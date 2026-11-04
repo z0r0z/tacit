@@ -79,6 +79,9 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
   const refreshSecs = config.inventory?.refreshSecs ?? 60;
   const reservations = new Map();                       // quote id -> { amount, until, txid }
   const published = new Map();
+  const checking = new Map();                           // swap id -> { p, done, at }: offers whose checks are under way
+  const offerBudgetMs = config.offerBudgetMs ?? 8000;
+  const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
   const counter = { publishEvmOffer: async (id, offer) => { published.set(id, offer); } };
   // an offer is judged against its quote, which lasts as long as the reservation made for it
   const quotes = { get: async (id) => { const q = await quoter.get(id); const r = reservations.get(id); return q && r && r.until > q.validUntil ? { ...q, validUntil: r.until } : q; } };
@@ -198,6 +201,25 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
   const reply = (body, status = 200) => ({ status, body });
   const no = (why, retry = false) => reply({ ok: false, retry, why });
 
+  // What an offer comes to: held and checked, or declined with a reason. A check that fails for a reason of its own (an explorer or a node that
+  // cannot be read, a bug) is logged and answered as one to try again, with its words, and is not a bare 500.
+  async function judgeOffer(body, q, sid) {
+    try {
+      // an offer whose payout is not held is held now, or declined, before anything is checked of it
+      if (q && !reservations.has(q.id) && !(await swaps.get(sid))) {
+        try { await exclusive(async () => { await capacity(BigInt(q.evmAmount)); }); } catch (e) { if (e.status) return { ok: false, retry: false, why: e.message }; throw e; }
+      }
+      const r = await el.receive({ quoteId: body.quoteId, offer: body.offer });
+      if (r.ok && q && reservations.delete(q.id)) await keep(q.id);
+      if (r.ok) stale();
+      return r.ok ? { ok: true, phase: r.rec.phase } : { ok: false, retry: !!r.retry, why: r.why };
+    } catch (e) {
+      const msg = String((e && e.message) || e).slice(0, 160);
+      log({ level: 'error', msg: 'an offer could not be checked', id: sid, error: msg });
+      return { ok: false, retry: true, why: `the lock could not be checked now: ${msg}` };
+    }
+  }
+
   // A request in, { status, body } out. The HTTP layer owns the limits per client; nothing here reads the address.
   async function handle({ method, path, body }) {
     try {
@@ -240,15 +262,23 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
       }
       if (method === 'POST' && path === '/offer') {
         if (!body || typeof body.quoteId !== 'string' || !body.offer || typeof body.offer !== 'object') return reply({ error: 'quoteId and offer are required' }, 400);
-        // an offer whose payout is not held is held now, or declined, before anything is checked of it
         const q = isId(body.quoteId) ? await quoter.get(body.quoteId) : null;
-        if (q && !reservations.has(q.id) && !(await swaps.get(String(body.offer.swapId || '').toLowerCase().replace(/^0x/, '')))) {
-          try { await exclusive(async () => { await capacity(BigInt(q.evmAmount)); }); } catch (e) { if (e.status) return no(e.message); throw e; }
+        const sid = String(body.offer.swapId || '').toLowerCase().replace(/^0x/, '');
+        if (!/^[0-9a-f]{72}$/.test(sid)) return reply(await judgeOffer(body, q, sid));
+        // The checks of an offer read the lock and its notes from explorers, which takes as long as they take. The request waits a few
+        // seconds for them and is then answered "ask again" while they go on; the same offer asked again joins the checks under way, so a
+        // slow check is one check and not one for every try, and a user's client is not left to time out on a provider that is working.
+        for (const [k, c] of checking) if (c.done && now() - c.at > 600) checking.delete(k);
+        let c = checking.get(sid);
+        if (!c) {
+          c = { done: false, at: now() };
+          c.p = judgeOffer(body, q, sid).then((r) => { c.done = true; c.at = now(); return r; });
+          checking.set(sid, c);
         }
-        const r = await el.receive({ quoteId: body.quoteId, offer: body.offer });
-        if (r.ok && q && reservations.delete(q.id)) await keep(q.id);
-        if (r.ok) stale();
-        return reply(r.ok ? { ok: true, phase: r.rec.phase } : { ok: false, retry: !!r.retry, why: r.why });
+        const r = await Promise.race([c.p, sleepMs(offerBudgetMs).then(() => null)]);
+        if (r === null) return reply({ ok: false, retry: true, why: 'the lock is still being checked: ask again in a few seconds' });
+        checking.delete(sid);
+        return reply(r);
       }
       const m = /^\/swap\/([0-9a-f]{72})(\/offer)?$/.exec(path);
       if (method === 'GET' && m) {
@@ -258,6 +288,7 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
       }
       return reply({ error: 'not found' }, 404);
     } catch (e) {
+      if (!e.status) log({ level: 'error', msg: 'a request failed', path, error: String((e && e.message) || e).slice(0, 160) });
       return reply({ error: e.status ? String(e.message) : 'the service could not answer' }, e.status || 500);
     }
   }

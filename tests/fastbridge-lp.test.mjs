@@ -361,6 +361,53 @@ test('reservations with no transaction behind them hold only a share of the pool
   assert.equal((await post(tight, '/reserve', { quoteId: q2.id })).body.ok, false, 'a quarter of 6,000 is 1,500: two thousand do not fit');
 });
 
+test('an offer whose checks take long is answered "ask again" within the budget while they go on, and asked again it joins them: one check, not one for every try', async () => {
+  const { w } = httpWorld();
+  w.lEvm.fund(1500n, 'inv'); manyCoins(w);
+  const s = await serve(w, { config: { ...configFor(w), offerBudgetMs: 40 } });
+  const q = (await post(s, '/quote', { amount: '1000' })).body;
+  let checks = 0;
+  s.svc.el.receive = async ({ quoteId, offer }) => { checks++; const known = await s.swaps.get(offer.swapId); if (known) return { ok: true, rec: known }; await new Promise((r) => setTimeout(r, 250)); await s.swaps.put({ id: offer.swapId, role: 'el', phase: 'accepted', quoteId, offer: { evm: { amount: '1000' } }, created: w.clock.now() }); return { ok: true, rec: { phase: 'accepted' } }; };
+  const offer = { quoteId: q.id, offer: { swapId: 'a'.repeat(72) } };
+  const t0 = Date.now();
+  const first = await post(s, '/offer', offer);
+  assert.deepEqual([first.status, first.body.ok, first.body.retry], [200, false, true]);
+  assert.match(first.body.why, /still being checked/); assert.ok(Date.now() - t0 < 200, 'answered within the budget, not when the checks end');
+  const joined = await post(s, '/offer', offer);
+  assert.deepEqual([joined.body.ok, joined.body.retry], [false, true], 'asked again while they go on, it is told the same');
+  await new Promise((r) => setTimeout(r, 300));
+  const done = await post(s, '/offer', offer);
+  assert.deepEqual([done.body.ok, done.body.phase], [true, 'accepted']);
+  assert.equal(checks, 1, 'three requests, one check');
+  assert.equal((await post(s, '/offer', offer)).body.ok, true, 'a swap already held is answered with its record');
+  assert.equal(checks, 2, 'and a swap that is stored is answered at once by the machine');
+});
+
+test('an offer whose checks fail for a reason of their own is answered to try again, with the reason, and logged: not a bare 500', async () => {
+  const { w } = httpWorld();
+  w.lEvm.fund(1500n, 'inv'); manyCoins(w);
+  const s = await serve(w);
+  const q = (await post(s, '/quote', { amount: '1000' })).body;
+  s.svc.el.receive = async () => { throw new Error('Buffer is not defined'); };
+  const r = await post(s, '/offer', { quoteId: q.id, offer: { swapId: 'b'.repeat(72) } });
+  assert.deepEqual([r.status, r.body.ok, r.body.retry], [200, false, true]);
+  assert.match(r.body.why, /the lock could not be checked now: Buffer is not defined/);
+  const log = s.logs.find((l) => l.msg === 'an offer could not be checked');
+  assert.ok(log && log.level === 'error' && /Buffer is not defined/.test(log.error), 'the provider is told');
+  // the same offer asked again is checked again, not remembered as failed
+  s.svc.el.receive = async ({ quoteId, offer }) => { await s.swaps.put({ id: offer.swapId, role: 'el', phase: 'accepted', quoteId, offer: { evm: { amount: '1000' } }, created: w.clock.now() }); return { ok: true, rec: { phase: 'accepted' } }; };
+  assert.equal((await post(s, '/offer', { quoteId: q.id, offer: { swapId: 'b'.repeat(72) } })).body.ok, true);
+});
+
+test('a request that fails inside the service is logged with its path, and is still answered 500 without the reason', async () => {
+  const { w } = httpWorld();
+  const s = await serve(w);
+  s.swaps.get = async () => { throw new Error('the disk is full'); };
+  const r = await call(s.base, 'GET', '/swap/' + 'c'.repeat(72));
+  assert.deepEqual([r.status, r.body.error], [500, 'the service could not answer']);
+  assert.ok(s.logs.some((l) => l.msg === 'a request failed' && l.path.startsWith('/swap/') && /disk is full/.test(l.error)), JSON.stringify(s.logs));
+});
+
 test('a provider with no Bitcoin of its own: each quote names the fee of the take, the lock pays it to the provider, and the take spends it', async () => {
   const { w, ref } = httpWorld();
   w.lEvm.fund(100_000n, 'inv');

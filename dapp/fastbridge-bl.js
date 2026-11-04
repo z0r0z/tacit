@@ -137,10 +137,10 @@ export function makeBitcoinLocker(ctx) {
           throw e;
         }
         if (answer && answer.ok === false) {
-          if (answer.retry && ctx.now() - rec.confirmedAt <= policy.offerWaitSecs) return rec;
+          if (answer.retry && ctx.now() - rec.confirmedAt <= policy.offerWaitSecs) return save(rec, { offerWhy: String(answer.why || '').slice(0, 200) });
           return save(rec, { phase: 'refund-wait', why: 'the counterparty declined: ' + answer.why });
         }
-        return save(rec, { phase: 'offered', offeredAt: ctx.now() });
+        return save(rec, { phase: 'offered', offeredAt: ctx.now(), offerWhy: null });
       }
       case 'offered': {
         const evmOffer = await counter.getEvmOffer(rec.id);

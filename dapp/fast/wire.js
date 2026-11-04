@@ -14,8 +14,8 @@ import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js?cb=586b3ee3';
 import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=6d248be8';
 import { makeFastBridgeEvm } from '/fastbridge-evm.js?cb=2391fffd';
 import { makeHttpCounter, makeCounter } from '/fastbridge-http.js?cb=11295986';
-import { makeFastBridgeMarket, makeLocalStore, termsOf } from '/fastbridge-client.js?cb=21e74139';
-import { makeLpService } from '/fastbridge-provider.js?cb=7208616b';
+import { makeFastBridgeMarket, makeLocalStore, termsOf } from '/fastbridge-client.js?cb=632a9387';
+import { makeLpService } from '/fastbridge-provider.js?cb=6b9deacd';
 import { makeMailboxCounter, makeMailboxServer, makeAdPublisher, readProviders, gatewayOf } from '/fastbridge-mailbox.js?cb=d00c9623';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=6a8ac4e2';
 import { signSchnorr } from '/bulletproofs.js?cb=132d3648';
@@ -273,7 +273,9 @@ export async function openProvider({ T, ux, priv, pubHex, boards = [], name = nu
   // requests and posts the ad on every board. Settings: { feeBps, flatFee, minAmount, maxAmount } in base units.
   async function start({ settings = {}, accept = true } = {}) {
     if (running) return;
-    service = makeLpService({ seed, btc, evm, swaps, quoteStore, config: configOf({ ...PROVIDER_DEFAULTS, ...settings }), now });
+    // what the service finds wrong is said in the panel (a lock it could not check, a request that failed), not kept from the one who provides
+    const said = (o) => { if (o.level === 'error' || o.level === 'warn') lastError = `${o.msg}${o.error ? `: ${o.error}` : ''}`.slice(0, 200); };
+    service = makeLpService({ seed, btc, evm, swaps, quoteStore, config: configOf({ ...PROVIDER_DEFAULTS, ...settings }), now, log: said });
     await service.start();
     running = true; accepting = !!accept; lastError = null;
     const note = (o) => { lastError = o.error || o.msg || null; };

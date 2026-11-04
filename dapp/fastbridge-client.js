@@ -214,7 +214,12 @@ const SAYS = {
   'counter-took': [3, 'Done', 'The TAC is in your private balance. The provider took the Bitcoin lock.'],
 };
 export function describe(rec) {
-  const [at, title, detail] = SAYS[rec.phase] || [0, rec.phase, ''];
+  let [at, title, detail] = SAYS[rec.phase] || [0, rec.phase, ''];
+  // the lock has confirmed and the provider has been asked: it is reading the lock from Bitcoin, which can take a minute, and says so
+  if (rec.phase === 'broadcast' && rec.confirmedAt) {
+    at = 1; title = 'The provider is checking your lock';
+    detail = rec.offerWhy ? `The lock is confirmed. The provider says: ${String(rec.offerWhy).replace(/\.$/, '')}.` : 'The lock is confirmed. The provider reads it from Bitcoin before it locks TAC for you.';
+  }
   const ended = TERMINAL.has(rec.phase), back = rec.phase === 'refund-wait' || rec.phase === 'refunded';
   return {
     id: rec.id, phase: rec.phase, title, detail: rec.phase === 'refund-wait' && rec.why && !/found from the key/.test(rec.why) ? `${detail} (${rec.why})` : detail,

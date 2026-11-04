@@ -241,6 +241,16 @@ test('a swap through the market: the provider is kept with the swap, and a recor
   assert.deepEqual(await gone.tick(), []);
 });
 
+test('a lock that has confirmed and not been answered yet says the provider is checking it, and what the provider said', () => {
+  const rec = { id: 'a', phase: 'broadcast', amount: '1', evmAmount: '1', created: 1, lock: { txid: 'bb'.repeat(32) } };
+  assert.equal(describe(rec).title, 'Waiting for Bitcoin', 'before a confirmation it waits for Bitcoin');
+  const checking = describe({ ...rec, confirmedAt: 5 });
+  assert.deepEqual([checking.title, checking.at, checking.ended], ['The provider is checking your lock', 1, false]);
+  assert.match(checking.detail, /reads it from Bitcoin before it locks TAC for you/);
+  const said = describe({ ...rec, confirmedAt: 5, offerWhy: 'the lock is still being checked: ask again in a few seconds' });
+  assert.match(said.detail, /The provider says: the lock is still being checked: ask again in a few seconds\.$/);
+});
+
 test('the words for each phase, and for one the page does not know', () => {
   const phases = ['built', 'broadcast', 'offered', 'claiming', 'claimed', 'done', 'refund-wait', 'refunded', 'counter-took'];
   const d = phases.map((phase) => describe({ id: 'x', phase, amount: '5', evmAmount: '4', created: 1 }));
