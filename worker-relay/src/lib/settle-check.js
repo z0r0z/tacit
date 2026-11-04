@@ -18,6 +18,14 @@ const text = (e) => {
 // for the caller to judge the proof another way, never a mark against the worker that made it.
 export const DEPOSIT_NOT_PENDING = '0x070d817c';
 
+// Refusals that say the OP has moved on since it was proved, not that the proof is wrong: the pool's NullifierAlreadySpent() (the op's note was
+// spent by another transaction first) and the farm's OverClaim() (the farm's accounting is no longer what the op claims, as when a harvest
+// was proved and then another changed the pool). A sound proof of such an op cannot land whoever made it, so these read as 'stale': no mark
+// against the worker. Read as 'bad' they marked a good worker six times between 2026-11-02 and 11-04 (its refused count went from 83 to 89)
+// and the monitor warned of it on every run. They are NOT in the lane's list of selectors that send an op back to be proved again from its
+// witness (open-board.js STALE_PROOF_SELECTORS): proving a spent note again would only fail again.
+export const OP_MOVED = [{ selector: '0xb115d857', name: 'nullifieralreadyspent' }, { selector: '0x508ece93', name: 'overclaim' }];
+
 // A node's refusal to run a call the account cannot pay for.
 export const fundsRefusal = (e) => /exceeds allowance|insufficient funds/i.test(text(e));
 
@@ -27,6 +35,7 @@ export function readSettleCheck(e, staleSelectors = []) {
   const hay = text(e).toLowerCase();
   if (staleSelectors.some((sel) => hay.includes(String(sel).toLowerCase()))) return { verdict: 'stale', said };
   if (hay.includes(DEPOSIT_NOT_PENDING) || hay.includes('depositnotpending')) return { verdict: 'nodeposit', said };
+  if (OP_MOVED.some((x) => hay.includes(x.selector) || hay.includes(x.name))) return { verdict: 'stale', said };
   if (fundsRefusal(e)) return { verdict: 'unchecked', said };
   return { verdict: 'bad', said };
 }

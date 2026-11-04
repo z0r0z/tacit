@@ -34,3 +34,16 @@ test('a proof whose deposit is not in the pool yet (proved first) is nodeposit, 
   assert.equal(readSettleCheck({ shortMessage: 'reverted with custom error DepositNotPending()' }, STALE).verdict, 'nodeposit');
   assert.equal(readSettleCheck({ shortMessage: 'reverted with custom error DepositExists()' }, STALE).verdict, 'bad');
 });
+
+test('an op that has moved on (its note already spent, a farm over-claim) is stale, not a bad proof: no mark against the worker', () => {
+  assert.equal(readSettleCheck({ shortMessage: 'reverted', cause: { data: '0xb115d857' } }, STALE).verdict, 'stale', 'NullifierAlreadySpent by selector');
+  assert.equal(readSettleCheck({ shortMessage: 'reverted with custom error NullifierAlreadySpent()' }, STALE).verdict, 'stale', '...by name');
+  assert.equal(readSettleCheck({ shortMessage: 'reverted', cause: { data: '0x508ece93' } }, STALE).verdict, 'stale', 'OverClaim by selector');
+  assert.equal(readSettleCheck({ shortMessage: 'reverted with custom error OverClaim()' }, STALE).verdict, 'stale', '...by name');
+  assert.equal(readSettleCheck({ shortMessage: 'reverted', cause: { data: '0xb115d857' } }, []).verdict, 'stale', 'whatever list of stale roots the lane passes');
+  // neighbours stay what they were
+  assert.equal(readSettleCheck({ shortMessage: 'reverted with custom error InvalidProof()' }, STALE).verdict, 'bad');
+  assert.equal(readSettleCheck({ shortMessage: 'reverted', cause: { data: '0x508ece94' } }, STALE).verdict, 'bad', 'a selector one off is not OverClaim');
+  assert.equal(readSettleCheck({ shortMessage: 'reverted', cause: { data: '0x070d817c' } }, STALE).verdict, 'nodeposit', 'DepositNotPending is still its own verdict');
+  assert.equal(readSettleCheck({ shortMessage: 'gas required exceeds allowance (47755)' }, STALE).verdict, 'unchecked');
+});
