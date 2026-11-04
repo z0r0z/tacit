@@ -1027,7 +1027,7 @@ function button(q, r, kind, gate) {
     if (S.toBad) return ['Check the address', false];
     const dest = outTo();
     if (!dest) return ['Add the address it goes to', false];
-    if (pb != null && q.wei > pb) return [`Not enough private ${pay.sym}`, false];
+    if (pb != null && q.wei > pb && !stagedFits(S.pay, q.wei)) return [`Not enough private ${pay.sym}`, false];
     if (gate && !S.ack) return gateButton();
     return [S.to ? `Swap privately → ${who(dest)}` : 'Swap privately to your wallet', true, 'priv'];
   }
@@ -1036,7 +1036,7 @@ function button(q, r, kind, gate) {
     const bal = isEth(S.pay) && W.account ? S.bal[S.pay] : null, tip = q.tip || 0n, pb = isEth(S.pay) ? null : privBal(S.pay);
     if (bal != null && q.wei > bal) return [`Not enough ${pay.sym}`, false];
     if (bal != null && q.wei + tip + gasKeep() > bal) return ['Leave some ETH for the network fee', false];
-    if (pb != null && q.wei > pb) return [`Not enough private ${pay.sym}`, false];
+    if (pb != null && q.wei > pb && !stagedFits(S.pay, q.wei)) return [`Not enough private ${pay.sym}`, false];
     if (gate && !S.ack) return gateButton();
     if (tTyped && S.toTacitBad) return ['Check the address', false];
     if (tTyped && !S.toTacit) return ['Finding their address…', false];
@@ -2039,7 +2039,7 @@ function exitButton(q, r) {
   if (!r) return [q?.err ? 'Try again' : 'No route', !!q?.err];
   const dest = intoPool() ? 'pool' : exitDest();
   if (!dest) return ['Add the address it goes to', false];
-  if (bal != null && wei > bal) return [wal ? `Not enough ${pay.sym}` : `Not enough private ${pay.sym}`, false];
+  if (bal != null && wei > bal && (wal || !stagedFits(S.pay, wei))) return [wal ? `Not enough ${pay.sym}` : `Not enough private ${pay.sym}`, false];
   if (bal != null && q.fee != null && wei + 2n * q.fee > bal) return ['Leave room for the relay’s fee', false];
   if (wal && isEth(S.pay) && bal != null && wei + gasKeep() > bal) return ['Leave some ETH for the network fee', false];
   if (wal && !isEth(S.pay) && S.bal[lc(R.ZERO)] != null && 2n * gasKeep() > S.bal[lc(R.ZERO)]) return ['Leave some ETH for the network fee', false];
@@ -2165,6 +2165,15 @@ function stagedChips() {
   if (!stagePair() || !PV) return null;
   const have = PV.stagedSizes(paint);
   if (!have) return null;
+  // proved on this computer the notes are staged whole, so the sizes kept ready are what is staged: the largest three, and Keep ready while a
+  // free note is not
+  if (PV.deviceStaging?.()) {
+    const sized = [...new Set(have.map(String))].map(BigInt).sort((a, b) => (a < b ? 1 : -1)).slice(0, 3);
+    const chips = sized.map((u) => ({ v: tidy(fmtUnits(u * E10, 18, 8)), rd: true, t: 'Kept ready: one fast proof' }));   // every unit: the press matches the deposit exactly
+    if (PV.isStaging()) chips.push({ v: 'Keeping ready…', act: true, off: true });
+    else if ((privBal('teth') ?? 0n) > 0n) chips.push({ v: 'Keep ready', act: true });
+    return chips;
+  }
   const units = KEEP_SWAP.map((v) => parseUnits(v, 8)), bal = privBal('teth'), miss = units.filter((u) => !have.includes(u));
   const chips = KEEP_SWAP.map((v, i) => ({ v, rd: have.includes(units[i]), t: 'Kept ready: one fast proof' }));
   if (PV.isStaging()) chips.push({ v: 'Keeping ready…', act: true, off: true });
@@ -2173,6 +2182,14 @@ function stagedChips() {
 }
 async function stageGo() {
   const pv = await pvLoad(), missing = KEEP_SWAP.map((v) => parseUnits(v, 8));
+  if (pv.deviceStaging?.()) {
+    const p = pv.stageWhole({ say: (n) => { say(`Keeping ${n} tETH note${n === 1 ? '' : 's'} ready to swap, proved on this computer: about 15 minutes…`, '', true); paint(); }, onStaged: () => pv.read(true).then(paint, paint) });
+    paint();
+    try { const n = await p; S.note = ''; say(n ? 'Kept ready. Pick a size to swap it in one fast proof.' : 'Nothing to keep ready: no free tETH note.', n ? '' : 'err', true); }
+    catch (e) { say(esc(e?.message || String(e)), 'err', true); }
+    finally { pv.read(true).then(paint, paint); }
+    return;
+  }
   const p = pv.stageSizes({ sizes: missing, say: (u) => { say(`Keeping ${esc(tidy(amtFmt(u * E10, 18)))} tETH ready to swap…`, '', true); paint(); }, onStaged: () => pv.read(true).then(paint, paint) });
   paint();
   try { const n = await p; S.note = ''; say(n ? 'Kept ready. Pick a size to swap it in one fast proof.' : 'Nothing to keep ready: no tETH note holds a size and its fees.', n ? '' : 'err', true); }
@@ -2205,6 +2222,8 @@ function aheadSoon() {
 }
 // The key's private balance of a coin, in its 18 decimals: null until the key is open here and its notes are read.
 const privBal = (k) => { const id = IDS[PK[k]]; return PV?.held && id ? PV.of(id).value * E10 : null; };
+// An amount of private tETH that one of the key's staged deposits is exactly: the press swaps that deposit, so no note need cover it.
+const stagedFits = (k, wei) => k === 'teth' && wei > 0n && wei % E10 === 0n && !!PV?.stagedSizes?.()?.includes(wei / E10);
 // A page that holds the key itself (the front page): a private side reads the balance at once, with nothing to open on the card.
 function privUp() {
   if (!H.key?.session?.unlocked || !(S.inP || S.outP)) return;

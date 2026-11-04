@@ -348,6 +348,32 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
     })().finally(() => { staging = null; }));
   }
   const isStaging = () => !!staging;
+  // With this computer's prover chosen (relay.ownProving: the holder's own key never leaves the machine), the free tETH notes are staged whole and
+  // together, with ONE proof made here (confidential-stage.js stageBatch): a machine pays a proof's fixed stages once for all of them. Up to
+  // BATCH_MAX, what one proof holds on an 8 GB laptop; the relay settles it and makes the deposits, so nothing is sent from a wallet. Each
+  // deposit is its note less the relay's fee, so the sizes kept ready are the notes' own. → how many were staged.
+  const BATCH_MAX = 9;
+  let own = null;
+  const deviceStaging = () => { getUx().then((t) => { own = !!t.relay.ownProving?.(); }, () => {}); return !!own; };
+  function stageWhole({ say = () => {}, onStaged = () => {} } = {}) {
+    if (!key.unlocked || staging) return staging;
+    return (staging = (async () => {
+      const t = await getUx();
+      if (!t.relay.ownProving?.()) return 0;
+      const st = await stage(), eth = t.assetByTicker.cETH.assetId;
+      await read(true);
+      const notes = of(eth).notes.filter(free).sort(byValue).reverse().slice(0, BATCH_MAX);
+      if (!notes.length) return 0;
+      const { makeDeviceProver } = await import('/device-prover.js?cb=635b9138');
+      const dev = makeDeviceProver({ keccak256: keccak_256 });
+      for (const n of notes) busy.set(lc(n.leaf), Date.now());
+      say(notes.length);
+      await st.stageBatch({ notes, walletPriv: key.priv(), prove: (items) => dev.proveBatch(items), waitOpts: { ...run().wait('Keep tETH ready to swap', 60 * 60e3), intervalMs: 4000, viaRelay: true } });
+      held = null; stagedAt = null;
+      onStaged();
+      return notes.length;
+    })().finally(() => { staging = null; }));
+  }
 
   // The relay is asked before anything is sent: a swap is a step that expires, so it cannot wait in line while the relay is held.
   async function relayOpen() {
@@ -664,7 +690,7 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
   }
 
   return {
-    open, lock, reset, read, swap, swapOut, exitCalls, of, most, keyHex, sendPrivate, ahead, aheadOf, routeAhead, routeAheadOf, keep, tierOf, stagedSizes, stageSizes, isStaging,
+    open, lock, reset, read, swap, swapOut, exitCalls, of, most, keyHex, sendPrivate, ahead, aheadOf, routeAhead, routeAheadOf, keep, tierOf, stagedSizes, stageSizes, stageWhole, deviceStaging, isStaging,
     // the checks a swap makes before anything leaves a wallet, for a page that first sells a token for the ETH it will make private
     relayOpen, priceOk: (asset, units, path, fee, minOut) => (path?.length ? price(asset, units, path, fee, minOut) : Promise.resolve(null)),
     get unlocked() { return key.unlocked; },

@@ -199,7 +199,7 @@ const { chromium } = require(process.env.PLAYWRIGHT || '/Users/z/zFi/node_module
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
 // Borrow reports under each step's own line (#bw-s1…#bw-s4) as well as the sheet's: read them all.
 const bwText = (page) => page.evaluate((s) => [...document.querySelectorAll(s)].map((e) => e.textContent).join(' '), '#bw-status, #bw-s1, #bw-s2, #bw-s3, #bw-s4');
-const ONLY = new Set((process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,stageready,wrapfirst,poolkeep,poolmax,sendahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,relayfail,selfwallet,slowline').split(','));
+const ONLY = new Set((process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,relayfail,selfwallet,slowline').split(','));
 const FORK = process.argv[3] || 'https://mainnet.gateway.tenderly.co';
 const SHOTS = process.env.SHOTS || null;
 const PORT = 20000 + Math.floor(Math.random() * 2000), WEB = PORT + 1;
@@ -6840,6 +6840,7 @@ const chainStub = () => `
 // A swap's route and the split before it, recorded in window.__swapCalls and applied to the notes. The real pools are read for the
 // quote. window.__swapRefuse makes the relay refuse a relayed route, as it does when its free settles are used up.
 const swapStub = () => `
+    if (window.__ownProving) ux.relay.ownProving = () => true;          // the holder chose this computer's prover (stagewhole)
     window.__swapCalls = [];
     window.__swapQueue = 0;                                             // how many relayed steps wait out the relay's queue (then run the next ones)
     window.__poolMoves = false;                                         // true: the pool's reserves take the swap in, as the real pool's do
@@ -11653,6 +11654,73 @@ await step('stageready', async () => {
     ok(/Done\./.test(await q('#q')) && (await calls()).at(-1) === 'press:10000000000000000' && !sc.some((x) => !x.ahead),
       `stageready: 0.01 swaps from its staged deposit, with no route asked of the relay and no note split (${(await calls()).at(-1)}; ${JSON.stringify(sc)}; ${(await q('#q')).slice(0, 100)})`);
     if (r.errors.length) { fails++; console.log('FAIL stageready page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { await r.browser.close(); }
+});
+
+// With this computer's prover chosen, Keep ready stages the key's tETH notes whole and together, with one proof made here (the device prover and
+// the stage module are stubbed: the batch's proof, its settle and its one recipe are checked by tests/stage-batch-fork.mjs); the sizes kept ready
+// are then the staged deposits' own, and a press swaps one of them with no route asked of the relay.
+await step('stagewhole', async () => {
+  const hex = '57a7'.padEnd(64, '5'), acct = makeEvmAccount({ secp, keccak256: keccak_256, sha256 }).deriveEvmAccount(Buffer.from(hex, 'hex'), 'mainnet').address;
+  const stubs = async (page) => {
+    await page.addInitScript(() => { window.__ownProving = true; });
+    await page.route(/\/device-prover\.js(\?|$)/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: `
+      export const DEVICE_PROVER_BASE = 'http://127.0.0.1:47815', DEVICE_TYPES = ['unwrap'];
+      export function makeDeviceProver() {
+        return { health: async () => null, supports: () => true, prove: async () => { throw new Error('one at a time asked'); },
+          proveBatch: async (items) => { (window.__stage ||= { staged: [], calls: [] }).calls.push('batch:' + items.length + ':' + items.map((x) => x.type).join('/')); return { publicValues: '0x01', proof: '0x02' }; } };
+      }` }));
+    await page.route(/\/confidential-stage\.js(\?|$)/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: `
+      export function makeConfidentialStage() {
+        const S = window.__stage ||= { staged: [], calls: [] }, E10 = 10n ** 10n;
+        return {
+          splitPending: async () => ({ staged: S.staged.map((x) => ({ ...x })), waiting: [] }),
+          stageNote: async () => { S.calls.push('one'); throw new Error('one at a time'); },
+          stageBatch: async ({ notes, prove }) => {
+            await prove(notes.map((n) => ({ type: 'unwrap', op: { note: n.value }, memos: [] })));
+            const c = window.__chainNotes;
+            for (const [i, n] of notes.entries()) { c.add.splice(c.add.findIndex((x) => x.cx === n.cx), 1); S.staged.push({ index: 40 + i, value: String(BigInt(n.value) - 100000n), depositId: '0x' + String(i + 1).padStart(64, 'd') }); }
+            S.calls.push('staged:' + notes.map((n) => n.value).join('/'));
+            return { deposits: [], settleTx: '0x' + 'ce'.repeat(32), activateTx: '0x' + 'cf'.repeat(32) };
+          },
+          pressSwap: async (a) => { S.calls.push('press:' + a.deposit.wei); S.staged = S.staged.filter((x) => BigInt(x.value) * E10 !== a.deposit.wei); return { txHash: '0x' + 'cd'.repeat(32), amountOut: 17000000000n }; },
+        };
+      }` }));
+    await rpc('anvil_setBalance', [acct, '0x0']);
+  };
+  const r = await openFarmKey(hex, { notes: [[FARM_CETH, 25000000n], [FARM_CETH, 1200000n]], fees: { route: 100000 }, swap: true }, undefined, stubs);
+  const p = r.page, q = (x) => text(p, `#hx-swap ${x}`).then((t) => t.replace(/\s+/g, ' ')), calls = () => p.evaluate(() => window.__stage?.calls || []);
+  const chips = () => p.evaluate(() => [...document.querySelectorAll('#hx-swap #pay-usd button')].map((b) => `${b.textContent.trim()}${b.classList.contains('rd') ? '*' : ''}`).join(' '));
+  const pick = (side, sym) => p.evaluate(([sd, sy]) => { let g = ''; for (const el of document.querySelectorAll('#pk .pk-g, #pk .pk-r')) { if (el.classList.contains('pk-g')) { g = el.textContent; continue; } if (/^Private/.test(g) && el.querySelector('b')?.textContent.trim() === sy) { el.click(); return; } } }, [side, sym]);
+  try {
+    await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
+    await p.click('[data-hxm="swap"]');
+    await p.waitForSelector('#hx-swap #pay-coin');
+    await p.click('#hx-swap #pay-coin'); await p.waitForSelector('#pk .pk-r:visible'); await pick('pay', 'tETH');
+    await until(p, () => /^tETH/.test((document.querySelector('#hx-swap #pay-coin')?.textContent || '').trim()) && /Balance 0\.262 · Max/.test(document.querySelector('#hx-swap #pay-side')?.textContent || ''), null, 300000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | pay: ${await text(p, '#hx-swap #pay-coin')} / ${await text(p, '#hx-swap #pay-side')}`); });
+    await p.click('#hx-swap #get-coin'); await p.waitForSelector('#pk .pk-r:visible'); await pick('get', 'TAC');
+    await until(p, () => /Keep ready/.test(document.querySelector('#hx-swap #pay-usd')?.textContent || ''), null, 120000).catch(() => {});
+    const c0 = await chips();
+    ok(c0 === 'Keep ready' && !(await calls()).length, `stagewhole: with this computer's prover, nothing staged yet offers Keep ready alone and stages nothing unasked (${c0}; ${await calls()})`);
+    await p.click('#hx-swap [data-stage]');
+    await until(p, () => [...document.querySelectorAll('#hx-swap #pay-usd button.rd')].length === 2, null, 120000).catch(() => {});
+    const c1 = await chips(), staged = await calls();
+    ok(staged.join() === 'batch:2:unwrap/unwrap,staged:25000000/1200000' && c1 === '0.249* 0.011*' && /Kept ready/.test(await q('#q')),
+      `stagewhole: Keep ready stages both notes whole with one proof made here, and the sizes kept ready are the deposits staged (${c1}; ${staged}; ${(await q('#q')).slice(0, 80)})`);
+    const s0 = (await p.evaluate(() => window.__swapCalls)).length;
+    // the kept sizes stand still once staged: a card that redrew them over and over would lose the press
+    const redraws = await p.evaluate(() => new Promise((res) => { let n = 0; const el = document.querySelector('#hx-swap #pay-usd'); const mo = new MutationObserver(() => n++); mo.observe(el, { childList: true, subtree: true }); setTimeout(() => { mo.disconnect(); res(n); }, 2000); }));
+    ok(redraws <= 2, `stagewhole: the kept sizes stand still once staged (${redraws} redraws in 2 s)`);
+    await p.evaluate(() => document.querySelector('#hx-swap #pay-usd [data-quick="0.011"]')?.click());
+    await until(p, () => { const b = document.querySelector('#hx-swap #go'); return !!b && !b.disabled && /^Swap/.test(b.textContent || ''); }, null, 300000)
+      .catch(async () => { throw new Error(`no press: go ${await q('#go')} | ${(await q('#q')).slice(0, 160)} | ${await q('#pay-side')}`); });
+    await p.click('#hx-swap #go');
+    await until(p, () => /Done\.|class="err"/.test(document.querySelector('#hx-swap #q')?.innerHTML || ''), null, 120000).catch(() => {});
+    const sc = (await p.evaluate(() => window.__swapCalls)).slice(s0);
+    ok(/Done\./.test(await q('#q')) && (await calls()).at(-1) === 'press:11000000000000000' && !sc.some((x) => !x.ahead),
+      `stagewhole: a kept size swaps from its staged deposit, no route asked of the relay (${(await calls()).at(-1)}; ${JSON.stringify(sc)}; ${(await q('#q')).slice(0, 100)})`);
+    if (r.errors.length) { fails++; console.log('FAIL stagewhole page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }
 });
 
