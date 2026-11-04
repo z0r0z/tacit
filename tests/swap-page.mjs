@@ -244,12 +244,12 @@ if (!process.env.SKIP_GASRELAY) {
     ok(/^Sell TAC$/.test((await page.textContent('#go')).trim()), `a wallet with 500 TAC and no ETH: the button sells TAC for ${label}`);
     { const rc = (await page.textContent('#rcpt')).replace(/\s+/g, ' ');
       ok(/Network fee\s*about \$[\d.,]+, paid in TAC/.test(rc), `the receipt says the network fee is paid in TAC before anything is pressed (${(rc.match(/Network fee[^$]*\$[\d.,]+, paid in \w+/) || [''])[0]})`); }
-    // a swap too small for its fee is refused in words, and nothing is signed
+    // a swap too small for its fee is refused in words, and nothing is signed: "too high for this swap" when both coins have a dollar price (the fee cap), "more than a quarter" when one has none
     if (label === 'USDC') {
       await typeAmt(page, '2'); await quoted(page);
       const s0 = walletLog.signs; await page.click('#go');
       await until(page, () => /quarter|Nothing was/.test(document.querySelector('#q').textContent), null, 120000);
-      ok(/more than a quarter of this swap/.test(await page.textContent('#q')) && walletLog.signs === s0 && !seen.orders.length, 'a swap whose network fee is over a quarter of it is refused before anything is signed');
+      ok(/more than a quarter of this swap|network fee is too high for this swap/.test(await page.textContent('#q')) && walletLog.signs === s0 && !seen.orders.length, 'a swap whose network fee is over a quarter of it is refused before anything is signed');
       await typeAmt(page, '100'); await quoted(page);
     }
     const t0 = await bal(TAC, w.account), d0 = label === 'USDC' ? await bal(USDC, w.account) : BigInt(await rpcA('eth_getBalance', [w.account, 'latest']));
