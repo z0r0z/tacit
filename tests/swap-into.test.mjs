@@ -18,10 +18,10 @@ const SRC = hopOf(USDC, '1-xa0b86991c6'), DST = hopOf('0xdac17f958d2ee523a220620
 
 // a pool's wallet that records what it is asked: `failWith` makes the withdrawal throw
 function wallets({ balance = 2_000n * 10n ** 6n, fee = 100_000n, failWith = null, noDrop = true } = {}) {
-  const w = { calls: { depositBox: [], withdrawAndCall: [], withdraw: [] }, balance };
+  const w = { calls: { depositBox: [], withdrawAndCall: [], withdraw: [], refundBox: [] }, balance };
   Object.assign(w, {
     sync: async () => ({ balance: w.balance, leaves: 40 }), notes: () => [{ index: 30, v: String(w.balance) }], summary: () => ({ balance: w.balance }),
-    quote: async () => ({ fee: String(fee) }), refundBox: async () => REFUND,
+    quote: async () => ({ fee: String(fee) }), refundBox: async () => { w.calls.refundBox.push(1); return REFUND; },
     depositBox: async (a) => { w.calls.depositBox.push(a); return { box: BOX, amount: a.amount, value: a.amount - BigInt(a.fee), deadline: a.deadline, intent: { refund: a.refund, deadline: String(a.deadline), amount: a.amount.toString() } }; },
     withdrawAndCall: async (a) => { w.calls.withdrawAndCall.push(a); if (failWith) throw new Error(failWith); return '0x' + 'ab'.repeat(32); },
     withdraw: async (a) => { w.calls.withdraw.push(a); return '0x' + 'cd'.repeat(32); },
@@ -239,4 +239,42 @@ test('another spend from the pool is not taken for the swap: with an escrow, the
   const old = { ...base, state: 'unsure', balBefore: String(10n ** 12n), swapAt: Date.now() - 30 * 60e3 };
   delete old.escrow;
   assert.strictEqual((await L.check(old)).state, 'done');
+});
+
+// ── a plan belongs to the key that made it, and its swap out makes one refund box however often it is tried ──
+const sharedStore = () => { const mem = new Map(); return { getItem: (k) => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, String(v)) }; };
+const withKey = (hex, w, store, extra = {}) => makeLater({ keyHex: async () => hex, signer: { address: '0x' + '01'.repeat(20) }, ethCall: async () => '0x', store, chain: { chainId: 1, rpc: ['http://127.0.0.1:1'] }, walletOf: () => w, routes: routesOf([E18, E18]).routes, ...extra });
+
+test('a plan made with one Tacit key is not swapped, checked or shown a mix by another key opened in the same browser', async () => {
+  const store = sharedStore(), w = wallets({ balance: 9_000n * 10n ** 6n });
+  const A = withKey('22'.repeat(32), w, store), B = withKey('33'.repeat(32), w, store);
+  const plan = await A.adopt(args());
+  assert.match(plan.key || '', /^bp1[0-9a-z]{20,}$/, 'the plan records the key\'s pool address');
+  const shown = await A.offer(plan);
+  await assert.rejects(B.swapOut(plan, { shown, via: 'relay' }), /another Tacit key/);
+  assert.strictEqual(w.calls.withdrawAndCall.length + w.calls.withdraw.length, 0, 'nothing was sent');
+  const checked = await B.check(plan);
+  assert.match(checked.err, /another Tacit key/);
+  assert.strictEqual(JSON.parse(store.getItem('tacit-swap-later-v1'))[0].state, 'waiting', 'and the plan is left as it was');
+  await assert.rejects(B.blend(plan), /another Tacit key/);
+  const done = await A.swapOut(plan, { shown, via: 'relay' });
+  assert.strictEqual(done.state, 'done', 'its own key swaps it');
+});
+
+test('a plan from before plans kept their key is anyone\'s, as it was', async () => {
+  const store = sharedStore(), w = wallets({ balance: 9_000n * 10n ** 6n });
+  const A = withKey('22'.repeat(32), w, store), B = withKey('33'.repeat(32), w, store);
+  const plan = await A.adopt(args()); delete plan.key;
+  const done = await B.swapOut(plan, { shown: await B.offer(plan), via: 'relay' });
+  assert.strictEqual(done.state, 'done');
+});
+
+test('every try at a swap out uses the plan\'s one refund box, not a new index each', async () => {
+  const w = wallets({ failWith: 'fee went up' }), { L, store } = make({ w, r: routesOf([E18, E18]) });
+  const plan = await L.adopt(args());
+  for (let i = 0; i < 3; i++) await assert.rejects(L.swapOut(JSON.parse(store.getItem('tacit-swap-later-v1'))[0], { shown: await L.offer(plan), via: 'relay' }), /fee went up/);
+  assert.strictEqual(w.calls.refundBox.length, 1, 'one refund box for three tries');
+  assert.strictEqual(w.calls.withdrawAndCall.length, 3);
+  assert.ok(w.calls.withdrawAndCall.every((c) => c.intent.refund === REFUND), 'each try names it');
+  assert.strictEqual(JSON.parse(store.getItem('tacit-swap-later-v1'))[0].callRefund, REFUND, 'and the plan keeps it');
 });

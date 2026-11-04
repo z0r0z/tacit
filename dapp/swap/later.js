@@ -334,6 +334,17 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
   }
   const prove = oneAtATime(async (input) => (await warm())(input));
 
+  // The address of the key's pool wallet: a plan is kept with it, and only the key that made the plan swaps it. A browser keeps plans for every Tacit key opened in it, and another
+  // key's wallet that held enough would otherwise send its own funds to this plan's address.
+  async function keyId() {
+    const priv = await keyHex();
+    if (keyAddr?.priv !== priv) { const m = await mods(); keyAddr = { priv, address: m.wm.evmPoolKeys(m.zk, hexToBytes(priv)).address }; }
+    return lc(keyAddr.address);
+  }
+  // (recorded when the key can be read: a flow that never opens it, a box made for the first hop, leaves no key, and such a plan is anyone's as plans were)
+  const keyIdIfOpen = () => keyId().catch(() => undefined);
+  const mine = async (plan) => !plan.key || plan.key === await keyId();         // (a plan from before plans kept their key has none, and is anyone's)
+  const OTHER_KEY = 'This swap was made with another Tacit key. Open that key to use it.';
   // The key's pool wallet, its state kept where /pay/eth keeps it, so either page sees the same notes: the ETH pool's, or with `hop` (a plan's
   // token pool) that pool's, its fees in the token and sent by the same relay.
   async function wallet(hop = null) {
@@ -511,7 +522,7 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
       paid = { token: lc(pay.token), sym: pay.sym, dec: pay.dec, amountWei: String(r.amountIn), typed: String(pay.amountIn), route: r.name };      // `typed`: the amount asked for, which the plan's header names
     }
     const s0 = await synced;
-    const plan = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, at: Date.now(), from: lc(signer.address), swapWei: String(swapWei), extraWei: String(extraWei),
+    const plan = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, at: Date.now(), key: await keyIdIfOpen(), from: lc(signer.address), swapWei: String(swapWei), extraWei: String(extraWei),
       depositWei: String(depositWei), token: lc(token), sym, dec, to: lc(to), ...(toName ? { toName: String(toName) } : {}), ...(paid ? { pay: paid } : {}), dest, gasWei: String(gasWei), state: 'depositing', leaves0: s0.leaves };
     keptOrStop(plan);
     try {
@@ -539,7 +550,7 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
     synced.catch(() => {});
     const pull = await routerPull({ token: hop.token, router: hop.router, sym: pay.sym, amount, deadline, onStep });
     const s0 = await synced;
-    const plan = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, at: Date.now(), from: lc(signer.address), swapWei: String(swapWei), extraWei: String(extraWei),
+    const plan = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, at: Date.now(), key: await keyIdIfOpen(), from: lc(signer.address), swapWei: String(swapWei), extraWei: String(extraWei),
       depositWei: String(depositWei), token: lc(token), sym, dec, to: lc(to), ...(toName ? { toName: String(toName) } : {}), dest: { kind: 'address' }, gasWei: '0',
       hop: { token: lc(hop.token), pool: hop.pool, router: hop.router, id: hop.id, from: hop.from || TOKEN_POOLS_FROM, sym: pay.sym, dec: pay.dec }, state: 'depositing', leaves0: s0.leaves };
     keptOrStop(plan);
@@ -576,7 +587,7 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
     if (least == null) throw Object.assign(new Error('The pool’s keeper could not quote its fee right now. Nothing was sent. Try again in a moment.'), { nothingSpent: true });
     const fee = boxFeeOf(least), amount = BigInt(depositWei) + fee;
     const s0 = await w.sync();
-    const plan = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, at: Date.now(), from: lc(signer.address), swapWei: String(swapWei), extraWei: String(extraWei),
+    const plan = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, at: Date.now(), key: await keyIdIfOpen(), from: lc(signer.address), swapWei: String(swapWei), extraWei: String(extraWei),
       depositWei: String(depositWei), token: lc(token), sym, dec, to: lc(to), ...(toName ? { toName: String(toName) } : {}),
       pay: { token: lc(pay.token), sym: pay.sym, dec: pay.dec, amountWei: String(pay.amountIn), ...(pay.typed != null ? { typed: String(pay.typed) } : {}), route: pay.route || 'relay' }, dest: { kind: 'address' }, gasWei: '0',
       boxed: true, state: 'depositing', leaves0: s0.leaves };
@@ -647,7 +658,7 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
     if (hop && !(hop.state?.pool && hop.state?.router)) throw new Error(`The private ${unit} pool is not open yet.`);
     const w = await wallet(hop), s = await w.sync();
     if (s.balance < swap + 2n * fee) throw new Error(`Your private ${unit} balance holds less than the swap and the relay’s fee. Nothing was sent.`);
-    const plan = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, at: Date.now(), held: true, swapWei: String(swap), extraWei: '0', depositWei: String(swap + 2n * fee),
+    const plan = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, at: Date.now(), key: await keyIdIfOpen(), held: true, swapWei: String(swap), extraWei: '0', depositWei: String(swap + 2n * fee),
       token: lc(token), sym, dec, to: lc(to), ...(toName ? { toName: String(toName) } : {}), dest: { kind: 'address' }, gasWei: '0',
       ...(hop ? { hop: { token: lc(hop.token), pool: hop.pool, router: hop.router, id: hop.id, from: hop.from || TOKEN_POOLS_FROM, sym: pay.sym, dec: pay.dec } } : {}),
       ...(into ? { into: { refund: lc(into.refund), hop: into.hop ? { token: lc(into.hop.token), pool: into.hop.pool, router: into.hop.router, id: into.hop.id, from: into.hop.from || TOKEN_POOLS_FROM, sym, dec } : null } } : {}),
@@ -704,6 +715,7 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
   // A plan left in doubt (a closed tab, an unclear answer) read against the pool: its deposit is a new note of exactly its amount; its swap out
   // spent the swap's ETH, so the balance is at least that much under what it was before.
   async function check(plan) {
+    if (!(await mine(plan))) return { ...plan, err: OTHER_KEY };                       // read against another key's pool it would say nothing true of this plan: left as it is
     if (poolDest(plan) && (plan.state === 'shielding' || plan.state === 'held')) return plan;        // its swap is done: what is left is the making private, pressed again
     const w = await wallet(plan.hop), s = await w.sync(), notes = w.notes();
     if (!plan.depositedAt) {
@@ -732,6 +744,7 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
 
   // How the wait goes: the notes the pool has made since the deposit (each deposit, payment, change and withdrawal makes one or two) and the time since.
   async function blend(plan) {
+    if (!(await mine(plan))) throw new Error(OTHER_KEY);                               // (the card shows no mix for it)
     // (a read a few seconds old serves every waiting plan of a pool: the card asks once per plan, every half minute)
     const w = await wallet(plan.hop), s = await w.sync(15000);
     // a swap's deposit is counted from its own; a held balance's from its latest note, the one that has mixed least
@@ -778,6 +791,7 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
     // Only a swap that waits is sent: one already made, being sent, or in doubt (here or in another tab, whose copy is the one kept) is not sent again
     const now_ = readPlans(store).find((x) => x.id === plan.id) || plan;
     if (now_.state !== 'waiting') throw new Error(`This swap is not waiting to be sent (${now_.state}). Check it first. Nothing was sent.`);
+    if (!(await mine(plan))) throw new Error(`${OTHER_KEY} Nothing was sent.`);
     if (via === 'self' && plan.from && lc(signer.address) === plan.from) throw new Error('Not from the wallet that deposited: that would tie the deposit to the swap. Connect another wallet, or let the relay send it.');
     const w = await wallet(plan.hop), amount = BigInt(plan.swapWei), gas = BigInt(plan.gasWei || 0);
     // from a token pool the relay's fee is the token's, at a price that moves: never more than the deposit set aside for it (twice the fee shown)
@@ -802,12 +816,12 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
       if (same) h = await w.withdraw({ to: plan.to, amount, via: via === 'self' ? 'self' : null, maxFee, onStep });
       else if (plan.hop) {
         // the escrow holds the token: one call approves zRouter for exactly the swap's amount and runs the route, which pays the address
-        const m = await mods(), refund = await w.refundBox();
+        const m = await mods(), refund = (plan.callRefund ||= await w.refundBox());      // one for the plan, kept: each is an index a restore from the seed must reach
         const intent = m.gw.callIntent({ calls: [{ target: ZROUTER, value: 0n, token: plan.hop.token, amount, push: false, data: r.callData }], refund, deadline: r.deadline, nonce: randomNonce() });
         plan.escrow = m.gw.callEscrowAddress(intent, plan.hop.router); save(plan);          // kept before the send: a check asks the router whether this call ran
         h = await w.withdrawAndCall({ intent, amount, gas: Number(HOP_GAS), maxFee, via, onStep });
       } else {
-        const m = await mods(), refund = await w.refundBox();
+        const m = await mods(), refund = (plan.callRefund ||= await w.refundBox());      // one for the plan, kept: each is an index a restore from the seed must reach
         // a swap into a private balance pays the key's own account, and hands it the gas to make the TAC private from there, in the same withdrawal
         const calls = [{ target: ZROUTER, value: amount, data: r.callData }, ...(gas > 0n ? [{ target: plan.to, value: gas }] : [])];
         const intent = m.gw.callIntent({ calls, refund, deadline: r.deadline, nonce: randomNonce() });
@@ -837,6 +851,7 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
   // taken (what the account held before stays), rounded down to the pool's unit.
   async function shield(plan, { onStep = () => {}, waitOpts } = {}) {
     if (!poolDest(plan)) throw new Error('This swap pays an address.');
+    if (!(await mine(plan))) throw new Error(OTHER_KEY);
     // a swap that went out while the tab was closed has no hash here, but a check against the pool found it made (swapDoneAt)
     if (!plan.swapTx && !plan.swapDoneAt) throw new Error('The swap out has not been made yet.');
     const { t, priv, acct, tk, meta } = await tacitAccount();
