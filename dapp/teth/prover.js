@@ -42,7 +42,7 @@ export function setDevicePref(pubHex, on) {
 }
 let devP = null;
 export function deviceProver() {
-  return (devP ||= import('/device-prover.js?cb=92d426ad').then((m) => m.makeDeviceProver({ keccak256: keccak_256 })).catch((e) => {
+  return (devP ||= import('/device-prover.js?cb=635b9138').then((m) => m.makeDeviceProver({ keccak256: keccak_256 })).catch((e) => {
     devP = null;
     throw Object.assign(new Error('Could not load the prover for this computer. Try again in a moment.'), { code: 'unavailable', cause: e });
   }));

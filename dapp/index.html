@@ -3093,7 +3093,7 @@ const devOn = () => !!S.key && store.get(DEV_PREF + S.key.pubHex) === true;
 const ownOn = () => spOn() || devOn();
 const LOCAL = { prover: null, found: null, at: 0, looking: null };
 const DEVICE_GET = 'https://github.com/src-company/tacit/tree/main/contracts/sp1/confidential/device-prover';
-const devMod = lazy(() => import('/device-prover.js?cb=92d426ad'));
+const devMod = lazy(() => import('/device-prover.js?cb=635b9138'));
 async function devProver({ fresh = false } = {}) {
   if (!fresh && LOCAL.found && Date.now() - LOCAL.at < 60e3) return LOCAL.prover;
   return (LOCAL.looking ||= (async () => {

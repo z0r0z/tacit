@@ -292,7 +292,7 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
   // amount, swapped through one pool from it: the press's proof holds no secret, so it is the relay's board (or any prover) that makes it, and
   // the note's key was used only when the deposit was staged. → { txHash, out } or null when no staged deposit fits.
   let stageP = null;
-  const stage = async () => (stageP ||= (async () => { const t = await getUx(); const { makeConfidentialStage } = await import('/confidential-stage.js?cb=99fb6aa1'); return makeConfidentialStage({ ux: t }); })());
+  const stage = async () => (stageP ||= (async () => { const t = await getUx(); const { makeConfidentialStage } = await import('/confidential-stage.js?cb=16cc915b'); return makeConfidentialStage({ ux: t }); })());
   async function stagedSwap(plan, say) {
     const t = await getUx();
     if (plan.path?.length !== 1 || lc(plan.asset) !== lc(t.assetByTicker.cETH.assetId)) return null;
