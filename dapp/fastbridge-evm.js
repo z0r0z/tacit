@@ -148,7 +148,22 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
   // A note of exactly the amount, cut from a larger one when there is none; one cut at a time.
   const prepare = ({ rec }) => serial(async () => {
     const amount = BigInt(rec.offer.evm.amount);
-    await ux.ensureExactNote({ walletPriv: privBytes, asset: assetId, amount, notes: await heldNotes() });
+    const free = (await heldNotes()).filter((n) => !reserved.has(lc(n.leaf)));
+    if (free.some((n) => BigInt(n.value) === amount)) return;
+    try { await ux.ensureExactNote({ walletPriv: privBytes, asset: assetId, amount, notes: free }); return; } catch (e) {
+      if (!/consolidate first/.test(String((e && e.message) || e))) throw e;
+    }
+    // No one note covers it: one transfer to this wallet's own identity takes several notes in (the largest first) and puts out a note of
+    // exactly the amount and the change, so a provider whose balance came in pieces can lock what it advertises.
+    const fee = await refundFee(amount + 1n);
+    const picked = [];
+    let sum = 0n;
+    for (const n of free.slice().sort((a, b) => (BigInt(b.value) > BigInt(a.value) ? 1 : -1))) {
+      if (sum >= amount + fee || picked.length >= 16) break;
+      picked.push(n); sum += BigInt(n.value);
+    }
+    if (sum < amount + fee) throw new Error(`fastbridge: the pool notes hold ${sum}, short of ${amount} and the fee of cutting it (${fee})`);
+    await ux.transfer({ walletPriv: privBytes, notes: picked, recipientPubHex: identity().pubHex, amount, fee });
   });
   // The reservation of a note keeps two swaps of one size from being given the same note. A swap keeps its note across tries: a lock
   // that is built again (the relay lost the job, or said it failed) is built from the note the first try used, so that if the first

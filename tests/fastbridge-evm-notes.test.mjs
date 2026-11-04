@@ -79,6 +79,35 @@ test('the claim of a lock is read only from a settle the pool or its relayer was
   await assert.rejects(() => again.findClaim(nu), /settle that spent it is not found yet/);
 });
 
+test('a note of the exact size is cut from several notes when no one note covers it, in one transfer to the wallet\'s own identity', async () => {
+  const held = { notes: [note(1, '400'), note(2, '500'), note(3, '300')] };
+  const calls = [];
+  const ux = {
+    pool: { leaf: () => '0x00', nullifier: (l) => l }, rpc: async () => null, identity: () => ({ pubHex: '03ab' }), chainBindingHex: () => '0x00',
+    balance: async () => ({ byAsset: { ['0x' + ASSET]: { notes: held.notes } } }),
+    ensureExactNote: async () => { throw new Error('lp-add: no single cTAC note covers 897 plus the split fee — consolidate first'); },
+    poolTickerOf: () => 'cTAC', quoteOpFee: async () => 7n, ladderFee: (f) => BigInt(f),
+    transfer: async (a) => { calls.push(a); },
+  };
+  const evm = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256: (k, m) => hmac(sha256, k, m), walletPriv: new Uint8Array(32).fill(1), seed: new Uint8Array(32), asset: ASSET, poolAddress: '0x' + '11'.repeat(20), adaptor: {} });
+  await evm.prepare({ rec: { offer: { evm: { amount: '897' } } } });
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].notes.map((n) => n.value), ['500', '400', '300'], 'the largest first, until they cover the amount and the fee (900 does not cover 897 and 7)');
+  assert.deepEqual([calls[0].amount, calls[0].fee, calls[0].recipientPubHex], [897n, 7n, '03ab']);
+  // a note of the size already there: nothing is cut
+  held.notes = [note(4, '897')]; calls.length = 0;
+  await evm.prepare({ rec: { offer: { evm: { amount: '897' } } } });
+  assert.equal(calls.length, 0);
+  // not enough in all: said, and nothing is sent
+  held.notes = [note(5, '100')];
+  await assert.rejects(() => evm.prepare({ rec: { offer: { evm: { amount: '897' } } } }), /short of 897/);
+  assert.equal(calls.length, 0);
+  // any other failure of the one-note cut is not papered over
+  ux.ensureExactNote = async () => { throw new Error('the relay did not take the job'); };
+  held.notes = [note(6, '400'), note(7, '600')];
+  await assert.rejects(() => evm.prepare({ rec: { offer: { evm: { amount: '897' } } } }), /relay did not take the job/);
+});
+
 let passed = 0, ran = 0;
 for (const [name, fn] of tests) {
   ran++;
