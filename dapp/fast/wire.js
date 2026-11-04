@@ -15,7 +15,7 @@ import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=94a5530b';
 import { makeFastBridgeEvm } from '/fastbridge-evm.js?cb=67bfdef4';
 import { makeHttpCounter, makeCounter } from '/fastbridge-http.js?cb=11295986';
 import { makeFastBridgeMarket, makeLocalStore, termsOf } from '/fastbridge-client.js?cb=632a9387';
-import { makeLpService } from '/fastbridge-provider.js?cb=e0cb50f6';
+import { makeLpService } from '/fastbridge-provider.js?cb=8b3cb635';
 import { makeMailboxCounter, makeMailboxServer, makeAdPublisher, readProviders, gatewayOf } from '/fastbridge-mailbox.js?cb=7f9e72e7';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=850e1c5e';
 import { signSchnorr } from '/bulletproofs.js?cb=132d3648';
@@ -256,6 +256,7 @@ export async function openProvider({ T, ux, priv, pubHex, boards = [], name = nu
       running, accepting, open: recs.filter((r) => !TERMINAL.includes(r.phase)).length, done: done.length,
       earned: done.reduce((a, r) => a + (BigInt(r.offer.btc.value) - BigInt(r.offer.evm.amount)), 0n), lastError,
       lastTake: done.filter((r) => r.take).sort((a, b) => (b.updated || 0) - (a.updated || 0))[0]?.take.txid ?? null,
+      held: service && service.held ? await service.held().catch(() => null) : null,
     };
   }
   async function inventory() {

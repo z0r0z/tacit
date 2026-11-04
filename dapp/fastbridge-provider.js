@@ -156,12 +156,39 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
 
   // reservations still running survive a restart, as do the notes already given to a stored lock
   async function start() {
-    const open = await swaps.list(), used = new Set(open.map((r) => r.quoteId));
+    const open = await swaps.list(), used = new Set(open.map((r) => r.quoteId)), txids = new Set(open.map((r) => r.lockTxid).filter(Boolean));
     for (const rec of open) if (evm.reserve) evm.reserve(rec);
-    for (const q of await quoteStore.list()) {
-      if (q.reservedUntil > now() && !used.has(q.id)) reservations.set(q.id, { amount: BigInt(q.evmAmount), until: q.reservedUntil, txid: q.reservedTxid || null });
+    for (const q of (await quoteStore.list()).sort((a, b) => (a.created || 0) - (b.created || 0))) {
+      if (!(q.reservedUntil > now()) || used.has(q.id)) continue;
+      // one lock transaction stands for one hold: a second hold kept for the same transaction (an earlier version took one for every quote
+      // a user asked with the same lock) is let go, as is a hold for a lock that is already a swap
+      if (q.reservedTxid && txids.has(q.reservedTxid)) { await quoteStore.put({ ...q, reservedUntil: 0, reservedTxid: null }); continue; }
+      if (q.reservedTxid) txids.add(q.reservedTxid);
+      reservations.set(q.id, { amount: BigInt(q.evmAmount), until: q.reservedUntil, txid: q.reservedTxid || null });
     }
+    await dropDeadHolds().catch(() => {});
   }
+
+  // A hold for a lock already on Bitcoin is worth keeping only while that lock's offer can still be answered: once the lock confirmed longer
+  // ago than this side answers offers for (maxOfferAgeSecs), no offer for it will be taken, and the hold only keeps others from bridging.
+  const lockTimes = new Map();
+  async function dropDeadHolds() {
+    const maxAge = config.policy.maxOfferAgeSecs ?? 3600;
+    const gone = [];
+    for (const [id, r] of reservations) {
+      if (!r.txid || !btc.status || !btc.blockTime) continue;
+      let at = lockTimes.get(r.txid);
+      if (at == null) {
+        try { const st = await btc.status(r.txid); if (st.confirmations > 0) { at = await btc.blockTime(st.height); lockTimes.set(r.txid, at); } } catch { continue; }
+      }
+      if (at != null && now() - at > maxAge) gone.push(id);
+    }
+    for (const id of gone) { reservations.delete(id); await keep(id); }
+    if (gone.length) { stale(); log({ level: 'info', msg: 'holds for locks too old to answer were let go', count: gone.length }); }
+    return gone.length;
+  }
+  // what is held against the pool balance now, for the one who provides to see
+  const held = async () => (await promised()).sum;
 
   // quotes that were never used are forgotten after two days
   let lastPrune = 0;
@@ -175,6 +202,7 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
 
   async function tick() {
     try {
+      await dropDeadHolds().catch(() => {});
       const recs = await swaps.list();
       // a record the store cannot read is a swap nobody is advancing: say so once, loudly
       for (const p of (swaps.problems && swaps.problems()) || []) if (!reported.has(p.id)) { reported.add(p.id); alert({ level: 'alert', msg: 'a swap record cannot be read', id: p.id, error: p.error }); }
@@ -329,5 +357,5 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
     }
   }
 
-  return { el, quoter, start, tick, handle, health, offerOf, reservations, availableAmount };
+  return { el, quoter, start, tick, handle, health, offerOf, reservations, availableAmount, held, dropDeadHolds };
 }

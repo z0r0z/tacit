@@ -51,7 +51,9 @@ export function mountProvide({ root, keyS, open, hasOpen = () => false, settings
     $('pv-want').hidden = !w;
     if (w) $('pv-want').lastElementChild.textContent = `${w.count} bridge${w.count === 1 ? '' : 's'}, ${fmtTac(w.total)} TAC`;
     $('pv-inv').innerHTML = S.loading ? '<p class="empty">Reading what you can provide…</p>' : inv ? `
-      <div class="kv"><span>Your private TAC</span><b class="num">${esc(fmtTac(inv.pool))} TAC</b></div>` : '';
+      <div class="kv"><span>Your private TAC</span><b class="num">${esc(fmtTac(inv.pool))} TAC</b></div>${st && st.held != null && st.held > 0n ? `
+      <div class="kv"><span>Held for bridges under way</span><b class="num">${esc(fmtTac(st.held))} TAC</b></div>
+      <div class="kv"><span>Free to lend now</span><b class="num">${esc(fmtTac(inv.pool > st.held ? inv.pool - st.held : 0n))} TAC</b></div>` : ''}` : '';
     $('pv-set').hidden = !inv || accepting();
     const run = $('pv-run');
     run.hidden = !st || !(st.running || st.lastTake);

@@ -554,6 +554,33 @@ test('an offer whose lock outpoint is not an outpoint is refused before any chai
   assert.equal(reads, 0, 'no explorer was asked');
 });
 
+test('holds kept for a lock too old to answer, or several for one lock, are let go: on a restart and on a tick, and the room comes back', async () => {
+  const { w, ref } = httpWorld();
+  w.lEvm.fund(VALUE, 'inv'); manyCoins(w);
+  const s = await serve(w);
+  ref.base = s.base;
+  const counter = makeHttpCounter({ base: s.base, fetchImpl: realFetch });
+  const q = await counter.quote(VALUE);
+  await counter.reserve({ quoteId: q.id });
+  const rec = await startSwap(w, q);
+  await w.userBl.step(rec); await w.userBl.step(rec);                      // the lock goes out and the hold is extended for it
+  w.btc.mine(1, { advance: false });
+  assert.equal(s.svc.reservations.get(q.id).txid, rec.lock.txid);
+  // as an earlier version left a provider's browser: more holds saved for the same lock, under quotes of their own
+  for (const id of ['1'.repeat(32), '2'.repeat(32)]) await s.quoteStore.put({ ...(await s.quoteStore.get(q.id)), id, created: w.clock.now() + 1, reservedUntil: w.clock.now() + 7200, reservedTxid: rec.lock.txid });
+  const again = await serve(w, { quoteStore: s.quoteStore, swaps: s.swaps });
+  assert.equal(again.svc.reservations.size, 1, 'a restart keeps one hold for one lock');
+  assert.equal((await again.quoteStore.get('1'.repeat(32))).reservedUntil, 0, 'and the others are let go for good');
+  assert.equal((await call(again.base, 'GET', '/info')).body.available, '0', 'while the lock may still be answered, its hold stands');
+  w.clock.advance(3601);
+  await again.svc.tick();
+  assert.equal(again.svc.reservations.size, 0, 'once the lock is too old to answer, its hold goes');
+  assert.ok(again.logs.some((l) => l.msg === 'holds for locks too old to answer were let go'));
+  assert.equal((await call(again.base, 'GET', '/info')).body.available, String(VALUE), 'and the room is back');
+  const third = await serve(w, { quoteStore: s.quoteStore, swaps: s.swaps });
+  assert.equal(third.svc.reservations.size, 0, 'nothing comes back on the next restart');
+});
+
 test('a provider with no Bitcoin of its own: each quote names the fee of the take, the lock pays it to the provider, and the take spends it', async () => {
   const { w, ref } = httpWorld();
   w.lEvm.fund(100_000n, 'inv');
