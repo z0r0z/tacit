@@ -137,7 +137,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
       <div class="lp-grid">${ps.map((p) => `<div class="lp-tile${p.id === me ? ' mine' : ''}">
         <div class="lp-top"><b>${esc(p.name || 'Provider')}</b>${p.id === me ? '<span class="lp-tag">You</span>' : ''}</div>
         <div class="kv"><span>Fee</span><b class="num">${esc(feeLine(p.terms))}</b></div>
-        <div class="kv"><span>Takes</span><b class="num">${esc(fmtTac(p.terms.minAmount))} to ${esc(fmtTac(capOf(p)))} TAC</b></div>
+        <div class="kv"><span>Takes</span><b class="num">${capOf(p) >= p.terms.minAmount ? `${esc(fmtTac(p.terms.minAmount))} to ${esc(fmtTac(capOf(p)))} TAC` : 'full right now'}</b></div>
       </div>`).join('')}</div>` : '';
   }
 

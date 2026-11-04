@@ -185,6 +185,18 @@ test('every provider online is a tile, the key\'s own first and marked, with its
   m.ui.destroy();
 });
 
+test('a provider that cannot take even its least is full, not a range that ends below where it starts', async () => {
+  for (const available of ['0', String(5n * TAC)]) {
+    const m = mount({ providers: [provider('Empty', { available })] });
+    await until(() => !m.$('fx-tiles').hidden, 'the tile');
+    assert.match(text(m.$('fx-tiles')), /Takes full right now/, `available ${available}`);
+    assert.doesNotMatch(text(m.$('fx-tiles')), /to (0|5) TAC/);
+  }
+  const m = mount({ providers: [provider('Some', { available: String(300n * TAC) })] });
+  await until(() => !m.$('fx-tiles').hidden, 'the tile');
+  assert.match(text(m.$('fx-tiles')), /Takes 10 to 300 TAC/, 'a provider with room says its range');
+});
+
 test('the key\'s own provider is not one to bridge with: it is left out of the summary and of the quotes', async () => {
   const mine = '03' + 'cd'.repeat(32);                                         // the pub keyStub opens
   const m = mount({ providers: [{ ...provider('Mine', { feeBps: 1 }), id: mine }, provider('Other', { feeBps: 40 })] });

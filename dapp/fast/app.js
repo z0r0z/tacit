@@ -3,7 +3,7 @@ import { isPasskeyAvailable } from '/prf-wallet.js';
 import { makeKeySession, signInSheet } from '/trade/key.js?cb=d54a64c1';
 import { makeTacitSession } from '/tacit-session.js?cb=a2d34bb2';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=8222dd8a';
-import { mountFast } from '/fast/ui.js?cb=bc085677';
+import { mountFast } from '/fast/ui.js?cb=7dd8be52';
 import { mountProvide } from '/fast/provide.js?cb=3f9c1782';
 import { mountBound } from '/fast/bound.js?cb=862c8d6e';
 import { openFast, openProvider, openBound, discoverProviders } from '/fast/wire.js?cb=9f8a6866';
