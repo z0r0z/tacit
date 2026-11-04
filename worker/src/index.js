@@ -3158,6 +3158,9 @@ function buildRelayFeeGate(env) {
   if (env.RELAY_FEE_FLOOR !== '1') return null;
   const marginBps = BigInt(env.RELAY_FEE_MARGIN_BPS || '1000');
   return async ({ type, op }) => {
+    // A transfer that carries no fee (a note cut to its owner's own identity, as a fast bridge provider cuts the note it locks) rides the
+    // day's free settles like the other fee-less ops: the free budgets at submit bound it (FREE_RELAY_DAILY_CAP, FREE_RELAY_CAP_OTHER).
+    if (type === 'transfer' && totalFee(type, op) === 0n) return true;
     const p = feeAssetRow(type, op, env) || ammFeeAsset(type, op, env);
     if (!p) return true; // can't price it — pass through
     const weiPerFeeUnit = await weiPerFeeUnitOf(p);
