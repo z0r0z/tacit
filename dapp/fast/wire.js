@@ -294,8 +294,10 @@ export async function openProvider({ T, ux, priv, pubHex, boards = [], name = nu
     const away = { status: 200, body: { ok: false, retry: true, why: 'the provider is away from its page right now: try again shortly, or another provider' } };
     const isNew = async (req) => req.method === 'POST' && (req.path === '/quote' || req.path === '/reserve' || (req.path === '/offer' && !(req.body && req.body.offer && (await swaps.get(String(req.body.offer.swapId || '').toLowerCase().replace(/^0x/, ''))))));
     const handle = async (req) => (!present() && (await isNew(req)) ? (req.path === '/quote' ? { status: 503, body: { error: away.body.why } } : away) : service.handle(req));
-    // the ad is posted only while it is at the page, so a provider that has gone does not keep being chosen
-    const adHandle = (req) => (present() ? service.handle(req) : Promise.resolve({ status: 503, body: null }));
+    // The ad is posted while it is at the page, or while a bridge it took on is open: the board carries a user's requests only to a provider
+    // whose ad stands, and a user whose bridge is open must still reach it for the pool lock's offer. New bridges are declined while away.
+    const openSwap = async () => (await swaps.list()).some((r) => !TERMINAL.includes(r.phase));
+    const adHandle = async (req) => (present() || (await openSwap()) ? service.handle(req) : { status: 503, body: null });
     if (accept) {
       for (const base of boards) {
         const board = makeBoardClient({ base, fetchImpl });
