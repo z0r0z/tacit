@@ -9,6 +9,7 @@
 //     ethGetStorageAt(to, slot, tag)   poolAddress   binding  chain binding hex   keccak256   secp
 
 import { makeNoteResolver } from './btc-pool-zap.js';
+import { bytesToHex } from './vendor/tacit-deps.min.js';
 import { makeCrossLaneGuard } from './confidential-crosslane-guard.js';
 
 const DUST = 546;
@@ -119,8 +120,8 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
       if (!note) return `${i.txid}:${i.vout} is not a valid note`;
       const parent = await fetchTx(i.txid);
       const spk = String(parent.vout[i.vout].scriptpubkey || '').toLowerCase();
-      const P = secp.ProjectivePoint.fromHex(Buffer.from(note.commitment).toString('hex')).toRawBytes(false);
-      const cx = '0x' + Buffer.from(P.slice(1, 33)).toString('hex'), cy = '0x' + Buffer.from(P.slice(33, 65)).toString('hex');
+      const P = secp.ProjectivePoint.fromHex(bytesToHex(note.commitment)).toRawBytes(false);
+      const cx = '0x' + bytesToHex(P.slice(1, 33)), cy = '0x' + bytesToHex(P.slice(33, 65));
       const asset = '0x' + String(note.assetIdHex).replace(/^0x/, '');
       const auths = spk.startsWith('5120') ? ['0x' + spk.slice(4)] : [ZERO_AUTH];
       const nus = [];
