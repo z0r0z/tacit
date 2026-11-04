@@ -293,12 +293,15 @@ export async function openProvider({ T, ux, priv, pubHex, boards = [], name = nu
     // what is new is taken on only while the one who provides is at the page: a quote, a reservation, or an offer for a swap not stored yet
     const away = { status: 200, body: { ok: false, retry: true, why: 'the provider is away from its page right now: try again shortly, or another provider' } };
     const isNew = async (req) => req.method === 'POST' && (req.path === '/quote' || req.path === '/reserve' || (req.path === '/offer' && !(req.body && req.body.offer && (await swaps.get(String(req.body.offer.swapId || '').toLowerCase().replace(/^0x/, ''))))));
-    const handle = async (req) => (!present() && (await isNew(req)) ? (req.path === '/quote' ? { status: 503, body: { error: away.body.why } } : away) : service.handle(req));
+    // a provider that only finishes (accept false) answers what is open and takes on nothing new, as one away from its page does
+    const taking = () => accept && present();
+    const handle = async (req) => (!taking() && (await isNew(req)) ? (req.path === '/quote' ? { status: 503, body: { error: away.body.why } } : away) : service.handle(req));
     // The ad is posted while it is at the page, or while a bridge it took on is open: the board carries a user's requests only to a provider
     // whose ad stands, and a user whose bridge is open must still reach it for the pool lock's offer. New bridges are declined while away.
     const openSwap = async () => (await swaps.list()).some((r) => !TERMINAL.includes(r.phase));
-    const adHandle = async (req) => (present() || (await openSwap()) ? service.handle(req) : { status: 503, body: null });
-    if (accept) {
+    const adHandle = async (req) => (taking() || (await openSwap()) ? service.handle(req) : { status: 503, body: null });
+    // on the board whether it takes new bridges or only finishes open ones: a user whose bridge is open reaches it only through the board
+    {
       for (const base of boards) {
         const board = makeBoardClient({ base, fetchImpl });
         const mail = makeMailboxServer({ board, keys, handle, signReply: (d) => signSchnorr(d, priv), now, pollMs, log: note });
