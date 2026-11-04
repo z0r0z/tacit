@@ -186,6 +186,11 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
     if (!key.unlocked || plan.wallet || !plan.path?.length) return null;
     const t = await getUx();
     if (t.relay.ownProving?.()) return null;
+    // posted at the press, it is sent only if its fee is tETH and covers a settle at today's gas with a fifth to spare (worker-relay open-board.js
+    // pickOpen counts no other coin): any other would wait on the board unsent
+    if (lc(plan.asset) !== lc(t.assetByTicker.cETH.assetId)) return null;
+    const gp = await t.rpc('eth_gasPrice', []).then(BigInt, () => null);
+    if (!gp || BigInt(plan.fee) * E10 < (600000n * gp * 12n) / 10n) return null;
     await read();
     const note = rahNote(plan);
     if (!note) return null;
