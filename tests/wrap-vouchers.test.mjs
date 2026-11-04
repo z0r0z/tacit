@@ -96,7 +96,8 @@ const ETH = 10n ** 18n, SIZES = [ETH / 1000n, ETH / 100n, ETH / 10n, ETH], OPT =
 test('a key with no money to wrap is asked for its starter size only; one with some, or one not yet read, for all', () => {
   assert.deepEqual(stockSizes(SIZES, 0n, OPT), [ETH / 100n], 'nothing in the paying accounts');
   assert.deepEqual(stockSizes(SIZES, ETH / 100n - 1n, OPT), [ETH / 100n], 'a wei under the floor');
-  assert.deepEqual(stockSizes(SIZES, ETH / 100n, OPT), SIZES, 'at the floor, all of them as before');
+  assert.deepEqual(stockSizes(SIZES, ETH / 100n, OPT), [ETH / 1000n], 'at the floor, only what it could send: 0.01 itself leaves nothing for the fees');
+  assert.deepEqual(stockSizes(SIZES, ETH / 20n, OPT), [ETH / 1000n, ETH / 100n], 'none over the balance');
   assert.deepEqual(stockSizes(SIZES, 5n * ETH, OPT), SIZES);
   assert.deepEqual(stockSizes(SIZES, null, OPT), SIZES, 'a balance that could not be read changes nothing');
   assert.deepEqual(stockSizes(SIZES, undefined, OPT), SIZES);
@@ -111,4 +112,18 @@ test('the starter is the only size left even when the key chose others, and none
 test('the store hands the rule to the page', () => {
   const s = makeVouchers({ storage: fakeStorage() });
   assert.equal(s.stockSizes, stockSizes);
+  assert.equal(s.fitWrap, fitWrap);
+});
+
+import { fitWrap } from '../dapp/wrap-vouchers.js';
+test('Max is a figure proved ahead: a kept amount just under the most, else the most cut to 0.0001 ETH', () => {
+  assert.deepEqual(fitWrap(9n * 10n ** 15n), { amount: 9n * 10n ** 15n, kept: false }, '0.01 ETH less 0.001 for the fees');
+  assert.deepEqual(fitWrap(9123456789012345n), { amount: 9100000000000000n, kept: false });
+  assert.deepEqual(fitWrap(9999998999999999999999n), { amount: 9999998900000000000000n, kept: false }, 'a large wallet leaves at most 0.0001 behind');
+  assert.deepEqual(fitWrap(5n, [], { grain: 1n, min: 1n }), { amount: 5n, kept: false });
+  assert.deepEqual(fitWrap(10n ** 15n - 1n), { amount: 0n, kept: false }, 'too little to be worth a proof');
+  assert.deepEqual(fitWrap(9123456789012345n, ['9050000000000000', '9100000000000000', '9200000000000000']), { amount: 9100000000000000n, kept: true },
+    'the largest kept amount under the most, so a balance that moved a little still finds its proof');
+  assert.deepEqual(fitWrap(9123456789012345n, ['9000000000000000']), { amount: 9100000000000000n, kept: false }, 'one more than 1% under is not used');
+  assert.deepEqual(fitWrap(10n ** 22n, [String(10n ** 22n - 2n * 10n ** 15n)]).kept, false, 'nor one more than 0.001 ETH under, however large the wallet');
 });

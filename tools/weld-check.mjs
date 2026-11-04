@@ -199,7 +199,7 @@ const { chromium } = require(process.env.PLAYWRIGHT || '/Users/z/zFi/node_module
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
 // Borrow reports under each step's own line (#bw-s1…#bw-s4) as well as the sheet's: read them all.
 const bwText = (page) => page.evaluate((s) => [...document.querySelectorAll(s)].map((e) => e.textContent).join(' '), '#bw-status, #bw-s1, #bw-s2, #bw-s3, #bw-s4');
-const ONLY = new Set((process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,stageready,wrapfirst,poolkeep,poolwait,poolstale,poolfunds,tacvoucher,relaystate,relayfail,selfwallet,slowline').split(','));
+const ONLY = new Set((process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,stageready,wrapfirst,poolkeep,poolmax,poolwait,poolstale,poolfunds,tacvoucher,relaystate,relayfail,selfwallet,slowline').split(','));
 const FORK = process.argv[3] || 'https://mainnet.gateway.tenderly.co';
 const SHOTS = process.env.SHOTS || null;
 const PORT = 20000 + Math.floor(Math.random() * 2000), WEB = PORT + 1;
@@ -1185,13 +1185,13 @@ await step('wrapform', async () => {
     const WRAP_TOPIC = '0x' + Buffer.from(keccak_256(Buffer.from('Wrap(bytes32,bytes32,uint256)'))).toString('hex');
     for (let i = 0; i < 180 && !logs.some((l) => l.includes(WRAP_TOPIC)); i++) await sleep(1000);
     ok(logs.some((l) => l.includes(WRAP_TOPIC)), 'wrapform: the Wrap logs are read as the form opens, ahead of any press');
-    // Max keeps back at least 0.003 ETH for the network fee and the tip, and the quote then accepts what it fills.
+    // Max keeps back at least 0.001 ETH for the network fee and the tip, and the quote then accepts what it fills.
     await until(p, () => /\d/.test(document.querySelector('#w-bal')?.textContent || ''), null, 120000);
     const bal = BigInt(await rpc('eth_getBalance', [A0, 'latest']));
     await p.click('#w-max');
     await until(p, () => !!document.querySelector('#w-amt').value, null, 30000);
     const maxV = await p.$eval('#w-amt', (i) => i.value), keep = bal - BigInt(Math.round(Number(maxV) * 1e8)) * 10n ** 10n;
-    ok(keep >= 3n * 10n ** 15n && keep < 10n ** 17n, `wrapform: Max keeps ${Number(keep) / 1e18} ETH back for the network fee and the tip (${maxV} of ${Number(bal) / 1e18})`);
+    ok(keep >= 10n ** 15n && keep < 10n ** 17n, `wrapform: Max keeps ${Number(keep) / 1e18} ETH back for the network fee and the tip (${maxV} of ${Number(bal) / 1e18})`);
     ok(await until(p, () => !document.querySelector('#w-go').disabled, null, 60000).then(() => true, () => false), 'wrapform: and the quote accepts the Max amount');
     // A prompt declined in the wallet: nothing is sent, the line says so, and the note index goes back, so the next try builds the same deposit.
     await p.fill('#w-amt', '0.05');
@@ -12270,6 +12270,56 @@ await step('poolkeep', async () => {
       `poolkeep: a wrap of that size goes out at once from the pool's proof, nothing asked of the relay (${await text(r.page, '#v1-status')})`);
     if (r.errors.length) { fails++; console.log('FAIL poolkeep page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { poolDone = false; await rpc('anvil_setCode', [ROUTER_ADDR, routerCode]); await r.browser.close(); }
+});
+
+// A new key whose wallet holds 0.01 ETH: it cannot send 0.01, 0.1 or 1 (the fees come out of the same ETH), so none of those is asked of the
+// pool; what Max will put in is asked first, and Max then puts in that figure, so the press sends a proof already made.
+await step('poolmax', async () => {
+  const r = await openPage({ account: A0, key: K0 });
+  const hex = 'b005'.padEnd(64, '7'), pub = Buffer.from(secp.getPublicKey(hex, true)).toString('hex');
+  const ROUTER_ADDR = '0x000000005da3e3b73726af3c774deeb9472d4992', routerCode = await rpc('eth_getCode', [ROUTER_ADDR, 'latest']);
+  const eth0 = await rpc('eth_getBalance', [A0, 'latest']);
+  const kept = () => r.page.evaluate((p) => JSON.parse(localStorage.getItem('tacit-wrap-vouchers-v1:' + p) || '[]'), pub);
+  const STD = [15, 16, 17, 18].map((e) => String(10n ** BigInt(e)));
+  try {
+    await rpc('anvil_setCode', [ROUTER_ADDR, '0x00']);
+    await rpc('anvil_setBalance', [A0, '0x' + (10n ** 16n).toString(16)]);
+    poolDone = false;
+    const q0 = poolReqs.length;
+    await r.page.goto(r.url);
+    await r.page.waitForSelector('#hx-body .hx-h');
+    await pasteKey(r.page, hex);
+    await toWallet(r.page);
+    await r.page.waitForSelector('[data-pay="wallet"]');
+    await r.page.click('[data-pay="wallet"]');
+    await r.page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
+    // a balance the slow fork has not answered yet asks for the sizes as before; the next round, a minute on, asks for Max's figure
+    const ethOp = (b) => b && wrapOpFromStdin(b.stdin, STUB_CETH), askedNow = () => poolReqs.slice(q0).map(ethOp).filter(Boolean).map((o) => BigInt(o.value) * 10n ** 10n);
+    await chainUntil(async () => askedNow().some((a) => !STD.includes(String(a))), 300000).catch(() => {});
+    const asked = askedNow(), fit = asked.find((a) => !STD.includes(String(a)));
+    ok(fit && fit < 10n ** 16n && fit >= 7n * 10n ** 15n, `poolmax: the pool is asked for what Max will put in (${asked.map((a) => Number(a) / 1e18)})`);
+    poolDone = true;
+    await until(r.page, ([p, f]) => JSON.parse(localStorage.getItem('tacit-wrap-vouchers-v1:' + p) || '[]').some((v) => v.amount === f && v.status === 'ready'), [pub, String(fit)], 150000).catch(() => {});
+    await go(r.page, '#private');
+    await r.page.waitForSelector('[data-v1="wrap"]', { timeout: 600000 });
+    await r.page.click('[data-v1="wrap"]').catch(() => {});
+    await r.page.waitForSelector('#w-amt', { timeout: 120000 });
+    await until(r.page, () => /\d/.test(document.querySelector('#w-bal')?.textContent || ''), null, 120000);
+    await r.page.click('#w-max');
+    await until(r.page, () => !!document.querySelector('#w-amt').value, null, 30000);
+    const maxV = await r.page.$eval('#w-amt', (i) => i.value);
+    ok(fit && BigInt(Math.round(Number(maxV) * 1e8)) * 10n ** 10n === fit, `poolmax: Max puts in the figure proved ahead (${maxV}, proved ${Number(fit) / 1e18})`);
+    await until(r.page, () => !document.querySelector('#w-go').disabled && /ready now/.test(document.querySelector('#w-rcpt')?.textContent || ''), null, QUOTE_WAIT).catch(() => {});
+    ok(/ready now/.test(await text(r.page, '#w-rcpt')), `poolmax: the receipt says it is ready now (${(await text(r.page, '#w-rcpt')).slice(0, 160)})`);
+    const s0 = submits.length, w0 = walletTxs.length;
+    await r.page.click('#w-go');
+    await until(r.page, () => /Done\./.test(document.querySelector('#v1-status')?.textContent || '') || /class="err"/.test(document.querySelector('#v1-status')?.innerHTML || ''), null, 300000).catch(() => {});
+    const sent = walletTxs.slice(w0);
+    ok(/Done\./.test(await text(r.page, '#v1-status')) && sent.length === 1 && String(sent[0].to).toLowerCase() === ROUTER_ADDR && !submits.slice(s0).some((x) => x.type === 'wrap'),
+      `poolmax: the press sends one transaction from the proof made ahead, nothing asked of the relay (${await text(r.page, '#v1-status')})`);
+    ok(!(await kept()).some((v) => v.amount === String(fit)), 'poolmax: the voucher sent is gone');
+    if (r.errors.length) { fails++; console.log('FAIL poolmax page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { poolDone = false; await rpc('anvil_setBalance', [A0, eth0]); await rpc('anvil_setCode', [ROUTER_ADDR, routerCode]); await r.browser.close(); }
 });
 
 // An amount the community pool is still proving: nothing is asked of the relay for it too (a second proof would queue on the same prover

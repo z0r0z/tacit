@@ -19,10 +19,25 @@ const KEY = 'tacit-wrap-vouchers-v1:';
 // and every board job that waited more than five seconds in a day (14 of 68, 371 s together) waited behind one. So a key whose paying
 // accounts hold less than `floor` ETH is asked for its starter size only (a first deposit soon after signing in still finds one ready), and
 // the rest are asked for within a minute of the money arriving. `room`: the most the key could pay with, null when it cannot be read (then
-// all are asked for, as before).
+// all are asked for, as before). A key with money is asked only for the sizes under what it holds: a 0.01 ETH wallet cannot send 0.01, 0.1 or 1
+// (the fees come out of the same ETH), and its Max is proved instead (fitWrap).
 export function stockSizes(sizes, room, { starter, floor }) {
-  if (room == null || BigInt(room) >= BigInt(floor)) return sizes;
+  if (room == null) return sizes;
+  if (BigInt(room) >= BigInt(floor)) return sizes.filter((s) => BigInt(s) < BigInt(room));
   return sizes.filter((s) => BigInt(s) === BigInt(starter));
+}
+
+// What Max puts in for a wrap of at most `most` (the balance less what the fees keep back), so the press finds it proved already: the largest
+// amount kept ready or being proved (`kept`) under it by at most `slack` (1% of it, and never more than 0.001 ETH: Max must not quietly
+// leave a large wallet's ETH behind), else `most` cut down to a step of `grain` (0.0001 ETH), the figure the page asks to be proved as soon
+// as the balance is read. → { amount, kept } (amount 0n: under `min`).
+export function fitWrap(most, kept = [], { grain = 10n ** 14n, min = 10n ** 15n, slack = 10n ** 15n } = {}) {
+  most = BigInt(most);
+  if (most < BigInt(min)) return { amount: 0n, kept: false };
+  const off = most / 100n < BigInt(slack) ? most / 100n : BigInt(slack);
+  const near = kept.map(BigInt).filter((a) => a <= most && a >= most - off).sort((a, b) => (a < b ? 1 : a > b ? -1 : 0))[0];
+  if (near) return { amount: near, kept: true };
+  return { amount: (most / BigInt(grain)) * BigInt(grain), kept: false };
 }
 
 export function makeVouchers({ storage = globalThis.localStorage } = {}) {
@@ -80,6 +95,7 @@ export function makeVouchers({ storage = globalThis.localStorage } = {}) {
     list,
     pick,
     stockSizes,
+    fitWrap,
     put(pub, v) { write(pub, [...read(pub).filter((x) => x.depositId !== v.depositId), v]); },
     // A wrap proved and then not sent, kept as a ready voucher: { built, proven } as the pool module's proveWrap returns them.
     keep(pub, ticker, { built, proven }) {
