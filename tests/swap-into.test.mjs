@@ -189,6 +189,25 @@ test('twenty plans are kept, and a swap that still waits is not the one that goe
   assert.ok(kept.some((x) => x.id === first.id && x.state === 'waiting'), 'the swap that waits is still kept');
 });
 
+test('when twenty are kept, the finished go first and then the stopped: no plan still waiting, held or in doubt is cut', async () => {
+  const { L, store } = make({ w: wallets({ balance: 9_000n * 10n ** 6n }), r: routesOf([E18]) });
+  const live = ['waiting', 'held', 'unsure', 'shielding', 'swapping', 'depositing'];
+  // newest first: seventeen in progress, then three stopped (the oldest last)
+  const seed = [...Array.from({ length: 17 }, (_, i) => ({ id: `live${i}`, at: i, state: live[i % live.length] })), ...Array.from({ length: 3 }, (_, i) => ({ id: `stp${i}`, at: 0, state: 'stopped' }))];
+  store.setItem('tacit-swap-later-v1', JSON.stringify(seed));
+  const fresh = await L.adopt(args());
+  const kept = JSON.parse(store.getItem('tacit-swap-later-v1'));
+  assert.strictEqual(kept.length, 20);
+  assert.ok(seed.slice(0, 17).every((p) => kept.some((x) => x.id === p.id)), 'every plan in progress is kept');
+  assert.ok(kept.some((x) => x.id === fresh.id));
+  assert.deepStrictEqual(kept.filter((x) => x.state === 'stopped').map((x) => x.id), ['stp0', 'stp1'], 'the oldest stopped one went');
+  // a finished one goes before a stopped one
+  store.setItem('tacit-swap-later-v1', JSON.stringify([...seed.slice(0, 17), { id: 'stp', at: 0, state: 'stopped' }, { id: 'fin', at: 0, state: 'done' }, { id: 'stp2', at: 0, state: 'stopped' }]));
+  await L.adopt(args());
+  const again = JSON.parse(store.getItem('tacit-swap-later-v1')).map((x) => x.id);
+  assert.ok(!again.includes('fin') && again.includes('stp') && again.includes('stp2'));
+});
+
 test('a browser that cannot keep the plan stops the swap before anything is sent', async () => {
   const w = wallets(), store = { getItem: () => null, setItem: () => { throw new Error('QuotaExceededError'); } };
   const L = makeLater({ keyHex: async () => '22'.repeat(32), signer: { address: '0x' + '01'.repeat(20) }, ethCall: async () => '0x', store, chain: { chainId: 1, rpc: ['http://127.0.0.1:1'] }, walletOf: () => w, routes: routesOf([E18]).routes });

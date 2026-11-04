@@ -7474,7 +7474,8 @@ await step('hxsendname', async () => {
       `hxsendname: a name with no Tacit address is paid at its address, said under the field and quoted as a send there (${rc.slice(0, 90)} | ${rcpt.slice(0, 80)})`);
     await sheetsSeen(p);
     await p.click('#hx-go');
-    await until(p, () => (document.querySelector('#hx-ss')?.textContent || '').trim() !== '', null, 120000).catch(() => {});
+    // (the press first reads the name again, said briefly under the button; the withdrawal's own steps follow)
+    await until(p, () => { const t = (document.querySelector('#hx-ss')?.textContent || '').trim(); return t !== '' && !/^Checking where it points/.test(t); }, null, 120000).catch(() => {});
     ok((await text(p, '#hx-ss')).trim() !== '' && (await p.evaluate(() => window.__sheetSeen)) === '' && !(await p.$('#o-to')), `hxsendname: its press withdraws to the name's address from the tile, the steps under the button and no withdrawal sheet (${await text(p, '#hx-ss')})`);
     await go(p, '#tac');
     await p.waitForSelector('#ts-to', { timeout: 120000 });
@@ -8811,6 +8812,7 @@ await step('earnrows', async () => {
     ok((await tacOf(acct)) > t0 && /Claimed to/.test(await text(p, '#hx-pos-s')) && (await p.evaluate(() => window.__sheetSeen)) === '', `earnrows: Claim pays TAC from the row, said under it, no sheet (${(await text(p, '#hx-pos-s')).slice(0, 80)})`);
     await until(p, () => { const b = document.querySelector('#hx-pos [data-pwd]'); return b && !b.disabled; }, null, 120000);
     await p.click('#hx-pos [data-pwd]');
+    await p.click('#hx-pos [data-pwd]');            // the first press asks, the second (soon after) sends
     await until(p, () => /Withdrawn to/.test(document.querySelector('#hx-pos-s')?.textContent || '') || /err/.test(document.querySelector('#hx-pos-s')?.innerHTML || ''), null, 300000);
     ok((await stakedOf(acct)) === 0n && (await p.evaluate(() => window.__sheetSeen)) === '', `earnrows: Withdraw takes the whole stake out from the row, no sheet (${(await text(p, '#hx-pos-s')).slice(0, 80)})`);
     if (r.errors.length) { fails++; console.log('FAIL earnrows page errors: ' + r.errors.slice(0, 3).join(' | ')); }

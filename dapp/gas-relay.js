@@ -150,14 +150,17 @@ export function relaySigner({ address, token, router, symbol, amount, plan, rpc,
     if (r && !r.ok) throw new Error(`The relay did not take the order${r.error ? `: ${r.error}` : ''}. Nothing was spent.`);
     if (!r) step('The relay did not answer. Checking whether it has the order');
     const usedSel = '0xad04dc3f' + A32(address) + W32(order.nonce), t0 = Date.now(), end = t0 + Math.max(60, Number(order.deadline) - clock + 15) * 1000;
-    let done = false;
+    let done = false, read = false;
     while (Date.now() < end && !done) {
       await new Promise((q) => setTimeout(q, 3000));
-      done = BigInt(await rpc('eth_call', [{ to: relay, data: usedSel }, 'latest']).catch(() => '0x0')) === 1n;
+      done = BigInt(await rpc('eth_call', [{ to: relay, data: usedSel }, 'latest']).then((x) => { read = true; return x; }, () => { read = false; return '0x0'; })) === 1n;
       if (!done) step(`Waiting for the relay to send it (${Math.round((Date.now() - t0) / 1000)} s). Nothing leaves your account unless the deposit lands`);
     }
+    // (a last read that failed says nothing of whether the relay sent it: another try could send twice)
+    if (!done && !read) throw new Error('The relay’s answer could not be read, so it may have sent the order. Check your balance before sending anything more.');
     if (!done) throw new Error(`The relay did not send it${r ? '' : ' (it never answered)'}, and the order has now lapsed, so nothing was spent. Try again.`);
-    const hash = await rpc('eth_getLogs', [{ address: relay, topics: ['0x533053a5fad9470861fb5df750d47e5f011faa03daba05299fe4bdc65f52d519', '0x' + A32(address), null, '0x' + W32(order.nonce)], fromBlock: '0x' + (BigInt(await rpc('eth_blockNumber', [])) - 200n).toString(16), toBlock: 'latest' }]).then((l) => l?.[0]?.transactionHash || null, () => null);
+    // (the lookup of its transaction is a courtesy: nothing in it may fail an order that ran)
+    const hash = await rpc('eth_blockNumber', []).then((h) => rpc('eth_getLogs', [{ address: relay, topics: ['0x533053a5fad9470861fb5df750d47e5f011faa03daba05299fe4bdc65f52d519', '0x' + A32(address), null, '0x' + W32(order.nonce)], fromBlock: '0x' + (BigInt(h) > 200n ? BigInt(h) - 200n : 0n).toString(16), toBlock: 'latest' }])).then((l) => l?.[0]?.transactionHash || null, () => null);
     if (!hash) throw new Error('The relay sent it, but its transaction could not be found. Check your balance in a moment.');
     return hash;
   } };

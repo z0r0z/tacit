@@ -15,17 +15,25 @@ const SENT_KEY = 'tacit-swap-btc-sent-v1', SENT_KEEP = 5, SENT_FOR = 24 * 3600e3
 const BRIDGED_KEY = 'tacit-bridged-v1';                                           // what each key last read at its Taproot address, as the front page keeps it
 
 const tidy = (s) => s.replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
+// A price in plain notation: six digits from 1 up, four significant ones below; zeros are dropped only after a decimal point (100000 stays 100000)
+export const priceText = (px) => (!(px > 0) || !Number.isFinite(px) ? '0' : px >= 1e5 ? px.toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: 0 }) : px >= 1 ? tidy(px.toPrecision(6)) : tidy(px.toFixed(Math.min(20, 3 - Math.floor(Math.log10(px))))));
 const fmt = (v, aid, max = 8) => fmtUnits(v, TOKENS[aid].dec, max);
 const sym = (aid) => TOKENS[aid].sym;
 const ageText = (t) => { const m = Math.floor((Date.now() - t) / 60e3); return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : `${Math.floor(m / 60)} h ${m % 60} min ago`; };
+// The swaps kept, newest first: every one still waiting, however many or old (it is followed until it settles), and the settled ones in the room that is left
+export function keepSent(xs) {
+  let room = SENT_KEEP - xs.filter((s) => s.state === 'waiting').length;
+  return xs.filter((s) => s.state === 'waiting' || room-- > 0);
+}
 function loadSent() {
   try {
-    return (JSON.parse(localStorage.getItem(SENT_KEY) || '[]') || [])
-      .filter((s) => /^[0-9a-f]{64}$/.test(s?.txid) && TOKENS[s.from] && TOKENS[s.to] && [s.din, s.quoted, s.floor].every((v) => /^\d+$/.test(String(v))) && Number.isFinite(s.at) && Date.now() - s.at < SENT_FOR)
-      .slice(0, SENT_KEEP)
-      .map((s) => ({ ...s, din: BigInt(s.din), quoted: BigInt(s.quoted), floor: BigInt(s.floor), got: s.got != null ? BigInt(s.got) : null, refund: s.refund != null ? BigInt(s.refund) : null }));
+    return keepSent((JSON.parse(localStorage.getItem(SENT_KEY) || '[]') || [])
+      .filter((s) => /^[0-9a-f]{64}$/.test(s?.txid) && TOKENS[s.from] && TOKENS[s.to] && [s.din, s.quoted, s.floor].every((v) => /^\d+$/.test(String(v))) && Number.isFinite(s.at) && (Date.now() - s.at < SENT_FOR || s.state === 'waiting'))
+      .map((s) => ({ ...s, din: BigInt(s.din), quoted: BigInt(s.quoted), floor: BigInt(s.floor), got: s.got != null ? BigInt(s.got) : null, refund: s.refund != null ? BigInt(s.refund) : null })));
   } catch { return []; }
 }
+// Why the pool returned a swap, from the reason it gave: a price past the floor is the usual one
+const refundWhy = (r) => (!r || /slippage|floor/i.test(r) ? 'The pool had moved past your floor.' : r === 'expired' ? 'The swap expired before the pool settled it.' : `The pool passed on it (${r}).`);
 // Where the explorer has a transaction: { block } (null while it is in the mempool), { gone } when it does not know it, undefined when it did not answer.
 const whereIs = (txid) => fetch(`${MEMPOOL}/api/tx/${txid}`, { signal: AbortSignal.timeout(8000) }).then((r) => (r.status === 404 ? { gone: true } : r.ok ? r.json().then((j) => ({ block: j.status?.confirmed ? j.status.block_height ?? null : null })) : undefined)).catch(() => undefined);
 
@@ -33,7 +41,7 @@ export function makeBitcoinLane({ host, notify = () => {}, wallet = () => null, 
   let slip = 100;
   try { const s = Number(localStorage.getItem(SLIP_KEY)); if (SLIPS.includes(s)) slip = s; } catch { /* storage is a convenience */ }
   const L = { pay: from === 'tac' ? TAC : TETH, get: from === 'tac' ? TETH : TAC, amt: '', q: null, pool: null, noPool: false, bal: {}, sats: null, need: null, notes: [], unread: 0, bridgedAt: 0, ack: false, busy: false, sent: loadSent(), asking: null, line: '', cls: '', open: false };
-  let moveNeed = MOVE_SATS_FLAT, bitcoin = null, T = null, mounted = false, seq = 0, qTimer = 0, poll = 0, refreshTimer = 0, reading = null;
+  let moveNeed = MOVE_SATS_FLAT, bitcoin = null, T = null, ensuring = null, mounted = false, seq = 0, qTimer = 0, poll = 0, refreshTimer = 0, reading = null;
   const $ = (id) => host.querySelector(`#${id}`);
 
   host.innerHTML = `
@@ -61,14 +69,15 @@ export function makeBitcoinLane({ host, notify = () => {}, wallet = () => null, 
   const say = (h, cls = '') => { L.line = h; L.cls = cls; const q = $('b-q'); q.className = `q${cls ? ` ${cls}` : ''}`; q.innerHTML = h; };
 
   // ── the library, the key and the pool ──
-  async function ensure() {
+  // made once, however fast the lane is opened again: the first call's promise is what the rest wait on (a failed start is asked again)
+  const ensure = () => (ensuring ||= (async () => {
     if (!bitcoin) {
       const m = await import(BTC_MODULE);
       bitcoin = m.makeBitcoin({ notify, wallet, onChange: () => { if (L.open) { paint(); readMe(true); } }, asset: { id: TETH, title: 'tETH on Bitcoin', after: '' } });
     }
     T ||= await bitcoin.session.load();
     return T;
-  }
+  })().catch((e) => { ensuring = null; throw e; }));
   const unlocked = () => !!bitcoin?.session.unlocked;
 
   async function readPool() {
@@ -208,7 +217,7 @@ export function makeBitcoinLane({ host, notify = () => {}, wallet = () => null, 
       const imp = impact(q), px = (Number(q.deltaOut) / 10 ** TOKENS[L.get].dec) / (Number(q.din) / 10 ** TOKENS[L.pay].dec);
       rc.hidden = false;
       rc.innerHTML = [
-        ['Price', `1 ${TOKENS[L.pay].sym} ≈ ${px >= 1 ? px.toPrecision(6).replace(/\.?0+$/, '') : px.toPrecision(4)} ${TOKENS[L.get].sym}`, ''],
+        ['Price', `1 ${TOKENS[L.pay].sym} ≈ ${priceText(px)} ${TOKENS[L.get].sym}`, ''],
         ['At least', `${tidy(fmt(q.minOut, L.get))} ${TOKENS[L.get].sym}`, ''],
         ['Price impact', `${(imp * 100).toFixed(imp < 0.1 ? 1 : 0)}%`, imp > IMPACT_ACK ? 'err' : imp > IMPACT_WARN ? 'warn' : ''],
         ['Pool fee', `${(q.feeBps / 100).toFixed(2)}%`, ''],
@@ -256,7 +265,7 @@ export function makeBitcoinLane({ host, notify = () => {}, wallet = () => null, 
     L.busy = true; say(STAGES.check); paint();
     try {
       const r = await T.bitcoinSwap({ fromAid: from, toAid: to, amountIn: q.din, minOut: q.minOut, onProgress: (s) => { if (STAGES[s]) say(STAGES[s]); } });
-      L.sent = [{ txid: r.revealTxid, from, to, floor: q.minOut, quoted: q.deltaOut, din: q.din, at: Date.now(), state: 'waiting', block: null }, ...L.sent].slice(0, SENT_KEEP);
+      L.sent = keepSent([{ txid: r.revealTxid, from, to, floor: q.minOut, quoted: q.deltaOut, din: q.din, at: Date.now(), state: 'waiting', block: null }, ...L.sent]);
       saveSent();
       L.amt = ''; $('b-amt').value = ''; L.q = null; L.ack = false;
       say(''); follow();
@@ -272,9 +281,9 @@ export function makeBitcoinLane({ host, notify = () => {}, wallet = () => null, 
       const link = `<a href="${MEMPOOL}/tx/${esc(s.txid)}" target="_blank" rel="noopener noreferrer">${esc(s.txid.slice(0, 10))}…↗</a>`;
       const waiting = s.state === 'waiting', gone = waiting && s.gone && Date.now() - s.at > 10 * 60e3;
       const head = s.state === 'filled' ? 'Filled' : s.state === 'refunded' ? 'Returned' : gone ? 'Not showing on mempool.space' : s.block ? `In block ${s.block}` : 'Waiting for a Bitcoin block';
-      const what = s.state === 'refunded' ? `${tidy(fmt(s.refund ?? s.din, s.from))} ${sym(s.from)} back`
-        : `${tidy(fmt(s.din, s.from))} ${sym(s.from)} → ${waiting ? 'about ' : ''}${tidy(fmt(s.state === 'filled' ? s.got ?? s.quoted : s.quoted, s.to))} ${sym(s.to)}`;
-      const note = gone ? 'If it was dropped, nothing was spent. Quote it again to retry.' : waiting ? `${s.block ? 'The pool settles it.' : `Sent ${ageText(s.at)}.`} At least ${tidy(fmt(s.floor, s.to))} ${sym(s.to)}, or your ${sym(s.from)} comes back.` : s.state === 'refunded' ? 'The pool had moved past your floor. Quote it again to retry.' : '';
+      const what = s.state === 'refunded' ? `${s.refund == null ? 'about ' : ''}${tidy(fmt(s.refund ?? s.din, s.from))} ${sym(s.from)} back`
+        : `${tidy(fmt(s.din, s.from))} ${sym(s.from)} → ${waiting || (s.state === 'filled' && s.got == null) ? 'about ' : ''}${tidy(fmt(s.state === 'filled' ? s.got ?? s.quoted : s.quoted, s.to))} ${sym(s.to)}`;
+      const note = gone ? 'If it was dropped, nothing was spent. Quote it again to retry.' : waiting ? `${s.block ? 'The pool settles it.' : `Sent ${ageText(s.at)}.`} At least ${tidy(fmt(s.floor, s.to))} ${sym(s.to)}, or your ${sym(s.from)} comes back.` : s.state === 'refunded' ? `${refundWhy(s.reason)} Quote it again to retry.` : '';
       return `<div class="${gone ? 'warn' : waiting ? 'wait' : s.state === 'filled' ? 'ok' : 'warn'}"><span><i class="dot" aria-hidden="true"></i><b>${esc(head)}</b></span><span>${link}${waiting && !gone ? '' : ` <button class="link" type="button" data-dismiss="${i}" aria-label="Dismiss">×</button>`}</span><span class="what">${esc(what)}</span>${note ? `<small>${esc(note)}</small>` : ''}</div>`;
     }).join('');
   }
@@ -282,7 +291,7 @@ export function makeBitcoinLane({ host, notify = () => {}, wallet = () => null, 
     const [o, w] = await Promise.all([T.bitcoinSwapOutcome(s.txid), whereIs(s.txid)]);
     if (w) { s.gone = !!w.gone; s.block = w.gone ? null : w.block; }
     if (o.state === 'filled') { Object.assign(s, { state: 'filled', got: o.got }); notify('Swap filled'); L.bridgedAt = 0; readMe(true); }
-    else if (o.state === 'refunded') { Object.assign(s, { state: 'refunded', refund: o.refund }); notify('Swap returned'); readMe(true); }
+    else if (o.state === 'refunded') { Object.assign(s, { state: 'refunded', refund: o.refund, reason: o.reason }); notify('Swap returned'); readMe(true); }
   }
   function follow(wait = 15e3) {
     clearTimeout(poll);
@@ -295,13 +304,15 @@ export function makeBitcoinLane({ host, notify = () => {}, wallet = () => null, 
   const readMoveNeed = async () => { moveNeed = await moveSatsNeeded(() => T?.getFeeRate()); };      // the commit and reveal at the fee rate now
   async function move(i) {
     const n = L.notes[i]; if (!n || L.busy) return;
-    await readMoveNeed();
-    if (L.sats != null && L.sats < moveNeed) { L.asking = null; say(`Moving takes about ${moveNeed.toLocaleString('en-US')} sats for the Bitcoin fee, paid from the sats at your trading address. Add sats, then try again.`, 'err'); paint(); fund(); return; }
-    L.busy = true; L.asking = null; say('Moving it to your trading address…'); paint();
+    L.busy = true;                                                         // before the fee is read: a second press while it is read moves nothing
     try {
+      await readMoveNeed();
+      if (L.sats != null && L.sats < moveNeed) { L.asking = null; say(`Moving takes about ${moveNeed.toLocaleString('en-US')} sats for the Bitcoin fee, paid from the sats at your trading address. Add sats, then try again.`, 'err'); fund(); return; }
+      L.asking = null; say('Moving it to your trading address…'); paint();
       await T.moveBridgedNote({ txid: n.txid, vout: n.vout ?? 0, assetIdHex: n.aid, swap: !!n.swap, onProgress: (s) => say(s === 'reveal-start' ? 'Sending the second transaction…' : 'Sending the first transaction…') });
       say(`Moved ${esc(tidy(fmt(n.amount, n.aid)))} ${TOKENS[n.aid].sym}. It shows in your balance after the next Bitcoin block.`, 'ok');
-      L.notes = L.notes.filter((_, j) => j !== i);
+      // (the list may have been read again meanwhile, so the note is found by its coin, not by its place in the list)
+      L.notes = L.notes.filter((x) => !(x.txid === n.txid && (x.vout ?? 0) === (n.vout ?? 0) && x.aid === n.aid));
       keepBridged(bitcoin.session.key?.pubHex, n.aid === TETH ? 'teth' : 'tac', { notes: L.notes.filter((x) => x.aid === n.aid), unread: L.unread });
       onBridged();
     } catch (e) { say(esc(/insufficient sats/i.test(e?.message || '') ? `You need about ${moveNeed.toLocaleString('en-US')} sats at your trading address for the fee. Add sats, then try again.` : (e?.message || e)), 'err'); }

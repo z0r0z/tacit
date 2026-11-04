@@ -1,6 +1,6 @@
-import { word, addrWord, wordAt, SEL, encApprove } from '/vault/chain.js?cb=fd24e94d';
+import { word, addrWord, wordAt, SEL, encApprove } from '/vault/chain.js?cb=872255e6';
 import * as M from '/vault/math.js?cb=ac1ed53e';
-import { MULTICALL3 } from '/vault/batch.js?cb=51bced2e';
+import { MULTICALL3 } from '/vault/batch.js?cb=07112350';
 
 const WAD = 10n ** 18n, ZERO = '0x0000000000000000000000000000000000000000';
 const MIN_LIQUIDITY = 1000n;

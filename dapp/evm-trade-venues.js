@@ -278,7 +278,7 @@ function decBuildBestSwap(raw) {
   return { amountOut, callData, amountLimit, msgValue, feeBps: decWord(h, 1) };
 }
 
-async function quoteZQuoter({ ethCall, dir, amountIn, account, slippageBps = 100, deadline, gas = '0x5F5E100' }) {
+async function quoteZQuoter({ ethCall, dir, amountIn, account, slippageBps = 100, deadline = BigInt(Math.floor(Date.now() / 1000) + 1800), gas = '0x5F5E100' }) {
   const tokenIn = dir === 'ETH_TO_TAC' ? ZERO_ADDR : TAC_ERC20;
   const tokenOut = dir === 'ETH_TO_TAC' ? TAC_ERC20 : ZERO_ADDR;
   const data = encBuildBestSwap({ to: account || ZERO_ADDR, exactOut: false, tokenIn, tokenOut, amount: amountIn, slippageBps, deadline });

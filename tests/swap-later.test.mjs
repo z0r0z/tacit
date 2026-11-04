@@ -59,13 +59,18 @@ function chainWith({ paid, wrapStatus = '0x1' }) {
     return new Response(JSON.stringify(Array.isArray(j) ? j.map(one) : one(j)), { headers: { 'content-type': 'application/json' } });
   };
 }
-function setup({ paid, held, wrapStatus, plan: over = {}, sendFails = false }) {
+const WRAP_INDEX = 7, DEPOSIT_STATUS = '0x7da9874f';
+// `deposit`: the pool's status for the wrap's deposit (1 pending, 2 settled, 0 not shown); `settleErr`: what the relay's settle fails with
+function setup({ paid, held, wrapStatus, plan: over = {}, sendFails = false, deposit = 1, settleErr = null }) {
   chainWith({ paid, wrapStatus });
   const mem = new Map(), store = { getItem: (k) => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, String(v)) };
-  const M = { wraps: [], sends: [], held };
-  const t = { assetByTicker: { TAC: { assetId: '0x' + '7a'.repeat(32), unitScale: String(SCALE) } }, account: () => ({ address: ACCT }),
-    ethCall: async () => '0x' + M.held.toString(16), routerWrap: async ({ amountWei }) => { M.wraps.push(BigInt(amountWei)); M.held -= BigInt(amountWei); return { txHash: WRAP_TX }; }, waitReceipt: async () => {} };
-  const sendPrivate = async (o) => { M.sends.push(o); if (sendFails) throw new Error('the relay is busy'); return { sent: { txHash: '0x' + 'ee'.repeat(32) } }; };
+  const M = { wraps: [], sends: [], settles: [], order: [], deposit, held };
+  const t = { assetByTicker: { TAC: { assetId: '0x' + '7a'.repeat(32), unitScale: String(SCALE) } }, account: () => ({ address: ACCT }), cfg: { pool: '0xpool' },
+    ethCall: async (to, data) => (data.startsWith(DEPOSIT_STATUS) ? '0x' + M.deposit.toString(16).padStart(64, '0') : '0x' + M.held.toString(16)),
+    routerWrap: async ({ amountWei }) => { M.order.push('wrap'); M.wraps.push(BigInt(amountWei)); M.held -= BigInt(amountWei); return { txHash: WRAP_TX, index: WRAP_INDEX }; }, waitReceipt: async () => {},
+    buildWrap: (a) => ({ ...a, depositId: '0x' + a.index.toString(16).padStart(64, 'd'), wrapOp: {} }),
+    submitWrapSettle: async (a) => { M.order.push('settle'); M.settles.push(a); if (settleErr) throw new Error(settleErr); M.deposit = 2; } };
+  const sendPrivate = async (o) => { M.order.push('send'); M.sends.push(o); if (sendFails) throw new Error('the relay is busy'); return { sent: { txHash: '0x' + 'ee'.repeat(32) } }; };
   const L = makeLater({ keyHex: async () => '11'.repeat(32), signer: { address: '0x' + '01'.repeat(20) }, ethCall: async () => '0x', ux: async () => t, sendPrivate, store, chain: { chainId: 1, rpc: ['http://node.test'], keeper: null, deployBlock: 0, confirmations: 0 } });
   const plan = { id: 'p', at: Date.now(), swapWei: '1', depositWei: '2', token: TAC, sym: 'TAC', dec: 18, to: ACCT, dest: { kind: 'tacit', pubHex: '02' + 'cd'.repeat(32), name: 'bob.wei' }, state: 'shielding', swapTx: SWAP_TX, tacBefore: '0', min: '1', ...over };
   return { L, M, plan };
@@ -84,11 +89,55 @@ test('a send-on that stopped after the wrap is pressed again: the wrap is not ma
   await assert.rejects(s1.L.shield(s1.plan), /relay is busy/);
   assert.strictEqual(s1.plan.state, 'held');
   assert.strictEqual(s1.plan.shieldTx, WRAP_TX, 'the wrap is kept on the plan');
-  const s2 = setup({ paid, held: 0n, plan: { ...s1.plan } });
+  const s2 = setup({ paid, held: 0n, deposit: 2, plan: { ...s1.plan } });
   const done = await s2.L.shield(s2.plan);
   assert.strictEqual(s2.M.wraps.length, 0, 'no second wrap');
+  assert.strictEqual(s2.M.settles.length, 0, 'and the deposit, settled the first time, is not settled again');
   assert.strictEqual(s2.M.sends[0].units, 50n);
   assert.strictEqual(done.state, 'done');
+});
+
+test('the wrap is settled once, and a swap sent on is sent only after it: a pending deposit is no note', async () => {
+  const paid = 30n * SCALE, s = setup({ paid, held: paid });
+  const done = await s.L.shield(s.plan);
+  assert.deepStrictEqual(s.M.order, ['wrap', 'settle', 'send']);
+  assert.strictEqual(s.M.settles.length, 1);
+  assert.strictEqual(s.M.settles[0].depositTx, WRAP_TX, 'the relay is told which transaction made the deposit');
+  assert.strictEqual(s.M.settles[0].built.index, WRAP_INDEX);
+  assert.strictEqual(BigInt(s.M.settles[0].built.amountWei), 30n * SCALE, 'the deposit of the amount wrapped');
+  assert.strictEqual(done.state, 'done');
+  const me = setup({ paid, held: paid, plan: { dest: { kind: 'me' } } });
+  assert.strictEqual((await me.L.shield(me.plan)).state, 'done');
+  assert.deepStrictEqual(me.M.order, ['wrap', 'settle'], 'into the balance: settled, nothing sent on');
+});
+
+test('a press after a reload between the wrap being mined and settled settles it, and wraps nothing again', async () => {
+  const paid = 12n * SCALE, kept = { shieldTx: WRAP_TX, shielded: String(paid), shieldIndex: WRAP_INDEX, state: 'held' };
+  const s = setup({ paid, held: 0n, plan: kept });
+  const done = await s.L.shield(s.plan);
+  assert.deepStrictEqual(s.M.order, ['settle', 'send']);
+  assert.strictEqual(s.M.settles[0].built.index, WRAP_INDEX);
+  assert.strictEqual(done.state, 'done');
+  const settled = setup({ paid, held: 0n, deposit: 2, plan: kept });
+  await settled.L.shield(settled.plan);
+  assert.deepStrictEqual(settled.M.order, ['send'], 'a deposit the relay already settled is not settled again');
+});
+
+test('a settle that stops leaves the wrap on the plan: the next press settles it, with no second wrap', async () => {
+  const paid = 8n * SCALE, a = setup({ paid, held: paid, settleErr: 'settle timed out (box offline or backlogged)' });
+  await assert.rejects(a.L.shield(a.plan), /settle timed out/);
+  assert.deepStrictEqual([a.plan.state, a.plan.shieldTx, a.plan.shieldIndex], ['held', WRAP_TX, WRAP_INDEX]);
+  assert.strictEqual(a.M.sends.length, 0, 'nothing is sent on from a deposit that is no note yet');
+  const b = setup({ paid, held: 0n, plan: { ...a.plan } });
+  assert.strictEqual((await b.L.shield(b.plan)).state, 'done');
+  assert.deepStrictEqual(b.M.order, ['settle', 'send']);
+});
+
+test('a deposit the pool does not show yet is not settled or sent on: the press says so, and keeps the wrap', async () => {
+  const paid = 8n * SCALE, s = setup({ paid, held: 0n, deposit: 0, plan: { shieldTx: WRAP_TX, shielded: String(paid), shieldIndex: WRAP_INDEX, state: 'held' } });
+  await assert.rejects(s.L.shield(s.plan), /does not show the deposit yet/);
+  assert.deepStrictEqual(s.M.order, []);
+  assert.strictEqual(s.plan.shieldTx, WRAP_TX);
 });
 
 test('a wrap not mined yet is waited for, never sent again; one that reverted is made again', async () => {

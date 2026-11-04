@@ -8,8 +8,8 @@
 // held in this visit's memory only.
 import { makeKeySession, signInSheet, Cancelled } from '/trade/key.js?cb=26d9c07b';
 import { forgetUx } from '/trade/poolux.js?cb=3d572bf4';
-import { wrapEth, wrapFirst, wrapCalldata, settle, relayState, relayStopped, relayWords } from '/teth/wrap.js?cb=18c7040b';
-import { wrapQuote, WRAP_TIP } from '/teth/read.js?cb=eaa2aca3';
+import { wrapEth, wrapFirst, wrapCalldata, settle, relayState, relayStopped, relayWords } from '/teth/wrap.js?cb=142cae01';
+import { wrapQuote, WRAP_TIP } from '/teth/read.js?cb=bf18d06a';
 import { secp, keccak_256, sha256, bytesToHex } from '/vendor/tacit-deps.min.js';
 import { makeRunner } from '/activity.js?cb=5bc9627f';
 
@@ -34,6 +34,8 @@ const floorMiss = (e) => /fee below the current floor/i.test(String(e?.message |
 // A step the relay may still finish (it timed out here, or is proved and waits for a sender): its note is not offered again for a while.
 const pending = (e) => !!e?.open || /settle timed out|status polling for job|prove timed out|waiting for a sender|settle held/i.test(String(e?.message || ''));
 const IN_USE_MS = 20 * 60e3;
+// What a swap that stopped with the relay still holding it says: it may yet land, so the person looks at the balance before swapping again.
+const mayGoThrough = (words, cause) => Object.assign(new Error(`${words} Your swap may still go through: check your private balance in a few minutes before swapping again.`), { pending: true, cause });
 // A route's relay fee over two pools is the one-pool fee and 40% more, in two figures, as the quote above prices it.
 const twoDigits = (v) => { if (v <= 0n) return 0n; const d = BigInt(String(v).length); if (d <= 2n) return v; const m = 10n ** (d - 2n); return ((v + m - 1n) / m) * m; };
 // A swap that stopped after its ETH was made private: the ETH is safe as tETH, and the card offers to swap it from there.
@@ -46,7 +48,8 @@ const nonce = () => BigInt('0x' + Array.from(crypto.getRandomValues(new Uint8Arr
 // `getUx()` gives the page's pool module; `pick(list)` chooses among several Ethereum wallets for the key sheet; `onKey(text)` is told when the key opens or is locked (`text` says why).
 // A page that holds a Tacit key of its own (the front page) hands it over instead: `session` (unlocked, key, priv()), `openKey(why)` to ask for it
 // (resolves once it is open), and `wait(label, ms)` for the relay's jobs to go into the page's own Activity journal.
-export function makePrivate({ getUx, pick, onKey = () => {}, session = null, openKey = null, wait = null } = {}) {
+// `now()` is the time in ms an exit's deadline is counted from: the page passes the chain's, so a device clock that is slow cannot make it past.
+export function makePrivate({ getUx, pick, onKey = () => {}, session = null, openKey = null, wait = null, now = Date.now } = {}) {
   const key = session || makeKeySession({ moved: (why) => { lock(); onKey(why); } });
   let held = null, heldP = null, runner = null, opening = null;
   const busy = new Map();                                     // leaf -> when a step that spends it was sent and may still land
@@ -297,7 +300,7 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
   // amount, swapped through one pool from it: the press's proof holds no secret, so it is the relay's board (or any prover) that makes it, and
   // the note's key was used only when the deposit was staged. → { txHash, out } or null when no staged deposit fits.
   let stageP = null;
-  const stage = async () => (stageP ||= (async () => { const t = await getUx(); const { makeConfidentialStage } = await import('/confidential-stage.js?cb=16cc915b'); return makeConfidentialStage({ ux: t }); })());
+  const stage = async () => (stageP ||= (async () => { const t = await getUx(); const { makeConfidentialStage } = await import('/confidential-stage.js?cb=d625f4a6'); return makeConfidentialStage({ ux: t }); })());
   async function stagedSwap(plan, say) {
     const t = await getUx();
     if (plan.path?.length !== 1 || lc(plan.asset) !== lc(t.assetByTicker.cETH.assetId)) return null;
@@ -306,10 +309,19 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
     const st = await stage();
     const d = (await st.splitPending(h.pending || [])).staged.find((x) => BigInt(x.value) === BigInt(plan.units));
     if (!d) return null;
+    // a deposit whose swap the relay may still settle is not swapped again, from it or (the caller stops here) from a note
+    if (!free({ leaf: d.depositId })) throw mayGoThrough('The relay is still working on the last one.');
     say('swap');
     const hop = plan.path[0];
-    const r = await st.pressSwap({ walletPriv: key.priv(), deposit: { index: d.index, wei: BigInt(d.value) * E10, depositId: d.depositId }, toAsset: hop.assetNext,
-      feeBps: Number(hop.feeBps), fee: BigInt(plan.fee), minOut: BigInt(plan.minOut), waitOpts: { ...run().wait(plan.label || 'Swap privately', 15 * 60e3), intervalMs: 4000, viaRelay: true } });
+    let r;
+    try {
+      r = await st.pressSwap({ walletPriv: key.priv(), deposit: { index: d.index, wei: BigInt(d.value) * E10, depositId: d.depositId }, toAsset: hop.assetNext,
+        feeBps: Number(hop.feeBps), fee: BigInt(plan.fee), minOut: BigInt(plan.minOut), waitOpts: { ...run().wait(plan.label || 'Swap privately', 15 * 60e3), intervalMs: 4000, viaRelay: true } });
+    } catch (e) {
+      // `jobId`: the proof was posted, so the relay has the swap; only its own "settle failed" leaves the deposit unspent
+      if (e?.jobId && !/^settle failed/i.test(String(e.message))) { busy.set(lc(d.depositId), Date.now()); throw mayGoThrough(relayWords(e), e); }
+      throw e;
+    }
     held = null;
     return { txHash: r.txHash || null, out: r.amountOut, staged: true };
   }
@@ -465,7 +477,7 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
       if (!eth) {
         sale = await out.quote(wei);
         if (!sale || sale.amountLimit < (out.min * wei) / out.wei) throw Object.assign(new Error('The price moved past what was quoted, so it did not leave the pool.'), { moved: true });
-        recipe = { exitedAsset: note.asset, feeAsset: ZERO, finalRecipient: lc(out.to), deadline: String(Math.floor(Date.now() / 1000) + EXIT_TTL), nonce: nonce(),
+        recipe = { exitedAsset: note.asset, feeAsset: ZERO, finalRecipient: lc(out.to), deadline: String(Math.floor(now() / 1000) + EXIT_TTL), nonce: nonce(),
           calls: [{ target: ZROUTER, value: wei.toString(), token: ZERO, amount: '0', push: false, data: sale.callData }], sweepTokens: [ZERO], minOuts: ['0'] };
         to = await escrowOf(t, recipe);
       }
@@ -593,8 +605,8 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
       if (!plan.path?.length) return sendOn({ plan, made: { made: plan.units, txHash: hash }, before, say, direct: note });
     } else {
       await price(plan.asset, plan.units, plan.path, plan.fee, plan.minOut);
-      // a deposit of exactly this tETH staged from a note of the key's: swapped from it in one proof that holds no secret
-      const fast = !plan.sendTo && await stagedSwap(plan, say).catch(() => null);
+      // a deposit of exactly this tETH staged from a note of the key's: swapped from it in one proof that holds no secret (one the relay already has stops here, not on to a note)
+      const fast = !plan.sendTo && await stagedSwap(plan, say).catch((e) => { if (e?.pending) throw e; return null; });
       if (fast) return fast;
       note = await coveringNote({ asset: plan.asset, units: plan.units, ticker: plan.ticker, say });
     }
@@ -604,7 +616,7 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
     let made;
     try { made = await route({ note, ...plan, say }); }
     catch (e) {
-      if (pending(e)) throw Object.assign(new Error(`${relayWords(e)} Your swap may still go through: check your private balance in a few minutes before swapping again.`), { pending: true, cause: e });
+      if (pending(e)) throw mayGoThrough(relayWords(e), e);
       if (plan.wallet) throw kept(`Your ETH is private now as tETH, but the swap stopped: ${e.moved ? 'the price moved past what was quoted.' : relayWords(e)}`, e);
       throw e;
     }
@@ -638,7 +650,7 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
       const r = await t.submitWrapSwap({ walletPriv: priv, built, waitOpts: { ...run().wait(plan.label, 15 * 60e3), intervalMs: 4000, viaRelay: true } });
       return { txHash: r?.txHash || null, out: built.amountOut };
     } catch (e) {
-      if (pending(e)) throw Object.assign(new Error(`${relayWords(e)} Your swap may still go through: check your private balance in a few minutes before swapping again.`), { pending: true, cause: e });
+      if (pending(e)) throw mayGoThrough(relayWords(e), e);
       // not settled: the same deposit settled as a plain wrap, so the ETH is private tETH and the card offers to swap it from there
       await settle({ t, built: asWrap(), hash, say });
       throw kept(`Your ETH is private now as tETH, but the swap stopped: ${/reserve|amm|state/i.test(String(e?.message)) ? 'the pool’s price moved while it was proved.' : relayWords(e)}`, e);

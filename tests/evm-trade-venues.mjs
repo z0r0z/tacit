@@ -402,4 +402,26 @@ const B32 = '0x' + 'ab'.repeat(32);
   ok('build() sends a TAC-in Tacit AMM swap direct to the AMM (approve first), never through snwap');
 }
 
+// ── quoteZQuoter with no deadline (the trade tile asks it that way) ──
+{
+  // The call must reach the node: without a default deadline the calldata could not be encoded, the probe was always an 'error', and the tile's
+  // "zQuoter quotes more" nudge never fired. Its calldata carries a deadline half an hour out unless one is named.
+  const seen = [];
+  const noRoute = async (to, data, block, opts) => { seen.push({ to, data, opts }); throw Object.assign(new Error('execution reverted'), { data: '0x6586e129' }); };
+  const v = makeEvmTradeVenues({ ethCall: noRoute });
+  const t0 = Math.floor(Date.now() / 1000);
+  const q = await v.quoteZQuoter({ dir: 'ETH_TO_TAC', amountIn: 10n ** 17n, account: '0x' + '11'.repeat(20) });
+  assert.equal(q.status, 'no-route', 'asked with no deadline, it reaches the node and reads its answer');
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].to.toLowerCase(), ZQUOTER_V2.toLowerCase());
+  const dlWord = BigInt('0x' + seen[0].data.slice(10).slice(6 * 64, 7 * 64));
+  assert.ok(dlWord >= BigInt(t0 + 1800) && dlWord <= BigInt(Math.floor(Date.now() / 1000) + 1800), 'the default deadline is half an hour from now');
+  await v.quoteZQuoter({ dir: 'TAC_TO_ETH', amountIn: 5n * 10n ** 18n, deadline: 1234567890n });
+  assert.equal(BigInt('0x' + seen[1].data.slice(10).slice(6 * 64, 7 * 64)), 1234567890n, 'a deadline that is named goes through as it is');
+  // a node error that is not "no route" is an error, not a silent none
+  const down = makeEvmTradeVenues({ ethCall: async () => { throw new Error('node down'); } });
+  assert.equal((await down.quoteZQuoter({ dir: 'ETH_TO_TAC', amountIn: 10n ** 17n })).status, 'error');
+  ok('quoteZQuoter needs no deadline from its caller: the tile\'s probe reaches the node (status no-route, not error) with a default half an hour out');
+}
+
 console.log(`\n${n} evm-trade-venues checks passed`);

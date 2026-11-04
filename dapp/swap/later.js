@@ -34,14 +34,16 @@ const TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523
 const CALL_EXECUTED = '0x' + hexOf(keccak_256(new TextEncoder().encode('CallExecuted(address,address)')));
 // How long the swap's route may take to run once quoted, and the gas the relay is asked to price beyond the route's own: the withdrawal and its escrow.
 const DEADLINE_S = 1200, BASE_GAS = 520_000n;
+// How long a deposit from the wallet that the pool does not show yet is still looked for, before the plan is called stopped.
+const LATE_MS = 30 * 60e3;
 // The swap card keeps no ETH-pool note worth less than a millionth of an ETH (see makeEvmPoolWallet's dustFloor): none is worth spending, and dust paid to a public address would otherwise grow what this device saves and reads.
 const DUST_ETH = 10n ** 12n;
 
 // The plans kept in this browser: amounts, the token, the address it goes to, the deposit and swap transactions, and (while one waits) the wallet
 // that deposited, so a swap out is never sent from it; that is dropped once the swap is done.
 export const readPlans = (store = globalThis.localStorage) => { try { return (JSON.parse(store.getItem(PLANS_KEY) || '[]') || []).filter((p) => p && p.id).slice(0, 20); } catch { return []; } };
-// Twenty are kept, the oldest finished ones leaving first, so a swap still waiting is not pushed out by newer ones. → whether the browser kept them
-const trimPlans = (ps) => { const out = ps.slice(); for (let i = out.length - 1; i >= 0 && out.length > 20; i--) if (out[i].state === 'done') out.splice(i, 1); return out.slice(0, 20); };
+// Twenty are kept, the oldest finished ones leaving first and then the oldest stopped, so a swap still waiting is not pushed out by newer ones. → whether the browser kept them
+const trimPlans = (ps) => { const out = ps.slice(); for (const gone of ['done', 'stopped']) for (let i = out.length - 1; i >= 0 && out.length > 20; i--) if (out[i].state === gone) out.splice(i, 1); return out.slice(0, 20); };
 const keepPlans = (ps, store = globalThis.localStorage) => { try { store.setItem(PLANS_KEY, JSON.stringify(trimPlans(ps))); return true; } catch { return false; } };
 
 // The route for `amount` wei of ETH into `token`, paid to `to`, asked of the nodes with a random stand-in in place of `to` (so no node sees where
@@ -531,7 +533,8 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
         for (const c of batched.calls) { onStep(c.data === encApprove(ZAP, 0n) ? 'reset the allowance' : 'approve'); await mined(await signer.send(c)); }
         return w.deposit({ amount: BigInt(depositWei), selfCall: batched.alone, onStep });
       });
-      plan.state = 'waiting'; plan.depositedAt = Date.now(); plan.leaves0 = (await w.sync(5000)).leaves; plan.err = null;
+      plan.state = 'waiting'; plan.depositedAt = Date.now(); plan.err = null;
+      plan.leaves0 = (await w.sync(5000).catch(() => s0)).leaves;      // the deposit is in the pool whatever this read says: a read that fails keeps the count from before it
     } catch (e) {
       // declined or refused before it was sent: nothing went; anything else may have landed, and is checked against the pool
       plan.state = notSent(e) ? 'stopped' : 'unsure';
@@ -562,7 +565,8 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
         await mined(await signer.send({ to: hop.token, data: encApprove(hop.router, amount), value: 0n }));
         return w.deposit({ amount, selfCall: (tx) => m_.wm.routerDeposit(hop.router, tx, { kind: 'allowance' }), onStep });
       });
-      plan.state = 'waiting'; plan.depositedAt = Date.now(); plan.leaves0 = (await w.sync(5000)).leaves; plan.err = null;
+      plan.state = 'waiting'; plan.depositedAt = Date.now(); plan.err = null;
+      plan.leaves0 = (await w.sync(5000).catch(() => s0)).leaves;      // the deposit is in the pool whatever this read says: a read that fails keeps the count from before it
     } catch (e) {
       plan.state = notSent(e) ? 'stopped' : 'unsure';
       plan.err = String(e?.message || e).slice(0, 200); throw e;
@@ -591,7 +595,7 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
       depositWei: String(depositWei), token: lc(token), sym, dec, to: lc(to), ...(toName ? { toName: String(toName) } : {}),
       pay: { token: lc(pay.token), sym: pay.sym, dec: pay.dec, amountWei: String(pay.amountIn), ...(pay.typed != null ? { typed: String(pay.typed) } : {}), route: pay.route || 'relay' }, dest: { kind: 'address' }, gasWei: '0',
       boxed: true, state: 'depositing', leaves0: s0.leaves };
-    keepPlans([plan, ...readPlans(store)], store);
+    keptOrStop(plan);                                 // before the box is made: a sale whose plan could not be kept would have nothing to find its deposit again
     let ran = false;                                  // whether the relay's order has run: from then on nothing is called stopped, however the wait ends
     try {
       onStep('opening your deposit box');
@@ -720,13 +724,19 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
     const w = await wallet(plan.hop), s = await w.sync(), notes = w.notes();
     if (!plan.depositedAt) {
       // a note of exactly its amount that the pool made after the plan began: an older note of the same size is some other money
-      if (notes.some((n) => BigInt(n.v) === BigInt(plan.depositWei) && Number(n.index) >= Number(plan.leaves0 || 0))) { plan.state = 'waiting'; plan.depositedAt = plan.at; plan.err = null; if (plan.boxed) plan.leaves0 = s.leaves; }
+      const found = notes.filter((n) => BigInt(n.v) === BigInt(plan.depositWei) && Number(n.index) >= Number(plan.leaves0 || 0)).map((n) => Number(n.index));
+      if (found.length) {
+        // the mix is counted from after the deposit's own pair of leaves (the pool takes them in pairs), as a start counts it
+        plan.state = 'waiting'; plan.depositedAt = plan.at; plan.err = null; plan.leaves0 = plan.boxed ? s.leaves : Math.min(...found) - (Math.min(...found) % 2) + 2;
+      }
       // through a deposit box: the relay's order ran and the keeper has the box to complete (until the box's deadline), or the order was posted and may still run (its own is ten minutes)
       else if (plan.boxed && plan.box && Date.now() - plan.at < 2 * DEADLINE_S * 1000) {
         plan.state = plan.depositTx ? 'depositing' : 'unsure';
         plan.err = plan.depositTx ? null : 'The relay may still send the swap, and the pool’s keeper may still complete the box. Check again in a few minutes.';
       }
-      else { plan.state = 'stopped'; plan.err = plan.boxed ? 'The deposit did not reach the pool before its box’s deadline. If the relay’s swap ran, what it paid is still in the box, which anyone can send back to an address your key owns.' : 'The deposit is not in the pool yet. If it was sent, it may still be on its way: check again in a minute.'; }
+      // a deposit sent from the wallet may be slow to be mined, or to be read: it stays in doubt, with Check offered, for half an hour
+      else if (!plan.boxed && Date.now() - plan.at < LATE_MS) { plan.state = 'unsure'; plan.err = 'The deposit is not in the pool yet. If it was sent, it may still be on its way: check again in a few minutes.'; }
+      else { plan.state = 'stopped'; plan.err = plan.boxed ? 'The deposit did not reach the pool before its box’s deadline. If the relay’s swap ran, what it paid is still in the box, which anyone can send back to an address your key owns.' : 'The deposit did not reach the pool. If your wallet shows it as sent, check it there before swapping again.'; }
     } else if (await (async () => {
       // Did the swap go out? The router says so for a plan that kept its escrow (an unrelated spend from the pool cannot be taken for it); a plan without one is judged by the pool's balance
       const ran = await ranCall(plan);
@@ -862,7 +872,7 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
     if (plan.shieldTx) {
       const rc = await rpc('eth_getTransactionReceipt', [plan.shieldTx]).catch(() => null);
       if (!rc) throw new Error('Making it private is still being mined. Press again in a minute.');
-      if (rc.status !== '0x1') { plan.shieldTx = null; plan.shielded = null; save(plan); }
+      if (rc.status !== '0x1') { plan.shieldTx = null; plan.shielded = null; plan.shieldIndex = null; save(plan); }
     }
     let amount = plan.shieldTx ? BigInt(plan.shielded || 0) : 0n;
     if (!plan.shieldTx) {
@@ -887,9 +897,22 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
         onStep('making it private');
         const w = await t.routerWrap({ walletPriv: priv, amountWei: amount.toString(), ticker: tk });
         // kept before the wait, so a wait that runs out is followed by a check of this transaction, not by a second wrap
-        plan.shieldTx = w?.txHash || null; plan.shielded = String(amount); save(plan);
+        // (and with the wrap's index, from which a later press builds the same deposit again to settle it)
+        plan.shieldTx = w?.txHash || null; plan.shielded = String(amount); plan.shieldIndex = w?.index ?? null; save(plan);
         onStep('waiting for it to be mined');
         if (w?.txHash) await t.waitReceipt(w.txHash);
+      }
+      // the wrap only registers a pending deposit: the relay's settle makes it the note the balance holds and the send-on spends. One already settled is left
+      // (a wrap kept by an earlier page has no index, and is as it was)
+      if (plan.shieldIndex != null) {
+        const built = t.buildWrap({ walletPriv: priv, amountWei: amount.toString(), ticker: tk, index: plan.shieldIndex });
+        // the pool's status for the deposit: 1 pending, 2 settled
+        const state = Number(BigInt(await t.ethCall(t.cfg.pool, '0x7da9874f' + String(built.depositId).replace(/^0x/, '').padStart(64, '0'))));
+        if (state !== 1 && state !== 2) throw new Error('The pool does not show the deposit yet. Press again in a minute.');
+        if (state === 1) {
+          onStep('the relay is settling it');
+          await t.submitWrapSettle({ built, depositTx: plan.shieldTx, waitOpts: { timeoutMs: 15 * 60e3, intervalMs: 4000, viaRelay: true } });
+        }
       }
       if (plan.dest.kind === 'tacit') {
         if (!sendPrivate) throw new Error('Private now, in your balance; sending it on needs the page.');

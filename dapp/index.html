@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-ds2xxUOqXjIsfJq/3JGO2ErsiQtUPa2KxPTAyLnEknE=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-iIhUyFBKlDoU9Kyq1uTXsuyf+RLp6TJHR63FgHEjgPc=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -47,7 +47,7 @@
 <link rel="modulepreload" href="/evm-tx.js">
 <link rel="modulepreload" href="/tac-airdrop.js?cb=6a6bb45f">
 <link rel="modulepreload" href="/rpc-body.js">
-<link rel="modulepreload" href="/evm-trade-venues.js?cb=10858cc2">
+<link rel="modulepreload" href="/evm-trade-venues.js?cb=dda58fa8">
 <link rel="modulepreload" href="/zrouter-guard.js">
 <link rel="modulepreload" href="/confidential-payout.js?cb=c27b4853">
 <link rel="modulepreload" href="/address-id.js?cb=c4fa5a58">
@@ -63,7 +63,7 @@
 <link rel="modulepreload" href="/bridge-tick.js?cb=b9adb91d">
 <link rel="modulepreload" href="/tacit-session.js?cb=a2d34bb2">
 <link rel="modulepreload" href="/activity.js?cb=5bc9627f">
-<link rel="modulepreload" href="/swap/card.js?cb=5cf5d344">
+<link rel="modulepreload" href="/swap/card.js?cb=61662c3d">
 <link rel="modulepreload" href="/trade/wallet.js?cb=88b623b8">
 <link rel="modulepreload" href="/trade/util.js?cb=e8317464">
 <link rel="modulepreload" href="/trade/rpc.js?cb=f575ef91">
@@ -75,7 +75,7 @@
 <link rel="modulepreload" href="/swap/solvers.js?cb=28273640">
 <link rel="modulepreload" href="/swap/link.js?cb=c30e2cdb">
 <link rel="modulepreload" href="/swap/route-name.js?cb=1bc2443b">
-<link rel="modulepreload" href="/gas-relay.js?cb=2e8c31fe">
+<link rel="modulepreload" href="/gas-relay.js?cb=fbfad56c">
 <link rel="modulepreload" href="/reward-pop.js?cb=1b53f6d4">
 <link rel="modulepreload" href="/points-note.js?cb=dc44d257">
 <link rel="modulepreload" href="/evm-pool-tokens.js?cb=a3c182f7">
@@ -1811,14 +1811,14 @@ import { ETH_NODES, ETH_LOG_NODES, walletNode } from '/eth-nodes.js';
 import { hedgedRpc, nodeHealth } from '/trade/rpc.js';
 import { prfBytesToScalar, prfLogin, prfRegister, loadPrfMap, savePrfMap, isPasskeyAvailable } from '/prf-wallet.js';
 import { knownWallets } from '/tacit-wallet-known.js?cb=ed4c75b7';
-import { makeTacitAddress } from '/tacit-address.js';
+import { makeTacitAddress, poolKeysOf } from '/tacit-address.js';
 import { bip352TaggedHash } from '/bip352.js';
 import { makeEvmWallet } from '/evm-wallet.js?cb=b400cbe7';
 import { announceWalletConnect, wcSheets, dialogHost, WC_PROJECT_ID } from '/walletconnect.js?cb=e0b29a34';
 import { makeEvmAccount } from '/evm-account.js';
 import { makeEvmTx } from '/evm-tx.js';
 import { makeTacAirdrop, makeRpcCall } from '/tac-airdrop.js?cb=6a6bb45f';
-import { encErc20Approve, CETH_POOL_ASSET_ID, TAC_POOL_ASSET_ID, TACIT_AMM, makeEvmTradeVenues } from '/evm-trade-venues.js?cb=10858cc2';
+import { encErc20Approve, CETH_POOL_ASSET_ID, TAC_POOL_ASSET_ID, TACIT_AMM, makeEvmTradeVenues } from '/evm-trade-venues.js?cb=dda58fa8';
 import { parseRecipient } from '/confidential-payout.js?cb=c27b4853';
 import { planMerge, planAll, countAll, opsCompared } from '/bridge-all.js?cb=4b6de3ff';
 import { aprFrom, shieldedApr as shieldedAprOf, poolWorthEth } from '/trade/farm-read.js?cb=112a01b9';
@@ -1826,7 +1826,7 @@ import { addressId } from '/address-id.js?cb=c4fa5a58';
 import { PXS_KEY, PX_CALLS, pxFigures, paintPx, pxState } from '/px-strip.js';
 import { zapPlan, zapPlanFor, zapCalldata, zapSettleCalldata, zapSplitSearch, zapWorth } from '/lp-zap.js?cb=4823580d';
 import { rewardPop } from '/reward-pop.js?cb=1b53f6d4';
-import * as GR from '/gas-relay.js?cb=2e8c31fe';
+import * as GR from '/gas-relay.js?cb=fbfad56c';
 import { netPicker } from '/net-pick.js?cb=8f57c360';
 import { UNBOND_DUST, HARVEST_WORTH, unharvested, bFor, aFor, farmManager, ladder as xoLadder, feeShort as xoFeeShort } from '/farm-ops.js?cb=0933a4c8';
 import { relayCode, proveCapped, proved, relayRefused, jobSaid } from '/relay-outcome.js?cb=26298b8e';
@@ -1894,15 +1894,15 @@ const EVM_POOL = '0x000000c2A20657CE25f2Ba99737933D031AFBEE9', EVM_ROUTER = '0x0
 const TOKEN_POOLS = [
   // the relay serves it (the keeper service's TAC pool keeper, which sends from the Ethereum keeper's address and is paid in TAC); a quote
   // above the ceiling is refused unsigned
-  { slug: 'tac', name: 'TAC', sym: 'TAC', icon: 'tk-tac', chainId: 1, token: ADDR.tac, permit: 'Tacit Token',
+  { slug: 'tac', name: 'TAC', sym: 'TAC', dec: 18, icon: 'tk-tac', chainId: 1, token: ADDR.tac, permit: 'Tacit Token',
     keeper: 'https://tacit-evm-pool-keepers.onrender.com/1-tac/evm-pool/keeper', relayer: '0x7c9f8aE4e48Cbb2727F95b6477a1cf92bCFc43D0', maxRelayFee: 1000n * 10n ** 18n,
     pool: '0x0000007F401114398b8fa67b4Bf1e1CFEcd28ffe', router: '0x000000fA029Eaf69840C1490Bf9AA6C094794D5a', deployBlock: 26201900,
     rpc: DEVICE_CHAINS[0].rpc, explorer: DEVICE_CHAINS[0].explorer, confirmations: DEVICE_CHAINS[0].confirmations },
-  { slug: 'tacd', name: 'TACD', sym: 'TACD', icon: 'tk-tacd', chainId: 1, token: '0xA0f6B02561C8ef08335B69aD25e022C0B342147C', permit: 'TAC Dollar',
+  { slug: 'tacd', name: 'TACD', sym: 'TACD', dec: 18, icon: 'tk-tacd', chainId: 1, token: '0xA0f6B02561C8ef08335B69aD25e022C0B342147C', permit: 'TAC Dollar',
     keeper: 'https://tacit-evm-pool-keepers.onrender.com/1-tacd/evm-pool/keeper', relayer: '0x7c9f8aE4e48Cbb2727F95b6477a1cf92bCFc43D0', maxRelayFee: 500n * 10n ** 18n,
     pool: '0x0000007bDb91d1aa0b5D3106Fd1c44C784b33DBA', router: '0x000000e96fcFf90F220fa65F8b82C6114Cd1Cc30', deployBlock: 26201900,
     rpc: DEVICE_CHAINS[0].rpc, explorer: DEVICE_CHAINS[0].explorer, confirmations: DEVICE_CHAINS[0].confirmations },
-  { slug: 'tace', name: 'TACE', sym: 'TACE', icon: 'tk-tace', chainId: 1, token: '0x9DE27883C5Dc9Db47BE12E595D59b8f1aBEC8570', permit: 'TAC Ether',
+  { slug: 'tace', name: 'TACE', sym: 'TACE', dec: 18, icon: 'tk-tace', chainId: 1, token: '0x9DE27883C5Dc9Db47BE12E595D59b8f1aBEC8570', permit: 'TAC Ether',
     keeper: 'https://tacit-evm-pool-keepers.onrender.com/1-tace/evm-pool/keeper', relayer: '0x7c9f8aE4e48Cbb2727F95b6477a1cf92bCFc43D0', maxRelayFee: 2n * 10n ** 17n,
     pool: '0x00000091974fB81e7eBA4cF2Cb24869c00a9A1a1', router: '0x000000e66C32bEC739180A5eDeeB40A8225c5223', deployBlock: 26201900,
     rpc: DEVICE_CHAINS[0].rpc, explorer: DEVICE_CHAINS[0].explorer, confirmations: DEVICE_CHAINS[0].confirmations },
@@ -2166,7 +2166,7 @@ async function busy(btn, fn) {
   let held = true;
   run.release = (keep = false) => {
     if (!held) return;
-    held = false;
+    held = false; run.kept = keep;
     btn.removeAttribute('aria-busy'); btn.disabled = keep;
     if (--INFLIGHT[sheet] === 0 && deferred.delete(sheet)) rerender(sheet);
   };
@@ -3916,6 +3916,7 @@ const NOT_TO = [[ADDR.pool, 'the Tacit pool'], [EVM_POOL, 'the private ETH pool'
   ...TOKEN_POOLS.flatMap((p) => [[p.pool, `the private ${p.sym} pool`], [p.router, `the private ${p.sym} router`]]),
   ['0x00000087ac9ed3E1Bd443E00FBe18B4EdcAEeb1F', 'the TAC dollar vault'], ['0x00000047bFC8cF504967049D9Cf9E1FD9651ED80', 'the TAC ether vault'],
   ['0xA0f6B02561C8ef08335B69aD25e022C0B342147C', 'the TACD token'], ['0x9DE27883C5Dc9Db47BE12E595D59b8f1aBEC8570', 'the TACE token'],
+  ['0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', 'the USDC token'], ['0xdac17f958d2ee523a2206206994597c13d831ec7', 'the USDT token'],
   ['0x000000ED49e117f472Ca16aEd7B1a8F07E6D3936', 'the TAC dollar vault zap'], ['0x0000006f0f1d16D2B27050b48D442927b2Edce0c', 'the TAC ether vault zap'],
   [PERMIT2_ADDR, 'the Permit2']]
   .map(([address, what]) => ({ address, reason: `That is ${what} contract, not an account to send to.` }));
@@ -5259,7 +5260,7 @@ const feeRoom = (units, fee, held, notes, show, dp = 6) => {
   const q = 10n ** BigInt(8 - dp);
   return `The most you can use is ${show(((held - fee) / q) * q)}: the relay fee to ${freeNotes(notes).some((n) => BigInt(n.value) >= units) ? 'split a note' : 'combine notes'} comes out of it.`;
 };
-const overBalance = () => P.scan ? 'More than your private balance.' : P.err ? 'Your private balance could not be read: press retry above.' : 'Still reading your private balance.';
+const overBalance = () => P.scan && !(P.scan.reading && P.err) ? 'More than your private balance.' : P.err ? 'Your private balance could not be read: press retry above.' : 'Still reading your private balance.';
 const resolveToM = memoRoute(resolveTo);
 // A name's Ethereum address (its resolver's addr): where a name with no Tacit address published is paid instead, out of the pool. null when it has none.
 const nameAddrM = memoRoute(async (raw) => (await getNames()).resolveAddress(String(raw || '').trim()));
@@ -5283,14 +5284,21 @@ async function stealthSendNow({ run, k, label, w, raw, units, field, status, lin
   if (r?.memoCheck?.ok === false) run.warn(line(), 'Sent, but the relay published a different note than was built, so the recipient may not find it. If it goes unclaimed, take it back in the classic app after the deadline; its refund record is saved in this browser.');
 }
 // A private asset (TAC, cUSD, cBTC, wTAC) taken out of the pool to an Ethereum address, where it arrives as `as`: the send forms' press and the Send tab's. The note is cut to size first if none is, and the
-// relay proves the exit. `status`, `line`, `clear`, `after` and `proveAfter` are as for stealthSendNow; a failure is thrown for the press to say.
-async function assetOutNow({ run, k, label, units, recipient, as, status, line, sheet = 'eth', clear, after, proveAfter }) {
+// relay proves the exit. `status`, `line`, `clear`, `after` and `proveAfter` are as for stealthSendNow; a failure is thrown for the press to say. `fee` is the relay fee as shown (`own`: none, a proof of your own):
+// read again once the note is ready, one above it stops here, and the one sent is pinned. With none shown the pool module reads it as it sends.
+async function assetOutNow({ run, k, label, units, recipient, as, fee = null, own = false, status, line, sheet = 'eth', clear, after, proveAfter }) {
   run.go({ label, status: line, clear });
   const t = await getUx(), priv = walletPriv();
   const note = await noteFor(run, t, priv, units, (n) => BigInt(n.value) >= units, status, k);
+  let feeOpts = null;
+  if (fee != null && !own) {
+    const tk = POOL_TK[k], minFee = await t.quoteOpFee(tk, BigInt(note.value) === units ? 'unwrap' : 'sendunwrap'), now = t.quoteUnwrapFee(units, tk, { minFee }).fee;
+    if (now > fee) throw Object.assign(new Error(`The relay fee is now ${fmt(now, 8, 8)} ${shownAs(tk)}, up from ${fmt(fee, 8, 8)}. Your note is ready: check the new fee and press again.`), { said: true, feeMoved: true });
+    feeOpts = { minFee };
+  }
   run.say(status, `The relay is proving your transfer, which arrives as ${as}…`);
   await proveOr({ run, types: ['sendunwrap', 'unwrap'], exit: true, go: exitGo(note, recipient, units), label, sheet, ...(proveAfter ? { after: proveAfter } : {}), status: line,
-    relayed: () => t.sendUnwrap({ note, walletPriv: priv, recipient, amount: units, waitOpts: run.wait(null, 15 * 60e3, { exit: { to: recipient, units: String(units), note: kNote(note), from: k, sheet } }) }) });
+    relayed: () => t.sendUnwrap({ note, walletPriv: priv, recipient, amount: units, ...(feeOpts ? { feeOpts } : {}), waitOpts: run.wait(null, 15 * 60e3, { exit: { to: recipient, units: String(units), note: kNote(note), from: k, sheet } }) }) });
   await scanPrivate(true).catch(() => {});
   after();
 }
@@ -6747,7 +6755,7 @@ function privacyView(c, amount, to, self) {
 // ETH out of the Pay pool of chain `c` (the Withdraw form's press and the Swap card's), proved on this device: to an address (`dest` 'addr'), or into the Tacit pool as tETH on Ethereum ('v1'); by the relay,
 // its fee out of the private balance (`maxFee` the most it may take), or from the paying account (`self`). → { h, done }: the transaction's hash and what to say once it has landed
 async function devOutSend({ run, c, amount, dest, to = null, self = false, maxFee = null, step }) {
-  DEV.chain = c;
+  if (DEV.chain !== c) setDeviceChain(c);                              // another chain's balance, wallet and quote are not this one's
   const W2 = await deviceWallet(), via = self ? 'self' : null;
   if (dest === 'addr') {
     const label = `Withdraw ${fmt(amount, 18, 6)} ETH from this device${c.chainId === 1 ? '' : `, on ${chainFull(c.chainId)}`}`;
@@ -6759,7 +6767,7 @@ async function devOutSend({ run, c, amount, dest, to = null, self = false, maxFe
 }
 // A deposit into the Pay pool of chain `c` (ETH), proved on this device and sent from the paying account: the Deposit form's and the Swap card's. `step` says each stage. → the transaction's hash
 async function devDepositSend({ c, amount, to = null, step }) {
-  DEV.chain = c;
+  if (DEV.chain !== c) setDeviceChain(c);
   const W2 = await deviceWallet();
   await payingAccount(); W2.connect(payFrom(c.chainId, `Deposit ${fmt(amount, 18, 6)} ETH${to ? ' to someone else’s private balance' : ''} on this device${c.chainId === 1 ? '' : `, on ${chainFull(c.chainId)}`}`));
   return to ? W2.depositTo({ to, amount, onStep: step }) : W2.deposit({ amount, onStep: step });
@@ -9031,7 +9039,7 @@ async function tacPublicNow({ run, raw = '', status, line, sheet = 'tac', after 
     run.go({ label: `Making ${fmt(sum * E10, 18, 2)} TAC public`, one: false, dest, status: line });
     let offered = false, moved = 0;
     for (const [i, n] of worth.entries()) {
-      if (run.switched()) { run.fail(status, new Error('Another Tacit wallet was opened, so the rest stopped.')); break; }
+      if (run.switched()) { run.fail(status, new Error('Another Tacit wallet was opened, so the rest stopped.')); return; }
       run.say(status, `The relay is moving your TAC${worth.length > 1 ? ` (${i + 1} of ${worth.length})` : ''}…`);
       const label = `Make ${fmt(BigInt(n.value), 8, 2)} TAC public`;
       try {
@@ -9465,8 +9473,7 @@ async function proveFirstWrap({ run, t, priv, via, wei, status, sheet, ticker = 
   }
 }
 const TAC_TOKEN = { address: ADDR.tac, permit: 'Tacit Token', sym: 'TAC' };
-async function tacWrapFromWallet(t, priv, wei, status) {
-  const index = await t.nextWrapIndex({ walletPriv: priv, ticker: 'TAC' });
+async function tacWrapFromWallet(t, priv, wei, status, index) {
   const w = t.buildWrap({ walletPriv: priv, amountWei: wei.toString(), ticker: 'TAC', index });
   const deadline = BigInt(chainNow() + 3600);
   const sig = await permitSig({ token: ADDR.tac, name: 'Tacit Token', what: 'TAC', spender: t.cfg.router, value: wei, deadline, status });
@@ -9480,7 +9487,7 @@ async function tacWrapFromWallet(t, priv, wei, status) {
 // `status` is the element the steps are said in, `line()` the one Activity and a failure use; `clear` empties the amount, `after` redraws when it is over.
 async function tacWrapNow({ run, wei, src, status, line, sheet = 'tac', clear, after }) {
   run.go({ label: `Make ${fmt(wei, 18, 6)} TAC private`, status: line, clear });
-  let sent = false, landed = false;
+  let sent = false, landed = false, giveBack = null;
   try {
     const t = await getUx(), priv = walletPriv();
     // A TAC wrap of exactly this amount kept ready goes out at once on any lane: its proof is made, its permit is signed as it is sent.
@@ -9499,7 +9506,10 @@ async function tacWrapNow({ run, wei, src, status, line, sheet = 'tac', clear, a
     }
     say(status, src === 'wallet' ? 'Preparing your note, about half a minute…' : 'Sending from your Tacit account…');
     run.check();
-    const w = src === 'wallet' ? await tacWrapFromWallet(t, priv, wei, status) : await t.routerWrap({ walletPriv: priv, amountWei: wei.toString(), ticker: 'TAC' });
+    // the wrap's index goes back if nothing is sent (as wrapNow), or enough tries would put a later deposit out of reach of a recovery from the key
+    const index = await t.nextWrapIndex({ walletPriv: priv, ticker: 'TAC' });
+    giveBack = () => { try { t.releaseWrapIndex?.({ walletPriv: priv, ticker: 'TAC', index }); } catch { } };
+    const w = src === 'wallet' ? await tacWrapFromWallet(t, priv, wei, status, index) : await t.routerWrap({ walletPriv: priv, amountWei: wei.toString(), ticker: 'TAC', index });
     sent = true;
     run.take(kDep(w));
     runTx(run, src === 'wallet' ? w.txHash : actTx(w.txHash, { label: `Deposit ${fmt(wei, 18, 6)} TAC to shield` }), 'Deposit', 'Depositing');
@@ -9513,6 +9523,7 @@ async function tacWrapNow({ run, wei, src, status, line, sheet = 'tac', clear, a
     await Promise.allSettled([scanPrivate(true), loadTacHoldings(true)]);
     after();
   } catch (e) {
+    if (!sent && (src === 'tacit' || walletDeclined(e))) giveBack?.();
     if (sent && !run.away && !e?.offered && !waitRanOut(e) && (landed || !/reverted/i.test(e?.message))) {
       run.to.clear(); run.release(true);
       e = keptDeposit(e, landed);
@@ -10236,7 +10247,7 @@ async function loadPrecision() {
   for (const token of [ADDR.tac, ADDR.tacbtc, ADDR.tacusd, ADDR.tacd, ADDR.tace]) for (const a of holders) calls.push({ to: token, data: SEL.balanceOf + addrWord(a) });
   const r = await multicall(calls);
   const w = (i) => r[i] ? wordAt(r[i], 0) : 0n;
-  const x = { who, r0: w(0), r1: w(1), supply: w(2), sp: w(3), totalStaked: w(4), rate: w(5), finish: Number(w(6)), t: Number(w(7)) || now(), staked: w(8), earned: w(9), tac: w(10), allowance: w(11), lp: w(12), lpAllow: w(13) };
+  const x = { who, r0: w(0), r1: w(1), supply: w(2), sp: w(3), totalStaked: w(4), rate: w(5), finish: Number(w(6)), t: Number(w(7)) || now(), staked: w(8), earned: w(9), tac: w(10), allowance: w(11), lp: w(12), lpAllow: w(13), at: Date.now() };
   x.live = x.t < x.finish;
   CLOCK.skew = x.t - now();
   x.perDay = x.live ? x.rate * 86400n : 0n;
@@ -10489,7 +10500,7 @@ async function stepTakeOut(run, p, notes, tell, status) {
   for (const [i, n] of mine.entries()) {
     tell(`The relay is taking your liquidity out${mine.length > 1 ? ` (${i + 1} of ${mine.length})` : ''}…`);
     const args = { assetA: r.assetA, assetB: r.assetB, feeBps: Number(p.feeBps ?? 30), shareNote: n }, label = `Take out ${pairName(p.pair)} liquidity`;
-    const spec = { run, types: ['lpremove'], label, sheet: 'farm', after: loadFarms, status: () => status, tell, wait: () => run.wait(label, 15 * 60e3),
+    const spec = { run, types: ['lpremove'], label, sheet: 'farm', after: loadFarms, status: statusLine(status), tell, wait: () => run.wait(label, 15 * 60e3),
       go: (y) => y.t.lpRemove({ walletPriv: y.priv, ...args, fee: 0n, selfSettle: y.selfSettle, waitOpts: y.waitOpts }) };
     try { await proveOr({ ...spec, offer: false, relayed: () => t.lpRemove({ walletPriv: priv, ...args, waitOpts: run.wait(label, 15 * 60e3) }) }); }
     catch (e1) {
@@ -10924,12 +10935,17 @@ function renderPrecision(el) {
   go.onclick = () => busy(go, async (run) => {
     const z = q;
     if (!z || !lossOk(ackBox, z.loss)) return;
+    let sent = false;
     try {
       const hash = await pubSend(x, z, mode, status);
+      sent = true;
       [ethIn, tacIn].forEach((i) => i && clearField(i)); delete acked['pf-ackv'];
       await done(hash, 'Staking', 'Staked.');
       toast('Staked. TAC is streaming to you.');
-    } catch (e) { txFail(run, status, e); }
+    } catch (e) {
+      txFail(run, status, e);
+      if (sent) { q = null; run.release(true); }                 // the form is empty and this quote is spent: nothing to press until an amount is typed
+    }
   });
 
   const st = $('#pf-stake');
@@ -11194,7 +11210,7 @@ async function ownCreditCovers(type = 'wrap') {
 // A proof that does not come back gives the index back and returns null, and the holder is asked as ever.
 async function proveWithCredit({ run, t, p, plan, prover, tell, pub, priv }) {
   const index = t.nextShareIndex({ walletPriv: priv, poolId: p.poolId, owned: await scanOwned(),
-    used: [...zapsKept().filter((x) => x.pub === pub && x.poolId === p.poolId), ...(await vouchers()).list(pub, lpTicker(p.poolId))].map((x) => x.index) });
+    used: [...zapsKept().filter((x) => x.pub === pub && x.poolId === p.poolId), ...(await vouchers()).list(pub, lpTicker(p.poolId))].map((x) => x.index).concat(marketPendingIdx(pub, p.poolId)) });
   const built = t.buildShareWrap({ walletPriv: priv, poolId: p.poolId, shares: plan.shares, index });
   tell('Tacit’s prover is taking longer than usual, so your own Succinct credit proves it, about a minute. Nothing has left your wallet yet…');
   try {
@@ -11229,7 +11245,7 @@ async function marketOffer() {
 // passes the total; the holder's TAC moves only when the pool accepts a proof. Turning it off here forgets the key, so nothing more can be signed.
 const tankKey = (owner) => 'tacit-market-tank-v1:' + String(owner).toLowerCase();
 function tankRec(owner) {
-  try { const r = JSON.parse(localStorage.getItem(tankKey(owner)) || 'null'); return r && Number(r.tank.expiry) > Math.floor(Date.now() / 1000) + 1800 ? r : null; } catch { return null; }   // an order lives 25 minutes: the tank must outlive it
+  try { const r = JSON.parse(localStorage.getItem(tankKey(owner)) || 'null'); return r && Number(r.tank.expiry) > chainNow() + 1800 ? r : null; } catch { return null; }   // an order lives 25 minutes: the tank must outlive it
 }
 const tankSave = (owner, r) => { try { localStorage.setItem(tankKey(owner), JSON.stringify(r)); } catch { /* a convenience: the next proof asks again */ } };
 function marketTankOff(owner) { try { localStorage.removeItem(tankKey(owner)); } catch { /* */ } }
@@ -11249,7 +11265,7 @@ async function marketTank({ q, status }) {
     }
   }
   const priv = secp.utils.randomPrivateKey(), delegate = '0x' + bytesToHex(keccak_256(secp.getPublicKey(priv, false).slice(1)).slice(-20));
-  const perOp = (q.max * 3n) / 2n, tank = pm.buildTank({ payer: q.owner, delegate, cap: perOp * 5n, perOpMax: perOp, ttlSecs: 7 * 86400 });
+  const perOp = (q.max * 3n) / 2n, tank = pm.buildTank({ payer: q.owner, delegate, cap: perOp * 5n, perOpMax: perOp, ttlSecs: 7 * 86400, now: chainNow() });
   let tankSignature;
   if (payer() === 'tacit') {
     const sig = secp.sign(hexToBytes(strip(pm.tankDigest(tank))), hexToBytes(strip(S.acct.priv)));
@@ -11265,7 +11281,7 @@ async function marketTank({ q, status }) {
 // it. The first time asks for two signatures (the tank and its permit); after that the session key signs and nothing is asked.
 async function postMarketOrder({ built, q, status }) {
   const pm = await marketMod(), inputs = pm.wrapOrderInputs(built), rec = await marketTank({ q, status });
-  const intent = pm.buildIntent({ payer: q.owner, publicValues: inputs.publicValues, floor: q.floor, max: q.max > BigInt(rec.tank.perOpMax) ? BigInt(rec.tank.perOpMax) : q.max, rampSecs: 90, ttlSecs: 1500, now: Math.floor(Date.now() / 1000) + 30, tank: pm.tankDigest(rec.tank) });   // the price holds at its floor for 30 s (the deposit and the proof take about that), then rises over 90 s
+  const intent = pm.buildIntent({ payer: q.owner, publicValues: inputs.publicValues, floor: q.floor, max: q.max > BigInt(rec.tank.perOpMax) ? BigInt(rec.tank.perOpMax) : q.max, rampSecs: 90, ttlSecs: 1500, now: chainNow() + 30, tank: pm.tankDigest(rec.tank) });   // the price holds at its floor for 30 s (the deposit and the proof take about that), then rises over 90 s
   const sig = secp.sign(hexToBytes(strip(pm.intentDigest(intent))), hexToBytes(rec.delegatePriv));
   const signature = '0x' + sig.r.toString(16).padStart(64, '0') + sig.s.toString(16).padStart(64, '0') + (27 + sig.recovery).toString(16);
   const order = { ...pm.buildOrder({ intent, signature, permit: rec.permit, publicValues: inputs.publicValues, memos: inputs.memos, tank: rec.tank, tankSignature: rec.tankSignature }), stdin: inputs.stdin };
@@ -11299,7 +11315,9 @@ async function marketPickup() {
       v.put(pub, { ...lpRec(p.poolId, built, { size: null, by: 'market' }), memos: p.memos, status: 'ready', publicValues: back.publicValues, proof: back.proof });
     } catch { keep.push(p); }
   }
-  marketPendingSave(keep);
+  // an order added while this waited on the network is kept too
+  const seen = new Set(all.map((x) => x.opId));
+  marketPendingSave([...keep, ...marketPendingList().filter((x) => !seen.has(x.opId))]);
 }
 const ZAPWAY = { cb: null, then: null };
 function zapWay({ tell, inflight = null, down = false, then = null, market = null }) {
@@ -11360,7 +11378,7 @@ async function zapNow({ run, p, z, status, bond = true, clear = () => {}, moved 
           run.take(kDep(c.built));
           ZAP_LIVE++; guarded = true; built = c.built;
           const r = await zapShareFirst({ run, t, p, built: c.built, index: c.index, shares: plan.shares, maxEth: z.wei + z.wei / 50n, tokenB, from, tell, status, proven: c.proven, bond });
-          hash = r.hash; landed = true;
+          hash = r.hash; rec = r.rec; landed = true;
           if ((await zapFinish(run, p, r.rec, c.built, tell, status, { bond })) === 'landing') throw Object.assign(new Error('Your zap landed, but the pool does not show it yet. Press Finish it in a minute to put its share in the farm.'), { said: true });
           clear();
           return;
@@ -11387,7 +11405,7 @@ async function zapNow({ run, p, z, status, bond = true, clear = () => {}, moved 
           proven: { publicValues: x.publicValues, proof: x.proof, memos: x.memos }, bond });
         v.drop(pub, x.depositId);
         refillSoon();
-        hash = r.hash; landed = true; built = kept;
+        hash = r.hash; rec = r.rec; landed = true; built = kept;
         if ((await zapFinish(run, p, r.rec, kept, tell, status, { bond })) === 'landing') throw Object.assign(new Error('Your zap landed, but the pool does not show it yet. Press Finish it in a minute to put its share in the farm.'), { said: true });
         clear();
         return;
@@ -11412,7 +11430,7 @@ async function zapNow({ run, p, z, status, bond = true, clear = () => {}, moved 
       run.take(kDep(built));
       ZAP_LIVE++; guarded = true;
       const r = await zapShareFirst({ run, t, p, built, index, shares: plan.shares, maxEth: z.wei + z.wei / 50n, tokenB, from, tell, status, bond });
-      hash = r.hash; landed = true;
+      hash = r.hash; rec = r.rec; landed = true;
       if ((await zapFinish(run, p, r.rec, built, tell, status, { bond })) === 'landing') throw Object.assign(new Error('Your zap landed, but the pool does not show it yet. Press Finish it in a minute to put its share in the farm.'), { said: true });
       clear();
       return;
@@ -11443,7 +11461,7 @@ async function zapNow({ run, p, z, status, bond = true, clear = () => {}, moved 
     if (hash && !landed && (/reverted/.test(e?.message || '') || e?.dropped)) zapDone(built.depositId);   // nothing went in: nothing to finish
     if (e?.dropped && built) t.releaseShareIndex({ walletPriv: priv, poolId: p.poolId, index: built.index });   // a kept proof's index stays with its voucher
     // once the share is a private note the zap's record is gone (and Finish it with it): the note waits under Your private farming
-    if (landed && !e?.offered) e = Object.assign(new Error(rec?.settled ? `Your share is a private note: ${errText(e)} Farm it from Your private farming.` : `Your zap landed and its share is safe: ${errText(e)} Press Finish it to make it private and farm it.`), { said: true });
+    if (landed && !e?.offered && !e?.said) e = Object.assign(new Error(rec?.settled ? `Your share is a private note: ${errText(e)} Farm it from Your private farming.` : `Your zap landed and its share is safe: ${errText(e)} Press Finish it to make it private and farm it.`), { said: true });
     if (e?.pending && pendingSent(status, e)) { run.release(true); return; }   // sent, not confirmed: the button stays off, and the zap's record waits to be finished
     run.fail(status, e);
     await Promise.allSettled([scanPrivate(true)]); rerender('farm');
@@ -11567,7 +11585,7 @@ async function zapShareFirst({ run, t, p, built, index, shares, maxEth, tokenB, 
 // With `bond` false the share stays a private LP note, earning the pool's fees, to farm, send on or take out later.
 // → 'landing' (the zap has not landed yet), 'gone' (it never will: reverted, or replaced and past its deadline) or 'done'.
 async function zapFinish(run, p, rec, built, tell, status, { bond = true } = {}) {
-  const t = await getUx(), priv = walletPriv();
+  const t = await getUx(), priv = walletPriv(), here = !!built;   // a zap that landed in this press hands its note over, and the scan may lag the block
   built ||= t.buildShareWrap({ walletPriv: priv, poolId: rec.poolId, shares: BigInt(rec.shares), index: rec.index });
   const leaf = String(built.leaf).toLowerCase(), held = () => (P.scan?.notes || []).find((n) => String(n.leaf).toLowerCase() === leaf);
   await scanIfNew().catch(() => {});
@@ -11594,7 +11612,7 @@ async function zapFinish(run, p, rec, built, tell, status, { bond = true } = {})
   }
   zapDone(rec.depositId); rec.settled = true;
   let note = held();
-  for (let i = 0, n = st === 1n ? 8 : 1; i < n && !note; i++) { await scanPrivate(true).catch(() => {}); note = held(); if (!note && i < n - 1) await sleep(4000); }
+  for (let i = 0, n = st === 1n || here ? 8 : 1; i < n && !note; i++) { await scanPrivate(true).catch(() => {}); note = held(); if (!note && i < n - 1) await sleep(4000); }
   if (!bond && note) {
     tell(html`<span class="ok">Your ${pairName(p.pair)} share is a private note.</span> It earns the pool’s fees; farm it for TAC from Your private farming.`);
     toast('Your share is private');
@@ -11620,7 +11638,7 @@ async function stepBond(run, p, notes, tell, status) {
   let r = null;
   for (const [i, n] of mine.entries()) {
     tell(`${!ownNow(['farmbond']) ? 'The relay is' : devOn() ? 'This computer is' : 'Your credit is'} putting your share in the farm${mine.length > 1 ? ` (${i + 1} of ${mine.length})` : ''}…`);
-    r = await proveOr({ run, types: ['farmbond'], label, sheet: 'farm', status: () => status, tell, wait: () => run.wait(label, 20 * 60e3),
+    r = await proveOr({ run, types: ['farmbond'], label, sheet: 'farm', status: statusLine(status), tell, wait: () => run.wait(label, 20 * 60e3),
       then: 'In the farm: TAC streams to your private position.', after: () => Promise.allSettled([loadPositions(), loadFarms(true, { private: true })]).then(() => rerender('farm')),
       go: (y) => y.t.farmBond({ walletPriv: y.priv, lpNote: n, selfSettle: y.selfSettle, waitOpts: y.waitOpts }),
       relayed: () => t.farmBond({ walletPriv: priv, lpNote: n, waitOpts: run.wait(label, 20 * 60e3) }) });
@@ -11669,7 +11687,12 @@ const noteExact = (k, v) => freeNotes(P.scan?.[k]?.notes).some((n) => BigInt(n.v
 function joinFresh(kS, Zin, fr, rIn, rOut, feeBps, fee) {
   const s2 = noteExact(kS, Zin) ? 0n : fee;
   let s1 = fee, z = zapSize(Zin - s1 - s2, fr, rIn, rOut, feeBps);
-  if (z && noteExact(kS, z.x)) { s1 = 0n; z = zapSize(Zin - s2, fr, rIn, rOut, feeBps); }
+  // a note of the swap's size is made already (a stopped join's): it is swapped whole at that size, and the cut it saves goes to the note that pairs
+  if (z && noteExact(kS, z.x)) {
+    s1 = 0n;
+    const c = cutSwap(z.x, fr, rIn, rOut, feeBps), keep = Zin - s2 - z.x;
+    z = c && { ...c, add: keep < c.pair ? keep : c.pair };
+  }
   return { z, s1, s2 };
 }
 // ... or two notes already made for it (a stopped join's), spent whole: one to swap and one that pairs with what it returns
@@ -13595,6 +13618,8 @@ const hxAsset = (k) => (k === 'ether' ? HX_ETHER : k === 'wtac' ? HX_WTAC : swap
 const hxUnits = () => parseUnits(HX.amt, hxDec());
 const hxHeld = () => (S.key && P.scan ? spendable('eth') : null), hxHeldTac = () => (S.key && P.scan ? spendable('tac') : null);
 const hxTwo = (units) => HX.from === 'ether' && !(units && hxHeld() >= units);
+// How the Earn card gets the wallet's ETH in: 'zap' (one transaction), 'wrap' (made private first) or null (the private tETH the key holds is joined). LP only always zaps: a join ends bonded.
+const hxEarnHow = (units) => (HX.lp && HX.from === 'ether' ? 'zap' : hxTwo(units) ? (HX.earnWay === 'wrap' ? 'wrap' : 'zap') : null);
 const hxDraft = (d) => { HX.draft = { ...d, at: Date.now() }; };
 function hxLive(mode) {
   if (HX.draft && Date.now() - HX.draft.at > 10 * 60e3) HX.draft = null;
@@ -13644,7 +13669,8 @@ function hxWrapAhead(units) {
   getUx().then((t) => t.relay.hold()).catch(() => {});
   hxWaT = setTimeout(async () => {
     // not under an open sheet: the wrap form there asks for its own, and one proof is made at a time
-    if (hxUnits() !== units || !hxWrapMode() || document.querySelector('dialog[open]') || !(await relayProving())) return;
+    const stale = () => hxUnits() !== units || !hxWrapMode() || !!document.querySelector('dialog[open]');
+    if (stale() || !(await relayProving()) || stale()) return;
     const p = proveAhead('cETH', units * E10, { relay: true });
     if (p) { hxQuote(); p.then(() => hxQuote(), () => {}); }
   }, 1500);
@@ -13655,14 +13681,14 @@ const hxWrapSay = (units, tip) => ({ out: units ? fmt(units, 8, 6) : null, go: '
     ['Chain sees', `your ${fmt(units, 8, 6)} ETH going in`]] : [] });
 const hxWarm = () => { if (Date.now() - (HX.warm || 0) < 10e3) return; HX.warm = Date.now(); gasNow(); getUx().then((t) => t.quoteOpFee('cETH', 'route')).catch(() => {}); };
 const hxWarmWrap = () => { if (!S.key || Date.now() - (HX.warmWrap || 0) < 60e3) return; HX.warmWrap = Date.now(); getUx().then((t) => t.warmWrapLogs?.()).catch(() => {}); };
-// What a private pool's liquidity earned in trading fees over its last week, as a year's rate (pool-ux poolFeeApr), read once and kept half an hour.
+// What a private pool's liquidity earned in trading fees over its last week, as a year's rate (pool-ux poolFeeApr), read once and kept half an hour; a read that gave none is asked again in a minute, the last rate standing meanwhile.
 const FEEAPR = {};
 async function feeAprOf(p) {
   const c = FEEAPR[p.pid];
-  if (c && Date.now() - c.at < 30 * 60e3) return c.v;
+  if (c && Date.now() - c.at < c.ttl) return c.v;
   const v = await getUx().then((t) => t.poolFeeApr(p.poolId)).catch(() => null);
-  FEEAPR[p.pid] = { v, at: Date.now() };
-  return v;
+  FEEAPR[p.pid] = { v: v ?? c?.v ?? null, at: Date.now(), ttl: v == null ? 60e3 : 30 * 60e3 };
+  return FEEAPR[p.pid].v;
 }
 // ── What a press on the Earn tab would do, priced for the card to go in place, as the farm sheet's form prices it: a join with the key's private tETH or TAC is the sheet's own plan
 // (joinOnePlan, joinPairPlan: one side with half swapped inside the pool, or both at the pool's ratio), a deposit into the public farm its own preview (pubPreview). ──
@@ -13707,7 +13733,7 @@ const hxPair = (on) => { HX.pair = on; if (on && HX.from === 'tac') { HX.ern = '
 async function hxPubQuote(units) {
   const mode = HX.from === 'wtac' ? 'tac' : 'eth', who = S.address, amt = units * E10;
   let x = FARM.precision;
-  if (x?.who !== who) x = await loadPrecision();
+  if (x?.who !== who || Date.now() - (x.at || 0) > 30e3) x = await loadPrecision().catch(() => (x?.who === who ? x : null));          // a wallet topped up since is read afresh
   if (!x || x.who !== who) throw new Error('The farm could not be read. Try again in a moment.');
   return { mode, units, who, x, at: Date.now(), q: await pubPreview(x, mode, mode === 'eth' ? amt : 0n, mode === 'tac' ? amt : 0n) };
 }
@@ -13722,7 +13748,7 @@ async function hxFarms(amt) {
   const [, prog] = await Promise.all([FARM.precision || loadPrecision(), HX.program ||= loadProgram().catch(() => FARM.program)]);
   if (!prog) HX.program = null;
   const out = [], x = FARM.precision, src = HX.from, tacSrc = src === 'wtac' || src === 'tac', live = !!FARM.program?.epoch?.active;
-  const zapping = hxTwo(amt > 0 ? BigInt(Math.round(amt * 1e8)) : 0n) && HX.earnWay !== 'wrap';
+  const zapping = hxEarnHow(amt > 0 ? BigInt(Math.round(amt * 1e8)) : 0n) === 'zap';
   const eth = tacSrc ? amt * (x?.tacEth || 0) : amt;
   const lpOnly = HX.lp && src === 'ether';
   if (!lpOnly && (src === 'ether' || src === 'wtac') && x?.supply) {
@@ -13800,9 +13826,9 @@ function hxSendWalletQuote(units) {
 }
 async function hxSendDevQuote(units) {
   const p = hxPayP(), out = hxRcptKind() === 'eth', held = S.key ? devBal(p.slug, S.key.pubHex) : null, show = (v) => `${fmt(v, p.dec, p.dp ?? (p.dec === 6 ? 2 : 4))} ${p.sym}`;
-  const fee = await hxDevFee(p), cap = fee ? (fee * 5n) / 4n : 0n, over = held != null && units + cap > held;
+  const self = !!(p.chain ? DEV.self : TK.self), fee = self ? 0n : await hxDevFee(p), cap = fee ? (fee * 5n) / 4n : 0n, over = held != null && units + cap > held;
   return { warn: over, line: over ? `You hold ${show(held)} here${fee ? `, and the relay’s fee comes out of it` : ''}.` : '',
-    rc: over ? [] : [['They get', `${show(units)}${out ? ' at that address' : ''}`], fee ? ['Relay fee', `about ${show(fee)}`, '', `Paid in ${p.sym}, out of your private balance`] : ['Relay fee', `in ${p.sym}`, '', 'Shown before you send'], ...hxSendSees()] };
+    rc: over ? [] : [['They get', `${show(units)}${out ? ' at that address' : ''}`], self ? ['Sent from', `${your()}, no relay fee`, '', 'The relay did not take the last one, so your wallet sends this and pays the network fee'] : fee ? ['Relay fee', `about ${show(fee)}`, '', `Paid in ${p.sym}, out of your private balance`] : ['Relay fee', `in ${p.sym}`, '', 'Shown before you send'], ...hxSendSees()] };
 }
 async function hxSendQuote(units) {
   if (hxSendWallet()) return hxSendWalletQuote(units);
@@ -13892,6 +13918,21 @@ function hxSendRead() {
   (HX.send === 'btc' ? loadBtc() : loadHeld()).then(drawn, () => {});
 }
 let hxRcT = 0, hxRcSeq = 0;
+// What a payments pool takes as a recipient: a Tacit address with a pool lane, a name whose record has one, or a pool address (bp1…). The private send's resolver wants an Ethereum-lane key, which a pool
+// address and a pool-only Tacit address have none of. → the resolver's shape ({ name?, address, pubHex? }) with `bp`, the pool address; a name with no record at all throws as the resolver does, to be paid at its address.
+async function hxPoolRcpt(raw) {
+  const bad = (message, code = 'bad-recipient') => Object.assign(new Error(message), { code });
+  if (/^bp1/i.test(raw)) { try { poolKeysOf(raw); } catch { throw bad('That pool address is not whole'); } return { address: raw, bp: raw.toLowerCase() }; }
+  const d = await devResolve(raw);
+  if (d.error) {
+    if (/^tacit1/i.test(raw)) throw bad(d.error);
+    await resolveToM(raw);
+    throw bad(d.error, 'no-pool');
+  }
+  let pubHex = null;
+  try { const e = decodeTacitAddress(String(d.id).toLowerCase()).lanes.evm; pubHex = e ? bytesToHex(e.ownerPub) : null; } catch { }
+  return { name: /^tacit1/i.test(raw) ? null : d.label, address: d.id, pubHex, bp: d.bp };
+}
 function hxRcptCheck() {
   clearTimeout(hxRcT);
   const raw = HX.rcpt, el = $('#hx-rc'), my = ++hxRcSeq;
@@ -13901,23 +13942,32 @@ function hxRcptCheck() {
   // what the check said of a whole name or address it cannot pay holds the button (said under the field, once)
   if (HX.rcBad) { HX.rcBad = false; hxHave(); }
   if (HX.rcName && HX.rcName.raw !== raw) HX.rcName = null;
+  if (HX.rcBtc && HX.rcBtc.raw !== raw) HX.rcBtc = null;
   const show = (warn, view) => { if (my !== hxRcSeq || !el.isConnected) return; mount(el, view); el.classList.toggle('warn', warn); el.hidden = false; if (warn !== !!HX.rcBad) { HX.rcBad = warn; hxHave(); } };
   const outTo = (a) => show(false, html`${a.name} has no Tacit address, so it is paid at <span class="mono">${short(a.address, 10)}</span>, out of the pool`);
   if (hxNamed(raw) && !HX.ask && !hxSendBtc()) return hxSendWallet() ? show(false, html`${HX.rcName.name} has no Tacit address, so it is sent to <span class="mono">${short(HX.rcName.address, 10)}</span>, publicly`) : outTo(HX.rcName);
-  if (!raw || HX.ask || hxSendBtc() || hxRcptKind()) return;
+  // a name sent Bitcoin is read here too, so where it points is shown before the press; the other Bitcoin forms say what they are
+  const btcName = hxSendBtc() && /\.(eth|wei|gwei)$/i.test(raw), pool = hxSendWallet() || !!hxPayP();
+  if (!raw || HX.ask || (hxSendBtc() && !btcName) || hxRcptKind()) return;
   hxRcT = setTimeout(() => {
+    if (btcName) {
+      return btcRouteM(raw, HX.send === 'tacb' ? (BTC.held || []).find((a) => a.id === TAC_BTC_ID) || null : null).then((r) => {
+        if (my !== hxRcSeq) return;
+        HX.rcBtc = { raw, address: r.address };
+        show(false, html`${r.name} → <span class="mono">${r.shown}</span> · ID <b class="num">${addressId(r.address)}</b>`);
+      }, (e) => show(true, html`${errText(e)}`));
+    }
     // a Tacit address paid into a payments pool needs its payments lane: read from the address itself, before anything is looked up
-    if ((hxSendWallet() || hxPayP()) && /^tacit1/i.test(raw)) { try { if (!decodeTacitAddress(raw.toLowerCase()).lanes.pool) return show(true, html`This Tacit address is from before pool payments, so it cannot receive in this pool yet. Pay it from the Tacit pool tab instead.`); } catch {} }
-    resolveToM(raw).then((r) => {
+    if (pool && /^tacit1/i.test(raw)) { try { if (!decodeTacitAddress(raw.toLowerCase()).lanes.pool) return show(true, html`This Tacit address is from before pool payments, so it cannot receive in this pool yet. Pay it from the Tacit pool tab instead.`); } catch {} }
+    (pool ? hxPoolRcpt(raw) : resolveToM(raw)).then((r) => {
       if (String(r.pubHex).replace(/^0x/, '').toLowerCase() === S.key?.pubHex) return hxSendWallet() ? show(false, html`Your own Tacit address: it goes into your private ${hxSendOf()[1]}`) : show(true, html`That is your own Tacit address.`);
       const to = r.address || (/^(tacit1|bp1)/i.test(raw) ? raw : '');
       if (!to && !r.name) return;
       HX.rcRes = { raw, r };
       show(false, html`${r.name ? html`${r.name} → ` : ''}<span class="mono">${short(to, 10)}</span>${to ? html` · ID <b class="num">${addressId(to)}</b>` : ''}`);
-      // paid into a payments pool (a wallet coin's deposit, or a payments pool's send): the address must take payments there
-      if ((hxSendWallet() || hxPayP()) && !/^bp1/i.test(raw)) devResolve(raw).then((d) => { if (my === hxRcSeq && d.error) show(true, html`${d.error}`); }, () => {});
     }, (e) => {
-      if (e?.code === 'bad-recipient') return show(full, html`${/^bp1/i.test(raw) ? 'That is a pool address (bp1…), which takes ETH paid in from a wallet. A private send needs a tacit1… address or a name.' : /^tacit1/i.test(raw) ? 'That Tacit address is not whole or has a typo. Paste it again.' : 'That is not a Tacit address or a name. Use tacit1…, name.wei or 0x….'}`);
+      if (e?.code === 'no-pool') return show(true, html`${e.message}`);
+      if (e?.code === 'bad-recipient') return show(full, html`${/^bp1/i.test(raw) ? (pool ? 'That pool address (bp1…) is not whole or has a typo. Paste it again.' : 'That is a pool address (bp1…), which takes ETH paid in from a wallet. A private send needs a tacit1… address or a name.') : /^tacit1/i.test(raw) ? 'That Tacit address is not whole or has a typo. Paste it again.' : 'That is not a Tacit address or a name. Use tacit1…, name.wei or 0x….'}`);
       // a name with no Tacit address is paid at its Ethereum address, out of the pool, where what is sent can go there
       if (e?.code === 'no-record' && !hxIsLp()) {
         return nameAddrM(raw).then((a) => {
@@ -13947,7 +13997,7 @@ function hxRecentPaint() {
   const view = html`<span class="quick">${me ? html`<button type="button" data-hxto="${me}" title="Your own Tacit address: private to you">Me</button>` : ''}${list.map((to) => html`<button type="button" data-hxto="${to}" title="${to}">${to.length > 22 ? short(to, 8) : to}</button>`)}</span>${list.length ? html`<button class="link" type="button" data-hxto-clear>clear</button>` : ''}`;
   if (el.__h === view.s) return;
   el.__h = view.s; mount(el, view);
-  for (const b of $$('[data-hxto]', el)) b.onclick = () => { const r = $('#hx-rcpt'); if (!r) return; r.value = b.dataset.hxto; r.dispatchEvent(new Event('input')); r.focus(); };
+  for (const b of $$('[data-hxto]', el)) b.onclick = () => { const r = $('#hx-rcpt'); if (!r) return; r.value = b.dataset.hxto; hxSelfOff(); r.dispatchEvent(new Event('input')); r.focus(); };
   const clr = $('[data-hxto-clear]', el);
   if (clr) clr.onclick = () => { try { localStorage.removeItem(HX_RECENT); } catch {} hxRecentPaint(); };
 }
@@ -13971,6 +14021,8 @@ function hxSendGo() {
   if (hxSendFit() || HX.rcBad) return;
   if (!hxUnits() && (!HX.rcpt || !hxSendBtc())) return hxAskAmt();
   if (!HX.rcpt && !hxSendBtc()) return hxAskTo();
+  // a name is read again at the press (it was read when typed): one that points elsewhere now stops here
+  if (!HX.rcPin && (hxNamed() || hxPoolNamed())) { hxSendPin().then((ok) => { if (!ok) return; HX.rcPin = true; try { hxSendGo(); } finally { HX.rcPin = false; } }); return; }
   const k = HX.send, u = hxUnits(), amt = u ? plain(u, hxDec()) : HX.amt, to = hxRcptKind() === 'eth' ? hxTo() : HX.rcpt;
   HX.draft = null;
   hxRecentAdd(HX.rcpt);
@@ -14011,6 +14063,24 @@ function hxSendGo() {
   (k === 'tac' ? TACSEND : CSEND).pick = k;
   openLink(k === 'tac' ? 'tac' : 'borrow');
 }
+// A name paid into a payments pool, as its pool address was shown
+const hxPoolNamed = () => (hxSendWallet() || !!hxPayP()) && !hxNamed() && HX.rcRes?.raw === HX.rcpt && !!HX.rcRes.r?.bp && /\.(eth|wei|gwei)$/i.test(HX.rcpt);
+// The name's address read again: → whether it still points where the check showed. If not, what was shown is dropped, the check is drawn again and the press stops with a word under the button.
+async function hxSendPin() {
+  const raw = HX.rcpt, named = hxNamed(), was = String(named ? HX.rcName.address : HX.rcRes.r.bp).toLowerCase(), who = named ? HX.rcName.name : raw;
+  let ok = false;
+  await hxSendRun(async () => {
+    const st = HX.ss;
+    try {
+      say(st, 'Checking where it points…');
+      const now = named ? (await nameAddrM(raw, null, true))?.address : await devResolve(raw).then((d) => { if (d.error) throw new Error(d.error); return d.bp; });
+      if (String(now || '').toLowerCase() === was) { say(st, ''); ok = true; return; }
+      HX.rcName = null; HX.rcRes = null; $('#hx-rcpt')?.dispatchEvent(new Event('input'));
+      say(st, html`<span class="err">${who} points somewhere else now. Check it and press again.</span>`);
+    } catch (e) { sayErr(st, e); }
+  });
+  return ok;
+}
 // Whatever the Send or Bridge tab does in place runs under its button, saying each step in one line kept across repaints (HX.ss); the button stays busy until it is over, and the line is
 // left standing until the next amount is typed (or another coin or way is picked).
 const hxSsKey = () => (HX.tab === 'send' ? `send:${HX.send}` : `${HX.tab}:${HX.br}`);
@@ -14030,6 +14100,8 @@ async function hxSendRun(job) {
 // What a send leaves behind once it is going or over: the amount emptied (the recipient stays, to pay again), the quote and balances drawn afresh
 const hxSendClear = () => { HX.amt = ''; const a = $('#hx-amt'); if (a) a.value = ''; hxTyped(true); };
 const hxSendAfter = () => { HX.q = null; hxQuote(); hxBalPaint(); dashSoon(); };
+// A relay that failed a withdrawal sends the next press from the wallet (DEV.self, TK.self); the person changing the amount or the recipient starts over with the relay
+const hxSelfOff = () => { if (HX.tab !== 'send' || HX.sending || !(DEV.self || TK.self)) return; DEV.self = TK.self = false; if (HX.ss) say(HX.ss, ''); hxQuoteSoon(true); };
 // The Send tab's pool payments, from the tab: tETH, TAC, cUSD, cBTC or wTAC to a Tacit address or a name (stealthSendNow, what the sheets' send forms do), or out of the pool to an
 // Ethereum address (unwrapNow for tETH, assetOutNow for the rest). The quote is read again at the press, so what goes is what the card says it costs now; a relay fee that has gone up since is shown first.
 async function hxSendPoolGo(k, units, raw, out) {
@@ -14045,14 +14117,14 @@ async function hxSendPoolGo(k, units, raw, out) {
         if (k === 'eth') await unwrapNow({ run, x: { units, fee: q.fee, minFee: q.minFee, own: q.own }, raw, status: st, line: () => st, sheet: '', clear: hxSendClear, moved: () => { HX.q = null; hxQuote(); }, after: hxSendAfter });
         else {
           const as = { tac: 'TAC', cusd: 'tacUSD', cbtc: 'tacBTC', rtac: 'wTAC' }[k];
-          await assetOutNow({ run, k, label: `Send ${fmt(units, 8, dp)} ${unit} to ${short(raw, 6)} as ${as}`, units, recipient: recipientOf(raw), as, status: st, line: () => st, sheet: '', clear: hxSendClear, after: hxSendAfter });
+          await assetOutNow({ run, k, label: `Send ${fmt(units, 8, dp)} ${unit} to ${short(raw, 6)} as ${as}`, units, recipient: recipientOf(raw), as, fee: q.fee, own: q.own, status: st, line: () => st, sheet: '', clear: hxSendClear, after: hxSendAfter });
         }
         return;
       }
       const w = seen || await resolveToM(raw);
       if (String(w.pubHex).replace(/^0x/, '').toLowerCase() === S.key?.pubHex) throw Object.assign(new Error('That is your own Tacit address.'), { said: true });
       await stealthSendNow({ run, k, label: `Send ${fmt(units, 8, dp)} ${unit} privately to ${w.name || short(raw, 8)}`, w, raw, units, field, status: st, line: () => st, sheet: '', clear: hxSendClear, after: hxSendAfter });
-    } catch (e) { run.fail(st, e); }
+    } catch (e) { run.fail(st, e); if (e?.feeMoved) { HX.q = null; hxQuote(); } }
   });
 }
 // BTC, or TAC on Bitcoin, sent from the Send tab to a Tacit address, a silent-payment or Bitcoin address or a name (btcSendNow, what the Bitcoin sheet's Send does), the steps said under the button;
@@ -14072,7 +14144,14 @@ async function hxSendBtcGo(k, raw) {
       if (v > avail) return pre('More than you hold.');
       if (!token && v <= SATS_DUST) return pre('Send more than 546 sats.');
       if (token && BTC.sats < ASSET_SEND_SATS) return pre(`A ${unit} send needs about ${Number(ASSET_SEND_SATS).toLocaleString('en-US')} sats at your Bitcoin address for its fees. Add some from Receive.`);
-      const r = await btcRouteM(raw, token), txid = await btcSendNow({ r, raw, v, token, dec, unit, pub, field, status: st });
+      const r = await btcRouteM(raw, token, true);
+      // a name is paid where it was shown to point (hxRcptCheck): one not shown yet, or pointing elsewhere now, stops here and the check is drawn again
+      if (r.name && (HX.rcBtc?.raw !== raw || HX.rcBtc.address !== r.address)) {
+        const seen = HX.rcBtc?.raw === raw;
+        HX.rcBtc = null; field?.dispatchEvent(new Event('input'));
+        return say(st, seen ? `${r.name} points somewhere else now. Check it and press again.` : `Check where ${r.name} points, then press again.`);
+      }
+      const txid = await btcSendNow({ r, raw, v, token, dec, unit, pub, field, status: st });
       hxSendClear();
       toast(`Sent ${fmt(v, dec, 8)} ${unit}`);
       await loadBtc(true).catch(() => {});
@@ -14103,7 +14182,9 @@ async function hxSendLpGo(p, raw) {
 // A wallet coin sent publicly to an Ethereum address, from the paying account, here in the tile: the line under the button follows it.
 async function hxWalletSend(k, to, raw) {
   const [, sym] = hxSendOf(k), token = HX_WTOK[k], dec = HX_WDEC[k] ?? 18, held = hxHeldOf(k)?.[0];
-  if (!raw || (held != null && raw > held)) return;
+  if (!raw) return;
+  if (held != null && raw > held) return hxSendRun(async () => { say(HX.ss, html`<span class="err">More than the ${fmt(held, dec, dec === 6 ? 2 : 4)} ${sym} in ${your()}.</span>`); });
+  const typed = HX.amt, rcpt = HX.rcpt;
   await hxSendRun(async (run) => {
     const status = HX.ss;
     try {
@@ -14113,8 +14194,8 @@ async function hxWalletSend(k, to, raw) {
       say(status, html`Sent ${txLink(h)}. Waiting for it to land…`);
       await waitTx(h, { timeoutMs: 5 * 60e3, chainId: 1 });
       say(status, html`<span class="ok">Sent.</span> ${txLink(h)}`);
-      HX.amt = ''; const a = $('#hx-amt'); if (a) a.value = '';
-      hxRecentAdd(HX.rcpt); hxWalletBals(true); hxTyped();
+      if (HX.amt === typed) { HX.amt = ''; const a = $('#hx-amt'); if (a) a.value = ''; }          // an amount typed for the next send while this landed stays
+      hxRecentAdd(rcpt); hxWalletBals(true); hxTyped();
     } catch (e) { txFail(run, status, e); }
   });
 }
@@ -14200,7 +14281,7 @@ const VE = { p: null, E: null, M: null, VS: null, at: 0, who: null, feedAt: 0, s
 class VaultStop extends Error { constructor() { super('Cancelled in your wallet. Nothing was sent.'); } }
 const veNo = (e) => (swcNo(e)?.userStopped ? new VaultStop() : e);
 const veEsc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => escMap[c]);
-const vaultEng = () => (VE.p ||= Promise.all([import('/vault/engine.js?cb=89d3ad20'), import('/vault/deployments.js?cb=4af96594'), import('/vault/chain.js?cb=fd24e94d'), import('/vault/feed.js?cb=5f8dd137'), import('/vault/math.js?cb=ac1ed53e')])
+const vaultEng = () => (VE.p ||= Promise.all([import('/vault/engine.js?cb=148b91db'), import('/vault/deployments.js?cb=4af96594'), import('/vault/chain.js?cb=872255e6'), import('/vault/feed.js?cb=e8f26c4c'), import('/vault/math.js?cb=ac1ed53e')])
   .then(([eng, { DEPLOYMENTS }, C, Fd, M]) => {
     const A = /^0x[0-9a-fA-F]{40}$/, hint = (h) => (h && ['tac', 'synth', 'oracle', 'feed'].every((k) => A.test(h[k] || '')) ? Object.fromEntries(['tac', 'synth', 'oracle', 'feed'].map((k) => [k, h[k].toLowerCase()])) : null);
     VE.M = M;
@@ -14497,6 +14578,8 @@ const hxMoves = {
   // only while the Swap tab is up: a timer of the card's that fires after another tab is chosen prices and starts nothing
   quote: (key, amt, cb) => {
     if (HX.tab !== 'swap') return;
+    // the line a finished move left under the button (Deposited, an error) is about that amount and pair
+    if ((HXM.key !== key || HX.amt !== amt) && HX.mz?.textContent && SWC.el?.querySelector('#go')?.getAttribute('aria-busy') !== 'true') say(HX.mz, '');
     HXM.cb = (q) => { if (q) cb({ ...q, free: hxMoveFree(), fixed: hxMoveFixed() }); };
     hxMoveSet(key, amt); hxQuote();
   },
@@ -14588,6 +14671,7 @@ const hxQuoteSoon = (() => { let h; return (now) => { clearTimeout(h); h = setTi
 const hxFit = (a) => { if (a) { const n = a.value.length; a.classList.toggle('long', n > 7); a.classList.toggle('longer', n > 10); } };
 function hxTyped(now) {
   HX.seq++; HX.goNext = false; hxFit($('#hx-amt')); hxRememberAmt();
+  if (HX.sent != null) { HX.sent = null; hxGateSync(); }
   if (hxWrapMode()) { const u = hxUnits(), tip = u && hxTipFresh(u) ? HXT.m.get(String(u)).v : null; HX.q = { eth: u ? Number(u) / 1e8 : 0, ...hxWrapSay(u, tip), early: !!u && tip == null }; paintHxQ(); }
   else if (!hxLocal()) { HX.q = { ...(HX.q || {}), busy: true }; paintHxQ(); }
   hxSub(); hxBalPaint(); hxQuoteSoon(now);
@@ -14649,7 +14733,7 @@ async function hxQuote() {
       const priv = rows.filter((r) => r.k !== 'precision' && r.apr != null), calm = priv.filter((r) => r.impact < 0.05);
       const top = calm.reduce((a, r) => (!a || net(r) > net(a) ? r : a), null) || priv.reduce((a, r) => (!a || r.impact < a.impact ? r : a), null);
       if (top && priv.length > 1) top.best = true;
-      const pick = rows.find((r) => r.k === HX.earnPick) || top || rows[0], two = pick.k !== 'precision' && hxTwo(units), zap = two && HX.earnWay !== 'wrap';
+      const pick = rows.find((r) => r.k === HX.earnPick) || top || rows[0], how = pick.k !== 'precision' ? hxEarnHow(units) : null, two = !!how, zap = how === 'zap';
       HX.pool = pick.k;
       if (S.key && /^\d+$/.test(pick.k)) { const lp = (FARM.program?.pools || []).find((x) => String(x.pid) === pick.k); if (lp) lpKeep(lp.poolId); }
       hxReadyRead();
@@ -14657,7 +14741,7 @@ async function hxQuote() {
       // and one not proved yet is asked of the relay once the amount has stood a moment
       const pp = zap && units && S.key ? FARM.program?.pools?.find((x) => String(x.pid) === pick.k) : null, zq = pp ? await zapQuote(pp, units * E10).catch(() => null) : null;
       if (my !== HX.seq) return;
-      HX.zq = zq?.plan ? zq : null; HX.zqFor = pp ? `${pp.pid}:${units}` : null;
+      HX.zq = zq?.plan ? zq : null; HX.zqFor = pp ? `${pp.pid}:${units}` : null; HX.zqBad = !!pp && !zq;
       if (HX.zq) zapAhead(pp, HX.zq, () => HX.zq === zq && HX.tab === 'earn');
       const pub = pick.k === 'precision';
       // what a press does from the key's private tETH or TAC, or into the public farm, priced here so the card can do it itself (a quote kept for the press, with a mark that one was tried)
@@ -14665,14 +14749,14 @@ async function hxQuote() {
       const jq = jp ? await hxJoinQuote(jp, units).catch((e) => ({ err: e })) : null, pq = pa ? await hxPubQuote(units).catch((e) => ({ err: e })) : null;
       if (my !== HX.seq) return;
       Object.assign(HX, { jq, jqFor: jp ? `${jp.pid}:${units}:${hxJoinMode()}` : null, pq, pqFor: pa ? `${HX.from === 'wtac' ? 'tac' : 'eth'}:${units}:${S.address}` : null });
-      for (const r of rows) { r.show = r.apr == null ? '—' : r.apr >= 10 ? Math.round(r.apr).toLocaleString('en-US') + '%' : pctFmt(r.apr); if (r.k !== 'precision') r.note = `private${r.dry ? ' · between reward periods' : ''}${hxTwo(units) && HX.earnWay === 'wrap' ? ' · 2 steps' : ''}${r.impact >= 0.01 ? ` · ${pctFmt(r.impact * 100)} impact` : ''}`; }
+      for (const r of rows) { r.show = r.apr == null ? '—' : r.apr >= 10 ? Math.round(r.apr).toLocaleString('en-US') + '%' : pctFmt(r.apr); if (r.k !== 'precision') r.note = `private${r.dry ? ' · between reward periods' : ''}${hxEarnHow(units) === 'wrap' ? ' · 2 steps' : ''}${r.impact >= 0.01 ? ` · ${pctFmt(r.impact * 100)} impact` : ''}`; }
       const js = jq ? hxJoinSay(jp, jq) : null, ps = pq ? hxPubSay(pq) : null, ex = js || ps;
       const zline = pp && !zq ? 'The zap could not be priced. Try again in a moment.' : zq && !zq.plan ? 'Enter a larger amount: this one is too small to make a share of the pool.'
         : HX.zq?.over ? `More ETH than ${your()} holds, with the network fee. Try Max.` : '';
       // a zap of this key's that is not in the farm yet comes first: the one link is to finish it (found again from the chain on any device)
       zapsRead();
       const waiting = S.key ? zapsKept().filter((z) => z.pub === S.key.pubHex) : [], wp = waiting.length && FARM.program?.pools?.find((x) => x.pid === waiting[0].pid);
-      const way = (w) => () => { HX.earnWay = w; HX.q = null; hxQuote(); };
+      const way = (w) => () => { HX.earnWay = w; HX.goNext = false; HX.q = null; hxQuote(); };
       // LP only: the same zap, its share kept as a private LP note that earns the pool's fees (no bond, so nothing after the one transaction)
       const lpOnly = HX.lp && HX.from === 'ether' && !pub, lpFee = lpOnly ? (HX.zq?.res?.feeBps ?? FARM.program?.pools?.find((x) => String(x.pid) === pick.k)?.reserves?.feeBps ?? 30) / 100 : 0;
       return done({ out: units && !lpOnly ? sig(ex?.day ?? pick.day) : null, rows, pick: pick.k, unit: 'TAC a day', pk: two && !zap ? 'wrap' : null,
@@ -14695,7 +14779,7 @@ async function hxQuote() {
       const [t, ux] = await Promise.all([getUx(), xoUx().catch(() => null)]), a = XA.tac;
       const lim = ux?.assetOf(a.id), fee = await xoFee(t, a), min = lim?.minRaw > 0n ? lim.minRaw : a.min;
       const held = S.key && P.scan ? spendable(a.k) : null, needPrivate = held != null && (units ? units > held : held === 0n);
-      const inRange = !lim || (units >= min && units <= lim.capRaw && units > fee);
+      const inRange = units > fee && (!lim || (units >= min && units <= lim.capRaw));
       const cut = units && held != null && !needPrivate && !freeNotes(P.scan[a.k].notes).some((n) => BigInt(n.value) === units) ? BigInt(await t.quoteOpFee(a.pool, 'transfer')) : 0n;
       const over = cut > 0n && units + cut > held, range = lim ? `${fmt(min, 8, 4)} to ${fmt(lim.capRaw, 8, 4)} TAC` : 'a small amount', fine = !!units && inRange && !over && !needPrivate;
       return done({ out: units ? (inRange && !over ? fmt(units - fee, 8, 4) : '—') : null, go: needPrivate ? 'Make TAC private' : 'Bridge TAC to Bitcoin', needPrivate,
@@ -14710,7 +14794,7 @@ async function hxQuote() {
       const a = XA[HX.xa], [t, ux] = await Promise.all([getUx(), xoUx().catch(() => null)]);
       const lim = ux?.assetOf(a.id), fee = await xoFee(t, a), min = lim?.minRaw > 0n ? lim.minRaw : 0n;
       const held = S.key && P.scan ? spendable(a.k) : null, over = held != null && !!units && units > held;
-      const inRange = !lim || (units >= min && units <= lim.capRaw && units > fee), range = lim ? `${fmt(min, 8, a.dp)} to ${fmt(lim.capRaw, 8, a.dp)} ${a.ticker}` : 'a small amount';
+      const inRange = units > fee && (!lim || (units >= min && units <= lim.capRaw)), range = lim ? `${fmt(min, 8, a.dp)} to ${fmt(lim.capRaw, 8, a.dp)} ${a.ticker}` : 'a small amount';
       const cut = units && held != null && !over && !freeNotes(P.scan[a.k].notes).some((n) => BigInt(n.value) === units) ? BigInt(await t.quoteOpFee(a.pool, 'transfer')) : 0n;
       return done({ out: units ? (inRange && !over ? fmt(units - fee, 8, a.dp) : '—') : null, go: `Bridge ${a.ticker} to Bitcoin`,
         rc: units && (!inRange || over) ? [] : [units ? ['Arrives', `${fmt(units - fee, 8, a.dp)} ${a.ticker} on Bitcoin`] : null, ['Relay fee', `${fmt(fee, 8, Math.max(a.dp, 4))} ${a.ticker}`],
@@ -14720,7 +14804,7 @@ async function hxQuote() {
     if (m === 'btc') {
       const two = hxTwo(units), [t, ux] = await Promise.all([getUx(), xoUx().catch(() => null)]);
       const lim = ux?.assetOf(CETH_ID), fee = BigInt(await t.quoteOpFee('cETH', 'bridgeburn'));
-      const min = lim?.minRaw || 0n, range = lim ? `${fmt(min, 8, 6)} to ${fmt(lim.capRaw, 8, 6)} tETH` : 'a small amount', inRange = !lim || (units >= min && units <= lim.capRaw && units > fee);
+      const min = lim?.minRaw || 0n, range = lim ? `${fmt(min, 8, 6)} to ${fmt(lim.capRaw, 8, 6)} tETH` : 'a small amount', inRange = units > fee && (!lim || (units >= min && units <= lim.capRaw));
       return done({ out: units ? (inRange ? fmt(units - fee, 8, 6) : '—') : null, go: two ? 'Make ETH private' : 'Bridge tETH to Bitcoin', pk: two ? 'wrap' : null,
         rc: units && !inRange ? [] : [units ? ['Arrives', `${fmt(units - fee, 8, 6)} tETH on Bitcoin`] : null, ['Relay fee', `${fmt(fee, 8, 6)} tETH`], ...bridge('tETH', lim, min, 6), two ? ['Steps', 'make the ETH private, then bridge it'] : null],
         warn: !!units && !inRange, line: units && !inRange ? `A bridge takes ${range} while this is new.` : '' });
@@ -14847,7 +14931,7 @@ function hxWalletRead(what, cid, read, who = S.address || '') {
   if (!hit || Date.now() - hit.at > 60e3) {
     const e = { at: Date.now(), v: hit?.v ?? null };
     HXW.set(k, e);
-    read(who).then((v) => { const first = e.v == null; e.v = v; if (HXW.get(k) === e) { hxBalPaint(); } }, () => {});
+    read(who).then((v) => { const first = e.v == null; if (v != null) e.v = v; if (HXW.get(k) === e) { hxBalPaint(); } }, () => {});     // a failed read leaves the last good one
   }
   return HXW.get(k).v;
 }
@@ -14910,14 +14994,18 @@ function hxBalPaint() {
   }
   const [v, dec] = h, typed = hxUnits(), dev = hxPayP(), over = !!typed && v > 0n && (!dev && dec === 18 ? typed * E10 : typed) > v, max = v > 0n && !(HX.tab === 'send' && hxSendBtc());
   const view = html`<button type="button" id="hx-max"${over ? html` class="over"` : ''} ${max ? '' : 'disabled'}>Balance ${fmt(v, dec, dec === 18 ? 4 : 6)}${max ? ' · Max' : ''}</button>`;
-  if (el.__h === view.s) return;
-  el.__h = view.s; mount(el, view);
+  // two coins can read alike (USDC and USDT, 'Balance 12.5 · Max'): the press belongs to this one
+  const key = `${HX.tab}|${src}|${dev?.slug ?? ''}|${v}|${view.s}`;
+  if (el.__h === key) return;
+  el.__h = key; mount(el, view);
   $('#hx-max').onclick = async () => {
+    const tab = HX.tab, pool = HX.pool, stale = () => HX.tab !== tab || HX.pool !== pool || hxAmtSrc() !== src || hxPayP()?.slug !== dev?.slug;
     // into a private farm from private tETH or TAC, the most a join takes is the sheet's (the notes it can spend whole, the relay's fees left out)
     const jp = HX.tab === 'earn' && S.key && P.scan && (HX.from === 'eth' || HX.from === 'tac') && FARM.program?.pools?.find((x) => String(x.pid) === String(HX.pool));
     if (jp) {
       try {
         const t = await getUx(), j = await joinTerms(t, jp), m = joinMax(jp, j, joinSides(jp, HX.from === 'tac' ? 'b' : 'a'), hxJoinMode());
+        if (stale()) return;
         HX.amt = m > 0n ? plain(m, 8) : ''; const a = $('#hx-amt'); if (a) { a.value = HX.amt; a.focus(); }
         hxTyped(true);
         return;
@@ -14925,7 +15013,9 @@ function hxBalPaint() {
     }
     const keep = dev ? await hxDevKeep(dev) : await hxKeep(src), left = v > keep ? v - keep : 0n;
     const units = dev || dec !== 18 ? left : (src === 'ether' && hxWrapMode() ? await wrapMax(v, keep) : left) / E10;
+    if (stale()) return;
     HX.amt = units ? plain(units, hxDec()) : ''; const a = $('#hx-amt'); if (a) { a.value = HX.amt; a.focus(); }
+    hxSelfOff();
     hxTyped(true);
     HX.max = src === 'pp';
   };
@@ -15086,7 +15176,7 @@ function hxPrivOut() {
 // amount (hxUrl), so the link is made here, and shown only once there is an amount.
 function hxShareLink() {
   const u = hxUnits();
-  if (u && HX.tab === 'send' && HX.send) return `${location.origin}/#card=send:${HX.send}&amt=${plain(u, hxDec())}`;
+  if (u && HX.tab === 'send' && HX.send) return HX_SEND.some(([k]) => k === HX.send) ? `${location.origin}/#card=send:${HX.send}&amt=${plain(u, hxDec())}` : null;
   if (!u || HX.tab !== 'earn' || HX.from !== 'ether' || !HX.pool) return null;
   return `${location.origin}/#card=earn:ether:${HX.pool === 'precision' ? 'public' : `p${Number(HX.pool)}`}&amt=${plain(u, 8)}${HX.lp && HX.pool !== 'precision' ? '&lp=1' : ''}`;
 }
@@ -15094,7 +15184,7 @@ function hxShareLink() {
 const hxShareSync = () => {
   const b = $('#hx-copy'), u = hxShareLink();
   if (b) b.hidden = !u;
-  if (!history.replaceState || HX.tab === 'swap') return;
+  if (!history.replaceState || HX.tab === 'swap' || linkNow()) return;                   // an open sheet owns the address
   const h = u ? new URL(u).hash : /^#card=(earn|send|shield):/.test(location.hash) ? '' : location.hash;
   if (location.hash !== h) history.replaceState(null, '', location.pathname + location.search + h);
 };
@@ -15154,6 +15244,7 @@ function paintHxQ() {
     const choose = (b) => {
       for (const x of live) { x.setAttribute('aria-checked', x === b); x.tabIndex = x === b ? 0 : -1; }
       b.focus();
+      HX.goNext = false;
       HX.pool = b.dataset.hxr;
       if (HX.mode === 'earn') HX.earnPick = b.dataset.hxr;
       if (HX.mode === 'tbback' || HX.mode === 'xb') xbOf(hxBackA()).pick = b.dataset.hxr;
@@ -15175,10 +15266,13 @@ function paintHxQ() {
   const go = $('#hx-go');
   if (go && !(HX.tab === 'send' && HX.ask)) go.classList.toggle('priv', hxPrivOut());
   if (!q.busy) { const line = $('#hx-q'); if (line) { line.textContent = q.line || ''; line.classList.toggle('warn', !!q.warn); } if (go && q.go) go.textContent = q.go; }
-  if (HX.goNext && !q.busy && !q.early) { HX.goNext = false; if (!q.failed) setTimeout(hxGo); }
+  if (HX.goNext && !q.busy && !q.early) { HX.goNext = false; if (!q.failed) setTimeout(() => { HX.replay = true; try { hxGo(); } finally { HX.replay = false; } }); }
   // a price move of 15% or more (the box, or the figure typed) is accepted here, under the receipt, and the button waits for it
   const ack = $('#hx-ack');
   if (ack && !q.busy) {
+    // a tick given for one deposit is not carried to another: it goes with a change of pool, source or amount
+    const ctx = [HX.pool, HX.from, HX.lp, HX.amt].join('|');
+    if (HX.ackFor !== ctx) { HX.ackFor = ctx; ack.__h = null; delete acked['hx-ackv']; }
     const g = q.gate >= 15 ? q.gate : 0, view = g ? lossGate('hx-ackv', g, 'deposit') : html``;
     ack.hidden = !g;
     if (ack.__h !== view.s) { ack.__h = view.s; mount(ack, view); if (g) wireAck(ack, 'hx-ackv', g, hxGateSync); }
@@ -15193,7 +15287,7 @@ function paintHxQ() {
 function hxGateSync() {
   const go = $('#hx-go');
   if (!go || HX.zapping || go.getAttribute('aria-busy') === 'true') return;
-  if (!hxGateOk()) { go.disabled = true; go.dataset.gated = '1'; }
+  if (hxSentOn() || !hxGateOk()) { go.disabled = true; go.dataset.gated = '1'; }
   else if (go.dataset.gated) { go.disabled = false; delete go.dataset.gated; }
 }
 OUT.paint = () => paintHxQ();
@@ -15233,7 +15327,7 @@ function hxAskTo() {
 }
 function hxGo() {
   hxNorm();
-  if (HX.zapping) return;
+  if (HX.zapping || Date.now() - (HX.asking || 0) < 90e3) return;
   if (hxNeedsAmt()) return hxAskAmt();
   if (HX.q?.busy) { HX.goNext = true; return; }
   HX.draft = null;
@@ -15243,7 +15337,15 @@ function hxGo() {
   // now, not when a sheet asks. Asked once a visit: declined, the press goes on to the sheet that asks as ever.
   if (!HX.keyAsked && !S.key && !signing && (m === 'private' || m === 'pay' || m === 'paytac' || m === 'paytok' || m === 'tacwrap' || (m === 'earn' && HX.from === 'ether')) && !knownWallet() && !otherWallet()) {
     HX.keyAsked = true;
-    connect({ key: true }).catch(() => {}).then(async () => { if (S.key && m === 'earn') await hxQuote().catch(() => {}); hxGo(); });          // the zap priced for the key, so it goes from this card
+    // presses are ignored while the wallet answers (a minute and a half at most), and the press goes on only if the card is as it was
+    const at = hxPressKey();
+    HX.asking = Date.now();
+    connect({ key: true }).then(() => null, (e) => e).then(async (bad) => {
+      try { if (!bad && S.key && m === 'earn' && hxPressKey() === at) await hxQuote().catch(() => {}); }          // the zap priced for the key, so it goes from this card
+      finally { HX.asking = 0; }
+      if (bad && !walletDeclined(bad)) return hxPressErr(bad);
+      if (hxPressKey() === at) hxGo();
+    });
     return;
   }
   const wrapFirst = (link, label, then, card = null) => { FARM.back = link ? { link, label, at: Date.now(), then, card, amt } : null; hxDraft({ mode: 'wrap', amt }); openLink('private'); };
@@ -15259,7 +15361,7 @@ function hxGo() {
   if (m === 'borrow' && HX.bsrc === 'cbtc') { if (!S.key) return openSheet('wallet'); return hxHeldGo(); }
   if (m === 'borrow' && HX.bsrc === 'tac') {
     // the engine's own borrow: the TAC deposited with it, the missing prices recorded with it (or before it), as on the vault page
-    if (!S.wallet) return void connect().catch(() => {});
+    if (!S.wallet) return void connect().catch(hxPressErr);
     const q = HX.q;
     if (!q?.P || VE.S.busy) return;
     return void hxVaultRun(HX.bm === 'tace' ? 'eth' : 'usd', 'borrow', q.bText);
@@ -15271,12 +15373,13 @@ function hxGo() {
   // Every way in goes from the card itself, its steps said under the button: the public farm (a deposit from the wallet), a private farm from the wallet's ETH (the zap), or from the
   // private tETH or TAC the key holds (a join: half swapped inside the pool, or both sides). The farm sheet keeps what is done with a position once it is there.
   if (m === 'earn') {
+    if (hxSentOn()) return;                                              // one sent and not confirmed: another waits for a change
     if (HX.pool === 'precision' && (HX.from === 'ether' || HX.from === 'wtac')) return void hxPubGo(units);
-    const pid = Number(HX.pool), p = FARM.program?.pools?.find((x) => x.pid === pid);
+    const pid = Number(HX.pool), p = FARM.program?.pools?.find((x) => x.pid === pid), how = hxEarnHow(units);
     if (!Number.isInteger(pid) || !p) return openLink('farm');
-    if (hxTwo(units) && HX.earnWay !== 'wrap') return void hxZapGo(p, units);
+    if (how === 'zap') return void hxZapGo(p, units);
     // made private first: the wrap's sheet, and from it back to this card with the tETH it made
-    if (hxTwo(units)) return wrapFirst(`farm/private-${pid}`, `farm it in ${pairName(p.pair)}`, null, `earn:eth:p${pid}`);
+    if (how === 'wrap') return wrapFirst(`farm/private-${pid}`, `farm it in ${pairName(p.pair)}`, null, `earn:eth:p${pid}`);
     return void hxJoinGo(p, units);
   }
   if (m === 'btc') {
@@ -15291,6 +15394,7 @@ function hxGo() {
 // while it is busy is ignored, so this waits for the card to be free.
 async function hxZapAgain(p, z) {
   for (let i = 0; i < 120 && $('#hx-go')?.getAttribute('aria-busy') === 'true'; i++) await sleep(1000);
+  if ($('#hx-go')?.getAttribute('aria-busy') === 'true') return;                  // still busy: a press while it is would not run, and would end the one that is
   return hxZap(p, z);
 }
 // Whatever the Earn tab does in place runs under its button, saying each step in one line kept across repaints (HX.zs) and in Activity; the button stays busy until it is done.
@@ -15299,26 +15403,42 @@ async function hxEarnRun(job) {
   HX.zs.setAttribute('aria-live', 'polite');
   $('#hx-zs-at')?.replaceWith(HX.zs);
   HX.zapping = true;
+  let ran = null;
   try {
-    await busy($('#hx-go'), job);
+    await busy($('#hx-go'), (run) => { ran = run; return job(run); });
   } finally {
     HX.zapping = false;
+    if (ran?.kept) HX.sent = hxSentKey();                                // sent, not confirmed: the button stays off, as busy kept it
     const g = $('#hx-go'); if (g) { g.removeAttribute('aria-busy'); g.disabled = false; delete g.dataset.gated; hxGateSync(); }
     hxReadyRead();
   }
 }
+// After a press sent and not confirmed, another waits until the amount, the pool or the source is changed (what a repaint shows is not a change)
+const hxSentKey = () => [HX.earnPick, HX.ern, HX.lp, HX.pair, HX.earnWay].join('|');
+const hxSentOn = () => {
+  if (HX.sent != null && HX.mode === 'earn' && HX.sent !== hxSentKey()) HX.sent = null;
+  return HX.sent != null && HX.mode === 'earn';
+};
+// A press that waits on the wallet or a read goes on only if the card is as it was; its failure is said under the button, a wallet's "no" being the person's own
+const hxPressKey = () => [HX.tab, HX.mode, HX.pool, HX.from, HX.sf, HX.sd, HX.amt].join('|');
+function hxPressErr(e) {
+  if (walletDeclined(e)) return;
+  if (HX.tab === 'swap') return sayErr(hxMoveSlot(), e);
+  const q = $('#hx-q'); if (q) { q.textContent = errText(e); q.classList.add('warn'); }
+}
 // A step line left by the last press (done, or stopped) goes when a new amount is typed
 const hxStatusIdle = () => { if (!HX.zapping && HX.zs?.textContent) say(HX.zs, ''); if (!HX.sending && HX.ss?.textContent) say(HX.ss, ''); };
 // What is typed is done with: emptied, its quotes dropped, the card quoting afresh
-const hxEarnClear = () => { HX.amt = ''; HX.pair = false; HX.zq = HX.jq = HX.pq = null; const a = $('#hx-amt'); if (a) a.value = ''; hxTyped(true); };
+const hxEarnClear = () => { HX.amt = ''; HX.pair = false; HX.zq = HX.jq = HX.pq = null; delete acked['hx-ackv']; const a = $('#hx-amt'); if (a) a.value = ''; hxTyped(true); };
 const hxEarnAfter = () => { HX.q = null; hxQuote(); hxPosPaint(); hxBalPaint(); };
 async function hxZap(p, z) {
   if (SP.then?.resume) SP.then = null;                                    // a press made by hand: the Prove sheet is not still waiting to send it
   await hxEarnRun((run) => zapNow({ run, p, z, status: HX.zs, bond: !HX.lp, again: () => hxZapAgain(p, z), moved: () => { HX.q = null; hxQuote(); }, clear: hxEarnClear }));
 }
-// A press whose quote is not this amount's, or is old, quotes again and goes on by itself; one that was quoted and could not be (the line says why) does nothing
-function hxQuoteThen(tried) {
-  if (HX.q?.busy || tried) return;
+// A press whose quote is not this amount's, or is old, quotes again and goes on by itself; one that was quoted and could not be (the line says why) does nothing,
+// unless the read itself failed: the person's next press reads once more, but the replay that follows a read never does
+function hxQuoteThen(tried, failed = false) {
+  if (HX.q?.busy || (tried && !(failed && !HX.replay))) return;
   HX.q = { ...(HX.q || {}), busy: true }; paintHxQ(); HX.goNext = true; hxQuote();
 }
 // The price move of 15% or more the quote asks to be accepted, accepted (the box or typed figure under the receipt)
@@ -15333,7 +15453,7 @@ function hxGateSay() {
 function hxZapGo(p, units) {
   if (!S.key) return openSheet('wallet');
   const z = HX.zq, mine = !!z && z.pid === p.pid && z.wei === units * E10;
-  if (!mine || Date.now() - z.at >= 90e3) return hxQuoteThen(!mine && HX.zqFor === `${p.pid}:${units}`);
+  if (!mine || Date.now() - z.at >= 90e3) return hxQuoteThen(!mine && HX.zqFor === `${p.pid}:${units}`, HX.zqBad);
   if (z.over) return;
   if (!hxGateOk()) return hxGateSay();
   return hxZap(p, z);
@@ -15341,10 +15461,10 @@ function hxZapGo(p, units) {
 // A join of private tETH or TAC: the quote (the sheet's own plan) is this amount's; with nothing typed and the key holding what the farm takes, its most is filled in to look at first
 async function hxJoinGo(p, units) {
   if (!S.key) return openSheet('wallet');
-  if (!P.scan) { scanPrivate().then(() => { if (P.scan) hxGo(); }, () => {}); return; }
+  if (!P.scan) { const at = hxPressKey(); scanPrivate().then(() => { if (P.scan && hxPressKey() === at) hxGo(); }, hxPressErr); return; }
   if (!units) return hxJoinFill(p);
   const jq = HX.jq, mode = hxJoinMode(), mine = !!jq?.sd && jq.pid === p.pid && jq.units === units && jq.mode === mode;
-  if (!mine) return hxQuoteThen(HX.jqFor === `${p.pid}:${units}:${mode}`);
+  if (!mine) return hxQuoteThen(HX.jqFor === `${p.pid}:${units}:${mode}`, !!jq?.err);
   if (!jq.q || jq.q.over || jq.q.gasShort) return;
   if (!hxGateOk()) return hxGateSay();
   const btn = HX.q?.go || 'Farm';
@@ -15361,9 +15481,9 @@ async function hxJoinFill(p) {
 }
 // A deposit into the public farm from the wallet: ETH, or TAC with a permit when it is not approved. Said under the button, then the farm is read again.
 async function hxPubGo(units) {
-  if (!S.address) return void connect().catch(() => {});
+  if (!S.address) return void connect().catch(hxPressErr);
   const pq = HX.pq, mode = HX.from === 'wtac' ? 'tac' : 'eth', mine = !!pq?.q && pq.mode === mode && pq.units === units && pq.who === S.address;
-  if (!mine || Date.now() - pq.at >= 90e3) return hxQuoteThen(!mine && HX.pqFor === `${mode}:${units}:${S.address}`);
+  if (!mine || Date.now() - pq.at >= 90e3) return hxQuoteThen(!mine && HX.pqFor === `${mode}:${units}:${S.address}`, !!pq?.err);
   if (pq.q.over) return;
   if (!hxGateOk()) return hxGateSay();
   await hxEarnRun(async (run) => {
@@ -15373,8 +15493,9 @@ async function hxPubGo(units) {
       const hash = await pubSend(pq.x, pq.q, mode, HX.zs);
       tell(html`Staking… ${txLink(hash)}`);
       await waitTx(hash);
-      tell(html`<span class="ok">Staked.</span> TAC is streaming to you. ${txLink(hash)}`);
-      toast('Staked. TAC is streaming to you.');
+      const live = pq.x.live, says = live ? 'TAC is streaming to you.' : 'It earns once the next reward period starts.';
+      tell(html`<span class="ok">Staked.</span> ${says} ${txLink(hash)}`);
+      toast(`Staked. ${says}`);
       hxEarnClear();
       await loadFarms(true);
       hxEarnAfter();
@@ -15417,6 +15538,7 @@ async function hxUnwrapGo(units) {
   return busy(go, async (run) => {
     try {
       if (!P.scan) await scanPrivate().catch(() => {});                 // what is held is read before it is said to be too little
+      if (P.scan?.reading && units > spendable('eth')) { say(st, 'Reading all your notes…'); await scanDone().catch(() => {}); say(st, ''); }       // a quick read can miss an older note
       const raw = await payingAccount(), t = await getUx(), own = ownNow(['sendunwrap', 'unwrap']), held = spendable('eth'), notes = freeNotes(P.scan?.eth.notes);
       const minFee = own ? 0n : await t.quoteOpFee('cETH', exitKind('eth', units)), fee = own ? 0n : t.quoteUnwrapFee(units, 'cETH', { minFee }).fee;
       const size = own || notes.some((n) => BigInt(n.value) >= units) ? 0n : BigInt(await t.quoteOpFee('cETH', 'transfer'));
@@ -15453,6 +15575,8 @@ async function hxTacPublicGo() {
   SWC.card?.working?.(true);
   return busy(go, async (run) => {
     if (!P.scan) await scanPrivate().catch(() => {});                 // what is held is read before it is said there is none
+    if (P.scan?.reading && !(spendable('tac') > 0n)) { say(st, 'Reading all your notes…'); await scanDone().catch(() => {}); say(st, ''); }       // a quick read can miss an older note
+    if (!P.scan || (P.scan.reading && P.err)) return say(st, html`<span class="err">${overBalance()}</span>`);
     if (!(spendable('tac') > 0n)) return say(st, html`<span class="err">You hold no private TAC.</span>`);
     await tacPublicNow({ run, status: st, line: () => st, sheet: '', after: hxMoveAfter });
   }).finally(() => SWC.card?.working?.(false));
@@ -15472,14 +15596,14 @@ async function hxPoolOutGo(m, amt) {
 // button (`st`); a failure is said here, with what the next press does about it.
 async function poolOutNow({ run, c, dest, amt, to = null, st, clear, after }) {
   const step = (x) => { x = String(x).replace(/relayer/gi, 'relay'); say(st, x[0].toUpperCase() + x.slice(1) + '…'); };
-  const viaWallet = (why) => { DEV.self = true; say(st, html`<span class="err">${why}</span> Press it again: ${your()} sends it, with no relay fee.`); };
+  const viaWallet = (why) => { DEV.self = true; say(st, html`<span class="err">${why}</span> Press it again: ${your()} sends it, with no relay fee.`); if (HX.tab === 'send') hxQuoteSoon(true); };
   const pre = (text) => Object.assign(new Error(text), { said: true, pre: true });
   PROVE_AT.el = st;
   try {
     const amount = parseUnits(amt, 18);
     if (!amount) throw pre('Enter an amount.');
     if (dest === 'v1' && amount % E10) throw pre('The Tacit pool takes up to 8 decimals.');
-    DEV.chain = c;
+    if (DEV.chain !== c) setDeviceChain(c);
     await deviceSync();                                                  // the notes and the relay's fee, read (kept for a minute)
     const W = await deviceWallet(), mods = await getDeviceMods(), self = !!DEV.self;
     DEV.quote ||= await W.quote().catch(() => null);
@@ -15513,7 +15637,7 @@ async function hxSendPoolOutGo(c, amt, to) {
 // Withdraw press, from the Send tab. By the relay with its fee in the token out of the private balance, or, once the relay has failed it, from the paying account (said under the button; the next press goes that way).
 async function tokOutNow({ run, t, op, amt, raw, st, clear, after }) {
   const D = t.dec ?? 18, step = (x) => { x = String(x); say(st, x[0].toUpperCase() + x.slice(1) + '…'); };
-  const viaWallet = (why) => { TK.self = true; say(st, html`<span class="err">${why}</span> Press it again: ${your()} sends it, with no relay fee.`); };
+  const viaWallet = (why) => { TK.self = true; say(st, html`<span class="err">${why}</span> Press it again: ${your()} sends it, with no relay fee.`); if (HX.tab === 'send') hxQuoteSoon(true); };
   const pre = (text) => Object.assign(new Error(text), { said: true, pre: true });
   PROVE_AT.el = st;
   try {
@@ -15776,7 +15900,7 @@ async function depositNow({ go, c, t, amount, to = null, st, step, clear, after 
   const eth = !!c;
   let h;
   if (eth) {
-    if (amount > BigInt(await rpc('eth_getBalance', [S.address, 'latest'], c.rpc))) throw new Error('More than your wallet balance.');
+    if (amount > BigInt(await rpc('eth_getBalance', [await payingAccount(), 'latest'], c.rpc))) throw new Error('More than your wallet balance.');
     h = await devDepositSend({ c, amount, to, step });
     rewardPop(go, { pts: hxPts('dev', Number(amount) / 1e18)?.pts });
   } else h = await tokDepositSend({ t, amount, to, step, status: st });
@@ -15842,7 +15966,7 @@ function hxRemember() {
 }
 // A link can name a swap the way the swap page's does (?from=ETH&to=TAC&amt=1&private=to): the Swap tab opens on it. While that tab shows a pair other than
 // its first one, the address keeps the pair (never the amount, which stays out of the address and the history), so a copied address opens the same swap.
-// Whatever else is in the address, and its hash, is left as it is.
+// Whatever else is in the address, and its hash (bar a card link left by another tab), is left as it is.
 const HX_QK = ['from', 'to', 'amt', 'private', 'from-at', 'to-at'];
 function hxAskFromUrl() {
   try {
@@ -15865,7 +15989,9 @@ function hxUrl() {
     for (const [k, v] of c) if (k !== 'from' && k !== 'to') u.set(k, v);
   }
   const qs = u.toString(), want = qs ? `?${qs}` : '';
-  if (location.search !== want) history.replaceState(null, '', location.pathname + want + location.hash);
+  // the card link another tab left in the bar (hxShareSync) is not this tab's: a reload would open that tab
+  const hash = HX.tab === 'swap' && /^#card=(earn|send|shield):/.test(location.hash) ? '' : location.hash;
+  if (location.search !== want || location.hash !== hash) history.replaceState(null, '', location.pathname + want + hash);
 }
 function hxRememberAmt() { try { sessionStorage.setItem(HX_AMT, JSON.stringify({ sig: hxSig(), amt: HX.amt })); } catch { } }
 function hxRecall() {
@@ -15932,7 +16058,7 @@ function swcPace(id) {
   if (b) b.dataset.pace = id;
   else q.insertAdjacentHTML('afterend', html`<div class="pace" data-card="1" data-pace="${id}"><div class="actr-bar" role="progressbar" aria-label="How far along" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i style="width:0%"></i></div><span></span></div>`.s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=5cf5d344').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=61662c3d').catch((e) => { SWC.p = null; throw e; }));
 function swcAsk() { if (SWC.ask && SWC.card?.busy) SWC.ask = null; else if (SWC.ask && SWC.card?.load(SWC.ask)) SWC.ask = null; }
 function hxSwap() {
   const put = () => { const s = $('#hx-swap'); if (s && s !== SWC.el) { s.replaceWith(SWC.el); SWC.card?.requote?.(); } swcAsk(); };
@@ -16105,7 +16231,7 @@ function paintHx() {
   $('#hx-bw-back')?.addEventListener('click', () => { HX.bwMore = false; paintHx(); });
   const press = m === 'send' ? hxSendGo : hxGo;
   const enter = (e) => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); press(); } };
-  $('#hx-amt')?.addEventListener('input', (e) => { HX.amt = e.target.value; HX.max = false; hxStatusIdle(); hxTyped(); });
+  $('#hx-amt')?.addEventListener('input', (e) => { HX.amt = e.target.value; HX.max = false; hxStatusIdle(); hxSelfOff(); hxTyped(); });
   $('#hx-amt')?.addEventListener('keydown', enter);
   el.onpointerover = (e) => { const b = e.target.closest?.('[data-hxq]'); if (b && HX.mode === 'private') hxWrapTip(parseUnits(b.dataset.hxq, 8)).catch(() => {}); };
   el.onclick = (e) => {
@@ -16113,7 +16239,7 @@ function paintHx() {
     if (g) { hxPreset(g.dataset.hxin, undefined, true); return; }
     const b = e.target.closest?.('[data-hxq]');
     if (!b) return;
-    HX.amt = b.dataset.hxq; HX.max = false; const a = $('#hx-amt'); a.value = HX.amt; hxStatusIdle(); hxTyped(true); a.focus();
+    HX.amt = b.dataset.hxq; HX.max = false; const a = $('#hx-amt'); a.value = HX.amt; hxStatusIdle(); hxSelfOff(); hxTyped(true); a.focus();
   };
   $('#hx-go').onclick = press;
   hxFit($('#hx-amt'));
@@ -16122,7 +16248,7 @@ function paintHx() {
   if (m === 'send') {
     $('#hx-sa').onchange = (e) => { HX.sendPick = true; hxKeepAmt(() => { HX.send = e.target.value; }); paintHx(); };
     const r = $('#hx-rcpt');
-    if (r) { r.oninput = (e) => { HX.rcpt = e.target.value.trim(); hxRcptChanged(); hxRcptCheck(); hxRecentPaint(); hxHave(); }; r.onkeydown = enter; }
+    if (r) { r.oninput = (e) => { HX.rcpt = e.target.value.trim(); if (e.isTrusted) hxSelfOff(); hxRcptChanged(); hxRcptCheck(); hxRecentPaint(); hxHave(); }; r.onkeydown = enter; }
     $('#hx-ask')?.addEventListener('click', () => { HX.ask = true; paintHx(); $('#hx-amt')?.focus(); });
     $('#hx-pay')?.addEventListener('click', () => { HX.ask = false; paintHx(); $('#hx-amt')?.focus(); });
     $('#hx-chain-sel')?.addEventListener('change', (e) => { HX.chain = Number(e.target.value); HX.q = null; paintHx(); });
@@ -16190,9 +16316,9 @@ function hxPosPaint() {
     if (r.pub) {
       const e = earnedNow(r.pub), has = e > 0n;
       return html`<div class="hx-pr">${pair(r)}<span class="rt"><b>TAC / ETH</b><small>${aboutEth(r.pub.mine.eth * 2n)} · ${has ? `+${tacShort(e)} TAC` : 'farming'} · public</small></span><span class="hx-pa">
-        <button class="link" type="button" data-pclaim${has ? '' : ' disabled'}>Claim</button>
+        <button class="link" type="button" data-pclaim${has && !HX.posBusy ? '' : ' disabled'}>Claim</button>
         <button class="link" type="button" data-padd="${i}">Add</button>
-        <button class="link" type="button" data-pwd="${i}"${HX.posBusy ? ' disabled' : ''}>Withdraw</button></span></div>`;
+        <button class="link" type="button" data-pwd="${i}"${HX.posBusy ? ' disabled' : ''} title="Takes out the whole stake as ETH and TAC, with the TAC it earned">Withdraw all</button></span></div>`;
     }
     const worth = sharesEth(r.p, r.pos ? big(r.pos.shares) : r.loose), name = pairName(r.p.pair), off = HX.posBusy ? ' disabled' : '';
     if (!r.pos) return html`<div class="hx-pr">${pair(r)}<span class="rt"><b>${name}</b><small>${worth != null ? `${aboutEth(worth)} · ` : ''}LP only</small></span><span class="hx-pa"><button class="link" type="button" data-pbond="${i}"${off}>Farm it</button><button class="link" type="button" data-ptake="${i}"${off}>Take out</button></span></div>`;
@@ -16207,49 +16333,58 @@ function hxPosPaint() {
   el.onclick = (e) => {
     const b = e.target.closest('[data-pharv], [data-padd], [data-pexit], [data-pclaim], [data-pwd], [data-pbond], [data-ptake], [data-pturn]');
     if (!b || b.disabled) return;
-    const turn = b.hasAttribute('data-pturn'), claim = b.hasAttribute('data-pclaim'), st = $('#hx-pos-s');
+    const turn = b.hasAttribute('data-pturn'), claim = b.hasAttribute('data-pclaim'), st = $('#hx-pos-s'), at = () => $('#hx-pos-s') || st;
     const r = claim ? rows.find((x) => x.pub) : rows[Number(b.dataset.pharv ?? b.dataset.padd ?? b.dataset.pexit ?? b.dataset.pwd ?? b.dataset.pbond ?? b.dataset.ptake)];
     if (!r && !turn) return;
-    if (b.dataset.padd != null) { if (r.pub) HX.ern = HX.ern === 'wtac' ? 'wtac' : 'ether'; HX.pool = HX.earnPick = r.pub ? 'precision' : String(r.p.pid); HX.q = null; paintHx(); $('#hx-amt')?.focus(); return; }
+    if (b.dataset.padd != null) {
+      // the source is one the pool takes: the public farm takes the wallet's TAC, a private one the wallet's ETH or its private coins
+      if (r.pub) HX.ern = HX.ern === 'wtac' ? 'wtac' : 'ether'; else if (HX.ern === 'wtac' || (HX.ern === 'tac' && !String(r.p.pair).split('/').includes('TAC'))) HX.ern = 'ether';
+      HX.pool = HX.earnPick = r.pub ? 'precision' : String(r.p.pid); HX.q = null; paintHx(); $('#hx-amt')?.focus(); return;
+    }
+    if (b.dataset.pwd != null) {
+      // all of the stake comes out at once, rewards with it: a second press within a few seconds sends it
+      if (!(Date.now() - (HX.pwdSure || 0) < 6e3)) { HX.pwdSure = Date.now(); say(at(), 'Press again to withdraw it all: the whole stake as ETH and TAC, and the TAC it earned.'); return; }
+      HX.pwdSure = 0;
+    }
     HX.posBusy = true; list.__h = ''; hxPosPaint();
     busy(b, async (run) => {
-      const tell = (m) => say(st, m);
+      const tell = (m) => say(at(), m);
       try {
         if (claim) {
           // the public stake's rewards, to the paying account
           const h = await sendTx({ to: ADDR.precisionFarm, data: SEL.claim, label: 'Claim TAC from the farm' });
           tell(html`Claiming… ${txLink(h)}`); await waitTx(h);
-          toast('TAC claimed'); say(st, html`<span class="ok">Claimed to ${your()}.</span> ${txLink(h)}`);
+          toast('TAC claimed'); say(at(), html`<span class="ok">Claimed to ${your()}.</span> ${txLink(h)}`);
           await loadFarms(true);
         } else if (b.dataset.pwd != null) {
           // all of the public stake, as ETH and TAC (the farm's Withdraw takes a part, or one asset alone)
           const h = await pubExitSend({ all: true, as: 'both', shares: r.pub.staked, label: 'Withdraw all from the farm' });
           tell(html`Withdrawing… ${txLink(h)}`); await waitTx(h);
-          toast(`Withdrawn to ${your()}`); say(st, html`<span class="ok">Withdrawn to ${your()}.</span> ${txLink(h)}`);
+          toast(`Withdrawn to ${your()}`); say(at(), html`<span class="ok">Withdrawn to ${your()}.</span> ${txLink(h)}`);
           await loadFarms(true);
         } else if (b.dataset.pbond != null) {
-          await stepBond(run, r.p, freeNotes(P.scan?.notes).filter(isLp(r.p)), tell, st);
-          toast('In the farm'); say(st, html`<span class="ok">In the farm: TAC streams to your private position.</span>`);
+          await stepBond(run, r.p, freeNotes(P.scan?.notes).filter(isLp(r.p)), tell, at());
+          toast('In the farm'); say(at(), html`<span class="ok">In the farm: TAC streams to your private position.</span>`);
           await Promise.allSettled([loadPositions()]); await refreshFarm();
         } else if (b.dataset.ptake != null) {
-          if (await stepTakeOut(run, r.p, freeNotes(P.scan?.notes).filter(isLp(r.p)), tell, st)) { toast('Liquidity taken out'); say(st, html`<span class="ok">Taken out: both assets are private notes again.</span>`); }
+          if (await stepTakeOut(run, r.p, freeNotes(P.scan?.notes).filter(isLp(r.p)), tell, at())) { toast('Liquidity taken out'); say(at(), html`<span class="ok">Taken out: both assets are private notes again.</span>`); }
           await refreshFarm();
         } else if (turn) {
-          await stepRedeem(run, tell, st);
-          toast('Rewards turned into TAC'); say(st, html`<span class="ok">Your rewards are TAC in ${your()}.</span>`);
+          await stepRedeem(run, tell, at());
+          toast('Rewards turned into TAC'); say(at(), html`<span class="ok">Your rewards are TAC in ${your()}.</span>`);
           await refreshFarm();
         } else if (b.dataset.pharv != null) {
-          await stepHarvest(run, r.pos, tell, st);
-          say(st, html`<span class="ok">Harvested to a wTAC note,</span> one for one with TAC. <button class="link" type="button" data-pturn>Turn it into TAC</button>`); toast('Harvested');
+          await stepHarvest(run, r.pos, tell, at());
+          say(at(), html`<span class="ok">Harvested to a wTAC note,</span> one for one with TAC. <button class="link" type="button" data-pturn>Turn it into TAC</button>`); toast('Harvested');
         } else {
-          const out = await exitPosition(run, r.p, r.pos, tell, st);
-          if (out === 'out') { toast('Out of the farm'); say(st, html`<span class="ok">Out: your liquidity is private ${pairName(r.p.pair)} notes again${run.harvested ? ', the rewards wTAC notes' : ''}.</span>`); }
-          else if (out === 'unseen') say(st, html`<span class="ok">Unbonded.</span> The liquidity note has not shown up yet.`);
+          const out = await exitPosition(run, r.p, r.pos, tell, at());
+          if (out === 'out') { toast('Out of the farm'); say(at(), html`<span class="ok">Out: your liquidity is private ${pairName(r.p.pair)} notes again${run.harvested ? ', the rewards wTAC notes' : ''}.</span>`); }
+          else if (out === 'unseen') say(at(), html`<span class="ok">Unbonded.</span> The liquidity note has not shown up yet.`);
           await refreshFarm();
         }
       } catch (e) {
-        if (claim || b.dataset.pwd != null) txFail(run, st, e);
-        else sayErr(st, /locked until/.test(e?.message || '') ? new Error('This device’s clock says the bond is not over yet. Try again in a few minutes, or set the clock right.')
+        if (claim || b.dataset.pwd != null) txFail(run, at(), e);
+        else sayErr(at(), /locked until/.test(e?.message || '') ? new Error('This device’s clock says the bond is not over yet. Try again in a few minutes, or set the clock right.')
           : /not covered by this withdrawal/.test(e?.message || '') ? new Error('This liquidity is worth less than the relay fee to take it out.') : e);
       }
       finally { HX.posBusy = false; list.__h = ''; hxPosPaint(); dashSoon(); }

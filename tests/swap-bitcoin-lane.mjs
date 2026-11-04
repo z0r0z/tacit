@@ -51,10 +51,10 @@ const T = {
   bridgedAtTaproot: async () => ({ count: W.bridged ? 1 : 0, address: 'bc1ptest' }),
   bridgedNotes: async (aid) => ({ notes: W.bridged && aid === TETH ? [{ txid: 'bb'.repeat(32), vout: 0, sats: 546, amount: 10000000n, confirmed: !W.unconfirmed, openErr: null }] : [], unread: 0 }),
   swapReceiptNotes: async () => W.receipts || [],
-  getFeeRate: async () => W.feeRate,
+  getFeeRate: async () => { if (W.feeDelay) await new Promise((r) => setTimeout(r, W.feeDelay)); return W.feeRate; },
   moveBridgedNote: async (o) => { rec('move', { txid: o.txid, assetIdHex: o.assetIdHex, vout: o.vout, swap: o.swap }); W.receipts = []; o.onProgress?.('commit-start'); o.onProgress?.('reveal-start'); if (W.fail.move) throw new Error(W.fail.move); W.bridged = false; return { reveal_txid: 'dd'.repeat(32) }; },
   bitcoinSwap: async (o) => { rec('swap', { fromAid: o.fromAid, toAid: o.toAid, amountIn: String(o.amountIn), minOut: String(o.minOut) }); for (const s of ['check', 'prepare', 'send']) { o.onProgress?.(s); await new Promise((r) => setTimeout(r, 30)); } if (W.fail.swap) throw new Error(W.fail.swap); return { revealTxid: 'cc'.repeat(32), quoted: 1n, floor: o.minOut }; },
-  bitcoinSwapOutcome: async () => (W.outcome === 'filled' ? { state: 'filled', got: 16500000n } : W.outcome === 'refunded' ? { state: 'refunded', reason: 'floor miss', refund: 2000n } : { state: 'waiting' }),
+  bitcoinSwapOutcome: async () => (W.outcome === 'filled' ? { state: 'filled', got: 16500000n } : W.outcome === 'filled-nofigure' ? { state: 'filled', got: null } : W.outcome === 'refunded' ? { state: 'refunded', reason: W.reason || 'floor miss', refund: 2000n } : { state: 'waiting' }),
 };
 const session = { key: null, get unlocked() { return W.unlocked; }, load: async () => T };
 export function makeBitcoin({ onChange }) {
@@ -175,10 +175,15 @@ console.log('the bridged note');
   ok(!/5,000/.test(await text(page, '#b-brd')), 'at 1 sat/vB the ask names about 2,000 sats, the commit and reveal at that rate, not a flat 5,000');
   await page.click('[data-move-no]');
   await page.evaluate(() => { window.__stub.feeRate = undefined; });
-  await page.click('[data-move]'); await page.click('[data-move-yes]');
+  // two presses of Move while the fee is being read move the note once
+  await page.evaluate(() => { window.__stub.feeDelay = 600; });
+  await page.click('[data-move]');
+  await page.dblclick('[data-move-yes]');
   await page.waitForFunction(() => /Moved 0\.1 tETH/.test(document.querySelector('#b-q').textContent), null, { timeout: 8000 });
+  await page.waitForTimeout(900);
   const mv = await calls(page, 'move');
-  ok(mv.length === 1 && mv[0].txid === 'bb'.repeat(32) && mv[0].assetIdHex === TETH, 'the move is asked for that note, as tETH');
+  ok(mv.length === 1 && mv[0].txid === 'bb'.repeat(32) && mv[0].assetIdHex === TETH, `the move is asked for that note, as tETH, once for a double press (${mv.length})`);
+  ok(/Moved 0\.1 tETH/.test(await text(page, '#b-q')) && !(await page.$('[data-move]')), 'and the note is gone from the list');
   ok(/next Bitcoin block/.test(await text(page, '#b-q')) && await page.$eval('#b-q', (e) => e.classList.contains('ok')), 'it says it confirms with the next block');
   await page.close();
 }
@@ -356,10 +361,87 @@ console.log('a swap sent before a reload');
   ok(/If it was dropped, nothing was spent/.test(await text(lost.page, '#b-sent')) && !!(await lost.page.$('#b-sent [data-dismiss]')), 'a swap the explorer has never seen says so, that a dropped one spent nothing, and can be dismissed');
   await lost.page.close();
   MEMPOOL_STATUS = { confirmed: false };
-  const bad = await fresh('/swap/#bitcoin', undefined, { 'tacit-swap-btc-sent-v1': JSON.stringify([{ ...entry, txid: 'zz', din: 'x' }, { ...entry, at: Date.now() - 3 * 864e5 }]) });
+  const bad = await fresh('/swap/#bitcoin', undefined, { 'tacit-swap-btc-sent-v1': JSON.stringify([{ ...entry, txid: 'zz', din: 'x' }, { ...entry, state: 'filled', got: '16500000', at: Date.now() - 3 * 864e5 }]) });
   await laneReady(bad.page);
-  ok(await bad.page.isHidden('#b-sent'), 'a damaged or day-old record is ignored');
+  ok(await bad.page.isHidden('#b-sent'), 'a damaged record, or a settled one a day old, is ignored');
   await bad.page.close();
+}
+
+console.log('swaps still waiting are never dropped');
+{
+  MEMPOOL_STATUS = { confirmed: false };
+  const mk = (i, o = {}) => ({ txid: i.toString(16).padStart(2, '0').repeat(32), from: TETH, to: TAC, din: '2000', quoted: '16564166', floor: '16398524', at: Date.now() - i * 60e3, state: 'waiting', block: null, ...o });
+  const settled = (i) => mk(i, { state: 'filled', got: '16500000' });
+  // seven waiting (one of them over a day old) and two settled: the waiting ones all stay, the settled ones have no room
+  let r = await fresh('/swap/#bitcoin', undefined, { 'tacit-swap-btc-sent-v1': JSON.stringify([mk(1), mk(2), mk(3), mk(4), mk(5), mk(6, { at: Date.now() - 30 * 3600e3 }), mk(7), settled(8), settled(9)]) });
+  await laneReady(r.page);
+  await r.page.waitForFunction(() => document.querySelector('#b-sent') && !document.querySelector('#b-sent').hidden, null, { timeout: 8000 });
+  let rows = await r.page.$$eval('#b-sent > div', (els) => els.map((e) => e.textContent.replace(/\s+/g, ' ')));
+  ok(rows.length === 7 && rows.every((t) => /Waiting|In block|Not showing/.test(t)), `seven swaps waiting are all kept, a day old or not, past the five that settled ones are held to (${rows.length})`);
+  await r.page.close();
+  // two waiting and five settled: the settled ones fill what is left of the five
+  r = await fresh('/swap/#bitcoin', undefined, { 'tacit-swap-btc-sent-v1': JSON.stringify([settled(1), mk(2), settled(3), settled(4), mk(5), settled(6), settled(7)]) });
+  await laneReady(r.page);
+  await r.page.waitForFunction(() => document.querySelector('#b-sent') && !document.querySelector('#b-sent').hidden, null, { timeout: 8000 });
+  rows = await r.page.$$eval('#b-sent > div', (els) => els.map((e) => e.textContent.replace(/\s+/g, ' ')));
+  ok(rows.length === 5 && rows.filter((t) => /Waiting for a Bitcoin block/.test(t)).length === 2 && rows.filter((t) => /Filled/.test(t)).length === 3, `two waiting and three of the settled ones make the five (${rows.length})`);
+  await r.page.close();
+  // a swap sent while five are waiting is not the one that pushes the oldest out
+  r = await fresh('/swap/#bitcoin', undefined, { 'tacit-swap-btc-sent-v1': JSON.stringify([mk(1), mk(2), mk(3), mk(4), mk(5)]) });
+  await laneReady(r.page);
+  await r.page.click('#b-go');
+  await r.page.waitForFunction(() => /Balance 0\.05 tETH/.test(document.querySelector('#b-bal').textContent), null, { timeout: 8000 });
+  await type(r.page, '0.00002');
+  await r.page.click('#b-go');
+  await r.page.waitForFunction(() => document.querySelectorAll('#b-sent > div').length === 6, null, { timeout: 8000 });
+  const kept = await r.page.evaluate(() => JSON.parse(localStorage.getItem('tacit-swap-btc-sent-v1')).length);
+  ok(kept === 6, `a sixth swap sent beside five waiting evicts none of them (${kept} kept)`);
+  await r.page.close();
+}
+
+console.log('how a settled swap is told');
+{
+  MEMPOOL_STATUS = { confirmed: false };
+  const entry = { txid: 'dd'.repeat(32), from: TETH, to: TAC, din: '2000', quoted: '16564166', floor: '16398524', at: Date.now() - 4 * 60e3, state: 'waiting', block: null };
+  const told = async (outcome, reason) => {
+    const r = await fresh('/swap/#bitcoin', undefined, { 'tacit-swap-btc-sent-v1': JSON.stringify([entry]) });
+    await laneReady(r.page);
+    await r.page.evaluate(([o, why]) => { window.__stub.outcome = o; window.__stub.reason = why; }, [outcome, reason]);
+    await r.page.waitForFunction(() => /Filled|Returned/.test(document.querySelector('#b-sent').textContent), null, { timeout: 15000 });
+    const t = await text(r.page, '#b-sent');
+    await r.page.close();
+    return t;
+  };
+  let t = await told('refunded', 'slippage: delta_out_actual < max(1, min_out)');
+  ok(/Returned/.test(t) && /The pool had moved past your floor/.test(t), `a refund for slippage says the pool moved past the floor (${t})`);
+  t = await told('refunded', 'expired');
+  ok(/Returned/.test(t) && /expired before the pool settled it/.test(t) && !/moved past your floor/.test(t), `a refund because the swap expired says that (${t})`);
+  t = await told('refunded', 'pool validation tag not verified');
+  ok(/The pool passed on it \(pool validation tag not verified\)/.test(t) && !/moved past your floor/.test(t), `any other reason is named, not called a price move (${t})`);
+  t = await told('filled-nofigure');
+  ok(/Filled.*0\.00002 tETH → about 0\.16564166 TAC/.test(t), `a fill whose figure was not read shows the quote as about (${t})`);
+}
+
+console.log('a price at every size');
+{
+  const { page } = await fresh('/swap/#bitcoin');
+  const got = await page.evaluate(async () => { const m = await import('/swap/bitcoin.js'); return [100000, 120000, 123456, 99999.96, 1e6, 1234567.89, 3e9, 8282.4167, 1, 10, 100.5, 0.5, 0.0012, 0.00123456, 1.5e-9, 0, NaN].map((x) => m.priceText(x)); });
+  const want = ['100000', '120000', '123456', '100000', '1000000', '1234568', '3000000000', '8282.42', '1', '10', '100.5', '0.5', '0.0012', '0.001235', '0.0000000015', '0', '0'];
+  ok(got.join() === want.join(), `prices read in plain notation, zeros dropped only after a decimal point (${got.join(' ')})`);
+  await page.close();
+}
+
+console.log('two quick turns of the switch make one lane');
+{
+  const { page } = await fresh('/swap/');
+  // the switch turned on, off and on again before the lane's code has arrived
+  await page.evaluate(() => { const on = document.querySelector('[data-mode=bitcoin]'); on.click(); document.querySelector('[data-mode=wallet]').click(); on.click(); });
+  await laneReady(page);
+  await page.click('#b-go');
+  await page.waitForFunction(() => window.__stub.unlocked, null, { timeout: 8000 });
+  await sleep(300);
+  ok((await calls(page, 'signIn')).length === 1, `one press of the button opens the key once, not once for each lane bound to the host (${(await calls(page, 'signIn')).length})`);
+  await page.close();
 }
 
 console.log('the other direction, and sats');

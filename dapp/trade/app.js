@@ -3,7 +3,7 @@ import { keccak_256 } from '/vendor/tacit-deps.min.js';
 import { ETH_NODES } from '/eth-nodes.js';
 import {
   makeEvmTradeVenues, zswapDeepLink, encErc20Approve, PRECISION_POOL, TAC_ERC20, TACIT_AMM, MULTICALL3, CETH_POOL_ASSET_ID, TAC_POOL_ASSET_ID, _internal,
-} from '/evm-trade-venues.js?cb=10858cc2';
+} from '/evm-trade-venues.js?cb=dda58fa8';
 import { getConfidentialDeployment } from '/confidential-deployments.js';
 import { buildBook, planBuy, planSell as planBtcSell, ladderLevels } from '/btc-book.js?cb=0a09ab9e';
 import { decodeTape, chartBars, continuous, invert, ethLaneUsd, btcLaneUsd, candlesFromTrades, tradePrices, closeAt, volumeSince, gap, TAPE_FINE, TAPE_COARSE, TAPE_WORDS } from '/trade/tape.js?cb=714b0344';
@@ -1010,7 +1010,7 @@ function renderBorrow() {
   if (BW.q && BW.key === key) setHtml(el, borrowHtml(BW.q, tac));
   if ((BW.key === key && now() - BW.at < 60) || BW.busy) return;
   BW.busy = true;
-  (BW.mod ||= import('/vault/quote.js?cb=18ccfc09').catch((e) => { BW.mod = null; throw e; })).then((m) => m.quoteBorrow({ tac, account: who, rpc }))
+  (BW.mod ||= import('/vault/quote.js?cb=4820f55f').catch((e) => { BW.mod = null; throw e; })).then((m) => m.quoteBorrow({ tac, account: who, rpc }))
     .then((q) => { BW.q = q; }, (e) => { console.warn('borrow quote:', e?.message || e); BW.q = null; })
     .then(() => { BW.key = key; BW.at = now(); })
     .finally(() => { BW.busy = false; if (W.account && `${lc(W.account)}:${S.bal?.tac}` === key) setHtml(el, borrowHtml(BW.q, tac)); else renderBorrow(); });

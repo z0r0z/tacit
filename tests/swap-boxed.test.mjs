@@ -282,12 +282,41 @@ test('a swap out is refused when the plan has no address to pay', async () => {
   await assert.rejects(L.offer({ id: 'x', swapWei: '1', token: DAI, sym: 'DAI', dec: 18, to: '', depositWei: '1', state: 'waiting' }), /no address to pay/);
 });
 
-test('a plain plan is checked as it always was', async () => {
+test('a deposit from the wallet the pool does not show yet stays in doubt for half an hour, so Check is still offered, and is stopped after', async () => {
   const { L } = setup();
-  const plan = { id: 'x', at: Date.now(), swapWei: '1', depositWei: '12345', state: 'unsure', leaves0: 10, token: DAI, sym: 'DAI', dec: 18, to: DEST };
-  const p = await L.check(plan);
-  assert.strictEqual(p.state, 'stopped');
-  assert.strictEqual(p.err, 'The deposit is not in the pool yet. If it was sent, it may still be on its way: check again in a minute.');
+  const plan = (age) => ({ id: 'x' + age, at: Date.now() - age, swapWei: '1', depositWei: '12345', state: 'depositing', leaves0: 10, token: DAI, sym: 'DAI', dec: 18, to: DEST });
+  const young = await L.check(plan(10 * 60e3));
+  assert.strictEqual(young.state, 'unsure', 'a slow transaction is not a failed one');
+  assert.match(young.err, /may still be on its way/);
+  assert.ok(!young.depositedAt);
+  const old = await L.check(plan(31 * 60e3));
+  assert.strictEqual(old.state, 'stopped');
+  assert.match(old.err, /did not reach the pool/);
+});
+
+test('a deposit that lands after a check found nothing is found by the next one, and the mix is counted after its own pair of leaves', async () => {
+  for (const [index, since] of [[10, 12], [11, 12]]) {
+    const { L, M } = setup({ leaves: 10 });
+    const plan = { id: 'x', at: Date.now() - 5 * 60e3, swapWei: '1', depositWei: '12345', state: 'depositing', leaves0: 10, token: DAI, sym: 'DAI', dec: 18, to: DEST };
+    assert.strictEqual((await L.check(plan)).state, 'unsure');
+    M.notes.push({ v: '12345', index }); M.leaves = 12;
+    const p = await L.check(plan);
+    assert.strictEqual(p.state, 'waiting');
+    assert.strictEqual(p.depositedAt, plan.at);
+    assert.strictEqual(p.leaves0, since, `the note at ${index} is in the pair that ends at ${since}`);
+    assert.strictEqual((await L.blend(p)).since, 0, 'nothing else has been deposited since: the deposit is not mixed with itself');
+    M.leaves = 16;
+    assert.strictEqual((await L.blend(p)).since, 4);
+  }
+});
+
+test('a plan whose browser cannot keep it stops a relayed start before a box is made or anything is sold', async () => {
+  const M = { boxes: [] }, pool = { quote: async () => ({ fee: '1000' }), sync: async () => ({ leaves: 10 }), refundBox: async () => REFUND_BOX, notes: () => [], depositBox: async (a) => { M.boxes.push(a); return { box: BOX }; } };
+  const L = makeLater({ keyHex: async () => { throw new Error('the key is not needed'); }, signer: { address: PAYER }, ethCall: async () => '0x', store: { getItem: () => null, setItem: () => { throw new Error('QuotaExceededError'); } }, walletOf: async () => pool, chain: { chainId: 1, rpc: ['http://127.0.0.1:1'] } });
+  let sold = false;
+  await assert.rejects(L.startBoxed({ ...base, fund: async () => { sold = true; return HASH; } }), /could not keep the swap’s plan, so nothing was sent/);
+  assert.strictEqual(M.boxes.length, 0);
+  assert.strictEqual(sold, false);
 });
 
 test('it is refused before a box is made: the wallet is the destination, ETH is the payer, the token is the one bought, no wallet', async () => {

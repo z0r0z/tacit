@@ -24,6 +24,7 @@ const STUBS = {
   '/wrap-vouchers.js': 'export function makeVouchers() { return { pick: () => null, list: () => [], drop() {}, put() {}, call: () => null }; }',
   '/activity.js': 'export function makeRunner() { return { wait: (label, ms) => ({ timeoutMs: ms, label, onJob() {} }) }; }',
   '/vendor/tacit-deps.min.js': 'export const bytesToHex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join(""); export const secp = {}; export const keccak_256 = () => new Uint8Array(32); export const sha256 = () => new Uint8Array(32);',
+  '/confidential-stage.js': 'export const makeConfidentialStage = () => globalThis.M.stage;',
   '/confidential-secret-store.js': 'export const makeStealthSendStore = () => ({ add: async (priv, rec) => { globalThis.M.stored.push(rec); } });',
   '/confidential-names.js': `export const makeMainnetCall = () => ({});
     export const makeConfidentialNames = () => ({ decodeTacitAddress: (s) => { if (s === 'tacit1good') return { key: '02' + 'cd'.repeat(32) }; throw new Error('not a Tacit address'); },
@@ -40,7 +41,7 @@ register('data:text/javascript,' + encodeURIComponent(hooks));
 const ETH = '0xeth', TAC = '0xtac';
 const note = (leaf, value, asset = ETH) => ({ leaf, value: BigInt(value), asset, root: '0xroot' });
 
-function setup({ notes = [], deposit = null, quote = 900n, quotes = null, routeErr = [], cutErr = [], fee = 20n, cutFee = 5n, submitErr = [], activation = 'done', routeOut = null, stealthErr = null } = {}) {
+function setup({ notes = [], deposit = null, quote = 900n, quotes = null, routeErr = [], cutErr = [], fee = 20n, cutFee = 5n, submitErr = [], activation = 'done', routeOut = null, stealthErr = null, staged = null } = {}) {
   const M = globalThis.M = { sheets: 0, forgot: 0, quoted: [], relay: { state: 'ok' }, cancel: false, wraps: [], routes: [], cuts: [], reads: 0, unwraps: [], submits: [], stealths: [], stored: [], sent: [], wrapSwaps: [], wrapSwapSubmits: [], released: [], settled: [] };
   let byAsset = {};
   const put = (ns) => { byAsset = {}; for (const n of ns) { const g = (byAsset[n.asset] ||= { value: 0n, notes: [] }); g.value += n.value; g.notes.push(n); } };
@@ -48,7 +49,8 @@ function setup({ notes = [], deposit = null, quote = 900n, quotes = null, routeE
   M.wrapEth = async (a) => { M.wraps.push(a); a.say('sent', '0xdep'); if (deposit) setTimeout(() => put([...notes, deposit]), 0); return { hash: '0xdep', built: { leaf: deposit?.leaf, note: { asset: ETH } } }; };
   const qs = quotes ? [...quotes] : null;
   const ux = {
-    balance: async () => { M.reads++; return { byAsset, diag: {} }; },
+    balance: async () => { M.reads++; return { byAsset, diag: staged ? { wrap: { pending: [{ value: 1000n, index: 3, depositId: '0xdep' }] } } : {} }; },
+    ...(staged ? { assetByTicker: { cETH: { assetId: ETH } } } : {}),
     quoteRoute: async ({ fee: f }) => ({ amountOut: qs ? qs.shift() : quote, f }),
     route: async (a) => {
       M.routes.push(a);
@@ -95,6 +97,8 @@ function setup({ notes = [], deposit = null, quote = 900n, quotes = null, routeE
     buildWrap: (a) => ({ leaf: '0xwrapleaf', commit: '0xc0', ...a }),
     ladderFee: (v) => v,
   };
+  // a staged deposit of 1000 units (confidential-stage.js, stood in for): its press posts to the relay and waits, and fails as `staged` says
+  if (staged) M.stage = { presses: 0, splitPending: async (p) => ({ staged: p, waiting: [] }), pressSwap: async () => { M.stage.presses++; throw staged; } };
   return { M, ux };
 }
 const load = async (ux) => (await import('../dapp/swap/private.js')).makePrivate({ getUx: async () => ux, pick: () => null });
@@ -212,6 +216,34 @@ test('the deposit path: a swap the relay may still finish says so, not "press ag
   await assert.rejects(run(await load(ux), plan({ wallet: true })), (e) => e.pending && !e.kept);
 });
 
+// ── a staged deposit's swap (confidential-stage.js): once the proof is posted the relay has the swap, and a second one is not started from a note ──
+const posted = (msg) => Object.assign(new Error(msg), { jobId: 'job9' });
+test('a staged swap the relay may still settle is not made again from a covering note', async () => {
+  for (const msg of ['settle timed out (box offline or backlogged)', 'status polling for job job9 failed 8 times in a row (x); the job may still be running', 'relay lost the job (worker restart / KV miss)', 'settle held: proved and waiting for a sender (job job9)']) {
+    const { M, ux } = setup({ notes: [note('0xn', 1000)], staged: posted(msg) });
+    const pv = await load(ux);
+    await assert.rejects(run(pv, plan()), (e) => e.pending && /may still go through/.test(e.message) && !e.kept, msg);
+    assert.strictEqual(M.stage.presses, 1);
+    assert.strictEqual(M.routes.length + M.cuts.length, 0, `${msg}: no route of a note, no cut`);
+    // pressed again while the relay may still have it: the deposit is left alone
+    await assert.rejects(run(pv, plan()), (e) => e.pending);
+    assert.strictEqual(M.stage.presses, 1, 'the same deposit is not posted twice');
+    assert.strictEqual(M.routes.length, 0);
+  }
+});
+test('a staged swap that stopped before the proof was posted falls back to the note, as before', async () => {
+  const { M, ux } = setup({ notes: [note('0xn', 1000)], staged: new Error('prove failed: boom') });
+  const r = await run(await load(ux), plan());
+  assert.strictEqual(M.stage.presses, 1);
+  assert.strictEqual(M.routes.length, 1, 'the covering note is routed');
+  assert.strictEqual(r.txHash, '0xswap');
+});
+test('a staged swap the relay says failed leaves the deposit unspent: the note may be routed', async () => {
+  const { M, ux } = setup({ notes: [note('0xn', 1000)], staged: posted('settle failed: reserves moved') });
+  await run(await load(ux), plan());
+  assert.strictEqual(M.routes.length, 1);
+});
+
 test('the open key is handed to the private ETH pool as hex, opening the sheet first', async () => {
   const { M, ux } = setup();
   const pv = await load(ux);
@@ -274,6 +306,13 @@ test('cBTC to USDC at an address: routed to tETH, then exited through a recipe w
   assert.ok(Number(sub.exit.deadline) > Date.now() / 1000 + 1700, 'the recipe runs for half an hour');
   assert.deepStrictEqual({ tx: r.txHash, out: r.out, to: r.to }, { tx: '0xactivated', out: 700n, to: ADDR });
   assert.deepStrictEqual(steps, ['route', 'note', 'exitswap', 'activate']);
+});
+
+test('an exit recipe runs from the chain’s clock, not a device clock that is behind', async () => {
+  const { M, ux } = setup({ notes: [note('0xbtcnote', 1000, '0xbtc')], routeOut: 500 });
+  const chainNow = Date.now() + 3 * 3600e3;
+  await (await import('../dapp/swap/private.js')).makePrivate({ getUx: async () => ux, pick: () => null, now: () => chainNow }).swapOut(outPlan());
+  assert.strictEqual(M.submits[0].exit.deadline, String(Math.floor(chainNow / 1000) + 1800));
 });
 
 test('tETH to ETH at an address: a plain unwrap to it, no recipe', async () => {

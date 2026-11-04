@@ -288,7 +288,9 @@ export function makeConfidentialStage({ ux: t, now = () => Math.floor(Date.now()
     const p = ready && (await stillFits(ready.built)) ? ready : await proveSwap({ walletPriv, deposit, toTicker, toAsset, feeBps, fee, minOut, waitOpts });
     const posted = await t.relay.postProof({ type: 'wrapswap', publicValues: p.proven.publicValues, proof: p.proven.proof, memos: p.proven.memos });
     if (!posted || !posted.jobId) throw new Error((posted && posted.error) || 'the relay would not take the swap');
-    const st = await t.relay.waitForSettle(posted.jobId, { ...waitOpts, viaRelay: true });
+    let st;
+    try { st = await t.relay.waitForSettle(posted.jobId, { ...waitOpts, viaRelay: true }); }
+    catch (e) { if (e && typeof e === 'object') e.jobId = posted.jobId; throw e; }      // the relay has the swap from here: a caller can tell an error that leaves it running from one before the post
     return { jobId: posted.jobId, txHash: st.txHash || null, amountOut: p.built.amountOut, ahead: p === ready };
   }
 
