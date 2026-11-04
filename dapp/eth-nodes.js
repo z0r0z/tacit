@@ -57,6 +57,25 @@ export function walletNode(get) {
 // The injected wallet, only once this site is already connected to it (eth_accounts asks nothing of the user) and while it is on Ethereum mainnet: what
 // it says is read once and again when its account or chain changes, so the getter itself sends nothing.
 let injected = null;
+// A wallet the page itself connected (an announced one, which need not be window.ethereum), used only while it is on Ethereum mainnet: a read of
+// the pool through a wallet on another chain would answer about that chain. Its chain is read once and again when it changes, so the getter sends nothing.
+export function onMainnet(get) {
+  const seen = new WeakMap();
+  return () => {
+    const w = get();
+    if (!w || typeof w.request !== 'function') return null;
+    let s = seen.get(w);
+    if (!s) {
+      s = { ok: false };
+      seen.set(w, s);
+      const look = () => Promise.resolve(w.request({ method: 'eth_chainId' })).then((c) => { s.ok = Number(c) === 1; }).catch(() => { s.ok = false; });
+      look();
+      try { w.on?.('chainChanged', look); } catch { /* a provider without events */ }
+    }
+    return s.ok ? w : null;
+  };
+}
+
 export function connectedInjected() {
   const w = typeof window !== 'undefined' ? window.ethereum : null;
   if (!w?.request) return null;

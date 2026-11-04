@@ -259,5 +259,7 @@ export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes,
     return { v, r: '0x' + h.slice(0, 64), s: '0x' + h.slice(64, 128) };
   }
 
-  return { available, hasBrowserWallet, listProviders, selectProvider, deselectProvider, providerLabel, connect, changeAccount, restore, onElsewhere, forget, disconnect, deriveIdentity, signErc2612, fundTx, chainId, derivationMsg };
+  // the wallet in use now (the one picked, else the injected one), for a page that reads Ethereum through it as a last resort
+  const provider = () => currentProvider() || null;
+  return { provider, available, hasBrowserWallet, listProviders, selectProvider, deselectProvider, providerLabel, connect, changeAccount, restore, onElsewhere, forget, disconnect, deriveIdentity, signErc2612, fundTx, chainId, derivationMsg };
 }

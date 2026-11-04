@@ -5,7 +5,7 @@
 import { secp, sha256, keccak_256, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 import { prfBytesToScalar, prfLogin, prfRegister, loadPrfMap, savePrfMap, isPasskeyAvailable } from '/prf-wallet.js';
 import { knownWallets } from '/tacit-wallet-known.js?cb=ed4c75b7';
-import { makeEvmWallet } from '/evm-wallet.js?cb=f3072d82';
+import { makeEvmWallet } from '/evm-wallet.js?cb=b400cbe7';
 import { overlay, esc } from '/trade/sheet.js?cb=84cda8f2';
 import { short } from '/trade/util.js?cb=e8317464';
 
@@ -92,6 +92,8 @@ export function makeKeySession({ moved = null, ways = {} } = {}) {
     // The wallet tacit.finance has open, when this page cannot open it (a Bitcoin wallet, a key saved in the browser).
     elsewhere: () => { const p = ids().primary; return p && !opens.has(p.mode) ? p : null; },
     passkeyAvailable: () => isPasskeyAvailable(), ethAvailable: () => evm.available(), btcOffered: () => !!ways.btc,
+    // the Ethereum wallet the key was opened with (null for a passkey, a pasted key or a Bitcoin wallet): a page's last-resort node for reads
+    walletProvider: () => (key && key.mode === 'eth' ? evm.provider() : null),
     lock() { priv = null; key = null; emit(); },
     onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); },
   };

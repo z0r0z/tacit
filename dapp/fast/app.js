@@ -1,8 +1,9 @@
-import { openBtcWallet } from '/trade/btc-session.js?cb=40875d95';
+import { openBtcWallet } from '/trade/btc-session.js?cb=90183de3';
 import { isPasskeyAvailable } from '/prf-wallet.js';
-import { makeKeySession, signInSheet } from '/trade/key.js?cb=d54a64c1';
+import { makeKeySession, signInSheet } from '/trade/key.js?cb=26d9c07b';
 import { makeTacitSession } from '/tacit-session.js?cb=a2d34bb2';
-import { getUx, forgetUx } from '/trade/poolux.js?cb=8222dd8a';
+import { getUx as loadUx, forgetUx } from '/trade/poolux.js?cb=8222dd8a';
+import { onMainnet, connectedInjected } from '/eth-nodes.js';
 import { mountFast } from '/fast/ui.js?cb=7dd8be52';
 import { mountProvide } from '/fast/provide.js?cb=601cf301';
 import { mountBound } from '/fast/bound.js?cb=862c8d6e';
@@ -46,6 +47,10 @@ const settings = {
 };
 
 let ui = null, TS = null;
+// The pool module reads Ethereum through public nodes and, as the last of them, the wallet this page opened the key with (while it is on
+// mainnet), else a wallet the site is already connected to: a provider whose public nodes refuse it keeps working through its own wallet.
+const walletRead = onMainnet(() => keyS.walletProvider?.() || null);
+const getUx = async () => { const ux = await loadUx(); ux.useWallet(() => walletRead() || connectedInjected()); return ux; };
 // a Bitcoin wallet opens the key through tacit.js, which this page loads for the bridge anyway
 const keyS = makeKeySession({ moved: (why) => ui?.lock(why), ways: { btc: (k) => TS.turn(() => openBtcWallet(TS.T, { k, tPriv: TS.tPriv, passkey: isPasskeyAvailable() })) } });
 TS = makeTacitSession({ url: TACIT_URL, key: () => (keyS.unlocked ? { pubHex: keyS.key.pubHex, priv: bytesToHex(keyS.priv()) } : null), secp, bytesToHex, hexToBytes });
