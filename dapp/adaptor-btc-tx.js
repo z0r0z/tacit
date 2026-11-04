@@ -98,7 +98,8 @@ export function makeAdaptorBtcTx({ prims, kit }) {
     // A coin of dust size may carry a note, and funding a commit from it would spend the note: only larger coins fund.
     const picked = [];
     let total = 0, commitFee = prims.feeFor(prims.estCommitVb(1), feeRate);
-    for (const u of satsUtxos.filter((c) => c.value > DUST)) {
+    const spending = new Set(inputs.map((i) => `${i.txid}:${i.vout}`));
+    for (const u of satsUtxos.filter((c) => c.value > DUST && !spending.has(`${c.txid}:${c.vout}`))) {
       picked.push(u); total += u.value;
       commitFee = prims.feeFor(prims.estCommitVb(picked.length), feeRate);
       if (total >= commitValue + commitFee + DUST) break;

@@ -22,7 +22,10 @@ const POSITION_TTL_MS = 5 * 60 * 1000;
 const strip = (h) => String(h).replace(/^0x/, '').toLowerCase();
 const lc = (h) => '0x' + strip(h);
 
-export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv, seed, asset, poolAddress, policy = {} }) {
+// the relayer the pool's lock scan trusts to forward settles (dapp/confidential-lock-scan.js)
+const MAINNET_RELAYER = '0x000000009C28617AC88B52Eae5EFaAcdD4aC34c3';
+
+export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv, seed, asset, poolAddress, relayerAddress = MAINNET_RELAYER, policy = {}, adaptor = null }) {
   const te = new TextEncoder();
   const hex = (b) => [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
   const bytes = (h) => Uint8Array.from(strip(h).match(/../g).map((x) => parseInt(x, 16)));
@@ -31,7 +34,7 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
   const scalarHex = (k) => '0x' + k.toString(16).padStart(64, '0');
   const privBytes = walletPriv instanceof Uint8Array ? walletPriv : bytes(walletPriv);
   const pool = ux.pool;
-  const ad = makeConfidentialAdaptor({ keccak256, secp, signSchnorr, curveOrder: SECP_N, pool });
+  const ad = adaptor || makeConfidentialAdaptor({ keccak256, secp, signSchnorr, curveOrder: SECP_N, pool });
   const rpc = ux.rpc;
   const assetId = lc(asset);
   const identity = () => ux.identity(privBytes);
@@ -89,10 +92,11 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     return lo;
   }
   const inputs = new Map();
-  async function txInput(h) {
-    if (!inputs.has(h)) inputs.set(h, (await rpc('eth_getTransactionByHash', [h]))?.input || null);
+  async function txOf(h) {
+    if (!inputs.has(h)) { const t = await rpc('eth_getTransactionByHash', [h]); inputs.set(h, t && t.input ? { input: t.input, to: String(t.to || '').toLowerCase() } : null); }
     return inputs.get(h);
   }
+  const trustedTo = new Set([poolAddress, relayerAddress].map((a) => String(a).toLowerCase()));
   const claims = new Map();
   // null while the lock is unspent; the s values its settle committed once it is spent ([] for a refund).
   async function findClaim(lockNu, { sinceSecs = 0 } = {}) {
@@ -104,9 +108,12 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     for (const e of events) {
       if (!e.txHash || seen.has(e.txHash) || (e.type !== 'LeavesInserted' && e.type !== 'NullifiersSpent')) continue;
       seen.add(e.txHash);
-      const input = await txInput(e.txHash);
-      const decoded = input && ux.lockScan.decodeSettleCalls(input);
-      for (const call of (decoded && decoded.calls) || []) {
+      const tx = await txOf(e.txHash);
+      const decoded = tx && ux.lockScan.decodeSettleCalls(tx.input);
+      // only a settle the pool itself (or its relayer) was called with says what the pool did: bytes inside the calldata of some other
+      // contract's call are whatever its sender wrote, and a settle-shaped decoy there would end the swap in the wrong phase
+      if (!decoded || !decoded.direct || !trustedTo.has(tx.to)) continue;
+      for (const call of decoded.calls) {
         let f; try { f = ux.lockScan.decodePublicValuesAdaptorFields(call.publicValues); } catch { continue; }
         if (f.lockNullifiers.map(lc).includes(key)) { claims.set(key, f.adaptorClaimS); return f.adaptorClaimS; }
       }
@@ -143,11 +150,21 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     const amount = BigInt(rec.offer.evm.amount);
     await ux.ensureExactNote({ walletPriv: privBytes, asset: assetId, amount, notes: await heldNotes() });
   });
-  // The reservation of a note keeps two swaps of one size from being given the same note.
-  const reserve = (rec) => { const op = rec && rec.lock && rec.lock.op && (rec.lock.op.op || rec.lock.op); if (op && op.nCx) reserved.add(lc(pool.leaf(assetId, op.nCx, op.nCy, op.locker))); };
-  const lockOp = ({ rec, rEvmLock, T, deadline, recipient, refundXonly }) => serial(async () => {
+  // The reservation of a note keeps two swaps of one size from being given the same note. A swap keeps its note across tries: a lock
+  // that is built again (the relay lost the job, or said it failed) is built from the note the first try used, so that if the first
+  // lands after all the second cannot, instead of two locks of one swap being made from two notes.
+  const reserve = (rec) => {
+    if (!rec || rec.phase === 'aborted') return;
+    const op = rec.lock && rec.lock.op && (rec.lock.op.op || rec.lock.op);
+    if (op && op.nCx) reserved.add(lc(pool.leaf(assetId, op.nCx, op.nCy, op.locker)));
+    if (rec.lockNote) reserved.add(lc(rec.lockNote));
+  };
+  const release = ({ rec }) => { if (rec && rec.lockNote) reserved.delete(lc(rec.lockNote)); };
+  const lockOp = ({ rec, rEvmLock, T, deadline, recipient, refundXonly, prefer = null }) => serial(async () => {
     const amount = BigInt(rec.offer.evm.amount);
-    const note = (await heldNotes()).find((n) => BigInt(n.value) === amount && !reserved.has(lc(n.leaf)));
+    const held = await heldNotes();
+    // a note an earlier try used is the one to use: when it is no longer held, that try has probably landed, and the pool says so by the lock's leaf
+    const note = prefer ? held.find((n) => lc(n.leaf) === lc(prefer) && BigInt(n.value) === amount) : held.find((n) => BigInt(n.value) === amount && !reserved.has(lc(n.leaf)));
     if (!note) return null;
     const op = ad.buildAdaptorLock({
       chainBinding: ux.chainBindingHex(), spendRoot: note.root, asset: assetId, amount, lBlinding: scalarHex(rEvmLock), T: affine(T), deadline,
@@ -155,7 +172,7 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
       nNote: { cx: note.cx, cy: note.cy, owner: note.owner, blinding: note.blinding, leafIndex: note.leafIndex, path: note.path, secret: note.secret },
     });
     reserved.add(lc(note.leaf));
-    return { op: { op, leaves: [], lockMemos: ['0x'] }, lockLeaf: op.lockLeaf };
+    return { op: { op, leaves: [], lockMemos: ['0x'] }, lockLeaf: op.lockLeaf, noteLeaf: lc(note.leaf) };
   });
   async function refundFee(amount) {
     try {
@@ -196,5 +213,5 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     return { op, leaves: [op.outLeaf], outputs: [output], ephSeed: scalarHex(derive('claim-eph', id)) };
   }
 
-  return { now, lockNullifier, lockPosition, findClaim, jobStatus, claimStatus: jobStatus, submit, prepare, lockOp, refundOp, refundKey, reserve, available, recipient, claimOp };
+  return { now, lockNullifier, lockPosition, findClaim, jobStatus, claimStatus: jobStatus, submit, prepare, lockOp, refundOp, refundKey, reserve, release, available, recipient, claimOp };
 }

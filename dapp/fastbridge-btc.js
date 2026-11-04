@@ -40,17 +40,21 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
   const getJson = async (path) => JSON.parse(await req(path));
   const orNull = async (fn) => { try { return await fn(); } catch (e) { if (e && e.status === 404) return null; throw e; } };
 
-  // confirmed transactions never change: they are kept
+  // a transaction id is 64 hex digits and nothing else: it is put into a request path
+  const isTxid = (t) => /^[0-9a-f]{64}$/.test(String(t));
+  const need = (txid) => { if (!isTxid(txid)) throw new Error('not a transaction id'); return txid; };
+  // confirmed transactions never change: the last few hundred are kept
   const txs = new Map();
   async function fetchTx(txid) {
+    need(txid);
     if (txs.has(txid)) return txs.get(txid);
     const tx = await orNull(() => getJson(`/tx/${txid}`));
-    if (tx && tx.status && tx.status.confirmed) txs.set(txid, tx);
+    if (tx && tx.status && tx.status.confirmed) { txs.set(txid, tx); if (txs.size > 400) txs.delete(txs.keys().next().value); }
     return tx;
   }
   const tip = async () => Number(await req('/blocks/tip/height'));
   async function status(txid) {
-    const st = await orNull(() => getJson(`/tx/${txid}/status`));
+    const st = await orNull(() => getJson(`/tx/${need(txid)}/status`));
     if (!st || !st.confirmed) return { confirmations: 0, height: 0 };
     return { confirmations: (await tip()) - st.block_height + 1, height: st.block_height };
   }
@@ -60,7 +64,7 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
     return blockTimes.get(height);
   }
   async function outspend(txid, vout) {
-    const o = await getJson(`/tx/${txid}/outspend/${vout}`);
+    const o = await getJson(`/tx/${need(txid)}/outspend/${Number(vout) >>> 0}`);
     return o && o.spent ? o.txid : null;
   }
   async function feeRate() {

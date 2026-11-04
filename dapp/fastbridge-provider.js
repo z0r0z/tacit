@@ -77,7 +77,8 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
   const quoter = makeQuoter({ store: quoteStore, now, params: { ...config.quote, claimPub: config.claimPub, csvBlocks: config.csvBlocks, evmWindowSecs: config.policy.evmWindowSecs, minConfsFor: config.policy.minConfsFor, takeSats } });
   const hold = { reserveSecs: 300, extendSecs: 7200, maxUnbackedShare: 0.5, ...(config.reserve || {}) };
   const refreshSecs = config.inventory?.refreshSecs ?? 60;
-  const reservations = new Map();                       // quote id -> { amount, until, txid }
+  const reservations = new Map();                       // quote id -> { amount, until, txid, swapId }
+  const pending = new Map();                            // swap id -> { amount, until }: an offer being checked, whose payout is held meanwhile
   const published = new Map();
   const checking = new Map();                           // swap id -> { p, done, at }: offers whose checks are under way
   const offerBudgetMs = config.offerBudgetMs ?? 8000;
@@ -121,6 +122,10 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
     for (const [id, r] of reservations) {
       if (r.until <= t) reservations.delete(id);
       else { sum += r.amount; count++; }
+    }
+    for (const [id, h] of pending) {
+      if (h.until <= t) pending.delete(id);
+      else { sum += h.amount; count++; }
     }
     return { sum, count };
   }
@@ -197,6 +202,10 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
     health.lastTick = now();
   }
 
+  // whether the user's Bitcoin lock has the confirmations this provider asked for, as the explorers say now; an explorer that cannot answer does not stop a user
+  async function lockStands(rec) {
+    try { const st = await btc.status(rec.lockTxid); return st.confirmations >= Math.max(1, Number(config.policy.minConfsFor(BigInt(rec.offer.btc.value)))); } catch { return true; }
+  }
   const offerOf = async (id) => published.get(id) || (await swaps.get(id))?.evmOffer || null;
   const reply = (body, status = 200) => ({ status, body });
   const no = (why, retry = false) => reply({ ok: false, retry, why });
@@ -204,20 +213,28 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
   // What an offer comes to: held and checked, or declined with a reason. A check that fails for a reason of its own (an explorer or a node that
   // cannot be read, a bug) is logged and answered as one to try again, with its words, and is not a bare 500.
   async function judgeOffer(body, q, sid) {
+    let held = false;
     try {
-      // an offer whose payout is not held is held now, or declined, before anything is checked of it
-      if (q && !reservations.has(q.id) && !(await swaps.get(sid))) {
-        try { await exclusive(async () => { await capacity(BigInt(q.evmAmount)); }); } catch (e) { if (e.status) return { ok: false, retry: false, why: e.message }; throw e; }
+      // An offer whose payout is not held is held now, or declined, before anything is checked of it. The hold is the swap's, kept while the
+      // offer is checked, so two offers arriving together cannot both be given what is left for one; a reservation covers the one swap that
+      // first uses it, and a second swap on the same quote asks for room of its own.
+      if (q && !(await swaps.get(sid))) {
+        const have = reservations.get(q.id);
+        if (have && have.until > now() && (!have.swapId || have.swapId === sid)) have.swapId = sid;
+        else {
+          try { await exclusive(async () => { await capacity(BigInt(q.evmAmount)); pending.set(sid, { amount: BigInt(q.evmAmount), until: now() + hold.reserveSecs }); held = true; }); } catch (e) { if (e.status) return { ok: false, retry: false, why: e.message }; throw e; }
+        }
       }
       const r = await el.receive({ quoteId: body.quoteId, offer: body.offer });
-      if (r.ok && q && reservations.delete(q.id)) await keep(q.id);
+      const res = q ? reservations.get(q.id) : null;
+      if (r.ok && res && res.swapId === sid && reservations.delete(q.id)) await keep(q.id);
       if (r.ok) stale();
       return r.ok ? { ok: true, phase: r.rec.phase } : { ok: false, retry: !!r.retry, why: r.why };
     } catch (e) {
       const msg = String((e && e.message) || e).slice(0, 160);
       log({ level: 'error', msg: 'an offer could not be checked', id: sid, error: msg });
       return { ok: false, retry: true, why: `the lock could not be checked now: ${msg}` };
-    }
+    } finally { if (held) pending.delete(sid); }
   }
 
   // A request in, { status, body } out. The HTTP layer owns the limits per client; nothing here reads the address.
@@ -248,13 +265,25 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
       }
       if (method === 'POST' && path === '/extend') {
         if (!body || !isId(body.quoteId) || !/^[0-9a-f]{64}$/.test(String(body.txid))) return reply({ error: 'quoteId and txid are required' }, 400);
+        // the transaction is read before the capacity lock is taken: an explorer that is slow must not hold every other request
+        if (!reservations.has(body.quoteId)) return no('no reservation');
+        const tx = await btc.fetchTx(body.txid).catch(() => null);
         return await exclusive(async () => {
           const r = reservations.get(body.quoteId);
           if (!r || r.until <= now()) return no('no reservation');
           if (r.txid && r.txid !== body.txid) return no('this reservation is held for another transaction');
-          const tx = await btc.fetchTx(body.txid).catch(() => null);
+          // held once: the same transaction asked again is answered with the hold it has, which does not start over
+          if (r.txid === body.txid) return reply({ ok: true, until: r.until });
           if (!tx) return no('the lock transaction is not visible yet', true);
           if (!tx.vin || tx.vin.length < 2) return no('that is not a lock transaction');
+          // a hold that stands for a lock is one that pays this provider's take, and one transaction stands for one quote
+          const q = await quoter.get(body.quoteId), take = Number((q && q.takeSats) || 0);
+          if (take > 0 && btc.prims && btc.wallet) {
+            const own = [...btc.prims.p2wpkhScript(btc.wallet.pub)].map((b) => b.toString(16).padStart(2, '0')).join('');
+            if (!(tx.vout || []).some((o) => String(o.scriptpubkey || '').toLowerCase() === own && o.value >= take)) return no('that transaction does not pay the fee of the take');
+          }
+          for (const [id, other] of reservations) if (id !== body.quoteId && other.txid === body.txid) return no('that transaction already holds another reservation');
+          for (const rec of await swaps.list()) if (rec.lockTxid === body.txid) return no('that transaction is already a swap');
           r.txid = body.txid; r.until = Math.max(r.until, now() + hold.extendSecs);
           await keep(body.quoteId);
           return reply({ ok: true, until: r.until });
@@ -282,7 +311,14 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
       }
       const m = /^\/swap\/([0-9a-f]{72})(\/offer)?$/.exec(path);
       if (method === 'GET' && m) {
-        if (m[2]) { const o = await offerOf(m[1]); return o ? reply(o) : reply({ error: 'no offer yet' }, 404); }
+        if (m[2]) {
+          // the pre-signature that lets the user claim is given while the user's lock stands: a lock that has fallen under its confirmations
+          // (replaced, or reorganised away) is not paid for, and is asked about again when it is back
+          const rec = await swaps.get(m[1]);
+          if (rec && (rec.phase === 'locked' || rec.phase === 'offered') && !(await lockStands(rec))) return reply({ error: 'no offer yet' }, 404);
+          const o = await offerOf(m[1]);
+          return o ? reply(o) : reply({ error: 'no offer yet' }, 404);
+        }
         const rec = await swaps.get(m[1]);
         return rec ? reply({ phase: rec.phase, why: rec.why || null }) : reply({ error: 'unknown swap' }, 404);
       }

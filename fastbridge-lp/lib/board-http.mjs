@@ -27,7 +27,7 @@ export function makeBoardHandler(board) {
       if (method === 'POST' && (m = /^\/m\/([0-9a-f]{66})$/.exec(path))) return reply(board.post(m[1], unb64(body && body.b)));
       if (method === 'GET' && (m = /^\/m\/([0-9a-f]{66})\/(\d{1,12})$/.exec(path))) {
         const r = board.inbox(m[1], Number(m[2]));
-        return reply({ next: r.next, items: r.items.map((x) => ({ seq: x.seq, id: x.id, b: b64(x.bytes) })) });
+        return reply({ boot: r.boot, next: r.next, items: r.items.map((x) => ({ seq: x.seq, id: x.id, b: b64(x.bytes) })) });
       }
       if (method === 'PUT' && (m = /^\/r\/([0-9a-f]{32})$/.exec(path))) return reply(board.putReply(m[1], unb64(body && body.b), body && body.sig));
       if (method === 'GET' && (m = /^\/r\/([0-9a-f]{32})$/.exec(path))) { const r = board.reply(m[1]); return r ? reply({ b: b64(r) }) : reply({ error: 'no answer yet' }, 404); }

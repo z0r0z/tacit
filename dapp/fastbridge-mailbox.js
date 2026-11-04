@@ -63,7 +63,7 @@ export async function readProviders({ board, now = () => Math.floor(Date.now() /
 export function makeMailboxServer({ board, keys, handle, signReply, now = () => Math.floor(Date.now() / 1000), pollMs = 2000, log = () => {} }) {
   const gw = bytesToHex(keys.pub);
   const seen = new Map();
-  let after = 0, busy = false, timer = null;
+  let after = 0, boot = null, busy = false, timer = null;
   // a request is answered once: a one-time key and nonce seen again is dropped
   const fresh = (id, until) => {
     const t = now();
@@ -77,7 +77,10 @@ export function makeMailboxServer({ board, keys, handle, signReply, now = () => 
     busy = true;
     let n = 0;
     try {
-      const { next, items } = await board.inbox(gw, after);
+      let r = await board.inbox(gw, after);
+      // a board that has restarted numbers its messages from the start: a cursor from before it would skip every new one, so a changed run is read from 0 (a request already answered is dropped by `fresh`)
+      if (r.boot && r.boot !== boot) { if (boot) { after = 0; r = await board.inbox(gw, 0); } boot = r.boot; }
+      const { next, items } = r;
       for (const m of items) {
         n++;
         try {

@@ -9,6 +9,7 @@
 import { makeBoard } from '../dapp/fastbridge-board.js';
 import { makeBoardHandler, boardKindOf } from './lib/board-http.mjs';
 import { makeHttpServer } from './lib/http.mjs';
+process.on('unhandledRejection', (e) => console.log(JSON.stringify({ ts: new Date().toISOString(), level: 'error', msg: 'unhandled rejection', error: String((e && e.message) || e).slice(0, 200) })));
 
 const port = Number(process.env.FB_BOARD_PORT || 8788);
 const origins = String(process.env.FB_BOARD_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean);

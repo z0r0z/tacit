@@ -7,8 +7,8 @@
 //   T  tacit.js with the key's wallet open     withKey(fn)  a call under that key     ux  the pool module     desk  the desk's URL
 
 import { makeBtcWallet } from '/bitcoin-taproot-wallet.js?cb=6e90dd96';
-import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js?cb=586b3ee3';
-import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=6d248be8';
+import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js?cb=77320a94';
+import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=94a5530b';
 import { makeLocalStore } from '/fastbridge-client.js?cb=632a9387';
 import { makeBtcSwapHolder, holderDone } from '/btcswap-holder.js?cb=ec8dc7eb';
 import { deskClient } from '/btcswap-desk.js?cb=e511951b';

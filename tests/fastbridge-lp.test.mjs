@@ -4,6 +4,7 @@
 //   node tests/fastbridge-lp.test.mjs        (Node 22)
 
 import assert from 'node:assert/strict';
+import net from 'node:net';
 import { realFetch } from './lib/real-fetch.mjs';
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -18,7 +19,7 @@ import { makeHttpCounter } from '../dapp/fastbridge-http.js';
 import { fetched, tacit } from './lib/btc-sim.mjs';
 import { pool, ASSET } from './lib/chain-sim.mjs';
 import { startEsploraMock, decodeRawTx } from './lib/esplora-mock.mjs';
-import { VALUE } from './lib/fastbridge-world.mjs';
+import { VALUE, world } from './lib/fastbridge-world.mjs';
 import { closers, configFor, serve, call, httpWorld, startSwap, bothDone } from './lib/lp-harness.mjs';
 import { makeFileStore, makeFileLogStore } from '../fastbridge-lp/lib/store.mjs';
 import { makeFileStorage } from '../fastbridge-lp/lib/storage.mjs';
@@ -406,6 +407,151 @@ test('a request that fails inside the service is logged with its path, and is st
   const r = await call(s.base, 'GET', '/swap/' + 'c'.repeat(72));
   assert.deepEqual([r.status, r.body.error], [500, 'the service could not answer']);
   assert.ok(s.logs.some((l) => l.msg === 'a request failed' && l.path.startsWith('/swap/') && /disk is full/.test(l.error)), JSON.stringify(s.logs));
+});
+
+test('the pre-signature is given while the user\'s lock stands: a lock that has fallen under its confirmations gets no offer until it is back', async () => {
+  const { w, ref } = httpWorld();
+  w.lEvm.fund(VALUE, 'inv');
+  const s = await serve(w);
+  ref.base = s.base;
+  const counter = makeHttpCounter({ base: s.base, fetchImpl: realFetch });
+  const q = await counter.quote(VALUE);
+  const rec = await startSwap(w, q);
+  await w.run(async () => (await w.lp())?.phase === 'offered');
+  assert.ok(await counter.getEvmOffer(rec.id), 'with the lock confirmed the offer is given');
+  const real = w.lBtc.status;
+  w.lBtc.status = async (t) => (t === rec.lock.txid ? { confirmations: 0, height: 0 } : real(t));
+  assert.equal(await counter.getEvmOffer(rec.id), null, 'a lock that has been reorganised away is not paid for');
+  w.lBtc.status = async () => { throw new Error('explorer down'); };
+  assert.ok(await counter.getEvmOffer(rec.id), 'an explorer that cannot answer does not stop the user');
+  w.lBtc.status = real;
+  assert.ok(await counter.getEvmOffer(rec.id), 'and when the lock is back the offer is too');
+});
+
+test('a request line the URL parser refuses is answered 400 and the server stays up; the first address of a proxy header does not choose the bucket', async () => {
+  const { w } = httpWorld();
+  const s = await serve(w, { trustProxy: true, limits: { default: [3, 3600], offer: [3, 3600] } });
+  const port = s.server.address().port;
+  for (const line of ['GET // HTTP/1.1', 'GET //a:b HTTP/1.1']) {
+    const answer = await new Promise((res, rej) => { const c = net.connect(port, '127.0.0.1', () => c.write(`${line}\r\nHost: x\r\nConnection: close\r\n\r\n`)); let d = ''; c.on('data', (x) => { d += x; }); c.on('close', () => res(d)); c.on('error', rej); });
+    assert.match(answer, /^HTTP\/1\.1 400/, line);
+  }
+  assert.equal((await call(s.base, 'GET', '/health', undefined, { 'x-forwarded-for': '198.51.100.1' })).status, 200, 'the server is still answering');
+  // a client that writes its own first hop is still counted under the address the proxy added
+  const codes = [];
+  for (let i = 0; i < 6; i++) codes.push((await call(s.base, 'GET', '/info', undefined, { 'x-forwarded-for': `10.0.0.${i}, 203.0.113.9` })).status);
+  assert.ok(codes.filter((c) => c === 429).length >= 3, `spoofed first hops did not give a bucket each (${codes})`);
+});
+
+test('extending a reservation needs a transaction that pays the take: not just any lock-shaped one, one transaction holds one quote, and a hold does not start over', async () => {
+  const { w } = httpWorld();
+  w.lEvm.fund(10_000n, 'inv'); manyCoins(w);
+  const own = bytesToHex(w.lBtc.prims.p2wpkhScript(w.lW.wallet.pub));
+  const txs = new Map();
+  const btc = { ...w.lBtc, fetchTx: async (t) => txs.get(t) || w.lBtc.fetchTx(t) };
+  const s = await serve(w, { btc, config: configFor(w, { reserve: { reserveSecs: 900, extendSecs: 7200 } }) });
+  const q1 = (await post(s, '/quote', { amount: '1000' })).body, q2 = (await post(s, '/quote', { amount: '1000' })).body;
+  assert.ok(q1.takeSats > 0, 'a take fee is asked');
+  await post(s, '/reserve', { quoteId: q1.id }); await post(s, '/reserve', { quoteId: q2.id });
+  const A = 'aa'.repeat(32), B = 'bb'.repeat(32);
+  txs.set(A, { vin: [{}, {}], vout: [{ scriptpubkey: '0014' + '11'.repeat(20), value: 1_000_000 }], status: { confirmed: false } });
+  assert.match((await post(s, '/extend', { quoteId: q1.id, txid: A })).body.why, /does not pay the fee of the take/, 'any two-input transaction is not a lock');
+  assert.equal(s.svc.reservations.get(q1.id).txid, null);
+  txs.set(A, { vin: [{}, {}], vout: [{ scriptpubkey: own, value: q1.takeSats - 1 }], status: { confirmed: false } });
+  assert.match((await post(s, '/extend', { quoteId: q1.id, txid: A })).body.why, /does not pay the fee of the take/, 'a payment under the take is not enough');
+  txs.set(A, { vin: [{}, {}], vout: [{ scriptpubkey: own, value: q1.takeSats }], status: { confirmed: false } });
+  const first = await post(s, '/extend', { quoteId: q1.id, txid: A });
+  assert.equal(first.body.ok, true);
+  w.clock.advance(100);
+  assert.equal((await post(s, '/extend', { quoteId: q1.id, txid: A })).body.until, first.body.until, 'asking again does not hold it longer');
+  assert.match((await post(s, '/extend', { quoteId: q2.id, txid: A })).body.why, /already holds another reservation/, 'one transaction stands for one quote');
+  txs.set(B, { vin: [{}, {}], vout: [{ scriptpubkey: own, value: q2.takeSats }], status: { confirmed: false } });
+  assert.equal((await post(s, '/extend', { quoteId: q2.id, txid: B })).body.ok, true, 'its own transaction holds the other');
+  w.clock.advance(7200);
+  assert.equal(s.svc.reservations.size, 2, 'the holds are still there until they run out');
+  assert.equal((await infoOf(s)).available, '10000', 'and then the payout is free again');
+});
+
+test('a slow explorer behind /extend does not hold the other requests: the transaction is read before the capacity lock is taken', async () => {
+  const { w } = httpWorld();
+  w.lEvm.fund(10_000n, 'inv'); manyCoins(w);
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const btc = { ...w.lBtc, fetchTx: async () => { await gate; return null; } };
+  const s = await serve(w, { btc });
+  const q = (await post(s, '/quote', { amount: '1000' })).body;
+  await post(s, '/reserve', { quoteId: q.id });
+  const slow = post(s, '/extend', { quoteId: q.id, txid: 'cc'.repeat(32) });
+  const t0 = Date.now();
+  assert.equal((await post(s, '/quote', { amount: '2000' })).status, 200, 'a quote is answered while an extension waits on the explorer');
+  assert.ok(Date.now() - t0 < 1000);
+  release();
+  assert.equal((await slow).body.retry, true);
+});
+
+test('two offers that arrive together are not both given what is left for one', async () => {
+  const { w } = httpWorld();
+  w.lEvm.fund(1500n, 'inv'); manyCoins(w);
+  const s = await serve(w);
+  const q1 = (await post(s, '/quote', { amount: '1000' })).body, q2 = (await post(s, '/quote', { amount: '1000' })).body;
+  // the checks of a real offer take a few explorer reads; the answer is a stored swap, as the real one
+  s.svc.el.receive = async ({ quoteId, offer }) => { await new Promise((r) => setTimeout(r, 40)); await s.swaps.put({ id: offer.swapId, role: 'el', phase: 'accepted', quoteId, offer: { evm: { amount: '1000' } }, created: w.clock.now() }); return { ok: true, rec: { phase: 'accepted' } }; };
+  const got = await Promise.all([post(s, '/offer', { quoteId: q1.id, offer: { swapId: 'a'.repeat(72) } }), post(s, '/offer', { quoteId: q2.id, offer: { swapId: 'b'.repeat(72) } })]);
+  assert.deepEqual(got.map((r) => r.body.ok).sort(), [false, true], 'one of them is declined, with its Bitcoin still in hand');
+  assert.match(got.find((r) => !r.body.ok).body.why, /cannot take that amount right now/);
+  // the hold of an offer is gone once it is answered: the swap itself holds the payout now
+  assert.equal(s.svc.reservations.size, 0);
+});
+
+test('a reservation belongs to the swap that first uses it: a second swap on the same quote asks for room of its own', async () => {
+  const { w } = httpWorld();
+  w.lEvm.fund(1500n, 'inv'); manyCoins(w);
+  const s = await serve(w);
+  const q = (await post(s, '/quote', { amount: '1000' })).body;
+  await post(s, '/reserve', { quoteId: q.id });
+  s.svc.el.receive = async ({ quoteId, offer }) => { await new Promise((r) => setTimeout(r, 30)); await s.swaps.put({ id: offer.swapId, role: 'el', phase: 'accepted', quoteId, offer: { evm: { amount: '1000' } }, created: w.clock.now() }); return { ok: true, rec: { phase: 'accepted' } }; };
+  const got = await Promise.all([post(s, '/offer', { quoteId: q.id, offer: { swapId: 'a'.repeat(72) } }), post(s, '/offer', { quoteId: q.id, offer: { swapId: 'b'.repeat(72) } })]);
+  assert.deepEqual(got.map((r) => r.body.ok).sort(), [false, true], 'the reservation covers one swap, and the room left covers no second');
+});
+
+test('an offer for a lock that is only in the mempool is not answered and stores nothing; a lock that never gets its confirmations ends the swap', async () => {
+  let captured = null;
+  const w = world({ lpConfs: 3, userCounter: () => ({ sendOffer: async (m) => { captured = m; return { ok: true }; }, getEvmOffer: async () => null }) });
+  const rec = await w.start();
+  await w.userBl.step(rec);
+  w.btc.mine(1, { advance: false });
+  await w.userBl.step(rec);
+  assert.ok(captured, 'the user made its offer once the lock confirmed');
+  const real = w.lBtc.status;
+  w.lBtc.status = async (t) => (t === rec.lock.txid ? { confirmations: 0, height: 0 } : real(t));
+  const r = await w.lp_.receive(captured);
+  assert.deepEqual([r.ok, r.retry], [false, true]); assert.match(r.why, /no confirmation yet/);
+  assert.deepEqual(await w.lpStore.list(), [], 'nothing is held for a lock that can still be replaced');
+  w.lBtc.status = async (t) => (t === rec.lock.txid ? { confirmations: 1, height: (await real(t)).height } : real(t));
+  assert.equal((await w.lp_.receive(captured)).ok, true);
+  const accepted = await w.lp();
+  assert.equal((await w.lp_.step(accepted)).phase, 'accepted', 'three are asked for and one is there');
+  w.clock.advance(43201);
+  const ended = await w.lp_.step(await w.lp());
+  assert.deepEqual([ended.phase, /did not reach its confirmations/.test(ended.why)], ['aborted', true]);
+});
+
+test('an offer whose lock outpoint is not an outpoint is refused before any chain read', async () => {
+  const w = world();
+  let reads = 0;
+  for (const k of ['fetchTx', 'status', 'resolveNote']) { const f = w.lBtc[k]; w.lBtc[k] = async (...a) => { reads++; return f(...a); }; }
+  const rec = await w.start();
+  await w.userBl.step(rec);
+  const base = { swapId: rec.id, btc: { value: String(VALUE), asset: rec.asset, vout: 0 }, evm: { amount: String(VALUE) } };
+  for (const txid of ['../mempool/txids', 'zz', 'aa'.repeat(31), 7, undefined]) {
+    const r = await w.lp_.receive({ quoteId: 'q1', offer: { ...base, btc: { ...base.btc, txid } } });
+    assert.equal(r.ok, false, String(txid)); assert.match(r.why, /malformed offer: the lock outpoint/);
+  }
+  const r2 = await w.lp_.receive({ quoteId: 'q1', offer: { ...base, btc: { ...base.btc, txid: 'aa'.repeat(32), vout: -1 } } });
+  assert.match(r2.why, /lock outpoint/);
+  const r3 = await w.lp_.receive({ quoteId: 'q1', offer: { ...base, btc: { ...base.btc, txid: 'aa'.repeat(32) }, evm: { amount: String(VALUE + 1n) } } });
+  assert.match(r3.why, /amounts differ from the quote/);
+  assert.equal(reads, 0, 'no explorer was asked');
 });
 
 test('a provider with no Bitcoin of its own: each quote names the fee of the take, the lock pays it to the provider, and the take spends it', async () => {

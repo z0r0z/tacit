@@ -26,13 +26,15 @@ export function makeHttpServer({ handle, origins = [], maxBody = 65536, limits =
   }
   setInterval(() => { const t = Date.now() / 1000; for (const [k, b] of buckets) if (t - b.at > 600) buckets.delete(k); }, 60000).unref();
 
-  const server = createServer(async (req, res) => {
+  async function onRequest(req, res) {
     const origin = req.headers.origin;
     const cors = origin && (origins.includes('*') || origins.includes(origin)) ? { 'access-control-allow-origin': origin, vary: 'origin', 'access-control-allow-methods': 'GET, POST, PUT, OPTIONS', 'access-control-allow-headers': 'content-type', 'access-control-max-age': '600' } : {};
     const send = (status, body) => { res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors }); res.end(JSON.stringify(body)); };
     if (req.method === 'OPTIONS') { res.writeHead(204, cors); return res.end(); }
-    const ip = (trustProxy && String(req.headers['x-forwarded-for'] || '').split(',')[0].trim()) || req.socket.remoteAddress || 'unknown';
-    const url = new URL(req.url, 'http://x');
+    // behind one trusted proxy the client is the last address in the list, the one the proxy added: the first is whatever the client wrote
+    const ip = (trustProxy && String(req.headers['x-forwarded-for'] || '').split(',').pop().trim()) || req.socket.remoteAddress || 'unknown';
+    let url;
+    try { url = new URL(req.url, 'http://x'); } catch { return send(400, { error: 'bad request' }); }
     const kind = kindOf(req.method, url.pathname);
     if (!allowed(ip, kind)) return send(429, { error: 'too many requests' });
     let body = null;
@@ -46,6 +48,10 @@ export function makeHttpServer({ handle, origins = [], maxBody = 65536, limits =
     }
     const r = await handle({ method: req.method, path: url.pathname, body });
     send(r.status, r.body);
+  }
+  // whatever a request does, the process stays up: a listener that throws is an unhandled rejection, which ends it
+  const server = createServer((req, res) => {
+    onRequest(req, res).catch(() => { try { if (!res.headersSent) res.writeHead(500, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: 'the service could not answer' })); } catch { /* the connection is gone */ } });
   });
   // a connection is kept longer than a proxy in front keeps its own idle ones, so the proxy never reuses one this side has closed
   server.keepAliveTimeout = 65000;

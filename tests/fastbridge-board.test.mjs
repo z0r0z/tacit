@@ -166,8 +166,8 @@ test('a request: only for a provider with a live ad, of a sealed request\'s size
   const first = board.inbox(gw, 0);
   assert.deepEqual(first.items.map((m) => m.seq), [1, 2, 3]); assert.equal(first.next, 3);
   assert.deepEqual(board.inbox(gw, 2).items.map((m) => m.seq), [3], 'from a cursor');
-  assert.deepEqual(board.inbox(gw, 3), { next: 3, items: [] });
-  assert.deepEqual(board.inbox('02' + 'ff'.repeat(32), 0), { next: 0, items: [] });
+  assert.deepEqual({ ...board.inbox(gw, 3), boot: null }, { next: 3, items: [], boot: null });
+  assert.deepEqual({ ...board.inbox('02' + 'ff'.repeat(32), 0), boot: null }, { next: 0, items: [], boot: null });
   c.advance(601);
   assert.deepEqual(board.inbox(gw, 0).items, [], 'requests run out');
 });
@@ -191,6 +191,50 @@ test('an answer: only the provider the request was for can make it, once, and it
   assert.deepEqual(board.reply(id), reply);
   c.advance(601);
   assert.equal(board.reply(id), null);
+});
+
+test('a want that was taken down stays down: the original, which is public, cannot be put back', () => {
+  const c = clock(), board = makeBoard({ now: c.now });
+  const w = (t, amount, until) => signWant({ pub: pubOf(priv(1)), btcAsset: 'ab'.repeat(32), amount, at: t, until }, priv(1));
+  const original = w(T0, '100000000000', T0 + 86400);
+  board.putWant(original);
+  board.putWant(w(T0 + 5, '0', T0 + 65));
+  assert.deepEqual(board.wants(), []);
+  assert.equal(board.putWant(original).kept, true, 'replayed: not taken');
+  assert.deepEqual(board.wants(), []);
+  assert.equal(board.putWant(w(T0 + 10, '7', T0 + 86410)).ok, true, 'a later want of the key is a new one');
+  assert.equal(board.wants().length, 1);
+  // takedowns of wants that were never there leave nothing behind to fill the board with
+  const other = signWant({ pub: pubOf(priv(2)), btcAsset: 'ab'.repeat(32), amount: '0', at: T0, until: T0 + 60 }, priv(2));
+  board.putWant(other);
+  assert.equal(board.putWant(signWant({ pub: pubOf(priv(2)), btcAsset: 'ab'.repeat(32), amount: '5', at: T0 - 1, until: T0 + 60 }, priv(2))).ok, true, 'nothing was remembered for a want that was never taken');
+});
+
+test('an ad is bounded in size, and a member named __proto__ cannot be added to a signed ad without breaking its signature', () => {
+  const a = adOf(1, T0);
+  assert.equal(checkAd(a, T0), a);
+  assert.match(thrown(() => checkAd({ ...a, extra: 'x'.repeat(3000) }, T0)).message, /too large/);
+  const sneaky = JSON.parse(JSON.stringify(a).replace(/}$/, ',"__proto__":{"x":1}}'));
+  assert.match(thrown(() => checkAd(sneaky, T0)).message, /not signed by its key/, 'the member is part of what is signed');
+  assert.equal(makeBoard({ now: () => T0 }).putAd(a).ok, true);
+});
+
+test('a board that restarts does not leave a provider deaf: the provider reads again from the start when the board\'s run changes', async () => {
+  const c = clock();
+  let board = makeBoard({ now: c.now });
+  const P = providerOf(1, async () => ({ status: 200, body: { ok: true } }), c);
+  board.putAd(adOf(1, T0));
+  const live = { inbox: (...a) => board.inbox(...a), putReply: (...a) => board.putReply(...a), post: (...a) => board.post(...a), reply: (...a) => board.reply(...a) };
+  const server = makeMailboxServer({ board: live, keys: P.keys, handle: P.handle, signReply: P.signReply, now: c.now });
+  const call = pumpedCall(live, server, P.gateway, c.now);
+  for (let i = 0; i < 5; i++) assert.equal((await call('GET', '/info')).status, 200);
+  assert.ok(board.inbox(P.gateway, 0).boot, 'the inbox names the board\'s run');
+  const run1 = board.inbox(P.gateway, 0).boot;
+  board = makeBoard({ now: c.now });                                  // restarted: its ads and messages gone, its numbering from the start
+  board.putAd(adOf(1, T0));
+  assert.notEqual(board.inbox(P.gateway, 0).boot, run1);
+  assert.equal((await call('GET', '/info')).status, 200, 'the first request after the restart is answered');
+  assert.equal((await call('GET', '/info')).status, 200);
 });
 
 // ── the mailbox ──

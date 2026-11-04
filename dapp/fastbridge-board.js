@@ -7,7 +7,8 @@
 //   board.putAd(ad)                     a signed ad (signAd) for a provider's key; replaces that provider's earlier one
 //   board.ads()                         the ads still running
 //   board.post(gateway, bytes)          a sealed request for the provider whose live ad names that gateway key -> { id, seq }
-//   board.inbox(gateway, after)         the requests after a cursor -> { next, items: [{ seq, id, bytes }] }
+//   board.inbox(gateway, after)         the requests after a cursor -> { boot, next, items: [{ seq, id, bytes }] }; `boot` names this run of the board,
+//                                       whose cursors start again after a restart, so a reader that sees it change reads from the start
 //   board.putReply(id, bytes, sig)      the provider's sealed answer, with its signature over it (replySignature)
 //   board.reply(id)                     the answer, or null
 //   board.putWant(want)                 a user waiting for a provider: a signed want (signWant) under a one-time key; amount 0 takes it down
@@ -21,13 +22,14 @@ import { signSchnorr, verifySchnorr, bigintToBytes32 } from './bulletproofs.js';
 
 export class BoardError extends Error { constructor(status, message) { super(message); this.status = status; } }
 
-export const LIMITS = { adSecs: 600, skewSecs: 120, msgSecs: 600, replySecs: 600, maxAds: 200, maxQueue: 64, maxMsg: 70000, minMsg: 4000, maxReply: 70000, maxName: 40, wantSecs: 86400, maxWants: 500 };
+export const LIMITS = { adSecs: 600, skewSecs: 120, msgSecs: 600, replySecs: 600, maxAds: 200, maxQueue: 64, maxMsg: 70000, minMsg: 4000, maxReply: 70000, maxName: 40, wantSecs: 86400, maxWants: 500, maxAd: 2048 };
 
 const te = new TextEncoder();
 const hex = (n) => new RegExp(`^[0-9a-f]{${n}}$`);
 const uint = /^\d{1,30}$/;
 const strip = (h) => String(h).replace(/^0x/, '').toLowerCase();
-const canonical = (o) => JSON.stringify(Object.keys(o).sort().reduce((a, k) => { a[k] = o[k]; return a; }, {}));
+// own members only, whatever their names: `a[k] = v` for a member called __proto__ would set a prototype and leave the member out of what is signed
+const canonical = (o) => JSON.stringify(Object.fromEntries(Object.keys(o).sort().map((k) => [k, o[k]])));
 
 // what an ad says (everything but its signature), as the bytes that are signed
 export const adDigest = (ad) => { const { sig, ...body } = ad; return sha256(concatBytes(te.encode('tacit-fast-ad-v1'), te.encode(canonical(body)))); };
@@ -53,6 +55,7 @@ export function checkAd(ad, now) {
   for (const k of ['minAmount', 'maxAmount', 'flatFee']) if (!uint.test(String(ad[k]))) bad(`the ad's ${k} is not an amount`);
   if (ad.available != null && !uint.test(String(ad.available))) bad('the ad\'s available is not an amount');
   for (const [k, max] of [['feeBps', 10000], ['csvBlocks', 4032], ['evmWindowSecs', 86400 * 7]]) if (!Number.isInteger(ad[k]) || ad[k] < 0 || ad[k] > max) bad(`the ad's ${k} is out of range`);
+  if (JSON.stringify(ad).length > LIMITS.maxAd) bad('the ad is too large');
   if (ad.name != null && (typeof ad.name !== 'string' || ad.name.length > LIMITS.maxName)) bad('the ad\'s name is too long');
   if (!Number.isInteger(ad.at) || !Number.isInteger(ad.until) || ad.until <= ad.at || ad.until - ad.at > LIMITS.adSecs) bad('the ad\'s time is not valid');
   if (ad.until <= now) bad('the ad has run out');
@@ -95,12 +98,15 @@ export function makeBoard({ now = () => Math.floor(Date.now() / 1000), limits = 
   const byId = new Map();                  // message id -> { gateway, claimPub, until }
   const replies = new Map();               // message id -> { bytes, until }
   const wantsBy = new Map();               // want pub -> want
+  const goneBy = new Map();                // want pub -> { at, until } of a want taken down, so the original cannot be put back
+  const boot = bytesToHex(crypto.getRandomValues(new Uint8Array(8)));
   let seq = 0;
 
   function prune() {
     const t = now();
     for (const [k, ad] of adsBy) if (ad.until <= t) adsBy.delete(k);
     for (const [k, w] of wantsBy) if (w.until <= t) wantsBy.delete(k);
+    for (const [k, g] of goneBy) if (g.until <= t) goneBy.delete(k);
     for (const [g, q] of queues) {
       const live = q.filter((m) => m.until > t);
       if (live.length) queues.set(g, live); else queues.delete(g);
@@ -140,7 +146,7 @@ export function makeBoard({ now = () => Math.floor(Date.now() / 1000), limits = 
     inbox(gateway, after = 0) {
       prune();
       const q = (queues.get(gateway) || []).filter((m) => m.seq > after);
-      return { next: q.length ? q[q.length - 1].seq : after, items: q.map(({ seq: s, id, bytes }) => ({ seq: s, id, bytes })) };
+      return { boot, next: q.length ? q[q.length - 1].seq : after, items: q.map(({ seq: s, id, bytes }) => ({ seq: s, id, bytes })) };
     },
     putReply(id, bytes, sig) {
       prune();
@@ -158,9 +164,14 @@ export function makeBoard({ now = () => Math.floor(Date.now() / 1000), limits = 
     putWant(w) {
       prune();
       checkWant(w, now(), L.wantSecs);
-      const have = wantsBy.get(w.pub);
-      if (have && have.at >= w.at) return { ok: true, kept: true };
-      if (BigInt(w.amount) === 0n) { wantsBy.delete(w.pub); return { ok: true, dropped: true }; }
+      const have = wantsBy.get(w.pub), gone = goneBy.get(w.pub);
+      if ((have && have.at >= w.at) || (gone && gone.at >= w.at)) return { ok: true, kept: true };
+      if (BigInt(w.amount) === 0n) {
+        // the want is public, so its taker-down is remembered until it would have run out: replaying the original does not bring it back
+        if (have) goneBy.set(w.pub, { at: w.at, until: have.until });
+        wantsBy.delete(w.pub);
+        return { ok: true, dropped: true };
+      }
       if (!have && wantsBy.size >= L.maxWants) throw new BoardError(503, 'the board has all the wants it takes');
       wantsBy.set(w.pub, w);
       return { ok: true };

@@ -54,6 +54,19 @@ test('the s a real claim commits is the kernel s of the op it was proved from', 
   assert.equal(pv.deadline, op.deadline);
 });
 
+test('public values that claim more array entries than they hold are refused at once, not allocated', () => {
+  const word = (n) => BigInt(n).toString(16).padStart(64, '0');
+  // an outer offset of 32, then a struct whose head words point at one array of a billion entries and hold no bytes for them
+  const head = Array.from({ length: 21 }, (_, i) => (i === 3 || i === 4 || i === 17 || i === 18 || i === 19 ? word(21 * 32) : word(0))).join('');
+  const blob = '0x' + word(32) + head + word(1_000_000_000);
+  const t0 = Date.now();
+  assert.throws(() => scan.decodePublicValuesAdaptorFields(blob), /does not fit its bytes/);
+  assert.throws(() => scan.decodePublicValuesLockFields(blob), /does not fit its bytes/);
+  assert.ok(Date.now() - t0 < 500, 'refused without allocating the array');
+  // a whole one still reads
+  assert.equal(scan.decodePublicValuesAdaptorFields(load('claim').publicValues).lockNullifiers.length, 1);
+});
+
 let passed = 0;
 for (const [name, fn] of tests) {
   try { fn(); passed++; console.log(`  ok - ${name}`); } catch (e) { console.log(`  FAIL - ${name}\n${e.stack}`); process.exitCode = 1; }

@@ -9,8 +9,8 @@
 //   w.takers(amount)        the providers online that take `amount` now: [{ id, name }]
 //   w.waiting()             what is waiting on the boards: { count, total }
 
-import { signWant, checkWant, checkAd } from '/fastbridge-board.js?cb=fe6f1569';
-import { makeBoardClient } from '/fastbridge-board-client.js?cb=6a8ac4e2';
+import { signWant, checkWant, checkAd } from '/fastbridge-board.js?cb=0152bd20';
+import { makeBoardClient } from '/fastbridge-board-client.js?cb=850e1c5e';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 
 export const TAC_ASSET = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';

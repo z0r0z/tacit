@@ -336,6 +336,21 @@ test('an LP that cannot make a note of the exact size tries at a slowing pace an
   assert.match(lp.lastError || '', /no single note covers/);
 });
 
+test('a take whose commit never spreads (its funding coin was spent elsewhere) is built again once it has had time, and then goes', async () => {
+  const w = world();
+  let failing = true, attempts = 0;
+  const real = w.lBtc.broadcast;
+  w.lBtc.broadcast = async (...a) => { if (failing) { attempts++; throw new Error('broadcast refused: txn-mempool-conflict'); } return real(...a); };
+  const rec = await w.start();
+  await w.run(async () => ((await w.lp())?.takeRebuilds || 0) >= 1);
+  const stalled = await w.lp();
+  assert.ok(attempts >= 2 && stalled.takeRebuilds >= 1, `rebuilt (${attempts} tries, ${stalled.takeRebuilds} rebuilds)`);
+  failing = false;
+  await w.run(async () => (await w.user())?.phase === 'done' && (await w.lp())?.phase === 'done');
+  assert.equal((await w.lp()).phase, 'done');
+  void rec;
+});
+
 let passed = 0, ran = 0;
 const ONLY = process.env.ONLY ? new RegExp(process.env.ONLY) : null;
 for (const [name, fn] of tests) {

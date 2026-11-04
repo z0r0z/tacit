@@ -111,6 +111,8 @@ export function makeConfidentialLockScan({ pool }) {
   function readBytes32Array(data, headByteOff) {
     const arrOff = Number(u256At(data, headByteOff));
     const count = Number(u256At(data, arrOff));
+    // a count that is larger than the bytes there are is not an array: it is never allocated (public values inside any calldata are read here)
+    if (!Number.isSafeInteger(arrOff) || !Number.isSafeInteger(count) || arrOff < 0 || (arrOff + 32 + count * 32) * 2 > data.length) throw new Error('public values: an array does not fit its bytes');
     const out = new Array(count);
     for (let i = 0; i < count; i++) out[i] = '0x' + hexWord(data, arrOff + 32 + i * 32);
     return out;

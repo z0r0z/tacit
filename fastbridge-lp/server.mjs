@@ -12,6 +12,7 @@
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+process.on('unhandledRejection', (e) => console.log(JSON.stringify({ ts: new Date().toISOString(), level: 'error', msg: 'unhandled rejection', error: String((e && e.message) || e).slice(0, 200) })));
 
 const DRY = process.argv.includes('--dry-run');
 const cfgPath = resolve(process.env.FB_LP_CONFIG || 'fastbridge-lp/config.json');

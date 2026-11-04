@@ -23,12 +23,13 @@
 // ctx = { seed, now(), policy, store, quotes, btc, evm, counter }
 //   quotes   { get(id) -> { btcAsset, btcValue, evmAsset, evmAmount, validUntil } | null }
 //   policy   { minCsv, minConfsFor(value) -> n, evmWindowSecs, minClaimSecs, claimSlackSecs, maxAmount, minAmount, roundSecs,
-//              refundMarginSecs (600), maxOfferAgeSecs (3600), maxLockFailures (3) }
+//              refundMarginSecs (600), maxOfferAgeSecs (3600), maxLockFailures (3), maxConfirmWaitSecs (43200) }
 //   btc      { prims, wallet:{ pub, priv, xonly }, tx (makeAdaptorBtcTx), satsUtxos(), feeRate(), broadcast(pair),
 //              fetchTx(txid), status(txid) -> { confirmations, height }, tip(), blockTime(height), outspend(txid, vout),
 //              resolveNote(txid, vout) -> { assetIdHex, commitment } | null, crossLaneBlocked(esploraTx) -> reason | null }
 //   evm      { now() (the latest block's timestamp), lockNullifier(lockLeaf) -> hex, prepare({ rec }) (optional: make the exact note ready),
-//              lockOp({ rec, rEvmLock, T, deadline, recipient, refundXonly }) -> { op, lockLeaf } | null (note not ready),
+//              lockOp({ rec, rEvmLock, T, deadline, recipient, refundXonly, prefer }) -> { op, lockLeaf, noteLeaf } | null (note not ready; `prefer` is the note
+//              an earlier try was built from, which a new try uses again so the two cannot both land), release({ rec }) (optional),
 //              refundOp({ rec, position }) -> op, submit(type, op) -> { jobId }, jobStatus(jobId) -> 'pending' | 'settled' | 'failed',
 //              lockPosition(leaf) -> { lIndex, lPath, lockSetRoot } | null,
 //              findClaim(lockNu, { sinceSecs }) -> null (unspent) | [] (spent by a refund) | [z hex, ...] (spent by claims), refundKey(swapIdHex) -> { xonly } }
@@ -59,6 +60,8 @@ export function makeEthereumLocker(ctx) {
     const entered = patch.phase && patch.phase !== rec.phase ? { phaseAt: ctx.now() } : {};
     Object.assign(rec, patch, entered, { updated: ctx.now() });
     await store.put(rec);
+    // a swap that ends with no lock in the pool gives its note back to the pool wallet's free notes
+    if (patch.phase === 'aborted' && evm.release) evm.release({ rec });
     return rec;
   };
   const sidOf = (rec) => hexToBytes(rec.id);
@@ -90,13 +93,18 @@ export function makeEthereumLocker(ctx) {
     if (ctx.now() > quote.validUntil) return reject('quote expired');
     let value, amount;
     try { value = BigInt(offer.btc.value); amount = BigInt(offer.evm.amount); } catch { return reject('malformed offer'); }
+    // what needs no chain read is checked before any: the outpoint's shape, and the amounts against the quote
+    if (!/^[0-9a-f]{64}$/.test(String(offer.btc.txid)) || !Number.isInteger(offer.btc.vout) || offer.btc.vout < 0 || offer.btc.vout > 0xffff) return reject('malformed offer: the lock outpoint');
     if (value < BigInt(policy.minAmount) || value > BigInt(policy.maxAmount)) return reject('amount outside this side\'s limits');
+    if (value !== BigInt(quote.btcValue) || amount !== BigInt(quote.evmAmount)) return reject('the amounts differ from the quote');
     const tx = await btc.fetchTx(offer.btc.txid);
     if (!tx) return reject('the lock transaction is not on the chain', true);
     const out = tx.vout[offer.btc.vout];
     if (!out || !Number.isInteger(out.value) || out.value < DUST_P2TR) return reject('the lock output carries no spendable amount');
-    const note = await btc.resolveNote(offer.btc.txid, offer.btc.vout);
+    // a lock that is only in the mempool can be replaced, and is not answered: the user's page sends its offer once the lock has confirmed
     const st = await btc.status(offer.btc.txid);
+    if (!(st.confirmations > 0)) return reject('the lock has no confirmation yet', true);
+    const note = await btc.resolveNote(offer.btc.txid, offer.btc.vout);
     if (st.confirmations > 0 && ctx.now() - (await btc.blockTime(st.height)) > maxOfferAge) return reject('the offer arrived too late to be answered');
     const chain = {
       spk: out.scriptpubkey, commitment: note ? hx(note.commitment) : '', validNote: !!note && strip(note.assetIdHex) === strip(offer.btc.asset),
@@ -108,7 +116,6 @@ export function makeEthereumLocker(ctx) {
       chain, minConfs: 0, minCsv: policy.minCsv,
     });
     if (!v.ok) return reject(v.reasons.join('; '));
-    if (value !== BigInt(quote.btcValue) || amount !== BigInt(quote.evmAmount)) return reject('the amounts differ from the quote');
     // the lock pays the fee of this side's take, to this side's own address
     const takeSats = Number(quote.takeSats ?? 0), own = hx(btc.prims.p2wpkhScript(btc.wallet.pub));
     if (takeSats > 0 && !tx.vout.some((o) => strip(o.scriptpubkey) === own && o.value >= takeSats)) return reject('the lock does not pay the fee of the take');
@@ -158,8 +165,10 @@ export function makeEthereumLocker(ctx) {
         const st = await btc.status(rec.lockTxid);
         const need = policy.minConfsFor(BigInt(rec.offer.btc.value));
         if (st.confirmations < need) {
-          // while the Bitcoin lock confirms, the note of the exact size is made ready, once
-          if (evm.prepare && !rec.prepared) { await evm.prepare({ rec }); return save(rec, { prepared: true }); }
+          // a lock that does not reach its confirmations (replaced, or reorganised away) does not hold the payout for ever
+          if (ctx.now() - rec.created > (policy.maxConfirmWaitSecs ?? 43200)) return save(rec, { phase: 'aborted', why: 'the lock did not reach its confirmations in time' });
+          // once the lock has a confirmation and needs more, the note of the exact size is made ready, once
+          if (st.confirmations >= 1 && evm.prepare && !rec.prepared) { await evm.prepare({ rec }); return save(rec, { prepared: true }); }
           return rec;
         }
         if (await btc.outspend(rec.lockTxid, rec.lockVout)) return save(rec, { phase: 'aborted', why: 'the lock output was spent before it could be answered' });
@@ -190,18 +199,19 @@ export function makeEthereumLocker(ctx) {
           if (rec.buildRetryAt && ctx.now() < rec.buildRetryAt) return rec;
           const nowSecs = await evm.now();
           if (rec.deadline - nowSecs < policy.minClaimSecs) return save(rec, { phase: 'aborted', why: 'too late to lock' });
-          const args = { rec, rEvmLock, T, deadline: rec.deadline, recipient: rec.offer.evm.recipient, refundXonly: refund.xonly };
+          const args = { rec, rEvmLock, T, deadline: rec.deadline, recipient: rec.offer.evm.recipient, refundXonly: refund.xonly, prefer: rec.lockNote || null };
           const failures = rec.buildFailures || 0;
           const next = { buildRetryAt: ctx.now() + Math.min(policy.buildRetryMaxSecs ?? 600, (policy.buildRetrySecs ?? 30) * 2 ** Math.min(failures, 10)), buildFailures: failures + 1 };
           let built;
           try {
             built = await evm.lockOp(args);
-            // no note of the exact size yet: one is made from a larger note (once), and the lock is tried again
-            if (!built && evm.prepare && !rec.prepared) { await evm.prepare({ rec }); await save(rec, { prepared: true }); built = await evm.lockOp(args); }
+            // no note of the exact size yet: one is made from a larger note (once), and the lock is tried again; not when an earlier try
+            // named its note, which is waited for: another note would let both tries land
+            if (!built && !rec.lockNote && evm.prepare && !rec.prepared) { await evm.prepare({ rec }); await save(rec, { prepared: true }); built = await evm.lockOp(args); }
           } catch (e) { await save(rec, next); throw e; }
           if (!built) return save(rec, { ...next, why: 'waiting for a pool note of the exact size' });
           if (strip(built.lockLeaf) !== strip(expected)) return save(rec, { phase: 'aborted', why: 'the lock built is not the lock this swap names' });
-          return save(rec, { lock: { lockLeaf: expected, lockNu, op: built.op }, why: null, buildRetryAt: null, buildFailures: 0 });
+          return save(rec, { lock: { lockLeaf: expected, lockNu, op: built.op }, lockNote: built.noteLeaf || rec.lockNote || null, why: null, buildRetryAt: null, buildFailures: 0 });
         }
         if (await evm.lockPosition(rec.lock.lockLeaf)) return save(rec, { phase: 'locked' });
         if (!rec.lock.jobId) {
@@ -244,9 +254,13 @@ export function makeEthereumLocker(ctx) {
             asset: hexToBytes(strip(rec.offer.btc.asset)), lockOut: { txid: rec.lockTxid, vout: rec.lockVout, value: rec.lockValue }, lock, sk,
             amount: BigInt(rec.offer.btc.value), rLock: BigInt('0x' + strip(rec.offer.btc.rLock)), satsUtxos: await btc.satsUtxos(), feeRate: await btc.feeRate(),
           });
-          await save(rec, { take: { txid: pair.revealTxid, commitTxid: pair.commitTxid, commitHex: pair.commitHex, revealHex: pair.revealHex } });
+          await save(rec, { take: { txid: pair.revealTxid, commitTxid: pair.commitTxid, commitHex: pair.commitHex, revealHex: pair.revealHex, at: ctx.now() } });
         }
-        await btc.broadcast(rec.take, null);
+        try { await btc.broadcast(rec.take, null); } catch (e) {
+          // a pair whose funding coin was spent elsewhere never goes: once it has had time to spread and its commit is nowhere, it is built again from the coins there are
+          if (rec.take.at != null && ctx.now() - rec.take.at > 600 && (rec.takeRebuilds || 0) < 5 && !(await btc.fetchTx(rec.take.commitTxid).catch(() => null))) await save(rec, { take: null, takeRebuilds: (rec.takeRebuilds || 0) + 1 });
+          throw e;
+        }
         if ((await btc.status(rec.take.txid)).confirmations) return save(rec, { phase: 'done' });
         return rec;
       }
