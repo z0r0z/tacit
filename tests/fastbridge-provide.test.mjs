@@ -175,6 +175,30 @@ test('/fast/#provide opens the panel, which reads the key as soon as it is unloc
   assert.equal(m.root.hidden, false);
 });
 
+test('while it provides, or a bridge it provides is open, the screen is kept awake; a hidden tab with a bridge open says so in its title', async () => {
+  const m = mount(), win = m.dom.window, locks = [];
+  Object.defineProperty(win.navigator, 'wakeLock', { configurable: true, value: { request: async (type) => { const l = { type, released: false, release: async () => { l.released = true; }, addEventListener: () => {} }; locks.push(l); return l; } } });
+  let hidden = false;
+  Object.defineProperty(m.doc, 'hidden', { configurable: true, get: () => hidden });
+  Object.defineProperty(m.doc, 'visibilityState', { configurable: true, get: () => (hidden ? 'hidden' : 'visible') });
+  m.doc.title = 'tacit fast';
+  await m.load();
+  assert.equal(locks.length, 0, 'nothing is kept awake for a key that does not provide');
+  m.$('pv-go').click();
+  await until(() => locks.length === 1, 'the wake lock');
+  assert.equal(locks[0].type, 'screen');
+  // a bridge taken on, then the tab hidden: the title says to keep it open
+  m.stub.st.open = 1; hidden = true; m.doc.dispatchEvent(new win.Event('visibilitychange'));
+  m.ui.refresh?.(); await tick(20);
+  await until(() => /Keep this open: a bridge is under way/.test(m.doc.title), 'the title');
+  hidden = false; m.doc.dispatchEvent(new win.Event('visibilitychange'));
+  await until(() => m.doc.title === 'tacit fast', 'the title back');
+  // stopped with nothing open: the screen may sleep again
+  m.stub.st.open = 0;
+  m.$('pv-go').click();
+  await until(() => locks.every((l) => l.released), 'the lock let go');
+});
+
 let passed = 0, ran = 0;
 for (const [name, fn] of tests) {
   ran++;

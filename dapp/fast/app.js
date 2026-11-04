@@ -4,9 +4,9 @@ import { makeKeySession, signInSheet } from '/trade/key.js?cb=d54a64c1';
 import { makeTacitSession } from '/tacit-session.js?cb=a2d34bb2';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=8222dd8a';
 import { mountFast } from '/fast/ui.js?cb=7dd8be52';
-import { mountProvide } from '/fast/provide.js?cb=9ddd74b6';
+import { mountProvide } from '/fast/provide.js?cb=601cf301';
 import { mountBound } from '/fast/bound.js?cb=862c8d6e';
-import { openFast, openProvider, openBound, discoverProviders } from '/fast/wire.js?cb=b63a61b2';
+import { openFast, openProvider, openBound, discoverProviders } from '/fast/wire.js?cb=42fcc0ae';
 import { makeWants } from '/fast/want.js?cb=81ee0d3f';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 

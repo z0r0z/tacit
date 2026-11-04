@@ -68,7 +68,25 @@ export function mountProvide({ root, keyS, open, hasOpen = () => false, settings
     go.hidden = !inv;
     go.textContent = accepting() ? 'Stop providing' : 'Start providing';
     if (st && st.lastError && !S.note) $('pv-st').textContent = st.lastError;
+    keepAwake();
   }
+
+  // While it provides, or a bridge it provides is open, the screen is kept awake: a laptop that sleeps after taking on a bridge leaves the
+  // user's lock waiting a day for its timelock. A hidden tab with a bridge open says so in its title, where the tab strip shows it.
+  const W = { lock: null, asking: false, title: '' };
+  async function keepAwake() {
+    const st = S.st, need = !!(st && st.running && (st.accepting || st.open > 0));
+    const nav = doc.defaultView && doc.defaultView.navigator;
+    if (need && !W.lock && !W.asking && nav && nav.wakeLock && doc.visibilityState === 'visible') {
+      W.asking = true;
+      try { W.lock = await nav.wakeLock.request('screen'); if (W.lock && W.lock.addEventListener) W.lock.addEventListener('release', () => { W.lock = null; }); } catch { /* refused, or not here: the page says to keep it open */ } finally { W.asking = false; }
+    }
+    if (!need && W.lock) { const l = W.lock; W.lock = null; try { await l.release(); } catch { /* already let go */ } }
+    const warn = 'Keep this open: a bridge is under way · tacit fast';
+    if (need && doc.hidden && st.open > 0) { if (doc.title !== warn) { W.title = doc.title; doc.title = warn; } } else if (doc.title === warn) doc.title = W.title;
+  }
+  // the browser lets go of the lock when the tab is hidden: it is asked for again when the tab is back
+  doc.addEventListener('visibilitychange', async () => { if (S.sess) { try { S.st = await S.sess.status(); } catch { /* the last one read */ } } keepAwake(); });
 
   // what is typed, as the engine takes it: { feeBps, maxAmount } or the reason it cannot be
   function read() {

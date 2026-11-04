@@ -238,7 +238,17 @@ export async function openBound({ T, withKey, ux, priv, pubHex, witnessBase = 'h
 // A provider's defaults, in base units of TAC (8 places): 0.30% and 1 TAC, from 10 to 1,000 TAC.
 export const PROVIDER_DEFAULTS = { feeBps: 30, flatFee: 100_000_000n, minAmount: 1_000_000_000n, maxAmount: 100_000_000_000n };
 
-export async function openProvider({ T, ux, priv, pubHex, boards = [], name = null, fetchImpl = (...a) => fetch(...a), bases = EXPLORERS, hrp = 'bc', now = () => Math.floor(Date.now() / 1000), tickSecs = 15, pollMs = 3000 }) {
+// Whether the one who provides is at the page: a tab that has been in the background for a while (a laptop closing, another tab) may not be
+// there to finish what it takes on, so it takes on nothing new until it is back. Swaps already under way are tended and answered all the same.
+const AWAY_AFTER_MS = 30000;
+function presence(doc = typeof document !== 'undefined' ? document : null) {
+  if (!doc || typeof doc.addEventListener !== 'function') return () => true;
+  let hiddenAt = doc.hidden ? Date.now() : null;
+  doc.addEventListener('visibilitychange', () => { hiddenAt = doc.hidden ? (hiddenAt ?? Date.now()) : null; });
+  return () => hiddenAt == null || Date.now() - hiddenAt < AWAY_AFTER_MS;
+}
+
+export async function openProvider({ T, ux, priv, pubHex, boards = [], name = null, fetchImpl = (...a) => fetch(...a), bases = EXPLORERS, hrp = 'bc', now = () => Math.floor(Date.now() / 1000), tickSecs = 15, pollMs = 3000, present = presence() }) {
   const asset = { btcAsset: TAC_ASSET, evmAsset: TAC_ASSET };
   const { prims, btc, seed, evm } = sides({ T, ux, priv, hrp, bases, fetchImpl, asset, seedTag: 'tacit-fastbridge-lp-seed', forNotes: true });
   const claimPub = hex(prims.wallet.pub);
@@ -280,11 +290,17 @@ export async function openProvider({ T, ux, priv, pubHex, boards = [], name = nu
     await service.start();
     running = true; accepting = !!accept; lastError = null;
     const note = (o) => { lastError = o.error || o.msg || null; };
+    // what is new is taken on only while the one who provides is at the page: a quote, a reservation, or an offer for a swap not stored yet
+    const away = { status: 200, body: { ok: false, retry: true, why: 'the provider is away from its page right now: try again shortly, or another provider' } };
+    const isNew = async (req) => req.method === 'POST' && (req.path === '/quote' || req.path === '/reserve' || (req.path === '/offer' && !(req.body && req.body.offer && (await swaps.get(String(req.body.offer.swapId || '').toLowerCase().replace(/^0x/, ''))))));
+    const handle = async (req) => (!present() && (await isNew(req)) ? (req.path === '/quote' ? { status: 503, body: { error: away.body.why } } : away) : service.handle(req));
+    // the ad is posted only while it is at the page, so a provider that has gone does not keep being chosen
+    const adHandle = (req) => (present() ? service.handle(req) : Promise.resolve({ status: 503, body: null }));
     if (accept) {
       for (const base of boards) {
         const board = makeBoardClient({ base, fetchImpl });
-        const mail = makeMailboxServer({ board, keys, handle: service.handle, signReply: (d) => signSchnorr(d, priv), now, pollMs, log: note });
-        const ads = makeAdPublisher({ board, handle: service.handle, claimPriv: priv, claimPub, keys, name: adName, now, everySecs: 60, log: note });
+        const mail = makeMailboxServer({ board, keys, handle, signReply: (d) => signSchnorr(d, priv), now, pollMs, log: note });
+        const ads = makeAdPublisher({ board, handle: adHandle, claimPriv: priv, claimPub, keys, name: adName, now, everySecs: 60, log: note });
         mail.start(); ads.start();
         stops.push(() => { mail.stop(); ads.stop(); });
       }
@@ -297,5 +313,5 @@ export async function openProvider({ T, ux, priv, pubHex, boards = [], name = nu
     stops.push(() => clearInterval(timer));
   }
   function stop() { for (const f of stops) f(); stops = []; running = false; accepting = false; }
-  return { address: btc.address, claimPub, inventory, start, stop, status, service: () => service };
+  return { address: btc.address, claimPub, inventory, start, stop, status, present, service: () => service };
 }

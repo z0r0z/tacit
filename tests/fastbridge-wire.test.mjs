@@ -167,6 +167,39 @@ test('a provider and a user, each from its own key, find and reach each other th
   provider.stop();
 });
 
+test('a provider away from its page takes on nothing new: no ad is posted and a quote is declined, until it is back', async () => {
+  const pPriv = key(9), pPub = bytesToHex(secp.getPublicKey(pPriv, true)), uPriv = key(10), uPub = bytesToHex(secp.getPublicKey(uPriv, true));
+  const { fetchImpl, posts } = world({ coinsFor: () => [] });
+  const uxP = {
+    cfg: { pool: POOL }, chainBindingHex: () => '0x' + '11'.repeat(32), rpc: async () => '0x0',
+    balance: async () => ({ byAsset: { ['0x' + TAC_ASSET]: { notes: [{ value: 5000n * TAC, leaf: '0x' + 'ab'.repeat(32) }] } } }),
+  };
+  let here = true;
+  openWallet(pPriv);
+  const provider = await openProvider({ T, ux: uxP, priv: pPriv, pubHex: pPub, boards: ['https://board.example'], fetchImpl, hrp: 'tb', pollMs: 15, tickSecs: 1, present: () => here });
+  await provider.start({ settings: { feeBps: 30, flatFee: TAC, minAmount: 10n * TAC, maxAmount: 1000n * TAC }, accept: true });
+  try {
+    await new Promise((r) => setTimeout(r, 80));
+    assert.ok(posts.length >= 1, 'present: the ad is posted');
+    const found = await discoverProviders({ providers: [], boards: ['https://board.example'], fetchImpl });
+    openWallet(uPriv);
+    T._testSetScanHoldingsOverride(() => holdings([[TAC_ASSET, { utxos: [{ utxo: utxo(1), amount: 500n * TAC, blinding: 7n }] }]]));
+    const s = await openFast({ T, withKey: (fn) => fn(T), ux: { cfg: { pool: POOL } }, priv: uPriv, pubHex: uPub, hrp: 'tb', fetchImpl, call: { pollMs: 5 } });
+    here = false;
+    const away = await s.quoteAll(found, 100n * TAC);
+    assert.equal(away.quotes.length, 0);
+    assert.match(String(away.failed[0].error.message), /away from its page/, 'the user is told why');
+    const posted = posts.length;
+    await new Promise((r) => setTimeout(r, 1200));
+    // the publisher posts every minute; what matters is that nothing it posts while away is an ad
+    assert.equal(posts.length, posted, 'no ad while away');
+    here = true;
+    const back = await s.quoteAll(found, 100n * TAC);
+    assert.equal(back.quotes.length, 1, 'back at the page, it quotes');
+    T._testSetScanHoldingsOverride(null);
+  } finally { provider.stop(); }
+});
+
 test('discovering providers: the ones that serve HTTP are checked against their pinned key, one entry for each key, an unreachable one left out', async () => {
   const claimA = '02' + 'aa'.repeat(32), claimB = '03' + 'bb'.repeat(32);
   const info = (claimPub) => ({ claimPub, btcAsset: TAC_ASSET, evmAsset: TAC_ASSET, minAmount: '1000000000', maxAmount: '5000000000', available: null, feeBps: 20, flatFee: '0', csvBlocks: 144, evmWindowSecs: 14400 });
