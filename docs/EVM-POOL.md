@@ -362,12 +362,14 @@ Its `GET /quote` says what completing a box costs it: `depositGas` (its `EVM_POO
 least fee a box may carry at that gas. A page that makes the box takes its fee from that figure (a half over it, so a rise in gas before the
 completion does not strand the box); an older keeper without the fields is asked for a quote at 500,000 gas.
 
-With `EVM_POOL_KEEPER_RECLAIM=1` the keeper also sends back what a box still holds once its deadline has passed, to the intent's `refund` (the router
-lets anyone do this): the whole of a box it never completed, and what a completed one holds above its `amount` (what a swap that funded it paid over).
-It does the second only when it is worth the send (ETH: three times the gas of the send, about 44,000 gas; a token: the keeper's minimum fee and, where it has
-a price, the gas at that price), looks every `EVM_POOL_KEEPER_SURPLUS_SECS` (600) at `EVM_POOL_KEEPER_SURPLUS_BATCH` (10) boxes, oldest deadline first, and
-marks a box it has settled (sent, nothing left, too small to send, or refused by the router for good), so a leftover too small to send stays where it is.
-Reclaim is off by default.
+With `EVM_POOL_KEEPER_RECLAIM=1` the keeper also sends back what a box still holds once its deadline has passed, to the intent's `refund` (the router lets anyone
+do this): the whole of a box it never completed, and what a completed one holds above its `amount` (what a swap that funded it paid over). The gas is the keeper's
+own, since the router sends the whole balance to the refund, so it does either only when the balance is worth the send (ETH: three times the gas of the send, about
+44,000 gas; a token: the keeper's minimum fee and, where it has a price, the gas at that price), and only inside the signer's day budget and over its reserve (the sweep
+subsidy's `EVM_POOL_KEEPER_SWEEP_SUBSIDY_DAILY_WEI` and `EVM_POOL_KEEPER_SUBSIDY_RESERVE_WEI`; with neither set there is no bound). A balance not worth it stays in the box
+(an unfinished box is watched as it is with reclaim off and expires after its grace). The leftover of a completed box is looked for every
+`EVM_POOL_KEEPER_SURPLUS_SECS` (600) in batches of `EVM_POOL_KEEPER_SURPLUS_BATCH` (10), oldest deadline first, and a box is marked once it is settled (sent, nothing
+left, too small, or refused by the router for good). Reclaim is off by default; like the other settings it can be set for one chain (`…_RECLAIM_1`) or one pool.
 
 **Handing a box to a funding page.** A page that funds boxes on the user's behalf takes
 `#tacit-box=<base64url(JSON.stringify({ chainId, intent, hint }))>`, where `intent` and `hint` are exactly the

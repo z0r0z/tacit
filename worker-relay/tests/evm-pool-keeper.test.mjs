@@ -15,7 +15,7 @@ import { loadKeeperConfig, checkKeeperSigner, parseTokenMap, RELAY_EOA } from '.
 import { openKeeperStore } from '../src/lib/evm-pool-keeper-store.js';
 import { makeLeafSync, makeFactsSync, LeafSyncError, ChunkNotKept, FACT_KEYS } from '../src/lib/evm-pool-keeper-leaves.js';
 import { createIntakeHandler, parseDepositSubmission, parseWrapSubmission, parseReceiveSubmission, parseRelaySubmission, ipKey } from '../src/lib/evm-pool-keeper-intake.js';
-import { createKeeper, coverCheck, quoteFee, receiveMinOf, receiveFloorOf, subsidyOf, subsidyRoom, absorbed, sweepGasOf, forgetSweepGas } from '../src/lib/evm-pool-keeper-loop.js';
+import { createKeeper, coverCheck, quoteFee, receiveMinOf, receiveFloorOf, subsidyOf, subsidyRoom, absorbed, sweepGasOf, forgetSweepGas, reclaimWorth } from '../src/lib/evm-pool-keeper-loop.js';
 import { loadZk } from '../src/lib/evm-pool-keeper-prover.js';
 import { makeForwarder } from '../src/lib/evm-pool-forwarder.js';
 import { makeSealedGateway, makeServiceGateway } from '../src/lib/evm-pool-keeper-sealed.js';
@@ -1004,6 +1004,93 @@ await test('a leftover sweep that finds the box empty, or emptied by another sen
   assert.equal(s.store.get(bad).note, 'refused', 'and the refused one stays so');
   assert.equal(await s.chain.balanceOf(TOKEN, bad), 500n);
   assert.equal(await s.chain.balanceOf(TOKEN, REFUND), 2000n);
+});
+
+await test('what a box is worth sending back: ETH at three times the gas of the send, a token at its minimum fee and its price, an unpriced token never', () => {
+  const cfg = mkCfg(), est = 150_000n;
+  assert.equal(reclaimWorth({ bal: 450_000n, token: ETH, est, price: 1n, cfg }), true);
+  assert.equal(reclaimWorth({ bal: 449_999n, token: ETH, est, price: 1n, cfg }), false);
+  assert.equal(reclaimWorth({ bal: 450_000n, token: ETH, est, price: 2n, cfg }), false, 'at twice the gas price it is not');
+  assert.equal(reclaimWorth({ bal: 10n, token: TOKEN, est, price: 1n, cfg }), true, 'the token\'s minimum fee is 10');
+  assert.equal(reclaimWorth({ bal: 9n, token: TOKEN, est, price: 1n, cfg }), false);
+  assert.equal(reclaimWorth({ bal: 10n ** 30n, token: '0x9999999999999999999999999999999999999999', est, price: 1n, cfg }), false, 'a token the keeper has no minimum or price for');
+  const priced = mkCfg({ minFees: new Map(), rates: new Map([[TOKEN.toLowerCase(), 10n ** 18n]]), marginBps: 0n });
+  assert.equal(reclaimWorth({ bal: 150_000n, token: TOKEN, est, price: 1n, cfg: priced }), true);
+  assert.equal(reclaimWorth({ bal: 149_999n, token: TOKEN, est, price: 1n, cfg: priced }), false, 'a token priced at a wei each: its balance against the gas');
+});
+
+await test('with reclaim on, a box whose balance is not worth sending back is left alone, watched as before, and expires after its grace', async () => {
+  const s = setup({ cfg: { reclaim: true, expireGraceSecs: 100 } });
+  const { box } = await addDeposit(s);
+  s.chain.fund(TOKEN, box, 5n);                                                 // the token's minimum fee is 10
+  s.advance(3601);
+  await s.keeper.tick();
+  assert.equal(reclaims(s).length, 0);
+  assert.equal(s.store.get(box).status, 'pending');
+  assert.equal(s.store.get(box).note, 'too little to send back');
+  s.advance(200);
+  await s.keeper.tick();
+  assert.equal(s.store.get(box).status, 'expired');
+  assert.equal(reclaims(s).length, 0);
+  assert.equal(await s.chain.balanceOf(TOKEN, box), 5n, 'left where it is');
+
+  // an ETH pool's box: worth it from three times the gas of the send, 450,000 wei here
+  const e = setup({ cfg: { reclaim: true } });
+  const d = makeDeposit({ amount: 10n ** 18n });                                // (underfunded: it holds a few hundred thousand wei of the ETH it was to hold)
+  const parsed = parseDepositSubmission(d.body, { zk, asset: assetField, now: e.clock.t, cfg: e.cfg });
+  const ebox = await e.chain.depositBoxOf(parsed.intent);
+  e.add('deposit', parsed, ebox, ETH);
+  e.chain.fund(ETH, ebox, 449_999n);
+  e.advance(3601);
+  await e.keeper.tick();
+  assert.equal(reclaims(e).length, 0);
+  e.chain.fund(ETH, ebox, 1n);
+  e.advance(100);
+  await e.keeper.tick();
+  assert.equal(reclaims(e).length, 1);
+  assert.equal(await e.chain.balanceOf(ETH, REFUND), 450_000n);
+  assert.equal(e.store.get(ebox).status, 'reclaimed');
+});
+
+await test('a box sent back is paid for out of the signer\'s day budget: the sweep subsidy\'s, and none set means no bound', async () => {
+  const s = setup({ cfg: { reclaim: true, sweepSubsidyDaily: 200_000n } });
+  s.chain.address = '0x7777777777777777777777777777777777770001';                // its own signer: the day\'s ledger is shared by the process
+  const a = await addDeposit(s), b = await addDeposit(s, { nonce: 1n });
+  s.chain.fund(TOKEN, a.box, 10n);
+  s.chain.fund(TOKEN, b.box, 10n);
+  s.advance(3601);
+  await s.keeper.tick();                                                        // a reclaim costs 150,000 wei here: one fits in 200,000, the second does not
+  assert.equal(reclaims(s).length, 1);
+  const waiting = [a, b].find((x) => s.store.get(x.box).status === 'pending');
+  assert.match(s.store.get(waiting.box).note, /day's budget/);
+  s.advance(86_401);
+  await s.keeper.tick();
+  assert.equal(reclaims(s).length, 2, 'a day on, the budget is whole again');
+
+  const free = setup({ cfg: { reclaim: true } });
+  free.chain.address = '0x7777777777777777777777777777777777770002';
+  const c = await addDeposit(free), d = await addDeposit(free, { nonce: 1n });
+  free.chain.fund(TOKEN, c.box, 10n);
+  free.chain.fund(TOKEN, d.box, 10n);
+  free.advance(3601);
+  await free.keeper.tick();
+  assert.equal(reclaims(free).length, 2, 'with no budget set there is no bound');
+});
+
+await test('a leftover sent back comes out of the same day budget, and waits for it without being marked', async () => {
+  const s = setup({ cfg: { reclaim: true, sweepSurplusSecs: 0, sweepSubsidyDaily: 200_000n } });
+  s.chain.address = '0x7777777777777777777777777777777777770003';
+  const a = await leftover(s, 700n), b = await leftover(s, 800n, { nonce: 1n });
+  s.advance(3601);
+  await s.keeper.tick();                                                        // 150,000 wei a send: one fits in 200,000
+  assert.equal(reclaims(s).length, 1);
+  const left = [a, b].find((x) => s.store.get(x).note !== 'swept');
+  assert.notEqual(s.store.get(left).note, 'dust');
+  assert.ok(s.logs.some((m) => /surplus waits: the day's budget/.test(m)));
+  s.advance(86_401);
+  await s.keeper.tick();
+  assert.equal(reclaims(s).length, 2, 'a day on, it goes');
+  assert.equal(s.store.get(left).note, 'swept');
 });
 
 await test('a funded box past its deadline is still completed (completion stays open while funded)', async () => {

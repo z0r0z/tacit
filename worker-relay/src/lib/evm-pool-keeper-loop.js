@@ -92,6 +92,20 @@ export function absorbed({ token, tokens, cfg, chain, at = nowSecs() }) {
   list.push({ at, wei: (tokens * rate) / E18 });
   ABSORBED.set(key, list);
 }
+// The same record for `wei` of the signer's own ETH, for gas it spends sending a box's balance back (kept only where a day's budget is set, as that is all that reads it).
+export function absorbWei({ wei, cfg, chain, at = nowSecs() }) {
+  if (!cfg.sweepSubsidyDaily || wei <= 0n) return;
+  const key = signerKey(chain), list = (ABSORBED.get(key) || []).filter((x) => at - x.at < 86_400);
+  list.push({ at, wei });
+  ABSORBED.set(key, list);
+}
+
+// Whether sending `bal` of `token` back from a box is worth the gas the keeper pays for it (the router sends the whole balance to the refund, so there is nothing to take the
+// gas from): for ETH, three times what the send costs; for a token, what coverCheck accepts (at least its minimum fee, and its price against the gas).
+export function reclaimWorth({ bal, token, est, price, cfg }) {
+  if (String(token).toLowerCase() === ETH.toLowerCase()) return BigInt(bal) >= BigInt(est) * BigInt(price) * 3n;
+  return coverCheck({ reward: bal, token, gas: est, gasPrice: price, cfg }).ok;
+}
 
 // The floor under the smallest balance a sweep of cost `cost` is done for: RECEIVE_MIN_MULT times the cost, and the token's own.
 export function receiveFloorOf({ token, cost, cfg }) {
@@ -250,12 +264,25 @@ export function createKeeper({
     return out === 'reverted' ? { failed: 'completion reverted on chain' } : { out };
   }
 
-  async function reclaim(r, intent, t) {
+  // Sending a box back is paid for by the signer's own ETH, so it is done only inside what is left of the signer's day budget and over its reserve (the sweep subsidy's:
+  // SWEEP_SUBSIDY_DAILY_WEI and SUBSIDY_RESERVE_WEI, none set = no bound), and counted against it.
+  const reclaimRoom = async (cost, t) => { const room = await subsidyRoom({ chain, cfg, at: t }); return room === null || cost <= room; };
+
+  // `bal`: what the box holds. A balance not worth the gas of sending it back is left where it is (the box is watched as it was with reclaim off, and expires after its grace).
+  async function reclaim(r, intent, t, bal) {
     const fnName = r.kind === 'deposit' ? 'reclaimDeposit' : 'reclaimWrap';
     let est;
     const args = [intent, r.token];
     try { est = await chain.estimate(fnName, args); }
     catch (e) { return failed(r, t, `reclaim: ${revertName(e) || safeErr(e)}`); }
+    const price = BigInt(await chain.gasPrice()), cost = BigInt(est) * price;
+    if (!reclaimWorth({ bal, token: r.token, est, price, cfg })) {
+      const note = 'too little to send back';
+      return t > Number(intent.deadline) + cfg.expireGraceSecs ? finish(r, t, 'expired', { note }) : backoff(r, t, note);
+    }
+    if (!(await reclaimRoom(cost, t))) return backoff(r, t, 'the day\'s budget for sending boxes back is used');
+    store.update(r.box, { note: 'reclaiming' }); r.note = 'reclaiming';
+    absorbWei({ wei: cost, cfg, chain, at: t });
     const limit = (BigInt(est) * 13n) / 10n;
     const out = await submit(r, fnName, args, limit > cfg.gasCap ? cfg.gasCap : limit, t);
     if (out === 'completed') return finish(r, t, 'reclaimed', { tx_hash: store.get(r.box).tx_hash });
@@ -264,8 +291,8 @@ export function createKeeper({
   }
 
   // What a completed deposit box still holds (what its funding paid above the intent's amount) is nobody's after the box's deadline but its refund address's, and the router
-  // lets anyone send it there. With reclaim on, the keeper does, once, when the leftover is worth the gas: three times what the send costs for ETH, and for a token
-  // what coverCheck accepts (at least its minimum fee, and its price against the gas). A box with nothing left, or too little, or one the router refuses for good (a
+  // lets anyone send it there. With reclaim on, the keeper does, once, when the leftover is worth the gas (reclaimWorth) and the signer's budget has room (reclaimRoom).
+  // A box with nothing left, or too little, or one the router refuses for good (a
   // revert that waiting does not change: NotExpired is the one that does) is marked and not looked at again, so none of them holds a place in the batch.
   async function sweepSurplus(r, t) {
     const intent = depositIntentArgs(r.intent), bal = BigInt(await chain.balanceOf(r.token, r.box));
@@ -278,10 +305,11 @@ export function createKeeper({
       if (name && name !== 'NotExpired') { log(`deposit ${r.box}: surplus refused (${name})`); return store.update(r.box, { note: 'refused', updated: t }); }
       return log(`deposit ${r.box}: surplus not sent yet (${name || safeErr(e)})`);
     }
-    const price = await chain.gasPrice(), asEth = String(r.token).toLowerCase() === '0x0000000000000000000000000000000000000000';
-    const worth = asEth ? bal >= BigInt(est) * BigInt(price) * 3n : coverCheck({ reward: bal, token: r.token, gas: est, gasPrice: price, cfg }).ok;
-    if (!worth) return store.update(r.box, { note: 'dust', updated: t });
+    const price = BigInt(await chain.gasPrice()), cost = BigInt(est) * price;
+    if (!reclaimWorth({ bal, token: r.token, est, price, cfg })) return store.update(r.box, { note: 'dust', updated: t });
     if (cfg.dryRun) return log(`deposit ${r.box}: dry run, would send ${bal} back to its refund`);
+    if (!(await reclaimRoom(cost, t))) return log(`deposit ${r.box}: surplus waits: the day's budget for sending boxes back is used`);
+    absorbWei({ wei: cost, cfg, chain, at: t });
     const limit = (BigInt(est) * 13n) / 10n, hash = await chain.send('reclaimDeposit', [intent, r.token], { gas: limit > cfg.gasCap ? cfg.gasCap : limit });
     const rc = await chain.waitReceipt(hash, cfg.receiptWaitSecs * 1000);
     if (!rc) return log(`deposit ${r.box}: surplus sent in ${hash}, not seen mined yet`);
@@ -419,7 +447,7 @@ export function createKeeper({
       return backoff(r, t, res.skipped);
     }
     if (bal < need && r.funded_at) return finish(r, t, 'closed-elsewhere');
-    if (pastDeadline && cfg.reclaim && bal > 0n) { store.update(r.box, { note: 'reclaiming' }); r.note = 'reclaiming'; return reclaim(r, intent, t); }
+    if (pastDeadline && cfg.reclaim && bal > 0n) return reclaim(r, intent, t, bal);
     if (pastGrace) return finish(r, t, 'expired');
     return backoff(r, t);
   }
