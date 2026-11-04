@@ -75,7 +75,7 @@ test('what is asked of a provider before it starts: private TAC, a fee that is a
   assert.match(poor.$('pv-st').textContent, /more private TAC than you have/);
   const m = mount();
   await m.load();
-  for (const [fee, most, re] of [['6', '100', /fee is a percentage from 0 to 5/], ['abc', '100', /fee is a percentage/], ['0.3', '5', /at least 10 TAC/], ['0.3', 'x', /at least 10 TAC/], ['0.3', '6000', /more private TAC/]]) {
+  for (const [fee, most, re] of [['6', '100', /fee is a percentage from 0 to 5/], ['abc', '100', /fee is a percentage/], ['0.3', '5', /at least 10 TAC/], ['0.3', 'x', /at least 10 TAC/], ['0.3', '6000', /more private TAC/], ['4.5', '100', /At 10 TAC that fee is 0\.55 TAC, over the 5% bridgers accept\. Use at most 4\.00%/]]) {
     m.$('pv-fee').value = fee; m.$('pv-most').value = most;
     m.$('pv-go').click(); await tick(5);
     assert.match(m.$('pv-st').textContent, re, `${fee} / ${most}`);

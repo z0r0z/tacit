@@ -102,7 +102,10 @@ export function makeMailboxServer({ board, keys, handle, signReply, now = () => 
   };
 }
 
-// The provider's ad: its terms and what it can take now, read from its own handler, signed with its claim key.
+// The provider's ad: its terms and what it can take now, read from its own handler, signed with its claim key. Each ad stands for
+// AD_SECS (inside the board's 600 s), several times the posting interval, so a late or failed post (a throttled tab, a board that
+// did not answer once) never leaves a gap in which a bridger finds no provider.
+const AD_SECS = 360;
 export function makeAdPublisher({ board, handle, claimPriv, claimPub, keys, name = null, now = () => Math.floor(Date.now() / 1000), everySecs = 60, log = () => {} }) {
   let timer = null;
   async function publish() {
@@ -112,7 +115,7 @@ export function makeAdPublisher({ board, handle, claimPriv, claimPub, keys, name
     const ad = signAd({
       claimPub, gateway: bytesToHex(keys.pub), btcAsset: strip(i.btcAsset), evmAsset: strip(i.evmAsset), minAmount: String(i.minAmount), maxAmount: String(i.maxAmount),
       available: i.available == null ? null : String(i.available), feeBps: i.feeBps, flatFee: String(i.flatFee), csvBlocks: i.csvBlocks, evmWindowSecs: i.evmWindowSecs,
-      ...(name ? { name } : {}), at: t, until: t + 2 * everySecs + 60,
+      ...(name ? { name } : {}), at: t, until: t + Math.min(600, Math.max(AD_SECS, 2 * everySecs + 60)),
     }, claimPriv);
     await board.putAd(ad);
     return ad;

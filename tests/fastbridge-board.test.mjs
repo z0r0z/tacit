@@ -309,7 +309,7 @@ test('the ads: a provider posts its terms and what it can take now; a user reads
   const P = providerOf(1, async (req) => (req.path === '/info' ? { status: 200, body: info } : { status: 404, body: {} }), c);
   const ads = makeAdPublisher({ board, handle: P.handle, claimPriv: P.p, claimPub: P.claimPub, keys: P.keys, name: 'Fast one', now: c.now, everySecs: 60 });
   const first = await ads.publish();
-  assert.deepEqual([first.name, first.available, first.feeBps, first.evmAsset, first.until - first.at], ['Fast one', '7000', 25, 'cd'.repeat(32), 180]);
+  assert.deepEqual([first.name, first.available, first.feeBps, first.evmAsset, first.until - first.at], ['Fast one', '7000', 25, 'cd'.repeat(32), 360], 'an ad stands for six minutes, several posts long, so a late post leaves no gap');
   c.advance(60); info = { ...info, available: '2000' };
   await ads.publish();
   assert.equal(board.ads()[0].available, '2000', 'the newer ad replaces the older');

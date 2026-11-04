@@ -7,6 +7,7 @@
 //   keyS        the key session (trade/key.js)
 //   open()      -> { inventory(), start({ settings, accept }), stop(), status() } for the open key (fast/wire.js openProvider)
 //   hasOpen(pub)  whether this key has provider swaps that are not finished: they are tended as soon as the key is open
+//   base        { minAmount, flatFee } the terms the panel does not ask for (fast/wire.js PROVIDER_DEFAULTS)
 //   settings    { get(pub), set(pub, settings) } the fee and size kept for a key
 //   waiting()   -> { count, total }: the bridges waiting on the boards for a provider (fast/want.js), shown to anyone who could provide
 //   -> { busy() }   whether closing the page now would leave a swap untended
@@ -14,12 +15,13 @@
 import { DEC, ONE, esc, fmtTac, parseTac, slowNet } from './fmt.js';
 
 const MIN_AMOUNT = 10n * ONE;
+const FEE_LIMIT_BPS = 500n;
 const DEFAULT_MOST = 1000n * ONE;
 const percent = (text) => { const t = String(text).trim().replace('%', ''); if (!/^\d+(\.\d{0,2})?$/.test(t)) return null; const bps = Math.round(Number(t) * 100); return bps >= 0 && bps <= 500 ? bps : null; };
 const every = 5000;
 const SCAN = 'https://mempool.space/tx/';
 
-export function mountProvide({ root, keyS, open, hasOpen = () => false, settings = { get: () => null, set: () => {} }, waiting = null, waitMs = 60000, retryMs = 15000, refreshMs = every }) {
+export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_000n }, root, keyS, open, hasOpen = () => false, settings = { get: () => null, set: () => {} }, waiting = null, waitMs = 60000, retryMs = 15000, refreshMs = every }) {
   const doc = root.ownerDocument;
   const S = { sess: null, pub: null, inv: null, st: null, loading: false, note: '', bad: false, timer: 0, opened: false, wait: null };
 
@@ -94,6 +96,12 @@ export function mountProvide({ root, keyS, open, hasOpen = () => false, settings
     if (feeBps == null) return { why: 'The fee is a percentage from 0 to 5.' };
     if (most == null || most < MIN_AMOUNT) return { why: `The most per bridge is at least ${fmtTac(MIN_AMOUNT)} TAC.` };
     if (S.inv && most > S.inv.pool) return { why: 'That is more private TAC than you have.' };
+    // a bridger's page refuses a quote whose fee is over 5% (fastbridge-client.js maxFeeBps), and the smallest bridge feels the flat fee most
+    const least = base.minAmount, atLeast = (least * BigInt(feeBps)) / 10000n + base.flatFee;
+    if (atLeast * 10000n > least * FEE_LIMIT_BPS) {
+      const top = Number(((least * FEE_LIMIT_BPS - base.flatFee * 10000n) / least)) / 100;
+      return { why: `At ${fmtTac(least)} TAC that fee is ${fmtTac(atLeast)} TAC, over the 5% bridgers accept. Use at most ${top.toFixed(2)}%.` };
+    }
     return { feeBps, maxAmount: most };
   }
 

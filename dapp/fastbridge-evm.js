@@ -25,7 +25,10 @@ const lc = (h) => '0x' + strip(h);
 // the relayer the pool's lock scan trusts to forward settles (dapp/confidential-lock-scan.js)
 const MAINNET_RELAYER = '0x000000009C28617AC88B52Eae5EFaAcdD4aC34c3';
 
-export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv, seed, asset, poolAddress, relayerAddress = MAINNET_RELAYER, policy = {}, adaptor = null }) {
+// `selfSettle(x)` -> { txHash }: sends a settle the relay proved but does not send (it is 'held': its sender is under its gas floor)
+// from an account of the page's own, x = { jobId, publicValues, proof, memos }; it is used only after `openGraceMs` of the relay not
+// sending, and a try that fails waits `selfRetryMs` before the next. Without it a held settle waits for the relay.
+export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv, seed, asset, poolAddress, relayerAddress = MAINNET_RELAYER, policy = {}, adaptor = null, selfSettle = null, openGraceMs = 45000, selfRetryMs = 120000, clock = () => Date.now(), log = () => {} }) {
   const te = new TextEncoder();
   const hex = (b) => [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
   const bytes = (h) => Uint8Array.from(strip(h).match(/../g).map((x) => parseInt(x, 16)));
@@ -121,10 +124,31 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     throw new Error('the lock is spent, and the settle that spent it is not found yet');
   }
 
+  // A job the relay proved and holds ('open') is sent by the page's own account once the relay has not sent it for a while; one send at a
+  // time per job, and one that lands counts as settled whatever the relay says of it after.
+  const own = new Map();
+  function sendOwn(id, open) {
+    let o = own.get(id);
+    if (!o) own.set(id, (o = { seen: clock(), retryAt: 0, sending: null, done: false }));
+    if (o.done) return 'settled';
+    if (o.sending || clock() - o.seen < openGraceMs || clock() < o.retryAt) return 'pending';
+    log({ level: 'info', msg: 'the relay holds a settle: sending it from your wallet', jobId: id });
+    o.sending = Promise.resolve().then(() => selfSettle({ jobId: id, publicValues: open.publicValues, proof: open.proof, memos: Array.isArray(open.memos) ? open.memos : [] }))
+      .then((r) => {
+        o.done = true;
+        if (r && r.txHash && ux.relay.landed) Promise.resolve(ux.relay.landed(id, r.txHash)).catch(() => {});
+      })
+      .catch((e) => { o.retryAt = clock() + selfRetryMs; log({ level: 'warn', msg: 'the settle was not sent from your wallet', error: String((e && e.message) || e).slice(0, 160) }); })
+      .finally(() => { o.sending = null; });
+    return 'pending';
+  }
   async function jobStatus(id) {
     const st = await ux.relay.status(id);
     const s = st && st.status;
-    return s === 'settled' ? 'settled' : s === 'failed' || s === 'unknown' ? 'failed' : 'pending';
+    if (s === 'settled' || (own.get(id) && own.get(id).done)) return 'settled';
+    if (s === 'failed' || s === 'unknown') return 'failed';
+    if (s === 'open' && selfSettle && st.publicValues && st.proof) return sendOwn(id, st);
+    return 'pending';
   }
   async function submit(type, bundle) {
     const r = await ux.relay.submitOp({
@@ -165,7 +189,12 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     const send = (fee) => {
       const notes = pick(fee);
       if (!notes) throw new Error(`fastbridge: the pool notes hold ${free.reduce((x, n) => x + BigInt(n.value), 0n)}, short of ${amount}${fee ? ` and the fee of cutting it (${fee})` : ''}`);
-      return ux.transfer({ walletPriv: privBytes, notes, recipientPubHex: identity().pubHex, amount, fee });
+      return ux.transfer({ walletPriv: privBytes, notes, recipientPubHex: identity().pubHex, amount, fee }).catch((e) => {
+        // the relay proved the cut and holds it: the page's own account sends it
+        if (!(e && e.open && selfSettle)) throw e;
+        log({ level: 'info', msg: 'the relay holds a settle: sending it from your wallet', jobId: e.open.jobId });
+        return selfSettle({ jobId: e.open.jobId, publicValues: e.open.publicValues, proof: e.open.proof, memos: e.open.memos || [] });
+      });
     };
     try { await send(0n); } catch (e) {
       const m = String((e && e.message) || e);
