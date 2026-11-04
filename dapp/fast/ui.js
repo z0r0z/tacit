@@ -10,9 +10,10 @@
 //               (fast/wire.js openFast)
 //   wants       waiting for a provider when none takes the amount (fast/want.js makeWants): kept(pub), start(pub, units), stop(pub)
 //   notify(text)  tells the holder, also when the page is in the background, that a provider can take what it waits with
+//   pinned()    the pairing id of a provider the bridger came by a link of (fast/fmt.js pairId), quoted first when it quotes, or null
 //   -> { lock(text), destroy() }
 
-import { DEC, ONE, esc, fmtTac, parseTac, slowNet } from './fmt.js';
+import { DEC, ONE, esc, fmtTac, parseTac, slowNet, pairId } from './fmt.js';
 import { minutesFor } from './route.js';
 export { fmtTac, parseTac, slowNet };
 const pct = (fee, of) => (of > 0n ? `${(Number((fee * 1000000n) / of) / 10000).toFixed(2)}%` : '');
@@ -23,7 +24,7 @@ const big = (xs, pick) => xs.reduce((a, x) => (pick(x) > a ? pick(x) : a), 0n);
 const capOf = (p) => { const t = p.terms; return t.available != null && t.available < t.maxAmount ? t.available : t.maxAmount; };
 const feeLine = (t) => `${(t.feeBps / 100).toFixed(2)}%${t.flatFee > 0n ? ` + ${fmtTac(t.flatFee)} TAC` : ''}`;
 
-export function mountFast({ root, keyS, signIn, open, discover, wants = null, notify = () => {}, quoteDelayMs = 350, refreshMs = 30000, retryMs = 15000, say = () => {} }) {
+export function mountFast({ root, keyS, signIn, open, discover, wants = null, notify = () => {}, pinned = () => null, quoteDelayMs = 350, refreshMs = 30000, retryMs = 15000, say = () => {} }) {
   const doc = root.ownerDocument;
   const S = { providers: [], loaded: false, termsAt: 0, sess: null, pub: null, bal: null, amt: '', quotes: [], quote: null, best: null, seq: 0, busy: false, note: '', bad: false, recs: [], stop: null, timer: 0, opening: null, want: null, told: false, watch: 0, cost: null, sure: null };
 
@@ -206,6 +207,8 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
   });
 
   // ── the amount ──
+  // a bridger who came by a provider's link is paired with it whenever it quotes, the others kept behind it in their order
+  const pinFirst = (quotes) => { const pin = pinned(); return pin ? quotes.slice().sort((a, b) => (pairId(b.provider.id) === pin) - (pairId(a.provider.id) === pin)) : quotes; };
   function typed() {
     readProviders();
     S.amt = $('fx-amt').value; S.quotes = []; S.quote = null; S.best = null; S.note = ''; S.cost = null; S.sure = null;
@@ -220,7 +223,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
         const r = await S.sess.quoteAll(eligible, units);
         if (seq !== S.seq) return;
         if (!r.quotes.length) { note(r.failed[0] ? wording(r.failed[0].error) : 'No provider can take that amount right now.', true); return; }
-        S.quotes = r.quotes; S.quote = r.quotes[0].quote; S.best = r.quotes[0].provider; paintForm();
+        S.quotes = pinFirst(r.quotes); S.quote = S.quotes[0].quote; S.best = S.quotes[0].provider; paintForm();
         // what the lock costs on Bitcoin, and whether this address can pay it, is read before the press and not found out at it
         if (S.sess.cost) {
           const sess = S.sess, c = await sess.cost({ quote: S.quote, provider: S.best }).catch(() => null);
@@ -301,7 +304,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
       if (quotes.some((x) => Number(x.quote.validUntil) <= soon)) {
         const r = await S.sess.quoteAll(quotes.map((x) => x.provider), S.quote.btcValue);
         if (!r.quotes.length) throw new Error('the quote expired');
-        quotes = r.quotes;
+        quotes = pinFirst(r.quotes);
       }
       await S.sess.start({ quotes });
       if (S.want) { const pub = S.pub; S.want = null; S.told = false; clearInterval(S.watch); wants.stop(pub).catch(() => {}); }

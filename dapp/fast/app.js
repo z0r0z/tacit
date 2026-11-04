@@ -4,11 +4,11 @@ import { makeKeySession, signInSheet } from '/trade/key.js?cb=26d9c07b';
 import { makeTacitSession } from '/tacit-session.js?cb=a2d34bb2';
 import { getUx as loadUx, forgetUx } from '/trade/poolux.js?cb=3d572bf4';
 import { onMainnet, connectedInjected } from '/eth-nodes.js';
-import { mountFast } from '/fast/ui.js?cb=79497e73';
-import { mountProvide } from '/fast/provide.js?cb=d375fbd8';
+import { mountFast } from '/fast/ui.js?cb=8c0b458c';
+import { mountProvide } from '/fast/provide.js?cb=572ed41d';
 import { mountBound } from '/fast/bound.js?cb=862c8d6e';
 import { openFast, openProvider, openBound, discoverProviders, PROVIDER_DEFAULTS } from '/fast/wire.js?cb=eedda560';
-import { makeWants } from '/fast/want.js?cb=81ee0d3f';
+import { makeWants } from '/fast/want.js?cb=3dad1fd3';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 
 // The fast bridge page: TAC held on Bitcoin goes to the key's private balance through a provider, and any key can be a provider
@@ -73,8 +73,10 @@ const notify = (text) => {
   try { if (document.hidden && typeof Notification === 'function' && Notification.permission === 'granted') { const n = new Notification('Fast bridge', { body: text, tag: 'tacit-fast-want', icon: '/favicon.svg' }); n.onclick = () => { focus(); n.close(); }; } } catch { /* the page says it */ }
 };
 
+// /fast/#with=<id>: a provider's pairing link (fast/fmt.js pairId), kept for this visit
+const PIN = (/^#with=([0-9a-f]{16})$/i.exec(location.hash) || [])[1]?.toLowerCase() || null;
 ui = mountFast({
-  root: document.getElementById('gate'), keyS, wants, notify,
+  root: document.getElementById('gate'), keyS, wants, notify, pinned: () => PIN,
   signIn: () => signInSheet(keyS, { icons: true, why: 'Open your Tacit wallet to bridge or provide TAC.' }),
   discover: () => discoverProviders(LISTS),
   open: async () => {
@@ -92,7 +94,7 @@ mountBound({
 });
 
 const provide = mountProvide({
-  base: PROVIDER_DEFAULTS, root: document.getElementById('provide'), keyS, hasOpen, settings, waiting: () => wants.waiting(),
+  base: PROVIDER_DEFAULTS, notify, ask: () => wants.ask(), root: document.getElementById('provide'), keyS, hasOpen, settings, waiting: () => wants.waiting(),
   open: async () => {
     const pubHex = keyS.key.pubHex, priv = keyS.priv(), ux = await getUx();
     return TS.withKey((T) => openProvider({ T, ux, priv, pubHex, boards: LISTS.boards, wallet: sendWallet, ask }), pubHex);

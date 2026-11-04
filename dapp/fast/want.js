@@ -7,7 +7,7 @@
 //   w.start(pub, amount)    keeps one for `amount` (base units) and posts it -> the want kept
 //   w.stop(pub)             takes it down and forgets it
 //   w.takers(amount)        the providers online that take `amount` now: [{ id, name }]
-//   w.waiting()             what is waiting on the boards: { count, total }
+//   w.waiting()             what is waiting on the boards: { count, total, items: [{ pub, amount }] smallest first }
 
 import { signWant, checkWant, checkAd } from '/fastbridge-board.js?cb=0152bd20';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=850e1c5e';
@@ -81,7 +81,8 @@ export function makeWants({ boards = [], providers = [], storage = globalThis.lo
         }
       } catch { /* a board that does not answer, or one that keeps no wants yet */ }
     }));
-    return { count: seen.size, total: [...seen.values()].reduce((s, x) => s + x, 0n) };
+    const items = [...seen].map(([pub, amount]) => ({ pub, amount })).sort((a, b) => (a.amount < b.amount ? -1 : a.amount > b.amount ? 1 : 0));
+    return { count: seen.size, total: [...seen.values()].reduce((s, x) => s + x, 0n), items };
   }
 
   return { kept, start, stop, takers, waiting };

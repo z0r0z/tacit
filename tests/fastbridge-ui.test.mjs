@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 import { mountFast, fmtTac, parseTac } from '../dapp/fast/ui.js';
 import { termsOf } from '../dapp/fastbridge-client.js';
+import { pairId } from '../dapp/fast/fmt.js';
 
 const tests = [];
 const test = (name, fn) => tests.push([name, fn]);
@@ -63,7 +64,7 @@ function mount(over = {}) {
   const p = page(), key = over.key || keyStub(), st = over.session || sessionStub();
   const state = { signIns: 0, opens: 0, says: [], discovers: 0 };
   const ui = mountFast({
-    root: p.root, keyS: key, quoteDelayMs: 1, refreshMs: over.refreshMs ?? 30000, wants: over.wants ?? null, notify: over.notify,
+    root: p.root, keyS: key, quoteDelayMs: 1, refreshMs: over.refreshMs ?? 30000, wants: over.wants ?? null, notify: over.notify, pinned: over.pinned,
     discover: over.discover || (async () => { state.discovers++; return over.providers ?? [provider('Tacit')]; }),
     signIn: over.signIn || (async () => { state.signIns++; key.open(); }),
     open: over.open || (async () => { state.opens++; return st.session; }), say: (t) => state.says.push(t),
@@ -258,6 +259,20 @@ test('the best of several quotes is shown with its provider, every provider that
   await press(m);
   await until(() => m.st.calls.starts.length === 1, 'the start');
   assert.deepEqual(m.st.calls.starts[0].quotes.map((x) => x.provider.name), ['Cheap', 'Slow'], 'the best first, then the next to try');
+});
+
+test('a bridger who came by a provider\'s link is paired with it when it quotes, even when another is cheaper, and with the best when it does not', async () => {
+  const ps = [provider('Linked', { feeBps: 50 }), provider('Cheap', { feeBps: 20 })];
+  const m = mount({ providers: ps, pinned: () => pairId('Linked') });
+  await signIn(m);
+  typeIn(m, '100'); await until(() => !m.$('fx-recv').hidden, 'the quote');
+  assert.match(text(m.$('fx-recv')), /Provider Linked/);
+  await press(m); await until(() => m.st.calls.starts.length === 1, 'the start');
+  assert.deepEqual(m.st.calls.starts[0].quotes.map((x) => x.provider.name), ['Linked', 'Cheap'], 'the linked one first, the others behind it');
+  const gone = mount({ providers: [provider('Cheap', { feeBps: 20 }), provider('Slow', { feeBps: 50 })], pinned: () => pairId('Linked') });
+  await signIn(gone);
+  typeIn(gone, '100'); await until(() => !gone.$('fx-recv').hidden, 'the quote');
+  assert.match(text(gone.$('fx-recv')), /Provider Cheap/, 'a linked provider that is not online leaves the best');
 });
 
 test('providers that can take the amount only in pieces, or not at all: said, not quoted', async () => {

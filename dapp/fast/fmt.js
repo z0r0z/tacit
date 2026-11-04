@@ -20,3 +20,6 @@ export function parseTac(text) {
 
 // A read that failed because no node answered (the pool module's `unreachable`, or the browser's own words for a connection that failed), not because of what was asked.
 export const slowNet = (e) => !!e && (e.unreachable === true || /public nodes did not answer|failed to fetch|networkerror|load failed|network request failed/i.test(String(e.message || e)));
+
+// a provider is named in a pairing link (/fast/#with=…) by 16 hex digits of its claim key, after its first byte
+export const pairId = (claimPub) => String(claimPub || '').replace(/^0x/, '').toLowerCase().slice(2, 18);

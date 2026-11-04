@@ -9,10 +9,12 @@
 //   hasOpen(pub)  whether this key has provider swaps that are not finished: they are tended as soon as the key is open
 //   base        { minAmount, flatFee } the terms the panel does not ask for (fast/wire.js PROVIDER_DEFAULTS)
 //   settings    { get(pub), set(pub, settings) } the fee and size kept for a key
-//   waiting()   -> { count, total }: the bridges waiting on the boards for a provider (fast/want.js), shown to anyone who could provide
+//   waiting()   -> { count, total, items }: the bridges waiting on the boards for a provider (fast/want.js), shown to anyone who could provide
+//   notify(t)   a notice for a new waiting bridge this key could take (the page shows it while the tab is hidden); ask() asks leave for it
+//   linkOf(id)  the address of the page that pairs a bridger with this key's provider
 //   -> { busy() }   whether closing the page now would leave a swap untended
 
-import { DEC, ONE, esc, fmtTac, parseTac, slowNet } from './fmt.js';
+import { DEC, ONE, esc, fmtTac, parseTac, slowNet, pairId } from './fmt.js';
 
 const MIN_AMOUNT = 10n * ONE;
 const FEE_LIMIT_BPS = 500n;
@@ -21,9 +23,9 @@ const percent = (text) => { const t = String(text).trim().replace('%', ''); if (
 const every = 5000;
 const SCAN = 'https://mempool.space/tx/';
 
-export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_000n }, root, keyS, open, hasOpen = () => false, settings = { get: () => null, set: () => {} }, waiting = null, waitMs = 60000, retryMs = 15000, refreshMs = every }) {
+export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_000n }, root, keyS, open, hasOpen = () => false, settings = { get: () => null, set: () => {} }, waiting = null, notify = () => {}, ask = async () => {}, linkOf = (id) => `https://tacit.finance/fast/#with=${id}`, waitMs = 60000, retryMs = 15000, refreshMs = every }) {
   const doc = root.ownerDocument;
-  const S = { sess: null, pub: null, inv: null, st: null, loading: false, note: '', bad: false, timer: 0, opened: false, wait: null };
+  const S = { sess: null, pub: null, inv: null, st: null, loading: false, note: '', bad: false, timer: 0, opened: false, wait: null, seen: null };
 
   root.hidden = true;
   root.innerHTML = `
@@ -46,6 +48,13 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
   const running = () => !!(S.st && S.st.running);
   const accepting = () => !!(S.st && S.st.accepting);
 
+  // the waiting bridges this key could take: inside its least and what it holds free, and its most per bridge when it has one set
+  const fitting = (w) => {
+    if (!S.inv || !w || !w.items) return [];
+    const free = S.st && S.st.held != null && S.inv.pool > S.st.held ? S.inv.pool - S.st.held : S.st && S.st.held != null ? 0n : S.inv.pool;
+    const kept = S.pub ? settings.get(S.pub) : null, most = kept && kept.maxAmount != null ? BigInt(kept.maxAmount) : free;
+    return w.items.filter((i) => i.amount >= base.minAmount && i.amount <= free && i.amount <= most);
+  };
   // too little private TAC for the smallest bridge, and not providing (a provider that is on can always stop)
   const short = () => !!(S.inv && S.inv.pool < MIN_AMOUNT && !accepting());
   function paint() {
@@ -53,12 +62,16 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
     const inv = S.inv, st = S.st, w = S.wait && S.wait.count ? S.wait : null;
     $('pv-waiting').textContent = w ? ` · ${w.count} waiting` : '';
     $('pv-want').hidden = !w;
-    if (w) $('pv-want').lastElementChild.textContent = `${w.count} bridge${w.count === 1 ? '' : 's'}, ${fmtTac(w.total)} TAC`;
+    if (w) {
+      const sizes = (w.items || []).map((i) => fmtTac(i.amount)), fits = fitting(w).length;
+      $('pv-want').lastElementChild.textContent = sizes.length ? `${sizes.slice(0, 4).join(' · ')} TAC${sizes.length > 4 ? ` +${sizes.length - 4}` : ''}${inv ? ` (you can take ${fits})` : ''}` : `${w.count} bridge${w.count === 1 ? '' : 's'}, ${fmtTac(w.total)} TAC`;
+    }
     $('pv-inv').innerHTML = S.loading ? '<p class="empty">Reading what you can provide…</p>' : inv ? `
       <div class="kv"><span>Your private TAC</span><b class="num">${esc(fmtTac(inv.pool))} TAC</b></div>${st && st.held != null && st.held > 0n ? `
       <div class="kv"><span>Held for bridges under way</span><b class="num">${esc(fmtTac(st.held))} TAC</b></div>
       <div class="kv"><span>Free to lend now</span><b class="num">${esc(fmtTac(inv.pool > st.held ? inv.pool - st.held : 0n))} TAC</b></div>` : ''}${short() ? `
-      <p class="empty">Providing takes at least ${esc(fmtTac(MIN_AMOUNT))} private TAC.</p>` : ''}` : '';
+      <p class="empty">Providing takes at least ${esc(fmtTac(MIN_AMOUNT))} private TAC.</p>` : ''}${inv.claimPub ? `
+      <div class="kv"><span>Your link</span><b><button class="link" type="button" id="pv-link" data-link="${esc(linkOf(pairId(inv.claimPub)))}">copy</button></b></div>` : ''}` : '';
     $('pv-set').hidden = !inv || accepting();
     const run = $('pv-run');
     run.hidden = !st || !(st.running || st.lastTake);
@@ -166,7 +179,12 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
     } catch (e) { note(String((e && e.message) || e).slice(0, 160), true); }
     paint();
   }
-  $('pv-go').addEventListener('click', go);
+  $('pv-go').addEventListener('click', () => { if (!accepting()) ask().catch(() => {}); go(); });
+  root.addEventListener('click', async (e) => {
+    const b = e.target.closest && e.target.closest('#pv-link');
+    if (!b) return;
+    try { await doc.defaultView.navigator.clipboard.writeText(b.dataset.link); note('Link copied. A bridger who opens it is paired with you whenever you can take their amount.'); } catch { note(b.dataset.link); }
+  });
   root.addEventListener('toggle', () => { if (root.open) load(); });
   keyS.onChange(() => {
     if (!keyS.unlocked || (S.pub && keyS.key.pubHex !== S.pub)) {
@@ -185,7 +203,14 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
   if (doc.defaultView?.location.hash === '#provide') root.open = true;
   // what is waiting for a provider, read now and every minute
   if (waiting) {
-    const look = () => waiting().then((w) => { S.wait = w; paint(); }).catch(() => {});
+    // a bridge that starts waiting and that this key could take is said once (the ones there at the first look are not news)
+    const look = () => waiting().then((w) => {
+      S.wait = w;
+      const now = new Set((w.items || []).map((i) => i.pub));
+      if (S.seen && S.inv) { const fresh = fitting(w).filter((i) => !S.seen.has(i.pub)); if (fresh.length) notify(`A bridge of ${fmtTac(fresh[0].amount)} TAC is waiting for a provider you can be.`); }
+      if (S.inv || !S.seen) S.seen = now;
+      paint();
+    }).catch(() => {});
     look(); setInterval(look, waitMs);
   }
   paint();

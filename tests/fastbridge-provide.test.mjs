@@ -41,7 +41,7 @@ function mount(over = {}) {
     root, keyS: key, refreshMs: over.refreshMs ?? 5000,
     open: async () => { state.opens++; return stub.session; }, hasOpen: over.hasOpen || (() => false),
     settings: { get: (p) => kept.get(p) || null, set: (p, v) => { kept.set(p, v); saved.push(v); } },
-    waiting: over.waiting || null, waitMs: over.waitMs ?? 60000,
+    waiting: over.waiting || null, notify: over.notify, ask: over.ask, waitMs: over.waitMs ?? 60000,
   });
   return { dom, doc, root, key, stub, ui, state, saved, $: (id) => doc.getElementById(id), load: async () => { key.open(); root.open = true; root.dispatchEvent(new dom.window.Event('toggle')); await until(() => !root.querySelector('#pv-go').hidden, 'the panel'); } };
 }
@@ -167,6 +167,33 @@ test('bridges waiting for a provider: counted beside the panel title and in it, 
   await until(() => !m.$('pv-want').hidden, 'the waiting line');
   assert.match(text(m.$('pv-want')), /Waiting for a provider 2 bridges, 1,500 TAC/);
   assert.equal(m.$('pv-waiting').textContent, ' · 2 waiting');
+});
+
+test('the bridges waiting are listed by size with how many this key can take, and one that starts waiting that it can take is told once', async () => {
+  const item = (pub, tac) => ({ pub, amount: BigInt(tac) * TAC });
+  let w = { count: 2, total: 47_896n * TAC, items: [item('a', 10), item('b', 47_886)] };
+  const told = [];
+  const m = mount({ waiting: async () => w, waitMs: 20, notify: (t) => told.push(t) });
+  await m.load();
+  await until(() => /you can take/.test(text(m.$('pv-want'))), 'the sizes');
+  assert.match(text(m.$('pv-want')), /Waiting for a provider 10 · 47,886 TAC \(you can take 1\)/);
+  assert.deepEqual(told, [], 'what was there at the first look is not news');
+  w = { count: 3, total: 0n, items: [item('a', 10), item('c', 250), item('b', 47_886), item('d', 5)] };
+  await until(() => told.length > 0, 'the notice');
+  assert.deepEqual(told, ['A bridge of 250 TAC is waiting for a provider you can be.']);
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal(told.length, 1, 'told once');
+});
+
+test('the key\'s pairing link is offered with what it can provide, and Start providing asks leave to tell it of waiting bridges', async () => {
+  let asked = 0;
+  const m = mount({ ask: async () => { asked++; } });
+  await m.load();
+  const b = m.$('pv-link');
+  assert.equal(b.dataset.link, 'https://tacit.finance/fast/#with=' + 'ab'.repeat(8));
+  m.$('pv-fee').value = '0.3'; m.$('pv-most').value = '100';
+  m.$('pv-go').click(); await tick(5);
+  assert.equal(asked, 1);
 });
 
 test('/fast/#provide opens the panel, which reads the key as soon as it is unlocked', async () => {

@@ -87,7 +87,8 @@ test('wants over HTTP, and fast/want.js: kept in the browser, posted under a one
   assert.equal(posted.length, 1);
   assert.notEqual(posted[0].pub, user, 'signed by a key made for it, not the wallet\'s');
   assert.ok(!JSON.stringify(posted[0]).includes(user.slice(2)), 'nothing of the wallet in it');
-  assert.deepEqual(await w.waiting(), { count: 1, total: 1000n });
+  const waits = await w.waiting();
+  assert.deepEqual([waits.count, waits.total, waits.items.map((i) => i.amount)], [1, 1000n, [1000n]], 'each want is listed with its size');
   assert.equal(w.kept(user).amount, 1000n, 'kept in this browser');
   assert.deepEqual(await w.takers(1000n), [], 'nobody online');
   board.putAd(adOf(7, T0, { btcAsset: asset, minAmount: '500', maxAmount: '5000', available: '800' }));
@@ -99,7 +100,7 @@ test('wants over HTTP, and fast/want.js: kept in the browser, posted under a one
   await w.stop(user);
   assert.equal(w.kept(user), null);
   assert.deepEqual(board.wants(), [], 'taken down on the board too');
-  assert.deepEqual(await w.waiting(), { count: 0, total: 0n });
+  assert.deepEqual(await w.waiting(), { count: 0, total: 0n, items: [] });
   await w.start(user, 5n);
   c.advance(86400);
   assert.equal(w.kept(user), null, 'a want past its day is forgotten');
