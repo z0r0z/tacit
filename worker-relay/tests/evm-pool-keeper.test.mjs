@@ -438,6 +438,33 @@ await test('the leaf sync names the confirmed tree\'s edge as a catch-up point, 
   } finally { server.close(); }
 });
 
+await test('overlapping syncs over one store do not empty it: the keeper tick, the history loop and a relay request each call sync()', async () => {
+  const store = openKeeperStore(':memory:');
+  const chain = mockChain();
+  // A node with latency: every read gives way, so two overlapping runs would both read a chunk before either stored it.
+  const slow = (f) => async (...a) => { await new Promise((r) => setTimeout(r, 3)); return f(...a); };
+  chain.transactLogs = slow(chain.transactLogs); chain.poolState = slow(chain.poolState); chain.blockNumber = slow(chain.blockNumber);
+  const logs = [];
+  const sync = makeLeafSync({ store, chain, zk, startBlock: 0n, confirmations: 2n, logChunk: 3n, log: (m) => logs.push(m) });
+  for (let i = 0; i < 12; i++) chain.foreignTx();
+  const runs = await Promise.all([sync.sync(), sync.sync(), sync.sync()]);
+  for (const r of runs) assert.equal(r.nextIndex, BigInt(chain.leaves.length), 'every caller gets the pool at its head');
+  assert.deepEqual(logs, [], 'no "leaf store inconsistent": nothing was emptied');
+  assert.equal(store.leafCount(), 20, 'the ten confirmed events (blocks 101-110), once each');
+  assert.deepEqual(store.leaves(), chain.leaves.slice(0, 20), 'the same leaves as the chain, in order');
+  // and it goes on: new blocks, overlapping again
+  for (let i = 0; i < 4; i++) chain.foreignTx();
+  const more = await Promise.all([sync.sync(), sync.sync()]);
+  for (const r of more) assert.equal(r.nextIndex, BigInt(chain.leaves.length));
+  assert.deepEqual(logs, []);
+  // a run that fails does not hold up the ones behind it
+  const real = chain.blockNumber; let fail = true;
+  chain.blockNumber = async () => { if (fail) { fail = false; throw new Error('node down'); } return real(); };
+  const [bad, good] = await Promise.allSettled([sync.sync(), sync.sync()]);
+  assert.equal(bad.status, 'rejected'); assert.match(String(bad.reason), /node down/);
+  assert.equal(good.status, 'fulfilled', 'the next caller runs on its own');
+});
+
 await test('leaf sync persists confirmed leaves and events, re-reads the tail, and resets on a dropped block', async () => {
   const store = openKeeperStore(':memory:');
   const chain = mockChain();

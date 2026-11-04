@@ -105,9 +105,22 @@ export function makeLeafSync({ store, chain, zk, startBlock = 0n, confirmations 
     gen++;
   }
 
+  // One run at a time. The keeper's tick, its history loop and every relay request's pipeline each call sync(), and two runs over
+  // one store read the same chunk: the one that stores second finds the pool's next leaf not where it expects it, calls the store
+  // inconsistent and empties it, and the replay of a busy pool's history (hours) starts again under the next overlap (Base,
+  // 2026-11-04: 91 resets in 10 hours, the feed never past its first blocks, relay requests answered "catching up"). A caller that
+  // arrives while a run is going waits for it, then runs its own, which finds the store caught up and costs a tail read. A run that
+  // fails does not hold up the ones behind it.
+  let queue = Promise.resolve();
+  function sync() {
+    const run = queue.then(syncOnce, syncOnce);
+    queue = run.then(() => {}, () => {});
+    return run;
+  }
+
   // Returns { tree, root, nextIndex, head, confirmed }: an incTree over every leaf the pool holds at `head`, and its root
   // there; `confirmed` is the tree over the persisted leaves alone and the block they are read through.
-  async function sync() {
+  async function syncOnce() {
     progressAt = Date.now();
     const head = BigInt(await chain.blockNumber());
     const safe = head - BigInt(confirmations);
