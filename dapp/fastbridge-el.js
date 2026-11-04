@@ -30,7 +30,7 @@
 //   evm      { now() (the latest block's timestamp), lockNullifier(lockLeaf) -> hex, prepare({ rec }) (optional: make the exact note ready),
 //              lockOp({ rec, rEvmLock, T, deadline, recipient, refundXonly, prefer }) -> { op, lockLeaf, noteLeaf } | null (note not ready; `prefer` is the note
 //              an earlier try was built from, which a new try uses again so the two cannot both land), release({ rec }) (optional),
-//              refundOp({ rec, position }) -> op, submit(type, op) -> { jobId }, jobStatus(jobId) -> 'pending' | 'settled' | 'failed',
+//              refundOp({ rec, position }) -> op, submit(type, op) -> { jobId }, jobStatus(jobId, { type, bundle }) -> 'pending' | 'settled' | 'failed',
 //              lockPosition(leaf) -> { lIndex, lPath, lockSetRoot } | null,
 //              findClaim(lockNu, { sinceSecs }) -> null (unspent) | [] (spent by a refund) | [z hex, ...] (spent by claims), refundKey(swapIdHex) -> { xonly } }
 //   counter  { publishEvmOffer(swapIdHex, evmOffer) }
@@ -221,7 +221,7 @@ export function makeEthereumLocker(ctx) {
           const { jobId } = await evm.submit('adaptorlock', rec.lock.op);
           return save(rec, { lock: { ...rec.lock, jobId } });
         }
-        const st = await evm.jobStatus(rec.lock.jobId);
+        const st = await evm.jobStatus(rec.lock.jobId, { type: 'adaptorlock', bundle: rec.lock.op });
         if (st === 'failed') {
           // a lock the relay reports failed will not land: the pool is asked again by leaf before another is built
           if ((rec.lockFailures || 0) + 1 >= (policy.maxLockFailures ?? 3)) return save(rec, { phase: 'aborted', why: 'the lock failed repeatedly' });
@@ -281,7 +281,7 @@ export function makeEthereumLocker(ctx) {
           const { jobId } = await evm.submit('adaptorrefund', rec.refund.op);
           return save(rec, { refund: { ...rec.refund, jobId } });
         }
-        const st = await evm.jobStatus(rec.refund.jobId);
+        const st = await evm.jobStatus(rec.refund.jobId, { type: 'adaptorrefund', bundle: rec.refund.op });
         if (st === 'settled') return save(rec, { phase: 'refunded' });
         if (st === 'failed') return save(rec, { refund: { ...rec.refund, jobId: null } });
         return rec;

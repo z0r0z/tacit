@@ -81,7 +81,7 @@ const { stdinFor } = await import('../dapp/sp1-stdin.js');
 const { makeConfidentialSettler } = await import('../worker/src/confidential-settle.js');
 const store = (() => { const m = new Map(); let pending = []; return { getPending: async () => pending.slice(), putPending: async (ids) => { pending = ids.slice(); }, getJob: async (id) => (m.has(id) ? JSON.parse(JSON.stringify(m.get(id))) : null), putJob: async (id, j) => { m.set(id, JSON.parse(JSON.stringify(j))); } }; })();
 const settler = makeConfidentialSettler({ storage: store, hash: (str) => keccak256(`0x${Buffer.from(str).toString('hex')}`), sleep: async () => {} });
-const log = [], jobsSeen = [];
+const log = [], jobsSeen = [], landedSeen = [];
 const note = (line) => { log.push(line); console.log('  ..   ' + line); };
 const T00 = Date.now();
 let queue = Promise.resolve();
@@ -98,11 +98,8 @@ const execGuest = (env) => new Promise((resolve) => {
   c.stdout.on('data', (d) => { stdout += d; }); c.stderr.on('data', (d) => { stderr += d; });
   c.on('close', (status) => resolve({ status, stdout, stderr }));
 });
-async function runJob(claimed) {
-  const { jobId: id, type, op, memos: jm } = claimed;
-  const rec = { id, type };
-  jobsSeen.push(rec);
-  try {
+// the guest run on an op, as the relay's box proves it: its public values (hex), or a throw with what the guest refused
+async function proveOp(id, type, op, jm, rec) {
     const body = { type, op: JSON.parse(JSON.stringify(op)), memos: jm };
     if (process.env.MUTATE === 'claim-amount' && type === 'adaptorclaim') body.op.amount = Number(body.op.amount) + 1;      // a changed op: the guest must refuse it (not part of a normal run)
     const memos = body.memos || [];
@@ -116,18 +113,53 @@ async function runJob(claimed) {
     rec.exec = `${type}: ${line} in ${((Date.now() - t) / 1000).toFixed(1)} s`;
     if (r.status !== 0 || !existsSync(out)) throw new Error(`the settle guest rejected the op: ${((r.stderr || '') + (r.stdout || '')).split('\n').filter((l) => /panick|assert|error|failed/i.test(l)).slice(0, 3).join(' | ').slice(0, 300)}`);
     note(rec.exec);
-    const pv = readFileSync(out, 'utf8').trim();
+    return readFileSync(out, 'utf8').trim();
+}
+async function runJob(claimed) {
+  const { jobId: id, type, op, memos: jm } = claimed;
+  const rec = { id, type };
+  jobsSeen.push(rec);
+  try {
+    const memos = jm || [];
+    const pv = await proveOp(id, type, op, jm, rec);
     const data = encodeFunctionData({ abi: parseAbi(['function settle(bytes publicValues, bytes proof, bytes[] memos)']), functionName: 'settle', args: [`0x${pv}`, '0x', memos.map((m) => (m.startsWith('0x') ? m : `0x${m}`))] });
     const s = await send(SETTLER, POOL, data);
     rec.txHash = s.hash;
     await settler.ackJob(id, { txHash: s.hash });
   } catch (e) { rec.error = String(e.message || e).slice(0, 400); note(`${type} failed: ${rec.error}`); await settler.ackJob(id, { error: rec.error }); }
 }
+// A held relay (its settle wallet under the gas floor): a relayed settle of an op that does not go on the open board waits, as the live
+// relay's does, and a prove-only job is still proved and handed back, for the page to send itself.
+let held = false;
+const heldJobs = new Map();
 const server = createServer(async (req, res) => {
   const u = new URL(req.url, RELAY);
   const json = (code, b) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(b, (_k, v) => (typeof v === 'bigint' ? v.toString() : v))); };
   const body = req.method === 'POST' ? JSON.parse(await new Promise((r) => { let s = ''; req.on('data', (c) => { s += c; }); req.on('end', () => r(s || '{}')); })) : null;
-  if (u.pathname === '/confidential/relay') return json(200, { state: 'ok', proving: true, settling: true, board: false });
+  if (u.pathname === '/confidential/relay') return json(200, { state: held ? 'held' : 'ok', proving: true, settling: !held, board: false });
+  if (held && u.pathname === '/confidential/submit' && req.method === 'POST') {
+    const mode = body.mode || 'settle', id = keccak256(`0x${Buffer.from(JSON.stringify({ type: body.type, op: body.op, mode, memos: body.memos })).toString('hex')}`);
+    if (!heldJobs.has(id)) {
+      const rec = { id, type: body.type, mode, held: true };
+      jobsSeen.push(rec);
+      if (mode === 'prove') {
+        heldJobs.set(id, { jobId: id, type: body.type, status: 'proving' });
+        queue = queue.then(async () => {
+          try { const pv = await proveOp(id, body.type, body.op, body.memos, rec); heldJobs.set(id, { jobId: id, type: body.type, status: 'proven', publicValues: `0x${pv}`, proof: '0x00', memos: body.memos || [] }); }
+          catch (e) { rec.error = String(e.message || e).slice(0, 400); heldJobs.set(id, { jobId: id, status: 'failed', error: rec.error }); }
+        });
+      } else heldJobs.set(id, { jobId: id, type: body.type, status: 'pending' });
+      console.log(`  ..   held relay took a ${body.type} job (${mode}) [${Math.round((Date.now() - T00) / 1000)} s]`);
+    }
+    return json(200, { ok: true, jobId: id, status: heldJobs.get(id).status });
+  }
+  if (u.pathname === '/confidential/landed' && req.method === 'POST') {
+    const j = heldJobs.get(body.jobId);
+    if (j) heldJobs.set(body.jobId, { ...j, status: 'settled', txHash: body.txHash });
+    landedSeen.push(body);
+    return json(200, { ok: true, status: 'settled', txHash: body.txHash });
+  }
+  if (u.pathname === '/confidential/status' && heldJobs.has(u.searchParams.get('id'))) return json(200, heldJobs.get(u.searchParams.get('id')));
   if (u.pathname === '/confidential/quote') return json(200, { recommendedWrapTipWei: '60000000000000', tipSplitter: '0xf5eBBE5Db610F64D29A0dC5e9534074Af12834F9', gasAwareFloorUnits: '20000', staticFloorUnits: '20000' });
   if (u.pathname === '/confidential/submit' && req.method === 'POST') {
     let r;
@@ -208,7 +240,7 @@ async function syncChain() {
   if (clock.now() > ts) { await rpcA('evm_setNextBlockTimestamp', [clock.now()]); await rpcA('evm_mine'); } else if (ts > clock.now()) clock.advance(ts - clock.now());
 }
 
-function world(tag, { value = AMOUNT } = {}) {
+function world(tag, { value = AMOUNT, self = null } = {}) {
   const btc = chainSim.makeBitcoinSim(clock);
   const kit = tacitKit(sim.tacit);
   const wal = (name) => makeBtcWallet({ priv: bigintToBytes32(sim.scalar(`${tag}/${name}/btc-wallet`)), hrp: 'tb', fetchUtxos: async () => [], broadcastTx: async () => { throw new Error('offline'); }, fetchFeeRate: async () => 3 });
@@ -225,8 +257,9 @@ function world(tag, { value = AMOUNT } = {}) {
   const userPriv = crypto.getRandomValues(new Uint8Array(32));
   ux.identity(userPriv);
   const userSeed = chainSim.sha256(userPriv), lpSeed = chainSim.sha256(new Uint8Array([...lpPriv, 1]));
-  const evmU = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: userPriv, seed: userSeed, asset: ETH_ID, poolAddress: POOL });
-  const evmL = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: lpPriv, seed: lpSeed, asset: ETH_ID, poolAddress: POOL });
+  const own = (who) => (self ? { selfSettle: self(who), openGraceMs: 2000, log: (o) => note(`${tag} ${who}: ${o.msg}`) } : {});
+  const evmU = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: userPriv, seed: userSeed, asset: ETH_ID, poolAddress: POOL, ...own('user') });
+  const evmL = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: lpPriv, seed: lpSeed, asset: ETH_ID, poolAddress: POOL, ...own('lp') });
 
   const quote = { id: 'q1', btcAsset: Buffer.from(etch.asset).toString('hex'), btcValue: value, evmAsset: ETH_ID, evmAmount: AMOUNT, validUntil: clock.now() + 1e6 };
   const offers = new Map();
@@ -314,6 +347,41 @@ const heldOf = async (priv) => ((await ux.balance(priv)).byAsset[ETH_ID] || { no
   w.userOnline = true;
   await w.run(async () => (await w.rec('user'))?.phase === 'refund-wait');
   ok(!jobsSeen.slice(seenBefore).some((j) => j.type === 'adaptorclaim'), 'the returning user builds no claim: its Bitcoin comes back on the timelock');
+}
+
+// ── C. the relay is held (its settle wallet under its floor): it proves but sends nothing. The LP's cut and lock and the user's claim are
+//       proved prove-only and sent from each one's own Ethereum wallet (fast/wire.js walletSettle, an EIP-1193 provider on the fork) ──
+{
+  const src = readFileSync(join(ROOT, 'dapp/fast/wire.js'), 'utf8');
+  const walletSettle = new Function(`${src.slice(src.indexOf('export function walletSettle('), src.indexOf('// What both roles need of a key')).replace('export function', 'function')}; return walletSettle;`)();
+  const sends = [];
+  const eoa = { user: '0x00000000000000000000000000000000000c1a1e', lp: '0x0000000000000000000000000000000000001e9d' };
+  for (const a of Object.values(eoa)) { await rpcA('anvil_impersonateAccount', [a]); await rpcA('anvil_setBalance', [a, hex(10n ** 18n)]); }
+  const provider = (who) => ({ request: async ({ method, params }) => {
+    if (method === 'eth_chainId') return '0x1';
+    if (method === 'eth_requestAccounts') return [eoa[who]];
+    if (method === 'eth_sendTransaction') { const h = await rpcA('eth_sendTransaction', [{ ...params[0], gas: '0x7A1200' }]); sends.push({ who, h }); return h; }
+    return rpcA(method, params || []);
+  } });
+  const ownTypes = () => jobsSeen.filter((j) => j.held).map((j) => `${j.type}/${j.mode}`);
+  held = true;
+  const relayedBefore = jobsSeen.filter((j) => j.txHash).length;
+  const w = world('C', { self: (who) => walletSettle({ ux, wallet: () => provider(who), sleep, everyMs: 200 }) });
+  const t1 = Date.now();
+  await w.start();
+  await w.run(async () => (await w.rec('user'))?.phase === 'done' && (await w.rec('lp'))?.phase === 'done');
+  const lp = await w.rec('lp');
+  ok(!!lp.take && !!(await w.btc.resolveNote(lp.take.txid, 0)), `with the relay held the swap still ends: the LP took the Bitcoin (${Math.round((Date.now() - t1) / 1000)} s)`);
+  ok(jobsSeen.filter((j) => j.txHash).length === relayedBefore, 'the held relay sent nothing');
+  const kinds = ownTypes();
+  ok(kinds.includes('adaptorlock/prove') && kinds.includes('adaptorclaim/prove'), `the lock and the claim were proved prove-only (${kinds.join(', ')})`);
+  ok(sends.some((x) => x.who === 'lp') && sends.some((x) => x.who === 'user'), `each sent its own settles from its wallet (${sends.map((x) => x.who).join(', ')})`);
+  for (const x of sends) { const rc = await rpcA('eth_getTransactionReceipt', [x.h]); ok(rc && rc.status === '0x1' && rc.to.toLowerCase() === POOL.toLowerCase(), `the ${x.who}'s settle landed in the pool (${x.h.slice(0, 10)})`); }
+  const mine = await heldOf(w.userPriv);
+  ok(mine.length === 1 && mine[0] === AMOUNT, `the user's private ETH note of ${AMOUNT} units is found from its key alone (${mine.join(',')})`);
+  ok(landedSeen.length >= 2, `the relay was told where each landed (${landedSeen.length})`);
+  ok(!jobsSeen.some((j) => j.held && j.error), 'no prove-only job failed');
+  held = false;
 }
 
 console.log(`\nfork reads: ${proxy.stats.hits} from the cache, ${proxy.stats.misses} asked of the upstream, ${proxy.stats.retries} asked again`);

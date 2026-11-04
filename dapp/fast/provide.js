@@ -70,7 +70,7 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
       <div class="kv"><span>Your private TAC</span><b class="num">${esc(fmtTac(inv.pool))} TAC</b></div>${st && st.held != null && st.held > 0n ? `
       <div class="kv"><span>Held for bridges under way</span><b class="num">${esc(fmtTac(st.held))} TAC</b></div>
       <div class="kv"><span>Free to lend now</span><b class="num">${esc(fmtTac(inv.pool > st.held ? inv.pool - st.held : 0n))} TAC</b></div>` : ''}${short() ? `
-      <p class="empty">Providing takes at least ${esc(fmtTac(MIN_AMOUNT))} private TAC.</p>` : ''}${inv.claimPub ? `
+      <p class="empty">Providing takes at least ${esc(fmtTac(MIN_AMOUNT))} private TAC. <a href="/#card=bridge">Make TAC private ↗</a></p>` : ''}${inv.claimPub ? `
       <div class="kv"><span>Your link</span><b><button class="link" type="button" id="pv-link" data-link="${esc(linkOf(pairId(inv.claimPub)))}">copy</button></b></div>` : ''}` : '';
     $('pv-set').hidden = !inv || accepting();
     const run = $('pv-run');

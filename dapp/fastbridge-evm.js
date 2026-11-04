@@ -25,9 +25,9 @@ const lc = (h) => '0x' + strip(h);
 // the relayer the pool's lock scan trusts to forward settles (dapp/confidential-lock-scan.js)
 const MAINNET_RELAYER = '0x000000009C28617AC88B52Eae5EFaAcdD4aC34c3';
 
-// `selfSettle(x)` -> { txHash }: sends a settle the relay proved but does not send (it is 'held': its sender is under its gas floor)
-// from an account of the page's own, x = { jobId, publicValues, proof, memos }; it is used only after `openGraceMs` of the relay not
-// sending, and a try that fails waits `selfRetryMs` before the next. Without it a held settle waits for the relay.
+// `selfSettle(x)` -> { txHash }: sends a settle the relay does not send (it is 'held': its sender is under its gas floor) from an
+// account of the page's own, x = { jobId, publicValues, proof, memos }; it is used only after `openGraceMs` of the relay not sending,
+// and a try that fails waits `selfRetryMs` before the next. Without it a held settle waits for the relay. See jobStatus.
 export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv, seed, asset, poolAddress, relayerAddress = MAINNET_RELAYER, policy = {}, adaptor = null, selfSettle = null, openGraceMs = 45000, selfRetryMs = 120000, clock = () => Date.now(), log = () => {} }) {
   const te = new TextEncoder();
   const hex = (b) => [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
@@ -124,37 +124,46 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     throw new Error('the lock is spent, and the settle that spent it is not found yet');
   }
 
-  // A job the relay proved and holds ('open') is sent by the page's own account once the relay has not sent it for a while; one send at a
-  // time per job, and one that lands counts as settled whatever the relay says of it after.
+  // A settle the relay does not send is sent by the page's own account (`selfSettle`) once the relay has not sent it for a while. Two ways:
+  // a job the relay proved and put on its open board ('open': a cut, a plain transfer) is sent with that proof; a job the relay leaves
+  // waiting while it is 'held' (its settle wallet under its gas floor: an adaptor lock, claim or refund never goes on the open board) is
+  // proved again prove-only, which a held relay still does, and that proof is sent. One send at a time per job; one that lands counts as
+  // settled whatever the relay says of the job after. Sending it shows the account's address on Ethereum, which the wallet asks about.
   const own = new Map();
-  function sendOwn(id, open) {
+  function sendOwn(id, proven) {
     let o = own.get(id);
     if (!o) own.set(id, (o = { seen: clock(), retryAt: 0, sending: null, done: false }));
     if (o.done) return 'settled';
     if (o.sending || clock() - o.seen < openGraceMs || clock() < o.retryAt) return 'pending';
     log({ level: 'info', msg: 'the relay holds a settle: sending it from your wallet', jobId: id });
-    o.sending = Promise.resolve().then(() => selfSettle({ jobId: id, publicValues: open.publicValues, proof: open.proof, memos: Array.isArray(open.memos) ? open.memos : [] }))
-      .then((r) => {
+    o.sending = Promise.resolve().then(proven)
+      .then((x) => selfSettle({ jobId: x.jobId || id, publicValues: x.publicValues, proof: x.proof, memos: Array.isArray(x.memos) ? x.memos : [] }).then((r) => [x, r]))
+      .then(([x, r]) => {
         o.done = true;
-        if (r && r.txHash && ux.relay.landed) Promise.resolve(ux.relay.landed(id, r.txHash)).catch(() => {});
+        if (r && r.txHash && ux.relay.landed) for (const j of new Set([id, x.jobId || id])) Promise.resolve(ux.relay.landed(j, r.txHash)).catch(() => {});
       })
       .catch((e) => { o.retryAt = clock() + selfRetryMs; log({ level: 'warn', msg: 'the settle was not sent from your wallet', error: String((e && e.message) || e).slice(0, 160) }); })
       .finally(() => { o.sending = null; });
     return 'pending';
   }
-  async function jobStatus(id) {
+  const relayHeld = async () => { try { const r = ux.relay.state ? await ux.relay.state() : null; return !!(r && r.state === 'held'); } catch { return false; } };
+  // `again` = { type, bundle }: the op the job was submitted with, so a job a held relay leaves waiting can be proved prove-only
+  async function jobStatus(id, again = null) {
     const st = await ux.relay.status(id);
     const s = st && st.status;
     if (s === 'settled' || (own.get(id) && own.get(id).done)) return 'settled';
     if (s === 'failed' || s === 'unknown') return 'failed';
-    if (s === 'open' && selfSettle && st.publicValues && st.proof) return sendOwn(id, st);
+    if (!selfSettle) return 'pending';
+    if (s === 'open' && st.publicValues && st.proof) return sendOwn(id, () => st);
+    if (again && again.bundle && (own.has(id) || (await relayHeld()))) return sendOwn(id, () => ux.relay.prove(specOf(again.type, again.bundle)));
     return 'pending';
   }
+  const specOf = (type, bundle) => ({
+    type, op: bundle.op, leaves: bundle.leaves || [], outputs: bundle.outputs || null,
+    ephRand: bundle.ephSeed ? seeded(bundle.ephSeed) : undefined, lockMemos: bundle.lockMemos || null,
+  });
   async function submit(type, bundle) {
-    const r = await ux.relay.submitOp({
-      type, op: bundle.op, leaves: bundle.leaves || [], outputs: bundle.outputs || null,
-      ephRand: bundle.ephSeed ? seeded(bundle.ephSeed) : undefined, lockMemos: bundle.lockMemos || null,
-    });
+    const r = await ux.relay.submitOp(specOf(type, bundle));
     if (!r || !r.jobId) throw new Error('the relay did not take the job');
     return { jobId: r.jobId };
   }
@@ -196,10 +205,12 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
       for (const n of sorted.reverse()) { if (sum >= need || out.length >= 16) break; out.push(n); sum += BigInt(n.value); }
       return sum >= need ? out : null;
     };
-    const send = (fee) => {
+    const send = async (fee) => {
       const notes = pick(fee);
       if (!notes) throw new Error(`fastbridge: the pool notes hold ${free.reduce((x, n) => x + BigInt(n.value), 0n)}, short of ${amount}${fee ? ` and the fee of cutting it (${fee})` : ''}`);
-      return ux.transfer({ walletPriv: privBytes, notes, recipientPubHex: identity().pubHex, amount, fee }).catch((e) => {
+      // with the relay held the cut is proved prove-only and sent from the page's own account at once
+      const own = selfSettle && (await relayHeld()) ? (x) => { log({ level: 'info', msg: 'the relay is held: sending the cut from your wallet', jobId: x.jobId }); return selfSettle(x); } : null;
+      return ux.transfer({ walletPriv: privBytes, notes, recipientPubHex: identity().pubHex, amount, fee, ...(own ? { selfSettle: own } : {}) }).catch((e) => {
         // the relay proved the cut and holds it: the page's own account sends it
         if (!(e && e.open && selfSettle)) throw e;
         log({ level: 'info', msg: 'the relay holds a settle: sending it from your wallet', jobId: e.open.jobId });

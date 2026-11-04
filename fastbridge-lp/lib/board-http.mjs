@@ -38,5 +38,6 @@ export function makeBoardHandler(board) {
   };
 }
 
-// What a message costs the board to take is the dear kind of request: it gets the smaller bucket.
-export const boardKindOf = (method, path) => (method === 'POST' || method === 'PUT' ? 'write' : 'default');
+// What a message costs the board to take is the dear kind of request: it gets the smaller bucket. A want is posted once per bridge a
+// user waits with and costs nothing to make up, so it has its own, far smaller one.
+export const boardKindOf = (method, path) => (method === 'PUT' && path === '/want' ? 'want' : method === 'POST' || method === 'PUT' ? 'write' : 'default');

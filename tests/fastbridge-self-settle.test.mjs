@@ -14,13 +14,13 @@ const walletSettle = new Function(`${body.replace('export function', 'function')
 
 const ASSET = 'ab'.repeat(32);
 const OPEN = { status: 'open', publicValues: '0xaa', proof: '0xbb', memos: ['0xcc'] };
-function adapter({ status = OPEN, selfSettle = null, notes = [], transfer = null } = {}) {
+function adapter({ status = OPEN, selfSettle = null, notes = [], transfer = null, held = false, prove = null } = {}) {
   let t = 0;
   const landed = [];
   const ux = {
     pool: { leaf: (a, x) => x, nullifier: (l) => l }, rpc: async () => null, identity: () => ({ pubHex: '03' }), chainBindingHex: () => '0x00',
     balance: async () => ({ byAsset: { ['0x' + ASSET]: { notes } } }),
-    relay: { status: async (id) => ({ jobId: id, ...(typeof status === 'function' ? status() : status) }), landed: async (id, h) => { landed.push([id, h]); } },
+    relay: { status: async (id) => ({ jobId: id, ...(typeof status === 'function' ? status() : status) }), landed: async (id, h) => { landed.push([id, h]); }, state: async () => ({ state: held ? 'held' : 'ok' }), prove: prove || (async () => { throw new Error('not asked'); }) },
     transfer: transfer || (async () => ({})),
   };
   const logs = [];
@@ -65,6 +65,29 @@ test('without a wallet a held settle waits for the relay; what the relay says of
   }
   const bare = adapter({ status: { status: 'open' }, selfSettle: async () => { throw new Error('not asked'); } });
   bare.at(1e9); assert.equal(await bare.evm.jobStatus('j'), 'pending', 'an open job without its proof is not sent');
+});
+
+test('a lock, claim or refund that a held relay leaves waiting is proved prove-only and sent from the wallet; a relay that is not held is waited for', async () => {
+  const proved = [], sent = [];
+  const bundle = { op: { kind: 'claim' }, leaves: ['0x1'], outputs: [{ v: 1 }], lockMemos: null };
+  const a = adapter({ status: { status: 'pending' }, held: true, prove: async (spec) => { proved.push(spec); return { jobId: 'p1', status: 'proven', publicValues: '0x5', proof: '0x6', memos: ['0x7'] }; }, selfSettle: async (x) => { sent.push(x); return { txHash: '0xab' }; } });
+  assert.equal(await a.evm.claimStatus('j', { type: 'adaptorclaim', bundle }), 'pending'); assert.equal(proved.length, 0, 'the relay has its while first');
+  a.at(1000); await a.evm.claimStatus('j', { type: 'adaptorclaim', bundle }); await tick(); await tick();
+  assert.deepEqual(proved.map((x) => [x.type, x.op.kind, x.leaves[0]]), [['adaptorclaim', 'claim', '0x1']], 'the same op, proved prove-only');
+  assert.deepEqual(sent, [{ jobId: 'p1', publicValues: '0x5', proof: '0x6', memos: ['0x7'] }]);
+  assert.equal(await a.evm.claimStatus('j', { type: 'adaptorclaim', bundle }), 'settled');
+  assert.deepEqual(a.landed.map((x) => x[0]).sort(), ['j', 'p1'], 'both jobs are told where it landed');
+  const ok = adapter({ status: { status: 'pending' }, held: false, selfSettle: async () => { throw new Error('not asked'); } });
+  ok.at(1e9); assert.equal(await ok.evm.jobStatus('j', { type: 'adaptorlock', bundle }), 'pending', 'a relay that is not held is waited for');
+  const blind = adapter({ status: { status: 'pending' }, held: true, selfSettle: async () => { throw new Error('not asked'); } });
+  blind.at(1e9); assert.equal(await blind.evm.jobStatus('j'), 'pending', 'a job whose op is not known is waited for');
+});
+
+test('with the relay held the cut is proved prove-only and sent from the wallet at once', async () => {
+  const sent = [], seen = [];
+  const a = adapter({ held: true, notes: [{ leaf: '0x' + '0'.repeat(63) + '1', value: '5000' }], transfer: async (o) => { seen.push(o); return o.selfSettle({ jobId: 'c2', publicValues: '0x1', proof: '0x2', memos: [] }); }, selfSettle: async (x) => { sent.push(x); return { txHash: '0x9' }; } });
+  await a.evm.prepare({ rec: { offer: { evm: { amount: '1000' } } } });
+  assert.equal(typeof seen[0].selfSettle, 'function'); assert.deepEqual(sent.map((x) => x.jobId), ['c2']);
 });
 
 test('the cut of a note that the relay holds is sent from the wallet with the memos the page sealed', async () => {

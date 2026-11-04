@@ -335,6 +335,15 @@ async function boardServer({ limits } = {}) {
   closers.push(close);
   return { board, base: `http://127.0.0.1:${server.address().port}`, close };
 }
+
+test('a want, which costs nothing to make up, has its own small allowance per address; other writes are not held to it', async () => {
+  assert.deepEqual([boardKindOf('PUT', '/want'), boardKindOf('PUT', '/ad'), boardKindOf('POST', '/m/' + 'a'.repeat(66)), boardKindOf('GET', '/wants')], ['want', 'write', 'write', 'default']);
+  const { base } = await boardServer({ limits: { default: [1000, 1], write: [1000, 1], want: [2, 3600] } });
+  const put = async (path) => (await realFetch(base + path, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: '{}' })).status;
+  const got = [await put('/want'), await put('/want'), await put('/want')];
+  assert.notEqual(got[0], 429); assert.notEqual(got[1], 429); assert.equal(got[2], 429, 'the third want in the hour is refused');
+  assert.notEqual(await put('/ad'), 429, 'an ad from the same address still goes in');
+});
 const rawCall = async (base, method, path, body) => {
   const r = await realFetch(base + path, { method, headers: body === undefined ? undefined : { 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
   let json = null; try { json = await r.json(); } catch { /* none */ }

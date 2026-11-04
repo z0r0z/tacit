@@ -202,6 +202,15 @@ and advances with `step(record)`.
 - The pre-signature is served to anyone who asks after the pool lock is made; a lock that is reorganised away after the provider's
   confirmations (one for the smaller amounts) can be double-spent by its maker. The confirmations policy is the defence.
 - The claim's proof is made by the claimer's chosen prover; see "Proving the claim".
+- Wants cost nothing to make up: the board takes 30 an hour from one address (`fastbridge-lp/board.mjs`, which needs
+  `FB_BOARD_TRUST_PROXY` behind Render's proxy to tell addresses apart), and a provider's panel lists each by size with how many it can take.
+- When the relay is held (its settle wallet under its gas floor) it proves but does not send. The pages then send each settle from the
+  connected Ethereum wallet after 45 s (`fastbridge-evm.js` jobStatus, `fast/wire.js` walletSettle): an open-board job with its proof, and
+  an adaptor lock, claim or refund (which never go on the open board) proved again prove-only. The sender's address is public on
+  Ethereum, so a bridger who sends its own claim links that address to the claim; the wallet asks first. `tests/fastbridge-fork.mjs` C
+  runs a whole swap this way through the settle guest on a fork.
+- The device prover does not take the adaptor ops yet (`device-prover.js` DEVICE_TYPES). Nothing in them goes stale while a laptop
+  proves (the pool accepts any lock-set root it has known), so adding them is a matter of wiring and a guest run on the device.
 
 ## Tests
 

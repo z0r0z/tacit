@@ -16,7 +16,7 @@ const origins = String(process.env.FB_BOARD_ORIGINS || '').split(',').map((s) =>
 const board = makeBoard();
 const server = makeHttpServer({
   handle: makeBoardHandler(board), origins, maxBody: 131072, trustProxy: !!process.env.FB_BOARD_TRUST_PROXY, kindOf: boardKindOf,
-  limits: { default: [120, 60], write: [240, 60] },
+  limits: { default: [120, 60], write: [240, 60], want: [30, 3600] },
 });
 server.listen(port, () => console.log(JSON.stringify({ ts: new Date().toISOString(), level: 'info', msg: 'fast bridge board', port, origins })));
 setInterval(() => console.log(JSON.stringify({ ts: new Date().toISOString(), level: 'info', msg: 'board', ...board.stats() })), 600000).unref();
