@@ -68,6 +68,50 @@ test('openFast: the address, the notes and the balance of the key, and the quote
   T._testSetScanHoldingsOverride(null);
 });
 
+test('a form that picks a note bridges exactly that note: `only` names the notes a bridge may spend', async () => {
+  const priv = key(6), pubHex = bytesToHex(secp.getPublicKey(priv, true));
+  openWallet(priv);
+  T._testSetScanHoldingsOverride(() => holdings([[TAC_ASSET, { utxos: [{ utxo: utxo(1), amount: 5000n, blinding: 7n }, { utxo: utxo(2), amount: 700n, blinding: 8n }, { utxo: utxo(3), amount: 900n, blinding: 9n }] }]]));
+  const s = await openFast({ T, withKey: (fn) => fn(T), ux: { cfg: { pool: POOL } }, priv, pubHex, hrp: 'tb', counterFor: () => ({}) });
+  let got = null;
+  s.market.start = async (o) => { got = o; return { rec: {} }; };
+  const q = [{ provider: { ref: { kind: 'http', claimPub: '02' + 'aa'.repeat(32) } }, quote: {} }];
+  await s.start({ quotes: q, only: [{ txid: utxo(2).txid, vout: 0 }] });
+  assert.deepEqual(got.notes.map((n) => n.amount), [700n], 'the one picked and no other');
+  await s.start({ quotes: q, only: [{ txid: utxo(3).txid, vout: 0 }, { txid: utxo(1).txid, vout: 0 }] });
+  assert.deepEqual(got.notes.map((n) => n.amount), [5000n, 900n]);
+  await s.start({ quotes: q, only: [{ txid: 'f'.repeat(64), vout: 0 }] });
+  assert.deepEqual(got.notes, [], 'a note that is not the key\'s is not found, and nothing is spent');
+  T._testSetScanHoldingsOverride(null);
+});
+
+test('the steps of a key\'s bridges are taken by one page at a time: the others show what is stored, and one takes over when the first closes', async () => {
+  const priv = key(7), pubHex = bytesToHex(secp.getPublicKey(priv, true));
+  openWallet(priv);
+  const queue = [];
+  let held = false;
+  const locks = { request: (name, cb) => new Promise((resolve) => {
+    const go = async () => { held = true; try { resolve(await cb({ name })); } finally { held = false; const next = queue.shift(); if (next) next(); } };
+    if (held) queue.push(go); else go();
+  }) };
+  const had = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', { value: { locks }, configurable: true });
+  try {
+    const open = () => openFast({ T, withKey: (fn) => fn(T), ux: { cfg: { pool: POOL } }, priv, pubHex, hrp: 'tb', counterFor: () => ({}) });
+    const [a, b] = [await open(), await open()], log = [], shown = [];
+    for (const [n, x] of [['a', a], ['b', b]]) x.market.run = () => { log.push(`${n} tends`); return () => log.push(`${n} stops`); };
+    const stopA = a.run({ everyMs: 5 }), stopB = b.run({ everyMs: 5, onChange: (l) => shown.push(l) });
+    await new Promise((r) => setTimeout(r, 30));
+    assert.deepEqual(log, ['a tends'], 'only the first tends');
+    assert.ok(shown.length > 0 && Array.isArray(shown[0]), 'the second shows what is stored');
+    stopA();
+    await new Promise((r) => setTimeout(r, 30));
+    assert.deepEqual(log, ['a tends', 'a stops', 'b tends'], 'the second takes over when the first closes');
+    stopB();
+    assert.deepEqual(log.slice(-1), ['b stops']);
+  } finally { if (had) Object.defineProperty(globalThis, 'navigator', had); else delete globalThis.navigator; }
+});
+
 test('a swap spends the notes the bridge does not take directly (out of the shielded pool, untracked) when they alone cover it', () => {
   const n = (c, amount) => ({ txid: c.repeat(64), vout: 0, amount });
   const pool = n('a', 1000n), tracked = n('b', 5000n), fresh = n('c', 300n), all = [tracked, pool, fresh];

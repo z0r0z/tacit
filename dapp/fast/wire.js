@@ -12,9 +12,9 @@
 import { makeBtcWallet } from '/bitcoin-taproot-wallet.js?cb=6e90dd96';
 import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js?cb=77320a94';
 import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=94a5530b';
-import { makeFastBridgeEvm } from '/fastbridge-evm.js?cb=a91f7446';
+import { makeFastBridgeEvm } from '/fastbridge-evm.js?cb=6191c04a';
 import { makeHttpCounter, makeCounter } from '/fastbridge-http.js?cb=11295986';
-import { makeFastBridgeMarket, makeLocalStore, termsOf } from '/fastbridge-client.js?cb=632a9387';
+import { makeFastBridgeMarket, makeLocalStore, termsOf } from '/fastbridge-client.js?cb=c78e7f59';
 import { makeLpService } from '/fastbridge-provider.js?cb=8b3cb635';
 import { makeMailboxCounter, makeMailboxServer, makeAdPublisher, readProviders, gatewayOf } from '/fastbridge-mailbox.js?cb=38553280';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=850e1c5e';
@@ -80,10 +80,15 @@ export async function discoverProviders({ providers = [], boards = [], fetchImpl
 // A settle the relay proved but holds, sent from the Ethereum wallet the page is connected to: the wallet must be on mainnet (it is asked
 // to switch), the settle is tried first so that one the pool would refuse costs nothing, and the send counts once its receipt is good.
 // `wallet()` is the wallet's EIP-1193 provider, or null when there is none (then the relay is waited for).
-export function walletSettle({ ux, wallet, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), waitMs = 30 * 60e3, everyMs = 4000 }) {
+// `ask(on)` is told while the wallet is being asked, so the page can say why it opened.
+export function walletSettle({ ux, wallet, ask = () => {}, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), waitMs = 30 * 60e3, everyMs = 4000 }) {
   return async (x) => {
     const w = wallet();
     if (!w) throw new Error('no Ethereum wallet is connected to send it from');
+    ask(true);
+    try { return await send(w, x); } finally { ask(false); }
+  };
+  async function send(w, x) {
     if (Number(await w.request({ method: 'eth_chainId' })) !== 1) {
       await w.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: '0x1' }] });
       if (Number(await w.request({ method: 'eth_chainId' })) !== 1) throw new Error('the wallet is not on Ethereum mainnet');
@@ -98,11 +103,11 @@ export function walletSettle({ ux, wallet, sleep = (ms) => new Promise((r) => se
       if (rc) { if (rc.status !== '0x1') throw new Error(`the settle sent from your wallet failed (${txHash})`); return { txHash }; }
     }
     throw new Error(`the settle sent from your wallet has not landed yet (${txHash})`);
-  };
+  }
 }
 
 // What both roles need of a key: its Bitcoin wallet, which must be the one tacit.js reads, and the Bitcoin and pool sides.
-function sides({ T, ux, priv, hrp, bases, fetchImpl, asset, seedTag, forNotes, wallet = null, log = () => {} }) {
+function sides({ T, ux, priv, hrp, bases, fetchImpl, asset, seedTag, forNotes, wallet = null, ask, log = () => {} }) {
   const { prims } = makeBtcWallet({ priv, hrp, fetchUtxos: async () => [], broadcastTx: async () => { throw new Error('not used'); }, fetchFeeRate: async () => 1 });
   // the lock spends notes at the wallet's own address: both must name the same one
   if (prims.wallet.address() !== T.wallet.address()) throw new Error('The Bitcoin address of this key is not the one the wallet reads. Nothing was done.');
@@ -113,24 +118,49 @@ function sides({ T, ux, priv, hrp, bases, fetchImpl, asset, seedTag, forNotes, w
     ...(forNotes ? { tacit: T, pool: ux.pool, ethGetStorageAt: (to, slot, tag) => ux.rpc('eth_getStorageAt', [to, slot, tag]), poolAddress: ux.cfg.pool, binding: ux.chainBindingHex(), keccak256: keccak_256, secp } : {}),
   });
   const seed = hmac(sha256, priv, enc.encode(seedTag));
-  const evm = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: priv, seed, asset: asset.evmAsset, poolAddress: ux.cfg.pool, selfSettle: wallet ? walletSettle({ ux, wallet }) : null, log });
+  const evm = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: priv, seed, asset: asset.evmAsset, poolAddress: ux.cfg.pool, selfSettle: wallet ? walletSettle({ ux, wallet, ask }) : null, log });
   return { prims, btc, seed, evm };
 }
 
-export async function openFast({ T, withKey, ux, priv, pubHex, pins = {}, wallet = null, fetchImpl = (...a) => fetch(...a), bases = EXPLORERS, hrp = 'bc', now, call = {}, counterFor: counterOf = (ref) => counterFor(ref, { fetchImpl, call }) }) {
+export async function openFast({ T, withKey, ux, priv, pubHex, pins = {}, wallet = null, ask, fetchImpl = (...a) => fetch(...a), bases = EXPLORERS, hrp = 'bc', now, call = {}, counterFor: counterOf = (ref) => counterFor(ref, { fetchImpl, call }) }) {
   const asset = { btcAsset: TAC_ASSET, evmAsset: TAC_ASSET, ...pins };
-  const { prims, btc, seed, evm } = sides({ T, ux, priv, hrp, bases, fetchImpl, asset, seedTag: 'tacit-fastbridge-user-seed', wallet });
+  const { prims, btc, seed, evm } = sides({ T, ux, priv, hrp, bases, fetchImpl, asset, seedTag: 'tacit-fastbridge-user-seed', wallet, ask });
   const store = makeLocalStore(`tacit-fastbridge-v1:mainnet:${pubHex}:`);
   const market = makeFastBridgeMarket({ btc, evm, store, seed, pins: asset, counterFor: counterOf, ...(now ? { now } : {}) });
   const notes = () => withKey((t) => notesOf(t, asset.btcAsset));
   const balance = async () => (await notes()).reduce((s, n) => s + n.amount, 0n);
   const fastFirst = async (all, quotes) => untrackedFirst(all, await withKey((t) => t.bridgeUx().noteTracking(all)).catch(() => null),
     (rest) => quotes.length > 0 && quotes.every(({ provider, quote }) => market.clientFor(provider.ref).pickNotes(rest, quote.btcValue)));
+  // The steps of a key's bridges are taken by one page at a time (the front page and /fast/ share the swaps kept in this browser): the others
+  // show what the one that tends them has stored, and the first of them takes over when that one closes.
+  const run = ({ everyMs = 15000, onChange = () => {} } = {}) => {
+    const locks = typeof navigator !== 'undefined' ? navigator.locks : null;
+    if (!locks || typeof locks.request !== 'function') return market.run({ everyMs, onChange });
+    let stopTend = null, gone = false, release = () => {};
+    const view = async () => { try { onChange(await market.records()); } catch { /* the next pass */ } };
+    view();
+    const timer = setInterval(() => { if (!stopTend) view(); }, everyMs);
+    locks.request(`tacit-fastbridge-tend:${pubHex}`, () => new Promise((resolve) => { if (gone) return resolve(); release = resolve; stopTend = market.run({ everyMs, onChange }); })).catch(() => {});
+    return () => { gone = true; clearInterval(timer); if (stopTend) stopTend(); release(); };
+  };
+  // `only` ([{ txid, vout }]) names the notes a bridge may spend, for a form that picks a note; otherwise the key's notes, the ones the
+  // bridge does not track first
+  const pool = async (quotes, only) => {
+    const all = await notes();
+    if (!only) return fastFirst(all, quotes);
+    const want = new Set(only.map((o) => `${o.txid}:${o.vout}`));
+    return all.filter((n) => want.has(`${n.txid}:${n.vout}`));
+  };
   return {
     address: prims.wallet.address(), notes, balance, market,
     quoteAll: (providers, units, o) => market.quoteAll(providers, units, o),
-    start: async ({ quotes }) => market.start({ quotes, notes: await fastFirst(await notes(), quotes) }),
-    records: market.records, run: market.run, recover: market.recover,
+    // what the lock would cost on Bitcoin for a quote and whether the address can pay it (nothing is stored or sent)
+    cost: async ({ quote, provider, only }) => {
+      const ref = provider ? provider.ref : null;
+      return market.clientFor(ref).cost({ quote, notes: await pool([{ provider: provider || { ref }, quote }], only) });
+    },
+    start: async ({ quotes, only }) => market.start({ quotes, notes: await pool(quotes, only) }),
+    records: market.records, run, recover: market.recover,
   };
 }
 
@@ -273,10 +303,10 @@ function presence(doc = typeof document !== 'undefined' ? document : null) {
   return () => hiddenAt == null || Date.now() - hiddenAt < AWAY_AFTER_MS;
 }
 
-export async function openProvider({ T, ux, priv, pubHex, boards = [], name = null, wallet = null, fetchImpl = (...a) => fetch(...a), bases = EXPLORERS, hrp = 'bc', now = () => Math.floor(Date.now() / 1000), tickSecs = 15, pollMs = 3000, present = presence() }) {
+export async function openProvider({ T, ux, priv, pubHex, boards = [], name = null, wallet = null, ask, fetchImpl = (...a) => fetch(...a), bases = EXPLORERS, hrp = 'bc', now = () => Math.floor(Date.now() / 1000), tickSecs = 15, pollMs = 3000, present = presence() }) {
   const asset = { btcAsset: TAC_ASSET, evmAsset: TAC_ASSET };
   let evmLog = () => {};
-  const { prims, btc, seed, evm } = sides({ T, ux, priv, hrp, bases, fetchImpl, asset, seedTag: 'tacit-fastbridge-lp-seed', forNotes: true, wallet, log: (o) => evmLog(o) });
+  const { prims, btc, seed, evm } = sides({ T, ux, priv, hrp, bases, fetchImpl, asset, seedTag: 'tacit-fastbridge-lp-seed', forNotes: true, wallet, ask, log: (o) => evmLog(o) });
   const claimPub = hex(prims.wallet.pub);
   const adName = name || `Provider ${claimPub.slice(2, 8)}`;
   const swaps = makeLocalStore(`tacit-fastlp-v1:mainnet:${pubHex}:swaps:`), quoteStore = makeLocalStore(`tacit-fastlp-v1:mainnet:${pubHex}:quotes:`);

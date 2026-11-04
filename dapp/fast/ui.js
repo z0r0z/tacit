@@ -13,6 +13,7 @@
 //   -> { lock(text), destroy() }
 
 import { DEC, ONE, esc, fmtTac, parseTac, slowNet } from './fmt.js';
+import { minutesFor } from './route.js';
 export { fmtTac, parseTac, slowNet };
 const pct = (fee, of) => (of > 0n ? `${(Number((fee * 1000000n) / of) / 10000).toFixed(2)}%` : '');
 const SCAN = 'https://mempool.space/tx/';
@@ -24,13 +25,17 @@ const feeLine = (t) => `${(t.feeBps / 100).toFixed(2)}%${t.flatFee > 0n ? ` + ${
 
 export function mountFast({ root, keyS, signIn, open, discover, wants = null, notify = () => {}, quoteDelayMs = 350, refreshMs = 30000, retryMs = 15000, say = () => {} }) {
   const doc = root.ownerDocument;
-  const S = { providers: [], loaded: false, termsAt: 0, sess: null, pub: null, bal: null, amt: '', quotes: [], quote: null, best: null, seq: 0, busy: false, note: '', bad: false, recs: [], stop: null, timer: 0, opening: null, want: null, told: false, watch: 0 };
+  const S = { providers: [], loaded: false, termsAt: 0, sess: null, pub: null, bal: null, amt: '', quotes: [], quote: null, best: null, seq: 0, busy: false, note: '', bad: false, recs: [], stop: null, timer: 0, opening: null, want: null, told: false, watch: 0, cost: null, sure: null };
 
   root.innerHTML = `
-    <div id="fx-lp" class="rows flat" aria-live="polite"></div>
+    <p class="fx-sum" id="fx-lp" aria-live="polite"></p>
     <div id="fx-form" hidden>
-      <p class="eyebrow"><span>Bridge TAC</span><span class="who num" id="fx-bal"></span></p>
+      <p class="eyebrow"><span>You bridge</span><span class="who num" id="fx-bal"></span></p>
       <div class="fx-amt"><input id="fx-amt" inputmode="decimal" placeholder="0" autocomplete="off" spellcheck="false" aria-label="TAC to bridge"><span>TAC</span><button class="linkbtn" id="fx-max" type="button" hidden>Max</button></div>
+      <div class="fx-out" id="fx-out" hidden>
+        <p class="eyebrow"><span>You receive, private</span><span class="who">in your Tacit wallet</span></p>
+        <div class="fx-big"><output class="num" id="fx-big" for="fx-amt">0</output><span>TAC</span></div>
+      </div>
       <div class="rows" id="fx-recv" hidden></div>
       <div class="kv" id="fx-wait" hidden><span></span><button class="linkbtn" id="fx-unwait" type="button">Stop waiting</button></div>
     </div>
@@ -64,14 +69,11 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
     // with nobody providing, a key must still be able to open: it is how the first provider starts
     // the key's own offer is not one to bridge with, but it is online: the provider is told so, not that nobody is
     const mine = keyS.unlocked && keyS.key && S.providers.some((p) => p.id === keyS.key.pubHex);
-    if (S.loaded && !sm && mine) { e.innerHTML = '<p class="empty">You are the provider online. Bridgers see your offer; to bridge yourself, use another wallet.</p>'; return; }
-    if (S.loaded && !sm) { e.innerHTML = `<p class="empty">No provider is online right now. ${keyS.unlocked ? 'Enter an amount to wait for one, or provide below.' : 'Open your wallet to wait for one, or to provide.'}</p>`; return; }
-    if (!sm) { e.innerHTML = '<p class="empty">Reading the providers…</p>'; return; }
+    if (S.loaded && !sm && mine) { e.textContent = 'You are the provider online. Bridgers see your offer; to bridge yourself, use another wallet.'; return; }
+    if (S.loaded && !sm) { e.innerHTML = `No provider is online right now. ${keyS.unlocked ? 'Enter an amount to wait for one, or provide below.' : 'Open your wallet to wait for one, or to provide.'} The regular bridge, which takes a few hours, is <a href="/#card=bridge">on the front page</a>.`; return; }
+    if (!sm) { e.textContent = 'Reading the providers…'; return; }
     const t = sm.best.terms, many = sm.count > 1;
-    e.innerHTML = `<div class="kv"><span>${many ? 'Providers' : 'Provider'}</span><b>${many ? `${sm.count} online` : esc(sm.best.name || 'Provider')}</b></div>
-      <div class="kv"><span>Fee</span><b class="num">${many ? 'from ' : ''}${esc(feeLine(t))}</b></div>
-      <div class="kv"><span>Amount</span><b class="num">${esc(fmtTac(sm.min))} to ${esc(fmtTac(sm.max))} TAC</b></div>${sm.cap < sm.max ? `
-      <div class="kv"><span>Available now</span><b class="num">${esc(fmtTac(sm.cap))} TAC</b></div>` : ''}`;
+    e.innerHTML = `<b>${many ? `${sm.count} providers online` : esc(sm.best.name || 'Provider')}</b><span>${many ? 'from ' : ''}${esc(feeLine(t))} fee</span><span>${sm.cap > 0n ? `${esc(fmtTac(sm.min))} to ${esc(fmtTac(sm.cap))} TAC${sm.cap < sm.max ? ' now' : ''}` : 'full right now'}</span>`;
   }
 
   // the amount typed: what is wrong with it, or ''
@@ -92,38 +94,45 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
   const plain = (units) => (units / ONE).toString() + (units % ONE ? '.' + (units % ONE).toString().padStart(DEC, '0').replace(/0+$/, '') : '');
 
   function paintForm() {
-    const signed = !!S.sess, form = $('fx-form'), go = $('fx-go'), recv = $('fx-recv'), sm = summary(), wt = $('fx-wait');
+    const signed = !!S.sess, form = $('fx-form'), go = $('fx-go'), recv = $('fx-recv'), out = $('fx-out'), wt = $('fx-wait');
     form.hidden = !signed;
     go.hidden = false;
     $('fx-bal').textContent = signed && S.bal != null ? `${fmtTac(S.bal)} TAC on Bitcoin` : '';
     $('fx-max').hidden = !(signed && S.bal > 0n);
     wt.hidden = !(signed && S.want);
     if (!wt.hidden) wt.firstElementChild.textContent = `Waiting for a provider for ${fmtTac(S.want.amount)} TAC`;
-    if (!signed) { go.textContent = 'Open wallet'; go.disabled = S.busy; recv.hidden = true; return; }
-    const units = parseTac(S.amt), bad = problem(units), q = S.quote, wait = waitable(units);
+    if (!signed) { go.textContent = 'Open wallet'; go.disabled = S.busy; recv.hidden = true; out.hidden = true; return; }
+    const units = parseTac(S.amt), bad = problem(units), q = S.quote, wait = waitable(units), short = !!(S.cost && S.cost.short);
     go.hidden = !!S.want && !q;
-    if (wait) { recv.hidden = true; go.textContent = S.busy ? 'Working…' : 'Wait for a provider'; go.disabled = S.busy; paintNote(); return; }
-    recv.hidden = !q;
+    if (wait) { recv.hidden = true; out.hidden = true; go.textContent = S.busy ? 'Working…' : 'Wait for a provider'; go.disabled = S.busy; paintNote(); return; }
+    out.hidden = !q; recv.hidden = !q;
     if (q) {
-      recv.innerHTML = `${sm.count > 1 && S.best ? `<div class="kv"><span>Provider</span><b>${esc(S.best.name || 'Provider')}</b></div>` : ''}<div class="kv"><span>You pay</span><b class="num">${esc(fmtTac(q.btcValue))} TAC</b></div>
-        <div class="kv"><span>You receive, private</span><b class="num">${esc(fmtTac(q.evmAmount))} TAC</b></div>
-        <div class="kv"><span>Fee</span><b class="num">${esc(fmtTac(q.fee))} TAC<small>${esc(pct(q.fee, q.btcValue))}</small></b></div>${q.takeSats ? `
-        <div class="kv"><span>Bitcoin network fee</span><b class="num">${esc(q.takeSats.toLocaleString('en-US'))} sats<small>for the provider's take</small></b></div>` : ''}`;
+      const c = S.cost, sm = summary();
+      $('fx-big').textContent = fmtTac(q.evmAmount);
+      const btc = c && c.total ? `<div class="kv"><span>Bitcoin fee</span><b class="num">≈ ${esc(c.total.toLocaleString('en-US'))} sats${c.take ? `<small>${esc(c.take.toLocaleString('en-US'))} of it is the provider's take</small>` : ''}</b></div>`
+        : q.takeSats ? `<div class="kv"><span>Bitcoin fee</span><b class="num">${esc(q.takeSats.toLocaleString('en-US'))} sats<small>for the provider's take, and your own transaction's fee</small></b></div>` : '';
+      recv.innerHTML = `${sm && sm.count > 1 && S.best ? `<div class="kv"><span>Provider</span><b>${esc(S.best.name || 'Provider')}</b></div>` : ''}<div class="kv"><span>Fee</span><b class="num">${esc(fmtTac(q.fee))} TAC<small>${esc(pct(q.fee, q.btcValue))}</small></b></div>${btc}
+        <div class="kv"><span>Time</span><b class="num">about ${minutesFor(q.minConfs)} minutes<small>${Math.max(1, Number(q.minConfs) || 1)} Bitcoin confirmation${(Number(q.minConfs) || 1) > 1 ? 's' : ''}, then a pool settle</small></b></div>`;
     }
-    go.textContent = S.busy ? 'Working…' : 'Bridge';
-    go.disabled = S.busy || !!bad || !q || units == null;
+    go.textContent = S.busy ? 'Working…' : S.sure ? 'Press again to bridge' : 'Bridge';
+    go.disabled = S.busy || !!bad || !q || units == null || short;
     paintNote();
   }
 
+  const ago = (sec) => {
+    const d = Math.max(0, Math.floor(Date.now() / 1000) - Number(sec || 0));
+    return d < 90 ? 'just now' : d < 5400 ? `${Math.round(d / 60)} minutes ago` : d < 172800 ? `${Math.round(d / 3600)} hours ago` : `${Math.round(d / 86400)} days ago`;
+  };
   function paintList() {
-    const e = $('fx-list'), recs = S.recs.slice(0, 10);
+    const e = $('fx-list'), recs = S.recs.slice(0, 10), open = recs.some((r) => !r.ended);
     e.hidden = !recs.length;
     e.innerHTML = recs.length ? `<div class="rows-h"><span>Your bridges</span></div>` + recs.map((r) => `
       <div class="fx-rec" data-id="${esc(r.id)}" data-phase="${esc(r.phase)}">
         <div class="kv"><b>${esc(r.title)}</b><span class="num">${esc(fmtTac(r.amount))} TAC${r.receive && r.receive !== '0' ? ` → ${esc(fmtTac(r.receive))} TAC` : ''}</span></div>
         ${r.returned ? '' : `<ol class="fx-steps" aria-label="Steps">${r.steps.map((s, i) => `<li${i < r.at || r.ended ? ' class="on"' : i === r.at ? ' class="at"' : ''}>${esc(s)}</li>`).join('')}</ol>`}
-        <p class="note">${esc(r.detail)}${r.lockTxid ? ` <a href="${SCAN}${esc(r.lockTxid)}" target="_blank" rel="noopener noreferrer">Bitcoin lock ↗</a>` : ''}</p>
-      </div>`).join('') : '';
+        <p class="note">${esc(r.detail)}${r.error && !r.ended ? ` <span class="err">${esc(r.error)}</span>` : ''}</p>
+        <p class="note fx-meta">${esc(ago(r.created))}${r.lockTxid ? ` · <a href="${SCAN}${esc(r.lockTxid)}" target="_blank" rel="noopener noreferrer">Bitcoin lock ↗</a>` : ''}${r.ended && !r.returned ? ' · <a href="/assets/">Your TAC in Assets</a>' : ''}</p>
+      </div>`).join('') + (open ? '<p class="note">Keep this page open until it is done: each step is taken as Bitcoin confirms.</p>' : '') : '';
   }
 
   // every provider online as a tile, the key's own first and marked: what a provider sees of its own offer, and a bridger of the market
@@ -160,7 +169,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
   function reset(text) {
     if (S.stop) { S.stop(); S.stop = null; }
     clearTimeout(S.timer); clearInterval(S.watch); S.seq++;
-    Object.assign(S, { sess: null, pub: null, bal: null, quotes: [], quote: null, best: null, amt: '', recs: [], busy: false, opening: null, want: null, told: false });
+    Object.assign(S, { sess: null, pub: null, bal: null, quotes: [], quote: null, best: null, amt: '', recs: [], busy: false, opening: null, want: null, told: false, cost: null, sure: null });
     $('fx-amt').value = '';
     note(text || '');
     paint();
@@ -199,7 +208,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
   // ── the amount ──
   function typed() {
     readProviders();
-    S.amt = $('fx-amt').value; S.quotes = []; S.quote = null; S.best = null; S.note = '';
+    S.amt = $('fx-amt').value; S.quotes = []; S.quote = null; S.best = null; S.note = ''; S.cost = null; S.sure = null;
     clearTimeout(S.timer); const seq = ++S.seq;
     const units = parseTac(S.amt);
     paintForm();
@@ -212,6 +221,11 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
         if (seq !== S.seq) return;
         if (!r.quotes.length) { note(r.failed[0] ? wording(r.failed[0].error) : 'No provider can take that amount right now.', true); return; }
         S.quotes = r.quotes; S.quote = r.quotes[0].quote; S.best = r.quotes[0].provider; paintForm();
+        // what the lock costs on Bitcoin, and whether this address can pay it, is read before the press and not found out at it
+        if (S.sess.cost) {
+          const sess = S.sess, c = await sess.cost({ quote: S.quote, provider: S.best }).catch(() => null);
+          if (seq === S.seq && S.sess === sess && c) { S.cost = c; if (c.short) note(shortText(c), true); paintForm(); }
+        }
       } catch (e) { if (seq === S.seq) note(wording(e), true); }
     }, quoteDelayMs);
   }
@@ -269,6 +283,16 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
     if (!S.sess) { await openSession(); return; }
     if (!S.quote && waitable(parseTac(S.amt))) { await wait(parseTac(S.amt)); return; }
     if (!S.quote) return;
+    if (S.cost && S.cost.short) { note(shortText(S.cost), true); return; }
+    // a lock on Bitcoin is not taken back for about a day if the provider stops: the first press says so, the same press again goes
+    const key = `${S.quote.id}|${S.quote.btcValue}`, who = S.best && S.best.name ? S.best.name : 'the provider';
+    if (!(S.sure && S.sure.key === key && Date.now() - S.sure.at < 180e3)) {
+      S.sure = { key, at: Date.now() };
+      note(`This locks ${fmtTac(S.quote.btcValue)} TAC on Bitcoin until ${who} has paid you ${fmtTac(S.quote.evmAmount)} private TAC in the pool, in about ${minutesFor(S.quote.minConfs)} minutes. If it does not, the lock returns to your address after about a day. Press again to bridge.`);
+      paintForm();
+      return;
+    }
+    S.sure = null;
     S.busy = true; note('Locking your TAC on Bitcoin…'); paintForm();
     try {
       // a quote close to its end is asked for again, from every provider that gave one
@@ -282,11 +306,14 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
       await S.sess.start({ quotes });
       if (S.want) { const pub = S.pub; S.want = null; S.told = false; clearInterval(S.watch); wants.stop(pub).catch(() => {}); }
       S.recs = await S.sess.records(); S.quotes = []; S.quote = null; S.best = null; S.amt = ''; $('fx-amt').value = '';
-      note('Started.');
+      note('Started. It is listed below, and each step is taken as Bitcoin confirms.');
       S.sess.balance().then((b) => { S.bal = b; paintForm(); }).catch(() => {});
     } catch (e) { note(wording(e), true); } finally { S.busy = false; paint(); }
   }
   $('fx-go').addEventListener('click', go);
+
+  // what the address lacks for the Bitcoin fee, in words: the front page's Bitcoin tab is where sats come in
+  const shortText = (c) => `This key's Bitcoin address holds ${(c.have || 0).toLocaleString('en-US')} sats for fees and this bridge needs about ${(c.need || c.total || 0).toLocaleString('en-US')}. Add some from Receive in the Bitcoin tab on the front page.`;
 
   // a message in the page's words for what went wrong
   function wording(e) {
@@ -297,6 +324,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
     if (/quote expired|expires too soon/.test(m)) return 'The quote ran out. Try again.';
     if (/fee is above the limit/.test(m)) return 'The provider\'s fee is above what this page accepts.';
     if (/is not the one this page expects/.test(m)) return 'This provider is not the one this page knows.';
+    if (/not enough sats to fund/.test(m)) { const x = /need (\d+), have (\d+)/.exec(m); return x ? shortText({ need: Number(x[1]), have: Number(x[2]) }) : 'This key\'s Bitcoin address does not hold enough sats for the fee.'; }
     if (/cannot hold that amount|cannot take that amount/.test(m)) return 'The provider cannot take that amount right now. Try a smaller amount.';
     return m.length > 160 ? `${m.slice(0, 157)}…` : m || 'Something went wrong. Try again.';
   }

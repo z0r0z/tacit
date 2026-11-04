@@ -99,6 +99,12 @@ test('the wallet sends the settle on mainnet (switching to it), tries it first, 
   assert.deepEqual(s.asked.slice(0, 4), ['eth_chainId', 'wallet_switchEthereumChain', 'eth_chainId', 'eth_requestAccounts']);
   assert.deepEqual(s.asked.find((x) => typeof x === 'object'), { from: '0xabc', to: '0xpool', data: '0xdata77' });
   assert.deepEqual(s.rpcs.slice(0, 2), ['eth_call', 'eth_getTransactionReceipt'], 'tried before it is sent');
+  const told = [], t = walletStub();
+  await walletSettle({ ux: t.ux, wallet: () => t.w, ask: (on) => told.push(on), sleep: async () => {} })({ proof: '0x1' });
+  assert.deepEqual(told, [true, false], 'the page is told while the wallet is asked, and when it is done');
+  const fails = walletStub({ call: new Error('execution reverted') }), told2 = [];
+  await assert.rejects(walletSettle({ ux: fails.ux, wallet: () => fails.w, ask: (on) => told2.push(on) })({ proof: '0x1' }));
+  assert.deepEqual(told2, [true, false], 'and done when it fails');
 });
 
 test('the wallet sends nothing off mainnet, nor what the pool would refuse; a failed receipt is a failure; no wallet is said', async () => {

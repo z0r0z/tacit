@@ -199,7 +199,7 @@ const { chromium } = require(process.env.PLAYWRIGHT || '/Users/z/zFi/node_module
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
 // Borrow reports under each step's own line (#bw-s1…#bw-s4) as well as the sheet's: read them all.
 const bwText = (page) => page.evaluate((s) => [...document.querySelectorAll(s)].map((e) => e.textContent).join(' '), '#bw-status, #bw-s1, #bw-s2, #bw-s3, #bw-s4');
-const ONLY = new Set((process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,relayfail,selfwallet,slowline').split(','));
+const ONLY = new Set((process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,relayfail,selfwallet,slowline,fastroute').split(','));
 const FORK = process.argv[3] || 'https://mainnet.gateway.tenderly.co';
 const SHOTS = process.env.SHOTS || null;
 const PORT = 20000 + Math.floor(Math.random() * 2000), WEB = PORT + 1;
@@ -3521,6 +3521,99 @@ await step('bridgedeep', async () => {
 });
 // A key waiting for a fast bridge provider (its want kept by /fast/ in this browser) is told on the front page, once, when a provider on
 // the board can take what it waits with; a provider that cannot take that much says nothing.
+// The Bridge tab's way in through a fast bridge provider: with one online that takes the size of the note picked, the tab quotes the bridge
+// through it (minutes, its fee, the Bitcoin cost) and the press says what happens if the provider stops before it locks anything; the regular
+// bridge stays one press away; a note no provider takes keeps the regular bridge with the reason in its receipt; a key whose address lacks the
+// sats for the lock is told before the press. The provider and its session are stand-ins (/fast/wire.js); the rule and the words are the real ones.
+await step('fastroute', async () => {
+  const r = await openPage({ account: A0, key: K0 });
+  const hex = 'f4c7'.padEnd(64, '9'), pubB = secp.getPublicKey(hex, true), pub = Buffer.from(pubB).toString('hex');
+  const { ripemd160 } = await import('@noble/hashes/ripemd160');
+  const spk = '0014' + Buffer.from(ripemd160(sha256(pubB))).toString('hex');
+  const { makeConfidentialPool } = await import(new URL('../dapp/confidential-pool.js', import.meta.url));
+  const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
+  const rev = (h) => h.match(/../g).reverse().join('');
+  const N1 = 'c1'.repeat(32), N2 = 'c2'.repeat(32), TAC = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
+  const api = (re, fn) => r.page.route(re, (route) => fn(route, new URL(route.request().url())));
+  try {
+    await api(/^https:\/\/api\.tacit\.finance\/reflection\/dump/, (route) => json(route, { attestedHeight: 970000, snapshot: { height: 970000, liveTriples: [[pool.outpointKey('0x' + rev(N1), 0), '0x00', '0x00', '0x00', 0], [pool.outpointKey('0x' + rev(N2), 0), '0x00', '0x00', '0x00', 0]], burnNodes: [], spentNodes: [] } }));
+    await api(/^https:\/\/api\.tacit\.finance\/reflection\/status/, (route) => json(route, { network: 'mainnet', attestedHeight: 970000, tipHeight: 970000, lagBlocks: 0 }));
+    await api(/^https:\/\/api\.tacit\.finance\/chain\/tx\/[0-9a-f]{64}/, (route) => route.fulfill({ status: 404, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: '{"error":"not-found"}' }));
+    await api(/^https:\/\/api\.tacit\.finance\/chain\/tx\/(c1|c2){32}/, (route, u) => json(route, { txid: u.pathname.split('/').pop(), status: { confirmed: true, block_height: 960000 }, vout: [{ scriptpubkey: spk, value: 546 }] }));
+    // the provider's side: a session the way fast/wire.js gives one, and a provider that takes 100 to 1,000 TAC
+    await r.page.route(/\/fast\/wire\.js/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: `
+      const TAC = 10n ** 8n;
+      window.__fast = { starts: [], opens: 0, terms: { minAmount: 100n * TAC, maxAmount: 1000n * TAC, feeBps: 30, flatFee: TAC, available: null }, cost: { short: false, fee: 3100, take: 8046, total: 11146 }, recs: [] };
+      export async function discoverProviders() { const t = window.__fast.terms; return t ? [{ id: 'p1', name: 'Test provider', ref: { kind: 'http', claimPub: 'p1' }, terms: t }] : []; }
+      export async function openFast() {
+        window.__fast.opens++;
+        return {
+          quoteAll: async (ps, units) => ({ quotes: ps.map((p) => { const fee = (units * BigInt(p.terms.feeBps)) / 10000n + p.terms.flatFee; return { provider: p, quote: { id: 'q' + units, btcValue: units, evmAmount: units - fee, fee, minConfs: 1, validUntil: Math.floor(Date.now() / 1000) + 600 } }; }), failed: [] }),
+          cost: async () => window.__fast.cost,
+          start: async (o) => { window.__fast.starts.push({ only: o.only, value: String(o.quotes[0].quote.btcValue) }); window.__fast.recs = [{ id: 'ab'.repeat(36), phase: 'built', title: 'Locking on Bitcoin', detail: 'The lock transaction is being sent.', at: 0, ended: false, returned: false, amount: String(o.quotes[0].quote.btcValue), receive: String(o.quotes[0].quote.evmAmount), created: Math.floor(Date.now() / 1000), lockTxid: 'ee'.repeat(32), error: null }]; window.__fast.change?.(window.__fast.recs); return { rec: {} }; },
+          records: async () => window.__fast.recs,
+          run: ({ onChange }) => { window.__fast.change = onChange; onChange(window.__fast.recs); return () => {}; },
+        };
+      }` }));
+    await r.page.goto(r.url + '#wallet');
+    await r.page.evaluate(async ([n1, n2, aid]) => {
+      globalThis.__TACIT_NO_INIT__ = true; localStorage.setItem('tacit-network-v1', 'mainnet');
+      const T = await import([...document.scripts].map((x) => x.textContent).join('').match(/\/tacit\.js\?cb=[0-9a-f]+/)[0]);
+      const note = (txid, amount) => ({ utxo: { txid, vout: 0, value: 546, status: { confirmed: true } }, amount, blinding: 12345n + amount });
+      T._testSetScanHoldingsOverride(() => new Map([[aid, { assetIdHex: aid, ticker: 'TAC', decimals: 8, balance: 28000000000n, utxos: [note(n1, 25000000000n), note(n2, 3000000000n)], ghosts: [], inflated: [], pending: [] }]]));
+    }, [N1, N2, TAC]);
+    await r.page.click('#wallet-body [data-in="paste"]');
+    await r.page.fill('#ws-hex', hex);
+    await r.page.click('#wallet-body [data-in="key"]');
+    await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
+    await bridgeTo(r.page, 'btc');
+    await until(r.page, () => document.querySelectorAll('#hx-routes [data-hxr]').length >= 2, null, 240000);
+    // a note of 250 TAC: a provider takes it, so the tab quotes it fast, with the receipt a bridge through a provider has
+    await r.page.click(`#hx-routes [data-hxr="${N1}:0"]`);
+    await until(r.page, () => document.querySelector('#hx-go')?.textContent === 'Bridge fast', null, 240000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | go: ${await text(r.page, '#hx-go')} | q: ${await text(r.page, '#hx-q')} | rc: ${(await text(r.page, '#hx-receipt')).replace(/\s+/g, ' ')}`); });
+    const rc = (await text(r.page, '#hx-receipt')).replace(/\s+/g, ' ');
+    await shot(r.page, 'hx-fast-quote');
+    ok(/Arrives\s*248\.25 private TAC on Ethereum/.test(rc) && /Provider fee\s*1\.75 TAC \(0\.70%\)/.test(rc) && /Bitcoin fee\s*≈ 11,146 sats/.test(rc) && /Time\s*about 15 minutes/.test(rc) && /If it stalls\s*the lock returns to your address after about a day/.test(rc), `fastroute: a provider takes the note, so the tab quotes it fast: what arrives, the provider's fee, the Bitcoin cost, the time and what happens if it stalls (${rc.slice(0, 260)})`);
+    ok(!/Relay fee/.test(rc) && /Bridge the regular way instead/.test(await text(r.page, '#hx-alt')), 'fastroute: the regular bridge is offered as the other way, and the receipt does not borrow its lines');
+    ok((await text(r.page, '#hx-out')) === '248.25', 'fastroute: the figure is what arrives');
+    ok(JSON.stringify(await r.page.$$eval('.hx-brs li', (xs) => xs.map((x) => x.textContent.replace(/\s+/g, ' ').trim()))) === JSON.stringify(['Locked on Bitcoin', 'Paid in the pool', 'Claimed', 'Arrived privately']), 'fastroute: the steps under the figure are the fast bridge\'s own');
+    // the first press says what happens if the provider stops, and locks nothing
+    await sheetsSeen(r.page);
+    await r.page.click(BRG.go);
+    await until(r.page, () => /Press again to bridge/.test(document.querySelector('#hx-ss')?.textContent || ''), null, 60000);
+    const said = (await text(r.page, '#hx-ss')).replace(/\s+/g, ' ');
+    ok(/^Bridging 250 TAC locks it on Bitcoin until Test provider has paid you 248\.25 private TAC in the pool, in about 15 minutes, for about 11,146 sats in Bitcoin fees\. If it does not, the lock returns to your address after about a day\./.test(said) && (await r.page.evaluate(() => window.__fast.starts.length)) === 0 && (await r.page.evaluate(() => window.__sheetSeen)) === '', `fastroute: the first press says what it does and what happens if the provider stops, and starts nothing (${said.slice(0, 200)})`);
+    // the same press again begins it with exactly the note picked
+    await r.page.click(BRG.go);
+    await until(r.page, () => window.__fast.starts.length === 1, null, 60000);
+    const start = await r.page.evaluate(() => window.__fast.starts[0]);
+    ok(start.only.length === 1 && start.only[0].txid === N1 && start.only[0].vout === 0 && start.value === '25000000000', `fastroute: the bridge begins with the note that was picked, for its whole amount (${JSON.stringify(start)})`);
+    await until(r.page, () => /Fast bridges/.test(document.querySelector('#hx-fastl')?.textContent || ''), null, 60000);
+    const list = (await text(r.page, '#hx-fastl')).replace(/\s+/g, ' ');
+    ok(/Locking on Bitcoin: 250 TAC → 248\.25/.test(list) && !!(await r.page.$('#hx-fastl a[href="https://mempool.space/tx/' + 'ee'.repeat(32) + '"]')), `fastroute: it is followed under the tab, with a link to its Bitcoin lock (${list.slice(0, 160)})`);
+    await shot(r.page, 'hx-fast-started');
+    // a bridge that is over is said once, with the TAC that arrived
+    await r.page.evaluate(() => { const r0 = window.__fast.recs[0]; window.__fast.recs = [{ ...r0, phase: 'done', title: 'Done', ended: true, at: 3, detail: 'The TAC is in your private balance.' }]; window.__fast.change(window.__fast.recs); });
+    await until(r.page, () => /248\.25 TAC arrived in your private balance/.test(document.getElementById('toast-container')?.textContent || ''), null, 30000);
+    ok(true, 'fastroute: a bridge that ends says what arrived, in a notice');
+    // the regular way: one press on the other way, and the note is checked as the regular bridge checks it
+    await r.page.click(`#hx-routes [data-hxr="${N1}:0"]`);
+    await until(r.page, () => document.querySelector('#hx-go')?.textContent === 'Bridge fast' && !!document.querySelector('#hx-alt-go'), null, 240000);
+    await r.page.click('#hx-alt-go');
+    await until(r.page, () => /Bridge it fast instead: about 15 minutes/.test(document.querySelector('#hx-alt')?.textContent || '') && /short of the [\d,]+ sats this needs/.test(document.querySelector('#hx-q')?.textContent || ''), null, 240000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | go: ${await text(r.page, '#hx-go')} | alt: ${await text(r.page, '#hx-alt')} | q: ${await text(r.page, '#hx-q')} | rc: ${(await text(r.page, '#hx-receipt')).replace(/\s+/g, ' ')}`); });
+    const regSteps = (await r.page.$$eval('.hx-brs li', (xs) => xs.map((x) => x.textContent.replace(/\s+/g, ' ').trim()))).join(' > ');
+    ok(regSteps === 'Burned on Bitcoin > Confirmed > Proven on Ethereum > Minted privately', `fastroute: and the regular bridge has its steps back (${regSteps})`);
+    ok((await text(r.page, '#hx-go')) === 'Bridge TAC from Bitcoin' && /Time\s*usually within a few hours/.test((await text(r.page, '#hx-receipt')).replace(/\s+/g, ' ')), 'fastroute: the regular bridge is one press away, checks the note as it always did, says its own time, and offers the fast one back');
+    // a note no provider takes keeps the regular bridge, and says why the fast one was not offered
+    await r.page.click(`#hx-routes [data-hxr="${N2}:0"]`);
+    await until(r.page, () => /Fast bridge\s*providers take 100 to 1,000 TAC now/.test((document.querySelector('#hx-receipt')?.textContent || '').replace(/\s+/g, ' ')), null, 240000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | go: ${await text(r.page, '#hx-go')} | q: ${await text(r.page, '#hx-q')} | rc: ${(await text(r.page, '#hx-receipt')).replace(/\s+/g, ' ')}`); });
+    ok((await text(r.page, '#hx-go')) === 'Bridge TAC from Bitcoin' && (await r.page.$eval('#hx-alt', (e) => e.hidden)), 'fastroute: a note no provider takes keeps the regular bridge, and the receipt says what the providers take');
+    if (r.errors.length) { fails++; console.log('FAIL fastroute page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { await r.browser.close(); }
+});
 await step('fastwant', async () => {
   const r = await openPage({ account: A0, key: K0 });
   const hex = 'fa57'.padEnd(64, '9'), pub = Buffer.from(secp.getPublicKey(hex, true)).toString('hex'), BOARD = 'https://tacit-fast-board.onrender.com';

@@ -275,7 +275,7 @@ const heldOf = async (priv) => ((await ux.balance(priv)).byAsset[ETH_ID] || { no
 {
   const w = world('A');
   const t1 = Date.now();
-  ok((await w.evmL.available()) === UNITS, `the LP's lockable balance is what its wallet holds (${UNITS} units)`);
+  ok((await w.evmL.available()) === UNITS - (await w.evmL.cutReserve(UNITS)), `the LP's lockable balance is what its wallet holds (${UNITS} units), less the relay's fee for a cut`);
   await w.start();
   await w.run(async () => (await w.rec('user'))?.phase === 'done' && (await w.rec('lp'))?.phase === 'done');
   const lp = await w.rec('lp'), user = await w.rec('user');
@@ -289,7 +289,7 @@ const heldOf = async (priv) => ((await ux.balance(priv)).byAsset[ETH_ID] || { no
   ok(mine.length === 1 && mine[0] === AMOUNT, `the user's private ETH note of ${AMOUNT} units is found again from its key and the chain alone (${mine.join(',')})`);
   const lpNotes = await heldOf(lpPriv);
   ok(!lpNotes.includes(UNITS) && lpNotes.some((v) => v > 0n), `the LP's big note was cut: ${lpNotes.join(',')}`);
-  ok((await w.evmL.available()) === lpNotes.reduce((a, b) => a + b, 0n), 'available() follows the wallet once the lock has left it');
+  ok((await w.evmL.available()) === lpNotes.reduce((a, b) => a + b, 0n) - (lpNotes.length ? await w.evmL.cutReserve(1n) : 0n), 'available() follows the wallet once the lock has left it');
   ok(log.filter((l) => /^adaptor/.test(l)).length === 2, `the guest ran the lock and the claim (${log.filter((l) => /^adaptor/.test(l)).map((l) => l.split(' ')[0]).join(', ')})`);
   ok(!jobsSeen.some((j) => j.error), 'no relayed job failed');
 }

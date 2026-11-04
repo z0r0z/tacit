@@ -50,6 +50,7 @@ const session = {
   },
   start: async ({ quotes }) => { const q = quotes[0].quote; recs = [rec({ id: 'aa'.repeat(36), amount: String(q.btcValue), receive: String(q.evmAmount) }), ...recs]; return { rec: {}, provider: quotes[0].provider }; },
   records: async () => recs,
+  cost: async () => ({ fee: 3100, take: 8046, total: 11146, have: 50000, short: false }),
   run: ({ onChange }) => { onChange(recs); return () => {}; },
   recover: async () => [],
 };
@@ -134,12 +135,12 @@ try {
   // a provider the page is told of: its terms, and a button to open the wallet
   {
     const { page, bad, shot } = await visit(`/fast/?lp=${encodeURIComponent(lp.base)}&claimPub=${claimPub}`);
-    await page.waitForFunction(() => /Fee/.test(document.getElementById('fx-lp')?.textContent || ''), null, { timeout: 15000 });
+    await page.waitForFunction(() => /fee/.test(document.getElementById('fx-lp')?.textContent || ''), null, { timeout: 15000 });
     ok(/^tacit fast/.test(await text(page, 'h1')), 'the page is "tacit fast"');
-    ok(/Fee\s*0\.30% \+ 0\.000002 TAC/.test(await text(page, '#fx-lp')), `the provider's fee is shown (${await text(page, '#fx-lp')})`);
+    ok(/0\.30% \+ 0\.000002 TAC fee/.test(await text(page, '#fx-lp')), `the provider's fee is shown (${await text(page, '#fx-lp')})`);
     ok((await text(page, '#fx-go')) === 'Open wallet' && !(await page.$eval('#fx-go', (e) => e.hidden)), 'the button reads Open wallet');
     ok(await page.$eval('#fx-form', (e) => e.hidden), 'no form before a key');
-    ok(/Keep this page open/.test(await text(page, '.fx-keep')), 'the page says to keep it open');
+    ok(!(await page.$('.fx-keep')), 'with nothing under way the page does not say to keep it open');
     await shot('fast-signed-out');
     await page.click('#fx-go');
     await page.waitForSelector('.bsheet', { timeout: 5000 });
@@ -157,7 +158,7 @@ try {
   {
     const { page, bad } = await visit(`/fast/?lp=${encodeURIComponent(lp.base)}&claimPub=02${'ab'.repeat(32)}`);
     await page.waitForFunction(() => /No provider is online/.test(document.getElementById('fx-lp')?.textContent || ''), null, { timeout: 15000 });
-    ok(!/Fee/.test(await text(page, '#fx-lp')) && (await text(page, '#fx-go')) === 'Open wallet', 'a provider with another key than the pinned one is not offered, and the wallet can still open to provide');
+    ok(!/ fee/.test(await text(page, '#fx-lp')) && (await text(page, '#fx-go')) === 'Open wallet', 'a provider with another key than the pinned one is not offered, and the wallet can still open to provide');
     ok(bad.length === 0, `no errors (${bad.join(' | ')})`);
     await page.context().close();
   }
@@ -173,8 +174,8 @@ try {
   // a provider that is only on a board: found from its ad, with the amount it can take now
   {
     const { page, bad } = await visit(`/fast/?board=${encodeURIComponent(BOARD)}`);
-    await page.waitForFunction(() => /Fee/.test(document.getElementById('fx-lp')?.textContent || ''), null, { timeout: 15000 });
-    ok(/Board provider/.test(await text(page, '#fx-lp')) && /0\.50%/.test(await text(page, '#fx-lp')) && /Available now\s*200 TAC/.test(await text(page, '#fx-lp')), `the provider on the board is listed (${await text(page, '#fx-lp')})`);
+    await page.waitForFunction(() => /fee/.test(document.getElementById('fx-lp')?.textContent || ''), null, { timeout: 15000 });
+    ok(/Board provider/.test(await text(page, '#fx-lp')) && /0\.50%/.test(await text(page, '#fx-lp')) && /to 200 TAC now/.test(await text(page, '#fx-lp')), `the provider on the board is listed (${await text(page, '#fx-lp')})`);
     ok(!(await page.$eval('#fx-go', (e) => e.hidden)), 'the page offers to open the wallet');
     ok(bad.length === 0, `no errors (${bad.join(' | ')})`);
     await page.context().close();
@@ -182,20 +183,24 @@ try {
   // the page's states with a key open, drawn by the real page logic over a stand-in wallet and provider: the form, the quote, the press, the bridges
   {
     const { page, bad, shot } = await visit('/fast/', { entry: STAND_IN });
-    await page.waitForFunction(() => /Fee/.test(document.getElementById('fx-lp')?.textContent || ''), null, { timeout: 15000 });
+    await page.waitForFunction(() => /fee/.test(document.getElementById('fx-lp')?.textContent || ''), null, { timeout: 15000 });
     await page.click('#fx-go');
     await page.waitForFunction(() => !document.getElementById('fx-form').hidden && /on Bitcoin/.test(document.getElementById('fx-bal').textContent), null, { timeout: 5000 });
     ok(/12,345\.5 TAC on Bitcoin/.test(await text(page, '#fx-bal')), `the TAC on Bitcoin is shown (${await text(page, '#fx-bal')})`);
-    ok(/Providers\s*2 online/.test(await text(page, '#fx-lp')) && /from 0\.20%/.test(await text(page, '#fx-lp')), `two providers are summed up (${await text(page, '#fx-lp')})`);
+    ok(/2 providers online/.test(await text(page, '#fx-lp')) && /from 0\.20%/.test(await text(page, '#fx-lp')), `two providers are summed up (${await text(page, '#fx-lp')})`);
     ok((await text(page, '#fx-go')) === 'Bridge' && await page.$eval('#fx-go', (e) => e.disabled), 'the button reads Bridge and waits for an amount');
     ok(await page.$eval('#fx-list', (e) => !e.hidden) && (await page.$$('#fx-list .fx-rec')).length === 4, 'the bridges under way are listed');
     await page.fill('#fx-amt', '5');
     ok(/The least is 10 TAC/.test(await text(page, '#fx-st')), 'an amount under the least is said');
     await page.fill('#fx-amt', '250');
     await page.waitForFunction(() => !document.getElementById('fx-recv').hidden, null, { timeout: 5000 });
-    ok(/Provider\s*Provider 0a1b2c/.test(await text(page, '#fx-recv')) && /You pay\s*250 TAC/.test(await text(page, '#fx-recv')) && /You receive, private\s*248\.5 TAC/.test(await text(page, '#fx-recv')), `the better of the two quotes is shown (${await text(page, '#fx-recv')})`);
+    ok(/Provider\s*Provider 0a1b2c/.test(await text(page, '#fx-recv')) && (await text(page, '#fx-big')) === '248.5' && /Bitcoin fee\s*≈ 11,146 sats/.test(await text(page, '#fx-recv')) && /Time\s*about 15 minutes/.test(await text(page, '#fx-recv')), `the better of the two quotes is shown (${await text(page, '#fx-recv')})`);
     ok(!(await page.$eval('#fx-go', (e) => e.disabled)), 'the button is ready');
     await shot('fast-quote');
+    await page.click('#fx-go');
+    await page.waitForFunction(() => document.getElementById('fx-go').textContent === 'Press again to bridge', null, { timeout: 5000 });
+    ok(/returns to your address after about a day/.test(await text(page, '#fx-st')), `the first press says what happens if the provider stops (${await text(page, '#fx-st')})`);
+    await shot('fast-confirm');
     await page.click('#fx-go');
     await page.waitForFunction(() => /Started/.test(document.getElementById('fx-st').textContent), null, { timeout: 5000 });
     ok((await page.$$('#fx-list .fx-rec')).length === 5 && (await page.inputValue('#fx-amt')) === '', 'the new bridge is at the top and the amount is cleared');
@@ -276,6 +281,8 @@ mountFast({
     ok(/A provider can take your 1,000 TAC now/.test(await page.evaluate(() => window.__said[0])), 'told when a provider can take it');
     await page.waitForFunction(() => document.getElementById('fx-go').textContent === 'Bridge' && !document.getElementById('fx-go').disabled, null, { timeout: 5000 });
     await shot('fast-wait-met');
+    await page.click('#fx-go');
+    await page.waitForFunction(() => document.getElementById('fx-go').textContent === 'Press again to bridge', null, { timeout: 5000 });
     await page.click('#fx-go');
     await page.waitForFunction(() => window.__started && !localStorage.getItem('tacit-fastbridge-want-v1:03' + 'cd'.repeat(32)), null, { timeout: 5000 });
     await page.waitForFunction(() => document.getElementById('fx-wait').hidden, null, { timeout: 5000 });

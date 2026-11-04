@@ -4,10 +4,10 @@ import { makeKeySession, signInSheet } from '/trade/key.js?cb=26d9c07b';
 import { makeTacitSession } from '/tacit-session.js?cb=a2d34bb2';
 import { getUx as loadUx, forgetUx } from '/trade/poolux.js?cb=3d572bf4';
 import { onMainnet, connectedInjected } from '/eth-nodes.js';
-import { mountFast } from '/fast/ui.js?cb=7dd8be52';
+import { mountFast } from '/fast/ui.js?cb=79497e73';
 import { mountProvide } from '/fast/provide.js?cb=d375fbd8';
 import { mountBound } from '/fast/bound.js?cb=862c8d6e';
-import { openFast, openProvider, openBound, discoverProviders, PROVIDER_DEFAULTS } from '/fast/wire.js?cb=b6506082';
+import { openFast, openProvider, openBound, discoverProviders, PROVIDER_DEFAULTS } from '/fast/wire.js?cb=eedda560';
 import { makeWants } from '/fast/want.js?cb=81ee0d3f';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 
@@ -52,6 +52,13 @@ let ui = null, TS = null;
 const walletRead = onMainnet(() => keyS.walletProvider?.() || null);
 // the wallet a settle the relay holds is sent from: the one the key was opened with, else one the site is connected to (it is asked to be on mainnet)
 const sendWallet = () => keyS.walletProvider?.() || connectedInjected();
+// while the wallet is asked to send a settle the relay holds, the page says why it opened
+let asking = 0;
+const ask = (on) => {
+  asking = Math.max(0, asking + (on ? 1 : -1));
+  const el = document.getElementById('fx-wallet'); if (el) el.hidden = !asking;
+  if (on) notify('The relay is holding a step of your bridge: confirm it in your wallet.');
+};
 const getUx = async () => { const ux = await loadUx(); ux.useWallet(() => walletRead() || connectedInjected()); return ux; };
 // a Bitcoin wallet opens the key through tacit.js, which this page loads for the bridge anyway
 const keyS = makeKeySession({ moved: (why) => ui?.lock(why), ways: { btc: (k) => TS.turn(() => openBtcWallet(TS.T, { k, tPriv: TS.tPriv, passkey: isPasskeyAvailable() })) } });
@@ -72,7 +79,7 @@ ui = mountFast({
   discover: () => discoverProviders(LISTS),
   open: async () => {
     const pubHex = keyS.key.pubHex, priv = keyS.priv(), ux = await getUx();
-    return TS.withKey((T) => openFast({ T, withKey: (fn) => TS.withKey(fn, pubHex), ux, priv, pubHex, wallet: sendWallet }), pubHex);
+    return TS.withKey((T) => openFast({ T, withKey: (fn) => TS.withKey(fn, pubHex), ux, priv, pubHex, wallet: sendWallet, ask }), pubHex);
   },
 });
 
@@ -88,7 +95,7 @@ const provide = mountProvide({
   base: PROVIDER_DEFAULTS, root: document.getElementById('provide'), keyS, hasOpen, settings, waiting: () => wants.waiting(),
   open: async () => {
     const pubHex = keyS.key.pubHex, priv = keyS.priv(), ux = await getUx();
-    return TS.withKey((T) => openProvider({ T, ux, priv, pubHex, boards: LISTS.boards, wallet: sendWallet }), pubHex);
+    return TS.withKey((T) => openProvider({ T, ux, priv, pubHex, boards: LISTS.boards, wallet: sendWallet, ask }), pubHex);
   },
 });
 // a page closed while it provides, or while a swap it provides is open, leaves that swap untended

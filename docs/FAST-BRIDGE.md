@@ -63,6 +63,17 @@ A provider in a page is for modest amounts: it answers requests and takes the Bi
 are open when the page closes are tended again the next time the key is opened. A provider that is a process (`fastbridge-lp/`)
 keeps them tended without a page.
 
+## On the front page
+
+The Bridge tab's way in for TAC from Bitcoin prefers the fast bridge: when a note is picked, the tab asks the providers there are
+(`dapp/fast/lp.json`, the boards) whether one takes that amount now. If one does, the tab quotes the bridge through the best of them
+(`dapp/fast/route.js`): what arrives, the provider's fee, the Bitcoin cost (the lock is built and signed as a dry run, so an address that
+cannot pay for it is told before the press), about how long it takes, and what happens if the provider stops. The first press says that and
+locks nothing; the same press again begins the bridge with exactly the note picked. The regular bridge (a burn and the reflection, a few
+hours, no provider fee) stays one press away under the receipt, and is the way when no provider takes the size, with the reason in its
+receipt. The steps of a bridge through a provider are taken while any page of the site is open with the key (one tab at a time holds the
+lock), and a bridge that ends is said once. `?fast=0` turns the preference off in a browser (`?fast=1` on again).
+
 ## Rules that keep a swap whole
 
 - The counterparty's Bitcoin claim key is fixed before `t` exists, and the lock is built to that key.
@@ -78,6 +89,17 @@ keeps them tended without a page.
   through its confirmation. An offer whose payout is not held is held at that moment or declined. A provider that is out of
   inventory is therefore found out while the user's TAC is still in hand.
 - Steps of one swap run one at a time, so overlapping ticks never build the same transaction twice.
+- The Ethereum locker answers an offer only for a lock with a confirmation (a lock in the mempool can be replaced), checks the outpoint's
+  shape and the amounts against the quote before it asks any explorer, and ends a swap whose lock does not reach its confirmations in time.
+- A lock that is built again (the relay lost the job, or said it failed) is built from the note the first try used, so that if the first lands
+  after all the second cannot: two locks of one swap would insert one leaf twice and strand a note. A note no longer held is waited for, not
+  replaced, since the pool then shows the first lock by its leaf.
+- What a settle did is read only from a settle the pool or its relayer was called with. Bytes that look like a settle inside the calldata of
+  another contract's call are whatever their sender wrote.
+- A stored take or refund whose funding coin was spent elsewhere is built again once it has had time to spread.
+- A provider holds a payout for a swap, not for a quote: an offer is held at its arrival, under the lock that checks capacity, so two offers
+  arriving together cannot both be given what is left for one. A reservation is extended once, by a transaction that pays the take, and one
+  transaction stands for one quote.
 - A lock is made from a pool note of exactly the amount. When there is none, one is cut from a larger note, once, and
   the tries that follow are spaced by growing waits, since each reads the wallet's notes.
 - No claim is built with less than `minClaimSecs` left before the deadline: a claim that is sent and misses the
@@ -163,11 +185,23 @@ needed. The wait is paid once, when the TAC is made ready, not when it moves.
 | `dapp/fastbridge-mailbox.js` | requests sealed to a provider and carried by a board: the user's counter, the provider's mailbox, its ad |
 | `dapp/fastbridge-btc.js` | the Bitcoin side of either machine on esplora explorers, shared by the page and the LP |
 | `dapp/fastbridge-client.js` | the user's side as a whole: terms and quote checked before they are shown, the notes to lock, the machine over a store, the words for each phase, a lock found again from the key |
+| `dapp/fast/route.js` | the front page's way in: whether a provider takes a note's size, the quote, the lock's cost, the bridge, and the words |
 | `dapp/fast/` | the bridge page at `/fast/`: the wiring to a Tacit key and tacit.js (`wire.js`), the page's logic for bridging (`ui.js`) and for providing (`provide.js`), the providers and boards it knows (`lp.json`) |
 | `fastbridge-lp/` | the LP as a process: the HTTP API, the Ethereum locker over a durable store, the explorer adapter (see its README) |
 
 Each machine takes its chain access as arguments (`ctx`, documented in its header), keeps one JSON record per swap,
 and advances with `step(record)`.
+
+## Known limits
+
+- A board is a memory-only relay: it can be filled with junk requests (64 for each provider for ten minutes) and its ad slots with
+  throwaway keys. An ad is signed by the claim key only, so a provider whose ad has lapsed can have its gateway key named in an ad of
+  someone else's until that one lapses. Both need a change to the ad's format (a gateway signature) and a deploy of the board and the pages
+  together; the board's runs now carry an id, so a provider reads again from the start after a board restart.
+- The quotes of a provider are kept until two days after they ran out; the file store reads every record for each capacity check.
+- The pre-signature is served to anyone who asks after the pool lock is made; a lock that is reorganised away after the provider's
+  confirmations (one for the smaller amounts) can be double-spent by its maker. The confirmations policy is the defence.
+- The claim's proof is made by the claimer's chosen prover; see "Proving the claim".
 
 ## Tests
 
@@ -182,6 +216,8 @@ node tests/fastbridge-lp.test.mjs          # the LP process: API on a socket, qu
 node tests/fastbridge-client.test.mjs      # the page's client against the LP service: quotes, a swap, a swap carried on, the refund, recovery from the key
 node tests/fastbridge-board.test.mjs       # the board and the mailbox: ads, sealed requests and answers, a whole swap over a board
 node tests/fastbridge-ui.test.mjs          # the page's bridging logic on a DOM
+node tests/fastbridge-route.test.mjs       # the front page's way in: the rule for a provider, the receipt and the words
+node tests/fastbridge-evm-notes.test.mjs   # the pool adapter's choice of note, and the claim read only from the pool's own settles
 node tests/fastbridge-provide.test.mjs     # the page's provider panel on a DOM
 node tests/fastbridge-wire.test.mjs        # the page's wiring on the real tacit.js
 PLAYWRIGHT=<path> node tests/fastbridge-page.mjs   # the page in a browser, under its content-security policy
@@ -202,5 +238,5 @@ HTTP API, store and explorer adapter, the board and the mailbox over it, and the
 recovery from the key, a choice among providers, a provider mode for any key, and a browser check. The page reads its
 board from `dapp/fast/lp.json`.
 
-Not built: a link to the page from the front page's Bridge tab, the Ethereum to Bitcoin direction, the claim prover's options
+Not built: the Ethereum to Bitcoin direction, the claim prover's options
 (the relay that is not the provider, the user's device, a prover network), and a run with real funds.

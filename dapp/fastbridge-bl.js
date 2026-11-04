@@ -54,16 +54,17 @@ export function makeBitcoinLocker(ctx) {
   // Builds the lock and stores it; sends nothing. `notes` are the wallet's own notes to lock from, `counterClaimPub` the
   // 33-byte Bitcoin key the counterparty committed to before this call, `takeSats` the fee of its take, which the lock pays
   // to that key's address so a counterparty needs no coins of its own on Bitcoin.
-  async function start({ asset, amount, notes, counterClaimPub, evmAsset, evmAmount, quoteId = null, takeSats = 0 }) {
+  async function build({ asset, amount, notes, counterClaimPub, evmAsset, evmAmount, quoteId = null, takeSats = 0, avoid = null }) {
     if (!notes.length) throw new Error('fastbridge: no note to lock');
     const swapId = X.swapIdOf(notes[0].txid, notes[0].vout), id = hx(swapId);
-    if (await store.get(id)) throw new Error('fastbridge: this note is already part of a swap');
     const sec = X.deriveSwapSecrets({ seed, swapId });
     const csvBlocks = policy.csvBlocks;
     const lock = deriveLock({ prims: btc.prims, claimerPub: counterClaimPub, T: sec.T, lockerXonly: btc.wallet.xonly, csvBlocks });
     const hint = X.lockHintScript({ seed, swapId, claimerPub: counterClaimPub, csvBlocks, value: amount });
     const pay = takeSats > 0 ? { value: takeSats, script: btc.prims.p2wpkhScript(counterClaimPub) } : null;
-    const pair = btc.tx.lockTransfer({ asset, notes, lock, lockAmount: amount, rLock: sec.rLock, hint, pay, satsUtxos: await btc.satsUtxos(), feeRate: await btc.feeRate() });
+    // a coin the wallet knows to carry a note is never a fee coin, whatever sats it holds
+    const coins = (await btc.satsUtxos()).filter((u) => !avoid || !avoid.has(`${u.txid}:${u.vout}`));
+    const pair = btc.tx.lockTransfer({ asset, notes, lock, lockAmount: amount, rLock: sec.rLock, hint, pay, satsUtxos: coins, feeRate: await btc.feeRate() });
     const rec = {
       v: 1, role: 'bl', id, phase: 'built', created: ctx.now(), updated: ctx.now(), quoteId,
       asset: hx(asset), amount: String(amount), evmAsset: strip(evmAsset), evmAmount: String(evmAmount),
@@ -71,6 +72,12 @@ export function makeBitcoinLocker(ctx) {
       lock: { txid: pair.revealTxid, vout: 0, value: pair.revealTx.outputs[0].value, commitTxid: pair.commitTxid, commitHex: pair.commitHex, revealHex: pair.revealHex },
       noteInputs: notes.map((n) => ({ txid: n.txid, vout: n.vout })),
     };
+    return { rec, pair };
+  }
+  async function start(args) {
+    if (!args.notes.length) throw new Error('fastbridge: no note to lock');
+    if (await store.get(hx(X.swapIdOf(args.notes[0].txid, args.notes[0].vout)))) throw new Error('fastbridge: this note is already part of a swap');
+    const { rec } = await build(args);
     await store.put(rec);
     return rec;
   }
@@ -89,9 +96,13 @@ export function makeBitcoinLocker(ctx) {
         asset: hexToBytes(rec.asset), lockOut: { txid: rec.lock.txid, vout: rec.lock.vout, value: rec.lock.value ?? 546 }, lock, dLocker: btc.wallet.priv,
         amount: BigInt(rec.amount), rLock: sec.rLock, satsUtxos: await btc.satsUtxos(), feeRate: await btc.feeRate(),
       });
-      await save(rec, { refund: { txid: pair.revealTxid, commitHex: pair.commitHex, revealHex: pair.revealHex, commitTxid: pair.commitTxid } });
+      await save(rec, { refund: { txid: pair.revealTxid, commitHex: pair.commitHex, revealHex: pair.revealHex, commitTxid: pair.commitTxid, at: ctx.now() } });
     }
-    await btc.broadcast(rec.refund, null);
+    try { await btc.broadcast(rec.refund, null); } catch (e) {
+      // as the take: a pair whose funding coin was spent elsewhere is built again once it has had time to spread
+      if (rec.refund.at != null && ctx.now() - rec.refund.at > 600 && (rec.refundRebuilds || 0) < 5 && btc.fetchTx && !(await btc.fetchTx(rec.refund.commitTxid).catch(() => null))) await save(rec, { refund: null, refundRebuilds: (rec.refundRebuilds || 0) + 1 });
+      throw e;
+    }
     return null;
   }
 
@@ -210,5 +221,5 @@ export function makeBitcoinLocker(ctx) {
     });
   }
 
-  return { start, step };
+  return { start, build, step };
 }

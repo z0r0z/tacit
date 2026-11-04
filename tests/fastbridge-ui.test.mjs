@@ -72,6 +72,8 @@ function mount(over = {}) {
 }
 const text = (e) => { const out = [], w = e.ownerDocument.createTreeWalker(e, 4); for (let n = w.nextNode(); n; n = w.nextNode()) if (n.nodeValue.trim()) out.push(n.nodeValue.trim()); return out.join(' '); };
 const signIn = async (m) => { await until(() => !m.$('fx-go').hidden, 'the button'); m.$('fx-go').click(); await until(() => !m.$('fx-form').hidden, 'the form'); };
+// the first press says what the bridge does and what happens if the provider stops; the same press again goes
+const press = async (m) => { await until(() => !m.$('fx-go').disabled, 'a quote'); m.$('fx-go').click(); await until(() => m.$('fx-go').textContent === 'Press again to bridge', 'the confirmation'); m.$('fx-go').click(); };
 const typeIn = (m, v) => { m.$('fx-amt').value = v; m.$('fx-amt').dispatchEvent(new m.dom.window.Event('input')); };
 
 test('amounts: shown with thousands and up to four places, read back exactly, and refused when they are not amounts', () => {
@@ -135,7 +137,7 @@ test('waiting for a provider: an amount nobody takes is waited for, kept for the
   await until(() => m.$('fx-go').textContent === 'Bridge' && !m.$('fx-go').disabled, 'the quote for it');
   await new Promise((r) => setTimeout(r, 80));
   assert.equal(told.length, 1, 'told once, not on every look');
-  m.$('fx-go').click();
+  await press(m);
   await until(() => m.st.calls.starts.length === 1 && !kept.has(pub), 'the bridge starts and the want is dropped');
   m.ui.destroy();
 });
@@ -155,11 +157,11 @@ test('a want kept from an earlier visit is shown, and Stop waiting takes it down
 
 test('a provider\'s terms are shown, and its name is text, not markup', async () => {
   const m = mount({ providers: [provider('<img src=x onerror=alert(1)>')] });
-  await until(() => /Fee/.test(text(m.$('fx-lp'))), 'the terms');
+  await until(() => /fee/.test(text(m.$('fx-lp'))), 'the terms');
   assert.equal(m.$('fx-lp').querySelector('img'), null);
   assert.match(text(m.$('fx-lp')), /<img src=x/);
-  assert.match(text(m.$('fx-lp')), /Fee 0\.30% \+ 1 TAC/);
-  assert.match(text(m.$('fx-lp')), /Amount 10 to 1,000 TAC/);
+  assert.match(text(m.$('fx-lp')), /0\.30% \+ 1 TAC fee/);
+  assert.match(text(m.$('fx-lp')), /10 to 1,000 TAC/);
   assert.equal(m.$('fx-go').textContent, 'Open wallet');
   assert.equal(m.$('fx-form').hidden, true, 'no form before a key');
 });
@@ -168,8 +170,8 @@ test('several providers: how many, the lowest fee, the widest range, and what th
   const m = mount({ providers: [provider('Slow', { feeBps: 50 }), provider('Cheap', { feeBps: 20, minAmount: String(50n * TAC), maxAmount: String(5000n * TAC), available: String(800n * TAC) }), provider('Small', { feeBps: 40, maxAmount: String(200n * TAC) })] });
   await until(() => /online/.test(text(m.$('fx-lp'))), 'the summary');
   const t = text(m.$('fx-lp'));
-  assert.match(t, /Providers 3 online/); assert.match(t, /Fee from 0\.20% \+ 1 TAC/); assert.match(t, /Amount 10 to 5,000 TAC/);
-  assert.match(t, /Available now 1,000 TAC/, 'the most any one of them can take now, when it is under the most they take');
+  assert.match(t, /3 providers online/); assert.match(t, /from 0\.20% \+ 1 TAC fee/);
+  assert.match(t, /10 to 1,000 TAC now/, 'the most any one of them can take now, when it is under the most they take');
 });
 
 test('every provider online is a tile, the key\'s own first and marked, with its fee and what it takes', async () => {
@@ -200,10 +202,10 @@ test('a provider that cannot take even its least is full, not a range that ends 
 test('the key\'s own provider is not one to bridge with: it is left out of the summary and of the quotes', async () => {
   const mine = '03' + 'cd'.repeat(32);                                         // the pub keyStub opens
   const m = mount({ providers: [{ ...provider('Mine', { feeBps: 1 }), id: mine }, provider('Other', { feeBps: 40 })] });
-  await until(() => /Providers 2 online/.test(text(m.$('fx-lp'))), 'both listed before a key');
+  await until(() => /2 providers online/.test(text(m.$('fx-lp'))), 'both listed before a key');
   await signIn(m);
-  await until(() => /Provider Other/.test(text(m.$('fx-lp'))), 'the summary without the key\'s own');
-  assert.match(text(m.$('fx-lp')), /Fee 0\.40%/);
+  await until(() => /Other/.test(text(m.$('fx-lp'))), 'the summary without the key\'s own');
+  assert.match(text(m.$('fx-lp')), /0\.40%/);
   typeIn(m, '100'); await until(() => !m.$('fx-recv').hidden, 'the quote');
   assert.deepEqual(m.st.calls.asked[0].names, ['Other']);
 });
@@ -236,10 +238,11 @@ test('the amount: checked against the providers\' limits and the balance, quoted
   assert.deepEqual(m.st.calls.asked, [], 'nothing was asked of a provider for these');
   typeIn(m, '100'); await until(() => !m.$('fx-recv').hidden, 'the quote');
   assert.deepEqual(m.st.calls.asked, [{ names: ['Tacit'], units: 100n * TAC }]);
-  assert.match(text(m.$('fx-recv')), /You pay 100 TAC/); assert.match(text(m.$('fx-recv')), /You receive, private 98\.7 TAC/); assert.match(text(m.$('fx-recv')), /Fee 1\.3 TAC 1\.30%/);
+  assert.equal(m.$('fx-out').hidden, false); assert.equal(m.$('fx-big').textContent, '98.7'); assert.match(text(m.$('fx-out')), /You receive, private/); assert.match(text(m.$('fx-recv')), /Fee 1\.3 TAC 1\.30%/);
+  assert.match(text(m.$('fx-recv')), /Time about 15 minutes 1 Bitcoin confirmation, then a pool settle/);
   assert.doesNotMatch(text(m.$('fx-recv')), /Provider/, 'with one provider the receipt does not name it');
   assert.equal(m.$('fx-go').disabled, false); assert.equal(m.$('fx-st').textContent, '');
-  typeIn(m, '101'); assert.equal(m.$('fx-recv').hidden, true, 'a changed amount drops the old quote'); assert.equal(m.$('fx-go').disabled, true);
+  typeIn(m, '101'); assert.equal(m.$('fx-recv').hidden, true, 'a changed amount drops the old quote'); assert.equal(m.$('fx-out').hidden, true); assert.equal(m.$('fx-go').disabled, true);
   await until(() => !m.$('fx-recv').hidden, 'the new quote');
   m.$('fx-max').click(); await until(() => m.st.calls.asked.at(-1).units === 500n * TAC, 'the quote for the whole balance');
   assert.equal(m.$('fx-amt').value, '500');
@@ -251,8 +254,8 @@ test('the best of several quotes is shown with its provider, every provider that
   await signIn(m);
   typeIn(m, '100'); await until(() => !m.$('fx-recv').hidden, 'the quote');
   assert.deepEqual(m.st.calls.asked[0].names.sort(), ['Cheap', 'Down', 'Slow'], 'a provider that does not take 100 is not asked');
-  assert.match(text(m.$('fx-recv')), /Provider Cheap/); assert.match(text(m.$('fx-recv')), /You receive, private 98\.8 TAC/);
-  await until(() => !m.$('fx-go').disabled, 'a quote'); m.$('fx-go').click();
+  assert.match(text(m.$('fx-recv')), /Provider Cheap/); assert.equal(m.$('fx-big').textContent, '98.8');
+  await press(m);
   await until(() => m.st.calls.starts.length === 1, 'the start');
   assert.deepEqual(m.st.calls.starts[0].quotes.map((x) => x.provider.name), ['Cheap', 'Slow'], 'the best first, then the next to try');
 });
@@ -274,6 +277,10 @@ test('Bridge: the quotes go to the client, the bridge appears with its steps, th
   await signIn(m);
   typeIn(m, '100');
   await until(() => !m.$('fx-go').disabled, 'a quote'); m.$('fx-go').click();
+  await until(() => m.$('fx-go').textContent === 'Press again to bridge', 'the confirmation');
+  assert.equal(m.st.calls.starts.length, 0, 'the first press starts nothing');
+  assert.match(m.$('fx-st').textContent, /locks 100 TAC on Bitcoin until Tacit has paid you 98\.7 private TAC in the pool/); assert.match(m.$('fx-st').textContent, /returns to your address after about a day/);
+  m.$('fx-go').click();
   await until(() => m.st.calls.starts.length === 1, 'the start');
   assert.equal(m.st.calls.starts[0].quotes[0].quote.btcValue, 100n * TAC);
   await until(() => !m.$('fx-list').hidden, 'the list');
@@ -290,7 +297,7 @@ test('a quote near its end is asked for again, from the providers that gave one,
   st.session.quoteAll = async (ps, u) => { const r = await quoteAll(ps, u); if (st.calls.asked.length === 1) for (const x of r.quotes) x.quote.validUntil = Math.floor(Date.now() / 1000) + 30; return r; };
   const m = mount({ session: st });
   await signIn(m);
-  typeIn(m, '100'); await until(() => !m.$('fx-go').disabled, 'a quote'); m.$('fx-go').click();
+  typeIn(m, '100'); await press(m);
   await until(() => st.calls.starts.length === 1, 'the start');
   assert.equal(st.calls.asked.length, 2, 'asked again');
   assert.ok(Number(st.calls.starts[0].quotes[0].quote.validUntil) > Math.floor(Date.now() / 1000) + 300, 'the fresh quote is the one sent');
@@ -326,7 +333,7 @@ test('errors from the start are said plainly: a note already in a bridge, notes 
     const m = mount({ session: sessionStub({ startError: err }) });
     await signIn(m);
     typeIn(m, '50');
-    await until(() => !m.$('fx-go').disabled, 'a quote'); m.$('fx-go').click();
+    await press(m);
     await until(() => m.$('fx-st').className === 'status err', 'the error');
     assert.match(m.$('fx-st').textContent, re);
     assert.equal(m.$('fx-go').disabled, false, 'the press can be tried again');
@@ -352,8 +359,7 @@ test('a key that locks or changes drops the session: the form closes, the timer 
 test('what the providers can take now: the amount is capped by it, and the providers are read again as an amount is typed', async () => {
   let avail = String(300n * TAC);
   const m = mount({ discover: async () => [provider('Tacit', { available: avail })], refreshMs: 1, session: sessionStub({ balance: 900n * TAC }) });
-  await until(() => /Available now/.test(text(m.$('fx-lp'))), 'the available row');
-  assert.match(text(m.$('fx-lp')), /Available now 300 TAC/);
+  await until(() => /to 300 TAC now/.test(text(m.$('fx-lp'))), 'the available figure');
   await signIn(m);
   typeIn(m, '400'); await tick(10);
   assert.match(m.$('fx-st').textContent, /The provider can take up to 300 TAC right now/); assert.equal(m.$('fx-go').disabled, true);
@@ -362,17 +368,79 @@ test('what the providers can take now: the amount is capped by it, and the provi
   typeIn(m, '100'); await until(() => /up to 50 TAC/.test(m.$('fx-st').textContent), 'the refreshed limit');
   avail = '0'; await tick(5); typeIn(m, '20'); await until(() => /cannot take more right now/.test(m.$('fx-st').textContent), 'none left');
   const plain = mount();
-  await until(() => /Fee/.test(text(plain.$('fx-lp'))), 'the terms');
-  assert.doesNotMatch(text(plain.$('fx-lp')), /Available now/);
+  await until(() => /fee/.test(text(plain.$('fx-lp'))), 'the terms');
+  assert.doesNotMatch(text(plain.$('fx-lp')), / now/);
 });
 
 test('the providers are read again when a provider goes: the ones left stand, and none left says so', async () => {
   let list = [provider('A'), provider('B', { feeBps: 10 })];
   const m = mount({ discover: async () => list, refreshMs: 1 });
-  await until(() => /Providers 2 online/.test(text(m.$('fx-lp'))), 'two providers');
+  await until(() => /2 providers online/.test(text(m.$('fx-lp'))), 'two providers');
   list = [provider('A')];
   m.$('fx-go').click(); await tick(5); await until(() => !m.$('fx-form').hidden, 'the form');
-  typeIn(m, '20'); await until(() => /Provider Tacit|Provider A|Provider\s*A/.test(text(m.$('fx-lp'))) || /Provider A/.test(text(m.$('fx-lp'))), 'one provider now');
+  typeIn(m, '20'); await until(() => /^A\b/.test(text(m.$('fx-lp'))), 'one provider now');
+});
+
+test('a provider with nothing to take is full, not a range that ends at nothing; and with no provider the regular bridge is pointed to', async () => {
+  const m = mount({ providers: [provider('Empty', { available: '0' })] });
+  await until(() => /fee/.test(text(m.$('fx-lp'))), 'the summary');
+  assert.match(text(m.$('fx-lp')), /full right now/); assert.doesNotMatch(text(m.$('fx-lp')), /to 0 TAC/);
+  assert.match(text(m.$('fx-tiles')), /Takes full right now/);
+  const n = mount({ providers: [] });
+  await until(() => /No provider is online/.test(text(n.$('fx-lp'))), 'the offline line');
+  assert.equal(n.$('fx-lp').querySelector('a').getAttribute('href'), '/#card=bridge', 'the regular bridge is one click away');
+});
+
+test('what the lock costs on Bitcoin is read before the press: the fee shown, and an address that cannot pay it stops the press and says what to add', async () => {
+  const st = sessionStub();
+  let cost = { fee: 3100, take: 8046, total: 11146, have: 50000, short: false };
+  st.session.cost = async ({ quote }) => { (st.calls.costs ||= []).push(quote.btcValue); return cost; };
+  const m = mount({ session: st, discover: async () => [provider('Tacit')] });
+  await signIn(m);
+  typeIn(m, '100'); await until(() => /Bitcoin fee/.test(text(m.$('fx-recv'))), 'the fee row');
+  assert.match(text(m.$('fx-recv')), /Bitcoin fee ≈ 11,146 sats/); assert.match(text(m.$('fx-recv')), /8,046 of it is the provider's take/); assert.deepEqual(st.calls.costs, [100n * TAC], 'priced for the amount quoted');
+  assert.equal(m.$('fx-go').disabled, false);
+  cost = { fee: 3100, take: 8046, total: 11146, have: 1200, need: 11146, short: true };
+  typeIn(m, '101'); await until(() => /holds 1,200 sats for fees/.test(m.$('fx-st').textContent), 'the shortfall said');
+  assert.match(m.$('fx-st').textContent, /needs about 11,146/); assert.equal(m.$('fx-go').disabled, true, 'a press that would fail is not offered');
+  assert.equal(m.$('fx-st').className, 'status err');
+  // a fee that cannot be read does not stop a bridge
+  st.session.cost = async () => { throw new Error('no explorer answered'); };
+  typeIn(m, '102'); await until(() => !m.$('fx-go').disabled, 'the quote without a cost'); await tick(10); assert.doesNotMatch(text(m.$('fx-recv')), /Bitcoin fee/, 'a fee that was not read is not made up'); assert.equal(m.$('fx-go').disabled, false);
+});
+
+test('the sats the builder lacks, as it says them, are put in the page\'s words', async () => {
+  const m = mount({ session: sessionStub({ startError: new Error('adaptor-btc-tx: not enough sats to fund the commit (need 9000, have 250)') }) });
+  await signIn(m);
+  typeIn(m, '50'); await press(m);
+  await until(() => m.$('fx-st').className === 'status err', 'the error');
+  assert.match(m.$('fx-st').textContent, /holds 250 sats for fees and this bridge needs about 9,000/);
+});
+
+test('a bridge says how long ago it began and, when it is done, where the TAC is; a bridge under way says to keep the page open', async () => {
+  const m = mount();
+  let onChange; m.st.session.run = (o) => { onChange = o.onChange; return () => {}; };
+  await signIn(m);
+  const now = Math.floor(Date.now() / 1000);
+  const want = [rec({ id: '01'.repeat(36), phase: 'offered', title: 'Waiting for the pool lock', at: 1, created: now - 600 }), rec({ id: '02'.repeat(36), phase: 'done', title: 'Done', at: 3, ended: true, created: now - 7200 })];
+  onChange(want); await tick(5);
+  const rows = [...m.$('fx-list').querySelectorAll('.fx-rec')];
+  assert.match(text(rows[0]), /10 minutes ago/); assert.match(text(rows[1]), /2 hours ago/);
+  assert.equal(rows[0].querySelector('a[href="/assets/"]'), null); assert.ok(rows[1].querySelector('a[href="/assets/"]'), 'a finished bridge points to where the TAC is');
+  assert.match(text(m.$('fx-list')), /Keep this page open until it is done/);
+  onChange([want[1]]); await tick(5);
+  assert.doesNotMatch(text(m.$('fx-list')), /Keep this page open/, 'with nothing under way it is not said');
+});
+
+test('the first press says what the bridge does and goes no further; a changed amount asks again', async () => {
+  const m = mount();
+  await signIn(m);
+  typeIn(m, '100'); await until(() => !m.$('fx-go').disabled, 'a quote'); m.$('fx-go').click();
+  await until(() => m.$('fx-go').textContent === 'Press again to bridge', 'the confirmation');
+  typeIn(m, '120'); assert.equal(m.$('fx-go').textContent, 'Bridge', 'a new amount is a new question');
+  await until(() => !m.$('fx-go').disabled, 'the new quote'); m.$('fx-go').click();
+  await until(() => m.$('fx-go').textContent === 'Press again to bridge', 'asked again');
+  assert.equal(m.st.calls.starts.length, 0); assert.match(m.$('fx-st').textContent, /locks 120 TAC/);
 });
 
 test('the wallet failing to open is said and the page can be pressed again', async () => {

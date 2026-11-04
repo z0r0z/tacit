@@ -164,8 +164,18 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     return (byAsset[assetId] && byAsset[assetId].notes) || [];
   }
 
-  // What the wallet holds of the asset, less the notes already given to a lock: the most a new lock can use.
-  const available = async () => (await heldNotes()).filter((n) => !reserved.has(lc(n.leaf))).reduce((s, n) => s + BigInt(n.value), 0n);
+  // What the wallet holds of the asset, less the notes already given to a lock and the relay's fee for cutting a note of the size (paid
+  // only when the day's free settles are used up, but then out of these notes): the most a new lock can use.
+  const cutFee = { at: -Infinity, fee: 0n };
+  async function cutReserve(sum) {
+    if (clock() - cutFee.at > 600000) { cutFee.fee = await refundFee(sum + 1n); cutFee.at = clock(); }
+    return cutFee.fee;
+  }
+  const available = async () => {
+    const sum = (await heldNotes()).filter((n) => !reserved.has(lc(n.leaf))).reduce((s, n) => s + BigInt(n.value), 0n);
+    const fee = sum > 0n ? await cutReserve(sum) : 0n;
+    return sum > fee ? sum - fee : 0n;
+  };
 
   // ── the Ethereum locker ──
   const refundKey = async (id) => ({ xonly: xonlyOf(derive('evm-refund', id)) });
@@ -265,5 +275,5 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     return { op, leaves: [op.outLeaf], outputs: [output], ephSeed: scalarHex(derive('claim-eph', id)) };
   }
 
-  return { now, lockNullifier, lockPosition, findClaim, jobStatus, claimStatus: jobStatus, submit, prepare, lockOp, refundOp, refundKey, reserve, release, available, recipient, claimOp };
+  return { now, lockNullifier, lockPosition, findClaim, jobStatus, claimStatus: jobStatus, submit, prepare, lockOp, refundOp, refundKey, reserve, release, available, cutReserve, recipient, claimOp };
 }

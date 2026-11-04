@@ -103,6 +103,39 @@ test('a whole swap through the client: quote, start, the steps in words, the poo
   await assert.rejects(() => fb.start({ quote: q, notes: [w.note] }), /already part of a swap/);
 });
 
+test('the cost of a lock is read before anything is sent: its fee in sats, nothing stored, nothing broadcast, and a shortfall said with the figures', async () => {
+  const { w, ref } = httpWorld();
+  w.lEvm.fund(NET, 'net');
+  const s = await serve(w, { config: feeConfig(w) });
+  ref.base = s.base;
+  const fb = clientFor(w, counterAt(s.base));
+  const q = await fb.quote(VALUE);
+  const c = await fb.cost({ quote: q, notes: [w.note] });
+  assert.equal(c.short, false);
+  assert.ok(c.fee > 0 && c.total === c.fee + (q.takeSats || 0), `a fee and the take make the total (${JSON.stringify(c)})`);
+  assert.deepEqual(await w.userStore.list(), [], 'a dry run stores nothing');
+  // the same address with no plain sats: the figures it lacks
+  const poor = clientFor(w, counterAt(s.base), {});
+  const real = w.uBtc.satsUtxos;
+  w.uBtc.satsUtxos = async () => [];
+  const c2 = await poor.cost({ quote: q, notes: [w.note] });
+  w.uBtc.satsUtxos = real;
+  assert.equal(c2.short, true); assert.equal(c2.have, 0); assert.ok(c2.need > 0);
+  assert.deepEqual(await w.userStore.list(), [], 'and still nothing stored');
+});
+
+test('a note held by a swap that is not over is not offered to another: the second press says so, and it is free again when the swap ends', async () => {
+  const { w, ref } = httpWorld();
+  w.lEvm.fund(NET, 'net');
+  const s = await serve(w, { config: feeConfig(w) });
+  ref.base = s.base;
+  const fb = clientFor(w, counterAt(s.base));
+  const q = await fb.quote(VALUE);
+  await fb.start({ quote: q, notes: [w.note] });
+  await assert.rejects(() => fb.start({ quote: q, notes: [w.note] }), /already part of a swap/);
+  assert.deepEqual(await fb.cost({ quote: q, notes: [w.note] }), { short: false, noNotes: true }, 'nothing to price while the note is held');
+});
+
 test('a new instance on the same store carries a swap on: the page closed and opened again mid-swap', async () => {
   const { w, ref } = httpWorld();
   w.lEvm.fund(NET, 'net');

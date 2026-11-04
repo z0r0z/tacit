@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-GejOPAg0ostNF03nM7nL/CER69EKYaGMxEzvvdVgCKY=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-tqdn/6Y5wmTO+YSKI3yF6tHWfuaop5WSLmZfugVBjFU=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -4642,7 +4642,7 @@ const noteLanded = (wei) => {
   if (v) v.textContent = fmt((P.scan ? BigInt(P.scan.eth.value) : lastSeen('teth') ?? 0n) + P.coming, 8, 6);
   dashSoon();
 };
-function resetPrivate() { for (const k of Object.keys(FLASH)) delete FLASH[k]; P.scan = null; P.scanning = null; P.full = null; P.err = null; P.coming = 0n; DEV.W = null; DEV.bal = null; DEV.key = null; DEV.quote = null; DEV.gq = {}; DEV.err = null; DEV.self = false; Object.assign(TK, { W: null, key: null, bal: null, at: 0, err: null, syncing: null, keys: null, quote: null, qFail: 0, self: false }); Object.assign(LOCK, { rec: null, state: null, lm: null, bonds: [], list: [], pick: null, found: null, repayOver: null, q: null }); Object.assign(LK, { at: 0, pub: null, mine: [], back: [], scanning: null }); Object.assign(BTC, { pub: null, at: 0, err: null, share: null, sp: null, held: [], got: 0, part: false });
+function resetPrivate() { fastForget(); for (const k of Object.keys(FLASH)) delete FLASH[k]; P.scan = null; P.scanning = null; P.full = null; P.err = null; P.coming = 0n; DEV.W = null; DEV.bal = null; DEV.key = null; DEV.quote = null; DEV.gq = {}; DEV.err = null; DEV.self = false; Object.assign(TK, { W: null, key: null, bal: null, at: 0, err: null, syncing: null, keys: null, quote: null, qFail: 0, self: false }); Object.assign(LOCK, { rec: null, state: null, lm: null, bonds: [], list: [], pick: null, found: null, repayOver: null, q: null }); Object.assign(LK, { at: 0, pub: null, mine: [], back: [], scanning: null }); Object.assign(BTC, { pub: null, at: 0, err: null, share: null, sp: null, held: [], got: 0, part: false });
   try { for (const x of Object.values(HOLD.byKey)) x.w = {}; FARM.positions = null; FARM.wtac = null; FARM.left = null; FARM.jm = null; FARM.auto = {}; FARM.paid = null; for (const k of Object.keys(JOIN)) delete JOIN[k]; } catch { }
   dropTacitKey();
   SWC.card?.keyChanged(); }
@@ -8123,7 +8123,7 @@ function brMarkLong(el, n, step) {
   $('span', lab)?.insertAdjacentHTML('beforeend', html`<small>${brLongReason(step)}</small>`.s);
 }
 // TAC the proof does not follow, swapped on Bitcoin at the swap desk for TAC it does (btcswap-page.js). A key's swaps run while this page is open.
-const bswMod = lazy(() => import('/btcswap-page.js?cb=382ba62f'));
+const bswMod = lazy(() => import('/btcswap-page.js?cb=602b31e0'));
 const BSW = { pub: null, s: null, say: null, recs: [] };
 const bswHas = (pub) => { try { return Object.keys(localStorage).some((k) => k.startsWith(`tacit-btcswap-v1:mainnet:${pub}:`)); } catch { return false; } };
 async function bswOpen() {
@@ -8190,6 +8190,7 @@ const fastWants = lazy(async () => {
 });
 let fastAt = 0;
 async function fastTick(first = false) {
+  fastTend();
   const pub = S.key?.pubHex, kept = pub ? store.get(`tacit-fastbridge-want-v1:${pub}`) : null;
   if (!kept || !(Number(kept.until) > Date.now() / 1000) || store.get(FAST_TOLD) === `${pub}:${kept.at}`) return;
   if (!first && Date.now() - fastAt < 5 * 60e3) return;
@@ -8200,6 +8201,111 @@ async function fastTick(first = false) {
   const text = `A fast bridge provider can take your ${fmt(amt, 8, 4)} TAC now.`;
   toast(html`${text} <a href="/fast/">Bridge it</a>`, false, 15000);
   osNote('Fast bridge', text, 'tacit-fast-want', () => { location.href = '/fast/'; });
+}
+// The fast bridge as the Bridge tab's first way in for TAC from Bitcoin: when a provider online can take the size of the note picked, the tab
+// bridges it through the provider, in minutes, and the regular bridge (a few hours) is one press away. dapp/fast/route.js holds the rule and
+// dapp/fast/wire.js the key's session; both load when the tab first asks. A browser that opened the page once with ?fast=0 keeps the regular
+// bridge only (?fast=1 turns it back on).
+const FAST_OFF = 'tacit-fast-route-off-v1';
+try { const q = new URLSearchParams(location.search).get('fast'); if (q === '0') store.set(FAST_OFF, 1); else if (q === '1') store.set(FAST_OFF, null); } catch {}
+const fastOn = () => !store.get(FAST_OFF);
+const FASTR = { route: null, pub: null, fr: null, frP: null, offers: new Map(), slow: null, stop: null, recs: [], open: new Set() };
+const fastMods = lazy(() => Promise.all([import('/fast/route.js?cb=450984f8'), import('/fast/wire.js?cb=eedda560'), fetch('/fast/lp.json', { cache: 'no-cache' }).then((r) => r.json()).catch(() => ({}))]));
+function fastForget() { FASTR.stop?.(); Object.assign(FASTR, { pub: null, fr: null, frP: null, stop: null, recs: [], slow: null }); FASTR.offers.clear(); FASTR.open.clear(); }
+function fastRoute() {
+  const pub = S.key?.pubHex;
+  if (!pub) return Promise.resolve(null);
+  if (FASTR.pub !== pub) { fastForget(); FASTR.pub = pub; }
+  return (FASTR.frP ||= (async () => {
+    const [route, wire, lists] = await fastMods();
+    FASTR.route = route;
+    if (S.key?.pubHex !== pub) return null;
+    let sess = null;
+    const open = () => (sess ||= withKey(async (T) => wire.openFast({ T, withKey: (fn) => withKey(fn, pub), ux: await getUx(), priv: walletPriv(), pubHex: pub, wallet: () => S.provider || null }), pub).catch((e) => { sess = null; throw e; }));
+    return (FASTR.fr = route.makeFastRoute({ discover: () => wire.discoverProviders(lists), open, ownId: () => S.key?.pubHex || null }));
+  })().catch((e) => { FASTR.frP = null; throw e; }));
+}
+// What a provider would do with this note: { ok, quote, provider, quotes, minutes, cost } or { ok: false, why, min, max }; asked again after 45 seconds
+function hxFastOffer(n, fresh = false) {
+  if (!fastOn() || !S.key) return Promise.resolve(null);
+  const pub = S.key.pubHex, key = `${pub}:${brId(n)}:${n.amount}`, kept = FASTR.offers.get(key);
+  if (!fresh && kept && Date.now() - kept.at < 45e3) return kept.p;
+  const p = (async () => {
+    const fr = await fastRoute().catch(() => null);
+    if (!fr || S.key?.pubHex !== pub) return null;
+    const o = await fr.offer(BigInt(n.amount)).catch(() => null);
+    if (o?.ok) o.cost = await fr.cost(o, n).catch(() => null);
+    return o;
+  })();
+  FASTR.offers.set(key, { at: Date.now(), p });
+  return p;
+}
+const fastSats = (v) => `${Number(v).toLocaleString('en-US')} sats`;
+const fastShort = (c) => FASTR.route.shortText(c);
+const fastFail = (e) => Object.assign(new Error(FASTR.route.failMessage(e)), { said: true });
+// the receipt of a bridge through a provider (dapp/fast/route.js says it), and the regular bridge as the other way
+const hxFastShown = (o, shown) => ({ ...shown, ...FASTR.route.shown(o),
+  alt: { label: 'Bridge the regular way instead: no provider fee, a few hours', go: () => { FASTR.slow = BR.pick; HX.q = null; hxQuote(); } } });
+// why the fast bridge is not offered, when providers are online and none takes it, as a row of the regular receipt
+const hxFastWhy = (o) => FASTR.route?.whyRow(o) || null;
+// the press: the first says what the bridge does and what happens if the provider stops, the same press again (this note, within three minutes) goes
+async function hxFastGo({ st, pub, n, F }) {
+  const amt = `${fmt(BigInt(n.amount), 8, 4)} TAC`, who = F.provider?.name || 'the provider', c = F.cost;
+  if (c?.short) { say(st, html`<span class="err">${fastShort(c)}</span>`); HX.xoSure = null; return; }
+  const key = `fast|${pub}|${brId(n)}|${F.quote.id}`;
+  if (!(HX.xoSure?.key === key && Date.now() - HX.xoSure.at < 180e3)) {
+    HX.xoSure = { key, at: Date.now() };
+    say(st, FASTR.route.confirmText(F, amt));
+    return;
+  }
+  HX.xoSure = null;
+  say(st, 'Locking your TAC on Bitcoin…');
+  const fr = await fastRoute();
+  const fresh = F.quotes.every((x) => Number(x.quote.validUntil) > Date.now() / 1000 + 150) ? F : await hxFastOffer(n, true);
+  if (!fresh?.ok) throw new Error('The provider cannot take it right now. Try again, or use the regular bridge.');
+  await fr.start(fresh, n);
+  FASTR.offers.clear(); BR.pick = null; BR.at = 0;
+  hxFastTend();
+  say(st, `Started: ${amt} is locked on Bitcoin and ${who} pays you in about ${fresh.minutes} minutes. It is followed below; this page takes each step as Bitcoin confirms.`);
+  loadBridge(true).then(() => hxSendAfter()).catch(() => {});
+}
+// the steps of the bridges through a provider are taken while a page of this site is open with the key
+function hxFastTend() {
+  const pub = S.key?.pubHex;
+  if (!pub || FASTR.stop || !fastOn()) return;
+  FASTR.stop = () => {};
+  fastRoute().then((fr) => {
+    if (!fr || S.key?.pubHex !== pub) { FASTR.stop = null; return; }
+    FASTR.stop = fr.run((list) => { if (S.key?.pubHex === pub) { FASTR.recs = list; hxFastPaint(); fastArrived(list); } });
+  }).catch(() => { FASTR.stop = null; });
+}
+function fastTend() {
+  const pub = S.key?.pubHex;
+  if (!pub || FASTR.stop || !fastOn()) return;
+  try {
+    const p = `tacit-fastbridge-v1:mainnet:${pub}:`;
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(p) && !['done', 'refunded', 'counter-took'].includes(JSON.parse(localStorage.getItem(k))?.phase)) return hxFastTend();
+    }
+  } catch {}
+}
+// a bridge that was under way and is over: said once, and the private balance read again
+function fastArrived(list) {
+  for (const r of list) {
+    if (!r.ended) { FASTR.open.add(r.id); continue; }
+    if (!FASTR.open.delete(r.id) || r.returned) continue;
+    toast(html`${fmt(BigInt(r.receive), 8, 4)} TAC arrived in your private balance.`);
+    scanPrivate(true).catch(() => {}); dashSoon();
+  }
+}
+// the bridges through a provider, under the Bridge tab: those under way, and those over for a while
+function hxFastPaint() {
+  const el = $('#hx-fastl');
+  if (!el) return;
+  const recs = FASTR.recs.filter((r) => !r.ended || Date.now() / 1000 - r.created < 6 * 3600).slice(0, 4);
+  el.hidden = !recs.length;
+  mount(el, html`<div class="rows-h"><span>Fast bridges</span></div>${recs.map((r) => html`<span class="hx-hv"><b>${r.title}</b>: ${fmt(BigInt(r.amount), 8, 4)} TAC${r.receive && r.receive !== '0' ? html` → ${fmt(BigInt(r.receive), 8, 4)}` : ''}. ${r.detail}${r.error && !r.ended ? html` <span class="err">${r.error}</span>` : ''}${r.lockTxid ? html` <a href="https://mempool.space/tx/${r.lockTxid}" target="_blank" rel="noopener noreferrer">Bitcoin lock ↗</a>` : ''}</span>`)}`);
 }
 let brPrepAt = 0;
 async function brPrepTick(first = false) {
@@ -15008,10 +15114,20 @@ function paintHxQ() {
   hxNorm();
   hxAskQr();
   if (out) {
-    if (!q.busy) out.textContent = HX.tab === 'bridge' && hxMoveFixed() ? '—' : q.out ?? '0';
+    if (!q.busy) out.textContent = HX.tab === 'bridge' && hxMoveFixed() && !q.fast ? '—' : q.out ?? '0';
     out.classList.toggle('busy', !!q.busy);
     out.classList.toggle('ph', !q.busy && (q.out == null || out.textContent === '—'));
     if (out.classList.contains('big')) { const n = out.textContent.length; out.classList.toggle('long', n > 8); out.classList.toggle('longer', n > 11); }
+  }
+  // the steps under the figure are the regular bridge's, or a bridge through a provider's own four
+  const steps = $('.hx-brs');
+  if (steps && HX.mode === 'btc' && HX.dir === 'in' && !q.busy) {
+    steps.__reg ??= steps.innerHTML;
+    const k = q.fast ? 'fast' : 'regular';
+    if (steps.dataset.k !== k) {
+      steps.dataset.k = k;
+      steps.innerHTML = q.fast ? ['Locked on Bitcoin', 'Paid in the pool', 'Claimed', 'Arrived privately'].map((t, i) => `<li style="--i:${i}"><span class="dot" aria-hidden="true"></span>${t}</li>`).join('') : steps.__reg;
+    }
   }
   // what the TAC earned a day is worth, under it
   const ou = $('#hx-out-usd');
@@ -15549,12 +15665,18 @@ async function hxBridgeInQuote(my, done) {
   const shown = { ...base, rowsName: 'Your TAC on Bitcoin', rows: notes.map((n) => ({ k: brId(n), name: `${fmt(BigInt(n.amount), 8, 4)} TAC`, note: n.eligible ? 'ready to bridge' : n.reason, show: '', off: !n.eligible })) };
   const n = open.find((x) => brId(x) === BR.pick);
   if (!n) return done({ ...shown, line: open.length ? 'Pick the note to bridge.' : '' });
-  done({ ...shown, pick: BR.pick, line: 'Checking this TAC and Bitcoin’s fees…' });
+  // a provider that takes the size of this note is the first way: minutes, not hours
+  if (fastOn()) done({ ...shown, pick: BR.pick, line: 'Looking for a provider…' });
+  const F = await hxFastOffer(n).catch(() => null);
+  if (my !== HX.seq) return;
+  if (F?.ok && FASTR.slow !== brId(n)) return done(hxFastShown(F, { ...shown, pick: BR.pick }));
+  const other = F?.ok ? { alt: { label: `Bridge it fast instead: about ${F.minutes} minutes`, go: () => { FASTR.slow = null; HX.q = null; hxQuote(); } } } : {};
+  done({ ...shown, ...other, pick: BR.pick, line: 'Checking this TAC and Bitcoin’s fees…' });
   const R = await brReview(pub, n, (read) => { if (my === HX.seq) { const q = $('#hx-q'); if (q) q.textContent = `Reading this TAC’s history from Bitcoin: ${brTransfers(read)} so far…`; } }).catch((e) => ({ stop: errText(brFail(e)) }));
   if (my !== HX.seq) return;
-  if (!R.r) return done({ ...shown, pick: BR.pick, warn: true, line: R.stop || '' });
+  if (!R.r) return done({ ...shown, ...other, pick: BR.pick, warn: true, line: R.stop || '' });
   const sats = (v) => `${Number(v).toLocaleString('en-US')} sats`, amtText = fmt(BigInt(n.amount), 8, 4);
-  return done({ ...shown, pick: BR.pick, out: amtText, rc: [['Arrives', `${amtText} private TAC on Ethereum`], ['Bitcoin fee', `≈ ${sats(R.cost.fee)}`], ['Relay fee', 'none'], ['Time', 'usually within a few hours, once Bitcoin’s proof on Ethereum records the burn']],
+  return done({ ...shown, ...other, pick: BR.pick, out: amtText, rc: [['Arrives', `${amtText} private TAC on Ethereum`], ['Bitcoin fee', `≈ ${sats(R.cost.fee)}`], ['Relay fee', 'none'], ['Time', 'usually within a few hours, once Bitcoin’s proof on Ethereum records the burn'], hxFastWhy(F)].filter(Boolean),
     warn: R.r.short, line: R.r.short ? `This key’s Bitcoin address has ${fmt(BigInt(R.cost.have || 0), 8, 8)} BTC free for fees, short of the ${sats(R.cost.need)} this needs. Add some from Receive on the Bitcoin tab.` : '' });
 }
 // TAC brought in from Bitcoin from the Bridge tab. A burn cannot be undone, so the first press checks the note and says what the Bitcoin step costs, and the same press again (this note, within three minutes) sends it.
@@ -15563,9 +15685,12 @@ async function hxBridgeInGo() {
   const pub = S.key.pubHex;
   return hxSendRun(async (run) => {
     const st = HX.ss;
+    let fast = false;
     try {
       const n = (BR.pub === pub ? BR.notes || [] : []).map(brMarkDeep).map(brMarkEmpty).find((x) => x.eligible && brId(x) === BR.pick);
       if (!n) { say(st, html`<span class="err">Pick the note to bridge.</span>`); return; }
+      const F = FASTR.slow === brId(n) ? null : await hxFastOffer(n).catch(() => null);
+      if (F?.ok) { fast = true; return await hxFastGo({ st, pub, n, F }); }
       const R = await brReview(pub, n, (read) => say(st, `Reading this TAC’s history from Bitcoin: ${brTransfers(read)} so far…`));
       if (!R.r) { say(st, html`<span class="err">${R.stop}</span>`); HX.xoSure = null; return; }
       if (R.r.short) { say(st, html`<span class="err">This key’s Bitcoin address has ${fmt(BigInt(R.cost.have || 0), 8, 8)} BTC free for fees, short of the ${Number(R.cost.need).toLocaleString('en-US')} sats this needs. Add some from Receive on the Bitcoin tab.</span>`); HX.xoSure = null; return; }
@@ -15577,7 +15702,7 @@ async function hxBridgeInGo() {
       }
       HX.xoSure = null;
       await brBridgeNow({ run, pub, r: R.r, amt, status: st, where: html`on <a href="/bridge/">the bridge page</a>`, after: hxSendAfter });
-    } catch (e) { run.fail(st, brFail(e)); }
+    } catch (e) { run.fail(st, fast ? fastFail(e) : brFail(e)); }
   });
 }
 // ETH made private first, from the Bridge tab: what the Private sheet's Make private does (wrapNow). The relay's tip is not in this tab's receipt, so the first press says it and the same press again (this amount,
@@ -15884,6 +16009,7 @@ function paintHx() {
       <ol class="hx-brs${to === 'bitcoin' ? ' out' : ''}" aria-label="Steps">${hxBrSteps(HX.sf).map(step)}</ol>
       ${tail}
       <p class="q" id="hx-ss-at" hidden></p>
+      <div class="hx-pos" id="hx-fastl" hidden></div>
       <p class="q" id="hx-brl"></p>`;
   } else if (m === 'earn') {
     const groups = hxGroups('earn'), place = hxPlaceOf('earn', HX.from);
@@ -16292,6 +16418,7 @@ function hxBrLine() {
   if (!el) return;
   const { under = 0, needs = 0 } = window.tacitBridges?.() || {};
   mount(el, html`<a href="/bridge/">${under ? `${under} under way${needs ? `, ${needs} need${needs === 1 ? 's' : ''} you` : ''}: follow ${under === 1 ? 'it' : 'them'}` : 'How the bridge works'} →</a>`);
+  hxFastPaint();
 }
 function hxSync() {
   hxNorm();

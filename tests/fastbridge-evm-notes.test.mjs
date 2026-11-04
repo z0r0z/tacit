@@ -109,6 +109,11 @@ test('a note of the exact size is cut with no fee first, from one note or severa
   await prep(); assert.equal(calls.length, 0);
   held.notes = [note(7, '100')];
   await assert.rejects(prep, /short of 897/); assert.equal(calls.length, 0);
+  // what a new lock can use leaves room for the relay's fee of a cut, read once for a while
+  held.notes = [note(1, '400'), note(2, '500')];
+  assert.equal(await evm.available(), 893n, '900 held, less the 7 a cut may cost');
+  held.notes = [note(3, '5')];
+  assert.equal(await evm.available(), 0n, 'never below nothing');
   // any other failure is not papered over
   ux.transfer = async () => { throw new Error('the relay did not take the job'); };
   held.notes = [note(8, '1000')];

@@ -77,11 +77,39 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
     return null;
   }
 
+  const outpointsOf = (ns) => new Set(ns.map((n) => `${n.txid}:${n.vout}`));
+
+  // The notes a swap still holds are not offered to another: a second lock built from one would double-spend the first.
+  async function freeNotes(notes) {
+    const held = new Set();
+    for (const r of await store.list()) if (!TERMINAL.has(r.phase) && r.role === 'bl') for (const i of r.noteInputs || []) held.add(`${i.txid}:${i.vout}`);
+    return held.size ? notes.filter((n) => !held.has(`${n.txid}:${n.vout}`)) : notes;
+  }
+
+  // What the lock for a quote would cost on Bitcoin, and whether the address can pay it: the lock is built and signed as it would be,
+  // and neither stored nor sent. { fee, take, total } in sats, or { short: true, need, have } when the address lacks the sats.
+  async function cost({ quote: q, notes }) {
+    const pick = pickNotes(await freeNotes(notes), q.btcValue);
+    if (!pick) return { short: false, noNotes: true };
+    const take = Number(q.takeSats ?? 0);
+    policy.csvBlocks = q.csvBlocks;
+    try {
+      const { pair } = await bl.build({ asset: hexToBytes(q.btcAsset), amount: q.btcValue, notes: pick.notes, counterClaimPub: hexToBytes(q.claimPub), evmAsset: q.evmAsset, evmAmount: q.evmAmount, quoteId: q.id, takeSats: take, avoid: outpointsOf(notes) });
+      const fee = pair.commitFee + pair.revealFee;
+      return { short: false, fee, take, total: fee + take };
+    } catch (e) {
+      const m = /not enough sats to fund the commit \(need (\d+), have (\d+)\)/.exec(String((e && e.message) || e));
+      if (m) return { short: true, need: Number(m[1]), have: Number(m[2]), take };
+      throw e;
+    }
+  }
+
   // Builds and stores the lock for a checked quote; nothing is sent until the first step.
-  async function start({ quote: q, notes }) {
+  async function start({ quote: q, notes: all }) {
     if (!(Number(q.validUntil) > now() + policy.quoteMarginSecs)) throw new Error('the quote expired');
+    const notes = await freeNotes(all);
     const pick = pickNotes(notes, q.btcValue);
-    if (!pick) throw new Error('these notes do not cover the amount');
+    if (!pick) throw new Error(notes.length < all.length ? 'fastbridge: this note is already part of a swap' : 'these notes do not cover the amount');
     if (await store.get(bytesToHex(X.swapIdOf(pick.notes[0].txid, pick.notes[0].vout)))) throw new Error('fastbridge: this note is already part of a swap');
     // the provider holds the payout before anything is locked: a provider that cannot is found out while the TAC is still in hand
     if (counter.reserve) {
@@ -91,7 +119,7 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
     policy.csvBlocks = q.csvBlocks;
     const rec = await bl.start({
       asset: hexToBytes(q.btcAsset), amount: q.btcValue, notes: pick.notes, counterClaimPub: hexToBytes(q.claimPub),
-      evmAsset: q.evmAsset, evmAmount: q.evmAmount, quoteId: q.id, takeSats: q.takeSats ?? 0,
+      evmAsset: q.evmAsset, evmAmount: q.evmAmount, quoteId: q.id, takeSats: q.takeSats ?? 0, avoid: outpointsOf(all),
     });
     // the provider is kept with the swap, so it is carried on with the one it began with
     if (provider) { rec.provider = provider; await store.put(rec); }
@@ -143,7 +171,7 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
     return found.map(describe);
   }
 
-  return { terms, quote, pickNotes, start, tick, run, records, recover, describe, step: (rec) => bl.step(rec) };
+  return { terms, quote, pickNotes, cost, start, tick, run, records, recover, describe, step: (rec) => bl.step(rec) };
 }
 
 // Several providers: a quote from each, the best first, and each swap carried on with the provider it began with.
@@ -179,6 +207,8 @@ export function makeFastBridgeMarket({ btc, evm, store, seed, pins = {}, policy,
     }
     throw last || new Error('the provider cannot hold that amount');
   }
+  // the cost of the lock for the best quote (the one tried first)
+  const cost = ({ quotes, notes }) => clientFor(quotes[0].provider.ref).cost({ quote: quotes[0].quote, notes });
   async function tick() {
     const out = [];
     for (const rec of await store.list()) out.push(TERMINAL.has(rec.phase) ? rec : await clientFor(rec.provider || null).step(rec));
@@ -197,7 +227,7 @@ export function makeFastBridgeMarket({ btc, evm, store, seed, pins = {}, policy,
   }
   const records = async () => (await store.list()).sort((a, b) => b.created - a.created).map(describe);
   const recover = (opts) => clientFor(null).recover(opts);
-  return { quoteAll, start, tick, run, records, recover, clientFor };
+  return { quoteAll, start, cost, tick, run, records, recover, clientFor };
 }
 
 // Where a swap is, in words and as a position among the four steps (lock on Bitcoin, lock in the pool, claim, done).
