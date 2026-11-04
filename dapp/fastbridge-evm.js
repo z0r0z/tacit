@@ -150,20 +150,28 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     const amount = BigInt(rec.offer.evm.amount);
     const free = (await heldNotes()).filter((n) => !reserved.has(lc(n.leaf)));
     if (free.some((n) => BigInt(n.value) === amount)) return;
-    try { await ux.ensureExactNote({ walletPriv: privBytes, asset: assetId, amount, notes: free }); return; } catch (e) {
-      if (!/consolidate first/.test(String((e && e.message) || e))) throw e;
+    // One transfer to this wallet's own identity takes in the fewest notes that cover it (the smallest one that does, else the largest
+    // first) and puts out a note of exactly the amount and the change. It is sent with no fee first, as the relay's free settles carry
+    // (the relay is the provider's own service, and the lock that follows is free as well); only when the day's free settles are used up
+    // is the relay's fee paid, out of the notes.
+    const pick = (fee) => {
+      const need = amount + fee, sorted = free.slice().sort((x, y) => (BigInt(x.value) > BigInt(y.value) ? 1 : -1));
+      const one = sorted.find((n) => BigInt(n.value) >= need);
+      if (one) return [one];
+      const out = []; let sum = 0n;
+      for (const n of sorted.reverse()) { if (sum >= need || out.length >= 16) break; out.push(n); sum += BigInt(n.value); }
+      return sum >= need ? out : null;
+    };
+    const send = (fee) => {
+      const notes = pick(fee);
+      if (!notes) throw new Error(`fastbridge: the pool notes hold ${free.reduce((x, n) => x + BigInt(n.value), 0n)}, short of ${amount}${fee ? ` and the fee of cutting it (${fee})` : ''}`);
+      return ux.transfer({ walletPriv: privBytes, notes, recipientPubHex: identity().pubHex, amount, fee });
+    };
+    try { await send(0n); } catch (e) {
+      const m = String((e && e.message) || e);
+      if (!/free relayed settles|free_budget|fee below|floor/i.test(m)) throw e;
+      await send(await refundFee(amount + 1n));
     }
-    // No one note covers it: one transfer to this wallet's own identity takes several notes in (the largest first) and puts out a note of
-    // exactly the amount and the change, so a provider whose balance came in pieces can lock what it advertises.
-    const fee = await refundFee(amount + 1n);
-    const picked = [];
-    let sum = 0n;
-    for (const n of free.slice().sort((a, b) => (BigInt(b.value) > BigInt(a.value) ? 1 : -1))) {
-      if (sum >= amount + fee || picked.length >= 16) break;
-      picked.push(n); sum += BigInt(n.value);
-    }
-    if (sum < amount + fee) throw new Error(`fastbridge: the pool notes hold ${sum}, short of ${amount} and the fee of cutting it (${fee})`);
-    await ux.transfer({ walletPriv: privBytes, notes: picked, recipientPubHex: identity().pubHex, amount, fee });
   });
   // The reservation of a note keeps two swaps of one size from being given the same note. A swap keeps its note across tries: a lock
   // that is built again (the relay lost the job, or said it failed) is built from the note the first try used, so that if the first
