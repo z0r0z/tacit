@@ -62,6 +62,9 @@ test('the panel shows when a key is open, reads what the key can provide only wh
   const small = mount({ stub: sessionStub({ pool: 250n * TAC }) });
   await small.load();
   assert.equal(small.$('pv-most').value, '250');
+  const odd = mount({ stub: sessionStub({ pool: 1_043_867_355n }) });
+  await odd.load();
+  assert.equal(odd.$('pv-most').value, '10.4386', 'what is held, down to four places: never more than is held, and whole in the field');
 });
 
 test('what is asked of a provider before it starts: private TAC, a fee that is a percentage, a size it can fill (no Bitcoin: each lock pays the take)', async () => {

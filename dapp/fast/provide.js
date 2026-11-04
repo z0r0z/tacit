@@ -90,7 +90,8 @@ export function mountProvide({ root, keyS, open, hasOpen = () => false, settings
       S.inv = await sess.inventory();
       const kept = settings.get(pub) || {};
       $('pv-fee').value = ((kept.feeBps ?? 30) / 100).toFixed(2);
-      const most = kept.maxAmount != null ? BigInt(kept.maxAmount) : (S.inv.pool < DEFAULT_MOST ? S.inv.pool : DEFAULT_MOST);
+      // the default is what is held, down to four places, so it reads whole in the field and is never more than is held
+      const most = kept.maxAmount != null ? BigInt(kept.maxAmount) : (S.inv.pool < DEFAULT_MOST ? S.inv.pool - (S.inv.pool % 10_000n) : DEFAULT_MOST);
       $('pv-most').value = (most / ONE).toString() + (most % ONE ? '.' + (most % ONE).toString().padStart(DEC, '0').replace(/0+$/, '') : '');
       S.st = await sess.status();
       note('');
