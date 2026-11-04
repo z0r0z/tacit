@@ -72,11 +72,12 @@ export function makeConfidentialStage({ ux: t, now = () => Math.floor(Date.now()
   // hidden change note of the key's, and the unwrap is a partial one. With the holder's own prover set (relay.useProver, the device prover takes
   // both) the unwrap is proved on this machine and posted with its recipe, so no one else sees the note's key; otherwise the relay proves it.
   // → { index, wei, depositId, settleTx, activateTx, own, change }
-  async function stageNote({ note, walletPriv, amountWei = null, minFee = null, waitOpts = {}, onStep = () => {} }) {
+  // One note's stage as it is sent, nothing sent yet: the op (a whole-note unwrap, or a partial one with its change), the recipe its exit runs
+  // and the escrow it pays, and the wrap the recipe deposits. `own`: proved on this machine (a longer op deadline).
+  async function buildStage({ note, walletPriv, amountWei = null, minFee = null, own = false }) {
     if (!note) throw new Error('stageNote: note required');
     const eth = lc(t.assetByTicker.cETH.assetId);
     if (lc(note.asset) !== eth) throw new Error('stageNote: only tETH notes are staged');
-    const own = t.relay.ownProving();
     let floor = minFee != null ? BigInt(minFee) : await stageFee('unwrap');
     let units = t.quoteUnwrapFee(BigInt(note.value), 'cETH', { minFee: floor }).net, part = null;
     if (amountWei != null) {
@@ -109,6 +110,12 @@ export function makeConfidentialStage({ ux: t, now = () => Math.floor(Date.now()
       spec = { type: 'sendunwrap', op: x.op, leaves: [x.changeLeaf], outputs: x.changeOut, ephRand: x.ephRand };
       change = { value: BigInt(x.out.change), leaf: x.changeLeaf };
     }
+    return { spec, recipe, escrow, index, wei, depositId: w.depositId, change };
+  }
+  async function stageNote({ note, walletPriv, amountWei = null, minFee = null, waitOpts = {}, onStep = () => {} }) {
+    const own = t.relay.ownProving();
+    const { spec, recipe, escrow, index, wei, depositId, change } = await buildStage({ note, walletPriv, amountWei, minFee, own });
+    const w = { depositId };
     let jobId = null;
     try {
       if (own) {
@@ -138,6 +145,29 @@ export function makeConfidentialStage({ ux: t, now = () => Math.floor(Date.now()
       if (jobId) e.stuck = { recipe, escrow, jobId, index, depositId: w.depositId };
       throw e;
     }
+  }
+
+  // Several whole notes staged with ONE proof: every note's unwrap in one program input, so a machine pays the proof's fixed stages (its
+  // recursion and Groth16, most of a laptop's time) once for all of them. `prove(items)` proves [{ type, op, memos }] as one batch (this
+  // machine's prover over sp1-stdin.js batchStdin) → { publicValues, proof }. The proof is posted with no exit attached (its stage fees pay
+  // whoever sends it); once it has landed each recipe is run through the router's activateExit, which anyone may call, by `activate(recipe)`
+  // (a transaction from the holder's own account). The notes must be read against one root. → [{ index, wei, depositId, activateTx }]
+  async function stageBatch({ notes, walletPriv, prove, activate, waitOpts = {}, onStep = () => {} }) {
+    if (!notes?.length) throw new Error('stageBatch: notes required');
+    if (new Set(notes.map((n) => lc(n.root))).size !== 1) throw new Error('stageBatch: the notes must be read against one root');
+    const stages = [];
+    for (const note of notes) stages.push(await buildStage({ note, walletPriv, own: true }));
+    onStep('prove');
+    const p = await prove(stages.map((x) => ({ type: x.spec.type, op: x.spec.op, memos: x.spec.memos || [] })));
+    if (!p?.publicValues || !p?.proof) throw new Error('this machine’s prover returned no proof for the batch');
+    onStep('settle');
+    const posted = await t.relay.postProof({ type: 'unwrap', publicValues: p.publicValues, proof: p.proof, memos: [] });
+    if (!posted?.jobId) throw new Error(posted?.error || 'the relay would not take the batch');
+    const st = await t.relay.waitForSettle(posted.jobId, { ...waitOpts, viaRelay: true });
+    onStep('activate', st.txHash);
+    const out = [];
+    for (const x of stages) out.push({ index: x.index, wei: x.wei, depositId: x.depositId, activateTx: await activate(x.recipe) });
+    return out;
   }
 
   // The key's staged tETH deposits still waiting, from a balance read (or `scan`, one already made). → [{ index, wei, depositId }]
@@ -194,5 +224,5 @@ export function makeConfidentialStage({ ux: t, now = () => Math.floor(Date.now()
     return { jobId: posted.jobId, txHash: st.txHash || null, amountOut: p.built.amountOut, ahead: p === ready };
   }
 
-  return { stageFee, stageNote, staged, splitPending, proveSwap, stillFits, pressSwap, rescueKey, stageRecipe };
+  return { stageFee, buildStage, stageNote, stageBatch, staged, splitPending, proveSwap, stillFits, pressSwap, rescueKey, stageRecipe };
 }
