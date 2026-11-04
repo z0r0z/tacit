@@ -2719,8 +2719,9 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   }
 
   // A route's op, the leaves and recovery descriptors of what it makes and their sealed memos: what a relayed route, one proved first and one
-  // proved ahead all send.
-  async function _routeBuild({ walletPriv, inNote, amountIn, path, minOut, fee = 0n } = {}) {
+  // proved ahead all send. `split`: the change cut into these values (each a note of its own, adding up to what the route leaves of the note),
+  // so a route can also make the exact note the next step spends (a farm join's pairing side) with no cut of its own.
+  async function _routeBuild({ walletPriv, inNote, amountIn, path, minOut, fee = 0n, split = null } = {}) {
     const q = await quoteRoute({ asset0: inNote.asset, amountIn, path, fee });
     if (!q) throw new Error('route: a hop pool is not initialized');
     const id = identity(walletPriv);
@@ -2733,24 +2734,23 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const rOut = outKeys.blinding;
     const outNk = outKeys.nk;
     const outOwner = pool.nkToOwner(outNk);
-    const changeKeys = changeVal > 0n ? deriveOutput(walletPriv, anchor, 'change', 0) : null;
-    const rChange = changeKeys ? changeKeys.blinding : null;
-    const changeNk = changeKeys ? changeKeys.nk : null;
-    const changeOwner = changeNk ? pool.nkToOwner(changeNk) : null;
-    const change = changeVal > 0n ? [{ value: changeVal, blinding: rChange, owner: changeOwner }] : [];
+    const parts = split ? split.map(BigInt) : changeVal > 0n ? [changeVal] : [];
+    if (parts.some((v) => v <= 0n) || parts.reduce((a, v) => a + v, 0n) !== changeVal) throw new Error('route: the split does not add up to the change');
+    if (![0, 1, 2, 4, 8].includes(parts.length)) throw new Error('route: the change is 0, 1, 2, 4 or 8 notes');
+    const change = parts.map((value, i) => { const k = deriveOutput(walletPriv, anchor, 'change', i); return { value, blinding: k.blinding, owner: pool.nkToOwner(k.nk), nk: k.nk }; });
     const op = _route.buildRoute({
       asset0: inNote.asset, chainBinding: chainBindingHex(), inNote, amountIn: spend,
       rIn: BigInt(inNote.blinding), hops: q.hops, minOut: BigInt(minOut), outOwner, rOut,
-      deadline: 0n, fee: BigInt(fee), change, noteValue: total,
+      deadline: 0n, fee: BigInt(fee), change: change.map(({ value, blinding, owner }) => ({ value, blinding, owner })), noteValue: total,
     });
     op.spendRoot = inNote.root;
     const beHex = (n) => '0x' + n.toString(16).padStart(64, '0');
     const leaf = pool.leaf(q.assetFinal, op.out.cx, op.out.cy, outOwner);
     const outputs = [{ value: q.amountOut.toString(), blinding: beHex(rOut), secret: outNk, asset: q.assetFinal, owner: outOwner, cx: op.out.cx, cy: op.out.cy, ownerPub: id.pubHex }];
     const leaves = [leaf];
-    for (const c of (op.change || [])) {
-      leaves.push(pool.leaf(inNote.asset, c.cx, c.cy, changeOwner));
-      outputs.push({ value: c.value.toString(), blinding: beHex(c.blinding), secret: changeNk, asset: inNote.asset, owner: changeOwner, cx: c.cx, cy: c.cy, ownerPub: id.pubHex });
+    for (const [i, c] of (op.change || []).entries()) {
+      leaves.push(pool.leaf(inNote.asset, c.cx, c.cy, change[i].owner));
+      outputs.push({ value: c.value.toString(), blinding: beHex(c.blinding), secret: change[i].nk, asset: inNote.asset, owner: change[i].owner, cx: c.cx, cy: c.cy, ownerPub: id.pubHex });
     }
     const ephRand = freshEph;
     const sealedMemos = guard.sealMemosForOutputs({ outputs, ephRand });
@@ -2758,24 +2758,36 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const wireOp = { ...op, change: (op.change || []).map((c) => ({ cx: c.cx, cy: c.cy, owner: c.owner })) };
     return { q, spec: { op: wireOp, leaves, outputs, ephRand }, sealedMemos };
   }
-  async function route({ walletPriv, inNote, amountIn, path, minOut, fee = 0n, selfRelay = false, selfSettle = null, waitOpts } = {}) {
-    const { spec, sealedMemos } = await _routeBuild({ walletPriv, inNote, amountIn, path, minOut, fee });
+  async function route({ walletPriv, inNote, amountIn, path, minOut, fee = 0n, split = null, selfRelay = false, selfSettle = null, waitOpts } = {}) {
+    const { spec, sealedMemos } = await _routeBuild({ walletPriv, inNote, amountIn, path, minOut, fee, split });
     return _dispatch({ type: 'route', spec, sealedMemos, selfRelay, selfSettle, walletPriv, waitOpts });
   }
   // A private swap proved before its press, as an exit is (exitAhead): a prove-only job the relay makes only on its board, whose proof is
   // posted at the press for the relay to send. The proof pins the note it spends and the reserves of the pools it crosses (`hops`), so it holds
   // only while the pool has not traded; the settle that finds otherwise is refused when the proof is posted, with nothing sent.
   // → what routeAheadSend takes: { note, amountIn, path, minOut, fee, hops, out, proven, leaves, memos }
-  async function routeAhead({ walletPriv, inNote, amountIn, path, minOut, fee = 0n, waitOpts } = {}) {
-    const b = await _routeBuild({ walletPriv, inNote, amountIn, path, minOut, fee });
+  async function routeAhead({ walletPriv, inNote, amountIn, path, minOut, fee = 0n, split = null, waitOpts } = {}) {
+    const b = await _routeBuild({ walletPriv, inNote, amountIn, path, minOut, fee, split });
     const proven = await relay.prove({ type: 'route', ...b.spec, memos: b.sealedMemos, ahead: true }, { ...waitOpts, viaRelay: true });
     if (!proven || !proven.publicValues) throw new Error(proven && proven.error || 'routeAhead: no proof');
-    return { note: inNote, amountIn: BigInt(amountIn), path, minOut: BigInt(minOut), fee: BigInt(fee), hops: b.q.hops, out: b.q.amountOut, proven, leaves: b.spec.leaves, memos: proven.memos || b.sealedMemos };
+    return { note: inNote, amountIn: BigInt(amountIn), path, minOut: BigInt(minOut), fee: BigInt(fee), split, hops: b.q.hops, out: b.q.amountOut, proven, leaves: b.spec.leaves, memos: proven.memos || b.sealedMemos };
   }
   // The press: the proof made ahead is posted for the relay to send, then waited for as a relayed route is, its memos checked.
-  async function routeAheadSend(a, { waitOpts } = {}) {
+  const routeAheadSend = (a, o) => _postAhead('route', a, o);
+  // A private transfer proved before its press (a note cut to size for a send or a join, to the key itself): it binds the notes it spends against
+  // a root the pool always knows, so it holds until one of them is spent, and its relay fee pays the relay that sends it.
+  // → what transferAheadSend takes: { notes, amount, fee, proven, leaves, memos }
+  async function transferAhead({ walletPriv, notes, recipientPubHex, amount, fee = 0n, feeUsd = null, waitOpts } = {}) {
+    if (feeUsd == null && BigInt(fee) > 0n) feeUsd = await feeUsdFor(fee, poolTickerOf(notes?.[0]?.asset)).catch(() => null);
+    const b = buildTransferOp({ walletPriv, notes, recipientPubHex, amount, fee, feeUsd });
+    const proven = await relay.prove({ type: 'transfer', op: b.op, leaves: b.leaves, outputs: b.outputs, ephRand: b.ephRand, memos: b.memos, ahead: true }, { ...waitOpts, viaRelay: true });
+    if (!proven || !proven.publicValues) throw new Error(proven && proven.error || 'transferAhead: no proof');
+    return { notes, amount: BigInt(amount), fee: BigInt(fee), recipientPubHex, proven, leaves: b.leaves, memos: proven.memos || b.memos };
+  }
+  const transferAheadSend = (a, o) => _postAhead('transfer', a, o);
+  async function _postAhead(type, a, { waitOpts } = {}) {
     // a refusal (the pool would not take it now: its note spent, its pools traded) comes back as an error or as an answer with no job: either way nothing was posted
-    const posted = await relay.postProof({ type: 'route', publicValues: a.proven.publicValues, proof: a.proven.proof, memos: a.memos })
+    const posted = await relay.postProof({ type, publicValues: a.proven.publicValues, proof: a.proven.proof, memos: a.memos })
       .catch((e) => ({ error: String(e && e.message || e) }));
     if (!posted || !posted.jobId) throw Object.assign(new Error((posted && posted.error) || 'the relay would not take the proof made ahead'), { notPosted: true });
     let st = posted.status === 'settled' ? { ...posted, status: 'settled' } : await relay.waitForSettle(posted.jobId, waitOpts);
@@ -3386,7 +3398,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // injected wallet this site is already connected to is used.
   return { cfg, assets: _poolAssets, assetByTicker, account, identity, rpc, useWallet: (get) => { _walletGet = typeof get === 'function' ? get : null; }, ethCall, fetchEvents, balance, poolStatsFromEvents, tickerOf, poolTickerOf,
     deriveOutput, receiveCode, parseReceiveCode, buildWrap, buildShareWrap, nextShareIndex, releaseShareIndex, shareDeposits, nextWrapIndex, warmWrapLogs, releaseWrapIndex, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, wrapAndMintCusdCall, resumeWrapAndSend, proveWrap, wrapProofFits, wrapSettleCall, sendPreparedTx, buildTransferOp, transfer, stealthSend, scanStealthLocks, stealthClaim, stealthRefund, stealthLockPosition, crossOut, payInvoice, quoteUnwrapFee, ladderFee: _ladderFee, poolLeafCount, refreshFarmPending, holderFeeBps, setPublicTacHeld, quoteTransferFee, quoteOpFee: gasAwareMinFee, feeUsdFor, relayFeeEligible, buildUnwrap, unwrap, sendUnwrap, sendUnwrapExitOp: _sendUnwrapExit, exitAhead, exitAheadSend, addBridgeAmountHint, buildAttestMeta, chainBindingHex,
-    settleFromAccount, erc2612Nonce: _erc2612Nonce, waitReceipt: _waitReceipt, poolReserves, poolFeeApr, poolCurrentRoot, sameRoot, routePoolId, quoteRoute, route, routeAhead, routeAheadSend, swapBatched, swapBatchPending, swapBatchFlush, lpBondPosition, buildLpBondOp, lpBond, farmProgram, farmBond, farmPositions, importFarmPosition, recover, recoverCdpPositions, scanSentLocks, farmHarvest, farmUnbond, farmRedeem, buildFastlaneExitOp, fastlaneExit, lpAdd, lpRemove, quoteLpAdd, wrapLp, wrapSwap, buildWrapSwap, submitWrapSwap, proveWrapSwap, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle, settleCalldata,
+    settleFromAccount, erc2612Nonce: _erc2612Nonce, waitReceipt: _waitReceipt, poolReserves, poolFeeApr, poolCurrentRoot, sameRoot, routePoolId, quoteRoute, route, routeAhead, routeAheadSend, transferAhead, transferAheadSend, swapBatched, swapBatchPending, swapBatchFlush, lpBondPosition, buildLpBondOp, lpBond, farmProgram, farmBond, farmPositions, importFarmPosition, recover, recoverCdpPositions, scanSentLocks, farmHarvest, farmUnbond, farmRedeem, buildFastlaneExitOp, fastlaneExit, lpAdd, lpRemove, quoteLpAdd, wrapLp, wrapSwap, buildWrapSwap, submitWrapSwap, proveWrapSwap, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle, settleCalldata,
     cbtcLockState, syncCbtcLockReservations, cbtcBonds, forgetKeys: forget,
     relay, indexer, evmLog, evmTx, pool, memo, router: _router, stealth: _stealth, bridgeMint: _bridgeMint, bridgeBurn: _bridgeBurn, bridgeBurnToPool, airdrop: _airdrop, tacAirdrop: _tacAirdrop, lockScan: _lockScan };
 }

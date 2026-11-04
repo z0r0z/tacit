@@ -199,7 +199,7 @@ const { chromium } = require(process.env.PLAYWRIGHT || '/Users/z/zFi/node_module
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
 // Borrow reports under each step's own line (#bw-s1…#bw-s4) as well as the sheet's: read them all.
 const bwText = (page) => page.evaluate((s) => [...document.querySelectorAll(s)].map((e) => e.textContent).join(' '), '#bw-status, #bw-s1, #bw-s2, #bw-s3, #bw-s4');
-const ONLY = new Set((process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,stageready,wrapfirst,poolkeep,poolmax,poolwait,poolstale,poolfunds,tacvoucher,relaystate,relayfail,selfwallet,slowline').split(','));
+const ONLY = new Set((process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,stageready,wrapfirst,poolkeep,poolmax,sendahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,relayfail,selfwallet,slowline').split(','));
 const FORK = process.argv[3] || 'https://mainnet.gateway.tenderly.co';
 const SHOTS = process.env.SHOTS || null;
 const PORT = 20000 + Math.floor(Math.random() * 2000), WEB = PORT + 1;
@@ -6856,7 +6856,7 @@ const swapStub = () => `
     const queued = (selfSettle) => { if (window.__swapQueue > 0 && !selfSettle) { window.__swapQueue--; throw new Error('settle timed out after 900s'); } };
     ux.route = async (a) => {
       const q = await ux.quoteRoute({ asset0: a.inNote.asset, amountIn: a.amountIn, path: a.path, fee: a.fee });
-      window.__swapCalls.push({ amountIn: String(a.amountIn), noteValue: String(a.inNote.value), fee: String(a.fee), minOut: String(a.minOut), out: String(q.amountOut), path: a.path.map((h) => h.feeBps + ':' + h.assetNext), self: !!a.selfSettle });
+      window.__swapCalls.push({ amountIn: String(a.amountIn), noteValue: String(a.inNote.value), fee: String(a.fee), minOut: String(a.minOut), out: String(q.amountOut), path: a.path.map((h) => h.feeBps + ':' + h.assetNext), self: !!a.selfSettle, ...(a.split ? { cut: a.split.map(String) } : {}) });
       if (window.__swapRefuse && !a.selfSettle) throw new Error('fee below the current floor');
       queued(a.selfSettle);
       await wait();
@@ -6867,7 +6867,9 @@ const swapStub = () => `
       window.__moved = { next: a.path[0].assetNext, asset: a.inNote.asset, y: BigInt(a.amountIn) - BigInt(a.fee), out: BigInt(q.amountOut) };
       add.splice(add.findIndex((n) => n.cx === a.inNote.cx), 1);
       add.push(note(q.assetFinal, q.amountOut));
-      if (BigInt(a.inNote.value) > BigInt(a.amountIn)) add.push(note(a.inNote.asset, BigInt(a.inNote.value) - BigInt(a.amountIn)));        // a partial spend: the rest comes back as change
+      // a partial spend: the rest comes back as change, one note, or the notes it was cut into
+      if (a.split) for (const v of a.split) add.push(note(a.inNote.asset, BigInt(v)));
+      else if (BigInt(a.inNote.value) > BigInt(a.amountIn)) add.push(note(a.inNote.asset, BigInt(a.inNote.value) - BigInt(a.amountIn)));
     };
     // A route proved ahead (the board's job, made by the stub at once) and its press: the proof is posted and the relay sends it.
     window.__aheadRefuse = false;
@@ -6875,14 +6877,14 @@ const swapStub = () => `
       const q = await ux.quoteRoute({ asset0: a.inNote.asset, amountIn: a.amountIn, path: a.path, fee: a.fee });
       window.__swapCalls.push({ ahead: true, amountIn: String(a.amountIn), noteValue: String(a.inNote.value), fee: String(a.fee), minOut: String(a.minOut) });
       await wait();
-      return { note: a.inNote, amountIn: BigInt(a.amountIn), path: a.path, minOut: BigInt(a.minOut), fee: BigInt(a.fee), hops: q.hops, out: q.amountOut, proven: { publicValues: '0x' + '01'.repeat(32), proof: '0x' + '02'.repeat(32), memos: [] }, leaves: [], memos: [] };
+      return { note: a.inNote, amountIn: BigInt(a.amountIn), path: a.path, minOut: BigInt(a.minOut), fee: BigInt(a.fee), split: a.split || null, hops: q.hops, out: q.amountOut, proven: { publicValues: '0x' + '01'.repeat(32), proof: '0x' + '02'.repeat(32), memos: [] }, leaves: [], memos: [] };
     };
     ux.routeAheadSend = async (a) => {
       window.__swapCalls.push({ posted: true, amountIn: String(a.amountIn), noteValue: String(a.note.value), fee: String(a.fee), refused: window.__aheadRefuse });
       await wait();
       if (window.__aheadRefuse) throw Object.assign(new Error('the relay would not take the proof made ahead'), { notPosted: true });
       const q = await ux.quoteRoute({ asset0: a.note.asset, amountIn: a.amountIn, path: a.path, fee: a.fee });
-      landed({ inNote: a.note, amountIn: a.amountIn, path: a.path, fee: a.fee }, q);
+      landed({ inNote: a.note, amountIn: a.amountIn, path: a.path, fee: a.fee, split: a.split }, q);
       return { txHash: '0x' + 'ac'.repeat(32) };
     };
     ux.lpBond = async (a) => { window.__join = { controller: a.controller, a: a.aNote.value, b: a.bNote.value, aAsset: a.aNote.asset, bAsset: a.bNote.asset, feeBps: a.feeBps, selfSettle: typeof a.selfSettle }; return { txHash: null, dShares: 1n }; };
@@ -6895,6 +6897,27 @@ const swapStub = () => `
       add.push(note(notes[0].asset, amount));
       if (total > amount) add.push(note(notes[0].asset, total - amount));
       return {};
+    };
+    // a cut proved ahead (the board's job, made by the stub at once) and its press: the proof is posted and the relay sends it
+    ux.transferAhead = async ({ notes, amount, fee }) => {
+      window.__swapCalls.push({ cutAhead: String(amount), fee: String(fee) });
+      await wait();
+      return { notes, amount: BigInt(amount), fee: BigInt(fee), proven: { publicValues: '0x01', proof: '0x02', memos: [] }, leaves: [], memos: [] };
+    };
+    ux.transferAheadSend = async (a) => {
+      window.__swapCalls.push({ cutPosted: String(a.amount) });
+      await wait();
+      for (const n of a.notes) add.splice(add.findIndex((x) => x.cx === n.cx), 1);
+      const total = a.notes.reduce((t, n) => t + BigInt(n.value), 0n);
+      add.push(note(a.notes[0].asset, a.amount));
+      if (total > a.amount + a.fee) add.push(note(a.notes[0].asset, total - a.amount - a.fee));
+      return { txHash: '0x' + 'ae'.repeat(32) };
+    };
+    ux.stealthSend = async ({ notes, amount, onBuilt }) => {
+      window.__swapCalls.push({ lock: String(amount), note: String(notes[0].value) });
+      await wait();
+      add.splice(add.findIndex((x) => x.cx === notes[0].cx), 1);
+      return { txHash: '0x' + 'af'.repeat(32) };
     };`;
 // `held`: a harvest goes to the real relay client (no proof is built here), whose job the stub relay holds open (openNext).
 const heldStub = () => `
@@ -8433,9 +8456,10 @@ await step('farmzap', async () => {
     await until(p, () => /Swaps/.test(document.querySelector('#sj-rcpt-0')?.textContent || '') && !document.querySelector('#sj-go-0').disabled, null, 420000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${(await text(p, '#sj-rcpt-0')).replace(/\s+/g, ' ')}`); });
     const rc = (await text(p, '#sj-rcpt-0')).replace(/\s+/g, ' ');
-    ok((await p.inputValue('#sj-a-0')) === '0.02' && /Swaps\s*0\.0\d+ tETH for about [\d.,]+ TAC/.test(rc) && /Then adds\s*0\.0\d+ tETH \+ [\d.,]+ TAC/.test(rc) && /Relay fee for the swap/.test(rc) && /Relay fee to split your notes/.test(rc) && /Share of the farm/.test(rc) && /Network fee, from your Tacit account/.test(rc),
-      `farmzap: Max takes the whole balance, and the quote says what is swapped, what both sides add, and the fees (${rc})`);
+    ok((await p.inputValue('#sj-a-0')) === '0.02' && /Swaps\s*0\.0\d+ tETH for about [\d.,]+ TAC/.test(rc) && /Then adds\s*0\.0\d+ tETH \+ [\d.,]+ TAC/.test(rc) && /Relay fee for the swap/.test(rc) && !/Relay fee to split your notes/.test(rc) && /Share of the farm/.test(rc) && /Network fee, from your Tacit account/.test(rc),
+      `farmzap: Max takes the whole balance, and the quote says what is swapped, what both sides add, and the fees, with no note to split (${rc})`);
     await shot(p, 'farmzap');
+    await p.evaluate(() => { window.__poolMoves = true; });
     await p.click('#sj-go-0');
     await until(p, () => !!window.__join || (/err/.test(document.querySelector('#sf-status-0')?.innerHTML || '') && !/taking longer than usual|not available right now/.test(document.querySelector('#sf-status-0')?.textContent || '')), null, 240000);
     const j = await p.evaluate(() => window.__join), calls = await p.evaluate(() => window.__swapCalls);
@@ -8444,15 +8468,41 @@ await step('farmzap', async () => {
     const poolId = '0x248497bf6f943cd2b39a04bf5841056c58dfd7ef196188cb4f0ac1fd11dc7c00';
     const sel = Buffer.from(keccak_256('pools(bytes32)')).toString('hex').slice(0, 8);
     const w = (await rpc('eth_call', [{ to: '0x000000000Ed1eabD231Be41d93b719056F7febFC', data: '0x' + sel + poolId.slice(2) }, 'latest'])).slice(2);
-    const rA = BigInt('0x' + w.slice(3 * 64, 4 * 64)), rB = BigInt('0x' + w.slice(4 * 64, 5 * 64)), a = BigInt(j.a), b = BigInt(j.b), need = b * rA / rB;
-    ok(sw && cuts[0] && cuts[0].split === sw.amountIn && sw.noteValue === sw.amountIn && sw.path[0].endsWith(FARM_CTAC) && BigInt(sw.minOut) === BigInt(sw.out) * 99n / 100n && !sw.self,
-      `farmzap: a note of the swap amount is cut and swapped whole in the farm's pool, at most 1% under the quote (${JSON.stringify(calls)})`);
-    ok(j.aAsset === FARM_CETH && j.bAsset === FARM_CTAC && b === BigInt(sw.out) && a >= need && (a - need) * 250n <= a && a + BigInt(sw.amountIn) <= 2000000n && j.selfSettle === 'function',
-      `farmzap: the bond spends the swap's return whole and pairs tETH with it at the live ratio, within what was held (${a} : ${b}, pool ${rA} : ${rB}, swapped ${sw.amountIn})`);
+    const rA = BigInt('0x' + w.slice(3 * 64, 4 * 64)), rB = BigInt('0x' + w.slice(4 * 64, 5 * 64)), a = BigInt(j.a), b = BigInt(j.b), need = b * (rA + BigInt(sw.amountIn) - BigInt(sw.fee)) / (rB - BigInt(sw.out)), off = a > need ? a - need : need - a;
+    ok(sw && !cuts.length && sw.noteValue === '2000000' && sw.cut?.length >= 1 && sw.cut.reduce((x, v) => x + BigInt(v), BigInt(sw.amountIn)) === 2000000n && sw.path[0].endsWith(FARM_CTAC) && BigInt(sw.minOut) === BigInt(sw.out) * 99n / 100n && !sw.self,
+      `farmzap: one swap spends part of the note in the farm's pool, at most 1% under the quote, and cuts what it leaves into the tETH that pairs and the rest: no note is cut first (${JSON.stringify(calls)})`);
+    ok(j.aAsset === FARM_CETH && j.bAsset === FARM_CTAC && b === BigInt(sw.out) && a === BigInt(sw.cut[0]) && off * 250n <= a && j.selfSettle === 'function',
+      `farmzap: the bond spends the swap's return and the note it cut, at the live ratio (${a} : ${b}, pool ${rA} : ${rB}, swapped ${sw.amountIn})`);
     await until(p, () => /In the farm/.test(document.querySelector('#sf-status-0')?.textContent || ''), null, 60000).catch(() => {});
     ok(/In the farm/.test(await text(p, '#sf-status-0')), `farmzap: the sheet says it is in (${await text(p, '#sf-status-0')})`);
     if (r.errors.length) { fails++; console.log('FAIL farmzap page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }
+});
+
+// A send that needs a note cut to size: the cut is proved while the amount and recipient stand, and the press posts it, then locks its note.
+await step('sendahead', async () => {
+  const r = await openFarmKey('5e4d'.padEnd(64, '8'), { notes: [[FARM_CETH, 2000000n]], positions: [], swap: true });
+  const p = r.page;
+  try {
+    await go(p, '#private');
+    await p.waitForSelector('[data-v1="send"]', { timeout: 300000 });
+    await p.click('[data-v1="send"]');
+    await p.waitForSelector('#s-to', { timeout: 120000 });
+    await p.fill('#s-to', tacit1('abc'.padEnd(64, '9')));
+    await p.fill('#s-amt', '0.005');
+    await until(p, () => /They get about/.test(document.querySelector('#s-rcpt')?.textContent || '') && !document.querySelector('#s-go').disabled, null, 420000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${(await text(p, '#s-rcpt')).replace(/\s+/g, ' ')}`); });
+    await until(p, () => (window.__swapCalls || []).some((c) => c.cutAhead), null, 60000).catch(() => {});
+    const before = await p.evaluate(() => window.__swapCalls);
+    ok(before.filter((c) => c.cutAhead === '500000').length === 1 && !before.some((c) => c.split || c.lock),
+      `sendahead: the note cut to 0.005 tETH is proved once the send stands, before any press (${JSON.stringify(before)})`);
+    await p.click('#s-go');
+    await until(p, () => (window.__swapCalls || []).some((c) => c.lock) || /class="err"/.test(document.querySelector('#v1-status')?.innerHTML || ''), null, 240000).catch(() => {});
+    const calls = await p.evaluate(() => window.__swapCalls);
+    ok(calls.some((c) => c.cutPosted === '500000') && !calls.some((c) => c.split) && calls.some((c) => c.lock === '500000' && c.note === '500000'),
+      `sendahead: the press posts that cut, proves no other, and locks the 0.005 note it made (${JSON.stringify(calls)} ${await text(p, '#v1-status')})`);
+    if (r.errors.length) { fails++; console.log('FAIL sendahead page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { relayStateNow = 'ok'; await r.browser.close(); }
 });
 
 // The Earn tab does a private join itself, with no sheet: tETH alone is quoted in the card (what half swapped adds, the relay's fees, the network fee), Max takes
@@ -8479,6 +8529,7 @@ await step('earnhere', async () => {
     ok((await p.inputValue('#hx-amt')) === '0.02' && /Adds\s*0\.0\d+ tETH \+ [\d.,]+ TAC/.test(rc) && /Relay fee\s*[\d.]+ tETH/.test(rc) && /Network fee\s*about [\d.]+ ETH/.test(rc) && /Time/.test(rc),
       `earnhere: Max takes the whole balance, and the card quotes what half swapped adds, the relay's fees and the network fee (${rc})`);
     await shot(p, 'earnhere');
+    await p.evaluate(() => { window.__poolMoves = true; });                 // the pool takes the swap in, as the live one does: the pairing note is sized for that
     await p.click('#hx-go');
     await until(p, () => !!window.__join || (/err/.test(document.querySelector('#hx-zs')?.innerHTML || '') && !/taking longer than usual|not available right now/.test(document.querySelector('#hx-zs')?.textContent || '')), null, 240000);
     const j = await p.evaluate(() => window.__join), calls = await p.evaluate(() => window.__swapCalls);
@@ -8487,11 +8538,11 @@ await step('earnhere', async () => {
     const poolId = '0x248497bf6f943cd2b39a04bf5841056c58dfd7ef196188cb4f0ac1fd11dc7c00';
     const sel = Buffer.from(keccak_256('pools(bytes32)')).toString('hex').slice(0, 8);
     const w = (await rpc('eth_call', [{ to: '0x000000000Ed1eabD231Be41d93b719056F7febFC', data: '0x' + sel + poolId.slice(2) }, 'latest'])).slice(2);
-    const rA = BigInt('0x' + w.slice(3 * 64, 4 * 64)), rB = BigInt('0x' + w.slice(4 * 64, 5 * 64)), a = BigInt(j.a), b = BigInt(j.b), need = b * rA / rB;
-    ok(sw && cuts[0] && cuts[0].split === sw.amountIn && sw.noteValue === sw.amountIn && sw.path[0].endsWith(FARM_CTAC) && BigInt(sw.minOut) === BigInt(sw.out) * 99n / 100n && !sw.self,
-      `earnhere: the press cuts a note of the swap amount and swaps it whole in the farm's pool, at most 1% under the quote (${JSON.stringify(calls)})`);
-    ok(j.aAsset === FARM_CETH && j.bAsset === FARM_CTAC && b === BigInt(sw.out) && a >= need && (a - need) * 250n <= a && a + BigInt(sw.amountIn) <= 2000000n && j.selfSettle === 'function',
-      `earnhere: the bond spends the swap's return whole and pairs tETH with it at the live ratio, within what was held (${a} : ${b}, pool ${rA} : ${rB}, swapped ${sw.amountIn})`);
+    const rA = BigInt('0x' + w.slice(3 * 64, 4 * 64)), rB = BigInt('0x' + w.slice(4 * 64, 5 * 64)), a = BigInt(j.a), b = BigInt(j.b), need = b * (rA + BigInt(sw.amountIn) - BigInt(sw.fee)) / (rB - BigInt(sw.out)), off = a > need ? a - need : need - a;
+    ok(sw && !cuts.length && sw.noteValue === '2000000' && sw.cut?.length >= 1 && sw.cut.reduce((x, v) => x + BigInt(v), BigInt(sw.amountIn)) === 2000000n && sw.path[0].endsWith(FARM_CTAC) && BigInt(sw.minOut) === BigInt(sw.out) * 99n / 100n && !sw.self,
+      `earnhere: one swap spends part of the note in the farm's pool, at most 1% under the quote, and cuts what it leaves into the tETH that pairs and the rest: no note is cut first (${JSON.stringify(calls)})`);
+    ok(j.aAsset === FARM_CETH && j.bAsset === FARM_CTAC && b === BigInt(sw.out) && a === BigInt(sw.cut[0]) && off * 250n <= a && j.selfSettle === 'function',
+      `earnhere: the bond spends the swap's return and the note it cut, at the live ratio (${a} : ${b}, pool ${rA} : ${rB}, swapped ${sw.amountIn})`);
     await until(p, () => /In the farm/.test(document.querySelector('#hx-zs')?.textContent || ''), null, 60000).catch(() => {});
     ok(/In the farm/.test(await text(p, '#hx-zs')), `earnhere: the line under the button says it is in (${await text(p, '#hx-zs')})`);
     ok((await p.evaluate(() => window.__sheetSeen)) === '', `earnhere: and no sheet opened at any point (${await p.evaluate(() => window.__sheetSeen)})`);
@@ -9171,7 +9222,8 @@ await step('farmcusd', async () => {
 // when it is done, and offers to send it from the paying account (what a refused step offers). The cut then goes out with the settle
 // handed over, and pressing again carries the chain on to the bond.
 await step('farmqueue', async () => {
-  const r = await openFarmKey('9c0e'.padEnd(64, '6'), { notes: [[FARM_CETH, 2000000n]], positions: [], swap: true });
+  // two notes, so no one note covers the join and its first step is a cut (one that does is swapped from directly: earnhere)
+  const r = await openFarmKey('9c0e'.padEnd(64, '6'), { notes: [[FARM_CETH, 1000000n], [FARM_CETH, 1000000n]], positions: [], swap: true });
   const p = r.page;
   try {
     await go(p, '#farm');
@@ -9181,7 +9233,7 @@ await step('farmqueue', async () => {
     await p.click('#sj-max-0');
     await until(p, () => /Swaps/.test(document.querySelector('#sj-rcpt-0')?.textContent || '') && !document.querySelector('#sj-go-0').disabled, null, 420000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${(await text(p, '#sj-rcpt-0')).replace(/\s+/g, ' ')}`); });
-    await p.evaluate(() => { window.__swapQueue = 1; });
+    await p.evaluate(() => { window.__swapQueue = 1; window.__poolMoves = true; });
     await p.click('#sj-go-0');
     await p.waitForSelector('#sf-status-0 [data-selfdo]', { timeout: 240000 });
     const line = (await text(p, '#sf-status-0')).replace(/\s+/g, ' ');

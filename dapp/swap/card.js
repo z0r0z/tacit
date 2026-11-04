@@ -716,7 +716,7 @@ const POOL_TK = { eth: 'cETH', tac: 'cTAC', cbtc: 'cBTC', cusd: 'cUSD' };
 // The pool module, one copy for the quotes and the private swap (private.js is handed it).
 let uxP = null;
 const getUx = () => (H.getUx ? H.getUx() : uxP ||= (async () => {
-  const [{ makeConfidentialPoolUx }, dep, d] = await Promise.all([import('/confidential-pool-ux.js?cb=36f62b6f'), import('/confidential-deployments.js'), import('/vendor/tacit-deps.min.js')]);
+  const [{ makeConfidentialPoolUx }, dep, d] = await Promise.all([import('/confidential-pool-ux.js?cb=72a4488c'), import('/confidential-deployments.js'), import('/vendor/tacit-deps.min.js')]);
   dep.setActiveNetwork('mainnet');
   return makeConfidentialPoolUx({ secp: d.secp, keccak256: d.keccak_256, sha256: d.sha256, network: 'mainnet' });
 })().catch((e) => { uxP = null; throw e; }));

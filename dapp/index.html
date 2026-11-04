@@ -1803,7 +1803,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
 // preload-later:begin
 // preload-later:end
 // preload-intent:begin
-const WARM_MODULES = ["/confidential-pool-ux.js?cb=36f62b6f","/confidential-deployments.js","/confidential-deployments.generated.js","/trade/rpc.js","/confidential-indexer.js","/confidential-pool.js","/evm-confidential.js","/bulletproofs.js","/bulletproofs-plus.js","/burn-deposit-bitcoin.js","/burn-deposit-provenance.js","/burn-deposit-assembler.js","/confidential-memo.js","/confidential-evm-log.js","/confidential-relay.js","/confidential-invoice.js","/confidential-recovery-guard.js","/confidential-router.js","/confidential-transfer.js","/confidential-route.js","/confidential-swap.js","/confidential-swap-coordinator.js","/confidential-lp.js","/confidential-cdp.js","/confidential-farm.js","/confidential-farm-program.js","/confidential-defi-actions.js","/confidential-stealth.js","/confidential-airdrop.js","/tac-airdrop.js","/confidential-lock-scan.js","/confidential-bridge-mint.js","/bridge-burn-broadcast.js","/confidential-recovery.js","/bridge-mint-recovery.js","/confidential-secret-store.js","/confidential-recovery-btc.js","/bitcoin-taproot-wallet.js","/cbtc-note-recovery.js"];
+const WARM_MODULES = ["/confidential-pool-ux.js?cb=72a4488c","/confidential-deployments.js","/confidential-deployments.generated.js","/trade/rpc.js","/confidential-indexer.js","/confidential-pool.js","/evm-confidential.js","/bulletproofs.js","/bulletproofs-plus.js","/burn-deposit-bitcoin.js","/burn-deposit-provenance.js","/burn-deposit-assembler.js","/confidential-memo.js","/confidential-evm-log.js","/confidential-relay.js","/confidential-invoice.js","/confidential-recovery-guard.js","/confidential-router.js","/confidential-transfer.js","/confidential-route.js","/confidential-swap.js","/confidential-swap-coordinator.js","/confidential-lp.js","/confidential-cdp.js","/confidential-farm.js","/confidential-farm-program.js","/confidential-defi-actions.js","/confidential-stealth.js","/confidential-airdrop.js","/tac-airdrop.js","/confidential-lock-scan.js","/confidential-bridge-mint.js","/bridge-burn-broadcast.js","/confidential-recovery.js","/bridge-mint-recovery.js","/confidential-secret-store.js","/confidential-recovery-btc.js","/bitcoin-taproot-wallet.js","/cbtc-note-recovery.js"];
 // preload-intent:end
 import '/storage-fallback.js';
 import { secp, keccak_256, sha256, hmac, bytesToHex, hexToBytes, concatBytes } from '/vendor/tacit-deps.min.js';
@@ -4623,7 +4623,7 @@ function wireSub(el, name, set) { $$(`[data-${name}]`, el).forEach((b) => b.oncl
 const warmPool = (() => { let on = false; return () => { if (on) return; on = true; for (const u of WARM_MODULES) document.head.append(Object.assign(document.createElement('link'), { rel: 'modulepreload', href: u })); }; })();
 const getUx = lazy(async () => {
   warmPool();
-  const [{ makeConfidentialPoolUx, setExternalTacHolders }, dep] = await Promise.all([import('/confidential-pool-ux.js?cb=36f62b6f'), import('/confidential-deployments.js')]);
+  const [{ makeConfidentialPoolUx, setExternalTacHolders }, dep] = await Promise.all([import('/confidential-pool-ux.js?cb=72a4488c'), import('/confidential-deployments.js')]);
   dep.setActiveNetwork('mainnet');
   setExternalTacHolders(() => (S.wallet ? [S.wallet] : []));
   const ux = makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256, network: 'mainnet' });
@@ -5175,6 +5175,29 @@ async function resolveTo(raw) {
   return names.resolveRecipient(raw, { local });
 }
 const POOL_TK = { eth: 'cETH', tac: 'cTAC', cbtc: 'cBTC', cusd: 'cUSD', rtac: 'cTAC' };
+// The notes a cut to size spends for `need` (the amount and its fee): the smallest that covers it, else the largest first, up to 16.
+function cutPick(k, need) {
+  const up = freeNotes(P.scan?.[k]?.notes).sort(byValue);
+  const picked = up.filter((x) => BigInt(x.value) >= need).slice(0, 1);
+  let sum = picked.length ? BigInt(picked[0].value) : 0n;
+  for (const x of picked.length ? [] : [...up].reverse()) { if (sum >= need || picked.length === 16) break; picked.push(x); sum += BigInt(x.value); }
+  return { picked, sum };
+}
+// A note cut to `amount` for a send, proved while the amount stands (pool-ux transferAhead, to the key itself): the press posts it and waits
+// only for its settle, then locks the note. One at a time; a proof whose notes moved is not posted and the press cuts afresh.
+const CA = {};
+function cutAhead(k, amount, fee) {
+  clearTimeout(CA.t);
+  if (!S.key || ownOn() || !amount || !fee || !P.scan?.[k] || CA.k === `${k}:${amount}`) return;
+  CA.t = setTimeout(async () => {
+    const { picked, sum } = cutPick(k, amount + fee);
+    if (!picked.length || sum < amount + fee || !(await relayProving())) return;
+    const t = await getUx(), priv = walletPriv(), key = `${k}:${amount}`;
+    CA.k = key; CA.a = null; CA.notes = picked.map(kNote).join();
+    CA.p = t.transferAhead({ walletPriv: priv, notes: picked, recipientPubHex: t.identity(priv).pubHex, amount, fee })
+      .then((a) => { if (CA.k === key) CA.a = a; return a; }, () => { if (CA.k === key) CA.k = null; return null; });
+  }, 1500);
+}
 async function noteFor(run, t, priv, amount, fits, status, k = 'eth') {
   if (!P.scan) await scanPrivate();
   if (!P.scan) throw new Error('Your private balance is still loading. Try again in a moment.');
@@ -5186,9 +5209,7 @@ async function noteFor(run, t, priv, amount, fits, status, k = 'eth') {
   // Proved with your own credit the cut carries no relay fee (the previews count none), so none is held back here either.
   const own = ownOn() && await ownCan(['transfer']).catch(() => false);
   const fee = own ? 0n : BigInt(await t.quoteOpFee(tk, 'transfer')), need = amount + fee;
-  const up = freeNotes(P.scan[k].notes).sort(byValue);
-  let picked = up.filter((x) => BigInt(x.value) >= need).slice(0, 1), sum = picked.length ? BigInt(picked[0].value) : 0n;
-  for (const x of picked.length ? [] : [...up].reverse()) { if (sum >= need || picked.length === 16) break; picked.push(x); sum += BigInt(x.value); }
+  const up = freeNotes(P.scan[k].notes).sort(byValue), { picked, sum } = cutPick(k, need);
   if (sum < need) {
     if (picked.length < up.length) throw new Error(`At most ${fmt(sum - fee, 8, 6)} ${unit} moves in one go. Try that first.`);
     throw new Error(onItsWay(k) > 0n ? 'Part of your balance is in an action still going through. Wait for it to finish, or try less.' : 'Your notes do not cover this and the relay fee. Try a little less.');
@@ -5202,6 +5223,12 @@ async function noteFor(run, t, priv, amount, fits, status, k = 'eth') {
   await proveOr({ run, types: ['transfer'], held: true, label: doing, sheet: run.sheet, then: 'Your note is ready. Press the button again to send it.', carry: 'press the button again to carry on from there', status: line,
     wait: stepWait, go: (x) => cut(0n, { selfSettle: x.selfSettle, waitOpts: x.waitOpts }),
     relayed: async () => {
+      // proved while the amount stood (cutAhead): posted for the relay to send (a minute at most for one still being made)
+      if (CA.k === `${k}:${amount}` && CA.notes === picked.map(kNote).join()) {
+        const a = CA.a || await Promise.race([CA.p, sleep(60e3).then(() => null)]);
+        CA.k = null;
+        if (a && a.fee >= fee) { try { await t.transferAheadSend(a, { waitOpts: stepWait() }); return; } catch (e) { if (!e?.notPosted) throw e; } }
+      }
       try { await cut(fee, { waitOpts: stepWait() }); }
       catch (e0) {
         const fee2 = t.ladderFee(fee * 2n);
@@ -5290,6 +5317,7 @@ function v1Send(el, status) {
       const [split, claim] = await feesP;
       if (my !== seq || !amt.isConnected) return;
       who = r;
+      if (split && units + split <= held) cutAhead('eth', units, split);
       mount(rc, html`
         ${r.name ? html`<div class="kv"><span>${r.name}</span><b>${short(r.address || '', 10)}</b></div>` : html`<div class="kv"><span>Recipient</span><b>${short(raw, 10)}</b></div>`}${idRow(r.address || raw)}
         ${split && units + split <= held ? html`<div class="kv"><span>Relay fee to ${freeNotes(P.scan?.eth.notes).some((n) => BigInt(n.value) >= units + split) ? 'split a note' : 'combine notes'}</span><b>${fmt(split, 8, 8)} tETH</b></div>` : ''}
@@ -11551,7 +11579,11 @@ function joinOnePlan(t, p, j, sd, Zin, gasShort = false) {
   const rIn = inA ? res.reserveA : res.reserveB, rOut = inA ? res.reserveB : res.reserveA, feeBps = Number(res.feeBps ?? p.feeBps ?? 30);
   const fee = inA ? j.feeA : j.feeB, fr = inA ? j.swapA : j.swapB;
   const reuse = joinReuse(kS, Zin, fr, rIn, rOut, feeBps, fee);
-  const { z, s1, s2 } = reuse ? { z: reuse.z, s1: 0n, s2: 0n } : joinFresh(kS, Zin, fr, rIn, rOut, feeBps, fee);
+  // one note that covers it: the swap cuts its own change into the note that pairs and the rest, so the join is two proofs with no cut (joinNow)
+  const one = !reuse && freeNotes(P.scan?.[kS]?.notes).filter((n) => BigInt(n.value) >= Zin).sort(byValue)[0], sp = one ? zapSize(Zin, fr, rIn, rOut, feeBps) : null;
+  // a rest of dust (a unit or two, from rounding) goes in with the pairing side rather than staying a note of its own
+  if (sp) { const rest = BigInt(one.value) - sp.x - sp.add; if (rest > 0n && rest * 250n <= sp.add) sp.add += rest; }
+  const { z, s1, s2 } = reuse ? { z: reuse.z, s1: 0n, s2: 0n } : sp && sp.add > 0n ? { z: { ...sp, split: kNote(one) }, s1: 0n, s2: 0n } : joinFresh(kS, Zin, fr, rIn, rOut, feeBps, fee);
   if (Zin > spendable(kS)) return { over: true };
   if (!z || z.y <= fr || z.add <= 0n) return { small: (fr + fee) * 4n };
   const a = inA ? z.add : z.out, b = inA ? z.out : z.add, rA2 = inA ? z.rIn2 : z.rOut2, rB2 = inA ? z.rOut2 : z.rIn2;
@@ -11564,7 +11596,7 @@ function joinOnePlan(t, p, j, sd, Zin, gasShort = false) {
     mkt = dep > 0 ? Math.max(0, (gave - got) / dep * 100) : 0;
   }
   const worst = Math.max(z.impact, mkt);
-  return { q: { kind: 'one', x: z.x, fr, out: z.out, minOut: z.out * 99n / 100n, path: [{ assetNext: P.scan[kO].id, feeBps }], impact: worst, over: false, gasShort, at: Date.now() }, z, s1, s2, reuse, a, b, shares, mkt, pm, fr };
+  return { q: { kind: 'one', x: z.x, fr, out: z.out, minOut: z.out * 99n / 100n, path: [{ assetNext: P.scan[kO].id, feeBps }], split: z.split || null, k: kS, add: z.add, impact: worst, over: false, gasShort, at: Date.now() }, z, s1, s2, reuse, a, b, shares, mkt, pm, fr };
 }
 // Both sides at the pool's ratio from `a` of tETH, nothing swapped
 function joinPairPlan(t, p, j, sd, a, gasShort = false) {
@@ -11593,6 +11625,23 @@ function joinMax(p, j, sd, mode) {
   const best = cands.filter((c) => c.a > 0n).sort((x, y) => (net(x) > net(y) ? -1 : net(x) < net(y) ? 1 : 0))[0];
   return best ? best.a : 0n;
 }
+// A join's swap proved while its amount stands, as the swap card's are (pool-ux routeAhead): the press then waits only for the farm entry. One
+// at a time, for a join that one note covers (its swap cuts the note that pairs, joinOnePlan); a proof the pool no longer takes (it traded, the
+// note moved) is not posted and the press proves afresh.
+const JA = {};
+const joinAheadKey = (pid, q) => `${pid}:${q.split}:${q.x}:${q.add}`;
+function joinAhead(p, q) {
+  clearTimeout(JA.t);
+  if (!q?.split || !S.key || ownOn() || JA.k === joinAheadKey(p.pid, q)) return;
+  JA.t = setTimeout(async () => {
+    const t = await getUx(), n = freeNotes(P.scan?.[q.k]?.notes).find((x) => kNote(x) === q.split);
+    if (!n || !(await relayProving())) return;
+    const k = joinAheadKey(p.pid, q), rest = BigInt(n.value) - q.x - q.add;
+    JA.k = k; JA.a = null;
+    JA.p = t.routeAhead({ walletPriv: walletPriv(), inNote: n, amountIn: q.x, path: q.path, minOut: q.minOut, fee: q.fr, split: rest > 0n ? [q.add, rest] : [q.add] })
+      .then((a) => { if (JA.k === k) JA.a = a; return a; }, () => { if (JA.k === k) JA.k = null; return null; });
+  }, 1500);
+}
 // A join's steps, pressed from either place: its quote `z` (the plan's q) goes through cutting the notes it needs, the swap (one side alone) and the bond that puts both
 // sides in the farm, each said in `line()`. `btn` names the button that carries on from the notes alone, `sheet` is where a relay offer is redrawn; `moved` asks for a fresh
 // quote, `swapped` is told once the swap is done (what is left is a pair to add), `clear` empties the amount, `after` redraws when it is over, whichever way it ended.
@@ -11605,19 +11654,35 @@ async function joinNow({ run, p, z, sd, btn, line, sheet = 'farm', moved = () =>
     let nA, nB, a, b;
     if (z.kind === 'one') {
       if (Date.now() - z.at > 60e3) { tell('The price had gone stale. It is being read again; check it and press once more.'); await scanIfNew().catch(() => {}); moved(); return; }
-      const unitS = unit[kS], unitO = unit[kO], doing = `Swap ${fmt(z.x, 8, dp[kS])} ${unitS} for ${unitO}`;
-      tell(`Step 1 of 4 · Making a note of ${fmt(z.x, 8, dp[kS])} ${unitS} to swap…`);
-      const nS = await noteFor(run, t, priv, z.x, (n) => BigInt(n.value) === z.x, line(), kS);
-      const had = new Set((P.scan?.[kO]?.notes || []).map(kNote));
+      const unitS = unit[kS], unitO = unit[kO], doing = `Swap ${fmt(z.x, 8, dp[kS])} ${unitS} for ${unitO}`, of = z.split ? 2 : 4;
+      // one note that covers the join: the swap spends part of it and cuts the change into the note that pairs (z.add) and the rest
+      let nS = null, split = null;
+      if (z.split) {
+        nS = freeNotes(P.scan?.[kS]?.notes).find((n) => kNote(n) === z.split);
+        if (!nS || BigInt(nS.value) < z.x + z.add) { moved(); throw Object.assign(new Error('Your balance moved since this was quoted. Check the amounts and press again.'), { said: true }); }
+        run.take(kNote(nS));
+        const rest = BigInt(nS.value) - z.x - z.add;
+        split = rest > 0n ? [z.add, rest] : [z.add];
+      } else {
+        tell(`Step 1 of 4 · Making a note of ${fmt(z.x, 8, dp[kS])} ${unitS} to swap…`);
+        nS = await noteFor(run, t, priv, z.x, (n) => BigInt(n.value) === z.x, line(), kS);
+      }
+      const had = new Set([...(P.scan?.[kO]?.notes || []), ...(P.scan?.[kS]?.notes || [])].map(kNote));
       const fresh = await t.quoteRoute({ asset0: nS.asset, amountIn: z.x, path: z.path, fee: z.fr });
-      if (!fresh || fresh.amountOut < z.minOut) throw new Error(`The price moved while your ${unitS} note was made. The note is ready: check the new quote and press again.`);
-      tell('Step 2 of 4 · The relay is proving your swap…');
-      const args = { inNote: nS, amountIn: z.x, path: z.path, minOut: z.minOut }, swapWait = () => run.wait({ step: `Swap for ${unitO}`, doing }, 15 * 60e3);
+      if (!fresh || fresh.amountOut < z.minOut) throw new Error(z.split ? 'The price moved since this was quoted. Check the new quote and press again.' : `The price moved while your ${unitS} note was made. The note is ready: check the new quote and press again.`);
+      tell(`Step ${of - 2} of ${of} · The relay is proving your swap…`);
+      const args = { inNote: nS, amountIn: z.x, path: z.path, minOut: z.minOut, split }, swapWait = () => run.wait({ step: `Swap for ${unitO}`, doing }, 15 * 60e3);
       try {
         await proveOr({ run, types: ['route'], held: true, label: doing, sheet, after: loadFarms, status: line, tell, wait: swapWait, carry: `press Max, then ${btn}, to put both sides in`,
           then: `Swapped. Your ${unitO} is a private note: press Max, then ${btn}, to put both sides in.`,
           go: (y) => y.t.route({ walletPriv: y.priv, ...args, fee: 0n, selfSettle: y.selfSettle, waitOpts: y.waitOpts }),
           relayed: async () => {
+            // proved while the amount stood: posted for the relay to send (a minute at most for one still being made)
+            if (z.split && JA.k === joinAheadKey(pid, z)) {
+              const a = JA.a || await Promise.race([JA.p, sleep(60e3).then(() => null)]);
+              JA.k = null;
+              if (a) { try { await t.routeAheadSend(a, { waitOpts: swapWait() }); return; } catch (e) { if (!e?.notPosted) throw e; } }
+            }
             try { await t.route({ walletPriv: priv, ...args, fee: z.fr, waitOpts: swapWait() }); }
             catch (e0) {
               if (!/fee below the current floor/i.test(e0?.message || '')) throw e0;
@@ -11639,10 +11704,16 @@ async function joinNow({ run, p, z, sd, btn, line, sheet = 'farm', moved = () =>
       const j = await joinTerms(t, p, true), res = j.res, out = BigInt(nO.value), fee = feeOf(j);
       const need = inA ? aFor(out, res) : out * res.reserveB / res.reserveA;
       if (need <= 0n) throw new Error(`Swapped, but the pool’s ratio has moved too far to pair with it. Press ${btn} with both sides.`);
-      tell(`Step 3 of 4 · Making a note of ${fmt(need, 8, dp[kS])} ${unitS} to pair with it…`);
-      const nS2 = await noteFor(run, t, priv, need, (n) => { const over = BigInt(n.value) - need; return over >= 0n && over <= fee && over * 10000n <= BigInt(n.value) * 40n; }, line(), kS);
+      const pairs = (n) => { const over = BigInt(n.value) - need; return over >= 0n && over <= fee && over * 10000n <= BigInt(n.value) * 40n; };
+      // the swap made the note that pairs (within 0.4% either way: its sizing can leave it a unit under the ratio, which the bond takes); a pool
+      // that traded since can leave it further off, and then one is cut as before
+      const near = (n) => { const d = BigInt(n.value) - need; return (d < 0n ? -d : d) * 10000n <= BigInt(n.value) * 40n; };
+      const made = z.split ? freeNotes(P.scan?.[kS]?.notes).find((n) => !had.has(kNote(n)) && BigInt(n.value) === z.add && near(n)) : null;
+      if (!made) tell(`Step ${of - 1} of ${of} · Making a note of ${fmt(need, 8, dp[kS])} ${unitS} to pair with it…`);
+      const nS2 = made || await noteFor(run, t, priv, need, pairs, line(), kS);
+      if (made) run.take(kNote(made));
       [nA, nB] = inA ? [nS2, nO] : [nO, nS2]; a = BigInt(nA.value); b = BigInt(nB.value);
-      tell('Step 4 of 4 · The relay is proving your farm entry…');
+      tell(`Step ${of} of ${of} · The relay is proving your farm entry…`);
     } else {
       const j = await joinTerms(t, p, true); a = z.a; b = bFor(a, j.res);
       if (b !== z.b) { moved(); throw Object.assign(new Error('The pool moved since this was quoted. Check the new amounts and press again.'), { said: true }); }
@@ -11694,7 +11765,7 @@ function farmJoin(el, p, status, has) {
     ? (both ? 'Both go in at the pool’s ratio, with nothing swapped.'
       : html`You hold no private ${bA ? other : 'tETH'}, and tETH + ${other} takes both. <button class="link" type="button" data-join-get="${bA ? getB[0] : 'private'}">${bA ? getB[1] : 'Make ETH private'}</button>, or <button class="link" type="button" data-join-one="${bA ? 'a' : 'b'}">farm with ${bA ? 'tETH' : other} alone</button>.`)
     : !(spendable(kS) > 0n) ? html`You hold no private ${unit[kS]}. <button class="link" type="button" data-join-get="${kS === kA ? 'private' : getB[0]}">${kS === kA ? 'Make ETH private' : getB[1]}</button>, or <button class="link" type="button" data-join-one="${kS === kA ? 'b' : 'a'}">farm with ${unit[kO]} alone</button>.`
-    : `About half is swapped to ${unit[kO]} inside the pool, then both go into the farm: up to four steps, each a few minutes.`;
+    : `About half is swapped to ${unit[kO]} inside the pool, then both go into the farm: two steps when one note covers it, about a minute.`;
   const field = (k, id) => html`
     <div class="lbl"><span>${unit[k]}</span><span>Private ${fmt(spendable(k), 8, dp[k])} ${unit[k]}${inUse(k, 8, dp[k], unit[k])}</span></div>
     <div class="amt"><input id="${id}" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="${unit[k]} to add"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#${icon[k]}"/></svg>${unit[k]}</span></div>`;
@@ -11751,6 +11822,7 @@ function farmJoin(el, p, status, has) {
     if (plan.small) { warn(rc, `Add more than ${fmt(plan.small, 8, dp[kS])} ${unit[kS]}: the relay’s fees for the swap and the note cuts come out of it.`); return; }
     const { z, s1, s2, reuse, a, b, shares, mkt, pm, fr } = plan, worst = plan.q.impact;
     q = plan.q;
+    joinAhead(p, q);
     mount(rc, html`
       <div class="kv"><span>Swaps</span><b>${fmt(z.x, 8, dp[kS])} ${unit[kS]} for about ${fmt(z.out, 8, dp[kO])} ${unit[kO]}</b></div>
       <div class="kv"><span>Then adds</span><b>${fmt(a, 8, 6)} tETH + ${fmt(b, 8, dpB)} ${other}</b></div>
@@ -12791,6 +12863,7 @@ function assetSendForm(el, status0, { prefix, sheet, statusId, sources, pick, af
         const exact = freeNotes(P.scan[k].notes).some((n) => BigInt(n.value) === units);
         const [split, claim] = await Promise.all([exact || ownNow(['transfer', 'stealthlock']) ? 0n : t.quoteOpFee(tk, 'transfer').then(BigInt), t.quoteOpFee(tk, 'stealthclaim').then(BigInt)]);
         if (stale()) return;
+        if (split) cutAhead(k, units, split);
         mount(rc, html`
           ${r.name ? html`<div class="kv"><span>${r.name}</span><b>${short(r.address || '', 10)}</b></div>` : html`<div class="kv"><span>Recipient</span><b>${short(raw, 10)}</b></div>`}${idRow(r.address || raw)}
           ${split ? html`<div class="kv"><span>Relay fee to ${freeNotes(P.scan[k].notes).some((n) => BigInt(n.value) >= units + split) ? 'split a note' : 'combine notes'}</span><b>${show(split)} ${dtk}</b></div>` : ''}
@@ -13482,7 +13555,9 @@ async function feeAprOf(p) {
 const hxJoinMode = () => (HX.pair && HX.from !== 'tac' ? 'pair' : 'one');
 async function hxJoinQuote(p, units) {
   const sd = joinSides(p, HX.from === 'tac' ? 'b' : 'a'), mode = hxJoinMode(), t = await getUx(), j = await joinTerms(t, p), eth = await ethBalance(), gasShort = eth != null && eth < j.gas;
-  return { pid: p.pid, units, mode, sd, j, at: Date.now(), ...(mode === 'pair' ? joinPairPlan(t, p, j, sd, units, gasShort) : joinOnePlan(t, p, j, sd, units, gasShort)) };
+  const plan = mode === 'pair' ? joinPairPlan(t, p, j, sd, units, gasShort) : joinOnePlan(t, p, j, sd, units, gasShort);
+  joinAhead(p, plan.q);
+  return { pid: p.pid, units, mode, sd, j, at: Date.now(), ...plan };
 }
 // The join's receipt rows, its one line and the price move it must have accepted, and the other way in (both sides, or one swapped) when the key holds the other coin
 function hxJoinSay(p, jq) {
@@ -13508,9 +13583,9 @@ function hxJoinSay(p, jq) {
     : mkt >= 5 ? `This pool’s price for ${pm.unit} is ${pctFmt(Math.abs(pm.ratio - 1) * 100)} ${pm.ratio > 1 ? 'above' : 'below'} the market’s, and the swap is made at it${other2 ? `. Adding your ${unit[kO]} too needs no swap` : ''}.`
     : z.impact >= 5 ? `The swap inside the pool costs a lot at this size. A smaller deposit costs less${other2 ? `, and so does adding your ${unit[kO]} too` : ''}.` : '';
   return { go: `Farm with ${unit[kS]}`, day, line, warn: !!line, gate: worst,
-    rc: [adds, ['Chain sees', 'a deposit, not whose'], ['Relay fee', `${fmt(fr + s1 + s2, 8, dp[kS])} ${unit[kS]}`, '', 'The swap, and cutting your notes to size'], gas,
+    rc: [adds, ['Chain sees', 'a deposit, not whose'], ['Relay fee', `${fmt(fr + s1 + s2, 8, dp[kS])} ${unit[kS]}`, '', s1 + s2 ? 'The swap, and cutting your notes to size' : 'The swap'], gas,
       z.impact >= 0.5 ? ['Price impact', pctFmt(z.impact), z.impact >= 5 ? 'err' : ''] : null, mkt >= 1 ? ['Against the market', `${pctFmt(mkt)} of this deposit`, mkt >= 5 ? 'err' : ''] : null,
-      reuse ? ['Notes', 'made already: nothing is split again'] : null, ['Time', 'a few minutes a step, up to four']],
+      reuse ? ['Notes', 'made already: nothing is split again'] : null, ['Time', z.split ? 'about a minute: the swap, then the entry' : 'a few minutes a step, up to four']],
     alt: other2 ? { label: `Add your ${unit[kO]} too: no swap`, go: () => hxPair(true) } : null };
 }
 // Both sides or one swapped: the tETH typed is the amount of both, so a card on TAC moves to tETH with nothing typed
@@ -13623,6 +13698,7 @@ async function hxSendQuote(units) {
   const t = await getUx(), held = S.key && P.scan ? spendable(k) : null, notes = freeNotes(P.scan?.[k]?.notes), exact = notes.some((n) => BigInt(n.value) === units);
   const [split, claim] = await Promise.all([held != null && !exact && !ownNow(['transfer', 'stealthlock']) ? t.quoteOpFee(tk, 'transfer').then(BigInt) : 0n, t.quoteOpFee(tk, 'stealthclaim').then(BigInt)]);
   const over = held != null && units + split > held, small = units <= claim * 2n;
+  if (split && !over && !small) cutAhead(k, units, split);
   return { warn: over || small,
     line: over ? feeRoom(units, split, held, P.scan?.[k]?.notes, show, dp) || `You hold ${show(held)}.`
       : small ? `Send more than ${show(claim * 2n)}: the recipient’s claim costs a relay fee of about ${show(claim)}.` : '',
