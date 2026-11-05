@@ -8,8 +8,8 @@
 // with prev = 32 zero bytes for height 0, each leaf and nullifier 32 bytes in log order (lock leaves after note leaves, lock nullifiers
 // after note nullifiers), and keccak256 of no bytes for an empty list. docs/TACIT-CHAIN.md says the same for someone checking it.
 //
-// A block names its prover when the proof pool kept a community proof that inserts one of its leaves (proof-pool.js minedBy): the
-// address the proof's points went to and the points it earned. Blocks proved any other way name none.
+// A block names its prover when the proof pool kept a proof that inserts one of its leaves (proof-pool.js minedBy): a community
+// prover's address and the points it earned, or `house` for Tacit's own GPU, which earns nothing. Blocks proved any other way name none.
 //
 // Storage (KV): ch:head ({ seq, height, hash, at }: the next index entry to read and the chain's tip), ch:recent (the newest blocks,
 // newest last).
@@ -83,7 +83,8 @@ export function makeChain({ kv, index, minedBy = async () => ({}), cfg = CHAIN, 
         const tail = made.slice(-cfg.keep), who = await minedBy(tail.flatMap((b) => b.leaves)).catch(() => ({}));
         for (const b of tail) {
           const m = b.leaves.map((l) => who[l.toLowerCase()]).find(Boolean);
-          if (m) { b.prover = m.miner; b.points = m.points; }
+          if (m?.house) b.house = true;
+          else if (m) { b.prover = m.miner; b.points = m.points; }
         }
         recent = [...recent, ...tail].slice(-cfg.keep);
       }

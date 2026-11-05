@@ -30,7 +30,7 @@ const ADDR = '0x66f5a1225e6ac772c461f2b4d8028bf9568f3db5';
 const day = Math.floor(Date.now() / 86400000);
 const OTHER = '0x' + 'ab'.repeat(20);
 const blk = (height, o = {}) => ({ height, hash: '0x' + height.toString(16).padStart(64, '0'), prev: '0x' + (height - 1).toString(16).padStart(64, '0'), ethBlock: 26349000 + height, tx: '0x' + 'cd'.repeat(32), notes: 1, spent: 1, deposits: 0, ...o });
-const chain = { blocks: [blk(9389), blk(9388, { notes: 2, spent: 0, deposits: 1, prover: ADDR, points: 20 }), blk(9387, { prover: OTHER, points: 20 })] };
+const chain = { blocks: [blk(9389), blk(9388, { notes: 2, spent: 0, deposits: 1, prover: ADDR, points: 20 }), blk(9387, { prover: OTHER, points: 20 }), blk(9386, { house: true })] };
 let fails = 0;
 const check = (ok, what, got = '') => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${what}${ok ? '' : ` (${got})`}`); if (!ok) fails++; };
 
@@ -60,7 +60,7 @@ async function open(browser, local, { phone = false } = {}) {
     const u = new URL(route.request().url());
     if (u.pathname === '/prover/pool') return json(route, { queued: 3, leased: 2, doneToday: 41, minersToday: 2, top: [{ miner: ADDR, proofs: 4 }, { miner: OTHER, proofs: 1 }], terms: { pointsPerProof: 20, proofsPerMinerDay: 30 } });
     if (u.pathname === '/prover/blocks') return json(route, { head: { height: chain.blocks[0].height, hash: chain.blocks[0].hash }, blocks: chain.blocks });
-    if (u.pathname === '/prover/pool/recent') return json(route, { proofs: [{ at: Date.now() - 120_000, miner: ADDR, points: 20, secs: 552 }] });
+    if (u.pathname === '/prover/pool/recent') return json(route, { proofs: [{ at: Date.now() - 60_000, house: true, points: 0, secs: 31 }, { at: Date.now() - 120_000, miner: ADDR, points: 20, secs: 552 }] });
     if (u.pathname === '/prover/pool/credits') return json(route, { day, over: false, miners: [{ miner: ADDR, proofs: 4, points: 80 }] });
     return json(route, {}, 404);
   });
@@ -85,13 +85,17 @@ try {
     await page.waitForFunction(() => document.querySelector('#today').textContent.includes('4 proofs'));
     check((await text(page, '#pays')).includes('0.2 TAC a proof'), 'what a proof pays is read from the services', await text(page, '#pays'));
     check((await text(page, '#paid')) === '6 TAC credited', 'what was paid', await text(page, '#paid'));
-    await page.waitForFunction(() => document.querySelectorAll('#chain .blk').length === 3);
+    await page.waitForFunction(() => document.querySelectorAll('#chain .blk').length === 4);
     check((await text(page, '#height')) === '#9,389', 'the tip is the newest block', await text(page, '#height'));
     check((await page.locator('#chain .blk.won').count()) === 2, 'blocks a community prover proved are marked');
     check((await page.locator('#chain .blk.mine').count()) === 1, 'the address\'s own block is picked out');
     check((await page.locator('#pool i').count()) === 5 && (await page.locator('#pool i.on').count()) === 2, 'the waiting proofs are drawn, the leased ones lit');
     check((await text(page, '#feed')).includes('+0.2 TAC') && (await text(page, '#feed')).includes('9 min'), 'the feed says who proved, how fast and what it won', await text(page, '#feed'));
     check((await text(page, '#board')).includes('4 proofs'), 'today\'s provers', await text(page, '#board'));
+    check((await page.locator('#chain .blk.gpu').count()) === 1 && (await page.locator('#chain .blk.gpu').innerText()).includes('Tacit GPU'), 'a block Tacit\'s GPU proved says so');
+    const gpuRow = await page.locator('#feed li').first().innerText();
+    check(gpuRow.includes('Tacit GPU') && !gpuRow.includes('TAC '), 'the feed shows Tacit\'s GPU, earning nothing', gpuRow);
+    check(!(await text(page, '#board')).includes('Tacit GPU'), 'Tacit\'s GPU is never on the leaderboard');
     await page.click('#chain .blk.mine button');
     const det = await text(page, '#detail');
     check(det.includes('Won') && det.includes('0.2 TAC') && det.includes('you') && det.includes('2 notes · 1 deposit'), 'a block opens with what it holds, who proved it and what it won', det);

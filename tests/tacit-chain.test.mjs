@@ -56,7 +56,7 @@ test('blocks chain from height 0, name a community prover, page back, and are re
   const kv = store(), ix = index(entries, 13);
   let t = 1_000_000;
   const chain = makeChain({ kv, index: ix, now: () => t, cfg: { keep: 200, page: 2, maxPagesPerSync: 40, staleMs: 10_000 },
-    minedBy: async (leaves) => (leaves.includes(h32(23)) ? { [h32(23)]: { miner: '0x' + '11'.repeat(20), points: 20 } } : {}) });
+    minedBy: async (leaves) => ({ ...(leaves.includes(h32(23)) ? { [h32(23)]: { miner: '0x' + '11'.repeat(20), points: 20 } } : {}), ...(leaves.includes(h32(21)) ? { [h32(21)]: { house: true } } : {}) }) });
   const r = await chain.blocks({ limit: 10 });
   assert.deepEqual(r.blocks.map((b) => [b.height, b.ethBlock, b.notes, b.spent, b.deposits]), [[2, 13, 1, 0, 0], [1, 12, 2, 0, 1], [0, 11, 1, 1, 0]]);
   assert.equal(r.blocks[2].prev, ZERO);
@@ -66,7 +66,9 @@ test('blocks chain from height 0, name a community prover, page back, and are re
   assert.equal(r.blocks[2].hash, blockHash({ prev: ZERO, height: 0, ethBlock: 11, tx: h32(2), leaves: [h32(21)], nullifiers: [h32(20)] }));
   assert.equal(r.blocks[1].prover, '0x' + '11'.repeat(20));
   assert.equal(r.blocks[1].points, 20);
-  assert.equal(r.blocks[0].prover, undefined, 'a block nobody in the community proved names nobody');
+  assert.equal(r.blocks[0].prover, undefined, 'a block no pool proof made names nobody');
+  assert.equal(r.blocks[0].house, undefined);
+  assert.deepEqual([r.blocks[2].house, r.blocks[2].prover, r.blocks[2].points], [true, undefined, undefined], 'Tacit\'s GPU is the house: no address, no points');
   assert.equal(r.blocks[0].leaves, undefined, 'a read carries counts, not the lists');
   assert.deepEqual((await chain.blocks({ before: 2, limit: 1 })).blocks.map((b) => b.height), [1]);
   // fresh: no index read; stale: only what is new

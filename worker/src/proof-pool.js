@@ -405,16 +405,25 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
         publicValues: publicValues.toLowerCase(), proof: proof.toLowerCase() }, Math.ceil(cfg.keepMs / 1000));
       const d = dayOf(t), rec = await dayRec(d);
       rec.done++;
-      if (l.house) { rec.house = (rec.house || 0) + 1; await write(K.day(d), rec, cfg.daySecs); return reply(200, { ok: true, points: 0 }); }
+      // Who made the note, for the block it lands in (tacit-chain.js), and the newest proofs: a community prover by its address,
+      // Tacit's own provers as the house, which earns nothing and is never in the tally.
+      const leaf = String(job.expect?.leaf || '').toLowerCase(), secs = Math.max(0, Math.round((t - (l.until - cfg.leaseMs)) / 1000));
+      const made = async (who) => {
+        if (leaf) await write(K.mined(leaf), { ...who, at: t }, cfg.daySecs);
+        const feed = await read(K.recent, []);
+        await write(K.recent, [...feed, { at: t, ...who, secs }].slice(-cfg.top * 2));
+      };
+      if (l.house) {
+        rec.house = (rec.house || 0) + 1;
+        await write(K.day(d), rec, cfg.daySecs);
+        await made({ house: true, points: 0 });
+        return reply(200, { ok: true, points: 0 });
+      }
       const mr = minerIn(rec, l.miner), points = earns(rec, l.miner);
       mr.proofs++;
       if (points > 0) { mr.credited++; mr.points += points; rec.points += points; }
       await write(K.day(d), rec, cfg.daySecs);
-      // Who made the note, for the block it lands in (tacit-chain.js), and the community's newest proofs.
-      const leaf = String(job.expect?.leaf || '').toLowerCase(), secs = Math.max(0, Math.round((t - (l.until - cfg.leaseMs)) / 1000));
-      if (leaf) await write(K.mined(leaf), { miner: l.miner, points, at: t }, cfg.daySecs);
-      const feed = await read(K.recent, []);
-      await write(K.recent, [...feed, { at: t, miner: l.miner, points, secs }].slice(-cfg.top * 2));
+      await made({ miner: l.miner, points });
       return reply(200, { ok: true, points });
     });
   }
@@ -455,17 +464,17 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
     return reply(200, { day, over: t >= (day + 1) * DAY_MS, pointsPerProof: cfg.pointsPerProof, miners });
   }
 
-  // The leaves a community proof inserted, each with the address its points went to: { [leaf]: { miner, points } }.
+  // The leaves a pool proof inserted, each with who made it: { [leaf]: { miner, points } } for a community prover, { house: true } for Tacit's own.
   async function minedBy(leaves) {
     const out = {};
     for (const leaf of new Set(leaves.map((x) => String(x).toLowerCase()))) {
       const m = B32.test(leaf) ? await read(K.mined(leaf), null) : null;
-      if (m) out[leaf] = { miner: m.miner, points: m.points };
+      if (m) out[leaf] = m.house ? { house: true } : { miner: m.miner, points: m.points };
     }
     return out;
   }
 
-  // The community's newest proofs, newest first: when, by whom, the points and how long it took from lease to proof.
+  // The newest pool proofs, newest first: when, by whom (a community address, or the house), the points and how long it took from lease to proof.
   async function recent() {
     return reply(200, { proofs: (await read(K.recent, [])).slice().reverse() });
   }

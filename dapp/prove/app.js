@@ -19,6 +19,9 @@ const addr = () => cleanAddress($('#addr').value);
 const me = () => addr()?.toLowerCase() || null;
 const cap = () => (points?.enabled && points?.terms && !points.terms.off ? points.terms.capWeiPerPoint : null);
 const who = (a) => `<span class="who"><i style="--c:hsl(${hueOf(a)} 70% 50%)"></i>${esc(short(a))}${a === me() ? ' · you' : ''}</span>`;
+// Tacit's own GPU, drawn apart from the community: no address, no TAC.
+const GPU = '<span class="who gpu"><i></i>Tacit GPU</span>';
+const byOf = (x) => (x.house ? GPU : x.prover || x.miner ? who(x.prover || x.miner) : null);
 
 async function readLocal() {
   health = await get(`${LOCAL}/health`, 2500);
@@ -55,9 +58,9 @@ function paintChain(landing) {
   ol.hidden = false;
   ol.innerHTML = blocks.map((b) => {
     const c = cells(b), mineB = b.prover && b.prover === me();
-    return `<li class="blk${b.prover ? ' won' : ''}${mineB ? ' mine' : ''}${landing.has(b.height) ? ' new' : ''}" data-h="${b.height}" aria-current="${picked === b.height}">
+    return `<li class="blk${b.prover ? ' won' : ''}${b.house ? ' gpu' : ''}${mineB ? ' mine' : ''}${landing.has(b.height) ? ' new' : ''}" data-h="${b.height}" aria-current="${picked === b.height}">
       <button type="button" aria-label="Block ${b.height}, ${esc(opsText(b))}"><span class="cube">${c.cells.map((k) => `<i class="${k}"></i>`).join('')}</span>
-      <span class="h num">#${b.height.toLocaleString('en-US')}</span><span class="o">${b.prover ? who(b.prover) : esc(opsText(b))}</span></button></li>`;
+      <span class="h num">#${b.height.toLocaleString('en-US')}</span><span class="o">${byOf(b) || esc(opsText(b))}</span></button></li>`;
   }).join('');
   paintDetail();
 }
@@ -70,7 +73,7 @@ function paintDetail() {
   d.innerHTML = `<div class="rows flat num">
     <div class="kv"><span>Block</span><b>#${b.height.toLocaleString('en-US')}</b></div>
     <div class="kv"><span>Holds</span><b>${esc(opsText(b))}</b></div>
-    <div class="kv"><span>Proved by</span><b>${b.prover ? who(b.prover) : '—'}</b></div>
+    <div class="kv"><span>Proved by</span><b>${byOf(b) || '—'}</b></div>
     ${b.prover ? `<div class="kv"><span>Won</span><b>${r ? `${tac(r)} TAC` : `${b.points} points`}</b></div>` : ''}
     <div class="kv"><span>Hash</span><b>${esc(short(b.hash))}</b></div>
     <div class="kv"><span>Ethereum</span><b><a href="https://etherscan.io/tx/${esc(b.tx)}" target="_blank" rel="noopener noreferrer">block ${b.ethBlock.toLocaleString('en-US')}</a></b></div>
@@ -89,7 +92,7 @@ function paintFeed() {
   if (!feed.length) return;
   $('#feed').innerHTML = feed.slice(0, 8).map((p) => {
     const r = rewardWei(p.points, cap());
-    return `<li class="${p.at > feedTop && feedTop ? 'new' : ''}"><span>${who(p.miner)} <small>${esc(took(p.secs))}</small></span>${r ? `<b>+${tac(r)} TAC</b>` : ''}<small>${esc(ago(p.at))}</small></li>`;
+    return `<li class="${p.at > feedTop && feedTop ? 'new' : ''}"><span>${byOf(p)} <small>${esc(took(p.secs))}</small></span>${r ? `<b>+${tac(r)} TAC</b>` : ''}<small>${esc(ago(p.at))}</small></li>`;
   }).join('');
 }
 
