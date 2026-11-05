@@ -833,9 +833,10 @@ async function fundsShort() {
   return true;
 }
 
-// While the wallet is short, relayed jobs any account could send are proved for the open board only with the board on and the
-// last credit reading at or over its floor (lib/prove-pause.js boardProving), and the heartbeat says so only then.
-const boardOn = () => boardProving({ enabled: CFG.proveWhileShort, credit: lastProverCredit(), minWei: CFG.proveWhileShortMinCreditWei });
+// While the wallet is short, relayed jobs any account could send are proved for the open board with the board on and either the
+// prover board making them or the last credit reading at or over its floor (lib/prove-pause.js boardProving), and the heartbeat
+// says so only then.
+const boardOn = () => boardProving({ enabled: CFG.proveWhileShort, credit: lastProverCredit(), minWei: CFG.proveWhileShortMinCreditWei, ownProver: CFG.proverBoard });
 
 // Proving pauses when a proof request is refused for want of credit (lib/prove-pause.js): no job is claimed, so each keeps
 // its place, and the credit is read again at most every SETTLE_PROVE_PAUSE_RECHECK_SECS until it covers a request. Sending

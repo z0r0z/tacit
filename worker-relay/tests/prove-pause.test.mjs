@@ -24,6 +24,9 @@ test('board proving needs the switch on and the last credit reading at its floor
   assert.equal(boardProving({ enabled: true, credit: { wei: 39n * PROVE, at: 1 }, minWei }), false, 'under the floor');
   assert.equal(boardProving({ enabled: true, credit: null, minWei }), false, 'nothing read yet');
   assert.equal(boardProving({ enabled: false, credit: { wei: 100n * PROVE, at: 1 }, minWei }), false, 'switched off');
+  assert.equal(boardProving({ enabled: true, credit: null, minWei, ownProver: true }), true, 'the prover board makes the proofs: no credit needed');
+  assert.equal(boardProving({ enabled: true, credit: { wei: 0n, at: 1 }, minWei, ownProver: true }), true, 'nor any credit left');
+  assert.equal(boardProving({ enabled: false, credit: null, minWei, ownProver: true }), false, 'still off when switched off');
 });
 
 test('the notes are public: nothing about gas, credit or balances, and each reads as what it is', () => {

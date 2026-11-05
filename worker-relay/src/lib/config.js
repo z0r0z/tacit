@@ -265,7 +265,7 @@ export const CFG = {
   // send are still proved and put on the board (SETTLE_PROVE_WHILE_SHORT); once it can pay, the relay sends open jobs
   // before proving new work, reading the board at most every OPEN_BOARD_POLL_SECS (OPEN_BOARD=0 turns sending off).
   proveWhileShort: opt('SETTLE_PROVE_WHILE_SHORT', '1') === '1',
-  // A board proof is paid for before anyone sends it, so it is made only while the last credit reading has this much to spare
+  // A bought board proof is paid for before anyone sends it, so with no prover board (PROVER_BOARD=0) it is made only while the last credit reading has this much to spare
   // (the reflection holds about 16 PROVE for each of its proofs, and the holders' own prove-mode jobs come first).
   proveWhileShortMinCreditWei: BigInt(opt('SETTLE_PROVE_WHILE_SHORT_MIN_CREDIT_WEI', '40000000000000000000')), // 40 PROVE
   // A proof request the prover account cannot pay for pauses proving (lib/prove-pause.js): no job is claimed, and the credit

@@ -10,10 +10,13 @@ export const NOTE_HELD = 'settle: proving only jobs a page settles itself; the r
 export const NOTE_PAUSED = 'settle: not proving for now; jobs keep their place';
 
 // Whether relayed jobs are proved for the open board while the settle wallet is short: only with SETTLE_PROVE_WHILE_SHORT
-// on and the last credit reading at or over its floor, since a board proof is bought before anyone sends it. `credit` is
+// on, and then either with Tacit's own prover board making the proofs (`ownProver`, PROVER_BOARD=1: they cost no credit) or
+// with the last credit reading at or over its floor, since a bought proof is paid for before anyone sends it. `credit` is
 // replenish.js lastProverCredit(): { wei, at }, or null before anything was read.
-export function boardProving({ enabled, credit, minWei }) {
-  return !!enabled && !!credit && credit.wei != null && BigInt(credit.wei) >= BigInt(minWei);
+export function boardProving({ enabled, credit, minWei, ownProver = false }) {
+  if (!enabled) return false;
+  if (ownProver) return true;
+  return !!credit && credit.wei != null && BigInt(credit.wei) >= BigInt(minWei);
 }
 
 // The note for where the relay stands, or null while it takes every job (each job's own beat then says what it is doing).
