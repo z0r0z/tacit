@@ -156,6 +156,32 @@ pairing check on chain.
 | verification key hash | 32 B | `43d11e6e1607e1ea7f3980c9bca91beed95e2e80d173d0873189e99d402e5757`; clients refuse any other key |
 | ceremony bundle (transcript, keys, verifier) | | `bafybeia4yvn2zoggvgpjwg5vpwpt6aivjbcm6tgzxoxsukao2nm5yyypfy` |
 
+### Rebuild and check it
+
+Everything above comes from the circuit source. With circom 2.2.3 and `npm ci` run in `dapp/circuits`:
+
+```sh
+cd dapp/circuits/evm-pool
+circom transact.circom --r1cs --wasm --O2 -o /tmp/transact
+shasum -a 256 /tmp/transact/transact.r1cs /tmp/transact/transact_js/transact.wasm
+../node_modules/.bin/snarkjs zkey verify /tmp/transact/transact.r1cs powersOfTau28_hez_final_16.ptau ../../evm-pool/transact_final.zkey
+cd ../../.. && node -e "import('./dapp/evm-pool-zk-prover.js').then(m => console.log(m.vkHash(JSON.parse(require('fs').readFileSync('dapp/evm-pool/transact_vk.json')))))"
+```
+
+| Check | Expected |
+|---|---|
+| `transact.r1cs` sha256 (the circuit hash) | `b0a246d1790151c722e42ccfa89450cb96c7f5a9f4b70a2162b7d9fc79b6ddb3` |
+| `transact.wasm` sha256 | `02dd5e84970e5bc629a7a3cd4d7eae5fc9ca05579fa22c9b39b5ea70c8d8a6c1` |
+| `zkey verify` | `ZKey Ok!`: the shipped key replays through all 176 contributions and the Bitcoin block 968840 beacon back to this r1cs |
+| verification key hash | `43d11e6e1607e1ea7f3980c9bca91beed95e2e80d173d0873189e99d402e5757` |
+
+The ptau is Hermez `powersOfTau28_hez_final_16.ptau`, BLAKE2b
+`6a6277a2f74e1073601b4f9fed6e1e55226917efb0f0db8a07d98ab01df1ccf43eb0e8c3159432acd4960e2f29fe84a4198501fa54c8dad9e43297453efec125`.
+The verifier contract is [`TransactVerifier.sol`](../contracts/src/TransactVerifier.sol) (sha256
+`78d6a432bf95502b0c3f1ffba041970014d054b998b48ebdeb02dc757cf0c0cb`), exported from that key; its source and init-code
+hashes are recorded in [`contracts/deployments/evm-pool.json`](../contracts/deployments/evm-pool.json). All hashes are
+also in [`dapp/evm-pool/pin.json`](../dapp/evm-pool/pin.json).
+
 The reference client is plain ES modules with no build step:
 
 - [`dapp/evm-pool-zk.js`](../dapp/evm-pool-zk.js): keys, notes, tree, nullifiers, witness.
