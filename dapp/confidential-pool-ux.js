@@ -2911,7 +2911,10 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const wei = RELAY_FEE_ASSETS[ticker] && RELAY_FEE_ASSETS[ticker].minUnderlying;
     return wei == null ? 0n : wei / _unitScaleOf(ticker);
   }
-  const SETTLE_GAS = { unwrap: 450000n, sendunwrap: 680000n, transfer: 620000n, lp: 780000n, lpremove: 720000n, route: 600000n, swap: 600000n, bridgeburn: 600000n };
+  // The gas a relayed settle uses, for the fee asked. Measured on mainnet (6 Nov 2026): a cross-out 365k to 390k over 11 settles, a whole-note unwrap 335k at the median and 369k at the 95th
+  // percentile over 1,244, a transfer 583k to 605k; each is asked for with a little over, and the price is asked for with 35% over (gasAwareMinFee). The relay's own table (worker-relay
+  // OP_GAS: bridgeburn 400k, unwrap 323k) must stay under these, or it refuses the fee.
+  const SETTLE_GAS = { unwrap: 380000n, sendunwrap: 680000n, transfer: 620000n, lp: 780000n, lpremove: 720000n, route: 600000n, swap: 600000n, bridgeburn: 430000n };
   const PROVE_COST_WEI = 40000000000000n;
   const PROVE_TOKEN = '0x6BEF15D938d4E72056AC92Ea4bDD0D76B1C4ad29';
   const ZQUOTER = '0x000000bd2DB80567c23E353ca95a251c573cBf9B';
