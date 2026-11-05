@@ -226,14 +226,18 @@ test('the least a swap is worth making follows the gas price, between a floor an
   assert.equal(swapMinWei({ gasWei: 0n, floorWei: E(0.01), ceilWei: E(0.002) }), E(0.002), 'a floor above the ceiling gives way to it');
 });
 
-test('an urgent purchase does not leave the relay wallet without gas: its hard minimum is filled first', () => {
+test('an urgent purchase does not leave the relay wallet without gas: under its hard minimum it is brought to its floor first', () => {
   const urgent = { ...OUTAGE, urgentMinSwapWei: E(0.0003), prove: { ...OUTAGE.prove, urgentBelowWei: P(45), urgentToWei: P(60) } };
-  // The relay wallet holds 0.0002 and its minimum is 0.0006: 0.0004 goes to it, and the PROVE gets the rest above the settle floor.
-  const plan = planTreasury({ ...urgent, relay: { ...OUTAGE.relay, wei: E(0.0002), hardMinWei: E(0.0006) } });
-  assert.equal(plan.toRelayWei, E(0.0004));
-  assert.equal(plan.toProveWei, E(0.0009) - E(0.0004));
+  // The relay wallet holds 0.0002, its minimum is 0.0006 and its floor 0.0008: 0.0006 goes to it, and the PROVE gets the rest above the settle floor.
+  const plan = planTreasury({ ...urgent, relay: { ...OUTAGE.relay, wei: E(0.0002), floorWei: E(0.0008), hardMinWei: E(0.0006) } });
+  assert.equal(plan.toRelayWei, E(0.0006));
+  assert.equal(plan.toProveWei, E(0.0009) - E(0.0006));
   assert.ok(E(0.0016) - plan.toRelayWei - plan.toProveWei >= E(0.0007), 'the settle wallet keeps its floor');
-  assert.ok(plan.notes.some((n) => /minimum before the credit/.test(n)));
+  assert.ok(plan.notes.some((n) => /before the credit is bought/.test(n)));
+  // A floor the room cannot reach takes the whole room: a relay wallet with no gas stops the attests the PROVE was for.
+  const short = planTreasury({ ...urgent, relay: { ...OUTAGE.relay, wei: E(0.0002), hardMinWei: E(0.0006) } });
+  assert.equal(short.toRelayWei, E(0.0009));
+  assert.equal(short.toProveWei, 0n);
   // A relay wallet already over its minimum is not asked for anything, and the purchase is the whole room as before.
   const fine = planTreasury({ ...urgent, relay: { ...OUTAGE.relay, wei: E(0.001), hardMinWei: E(0.0006) } });
   assert.equal(fine.toProveWei, E(0.0009));
@@ -241,4 +245,22 @@ test('an urgent purchase does not leave the relay wallet without gas: its hard m
   // With the credit healthy the minimum is not applied here at all: the levelling feeds the relay wallet as it always did.
   const calm = planTreasury({ ...OUTAGE, prove: { ...OUTAGE.prove, wei: P(120), urgentBelowWei: P(45), urgentToWei: P(60) }, relay: { ...OUTAGE.relay, wei: E(0.0002), hardMinWei: E(0.0006) } });
   assert.equal(calm.urgentWei, 0n);
+});
+
+// 2026-10-30..11-04: the urgent tier filled the relay wallet only to its hard minimum (attests alone, ~0.0017 ETH at 0.2 gwei) under a floor
+// of ~0.0065 (attests and header batches), so it sat just under the minimum after every pass and was fed in slivers (0.000001, 0.000002,
+// 0.000005 ETH, each transfer's gas more than it carried) while the rest of the room bought PROVE. Filled to its floor, one move holds it
+// over the minimum for days, and a wallet between the minimum and its floor is left to the levelling as before.
+test('the urgent tier does not feed the relay wallet in slivers', () => {
+  const urgent = { ...OUTAGE, settle: { wei: E(0.02), burnPerDayWei: E(0.003), floorWei: E(0.00136) }, urgentMinSwapWei: E(0.0003),
+    prove: { ...OUTAGE.prove, urgentBelowWei: P(45), urgentToWei: P(60) } };
+  const relay = { burnPerDayWei: E(0.0027), floorWei: E(0.0065), hardMinWei: E(0.0017) };
+  const plan = planTreasury({ ...urgent, relay: { ...relay, wei: E(0.0017) - 1000000000000n } });
+  assert.equal(plan.toRelayWei, E(0.0065) - E(0.0017) + 1000000000000n, 'to its floor, not the millionth it is short of its minimum');
+  assert.ok(plan.toProveWei > 0n, 'the credit is still bought with the rest');
+  assert.ok(E(0.02) - plan.toRelayWei - plan.toProveWei >= E(0.00136), 'the settle wallet keeps its floor');
+  // Between its minimum and its floor the urgent tier leaves it alone: the credit is first, as before.
+  const mid = planTreasury({ ...urgent, relay: { ...relay, wei: E(0.003) } });
+  assert.ok(mid.urgentWei > 0n);
+  assert.ok(!mid.notes.some((n) => /before the credit is bought/.test(n)));
 });

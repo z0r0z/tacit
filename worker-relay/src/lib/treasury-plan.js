@@ -19,8 +19,10 @@
 // account before the network will take it, so a credit under that line stops every attest while the wallets still hold ETH. Under
 // `urgentBelowWei` it is therefore fed first, from everything the settle wallet holds above its floor, up to `urgentToWei`, ahead of the
 // levelling below and past the ordinary minimum swap (`urgentMinSwapWei`, smaller). What is left is levelled as before. The relay wallet is
-// not starved for it: it is brought to its own `hardMinWei` (a few attests of gas) first, since a relay wallet with no gas stops the same
-// attests from the other side.
+// not starved for it: once under its own `hardMinWei` (a few attests of gas) it is brought back to its floor first, since a relay wallet with
+// no gas stops the same attests from the other side. To the floor, not to the minimum: the minimum counts attests alone, not the header
+// batches the same wallet sends, and filling only to it left the wallet just under it after every pass, fed again in slivers of a few
+// millionths of an ETH (each transfer's gas more than it carried) while the rest of the room went to PROVE (2026-10-30..11-04).
 
 const min = (a, b) => (a < b ? a : b);
 const max = (a, b) => (a > b ? a : b);
@@ -51,7 +53,7 @@ export function planTreasury({ settle, relay, prove, targetDays = 3, minMoveWei 
   const urgentMin = urgentMinSwapWei != null ? big(urgentMinSwapWei) : big(minSwapWei);
   if (priced && urgentBelow > 0n && p.wei < urgentBelow) {
     let room = s.wei > s.floor ? s.wei - s.floor : 0n;
-    if (r.hardMin > r.wei) { relayFirstWei = min(r.hardMin - r.wei, room); room -= relayFirstWei; }
+    if (r.hardMin > r.wei) { relayFirstWei = min(max(r.hardMin, r.floor) - r.wei, room); room -= relayFirstWei; }
     let want = toEth(urgentTo - p.wei);
     if (maxSwapWei != null) want = min(want, big(maxSwapWei));
     urgentWei = min(want, room);
@@ -59,7 +61,7 @@ export function planTreasury({ settle, relay, prove, targetDays = 3, minMoveWei 
     else if (urgentWei > 0n) notes.push(`prover credit is under its urgent line: ${urgentWei} wei of ETH goes to PROVE first`);
     else if (room === 0n) notes.push('prover credit is under its urgent line, but the settle wallet holds nothing above its floor');
   }
-  if (relayFirstWei > 0n) notes.push(`relay wallet: ${relayFirstWei} wei of ETH brings it to its minimum before the credit is bought`);
+  if (relayFirstWei > 0n) notes.push(`relay wallet: under its minimum, ${relayFirstWei} wei of ETH goes to it before the credit is bought`);
   s.wei -= relayFirstWei + urgentWei; r.wei += relayFirstWei;
   if (urgentWei > 0n) p.wei += (urgentWei * price) / ONE_ETH;
   const spare = s.wei > s.floor ? s.wei - s.floor : 0n;
@@ -99,7 +101,7 @@ export function planTreasury({ settle, relay, prove, targetDays = 3, minMoveWei 
   // What the levelling adds to the urgent purchase is one swap with it; the urgent part has its own, smaller minimum.
   let toProveWei = (amounts.find((x) => x.t.key === 'prove')?.wei ?? 0n) + urgentWei;
   if (toRelayWei > 0n && toRelayWei < big(minMoveWei)) { notes.push(`relay wallet: ${toRelayWei} wei due, under the ${minMoveWei} wei minimum move — waits`); toRelayWei = 0n; }
-  toRelayWei += relayFirstWei;                                              // its hard minimum is a need, not a convenience: no minimum move
+  toRelayWei += relayFirstWei;                                              // a refill under its hard minimum is a need, not a convenience: no minimum move
   if (maxSwapWei != null && toProveWei > big(maxSwapWei)) toProveWei = big(maxSwapWei);
   const swapMin = urgentWei > 0n ? urgentMin : big(minSwapWei);
   if (toProveWei > 0n && toProveWei < swapMin) { notes.push(`prover credit: ${toProveWei} wei of ETH due, under the ${swapMin} wei minimum swap — waits`); toProveWei = 0n; urgentWei = 0n; }
