@@ -128,6 +128,7 @@ import { buildProverBoard, workerOf } from './prover-board.js';
 import { buildProofPool, verifyCalldata, clientOf, PROOF_POOL } from './proof-pool.js';
 import { makeChain } from './tacit-chain.js';
 import { makePoolSnapshotJob } from './pool-snapshot-job.js';
+import { buildSaltPool } from './salt-pool.js';
 import { ETH_LOG_NODES } from '../../dapp/eth-nodes.js';
 import { makeMarketBoard, MARKET_BOARD } from './proof-market-queue.js';
 import { makeGasBoard, GAS_RELAY, GAS_RELAY_ADDR } from './gas-relay-queue.js';
@@ -655,7 +656,7 @@ const reverseBytes = b => { const r = new Uint8Array(b); r.reverse(); return r; 
 // caller (curl, another server) could already do. This is what lets a third-party page with no fixed
 // origin (an IPFS/web3-gateway-hosted frontend, e.g.) use the relay directly from a browser instead of
 // needing its own backend proxy or a per-deploy entry in ALLOWED_ORIGINS.
-const OPEN_ORIGIN_PATHS = new Set(['/stats', '/flow', '/relay/economics', '/bridge/recover', '/reflection/proof', '/confidential/submit', '/confidential/status', '/confidential/open', '/confidential/landed', '/confidential/quote', '/confidential/index', '/confidential/relay', '/reflection/dump', '/reflection/live', '/reflection/status', '/reflection/note-witness', '/reflection/burndep', '/reflection/eth-state/covers', '/reflection/eth-state/proof', '/reflection/open', '/reflection/open/job', '/reflection/landed', '/reflection/burndep-list', '/crossout/minted', '/farm/program', '/farm/health', '/prover/upload', '/prover/download', '/prover/board', '/prover/board/credits', '/prover/community/claim', '/prover/community/result', '/prover/pool', '/prover/pool/request', '/prover/pool/lease', '/prover/pool/hold', '/prover/pool/submit', '/prover/pool/result', '/prover/pool/credits', '/prover/pool/recent', '/prover/blocks', '/pool/snapshot','/market/order', '/market/orders', '/market/done', '/market/proof', '/gas/order', '/gas/orders', '/gas/done', '/outpoints/classify']);
+const OPEN_ORIGIN_PATHS = new Set(['/stats', '/flow', '/relay/economics', '/bridge/recover', '/reflection/proof', '/confidential/submit', '/confidential/status', '/confidential/open', '/confidential/landed', '/confidential/quote', '/confidential/index', '/confidential/relay', '/reflection/dump', '/reflection/live', '/reflection/status', '/reflection/note-witness', '/reflection/burndep', '/reflection/eth-state/covers', '/reflection/eth-state/proof', '/reflection/open', '/reflection/open/job', '/reflection/landed', '/reflection/burndep-list', '/crossout/minted', '/farm/program', '/farm/health', '/prover/upload', '/prover/download', '/prover/board', '/prover/board/credits', '/prover/community/claim', '/prover/community/result', '/prover/pool', '/prover/pool/request', '/prover/pool/lease', '/prover/pool/hold', '/prover/pool/submit', '/prover/pool/result', '/prover/pool/credits', '/prover/pool/recent', '/prover/blocks', '/pool/snapshot', '/prover/salt', '/prover/salt/share', '/prover/salt/credits', '/prover/salt/bank', '/market/order','/market/orders', '/market/done', '/market/proof', '/gas/order', '/gas/orders', '/gas/done', '/outpoints/classify']);
 function corsHeaders(env, reqOrigin, openOrigin) {
   const list = (env.ALLOWED_ORIGINS || '*').split(',').map(s => s.trim());
   const allow = openOrigin || list.includes('*') ? '*' : (list.includes(reqOrigin) ? reqOrigin : list[0]);
@@ -3851,6 +3852,29 @@ async function poolCached(key, ms, make) {
     if (_poolCache.size > 64) _poolCache.delete(_poolCache.keys().next().value);
   }
   return r;
+}
+
+// GET /prover/salt (the day so far and the best salts banked), GET /prover/salt/credits?day= (the day's points by weight, for the points
+// service), GET /prover/salt/bank (every banked salt), POST /prover/salt/share { miner, salts } (a prover's shares).
+async function handleSaltPool(req, env, url, cors) {
+  const nostore = { ...cors, 'Cache-Control': 'no-store' };
+  if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
+  const pool = buildSaltPool(env);
+  if (!pool) return jsonResponse({ error: 'not found' }, 404, cors);
+  const send = (r, headers = nostore) => jsonResponse(r.body, r.status, headers);
+  const p = url.pathname;
+  if (req.method === 'GET') {
+    if (p === '/prover/salt') return send(await poolCached('salt', 10000, () => pool.summary()), { ...cors, 'Cache-Control': 'max-age=10' });
+    if (p === '/prover/salt/credits') { const day = Number(url.searchParams.get('day') ?? NaN); return send(await poolCached(`salt-credits:${day}`, 15000, () => pool.credits(day)), { ...cors, 'Cache-Control': 'max-age=15' }); }
+    if (p === '/prover/salt/bank') return send(await pool.bank(), { ...cors, 'Cache-Control': 'max-age=60' });
+    return jsonResponse({ error: 'not found' }, 404, cors);
+  }
+  if (p !== '/prover/salt/share') return jsonResponse({ error: 'not found' }, 404, cors);
+  if (req.method !== 'POST') return jsonResponse({ error: 'method' }, 405, nostore);
+  let b;
+  try { b = await req.json(); } catch { b = null; }
+  if (!b || typeof b !== 'object' || Array.isArray(b)) return jsonResponse({ ok: false, error: 'bad json' }, 400, nostore);
+  return send(await pool.submit({ miner: b.miner, salts: b.salts, client: clientOf(req.headers.get('CF-Connecting-IP') || 'anon') }));
 }
 
 async function handleProofPool(req, env, url, cors) {
@@ -28055,6 +28079,8 @@ async function _routeFetch(req, env, ctx) {
     const cors = corsHeaders(env, req.headers.get('Origin') || '', openOrigin);
     // The proof pool (worker/src/proof-pool.js) is open to anyone: pages post wraps, miners lease and prove them.
     if (url.pathname === '/prover/pool' || url.pathname.startsWith('/prover/pool/')) return handleProofPool(req, env, url, cors);
+    // Salt mining (worker/src/salt-pool.js), also open: provers send the CREATE3 salts they ground between proofs.
+    if (url.pathname === '/prover/salt' || url.pathname.startsWith('/prover/salt/')) return handleSaltPool(req, env, url, cors);
     if (url.pathname === '/prover/blocks' && req.method === 'GET') return handleChainBlocks(req, env, url, cors);
     if (url.pathname === '/pool/snapshot' && req.method === 'GET') return handlePoolSnapshot(req, env, url, cors);
     if (url.pathname === '/market/order' || url.pathname === '/market/orders' || url.pathname === '/market/done' || url.pathname === '/market/proof') return handleProofMarket(req, env, url, cors);

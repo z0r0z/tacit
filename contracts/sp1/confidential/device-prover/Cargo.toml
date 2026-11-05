@@ -33,6 +33,7 @@ sha2 = "0.10"
 rand = "0.8"
 tracing = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+tiny-keccak = { version = "2", features = ["keccak"] }   # salt.rs: the deploy salts mined between proofs
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 [profile.release]

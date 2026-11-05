@@ -2,7 +2,7 @@
 // and paused from here. The computer's tacit-prover (installed once with the line the page shows) answers on 127.0.0.1; the API's chain
 // (GET /prover/blocks) and proof pool, and the points service, say what the network did and what an address has made and been paid.
 import { cleanAddress, proveCommand, utcDay, mineLines } from '/community-prove.js?cb=4f1a30e7';
-import { localState, jobView, headline, isPhone } from '/prove/view.js?cb=396aa5e6';
+import { localState, jobView, headline, isPhone } from '/prove/view.js?cb=0279ad9a';
 import { invaderSvg, gpuSvg } from '/prove/invader.js?cb=e8a5ec59';
 import { short, cells, opsText, tac, rewardWei, ago, took, fresh, blockAgo, kindOf, KINDS, kindText, median, untilDayEnds, cleanBlock, cleanProof, cleanMiner } from '/prove/chain.js?cb=8a988a34';
 
@@ -202,6 +202,7 @@ function paint() {
   if (mineRow) share.href = `https://x.com/intent/post?text=${encodeURIComponent(`I'm running a Tacit prover node: ${mineRow.proofs} privacy ${mineRow.proofs === 1 ? 'proof' : 'proofs'} today, mining TAC.`)}&url=${encodeURIComponent('https://tacit.finance/prove')}`;
   $('#run').textContent = mine?.proved ? String(mine.proved) : '0';
   $('#run-row').hidden = !mine || typeof mine.on !== 'boolean';
+  paintSalt();
 }
 
 function paintMe() {
@@ -252,6 +253,32 @@ async function readBoardPay() { const s = await get(`${API}/prover/board`); if (
 $('#gpu-copy').addEventListener('click', async () => {
   try { await navigator.clipboard.writeText(gpuCommand()); $('#gpu-copy').textContent = 'Copied'; setTimeout(() => { $('#gpu-copy').textContent = 'Copy'; }, 1500); } catch {}
 });
+
+// Salt mining (worker/src/salt-pool.js): the day's points shared by work, this address's part of them so far, what this computer grinds
+// (tacit-prover's GET /mine `salt`), and the best addresses banked for Tacit's next contracts.
+let salts = null;
+const HEX40 = /^0x[0-9a-f]{40}$/;
+const cleanSalts = (s) => (s && typeof s === 'object' ? {
+  pointsPerDay: count(s.pointsPerDay), miners: count(s.today?.miners), shares: count(s.today?.shares), weight: Number(s.today?.weight) || 0,
+  top: (Array.isArray(s.top) ? s.top : []).map((m) => ({ miner: cleanAddress(m?.miner), weight: Number(m?.weight) || 0, shares: count(m?.shares) })).filter((m) => m.miner),
+  bank: (Array.isArray(s.bank) ? s.bank : []).map((b) => ({ address: HEX40.test(String(b?.address)) ? b.address : null, bits: count(b?.bits), miner: cleanAddress(b?.miner) })).filter((b) => b.address),
+} : null);
+const rateText = (r) => (r >= 1e6 ? `${(r / 1e6).toFixed(1)} M/s` : `${Math.round(r / 1e3)} k/s`);
+function paintSalt() {
+  const potWei = salts?.pointsPerDay ? rewardWei(salts.pointsPerDay, cap()) : null;
+  $('#salt-pay').textContent = potWei ? ` · ${tac(potWei)} TAC a day` : '';
+  if (salts) $('#salt-day').textContent = `Shared by work: ${salts.miners || 0} ${salts.miners === 1 ? 'node' : 'nodes'}, ${salts.shares || 0} shares today. A proof always comes first.`;
+  $('#salt-bank').innerHTML = (salts?.bank || []).slice(0, 5).map((b) => {
+    const z = Math.floor((b.bits || 0) / 4);
+    return `<li><code><b>${esc(b.address.slice(0, 2 + z))}</b>${esc(b.address.slice(2 + z, 18))}…</code><small>${b.miner ? who(b.miner) : ''}</small></li>`;
+  }).join('');
+  const rate = Number(mine?.salt?.rate), mineRow = (salts?.top || []).find((m) => m.miner.toLowerCase() === me());
+  const part = mineRow && salts.weight && salts.pointsPerDay ? rewardWei(Math.floor((salts.pointsPerDay * mineRow.weight) / salts.weight), cap()) : null;
+  const on = mine?.salt?.on === true && Number.isFinite(rate) && rate > 0;
+  $('#salt-row').hidden = !(on || mineRow);
+  $('#salt').textContent = [mineRow ? `${mineRow.shares} shares` : null, part ? `${tac(part)} TAC so far` : null, on ? rateText(rate) : null].filter(Boolean).join(' · ') || '—';
+}
+async function readSalts() { const s = await get(`${API}/prover/salt`); if (s) salts = cleanSalts(s); paintSalt(); }
 
 async function copy() {
   const a = addr();
@@ -323,6 +350,7 @@ loop(readFeed, 10000, 60000);
 loop(async () => { const p = await get(`${API}/prover/pool`); if (p) pool = cleanPool(p); paintNet(); }, 10000, 60000);
 loop(readRemote, 30000, 120000);
 loop(readBoardPay, 60000, 300000);
+loop(readSalts, 30000, 120000);
 if (isPhone(navigator.userAgent)) {
   $('#phone').hidden = false;
   $('#desk').hidden = true;

@@ -21,9 +21,9 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /prove/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/prove/app.js?cb=f941f088">
+<link rel="modulepreload" href="/prove/app.js?cb=c0f2ee0d">
 <link rel="modulepreload" href="/community-prove.js?cb=4f1a30e7">
-<link rel="modulepreload" href="/prove/view.js?cb=396aa5e6">
+<link rel="modulepreload" href="/prove/view.js?cb=0279ad9a">
 <link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="/prove/chain.js?cb=8a988a34">
@@ -287,6 +287,10 @@ pre.cmd { margin: 16px 0 0; padding: 12px 14px; background: var(--field); border
 .gpu h3 { font: 400 clamp(22px, 3.6vw, 28px)/1.1 var(--serif); margin: 4px 0 0; }
 .gpu h3 span { color: var(--orange); }
 .gpu .btn { margin-top: 12px; }
+.bank { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 6px; }
+.bank li { display: flex; justify-content: space-between; gap: 12px; font: 13px/1.4 var(--mono); }
+.bank li code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bank li code b { color: var(--orange); font-weight: 600; }
 
 /* the wallet chip's short label, the wallet app's pairing sheet, the toasts */
 .chip .narrow { display: none; }
@@ -538,6 +542,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
           <div class="kv"><span>Each proof</span><b id="pays">—</b></div>
           <div class="kv"><span>Today</span><b id="today">—</b></div>
           <div class="kv" id="pace-row" hidden><span>At this pace</span><b id="pace">—</b></div>
+          <div class="kv" id="salt-row" hidden><span>Salts today</span><b id="salt">—</b></div>
           <div class="kv"><span>Paid out</span><b id="payout">—</b></div>
           <div class="kv" id="run-row" hidden><span>Proved since it started</span><b id="run">0</b></div>
           <div class="kv"><span>Paid so far</span><b id="paid">—</b></div>
@@ -553,6 +558,12 @@ footer.sf svg.fill { width: 16px; height: 16px; }
         <ol id="board"><li class="empty">Nobody yet. Be first.</li></ol>
       </section>
     </div>
+      <section class="panel gpu" aria-labelledby="h-salt">
+        <p class="eyebrow"><span>Between proofs</span></p>
+        <h3 id="h-salt">Mine deploy addresses<span id="salt-pay"></span></h3>
+        <p class="hint" id="salt-day">Your node grinds salts for Tacit's next contracts while it waits. A proof always comes first.</p>
+        <ol id="salt-bank" class="bank"></ol>
+      </section>
       <section class="panel gpu" aria-labelledby="h-gpu">
         <p class="eyebrow"><span>Big GPU?</span></p>
         <h3 id="h-gpu">Prove Bitcoin batches<span id="btc-pay"></span></h3>
@@ -662,6 +673,6 @@ RUNNER_KEY=0x… node tools/community-runner.mjs</code></pre>
 
 <div id="toast-container" class="toasts" popover="manual"></div>
 
-<script type="module" src="/prove/app.js?cb=f941f088"></script>
+<script type="module" src="/prove/app.js?cb=c0f2ee0d"></script>
 </body>
 </html>

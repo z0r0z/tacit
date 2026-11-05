@@ -4595,6 +4595,7 @@ dependencies = [
  "sp1-recursion-gnark-ffi",
  "sp1-sdk",
  "tacit-leafhash",
+ "tiny-keccak",
  "tracing",
  "tracing-subscriber",
 ]

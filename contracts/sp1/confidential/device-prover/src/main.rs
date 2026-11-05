@@ -10,11 +10,14 @@
 //   tacit-prover uninstall        stop that
 //   tacit-prover mine 0xADDR      prove wraps people asked to have ready (the API's proof pool) for TAC points to 0xADDR
 //
+// While mining, the cores a proof is not using grind deploy salts for TAC points too (salt.rs): a proof always comes first.
+//
 // Env: TACIT_PROVER_PORT (47815), TACIT_PROVER_ORIGINS (comma list, default tacit.finance and www.tacit.finance; a local page
 // under development adds its own),
 // TACIT_PROVER_DIR (~/.tacit-prover: finished proofs), TACIT_METAL=0 (CPU leaf hashing), TACIT_MINE=0xADDR (serve mines the
 // proof pool while it has nothing of its own to prove), TACIT_POOL_API (https://api.tacit.finance), and the SDK's
-// SP1_WORKER_NUM_*_WORKERS (one per stage by default below 16 GB of RAM).
+// SP1_WORKER_NUM_*_WORKERS (one per stage by default below 16 GB of RAM), TACIT_SALT_THREADS (cores that grind salts; half by default, 0 is off).
+mod salt;
 use sha2::{Digest, Sha256};
 use sp1_sdk::{blocking::{ProveRequest, Prover, ProverClient}, Elf, HashableKey, ProvingKey, SP1Stdin};
 use std::collections::{HashMap, VecDeque};
@@ -85,8 +88,13 @@ fn main() {
                 std::process::exit(2);
             }
             eprintln!("tacit-prover: mining the proof pool for {miner}");
+            std::env::set_var("TACIT_MINE", &miner);
+            salt::start();
             loop {
-                if !pool::mine_one(&client, &pk, &miner) {
+                salt::PROVING.store(true, std::sync::atomic::Ordering::Relaxed);
+                let mined = pool::mine_one(&client, &pk, &miner);
+                salt::PROVING.store(false, std::sync::atomic::Ordering::Relaxed);
+                if !mined {
                     std::thread::sleep(std::time::Duration::from_secs(60));
                 }
             }
@@ -456,6 +464,7 @@ fn serve(client: sp1_sdk::blocking::CpuProver, pk: sp1_sdk::SP1ProvingKey, vkey:
         }
     }
     let state = Arc::new((Mutex::new(State { jobs, queue: VecDeque::new(), kick: false }), Condvar::new()));
+    salt::start();
 
     // One proof at a time: a second would double the memory and halve each one's speed.
     {
@@ -477,7 +486,9 @@ fn serve(client: sp1_sdk::blocking::CpuProver, pk: sp1_sdk::SP1ProvingKey, vkey:
                     if (t.timed_out() || kick) && s.queue.is_empty() {
                         if let Some(miner) = pool::miner() {
                             drop(s);
+                            salt::PROVING.store(true, std::sync::atomic::Ordering::Relaxed);
                             mined = pool::mine_one(&client, &pk, &miner);
+                            salt::PROVING.store(false, std::sync::atomic::Ordering::Relaxed);
                             s = m.lock().unwrap();
                         }
                     }
@@ -490,7 +501,9 @@ fn serve(client: sp1_sdk::blocking::CpuProver, pk: sp1_sdk::SP1ProvingKey, vkey:
                 (id, stdin)
             };
             let mut job = Job { status: "proving", started: Some(Instant::now()), ..Default::default() };
+            salt::PROVING.store(true, std::sync::atomic::Ordering::Relaxed);
             run(&client, &pk, stdin, &mut job);
+            salt::PROVING.store(false, std::sync::atomic::Ordering::Relaxed);
             if job.status == "done" {
                 let _ = std::fs::write(dir.join(format!("{id}.json")), job_json(&job).to_string());
             }
@@ -654,7 +667,7 @@ fn mine_json() -> serde_json::Value {
         }
         o
     });
-    serde_json::json!({ "miner": miner, "on": pool::miner().is_some(), "job": job, "proved": pool::DONE.load(std::sync::atomic::Ordering::Relaxed) })
+    serde_json::json!({ "miner": miner, "on": pool::miner().is_some(), "job": job, "proved": pool::DONE.load(std::sync::atomic::Ordering::Relaxed), "salt": salt::status() })
 }
 
 // The GPU leaf hash against SP1's own outer hasher on random rows of several widths, with timings.

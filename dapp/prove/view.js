@@ -33,7 +33,7 @@ export function headline(state, mine) {
     case 'none': return { title: 'Set up this computer', button: null };
     case 'old': return { title: 'Update tacit-prover to start from here', button: null };
     case 'paused': return { title: 'Paused', button: 'Start proving' };
-    case 'waiting': return { title: 'Waiting for the next proof', button: 'Pause' };
+    case 'waiting': return { title: mine?.salt?.on ? 'Mining salts until the next proof' : 'Waiting for the next proof', button: 'Pause' };
     case 'proving': return { title: mine?.on ? 'Proving' : 'Pausing after this proof', button: mine?.on ? 'Pause' : 'Start proving' };
     default: return { title: '', button: null };
   }

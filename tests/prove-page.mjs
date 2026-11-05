@@ -63,6 +63,7 @@ async function open(browser, local, { phone = false } = {}) {
     if (u.pathname === '/prover/board') return json(route, { queued: 0, workers: [], pay: { pointsPerProof: 20, pointsByProgram: { 'btc-state': 500 } } });
     if (u.pathname === '/prover/pool/recent') return json(route, { proofs: [{ at: Date.now() - 60_000, house: true, points: 0, secs: 31 }, { at: Date.now() - 120_000, miner: ADDR, points: 20, secs: 552 }] });
     if (u.pathname === '/prover/pool/credits') return json(route, { day, over: false, miners: [{ miner: ADDR, proofs: 4, points: 80 }] });
+    if (u.pathname === '/prover/salt') return json(route, { pointsPerDay: 1500, minBits: 26, today: { miners: 2, shares: 30, weight: 40 }, top: [{ miner: ADDR, shares: 20, weight: 22 }], bank: [{ address: '0x0000000000ab12cd34ef56ab78cd90ef12ab34cd', bits: 41, miner: OTHER }] });
     return json(route, {}, 404);
   });
   await page.route('https://tacit-points.onrender.com/**', (route) => json(route, { enabled: true, endSec: Math.floor(Date.now() / 1000) + 86400 * 10, terms: { capWeiPerPoint: '10000000000000000' }, account: { creditedWei: '6000000000000000000' } }));
@@ -156,6 +157,11 @@ try {
     await page.click('#go');
     await page.waitForFunction(() => document.querySelector('#title').textContent === 'Waiting for the next proof');
     check(posts.length === 1 && posts[0].on === true && posts[0].miner.toLowerCase() === ADDR, 'Start sends on with the address', JSON.stringify(posts));
+    local.v.mine = { ...local.v.mine, salt: { on: true, rate: 2_400_000, minBits: 26 } };
+    await page.waitForFunction(() => document.querySelector('#title').textContent === 'Mining salts until the next proof');
+    await page.waitForFunction(() => document.querySelector('#salt').textContent.includes('M/s'));
+    check((await text(page, '#salt')) === '20 shares · 8.25 TAC so far · 2.4 M/s', 'between proofs the node grinds salts: its shares, its part of the day and its speed', await text(page, '#salt'));
+    check((await text(page, '#salt-pay')).includes('15 TAC a day') && (await page.locator('#salt-bank li').count()) === 1, 'the salt pot and the best addresses banked', await text(page, '#salt-pay'));
     local.v.mine = { ...local.v.mine, job: { id: 'j1', secs: 120, stage: 'shrink', eta: 360 }, proved: 2 };
     await page.waitForFunction(() => document.querySelector('#title').textContent === 'Proving');
     const st = await text(page, '#stage'), steps = await page.locator('#forge li').evaluateAll((ls) => ls.map((l) => l.className));
