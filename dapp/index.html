@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-990GtKvslTMbszwzUxH5MdbpYpf7//icGpnQiVB+Nc4=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-+BZ80cGrO+rPm5dTudrGI6kzM21t28fKAU6BnQU4UnU=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -235,6 +235,7 @@ main:focus { outline: none; }
 @keyframes hint-pf { 0%, 100% { opacity: .25; transform: scale(.8); } 50% { opacity: .8; transform: scale(1); } }
 @media (prefers-reduced-motion: reduce) { .hint[data-pf="proving"] .pf { animation: none; } }
 .hint:active { transform: scale(.98); }
+.hint.own { gap: 6px; padding: 0 12px 0 10px; } .hint.own svg { width: 14px; height: 14px; }
 @keyframes hint-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .hint { animation: none; transition: none; } }
 @media (max-width: 640px) { .hints { justify-content: flex-start; margin: 0 -16px 14px; padding: 1px 16px; scroll-padding: 0 16px; -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); } }
@@ -249,6 +250,11 @@ main:focus { outline: none; }
 @media (max-width: 640px) { .fms { margin: 0 -16px 8px; padding: 1px 16px; scroll-padding: 0 16px; } }          /* runs to the screen's edge, so a chip cut off there reads as more to scroll to */
 /* Where both fit on one line, the prices sit left and the farms right, under the brand and the menu they line up with. Narrower, they stack. */
 .strip { display: contents; }
+/* below the tile: the airdrop line, then prices and farms as one centred row */
+.newsl.below { margin: 22px 0 0; }
+.strip.below { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 4px 28px; margin: 28px auto 0; }
+.strip.below .pxs, .strip.below .fms { margin: 0; }
+@media (max-width: 640px) { .strip.below { display: grid; justify-items: center; gap: 6px; } .strip.below .fms { max-width: 100%; } }
 @media (min-width: 900px) {
   .strip { display: flex; align-items: center; justify-content: space-between; gap: 28px; margin: -10px 0 8px; }
   .pxs, .fms { margin: 0; }
@@ -1419,18 +1425,10 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       <button class="chip" id="wallet" type="button"><span class="dot" id="wallet-dot"></span><span id="wallet-label">Sign in</span></button>
     </div>
   </header>
-  <div class="strip">
-    <div class="pxs" id="pxs" role="group" aria-label="Prices in dollars"></div>
-    <div class="fms" id="fms" role="group" aria-label="Farms and their APR now; each opens its ETH zap"></div>
-  </div>
 
   <main id="main" tabindex="-1">
   <section class="hero" aria-labelledby="hero-h">
     <div class="hero-t">
-      <div class="newsl">
-      <a class="news" id="air-news" href="/rewards/"><span class="dot" data-dot="tac"></span><b>TAC airdrop</b><span data-foot="tac">Is your wallet in it?</span><span class="go"><span class="w">Check yours </span>→</span></a>
-      <a class="news" id="task-news" href="/tasks/" hidden><span class="dot on" aria-hidden="true"></span><b>Task</b><span data-task-t>Earn TAC</span><span class="go">→</span></a>
-      </div>
       <h1 id="hero-h">Swap, send and earn <em>privately</em>.</h1>
       <p class="sub">One <b>tacit1</b>&nbsp;ID on Bitcoin and Ethereum. Private inside the pool.</p>
     </div>
@@ -1446,6 +1444,14 @@ footer.sf svg.fill { width: 16px; height: 16px; }
         <a class="tl" href="#how" data-scroll="how">How it works ↓</a>
       </div>
     </div>
+      <div class="newsl below">
+      <a class="news" id="air-news" href="/rewards/"><span class="dot" data-dot="tac"></span><b>TAC airdrop</b><span data-foot="tac">Is your wallet in it?</span><span class="go"><span class="w">Check yours </span>→</span></a>
+      <a class="news" id="task-news" href="/tasks/" hidden><span class="dot on" aria-hidden="true"></span><b>Task</b><span data-task-t>Earn TAC</span><span class="go">→</span></a>
+      </div>
+  <div class="strip below">
+    <div class="pxs" id="pxs" role="group" aria-label="Prices in dollars"></div>
+    <div class="fms" id="fms" role="group" aria-label="Farms and their APR now; each opens its ETH zap"></div>
+  </div>
     <div class="tape" id="tape" role="region" aria-label="Recent activity on Tacit" hidden>
         <span class="tape-l"><span class="dot live" aria-hidden="true"></span>Live</span>
         <div class="tape-v"><ul class="tape-run" id="tape-run"></ul></div>
@@ -10208,6 +10214,14 @@ function paintHints() {
   const el = $('#hints');
   if (!el) return;
   const pair = (ic) => html`<span class="pair">${ic.map((i) => html`<svg class="tk" aria-hidden="true"><use href="#${i}"/></svg>`)}</span>`;
+  // signed in, with something to show: what you hold and what you did, in place of the quick starts
+  const mine = [!$('#dash')?.hidden && ['bal', 'My balances', 'M3 7h15a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h11M16 14h.01'], !$('#act')?.hidden && ['act', 'Activity', 'M3 12h4l3-7 4 14 3-7h4']].filter(Boolean);
+  if (mine.length) {
+    const own = html`${mine.map(([id, t, d], i) => html`<button type="button" class="hint own" data-hint="${id}" style="--i:${i}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="${d}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><span>${t}</span></button>`)}`;
+    if (el.__h !== own.s) { el.__h = own.s; mount(el, own); }
+    hintsWarm();                                                        // (the kept sizes still prove ahead)
+    return;
+  }
   const hs = [
     { id: 'send', ic: ['tk-usdc', 'tk-teth'], lead: 'Pay ', amt: '25 USDC', rest: ' privately', tip: 'Paid from your wallet into their private balance: the deposit shows, not whose it is' },
     { id: 'pswap', ic: ['tk-eth', 'tk-usdc'], lead: 'Swap ', amt: `${HINT_ETH} ETH`, rest: ' to USDC privately', tip: 'ETH goes into the private pool and the relay swaps and sends USDC out: nothing on chain links them' },
@@ -10232,6 +10246,8 @@ async function hintsReady() {
   mark('zap', HINT_POOL ? state(v.list(pub, lpTicker(HINT_POOL.poolId)), (x) => x.size === size) : '');
 }
 function hintGo(id) {
+  if (id === 'bal') { $('#dash')?.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' }); return; }
+  if (id === 'act') { openAct(); return; }
   // a press is a choice: a wallet connected with no Tacit key open is asked for it now (one signature), so the kept sizes start proving before the card's own button
   // (a returning wallet is not asked on arrival, so until now nothing was proving for it); declined, the card still works and asks again at its press
   if (S.wallet && !S.key && !signing) { signing = true; open.eth({ address: S.wallet }).catch(() => {}).finally(() => { signing = false; if (S.key) { try { hxQuote(); } catch { } } }); }
@@ -13688,6 +13704,9 @@ function dashWorth(items) {
 }
 const usdFmt = (n) => `$${n >= 1000 ? Math.round(n).toLocaleString('en-US') : n.toFixed(2)}`;
 function paintDash() {
+  try { return paintDash0(); } finally { paintHints(); }
+}
+function paintDash0() {
   const id = dashId(), sec = $('#dash');
   if (!id) { sec.hidden = true; DASH.id = null; DASH.view = ''; DASH.items = DASH.worth = null; return; }
   if (DASH.id !== id) { if (!(id in DASH.bases)) DASH.bases[id] = store.get(id); Object.assign(DASH, { id, base: DASH.bases[id], cur: {} }); }
@@ -13898,8 +13917,8 @@ function paintTape(d, rec) {
 const refreshTape = () => Promise.all([readStats().catch(() => null), readRecent()]).then(([d, rec]) => paintTape(d, rec)).catch(() => {});
 
 const HX = { tab: 'swap', flow: 'shield', mode: 'swap', from: 'ether', pool: 'precision', lp: false, dir: 'in', send: 'eth', amt: '', rcpt: '', draft: null, seq: 0, q: null,
-  sf: 'ether', sd: 'defi', chain: 1, bm: 'cusd', bsrc: 'btc', bwr: '200', swq: 'to=USDC', ern: 'ether', br: 'btc' };
-// the Swap card's pair on a first visit: ETH for USDC (ETH made private is the Shield tab's)
+  sf: 'ether', sd: 'defi', chain: 1, bm: 'cusd', bsrc: 'btc', bwr: '200', swq: 'to=USDC&private=to', ern: 'ether', br: 'btc' };
+// the Swap card's pair on a first visit: ETH for USDC, privately (ETH made private is the Shield tab's)
 const HX_SWQ0 = HX.swq;
 // the move the Swap card is showing, when it is one of the Shield ways (hxMoves, by HX_SWAP), and where its prices go
 const HXM = { key: null, cb: null, amt: '', all: '' };
@@ -15652,7 +15671,7 @@ function hxShareLink() {
 const hxShareSync = () => {
   const b = $('#hx-copy'), u = hxShareLink();
   if (b) b.hidden = !u;
-  if (!history.replaceState || HX.tab === 'swap' || linkNow()) return;                   // an open sheet owns the address
+  if (!history.replaceState || !HX.routed || HX.tab === 'swap' || linkNow()) return;    // an open sheet owns the address; before the router, the link that arrived does
   const h = u ? new URL(u).hash : /^#card=(earn|send|shield):/.test(location.hash) ? '' : location.hash;
   if (location.hash !== h) history.replaceState(null, '', location.pathname + location.search + h);
 };
@@ -16453,6 +16472,8 @@ function hxAskFromUrl() {
     const u = new URLSearchParams(location.search), p = new URLSearchParams();
     for (const k of HX_QK) { const v = u.get(k); if (v != null && v.length <= 64) p.set(k, v); }
     if (!p.has('from') && !p.has('to') && !p.has('private')) return;
+    // a private swap's link leaves its amount out of the address: a reload of this visit takes the one it kept
+    if (!p.has('amt')) { const a = JSON.parse(sessionStorage.getItem(HX_AMT) || 'null'); if (a?.sig === 'swap' && /^\d{1,12}(\.\d{1,18})?$/.test(a.amt)) p.set('amt', a.amt); }
     HX.tab = 'swap'; HX.flow = null; SWC.ask = p; SWC.url = true;
     const q = new URLSearchParams(p); q.delete('amt'); HX.swq = q.toString();
   } catch { }
@@ -16470,7 +16491,8 @@ function hxUrl() {
   }
   const qs = u.toString(), want = qs ? `?${qs}` : '';
   // the card link another tab left in the bar (hxShareSync) is not this tab's: a reload would open that tab
-  const hash = HX.tab === 'swap' && /^#card=(earn|send|shield):/.test(location.hash) ? '' : location.hash;
+  // (not before the page's router has read the address: on arrival the card link there is the one to open)
+  const hash = HX.routed && HX.tab === 'swap' && /^#card=(earn|send|shield):/.test(location.hash) ? '' : location.hash;
   if (location.search !== want || location.hash !== hash) history.replaceState(null, '', location.pathname + want + hash);
 }
 function hxRememberAmt() { try { sessionStorage.setItem(HX_AMT, JSON.stringify({ sig: hxSig(), amt: HX.amt })); } catch { } }
@@ -17186,6 +17208,7 @@ const tick = () => { lastTick = Date.now(); paintEarn(); refreshTape(); loadTacP
 setInterval(() => { if (!document.hidden) tick(); }, 60e3);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && Date.now() - lastTick > 60e3) tick(); });
 const route = () => {
+  HX.routed = true;
   const h = location.hash.slice(1), pay = h.match(/^(sp|st)=([0-9a-fA-F]{64})/);
   const snd = h.match(/^card=send(?::([a-z]+))?((?:&(?:to|amt)=[^&]*){0,2})$/);
   if (snd) {

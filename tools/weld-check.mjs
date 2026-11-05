@@ -6798,6 +6798,12 @@ await step('dash', async () => {
       await go(r.page, '#points');
       await r.page.click('#pts-connect');
       await until(r.page, () => !document.querySelector('#dash').hidden, null, 30000);
+      if (tag === 'desk') {
+        await until(r.page, () => !!document.querySelector('#hints [data-hint="bal"]'), null, 30000);
+        await r.page.click('#hints [data-hint="bal"]');
+        await until(r.page, () => Math.abs(document.querySelector('#dash').getBoundingClientRect().top) < 80, null, 15000);
+        ok(true, 'dash: signed in, the chips under the tile are My balances (and Activity once there is some), and My balances goes to Your Tacit');
+      }
       await r.page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
       const early = await r.page.evaluate(() => document.querySelectorAll('#dash .sk').length);
       if (tag === 'phone') await shot(r.page, 'dash-loading-phone');
@@ -7969,7 +7975,7 @@ await step('hxplace', async () => {
     await until(q, () => document.querySelector('[data-hxm="withdraw"]')?.getAttribute('aria-selected') === 'true' && /^ETH/.test((document.querySelector('#hx-swap #pay-coin')?.textContent || '').trim()) && /Balance 0\.25 · Max/.test(document.querySelector('#hx-swap #pay-side')?.textContent || ''), null, 300000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | from: ${await text(q, '#hx-swap #pay-coin')} | bal: ${await text(q, '#hx-swap #pay-side')} | place: ${await mvPicked(q)} | marks: ${await mvMarks(q)} | go: ${await goText(q)}`); });
     ok(await mvPicked(q) === 'private' && await mvMarks(q) === 'private' && /^ETH/.test((await text(q, '#hx-swap #get-coin')).trim()), `hxplace: with nothing in the wallet the card opens on Withdraw, taking the private ETH out (${await goText(q)})`);
-    ok(await q.evaluate(() => JSON.parse(localStorage.getItem('tacit-hx-card-v1') || '{}').swq ?? 'to=USDC') === 'to=USDC', 'hxplace: the Swap tab keeps the pair it had');
+    ok(await q.evaluate(() => JSON.parse(localStorage.getItem('tacit-hx-card-v1') || '{}').swq ?? 'to=USDC&private=to') === 'to=USDC&private=to', 'hxplace: the Swap tab keeps the pair it had');
     await q.click('[data-hxm="earn"]');
     await until(q, () => document.querySelector('#hx-from')?.value === 'eth' && /^Balance 0\.25 · Max/.test(document.querySelector('#hx-bal')?.textContent || ''), null, 60000);
     ok(await heldAt(q) === 'private', 'hxplace: Earn opens on the private tETH too');
