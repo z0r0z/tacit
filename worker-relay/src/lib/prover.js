@@ -20,6 +20,8 @@ import { makeStdinProver, batchInput } from './stdin-prover.js';
 import { makeBoardProver } from './board-prover.js';
 import { makeEthBoard, boardProves, finishVerdict } from './eth-board.js';
 import { makeBtcBoard } from './btc-board.js';
+import { depositsOf, depositIdOf } from './spent-precheck.js';
+import { consumesJobDeposits } from './board-check.js';
 import { boardPost, boardStatus, boardCancel, boardSummary, boardRace } from './worker-client.js';
 import { stdinFor, SELF_PROVE_TYPES, LIMITS } from './spn/sp1-stdin.js';
 import { assertMemosMatchProof } from './memo-root.js';
@@ -589,7 +591,10 @@ export async function proveSettle({ type, op, memos = [], timeoutMs }) {
     let stdin = null;
     try { stdin = stdinFor(type, { ...op, memoHashes }); } catch (e) { console.log(`[prover] ${type}: no board input (${e.message}); the binary proves it`); }
     if (stdin) {
-      const first = await viaBoard({ stdin, ...LIMITS[type], label: type, memos: memos || [], timeoutMs, cls: PUBLIC_BOARD_TYPES.includes(type) ? 'public' : 'private' });
+      const pub = PUBLIC_BOARD_TYPES.includes(type);
+      const want = pub ? (() => { try { return depositsOf(type, op).map((d) => String(depositIdOf(d)).toLowerCase()); } catch { return []; } })() : [];
+      const check = pub ? (c) => (c.community && !consumesJobDeposits(c.publicValues, want) ? false : verifySettle(c)) : null;
+      const first = await viaBoard({ stdin, ...LIMITS[type], label: type, memos: memos || [], timeoutMs, cls: pub ? 'public' : 'private', check });
       if (first.proof) return first.proof;
       timeoutMs = Math.max(60_000, timeoutMs - first.spentMs);
     }
