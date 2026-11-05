@@ -131,7 +131,7 @@ export async function settle({ t = null, built, hash = null, say = () => {} }) {
 export function relayWords(e) {
   const m = String(e?.message || e || ''), code = e?.code;
   if (code === 'open' || e?.open || /settle held|waiting for a sender/i.test(m)) return 'Your note is proved and waiting to be sent. Anyone can send it, and it goes through on its own once a relay does.';
-  if (code === 'prove_budget') return 'The relay has made as many proofs as it can for today. Try again after midnight UTC. Your deposit is safe and waits to be finished.';
+  if (code === 'prove_budget') return 'Today’s relay proofs are taken. Try again after midnight UTC. Your deposit is safe and waits to be finished.';
   if (code === 'relay_paused') return `${e.proving ? 'The relay can’t send this one right now.' : 'The relay isn’t proving right now.'} ${e.queued ? 'Your deposit is safe and keeps its place in line: it goes through once the relay is back.' : 'Your deposit is safe and waits to be finished.'}`;
   if (code === 'relay_held' && e.queued) return 'The relay can’t send this one right now. It still proves it, so your wallet can send the settle.';
   if (code === 'relay_held' || /can.t take this one/i.test(m)) return 'The relay can’t take this one right now. Your deposit is safe and waits to be finished.';

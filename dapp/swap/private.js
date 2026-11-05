@@ -8,7 +8,7 @@
 // held in this visit's memory only.
 import { makeKeySession, signInSheet, Cancelled } from '/trade/key.js?cb=26d9c07b';
 import { forgetUx } from '/trade/poolux.js?cb=aa0f752e';
-import { wrapEth, wrapFirst, wrapCalldata, settle, relayState, relayStopped, relayWords } from '/teth/wrap.js?cb=ac4fa4a6';
+import { wrapEth, wrapFirst, wrapCalldata, settle, relayState, relayStopped, relayWords } from '/teth/wrap.js?cb=9b16948e';
 import { wrapQuote, WRAP_TIP } from '/teth/read.js?cb=bf18d06a';
 import { secp, keccak_256, sha256, bytesToHex } from '/vendor/tacit-deps.min.js';
 import { makeRunner } from '/activity.js?cb=a49f677c';
@@ -49,7 +49,7 @@ const nonce = () => BigInt('0x' + Array.from(crypto.getRandomValues(new Uint8Arr
 // A page that holds a Tacit key of its own (the front page) hands it over instead: `session` (unlocked, key, priv()), `openKey(why)` to ask for it
 // (resolves once it is open), and `wait(label, ms)` for the relay's jobs to go into the page's own Activity journal.
 // `now()` is the time in ms an exit's deadline is counted from: the page passes the chain's, so a device clock that is slow cannot make it past.
-export function makePrivate({ getUx, pick, onKey = () => {}, session = null, openKey = null, wait = null, now = Date.now } = {}) {
+export function makePrivate({ getUx, pick, onKey = () => {}, session = null, openKey = null, wait = null, selfSettle = null, now = Date.now } = {}) {
   const key = session || makeKeySession({ moved: (why) => { lock(); onKey(why); } });
   let held = null, heldP = null, runner = null, opening = null;
   const busy = new Map();                                     // leaf -> when a step that spends it was sent and may still land
@@ -272,7 +272,7 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
     if (sum < need) throw Object.assign(new Error('short'), { code: 'short', most: sum > fee ? sum - fee : 0n, fee });
     say(picked.length > 1 ? 'combine' : 'split');
     const before = new Set(of(asset).notes.map((n) => lc(n.leaf)));
-    const cut = (f) => t.transfer({ walletPriv: key.priv(), notes: picked, recipientPubHex: t.identity(key.priv()).pubHex, amount: units, fee: f,
+    const cut = (f) => t.transfer({ walletPriv: key.priv(), notes: picked, recipientPubHex: t.identity(key.priv()).pubHex, amount: units, fee: f, selfSettle: selfFor(t, picked.length > 1 ? 'Combine notes' : 'Split a note'),
       waitOpts: { ...run().wait(picked.length > 1 ? 'Combine notes' : 'Split a note', 15 * 60e3), intervalMs: 4000, viaRelay: true } });
     try {
       try { await cut(fee); }
@@ -395,11 +395,19 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
     })().finally(() => { staging = null; }));
   }
 
-  // The relay is asked before anything is sent: a swap is a step that expires, so it cannot wait in line while the relay is held.
+  // The relay is asked before anything is sent: a swap is a step that expires, so it cannot wait in line. While the relay proves but does not
+  // send (held), what it proves is sent from the holder's own wallet (the page's `selfSettle`), so the swap still goes; with no such way, or a relay
+  // that is not proving, nothing is sent.
+  let SELF = false;
+  const selfFor = (t, label) => (SELF && selfSettle ? selfSettle(t, { label }) : null);
   async function relayOpen() {
     const rs = await relayState();
-    if (relayStopped(rs) || rs?.state === 'held') throw new Error('This private swap can’t start right now, so nothing was sent. Try again in a few minutes.');
+    SELF = rs?.state === 'held' && !!selfSettle;
+    if (relayStopped(rs) || (rs?.state === 'held' && !selfSettle)) throw new Error('This private swap can’t start right now, so nothing was sent. Try again in a few minutes.');
   }
+  const notNow = () => new Error('This private swap can’t start right now, so nothing was sent. Try again in a few minutes.');
+  // a relay that turned this one down at the send (held since it was asked): sent again once, from the holder's wallet
+  const heldNow = (e) => !!selfSettle && !SELF && (e?.code === 'relay_held' || /settle held|relay can.t (take|send)/i.test(String(e?.message || '')));
 
   // One relayed route of `note`: priced again first (it may have waited a minute for its note), and sent again once at the relay's new floor.
   const price = async (asset, units, path, fee, minOut) => {
@@ -415,10 +423,10 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
       return q;
     };
     let q = await priced(fee);
-    const send = (f) => t.route({ walletPriv: key.priv(), inNote: note, amountIn: units, path, minOut, fee: f,
+    const send = (f) => t.route({ walletPriv: key.priv(), inNote: note, amountIn: units, path, minOut, fee: f, selfSettle: selfFor(t, label),
       waitOpts: { ...run().wait(label, 15 * 60e3), intervalMs: 4000, viaRelay: true } });
     let r = null, ahead = null;
-    try { ahead = await routeAheadFor({ note, units, path, fee, minOut, ticker }, say); } catch { ahead = null; }
+    if (!SELF) try { ahead = await routeAheadFor({ note, units, path, fee, minOut, ticker }, say); } catch { ahead = null; }
     if (ahead) {
       say('posted');
       try { r = await t.routeAheadSend(ahead, { waitOpts: { ...run().wait(label, 15 * 60e3), intervalMs: 4000, viaRelay: true } }); RAH.delete(ahead.slot.k); q = { amountOut: ahead.out }; }
@@ -431,10 +439,13 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
     try {
       if (!r) try { r = await send(fee); }
       catch (e) {
-        if (!floorMiss(e)) throw e;
-        const one = BigInt(await t.quoteOpFee(ticker, 'route')), now = path.length > 1 ? twoDigits((one * 14n) / 10n) : one, f2 = now > fee ? now : t.ladderFee(fee * 2n);
-        q = await priced(f2);
-        r = await send(f2);
+        if (heldNow(e)) { SELF = true; r = await send(fee); }
+        else {
+          if (!floorMiss(e)) throw e;
+          const one = BigInt(await t.quoteOpFee(ticker, 'route')), now = path.length > 1 ? twoDigits((one * 14n) / 10n) : one, f2 = now > fee ? now : t.ladderFee(fee * 2n);
+          q = await priced(f2);
+          r = await send(f2);
+        }
       }
     } catch (e) { if (pending(e)) busy.set(lc(note.leaf), Date.now()); throw e; }
     busy.set(lc(note.leaf), Date.now());
@@ -515,6 +526,7 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
   async function swapOut(plan, { say = () => {} } = {}) {
     await open();
     await relayOpen();
+    if (SELF) throw notNow();                                          // (an exit's settle and its escrow's swap are the relay's)
     if (!plan.path?.length) {
       const note = await exactNote({ asset: plan.eth, units: plan.units, ticker: 'cETH', say });
       return exitNote({ note, out: plan.out, label: plan.label, say });
@@ -587,6 +599,7 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
       }
       // 3. through one pool: the deposit, then the relay proves and settles the swap in one step (a swap that does not settle, the pool having
       // moved while it was proved, is settled as a plain wrap of the same deposit, so the ETH is private tETH to swap from)
+      if (!hash && SELF) throw notNow();                              // (the deposit's settle would wait on the relay)
       if (!hash && plan.path?.length === 1 && !plan.sendTo) return depositSwap(plan, { t, tq, from, wallet, say });
       if (!hash) {
         // wrapEth throws with `deposit` once the ETH has left the wallet: the page says where it is and how to finish it

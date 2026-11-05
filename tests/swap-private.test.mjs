@@ -172,6 +172,36 @@ test('the relay held or paused: nothing is sent', async () => {
   }
 });
 
+test('the relay held, with the page’s own-wallet settle: a swap from the private balance is proved by the relay and sent from the wallet', async () => {
+  const { M, ux } = setup({ notes: [note('0xold', 1000)] });
+  M.relay = { state: 'held' };
+  const settled = [];
+  const pv = (await import('../dapp/swap/private.js')).makePrivate({ getUx: async () => ux, pick: () => null, selfSettle: (t, { label }) => { const f = async (x) => { settled.push(label); return { txHash: '0xself' }; }; f.label = label; return f; } });
+  await run(pv, plan());
+  assert.strictEqual(M.routes.length, 1);
+  assert.strictEqual(typeof M.routes[0].selfSettle, 'function', 'the route carries the wallet’s settle');
+  assert.strictEqual(M.routes[0].selfSettle.label, 'Swap');
+});
+
+test('the relay held, with the own-wallet settle: from the wallet, a way whose settle is the relay’s sends nothing', async () => {
+  const { M, ux } = setup({ deposit: note('0xnew', 1000) });
+  M.relay = { state: 'held' };
+  const pv = (await import('../dapp/swap/private.js')).makePrivate({ getUx: async () => ux, pick: () => null, selfSettle: () => async () => ({ txHash: '0xself' }) });
+  await assert.rejects(run(pv, plan({ wallet: true, path: [{ assetNext: TAC, feeBps: 30 }, { assetNext: ETH, feeBps: 30 }] })), /can’t start right now/);
+  assert.strictEqual(M.wraps.length + M.sent.length, 0, 'no deposit');
+});
+
+test('the relay turned it down at the send: sent once more, from the wallet', async () => {
+  const { M, ux } = setup({ notes: [note('0xold', 1000)] });
+  const route0 = ux.route; let n = 0;
+  ux.route = async (a) => { if (n++ === 0) { M.routes.push(a); throw Object.assign(new Error('settle held'), { code: 'relay_held' }); } return route0(a); };
+  const pv = (await import('../dapp/swap/private.js')).makePrivate({ getUx: async () => ux, pick: () => null, selfSettle: () => async () => ({ txHash: '0xself' }) });
+  await run(pv, plan());
+  assert.strictEqual(M.routes.length, 2);
+  assert.strictEqual(M.routes[0].selfSettle, null, 'first: the relay’s');
+  assert.strictEqual(typeof M.routes[1].selfSettle, 'function', 'then: the wallet’s');
+});
+
 test('the relay’s floor moved: sent once more at its new fee, priced again', async () => {
   const { M, ux } = setup({ notes: [note('0xn', 1000)], routeErr: ['relay 400: fee below the current floor'], fee: 25n });
   const r = await run(await load(ux), plan());

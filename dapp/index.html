@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-XHqcPa3BtUtYKVOuwRBa6/J+nN8U0zY+O623xStqt+w=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-eZ/ymPa7ZlixVImyboEbmDCIw5ixraE2MG2CLB1vgwI=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -64,7 +64,7 @@
 <link rel="modulepreload" href="/bridge-tick.js?cb=b9adb91d">
 <link rel="modulepreload" href="/tacit-session.js?cb=a2d34bb2">
 <link rel="modulepreload" href="/activity.js?cb=a49f677c">
-<link rel="modulepreload" href="/swap/card.js?cb=cda6300b">
+<link rel="modulepreload" href="/swap/card.js?cb=9c63f5fa">
 <link rel="modulepreload" href="/trade/wallet.js?cb=88b623b8">
 <link rel="modulepreload" href="/trade/util.js?cb=e8317464">
 <link rel="modulepreload" href="/trade/rpc.js?cb=f575ef91">
@@ -2202,15 +2202,15 @@ const errText = (e) => {
   if (/no ethereum wallet detected/i.test(m)) return `No Ethereum wallet found in this browser. Open this page in your wallet’s own browser, or install MetaMask, Rabby or Rainbow.${isPasskeyAvailable() ? ' Or use a passkey.' : ''}`;
   const r = revertText(e);
   if (r) return r;
-  if (relayCode(e) === 'prove_reserved') return `The relay isn’t proving from your own account right now. Nothing was spent${e?.hint === 'relay' ? ' and what you hold is still in the pool' : ''}. Try again later, or prove it yourself.`;
+  if (relayCode(e) === 'prove_reserved') return `This one can’t be proved from your own account right now. Nothing was spent${e?.hint === 'relay' ? ' and what you hold is still in the pool' : ''}. Try again later, or prove it yourself.`;
   if (proveCapped(e)) return e?.class === 'client' ? 'You have used today’s share of proofs the relay pays for. It opens again at midnight UTC; nothing was spent. Prove it yourself to go on now.'
-    : 'The relay has made as many proofs as it can for today. Try again after midnight UTC; nothing was spent.';
+    : 'Today’s relay proofs are taken. Prove it yourself, or try again after midnight UTC; nothing was spent.';
   if (e?.code === 'prover_credit' || e?.code === 'not_proved' || e?.code === 'prover_load') return spMsg(e);
   if (relayCode(e) === 'open' || /^settle held: proved/i.test(m)) return proved(e) ? 'It is proved and waiting to be sent: it goes through when a relay sends it, or send it yourself now from Activity.'
     : 'It is proved and waiting for a relay to send it. It goes through when one does; follow it in Activity.';
   if (relayCode(e) === 'relay_paused') return e?.queued ? 'In line. It keeps its place and goes through on its own.' : 'Nothing was spent. Try again in a few minutes.';
   if (relayCode(e) === 'relay_held') return e?.queued ? (e.slow ? 'It is taking longer than usual. It keeps its place in line.' : 'The relay can’t send this one right now. It keeps its place in line.') : 'The relay can’t take this one right now.';
-  if (relayCode(e) === 'free_budget') return 'The relay’s free settles for today are used up. They open again at midnight UTC.';
+  if (relayCode(e) === 'free_budget') return 'Today’s free sends are taken. Send it from your own wallet now, or free again at midnight UTC.';
   if (/prove failed:/i.test(m) && proofsBusy(m)) return failText({ status: 'failed', err: m.slice(m.search(/prove failed:/i)) });
   if (/could not make this proof|produced no proof|prove failed: exec:/i.test(m)) return 'The relay could not make this proof. Nothing was spent and what you hold is still in the pool. Try again in a few minutes, or prove it yourself.';
   if (/insufficient funds/i.test(m)) return 'Not enough ETH for this and its network fee.';
@@ -2505,14 +2505,15 @@ const feesLine = () => (FEES.high ? ' Network fees are high right now, so a rela
 const SLOW_MS = 3 * 60e3;
 async function waitOn(run, w, ms) {
   await sleep(ms);
-  if (!w.since || run.away || !run.live || run.keep || Date.now() - w.since < 60e3) return;
+  // (handed off, the wait goes on in the background: a relay that holds it or is slow turns into the offer to send it from the wallet, in Activity)
+  if (!w.since || !run.live || run.keep || Date.now() - w.since < 60e3) return;
   const why = await relayNow();
   if (why === 'paused' || why === 'down') throw Object.assign(new Error('relay paused: the relay isn’t proving right now'), { code: 'relay_paused', queued: true });
   if (why === 'held' && w.mode === 'settle') throw Object.assign(new Error('relay held: the relay can’t send this one right now'), { code: 'relay_held', queued: true });
   if (w.mode !== 'settle') return;
   await feesRead();
   if (Date.now() - w.since >= SLOW_MS) throw Object.assign(new Error('relay slow: still in the relay’s line'), { code: 'relay_held', queued: true, slow: true });
-  if (!w.told && run.statusOf) {
+  if (!w.told && run.statusOf && !run.away) {
     w.told = true;
     run.say(run.statusOf(), `${why === 'busy' ? 'In line behind another request.' : 'In line.'}${feesLine()} It keeps its place; if it takes much longer you can send it from your own account, and the relay still proves it.`);
   }
@@ -16672,7 +16673,7 @@ function swcPace(id) {
   if (b) b.dataset.pace = id;
   else q.insertAdjacentHTML('afterend', html`<div class="pace" data-card="1" data-pace="${id}"><div class="actr-bar" role="progressbar" aria-label="How far along" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i style="width:0%"></i></div><span></span></div>`.s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=cda6300b').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=9c63f5fa').catch((e) => { SWC.p = null; throw e; }));
 // the card held to the tab's flow; back on the Swap tab it opens on the swap it showed there
 function swcFlow() {
   hxPathPaint();
@@ -16730,7 +16731,9 @@ function hxSwap() {
       SWC.card = m.mountSwapCard(SWC.el, {
         wallet: swcWallet, W: swcW, copy: (t, d) => copy(t, d), connect: (o) => connect({ key: !!o?.key }).catch((e) => { if (e?.code !== 4001 && !/cancel/i.test(e?.message || '')) toast(errText(e), true); }), getUx, recent: false, moves: hxMoves,
         points: (act, eth) => { hxWantPoints(); const p = hxPts(act, eth); return p ? { pts: p.pts, floor: !p.known, why: p.why } : null; },
-        key: { session: { get unlocked() { return !!S.key; }, get key() { return S.key; }, priv: walletPriv }, openKey: swcKey, wait: swcWait },
+        // (selfSettle: what the relay proves while it does not send, sent from the holder's wallet, as the sheets' own swaps do)
+        key: { session: { get unlocked() { return !!S.key; }, get key() { return S.key; }, priv: walletPriv }, openKey: swcKey, wait: swcWait,
+          selfSettle: (t, { label }) => settleFrom(t, { label, say: (m) => { const q = $('#hx-swap #q'); if (q) mount(q, html`${m}`); } }) },
         // the pair and its sides are kept in this browser, the amount for the visit only, as the other tabs keep theirs
         onChange: () => { if (SWC.auto || SWC.card?.flow) return; const p = SWC.card.params(), amt = p.get('amt') || ''; p.delete('amt'); HX.swq = p.toString(); hxRemember(); try { sessionStorage.setItem(HX_AMT, JSON.stringify({ sig: 'swap', amt })); } catch { } },
         onDone: () => { HXW.clear(); HXWB.at = 0; hxBalPaint(); if (S.key) scanPrivate(true).catch(() => {}); dashSoon(); },
