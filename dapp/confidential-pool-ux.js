@@ -29,6 +29,7 @@ import { makeBridgeBurnBroadcaster } from './bridge-burn-broadcast.js';
 import { signSchnorr, SECP_N } from './bulletproofs.js';
 import { randomScalar, bppH, G as BPP_G } from './bulletproofs-plus.js';
 import { hmac, sha256 as vendorSha256 } from './vendor/tacit-deps.min.js';
+import { loadSnapshot, pointerCall, readPointer, poolTrees, sameTrees, selectLogs, snapshotCovers, treesOf } from './pool-snapshot.js';
 import { makeConfidentialRecovery, privBytes, deriveOutputKeys } from './confidential-recovery.js';
 import { makeImportedFarmStore } from './confidential-secret-store.js';
 import { makeBtcHistoryProvider } from './confidential-recovery-btc.js';
@@ -60,7 +61,7 @@ export function forgetKeys() {
   for (const forget of _keyForgetters) { try { forget(); } catch { } }
 }
 
-export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, network, logStore } = {}) {
+export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, network, logStore, snapshotOpts = {} } = {}) {
   const cfg = getConfidentialDeployment(network);
   if (!cfg || !cfg.pool) throw new Error(`confidential pool not deployed on "${network || activeNetwork()}"`);
   const _fetch = fetchImpl || (typeof fetch !== 'undefined' ? fetch : null);
@@ -238,6 +239,52 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     }
     try { return next === Number(BigInt(await rpc('eth_call', [{ to: cfg.pool, data: '0x0be4f422' }, '0x' + to.toString(16)]))); } catch { return null; }
   }
+  // A first visit (nothing kept) starts its read of the pool's whole history from the latest snapshot on IPFS (pool-snapshot.js), named by the
+  // snapshot.tacit.wei record or, without one, by the API; the rest comes from the nodes as always. The snapshot counts only once the note, lock and
+  // position trees the logs build match the pool's storage at the block read to. Its range is read again from the nodes once the page has settled
+  // (the kept record carries `snap` until then), and what they say is kept.
+  const _allTopics = () => {
+    const T = evmLog.TOPIC0;
+    return [T.LeavesInserted, T.NullifiersSpent, T.LockLeavesInserted, T.Wrap, T.CdpPositionInserted, T.CrossOutRecorded,
+      ...(cfg.farm && cfg.farm.manager ? [T.Bonded, T.Harvested] : [])];
+  };
+  const _snapAddrs = () => [cfg.pool, ...(cfg.farm && cfg.farm.manager ? [cfg.farm.manager] : [])];
+  const _snapFits = (params) => Number(cfg.chainId) === 1 && snapshotCovers(params, { addresses: _snapAddrs(), topics: _allTopics() }) &&
+    [].concat(params.address).some((a) => String(a).toLowerCase() === String(cfg.pool).toLowerCase()) &&
+    [evmLog.TOPIC0.LeavesInserted, evmLog.TOPIC0.LockLeavesInserted, evmLog.TOPIC0.CdpPositionInserted].every((t) => [].concat(params.topics[0]).map((x) => String(x).toLowerCase()).includes(String(t).toLowerCase()));
+  let _snapRun = null;
+  function _snapshot() {
+    return _snapRun ||= (async () => {
+      let ptr = readPointer(await rpc('eth_call', [pointerCall(keccak256), 'latest']).catch(() => null));
+      if (!ptr && cfg.relayBase) ptr = await _fetch(`${cfg.relayBase}/pool/snapshot`, { signal: AbortSignal.timeout(8000) }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+      if (!ptr || !ptr.cid) return null;
+      return await loadSnapshot(ptr.cid, { fetchImpl: _fetch, sha256, gateways: snapshotOpts.gateways, expect: { chainId: cfg.chainId, pool: cfg.pool, addresses: _snapAddrs(), topics: _allTopics() } });
+    })().catch(() => null);
+  }
+  async function _treesHold(logs, to) {
+    try {
+      const mine = treesOf(logs, { decodeLogs: evmLog.decodeLogs, Tree: indexer._pool.Tree, pool: cfg.pool });
+      const tag = '0x' + to.toString(16);
+      return sameTrees(mine, await poolTrees((slot) => rpc('eth_getStorageAt', [cfg.pool, slot, tag])));
+    } catch { return false; }
+  }
+  const _audits = new Set();
+  function _auditSnapshot(params, from, snapTo, key) {
+    if (_audits.has(key)) return;
+    _audits.add(key);
+    setTimeout(async () => {
+      try {
+        const fresh = await _logsIn(params, from, snapTo);
+        const c = _logsCache.get(key);
+        if (!c) return;
+        const id = (l) => [_blockOf(l), Number(BigInt(l.logIndex)), l.address, l.data, ...(l.topics || [])].join('|').toLowerCase();
+        const old = c.logs.filter((l) => _blockOf(l) <= snapTo);
+        const logs = old.length === fresh.length && old.every((l, i) => id(l) === id(fresh[i])) ? c.logs : [...fresh, ...c.logs.filter((l) => _blockOf(l) > snapTo)];
+        _logsCache.set(key, { ...c, logs, snapTo: null });
+        if (_kept) await _kept.put(key, { v: 1, finalTo: c.toBlock - FINAL, logs: logs.filter((l) => _blockOf(l) <= c.toBlock - FINAL) });
+      } catch { _audits.delete(key); } // the kept record keeps its mark, and the next visit reads it again
+    }, snapshotOpts.auditMs ?? 30000);
+  }
   const _logsBusy = new Map();
   async function getLogsChunked(params, from, to) {
     const key = _qkey(params, from);
@@ -250,22 +297,29 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     let cached = _logsCache.get(key);
     if (!cached && _kept) {
       const rec = await _kept.get(key).catch(() => null);
-      if (rec && rec.v === 1 && Array.isArray(rec.logs) && Number.isFinite(rec.finalTo)) _logsCache.set(key, cached = { toBlock: rec.finalTo + FINAL, logs: rec.logs, stored: true });
+      if (rec && rec.v === 1 && Array.isArray(rec.logs) && Number.isFinite(rec.finalTo)) _logsCache.set(key, cached = { toBlock: rec.finalTo + FINAL, logs: rec.logs, stored: true, snapTo: Number.isSafeInteger(rec.snap) ? rec.snap : null });
     }
     if (cached && !cached.stored && to <= cached.toBlock - FINAL) return cached.logs.filter((l) => _blockOf(l) <= to);
+    let snapTo = cached ? cached.snapTo || null : null;
+    if (!cached && from <= Number(cfg.deployBlock || 0) && _snapFits(params)) {
+      const s = await _snapshot();
+      if (s && s.manifest.to < to) { snapTo = s.manifest.to; cached = { toBlock: snapTo + FINAL, logs: selectLogs(s.logs, params), stored: true, snap: true }; }
+    }
     const walkFrom = cached ? Math.max(from, cached.toBlock - FINAL + 1) : from;
     let logs = [...(cached ? cached.logs.filter((l) => _blockOf(l) < walkFrom) : []), ...(await _logsIn(params, walkFrom, to))].filter((l) => _blockOf(l) <= to);
     let sound = true;
-    if (cached && cached.stored && (await _leavesAddUp(params, from, logs, to)) === false) {
+    if (cached && cached.snap ? !(await _treesHold(logs, to)) : cached && cached.stored && (await _leavesAddUp(params, from, logs, to)) === false) {
       logs = await _logsIn(params, from, to);
       sound = (await _leavesAddUp(params, from, logs, to)) !== false;
+      snapTo = null;
       if (_kept) _kept.del(key).catch(() => {});
     }
-    _logsCache.set(key, { toBlock: to, logs });
+    _logsCache.set(key, { toBlock: to, logs, snapTo });
     if (_kept && sound && Date.now() - (_keptAt.get(key) || 0) > 60000) {
       _keptAt.set(key, Date.now());
-      _kept.put(key, { v: 1, finalTo: to - FINAL, logs: logs.filter((l) => _blockOf(l) <= to - FINAL) }).catch(() => {});
+      _kept.put(key, { v: 1, finalTo: to - FINAL, logs: logs.filter((l) => _blockOf(l) <= to - FINAL), ...(snapTo ? { snap: snapTo } : {}) }).catch(() => {});
     }
+    if (snapTo) _auditSnapshot(params, from, snapTo, key);
     return logs;
   }
   async function headBlock() { return parseInt(await rpc('eth_blockNumber', []), 16); }
@@ -275,7 +329,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const inc = new Set(include);
     const T = evmLog.TOPIC0;
     const manager = cfg.farm && cfg.farm.manager ? String(cfg.farm.manager).toLowerCase() : null;
-    const all = [T.LeavesInserted, T.NullifiersSpent, T.LockLeavesInserted, T.Wrap, T.CdpPositionInserted, T.CrossOutRecorded, ...(manager ? [T.Bonded, T.Harvested] : [])];
+    const all = _allTopics();
     const want = new Set([T.LeavesInserted, T.NullifiersSpent, T.LockLeavesInserted,
       ...(inc.has('wraps') ? [T.Wrap] : []), ...(inc.has('cdp') ? [T.CdpPositionInserted] : []), ...(inc.has('crossouts') ? [T.CrossOutRecorded] : []),
       ...(inc.has('bonds') && manager ? [T.Bonded, T.Harvested] : [])].map((t) => String(t).toLowerCase()));

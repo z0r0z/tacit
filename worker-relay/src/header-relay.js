@@ -26,6 +26,8 @@ import { attestFundsNeed } from './lib/attest-fees.js';
 import { affordableHeaders, headerBatchNeed, exceedsAllowance } from './lib/header-fits.js';
 import { makeEsploraReader } from './lib/esplora-reader.js';
 import { makeExplorerChain } from './lib/explorer-chain.js';
+import { pointSnapshot, POINTER, WNS_ABI } from './lib/snapshot-pointer.js';
+import { keccak256 as viemKeccak } from 'viem';
 
 const log = (...a) => console.log(`[header ${new Date().toISOString()}]`, ...a);
 // The waits below are on purpose and last hours: each is said once, then every ten minutes while it stays the same (lib/quiet-log.js).
@@ -369,6 +371,29 @@ async function cycleOnce() {
   return true;
 }
 
+// snapshot.tacit.wei, after the headers (lib/snapshot-pointer.js): a GET and a read each time, a send about once a day while gas is cheap.
+let pointedAt = 0;
+async function pointerStep() {
+  if (!CFG.snapshotPointer || Date.now() - pointedAt < 30 * 60_000) return;
+  pointedAt = Date.now();
+  try {
+    const r = await pointSnapshot({
+      apiBase: CFG.workerBase, maxGasGwei: CFG.snapshotPointerMaxGwei,
+      readText: () => publicClient.readContract({ address: POINTER.wns, abi: WNS_ABI, functionName: 'text', args: [POINTER.tokenId, POINTER.key] }),
+      getStorageAt: (slot) => publicClient.getStorageAt({ address: ADDR.pool, slot }).then((v) => v || '0x0'),
+      keccak256: (b) => Buffer.from(viemKeccak(b).slice(2), 'hex'),
+      gasGwei: () => publicClient.getBlock({ blockTag: 'latest' }).then((b) => Number(nextBaseFee(b) ?? b.baseFeePerGas) / 1e9).catch(() => null),
+      setText: (value) => withNonceRetry('snapshot record', async () => {
+        const hash = await relayWallet.writeContract({ address: POINTER.wns, abi: WNS_ABI, functionName: 'setText', args: [POINTER.tokenId, POINTER.key, value] });
+        await publicClient.waitForTransactionReceipt({ hash, timeout: 180_000 });
+        return hash;
+      }, { log }),
+    });
+    if (r.status === 'set') log(`snapshot.tacit.wei now names ${r.value} tx=${r.txHash}`);
+    else if (r.status === 'refused') log(`snapshot record not moved: ${r.why}`);
+  } catch (e) { log('snapshot record step:', String(e.message || e).slice(0, 160)); }
+}
+
 async function main() {
   log(`starting — relay=${HEADER_RELAY} lead=${CFG.headerLead} maxBatch=${CFG.headerMaxBatch} minBatch=${CFG.headerMinBatch} maxStale=${CFG.headerMaxStaleBlocks || 'off'} esploras=${ESPLORAS.length}`);
   if (CFG.runMode === 'cron') {
@@ -380,10 +405,12 @@ async function main() {
       catch (e) { log('cycle error — exiting cron run:', e.message); break; }
       if (!worked) { log('relay caught up to pace — cron run done'); break; }
     }
+    await pointerStep();
     return;
   }
   for (;;) {
     try { await cycle(); } catch (e) { log('cycle error (continuing):', e.message); }
+    await pointerStep();
     await sleep(CFG.reflectionPollSecs);
   }
 }

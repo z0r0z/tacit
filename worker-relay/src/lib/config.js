@@ -156,6 +156,10 @@ export const CFG = {
   // The header feeder's own ceiling (headers can wait for cheap gas; an attest should not), HEADER_MAX_GAS_GWEI, else MAX_GAS_GWEI. In the
   // one-process lane (bitcoin-lane.js) the two run side by side, so each has its own.
   headerMaxGasGwei: num('HEADER_MAX_GAS_GWEI', num('MAX_GAS_GWEI', 0)),
+  // The header feeder also points snapshot.tacit.wei at tacit-api's newest pool snapshot (lib/snapshot-pointer.js) when SNAPSHOT_POINTER=1,
+  // from the relay wallet that holds the subname, at gas no dearer than SNAPSHOT_POINTER_MAX_GWEI.
+  snapshotPointer: process.env.SNAPSHOT_POINTER === '1',
+  snapshotPointerMaxGwei: num('SNAPSHOT_POINTER_MAX_GWEI', 3),
   // How the feeder and the attest wait for gas (lib/gas-pace.js). The ceiling above is the bar in a usual market; once the last day's
   // HEADER_FOLLOW_PCT percentile is above it, that percentile is the bar, so gas settling higher for good does not freeze the relay
   // until its staleness bound. Under max(HEADER_CHEAP_GWEI, the HEADER_CHEAP_PCT percentile) gas is cheap and batches are small.

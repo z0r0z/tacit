@@ -115,6 +115,7 @@ import { makeBurnDepositTracer } from '../../dapp/burn-deposit-tracer.js';
 import { buildOversight } from './governance-oversight.js';
 import { validateConsumedSource, deriveConsumedSource } from './consumed-source.js';
 import { makeConfidentialPool } from '../../dapp/confidential-pool.js';
+import { makeConfidentialEvmLog } from '../../dapp/confidential-evm-log.js';
 import { opExpiry } from '../../dapp/confidential-relay.js';
 import { sanitizeLedger, sanitizeBooks, readChain, readTips, buildEconomics } from './relay-economics.js';
 import { CONFIDENTIAL_DEPLOYMENTS as _CONFIDENTIAL_DEPLOYMENTS } from '../../dapp/confidential-deployments.js';
@@ -126,6 +127,8 @@ import { handleProverUpload, handleProverDownload, PROVER_PROXY_PATHS } from './
 import { buildProverBoard, workerOf } from './prover-board.js';
 import { buildProofPool, verifyCalldata, clientOf, PROOF_POOL } from './proof-pool.js';
 import { makeChain } from './tacit-chain.js';
+import { makePoolSnapshotJob } from './pool-snapshot-job.js';
+import { ETH_LOG_NODES } from '../../dapp/eth-nodes.js';
 import { makeMarketBoard, MARKET_BOARD } from './proof-market-queue.js';
 import { makeGasBoard, GAS_RELAY, GAS_RELAY_ADDR } from './gas-relay-queue.js';
 import { SWAP_BATCH_VK } from '../../dapp/confidential-swapbatch-vk.js';
@@ -652,7 +655,7 @@ const reverseBytes = b => { const r = new Uint8Array(b); r.reverse(); return r; 
 // caller (curl, another server) could already do. This is what lets a third-party page with no fixed
 // origin (an IPFS/web3-gateway-hosted frontend, e.g.) use the relay directly from a browser instead of
 // needing its own backend proxy or a per-deploy entry in ALLOWED_ORIGINS.
-const OPEN_ORIGIN_PATHS = new Set(['/stats', '/flow', '/relay/economics', '/bridge/recover', '/reflection/proof', '/confidential/submit', '/confidential/status', '/confidential/open', '/confidential/landed', '/confidential/quote', '/confidential/index', '/confidential/relay', '/reflection/dump', '/reflection/live', '/reflection/status', '/reflection/note-witness', '/reflection/burndep', '/reflection/eth-state/covers', '/reflection/eth-state/proof', '/reflection/open', '/reflection/open/job', '/reflection/landed', '/reflection/burndep-list', '/crossout/minted', '/farm/program', '/farm/health', '/prover/upload', '/prover/download', '/prover/board', '/prover/board/credits', '/prover/community/claim', '/prover/community/result', '/prover/pool', '/prover/pool/request', '/prover/pool/lease', '/prover/pool/hold', '/prover/pool/submit', '/prover/pool/result', '/prover/pool/credits', '/prover/pool/recent', '/prover/blocks', '/market/order', '/market/orders', '/market/done', '/market/proof', '/gas/order', '/gas/orders', '/gas/done', '/outpoints/classify']);
+const OPEN_ORIGIN_PATHS = new Set(['/stats', '/flow', '/relay/economics', '/bridge/recover', '/reflection/proof', '/confidential/submit', '/confidential/status', '/confidential/open', '/confidential/landed', '/confidential/quote', '/confidential/index', '/confidential/relay', '/reflection/dump', '/reflection/live', '/reflection/status', '/reflection/note-witness', '/reflection/burndep', '/reflection/eth-state/covers', '/reflection/eth-state/proof', '/reflection/open', '/reflection/open/job', '/reflection/landed', '/reflection/burndep-list', '/crossout/minted', '/farm/program', '/farm/health', '/prover/upload', '/prover/download', '/prover/board', '/prover/board/credits', '/prover/community/claim', '/prover/community/result', '/prover/pool', '/prover/pool/request', '/prover/pool/lease', '/prover/pool/hold', '/prover/pool/submit', '/prover/pool/result', '/prover/pool/credits', '/prover/pool/recent', '/prover/blocks', '/pool/snapshot','/market/order', '/market/orders', '/market/done', '/market/proof', '/gas/order', '/gas/orders', '/gas/done', '/outpoints/classify']);
 function corsHeaders(env, reqOrigin, openOrigin) {
   const list = (env.ALLOWED_ORIGINS || '*').split(',').map(s => s.trim());
   const allow = openOrigin || list.includes('*') ? '*' : (list.includes(reqOrigin) ? reqOrigin : list[0]);
@@ -3790,6 +3793,37 @@ async function handleProverBoard(req, env, url, cors) {
 const POOL_SP1_VERIFIER = '0xb69f2584CBcFf99a58C4e7002E8b89Af54a6f4e2';   // the pool's Groth16 verifier (SP1 v6)
 const POOL_PROGRAM_VKEY = '0x006cd47fd23937a6d247696cace28c22d2c6a8280447e6ac45a3571de232d6e3'; // the settle guest the pool pins
 // GET /prover/blocks?limit=&before=: the pool's history as blocks (tacit-chain.js), newest first, with the tip's height and hash.
+// The pool snapshot on IPFS (pool-snapshot-job.js, dapp/pool-snapshot.js): a run on the cron tick when POOL_SNAPSHOT=1 and Filebase is set,
+// one at a time across both API services. GET /pool/snapshot names the newest manifest it pinned ({ cid, to, at, trees }); a page reads the
+// snapshot.tacit.wei record first and this only when there is none.
+let _snapJob = null;
+async function poolSnapshotTick(env) {
+  const d = _CONFIDENTIAL_DEPLOYMENTS?.mainnet, kv = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
+  if (env.POOL_SNAPSHOT !== '1' || !_filebaseConfigured(env) || !d || !d.pool || !kv) return null;
+  if (await kv.get('snap:lease')) return null;
+  await kv.put('snap:lease', String(Date.now()), { expirationTtl: 240 });
+  if (!_snapJob) {
+    const evmLog = makeConfidentialEvmLog({ keccak256: keccak_256 }), T = evmLog.TOPIC0;
+    _snapJob = makePoolSnapshotJob({
+      kv: { get: (k) => kv.get(k), put: (k, v) => kv.put(k, v) },
+      rpcs: ETH_LOG_NODES.map((rpc) => (method, params) => _ethRpcOrThrow(rpc, method, params)),
+      pin: async (bytes) => { const cid = await _tryPinFilebase(env, bytes); if (!cid) throw new Error('filebase did not pin'); return cid; },
+      fetchImpl: fetch, sha256, keccak256: keccak_256, decodeLogs: evmLog.decodeLogs,
+      pool: d.pool, manager: d.farm && d.farm.manager, deployBlock: Number(d.deployBlock) || 0,
+      topics: [T.LeavesInserted, T.NullifiersSpent, T.LockLeavesInserted, T.Wrap, T.CdpPositionInserted, T.CrossOutRecorded, ...(d.farm && d.farm.manager ? [T.Bonded, T.Harvested] : [])],
+    });
+  }
+  const r = await _snapJob.run();
+  if (r.status !== 'idle') console.log(`[pool-snapshot] ${r.status} to ${r.to}${r.cid ? ` ${r.cid}` : ''}`);
+  return r;
+}
+async function handlePoolSnapshot(req, env, url, cors) {
+  const kv = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
+  const pub = kv ? await kv.get('snap:pub') : null;
+  if (!pub) return jsonResponse({ error: 'no snapshot yet' }, 404, { ...cors, 'Cache-Control': 'public, max-age=60' });
+  return new Response(pub, { status: 200, headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=300' } });
+}
+
 let _chain = null;
 async function handleChainBlocks(req, env, url, cors) {
   const idx = confIndex(env), kv = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
@@ -28022,6 +28056,7 @@ async function _routeFetch(req, env, ctx) {
     // The proof pool (worker/src/proof-pool.js) is open to anyone: pages post wraps, miners lease and prove them.
     if (url.pathname === '/prover/pool' || url.pathname.startsWith('/prover/pool/')) return handleProofPool(req, env, url, cors);
     if (url.pathname === '/prover/blocks' && req.method === 'GET') return handleChainBlocks(req, env, url, cors);
+    if (url.pathname === '/pool/snapshot' && req.method === 'GET') return handlePoolSnapshot(req, env, url, cors);
     if (url.pathname === '/market/order' || url.pathname === '/market/orders' || url.pathname === '/market/done' || url.pathname === '/market/proof') return handleProofMarket(req, env, url, cors);
     if (url.pathname === '/gas/order' || url.pathname === '/gas/orders' || url.pathname === '/gas/done') return handleGasRelay(req, env, url, cors);
     // A page proving with its holder's own prover account passes its program input and the finished proof through here
@@ -31404,6 +31439,7 @@ export default {
       const idx = Math.floor(Date.now() / (5 * 60 * 1000));
       for (const net of cronNetworks(env)) await autoSweepStrandedBurns(env, net, { tickIdx: idx }).catch((e) => _logCronError(env, 'burnAutoSweep', net, e));
     })());
+    ctx.waitUntil(poolSnapshotTick(env).catch((e) => _logCronError(env, 'poolSnapshot', 'mainnet', e)));
     ctx.waitUntil((async () => {
       const _tickIdx = Math.floor(Date.now() / (5 * 60 * 1000));
       // Run `fn` over `items` with at most `limit` in flight. Rejections are
