@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-eZ/ymPa7ZlixVImyboEbmDCIw5ixraE2MG2CLB1vgwI=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-OVANfQQWbADKMy7hACTwa6BSxixMT0aNhookRbvE8hc=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -2235,6 +2235,19 @@ const errText = (e) => {
   const cut = t.slice(0, 240), end = cut.lastIndexOf('. ');
   return end > 80 ? cut.slice(0, end + 1) : `${cut.slice(0, cut.lastIndexOf(' '))}…`;
 };
+// The pools' keeper says, per pool, whether it is ready (GET /health on its service, read at most once a minute). A pool it says is not ready
+// starts on the way from the wallet, said in the form (no relay fee; the wallet pays the network fee and shows as the sender), so the first
+// press goes through. A read that fails changes nothing. The pool's key is its keeper path's first part (/1/…, /1-tac/…, /<token id>/…).
+const KH = { at: 0, chains: null, ready: null, p: null };
+const keeperKey = (url) => { try { return new URL(url).pathname.split('/')[1] || null; } catch { return null; } };
+function keeperRead(url) {
+  if (!url || Date.now() - KH.at < 60e3) return Promise.resolve();
+  let base; try { base = new URL(url).origin; } catch { return Promise.resolve(); }
+  return (KH.p ||= fetch(`${base}/health`, { cache: 'no-store', signal: within(8e3) }).then((r) => (r.ok || r.status === 503 ? r.json() : null))
+    .then((j) => { if (j && typeof j.chains === 'object') { KH.chains = j.chains; KH.ready = j.ready ?? null; } })
+    .catch(() => {}).finally(() => { KH.at = Date.now(); KH.p = null; }));
+}
+const keeperDown = (url) => { const k = keeperKey(url); return !!k && !!KH.chains && (KH.ready === false || KH.chains[k] === false); };
 const keeperTrouble = (e) => /relay|keeper|failed to fetch|\b5\d\d\b|\b429\b|timed? ?out|capacity/i.test(String(e?.message || e)) && !revertText(e) && !e?.said && e?.feeMoved == null;
 const noRetry = (t) => String(t).split(/(?<=[.!?])\s+/).filter((s) => !/\btry(ing)? again\b/i.test(s)).join(' ');
 const keptDeposit = (e, landed, where = '') => {
@@ -7277,6 +7290,7 @@ function renderDevice(el) {
   wireSub(el, 'chain', pickPool);
   wireSub(el, 'dev', (m) => { DEV.mode = m; keep($('#sheet-eth'), render.eth); });
   if ((!W || DEV.bal == null) && !DEV.err) deviceSync().then(() => rerender('eth')).catch(syncFailed);
+  if (!DEV.self && c?.keeper) keeperRead(c.keeper).then(() => { if (!DEV.self && keeperDown(c.keeper) && !(DEV.mode === 'out' && c.chainId === 1 && DEV.dest !== 'addr' && DEV.dest !== 'v1')) { DEV.self = true; rerender('eth'); } });
   const re = $('#d-rescan'); if (re) re.onclick = () => busy(re, async () => { try { await deviceSync(true); DEV.err = null; rerender('eth'); } catch (e) { syncFailed(e); } });
   const f = $('#d-form'), status = $('#d-status');
   f.addEventListener('input', (e) => { if (e.isTrusted && !running('eth')) say(status, ''); });
@@ -7707,6 +7721,7 @@ function renderTokenPool(el) {
   wireSub(el, 'chain', pickPool);
   wireSub(el, 'dev', (m) => { DEV.mode = m; keep($('#sheet-eth'), render.eth); });
   if ((!W || TK.bal == null) && !TK.err) tokenSync().then(() => rerender('eth')).catch(syncFailed);
+  if (!TK.self && t?.keeper) keeperRead(t.keeper).then(() => { if (!TK.self && keeperDown(t.keeper)) { TK.self = true; rerender('eth'); } });
   const re = $('#d-rescan'); if (re) re.onclick = () => busy(re, async () => { try { await tokenSync(true); TK.err = null; rerender('eth'); } catch (e) { syncFailed(e); } });
   const f = $('#d-form'), status = $('#d-status');
   f.addEventListener('input', (e) => { if (e.isTrusted && !running('eth')) say(status, ''); });
@@ -8575,7 +8590,9 @@ function brRow(rec) {
     : rec.stage === 'not-recorded' ? html`${brRecoverable(rec) ? btn('recover', 'Recover') : ''}${rec.path === 'reflected' ? btn('recheck', 'Check again') : ''}`
     : rec.stage === 'recovered' ? btn('dismiss', 'Done') : arrived ? html`${brPrivateNote(rec) ? btn('public', 'Withdraw now', false) : ''}${btn('seen', 'Done')}` : failing ? btn('poll', 'Try again') : BR_WAIT.includes(rec.stage) ? btn('poll', 'Check now') : '';
   const stuck = BR_SIGNED.includes(rec.stage) && failing && (rec.errorCount || 0) >= 3;
-  const self = (rec.stage === 'folded' || rec.stage === 'rfolded') && failing && brRefused(rec.lastError?.message);
+  // the mint from the wallet is offered once the relay turned it down, its wait ran out, or it has been ready a while with the relay not sending
+  const ready = rec.stage === 'folded' || rec.stage === 'rfolded', long = Date.now() - Number(rec.foldedAt || rec.createdAt || Date.now()) > 20 * 60e3;
+  const self = ready && ((failing && (brRefused(rec.lastError?.message) || waitRanOut({ message: String(rec.lastError?.message || '') }))) || (long && relayWhy() === 'held'));
   const back = brMinerStuck(rec) || brStalled(rec);
   const when = arrived ? `${rec.stealth ? 'Sent' : 'Arrived'} ${ago(rec.mintedAt || Date.now())}` : rec.createdAt ? `Started ${ago(rec.createdAt)}` : '';
   return html`<li class="actr brr">
@@ -16202,6 +16219,7 @@ async function poolOutNow({ run, c, dest, amt, to = null, st, clear, after }) {
     if (dest === 'v1' && amount % E10) throw pre('The Tacit pool takes up to 8 decimals.');
     if (DEV.chain !== c) setDeviceChain(c);
     await deviceSync();                                                  // the notes and the relay's fee, read (kept for a minute)
+    if (!DEV.self && c.keeper) { await keeperRead(c.keeper); if (keeperDown(c.keeper) && (dest === 'addr' || dest === 'v1' || c.chainId !== 1)) DEV.self = true; }
     const W = await deviceWallet(), mods = await getDeviceMods(), self = !!DEV.self;
     DEV.quote ||= await W.quote().catch(() => null);
     if (!self && !DEV.quote) return viaWallet('The relay’s fee could not be read.');
@@ -16244,6 +16262,7 @@ async function tokOutNow({ run, t, op, amt, raw, st, clear, after }) {
     if (op === 'send') { const r = await tokRecipient(raw, t); if (r.error) throw pre(r.error); to = r.bp; } else to = recipientOf(raw);
     const W = await tokenWallet(t), mods = await getDeviceMods();
     await tokenSync(false, t);                                             // the notes, read (kept for a minute)
+    if (!TK.self && t.keeper) { await keeperRead(t.keeper); if (keeperDown(t.keeper)) TK.self = true; }
     const relay = !!t.keeper && !TK.self, quote = relay ? await W.quote().catch(() => null) : null;
     if (relay && !quote) return viaWallet('The relay’s fee could not be read.');
     const fee = quote ? BigInt(quote.fee || 0) : 0n, maxFee = fee ? (fee * 5n) / 4n : null;
