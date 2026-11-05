@@ -913,6 +913,9 @@ const shareSync = () => {
 // Shield and Withdraw say what they do before an amount is typed: the button names it, and pressed it goes to the amount
 function paintQuote() { quotePaint(); flowGo(); }
 function flowGo() {
+  const tip = $('#flow-tip');
+  // (the address is named only where the card asks for one: a Pay pool's exit; the DeFi pool's ETH goes to the wallet)
+  if (tip) { tip.hidden = !(FLOW === 'withdraw' && S.amt && !S.busy); if (!tip.hidden) tip.textContent = exiting() ? 'For more privacy: a new address, a while after you shielded, and not the same amount.' : 'For more privacy: a while after you shielded, and not the same amount.'; }
   const go = $('#go'), ask = !!FLOW && !S.busy && !S.amt && !(moveOf() && S.mq?.fixed);
   go.dataset.ask = ask ? '1' : '';
   // a deposit into either pool is Shield's one verb
@@ -2831,7 +2834,7 @@ const markup = (o) => `<p class="sr" id="sw-live" role="status" aria-live="polit
     <div id="ackbox"></div>
     <button class="go" id="go" type="button" disabled>Enter an amount</button>
     <p class="q" id="q" role="status"></p>
-    ${o.moves ? '<div class="mv-st" id="mv-st"></div>' : ''}
+    ${o.moves ? '<div class="mv-st" id="mv-st"></div><p class="flow-tip" id="flow-tip" hidden></p>' : ''}
     ${o.moves ? `<button class="cp" id="copy" type="button" title="Copy link" aria-label="Copy link" hidden>${CP_ICON}</button>` : ''}
   </div>
   <div class="sw-foot"><span>Slippage</span><span class="slip" id="slip" role="group" aria-label="Slippage"></span></div>

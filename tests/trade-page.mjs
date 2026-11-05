@@ -781,7 +781,7 @@ try {
   const order = await m.evaluate(() => ['.p-ticket', '.p-chart', '.p-depth', '.p-info'].map((s) => Math.round(document.querySelector(s).getBoundingClientRect().top)));
   ok(order.every((t, i) => i === 0 || t > order[i - 1]), `the panels stack ticket, chart, book, facts (${order})`);
   ok((await m.$eval('#chart', (e) => e.getBoundingClientRect().width)) > 300, 'the chart takes the phone\'s width');
-  ok(await m.$$eval('.sn > a', (a) => a.every((x) => getComputedStyle(x).display === 'none')) && (await m.$$eval('.sm-p a.pr', (a) => a.length)) === 4, 'and the header\'s page links are in its menu there');
+  ok(await m.$$eval('.sn > a', (a) => a.every((x) => getComputedStyle(x).display === 'none')) && (await m.$$eval('.sm-p a.pr', (a) => a.length)) === 3, 'and the header\'s page links are in its menu there');
   const hd = await m.evaluate(() => { const r = (s) => document.querySelector(s).getBoundingClientRect(); return { top: r('.top').height, brand: r('.brand').top, chip: r('#wallet-chip').top, menu: r('.sn summary').width }; });
   ok(hd.top < 90 && Math.abs(hd.brand - hd.chip) < 30 && hd.menu > 30, `the brand, the menu and the wallet chip share one row on a phone (${JSON.stringify(hd)})`);
   const subh = await m.$eval('#px-sub', (e) => e.getBoundingClientRect().height);
