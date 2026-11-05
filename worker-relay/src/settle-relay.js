@@ -72,6 +72,8 @@ async function idleWait() {
   const t0 = Date.now();
   if (CFG.settleWakeSecs > 0) {
     const r = await confidentialWake(Math.max(CFG.settleWakeSecs, CFG.settlePollSecs)).catch(() => null);
+    // a wake is a job just taken, often a proof posted at a press: the board is read at once, not at its next OPEN_BOARD_POLL_SECS
+    if (r?.woke === true) openReadAt = 0;
     if (typeof r?.woke === 'boolean') return;
   }
   const left = CFG.settlePollSecs - (Date.now() - t0) / 1000;

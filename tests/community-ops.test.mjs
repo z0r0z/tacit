@@ -194,3 +194,11 @@ test('ETH figures', () => {
   assert.equal(ops.ethText(62n * 10n ** 14n), '0.0062');
   assert.equal(ops.ethText(12345n * 10n ** 15n), '12.345');
 });
+
+test('the relay sends a posted step the API took on its free settles (a stealth lock, no fee), and no other posted step without its fee', () => {
+  const nowMs = 2_000_000_000_000, base = { status: 'open', publicValues: '0x', proof: '0x01', posted: true, openSince: 1, expiresAt: 0 };
+  const opts = { settleCostWei: 10n ** 15n, ethAssetId: ETH, ethUnitScale: ops.ETH_UNIT_SCALE, nowMs };
+  assert.equal(pickOpen([{ ...base, jobId: 'a', type: 'stealthlock', free: true }], opts)?.jobId, 'a');
+  assert.equal(pickOpen([{ ...base, jobId: 'b', type: 'stealthlock' }], opts), null, 'not taken on the free settles: it pays nothing, so it waits');
+  assert.equal(pickOpen([{ ...base, jobId: 'c', type: 'transfer' }], opts), null);
+});

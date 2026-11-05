@@ -58,5 +58,6 @@ export function pickOpen(jobs, { settleCostWei, ethAssetId, ethUnitScale, margin
   if (own.length) return own[0];
   const need = settleCostWei == null ? null : (BigInt(settleCostWei) * (10000n + BigInt(marginBps))) / 10000n;
   if (need == null) return null;
-  return live.filter((j) => j.posted && ethFeeWei(j.publicValues, { ethAssetId, ethUnitScale }) >= need).sort(byAge)[0] || null;
+  // a posted step the API took on the day's free settles (j.free: a stealth send's lock) is sent as the same step relayed would be
+  return live.filter((j) => j.posted && (j.free || ethFeeWei(j.publicValues, { ethAssetId, ethUnitScale }) >= need)).sort(byAge)[0] || null;
 }

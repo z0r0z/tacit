@@ -90,8 +90,8 @@ import { bech32, bech32m } from '@scure/base';
 import { buildScanReflectionAttester } from './reflection-attest.js';
 import { burnsAwaitingBundle } from './pending-burns.js';
 import { handleFarm } from './farm-program.js';
-import { buildConfidentialSettler } from './confidential-settle.js';
-import { pvDeadline, settleCalldata as openSettleCalldata, carriesPublicValues, checkPostedShape } from './confidential-open.js';
+import { buildConfidentialSettler, FREE_POSTED_TYPES } from './confidential-settle.js';
+import { pvDeadline, pvFees, settleCalldata as openSettleCalldata, carriesPublicValues, checkPostedShape } from './confidential-open.js';
 import { passesFloor, feeAssetOf, floorInFeeUnits, totalFee, decodePoolState, ammUsdPerUnitBest, AMM_PRICE_DEFAULTS, FEELESS_TYPES } from './relay-quote.js';
 import { makeConfidentialIndex } from './confidential-index.js';
 import { buildFlow, appendSeries, flowPoint } from './flow-feed.js';
@@ -4217,11 +4217,14 @@ async function handleConfidentialSubmit(req, env, cors) {
     mintBurn = adm.burnId ? String(adm.burnId).toLowerCase() : null;
   }
   const feeless = submitMode === 'settle' && isFeeless(body.type, body.op) && !(await wrapTipPaid(env, body));
+  // A posted stealth lock proved ahead of its press carries no fee (the recipient's claim pays the relay), as the same lock relayed does not: it
+  // goes on the day's free settles, the same allowance, and is charged to them here (FREE_POSTED_TYPES).
+  const postedFree = submitMode === 'preproven' && FREE_POSTED_TYPES.includes(body.type) && (() => { try { return pvFees(body.publicValues).every((f) => BigInt(f.value) === 0n); } catch { return false; } })();
   if (feeless && mintBurn) {
     const bb = await dailyBudget(env, `bridgemint:${mintBurn}`, BRIDGEMINT_FREE_PER_BURN);
     if (!bb.ok) return jsonResponse({ ok: false, error: `this burn has used its free relayed settles for today (${bb.used}/${bb.cap}): send it from your own account, which the relay still proves for you`, code: 'free_budget', class: 'burn' }, 429, { ...cors, 'Cache-Control': 'no-store', 'Retry-After': '3600' });
   }
-  if (feeless) {
+  if (feeless || postedFree) {
     const b = await freeRelayBudget(env);
     if (!b.ok) return jsonResponse({ ok: false, error: `free relayed settles for today are used up (${b.used}/${b.cap}) — attach a fee above the floor, or prove-mode and settle it yourself`, code: 'free_budget' }, 429, { ...cors, 'Cache-Control': 'no-store', 'Retry-After': '3600' });
     const cls = freeClassOf(body.type), cb = await freeClassBudget(env, cls);
@@ -4265,16 +4268,16 @@ async function handleConfidentialSubmit(req, env, cors) {
     if (!cb.ok) return jsonResponse({ ok: false, error: `your share of relay-paid proofs for today is used up (${cb.used}/${cb.cap}) — send it through the relay instead (it carries a fee), prove locally, or try again tomorrow`, code: 'prove_budget', class: 'client', hint: body.type === 'wrap' ? 'tip' : 'relay' }, 429, { ...cors, 'Cache-Control': 'no-store', 'Retry-After': '3600' });
   }
   // What a free settle spends, kept on the job so it is given back if the relay fails the job on its own account.
-  const charge = feeless ? { day: new Date().toISOString().slice(0, 10), names: ['free', `free:${freeClassOf(body.type)}`, ...(mintBurn ? [`bridgemint:${mintBurn}`] : [])] } : undefined;
+  const charge = feeless || postedFree ? { day: new Date().toISOString().slice(0, 10), names: ['free', `free:${freeClassOf(body.type)}`, ...(mintBurn ? [`bridgemint:${mintBurn}`] : [])] } : undefined;
   try {
     const r = await q.submitJob({ type: body.type, op: body.op, memos: body.memos, mode: body.mode, feeAsset: body.feeAsset, exit: body.exit,
-      publicValues: body.publicValues, proof: body.proof, paid: paidProve || undefined, sealed: body.sealed, charge, early: submitMode === 'prove' && body.ahead === true });
+      publicValues: body.publicValues, proof: body.proof, paid: paidProve || undefined, sealed: body.sealed, charge, early: submitMode === 'prove' && body.ahead === true, free: postedFree });
     if (!r.deduped) wakeRelay();
     // Spend only on a job we actually accepted and will prove — a dedupe hit costs us nothing.
     if (!r.deduped) {
       if (onBoard) await spendDailyBudget(env, 'prove:board').catch(() => {});
       else if (submitMode === 'prove' && !paidProve) { await spendProveBudget(env).catch(() => {}); await spendDailyBudget(env, `prove:${clientIp}`).catch(() => {}); }
-      else if (feeless) { for (const name of charge.names) await spendDailyBudget(env, name).catch(() => {}); }
+      else if (feeless || postedFree) { for (const name of charge.names) await spendDailyBudget(env, name).catch(() => {}); }
     }
     return jsonResponse({ ok: true, ...r, ...(relay ? { relay: relay.state } : {}) }, 200, { ...cors, 'Cache-Control': 'no-store' });
   } catch (e) { return jsonResponse({ ok: false, error: String(e && e.message || e) }, 400, cors); }

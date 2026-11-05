@@ -27,6 +27,9 @@ export const OPEN_TYPES = ['wrap', 'unwrap', 'transfer', 'swap', 'route', 'lp', 
 // is then a plain pool.settle too, and verifyPosted's simulation refuses one whose deposit is not there, so a proof meant to go with its deposit
 // through the router never goes on the board.
 export const POSTED_TYPES = [...OPEN_TYPES, 'wrapswap'];
+// The posted steps the relay sends with no fee in them, on its free settles for the day, as it does the same step relayed: a stealth send's lock
+// (the recipient's claim pays the relay). Proved ahead of the press, the lock is then only sent at it.
+export const FREE_POSTED_TYPES = ['stealthlock'];
 // KV has no compare-and-swap (real Cloudflare KV doesn't either, and this queue must stay portable to
 // it — see server/kv-store.mjs), so a plain read-then-write claim races once more than one poller hits
 // the same pending job. CLAIM_VERIFY_DELAY_MS narrows that window from "the whole poll interval" to
@@ -133,8 +136,8 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
   // given back if the relay fails it on its own account (see ackJobLocked); nothing else reads it.
   const chargeOf = (c) => (c && typeof c === 'object' && /^\d{4}-\d{2}-\d{2}$/.test(String(c.day)) && Array.isArray(c.names)
     ? { day: String(c.day), names: c.names.map(String).slice(0, 6) } : null);
-  async function submitJob({ type, op, memos, mode = 'settle', feeAsset = null, exit = null, publicValues = null, proof = null, paid = false, sealed = null, charge = null, early = false }) {
-    if (mode === 'preproven') return postProven({ type, memos, publicValues, proof, exit });
+  async function submitJob({ type, op, memos, mode = 'settle', feeAsset = null, exit = null, publicValues = null, proof = null, paid = false, sealed = null, charge = null, early = false, free = false }) {
+    if (mode === 'preproven') return postProven({ type, memos, publicValues, proof, exit, free: !!free && FREE_POSTED_TYPES.includes(type), charge: free ? chargeOf(charge) : null });
     if (mode === 'sealed') {
       if (!type || !SEALED_SHAPE(sealed)) throw new Error('submitJob: a sealed job needs type + sealed { worker, epk, iv, ct }');
       if (!OPEN_TYPES.includes(type)) throw new Error(`submitJob: a ${type} cannot be sent sealed (its settle is not a plain pool.settle)`);
@@ -238,7 +241,9 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
   // simulates its settle first, so the board carries only proofs the pool would take at the time they were posted.
   // `exit`: an unwrap proved on the holder's own machine may carry its ConfidentialRouter recipe, which the relay that sends it
   // activates as it does a relayed exit's (it checks there that the recipe's escrow is the recipient the proof pays).
-  async function postProven({ type, memos, publicValues, proof, exit = null }) {
+  // `free`: a fee-less step the relay sends on its free settles for the day (a stealth send's lock: its claim pays the fee), as it sends the same
+  // step relayed; the API has charged that allowance before it posts it, and `charge` names what to give back if the job fails.
+  async function postProven({ type, memos, publicValues, proof, exit = null, free = false, charge = null }) {
     if (!POSTED_TYPES.includes(type)) throw new Error(`submitJob: a ${type} proof cannot be posted for any sender`);
     if (exit != null && !EXIT_TYPES.includes(type)) throw new Error('submitJob: an exit recipe rides only on an unwrap or sendunwrap');
     const recipe = exit == null ? null : normalizeExit(exit);
@@ -259,7 +264,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
       if (open.length >= MAX_OPEN_JOBS) throw new Error('submitJob: the open board is full, retry later');
       const t = clock();
       const job = { id, type, op: null, mode: 'preproven', memos: ms, feeUnits: null, feeUsd: null, feeAsset: null, exit: recipe, activateTx: null, activateError: null,
-        status: 'open', createdAt: t, claimedAt: 0, openSince: t, posted: true, txHash: null, error: null, publicValues: pv, proof: pf };
+        status: 'open', createdAt: t, claimedAt: 0, openSince: t, posted: true, txHash: null, error: null, publicValues: pv, proof: pf, ...(free ? { free: true, charge } : {}) };
       job.expiresAt = expiresAt(job);
       await storage.putJob(id, job);
       await putOpen([...open.filter((x) => x !== id), id]);
@@ -269,7 +274,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
 
   const isOpen = (j) => j.status === 'open' || (j.status === 'sending' && clock() - (j.sendClaimAt || 0) > SEND_CLAIM_TTL_MS);
   const ranOut = (j) => (j.posted && clock() - (j.openSince || j.createdAt || 0) > OPEN_TTL_MS) || (j.expiresAt > 0 && clock() >= j.expiresAt);
-  const openView = (id, j) => ({ jobId: id, type: j.type, status: isOpen(j) ? 'open' : 'sending', posted: !!j.posted,
+  const openView = (id, j) => ({ jobId: id, type: j.type, status: isOpen(j) ? 'open' : 'sending', posted: !!j.posted, free: !!j.free,
     publicValues: j.publicValues, proof: j.proof, memos: j.memos || [], openSince: j.openSince || j.createdAt || 0,
     expiresAt: j.expiresAt || 0, feeUsd: j.feeUsd ?? null, feeAsset: j.feeAsset || null });
 

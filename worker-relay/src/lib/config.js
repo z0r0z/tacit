@@ -288,7 +288,7 @@ export const CFG = {
   gasRelayMarginBps: num('GAS_RELAY_MARGIN_BPS', 12000),
   gasRelayPollSecs: num('GAS_RELAY_POLL_SECS', 5),
   openBoard: opt('OPEN_BOARD', '1') === '1',
-  openBoardPollSecs: num('OPEN_BOARD_POLL_SECS', 15),
+  openBoardPollSecs: num('OPEN_BOARD_POLL_SECS', 5),
   // Relay fees paid in cTAC are never sold (TAC is never in FEE_ASSETS), so they pile up on the earning wallet.
   // When set, each replenish pass moves that TAC to this reserve once it reaches tacReserveMinWei. Empty = hold.
   tacReserveAddr: opt('TAC_RESERVE_ADDR', ''),
