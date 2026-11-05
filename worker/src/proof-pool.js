@@ -41,6 +41,7 @@ export const PROOF_POOL = Object.freeze({
   pointsPerProof: 20,                // POINTS_MINE_PER_PROOF
   proofsPerMinerDay: 30,             // POINTS_MINE_DAILY_CAP: proofs an address is credited for in a UTC day
   strikesPerDay: 3,
+  lapsesPerDay: 8,                   // POOL_LAPSES_PER_DAY: leases a client may let run out or hand back in a UTC day before it is offered nothing more
   leasesPerClient: 4,                // open leases one client may hold, one per address (a household's few machines)
   minerIdleMs: 5 * 60_000,           // POOL_MINER_IDLE_MS: a house prover's wait for the miners holds only while one has asked this recently
   holdMs: 45_000,                    // POOL_HOLD_MS: how long a page's hold keeps Tacit's own provers off the pool (a typed amount's proof is asked within seconds)
@@ -70,6 +71,7 @@ export function proofPoolConfig(env = {}) {
     keepMs: n(env.POOL_KEEP_MS, PROOF_POOL.keepMs, 60_000, 30 * 86_400_000),
     pointsPerProof: n(env.POINTS_MINE_PER_PROOF, PROOF_POOL.pointsPerProof, 0, 100_000),
     proofsPerMinerDay: n(env.POINTS_MINE_DAILY_CAP, PROOF_POOL.proofsPerMinerDay, 0, 100_000),
+    lapsesPerDay: n(env.POOL_LAPSES_PER_DAY, PROOF_POOL.lapsesPerDay, 1, 100_000),
   });
 }
 
@@ -217,6 +219,15 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
     const i = q.findIndex((x) => x.at > e.at);
     if (i < 0) q.push(e); else q.splice(i, 0, e);
   }
+  // A lease a client let run out or handed back: counted against that client for the day (never against an address, which anyone may
+  // name), so a few places cannot hold the queue up or wear its jobs out with leases they never mean to prove. Tacit's own provers are
+  // not counted.
+  async function lapsed(l, t) {
+    if (l.house) return;
+    const d = dayOf(t), rec = await dayRec(d);
+    rec.lapses = { ...(rec.lapses || {}), [l.client]: ((rec.lapses || {})[l.client] || 0) + 1 };
+    await write(K.day(d), rec, cfg.daySecs);
+  }
   // Leases that ran out go back. → whether anything changed.
   async function reclaim(q, L, t) {
     let changed = false;
@@ -224,6 +235,7 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
       if (l.until > t) continue;
       delete L[id];
       await giveBack(q, id, l, true);
+      await lapsed(l, t);
       changed = true;
     }
     return changed;
@@ -305,6 +317,10 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
         await save();
         return reply(403, { ok: false, code: 'struck_out', error: `${cfg.strikesPerDay} proofs that did not pass today; nothing more is leased here until the next UTC day` });
       }
+      if (!house && ((rec.lapses || {})[client] || 0) >= cfg.lapsesPerDay) {
+        await save();
+        return reply(403, { ok: false, code: 'lapsed_out', error: `${cfg.lapsesPerDay} leases ran out or were handed back today; nothing more is leased here until the next UTC day` });
+      }
       const held = Object.entries(L).filter(([, l]) => l.client === client), open = held.find(([, l]) => l.miner === m);
       if (open) { await save(); return reply(429, { ok: false, code: 'lease_open', id: open[0], error: 'one lease at a time: send its proof (or hand it back) first' }); }
       if (held.length >= cfg.leasesPerClient) { await save(); return reply(429, { ok: false, code: 'lease_open', error: `at most ${cfg.leasesPerClient} leases from one place at a time` }); }
@@ -374,6 +390,7 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
         await giveBack(q, id, l, true);
         await write(K.queue, q);
         await write(K.leases, L);
+        await lapsed(l, t);
         return { r: reply(200, { ok: true, released: true }) };
       }
       const job = await read(K.job(id), null);

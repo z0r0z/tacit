@@ -469,3 +469,21 @@ test('a note is paid for once: its input posted again with another signature is 
   assert.deepEqual(await h.pool.minedBy([a.expect.leaf]), { [a.expect.leaf.toLowerCase()]: { miner: MINER, points: PROOF_POOL.pointsPerProof } }, 'the first prover stays named');
   assert.equal((await h.pool.recent()).body.proofs.length, 1, 'and the feed shows the one proof');
 });
+
+test('leases a client lets run out or hands back count against it for the day; Tacit\'s own provers are not counted', async () => {
+  const h = harness({ cfg: { ...PROOF_POOL, lapsesPerDay: 3 } });
+  for (let i = 0; i < 6; i++) { const j = wrapJob(10 + i); await h.pool.request({ type: 'wrap', stdin: j.stdin, expect: j.expect, client: 'page' + i }); }
+  // two hand-backs and one lease left to run out, from one place under three addresses
+  let l = (await h.pool.lease({ miner: MINER, client: 'm1' })).body;
+  await h.pool.submit({ id: l.id, lease: l.lease, error: 'cannot' });
+  l = (await h.pool.lease({ miner: MINER2, client: 'm1' })).body;
+  await h.pool.submit({ id: l.id, lease: l.lease, error: 'cannot' });
+  await h.pool.lease({ miner: MINER3, client: 'm1' });
+  h.t += PROOF_POOL.leaseMs + 1;
+  const r = await h.pool.lease({ miner: MINER, client: 'm1' });
+  assert.deepEqual([r.status, r.body.code], [403, 'lapsed_out']);
+  assert.equal((await h.pool.lease({ miner: MINER, client: 'm2' })).status, 200, 'the address leases from elsewhere: only the place is held to it');
+  // the house hands back as often as it needs
+  for (let i = 0; i < 4; i++) { const x = (await h.pool.lease({ house: 'gpu', client: 'h' })).body; if (!x?.lease) break; await h.pool.submit({ id: x.id, lease: x.lease, error: 'busy' }); }
+  assert.notEqual((await h.pool.lease({ house: 'gpu', client: 'h' })).status, 403);
+});

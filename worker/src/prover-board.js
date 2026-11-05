@@ -47,6 +47,7 @@ export const PROVER_BOARD = Object.freeze({
   communityPrograms: Object.freeze(['confidential', 'btc-state']), // what a community machine may race, when it says it proves it
   communityOpen: 1,                                    // jobs one community machine races at a time
   communityKept: 200,                                  // community records kept on the summary (the most recently seen)
+  maxCandidatePvBytes: 16 * 1024,                      // a race candidate's public values (a wrap's or a Bitcoin batch's are a few KB)
   pointsPerProof: 20,                                  // POINTS_BOARD_PER_PROOF: for each community proof the relay takes
   proofsPerMinerDay: 30,                               // POINTS_BOARD_DAILY_CAP: proofs an address is credited for in a UTC day
   daySecs: 40 * 86400,                                 // a day's tally outlives the campaign's reading of it
@@ -304,15 +305,19 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
       const pend = await sweep(await storage.getPending());
       await storage.putPending(pend);
       let open = 0;
-      for (const jid of pend) { const j = await storage.getJob(jid); if (j && ['queued', 'claimed'].includes(j.status) && (j.racers || []).includes(worker.name)) open++; }
+      const racing = (j) => (j.racers || []).includes(worker.name) && clock() - ((j.racedAt || {})[worker.name] || 0) < leaseFor(j);
+      for (const jid of pend) { const j = await storage.getJob(jid); if (j && ['queued', 'claimed'].includes(j.status) && racing(j)) open++; }
       if (open >= PROVER_BOARD.communityOpen) return null;
       for (const jid of pend) {
         const j = await storage.getJob(jid);
         if (!j || !['queued', 'claimed'].includes(j.status) || j.class !== 'public' || j.sealed || !races.includes(j.program || 'confidential') || !(j.stdin || j.stdinKept)) continue;
-        const racers = j.racers || [];
+        // a racer that took the job and never answered gives its place up once the job's lease time has passed
+        const lease = leaseFor(j), since = j.racedAt || {};
+        const racers = (j.racers || []).filter((r) => clock() - (since[r] || 0) < lease);
         // racing now, or raced it before (answered or dropped out): offered once
         if ((j.raced || []).includes(worker.name) || racers.length >= PROVER_BOARD.communityRacers) continue;
         j.racers = [...racers, worker.name];
+        j.racedAt = Object.fromEntries([...racers, worker.name].map((r) => [r, r === worker.name ? clock() : since[r]]));
         j.raced = [...(j.raced || []), worker.name].slice(-4 * PROVER_BOARD.communityRacers);
         await storage.putJob(jid, j);
         return { jobId: j.id, class: j.class, program: j.program || 'confidential', mode: 'groth16', stdin: await inputOf(j), sealed: null, cycleLimit: j.cycleLimit, gasLimit: j.gasLimit,
@@ -335,7 +340,7 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
         if (!['queued', 'claimed'].includes(j.status)) return { ok: false, error: `job is ${j.status}` };
         j.racers = j.racers.filter((x) => x !== worker.name);
         if (error == null) {
-          if (!isHex(publicValues) || publicValues.length < 2 + 64 * 2 || publicValues.length > 2 + 2 * 65536) return { ok: false, error: 'publicValues must be the hex of the proof\'s public values' };
+          if (!isHex(publicValues) || publicValues.length < 2 + 64 * 2 || publicValues.length > 2 + 2 * PROVER_BOARD.maxCandidatePvBytes) return { ok: false, error: 'publicValues must be the hex of the proof\'s public values' };
           if (!isHex(proof) || proof.length < 2 + 2 * 4 || proof.length > 2 + 2 * 4096) return { ok: false, error: 'proof must be the hex of the groth16 proof bytes' };
           j.race = [...(j.race || []).filter((c) => c.worker !== worker.name), { worker: worker.name, publicValues: publicValues.toLowerCase(), proof: proof.toLowerCase(), at: clock() }]
             .slice(-PROVER_BOARD.communityRacers);

@@ -417,3 +417,18 @@ test('the Bitcoin-state program: public groth16 work, its input kept apart and d
   assert.equal(kept.has(jobId), false, 'the input goes when the job is over');
   assert.equal((await b.status(jobId)).proof, '0x' + '22'.repeat(260));
 });
+
+test('a community racer that never answers gives its place up after the job\'s lease, and a candidate\'s public values are capped', async () => {
+  const b = makeProverBoard({ storage: store(), now });
+  const { jobId } = await b.post({ class: 'public', stdin, cycleLimit: 1e6, gasLimit: 1e8, deadline: now() / 1000 + 7200 });
+  const racers = Array.from({ length: PROVER_BOARD.communityRacers }, (_, i) => ({ name: `c-0x${String(i + 1).padStart(40, '0')}`, classes: ['public'], community: true }));
+  for (const r of racers) assert.equal((await b.claim({ worker: r, classes: ['public'] })).jobId, jobId);
+  const late = { name: 'c-0x' + 'ee'.repeat(20), classes: ['public'], community: true };
+  assert.equal(await b.claim({ worker: late, classes: ['public'] }), null, 'every place taken');
+  t += PROVER_BOARD.leaseMs + 1;
+  assert.equal((await b.claim({ worker: late, classes: ['public'] })).jobId, jobId, 'silent racers give their places up');
+  const big = '0x' + '11'.repeat(PROVER_BOARD.maxCandidatePvBytes + 1);
+  assert.match((await b.result({ worker: late, jobId, publicValues: big, proof: '0x' + '22'.repeat(260) })).error, /public values/);
+  const { jobId: second } = await b.post({ class: 'public', stdin: Buffer.from('another input').toString('base64'), cycleLimit: 1e6, gasLimit: 1e8, deadline: now() / 1000 + 7200 });
+  assert.equal((await b.claim({ worker: racers[0], classes: ['public'] })).jobId, second, 'a racer whose old place lapsed may race again');
+});
