@@ -25,6 +25,7 @@ import { makeQuietLog } from './lib/quiet-log.js';
 import { attestFundsNeed } from './lib/attest-fees.js';
 import { affordableHeaders, headerBatchNeed, exceedsAllowance } from './lib/header-fits.js';
 import { makeEsploraReader } from './lib/esplora-reader.js';
+import { makeExplorerChain } from './lib/explorer-chain.js';
 
 const log = (...a) => console.log(`[header ${new Date().toISOString()}]`, ...a);
 // The waits below are on purpose and last hours: each is said once, then every ten minutes while it stays the same (lib/quiet-log.js).
@@ -33,15 +34,11 @@ const sleep = (s) => new Promise((r) => setTimeout(r, s * 1000));
 const ESPLORAS = CFG.btcEsplora.split(',').map((s) => s.trim()).filter(Boolean);
 
 // One pass over the explorers that are not resting, the last good one first; one that rate-limits is left alone for what it asks (lib/esplora-reader.js).
+// Over it, the chain as the feeder needs it, asked for as seldom as it can be: the tip kept 90 s, buried blocks kept for good, headers ten to a request
+// (lib/explorer-chain.js). The public explorers limit a shared address by how often it asks.
 const explorer = makeEsploraReader(ESPLORAS, { log: (m) => say('explorer-rest', m) });
-const esplora = (path) => explorer.get(path);
-const btcTip = async () => parseInt(await esplora('/blocks/tip/height'), 10);
-async function headerHex(h) {
-  const hash = await esplora(`/block-height/${h}`);
-  const hdr = await esplora(`/block/${hash}/header`);
-  if (!/^[0-9a-fA-F]{160}$/.test(hdr)) throw new Error(`bad header @${h} (${hdr.slice(0, 16)}…)`);
-  return hdr;
-}
+const chain = makeExplorerChain(explorer, { tipTtlMs: CFG.btcTipTtlSecs * 1000, log: (m) => say('explorer-page', m) });
+const btcTip = () => chain.tip();
 // A ready batch holds for a cheaper block, for a bounded time (lib/base-fee-wait.js). HEADER_BASEFEE_WAIT=0 turns it off.
 const BASEFEE_WAIT = process.env.HEADER_BASEFEE_WAIT !== '0';
 const BASEFEE_BLOCKS = Number(process.env.HEADER_BASEFEE_BLOCKS || 1000);
@@ -125,7 +122,7 @@ async function resumeHeight(rtip, btip) {
     tipHeight: rtip,
     tipHash: await relayTipHash(),
     parentOf: relayParent,
-    explorerHashAt: (h) => esplora(`/block-height/${h}`),
+    explorerHashAt: (h) => chain.hashAt(h),
     isKnown: relayKnows,
     maxHeight: btip - 2,
     alertDepth: CFG.headerReorgDepth,
@@ -211,8 +208,7 @@ async function submitAdvance(from, to, { notes = [], ctx = '' } = {}) {
   if (fits0 < to - from + 1) { log(`relay wallet holds ${eth(have)} ETH (${eth(reserve)} kept for ${kept}), enough for ${fits0} of ${to - from + 1} headers at today's gas`); to = from + fits0 - 1; }
   for (const n of notes) log(n);
   log(`advancing relay ${from}..${to}${ctx ? ` (${ctx})` : ''}`);
-  const headers = [];
-  for (let h = from; h <= to; h++) headers.push(await headerHex(h));
+  const headers = await chain.headers(from, to);
   for (;;) {
     const advanceCall = { address: HEADER_RELAY, abi: RELAY_ABI, functionName: 'advanceTip', args: [`0x${headers.slice(0, to - from + 1).join('')}`] };
     let estimate;

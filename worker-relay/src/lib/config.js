@@ -385,6 +385,7 @@ export const CFG = {
 
   // Idle poll intervals (seconds).
   reflectionPollSecs: num('REFLECTION_POLL_SECS', 30),
+  btcTipTtlSecs: num('BTC_TIP_TTL_SECS', 90),
   reflectionCreditRecheckSecs: num('REFLECTION_CREDIT_RECHECK_SECS', 120), // how often the stage re-reads the prover credit after a refusal for want of it
   // How long a submitted attest may take to land before the cron gives up waiting for it. A timed-out receipt wait is
   // not a failure — the tx can still confirm minutes later — so the folder polls the pool's digest instead, and only
