@@ -813,6 +813,90 @@
           "href": "https://discord.gg/VxYx9XSBrM"
         }
       ]
+    },
+    {
+      "id": "usdt-bridge-test",
+      "chainId": 1,
+      "opensAt": 1793894979,
+      "title": "Test the USDT bridge",
+      "tagline": "Send 2 to 5 USDT to Bitcoin and back: the first mainnet round trips of USDT. A small amount is all it takes.",
+      "verified": false,
+      "created": [],
+      "hint": "Opens the bridge with 2 USDT in it: use 2 to 5, no more. The way to Bitcoin and the way back each take hours: come back here to claim when the USDT is back in your wallet.",
+      "steps": [
+        {
+          "id": "01-tester",
+          "kind": "review",
+          "to": "0x0000000000000000000000000000000000000000",
+          "gas": 22000,
+          "approved": [],
+          "minWei": "250000000000000000000",
+          "maxWei": "250000000000000000000",
+          "label": "Tester, first",
+          "detail": "2 to 5 USDT to Bitcoin and back.",
+          "action": {
+            "label": "Bridge 2 USDT",
+            "href": "/#card=bridge:wusdt&amt=2"
+          },
+          "ask": "The Bitcoin transaction that brought your USDT back (its burn). It is paid to the wallet you claim from."
+        },
+        {
+          "id": "02-tester-second",
+          "kind": "review",
+          "to": "0x0000000000000000000000000000000000000000",
+          "gas": 22000,
+          "approved": [],
+          "minWei": "250000000000000000000",
+          "maxWei": "250000000000000000000",
+          "label": "Tester, second",
+          "detail": "A second, independent round trip.",
+          "action": {
+            "label": "Bridge 2 USDT",
+            "href": "/#card=bridge:wusdt&amt=2"
+          },
+          "ask": "The Bitcoin transaction that brought your USDT back (its burn). It is paid to the wallet you claim from."
+        },
+        {
+          "id": "03-tester-third",
+          "kind": "review",
+          "to": "0x0000000000000000000000000000000000000000",
+          "gas": 22000,
+          "approved": [],
+          "minWei": "250000000000000000000",
+          "maxWei": "250000000000000000000",
+          "label": "Tester, third",
+          "detail": "A third, independent round trip.",
+          "action": {
+            "label": "Bridge 2 USDT",
+            "href": "/#card=bridge:wusdt&amt=2"
+          },
+          "ask": "The Bitcoin transaction that brought your USDT back (its burn). It is paid to the wallet you claim from."
+        }
+      ],
+      "about": [
+        {
+          "h": "What to do",
+          "p": "Bridge 2 to 5 USDT from your wallet to Bitcoin and back, on the bridge page or the front page's Bridge tab. This is new and unproven on mainnet, so use a small amount: 2 USDT is enough, a larger bridge pays no more, and one bridge takes 100 at most. The USDT is made private in the Tacit pool first (one approval of exactly the amount and one signature), burned there, and minted on Bitcoin to your own key a few hours later. The two Bitcoin steps are paid from your own Bitcoin address, about 2,500 sats in all, so have that on it. Bring it back from Bitcoin (a burn there, then a mint in the pool, about four hours and then the next proof), and withdraw it to your wallet."
+        },
+        {
+          "h": "What is checked",
+          "p": "Claim with the Bitcoin transaction that brought your USDT back. It is read by hand: that it burns a note of the USDT asset that a cross-out minted for your key, that the pool minted it again, and that you hold it or have withdrawn it. If anything goes wrong on the way, that is the finding: say what happened in Discord, with the transaction ids, and it is paid for as well."
+        },
+        {
+          "h": "Paid",
+          "p": "250 TAC to each of the first three testers whose round trip is checked. About $6 of it is the fees (gas for the approval and the deposit, the relay's fees of about 0.8 USDT, and about 2,500 sats of Bitcoin), and the rest pays for your time. You keep what comes back of your USDT."
+        }
+      ],
+      "links": [
+        {
+          "label": "The bridge",
+          "href": "/bridge/"
+        },
+        {
+          "label": "Discord",
+          "href": "https://discord.gg/VxYx9XSBrM"
+        }
+      ]
     }
   ]
 }

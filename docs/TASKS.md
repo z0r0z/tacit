@@ -91,6 +91,8 @@ job by id and leaves the others):
 
     node worker-relay/scripts/tasks-jobs.mjs --payload payload.json --manifest tac-vaults.json --rpc <anvil fork> --opens <unix secs>
 
+`worker-relay/scripts/tasks-usdt-bridge.mjs` builds the `usdt-bridge-test` job: three read-by-hand steps (`kind: review`, as the fast bridge job's), each paying a fixed sum (`--tac`, 150 by default) once to the tester whose round trip of 2 USDT or more to Bitcoin and back was checked. A tester claims with the Bitcoin transaction that brought the USDT back; the page sends the account a transaction to itself naming it, and the step lists that hash after review (`--tester`, `--tester2`, `--tester3`: a push and a deploy of the points service). The job's `hint` is the page's line under the button.
+
 `worker-relay/scripts/tasks-gen4.mjs` builds the `anon-wei-4` job (the page's chunks on Ethereum, the catch-up registry on three chains,
 the first points on two) from the page build's `out/` and the registry's init code and open salt; it reads each step's gas from the
 chain's own node with `eth_estimateGas` (nothing is sent). The page fetches a point from the chain's keeper when it is sent

@@ -386,8 +386,8 @@ function reviewBody(job) {
       <div class="col">
         ${doit.length ? `<section class="panel p-ticket" aria-label="Do it">
           <p class="eyebrow">Do it</p>
-          <div class="acts">${doit.map((s) => `<a class="btn" href="${esc(s.action.href)}" target="_blank" rel="noopener noreferrer">${esc(s.action.label)} ↗</a>`).join('')}</div>
-          <p class="hint">Opens the fast bridge. Come back here to claim when the bridge is done.</p>
+          <div class="acts">${doit.filter((s, i) => doit.findIndex((x) => x.action.href === s.action.href && x.action.label === s.action.label) === i).map((s) => `<a class="btn" href="${esc(s.action.href)}" target="_blank" rel="noopener noreferrer">${esc(s.action.label)} ↗</a>`).join('')}</div>
+          <p class="hint">${esc(job.hint || 'Opens the fast bridge. Come back here to claim when the bridge is done.')}</p>
         </section>` : ''}
         ${claimPanel(job, todo, open)}
         ${a?.enabled ? `<section class="panel p-rewards" aria-label="Rewards"><p class="eyebrow">Rewards</p>
