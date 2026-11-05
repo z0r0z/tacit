@@ -203,7 +203,9 @@ const { chromium } = require(process.env.PLAYWRIGHT || '/Users/z/zFi/node_module
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
 // Borrow reports under each step's own line (#bw-s1…#bw-s4) as well as the sheet's: read them all.
 const bwText = (page) => page.evaluate((s) => [...document.querySelectorAll(s)].map((e) => e.textContent).join(' '), '#bw-status, #bw-s1, #bw-s2, #bw-s3, #bw-s4');
-const ONLY = new Set((process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,hxbridgeu,usdtwrap,usdtwrapw,usdtout,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,relayfail,selfwallet,slowline,fastroute').split(','));
+// `ui`: the front page's tile and landing, the steps a look-and-copy pass needs (tools/weld-ui.sh runs them on a pinned, cached fork)
+const UI_STEPS = 'links,swapurl,swapfield,hints,hxbridge,hxfold,hxnudge,tradelinks';
+const ONLY = new Set((process.argv[2] === 'ui' ? UI_STEPS : process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,hxbridgeu,usdtwrap,usdtwrapw,usdtout,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,relayfail,selfwallet,slowline,fastroute').split(','));
 const FORK = process.argv[3] || 'https://mainnet.gateway.tenderly.co';
 const SHOTS = process.env.SHOTS || null;
 const PORT = 20000 + Math.floor(Math.random() * 2000), WEB = PORT + 1;
@@ -540,6 +542,8 @@ const flowFeed = () => { const t = Math.floor(Date.now() / 1000), ago = (x) => t
   events: { attests: [ago(70000), ago(30000), ago(900)], settles: [ago(50000), ago(3000)], deposits: [ago(20000)], tacOut: [ago(10000), ago(9000)], tacIn: [ago(5000)] } }; };
 const until = (page, fn, arg, timeout = 60000) => page.waitForFunction(fn, arg, { timeout });
 // a tab of the card: Bridge and Borrow sit under its More tab, which is opened first when they are not shown
+// a route row of the card: Earn shows only the farm it picked until its Change opens the others
+const rowClick = async (page, sel) => { const c = await page.$('#hx-routes .chg'); if (c && !(await page.isVisible(sel))) await c.click(); await page.click(sel); };
 const tabClick = async (page, k) => { if (!(await page.$(`[data-hxm="${k}"]`))) await page.click('[data-hxm="more"]'); await page.click(`[data-hxm="${k}"]`); };
 // The card folds away a way beside the one in use behind a line that opens them: a test opens it before it presses one.
 const reveal = async (page, sel, timeout = 120000) => { await page.waitForSelector(sel, { state: 'attached', timeout }); if (!(await page.isVisible(sel))) await page.locator('[data-hxmore]:visible').first().click(); };
@@ -3316,7 +3320,7 @@ await step('bridge', async () => {
   await until(r.page, () => /Pick the note to bridge/.test(document.querySelector('#hx-ss')?.textContent || ''), null, 60000);
   ok((await r.page.evaluate(() => window.__sheetSeen)) === '' && !/#bridge/.test(await r.page.evaluate(() => location.hash)), 'bridge: the tile\'s Bridge TAC from Bitcoin, pressed with no note picked, asks for one under the button and opens no sheet');
   // picked, the note is checked as the sheet checks it; this key holds no sats for the Bitcoin fee, which the receipt and the press say
-  await r.page.click(`#hx-routes [data-hxr="${tileRows.find((x) => !x.off).k}"]`);
+  await rowClick(r.page, `#hx-routes [data-hxr="${tileRows.find((x) => !x.off).k}"]`);
   await until(r.page, () => /short of the [\d,]+ sats this needs/.test(document.querySelector('#hx-q')?.textContent || ''), null, 240000)
     .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | q: ${await text(r.page, '#hx-q')} | rc: ${(await text(r.page, '#hx-receipt')).replace(/\s+/g, ' ')}`); });
   ok(/Bitcoin fee/.test(await text(r.page, '#hx-receipt')) && /Relay fee\s*none/.test(await text(r.page, '#hx-receipt')), `bridge: a note picked in the tile is checked and its receipt names the Bitcoin fee (${(await text(r.page, '#hx-receipt')).replace(/\s+/g, ' ').slice(0, 160)})`);
@@ -3575,7 +3579,7 @@ await step('fastroute', async () => {
     await bridgeTo(r.page, 'btc');
     await until(r.page, () => document.querySelectorAll('#hx-routes [data-hxr]').length >= 2, null, 240000);
     // a note of 250 TAC: a provider takes it, so the tab quotes it fast, with the receipt a bridge through a provider has
-    await r.page.click(`#hx-routes [data-hxr="${N1}:0"]`);
+    await rowClick(r.page, `#hx-routes [data-hxr="${N1}:0"]`);
     await until(r.page, () => document.querySelector('#hx-go')?.textContent === 'Bridge fast', null, 240000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | go: ${await text(r.page, '#hx-go')} | q: ${await text(r.page, '#hx-q')} | rc: ${(await text(r.page, '#hx-receipt')).replace(/\s+/g, ' ')}`); });
     const rc = (await text(r.page, '#hx-receipt')).replace(/\s+/g, ' ');
@@ -3604,7 +3608,7 @@ await step('fastroute', async () => {
     await until(r.page, () => /248\.25 TAC arrived in your private balance/.test(document.getElementById('toast-container')?.textContent || ''), null, 30000);
     ok(true, 'fastroute: a bridge that ends says what arrived, in a notice');
     // the regular way: one press on the other way, and the note is checked as the regular bridge checks it
-    await r.page.click(`#hx-routes [data-hxr="${N1}:0"]`);
+    await rowClick(r.page, `#hx-routes [data-hxr="${N1}:0"]`);
     await until(r.page, () => document.querySelector('#hx-go')?.textContent === 'Bridge fast' && !!document.querySelector('#hx-alt-go'), null, 240000);
     await r.page.click('#hx-alt-go');
     await until(r.page, () => /Bridge it fast instead: about 15 minutes/.test(document.querySelector('#hx-alt')?.textContent || '') && /short of the [\d,]+ sats this needs/.test(document.querySelector('#hx-q')?.textContent || ''), null, 240000)
@@ -3613,7 +3617,7 @@ await step('fastroute', async () => {
     ok(regSteps === 'Burned on Bitcoin > Confirmed > Proven on Ethereum > Minted privately', `fastroute: and the regular bridge has its steps back (${regSteps})`);
     ok((await text(r.page, '#hx-go')) === 'Bridge TAC from Bitcoin' && /Time\s*usually within a few hours/.test((await text(r.page, '#hx-receipt')).replace(/\s+/g, ' ')), 'fastroute: the regular bridge is one press away, checks the note as it always did, says its own time, and offers the fast one back');
     // a note no provider takes keeps the regular bridge, and says why the fast one was not offered
-    await r.page.click(`#hx-routes [data-hxr="${N2}:0"]`);
+    await rowClick(r.page, `#hx-routes [data-hxr="${N2}:0"]`);
     await until(r.page, () => /Fast bridge\s*providers take 100 to 1,000 TAC now/.test((document.querySelector('#hx-receipt')?.textContent || '').replace(/\s+/g, ' ')), null, 240000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | go: ${await text(r.page, '#hx-go')} | q: ${await text(r.page, '#hx-q')} | rc: ${(await text(r.page, '#hx-receipt')).replace(/\s+/g, ' ')}`); });
     ok((await text(r.page, '#hx-go')) === 'Bridge TAC from Bitcoin' && (await r.page.$eval('#hx-alt', (e) => e.hidden)), 'fastroute: a note no provider takes keeps the regular bridge, and the receipt says what the providers take');
@@ -4502,7 +4506,7 @@ await step('xbring', async () => {
   await bridgeTo(r.page, 'tb');
   await until(r.page, () => !!document.querySelector('#hx-routes [data-hxr="all"]'), null, 240000)
     .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | q: ${await text(r.page, '#hx-q')} | go: ${await text(r.page, '#hx-go')} | routes: ${(await text(r.page, '#hx-routes')).replace(/\s+/g, ' ').slice(0, 200)} | hash: ${await r.page.evaluate(() => location.hash)} | errors: ${r.errors.slice(0, 2).join(' | ')}`); });
-  await r.page.click('#hx-routes [data-hxr="all"]');
+  await rowClick(r.page, '#hx-routes [data-hxr="all"]');
   await until(r.page, () => /Bring 2 notes back/.test(document.querySelector('#hx-go')?.textContent || '') && /Bitcoin fee/.test(document.querySelector('#hx-receipt')?.textContent || ''), null, 240000)
     .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | go: ${await text(r.page, '#hx-go')} | q: ${await text(r.page, '#hx-q')} | rc: ${(await text(r.page, '#hx-receipt')).replace(/\s+/g, ' ')}`); });
   const rcCard = (await text(r.page, '#hx-receipt')).replace(/\s+/g, ' ');
@@ -8656,8 +8660,8 @@ const earnCard = async (p, from, route) => {
   await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
   await p.click('[data-hxm="earn"]');
   await p.selectOption('#hx-from', from);
-  await p.waitForSelector(`#hx-routes [data-hxr="${route}"]`, { timeout: 420000 });
-  await p.click(`#hx-routes [data-hxr="${route}"]`);
+  await p.waitForSelector(`#hx-routes [data-hxr="${route}"]`, { state: 'attached', timeout: 420000 });
+  await rowClick(p, `#hx-routes [data-hxr="${route}"]`);
 };
 await step('earnhere', async () => {
   const r = await openFarmKey('7a9b'.padEnd(64, '7'), { notes: [[FARM_CETH, 2000000n]], positions: [], swap: true }, { width: 1280, height: 1500 });
@@ -8848,7 +8852,7 @@ await step('earnrows', async () => {
   try {
     await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
     await p.click('[data-hxm="earn"]'); await p.fill('#hx-amt', '0.3');
-    await p.waitForSelector('[data-hxr="precision"]', { timeout: 600000 }); await p.click('[data-hxr="precision"]');
+    await p.waitForSelector('[data-hxr="precision"]', { state: 'attached', timeout: 600000 }); await rowClick(p, '[data-hxr="precision"]');
     await until(p, () => document.querySelector('#hx-go')?.textContent === 'Farm with ETH', null, 600000);
     await p.click('#hx-go');
     ok(await chainUntil(async () => (await stakedOf(acct)) > 0n, 600000), 'earnrows: 0.3 ETH staked in the public farm from the card');
@@ -8901,8 +8905,8 @@ await step('farmzapeth', async () => {
     await closeAll();
     await p.click('[data-hxm="earn"]');
     await p.fill('#hx-amt', '0.02');
-    await p.waitForSelector('#hx-routes [data-hxr="0"]', { timeout: 240000 });
-    await p.click('#hx-routes [data-hxr="0"]');
+    await p.waitForSelector('#hx-routes [data-hxr="0"]', { state: 'attached', timeout: 240000 });
+    await rowClick(p, '#hx-routes [data-hxr="0"]');
     await until(p, () => document.querySelector('#hx-go')?.textContent === 'Zap into the farm', null, 240000);
     ok(!/2 steps/.test(await text(p, '#hx-routes [data-hxr="0"]')) && /one transaction/.test(await text(p, '#hx-receipt')) && /Earn points too: make ETH private first/.test(await text(p, '#hx-alt')), `farmzapeth: the Earn tab offers the zap for ETH not yet private, and making it private first as the other way (${(await text(p, '#hx-routes [data-hxr="0"]')).replace(/\s+/g, ' ')})`);
     await p.click('#hx-alt button');
@@ -9040,8 +9044,8 @@ await step('fastzap', async () => {
     await readyOne();
     // (1) the card's Earn tab: the size proved shows as ready, and one press sends it from the card
     await p.click('[data-hxm="earn"]');
-    await p.waitForSelector('#hx-routes [data-hxr="0"]', { timeout: 240000 });
-    await p.click('#hx-routes [data-hxr="0"]');
+    await p.waitForSelector('#hx-routes [data-hxr="0"]', { state: 'attached', timeout: 240000 });
+    await rowClick(p, '#hx-routes [data-hxr="0"]');
     await until(p, () => !!document.querySelector('#hx-sub [data-hxq="0.01"].rd'), null, 240000).catch(() => {});
     ok(!!(await p.$('#hx-sub [data-hxq="0.01"].rd')) && (await p.$$('#hx-sub [data-hxq]')).length === 3,
       `fastzap: the Earn tab offers 0.01, 0.1 and 1 ETH, the one whose share is proved marked ready, with any the kept stock has made by now (${(await p.$$eval('#hx-sub [data-hxq]', (bs) => bs.map((b) => b.dataset.hxq + (b.classList.contains('rd') ? '*' : '')))).join(' ')})`);
@@ -9824,7 +9828,7 @@ await step('hxpanel', async () => {
     await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
     await tabClick(p, mode);
     if (amt != null) await p.fill('#hx-amt', amt);
-    if (route) { await p.waitForSelector(`[data-hxr="${route}"]`, { timeout: 600000 }); await p.click(`[data-hxr="${route}"]`); }
+    if (route) { await p.waitForSelector(`[data-hxr="${route}"]`, { state: 'attached', timeout: 600000 }); await rowClick(p, `[data-hxr="${route}"]`); }
     // The private balance is read on a cold fork first. A wait that runs out says what the panel showed.
     await until(p, (l) => document.querySelector('#hx-go')?.textContent === l, label, 900000).catch(async (e) => {
       console.log('     panel:', JSON.stringify(await p.evaluate(() => ['#hx-go', '#hx-out', '#hx-routes', '#hx-q', '#wallet-dot'].map((s) => `${s}=${(document.querySelector(s)?.textContent || '').replace(/\s+/g, ' ').slice(0, 160)}`))));
@@ -9838,7 +9842,7 @@ await step('hxpanel', async () => {
     await press('earn', '0.05', 'precision', 'Farm with ETH');
     ok(await chainUntil(async () => (await stakedOf(acctP)) > st0, 300000), `hxpanel: Earn deposits ETH into the public farm from the card (${await text(p, '#hx-zs')})`);
     await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
-    await p.click('[data-hxm="earn"]'); await p.fill('#hx-amt', '0.01'); await p.waitForSelector('[data-hxr="0"]', { timeout: 600000 }); await p.click('[data-hxr="0"]');
+    await p.click('[data-hxm="earn"]'); await p.fill('#hx-amt', '0.01'); await p.waitForSelector('[data-hxr="0"]', { state: 'attached', timeout: 600000 }); await rowClick(p, '[data-hxr="0"]');
     await until(p, () => document.querySelector('#hx-go')?.textContent === 'Farm with tETH' && /Adds/.test(document.querySelector('#hx-receipt')?.textContent || ''), null, 900000);
     ok(/Adds\s*0\.0\d+ tETH \+ [\d.,]+ TAC/.test(await text(p, '#hx-receipt')) && !(await p.$('#sheet-farm[open]')), 'hxpanel: a private farm, with tETH held, is quoted in the card (half swapped inside the pool) and its button joins from there');
     // More than the tETH held: the zap, which opens the farm on ETH with the amount; or, by its link, the ETH made private first, and the
@@ -9964,7 +9968,7 @@ await step('hxdry', async () => {
     await until(p, () => /between reward periods/.test(document.querySelector('#hx-routes')?.textContent || ''), null, 240000);
     const rows = await p.$$eval('#hx-routes [data-hxr]', (b) => b.map((x) => `${x.dataset.hxr}:${x.textContent.replace(/\s+/g, ' ')}`));
     ok(rows.length > 1 && /^precision:.*\d%/.test(rows[0]) && rows.slice(1).every((x) => /between reward periods/.test(x) && /—/.test(x)), `hxdry: the private farms say they are between reward periods and quote no APR (${rows.join(' | ').slice(0, 200)})`);
-    await p.click('#hx-routes [data-hxr]:not([data-hxr="precision"])');
+    await rowClick(p, '#hx-routes [data-hxr]:not([data-hxr="precision"])');
     await until(p, () => /Between reward periods: nothing streams/.test(document.querySelector('#hx-q')?.textContent || ''), null, 120000);
     ok(/^0\b|—/.test(await text(p, '#hx-out')) || (await text(p, '#hx-out')) === '0', `hxdry: and earn no TAC a day (${await text(p, '#hx-out')})`);
     if (r.errors.length) { fails++; console.log('FAIL hxdry page errors: ' + r.errors.slice(0, 3).join(' | ')); }
@@ -12064,7 +12068,7 @@ await step('zapfirst', async () => {
     await p.waitForSelector('#hx-amt', { timeout: 120000 });
     await until(p, () => document.querySelector('#hx-amt')?.value === '0.01' && document.querySelector('[data-hxm="earn"]')?.getAttribute('aria-selected') === 'true', null, 120000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | amt ${await p.inputValue('#hx-amt').catch(() => '?')} | go ${await text(p, '#hx-go').catch(() => '?')}`); });
-    await p.waitForSelector('#hx-routes [data-hxr]', { timeout: 300000 }).catch(() => {});
+    await p.waitForSelector('#hx-routes [data-hxr]', { state: 'attached', timeout: 300000 }).catch(() => {});
     await until(p, () => /Zap into the farm/.test(document.querySelector('#hx-go')?.textContent || ''), null, 60000).catch(() => {});
     ok(!(await p.$('#wallet-dot.on')) && /Zap into the farm/.test(await text(p, '#hx-go')), `zapfirst: the link opens the Earn card with 0.01 ETH in it and nothing signed in (${(await text(p, '#hx-go')).trim()}; link ${spec}; card ${(await text(p, '#hx')).replace(/\s+/g, ' ').slice(0, 300)}; routes ${(await p.$$eval('#hx-routes [data-hxr]', (bs) => bs.map((b) => `${b.dataset.hxr}${b.getAttribute('aria-checked') === 'true' ? '*' : ''}`))).join(' ')})`);
     const s0 = submits.length, w0 = walletTxs.length;
@@ -12089,8 +12093,8 @@ await step('copylink', async () => {
   try {
     await p.evaluate(() => { window.__copied = []; Object.defineProperty(navigator, 'clipboard', { value: { writeText: async (t) => { window.__copied.push(t); } }, configurable: true }); document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
     await p.click('[data-hxm="earn"]');
-    await p.waitForSelector('#hx-routes [data-hxr="0"]', { timeout: 300000 });
-    await p.click('#hx-routes [data-hxr="0"]');
+    await p.waitForSelector('#hx-routes [data-hxr="0"]', { state: 'attached', timeout: 300000 });
+    await rowClick(p, '#hx-routes [data-hxr="0"]');
     ok(await p.$eval('#hx-copy', (b) => b.hidden), 'copylink: with no amount the Earn card offers no link');
     await p.fill('#hx-amt', '0.01');
     await until(p, () => !document.querySelector('#hx-copy')?.hidden, null, 60000).catch(() => {});
@@ -12126,8 +12130,8 @@ await step('zapway', async () => {
     proveStub = false; poolDone = false;
     await p.evaluate(() => { window.__zapWay = null; document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
     await p.click('[data-hxm="earn"]');
-    await p.waitForSelector('#hx-routes [data-hxr="0"]', { timeout: 300000 });
-    await p.click('#hx-routes [data-hxr="0"]');
+    await p.waitForSelector('#hx-routes [data-hxr="0"]', { state: 'attached', timeout: 300000 });
+    await rowClick(p, '#hx-routes [data-hxr="0"]');
     await p.fill('#hx-amt', '0.01');
     await until(p, () => /Zap into the farm/.test(document.querySelector('#hx-go')?.textContent || '') && !document.querySelector('#hx-go').disabled, null, 240000);
     const b0 = BigInt(await rpc('eth_blockNumber', []));
@@ -12163,8 +12167,8 @@ await step('lponly', async () => {
     await p.evaluate(() => { window.__copied = []; Object.defineProperty(navigator, 'clipboard', { value: { writeText: async (t) => { window.__copied.push(t); } }, configurable: true }); document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
     await until(p, ([k, lp, sz]) => JSON.parse(localStorage.getItem('tacit-wrap-vouchers-v1:' + k) || '[]').some((v) => v.ticker === lp && v.size === sz && v.status === 'ready'), [pub, LP, SZ], 600000).catch(() => {});
     await p.click('[data-hxm="earn"]');
-    await p.waitForSelector('#hx-routes [data-hxr="0"]', { timeout: 300000 });
-    await p.click('#hx-routes [data-hxr="0"]');
+    await p.waitForSelector('#hx-routes [data-hxr="0"]', { state: 'attached', timeout: 300000 });
+    await rowClick(p, '#hx-routes [data-hxr="0"]');
     await p.fill('#hx-amt', '0.01');
     await p.click('[data-hxlp="1"]');
     await until(p, () => /Add as private LP/.test(document.querySelector('#hx-go')?.textContent || '') && /Fee APR/.test(document.querySelector('#hx-routes')?.textContent || '') && /6\.2%/.test(document.querySelector('#hx-routes')?.textContent || ''), null, 240000).catch(() => {});
@@ -12204,8 +12208,8 @@ await step('zapcredit', async () => {
     await until(p, () => !!document.querySelector('#wallet-dot.on'));
     await p.evaluate(() => { window.__zapWay = null; document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
     await p.click('[data-hxm="earn"]');
-    await p.waitForSelector('#hx-routes [data-hxr="0"]', { timeout: 300000 });
-    await p.click('#hx-routes [data-hxr="0"]');
+    await p.waitForSelector('#hx-routes [data-hxr="0"]', { state: 'attached', timeout: 300000 });
+    await rowClick(p, '#hx-routes [data-hxr="0"]');
     await p.fill('#hx-amt', '0.01');
     await until(p, () => /Zap into the farm/.test(document.querySelector('#hx-go')?.textContent || '') && !document.querySelector('#hx-go').disabled, null, 240000);
     const b0 = BigInt(await rpc('eth_blockNumber', [])), s0 = submits.length;
@@ -12237,8 +12241,8 @@ await step('zapresume', async () => {
     await until(p, () => !!document.querySelector('#wallet-dot.on'));
     await p.evaluate(() => { window.__zapWay = null; document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
     await p.click('[data-hxm="earn"]');
-    await p.waitForSelector('#hx-routes [data-hxr="0"]', { timeout: 300000 });
-    await p.click('#hx-routes [data-hxr="0"]');
+    await p.waitForSelector('#hx-routes [data-hxr="0"]', { state: 'attached', timeout: 300000 });
+    await rowClick(p, '#hx-routes [data-hxr="0"]');
     await p.fill('#hx-amt', '0.01');
     await until(p, () => /Zap into the farm/.test(document.querySelector('#hx-go')?.textContent || '') && !document.querySelector('#hx-go').disabled, null, 240000);
     const b0 = BigInt(await rpc('eth_blockNumber', []));

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-ao/v8N2lL3R438QhRpdXyE9S1MOg8bmkDTQ+mJWQ8wo=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-iSLgn6RdGKcSzRJWrXfxbDIYY/LDmjMNsoBguRy+OR4=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -674,6 +674,10 @@ a.di { color: inherit; text-decoration: none; }
 @media (hover: hover) { .hx-mode button:hover { color: var(--ink); } }
 .hx-sr { display: flex; margin: 0 0 12px; } .hx-sr button { flex: 1; }
 .hx-more { display: flex; margin: 0 0 12px; } .hx-more button { flex: 1; }
+/* what is under way, over the tabs: one quiet line that opens Activity */
+.hx-live { display: flex; align-items: center; gap: 8px; width: calc(100% - 24px); margin: 10px 12px 0; padding: 8px 12px; font: 12px var(--mono); color: var(--ink); text-align: left; background: var(--field); border: 1px solid var(--hair); border-radius: 12px; cursor: pointer; }
+.hx-live .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .hx-live .s { color: var(--mute); white-space: nowrap; } .hx-live .go { color: var(--mute); }
+.hx-live .dot { width: 7px; height: 7px; flex: none; }
 .hx-where { display: flex; margin: 0 0 12px; } .hx-where button { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px; } .hx-where .tk { width: 14px; height: 14px; }
 /* under Shield's button: the steps of a first press, then, once it is done, where the private coin goes next */
 .hx-path { display: flex; justify-content: center; gap: 6px 18px; flex-wrap: wrap; margin: 10px 0 0; padding: 0; list-style: none; counter-reset: s; font: 12px var(--mono); color: var(--mute); }
@@ -3533,8 +3537,22 @@ function renderAct() {
     ACT.items = ACT.items.filter((x) => kept.has(x.in || x.id)); actSave(); paintAct();
   };
 }
+// What is under way (from Activity, so it is still there after a reload): one line at the top of the tile, the newest first, that opens Activity
+function hxLivePaint(items) {
+  const hx = $('#hx');
+  if (!hx) return;
+  let el = hx.querySelector(':scope > .hx-live');
+  const on = items.filter((x) => !actDone(x));
+  if (!on.length) { el?.remove(); return; }
+  if (!el) { el = Object.assign(document.createElement('button'), { type: 'button', className: 'hx-live' }); el.onclick = () => openAct(); hx.prepend(el); }
+  const it = on[0], more = on.length - 1, eta = boardEta();
+  const v = html`<span class="dot live" aria-hidden="true"></span><span class="t">${it.label || 'In progress'}${more ? ` and ${more} more` : ''}</span><span class="s">${eta ? `settling, ${etaText(eta)}` : 'settling'}</span><span class="go" aria-hidden="true">→</span>`;
+  if (el.__h !== v.s) { el.__h = v.s; mount(el, v); }
+  el.setAttribute('aria-label', `${it.label || 'In progress'}${more ? ` and ${more} more` : ''}: in progress. Open Activity`);
+}
 function paintAct() {
   const top = listed(), live = top.filter((x) => !actDone(x)).length, b = $('#act'), n = $('#act-n');
+  try { hxLivePaint(top); } catch { }
   b.hidden = !top.length;
   b.classList.toggle('busy', live > 0);
   n.hidden = !live; n.textContent = live ? String(live) : '';
@@ -14145,8 +14163,22 @@ const hxWrapReady = (units) => !!(units && S.key && VOUCH.mod?.pick(S.key.pubHex
 const proofRow = (ready, making = false) => (ready ? ['Proof', 'made already: no wait', 'ok']
   : ownNow(['wrap']) ? ['Proof', devOn() ? 'on this computer, a few minutes' : 'with your own credit, about a minute']
   : ['Proof', making ? 'being made now, about 30 s' : 'by Tacit’s prover, about 30 s']);
+// The community prover pool's recent pace (its board, read at most once a minute): the median wait for a prover and the median proof, and a
+// block to settle it. Unknown until the board has a few recent proofs.
+const BOARD = { s: null, at: 0 };
+function boardEta() {
+  if (Date.now() - BOARD.at > 60e3) {
+    BOARD.at = Date.now();
+    fetch(`${API}/prover/board`, { cache: 'no-store', signal: within(8e3) }).then((r) => (r.ok ? r.json() : null)).then((b) => {
+      const r = b?.recent;
+      if (r?.n >= 3 && Number.isFinite(r.proveP50)) { const was = BOARD.s; BOARD.s = Math.round((Number(r.waitP50) || 0) + r.proveP50 + 12); if (was !== BOARD.s) { try { hxLivePaint(listed()); } catch { } if (HX.tab === 'swap') { HX.q = null; try { hxQuote(); } catch { } } } }
+    }).catch(() => {});
+  }
+  return BOARD.s;
+}
+const etaText = (s) => (s < 90 ? `about ${Math.max(10, Math.round(s / 5) * 5)} s` : `about ${Math.round(s / 60)} min`);
 // Shield's receipt says when the ETH is private, from the proof's row: at once when it is made already, else how long it takes
-const hxPrivIn = (r) => ['Private in', r[1].replace(/^made already: no wait$/, 'at once: its proof is made').replace(/^(by Tacit’s prover|being made now), /, ''), r[2], 'The deposit is proved, then settled: its proof is made ahead for the sizes kept ready'];
+const hxPrivIn = (r) => { const eta = boardEta(), v = r[1].replace(/^made already: no wait$/, 'at once: its proof is made').replace(/^(by Tacit’s prover|being made now), about 30 s$/, eta ? etaText(eta) : 'about 30 s'); return ['Private in', v, r[2], 'Proved by the community prover pool, then settled on Ethereum: its proof is made ahead for the sizes kept ready']; };
 // The tile's wrap, its amount standing a moment with a key open and no wrap kept ready that fits: asked of the relay ahead, as the wrap form
 // asks it, so the press finds the proof made (or nearly) and sends one transaction.
 let hxWaT = 0;
@@ -15753,7 +15785,21 @@ function paintHxQ() {
       if (HX.mode === 'btc' && HX.dir === 'in') { BR.pick = b.dataset.hxr; BR.act = null; }
       if (b.hasAttribute('data-wait')) { HX.q = { ...HX.q, busy: true }; paintHxQ(); } else hxQuote();
     };
-    for (const b of live) b.onclick = () => choose(b);
+    for (const b of live) b.onclick = () => { HX.earnOpen = false; choose(b); };
+    // Earn shows the farm it picked (the best one, or the one chosen) alone, with a way to see the others
+    if (HX.mode === 'earn' && live.length > 1 && live.some((b) => b.getAttribute('aria-checked') === 'true')) {
+      const open = !!HX.earnOpen, hd = $('.rows-h', rows);
+      rows.classList.toggle('folded', !open);
+      for (const b of live) b.hidden = !open && b.getAttribute('aria-checked') !== 'true';
+      if (!open && hd?.lastElementChild) {
+        // (a span, as the Swap card's own Change: the rows' button rules are for the rows)
+        const c = Object.assign(document.createElement('span'), { className: 'chg', textContent: `Change (${live.length - 1} more)`, tabIndex: 0 });
+        c.setAttribute('role', 'button');
+        hd.lastElementChild.replaceWith(c);
+        const unfold = () => { HX.earnOpen = true; for (const b of live) b.hidden = false; rows.classList.remove('folded'); c.remove(); (live.find((b) => b.getAttribute('aria-checked') === 'true') || live[0])?.focus(); };
+        c.onclick = unfold; c.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); unfold(); } };
+      }
+    }
     rows.onkeydown = (e) => { const i = live.indexOf(document.activeElement), d = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[e.key]; if (d && i >= 0 && live.length > 1) { e.preventDefault(); choose(live[(i + d + live.length) % live.length]); } };
     if (had) (live.find((b) => b.dataset.hxr === q.pick) || live[0])?.focus();
   }
