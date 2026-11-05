@@ -153,7 +153,8 @@ const programEnded = () => {
 const isOpen = (job) => !!(S.api?.enabled && job.opensAt && Date.now() / 1000 >= job.opensAt && !programEnded());
 const onChain = (job, s) => S.done[job.id]?.[s.id];
 const doneCount = (job) => job.steps.filter((s) => onChain(job, s)).length;
-const isDone = (job) => doneCount(job) === job.steps.length;
+// a job the owner has finished (`done: true`) reads as done even while a reviewed claim is still to be sent
+const isDone = (job) => job.done === true || doneCount(job) === job.steps.length;
 const stateOf = (job) => (isDone(job) ? 'done' : !S.api ? 'offline' : programEnded() ? 'closed' : !isOpen(job) ? 'soon' : 'open');
 const PILL = { done: ['Done', 'ok'], open: ['Open', 'ok'], soon: ['Opens soon', 'mute'], closed: ['Closed', 'mute'], offline: ['Rewards offline', 'mute'] };
 const firstOpen = () => S.jobs.find((j) => stateOf(j) !== 'done');

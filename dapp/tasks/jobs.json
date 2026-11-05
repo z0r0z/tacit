@@ -758,6 +758,7 @@
       "tagline": "Moving 10 TAC from Bitcoin to Ethereum in minutes: proved on mainnet on 4 and 5 November.",
       "verified": false,
       "created": [],
+      "done": true,
       "steps": [
         {
           "id": "02-bridger",
@@ -803,7 +804,7 @@
         },
         {
           "h": "Paid",
-          "p": "The first two bridges proved the fast bridge on mainnet, and their bridgers are paid for it: 2,000 TAC to the first and 700 TAC to the second. That covers their Bitcoin fees and gas and pays for their time, with a bonus for proving it out, and for the first a lock that stalled while the bugs it found were fixed."
+          "p": "The first two bridges proved the fast bridge on mainnet, and their bridgers are rewarded for it: 2,000 TAC to the first and 700 TAC to the second. That covers their Bitcoin fees and gas and pays for their time, with a bonus for proving it out, and for the first a lock that stalled while the bugs it found were fixed. The second is credited; the first is credited when its bridger claims it here."
         }
       ],
       "links": [

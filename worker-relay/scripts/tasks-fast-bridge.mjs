@@ -31,14 +31,14 @@ const steps = [step('02-bridger', 'bridger', 2000), step('03-bridger-second', 'b
 
 writeJobs(SERVICE_OUT, { id: JOB, chainId: 1, opensAt, steps });
 writeJobs(PAGE_OUT, {
-  id: JOB, chainId: 1, opensAt, title: 'Test the fast bridge', tagline: 'Moving 10 TAC from Bitcoin to Ethereum in minutes: proved on mainnet on 4 and 5 November.', verified: false, created: [],
+  id: JOB, chainId: 1, opensAt, title: 'Test the fast bridge', tagline: 'Moving 10 TAC from Bitcoin to Ethereum in minutes: proved on mainnet on 4 and 5 November.', verified: false, created: [], done: true,
   steps: [
     { ...steps[0], label: 'Bridger, first', detail: 'The first bridge, checked on 4 November.', reserved: true, action: { label: 'Bridge 10 TAC', href: '/fast/' }, ask: 'Bridger: the Bitcoin lock link on your bridge' },
     { ...steps[1], label: 'Bridger, second', detail: 'The second bridge, checked on 5 November.', reserved: true, action: { label: 'Bridge 10 TAC', href: '/fast/' }, ask: 'Bridger: the Bitcoin lock link on your bridge' },
   ],
   about: [
     { h: 'What it was', p: 'Bridging 10 TAC from Bitcoin to a private balance on Ethereum, with a provider who pays it out of the pool. The bridger\'s Bitcoin is locked until the provider has paid, and comes back after about a day if it never does.' },
-    { h: 'Paid', p: 'The first two bridges proved the fast bridge on mainnet, and their bridgers are paid for it: 2,000 TAC to the first and 700 TAC to the second. That covers their Bitcoin fees and gas and pays for their time, with a bonus for proving it out, and for the first a lock that stalled while the bugs it found were fixed.' },
+    { h: 'Paid', p: 'The first two bridges proved the fast bridge on mainnet, and their bridgers are rewarded for it: 2,000 TAC to the first and 700 TAC to the second. That covers their Bitcoin fees and gas and pays for their time, with a bonus for proving it out, and for the first a lock that stalled while the bugs it found were fixed. The second is credited; the first is credited when its bridger claims it here.' },
   ],
   links: [{ label: 'Discord', href: 'https://discord.gg/VxYx9XSBrM' }],
 });
