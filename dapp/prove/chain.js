@@ -50,3 +50,13 @@ export const took = (secs) => (secs < 90 ? `${secs} s` : `${Math.round(secs / 60
 export function fresh(blocks, shownTop) {
   return shownTop == null ? blocks : blocks.filter((b) => b.height > shownTop);
 }
+
+// How long ago an Ethereum block was, from the newest one: twelve seconds a block.
+export function blockAgo(ethBlock, ethHead) {
+  if (ethHead == null || ethBlock == null) return null;
+  const s = Math.max(0, (ethHead - ethBlock) * 12);
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+  return `${Math.floor(s / 86400)} d ago`;
+}

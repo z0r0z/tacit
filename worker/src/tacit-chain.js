@@ -68,6 +68,7 @@ export function makeChain({ kv, index, minedBy = async () => ({}), cfg = CHAIN, 
     let recent = await read('ch:recent', []);
     for (let p = 0; p < cfg.maxPagesPerSync; p++) {
       const r = await index.read({ from: head.seq, limit: cfg.page });
+      if (r.headBlock != null) head = { ...head, ethHead: r.headBlock };
       const groups = txGroups(r.entries || [], r.indexedToBlock, (r.entries || []).length >= cfg.page);
       if (!groups.length) break;
       const made = [];
@@ -97,7 +98,7 @@ export function makeChain({ kv, index, minedBy = async () => ({}), cfg = CHAIN, 
   }
   const sync = () => running || (running = syncOnce().finally(() => { running = null; }));
 
-  // The tip and the newest `limit` blocks, newest first, each without its leaf and nullifier lists (counts only); `before` pages back.
+  // The tip (with Ethereum's newest block, so a reader can say how long ago each block was) and the newest `limit` blocks, newest first, each without its leaf and nullifier lists (counts only); `before` pages back.
   async function blocks({ limit = 30, before = null } = {}) {
     let head = await read('ch:head', null), recent;
     if (!head || now() - head.at > cfg.staleMs) ({ head, recent } = await sync()); else recent = await read('ch:recent', []);
@@ -105,7 +106,7 @@ export function makeChain({ kv, index, minedBy = async () => ({}), cfg = CHAIN, 
     const top = before == null ? Infinity : Number(before);
     const list = recent.filter((b) => b.height < top).slice(-n).reverse()
       .map(({ leaves, nullifiers, ...b }) => b);
-    return { head: { height: head.height, hash: head.hash }, blocks: list };
+    return { head: { height: head.height, hash: head.hash, ethHead: head.ethHead ?? null }, blocks: list };
   }
 
   return { sync, blocks };

@@ -20,7 +20,7 @@ function store() {
 }
 function index(entries, indexedToBlock) {
   const ix = { reads: 0, entries, indexedToBlock, fresh: async () => {} };
-  ix.read = async ({ from, limit }) => { ix.reads++; const e = ix.entries.filter((x) => x.seq >= from).slice(0, limit); return { entries: e, indexedToBlock: ix.indexedToBlock, total: ix.entries.length }; };
+  ix.read = async ({ from, limit }) => { ix.reads++; const e = ix.entries.filter((x) => x.seq >= from).slice(0, limit); return { entries: e, indexedToBlock: ix.indexedToBlock, headBlock: ix.indexedToBlock + 2, total: ix.entries.length }; };
   return ix;
 }
 
@@ -63,6 +63,7 @@ test('blocks chain from height 0, name a community prover, page back, and are re
   assert.equal(r.blocks[1].prev, r.blocks[2].hash);
   assert.equal(r.blocks[0].prev, r.blocks[1].hash);
   assert.equal(r.head.hash, r.blocks[0].hash);
+  assert.equal(r.head.ethHead, 15, 'the tip carries Ethereum\'s newest block');
   assert.equal(r.blocks[2].hash, blockHash({ prev: ZERO, height: 0, ethBlock: 11, tx: h32(2), leaves: [h32(21)], nullifiers: [h32(20)] }));
   assert.equal(r.blocks[1].prover, '0x' + '11'.repeat(20));
   assert.equal(r.blocks[1].points, 20);

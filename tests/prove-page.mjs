@@ -59,7 +59,7 @@ async function open(browser, local, { phone = false } = {}) {
   await page.route('https://api.tacit.finance/**', (route) => {
     const u = new URL(route.request().url());
     if (u.pathname === '/prover/pool') return json(route, { queued: 3, leased: 2, doneToday: 41, minersToday: 2, top: [{ miner: ADDR, proofs: 4 }, { miner: OTHER, proofs: 1 }], terms: { pointsPerProof: 20, proofsPerMinerDay: 30 } });
-    if (u.pathname === '/prover/blocks') return json(route, { head: { height: chain.blocks[0].height, hash: chain.blocks[0].hash }, blocks: chain.blocks });
+    if (u.pathname === '/prover/blocks') return json(route, { head: { height: chain.blocks[0].height, hash: chain.blocks[0].hash, ethHead: chain.blocks[0].ethBlock + 25 }, blocks: chain.blocks });
     if (u.pathname === '/prover/pool/recent') return json(route, { proofs: [{ at: Date.now() - 60_000, house: true, points: 0, secs: 31 }, { at: Date.now() - 120_000, miner: ADDR, points: 20, secs: 552 }] });
     if (u.pathname === '/prover/pool/credits') return json(route, { day, over: false, miners: [{ miner: ADDR, proofs: 4, points: 80 }] });
     return json(route, {}, 404);
@@ -77,7 +77,7 @@ try {
   {
     const local = { v: null };
     const { page, ctx, errors } = await open(browser, local);
-    await page.waitForFunction(() => document.querySelector('#title').textContent === 'Not set up on this computer');
+    await page.waitForFunction(() => document.querySelector('#title').textContent === 'Set up this computer');
     check(await page.locator('#setup').isVisible(), 'not set up: the setup line is shown');
     check(!(await page.locator('#go').isVisible()), 'not set up: no start button');
     await page.fill('#addr', ADDR);
@@ -87,10 +87,12 @@ try {
     check((await text(page, '#paid')) === '6 TAC credited', 'what was paid', await text(page, '#paid'));
     await page.waitForFunction(() => document.querySelectorAll('#chain .blk').length === 4);
     check((await text(page, '#height')) === '#9,389', 'the tip is the newest block', await text(page, '#height'));
+    check((await text(page, '#last')) === '5 min ago', 'the newest block\'s age is read from Ethereum\'s head', await text(page, '#last'));
+    check((await page.locator('#chain .blk .t').first().innerText()) === '5 min ago', 'each block says how long ago it was');
     check((await page.locator('#chain .blk.won').count()) === 2, 'blocks a community prover proved are marked');
     check((await page.locator('#chain .blk.mine').count()) === 1, 'the address\'s own block is picked out');
     check((await page.locator('#pool i').count()) === 5 && (await page.locator('#pool i.on').count()) === 2, 'the waiting proofs are drawn, the leased ones lit');
-    check((await text(page, '#feed')).includes('+0.2 TAC') && (await text(page, '#feed')).includes('9 min'), 'the feed says who proved, how fast and what it won', await text(page, '#feed'));
+    check((await text(page, '#feed')).includes('+0.2 TAC') && (await text(page, '#feed')).includes('proved in 9 min'), 'the feed says who proved, how fast and what it won', await text(page, '#feed'));
     check((await text(page, '#board')).includes('4 proofs'), 'today\'s provers', await text(page, '#board'));
     check((await page.locator('#chain .blk.gpu').count()) === 1 && (await page.locator('#chain .blk.gpu').innerText()).includes('Tacit GPU'), 'a block Tacit\'s GPU proved says so');
     const gpuRow = await page.locator('#feed li').first().innerText();

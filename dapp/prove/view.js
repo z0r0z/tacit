@@ -30,7 +30,7 @@ export function jobView(job) {
 // The headline and the button for a state; `paused` with a job still running finishes that one proof first.
 export function headline(state, mine) {
   switch (state) {
-    case 'none': return { title: 'Not set up on this computer', button: null };
+    case 'none': return { title: 'Set up this computer', button: null };
     case 'old': return { title: 'Update tacit-prover to start from here', button: null };
     case 'paused': return { title: 'Paused', button: 'Start proving' };
     case 'waiting': return { title: 'Waiting for the next proof', button: 'Pause' };

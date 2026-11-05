@@ -2,9 +2,9 @@
 // and paused from here. The computer's tacit-prover (installed once with the line the page shows) answers on 127.0.0.1; the API's chain
 // (GET /prover/blocks) and proof pool, and the points service, say what the network did and what an address has made and been paid.
 import { cleanAddress, proveCommand, utcDay, mineLines } from '/community-prove.js?cb=9c90fa04';
-import { localState, jobView, headline, isPhone } from '/prove/view.js?cb=f6efbcdd';
+import { localState, jobView, headline, isPhone } from '/prove/view.js?cb=396aa5e6';
 import { invaderSvg, gpuSvg, idOf } from '/prove/invader.js?cb=8b68bcd8';
-import { short, cells, opsText, tac, rewardWei, ago, took, fresh } from '/prove/chain.js?cb=045857de';
+import { short, cells, opsText, tac, rewardWei, ago, took, fresh, blockAgo } from '/prove/chain.js?cb=4878054d';
 
 const API = 'https://api.tacit.finance', POINTS = 'https://tacit-points.onrender.com', LOCAL = 'http://127.0.0.1:47815';
 const SAVED_ADDR = 'tacit-prove-address';                          // shared with the keeper page's card
@@ -14,7 +14,7 @@ const get = (url, ms = 6000) => fetch(url, { cache: 'no-store', signal: AbortSig
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
 let health = null, mine = null, pool = null, points = null, tally = null, busy = false;
-let blocks = [], shownTop = null, picked = null, feed = [], feedTop = 0, lastProved = null;
+let blocks = [], ethHead = null, headReadAt = 0, shownTop = null, picked = null, feed = [], feedTop = 0, lastProved = null;
 
 const addr = () => cleanAddress($('#addr').value);
 const me = () => addr()?.toLowerCase() || null;
@@ -49,6 +49,10 @@ async function readRemote() {
 async function readChain() {
   const c = await get(`${API}/prover/blocks?limit=${SHOW}`);
   if (!c?.blocks) { $('#chain').hidden = !blocks.length; return; }
+  if (c.head?.ethHead != null) ethHead = c.head.ethHead;
+  // An API from before the tip carried Ethereum's head: the settle index says it, read at most once a minute.
+  else if (Date.now() - headReadAt > 60000) { headReadAt = Date.now(); ethHead = (await get(`${API}/confidential/index?limit=1`))?.headBlock ?? ethHead; }
+  $('#last').textContent = c.blocks[0] ? (blockAgo(c.blocks[0].ethBlock, ethHead) || '—') : '—';
   const add = fresh(c.blocks, shownTop);
   if (!add.length && shownTop != null) return;
   const first = shownTop == null;
@@ -67,7 +71,7 @@ function paintChain(landing) {
     const c = cells(b), mineB = b.prover && b.prover === me();
     return `<li class="blk${b.prover ? ' won' : ''}${b.house ? ' gpu' : ''}${mineB ? ' mine' : ''}${landing.has(b.height) ? ' new' : ''}" data-h="${b.height}" aria-current="${picked === b.height}">
       <button type="button" aria-label="Block ${b.height}, ${esc(opsText(b))}"><span class="cube">${c.cells.map((k) => `<i class="${k}"></i>`).join('')}${b.house || b.prover ? `<span class="badge">${face(b.house ? null : b.prover, 26)}</span>` : ''}</span>
-      <span class="h num">#${b.height.toLocaleString('en-US')}</span><span class="o">${byOf(b) || esc(opsText(b))}</span></button></li>`;
+      <span class="h num">#${b.height.toLocaleString('en-US')}</span><span class="o">${byOf(b) || esc(opsText(b))}</span><span class="t">${esc(blockAgo(b.ethBlock, ethHead) || '')}</span></button></li>`;
   }).join('');
   paintDetail();
 }
@@ -83,7 +87,7 @@ function paintDetail() {
     <div class="kv"><span>Proved by</span><b>${byOf(b) || '—'}${b.prover ? `<small>zorgz #${idOf(b.prover)}</small>` : ''}</b></div>
     ${b.prover ? `<div class="kv"><span>Won</span><b>${r ? `${tac(r)} TAC` : `${b.points} points`}</b></div>` : ''}
     <div class="kv"><span>Hash</span><b>${esc(short(b.hash))}</b></div>
-    <div class="kv"><span>Ethereum</span><b><a href="https://etherscan.io/tx/${esc(b.tx)}" target="_blank" rel="noopener noreferrer">block ${b.ethBlock.toLocaleString('en-US')}</a></b></div>
+    <div class="kv"><span>Ethereum</span><b><a href="https://etherscan.io/tx/${esc(b.tx)}" target="_blank" rel="noopener noreferrer">block ${b.ethBlock.toLocaleString('en-US')}</a>${blockAgo(b.ethBlock, ethHead) ? `<small>${esc(blockAgo(b.ethBlock, ethHead))}</small>` : ''}</b></div>
   </div>`;
 }
 
@@ -99,7 +103,7 @@ function paintFeed() {
   if (!feed.length) return;
   $('#feed').innerHTML = feed.slice(0, 8).map((p) => {
     const r = rewardWei(p.points, cap());
-    return `<li class="${p.at > feedTop && feedTop ? 'new' : ''}"><span>${byOf(p)} <small>${esc(took(p.secs))}</small></span>${r ? `<b>+${tac(r)} TAC</b>` : ''}<small>${esc(ago(p.at))}</small></li>`;
+    return `<li class="${p.at > feedTop && feedTop ? 'new' : ''}"><span class="by">${byOf(p)}<small>proved in ${esc(took(p.secs))}</small></span>${r ? `<b>+${tac(r)} TAC</b>` : ''}<small>${esc(ago(p.at))}</small></li>`;
   }).join('');
 }
 
