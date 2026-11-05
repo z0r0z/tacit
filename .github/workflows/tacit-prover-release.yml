@@ -17,7 +17,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - { os: macos-14, name: tacit-prover-macos-arm64 }
+          - { os: macos-15, name: tacit-prover-macos-arm64 }
           - { os: ubuntu-22.04, name: tacit-prover-linux-x86_64 }   # GLIBC 2.35, as the other prover builds
     runs-on: ${{ matrix.os }}
     steps:
@@ -30,9 +30,19 @@ jobs:
         with:
           go-version-file: contracts/sp1/confidential/device-prover/patches/sp1-recursion-gnark-ffi/go/go.mod
           cache: false
+      # macos-15 is the oldest Apple-silicon runner GitHub still offers (macos-14 was retired): the build is pinned to run on macOS 12 and up
+      # (Rust, the C and Go code it links), and refused if the binary asks for a newer macOS.
       - name: Build
         working-directory: contracts/sp1/confidential/device-prover
+        env: { MACOSX_DEPLOYMENT_TARGET: '12.0' }
         run: cargo build --release --locked
+      - name: Runs on macOS 12 and up
+        if: runner.os == 'macOS'
+        working-directory: contracts/sp1/confidential/device-prover
+        run: |
+          minos=$(otool -l target/release/tacit-prover | awk '/LC_BUILD_VERSION/{f=1} f && $1=="minos"{print $2; exit}')
+          echo "minos=$minos"
+          [ "$(printf '%s\n12.0\n' "$minos" | sort -V | tail -1)" = "12.0" ] || { echo "the binary needs macOS $minos, newer than 12.0"; exit 1; }
       - name: Package
         working-directory: contracts/sp1/confidential/device-prover
         run: |
