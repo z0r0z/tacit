@@ -26,9 +26,6 @@ export function tacText(wei, places = 2) {
   return frac ? `${q / scale}.${frac}` : String(q / scale);
 }
 
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-// A UTC day as "24 Nov", written without Intl so it reads the same everywhere.
-const dayText = (sec) => { const d = new Date(sec * 1000); return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`; };
 
 // What mining pays now, or null when it is not paying: `pool` is GET /prover/pool (terms.pointsPerProof, terms.proofsPerMinerDay) and
 // `mine` is GET /mine (enabled, endSec, terms.capWeiPerPoint for today, null or off when none). The service shares a day's amount between
@@ -46,7 +43,6 @@ export function mineTerms(pool, mine, nowSec = Date.now() / 1000) {
     proofsPerDay: perDay > 0 ? perDay : null,
     perProofWei,
     perDayWei: perDay > 0 ? perProofWei * BigInt(perDay) : null,
-    until: dayText(Number(mine.endSec)),
   };
 }
 
@@ -60,7 +56,7 @@ const count = (n, one) => `${n} ${n === 1 ? one : `${one}s`}`;
 export function mineLines(pool, mine, { tally = null, address = null, nowSec = Date.now() / 1000 } = {}) {
   const t = mineTerms(pool, mine, nowSec);
   const pays = !t ? null
-    : `Up to ${tacText(t.perProofWei)} TAC a proof${t.proofsPerDay ? `, ${t.proofsPerDay} proofs a day` : ''}, until ${t.until}`;
+    : `Up to ${tacText(t.perProofWei)} TAC a proof${t.proofsPerDay ? `, ${t.proofsPerDay} proofs a day` : ''}`;
   const me = cleanAddress(address)?.toLowerCase();
   const row = me && Array.isArray(tally?.miners) ? tally.miners.find((m) => String(m?.miner).toLowerCase() === me) : null;
   const today = !me || !Array.isArray(tally?.miners) ? null

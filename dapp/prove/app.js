@@ -1,7 +1,7 @@
 // /prove/: the network's blocks as they land, the proofs waiting and the provers making them, and this computer's own prover, started
 // and paused from here. The computer's tacit-prover (installed once with the line the page shows) answers on 127.0.0.1; the API's chain
 // (GET /prover/blocks) and proof pool, and the points service, say what the network did and what an address has made and been paid.
-import { cleanAddress, proveCommand, utcDay, mineLines } from '/community-prove.js?cb=4f1a30e7';
+import { cleanAddress, proveCommand, utcDay, mineLines } from '/community-prove.js?cb=55393eb1';
 import { localState, jobView, headline, isPhone } from '/prove/view.js?cb=0279ad9a';
 import { invaderSvg, gpuSvg } from '/prove/invader.js?cb=e8a5ec59';
 import { short, cells, opsText, tac, rewardWei, ago, took, fresh, blockAgo, kindOf, KINDS, kindText, median, untilDayEnds, cleanBlock, cleanProof, cleanMiner } from '/prove/chain.js?cb=8a988a34';
