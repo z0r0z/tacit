@@ -5,7 +5,10 @@
 //   · the public key: the key's compressed secp256k1 point, in full, and Copy puts it on the clipboard;
 //   · the Bitcoin address: the key's own bc1q…, the same one Receive shows;
 //   · Balances: the Bitcoin address's BTC (and what is arriving) is a row under Bitcoin, read when the sheet opens, matching the landing card;
-//   · Receive carries the public key and a folded Tacit address too.
+//   · Receive carries the public key and a folded Tacit address too;
+//   · the Bitcoin address has a QR code (the same drawing as the page's other codes), in the sheet and in Receive;
+//   · Refresh reads the Bitcoin address again; a row goes to its sheet and puts the Wallet sheet away; the old "connects when you lock BTC" row is gone;
+//   · the Balances box has an id of its own: the ETH form's balance (#w-bal) lands in that form, not in Balances.
 //
 //   PLAYWRIGHT=/Users/z/zFi/node_modules/playwright-core node tests/wallet-keys.mjs
 import { createRequire } from 'node:module';
@@ -14,6 +17,7 @@ import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { secp } from '../dapp/vendor/tacit-deps.min.js';
 import { unifiedAddress } from '../dapp/tacit-unified.js';
+import { qrSvg } from '../dapp/qr.js';
 
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT || '/Users/z/zFi/node_modules/playwright-core');
 const DAPP = process.env.DAPP || new URL('../dapp/', import.meta.url).pathname;
@@ -34,6 +38,7 @@ const KEY = '11'.repeat(31) + '22';
 const PUB = Buffer.from(secp.getPublicKey(Uint8Array.from(Buffer.from(KEY, 'hex')), true)).toString('hex');
 const TACIT = unifiedAddress(KEY).address;
 const CORS = { 'access-control-allow-origin': '*', 'content-type': 'application/json' };
+let utxoReads = 0;
 const UTXOS = [{ txid: 'aa'.repeat(32), vout: 0, value: 250000, status: { confirmed: true, block_height: 900000, block_time: 1700000000 } }, { txid: 'bb'.repeat(32), vout: 1, value: 7000, status: { confirmed: false } }];
 
 const browser = await chromium.launch({ args: ['--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1'] });
@@ -42,7 +47,7 @@ try {
   await ctx.route('**/*', (r) => {
     const u = r.request().url();
     if (u.startsWith(BASE)) return r.continue();
-    if (/\/address\/[^/]+\/utxo/.test(u)) return r.fulfill({ status: 200, headers: CORS, body: JSON.stringify(UTXOS) });
+    if (/\/address\/[^/]+\/utxo/.test(u)) { utxoReads++; return r.fulfill({ status: 200, headers: CORS, body: JSON.stringify(UTXOS) }); }
     return r.abort();
   });
   const page = await ctx.newPage();
@@ -84,21 +89,59 @@ try {
   ok(/^bc1q[0-9a-z]{38}$/.test(bc), `the key's own Bitcoin address is there: ${bc}`);
 
   // Balances: BTC under Bitcoin, from the address's own read
-  await page.waitForFunction(() => /0\.0025/.test(document.querySelector('#w-bal')?.textContent || ''), null, { timeout: 30000 }).catch(() => {});
-  const bal = await text('#w-bal');
+  await page.waitForFunction(() => /0\.0025/.test(document.querySelector('#wbal-box')?.textContent || ''), null, { timeout: 30000 }).catch(() => {});
+  const bal = await text('#wbal-box');
   ok(/Bitcoin/.test(bal) && /BTC\s*0\.0025/.test(bal.replace(/\s+/g, ' ')) && /0\.00007 arriving/.test(bal), `Balances lists the Bitcoin address's BTC and what is arriving: ${bal.replace(/\s+/g, ' ').slice(0, 120)}`);
   ok(bal.indexOf('Bitcoin') < bal.indexOf('Ethereum'), 'Bitcoin and Ethereum are separate groups');
-  ok((await page.$$('#w-bal .wbal li')).length >= 2, 'each asset is a row of its own');
+  ok((await page.$$('#wbal-box .wbal li')).length >= 2, 'each asset is a row of its own');
 
-  // Receive
+  // the old placeholder row is gone
+  ok(!/connects when you lock BTC/.test(await text('#wallet-body')), 'the sheet no longer says the Bitcoin wallet "connects when you lock BTC to borrow"');
+
+  // the Bitcoin address as a QR code
+  const qrRow = row('Bitcoin address');
+  ok(!(await page.isVisible(`${qrRow} .keyqr`)), 'the QR code is not drawn until it is asked for');
+  await page.click(`${qrRow} [data-qr]`);
+  await page.waitForSelector(`${qrRow} .keyqr svg`, { timeout: 10000 });
+  const want = qrSvg(bc, 208, 'QR code of your bitcoin address'), drawn = await page.$eval(`${qrRow} .keyqr svg`, (e) => ({ d: e.querySelector('path').getAttribute('d'), label: e.getAttribute('aria-label'), style: e.getAttribute('style') }));
+  ok(drawn.d === /<path d="([^"]+)"/.exec(want)[1] && drawn.label === 'QR code of your bitcoin address' && drawn.style === /style="([^"]+)"/.exec(want)[1], 'Show QR draws the address as the page draws its other codes (the same modules, at 208 px)');
+  ok((await text(`${qrRow} [data-qr]`)) === 'Hide QR', 'and the button can put it away');
+  await page.click(`${qrRow} [data-qr]`);
+  ok(!(await page.isVisible(`${qrRow} .keyqr`)) && (await text(`${qrRow} [data-qr]`)) === 'QR', 'Hide QR puts it away');
+
+  // the ETH form has its own #w-bal; opening it must leave Balances alone (it once wrote its balance into this sheet's box) and fill its own
+  ok((await page.$$('#w-bal')).length === 0 && (await page.$$('#wbal-box')).length === 1, 'the Balances box and the ETH form do not share an id');
+  await page.evaluate(() => { const d = document.querySelector('#sheet-wallet'); d.close(); });
+  await page.goto(BASE + '/#private', { waitUntil: 'commit' });
+  await page.waitForSelector('#w-max #w-bal', { timeout: 20000 });
+  await page.waitForFunction(() => !document.querySelector('#w-max #w-bal .sk'), null, { timeout: 20000 }).catch(() => {});
+  ok(!(await page.$eval('#w-max #w-bal', (e) => !!e.querySelector('.sk'))), 'the ETH form fills its own balance');
+  ok(/Balances/.test(await page.$eval('#wbal-box', (e) => e.textContent)), 'and leaves the wallet sheet\'s Balances as they were');
   await page.keyboard.press('Escape');
-  await page.goto(BASE + '/#bitcoin/receive', { waitUntil: 'commit' });
+
+  // Refresh reads the Bitcoin address again
+  await page.click('#wallet');
+  await page.waitForSelector('#wbal-re', { timeout: 15000 });
+  const before = utxoReads;
+  await page.click('#wbal-re');
+  await page.waitForFunction((n) => document.querySelector('#wbal-re')?.textContent === 'Refresh' && !document.querySelector('#wbal-re').disabled, null, { timeout: 60000 }).catch(() => {});
+  ok(utxoReads > before, `Refresh asks for the Bitcoin address's coins again (${before} → ${utxoReads})`);
+  ok(/0\.0025/.test(await text('#wbal-box')), 'and the balance is still there after it');
+
+  // a row goes to its own sheet, and the Wallet sheet is put away
+  await page.click('#wbal-box [data-dash-open="btc"]');
+  await page.waitForSelector('#sheet-btc[open]', { timeout: 10000 });
+  ok(!(await page.$eval('#sheet-wallet', (d) => d.open)), 'pressing the BTC row opens the Bitcoin sheet and puts the Wallet sheet away');
+
+  // Receive, from the Bitcoin sheet the row opened
+  await page.click('[data-btcm="receive"]');
   await page.waitForSelector('#btc-form .keyrow', { timeout: 20000 });
   await page.waitForFunction(() => document.querySelectorAll('#btc-form .keyrow code').length >= 4, null, { timeout: 20000 });
   const labels = await page.$$eval('#btc-form .keyrow > .kv:first-child > span:first-child', (es) => es.map((e) => e.textContent.trim()));
   ok(labels.join('|') === 'Bitcoin address|Tacit address|Public key|Silent payments', `Receive lists the addresses and the public key: ${labels.join(', ')}`);
   ok((await page.$eval('#btc-form .keyrow:nth-of-type(3) code', (e) => e.textContent.trim())) === PUB, 'its public key is the same one');
   ok((await page.$eval('#btc-form .keyrow:nth-of-type(1) code', (e) => e.textContent.trim())) === bc, 'and its Bitcoin address the same one');
+  ok(!!(await page.$('#btc-form .keyrow:nth-of-type(1) [data-qr]')) && !(await page.$('#btc-form .keyrow:nth-of-type(2) [data-qr]')), 'with a QR code on the Bitcoin address only');
   ok(!errors.length, `no page errors${errors.length ? ': ' + errors[0] : ''}`);
   await ctx.close();
 } finally { await browser.close(); server.close(); }

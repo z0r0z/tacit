@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-b3LWXxFY9m+6OLtXd3nXei7LEnqHSXC/QDv73t5V6y4=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-CMR1UWLfAfe+g9KN3DB+MfyZmDT125c1a25zFo6ePrU=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -51,7 +51,7 @@
 <link rel="modulepreload" href="/zrouter-guard.js">
 <link rel="modulepreload" href="/confidential-payout.js?cb=c27b4853">
 <link rel="modulepreload" href="/address-id.js?cb=c4fa5a58">
-<link rel="modulepreload" href="/wallet-balances.js?cb=139cd197">
+<link rel="modulepreload" href="/wallet-balances.js?cb=9c8ca1f0">
 <link rel="modulepreload" href="/trade/farm-read.js?cb=112a01b9">
 <link rel="modulepreload" href="/bridge-all.js?cb=4b6de3ff">
 <link rel="modulepreload" href="/lp-zap.js?cb=4823580d">
@@ -1006,8 +1006,13 @@ a.btn { text-decoration: none; white-space: nowrap; }
 .addrline { display: block; margin-top: 6px; }
 .addrline code { font: 500 12.5px/1.45 var(--mono); color: var(--ink); overflow-wrap: anywhere; user-select: all; }
 .wbal { list-style: none; margin: 0; padding: 0; }
-.wbal li { display: grid; grid-template-columns: 1fr auto; align-items: baseline; gap: 1px 12px; padding: 9px 0; border-top: 1px solid var(--hair); }
+.wbal li { position: relative; border-top: 1px solid var(--hair); }
 .wbal li:first-child { border-top: 0; }
+.wbal .wb-go { display: grid; grid-template-columns: 1fr auto; align-items: baseline; gap: 1px 12px; width: calc(100% + 16px); margin: 0 -8px; padding: 9px 8px; text-align: left; color: inherit; font: inherit; text-decoration: none; background: none; border: 0; border-radius: 8px; }
+.wbal button.wb-go, .wbal a.wb-go { cursor: pointer; }
+@media (hover: hover) { .wbal button.wb-go:hover, .wbal a.wb-go:hover { background: var(--soft); } }
+.wbal .wb-do { position: absolute; right: 0; bottom: 9px; padding: 2px 11px; font: 12px var(--mono); color: var(--ink); background: var(--card); border: 1px solid var(--hair-2); border-radius: 999px; cursor: pointer; }
+.wbal li:has(.wb-do) .wb-m { padding-right: 76px; }
 .wbal .wb-k { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink); }
 .wbal .wb-k .tk { width: 20px; height: 20px; }
 .wbal .wb-k .tk.letter { font-size: 8px; }
@@ -1016,6 +1021,8 @@ a.btn { text-decoration: none; white-space: nowrap; }
 .wbal .wb-m .chs { vertical-align: -3px; }
 .lbl .wb-w { color: var(--ink); }
 .keyrow .keyacts { display: flex; gap: 14px; flex: none; }
+.keyqr { display: flex; justify-content: center; margin: 10px 0 2px; }
+.keyqr[hidden] { display: none; }
 .keyrow .full, .keyrow.open .ends { display: none; }
 .keyrow.open .full { display: block; }
 .nw { white-space: nowrap; }
@@ -1850,7 +1857,7 @@ import { parseRecipient } from '/confidential-payout.js?cb=c27b4853';
 import { planMerge, planAll, countAll, opsCompared } from '/bridge-all.js?cb=4b6de3ff';
 import { aprFrom, shieldedApr as shieldedAprOf, poolWorthEth } from '/trade/farm-read.js?cb=112a01b9';
 import { addressId } from '/address-id.js?cb=c4fa5a58';
-import { balanceRows } from '/wallet-balances.js?cb=139cd197';
+import { balanceRows } from '/wallet-balances.js?cb=9c8ca1f0';
 import { PXS_KEY, PX_CALLS, pxFigures, paintPx, pxState } from '/px-strip.js';
 import { zapPlan, zapPlanFor, zapCalldata, zapSettleCalldata, zapSplitSearch, zapWorth } from '/lp-zap.js?cb=4823580d';
 import { rewardPop } from '/reward-pop.js?cb=1b53f6d4';
@@ -3989,34 +3996,61 @@ function l2Balances(who) {
   }
   return L2BAL.p;
 }
-// What the open key hands out to be paid or sent to, whichever way it was opened (an Ethereum or Bitcoin wallet, a passkey, a pasted key): the Tacit address, the public key it is made from, and the key's own Bitcoin address.
-// A row of the Balances list: the asset's mark and name, what the key holds of it, and where.
+// A row of the Balances list: the asset's mark and name, what the key holds of it, and where. A row that has a place goes there when pressed (the Bitcoin tab, the sheet of a private
+// asset), with the one press its asset offers beside it (Send, Swap, Bridge).
 const WB_MARK = { TAC: 'tk-tac', tETH: 'tk-teth', cBTC: 'tk-cbtc', cUSD: 'tk-cusd', cUSDT: 'tk-usdt' };
 const wbRow = (r) => {
   const mark = r.mark ? html`<span class="tk letter" style="--c:${markColor(r.markId)}" aria-hidden="true">${r.mark.slice(0, 2).toUpperCase()}</span>` : html`<svg class="tk" aria-hidden="true"><use href="#${r.icon}"/></svg>`;
   const v = r.v != null ? html`${fmt(r.v, r.dec, r.max)}` : r.err ? '—' : html`<span class="sk" style="--w:7ch"></span>`;
   const meta = r.err ? 'could not read right now' : html`${r.meta || ''}${r.pending ? html`${r.meta ? ' · ' : ''}${fmt(r.pending, r.dec, r.max)} arriving` : ''}`;
-  return html`<li><span class="wb-k">${mark}${r.label}</span><span class="wb-v num">${v}</span><span class="wb-m">${meta}</span></li>`;
+  const body = html`<span class="wb-k">${mark}${r.label}</span><span class="wb-v num">${v}</span><span class="wb-m">${meta}</span>`;
+  const go = r.href ? html`<a class="wb-go" href="${r.href}">${body}</a>`
+    : r.asset ? html`<button class="wb-go" type="button" data-asset="${r.asset}">${body}</button>`
+    : r.open ? html`<button class="wb-go" type="button" data-dash-open="${r.open}"${r.btcAsset ? html` data-btc-asset="${r.btcAsset}"` : ''}>${body}</button>`
+    : html`<div class="wb-go">${body}</div>`;
+  const pill = r.act ? html`<button class="wb-do" type="button" data-wb-link="${r.act.link}">${r.act.label}</button>`
+    : r.send ? html`<button class="wb-do" type="button" data-hx="send:${r.send}" aria-label="Send ${r.label}">Send</button>`
+    : r.swap ? html`<button class="wb-do" type="button" data-hx="pay:${r.swap}" aria-label="Swap ${r.label} held privately">Swap</button>` : '';
+  return html`<li>${go}${pill}</li>`;
 };
 // What the open key holds, by where: the Bitcoin address's own read, and the rows of the landing page's "Your Tacit" panel (kept on DASH when it paints) for Ethereum.
+let wbReading = false;
 function walletBalances() {
   const b = BTC.pub === S.key.pubHex ? BTC : null;
   const { bitcoin, ethereum } = balanceRows(DASH.items || [], b ? { ready: b.got >= 2, err: BTC.err, sats: b.sats, silent: b.silent, pending: b.pending, held: b.held } : { ready: false, err: BTC.err },
-    { icon: (id) => { const a = assetById(id); return a ? WB_MARK[a.ticker] : null; }, dp: (id) => assetById(id)?.dp });
-  const worth = DASH.worth?.all > 0 ? html`<span class="wb-w">≈ ${usdFmt(DASH.worth.all)}</span>` : '';
+    { icon: (id) => { const a = assetById(id); return a ? WB_MARK[a.ticker] : null; }, dp: (id) => assetById(id)?.dp, act: (id) => (id === TAC_BTC_ID ? { label: 'Bridge', link: 'bridge' } : null) });
+  const worth = DASH.worth?.all > 0 ? html`<span class="wb-w">≈ ${usdFmt(DASH.worth.all)}</span> · ` : '';
   const group = (name, rows, empty) => html`<div class="lbl"><span>${name}</span></div>${rows.length ? html`<ul class="wbal">${rows.map(wbRow)}</ul>` : html`<p class="note">${empty}</p>`}`;
-  return html`<div class="lbl"><span>Balances</span>${worth}</div>
+  return html`<div class="lbl"><span>Balances</span><span>${worth}<button type="button" id="wbal-re"${wbReading ? ' disabled' : ''}>${wbReading ? 'Reading…' : 'Refresh'}</button></span></div>
     ${group(chainTag('btc'), bitcoin, '')}
     ${group(chainTag(1), ethereum, 'Nothing held privately or in your wallet yet.')}`;
 }
 function paintWalletBal() {
-  const w = $('#w-bal');
+  const w = $('#wbal-box');
   if (w?.isConnected && S.key) mount(w, walletBalances());
 }
+// Read the Bitcoin address and the private pools again, for sats just sent to it or a payment just made
+function refreshWalletBal() {
+  if (wbReading || !S.key) return;
+  wbReading = true; paintWalletBal();
+  Promise.allSettled([loadBtc(true), scanPrivate(true)]).finally(() => { wbReading = false; paintWalletBal(); dashSoon(); });
+}
+// A press in the Balances list: Refresh, or a row or its button, which is done on its own sheet, so this one is put away first
+function wbClick(e) {
+  if (e.target.closest('#wbal-re')) return refreshWalletBal();
+  const b = e.target.closest('[data-dash-open],[data-wb-link],[data-hx]');
+  if (!b) return;
+  e.preventDefault(); e.stopPropagation();
+  $('#sheet-wallet').close();
+  if (b.dataset.hx) hxPreset(b.dataset.hx);
+  else if (b.dataset.wbLink) openLink(b.dataset.wbLink);
+  else dashGo(b);
+}
+// What the open key hands out to be paid or sent to, whichever way it was opened (an Ethereum or Bitcoin wallet, a passkey, a pasted key): the Tacit address, the public key it is made from, and the key's own Bitcoin address.
 const walletKeys = () => html`<div class="lbl"><span>Addresses and public key</span></div>
   ${keyRow('Tacit address', S.key.tacit, 'Tacit address', 'Other Tacit wallets pay you here, privately.', { fold: 90 })}
   ${keyRow('Public key', S.key.pubHex, 'Public key', 'For a Send box that asks for a key.')}
-  ${keyRow('Bitcoin address', plainAddr(), 'Bitcoin address', 'Sats from any wallet or exchange.')}`;
+  ${keyRow('Bitcoin address', plainAddr(), 'Bitcoin address', 'Sats from any wallet or exchange.', { qr: true })}`;
 render.wallet = () => {
   const el = $('#wallet-body');
   if (!S.key) {
@@ -4030,7 +4064,7 @@ render.wallet = () => {
     <div class="who"><div class="addr num">${k.tacit ? short(k.tacit, 12) : '…'}</div><div class="u">Your Tacit address · opened with ${viaText(k)}</div>
       ${k.tacit ? html`<div class="u">ID <b class="num">${addressId(k.tacit)}</b> · a payer sees the same ID</div>` : ''}
       <div class="row2"><button class="btn ghost" type="button" id="w-copy" ${k.tacit ? '' : 'disabled'}>Copy address</button><button class="btn ghost" type="button" id="w-lock">Lock</button></div></div>
-    <div id="w-bal">${walletBalances()}</div>
+    <div id="wbal-box">${walletBalances()}</div>
     <div id="w-keys">${walletKeys()}</div>
     <div class="lbl" id="pay-h"><span>Public transactions come from</span></div>
     <div class="opts" role="radiogroup" aria-labelledby="pay-h">
@@ -4042,7 +4076,7 @@ render.wallet = () => {
     ${segSub('wal', WAL.mode, [['add', 'Add ETH'], ['out', 'Send out']])}
     <div id="ac-form"></div>
     <div class="status" role="status" id="ac-status"></div>
-    <div class="kv sep"><span>${chainTag('btc')}</span>${btcAddr ? html`<b>${short(btcAddr, 8)}</b>` : html`<span class="mute">connects when you lock BTC to borrow</span>`}</div>
+    ${btcAddr ? html`<div class="kv sep"><span>${chainTag('btc')}</span><b>${short(btcAddr, 8)}</b></div>` : ''}
     ${ethLine()}
     ${kept ? html`<p class="note"><button class="link" type="button" id="w-backup">Copy key to back up</button></p>` : ''}
     <p class="note">${kept ? 'This key is kept in this browser only, so clearing the browser’s data loses it. Copy it somewhere private: anyone who has it controls these funds, and pasting it back opens them again.' : k.mode === 'key' ? 'You pasted this key and it is not saved here, so closing the tab forgets it. Keep your own copy somewhere private: anyone who has it controls these funds.' : 'Your wallet or passkey is the only way back to these funds: keep it safe.'} The key stays in this tab, and whoever holds it holds the Tacit account too. Private payments to your Tacit address reach you here and everywhere on tacit.finance.</p>`);
@@ -4050,6 +4084,7 @@ render.wallet = () => {
   if (!plainAddr()) loadPlain().then(() => { const w = $('#w-keys'); if (w?.isConnected && S.key?.pubHex === k.pubHex) mount(w, walletKeys()); }).catch(() => {});
   // the Bitcoin address is read when the sheet opens, as the Bitcoin tab does, so its balance is here without a visit there
   loadBtc().then(paintWalletBal, paintWalletBal);
+  $('#wbal-box').onclick = wbClick;
   $('#w-backup')?.addEventListener('click', () => navigator.clipboard.writeText(k.priv).then(() => toast('Key copied. Keep it somewhere private.'), () => toast('Could not copy the key: the browser refused clipboard access.', true)));
   $('#w-lock').onclick = () => { if (midAction()) return; evm.deselectProvider(); S.key = null; syncAccount(); resetPrivate(); paintWallet(); refreshAll(); rerender('wallet'); };
   const bal = (id, who) => { const e = $('#' + id); if (who && e) rpc('eth_getBalance', [who, 'latest']).then((b) => `${fmt(BigInt(b), 18, 4)} ETH`, () => '—').then((t) => { e.textContent = t; }); };
@@ -5784,16 +5819,22 @@ const xoFundingText = (pf) => fundingText(pf, (sats) => fmt(BigInt(sats), 8, 8))
 // Where to send the sats: the address whole, ready to copy. The Tacit address (tacit1…) takes nothing from an ordinary wallet or an exchange.
 const addrLine = (a) => (a ? html`<span class="addrline"><code>${a}</code> <button class="link" type="button" data-copy-addr="${a}">Copy</button></span>` : '');
 document.addEventListener('click', (e) => {
-  const b = e.target.closest?.('[data-copy-addr]'), f = e.target.closest?.('[data-fold]');
+  const b = e.target.closest?.('[data-copy-addr]'), f = e.target.closest?.('[data-fold]'), q = e.target.closest?.('[data-qr]');
   if (b) copy(b.dataset.copyAddr, `${b.dataset.what || 'Bitcoin address'} copied`);
   if (f) { const open = f.closest('.keyrow').classList.toggle('open'); f.textContent = open ? 'Show less' : 'Show all'; f.setAttribute('aria-expanded', String(open)); }
+  if (q) {
+    const box = q.closest('.keyrow').querySelector('.keyqr');
+    box.hidden = !box.hidden; q.textContent = box.hidden ? 'QR' : 'Hide QR'; q.setAttribute('aria-expanded', String(!box.hidden));
+    if (!box.hidden && !box.firstChild) qrModule().then((m) => { box.innerHTML = m.qrSvg(q.dataset.qr, 208, `QR code of your ${q.dataset.what}`); }, () => { box.hidden = true; q.textContent = 'QR'; });
+  }
 });
-// One of the key's addresses, or its public key, to hand to someone: shown whole and ready to copy, a long one by its two ends until Show all opens it. `id` adds the address's ID line.
-function keyRow(label, v, what, note, { fold = 0, id = false } = {}) {
+// One of the key's addresses, or its public key, to hand to someone: shown whole and ready to copy, a long one by its two ends until Show all opens it.
+// `id` adds the address's ID line; `qr` a code of it to scan from another phone's wallet.
+function keyRow(label, v, what, note, { fold = 0, id = false, qr = false } = {}) {
   const long = !!v && fold > 0 && v.length > fold;
-  return html`<div class="blk keyrow"><div class="kv"><span>${label}</span><span class="keyacts">${long ? html`<button class="link" type="button" data-fold aria-expanded="false">Show all</button>` : ''}${v ? html`<button class="link" type="button" data-copy-addr="${v}" data-what="${what}">Copy</button>` : ''}</span></div>
+  return html`<div class="blk keyrow"><div class="kv"><span>${label}</span><span class="keyacts">${long ? html`<button class="link" type="button" data-fold aria-expanded="false">Show all</button>` : ''}${v && qr ? html`<button class="link" type="button" data-qr="${v}" data-what="${what.toLowerCase()}" aria-expanded="false">QR</button>` : ''}${v ? html`<button class="link" type="button" data-copy-addr="${v}" data-what="${what}">Copy</button>` : ''}</span></div>
     ${!v ? html`<span class="addrline"><code>…</code></span>` : long ? html`<span class="addrline ends"><code>${v.slice(0, 28)}…${v.slice(-12)}</code></span><span class="addrline full"><code>${v}</code></span>` : html`<span class="addrline"><code>${v}</code></span>`}
-    ${id ? idRow(v) : ''}${note ? html`<p class="note">${note}</p>` : ''}</div>`;
+    ${v && qr ? html`<div class="keyqr" hidden></div>` : ''}${id ? idRow(v) : ''}${note ? html`<p class="note">${note}</p>` : ''}</div>`;
 }
 const xoFundNote = (pf, a = XA.teth) => html`${xoFundingText(pf)} Send bitcoin to it from any wallet or exchange: ${addrLine(pf.address)} <button class="link" type="button" id="${a.pre}-recheck">Check again</button>`;
 const xoProblemText = () => 'Bitcoin’s proof on Ethereum could not be read, so nothing was started. Try again in a minute.';
@@ -8109,7 +8150,7 @@ function btcReceive(f, status, b) {
   const plain = plainAddr() || b?.addr || null;
   if (!plain) loadPlain().then(() => { if (f.isConnected) rerender('btc'); }).catch(() => {});
   mount(f, html`
-    ${keyRow('Bitcoin address', plain, 'Bitcoin address', 'From any wallet or exchange. What arrives here is public. This is the address that pays the fees of a bridge to Bitcoin.', { id: true })}
+    ${keyRow('Bitcoin address', plain, 'Bitcoin address', 'From any wallet or exchange. What arrives here is public. This is the address that pays the fees of a bridge to Bitcoin.', { id: true, qr: true })}
     ${keyRow('Tacit address', S.key.tacit, 'Tacit address', 'From other Tacit wallets only: BTC arrives as a silent payment, and TAC with its amount hidden. An ordinary wallet or an exchange cannot send to it.', { fold: 90, id: true })}
     ${keyRow('Public key', S.key.pubHex, 'Public key', 'The key both addresses are made from, for a Send box that asks for a key.')}
     ${keyRow('Silent payments', BTC.sp, 'Silent payment address', 'From any wallet that sends silent payments (BIP‑352).', { fold: 90, id: true })}
@@ -13701,16 +13742,18 @@ function paintDash() {
     const f = document.activeElement?.closest?.('#dash button');
     const was = f && (f.dataset.dashOpen ? `[data-dash-open="${f.dataset.dashOpen}"]` : f.dataset.asset ? `[data-asset="${f.dataset.asset}"]` : f.dataset.hx ? `[data-hx="${f.dataset.hx}"]` : `[data-dash-do="${f.dataset.dashDo}"]`);
     $('#dash-due').innerHTML = dueHtml; $('#dash-g').innerHTML = gridHtml; DASH.view = view;
-    $$('[data-dash-open]', sec).forEach((b) => b.onclick = () => {
-      if (b.dataset.btcAsset) { BTC.mode = 'send'; BTC.asset = b.dataset.btcAsset; }
-      return b.dataset.dashOpen === 'loans' ? dashDo('loans') : b.dataset.dashOpen === 'borrow' ? hxPreset(`borrow:${HX.bm}`) : b.dataset.dashOpen.includes('/') ? openLink(b.dataset.dashOpen) : openSheet(b.dataset.dashOpen);
-    });
+    $$('[data-dash-open]', sec).forEach((b) => b.onclick = () => dashGo(b));
     $$('[data-dash-do]', sec).forEach((b) => b.onclick = () => dashDo(b.dataset.dashDo));
     if (was) $(was, sec)?.focus();
   }
   clearTimeout(dashSaveT);
   dashSaveT = setTimeout(dashWrite, 1000);
   hxPosPaint(); hxBwList();
+}
+// A row of the panel (or of the wallet sheet's Balances, which are the same rows): open the sheet it names, an asset on Bitcoin at its send form
+function dashGo(b) {
+  if (b.dataset.btcAsset) { BTC.mode = 'send'; BTC.asset = b.dataset.btcAsset; }
+  return b.dataset.dashOpen === 'loans' ? dashDo('loans') : b.dataset.dashOpen === 'borrow' ? hxPreset(`borrow:${HX.bm}`) : b.dataset.dashOpen.includes('/') ? openLink(b.dataset.dashOpen) : openSheet(b.dataset.dashOpen);
 }
 // A press of the panel's: open where it is done and press its button there (the Earn tab's list, for private farm rewards)
 function dashDo(go) {
@@ -14236,8 +14279,10 @@ function hxAskLink() {
   if (!a) return '';
   return dp ? `${location.origin}/pay/eth/#pay=${encodeURIComponent(a)}${dp.chain ? `&chain=${dp.chain.chainId}` : `&asset=${dp.sym.toLowerCase()}`}${u ? `&amount=${plain(u, dp.dec)}` : ''}` : `${location.origin}/#card=send:${HX.send}&to=${encodeURIComponent(a)}${u ? `&amt=${plain(u, hxDec())}` : ''}`;
 }
+// The QR drawing, loaded the first time a code is asked for (the request's link under the receipt, or an address in the wallet sheet)
+let qrMod = null;
+const qrModule = () => (qrMod ||= import('/qr.js?cb=926d16be'));
 // The request's link as a QR code under the receipt, for a payer in front of you: drawn once a link exists, again when it changes
-let hxQrMod = null;
 function hxAskQr() {
   const el = $('#hx-qr');
   if (!el) return;
@@ -14245,7 +14290,7 @@ function hxAskQr() {
   el.hidden = !url;
   if (!url || el.__u === url) return;
   el.__u = url;
-  (hxQrMod ||= import('/qr.js?cb=926d16be')).then((m) => { if (el.__u === url) el.innerHTML = m.qrSvg(url, 168, 'QR code of the payment link'); }, () => { el.hidden = true; });
+  qrModule().then((m) => { if (el.__u === url) el.innerHTML = m.qrSvg(url, 168, 'QR code of the payment link'); }, () => { el.hidden = true; });
 }
 async function hxAskGo() {
   if (!S.key?.tacit) return openSheet('wallet');
