@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Checks the community ops page (dapp/weld/keeper) in a real browser with the chain, the API and the wallet stubbed:
+// Checks the node jobs on /prove/ (dapp/prove/ops.js: the Relay and Bitcoin tabs, moved there from the community ops page) in a real browser with the chain, the API and the wallet stubbed:
 //   ready    a published proof that builds on the pool's digest shows as ready; submitting it sends exactly
 //            attestBitcoinStateProven(publicValues, proof) to the pool and reports it landed
 //   spent    a published proof whose prior the pool has moved past is not offered
@@ -130,7 +130,7 @@ async function run(name, { proof, simulateRevert = null, chain = '0x1', attested
   const page = await ctx.newPage();
   if (clock) await page.clock.install();
   page.on('pageerror', (e) => { console.log('     page error:', e.message); });
-  await page.goto(`http://127.0.0.1:${WEB}/weld/keeper/`);
+  await page.goto(`http://127.0.0.1:${WEB}/prove/#tab=${name.startsWith('board') ? 'relay' : 'bitcoin'}`);
   await page.waitForFunction(() => !/Reading the latest proof/.test(document.querySelector('#proof-box')?.textContent || 'Reading'), null, { timeout: 15000 });
   await page.waitForFunction(() => !document.querySelector('#board-box .sk'), null, { timeout: 15000 });
   return { browser, page, calls, wcAsked, landed };

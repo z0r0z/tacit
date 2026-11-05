@@ -343,7 +343,7 @@ test('the pins are well formed, and the pages that offer the install name the sc
   for (const f of walk(dapp)) {
     for (const m of readFileSync(f, 'utf8').matchAll(/releases\/download\/(tacit-prover-v[\d.]+)\//g)) assert.equal(m[1], pins.PIN_TAG, `${f} offers ${m[1]}, the script pins ${pins.PIN_TAG}`);
   }
-  for (const page of ['index.html', 'weld/keeper/index.html']) assert.match(readFileSync(join(dapp, page), 'utf8'), /https:\/\/tacit\.finance\/prove\.sh/, `${page} offers the installer`);
+  for (const page of ['index.html', 'community-prove.js']) assert.match(readFileSync(join(dapp, page), 'utf8'), /https:\/\/tacit\.finance\/prove\.sh/, `${page} offers the installer`);
 });
 
 test('the pins are the real release\'s checksums', { skip: !process.env.LIVE }, async () => {

@@ -1,5 +1,5 @@
 // What anyone can send to keep Bitcoin's state current on Ethereum and earn the open board's fees, shared by the community ops
-// page (dapp/weld/keeper/) and the runner (tools/community-runner.mjs), so both build the same calls and pass over the same work:
+// page (dapp/prove/ops.js, the Relay and Bitcoin tabs of /prove/) and the runner (tools/community-runner.mjs), so both build the same calls and pass over the same work:
 //   - a proof of Bitcoin's state that Tacit's prover has published (GET /reflection/proof) goes to
 //     ConfidentialPool.attestBitcoinStateProven while it still builds on the pool's attested digest;
 //   - a lane more than REFLECTION_MAX_LAG blocks behind the header relay first takes advanceReflectionAncestry() calls;

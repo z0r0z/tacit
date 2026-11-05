@@ -194,7 +194,7 @@ try {
   const EVM = {
     front: { path: '/', chip: '#wallet', sheet: '#sheet-wallet', change: '[data-wc-change]', off: '[data-wc-off]' },
     eth: { path: '/pay/eth/', chip: '#wallet', sheet: '#sheet-wallet', change: '#w-wc-change', off: '#w-wc-off' },
-    keeper: { path: '/weld/keeper/', chip: '#wallet', sheet: '#sheet-wc', change: '[data-change]', off: '[data-off]' },
+    keeper: { path: '/prove/#tab=bitcoin', chip: '#wallet', sheet: '#sheet-wc', change: '[data-change]', off: '[data-off]' },
     hub: { path: '/pay/', chip: '#wallet', sheet: '#sheet-wallet', off: '#w-wc-off' },
   };
   for (const [k, P] of Object.entries(EVM)) {
@@ -227,7 +227,7 @@ try {
   // tabs, on the front page's wallet: the keeper page follows a Disconnect on the front page, and both follow a connect made in a third tab
   c = await newContext();
   await seed(c.ctx, { account: 0 });
-  const f = await open(c.ctx, '/'), kp = await open(c.ctx, '/weld/keeper/');
+  const f = await open(c.ctx, '/'), kp = await open(c.ctx, '/prove/#tab=bitcoin');
   ok((await showing(f.page, SHORT_A)) && (await showing(kp.page, SHORT_A)), 'two tabs of the front page\'s wallet are connected');
   await f.page.click('#wallet');
   await f.page.waitForSelector('#sheet-wallet [data-wc-off]', { state: 'visible' });

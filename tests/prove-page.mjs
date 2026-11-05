@@ -168,6 +168,32 @@ try {
     check(posts.length === 0 && (await text(page, '#say')).includes('Enter the address'), 'Start without an address asks for one');
     await ctx.close();
   }
+  // the node's jobs as tabs, and the old community ops address sending its visitors to them
+  {
+    const { page, ctx, errors } = await open(browser, { v: null });
+    await page.waitForFunction(() => document.querySelector('#title').textContent === 'Set up this computer');
+    check(!(await page.locator('#t-relay').isVisible()) && await page.locator('#t-prove').isVisible(), 'the Prove tab opens first');
+    await page.click('#tb-relay');
+    check(await page.locator('#g-board').isVisible() && !(await page.locator('#t-prove').isVisible()), 'Relay shows the open board and hides Prove');
+    check(new URL(page.url()).hash === '#tab=relay', 'the tab is in the address', page.url());
+    await shot(page, 'prove-relay');
+    await page.keyboard.press('ArrowRight');
+    check(await page.locator('#g-advance').isVisible() && (await page.getAttribute('#tb-bitcoin', 'aria-selected')) === 'true', 'the arrow keys move along the tabs to Bitcoin');
+    await page.waitForTimeout(1500);
+    await shot(page, 'prove-bitcoin');
+    await page.click('#tb-prove');
+    check(new URL(page.url()).hash === '' && await page.locator('#t-prove').isVisible(), 'back on Prove the address has no tab');
+    check(await page.locator('#wallet').isVisible(), 'the wallet chip is in the header');
+    check(errors.length === 0, 'no page errors', errors.join(' | '));
+    for (const [from, tab, extra] of [['#need=970200&why=lock', 'bitcoin', 'need=970200&why=lock'], ['#g-board', 'relay', ''], ['', 'bitcoin', '']]) {
+      await page.goto(`${ORIGIN}/weld/keeper/${from}`);
+      await page.waitForURL(/\/prove\//, { timeout: 8000 });
+      const h = new URLSearchParams(new URL(page.url()).hash.slice(1));
+      check(h.get('tab') === tab && (!extra || `need=${h.get('need')}&why=${h.get('why')}` === extra) && await page.locator(`#t-${tab}`).isVisible(),
+        `/weld/keeper/${from || ''} goes to the ${tab} tab${extra ? ', keeping what the lock needs' : ''}`, page.url());
+    }
+    await ctx.close();
+  }
   // a phone
   {
     const { page, ctx } = await open(browser, { v: null }, { phone: true });

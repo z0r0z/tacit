@@ -1,9 +1,10 @@
 // /prove/: the network's blocks as they land, the proofs waiting and the provers making them, and this computer's own prover, started
 // and paused from here. The computer's tacit-prover (installed once with the line the page shows) answers on 127.0.0.1; the API's chain
 // (GET /prover/blocks) and proof pool, and the points service, say what the network did and what an address has made and been paid.
-import { cleanAddress, proveCommand, utcDay, mineLines } from '/community-prove.js?cb=9c90fa04';
+import { cleanAddress, proveCommand, utcDay, mineLines } from '/community-prove.js?cb=4f1a30e7';
 import { localState, jobView, headline, isPhone } from '/prove/view.js?cb=396aa5e6';
 import { invaderSvg, gpuSvg } from '/prove/invader.js?cb=e8a5ec59';
+import { startOps } from '/prove/ops.js?cb=bb362b17';
 import { short, cells, opsText, tac, rewardWei, ago, took, fresh, blockAgo } from '/prove/chain.js?cb=afaa267c';
 
 const API = 'https://api.tacit.finance', POINTS = 'https://tacit-points.onrender.com', LOCAL = 'http://127.0.0.1:47815';
@@ -211,6 +212,34 @@ async function copy() {
     say('Press Cmd+C or Ctrl+C to copy it.');
   }
 }
+
+// The node's jobs as tabs: #tab=relay or #tab=bitcoin opens one (a link from a waiting lock carries need= and why= beside it), and the
+// other jobs' reads start the first time one of their tabs opens.
+const TABS = ['prove', 'relay', 'bitcoin'];
+function showTab(name, { write = true } = {}) {
+  const t = TABS.includes(name) ? name : 'prove';
+  for (const n of TABS) {
+    $(`#t-${n}`).hidden = n !== t;
+    $(`#tb-${n}`).setAttribute('aria-selected', String(n === t));
+    $(`#tb-${n}`).tabIndex = n === t ? 0 : -1;
+  }
+  if (t !== 'prove') startOps();
+  if (write) {
+    const h = new URLSearchParams(location.hash.slice(1));
+    if (t === 'prove') h.delete('tab'); else h.set('tab', t);
+    history.replaceState(null, '', `${location.pathname}${location.search}${[...h].length ? `#${h}` : ''}`);
+  }
+}
+const tabOf = () => new URLSearchParams(location.hash.slice(1)).get('tab') || 'prove';
+for (const n of TABS) $(`#tb-${n}`).addEventListener('click', () => showTab(n));
+$('.tabs').addEventListener('keydown', (e) => {
+  const i = TABS.indexOf(tabOf()), d = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+  if (!d) return;
+  const n = TABS[(i + d + TABS.length) % TABS.length];
+  showTab(n); $(`#tb-${n}`).focus();
+});
+window.addEventListener('hashchange', () => showTab(tabOf(), { write: false }));
+showTab(tabOf(), { write: false });
 
 $('#chain').addEventListener('click', (e) => {
   const li = e.target.closest('.blk');

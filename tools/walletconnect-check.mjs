@@ -136,7 +136,7 @@ try {
   // ── the keeper page: a wallet app pays for a keeper action, and Disconnect leaves it ──
   page = await newPage();
   asked.length = 0;
-  await page.goto(`${ORIGIN}/weld/keeper/`, { waitUntil: 'domcontentloaded' });
+  await page.goto(`${ORIGIN}/prove/#tab=bitcoin`, { waitUntil: 'domcontentloaded' });
   await page.click('#wallet');
   await pairFrom(page, '#sheet-wc');
   await page.waitForFunction(() => /^0x/.test(document.querySelector('#wallet-label')?.textContent || ''), null, { timeout: 60000 }).catch(() => {});

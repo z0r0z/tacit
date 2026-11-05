@@ -235,7 +235,7 @@ try {
     ok(/TAC 20 to 1,000 to Bitcoin and up to 1,000 back/.test(faq) && /tETH 0\.001 to 0\.5 to Bitcoin and up to 0\.5 back/.test(faq) && /cBTC 0\.00001 to 0\.5 to Bitcoin and up to 0\.5 back/.test(faq) && /cUSD 10 to 1,000 to Bitcoin and up to 1,000 back/.test(faq) && /255 transfers/.test(faq), 'the limits answer gives each asset its own range, both ways, and the history it proves');
     ok(/To Bitcoin, a small relay fee comes out of the note/.test(faq) && /Tacit covers the Ethereum mint/.test(faq), 'and the cost answer is right for both directions');
     ok(!/allowance|free/i.test(await page.textContent('.faq')), 'the answers keep to plain words about who pays');
-    ok(await page.getAttribute('.runcta .go', 'href') === '/weld/keeper/' && (await page.$$('#run .cap3 li')).length === 3 && (await page.$$('#run .pill')).length === 3, 'anyone can run it: three steps, each open to anyone, and a door to community ops');
+    ok(await page.getAttribute('.runcta .go', 'href') === '/prove/#tab=bitcoin' && (await page.$$('#run .cap3 li')).length === 3 && (await page.$$('#run .pill')).length === 3, 'anyone can run it: three steps, each open to anyone, and a door to community ops');
     ok(await page.getAttribute('.trio a', 'href') === '#run', 'and the top of the page points to it');
     const body = await page.textContent('main');
     ok(!/same commitment|same note|without opening/i.test(body) && /fresh note of the same value/.test(body), 'a bridge is said to mint a fresh note of the same value, not the same note');

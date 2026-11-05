@@ -38,7 +38,7 @@ const SW_JS      = join(DAPP_DIR, 'sw.js');
 const VERIFY_HTML = join(DAPP_DIR, 'verify.html');   // self-contained verifier; its inline module is CSP-hash-pinned
 const WELD_HTML  = join(DAPP_DIR, 'index.html');             // the front page (tacit weld, formerly /weld/): one file, its inline module CSP-hash-pinned
 const WELD_STATS_HTML = join(DAPP_DIR, 'weld', 'stats', 'index.html');   // weld stats: public reads only, its inline module CSP-hash-pinned
-const WELD_KEEPER_HTML = join(DAPP_DIR, 'weld', 'keeper', 'index.html'); // community ops: permissionless keeper actions (advanceTip etc.), its inline module CSP-hash-pinned
+const WELD_KEEPER_HTML = join(DAPP_DIR, 'weld', 'keeper', 'index.html'); // community ops moved to /prove/: this page only forwards to its tabs, its inline module CSP-hash-pinned
 const PAY_HTML = join(DAPP_DIR, 'pay', 'index.html');         // tacit pay: BTC and TAC payments, one file, its inline module CSP-hash-pinned
 const PAY_ETH_HTML = join(DAPP_DIR, 'pay', 'eth', 'index.html');   // tacit pay's private ETH, likewise (served at /pay/eth/ and /pay/wei/)
 const CEREMONY_HTML = join(DAPP_DIR, 'ceremony', 'index.html');     // the EVM pool's trusted-setup page: one classic inline script, CSP-hash-pinned
@@ -170,7 +170,7 @@ function updateCacheBust(htmlBytes, appJsBytes, prebootBytes) {
 const SATS_CB_FILES = ['sats/join-worker.js', 'sats/mix.js', 'sats/secret.js', 'sats/eth.js', 'sats/app.js', 'sats/index.html'];
 // The front page (dapp/index.html) and weld's stats and keeper pages each keep their imports in their inline module, so their tokens are rewritten before
 // those modules' CSP hashes are taken (updatePinnedCsp below).
-const WELD_CB_FILES = ['btcswap-page.js', 'walletconnect.js', 'evm-pool-sync-worker.js', 'holding-prove-worker.js', 'index.html', 'weld/stats/index.html', 'weld/keeper/index.html'];
+const WELD_CB_FILES = ['btcswap-page.js', 'walletconnect.js', 'evm-pool-sync-worker.js', 'holding-prove-worker.js', 'index.html', 'weld/stats/index.html'];
 // dapp/pay/ and dapp/pay/eth/ are built the same way as weld: one page each, every import in its inline module.
 const PAY_CB_FILES = ['private-route.js', 'pay/index.html', 'pay/eth/index.html'];
 // dapp/tac/ is the shielded-TAC page: app.js lazy-imports sats.js, so sats.js is hashed first and the page
@@ -190,7 +190,7 @@ const DISCORD_CB_FILES = ['discord/message.js', 'discord/holdings.js', 'discord/
 // dapp/fast/ is where TAC on Bitcoin goes to the private balance through a provider: its wiring and its page logic first, then app.js, then the page.
 const FAST_CB_FILES = ['fast/want.js', 'fast/wire.js', 'fast/ui.js', 'fast/provide.js', 'fast/app.js', 'fast/index.html'];
 // dapp/prove/ starts and pauses proving on this computer: its words, then app.js (which also takes community-prove.js), then the page.
-const PROVE_CB_FILES = ['community-prove.js', 'prove/view.js', 'prove/chain.js', 'prove/invader.js', 'prove/app.js', 'prove/index.html'];
+const PROVE_CB_FILES = ['community-prove.js', 'prove/view.js', 'prove/chain.js', 'prove/invader.js', 'prove/ops.js', 'prove/app.js', 'prove/index.html'];
 // dapp/build/ is the page for builders: its one script, then the page.
 const BUILD_CB_FILES = ['build/app.js', 'build/index.html'];
 // dapp/assets/ lists Tacit's own assets and the farms under them: the farms' reading first, then app.js, then the page.

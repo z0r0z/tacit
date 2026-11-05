@@ -17,7 +17,7 @@ your browser and recomputes every check, with no Tacit server or indexer asked.
 - **Pays for proofs.** A holder who wants a private wrap proved fast signs an order with a TAC permit. Any
   prover can claim it through [ProofMarket](https://etherscan.io/address/0x0000000033Dd45B1686Ba37e5F6e4ABDdaC17609)
   and is paid in TAC the moment the pool accepts the proof, so anyone with a prover can earn TAC
-  ([community ops](https://tacit.finance/weld/keeper/)).
+  ([tacit prove](https://tacit.finance/prove/#tab=bitcoin)).
 - **Collateral.** [Borrow TACD (a dollar) or TACE (ether) against TAC](https://tacit.finance/vault/) and keep
   the TAC: no interest, one fee when you borrow, and prices that move slowly. The fee goes to the reserve.
 - **Cheaper exits.** The dapp lowers the relayed exit fee for holders from 0.30% to 0.25% / 0.20% / 0.15% at

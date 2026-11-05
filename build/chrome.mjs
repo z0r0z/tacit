@@ -18,7 +18,7 @@ import { join } from 'node:path';
 export const CHROME_PAGES = {
   'index.html': '', 'assets/index.html': 'assets', 'rewards/index.html': 'rewards', 'trade/index.html': 'assets', 'teth/index.html': 'assets', 'cbtc/index.html': 'assets',
   'vault/index.html': 'borrow', 'pay/index.html': 'pay', 'pay/eth/index.html': 'pay', 'tac/index.html': 'tac', 'tasks/index.html': 'tasks',
-  'build/index.html': 'build', 'etch/index.html': 'etch', 'weld/stats/index.html': 'stats', 'weld/keeper/index.html': 'community', 'relay/index.html': '',
+  'build/index.html': 'build', 'etch/index.html': 'etch', 'weld/stats/index.html': 'stats', 'relay/index.html': '',
   'splitter/index.html': '', 'sats/index.html': '', 'bridge/index.html': 'bridge',
   'discord/index.html': '', 'fast/index.html': 'bridge', 'prove/index.html': 'prove',
 };
@@ -57,7 +57,7 @@ const svg = (k) => `<svg viewBox="0 0 24 24"${FILLED.has(k) ? ' class="fill"' : 
 const MAIN = [['assets', '/assets/', 'Assets'], ['pay', '/pay/', 'Pay'], ['borrow', '/vault/', 'Borrow'], ['rewards', '/rewards/', 'Rewards'], ['prove', '/prove/', 'Prove']];
 const MORE = [
   [['bridge', '/bridge/', 'Bridges'], ['tac', '/tac/', 'Shielded TAC'], ['etch', '/etch/', 'Etch'], ['tasks', '/tasks/', 'Tasks']],
-  [['stats', '/weld/stats/', 'Stats'], ['build', '/build/', 'Build'], ['community', '/weld/keeper/', 'Community ops'], ['classic', '/classic.html', 'Classic app']],
+  [['stats', '/weld/stats/', 'Stats'], ['build', '/build/', 'Build'], ['classic', '/classic.html', 'Classic app']],
 ];
 
 const here = (key, k) => (key === k ? ' aria-current="page"' : '');

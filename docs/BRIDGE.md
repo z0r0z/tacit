@@ -88,7 +88,7 @@ no permission, and you pay only the network fee:
 3. **Submit it.** `attestBitcoinStateProven(publicValues, proof)` accepts any valid proof over the pool's
    current state, from any wallet. Then `POST /reflection/landed`, and the API adopts the batch.
 
-[Community ops](https://tacit.finance/weld/keeper/) does the first and the last from your own wallet, and
+[tacit prove](https://tacit.finance/prove/#tab=bitcoin) does the first and the last from your own wallet, and
 [`tools/community-runner.mjs`](../tools/community-runner.mjs) does them on a loop from your own machine
 ([COMMUNITY-OPS.md](./COMMUNITY-OPS.md)). To
 check the deployment itself, run [`tools/verify-live.mjs`](./VERIFY-LIVE.md) and rebuild the programs from

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module (its sha256 pinned in script-src by build/build.mjs) and the reading it imports. It reads
      public data only: no wallet, no key; it keeps the last reading, and the chain data behind it, to read on from. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-cX5ocZj7Xgns5m/7fQVKTx90ru1pIn/NctbEiRsfPsQ='; connect-src https://api.tacit.finance https://mainnet.gateway.tenderly.co https://ethereum-rpc.publicnode.com https://eth.drpc.org https://mainnet.base.org https://base-rpc.publicnode.com https://base.gateway.tenderly.co https://rpc.mainnet.chain.robinhood.com https://eth.blockscout.com https://base.blockscout.com https://api.routescan.io https://mempool.space https://blockstream.info https://rpc.mevblocker.io https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://rpc.flashbots.net https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io https://1rpc.io; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-XPSHlnQneC1o7u23Kasu3JqaC+Fm3xPUOTMtgM56X+g='; connect-src https://api.tacit.finance https://mainnet.gateway.tenderly.co https://ethereum-rpc.publicnode.com https://eth.drpc.org https://mainnet.base.org https://base-rpc.publicnode.com https://base.gateway.tenderly.co https://rpc.mainnet.chain.robinhood.com https://eth.blockscout.com https://base.blockscout.com https://api.routescan.io https://mempool.space https://blockstream.info https://rpc.mevblocker.io https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://rpc.flashbots.net https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io https://1rpc.io; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#E8E0CC" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#15130E" media="(prefers-color-scheme: dark)">
@@ -334,7 +334,6 @@ footer.sf svg.fill { width: 16px; height: 16px; }
             <hr>
             <a href="/weld/stats/" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20v-6"/><path d="M12 20V5"/><path d="M19 20v-10"/></svg>Stats</a>
             <a href="/build/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7l-5 5 5 5"/><path d="M16 7l5 5-5 5"/><path d="M14 4l-4 16"/></svg>Build</a>
-            <a href="/weld/keeper/"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M16.5 5.3a3 3 0 0 1 0 5.6"/><path d="M18 14.2c1.8.7 3 2.6 3 5.8"/></svg>Community ops</a>
             <a href="/classic.html"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M3 9h18"/></svg>Classic app</a>
             </div>
           </details>
@@ -667,7 +666,7 @@ function showLink(r, eth) {
   // Arrivals when the status says them (the pool's own minted flags); a status that lacks the figure keeps the recorded count.
   const minted = Number.isInteger(r.status?.bridgeMinted) ? Math.min(r.status.bridgeMinted, bridged ?? Infinity) : null;
   paint('link', [
-    { k: 'Bitcoin headers', icon: 'tk-btc', v: int(r.tip), u: 'block', m: `${int(r.tip - r.anchorHeight)} relayed${behind == null ? '' : behind <= 0 ? ' · at the tip' : ` · ${int(behind)} behind · <a href="/weld/keeper/">advance it yourself →</a>`}` },
+    { k: 'Bitcoin headers', icon: 'tk-btc', v: int(r.tip), u: 'block', m: `${int(r.tip - r.anchorHeight)} relayed${behind == null ? '' : behind <= 0 ? ' · at the tip' : ` · ${int(behind)} behind · <a href="/prove/#tab=bitcoin">advance it yourself →</a>`}` },
     { k: 'Proven to', v: int(r.attestedHeight), u: 'block', m: `${int(r.attests)} attestations${r.lastAttest ? ` · latest ${ago(Number(r.lastAttest.timeStamp))} ${tx(r.lastAttest.hash)}` : ''}` },
     { k: 'Settles', v: int(r.settles), m: `${int(r.notes)} notes made · ${int(r.spent)} spent` },
     { k: 'Cross-chain', v: int(r.crossOuts + r.consumed + (minted ?? bridged ?? 0)), u: 'moves', m: `${int(r.crossOuts)} to ${tag('btc')}${folded != null ? ` (${int(folded)} folded)` : ''} · ${int(r.consumed)} spent on ${tag(1)}${bridged == null ? '' : minted == null ? ` · ${int(bridged)} bridged in` : ` · ${int(minted)} bridged in${bridged > minted ? ` (${int(bridged - minted)} more recorded, not minted yet)` : ''}`}` },

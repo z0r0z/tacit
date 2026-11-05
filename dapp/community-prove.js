@@ -1,4 +1,4 @@
-// The proof-mining card on /weld/keeper/: the one command that installs tacit-prover for an address (dapp/prove.sh does the work), and what
+// What /prove/ says about mining: the one command that installs tacit-prover for an address (dapp/prove.sh does the work), and what
 // mining pays, said from the proof pool's and the points service's own answers (GET /prover/pool, GET /mine). No terms are written here: the
 // pay per proof is the pool's points a proof earns times the most one point may be paid, so a change of terms on the service changes the card.
 

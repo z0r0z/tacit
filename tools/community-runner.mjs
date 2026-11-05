@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Tacit's community ops runner: one key keeps Bitcoin's state moving onto Ethereum and sends the open board's settles for the fees
 // their proofs pay. Every call it makes is permissionless on chain, the same ones Tacit's own services and the community ops page
-// (tacit.finance/weld/keeper/) make, built by the same modules:
+// (tacit.finance/prove/, its Relay and Bitcoin tabs) make, built by the same modules:
 //   headers  BitcoinLightRelay.advanceTip, when the next proof is waiting on the relay (dapp/header-relay-advance.js)
 //   attest   a proof Tacit's prover has published and not landed, to attestBitcoinStateProven; first advanceReflectionAncestry()
 //            while the proofs are more than 2,016 blocks behind the relay (dapp/community-ops.js)

@@ -74,7 +74,7 @@ const PAGES = {
   front: { path: '/', label: '#wallet-label', dot: '#wallet-dot', chip: '#wallet', sheet: '#sheet-wallet', off: '[data-wc-off]', idle: /Sign in|Open wallet/ },
   hub: { path: '/pay/', label: '#wallet-label', dot: '#wallet-dot', chip: '#wallet', sheet: '#sheet-wallet', off: '#w-wc-off', idle: /Sign in|Open wallet/ },
   eth: { path: '/pay/eth/', label: '#wallet-label', dot: '#wallet-dot', chip: '#wallet', sheet: '#sheet-wallet', off: '#w-wc-off', idle: /Sign in|Open wallet/ },
-  keeper: { path: '/weld/keeper/', label: '#wallet-label', dot: '#wallet-dot', chip: '#wallet', sheet: '#sheet-wc', off: '[data-off]', idle: /Connect/, bare: true },
+  keeper: { path: '/prove/#tab=bitcoin', label: '#wallet-label', dot: '#wallet-dot', chip: '#wallet', sheet: '#sheet-wc', off: '[data-off]', idle: /Connect/, bare: true },
   rewards: { path: '/rewards/', label: '#wallet-label', dot: '#wallet-dot', chip: '#wallet-chip', trade: true, idle: /Connect/ },
 };
 const label = (p, k) => p.evaluate((s) => document.querySelector(s)?.textContent.replace(/\s+/g, ' ').trim() || '', PAGES[k].label);

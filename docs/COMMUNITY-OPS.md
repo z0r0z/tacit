@@ -3,7 +3,7 @@
 Bitcoin's state reaches Ethereum through calls anyone can make: block headers into the header relay, proofs of
 each batch into the pool, and the open board's settles into the pool for the fees their proofs pay. Tacit's own
 services make every one of them. So can you, from a browser wallet on
-[tacit.finance/weld/keeper](https://tacit.finance/weld/keeper/), or from your own machine with one key and the
+[tacit.finance/prove](https://tacit.finance/prove/) (its Relay and Bitcoin tabs), or from your own machine with one key and the
 **community runner**, [`tools/community-runner.mjs`](../tools/community-runner.mjs).
 
 The page and the runner build the same calls from the same modules:
@@ -136,7 +136,7 @@ curl -fsSL https://tacit.finance/prove.sh | sh -s -- --uninstall      # stop it 
 
 [tacit prove](https://tacit.finance/prove/) gives the same command with your address filled in, then starts and pauses the installed prover and shows the
 proof under way and what the address has earned (it talks to `tacit-prover` on 127.0.0.1: `GET /mine`, `POST /mine {miner, on}`, kept in
-`~/.tacit-prover/mine.json`). The [keeper page](https://tacit.finance/weld/keeper/) has the command too. [`dapp/prove.sh`](../dapp/prove.sh) picks the build
+`~/.tacit-prover/mine.json`). [`dapp/prove.sh`](../dapp/prove.sh) picks the build
 for the machine (an Apple-silicon Mac or x86-64 Linux; on Windows, run it inside WSL), downloads the release it pins and runs nothing from it unless the
 archive's sha256 is the pinned one, puts the program in `~/.tacit-prover/bin`, and sets it to start at login (a launchd agent, or a systemd user unit). Run
 again, it updates the program and keeps the address. Cutting a new release means `node tools/prove-pins.mjs tacit-prover-vX.Y.Z`, which writes its sums into the script.

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; connect-src 'self' https://api.tacit.finance https://tacit-points.onrender.com http://127.0.0.1:47815; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self' http://127.0.0.1:47815 wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://tacit-points.onrender.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://rpc.flashbots.net https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit prove</title>
 <meta name="description" content="Each block is private transactions proved by someone's computer. Prove one and earn TAC.">
@@ -21,11 +21,20 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /prove/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/prove/app.js?cb=a6bafaab">
-<link rel="modulepreload" href="/community-prove.js?cb=9c90fa04">
+<link rel="modulepreload" href="/prove/app.js?cb=38e2cc1c">
+<link rel="modulepreload" href="/community-prove.js?cb=4f1a30e7">
 <link rel="modulepreload" href="/prove/view.js?cb=396aa5e6">
 <link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
+<link rel="modulepreload" href="/prove/ops.js?cb=bb362b17">
+<link rel="modulepreload" href="/evm-wallet.js?cb=b400cbe7">
+<link rel="modulepreload" href="/identity-message.js">
+<link rel="modulepreload" href="/walletconnect.js?cb=e0b29a34">
+<link rel="modulepreload" href="/header-relay-advance.js?cb=1c3a7226">
+<link rel="modulepreload" href="/rpc-body.js">
+<link rel="modulepreload" href="/community-ops.js?cb=ec01725e">
+<link rel="modulepreload" href="/relay/abi.js">
+<link rel="modulepreload" href="/zrouter-guard.js">
 <link rel="modulepreload" href="/prove/chain.js?cb=afaa267c">
 <!-- preload:end -->
 <style>
@@ -206,6 +215,97 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .forge p { margin: 8px 0 0; font-size: 12.5px; color: var(--mute); }
 pre.cmd { margin: 16px 0 0; padding: 12px 14px; background: var(--field); border: 1px solid var(--hair-2); font: 12.5px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 
+/* the node's jobs: Prove, Relay, Bitcoin */
+.tabs { display: flex; gap: 4px; margin: 28px 0 0; border-bottom: 1px solid var(--hair); }
+.tabs button { padding: 10px 16px; min-height: var(--tap); background: none; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; cursor: pointer; color: var(--mute); font: 500 13px/1 var(--mono); }
+.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--orange); }
+@media (hover: hover) { .tabs button:hover { color: var(--ink); } }
+.tab > .cols { margin-top: 18px; }
+.tab.ops > .lede { margin: 18px 0 0; }
+
+/* the moved cards (Relay, Bitcoin, the proof market): their own panels and buttons, kept to these tabs */
+.ops { --skel: rgba(26,26,26,.08); --skel-hi: rgba(26,26,26,.02); max-width: 720px; }
+@media (prefers-color-scheme: dark) { .ops { --skel: rgba(237,229,207,.07); --skel-hi: rgba(237,229,207,.15); } }
+.ops .lede { color: var(--mute); font-size: 13px; max-width: 60ch; margin: 0 0 8px; }
+.ops .asof { font-size: 12px; color: var(--mute); margin: 6px 0 0; min-height: 1.6em; }
+.ops section.grp { margin-top: 30px; }
+.ops section.grp > h2 { margin-bottom: 12px; }
+.ops h2 { font: italic 400 26px/1.1 var(--serif); margin: 0; display: flex; align-items: center; gap: 10px; }
+.ops h2 .tk { width: 24px; height: 24px; }
+.ops .tk.sm { width: 16px; height: 16px; }
+.ops .cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.ops .card { background: var(--card); border: 1px solid var(--hair); padding: 14px 16px 13px; min-width: 0; }
+.ops .card .k { font-size: 12px; color: var(--mute); display: flex; align-items: center; gap: 7px; }
+.ops .card .v { font: 400 26px/1.15 var(--serif); margin: 6px 0 4px; overflow-wrap: anywhere; }
+.ops .card .v small { font: 12px var(--mono); color: var(--mute); margin-left: 4px; }
+.ops .card .m { font-size: 12px; color: var(--mute); overflow-wrap: anywhere; }
+.ops .card .m .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; background: var(--hair-2); }
+.ops .dot.on { background: var(--ok); }
+.ops .dot.warn { background: var(--warn); }
+.ops .card.attn { border-color: var(--warn); }
+.ops .card.attn .m { color: var(--warn); }
+.ops .sk { display: inline-block; width: var(--w, 6ch); max-width: 100%; height: .9em; vertical-align: -.08em; border-radius: 2px;
+  background: linear-gradient(90deg, var(--skel) 0 35%, var(--skel-hi) 50%, var(--skel) 65%) 0 0 / 300% 100%; animation: shimmer 1.6s linear infinite; }
+@keyframes shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
+.ops .panel { padding: 16px 18px; margin-top: 12px; }
+.ops .panel > .lede { margin: 0 0 4px; }
+.ops .plan { font-size: 12.5px; margin-top: 12px; overflow-wrap: anywhere; }
+.ops .plan p { margin: 0; }
+.ops .plan p + p { margin-top: 6px; color: var(--mute); }
+.ops .stp { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 0; list-style: none; margin: 14px 0 0; padding: 0; font-size: 11.5px; color: var(--mute); }
+.ops .stp li { display: inline-flex; align-items: center; gap: 6px; }
+.ops .stp li + li::before { content: ''; width: 14px; height: 1px; margin: 0 8px; background: var(--hair-2); }
+.ops .stp i { width: 7px; height: 7px; border-radius: 50%; border: 1px solid var(--hair-2); flex: none; }
+.ops .stp .done, .ops .stp .now { color: var(--ink); }
+.ops .stp .done i { background: var(--ink); border-color: var(--ink); }
+.ops .stp .now i { background: var(--orange); border-color: var(--orange); animation: pulse 1.6s ease-in-out infinite; }
+.ops .stp .bad { color: var(--err); }
+.ops .stp .bad i { background: var(--err); border-color: var(--err); }
+.ops .btn { margin-top: 18px; }
+.btn[aria-busy="true"] { cursor: progress; }
+.btn[aria-busy="true"]::after { content: ''; width: 12px; height: 12px; border: 1.5px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.link { background: none; border: 0; padding: 6px 2px; margin: -6px -2px; cursor: pointer; color: var(--mute); text-decoration: underline; text-underline-offset: 3px; font-size: inherit; }
+@media (hover: hover) { .link:hover { color: var(--ink); } }
+.ops .status { min-height: 20px; }
+.ops .status:empty { min-height: 0; margin-top: 0; }
+.ops .callout { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; margin-top: 12px; font-size: 12.5px; background: var(--field); border-left: 2px solid var(--orange); }
+.ops .callout p { margin: 0; color: var(--mute); }
+.ops .callout p b { color: var(--ink); font-weight: 500; }
+.ops .callout a { color: var(--ink); }
+.ops .callout .btn { margin-top: 8px; }
+.ops pre.cmd { margin: 12px 0 0; font: 12px/1.7 var(--mono); border-color: var(--hair); overflow-x: auto; white-space: pre; }
+.ops .tscroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.ops table.batches { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 10px; }
+.ops table.batches th, .ops table.batches td { text-align: right; padding: 5px 0 5px 10px; border-bottom: 1px solid var(--hair); font-weight: 400; white-space: nowrap; }
+.ops table.batches th:first-child, .ops table.batches td:first-child { text-align: left; padding-left: 0; }
+.ops table.batches th { color: var(--mute); font-size: 11px; }
+.ops code { font: inherit; }
+@media (max-width: 560px) { .ops .cards { grid-template-columns: minmax(0, 1fr); } }
+.tab > .ops { margin-top: 30px; }
+
+/* the wallet chip's short label, the wallet app's pairing sheet, the toasts */
+.chip .narrow { display: none; }
+@media (max-width: 430px) { .chip .wide { display: none; } .chip .narrow { display: inline; } }
+.chip[aria-busy="true"] { cursor: progress; }
+dialog.sheet { width: min(480px, calc(100vw - 32px)); max-height: min(90vh, 900px); padding: 0; overflow: auto; color: var(--ink); background: var(--card); border: 1px solid var(--ink); box-shadow: 0 12px 40px rgba(0,0,0,.25); }
+dialog.sheet[open] { animation: rise .22s cubic-bezier(.2,.8,.2,1); }
+dialog.sheet::backdrop { background: rgba(0,0,0,.45); backdrop-filter: blur(2px); }
+@keyframes rise { from { opacity: 0; transform: translateY(14px); } }
+.sheet-in { padding: 24px 24px 28px; }
+.sheet-head { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
+.sheet-head h2 { font: 400 30px/1 var(--serif); letter-spacing: -.01em; margin: 0; }
+.sheet-head h2:focus { outline: none; }
+.x { margin-left: auto; width: var(--tap); height: var(--tap); display: grid; place-items: center; font-size: 22px; line-height: 1; background: none; border: 1px solid transparent; cursor: pointer; color: var(--mute); }
+.lede-s { color: var(--mute); font-size: 13px; margin: 0 0 14px; }
+.wc-qr { width: min(264px, 100%); margin: 6px auto 18px; padding: 14px; background: #fff; border: 1px solid var(--hair); }
+.wc-qr svg { display: block; width: 100%; height: auto; }
+@media (max-width: 560px) { dialog.sheet { width: 100vw; max-width: 100vw; margin: auto 0 0; max-height: 92vh; border-width: 1px 0 0; } .sheet-in { padding: 20px 16px calc(24px + env(safe-area-inset-bottom)); } }
+.toasts { position: fixed; inset: auto 16px max(16px, env(safe-area-inset-bottom)) 16px; width: auto; height: auto; margin: 0; padding: 0; border: 0; background: transparent; overflow: visible; display: grid; gap: 8px; justify-items: center; pointer-events: none; }
+.toasts:not(:popover-open) { display: none; }
+.toast { max-width: 520px; padding: 10px 16px; font-size: 12.5px; color: var(--card); background: var(--ink); pointer-events: auto; box-shadow: var(--lift); animation: rise .2s ease-out; }
+.toast.bad { background: var(--err); color: var(--card); }
+
 /* activity */
 .feed ol { list-style: none; margin: 0; padding: 0; }
 .feed li { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--hair); font-size: 12.5px; }
@@ -335,9 +435,14 @@ footer.sf svg.fill { width: 16px; height: 16px; }
 <!-- chrome:head:end -->
 </head>
 <body>
+<div class="sr" id="live" role="status" aria-live="polite"></div>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
   <defs>
     <symbol id="tk-tac" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#0a0a0a"/><circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2.5"/><path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="#f7931a" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11L21 11" stroke="#f7931a" stroke-width="2.4" stroke-linecap="round"/></symbol>
+    <symbol id="tk-btc" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#F7931A"/><path fill="#FFF" d="M23.189 14.02c.314-2.096-1.283-3.223-3.465-3.975l.708-2.84-1.728-.43-.69 2.765c-.454-.114-.92-.22-1.385-.326l.695-2.783L15.596 6l-.708 2.839c-.376-.086-.746-.17-1.104-.26l.002-.009-2.384-.595-.46 1.846s1.283.294 1.256.312c.7.175.826.638.805 1.006l-.806 3.235c.048.012.11.03.18.057l-.183-.045-1.13 4.532c-.086.212-.303.531-.793.41.018.025-1.256-.313-1.256-.313l-.858 1.978 2.25.561c.418.105.828.215 1.231.318l-.715 2.872 1.727.43.708-2.84c.472.127.93.245 1.378.357l-.706 2.828 1.728.43.715-2.866c2.948.558 5.164.333 6.097-2.333.752-2.146-.037-3.385-1.588-4.192 1.13-.26 1.98-1.003 2.207-2.538zm-3.95 5.538c-.533 2.147-4.148.986-5.32.695l.95-3.805c1.172.293 4.929.872 4.37 3.11zm.535-5.569c-.487 1.953-3.495.96-4.47.717l.86-3.45c.975.243 4.118.696 3.61 2.733z"/></symbol>
+    <symbol id="tk-eth" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#627EEA"/><g fill="#FFF"><path fill-opacity=".602" d="M16.498 4v8.87l7.497 3.35z"/><path d="M16.498 4L9 16.22l7.498-3.35z"/><path fill-opacity=".602" d="M16.498 21.968v6.027L24 17.616z"/><path d="M16.498 27.995v-6.028L9 17.616z"/><path fill-opacity=".2" d="M16.498 20.573l7.497-4.353-7.497-3.348z"/><path fill-opacity=".602" d="M9 16.22l7.498 4.353v-7.701z"/></g></symbol>
+    <symbol id="c-btc" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#0a0a0a"/><circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2.5"/><path transform="translate(16 16) scale(.74) translate(-16.3 -16.6)" fill="#f7931a" d="M23.189 14.02c.314-2.096-1.283-3.223-3.465-3.975l.708-2.84-1.728-.43-.69 2.765c-.454-.114-.92-.22-1.385-.326l.695-2.783L15.596 6l-.708 2.839c-.376-.086-.746-.17-1.104-.26l.002-.009-2.384-.595-.46 1.846s1.283.294 1.256.312c.7.175.826.638.805 1.006l-.806 3.235c.048.012.11.03.18.057l-.183-.045-1.13 4.532c-.086.212-.303.531-.793.41.018.025-1.256-.313-1.256-.313l-.858 1.978 2.25.561c.418.105.828.215 1.231.318l-.715 2.872 1.727.43.708-2.84c.472.127.93.245 1.378.357l-.706 2.828 1.728.43.715-2.866c2.948.558 5.164.333 6.097-2.333.752-2.146-.037-3.385-1.588-4.192 1.13-.26 1.98-1.003 2.207-2.538zm-3.95 5.538c-.533 2.147-4.148.986-5.32.695l.95-3.805c1.172.293 4.929.872 4.37 3.11zm.535-5.569c-.487 1.953-3.495.96-4.47.717l.86-3.45c.975.243 4.118.696 3.61 2.733z"/></symbol>
+    <symbol id="c-eth" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#0a0a0a"/><circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2.5"/><g fill="#8ea2f0" transform="translate(16 16) scale(1.05) translate(-16.3 -16)"><path fill-opacity=".7" d="M16.3 7v6.6l5.6 2.5z"/><path d="M16.3 7L10.7 16.1l5.6-2.5z"/><path fill-opacity=".7" d="M16.3 20.4v4.5l5.6-7.8z"/><path d="M16.3 24.9v-4.5l-5.6-3.3z"/><path fill-opacity=".35" d="M16.3 19.4l5.6-3.3-5.6-2.5z"/><path fill-opacity=".7" d="M10.7 16.1l5.6 3.3v-5.8z"/></g></symbol>
   </defs>
 </svg>
 <div class="shell">
@@ -368,12 +473,12 @@ footer.sf svg.fill { width: 16px; height: 16px; }
             <hr>
             <a href="/weld/stats/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20v-6"/><path d="M12 20V5"/><path d="M19 20v-10"/></svg>Stats</a>
             <a href="/build/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7l-5 5 5 5"/><path d="M16 7l5 5-5 5"/><path d="M14 4l-4 16"/></svg>Build</a>
-            <a href="/weld/keeper/"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M16.5 5.3a3 3 0 0 1 0 5.6"/><path d="M18 14.2c1.8.7 3 2.6 3 5.8"/></svg>Community ops</a>
             <a href="/classic.html"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M3 9h18"/></svg>Classic app</a>
             </div>
           </details>
         </nav>
       <!-- chrome:nav:end -->
+      <button class="chip" id="wallet" type="button"><span class="dot" id="wallet-dot"></span><span id="wallet-label"><span class="wide">Connect wallet</span><span class="narrow">Connect</span></span></button>
     </div>
   </header>
 
@@ -398,6 +503,13 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       <div class="detail" id="detail" hidden></div>
     </section>
 
+    <nav class="tabs" role="tablist" aria-label="What a node does">
+      <button type="button" role="tab" id="tb-prove" aria-controls="t-prove" aria-selected="true">Prove</button>
+      <button type="button" role="tab" id="tb-relay" aria-controls="t-relay" aria-selected="false">Relay</button>
+      <button type="button" role="tab" id="tb-bitcoin" aria-controls="t-bitcoin" aria-selected="false">Bitcoin</button>
+    </nav>
+
+    <div class="tab" id="t-prove" role="tabpanel" aria-labelledby="tb-prove">
     <div class="cols">
       <section class="panel" id="phone" hidden>
         <p class="empty">Proving needs a computer: a Mac with Apple silicon, or Linux. Open this page there.</p>
@@ -430,6 +542,82 @@ footer.sf svg.fill { width: 16px; height: 16px; }
         <ol id="board"><li class="empty">Nobody yet. Be first.</li></ol>
       </section>
     </div>
+      <div class="ops">
+  <section class="grp" id="g-prove" aria-labelledby="h-market">
+    <h2 id="h-market"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg>GPU provers: prove for TAC</h2>
+    <div class="panel">
+      <p class="lede">Holders who want a proof fast sign a fee in TAC. Your computer claims the order, proves it, and is paid from their permit the moment the pool accepts it.</p>
+      <div class="plan num" id="prove-box"><p><span class="sk" style="--w:22ch"></span></p></div>
+      <pre class="cmd"><code>curl -fsSL https://tacit.finance/prove.sh | sh   # installs tacit-prover and keeps it running (127.0.0.1)
+git clone https://github.com/src-company/tacit
+cd tacit &amp;&amp; npm ci --omit=dev
+RUNNER_KEY=0x… node tools/community-runner.mjs prove</code></pre>
+      <p class="plan">The key needs a little ETH for gas. Nothing moves unless the pool takes your proof. <a href="https://github.com/src-company/tacit/blob/main/docs/COMMUNITY-OPS.md" target="_blank" rel="noopener noreferrer">What it costs and earns</a> · <a href="https://etherscan.io/address/0x0000000033Dd45B1686Ba37e5F6e4ABDdaC17609" target="_blank" rel="noopener noreferrer">Market contract</a></p>
+    </div>
+  </section>
+      </div>
+    </div>
+
+    <div class="tab ops" id="t-relay" role="tabpanel" aria-labelledby="tb-relay" hidden>
+      <p class="lede">Send proved settles to Ethereum from your own wallet. Each one pays its fee to the wallet that sends it.</p>
+  <section class="grp" id="g-board" aria-labelledby="h-board">
+    <h2 id="h-board"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg>Send a waiting settle</h2>
+    <div class="panel">
+      <p class="lede">Each proof on the open board pays its fee to the wallet that sends it.</p>
+      <div class="plan num" id="board-box"><p><span class="sk" style="--w:22ch"></span></p></div>
+      <button class="btn" id="btn-board" type="button" disabled>Send one</button>
+      <p class="status" id="board-status" role="status"></p>
+    </div>
+  </section>
+  <section class="grp" id="g-run" aria-labelledby="h-run">
+    <h2 id="h-run"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg>Run it on your machine</h2>
+    <div class="panel">
+      <p class="lede">One key advances the relay, lands published proofs and sends the board’s settles for their fees.</p>
+      <pre class="cmd"><code>git clone https://github.com/src-company/tacit
+cd tacit &amp;&amp; npm ci --omit=dev
+RUNNER_KEY=0x… node tools/community-runner.mjs</code></pre>
+      <p class="plan"><a href="https://github.com/src-company/tacit/blob/main/docs/COMMUNITY-OPS.md" target="_blank" rel="noopener noreferrer">Modes and costs</a> · <a href="https://github.com/src-company/tacit/tree/main/contracts/sp1/confidential/device-prover" target="_blank" rel="noopener noreferrer">Prove on your own device</a></p>
+    </div>
+  </section>
+    </div>
+
+    <div class="tab ops" id="t-bitcoin" role="tabpanel" aria-labelledby="tb-bitcoin" hidden>
+      <p class="lede">Two permissionless calls keep Bitcoin’s state current on Ethereum: the header relay and the proofs. When one is behind, move it from your own wallet and pay only the network fee.</p>
+      <p class="asof num" id="asof">Reading the relay…</p>
+  <section class="grp" id="g-wait" aria-labelledby="h-wait">
+    <h2 id="h-wait"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg>Where things stand</h2>
+    <div class="cards" id="cards-wait"></div>
+  </section>
+  <section class="grp" id="g-advance" aria-labelledby="h-advance">
+    <h2 id="h-advance"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg>Advance the header relay</h2>
+    <div class="panel">
+      <p class="lede">Sends Bitcoin’s block headers to <code>BitcoinLightRelay.advanceTip</code>. The contract checks each header’s proof of work, so only real blocks are accepted. Up to 40 headers per transaction, each confirmed in your wallet.</p>
+      <div class="plan" id="plan-box"><p><span class="sk" style="--w:30ch"></span></p></div>
+      <button class="btn" id="btn-advance" type="button" disabled>Advance the relay</button>
+      <ol class="stp" id="strip" hidden></ol>
+      <div class="tscroll"><table class="batches num" id="batch-table" hidden><thead><tr><th>Batch</th><th>Blocks</th><th>Status</th></tr></thead><tbody id="batch-rows"></tbody></table></div>
+      <p class="status" id="status" role="status"></p>
+      <div class="callout" id="ancestry-callout" hidden>
+        <p><b>The proofs are more than 2,016 blocks behind the relay.</b> One batch can’t span that gap, so the pool needs a checkpoint closer to the proven block first. Anyone can call <code>advanceReflectionAncestry()</code>: it walks the relay’s chain back up to 2,016 blocks a call. <span id="anc-plan"></span></p>
+        <button class="btn ghost" id="btn-ancestry" type="button">Call advanceReflectionAncestry()</button>
+        <p class="status" id="anc-status" role="status"></p>
+      </div>
+    </div>
+  </section>
+  <section class="grp" id="g-attest" aria-labelledby="h-attest">
+    <h2 id="h-attest"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg>Submit a proof</h2>
+    <div class="panel">
+      <p class="lede">Tacit’s prover publishes each proof, then submits it itself. Any wallet can submit one that is still waiting: <code>attestBitcoinStateProven</code> takes any valid proof over the pool’s current state.</p>
+      <div class="plan" id="proof-box"><p>Reading the latest proof…</p></div>
+      <button class="btn" id="btn-proof" type="button" disabled>Submit the proof</button>
+      <p class="status" id="proof-status" role="status"></p>
+    </div>
+    <div class="callout">
+      <p>Each proof is an SP1 zero-knowledge proof over one batch of Bitcoin blocks, paid for in <a href="https://etherscan.io/address/0x6BEF15D938d4E72056AC92Ea4bDD0D76B1C4ad29" target="_blank" rel="noopener">PROVE</a> credits on the Succinct network. A prover with a funded Succinct account makes it, not this page.</p>
+      <p>Tacit’s prover looks for a new batch every 5 minutes. Anyone can run the same prover on the same public inputs with their own account: <a href="https://github.com/src-company/tacit/blob/main/worker-relay/src/reflection-folder.js" target="_blank" rel="noopener">reflection-folder.js</a>.</p>
+    </div>
+  </section>
+    </div>
   </main>
 
   <!-- chrome:foot:begin -->
@@ -447,6 +635,15 @@ footer.sf svg.fill { width: 16px; height: 16px; }
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/prove/app.js?cb=a6bafaab"></script>
+<dialog class="sheet" id="sheet-wc" aria-labelledby="wc-h">
+  <div class="sheet-in">
+    <div class="sheet-head"><h2 id="wc-h" tabindex="-1" autofocus>Connect a wallet app</h2><button class="x" type="button" data-close aria-label="Close">×</button></div>
+    <div id="wc-body"></div>
+  </div>
+</dialog>
+
+<div id="toast-container" class="toasts" popover="manual"></div>
+
+<script type="module" src="/prove/app.js?cb=38e2cc1c"></script>
 </body>
 </html>
