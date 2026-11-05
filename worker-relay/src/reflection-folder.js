@@ -31,6 +31,7 @@ import { proveReflection, proverCredit } from './lib/prover.js';
 import { creditShort, creditRefusal, makeProvePause } from './lib/prove-pause.js';
 import { nextBlockCap } from './lib/block-cap.js';
 import { makeHeldProof } from './lib/held-proof.js';
+import { jobCounts, proofCounts, countsBehind } from './lib/attest-counts.js';
 import { relayWallet, publicClient, verifyClient, readPool, readReflectionDigest, POOL, POOL_ABI, gasAboveCap, HEADER_RELAY, RELAY_ABI, baseFeeHistory } from './lib/chain.js';
 import { safeErr } from './lib/safe-err.js';
 import { withNonceRetry } from './lib/nonce-retry.js';
@@ -211,7 +212,20 @@ async function cycle() {
     await heartbeat('reflection', `mode_b required (crossOuts=${crossOuts}) but job is forward-only — eth-state candidate missing?`);
     return false;
   }
+  // The pool takes the batch only while its counts equal the pool's (lib/attest-counts.js). A batch behind them cannot land, so no proof is
+  // bought for it, and a held proof the pool has moved past is let go. An unreadable count is not a reason to stop.
+  const live = await Promise.all([readPool('attestedCrossOutCount'), readPool('attestedBitcoinConsumedCount')])
+    .then(([c, n]) => ({ crossOuts: BigInt(c), consumed: BigInt(n) })).catch(() => null);
+  const jobBehind = countsBehind(jobCounts(job), live);
+  if (jobBehind) {
+    heldProof.clear();
+    say('counts', `batch ${attestedTo} carries ${jobBehind}: recorded after its eth-state candidate — waiting for a fresh candidate, not buying a proof`);
+    await heartbeat('reflection', `batch behind the pool (${jobBehind}); waiting for the eth-state candidate`);
+    return false;
+  }
   let proved = heldProof.take(newDigest);
+  const heldBehind = proved && countsBehind(proofCounts(proved.publicValues, POOL), live);
+  if (heldBehind) { log(`the proof held for this batch carries ${heldBehind} — letting it go`); heldProof.clear(); proved = null; }
   if (proved) {
     log(`job attestedTo=${attestedTo} blocks=${job.blocks ?? '?'} — the proof bought for this batch is still held, not buying another`);
   } else {
