@@ -775,7 +775,7 @@
             "label": "Bridge 10 TAC",
             "href": "/fast/"
           },
-          "ask": "Bridger: the Bitcoin lock link on your bridge"
+          "ask": "The Bitcoin lock of your bridge. It is paid to the wallet you claim from."
         },
         {
           "id": "03-bridger-second",
@@ -794,7 +794,7 @@
             "label": "Bridge 10 TAC",
             "href": "/fast/"
           },
-          "ask": "Bridger: the Bitcoin lock link on your bridge"
+          "ask": "The Bitcoin lock of your bridge. It is paid to the wallet you claim from."
         }
       ],
       "about": [

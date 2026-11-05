@@ -291,6 +291,7 @@ function doneBody(job, res) {
       <div class="kv"><span>When</span><b>${span}</b></div>
       <div class="kv"><span>Paid</span><b class="num">${res.count ? `${tac(res.total)} TAC` : '—'}</b></div>
     </div>
+    ${job.steps.some((s) => s.kind === 'review' && !onChain(job, s)) ? claimPanel(job, job.steps.filter((s) => s.kind === 'review' && !onChain(job, s)), isOpen(job), false) : ''}
     ${about(job)}
     ${links(job)}
     ${groupsOf(job).filter(([g]) => g !== 'Confidential pool').map(([g, rows]) => `<p class="grp-h"><span>${esc(g)}</span><span>${rows.length}</span></p>
@@ -355,8 +356,20 @@ function reviewRow(job, s, i) {
     ${c ? `<span class="by">${c.state === 'credited' ? 'Credited' : 'Claimed'} to ${link(`${ETHERSCAN}/address/${c.address}`, esc(short(c.address)))} · ${tac(c.wei)} TAC</span>` : ''}
   </li>`;
 }
+// The claim forms of the steps a reviewed job has left: each names the Bitcoin transaction of a bridge and is paid to the wallet that claims.
+// `status` is false where the page already has this job's status line.
+const claimPanel = (job, todo, open, status = true) => `<section class="panel p-mine" aria-label="Claim">
+          <p class="eyebrow">Claim</p>
+          ${todo.map((s) => `<form class="review" autocomplete="off" data-job="${esc(job.id)}" data-step="${esc(s.id)}">
+            <label class="lbl"><span>${esc(s.ask)}</span>
+              <textarea rows="2" spellcheck="false" data-for="${esc(`${job.id}/${s.id}`)}" placeholder="Bitcoin transaction id"></textarea></label>
+            <button class="btn ghost" type="submit" ${open ? '' : 'disabled'}>${W.account ? `Claim as ${esc(s.label.toLowerCase())}` : 'Connect wallet'}</button>
+          </form>`).join('')}
+          ${status ? `<div class="status" role="status" data-for="${esc(job.id)}"></div>` : ''}
+        </section>`;
 function reviewBody(job) {
-  const todo = job.steps.filter((s) => !onChain(job, s) && !s.reserved), open = isOpen(job), a = S.api;
+  // `reserved` steps (taken by a bridge already checked) keep their claim form for its owner but are not offered to others as work to do
+  const todo = job.steps.filter((s) => !onChain(job, s)), doit = todo.filter((s) => !s.reserved), open = isOpen(job), a = S.api;
   return `
     <div class="grid">
       <div class="col">
@@ -371,20 +384,12 @@ function reviewBody(job) {
         </section>
       </div>
       <div class="col">
-        ${todo.length ? `<section class="panel p-ticket" aria-label="Do it">
+        ${doit.length ? `<section class="panel p-ticket" aria-label="Do it">
           <p class="eyebrow">Do it</p>
-          <div class="acts">${todo.map((s) => `<a class="btn" href="${esc(s.action.href)}" target="_blank" rel="noopener noreferrer">${esc(s.action.label)} ↗</a>`).join('')}</div>
+          <div class="acts">${doit.map((s) => `<a class="btn" href="${esc(s.action.href)}" target="_blank" rel="noopener noreferrer">${esc(s.action.label)} ↗</a>`).join('')}</div>
           <p class="hint">Opens the fast bridge. Come back here to claim when the bridge is done.</p>
         </section>` : ''}
-        <section class="panel p-mine" aria-label="Claim">
-          <p class="eyebrow">Claim</p>
-          ${todo.map((s) => `<form class="review" autocomplete="off" data-job="${esc(job.id)}" data-step="${esc(s.id)}">
-            <label class="lbl"><span>${esc(s.ask)}</span>
-              <textarea rows="2" spellcheck="false" data-for="${esc(`${job.id}/${s.id}`)}" placeholder="Bitcoin transaction id"></textarea></label>
-            <button class="btn ghost" type="submit" ${open ? '' : 'disabled'}>${W.account ? `Claim as ${esc(s.label.toLowerCase())}` : 'Connect wallet'}</button>
-          </form>`).join('')}
-          <div class="status" role="status" data-for="${esc(job.id)}"></div>
-        </section>
+        ${claimPanel(job, todo, open)}
         ${a?.enabled ? `<section class="panel p-rewards" aria-label="Rewards"><p class="eyebrow">Rewards</p>
           <div class="rows"><div class="kv"><span>Budget left</span><b class="num">${tac(BigInt(a.budget.remainingWei), 0)} of ${tac(a.budget.totalWei, 0)} TAC</b></div><div class="kv"><span>Open until</span><b>${esc(day(a.endSec))}</b></div></div></section>` : ''}
       </div>
