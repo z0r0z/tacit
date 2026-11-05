@@ -132,9 +132,10 @@ export async function reflectionConsumedSourceRegister({ nu, cx, cy, srcTxid, sr
 }
 
 // ── Eth-state sidecar (Mode-B producer) ──
-// { network, confirmed: {...}|null, pending: {contentHash,publishedAt,lastBlock,execBlock,finalizedSlot}|null }
+// { network, confirmed: {...}|null, pending: {contentHash,publishedAt,lastBlock,execBlock,finalizedSlot}|null }, or { unavailable: <HTTP status> }
+// when the API refuses. (Read as "nothing pending, nothing confirmed", a refusal made the sidecar drop its in-flight candidate and prove another.)
 export async function reflectionEthState() {
-  return getJson(`/reflection/eth-state?network=${encodeURIComponent(CFG.network)}`);
+  return getJson(`/reflection/eth-state?network=${encodeURIComponent(CFG.network)}`, { status: true });
 }
 // Publish a fresh candidate. 409 (pending already live and not stale) is a normal, expected outcome —
 // it means another producer (or a prior run of this same sidecar) already fueled the next Bitcoin batch,

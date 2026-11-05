@@ -124,6 +124,11 @@ async function readLocalInflight() {
 async function cycle() {
   await mkdir(CFG.ethProveOutDir, { recursive: true });
   const state = await reflectionEthState(); // { confirmed, pending }
+  // An API that cannot answer says nothing about the candidates: the in-flight one is kept and nothing is proved until it can.
+  if (state.unavailable) {
+    log(`the API could not say what is pending (HTTP ${state.unavailable}) — asking again next cycle`);
+    return false;
+  }
   const pendingLive = !!(state.pending && !isStale(state.pending.publishedAt));
 
   const local = await readLocalInflight();
