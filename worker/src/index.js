@@ -3806,6 +3806,19 @@ async function handleChainBlocks(req, env, url, cors) {
   }
 }
 
+// The pool's public reads, kept briefly in this process: an answer and its time, by key (a day's tally by its day).
+const _poolCache = new Map();
+async function poolCached(key, ms, make) {
+  const hit = _poolCache.get(key);
+  if (hit && Date.now() - hit.at < ms) return hit.r;
+  const r = await make();
+  if (r && r.status === 200) {
+    _poolCache.set(key, { at: Date.now(), r });
+    if (_poolCache.size > 64) _poolCache.delete(_poolCache.keys().next().value);
+  }
+  return r;
+}
+
 async function handleProofPool(req, env, url, cors) {
   const nostore = { ...cors, 'Cache-Control': 'no-store' };
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
@@ -3817,9 +3830,10 @@ async function handleProofPool(req, env, url, cors) {
   const send = (r, headers = nostore) => (r.status === 204 ? new Response(null, { status: 204, headers }) : jsonResponse(r.body, r.status, headers));
   const p = url.pathname;
   if (req.method === 'GET') {
-    if (p === '/prover/pool') return send(await pool.stats(), { ...cors, 'Cache-Control': 'max-age=10' });
-    if (p === '/prover/pool/credits') return send(await pool.credits(Number(url.searchParams.get('day') ?? NaN)), { ...cors, 'Cache-Control': 'max-age=60' });
-    if (p === '/prover/pool/recent') return send(await pool.recent(), { ...cors, 'Cache-Control': 'max-age=5' });
+    // Every open /prove/ page reads these every few seconds: one answer is kept a few seconds and given to all of them.
+    if (p === '/prover/pool') return send(await poolCached('stats', 5000, () => pool.stats()), { ...cors, 'Cache-Control': 'max-age=10' });
+    if (p === '/prover/pool/credits') { const day = Number(url.searchParams.get('day') ?? NaN); return send(await poolCached(`credits:${day}`, 15000, () => pool.credits(day)), { ...cors, 'Cache-Control': 'max-age=60' }); }
+    if (p === '/prover/pool/recent') return send(await poolCached('recent', 5000, () => pool.recent()), { ...cors, 'Cache-Control': 'max-age=5' });
     if (p === '/prover/pool/result') {
       const ids = [...new Set(String(url.searchParams.get('ids') || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean))];
       if (!ids.length || ids.length > PROOF_POOL.maxResultIds) return jsonResponse({ ok: false, error: `ids must name 1 to ${PROOF_POOL.maxResultIds} jobs` }, 400, nostore);
