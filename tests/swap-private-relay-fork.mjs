@@ -204,7 +204,7 @@ const t0 = Date.now();
 
 // ── 1. ETH made private: the deposit the wallet sends, the wrap the guest checks, the pool's settle ──
 const wei = 10n ** 17n, units = wei / E10;
-const made = await P.swap({ wallet: true, wei, units, path: [], label: 'Make private' }, { wallet, from: FROM, say }).catch((e) => ({ error: e }));
+const made = await P.swap({ wallet: true, wei, units, path: [], label: 'Shield' }, { wallet, from: FROM, say }).catch((e) => ({ error: e }));
 ok(!made.error && made.made === units, `ETH is made private: the wrap is checked by the settle guest and settled by the pool (${made.error ? made.error.message : `${made.made} units`}; ${log.join('; ')})`);
 const held = await P.read(true);
 const tNotes = held?.byAsset?.[ETH_ID]?.notes || [];

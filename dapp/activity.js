@@ -6,7 +6,7 @@
 export const ACT_KEY = 'tacit-lite-activity-v1', ACT_MAX = 20;
 
 export const JOB_LABEL = {
-  wrap: 'Make private', wraptransfer: 'Make private and send', wrapswap: 'Make private and swap', wraplp: 'Make private and add liquidity', wrapcdpmint: 'Make private and borrow',
+  wrap: 'Shield', wraptransfer: 'Shield and send', wrapswap: 'Shield and swap', wraplp: 'Shield and add liquidity', wrapcdpmint: 'Shield and borrow',
   transfer: 'Private transfer', batchtransfer: 'Private transfers', unwrap: 'Withdraw', sendunwrap: 'Withdraw', swap: 'Private swap', route: 'Private swap',
   lp: 'Add liquidity', lpremove: 'Take out liquidity', lpbond: 'Bond liquidity', farmbond: 'Join a private farm', farmharvest: 'Harvest farm rewards',
   farmunbond: 'Unbond from a farm', otc: 'Private trade', bid: 'Private bid', cbtcmint: 'Mint cBTC', cdpmint: 'Borrow cUSD', cdpclose: 'Repay a loan',

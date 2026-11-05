@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-iSLgn6RdGKcSzRJWrXfxbDIYY/LDmjMNsoBguRy+OR4=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-kcwd3dPzipNbPrrXGYHq/WesihJJE1rGGE3m05/IM0E=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -63,8 +63,8 @@
 <link rel="modulepreload" href="/bridge-in.js?cb=4a6878a3">
 <link rel="modulepreload" href="/bridge-tick.js?cb=b9adb91d">
 <link rel="modulepreload" href="/tacit-session.js?cb=a2d34bb2">
-<link rel="modulepreload" href="/activity.js?cb=5bc9627f">
-<link rel="modulepreload" href="/swap/card.js?cb=b272640c">
+<link rel="modulepreload" href="/activity.js?cb=6baa925d">
+<link rel="modulepreload" href="/swap/card.js?cb=75525fbf">
 <link rel="modulepreload" href="/trade/wallet.js?cb=88b623b8">
 <link rel="modulepreload" href="/trade/util.js?cb=e8317464">
 <link rel="modulepreload" href="/trade/rpc.js?cb=f575ef91">
@@ -679,6 +679,8 @@ a.di { color: inherit; text-decoration: none; }
 .hx-live .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .hx-live .s { color: var(--mute); white-space: nowrap; } .hx-live .go { color: var(--mute); }
 .hx-live .dot { width: 7px; height: 7px; flex: none; }
 .hx-where { display: flex; margin: 0 0 12px; } .hx-where button { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px; } .hx-where .tk { width: 14px; height: 14px; }
+.hx-where button { min-width: 0; } .hx-where .n { display: none; }
+@media (max-width: 370px) { .hx-where .w { display: none; } .hx-where .n { display: inline; } .hx-where button { padding: 2px 8px; } }
 /* under Shield's button: the steps of a first press, then, once it is done, where the private coin goes next */
 .hx-path { display: flex; justify-content: center; gap: 6px 18px; flex-wrap: wrap; margin: 10px 0 0; padding: 0; list-style: none; counter-reset: s; font: 12px var(--mono); color: var(--mute); }
 .hx-path li { counter-increment: s; display: inline-flex; align-items: center; gap: 6px; }
@@ -1201,6 +1203,10 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   .proof b { font-size: 34px; }
   .hx-h { padding: 2px 2px 0; }
   .hx-h button { font-size: 16px; }
+}
+/* six tabs on the narrowest phones: a little smaller, so Withdraw keeps clear of its neighbours */
+@media (max-width: 370px) {
+  .hx-h button { font-size: 14.5px; letter-spacing: -.02em; }
   .hx-b { padding: 12px; }
   .hx-b.swc .act, .hx-b .swc .act { margin-left: -12px; margin-right: -12px; padding-left: 12px; padding-right: 12px; }
   .hx-amt { font-size: 38px; }
@@ -1939,7 +1945,7 @@ import { SERVED as SERVED_POOLS, keeperIdOf, makeTokenPools, KEEPERS as POOL_KEE
 import { bridgeError, checkText, listNotes as listBridgeNotes, begin as beginBridge, toSelf as noteToSelf, through as brThrough, transfers as brTransfers, longCount as brLongCount, longReason as brLongReason, needsSend as brNeedsSend, firstStep as brFirst, overCap as brOver, haltText as bridgeHaltText, halts as brHalts, mergeSend, startNote, tryAgain, bulkFee, prepsAfterPass, runMerge as bridgeRunMerge, runAll as bridgeRunAll } from '/bridge-in.js?cb=4a6878a3';
 import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverEvery, IN_DONE, IN_HELD, IN_BURN_SENT, waitRanOut } from '/bridge-tick.js?cb=b9adb91d';
 import { makeTacitSession } from '/tacit-session.js?cb=a2d34bb2';
-import { ACT_KEY, ACT_MAX, JOB_LABEL, ENDS, ended, listed as listedOf, actBridge, actOpen, actDone, makeJournal, makeFollow, makeRelayState, makePace, WAIT_WHY, OPENISH, ahead } from '/activity.js?cb=5bc9627f';
+import { ACT_KEY, ACT_MAX, JOB_LABEL, ENDS, ended, listed as listedOf, actBridge, actOpen, actDone, makeJournal, makeFollow, makeRelayState, makePace, WAIT_WHY, OPENISH, ahead } from '/activity.js?cb=6baa925d';
 if (window.__tacitAway) await new Promise(() => {});
 // The swap card's stylesheet is linked in the head as media="print", so the first paint does not wait for it (the host sends it after the document, and nothing visible yet is drawn
 // with it): it applies from here, in its place in the cascade, before the tile is drawn.
@@ -5098,7 +5104,7 @@ function renderV1(el) {
     ${LK.pub === S.key.pubHex && lockList('claim').length ? html`<div class="callout"><span>${lockLine(lockList('claim'), 'claim')}</span><button class="btn ghost" type="button" id="v1-claim">Claim</button></div>` : ''}
     ${LK.pub === S.key.pubHex && lockList('refund').length ? html`<div class="callout"><span>${lockLine(lockList('refund'), 'refund')}</span><button class="btn ghost" type="button" id="v1-back">Take back</button></div>` : ''}
     ${LK.failed?.pub === S.key.pubHex && LK.pub !== S.key.pubHex && !LK.scanning ? html`<div class="callout"><span>Could not check for payments sent to you.</span><button class="btn ghost" type="button" id="v1-locks">Try again</button></div>` : ''}
-    ${segSub('v1', V1.mode, [['wrap', 'Make private'], ['send', 'Send'], ['swap', 'Swap'], ['out', 'Withdraw'], ...(xoShown(S.key.pubHex) ? [['btc', xoJournal(S.key.pubHex, XA.teth).length || brJournal(S.key.pubHex, 'tETH').some((r) => !BR_DONE.includes(r.stage) && r.stage !== 'recovered') ? html`Bitcoin<i class="dot live" aria-hidden="true"></i><span class="sr">, under way</span>` : 'Bitcoin']] : [])])}
+    ${segSub('v1', V1.mode, [['wrap', 'Shield'], ['send', 'Send'], ['swap', 'Swap'], ['out', 'Withdraw'], ...(xoShown(S.key.pubHex) ? [['btc', xoJournal(S.key.pubHex, XA.teth).length || brJournal(S.key.pubHex, 'tETH').some((r) => !BR_DONE.includes(r.stage) && r.stage !== 'recovered') ? html`Bitcoin<i class="dot live" aria-hidden="true"></i><span class="sr">, under way</span>` : 'Bitcoin']] : [])])}
     <div id="v1-form"></div>
     <div class="status" role="status" id="v1-status"></div>`);
   wireSub(el, 'v1', (m) => { V1.mode = m; keep($('#sheet-eth'), render.eth); });
@@ -5294,7 +5300,7 @@ function v1Wrap(el, status) {
     <div class="lbl"><span>Amount</span><button type="button" id="w-max">${payName()} <span id="w-bal"><span class="sk" style="--w:5ch"></span></span> ETH</button></div>
     <div class="amt"><input id="w-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="ETH to wrap"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>ETH</span></div>
     <div class="rcpt" id="w-rcpt" aria-live="polite" hidden></div>
-    <button class="btn" type="button" id="w-go" disabled>Make ETH private</button>
+    <button class="btn" type="button" id="w-go" disabled>Shield ETH</button>
     <p class="note">${ownNow(['wrap']) ? html`One transaction from ${your()} once it is proved ${devOn() ? 'on this computer' : 'with your own credit'}, so nothing waits in the pool meanwhile and there is no relay tip.` : html`One transaction from ${your()}. A small fee in it pays Tacit’s relay to do the privacy work.`}</p>
     <p class="note mute" data-pool="v1">${poolLine('v1')}</p>`);
   const input = $('#w-amt'), go = $('#w-go'), rc = $('#w-rcpt');
@@ -5607,7 +5613,7 @@ function v1Swap(el, status) {
       <div class="lbl"><span>You pay</span><button type="button" id="sw-max">${heldLabel(from, 8, dp, unit)}</button></div>
       ${segSub('swf', from, SWAP_ASSETS.map(chip))}
       <div class="amt"><input id="sw-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="${unit} to swap"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-${icon}"/></svg>${unit}</span></div>
-      ${P.scan && !held && from === 'eth' && tethComing() ? (comingPoll('eth'), html`<div class="callout" data-coming><span>${COMING_TETH} The swap is ready once it lands.</span></div>`) : P.scan && !held ? html`<p class="note">No private ${unit} yet. ${from === 'eth' ? html`<button type="button" class="link" id="sw-first">Make ETH private first</button>` : html`<button type="button" class="link" id="sw-first">Pay with tETH</button>`}</p>` : ''}
+      ${P.scan && !held && from === 'eth' && tethComing() ? (comingPoll('eth'), html`<div class="callout" data-coming><span>${COMING_TETH} The swap is ready once it lands.</span></div>`) : P.scan && !held ? html`<p class="note">No private ${unit} yet. ${from === 'eth' ? html`<button type="button" class="link" id="sw-first">Shield ETH first</button>` : html`<button type="button" class="link" id="sw-first">Pay with tETH</button>`}</p>` : ''}
       <button type="button" class="flip" id="sw-flip" aria-label="Pay with ${unitTo} instead"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3v17m0 0-4-4m4 4 4-4M16 21V4m0 0-4 4m4-4 4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
       <div class="lbl"><span>You get</span><span>${heldLabel(to, 8, dpTo, unitTo)}</span></div>
       ${segSub('swt', to, SWAP_ASSETS.filter(([k]) => k !== from).map(chip))}
@@ -5844,10 +5850,10 @@ const BTC_NOTE_ASSETS = [CHAIN_ASSETS.tac, CHAIN_ASSETS.teth, CHAIN_ASSETS.cbtc,
 const xdec = (a) => a?.dec ?? 8;
 const XA = {
   teth: { key: 'teth', ticker: 'tETH', pool: 'cETH', k: 'eth', icon: 'tk-teth', flag: 'tacit-teth-btc', seg: true, sheet: 'eth', status: '#v1-status', pre: 'xo', bpre: 'xb', dp: 6,
-    held: 'tETH on your Bitcoin address', see: 'Private ETH, Bitcoin', none: 'You have no private tETH yet. The Make private tab turns ETH into it.', after: 'There it can be brought back to Ethereum below once Bitcoin’s proof has recorded it.',
+    held: 'tETH on your Bitcoin address', see: 'Private ETH, Bitcoin', none: 'You have no private tETH yet. The Shield tab turns ETH into it.', after: 'There it can be brought back to Ethereum below once Bitcoin’s proof has recorded it.',
     id: '0x' + CHAIN_ASSETS.teth.id },
   tac: { key: 'tac', ticker: 'TAC', pool: 'cTAC', k: 'tac', icon: 'tk-tac', flag: 'tacit-tac-btc', sheet: 'tac', status: '#bt-status', pre: 'xt', bpre: 'xc', dp: 4, mixed: true, floor: true, min: 2_000_000_000n,
-    held: 'Bridged TAC on your Bitcoin address', see: 'TAC, Bridge, To Bitcoin', none: 'You have no private TAC yet. Make TAC private above, buy it on the Buy tab, or bring it from Bitcoin on the From Bitcoin side.', after: 'There it can be brought back to Ethereum below once Bitcoin’s proof has recorded it.',
+    held: 'Bridged TAC on your Bitcoin address', see: 'TAC, Bridge, To Bitcoin', none: 'You have no private TAC yet. Shield TAC above, buy it on the Buy tab, or bring it from Bitcoin on the From Bitcoin side.', after: 'There it can be brought back to Ethereum below once Bitcoin’s proof has recorded it.',
     id: '0x' + CHAIN_ASSETS.tac.id },
   cbtc: { key: 'cbtc', ticker: 'cBTC', pool: 'cBTC', k: 'cbtc', icon: 'tk-cbtc', flag: 'tacit-cbtc-btc', seg: true, sheet: 'borrow', status: '#bw-status', pre: 'xk', bpre: 'xkb', dp: 8,
     held: 'cBTC on your Bitcoin address', see: 'Borrow, On Bitcoin', none: 'You have no private cBTC yet. Buy some in Swap.', after: 'There it can be brought back to Ethereum below once Bitcoin’s proof has recorded it, or burned to redeem a lock.',
@@ -5856,7 +5862,7 @@ const XA = {
     held: 'cUSD on your Bitcoin address', see: 'Borrow, On Bitcoin', none: 'You have no private cUSD yet. Borrow it against cBTC.', after: 'There it can be brought back to Ethereum below once Bitcoin’s proof has recorded it.',
     id: '0x' + CHAIN_ASSETS.cusd.id },
   cusdt: { key: 'cusdt', ticker: 'cUSDT', pool: 'cUSDT', k: 'cusdt', icon: 'tk-usdt', flag: 'tacit-cusdt-btc', seg: true, sheet: 'usdt', status: '#us-status', pre: 'xd', bpre: 'xdb', dp: 2, dec: 6,
-    held: 'cUSDT on your Bitcoin address', see: 'USDT, Bitcoin', none: 'You have no private USDT yet. The Make private tab turns the USDT in your wallet into it.', after: 'There it can be brought back to Ethereum below once Bitcoin’s proof has recorded it.',
+    held: 'cUSDT on your Bitcoin address', see: 'USDT, Bitcoin', none: 'You have no private USDT yet. The Shield tab turns the USDT in your wallet into it.', after: 'There it can be brought back to Ethereum below once Bitcoin’s proof has recorded it.',
     id: '0x' + CHAIN_ASSETS.cusdt.id },
 };
 // cBTC moved to Bitcoin to redeem a lock: exactly the lock's shortfall, one try at the fee asked, no way back from the form (the redeem burns it),
@@ -6721,7 +6727,7 @@ render.usdt = () => {
       <div><div class="v num">${P.scan ? fmt(held, 6, 2) : P.err ? html`<span class="err">—</span>` : html`<span class="sk" style="--w:8ch"></span>`}</div><div class="u">USDT, private</div></div>
       <div class="side">${US.bal != null ? html`${fmt(US.bal, 6, 2)} in ${your()}` : ''}</div>
     </div>
-    ${segSub('us', US.mode, [['wrap', 'Make private'], ['out', 'Withdraw'], ['btc', 'Bitcoin']])}
+    ${segSub('us', US.mode, [['wrap', 'Shield'], ['out', 'Withdraw'], ['btc', 'Bitcoin']])}
     <div id="us-form"></div>
     <div class="status" role="status" id="us-status"></div>`);
   const status = $('#us-status'), f = $('#us-form');
@@ -6748,10 +6754,10 @@ render.usdt = () => {
   }
   const bal = US.bal, from = your();
   mount(f, html`
-    <div class="lbl"><span>Make USDT private</span><button type="button" id="us-max">USDT in ${from} ${bal != null ? fmt(bal, 6, 2) : '…'}</button></div>
+    <div class="lbl"><span>Shield USDT</span><button type="button" id="us-max">USDT in ${from} ${bal != null ? fmt(bal, 6, 2) : '…'}</button></div>
     <div class="amt"><input id="us-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="USDT to make private"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-usdt"/></svg>USDT</span></div>
     <div class="rcpt" id="us-rcpt" hidden></div>
-    <button class="btn" type="button" id="us-go" disabled>Make private</button>
+    <button class="btn" type="button" id="us-go" disabled>Shield</button>
     <p class="note">From ${from}, through Permit2: you approve exactly this amount and sign once. ${ownNow(['wrap']) ? `It is proved ${devOn() ? 'on this computer' : 'with your own credit'} first, so nothing waits in the pool.` : 'Tacit’s relay does the privacy work after.'} Private USDT can then be sent, swapped, bridged to Bitcoin or withdrawn.</p>`);
   const amt = $('#us-amt', f), go = $('#us-go', f), rc = $('#us-rcpt', f);
   let q = null;
@@ -8520,10 +8526,10 @@ function brMintedText(rec) {
   if (plan?.publicNote === 'gone' && !brPrivateNote(rec)) return html`Arrived. Its private note is no longer in your balance: it was made public or sent on.`;
   if (plan?.publicTo && !plan.publicDone) {
     return plan.publicTries >= 3 || plan.publicErr
-      ? html`Arrived in your private TAC. Making it public did not go${plan.publicErr ? `: ${errText(new Error(plan.publicErr))}` : ''}. Make public now tries again.`
+      ? html`Arrived in your private TAC. Making it public did not go${plan.publicErr ? `: ${errText(new Error(plan.publicErr))}` : ''}. Withdraw now tries again.`
       : html`Arrived in your private TAC. It is being made public for you within a few minutes, while this page is open with your wallet.`;
   }
-  return html`Arrived in your private TAC. Make public turns it into ERC20 TAC.`;
+  return html`Arrived in your private TAC. Withdraw turns it into ERC-20 TAC in your wallet.`;
 }
 function brNoteText(rec) {
   const s = rec.stage, wait = 'Confirmed on Bitcoin. Waiting for Bitcoin’s proof on Ethereum to record the burn: usually within a few hours, sometimes up to a day.';
@@ -8566,7 +8572,7 @@ function brRow(rec) {
   const act = rec.stage === 'traced' ? btn('burn', 'Burn it', false) : rec.stage === 'folded' || rec.stage === 'rfolded' ? btn('mint', 'Mint now', false)
     : rec.stage === 'stopped' ? btn('reclaim', 'Move back to my wallet')
     : rec.stage === 'not-recorded' ? html`${brRecoverable(rec) ? btn('recover', 'Recover') : ''}${rec.path === 'reflected' ? btn('recheck', 'Check again') : ''}`
-    : rec.stage === 'recovered' ? btn('dismiss', 'Done') : arrived ? html`${brPrivateNote(rec) ? btn('public', 'Make public now', false) : ''}${btn('seen', 'Done')}` : failing ? btn('poll', 'Try again') : BR_WAIT.includes(rec.stage) ? btn('poll', 'Check now') : '';
+    : rec.stage === 'recovered' ? btn('dismiss', 'Done') : arrived ? html`${brPrivateNote(rec) ? btn('public', 'Withdraw now', false) : ''}${btn('seen', 'Done')}` : failing ? btn('poll', 'Try again') : BR_WAIT.includes(rec.stage) ? btn('poll', 'Check now') : '';
   const stuck = BR_SIGNED.includes(rec.stage) && failing && (rec.errorCount || 0) >= 3;
   const self = (rec.stage === 'folded' || rec.stage === 'rfolded') && failing && brRefused(rec.lastError?.message);
   const back = brMinerStuck(rec) || brStalled(rec);
@@ -8876,7 +8882,7 @@ function renderBridgeIn(el) {
   if (BR.act && (!bulk || (BR.act === 'merge' && !bulk.merge.groups.length))) BR.act = null;
   if (BR.act) BR.pick = null;
   mount(el, html`
-    <p class="lede-s">TAC on your Bitcoin address becomes private TAC on Ethereum. You pay a Bitcoin fee, in sats. It arrives once Bitcoin’s proof on Ethereum records the burn, usually a few hours, up to a day. Tick the receipt’s choice to arrive as public TAC (ERC20), or press Make public after. <a href="/bridge/">How the bridge is proven</a></p>
+    <p class="lede-s">TAC on your Bitcoin address becomes private TAC on Ethereum. You pay a Bitcoin fee, in sats. It arrives once Bitcoin’s proof on Ethereum records the burn, usually a few hours, up to a day. Tick the receipt’s choice to arrive as public TAC (ERC20), or press Withdraw after. <a href="/bridge/">How the bridge is proven</a></p>
     ${brLooking === pub ? html`<p class="note">Looking through your Bitcoin history for bridges this browser has no record of…</p>` : ''}
     ${preps.length || swaps.length ? html`<div class="lbl"><span>Getting ready</span></div><ul class="acts brs">${preps.map(brPrepRow)}${swaps.map(bswRow)}</ul>` : ''}
     ${recs.length ? html`<div class="lbl"><span>On the way</span></div><ul class="acts brs">${recs.map(brRow)}</ul>` : ''}
@@ -9336,7 +9342,7 @@ async function brAct(run, kind, id) {
       run.say(status(), html`<span class="ok">✓ ${amt} sent to ${brPaid(after)}.</span> ${after.mintedTxHash ? txLink(after.mintedTxHash) : ''}`);
     } else if (after.stage === 'minted') {
       toast(`${amt} from Bitcoin is in your private ${tk}`);
-      run.say(status(), html`<span class="ok">✓ ${amt} arrived in your private ${tk}.</span> ${after.mintedTxHash ? txLink(after.mintedTxHash) : ''} ${tk === 'TAC' ? html`<span>Make public, above, turns it into ERC20 TAC.</span>` : ''}`);
+      run.say(status(), html`<span class="ok">✓ ${amt} arrived in your private ${tk}.</span> ${after.mintedTxHash ? txLink(after.mintedTxHash) : ''} ${tk === 'TAC' ? html`<span>Withdraw, above, turns it into ERC20 TAC.</span>` : ''}`);
       scanPrivate(true).then(() => rerender(xa.sheet)).catch(() => {});
     } else if (after.stage !== rec.stage) run.say(status(), brNoteText(after));
     else if (after.mintJob && !after.lastError) run.say(status(), `${amt}: its mint is already with the relay, and lands on its own, usually within minutes. It is not sent twice.`);
@@ -9553,7 +9559,7 @@ function renderTacBal(el) {
     ${k ? shLookingNote(k) : ''}
     ${k ? depositCallout('tac', 'tac-finish') : ''}
     ${k ? html`<div id="tac-shield"></div>` : ''}
-    ${k && spendable('tac') ? html`<div class="callout"><span>${fmt(spendable('tac') * E10, 18, 2)} TAC is in private notes. Make it public TAC in ${your()} to sell or farm it here, all at once.${tacFeeNote()}</span><button class="btn ghost" type="button" id="tac-pub">Make public</button></div>
+    ${k && spendable('tac') ? html`<div class="callout"><span>${fmt(spendable('tac') * E10, 18, 2)} TAC is in private notes. Withdraw it to ${your()} as TAC to sell or farm it here, all at once.${tacFeeNote()}</span><button class="btn ghost" type="button" id="tac-pub">Withdraw all</button></div>
       <div class="lbl"><span>Send it to</span><span>${your()} unless you enter an address</span></div>
       <div class="amt text"><input id="tac-pub-to" placeholder="0x… (optional)" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Where the public TAC goes"></div>` : ''}
     <div id="tac-send"></div>
@@ -9998,14 +10004,14 @@ function tacShield(el, status, acctBal, walletBal) {
   const via = payer(), src = acctBal > 0n && (via === 'tacit' || !(walletBal > 0n)) ? 'tacit' : via === 'wallet' && walletBal > 0n ? 'wallet' : null;
   const alt = src === 'wallet' ? (acctBal > 0n ? 'tacit' : null) : (via === 'tacit' && walletBal > 0n ? 'wallet' : null);
   const balance = src === 'wallet' ? walletBal : acctBal, from = src === 'wallet' ? 'your wallet' : 'your Tacit account';
-  const swap = alt ? html`<p class="note">${fmt(alt === 'wallet' ? walletBal : acctBal, 18, 2)} TAC is ${src ? 'also ' : ''}in ${alt === 'wallet' ? 'your connected wallet' : 'your Tacit account'}. <button class="link" type="button" id="tsh-switch">Make it private from there</button></p>` : '';
+  const swap = alt ? html`<p class="note">${fmt(alt === 'wallet' ? walletBal : acctBal, 18, 2)} TAC is ${src ? 'also ' : ''}in ${alt === 'wallet' ? 'your connected wallet' : 'your Tacit account'}. <button class="link" type="button" id="tsh-switch">Shield it from there</button></p>` : '';
   const wireSwap = () => { const sw = $('#tsh-switch', el); if (sw) sw.onclick = () => busy(sw, async () => { try { setPayer(alt); } catch (e) { toast(errText(e), true); } }); };
   if (!src) { mount(el, html`${swap}`); wireSwap(); return; }
   mount(el, html`
-    <div class="lbl"><span>Make TAC private</span><button type="button" id="tsh-max">TAC in ${from} ${fmt(balance, 18, 2)}</button></div>
+    <div class="lbl"><span>Shield TAC</span><button type="button" id="tsh-max">TAC in ${from} ${fmt(balance, 18, 2)}</button></div>
     <div class="amt"><input id="tsh-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="TAC to make private"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div>
     <div class="rcpt" id="tsh-rcpt" hidden></div>
-    <button class="btn" type="button" id="tsh-go" disabled>Make private</button>
+    <button class="btn" type="button" id="tsh-go" disabled>Shield</button>
     <p class="note">One transaction from ${from}${src === 'wallet' ? ', with a signed permit' : ''}; ${ownNow(['wrap']) ? `it is proved ${devOn() ? 'on this computer' : 'with your own credit'} first, so nothing waits in the pool` : 'Tacit’s relay does the privacy work after'}. It stays private until you send it or make it public again.</p>${swap}`);
   wireSwap();
   const amt = $('#tsh-amt'), go = $('#tsh-go'), rc = $('#tsh-rcpt');
@@ -11943,7 +11949,7 @@ function farmZap(el, p, status, has, top) {
   mount(el, html`${top.coming}
     <div class="lbl"><span>${has ? 'Add more' : 'Add and farm'}</span><button type="button" id="sz-max-${pid}">Max</button></div>
     ${top.seg}
-    <p class="note how">One transaction from ${your()}: about half is swapped to ${other}, both go in, and your share is farmed privately. <button class="link" type="button" data-join-get="private">Make ETH private first instead</button></p>
+    <p class="note how">One transaction from ${your()}: about half is swapped to ${other}, both go in, and your share is farmed privately. <button class="link" type="button" data-join-get="private">Shield ETH first instead</button></p>
     <div id="sz-fund-${pid}"></div>
     <div class="lbl"><span>ETH</span><span id="sz-bal-${pid}"></span></div>
     <div class="amt"><input id="sz-a-${pid}" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="ETH to zap into the farm"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>ETH</span></div>
@@ -12358,7 +12364,7 @@ function farmJoin(el, p, status, has) {
   if (!bA && tethComing()) comingPoll('farm');
   zapsRead();
   const comingNote = html`${zapCallout(pid)}${!bA && tethComing() ? html`<div class="callout" data-coming><span>${COMING_TETH} The farm opens with your amount once it lands.</span></div>` : ''}${P.scan.partial ? html`<p class="note err">Part of your private balance could not be read, so a side may show as none. <button class="link" type="button" data-retry="farm">Read it again</button></p>` : ''}`;
-  const getB = { tac: ['tac', 'Make TAC private'], cusd: ['borrow', 'Borrow cUSD'], cbtc: ['borrow', 'Mint cBTC'] }[kB] || ['tac', `Get private ${other}`];
+  const getB = { tac: ['tac', 'Shield TAC'], cusd: ['borrow', 'Borrow cUSD'], cbtc: ['borrow', 'Mint cBTC'] }[kB] || ['tac', `Get private ${other}`];
   const goGet = (b) => { if (running('farm')) return; const wrap = b.dataset.joinGet === 'private', label = pairName(p.pair); FARM.back = wrap ? { link: `farm/private-${pid}`, label: `farm it in ${label}`, at: Date.now() } : { pid, label, at: Date.now() }; if (wrap) hxDraft({ mode: 'wrap', all: true }); $('#sheet-farm').close(); openLink(b.dataset.joinGet); };
   FARM.jm ||= {};
   // with nothing private yet, ETH from the wallet is the way in: one transaction, then private (not kept, so tETH that lands opens on tETH)
@@ -12371,8 +12377,8 @@ function farmJoin(el, p, status, has) {
   const single = mode !== 'pair', both = mode === 'pair' && bA > 0n && bB > 0n;
   const how = mode === 'pair'
     ? (both ? 'Both go in at the pool’s ratio, with nothing swapped.'
-      : html`You hold no private ${bA ? other : 'tETH'}, and tETH + ${other} takes both. <button class="link" type="button" data-join-get="${bA ? getB[0] : 'private'}">${bA ? getB[1] : 'Make ETH private'}</button>, or <button class="link" type="button" data-join-one="${bA ? 'a' : 'b'}">farm with ${bA ? 'tETH' : other} alone</button>.`)
-    : !(spendable(kS) > 0n) ? html`You hold no private ${unit[kS]}. <button class="link" type="button" data-join-get="${kS === kA ? 'private' : getB[0]}">${kS === kA ? 'Make ETH private' : getB[1]}</button>, or <button class="link" type="button" data-join-one="${kS === kA ? 'b' : 'a'}">farm with ${unit[kO]} alone</button>.`
+      : html`You hold no private ${bA ? other : 'tETH'}, and tETH + ${other} takes both. <button class="link" type="button" data-join-get="${bA ? getB[0] : 'private'}">${bA ? getB[1] : 'Shield ETH'}</button>, or <button class="link" type="button" data-join-one="${bA ? 'a' : 'b'}">farm with ${bA ? 'tETH' : other} alone</button>.`)
+    : !(spendable(kS) > 0n) ? html`You hold no private ${unit[kS]}. <button class="link" type="button" data-join-get="${kS === kA ? 'private' : getB[0]}">${kS === kA ? 'Shield ETH' : getB[1]}</button>, or <button class="link" type="button" data-join-one="${kS === kA ? 'b' : 'a'}">farm with ${unit[kO]} alone</button>.`
     : `About half is swapped to ${unit[kO]} inside the pool, then both go into the farm: two steps when one note covers it, about a minute.`;
   const field = (k, id) => html`
     <div class="lbl"><span>${unit[k]}</span><span>Private ${fmt(spendable(k), 8, dp[k])} ${unit[k]}${inUse(k, 8, dp[k], unit[k])}</span></div>
@@ -15290,7 +15296,7 @@ async function hxQuote() {
       // LP only: the same zap, its share kept as a private LP note that earns the pool's fees (no bond, so nothing after the one transaction)
       const lpOnly = HX.lp && HX.from === 'ether' && !pub, lpFee = lpOnly ? (HX.zq?.res?.feeBps ?? FARM.program?.pools?.find((x) => String(x.pid) === pick.k)?.reserves?.feeBps ?? 30) / 100 : 0;
       return done({ out: units && !lpOnly ? sig(ex?.day ?? pick.day) : null, rows, pick: pick.k, unit: 'TAC a day', pk: two && !zap ? 'wrap' : null,
-        go: ex?.go || (pub ? (tacSrc ? 'Farm with TAC' : 'Farm with ETH') : zap ? (lpOnly ? 'Add as private LP' : 'Zap into the farm') : two ? 'Make ETH private' : 'Farm privately'),
+        go: ex?.go || (pub ? (tacSrc ? 'Farm with TAC' : 'Farm with ETH') : zap ? (lpOnly ? 'Add as private LP' : 'Zap into the farm') : two ? 'Shield ETH' : 'Farm privately'),
         rc: [['How', js?.how || (pub ? `half swapped to ${tacSrc ? 'ETH' : 'TAC'}, both staked` : zap ? 'one transaction' : 'half swapped inside the pool')],
           lpOnly ? ['You earn', `the pool’s ${lpFee}% fee on every swap${pick.apr != null ? `, about ${pctFmt(pick.apr)} a year (last week)` : ''}`] : null,
           pub || js ? null : ['Chain sees', zap ? 'ETH in, private after' : 'a deposit, not whose'], two && !zap ? ['Steps', 'make the ETH private, then farm it'] : null,
@@ -15300,7 +15306,7 @@ async function hxQuote() {
           !pub && !js && (HX.zq ? HX.zq.impact >= 5 : pick.impact >= 0.05) ? ['Price impact', pctFmt(HX.zq ? HX.zq.impact : pick.impact * 100), 'err'] : null,
           ...(ex?.rc || [])],
         // the two ways in from the wallet's ETH: the zap, or making it private first (more private, and a wrap earns points); from private coins, one side swapped or both
-        alt: wp ? { label: `Finish your zap into ${pairName(wp.pair)}`, go: () => hxFinishZap(wp) } : js?.alt || (!two || lpOnly ? null : zap ? { label: 'Earn points too: make ETH private first', go: way('wrap') } : { label: 'Zap in one transaction instead', go: way(null) }),
+        alt: wp ? { label: `Finish your zap into ${pairName(wp.pair)}`, go: () => hxFinishZap(wp) } : js?.alt || (!two || lpOnly ? null : zap ? { label: 'Earn points too: shield ETH first', go: way('wrap') } : { label: 'Zap in one transaction instead', go: way(null) }),
         // a price move of 15% or more is accepted in the card, as the sheet's form asks
         gate: ex ? ex.gate : HX.zq?.impact >= 15 ? HX.zq.impact : 0,
         warn: !!pick.dry || !!wp || !!ex?.warn || !!zline, line: wp ? 'A zap of yours is waiting to be farmed.' : ex?.line || zline || (pick.dry ? 'Between reward periods: nothing streams until the next one starts.' : '') });
@@ -15312,11 +15318,11 @@ async function hxQuote() {
       const inRange = units > fee && (!lim || (units >= min && units <= lim.capRaw));
       const cut = units && held != null && !needPrivate && !freeNotes(P.scan[a.k].notes).some((n) => BigInt(n.value) === units) ? BigInt(await t.quoteOpFee(a.pool, 'transfer')) : 0n;
       const over = cut > 0n && units + cut > held, range = lim ? `${fmt(min, 8, 4)} to ${fmt(lim.capRaw, 8, 4)} TAC` : 'a small amount', fine = !!units && inRange && !over && !needPrivate;
-      return done({ out: units ? (inRange && !over ? fmt(units - fee, 8, 4) : '—') : null, go: needPrivate ? 'Make TAC private' : 'Bridge TAC to Bitcoin', needPrivate,
+      return done({ out: units ? (inRange && !over ? fmt(units - fee, 8, 4) : '—') : null, go: needPrivate ? 'Shield TAC' : 'Bridge TAC to Bitcoin', needPrivate,
         rc: units && !inRange ? [] : [fine ? ['Arrives', `${fmt(units - fee, 8, 4)} TAC on Bitcoin`] : null, ['Relay fee', `${fmt(fee, 8, 4)} TAC`, '', `${fmt(xoLadder(fee * 2n), 8, 4)} TAC if its floor has moved`],
           cut ? ['Cuts a note', `${fmt(cut, 8, 4)} TAC first`] : null, ...bridge('TAC', lim, min, 4)],
         warn: needPrivate || (!!units && !inRange) || over,
-        line: [needPrivate ? `You hold ${fmt(held, 8, 4)} private TAC${units ? ', less than this' : ''}: make TAC private first.` : '',
+        line: [needPrivate ? `You hold ${fmt(held, 8, 4)} private TAC${units ? ', less than this' : ''}: shield TAC first.` : '',
           units && !inRange ? (units <= fee ? `Send more than the relay fee, ${fmt(fee, 8, 4)} TAC.` : `A bridge takes ${range} while this is new.`) : over ? `The most you can use is ${fmt(held - cut, 8, 4)} TAC: the relay fee to cut a note of this size comes out of it.` : ''].filter(Boolean).join(' ') });
     }
     if (m === 'xo') {
@@ -15329,7 +15335,7 @@ async function hxQuote() {
       const over = wallet ? needPrivate && wal != null && units > wal : held != null && !!units && units > held;
       const inRange = units > fee && (!lim || (units >= min && units <= lim.capRaw)), range = lim ? `${fmt(min, dec, a.dp)} to ${fmt(lim.capRaw, dec, a.dp)} ${a.ticker}` : 'a small amount';
       const cut = !needPrivate && units && held != null && !over && !freeNotes(P.scan[a.k].notes).some((n) => BigInt(n.value) === units) ? BigInt(await t.quoteOpFee(a.pool, 'transfer')) : 0n;
-      return done({ out: units ? (inRange && !over ? fmt(units - fee, dec, a.dp) : '—') : null, go: needPrivate ? 'Make USDT private' : `Bridge ${a.ticker} to Bitcoin`, needPrivate,
+      return done({ out: units ? (inRange && !over ? fmt(units - fee, dec, a.dp) : '—') : null, go: needPrivate ? 'Shield USDT' : `Bridge ${a.ticker} to Bitcoin`, needPrivate,
         rc: units && (!inRange || over) ? [] : [units ? ['Arrives', `${fmt(units - fee, dec, a.dp)} ${a.ticker} on Bitcoin`] : null, ['Relay fee', `${fmt(fee, dec, Math.max(a.dp, 4))} ${a.ticker}`],
           cut ? ['Cuts a note', `${fmt(cut, dec, Math.max(a.dp, 4))} ${a.ticker} first`] : null, ...bridge(a.ticker, lim, min, a.dp, dec), needPrivate ? ['Steps', 'make the USDT private, then bridge it'] : null,
           ...(a.key === 'cusdt' && units && inRange && !over ? await usdtBackRows(t, units - fee) : [])],
@@ -15339,7 +15345,7 @@ async function hxQuote() {
       const two = hxTwo(units), [t, ux] = await Promise.all([getUx(), xoUx().catch(() => null)]);
       const lim = ux?.assetOf(CETH_ID), fee = BigInt(await t.quoteOpFee('cETH', 'bridgeburn'));
       const min = lim?.minRaw || 0n, range = lim ? `${fmt(min, 8, 6)} to ${fmt(lim.capRaw, 8, 6)} tETH` : 'a small amount', inRange = units > fee && (!lim || (units >= min && units <= lim.capRaw));
-      return done({ out: units ? (inRange ? fmt(units - fee, 8, 6) : '—') : null, go: two ? 'Make ETH private' : 'Bridge tETH to Bitcoin', pk: two ? 'wrap' : null,
+      return done({ out: units ? (inRange ? fmt(units - fee, 8, 6) : '—') : null, go: two ? 'Shield ETH' : 'Bridge tETH to Bitcoin', pk: two ? 'wrap' : null,
         rc: units && !inRange ? [] : [units ? ['Arrives', `${fmt(units - fee, 8, 6)} tETH on Bitcoin`] : null, ['Relay fee', `${fmt(fee, 8, 6)} tETH`], ...bridge('tETH', lim, min, 6), two ? ['Steps', 'make the ETH private, then bridge it'] : null],
         warn: !!units && !inRange, line: units && !inRange ? (units <= fee ? `Send more than the relay fee, ${fmt(fee, 8, 6)} tETH.` : `A bridge takes ${range} while this is new.`) : '' });
     }
@@ -16648,7 +16654,7 @@ function swcPace(id) {
   if (b) b.dataset.pace = id;
   else q.insertAdjacentHTML('afterend', html`<div class="pace" data-card="1" data-pace="${id}"><div class="actr-bar" role="progressbar" aria-label="How far along" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i style="width:0%"></i></div><span></span></div>`.s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=b272640c').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=75525fbf').catch((e) => { SWC.p = null; throw e; }));
 // the card held to the tab's flow; back on the Swap tab it opens on the swap it showed there
 function swcFlow() {
   hxPathPaint();
@@ -16663,7 +16669,9 @@ function hxWhereSync() {
   if (!panel) return;
   let el = panel.querySelector(':scope > .hx-where');
   if (hk !== 'shield' && hk !== 'withdraw') { el?.remove(); return; }
-  const btc = HX.tab === 'bridge', v = html`${[['wallet', 'c-eth', hk === 'shield' ? 'From your wallet' : 'To your wallet'], ['bitcoin', 'c-btc', hk === 'shield' ? 'From Bitcoin' : 'To Bitcoin']].map(([k, ic, t]) => html`<button type="button" role="radio" data-hxwhere="${k}" aria-checked="${String(btc === (k === 'bitcoin'))}"><svg class="tk" aria-hidden="true"><use href="#${ic}"/></svg>${t}</button>`)}`;
+  const btc = HX.tab === 'bridge', w = hk === 'shield' ? 'From ' : 'To ';
+  // (the narrowest phones show the place alone: the switch's own label says From or To)
+  const v = html`${[['wallet', 'c-eth', 'wallet', 'Wallet'], ['bitcoin', 'c-btc', 'Bitcoin', 'Bitcoin']].map(([k, ic, t, n]) => html`<button type="button" role="radio" data-hxwhere="${k}" aria-checked="${String(btc === (k === 'bitcoin'))}"><svg class="tk" aria-hidden="true"><use href="#${ic}"/></svg><span class="w">${w}${t}</span><span class="n">${n}</span></button>`)}`;
   if (!el) { el = Object.assign(document.createElement('div'), { className: 'hx-mode hx-where' }); el.setAttribute('role', 'radiogroup'); panel.prepend(el); }
   el.setAttribute('aria-label', hk === 'shield' ? 'From' : 'To');
   if (el.__h !== v.s) { el.__h = v.s; mount(el, v); }

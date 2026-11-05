@@ -43,7 +43,7 @@
 //   farmzap  one side alone farms: Max takes the whole balance, the quote says what is swapped and what both sides add, and the
 //            press cuts the swap note, swaps it in the farm's pool, cuts what pairs with the return and bonds both
 //   farmready a private farm opened to join arrives ready: the most the key holds is in the form and quoted, the button stays in view, the farm's facts follow the form, and an amount cleared by hand stays cleared
-//   farmgetprivate with nothing private held, Make ETH private is the farm's main button, opens with the most it can take, and carries a line on to the farm
+//   farmgetprivate with nothing private held, Shield ETH is the farm's main button, opens with the most it can take, and carries a line on to the farm
 //   farmmarket a private pool priced far from the market says so on its card; tETH alone shows its cost against the market and waits for it to be accepted
 //   hxdry   between reward periods the card's private farms say so and quote no APR or TAC a day; the Precision pool keeps its figures
 //   hxfold   Shield shows the way in use with a line to the others; a returning visitor finds the tab and choices kept, the amount for the visit only
@@ -2482,7 +2482,7 @@ await step('tacsend', async () => {
     await until(r.page, () => /More than your private balance/.test(document.querySelector('#ts-rcpt')?.textContent || ''), null, QUOTE_WAIT);
     ok(await r.page.$eval('#ts-go', (b) => b.disabled), 'tacsend: more than the private balance is refused');
     // The one-tap "Make public" (drains every worthwhile note) still sits alongside the new partial-amount form.
-    ok(/Make public/.test(await text(r.page, '#tac-bal')), 'tacsend: the all-at-once "Make public" action is unchanged');
+    ok(/Withdraw all/.test(await text(r.page, '#tac-bal')), 'tacsend: the all-at-once "Withdraw all" action is still there');
     if (r.errors.length) { fails++; console.log('FAIL tacsend page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }
 });
@@ -3914,7 +3914,7 @@ await step('bridgepub', async () => {
     await r.page.evaluate(() => { location.hash = ''; location.hash = '#bridge'; });
     const sel = `#bridge-body [data-bract="public"][data-brid="${B}:0"]`;
     await until(r.page, (s) => !!document.querySelector(s), sel, 240000);
-    ok((await r.page.$$(sel)).length === 1, `bridgepub: the arrived bridge that asked for nothing offers Make public now, once (${(await r.page.$$eval('#bridge-body .brr', (xs) => xs.map((x) => x.textContent.replace(/\s+/g, ' ').trim().slice(0, 100)))).join(' | ')})`);
+    ok((await r.page.$$(sel)).length === 1, `bridgepub: the arrived bridge that asked for nothing offers Withdraw now, once (${(await r.page.$$eval('#bridge-body .brr', (xs) => xs.map((x) => x.textContent.replace(/\s+/g, ' ').trim().slice(0, 100)))).join(' | ')})`);
     const n1 = submits.length;
     await r.page.click(sel);
     for (let i = 0; i < 90 && submits.length === n1; i++) await sleep(4000);
@@ -4908,7 +4908,7 @@ await step('xtring', async () => {
   await r.page.fill('#xt-amt', '25');
   await until(r.page, () => /You have no private TAC yet\./.test(document.querySelector('#xt-rcpt')?.textContent || ''), null, 240000)
     .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | rcpt: ${(await text(r.page, '#xt-rcpt')).replace(/\s+/g, ' ')}`); });
-  ok(/Make TAC private above, buy it on the Buy tab, or bring it from Bitcoin/.test(await text(r.page, '#xt-rcpt')), 'xtring: a key with no private TAC is told where to get some');
+  ok(/Shield TAC above, buy it on the Buy tab, or bring it from Bitcoin/.test(await text(r.page, '#xt-rcpt')), 'xtring: a key with no private TAC is told where to get some');
   await r.page.fill('#xt-amt', '');
   // A key this browser has no record of is also looked for once on its own (xbDiscover), a few seconds after it opens: by now the page may have
   // done that, and "Look for it" has given way to "refresh", which reads the address again. Either one lists the notes.
@@ -6212,7 +6212,7 @@ await step('activity', async () => {
     ok(await r.page.$eval('#act', (b) => b.hidden), 'activity: no Activity button before anything has happened');
     await fire({ jobId: 'j-wrap', type: 'wrap', status: 'pending' });
     await until(r.page, () => !document.querySelector('#act').hidden && document.querySelector('#act-n').textContent === '1', null, 15000);
-    ok(await toastHas(/Make private: queued for the relay/), 'activity: a queued job shows in the header with a count, and is toasted');
+    ok(await toastHas(/Shield: queued for the relay/), 'activity: a queued job shows in the header with a count, and is toasted');
     await openActivity(r.page);
     ok((await row('job:j-wrap')).now === 'Queued', `activity: its row is at Queued (${(await row('job:j-wrap')).text.slice(0, 50)})`);
     await fire({ jobId: 'j-wrap', type: 'wrap', status: 'proving' });
@@ -6222,7 +6222,7 @@ await step('activity', async () => {
     await until(r.page, () => /Done in/.test(document.querySelector('[data-act="job:j-wrap"]')?.textContent || ''), null, 15000);
     const done = await row('job:j-wrap');
     ok(done.links.includes(`https://etherscan.io/tx/${H('a1')}`) && await r.page.$eval('#act-n', (n) => n.hidden), `activity: done, linked to its transaction, nothing left in flight (${done.text.slice(0, 60)})`);
-    ok(await toastHas(/Make private: done\./), 'activity: done is toasted');
+    ok(await toastHas(/Shield: done\./), 'activity: done is toasted');
     // A failure reads as the relay wrote it, with the transaction it names linked.
     await fire({ jobId: 'j-send', type: 'stealthlock', status: 'pending' });
     await fire({ jobId: 'j-send', type: 'stealthlock', status: 'failed', error: `this note was already spent in ${H('b2')}; if that was this same request, it went through` });
@@ -8777,7 +8777,7 @@ await step('payhere', async () => {
     if (r.errors.length) { fails++; console.log('FAIL payhere page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }
 });
-// Make TAC private from the Swap card, no sheet over it: the wallet's TAC goes into the pool in one transaction with a permit (the first press of a visit connects the wallet and opens the key), the steps said
+// Shield TAC from the Swap card, no sheet over it: the wallet's TAC goes into the pool in one transaction with a permit (the first press of a visit connects the wallet and opens the key), the steps said
 // under the button; the relay's settle is the stub's here, so what is checked is that the TAC left the wallet and no sheet opened.
 await step('tachere', async () => {
   const unit = 10n ** 18n;
@@ -8908,9 +8908,9 @@ await step('farmzapeth', async () => {
     await p.waitForSelector('#hx-routes [data-hxr="0"]', { state: 'attached', timeout: 240000 });
     await rowClick(p, '#hx-routes [data-hxr="0"]');
     await until(p, () => document.querySelector('#hx-go')?.textContent === 'Zap into the farm', null, 240000);
-    ok(!/2 steps/.test(await text(p, '#hx-routes [data-hxr="0"]')) && /one transaction/.test(await text(p, '#hx-receipt')) && /Earn points too: make ETH private first/.test(await text(p, '#hx-alt')), `farmzapeth: the Earn tab offers the zap for ETH not yet private, and making it private first as the other way (${(await text(p, '#hx-routes [data-hxr="0"]')).replace(/\s+/g, ' ')})`);
+    ok(!/2 steps/.test(await text(p, '#hx-routes [data-hxr="0"]')) && /one transaction/.test(await text(p, '#hx-receipt')) && /Earn points too: shield ETH first/.test(await text(p, '#hx-alt')), `farmzapeth: the Earn tab offers the zap for ETH not yet private, and making it private first as the other way (${(await text(p, '#hx-routes [data-hxr="0"]')).replace(/\s+/g, ' ')})`);
     await p.click('#hx-alt button');
-    await until(p, () => document.querySelector('#hx-go')?.textContent === 'Make ETH private', null, 60000);
+    await until(p, () => document.querySelector('#hx-go')?.textContent === 'Shield ETH', null, 60000);
     ok(/2 steps/.test(await text(p, '#hx-routes [data-hxr="0"]')) && /Zap in one transaction instead/.test(await text(p, '#hx-alt')), 'farmzapeth: and the link swaps the two');
     await p.click('#hx-alt button');
     await until(p, () => document.querySelector('#hx-go')?.textContent === 'Zap into the farm', null, 60000);
@@ -9239,14 +9239,14 @@ await step('farmready', async () => {
   } finally { await r.browser.close(); }
 });
 
-// A key holding nothing private opens on the zap, and its link to Make ETH private first fills that form with the most it can take, and the way back.
+// A key holding nothing private opens on the zap, and its link to Shield ETH first fills that form with the most it can take, and the way back.
 await step('farmgetprivate', async () => {
   const r = await openFarmKey('d5e2'.padEnd(64, '6'), { notes: [], positions: [] });
   const p = r.page;
   try {
     await go(p, '#farm/private-0');
     await p.waitForSelector('#farm-pid0 [data-join-get="private"]', { timeout: 300000 });
-    ok(/Make ETH private first instead/.test(await text(p, '#farm-pid0 [data-join-get="private"]')) && (await text(p, '#sz-go-0')) === 'Zap into the farm', 'farmgetprivate: with nothing private held, the farm opens on the zap, with making ETH private first a link beside it');
+    ok(/Shield ETH first instead/.test(await text(p, '#farm-pid0 [data-join-get="private"]')) && (await text(p, '#sz-go-0')) === 'Zap into the farm', 'farmgetprivate: with nothing private held, the farm opens on the zap, with making ETH private first a link beside it');
     await p.click('#farm-pid0 [data-join-get="private"]');
     await p.waitForSelector('#sheet-eth[open] #w-amt', { timeout: 60000 });
     await until(p, () => /^\d*\.?\d+$/.test(document.querySelector('#w-amt')?.value || '') && Number(document.querySelector('#w-amt').value) > 0, null, 300000);
@@ -9557,7 +9557,7 @@ await step('hxout', async () => {
     // Outside what a bridge takes: no figure is promised, and the limits are said.
     await lander();
     const limits = 'A bridge takes 20 to 1,000 TAC while this is new.';
-    for (const [v, says] of [['5', limits], ['5000', `You hold 62 private TAC, less than this: make TAC private first. ${limits}`]]) {
+    for (const [v, says] of [['5', limits], ['5000', `You hold 62 private TAC, less than this: shield TAC first. ${limits}`]]) {
       await p.fill(BRG.amt, v);
       await until(p, (x) => document.querySelector('#hx-out')?.textContent === '—' && (document.querySelector('#hx-q')?.textContent || '').trim() === x, says, 240000)
         .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | at ${v}: ${await body()}`); });
@@ -9569,7 +9569,7 @@ await step('hxout', async () => {
     ok(true, 'hxout: 61 of 62 TAC held is not quoted, and the most that can be used is said');
     await lander();
     await p.fill(BRG.amt, '70');
-    await until(p, () => document.querySelector('#hx-go')?.textContent === 'Make TAC private' && /You hold 62 private TAC, less than this: make TAC private first\./.test(document.querySelector('#hx-q')?.textContent || ''), null, 240000)
+    await until(p, () => document.querySelector('#hx-go')?.textContent === 'Shield TAC' && /You hold 62 private TAC, less than this: shield TAC first\./.test(document.querySelector('#hx-q')?.textContent || ''), null, 240000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | card: ${await body()}`); });
     ok(true, 'hxout: more than the private TAC held says what is held and offers to make TAC private');
     // its press makes TAC private from the tile (what the TAC sheet's Make private does): this key holds none in its wallet, which is said under the button, and no sheet opens
@@ -9709,7 +9709,7 @@ await step('hxbridgeu', async () => {
     await until(p, () => /^Bridge cUSDT to Bitcoin$/.test(document.querySelector('#hx-go')?.textContent || ''), null, 240000).catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)} | go ${await text(p, BRG.go)}`); });
     ok((await heldAt(p)) === 'wallet', 'hxbridgeu: USDT in the wallet is a source, and with the private USDT held covering it the press is the bridge itself');
     await p.fill(BRG.amt, '80');
-    await until(p, () => /^Make USDT private$/.test(document.querySelector('#hx-go')?.textContent || ''), null, 240000).catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)} | go ${await text(p, BRG.go)}`); });
+    await until(p, () => /^Shield USDT$/.test(document.querySelector('#hx-go')?.textContent || ''), null, 240000).catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)} | go ${await text(p, BRG.go)}`); });
     ok(true, `hxbridgeu: more than the private USDT held makes the USDT private first (${await said(p)})`);
     // the sheet and its links
     for (const [hash, tab] of [['usdt', 'wrap'], ['usdt/withdraw', 'out'], ['usdt/bitcoin', 'btc'], ['usdt/bitcoin/back', 'btc'], ['usdt/bitcoin/out', 'btc']]) {
@@ -9743,7 +9743,7 @@ await step('usdtwrap', async () => {
   try {
     await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
     await bridgeTo(p, 'wusdt', '5');
-    await until(p, () => /^Make USDT private$/.test(document.querySelector('#hx-go')?.textContent || '') && !document.querySelector('#hx-go').disabled, null, 420000)
+    await until(p, () => /^Shield USDT$/.test(document.querySelector('#hx-go')?.textContent || '') && !document.querySelector('#hx-go').disabled, null, 420000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)} | go ${await text(p, BRG.go)}`); });
     ok(/make the USDT private, then bridge it/.test(await said(p)), `usdtwrap: with no private USDT the card says it makes the USDT private first (${await said(p)})`);
     const u0 = await usdtOf(acct), pool0 = await usdtOf(POOLA);
@@ -9854,7 +9854,7 @@ await step('hxpanel', async () => {
     await p.click('[data-hxm="earn"]');
     await until(p, () => document.querySelector('#hx-go')?.textContent === 'Zap into the farm', null, 120000);
     await p.click('#hx-alt button');
-    await until(p, () => document.querySelector('#hx-go')?.textContent === 'Make ETH private', null, 120000);
+    await until(p, () => document.querySelector('#hx-go')?.textContent === 'Shield ETH', null, 120000);
     await p.click('#hx-go');
     ok(await form('#w-amt', '1') && /Then farm it in/.test(await text(p, '#sheet-eth .farm-back')), `hxpanel: a private farm for more than the tETH held makes the ETH private first, and names the farm next (${(await text(p, '#sheet-eth .farm-back')).trim()})`);
     await p.click('#sheet-eth .farm-back a');
@@ -10529,7 +10529,7 @@ await step('openact', async () => {
     await r.page.evaluate((t) => localStorage.setItem('tacit-lite-activity-v1', JSON.stringify({ cleared: 0, items: [
       { id: 'job:o-open', kind: 'job', type: 'unwrap', label: 'Withdraw 0.1 ETH', status: 'pending', at: t - 300e3, up: t - 300e3 },
       { id: 'job:o-prov', kind: 'job', type: 'transfer', label: 'Split a note', status: 'proven', at: t - 600e3, up: t - 500e3, end: t - 500e3 },
-      { id: 'job:o-router', kind: 'job', type: 'wraptransfer', label: 'Make private and send', status: 'proven', at: t - 700e3, up: t - 650e3, end: t - 650e3 },
+      { id: 'job:o-router', kind: 'job', type: 'wraptransfer', label: 'Shield and send', status: 'proven', at: t - 700e3, up: t - 650e3, end: t - 650e3 },
       { id: 'job:o-slow', kind: 'job', type: 'sendunwrap', label: 'Withdraw 0.2 ETH', status: 'sending', at: t - 900e3, up: t - 400e3 },
       { id: 'job:o-new', kind: 'job', type: 'sendunwrap', label: 'Withdraw 0.3 ETH', status: 'sending', at: t - 120e3, up: t - 30e3 },
     ] })), Date.now());
