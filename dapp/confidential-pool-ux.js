@@ -2330,7 +2330,37 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       throw new Error('stealthSend: recipient is your own address — use transfer() (a plain self-send) instead, it needs no proof round trip and no claim step');
     }
     const { note } = await ensureExactNote({ walletPriv, asset, amount, notes, selfSettle, waitOpts });
+    const { op, memo, built } = _stealthBuild({ id, recipientPubHex, note, asset, amount, deadline });
+    onBuilt?.(built);
 
+    const r = await _dispatch({ type: 'stealthlock', spec: { op, lockMemos: [memo] }, sealedMemos: [memo], selfRelay, selfSettle, walletPriv, waitOpts });
+    const memoCheck = await checkEmittedLockMemos({ txHash: r && r.txHash, lockLeaves: [op.lockLeaf], memos: [memo] });
+    return { ...r, ...built, ...(memoCheck ? { memoCheck } : {}) };
+  }
+  // A stealth send's lock proved before its press, from a note of exactly the amount (the board makes it; nothing in it moves while it
+  // waits but the note itself): posted at the press, the relay sends it on its free settles as it does the same lock relayed. → what
+  // stealthSendAheadSend takes. The lock's secrets (`built`) are kept by the caller once it is sent, as stealthSend's are.
+  async function stealthSendAhead({ walletPriv, recipientPubHex, note, amount, deadline, waitOpts } = {}) {
+    amount = BigInt(amount);
+    if (!note || BigInt(note.value) !== amount) throw new Error('stealthSendAhead: a note of exactly the amount is required');
+    const id = identity(walletPriv);
+    if (String(recipientPubHex).toLowerCase() === String(id.pubHex).toLowerCase()) throw new Error('stealthSend: recipient is your own address');
+    const { op, memo, built } = _stealthBuild({ id, recipientPubHex, note, asset: note.asset, amount, deadline });
+    const proven = await relay.prove({ type: 'stealthlock', op, lockMemos: [memo], memos: [memo], ahead: true }, { ...waitOpts, viaRelay: true });
+    if (!proven || !proven.publicValues) throw new Error(proven && proven.error || 'stealthSendAhead: no proof');
+    return { note, amount, recipientPubHex, built, memo, lockLeaf: op.lockLeaf, proven };
+  }
+  async function stealthSendAheadSend(a, { waitOpts } = {}) {
+    const posted = await relay.postProof({ type: 'stealthlock', publicValues: a.proven.publicValues, proof: a.proven.proof, memos: [a.memo] })
+      .catch((e) => ({ error: String(e && e.message || e) }));
+    if (!posted || !posted.jobId) throw Object.assign(new Error((posted && posted.error) || 'the relay would not take the lock made ahead'), { notPosted: true });
+    let st = posted.status === 'settled' ? { ...posted } : await relay.waitForSettle(posted.jobId, waitOpts);
+    if (!st.txHash && st.status === 'settled') { try { const rs = await relay.status(posted.jobId); if (rs && rs.txHash) st = { ...st, txHash: rs.txHash }; } catch { } }
+    const memoCheck = await checkEmittedLockMemos({ txHash: st && st.txHash, lockLeaves: [a.lockLeaf], memos: [a.memo] });
+    return { ...st, ...a.built, ...(memoCheck ? { memoCheck } : {}) };
+  }
+  // The lock's op and memo, and what its sender keeps to refund it: from a note of exactly `amount`.
+  function _stealthBuild({ id, recipientPubHex, note, asset, amount, deadline }) {
     const deadlineB = deadline != null ? BigInt(deadline) : coarseDeadline(90 * 24 * 3600, 3600);
     if (deadlineB <= 0n) throw new Error('stealthSend: deadline required');
 
@@ -2353,11 +2383,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     });
     const memo = recipientMemo + senderTail.replace(/^0x/, '');
     const built = { lockLeaf: op.lockLeaf, asset, amount: amount.toString(), deadline: deadlineB.toString(), refundPriv: refundPrivHex, refundPub, recipientPubHex, memo, lCx: op.lCx, lCy: op.lCy, ownerPub, lBlinding };
-    onBuilt?.(built);
-
-    const r = await _dispatch({ type: 'stealthlock', spec: { op, lockMemos: [memo] }, sealedMemos: [memo], selfRelay, selfSettle, walletPriv, waitOpts });
-    const memoCheck = await checkEmittedLockMemos({ txHash: r && r.txHash, lockLeaves: [op.lockLeaf], memos: [memo] });
-    return { ...r, ...built, ...(memoCheck ? { memoCheck } : {}) };
+    return { op, memo, built };
   }
 
   async function checkEmittedLockMemos({ txHash, lockLeaves, memos }) {
@@ -3398,7 +3424,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // injected wallet this site is already connected to is used.
   return { cfg, assets: _poolAssets, assetByTicker, account, identity, rpc, useWallet: (get) => { _walletGet = typeof get === 'function' ? get : null; }, ethCall, fetchEvents, balance, poolStatsFromEvents, tickerOf, poolTickerOf,
     deriveOutput, receiveCode, parseReceiveCode, buildWrap, buildShareWrap, nextShareIndex, releaseShareIndex, shareDeposits, nextWrapIndex, warmWrapLogs, releaseWrapIndex, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, wrapAndMintCusdCall, resumeWrapAndSend, proveWrap, wrapProofFits, wrapSettleCall, sendPreparedTx, buildTransferOp, transfer, stealthSend, scanStealthLocks, stealthClaim, stealthRefund, stealthLockPosition, crossOut, payInvoice, quoteUnwrapFee, ladderFee: _ladderFee, poolLeafCount, refreshFarmPending, holderFeeBps, setPublicTacHeld, quoteTransferFee, quoteOpFee: gasAwareMinFee, feeUsdFor, relayFeeEligible, buildUnwrap, unwrap, sendUnwrap, sendUnwrapExitOp: _sendUnwrapExit, exitAhead, exitAheadSend, addBridgeAmountHint, buildAttestMeta, chainBindingHex,
-    settleFromAccount, erc2612Nonce: _erc2612Nonce, waitReceipt: _waitReceipt, poolReserves, poolFeeApr, poolCurrentRoot, sameRoot, routePoolId, quoteRoute, route, routeAhead, routeAheadSend, transferAhead, transferAheadSend, swapBatched, swapBatchPending, swapBatchFlush, lpBondPosition, buildLpBondOp, lpBond, farmProgram, farmBond, farmPositions, importFarmPosition, recover, recoverCdpPositions, scanSentLocks, farmHarvest, farmUnbond, farmRedeem, buildFastlaneExitOp, fastlaneExit, lpAdd, lpRemove, quoteLpAdd, wrapLp, wrapSwap, buildWrapSwap, submitWrapSwap, proveWrapSwap, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle, settleCalldata,
+    settleFromAccount, erc2612Nonce: _erc2612Nonce, waitReceipt: _waitReceipt, poolReserves, poolFeeApr, poolCurrentRoot, sameRoot, routePoolId, quoteRoute, route, routeAhead, routeAheadSend, transferAhead, transferAheadSend, stealthSendAhead, stealthSendAheadSend, swapBatched, swapBatchPending, swapBatchFlush, lpBondPosition, buildLpBondOp, lpBond, farmProgram, farmBond, farmPositions, importFarmPosition, recover, recoverCdpPositions, scanSentLocks, farmHarvest, farmUnbond, farmRedeem, buildFastlaneExitOp, fastlaneExit, lpAdd, lpRemove, quoteLpAdd, wrapLp, wrapSwap, buildWrapSwap, submitWrapSwap, proveWrapSwap, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle, settleCalldata,
     cbtcLockState, syncCbtcLockReservations, cbtcBonds, forgetKeys: forget,
     relay, indexer, evmLog, evmTx, pool, memo, router: _router, stealth: _stealth, bridgeMint: _bridgeMint, bridgeBurn: _bridgeBurn, bridgeBurnToPool, airdrop: _airdrop, tacAirdrop: _tacAirdrop, lockScan: _lockScan };
 }

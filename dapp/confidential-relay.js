@@ -177,7 +177,7 @@ export function makeConfidentialRelay({ base, fetchImpl, guard, checkEmittedMemo
   async function waitForSettle(jobId, { intervalMs = 2000, timeoutMs = 5 * 60 * 1000, openGraceMs = 20_000, onUpdate, sleep } = {}) {
     const wait = sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
     const deadline = Date.now() + timeoutMs;
-    let last = null, openAt = 0;
+    let last = null, openAt = 0, nearAt = 0;
     const pollState = {};
     for (;;) {
       const st = await pollStatus(jobId, pollState, { wait, intervalMs });
@@ -194,7 +194,11 @@ export function makeConfidentialRelay({ base, fetchImpl, guard, checkEmittedMemo
         if (st.status === 'open' && st.publicValues && st.proof) { e.code = 'open'; e.open = openError(st).open; }
         throw e;
       }
-      await wait(intervalMs);
+      // proved and on its way to the chain (a proof posted at a press is here from the start): looked at every second for up to a minute,
+      // so the settle is seen as it lands; while it waits or proves, at the caller's pace
+      const near = st.status !== 'pending' && st.status !== 'proving' && st.status !== 'claimed';
+      if (near && !nearAt) nearAt = Date.now();
+      await wait(near && Date.now() - nearAt < 60e3 ? Math.min(intervalMs, 1000) : intervalMs);
     }
   }
 

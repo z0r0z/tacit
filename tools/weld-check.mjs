@@ -199,7 +199,7 @@ const { chromium } = require(process.env.PLAYWRIGHT || '/Users/z/zFi/node_module
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
 // Borrow reports under each step's own line (#bw-s1…#bw-s4) as well as the sheet's: read them all.
 const bwText = (page) => page.evaluate((s) => [...document.querySelectorAll(s)].map((e) => e.textContent).join(' '), '#bw-status, #bw-s1, #bw-s2, #bw-s3, #bw-s4');
-const ONLY = new Set((process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,relayfail,selfwallet,slowline,fastroute').split(','));
+const ONLY = new Set((process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,relayfail,selfwallet,slowline,fastroute').split(','));
 const FORK = process.argv[3] || 'https://mainnet.gateway.tenderly.co';
 const SHOTS = process.env.SHOTS || null;
 const PORT = 20000 + Math.floor(Math.random() * 2000), WEB = PORT + 1;
@@ -7007,6 +7007,18 @@ const swapStub = () => `
       if (total > a.amount + a.fee) add.push(note(a.notes[0].asset, total - a.amount - a.fee));
       return { txHash: '0x' + 'ae'.repeat(32) };
     };
+    // a lock proved ahead (the board's, made at once) and its press
+    ux.stealthSendAhead = async ({ note, amount, recipientPubHex }) => {
+      window.__swapCalls.push({ lockAhead: String(amount), note: String(note.value) });
+      await wait();
+      return { note, amount: BigInt(amount), recipientPubHex, built: { lockLeaf: '0x' + 'ab'.repeat(32), asset: note.asset, amount: String(amount), deadline: '9999999999' }, memo: '0x01', lockLeaf: '0x' + 'ab'.repeat(32), proven: { publicValues: '0x01', proof: '0x02' } };
+    };
+    ux.stealthSendAheadSend = async (a) => {
+      window.__swapCalls.push({ lockPosted: String(a.amount) });
+      await wait();
+      add.splice(add.findIndex((x) => x.cx === a.note.cx), 1);
+      return { txHash: '0x' + 'b0'.repeat(32), ...a.built };
+    };
     ux.stealthSend = async ({ notes, amount, onBuilt }) => {
       window.__swapCalls.push({ lock: String(amount), note: String(notes[0].value) });
       await wait();
@@ -8598,6 +8610,32 @@ await step('sendahead', async () => {
       `sendahead: the press posts that cut, proves no other, and locks the 0.005 note it made (${JSON.stringify(calls)} ${await text(p, '#v1-status')})`);
     if (r.errors.length) { fails++; console.log('FAIL sendahead page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { relayStateNow = 'ok'; await r.browser.close(); }
+});
+
+// A send of exactly a note's amount: its lock is proved while the send stands, and the press posts it for the relay to send on its free
+// settles, with nothing proved at the press.
+await step('lockahead', async () => {
+  const r = await openFarmKey('5e4e'.padEnd(64, '8'), { notes: [[FARM_CETH, 500000n], [FARM_CETH, 1500000n]], positions: [], swap: true });
+  const p = r.page;
+  try {
+    await go(p, '#private');
+    await p.waitForSelector('[data-v1="send"]', { timeout: 300000 });
+    await p.click('[data-v1="send"]');
+    await p.waitForSelector('#s-to', { timeout: 120000 });
+    await p.fill('#s-to', tacit1('abd'.padEnd(64, '9')));
+    await p.fill('#s-amt', '0.005');
+    await until(p, () => /They get about/.test(document.querySelector('#s-rcpt')?.textContent || '') && !document.querySelector('#s-go').disabled, null, 420000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${(await text(p, '#s-rcpt')).replace(/\s+/g, ' ')}`); });
+    await until(p, () => (window.__swapCalls || []).some((c) => c.lockAhead), null, 60000).catch(() => {});
+    const before = await p.evaluate(() => window.__swapCalls);
+    ok(before.filter((c) => c.lockAhead === '500000' && c.note === '500000').length === 1 && !before.some((c) => c.split || c.cutAhead || c.lock),
+      `lockahead: the lock of the 0.005 note is proved once the send stands, and no note is cut (${JSON.stringify(before)})`);
+    await p.click('#s-go');
+    await until(p, () => (window.__swapCalls || []).some((c) => c.lockPosted || c.lock) || /class="err"/.test(document.querySelector('#v1-status')?.innerHTML || ''), null, 240000).catch(() => {});
+    const calls = await p.evaluate(() => window.__swapCalls);
+    ok(calls.some((c) => c.lockPosted === '500000') && !calls.some((c) => c.lock), `lockahead: the press posts that lock and proves none (${JSON.stringify(calls)} ${await text(p, '#v1-status')})`);
+    if (r.errors.length) { fails++; console.log('FAIL lockahead page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { await r.browser.close(); }
 });
 
 // The Earn tab does a private join itself, with no sheet: tETH alone is quoted in the card (what half swapped adds, the relay's fees, the network fee), Max takes
