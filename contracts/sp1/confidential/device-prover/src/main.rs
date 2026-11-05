@@ -3,7 +3,7 @@
 // dapp/sp1-stdin.js, and returns the Groth16 proof the pool verifies. Listens on 127.0.0.1 only.
 //
 //   tacit-prover [serve]          GET /health, POST /prove {stdin}, GET /job?id= (its stage and an ETA while it proves),
-//                                 GET /mine, POST /mine {miner?, on} (tacit.finance/mine/ starts and pauses mining)
+//                                 GET /mine, POST /mine {miner?, on} (tacit.finance/prove/ starts and pauses mining)
 //   tacit-prover prove <stdin>    one proof to <stdin>.proof.json
 //   tacit-prover check            every faster path against the code it replaces, then exit
 //   tacit-prover install          start at login and stay ready (launchd on macOS, a systemd user unit on Linux)

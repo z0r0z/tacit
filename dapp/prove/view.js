@@ -1,4 +1,4 @@
-// What /mine/ shows, from the computer's own tacit-prover (GET /health and GET /mine on 127.0.0.1) and nothing else: no wallet,
+// What /prove/ shows, from the computer's own tacit-prover (GET /health and GET /mine on 127.0.0.1) and nothing else: no wallet,
 // no network. app.js reads and paints; this only turns the answers into words, so a jsdom-free test can check every state.
 
 // The local prover's state: 'none' (nothing answers), 'old' (a tacit-prover from before GET /mine, which the setup line updates),
@@ -21,6 +21,7 @@ export function jobView(job) {
   const pct = eta == null ? null : Math.min(0.99, secs / Math.max(1, secs + eta));
   return {
     pct,
+    step: Math.max(0, Object.keys(STAGE).indexOf(job.stage)),
     stage: STAGE[job.stage] || 'Proving',
     left: eta == null ? `${Math.floor(secs / 60)} min in` : `${mins(eta)} left`,
   };

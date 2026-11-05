@@ -430,3 +430,20 @@ test('the eth_call verdict: a return is ok; a revert with a code or data is cert
     assert.deepEqual(await simulateSettle({}, { publicValues: '0x' + '00'.repeat(64), proof: '0x00', memos: [] }), { ok: true });
   } finally { globalThis.fetch = realFetch; }
 });
+
+test('a community proof names its miner for the leaf it inserts and joins the recent feed; a house proof does neither', async () => {
+  const h = harness();
+  const a = wrapJob(0), b = wrapJob(1);
+  await h.pool.request({ type: 'wrap', stdin: a.stdin, expect: a.expect, client: 'page' });
+  await h.pool.request({ type: 'wrap', stdin: b.stdin, expect: b.expect, client: 'page' });
+  let l = (await h.pool.lease({ miner: MINER, client: 'm1' })).body;
+  h.t += 600_000;
+  assert.equal((await h.pool.submit({ id: l.id, lease: l.lease, publicValues: pvFor(a.expect), proof: PROOF })).status, 200);
+  l = (await h.pool.lease({ house: 'gpu', client: 'h' })).body;
+  assert.equal((await h.pool.submit({ id: l.id, lease: l.lease, publicValues: pvFor(b.expect), proof: PROOF })).status, 200);
+  const who = await h.pool.minedBy([a.expect.leaf.toUpperCase().replace('0X', '0x'), b.expect.leaf, '0x' + '00'.repeat(32)]);
+  assert.deepEqual(who, { [a.expect.leaf.toLowerCase()]: { miner: MINER, points: PROOF_POOL.pointsPerProof } });
+  const feed = (await h.pool.recent()).body.proofs;
+  assert.equal(feed.length, 1);
+  assert.deepEqual({ miner: feed[0].miner, points: feed[0].points, secs: feed[0].secs }, { miner: MINER, points: PROOF_POOL.pointsPerProof, secs: 600 });
+});
