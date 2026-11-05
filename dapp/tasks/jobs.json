@@ -876,7 +876,7 @@
       "about": [
         {
           "h": "What to do",
-          "p": "Bridge 5 USDT from your wallet to Bitcoin and back, on the bridge page or the front page's Bridge tab. This is new and unproven on mainnet, so use a small amount: 5 is enough, a larger bridge pays no more, and one bridge takes 100 at most. The relay's fee for the way to Bitcoin follows gas (about 3 USDT at today's, and the form says it before you press), so 5 USDT arrives on Bitcoin as about 2; less than the fee cannot cross. The USDT is made private in the Tacit pool first (one approval of exactly the amount and one signature), burned there, and minted on Bitcoin to your own key a few hours later. The two Bitcoin steps are paid from your own Bitcoin address, about 2,500 sats in all, so have that on it. Bring it back from Bitcoin (a burn there, then a mint in the pool, free of any fee, about four hours and then the next proof). What comes back is private USDT in the pool: withdrawing it to your wallet costs the relay's fee again (about 2.5 USDT today), so leave it there unless gas is low or you bridged more."
+          "p": "Bridge 5 USDT from your wallet to Bitcoin and back, on the bridge page or the front page's Bridge tab. This is new and unproven on mainnet, so use a small amount: 5 is enough, a larger bridge pays no more, and one bridge takes 100 at most. The relay's fee for the way to Bitcoin follows gas (between about 1 and 3 USDT lately, and the form says it before you press), so 5 USDT arrives on Bitcoin as about 2 to 4; less than the fee cannot cross. The USDT is made private in the Tacit pool first (one approval of exactly the amount and one signature), burned there, and minted on Bitcoin to your own key a few hours later. The two Bitcoin steps are paid from your own Bitcoin address, about 2,500 sats in all, so have that on it. Bring it back from Bitcoin (a burn there, then a mint in the pool, free of any fee, about four hours and then the next proof). What comes back is private USDT in the pool: withdrawing it to your wallet costs the relay's fee again (about 1 to 2.5 USDT lately), so leave it there unless gas is low or it is more than the fee; the Withdraw tab says what it takes."
         },
         {
           "h": "What is checked",
@@ -884,7 +884,7 @@
         },
         {
           "h": "Paid",
-          "p": "250 TAC to each of the first three testers whose round trip is checked. About $6 of it is the fees (gas for the approval and the deposit, the relay's fee of about 3 USDT for the way out, and about 2,500 sats of Bitcoin), and the rest pays for your time. You keep what comes back of your USDT, about 2 of the 5, as private USDT."
+          "p": "250 TAC to each of the first three testers whose round trip is checked. About $4 to $6 of it is the fees (gas for the approval and the deposit, the relay's fee of 1 to 3 USDT for the way out, and about 2,500 sats of Bitcoin), and the rest pays for your time. You keep what comes back of your USDT, most of the 5, as private USDT."
         }
       ],
       "links": [
