@@ -9,6 +9,10 @@ export const CROSSOUT_CBTC_CAP_RAW = 50_000_000n;
 export const CROSSOUT_CBTC_MIN_RAW = 1_000n;
 export const CROSSOUT_CUSD_CAP_RAW = 100_000_000_000n;    // 1,000 cUSD while the bridge is new
 export const CROSSOUT_CUSD_MIN_RAW = 1_000_000_000n;      // 10 cUSD: a bridge must still exceed its relay fee
+// cUSDT is in the pool at USDT's own six decimals (scale 1), not eight like the rest
+export const CROSSOUT_CUSDT_DEC = 6;
+export const CROSSOUT_CUSDT_CAP_RAW = 1_000_000_000n;     // 1,000 USDT while the bridge is new
+export const CROSSOUT_CUSDT_MIN_RAW = 2_000_000n;         // 2 USDT: small enough to try with, and a bridge must still exceed its relay fee
 export const CROSSOUT_MINT_FEE_CEILING = 100;
 // How many times a burn's Bitcoin step is sent before the record stops offering it again: the first, and two more.
 export const CROSSOUT_MAX_MINT_ATTEMPTS = 3;
@@ -20,8 +24,8 @@ const stripHex = (h) => String(h).replace(/^0x/, '');
 const withHex = (h) => (String(h).startsWith('0x') ? String(h) : '0x' + String(h));
 const lc = (h) => String(h).toLowerCase();
 const now = () => Date.now();
-function units8(raw) {
-  const v = BigInt(raw), whole = (v / 100_000_000n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ','), frac = (v % 100_000_000n).toString().padStart(8, '0').replace(/0+$/, '');
+function unitsDp(raw, dec = 8) {
+  const v = BigInt(raw), one = 10n ** BigInt(dec), whole = (v / one).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ','), frac = (v % one).toString().padStart(dec, '0').replace(/0+$/, '');
   return frac ? `${whole}.${frac}` : whole;
 }
 function hexToBytesLocal(h) { const s = String(h).replace(/^0x/, ''); const a = new Uint8Array(s.length / 2); for (let i = 0; i < a.length; i++) a[i] = parseInt(s.slice(2 * i, 2 * i + 2), 16); return a; }
@@ -105,8 +109,8 @@ export function makeCrossoutUx(deps) {
       const value = BigInt(n.value), a = assetOf(n.asset);
       let reason = null;
       if (!a) reason = ASSETS.length === 1 ? `not ${ASSETS[0].ticker}` : 'not an asset this bridge takes';
-      else if (value > a.capRaw) reason = `over the ${units8(a.capRaw)} ${a.ticker} beta limit — send part of it to yourself first to split off a smaller note`;
-      else if (value < a.minRaw) reason = `under the ${units8(a.minRaw)} ${a.ticker} minimum`;
+      else if (value > a.capRaw) reason = `over the ${unitsDp(a.capRaw, a.dec)} ${a.ticker} beta limit — send part of it to yourself first to split off a smaller note`;
+      else if (value < a.minRaw) reason = `under the ${unitsDp(a.minRaw, a.dec)} ${a.ticker} minimum`;
       else if (n.confirmed === false) reason = 'unconfirmed';
       else if (isReserved(n.nullifier)) reason = 'already bridging';
       return { ...n, eligible: !reason, reason };

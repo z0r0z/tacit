@@ -20,6 +20,8 @@ export const TAC_ID = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43
 export const TETH_ID = '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
 export const CBTC_ID = '62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8';
 export const CUSD_ID = '8f4490dd3728b0ee904d7a67c11b37ffd463a5c7f08b79810006995ee8a9679d';
+// USDT crosses under the id of its registration in the pool; it keeps USDT's six decimals (`dec`), the others carry eight
+export const CUSDT_ID = 'c50e8dd9666f64a23e5457d686382901f08aaea3554328fc4ac25d2f9fac6c00';
 
 // Every asset's routes: where one starts (the front page's Bridge tab, or the Borrow page for a lock) and where the front page's sheet moves one on
 // that is under way. `in` is from Bitcoin to Ethereum, `out` the other way.
@@ -45,6 +47,12 @@ export const ROUTES = {
     in: { start: '/#card=bridge:ub', href: '/#borrow/bitcoin/cusd/back', go: 'Bring cUSD back', steps: ['Burned on Bitcoin', 'Confirmed', 'Proven on Ethereum', 'Minted privately'] },
     out: { start: '/#card=bridge:cusd', href: '/#borrow/bitcoin/cusd', go: 'Bridge cUSD', steps: ['Burned on Ethereum', 'Proven for Bitcoin', 'Sent to Bitcoin', 'Arrived'] },
   },
+  // USDT starts from the wallet's (the card makes it private, then bridges it) and has a sheet of its own
+  cusdt: {
+    ticker: 'cUSDT', icon: 'tk-usdt', dp: 2, dec: 6,
+    in: { start: '/#card=bridge:ut', href: '/#usdt/bitcoin/back', go: 'Bring USDT back', steps: ['Burned on Bitcoin', 'Confirmed', 'Proven on Ethereum', 'Minted privately'] },
+    out: { start: '/#card=bridge:wusdt', href: '/#usdt/bitcoin/out', go: 'Bridge USDT', steps: ['Burned on Ethereum', 'Proven for Bitcoin', 'Sent to Bitcoin', 'Arrived'] },
+  },
 };
 
 // What one bridge takes while the bridge is new, in the eight-decimal units a note carries. The limits live in dapp/crossout-ux.js (to Bitcoin),
@@ -55,16 +63,17 @@ export const LIMITS = {
   teth: { in: { max: 50_000_000n }, out: { min: 100_000n, max: 50_000_000n } },
   cbtc: { in: { max: 50_000_000n }, out: { min: 1_000n, max: 50_000_000n } },
   cusd: { in: { max: 1000n * E8 }, out: { min: 10n * E8, max: 1000n * E8 } },
+  cusdt: { in: { max: 1_000_000_000n }, out: { min: 2_000_000n, max: 1_000_000_000n } },       // 2 to 1,000 USDT, in six-decimal units
 };
 // The line under the steps: '20 to 1,000 TAC a bridge', 'Up to 0.5 tETH a bridge', or '' for a way with no such limit.
 // The FAQ's sentence of every asset's limits, read from the same table as the line under the steps.
 export function limitsSaid() {
-  return ['tac', 'teth', 'cbtc', 'cusd'].map((k) => { const l = LIMITS[k], r = ROUTES[k]; return `${r.ticker} ${fmtAmount(l.out.min, r.dp)} to ${fmtAmount(l.out.max, r.dp)} to Bitcoin and up to ${fmtAmount(l.in.max, r.dp)} back`; }).join('; ');
+  return ['tac', 'teth', 'cbtc', 'cusd', 'cusdt'].map((k) => { const l = LIMITS[k], r = ROUTES[k]; return `${r.ticker} ${fmtAmount(l.out.min, r.dp, r.dec)} to ${fmtAmount(l.out.max, r.dp, r.dec)} to Bitcoin and up to ${fmtAmount(l.in.max, r.dp, r.dec)} back`; }).join('; ');
 }
 export function limitLine(asset, dir) {
   const l = LIMITS[asset]?.[dir], r = ROUTES[asset];
   if (!l || !r) return '';
-  return `${l.min ? `${fmtAmount(l.min, r.dp)} to ` : 'Up to '}${fmtAmount(l.max, r.dp)} ${r.ticker} a bridge while it is new`;
+  return `${l.min ? `${fmtAmount(l.min, r.dp, r.dec)} to ` : 'Up to '}${fmtAmount(l.max, r.dp, r.dec)} ${r.ticker} a bridge while it is new`;
 }
 
 const lc = (s) => String(s || '').replace(/^0x/i, '').toLowerCase();
@@ -72,7 +81,7 @@ const big = (v) => { try { return BigInt(v?.__big ?? v ?? 0); } catch { return 0
 const num = (v) => (Number.isFinite(Number(v)) && v != null ? Number(v) : null);
 // a transaction id is 64 hex digits: anything else read out of a record or an answer is not made into a link
 const hex64 = (v) => { const x = lc(v); return /^[0-9a-f]{64}$/.test(x) ? x : null; };
-const assetKey = (id, ticker) => (lc(id) === TETH_ID || ticker === 'tETH' ? 'teth' : lc(id) === CBTC_ID || ticker === 'cBTC' ? 'cbtc' : lc(id) === CUSD_ID || ticker === 'cUSD' ? 'cusd' : 'tac');
+const assetKey = (id, ticker) => (lc(id) === TETH_ID || ticker === 'tETH' ? 'teth' : lc(id) === CBTC_ID || ticker === 'cBTC' ? 'cbtc' : lc(id) === CUSD_ID || ticker === 'cUSD' ? 'cusd' : lc(id) === CUSDT_ID || ticker === 'cUSDT' ? 'cusdt' : 'tac');
 
 // ── the way in: burndep-ux's stages ──────────────────────────────────────────────────────────────────────────────────────
 // One-step ("reflected") and two-step (a move to a burn address, then a burn through a miner) bridges share the last two steps.
@@ -280,7 +289,7 @@ export function costLine(asset, dir, c = {}) {
   const fee = dir === 'out' ? c.relay?.[asset] : null;
   if (dir === 'out' && fee == null) return '';
   const btc = `${sats.toLocaleString('en-US')} sats on Bitcoin`;
-  const relay = fee != null ? `${fmtAmount(fee, asset === 'teth' ? 4 : r.dp)} ${r.ticker} to the relay` : '';
+  const relay = fee != null ? `${fmtAmount(fee, asset === 'teth' ? 4 : r.dp, r.dec)} ${r.ticker} to the relay` : '';
   const usd = asset === 'teth' && c.btcUsd > 0 && (fee == null || c.ethUsd > 0) ? (sats / 1e8) * c.btcUsd + (fee != null ? (Number(fee) / 1e8) * c.ethUsd : 0) : null;
   // The relay's figure is its floor; what the app quotes adds headroom for gas that moves, so the way out reads as a least.
   const lead = fee != null ? 'From' : 'About';
@@ -353,9 +362,9 @@ export function nextOf(row, live = null, auto = false) {
   return { due: '', self: row.at < 2 || row.at >= 3 };
 }
 
-// An amount in an asset's units (8 decimals on both chains), trimmed to the asset's places.
-export function fmtAmount(raw, dp = 4) {
-  const v = big(raw), neg = v < 0n, a = neg ? -v : v;
-  const whole = a / 100_000_000n, frac = (a % 100_000_000n).toString().padStart(8, '0').slice(0, dp).replace(/0+$/, '');
+// An amount in an asset's units (8 decimals on both chains, 6 for cUSDT: `dec`), trimmed to the asset's places.
+export function fmtAmount(raw, dp = 4, dec = 8) {
+  const v = big(raw), neg = v < 0n, a = neg ? -v : v, one = 10n ** BigInt(dec);
+  const whole = a / one, frac = (a % one).toString().padStart(dec, '0').slice(0, dp).replace(/0+$/, '');
   return `${neg ? '-' : ''}${whole.toLocaleString('en-US')}${frac ? '.' + frac : ''}`;
 }

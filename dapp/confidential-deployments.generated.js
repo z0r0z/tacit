@@ -20,6 +20,9 @@ export const DEPLOY_OVERRIDES = {
     "cUsdToken": "0x23cACFFAc2674514A6d4F6cD420B4cc2aC921564",
     "assetIds": {
       "cUsd": "0x8f4490dd3728b0ee904d7a67c11b37ffd463a5c7f08b79810006995ee8a9679d"
-    }
+    },
+    "externalErc20": [
+      "USDT"
+    ]
   }
 };

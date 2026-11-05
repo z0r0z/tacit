@@ -31,7 +31,7 @@ const { makeBtcWallet } = await import('../dapp/bitcoin-taproot-wallet.js');
 // computed once here so the recovery tests can assert against it without re-deriving it inline each time.
 const destXonlyOf = (priv) => bytesToHex(makeBtcWallet({ priv, hrp: 'bc', fetchUtxos: async () => [], broadcastTx: async () => {}, fetchFeeRate: async () => 1 }).wallet.xonly());
 
-const { makeCrossoutUx, CROSSOUT_BETA_CAP_RAW, CROSSOUT_TETH_CAP_RAW, CROSSOUT_TETH_MIN_RAW } = await import('../dapp/crossout-ux.js');
+const { makeCrossoutUx, CROSSOUT_BETA_CAP_RAW, CROSSOUT_TETH_CAP_RAW, CROSSOUT_TETH_MIN_RAW, CROSSOUT_CUSDT_DEC, CROSSOUT_CUSDT_CAP_RAW, CROSSOUT_CUSDT_MIN_RAW } = await import('../dapp/crossout-ux.js');
 globalThis.fetch = realFetch;
 
 const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256: nobleSha256 });
@@ -421,6 +421,37 @@ const TNOTE = { nullifier: withHex('7f'.repeat(32)), value: 4_000_000n, blinding
   ok(covered.stage === 'covered' && signed.stage === 'mint-signed', 'a tETH record walks the same stages');
   ok(stripHex(signed.mint.revealHex).includes('3c'.repeat(32)), 'the signed reveal carries the tETH asset id, not TAC\'s');
   ok(!stripHex(signed.mint.revealHex).includes('a5'.repeat(32)), 'and not the TAC asset id');
+}
+
+// ---- cUSDT: USDT at its own six decimals, the pool id of its escrow registration (no Bitcoin link), a $2 minimum ----
+const CUSDT = withHex('c5'.repeat(32));
+const USDT_ASSET = { assetId: CUSDT, ticker: 'cUSDT', capRaw: CROSSOUT_CUSDT_CAP_RAW, minRaw: CROSSOUT_CUSDT_MIN_RAW, dec: CROSSOUT_CUSDT_DEC };
+const UNOTE = { nullifier: withHex('6e'.repeat(32)), value: 5_000_000n, blinding: 0x777n, asset: CUSDT, confirmed: true };
+{
+  ok(CROSSOUT_CUSDT_DEC === 6 && CROSSOUT_CUSDT_MIN_RAW === 2_000_000n && CROSSOUT_CUSDT_CAP_RAW === 1_000_000_000n, 'the limits are 2 and 1,000 USDT, in six-decimal units');
+  const world = makeWorld();
+  const ux = makeUx(world, { assets: [...MULTI.assets, USDT_ASSET] });
+  const [good, over, under, atCap, atMin] = ux.eligibleNotes([UNOTE, { ...UNOTE, value: CROSSOUT_CUSDT_CAP_RAW + 1n }, { ...UNOTE, value: CROSSOUT_CUSDT_MIN_RAW - 1n },
+    { ...UNOTE, value: CROSSOUT_CUSDT_CAP_RAW }, { ...UNOTE, value: CROSSOUT_CUSDT_MIN_RAW }]);
+  ok(good.eligible, 'a cUSDT note is eligible beside TAC and tETH');
+  ok(!over.eligible && /over the 1,000 cUSDT beta limit/.test(over.reason), 'over the cap, the cap is named in USDT (1,000, not 10)');
+  ok(!under.eligible && /under the 2 cUSDT minimum/.test(under.reason), 'under the minimum, the minimum is named in USDT (2, not 0.02)');
+  ok(atCap.eligible && atMin.eligible, 'both limits are inclusive');
+  ok(ux.assetOf(CUSDT).dec === 6 && ux.assetOf(TETH).dec === undefined, 'the six-decimal asset carries its decimals; the eight-decimal ones need not');
+  ok(/over the 0\.5 tETH beta limit/.test(ux.eligibleNotes([{ ...TNOTE, value: CROSSOUT_TETH_CAP_RAW + 1n }])[0].reason), 'tETH\'s limits still read at eight places');
+
+  // 5 USDT with the relay's fee of 0.5 USDT: 4.5 arrives, the burn carries both, and the signed Bitcoin step names the cUSDT id
+  const rec = await ux.start({ note: UNOTE, walletPriv: WALLET_PRIV, fee: 500_000n });
+  const call = world.crossOutCalls[0];
+  ok(call.amount === 4_500_000n && call.fee === 500_000n, 'crossOut is asked to burn 4.5 USDT to Bitcoin and 0.5 to the relay');
+  ok(rec.source.ticker === 'cUSDT' && rec.source.assetId.toLowerCase() === CUSDT.toLowerCase(), 'the record names cUSDT');
+  world.setEthCovered(true);
+  await ux.advance(WALLET_PUB, UNOTE.nullifier);
+  const signed = await ux.advance(WALLET_PUB, UNOTE.nullifier, { walletPriv: WALLET_PRIV });
+  ok(signed.stage === 'mint-signed' && stripHex(signed.mint.revealHex).includes('c5'.repeat(32)), 'the signed reveal carries the cUSDT id');
+  let m = null;
+  try { await makeUx(makeWorld(), { assets: [...MULTI.assets, USDT_ASSET] }).start({ note: { ...UNOTE, value: CROSSOUT_CUSDT_MIN_RAW - 1n }, walletPriv: WALLET_PRIV }); } catch (e) { m = e.message; }
+  ok(m && /minimum/.test(m), 'start() refuses a bridge under 2 USDT');
 }
 
 // ---- start() refuses what it must before settling anything ----

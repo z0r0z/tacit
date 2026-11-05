@@ -153,6 +153,13 @@ browser has under way.
 | TAC | Burn on Bitcoin, minted privately in the pool once proven | Cross-out from the pool, minted on Bitcoin once proven |
 | tETH | Burn on Bitcoin, minted back in the pool once proven | Cross-out from the pool |
 | cBTC | Lock BTC at your own key's output, with a wstETH bond behind it; the pool mints cBTC 1:1 once the lock is proven. Borrow cUSD against it. | Will be burned on Bitcoin to redeem a lock |
+| USDT | Burn on Bitcoin, minted back in the pool once proven | Cross-out from the pool, from private USDT (cUSDT) |
+
+USDT is an Ethereum token the pool holds in escrow, so it keeps its six decimals and has no Bitcoin etch: it crosses under the id of its registration
+in the pool, a hash of the chain and the token that no Bitcoin etch can produce, so the only USDT notes on Bitcoin are ones a cross-out made, each backed
+by the USDT still in the pool's escrow. The pool's registry refuses to give an escrowed token a Bitcoin-side id of its own, and does not need to: a note
+that comes back names the same id and resolves to the escrow directly. The USDT in a wallet is made private in the pool first (Permit2: one approval for
+exactly the amount and one signature), and is taken out again to an Ethereum address once it is back.
 
 ### Limits and costs, while the bridge is new
 
@@ -160,6 +167,7 @@ browser has under way.
 | --- | --- | --- |
 | TAC | 20 to 1,000 TAC a bridge | up to 1,000 TAC, a note goes whole |
 | tETH | 0.001 to 0.5 tETH a bridge | up to 0.5 tETH, a note goes whole |
+| USDT | 2 to 1,000 USDT a bridge | up to 1,000 USDT, a note goes whole |
 
 A TAC note going back in two steps carries up to 255 transfers of history.
 
@@ -168,7 +176,8 @@ A TAC note going back in two steps carries up to 255 transfers of history.
 | Relay fee | Taken out of the note: the relay's floor for the asset at today's gas (about 0.0005 tETH, 4 TAC). The note must be worth more than it. | None: Tacit covers the Ethereum mint for now |
 | Bitcoin fee | About 900 to 1,200 sats at 1 to 2 sat/vB (a 180 vB reveal, a 154 vB commit, and the 546-sat output the note sits on), paid from the key's own Bitcoin address, which needs one free coin of about twice that when the Bitcoin step is sent, a few hours after the burn. A bridge can start without it: the app asks for the sats when the step is due, and the burn waits until they are there | About 1,000 sats at 1 to 2 sat/vB (two transactions, each at least 500), paid from the same address |
 
-[tacit.finance/bridge](https://tacit.finance/bridge/) shows what each way costs at the live rates. The limits are in
+[tacit.finance/bridge](https://tacit.finance/bridge/) shows what each way costs at the live rates. A USDT bridge must exceed its relay fee (about 0.5 USDT), and its Bitcoin step is paid separately in sats (about 1,000 to 1,500, around a dollar), so a
+2 USDT bridge is for trying it, not for saving money. The limits are in
 [`crossout-ux.js`](../dapp/crossout-ux.js) and [`burndep-ux.js`](../dapp/burndep-ux.js); `tests/bridge-track.test.mjs`
 holds the page's copy of them, and of the sizes behind the costs, to those files.
 
@@ -199,6 +208,10 @@ all, the same acknowledgement. A note sent first or merged is bridged from this 
 has seen it (the front page lists it under Getting ready too). Bridging a note for the holder when it is ready, minting to
 someone else's address or as public TAC, proving a burn or a mint yourself, and paying the mint from a wallet are on the
 front page; a press the relay will not take links there.
+
+USDT has a sheet of its own (`#usdt`) with three tabs: **Make private** (USDT from the wallet into the pool), **Withdraw** (private USDT out to the wallet) and
+**Bitcoin** (`#usdt/bitcoin/out`, `#usdt/bitcoin/back`: the bridge forms, as for cUSD and cBTC). The front page's Bridge tab takes USDT from the wallet, making it
+private first when the key holds too little, and brings it back from Bitcoin.
 
 ### Following a bridge
 

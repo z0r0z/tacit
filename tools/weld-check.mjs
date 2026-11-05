@@ -7,6 +7,10 @@
 //   swapurl the swap page's address on the front page: ?from=&to=&amt=&private= open the Swap tab on that swap, the address follows the card's pair
 //            (never the amount) while that tab shows, other parameters and the hash stay, and the first pair leaves it plain
 //   hxbridge the tile's Bridge tab: its link and the page's bridge buttons open it, its From lists what crosses, the flip and steps, the Swap card's line over to it, and the Bitcoin lane reached by putting both sides on Bitcoin
+//   usdtwrap USDT made private from the Bridge tab: the card says so first, and the press sends the deposit through Permit2 in one transaction, the steps under the button, no sheet
+//   usdtout  private USDT withdrawn from the USDT sheet: the Withdraw tab shows what the key holds and its press moves each note by the relay, said in the sheet
+//   usdtwrapw USDT made private from the USDT sheet with the connected wallet paying: an approval of exactly the amount to Permit2, the permit signed in the wallet, one deposit; nothing left over
+//   hxbridgeu USDT on the Bridge tab and its sheet: private USDT out quoted with its fee and the 2 to 1,000 limits in six decimals, a seventh decimal refused, the press bridging from the tile; USDT on Bitcoin back; the wallet's USDT made private first; the USDT sheet's tabs and links
 //   hxbridgec cBTC and cUSD on the Bridge tab: private cUSD out quoted with its fee and limits, the press opening the Borrow sheet's form with the amount; cBTC back
 //   ux       the page's shell: a toast over an open sheet can be pressed, a drag ending on the backdrop leaves the sheet open, an
 //            unreadable amount says so, one sheet replacing another keeps its link in the address bar, a hash naming nothing is ignored
@@ -199,7 +203,7 @@ const { chromium } = require(process.env.PLAYWRIGHT || '/Users/z/zFi/node_module
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
 // Borrow reports under each step's own line (#bw-s1…#bw-s4) as well as the sheet's: read them all.
 const bwText = (page) => page.evaluate((s) => [...document.querySelectorAll(s)].map((e) => e.textContent).join(' '), '#bw-status, #bw-s1, #bw-s2, #bw-s3, #bw-s4');
-const ONLY = new Set((process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,relayfail,selfwallet,slowline,fastroute').split(','));
+const ONLY = new Set((process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,hxbridgeu,usdtwrap,usdtwrapw,usdtout,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,relayfail,selfwallet,slowline,fastroute').split(','));
 const FORK = process.argv[3] || 'https://mainnet.gateway.tenderly.co';
 const SHOTS = process.env.SHOTS || null;
 const PORT = 20000 + Math.floor(Math.random() * 2000), WEB = PORT + 1;
@@ -9647,6 +9651,151 @@ await step('hxbridgec', async () => {
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | q: ${await text(p, '#hx-q')} | hash ${await p.evaluate(() => location.hash)}`); });
     ok((await p.evaluate(() => window.__sheetSeen)) === '', `hxbridgec: and its press brings cBTC back from the tile, not the Borrow sheet (${(await text(p, '#hx-ss')).slice(0, 90)})`);
     if (r.errors.length) { fails++; console.log('FAIL hxbridgec page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { await r.browser.close(); }
+});
+
+// USDT crosses too, at its own six decimals: private USDT (cUSDT) out of the Bridge tab quoted with its relay fee and the 2 to 1,000 limits, a seventh
+// decimal refused, the press bridging from the tile with no sheet; USDT on Bitcoin comes back from the same tab; the USDT sheet's three tabs hold their links.
+await step('hxbridgeu', async () => {
+  const r = await openFarmKey('c05e'.padEnd(64, '6'), { notes: [['@cUSDT', 50000000n]], fees: { transfer: 100000, bridgeburn: 500000 } });
+  const p = r.page;
+  try {
+    await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
+    await bridgeTo(p, 'cusdt', '200');
+    await until(p, () => /You hold 50 cUSDT privately\./.test(document.querySelector('#hx-q')?.textContent || ''), null, 240000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)} | out ${await text(p, BRG.out)}`); });
+    ok(true, 'hxbridgeu: more USDT than the key holds is said, in USDT');
+    await p.fill(BRG.amt, '20');
+    await until(p, () => /^19\.5$/.test(document.querySelector('#hx-out')?.textContent || '') && /Relay fee: 0\.5 cUSDT/.test(window.__said()) && /Limits: 2 to 1,000 cUSDT a bridge/.test(window.__said()), null, 240000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)} | out ${await text(p, BRG.out)}`); });
+    ok((await text(p, BRG.go)).trim() === 'Bridge cUSDT to Bitcoin' && (await heldAt(p)) === 'private', `hxbridgeu: 20 USDT to Bitcoin is quoted with its relay fee and its limits in six decimals (${await said(p)})`);
+    await p.fill(BRG.amt, '1');
+    await until(p, () => /A bridge takes 2 to 1,000 cUSDT while this is new\./.test(document.querySelector('#hx-q')?.textContent || ''), null, 240000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)}`); });
+    ok(true, 'hxbridgeu: 1 USDT is under the 2 USDT minimum, and the line names the limits in USDT');
+    await p.fill(BRG.amt, '2.5');
+    await until(p, () => /^2$/.test(document.querySelector('#hx-out')?.textContent || ''), null, 240000).catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)} | out ${await text(p, BRG.out)}`); });
+    ok(true, 'hxbridgeu: 2.5 USDT less the 0.5 fee arrives as 2 (a bridge just over the minimum is quoted)');
+    await p.fill(BRG.amt, '1.1234567');
+    await until(p, () => /up to 6 decimals/.test(document.querySelector('#hx-q')?.textContent || ''), null, 240000).catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)}`); });
+    ok(true, 'hxbridgeu: a seventh decimal is refused, with USDT\'s six named');
+    await p.fill(BRG.amt, '20');
+    await until(p, () => /^19\.5$/.test(document.querySelector('#hx-out')?.textContent || ''), null, 240000);
+    await sheetsSeen(p);
+    await p.click(BRG.go);
+    await until(p, () => (document.querySelector('#hx-ss')?.textContent || '').trim() !== '', null, 300000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | hash ${await p.evaluate(() => location.hash)}`); });
+    ok((await p.evaluate(() => window.__sheetSeen)) === '' && !(await p.$('#xd-amt')), `hxbridgeu: the press bridges from the tile, with no USDT sheet opened (${(await text(p, '#hx-ss')).slice(0, 110)})`);
+    await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
+    await bridgeTo(p, 'ut');
+    ok((await text(p, BRG.go)).trim() === 'Bring cUSDT back' && (await heldAt(p)) === 'bitcoin', 'hxbridgeu: USDT on Bitcoin comes back from the same tab');
+    await bridgeTo(p, 'wusdt', '5');
+    await until(p, () => /^Bridge cUSDT to Bitcoin$/.test(document.querySelector('#hx-go')?.textContent || ''), null, 240000).catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)} | go ${await text(p, BRG.go)}`); });
+    ok((await heldAt(p)) === 'wallet', 'hxbridgeu: USDT in the wallet is a source, and with the private USDT held covering it the press is the bridge itself');
+    await p.fill(BRG.amt, '80');
+    await until(p, () => /^Make USDT private$/.test(document.querySelector('#hx-go')?.textContent || ''), null, 240000).catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)} | go ${await text(p, BRG.go)}`); });
+    ok(true, `hxbridgeu: more than the private USDT held makes the USDT private first (${await said(p)})`);
+    // the sheet and its links
+    for (const [hash, tab] of [['usdt', 'wrap'], ['usdt/withdraw', 'out'], ['usdt/bitcoin', 'btc'], ['usdt/bitcoin/back', 'btc'], ['usdt/bitcoin/out', 'btc']]) {
+      await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); });
+      await p.waitForTimeout(400);                          // a closed sheet's close event rewrites the address: let it, then follow the link
+      await p.evaluate((h) => { location.hash = h; }, hash);
+      await until(p, () => !!document.querySelector('#sheet-usdt[open] #us-form > *'), null, 120000).catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${hash} | ${await p.evaluate(() => location.hash)}`); });
+      const sel = await p.$eval('#sheet-usdt [data-us][aria-selected="true"]', (b) => b.getAttribute('data-us'));
+      ok(sel === tab && (await p.evaluate(() => location.hash)) === '#' + hash, `hxbridgeu: #${hash} opens the USDT sheet on ${tab} and the address follows`);
+    }
+    ok((await p.$('#xd-amt')) !== null || /Back to Ethereum/.test(await text(p, '#us-form')), 'hxbridgeu: the Bitcoin tab holds the bridge forms');
+    await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); });
+    await p.waitForTimeout(400);
+    await p.evaluate(() => { location.hash = 'usdt'; });
+    await until(p, () => /^50\b/.test((document.querySelector('#sheet-usdt .bal .v')?.textContent || '').trim()), null, 240000).catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | bal ${await text(p, '#sheet-usdt .bal')}`); });
+    ok(true, 'hxbridgeu: the sheet shows the 50 private USDT the key holds');
+    if (r.errors.length) { fails++; console.log('FAIL hxbridgeu page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { await r.browser.close(); }
+});
+
+// USDT made private from the Bridge tab (a key with no private USDT, 5 USDT in its Tacit account): the card says it makes the USDT private first, and the press sends the
+// deposit through Permit2 in one transaction, so 5 USDT leave the account for the pool, said under the button with no sheet opened. The relay's settle is the stub's here.
+await step('usdtwrap', async () => {
+  const USDT = '0xdac17f958d2ee523a2206206994597c13d831ec7', POOLA = '0x000000000Ed1eabD231Be41d93b719056F7febFC', hex = 'c060'.padEnd(64, '6');
+  const w32 = (a) => a.replace(/^0x/, '').toLowerCase().padStart(64, '0');
+  const slotOf = (a) => '0x' + Buffer.from(keccak_256(Buffer.from(w32(a) + '0'.repeat(63) + '2', 'hex'))).toString('hex');
+  const usdtOf = async (a) => BigInt(await rpc('eth_call', [{ to: USDT, data: '0x70a08231' + w32(a) }, 'latest']));
+  const acct = makeEvmAccount({ secp, keccak256: keccak_256, sha256 }).deriveEvmAccount(Buffer.from(hex, 'hex'), 'mainnet').address;
+  await rpc('anvil_setStorageAt', [USDT, slotOf(acct), '0x' + (50n * 10n ** 6n).toString(16).padStart(64, '0')]);
+  const r = await openFarmKey(hex, { notes: [], fees: { transfer: 100000, bridgeburn: 500000 } }, { width: 1280, height: 1500 }), p = r.page;
+  try {
+    await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
+    await bridgeTo(p, 'wusdt', '5');
+    await until(p, () => /^Make USDT private$/.test(document.querySelector('#hx-go')?.textContent || '') && !document.querySelector('#hx-go').disabled, null, 420000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)} | go ${await text(p, BRG.go)}`); });
+    ok(/make the USDT private, then bridge it/.test(await said(p)), `usdtwrap: with no private USDT the card says it makes the USDT private first (${await said(p)})`);
+    const u0 = await usdtOf(acct), pool0 = await usdtOf(POOLA);
+    ok(u0 === 50n * 10n ** 6n, `usdtwrap: the Tacit account holds the 50 USDT it was given (${u0})`);
+    await sheetsSeen(p);
+    await p.click(BRG.go);
+    ok(await chainUntil(async () => u0 - (await usdtOf(acct)) === 5n * 10n ** 6n && (await usdtOf(POOLA)) - pool0 === 5n * 10n ** 6n, 600000), 'usdtwrap: 5 USDT left the account for the pool, in one transaction');
+    await until(p, () => (document.querySelector('#hx-ss')?.textContent || '').trim() !== '', null, 120000);
+    ok((await p.evaluate(() => window.__sheetSeen)) === '', `usdtwrap: and no sheet opened, the steps said under the button (${(await text(p, '#hx-ss')).slice(0, 100)})`);
+    if (r.errors.length) { fails++; console.log('FAIL usdtwrap page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { await r.browser.close(); }
+});
+
+// USDT made private from the USDT sheet with the connected wallet paying: the wallet approves exactly the amount to Permit2 (USDT's allowance starts at zero), signs the router's Permit2 permit
+// in the wallet, and sends the deposit, so 5 USDT leave the wallet for the pool, the allowance is used up, and the steps are said in the sheet. The relay's settle is the stub's here.
+await step('usdtwrapw', async () => {
+  const USDT = '0xdac17f958d2ee523a2206206994597c13d831ec7', POOLA = '0x000000000Ed1eabD231Be41d93b719056F7febFC', PERMIT2 = '0x000000000022d473030f116ddee9f6b43ac78ba3';
+  // a fresh account: anvil's own first account has contract code on the mainnet fork (an EIP-7702 delegation), so Permit2 would check its signature as EIP-1271 and refuse a plain one
+  const KXW = '0x' + 'c0de'.padEnd(64, '7'), XW = '0x' + Buffer.from(keccak_256(secp.getPublicKey(KXW.slice(2), false).slice(1))).toString('hex').slice(-40);
+  await rpc('anvil_impersonateAccount', [XW]); await rpc('anvil_setBalance', [XW, '0x' + (10n ** 18n).toString(16)]);
+  const w32 = (a) => a.replace(/^0x/, '').toLowerCase().padStart(64, '0');
+  const slotOf = (a) => '0x' + Buffer.from(keccak_256(Buffer.from(w32(a) + '0'.repeat(63) + '2', 'hex'))).toString('hex');
+  const usdtOf = async (a) => BigInt(await rpc('eth_call', [{ to: USDT, data: '0x70a08231' + w32(a) }, 'latest']));
+  const allowed = async (o, s) => BigInt(await rpc('eth_call', [{ to: USDT, data: '0xdd62ed3e' + w32(o) + w32(s) }, 'latest']));
+  await rpc('anvil_setStorageAt', [USDT, slotOf(XW), '0x' + (50n * 10n ** 6n).toString(16).padStart(64, '0')]);
+  const r = await openPage({ account: XW, key: KXW, viewport: { width: 1280, height: 1500 } }), p = r.page;
+  try {
+    await p.goto(r.url + '#usdt');
+    await p.waitForSelector('#usdt-body [data-in="eth"]', { timeout: 120000 });
+    await p.click('#usdt-body [data-in="eth"]');
+    await p.waitForSelector('#us-amt', { timeout: 240000 });
+    await until(p, () => /USDT in your wallet 50\b/.test(document.querySelector('#us-max')?.textContent || ''), null, 240000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | max ${await text(p, '#us-max')}`); });
+    ok(true, `usdtwrapw: the sheet reads the wallet's USDT (${(await text(p, '#us-max')).trim()})`);
+    await p.fill('#us-amt', '5');
+    await until(p, () => !document.querySelector('#us-go').disabled, null, 120000);
+    ok(/5 USDT, private/.test(await text(p, '#us-rcpt')) && (await allowed(XW, PERMIT2)) === 0n, 'usdtwrapw: 5 USDT is quoted as private USDT, with no allowance to Permit2 yet');
+    await p.fill('#us-amt', '1.1234567');
+    await until(p, () => /Up to 6 decimals/.test(document.querySelector('#us-rcpt')?.textContent || ''), null, 60000);
+    ok(!(await p.$eval('#us-go', (b) => !b.disabled)), 'usdtwrapw: a seventh decimal is refused and the button stays off');
+    await p.fill('#us-amt', '5');
+    await until(p, () => !document.querySelector('#us-go').disabled, null, 120000);
+    const u0 = await usdtOf(XW), pool0 = await usdtOf(POOLA);
+    await p.click('#us-go');
+    const wrapped = await chainUntil(async () => u0 - (await usdtOf(XW)) === 5n * 10n ** 6n && (await usdtOf(POOLA)) - pool0 === 5n * 10n ** 6n, 240000);
+    ok(wrapped, 'usdtwrapw: 5 USDT left the wallet for the pool (approved to Permit2, permitted by signature, deposited)');
+    ok((await allowed(XW, PERMIT2)) === 0n, 'usdtwrapw: and the allowance to Permit2 was exactly the amount, so none is left over');
+    await until(p, () => (document.querySelector('#us-status')?.textContent || '').trim() !== '', null, 120000);
+    ok(true, `usdtwrapw: the steps are said in the sheet (${(await text(p, '#us-status')).trim().slice(0, 100)})`);
+    if (r.errors.length) { fails++; console.log('FAIL usdtwrapw page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { await r.browser.close(); }
+});
+
+// Private USDT taken out from the USDT sheet: the Withdraw tab shows what the key holds, and its press moves each note by the relay, said in the sheet. The stub's notes cannot make a real proof,
+// so the run ends in the error it says: what is checked is that it went from the sheet, step by step, in USDT's six decimals.
+await step('usdtout', async () => {
+  const r = await openFarmKey('c061'.padEnd(64, '6'), { notes: [['@cUSDT', 50000000n]], positions: [], fees: { transfer: 10000, sendunwrap: 300000, unwrap: 300000 } }, { width: 1280, height: 1500 });
+  const p = r.page;
+  try {
+    await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); location.hash = 'usdt/withdraw'; });
+    await until(p, () => !!document.querySelector('#us-out') && !document.querySelector('#us-out').disabled, null, 300000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | open ${await p.evaluate(() => !!document.querySelector('#sheet-usdt[open]'))} hash ${await p.evaluate(() => location.hash)} body ${(await text(p, '#usdt-body')).replace(/\s+/g, ' ').slice(0, 160)} | errors ${r.errors.slice(0, 2).join(' / ').replace(/\s+/g, ' ')}`); });
+    ok(/Private USDT\s*50\b/.test((await text(p, '#us-form')).replace(/\s+/g, ' ')), `usdtout: the Withdraw tab shows the 50 private USDT (${(await text(p, '#us-form')).replace(/\s+/g, ' ').slice(0, 120)})`);
+    await p.evaluate(() => { window.__mz = []; new MutationObserver(() => { const t = document.querySelector('#us-status')?.textContent; if (t && window.__mz[window.__mz.length - 1] !== t) window.__mz.push(t); }).observe(document.body, { subtree: true, childList: true, characterData: true }); });
+    await p.click('#us-out');
+    await until(p, () => (window.__mz || []).length > 0, null, 240000);
+    ok(/The relay is moving your USDT|Withdrawing|worth less than the relay fee/.test((await p.evaluate(() => window.__mz)).join(' | ')), `usdtout: Withdraw goes from the sheet and says its steps there (${(await p.evaluate(() => window.__mz)).join(' | ').slice(0, 140)})`);
+    if (r.errors.length) { fails++; console.log('FAIL usdtout page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }
 });
 

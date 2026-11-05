@@ -44,7 +44,7 @@ import { loadTrackedNotes } from './tracked-notes.js';
 import { makeConfidentialPoolUx, setExternalTacHolders, forgetKeys as forgetPoolKeys } from './confidential-pool-ux.js';
 import { makeBurnDepositUx, BURNDEP_BETA_CAP_RAW as BURNDEP_BETA_CAP_RAW_TAC } from './burndep-ux.js';
 import { makeTxArchive } from './tx-archive.js';
-import { makeCrossoutUx, CROSSOUT_BETA_CAP_RAW as CROSSOUT_TAC_CAP_RAW, CROSSOUT_TETH_CAP_RAW, CROSSOUT_TETH_MIN_RAW, CROSSOUT_CBTC_CAP_RAW, CROSSOUT_CBTC_MIN_RAW, CROSSOUT_CUSD_CAP_RAW, CROSSOUT_CUSD_MIN_RAW } from './crossout-ux.js';
+import { makeCrossoutUx, CROSSOUT_BETA_CAP_RAW as CROSSOUT_TAC_CAP_RAW, CROSSOUT_TETH_CAP_RAW, CROSSOUT_TETH_MIN_RAW, CROSSOUT_CBTC_CAP_RAW, CROSSOUT_CBTC_MIN_RAW, CROSSOUT_CUSD_CAP_RAW, CROSSOUT_CUSD_MIN_RAW, CROSSOUT_CUSDT_DEC, CROSSOUT_CUSDT_CAP_RAW, CROSSOUT_CUSDT_MIN_RAW } from './crossout-ux.js';
 import { makeCrossoutNotes, p2trAddress as _crossoutP2trAddress } from './crossout-notes.js';
 import { renderConfidentialPoolTab } from './confidential-pool-tab.js';
 import { renderLanePanel } from './cross-chain-lane.js';
@@ -15901,13 +15901,17 @@ function _burndepReserved(txid, vout) {
   try { return _burndepUxSingleton().isReserved(txid, vout); } catch { return false; }
 }
 let _crossoutUx = null, _crossoutUxNet = null;
-// cBTC and cUSD cross both ways like tETH: each is a pool asset whose Bitcoin link is its own id (the pool resolves a bridged-back note by it)
+// cBTC and cUSD cross both ways like tETH: each is a pool asset whose Bitcoin link is its own id (the pool resolves a bridged-back note by it).
+// cUSDT crosses under its own pool id with no link: an ERC-20 the pool escrows can never claim a Bitcoin-side id, and the id of its registration
+// (a hash of the chain and the token, which no etch can produce) is already the shared one, so a note that comes back resolves to the escrow directly.
 function _bridgedPoolAssets(poolUx) {
   const by = poolUx.assetByTicker || {}, out = [];
   for (const [ticker, capRaw, minRaw] of [['cBTC', CROSSOUT_CBTC_CAP_RAW, CROSSOUT_CBTC_MIN_RAW], ['cUSD', CROSSOUT_CUSD_CAP_RAW, CROSSOUT_CUSD_MIN_RAW]]) {
     const r = by[ticker];
     if (r && r.assetId && r.bitcoinLink && String(r.assetId).toLowerCase() === String(r.bitcoinLink).toLowerCase()) out.push({ assetId: r.assetId, ticker, capRaw, minRaw });
   }
+  const t = by.cUSDT;
+  if (t && t.assetId && !t.bitcoinLink && t.underlying && Number(t.tacitDecimals) === CROSSOUT_CUSDT_DEC) out.push({ assetId: t.assetId, ticker: 'cUSDT', capRaw: CROSSOUT_CUSDT_CAP_RAW, minRaw: CROSSOUT_CUSDT_MIN_RAW, dec: CROSSOUT_CUSDT_DEC });
   return out;
 }
 function _crossoutUxSingleton() {

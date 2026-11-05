@@ -1,7 +1,7 @@
 // The bridge page: one tile to pick an asset and a way, the bridges this browser has under way, and the two proofs they wait on.
 // Below it, the walk-through of how each way is proven. A bridge is started on the front page (its sheets are linked); this page
 // reads the journals (track.js) and the chains, and moves a bridge on only once the holder opens the key here (mover.js).
-import { ROUTES, readBridges, liveLine, nextOf, fmtAmount, limitLine, limitsSaid, ethSpan, costLine } from '/bridge/track.js?cb=31e3a58f';
+import { ROUTES, readBridges, liveLine, nextOf, fmtAmount, limitLine, limitsSaid, ethSpan, costLine } from '/bridge/track.js?cb=5bf42c45';
 import { bodyType } from '/rpc-body.js';
 { const fq = document.getElementById('fq-lim'); if (fq) fq.textContent = limitsSaid(); }   // the FAQ's limits, from the table the page enforces
 
@@ -123,7 +123,7 @@ async function readCosts() {
   const floor = (asset, k) => getJson(`${API}/confidential/quote?asset=${asset}`).then((q) => { const u = BigInt(q.gasAwareFloorUnits ?? q.staticFloorUnits ?? 0); if (u > 0n) COST.relay[k] = u; }).catch(() => {});
   await Promise.all([
     getJson(`${ESPLORA}/v1/fees/recommended`).then((f) => { if (Number(f.fastestFee) > 0) COST.satvb = Number(f.fastestFee); }).catch(() => {}),
-    floor('cETH', 'teth'), floor('cTAC', 'tac'), floor('cBTC', 'cbtc'), floor('cUSD', 'cusd'), feed('ethUsd'), feed('btcUsd'),
+    floor('cETH', 'teth'), floor('cTAC', 'tac'), floor('cBTC', 'cbtc'), floor('cUSD', 'cusd'), floor('cUSDT', 'cusdt'), feed('ethUsd'), feed('btcUsd'),
   ]);
   paintTile();
 }
@@ -247,7 +247,7 @@ function rowHtml(r) {
   return `<li class="mb${r.done ? ' done' : ''}${nx.due ? ' due' : ''}" data-dir="${r.dir}">
     <svg class="tk" aria-hidden="true"><use href="#${a.icon}"/></svg>
     <div class="mb-m">
-      <div class="mb-t"><b class="num">${fmtAmount(r.amount, a.dp)} ${a.ticker}</b>${to}<small>${r.since ? ago(r.since) : ''}</small></div>
+      <div class="mb-t"><b class="num">${fmtAmount(r.amount, a.dp, a.dec)} ${a.ticker}</b>${to}<small>${r.since ? ago(r.since) : ''}</small></div>
       <div class="mb-r" role="img" aria-label="${esc(where)}">${ticks}</div>
       <div class="mb-w"><span>${stepHtml(where)}</span>${live ? `<span class="mb-live">${esc(live)}</span>` : ''}</div>
       ${r.note ? `<p class="mb-n">${esc(r.note)}</p>` : ''}
@@ -291,7 +291,7 @@ function notifyChanges() {
   SEEN = now;
 }
 function ping(r, kind) {
-  const a = ROUTES[r.asset] || ROUTES.tac, amt = `${fmtAmount(r.amount, a.dp)} ${a.ticker}`, due = nxt(r).due;
+  const a = ROUTES[r.asset] || ROUTES.tac, amt = `${fmtAmount(r.amount, a.dp, a.dec)} ${a.ticker}`, due = nxt(r).due;
   try {
     const n = new Notification(kind === 'due' ? `${amt} bridge needs you` : r.paid ? `${amt} was sent` : `${amt} has arrived`, {
       body: kind === 'due' ? `${due}: open the app to finish it.` : r.paid ? 'It is with the address you paid, to claim as a private payment.' : r.dir === 'in' ? 'It is private on Ethereum now.' : 'It is on your Bitcoin address.', tag: `${r.dir}:${r.id}`,
@@ -332,7 +332,7 @@ function mineSay(text, front = false) {
   el.hidden = !text;
   el.innerHTML = text ? `${esc(text)}${front ? ` <a href="${esc(typeof front === 'string' ? front : '/#bridge')}">Do it on the front page →</a>` : ''}` : '';
 }
-const loadMover = () => (MVP ||= import('/bridge/mover.js?cb=fc7ff6ea').then((m) => {
+const loadMover = () => (MVP ||= import('/bridge/mover.js?cb=00240860').then((m) => {
   const b = $('#mine-mv');
   MV = m.mountMover({ repaint: () => { readMine.sig = null; readMine(); }, say: mineSay,
     onState: (on) => { if (b) { b.setAttribute('aria-pressed', String(on)); b.textContent = on ? 'Moving them on here' : 'Move them on here'; } } });

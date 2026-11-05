@@ -5,13 +5,13 @@
 import { makeKeySession, signInSheet } from '/trade/key.js?cb=26d9c07b';
 import { makeTacitSession } from '/tacit-session.js?cb=a2d34bb2';
 import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverEvery } from '/bridge-tick.js?cb=b9adb91d';
-import { ROUTES } from '/bridge/track.js?cb=31e3a58f';
+import { ROUTES } from '/bridge/track.js?cb=5bf42c45';
 import { parseUnits } from '/trade/util.js?cb=e8317464';
 import { forgetUx } from '/trade/poolux.js?cb=b787152b';
 import { relayWords } from '/relay-outcome.js?cb=26298b8e';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 
-const TACIT_URL = '/tacit.js?cb=ebb75ca0';
+const TACIT_URL = '/tacit.js?cb=63fac4ae';
 const PLAN_KEY = 'tacit-lite-bridge-plan-v1', SELF_PROVE = 'tacit-lite-prove-self-v1:';
 const EVERY = 75e3;                                                                  // as often as the front page's pass
 const read = (k) => { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } };
