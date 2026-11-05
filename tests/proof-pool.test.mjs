@@ -449,3 +449,23 @@ test('a pool proof names who made the leaf it inserts and joins the recent feed:
   assert.deepEqual({ miner: feed[1].miner, points: feed[1].points, secs: feed[1].secs }, { miner: MINER, points: PROOF_POOL.pointsPerProof, secs: 600 });
   assert.equal((await h.pool.stats()).body.top.length, 1, 'the house is never on the leaderboard');
 });
+
+test('a note is paid for once: its input posted again with another signature is a new job the same proof answers, and earns nothing', async () => {
+  const h = harness();
+  const a = wrapJob(0);
+  await h.pool.request({ type: 'wrap', stdin: a.stdin, expect: a.expect, client: 'page' });
+  let l = (await h.pool.lease({ miner: MINER, client: 'm1' })).body;
+  assert.equal((await h.pool.submit({ id: l.id, lease: l.lease, publicValues: pvFor(a.expect), proof: PROOF })).body.points, PROOF_POOL.pointsPerProof);
+  // the same wrap with one byte of the opening signature changed: a different input, the same leaf and deposit
+  const z = WRAP_OP.sigZ, flipped = z.slice(0, -2) + (z.slice(-2) === '00' ? '01' : '00');
+  const bytes = stdinFor('wrap', { ...WRAP_OP, value: '1500', sigZ: flipped });
+  const b = { stdin: hx(bytes), expect: wrapExpect(readWrapStdin(bytes)) };
+  assert.deepEqual(b.expect, a.expect, 'the check reads the same leaf, deposit, chain and memos');
+  assert.equal((await h.pool.request({ type: 'wrap', stdin: b.stdin, expect: b.expect, client: 'page2' })).status, 200);
+  l = (await h.pool.lease({ miner: MINER2, client: 'm2' })).body;
+  assert.notEqual(l.id, a.id, 'a new job');
+  const r = await h.pool.submit({ id: l.id, lease: l.lease, publicValues: pvFor(a.expect), proof: PROOF });
+  assert.deepEqual([r.status, r.body.points], [200, 0], 'kept for the page, paid nothing');
+  assert.deepEqual(await h.pool.minedBy([a.expect.leaf]), { [a.expect.leaf.toLowerCase()]: { miner: MINER, points: PROOF_POOL.pointsPerProof } }, 'the first prover stays named');
+  assert.equal((await h.pool.recent()).body.proofs.length, 1, 'and the feed shows the one proof');
+});

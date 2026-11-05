@@ -23,7 +23,8 @@
 // Storage (KV, portable to Cloudflare's): pp:queue ([{ id, at, tries, skip }], oldest first), pp:leases (id → { lease, until, miner,
 // client, at, tries, skip }), pp:job:<id> (the input until it is proved, then only the proof), pp:day:<day> (the day's miners, the
 // clients' strikes and counts, kept long enough for the campaign to read), pp:req:<day>:<client> (the requests one client made that day). A client is
-// a hash of its IP address, never the address itself.
+// a hash of its IP address, never the address itself. pp:paid:<depositId> marks a deposit already proved (paid for once), pp:mined:<leaf>
+// who proved it, pp:recent the newest proofs.
 import { sha256 } from '@noble/hashes/sha256';
 import { keccak_256 } from '@noble/hashes/sha3';
 import { bytesToHex, hexToBytes, concatBytes } from '@noble/hashes/utils';
@@ -200,7 +201,7 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
   const clock = now || (() => Date.now());
   const exclusive = lock || makeLock();
   const token = random || (() => bytesToHex(crypto.getRandomValues(new Uint8Array(16))));
-  const K = { queue: 'pp:queue', leases: 'pp:leases', job: (id) => `pp:job:${id}`, day: (d) => `pp:day:${d}`, req: (d, c) => `pp:req:${d}:${c}`, urg: (d, c) => `pp:urg:${d}:${c}`, minerSeen: 'pp:miner-seen', hold: 'pp:hold', mined: (leaf) => `pp:mined:${leaf}`, recent: 'pp:recent' };
+  const K = { queue: 'pp:queue', leases: 'pp:leases', job: (id) => `pp:job:${id}`, day: (d) => `pp:day:${d}`, req: (d, c) => `pp:req:${d}:${c}`, urg: (d, c) => `pp:urg:${d}:${c}`, minerSeen: 'pp:miner-seen', hold: 'pp:hold', mined: (leaf) => `pp:mined:${leaf}`, paid: (dep) => `pp:paid:${dep}`, recent: 'pp:recent' };
   const read = async (key, dflt) => { const s = await kv.get(key); if (s == null) return dflt; try { return JSON.parse(s); } catch { return dflt; } };
   const write = (key, v, ttlSecs) => kv.put(key, JSON.stringify(v), ttlSecs ? { expirationTtl: ttlSecs } : undefined);
   const dayRec = async (d) => { const r = await read(K.day(d), null); return { done: 0, points: 0, miners: {}, clients: {}, ...(r && typeof r === 'object' ? r : {}) }; };
@@ -416,14 +417,20 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
       if (l.house) {
         rec.house = (rec.house || 0) + 1;
         await write(K.day(d), rec, cfg.daySecs);
-        await made({ house: true, points: 0 });
+        const dep = String(job.expect?.depositId || '').toLowerCase();
+        if (!dep || (await read(K.paid(dep), null)) == null) { if (dep) await write(K.paid(dep), t, cfg.daySecs); await made({ house: true, points: 0 }); }
         return reply(200, { ok: true, points: 0 });
       }
-      const mr = minerIn(rec, l.miner), points = earns(rec, l.miner);
+      // A deposit is paid for once: its input can be posted again with a changed signature (a new job, the same deposit and leaf), which
+      // the same proof answers, so a deposit already proved earns nothing more and its leaf keeps who proved it first.
+      const dep = String(job.expect?.depositId || '').toLowerCase();
+      const again = dep ? (await read(K.paid(dep), null)) != null : false;
+      if (dep && !again) await write(K.paid(dep), t, cfg.daySecs);
+      const mr = minerIn(rec, l.miner), points = again ? 0 : earns(rec, l.miner);
       mr.proofs++;
       if (points > 0) { mr.credited++; mr.points += points; rec.points += points; }
       await write(K.day(d), rec, cfg.daySecs);
-      await made({ miner: l.miner, points });
+      if (!again) await made({ miner: l.miner, points });
       return reply(200, { ok: true, points });
     });
   }
