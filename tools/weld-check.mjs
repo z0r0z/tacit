@@ -9085,8 +9085,8 @@ await step('fastzap', async () => {
     ok(!!(await p.$('#hx-swap [data-quick="0.01"].rd')) && (await p.$$('#hx-swap #pay-usd [data-quick]')).length === 3,
       `fastzap: the Swap card's Private in offers ETH's sizes, the proved one marked (${(await p.$$eval('#hx-swap #pay-usd [data-quick]', (bs) => bs.map((b) => b.dataset.quick + (b.classList.contains('rd') ? '*' : '')))).join(' ')})`);
     await p.click('#hx-swap [data-quick="0.01"]');
-    await until(p, () => /made already/.test(document.querySelector('#hx-swap')?.textContent || '') && document.querySelector('#hx-swap #go')?.textContent === 'Shield ETH' && !document.querySelector('#hx-swap #go').disabled, null, 240000).catch(() => {});
-    ok(/Proof\s*made already: no wait/.test(await text(p, '#hx-swap')), 'fastzap: its receipt says the proof is made');
+    await until(p, () => /its proof is made/.test(document.querySelector('#hx-swap')?.textContent || '') && document.querySelector('#hx-swap #go')?.textContent === 'Shield ETH' && !document.querySelector('#hx-swap #go').disabled, null, 240000).catch(() => {});
+    ok(/Private in\s*at once: its proof is made/.test(await text(p, '#hx-swap')), 'fastzap: its receipt says it is private at once, the proof being made');
     const wv = (await kept()).find((v) => v.ticker === 'cETH' && v.amount === '10000000000000000' && v.status === 'ready');
     const b4 = BigInt(await rpc('eth_blockNumber', [])), s4 = submits.length;
     await sheetsSeen(p);
@@ -9096,6 +9096,7 @@ await step('fastzap', async () => {
     const left = await kept();
     ok(/Done\./.test(await text(p, '#hx-mz')) && (await p.evaluate(() => window.__sheetSeen)) === '' && m4.length === 1 && r4?.status === '0x1' && wv && !left.some((v) => v.depositId === wv.depositId) && !submits.slice(s4).some((x) => x.mode === 'prove'),
       `fastzap: pressed once, the wrap goes as one transaction with that proof, nothing asked of the relay (${m4.map((x) => x.input.slice(0, 10))}; ${(await text(p, '#hx-mz')).replace(/\s+/g, ' ').slice(0, 80)}; used ${!!wv && !left.some((v) => v.depositId === wv.depositId)}, cETH kept ${left.filter((v) => v.ticker === 'cETH').map((v) => `${v.amount}/${v.status}/${v.by}`).join(' ')}; asked ${submits.slice(s4).map((x) => `${x.type}/${x.mode || 'settle'}`).join(' ')}${m4.length ? '' : `; sheet ${await p.evaluate(() => [document.querySelector('#sheet-eth')?.open, document.querySelector('#w-amt')?.value, document.querySelector('#w-go')?.disabled].join('/'))}: ${(await text(p, '#w-rcpt')).replace(/\s+/g, ' ').slice(0, 160)}`})`);
+    ok(/Private now\. Next:\s*Swap\s*Earn\s*Send/.test(await text(p, '#hx-swap .hx-next')), `fastzap: once done, the card offers where the private ETH goes next (${await text(p, '#hx-swap .hx-next')})`);
     await shot(p, 'shieldhere');
     if (r.errors.length) { fails++; console.log('FAIL fastzap page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { poolDone = false; proveStub = false; await restore(); await r.browser.close(); }
@@ -9987,9 +9988,11 @@ await step('hxnudge', async () => {
     await p.fill('#hx-rcpt', '');
     // The Swap card has nothing to ask for: its button waits for an amount, and says so.
     await move(p, 'shield:ether:defi'); await p.fill(MV.amt, '');
-    ok((await goText(p)) === 'Enter an amount' && await p.$eval(MV.go, (b) => b.disabled) && (await open()) === '', 'hxnudge: the Swap card with no amount waits, says what it needs, and opens nothing');
+    await until(p, () => document.querySelector('#hx-swap #go')?.textContent === 'Shield ETH', null, 30000);
+    await p.evaluate(() => document.activeElement?.blur()); await p.click(MV.go);
+    ok((await open()) === '' && (await p.evaluate(() => document.activeElement?.id)) === 'amt', 'hxnudge: Shield with no amount says what it does, and pressed it goes to the amount, opening nothing');
     await p.fill(MV.amt, '0');
-    ok((await goText(p)) === 'Enter an amount' && await p.$eval(MV.go, (b) => b.disabled), 'hxnudge: a zero is no amount either');
+    ok((await goText(p)) === 'Enter an amount' && await p.$eval(MV.go, (b) => b.disabled), 'hxnudge: a zero is no amount: the button waits for one');
     await p.fill(MV.amt, '0.5');
     await until(p, () => document.querySelector('#hx-swap #go')?.textContent === 'Shield ETH' && !document.querySelector('#hx-swap #go').disabled, null, 120000);
     await sheetsSeen(p);
@@ -13187,9 +13190,9 @@ await step('selfdevice', async () => {
     // (z) The Swap card's Private in, with this computer proving: its receipt says the proof is made here, and how long that takes
     await r.page.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); window.scrollTo(0, 0); });
     await move(r.page, 'shield:ether:defi', '0.02');
-    await until(r.page, () => /Proof/.test(document.querySelector('#hx-swap')?.textContent || ''), null, 120000).catch(() => {});
+    await until(r.page, () => /Private in/.test(document.querySelector('#hx-swap #rcpt')?.textContent || ''), null, 120000).catch(() => {});
     const rcp = (await text(r.page, '#hx-swap')).replace(/\s+/g, ' ');
-    ok(/Proof\s*on this computer, a few minutes/.test(rcp), `selfdevice: the Swap card's Private in says its proof is made on this computer, a few minutes (${(rcp.match(/Proof.{0,60}/) || [''])[0]})`);
+    ok(/Private in\s*on this computer, a few minutes/.test(rcp), `selfdevice: Shield's receipt says it is private in a few minutes, proved on this computer (${(rcp.match(/Private in.{0,60}/) || [''])[0]})`);
     if (r.errors.length) { fails++; console.log('FAIL selfdevice page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { proveStub = false; if (restore) await restore(); await r.browser.close(); }
 });

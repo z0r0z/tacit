@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-+BZ80cGrO+rPm5dTudrGI6kzM21t28fKAU6BnQU4UnU=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-fhmNxtvH0+wBuJnaWx93GTboeodaUnBDwuFvYEnuTdU=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -674,6 +674,15 @@ a.di { color: inherit; text-decoration: none; }
 @media (hover: hover) { .hx-mode button:hover { color: var(--ink); } }
 .hx-sr { display: flex; margin: 0 0 12px; } .hx-sr button { flex: 1; }
 .hx-more { display: flex; margin: 0 0 12px; } .hx-more button { flex: 1; }
+/* under Shield's button: the steps of a first press, then, once it is done, where the private coin goes next */
+.hx-path { display: flex; justify-content: center; gap: 6px 18px; flex-wrap: wrap; margin: 10px 0 0; padding: 0; list-style: none; counter-reset: s; font: 12px var(--mono); color: var(--mute); }
+.hx-path li { counter-increment: s; display: inline-flex; align-items: center; gap: 6px; }
+.hx-path li::before { content: counter(s); display: inline-grid; place-items: center; width: 17px; height: 17px; border-radius: 50%; font-size: 10px; border: 1px solid var(--hair-2); }
+.hx-path li.on { color: var(--ink); } .hx-path li.on::before { color: var(--paper); background: var(--ink); border-color: var(--ink); }
+.hx-path li.ok::before { content: '✓'; color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+.hx-next { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; margin: 12px 0 0; font: 12px var(--mono); color: var(--mute); }
+.hx-next button { min-height: 30px; padding: 0 14px; font: 500 12px var(--mono); color: var(--ink); background: var(--card); border: 1px solid var(--hair-2); border-radius: 999px; cursor: pointer; }
+@media (hover: hover) { .hx-next button:hover { background: var(--field); } }
 .hx-qr { display: flex; justify-content: center; margin: 12px 0 0; } .hx-qr[hidden] { display: none; } .hx-qr svg { width: 168px; height: 168px; border-radius: 12px; }
 .hx-mode button[aria-checked="true"], .hx-more button[aria-selected="true"] { color: var(--ink); background: var(--card); box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 14%, transparent); }
 .ptsline { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; text-align: center; gap: 6px 14px; padding: 14px 4px; color: inherit; text-decoration: none; }
@@ -4036,6 +4045,7 @@ function btcSend(to, sats) {
 }
 
 function paintWallet() {
+  try { hxPathPaint(); } catch { }
   $('#wallet-dot').className = 'dot' + (S.key ? ' on' : S.address ? ' live' : '');
   const wid = $('#wd-id'); if (wid) wid.textContent = S.key?.tacit ? short(S.key.tacit, 6) : 'tacit1…';
   mount($('#wallet-label'), S.key ? (S.key.tacit ? chipView(S.key.tacit) : html`Opening…`) : html`${S.address ? short(S.address) : knownWallet() ? 'Open wallet' : 'Sign in'}`);
@@ -14134,6 +14144,8 @@ const hxWrapReady = (units) => !!(units && S.key && VOUCH.mod?.pick(S.key.pubHex
 const proofRow = (ready, making = false) => (ready ? ['Proof', 'made already: no wait', 'ok']
   : ownNow(['wrap']) ? ['Proof', devOn() ? 'on this computer, a few minutes' : 'with your own credit, about a minute']
   : ['Proof', making ? 'being made now, about 30 s' : 'by Tacit’s prover, about 30 s']);
+// Shield's receipt says when the ETH is private, from the proof's row: at once when it is made already, else how long it takes
+const hxPrivIn = (r) => ['Private in', r[1].replace(/^made already: no wait$/, 'at once: its proof is made').replace(/^(by Tacit’s prover|being made now), /, ''), r[2], 'The deposit is proved, then settled: its proof is made ahead for the sizes kept ready'];
 // The tile's wrap, its amount standing a moment with a key open and no wrap kept ready that fits: asked of the relay ahead, as the wrap form
 // asks it, so the press finds the proof made (or nearly) and sends one transaction.
 let hxWaT = 0;
@@ -14152,7 +14164,7 @@ function hxWrapAhead(units) {
 }
 const hxWrapSay = (units, tip) => ({ out: units ? fmt(units, 8, 6) : null, go: 'Shield ETH', pk: 'wrap', tip,
   rc: units ? [ownNow(['wrap']) ? ['Relay tip', 'none: your own proof'] : ['Relay tip', tip ? `${fmt(tip, 18, 6)} ETH` : tip === undefined ? 'shown next' : tip == null ? '…' : 'none', '', 'Paid on top, to the relay that settles the deposit'],
-    S.key ? proofRow(hxWrapReady(units), hxWrapMaking(units)) : null,
+    hxPrivIn(S.key ? proofRow(hxWrapReady(units), hxWrapMaking(units)) : proofRow(false)),
     ['Chain sees', `your ${fmt(units, 8, 6)} ETH going in`]] : [] });
 const hxWarm = () => { if (Date.now() - (HX.warm || 0) < 10e3) return; HX.warm = Date.now(); gasNow(); getUx().then((t) => t.quoteOpFee('cETH', 'route')).catch(() => {}); };
 const hxWarmWrap = () => { if (!S.key || Date.now() - (HX.warmWrap || 0) < 60e3) return; HX.warmWrap = Date.now(); getUx().then((t) => t.warmWrapLogs?.()).catch(() => {}); };
@@ -15057,6 +15069,8 @@ const hxMoves = {
     if (HX.tab !== 'swap') return;
     // the line a finished move left under the button (Deposited, an error) is about that amount and pair
     if ((HXM.key !== key || HX.amt !== amt) && HX.mz?.textContent && SWC.el?.querySelector('#go')?.getAttribute('aria-busy') !== 'true') say(HX.mz, '');
+    if (HX.amt !== amt && amt) hxNextPaint();
+    hxPathPaint();
     HXM.cb = (q) => { if (q) cb({ ...q, free: hxMoveFree(), fixed: hxMoveFixed() }); };
     hxMoveSet(key, amt); hxQuote();
   },
@@ -15996,7 +16010,32 @@ function hxMoveSlot() {
   SWC.el?.querySelector('#mv-st')?.replaceChildren(HX.mz);
   return HX.mz;
 }
-const hxMoveAfter = () => { SWC.card?.readBalances?.(); hxBalPaint(); dashSoon(); };
+const hxMoveAfter = () => { SWC.card?.readBalances?.(); hxBalPaint(); dashSoon(); try { hxNextPaint(true); } catch { } };
+// A Shield done: where the private coin goes next, one press each (the DeFi pool's to swap, farm and send; the Pay pool's to pay anyone).
+// It stays until another amount is typed or the tab changes.
+function hxNextPaint(done = false) {
+  const act = SWC.el?.querySelector('.act');
+  act?.querySelector('.hx-next')?.remove();
+  if (!done || !act || HX.tab !== 'swap' || HX.flow !== 'shield') return;
+  const [sf, sd] = (HXM.key || '').split('>'), c = sf === 'wtac' ? 'tac' : 'eth';
+  const ways = sd === 'pay' ? [['send', 'Pay someone'], [`swap:${c === 'tac' ? 'tac:ether' : 'eth:tac'}`, 'Swap']]
+    : [[`swap:${c === 'tac' ? 'tac:eth' : 'eth:tac'}`, 'Swap'], [`earn:${c}`, 'Earn'], [`send:${c}`, 'Send']];
+  const el = html`<div class="hx-next" role="group" aria-label="What next"><span>Private now. Next:</span>${ways.map(([spec, t]) => html`<button type="button" data-next="${spec}">${t}</button>`)}</div>`;
+  act.insertAdjacentHTML('beforeend', el.s);
+  for (const b of act.querySelectorAll('[data-next]')) b.onclick = () => { act.querySelector('.hx-next')?.remove(); hxPreset(b.dataset.next, undefined, true); };
+}
+// Shield's first press, said ahead: the wallet, one signature for the Tacit key, then the deposit, each ticked once done
+function hxPathPaint() {
+  const act = SWC.el?.querySelector('.act');
+  if (!act) return;
+  const show = HX.tab === 'swap' && HX.flow === 'shield' && !(S.wallet && S.key);
+  let el = act.querySelector('.hx-path');
+  if (!show) { el?.remove(); return; }
+  if (!el) { el = Object.assign(document.createElement('ol'), { className: 'hx-path' }); el.setAttribute('aria-label', 'Steps'); act.querySelector('#go')?.after(el); }
+  const steps = [['Connect wallet', !!S.wallet], ['Sign in once', !!S.key], ['Shield', false]], cur = steps.findIndex(([, d]) => !d);
+  const v = html`${steps.map(([t, d], i) => html`<li class="${d ? 'ok' : i === cur ? 'on' : ''}">${t}</li>`)}`;
+  if (el.__h !== v.s) { el.__h = v.s; mount(el, v); }
+}
 // ETH made private from the card: what the Private sheet's form does (wrapNow), at the tip the card showed unless the relay's has moved by half since
 async function hxWrapGo(units) {
   if (!S.key) return openSheet('wallet');
@@ -16565,7 +16604,9 @@ function swcPace(id) {
 const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=efc6970b').catch((e) => { SWC.p = null; throw e; }));
 // the card held to the tab's flow; back on the Swap tab it opens on the swap it showed there
 function swcFlow() {
+  hxPathPaint();
   if (!SWC.card || SWC.card.flow === HX.flow) return;
+  hxNextPaint();
   SWC.card.setFlow(HX.flow);
   if (!HX.flow && !SWC.ask) SWC.ask = new URLSearchParams(HX.swq);
 }
