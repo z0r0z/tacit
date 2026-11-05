@@ -1,8 +1,8 @@
 // A node's avatar: the zOrgz invader its address picks (zOrgz, 0x00000000008835cef3e0d2333695f288ee6b63a6, a 10K onchain collection),
 // drawn here the way the contract draws it. Each trait is keccak256(abi.encodePacked(uint256 id, uint256 trait)) % options, as the
 // contract's _getTrait, and each shape is the contract's rects, kept as data: [x, y, w, h, colour, opacity?], where the colour is a key
-// (p primary, s secondary, a accent, e eye, b background) or a literal. A node is zorgz #(address mod 10000), so its avatar is that
-// token's picture, minted or not. Tacit's own GPU is no address and gets an invader of its own.
+// (p primary, s secondary, a accent, e eye, b background) or a literal. An address draws the picture of the design numbered
+// (address mod 10000): only the picture, which says nothing about who holds that token. Tacit's own GPU gets an invader of its own.
 import { keccak_256 } from '/vendor/tacit-deps.min.js';
 
 const BG1 = ['000000', '0a0a0a', '1a0a1a', '0a1a0a', '1a0f0a', 'f0f0f0', 'e8e8ff', '1a1a00'];
@@ -84,7 +84,7 @@ export function trait(id, index, options) {
   return Number(x % BigInt(options));
 }
 
-// The zorgz an address is: its number mod 10000.
+// The design an address draws: its number mod 10000.
 export const idOf = (address) => Number(BigInt(address) % 10000n);
 
 export function traitsOf(id) {
@@ -101,7 +101,7 @@ function draw(t, c, size) {
     + '</svg>';
 }
 
-// zorgz #id's picture, as the contract's generateSVG draws it.
+// Design #id's picture, as the contract's generateSVG draws it.
 export function zorgzSvg(id, size = 512) {
   const t = traitsOf(id), light = t.bg === 5 || t.bg === 6;
   return draw(t, { b: BG1[t.bg], b2: BG2[t.bg], p: PRI[t.pal], s: SEC[t.pal], a: ACC[t.pal], e: light ? '000000' : BG1[t.bg] }, size);

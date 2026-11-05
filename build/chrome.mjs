@@ -54,10 +54,10 @@ const svg = (k) => `<svg viewBox="0 0 24 24"${FILLED.has(k) ? ' class="fill"' : 
 // the places most people come for, always in the header (icons below ~900px, a menu entry on a phone): the assets, then pages of their own for what is
 // done with them (pay, borrow), then what they pay (rewards: farms, points, the airdrop). Swapping and bridging are the front page's tile, which the
 // logo opens. The menu holds the rest in two groups: more for a holder (the bridge page follows bridges under way), then the network's own pages
-const MAIN = [['assets', '/assets/', 'Assets'], ['pay', '/pay/', 'Pay'], ['borrow', '/vault/', 'Borrow'], ['rewards', '/rewards/', 'Rewards']];
+const MAIN = [['assets', '/assets/', 'Assets'], ['pay', '/pay/', 'Pay'], ['borrow', '/vault/', 'Borrow'], ['rewards', '/rewards/', 'Rewards'], ['prove', '/prove/', 'Prove']];
 const MORE = [
   [['bridge', '/bridge/', 'Bridges'], ['tac', '/tac/', 'Shielded TAC'], ['etch', '/etch/', 'Etch'], ['tasks', '/tasks/', 'Tasks']],
-  [['stats', '/weld/stats/', 'Stats'], ['build', '/build/', 'Build'], ['prove', '/prove/', 'Prove'], ['community', '/weld/keeper/', 'Community ops'], ['classic', '/classic.html', 'Classic app']],
+  [['stats', '/weld/stats/', 'Stats'], ['build', '/build/', 'Build'], ['community', '/weld/keeper/', 'Community ops'], ['classic', '/classic.html', 'Classic app']],
 ];
 
 const here = (key, k) => (key === k ? ' aria-current="page"' : '');

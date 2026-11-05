@@ -15,11 +15,11 @@ export function cells(b, max = 9) {
 
 const plural = (n, one) => `${n} ${n === 1 ? one : `${one}s`}`;
 
-// What a block holds, in a few words: "2 notes · 1 spent".
+// What a block holds, in a few words: "2 new notes · 1 note spent".
 export function opsText(b) {
   const parts = [];
-  if (b.notes) parts.push(plural(b.notes, 'note'));
-  if (b.spent) parts.push(`${b.spent} spent`);
+  if (b.notes) parts.push(plural(b.notes, 'new note'));
+  if (b.spent) parts.push(`${plural(b.spent, 'note')} spent`);
   if (b.deposits) parts.push(plural(b.deposits, 'deposit'));
   return parts.join(' · ') || 'empty';
 }

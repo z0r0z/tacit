@@ -3,8 +3,8 @@
 // (GET /prover/blocks) and proof pool, and the points service, say what the network did and what an address has made and been paid.
 import { cleanAddress, proveCommand, utcDay, mineLines } from '/community-prove.js?cb=9c90fa04';
 import { localState, jobView, headline, isPhone } from '/prove/view.js?cb=396aa5e6';
-import { invaderSvg, gpuSvg, idOf } from '/prove/invader.js?cb=8b68bcd8';
-import { short, cells, opsText, tac, rewardWei, ago, took, fresh, blockAgo } from '/prove/chain.js?cb=4878054d';
+import { invaderSvg, gpuSvg } from '/prove/invader.js?cb=e8a5ec59';
+import { short, cells, opsText, tac, rewardWei, ago, took, fresh, blockAgo } from '/prove/chain.js?cb=afaa267c';
 
 const API = 'https://api.tacit.finance', POINTS = 'https://tacit-points.onrender.com', LOCAL = 'http://127.0.0.1:47815';
 const SAVED_ADDR = 'tacit-prove-address';                          // shared with the keeper page's card
@@ -13,7 +13,7 @@ const $ = (s) => document.querySelector(s);
 const get = (url, ms = 6000) => fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(ms) }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
-let health = null, mine = null, pool = null, points = null, tally = null, busy = false;
+let health = null, mine = null, pool = null, points = null, tally = null, busy = false, copied = false;
 let blocks = [], ethHead = null, headReadAt = 0, shownTop = null, picked = null, feed = [], feedTop = 0, lastProved = null;
 
 const addr = () => cleanAddress($('#addr').value);
@@ -67,7 +67,7 @@ async function readChain() {
 function paintChain(landing) {
   const ol = $('#chain');
   ol.hidden = false;
-  ol.innerHTML = blocks.map((b) => {
+  ol.innerHTML = `<li class="blk next" aria-label="The next block"><span class="cube ghost"><i></i><i></i><i></i></span><span class="h">next</span><span class="o" id="next-o">${esc(waitingText())}</span></li>` + blocks.map((b) => {
     const c = cells(b), mineB = b.prover && b.prover === me();
     return `<li class="blk${b.prover ? ' won' : ''}${b.house ? ' gpu' : ''}${mineB ? ' mine' : ''}${landing.has(b.height) ? ' new' : ''}" data-h="${b.height}" aria-current="${picked === b.height}">
       <button type="button" aria-label="Block ${b.height}, ${esc(opsText(b))}"><span class="cube">${c.cells.map((k) => `<i class="${k}"></i>`).join('')}${b.house || b.prover ? `<span class="badge">${face(b.house ? null : b.prover, 26)}</span>` : ''}</span>
@@ -84,7 +84,7 @@ function paintDetail() {
   d.innerHTML = `<div class="rows flat num">
     <div class="kv"><span>Block</span><b>#${b.height.toLocaleString('en-US')}</b></div>
     <div class="kv"><span>Holds</span><b>${esc(opsText(b))}</b></div>
-    <div class="kv"><span>Proved by</span><b>${byOf(b) || '—'}${b.prover ? `<small>zorgz #${idOf(b.prover)}</small>` : ''}</b></div>
+    <div class="kv"><span>Proved by</span><b>${byOf(b) || '—'}</b></div>
     ${b.prover ? `<div class="kv"><span>Won</span><b>${r ? `${tac(r)} TAC` : `${b.points} points`}</b></div>` : ''}
     <div class="kv"><span>Hash</span><b>${esc(short(b.hash))}</b></div>
     <div class="kv"><span>Ethereum</span><b><a href="https://etherscan.io/tx/${esc(b.tx)}" target="_blank" rel="noopener noreferrer">block ${b.ethBlock.toLocaleString('en-US')}</a>${blockAgo(b.ethBlock, ethHead) ? `<small>${esc(blockAgo(b.ethBlock, ethHead))}</small>` : ''}</b></div>
@@ -107,8 +107,15 @@ function paintFeed() {
   }).join('');
 }
 
+function waitingText() {
+  const n = (pool?.queued || 0) + (pool?.leased || 0);
+  return pool ? (n ? `${n} waiting` : 'waiting for work') : '';
+}
+
 function paintNet() {
   const q = pool?.queued ?? null, l = pool?.leased ?? null;
+  const nx = document.getElementById('next-o');
+  if (nx) nx.textContent = waitingText();
   $('#n-wait').textContent = q == null ? '—' : String(q);
   $('#n-lease').textContent = l == null ? '—' : String(l);
   $('#n-provers').textContent = pool?.minersToday == null ? '—' : String(pool.minersToday);
@@ -123,7 +130,9 @@ function paintNet() {
 function paint() {
   const state = localState(health, mine), h = headline(state, mine), job = jobView(mine?.job);
   $('#state').dataset.s = state;
-  $('#title').textContent = h.title;
+  // Once the line is copied, a computer with no prover yet is waiting for it to start.
+  $('#title').textContent = state === 'none' && copied ? 'Waiting for tacit-prover…' : h.title;
+  $('#state').classList.toggle('copied', state === 'none' && copied);
   const forge = $('#forge');
   forge.hidden = !job;
   if (job) {
@@ -158,7 +167,7 @@ function paint() {
 
 function paintMe() {
   const a = addr(), el = $('#me');
-  el.innerHTML = a ? `${face(a, 40)}<span>zorgz #${idOf(a)}</span>` : '';
+  el.innerHTML = a ? `${face(a, 40)}<span>${esc(short(a))}</span>` : '';
 }
 
 function addressChanged() {
@@ -195,7 +204,7 @@ function say(text, bad = false) {
 async function copy() {
   const a = addr();
   if (!a) { $('#addr').focus(); say('Enter the address the TAC goes to.', true); return; }
-  try { await navigator.clipboard.writeText(proveCommand(a)); say('Copied. Paste it in Terminal; this page sees it start.'); }
+  try { await navigator.clipboard.writeText(proveCommand(a)); copied = true; paint(); say('Copied. Paste it in Terminal: it takes about a minute, and this page sees it start.'); }
   catch {
     const sel = getSelection(), range = document.createRange();
     range.selectNodeContents($('#cmd')); sel.removeAllRanges(); sel.addRange(range);
@@ -205,7 +214,7 @@ async function copy() {
 
 $('#chain').addEventListener('click', (e) => {
   const li = e.target.closest('.blk');
-  if (!li) return;
+  if (!li || li.classList.contains('next')) return;
   const h = Number(li.dataset.h);
   picked = picked === h ? null : h;
   $('#chain').querySelectorAll('.blk').forEach((x) => x.setAttribute('aria-current', String(Number(x.dataset.h) === picked)));

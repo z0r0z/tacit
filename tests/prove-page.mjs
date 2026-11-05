@@ -82,13 +82,17 @@ try {
     check(!(await page.locator('#go').isVisible()), 'not set up: no start button');
     await page.fill('#addr', ADDR);
     check((await text(page, '#cmd')).endsWith(ADDR), 'the setup line carries the address', await text(page, '#cmd'));
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+    await page.click('#copy');
+    await page.waitForFunction(() => document.querySelector('#title').textContent === 'Waiting for tacit-prover…', null, { timeout: 5000 }).catch(() => {});
+    check((await text(page, '#title')) === 'Waiting for tacit-prover…', 'once copied, the page waits for the prover', await text(page, '#title'));
     await page.waitForFunction(() => document.querySelector('#today').textContent.includes('4 proofs'));
     check((await text(page, '#pays')).includes('0.2 TAC a proof'), 'what a proof pays is read from the services', await text(page, '#pays'));
     check((await text(page, '#paid')) === '6 TAC credited', 'what was paid', await text(page, '#paid'));
-    await page.waitForFunction(() => document.querySelectorAll('#chain .blk').length === 4);
+    await page.waitForFunction(() => document.querySelectorAll('#chain .blk:not(.next)').length === 4);
     check((await text(page, '#height')) === '#9,389', 'the tip is the newest block', await text(page, '#height'));
     check((await text(page, '#last')) === '5 min ago', 'the newest block\'s age is read from Ethereum\'s head', await text(page, '#last'));
-    check((await page.locator('#chain .blk .t').first().innerText()) === '5 min ago', 'each block says how long ago it was');
+    check((await page.locator('#chain .blk:not(.next) .t').first().innerText()) === '5 min ago', 'each block says how long ago it was');
     check((await page.locator('#chain .blk.won').count()) === 2, 'blocks a community prover proved are marked');
     check((await page.locator('#chain .blk.mine').count()) === 1, 'the address\'s own block is picked out');
     check((await page.locator('#pool i').count()) === 5 && (await page.locator('#pool i.on').count()) === 2, 'the waiting proofs are drawn, the leased ones lit');
@@ -98,17 +102,20 @@ try {
     const gpuRow = await page.locator('#feed li').first().innerText();
     check(gpuRow.includes('Tacit GPU') && !gpuRow.includes('TAC '), 'the feed shows Tacit\'s GPU, earning nothing', gpuRow);
     check(!(await text(page, '#board')).includes('Tacit GPU'), 'Tacit\'s GPU is never on the leaderboard');
-    check((await text(page, '#me')) === 'zorgz #' + Number(BigInt(ADDR) % 10000n), 'the rig shows the address\'s zorgz', await text(page, '#me'));
+    check((await text(page, '#me')) === '0x66f5…3db5', 'the rig shows the address beside its invader, no NFT number', await text(page, '#me'));
+    check(!(await page.content()).includes('zorgz #'), 'no page text names an NFT number');
+    check((await text(page, '#next-o')) === '5 waiting', 'the next block says how many proofs wait', await text(page, '#next-o'));
     check((await page.locator('#chain .blk .badge img.inv').count()) === 3, 'each proved block wears its prover\'s invader');
     const loaded = await page.locator('img.inv').evaluateAll((xs) => xs.every((x) => x.complete && x.naturalWidth > 0));
     check(loaded, 'every invader image draws');
     await page.click('#chain .blk.mine button');
     const det = await text(page, '#detail');
-    check(det.includes('Won') && det.includes('0.2 TAC') && det.includes('you') && det.includes('2 notes · 1 deposit'), 'a block opens with what it holds, who proved it and what it won', det);
+    check(det.includes('Won') && det.includes('0.2 TAC') && det.includes('you') && det.includes('2 new notes · 1 deposit'), 'a block opens with what it holds, who proved it and what it won', det);
     // a new block lands at the front
     chain.blocks = [blk(9390, { notes: 0, spent: 2 }), ...chain.blocks];
-    await page.waitForFunction(() => document.querySelector('#chain .blk')?.dataset.h === '9390', null, { timeout: 12000 });
+    await page.waitForFunction(() => document.querySelector('#chain .blk:not(.next)')?.dataset.h === '9390', null, { timeout: 12000 });
     check(await page.locator('#chain .blk.new').count() === 1, 'a new block lands with the landing animation');
+    check((await page.locator('#chain .blk').first().getAttribute('class')).includes('next'), 'the next block stays at the front');
     check((await text(page, '#height')) === '#9,390', 'the tip moves on');
     await shot(page, 'prove-none');
     // the prover appears (the line was pasted): the page sees it on its own
