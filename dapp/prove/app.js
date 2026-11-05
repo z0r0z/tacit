@@ -180,7 +180,8 @@ function paint() {
   go.hidden = !h.button;
   go.textContent = h.button || '';
   go.disabled = busy;
-  $('#setup').hidden = state !== 'none' && state !== 'old';
+  // the setup line also updates a node from before salt mining (its /mine has no `salt`)
+  $('#setup').hidden = state !== 'none' && state !== 'old' && !(mine && !('salt' in mine));
   $('#cmd').textContent = proveCommand(addr());
   const l = mineLines(pool, points, { tally, address: addr() });
   $('#pays').textContent = l.pays || '—';
@@ -267,7 +268,9 @@ const rateText = (r) => (r >= 1e6 ? `${(r / 1e6).toFixed(1)} M/s` : `${Math.roun
 function paintSalt() {
   const potWei = salts?.pointsPerDay ? rewardWei(salts.pointsPerDay, cap()) : null;
   $('#salt-pay').textContent = potWei ? ` · ${tac(potWei)} TAC a day` : '';
-  if (salts) $('#salt-day').textContent = `Shared by work: ${salts.miners || 0} ${salts.miners === 1 ? 'node' : 'nodes'}, ${salts.shares || 0} shares today. A proof always comes first.`;
+  // A node from before salt mining (its /mine has no `salt`) is told how to start: the setup line installs the newest.
+  if (mine && !('salt' in mine)) $('#salt-day').textContent = 'Run the setup line again to update tacit-prover: it then mines salts between proofs.';
+  else if (salts) $('#salt-day').textContent = `Shared by work: ${salts.miners || 0} ${salts.miners === 1 ? 'node' : 'nodes'}, ${salts.shares || 0} shares today. A proof always comes first.`;
   $('#salt-bank').innerHTML = (salts?.bank || []).slice(0, 5).map((b) => {
     const z = Math.floor((b.bits || 0) / 4);
     return `<li><code><b>${esc(b.address.slice(0, 2 + z))}</b>${esc(b.address.slice(2 + z, 18))}…</code><small>${b.miner ? who(b.miner) : ''}</small></li>`;

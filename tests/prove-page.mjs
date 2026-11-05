@@ -134,9 +134,12 @@ try {
     check((await text(page, '#height')) === '#9,390', 'the tip moves on');
     await shot(page, 'prove-none');
     // the prover appears (the line was pasted): the page sees it on its own
-    local.v = { mine: { miner: null, on: false, job: null, proved: 0 } };
+    local.v = { mine: { miner: null, on: false, job: null, proved: 0, salt: { on: false, rate: 0, minBits: 26 } } };
     await page.waitForFunction(() => document.querySelector('#title').textContent === 'Paused', null, { timeout: 8000 });
     check(!(await page.locator('#setup').isVisible()), 'once it answers, the setup line goes');
+    local.v = { mine: { miner: null, on: false, job: null, proved: 0 } };
+    await page.waitForFunction(() => document.querySelector('#salt-day').textContent.startsWith('Run the setup line again'), null, { timeout: 8000 });
+    check(await page.locator('#setup').isVisible(), 'a node from before salt mining is shown the setup line, to update');
     check(errors.length === 0, 'no page errors', errors.join(' | '));
     await ctx.close();
   }
