@@ -3763,7 +3763,7 @@ async function handleProverBoard(req, env, url, cors) {
     if (!rl.ok) return jsonResponse({ ok: false, code: 'rate', error: `too many asks, retry in ~${rl.retryAfter}s`, retryAfter: rl.retryAfter }, 429, { ...nostore, 'Retry-After': String(rl.retryAfter) });
     const worker = { name: `c-${b.miner.toLowerCase()}`, classes: ['public'], community: true };
     try {
-      if (claimPath) { const job = await board.claim({ worker, classes: ['public'] }); return jsonResponse(job ? { job } : {}, 200, nostore); }
+      if (claimPath) { const job = await board.claim({ worker, classes: ['public'], programs: Array.isArray(b.programs) ? b.programs.slice(0, 8).map(String) : null }); return jsonResponse(job ? { job } : {}, 200, nostore); }
       return jsonResponse(await board.result({ worker, jobId: b.jobId, publicValues: b.publicValues ?? null, proof: b.proof ?? null, error: b.error ?? null }), 200, nostore);
     } catch (e) { return jsonResponse({ ok: false, error: String(e.message || e) }, 400, nostore); }
   }

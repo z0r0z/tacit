@@ -393,3 +393,27 @@ test('points config: env sets the points and the cap, 0 switches them off, nonse
   assert.deepEqual(proverBoardConfig({ POINTS_BOARD_PER_PROOF: '0', POINTS_BOARD_DAILY_CAP: '0' }), { pointsPerProof: 0, proofsPerMinerDay: 0 });
   assert.deepEqual(proverBoardConfig({ POINTS_BOARD_PER_PROOF: 'lots', POINTS_BOARD_DAILY_CAP: '-1' }), { pointsPerProof: 20, proofsPerMinerDay: 30 });
 });
+
+test('the Bitcoin-state program: public groth16 work, its input kept apart and deleted with the job, leased for hours, raced only by machines that prove it', async () => {
+  const s = store(), kept = new Map();
+  Object.assign(s, { putStdin: async (id, v) => { kept.set(id, v); }, getStdin: async (id) => kept.get(id) ?? null, deleteStdin: async (id) => { kept.delete(id); } });
+  const b = makeProverBoard({ storage: s, now });
+  const big = Buffer.alloc(3 * 1024 * 1024, 7).toString('base64');
+  await assert.rejects(b.post({ class: 'private', program: 'btc-state', stdin: big, cycleLimit: 1e11, gasLimit: 1e11, deadline: now() / 1000 + 7200 }), /class is public/);
+  await assert.rejects(b.post({ class: 'public', program: 'btc-state', mode: 'compressed', stdin: big, cycleLimit: 1e11, gasLimit: 1e11, deadline: now() / 1000 + 7200 }), /proved groth16/);
+  await assert.rejects(b.post({ class: 'public', program: 'btc-state', stdin: Buffer.alloc(17 * 1024 * 1024).toString('base64'), cycleLimit: 1e11, gasLimit: 1e11, deadline: now() / 1000 + 7200 }), /at most 16777216 bytes/);
+  const { jobId } = await b.post({ class: 'public', program: 'btc-state', mode: 'groth16', stdin: big, cycleLimit: 1e11, gasLimit: 1e11, deadline: now() / 1000 + 7200, label: 'btc-state' });
+  assert.equal(kept.get(jobId), big, 'the input is under its own key');
+  assert.equal(JSON.parse(JSON.stringify(await s.getJob(jobId))).stdin, null, 'and not on the record every read loads');
+  assert.equal(await b.claim({ worker: tacit, classes: ['private', 'public'] }), null, 'a worker that does not say it proves btc-state is not offered it');
+  assert.equal(await b.claim({ worker: { name: 'c-0x' + '11'.repeat(20), classes: ['public'], community: true }, classes: ['public'] }), null, 'nor is a community machine that names no programs');
+  const raced = await b.claim({ worker: { name: 'c-0x' + '22'.repeat(20), classes: ['public'], community: true }, classes: ['public'], programs: ['btc-state'] });
+  assert.deepEqual([raced.jobId, raced.program, raced.mode, raced.stdin === big, raced.race], [jobId, 'btc-state', 'groth16', true, true], 'a community machine that proves it races it, with the input');
+  const job = await b.claim({ worker: tacit, classes: ['private', 'public'], programs: ['confidential', 'eth-state', 'btc-state'] });
+  assert.deepEqual([job.jobId, job.program, job.mode, job.stdin === big, job.leaseUntil], [jobId, 'btc-state', 'groth16', true, now() + 2 * 3600_000]);
+  t += PROVER_BOARD.leaseMs + 1;
+  assert.equal((await b.status(jobId)).status, 'claimed', 'five minutes in, the claim still holds');
+  assert.deepEqual(await b.result({ worker: tacit, jobId, publicValues: '0x' + '11'.repeat(64 * 8), proof: '0x' + '22'.repeat(260) }), { ok: true, status: 'proved' });
+  assert.equal(kept.has(jobId), false, 'the input goes when the job is over');
+  assert.equal((await b.status(jobId)).proof, '0x' + '22'.repeat(260));
+});

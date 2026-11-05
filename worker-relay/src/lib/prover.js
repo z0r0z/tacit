@@ -19,6 +19,7 @@ import { CREDIT_SHORT } from './prove-pause.js';
 import { makeStdinProver, batchInput } from './stdin-prover.js';
 import { makeBoardProver } from './board-prover.js';
 import { makeEthBoard, boardProves, finishVerdict } from './eth-board.js';
+import { makeBtcBoard } from './btc-board.js';
 import { boardPost, boardStatus, boardCancel, boardSummary, boardRace } from './worker-client.js';
 import { stdinFor, SELF_PROVE_TYPES, LIMITS } from './spn/sp1-stdin.js';
 import { assertMemosMatchProof } from './memo-root.js';
@@ -120,7 +121,8 @@ async function writeEthProofFor(ethPv) {
 // own modeB field.
 const priceCap = makeReflectPriceCap({ capWei: CFG.reflectMaxPricePerPgu, waitSecs: CFG.reflectCapWaitSecs });
 
-export async function proveReflection(input) {
+// `expect`: the batch's prior and new digests, which a board proof's public values must carry.
+export async function proveReflection(input, expect = {}) {
   await mkdir(CFG.fixtureDir, { recursive: true });
   await mkdir(CFG.proverOut, { recursive: true });
   const fixture = path.join(CFG.fixtureDir, 'reflection_input.json');
@@ -128,11 +130,24 @@ export async function proveReflection(input) {
   await rm(path.join(CFG.proverOut, 'bitcoin_proof_bytes.hex'), { force: true });
   if (input.modeB) await writeEthProofFor(input.ethPv);
 
+  // Tacit's prover board first (btcBoardLane below), when a worker there proves the Bitcoin guest; the network otherwise, as before.
+  let timeoutMs = CFG.reflectionProveTimeoutSecs * 1000;
+  const lane = btcBoardLane();
+  if (lane) {
+    const b = await lane.prove({ priorDigest: expect.priorDigest ?? null, newDigest: expect.newDigest ?? null });
+    if (b.ok) {
+      boardLog(`btc-state: proved on the board by ${b.worker} in ${Math.round(b.ms / 1000)} s`);
+      return { publicValues: b.publicValues, proofBytes: b.proofBytes, lane: 'board', worker: b.worker };
+    }
+    boardLog(`btc-state: ${b.reason}; proving it on the network`);
+    timeoutMs = Math.max(20 * 60_000, timeoutMs - b.ms);
+  }
+
   const cap = priceCap.cap();
   const { code, out, err } = await run(CFG.bitcoinProveBin, {
     env: proverEnv({ PROOF_MODE: 'groth16', REFLECT_FIXTURE: fixture, REFLECT_MAX_PRICE_PER_PGU: cap }),
     cwd: CFG.proverOut,
-    timeoutMs: CFG.reflectionProveTimeoutSecs * 1000,
+    timeoutMs,
     rssLimitKB: CFG.reflectionProverRssKB,
     tag: 'bitcoin_prove',
   });
@@ -144,7 +159,7 @@ export async function proveReflection(input) {
     const publicValues = await readHex(pvPath);
     const proofBytes = await readHex(pbPath);
     priceCap.settled({ capped: cap !== '0', filled: true });
-    return { publicValues, proofBytes };
+    return { publicValues, proofBytes, lane: 'network' };
   } catch (e) {
     priceCap.settled({ capped: cap !== '0', filled: false });
     const fail = new Error(`bitcoin_prove produced no proof (code=${code}): ${e.message}\n${out.slice(-2000)}`);
@@ -272,6 +287,46 @@ function ethBoardLane() {
     cycleLimit: CFG.ethProveCycleLimit, gasLimit: CFG.ethProveGasLimit, waitMs: CFG.ethStateBoardWaitSecs * 1000, log: boardLog,
   });
   return ethBoard;
+}
+
+// The Bitcoin-state proof on the prover board (lib/btc-board.js): bitcoin_prove builds the input from the fixture proveReflection has
+// just written (SP1_PROVER=stdin, with the Ethereum proof already on disk for a Mode-B batch), a worker that proves the 'btc-state'
+// program proves it groth16, and the proof is used once it carries the batch's digests and the verifier takes it under the pool's
+// Bitcoin key. Whether this image's bitcoin_prove has the stdin mode is asked once (BITCOIN_PROVE_MODES=1); an older build does
+// not answer, and the board is passed over.
+const BITCOIN_RELAY_VKEY = '0x00bb158ba04f18a100f998af0e3b074b5368771f22b8b6e4fd1d66823a074bc5';
+let btcModes = null;
+async function bitcoinProveModes() {
+  btcModes ||= run(CFG.bitcoinProveBin, { env: { BITCOIN_PROVE_MODES: '1', PATH: process.env.PATH || '' }, cwd: CFG.proverOut, timeoutMs: 20_000, tag: 'bitcoin_prove:modes' })
+    .then(({ out }) => (/^BITCOIN_PROVE_MODES (.+)$/m.exec(out)?.[1] || '').split(/\s+/).filter(Boolean))
+    .catch(() => []);
+  return btcModes;
+}
+let btcBoard = null;
+function btcBoardLane() {
+  if (!CFG.btcStateBoard) return null;
+  const dir = CFG.proverOut, stdinFile = path.join(dir, 'bitcoin_stdin.bin');
+  btcBoard ||= makeBtcBoard({
+    capable: async () => (await bitcoinProveModes()).includes('stdin') && boardProves(await within(boardSummary(), 15_000, 'the board summary'), 'btc-state', 120),
+    buildInput: async () => {
+      await rm(stdinFile, { force: true });
+      const fixture = path.join(CFG.fixtureDir, 'reflection_input.json');
+      const { code, out, err } = await run(CFG.bitcoinProveBin, { env: proverEnv({ SP1_PROVER: 'stdin', PROOF_MODE: 'groth16', REFLECT_FIXTURE: fixture }), cwd: dir,
+        timeoutMs: CFG.btcStateStdinTimeoutSecs * 1000, rssLimitKB: CFG.btcStateStdinRssKB, tag: 'bitcoin_prove:stdin' });
+      if (code !== 0 || !/^STDIN_OK bytes=\d+/m.test(out)) throw new Error(`bitcoin_prove stdin run gave no input (code=${code}): ${(out + err).slice(-600)}`);
+      try { return new Uint8Array(await readFile(stdinFile)); } finally { await rm(stdinFile, { force: true }); }
+    },
+    lane: makeBoardProver({
+      post: boardPost, cancel: boardCancel, status: (id) => within(boardStatus(id), 30_000, 'a board status read'),
+      verify: () => false, race: boardRace, waitMs: CFG.btcStateBoardWaitSecs * 1000, pollMs: 5000, log: boardLog,
+    }),
+    verify: async ({ publicValues, proof }) => {
+      try { await publicClient.call({ to: SP1_VERIFIER, data: encodeFunctionData({ abi: VERIFY_ABI, functionName: 'verifyProof', args: [BITCOIN_RELAY_VKEY, publicValues, proof] }) }); return true; }
+      catch (e) { return /revert|execution|invalid/i.test(String(e && (e.shortMessage || e.message))) ? false : 'unchecked'; }
+    },
+    cycleLimit: CFG.reflectCycleLimit, gasLimit: CFG.reflectGasLimit, waitMs: CFG.btcStateBoardWaitSecs * 1000, log: boardLog,
+  });
+  return btcBoard;
 }
 
 const ETH_OUTPUTS = ['eth_compressed.bin', 'eth_set.json', 'eth_set_state.pending.json'];

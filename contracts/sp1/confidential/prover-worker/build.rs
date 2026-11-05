@@ -18,11 +18,14 @@ use std::path::PathBuf;
 
 const PINNED_ELF_SHA256: &str = "f7bc327d232ec8d1f693d5a44024c1ee732dc42196d079c5be5e3f3668b922c7";
 const PINNED_ETH_ELF_SHA256: &str = "5fb193b5c463af186d35dfcedc21c089f21c010055e96daffff47800d8ff43ae";
+// elf/reflection-prover, the Bitcoin reflection guest (elf-vkey-pin.json reflection_elf_sha256): its key is the pool's BITCOIN_RELAY_VKEY.
+const PINNED_BTC_ELF_SHA256: &str = "55b5ccffd4cd19e10061c4b5e70658e36bc806a365d0f5535918392e7bf12c5b";
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     pin("../elf/cxfer-guest", PINNED_ELF_SHA256, "the on-chain program_vkey");
     pin("../../eth-reflection/elf/eth_reflection", PINNED_ETH_ELF_SHA256, "reflect.rs ETH_REFLECTION_VKEY (and so the Bitcoin guest)");
+    pin("../elf/reflection-prover", PINNED_BTC_ELF_SHA256, "the pool's BITCOIN_RELAY_VKEY");
 }
 
 fn pin(rel: &str, want: &str, with: &str) {

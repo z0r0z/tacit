@@ -10,34 +10,41 @@
 // is a lease: a worker that goes quiet past it loses the job to the next claim, with no bond and no penalty beyond the
 // record. Nothing here verifies a proof; the relay does, before anything is sent or paid for.
 //
-// Programs: 'confidential' (the pool's settle guest, proved groth16: the proof is the hex settle() takes) and 'eth-state'
-// (proved compressed: the proof is the base64 of the bincode SP1ProofWithPublicValues, which eth_prove's finish mode checks).
+// Programs: 'confidential' (the pool's settle guest, proved groth16: the proof is the hex settle() takes), 'eth-state'
+// (proved compressed: the proof is the base64 of the bincode SP1ProofWithPublicValues, which eth_prove's finish mode checks) and
+// 'btc-state' (the Bitcoin reflection guest, proved groth16: the proof is the hex attestBitcoinStateProven takes; its input is Bitcoin's
+// blocks and a public Ethereum proof, so it is public work, large and slow: kept under its own key and leased for longer).
 // A worker says which programs it proves when it claims (old workers say nothing: 'confidential'), and is offered only those.
 //
-// Storage (KV, portable to Cloudflare's): pb:pending (ids, oldest first), pb:job:<id>, pb:proof:<id> (a compressed proof,
+// Storage (KV, portable to Cloudflare's): pb:pending (ids, oldest first), pb:job:<id>, pb:stdin:<id> (a btc-state input, kept apart like
+// a proof and deleted with its job), pb:proof:<id> (a compressed proof,
 // kept apart from its job so the record every claim reads stays small), pb:workers (name → record), pb:day:<day> (the UTC day's
 // community proofs taken, per address, and the points they earned: GET /prover/board/credits, which the points service pays from).
 
 export const PROVER_BOARD = Object.freeze({
   classes: Object.freeze(['private', 'public', 'eth-state']),
-  programs: Object.freeze(['confidential', 'eth-state']),
+  programs: Object.freeze(['confidential', 'eth-state', 'btc-state']),
   // Each program's proof mode and the classes its jobs may carry.
-  modes: Object.freeze({ confidential: 'groth16', 'eth-state': 'compressed' }),
-  programClasses: Object.freeze({ confidential: Object.freeze(['private', 'public']), 'eth-state': Object.freeze(['eth-state']) }),
+  modes: Object.freeze({ confidential: 'groth16', 'eth-state': 'compressed', 'btc-state': 'groth16' }),
+  programClasses: Object.freeze({ confidential: Object.freeze(['private', 'public']), 'eth-state': Object.freeze(['eth-state']), 'btc-state': Object.freeze(['public']) }),
   maxCompressedProofBytes: 2 * 1024 * 1024,            // a compressed proof of the eth-reflection guest is about 1.3 MB
   leaseMs: 5 * 60_000,                                 // a claim lasts this long without a result
+  leaseMsByProgram: Object.freeze({ 'btc-state': 2 * 3600_000 }), // a Bitcoin batch is billions of cycles
+  // Programs whose input is kept under its own key (pb:stdin:<id>) and read only for the claim that proves it, not on every read of the job.
+  keptInput: Object.freeze(['btc-state']),
   keepMs: 60 * 60_000,                                 // a finished or cancelled job stays readable this long
   maxPending: 64,
   maxStdinBytes: 1024 * 1024,                          // bincode SP1Stdin, uncompressed (a batch of eight ops is well under)
   // eth_prove's input carries one light-client update per sync-committee period since the last landed proof: ~120 KB a cycle,
   // 2 MB from a cold start (34 periods, measured 2026-10-26), so a run of missed landings still fits.
-  maxStdinBytesByProgram: Object.freeze({ 'eth-state': 4 * 1024 * 1024 }),
+  maxStdinBytesByProgram: Object.freeze({ 'eth-state': 4 * 1024 * 1024, 'btc-state': 16 * 1024 * 1024 }),
   maxOpenPerWorker: 2,
   // Community provers (no token): anyone may race Tacit's own workers for 'public' jobs, whose input holds nothing secret. A community
   // claim takes the job from no one, and a community proof does not close it: it waits beside the job as a candidate, the relay checks it
   // (a simulated settle, as for any board proof) and takes the first that passes, while Tacit's own worker goes on with the job. A slow
   // machine never holds a user's op up, and a bad proof costs the relay one check and its maker a mark, nothing more.
   communityRacers: 8,                                  // community machines racing one job at most
+  communityPrograms: Object.freeze(['confidential', 'btc-state']), // what a community machine may race, when it says it proves it
   communityOpen: 1,                                    // jobs one community machine races at a time
   communityKept: 200,                                  // community records kept on the summary (the most recently seen)
   pointsPerProof: 20,                                  // POINTS_BOARD_PER_PROOF: for each community proof the relay takes
@@ -116,18 +123,23 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
       const j = await storage.getJob(jid);
       if (!j) continue;
       if (j.status === 'queued' || j.status === 'claimed') {
-        if (j.deadline && clock() > j.deadline * 1000) { j.status = 'expired'; over(j); await storage.putJob(jid, j); }
+        if (j.deadline && clock() > j.deadline * 1000) { j.status = 'expired'; await end(j); await storage.putJob(jid, j); }
         else if (j.status === 'claimed' && clock() > j.leaseUntil) { j.status = 'queued'; j.worker = null; j.leaseUntil = 0; j.lapsed = (j.lapsed || 0) + 1; await storage.putJob(jid, j); }
       }
       if (['queued', 'claimed'].includes(j.status) || clock() - (j.endedAt || 0) < PROVER_BOARD.keepMs) keep.push(jid);
       else {
         if (storage.deleteJob) await storage.deleteJob(jid);
         if (j.proofKept && storage.deleteProof) await storage.deleteProof(jid);
+        if (j.stdinKept && storage.deleteStdin) await storage.deleteStdin(jid);
       }
     }
     return keep;
   }
   const over = (j) => { j.stdin = null; j.sealed = null; j.endedAt = clock(); };
+  // over, and a kept input deleted with it
+  const end = async (j) => { over(j); if (j.stdinKept && storage.deleteStdin) { await storage.deleteStdin(j.id); j.stdinKept = false; } };
+  const inputOf = async (j) => (j.stdinKept && storage.getStdin ? await storage.getStdin(j.id) : j.stdin);
+  const leaseFor = (j) => PROVER_BOARD.leaseMsByProgram[j.program] || PROVER_BOARD.leaseMs;
   // A compressed proof lives under its own key when the storage has one (buildProverBoard's KV does), else on the record.
   const putProof = async (j, proof) => { if (storage.putProof) { await storage.putProof(j.id, proof); j.proof = null; j.proofKept = true; } else j.proof = proof; };
   const proofOf = async (j) => (j.proofKept && storage.getProof ? await storage.getProof(j.id) : j.proof);
@@ -161,6 +173,7 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
       const job = { id: jobId, class: cls, program, mode: PROVER_BOARD.modes[program], stdin: sealedOk ? null : stdin, sealed: sealedOk ? { worker: sealed.worker, epk: sealed.epk, iv: sealed.iv, ct: sealed.ct } : null,
         cycleLimit: cyc, gasLimit: gas, deadline: dl, label, status: 'queued', postedAt: clock(),
         worker: null, leaseUntil: 0, claimedAt: 0, endedAt: 0, publicValues: null, proof: null, error: null, lapsed: 0 };
+      if (job.stdin && PROVER_BOARD.keptInput.includes(program) && storage.putStdin) { await storage.putStdin(jobId, job.stdin); job.stdin = null; job.stdinKept = true; }
       await storage.putJob(jobId, job);
       await storage.putPending([...pend.filter((x) => x !== jobId), jobId]);
       return { jobId, status: 'queued' };
@@ -187,7 +200,7 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
       if (!c) return { ok: false, error: 'no such candidate' };
       j.race = j.race.filter((x) => x !== c);
       if (ok === true && ['queued', 'claimed'].includes(j.status)) {
-        j.status = 'proved'; j.worker = c.worker; j.publicValues = c.publicValues; j.proof = c.proof; j.race = []; j.racers = []; over(j);
+        j.status = 'proved'; j.worker = c.worker; j.publicValues = c.publicValues; j.proof = c.proof; j.race = []; j.racers = []; await end(j);
         if (!j.claimedAt) j.claimedAt = c.at;
         await storage.putJob(j.id, j);
         await bump(c.worker, 'proved', null, null, true);
@@ -208,7 +221,7 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
       if (!j) return { ok: false, error: 'no such job' };
       if (!['queued', 'claimed', 'proved'].includes(j.status)) return { ok: true, status: j.status };
       if (reason === 'bad' && j.worker) await bump(j.worker, 'bad');
-      j.status = 'cancelled'; over(j); j.cancelReason = reason;
+      j.status = 'cancelled'; await end(j); j.cancelReason = reason;
       await storage.putJob(j.id, j);
       return { ok: true, status: 'cancelled' };
     });
@@ -261,7 +274,7 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
   async function claim({ worker, classes, pubkey = null, warming = false, programs = null } = {}) {
     if (!worker || !Array.isArray(classes) || !classes.length) throw new Error('worker and classes are required');
     const can = Array.isArray(programs) && programs.length ? programs.filter((p) => PROVER_BOARD.programs.includes(p)) : ['confidential'];
-    if (worker.community) return communityClaim(worker);
+    if (worker.community) return communityClaim(worker, Array.isArray(programs) && programs.length ? can : ['confidential']);
     return exclusive(async () => {
       await bump(worker.name, null, pubkey, warming ? null : can); // a warming ping names no programs: what it proved last stands
       if (warming) return null;
@@ -274,19 +287,20 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
         const j = await storage.getJob(jid);
         if (!j || j.status !== 'queued' || !classes.includes(j.class) || !worker.classes.includes(j.class) || !can.includes(j.program || 'confidential')) continue;
         if (j.sealed && j.sealed.worker !== worker.name) continue; // sealed to another worker: not even offered
-        j.status = 'claimed'; j.worker = worker.name; j.claimedAt = clock(); j.leaseUntil = clock() + PROVER_BOARD.leaseMs;
+        j.status = 'claimed'; j.worker = worker.name; j.claimedAt = clock(); j.leaseUntil = clock() + leaseFor(j);
         await storage.putJob(jid, j);
-        return { jobId: j.id, class: j.class, program: j.program, mode: j.mode || PROVER_BOARD.modes[j.program], stdin: j.stdin, sealed: j.sealed ? { epk: j.sealed.epk, iv: j.sealed.iv, ct: j.sealed.ct } : null, cycleLimit: j.cycleLimit, gasLimit: j.gasLimit, deadline: j.deadline, leaseUntil: j.leaseUntil, label: j.label };
+        return { jobId: j.id, class: j.class, program: j.program, mode: j.mode || PROVER_BOARD.modes[j.program], stdin: await inputOf(j), sealed: j.sealed ? { epk: j.sealed.epk, iv: j.sealed.iv, ct: j.sealed.ct } : null, cycleLimit: j.cycleLimit, gasLimit: j.gasLimit, deadline: j.deadline, leaseUntil: j.leaseUntil, label: j.label };
       }
       return null;
     });
   }
 
-  // A community machine joins the race for the oldest public job it is not already racing (unsealed, the pool's program, groth16). Its
-  // answer is taken in `result` while the job is open, whoever else has claimed it.
-  function communityClaim(worker) {
+  // A community machine joins the race for the oldest public job it is not already racing (unsealed, groth16, a program it says it proves:
+  // the pool's settle guest unless it names others). Its answer is taken in `result` while the job is open, whoever else has claimed it.
+  function communityClaim(worker, can = ['confidential']) {
+    const races = can.filter((p) => PROVER_BOARD.communityPrograms.includes(p));
     return exclusive(async () => {
-      await bump(worker.name, null, null, ['confidential'], true);
+      await bump(worker.name, null, null, races, true);
       const pend = await sweep(await storage.getPending());
       await storage.putPending(pend);
       let open = 0;
@@ -294,14 +308,14 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
       if (open >= PROVER_BOARD.communityOpen) return null;
       for (const jid of pend) {
         const j = await storage.getJob(jid);
-        if (!j || !['queued', 'claimed'].includes(j.status) || j.class !== 'public' || j.sealed || (j.program || 'confidential') !== 'confidential' || !j.stdin) continue;
+        if (!j || !['queued', 'claimed'].includes(j.status) || j.class !== 'public' || j.sealed || !races.includes(j.program || 'confidential') || !(j.stdin || j.stdinKept)) continue;
         const racers = j.racers || [];
         // racing now, or raced it before (answered or dropped out): offered once
         if ((j.raced || []).includes(worker.name) || racers.length >= PROVER_BOARD.communityRacers) continue;
         j.racers = [...racers, worker.name];
         j.raced = [...(j.raced || []), worker.name].slice(-4 * PROVER_BOARD.communityRacers);
         await storage.putJob(jid, j);
-        return { jobId: j.id, class: j.class, program: 'confidential', mode: 'groth16', stdin: j.stdin, sealed: null, cycleLimit: j.cycleLimit, gasLimit: j.gasLimit,
+        return { jobId: j.id, class: j.class, program: j.program || 'confidential', mode: 'groth16', stdin: await inputOf(j), sealed: null, cycleLimit: j.cycleLimit, gasLimit: j.gasLimit,
           deadline: j.deadline, leaseUntil: j.deadline * 1000, label: j.label, race: true };
       }
       return null;
@@ -331,7 +345,7 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
       }
       if (j.status !== 'claimed' || j.worker !== worker.name) return { ok: false, error: j.status === 'claimed' ? 'claimed by another worker' : `job is ${j.status}` };
       if (error != null) {
-        j.status = 'failed'; j.error = String(error).slice(0, 300); over(j);
+        j.status = 'failed'; j.error = String(error).slice(0, 300); await end(j);
         await storage.putJob(j.id, j);
         await bump(worker.name, 'failed');
         return { ok: true, status: 'failed' };
@@ -339,10 +353,10 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
       if (!isHex(publicValues) || publicValues.length < 2 + 64 * 2 || publicValues.length > 2 + 2 * 65536) return { ok: false, error: 'publicValues must be the hex of the proof\'s public values' };
       if ((j.mode || PROVER_BOARD.modes[j.program]) === 'compressed') {
         if (typeof proof !== 'string' || !B64.test(proof) || b64len(proof) < 1024 || b64len(proof) > PROVER_BOARD.maxCompressedProofBytes) return { ok: false, error: 'proof must be the base64 of the saved compressed proof' };
-        j.status = 'proved'; j.publicValues = publicValues.toLowerCase(); await putProof(j, proof); over(j);
+        j.status = 'proved'; j.publicValues = publicValues.toLowerCase(); await putProof(j, proof); await end(j);
       } else {
         if (!isHex(proof) || proof.length < 2 + 2 * 4 || proof.length > 2 + 2 * 4096) return { ok: false, error: 'proof must be the hex of the groth16 proof bytes' };
-        j.status = 'proved'; j.publicValues = publicValues.toLowerCase(); j.proof = proof.toLowerCase(); over(j);
+        j.status = 'proved'; j.publicValues = publicValues.toLowerCase(); j.proof = proof.toLowerCase(); await end(j);
       }
       await storage.putJob(j.id, j);
       await bump(worker.name, 'proved');
@@ -390,6 +404,9 @@ export function buildProverBoard(env, { hash } = {}) {
     putProof: async (id, proof) => KV.put('pb:proof:' + id, proof),
     getProof: async (id) => KV.get('pb:proof:' + id),
     deleteProof: async (id) => KV.delete('pb:proof:' + id),
+    putStdin: async (id, stdin) => KV.put('pb:stdin:' + id, stdin),
+    getStdin: async (id) => KV.get('pb:stdin:' + id),
+    deleteStdin: async (id) => KV.delete('pb:stdin:' + id),
     getWorkers: async () => { const s = await KV.get('pb:workers'); return s ? JSON.parse(s) : {}; },
     putWorkers: async (ws) => KV.put('pb:workers', JSON.stringify(ws)),
     getDay: async (d) => { const s = await KV.get('pb:day:' + d); return s ? JSON.parse(s) : null; },

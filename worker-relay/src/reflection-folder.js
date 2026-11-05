@@ -11,7 +11,7 @@
 //      assembler, bounded memory). jobId = the batch's newDigest.
 //   2. Idempotency: read knownReflectionDigest(); if newDigest already landed
 //      (a lost ack), just re-ack — a re-submit would revert, never double-attest.
-//   3. proveReflection(input) → bitcoin_prove groth16 on Succinct.
+//   3. proveReflection(input) → bitcoin_prove groth16: on Tacit's prover board when a worker there proves it, else on Succinct.
 //   4. attestBitcoinStateProven(pv, proof) with the RELAY key.
 //   5. POST /reflection/ack {attestedTo, txHash, jobId} → worker advances the
 //      un-rewindable attested cursor (persists newSnapshot keyed by jobId).
@@ -215,10 +215,10 @@ async function cycle() {
   if (proved) {
     log(`job attestedTo=${attestedTo} blocks=${job.blocks ?? '?'} — the proof bought for this batch is still held, not buying another`);
   } else {
-    log(`job attestedTo=${attestedTo} pending=${job.pending ?? '?'} blocks=${job.blocks ?? '?'} ask=${blockCap ?? 'none'} — proving (network groth16)...`);
+    log(`job attestedTo=${attestedTo} pending=${job.pending ?? '?'} blocks=${job.blocks ?? '?'} ask=${blockCap ?? 'none'} — proving (groth16)...`);
     await heartbeat('reflection', `proving ${newDigest}`);
     try {
-      proved = await proveReflection(job.input);
+      proved = await proveReflection(job.input, { priorDigest: job.priorDigest, newDigest });
     } catch (e) {
       // The prover account cannot pay what the request reserves (REFLECT_GAS_LIMIT at the price cap, plus the base fee), whatever the
       // batch will really use. Pause on the figures the network gave, so the credit is read again rather than a job built each time.

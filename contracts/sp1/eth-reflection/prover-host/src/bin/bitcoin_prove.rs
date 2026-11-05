@@ -5,6 +5,12 @@
 // the guest verify_sp1_proof binds the eth cross-out / consumed-ν set; a forward fixture (modeB=0) proves
 // without an inner proof. PROOF_MODE=execute (diagnostic, no proof) | compressed (default, fast recursion
 // validation) | groth16 (on-chain).
+//
+// Proving elsewhere (the prover board's GPU worker; worker-relay/src/lib/btc-board.js): SP1_PROVER=stdin builds the same input
+// (the inner Ethereum proof included) with a local CPU client and stops before proving, writing out/bitcoin_stdin.bin (the bincode
+// SP1Stdin) and a STDIN_OK line. The worker proves it groth16 and returns the public values and the proof bytes the pool's
+// attestBitcoinStateProven takes, which the relay checks against the verifier under BITCOIN_RELAY_VKEY before using them; so
+// there is no finish run. BITCOIN_PROVE_MODES=1 prints the modes this build has and does nothing else.
 use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, SP1Stdin, Elf, HashableKey, SP1Proof, SP1ProofWithPublicValues};
 use sp1_sdk::ProvingKey;
 use reflect_stdin::write_stdin;
@@ -13,6 +19,10 @@ const BITCOIN_ELF: &[u8] = include_bytes!("/root/work/confidential/target/elf-co
 const ETH_ELF: &[u8] = include_bytes!("/root/sp1-helios/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/eth_reflection");
 
 fn main() {
+    if std::env::var("BITCOIN_PROVE_MODES").is_ok() {
+        println!("BITCOIN_PROVE_MODES network execute stdin");
+        return;
+    }
     // Without this, a guest panic during execute()/prove() (e.g. a witness assertion failing) surfaces only
     // as a bare exit_code with no message — sp1_sdk's tracing calls are silent without a subscriber attached.
     sp1_sdk::utils::setup_logger();
@@ -30,50 +40,18 @@ fn main() {
 
     // Deployment target is the hosted Succinct network prover (no GPU on the relay host), matching the
     // confidential settle harnesses. Swap to .cuda() only for a local GPU box build.
-    let pclient = ProverClient::builder().network().build();
-
-    // Mode-B recursion: bind the stage-i eth-reflection inner proof so verify_sp1_proof trusts the
-    // cross-out / consumed-ν set. write_stdin already wrote f["ethPv"] into the io stream; assert it equals
-    // the loaded proof's public values (the indexer sourced the fold roots FROM this proof, and the real
-    // ethPool word must ride through so the on-chain ethPoolReflected == address(this) gate passes).
-    if mode_b != 0 {
-        let eth_proof_path = format!("{out_dir}/eth_compressed.bin");
-        let eth = SP1ProofWithPublicValues::load(&eth_proof_path)
-            .unwrap_or_else(|e| panic!("load eth proof from {eth_proof_path}: {e}"));
-        let eth_pv = eth.public_values.as_slice().to_vec();
-        assert!(eth_pv.len() >= 11 * 32, "eth pv too short (need the 11-word fast-lane PV)");
-        let fx_ethpv = f.get("ethPv").and_then(|v| v.as_str())
-            .map(|s| hex::decode(s.trim_start_matches("0x")).unwrap());
-        assert_eq!(fx_ethpv.as_deref(), Some(eth_pv.as_slice()),
-            "fixture ethPv != eth proof public values (regenerate the fixture from out/eth_pv.hex)");
-        let SP1Proof::Compressed(reduce) = eth.proof else { panic!("eth proof not compressed") };
-        let eth_pk = pclient.setup(Elf::Static(ETH_ELF)).expect("setup eth");
-        // COHERENCE GUARD: the eth ELF's recursion vk_digest MUST equal the constant the Bitcoin guest
-        // (reflect.rs ETH_REFLECTION_VKEY) bakes into its `verify_sp1_proof` call. If they drift, the Bitcoin
-        // guest at best rejects every Mode-B proof (fail-closed) and at worst — if a wrong-but-valid digest
-        // is ever pinned — recursively trusts the WRONG inner program (forged crossOut/consumed-ν sets). Assert
-        // here so a drift fails LOUDLY before the GPU spend, printing the value to re-pin. Keep this array in
-        // lockstep with reflect.rs:169-170 (rebuilding the eth ELF rotates it).
-        const ETH_REFLECTION_VKEY: [u32; 8] =
-            [1698740370, 761725306, 1843717690, 1218893588, 786585592, 423901230, 1310805602, 795535986];
-        let derived = eth_pk.verifying_key().hash_u32();
-        assert_eq!(
-            derived, ETH_REFLECTION_VKEY,
-            "ETH_REFLECTION_VKEY DRIFT: this eth ELF's recursion vkey {derived:?} != the constant the Bitcoin \
-             guest verifies against (reflect.rs ETH_REFLECTION_VKEY). Re-pin BOTH reflect.rs:169-170 and \
-             bitcoin_prove.rs to {derived:?}, then re-prove the Bitcoin guest so its baked vkey matches the eth \
-             ELF being recursed.",
-        );
-        println!("eth vkey = {} (recursion hash_u32 == reflect.rs ETH_REFLECTION_VKEY ✓)", eth_pk.verifying_key().bytes32());
-        let eth_vk = eth_pk.verifying_key().vk.clone();
-        stdin.write_proof(*reduce, eth_vk);
-        // sp1-cuda 6.2.x may spawn from ProvingKey/SessionKey Drop without a Tokio reactor when this
-        // short-lived inner key leaves scope. The process exits explicitly after the outer proof, so leaking
-        // this setup key is the least surprising way to avoid a destructor-only abort before the real proof.
-        std::mem::forget(eth_pk);
-    } else {
-        println!("forward batch (modeB=0): no eth recursion");
+    if std::env::var("SP1_PROVER").as_deref() == Ok("stdin") {
+        let cpu = ProverClient::builder().cpu().build();
+        add_eth_proof(&cpu, &f, &out_dir, mode_b, &mut stdin);
+        let bytes = bincode::serialize(&stdin).expect("the input did not serialize");
+        std::fs::create_dir_all(&out_dir).ok();
+        std::fs::write(format!("{out_dir}/bitcoin_stdin.bin"), &bytes).expect("write bitcoin_stdin.bin");
+        println!("STDIN_OK bytes={} modeB={mode_b}", bytes.len());
+        use std::io::Write; std::io::stdout().flush().ok();
+        std::process::exit(0);
     }
+    let pclient = ProverClient::builder().network().build();
+    add_eth_proof(&pclient, &f, &out_dir, mode_b, &mut stdin);
 
     if execute_only {
         println!("executing bitcoin guest (no proof)...");
@@ -126,4 +104,51 @@ fn main() {
     println!("WROTE out/bitcoin_{mode}.bin + bitcoin_pv.hex");
     use std::io::Write; std::io::stdout().flush().ok();
     std::process::exit(0);
+}
+
+// Mode-B: the stage-i Ethereum proof written into the input, for the Bitcoin guest's verify_sp1_proof. A forward batch has none.
+fn add_eth_proof<P: Prover>(client: &P, f: &serde_json::Value, out_dir: &str, mode_b: u64, stdin: &mut SP1Stdin) {
+    // Mode-B recursion: bind the stage-i eth-reflection inner proof so verify_sp1_proof trusts the
+    // cross-out / consumed-ν set. write_stdin already wrote f["ethPv"] into the io stream; assert it equals
+    // the loaded proof's public values (the indexer sourced the fold roots FROM this proof, and the real
+    // ethPool word must ride through so the on-chain ethPoolReflected == address(this) gate passes).
+    if mode_b != 0 {
+        let eth_proof_path = format!("{out_dir}/eth_compressed.bin");
+        let eth = SP1ProofWithPublicValues::load(&eth_proof_path)
+            .unwrap_or_else(|e| panic!("load eth proof from {eth_proof_path}: {e}"));
+        let eth_pv = eth.public_values.as_slice().to_vec();
+        assert!(eth_pv.len() >= 11 * 32, "eth pv too short (need the 11-word fast-lane PV)");
+        let fx_ethpv = f.get("ethPv").and_then(|v| v.as_str())
+            .map(|s| hex::decode(s.trim_start_matches("0x")).unwrap());
+        assert_eq!(fx_ethpv.as_deref(), Some(eth_pv.as_slice()),
+            "fixture ethPv != eth proof public values (regenerate the fixture from out/eth_pv.hex)");
+        let SP1Proof::Compressed(reduce) = eth.proof else { panic!("eth proof not compressed") };
+        let eth_pk = client.setup(Elf::Static(ETH_ELF)).expect("setup eth");
+        // COHERENCE GUARD: the eth ELF's recursion vk_digest MUST equal the constant the Bitcoin guest
+        // (reflect.rs ETH_REFLECTION_VKEY) bakes into its `verify_sp1_proof` call. If they drift, the Bitcoin
+        // guest at best rejects every Mode-B proof (fail-closed) and at worst — if a wrong-but-valid digest
+        // is ever pinned — recursively trusts the WRONG inner program (forged crossOut/consumed-ν sets). Assert
+        // here so a drift fails LOUDLY before the GPU spend, printing the value to re-pin. Keep this array in
+        // lockstep with reflect.rs:169-170 (rebuilding the eth ELF rotates it).
+        const ETH_REFLECTION_VKEY: [u32; 8] =
+            [1698740370, 761725306, 1843717690, 1218893588, 786585592, 423901230, 1310805602, 795535986];
+        let derived = eth_pk.verifying_key().hash_u32();
+        assert_eq!(
+            derived, ETH_REFLECTION_VKEY,
+            "ETH_REFLECTION_VKEY DRIFT: this eth ELF's recursion vkey {derived:?} != the constant the Bitcoin \
+             guest verifies against (reflect.rs ETH_REFLECTION_VKEY). Re-pin BOTH reflect.rs:169-170 and \
+             bitcoin_prove.rs to {derived:?}, then re-prove the Bitcoin guest so its baked vkey matches the eth \
+             ELF being recursed.",
+        );
+        println!("eth vkey = {} (recursion hash_u32 == reflect.rs ETH_REFLECTION_VKEY ✓)", eth_pk.verifying_key().bytes32());
+        let eth_vk = eth_pk.verifying_key().vk.clone();
+        stdin.write_proof(*reduce, eth_vk);
+        // sp1-cuda 6.2.x may spawn from ProvingKey/SessionKey Drop without a Tokio reactor when this
+        // short-lived inner key leaves scope. The process exits explicitly after the outer proof, so leaking
+        // this setup key is the least surprising way to avoid a destructor-only abort before the real proof.
+        std::mem::forget(eth_pk);
+    } else {
+        println!("forward batch (modeB=0): no eth recursion");
+    }
+
 }

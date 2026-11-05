@@ -20,6 +20,12 @@
 // proved compressed (the form the Bitcoin reflection guest verifies inside itself) and sent back as the base64 of the bincode
 // SP1ProofWithPublicValues, which eth_prove's finish mode checks before it is used. Its proving key is set up on the first such
 // job and refused (and the program dropped from the claims) unless its recursion digest is ETH_REFLECTION_VKEY.
+// BTC_STATE (default 0): the worker also proves the Bitcoin-state input bitcoin_prove posts (program 'btc-state', public work: its
+// input is Bitcoin's blocks and a public Ethereum proof): the Bitcoin reflection guest (elf/reflection-prover, pinned in build.rs),
+// proved groth16 and sent back as the hex of the proof bytes attestBitcoinStateProven takes. Its key is set up on the first such
+// job and refused (and the program dropped from the claims) unless it is the pool's BITCOIN_RELAY_VKEY. A batch is billions of
+// cycles, tens of minutes on one GPU, and a proof cannot be stopped once it starts, so it is off by default: on a box that also
+// proves users' settles, a settle that comes in meanwhile waits for it. BTC_JOB_TIMEOUT_SECS (default 7200) is its watchdog limit.
 // RELOAD_FLAG (default /workspace/worker.reload): when that file exists and no job is in hand, the worker removes it and
 // exits 0, so the loop around it starts a fresh worker (and GPU server) with whatever binary and env are now in place,
 // never in the middle of a proof.
@@ -40,6 +46,9 @@ use sp1_sdk::{
 
 const ELF: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../elf/cxfer-guest"));
 const ETH_ELF: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../eth-reflection/elf/eth_reflection"));
+const BTC_ELF: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../elf/reflection-prover"));
+// The pool's BITCOIN_RELAY_VKEY (contracts/deployments/1.json, elf-vkey-pin.json): the key a Bitcoin-state proof must verify under.
+const BITCOIN_RELAY_VKEY: &str = "0x00bb158ba04f18a100f998af0e3b074b5368771f22b8b6e4fd1d66823a074bc5";
 // The recursion digest of the eth-reflection guest's key, as the Bitcoin reflection guest checks it (reflect.rs).
 const ETH_REFLECTION_VKEY: [u32; 8] =
     [1698740370, 761725306, 1843717690, 1218893588, 786585592, 423901230, 1310805602, 795535986];
@@ -58,7 +67,7 @@ struct Job {
     cycle_limit: Option<f64>,
     deadline: Option<f64>,
     label: Option<String>,
-    // 'confidential' (absent from an older API) or 'eth-state'.
+    // 'confidential' (absent from an older API), 'eth-state' or 'btc-state'.
     program: Option<String>,
 }
 
@@ -243,18 +252,26 @@ fn main() {
     // The Ethereum-state program: claimed while ETH_STATE is on and its key has not been refused (set up on the first job).
     let eth_on = env_or("ETH_STATE", "1") == "1";
     let mut eth_key: Option<Result<_, String>> = None;
+    // The Bitcoin-state program: claimed only while BTC_STATE is on and its key has not been refused.
+    let btc_on = env_or("BTC_STATE", "0") == "1";
+    let mut btc_key: Option<Result<_, String>> = None;
+    let btc_limit = env_or("BTC_JOB_TIMEOUT_SECS", "7200").parse::<u64>().unwrap_or(7200);
     // A proof that never ends (a GPU kernel that hangs leaves the server alive and silent, and the client waiting on it for ever) is
     // ended from outside: a watchdog thread sees a job in hand for longer than JOB_TIMEOUT_SECS (15 minutes by default, three times a
     // long op) and exits the process, so the loop around it starts a fresh worker and GPU server and the job goes back to the board.
     let job_since = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    // The limit for the job in hand: JOB_TIMEOUT_SECS, or BTC_JOB_TIMEOUT_SECS while a Bitcoin-state batch is proved.
+    let default_limit = env_or("JOB_TIMEOUT_SECS", "900").parse::<u64>().unwrap_or(900);
+    let job_limit = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(default_limit));
     {
         let job_since = job_since.clone();
-        let limit = env_or("JOB_TIMEOUT_SECS", "900").parse::<u64>().unwrap_or(900);
+        let job_limit = job_limit.clone();
         let name = name.clone();
         std::thread::spawn(move || loop {
             std::thread::sleep(Duration::from_secs(15));
             let since = job_since.load(std::sync::atomic::Ordering::Relaxed);
             if since == 0 { continue; }
+            let limit = job_limit.load(std::sync::atomic::Ordering::Relaxed);
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
             if now.saturating_sub(since) > limit {
                 println!("[{name}] a job has been in hand for {} s (limit {limit}); exiting so the loop starts a fresh worker and GPU server", now - since);
@@ -275,7 +292,8 @@ fn main() {
             return;
         }
         let eth_claims = eth_on && !matches!(eth_key, Some(Err(_)));
-        let (claim_classes, programs) = claim_scope(&classes, eth_claims);
+        let btc_claims = btc_on && !matches!(btc_key, Some(Err(_)));
+        let (claim_classes, programs) = claim_scope(&classes, eth_claims, btc_claims);
         let claimed: Result<Claim, String> = agent
             .post(&claim_url)
             .set("Authorization", &auth)
@@ -333,6 +351,8 @@ fn main() {
         let label = job.label.clone().unwrap_or_default();
         println!("[{name}] job {} {label}: proving", &job.job_id[..job.job_id.len().min(12)]);
         let t = Instant::now();
+        let is_btc = job.program.as_deref() == Some("btc-state");
+        job_limit.store(if is_btc { btc_limit } else { default_limit }, std::sync::atomic::Ordering::Relaxed);
         job_since.store(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(1).max(1), std::sync::atomic::Ordering::Relaxed);
         // The job: its input decoded, proved within its cycle limit → (public values, the proof as the board takes it: the hex of the
         // bytes settle() takes for the pool's guest, the base64 of the saved compressed proof for the Ethereum-state guest).
@@ -351,6 +371,7 @@ fn main() {
             match job.program.as_deref() {
                 None | Some("confidential") => {}
                 Some("eth-state") => return eth_state_proof(&client, &mut eth_key, stdin, cycles),
+                Some("btc-state") if btc_on => return btc_state_proof(&client, &mut btc_key, stdin, cycles),
                 Some(other) => return Err(format!("this worker does not prove the {other} program")),
             }
             let proof = client.prove(&pk, stdin).groth16().cycle_limit(cycles).run().map_err(|e| format!("groth16 proof failed: {e}"))?;
@@ -385,7 +406,8 @@ fn main() {
             std::process::exit(2);
         }
         jobs_done += 1;
-        slow_in_a_row = if outcome.is_ok() && t.elapsed().as_secs_f64() > slow_secs { slow_in_a_row + 1 } else { 0 };
+        // A Bitcoin-state batch is slow by its nature, not a sign of a slowing server: it leaves the count as it was.
+        if !is_btc { slow_in_a_row = if outcome.is_ok() && t.elapsed().as_secs_f64() > slow_secs { slow_in_a_row + 1 } else { 0 }; }
         if std::path::Path::new(&recycle_flag).exists() {
             let from = *recycle_from.get_or_insert(jobs_done);
             if jobs_done - from >= recycle_max {
@@ -402,13 +424,49 @@ fn main() {
 }
 
 // The classes and programs a claim asks for: with the Ethereum-state program on, its class and program are added to the
-// configured ones (CLASSES), so a worker.env written before it needs no change.
-fn claim_scope(classes: &[String], eth: bool) -> (Vec<String>, Vec<&'static str>) {
+// configured ones (CLASSES), so a worker.env written before it needs no change; the Bitcoin-state program is public work, so it
+// adds that class and the program.
+fn claim_scope(classes: &[String], eth: bool, btc: bool) -> (Vec<String>, Vec<&'static str>) {
     let mut cls = classes.to_vec();
     if eth && !cls.iter().any(|c| c == "eth-state") {
         cls.push("eth-state".to_string());
     }
-    (cls, if eth { vec!["confidential", "eth-state"] } else { vec!["confidential"] })
+    if btc && !cls.iter().any(|c| c == "public") {
+        cls.push("public".to_string());
+    }
+    let mut programs = vec!["confidential"];
+    if eth { programs.push("eth-state"); }
+    if btc { programs.push("btc-state"); }
+    (cls, programs)
+}
+
+// One Bitcoin-state job: the Bitcoin reflection guest proved groth16 on the same GPU server. Its key is set up on the first job and
+// kept; a key that is not the pool's BITCOIN_RELAY_VKEY is refused for good, and `btc_key` then keeps the reason, which drops the
+// program from the claims. → (public values, the hex of the proof bytes attestBitcoinStateProven takes)
+fn btc_state_proof<P: Prover>(
+    client: &P,
+    btc_key: &mut Option<Result<P::ProvingKey, String>>,
+    stdin: SP1Stdin,
+    cycles: u64,
+) -> Result<(Vec<u8>, String), String> {
+    if btc_key.is_none() {
+        let t = Instant::now();
+        let k = client.setup(Elf::Static(BTC_ELF)).map_err(|e| format!("btc-state setup failed: {e}"))?;
+        let vk = k.verifying_key().bytes32();
+        *btc_key = Some(if vk.to_lowercase() == BITCOIN_RELAY_VKEY {
+            println!("btc-state key set up in {:.1} s ({vk})", t.elapsed().as_secs_f64());
+            Ok(k)
+        } else {
+            Err(format!("the btc-state guest's key {vk} is not the pool's BITCOIN_RELAY_VKEY; btc-state jobs are off"))
+        });
+    }
+    let pk = match btc_key.as_ref() {
+        Some(Ok(k)) => k,
+        Some(Err(why)) => return Err(why.clone()),
+        None => unreachable!(),
+    };
+    let proof = client.prove(pk, stdin).groth16().cycle_limit(cycles).run().map_err(|e| format!("groth16 proof failed: {e}"))?;
+    Ok((proof.public_values.as_slice().to_vec(), format!("0x{}", hex::encode(proof.bytes()))))
 }
 
 // One Ethereum-state job: the eth-reflection guest proved compressed on the same GPU server as the pool's guest. Its key is set up

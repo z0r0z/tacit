@@ -455,6 +455,19 @@ export const CFG = {
   ethStateBoardWaitSecs: num('ETH_STATE_BOARD_WAIT_SECS', 300),
   // Building the input is eth_prove's whole RPC phase (light-client updates, logs, storage proofs) without the proof.
   ethStateStdinTimeoutSecs: num('ETH_STATE_STDIN_TIMEOUT_SECS', 15 * 60),
+  // The Bitcoin-state proof on the prover board (lib/btc-board.js), before the network. When a worker that proves the btc-state
+  // program has polled the board in the last two minutes, bitcoin_prove builds the input (SP1_PROVER=stdin) and the board offers
+  // it as public work; a groth16 proof that carries the batch's digests and passes the SP1 verifier under BITCOIN_RELAY_VKEY is
+  // used as the network's would be. None back within BTC_STATE_BOARD_WAIT_SECS (a batch is billions of cycles): the network
+  // proves it, as before. Off until BTC_STATE_BOARD=1, once a worker with the btc-state program is running.
+  btcStateBoard: opt('BTC_STATE_BOARD', '0') === '1',
+  btcStateBoardWaitSecs: num('BTC_STATE_BOARD_WAIT_SECS', 60 * 60),
+  // What the board's worker may spend on one batch, as bitcoin_prove's network request declares it (REFLECT_CYCLE_LIMIT/REFLECT_GAS_LIMIT).
+  reflectCycleLimit: num('REFLECT_CYCLE_LIMIT', 100_000_000_000),
+  reflectGasLimit: num('REFLECT_GAS_LIMIT', 100_000_000_000),
+  // Building the input sets up the Ethereum guest's key on the CPU (Mode-B) and serializes the batch; it proves nothing.
+  btcStateStdinTimeoutSecs: num('BTC_STATE_STDIN_TIMEOUT_SECS', 10 * 60),
+  btcStateStdinRssKB: num('BTC_STATE_STDIN_RSS_KB', 1_700_000),
   // The finish run sets up the guest's key and verifies a compressed proof on the CPU; it proves nothing.
   ethFinishTimeoutSecs: num('ETH_FINISH_TIMEOUT_SECS', 10 * 60),
   ethFinishRssKB: num('ETH_FINISH_RSS_KB', 1_700_000),
