@@ -343,7 +343,11 @@
 .swc .fm .unit { flex: none; font-size: 12px; color: var(--mute); white-space: nowrap; }
 .swc .fh .where { color: var(--mute); }
 .swc .q.warn { color: var(--warn); }
+/* a size whose proof is made goes at once: its chip is not the rows' radio (.rd), and the row says what the bolt means */
+.swc .quick button.rd { width: auto; height: auto; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--ok) 45%, transparent); color: var(--ink); box-shadow: none; }
 .swc .quick button.rd svg { width: 8px; height: 10px; margin: 0 4px -1px -2px; fill: var(--ok); }
+.swc .quick .rdn { display: inline-flex; align-items: center; gap: 4px; font: 11px var(--mono); color: var(--ok); }
+.swc .quick .rdn svg { width: 8px; height: 10px; fill: var(--ok); }
 
 .swc .buf small { color: var(--mute); }
 

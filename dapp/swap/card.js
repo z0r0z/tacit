@@ -846,7 +846,9 @@ function paintSides() {
   if (homes) { const h = homesHtml(); homes.hidden = !h; if (h !== homes.dataset.h) { homes.innerHTML = h; homes.dataset.h = h; } }
   if (chain) { const c = chainHtml(); chain.hidden = !c; if (c !== chain.dataset.h) { chain.innerHTML = c; chain.dataset.h = c; netPicker($('#chain-sel')); } }
   const side = $('#pay-side'), mk = !S.amt && !fixed ? moveOf() : null, sizes = mk ? H.moves?.sizes?.(mk) || null : !S.amt && !fixed ? keptChips() : null;
-  if (payPriv && bal == null && !S.at.pay && !moveOf()) side.innerHTML = PV?.unlocked ? `<span>Reading your private balance…${PV.readFailed ? ' <button type="button" id="pv-read">Read again</button>' : ''}</span>` : '<button type="button" id="pv-open">Your private balance</button>';
+  if (payPriv && bal == null && !S.at.pay && !moveOf()) side.innerHTML = PV?.unlocked ? `<span>Reading your private balance…${PV.readFailed ? ' <button type="button" id="pv-read">Read again</button>' : ''}</span>` : '<button type="button" id="pv-open">Sign in to see your private balance</button>';
+  // a private side the page moves (Withdraw, a Pay pool coin) with no key open: what it holds is a sign-in away
+  else if (moving() && isPrivAt(atOf('pay')) && bal == null && !fixed && !H.key?.session?.unlocked) side.innerHTML = '<button type="button" id="pv-sign">Sign in to see your private balance</button>';
   else if (bal != null) side.innerHTML = fixed ? `<span>Balance ${esc(amtFmt(bal, pay.dec))}</span>` : `<button type="button" id="max" class="${wei && wei > bal ? 'over' : ''}">Balance ${esc(amtFmt(bal, pay.dec))}${bal > 0n ? ' · Max' : ''}</button>`;
   else if (!S.amt && !fixed && !sizes) side.innerHTML = `<span class="quick">${((poolUnits() ? QUICK_PRIV : QUICK)[pay.sym] || []).map((v) => `<button type="button" data-quick="${v}">${v}</button>`).join('')}</span>`;
   else side.textContent = '';
@@ -856,7 +858,7 @@ function paintSides() {
   $('#get-side').textContent = getBal ? `Balance ${amtFmt(getBal, get.dec)}` : '';
   // a move's own quick amounts (the page's sizes kept ready, marked once proved) stand where the dollar value goes until one is typed
   const v = wei && !fixed ? usdOf(S.pay, wei) : null, pu = $('#pay-usd');
-  const h = sizes ? `<span class="quick">${sizes.map((x) => x.act ? `<button type="button" data-stage${x.off ? ' disabled' : ''}>${esc(x.v)}</button>` : `<button type="button" data-quick="${esc(x.v)}"${x.rd ? ` class="rd" title="${esc(x.t || 'Proved already: one transaction')}"` : ''}>${x.rd ? '<svg aria-hidden="true"><use href="#i-bolt"/></svg>' : ''}${esc(x.v)}</button>`).join('')}</span>` : '';
+  const h = sizes ? `<span class="quick">${sizes.map((x) => x.act ? `<button type="button" data-stage${x.off ? ' disabled' : ''}>${esc(x.v)}</button>` : `<button type="button" data-quick="${esc(x.v)}"${x.rd ? ` class="rd" title="${esc(x.t || 'Proved already: one transaction')}" aria-label="${esc(x.v)}, ready now: one transaction"` : ''}>${x.rd ? '<svg aria-hidden="true"><use href="#i-bolt"/></svg>' : ''}${esc(x.v)}</button>`).join('')}${sizes.some((x) => x.rd) ? '<span class="rdn" aria-hidden="true"><svg><use href="#i-bolt"/></svg>ready now</span>' : ''}</span>` : '';
   if (h) { if (pu.dataset.h !== h) { pu.innerHTML = h; pu.dataset.h = h; } }
   else { pu.dataset.h = ''; pu.textContent = v != null ? `≈ ${usd(v)}` : ''; }
 }
@@ -2958,6 +2960,7 @@ function wire() {
     if (e.target.closest('[data-watch]')) { const t = tokenOf(e.target.closest('[data-watch]').dataset.watch); if (t) wallet.watchAsset({ address: t.addr, symbol: t.sym, decimals: t.dec }); return; }
     if (e.target.closest('[data-farm-it]')) H.farmIt?.(S.lastBuy);
     if (e.target.closest('#pv-open')) openPrivate().catch(() => {});
+    if (e.target.closest('#pv-sign')) H.key?.openKey?.().catch(() => {});
     if (e.target.closest('#pv-read')) { PV?.read(true).then(paint, () => paint()); return; }
     const xr = e.target.closest('[data-exit-run], [data-exit-back]');
     if (xr) exitAct(xr.dataset.exitRun || xr.dataset.exitBack, !!xr.dataset.exitBack).catch(() => {});
