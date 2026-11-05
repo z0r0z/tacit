@@ -3,7 +3,8 @@
 // (GET /prover/blocks) and proof pool, and the points service, say what the network did and what an address has made and been paid.
 import { cleanAddress, proveCommand, utcDay, mineLines } from '/community-prove.js?cb=9c90fa04';
 import { localState, jobView, headline, isPhone } from '/prove/view.js?cb=f6efbcdd';
-import { short, hueOf, cells, opsText, tac, rewardWei, ago, took, fresh } from '/prove/chain.js?cb=045857de';
+import { invaderSvg, gpuSvg, idOf } from '/prove/invader.js?cb=8b68bcd8';
+import { short, cells, opsText, tac, rewardWei, ago, took, fresh } from '/prove/chain.js?cb=045857de';
 
 const API = 'https://api.tacit.finance', POINTS = 'https://tacit-points.onrender.com', LOCAL = 'http://127.0.0.1:47815';
 const SAVED_ADDR = 'tacit-prove-address';                          // shared with the keeper page's card
@@ -18,9 +19,15 @@ let blocks = [], shownTop = null, picked = null, feed = [], feedTop = 0, lastPro
 const addr = () => cleanAddress($('#addr').value);
 const me = () => addr()?.toLowerCase() || null;
 const cap = () => (points?.enabled && points?.terms && !points.terms.off ? points.terms.capWeiPerPoint : null);
-const who = (a) => `<span class="who"><i style="--c:hsl(${hueOf(a)} 70% 50%)"></i>${esc(short(a))}${a === me() ? ' · you' : ''}</span>`;
-// Tacit's own GPU, drawn apart from the community: no address, no TAC.
-const GPU = '<span class="who gpu"><i></i>Tacit GPU</span>';
+// A node's face: the zOrgz invader its address picks (invader.js), or Tacit's GPU's own. An image, so each picture keeps its own gradient.
+const faces = new Map();
+const face = (a, px = 18) => {
+  const k = a || 'gpu';
+  if (!faces.has(k)) faces.set(k, `data:image/svg+xml;base64,${btoa(a ? invaderSvg(a, 64) : gpuSvg(64))}`);
+  return `<img class="inv" src="${faces.get(k)}" width="${px}" height="${px}" alt="">`;
+};
+const who = (a) => `<span class="who">${face(a)}${esc(short(a))}${a === me() ? ' · you' : ''}</span>`;
+const GPU = `<span class="who gpu">${face(null)}Tacit GPU</span>`;
 const byOf = (x) => (x.house ? GPU : x.prover || x.miner ? who(x.prover || x.miner) : null);
 
 async function readLocal() {
@@ -59,7 +66,7 @@ function paintChain(landing) {
   ol.innerHTML = blocks.map((b) => {
     const c = cells(b), mineB = b.prover && b.prover === me();
     return `<li class="blk${b.prover ? ' won' : ''}${b.house ? ' gpu' : ''}${mineB ? ' mine' : ''}${landing.has(b.height) ? ' new' : ''}" data-h="${b.height}" aria-current="${picked === b.height}">
-      <button type="button" aria-label="Block ${b.height}, ${esc(opsText(b))}"><span class="cube">${c.cells.map((k) => `<i class="${k}"></i>`).join('')}</span>
+      <button type="button" aria-label="Block ${b.height}, ${esc(opsText(b))}"><span class="cube">${c.cells.map((k) => `<i class="${k}"></i>`).join('')}${b.house || b.prover ? `<span class="badge">${face(b.house ? null : b.prover, 26)}</span>` : ''}</span>
       <span class="h num">#${b.height.toLocaleString('en-US')}</span><span class="o">${byOf(b) || esc(opsText(b))}</span></button></li>`;
   }).join('');
   paintDetail();
@@ -73,7 +80,7 @@ function paintDetail() {
   d.innerHTML = `<div class="rows flat num">
     <div class="kv"><span>Block</span><b>#${b.height.toLocaleString('en-US')}</b></div>
     <div class="kv"><span>Holds</span><b>${esc(opsText(b))}</b></div>
-    <div class="kv"><span>Proved by</span><b>${byOf(b) || '—'}</b></div>
+    <div class="kv"><span>Proved by</span><b>${byOf(b) || '—'}${b.prover ? `<small>zorgz #${idOf(b.prover)}</small>` : ''}</b></div>
     ${b.prover ? `<div class="kv"><span>Won</span><b>${r ? `${tac(r)} TAC` : `${b.points} points`}</b></div>` : ''}
     <div class="kv"><span>Hash</span><b>${esc(short(b.hash))}</b></div>
     <div class="kv"><span>Ethereum</span><b><a href="https://etherscan.io/tx/${esc(b.tx)}" target="_blank" rel="noopener noreferrer">block ${b.ethBlock.toLocaleString('en-US')}</a></b></div>
@@ -145,8 +152,14 @@ function paint() {
   $('#run-row').hidden = !mine || typeof mine.on !== 'boolean';
 }
 
+function paintMe() {
+  const a = addr(), el = $('#me');
+  el.innerHTML = a ? `${face(a, 40)}<span>zorgz #${idOf(a)}</span>` : '';
+}
+
 function addressChanged() {
   const a = addr();
+  paintMe();
   $('#addr').setAttribute('aria-invalid', $('#addr').value.trim() && !a ? 'true' : 'false');
   if (a) { try { localStorage.setItem(SAVED_ADDR, a); } catch {} }
   paint();
@@ -196,6 +209,7 @@ $('#chain').addEventListener('click', (e) => {
 });
 
 try { const saved = localStorage.getItem(SAVED_ADDR); if (cleanAddress(saved)) $('#addr').value = saved; } catch {}
+paintMe();
 const loop = (fn, ms, idle) => { const run = async () => { await fn(); setTimeout(run, document.hidden ? idle : ms); }; run(); };
 // The chain every six seconds, the pool and the feed every ten, the points service every half minute.
 loop(readChain, 6000, 30000);

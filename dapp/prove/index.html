@@ -21,9 +21,11 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /prove/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/prove/app.js?cb=e7410a9f">
+<link rel="modulepreload" href="/prove/app.js?cb=184eff0a">
 <link rel="modulepreload" href="/community-prove.js?cb=9c90fa04">
 <link rel="modulepreload" href="/prove/view.js?cb=f6efbcdd">
+<link rel="modulepreload" href="/prove/invader.js?cb=8b68bcd8">
+<link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="/prove/chain.js?cb=045857de">
 <!-- preload:end -->
 <style>
@@ -155,7 +157,15 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .blk .o { font-size: 11px; color: var(--mute); }
 .who { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; }
 .who i { width: 12px; height: 12px; flex: none; border-radius: 3px; background: var(--c, var(--hair-2)); }
-.who.gpu i { background: var(--ink); border-radius: 50%; }
+.inv { display: block; flex: none; image-rendering: pixelated; border-radius: 3px; }
+.who .inv { animation: march 1.6s steps(1) infinite; }
+@keyframes march { 50% { transform: translateX(1px); } }
+.me { display: inline-flex; align-items: center; gap: 10px; letter-spacing: 0; text-transform: none; font: 500 12px/1 var(--mono); color: var(--ink); }
+.me .inv { border-radius: 6px; animation: march 1.2s steps(1) infinite; }
+.cube .badge { position: absolute; right: -10px; top: -10px; }
+.cube .badge .inv { border-radius: 4px; box-shadow: 0 0 0 2px var(--paper); }
+.blk.new .badge { animation: abduct 1.1s cubic-bezier(.2, 1.3, .4, 1) both .25s; }
+@keyframes abduct { from { transform: translateY(-40px) scale(.4); opacity: 0; } }
 .blk.gpu .cube { border-color: var(--ink); }
 .detail { margin: 6px 0 0; padding: 14px 16px; background: var(--card); border: 1px solid var(--hair); max-width: 560px; }
 .detail .kv b a { color: var(--ink); }
@@ -380,7 +390,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       </section>
 
       <section class="panel" id="desk" aria-live="polite">
-        <p class="eyebrow">Your computer</p>
+        <p class="eyebrow"><span>Your node</span><span class="me" id="me"></span></p>
         <label class="fld" for="addr"><span>Pays to</span><input id="addr" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="0x…" maxlength="64"></label>
         <div class="state" id="state" data-s="none"><span class="dot" aria-hidden="true"></span><h2 id="title">Looking for tacit-prover…</h2><span class="win num" id="win" aria-live="polite"></span></div>
         <div class="forge" id="forge" hidden><ol><li></li><li></li><li></li><li></li></ol><p class="num" id="stage"></p></div>
@@ -423,6 +433,6 @@ footer.sf svg.fill { width: 16px; height: 16px; }
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/prove/app.js?cb=e7410a9f"></script>
+<script type="module" src="/prove/app.js?cb=184eff0a"></script>
 </body>
 </html>

@@ -96,6 +96,10 @@ try {
     const gpuRow = await page.locator('#feed li').first().innerText();
     check(gpuRow.includes('Tacit GPU') && !gpuRow.includes('TAC '), 'the feed shows Tacit\'s GPU, earning nothing', gpuRow);
     check(!(await text(page, '#board')).includes('Tacit GPU'), 'Tacit\'s GPU is never on the leaderboard');
+    check((await text(page, '#me')) === 'zorgz #' + Number(BigInt(ADDR) % 10000n), 'the rig shows the address\'s zorgz', await text(page, '#me'));
+    check((await page.locator('#chain .blk .badge img.inv').count()) === 3, 'each proved block wears its prover\'s invader');
+    const loaded = await page.locator('img.inv').evaluateAll((xs) => xs.every((x) => x.complete && x.naturalWidth > 0));
+    check(loaded, 'every invader image draws');
     await page.click('#chain .blk.mine button');
     const det = await text(page, '#detail');
     check(det.includes('Won') && det.includes('0.2 TAC') && det.includes('you') && det.includes('2 notes · 1 deposit'), 'a block opens with what it holds, who proved it and what it won', det);

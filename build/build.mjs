@@ -190,7 +190,7 @@ const DISCORD_CB_FILES = ['discord/message.js', 'discord/holdings.js', 'discord/
 // dapp/fast/ is where TAC on Bitcoin goes to the private balance through a provider: its wiring and its page logic first, then app.js, then the page.
 const FAST_CB_FILES = ['fast/want.js', 'fast/wire.js', 'fast/ui.js', 'fast/provide.js', 'fast/app.js', 'fast/index.html'];
 // dapp/prove/ starts and pauses proving on this computer: its words, then app.js (which also takes community-prove.js), then the page.
-const PROVE_CB_FILES = ['community-prove.js', 'prove/view.js', 'prove/chain.js', 'prove/app.js', 'prove/index.html'];
+const PROVE_CB_FILES = ['community-prove.js', 'prove/view.js', 'prove/chain.js', 'prove/invader.js', 'prove/app.js', 'prove/index.html'];
 // dapp/build/ is the page for builders: its one script, then the page.
 const BUILD_CB_FILES = ['build/app.js', 'build/index.html'];
 // dapp/assets/ lists Tacit's own assets and the farms under them: the farms' reading first, then app.js, then the page.
