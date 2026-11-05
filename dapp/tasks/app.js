@@ -245,7 +245,8 @@ function card(job) {
     foot = res.last ? `Done ${day(res.last)}` : 'Done';
   } else if (reviewed) {
     fig = `${tac(job.steps.reduce((x, s) => x + BigInt(s.minWei), 0n), 0)}<small>TAC</small>`;
-    cap = `${tac(job.steps[0].minWei, 0)} TAC for each role, paid once`;
+    const pays = job.steps.map((s) => BigInt(s.minWei)), least = pays.reduce((x, y) => (y < x ? y : x)), most = pays.reduce((x, y) => (y > x ? y : x));
+    cap = least === most ? `${tac(least, 0)} TAC for each role, paid once` : `${tac(least, 0)} to ${tac(most, 0)} TAC a role, paid once`;
   } else if (eco || apiJob(job)?.estimateWei != null) { fig = `≈ ${tacR(eco ? eco.pays : apiJob(job).estimateWei)}<small>TAC</small>`; cap = 'for the whole job, at today’s network fees'; }
   const where = reviewed ? 'roles claimed' : `${steps(total)} on the chain`;
   return `<article class="job ${st}${exp ? ' is-open' : ''}" id="${esc(job.id)}">
@@ -354,7 +355,7 @@ function reviewRow(job, s, i) {
   </li>`;
 }
 function reviewBody(job) {
-  const todo = job.steps.filter((s) => !onChain(job, s)), open = isOpen(job), a = S.api;
+  const todo = job.steps.filter((s) => !onChain(job, s) && !s.reserved), open = isOpen(job), a = S.api;
   return `
     <div class="grid">
       <div class="col">

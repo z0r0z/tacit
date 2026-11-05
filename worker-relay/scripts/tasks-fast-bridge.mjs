@@ -2,27 +2,30 @@
 //   worker-relay/src/lib/points-tasks-jobs.json   what the points service verifies and prices
 //   dapp/tasks/jobs.json                          what the /tasks page shows
 //
-//   node worker-relay/scripts/tasks-fast-bridge.mjs [--opens <unix secs>] [--provider <tx hash>] [--bridger <tx hash>]
+//   node worker-relay/scripts/tasks-fast-bridge.mjs [--opens <unix secs>] [--provider <tx hash>] [--bridger <tx hash>] [--bridger2 <tx hash>]
 //
-// The job: two roles of one swap, each paid once. The swap's Ethereum side is sent by the relay, so the sender of no transaction there is
-// who did the work: each role sends itself a transaction naming its Bitcoin transaction, and the step lists that hash after review
-// (--provider, --bridger), which takes a push and a deploy of the points service. To review, a bridger's lock must be spent by a provider's
-// take, with an adaptor claim settled in the pool between the two.
+// The job: two roles of one swap, each paid once, and a second bridger step. The swap's Ethereum side is sent by the relay, so the sender of
+// no transaction there is who did the work: each role sends itself a transaction naming its Bitcoin transaction, and the step lists that
+// hash after review (--provider, --bridger, --bridger2), which takes a push and a deploy of the points service. To review, a bridger's lock
+// must be spent by a provider's take, with an adaptor claim settled in the pool between the two.
 //
-// Each role pays 60 TAC, about twice the fees of one swap (about 10,000 sats and a little gas) at the fee levels of November 2026.
+// The provider pays 60 TAC: about one swap's Bitcoin fees (a bridger's cost on 5 November 2026 was 4,760 to 5,716 sats, about $4 to $5, with
+// TAC at $0.13 and Bitcoin at $80,000), which the provider does not pay. The first two bridgers were paid more, for what they spent and for
+// proving the bridge out: the first 300 TAC (two locks, one stalled by bugs now fixed, and a day of retries: about $7.50 in fees), the
+// second 130 TAC (one lock, about $4 in fees). Each is its own step, paid once, to the claim reviewed for it.
 import { fileURLToPath } from 'node:url';
 import { readJobs, writeJobs } from './tasks-merge.mjs';
 
 const arg = (k, d = null) => { const i = process.argv.indexOf(`--${k}`); return i > 0 ? process.argv[i + 1] : d; };
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const SERVICE_OUT = `${root}worker-relay/src/lib/points-tasks-jobs.json`, PAGE_OUT = `${root}dapp/tasks/jobs.json`;
-const JOB = 'fast-bridge-test', PAYS = String(60n * 10n ** 18n), NOBODY = '0x0000000000000000000000000000000000000000';
+const JOB = 'fast-bridge-test', TAC = (n) => String(BigInt(n) * 10n ** 18n), NOBODY = '0x0000000000000000000000000000000000000000';
 
 const before = readJobs(SERVICE_OUT).find((j) => j.id === JOB);
 const approved = (id, name) => { const had = before?.steps.find((s) => s.id === id)?.approved ?? [], h = arg(name); return h && !had.includes(h) ? [...had, h] : had; };
 const opensAt = Number(arg('opens', before?.opensAt ?? Math.floor(Date.now() / 1000)));
-const step = (id) => ({ id, kind: 'review', to: NOBODY, gas: 22000, approved: approved(id, id.slice(3)), minWei: PAYS, maxWei: PAYS });
-const steps = [step('01-provider'), step('02-bridger')];
+const step = (id, flag, tac) => ({ id, kind: 'review', to: NOBODY, gas: 22000, approved: approved(id, flag), minWei: TAC(tac), maxWei: TAC(tac) });
+const steps = [step('01-provider', 'provider', 60), step('02-bridger', 'bridger', 300), step('03-bridger-second', 'bridger2', 130)];
 
 writeJobs(SERVICE_OUT, { id: JOB, chainId: 1, opensAt, steps });
 writeJobs(PAGE_OUT, {
@@ -33,7 +36,11 @@ writeJobs(PAGE_OUT, {
       action: { label: 'Provide 10 TAC', href: '/fast/#provide' }, ask: 'Provider: the Last take link under Provide liquidity',
     },
     {
-      ...steps[1], label: 'Bridger', detail: 'You need 10 TAC on Bitcoin and about 10,000 sats for fees. A provider must be online first.',
+      ...steps[1], label: 'Bridger, first', detail: 'The first bridge to be checked, on 4 November. Taken.', reserved: true,
+      action: { label: 'Bridge 10 TAC', href: '/fast/' }, ask: 'Bridger: the Bitcoin lock link on your bridge',
+    },
+    {
+      ...steps[2], label: 'Bridger, second', detail: 'The second bridge to be checked, on 5 November. Taken.', reserved: true,
       action: { label: 'Bridge 10 TAC', href: '/fast/' }, ask: 'Bridger: the Bitcoin lock link on your bridge',
     },
   ],
@@ -42,6 +49,7 @@ writeJobs(PAGE_OUT, {
     { h: 'What it costs', p: 'The bridger pays the Bitcoin fees, including the provider\'s take, and the reward covers them. Your TAC stays yours, less the provider\'s fee.' },
     { h: 'If a bridge stops', p: 'Open the fast bridge again after about a day and your TAC returns to your Bitcoin address.' },
     { h: 'Getting paid', p: 'Each role pays once, to the first bridge checked on both chains. Claim from the wallet you want paid, then post the link in Discord.' },
+    { h: 'Paid', p: 'The first two bridges, on 4 and 5 November, proved the fast bridge on mainnet, and their bridgers are paid for it: 300 TAC to the first and 130 TAC to the second. That covers their Bitcoin fees, with a reward for the testing and, for the first, a lock that stalled while the bugs it found were fixed.' },
   ],
   links: [{ label: 'Discord', href: 'https://discord.gg/VxYx9XSBrM' }],
 });
