@@ -32,6 +32,9 @@ import { creditShort, creditRefusal, makeProvePause } from './lib/prove-pause.js
 import { nextBlockCap } from './lib/block-cap.js';
 import { makeHeldProof } from './lib/held-proof.js';
 import { jobCounts, proofCounts, countsBehind } from './lib/attest-counts.js';
+import { staleAttestRevert } from './lib/attest-revert.js';
+import { revertSelector } from './lib/revert-data.js';
+import { encodeFunctionData } from 'viem';
 import { relayWallet, publicClient, verifyClient, readPool, readReflectionDigest, POOL, POOL_ABI, gasAboveCap, HEADER_RELAY, RELAY_ABI, baseFeeHistory } from './lib/chain.js';
 import { safeErr } from './lib/safe-err.js';
 import { withNonceRetry } from './lib/nonce-retry.js';
@@ -276,7 +279,10 @@ async function cycle() {
   // The node asks the wallet to hold the gas LIMIT the send carries (the padded estimate) times its fee cap, so that is what is checked, now
   // that the proof is in hand and the estimate can be had (the check before buying could only use the budget for a large batch). An
   // estimate that fails (the send would hit the same revert, and meets it below) falls back to the budget.
-  const sendGas = await publicClient.estimateContractGas({ ...attestCall, account: relayWallet.account }).then((g) => (g * 125n) / 100n).catch(() => null);
+  // A revert the pool gives because its state moved past the proof (lib/attest-revert.js) lets the proof go here, before any send.
+  const estimate = () => publicClient.estimateContractGas({ ...attestCall, account: relayWallet.account });
+  let sendGas = null;
+  try { sendGas = ((await estimate()) * 125n) / 100n; } catch (e) { if (await droppedStale(e, attestCall, attestedTo)) return false; }
   const late = await attestFunds({ gas: sendGas ?? ATTEST_GAS_BUDGET });
   if (late.short) {
     say('funds-late', `relay wallet holds ${eth(late.have)} ETH, under the ${eth(late.need)} ETH the attest can cost now — keeping the proof, waiting for a top-up`);
@@ -291,7 +297,8 @@ async function cycle() {
   // seconds. The same holds after submission: a tx whose nonce a private settle took is dropped, and the proof is simply
   // sent again, for as long as the estimate says it still lands (the pool still sits on this batch's prior).
   for (let attempt = 1; ; attempt++) {
-    const attestGas = await publicClient.estimateContractGas({ ...attestCall, account: relayWallet.account });
+    let attestGas;
+    try { attestGas = await estimate(); } catch (e) { if (await droppedStale(e, attestCall, attestedTo)) return false; throw e; }
     const txHash = await withNonceRetry('attest', () => relayWallet.writeContract({ ...attestCall, gas: (attestGas * 125n) / 100n }), { log });
     await reflectionSubmitted({ newDigest, txHash, attestedTo });
     const outcome = await landAttest({ txHash, newDigest, attestedTo, nonce: await nonceOf(txHash) });
@@ -299,6 +306,20 @@ async function cycle() {
     if (attempt >= CFG.reflectionResubmits) return false;
     log(`sending the same proof again (${attempt + 1}/${CFG.reflectionResubmits})`);
   }
+}
+
+// The attest's estimate reverted. When the revert says the pool's state moved past the proof (a cross-out or a consume recorded since the
+// batch's eth-state candidate, the prior digest or the relay height moved on), the proof can never land: it is let go and the cycle
+// ends without an error, so the lane does not back off and the next cycle builds a fresh batch. -> true when that was the case. A
+// revert that names no selector on our node is asked of public ones. Any other revert is left to throw as before.
+async function droppedStale(e, call, attestedTo) {
+  const sel = staleAttestRevert(e) ? null : await revertSelector(e, { from: relayWallet.account.address, to: call.address, data: encodeFunctionData(call) }, { chainId: CFG.chainId }).catch(() => null);
+  const why = staleAttestRevert(e, sel);
+  if (!why) return false;
+  heldProof.clear();
+  log(`the pool refuses the proof for batch ${attestedTo} (${why}): its state moved after the batch was built — letting the proof go, a fresh batch follows`);
+  await heartbeat('reflection', `proof for batch ${attestedTo} let go: pool state moved (${why})`);
+  return true;
 }
 
 // What an attest can cost the relay wallet right now against what it holds: the gas limit it will carry (the budget for a large batch
