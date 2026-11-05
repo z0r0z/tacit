@@ -60,6 +60,8 @@ async function newContext(wallets, { phone = false } = {}) {
   await ctx.exposeFunction('__log', (m) => { calls.push(m); });
   for (const w of wallets) await ctx.addInitScript(w);
   await ctx.route(/^https?:\/\/(?!127\.0\.0\.1)/, (r) => r.abort());
+  // the computer's own prover (a page may look for it): never this machine's real one
+  await ctx.route('http://127.0.0.1:47815/**', (r) => r.abort('connectionrefused'));
   return { ctx, calls, asked: (m) => calls.filter((c) => c.endsWith(':' + m)).length };
 }
 async function open(ctx, path) {

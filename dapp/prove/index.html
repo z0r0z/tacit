@@ -21,20 +21,11 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /prove/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/prove/app.js?cb=beda7d32">
+<link rel="modulepreload" href="/prove/app.js?cb=c53ef93f">
 <link rel="modulepreload" href="/community-prove.js?cb=4f1a30e7">
 <link rel="modulepreload" href="/prove/view.js?cb=396aa5e6">
 <link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
-<link rel="modulepreload" href="/prove/ops.js?cb=bb362b17">
-<link rel="modulepreload" href="/evm-wallet.js?cb=b400cbe7">
-<link rel="modulepreload" href="/identity-message.js">
-<link rel="modulepreload" href="/walletconnect.js?cb=e0b29a34">
-<link rel="modulepreload" href="/header-relay-advance.js?cb=1c3a7226">
-<link rel="modulepreload" href="/rpc-body.js">
-<link rel="modulepreload" href="/community-ops.js?cb=ec01725e">
-<link rel="modulepreload" href="/relay/abi.js">
-<link rel="modulepreload" href="/zrouter-guard.js">
 <link rel="modulepreload" href="/prove/chain.js?cb=8a988a34">
 <!-- preload:end -->
 <style>
@@ -142,19 +133,19 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .tip b.bump { animation: bump .6s var(--spring, ease-out); }
 @keyframes bump { 30% { transform: translateY(-4px); color: var(--orange); } }
 .stat b { display: block; font: 500 18px/1.3 var(--mono); }
-.crowd { margin: 18px 0 0; }
+.crowd { margin: 18px 0 0; min-height: 54px; }
+.crowd-row { min-height: 28px; }
 .crowd-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 0; }
 .crowd .pod { display: block; animation: hop 1.8s steps(1) infinite; animation-delay: calc(var(--i) * -.23s); }
 .crowd .pod .inv { border-radius: 5px; }
 .crowd .pod.me .inv { outline: 2px solid var(--orange); outline-offset: 2px; }
 @keyframes hop { 50% { transform: translate(2px, -2px); } }
 .pool { display: flex; flex-wrap: wrap; gap: 4px; min-height: 14px; margin: 18px 0 0; }
-.pool i { width: 10px; height: 10px; background: var(--hair-2); animation: float 3s ease-in-out infinite; animation-delay: calc(var(--k) * -.37s); }
+.pool i { width: 10px; height: 10px; background: var(--hair-2); }
 .pool i.on { background: var(--orange); animation: glow 1.2s ease-in-out infinite; }
 .pool span { font-size: 11px; color: var(--mute); line-height: 10px; margin-left: 4px; }
-@keyframes float { 50% { transform: translateY(-3px); } }
 @keyframes glow { 50% { opacity: .35; transform: scale(.8); } }
-.chain { list-style: none; margin: 14px 0 0; padding: 12px 12px 10px 0; display: flex; gap: 14px; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: thin; }
+.chain { min-height: 128px; list-style: none; margin: 14px 0 0; padding: 12px 12px 10px 0; display: flex; gap: 14px; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: thin; }
 .blk { position: relative; flex: none; width: 112px; }
 .blk + .blk::before { content: ''; position: absolute; left: -14px; top: 34px; width: 14px; border-top: 2px dashed var(--hair-2); }
 .blk button { display: grid; gap: 6px; justify-items: start; padding: 0; background: none; border: 0; cursor: pointer; text-align: left; color: var(--ink); }
@@ -179,7 +170,6 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .who { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; }
 .who i { width: 12px; height: 12px; flex: none; border-radius: 3px; background: var(--c, var(--hair-2)); }
 .inv { display: block; flex: none; image-rendering: pixelated; border-radius: 3px; }
-.who .inv { animation: march 1.6s steps(1) infinite; }
 @keyframes march { 50% { transform: translateX(1px); } }
 .me { display: inline-flex; align-items: center; gap: 10px; letter-spacing: 0; text-transform: none; font: 500 12px/1 var(--mono); color: var(--ink); }
 .me .inv { border-radius: 6px; animation: march 1.2s steps(1) infinite; }
@@ -296,6 +286,9 @@ pre.cmd { margin: 16px 0 0; padding: 12px 14px; background: var(--field); border
 
 /* the wallet chip's short label, the wallet app's pairing sheet, the toasts */
 .chip .narrow { display: none; }
+/* the chip keeps one width whatever it says, so a wallet that reconnects after the page has drawn moves nothing */
+#wallet { width: 14ch; justify-content: center; }
+@media (max-width: 430px) { #wallet { width: 13ch; } }
 @media (max-width: 430px) { .chip .wide { display: none; } .chip .narrow { display: inline; } }
 .chip[aria-busy="true"] { cursor: progress; }
 dialog.sheet { width: min(480px, calc(100vw - 32px)); max-height: min(90vh, 900px); padding: 0; overflow: auto; color: var(--ink); background: var(--card); border: 1px solid var(--ink); box-shadow: 0 12px 40px rgba(0,0,0,.25); }
@@ -318,6 +311,7 @@ dialog.sheet::backdrop { background: rgba(0,0,0,.45); backdrop-filter: blur(2px)
 
 /* activity */
 .feed ol { list-style: none; margin: 0; padding: 0; }
+.feed #feed { min-height: 152px; }
 .feed li { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--hair); font-size: 12.5px; }
 .feed li:last-child { border-bottom: 0; }
 .feed li.new { animation: fresh 1.6s ease-out; }
@@ -508,7 +502,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
         <div class="stat"><span class="lbl">Community provers</span><b id="n-provers">—</b></div>
         <div class="stat"><span class="lbl">Proofs today</span><b id="n-done">—</b></div>
       </div>
-      <div class="crowd" id="crowd" hidden><span class="lbl" id="crowd-n"></span><div class="crowd-row" id="crowd-row"></div></div>
+      <div class="crowd" id="crowd"><span class="lbl" id="crowd-n">Proving now</span><div class="crowd-row" id="crowd-row"></div></div>
       <div class="pool" id="pool" aria-hidden="true"></div>
       <ol class="chain" id="chain" aria-label="Newest blocks"></ol>
       <div class="detail" id="detail" hidden></div>
@@ -659,6 +653,6 @@ RUNNER_KEY=0x… node tools/community-runner.mjs</code></pre>
 
 <div id="toast-container" class="toasts" popover="manual"></div>
 
-<script type="module" src="/prove/app.js?cb=beda7d32"></script>
+<script type="module" src="/prove/app.js?cb=c53ef93f"></script>
 </body>
 </html>

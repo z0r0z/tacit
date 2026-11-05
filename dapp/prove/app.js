@@ -4,7 +4,6 @@
 import { cleanAddress, proveCommand, utcDay, mineLines } from '/community-prove.js?cb=4f1a30e7';
 import { localState, jobView, headline, isPhone } from '/prove/view.js?cb=396aa5e6';
 import { invaderSvg, gpuSvg } from '/prove/invader.js?cb=e8a5ec59';
-import { startOps } from '/prove/ops.js?cb=bb362b17';
 import { short, cells, opsText, tac, rewardWei, ago, took, fresh, blockAgo, kindOf, KINDS, kindText, median, untilDayEnds, cleanBlock, cleanProof, cleanMiner } from '/prove/chain.js?cb=8a988a34';
 
 const API = 'https://api.tacit.finance', POINTS = 'https://tacit-points.onrender.com', LOCAL = 'http://127.0.0.1:47815';
@@ -43,9 +42,9 @@ async function readLocal() {
 
 async function readRemote() {
   const a = addr();
-  const [p, m, t] = await Promise.all([get(`${API}/prover/pool`), get(`${POINTS}/mine${a ? `?address=${a.toLowerCase()}` : ''}`), get(`${API}/prover/pool/credits?day=${utcDay()}`)]);
+  const [m, t] = await Promise.all([get(`${POINTS}/mine${a ? `?address=${a.toLowerCase()}` : ''}`), get(`${API}/prover/pool/credits?day=${utcDay()}`)]);
   if (a !== addr()) return;
-  pool = cleanPool(p); points = m; tally = t ? { ...t, miners: (t.miners || []).map(cleanMiner).filter(Boolean) } : t;
+  points = m; tally = t ? { ...t, miners: (t.miners || []).map(cleanMiner).filter(Boolean) } : t;
   paintNet(); paintFeed(); paintDetail();
 }
 
@@ -118,9 +117,7 @@ const ONLINE_MS = 20 * 60_000;
 function paintCrowd() {
   const t = Date.now(), seen = new Map();
   for (const p of feed) if (t - p.at < ONLINE_MS) { const k = p.house ? 'gpu' : p.miner; if (k && !seen.has(k)) seen.set(k, p); }
-  const el = $('#crowd');
-  el.hidden = !seen.size;
-  if (!seen.size) return;
+  if (!seen.size) { $('#crowd-n').textContent = 'Proving now'; $('#crowd-row').innerHTML = ''; return; }
   const faces = [...seen.keys()].slice(0, 24).map((k, i) => `<span class="pod${k === me() ? ' me' : ''}" style="--i:${i}" title="${k === 'gpu' ? 'Tacit GPU' : esc(short(k))}">${face(k === 'gpu' ? null : k, 28)}</span>`).join('');
   $('#crowd-n').textContent = `${seen.size} proving now`;
   $('#crowd-row').innerHTML = faces;
@@ -251,6 +248,19 @@ async function copy() {
   }
 }
 
+// The Relay and Bitcoin tabs' code (the wallet, the header relay, the board's settles) is most of the page's weight and most visitors never
+// open those tabs, so it loads when one opens, when the wallet chip is pressed, or once the page has settled.
+let opsLoad = null;
+const loadOps = () => (opsLoad ||= import('/prove/ops.js?cb=bb362b17'));
+$('#wallet').addEventListener('click', async (e) => {
+  if (opsLoad) return;                                             // loaded: ops.js has its own handler on the chip
+  e.preventDefault();
+  await loadOps().catch(() => {});
+  $('#wallet').click();
+}, { once: true });
+const whenIdle = (fn) => ('requestIdleCallback' in window ? requestIdleCallback(fn, { timeout: 8000 }) : setTimeout(fn, 4000));
+addEventListener('load', () => setTimeout(() => whenIdle(() => loadOps().catch(() => {})), 2500), { once: true });
+
 // The node's jobs as tabs: #tab=relay or #tab=bitcoin opens one (a link from a waiting lock carries need= and why= beside it), and the
 // other jobs' reads start the first time one of their tabs opens.
 const TABS = ['prove', 'relay', 'bitcoin'];
@@ -261,7 +271,7 @@ function showTab(name, { write = true } = {}) {
     $(`#tb-${n}`).setAttribute('aria-selected', String(n === t));
     $(`#tb-${n}`).tabIndex = n === t ? 0 : -1;
   }
-  if (t !== 'prove') startOps();
+  if (t !== 'prove') loadOps().then((m) => m.startOps()).catch(() => {});
   if (write) {
     const h = new URLSearchParams(location.hash.slice(1));
     if (t === 'prove') h.delete('tab'); else h.set('tab', t);
