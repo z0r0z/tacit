@@ -161,9 +161,9 @@ try {
     await page.click('#bt-flip');
     ok(await page.getAttribute('#bt-go', 'href') === '/#card=bridge:ub' && (await page.textContent('#bt-go')).includes('Bring cUSD back'), 'and cUSD back from Bitcoin');
     await page.click('[data-asset="cusdt"]');
-    ok(await page.getAttribute('#bt-go', 'href') === '/#card=bridge:ut' && (await page.textContent('#bt-go')).includes('Bring USDT back') && (await page.textContent('#bt-limit')) === 'Up to 1,000 cUSDT a bridge while it is new', 'USDT is brought back from Bitcoin, with what one bridge takes');
+    ok(await page.getAttribute('#bt-go', 'href') === '/#card=bridge:ut' && (await page.textContent('#bt-go')).includes('Bring USDT back') && (await page.textContent('#bt-limit')) === 'Up to 100 cUSDT a bridge while it is new', 'USDT is brought back from Bitcoin, with what one bridge takes');
     await page.click('#bt-flip');
-    ok(await page.getAttribute('#bt-go', 'href') === '/#card=bridge:wusdt' && (await page.textContent('#bt-go')).includes('Bridge USDT') && (await page.textContent('#bt-limit')) === '2 to 1,000 cUSDT a bridge while it is new', 'and USDT to Bitcoin starts from the wallet\'s USDT, with its two-dollar least');
+    ok(await page.getAttribute('#bt-go', 'href') === '/#card=bridge:wusdt' && (await page.textContent('#bt-go')).includes('Bridge USDT') && (await page.textContent('#bt-limit')) === '2 to 100 cUSDT a bridge while it is new', 'and USDT to Bitcoin starts from the wallet\'s USDT, with its two-dollar least');
     await page.click('#bt-flip');
     await page.click('[data-asset="tac"]');
     await shot(page, 'desktop-top');

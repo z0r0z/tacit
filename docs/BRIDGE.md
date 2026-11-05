@@ -167,7 +167,7 @@ exactly the amount and one signature), and is taken out again to an Ethereum add
 | --- | --- | --- |
 | TAC | 20 to 1,000 TAC a bridge | up to 1,000 TAC, a note goes whole |
 | tETH | 0.001 to 0.5 tETH a bridge | up to 0.5 tETH, a note goes whole |
-| USDT | 2 to 1,000 USDT a bridge | up to 1,000 USDT, a note goes whole |
+| USDT | 2 to 100 USDT a bridge | up to 100 USDT, a note goes whole |
 
 A TAC note going back in two steps carries up to 255 transfers of history.
 

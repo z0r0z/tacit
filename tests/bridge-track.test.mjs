@@ -183,7 +183,7 @@ test('the limits the page shows are the ones the bridge enforces', () => {
     assert.equal(LIMITS[k].out.max, cap); assert.equal(LIMITS[k].out.min, min); assert.equal(LIMITS[k].in.max, cap);
   }
   assert.match(tacit, /\['cBTC', CROSSOUT_CBTC_CAP_RAW, CROSSOUT_CBTC_MIN_RAW\], \['cUSD', CROSSOUT_CUSD_CAP_RAW, CROSSOUT_CUSD_MIN_RAW\]/, 'cBTC and cUSD cross with those caps');
-  // cUSDT: USDT's own six decimals, 2 to 1,000 USDT a bridge, and the id the front page and this page both name it by
+  // cUSDT: USDT's own six decimals, 2 to 100 USDT a bridge, and the id the front page and this page both name it by
   assert.equal(LIMITS.cusdt.out.max, CROSSOUT_CUSDT_CAP_RAW); assert.equal(LIMITS.cusdt.out.min, CROSSOUT_CUSDT_MIN_RAW); assert.equal(LIMITS.cusdt.in.max, CROSSOUT_CUSDT_CAP_RAW);
   assert.equal(ROUTES.cusdt.dec, CROSSOUT_CUSDT_DEC); assert.equal(CROSSOUT_CUSDT_DEC, 6);
   assert.match(tacit, /capRaw: CROSSOUT_CUSDT_CAP_RAW, minRaw: CROSSOUT_CUSDT_MIN_RAW, dec: CROSSOUT_CUSDT_DEC/, 'cUSDT crosses with those limits and decimals');
@@ -191,11 +191,11 @@ test('the limits the page shows are the ones the bridge enforces', () => {
 });
 
 test('cUSDT reads in six decimals and is told from the eight-decimal assets', () => {
-  assert.equal(limitLine('cusdt', 'out'), '2 to 1,000 cUSDT a bridge while it is new');
-  assert.equal(limitLine('cusdt', 'in'), 'Up to 1,000 cUSDT a bridge while it is new');
+  assert.equal(limitLine('cusdt', 'out'), '2 to 100 cUSDT a bridge while it is new');
+  assert.equal(limitLine('cusdt', 'in'), 'Up to 100 cUSDT a bridge while it is new');
   assert.equal(fmtAmount(2_500_000n, 2, 6), '2.5'); assert.equal(fmtAmount(1_234_567n, 6, 6), '1.234567'); assert.equal(fmtAmount(1_000_000_000n, 2, 6), '1,000');
   assert.equal(fmtAmount(250_000_000n, 2), '2.5', 'the default is still eight decimals');
-  assert.match(limitsSaid(), /cUSDT 2 to 1,000 to Bitcoin and up to 1,000 back/);
+  assert.match(limitsSaid(), /cUSDT 2 to 100 to Bitcoin and up to 100 back/);
   const page = readFileSync(new URL('../dapp/bridge/index.html', import.meta.url), 'utf8');
   assert.ok(page.includes(limitsSaid()), 'the page\'s own sentence of the limits is the one built here');
   assert.match(page, /data-asset="cusdt"/, 'the page has a USDT tab');

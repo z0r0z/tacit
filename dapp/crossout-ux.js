@@ -11,7 +11,7 @@ export const CROSSOUT_CUSD_CAP_RAW = 100_000_000_000n;    // 1,000 cUSD while th
 export const CROSSOUT_CUSD_MIN_RAW = 1_000_000_000n;      // 10 cUSD: a bridge must still exceed its relay fee
 // cUSDT is in the pool at USDT's own six decimals (scale 1), not eight like the rest
 export const CROSSOUT_CUSDT_DEC = 6;
-export const CROSSOUT_CUSDT_CAP_RAW = 1_000_000_000n;     // 1,000 USDT while the bridge is new
+export const CROSSOUT_CUSDT_CAP_RAW = 100_000_000n;       // 100 USDT while the bridge is new: a start, raised once round trips have been through
 export const CROSSOUT_CUSDT_MIN_RAW = 2_000_000n;         // 2 USDT: small enough to try with, and a bridge must still exceed its relay fee
 export const CROSSOUT_MINT_FEE_CEILING = 100;
 // How many times a burn's Bitcoin step is sent before the record stops offering it again: the first, and two more.

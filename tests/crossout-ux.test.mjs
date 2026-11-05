@@ -428,13 +428,13 @@ const CUSDT = withHex('c5'.repeat(32));
 const USDT_ASSET = { assetId: CUSDT, ticker: 'cUSDT', capRaw: CROSSOUT_CUSDT_CAP_RAW, minRaw: CROSSOUT_CUSDT_MIN_RAW, dec: CROSSOUT_CUSDT_DEC };
 const UNOTE = { nullifier: withHex('6e'.repeat(32)), value: 5_000_000n, blinding: 0x777n, asset: CUSDT, confirmed: true };
 {
-  ok(CROSSOUT_CUSDT_DEC === 6 && CROSSOUT_CUSDT_MIN_RAW === 2_000_000n && CROSSOUT_CUSDT_CAP_RAW === 1_000_000_000n, 'the limits are 2 and 1,000 USDT, in six-decimal units');
+  ok(CROSSOUT_CUSDT_DEC === 6 && CROSSOUT_CUSDT_MIN_RAW === 2_000_000n && CROSSOUT_CUSDT_CAP_RAW === 100_000_000n, 'the limits are 2 and 100 USDT, in six-decimal units');
   const world = makeWorld();
   const ux = makeUx(world, { assets: [...MULTI.assets, USDT_ASSET] });
   const [good, over, under, atCap, atMin] = ux.eligibleNotes([UNOTE, { ...UNOTE, value: CROSSOUT_CUSDT_CAP_RAW + 1n }, { ...UNOTE, value: CROSSOUT_CUSDT_MIN_RAW - 1n },
     { ...UNOTE, value: CROSSOUT_CUSDT_CAP_RAW }, { ...UNOTE, value: CROSSOUT_CUSDT_MIN_RAW }]);
   ok(good.eligible, 'a cUSDT note is eligible beside TAC and tETH');
-  ok(!over.eligible && /over the 1,000 cUSDT beta limit/.test(over.reason), 'over the cap, the cap is named in USDT (1,000, not 10)');
+  ok(!over.eligible && /over the 100 cUSDT beta limit/.test(over.reason), 'over the cap, the cap is named in USDT (100, not 1)');
   ok(!under.eligible && /under the 2 cUSDT minimum/.test(under.reason), 'under the minimum, the minimum is named in USDT (2, not 0.02)');
   ok(atCap.eligible && atMin.eligible, 'both limits are inclusive');
   ok(ux.assetOf(CUSDT).dec === 6 && ux.assetOf(TETH).dec === undefined, 'the six-decimal asset carries its decimals; the eight-decimal ones need not');

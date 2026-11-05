@@ -9666,11 +9666,11 @@ await step('hxbridgeu', async () => {
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)} | out ${await text(p, BRG.out)}`); });
     ok(true, 'hxbridgeu: more USDT than the key holds is said, in USDT');
     await p.fill(BRG.amt, '20');
-    await until(p, () => /^19\.5$/.test(document.querySelector('#hx-out')?.textContent || '') && /Relay fee: 0\.5 cUSDT/.test(window.__said()) && /Limits: 2 to 1,000 cUSDT a bridge/.test(window.__said()), null, 240000)
+    await until(p, () => /^19\.5$/.test(document.querySelector('#hx-out')?.textContent || '') && /Relay fee: 0\.5 cUSDT/.test(window.__said()) && /Limits: 2 to 100 cUSDT a bridge/.test(window.__said()), null, 240000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)} | out ${await text(p, BRG.out)}`); });
     ok((await text(p, BRG.go)).trim() === 'Bridge cUSDT to Bitcoin' && (await heldAt(p)) === 'private', `hxbridgeu: 20 USDT to Bitcoin is quoted with its relay fee and its limits in six decimals (${await said(p)})`);
     await p.fill(BRG.amt, '1');
-    await until(p, () => /A bridge takes 2 to 1,000 cUSDT while this is new\./.test(document.querySelector('#hx-q')?.textContent || ''), null, 240000)
+    await until(p, () => /A bridge takes 2 to 100 cUSDT while this is new\./.test(document.querySelector('#hx-q')?.textContent || ''), null, 240000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)}`); });
     ok(true, 'hxbridgeu: 1 USDT is under the 2 USDT minimum, and the line names the limits in USDT');
     await p.fill(BRG.amt, '2.5');

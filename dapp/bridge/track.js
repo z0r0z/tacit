@@ -63,7 +63,7 @@ export const LIMITS = {
   teth: { in: { max: 50_000_000n }, out: { min: 100_000n, max: 50_000_000n } },
   cbtc: { in: { max: 50_000_000n }, out: { min: 1_000n, max: 50_000_000n } },
   cusd: { in: { max: 1000n * E8 }, out: { min: 10n * E8, max: 1000n * E8 } },
-  cusdt: { in: { max: 1_000_000_000n }, out: { min: 2_000_000n, max: 1_000_000_000n } },       // 2 to 1,000 USDT, in six-decimal units
+  cusdt: { in: { max: 100_000_000n }, out: { min: 2_000_000n, max: 100_000_000n } },       // 2 to 100 USDT, in six-decimal units
 };
 // The line under the steps: '20 to 1,000 TAC a bridge', 'Up to 0.5 tETH a bridge', or '' for a way with no such limit.
 // The FAQ's sentence of every asset's limits, read from the same table as the line under the steps.
