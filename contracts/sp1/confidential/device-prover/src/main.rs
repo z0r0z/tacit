@@ -2,7 +2,8 @@
 // stays warm (the recursion programs and the Groth16 key are loaded once), takes a program input the page built with
 // dapp/sp1-stdin.js, and returns the Groth16 proof the pool verifies. Listens on 127.0.0.1 only.
 //
-//   tacit-prover [serve]          GET /health, POST /prove {stdin}, GET /job?id= (its stage and an ETA while it proves)
+//   tacit-prover [serve]          GET /health, POST /prove {stdin}, GET /job?id= (its stage and an ETA while it proves),
+//                                 GET /mine, POST /mine {miner?, on} (tacit.finance/mine/ starts and pauses mining)
 //   tacit-prover prove <stdin>    one proof to <stdin>.proof.json
 //   tacit-prover check            every faster path against the code it replaces, then exit
 //   tacit-prover install          start at login and stay ready (launchd on macOS, a systemd user unit on Linux)
@@ -41,6 +42,7 @@ struct Job {
 struct State {
     jobs: HashMap<String, Job>,
     queue: VecDeque<(String, SP1Stdin)>,
+    kick: bool,
 }
 
 fn main() {
@@ -195,9 +197,31 @@ mod pool {
     pub fn is_address(a: &str) -> bool {
         a.len() == 42 && a.starts_with("0x") && a[2..].chars().all(|c| c.is_ascii_hexdigit())
     }
-    pub fn miner() -> Option<String> {
+    pub fn env_miner() -> Option<String> {
         std::env::var("TACIT_MINE").ok().filter(|a| is_address(a))
     }
+    // What the page last set (POST /mine, kept in mine.json) decides; with nothing set, TACIT_MINE does.
+    pub fn setting() -> Option<Value> {
+        serde_json::from_slice(&std::fs::read(store_dir().join("mine.json")).ok()?).ok()
+    }
+    pub fn miner() -> Option<String> {
+        match setting() {
+            Some(s) => s["on"].as_bool().filter(|on| *on).and(s["miner"].as_str()).filter(|a| is_address(a)).map(str::to_string),
+            None => env_miner(),
+        }
+    }
+    pub fn set(miner: Option<&str>, on: bool) -> Result<Value, String> {
+        let miner = miner.map(str::to_string).or_else(|| setting().and_then(|s| s["miner"].as_str().map(str::to_string))).or_else(env_miner);
+        let Some(miner) = miner.filter(|a| is_address(a)) else { return Err("an address (0x and 40 hex digits) is needed to mine".into()) };
+        let v = json!({ "miner": miner, "on": on });
+        let _ = std::fs::create_dir_all(store_dir());
+        std::fs::write(store_dir().join("mine.json"), v.to_string()).map_err(|e| e.to_string())?;
+        Ok(v)
+    }
+
+    // The pool job being proved now and what this run has proved, for GET /mine.
+    pub static NOW: std::sync::Mutex<Option<(String, std::time::Instant)>> = std::sync::Mutex::new(None);
+    pub static DONE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     fn api() -> String {
         std::env::var("TACIT_POOL_API").unwrap_or_else(|_| "https://api.tacit.finance".into()).trim_end_matches('/').to_string()
     }
@@ -247,7 +271,9 @@ mod pool {
         };
         eprintln!("tacit-prover: proving pool job {id} for {miner}");
         let mut job = Job::default();
+        *NOW.lock().unwrap() = Some((id.to_string(), std::time::Instant::now()));
         run(client, pk, input, &mut job);
+        *NOW.lock().unwrap() = None;
         if job.status != "done" {
             eprintln!("tacit-prover: pool job {id} {}: {}; handed back", job.status, job.error);
             hand_back(&http, id, token, &job.error);
@@ -259,6 +285,7 @@ mod pool {
         for _ in 0..6 {
             match post(&http, "submit", &body) {
                 Some((200, v)) => {
+                    DONE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     eprintln!("tacit-prover: pool job {id} proved in {:.0} s, {} points to {miner}", job.secs, v["points"]);
                     break;
                 }
@@ -350,6 +377,10 @@ fn service(on: bool) -> Result<String, String> {
     let sh = |cmd: &str, args: &[&str]| std::process::Command::new(cmd).args(args).status().map(|s| s.success()).unwrap_or(false);
     let log = store_dir().join("daemon.log");
     let _ = std::fs::create_dir_all(store_dir());
+    // Installing for an address mines for it, whatever the page set before.
+    if on && pool::env_miner().is_some() {
+        let _ = std::fs::remove_file(store_dir().join("mine.json"));
+    }
     if cfg!(target_os = "macos") {
         let uid = String::from_utf8(std::process::Command::new("id").arg("-u").output().map_err(|e| e.to_string())?.stdout).unwrap_or_default();
         let domain = format!("gui/{}", uid.trim());
@@ -366,7 +397,7 @@ fn service(on: bool) -> Result<String, String> {
              <key>ProgramArguments</key><array><string>{}</string><string>serve</string></array>\
              <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>{}\
              <key>StandardOutPath</key><string>{}</string><key>StandardErrorPath</key><string>{}</string></dict></plist>\n",
-            exe.display(), pool::miner().map(|m| format!("<key>EnvironmentVariables</key><dict><key>TACIT_MINE</key><string>{m}</string></dict>")).unwrap_or_default(),
+            exe.display(), pool::env_miner().map(|m| format!("<key>EnvironmentVariables</key><dict><key>TACIT_MINE</key><string>{m}</string></dict>")).unwrap_or_default(),
             log.display(), log.display())).map_err(|e| e.to_string())?;
         if !sh("launchctl", &["bootstrap", &domain, &plist.to_string_lossy()]) {
             return Err(format!("launchctl could not load {}", plist.display()));
@@ -380,7 +411,7 @@ fn service(on: bool) -> Result<String, String> {
             return Ok("tacit-prover no longer starts at login".into());
         }
         let _ = std::fs::create_dir_all(unit.parent().unwrap());
-        let mine = pool::miner().map(|m| format!("Environment=TACIT_MINE={m}\n")).unwrap_or_default();
+        let mine = pool::env_miner().map(|m| format!("Environment=TACIT_MINE={m}\n")).unwrap_or_default();
         std::fs::write(&unit, format!("[Unit]\nDescription=tacit-prover\n\n[Service]\nExecStart={} serve\n{mine}Restart=always\n\n[Install]\nWantedBy=default.target\n", exe.display()))
             .map_err(|e| e.to_string())?;
         if !(sh("systemctl", &["--user", "daemon-reload"]) && sh("systemctl", &["--user", "enable", "--now", "tacit-prover"])) {
@@ -421,7 +452,7 @@ fn serve(client: sp1_sdk::blocking::CpuProver, pk: sp1_sdk::SP1ProvingKey, vkey:
             });
         }
     }
-    let state = Arc::new((Mutex::new(State { jobs, queue: VecDeque::new() }), Condvar::new()));
+    let state = Arc::new((Mutex::new(State { jobs, queue: VecDeque::new(), kick: false }), Condvar::new()));
 
     // One proof at a time: a second would double the memory and halve each one's speed.
     {
@@ -430,17 +461,20 @@ fn serve(client: sp1_sdk::blocking::CpuProver, pk: sp1_sdk::SP1ProvingKey, vkey:
             let (id, stdin) = {
                 let (m, cv) = &*state;
                 let mut s = m.lock().unwrap();
-                // With TACIT_MINE set, a minute with nothing of its own to prove is spent on the proof pool, one job at a time; a
-                // proof asked for meanwhile waits for that one to finish.
-                let mut idle = 0;
+                // While mining, a minute with nothing of its own to prove is spent on the proof pool, one job at a time, and the
+                // next job is leased as soon as one is proved; a proof asked for meanwhile waits for that one to finish. Mining
+                // switched on from the page starts at once.
+                let mut mined = false;
                 while s.queue.is_empty() {
-                    let (g, t) = cv.wait_timeout(s, std::time::Duration::from_secs(60)).unwrap();
+                    let wait = if mined || std::mem::take(&mut s.kick) { 1 } else { 60 };
+                    let (g, t) = cv.wait_timeout(s, std::time::Duration::from_secs(wait)).unwrap();
                     s = g;
-                    idle = if t.timed_out() { idle + 1 } else { 0 };
-                    if idle > 0 && s.queue.is_empty() {
+                    let kick = std::mem::take(&mut s.kick);
+                    mined = false;
+                    if (t.timed_out() || kick) && s.queue.is_empty() {
                         if let Some(miner) = pool::miner() {
                             drop(s);
-                            pool::mine_one(&client, &pk, &miner);
+                            mined = pool::mine_one(&client, &pk, &miner);
                             s = m.lock().unwrap();
                         }
                     }
@@ -520,7 +554,7 @@ fn handle(mut conn: TcpStream, state: &Arc<(Mutex<State>, Condvar)>, origins: &[
     match (method.as_str(), path) {
         ("GET", "/health") => {
             let s = state.0.lock().unwrap();
-            let busy = s.jobs.values().any(|j| j.status == "proving");
+            let busy = s.jobs.values().any(|j| j.status == "proving") || pool::NOW.lock().unwrap().is_some();
             let gpu = tacit_leafhash::device();
             reply(&mut conn, "200 OK", serde_json::json!({"ok": true, "vkey": vkey, "busy": busy, "queued": s.queue.len(), "gpu": gpu}).to_string())
         }
@@ -559,8 +593,42 @@ fn handle(mut conn: TcpStream, state: &Arc<(Mutex<State>, Condvar)>, origins: &[
                 }
             }
         }
+        // Mining as the page sees it: the address, on or off, the pool job being proved (its stage and an ETA) and how many
+        // this run has proved. POST {miner?, on} switches it, kept across restarts.
+        ("GET", "/mine") => reply(&mut conn, "200 OK", mine_json().to_string()),
+        ("POST", "/mine") => {
+            let v: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+            let Some(on) = v["on"].as_bool() else {
+                return reply(&mut conn, "400 Bad Request", r#"{"error":"on must be true or false"}"#.into());
+            };
+            if let Err(e) = pool::set(v["miner"].as_str(), on) {
+                return reply(&mut conn, "400 Bad Request", serde_json::json!({ "error": e }).to_string());
+            }
+            if on {
+                let (m, cv) = &**state;
+                m.lock().unwrap().kick = true;
+                cv.notify_one();
+            }
+            reply(&mut conn, "200 OK", mine_json().to_string())
+        }
         _ => reply(&mut conn, "404 Not Found", r#"{"error":"not found"}"#.into()),
     }
+}
+
+fn mine_json() -> serde_json::Value {
+    let set = pool::setting();
+    let miner = set.as_ref().and_then(|s| s["miner"].as_str().map(str::to_string)).or_else(pool::env_miner);
+    let job = pool::NOW.lock().unwrap().clone().map(|(id, t)| {
+        let mut o = serde_json::json!({ "id": id, "secs": t.elapsed().as_secs_f64().round() });
+        if let Some((stage, eta)) = progress::now(&store_dir()) {
+            o["stage"] = stage.into();
+            if let Some(eta) = eta {
+                o["eta"] = eta.round().into();
+            }
+        }
+        o
+    });
+    serde_json::json!({ "miner": miner, "on": pool::miner().is_some(), "job": job, "proved": pool::DONE.load(std::sync::atomic::Ordering::Relaxed) })
 }
 
 // The GPU leaf hash against SP1's own outer hasher on random rows of several widths, with timings.
