@@ -29,9 +29,10 @@ WORKDIR /app
 # program_vkey together.
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-# bitcoin_prove from v12: v8's with REFLECT_MAX_PRICE_PER_PGU read (the lane's price cap), built by build-reflection-prover from the
-# same pinned guests and checked to execute the reflection fixture exactly as v8's does.
-ARG PROVER_REFLECT_RELEASE=prover-bins-v12
+# bitcoin_prove from v14: v12's (v8's with REFLECT_MAX_PRICE_PER_PGU read) with the stdin mode the prover board's lane uses
+# (lib/btc-board.js) and BITCOIN_PROVE_MODES, built by build-reflection-prover (run 42098370134) from the same pinned guests and checked to
+# execute the reflection fixture exactly as v12's does. The relay asks the binary which modes it has before it uses the board.
+ARG PROVER_REFLECT_RELEASE=prover-bins-v14
 # eth_prove from its own release: v13, built by build-eth-prover (run 40340478253), with the stdin and finish modes the prover board's
 # lane uses (lib/eth-board.js): checked against the network's proof of request 0x9e732826 and against v8's eth_prove on live data (same
 # input, same public values). This tag and eth_prove's line in SHA256SUMS move together. The relay asks the binary which
