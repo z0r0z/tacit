@@ -104,3 +104,13 @@ test('the press reads the plan afresh, sends from the connected wallet, tells th
   assert.match(go, /UserStopped/, 'and a no is not an error');
   assert.match(fn('stepsClick'), /data-later-reclaim[\s\S]*laterReclaim\(rb\.dataset\.laterReclaim\)/);
 });
+
+test('removing a stopped swap whose deposit box may still hold ETH asks first, and says what is lost', () => {
+  assert.match(card, /stopped && p\.boxed && p\.boxIntent && !p\.reclaimedAt \? ' data-ask="1"' : ''\} aria-label="Remove"/, 'the x asks');
+  assert.match(card, /pl\?\.boxed && pl\.boxIntent && !pl\.reclaimedAt && pl\.state === 'stopped' \? 'Remove this swap\? Its deposit box may still hold ETH/, 'and the question names the box');
+});
+
+test('a deposit declined after USDT\'s allowance was reset to zero says so, not "nothing was sent"', () => {
+  const go = fn('laterGo');
+  assert.match(go, /stopped \? \(e\?\.zeroed \? `Your \$\{esc\(e\.zeroed\)\} allowance was set to zero; nothing else was sent\.` : 'Nothing was sent\.'\)/);
+});

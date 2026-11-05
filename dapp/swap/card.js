@@ -1469,7 +1469,7 @@ function depositSoon(q) {
   clearTimeout(depTimer);
   depTimer = setTimeout(ask, 0);
 }
-const ltLoad = () => (LTP ||= import('/swap/later.js?cb=007809a8').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o), now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
+const ltLoad = () => (LTP ||= import('/swap/later.js?cb=ceb9e446').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o), now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
 // what Swap privately starts from: the wallet's ETH, or a token the zap sells for the deposit's ETH (any listed token zQuoter routes, or TAC through
 // the Precision pool; WETH, tacUSD and tacBTC have their own ways in)
 const laterPay = (k) => isEth(k) || k === lc(R.TAC) || (isListed(k) && !tacitKey(k) && k !== lc(R.WETH));
@@ -1743,7 +1743,7 @@ async function laterGo() {
     const stopped = e instanceof UserStopped || e?.userStopped || e?.unlockCancelled;
     // a deposit that was sent and then failed to confirm is marked unsure by the steps: say so, so no second deposit is sent
     const unsure = !stopped && plans().some((x) => x.state === 'unsure' && Date.now() - x.at < 10 * 60e3);
-    say(stopped ? 'Nothing was sent.' : `${esc(e?.message || String(e))}${unsure ? ' It may have been sent: check the steps below before depositing again.' : ''}`, stopped ? '' : 'err', true);
+    say(stopped ? (e?.zeroed ? `Your ${esc(e.zeroed)} allowance was set to zero; nothing else was sent.` : 'Nothing was sent.') : `${esc(e?.message || String(e))}${unsure ? ' It may have been sent: check the steps below before depositing again.' : ''}`, stopped ? '' : 'err', true);
   }
   finally { S.busy = false; pageSigner.pin = null; LATER.depStep = ''; depAsked = ''; changed(); paint(); paintSteps(); H.onDone?.(); readBalances().then(paintSides, () => {}); }
   if (moved) requote(true);
@@ -1867,7 +1867,7 @@ function paintSteps() {
     const bx = BOXES[p.id], back = stopped && p.boxed && p.boxIntent && !p.reclaimedAt && bx?.wei > 0n && chainNow() > Number(p.boxIntent.deadline)
       ? `<div class="cta"><button type="button" class="btn" data-later-reclaim="${id}">Send ${esc(tidy(amtFmt(bx.wei, 18)))} ETH back</button><small>It goes to ${esc(shortAddr(String(p.boxIntent.refund)))}, an address only your key controls, where the pool’s keeper turns it into private ETH. Your wallet pays the gas.</small></div>` : '';
     const note = p.err && !done ? `<p class="note ${stopped || depDoubt || swapDoubt ? 'err' : 'warn'}" role="status">${esc(p.err)}${selfOk ? ` <button type="button" class="link" data-later-self="${id}">Send it from this wallet</button>` : ''}</p>` : '';
-    const x = done ? `<button type="button" class="x" data-later-forget="${id}" aria-label="Hide">×</button>` : stopped || held ? `<button type="button" class="x" data-later-forget="${id}" aria-label="Remove">×</button>`
+    const x = done ? `<button type="button" class="x" data-later-forget="${id}" aria-label="Hide">×</button>` : stopped || held ? `<button type="button" class="x" data-later-forget="${id}"${stopped && p.boxed && p.boxIntent && !p.reclaimedAt ? ' data-ask="1"' : ''} aria-label="Remove">×</button>`
       : waiting ? `<button type="button" class="x" data-later-forget="${id}" data-ask="1" aria-label="Remove this swap">×</button>` : '';
     const where = p.into ? `into your private ${p.sym}` : !pool ? `to ${p.toName || shortAddr(p.to)}` : p.dest.kind === 'tacit' ? `to ${p.dest.name || `tacit1…${String(p.dest.pubHex).slice(-6)}`}, privately` : 'to your private balance';
     const held_ = BigInt(p.depositWei || 0);
@@ -2021,7 +2021,7 @@ function stepsClick(e) {
   if (no) { delete LATER.offers[no.dataset.laterNo]; say(''); paintSteps(); }
   if (c) laterCheck(c.dataset.laterCheck);
   if (s) laterOffer(s.dataset.laterSelf, 'self');
-  if (f && (!f.dataset.ask || confirm((() => { const pl = plans().find((p) => p.id === f.dataset.laterForget); return pl?.held ? 'Remove this plan? The balance stays in the pool, yours.' : pl?.hop ? `Remove this plan? Its deposit stays in your private ${pl.hop.sym} balance.` : 'Remove this plan? Its deposit stays in your private ETH balance, on the private ETH page.'; })()))) { try { localStorage.setItem(PLANS_KEY, JSON.stringify(plans().filter((p) => p.id !== f.dataset.laterForget))); } catch { } paintSteps(); }
+  if (f && (!f.dataset.ask || confirm((() => { const pl = plans().find((p) => p.id === f.dataset.laterForget); return pl?.boxed && pl.boxIntent && !pl.reclaimedAt && pl.state === 'stopped' ? 'Remove this swap? Its deposit box may still hold ETH, and this record is what sends it back from here. Removing it means that can no longer be done on this page.' : pl?.held ? 'Remove this plan? The balance stays in the pool, yours.' : pl?.hop ? `Remove this plan? Its deposit stays in your private ${pl.hop.sym} balance.` : 'Remove this plan? Its deposit stays in your private ETH balance, on the private ETH page.'; })()))) { try { localStorage.setItem(PLANS_KEY, JSON.stringify(plans().filter((p) => p.id !== f.dataset.laterForget))); } catch { } paintSteps(); }
 }
 
 // ── out of the Pay pool: what a pool holds for this key, swapped (or paid) out to an address ──────────────────────────────────────────────────

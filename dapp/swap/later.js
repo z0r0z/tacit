@@ -204,6 +204,11 @@ export async function routeFrom({ ethCall, venues, tokenIn, token, amount, to, s
   return { ...q, callData: data, standData: q.callData, deadline: dl };
 }
 const declined = (e) => e?.code === 4001 || e?.userStopped || e?.name === 'UserStopped' || /reject|denied|cancel/i.test(String(e?.message || ''));
+// USDT's allowance is set to zero before it is raised, a transaction of its own: an error from the step after it says that was sent (`zeroed`, for a page that words a decline itself).
+const afterReset = (e) => {
+  try { if (e && typeof e === 'object') { e.zeroed = 'USDT'; if (typeof e.message === 'string' && !/allowance was set to zero/.test(e.message)) e.message += ' Your USDT allowance was set to zero first; nothing else was sent.'; } } catch { /* a frozen error keeps its words */ }
+  return e;
+};
 // `fn` called one at a time, in the order asked: the prover holds a wasm heap for each thread it proves with, so two proofs at once slow each other and
 // can run a small device out of memory.
 export function oneAtATime(fn) {
@@ -444,10 +449,13 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
         } catch (e) { if (declined(e)) throw e; }
       }
     }
-    if (acc.allowed > 0n && lc(token) === USDT) { onStep('reset the allowance'); await mined(await signer.send({ to: token, data: encApprove(router, 0n), value: 0n })); }
-    if (signer.batch && signer.canBatch && await Promise.resolve(signer.canBatch()).catch(() => false)) return { kind: 'batch', token };
-    onStep('approve');
-    await mined(await signer.send({ to: token, data: encApprove(router, amount), value: 0n }));
+    let zeroed = false;
+    if (acc.allowed > 0n && lc(token) === USDT) { onStep('reset the allowance'); await mined(await signer.send({ to: token, data: encApprove(router, 0n), value: 0n })); zeroed = true; }
+    try {
+      if (signer.batch && signer.canBatch && await Promise.resolve(signer.canBatch()).catch(() => false)) return { kind: 'batch', token };
+      onStep('approve');
+      await mined(await signer.send({ to: token, data: encApprove(router, amount), value: 0n }));
+    } catch (e) { throw zeroed ? afterReset(e) : e; }
     return { kind: 'allowance' };
   }
   // The token pools a swap here has gone through, for the front page (TOKEN_POOLS_KEY).
@@ -492,7 +500,9 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
     }
     const ask = approvals(token, amount, acc.allowed);
     if (signer.batch && signer.canBatch && await Promise.resolve(signer.canBatch()).catch(() => false)) return { kind: 'allowance', before: ask };
-    for (const c of ask) { onStep(c.data === encApprove(ZAP, 0n) ? 'reset the allowance' : 'approve'); await mined(await signer.send(c)); }
+    let zeroed = false;
+    try { for (const c of ask) { const reset = c.data === encApprove(ZAP, 0n); onStep(reset ? 'reset the allowance' : 'approve'); await mined(await signer.send(c)); if (reset) zeroed = true; } }
+    catch (e) { throw zeroed ? afterReset(e) : e; }
     return { kind: 'allowance' };
   }
 
@@ -539,7 +549,9 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
     try {
       plan.depositTx = await w.deposit({ amount: BigInt(depositWei), selfCall, onStep, readAt }).catch(async (e) => {
         if (!e?.noBatch || !batched) throw e;
-        for (const c of batched.calls) { onStep(c.data === encApprove(ZAP, 0n) ? 'reset the allowance' : 'approve'); await mined(await signer.send(c)); }
+        let zeroed = false;
+        try { for (const c of batched.calls) { const reset = c.data === encApprove(ZAP, 0n); onStep(reset ? 'reset the allowance' : 'approve'); await mined(await signer.send(c)); if (reset) zeroed = true; } }
+        catch (x) { throw zeroed ? afterReset(x) : x; }
         return w.deposit({ amount: BigInt(depositWei), selfCall: batched.alone, onStep });
       });
       plan.state = 'waiting'; plan.depositedAt = Date.now(); plan.err = null;

@@ -57,3 +57,39 @@ test('a deposit that did not go through still stops the plan, and one in doubt s
   await assert.rejects(b.L.start(args), /socket hang up/);
   assert.strictEqual(b.L.plans()[0].state, 'unsure');
 });
+
+// USDT's allowance is set to zero before it is raised, a transaction of its own: an error from the step after it says that reset was sent.
+const USDT = '0xdac17f958d2ee523a2206206994597c13d831ec7';
+const multicallOf = (vals) => '0x' + w32(32) + w32(vals.length) + vals.map((_, i) => w32(vals.length * 32 + i * 128)).join('') + vals.map((v) => w32(1) + w32(64) + w32(32) + w32(v)).join('');
+function approving({ token, allowed, failAt }) {
+  const mem = new Map(), store = { getItem: (k) => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, String(v)) }, sent = [];
+  const call = async (to) => (String(to).toLowerCase() === '0xca11bde05977b3631167028862be2a173976ca11' ? multicallOf([2n ** 200n, allowed, 0n, 0n]) : '0x');
+  const signer = {
+    address: PAYER, receipt: async () => ({ status: '0x1' }),
+    send: async (tx) => { sent.push(tx); if (sent.length === failAt) throw Object.assign(new Error('User rejected the request.'), { code: 4001 }); return HASH; },
+  };
+  const pool = { sync: async () => ({ leaves: 10, balance: 0n }), deposit: async () => HASH };
+  const L = makeLater({ keyHex: async () => '11'.repeat(32), signer, ethCall: call, store, walletOf: async () => pool, prove: async () => ({}), chain: { chainId: 1, rpc: ['http://127.0.0.1:1'] } });
+  return { L, sent, hop: { ...HOP, token } };
+}
+
+test('a decline after USDT\'s allowance was reset says the reset was sent', async () => {
+  const { L, sent, hop } = approving({ token: USDT, allowed: 5n, failAt: 2 });
+  const err = await L.start({ ...args, hop, pay: { sym: 'USDT', dec: 6 } }).catch((e) => e);
+  assert.strictEqual(sent.length, 2, 'the reset went, the raise was asked for and refused');
+  assert.strictEqual(err.zeroed, 'USDT');
+  assert.match(err.message, /allowance was set to zero first; nothing else was sent/);
+  assert.match(err.message, /rejected/, 'and what it was still says what it was');
+  assert.strictEqual(L.plans().length, 0, 'no plan: nothing was deposited');
+});
+
+test('a reset that is declined itself sent nothing, and a token with no reset has nothing to add', async () => {
+  const a = approving({ token: USDT, allowed: 5n, failAt: 1 });
+  const e1 = await a.L.start({ ...args, hop: a.hop, pay: { sym: 'USDT', dec: 6 } }).catch((e) => e);
+  assert.strictEqual(e1.zeroed, undefined);
+  assert.doesNotMatch(e1.message, /set to zero/);
+  const b = approving({ token: USDC, allowed: 5n, failAt: 1 });
+  const e2 = await b.L.start({ ...args, hop: b.hop, pay: { sym: 'USDC', dec: 6 } }).catch((e) => e);
+  assert.strictEqual(e2.zeroed, undefined);
+  assert.strictEqual(b.sent.length, 1, 'USDC is raised straight away, with no reset');
+});
