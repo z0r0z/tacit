@@ -84,7 +84,7 @@ and the swap out with the real keeper and the live relay and router contracts).
   it is left where it is, and is the price of this way in. Reclaim is off until it is set.
 - **A box the keeper never completes** (down past its deadline, a gas rise above the keeper's 1.5 times margin) is sent back whole by the same reclaim, to the
   refund address, when that keeper is up again with its store. The plan in the browser keeps the box's intent too (`boxIntent`, `boxDeadline`), which is all
-  the router's `reclaimDeposit` needs from anyone after the deadline, but no screen sends it yet. With the keeper's store and the browser's plan both lost the
+  the router's `reclaimDeposit` needs from anyone after the deadline: a stopped swap's card offers it (later.js `reclaimBox`, sent from the connected wallet, which pays the gas). With the keeper's store and the browser's plan both lost the
   ETH stays in the box; deriving the intent's nonce from the key would make it recoverable from the key alone, as the rest of the pool is. Not done.
 - The relay's way pays an address. A swap into TAC that ends in the key's own private balance or at a Tacit address is still the wallet's own deposit (it hands the
   key's account its gas), so a wallet with no ETH is told what is missing.

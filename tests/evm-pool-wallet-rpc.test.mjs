@@ -782,6 +782,46 @@ await check('a queued spend that never lands (a reservation that lapses) is wait
   assert.ok(waits.reduce((a, b) => a + b, 0) >= 90_000, 'waited past the time a reservation is held');
 });
 
+await check('a withdrawal gives the leaves of the notes it spends before it is proved, and its hash before it waits for the block', async () => {
+  const s = spender(25), order = [];
+  s.reserve = () => slotOf(s.pool);
+  s.relay = () => { order.push('relay'); return [200, { txHash: s.spend().tx }]; };
+  s.make();
+  await s.ready();
+  const leaves = s.w.notes().map((n) => n.index);
+  assert.ok(leaves.length === 1);
+  let h;
+  await quickly(async () => { h = await s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay', onSend: (ins) => order.push(['send', ins, s.proofs]), onSent: (x) => order.push(['sent', x]) }); });
+  assert.deepEqual(order[0], ['send', leaves, 0], 'the notes it is built from, before the proof is made');
+  assert.equal(order[1], 'relay');
+  assert.deepEqual(order[2], ['sent', h], 'the hash the relay gave');
+  assert.equal(order.length, 3);
+});
+
+await check('a withdrawal the relay refuses gave its notes and no hash; one whose notes are spent already gave neither; a callback that throws changes nothing', async () => {
+  const s = spender(26), order = [];
+  s.reserve = () => slotOf(s.pool);
+  s.relay = () => [500, { error: 'internal error' }];
+  s.make();
+  await s.ready();
+  await quickly(() => assert.rejects(s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay', onSend: (ins) => order.push(['send', ins]), onSent: (x) => order.push(['sent', x]) }), /internal error/));
+  assert.deepEqual(order, [['send', s.w.notes().map((n) => n.index)]]);
+  const t = spender(27), seen = [];
+  t.reserve = () => { t.spend(); return [400, { error: 'a note in this spend is already spent' }]; };
+  t.make();
+  await t.ready();
+  await quickly(() => assert.rejects(t.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay', onSend: (x) => seen.push(x), onSent: (x) => seen.push(x) }), isSpent));
+  assert.deepEqual(seen, [], 'spent before it was proved: nothing to report');
+  const u = spender(28);
+  u.reserve = () => slotOf(u.pool);
+  u.relay = () => [200, { txHash: u.spend().tx }];
+  u.make();
+  await u.ready();
+  let h;
+  await quickly(async () => { h = await u.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay', onSend: () => { throw new Error('storage is full'); }, onSent: () => { throw new Error('storage is full'); } }); });
+  assert.match(h, /^0x[0-9a-f]{64}$/, 'a caller that cannot keep what it was told does not stop the payout');
+});
+
 await check('a note the relay finds spent on chain: nothing is proved, the wallet says so, and only a wallet that cannot see that spend rebuilds', async () => {
   const s = spender(23);
   s.reserve = () => { s.spend(); return [400, { error: 'a note in this spend is already spent' }]; };

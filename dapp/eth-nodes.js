@@ -68,7 +68,9 @@ export function onMainnet(get) {
     if (!s) {
       s = { ok: false };
       seen.set(w, s);
-      const look = () => Promise.resolve(w.request({ method: 'eth_chainId' })).then((c) => { s.ok = Number(c) === 1; }).catch(() => { s.ok = false; });
+      // off while it is read again, and only the latest read counts: an answer about the chain left behind must not turn it back on
+      let n = 0;
+      const look = () => { const my = ++n; s.ok = false; return Promise.resolve(w.request({ method: 'eth_chainId' })).then((c) => { if (my === n) s.ok = Number(c) === 1; }).catch(() => { if (my === n) s.ok = false; }); };
       look();
       try { w.on?.('chainChanged', look); } catch { /* a provider without events */ }
     }
@@ -81,9 +83,10 @@ export function connectedInjected() {
   if (!w?.request) return null;
   if (!injected) {
     injected = { ok: false };
-    const look = () => Promise.all([w.request({ method: 'eth_accounts' }), w.request({ method: 'eth_chainId' })])
-      .then(([a, c]) => { injected.ok = Array.isArray(a) && a.length > 0 && Number(c) === 1; })
-      .catch(() => { injected.ok = false; });
+    let n = 0;
+    const look = () => { const my = ++n; injected.ok = false; return Promise.all([w.request({ method: 'eth_accounts' }), w.request({ method: 'eth_chainId' })])
+      .then(([a, c]) => { if (my === n) injected.ok = Array.isArray(a) && a.length > 0 && Number(c) === 1; })
+      .catch(() => { if (my === n) injected.ok = false; }); };
     look();
     try { w.on?.('accountsChanged', look); w.on?.('chainChanged', look); } catch { /* a provider without events */ }
   }

@@ -927,7 +927,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
   async function transact(args) {
     try { return await transactOnce(args); } finally { for (const n of args.ins) claimed.delete(n.nf); }
   }
-  async function transactOnce({ ins, outs, extAmount = 0n, recipient = ZERO, q = null, extra = {}, selfCall = null, ahead = null, onStep = () => {} }) {
+  async function transactOnce({ ins, outs, extAmount = 0n, recipient = ZERO, q = null, extra = {}, selfCall = null, ahead = null, onStep = () => {}, onSend = null, onSent = null }) {
     // A spend's outputs take one-time keys the sender can derive again (paymentKey); a deposit's are random.
     const attempt = ins.length ? nextAttempt(ins[0].nf) : 0;
     const eOf = (k) => (ins.length ? paymentKey(keys, { chainId: chain.chainId, nf: BigInt(ins[0].nf), k, attempt }) : undefined);
@@ -956,6 +956,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
         if (r === 'tail') tree = (await queueTail(false)) || tree;
         else if (r) { slot = r.id; tree = r.tree; }
       } else if (q && inserts) tree = (await queueTail(true)) || tree;
+      try { onSend?.(ins.map((n) => n.index)); } catch { }       // the leaves of the notes this spend is built from, given before it is proved and sent, for a caller that must tell later whether it went
       let tx = !round && made && made.root === tree.root && made.size === tree.size ? made.tx : null;
       if (!tx) {
         try { tx = await proveTx({ tree, inputs, sealed, extAmount, recipient, relayer, fee, onStep }); } catch (e) { if (slot) await releaseSlot(slot); throw e; }
@@ -1001,6 +1002,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
         }
         if (!h) { treeRefused = true; continue; }
       }
+      try { onSent?.(h); } catch { }                              // (the hash, before the wait for the block)
       for (const n of ins) pending.add(n.nf);
       onStep('waiting for it to be mined');
       if (await landed(h, ins.map((n) => n.nf), q ? chain.rpc : signer?.rpc || chain.rpc)) {
@@ -1113,7 +1115,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
     watchReceive: (index = RECEIVE_INDEX) => keeperPost('/receive', { chainId: chain.chainId, npk: receiveKeys(zk, keys.zkWallet, index).npk.toString(), feeBps: RECEIVE_FEE_BPS }),
 
     // Pays `amount` wei (or 'max') out of the pool to `to` (0x…). → tx hash.
-    async withdraw({ to, amount, via = null, maxFee = null, onStep = () => {} }) {
+    async withdraw({ to, amount, via = null, maxFee = null, onStep = () => {}, onSend = null, onSent = null }) {
       if (!/^0x[0-9a-fA-F]{40}$/.test(String(to)) || BigInt(to) === 0n) throw new Error('enter a 0x address');
       if (amount !== 'max' && BigInt(amount) <= 0n) throw new Error('enter an amount');
       await sync();
@@ -1121,7 +1123,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
       const fee = q ? BigInt(q.fee) : 0n, a = amount === 'max' ? maxOf(fee) : BigInt(amount);
       const ins = await prepare(a + fee, q, onStep);
       const change = ins.reduce((s, n) => s + BigInt(n.v), 0n) - a - fee;
-      return transact({ ins, outs: [change > 0n ? { to: self, value: change } : null, null], extAmount: -a, recipient: to, q, onStep });
+      return transact({ ins, outs: [change > 0n ? { to: self, value: change } : null, null], extAmount: -a, recipient: to, q, onStep, onSend, onSent });
     },
 
     // Watches receive boxes through `index`, e.g. a payment-request box a payment reached on another chain, so a payment

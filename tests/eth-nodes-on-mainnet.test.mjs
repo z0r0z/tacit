@@ -39,5 +39,19 @@ await test('as a node, the wallet takes the reads it is asked for only while it 
   assert.equal(await node.send('eth_blockNumber', []), '0x1');
 });
 
+await test('a chain read that was asked before a change and answers after it does not switch the wallet back on', async () => {
+  const replies = [], fns = [];
+  const w = { request: ({ method }) => (method === 'eth_chainId' ? new Promise((r) => replies.push(r)) : Promise.resolve('0x1')), on: (e, f) => { if (e === 'chainChanged') fns.push(f); } };
+  const get = onMainnet(() => w);
+  get();                                          // the first read is asked: the wallet is on mainnet, but has not said so
+  fns.forEach((f) => f());                        // it moves to Base: the second read is asked
+  assert.equal(get(), null, 'off while it is read again');
+  replies[1]('0x2105'); await tick();             // Base answers first
+  replies[0]('0x1'); await tick();                // the old answer (mainnet) arrives late
+  assert.equal(get(), null, 'the late answer about the chain it left is dropped');
+  fns.forEach((f) => f()); replies[2]('0x1'); await tick();
+  assert.equal(get(), w, 'back on mainnet, it is a node again');
+});
+
 console.log(failed ? `\n${failed} failed` : '\nall eth-nodes onMainnet checks passed');
 process.exit(failed ? 1 : 0);
