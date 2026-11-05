@@ -898,8 +898,9 @@ function shareLink() {
 // The address bar follows the same link (replaced in place, so no history entry): copying it from there works as well as the icon.
 const shareSync = () => {
   const b = $('#copy'), u = shareLink();
-  if (b) b.hidden = !u;
-  if (!b || !history.replaceState) return;
+  if (b) b.hidden = !u || !!FLOW;                                            // (its link is a swap's: it would open Swap, not Shield or Withdraw)
+  // (in Shield and Withdraw the page keeps the address: it names the tab, not this card's pair)
+  if (!b || !history.replaceState || FLOW) return;
   try {
     const at = location.pathname + location.search + location.hash, cur = new URL(location.href);
     let want;

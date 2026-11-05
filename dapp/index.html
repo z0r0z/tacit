@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-gIjRDMc4sWEWE8olWvDRS60QTRp1dx+7mC7lqBhVPpk=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-jtQolgf3k9sjkCHBEHLlQQwDg1OGprmfkAoVCT8iTAs=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -64,7 +64,7 @@
 <link rel="modulepreload" href="/bridge-tick.js?cb=b9adb91d">
 <link rel="modulepreload" href="/tacit-session.js?cb=a2d34bb2">
 <link rel="modulepreload" href="/activity.js?cb=6baa925d">
-<link rel="modulepreload" href="/swap/card.js?cb=75525fbf">
+<link rel="modulepreload" href="/swap/card.js?cb=08aae1e1">
 <link rel="modulepreload" href="/trade/wallet.js?cb=88b623b8">
 <link rel="modulepreload" href="/trade/util.js?cb=e8317464">
 <link rel="modulepreload" href="/trade/rpc.js?cb=f575ef91">
@@ -16609,7 +16609,7 @@ function hxRecall() {
       if (HX_SEND.some(([k]) => k === m.send)) { HX.send = m.send; HX.sendPick = !!m.sendPick; }
       // the Shield tab, kept from before the Swap card: the card opens on the way it showed, or the Bridge tab on a way that crosses
       if (m.tab === 'private' && HX_BR[HX.sf] === HX.sd) { HX.tab = 'bridge'; HX.br = HX.sf; }
-      else if (m.tab === 'private') { HX.tab = 'swap'; HX.swq = hxMoveAsk(HX.sf, HX.sd).toString(); }
+      else if (m.tab === 'private') { HX.tab = 'swap'; HX.flow = hxFlowOf(hxMoveAsk(HX.sf, HX.sd)); if (!HX.flow) HX.swq = hxMoveAsk(HX.sf, HX.sd).toString(); }
     }
     hxNorm();
     const a = JSON.parse(sessionStorage.getItem(HX_AMT) || 'null');
@@ -16657,14 +16657,18 @@ function swcPace(id) {
   if (b) b.dataset.pace = id;
   else q.insertAdjacentHTML('afterend', html`<div class="pace" data-card="1" data-pace="${id}"><div class="actr-bar" role="progressbar" aria-label="How far along" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i style="width:0%"></i></div><span></span></div>`.s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=75525fbf').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=08aae1e1').catch((e) => { SWC.p = null; throw e; }));
 // the card held to the tab's flow; back on the Swap tab it opens on the swap it showed there
 function swcFlow() {
   hxPathPaint();
   if (!SWC.card || SWC.card.flow === HX.flow) return;
   hxNextPaint();
   SWC.card.setFlow(HX.flow);
-  if (!HX.flow && !SWC.ask) SWC.ask = new URLSearchParams(HX.swq);
+  // back on Swap: its pair, with the amount this visit kept for it
+  if (!HX.flow && !SWC.ask) {
+    SWC.ask = new URLSearchParams(HX.swq);
+    try { const a = JSON.parse(sessionStorage.getItem(HX_AMT) || 'null'); if (a?.sig === 'swap' && /^\d{1,12}(\.\d{1,18})?$/.test(a.amt)) SWC.ask.set('amt', a.amt); } catch { }
+  }
 }
 // Shield and Withdraw: where the coin comes from or goes to, the wallet (the Swap card) or Bitcoin (the Bridge tab's crossing that way)
 function hxWhereSync() {
