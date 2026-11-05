@@ -28,6 +28,7 @@ k256 = { version = "0.13", features = ["ecdh"] }
 aes-gcm = "0.10"
 sha2 = "0.10"
 rand = "0.8"
+tiny-keccak = { version = "2", features = ["keccak"] }   # salt.rs: deploy salts ground between batches in community mode
 
 [profile.release]
 opt-level = 3

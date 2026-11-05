@@ -29,13 +29,16 @@
 // COMMUNITY_MINER=0x<address> (community mode): no token. The worker races the board's public Bitcoin-state batches through the open
 // community routes (POST /prover/community/claim { miner, programs: ["btc-state"] } and /prover/community/result { miner, jobId, ... }),
 // and each batch the relay takes earns that address the board's points for it (TAC from the points service). The proof pool and the
-// warm-up pings, which are for Tacit's own tokens, are off; BTC_STATE is on.
+// warm-up pings, which are for Tacit's own tokens, are off; BTC_STATE is on. Between batches its spare CPU cores grind deploy salts for
+// the same address (salt.rs; SALT_THREADS, half the cores by default, 0 is off). Tacit's own box grinds for the bank alone, earning
+// nothing, when SALT_MINER names the house address (the deployer).
 // RELOAD_FLAG (default /workspace/worker.reload): when that file exists and no job is in hand, the worker removes it and
 // exits 0, so the loop around it starts a fresh worker (and GPU server) with whatever binary and env are now in place,
 // never in the middle of a proof.
 //
 // The prover client and the proving key are built once: the cost of a proof on a warm GPU is the proof, not the start-up.
 
+mod salt;
 use std::time::{Duration, Instant};
 
 use aes_gcm::{aead::{Aead, KeyInit, Payload}, Aes256Gcm, Nonce};
@@ -272,6 +275,9 @@ fn main() {
     // ended from outside: a watchdog thread sees a job in hand for longer than JOB_TIMEOUT_SECS (15 minutes by default, three times a
     // long op) and exits the process, so the loop around it starts a fresh worker and GPU server and the job goes back to the board.
     let job_since = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    // Salts between jobs: a community worker for its address; Tacit's own box for the bank alone, when SALT_MINER names the house address.
+    if let Some(m) = &community { salt::start(&base, m, &name, job_since.clone(), false); }
+    else if let Some(m) = std::env::var("SALT_MINER").ok().map(|a| a.trim().to_lowercase()).filter(|a| a.len() == 42 && a.starts_with("0x")) { salt::start(&base, &m, &name, job_since.clone(), true); }
     // The limit for the job in hand: JOB_TIMEOUT_SECS, or BTC_JOB_TIMEOUT_SECS while a Bitcoin-state batch is proved.
     let default_limit = env_or("JOB_TIMEOUT_SECS", "900").parse::<u64>().unwrap_or(900);
     let job_limit = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(default_limit));

@@ -4641,6 +4641,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sp1-sdk",
+ "tiny-keccak",
  "ureq",
 ]
 

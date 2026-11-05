@@ -78,3 +78,20 @@ test('config: env sets the share size, the points and the bank; nonsense keeps t
   assert.equal(saltPoolConfig({ SALT_MIN_BITS: '2' }).minBits, SALT_POOL.minBits);
   assert.equal(saltPoolConfig({ POINTS_SALT_DAILY: 'lots' }).pointsPerDay, SALT_POOL.pointsPerDay);
 });
+
+test('Tacit\'s own machines bank what they find and never share the day\'s points', async () => {
+  let t = 300 * DAY + 1000;
+  const kv = kvStore(), pool = makeSaltPool({ kv, cfg: { ...SALT_POOL, minBits: 8, bankBits: 9, sendEveryMs: 0, pointsPerDay: 1000, house: [SALT_POOL.deployer] }, now: () => t });
+  const h = grind(300, 9), c = grind(300, 8);
+  const r = await pool.submit({ miner: SALT_POOL.deployer, salts: [h.salt], client: 'house' });
+  assert.equal(r.body.accepted, 1);
+  assert.equal(r.body.today, null);
+  await pool.submit({ miner: A, salts: [c.salt], client: 'c1' });
+  t += DAY;
+  const credits = (await pool.credits(300)).body.miners;
+  assert.deepEqual(credits.map((m) => m.miner), [A], 'only the community address shares the day');
+  assert.equal(credits[0].points, 1000);
+  const bank = (await pool.bank()).body.bank;
+  assert.ok(bank.some((b) => b.miner === SALT_POOL.deployer && b.house === true), 'the house salt is banked, marked');
+  assert.equal(saltPoolConfig({}).house[0], SALT_POOL.deployer, 'the deployer is the house by default');
+});

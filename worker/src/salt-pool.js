@@ -9,7 +9,7 @@
 // once, for the first address that sends it. A day's points (pointsPerDay) are shared between the day's miners by weight once the day is
 // over (GET /prover/salt/credits, which the points service pays from beside the proof pool's tally): more machines share the same points,
 // so what a day costs never grows with them. Salts at least bankBits good are kept (GET /prover/salt/bank): the addresses Tacit deploys
-// its next contracts to.
+// its next contracts to. Tacit's own machines (SALT_HOUSE, the deployer by default) send only salts for the bank and never share the points.
 //
 // Storage (KV): sl:seen:<salt> (kept 3 days), sl:m:<day>:<miner> ({ shares, weight, best }), sl:miners:<day> ([miner]), sl:bank (best first),
 // sl:rate:<client> (when it last sent).
@@ -41,6 +41,7 @@ export function saltPoolConfig(env = {}) {
     minBits: n(env.SALT_MIN_BITS, SALT_POOL.minBits, 16, 64),
     pointsPerDay: n(env.POINTS_SALT_DAILY, SALT_POOL.pointsPerDay, 0, 1_000_000),
     bankBits: n(env.SALT_BANK_BITS, SALT_POOL.bankBits, 24, 96),
+    house: String(env.SALT_HOUSE || SALT_POOL.deployer).split(',').map((a) => a.trim().toLowerCase()).filter((a) => ADDR.test(a)),
   });
 }
 
@@ -80,6 +81,8 @@ export function makeSaltPool({ kv, cfg = SALT_POOL, now = () => Date.now(), lock
       const head = cfg.deployer.slice(2) + '00', days = [day % 65536, (day - 1 + 65536) % 65536];
       const rec = await read(`sl:m:${day}:${miner}`, { shares: 0, weight: 0, best: null });
       const wasNew = rec.shares === 0;
+      // Tacit's own machines (cfg.house, the deployer by default) bank what they find and earn nothing: they never share the day's points.
+      const house = (cfg.house || [SALT_POOL.deployer]).includes(miner);
       const rejected = [], banked = [];
       let accepted = 0, weight = 0;
       for (const raw of [...new Set(salts.map((s) => String(s).toLowerCase()))]) {
@@ -92,18 +95,20 @@ export function makeSaltPool({ kv, cfg = SALT_POOL, now = () => Date.now(), lock
         const w = 2 ** Math.min(bits - cfg.minBits, cfg.maxWeightBits);
         accepted++; weight += w;
         if (!rec.best || bits > rec.best.bits) rec.best = { address, bits };
-        if (bits >= cfg.bankBits) banked.push({ salt: raw, address, bits, miner, at: t });
+        if (bits >= cfg.bankBits) banked.push({ salt: raw, address, bits, miner, at: t, ...(house ? { house: true } : {}) });
       }
       if (accepted) {
-        rec.shares += accepted; rec.weight += weight;
-        await write(`sl:m:${day}:${miner}`, rec, cfg.daySecs);
-        if (wasNew) { const list = await read(`sl:miners:${day}`, []); if (!list.includes(miner)) { list.push(miner); await write(`sl:miners:${day}`, list, cfg.daySecs); } }
+        if (!house) {
+          rec.shares += accepted; rec.weight += weight;
+          await write(`sl:m:${day}:${miner}`, rec, cfg.daySecs);
+          if (wasNew) { const list = await read(`sl:miners:${day}`, []); if (!list.includes(miner)) { list.push(miner); await write(`sl:miners:${day}`, list, cfg.daySecs); } }
+        }
         if (banked.length) {
           const bank = [...await read('sl:bank', []), ...banked].sort((a, b) => b.bits - a.bits || a.at - b.at).slice(0, cfg.bankKeep);
           await write('sl:bank', bank);
         }
       }
-      return reply(200, { ok: true, accepted, weight, rejected, today: { shares: rec.shares, weight: rec.weight, best: rec.best } });
+      return reply(200, { ok: true, accepted, weight: house ? 0 : weight, rejected, today: house ? null : { shares: rec.shares, weight: rec.weight, best: rec.best } });
     });
   }
 
@@ -128,7 +133,7 @@ export function makeSaltPool({ kv, cfg = SALT_POOL, now = () => Date.now(), lock
       deployer: cfg.deployer, createx: cfg.createx, minBits: cfg.minBits, bankBits: cfg.bankBits, pointsPerDay: cfg.pointsPerDay, day,
       today: { miners: recs.length, shares: recs.reduce((s, r) => s + r.shares, 0), weight: recs.reduce((s, r) => s + r.weight, 0) },
       top: recs.sort((a, b) => b.weight - a.weight).slice(0, 20).map((r) => ({ miner: r.miner, shares: r.shares, weight: r.weight, best: r.best })),
-      bank: bank.slice(0, 10).map(({ address, bits, miner, at }) => ({ address, bits, miner, at })),
+      bank: bank.slice(0, 10).map(({ address, bits, miner, at, house }) => ({ address, bits, miner, at, ...(house ? { house: true } : {}) })),
       banked: bank.length,
     });
   }
