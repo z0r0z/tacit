@@ -1,9 +1,9 @@
 // /prove/: the network's blocks as they land, the proofs waiting and the provers making them, and this computer's own prover, started
 // and paused from here. The computer's tacit-prover (installed once with the line the page shows) answers on 127.0.0.1; the API's chain
-// (GET /chain/blocks) and proof pool, and the points service, say what the network did and what an address has made and been paid.
+// (GET /prover/blocks) and proof pool, and the points service, say what the network did and what an address has made and been paid.
 import { cleanAddress, proveCommand, utcDay, mineLines } from '/community-prove.js?cb=9c90fa04';
 import { localState, jobView, headline, isPhone } from '/prove/view.js?cb=f6efbcdd';
-import { short, hueOf, cells, opsText, tac, rewardWei, ago, took, fresh } from '/prove/chain.js?cb=1ddff79e';
+import { short, hueOf, cells, opsText, tac, rewardWei, ago, took, fresh } from '/prove/chain.js?cb=045857de';
 
 const API = 'https://api.tacit.finance', POINTS = 'https://tacit-points.onrender.com', LOCAL = 'http://127.0.0.1:47815';
 const SAVED_ADDR = 'tacit-prove-address';                          // shared with the keeper page's card
@@ -37,7 +37,7 @@ async function readRemote() {
 
 // The chain, read often: a new block lands at the front of the strip.
 async function readChain() {
-  const c = await get(`${API}/chain/blocks?limit=${SHOW}`);
+  const c = await get(`${API}/prover/blocks?limit=${SHOW}`);
   if (!c?.blocks) { $('#chain').hidden = !blocks.length; return; }
   const add = fresh(c.blocks, shownTop);
   if (!add.length && shownTop != null) return;

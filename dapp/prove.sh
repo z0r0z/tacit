@@ -14,9 +14,9 @@
 
 set -eu
 
-PIN_TAG=tacit-prover-v0.2.0
-PIN_MACOS_ARM64=98ea307b8bb36eda3546d9b6bf0d8b31fe5197f696cba524ba3c30224bd283f5
-PIN_LINUX_X86_64=1a9807db0b35a80b7dad0aca3478625484c7ed8d79074c9d0f7fc56bcc5e2ab1
+PIN_TAG=tacit-prover-v0.3.0
+PIN_MACOS_ARM64=6622f9bdd92d8ca26016f3788af88231e6384a45904f71880201f3fc13bd0466
+PIN_LINUX_X86_64=323a505372dabf957e44d864717ba2738c04e8b5d45eeb2f32d3a430c5e92919
 
 say() { printf '%s\n' "$*"; }
 warn() { printf 'note: %s\n' "$*" >&2; }

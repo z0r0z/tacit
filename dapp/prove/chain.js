@@ -1,4 +1,4 @@
-// The network view on /prove/, as words and shapes: a block from GET /chain/blocks (its height, its transaction, the notes it made,
+// The network view on /prove/, as words and shapes: a block from GET /prover/blocks (its height, its transaction, the notes it made,
 // the notes it spent, the deposits in it, and the community prover who proved one of its notes, if one did), the proofs a page reads from
 // GET /prover/pool/recent, and the reward a proof earns (its points times the most a point is paid). Nothing here reads the network.
 

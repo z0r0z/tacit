@@ -142,8 +142,8 @@ archive's sha256 is the pinned one, puts the program in `~/.tacit-prover/bin`, a
 again, it updates the program and keeps the address. Cutting a new release means `node tools/prove-pins.mjs tacit-prover-vX.Y.Z`, which writes its sums into the script.
 
 - **Needs:** about 8 GB of memory. The first proof downloads SP1's Groth16 circuit once, 6.2 GB (8.4 GB unpacked). A proof takes about 5 to 10 minutes on a Mac
-  with 16 GB or more (13 minutes measured on an 8 GB MacBook Air) and uses the processor while it runs, so a laptop does best plugged in. The program asks the pool
-  once a minute and makes one proof at a time.
+  with 16 GB or more (13 minutes measured on an 8 GB MacBook Air) and uses the processor while it runs, so a laptop does best plugged in. The program makes one proof
+  at a time and asks the pool for the next as soon as one is done (once a minute while the pool is empty).
 - **Costs:** nothing else. No key and no ETH are involved and nothing is signed; the address only receives points. A proof it cannot make is handed back, unpaid.
 - **Earns:** 20 points a proof, the first 30 of a day. Once the day is over, the points service shares that day's TAC between the provers by points, no point
   paid more than a cap, so a proof pays up to 20 times the cap. [`GET https://tacit-points.onrender.com/mine`](https://tacit-points.onrender.com/mine) gives the

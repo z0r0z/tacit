@@ -59,7 +59,7 @@ async function open(browser, local, { phone = false } = {}) {
   await page.route('https://api.tacit.finance/**', (route) => {
     const u = new URL(route.request().url());
     if (u.pathname === '/prover/pool') return json(route, { queued: 3, leased: 2, doneToday: 41, minersToday: 2, top: [{ miner: ADDR, proofs: 4 }, { miner: OTHER, proofs: 1 }], terms: { pointsPerProof: 20, proofsPerMinerDay: 30 } });
-    if (u.pathname === '/chain/blocks') return json(route, { head: { height: chain.blocks[0].height, hash: chain.blocks[0].hash }, blocks: chain.blocks });
+    if (u.pathname === '/prover/blocks') return json(route, { head: { height: chain.blocks[0].height, hash: chain.blocks[0].hash }, blocks: chain.blocks });
     if (u.pathname === '/prover/pool/recent') return json(route, { proofs: [{ at: Date.now() - 120_000, miner: ADDR, points: 20, secs: 552 }] });
     if (u.pathname === '/prover/pool/credits') return json(route, { day, over: false, miners: [{ miner: ADDR, proofs: 4, points: 80 }] });
     return json(route, {}, 404);

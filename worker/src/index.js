@@ -652,7 +652,7 @@ const reverseBytes = b => { const r = new Uint8Array(b); r.reverse(); return r; 
 // caller (curl, another server) could already do. This is what lets a third-party page with no fixed
 // origin (an IPFS/web3-gateway-hosted frontend, e.g.) use the relay directly from a browser instead of
 // needing its own backend proxy or a per-deploy entry in ALLOWED_ORIGINS.
-const OPEN_ORIGIN_PATHS = new Set(['/stats', '/flow', '/relay/economics', '/bridge/recover', '/reflection/proof', '/confidential/submit', '/confidential/status', '/confidential/open', '/confidential/landed', '/confidential/quote', '/confidential/index', '/confidential/relay', '/reflection/dump', '/reflection/live', '/reflection/status', '/reflection/note-witness', '/reflection/burndep', '/reflection/eth-state/covers', '/reflection/eth-state/proof', '/reflection/open', '/reflection/open/job', '/reflection/landed', '/reflection/burndep-list', '/crossout/minted', '/farm/program', '/farm/health', '/prover/upload', '/prover/download', '/prover/board', '/prover/board/credits', '/prover/community/claim', '/prover/community/result', '/prover/pool', '/prover/pool/request', '/prover/pool/lease', '/prover/pool/hold', '/prover/pool/submit', '/prover/pool/result', '/prover/pool/credits', '/prover/pool/recent', '/chain/blocks', '/market/order', '/market/orders', '/market/done', '/market/proof', '/gas/order', '/gas/orders', '/gas/done', '/outpoints/classify']);
+const OPEN_ORIGIN_PATHS = new Set(['/stats', '/flow', '/relay/economics', '/bridge/recover', '/reflection/proof', '/confidential/submit', '/confidential/status', '/confidential/open', '/confidential/landed', '/confidential/quote', '/confidential/index', '/confidential/relay', '/reflection/dump', '/reflection/live', '/reflection/status', '/reflection/note-witness', '/reflection/burndep', '/reflection/eth-state/covers', '/reflection/eth-state/proof', '/reflection/open', '/reflection/open/job', '/reflection/landed', '/reflection/burndep-list', '/crossout/minted', '/farm/program', '/farm/health', '/prover/upload', '/prover/download', '/prover/board', '/prover/board/credits', '/prover/community/claim', '/prover/community/result', '/prover/pool', '/prover/pool/request', '/prover/pool/lease', '/prover/pool/hold', '/prover/pool/submit', '/prover/pool/result', '/prover/pool/credits', '/prover/pool/recent', '/prover/blocks', '/market/order', '/market/orders', '/market/done', '/market/proof', '/gas/order', '/gas/orders', '/gas/done', '/outpoints/classify']);
 function corsHeaders(env, reqOrigin, openOrigin) {
   const list = (env.ALLOWED_ORIGINS || '*').split(',').map(s => s.trim());
   const allow = openOrigin || list.includes('*') ? '*' : (list.includes(reqOrigin) ? reqOrigin : list[0]);
@@ -3789,7 +3789,7 @@ async function handleProverBoard(req, env, url, cors) {
 // path answers any origin: the pages are on tacit.finance and the miners anywhere.
 const POOL_SP1_VERIFIER = '0xb69f2584CBcFf99a58C4e7002E8b89Af54a6f4e2';   // the pool's Groth16 verifier (SP1 v6)
 const POOL_PROGRAM_VKEY = '0x006cd47fd23937a6d247696cace28c22d2c6a8280447e6ac45a3571de232d6e3'; // the settle guest the pool pins
-// GET /chain/blocks?limit=&before=: the pool's history as blocks (tacit-chain.js), newest first, with the tip's height and hash.
+// GET /prover/blocks?limit=&before=: the pool's history as blocks (tacit-chain.js), newest first, with the tip's height and hash.
 let _chain = null;
 async function handleChainBlocks(req, env, url, cors) {
   const idx = confIndex(env), kv = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
@@ -28007,7 +28007,7 @@ async function _routeFetch(req, env, ctx) {
     const cors = corsHeaders(env, req.headers.get('Origin') || '', openOrigin);
     // The proof pool (worker/src/proof-pool.js) is open to anyone: pages post wraps, miners lease and prove them.
     if (url.pathname === '/prover/pool' || url.pathname.startsWith('/prover/pool/')) return handleProofPool(req, env, url, cors);
-    if (url.pathname === '/chain/blocks' && req.method === 'GET') return handleChainBlocks(req, env, url, cors);
+    if (url.pathname === '/prover/blocks' && req.method === 'GET') return handleChainBlocks(req, env, url, cors);
     if (url.pathname === '/market/order' || url.pathname === '/market/orders' || url.pathname === '/market/done' || url.pathname === '/market/proof') return handleProofMarket(req, env, url, cors);
     if (url.pathname === '/gas/order' || url.pathname === '/gas/orders' || url.pathname === '/gas/done') return handleGasRelay(req, env, url, cors);
     // A page proving with its holder's own prover account passes its program input and the finished proof through here

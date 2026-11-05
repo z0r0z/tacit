@@ -1,7 +1,7 @@
 # The Tacit chain
 
 The live pool's history, read as a chain of blocks. Ethereum orders it and its logs hold it; nothing here is decided by Tacit, and anyone can
-rebuild every block and its hash from the pool's logs alone. `GET https://api.tacit.finance/chain/blocks` serves it (worker/src/tacit-chain.js),
+rebuild every block and its hash from the pool's logs alone. `GET https://api.tacit.finance/prover/blocks` serves it (worker/src/tacit-chain.js),
 and [tacit prove](https://tacit.finance/prove/) draws it.
 
 ## Blocks
