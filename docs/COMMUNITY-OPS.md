@@ -134,7 +134,7 @@ curl -fsSL https://tacit.finance/prove.sh | sh -s -- --status         # running?
 curl -fsSL https://tacit.finance/prove.sh | sh -s -- --uninstall      # stop it and remove it
 ```
 
-[tacit mine](https://tacit.finance/mine/) gives the same command with your address filled in, then starts and pauses the installed prover and shows the
+[tacit prove](https://tacit.finance/prove/) gives the same command with your address filled in, then starts and pauses the installed prover and shows the
 proof under way and what the address has earned (it talks to `tacit-prover` on 127.0.0.1: `GET /mine`, `POST /mine {miner, on}`, kept in
 `~/.tacit-prover/mine.json`). The [keeper page](https://tacit.finance/weld/keeper/) has the command too. [`dapp/prove.sh`](../dapp/prove.sh) picks the build
 for the machine (an Apple-silicon Mac or x86-64 Linux; on Windows, run it inside WSL), downloads the release it pins and runs nothing from it unless the

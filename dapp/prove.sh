@@ -187,7 +187,7 @@ do_install() {
   say ""
   if [ -n "$up" ]; then say "tacit-prover is running."; else say "tacit-prover has not answered yet; it may still be loading. Check in a minute with --status."; fi
   if [ -n "$addr" ]; then
-    say "It checks the pool once a minute and proves one wrap at a time, for $(short_addr "$addr"). Each wrap the pool accepts earns points."
+    say "It proves one wrap at a time, the next as soon as one is done, for $(short_addr "$addr"). Each wrap the pool accepts earns points."
     say "The first proof downloads a 6.2 GB circuit; a proof then takes about 5 to 10 minutes on a Mac with 16 GB or more, longer on less."
   else
     say "No address was given, so it proves for this computer's own pages and earns nothing. Run this again with 0x... to mine for points."
@@ -196,7 +196,7 @@ do_install() {
   if [ "$(uname -s)" = Linux ] && command -v loginctl >/dev/null 2>&1 && ! loginctl show-user "$(id -un)" -p Linger 2>/dev/null | grep -q yes; then
     say "On Linux it stops when you log out. To keep it running: sudo loginctl enable-linger $(id -un)"
   fi
-  say "Watch, pause or start it: https://tacit.finance/mine/"
+  say "Watch, pause or start it: https://tacit.finance/prove/"
   say "Check on it:  curl -fsSL https://tacit.finance/prove.sh | sh -s -- --status"
   say "Remove it:    curl -fsSL https://tacit.finance/prove.sh | sh -s -- --uninstall"
   say "Its log:      $HOME_DIR/daemon.log"

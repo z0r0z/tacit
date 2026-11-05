@@ -1,7 +1,7 @@
-// The mining page (dapp/mine/) in a real browser under its content-security policy, with the computer's tacit-prover and the pool and
+// The proving page (dapp/prove/) in a real browser under its content-security policy, with the computer's tacit-prover and the pool and
 // points services stood in by routes: nothing set up (the setup line, with the address), an older prover (the setup line again), paused,
 // started from the button (the POST it sends), proving with a bar and the time left, paused mid-proof, and a phone.
-//   PLAYWRIGHT=<path to playwright-core> node tests/mine-page.mjs        (Node 22; SHOTS=<dir> saves screenshots)
+//   PLAYWRIGHT=<path to playwright-core> node tests/prove-page.mjs        (Node 22; SHOTS=<dir> saves screenshots)
 
 import { createServer } from 'node:http';
 import { existsSync, readFileSync, statSync } from 'node:fs';
@@ -28,6 +28,9 @@ const ORIGIN = `http://localhost:${server.address().port}`;
 
 const ADDR = '0x66f5a1225e6ac772c461f2b4d8028bf9568f3db5';
 const day = Math.floor(Date.now() / 86400000);
+const OTHER = '0x' + 'ab'.repeat(20);
+const blk = (height, o = {}) => ({ height, hash: '0x' + height.toString(16).padStart(64, '0'), prev: '0x' + (height - 1).toString(16).padStart(64, '0'), ethBlock: 26349000 + height, tx: '0x' + 'cd'.repeat(32), notes: 1, spent: 1, deposits: 0, ...o });
+const chain = { blocks: [blk(9389), blk(9388, { notes: 2, spent: 0, deposits: 1, prover: ADDR, points: 20 }), blk(9387, { prover: OTHER, points: 20 })] };
 let fails = 0;
 const check = (ok, what, got = '') => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${what}${ok ? '' : ` (${got})`}`); if (!ok) fails++; };
 
@@ -55,12 +58,14 @@ async function open(browser, local, { phone = false } = {}) {
   });
   await page.route('https://api.tacit.finance/**', (route) => {
     const u = new URL(route.request().url());
-    if (u.pathname === '/prover/pool') return json(route, { queued: 3, terms: { pointsPerProof: 20, proofsPerMinerDay: 30 } });
+    if (u.pathname === '/prover/pool') return json(route, { queued: 3, leased: 2, doneToday: 41, minersToday: 2, top: [{ miner: ADDR, proofs: 4 }, { miner: OTHER, proofs: 1 }], terms: { pointsPerProof: 20, proofsPerMinerDay: 30 } });
+    if (u.pathname === '/chain/blocks') return json(route, { head: { height: chain.blocks[0].height, hash: chain.blocks[0].hash }, blocks: chain.blocks });
+    if (u.pathname === '/prover/pool/recent') return json(route, { proofs: [{ at: Date.now() - 120_000, miner: ADDR, points: 20, secs: 552 }] });
     if (u.pathname === '/prover/pool/credits') return json(route, { day, over: false, miners: [{ miner: ADDR, proofs: 4, points: 80 }] });
     return json(route, {}, 404);
   });
   await page.route('https://tacit-points.onrender.com/**', (route) => json(route, { enabled: true, endSec: Math.floor(Date.now() / 1000) + 86400 * 10, terms: { capWeiPerPoint: '10000000000000000' }, account: { creditedWei: '6000000000000000000' } }));
-  await page.goto(`${ORIGIN}/mine/`);
+  await page.goto(`${ORIGIN}/prove/`);
   return { page, ctx, errors, posts };
 }
 const text = (page, s) => page.locator(s).innerText();
@@ -80,7 +85,22 @@ try {
     await page.waitForFunction(() => document.querySelector('#today').textContent.includes('4 proofs'));
     check((await text(page, '#pays')).includes('0.2 TAC a proof'), 'what a proof pays is read from the services', await text(page, '#pays'));
     check((await text(page, '#paid')) === '6 TAC credited', 'what was paid', await text(page, '#paid'));
-    await shot(page, 'mine-none');
+    await page.waitForFunction(() => document.querySelectorAll('#chain .blk').length === 3);
+    check((await text(page, '#height')) === '#9,389', 'the tip is the newest block', await text(page, '#height'));
+    check((await page.locator('#chain .blk.won').count()) === 2, 'blocks a community prover proved are marked');
+    check((await page.locator('#chain .blk.mine').count()) === 1, 'the address\'s own block is picked out');
+    check((await page.locator('#pool i').count()) === 5 && (await page.locator('#pool i.on').count()) === 2, 'the waiting proofs are drawn, the leased ones lit');
+    check((await text(page, '#feed')).includes('+0.2 TAC') && (await text(page, '#feed')).includes('9 min'), 'the feed says who proved, how fast and what it won', await text(page, '#feed'));
+    check((await text(page, '#board')).includes('4 proofs'), 'today\'s provers', await text(page, '#board'));
+    await page.click('#chain .blk.mine button');
+    const det = await text(page, '#detail');
+    check(det.includes('Won') && det.includes('0.2 TAC') && det.includes('you') && det.includes('2 notes · 1 deposit'), 'a block opens with what it holds, who proved it and what it won', det);
+    // a new block lands at the front
+    chain.blocks = [blk(9390, { notes: 0, spent: 2 }), ...chain.blocks];
+    await page.waitForFunction(() => document.querySelector('#chain .blk')?.dataset.h === '9390', null, { timeout: 12000 });
+    check(await page.locator('#chain .blk.new').count() === 1, 'a new block lands with the landing animation');
+    check((await text(page, '#height')) === '#9,390', 'the tip moves on');
+    await shot(page, 'prove-none');
     // the prover appears (the line was pasted): the page sees it on its own
     local.v = { mine: { miner: null, on: false, job: null, proved: 0 } };
     await page.waitForFunction(() => document.querySelector('#title').textContent === 'Paused', null, { timeout: 8000 });
@@ -107,14 +127,18 @@ try {
     check(posts.length === 1 && posts[0].on === true && posts[0].miner.toLowerCase() === ADDR, 'Start sends on with the address', JSON.stringify(posts));
     local.v.mine = { ...local.v.mine, job: { id: 'j1', secs: 120, stage: 'shrink', eta: 360 }, proved: 2 };
     await page.waitForFunction(() => document.querySelector('#title').textContent === 'Proving');
-    const st = await text(page, '#stage'), w = await page.locator('#bar i').evaluate((e) => e.style.width);
+    const st = await text(page, '#stage'), steps = await page.locator('#forge li').evaluateAll((ls) => ls.map((l) => l.className));
     check(st === 'Compressing · about 6 min left', 'proving: the stage and the time left', st);
-    check(parseFloat(w) === 25, 'proving: the bar is a quarter along', w);
+    check(JSON.stringify(steps) === JSON.stringify(['done', 'now spin', '', '']), 'proving: the forge shows the first stage done and the second under way', JSON.stringify(steps));
     check((await text(page, '#run')) === '2', 'proofs since it started', await text(page, '#run'));
-    await shot(page, 'mine-proving');
+    await shot(page, 'prove-proving');
     await page.click('#go');
     await page.waitForFunction(() => document.querySelector('#title').textContent === 'Pausing after this proof');
     check(posts[1]?.on === false, 'Pause sends off', JSON.stringify(posts));
+    // the proof is taken: the reward it won pops up
+    local.v.mine = { ...local.v.mine, job: null, proved: 3 };
+    await page.waitForFunction(() => document.querySelector('#win').classList.contains('go'));
+    check((await text(page, '#win')) === '+0.2 TAC', 'a proof taken shows what it won', await text(page, '#win'));
     check((await text(page, '#say')).includes('after the proof under way'), 'pausing mid-proof says it finishes that one', await text(page, '#say'));
     check(errors.length === 0, 'no page errors', errors.join(' | '));
     await ctx.close();
@@ -133,7 +157,7 @@ try {
     check(await page.locator('#phone').isVisible() && !(await page.locator('#desk').isVisible()), 'a phone is told to open it on a computer');
     const over = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
     check(!over, 'no sideways scroll on a phone');
-    await shot(page, 'mine-phone');
+    await shot(page, 'prove-phone');
     await ctx.close();
   }
 } finally {

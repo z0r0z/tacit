@@ -32,7 +32,9 @@
 /tasks    /tasks/    301
 /discord    /discord/    301
 /fast       /fast/       301
-/mine       /mine/       301
+/prove      /prove/      301
+/mine       /prove/      301
+/mine/      /prove/      301
 /build    /build/    301
 /swap     /     301
 /swap/*   /     301

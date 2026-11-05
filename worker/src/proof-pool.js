@@ -200,7 +200,7 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
   const clock = now || (() => Date.now());
   const exclusive = lock || makeLock();
   const token = random || (() => bytesToHex(crypto.getRandomValues(new Uint8Array(16))));
-  const K = { queue: 'pp:queue', leases: 'pp:leases', job: (id) => `pp:job:${id}`, day: (d) => `pp:day:${d}`, req: (d, c) => `pp:req:${d}:${c}`, urg: (d, c) => `pp:urg:${d}:${c}`, minerSeen: 'pp:miner-seen', hold: 'pp:hold' };
+  const K = { queue: 'pp:queue', leases: 'pp:leases', job: (id) => `pp:job:${id}`, day: (d) => `pp:day:${d}`, req: (d, c) => `pp:req:${d}:${c}`, urg: (d, c) => `pp:urg:${d}:${c}`, minerSeen: 'pp:miner-seen', hold: 'pp:hold', mined: (leaf) => `pp:mined:${leaf}`, recent: 'pp:recent' };
   const read = async (key, dflt) => { const s = await kv.get(key); if (s == null) return dflt; try { return JSON.parse(s); } catch { return dflt; } };
   const write = (key, v, ttlSecs) => kv.put(key, JSON.stringify(v), ttlSecs ? { expirationTtl: ttlSecs } : undefined);
   const dayRec = async (d) => { const r = await read(K.day(d), null); return { done: 0, points: 0, miners: {}, clients: {}, ...(r && typeof r === 'object' ? r : {}) }; };
@@ -410,6 +410,11 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
       mr.proofs++;
       if (points > 0) { mr.credited++; mr.points += points; rec.points += points; }
       await write(K.day(d), rec, cfg.daySecs);
+      // Who made the note, for the block it lands in (tacit-chain.js), and the community's newest proofs.
+      const leaf = String(job.expect?.leaf || '').toLowerCase(), secs = Math.max(0, Math.round((t - (l.until - cfg.leaseMs)) / 1000));
+      if (leaf) await write(K.mined(leaf), { miner: l.miner, points, at: t }, cfg.daySecs);
+      const feed = await read(K.recent, []);
+      await write(K.recent, [...feed, { at: t, miner: l.miner, points, secs }].slice(-cfg.top * 2));
       return reply(200, { ok: true, points });
     });
   }
@@ -450,7 +455,22 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
     return reply(200, { day, over: t >= (day + 1) * DAY_MS, pointsPerProof: cfg.pointsPerProof, miners });
   }
 
-  return { request, lease, hold, submit, results, stats, credits };
+  // The leaves a community proof inserted, each with the address its points went to: { [leaf]: { miner, points } }.
+  async function minedBy(leaves) {
+    const out = {};
+    for (const leaf of new Set(leaves.map((x) => String(x).toLowerCase()))) {
+      const m = B32.test(leaf) ? await read(K.mined(leaf), null) : null;
+      if (m) out[leaf] = { miner: m.miner, points: m.points };
+    }
+    return out;
+  }
+
+  // The community's newest proofs, newest first: when, by whom, the points and how long it took from lease to proof.
+  async function recent() {
+    return reply(200, { proofs: (await read(K.recent, [])).slice().reverse() });
+  }
+
+  return { request, lease, hold, submit, results, stats, credits, minedBy, recent };
 }
 
 const kvLocks = new WeakMap();
