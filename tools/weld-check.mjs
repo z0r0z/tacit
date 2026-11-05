@@ -9657,7 +9657,7 @@ await step('hxbridgec', async () => {
 // USDT crosses too, at its own six decimals: private USDT (cUSDT) out of the Bridge tab quoted with its relay fee and the 2 to 1,000 limits, a seventh
 // decimal refused, the press bridging from the tile with no sheet; USDT on Bitcoin comes back from the same tab; the USDT sheet's three tabs hold their links.
 await step('hxbridgeu', async () => {
-  const r = await openFarmKey('c05e'.padEnd(64, '6'), { notes: [['@cUSDT', 50000000n]], fees: { transfer: 100000, bridgeburn: 500000 } });
+  const r = await openFarmKey('c05e'.padEnd(64, '6'), { notes: [['@cUSDT', 50000000n]], fees: { transfer: 100000, bridgeburn: 500000, unwrap: 2300000 } });
   const p = r.page;
   try {
     await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
@@ -9669,6 +9669,8 @@ await step('hxbridgeu', async () => {
     await until(p, () => /^19\.5$/.test(document.querySelector('#hx-out')?.textContent || '') && /Relay fee: 0\.5 cUSDT/.test(window.__said()) && /Limits: 2 to 100 cUSDT a bridge/.test(window.__said()), null, 240000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)} | out ${await text(p, BRG.out)}`); });
     ok((await text(p, BRG.go)).trim() === 'Bridge cUSDT to Bitcoin' && (await heldAt(p)) === 'private', `hxbridgeu: 20 USDT to Bitcoin is quoted with its relay fee and its limits in six decimals (${await said(p)})`);
+    await until(p, () => /Back on Ethereum: 19\.5 private USDT, no fee to bring it back/.test(window.__said()) && /Then to take it out: 2\.3 to the relay, 17\.2 out/.test(window.__said()), null, 120000).catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)}`); });
+    ok(true, 'hxbridgeu: and says what coming back leads to: 19.5 private USDT, free to bring back, 2.3 to take out, 17.2 out');
     await p.fill(BRG.amt, '1');
     await until(p, () => /A bridge takes 2 to 100 cUSDT while this is new\./.test(document.querySelector('#hx-q')?.textContent || ''), null, 240000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)}`); });
@@ -9676,6 +9678,8 @@ await step('hxbridgeu', async () => {
     await p.fill(BRG.amt, '2.5');
     await until(p, () => /^2$/.test(document.querySelector('#hx-out')?.textContent || ''), null, 240000).catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)} | out ${await text(p, BRG.out)}`); });
     ok(true, 'hxbridgeu: 2.5 USDT less the 0.5 fee arrives as 2 (a bridge just over the minimum is quoted)');
+    await until(p, () => /Then to take it out: 2\.3 to the relay, more than it holds: it stays private until gas is lower/.test(window.__said()), null, 120000).catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)}`); });
+    ok(true, 'hxbridgeu: a bridge that arrives as less than a withdraw costs says so before it is sent: it stays private until gas is lower');
     await p.fill(BRG.amt, '1.1234567');
     await until(p, () => /up to 6 decimals/.test(document.querySelector('#hx-q')?.textContent || ''), null, 240000).catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)}`); });
     ok(true, 'hxbridgeu: a seventh decimal is refused, with USDT\'s six named');
@@ -9791,6 +9795,8 @@ await step('usdtout', async () => {
     await until(p, () => !!document.querySelector('#us-out') && !document.querySelector('#us-out').disabled, null, 300000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | open ${await p.evaluate(() => !!document.querySelector('#sheet-usdt[open]'))} hash ${await p.evaluate(() => location.hash)} body ${(await text(p, '#usdt-body')).replace(/\s+/g, ' ').slice(0, 160)} | errors ${r.errors.slice(0, 2).join(' / ').replace(/\s+/g, ' ')}`); });
     ok(/Private USDT\s*50\b/.test((await text(p, '#us-form')).replace(/\s+/g, ' ')), `usdtout: the Withdraw tab shows the 50 private USDT (${(await text(p, '#us-form')).replace(/\s+/g, ' ').slice(0, 120)})`);
+    await until(p, () => /The relay takes 0\.3 USDT to move your biggest note \(50\) out/.test(document.querySelector('#us-exit')?.textContent || ''), null, 120000).catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await text(p, '#us-exit')}`); });
+    ok(true, `usdtout: the Withdraw tab says what the relay takes before it is pressed (${(await text(p, '#us-exit')).trim().slice(0, 100)})`);
     await p.evaluate(() => { window.__mz = []; new MutationObserver(() => { const t = document.querySelector('#us-status')?.textContent; if (t && window.__mz[window.__mz.length - 1] !== t) window.__mz.push(t); }).observe(document.body, { subtree: true, childList: true, characterData: true }); });
     await p.click('#us-out');
     await until(p, () => (window.__mz || []).length > 0, null, 240000);

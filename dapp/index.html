@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-5olipXjLNqb8IL/ND8VpBiYwhx4/UnVDbKU5fTIXeoM=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-uJ0/BQkAL2GONQtGCtVliQtQH88wqb/LLLvqnAZLlQ4=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -6335,9 +6335,11 @@ function xoOut(el, status, a) {
       const kept = XO.pf && XO.pf.pub === pub && Date.now() - XO.pf.at < 120e3 ? XO.pf.v : null;
       const pf = kept || await xoPreflight(ux, pub);
       if (!kept && pf.ok) XO.pf = { pub, at: Date.now(), v: pf };
+      const back = a.key === 'cusdt' && units > fee ? await usdtBackRows(t, units - fee) : [];
       if (my !== seq || !amt.isConnected) return;
       mount(rc, html`
         <div class="kv"><span>You get</span><b>${units > fee ? fmt(units - fee, xdec(a), xdec(a)) : '0'} ${a.ticker} on your Bitcoin address</b></div>
+        ${back.map(([k, v]) => html`<div class="kv"><span>${k}</span><b>${v}</b></div>`)}
         <div class="kv"><span>Relay fee</span><b>${fmt(fee, xdec(a), xdec(a))} ${a.ticker}${a.key === 'teth' ? xoUsd({ teth: fee }) : ''}</b></div>
         ${size && units + size <= held ? html`<div class="kv"><span>Relay fee to ${freeNotes(P.scan?.[a.k].notes).some((n) => BigInt(n.value) >= units + size) ? 'split a note' : 'combine notes'}</span><b>${fmt(size, xdec(a), xdec(a))} ${a.ticker}</b></div>` : ''}
         <div class="kv"><span>Bitcoin fee, when it is sent</span><b>≈ ${pf.estSats.toLocaleString('en-US')} sats${xoUsd({ sats: pf.estSats })} from ${short(pf.address, 6)}</b></div>
@@ -6471,11 +6473,26 @@ async function usdtWrapNow({ run, units, src, status, line, sheet = 'usdt', clea
     if (sent) refresh().then(after).catch(() => {});
   }
 }
+// What the relay takes to move a whole private USDT note out of the pool (its exit fee, a floor that follows gas): { fee, net }
+async function usdtExitFee(t, value) {
+  const minFee = BigInt(await t.quoteOpFee('cUSDT', 'unwrap'));
+  return { ...t.quoteUnwrapFee(BigInt(value), 'cUSDT', { minFee }), floor: minFee };       // `floor`: the fee before it is held to what the note holds
+}
+// What a bridge to Bitcoin leads to, said before it is sent: the way back is free and lands as private USDT, and taking that out of the pool costs the relay's exit fee, which can be more than
+// a small amount holds (then it stays private until gas is lower). → rows for a receipt, none when the fee cannot be read
+async function usdtBackRows(t, arrives) {
+  try {
+    if (!(arrives > 0n)) return [];
+    const ex = await usdtExitFee(t, arrives);
+    return [['Back on Ethereum', `${fmt(arrives, 6, 2)} private USDT, no fee to bring it back`],
+      ['Then to take it out', ex.net > 0n ? `${fmt(ex.fee, 6, 2)} to the relay, ${fmt(ex.net, 6, 2)} out` : `${fmt(ex.floor, 6, 2)} to the relay, more than it holds: it stays private until gas is lower`]];
+  } catch { return []; }
+}
 // All the private USDT taken out to the paying account (a note at a time, by the relay, its fee out of the note): what tacPublicNow does for TAC
 async function usdtWithdrawNow({ run, status, line, sheet = 'usdt', after }) {
   try {
     const t = await getUx(), priv = walletPriv(), to = await payingAccount(), dest = `${your()} (${short(to, 6)})`;
-    const minFee = BigInt(await t.quoteOpFee('cUSDT', 'sendunwrap')), types = ['unwrap', 'sendunwrap'], self = await proveOwn(types);
+    const minFee = BigInt(await t.quoteOpFee('cUSDT', 'unwrap')), types = ['unwrap', 'sendunwrap'], self = await proveOwn(types);   // a whole note is the relay's unwrap, not its send-and-unwrap
     const notes = freeNotes(P.scan?.cusdt?.notes).sort(byValue).reverse();
     const worth = notes.filter((n) => self || BigInt(n.value) > t.quoteUnwrapFee(BigInt(n.value), 'cUSDT', { minFee }).fee);
     if (!worth.length) {
@@ -6534,7 +6551,16 @@ render.usdt = () => {
     mount(f, html`
       <p class="lede-s">Take your private USDT out to ${your()}. The relay moves each note and keeps a small fee out of it; the USDT arrives as ordinary USDT.</p>
       <div class="kv"><span>Private USDT</span><b class="num">${P.scan ? fmt(held, 6, 2) : '…'}</b></div>
+      <p class="note" id="us-exit"></p>
       <button class="btn" type="button" id="us-out" ${P.scan && held > small ? '' : 'disabled'}>Withdraw to ${your()}</button>`);
+    if (P.scan && held > small) {
+      const big = freeNotes(P.scan.cusdt.notes).sort(byValue).reverse()[0];
+      getUx().then((t) => usdtExitFee(t, big.value)).then((ex) => {
+        const n = $('#us-exit', f); if (!n) return;
+        n.textContent = ex.net > 0n ? `The relay takes ${fmt(ex.fee, 6, 2)} USDT to move your biggest note (${fmt(BigInt(big.value), 6, 2)}) out, at today’s gas, so ${fmt(ex.net, 6, 2)} arrives.`
+          : `The relay takes ${fmt(ex.floor, 6, 2)} USDT to move a note out at today’s gas, more than your biggest note holds (${fmt(BigInt(big.value), 6, 2)}). It stays private until gas is lower; Withdraw offers to send it from your own account for the network fee instead.`;
+      }).catch(() => {});
+    }
     $('#us-out', f).onclick = (e) => busy(e.currentTarget, (run) => usdtWithdrawNow({ run, status, line: () => $('#us-status'), after: () => rerender('usdt') }));
     return;
   }
@@ -15068,7 +15094,8 @@ async function hxQuote() {
       const cut = !needPrivate && units && held != null && !over && !freeNotes(P.scan[a.k].notes).some((n) => BigInt(n.value) === units) ? BigInt(await t.quoteOpFee(a.pool, 'transfer')) : 0n;
       return done({ out: units ? (inRange && !over ? fmt(units - fee, dec, a.dp) : '—') : null, go: needPrivate ? 'Make USDT private' : `Bridge ${a.ticker} to Bitcoin`, needPrivate,
         rc: units && (!inRange || over) ? [] : [units ? ['Arrives', `${fmt(units - fee, dec, a.dp)} ${a.ticker} on Bitcoin`] : null, ['Relay fee', `${fmt(fee, dec, Math.max(a.dp, 4))} ${a.ticker}`],
-          cut ? ['Cuts a note', `${fmt(cut, dec, Math.max(a.dp, 4))} ${a.ticker} first`] : null, ...bridge(a.ticker, lim, min, a.dp, dec), needPrivate ? ['Steps', 'make the USDT private, then bridge it'] : null],
+          cut ? ['Cuts a note', `${fmt(cut, dec, Math.max(a.dp, 4))} ${a.ticker} first`] : null, ...bridge(a.ticker, lim, min, a.dp, dec), needPrivate ? ['Steps', 'make the USDT private, then bridge it'] : null,
+          ...(a.key === 'cusdt' && units && inRange && !over ? await usdtBackRows(t, units - fee) : [])],
         warn: !!units && (!inRange || over), line: over ? (wallet ? `You hold ${fmt(wal, dec, 4)} USDT in ${your()}.` : `You hold ${fmt(held, dec, a.dp)} ${a.ticker} privately.`) : units && !inRange ? (units <= fee ? `Send more than the relay fee, ${fmt(fee, dec, Math.max(a.dp, 4))} ${a.ticker}.` : `A bridge takes ${range} while this is new.`) : '' });
     }
     if (m === 'btc') {
