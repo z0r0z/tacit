@@ -188,9 +188,12 @@ function paint() {
   const earned = mineRow ? rewardWei(mineRow.points, cap()) : null;
   $('#today').textContent = mineRow ? `${mineRow.proofs} ${mineRow.proofs === 1 ? 'proof' : 'proofs'}${earned ? ` · ${tac(earned)} TAC` : ''}` : (l.today || '—');
   $('#payout').textContent = mineRow ? `after the day ends, in ${untilDayEnds()}` : '—';
-  // At this computer's own pace (its newest proofs), up to the day's cap.
+  // At this address's rate so far today (from two hours into the day: there are only as many proofs as people press for), never past what
+  // this computer's own pace or a count a day allows.
   const mySecs = median(feed.filter((p) => String(p.miner).toLowerCase() === me()).map((p) => p.secs));
-  const perDay = mySecs ? Math.min(pool?.terms?.proofsPerMinerDay || 30, Math.floor(86400 / mySecs)) : null, per = rewardWei(pool?.terms?.pointsPerProof, cap());
+  const into = (Date.now() % 86_400_000) / 86_400_000;
+  const rate = mineRow && into >= 1 / 12 ? Math.round(mineRow.proofs / into) : 0;
+  const perDay = rate ? Math.min(rate, pool?.terms?.proofsPerMinerDay || Infinity, mySecs ? Math.floor(86400 / mySecs) : Infinity) : null, per = rewardWei(pool?.terms?.pointsPerProof, cap());
   $('#pace-row').hidden = !(perDay && per);
   if (perDay && per) $('#pace').textContent = `about ${tac(per * BigInt(perDay))} TAC a day (${perDay} proofs)`;
   $('#paid').textContent = l.credited || '—';

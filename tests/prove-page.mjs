@@ -108,7 +108,8 @@ try {
     check(JSON.stringify(kinds) === JSON.stringify(['Private transfer', 'Deposit', 'Private transfer', 'Private transfer']), 'each block says what it did', JSON.stringify(kinds));
     check((await text(page, '#today')) === '4 proofs · 0.8 TAC', 'the rig says what today earned', await text(page, '#today'));
     check((await text(page, '#payout')).startsWith('after the day ends, in '), 'and when it is paid', await text(page, '#payout'));
-    check((await text(page, '#pace')).includes('TAC a day'), 'and the pace', await text(page, '#pace'));
+    if (Date.now() % 86400000 >= 7200000) check((await text(page, '#pace')).includes('TAC a day ('), 'and the pace at today\'s rate', await text(page, '#pace'));
+    else check(await page.locator('#pace-row').isHidden(), 'no pace in the day\'s first two hours');
     const share = await page.getAttribute('#share', 'href');
     check(await page.locator('#share').isVisible() && share.startsWith('https://x.com/intent/post?') && share.includes('4%20privacy%20proofs'), 'a share link once it has proved', share);
     check((await page.locator('#chain .blk.gpu').count()) === 1 && (await page.locator('#chain .blk.gpu').innerText()).includes('Tacit GPU'), 'a block Tacit\'s GPU proved says so');

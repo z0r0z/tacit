@@ -9,7 +9,8 @@
 // Each proof is checked before it is kept: its public values must be this input's (the deposit it consumes, the leaf it inserts,
 // the chain it is bound to and its memo root, every one read from the input itself, so a page cannot name a deposit its input does
 // not prove), and the live SP1 verifier must take it. A proof that passes is kept for the page and earns its miner's address points
-// for the UTC day, up to a number of proofs a day; the points service's mining campaign pays those points in TAC from a pocket of its
+// for the UTC day, for every proof it makes (no count a day unless one is set: the campaign's daily pot already bounds what is paid, and
+// a count per address only holds back the provers who give the most, since anyone may name more addresses); the points service's mining campaign pays those points in TAC from a pocket of its
 // own once the day is over, reading the day's tally from GET /prover/pool/credits. A proof that fails goes back to the queue for
 // someone else and, when the answer is certain, is a strike against the client that leased it; three strikes in a day and that client
 // is offered nothing more that day. Strikes, the jobs a miner is not offered again and the lease limits all go by the client, never
@@ -39,7 +40,7 @@ export const PROOF_POOL = Object.freeze({
   leaseMs: 45 * 60_000,              // POOL_LEASE_MS: a laptop proves a wrap in about 15 minutes
   keepMs: 7 * 86_400_000,            // POOL_KEEP_MS: how long a finished proof stays readable
   pointsPerProof: 20,                // POINTS_MINE_PER_PROOF
-  proofsPerMinerDay: 30,             // POINTS_MINE_DAILY_CAP: proofs an address is credited for in a UTC day
+  proofsPerMinerDay: Infinity,       // POINTS_MINE_DAILY_CAP: proofs an address is credited for in a UTC day (none: every proof)
   strikesPerDay: 3,
   lapsesPerDay: 8,                   // POOL_LAPSES_PER_DAY: leases a client may let run out or hand back in a UTC day before it is offered nothing more
   leasesPerClient: 4,                // open leases one client may hold, one per address (a household's few machines)
@@ -70,7 +71,7 @@ export function proofPoolConfig(env = {}) {
     holdMaxMs: n(env.POOL_HOLD_MAX_MS, PROOF_POOL.holdMaxMs, 0, 86_400_000),
     keepMs: n(env.POOL_KEEP_MS, PROOF_POOL.keepMs, 60_000, 30 * 86_400_000),
     pointsPerProof: n(env.POINTS_MINE_PER_PROOF, PROOF_POOL.pointsPerProof, 0, 100_000),
-    proofsPerMinerDay: n(env.POINTS_MINE_DAILY_CAP, PROOF_POOL.proofsPerMinerDay, 0, 100_000),
+    proofsPerMinerDay: n(env.POINTS_MINE_DAILY_CAP, PROOF_POOL.proofsPerMinerDay, 1, 100_000),
     lapsesPerDay: n(env.POOL_LAPSES_PER_DAY, PROOF_POOL.lapsesPerDay, 1, 100_000),
   });
 }

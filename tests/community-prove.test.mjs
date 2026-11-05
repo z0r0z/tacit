@@ -58,6 +58,7 @@ test('the card says what pays in a line, what the address made today, and what i
   const tally = { day: 20757, over: false, pointsPerProof: 20, miners: [{ miner: ADDR.toLowerCase(), proofs: 2, points: 40 }, { miner: OTHER, proofs: 1, points: 20 }] };
   const l = mineLines(POOL, { ...MINE, account: { address: ADDR, creditedWei: '6200000000000000000' } }, { tally, address: ADDR, nowSec: NOW });
   assert.equal(l.pays, 'Up to 0.2 TAC a proof, 30 proofs a day, until 24 Nov');
+  assert.equal(mineLines({ ...POOL, terms: { pointsPerProof: 20, proofsPerMinerDay: null } }, MINE, { tally, address: ADDR, nowSec: NOW }).pays, 'Up to 0.2 TAC a proof, until 24 Nov', 'no count a day, none said');
   assert.equal(l.today, '2 proofs, 40 points today');
   assert.equal(l.credited, '6.2 TAC credited');
   // the tally lists addresses in lower case; the field takes them as a wallet shows them

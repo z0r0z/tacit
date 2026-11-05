@@ -51,20 +51,21 @@ export const PROVER_BOARD = Object.freeze({
   pointsPerProof: 20,                                  // POINTS_BOARD_PER_PROOF: for each community proof the relay takes
   // A Bitcoin batch is billions of cycles, tens of minutes on a large GPU, and costs about 16 PROVE on the prover network: it earns its own.
   pointsByProgram: Object.freeze({ 'btc-state': 500 }),  // POINTS_BOARD_BTC_PER_PROOF
-  proofsPerMinerDay: 30,                               // POINTS_BOARD_DAILY_CAP: proofs an address is credited for in a UTC day
+  proofsPerMinerDay: Infinity,                         // POINTS_BOARD_DAILY_CAP: proofs an address is credited for in a UTC day (none: every proof)
   daySecs: 40 * 86400,                                 // a day's tally outlives the campaign's reading of it
 });
 
-// The board's points from the environment, each checked: a value out of range keeps the default, and 0 pays nothing.
+// The board's points from the environment, each checked: a value out of range keeps the default, and 0 points pays nothing. A count a day of
+// 0 or none is no count: the campaign's daily pot bounds what is paid.
 export function proverBoardConfig(env = {}) {
-  const n = (v, dflt) => {
+  const n = (v, dflt, lo = 0) => {
     if (v === undefined || v === null || v === '') return dflt;
     const x = Number(v);
-    return Number.isInteger(x) && x >= 0 && x <= 100_000 ? x : dflt;
+    return Number.isInteger(x) && x >= lo && x <= 100_000 ? x : dflt;
   };
   return Object.freeze({
     pointsPerProof: n(env.POINTS_BOARD_PER_PROOF, PROVER_BOARD.pointsPerProof),
-    proofsPerMinerDay: n(env.POINTS_BOARD_DAILY_CAP, PROVER_BOARD.proofsPerMinerDay),
+    proofsPerMinerDay: n(env.POINTS_BOARD_DAILY_CAP, PROVER_BOARD.proofsPerMinerDay, 1),
     pointsByProgram: Object.freeze({ 'btc-state': n(env.POINTS_BOARD_BTC_PER_PROOF, PROVER_BOARD.pointsByProgram['btc-state']) }),
   });
 }
