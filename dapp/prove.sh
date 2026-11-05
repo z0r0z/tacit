@@ -196,6 +196,7 @@ do_install() {
   if [ "$(uname -s)" = Linux ] && command -v loginctl >/dev/null 2>&1 && ! loginctl show-user "$(id -un)" -p Linger 2>/dev/null | grep -q yes; then
     say "On Linux it stops when you log out. To keep it running: sudo loginctl enable-linger $(id -un)"
   fi
+  say "Watch, pause or start it: https://tacit.finance/mine/"
   say "Check on it:  curl -fsSL https://tacit.finance/prove.sh | sh -s -- --status"
   say "Remove it:    curl -fsSL https://tacit.finance/prove.sh | sh -s -- --uninstall"
   say "Its log:      $HOME_DIR/daemon.log"
