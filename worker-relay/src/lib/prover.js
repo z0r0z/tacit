@@ -29,6 +29,7 @@ import { makeReflectPriceCap } from './reflect-price-cap.js';
 import { proverEnvFrom } from './prover-env.js';
 import { isUnexecutable } from './block-cap.js';
 import { pickRpc, hostOf } from './rpc-pick.js';
+import { exitReason } from './exit-reason.js';
 
 function proverEnv(extra = {}) {
   // Env the spawned SP1 binary reads to route to the Succinct network prover: the service's own, without its keys and tokens (lib/prover-env.js).
@@ -267,7 +268,9 @@ function ethBoardLane() {
       await Promise.all(['eth_stdin.bin', 'eth_candidate.json'].map((f) => rm(path.join(dir, f), { force: true })));
       const { code, out, err } = await run(CFG.ethProveBin, { env: ethProveEnv('stdin', await ethProveRpcs()), cwd: dir, timeoutMs: CFG.ethStateStdinTimeoutSecs * 1000, tag: 'eth_prove:stdin' });
       const m = /^STDIN_OK bytes=(\d+) exec_block=(\d+) expect_pv=([0-9a-f]+)$/m.exec(out);
-      if (code !== 0 || !m) throw new Error(`eth_prove stdin run gave no input (code=${code}): ${(out + err).slice(-600)}`);
+      // An exit on eth_prove's own error (code 1: an RPC or beacon read it could not make) is worth one more build; a clean exit with no
+      // STDIN_OK line is not.
+      if (code !== 0 || !m) throw Object.assign(new Error(`eth_prove stdin run gave no input (code=${code}): ${exitReason({ out, err })}`), { retry: code !== 0 });
       return { stdin: new Uint8Array(await readFile(path.join(dir, 'eth_stdin.bin'))), expectPv: m[3], execBlock: Number(m[2]) };
     },
     lane: makeBoardProver({
@@ -315,7 +318,7 @@ function btcBoardLane() {
       const fixture = path.join(CFG.fixtureDir, 'reflection_input.json');
       const { code, out, err } = await run(CFG.bitcoinProveBin, { env: proverEnv({ SP1_PROVER: 'stdin', PROOF_MODE: 'groth16', REFLECT_FIXTURE: fixture }), cwd: dir,
         timeoutMs: CFG.btcStateStdinTimeoutSecs * 1000, rssLimitKB: CFG.btcStateStdinRssKB, tag: 'bitcoin_prove:stdin' });
-      if (code !== 0 || !/^STDIN_OK bytes=\d+/m.test(out)) throw new Error(`bitcoin_prove stdin run gave no input (code=${code}): ${(out + err).slice(-600)}`);
+      if (code !== 0 || !/^STDIN_OK bytes=\d+/m.test(out)) throw new Error(`bitcoin_prove stdin run gave no input (code=${code}): ${exitReason({ out, err })}`);
       try { return new Uint8Array(await readFile(stdinFile)); } finally { await rm(stdinFile, { force: true }); }
     },
     lane: makeBoardProver({

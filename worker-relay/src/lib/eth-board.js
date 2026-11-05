@@ -13,7 +13,9 @@
 //   lane               the board lane (lib/board-prover.js makeBoardProver)
 //   finish(proofB64)   → true (accepted and written), false (refused: counts against the worker) or 'unchecked'
 
-export function makeEthBoard({ capable, buildInput, lane, finish, cycleLimit, gasLimit, waitMs, now = Date.now, log = () => {} } = {}) {
+// A build whose error is marked `retry` (eth_prove exited on an error of its own: an RPC that failed it, a beacon node behind)
+// is run once more after `retryMs` before the network is paid; one that timed out, ran over its memory or printed no input is not.
+export function makeEthBoard({ capable, buildInput, lane, finish, cycleLimit, gasLimit, waitMs, buildTries = 2, retryMs = 20_000, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), now = Date.now, log = () => {} } = {}) {
   const say = (e) => String(e && e.message || e).split('\n')[0].slice(0, 300);
   // → { ok: true, worker, jobId, ms } once the outputs are written; { ok: false, reason, ms } for the network to take over.
   async function prove() {
@@ -21,7 +23,13 @@ export function makeEthBoard({ capable, buildInput, lane, finish, cycleLimit, ga
     const out = (reason) => ({ ok: false, reason, ms: now() - t0 });
     if (!(await Promise.resolve().then(capable).catch(() => false))) return out('no worker that proves the Ethereum-state input has been seen lately');
     let built;
-    try { built = await buildInput(); } catch (e) { return out(`the input was not built: ${say(e)}`); }
+    for (let n = 1; ; n++) {
+      try { built = await buildInput(); break; } catch (e) {
+        if (n >= buildTries || !(e && e.retry)) return out(`the input was not built${n > 1 ? ` (${n} tries)` : ''}: ${say(e)}`);
+        log(`eth-state: the input was not built (${say(e)}); trying again in ${Math.round(retryMs / 1000)} s`);
+        await sleep(retryMs);
+      }
+    }
     if (!built || !(built.stdin instanceof Uint8Array) || !built.stdin.length || !/^[0-9a-f]+$/.test(String(built.expectPv || ''))) return out('the input was not built');
     log(`eth-state: input built (${built.stdin.length} bytes); asking the board`);
     // The proof's public values are compared before the finish run is spent on it: a proof of another input is refused at once.

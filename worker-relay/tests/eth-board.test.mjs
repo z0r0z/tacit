@@ -116,3 +116,31 @@ test('finishVerdict: FINISH_OK with exit 0 is accepted, FINISH_REFUSED with exit
   assert.equal(finishVerdict({ code: null, out: '' }), 'unchecked');
   assert.equal(finishVerdict({ code: 3, out: 'FINISH_OK' }), 'unchecked');
 });
+
+test('an input build that failed on its own error is tried once more before the network; a second failure goes to the network', async () => {
+  const slept = [], logs = [];
+  const mk = (results) => {
+    let i = 0;
+    return makeEthBoard({
+      capable: async () => true,
+      buildInput: async () => { const r = results[i++]; if (r instanceof Error) throw r; return r; },
+      lane: { prove: async () => ({ worker: 'tacit-a5000', jobId: '0x1' }) },
+      finish: async () => true, cycleLimit: 1, gasLimit: 1, waitMs: 1000, retryMs: 5000,
+      sleep: async (ms) => { slept.push(ms); }, log: (m) => logs.push(m),
+    });
+  };
+  const flaky = () => Object.assign(new Error('eth_prove stdin run gave no input (code=1): Error: [debug get_proof failed] header not found'), { retry: true });
+  const good = { stdin: new Uint8Array([1]), expectPv: EXPECT };
+  let r = await mk([flaky(), good]).prove();
+  assert.equal(r.ok, true); assert.deepEqual(slept, [5000]);
+  assert.match(logs[0], /the input was not built \(.*header not found\); trying again in 5 s/);
+
+  slept.length = 0;
+  r = await mk([flaky(), flaky(), good]).prove();
+  assert.equal(r.ok, false); assert.match(r.reason, /the input was not built \(2 tries\): .*header not found/);
+  assert.deepEqual(slept, [5000]);
+
+  slept.length = 0;
+  r = await mk([new Error('eth_prove:stdin timed out after 900000ms'), good]).prove();
+  assert.equal(r.ok, false, 'a timeout is not run again'); assert.match(r.reason, /timed out/); assert.deepEqual(slept, []);
+});
