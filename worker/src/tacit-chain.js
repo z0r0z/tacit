@@ -61,11 +61,15 @@ export function makeChain({ kv, index, minedBy = async () => ({}), cfg = CHAIN, 
   const read = async (k, d) => { const s = await kv.get(k); if (s == null) return d; try { return JSON.parse(s); } catch { return d; } };
   const write = (k, v) => kv.put(k, JSON.stringify(v));
   let running = null;
+  // The tip and the newest blocks are kept in this process too, so a read while they are fresh touches nothing, and storage is written only
+  // when a block was added: a record rewritten on every read is a dead row each time for the database to clear.
+  let mem = null;
 
   async function syncOnce() {
     try { await index.fresh(); } catch {}
-    let head = await read('ch:head', { seq: 0, height: -1, hash: ZERO, at: 0 });
-    let recent = await read('ch:recent', []);
+    let head = mem ? { ...mem.head } : await read('ch:head', { seq: 0, height: -1, hash: ZERO, at: 0 });
+    let recent = mem ? mem.recent.slice() : await read('ch:recent', []);
+    const seq0 = head.seq;
     for (let p = 0; p < cfg.maxPagesPerSync; p++) {
       const r = await index.read({ from: head.seq, limit: cfg.page });
       if (r.headBlock != null) head = { ...head, ethHead: r.headBlock };
@@ -87,25 +91,28 @@ export function makeChain({ kv, index, minedBy = async () => ({}), cfg = CHAIN, 
           if (m?.house) b.house = true;
           else if (m) { b.prover = m.miner; b.points = m.points; }
         }
-        recent = [...recent, ...tail].slice(-cfg.keep);
+        // the leaf and nullifier lists made the hash and found the prover; nothing reads them after, so they are not kept
+        recent = [...recent, ...tail.map(({ leaves, nullifiers, ...b }) => b)].slice(-cfg.keep);
       }
       if ((r.entries || []).length < cfg.page) break;
     }
     head.at = now();
-    await write('ch:recent', recent);
-    await write('ch:head', head);
+    if (head.seq !== seq0 || !mem) {
+      await write('ch:recent', recent);
+      await write('ch:head', head);
+    }
+    mem = { head, recent };
     return { head, recent };
   }
   const sync = () => running || (running = syncOnce().finally(() => { running = null; }));
 
   // The tip (with Ethereum's newest block, so a reader can say how long ago each block was) and the newest `limit` blocks, newest first, each without its leaf and nullifier lists (counts only); `before` pages back.
   async function blocks({ limit = 30, before = null } = {}) {
-    let head = await read('ch:head', null), recent;
-    if (!head || now() - head.at > cfg.staleMs) ({ head, recent } = await sync()); else recent = await read('ch:recent', []);
+    let head = mem ? mem.head : null, recent = mem ? mem.recent : null;
+    if (!head || now() - head.at > cfg.staleMs) ({ head, recent } = await sync());
     const n = Math.min(100, Math.max(1, Math.floor(Number(limit) || 30)));
     const top = before == null ? Infinity : Number(before);
-    const list = recent.filter((b) => b.height < top).slice(-n).reverse()
-      .map(({ leaves, nullifiers, ...b }) => b);
+    const list = recent.filter((b) => b.height < top).slice(-n).reverse();
     return { head: { height: head.height, hash: head.hash, ethHead: head.ethHead ?? null }, blocks: list };
   }
 
