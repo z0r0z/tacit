@@ -26,6 +26,10 @@
 // job and refused (and the program dropped from the claims) unless it is the pool's BITCOIN_RELAY_VKEY. A batch is billions of
 // cycles, tens of minutes on one GPU, and a proof cannot be stopped once it starts, so it is off by default: on a box that also
 // proves users' settles, a settle that comes in meanwhile waits for it. BTC_JOB_TIMEOUT_SECS (default 7200) is its watchdog limit.
+// COMMUNITY_MINER=0x<address> (community mode): no token. The worker races the board's public Bitcoin-state batches through the open
+// community routes (POST /prover/community/claim { miner, programs: ["btc-state"] } and /prover/community/result { miner, jobId, ... }),
+// and each batch the relay takes earns that address the board's points for it (TAC from the points service). The proof pool and the
+// warm-up pings, which are for Tacit's own tokens, are off; BTC_STATE is on.
 // RELOAD_FLAG (default /workspace/worker.reload): when that file exists and no job is in hand, the worker removes it and
 // exits 0, so the loop around it starts a fresh worker (and GPU server) with whatever binary and env are now in place,
 // never in the middle of a proof.
@@ -132,7 +136,12 @@ fn main() {
     }
     let bench = std::env::var("BENCH").ok();
     let base = env_or("BOARD_URL", "https://api.tacit.finance").trim_end_matches('/').to_string();
-    let token = if bench.is_some() { String::new() } else { std::env::var("WORKER_TOKEN").expect("WORKER_TOKEN is the bearer the API knows this worker by") };
+    // Community mode: an address to be paid, no token.
+    let community = std::env::var("COMMUNITY_MINER").ok().map(|a| a.trim().to_lowercase());
+    if let Some(a) = &community {
+        assert!(a.len() == 42 && a.starts_with("0x") && a[2..].chars().all(|c| c.is_ascii_hexdigit()), "COMMUNITY_MINER must be the 0x address the points go to");
+    }
+    let token = if bench.is_some() || community.is_some() { String::new() } else { std::env::var("WORKER_TOKEN").expect("WORKER_TOKEN is the bearer the API knows this worker by") };
     let name = env_or("WORKER_NAME", "worker");
     let classes: Vec<String> = env_or("CLASSES", "private,public").split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
     let poll = Duration::from_millis(env_or("POLL_MS", "1000").parse().expect("POLL_MS"));
@@ -150,7 +159,7 @@ fn main() {
         std::thread::spawn(move || {
             let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(20)).build();
             while warming.load(std::sync::atomic::Ordering::Relaxed) {
-                if !std::path::Path::new(&pause_flag).exists() {
+                if !token.is_empty() && !std::path::Path::new(&pause_flag).exists() {
                     let _ = agent.post(&format!("{base}/prover/claim")).set("Authorization", &format!("Bearer {token}"))
                         .send_json(serde_json::json!({ "worker": name, "classes": ["private"], "warming": true }));
                 }
@@ -205,8 +214,11 @@ fn main() {
     warming.store(false, std::sync::atomic::Ordering::Relaxed);
     let reload_flag = env_or("RELOAD_FLAG", "/workspace/worker.reload");
     let reload_due = || std::path::Path::new(&reload_flag).exists();
-    let claim_url = format!("{base}/prover/claim");
-    let result_url = format!("{base}/prover/result");
+    let (claim_url, result_url) = if community.is_some() {
+        (format!("{base}/prover/community/claim"), format!("{base}/prover/community/result"))
+    } else {
+        (format!("{base}/prover/claim"), format!("{base}/prover/result"))
+    };
     let auth = format!("Bearer {token}");
     let sk = worker_key();
     let my_pub = sk.public_key().to_encoded_point(true).as_bytes().to_vec();
@@ -237,7 +249,7 @@ fn main() {
     let mut recycle_from: Option<u32> = None;
     // A board job that comes in while a pool wrap is proved waits that one proof (under a minute here), well inside the relay's
     // PROVER_BOARD_WAIT_SECS before it would go to the prover network.
-    let pool_on = env_or("POOL", "1") == "1";
+    let pool_on = community.is_none() && env_or("POOL", "1") == "1";
     let pool_min_age_ms = env_or("POOL_MIN_AGE_SECS", "600").parse::<u64>().unwrap_or(600) * 1000;
     let pool_every = Duration::from_secs(env_or("POOL_EVERY_SECS", "30").parse::<u64>().unwrap_or(30));
     let mut pool_last: Option<Instant> = None;
@@ -253,7 +265,7 @@ fn main() {
     let eth_on = env_or("ETH_STATE", "1") == "1";
     let mut eth_key: Option<Result<_, String>> = None;
     // The Bitcoin-state program: claimed only while BTC_STATE is on and its key has not been refused.
-    let btc_on = env_or("BTC_STATE", "0") == "1";
+    let btc_on = community.is_some() || env_or("BTC_STATE", "0") == "1";
     let mut btc_key: Option<Result<_, String>> = None;
     let btc_limit = env_or("BTC_JOB_TIMEOUT_SECS", "7200").parse::<u64>().unwrap_or(7200);
     // A proof that never ends (a GPU kernel that hangs leaves the server alive and silent, and the client waiting on it for ever) is
@@ -293,11 +305,11 @@ fn main() {
         }
         let eth_claims = eth_on && !matches!(eth_key, Some(Err(_)));
         let btc_claims = btc_on && !matches!(btc_key, Some(Err(_)));
-        let (claim_classes, programs) = claim_scope(&classes, eth_claims, btc_claims);
+        let (claim_classes, programs) = if community.is_some() { (vec!["public".to_string()], vec!["btc-state"]) } else { claim_scope(&classes, eth_claims, btc_claims) };
         let claimed: Result<Claim, String> = agent
             .post(&claim_url)
             .set("Authorization", &auth)
-            .send_json(serde_json::json!({ "worker": name, "classes": claim_classes, "programs": programs, "pubkey": my_pub_hex }))
+            .send_json(serde_json::json!({ "worker": name, "classes": claim_classes, "programs": programs, "pubkey": my_pub_hex, "miner": community }))
             .map_err(|e| e.to_string())
             .and_then(|r| r.into_json::<Claim>().map_err(|e| e.to_string()));
         let job = match claimed {
@@ -382,11 +394,11 @@ fn main() {
         let body = match &outcome {
             Ok((pv, proof)) => {
                 println!("[{name}] job {} {label}: proved in {:.1} s", &job.job_id[..job.job_id.len().min(12)], t.elapsed().as_secs_f64());
-                serde_json::json!({ "jobId": job.job_id, "publicValues": format!("0x{}", hex::encode(pv)), "proof": proof })
+                serde_json::json!({ "jobId": job.job_id, "publicValues": format!("0x{}", hex::encode(pv)), "proof": proof, "miner": community })
             }
             Err(e) => {
                 println!("[{name}] job {} {label}: failed after {:.1} s: {e}", &job.job_id[..job.job_id.len().min(12)], t.elapsed().as_secs_f64());
-                serde_json::json!({ "jobId": job.job_id, "error": e.chars().take(300).collect::<String>() })
+                serde_json::json!({ "jobId": job.job_id, "error": e.chars().take(300).collect::<String>(), "miner": community })
             }
         };
         let transport_dead = matches!(&outcome, Err(e) if gpu_gone(e));
