@@ -13,7 +13,7 @@
 //   pinned()    the pairing id of a provider the bridger came by a link of (fast/fmt.js pairId), quoted first when it quotes, or null
 //   -> { lock(text), destroy() }
 
-import { DEC, ONE, esc, fmtTac, parseTac, slowNet, pairId } from './fmt.js';
+import { DEC, ONE, esc, fmtTac, parseTac, slowNet, pairId, highFee } from './fmt.js';
 import { minutesFor } from './route.js';
 export { fmtTac, parseTac, slowNet };
 const pct = (fee, of) => (of > 0n ? `${(Number((fee * 1000000n) / of) / 10000).toFixed(2)}%` : '');
@@ -113,7 +113,8 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
       const btc = c && c.total ? `<div class="kv"><span>Bitcoin fee</span><b class="num">≈ ${esc(c.total.toLocaleString('en-US'))} sats${c.take ? `<small>${esc(c.take.toLocaleString('en-US'))} of it is the provider's take</small>` : ''}</b></div>`
         : q.takeSats ? `<div class="kv"><span>Bitcoin fee</span><b class="num">${esc(q.takeSats.toLocaleString('en-US'))} sats<small>for the provider's take, and your own transaction's fee</small></b></div>` : '';
       recv.innerHTML = `${sm && sm.count > 1 && S.best ? `<div class="kv"><span>Provider</span><b>${esc(S.best.name || 'Provider')}</b></div>` : ''}<div class="kv"><span>Fee</span><b class="num">${esc(fmtTac(q.fee))} TAC<small>${esc(pct(q.fee, q.btcValue))}</small></b></div>${btc}
-        <div class="kv"><span>Time</span><b class="num">about ${minutesFor(q.minConfs)} minutes<small>${Math.max(1, Number(q.minConfs) || 1)} Bitcoin confirmation${(Number(q.minConfs) || 1) > 1 ? 's' : ''}, then a pool settle</small></b></div>`;
+        <div class="kv"><span>Time</span><b class="num">about ${minutesFor(q.minConfs)} minutes<small>${Math.max(1, Number(q.minConfs) || 1)} Bitcoin confirmation${(Number(q.minConfs) || 1) > 1 ? 's' : ''}, then a pool settle</small></b></div>${highFee(q) ? `
+        <p class="status err" role="alert" id="fx-high">High fee: this provider keeps ${esc(fmtTac(q.fee))} TAC (${esc(pct(q.fee, q.btcValue))}) of your ${esc(fmtTac(q.btcValue))} TAC, and you receive ${esc(fmtTac(q.evmAmount))}. A smaller bridge costs more in proportion, a larger one less, and the regular bridge may cost less.</p>` : ''}`;
     }
     go.textContent = S.busy ? 'Working…' : S.sure ? 'Press again to bridge' : 'Bridge';
     go.disabled = S.busy || !!bad || !q || units == null || short;
@@ -291,7 +292,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
     const key = `${S.quote.id}|${S.quote.btcValue}`, who = S.best && S.best.name ? S.best.name : 'the provider';
     if (!(S.sure && S.sure.key === key && Date.now() - S.sure.at < 180e3)) {
       S.sure = { key, at: Date.now() };
-      note(`This locks ${fmtTac(S.quote.btcValue)} TAC on Bitcoin until ${who} has paid you ${fmtTac(S.quote.evmAmount)} private TAC in the pool, in about ${minutesFor(S.quote.minConfs)} minutes. If it does not, the lock returns to your address after about a day. Press again to bridge.`);
+      note(`${highFee(S.quote) ? `High fee: ${who} keeps ${fmtTac(S.quote.fee)} TAC (${pct(S.quote.fee, S.quote.btcValue)}). ` : ''}This locks ${fmtTac(S.quote.btcValue)} TAC on Bitcoin until ${who} has paid you ${fmtTac(S.quote.evmAmount)} private TAC in the pool, in about ${minutesFor(S.quote.minConfs)} minutes. If it does not, the lock returns to your address after about a day. Press again to bridge.`);
       paintForm();
       return;
     }
@@ -325,7 +326,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
     if (/already part of a swap/.test(m)) return 'This note is already in a bridge.';
     if (/do not cover the amount/.test(m)) return 'Your TAC on Bitcoin does not cover that amount in one go.';
     if (/quote expired|expires too soon/.test(m)) return 'The quote ran out. Try again.';
-    if (/fee is above the limit/.test(m)) return 'The provider\'s fee is above what this page accepts.';
+    if (/fee is above the limit/.test(m)) return 'The provider keeps almost all of that amount as its fee, so this page does not quote it.';
     if (/is not the one this page expects/.test(m)) return 'This provider is not the one this page knows.';
     if (/not enough sats to fund/.test(m)) { const x = /need (\d+), have (\d+)/.exec(m); return x ? shortText({ need: Number(x[1]), have: Number(x[2]) }) : 'This key\'s Bitcoin address does not hold enough sats for the fee.'; }
     if (/cannot hold that amount|cannot take that amount/.test(m)) return 'The provider cannot take that amount right now. Try a smaller amount.';

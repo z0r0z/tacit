@@ -23,3 +23,7 @@ export const slowNet = (e) => !!e && (e.unreachable === true || /public nodes di
 
 // a provider is named in a pairing link (/fast/#with=…) by 16 hex digits of its claim key, after its first byte
 export const pairId = (claimPub) => String(claimPub || '').replace(/^0x/, '').toLowerCase().slice(2, 18);
+
+// a fee over 5% of the amount is a high one: the fast page says so plainly, and the front page's Bridge tab does not prefer such a quote
+export const FEE_WARN_BPS = 500n;
+export const highFee = (q) => (q.highFee != null ? !!q.highFee : BigInt(q.fee) * 10000n > BigInt(q.btcValue) * FEE_WARN_BPS);

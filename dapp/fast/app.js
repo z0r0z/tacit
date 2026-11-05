@@ -4,10 +4,10 @@ import { makeKeySession, signInSheet } from '/trade/key.js?cb=26d9c07b';
 import { makeTacitSession } from '/tacit-session.js?cb=a2d34bb2';
 import { getUx as loadUx, forgetUx } from '/trade/poolux.js?cb=39bc83e6';
 import { onMainnet, connectedInjected } from '/eth-nodes.js';
-import { mountFast } from '/fast/ui.js?cb=8c0b458c';
-import { mountProvide } from '/fast/provide.js?cb=05e506f6';
+import { mountFast } from '/fast/ui.js?cb=cddec31b';
+import { mountProvide } from '/fast/provide.js?cb=badff501';
 import { mountBound } from '/fast/bound.js?cb=862c8d6e';
-import { openFast, openProvider, openBound, discoverProviders, PROVIDER_DEFAULTS } from '/fast/wire.js?cb=3197d845';
+import { openFast, openProvider, openBound, discoverProviders, PROVIDER_DEFAULTS } from '/fast/wire.js?cb=a7b67508';
 import { makeWants } from '/fast/want.js?cb=3dad1fd3';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 

@@ -194,6 +194,10 @@ and advances with `step(record)`.
 
 ## Known limits
 
+- A provider prices as it likes. A bridger's client quotes a fee up to 90% of the amount and flags one over 5% (`highFee`): the fast page
+  says so in the receipt and at the first press, and the front page's Bridge tab keeps the regular bridge as its choice and says the fast
+  page can still do it (`dapp/fast/fmt.js`, `route.js`). A fee over 90% is not quoted.
+
 - A board is a memory-only relay: it can be filled with junk requests (64 for each provider for ten minutes) and its ad slots with
   throwaway keys. An ad is signed by the claim key only, so a provider whose ad has lapsed can have its gateway key named in an ad of
   someone else's until that one lapses. Both need a change to the ad's format (a gateway signature) and a deploy of the board and the pages

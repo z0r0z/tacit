@@ -113,11 +113,11 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
     if (feeBps == null) return { why: 'The fee is a percentage from 0 to 5.' };
     if (most == null || most < MIN_AMOUNT) return { why: `The most per bridge is at least ${fmtTac(MIN_AMOUNT)} TAC.` };
     if (S.inv && most > S.inv.pool) return { why: 'That is more private TAC than you have.' };
-    // a bridger's page refuses a quote whose fee is over 5% (fastbridge-client.js maxFeeBps), and the smallest bridge feels the flat fee most
+    // the front page's Bridge tab prefers only a fee within 5% (fast/fmt.js highFee); the smallest bridge feels the flat fee most
     const least = base.minAmount, atLeast = (least * BigInt(feeBps)) / 10000n + base.flatFee;
     if (atLeast * 10000n > least * FEE_LIMIT_BPS) {
       const top = Number(((least * FEE_LIMIT_BPS - base.flatFee * 10000n) / least)) / 100;
-      return { why: `At ${fmtTac(least)} TAC that fee is ${fmtTac(atLeast)} TAC, over the 5% bridgers accept. Use at most ${top.toFixed(2)}%.` };
+      return { why: `At ${fmtTac(least)} TAC that fee is ${fmtTac(atLeast)} TAC, over the 5% the front page's Bridge tab prefers (the fast page quotes more, with a warning). Use at most ${top.toFixed(2)}%.` };
     }
     return { feeBps, maxAmount: most };
   }

@@ -6,7 +6,7 @@
 //   btc     the Bitcoin locker's Bitcoin context (fastbridge-btc.js)      evm   the pool side (fastbridge-evm.js)
 //   store   { get(id), put(rec), list() }                                  seed  32 bytes, the swap seed from the key
 //   pins    { claimPub?, btcAsset, evmAsset }: what the page expects of the LP; a quote that differs is refused
-//   policy  { csvBlocks, minCsv, maxCsv, minClaimSecs, offerWaitSecs, maxEvmWindowSecs, maxFeeBps, quoteMarginSecs }
+//   policy  { csvBlocks, minCsv, maxCsv, minClaimSecs, offerWaitSecs, maxEvmWindowSecs, warnFeeBps, maxFeeBps, quoteMarginSecs }
 
 import { makeBitcoinLocker } from './fastbridge-bl.js';
 import { makeHttpCounter } from './fastbridge-http.js';
@@ -21,7 +21,8 @@ const MAX_INPUTS = 6;
 
 export const DEFAULT_POLICY = {
   csvBlocks: 144, minCsv: 72, maxCsv: 288, maxTakeSats: 30000, minClaimSecs: 3600, offerWaitSecs: 2 * 3600, maxEvmWindowSecs: 6 * 3600,
-  maxFeeBps: 500, quoteMarginSecs: 120,
+  // a fee over warnFeeBps is quoted, flagged `highFee`, for a page to say so plainly (a provider prices as it likes); one over maxFeeBps is not quoted
+  warnFeeBps: 500, maxFeeBps: 9000, quoteMarginSecs: 120,
 };
 
 export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, policy: policyIn = {}, provider = null, now = () => Math.floor(Date.now() / 1000) }) {
@@ -56,11 +57,12 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
     if (!Number.isInteger(csvBlocks) || csvBlocks < policy.minCsv || csvBlocks > policy.maxCsv) throw new Error('the quote\'s timelock is out of range');
     const fee = btcValue - evmAmount;
     if (fee * 10000n > btcValue * BigInt(policy.maxFeeBps)) throw new Error('the quote\'s fee is above the limit this page accepts');
+    const highFee = fee * 10000n > btcValue * BigInt(policy.warnFeeBps);
     if (!(Number(q.validUntil) > now() + policy.quoteMarginSecs)) throw new Error('the quote expires too soon to use');
     // the provider's take fee, which the lock pays it on Bitcoin: none, or from dust to the most this page pays
     const takeSats = Number(q.takeSats ?? 0);
     if (!Number.isInteger(takeSats) || (takeSats !== 0 && (takeSats < 546 || takeSats > policy.maxTakeSats))) throw new Error('the quote\'s Bitcoin fee is out of range');
-    return { ...q, claimPub: strip(q.claimPub), btcAsset: strip(q.btcAsset), evmAsset: strip(q.evmAsset), btcValue, evmAmount, fee, csvBlocks, takeSats };
+    return { ...q, claimPub: strip(q.claimPub), btcAsset: strip(q.btcAsset), evmAsset: strip(q.evmAsset), btcValue, evmAmount, fee, csvBlocks, takeSats, highFee };
   }
 
   // Notes to lock for `amount`: the smallest single note that covers it, else the largest first until covered.

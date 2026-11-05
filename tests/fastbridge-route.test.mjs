@@ -67,6 +67,14 @@ test('no provider takes it, and why: none online, none for that size (and what t
   assert.deepEqual([broken.ok, broken.why], [false, 'error']);
 });
 
+test('a high fee is not a reason to leave the regular bridge: the tile prefers the quote within 5%, and says so when every quote is over it', async () => {
+  const fr = routeOf([provider('Dear', { feeBps: 800, flatFee: 0n }), provider('Fair', { feeBps: 50 })], session());
+  const o = await fr.offer(100n * TAC);
+  assert.equal(o.ok, true); assert.equal(o.provider.name, 'Fair'); assert.deepEqual(o.quotes.map((x) => x.provider.name), ['Fair'], 'the dear one is not kept behind it');
+  const only = await routeOf([provider('Dear', { feeBps: 800, flatFee: 0n })], session()).offer(100n * TAC);
+  assert.deepEqual([only.ok, only.why], [false, 'dear'], 'quoted, but dearer than the tile prefers');
+});
+
 test('the key\'s own provider is not one to bridge with', async () => {
   const s = session();
   const fr = routeOf([provider('Mine', { feeBps: 1 }), provider('Other', { feeBps: 40 })], s, { ownId: () => 'Mine' });
@@ -116,7 +124,7 @@ test('what the tab shows for an offer: the arrival, the fee, the Bitcoin cost, t
 
 test('why the fast bridge is not offered is one row of the regular receipt, and nothing when there is nothing to say', () => {
   assert.deepEqual(whyRow({ ok: false, why: 'size', min: 10n * TAC, max: 1000n * TAC }), ['Fast bridge', 'providers take 10 to 1,000 TAC now']);
-  assert.deepEqual(whyRow({ ok: false, why: 'dear' }), ['Fast bridge', 'the providers’ fee is over 5% at this size']);
+  assert.deepEqual(whyRow({ ok: false, why: 'dear' }), ['Fast bridge', 'the providers’ fee is over 5% at this size; the fast page can still bridge it']);
   assert.deepEqual(whyRow({ ok: false, why: 'busy' }), ['Fast bridge', 'the providers did not answer']);
   for (const o of [null, { ok: true }, { ok: false, why: 'none' }, { ok: false, why: 'error' }]) assert.equal(whyRow(o), null);
 });

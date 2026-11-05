@@ -458,6 +458,22 @@ test('the first press says what the bridge does and goes no further; a changed a
   assert.equal(m.st.calls.starts.length, 0); assert.match(m.$('fx-st').textContent, /locks 120 TAC/);
 });
 
+test('a fee over 5% is quoted with a plain warning, in the receipt and again at the first press; a fair fee has none', async () => {
+  const m = mount({ providers: [provider('Dear', { feeBps: 800, flatFee: '0' })] });
+  await signIn(m);
+  typeIn(m, '100'); await until(() => !m.$('fx-go').disabled, 'a quote');
+  assert.match(text(m.$('fx-recv')), /High fee: this provider keeps 8 TAC \(8\.00%\) of your 100 TAC, and you receive 92\./);
+  assert.equal(m.$('fx-big').textContent, '92');
+  m.$('fx-go').click(); await until(() => m.$('fx-go').textContent === 'Press again to bridge', 'the confirmation');
+  assert.match(m.$('fx-st').textContent, /^High fee: Dear keeps 8 TAC \(8\.00%\)\. This locks 100 TAC/);
+  const fair = mount({ providers: [provider('Fair', { feeBps: 100, flatFee: '0' })] });
+  await signIn(fair);
+  typeIn(fair, '100'); await until(() => !fair.$('fx-go').disabled, 'a quote');
+  assert.equal(fair.$('fx-high'), null, 'no warning for a fee within 5%');
+  fair.$('fx-go').click(); await until(() => fair.$('fx-go').textContent === 'Press again to bridge', 'the confirmation');
+  assert.doesNotMatch(fair.$('fx-st').textContent, /High fee/);
+});
+
 test('the wallet failing to open is said and the page can be pressed again', async () => {
   let n = 0;
   const m = mount({ open: async () => { n++; if (n === 1) throw new Error('The Bitcoin address of this key is not the one the wallet reads. Nothing was done.'); return sessionStub().session; } });

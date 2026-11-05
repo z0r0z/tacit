@@ -15,7 +15,7 @@
 //   fr.records()            -> the bridges, newest first, in words (fastbridge-client.js describe)
 //   fr.run(onChange)        -> stop(): the steps taken while the page is open
 
-import { fmtTac } from './fmt.js';
+import { fmtTac, highFee } from './fmt.js';
 
 // What a provider takes now: its most, or less when it says so.
 export const capOf = (t) => (t.available != null && t.available < t.maxAmount ? t.available : t.maxAmount);
@@ -50,8 +50,11 @@ export function makeFastRoute({ discover, open, ownId = () => null, refreshMs = 
       const dear = r.failed.length > 0 && r.failed.every((f) => /fee is above the limit/.test(String((f.error && f.error.message) || '')));
       return { ok: false, why: dear ? 'dear' : r.failed.length ? 'busy' : 'size', min, max, error: r.failed[0] && r.failed[0].error };
     }
-    const best = r.quotes[0];
-    return { ok: true, quotes: r.quotes, quote: best.quote, provider: best.provider, minutes: minutesFor(best.quote.minConfs), min, max };
+    // a quote with a high fee is not a reason to leave the regular bridge: the fast page quotes it, with a warning, for whoever wants it
+    const fair = r.quotes.filter((x) => !highFee(x.quote));
+    if (!fair.length) return { ok: false, why: 'dear', min, max };
+    const best = fair[0];
+    return { ok: true, quotes: fair, quote: best.quote, provider: best.provider, minutes: minutesFor(best.quote.minConfs), min, max };
   }
 
   async function cost(o, note) {
@@ -95,7 +98,7 @@ export function shown(o) {
 // why the fast bridge is not offered, when providers are online and none takes this note: one row of the regular receipt (null when there is nothing to say)
 export function whyRow(o) {
   if (!o || o.ok || o.why === 'none' || o.why === 'error') return null;
-  return ['Fast bridge', o.why === 'size' ? `providers take ${fmtTac(o.min)} to ${fmtTac(o.max)} TAC now` : o.why === 'dear' ? 'the providers’ fee is over 5% at this size' : 'the providers did not answer'];
+  return ['Fast bridge', o.why === 'size' ? `providers take ${fmtTac(o.min)} to ${fmtTac(o.max)} TAC now` : o.why === 'dear' ? 'the providers’ fee is over 5% at this size; the fast page can still bridge it' : 'the providers did not answer'];
 }
 
 // the first press of the bridge: what it does, what it costs and what happens if the provider stops

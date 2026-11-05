@@ -63,6 +63,13 @@ test('a quote the page will not show: unreadable, for another amount, a payout a
   assert.equal(ok.evmAmount, NET);
   const loose = await clientFor(w, fakeLp(w, { evmAmount: '12' }), { policy: { maxFeeBps: 10000 } }).quote(VALUE);
   assert.equal(loose.evmAmount, 12n, 'the fee limit is the page\'s to set');
+  // a provider prices as it likes: a fee over 5% is quoted and flagged for the page to say so, one over 90% is not quoted
+  assert.equal(ok.highFee, false);
+  const dear = await clientFor(w, fakeLp(w, { evmAmount: String(VALUE - (VALUE * 8n) / 100n) })).quote(VALUE);
+  assert.deepEqual([dear.highFee, dear.evmAmount], [true, VALUE - (VALUE * 8n) / 100n]);
+  const edge = await clientFor(w, fakeLp(w, { evmAmount: String(VALUE - (VALUE * 5n) / 100n) })).quote(VALUE);
+  assert.equal(edge.highFee, false, 'exactly 5% is not high');
+  await assert.rejects(() => clientFor(w, fakeLp(w, { evmAmount: String(VALUE / 10n - 1n) })).quote(VALUE), /fee is above the limit/);
 });
 
 test('notes to lock: the smallest one that covers the amount, else the largest first, and none when they do not cover it', async () => {
