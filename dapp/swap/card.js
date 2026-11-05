@@ -11,6 +11,7 @@ import * as A from '/swap/aggregate.js?cb=29aa40e7';
 import * as SV from '/swap/solvers.js?cb=28273640';
 import { linkName, linkSides } from '/swap/link.js?cb=c30e2cdb';
 import { routeLine } from '/swap/route-name.js?cb=1bc2443b';
+import { calmText } from '/relay-outcome.js';
 import * as GR from '/gas-relay.js?cb=fbfad56c';
 import { checkSnwapCall, SNWAP_EXECUTORS, SAFE_EXECUTOR } from '/zrouter-guard.js?cb=2841d896';
 import { rewardPop } from '/reward-pop.js?cb=1b53f6d4';
@@ -1242,7 +1243,7 @@ async function relayGo(P, from, plan) {
     say('Sending it to the relay…');
     const r = await fetch(`${API}/gas/order`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ order: { order, data, signature, inPermit, feePermit, p2 } }), signal: AbortSignal.timeout(15e3) }).then((q) => q.json()).catch(() => null);
     // the relay saying no is final; no answer at all (a timeout, a dropped connection) is not: it may have the order, so this goes on to wait for it until it expires
-    if (r && !r.ok) throw new Error(`The relay did not take the order${r?.error ? `: ${esc(r.error)}` : ''}. Nothing was spent.`);
+    if (r && !r.ok) throw new Error(`${calmText(r?.error) && calmText(r?.error) !== String(r?.error) ? calmText(r.error) : 'The relay did not take the order.'} Nothing was spent.`);
     if (!r) say('The relay did not answer. Checking whether it took the order…');
     // wait for the relay to send it: the contract marks the order's nonce used when it runs (or when the wallet cancels it)
     const usedSel = '0xad04dc3f' + addrWord(from) + BigInt(order.nonce).toString(16).padStart(64, '0');
@@ -1502,7 +1503,7 @@ function depositSoon(q) {
   clearTimeout(depTimer);
   depTimer = setTimeout(ask, 0);
 }
-const ltLoad = () => (LTP ||= import('/swap/later.js?cb=ceb9e446').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o), now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
+const ltLoad = () => (LTP ||= import('/swap/later.js?cb=8e0eb577').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o), now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
 // what Swap privately starts from: the wallet's ETH, or a token the zap sells for the deposit's ETH (any listed token zQuoter routes, or TAC through
 // the Precision pool; WETH, tacUSD and tacBTC have their own ways in)
 const laterPay = (k) => isEth(k) || k === lc(R.TAC) || (isListed(k) && !tacitKey(k) && k !== lc(R.WETH));
@@ -2092,7 +2093,7 @@ async function quoteExit(my, wei) {
   const routeP = S.pay === S.get ? null : price();
   const pool = exitOf()?.wallet ? { open: true, fee: null, hop: null } : await exitPool(S.pay);
   if (!pool.open) return done({ rows: [], why: `The private ${pay.sym} pool is not open yet.` });
-  if (pool.fee == null && !exitOf()?.wallet) return done({ rows: [], why: `The relay is not quoting for the private ${pay.sym} pool right now. Try again in a moment.` });
+  if (pool.fee == null && !exitOf()?.wallet) return done({ rows: [], why: `No price for the private ${pay.sym} pool yet. Try again in a moment.` });
   if (S.pay === S.get) return done({ rows: [{ k: 'exit', name: `${pay.sym} itself`, out: wei, min: wei, best: true }], fee: pool.fee });
   const { r, e } = await routeP;
   if (e) throw e;
@@ -2209,7 +2210,7 @@ async function exitGo() {
     const lt = await ltLoad();
     try { await (await pvLoad()).open(); } catch (e) { if (!e?.unlockCancelled) throw e; return; }
     const pool = await exitPool(S.pay);
-    if (!pool.open || pool.fee == null) throw new Error(`The relay is not quoting for the private ${pay.sym} pool right now. Try again in a moment.`);
+    if (!pool.open || pool.fee == null) throw new Error(`No price for the private ${pay.sym} pool yet. Try again in a moment.`);
     const into_ = into ? await exitPool(S.get) : null;
     if (into && (!into_.open || (into_.hop && into_.fee == null))) throw new Error(`The private ${get.sym} pool is not ready right now. Try again in a moment.`);
     plan = await lt.adopt({ swapWei: wei, token: S.get, sym: get.sym, dec: get.dec, to: into ? null : dest, toName: !into && S.toName?.addr === lc(dest) ? S.toName.name : null,
@@ -2223,7 +2224,7 @@ async function exitGo() {
 // ── a private swap, made on this card: the Tacit key is opened here (private.js), and the relay proves and sends each step ──
 let PVP = null, PV = null;
 const pickWallet = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : list[0]?.uuid; };
-const pvLoad = () => (PVP ||= import('/swap/private.js?cb=9ad6056a').then((m) => {
+const pvLoad = () => (PVP ||= import('/swap/private.js?cb=a34024ee').then((m) => {
   PV = m.makePrivate({ getUx, pick: pickWallet, ...H.key, now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()), onKey: (why) => { if (why) say(esc(why), 'err', true); else { PV.read().then(paint, () => {}); if (plans().some((x) => x.state === 'waiting')) ltLoad().then(readBlend, () => {}); } paint(); } });
   PV.mod = m;
   return PV;

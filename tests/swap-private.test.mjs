@@ -167,7 +167,7 @@ test('the relay held or paused: nothing is sent', async () => {
   for (const state of ['held', 'paused', 'down']) {
     const { M, ux } = setup({ deposit: note('0xnew', 1000) });
     M.relay = { state };
-    await assert.rejects(run(await load(ux), plan({ wallet: true })), /isn’t taking private swaps/);
+    await assert.rejects(run(await load(ux), plan({ wallet: true })), /can’t start right now/);
     assert.strictEqual(M.wraps.length + M.routes.length, 0, `${state}: no deposit, no route`);
   }
 });

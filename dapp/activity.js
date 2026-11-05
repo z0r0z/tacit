@@ -215,8 +215,8 @@ export function makePace({ storage = globalThis.localStorage } = {}) {
 
 export const WAIT_WHY = {
   held: 'In line. It keeps its place and goes through on its own.',
-  paused: 'In line: the relay isn’t proving right now. It keeps its place and goes through once it is.',
-  down: 'In line: the relay has been quiet for a few minutes (a long proof, or a restart). It keeps its place and goes through on its own.',
+  paused: 'In line. It keeps its place and goes through on its own.',
+  down: 'In line. It keeps its place and goes through on its own.',
   busy: 'In line behind another request.',
 };
 const RELAY_WHY = { busy: 'busy', held: 'held', paused: 'paused', down: 'down' };

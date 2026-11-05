@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-NV/tue1DzvC0dNL7As6AfF8rlnXhGp0Tzpm021a40zk=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-XHqcPa3BtUtYKVOuwRBa6/J+nN8U0zY+O623xStqt+w=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -56,15 +56,15 @@
 <link rel="modulepreload" href="/bridge-all.js?cb=4b6de3ff">
 <link rel="modulepreload" href="/lp-zap.js?cb=4823580d">
 <link rel="modulepreload" href="/farm-ops.js?cb=0933a4c8">
-<link rel="modulepreload" href="/relay-outcome.js?cb=26298b8e">
+<link rel="modulepreload" href="/relay-outcome.js?cb=9db7155a">
 <link rel="modulepreload" href="/btc-borrow.js?cb=13923518">
 <link rel="modulepreload" href="/bridge-out.js?cb=ecf49203">
 <link rel="modulepreload" href="/bridge/track.js?cb=616e7608">
 <link rel="modulepreload" href="/bridge-in.js?cb=4a6878a3">
 <link rel="modulepreload" href="/bridge-tick.js?cb=b9adb91d">
 <link rel="modulepreload" href="/tacit-session.js?cb=a2d34bb2">
-<link rel="modulepreload" href="/activity.js?cb=6baa925d">
-<link rel="modulepreload" href="/swap/card.js?cb=1494f005">
+<link rel="modulepreload" href="/activity.js?cb=a49f677c">
+<link rel="modulepreload" href="/swap/card.js?cb=cda6300b">
 <link rel="modulepreload" href="/trade/wallet.js?cb=88b623b8">
 <link rel="modulepreload" href="/trade/util.js?cb=e8317464">
 <link rel="modulepreload" href="/trade/rpc.js?cb=f575ef91">
@@ -76,6 +76,7 @@
 <link rel="modulepreload" href="/swap/solvers.js?cb=28273640">
 <link rel="modulepreload" href="/swap/link.js?cb=c30e2cdb">
 <link rel="modulepreload" href="/swap/route-name.js?cb=1bc2443b">
+<link rel="modulepreload" href="/relay-outcome.js">
 <link rel="modulepreload" href="/gas-relay.js?cb=fbfad56c">
 <link rel="modulepreload" href="/reward-pop.js?cb=1b53f6d4">
 <link rel="modulepreload" href="/points-note.js?cb=dc44d257">
@@ -687,6 +688,7 @@ a.di { color: inherit; text-decoration: none; }
 .hx-path li::before { content: counter(s); display: inline-grid; place-items: center; width: 17px; height: 17px; border-radius: 50%; font-size: 10px; border: 1px solid var(--hair-2); }
 .hx-path li.on { color: var(--ink); } .hx-path li.on::before { color: var(--paper); background: var(--ink); border-color: var(--ink); }
 .hx-path li.ok::before { content: '✓'; color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+.hx-fin { margin: 0 0 10px; } .hx-fin .callout { margin: 0; }
 .hx-next { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; margin: 12px 0 0; font: 12px var(--mono); color: var(--mute); }
 .hx-next button { min-height: 30px; padding: 0 14px; font: 500 12px var(--mono); color: var(--ink); background: var(--card); border: 1px solid var(--hair-2); border-radius: 999px; cursor: pointer; }
 @media (hover: hover) { .hx-next button:hover { background: var(--field); } }
@@ -1935,7 +1937,7 @@ import { rewardPop } from '/reward-pop.js?cb=1b53f6d4';
 import * as GR from '/gas-relay.js?cb=fbfad56c';
 import { netPicker } from '/net-pick.js?cb=8f57c360';
 import { UNBOND_DUST, HARVEST_WORTH, unharvested, bFor, aFor, farmManager, ladder as xoLadder, feeShort as xoFeeShort } from '/farm-ops.js?cb=0933a4c8';
-import { relayCode, proveCapped, proved, relayRefused, jobSaid } from '/relay-outcome.js?cb=26298b8e';
+import { relayCode, proveCapped, proved, relayRefused, jobSaid, calmText } from '/relay-outcome.js?cb=9db7155a';
 import { makeLoans, bondGap, lockPad as lockPadOf } from '/btc-borrow.js?cb=13923518';
 import { makeOutFee, limitText, proofWarn, fundingText, onTheWay } from '/bridge-out.js?cb=ecf49203';
 import { ROUTES as BR_WAYS } from '/bridge/track.js?cb=616e7608';
@@ -1943,7 +1945,7 @@ import { SERVED as SERVED_POOLS, keeperIdOf, makeTokenPools, KEEPERS as POOL_KEE
 import { bridgeError, checkText, listNotes as listBridgeNotes, begin as beginBridge, toSelf as noteToSelf, through as brThrough, transfers as brTransfers, longCount as brLongCount, longReason as brLongReason, needsSend as brNeedsSend, firstStep as brFirst, overCap as brOver, haltText as bridgeHaltText, halts as brHalts, mergeSend, startNote, tryAgain, bulkFee, prepsAfterPass, runMerge as bridgeRunMerge, runAll as bridgeRunAll } from '/bridge-in.js?cb=4a6878a3';
 import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverEvery, IN_DONE, IN_HELD, IN_BURN_SENT, waitRanOut } from '/bridge-tick.js?cb=b9adb91d';
 import { makeTacitSession } from '/tacit-session.js?cb=a2d34bb2';
-import { ACT_KEY, ACT_MAX, JOB_LABEL, ENDS, ended, listed as listedOf, actBridge, actOpen, actDone, makeJournal, makeFollow, makeRelayState, makePace, WAIT_WHY, OPENISH, ahead } from '/activity.js?cb=6baa925d';
+import { ACT_KEY, ACT_MAX, JOB_LABEL, ENDS, ended, listed as listedOf, actBridge, actOpen, actDone, makeJournal, makeFollow, makeRelayState, makePace, WAIT_WHY, OPENISH, ahead } from '/activity.js?cb=a49f677c';
 if (window.__tacitAway) await new Promise(() => {});
 // The swap card's stylesheet is linked in the head as media="print", so the first paint does not wait for it (the host sends it after the document, and nothing visible yet is drawn
 // with it): it applies from here, in its place in the cascade, before the tile is drawn.
@@ -2206,7 +2208,7 @@ const errText = (e) => {
   if (e?.code === 'prover_credit' || e?.code === 'not_proved' || e?.code === 'prover_load') return spMsg(e);
   if (relayCode(e) === 'open' || /^settle held: proved/i.test(m)) return proved(e) ? 'It is proved and waiting to be sent: it goes through when a relay sends it, or send it yourself now from Activity.'
     : 'It is proved and waiting for a relay to send it. It goes through when one does; follow it in Activity.';
-  if (relayCode(e) === 'relay_paused') return e?.queued ? 'The relay isn’t proving right now. It keeps its place in line and goes through once it is.' : 'The relay isn’t proving right now. Nothing was spent.';
+  if (relayCode(e) === 'relay_paused') return e?.queued ? 'In line. It keeps its place and goes through on its own.' : 'Nothing was spent. Try again in a few minutes.';
   if (relayCode(e) === 'relay_held') return e?.queued ? (e.slow ? 'It is taking longer than usual. It keeps its place in line.' : 'The relay can’t send this one right now. It keeps its place in line.') : 'The relay can’t take this one right now.';
   if (relayCode(e) === 'free_budget') return 'The relay’s free settles for today are used up. They open again at midnight UTC.';
   if (/prove failed:/i.test(m) && proofsBusy(m)) return failText({ status: 'failed', err: m.slice(m.search(/prove failed:/i)) });
@@ -2217,7 +2219,7 @@ const errText = (e) => {
   if (/fee below the current floor/i.test(m)) return 'The network fee rose while this was being sent. Nothing was spent. Try again in a minute; the fee is worked out again each time.';
   if (/settle timed out|status polling for job/i.test(m)) return `Still in the relay’s queue. It goes through on its own; follow it in Activity, and do not send it again.`;
   if (/prove timed out/i.test(m)) return 'The relay is taking longer than usual to prove this, and this page stopped waiting for it. Try again in a few minutes.';
-  if (/relay lost the job/i.test(m)) return 'The relay lost track of this request. Check Activity before sending it again.';
+  if (/relay lost the job/i.test(m)) return 'This one needs a check: see Activity before sending it again.';
   if (/short of gas|can.t take this one/i.test(m)) return 'The relay can’t take this one right now.';
   if (/^the relay is busy with other sends/i.test(m)) return m.charAt(0).toUpperCase() + m.slice(1);
   if (/free relayed settles for today are used up/i.test(m)) return 'The relay’s free settles for today are used up. They open again at midnight UTC.';
@@ -2228,7 +2230,7 @@ const errText = (e) => {
   if (/timed? ?out|timeout/i.test(m)) return 'The network took too long to answer. Try again.';
   if (/previously derived a different Tacit identity/i.test(m)) return 'This account opened a different Tacit wallet on this device before. Switch to that account in your wallet, or open yours another way.';
   if (/non-canonical \(high-s\) signature/i.test(m)) return 'The wallet’s signature came back in a form Tacit does not use, so nothing was opened. Reconnect the wallet and try again.';
-  const t = m.replace(/^Error:\s*/, '').replace(/\brelayer/gi, 'relay');
+  const t = calmText(m.replace(/^Error:\s*/, '').replace(/\brelayer/gi, 'relay'));
   if (t.length <= 240) return t;
   const cut = t.slice(0, 240), end = cut.lastIndexOf('. ');
   return end > 80 ? cut.slice(0, end + 1) : `${cut.slice(0, cut.lastIndexOf(' '))}…`;
@@ -2835,7 +2837,7 @@ function actSteps(it) {
 const byTime = (ms) => new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 const byLine = (j) => (!j.by ? '' : j.by > Date.now() ? ` It has until ${byTime(j.by)} to go through: past that it expires, nothing is spent, and you send it again.`
   : ' Its time has run out: it will show as expired, nothing is spent, and you send it again.');
-const WAIT_BY = { held: 'In line.', paused: 'In line: the relay isn’t proving right now.', down: 'In line: the relay has been quiet for a few minutes (a long proof, or a restart).', busy: 'In line behind another request.' };
+const WAIT_BY = { held: 'In line.', paused: 'In line.', down: 'In line.', busy: 'In line behind another request.' };
 const jobWhere = (j) => {
   if (ownJob(j.id)) return j.status === 'proven' ? (JOBS.get(j.id.slice(4))?.run.live ? `Proved with your own credit. Sending it from ${your()}…`
     : SEALED.has(j.id.slice(4)) ? 'Proved with your own credit, but its settle was not sent.' : 'Proved, but the page that asked for it closed before sending it. Start it again.') : DEV_JOB.test(j.id) && devNow(j) ? devSaid(devNow(j)) : spSaid(j.stage, j.status, !!j.inPub);
@@ -2899,7 +2901,7 @@ function selfLine(it) {
   if (!selfWork(it)) { OFFERED.delete(it.id); return err; }
   OFFERED.add(it.id);
   if ((RS.why === 'paused' || RS.why === 'down') && !ownOn()) {
-    return html`${err}<div class="actr-f"><button class="link" type="button" data-prove-open>Prove it yourself</button>: the relay isn’t proving right now. Switch on your own prover credit, then ${it.self.exit ? 'send it' : 'finish it'} from ${your()} here.</div>`;
+    return html`${err}<div class="actr-f"><button class="link" type="button" data-prove-open>Prove it yourself</button> to send it sooner: switch on your own prover credit, then ${it.self.exit ? 'send it' : 'finish it'} from ${your()} here.</div>`;
   }
   return html`${err}<div class="actr-f"><button class="link" type="button" data-self="${it.id}">${it.self.exit ? 'Send it' : 'Finish it'} from ${your()}</button>
     instead: ${it.self.exit ? `no relay fee; ${your()} pays the network fee, and its address shows on the withdrawal.` : `${your()} pays the network fee, and its address shows as the sender.`}</div>`;
@@ -3425,12 +3427,12 @@ document.addEventListener('click', (e) => {
   });
 });
 function offerPaused(spec) {
-  const msg = 'The relay isn’t proving right now, so nothing was sent to it.';
+  const msg = 'Nothing was sent yet. Try again in a few minutes, or:';
   if (!spec.status?.()) return Object.assign(new Error(msg), { said: true });
   const own = { ...spec, own: true, open: null };
   own.id = String(++selfdoSeq); SELFDO[own.id] = own;
   own.keys ||= spec.run ? [...spec.run.keys] : [];
-  say(spec.status(), html`<span class="err">${msg}</span><div class="actr-f"><button class="link" type="button" data-prove-add="${own.id}">Prove it yourself</button> with your own prover credit${(() => { const k = keepLink(keepFor(spec)); return k ? html`. ${k}` : ''; })()}.</div>`);
+  say(spec.status(), html`<span>${msg}</span><div class="actr-f"><button class="link" type="button" data-prove-add="${own.id}">Prove it yourself</button> with your own prover credit${(() => { const k = keepLink(keepFor(spec)); return k ? html`. ${k}` : ''; })()}.</div>`);
   return Object.assign(new Error(msg), { offered: true, said: true });
 }
 function offerProveSelf(spec, e) {
@@ -11799,7 +11801,7 @@ function zapWay({ tell, inflight = null, down = false, then = null, market = nul
   return new Promise((resolve) => {
     const fin = (v) => { if (ZAPWAY.cb === fin) ZAPWAY.cb = null; resolve(v); };
     ZAPWAY.cb = fin; ZAPWAY.then = then;
-    tell(html`<span class="err">${down ? 'Tacit’s prover is not available right now.' : 'Tacit’s prover is taking longer than usual.'}</span> Nothing has left your wallet.<div class="actr-f"><button class="link" type="button" data-zapway="own">Prove it yourself</button>, on this computer or with your credit · ${market ? html`<button class="link" type="button" data-zapway="market">Pay up to ${fmt(market.max, 18, 1)} TAC for a fast proof${market.tank ? '' : ' (two signatures, then none for a week)'}</button> · ${market.tank ? html`<button class="link" type="button" data-tankoff="${market.owner}">Turn fast proofs off here</button> · ` : ''}` : ''}<button class="link" type="button" data-zapway="relay">Send the zap and let the relay finish it</button></div>`);
+    tell(html`<span class="err">${down ? 'The proof can’t be made here right now.' : 'The proof is taking a little longer.'}</span> Nothing has left your wallet.<div class="actr-f"><button class="link" type="button" data-zapway="own">Prove it yourself</button>, on this computer or with your credit · ${market ? html`<button class="link" type="button" data-zapway="market">Pay up to ${fmt(market.max, 18, 1)} TAC for a fast proof${market.tank ? '' : ' (two signatures, then none for a week)'}</button> · ${market.tank ? html`<button class="link" type="button" data-tankoff="${market.owner}">Turn fast proofs off here</button> · ` : ''}` : ''}<button class="link" type="button" data-zapway="relay">Send the zap and let the relay finish it</button></div>`);
     if (inflight) inflight.then(() => fin('ready'), () => fin('ready'));
   });
 }
@@ -13735,7 +13737,7 @@ function dashWorth(items) {
 }
 const usdFmt = (n) => `$${n >= 1000 ? Math.round(n).toLocaleString('en-US') : n.toFixed(2)}`;
 function paintDash() {
-  try { return paintDash0(); } finally { paintHints(); }
+  try { return paintDash0(); } finally { paintHints(); try { hxFinishPaint(); } catch { } }
 }
 function paintDash0() {
   const id = dashId(), sec = $('#dash');
@@ -16079,8 +16081,21 @@ function hxNextPaint(done = false) {
   act.insertAdjacentHTML('beforeend', el.s);
   for (const b of act.querySelectorAll('[data-next]')) b.onclick = () => { act.querySelector('.hx-next')?.remove(); hxPreset(b.dataset.next, undefined, true); };
 }
+// A Shield deposit that is in the pool but not private yet: the sheet's own callout, here, over the button, with its Finish and the way to
+// finish it from the wallet (what the line under the button tells the holder to press)
+function hxFinishPaint() {
+  const act = SWC.el?.querySelector('.act');
+  if (!act) return;
+  let el = act.querySelector('.hx-fin');
+  const sheet = HX.tab === 'swap' && HX.flow === 'shield' ? ((HXM.key || '').startsWith('wtac') ? 'tac' : 'eth') : null;
+  const v = sheet && pendingFor(sheet).length ? depositCallout(sheet, 'hx-fin') : null;
+  if (!v) { el?.remove(); return; }
+  if (!el) { el = Object.assign(document.createElement('div'), { className: 'hx-fin' }); act.querySelector('#go')?.before(el); }
+  if (el.__h !== v.s) { el.__h = v.s; mount(el, v); hxMoveSlot(); wireFinish(el, sheet, 'hx-fin', 'hx-mz'); }
+}
 // Shield's first press, said ahead: the wallet, one signature for the Tacit key, then the deposit, each ticked once done
 function hxPathPaint() {
+  try { hxFinishPaint(); } catch { }
   const act = SWC.el?.querySelector('.act');
   if (!act) return;
   const show = HX.tab === 'swap' && HX.flow === 'shield' && !(S.wallet && S.key);
@@ -16657,7 +16672,7 @@ function swcPace(id) {
   if (b) b.dataset.pace = id;
   else q.insertAdjacentHTML('afterend', html`<div class="pace" data-card="1" data-pace="${id}"><div class="actr-bar" role="progressbar" aria-label="How far along" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i style="width:0%"></i></div><span></span></div>`.s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=1494f005').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=cda6300b').catch((e) => { SWC.p = null; throw e; }));
 // the card held to the tab's flow; back on the Swap tab it opens on the swap it showed there
 function swcFlow() {
   hxPathPaint();

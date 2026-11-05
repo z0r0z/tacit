@@ -143,7 +143,7 @@ test('a funder that gives only the hash is taken as it is', async () => {
 test('a note of the same size from before the box is not the deposit', async () => {
   const { L, M, complete } = setup({ leaves: 10 });
   M.notes.push({ v: String(base.depositWei), index: 4 });          // an older note of exactly that amount: some other money
-  await assert.rejects(L.startBoxed({ ...base, waitMs: 20, fund: async () => HASH }), /keeper has not made the deposit yet/);
+  await assert.rejects(L.startBoxed({ ...base, waitMs: 20, fund: async () => HASH }), /its deposit is on its way/);
   assert.strictEqual(L.plans()[0].state, 'depositing');
   complete(base.depositWei);
   const again = await L.check(L.plans()[0]);
@@ -182,7 +182,7 @@ test('an order that ran with no hash found still waits for the keeper: the hash 
   assert.ok(!plan.depositTx, 'no hash was found');
   // the keeper has not: unsure (no hash to say the relay sent it), and check moves it on once the note is there
   const { L: L2, complete: done2 } = setup();
-  await assert.rejects(L2.startBoxed({ ...base, waitMs: 30, pollMs: 5, fund: async () => ({ hash: null }) }), (e) => e.pending === true && /keeper has not made the deposit yet/.test(e.message));
+  await assert.rejects(L2.startBoxed({ ...base, waitMs: 30, pollMs: 5, fund: async () => ({ hash: null }) }), (e) => e.pending === true && /its deposit is on its way/.test(e.message));
   assert.strictEqual(L2.plans()[0].state, 'unsure', 'an order that ran with no hash and no note yet is unsure');
   done2(base.depositWei);
   assert.strictEqual((await L2.check(L2.plans()[0])).state, 'waiting');
@@ -209,7 +209,7 @@ test('the keeper failing to quote its fee stops the start in words, before anyth
 
 test('an order that ran and a box the keeper has not completed yet leaves the plan depositing, and check moves it on once the note is there', async () => {
   const { L, M, complete } = setup();
-  await assert.rejects(L.startBoxed({ ...base, waitMs: 30, fund: async () => ({ hash: HASH, amountIn: 5n, route: 'r' }) }), (e) => e.pending === true && /keeper has not made the deposit yet/.test(e.message));
+  await assert.rejects(L.startBoxed({ ...base, waitMs: 30, fund: async () => ({ hash: HASH, amountIn: 5n, route: 'r' }) }), (e) => e.pending === true && /its deposit is on its way/.test(e.message));
   let p = L.plans()[0];
   assert.strictEqual(p.state, 'depositing');
   assert.strictEqual(p.depositTx, HASH);
@@ -226,7 +226,7 @@ test('an order that ran and a box the keeper has not completed yet leaves the pl
 
 test('a box never completed is stopped after its deadline, and says where the ETH goes', async () => {
   const { L } = setup();
-  await assert.rejects(L.startBoxed({ ...base, waitMs: 10, fund: async () => HASH }), /keeper has not made/);
+  await assert.rejects(L.startBoxed({ ...base, waitMs: 10, fund: async () => HASH }), /its deposit is on its way/);
   const p = L.plans()[0];
   p.at = Date.now() - 41 * 60e3;
   const after = await L.check(p);

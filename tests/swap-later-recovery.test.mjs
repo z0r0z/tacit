@@ -73,7 +73,7 @@ function boxedSetup({ C, skew = 0, signer = {} } = {}) {
 const base = { swapWei: 20n * 10n ** 15n, extraWei: 8n * 10n ** 15n, token: DAI, sym: 'DAI', dec: 18, to: DEST, depositWei: 3n * 10n ** 16n, pay: { token: USDC, sym: 'USDC', dec: 6, amountIn: 70_000_000n }, pollMs: 5 };
 // the relay's sale ran and the keeper never completed the box: forty-one minutes on, the plan is stopped and the box's deadline (forty minutes from its making) has passed
 async function stoppedPlan(ctx) {
-  await assert.rejects(ctx.L.startBoxed({ ...base, waitMs: 20, fund: async () => HASH }), /keeper has not made the deposit yet/);
+  await assert.rejects(ctx.L.startBoxed({ ...base, waitMs: 20, fund: async () => HASH }), /its deposit is on its way/);
   const p = ctx.L.plans()[0];
   ctx.mem.set('tacit-swap-later-v1', JSON.stringify([{ ...p, at: Date.now() - 41 * 60e3 }]));
   const stopped = await ctx.L.check(ctx.L.plans()[0]);

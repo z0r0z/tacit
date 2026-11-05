@@ -8,7 +8,7 @@ import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverE
 import { ROUTES } from '/bridge/track.js?cb=616e7608';
 import { parseUnits } from '/trade/util.js?cb=e8317464';
 import { forgetUx } from '/trade/poolux.js?cb=aa0f752e';
-import { relayWords } from '/relay-outcome.js?cb=26298b8e';
+import { relayWords } from '/relay-outcome.js?cb=9db7155a';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 
 const TACIT_URL = '/tacit.js?cb=63fac4ae';

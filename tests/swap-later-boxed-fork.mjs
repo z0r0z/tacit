@@ -301,7 +301,7 @@ if (want('neg')) {
   lapsedOrder = posted[posted.length - 1];
   // (d) the page stops waiting before the keeper has completed the box: depositing with the reason; a later check finds the note
   const d = await attempt(() => funderFor({ tokenIn: USDC, sym: 'USDC', first, fee: feeUsdc }), { waitMs: 1 });
-  ok(d.err?.pending === true && /keeper has not made the deposit yet/.test(d.err.message) && d.plan.state === 'depositing' && d.plan.depositTx === runs[runs.length - 1] && d.ran === 1 && d.err.message, `the page stops waiting before the keeper is done: the plan is depositing, the order ran once (${d.plan.state})`);
+  ok(d.err?.pending === true && /its deposit is on its way/.test(d.err.message) && d.plan.state === 'depositing' && d.plan.depositTx === runs[runs.length - 1] && d.ran === 1 && d.err.message, `the page stops waiting before the keeper is done: the plan is depositing, the order ran once (${d.plan.state})`);
   let seenState = '';
   const got = await waitUntil(async () => { const r = await L.check(L.plans().find((x) => x.id === d.plan.id)); if (r.state !== seenState) { seenState = r.state; say(`check: ${r.state}${r.err ? ` (${r.err})` : ''}`); } return r.state === 'waiting' ? r : null; }, 180_000, 2000);
   ok(!!got && got.depositedAt > 0 && !got.err, `a check a little later finds the note the keeper made, and the plan waits (${got?.state})`);

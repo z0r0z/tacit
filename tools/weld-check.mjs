@@ -1118,7 +1118,7 @@ await step('v1refuse', async () => {
     const where = setInterval(() => text(r.page, '#v1-status').then((t) => console.log(`     v1refuse … ${t.slice(0, 100)}`), () => {}), 60000);
     try { await until(r.page, () => /Press Finish|not private yet/.test(document.querySelector('#v1-status')?.textContent || ''), null, 1200000); } finally { clearInterval(where); }
     const kept = await text(r.page, '#v1-status');
-    ok(/Your deposit is in the Tacit pool/.test(kept) && /free settles for today are used up/.test(kept) && /no need to send it again/.test(kept)
+    ok(/Your deposit is in the Tacit pool/.test(kept) && /Today’s free sends are taken/.test(kept) && /no need to send it again/.test(kept)
       && await r.page.$eval('#w-amt', (i) => i.value === '') && await r.page.$eval('#w-go', (b) => b.disabled), `v1refuse: a settle the relay refuses after the deposit empties the form and points to Finish (${kept.slice(0, 130)})`);
     ok(await until(r.page, () => !!document.querySelector('#v1-finish'), null, 600000).then(() => true, () => false), 'v1refuse: the deposit is then offered to Finish');
     // Or from the wallet: the relay is asked for the proof only, and settle() is tried against the pool before the wallet is asked to send it. The
@@ -10877,7 +10877,7 @@ await step('provecap', async () => {
     refuseSubmits = 1; refuseWith = CAP;
     await r.page.click('#o-go');
     await until(r.page, () => /as many proofs/.test(document.querySelector('#v1-status')?.textContent || '') || !!document.querySelector('#v1-status [data-selfdo]'), null, QUOTE_WAIT).catch(() => {});
-    ok(/The relay has made as many proofs as it can for today\. Try again after midnight UTC; nothing was spent\./.test(await said()) && !(await r.page.$('#v1-status [data-selfdo]')),
+    ok(/Today’s relay proofs are taken\. Prove it yourself, or try again after midnight UTC; nothing was spent\./.test(await said()) && !(await r.page.$('#v1-status [data-selfdo]')),
       `provecap: a withdrawal met by the day's proofs used up says so, and offers nothing (${await said()})`);
     // Refused for another reason, it is offered; the proof the account then asks for meets the cap, and that is said the same way.
     await until(r.page, () => !document.querySelector('#o-go')?.disabled && !document.querySelector('#o-go')?.getAttribute('aria-busy'), null, 120000).catch(() => {});
@@ -10889,7 +10889,7 @@ await step('provecap', async () => {
       const n0 = refused.length;
       await r.page.click('#v1-status [data-selfdo]');
       await until(r.page, () => /as many proofs/.test(document.querySelector('#v1-status')?.textContent || ''), null, QUOTE_WAIT).catch(() => {});
-      ok(/as many proofs as it can for today/.test(await said()) && refused.length === n0 + 1 && refused.at(-1)?.mode === 'prove' && !(await r.page.$('#v1-status [data-selfdo]')),
+      ok(/relay proofs are taken/.test(await said()) && refused.length === n0 + 1 && refused.at(-1)?.mode === 'prove' && !(await r.page.$('#v1-status [data-selfdo]')),
         `provecap: the proof it then asks for meets the cap, said plainly, with no offer to go round again (${await said()})`);
     }
     if (r.errors.length) { fails++; console.log('FAIL provecap page errors: ' + r.errors.slice(0, 3).join(' | ')); }
@@ -13263,8 +13263,8 @@ await step('relaystate', async () => {
     relayStateNow = 'paused';
     const s0 = submits.length;
     await withdraw('0.1');
-    await until(r.page, () => /isn’t proving right now/.test(document.querySelector('#v1-status')?.textContent || ''), null, 300000).catch(() => {});
-    ok(/The relay isn’t proving right now, so nothing was sent to it\./.test(await said()) && !!(await r.page.$('#v1-status [data-prove-add]')) && !(await r.page.$('#v1-status [data-keepline]')) && submits.length === s0,
+    await until(r.page, () => /Nothing was sent yet/.test(document.querySelector('#v1-status')?.textContent || ''), null, 300000).catch(() => {});
+    ok(/Nothing was sent yet\. Try again in a few minutes, or:/.test(await said()) && !!(await r.page.$('#v1-status [data-prove-add]')) && !(await r.page.$('#v1-status [data-keepline]')) && submits.length === s0,
       `relaystate: paused at the press, a withdrawal offers proving it yourself, not the line, and nothing is submitted (${await said()})`);
     // A private send does not expire: it can wait its turn in line, and pressed, goes to the relay.
     await tab('send');
@@ -13308,9 +13308,9 @@ await step('relaystate', async () => {
     });
     await openActivity(r.page);
     const rowText = () => r.page.evaluate(() => (document.querySelector('[data-act="job:rs-exit"]')?.textContent || '').replace(/\s+/g, ' '));
-    await until(r.page, () => /isn’t proving right now/.test(document.querySelector('[data-act="job:rs-exit"]')?.textContent || '') && !!document.querySelector('[data-act="job:rs-exit"] [data-prove-open]'), null, 90000).catch(() => {});
+    await until(r.page, () => /In line\./.test(document.querySelector('[data-act="job:rs-exit"]')?.textContent || '') && !!document.querySelector('[data-act="job:rs-exit"] [data-prove-open]'), null, 90000).catch(() => {});
     const row = await rowText();
-    ok(/In line: the relay isn’t proving right now\. It keeps its place and goes through once it is\./.test(row) && !!(await r.page.$('[data-act="job:rs-exit"] [data-prove-open]')) && !/gas|credit is low|out of/i.test(row),
+    ok(/In line\. It keeps its place and goes through on its own\./.test(row) && !!(await r.page.$('[data-act="job:rs-exit"] [data-prove-open]')) && !/gas|credit is low|out of/i.test(row),
       `relaystate: an exit in line while the relay is paused says why and offers proving it yourself (${row.slice(0, 260)})`);
     if (r.errors.length) { fails++; console.log('FAIL relaystate page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { relayStateNow = 'ok'; proveStub = false; if (restore) await restore(); await r.browser.close(); }

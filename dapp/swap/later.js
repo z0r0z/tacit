@@ -8,6 +8,7 @@
 // the TAC vaults could hold TAC itself, but nothing is in it yet and no keeper sends for it, so a hop through it would hide nothing.)
 import { hexToBytes, keccak_256 } from '/vendor/tacit-deps.min.js';
 import { ETH_NODES } from '/eth-nodes.js';
+import { calmText } from '/relay-outcome.js';
 import { bestRoute } from '/swap/aggregate.js?cb=29aa40e7';
 import { checkRoute, readAccess, readToken, permitTyped, permit2Typed, splitSig, randomNonce as permit2Nonce, encApprove, quoteTacitToToken, buildTacitToToken, quoteAnyToTac, buildAnyToTac } from '/swap/route.js?cb=45fd31f8';
 import { makeTokenPools, poolState, RELAYER, KEEPERS, SERVED } from '/evm-pool-tokens.js?cb=a3c182f7';
@@ -635,7 +636,7 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
       for (;;) {
         const s = await w.sync();
         if (w.notes().some((n) => BigInt(n.v) === BigInt(depositWei) && Number(n.index) >= Number(s0.leaves))) { plan.leaves0 = s.leaves; break; }
-        if (Date.now() > end) throw Object.assign(new Error('The relay sent the swap, and the pool’s keeper has not made the deposit yet. It is checked again below; nothing is lost.'), { pending: true });
+        if (Date.now() > end) throw Object.assign(new Error('The swap went through and its deposit is on its way. It is checked again below; nothing is lost.'), { pending: true });
         await sleep(pollMs);
       }
       plan.state = 'waiting'; plan.depositedAt = Date.now(); plan.err = null;
@@ -938,7 +939,7 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
       else { plan.state = 'done'; plan.doneAt = Date.now(); }
       return plan;
     } catch (e) {
-      plan.state = unsure(e) ? 'unsure' : 'waiting'; plan.refused = refused(e); plan.err = String(e?.message || e).slice(0, 200);
+      plan.state = unsure(e) ? 'unsure' : 'waiting'; plan.refused = refused(e); plan.err = calmText(String(e?.message || e)).slice(0, 200);
       if (plan.state === 'waiting') { plan.outIns = null; plan.outTx = null; }          // nothing went: the notes it was built from are free to be spent by anything else
       throw e;
     } finally { save(plan); }

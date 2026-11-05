@@ -11,7 +11,7 @@ import { forgetUx } from '/trade/poolux.js?cb=aa0f752e';
 import { wrapEth, wrapFirst, wrapCalldata, settle, relayState, relayStopped, relayWords } from '/teth/wrap.js?cb=ac4fa4a6';
 import { wrapQuote, WRAP_TIP } from '/teth/read.js?cb=bf18d06a';
 import { secp, keccak_256, sha256, bytesToHex } from '/vendor/tacit-deps.min.js';
-import { makeRunner } from '/activity.js?cb=6baa925d';
+import { makeRunner } from '/activity.js?cb=a49f677c';
 
 export { Cancelled, relayWords };
 
@@ -398,7 +398,7 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
   // The relay is asked before anything is sent: a swap is a step that expires, so it cannot wait in line while the relay is held.
   async function relayOpen() {
     const rs = await relayState();
-    if (relayStopped(rs) || rs?.state === 'held') throw new Error('The relay isn’t taking private swaps right now, so nothing was sent. Try again in a few minutes.');
+    if (relayStopped(rs) || rs?.state === 'held') throw new Error('This private swap can’t start right now, so nothing was sent. Try again in a few minutes.');
   }
 
   // One relayed route of `note`: priced again first (it may have waited a minute for its note), and sent again once at the relay's new floor.
@@ -569,7 +569,7 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
         // 1. proved ahead: one transaction, the wrap's tip and the swap's fee paid on top in ETH as the quote showed them
         if (!r && !relayDown) r = await aheadFor(plan, say);
         const one = r && await oneTx(r, { wei: plan.wei, tip: mine ? 0n : tq.tip + BigInt(plan.fee) * E10, to: mine ? null : tq.to, from, wallet, say });
-        if (!one && relayDown) throw new Error('The relay isn’t taking private swaps right now and your own prover could not prove this one, so nothing was sent. Try again in a few minutes.');
+        if (!one && relayDown) throw new Error('This private swap can’t start right now and your own prover could not prove it, so nothing was sent. Try again in a few minutes.');
         if (one) {
           if (r.slot) spent(r.slot);
           held = null;
