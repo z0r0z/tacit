@@ -1,0 +1,29 @@
+# Build Tacit's GPU prover worker (contracts/sp1/confidential/prover-worker) for Linux x86-64, the box's Ubuntu 22.04: the guest ELFs it
+# embeds are the committed ones, checked by its build.rs against their pins. The CUDA prover itself is the sp1-gpu-server the SDK fetches on
+# the box, so the build needs no GPU. Nothing is published: the binary and its SHA-256 are kept as a workflow artifact, copied to the box by
+# hand, and started there between jobs (RELOAD_FLAG).
+# Trigger manually (workflow_dispatch).
+name: build-prover-worker
+permissions:
+  contents: read
+on:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-22.04   # GLIBC 2.35, as the box's nvidia/cuda:12.4.1-devel-ubuntu22.04 image
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build deps (protoc for sp1-prover-types)
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Build
+        working-directory: contracts/sp1/confidential/prover-worker
+        run: cargo build --release --locked
+      - name: Package
+        working-directory: contracts/sp1/confidential/prover-worker
+        run: |
+          mkdir -p dist && cp target/release/tacit-prover-worker dist/
+          (cd dist && sha256sum tacit-prover-worker | tee tacit-prover-worker.sha256)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tacit-prover-worker
+          path: contracts/sp1/confidential/prover-worker/dist/
