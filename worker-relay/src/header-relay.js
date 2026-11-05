@@ -24,6 +24,7 @@ import { headerPace, headerHoldText, nextBaseFee } from './lib/gas-pace.js';
 import { makeQuietLog } from './lib/quiet-log.js';
 import { attestFundsNeed } from './lib/attest-fees.js';
 import { affordableHeaders, headerBatchNeed, exceedsAllowance } from './lib/header-fits.js';
+import { makeEsploraReader } from './lib/esplora-reader.js';
 
 const log = (...a) => console.log(`[header ${new Date().toISOString()}]`, ...a);
 // The waits below are on purpose and last hours: each is said once, then every ten minutes while it stays the same (lib/quiet-log.js).
@@ -31,15 +32,9 @@ const say = makeQuietLog(log);
 const sleep = (s) => new Promise((r) => setTimeout(r, s * 1000));
 const ESPLORAS = CFG.btcEsplora.split(',').map((s) => s.trim()).filter(Boolean);
 
-async function esplora(path) {
-  let err;
-  for (let a = 0; a < ESPLORAS.length * 3; a++) {
-    const base = ESPLORAS[a % ESPLORAS.length];
-    try { const r = await fetch(base + path); if (!r.ok) throw new Error(`${r.status}`); return (await r.text()).trim(); }
-    catch (e) { err = e; await sleep(0.5 * (a + 1)); }
-  }
-  throw new Error(`esplora ${path}: ${err?.message}`);
-}
+// One pass over the explorers that are not resting, the last good one first; one that rate-limits is left alone for what it asks (lib/esplora-reader.js).
+const explorer = makeEsploraReader(ESPLORAS, { log: (m) => say('explorer-rest', m) });
+const esplora = (path) => explorer.get(path);
 const btcTip = async () => parseInt(await esplora('/blocks/tip/height'), 10);
 async function headerHex(h) {
   const hash = await esplora(`/block-height/${h}`);

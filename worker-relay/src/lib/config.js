@@ -117,8 +117,9 @@ export const CFG = {
   chainId: num('CHAIN_ID', 1),
 
   // ── BitcoinLightRelay header feeder (header-relay.js) ──
-  // Bitcoin esplora(s) for raw block headers (comma list; tried in order, next on failure).
-  btcEsplora: opt('BTC_ESPLORA', 'https://mempool.space/api,https://blockstream.info/api,https://mempool.emzy.de/api'),
+  // Bitcoin esplora(s) for raw block headers (comma list; the last one that answered first, a rate-limited one left alone for what it asks: lib/esplora-reader.js).
+  // Mainnet. Five keyless explorers that all gave the same tip on 2026-11-05; the three busiest rate-limit the relay's shared address for hours.
+  btcEsplora: opt('BTC_ESPLORA', 'https://mempool.space/api,https://blockstream.info/api,https://mempool.emzy.de/api,https://btcscan.org/api,https://mempool.bitaroo.net/api'),
   // Reflection maturity depth — matches the pool's immutable REFLECTION_CONFIRMATIONS (attest tip = relayTip - this).
   // 24 on the mainnet pool; override for a pool deployed with a different depth.
   reflectionConfirmations: num('REFLECTION_CONFIRMATIONS', 24),
