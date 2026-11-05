@@ -49,6 +49,8 @@ export const PROVER_BOARD = Object.freeze({
   communityKept: 200,                                  // community records kept on the summary (the most recently seen)
   maxCandidatePvBytes: 16 * 1024,                      // a race candidate's public values (a wrap's or a Bitcoin batch's are a few KB)
   pointsPerProof: 20,                                  // POINTS_BOARD_PER_PROOF: for each community proof the relay takes
+  // A Bitcoin batch is billions of cycles, tens of minutes on a large GPU, and costs about 16 PROVE on the prover network: it earns its own.
+  pointsByProgram: Object.freeze({ 'btc-state': 500 }),  // POINTS_BOARD_BTC_PER_PROOF
   proofsPerMinerDay: 30,                               // POINTS_BOARD_DAILY_CAP: proofs an address is credited for in a UTC day
   daySecs: 40 * 86400,                                 // a day's tally outlives the campaign's reading of it
 });
@@ -63,6 +65,7 @@ export function proverBoardConfig(env = {}) {
   return Object.freeze({
     pointsPerProof: n(env.POINTS_BOARD_PER_PROOF, PROVER_BOARD.pointsPerProof),
     proofsPerMinerDay: n(env.POINTS_BOARD_DAILY_CAP, PROVER_BOARD.proofsPerMinerDay),
+    pointsByProgram: Object.freeze({ 'btc-state': n(env.POINTS_BOARD_BTC_PER_PROOF, PROVER_BOARD.pointsByProgram['btc-state']) }),
   });
 }
 const DAY_MS = 86_400_000;
@@ -112,7 +115,9 @@ function makeLock() {
 export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD } = {}) {
   if (!storage) throw new Error('prover-board: storage is required');
   const clock = now || (() => Date.now());
-  const pay = { pointsPerProof: cfg.pointsPerProof ?? PROVER_BOARD.pointsPerProof, proofsPerMinerDay: cfg.proofsPerMinerDay ?? PROVER_BOARD.proofsPerMinerDay };
+  const pay = { pointsPerProof: cfg.pointsPerProof ?? PROVER_BOARD.pointsPerProof, proofsPerMinerDay: cfg.proofsPerMinerDay ?? PROVER_BOARD.proofsPerMinerDay,
+    pointsByProgram: cfg.pointsByProgram ?? PROVER_BOARD.pointsByProgram };
+  const pointsFor = (program) => pay.pointsByProgram[program] ?? pay.pointsPerProof;
   const exclusive = lock || makeLock();
   const id = hash || ((s) => 'pb_' + s.length.toString(36) + '_' + Array.from(s).reduce((a, c) => ((a * 33) ^ c.charCodeAt(0)) >>> 0, 5381).toString(36));
   const workers = async () => (await storage.getWorkers()) || {};
@@ -205,7 +210,7 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
         if (!j.claimedAt) j.claimedAt = c.at;
         await storage.putJob(j.id, j);
         await bump(c.worker, 'proved', null, null, true);
-        await credit(c.worker);
+        await credit(c.worker, j.program || 'confidential');
         return { ok: true, status: 'proved' };
       }
       await storage.putJob(j.id, j);
@@ -230,13 +235,13 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
 
   // A community proof the relay took counts for its address on the day it was taken, with points up to the day's cap. Only `c-0x…`
   // names are community machines; Tacit's own workers never prove through a race.
-  async function credit(name) {
+  async function credit(name, program = 'confidential') {
     const m = /^c-(0x[0-9a-f]{40})$/.exec(String(name));
     if (!m || !storage.putDay) return;
     const d = dayOf(clock()), r = (storage.getDay && await storage.getDay(d)) || {};
     const rec = { done: 0, points: 0, miners: {}, ...r };
     const mr = rec.miners[m[1]] || (rec.miners[m[1]] = { proofs: 0, credited: 0, points: 0 });
-    const points = mr.credited < pay.proofsPerMinerDay ? pay.pointsPerProof : 0;
+    const points = mr.credited < pay.proofsPerMinerDay ? pointsFor(program) : 0;
     rec.done++; mr.proofs++;
     if (points > 0) { mr.credited++; mr.points += points; rec.points += points; }
     await storage.putDay(d, rec);
@@ -389,7 +394,7 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
     // percentile, every wait over five seconds behind work that was not a board job, so the 90th percentile is what a second worker would move.
     const pct = (xs, p) => (xs.length ? Math.round([...xs].sort((a, b) => a - b)[Math.min(xs.length - 1, Math.floor(xs.length * p))]) : null);
     const recent = { n: waits.length, waitP50: pct(waits, 0.5), waitP90: pct(waits, 0.9), proveP50: pct(proves, 0.5), proveP90: pct(proves, 0.9) };
-    return { ...counts, recent, workers: list, lease: PROVER_BOARD.leaseMs / 1000 };
+    return { ...counts, recent, workers: list, lease: PROVER_BOARD.leaseMs / 1000, pay: { pointsPerProof: pay.pointsPerProof, pointsByProgram: pay.pointsByProgram } };
   }
 
   return { post, status, cancel, claim, result, raceVerdict, summary, credits };

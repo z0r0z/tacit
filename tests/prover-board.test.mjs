@@ -388,10 +388,11 @@ test('points: each proof the relay takes from a community machine counts for its
 });
 
 test('points config: env sets the points and the cap, 0 switches them off, nonsense keeps the default', () => {
-  assert.deepEqual(proverBoardConfig({}), { pointsPerProof: 20, proofsPerMinerDay: 30 });
-  assert.deepEqual(proverBoardConfig({ POINTS_BOARD_PER_PROOF: '50', POINTS_BOARD_DAILY_CAP: '10' }), { pointsPerProof: 50, proofsPerMinerDay: 10 });
-  assert.deepEqual(proverBoardConfig({ POINTS_BOARD_PER_PROOF: '0', POINTS_BOARD_DAILY_CAP: '0' }), { pointsPerProof: 0, proofsPerMinerDay: 0 });
-  assert.deepEqual(proverBoardConfig({ POINTS_BOARD_PER_PROOF: 'lots', POINTS_BOARD_DAILY_CAP: '-1' }), { pointsPerProof: 20, proofsPerMinerDay: 30 });
+  const btc = (n) => ({ pointsByProgram: { 'btc-state': n } });
+  assert.deepEqual(proverBoardConfig({}), { pointsPerProof: 20, proofsPerMinerDay: 30, ...btc(500) });
+  assert.deepEqual(proverBoardConfig({ POINTS_BOARD_PER_PROOF: '50', POINTS_BOARD_DAILY_CAP: '10', POINTS_BOARD_BTC_PER_PROOF: '800' }), { pointsPerProof: 50, proofsPerMinerDay: 10, ...btc(800) });
+  assert.deepEqual(proverBoardConfig({ POINTS_BOARD_PER_PROOF: '0', POINTS_BOARD_DAILY_CAP: '0', POINTS_BOARD_BTC_PER_PROOF: '0' }), { pointsPerProof: 0, proofsPerMinerDay: 0, ...btc(0) });
+  assert.deepEqual(proverBoardConfig({ POINTS_BOARD_PER_PROOF: 'lots', POINTS_BOARD_DAILY_CAP: '-1' }), { pointsPerProof: 20, proofsPerMinerDay: 30, ...btc(500) });
 });
 
 test('the Bitcoin-state program: public groth16 work, its input kept apart and deleted with the job, leased for hours, raced only by machines that prove it', async () => {
@@ -431,4 +432,18 @@ test('a community racer that never answers gives its place up after the job\'s l
   assert.match((await b.result({ worker: late, jobId, publicValues: big, proof: '0x' + '22'.repeat(260) })).error, /public values/);
   const { jobId: second } = await b.post({ class: 'public', stdin: Buffer.from('another input').toString('base64'), cycleLimit: 1e6, gasLimit: 1e8, deadline: now() / 1000 + 7200 });
   assert.equal((await b.claim({ worker: racers[0], classes: ['public'] })).jobId, second, 'a racer whose old place lapsed may race again');
+});
+
+test('a community Bitcoin batch earns its own points, and the summary says what each program pays', async () => {
+  const s = store(), kept = new Map();
+  Object.assign(s, { putStdin: async (id, v) => { kept.set(id, v); }, getStdin: async (id) => kept.get(id) ?? null, deleteStdin: async (id) => { kept.delete(id); } });
+  const b = makeProverBoard({ storage: s, now, cfg: { ...PROVER_BOARD, pointsByProgram: { 'btc-state': 500 } } });
+  const { jobId } = await b.post({ class: 'public', program: 'btc-state', stdin: Buffer.from('batch').toString('base64'), cycleLimit: 1e11, gasLimit: 1e11, deadline: now() / 1000 + 7200 });
+  const miner = '0x' + '42'.repeat(20), w = { name: `c-${miner}`, classes: ['public'], community: true };
+  assert.equal((await b.claim({ worker: w, classes: ['public'], programs: ['btc-state'] })).jobId, jobId);
+  assert.equal((await b.result({ worker: w, jobId, publicValues: '0x' + '11'.repeat(64 * 8), proof: '0x' + '22'.repeat(260) })).status, 'candidate');
+  assert.deepEqual(await b.raceVerdict({ jobId, worker: w.name, ok: true }), { ok: true, status: 'proved' });
+  const day = Math.floor(now() / 86400000);
+  assert.deepEqual((await b.credits(day)).body.miners, [{ miner, proofs: 1, points: 500 }]);
+  assert.deepEqual((await b.summary()).pay, { pointsPerProof: 20, pointsByProgram: { 'btc-state': 500 } });
 });
