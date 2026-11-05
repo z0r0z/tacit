@@ -917,6 +917,7 @@ export const OP_GAS = {
   route: 569_000n,
   lp: 749_000n,
   unwrap: 323_000n,
+  bridgeburn: 400_000n, // a cross-out to Bitcoin: 11 mainnet settles used 365,248 to 390,461 (the table had no entry, so it was priced at DEFAULT_OP_GAS, 600,000, half as much again)
   transfer: 600_000n, // from a live 1-in/2-out settle estimate (600,356); 2 output leaves + membership
   swapblind: 900_000n, // heavier than swap: in-guest amm_swap_batch Groth16 verify + 2 cross-curve sigmas + opening-PoK. Consulted only for the (dormant) relayed path; tips=0 self-settle pays its own gas. Refine from a live estimate at arming.
   // Bitcoin header attestation — the maintenance lane, measured from live receipts. NOT a user op: nobody pays a fee for it, but the bridge and
