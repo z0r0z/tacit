@@ -19,7 +19,7 @@
     "minAmount": "1000000000",
     "maxAmount": "100000000000",
     "feeBps": 30,
-    "flatFee": "100000000",
+    "flatFee": "10000000",
     "validSecs": 600,
     "rate": { "num": 1, "den": 1 }
   },
