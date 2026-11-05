@@ -415,7 +415,7 @@ async function main() {
   }
 }
 
-export { cycle as headerCycle };
+export { cycle as headerCycle, pointerStep as snapshotPointerStep };
 if (import.meta.url === `file://${process.argv[1]}`) {
   main().catch((e) => { console.error('fatal', e); process.exit(1); });
 }

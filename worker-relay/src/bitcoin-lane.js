@@ -18,7 +18,7 @@ import { heartbeat, heartbeatIdle } from './lib/worker-client.js';
 import { safeErr } from './lib/safe-err.js';
 import { ethStateCycle, ethStateReset } from './eth-state-sidecar.js';
 import { reflectionCycle } from './reflection-folder.js';
-import { headerCycle } from './header-relay.js';
+import { headerCycle, snapshotPointerStep } from './header-relay.js';
 
 const log = (...a) => console.log(`[lane ${new Date().toISOString()}]`, ...a);
 const sleep = (s) => new Promise((r) => setTimeout(r, s * 1000));
@@ -34,6 +34,8 @@ async function main() {
   if (on('LANE_ETH_STATE')) { await ethStateReset(); proving.push({ name: 'eth-state', kind: 'eth-state', everySecs: CFG.ethStatePollSecs, run: ethStateCycle, idleNote: 'idle — no candidate to produce yet', busyNote: 'producing a candidate' }); }
   if (on('LANE_REFLECTION')) proving.push({ name: 'reflection', kind: 'reflection', everySecs: CFG.reflectionPollSecs, run: reflectionCycle, idleNote: 'caught up', busyNote: 'proving a batch' });
   if (on('LANE_HEADERS')) feeding.push({ name: 'header', everySecs: Number(process.env.HEADER_EVERY_SECS || 180), run: headerCycle });
+  // snapshot.tacit.wei, from the same wallet (header-relay.js pointerStep): a read each half hour, a send about once a day
+  if (CFG.snapshotPointer) feeding.push({ name: 'snapshot record', everySecs: 1800, run: async () => { await snapshotPointerStep(); return false; } });
   const stages = [...proving, ...feeding];
   if (!stages.length) throw new Error('every stage is off (LANE_ETH_STATE, LANE_REFLECTION, LANE_HEADERS)');
   log(`starting — stages ${stages.map((s) => `${s.name} every ${s.everySecs}s`).join(', ')}; worker=${CFG.workerBase} network=${CFG.network}`);
