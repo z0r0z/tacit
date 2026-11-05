@@ -5,7 +5,7 @@ import { cleanAddress, proveCommand, utcDay, mineLines } from '/community-prove.
 import { localState, jobView, headline, isPhone } from '/prove/view.js?cb=396aa5e6';
 import { invaderSvg, gpuSvg } from '/prove/invader.js?cb=e8a5ec59';
 import { startOps } from '/prove/ops.js?cb=bb362b17';
-import { short, cells, opsText, tac, rewardWei, ago, took, fresh, blockAgo } from '/prove/chain.js?cb=afaa267c';
+import { short, cells, opsText, tac, rewardWei, ago, took, fresh, blockAgo, kindOf, KINDS, kindText, median, untilDayEnds, cleanBlock, cleanProof, cleanMiner } from '/prove/chain.js?cb=8a988a34';
 
 const API = 'https://api.tacit.finance', POINTS = 'https://tacit-points.onrender.com', LOCAL = 'http://127.0.0.1:47815';
 const SAVED_ADDR = 'tacit-prove-address';                          // shared with the keeper page's card
@@ -18,6 +18,9 @@ let health = null, mine = null, pool = null, points = null, tally = null, busy =
 let blocks = [], ethHead = null, headReadAt = 0, shownTop = null, picked = null, feed = [], feedTop = 0, lastProved = null;
 
 const addr = () => cleanAddress($('#addr').value);
+const count = (x) => (Number.isSafeInteger(Number(x)) && Number(x) >= 0 ? Number(x) : null);
+const cleanPool = (p) => (p ? { queued: count(p.queued), leased: count(p.leased), doneToday: count(p.doneToday), minersToday: count(p.minersToday),
+  top: (p.top || []).map(cleanMiner).filter(Boolean), terms: { pointsPerProof: count(p.terms?.pointsPerProof), proofsPerMinerDay: count(p.terms?.proofsPerMinerDay) } } : null);
 const me = () => addr()?.toLowerCase() || null;
 const cap = () => (points?.enabled && points?.terms && !points.terms.off ? points.terms.capWeiPerPoint : null);
 // A node's face: the zOrgz invader its address picks (invader.js), or Tacit's GPU's own. An image, so each picture keeps its own gradient.
@@ -40,9 +43,9 @@ async function readLocal() {
 
 async function readRemote() {
   const a = addr();
-  const [p, m, t] = await Promise.all([get(`${API}/prover/pool`), get(`${POINTS}/mine${a ? `?address=${a.toLowerCase()}` : ''}`), a ? get(`${API}/prover/pool/credits?day=${utcDay()}`) : null]);
+  const [p, m, t] = await Promise.all([get(`${API}/prover/pool`), get(`${POINTS}/mine${a ? `?address=${a.toLowerCase()}` : ''}`), get(`${API}/prover/pool/credits?day=${utcDay()}`)]);
   if (a !== addr()) return;
-  pool = p; points = m; tally = t;
+  pool = cleanPool(p); points = m; tally = t ? { ...t, miners: (t.miners || []).map(cleanMiner).filter(Boolean) } : t;
   paintNet(); paintFeed(); paintDetail();
 }
 
@@ -50,9 +53,11 @@ async function readRemote() {
 async function readChain() {
   const c = await get(`${API}/prover/blocks?limit=${SHOW}`);
   if (!c?.blocks) { $('#chain').hidden = !blocks.length; return; }
+  c.blocks = c.blocks.map(cleanBlock).filter(Boolean);
+  if (c.head) c.head.ethHead = Number.isSafeInteger(Number(c.head.ethHead)) ? Number(c.head.ethHead) : null;
   if (c.head?.ethHead != null) ethHead = c.head.ethHead;
   // An API from before the tip carried Ethereum's head: the settle index says it, read at most once a minute.
-  else if (Date.now() - headReadAt > 60000) { headReadAt = Date.now(); ethHead = (await get(`${API}/confidential/index?limit=1`))?.headBlock ?? ethHead; }
+  else if (Date.now() - headReadAt > 60000) { headReadAt = Date.now(); const hb = Number((await get(`${API}/confidential/index?limit=1`))?.headBlock); if (Number.isSafeInteger(hb)) ethHead = hb; }
   $('#last').textContent = c.blocks[0] ? (blockAgo(c.blocks[0].ethBlock, ethHead) || '—') : '—';
   const add = fresh(c.blocks, shownTop);
   if (!add.length && shownTop != null) return;
@@ -71,8 +76,8 @@ function paintChain(landing) {
   ol.innerHTML = `<li class="blk next" aria-label="The next block"><span class="cube ghost"><i></i><i></i><i></i></span><span class="h">next</span><span class="o" id="next-o">${esc(waitingText())}</span></li>` + blocks.map((b) => {
     const c = cells(b), mineB = b.prover && b.prover === me();
     return `<li class="blk${b.prover ? ' won' : ''}${b.house ? ' gpu' : ''}${mineB ? ' mine' : ''}${landing.has(b.height) ? ' new' : ''}" data-h="${b.height}" aria-current="${picked === b.height}">
-      <button type="button" aria-label="Block ${b.height}, ${esc(opsText(b))}"><span class="cube">${c.cells.map((k) => `<i class="${k}"></i>`).join('')}${b.house || b.prover ? `<span class="badge">${face(b.house ? null : b.prover, 26)}</span>` : ''}</span>
-      <span class="h num">#${b.height.toLocaleString('en-US')}</span><span class="o">${byOf(b) || esc(opsText(b))}</span><span class="t">${esc(blockAgo(b.ethBlock, ethHead) || '')}</span></button></li>`;
+      <button type="button" aria-label="Block ${b.height}, ${esc(kindText(b))}, ${esc(opsText(b))}"><span class="cube">${c.cells.map((k) => `<i class="${k}"></i>`).join('')}${b.house || b.prover ? `<span class="badge">${face(b.house ? null : b.prover, 26)}</span>` : ''}</span>
+      <span class="h num">#${b.height.toLocaleString('en-US')}</span><span class="o"><span class="k k-${kindOf(b)}">${esc(kindText(b))}</span>${byOf(b) || ''}</span><span class="t">${esc(blockAgo(b.ethBlock, ethHead) || '')}</span></button></li>`;
   }).join('');
   paintDetail();
 }
@@ -84,7 +89,7 @@ function paintDetail() {
   const r = b.prover ? rewardWei(b.points, cap()) : null;
   d.innerHTML = `<div class="rows flat num">
     <div class="kv"><span>Block</span><b>#${b.height.toLocaleString('en-US')}</b></div>
-    <div class="kv"><span>Holds</span><b>${esc(opsText(b))}</b></div>
+    <div class="kv"><span>What it did</span><b>${esc(kindText(b))}<small>${esc(opsText(b))}${KINDS[kindOf(b)].href ? ` · <a href="${KINDS[kindOf(b)].href}">${esc(KINDS[kindOf(b)].act)}</a>` : ''}</small></b></div>
     <div class="kv"><span>Proved by</span><b>${byOf(b) || '—'}</b></div>
     ${b.prover ? `<div class="kv"><span>Won</span><b>${r ? `${tac(r)} TAC` : `${b.points} points`}</b></div>` : ''}
     <div class="kv"><span>Hash</span><b>${esc(short(b.hash))}</b></div>
@@ -95,8 +100,8 @@ function paintDetail() {
 // The waiting proofs as little squares (the leased ones lit), the day's numbers, the newest community proofs and the day's provers.
 async function readFeed() {
   const f = await get(`${API}/prover/pool/recent`);
-  if (f?.proofs) feed = f.proofs;
-  paintFeed();
+  if (f?.proofs) feed = f.proofs.map(cleanProof).filter(Boolean);
+  paintFeed(); paintBoard(); paintCrowd();
   feedTop = Math.max(feedTop, feed[0]?.at || 0);
 }
 
@@ -104,8 +109,21 @@ function paintFeed() {
   if (!feed.length) return;
   $('#feed').innerHTML = feed.slice(0, 8).map((p) => {
     const r = rewardWei(p.points, cap());
-    return `<li class="${p.at > feedTop && feedTop ? 'new' : ''}"><span class="by">${byOf(p)}<small>proved in ${esc(took(p.secs))}</small></span>${r ? `<b>+${tac(r)} TAC</b>` : ''}<small>${esc(ago(p.at))}</small></li>`;
+    return `<li class="${p.at > feedTop && feedTop ? 'new' : ''}"><span class="by">${byOf(p)}<small>a deposit, proved in ${esc(took(p.secs))}</small></span>${r ? `<b>+${tac(r)} TAC</b>` : ''}<small>${esc(ago(p.at))}</small></li>`;
   }).join('');
+}
+
+// Who is proving now: everyone with a proof in the last twenty minutes, Tacit's GPU among them, as their invaders.
+const ONLINE_MS = 20 * 60_000;
+function paintCrowd() {
+  const t = Date.now(), seen = new Map();
+  for (const p of feed) if (t - p.at < ONLINE_MS) { const k = p.house ? 'gpu' : p.miner; if (k && !seen.has(k)) seen.set(k, p); }
+  const el = $('#crowd');
+  el.hidden = !seen.size;
+  if (!seen.size) return;
+  const faces = [...seen.keys()].slice(0, 24).map((k, i) => `<span class="pod${k === me() ? ' me' : ''}" style="--i:${i}" title="${k === 'gpu' ? 'Tacit GPU' : esc(short(k))}">${face(k === 'gpu' ? null : k, 28)}</span>`).join('');
+  $('#crowd-n').textContent = `${seen.size} proving now`;
+  $('#crowd-row').innerHTML = faces;
 }
 
 function waitingText() {
@@ -124,8 +142,17 @@ function paintNet() {
   const n = Math.min(60, (q || 0) + (l || 0));
   $('#pool').innerHTML = Array.from({ length: n }, (_, k) => `<i class="${k < (l || 0) ? 'on' : ''}" style="--k:${k}"></i>`).join('')
     + ((q || 0) + (l || 0) > n ? `<span>+${(q || 0) + (l || 0) - n}</span>` : '');
-  const top = pool?.top || [];
-  if (top.length) $('#board').innerHTML = top.slice(0, 8).map((m, i) => `<li><span>${i + 1}. ${who(m.miner)}</span><small>${m.proofs} ${m.proofs === 1 ? 'proof' : 'proofs'}</small></li>`).join('');
+  paintBoard();
+}
+
+// Today's provers: their proofs, the TAC those earn and how fast they usually prove (from the newest proofs).
+function paintBoard() {
+  const top = pool?.top || [], pts = new Map((tally?.miners || []).map((m) => [String(m.miner).toLowerCase(), m.points]));
+  if (!top.length) return;
+  $('#board').innerHTML = top.slice(0, 8).map((m, i) => {
+    const r = rewardWei(pts.get(String(m.miner).toLowerCase()), cap()), s = median(feed.filter((p) => p.miner === m.miner).map((p) => p.secs));
+    return `<li><span>${i + 1}. ${who(m.miner)}</span><small>${m.proofs} ${m.proofs === 1 ? 'proof' : 'proofs'}${r ? ` · ${tac(r)} TAC` : ''}${s ? ` · ${esc(took(s))} each` : ''}</small></li>`;
+  }).join('');
 }
 
 function paint() {
@@ -160,8 +187,19 @@ function paint() {
   $('#cmd').textContent = proveCommand(addr());
   const l = mineLines(pool, points, { tally, address: addr() });
   $('#pays').textContent = l.pays || '—';
-  $('#today').textContent = l.today || '—';
+  const mineRow = (tally?.miners || []).find((m) => String(m.miner).toLowerCase() === me());
+  const earned = mineRow ? rewardWei(mineRow.points, cap()) : null;
+  $('#today').textContent = mineRow ? `${mineRow.proofs} ${mineRow.proofs === 1 ? 'proof' : 'proofs'}${earned ? ` · ${tac(earned)} TAC` : ''}` : (l.today || '—');
+  $('#payout').textContent = mineRow ? `after the day ends, in ${untilDayEnds()}` : '—';
+  // At this computer's own pace (its newest proofs), up to the day's cap.
+  const mySecs = median(feed.filter((p) => String(p.miner).toLowerCase() === me()).map((p) => p.secs));
+  const perDay = mySecs ? Math.min(pool?.terms?.proofsPerMinerDay || 30, Math.floor(86400 / mySecs)) : null, per = rewardWei(pool?.terms?.pointsPerProof, cap());
+  $('#pace-row').hidden = !(perDay && per);
+  if (perDay && per) $('#pace').textContent = `about ${tac(per * BigInt(perDay))} TAC a day (${perDay} proofs)`;
   $('#paid').textContent = l.credited || '—';
+  const share = $('#share');
+  share.hidden = !mineRow;
+  if (mineRow) share.href = `https://x.com/intent/post?text=${encodeURIComponent(`I'm running a Tacit prover node: ${mineRow.proofs} privacy ${mineRow.proofs === 1 ? 'proof' : 'proofs'} today, mining TAC.`)}&url=${encodeURIComponent('https://tacit.finance/prove')}`;
   $('#run').textContent = mine?.proved ? String(mine.proved) : '0';
   $('#run-row').hidden = !mine || typeof mine.on !== 'boolean';
 }
@@ -178,7 +216,7 @@ function addressChanged() {
   if (a) { try { localStorage.setItem(SAVED_ADDR, a); } catch {} }
   paint();
   if (blocks.length) paintChain(new Set());
-  paintFeed();
+  paintFeed(); paintCrowd();
   readRemote().then(paint);
 }
 
@@ -256,7 +294,7 @@ const loop = (fn, ms, idle) => { const run = async () => { await fn(); setTimeou
 // The chain every six seconds, the pool and the feed every ten, the points service every half minute.
 loop(readChain, 6000, 30000);
 loop(readFeed, 10000, 60000);
-loop(async () => { pool = (await get(`${API}/prover/pool`)) ?? pool; paintNet(); }, 10000, 60000);
+loop(async () => { const p = await get(`${API}/prover/pool`); if (p) pool = cleanPool(p); paintNet(); }, 10000, 60000);
 loop(readRemote, 30000, 120000);
 if (isPhone(navigator.userAgent)) {
   $('#phone').hidden = false;

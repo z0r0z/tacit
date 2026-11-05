@@ -96,8 +96,17 @@ try {
     check((await page.locator('#chain .blk.won').count()) === 2, 'blocks a community prover proved are marked');
     check((await page.locator('#chain .blk.mine').count()) === 1, 'the address\'s own block is picked out');
     check((await page.locator('#pool i').count()) === 5 && (await page.locator('#pool i.on').count()) === 2, 'the waiting proofs are drawn, the leased ones lit');
-    check((await text(page, '#feed')).includes('+0.2 TAC') && (await text(page, '#feed')).includes('proved in 9 min'), 'the feed says who proved, how fast and what it won', await text(page, '#feed'));
-    check((await text(page, '#board')).includes('4 proofs'), 'today\'s provers', await text(page, '#board'));
+    check((await text(page, '#feed')).includes('+0.2 TAC') && (await text(page, '#feed')).includes('a deposit, proved in 9 min'), 'the feed says who proved what, how fast and what it won', await text(page, '#feed'));
+    check((await text(page, '#board')).includes('4 proofs · 0.8 TAC · 9 min each'), 'today\'s provers with their TAC and their speed', await text(page, '#board'));
+    check((await page.locator('#crowd .pod').count()) === 2 && (await page.textContent('#crowd-n')) === '2 proving now', 'the crowd: everyone who proved lately, Tacit GPU among them');
+    check(await page.locator('#crowd .pod.me').count() === 1, 'with this address picked out');
+    const kinds = await page.locator('#chain .blk:not(.next) .k').allInnerTexts();
+    check(JSON.stringify(kinds) === JSON.stringify(['Private transfer', 'Deposit', 'Private transfer', 'Private transfer']), 'each block says what it did', JSON.stringify(kinds));
+    check((await text(page, '#today')) === '4 proofs · 0.8 TAC', 'the rig says what today earned', await text(page, '#today'));
+    check((await text(page, '#payout')).startsWith('after the day ends, in '), 'and when it is paid', await text(page, '#payout'));
+    check((await text(page, '#pace')).includes('TAC a day'), 'and the pace', await text(page, '#pace'));
+    const share = await page.getAttribute('#share', 'href');
+    check(await page.locator('#share').isVisible() && share.startsWith('https://x.com/intent/post?') && share.includes('4%20privacy%20proofs'), 'a share link once it has proved', share);
     check((await page.locator('#chain .blk.gpu').count()) === 1 && (await page.locator('#chain .blk.gpu').innerText()).includes('Tacit GPU'), 'a block Tacit\'s GPU proved says so');
     const gpuRow = await page.locator('#feed li').first().innerText();
     check(gpuRow.includes('Tacit GPU') && !gpuRow.includes('TAC '), 'the feed shows Tacit\'s GPU, earning nothing', gpuRow);
@@ -110,7 +119,7 @@ try {
     check(loaded, 'every invader image draws');
     await page.click('#chain .blk.mine button');
     const det = await text(page, '#detail');
-    check(det.includes('Won') && det.includes('0.2 TAC') && det.includes('you') && det.includes('2 new notes · 1 deposit'), 'a block opens with what it holds, who proved it and what it won', det);
+    check(det.includes('Won') && det.includes('0.2 TAC') && det.includes('you') && det.includes('Deposit') && det.includes('2 new notes · 1 deposit') && det.includes('Make a private deposit'), 'a block opens with what it did, a link to do it, who proved it and what it won', det);
     // a new block lands at the front
     chain.blocks = [blk(9390, { notes: 0, spent: 2 }), ...chain.blocks];
     await page.waitForFunction(() => document.querySelector('#chain .blk:not(.next)')?.dataset.h === '9390', null, { timeout: 12000 });
@@ -192,6 +201,18 @@ try {
       check(h.get('tab') === tab && (!extra || `need=${h.get('need')}&why=${h.get('why')}` === extra) && await page.locator(`#t-${tab}`).isVisible(),
         `/weld/keeper/${from || ''} goes to the ${tab} tab${extra ? ', keeping what the lock needs' : ''}`, page.url());
     }
+    await ctx.close();
+  }
+  // an API answer carrying markup: dropped before anything is drawn
+  {
+    const saved = chain.blocks;
+    chain.blocks = [{ height: '<img id=pwn src=x>', hash: '0x1', tx: '"><b id=pwn2>', ethBlock: '<i id=pwn3>', notes: 1, spent: 0 }, blk(7, { prover: '<b id=pwn4>x</b>', points: '<b id=pwn5>' })];
+    const { page, ctx, errors } = await open(browser, { v: null });
+    await page.waitForFunction(() => document.querySelectorAll('#chain .blk:not(.next)').length === 1);
+    const pwned = await page.evaluate(() => ['pwn', 'pwn2', 'pwn3', 'pwn4', 'pwn5'].filter((i) => document.getElementById(i)));
+    check(pwned.length === 0 && (await page.locator('#chain .blk:not(.next)').first().getAttribute('data-h')) === '7', 'markup in an API answer never reaches the page', JSON.stringify(pwned));
+    check(errors.length === 0, 'and nothing breaks', errors.join(' | '));
+    chain.blocks = saved;
     await ctx.close();
   }
   // a phone

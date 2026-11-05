@@ -60,3 +60,45 @@ export function blockAgo(ethBlock, ethHead) {
   if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
   return `${Math.floor(s / 86400)} d ago`;
 }
+
+// What a block did, from the notes it made and spent: money arriving (a deposit, a bridge mint), money moving inside (a send, a swap,
+// an LP change), money leaving (a withdrawal, a lock), or several operations proved together in one settle (a batch). It is read from
+// the pool's logs alone, so it names the shape, not the exact operation.
+export function kindOf(b) {
+  const made = b.notes || 0, spent = b.spent || 0;
+  if (made + spent >= 4) return 'batch';
+  if (made && spent) return 'transfer';
+  if (made) return 'deposit';
+  if (spent) return 'withdrawal';
+  return 'other';
+}
+export const KINDS = Object.freeze({
+  deposit: { name: 'Deposit', act: 'Make a private deposit', href: '/' },
+  transfer: { name: 'Private transfer', act: 'Send privately', href: '/pay/' },
+  withdrawal: { name: 'Withdrawal', act: null, href: null },
+  batch: { name: 'Batch', act: null, href: null },
+  other: { name: 'Settle', act: null, href: null },
+});
+export const kindText = (b) => (kindOf(b) === 'batch' ? `Batch · ${(b.notes || 0) + (b.spent || 0)} ops` : KINDS[kindOf(b)].name);
+
+// The middle of a list of seconds, for a prover's usual speed.
+export const median = (xs) => { const s = xs.filter((x) => x > 0).sort((a, b) => a - b); return s.length ? s[Math.floor(s.length / 2)] : null; };
+
+// How long until a UTC day is over, when its proofs are paid: "5 h 12 min".
+export function untilDayEnds(nowMs = Date.now()) {
+  const left = Math.max(0, 86400000 - (nowMs % 86400000)), h = Math.floor(left / 3600000), m = Math.floor((left % 3600000) / 60000);
+  return h ? `${h} h ${m} min` : `${m} min`;
+}
+
+// What the API says, cleaned before anything is drawn: numbers as numbers, addresses and hashes as hex or nothing. A value that is not
+// one of those is dropped, so an answer can never carry markup into the page.
+const ADDR = /^0x[0-9a-f]{40}$/i, H32 = /^0x[0-9a-f]{64}$/i;
+const nat = (x) => (Number.isSafeInteger(Number(x)) && Number(x) >= 0 ? Number(x) : 0);
+const addrOr = (a) => (ADDR.test(String(a)) ? String(a).toLowerCase() : null);
+export function cleanBlock(b) {
+  if (!b || !Number.isSafeInteger(Number(b.height)) || Number(b.height) < 0) return null;
+  return { height: Number(b.height), ethBlock: nat(b.ethBlock), notes: nat(b.notes), spent: nat(b.spent), deposits: nat(b.deposits), points: nat(b.points),
+    hash: H32.test(String(b.hash)) ? String(b.hash) : '', tx: H32.test(String(b.tx)) ? String(b.tx) : '', prover: addrOr(b.prover) || undefined, house: b.house === true };
+}
+export const cleanProof = (p) => (p && (p.house === true || addrOr(p.miner)) ? { at: nat(p.at), miner: addrOr(p.miner) || undefined, house: p.house === true, points: nat(p.points), secs: nat(p.secs) } : null);
+export const cleanMiner = (m) => (m && addrOr(m.miner) ? { miner: addrOr(m.miner), proofs: nat(m.proofs), points: nat(m.points) } : null);
