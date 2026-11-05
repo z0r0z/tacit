@@ -62,6 +62,10 @@ test('a lapsed lease re-opens the job for the next claim; a cancelled job takes 
   assert.equal((await b.result({ worker: tacit, jobId, publicValues: '0x' + '11'.repeat(64), proof: '0x' + '22'.repeat(100) })).ok, false);
   const sum = await b.summary();
   assert.equal(sum.workers.find((w) => w.name === 'tacit-a5000').bad, 1);
+  assert.equal(sum.workers.find((w) => w.name === 'tacit-a5000').lastBadSeconds, 0, 'when the last refusal was, so the monitor warns on a new one, not the lifetime count');
+  assert.equal(sum.workers.find((w) => w.name === 'alice').lastBadSeconds, null);
+  t += 90_000;
+  assert.equal((await b.summary()).workers.find((w) => w.name === 'tacit-a5000').lastBadSeconds, 90);
   assert.equal((await b.status(jobId)).lapsed, 1);
   // A job past its deadline is expired, not offered.
   const late = await b.post({ class: 'public', stdin: Buffer.from('other').toString('base64'), cycleLimit: 1, gasLimit: 1, deadline: now() / 1000 + 1 });

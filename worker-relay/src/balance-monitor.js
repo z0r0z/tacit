@@ -40,6 +40,7 @@ import { settleFundsNeed, treasuryFloors } from './lib/settle-fees.js';
 import { poolBooks } from './lib/evm-pool-solvency.js';
 import { readTacSupply } from './lib/tac-supply.js';
 import { scanLagVerdict } from './lib/scan-lag.js';
+import { boardVerdict, runpodVerdict } from './lib/board-health.js';
 import { publicClient, relayWallet, watchedWallets, ERC20_ABI, PROVE, readPool, readReflectionDigest, HEADER_RELAY, RELAY_ABI, POOL } from './lib/chain.js';
 import { safeErr } from './lib/safe-err.js';
 
@@ -607,7 +608,7 @@ async function checkEvmPoolKeepers() {
 
 // The prover board (worker/src/prover-board.js): Tacit's own GPU worker polls it every few seconds; while none has for a
 // while, every settle proof goes to the prover network with a public input, which the relay does on its own but which
-// costs the base fee and the witness's privacy, so it is worth knowing at once.
+// costs the base fee and the witness's privacy, so it is worth knowing at once. Verdicts in lib/board-health.js.
 async function checkProverBoard() {
   if (!CFG.proverBoardExpectWorkers) return;
   let s;
@@ -615,33 +616,12 @@ async function checkProverBoard() {
     const res = await fetch(`${CFG.workerBase}/prover/board`);
     s = res.ok ? await res.json() : null;
   } catch (e) { s = null; }
-  if (!s || !Array.isArray(s.workers)) { await alert('warning', `prover board unreadable: settle proofs may be going to the prover network`); return; }
-  // community machines race public jobs only: they neither keep the board alive for Tacit's jobs nor are Tacit's boxes to check
-  s = { ...s, workers: s.workers.filter((w) => !w.community) };
-  const live = s.workers.filter((w) => Number(w.lastSeenSeconds) <= CFG.proverBoardQuietSecs);
-  if (!live.length) {
-    const seen = s.workers.map((w) => `${w.name} ${Math.round(Number(w.lastSeenSeconds) / 60)} min ago`).join(', ') || 'none ever';
-    await alert('critical', `no prover-board worker has polled in ${Math.round(CFG.proverBoardQuietSecs / 60)} min (last: ${seen}): settle proofs go to the prover network with public inputs until the GPU box is back (stopped pod, out of credit, or the worker loop down)`, { workers: s.workers });
-    return;
-  }
-  const bad = s.workers.filter((w) => Number(w.bad) > 0);
-  if (bad.length) await alert('warning', `prover board: ${bad.map((w) => `${w.name} ${w.bad} refused proof(s)`).join(', ')} — a proof the pool would not settle; check that box's guest and server versions`, { workers: s.workers });
-  // A worker failing a good share of what it takes (a GPU server that keeps dying, inputs it cannot read): the jobs
-  // still land, after a wait, on the prover network, but the box is not earning its keep.
-  const failing = s.workers.filter((w) => Number(w.failed) >= 3 && Number(w.failed) * 2 >= Number(w.proved));
-  if (failing.length) await alert('warning', `prover board: ${failing.map((w) => `${w.name} failed ${w.failed} of ${Number(w.failed) + Number(w.proved)} jobs`).join(', ')} — jobs then wait out the board before the prover network takes them; check the worker's log`, { workers: s.workers });
-  // What a user's proof waits for the GPU: the wait for a claim over the last hour's finished jobs. A worker busy with the proof pool's stock or an
-  // Ethereum-state proof leaves a user's job queued behind it (on 2026-10-30: 1 s at the median, 24 s at the 90th percentile, 70 jobs in 12 hours), and
-  // a second worker, or less stock, is what lowers it.
-  const r = s.recent;
-  if (r && r.n >= 10 && Number(r.waitP90) > CFG.proverBoardWaitWarnSecs) {
-    await alert('warning', `prover board: a user's proof waited ${r.waitP90} s for a free GPU at the 90th percentile (${r.waitP50} s at the median, ${r.n} jobs in the last hour, ${r.proveP50} s to prove): the worker is busy with other work; a second worker would cut the wait`, { recent: r });
-  }
-  log(`prover board: ${live.map((w) => `${w.name} seen ${w.lastSeenSeconds}s ago, proved ${w.proved}`).join('; ')}; queued ${s.queued}, claimed ${s.claimed}${r && r.n ? `; last hour: ${r.n} jobs, waited ${r.waitP50}/${r.waitP90} s (median/90th), proved in ${r.proveP50}/${r.proveP90} s` : ''}`);
+  const v = boardVerdict(s, { quietSecs: CFG.proverBoardQuietSecs, badWindowSecs: CFG.proverBoardBadWindowSecs, waitWarnSecs: CFG.proverBoardWaitWarnSecs });
+  for (const a of v.alerts) await alert(a.level, a.msg, a.extra);
+  if (v.log) log(v.log);
 }
 
-// The GPU box's rent: RunPod stops the pod at a zero balance, and the board then goes quiet with no word. Hours left = balance over
-// the running pods' hourly cost; a warning under two days, critical under half a day.
+// A RunPod account's rent, read only with RUNPOD_API_KEY (the board's GPU box has moved off RunPod: unset the key to drop the check).
 async function checkRunPod() {
   if (!CFG.runpodApiKey) return;
   let m;
@@ -650,17 +630,9 @@ async function checkRunPod() {
       body: JSON.stringify({ query: '{ myself { clientBalance pods { name desiredStatus costPerHr } } }' }) });
     m = res.ok ? (await res.json())?.data?.myself : null;
   } catch { m = null; }
-  if (!m) { log('runpod: balance unreadable'); return; }
-  const running = (m.pods || []).filter((p) => p.desiredStatus === 'RUNNING');
-  const perHour = running.reduce((a, p) => a + Number(p.costPerHr || 0), 0);
-  const balance = Number(m.clientBalance || 0);
-  if (!running.length) { await alert('warning', `runpod: no pod is running (balance $${balance.toFixed(2)}); the prover board has no worker from here`); return; }
-  if (perHour <= 0) { log(`runpod: balance $${balance.toFixed(2)}, cost unknown`); return; }
-  const hours = balance / perHour;
-  const what = `runpod balance $${balance.toFixed(2)} lasts about ${hours.toFixed(0)} h for ${running.map((p) => p.name).join(', ')} at $${perHour.toFixed(2)}/h`;
-  if (hours < CFG.runpodHoursCritical) await alert('critical', `${what} — top it up or the GPU box stops and settle proofs go to the prover network with public inputs`);
-  else if (hours < CFG.runpodHoursWarn) await alert('warning', `${what} — top it up soon`);
-  else log(what);
+  const v = runpodVerdict(m, { hoursWarn: CFG.runpodHoursWarn, hoursCritical: CFG.runpodHoursCritical });
+  for (const a of v.alerts) await alert(a.level, a.msg, a.extra);
+  if (v.log) log(v.log);
 }
 
 async function main() {
