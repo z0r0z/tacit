@@ -375,3 +375,6 @@
 .swc .pk-r b .pk-t::after { content: attr(data-t); }
 .swc .pk-r b .pk-t-defi, .swc .pk-r b .pk-t-pay { border-style: dashed; color: var(--ink); }
 .swc #pk-l.srch .pk-r b .pk-t { display: inline-block; }
+/* Shield and Withdraw: the To coin follows the From coin, so it is no picker */
+.swc.flow #get-coin { cursor: default; pointer-events: none; }
+.swc.flow #get-coin .car { display: none; }
