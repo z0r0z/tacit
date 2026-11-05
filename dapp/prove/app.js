@@ -45,7 +45,7 @@ async function readRemote() {
   const [m, t] = await Promise.all([get(`${POINTS}/mine${a ? `?address=${a.toLowerCase()}` : ''}`), get(`${API}/prover/pool/credits?day=${utcDay()}`)]);
   if (a !== addr()) return;
   points = m; tally = t ? { ...t, miners: (t.miners || []).map(cleanMiner).filter(Boolean) } : t;
-  paintNet(); paintFeed(); paintDetail();
+  paintNet(); paintFeed(); paintDetail(); paintGpu();
 }
 
 // The chain, read often: a new block lands at the front of the strip.
@@ -213,7 +213,7 @@ function addressChanged() {
   if (a) { try { localStorage.setItem(SAVED_ADDR, a); } catch {} }
   paint();
   if (blocks.length) paintChain(new Set());
-  paintFeed(); paintCrowd();
+  paintFeed(); paintCrowd(); paintGpu();
   readRemote().then(paint);
 }
 
@@ -236,6 +236,19 @@ function say(text, bad = false) {
   s.textContent = text;
   s.classList.toggle('err', bad);
 }
+
+// The GPU card: the command for this address, and what a Bitcoin batch pays (the board's points for it, at the most a point is paid today).
+let boardPay = null;
+const gpuCommand = () => `curl -fsSL https://tacit.finance/prove-gpu.sh | sh -s -- ${addr() || '0xYourAddress'}`;
+function paintGpu() {
+  $('#gpu-cmd').textContent = gpuCommand();
+  const pts = Number(boardPay?.pointsByProgram?.['btc-state']), r = Number.isSafeInteger(pts) ? rewardWei(pts, cap()) : null;
+  $('#btc-pay').textContent = r ? ` · about ${tac(r)} TAC each` : '';
+}
+async function readBoardPay() { const s = await get(`${API}/prover/board`); if (s?.pay) boardPay = s.pay; paintGpu(); }
+$('#gpu-copy').addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText(gpuCommand()); $('#gpu-copy').textContent = 'Copied'; setTimeout(() => { $('#gpu-copy').textContent = 'Copy'; }, 1500); } catch {}
+});
 
 async function copy() {
   const a = addr();
@@ -306,6 +319,7 @@ loop(readChain, 6000, 30000);
 loop(readFeed, 10000, 60000);
 loop(async () => { const p = await get(`${API}/prover/pool`); if (p) pool = cleanPool(p); paintNet(); }, 10000, 60000);
 loop(readRemote, 30000, 120000);
+loop(readBoardPay, 60000, 300000);
 if (isPhone(navigator.userAgent)) {
   $('#phone').hidden = false;
   $('#desk').hidden = true;

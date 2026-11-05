@@ -60,6 +60,7 @@ async function open(browser, local, { phone = false } = {}) {
     const u = new URL(route.request().url());
     if (u.pathname === '/prover/pool') return json(route, { queued: 3, leased: 2, doneToday: 41, minersToday: 2, top: [{ miner: ADDR, proofs: 4 }, { miner: OTHER, proofs: 1 }], terms: { pointsPerProof: 20, proofsPerMinerDay: 30 } });
     if (u.pathname === '/prover/blocks') return json(route, { head: { height: chain.blocks[0].height, hash: chain.blocks[0].hash, ethHead: chain.blocks[0].ethBlock + 25 }, blocks: chain.blocks });
+    if (u.pathname === '/prover/board') return json(route, { queued: 0, workers: [], pay: { pointsPerProof: 20, pointsByProgram: { 'btc-state': 500 } } });
     if (u.pathname === '/prover/pool/recent') return json(route, { proofs: [{ at: Date.now() - 60_000, house: true, points: 0, secs: 31 }, { at: Date.now() - 120_000, miner: ADDR, points: 20, secs: 552 }] });
     if (u.pathname === '/prover/pool/credits') return json(route, { day, over: false, miners: [{ miner: ADDR, proofs: 4, points: 80 }] });
     return json(route, {}, 404);
@@ -82,6 +83,9 @@ try {
     check(!(await page.locator('#go').isVisible()), 'not set up: no start button');
     await page.fill('#addr', ADDR);
     check((await text(page, '#cmd')).endsWith(ADDR), 'the setup line carries the address', await text(page, '#cmd'));
+    await page.waitForFunction(() => document.querySelector('#btc-pay').textContent.includes('TAC'), null, { timeout: 8000 }).catch(() => {});
+    check((await page.textContent('#btc-pay')) === ' · about 5 TAC each', 'the GPU card says what a Bitcoin batch pays', await page.textContent('#btc-pay'));
+    check((await text(page, '#gpu-cmd')) === `curl -fsSL https://tacit.finance/prove-gpu.sh | sh -s -- ${ADDR}`, 'with the GPU command for the address', await text(page, '#gpu-cmd'));
     await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
     await page.click('#copy');
     await page.waitForFunction(() => document.querySelector('#title').textContent === 'Waiting for tacit-prover…', null, { timeout: 5000 }).catch(() => {});

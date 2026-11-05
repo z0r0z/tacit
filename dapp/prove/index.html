@@ -21,7 +21,7 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /prove/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/prove/app.js?cb=c53ef93f">
+<link rel="modulepreload" href="/prove/app.js?cb=830bab77">
 <link rel="modulepreload" href="/community-prove.js?cb=4f1a30e7">
 <link rel="modulepreload" href="/prove/view.js?cb=396aa5e6">
 <link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
@@ -283,6 +283,10 @@ pre.cmd { margin: 16px 0 0; padding: 12px 14px; background: var(--field); border
 .ops code { font: inherit; }
 @media (max-width: 560px) { .ops .cards { grid-template-columns: minmax(0, 1fr); } }
 .tab > .ops { margin-top: 30px; }
+.gpu { margin-top: 18px; max-width: 720px; }
+.gpu h3 { font: 400 clamp(22px, 3.6vw, 28px)/1.1 var(--serif); margin: 4px 0 0; }
+.gpu h3 span { color: var(--orange); }
+.gpu .btn { margin-top: 12px; }
 
 /* the wallet chip's short label, the wallet app's pairing sheet, the toasts */
 .chip .narrow { display: none; }
@@ -549,6 +553,13 @@ footer.sf svg.fill { width: 16px; height: 16px; }
         <ol id="board"><li class="empty">Nobody yet. Be first.</li></ol>
       </section>
     </div>
+      <section class="panel gpu" aria-labelledby="h-gpu">
+        <p class="eyebrow"><span>Big GPU?</span></p>
+        <h3 id="h-gpu">Prove Bitcoin batches<span id="btc-pay"></span></h3>
+        <pre class="cmd"><code id="gpu-cmd">curl -fsSL https://tacit.finance/prove-gpu.sh | sh -s -- 0xYourAddress</code></pre>
+        <button class="btn ghost" id="gpu-copy" type="button">Copy</button>
+        <p class="hint">x86-64 Linux and an NVIDIA GPU with 24 GB or more.</p>
+      </section>
       <div class="ops">
   <section class="grp" id="g-prove" aria-labelledby="h-market">
     <h2 id="h-market"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg>GPU provers: prove for TAC</h2>
@@ -651,6 +662,6 @@ RUNNER_KEY=0x… node tools/community-runner.mjs</code></pre>
 
 <div id="toast-container" class="toasts" popover="manual"></div>
 
-<script type="module" src="/prove/app.js?cb=c53ef93f"></script>
+<script type="module" src="/prove/app.js?cb=830bab77"></script>
 </body>
 </html>
