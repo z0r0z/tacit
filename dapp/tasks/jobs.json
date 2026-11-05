@@ -781,8 +781,8 @@
           "to": "0x0000000000000000000000000000000000000000",
           "gas": 22000,
           "approved": [],
-          "minWei": "300000000000000000000",
-          "maxWei": "300000000000000000000",
+          "minWei": "2000000000000000000000",
+          "maxWei": "2000000000000000000000",
           "label": "Bridger, first",
           "detail": "The first bridge to be checked, on 4 November. Taken.",
           "reserved": true,
@@ -800,8 +800,8 @@
           "approved": [
             "0x4b01d65d4810207efb5fe09bbbd275689d7da80c7c7b35ceb88143e74ee31fe9"
           ],
-          "minWei": "130000000000000000000",
-          "maxWei": "130000000000000000000",
+          "minWei": "700000000000000000000",
+          "maxWei": "700000000000000000000",
           "label": "Bridger, second",
           "detail": "The second bridge to be checked, on 5 November. Taken.",
           "reserved": true,
@@ -831,7 +831,7 @@
         },
         {
           "h": "Paid",
-          "p": "The first two bridges, on 4 and 5 November, proved the fast bridge on mainnet, and their bridgers are paid for it: 300 TAC to the first and 130 TAC to the second. That covers their Bitcoin fees, with a reward for the testing and, for the first, a lock that stalled while the bugs it found were fixed."
+          "p": "The first two bridges, on 4 and 5 November, proved the fast bridge on mainnet, and their bridgers are paid for it: 2,000 TAC to the first and 700 TAC to the second. That covers their Bitcoin fees and gas and pays for their time, with a bonus for proving it out, and for the first a lock that stalled while the bugs it found were fixed."
         }
       ],
       "links": [

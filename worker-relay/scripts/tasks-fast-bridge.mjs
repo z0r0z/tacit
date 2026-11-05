@@ -10,9 +10,11 @@
 // must be spent by a provider's take, with an adaptor claim settled in the pool between the two.
 //
 // The provider pays 60 TAC: about one swap's Bitcoin fees (a bridger's cost on 5 November 2026 was 4,760 to 5,716 sats, about $4 to $5, with
-// TAC at $0.13 and Bitcoin at $80,000), which the provider does not pay. The first two bridgers were paid more, for what they spent and for
-// proving the bridge out: the first 300 TAC (two locks, one stalled by bugs now fixed, and a day of retries: about $7.50 in fees), the
-// second 130 TAC (one lock, about $4 in fees). Each is its own step, paid once, to the claim reviewed for it.
+// TAC at $0.13 and Bitcoin at $80,000), which the provider does not pay. The first two bridgers proved the bridge out on mainnet and are
+// paid for what it cost them, for their time and for that: the first 2,000 TAC (about $7.50 of Bitcoin fees for two locks, one stalled by
+// bugs since fixed, and a provider's fee, about 70 TAC; a day of retries and reports, about 1,150 TAC; and a bonus of about 780 TAC for being
+// first), the second 700 TAC (about $4 of fees, 35 TAC; about an hour and a half, 290 TAC; and a bonus of 375 TAC for a second, independent
+// proof on another provider). Each is its own step, paid once, to the claim reviewed for it.
 import { fileURLToPath } from 'node:url';
 import { readJobs, writeJobs } from './tasks-merge.mjs';
 
@@ -25,7 +27,7 @@ const before = readJobs(SERVICE_OUT).find((j) => j.id === JOB);
 const approved = (id, name) => { const had = before?.steps.find((s) => s.id === id)?.approved ?? [], h = arg(name); return h && !had.includes(h) ? [...had, h] : had; };
 const opensAt = Number(arg('opens', before?.opensAt ?? Math.floor(Date.now() / 1000)));
 const step = (id, flag, tac) => ({ id, kind: 'review', to: NOBODY, gas: 22000, approved: approved(id, flag), minWei: TAC(tac), maxWei: TAC(tac) });
-const steps = [step('01-provider', 'provider', 60), step('02-bridger', 'bridger', 300), step('03-bridger-second', 'bridger2', 130)];
+const steps = [step('01-provider', 'provider', 60), step('02-bridger', 'bridger', 2000), step('03-bridger-second', 'bridger2', 700)];
 
 writeJobs(SERVICE_OUT, { id: JOB, chainId: 1, opensAt, steps });
 writeJobs(PAGE_OUT, {
@@ -49,7 +51,7 @@ writeJobs(PAGE_OUT, {
     { h: 'What it costs', p: 'The bridger pays the Bitcoin fees, including the provider\'s take, and the reward covers them. Your TAC stays yours, less the provider\'s fee.' },
     { h: 'If a bridge stops', p: 'Open the fast bridge again after about a day and your TAC returns to your Bitcoin address.' },
     { h: 'Getting paid', p: 'Each role pays once, to the first bridge checked on both chains. Claim from the wallet you want paid, then post the link in Discord.' },
-    { h: 'Paid', p: 'The first two bridges, on 4 and 5 November, proved the fast bridge on mainnet, and their bridgers are paid for it: 300 TAC to the first and 130 TAC to the second. That covers their Bitcoin fees, with a reward for the testing and, for the first, a lock that stalled while the bugs it found were fixed.' },
+    { h: 'Paid', p: 'The first two bridges, on 4 and 5 November, proved the fast bridge on mainnet, and their bridgers are paid for it: 2,000 TAC to the first and 700 TAC to the second. That covers their Bitcoin fees and gas and pays for their time, with a bonus for proving it out, and for the first a lock that stalled while the bugs it found were fixed.' },
   ],
   links: [{ label: 'Discord', href: 'https://discord.gg/VxYx9XSBrM' }],
 });
