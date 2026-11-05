@@ -10,7 +10,8 @@
 //   tacit-prover uninstall        stop that
 //   tacit-prover mine 0xADDR      prove wraps people asked to have ready (the API's proof pool) for TAC points to 0xADDR
 //
-// Env: TACIT_PROVER_PORT (47815), TACIT_PROVER_ORIGINS (comma list, default tacit.finance + localhost:8080),
+// Env: TACIT_PROVER_PORT (47815), TACIT_PROVER_ORIGINS (comma list, default tacit.finance and www.tacit.finance; a local page
+// under development adds its own),
 // TACIT_PROVER_DIR (~/.tacit-prover: finished proofs), TACIT_METAL=0 (CPU leaf hashing), TACIT_MINE=0xADDR (serve mines the
 // proof pool while it has nothing of its own to prove), TACIT_POOL_API (https://api.tacit.finance), and the SDK's
 // SP1_WORKER_NUM_*_WORKERS (one per stage by default below 16 GB of RAM).
@@ -27,6 +28,8 @@ const ELF: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../elf/c
 // The live pool's PROGRAM_VKEY: a guest that derives anything else is refused at start.
 const POOL_VKEY: &str = "0x006cd47fd23937a6d247696cace28c22d2c6a8280447e6ac45a3571de232d6e3";
 const MAX_INPUT: usize = 1 << 20;
+// Proofs waiting at once from this machine's pages: one proof takes minutes, so more would only wait.
+const MAX_QUEUED: usize = 8;
 
 #[derive(Clone, Default)]
 struct Job {
@@ -264,7 +267,7 @@ mod pool {
         let (Some(id), Some(token), Some(stdin)) = (lease["id"].as_str(), lease["lease"].as_str(), lease["stdin"].as_str()) else { return false };
         let _ = std::fs::create_dir_all(store_dir());
         let _ = std::fs::write(held(), json!({ "id": id, "lease": token }).to_string());
-        let Some(input) = hex::decode(stdin.trim_start_matches("0x")).ok().and_then(|b| super::read_stdin(&b)) else {
+        let Some(input) = hex::decode(stdin.trim_start_matches("0x")).ok().filter(|b| b.len() <= super::MAX_INPUT).and_then(|b| super::read_stdin(&b)) else {
             eprintln!("tacit-prover: pool job {id} has an input this prover cannot read; handed back");
             hand_back(&http, id, token, "an input this prover cannot read");
             return true;
@@ -430,7 +433,7 @@ fn store_dir() -> PathBuf {
 fn serve(client: sp1_sdk::blocking::CpuProver, pk: sp1_sdk::SP1ProvingKey, vkey: String) {
     let port: u16 = std::env::var("TACIT_PROVER_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(47815);
     let origins: Vec<String> = std::env::var("TACIT_PROVER_ORIGINS")
-        .unwrap_or_else(|_| "https://tacit.finance,https://www.tacit.finance,http://localhost:8080,http://127.0.0.1:8080".into())
+        .unwrap_or_else(|_| "https://tacit.finance,https://www.tacit.finance".into())
         .split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
     let dir = store_dir().join("proofs");
     let _ = std::fs::create_dir_all(&dir);
@@ -499,6 +502,9 @@ fn serve(client: sp1_sdk::blocking::CpuProver, pk: sp1_sdk::SP1ProvingKey, vkey:
     let listener = TcpListener::bind(("127.0.0.1", port)).expect("bind");
     eprintln!("tacit-prover: listening on 127.0.0.1:{port}");
     for conn in listener.incoming().flatten() {
+        // A request that stalls (a header never finished, a body shorter than it said) is dropped rather than held for ever.
+        let _ = conn.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+        let _ = conn.set_write_timeout(Some(std::time::Duration::from_secs(10)));
         let state = state.clone();
         let origins = origins.clone();
         let vkey = vkey.clone();
@@ -508,25 +514,42 @@ fn serve(client: sp1_sdk::blocking::CpuProver, pk: sp1_sdk::SP1ProvingKey, vkey:
     }
 }
 
+// A request line or header of at most this many bytes, and at most this many headers: enough for any browser, and a request
+// that sends more is refused rather than read without end.
+const MAX_LINE: u64 = 8 * 1024;
+const MAX_HEADERS: usize = 64;
+
 fn handle(mut conn: TcpStream, state: &Arc<(Mutex<State>, Condvar)>, origins: &[String], vkey: &str) -> std::io::Result<()> {
     let mut r = BufReader::new(conn.try_clone()?);
     let mut line = String::new();
-    r.read_line(&mut line)?;
+    (&mut r).take(MAX_LINE).read_line(&mut line)?;
     let mut parts = line.split_whitespace();
     let (method, target) = (parts.next().unwrap_or("").to_string(), parts.next().unwrap_or("").to_string());
-    let (mut origin, mut len) = (String::new(), 0usize);
+    let (mut origin, mut host, mut len) = (String::new(), String::new(), 0usize);
+    let mut headers = 0usize;
     loop {
         let mut h = String::new();
-        if r.read_line(&mut h)? == 0 || h == "\r\n" || h == "\n" {
+        if (&mut r).take(MAX_LINE).read_line(&mut h)? == 0 || h == "\r\n" || h == "\n" {
             break;
+        }
+        headers += 1;
+        if headers > MAX_HEADERS || !h.ends_with('\n') {
+            return conn.write_all(b"HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
         }
         if let Some((k, v)) = h.split_once(':') {
             match k.trim().to_ascii_lowercase().as_str() {
                 "origin" => origin = v.trim().to_string(),
+                "host" => host = v.trim().to_ascii_lowercase(),
                 "content-length" => len = v.trim().parse().unwrap_or(0),
                 _ => {}
             }
         }
+    }
+    // Only a request addressed to this machine by name is answered: a page on another site that has its name pointed at 127.0.0.1
+    // (DNS rebinding) sends its own name as Host, and its same-site reads carry no Origin.
+    let port = conn.local_addr().map(|a| a.port()).unwrap_or(0);
+    if host != format!("127.0.0.1:{port}") && host != format!("localhost:{port}") {
+        return conn.write_all(b"HTTP/1.1 421 Misdirected Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
     }
     // A page may use the prover only from an allowed origin; programs on this machine can reach 127.0.0.1 anyway.
     let allowed = origin.is_empty() || origins.iter().any(|o| o == &origin);
@@ -574,6 +597,9 @@ fn handle(mut conn: TcpStream, state: &Arc<(Mutex<State>, Condvar)>, origins: &[
             let mut s = m.lock().unwrap();
             // The same input asked for again (a page reloaded mid-proof) is the same job.
             let again = s.jobs.get(&id).is_some_and(|j| j.status != "failed");
+            if !again && s.queue.len() >= MAX_QUEUED {
+                return reply(&mut conn, "503 Service Unavailable", r#"{"error":"the prover has as many proofs waiting as it takes; ask again shortly"}"#.into());
+            }
             if !again {
                 s.jobs.insert(id.clone(), Job { status: "queued", ..Default::default() });
                 s.queue.push_back((id.clone(), stdin));

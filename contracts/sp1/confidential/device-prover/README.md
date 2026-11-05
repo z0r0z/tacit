@@ -61,7 +61,7 @@ start loads in seconds.
 | env | default | |
 |---|---|---|
 | `TACIT_PROVER_PORT` | `47815` | the page looks here |
-| `TACIT_PROVER_ORIGINS` | tacit.finance, www.tacit.finance, and localhost:8080 / 127.0.0.1:8080 for a local dapp | pages allowed to ask for a proof |
+| `TACIT_PROVER_ORIGINS` | tacit.finance and www.tacit.finance (a page under development adds its own, e.g. http://localhost:8080) for a local dapp | pages allowed to ask for a proof |
 | `TACIT_PROVER_DIR` | `~/.tacit-prover` | finished proofs, kept by input hash |
 | `TACIT_METAL` | on, on macOS | `0` keeps all hashing and proof-of-work on the CPU |
 | `TACIT_MINE` | unset | an address: mine the proof pool while idle, for TAC points to it |
