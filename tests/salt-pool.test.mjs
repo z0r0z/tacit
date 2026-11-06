@@ -108,3 +108,22 @@ test('who is grinding now and how fast: every address that sent shares lately, T
   s = (await pool.summary()).body;
   assert.deepEqual(s.live, [], 'nobody once they stop sending');
 });
+
+test('the salts share what the day\'s proofs leave of the campaign\'s daily points, up to their own most', async () => {
+  let t = 500 * DAY + 1000;
+  const kv = kvStore(), used = new Map([[500, 1500]]);
+  const pool = makeSaltPool({ kv, cfg: { ...SALT_POOL, minBits: 8, sendEveryMs: 0 }, now: () => t, potPoints: async () => 5000, proofPoints: async (d) => used.get(d) || 0 });
+  await pool.submit({ miner: A, salts: [grind(500, 8).salt], client: 'c1' });
+  assert.equal((await pool.summary()).body.pointsPerDay, 3500, 'today so far: 5000 less the 1500 the proofs took');
+  used.set(500, 4800);
+  t += DAY;
+  const c = (await pool.credits(500)).body;
+  assert.equal(c.pointsPerDay, 200, 'a busy day leaves the salts less');
+  assert.equal(c.miners[0].points, 200);
+  used.set(500, 6000);
+  assert.equal((await pool.credits(500)).body.pointsPerDay, 0, 'and nothing once the proofs took the pot');
+  const capped = makeSaltPool({ kv, cfg: { ...SALT_POOL, pointsPerDay: 1000 }, now: () => t, potPoints: async () => 5000, proofPoints: async () => 0 });
+  assert.equal((await capped.credits(500)).body.pointsPerDay, 1000, 'never past their own most');
+  const blind = makeSaltPool({ kv, cfg: SALT_POOL, now: () => t, potPoints: async () => { throw new Error('down'); }, proofPoints: async () => 0 });
+  assert.equal((await blind.credits(500)).body.pointsPerDay, SALT_POOL.potPoints, 'the campaign\'s terms unread: the default pot');
+});

@@ -3940,10 +3940,28 @@ async function poolCached(key, ms, make) {
 
 // GET /prover/salt (the day so far and the best salts banked), GET /prover/salt/credits?day= (the day's points by weight, for the points
 // service), GET /prover/salt/bank (every banked salt), POST /prover/salt/share { miner, salts } (a prover's shares).
+// The salts share what the day's proofs leave of the mining campaign's daily points: the campaign's terms from the points service (its
+// daily amount over the most a point earns, kept ten minutes), and the day's proof points from the proof pool's and the board's tallies.
+let _saltPot = { at: 0, points: null };
+async function saltPotPoints() {
+  if (_saltPot.points != null && Date.now() - _saltPot.at < 600_000) return _saltPot.points;
+  const r = await fetch(`${POINTS_API_BASE}/mine`, { signal: AbortSignal.timeout(8000) });
+  const t = (await r.json())?.terms;
+  const daily = BigInt(t?.dailyWei || 0), cap = BigInt(t?.capWeiPerPoint || 0);
+  if (!r.ok || daily <= 0n || cap <= 0n) throw new Error('no campaign terms');
+  _saltPot = { at: Date.now(), points: Number(daily / cap) };
+  return _saltPot.points;
+}
+async function proofPointsOf(env, day) {
+  const pool = buildProofPool(env, { verify: async () => ({}) }), board = buildProverBoard(env);
+  const [p, b] = await Promise.all([pool ? pool.credits(day) : null, board ? board.credits(day) : null]);
+  const sum = (r) => (r && r.status === 200 && Array.isArray(r.body?.miners) ? r.body.miners.reduce((s, m) => s + (Number(m.points) || 0), 0) : 0);
+  return sum(p) + sum(b);
+}
 async function handleSaltPool(req, env, url, cors) {
   const nostore = { ...cors, 'Cache-Control': 'no-store' };
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
-  const pool = buildSaltPool(env);
+  const pool = buildSaltPool(env, { potPoints: saltPotPoints, proofPoints: (day) => proofPointsOf(env, day) });
   if (!pool) return jsonResponse({ error: 'not found' }, 404, cors);
   const send = (r, headers = nostore) => jsonResponse(r.body, r.status, headers);
   const p = url.pathname;

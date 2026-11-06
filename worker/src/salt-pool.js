@@ -6,7 +6,9 @@
 // creates the contract at its nonce 1 (contracts/script/create3-vanity; checked against CreateX.computeCreate3Address on mainnet).
 //
 // A share is a salt whose address starts with at least minBits zero bits. It weighs 2^(bits − minBits), up to 2^maxWeightBits, and counts
-// once, for the first address that sends it. A day's points (pointsPerDay) are shared between the day's miners by weight once the day is
+// once, for the first address that sends it. A day's points are what the day's proofs leave of the mining campaign's daily points (the
+// campaign's daily amount over its most a point earns), up to pointsPerDay: proofs come first, and the salts fill the rest. They are
+// shared between the day's miners by weight once the day is
 // over (GET /prover/salt/credits, which the points service pays from beside the proof pool's tally): more machines share the same points,
 // so what a day costs never grows with them. Salts at least bankBits good are kept (GET /prover/salt/bank): the addresses Tacit deploys
 // its next contracts to. Tacit's own machines (SALT_HOUSE, the deployer by default) are counted as grinding and banked, and never share the points.
@@ -24,7 +26,8 @@ export const SALT_POOL = Object.freeze({
   createx: '0xba5ed099633d3b313e4d5f7bdc1305d3c28ba5ed',
   minBits: 26,              // SALT_MIN_BITS: a share's address starts with this many zero bits (about a minute of four laptop cores)
   maxWeightBits: 20,
-  pointsPerDay: 1500,       // POINTS_SALT_DAILY: shared by weight (15 TAC a day at 0.01 TAC a point)
+  pointsPerDay: 1_000_000,  // POINTS_SALT_DAILY: the most a day's salts may share (by default no less than the whole pot)
+  potPoints: 5000,          // the campaign's daily points when its terms cannot be read (50 TAC at 0.01 TAC a point)
   bankBits: 40,             // SALT_BANK_BITS: five zero bytes and better are kept for deploys
   bankKeep: 64,
   perCall: 64,              // salts one send may carry
@@ -65,8 +68,15 @@ function makeLock() {
   return (fn) => { const p = tail.then(fn, fn); tail = p.then(() => {}, () => {}); return p; };
 }
 
-// kv: { get, put(key, value, { expirationTtl }?) }. Every call answers { status, body }.
-export function makeSaltPool({ kv, cfg = SALT_POOL, now = () => Date.now(), lock = makeLock() }) {
+// kv: { get, put(key, value, { expirationTtl }?) }. potPoints() → the campaign's daily points (its terms: daily amount over the most a
+// point earns); proofPoints(day) → the points the day's proofs earned (the proof pool's and the board's tallies). Every call answers
+// { status, body }.
+export function makeSaltPool({ kv, cfg = SALT_POOL, now = () => Date.now(), lock = makeLock(), potPoints = async () => cfg.potPoints, proofPoints = async () => 0 }) {
+  // What a day's salts share: what its proofs leave of the pot, up to pointsPerDay.
+  const saltPot = async (day) => {
+    const [pot, used] = await Promise.all([potPoints().catch(() => cfg.potPoints), proofPoints(day).catch(() => 0)]);
+    return Math.max(0, Math.min(cfg.pointsPerDay, Math.floor((Number(pot) || cfg.potPoints) - (Number(used) || 0))));
+  };
   const read = async (k, d) => { const s = await kv.get(k); if (s == null) return d; try { return JSON.parse(s); } catch { return d; } };
   const write = (k, v, secs) => kv.put(k, JSON.stringify(v), secs ? { expirationTtl: secs } : undefined);
   const dayOf = (t) => Math.floor(t / DAY_MS);
@@ -132,8 +142,9 @@ export function makeSaltPool({ kv, cfg = SALT_POOL, now = () => Date.now(), lock
     if (!Number.isInteger(day) || day > today || day < today - 39) return reply(400, { ok: false, error: 'day must be a UTC day number, today or before' });
     const recs = await dayMiners(day);
     const total = recs.reduce((s, r) => s + r.weight, 0);
-    const miners = recs.map((r) => ({ miner: r.miner, proofs: r.shares, points: total ? Math.floor((cfg.pointsPerDay * r.weight) / total) : 0 }));
-    return reply(200, { day, over: day < today, pointsPerDay: cfg.pointsPerDay, miners });
+    const pot = await saltPot(day);
+    const miners = recs.map((r) => ({ miner: r.miner, proofs: r.shares, points: total ? Math.floor((pot * r.weight) / total) : 0 }));
+    return reply(200, { day, over: day < today, pointsPerDay: pot, miners });
   }
   async function summary() {
     const t = now(), day = dayOf(t), recs = await dayMiners(day);
@@ -145,7 +156,8 @@ export function makeSaltPool({ kv, cfg = SALT_POOL, now = () => Date.now(), lock
     const live = Object.entries(await read('sl:live', {})).filter(([, v]) => t - v.at < cfg.liveMs)
       .sort((a, b) => b[1].at - a[1].at).map(([miner, v]) => ({ miner, at: v.at, ...(v.house ? { house: true } : {}) }));
     return reply(200, {
-      deployer: cfg.deployer, createx: cfg.createx, minBits: cfg.minBits, bankBits: cfg.bankBits, pointsPerDay: cfg.pointsPerDay, day, rate, live,
+      // today's pot so far: it shrinks as the day's proofs come in
+      deployer: cfg.deployer, createx: cfg.createx, minBits: cfg.minBits, bankBits: cfg.bankBits, pointsPerDay: await saltPot(day), day, rate, live,
       today: { miners: recs.length, shares: recs.reduce((s, r) => s + r.shares, 0), weight: recs.reduce((s, r) => s + r.weight, 0) },
       top: recs.sort((a, b) => b.weight - a.weight).slice(0, 20).map((r) => ({ miner: r.miner, shares: r.shares, weight: r.weight, best: r.best })),
       bank: bank.slice(0, 10).map(({ address, bits, miner, at, house }) => ({ address, bits, miner, at, ...(house ? { house: true } : {}) })),
@@ -157,9 +169,9 @@ export function makeSaltPool({ kv, cfg = SALT_POOL, now = () => Date.now(), lock
 }
 
 const kvLocks = new WeakMap();
-export function buildSaltPool(env) {
+export function buildSaltPool(env, { potPoints, proofPoints } = {}) {
   const kv = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
   if (!kv) return null;
   if (!kvLocks.has(kv)) kvLocks.set(kv, makeLock());
-  return makeSaltPool({ kv, cfg: saltPoolConfig(env), lock: kvLocks.get(kv) });
+  return makeSaltPool({ kv, cfg: saltPoolConfig(env), lock: kvLocks.get(kv), ...(potPoints ? { potPoints } : {}), ...(proofPoints ? { proofPoints } : {}) });
 }
