@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-aHjOvhwb3wRJ9fteXvwTWLA42UJ0+7XGU2X2cAwm7u4=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-yevEDH1vnVJcskNPI1y3+KldjWyAX7uSgG98pR6b7tY=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -2917,7 +2917,7 @@ function selfLine(it) {
   if (!selfWork(it)) { OFFERED.delete(it.id); return err; }
   OFFERED.add(it.id);
   if ((RS.why === 'paused' || RS.why === 'down') && !ownOn()) {
-    return html`${err}<div class="actr-f"><button class="link" type="button" data-prove-open>Prove it yourself</button> to send it sooner: switch on your own prover credit, then ${it.self.exit ? 'send it' : 'finish it'} from ${your()} here.</div>`;
+    return html`${err}<div class="actr-f"><button class="link" type="button" data-prove-open="device">Prove on this computer</button> to send it sooner, then ${it.self.exit ? 'send it' : 'finish it'} from ${your()} here.</div>`;
   }
   return html`${err}<div class="actr-f"><button class="link" type="button" data-self="${it.id}">${it.self.exit ? 'Send it' : 'Finish it'} from ${your()}</button>
     instead: ${it.self.exit ? `no relay fee; ${your()} pays the network fee, and its address shows on the withdrawal.` : `${your()} pays the network fee, and its address shows as the sender.`}</div>`;
@@ -3214,7 +3214,7 @@ document.addEventListener('click', (e) => {
   const spec = b && SELFDO[b.dataset.selfdo];
   if (spec) busy(b, (run) => selfDo(run, spec));
 });
-const SP = { prover: null, who: null, mod: null, credit: null, need: null, creditAt: 0, reading: null, ux: null, then: null, note: 0, sealNote: 0, src: 'prove', q: null };
+const SP = { prover: null, who: null, mod: null, credit: null, need: null, creditAt: 0, reading: null, ux: null, then: null, note: 0, sealNote: 0, src: 'prove', q: null, more: false };
 const spMod = lazy(() => import('/self-prover.js?cb=b615e1f8').then((m) => (SP.mod = m)));
 const SP_PREF = 'tacit-lite-prove-self-v1:';
 const spOn = () => !!S.key && store.get(SP_PREF + S.key.pubHex) === true;
@@ -3442,13 +3442,18 @@ document.addEventListener('click', (e) => {
     catch (x) { run.fail(spec.status(), x); }
   });
 });
+// The way to prove an action yourself: on this computer where its prover can (free, and nothing leaves the machine), else with your own PROVE credit.
+const devCan = (spec) => [].concat(spec.types || []).every((x) => DEVICE_TYPES.includes(x));
+const proveSelf = (spec, id) => (devCan(spec) && !spOn()
+  ? html`<button class="link" type="button" data-prove-dev="${id}">Prove it on this computer</button>, free`
+  : html`<button class="link" type="button" data-prove-add="${id}">Prove it yourself</button> with your own PROVE credit`);
 function offerPaused(spec) {
   const msg = 'Nothing was sent yet. Try again in a few minutes, or:';
   if (!spec.status?.()) return Object.assign(new Error(msg), { said: true });
   const own = { ...spec, own: true, open: null };
   own.id = String(++selfdoSeq); SELFDO[own.id] = own;
   own.keys ||= spec.run ? [...spec.run.keys] : [];
-  say(spec.status(), html`<span>${msg}</span><div class="actr-f"><button class="link" type="button" data-prove-add="${own.id}">Prove it yourself</button> with your own prover credit${[].concat(spec.types || []).every((x) => DEVICE_TYPES.includes(x)) ? html`, or <button class="link" type="button" data-prove-dev="${own.id}">prove it on this computer</button>` : ''}${(() => { const k = keepLink(keepFor(spec)); return k ? html`. ${k}` : ''; })()}.</div>`);
+  say(spec.status(), html`<span>${msg}</span><div class="actr-f">${proveSelf(spec, own.id)}${(() => { const k = keepLink(keepFor(spec)); return k ? html`. ${k}` : ''; })()}.</div>`);
   return Object.assign(new Error(msg), { offered: true, said: true });
 }
 function offerProveSelf(spec, e) {
@@ -3457,7 +3462,7 @@ function offerProveSelf(spec, e) {
   own.id = String(++selfdoSeq); SELFDO[own.id] = own;
   own.keys ||= spec.run ? [...spec.run.keys] : [];
   const msg = errText(e);
-  say(spec.status(), html`<span class="err">${msg}</span><div class="actr-f"><button class="link" type="button" data-prove-add="${own.id}">Prove it yourself</button> with your own prover credit instead.</div>`);
+  say(spec.status(), html`<span class="err">${msg}</span><div class="actr-f">${proveSelf(spec, own.id)} instead.</div>`);
   return Object.assign(new Error(msg), { offered: true, said: true });
 }
 // This computer's prover for one action the relay is not proving: looked for at the press (the browser asks before a page first reaches the local
@@ -3477,6 +3482,7 @@ document.addEventListener('click', (e) => {
   const b = e.target.closest?.('[data-prove-add], [data-prove-open]');
   if (!b) return;
   SP.then = b.dataset.proveAdd ? SELFDO[b.dataset.proveAdd] || null : SP.then;
+  if (b.dataset.proveAdd) SP.more = true;
   openProve();
 });
 const otherKey = (it) => !!(it.pub && S.key && it.pub !== S.key.pubHex);
@@ -4391,8 +4397,9 @@ function renderProve() {
     <div class="spw" role="radiogroup" aria-label="Who proves your private actions">
       ${wayOpt('relay', 'sp-relay', 'Tacit’s relay', 'about a minute, nothing to set up')}
       ${wayOpt('device', 'sp-dev', 'This computer', 'free and private, a few minutes')}
-      ${wayOpt('credit', 'sp-on', 'Your own credit', 'about a minute, paid in PROVE')}
+      ${on || SP.more ? wayOpt('credit', 'sp-on', 'Your own credit', 'about a minute, paid in PROVE on Succinct’s network') : ''}
     </div>
+    ${on || SP.more ? '' : html`<p class="note"><button class="link" type="button" id="sp-more">Prove with PROVE credit instead</button></p>`}
     ${panel}
     ${S.key ? html`<p class="note" id="sp-keep">Keep wraps ready to send at once${dev ? ' (proved here while it is idle)' : ' (proved free by the community)'}: ${Object.entries(KEEP_READY).map(([tk, k], i) => html`${i ? ' ·' : ''}${k.sizes.map((w) => html` <button class="link" type="button" data-keep="${tk}:${w}" aria-pressed="${String(keepSizes(tk).includes(w))}">${keepSizes(tk).includes(w) ? '✓ ' : ''}${fmt(w, 18, k.dp)} ${k.sym}</button>`)}`)}</p>` : ''}
     ${SP.then ? html`<div class="callout"><span>Waiting to go on: ${SP.then.label}.</span><button class="btn ghost" type="button" id="sp-then" ${on || dev ? '' : 'disabled'}>Go on</button></div>` : ''}</div></li>`);
@@ -4465,7 +4472,8 @@ function renderProve() {
   };
   $('#sp-relay').onchange = () => choose('relay');
   $('#sp-dev').onchange = () => choose('device');
-  $('#sp-on').onchange = () => choose('credit');
+  if ($('#sp-on')) $('#sp-on').onchange = () => choose('credit');
+  if ($('#sp-more')) $('#sp-more').onclick = () => { SP.more = true; reProve(); };
   devWatch();
   $$('[data-keep]', el).forEach((b) => b.onclick = () => {
     const [tk, ws] = b.dataset.keep.split(':'), k = KEEP_READY[tk], w = BigInt(ws), now = keepSizes(tk), next = now.includes(w) ? now.filter((x) => x !== w) : [...now, w];

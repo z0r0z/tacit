@@ -13264,10 +13264,10 @@ await step('relaystate', async () => {
     const s0 = submits.length;
     await withdraw('0.1');
     await until(r.page, () => /Nothing was sent yet/.test(document.querySelector('#v1-status')?.textContent || ''), null, 300000).catch(() => {});
-    ok(/Nothing was sent yet\. Try again in a few minutes, or:/.test(await said()) && !!(await r.page.$('#v1-status [data-prove-add]')) && !(await r.page.$('#v1-status [data-keepline]')) && submits.length === s0,
+    ok(/Nothing was sent yet\. Try again in a few minutes, or:\s*Prove it on this computer, free\./.test(await said()) && !(await r.page.$('#v1-status [data-prove-add]')) && !(await r.page.$('#v1-status [data-keepline]')) && submits.length === s0,
       `relaystate: paused at the press, a withdrawal offers proving it yourself, not the line, and nothing is submitted (${await said()})`);
     // and, a withdrawal being something this computer's prover takes, proving it here; pressed with none running, the way to set one up
-    ok(!!(await r.page.$('#v1-status [data-prove-dev]')), `relaystate: and proving it on this computer (${await said()})`);
+    ok(!!(await r.page.$('#v1-status [data-prove-dev]')), `relaystate: on this computer, not with PROVE credit (${await said()})`);
     await r.ctx.route(/127\.0\.0\.1:47815|localhost:47815/, (route) => route.abort());     // (no prover here, whatever runs on the test machine)
     await r.page.click('#v1-status [data-prove-dev]');
     await until(r.page, () => /Set up this computer/.test(document.querySelector('#v1-status')?.textContent || ''), null, 60000).catch(() => {});
@@ -13279,7 +13279,7 @@ await step('relaystate', async () => {
     await until(r.page, () => /They get about/.test(document.querySelector('#s-rcpt')?.textContent || '') && !document.querySelector('#s-go').disabled, null, QUOTE_WAIT);
     await r.page.click('#s-go');
     await until(r.page, () => !!document.querySelector('#v1-status [data-keepline]'), null, 300000).catch(() => {});
-    ok(!!(await r.page.$('#v1-status [data-keepline]')) && !!(await r.page.$('#v1-status [data-prove-add]')) && submits.length === s0, `relaystate: a private send offers both, with nothing submitted yet (${await said()})`);
+    ok(!!(await r.page.$('#v1-status [data-keepline]')) && !!(await r.page.$('#v1-status [data-prove-dev]')) && submits.length === s0, `relaystate: a private send offers both, with nothing submitted yet (${await said()})`);
     if (await r.page.$('#v1-status [data-keepline]')) {
       await r.page.click('#v1-status [data-keepline]');
       await chainUntil(async () => submits.length > s0, 120000);
