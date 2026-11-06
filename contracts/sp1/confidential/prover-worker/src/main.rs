@@ -26,8 +26,9 @@
 // job and refused (and the program dropped from the claims) unless it is the pool's BITCOIN_RELAY_VKEY. A batch is billions of
 // cycles, tens of minutes on one GPU, and a proof cannot be stopped once it starts, so it is off by default: on a box that also
 // proves users' settles, a settle that comes in meanwhile waits for it. BTC_JOB_TIMEOUT_SECS (default 7200) is its watchdog limit.
-// COMMUNITY_MINER=0x<address> (community mode): no token. The worker races the board's public Bitcoin-state batches through the open
-// community routes (POST /prover/community/claim { miner, programs: ["btc-state"] } and /prover/community/result { miner, jobId, ... }),
+// COMMUNITY_MINER=0x<address> (community mode): no token. The worker takes its turn at the board's public Bitcoin-state batches (the board
+// gives each batch to one machine, in turn) through the open community routes (POST /prover/community/claim { miner, programs: ["btc-state"] }
+// and /prover/community/result { miner, jobId, ... }),
 // and each batch the relay takes earns that address the board's points for it (TAC from the points service). The proof pool and the
 // warm-up pings, which are for Tacit's own tokens, are off; BTC_STATE is on. Between batches its spare CPU cores grind deploy salts for
 // the same address (salt.rs; SALT_THREADS, half the cores by default, 0 is off). Tacit's own box grinds too, earning nothing

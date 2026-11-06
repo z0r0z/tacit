@@ -1,7 +1,8 @@
 #!/bin/sh
 # Prove Bitcoin batches for Tacit from a machine with a large NVIDIA GPU, for TAC. This installs tacit-prover-worker (the build pinned below, its
-# sha256 checked before anything is run) and keeps it running in community mode: it races the prover board's public Bitcoin-state batches,
-# and each batch the relay takes earns the address the board's points for it, paid in TAC by the points service. No key, no token, no ETH.
+# sha256 checked before anything is run) and keeps it running in community mode: it takes its turn at the prover board's public Bitcoin-state
+# batches (the board gives each batch to one machine, in turn), and each batch the relay takes earns the address the board's points for it,
+# paid in TAC by the points service. No key, no token, no ETH.
 #
 #   curl -fsSL https://tacit.finance/prove-gpu.sh | sh -s -- 0xYourAddress    install it and start it; the TAC goes to that address
 #   curl -fsSL https://tacit.finance/prove-gpu.sh | sh -s -- --status         is it running, and its last lines
