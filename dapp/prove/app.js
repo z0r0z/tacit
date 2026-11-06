@@ -156,7 +156,7 @@ function paintFeed() {
     const r = rewardWei(p.points, cap());
     // This address's own proofs are marked by the row (an edge), not a longer name, so every row stays on one line.
     const mine = !p.house && p.miner && String(p.miner).toLowerCase() === me();
-    return `<li class="${[p.at > feedTop && feedTop ? 'new' : '', mine ? 'me' : ''].filter(Boolean).join(' ')}"${mine ? ' title="Your node"' : ''}><span class="by">${byOf(p, false)}<small>a deposit, proved in ${esc(took(p.secs))}</small></span>${r ? `<b>+${tac(r)} TAC</b>` : ''}<small>${esc(ago(p.at))}</small></li>`;
+    return `<li class="${[p.at > feedTop && feedTop ? 'new' : '', mine ? 'me' : ''].filter(Boolean).join(' ')}"${mine ? ' title="Your node"' : ''}><span class="by">${byOf(p, false)}<small>a deposit, proved in ${esc(took(p.secs))}</small></span><b>${r ? `+${tac(r)} TAC` : ''}</b><small>${esc(ago(p.at))}</small></li>`;
   }).join('');
 }
 
@@ -183,11 +183,10 @@ function paintNet() {
   const q = pool?.queued ?? null, l = pool?.leased ?? null;
   const nx = document.getElementById('next-o');
   if (nx) nx.textContent = waitingText();
-  // Nothing queued: the two cells say what the nodes do meanwhile (how many grind salts, and how fast between them).
+  // Nothing queued: the second cell says how fast the nodes grind salts meanwhile (the crowd below counts them).
   const mining = pool && !(q || l) && salts?.live?.length;
-  $('#l-wait').textContent = mining ? 'Mining now' : 'Waiting';
   $('#l-lease').textContent = mining ? 'Salts a second' : 'Proving now';
-  $('#n-wait').textContent = mining ? String(salts.live.length) : q == null ? '—' : String(q);
+  $('#n-wait').textContent = q == null ? '—' : String(q);
   $('#n-lease').textContent = mining ? (salts.rate ? rateText(salts.rate).replace('/s', '') : '—') : l == null ? '—' : String(l);
   // The last 24 hours (today's alone would drop to nothing at midnight UTC); today's from an API that does not count them yet.
   const provers = pool?.miners24h ?? pool?.minersToday, done = pool?.done24h ?? pool?.doneToday;
@@ -203,10 +202,12 @@ function paintNet() {
 function paintBoard() {
   const top = pool?.top || [], pts = new Map((tally?.miners || []).map((m) => [String(m.miner).toLowerCase(), m.points]));
   if (!top.length) return;
-  $('#board').innerHTML = top.slice(0, 8).map((m, i) => {
+  const row = (m, i) => {
     const r = rewardWei(pts.get(String(m.miner).toLowerCase()), cap()), s = median(feed.filter((p) => p.miner === m.miner).map((p) => p.secs));
-    return `<li><span>${i + 1}. ${who(m.miner)}</span><small>${m.proofs} ${m.proofs === 1 ? 'proof' : 'proofs'}${r ? ` · ${tac(r)} TAC` : ''}${s ? ` · ${esc(took(s))} each` : ''}</small></li>`;
-  }).join('');
+    return `<li${m.miner === me() ? ' class="me"' : ''}><span class="rk num">${i + 1}.</span>${who(m.miner)}<small>${m.proofs} ${m.proofs === 1 ? 'proof' : 'proofs'}</small><b>${r ? `${tac(r)} TAC` : ''}</b><small class="spd">${s ? `${esc(took(s))} each` : ''}</small></li>`;
+  };
+  const mine = me() ? top.findIndex((m) => m.miner === me()) : -1;
+  $('#board').innerHTML = top.slice(0, 8).map(row).join('') + (mine >= 8 ? `<li class="gap" aria-hidden="true"></li>${row(top[mine], mine)}` : '');
 }
 
 function paint() {
@@ -253,19 +254,25 @@ function paint() {
   const mineRow = (tally?.miners || []).find((m) => String(m.miner).toLowerCase() === me());
   const earned = mineRow ? rewardWei(mineRow.points, cap()) : null;
   $('#today').textContent = mineRow ? `${mineRow.proofs} ${mineRow.proofs === 1 ? 'proof' : 'proofs'}${earned ? ` · ${tac(earned)} TAC` : ''}` : (l.today || '—');
-  $('#payout').textContent = mineRow ? `after the day ends, in ${untilDayEnds()}` : '—';
+  $('#today-row').hidden = !mineRow && !l.today;
+  $('#payout-row').hidden = !mineRow;
+  if (mineRow) $('#payout').textContent = `after the day ends, in ${untilDayEnds()}`;
   // At this address's rate so far today (from two hours into the day: there are only as many proofs as people press for), never past what
   // this computer's own pace or a count a day allows.
   const mySecs = median(feed.filter((p) => String(p.miner).toLowerCase() === me()).map((p) => p.secs));
   const into = (Date.now() % 86_400_000) / 86_400_000;
   const rate = mineRow && into >= 1 / 12 ? Math.round(mineRow.proofs / into) : 0;
-  const perDay = rate ? Math.min(rate, pool?.terms?.proofsPerMinerDay || Infinity, mySecs ? Math.floor(86400 / mySecs) : Infinity) : null, per = rewardWei(pool?.terms?.pointsPerProof, cap());
+  // What a proof has paid this address today on average (fewer points than the most a proof can earn once the day's pot is shared), else that most.
+  const perDay = rate ? Math.min(rate, pool?.terms?.proofsPerMinerDay || Infinity, mySecs ? Math.floor(86400 / mySecs) : Infinity) : null;
+  const per = earned && mineRow.proofs ? earned / BigInt(mineRow.proofs) : rewardWei(pool?.terms?.pointsPerProof, cap());
   $('#pace-row').hidden = !(perDay && per);
   if (perDay && per) $('#pace').textContent = `about ${tac(per * BigInt(perDay))} TAC a day (${perDay} proofs)`;
-  $('#paid').textContent = l.credited || '—';
-  const share = $('#share');
-  share.hidden = !mineRow;
-  if (mineRow) share.href = `https://x.com/intent/post?text=${encodeURIComponent(`I'm running a Tacit prover node: ${mineRow.proofs} privacy ${mineRow.proofs === 1 ? 'proof' : 'proofs'} today, mining TAC.`)}&url=${encodeURIComponent('https://tacit.finance/prove/#node')}`;
+  const credited = points?.account?.creditedWei;
+  $('#paid-row').hidden = !/^\d+$/.test(String(credited ?? ''));
+  if (!$('#paid-row').hidden) $('#paid').textContent = `${tac(credited)} TAC`;
+  // The node card's Share: with proofs today, the day's own count.
+  const share = document.querySelector('[data-card="node"] .share-x');
+  if (share) share.href = shareHref('node', mineRow ? `I'm running a Tacit prover node: ${mineRow.proofs} privacy ${mineRow.proofs === 1 ? 'proof' : 'proofs'} today, mining TAC.` : null);
   $('#run').textContent = mine?.proved ? String(mine.proved) : '0';
   $('#run-row').hidden = !mine || typeof mine.on !== 'boolean';
   paintSalt();
@@ -353,7 +360,7 @@ function paintSalt() {
   $('#salt-pay').textContent = potWei ? ` · up to ${tac(potWei)} TAC today` : '';
   // A node from before salt mining (its /mine has no `salt`) is told how to start: the setup line installs the newest.
   if (mine && !('salt' in mine)) $('#salt-day').textContent = 'Run the setup line again to update tacit-prover: it then mines salts between proofs.';
-  else if (salts) $('#salt-day').textContent = `Shared by work: ${salts.miners || 0} ${salts.miners === 1 ? 'node' : 'nodes'}, ${salts.shares || 0} shares today. A proof always comes first.`;
+  else if (salts) $('#salt-day').textContent = `Shared by work: ${salts.miners || 0} ${salts.miners === 1 ? 'node' : 'nodes'}, ${(salts.shares || 0).toLocaleString('en-US')} shares today. A proof always comes first.`;
   // The bank's best (five zero bytes and better); until it has one, the best addresses ground today, so the panel shows the hunt.
   const banked = salts?.bank?.length ? salts.bank : null;
   const finds = banked || (salts?.top || []).filter((m) => m.best).map((m) => ({ ...m.best, miner: m.miner })).sort((a, b) => b.bits - a.bits);
@@ -367,7 +374,7 @@ function paintSalt() {
   const part = mineRow && salts.weight && salts.pointsPerDay ? rewardWei(Math.floor((salts.pointsPerDay * mineRow.weight) / salts.weight), cap()) : null;
   const on = mine?.salt?.on === true && Number.isFinite(rate) && rate > 0;
   $('#salt-row').hidden = !(on || mineRow);
-  $('#salt').textContent = [mineRow ? `${mineRow.shares} shares` : null, part ? `${tac(part)} TAC so far` : null, on ? rateText(rate) : null].filter(Boolean).join(' · ') || '—';
+  $('#salt').textContent = [mineRow ? `${(mineRow.shares || 0).toLocaleString('en-US')} shares` : null, part ? `${tac(part)} TAC so far` : null, on ? rateText(rate) : null].filter(Boolean).join(' · ') || '—';
 }
 async function readSalts() { const s = await get(`${API}/prover/salt`); if (s) salts = cleanSalts(s); paintSalt(); paintNet(); paintCrowd(); }
 
@@ -424,10 +431,13 @@ function showCard(name, behavior = matchMedia('(prefers-reduced-motion: reduce)'
   el.classList.remove('lit'); void el.offsetWidth; el.classList.add('lit');
 }
 const X_MARK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.638 7.584H.474l8.6-9.83L0 1.154h7.594l5.243 6.932ZM17.61 20.644h2.039L6.486 3.24H4.298Z"/></svg>';
+function shareHref(name, text) {
+  return `https://x.com/intent/post?text=${encodeURIComponent(text || CARDS.get(name)?.dataset.share || 'tacit prove')}&url=${encodeURIComponent(`https://tacit.finance/prove/#${name}`)}`;
+}
 for (const [name, el] of CARDS) {
   const a = document.createElement('a');
   a.className = 'share-x'; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.title = 'Share on X';
-  a.href = `https://x.com/intent/post?text=${encodeURIComponent(el.dataset.share || 'tacit prove')}&url=${encodeURIComponent(`https://tacit.finance/prove/#${name}`)}`;
+  a.href = shareHref(name);
   a.innerHTML = `${X_MARK}<span>Share</span>`;
   (el.querySelector('.eyebrow') || el.querySelector('h2'))?.append(a);
 }

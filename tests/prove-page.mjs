@@ -100,7 +100,7 @@ try {
     check((await text(page, '#title')) === 'Waiting for tacit-prover…', 'once copied, the page waits for the prover', await text(page, '#title'));
     await page.waitForFunction(() => document.querySelector('#today').textContent.includes('4 proofs'));
     check((await text(page, '#pays')).includes('0.2 TAC a proof'), 'what a proof pays is read from the services', await text(page, '#pays'));
-    check((await text(page, '#paid')) === '6 TAC credited', 'what was paid', await text(page, '#paid'));
+    check((await text(page, '#paid')) === '6 TAC', 'what was paid', await text(page, '#paid'));
     await page.waitForFunction(() => document.querySelectorAll('#chain .blk:not(.next):not(.xc)').length === 4);
     check((await text(page, '#height')) === '#9,389', 'the tip is the newest block', await text(page, '#height'));
     check((await text(page, '#last')) === '5 min ago', 'the newest block\'s age is read from Ethereum\'s head', await text(page, '#last'));
@@ -109,7 +109,11 @@ try {
     check((await page.locator('#chain .blk.mine').count()) === 1, 'the address\'s own block is picked out');
     check((await page.locator('#pool i').count()) === 5 && (await page.locator('#pool i.on').count()) === 2, 'the waiting proofs are drawn, the leased ones lit');
     check((await text(page, '#feed')).includes('+0.2 TAC') && (await text(page, '#feed')).includes('a deposit, proved in 9 min'), 'the feed says who proved what, how fast and what it won', await text(page, '#feed'));
-    check((await text(page, '#board')).includes('4 proofs · 0.8 TAC · 9 min each'), 'today\'s provers with their TAC and their speed', await text(page, '#board'));
+    const mineRank = (await page.locator('#board li.me').innerText()).replace(/\s+/g, ' ');
+    check(mineRank.includes('4 proofs 0.8 TAC 9 min each'), 'today\'s provers with their TAC and their speed', mineRank);
+    const cols = await page.evaluate(() => [...document.querySelectorAll('#feed li:not(.empty)')].map((li) => Math.round(li.children[1].getBoundingClientRect().right)));
+    check(cols.length > 1 && new Set(cols).size === 1, 'the feed\'s TAC column lines up', JSON.stringify(cols));
+    check(await page.evaluate(() => [...document.querySelectorAll('.who.gpu')].every((e) => getComputedStyle(e).marginTop === '0px')), 'the Tacit GPU name sits in line (no card style on it)');
     await page.waitForFunction(() => document.querySelector('#crowd-n').textContent === '3 online now');
     check((await page.locator('#crowd .pod').count()) === 3, 'the crowd: everyone who proved lately and every node grinding salts, Tacit GPU among them');
     check(await page.locator('#crowd .pod.me').count() === 1, 'with this address picked out');
@@ -124,8 +128,8 @@ try {
     check((await text(page, '#payout')).startsWith('after the day ends, in '), 'and when it is paid', await text(page, '#payout'));
     if (Date.now() % 86400000 >= 7200000) check((await text(page, '#pace')).includes('TAC a day ('), 'and the pace at today\'s rate', await text(page, '#pace'));
     else check(await page.locator('#pace-row').isHidden(), 'no pace in the day\'s first two hours');
-    const share = await page.getAttribute('#share', 'href');
-    check(await page.locator('#share').isVisible() && share.startsWith('https://x.com/intent/post?') && share.includes('4%20privacy%20proofs'), 'a share link once it has proved', share);
+    const share = await page.getAttribute('[data-card="node"] .share-x', 'href');
+    check(share.startsWith('https://x.com/intent/post?') && share.includes('4%20privacy%20proofs'), 'the node card\'s Share carries the day\'s count once it has proved', share);
     check((await page.locator('#chain .blk.gpu').count()) === 1 && (await page.locator('#chain .blk.gpu').innerText()).includes('Tacit GPU'), 'a block Tacit\'s GPU proved says so');
     const gpuRow = await page.locator('#feed li').first().innerText();
     check(gpuRow.includes('Tacit GPU') && !gpuRow.includes('TAC '), 'the feed shows Tacit\'s GPU, earning nothing', gpuRow);
@@ -159,8 +163,8 @@ try {
   // nothing queued: the stats say what the nodes do meanwhile
   {
     const { page, ctx } = await open(browser, { v: null }, { idle: true });
-    await page.waitForFunction(() => document.querySelector('#l-wait').textContent === 'Mining now');
-    check((await text(page, '#n-wait')) === '2' && (await page.textContent('#l-lease')) === 'Salts a second' && (await text(page, '#n-lease')) === '2.4 M', 'with nothing queued, the nodes grinding salts and how fast', `${await text(page, '#n-wait')} ${await text(page, '#n-lease')}`);
+    await page.waitForFunction(() => document.querySelector('#l-lease').textContent === 'Salts a second');
+    check((await text(page, '#n-wait')) === '0' && (await text(page, '#n-lease')) === '2.4 M', 'with nothing queued, nothing waits and the nodes grind salts this fast', `${await text(page, '#n-wait')} ${await text(page, '#n-lease')}`);
     await page.waitForFunction(() => document.querySelector('#next-o')?.textContent === 'mining salts');
     check(true, 'the next block says the nodes are mining salts meanwhile');
     await ctx.close();
