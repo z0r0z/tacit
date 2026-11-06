@@ -1,7 +1,7 @@
 
 const TACIT_URL = '/tacit.js?cb=187d27e1';
 const SECRET_URL = '/sats/secret.js?cb=d10eac01';
-const SATS_URL = '/tac/sats.js?cb=870a84c8';
+const SATS_URL = '/tac/sats.js?cb=6fd2a990';
 const CLAIM_URL = '/tac/claim.js?cb=27a72592';
 const UNIFIED_URL = '/tacit-unified.js?cb=a5b3a042';
 const KNOWN_URL = '/tacit-wallet-known.js?cb=ed4c75b7';
@@ -79,6 +79,7 @@ for (const ev of ['input', 'change']) document.addEventListener(ev, ({ target: i
   if (bad) i.setAttribute('aria-invalid', 'true'); else i.removeAttribute('aria-invalid');
   amountHint(i, bad ? amountWhy(t, DECIMALS) : '');
 }, true);
+const blocksText = (n) => `${n} more Bitcoin block${n === 1 ? '' : 's'} (≈ ${n * 10} min)`;
 const short = (a, n = 4) => { if (!a) return ''; const head = /^tacit1/.test(a) ? 10 + n : n + 2; return a.length > head + n + 2 ? `${a.slice(0, head)}…${a.slice(-n)}` : a; };
 // A relayed payment can come back without its id (the relay says it posted, not in which transaction): it went out in the relay's batch.
 const txLink = (txid) => {
@@ -776,7 +777,7 @@ const askSelfPost = (statusId) => (why, { timedOut = false, signal } = {}) => ne
 function waitBox(statusId, w, retry) {
   const wrap = document.createElement('div');
   const p = document.createElement('div');
-  p.textContent = `Your newest note needs ${w.wait} more Bitcoin block${w.wait === 1 ? '' : 's'} (≈ ${w.wait * 10} min) before it can be spent against a settled block.`;
+  p.textContent = `Your newest note needs ${blocksText(w.wait)} before it can be spent against a settled block.`;
   const row = document.createElement('div');
   row.className = 'row2';
   const now = document.createElement('button');
@@ -976,7 +977,7 @@ async function makeClaimLink() {
   });
   if (r.wait) {
     if (secret) dropClaimLink(secret);
-    return say('st-claim-make', `Your newest note needs ${r.wait} more Bitcoin block${r.wait === 1 ? '' : 's'} (≈ ${r.wait * 10} min) before it can be spent. Try again after that.`);
+    return say('st-claim-make', `Your newest note needs ${blocksText(r.wait)} before it can be spent. Try again after that.`);
   }
   if (secret) patchClaimLink(secret, { txid: r.revealTxid, link: r.link });
   $('claim-amt').value = ''; $('claim-pin').value = '';
@@ -996,7 +997,9 @@ async function makeClaimLink() {
   await loadShielded();
 }
 
+const claimTimers = { typing: 0, again: 0 };   // one claim panel at a time: a new link stops the last one's checks
 async function showClaim(payload) {
+  clearTimeout(claimTimers.typing); clearTimeout(claimTimers.again);
   const host = $('claim-body'); const panel = $('claim-panel');
   panel.hidden = false;
   host.textContent = 'Reading the link…';
@@ -1027,8 +1030,8 @@ async function showClaim(payload) {
         Object.assign(document.createElement('span'), { textContent: has ? 'Waiting for you' : gone ? 'Nothing under this link' : 'Nothing here yet' }),
         Object.assign(document.createElement('b'), { className: 'num', textContent: why }));
       btn.disabled = !has;
-      clearTimeout(showClaim._again);
-      if (!has && !gone) showClaim._again = setTimeout(() => { if (!document.hidden) refresh(); else showClaim._again = setTimeout(refresh, 60e3); }, 60e3);   // a payment a few blocks out shows up without a reload
+      clearTimeout(claimTimers.again);
+      if (!has && !gone) claimTimers.again = setTimeout(() => { if (!document.hidden) refresh(); else claimTimers.again = setTimeout(refresh, 60e3); }, 60e3);   // a payment a few blocks out shows up without a reload
     } catch (e) { if (mine === looked) { line.replaceChildren(); errSayInto(line, e); } }
   }
 
@@ -1044,7 +1047,7 @@ async function showClaim(payload) {
       S, pool: S.pool, secret32: parsed.secret32, pin: pinField.value.trim(), network: 'mainnet',
       asset: S.TAC_ASSET_MAINNET, toAddress: poolWallet.addressString, fmt, say: (m) => { st.textContent = m; }, askSelf: askSelfPost('st-claim'),
     });
-    if (r.wait) { st.textContent = `The note needs ${r.wait} more Bitcoin block${r.wait === 1 ? '' : 's'} (≈ ${r.wait * 10} min) before it can move. Try again after that.`; return; }
+    if (r.wait) { st.textContent = `The note needs ${blocksText(r.wait)} before it can move. Try again after that.`; return; }
     claimed = true;
     st.replaceChildren(document.createTextNode('Claimed to your wallet in '), txLink(r.revealTxid), document.createTextNode(r.relayed ? '. The fee came out of the TAC, so it cost you no bitcoin.' : '.'));
     await refreshAll();
@@ -1054,7 +1057,7 @@ async function showClaim(payload) {
   host.replaceChildren(
     Object.assign(document.createElement('p'), { className: 'note', style: 'margin-top:0', textContent: parsed.pinned ? 'Enter the PIN you were given.' : 'Claiming moves the TAC into a wallet only you control.' }),
     ...(parsed.pinned ? [pinField] : []), line, btn, st);
-  if (parsed.pinned) pinField.addEventListener('input', () => { clearTimeout(showClaim._t); showClaim._t = setTimeout(refresh, 400); });
+  if (parsed.pinned) pinField.addEventListener('input', () => { clearTimeout(claimTimers.typing); claimTimers.typing = setTimeout(refresh, 400); });
   await refresh();
 }
 
@@ -1072,7 +1075,7 @@ function renderSats() {
   import(SATS_URL).then((m) => m.mount(host, {
     get T() { return T; }, get S() { return S; }, get poolWallet() { return poolWallet; },
     get markSats() { return markSats; }, get notes() { return shielded.notes; },
-    ensureKey, busy, say, errSay, fmt, parseUnits, shieldedTotal, txLink, loadShielded, relayFeeUnits, turn,
+    ensureKey, busy, say, errSay, fmt, blocksText, parseUnits, shieldedTotal, txLink, loadShielded, relayFeeUnits, turn,
   })).catch((e) => { host.textContent = ''; delete host.dataset.ready; errSay('st-exit', e); });
 }
 

@@ -179,7 +179,7 @@ export function mount(host, ctx) {
       say: (m) => say('st-sats-1', m),
     });
     if (r.wait) {
-      say('st-sats-1', `Your newest note needs ${r.wait} more Bitcoin block${r.wait === 1 ? '' : 's'} (≈ ${r.wait * 10} min) before it can be spent against a settled block. Try again after that.`);
+      say('st-sats-1', `Your newest note needs ${ctx.blocksText(r.wait)} before it can be spent against a settled block. Try again after that.`);
       return;
     }
     if (r.revealTxid) pick = `${r.revealTxid}:${r.exitVout}`;
