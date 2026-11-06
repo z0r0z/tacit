@@ -10,6 +10,7 @@ import { bodyType } from '/rpc-body.js';
 import { secp, keccak_256, sha256 } from '/vendor/tacit-deps.min.js';
 import { makeEvmAccount } from '/evm-account.js?cb=e48ce3f6';
 import { makeEvmTx } from '/evm-tx.js?cb=ed0eafb7';
+import { makeNostrBoard, mergeBoards } from '/nostr-board.js?cb=0feadbff';
 import { makeAutoRelay, AUTO_RESERVE_WEI } from '/prove/autorelay.js?cb=a83848c2';
 
 const $ = (s, el = document) => el.querySelector(s);
@@ -364,8 +365,33 @@ async function doSubmitProof() {
 // The board's figures, the job sent next (the one paying the most) and the settle itself all come from dapp/community-ops.js, as the runner's do.
 let board = null, boardErr = false;
 const passed = new Set();                                         // jobs the pool refused here: not offered again on this page
+// The board is the API's and Nostr's (nostr-board.js): the proofs posted to public relays, which any visitor here also copies the API's
+// jobs to, so the board goes on when the API does not. Nostr is read at most once a minute; either half may be missing.
+const NB = makeNostrBoard({ pool: POOL });
+const MIRRORED = new Map();                                       // proofs this tab has posted, by public values: not posted again for an hour
+let nostrAt = 0, nostrJobs = null;
+async function readBoards() {
+  const fresh = Date.now() - nostrAt > 60e3;
+  const [a, n] = await Promise.allSettled([readBoard({ api: API }), fresh ? NB.read() : Promise.resolve(nostrJobs)]);
+  if (fresh && n.status === 'fulfilled') { nostrJobs = n.value; nostrAt = Date.now(); }
+  const api = a.status === 'fulfilled' ? a.value.jobs : null;
+  if (!api && !nostrJobs) throw new Error('Neither the API’s board nor the Nostr relays answered.');
+  if (api && nostrJobs) mirror(api).catch(() => {});
+  return { jobs: mergeBoards(api, nostrJobs), api: !!api, nostr: nostrJobs?.length ?? null };
+}
+// The API's open jobs that no relay carries yet, posted from here: two at a time, each once an hour.
+async function mirror(api) {
+  const on = new Set((nostrJobs || []).map((j) => j.publicValues.toLowerCase()));
+  for (const [k, at] of MIRRORED) if (Date.now() - at > 3600e3) MIRRORED.delete(k);
+  const todo = api.filter((j) => j.status === 'open' && j.publicValues && j.proof && Array.isArray(j.memos) && !on.has(j.publicValues.toLowerCase()) && !MIRRORED.has(j.publicValues.toLowerCase())).slice(0, 2);
+  for (const j of todo) {
+    MIRRORED.set(j.publicValues.toLowerCase(), Date.now());
+    try { await NB.post(j); } catch { /* a type the board does not carry, or no relay took it */ }
+  }
+}
+const reportIf = (jobId, txHash) => (String(jobId).startsWith('nostr:') ? Promise.resolve() : reportLanded({ api: API, jobId, txHash }));
 async function refreshBoard() {
-  try { board = await readBoard({ api: API }); boardErr = false; } catch { boardErr = true; }   // a board read before stays shown
+  try { board = await readBoards(); boardErr = false; } catch { boardErr = true; }   // a board read before stays shown
   paintBoard();
 }
 function paintBoard() {
@@ -375,6 +401,8 @@ function paintBoard() {
     const s = boardSummary(board.jobs), fees = s.feeWei > 0n ? `${ethText(s.feeWei)} ETH in fees` : s.feeUsd > 0 ? `≈ $${s.feeUsd.toFixed(2)} in fees` : 'no fee';
     const eth = ethFor(SETTLE_GAS);
     box.innerHTML = `<p>${s.waiting ? `${esc(plural(s.waiting, 'settle'))} waiting · ${esc(fees)}${eth ? ` · network fee ${eth.startsWith('<') ? esc(eth) : `≈ ${esc(eth)}`} ETH each` : ''}` : 'Nothing waiting.'}</p>`;
+    const where = !board.api ? 'The API’s board is not answering: these are the ones posted on Nostr.' : board.nostr == null ? '' : `Read from the API and ${board.nostr ? `Nostr (${int(board.nostr)} posted there)` : 'Nostr'}.`;
+    if (where) box.innerHTML += `<p class="mute">${esc(where)}</p>`;
   }
   if (btn.getAttribute('aria-busy') === 'true') return;           // a send in progress keeps its button
   const next = board && pickSettle(board.jobs, { skip: passed });
@@ -400,7 +428,7 @@ async function doSendOne() {
   out.innerHTML = `Sent ${txLink(txHash, short(txHash, 8))}. Waiting for it to land…`;
   const rcpt = await waitReceipt(txHash);
   if (!landed(rcpt)) { out.innerHTML = `Reverted: ${txLink(txHash, short(txHash, 8))}.`; passed.add(job.jobId); throw new Error('The settle reverted: another wallet may have sent it first. Nothing was lost but its network fee.'); }
-  await reportLanded({ api: API, jobId: job.jobId, txHash }).catch(() => {});
+  await reportIf(job.jobId, txHash).catch(() => {});
   out.innerHTML = `Landed: ${txLink(txHash, short(txHash, 8))}.${fee > 0n ? ` ${esc(ethText(fee))} ETH went to ${esc(short(S.address))}.` : ''}`;
   toast('Settle sent');
   refreshBoard().catch(() => {});
@@ -432,7 +460,7 @@ async function sendPrivate(raw) {
 function autoRelay() {
   const a = relayAcct(true);
   return (A.relay ||= makeAutoRelay({ address: a.address, rpc, sign: (tx) => evmTx.signEip1559(tx, a.priv), sendPrivate,
-    board: () => readBoard({ api: API }), landed: (jobId, txHash) => reportLanded({ api: API, jobId, txHash }),
+    board: () => readBoards(), landed: (jobId, txHash) => reportIf(jobId, txHash),
     store: { get: () => { try { return JSON.parse(ls.get(AUTO_DAY) || 'null'); } catch { return null; } }, set: (v) => ls.set(AUTO_DAY, JSON.stringify(v)) } }));
 }
 async function paintAuto() {
