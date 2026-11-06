@@ -223,8 +223,10 @@ pause=15
 while true; do
   t=\$(date +%s)
   # CUDA numbers the cards as nvidia-smi does (PCI order), so SP1's server proves on the card the checks above measured (GPU_DEVICE).
+  # The pool's wraps go to whoever asks first, and a GPU proves one in a minute or two: it asks every 10 s, and stops for the day once
+  # the pool pays its address nothing more.
   COMMUNITY_MINER=$ADDR WORKER_NAME=gpu-$(printf '%s' "$ADDR" | cut -c3-8) EXPECT_VKEY=$POOL_VKEY WARM=0 POLL_MS=4000 CUDA_DEVICE_ORDER=PCI_BUS_ID GPU_DEVICE=$gpu RELOAD_FLAG="$HOME_DIR/reload" \\
-    WORKER_KEY_FILE="$HOME_DIR/worker.key" PAUSE_FLAG="$HOME_DIR/pause" RECYCLE_FLAG="$HOME_DIR/recycle" POOL_LEASE_FILE="$HOME_DIR/pool-lease.json" $small "$BIN"
+    WORKER_KEY_FILE="$HOME_DIR/worker.key" PAUSE_FLAG="$HOME_DIR/pause" RECYCLE_FLAG="$HOME_DIR/recycle" POOL_LEASE_FILE="$HOME_DIR/pool-lease.json" POOL_EVERY_SECS=10 $small "$BIN"
   # SP1's GPU server goes when the worker lets it go, not when the worker aborts: what is left in this group (this script leads it) goes
   # before the next start, so a crash never leaves a server holding the GPU's memory.
   trap '' TERM; kill -- -\$\$ 2>/dev/null; trap - TERM

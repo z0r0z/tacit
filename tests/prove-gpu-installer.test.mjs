@@ -258,6 +258,7 @@ test('a 16 GB card gets the pinned smaller server and its pool-only settings', a
   assert.match(env, /^SP1_GPU_MIN_GB=16$/m);
   assert.match(env, new RegExp(`^POOL_LEASE_FILE=${w.gpuHome}/pool-lease.json$`, 'm'));
   assert.match(env, new RegExp(`^COMMUNITY_MINER=${ADDR}$`, 'm'));
+  assert.match(env, /^POOL_EVERY_SECS=10$/m);
 });
 
 test('a 20 GB card proves the pool\'s wraps too', async () => {
