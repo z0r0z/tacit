@@ -271,7 +271,8 @@ $('#gpu-copy').addEventListener('click', async () => {
 const HEX40 = /^0x[0-9a-f]{40}$/;
 const cleanSalts = (s) => (s && typeof s === 'object' ? {
   pointsPerDay: count(s.pointsPerDay), miners: count(s.today?.miners), shares: count(s.today?.shares), weight: Number(s.today?.weight) || 0,
-  top: (Array.isArray(s.top) ? s.top : []).map((m) => ({ miner: cleanAddress(m?.miner), weight: Number(m?.weight) || 0, shares: count(m?.shares) })).filter((m) => m.miner),
+  top: (Array.isArray(s.top) ? s.top : []).map((m) => ({ miner: cleanAddress(m?.miner), weight: Number(m?.weight) || 0, shares: count(m?.shares),
+    best: HEX40.test(String(m?.best?.address)) && count(m?.best?.bits) ? { address: m.best.address, bits: m.best.bits } : null })).filter((m) => m.miner),
   bank: (Array.isArray(s.bank) ? s.bank : []).map((b) => ({ address: HEX40.test(String(b?.address)) ? b.address : null, bits: count(b?.bits), miner: cleanAddress(b?.miner), house: b?.house === true })).filter((b) => b.address),
   live: (Array.isArray(s.live) ? s.live : []).map((m) => ({ miner: cleanAddress(m?.miner)?.toLowerCase() || null, house: m?.house === true })).filter((m) => m.miner).slice(0, 64),
   rate: Number.isFinite(Number(s.rate)) && Number(s.rate) >= 0 ? Number(s.rate) : 0,
@@ -282,7 +283,12 @@ function paintSalt() {
   // A node from before salt mining (its /mine has no `salt`) is told how to start: the setup line installs the newest.
   if (mine && !('salt' in mine)) $('#salt-day').textContent = 'Run the setup line again to update tacit-prover: it then mines salts between proofs.';
   else if (salts) $('#salt-day').textContent = `Shared by work: ${salts.miners || 0} ${salts.miners === 1 ? 'node' : 'nodes'}, ${salts.shares || 0} shares today. A proof always comes first.`;
-  $('#salt-bank').innerHTML = (salts?.bank || []).slice(0, 5).map((b) => {
+  // The bank's best (five zero bytes and better); until it has one, the best addresses ground today, so the panel shows the hunt.
+  const banked = salts?.bank?.length ? salts.bank : null;
+  const finds = banked || (salts?.top || []).filter((m) => m.best).map((m) => ({ ...m.best, miner: m.miner })).sort((a, b) => b.bits - a.bits);
+  $('#salt-bank-h').hidden = !finds.length;
+  $('#salt-bank-h').textContent = banked ? 'Banked for deploys' : 'Best found today';
+  $('#salt-bank').innerHTML = finds.slice(0, 5).map((b) => {
     const z = Math.floor((b.bits || 0) / 4);
     return `<li><code><b>${esc(b.address.slice(0, 2 + z))}</b>${esc(b.address.slice(2 + z, 18))}…</code><small>${b.house ? `<span class="who">${face(null)}Tacit GPU</span>` : b.miner ? who(b.miner) : ''}</small></li>`;
   }).join('');
@@ -308,7 +314,7 @@ async function copy() {
 // The Relay and Bitcoin tabs' code (the wallet, the header relay, the board's settles) is most of the page's weight and most visitors never
 // open those tabs, so it loads when one opens, when the wallet chip is pressed, or once the page has settled.
 let opsLoad = null;
-const loadOps = () => (opsLoad ||= import('/prove/ops.js?cb=bb362b17'));
+const loadOps = () => (opsLoad ||= import('/prove/ops.js?cb=c1b89f0e'));
 $('#wallet').addEventListener('click', async (e) => {
   if (opsLoad) return;                                             // loaded: ops.js has its own handler on the chip
   e.preventDefault();
@@ -316,7 +322,7 @@ $('#wallet').addEventListener('click', async (e) => {
   $('#wallet').click();
 }, { once: true });
 const whenIdle = (fn) => ('requestIdleCallback' in window ? requestIdleCallback(fn, { timeout: 8000 }) : setTimeout(fn, 4000));
-addEventListener('load', () => setTimeout(() => whenIdle(() => loadOps().catch(() => {})), 2500), { once: true });
+addEventListener('load', () => setTimeout(() => whenIdle(() => loadOps().then((m) => m.startMarket()).catch(() => {})), 2500), { once: true });
 
 // The node's jobs as tabs: #tab=relay or #tab=bitcoin opens one (a link from a waiting lock carries need= and why= beside it), and the
 // other jobs' reads start the first time one of their tabs opens.

@@ -9,7 +9,7 @@
 // once, for the first address that sends it. A day's points (pointsPerDay) are shared between the day's miners by weight once the day is
 // over (GET /prover/salt/credits, which the points service pays from beside the proof pool's tally): more machines share the same points,
 // so what a day costs never grows with them. Salts at least bankBits good are kept (GET /prover/salt/bank): the addresses Tacit deploys
-// its next contracts to. Tacit's own machines (SALT_HOUSE, the deployer by default) send only salts for the bank and never share the points.
+// its next contracts to. Tacit's own machines (SALT_HOUSE, the deployer by default) are counted as grinding and banked, and never share the points.
 //
 // Who is grinding now (every address that sent shares in the last liveMs, Tacit's own named so) and how fast the network grinds (the shares
 // of the last hour or so, each the 2^minBits salts a share takes on average) are in GET /prover/salt, for the page's live row.

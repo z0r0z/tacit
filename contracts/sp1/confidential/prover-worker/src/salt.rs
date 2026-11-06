@@ -78,15 +78,14 @@ fn grind(seed: u64) {
     }
 }
 
-// Once a minute: the share size the pool asks (for Tacit's own box, the bank's: it earns nothing, so only salts worth keeping go), then
-// the shares found, best first.
-fn send(base: String, miner: String, name: String, house: bool) {
+// Once a minute: the share size the pool asks, then the shares found, best first. Tacit's own box sends the same shares: the pool gives
+// them no weight (it earns nothing) but counts it among the nodes grinding now.
+fn send(base: String, miner: String, name: String) {
     let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(20)).build();
-    let size = if house { "bankBits" } else { "minBits" };
     loop {
         std::thread::sleep(Duration::from_secs(60));
         if let Ok(v) = agent.get(&format!("{base}/prover/salt")).call().map_err(|e| e.to_string()).and_then(|r| r.into_json::<serde_json::Value>().map_err(|e| e.to_string())) {
-            if let Some(b) = v[size].as_u64().filter(|b| (16..=96).contains(b)) { MIN_BITS.store(b, Ordering::Relaxed); }
+            if let Some(b) = v["minBits"].as_u64().filter(|b| (16..=64).contains(b)) { MIN_BITS.store(b, Ordering::Relaxed); }
         }
         let mut found = std::mem::take(&mut *FOUND.lock().unwrap());
         if found.is_empty() { continue; }
@@ -105,7 +104,7 @@ fn send(base: String, miner: String, name: String, house: bool) {
 }
 
 // Spare cores (SALT_THREADS, else half of them; 0 is off) and the sender. `busy`: the main loop's job-in-hand marker. `house`: Tacit's
-// own box, grinding for the bank alone.
+// own box (the pool banks its salts and gives them no weight).
 pub fn start(base: &str, miner: &str, name: &str, busy: Arc<AtomicU64>, house: bool) {
     let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2);
     let threads = std::env::var("SALT_THREADS").ok().and_then(|s| s.parse::<usize>().ok()).unwrap_or((cores / 2).max(1));
@@ -116,8 +115,7 @@ pub fn start(base: &str, miner: &str, name: &str, busy: Arc<AtomicU64>, house: b
         std::thread::Builder::new().name(format!("salt-{t}")).spawn(move || grind(seed)).ok();
     }
     let (base, miner, name) = (base.to_string(), miner.to_string(), name.to_string());
-    if house { MIN_BITS.store(40, Ordering::Relaxed); }
-    std::thread::spawn(move || send(base, miner, name, house));
+    std::thread::spawn(move || send(base, miner, name));
     println!("grinding salts on {threads} of {cores} cores between jobs{}", if house { ", for the bank" } else { "" });
 }
 

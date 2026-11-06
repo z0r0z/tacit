@@ -175,6 +175,7 @@ try {
     await page.waitForFunction(() => document.querySelector('#title').textContent === 'Mining salts until the next proof');
     await page.waitForFunction(() => document.querySelector('#salt').textContent.includes('M/s'));
     check((await text(page, '#salt')) === '20 shares · 8.25 TAC so far · 2.4 M/s', 'between proofs the node grinds salts: its shares, its part of the day and its speed', await text(page, '#salt'));
+    check((await page.textContent('#salt-bank-h')) === 'Banked for deploys', 'the bank says what it is');
     check((await text(page, '#salt-pay')).includes('15 TAC a day') && (await page.locator('#salt-bank li').count()) === 2 && (await text(page, '#salt-bank')).includes('Tacit GPU'), 'the salt pot and the best addresses banked, Tacit GPU\'s named so', await text(page, '#salt-pay'));
     local.v.mine = { ...local.v.mine, job: { id: 'j1', secs: 120, stage: 'shrink', eta: 360 }, proved: 2 };
     await page.waitForFunction(() => document.querySelector('#title').textContent === 'Proving');

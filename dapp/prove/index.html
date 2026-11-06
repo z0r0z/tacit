@@ -21,7 +21,7 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /prove/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/prove/app.js?cb=0fd1e546">
+<link rel="modulepreload" href="/prove/app.js?cb=41744c42">
 <link rel="modulepreload" href="/community-prove.js?cb=55393eb1">
 <link rel="modulepreload" href="/prove/view.js?cb=0279ad9a">
 <link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
@@ -284,6 +284,9 @@ pre.cmd { margin: 16px 0 0; padding: 12px 14px; background: var(--field); border
 @media (max-width: 560px) { .ops .cards { grid-template-columns: minmax(0, 1fr); } }
 .tab > .ops { margin-top: 30px; }
 .gpu { margin-top: 18px; max-width: 720px; }
+.pair { margin-top: 18px; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
+.pair .gpu { margin-top: 0; max-width: none; }
+@media (max-width: 820px) { .pair { grid-template-columns: minmax(0, 1fr); } }
 .gpu h3 { font: 400 clamp(22px, 3.6vw, 28px)/1.1 var(--serif); margin: 4px 0 0; }
 .gpu h3 span { color: var(--orange); }
 .gpu .btn { margin-top: 12px; }
@@ -558,10 +561,12 @@ footer.sf svg.fill { width: 16px; height: 16px; }
         <ol id="board"><li class="empty">Nobody yet. Be first.</li></ol>
       </section>
     </div>
+    <div class="cols pair">
       <section class="panel gpu" aria-labelledby="h-salt">
         <p class="eyebrow"><span>Between proofs</span></p>
         <h3 id="h-salt">Mine deploy addresses<span id="salt-pay"></span></h3>
         <p class="hint" id="salt-day">Your node grinds salts for Tacit's next contracts while it waits. A proof always comes first.</p>
+        <p class="eyebrow" id="salt-bank-h" hidden></p>
         <ol id="salt-bank" class="bank"></ol>
       </section>
       <section class="panel gpu" aria-labelledby="h-gpu">
@@ -571,6 +576,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
         <button class="btn ghost" id="gpu-copy" type="button">Copy</button>
         <p class="hint">x86-64 Linux and an NVIDIA GPU with 24 GB or more.</p>
       </section>
+    </div>
       <div class="ops">
   <section class="grp" id="g-prove" aria-labelledby="h-market">
     <h2 id="h-market"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg>GPU provers: prove for TAC</h2>
@@ -673,6 +679,6 @@ RUNNER_KEY=0x… node tools/community-runner.mjs</code></pre>
 
 <div id="toast-container" class="toasts" popover="manual"></div>
 
-<script type="module" src="/prove/app.js?cb=0fd1e546"></script>
+<script type="module" src="/prove/app.js?cb=41744c42"></script>
 </body>
 </html>

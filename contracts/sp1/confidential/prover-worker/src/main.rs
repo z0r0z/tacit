@@ -30,8 +30,8 @@
 // community routes (POST /prover/community/claim { miner, programs: ["btc-state"] } and /prover/community/result { miner, jobId, ... }),
 // and each batch the relay takes earns that address the board's points for it (TAC from the points service). The proof pool and the
 // warm-up pings, which are for Tacit's own tokens, are off; BTC_STATE is on. Between batches its spare CPU cores grind deploy salts for
-// the same address (salt.rs; SALT_THREADS, half the cores by default, 0 is off). Tacit's own box grinds for the bank alone, earning
-// nothing, when SALT_MINER names the house address (the deployer).
+// the same address (salt.rs; SALT_THREADS, half the cores by default, 0 is off). Tacit's own box grinds too, earning nothing
+// (the pool gives the house no weight), when SALT_MINER names the house address (the deployer).
 // RELOAD_FLAG (default /workspace/worker.reload): when that file exists and no job is in hand, the worker removes it and
 // exits 0, so the loop around it starts a fresh worker (and GPU server) with whatever binary and env are now in place,
 // never in the middle of a proof.

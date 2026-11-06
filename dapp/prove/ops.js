@@ -439,6 +439,15 @@ evm.onElsewhere(restoreWallet);                                  // a wallet con
 const inView = () => !document.hidden && [...document.querySelectorAll('.tab.ops')].some((t) => !t.hidden);
 const readAll = () => { refresh().catch(() => {}); refreshProof().catch(() => {}); refreshBoard().catch(() => {}); refreshMarket().catch(() => {}); };
 let started = false;
+// The Prove tab's market card reads on its own, the rest waiting for a tab that shows them: once the page has settled (app.js), then each
+// minute while the page is in view, until startOps takes it over.
+let marketOn = false;
+export function startMarket() {
+  if (marketOn || started) return;
+  marketOn = true;
+  refreshMarket().catch(() => {});
+  setInterval(() => { if (!document.hidden && !started) refreshMarket().catch(() => {}); }, 60000);
+}
 export function startOps() {
   if (started) return;
   started = true;
