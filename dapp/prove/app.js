@@ -378,9 +378,11 @@ loop(readSalts, 30000, 120000);
 const HEX32 = /^0x[0-9a-f]{64}$/i, CID = /^b[a-z2-7]{58}$/;
 async function readCheckpoint() {
   const s = await get(`${API}/pool/snapshot`), c = s?.checkpoint, el = $('#checkpoint');
-  const height = count(c?.tacit?.height), btc = count(c?.bitcoin?.relayTip);
+  // Bitcoin's height as far as the pool's verifier has taken it in (the reflection), else as far as the light relay has seen it.
+  const height = count(c?.tacit?.height), btc = count(c?.bitcoin?.reflection?.height) ?? count(c?.bitcoin?.relayTip);
+  const slot = count(c?.ethereum?.finalizedSlot);
   if (!CID.test(String(s?.cid)) || height == null || !HEX32.test(String(c?.tacit?.hash))) { el.hidden = true; return; }
-  el.innerHTML = `Checkpoint: block #${height.toLocaleString('en-US')} <code>${esc(c.tacit.hash.slice(0, 10))}…</code>${btc != null ? ` · Bitcoin ${btc.toLocaleString('en-US')}` : ''} · <a href="https://ipfs.filebase.io/ipfs/${esc(s.cid)}" target="_blank" rel="noopener noreferrer">snapshot.tacit.wei</a>`;
+  el.innerHTML = `Checkpoint: block #${height.toLocaleString('en-US')} <code>${esc(c.tacit.hash.slice(0, 10))}…</code>${btc != null ? ` · Bitcoin ${btc.toLocaleString('en-US')}` : ''}${slot != null ? ` · Ethereum slot ${slot.toLocaleString('en-US')}` : ''} · <a href="https://ipfs.filebase.io/ipfs/${esc(s.cid)}" target="_blank" rel="noopener noreferrer">snapshot.tacit.wei</a>`;
   el.hidden = false;
 }
 loop(readCheckpoint, 300000, 900000);

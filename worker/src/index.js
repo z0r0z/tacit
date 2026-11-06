@@ -3799,24 +3799,47 @@ const POOL_PROGRAM_VKEY = '0x006cd47fd23937a6d247696cace28c22d2c6a8280447e6ac45a
 // reads the snapshot.tacit.wei record first and this only when there is none.
 let _snapJob = null;
 const SEL_RELAY_TIP_HEIGHT = '0x1fd4827a', SEL_RELAY_TIP = '0x' + bytesToHex(keccak_256(new TextEncoder().encode('tip()'))).slice(0, 8);
-const SLOT_KNOWN_BITCOIN_SPENT_ROOT = '0x' + (79).toString(16).padStart(64, '0');
-// The cross-chain checkpoint at Ethereum block `to`: that block's hash, the tacit chain's newest block at or before it, and the Bitcoin side
-// as the pool saw it then (BitcoinLightRelay's tip, the pool's knownBitcoinSpentRoot).
+const poolSlot = (n) => '0x' + n.toString(16).padStart(64, '0');
+// ConfidentialPool storage (`forge inspect … storageLayout`): the Bitcoin side as the pool's verifier last took it.
+const SLOT_LAST_REFLECTION_BLOCK_HASH = poolSlot(1), SLOT_LAST_RELAY_HEIGHT = poolSlot(2), SLOT_KNOWN_BITCOIN_SPENT_ROOT = poolSlot(79), SLOT_KNOWN_REFLECTION_DIGEST = poolSlot(81);
+// The eth-state proof's public values (contracts/sp1/eth-reflection EthReflectionPublicValues, one word each): newDigest is word 1,
+// finalizedSlot word 5, finalizedExecStateRoot word 6.
+const pvWord = (pv, i) => '0x' + String(pv || '').replace(/^0x/, '').slice(64 * i, 64 * (i + 1));
+// The cross-chain checkpoint at Ethereum block `to`, every part of it proved or readable on Ethereum:
+//   eth      the block and its hash
+//   tacit    the tacit chain's newest block at or before it (/prover/blocks)
+//   bitcoin  Bitcoin into Ethereum, as the pool held it then: BitcoinLightRelay's tip, and the reflection the pool's verifier last took
+//            (its digest, the Bitcoin height and block it reached, the spent root)
+//   ethereum Ethereum into Bitcoin: the newest eth-state proof the reflection folded (its digest, the beacon slot it was finalized at,
+//            and the execution state root it proves, which any pool value can be checked against with a storage proof)
 async function poolCheckpoint(env, d, to) {
   const tag = '0x' + to.toString(16), nodes = ETH_LOG_NODES.map((rpc) => (m, p) => _ethRpcOrThrow(rpc, m, p));
   const rpc = async (m, p) => { let last; for (const n of nodes) { try { return await n(m, p); } catch (e) { last = e; } } throw last; };
-  const [blk, tipH, tipHash, spent, view] = await Promise.all([
+  const slot = (s) => rpc('eth_getStorageAt', [d.pool, s, tag]);
+  const [blk, tipH, tipHash, spent, digest, height, rblock, view, ethRaw] = await Promise.all([
     rpc('eth_getBlockByNumber', [tag, false]),
     d.headerRelay ? rpc('eth_call', [{ to: d.headerRelay, data: SEL_RELAY_TIP_HEIGHT }, tag]) : null,
     d.headerRelay ? rpc('eth_call', [{ to: d.headerRelay, data: SEL_RELAY_TIP }, tag]) : null,
-    rpc('eth_getStorageAt', [d.pool, SLOT_KNOWN_BITCOIN_SPENT_ROOT, tag]),
+    slot(SLOT_KNOWN_BITCOIN_SPENT_ROOT), slot(SLOT_KNOWN_REFLECTION_DIGEST), slot(SLOT_LAST_RELAY_HEIGHT), slot(SLOT_LAST_REFLECTION_BLOCK_HASH),
     chainView(env)?.blocks({ limit: 100 }).catch(() => null),
+    env.REGISTRY_KV ? env.REGISTRY_KV.get(ethStateConfirmedKey('mainnet')).catch(() => null) : null,
   ]);
   const tb = (view?.blocks || []).find((b) => Number(b.ethBlock) <= to);
+  let eth = null;
+  try { eth = ethRaw ? JSON.parse(ethRaw) : null; } catch { eth = null; }
+  // The slot read from the public values must be the one recorded beside them, or the record is not the shape this reads: left out.
+  if (eth && (!/^(0x)?[0-9a-f]{896,}$/i.test(String(eth.ethPv)) || (Number.isFinite(eth.finalizedSlot) && Number(BigInt(pvWord(eth.ethPv, 5))) !== eth.finalizedSlot))) eth = null;
   return {
     eth: { block: to, hash: blk?.hash || null },
     tacit: tb ? { height: tb.height, hash: tb.hash, ethBlock: tb.ethBlock } : null,
-    bitcoin: { relayTip: tipH ? Number(BigInt(tipH)) : null, relayTipHash: tipHash || null, spentRoot: spent || null },
+    bitcoin: {
+      relayTip: tipH ? Number(BigInt(tipH)) : null, relayTipHash: tipHash || null, spentRoot: spent || null,
+      reflection: { digest: digest || null, height: height ? Number(BigInt(height)) : null, block: rblock || null },
+    },
+    ethereum: eth && eth.ethPv ? {
+      digest: pvWord(eth.ethPv, 1), finalizedSlot: Number(BigInt(pvWord(eth.ethPv, 5))), execStateRoot: pvWord(eth.ethPv, 6),
+      execBlock: eth.execBlock ?? null, contentHash: eth.contentHash || null,
+    } : null,
   };
 }
 async function poolSnapshotTick(env) {
