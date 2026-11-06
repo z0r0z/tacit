@@ -229,8 +229,9 @@ export const PROVE = getAddress(ADDR.prove);
 export const ZQUOTER = getAddress(ADDR.zQuoter);
 export const ZROUTER = getAddress(ADDR.zRouter);
 
-export async function readPool(fn, args = []) {
-  return publicClient.readContract({ address: POOL, abi: POOL_ABI, functionName: fn, args });
+// `at` reads at a past state ({ blockNumber } or { blockTag }); left out, the latest.
+export async function readPool(fn, args = [], at = {}) {
+  return publicClient.readContract({ address: POOL, abi: POOL_ABI, functionName: fn, args, ...at });
 }
 
 // The digest the pool has attested up to — the reflection-folder's idempotency check (skip a batch that

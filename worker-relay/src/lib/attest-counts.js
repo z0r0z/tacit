@@ -11,13 +11,18 @@ const word = (hex, i) => {
   return w.length === 64 ? BigInt('0x' + w) : null;
 };
 
-// The counts a Mode-B batch will commit: its eth-state proof's public values, word 4 the cumulative cross-outs and word 10 the cumulative
-// consumes (dapp/confidential-pool.js buildEthPv). Null for a forward batch, or a job that does not carry them.
-export function jobCounts(job) {
-  const pv = job?.input?.modeB?.ethPv;
-  if (!pv) return null;
-  const crossOuts = word(pv, 4), consumed = word(pv, 10);
+// The counts an eth-state candidate commits: its public values' word 4, the cumulative cross-outs, and word 10, the cumulative consumes
+// (prover-host eth_pv.rs). Null when the bytes are too short to hold them.
+export function pvCounts(ethPv) {
+  const crossOuts = word(ethPv, 4), consumed = word(ethPv, 10);
   return crossOuts == null || consumed == null ? null : { crossOuts, consumed };
+}
+
+// The counts a Mode-B batch will commit: those of the eth-state candidate it folds, which the prover input carries as `ethPv` beside its
+// `modeB` flag (dapp/confidential-pool.js). Null for a forward batch, or a job that does not carry them.
+export function jobCounts(job) {
+  const input = job?.input;
+  return input?.modeB ? pvCounts(input.ethPv) : null;
 }
 
 // The counts a bought Bitcoin proof commits (ReflectionLib BitcoinRelayPublicValues, ABI-encoded as one tuple: word 0 its offset, then the

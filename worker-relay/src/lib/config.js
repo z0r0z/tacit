@@ -489,6 +489,8 @@ export const CFG = {
   // Render-side config was retuned, and a crossOut's Bitcoin-side broadcast sat blocked for 3+ hours.
   // Change both together, in the same commit, and keep this default equal to that constant.
   ethStatePendingStaleSecs: num('ETH_STATE_PENDING_STALE_SECS', 90 * 60),
+  // The longest the eth-state stage waits for finality to cover the pool's latest cross-outs and consumes before it proves anyway.
+  ethStateFinalityCoverSecs: num('ETH_STATE_FINALITY_COVER_SECS', 30 * 60),
   // DRY_RUN=1: run every check + log the decision, never invoke eth_prove or POST — the safe first-run
   // mode to validate the trigger logic and API wiring against production before spending any real PROVE.
   ethStateDryRun: opt('DRY_RUN', '0') === '1',
