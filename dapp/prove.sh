@@ -7,7 +7,9 @@
 #   curl -fsSL https://tacit.finance/prove.sh | sh -s -- --status          is it running, what the pool has, what the address earned
 #   curl -fsSL https://tacit.finance/prove.sh | sh -s -- --uninstall       stop it and take it away
 #
-# Apple-silicon Macs and x86-64 Linux. The whole script is one function called on the last line, so a download cut short runs nothing.
+# Apple-silicon Macs and x86-64 Linux (Ubuntu 22.04, Debian 12 or newer), and so Windows through WSL 2: run it in the Ubuntu window. Where
+# systemd's user manager is not running (WSL with systemd off, a container) it runs in the background instead, until the computer stops.
+# The whole script is one function called on the last line, so a download cut short runs nothing.
 # Environment: TACIT_PROVER_NO_SERVICE=1 installs the program and stops there (run it by hand: tacit-prover mine 0x...); TACIT_PROVER_HOME
 # is where it lives (~/.tacit-prover); TACIT_PROVER_TAG, TACIT_PROVER_BASE and TACIT_PROVER_SHA256 install a build of your own (with no
 # sha256 given, the release's own .sha256 file is used). The pins are changed with tools/prove-pins.mjs when a release is cut.
@@ -46,8 +48,13 @@ platform() {
       case $arch in
         x86_64|amd64) PLAT=linux-x86_64 ;;
         *) die "there is no Linux build for $arch yet, only for x86-64." ;;
-      esac ;;
-    MINGW*|MSYS*|CYGWIN*) die "Windows runs this inside WSL: install it with wsl --install, then run the command in its Ubuntu window." ;;
+      esac
+      check_glibc
+      # WSL 1 has no Linux kernel of its own (its version line says Microsoft with a capital M, WSL 2's says microsoft-standard-WSL2).
+      if is_wsl && grep -q Microsoft "${TACIT_PROC_VERSION:-/proc/version}" 2>/dev/null; then
+        warn "this looks like WSL 1, and tacit-prover is made for WSL 2. In PowerShell: wsl --set-version ${WSL_DISTRO_NAME:-Ubuntu} 2"
+      fi ;;
+    MINGW*|MSYS*|CYGWIN*) die "this does not run in Git Bash. On Windows, install WSL 2 (in PowerShell: wsl --install), open Ubuntu from the Start menu, and run the command there." ;;
     *) die "tacit-prover has builds for Apple-silicon Macs and x86-64 Linux; this is $os $arch." ;;
   esac
 }
@@ -78,10 +85,82 @@ short_addr() { printf '%s...%s' "$(printf '%s' "$1" | cut -c1-6)" "$(printf '%s'
 
 # The address a service installed earlier mines for (a re-run without one keeps it): launchd's plist, or systemd's unit.
 existing_mine() {
-  for f in "$HOME/Library/LaunchAgents/finance.tacit.prover.plist" "$HOME/.config/systemd/user/tacit-prover.service"; do
+  for f in "$HOME/Library/LaunchAgents/finance.tacit.prover.plist" "$HOME/.config/systemd/user/tacit-prover.service" "$RUN_SH"; do
     [ -f "$f" ] && { grep -Eo '0x[0-9a-fA-F]{40}' "$f" | head -1; return 0; }
   done
   return 0
+}
+
+# Inside WSL uname says Linux: WSL sets WSL_DISTRO_NAME, and its kernel's version line names Microsoft.
+is_wsl() { [ -n "${WSL_DISTRO_NAME:-}" ] || grep -qi microsoft "${TACIT_PROC_VERSION:-/proc/version}" 2>/dev/null; }
+
+# The Linux build asks for glibc 2.34 or newer and would not start on an older one, so that is said before the download. A version that
+# does not read as one (another libc) is left to the program.
+check_glibc() {
+  v=$(ldd --version 2>&1 | head -n 1 | awk '{print $NF}')
+  maj=${v%%[!0-9]*}; rest=${v#*.}; min=${rest%%[!0-9]*}
+  { [ -n "$maj" ] && [ -n "$min" ] && [ "$v" != "$rest" ]; } || return 0
+  if [ "$maj" -lt 2 ] || { [ "$maj" -eq 2 ] && [ "$min" -lt 34 ]; }; then
+    hint="Ubuntu 22.04, Debian 12 or newer."
+    if is_wsl; then hint="$hint In PowerShell: wsl --install -d Ubuntu-24.04, then run the command in that window."; fi
+    die "this Linux has glibc $v, and tacit-prover needs 2.34 or newer: $hint"
+  fi
+}
+
+# systemd's user manager, which keeps the prover running and starts it at login. WSL runs it only when /etc/wsl.conf turns systemd on,
+# and a container has none.
+user_systemd() { command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; }
+
+# Without one the prover runs in the background from $RUN_SH, which writes its own pid before it becomes the program. The pid is only
+# taken as the prover's while that process is running the installed program.
+background_pid() {
+  [ -f "$RUN_PID" ] || return 0
+  bgp=$(cat "$RUN_PID" 2>/dev/null || true)
+  case $bgp in ''|*[!0-9]*) return 0 ;; esac
+  kill -0 "$bgp" 2>/dev/null || return 0
+  if [ -r "/proc/$bgp/cmdline" ]; then args=$(tr '\0' ' ' < "/proc/$bgp/cmdline" 2>/dev/null || true); else args=$(ps -p "$bgp" -o args= 2>/dev/null || true); fi
+  case $args in *"$BIN"*) printf '%s' "$bgp" ;; esac
+  return 0
+}
+
+stop_background() {
+  bgp=$(background_pid)
+  if [ -n "$bgp" ]; then
+    kill "$bgp" 2>/dev/null || true
+    n=0
+    while [ "$n" -lt 10 ] && kill -0 "$bgp" 2>/dev/null; do sleep 1; n=$((n + 1)); done
+  fi
+  rm -f "$RUN_PID"
+}
+
+start_background() {
+  stop_background
+  cat > "$RUN_SH" <<EOF
+#!/bin/sh
+echo \$\$ > "$RUN_PID"
+cd "$HOME_DIR" || exit 1
+export TACIT_PROVER_DIR="$HOME_DIR" TACIT_MINE="$1"
+exec "$BIN" serve >> "$HOME_DIR/daemon.log" 2>&1
+EOF
+  chmod 755 "$RUN_SH"
+  # Out of the terminal's session, so closing the terminal or pressing Ctrl-C there leaves it running.
+  if command -v setsid >/dev/null 2>&1; then nohup setsid sh "$RUN_SH" >/dev/null 2>&1 < /dev/null &
+  else nohup sh "$RUN_SH" >/dev/null 2>&1 < /dev/null &
+  fi
+  n=0
+  while [ "$n" -lt 10 ] && [ -z "$(background_pid)" ]; do sleep 1; n=$((n + 1)); done
+  [ -n "$(background_pid)" ] || die "tacit-prover did not start; its log is $HOME_DIR/daemon.log"
+}
+
+# What WSL does to a program that keeps running, said once after an install there.
+wsl_notes() {
+  say ""
+  say "WSL stops Ubuntu a few seconds after its last window closes, and tacit-prover with it (linger and vmIdleTimeout do not change"
+  say "that): keep an Ubuntu window open while it proves. To keep it running without one, add this to %UserProfile%\\.wslconfig on Windows"
+  say "and run wsl --shutdown in PowerShell:"
+  say "  [general]"
+  say "  instanceIdleTimeout=-1"
+  say "Reports differ by WSL version, so check: with every Ubuntu window closed, wsl --list --running should still list it."
 }
 
 # Wei as TAC, four places.
@@ -107,7 +186,13 @@ check_machine() {
   else
     kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0); mem=$(( ${kb:-0} / 1048576 ))
   fi
-  if [ "$mem" -gt 0 ] && [ "$mem" -lt 7 ]; then
+  # WSL's Linux gets half the PC's memory unless told otherwise, which is what /proc/meminfo shows.
+  if is_wsl && [ "$mem" -gt 0 ] && [ "$mem" -lt 12 ]; then
+    warn "WSL gives Linux about $mem GB here (half of this PC's memory, unless %UserProfile%\\.wslconfig says otherwise); a proof wants 8 GB, and is quicker with 16."
+    warn "To give it more, put these two lines in %UserProfile%\\.wslconfig on Windows (memory= what you can spare, say 12GB on a 16 GB PC), run wsl --shutdown in PowerShell and open Ubuntu again:"
+    warn "  [wsl2]"
+    warn "  memory=12GB"
+  elif [ "$mem" -gt 0 ] && [ "$mem" -lt 7 ]; then
     warn "this computer has about $mem GB of memory; a proof wants 8 GB, and may fail or take very long here."
   fi
   free=$(df -Pk "$HOME" 2>/dev/null | awk 'NR==2 {print int($4 / 1048576)}')
@@ -165,25 +250,44 @@ do_install() {
     say "  $BIN mine ${addr:-0xYourAddress}"
     return 0
   fi
-  # An update on a Mac: the old program is booted out and gone before the new one is loaded. launchctl bootout returns before the old
-  # process has exited, and loading the label meanwhile fails ("Bootstrap failed: 5: Input/output error"), so this waits for it (up to
-  # 30 s), and tries the load once more after a pause if it still fails.
-  if [ "$(uname -s)" = Darwin ]; then
-    dom="gui/$(id -u)"
-    launchctl bootout "$dom/finance.tacit.prover" >/dev/null 2>&1 || true
-    n=0
-    while [ "$n" -lt 30 ] && launchctl print "$dom/finance.tacit.prover" >/dev/null 2>&1; do sleep 1; n=$((n + 1)); done
+  bg=
+  if [ "$(uname -s)" = Linux ] && ! user_systemd; then
+    bg=1
+    if is_wsl && [ -d /run/systemd/system ]; then
+      say "systemd runs in this Ubuntu, but not for $(id -un) (systemctl --user does not answer), so tacit-prover runs in the background"
+      say "until WSL stops. To have it start by itself, run wsl --shutdown in PowerShell, open Ubuntu again and run this command again."
+    elif is_wsl; then
+      say "systemd is off in this Ubuntu, so tacit-prover runs in the background until WSL stops. To have it start by itself, add these"
+      say "two lines to /etc/wsl.conf (sudo nano /etc/wsl.conf), run wsl --shutdown in PowerShell, open Ubuntu again and run this command again:"
+      say "  [boot]"
+      say "  systemd=true"
+    else
+      say "systemd's user manager does not answer here (systemctl --user), so tacit-prover runs in the background until this computer stops."
+    fi
+    start_background "$addr"
+  else
+    # A background run from an install before systemd was on would hold the port.
+    stop_background
+    # An update on a Mac: the old program is booted out and gone before the new one is loaded. launchctl bootout returns before the old
+    # process has exited, and loading the label meanwhile fails ("Bootstrap failed: 5: Input/output error"), so this waits for it (up to
+    # 30 s), and tries the load once more after a pause if it still fails.
+    if [ "$(uname -s)" = Darwin ]; then
+      dom="gui/$(id -u)"
+      launchctl bootout "$dom/finance.tacit.prover" >/dev/null 2>&1 || true
+      n=0
+      while [ "$n" -lt 30 ] && launchctl print "$dom/finance.tacit.prover" >/dev/null 2>&1; do sleep 1; n=$((n + 1)); done
+    fi
+    if ! out=$(TACIT_PROVER_DIR="$HOME_DIR" TACIT_MINE="$addr" "$BIN" install 2>&1) && { sleep 5; ! out=$(TACIT_PROVER_DIR="$HOME_DIR" TACIT_MINE="$addr" "$BIN" install 2>&1); }; then
+      printf '%s\n' "$out" >&2
+      say "It could not be set to start at login. It is installed, and runs in a terminal (leave the window open) with:" >&2
+      say "  $BIN mine ${addr:-0xYourAddress}" >&2
+      [ "$(uname -s)" != Darwin ] || say "(On a Mac this needs the desktop session, not ssh: run the command in Terminal on the Mac.)" >&2
+      exit 1
+    fi
+    say "$out"
+    # launchd's install boots the old program out first; systemd leaves a unit that is already running alone, so an update is restarted here.
+    if [ "$(uname -s)" = Linux ]; then systemctl --user restart tacit-prover >/dev/null 2>&1 || true; fi
   fi
-  if ! out=$(TACIT_PROVER_DIR="$HOME_DIR" TACIT_MINE="$addr" "$BIN" install 2>&1) && { sleep 5; ! out=$(TACIT_PROVER_DIR="$HOME_DIR" TACIT_MINE="$addr" "$BIN" install 2>&1); }; then
-    printf '%s\n' "$out" >&2
-    say "It could not be set to start at login. It is installed, and runs in a terminal (leave the window open) with:" >&2
-    say "  $BIN mine ${addr:-0xYourAddress}" >&2
-    [ "$(uname -s)" != Darwin ] || say "(On a Mac this needs the desktop session, not ssh: run the command in Terminal on the Mac.)" >&2
-    exit 1
-  fi
-  say "$out"
-  # launchd's install boots the old program out first; systemd leaves a unit that is already running alone, so an update is restarted here.
-  if [ "$(uname -s)" = Linux ] && command -v systemctl >/dev/null 2>&1; then systemctl --user restart tacit-prover >/dev/null 2>&1 || true; fi
 
   say "Waiting for it to load its keys (up to a minute)..."
   up=
@@ -201,10 +305,23 @@ do_install() {
   else
     say "No address was given, so it proves for this computer's own pages and earns nothing. Run this again with 0x... to mine for points."
   fi
-  say "It starts at login and uses the processor while it proves, so a laptop does best plugged in."
-  if [ "$(uname -s)" = Linux ] && command -v loginctl >/dev/null 2>&1 && ! loginctl show-user "$(id -un)" -p Linger 2>/dev/null | grep -q yes; then
+  if [ -n "$bg" ]; then
+    say "It uses the processor while it proves, so a laptop does best plugged in. It does not start by itself: after a restart, run this again."
+  else
+    say "It starts at login and uses the processor while it proves, so a laptop does best plugged in."
+  fi
+  if [ -z "$bg" ] && [ "$(uname -s)" = Linux ] && command -v loginctl >/dev/null 2>&1 && ! loginctl show-user "$(id -un)" -p Linger 2>/dev/null | grep -q yes; then
     say "On Linux it stops when you log out. To keep it running: sudo loginctl enable-linger $(id -un)"
   fi
+  # The page runs in the Windows browser, which reaches 127.0.0.1 inside WSL through WSL's localhost forwarding; Windows' own curl checks it.
+  if is_wsl && [ -n "$up" ] && command -v curl.exe >/dev/null 2>&1; then
+    if curl.exe -fsS --max-time 3 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
+      say "Windows reaches it at 127.0.0.1:$PORT, so the page in your Windows browser finds it."
+    else
+      warn "Windows could not reach it at 127.0.0.1:$PORT, so the page in your Windows browser will not find it (it proves all the same). Check that %UserProfile%\\.wslconfig does not set localhostForwarding=false."
+    fi
+  fi
+  if is_wsl; then wsl_notes; fi
   say "Watch, pause or start it: https://tacit.finance/prove/"
   say "Check on it:  curl -fsSL https://tacit.finance/prove.sh | sh -s -- --status"
   say "Remove it:    curl -fsSL https://tacit.finance/prove.sh | sh -s -- --uninstall"
@@ -223,7 +340,12 @@ do_status() {
     unit=$HOME/.config/systemd/user/tacit-prover.service
     state=$(systemctl --user is-active tacit-prover 2>/dev/null || true)
   fi
-  if [ ! -f "$unit" ]; then
+  bgp=$(background_pid)
+  if [ -n "$bgp" ]; then
+    say "Service    running in the background (pid $bgp); after a restart, run the install again"
+  elif [ ! -f "$unit" ] && [ -f "$RUN_SH" ]; then
+    say "Service    stopped (it ran in the background; run the install again, and if it stops by itself see its log)"
+  elif [ ! -f "$unit" ]; then
     say "Service    not set to start at login"
   else
     case $state in
@@ -265,6 +387,8 @@ do_status() {
 }
 
 do_uninstall() {
+  stop_background
+  rm -f "$RUN_SH"
   if [ -x "$BIN" ]; then
     TACIT_PROVER_DIR="$HOME_DIR" "$BIN" uninstall || true
   elif [ "$(uname -s)" = Darwin ]; then
@@ -291,6 +415,8 @@ main() {
   POINTS=${TACIT_POINTS_API:-https://tacit-points.onrender.com}
   PORT=${TACIT_PROVER_PORT:-47815}
   BIN=$HOME_DIR/bin/tacit-prover
+  RUN_SH=$HOME_DIR/run.sh
+  RUN_PID=$HOME_DIR/run.pid
 
   cmd=install
   addr=

@@ -549,6 +549,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
           <pre class="cmd"><code id="cmd"></code></pre>
           <button class="btn" id="copy" type="button">Copy, then paste in Terminal</button>
           <p class="hint">Once per computer. A Mac with Apple silicon, or Linux.</p>
+          <p class="hint">Windows: paste it into Ubuntu on WSL 2 and leave that window open. Not yet tried on a Windows PC.</p>
         </div>
         <p class="status" id="say"></p>
         <div class="rows num">
@@ -584,7 +585,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
         <h3 id="h-gpu">Prove Bitcoin batches<span id="btc-pay"></span></h3>
         <pre class="cmd"><code id="gpu-cmd">curl -fsSL https://tacit.finance/prove-gpu.sh | sh -s -- 0xYourAddress</code></pre>
         <button class="btn ghost" id="gpu-copy" type="button">Copy</button>
-        <p class="hint">x86-64 Linux and an NVIDIA GPU with 24 GB or more.</p>
+        <p class="hint">x86-64 Linux, an NVIDIA GPU with 24 GB or more, and CUDA 12.</p>
       </section>
     </div>
       <div class="ops">
