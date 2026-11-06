@@ -1,8 +1,11 @@
 import { secp, keccak_256 } from '/vendor/tacit-deps.min.js';
 import { makeConfidentialNames, makeMainnetCall, MAINNET_RPCS, NameError } from '/confidential-names.js?cb=d41cb8bd';
 import { bodyType } from '/rpc-body.js';
-import { makeTacAirdrop, makeRpcCall } from '/tac-airdrop.js?cb=6a6bb45f';
+import { makeTacAirdrop } from '/tac-airdrop.js?cb=6a6bb45f';
 import { makeConnect, UserStopped } from '/trade/connect.js?cb=a64b9cec';
+import { rpc as readRpc } from '/trade/util.js?cb=e8317464';
+import { nodeHealth } from '/trade/rpc.js?cb=f575ef91';
+import { batchReads } from '/trade/batch.js?cb=11d17343';
 import { TAC, POOL, FARM, aprText, readPrecision, readSpot, readStake, privateFarms } from '/trade/farm-read.js?cb=112a01b9';
 import { rememberOwed } from '/trade/rewards-dot.js?cb=36212f5c';
 import { readTasks } from '/rewards/earn.js?cb=74689244';
@@ -17,12 +20,14 @@ const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&
 const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const calm = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const store = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch { } } };
+const health = nodeHealth({ store: { getItem: store.get, setItem: store.set } });
 const names = makeConfidentialNames({ call: makeMainnetCall({}), secp, keccak256: keccak_256 });
-const call = makeRpcCall({ rpcs: MAINNET_RPCS });
+const call = batchReads(({ to, data, from }) => readRpc('eth_call', [{ to: to.toLowerCase(), data, ...(from ? { from: from.toLowerCase() } : {}) }, 'latest'], undefined, { health })
+  .catch((e) => { throw e?.revert ? Object.assign(e, { code: 3 }) : e; }));
 const air = makeTacAirdrop({ call, keccak256: keccak_256 });
 const within = (s) => (s && AbortSignal.any ? AbortSignal.any([s, AbortSignal.timeout(20e3)]) : AbortSignal.timeout(20e3));
 const get = (path, signal) => fetch(`${API}/${path}`, { signal: within(signal) }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
-const store = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch { } } };
 const connect = makeConnect({
   describe: 'Farm TAC, and look up and claim the airdrop and points.',
   rewards: false,
@@ -107,7 +112,7 @@ let primedAt = 0;
 function prime() {
   if (Date.now() - primedAt < 300e3) return;
   primedAt = Date.now();
-  for (const u of MAINNET_RPCS) fetch(u, { method: 'POST', headers: { 'content-type': bodyType(u) }, body: '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' }).catch(() => {});
+  for (const u of MAINNET_RPCS.slice(0, 3)) fetch(u, { method: 'POST', headers: { 'content-type': bodyType(u) }, body: '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' }).catch(() => {});
 }
 
 let boardP = null, boardAt = 0;
@@ -150,16 +155,17 @@ function airdropRow(s, address) {
   const [cls, line] = s.claimed ? ['ok', 'Claimed'] : s.claimable ? [left <= 7 ? 'warn' : 'ok', `Claim by ${by} · ${left} day${left === 1 ? '' : 's'} left`] : s.reason === 'closed' ? ['mute', `Closed ${by}`] : ['warn', s.message];
   return `<div class="rw"><h3>Airdrop</h3>${figure(Number(s.amountTac), tac(s.amountWei), 'TAC')}<p class="st ${cls}">${esc(line)}</p>${s.claimable ? claimUi('airdrop', `Claim ${tac(s.amountWei)} TAC`, address, '/#airdrop', tac(s.amountWei), s.amountWei) + sendTo(address, s.amountWei) : ''}</div>`;
 }
+const inTime = (ms) => { const m = Math.max(1, Math.round(ms / 60e3)); return m < 90 ? `${m} min` : `${Math.round(m / 60)} h`; };
 function clockLine(c) {
-  const at = new Date(c.settleAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
-  return `Day ${c.day} of ${c.days} · today’s points can be claimed after ${at} UTC`;
+  const left = c.settleAt - Date.now(), at = new Date(c.settleAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
+  return `Day ${c.day} of ${c.days}${left > 0 ? ` · today’s points are claimable in ${inTime(left)} (${at} UTC)` : ''}`;
 }
 function pointsRow(p, address) {
   if (p.error) return lone('Points', 'Could not read points. Try again in a moment.', 'warn');
   const t = p.today, pct = t ? (t.pct < 0.01 ? t.pct.toFixed(4) : t.pct < 1 ? t.pct.toFixed(3) : t.pct.toFixed(2)) : '', pts = Math.round(p.points).toLocaleString('en-US');
   const fig = p.owed > 0n ? figure(Number(p.owed) / 1e18, tac(p.owed), 'TAC') : figure(Math.round(p.points), pts, 'points');
   const kv = p.earned > 0n ? `<dl class="kv"><div><dt>Earned from finished days</dt><dd class="num">${tac(p.earned)} TAC</dd></div><div><dt>Claimed</dt><dd class="num">${tac(p.claimed)} TAC</dd></div><div><dt>To claim</dt><dd class="num">${p.unread ? 'unavailable' : `${tac(p.owed)} TAC`}</dd></div></dl>` : '';
-  return `<div class="rw"><h3>Points</h3>${fig}<p class="st mute"><span>${p.points > 0 ? `${pts} points` : 'No points yet.'}</span><span id="rank"></span></p>`
+  return `<div class="rw"><h3>Points</h3>${fig}<p class="st mute"><span>${p.points > 0 ? `${pts} points` : 'No points yet. <a href="#earn" data-earn>How to earn</a>'}</span><span id="rank"></span></p>`
     + (t ? `<p class="st mute">Today ${Math.round(t.points).toLocaleString('en-US')} points · ${pct}% of the day${t.tac != null ? ` · about ${tac(t.tac)} TAC` : ''}</p>` : '')
     + (p.claimed > 0n && p.owed <= 0n ? `<p class="st mute">${tac(p.claimed)} TAC claimed so far</p>` : '')
     + (p.points > 0 && p.clock ? `<p class="st mute clock">${clockLine(p.clock)}</p>` : '')
@@ -198,13 +204,22 @@ function paintTotal() {
   const sum = tot.air + tot.pts + tot.farm;
   if (!tot.bad && W.account && W.account.toLowerCase() === tot.address) rememberOwed(tot.address, tot.air > 0n || tot.pts >= 10n ** 16n);
   paint('#tot', sum > 0n ? `<b class="num">${esc(tac(sum))}</b>TAC to claim` : tot.bad ? '' : 'Nothing to claim yet');
+  paintNext(sum === 0n && !tot.bad);
+}
+let farmNow = null;
+function paintNext(nothing = $('#c-next')?.dataset.on === '1') {
+  const el = $('#c-next');
+  if (!el) return;
+  el.dataset.on = nothing ? '1' : '';
+  const h = nothing ? `<div class="rw next"><h3>Start here</h3><p class="st mute">Farm TAC with ETH${farmNow?.live && farmNow.apr != null ? ` · ${aprText(farmNow.apr)} APR now` : ''}</p><button class="act" type="button" data-open-farm>Farm</button></div>` : '';
+  if (el.__h !== h) { el.__h = h; el.innerHTML = h; }
 }
 const whoLine = (who, q) => `<p class="who"><b>${esc(who.name || short(who.address))}</b>${who.name ? `<span>${short(who.address)}</span>` : ''}</p>
   <p class="acts"><button type="button" data-copy="${who.address}">Copy address</button><a href="https://etherscan.io/address/${who.address}" target="_blank" rel="noopener noreferrer">Etherscan ↗</a><button type="button" data-copy="${esc(`${location.origin}/rewards/?q=${encodeURIComponent(q)}`)}" data-said="Link copied">Copy link</button></p>
   <p class="wl" id="wl"></p>
   <div id="done" aria-live="polite"></div>`;
 const SKEL = (t) => `<div class="rw ld"><h3>${t}</h3><p class="fig"><span class="sk"></span></p></div>`;
-const YOURS = `<section class="card yours" id="yours"><div class="yh"><h2>Your rewards</h2><p class="tot" id="tot"></p></div><div id="c-air">${SKEL('Airdrop')}</div><div id="c-pts">${SKEL('Points')}</div><div id="c-farm"></div></section>`;
+const YOURS = `<section class="card yours" id="yours"><div class="yh"><h2>Your rewards</h2><p class="tot" id="tot"></p></div><div id="c-air">${SKEL('Airdrop')}</div><div id="c-pts">${SKEL('Points')}</div><div id="c-farm"></div><div id="c-next"></div></section>`;
 const SKELETON = `<p class="who"><b><span class="sk"></span></b></p>${YOURS}`;
 
 function countUp(el) {
@@ -307,9 +322,14 @@ async function claim(kind, address, btn, to = '') {
     $('#done')?.insertAdjacentHTML('beforeend', `<p class="done"><b>Claimed ${esc(amt)} TAC${dest ? ` to ${short(dest)}` : ''}</b>${txLink(hash)}${dest ? '' : '<button class="linkbtn" type="button" data-watch>Add TAC to wallet</button>'}</p>`);
     said(`Claimed ${amt} TAC`); react('up', 4200); confetti();
     if (!dest) farmClaimed(BigInt(btn.dataset.wei || 0));
-    kept.delete(`airdrop:${address}`); kept.delete(`points:${address}`);
-    await sleep(1500);
-    const [a, p] = await Promise.all([readAirdrop(address), readPoints(address)]);
+    const was = BigInt(btn.dataset.wei || 0);
+    let a, p;
+    for (let i = 0; i < 5; i++) {
+      kept.delete(`airdrop:${address}`); kept.delete(`points:${address}`);
+      await sleep(i ? 2500 : 1500);
+      [a, p] = await Promise.all([readAirdrop(address), readPoints(address)]);
+      if (!(kind === 'airdrop' ? a.claimable : !p.error && p.owed >= was)) break;
+    }
     if (out.dataset.address === address) {
       paint('#c-air', airdropRow(a, address)); paint('#c-pts', pointsRow(p, address)); fillRank(address, p); claimedNow(address, a0(a), p0(p));
       tot.air = a.claimable ? BigInt(a.amountWei) : 0n; tot.pts = p.error ? 0n : p.owed; tot.bad = a.reason === 'error' || !!p.error || tot.bad; paintTotal();
@@ -362,6 +382,7 @@ const ICONS = new Set(['tac', 'tacd', 'tace', 'eth', 'teth', 'cusd', 'cbtc']);
 const pairIcons = (ids) => `<span class="pairtk">${ids.filter((i) => ICONS.has(i)).map((i) => `<svg class="tk" aria-hidden="true"><use href="#tk-${i}"/></svg>`).join('')}</span>`;
 const dot = (on) => `<i class="sd${on ? ' on' : ''}"></i>`;
 function noteFarm(f) {
+  farmNow = f; paintNext();
   $('#farm-apr').textContent = f?.live ? aprText(f.apr) : f ? '—' : '';
   $('#farm-d').innerHTML = f?.live ? `${dot(true)}Public · ${tac(f.perDay, 0)} TAC a day` : f ? `${dot(false)}Public · between reward periods` : 'Public';
 }
@@ -421,15 +442,15 @@ function earnAgain() {
   clearTimeout(earnTimer);
   earnTimer = setTimeout(() => { if (!document.hidden) { kept.delete('farm'); readEarn(); } else earnAgain(); }, 120e3);
 }
-async function readEarn() {
+function readEarn() {
   earnAgain();
-  const f = await farmFacts().catch(() => null);
-  noteFarm(f);
+  const facts = farmFacts().catch(() => null);
   const spot = readSpot((calls) => Promise.all(calls.map((c) => call(c).catch(() => null))));
-  Promise.all([get('farm/program?network=mainnet'), spot]).then(([prog, px]) => { PROG = prog; paintPrivate(privateFarms(prog, f?.tacEth || 0, px)); }, () => paintPrivate([]));
+  facts.then(noteFarm);
+  Promise.all([get('farm/program?network=mainnet'), spot, facts]).then(([prog, px, f]) => { PROG = prog; paintPrivate(privateFarms(prog, f?.tacEth || 0, px)); }, () => paintPrivate([]));
   capNow().then(notePoints, () => {});
   const synths = Object.fromEntries(DEPLOYMENTS.vaults.map((v) => [v.key, v.hint?.synth]).filter(([, a]) => a));
-  Promise.all([readCampaign({ ethCall: (to, data) => call({ to, data }), synths }), spot]).then(([c, px]) => noteLiquidity(c, (px.ethUsd || 0) * (f?.tacEth || 0)), () => noteLiquidity(null));
+  Promise.all([readCampaign({ ethCall: (to, data) => call({ to, data }), synths }), spot, facts]).then(([c, px, f]) => noteLiquidity(c, (px.ethUsd || 0) * (f?.tacEth || 0)), () => noteLiquidity(null));
   readTasks(json).then(noteTasks, () => noteTasks(null));
 }
 
@@ -477,6 +498,7 @@ function farmClaimed(wei) {
   farmFor = wei > 0n ? wei : null;
   showFarm(wei).then(() => { if (farm.open) openFarm(); else farm.open = true; toFarm(); });
 }
+function openEarn() { const d = $('#earn'); d.open = true; d.scrollIntoView({ behavior: calm ? 'auto' : 'smooth', block: 'start' }); d.querySelector('summary').focus({ preventScroll: true }); }
 function openTheFarm() { if (!farm.open) farm.open = true; toFarm(); farm.querySelector('summary').focus({ preventScroll: true }); }
 if (location.hash === '#farm') farm.open = true;
 addEventListener('hashchange', () => { if (location.hash === '#farm') openTheFarm(); });
@@ -669,6 +691,7 @@ document.addEventListener('click', async (e) => {
   if (chip) { input.value = chip.dataset.q; run(chip.dataset.q); return; }
   if (e.target.closest('[data-own]')) { connect.connect(); return; }
   if (e.target.closest('[data-open-farm]')) { openTheFarm(); return; }
+  if (e.target.closest('[data-earn]')) { e.preventDefault(); openEarn(); return; }
   if (e.target.closest('[data-clear]')) { store.set(RECENT, '[]'); showRecent(); return; }
   if (cl) { const toward = cl.dataset.claim === 'airdrop-to'; claim(toward ? 'airdrop' : cl.dataset.claim, cl.dataset.addr, cl, toward ? $('#to-q').value.trim() || ' ' : ''); return; }
   if (e.target.closest('[data-to-show]')) { const f = $('#to-f'); f.hidden = false; e.target.closest('.to').hidden = true; $('#to-q').focus(); return; }

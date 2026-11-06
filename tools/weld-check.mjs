@@ -5208,10 +5208,10 @@ await step('rewards', async () => {
     const box = await n.page.evaluate(() => { const r = document.querySelector('.bar').getBoundingClientRect(), h = document.querySelector('#find-h').getBoundingClientRect(); return { bar: r.left + r.width / 2, h1: h.left + h.width / 2, vw: innerWidth }; });
     ok(Math.abs(box.bar - box.vw / 2) < 3 && Math.abs(box.h1 - box.vw / 2) < 3 && !!(await n.page.$('header.top nav.sn')) && !!(await n.page.$('footer.sf')), `rewards: the bar and the title are centred, under the shared header and footer (${JSON.stringify(box)})`);
     const pre = await n.page.$$eval('link[rel="preconnect"]', (l) => l.map((x) => x.href));
-    ok(['https://api.tacit.finance/', 'https://ethereum-rpc.publicnode.com/', 'https://eth.drpc.org/', 'https://1rpc.io/'].every((h) => pre.includes(h)), `rewards: the hosts it reads are connected while the person types (${pre.length} preconnect links)`);
+    ok(['https://api.tacit.finance/', 'https://ethereum-rpc.publicnode.com/', 'https://rpc.mevblocker.io/', 'https://eth-mainnet.nodereal.io/', 'https://tacit-points.onrender.com/'].every((h) => pre.includes(h)), `rewards: the hosts it reads are connected while the person types (${pre.length} preconnect links)`);
     await until(n.page, () => true); await sleep(1200);
     ok(hits.board === 1, `rewards: the leaderboard is fetched once, before anything is asked (${hits.board})`);
-    ok(['ethereum-rpc.publicnode.com', 'eth.drpc.org', '1rpc.io'].every((h) => primed.has(h)), `rewards: the three Ethereum endpoints are warmed while the page is idle, so a lookup finds them connected (${[...primed]})`);
+    ok(['ethereum-rpc.publicnode.com', 'rpc.mevblocker.io', 'eth-mainnet.nodereal.io'].every((h) => primed.has(h)) && primed.size === 3, `rewards: the three Ethereum endpoints asked first are warmed while the page is idle, so a lookup finds them connected (${[...primed]})`);
     await n.page.fill('#q', 'hello'); await n.page.click('#go');
     await until(n.page, () => /Enter a 0x address/.test(document.querySelector('#out')?.textContent || ''), null, 30000);
     ok((await n.page.getAttribute('#q', 'aria-invalid')) === 'true', 'rewards: something that is neither an address nor a name is told, and marked on the bar');
@@ -5227,12 +5227,19 @@ await step('rewards', async () => {
     await until(n.page, () => /No points yet/.test(document.querySelector('#c-pts')?.textContent || ''), null, 30000);
     await until(n.page, () => document.querySelector('#ninja')?.dataset.mood === 'down', null, 10000);
     ok((await text(n.page, '#emo')) === '👎', 'rewards: nothing to claim (not on the list, no points): the ninja shakes its head and a thumbs down appears');
+    await until(n.page, () => /^start here farm tac with eth/i.test((document.querySelector('#c-next')?.innerText || '').replace(/\s+/g, ' ').trim()), null, 30000);
+    ok(!!(await n.page.$('#c-next [data-open-farm]')), `rewards: and an account with nothing to claim is given the next step, the farm (${await text(n.page, '#c-next')})`);
+    await n.page.click('#c-pts [data-earn]');
+    await until(n.page, () => document.querySelector('#earn')?.open === true, null, 10000);
+    ok(true, 'rewards: and "How to earn" under no points opens the points row');
+    await n.page.click('#earn > summary');
     slow = 0;
     // A name starts it too, a moment after the last key; the address it points to was not read before, so this reads it.
     await n.page.evaluate(() => { window.__winked = false; new MutationObserver(() => { if (document.querySelector('#ninja').classList.contains('wink')) window.__winked = true; }).observe(document.querySelector('#ninja'), { attributes: true, attributeFilter: ['class'] }); });
     await n.page.fill('#q', LISTED);
     await settled();
     ok((await n.page.getAttribute('#ninja', 'data-mood')) === 'up' && (await text(n.page, '#emo')) === '👍', 'rewards: something to claim: the ninja nods and a thumbs up appears');
+    ok(!(await n.page.$('#c-next .rw')) && /to claim/.test(await text(n.page, '#tot')), 'rewards: with something to claim there is no "Start here", the claims are the next step');
     await until(n.page, () => document.querySelector('#ninja')?.dataset.mood === 'idle' && document.querySelector('#emo')?.textContent === '', null, 10000);
     ok(await n.page.evaluate(() => window.__winked), 'rewards: it winked on the way');
     ok(true, 'rewards: and it settles back behind the bar, the thumb gone');
@@ -5467,7 +5474,7 @@ await step('rewardsuses', async () => {
     await land('trade/tac/', () => /trade/i.test(document.title) && !!document.querySelector('#route'), '/trade/tac/ is the trade page');
     await land('swap/#earn', () => location.pathname === '/' && !!document.querySelector('#sheet-farm[open]'), '/swap/#earn forwards to the front page\'s public farm');
     await land('vault/', () => /borrow/i.test(document.title), '/vault/ is the borrow page');
-    await land('#card=shield:wtac:defi', () => { const t = (document.querySelector('#hx')?.innerText || '').replace(/\s+/g, ' '); return /From Wallet TAC/.test(t) && /To Private/.test(t) && /Private in DeFi pool/.test(t); }, '/#card=shield:wtac:defi sets the front page\'s card to make the wallet\'s TAC private on Ethereum');
+    await land('#card=shield:wtac:defi', () => { const t = (document.querySelector('#hx')?.innerText || '').replace(/\s+/g, ' '); return /From Wallet TAC/.test(t) && /To Private/.test(t) && /DeFi pool/.test(t); }, '/#card=shield:wtac:defi sets the front page\'s card to make the wallet\'s TAC private on Ethereum');
     await land('pay/#tac', () => /pay/i.test(document.title) && location.hash === '#tac', '/pay/#tac is the pay page on TAC');
     await land('tac/', () => /tac/i.test(document.title), '/tac/ is the Bitcoin-native shielded TAC page');
   } finally { await n.browser.close(); }
@@ -5588,7 +5595,7 @@ await step('rewardsdot', async () => {
     await n.ctx.route(/api\.tacit\.finance\/claim\/0x/, (route) => { hits++; return json(route, owed ? { cumulativeAmount: '5000000000000000000', claimedWei: '0', unclaimedWei: '5000000000000000000', proof } : { cumulativeAmount: '0', claimedWei: '0', unclaimedWei: '0', proof: null }); });
     await n.ctx.route(/api\.tacit\.finance\/(points\/0x|leaderboard)/, (route) => json(route, /leaderboard/.test(route.request().url()) ? [] : { points: 0, deposit_count: 0, deposits: [] }));
     try {
-      await n.page.goto(n.url + 'swap/');
+      await n.page.goto(n.url + 'vault/');
       await n.page.waitForSelector('#wallet-chip', { timeout: 60000 });
       ok(!(await dot(n.page)).on && hits === 0, `rewardsdot (${owed ? 'owed' : 'nothing'}): with no wallet connected nothing is asked and there is no dot`);
       await plug(n.page);
@@ -5800,7 +5807,7 @@ await step('rewardsto', async () => {
       await n.page.goto(n.url + 'airdrop?x=1');
       await until(n.page, () => location.pathname === '/rewards/', null, 30000);
       ok(true, 'rewardsto: /airdrop is the rewards page');
-      await n.page.goto(n.url + 'swap/');
+      await n.page.goto(n.url + 'tasks/');
       await n.page.waitForSelector('#wallet-chip', { timeout: 60000 });
       choose(n.page); await n.page.click('#wallet-chip');
       await until(n.page, () => /0x[0-9a-f]{4}/i.test(document.querySelector('#wallet-label')?.textContent || ''), null, 30000);
@@ -5831,7 +5838,7 @@ await step('rewardsfolds', async () => {
   const n = await openPage({ account: A0, viewport: { width: 1000, height: 900 } });
   await n.ctx.route(/api\.tacit\.finance\/(points|claim|leaderboard)/, (route) => {
     const u = route.request().url();
-    if (/leaderboard\?day=today/.test(u)) return json(route, { day: 20743, programDay: 25, programDays: 90, program: { settleGraceSecs: 1800, dayBudgetWei: '1111111111111111111111', rateCap: [{ fromDay: 20729, maxWeiPerPoint: '30000000000000000' }], rates: { holding: 1000, wrap: 1250, evmpooldeposit: 1000, zswapeth: 1000, cbtcmint: 1000, cbtchold: 500, cusdmint: 2, pmbet: 1000 }, budgets: [{ fromDay: 20747, groups: [{ name: 'stay', activities: ['holding', 'cbtchold'], share: 0.25, maxWeiPerPoint: '20000000000000000', topWeiPerPoint: '30000000000000000' }, { name: 'use', activities: ['zswapeth', 'cusdmint'], share: 0.15, maxWeiPerPoint: '10000000000000000' }] }], weights: [{ fromDay: 20730, weights: { zswapeth: 2, cusdmint: 0 } }], addressDayCaps: [{ fromDay: 20741, caps: { wrap: '5' } }], categoryShareCaps: [{ fromDay: 20741, caps: { evmpooldeposit: 0.5 } }], holder: { tiers: [{ tac: 100, multiplier: 1.25 }, { tac: 1000, multiplier: 1.5 }] }, earlyBonus: { max: 5 } } });
+    if (/leaderboard\?day=today/.test(u)) return json(route, { day: 20743, programDay: 25, programDays: 90, program: { settleGraceSecs: Math.floor(Date.now() / 1000) - 20744 * 86400 + 4.6 * 3600, dayBudgetWei: '1111111111111111111111', rateCap: [{ fromDay: 20729, maxWeiPerPoint: '30000000000000000' }], rates: { holding: 1000, wrap: 1250, evmpooldeposit: 1000, zswapeth: 1000, cbtcmint: 1000, cbtchold: 500, cusdmint: 2, pmbet: 1000 }, budgets: [{ fromDay: 20747, groups: [{ name: 'stay', activities: ['holding', 'cbtchold'], share: 0.25, maxWeiPerPoint: '20000000000000000', topWeiPerPoint: '30000000000000000' }, { name: 'use', activities: ['zswapeth', 'cusdmint'], share: 0.15, maxWeiPerPoint: '10000000000000000' }] }], weights: [{ fromDay: 20730, weights: { zswapeth: 2, cusdmint: 0 } }], addressDayCaps: [{ fromDay: 20741, caps: { wrap: '5' } }], categoryShareCaps: [{ fromDay: 20741, caps: { evmpooldeposit: 0.5 } }], holder: { tiers: [{ tac: 100, multiplier: 1.25 }, { tac: 1000, multiplier: 1.5 }] }, earlyBonus: { max: 5 } } });
     if (/leaderboard/.test(u)) return json(route, board);
     if (/\/claim\//.test(u)) return json(route, { cumulativeAmount: '0', claimedWei: '0', unclaimedWei: '0', proof: null });
     if (/\/days$/.test(u)) { dayCalls++; return json(route, { days: [{ day: 20743, points: 40, settled: false }, { day: 20742, points: 33.458, settled: true, tacWei: '10746707713728415' }, { day: 20741, points: 20, settled: true, tacWei: null }] }); }
@@ -5844,7 +5851,7 @@ await step('rewardsfolds', async () => {
     const read = (sel) => n.page.$eval(sel, (e) => e.innerText.replace(/\s+/g, ' ').trim()), kv = await read('#c-pts');
     ok(/Today 1,000 points · 0\.050% of the day · about 3 TAC/.test(kv), `rewardsfolds: today's share of the day's pot, in points and percent, and the TAC the service says it pays (not the share of the pot) (${kv.trim()})`);
     const clk = await read('#c-pts .clock');
-    ok(/^Day 25 of 90 · today’s points can be claimed after 00:30 UTC$/.test(clk), `rewardsfolds: the program's day and when today's points can be claimed (${clk})`);
+    ok(/^Day 25 of 90 · today’s points are claimable in [45] h \(\d\d:\d\d UTC\)$/.test(clk), `rewardsfolds: the program's day and how long until today's points can be claimed (${clk})`);
     ok(dayCalls === 0 && !(await n.page.$eval('#c-pts [data-days]', (d) => d.open)), 'rewardsfolds: the days are not read until the fold is opened');
     await n.page.click('#c-pts [data-days] > summary');
     await n.page.waitForSelector('#c-pts .rows li', { timeout: 20000 });
@@ -5853,7 +5860,7 @@ await step('rewardsfolds', async () => {
     await n.page.click('#earn > summary');
     await n.page.waitForSelector('#earn-b .ways li', { timeout: 20000 });
     const ways = await n.page.$$eval('#earn-b .ways li', (a) => a.map((x) => `${x.querySelector('a').getAttribute('href')} ${x.innerText.replace(/\s+/g, ' ').trim()}`));
-    ok(ways.length === 5 && /^\/#points Hold ETH in the private pools 1,000 points per ETH a day, proven on your device$/.test(ways[0]) && /^\/#private Wrap ETH into the Tacit pool 1,250 points per ETH · up to 5 ETH a day per address$/.test(ways[1]) && /^\/#device .* 1,000 points per ETH · together at most 50% of a day’s 1,111 TAC$/.test(ways[2]) && /^\/swap\/ Buy TAC with ETH \(Precision pool\) 2,000 points per ETH · 2×$/.test(ways[3]) && !ways.some((w) => /Borrow cUSD/.test(w)) && /500 a day while it stays posted/.test(ways[4]), `rewardsfolds: Earn more lists each action with its rate, weight, limits and where to do it, the staying reward first, and leaves out one that is weighted to nothing (${ways.length}: ${ways[3]})`);
+    ok(ways.length === 5 && /^\/#points Hold ETH in the private pools 1,000 points per ETH a day, proven on your device$/.test(ways[0]) && /^\/#private Wrap ETH into the Tacit pool 1,250 points per ETH · up to 5 ETH a day per address$/.test(ways[1]) && /^\/#device .* 1,000 points per ETH · together at most 50% of a day’s 1,111 TAC$/.test(ways[2]) && /^\/\?from=ETH&to=TAC Buy TAC with ETH \(Precision pool\) 2,000 points per ETH · 2×$/.test(ways[3]) && !ways.some((w) => /Borrow cUSD/.test(w)) && /500 a day while it stays posted/.test(ways[4]), `rewardsfolds: Earn more lists each action with its rate, weight, limits and where to do it, the staying reward first, and leaves out one that is weighted to nothing (${ways.length}: ${ways[3]})`);
     const reserved = await read('#earn-b > p:first-of-type');
     ok(/^From Wed 21 Oct, part of each day’s 1,111 TAC is set aside: 25% for holding ETH in the private pools and keeping bonds posted \(up to 0\.02 TAC a point, and 0\.03 when the day has TAC left over\) and 15% for buying TAC and borrowing \(up to 0\.01 TAC a point\)\. A share that is not used goes back to everyone else\.$/.test(reserved), `rewardsfolds: the reserved shares, with their start day and what a point can earn (${reserved.slice(0, 60)}…)`);
     ok(/Holding 100 or 1,000 public TAC at the same address for a day multiplies that day’s points by 1\.25× or 1\.5×\. Early activity counts up to 5×\./.test(await read('#earn-b > p:last-of-type')), 'rewardsfolds: and the holder boost and the early bonus');

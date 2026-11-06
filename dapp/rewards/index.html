@@ -27,11 +27,12 @@
 <link rel="prefetch" href="/rewards/ninja-wink.png">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
-<link rel="preconnect" href="https://eth.drpc.org" crossorigin>
-<link rel="preconnect" href="https://1rpc.io" crossorigin>
+<link rel="preconnect" href="https://rpc.mevblocker.io" crossorigin>
+<link rel="preconnect" href="https://eth-mainnet.nodereal.io" crossorigin>
+<link rel="preconnect" href="https://tacit-points.onrender.com" crossorigin>
 <!-- preload-roots: /rewards/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/rewards/app.js?cb=5526922c">
+<link rel="modulepreload" href="/rewards/app.js?cb=c57894f9">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="/confidential-names.js?cb=d41cb8bd">
 <link rel="modulepreload" href="/tacit-address.js">
@@ -45,6 +46,7 @@
 <link rel="modulepreload" href="/trade/util.js?cb=e8317464">
 <link rel="modulepreload" href="/trade/rpc.js?cb=f575ef91">
 <link rel="modulepreload" href="/trade/fmt.js?cb=32b1744b">
+<link rel="modulepreload" href="/trade/batch.js?cb=11d17343">
 <link rel="modulepreload" href="/trade/farm-read.js?cb=112a01b9">
 <link rel="modulepreload" href="/trade/rewards-dot.js?cb=36212f5c">
 <link rel="modulepreload" href="/rewards/earn.js?cb=74689244">
@@ -236,7 +238,7 @@ button.act:disabled { opacity: .6; cursor: default; transform: none; }
 /* the page fills the screen, so the footer sits at the bottom of an empty one */
 .shell { min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; }
 #main { flex: 1; outline: none; }
-.chip.own { color: var(--ink); border-color: var(--hair-2); }
+.chip.own { min-height: var(--tap); padding: 0 22px; color: var(--paper); background: var(--ink); border-color: var(--ink); font-weight: 500; } .chip.own:hover { background: var(--ink); opacity: .88; }
 .card.slim { padding-bottom: 16px; } .card.slim .st { margin-top: 2px; }
 .st.pill { display: inline-block; padding: 1px 11px; border: 1px solid var(--hair-2); border-radius: 999px; font-size: 12.5px; margin-top: 10px; }
 @media (max-width: 560px) { .act { display: flex; justify-content: center; width: 100%; min-height: 50px; } .card { padding: 20px 18px 18px; } .fm-in { padding: 2px 16px 18px; } }
@@ -354,15 +356,17 @@ a.ern::after { display: none; }
 .rw h3 { grid-column: 1; margin: 0; font: 500 12px/1.4 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--mute); }
 .rw .fig { grid-column: 2; grid-row: 1 / span 2; justify-self: end; align-self: start; margin: 0; text-align: right; font: 400 clamp(30px, 5.4vw, 38px)/1 var(--serif); letter-spacing: -.02em; }
 .rw .fig small { font: 400 13px var(--mono); letter-spacing: 0; color: var(--mute); margin-left: 6px; }
-.rw .st { grid-column: 1; margin: 0; }
+.rw .st { grid-column: 1; margin: 0; text-wrap: pretty; }
 .rw .st.pill { justify-self: start; margin-top: 4px; }
 .rw .act { grid-column: 2; grid-row: 3 / span 2; justify-self: end; align-self: start; margin-top: 6px; }
-.rw .x, .rw .to, .rw .toform, .rw .fold { grid-column: 1 / -1; }
+.rw .x, .rw .toform, .rw .fold { grid-column: 1 / -1; }
+.rw .to { grid-column: 1; grid-row: 3 / span 2; align-self: center; margin: 6px 0 0; }
+@media (min-width: 561px) { .rw .act { min-width: 212px; justify-content: center; } }
 .rw .kv { margin-top: 10px; }
-.rw .to { margin: 8px 0 0; }
 .rw.none { padding: 14px 24px; }
+.rw.next .act { grid-row: 1 / span 2; align-self: center; margin: 0; }
 .rw.none .st { grid-column: 1 / -1; margin-top: 2px; }
-@media (max-width: 560px) { .yh { display: block; padding: 16px 18px 10px; } .yh .tot { margin-top: 2px; } .rw { padding: 14px 18px 16px; grid-template-columns: minmax(0, 1fr); } .rw .fig { grid-column: 1; grid-row: auto; justify-self: start; text-align: left; margin: 2px 0 4px; } .rw .act { grid-column: 1; grid-row: auto; justify-self: stretch; } .rw.none { padding: 12px 18px; } }
+@media (max-width: 560px) { .yh { display: block; padding: 16px 18px 10px; } .yh .tot { margin-top: 2px; } .rw { padding: 14px 18px 16px; grid-template-columns: minmax(0, 1fr); } .rw .fig { grid-column: 1; grid-row: auto; justify-self: start; text-align: left; margin: 2px 0 4px; } .rw .act { grid-column: 1; grid-row: auto; justify-self: stretch; } .rw .to { grid-row: auto; } .rw.next .act { grid-row: auto; margin-top: 8px; } .rw.none { padding: 12px 18px; } }
 /* the place of an answer that is on its way, so the lists below do not move when it arrives (early.js) */
 html[data-lookup] #out { min-height: 470px; }
 html[data-lookup] #out:empty::before { content: ''; display: block; height: 470px; background: var(--card); border: 1px solid var(--hair); animation: pulse 1.2s ease-in-out infinite; }
@@ -564,7 +568,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       </div>
       <div class="lst" id="pf-lst">
         <details class="ern" id="pf-row">
-          <summary><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7.5 3v5.5c0 4.6-3.2 8-7.5 9.5-4.3-1.5-7.5-4.9-7.5-9.5V6z"/></svg></span><span class="rt"><b>Your private positions</b><small>Harvest and unbond</small></span></summary>
+          <summary><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7.5 3v5.5c0 4.6-3.2 8-7.5 9.5-4.3-1.5-7.5-4.9-7.5-9.5V6z"/></svg></span><span class="rt"><b>Your private positions</b><small>Harvest and unbond</small></span><span class="cv" aria-hidden="true"></span></summary>
           <div class="fm-in"><div id="pf-mine"><p class="more">Your positions in the private farms.</p><button class="act" type="button" data-pf="open">Show mine</button></div></div>
         </details>
       </div>
@@ -599,6 +603,6 @@ footer.sf svg.fill { width: 16px; height: 16px; }
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/rewards/app.js?cb=5526922c"></script>
+<script type="module" src="/rewards/app.js?cb=c57894f9"></script>
 </body>
 </html>

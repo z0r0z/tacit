@@ -8,7 +8,8 @@
 //   walletNode(get)    the connected wallet's own node as a last resort: only reads, only on Ethereum mainnet, never through WalletConnect (a relay hop)
 //
 // Measured and left out: Tenderly's gateway (resets the connection), llamarpc (525), cloudflare-eth (refuses), Ankr (needs a key), omniatech, lava,
-// onfinality and merkle (gone or rate-limited at once), blxrbdn (no eth_getLogs).
+// onfinality and merkle (gone or rate-limited at once), blxrbdn (no eth_getLogs), flashbots (a sending endpoint: eth_call is refused with a 403, and
+// eth_getBalance, eth_getCode and eth_getLogs time out; it still serves the sends that name it).
 
 export const ETH_NODES = [
   'https://ethereum-rpc.publicnode.com',
@@ -16,7 +17,6 @@ export const ETH_NODES = [
   'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7',
   'https://eth.drpc.org',
   'https://1.rpc.thirdweb.com',
-  'https://rpc.flashbots.net',
   'https://eth-mainnet.public.blastapi.io',
   'https://ethereum-json-rpc.stakely.io',
   'https://1rpc.io/eth',
@@ -35,7 +35,6 @@ export const ETH_ARCHIVE_NODES = [
   'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7',
   'https://eth.drpc.org',
   'https://1.rpc.thirdweb.com',
-  'https://rpc.flashbots.net',
   'https://eth-mainnet.public.blastapi.io',
 ];
 
