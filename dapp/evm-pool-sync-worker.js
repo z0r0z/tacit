@@ -4,19 +4,23 @@
 // each state as it is written, so a long history read partway is kept. The page stores them (still only a cache: every
 // balance is found again from the key and the chain), and its own wallet, made from them, then reads only what came after.
 // Given `pools` (the payments pools a coin picker shows), it reads them all at once, the calls to one chain's nodes going out
-// together in batches, and sends each pool's balance as it is known ({ part }), then { ok } when all are read.
+// together in batches, and sends each pool's balance as it is known ({ part }), then { ok } when all are read. Given `watch`, the
+// wallet watches its receive boxes through that index first (a payment link's box), as the page's own wallet does. Given `partial`,
+// a state with nothing read starts at the pool's newest catch-up point; given `back` too, this reads the history behind that point
+// into the second state (readBack), which the page's own wallet then takes in place of its own (adopt). Without `partial` a state
+// begun at a point (another page's) is completed here, before the balance is sent.
 import { makeEvmPoolZk } from '/evm-pool-zk.js?cb=2f062779';
-import { makeEvmPoolWallet, evmPoolKeys, jsonRpc, batchedRpc } from '/evm-pool-wallet.js?cb=7182f9ce';
+import { makeEvmPoolWallet, evmPoolKeys, jsonRpc, batchedRpc } from '/evm-pool-wallet.js?cb=46bc5840';
 import { poseidon2, poseidon3, poseidon4, poseidon5, poseidon7 } from '/vendor/tacit-poseidon.min.js';
 
 const PO = { 2: poseidon2, 3: poseidon3, 4: poseidon4, 5: poseidon5, 7: poseidon7 };
 const zk = makeEvmPoolZk({ poseidon: (xs) => PO[xs.length](xs) });
 
-const walletOf = (id, keys, c, pool, router, kept, rpc) => makeEvmPoolWallet({ zk, keys, keeper: c.keeper, prove: null,
+const walletOf = (id, keys, c, pool, router, kept, rpc, partial = false) => makeEvmPoolWallet({ zk, keys, keeper: c.keeper, prove: null, partial,
   store: { get: (k) => kept.get(k) ?? null, set: (k, v) => { kept.set(k, v); self.postMessage({ id, write: [k, v] }); } },
   chain: { chainId: c.chainId, pool, router, rpc, deployBlock: c.deployBlock, confirmations: c.confirmations, logChunk: c.logChunk, token: c.token } });
 
-self.onmessage = async ({ data: { id, priv, chain: c, pool, router, entries, pools } }) => {
+self.onmessage = async ({ data: { id, priv, chain: c, pool, router, entries, pools, watch, back, partial } }) => {
   const kept = new Map(Object.entries(entries || {}));
   try {
     const keys = evmPoolKeys(zk, priv);
@@ -31,7 +35,9 @@ self.onmessage = async ({ data: { id, priv, chain: c, pool, router, entries, poo
       self.postMessage({ id, ok: true });
       return;
     }
-    const s = await walletOf(id, keys, c, pool, router, kept, jsonRpc(c.rpc)).sync();
+    const w = walletOf(id, keys, c, pool, router, kept, jsonRpc(c.rpc), !!partial);
+    if (watch != null) w.watchThrough(watch);
+    const s = await (back ? w.readBack() : w.sync());
     self.postMessage({ id, ok: true, balance: String(s.balance) });
   } catch (e) {
     self.postMessage({ id, ok: false, error: String(e?.message || e) });

@@ -40,6 +40,11 @@ const RELAYERS = {
   4326: '0x69e4ea1992561Ce129713899244209Fd955E7D89',
 };
 const MAX_RELAY_FEE = { 1: 5n * 10n ** 16n, 8453: 2n * 10n ** 15n, 4663: 2n * 10n ** 15n, 4326: 2n * 10n ** 15n };
+// The catch-up registry (TacitEvmPoolCheckpoints, docs/EVM-POOL.md), at one address on every chain, keeps points for the ETH pool at its one
+// address: a wallet with nothing read starts at the newest point the pool vouches for, and reads the history behind it afterwards.
+const ETH_POOL = '0x000000c2a20657ce25f2ba99737933d031afbee9', CHECKPOINTS = '0x00000000C3267616ED5E0DAA6F6490D109d6844D';
+// One read of the history behind a point at a time for each saved state, however many wallets on the page share it.
+const BACKFILLS = new Map();
 
 // Where a read of the keeper's history feed starts. A wallet that has been away, its place more than ten minutes behind
 // the tip, asks from the start of the cell its place falls in (a range of blocks counted from the pool's first block: a day
@@ -431,7 +436,12 @@ export function zapDeposit(zap, tx, { token, amountIn, swap, pull = { kind: 'all
 // by the signer are always its own.
 // feed: read confirmed history from the keeper's /events first (checked against the pool; see sync), then the rest
 // from chain logs.
-export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store = null, signer = null, feed = true, fetchImpl = globalThis.fetch?.bind(globalThis) }) {
+// partial: a state with nothing read starts at the pool's newest catch-up point (the registry's, for the ETH pool) and sync() returns at
+// once with the notes after it, summary().behind naming the point until the history behind it is read: by backfill(), or by the caller's
+// own readBack() (in a worker, say) then adopt(). Only a caller that shows such a balance as unfinished sets it. Without it a wallet
+// reads from the pool's first block as it always did, and one that finds a state begun at a point (another page's) reads the history
+// behind it before sync() returns, so no caller of it sees a balance short of the notes behind a point.
+export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store = null, signer = null, feed = true, fetchImpl = globalThis.fetch?.bind(globalThis), partial = false }) {
   const token = chain.token ?? ZERO, isToken = BigInt(token) !== 0n;
   // `chain.dustFloor`: a note worth less than this is not kept (default 0: every note is). Anyone can pay a public pool address, and every note kept costs this device about
   // 6 KB of saved state and a pass over it with each block (150 of them are 860 KB and over a second a read). A caller that never spends such notes sets it: a note under a
@@ -447,24 +457,29 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
   const skey = `tacit-evm-pool-v1:${chain.chainId}:${chain.pool.toLowerCase()}:${keys.address}`;
 
   // State: { block, tree (an incTree tracking each unspent owned note), notes (unspent), nextRefund }. The tree keeps
-  // the pool's right edge and owned paths only, so state stays small however large the pool grows.
-  const blank = () => ({ block: Number(chain.deployBlock ?? 0) - 1, tree: zk.incTree(), notes: [], nextRefund: 1, attempts: {} });
-  let saved = blank();
-  try {
-    const j = openState(keys.v, store?.get(skey));
-    if (j) {
-      const o = JSON.parse(j);
-      let tree;
-      if (o.tree) tree = zk.incTree(o.tree);
-      else { // state saved with every leaf: rebuild the tree once, tracking the owned notes
-        tree = zk.incTree();
-        tree.append((o.leaves || []).map(BigInt), (o.notes || []).map((n) => n.index));
-      }
-      saved = { nextRefund: 1, attempts: {}, ...o, tree };
-      delete saved.leaves;
-      delete saved.spent;
+  // the pool's right edge and owned paths only, so state stays small however large the pool grows. A state begun at a
+  // catch-up point also has `from` ({ size, block, root }, the point): the leaves before it are in the edge, and notes
+  // among them are not known until the history behind it is read.
+  // `first`: the lowest leaf found to be this key's, read from the first block (null for none yet; absent in a state saved before it was kept).
+  // `pointed`: the point a state that took the history behind it in had begun at.
+  const blank = () => ({ block: Number(chain.deployBlock ?? 0) - 1, tree: zk.incTree(), notes: [], nextRefund: 1, attempts: {}, first: null });
+  const loadState = (raw) => {
+    const j = openState(keys.v, raw);
+    if (!j) return null;
+    const o = JSON.parse(j);
+    let tree;
+    if (o.tree) tree = zk.incTree(o.tree);
+    else { // state saved with every leaf: rebuild the tree once, tracking the owned notes
+      tree = zk.incTree();
+      tree.append((o.leaves || []).map(BigInt), (o.notes || []).map((n) => n.index));
     }
-  } catch { saved = blank(); }
+    const st = { nextRefund: 1, attempts: {}, ...o, tree };
+    delete st.leaves;
+    delete st.spent;
+    return st;
+  };
+  let saved = blank();
+  try { saved = loadState(store?.get(skey)) || blank(); } catch { saved = blank(); }
   let view = null; // saved state plus the unconfirmed tail, from the last sync
 
   // Receive boxes watched: box 0 (the public receive address) and the refund boxes of call intents, indices 1 up
@@ -549,8 +564,10 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
     const received = new Map(receipts.map((r) => [r.index, r]));
     const leafAt = new Map();
     const want = [];
+    // Behind a catch-up point whose block came before the tree reached its count, the first read after it starts with leaves the edge holds already.
+    const edge = state.from ? state.from.size : 0, inserts = (t) => !(t.outLeaf[0] === 0n && t.outLeaf[1] === 0n) && t.firstIndex >= edge;
     transacts.forEach((t, i) => {
-      if (t.outLeaf[0] === 0n && t.outLeaf[1] === 0n) return;
+      if (!inserts(t)) return;
       for (let k = 0; k < 2; k++) if (t.outLeaf[k] !== 0n && !received.has(t.firstIndex + k) && t.memo[k].length) want.push([i, k]);
     });
     const found = openNotes(zk, keys, want.map(([i, k]) => ({ memo: transacts[i].memo[k], leaf: transacts[i].outLeaf[k], asset })));
@@ -560,7 +577,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
     const batch = [], track = [];
     for (const [i, t] of transacts.entries()) {
       for (const nf of t.nf) if (nf !== 0n) spent.set(nf.toString(), t.block);
-      if (t.outLeaf[0] === 0n && t.outLeaf[1] === 0n) continue;
+      if (!inserts(t)) continue;
       if (t.firstIndex !== tree.size + batch.length) throw new Error(`evm-pool-wallet: leaf ${t.firstIndex} out of order (have ${tree.size + batch.length})`);
       for (let k = 0; k < 2; k++) {
         const index = t.firstIndex + k;
@@ -588,8 +605,24 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
     // the notes (no balance, spend or merge reads that list): a day's holding reward is for the notes held at a snapshot, and
     // claims open after the day, so a note spent since still has a claim to make.
     const gone = [];
+    const low = track.length ? Math.min(...track) : null, first = state.first === undefined ? undefined : low == null ? state.first : Math.min(state.first ?? low, low);
     for (const [k, n] of notes) if (spent.has(n.nf)) { tree.untrack(n.index); notes.delete(k); gone.push({ ...n, spentBlock: spent.get(n.nf) }); }
-    return { ...state, tree, notes: [...notes.values()].sort((a, b) => a.index - b.index), recentSpent: keepSpent(state, gone) };
+    return { ...state, tree, notes: [...notes.values()].sort((a, b) => a.index - b.index), recentSpent: keepSpent(state, gone), first };
+  }
+
+  // absorb, a slice of transactions at a time with a pause between, so a long read (a first one, or the history behind a point) does not hold the
+  // page for seconds: a receipt goes with the transaction whose leaves it names.
+  const SLICE = 64;
+  async function absorbPaced(state, transacts, receipts) {
+    if (transacts.length <= SLICE) return absorb(state, transacts, receipts);
+    const sliceOf = new Map();
+    transacts.forEach((t, i) => { if (t.outLeaf[0] !== 0n || t.outLeaf[1] !== 0n) for (let k = 0; k < 2; k++) sliceOf.set(t.firstIndex + k, Math.floor(i / SLICE)); });
+    let st = state, t0 = Date.now();
+    for (let i = 0; i < transacts.length; i += SLICE) {
+      st = absorb(st, transacts.slice(i, i + SLICE), receipts.filter((r) => (sliceOf.get(r.index) ?? 0) === i / SLICE));
+      if (Date.now() - t0 > 40) { await sleep(0); t0 = Date.now(); }
+    }
+    return st;
   }
 
   async function logs(address, topics, from, to) {
@@ -647,7 +680,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
       const rs = ours(evs.filter((e) => e.kind === 'received').map((e) => ({ ...e, box: topicOf(e.box) }))).map((e) => ({
         box: e.box, n: BigInt(e.n), index: Number(e.index), value: BigInt(e.value), rho: BigInt(e.rho), fee: BigInt(e.fee), block: e.block, tx: e.tx,
       }));
-      const next = { ...absorb(cand, ts, rs), block: through };
+      const next = { ...(await absorbPaced(cand, ts, rs)), block: through };
       if (next.tree.size !== cand.tree.size) {
         const size = BigInt(await view32('rootSize(bytes32)', ['bytes32'], [next.tree.root]));
         if (size !== BigInt(next.tree.size)) throw new Error('feed leaves do not match the pool');
@@ -662,28 +695,121 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
   // so a caller arriving while one runs waits for it, then reads what came after.
   // `maxAge` (ms): a read that finished that recently stands for this one (a screen that asks every half minute for each of its swaps reads the pool once).
   let reading = Promise.resolve(), healedAt = 0, readAt = 0;
-  function sync(maxAge = 0) {
+  function syncRead(maxAge = 0) {
     if (maxAge > 0 && Date.now() - readAt < maxAge) return reading.catch(() => {}).then(summary);
     const run = reading.catch(() => {}).then(readHealed).then((r) => { readAt = Date.now(); return r; });
     reading = run;
     return run;
   }
+  const sync = (maxAge = 0) => syncRead(maxAge).then(async (r) => {
+    if (partial || !saved.from) return r;
+    await startBackfill();
+    if (saved.from) await syncRead();            // another wallet on the page took the history in place of the point
+    if (saved.from) throw new Error('the older history could not be read just now; try again');
+    return summary();
+  });
   // A node that answered short of the range it was asked (one behind the others) can leave the kept tree missing
   // leaves, so every later read stops at a leaf out of order. The chain's logs alone are then read again from the
-  // start, at most once in ten minutes.
+  // start, at most once in ten minutes. A state begun at a catch-up point is read again at once, and if the first leaf
+  // after the point is still out of order in the chain's own logs, the point named the wrong block: it is passed over.
   async function readHealed() {
     try { return await readNew(); } catch (e) {
       // A gap in the unconfirmed tail alone is a node a block behind, not a tree missing leaves: the next read sees it whole.
-      if (e?.tail || !/ out of order /.test(e?.message || '') || Date.now() - healedAt < 600_000) throw e;
+      const at = saved.from;
+      if (e?.tail || !/ out of order /.test(e?.message || '') || (!at && Date.now() - healedAt < 600_000)) throw e;
       healedAt = Date.now();
       saved = rebuilt(); view = null; readAt = 0; persist();
       const f = feed; feed = false;
-      try { return await readNew(); } finally { feed = f; }
+      try { return await readNew(); }
+      catch (e2) {
+        if (!at || e2?.tail || !/ out of order /.test(e2?.message || '')) throw e2;
+        badPoints.add(at.size);
+        saved = rebuilt(); view = null; persist();
+        return await readNew();
+      } finally { feed = f; }
     }
   }
-  async function readNew() {
+
+  // ── catch-up points ──
+  // A point is the tree's right edge at a leaf count, kept by the registry only if the pool held the root it folds to there. It is checked
+  // again here before it is used (the pool's own word on the root, and its leaf count at the point's block where a node serves that old a
+  // state), and one whose block turns out wrong is passed over for the one before it. → { size, block, root, filled }, or null.
+  const points = !partial ? null : chain.points !== undefined ? chain.points : !isToken && chain.pool.toLowerCase() === ETH_POOL ? CHECKPOINTS : null;
+  const badPoints = new Set();
+  const fold = (size, filled) => { let cur = 0n; for (let l = 0; l < 32; l++) cur = Math.floor(size / 2 ** l) % 2 ? zk.H([filled[l], cur]) : zk.H([cur, zk.zeros[l]]); return cur; };
+  async function readPoint(safe) {
+    if (!points) return null;
+    try {
+      const at = (data, tag = 'latest') => chain.rpc('eth_call', [{ to: points, data }, tag]);
+      const top = await at(calldata('latest()', [], []));
+      let size = typeof top === 'string' && top.length > 2 ? Number(BigInt(top)) : 0;
+      for (let i = 0; size && i < 6; i++) {
+        const r = await at(calldata('pointAt(uint256)', ['uint256'], [BigInt(size)]));
+        if (typeof r !== 'string' || r.length < 2 + 64 * 34) return null;
+        const w = (k) => BigInt('0x' + r.slice(2 + 64 * k, 66 + 64 * k)), block = Number(w(0)), prev = Number(w(1));
+        if (!badPoints.has(size) && size % 2 === 0 && block >= Number(chain.deployBlock ?? 0) && block <= safe) {
+          const filled = Array.from({ length: 32 }, (_, k) => w(2 + k)), root = fold(size, filled);
+          const [held, had] = await Promise.all([
+            view32('rootSize(bytes32)', ['bytes32'], [root]).then((x) => BigInt(x) === BigInt(size), () => false),
+            chain.rpc('eth_call', [{ to: chain.pool, data: calldata('nextIndex()', [], []) }, '0x' + block.toString(16)]).then((x) => BigInt(x), () => null),
+          ]);
+          if (held && (had == null || had <= BigInt(size))) return { size, block, root, filled };
+        }
+        size = prev;
+      }
+    } catch {}
+    return null;
+  }
+  // The history behind a point is read by a second wallet into a state of its own, kept under its own name so a later visit goes on where
+  // this one stopped; once it has read as far as this state, and their trees are the same, it takes this state's place.
+  const bkey = `${skey}:back`, mem = new Map();
+  const backStore = { get: (k) => (k === skey ? (store ? store.get(bkey) : mem.get(bkey)) : store?.get(k)), set: (k, v) => (k === skey ? (store ? store.set(bkey, v) : mem.set(bkey, v)) : store?.set(k, v)) };
+  const dropBack = () => { if (store) store.set(bkey, ''); else mem.delete(bkey); };
+  // Reads the history behind the point as far as the head; → the second state's summary.
+  async function readBack() {
+    if (!saved.from) return summary();
+    const back = makeEvmPoolWallet({ zk, keys, chain, keeper, prove: null, store: backStore, feed, fetchImpl });
+    if (saved.nextRefund > 1) back.watchThrough(saved.nextRefund - 1);
+    return back.sync();
+  }
+  // Takes the second state in place of this one when it has read as far (this one reads to the same block first, if behind it). → true once
+  // this state holds the whole history.
+  function adopt() {
+    if (!saved.from) return Promise.resolve(true);
+    const run = reading.catch(() => {}).then(async () => {
+      if (!saved.from) return true;
+      let b = null;
+      try { b = loadState(backStore.get(skey)); } catch {}
+      if (!b || b.from || b.block < saved.from.block) return false;
+      if (b.block > saved.block) await readNew(b.block);
+      if (!saved.from) return true;
+      if (b.block !== saved.block) return false;
+      if (b.tree.size !== saved.tree.size || b.tree.root !== saved.tree.root) { dropBack(); return false; }
+      saved = { ...b, notes: b.notes.map(withKeys), attempts: { ...b.attempts, ...saved.attempts }, nextRefund: Math.max(b.nextRefund, saved.nextRefund), pointed: saved.from };
+      view = null; readAt = 0; persist(); dropBack();
+      return true;
+    });
+    reading = run;
+    return run;
+  }
+  function startBackfill() {
+    if (!BACKFILLS.has(skey)) {
+      const p = (async () => { for (let i = 0; i < 4; i++) { await readBack(); if (await adopt()) return true; } return false; })().catch(() => false).finally(() => BACKFILLS.delete(skey));
+      BACKFILLS.set(skey, p);
+    }
+    return BACKFILLS.get(skey);
+  }
+
+  async function readNew(until = Infinity) {
+    // Another wallet on this page, or another tab, has taken the whole history in place of a point: go on from that.
+    if (saved.from) { try { const s = loadState(store?.get(skey)); if (s && !s.from && s.block >= saved.from.block) { saved = { ...s, notes: s.notes.map(withKeys), attempts: { ...s.attempts, ...saved.attempts }, nextRefund: Math.max(s.nextRefund, saved.nextRefund) }; view = null; } } catch {} }
     const tip = Number(BigInt(await chain.rpc('eth_blockNumber')));
-    const safe = tip - confirmations;
+    const safe = Math.min(tip - confirmations, until);
+    // Nothing read yet: the newest point the pool vouches for, the history behind it read later.
+    if (saved.block < Number(chain.deployBlock ?? 0) && !saved.tree.size && until === Infinity) {
+      const pt = await readPoint(safe);
+      if (pt) { saved = { ...saved, block: pt.block, tree: zk.incTree({ size: pt.size, root: pt.root.toString(), filled: pt.filled.map(String), tracked: {} }), notes: [], from: { size: pt.size, block: pt.block, root: pt.root.toString() } }; view = null; persist(); }
+    }
     if (keeper && feed && saved.block < safe) await syncFromFeed(safe).catch(() => {});
     const from = saved.block + 1;
     if (from > tip) return summary();
@@ -695,7 +821,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
     const ts = got.filter((l) => of(l, chain.pool, TRANSACT_TOPIC)).map(decodeTransact).sort((a, b) => a.block - b.block || a.firstIndex - b.firstIndex);
     const rs = ours(got.filter((l) => of(l, chain.router, RECEIVED_TOPIC)).map(decodeReceived));
     if (safe >= from) {
-      const next = { ...absorb(saved, ts.filter((t) => t.block <= safe), rs.filter((r) => r.block <= safe)), block: safe };
+      const next = { ...(await absorbPaced(saved, ts.filter((t) => t.block <= safe), rs.filter((r) => r.block <= safe))), block: safe };
       if (next.tree.size !== saved.tree.size) {
         const size = BigInt(await view32('rootSize(bytes32)', ['bytes32'], [next.tree.root]));
         if (size !== BigInt(next.tree.size)) throw new Error('the node\'s logs do not match the pool');
@@ -719,7 +845,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
   const free = () => unspent().filter((n) => !taken(n));
   function summary() {
     const u = unspent();
-    return { balance: u.reduce((a, n) => a + BigInt(n.v), 0n), notes: u.length, leaves: state().tree.size, block: saved.block };
+    return { balance: u.reduce((a, n) => a + BigInt(n.v), 0n), notes: u.length, leaves: state().tree.size, block: saved.block, behind: saved.from ? { size: saved.from.size, block: saved.from.block } : null };
   }
 
   // ── spending ──
@@ -1104,6 +1230,14 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
     connect(s) { signer = s; },
     // Forgets the synced state and rebuilds it from chain logs alone (no feed).
     rescan: () => rescanFromChain(),
+    // Behind a catch-up point: the history before it, read into a second state (readBack), then taken in place of this one (adopt); backfill does both.
+    readBack,
+    adopt,
+    backfill: () => startBackfill(),
+    // Where this key's history can be read from: a catch-up point behind which it holds no leaf, { size, block }, with partial set while the
+    // history behind the point is still unread (so that is not known yet); null for the pool's first block.
+    historyFrom: () => (saved.from ? { size: saved.from.size, block: saved.from.block, partial: true }
+      : saved.pointed && saved.first !== undefined && (saved.first === null || saved.first >= saved.pointed.size) ? { size: saved.pointed.size, block: saved.pointed.block, partial: false } : null),
     // The relayer's quote: priced for a spend that burns `gas` (withdrawAndCall, toV1) when given, else an ordinary one.
     quote: (gas = null) => keeperGet(gas ? `/quote?gas=${gas}` : '/quote'),
     // The receive box at `index` (0 is the private ETH address; later ones are one-time addresses, e.g. per payment

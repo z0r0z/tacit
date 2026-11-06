@@ -791,7 +791,7 @@ try {
     // is routed to the fork.
     const F = {
       ethereum: { id: 1, name: 'Ethereum', key: 'ethereum', other: 8453, row: 1, rpc: process.env.ETH_RPC || 'https://mainnet.gateway.tenderly.co', url: 'https://ethereum-rpc.publicnode.com', hosts: /ethereum-rpc\.publicnode\.com|mainnet\.gateway\.tenderly\.co|eth\.drpc\.org|rpc\.flashbots\.net|1rpc\.io/ },
-      base: { id: 8453, name: 'Base', key: 'base', other: 1, row: 2, rpc: process.env.BASE_RPC || 'https://mainnet.base.org', url: 'https://mainnet.base.org', hosts: /mainnet\.base\.org|base\.drpc\.org/ },
+      base: { id: 8453, name: 'Base', key: 'base', other: 1, row: 2, rpc: process.env.BASE_RPC || 'https://mainnet.base.org', url: 'https://mainnet.base.org', hosts: /mainnet\.base\.org|base-rpc\.publicnode\.com|base\.drpc\.org/ },
       robinhood: { id: 4663, name: 'Robinhood Chain', key: 'robinhood', other: 8453, row: 3, rpc: process.env.RH_RPC || 'https://rpc.mainnet.chain.robinhood.com', url: 'https://rpc.mainnet.chain.robinhood.com', hosts: /rpc\.mainnet\.chain\.robinhood\.com|robinhood\.drpc\.org/ },
     }[process.env.CHAIN || 'base'];
     console.log(`fork (${F.name})`);
@@ -1163,7 +1163,7 @@ try {
     const TX_SIG = '(uint256[2],uint256[2][2],uint256[2],uint256[11],address,int256,address,uint256,bytes,bytes)';
     const transactData = (t) => calldata(`transact${TX_SIG}`, TX_TYPES, [t.pA.map(B), t.pB.map((r) => r.map(B)), t.pC.map(B), t.publicInputs.map(B), t.recipient, BigInt.asUintN(256, B(t.extAmount)), t.relayer, B(t.fee), t.memo0, t.memo1]);
     const USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', POOLU = '0xCAf6BE2e337AEcAB4a4eA183452f78800fD1616D', RELAYER = '0xfA2afbaB631C7Eda7CeA6AE1440605C504E322Ec';
-    const PORT = WEB + 5, ANVIL = `http://127.0.0.1:${PORT}`, hosts = /mainnet\.base\.org|base\.gateway\.tenderly\.co|base\.drpc\.org|base\.rpc\.blxrbdn\.com/;
+    const PORT = WEB + 5, ANVIL = `http://127.0.0.1:${PORT}`, hosts = /mainnet\.base\.org|base-rpc\.publicnode\.com|base\.gateway\.tenderly\.co|base\.drpc\.org|base\.rpc\.blxrbdn\.com/;
     // forked from a node that answers 5,000-block log reads (mainnet.base.org limits them when busy)
     const anvil = spawn('anvil', ['--port', String(PORT), '--fork-url', process.env.BASE_RPC || 'https://base-rpc.publicnode.com', '--chain-id', '8453', '--silent', '--no-rate-limit'], { stdio: 'ignore' });
     process.on('exit', () => anvil.kill('SIGKILL'));
