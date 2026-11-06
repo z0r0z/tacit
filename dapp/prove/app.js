@@ -20,6 +20,7 @@ let blocks = [], ethHead = null, headReadAt = 0, shownTop = null, picked = null,
 const addr = () => cleanAddress($('#addr').value);
 const count = (x) => (Number.isSafeInteger(Number(x)) && Number(x) >= 0 ? Number(x) : null);
 const cleanPool = (p) => (p ? { queued: count(p.queued), leased: count(p.leased), doneToday: count(p.doneToday), minersToday: count(p.minersToday),
+  done24h: count(p.done24h), miners24h: count(p.miners24h),
   top: (p.top || []).map(cleanMiner).filter(Boolean), terms: { pointsPerProof: count(p.terms?.pointsPerProof), proofsPerMinerDay: count(p.terms?.proofsPerMinerDay) } } : null);
 const me = () => addr()?.toLowerCase() || null;
 const cap = () => (points?.enabled && points?.terms && !points.terms.off ? points.terms.capWeiPerPoint : null);
@@ -142,8 +143,10 @@ function paintNet() {
   $('#l-lease').textContent = mining ? 'Salts a second' : 'Proving now';
   $('#n-wait').textContent = mining ? String(salts.live.length) : q == null ? '—' : String(q);
   $('#n-lease').textContent = mining ? (salts.rate ? rateText(salts.rate).replace('/s', '') : '—') : l == null ? '—' : String(l);
-  $('#n-provers').textContent = pool?.minersToday == null ? '—' : String(pool.minersToday);
-  $('#n-done').textContent = pool?.doneToday == null ? '—' : String(pool.doneToday);
+  // The last 24 hours (today's alone would drop to nothing at midnight UTC); today's from an API that does not count them yet.
+  const provers = pool?.miners24h ?? pool?.minersToday, done = pool?.done24h ?? pool?.doneToday;
+  $('#n-provers').textContent = provers == null ? '—' : String(provers);
+  $('#n-done').textContent = done == null ? '—' : String(done);
   const n = Math.min(60, (q || 0) + (l || 0));
   $('#pool').innerHTML = Array.from({ length: n }, (_, k) => `<i class="${k < (l || 0) ? 'on' : ''}" style="--k:${k}"></i>`).join('')
     + ((q || 0) + (l || 0) > n ? `<span>+${(q || 0) + (l || 0) - n}</span>` : '');

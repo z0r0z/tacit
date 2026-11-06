@@ -424,6 +424,7 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
         publicValues: publicValues.toLowerCase(), proof: proof.toLowerCase() }, Math.ceil(cfg.keepMs / 1000));
       const d = dayOf(t), rec = await dayRec(d);
       rec.done++;
+      await bumpHour(t, l.house ? null : l.miner);
       // Who made the note, for the block it lands in (tacit-chain.js), and the newest proofs: a community prover by its address,
       // Tacit's own provers as the house, which earns nothing and is never in the tally.
       const leaf = String(job.expect?.leaf || '').toLowerCase(), secs = Math.max(0, Math.round((t - (l.until - cfg.leaseMs)) / 1000));
@@ -466,13 +467,31 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
     return reply(200, { results: out });
   }
 
-  // For anyone: how much is waiting, and who proved most today. No inputs, no proofs, no clients.
+  // The last 24 hours, so the counts do not drop to nothing at midnight UTC: pp:hour:<n> holds an hour's proofs and who made them
+  // (a community prover by its address; Tacit's own counted, never named).
+  const HOUR_MS = 3_600_000;
+  async function bumpHour(t, miner) {
+    const k = `pp:hour:${Math.floor(t / HOUR_MS)}`, h = await read(k, { done: 0, miners: {} });
+    h.done++;
+    if (miner) h.miners[miner] = (h.miners[miner] || 0) + 1;
+    await write(k, h, 26 * 3600);
+  }
+  async function lastDay(t) {
+    const now = Math.floor(t / HOUR_MS), hours = await Promise.all(Array.from({ length: 24 }, (_, i) => read(`pp:hour:${now - i}`, null)));
+    const miners = new Set();
+    let done = 0;
+    for (const h of hours) if (h) { done += h.done || 0; for (const m of Object.keys(h.miners || {})) miners.add(m); }
+    return { done, miners: miners.size };
+  }
+
+  // For anyone: how much is waiting, who proved most today, and the last 24 hours' proofs and provers. No inputs, no proofs, no clients.
   async function stats() {
     const t = clock(), q = await read(K.queue, []), L = await read(K.leases, {}), rec = await dayRec(dayOf(t));
     const live = Object.values(L).filter((l) => l.until > t).length;
     const miners = Object.entries(rec.miners).filter(([, m]) => m.proofs > 0);
+    const day = await lastDay(t);
     return reply(200, {
-      queued: q.length + Object.keys(L).length - live, leased: live, doneToday: rec.done, minersToday: miners.length,
+      queued: q.length + Object.keys(L).length - live, leased: live, doneToday: rec.done, minersToday: miners.length, done24h: day.done, miners24h: day.miners,
       top: miners.map(([miner, m]) => ({ miner, proofs: m.proofs })).sort((a, b) => b.proofs - a.proofs || (a.miner < b.miner ? -1 : 1)).slice(0, cfg.top),
       terms: { pointsPerProof: cfg.pointsPerProof, proofsPerMinerDay: cfg.proofsPerMinerDay, leaseMs: cfg.leaseMs },
     });

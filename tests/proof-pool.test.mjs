@@ -159,7 +159,7 @@ test('lease: the oldest job first, one lease per address on a client and a few o
   const r2 = await h.pool.lease({ miner: '0x' + '55'.repeat(20), client: 'm5' });
   assert.equal(r2.body.id, b.id);
   assert.equal((await h.pool.results([a.id])).body.results[a.id].status, 'gone');
-  assert.deepEqual({ ...(await h.pool.stats()).body, top: undefined, terms: undefined }, { queued: 1, leased: 1, doneToday: 0, minersToday: 0, top: undefined, terms: undefined });
+  assert.deepEqual({ ...(await h.pool.stats()).body, top: undefined, terms: undefined }, { queued: 1, leased: 1, doneToday: 0, minersToday: 0, done24h: 0, miners24h: 0, top: undefined, terms: undefined });
 });
 
 test('submit: public values that are not the job\'s are refused before the verifier is asked; ones the verifier refuses are refused after; either is a strike and the job goes back', async () => {
@@ -241,7 +241,7 @@ test('points: each passing proof earns its address the day\'s points up to the c
   assert.deepEqual(third.r.body, { ok: true, points: 0 }, 'past the cap: kept, not credited');
   assert.equal((await prove(MINER2, 'm2')).r.body.points, 20);
   const s = (await h.pool.stats()).body;
-  assert.deepEqual({ ...s, terms: undefined }, { queued: 0, leased: 0, doneToday: 4, minersToday: 2, top: [{ miner: MINER, proofs: 3 }, { miner: MINER2, proofs: 1 }], terms: undefined });
+  assert.deepEqual({ ...s, terms: undefined }, { queued: 0, leased: 0, doneToday: 4, minersToday: 2, done24h: 4, miners24h: 2, top: [{ miner: MINER, proofs: 3 }, { miner: MINER2, proofs: 1 }], terms: undefined });
   assert.deepEqual(s.terms, { pointsPerProof: 20, proofsPerMinerDay: 2, leaseMs: PROOF_POOL.leaseMs });
   assert.equal(JSON.stringify(s).includes(jobs[0].stdin.slice(2, 40)), false, 'no inputs');
   let c = (await h.pool.credits(DAY0)).body;
@@ -252,6 +252,10 @@ test('points: each passing proof earns its address the day\'s points up to the c
   assert.equal(c.over, true);
   assert.deepEqual((await h.pool.credits(DAY0 + 1)).body.miners, []);
   assert.equal((await h.pool.stats()).body.doneToday, 0, 'a new day');
+  assert.equal((await h.pool.stats()).body.done24h, 0, 'and a day after, nothing in the last 24 hours either');
+  h.t -= 30 * 60_000; // 00:30 the next day: the proofs were made at 01:00 the day before
+  const s2 = (await h.pool.stats()).body;
+  assert.ok(s2.doneToday === 0 && s2.done24h === 4 && s2.miners24h === 2, `past midnight the day is new, the last 24 hours still hold the proofs (${s2.doneToday} ${s2.done24h})`);
 });
 
 test('a miner hands back a job it cannot prove: it goes back for someone else, counted as a try', async () => {
