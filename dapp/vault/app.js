@@ -420,8 +420,8 @@ function showSide() {
   document.documentElement.dataset.side = s;
   document.querySelectorAll('.via a[data-side]').forEach((a) => { if (a.dataset.side === s) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
   if (s === 'btc') {
-    $('#wallet-chip').hidden = true;
-    btcP ||= import('/vault/btc.js?cb=701756e8').then((m) => m.loadBtc($('#btc'), { batch })).catch((e) => { btcP = null; console.warn('bitcoin side:', e?.message || e); });
+    $('#wallet-chip').hidden = false;                                              // the same wallet posts a lock's bond, so its chip stays
+    btcP ||= import('/vault/btc.js?cb=ba40f53b').then((m) => m.loadBtc($('#btc'), { batch })).catch((e) => { btcP = null; console.warn('bitcoin side:', e?.message || e); });
     return true;
   }
   renderAll();
@@ -441,10 +441,10 @@ document.addEventListener('click', (e) => {
 // The Bitcoin side's own position (vault/mine.js): loaded on the holder's first press, so the side reads nothing more until then
 const pickProvider = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : list[0]?.uuid; };
 let mineP = null;
-$('#btc-mine').addEventListener('click', (e) => {
+$('#btc').addEventListener('click', (e) => {
   if (mineP || !e.target.closest('[data-mine="open"]')) return;
   e.stopImmediatePropagation();
-  mineP = import('/vault/mine.js?cb=3b0cd496').then((m) => { m.mountMine($('#btc-mine'), { pick: pickProvider, wallet, W, connect: connectWallet }); $('#btc-mine [data-mine="open"]')?.click(); })
+  mineP = import('/vault/mine.js?cb=f3e9831a').then((m) => { m.mountMine($('#btc-mine'), { ticket: $('#btc-tk'), pick: pickProvider, wallet, W, connect: connectWallet }); $('#btc-mine [data-mine="open"]')?.click(); })
     .catch((err) => { mineP = null; console.warn('your position:', err?.message || err); });
 });
 const refresh = () => load().catch((e) => { console.warn('vault read:', e?.message || e); if (!S.loaded) S.failed = true; }).then(() => { renderAll(); pools.read(); });
@@ -472,7 +472,7 @@ document.addEventListener('click', (e) => {
   if (e.target.closest('[data-cancel]')) { run('cancel'); return; }
   const m = e.target.closest('[data-mine]');
   // (the Bitcoin panel re-draws its buttons as it handles a press, so by now the one pressed is out of the page: the path the press took says where it was)
-  if (m && !e.composedPath().some((n) => n.id === 'btc-mine')) { e.preventDefault(); const p = params(); p.delete('a'); history.replaceState(null, '', location.pathname + (p.toString() ? `#${p}` : '')); S.view = null; refresh(); }
+  if (m && !e.composedPath().some((n) => n.id === 'btc')) { e.preventDefault(); const p = params(); p.delete('a'); history.replaceState(null, '', location.pathname + (p.toString() ? `#${p}` : '')); S.view = null; refresh(); }
 });
 addEventListener('hashchange', () => { if (onBtc()) { showSide(); return; } readHash(); if (!showSide()) refresh(); });
 document.addEventListener('visibilitychange', () => { if (!document.hidden && !S.busy && side === 'tac') refresh(); });

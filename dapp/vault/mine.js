@@ -34,7 +34,7 @@ const mk = (id) => `<svg class="tk xs inl" aria-hidden="true"><use href="#tk-${i
 // a note, by what it is and not by where it sits in a list that a read can reorder
 const noteId = (x) => String(x.leaf || x.nullifier || `${x.cx}:${x.cy}`).toLowerCase();
 
-export function mountMine(root, { pick, wallet = null, W = null, connect = null } = {}) {
+export function mountMine(root, { ticket = null, pick, wallet = null, W = null, connect = null } = {}) {
   let D = null, seq = 0, histP = null, runner = null;
   let lockedWhy = '';                                                                  // why the key was locked, when the wallet that opened it moved
   const key = makeKeySession({ moved: (why) => { lockedWhy = why || ''; forget(); } });
@@ -226,87 +226,111 @@ export function mountMine(root, { pick, wallet = null, W = null, connect = null 
     if (h.ratio == null) return '';
     return `Collateral ratio <b class="${h.level}">${esc(String(Math.round(h.ratio)))}%</b>${h.liqAt ? `; liquidated below $${esc(Math.round(h.liqAt).toLocaleString('en-US'))} a bitcoin` : ''}.${h.level === 'err' ? ` That is under the ${esc(String(e.ratio))}% floor: borrow less.` : ''}`;
   }
-  function updateHealth() { const el = root.querySelector('#bm-health'); if (el && D?.form) el.innerHTML = healthHtml(chosenNote(), D.form.amt); }
+  const tk = (id) => `<svg class="tk" aria-hidden="true"><use href="#tk-${id}"/></svg>`;
+  const off = () => (D.busy ? ' disabled' : '');
+  function updateHealth() { const el = ticket.querySelector('#bm-health'); if (el && D?.form) el.innerHTML = healthHtml(chosenNote(), D.form.amt); }
+  // Borrow: a cBTC note, the cUSD against it (the safer ratios a press away), how the loan would stand, the button.
   function form() {
     const notes = D.held?.cbtc.list || [];
-    if (!notes.length) return '';
+    if (!notes.length) return `<p class="empty">No cBTC to borrow against yet. Lock BTC, then mint cBTC from the lock under Your loans.</p><button class="btn ghost" type="button" data-mine="tab" data-t="lock">Lock BTC</button>`;
     const f = D.form, n = chosenNote(), e = D.engine, sats = n ? big(n.value) : 0n;
     const max = e?.ratio && e?.usdBtc && n ? borrowAt({ sats, usdBtc: e.usdBtc, pct: e.ratio }) : 0;
     const chips = e?.usdBtc && n ? SAFE_RATIOS.map((r) => [r, borrowAt({ sats, usdBtc: e.usdBtc, pct: r })]).filter(([, v]) => v > 0) : [];
     const half = max ? String(Math.floor(max / 2 * 100) / 100) : '0.00';
     return `<div class="bm-form">
-      <div class="kv"><span>Put up</span><b><select id="bm-note" aria-label="cBTC note to put up"${D.busy ? ' disabled' : ''}>${notes.map((x) => `<option value="${esc(noteId(x))}"${x === n ? ' selected' : ''}>${esc(btcTxt(x.value))} cBTC</option>`).join('')}</select></b></div>
-      <div class="kv"><span>Borrow</span><b><input id="bm-amt" inputmode="decimal" placeholder="${esc(half)}" autocomplete="off" aria-label="cUSD to borrow" value="${esc(f.amt || '')}"${D.busy ? ' disabled' : ''}> cUSD</b></div>
-      ${chips.length ? `<div class="seg sub bm-chips" role="group" aria-label="Collateral ratio">${chips.map(([r, v]) => `<button type="button" data-mine="ratio" data-v="${v}" aria-label="Borrow ${v} cUSD, a ${r}% collateral ratio"${D.busy ? ' disabled' : ''}>${r}%</button>`).join('')}</div>` : ''}
-      <p class="note bm-health" id="bm-health">${healthHtml(n, f.amt)}</p>
-      ${max ? `<p class="note">Up to about ${esc(grp(max, max >= 100 ? 0 : 2))} cUSD at the ${esc(String(e.ratio))}% floor.${e.liq ? ` A loan can be liquidated below ${esc(String(e.liq))}%.` : ''}</p>` : ''}
-      <button class="btn" type="button" data-mine="borrow"${D.busy ? ' disabled' : ''}>${D.busy === 'borrow' ? 'Borrowing…' : 'Borrow cUSD'}</button>
+      <div class="lbl"><span>cBTC to put up</span></div>
+      <div class="sel">${tk('cbtc')}<select id="bm-note" aria-label="cBTC note to put up"${off()}>${notes.map((x) => `<option value="${esc(noteId(x))}"${x === n ? ' selected' : ''}>${esc(btcTxt(x.value))} cBTC</option>`).join('')}</select></div>
+      <div class="lbl"><span>cUSD to borrow</span></div>
+      <div class="amt"><input id="bm-amt" inputmode="decimal" placeholder="${esc(half)}" autocomplete="off" aria-label="cUSD to borrow" value="${esc(f.amt || '')}"${off()}><span class="u">${tk('cusd')}cUSD</span></div>
+      ${chips.length ? `<div class="chips bm-chips" role="group" aria-label="Collateral ratio">${chips.map(([r, v]) => `<button type="button" data-mine="ratio" data-v="${v}" aria-label="Borrow ${v} cUSD, a ${r}% collateral ratio"${off()}>${r}%</button>`).join('')}</div>` : ''}
+      <p class="hint bm-health" id="bm-health">${healthHtml(n, f.amt)}</p>
+      ${max ? `<p class="hint">Up to about ${esc(grp(max, max >= 100 ? 0 : 2))} cUSD at the ${esc(String(e.ratio))}% floor.${e.liq ? ` A loan can be liquidated below ${esc(String(e.liq))}%.` : ''}</p>` : ''}
+      <button class="btn" type="button" data-mine="borrow"${off()}>${D.busy === 'borrow' ? 'Borrowing…' : 'Borrow cUSD'}</button>
     </div>`;
   }
 
+  // Lock: the key's deposit address, what it holds, the BTC to lock (all of it, less the fees, a press away), the button.
   function lockForm() {
     const d = D.dep;
-    if (!d) return D.errs?.dep ? `<p class="note err">Could not read your deposit address: ${esc(D.errs.dep)}</p>` : '';
-    return `<details class="bm-lock"${d.sats + d.pending > 0n || D.form.lock ? ' open' : ''}><summary>Lock BTC</summary>
-      <div class="kv"><span>Deposit address</span><b class="mono">${esc(short(d.addr, 8))} <button class="linkbtn" type="button" data-mine="copy" data-copy="${esc(d.addr)}">copy</button></b></div>
-      <div class="kv"><span>It holds</span><b class="num">${esc(btcTxt(d.sats))} BTC${d.pending > 0n ? `<small>${esc(btcTxt(d.pending))} on its way</small>` : ''}</b></div>
-      <div class="kv"><span>Lock</span><b><input id="bm-lock" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="BTC to lock" value="${esc(D.form.lock || '')}"${D.busy ? ' disabled' : ''}> BTC</b></div>
-      <p class="note">Send BTC to it from any wallet, then lock it, keeping about ${esc(btcTxt(d.pad))} BTC for fees. <a href="/#lock">Send from a wallet in this browser →</a></p>
-      <button class="btn ghost" type="button" data-mine="lockbtc"${D.busy ? ' disabled' : ''}>${D.busy === 'lockbtc' ? 'Locking…' : 'Lock BTC'}</button>
-    </details>`;
+    if (!d) return D.errs?.dep ? `<p class="hint err">Could not read your deposit address: ${esc(D.errs.dep)}</p>` : '<p class="empty">Reading your deposit address…</p>';
+    const most = d.sats > d.pad ? d.sats - d.pad : 0n;
+    return `<div class="bm-lock">
+      <div class="lbl"><span>Your deposit address</span><button class="linkbtn" type="button" data-mine="copy" data-copy="${esc(d.addr)}">Copy</button></div>
+      <div class="bm-addr"><code>${esc(d.addr)}</code></div>
+      <div class="lbl"><span>BTC to lock</span>${most >= 10000n ? `<button class="linkbtn" type="button" data-mine="lockmax" data-v="${esc(btcTxt(most))}"${off()}>Up to ${esc(btcTxt(most))} · Max</button>` : ''}</div>
+      <div class="amt"><input id="bm-lock" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="BTC to lock" value="${esc(D.form.lock || '')}"${off()}><span class="u">${tk('btc')}BTC</span></div>
+      <div class="rows">
+        <div class="kv"><span>At the address</span><b class="num">${esc(btcTxt(d.sats))} BTC${d.pending > 0n ? `<small>${esc(btcTxt(d.pending))} on its way</small>` : ''}</b></div>
+        <div class="kv"><span>Kept for fees</span><b class="num">about ${esc(btcTxt(d.pad))} BTC</b></div>
+      </div>
+      <p class="hint">Send BTC to the address from any wallet, then lock it. <a href="/#lock">Send from a wallet in this browser →</a></p>
+      <button class="btn" type="button" data-mine="lockbtc"${off()}>${D.busy === 'lockbtc' ? 'Locking…' : 'Lock BTC'}</button>
+    </div>`;
   }
 
+  const OPEN = (label) => `<button class="linkbtn" type="button" data-mine="open">${label}</button>`;
   function paint() {
-    let h;
-    if (!key.unlocked) h = `${lockedWhy ? `<p class="note err">${esc(lockedWhy)}</p>` : ''}<p class="note">Your locks, loans and cBTC.</p><button class="btn ghost" type="button" data-mine="open">Show mine</button>`;
-    else if (!D || D.loading) h = '<p class="note">Reading your locks and loans…</p>';
-    else if (D.err) h = `<p class="note err">${esc(D.err)} <button class="linkbtn" type="button" data-mine="again">Try again</button></p>`;
+    let h, t;
+    if (!key.unlocked) {
+      h = `${lockedWhy ? `<p class="hint err">${esc(lockedWhy)}</p>` : ''}<p class="empty">${OPEN('Open your Tacit wallet')} to see your locks, loans and cBTC.</p>`;
+      t = '<p class="empty">Lock BTC at your own address, mint cBTC one to one, then borrow cUSD against it.</p><button class="btn" type="button" data-mine="open">Open your Tacit wallet</button>';
+    } else if (!D || D.loading) { h = '<p class="empty">Reading your locks and loans…</p>'; t = '<p class="empty">Reading your cBTC and deposit address…</p>'; }
+    else if (D.err) { h = `<p class="hint err">${esc(D.err)} <button class="linkbtn" type="button" data-mine="again">Try again</button></p>`; t = '<p class="empty">Your locks and loans could not be read.</p><button class="btn ghost" type="button" data-mine="again">Try again</button>'; }
     else {
       const rows = [], { held, locks, loans, errs } = D;
       if (held) {
         rows.push(`<div class="kv"><span>${mk('cbtc')}cBTC, private</span><b class="num">${esc(btcTxt(held.cbtc.value))}</b></div>`);
         if (held.cusd.value > 0n) rows.push(`<div class="kv"><span>${mk('cusd')}cUSD, private</span><b class="num">${esc(cusdTxt(held.cusd.value))}</b></div>`);
-      } else rows.push(`<p class="note err">Could not read your balance: ${esc(errs.held)}</p>`);
+      } else rows.push(`<p class="hint err">Could not read your balance: ${esc(errs.held)}</p>`);
       if (loans) loans.forEach((l, i) => {
         const e = D.engine, hh = e?.usdBtc ? loanHealth({ sats: l.cbtc, debt: l.debt, usdBtc: e.usdBtc, floor: e.ratio, liq: e.liq }) : null;
-        rows.push(`<div class="kv"><span>${mk('cusd')}Loan</span><b class="num">${esc(cusdTxt(l.debt))} cUSD<small>against ${esc(btcTxt(l.cbtc))} cBTC · <button class="linkbtn" type="button" data-mine="repay" data-i="${i}"${D.busy ? ' disabled' : ''}>${D.busy === `repay:${i}` ? 'Repaying…' : 'Repay'}</button></small>${hh?.ratio != null ? `<small class="bm-health">Collateral ratio <b class="${hh.level}">${esc(String(Math.round(hh.ratio)))}%</b>${hh.liqAt ? ` · liquidated below $${esc(Math.round(hh.liqAt).toLocaleString('en-US'))} a bitcoin` : ''}</small>` : ''}</b></div>`);
+        rows.push(`<div class="kv"><span>${mk('cusd')}Loan</span><b class="num">${esc(cusdTxt(l.debt))} cUSD<small>against ${esc(btcTxt(l.cbtc))} cBTC · <button class="linkbtn" type="button" data-mine="repay" data-i="${i}"${off()}>${D.busy === `repay:${i}` ? 'Repaying…' : 'Repay'}</button></small>${hh?.ratio != null ? `<small class="bm-health">Collateral ratio <b class="${hh.level}">${esc(String(Math.round(hh.ratio)))}%</b>${hh.liqAt ? ` · liquidated below $${esc(Math.round(hh.liqAt).toLocaleString('en-US'))} a bitcoin` : ''}</small>` : ''}</b></div>`);
       });
-      else rows.push(`<p class="note err">Could not read your loans: ${esc(errs.loans)}</p>`);
+      else rows.push(`<p class="hint err">Could not read your loans: ${esc(errs.loans)}</p>`);
       if (locks) locks.forEach((l, i) => {
         const step = lockStep(l), [a, what] = NEXT[step] || [], busy = D.busy === `${what}:${i}`;
-        rows.push(`<div class="kv"><span>${mk('btc')}Lock ${esc(short(l.lockTxid, 4))}:${l.lockVout}</span><b class="num">${esc(btcTxt(l.sats))} BTC<small class="${l.minted ? 'ok' : ''}">${a ? `<button class="linkbtn" type="button" data-mine="${what}" data-i="${i}"${D.busy ? ' disabled' : ''}>${busy ? `${a}…` : a}</button>` : esc(step)}</small></b></div>`);
+        rows.push(`<div class="kv"><span>${mk('btc')}Lock ${esc(short(l.lockTxid, 4))}:${l.lockVout}</span><b class="num">${esc(btcTxt(l.sats))} BTC<small class="${l.minted ? 'ok' : ''}">${a ? `<button class="linkbtn" type="button" data-mine="${what}" data-i="${i}"${off()}>${busy ? `${a}…` : a}</button>` : esc(step)}</small></b></div>`);
       });
-      else rows.push(`<p class="note err">Could not read your locks: ${esc(errs.locks)}</p>`);
-      if (locks && loans && !locks.length && !loans.length && !held?.cbtc.list.length) rows.push('<p class="note">No locks or loans yet.</p>');
-      const s = D.said, said = s?.text ? `<p class="note${s.kind === 'ok' ? ' ok' : s.kind ? ' err' : ''}" role="status" id="bm-status">${esc(s.text)}${s.kind === 'front' ? ` ${FRONT}` : ''}</p>` : '<p class="note" role="status" id="bm-status"></p>';
-      h = `<div class="rows flat">${rows.join('')}</div>${form()}${lockForm()}${said}<p class="note"><button class="linkbtn" type="button" data-mine="again"${D.busy ? ' disabled' : ''}>Read again</button> · <button class="linkbtn" type="button" data-mine="lock"${D.busy ? ' disabled' : ''}>Lock your key</button></p>`;
+      else rows.push(`<p class="hint err">Could not read your locks: ${esc(errs.locks)}</p>`);
+      if (locks && loans && !locks.length && !loans.length && !held?.cbtc.list.length) rows.push('<p class="empty">No locks or loans yet.</p>');
+      h = `<div class="rows flat bm-pos">${rows.join('')}</div><p class="note bm-foot"><button class="linkbtn" type="button" data-mine="again"${off()}>Read again</button> · <button class="linkbtn" type="button" data-mine="lock"${off()}>Lock your key</button></p>`;
+      // the ticket opens on Borrow once there is cBTC to put up, on Lock before
+      const tab = D.form.tab || (held?.cbtc.list.length ? 'borrow' : 'lock');
+      const s = D.said, said = `<p class="status${s?.kind === 'ok' ? ' ok' : s?.kind ? ' err' : ''}" role="status" id="bm-status">${s?.text ? `${esc(s.text)}${s.kind === 'front' ? ` ${FRONT}` : ''}` : ''}</p>`;
+      t = `<div class="seg big tabs" role="group" aria-label="What to do">${[['lock', 'Lock BTC'], ['borrow', 'Borrow cUSD']].map(([k, l]) => `<button type="button" data-mine="tab" data-t="${k}" aria-pressed="${k === tab}"${off()}>${l}</button>`).join('')}</div>${tab === 'borrow' ? form() : lockForm()}${said}`;
     }
-    if (root.__h !== h) {
-      // the field being typed in keeps its place through a repaint
-      const at = document.activeElement, id = at && root.contains(at) ? at.id : '', s0 = at?.selectionStart, s1 = at?.selectionEnd;
-      root.__h = h; root.innerHTML = h;
-      const el = id && root.querySelector(`#${CSS.escape(id)}`);
-      if (el) { el.focus({ preventScroll: true }); try { if (s0 != null) el.setSelectionRange(s0, s1); } catch { /* a field with no selection */ } }
-    }
+    put(root, h); put(ticket, t);
+  }
+  function put(el, h) {
+    if (!el || el.__h === h) return;
+    // the field being typed in keeps its place through a repaint
+    const at = document.activeElement, id = at && el.contains(at) ? at.id : '', s0 = at?.selectionStart, s1 = at?.selectionEnd;
+    el.__h = h; el.innerHTML = h;
+    const f = id && el.querySelector(`#${CSS.escape(id)}`);
+    if (f) { f.focus({ preventScroll: true }); try { if (s0 != null) f.setSelectionRange(s0, s1); } catch { /* a field with no selection */ } }
   }
 
-  root.addEventListener('input', (e) => { if (!D?.form) return; if (e.target.id === 'bm-amt') { D.form.amt = e.target.value.trim(); updateHealth(); } if (e.target.id === 'bm-lock') D.form.lock = e.target.value.trim(); });
-  root.addEventListener('change', (e) => { if (D?.form && e.target.id === 'bm-note') { D.form.note = e.target.value; paint(); } });
-  root.addEventListener('click', (e) => {
-    const b = e.target.closest('[data-mine]');
-    if (!b || b.disabled) return;
-    const what = b.dataset.mine;
-    if (what === 'lock') return forget();
-    if (what === 'again') return read();
-    if (what === 'ratio') { D.form.amt = b.dataset.v; const i = root.querySelector('#bm-amt'); if (i) i.value = D.form.amt; updateHealth(); return; }
-    if (what === 'borrow') return act('borrow', borrow);
-    if (what === 'repay') { const i = Number(b.dataset.i); return act(`repay:${i}`, () => repay(i)); }
-    if (what === 'bond') { const i = Number(b.dataset.i); return act(`bond:${i}`, () => bond(i)); }
-    if (what === 'mint') { const i = Number(b.dataset.i); return act(`mint:${i}`, () => mint(i)); }
-    if (what === 'lockbtc') return act('lockbtc', lockBtc);
-    if (what === 'copy') { navigator.clipboard?.writeText(b.dataset.copy).catch(() => {}); b.textContent = 'copied'; return; }
-    signInSheet(key, { pick, why: 'Open your Tacit wallet to see your locks, loans and cBTC. Nothing is stored or sent.' }).then(() => read(), () => {});
-  });
+  for (const el of [root, ticket].filter(Boolean)) {
+    el.addEventListener('input', (e) => { if (!D?.form) return; if (e.target.id === 'bm-amt') { D.form.amt = e.target.value.trim(); updateHealth(); } if (e.target.id === 'bm-lock') D.form.lock = e.target.value.trim(); });
+    el.addEventListener('change', (e) => { if (D?.form && e.target.id === 'bm-note') { D.form.note = e.target.value; paint(); } });
+    el.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-mine]');
+      if (!b || b.disabled) return;
+      const what = b.dataset.mine;
+      if (what === 'lock') return forget();
+      if (what === 'again') return read();
+      if (what === 'tab') { if (D?.form) { D.form.tab = b.dataset.t; paint(); } return; }
+      if (what === 'ratio') { D.form.amt = b.dataset.v; const i = ticket.querySelector('#bm-amt'); if (i) i.value = D.form.amt; updateHealth(); return; }
+      if (what === 'lockmax') { D.form.lock = b.dataset.v; const i = ticket.querySelector('#bm-lock'); if (i) i.value = D.form.lock; return; }
+      if (what === 'borrow') return act('borrow', borrow);
+      if (what === 'repay') { const i = Number(b.dataset.i); return act(`repay:${i}`, () => repay(i)); }
+      if (what === 'bond') { const i = Number(b.dataset.i); return act(`bond:${i}`, () => bond(i)); }
+      if (what === 'mint') { const i = Number(b.dataset.i); return act(`mint:${i}`, () => mint(i)); }
+      if (what === 'lockbtc') return act('lockbtc', lockBtc);
+      if (what === 'copy') { navigator.clipboard?.writeText(b.dataset.copy).catch(() => {}); b.textContent = 'Copied'; return; }
+      signInSheet(key, { pick, why: 'Open your Tacit wallet to see your locks, loans and cBTC. Nothing is stored or sent.' }).then(() => read(), () => {});
+    });
+  }
   key.onChange(() => { if (key.unlocked && D?.pub !== key.key.pubHex) read(); else paint(); });
   paint();
   return { read, forget };

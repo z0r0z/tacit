@@ -53,14 +53,14 @@ const f = Object.fromEntries(btc.figures(e));
 ok(f.out === '4,420.12 cUSD' && f.ratio === '150%' && f.liq === '130%', `figures: ${JSON.stringify(f)}`);
 const none = Object.fromEntries(btc.figures(btc.parseEngine([null, '0x', undefined])));
 ok(none.out === '—' && none.ratio === '—' && none.liq === '—', 'figures: a failed read is a dash');
-ok(btc.engineCalls().every((c) => c.to === btc.ENGINE) && btc.engineCalls().length === 3, 'engineCalls: three reads of the engine');
+ok(btc.engineCalls().every((c) => c.to === btc.ENGINE) && btc.engineCalls().length === 4, 'engineCalls: four reads of the engine');
 {
   const els = {}, el = (k) => (els[k] ||= { textContent: '…' });
   const root = { querySelector: (s) => { const m = /data-bf="(\w+)"/.exec(s); return m ? el(m[1]) : s === '[data-bf-who]' ? el('who') : null; } };
   await btc.loadBtc(root, { batch: async () => { throw new Error('down'); } });
   ok(els.out.textContent === '—' && els.who.textContent === 'could not be read', 'loadBtc: a failed batch leaves dashes and says so');
-  await btc.loadBtc(root, { batch: async (calls) => (calls.length === 3 ? [w(15000), w(13000), w(1e8)] : []) });
-  ok(els.out.textContent === '1.00 cUSD' && els.ratio.textContent === '150%' && els.who.textContent === '', 'loadBtc: fills the rows');
+  await btc.loadBtc(root, { batch: async (calls) => (calls.length === 4 ? [w(15000), w(13000), w(1e8), w(7_600_000_000_000n)] : []) });
+  ok(els.out.textContent === '1.00 cUSD' && els.ratio.textContent === '150%' && els.px.textContent === '$76,000' && els.max.textContent === '50,666 cUSD' && els.who.textContent === '', `loadBtc: fills the rows (${els.px.textContent}, ${els.max.textContent})`);
 }
 
 // ── 3. the page ──
@@ -99,7 +99,7 @@ if (!chromium) {
     for (const h of RPC_HOSTS) await ctx.route(`https://${h}/**`, (r) => {
       const body = JSON.parse(r.request().postData() || '{}'), data = String(body.params?.[0]?.data || '').toLowerCase();
       const cors = { 'access-control-allow-origin': '*' };
-      if (body.method === 'eth_call' && data.includes(ENGINE)) { log.engine++; return r.fulfill({ status: 200, contentType: 'application/json', headers: cors, body: JSON.stringify({ jsonrpc: '2.0', id: body.id, result: agg([15000, 13000, 442_012_345_678n]) }) }); }
+      if (body.method === 'eth_call' && data.includes(ENGINE)) { log.engine++; return r.fulfill({ status: 200, contentType: 'application/json', headers: cors, body: JSON.stringify({ jsonrpc: '2.0', id: body.id, result: agg([15000, 13000, 442_012_345_678n, 7_600_000_000_000n]) }) }); }
       if (VAULTS.some((v) => data.includes(v) || String(body.params?.[0]?.to || '').toLowerCase().includes(v))) log.vault++; else log.other++;
       return r.fulfill({ status: 200, contentType: 'application/json', headers: cors, body: JSON.stringify({ jsonrpc: '2.0', id: body.id, error: { code: -32000, message: 'not in this test' } }) });
     });
@@ -130,8 +130,8 @@ if (!chromium) {
       await page.waitForFunction(() => document.querySelector('[data-bf="out"]')?.textContent !== '…', null, { timeout: 15000 }).catch(() => {});
       ok((await page.textContent('[data-bf="out"]')) === '4,420.12 cUSD' && (await page.textContent('[data-bf="ratio"]')) === '150%' && (await page.textContent('[data-bf="liq"]')) === '130%', 'the board shows the engine’s figures');
       ok((await h1(page)) === 'Borrow against Bitcoin' && (await current(page)) === 'btc', 'h1 and aria-current are on Bitcoin');
-      ok(await shown(page, '.s-btc.sub') && !(await shown(page, '#app')) && !(await shown(page, '#how')) && !(await shown(page, '#wallet-chip')), 'the TAC side, its how-to and the wallet chip are hidden');
-      ok(!!(await page.$('#btc-mine [data-mine="open"]')) && (await page.getAttribute('#btc a[href="/cbtc/"]', 'href')) === '/cbtc/' && !(await page.$('#btc a[href^="/#"]')), 'the side\'s own panel does the borrowing (Show mine), with the cBTC market a link and none back to the front page');
+      ok(await shown(page, '.s-btc.sub') && !(await shown(page, '#app')) && !(await shown(page, '#how')) && await shown(page, '#wallet-chip'), 'the TAC side and its how-to are hidden; the wallet chip stays (it posts a lock\'s bond)');
+      ok(!!(await page.$('#btc-mine [data-mine="open"]')) && (await page.getAttribute('#btc a[href="/cbtc/"]', 'href')) === '/cbtc/' && !(await page.$('#btc a[href^="/#"]')), 'the side\'s own panels do the borrowing (Open your Tacit wallet), with the cBTC market a link and none back to the front page');
       await page.waitForTimeout(1500);
       ok(log.vault === 0 && log.engine === 1, `the Bitcoin side reads the engine once and no vault (engine ${log.engine}, vault ${log.vault}, other ${log.other})`);
       ok(log.files.some((p) => p === '/vault/btc.js'), 'btc.js is fetched for the Bitcoin side');

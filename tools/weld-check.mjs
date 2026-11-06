@@ -11175,12 +11175,12 @@ await step('vaultborrow', async () => {
     await r.page.waitForSelector('.bsheet.top [data-in="eth"], .bsheet.top [data-in="known"]', { timeout: 60000 });
     await r.page.click('.bsheet.top [data-in="known"], .bsheet.top [data-in="eth"]');
     await r.page.waitForSelector('#bm-note', { timeout: 300000 });
-    ok((await r.page.$$eval('#bm-note option', (o) => o.map((x) => x.textContent))).join() === '0.0002 cBTC' && /Up to about [\d.,]+ cUSD at the \d+% floor/.test(await text(r.page, '#btc-mine')),
-      `vaultborrow: a key holding a cBTC note is offered a loan against it, with the most the floor allows (${(await text(r.page, '#btc-mine .bm-form')).replace(/\s+/g, ' ').slice(0, 120)})`);
+    ok((await r.page.$$eval('#bm-note option', (o) => o.map((x) => x.textContent))).join() === '0.0002 cBTC' && /Up to about [\d.,]+ cUSD at the \d+% floor/.test(await text(r.page, '#btc-tk')),
+      `vaultborrow: a key holding a cBTC note is offered a loan against it, with the most the floor allows (${(await text(r.page, '#btc-tk .bm-form')).replace(/\s+/g, ' ').slice(0, 120)})`);
     // safer ratios are offered, and the loan being typed says how it would stand
-    const chips = await r.page.$$eval('#btc-mine .bm-chips button', (b) => b.map((x) => x.textContent));
+    const chips = await r.page.$$eval('#btc-tk .bm-chips button', (b) => b.map((x) => x.textContent));
     ok(chips.join() === '250%,200%,175%', `vaultborrow: the form offers the safer ratios (${chips})`);
-    await r.page.click('#btc-mine .bm-chips button:nth-child(2)');
+    await r.page.click('#btc-tk .bm-chips button:nth-child(2)');
     const filled = Number(await r.page.inputValue('#bm-amt')), health = (await text(r.page, '#bm-health')).replace(/\s+/g, ' ');
     ok(filled > 0 && /Collateral ratio 2\d\d%; liquidated below \$[\d,]+ a bitcoin\./.test(health) && !/borrow less/.test(health), `vaultborrow: choosing 200% fills the amount and says how the loan would stand (${filled} cUSD: ${health})`);
     await r.page.fill('#bm-amt', String(Math.ceil(filled * 4)));
@@ -11190,13 +11190,13 @@ await step('vaultborrow', async () => {
     await r.page.evaluate(() => { window.__vb.refuse = true; });
     const s0 = await store();
     await r.page.fill('#bm-amt', '5');
-    await r.page.click('#btc-mine [data-mine="borrow"]');
+    await r.page.click('#btc-tk [data-mine="borrow"]');
     await until(r.page, () => /can’t take this one/.test(document.querySelector('#bm-status')?.textContent || ''), null, 240000);
     ok((await r.page.getAttribute('#bm-status a', 'href')) === '/#borrow' && (await store()) === s0, `vaultborrow: a loan the relay refuses says so, remembers nothing, and points to the front page (${await said()})`);
     await r.page.evaluate(() => { window.__vb.refuse = false; });
     // borrowed
     await r.page.fill('#bm-amt', '5');
-    await r.page.click('#btc-mine [data-mine="borrow"]');
+    await r.page.click('#btc-tk [data-mine="borrow"]');
     await until(r.page, () => /Borrowed 5 cUSD/.test(document.querySelector('#bm-status')?.textContent || ''), null, 240000);
     const open = (await vb()).calls.filter((c) => c.kind === 'open').at(-1);
     ok(open && open.self === 'undefined' && open.debt === '500000000' && open.coll === '20000' && /^0x[0-9a-f]{64}$/.test(open.owner), `vaultborrow: the loan is relayed against the whole note (${JSON.stringify(open)})`);
