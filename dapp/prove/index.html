@@ -21,9 +21,9 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /prove/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/prove/app.js?cb=b4a75dd2">
+<link rel="modulepreload" href="/prove/app.js?cb=5b8cbf02">
 <link rel="modulepreload" href="/community-prove.js?cb=55393eb1">
-<link rel="modulepreload" href="/prove/view.js?cb=0279ad9a">
+<link rel="modulepreload" href="/prove/view.js?cb=a0f0c54d">
 <link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="/prove/chain.js?cb=8a988a34">
@@ -221,6 +221,18 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(260%); } }
 .forge p { margin: 8px 0 0; font-size: 12.5px; color: var(--mute); }
 pre.cmd { margin: 16px 0 0; padding: 12px 14px; background: var(--field); border: 1px solid var(--hair-2); font: 12.5px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+/* The setup line's kind of computer; Windows adds installing Ubuntu first (#setup[data-os], set by app.js). */
+.os { display: inline-flex; margin: 16px 0 0; border: 1px solid var(--hair-2); }
+.os button { min-height: 36px; padding: 6px 14px; background: none; border: 0; cursor: pointer; color: var(--mute); font: 500 12.5px/1 var(--mono); }
+.os button[aria-pressed="true"] { background: var(--ink); color: var(--card); }
+.os .beta { margin-left: 4px; font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--orange); }
+#setup .wsl { display: none; }
+#setup[data-os="win"][data-first] .wsl { display: block; }
+.step { display: flex; align-items: baseline; gap: 10px; margin: 16px 0 0; font-size: 13px; }
+.step b { flex: none; display: inline-grid; place-items: center; width: 20px; height: 20px; border: 1px solid var(--hair-2); border-radius: 50%; font: 500 11px/1 var(--mono); }
+.pair { display: flex; gap: 8px; margin-top: 12px; }
+.pair pre.cmd { flex: 1; margin: 0; }
+.pair .btn.ghost { flex: none; width: 88px; min-height: 0; padding: 0; }
 
 /* the node's jobs: Prove, Relay, Bitcoin */
 .tabs { display: flex; gap: 4px; margin: 28px 0 0; border-bottom: 1px solid var(--hair); }
@@ -536,7 +548,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
     <div class="tab" id="t-prove" role="tabpanel" aria-labelledby="tb-prove">
     <div class="cols">
       <section class="panel" id="phone" hidden>
-        <p class="empty">Proving needs a computer: a Mac with Apple silicon, or Linux. Open this page there.</p>
+        <p class="empty">Proving needs a computer: a Mac with Apple silicon, Linux, or Windows. Open this page there.</p>
       </section>
 
       <section class="panel" id="desk" aria-live="polite">
@@ -546,10 +558,18 @@ footer.sf svg.fill { width: 16px; height: 16px; }
         <div class="forge" id="forge" hidden><ol><li></li><li></li><li></li><li></li></ol><p class="num" id="stage"></p></div>
         <button class="btn" id="go" type="button" hidden></button>
         <div id="setup" hidden>
+          <div class="os" role="group" aria-label="This computer">
+            <button type="button" data-os="unix" aria-pressed="true">Mac or Linux</button>
+            <button type="button" data-os="win" aria-pressed="false">Windows <span class="beta">beta</span></button>
+          </div>
+          <div class="wsl">
+            <p class="step"><b>1</b>Install Ubuntu: in PowerShell as administrator, then restart.</p>
+            <div class="pair"><pre class="cmd"><code>wsl --install</code></pre><button class="btn ghost" id="wsl-copy" type="button">Copy</button></div>
+            <p class="step"><b>2</b>Open Ubuntu from the Start menu and paste this.</p>
+          </div>
           <pre class="cmd"><code id="cmd"></code></pre>
           <button class="btn" id="copy" type="button">Copy, then paste in Terminal</button>
-          <p class="hint">Once per computer. A Mac with Apple silicon, or Linux.</p>
-          <p class="hint">Windows: paste it into Ubuntu on WSL 2 and leave that window open. Not yet tried on a Windows PC.</p>
+          <p class="hint" id="setup-hint">Once per computer. A Mac with Apple silicon, or Linux.</p>
         </div>
         <p class="status" id="say"></p>
         <div class="rows num">
@@ -700,6 +720,6 @@ node tools/community-runner.mjs mirror   # no key: keeps the board public on Nos
 
 <div id="toast-container" class="toasts" popover="manual"></div>
 
-<script type="module" src="/prove/app.js?cb=b4a75dd2"></script>
+<script type="module" src="/prove/app.js?cb=5b8cbf02"></script>
 </body>
 </html>

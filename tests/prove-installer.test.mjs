@@ -329,7 +329,7 @@ test('in WSL with systemd on it installs the service, checks that Windows reache
   assert.ok(!existsSync(join(w.home, '.tacit-prover/run.pid')));
   assert.match(r.out, /It starts at login/);
   assert.match(r.out, /sudo loginctl enable-linger/);
-  assert.match(r.out, /WSL stops Ubuntu a few seconds after its last window closes, and tacit-prover with it \(linger and vmIdleTimeout do not change/);
+  assert.match(r.out, /Keep an Ubuntu window open while it proves: WSL stops Ubuntu, and tacit-prover with it, soon after the last one closes\./);
   assert.match(r.out, /%UserProfile%\\\.wslconfig/);
   assert.match(w.read('system.log'), /curl\.exe -fsS --max-time 3 http:\/\/127\.0\.0\.1:\d+\/health/);
 

@@ -1,6 +1,6 @@
 // The proving page (dapp/prove/) in a real browser under its content-security policy, with the computer's tacit-prover and the pool and
 // points services stood in by routes: nothing set up (the setup line, with the address), an older prover (the setup line again), paused,
-// started from the button (the POST it sends), proving with a bar and the time left, paused mid-proof, and a phone.
+// started from the button (the POST it sends), proving with a bar and the time left, paused mid-proof, a Windows PC, and a phone.
 //   PLAYWRIGHT=<path to playwright-core> node tests/prove-page.mjs        (Node 22; SHOTS=<dir> saves screenshots)
 
 import { createServer } from 'node:http';
@@ -35,12 +35,14 @@ let fails = 0;
 const check = (ok, what, got = '') => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${what}${ok ? '' : ` (${got})`}`); if (!ok) fails++; };
 
 // The stand-in prover: `local` is what it answers (null: nothing listens), and each POST /mine it was sent.
-async function open(browser, local, { phone = false, idle = false } = {}) {
-  const ctx = await browser.newContext(phone ? { viewport: { width: 390, height: 800 }, userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148' } : { viewport: { width: 1100, height: 900 } });
+const WINDOWS_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+async function open(browser, local, { phone = false, idle = false, ua = null } = {}) {
+  const ctx = await browser.newContext(phone ? { viewport: { width: 390, height: 800 }, userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148' } : { viewport: { width: 1100, height: 900 }, ...(ua ? { userAgent: ua } : {}) });
   const page = await ctx.newPage();
   const errors = [], posts = [];
   page.on('pageerror', (e) => errors.push(e.message));
-  page.on('console', (m) => { if (m.type() === 'error' && !/Failed to load resource|ERR_/.test(m.text())) errors.push(m.text()); });
+  // a public Nostr relay that is down (the Relay tab reads several) is the outside world, not the page
+  page.on('console', (m) => { if (m.type() === 'error' && !/Failed to load resource|ERR_|WebSocket connection to 'wss:\/\//.test(m.text())) errors.push(m.text()); });
   const json = (route, body, status = 200) => route.fulfill({ status, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(body) });
   await page.route('http://127.0.0.1:47815/**', async (route) => {
     const req = route.request(), path = new URL(req.url()).pathname;
@@ -82,6 +84,7 @@ try {
     const { page, ctx, errors } = await open(browser, local);
     await page.waitForFunction(() => document.querySelector('#title').textContent === 'Set up this computer');
     check(await page.locator('#setup').isVisible(), 'not set up: the setup line is shown');
+    check(!(await page.locator('#setup .wsl').isVisible()) && (await text(page, '#copy')) === 'Copy, then paste in Terminal', 'on a Mac, the line alone, pasted in Terminal');
     check(!(await page.locator('#go').isVisible()), 'not set up: no start button');
     await page.fill('#addr', ADDR);
     check((await text(page, '#cmd')).endsWith(ADDR), 'the setup line carries the address', await text(page, '#cmd'));
@@ -157,6 +160,30 @@ try {
     check((await text(page, '#n-wait')) === '2' && (await page.textContent('#l-lease')) === 'Salts a second' && (await text(page, '#n-lease')) === '2.4 M', 'with nothing queued, the nodes grinding salts and how fast', `${await text(page, '#n-wait')} ${await text(page, '#n-lease')}`);
     await page.waitForFunction(() => document.querySelector('#next-o')?.textContent === 'mining salts');
     check(true, 'the next block says the nodes are mining salts meanwhile');
+    await ctx.close();
+  }
+  // a Windows PC: Ubuntu installed first, then the same line pasted in Ubuntu; the switch goes back to Mac or Linux
+  {
+    const { page, ctx, errors } = await open(browser, { v: null }, { ua: WINDOWS_UA });
+    await page.waitForFunction(() => document.querySelector('#title').textContent === 'Set up this computer');
+    check(await page.locator('#setup .wsl').isVisible(), 'Windows: installing Ubuntu comes first');
+    // drawn, not only laid out: no inherited style (such as the reward pop's opacity) hides the steps
+    check(await page.evaluate(() => [...document.querySelectorAll('#setup .wsl, #setup .wsl *')].every((e) => getComputedStyle(e).opacity === '1')), 'and its steps are drawn');
+    check((await page.getAttribute('#setup [data-os="win"]', 'aria-pressed')) === 'true', 'and the switch says Windows');
+    check((await text(page, '#copy')) === 'Copy, then paste in Ubuntu', 'the line is pasted in Ubuntu', await text(page, '#copy'));
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+    await page.click('#wsl-copy');
+    check((await page.evaluate(() => navigator.clipboard.readText())) === 'wsl --install', 'the first step copies wsl --install');
+    await page.fill('#addr', ADDR);
+    await page.click('#copy');
+    check((await page.evaluate(() => navigator.clipboard.readText())).endsWith(ADDR), 'the second copies the setup line for the address');
+    check((await text(page, '#say')).startsWith('Copied. Paste it in Ubuntu'), 'and says where to paste it', await text(page, '#say'));
+    const over = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
+    check(!over, 'no sideways scroll with the Windows steps');
+    await shot(page, 'prove-windows');
+    await page.click('#setup [data-os="unix"]');
+    check(!(await page.locator('#setup .wsl').isVisible()) && (await text(page, '#copy')) === 'Copy, then paste in Terminal', 'the switch goes back to Mac or Linux');
+    check(errors.length === 0, 'no page errors on Windows', errors.join(' | '));
     await ctx.close();
   }
   // an older prover: no GET /mine

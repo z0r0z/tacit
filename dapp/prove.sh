@@ -155,12 +155,11 @@ EOF
 # What WSL does to a program that keeps running, said once after an install there.
 wsl_notes() {
   say ""
-  say "WSL stops Ubuntu a few seconds after its last window closes, and tacit-prover with it (linger and vmIdleTimeout do not change"
-  say "that): keep an Ubuntu window open while it proves. To keep it running without one, add this to %UserProfile%\\.wslconfig on Windows"
-  say "and run wsl --shutdown in PowerShell:"
+  say "Keep an Ubuntu window open while it proves: WSL stops Ubuntu, and tacit-prover with it, soon after the last one closes."
+  say "To prove with none open, put these lines in %UserProfile%\\.wslconfig and run wsl --shutdown in PowerShell:"
   say "  [general]"
   say "  instanceIdleTimeout=-1"
-  say "Reports differ by WSL version, so check: with every Ubuntu window closed, wsl --list --running should still list it."
+  say "If wsl --list --running no longer shows Ubuntu once its windows are closed, keep one open."
 }
 
 # Wei as TAC, four places.

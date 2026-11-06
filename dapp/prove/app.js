@@ -2,7 +2,7 @@
 // and paused from here. The computer's tacit-prover (installed once with the line the page shows) answers on 127.0.0.1; the API's chain
 // (GET /prover/blocks) and proof pool, and the points service, say what the network did and what an address has made and been paid.
 import { cleanAddress, proveCommand, utcDay, mineLines } from '/community-prove.js?cb=55393eb1';
-import { localState, jobView, headline, isPhone } from '/prove/view.js?cb=0279ad9a';
+import { localState, jobView, headline, isPhone, isWindows, setupText } from '/prove/view.js?cb=a0f0c54d';
 import { invaderSvg, gpuSvg } from '/prove/invader.js?cb=e8a5ec59';
 import { short, cells, opsText, tac, rewardWei, ago, took, fresh, blockAgo, kindOf, KINDS, kindText, median, untilDayEnds, cleanBlock, cleanProof, cleanMiner } from '/prove/chain.js?cb=8a988a34';
 
@@ -14,6 +14,8 @@ const get = (url, ms = 6000) => fetch(url, { cache: 'no-store', signal: AbortSig
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
 let health = null, mine = null, pool = null, points = null, tally = null, busy = false, copied = false, salts = null, cross = [];
+// The setup line's kind of computer, from the browser; the switch above the line changes it (setting up another computer).
+let os = isWindows(navigator.userAgent) ? 'win' : 'unix';
 const rateText = (r) => (r >= 1e6 ? `${(r / 1e6).toFixed(1)} M/s` : `${Math.round(r / 1e3)} k/s`);
 let blocks = [], ethHead = null, headReadAt = 0, shownTop = null, picked = null, feed = [], feedTop = 0, lastProved = null;
 
@@ -221,7 +223,14 @@ function paint() {
   go.textContent = h.button || '';
   go.disabled = busy;
   // the setup line also updates a node from before salt mining (its /mine has no `salt`)
-  $('#setup').hidden = state !== 'none' && state !== 'old' && !(mine && !('salt' in mine));
+  const setup = $('#setup'), words = setupText(os);
+  setup.hidden = state !== 'none' && state !== 'old' && !(mine && !('salt' in mine));
+  // Windows' first step (installing Ubuntu) is for a computer with no prover yet; one that has it only updates, in Ubuntu
+  setup.dataset.os = os;
+  setup.toggleAttribute('data-first', state === 'none');
+  for (const b of setup.querySelectorAll('[data-os]')) b.setAttribute('aria-pressed', String(b.dataset.os === os));
+  $('#copy').textContent = words.button;
+  $('#setup-hint').textContent = words.hint;
   $('#cmd').textContent = proveCommand(addr());
   const l = mineLines(pool, points, { tally, address: addr() });
   $('#pays').textContent = l.pays || '—';
@@ -333,7 +342,7 @@ async function readSalts() { const s = await get(`${API}/prover/salt`); if (s) s
 async function copy() {
   const a = addr();
   if (!a) { $('#addr').focus(); say('Enter the address the TAC goes to.', true); return; }
-  try { await navigator.clipboard.writeText(proveCommand(a)); copied = true; paint(); say('Copied. Paste it in Terminal: it takes about a minute, and this page sees it start.'); }
+  try { await navigator.clipboard.writeText(proveCommand(a)); copied = true; paint(); say(setupText(os).copied); }
   catch {
     const sel = getSelection(), range = document.createRange();
     range.selectNodeContents($('#cmd')); sel.removeAllRanges(); sel.addRange(range);
@@ -421,6 +430,10 @@ if (isPhone(navigator.userAgent)) {
   $('#addr').addEventListener('input', addressChanged);
   $('#go').addEventListener('click', toggle);
   $('#copy').addEventListener('click', copy);
+  for (const b of $('#setup').querySelectorAll('[data-os]')) b.addEventListener('click', () => { os = b.dataset.os; say(''); paint(); });
+  $('#wsl-copy').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText('wsl --install'); $('#wsl-copy').textContent = 'Copied'; setTimeout(() => { $('#wsl-copy').textContent = 'Copy'; }, 1500); } catch {}
+  });
   paint();
   // The computer is read every two seconds: it is on this machine.
   loop(async () => { await readLocal(); paint(); }, 2000, 10000);

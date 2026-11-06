@@ -28,11 +28,16 @@ is_addr() { hex=${1#0x}; [ "$1" != "$hex" ] && [ "${#hex}" -eq 40 ] && [ -z "$(p
 is_wsl() { [ -n "${WSL_DISTRO_NAME:-}" ] || grep -qi microsoft "${TACIT_PROC_VERSION:-/proc/version}" 2>/dev/null; }
 
 # SP1's GPU server, which the worker fetches and starts, is linked against libcudart.so.12, the CUDA runtime: it comes with the toolkit, not
-# the driver, and has to be where the loader looks (its cache, or LD_LIBRARY_PATH).
+# the driver, and has to be where the loader looks (its cache, LD_LIBRARY_PATH or its own folders). Where the cache cannot be read, nothing is
+# refused: the server says so itself if the library is missing.
 has_cudart() {
-  { ldconfig -p 2>/dev/null || /sbin/ldconfig -p 2>/dev/null; } | grep -q 'libcudart\.so\.12 ' && return 0
+  cache=$(ldconfig -p 2>/dev/null || /sbin/ldconfig -p 2>/dev/null) || cache=
+  [ -n "$cache" ] || return 0
+  printf '%s\n' "$cache" | grep -q 'libcudart\.so\.12 ' && return 0
   ifs=$IFS; IFS=:
-  for d in ${LD_LIBRARY_PATH:-}; do [ -e "$d/libcudart.so.12" ] && { IFS=$ifs; return 0; }; done
+  for d in ${LD_LIBRARY_PATH:-} /lib /usr/lib /lib64 /usr/lib64 /lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu; do
+    [ -e "$d/libcudart.so.12" ] && { IFS=$ifs; return 0; }
+  done
   IFS=$ifs
   return 1
 }
