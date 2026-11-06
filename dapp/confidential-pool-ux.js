@@ -72,7 +72,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   const memo = indexer._memo;
   const _ownKeys = new Map();
   const guard = makeRecoveryGuard({ memo, openKeyFor: (pub) => _ownKeys.get(String(pub).toLowerCase()) || null });
-  const relay = makeConfidentialRelay({ base: cfg.relayBase, fetchImpl: _fetch, guard, checkEmittedMemos, saveMismatchedMemos });
+  const relay = makeConfidentialRelay({ base: cfg.relayBase, others: cfg.relays || [], fetchImpl: _fetch, guard, checkEmittedMemos, saveMismatchedMemos });
   const SAVED_MEMOS_PREFIX = 'tacit:unrecoverable-memos:';
   function saveMismatchedMemos({ txHash, leaves, memos }) {
     if (typeof localStorage === 'undefined') return;

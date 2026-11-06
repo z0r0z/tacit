@@ -11,10 +11,21 @@ export function relayCanProve(st) {
   return !(st && (st.state === 'paused' || st.state === 'down'));
 }
 
-export function makeConfidentialRelay({ base, fetchImpl, guard, checkEmittedMemos, saveMismatchedMemos } = {}) {
+// `others`: relays besides `base` that run the same API (confidential-deployments.js `relays`). The pool pays a settle's fees to whoever
+// sends it, so any of them can take a job. A new job goes to `base` while it proves and sends, else to the first other one that does;
+// a job taken by another relay carries its address (`<id>@<relay>`), so what follows it (its status, its landing) goes back there.
+export const RELAY_AT = '@';
+export function makeConfidentialRelay({ base, others = [], fetchImpl, guard, checkEmittedMemos, saveMismatchedMemos } = {}) {
   const f = fetchImpl || (typeof fetch !== 'undefined' ? fetch : null);
   if (!f) throw new Error('confidential-relay: no fetch available');
-  const root = (base || '').replace(/\/$/, '');
+  const trim = (b) => String(b || '').replace(/\/$/, '');
+  const root = trim(base);
+  const alts = [...new Set([].concat(others || []).map(trim).filter((b) => /^https:\/\/[^/@]+$/.test(b) && b !== root))];
+  // where a job lives: the relay its id names, or `base`; and the id that relay knows it by
+  const jobRoot = (jobId) => { const s = String(jobId), i = s.lastIndexOf(RELAY_AT); return i > 0 && alts.includes(s.slice(i + 1)) ? s.slice(i + 1) : root; };
+  const bareId = (jobId) => { const s = String(jobId), i = s.lastIndexOf(RELAY_AT); return i > 0 && alts.includes(s.slice(i + 1)) ? s.slice(0, i) : s; };
+  const tagId = (id, at) => (at === root ? id : `${id}${RELAY_AT}${at}`);
+  let pick = root;
 
   const jobTypes = new Map();
   const jobBy = new Map();
@@ -46,14 +57,23 @@ export function makeConfidentialRelay({ base, fetchImpl, guard, checkEmittedMemo
   async function state() {
     if (stateReading) return stateReading;
     if (stateAt && Date.now() - stateAt < 15_000) return stateLast;
-    stateReading = (async () => {
+    const read = async (at) => {
       try {
-        const res = await f(`${root}/confidential/relay`);
+        const res = await f(`${at}/confidential/relay`);
         if (!res.ok) return null;
         const b = JSON.parse(await res.text());
         if (!b || typeof b.state !== 'string') return null;
         return { state: b.state, proving: !!b.proving, settling: !!b.settling, board: !!b.board };
       } catch { return null; }
+    };
+    // `base` while it proves and sends; else the first other relay that does, which new jobs then go to (its state is the one said)
+    const works = (st) => !!st && st.state !== 'paused' && st.state !== 'down' && st.state !== 'held';
+    stateReading = (async () => {
+      const home = await read(root);
+      if (works(home) || !alts.length) { pick = root; return home; }
+      for (const at of alts) { const st = await read(at); if (works(st)) { pick = at; return { ...st, relay: at }; } }
+      pick = root;
+      return home;
     })();
     try {
       stateLast = await stateReading;
@@ -76,9 +96,11 @@ export function makeConfidentialRelay({ base, fetchImpl, guard, checkEmittedMemo
   // `ahead`: a prove-only job asked for before its press, which the API takes only while the prover board is up (it costs no credit)
   async function submitOp({ type, op, leaves = [], outputs = null, ephRand, memos = null, mode, feeAsset = null, lockMemos = null, depositTx = null, exit = null, ahead = false } = {}, waitOpts) {
     const onJob = waitOpts && waitOpts.onJob;
+    if (alts.length) await state();                                   // (which relay takes it, read at most every 15 s)
     const sealedMemos = sealFor({ leaves, outputs, ephRand, memos, lockMemos });
     const bigintSafe = (_, v) => typeof v === 'bigint' ? v.toString() : v;
-    const sealing = sealer && !mode && !depositTx && !exit && !(waitOpts && waitOpts.viaRelay);
+    // (sealed inputs open only on Tacit's prover machine, so one sent to another relay goes as it is)
+    const at = pick, sealing = sealer && at === root && !mode && !depositTx && !exit && !(waitOpts && waitOpts.viaRelay);
     const opKey = sealing ? JSON.stringify({ type, op }, bigintSafe) : null;
     if (opKey && sealedJobs.has(opKey)) {
       const jobId = sealedJobs.get(opKey);
@@ -91,13 +113,14 @@ export function makeConfidentialRelay({ base, fetchImpl, guard, checkEmittedMemo
       sealedJobs.delete(opKey);
     }
     const sealedIn = sealing ? await sealer({ type, op, memos: sealedMemos }) : null;
-    const res = await f(`${root}/confidential/submit`, {
+    const res = await f(`${at}/confidential/submit`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify(sealedIn
         ? { type, mode: 'sealed', sealed: sealedIn, memos: sealedMemos, ...(feeAsset ? { feeAsset } : {}) }
         : { type, op, memos: sealedMemos, ...(mode ? { mode } : {}), ...(feeAsset ? { feeAsset } : {}), ...(depositTx ? { depositTx } : {}), ...(exit ? { exit } : {}), ...(ahead ? { ahead: true } : {}) }, bigintSafe),
     });
     const body = await asJson(res);
+    if (body && body.jobId) body.jobId = tagId(body.jobId, at);
     if (body && body.jobId) {
       if (opKey) sealedJobs.set(opKey, body.jobId);
       jobTypes.set(body.jobId, type);
@@ -151,9 +174,10 @@ export function makeConfidentialRelay({ base, fetchImpl, guard, checkEmittedMemo
 
   async function status(jobId) {
     if (OWN_ID.test(String(jobId))) return ownJobs.get(jobId) || { jobId, status: 'unknown' };
-    const res = await f(`${root}/confidential/status?id=${encodeURIComponent(jobId)}`);
+    const res = await f(`${jobRoot(jobId)}/confidential/status?id=${encodeURIComponent(bareId(jobId))}`);
     if (res.status === 404) return { jobId, status: 'unknown' };
-    return asJson(res);
+    const body = await asJson(res);
+    return body && body.jobId != null ? { ...body, jobId } : body;
   }
 
   async function pollStatus(jobId, state, { wait, intervalMs, maxErrors = 8 } = {}) {
@@ -267,7 +291,7 @@ export function makeConfidentialRelay({ base, fetchImpl, guard, checkEmittedMemo
       return { ok: true, status: 'settled', txHash };
     }
     try {
-      const res = await f(`${root}/confidential/landed`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jobId, txHash }) });
+      const res = await f(`${jobRoot(jobId)}/confidential/landed`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jobId: bareId(jobId), txHash }) });
       const body = await asJson(res);
       if (body && body.status) announce({ jobId, status: body.status, txHash: body.txHash || txHash });
       return body;
@@ -281,12 +305,14 @@ export function makeConfidentialRelay({ base, fetchImpl, guard, checkEmittedMemo
 
   // `exit`: an unwrap's ConfidentialRouter ExitRecipe, which the relay that sends the proof activates once the settle has paid its escrow.
   async function postProof({ type, publicValues, proof, memos = [], exit = null }) {
-    const res = await f(`${root}/confidential/submit`, {
+    if (alts.length) await state();
+    const at = pick;
+    const res = await f(`${at}/confidential/submit`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ type, mode: 'preproven', publicValues, proof, memos, ...(exit ? { exit } : {}) }),
     });
     const body = await asJson(res);
-    if (body && body.jobId) { jobTypes.set(body.jobId, type); announce({ ...body, type }); }
+    if (body && body.jobId) { body.jobId = tagId(body.jobId, at); jobTypes.set(body.jobId, type); announce({ ...body, type }); }
     return body;
   }
 
@@ -330,5 +356,5 @@ export function makeConfidentialRelay({ base, fetchImpl, guard, checkEmittedMemo
     }
   }
 
-  return { submitOp, hold, sealFor, status, state, waitForSettle, settle, waitForProof, prove, provenMemos, verifyEmittedMemos, landed, openJobs, postProof, useProver, ownProving: () => !!ownProver, useSealer, sealing: () => !!sealer };
+  return { relays: () => [root, ...alts], relayNow: () => pick, submitOp, hold, sealFor, status, state, waitForSettle, settle, waitForProof, prove, provenMemos, verifyEmittedMemos, landed, openJobs, postProof, useProver, ownProving: () => !!ownProver, useSealer, sealing: () => !!sealer };
 }

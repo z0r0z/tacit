@@ -221,10 +221,12 @@ export const WAIT_WHY = {
 };
 const RELAY_WHY = { busy: 'busy', held: 'held', paused: 'paused', down: 'down' };
 const within = (ms) => (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(ms) : undefined);
-export function makeRelayState({ api, base = async () => api, uxState = async () => null, onChange = () => {} }) {
+// `others()`: the other relays a job may have gone to (confidential-relay.js): one of theirs carries the relay's address after an '@'.
+export function makeRelayState({ api, base = async () => api, others = async () => [], uxState = async () => null, onChange = () => {} }) {
   const state = { at: 0, why: null, reading: null };
   async function jobStatus(jobId) {
-    const r = await fetch(`${await base()}/confidential/status?id=${encodeURIComponent(jobId)}`, { cache: 'no-store', signal: within(15e3) });
+    const s = String(jobId), i = s.lastIndexOf('@'), at = i > 0 ? s.slice(i + 1) : '', theirs = !!at && (await others()).includes(at);
+    const r = await fetch(`${theirs ? at : await base()}/confidential/status?id=${encodeURIComponent(theirs ? s.slice(0, i) : s)}`, { cache: 'no-store', signal: within(15e3) });
     if (r.status === 404) return { status: 'unknown' };
     if (!r.ok) throw new Error(`relay ${r.status}`);
     return r.json();

@@ -1,8 +1,8 @@
 // The open board: settles the relay has proved and holds for a sender. settle() on the pool is open to every account and pays each fee leg its
 // proof binds to whoever sends it, so any visitor with a wallet can send one: the page reads the board (the API's /confidential/open), tries the
 // settle with eth_call, has the wallet send it, and tells the API it landed. The fee shown is read from the proof's own public values.
-import { makeConfidentialRelay } from '/confidential-relay.js?cb=3c9e04f0';
-import { CONFIDENTIAL_DEPLOYMENTS, shownTicker } from '/confidential-deployments.js?cb=36501936';
+import { makeConfidentialRelay } from '/confidential-relay.js?cb=6cf41a88';
+import { CONFIDENTIAL_DEPLOYMENTS, shownTicker } from '/confidential-deployments.js?cb=0e09d9e4';
 import { pvFees, pvDeadline, settleCalldata, typeWords } from '/relay/abi.js?cb=5078b247';
 import { UserStopped } from '/trade/wallet.js?cb=88b623b8';
 import { rpc, esc, fmtUnits, short } from '/trade/util.js?cb=e8317464';
