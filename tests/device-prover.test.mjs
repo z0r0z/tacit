@@ -8,7 +8,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
-import { makeDeviceProver, DEVICE_TYPES } from '../dapp/device-prover.js';
+import { makeDeviceProver, DEVICE_TYPES, DEVICE_LIVE_TYPES } from '../dapp/device-prover.js';
 import { stdinFor } from '../dapp/sp1-stdin.js';
 
 const VKEY = '0x006cd47fd23937a6d247696cace28c22d2c6a8280447e6ac45a3571de232d6e3';
@@ -36,11 +36,21 @@ test('health trusts only a prover for this pool', async () => {
   assert.equal(await none.health(), null);
 });
 
-test('it takes only ops whose proofs pin no moving state', () => {
+test('by default it takes only ops whose proofs pin no moving state', () => {
   const d = makeDeviceProver({ keccak256: keccak_256, fetchImpl: async () => { throw new Error('unused'); } });
   for (const t of ['wrap', 'transfer', 'unwrap', 'sendunwrap', 'stealthlock', 'stealthclaim', 'farmbond']) assert.ok(d.supports(t) && d.prove.supports(t), t);
   for (const t of ['swap', 'route', 'lp', 'cdpmint', 'bridgemint', 'wrapswap', 'farmharvest']) assert.ok(!d.supports(t), t);
   assert.ok(DEVICE_TYPES.every((t) => d.supports(t)));
+});
+
+test('ops that pin a pool\'s reserves only once allowed, and only those', () => {
+  const d = makeDeviceProver({ keccak256: keccak_256, fetchImpl: async () => { throw new Error('no network in this test'); } });
+  d.allowLive(true);
+  for (const t of DEVICE_LIVE_TYPES) assert.ok(d.supports(t) && d.prove.supports(t), t);
+  for (const t of ['cdpmint', 'bridgemint', 'farmharvest', 'bridgeburn']) assert.ok(!d.supports(t), t);
+  d.allowLive(false);
+  for (const t of DEVICE_LIVE_TYPES) assert.ok(!d.supports(t), t);
+  assert.deepEqual([...DEVICE_LIVE_TYPES].sort(), ['lp', 'lpbond', 'lpremove', 'route', 'swap', 'wraplp', 'wrapswap']);
 });
 
 test('prove sends sp1-stdin.js\'s input and returns the proof as relay.proveOwn reads it', async () => {

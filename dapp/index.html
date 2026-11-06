@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-yevEDH1vnVJcskNPI1y3+KldjWyAX7uSgG98pR6b7tY=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-BpS9Vk8fc+un9Rn0uDjxYsQ5oPGiftFBXpZEET5g8Xc=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -64,7 +64,7 @@
 <link rel="modulepreload" href="/bridge-tick.js?cb=b9adb91d">
 <link rel="modulepreload" href="/tacit-session.js?cb=a2d34bb2">
 <link rel="modulepreload" href="/activity.js?cb=a49f677c">
-<link rel="modulepreload" href="/swap/card.js?cb=9c63f5fa">
+<link rel="modulepreload" href="/swap/card.js?cb=4b976345">
 <link rel="modulepreload" href="/trade/wallet.js?cb=88b623b8">
 <link rel="modulepreload" href="/trade/util.js?cb=e8317464">
 <link rel="modulepreload" href="/trade/rpc.js?cb=f575ef91">
@@ -2944,7 +2944,7 @@ const settleFrom = (t, { label, nest = null, say: tell, finishes = null, already
       if (already && (ALREADY.test(`${e?.data?.data || e?.data || ''} ${e?.message || ''}`) || (x.jobId && (await t.relay.status(x.jobId).catch(() => null))?.status === 'settled'))) {
         return { txHash: null, already: true };
       }
-      if (/29b3c833|PoolReserveMismatch/i.test(`${e?.data?.data || e?.data || ''} ${e?.message || ''}`)) throw Object.assign(new Error('Nothing was sent. The pool moved while it was being proved. Press again for a fresh quote.'), { said: true });
+      if (/29b3c833|PoolReserveMismatch/i.test(`${e?.data?.data || e?.data || ''} ${e?.message || ''}`)) throw Object.assign(new Error('Nothing was sent. The pool moved while it was being proved. Press again for a fresh quote.'), { said: true, moved: true });
       throw Object.assign(new Error(`Nothing was sent: the pool refuses this as it stands. ${revertText(e) || 'If it already went through, your balance shows it.'}`), { said: true });
     }
   }
@@ -3225,7 +3225,7 @@ const devOn = () => !!S.key && store.get(DEV_PREF + S.key.pubHex) === true;
 const ownOn = () => spOn() || devOn();
 const LOCAL = { prover: null, found: null, at: 0, looking: null };
 const DEVICE_GET = 'https://github.com/src-company/tacit/tree/main/contracts/sp1/confidential/device-prover';
-const devMod = lazy(() => import('/device-prover.js?cb=635b9138'));
+const devMod = lazy(() => import('/device-prover.js?cb=2f554eb1'));
 async function devProver({ fresh = false } = {}) {
   if (!fresh && LOCAL.found && Date.now() - LOCAL.at < 60e3) return LOCAL.prover;
   return (LOCAL.looking ||= (async () => {
@@ -3312,6 +3312,8 @@ function spApply() {
 const VIA_RELAY = { viaRelay: true };
 const ownNow = (types) => (devOn() ? [].concat(types).every((x) => DEVICE_TYPES.includes(x)) : spOn() && [].concat(types).every((x) => !SP.prover || SP.prover.supports(x)));
 const DEVICE_TYPES = ['wrap', 'wraptransfer', 'transfer', 'unwrap', 'sendunwrap', 'stealthlock', 'stealthclaim', 'stealthrefund', 'farmbond'];
+// Those that pin a pool's reserves (device-prover.js DEVICE_LIVE_TYPES): proved on this computer only for an action asked of it, again if the pool trades meanwhile.
+const DEVICE_LIVE = ['swap', 'route', 'lp', 'lpremove', 'lpbond', 'wrapswap', 'wraplp'];
 const NO_RELAY_FEE_CREDIT = 'None: proved with your own credit';
 const noRelayFee = () => (devOn() ? 'None: proved on this computer' : NO_RELAY_FEE_CREDIT);
 async function ownCan(types) {
@@ -3443,7 +3445,7 @@ document.addEventListener('click', (e) => {
   });
 });
 // The way to prove an action yourself: on this computer where its prover can (free, and nothing leaves the machine), else with your own PROVE credit.
-const devCan = (spec) => [].concat(spec.types || []).every((x) => DEVICE_TYPES.includes(x));
+const devCan = (spec) => [].concat(spec.types || []).every((x) => DEVICE_TYPES.includes(x) || DEVICE_LIVE.includes(x));
 const proveSelf = (spec, id) => (devCan(spec) && !spOn()
   ? html`<button class="link" type="button" data-prove-dev="${id}">Prove it on this computer</button>, free`
   : html`<button class="link" type="button" data-prove-add="${id}">Prove it yourself</button> with your own PROVE credit`);
@@ -3471,10 +3473,20 @@ async function devOnce(run, spec) {
   const st = spec.status?.(), tell = (v) => { if (st) say(st, v); };
   tell('Looking for the prover on this computer…');
   const d = await devProver({ fresh: true }).catch(() => null);
-  if (!d || ![].concat(spec.types || []).every((x) => d.supports(x))) { tell(html`No prover runs on this computer yet. <a href="/prove/">Set up this computer</a>, then press again.`); return; }
+  d?.allowLive?.(true);
+  if (!d || ![].concat(spec.types || []).every((x) => d.supports(x))) { d?.allowLive?.(false); tell(html`No prover runs on this computer yet. <a href="/prove/">Set up this computer</a>, then press again.`); return; }
   const r = (await getUx()).relay;
   r.useProver?.(d.prove); r.useSealer?.(null);
-  try { await selfDo(run, { ...spec, own: true }); } finally { r.useProver?.(null); spApply(); }
+  // A swap or pool move pins the pool's reserves: if it traded while this computer proved, it is built again at the new price (still at
+  // least the least asked for) and proved again, twice at most.
+  let left = 2;
+  const go = async (y) => {
+    for (;;) {
+      try { return await spec.go(y); }
+      catch (e) { if (!e?.moved || !left--) throw e; tell('The pool traded while this computer proved it, so it is proved again at the new price…'); }
+    }
+  };
+  try { await selfDo(run, { ...spec, own: true, go }); } finally { d.allowLive?.(false); r.useProver?.(null); spApply(); }
 }
 document.addEventListener('click', (e) => {
   const d = e.target.closest?.('[data-prove-dev]'), spec = d && SELFDO[d.dataset.proveDev];
@@ -16715,7 +16727,7 @@ function swcPace(id) {
   if (b) b.dataset.pace = id;
   else q.insertAdjacentHTML('afterend', html`<div class="pace" data-card="1" data-pace="${id}"><div class="actr-bar" role="progressbar" aria-label="How far along" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i style="width:0%"></i></div><span></span></div>`.s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=9c63f5fa').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=4b976345').catch((e) => { SWC.p = null; throw e; }));
 // the card held to the tab's flow; back on the Swap tab it opens on the swap it showed there
 function swcFlow() {
   hxPathPaint();

@@ -384,7 +384,7 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
       // made inside the pool (change, a swap's return, a payment), have amounts nothing on chain names.
       const all = of(eth).notes.filter(free), notes = all.filter((n) => n.source !== 'wrap').sort(byValue).reverse().slice(0, BATCH_MAX);
       if (!notes.length) { if (all.length) throw Object.assign(new Error('Nothing to keep ready yet: your tETH is still the note your deposit made, and staging it whole would show which deposit it was. Swap or send some of it first.'), { said: true }); return 0; }
-      const { makeDeviceProver } = await import('/device-prover.js?cb=635b9138');
+      const { makeDeviceProver } = await import('/device-prover.js?cb=2f554eb1');
       const dev = makeDeviceProver({ keccak256: keccak_256 });
       for (const n of notes) busy.set(lc(n.leaf), Date.now());
       say(notes.length);

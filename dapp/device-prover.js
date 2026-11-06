@@ -11,6 +11,10 @@ import { stdinFor, batchStdin, SELF_PROVE_TYPES } from './sp1-stdin.js';
 export const DEVICE_PROVER_BASE = 'http://127.0.0.1:47815';
 export const DEVICE_TYPES = Object.freeze(['wrap', 'wraptransfer', 'transfer', 'unwrap', 'sendunwrap', 'stealthlock', 'stealthclaim', 'stealthrefund', 'farmbond']
   .filter((t) => SELF_PROVE_TYPES.includes(t)));
+// Ops that pin a pool's reserves: a proof made over minutes holds only while nobody trades in that pool. They are taken only once the
+// page allows them (allowLive), for an action the holder asked this computer to prove, and one that went stale is built and proved again.
+export const DEVICE_LIVE_TYPES = Object.freeze(['swap', 'route', 'lp', 'lpremove', 'lpbond', 'wrapswap', 'wraplp']
+  .filter((t) => SELF_PROVE_TYPES.includes(t)));
 const POOL_VKEY = '0x006cd47fd23937a6d247696cace28c22d2c6a8280447e6ac45a3571de232d6e3';
 
 const hex = (b) => '0x' + Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
@@ -32,7 +36,9 @@ export function makeDeviceProver({ keccak256, base = DEVICE_PROVER_BASE, fetchIm
     } catch { return null; }
   }
 
-  const supports = (type) => DEVICE_TYPES.includes(type);
+  let live = false;
+  const supports = (type) => DEVICE_TYPES.includes(type) || (live && DEVICE_LIVE_TYPES.includes(type));
+  const allowLive = (on) => { live = !!on; };
 
   async function prove({ type, op, memos = [], onUpdate = () => {} }) {
     if (!supports(type)) throw Object.assign(new Error(`this computer's prover does not take ${type}: its proof would go stale while it works`), { code: 'device_prover' });
@@ -71,5 +77,5 @@ export function makeDeviceProver({ keccak256, base = DEVICE_PROVER_BASE, fetchIm
   // A proof asked for before (by its requestId), picked up again after a reload: the prover keeps working on its own.
   const resume = (requestId, { onUpdate = () => {} } = {}) => follow(String(requestId).replace(/^device-/, ''), onUpdate);
 
-  return { health, supports, prove, proveBatch, resume };
+  return { health, supports, allowLive, prove, proveBatch, resume };
 }
