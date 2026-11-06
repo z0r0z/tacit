@@ -178,6 +178,7 @@
 //   selfprove with the switch on, a withdrawal and a swap are proved on the holder's credit (no submit to the relay) and settled from the
 //            wallet, Activity naming its steps; too little credit, a request not taken, an op it cannot prove, and a pool that moved
 //   nohost     every Tacit server refused: the page loads, a key opens, a withdrawal is proved on this computer and settled from the wallet
+//   swaphere   the tile's private swap with the relay paused: offered on this computer, proved there, settled from the wallet
 //   selfdevice the prove sheet's switch for this computer's prover (tacit-prover on 127.0.0.1, answered here): it looks for the prover and turns
 //            the own-credit switch off; a withdrawal proved there and settled from the wallet, nothing to the relay; a swap it does not take
 //            goes to the relay with a note; a proof it could not make offers Try again or the relay
@@ -206,7 +207,7 @@ const DAPP = new URL('../dapp/', import.meta.url).pathname;
 const bwText = (page) => page.evaluate((s) => [...document.querySelectorAll(s)].map((e) => e.textContent).join(' '), '#bw-status, #bw-s1, #bw-s2, #bw-s3, #bw-s4');
 // `ui`: the front page's tile and landing, the steps a look-and-copy pass needs (tools/weld-ui.sh runs them on a pinned, cached fork)
 const UI_STEPS = 'links,swapurl,swapfield,hints,hxbridge,hxfold,hxnudge,tradelinks';
-const ONLY = new Set((process.argv[2] === 'ui' ? UI_STEPS : process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,hxbridgeu,usdtwrap,usdtwrapw,usdtout,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,nohost,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,relayfail,selfwallet,slowline,fastroute').split(','));
+const ONLY = new Set((process.argv[2] === 'ui' ? UI_STEPS : process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,hxbridgeu,usdtwrap,usdtwrapw,usdtout,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,swaphere,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,nohost,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,relayfail,selfwallet,slowline,fastroute').split(','));
 const FORK = process.argv[3] || 'https://mainnet.gateway.tenderly.co';
 const SHOTS = process.env.SHOTS || null;
 const PORT = 20000 + Math.floor(Math.random() * 2000), WEB = PORT + 1;
@@ -11878,6 +11879,94 @@ await step('swapown', async () => {
 // over part of the larger note with the relay's fee bound in, the receipt says the proof is made, and the press posts it for the relay to
 // send, asking no route of the relay. (tests/route-change-fork.mjs runs the posted proof through the real guest and the pool, and shows one
 // posted after its note was spent refused as `notPosted`, which private.js answers by sending the swap the usual way.)
+// The tile's private swap while the relay is not proving: it offers this computer, and pressed, the swap is proved here (the prover on 127.0.0.1,
+// answered here) and sent from the wallet as one router transaction with no relay tip, nothing asked of the relay.
+await step('swaphere', async () => {
+  const hex = '5a1f'.padEnd(64, '6');
+  const r = await openPage({ account: A0, key: K0 });
+  const dev = { up: true, fail: false, slow: 0, asked: [], polls: {} };
+  await r.page.route('http://127.0.0.1:47815/**', (route) => {
+    const q = route.request(), u = new URL(q.url());
+    const cors = { 'access-control-allow-origin': q.headers().origin || '*', 'access-control-allow-private-network': 'true', 'access-control-allow-headers': 'content-type', 'access-control-allow-methods': 'GET, POST' };
+    if (!dev.up) return route.abort('connectionrefused');
+    if (q.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors, body: '' });
+    const json = (b) => route.fulfill({ status: 200, contentType: 'application/json', headers: cors, body: JSON.stringify(b) });
+    if (u.pathname === '/health') return json({ ok: true, vkey: '0x006cd47fd23937a6d247696cace28c22d2c6a8280447e6ac45a3571de232d6e3', busy: false, queued: 0, gpu: 'Apple M2' });
+    if (u.pathname === '/prove') { dev.asked.push(JSON.parse(q.postData() || '{}')); return json({ id: 'w' + dev.asked.length }); }
+    if (u.pathname === '/job') {
+      const id = String(u.searchParams.get('id')), job = dev.asked[Number(id.slice(1)) - 1], op = job?.type === 'wrap' ? wrapOpFromStdin(job.stdin, STUB_CETH) : null;
+      dev.polls[id] = (dev.polls[id] || 0) + 1;
+      if (!dev.fail && dev.polls[id] <= dev.slow) return json({ status: 'proving', secs: 420 + dev.polls[id] * 3, stage: 'wrap', eta: 280 });
+      return json(dev.fail ? { status: 'failed', error: 'the guest rejects this input' } : { status: 'done', secs: 240, publicValues: op ? wrapPv(op) : '0x' + '01'.repeat(32), proof: '0x' + '07'.repeat(32) });
+    }
+    return route.fulfill({ status: 404, headers: cors, body: '{}' });
+  });
+  await r.page.route(/\/confidential-pool-ux\.js\?cb=/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: `
+    import * as real from '/confidential-pool-ux.js?stub=real';
+    export * from '/confidential-pool-ux.js?stub=real';
+    export function makeConfidentialPoolUx(o) {
+      const ux = real.makeConfidentialPoolUx(o), balance = ux.balance;
+      let made = null;
+      ux.balance = async (priv, opts) => {
+        const b = await balance(priv, opts);
+        const hx = typeof priv === 'string' ? priv : '0x' + [...priv].map((x) => x.toString(16).padStart(2, '0')).join('');
+        made ||= [['5', 0], ['6', 1], ['50', 2], ['40', 3]].map(([cents, index]) => {
+          const w = ux.buildWrap({ walletPriv: hx, amountWei: (BigInt(cents) * 10n ** 16n).toString(), ticker: 'cETH', index });
+          return ux.indexer.recover([{ type: 'LeavesInserted', firstLeafIndex: 0, leaves: [w.leaf], memos: [w.memo] }], hx)[0];
+        });
+        b.notes = [...b.notes, ...made];
+        for (const n of made) { const g = b.byAsset[n.asset] ||= { asset: n.asset, value: 0n, notes: [] }; g.value = BigInt(g.value) + BigInt(n.value); g.notes = [...g.notes, n]; }
+        return b;
+      };
+      ux.quoteOpFee = async () => '100000';
+      return ux;
+    }` }));
+  const p = r.page, q = () => text(p, '#hx-swap #q').then((t) => t.replace(/\s+/g, ' '));
+  let restore = null;
+  try {
+    await p.goto(r.url);
+    await p.waitForSelector('#hx-body .hx-h');
+    await pasteKey(p, hex);
+    await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); location.hash = ''; });
+    await p.goto(r.url + '?from=tETH&to=TAC&private=both&amt=0.05');
+    await pasteKey(p, hex);
+    await p.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
+    await p.waitForSelector('#hx-swap #amt', { timeout: 120000 });
+    relayStateNow = 'paused';
+    await sleep(16000);                                                          // the page reads the relay's state at most every 15 seconds
+    await until(p, () => { const b = document.querySelector('#hx-swap #go'); return !!b && !b.disabled && /^Swap/.test(b.textContent || ''); }, null, 600000).catch(() => {});
+    const s0 = submits.length, w0 = walletTxs.length;
+    for (let i = 0; i < 4 && !(await p.$('#hx-swap #pv-here')); i++) {
+      await until(p, () => { const b = document.querySelector('#hx-swap #go'); return !!b && !b.disabled && /^Swap/.test(b.textContent || ''); }, null, 120000).catch(() => {});
+      await p.click('#hx-swap #go');
+      await until(p, () => !!document.querySelector('#hx-swap #pv-here') || /class="err"|Nothing was sent|read again|price moved/.test(document.querySelector('#hx-swap #q')?.innerHTML || ''), null, 60000).catch(() => {});
+    }
+    ok(!!(await p.$('#hx-swap #pv-here')) && /can’t start right now/.test(await q()) && walletTxs.length === w0, `swaphere: with the relay paused, the swap offers this computer and sends nothing (${await q()})`);
+    // paid from the Tacit account, which holds no ETH: said before anything is proved
+    await p.click('#hx-swap #pv-here');
+    await until(p, () => /Add a little ETH there/.test(document.querySelector('#hx-swap #q')?.textContent || ''), null, 60000).catch(() => {});
+    ok(/Add a little ETH there/.test(await q()) && dev.asked.length === 0, `swaphere: a paying account short of the fee is said before anything is proved (${await q()})`);
+    await toWallet(p);
+    await p.waitForSelector('[data-pay="wallet"]');
+    await p.click('[data-pay="wallet"]');
+    await until(p, () => document.querySelector('[data-pay="wallet"]')?.classList.contains('main'));
+    await p.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
+    for (let i = 0; i < 4 && !(await p.$('#hx-swap #pv-here')); i++) {
+      await until(p, () => { const b = document.querySelector('#hx-swap #go'); return !!b && !b.disabled && /^Swap/.test(b.textContent || ''); }, null, 120000).catch(() => {});
+      await p.click('#hx-swap #go');
+      await until(p, () => !!document.querySelector('#hx-swap #pv-here'), null, 60000).catch(() => {});
+    }
+    restore = await stubPoolSettle('ok');
+    await p.click('#hx-swap #pv-here');
+    await until(p, () => /Done\.|class="err"|Nothing was sent/.test(document.querySelector('#hx-swap #q')?.innerHTML || ''), null, 300000).catch(() => {});
+    const sent = walletTxs.slice(w0);
+    const settles = sent.filter((x) => String(x.to).toLowerCase() === POOL_ADDR && x.data.startsWith('0x' + SETTLE_SEL));
+    ok(/Done\./.test(await q()) && dev.asked.some((x) => x.type === 'route') && settles.length === 1 && settles[0].from.toLowerCase() === A0 && submits.length === s0,
+      `swaphere: a swap from the private balance is proved on this computer and settled from the wallet, nothing asked of the relay (${dev.asked.map((x) => x.type)}; settles ${settles.length}; ${(await q()).slice(0, 160)})`);
+    if (r.errors.length) { fails++; console.log('FAIL swaphere page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { relayStateNow = 'ok'; if (restore) await restore(); await r.browser.close(); }
+});
+
 await step('routeahead', async () => {
   const hex = '7d82'.padEnd(64, '5'), acct = makeEvmAccount({ secp, keccak256: keccak_256, sha256 }).deriveEvmAccount(Buffer.from(hex, 'hex'), 'mainnet').address;
   const r = await openFarmKey(hex, { notes: [[FARM_CETH, 25000000n]], fees: { route: 100000 }, swap: true }, undefined, () => rpc('anvil_setBalance', [acct, '0x0']));

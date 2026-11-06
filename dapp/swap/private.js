@@ -49,7 +49,7 @@ const nonce = () => BigInt('0x' + Array.from(crypto.getRandomValues(new Uint8Arr
 // A page that holds a Tacit key of its own (the front page) hands it over instead: `session` (unlocked, key, priv()), `openKey(why)` to ask for it
 // (resolves once it is open), and `wait(label, ms)` for the relay's jobs to go into the page's own Activity journal.
 // `now()` is the time in ms an exit's deadline is counted from: the page passes the chain's, so a device clock that is slow cannot make it past.
-export function makePrivate({ getUx, pick, onKey = () => {}, session = null, openKey = null, wait = null, selfSettle = null, now = Date.now } = {}) {
+export function makePrivate({ getUx, pick, onKey = () => {}, session = null, openKey = null, wait = null, selfSettle = null, here = null, now = Date.now } = {}) {
   const key = session || makeKeySession({ moved: (why) => { lock(); onKey(why); } });
   let held = null, heldP = null, runner = null, opening = null;
   const busy = new Map();                                     // leaf -> when a step that spends it was sent and may still land
@@ -246,7 +246,7 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
     const t = await getUx(), hop = plan.path[0], priv = key.priv();
     say('own');
     const index = await t.nextWrapIndex({ walletPriv: priv, ticker: 'cETH' });
-    try { return await t.proveWrapSwap({ walletPriv: priv, toAsset: hop.assetNext, amountWei: plan.wei, feeBps: hop.feeBps, index, waitOpts: { timeoutMs: 6 * 60e3, intervalMs: 3000 } }); }
+    try { return await t.proveWrapSwap({ walletPriv: priv, toAsset: hop.assetNext, amountWei: plan.wei, feeBps: hop.feeBps, index, waitOpts: { timeoutMs: (HERE ? 40 : 6) * 60e3, intervalMs: 3000 } }); }
     catch (e) { try { t.releaseWrapIndex?.({ walletPriv: priv, ticker: 'cETH', index }); } catch { } throw e; }
   }
   // A wallet that declined: nothing more is asked of it.
@@ -266,14 +266,14 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
     await read(true);
     const has = of(asset).notes.find((n) => BigInt(n.value) === units);
     if (has) return has;
-    const t = await getUx(), fee = BigInt(await t.quoteOpFee(ticker, 'transfer')), need = units + fee, up = [...of(asset).notes].sort(byValue);
+    const t = await getUx(), fee = HERE ? 0n : BigInt(await t.quoteOpFee(ticker, 'transfer')), need = units + fee, up = [...of(asset).notes].sort(byValue);
     let picked = up.filter((n) => BigInt(n.value) >= need).slice(0, 1), sum = picked.length ? BigInt(picked[0].value) : 0n;
     for (const n of picked.length ? [] : [...up].reverse()) { if (sum >= need || picked.length === 16) break; picked.push(n); sum += BigInt(n.value); }
     if (sum < need) throw Object.assign(new Error('short'), { code: 'short', most: sum > fee ? sum - fee : 0n, fee });
     say(picked.length > 1 ? 'combine' : 'split');
     const before = new Set(of(asset).notes.map((n) => lc(n.leaf)));
     const cut = (f) => t.transfer({ walletPriv: key.priv(), notes: picked, recipientPubHex: t.identity(key.priv()).pubHex, amount: units, fee: f, selfSettle: selfFor(t, picked.length > 1 ? 'Combine notes' : 'Split a note'),
-      waitOpts: { ...run().wait(picked.length > 1 ? 'Combine notes' : 'Split a note', 15 * 60e3), intervalMs: 4000, viaRelay: true } });
+      waitOpts: { ...run().wait(picked.length > 1 ? 'Combine notes' : 'Split a note', 15 * 60e3), intervalMs: 4000, ...relayOnly() } });
     try {
       try { await cut(fee); }
       catch (e) { const f2 = t.ladderFee(fee * 2n); if (floorMiss(e) && sum >= units + f2) await cut(f2); else throw e; }
@@ -399,13 +399,18 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
   // send (held), what it proves is sent from the holder's own wallet (the page's `selfSettle`), so the swap still goes; with no such way, or a relay
   // that is not proving, nothing is sent.
   let SELF = false;
+  // HERE: a swap the holder asked this computer to prove (`here`, the page's: its prover set for this swap alone). The relay is not asked:
+  // what is proved here is sent from the holder's wallet, with no relay fee, and a proof the pool traded past is made again at the new price.
+  let HERE = false;
+  const relayOnly = () => (HERE ? {} : { viaRelay: true });
   const selfFor = (t, label) => (SELF && selfSettle ? selfSettle(t, { label }) : null);
   async function relayOpen() {
+    if (HERE) { SELF = true; return; }
     const rs = await relayState();
     SELF = rs?.state === 'held' && !!selfSettle;
-    if (relayStopped(rs) || (rs?.state === 'held' && !selfSettle)) throw new Error('This private swap can’t start right now, so nothing was sent. Try again in a few minutes.');
+    if (relayStopped(rs) || (rs?.state === 'held' && !selfSettle)) throw notNow();
   }
-  const notNow = () => new Error('This private swap can’t start right now, so nothing was sent. Try again in a few minutes.');
+  const notNow = () => Object.assign(new Error('This private swap can’t start right now, so nothing was sent. Try again in a few minutes.'), { notNow: true });
   // a relay that turned this one down at the send (held since it was asked): sent again once, from the holder's wallet
   const heldNow = (e) => !!selfSettle && !SELF && (e?.code === 'relay_held' || /settle held|relay can.t (take|send)/i.test(String(e?.message || '')));
 
@@ -417,14 +422,21 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
   };
   async function route({ note, units, path, fee, minOut, ticker, label, say }) {
     const t = await getUx();
+    if (HERE) fee = 0n;
     const priced = async (f) => {
       const q = await t.quoteRoute({ asset0: note.asset, amountIn: units, path, fee: f });
       if (!q || q.amountOut < minOut) throw Object.assign(new Error('The price moved past what was quoted, so the swap was not sent.'), { moved: true });
       return q;
     };
     let q = await priced(fee);
-    const send = (f) => t.route({ walletPriv: key.priv(), inNote: note, amountIn: units, path, minOut, fee: f, selfSettle: selfFor(t, label),
-      waitOpts: { ...run().wait(label, 15 * 60e3), intervalMs: 4000, viaRelay: true } });
+    const send0 = (f) => t.route({ walletPriv: key.priv(), inNote: note, amountIn: units, path, minOut, fee: f, selfSettle: selfFor(t, label),
+      waitOpts: { ...run().wait(label, 15 * 60e3), intervalMs: 4000, ...relayOnly() } });
+    const send = async (f) => {
+      for (let left = HERE ? 2 : 0; ; left--) {
+        try { return await send0(f); }
+        catch (e) { if (!e?.stale || left <= 0) throw e; say('again'); q = await priced(f); }
+      }
+    };
     let r = null, ahead = null;
     if (!SELF) try { ahead = await routeAheadFor({ note, units, path, fee, minOut, ticker }, say); } catch { ahead = null; }
     if (ahead) {
@@ -560,7 +572,8 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
     // The holder's own prover (their Succinct credit; a computer's prover takes only ops that can wait) is the last resort the relay's refusal
     // leaves, and the first choice when they turned it on: a wallet swap through one pool is proved with it before anything is deposited.
     const own = !!(await getUx()).relay.ownProving?.();
-    let relayDown = false;
+    let relayDown = HERE;
+    if (HERE && plan.sendTo) throw new Error('On this computer a swap stays in your private balance: leave the address empty, then send it after.');
     await relayOpen().catch((e) => { if (!own || !plan.wallet || plan.path?.length !== 1) throw e; relayDown = true; });
     // a payment to the key's own address is refused before anything is sent: it would be a swap into the same balance, by a longer way
     if (plan.sendTo && lc(plan.sendTo.pubHex) === lc(key.key.pubHex)) throw new Error('That is your own address. Leave it empty to keep the swap in your private balance.');
@@ -573,14 +586,19 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
         await read(true).catch(() => null);
         before = new Set((held?.byAsset?.[lc(outAsset)]?.notes || []).map((n) => lc(n.leaf)));
         // 0. the holder's own prover, when on: their proof, so no tip; a prover that takes no such op leaves it to the relay's prove-mode
-        let r = null, mine = false;
-        if (own) {
-          r = await ownProveSwap(plan, say).catch(() => null);
-          mine = !!r && /^spn:/.test(String(r.proven?.jobId || ''));
+        let r = null, mine = false, one = null;
+        // (on this computer, a proof the pool traded past is made again at the new price, twice at most)
+        for (let i = 0; i < (HERE ? 3 : 1); i++) {
+          if (i) say('again');
+          if (own) {
+            r = await ownProveSwap(plan, say).catch(() => null);
+            mine = !!r && /^spn:/.test(String(r.proven?.jobId || ''));
+          }
+          // 1. proved ahead: one transaction, the wrap's tip and the swap's fee paid on top in ETH as the quote showed them
+          if (!r && !relayDown) r = await aheadFor(plan, say);
+          one = r && await oneTx(r, { wei: plan.wei, tip: mine ? 0n : tq.tip + BigInt(plan.fee) * E10, to: mine ? null : tq.to, from, wallet, say });
+          if (one || !HERE || !r) break;
         }
-        // 1. proved ahead: one transaction, the wrap's tip and the swap's fee paid on top in ETH as the quote showed them
-        if (!r && !relayDown) r = await aheadFor(plan, say);
-        const one = r && await oneTx(r, { wei: plan.wei, tip: mine ? 0n : tq.tip + BigInt(plan.fee) * E10, to: mine ? null : tq.to, from, wallet, say });
         if (!one && relayDown) throw new Error('This private swap can’t start right now and your own prover could not prove it, so nothing was sent. Try again in a few minutes.');
         if (one) {
           if (r.slot) spent(r.slot);
@@ -619,7 +637,7 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
     } else {
       await price(plan.asset, plan.units, plan.path, plan.fee, plan.minOut);
       // a deposit of exactly this tETH staged from a note of the key's: swapped from it in one proof that holds no secret (one the relay already has stops here, not on to a note)
-      const fast = !plan.sendTo && await stagedSwap(plan, say).catch((e) => { if (e?.pending) throw e; return null; });
+      const fast = !plan.sendTo && !HERE && await stagedSwap(plan, say).catch((e) => { if (e?.pending) throw e; return null; });
       if (fast) return fast;
       note = await coveringNote({ asset: plan.asset, units: plan.units, ticker: plan.ticker, say });
     }
@@ -638,6 +656,14 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
 
   // The deposit swapped by the relay in one proof (its fee, the route's, bound in; the deposit tips it as a wrap's would): one wait for the
   // relay instead of a wrap's and then a swap's.
+  // The swap proved on this computer: `here.on()` sets its prover for this swap (false when none answers), `here.off()` puts the page's choice back.
+  async function swapHere(plan, o) {
+    if (!here || !selfSettle) throw notNow();
+    if (!(await here.on())) throw Object.assign(new Error('No prover runs on this computer yet.'), { noProver: true });
+    HERE = true;
+    try { return await swap(plan, o); } finally { HERE = false; SELF = false; await here.off(); }
+  }
+
   async function depositSwap(plan, { t, tq, from, wallet, say }) {
     const hop = plan.path[0], priv = key.priv();
     say('prepare');
@@ -725,6 +751,7 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
   return {
     open, lock, reset, read, swap, swapOut, exitCalls, of, most, keyHex, sendPrivate, ahead, aheadOf, routeAhead, routeAheadOf, keep, tierOf, stagedSizes, stageSizes, stageWhole, deviceStaging, isStaging,
     // the checks a swap makes before anything leaves a wallet, for a page that first sells a token for the ETH it will make private
+    swapHere, get canHere() { return !!here && !!selfSettle; },
     relayOpen, priceOk: (asset, units, path, fee, minOut) => (path?.length ? price(asset, units, path, fee, minOut) : Promise.resolve(null)),
     get unlocked() { return key.unlocked; },
     get held() { return held; },

@@ -2224,7 +2224,7 @@ async function exitGo() {
 // ── a private swap, made on this card: the Tacit key is opened here (private.js), and the relay proves and sends each step ──
 let PVP = null, PV = null;
 const pickWallet = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : list[0]?.uuid; };
-const pvLoad = () => (PVP ||= import('/swap/private.js?cb=d127602e').then((m) => {
+const pvLoad = () => (PVP ||= import('/swap/private.js?cb=e6ac5e73').then((m) => {
   PV = m.makePrivate({ getUx, pick: pickWallet, ...H.key, now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()), onKey: (why) => { if (why) say(esc(why), 'err', true); else { PV.read().then(paint, () => {}); if (plans().some((x) => x.state === 'waiting')) ltLoad().then(readBlend, () => {}); } paint(); } });
   PV.mod = m;
   return PV;
@@ -2357,7 +2357,13 @@ async function checkExits() {
   const w = left.find((x) => now() - (x.at || 0) >= 120);
   if (w && !S.busy && !S.note) say(exitLine(w), 'err', true);
 }
-async function privateGo(r, kind = 'private') {
+// The private swap's steps when this computer proves it: nothing is the relay's.
+const HERE_SAY = {
+  split: 'This computer is cutting a note to the amount first, a few minutes…', combine: 'This computer is combining your notes into one of the amount first, a few minutes…',
+  route: 'This computer is proving your private swap, a few minutes. Nothing has left your wallet yet…', own: 'This computer is proving your swap, a few minutes. Nothing has left your wallet yet…',
+  again: 'The pool traded while this computer proved it, so it is proved again at the new price…',
+};
+async function privateGo(r, kind = 'private', here = false) {
   if (kind === 'pin') return pinGo(r);
   let q = S.q;
   const fromWallet = isEth(S.pay), units = parseUnits(S.amt, 8);
@@ -2376,7 +2382,7 @@ async function privateGo(r, kind = 'private') {
   }
   const pay = tokenOf(S.pay), get = tokenOf(S.get), what = `${tidy(plain(units, 8))} ${pay.sym}`, payKey = S.pay, earned = rowPts(r, q);
   let popped = false;
-  const step = (k, h) => (say({
+  const step = (k, h) => (say((here && HERE_SAY[k]) || {
     prepare: 'Preparing the deposit…', confirm: 'Confirm the deposit in your wallet…', sent: `Deposit sent ${h ? txLink(h) : ''}. Waiting for it to land…`,
     proving: `Deposited ${h ? txLink(h) : ''}. The relay is making it private, about a minute…`, note: 'Private now. Finding its note…',
     split: 'The relay is cutting a note to the amount first, about a minute…', combine: 'The relay is combining your notes into one of the amount first, about a minute…',
@@ -2411,7 +2417,7 @@ async function privateGo(r, kind = 'private') {
     const plan = { wallet: fromWallet, wei: units * E10, units, asset: IDS[k0], ticker: POOL_TK[k0], fee: q.fee ?? 0n,
       path: S.get === 'teth' && fromWallet ? [] : (q.pools || []).map((p) => ({ assetNext: IDS[p.b], feeBps: p.feeBps })),
       minOut: poolFloor(r.out / E10, slip), label: `Swap ${what} for ${get.sym} privately`, sendTo: toTacit, outTicker: POOL_TK[PK[S.get]] };
-    const res = await pv.swap(plan, { wallet, from: W.account, say: step });
+    const res = await (here ? pv.swapHere(plan, { wallet, from: W.account, say: step }) : pv.swap(plan, { wallet, from: W.account, say: step }));
     if (!popped) { popped = true; reward(earned); }                 // the points pop once the swap has gone through, not when its first step is sent
     const got = res.made != null ? `${tidy(plain(res.made, 8))} tETH` : `${tidy(amtFmt(res.out * E10, 18))} ${get.sym}`;
     if (res.txHash) remember(res.txHash, res.made != null ? `Made ${what} private` : `Swapped ${what} for ${got} privately`);
@@ -2423,6 +2429,8 @@ async function privateGo(r, kind = 'private') {
     const m = PV?.mod;
     if (e?.unlockCancelled) say('');
     else if (e instanceof UserStopped || e?.userStopped || e?.code === 4001) say('Nothing was sent.', '', true);
+    else if (e?.noProver) say('No prover runs on this computer yet. <a href="/prove/">Set up this computer</a>, then press again.', 'err', true);
+    else if (e?.notNow && kind === 'private' && !here && PV?.canHere) { S.hereR = r; say(`${esc(e.message)}<br><button class="link" type="button" id="pv-here">Prove it on this computer</button>, free: it takes a few minutes, and nothing goes to the relay.`, 'err', true); }
     else if (e?.code === 'short') say(`Not enough private ${esc(pay.sym)}${e.most ? `: at most ${esc(tidy(plain(e.most, 8)))}, after the relay’s fee to cut a note to the amount` : ''}.`, 'err', true);
     else if (e?.stuck) say(exitLine(e.stuck), 'err', true);
     else if (e?.stayed) say(esc(e.message), 'err', true);
@@ -2966,6 +2974,7 @@ function wire() {
     if (e.target.closest('[data-farm-it]')) H.farmIt?.(S.lastBuy);
     if (e.target.closest('#pv-open')) openPrivate().catch(() => {});
     if (e.target.closest('#pv-sign')) H.key?.openKey?.().catch(() => {});
+    if (e.target.closest('#pv-here') && S.hereR && !S.busy) { S.note = ''; privateGo(S.hereR, 'private', true).catch(() => {}); return; }
     if (e.target.closest('#pv-read')) { PV?.read(true).then(paint, () => paint()); return; }
     const xr = e.target.closest('[data-exit-run], [data-exit-back]');
     if (xr) exitAct(xr.dataset.exitRun || xr.dataset.exitBack, !!xr.dataset.exitBack).catch(() => {});

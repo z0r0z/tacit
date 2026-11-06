@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-BpS9Vk8fc+un9Rn0uDjxYsQ5oPGiftFBXpZEET5g8Xc=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-0Cy1fDny9aD/LHzE23u8U9KAlHwjRYtAnIdloh4plT8=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -64,7 +64,7 @@
 <link rel="modulepreload" href="/bridge-tick.js?cb=b9adb91d">
 <link rel="modulepreload" href="/tacit-session.js?cb=a2d34bb2">
 <link rel="modulepreload" href="/activity.js?cb=a49f677c">
-<link rel="modulepreload" href="/swap/card.js?cb=4b976345">
+<link rel="modulepreload" href="/swap/card.js?cb=6c8e0ee5">
 <link rel="modulepreload" href="/trade/wallet.js?cb=88b623b8">
 <link rel="modulepreload" href="/trade/util.js?cb=e8317464">
 <link rel="modulepreload" href="/trade/rpc.js?cb=f575ef91">
@@ -2944,7 +2944,7 @@ const settleFrom = (t, { label, nest = null, say: tell, finishes = null, already
       if (already && (ALREADY.test(`${e?.data?.data || e?.data || ''} ${e?.message || ''}`) || (x.jobId && (await t.relay.status(x.jobId).catch(() => null))?.status === 'settled'))) {
         return { txHash: null, already: true };
       }
-      if (/29b3c833|PoolReserveMismatch/i.test(`${e?.data?.data || e?.data || ''} ${e?.message || ''}`)) throw Object.assign(new Error('Nothing was sent. The pool moved while it was being proved. Press again for a fresh quote.'), { said: true, moved: true });
+      if (/29b3c833|PoolReserveMismatch/i.test(`${e?.data?.data || e?.data || ''} ${e?.message || ''}`)) throw Object.assign(new Error('Nothing was sent. The pool moved while it was being proved. Press again for a fresh quote.'), { said: true, moved: true, stale: true });
       throw Object.assign(new Error(`Nothing was sent: the pool refuses this as it stands. ${revertText(e) || 'If it already went through, your balance shows it.'}`), { said: true });
     }
   }
@@ -3483,7 +3483,7 @@ async function devOnce(run, spec) {
   const go = async (y) => {
     for (;;) {
       try { return await spec.go(y); }
-      catch (e) { if (!e?.moved || !left--) throw e; tell('The pool traded while this computer proved it, so it is proved again at the new price…'); }
+      catch (e) { if (!e?.stale || !left--) throw e; tell('The pool traded while this computer proved it, so it is proved again at the new price…'); }
     }
   };
   try { await selfDo(run, { ...spec, own: true, go }); } finally { d.allowLive?.(false); r.useProver?.(null); spApply(); }
@@ -16727,7 +16727,7 @@ function swcPace(id) {
   if (b) b.dataset.pace = id;
   else q.insertAdjacentHTML('afterend', html`<div class="pace" data-card="1" data-pace="${id}"><div class="actr-bar" role="progressbar" aria-label="How far along" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i style="width:0%"></i></div><span></span></div>`.s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=4b976345').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=6c8e0ee5').catch((e) => { SWC.p = null; throw e; }));
 // the card held to the tab's flow; back on the Swap tab it opens on the swap it showed there
 function swcFlow() {
   hxPathPaint();
@@ -16787,7 +16787,15 @@ function hxSwap() {
         points: (act, eth) => { hxWantPoints(); const p = hxPts(act, eth); return p ? { pts: p.pts, floor: !p.known, why: p.why } : null; },
         // (selfSettle: what the relay proves while it does not send, sent from the holder's wallet, as the sheets' own swaps do)
         key: { session: { get unlocked() { return !!S.key; }, get key() { return S.key; }, priv: walletPriv }, openKey: swcKey, wait: swcWait,
-          selfSettle: (t, { label }) => settleFrom(t, { label, say: (m) => { const q = $('#hx-swap #q'); if (q) mount(q, html`${m}`); } }) },
+          selfSettle: (t, { label }) => settleFrom(t, { label, say: (m) => { const q = $('#hx-swap #q'); if (q) mount(q, html`${m}`); } }),
+          // (here: this computer's prover for one swap, as devOnce sets it for a sheet's action)
+          here: { on: async () => {
+              // the settle is sent from the paying account: one short of its fee is said before minutes of proving, not after
+              await payingAccount();
+              const need = await selfGasWei(), have = await ethBalance();
+              if (have != null && have < need) throw Object.assign(new Error(`It is sent from ${your()}, which pays the network fee, about ${gasEth(need)} ETH. It holds ${gasEth(have)}. Add a little ETH there, then press again.`), { said: true });
+              const d = await devProver({ fresh: true }).catch(() => null); if (!d) return false; d.allowLive?.(true); const r = (await getUx()).relay; r.useProver?.(d.prove); r.useSealer?.(null); return true; },
+            off: async () => { LOCAL.prover?.allowLive?.(false); (await getUx()).relay.useProver?.(null); spApply(); } } },
         // the pair and its sides are kept in this browser, the amount for the visit only, as the other tabs keep theirs
         onChange: () => { if (SWC.auto || SWC.card?.flow) return; const p = SWC.card.params(), amt = p.get('amt') || ''; p.delete('amt'); HX.swq = p.toString(); hxRemember(); try { sessionStorage.setItem(HX_AMT, JSON.stringify({ sig: 'swap', amt })); } catch { } },
         onDone: () => { HXW.clear(); HXWB.at = 0; hxBalPaint(); if (S.key) scanPrivate(true).catch(() => {}); dashSoon(); },

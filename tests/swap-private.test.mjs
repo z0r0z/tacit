@@ -105,6 +105,7 @@ const load = async (ux) => (await import('../dapp/swap/private.js')).makePrivate
 const plan = (o = {}) => ({ wallet: false, units: 1000n, wei: 1000n * 10n ** 10n, asset: ETH, ticker: 'cETH', fee: 10n, path: [{ assetNext: TAC, feeBps: 30 }], minOut: 800n, label: 'Swap', ...o });
 const wallet = { sendTx: async (tx) => { globalThis.M.sent.push(tx); return '0xdep'; }, receipt: async () => ({ status: '0x1' }) };
 const run = (pv, p, steps = []) => pv.swap(p, { wallet, from: '0xme', say: (k) => steps.push(k) });
+const runHere = (pv, p, steps = []) => pv.swapHere(p, { wallet, from: '0xme', say: (k) => steps.push(k) });
 
 test('from the wallet through one pool: one deposit, and the relay proves and settles its swap in one step, with no route', async () => {
   const { M, ux } = setup({ notes: [note('0xold', 1000)] });
@@ -189,6 +190,53 @@ test('the relay held, with the own-wallet settle: from the wallet, a way whose s
   const pv = (await import('../dapp/swap/private.js')).makePrivate({ getUx: async () => ux, pick: () => null, selfSettle: () => async () => ({ txHash: '0xself' }) });
   await assert.rejects(run(pv, plan({ wallet: true, path: [{ assetNext: TAC, feeBps: 30 }, { assetNext: ETH, feeBps: 30 }] })), /can’t start right now/);
   assert.strictEqual(M.wraps.length + M.sent.length, 0, 'no deposit');
+});
+
+test('on this computer, the relay stopped: the swap is proved here with no relay fee, sent from the wallet, and the page’s prover put back', async () => {
+  const { M, ux } = setup({ notes: [note('0xold', 1000)] });
+  M.relay = { state: 'down' };
+  const seen = [];
+  const here = { on: async () => { seen.push('on'); return true; }, off: async () => { seen.push('off'); } };
+  const pv = (await import('../dapp/swap/private.js')).makePrivate({ getUx: async () => ux, pick: () => null, here, selfSettle: () => async () => ({ txHash: '0xself' }) });
+  assert.ok(pv.canHere);
+  await runHere(pv, plan());
+  assert.strictEqual(M.routes.length, 1);
+  assert.strictEqual(M.routes[0].fee, 0n, 'no relay fee');
+  assert.strictEqual(typeof M.routes[0].selfSettle, 'function', 'settled from the wallet');
+  assert.ok(!M.routes[0].waitOpts?.viaRelay, 'proved by the page’s prover, not sent to the relay');
+  assert.deepStrictEqual(seen, ['on', 'off']);
+});
+
+test('on this computer: a proof the pool traded past is made again at the new price, twice at most', async () => {
+  const { M, ux } = setup({ notes: [note('0xold', 1000)] });
+  M.relay = { state: 'down' };
+  const route0 = ux.route; let n = 0;
+  ux.route = async (a) => { if (n++ < 2) { M.routes.push(a); throw Object.assign(new Error('Nothing was sent. The pool moved while it was being proved.'), { moved: true, stale: true }); } return route0(a); };
+  const steps = [];
+  const pv = (await import('../dapp/swap/private.js')).makePrivate({ getUx: async () => ux, pick: () => null, here: { on: async () => true, off: async () => {} }, selfSettle: () => async () => ({ txHash: '0xself' }) });
+  await runHere(pv, plan(), steps);
+  assert.strictEqual(M.routes.length, 3);
+  assert.strictEqual(steps.filter((k) => k === 'again').length, 2);
+  const b = setup({ notes: [note('0xold', 1000)] });
+  b.M.relay = { state: 'down' };
+  b.ux.route = async (a) => { b.M.routes.push(a); throw Object.assign(new Error('Nothing was sent. The pool moved while it was being proved.'), { moved: true, stale: true }); };
+  const pv2 = (await import('../dapp/swap/private.js')).makePrivate({ getUx: async () => b.ux, pick: () => null, here: { on: async () => true, off: async () => {} }, selfSettle: () => async () => ({ txHash: '0xself' }) });
+  await assert.rejects(runHere(pv2, plan()), /pool moved/);
+  assert.strictEqual(b.M.routes.length, 3, 'three tries, then it says so');
+});
+
+test('on this computer with no prover answering: nothing is sent, and it says so', async () => {
+  const { M, ux } = setup({ notes: [note('0xold', 1000)] });
+  M.relay = { state: 'down' };
+  const pv = (await import('../dapp/swap/private.js')).makePrivate({ getUx: async () => ux, pick: () => null, here: { on: async () => false, off: async () => {} }, selfSettle: () => async () => ({ txHash: '0xself' }) });
+  await assert.rejects(runHere(pv, plan()), (e) => e.noProver === true);
+  assert.strictEqual(M.routes.length + M.wraps.length, 0);
+});
+
+test('the relay stopped, without this computer: it says it can’t start, marked so the card can offer it', async () => {
+  const { ux, M } = setup({ notes: [note('0xold', 1000)] });
+  M.relay = { state: 'paused' };
+  await assert.rejects(run(await load(ux), plan()), (e) => e.notNow === true);
 });
 
 test('the relay turned it down at the send: sent once more, from the wallet', async () => {
