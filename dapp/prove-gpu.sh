@@ -19,6 +19,12 @@ set -eu
 
 PIN_TAG=prover-bins-v17
 PIN_WORKER=9c8297ad19808b033301e25e37206e26f0e300f7aec03a730b52b45b6f5a4327
+# SP1's Groth16 proving files the worker's SP1 version asks for (its first proof fetches them over one connection, slowly, and a fetch cut
+# short leaves a folder it takes for finished): pinned with the worker, fetched here over several connections and checked.
+PIN_CIRCUITS=v6.1.0
+PIN_CIRCUITS_BYTES=6211807514
+PIN_CIRCUITS_SHA256=18beebb6cd0cc9b4d4a240ee4f49511da6c2a7e51724bad4232de538a9147810
+CIRCUITS_URL="https://sp1-circuits.s3-us-east-2.amazonaws.com/$PIN_CIRCUITS-groth16.tar.gz"
 BASE="https://github.com/z0r0z/tacit/releases/download"
 POOL_VKEY=0x006cd47fd23937a6d247696cace28c22d2c6a8280447e6ac45a3571de232d6e3
 
@@ -72,6 +78,63 @@ run_pid() {
   case $(tr '\0' ' ' 2>/dev/null < "/proc/$p/cmdline" || ps -p "$p" -o args= 2>/dev/null || true) in *"$HOME_DIR/run.sh"*) printf '%s' "$p" ;; esac
 }
 
+# SP1's Groth16 files in the folder the SDK reads them from ($HOME/.sp1/circuits/groth16/<version>; the SDK skips its own fetch when the folder
+# exists), fetched in CIRCUITS_PARTS ranges at once, checked against the pin, unpacked beside it and moved into place whole. A folder left by
+# a fetch cut short (it still holds artifacts.tar.gz) is cleared first. Returns 1, having said why, when it could not: the worker then does
+# its own, slower fetch.
+fetch_circuits() {
+  dir="${SP1_GROTH16_CIRCUIT_PATH:-$HOME/.sp1/circuits/groth16}"; dest="$dir/$PIN_CIRCUITS"
+  if [ -d "$dest" ]; then
+    [ -e "$dest/artifacts.tar.gz" ] || return 0
+    rm -rf "$dest"
+  fi
+  parts="${TACIT_CIRCUITS_PARTS:-8}"; url="${TACIT_CIRCUITS_URL:-$CIRCUITS_URL}"
+  mkdir -p "$dir" || return 1
+  need="${TACIT_CIRCUITS_MIN_GB:-20}"; free=$(df -Pk "$dir" | awk 'NR==2 {print int($4 / 1048576)}')
+  case $free in ''|*[!0-9]*) ;; *) [ "$free" -ge "$need" ] || { say "note: only $free GB are free where SP1's files go (it needs about $need GB while it unpacks)"; return 1; } ;; esac
+  tmp="$dir/.part-$$"; rm -rf "$tmp"; mkdir -p "$tmp/x" || return 1
+  say "Fetching SP1's Groth16 proving files (about $((PIN_CIRCUITS_BYTES / 1000000000)) GB) over $parts connections"
+  chunk=$(( (PIN_CIRCUITS_BYTES + parts - 1) / parts ))
+  # one range into its file, picking up where a dropped or stalled connection left it (what curl got is appended as it comes)
+  fetch_range() {
+    f="$tmp/p$1"; want=$(($3 - $2 + 1)); tries=0
+    : > "$f"
+    while [ "$(wc -c < "$f")" -lt "$want" ] && [ "$tries" -lt 30 ]; do
+      curl -fsS --connect-timeout 20 --speed-limit 20000 --speed-time 20 -r "$(($2 + $(wc -c < "$f")))-$3" "$url" >> "$f" 2>/dev/null || sleep 2
+      tries=$((tries + 1))
+    done
+  }
+  (
+    i=0
+    while [ "$i" -lt "$parts" ]; do
+      a=$((i * chunk)); b=$((a + chunk - 1)); [ "$b" -lt "$PIN_CIRCUITS_BYTES" ] || b=$((PIN_CIRCUITS_BYTES - 1))
+      fetch_range "$i" "$a" "$b" &
+      i=$((i + 1))
+    done
+    wait
+  ) &
+  dl=$!
+  while kill -0 "$dl" 2>/dev/null; do
+    sleep "${TACIT_CIRCUITS_POLL:-15}"
+    say "  $(du -sk "$tmp" | awk '{print int($1 / 1024)}') MB of $((PIN_CIRCUITS_BYTES / 1000000))"
+  done
+  i=0; list=""
+  while [ "$i" -lt "$parts" ]; do
+    a=$((i * chunk)); b=$((a + chunk - 1)); [ "$b" -lt "$PIN_CIRCUITS_BYTES" ] || b=$((PIN_CIRCUITS_BYTES - 1))
+    [ "$(wc -c < "$tmp/p$i" 2>/dev/null || echo 0)" -eq $((b - a + 1)) ] || { say "note: the fetch of SP1's files came up short"; rm -rf "$tmp"; return 1; }
+    list="$list $tmp/p$i"; i=$((i + 1))
+  done
+  # shellcheck disable=SC2086
+  got=$(cat $list | sha256sum | cut -d' ' -f1)
+  [ "$got" = "$PIN_CIRCUITS_SHA256" ] || { say "note: SP1's files did not match their pin ($got): not used"; rm -rf "$tmp"; return 1; }
+  say "Unpacking them"
+  # shellcheck disable=SC2086
+  cat $list | tar -Pxzf - -C "$tmp/x" 2>/dev/null || { say "note: SP1's files did not unpack"; rm -rf "$tmp"; return 1; }
+  rm -f $list
+  mv "$tmp/x" "$dest" || { rm -rf "$tmp"; return 1; }
+  rm -rf "$tmp"
+}
+
 main() {
   HOME_DIR="${TACIT_GPU_HOME:-$HOME/.tacit-gpu}"
   BIN="$HOME_DIR/tacit-prover-worker"
@@ -117,6 +180,7 @@ main() {
   [ "$got" = "$PIN_WORKER" ] || { rm -f "$BIN.part"; die "the download's sha256 is $got, not the pinned $PIN_WORKER: nothing was run."; }
   chmod +x "$BIN.part" && mv -f "$BIN.part" "$BIN"
   say "Checked its sha256 ($(printf '%s' "$got" | cut -c1-12)...)"
+  fetch_circuits || say "The worker fetches SP1's files itself on its first start instead; that takes longer."
   # One worker at a time, restarted after a crash with a pause; it re-reads nothing between starts but this script's settings.
   p=$(run_pid); [ -z "$p" ] || kill -- "-$p" 2>/dev/null || true
   cat > "$HOME_DIR/run.sh" <<EOF
@@ -125,7 +189,7 @@ cd "$HOME_DIR"
 pause=15
 while true; do
   t=\$(date +%s)
-  COMMUNITY_MINER=$ADDR WORKER_NAME=gpu-$(printf '%s' "$ADDR" | cut -c3-8) EXPECT_VKEY=$POOL_VKEY WARM=0 RELOAD_FLAG="$HOME_DIR/reload" \\
+  COMMUNITY_MINER=$ADDR WORKER_NAME=gpu-$(printf '%s' "$ADDR" | cut -c3-8) EXPECT_VKEY=$POOL_VKEY WARM=0 POLL_MS=4000 RELOAD_FLAG="$HOME_DIR/reload" \\
     WORKER_KEY_FILE="$HOME_DIR/worker.key" PAUSE_FLAG="$HOME_DIR/pause" RECYCLE_FLAG="$HOME_DIR/recycle" "$BIN"
   # SP1's GPU server goes when the worker lets it go, not when the worker aborts: what is left in this group (this script leads it) goes
   # before the next start, so a crash never leaves a server holding the GPU's memory.
