@@ -14,8 +14,8 @@
 
 set -eu
 
-PIN_TAG=prover-bins-v16
-PIN_WORKER=c18b63171fa8ccb4132f2a01f9d32d07b2f7da147bcf578e45466a91d833db1e
+PIN_TAG=prover-bins-v17
+PIN_WORKER=9c8297ad19808b033301e25e37206e26f0e300f7aec03a730b52b45b6f5a4327
 BASE="https://github.com/z0r0z/tacit/releases/download"
 POOL_VKEY=0x006cd47fd23937a6d247696cace28c22d2c6a8280447e6ac45a3571de232d6e3
 
