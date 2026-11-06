@@ -95,3 +95,16 @@ test('Tacit\'s own machines bank what they find and never share the day\'s point
   assert.ok(bank.some((b) => b.miner === SALT_POOL.deployer && b.house === true), 'the house salt is banked, marked');
   assert.equal(saltPoolConfig({}).house[0], SALT_POOL.deployer, 'the deployer is the house by default');
 });
+
+test('who is grinding now and how fast: every address that sent shares lately, Tacit\'s named so, and the last hour\'s shares as a rate', async () => {
+  let t = 400 * DAY + 3 * 3_600_000 + 600_000;
+  const pool = makeSaltPool({ kv: kvStore(), cfg: { ...SALT_POOL, minBits: 8, bankBits: 9, sendEveryMs: 0, house: [SALT_POOL.deployer] }, now: () => t });
+  await pool.submit({ miner: A, salts: [grind(400, 8).salt, grind(400, 8).salt], client: 'c1' });
+  await pool.submit({ miner: SALT_POOL.deployer, salts: [grind(400, 9).salt], client: 'house' });
+  let s = (await pool.summary()).body;
+  assert.deepEqual(s.live.map((l) => [l.miner, !!l.house]).sort(), [[A, false], [SALT_POOL.deployer, true]].sort());
+  assert.equal(s.rate, Math.round((3 * 2 ** 8) / ((3_600_000 + 600_000) / 1000)), 'three shares of 2^8 salts over the hour and ten minutes they span');
+  t += SALT_POOL.liveMs + 1;
+  s = (await pool.summary()).body;
+  assert.deepEqual(s.live, [], 'nobody once they stop sending');
+});

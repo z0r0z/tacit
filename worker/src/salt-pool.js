@@ -11,8 +11,11 @@
 // so what a day costs never grows with them. Salts at least bankBits good are kept (GET /prover/salt/bank): the addresses Tacit deploys
 // its next contracts to. Tacit's own machines (SALT_HOUSE, the deployer by default) send only salts for the bank and never share the points.
 //
+// Who is grinding now (every address that sent shares in the last liveMs, Tacit's own named so) and how fast the network grinds (the shares
+// of the last hour or so, each the 2^minBits salts a share takes on average) are in GET /prover/salt, for the page's live row.
+//
 // Storage (KV): sl:seen:<salt> (kept 3 days), sl:m:<day>:<miner> ({ shares, weight, best }), sl:miners:<day> ([miner]), sl:bank (best first),
-// sl:rate:<client> (when it last sent).
+// sl:rate:<client> (when it last sent), sl:live ({ miner: { at, house } }), sl:hour:<n> (shares in UTC hour n).
 import { keccak_256 } from '@noble/hashes/sha3';
 import { bytesToHex, hexToBytes, concatBytes } from '@noble/hashes/utils';
 
@@ -28,8 +31,9 @@ export const SALT_POOL = Object.freeze({
   sendEveryMs: 20_000,      // one send per client this often
   seenSecs: 3 * 86400,
   daySecs: 40 * 86400,
+  liveMs: 15 * 60_000,      // an address that sent shares this recently is grinding now
 });
-const DAY_MS = 86_400_000;
+const DAY_MS = 86_400_000, HOUR_MS = 3_600_000;
 const PROXY_INIT_HASH = keccak_256(Uint8Array.from([0x67, 0x36, 0x3d, 0x3d, 0x37, 0x36, 0x3d, 0x34, 0xf0, 0x3d, 0x52, 0x60, 0x08, 0x60, 0x18, 0xf3]));
 const ADDR = /^0x[0-9a-f]{40}$/;
 const SALT = /^0x[0-9a-f]{64}$/;
@@ -107,6 +111,11 @@ export function makeSaltPool({ kv, cfg = SALT_POOL, now = () => Date.now(), lock
           const bank = [...await read('sl:bank', []), ...banked].sort((a, b) => b.bits - a.bits || a.at - b.at).slice(0, cfg.bankKeep);
           await write('sl:bank', bank);
         }
+        const live = Object.fromEntries(Object.entries(await read('sl:live', {})).filter(([, v]) => t - v.at < cfg.liveMs));
+        live[miner] = { at: t, ...(house ? { house: true } : {}) };
+        await write('sl:live', live);
+        const h = Math.floor(t / HOUR_MS);
+        await write(`sl:hour:${h}`, (Number(await kv.get(`sl:hour:${h}`)) || 0) + accepted, 3 * 3600);
       }
       return reply(200, { ok: true, accepted, weight: house ? 0 : weight, rejected, today: house ? null : { shares: rec.shares, weight: rec.weight, best: rec.best } });
     });
@@ -127,10 +136,16 @@ export function makeSaltPool({ kv, cfg = SALT_POOL, now = () => Date.now(), lock
     return reply(200, { day, over: day < today, pointsPerDay: cfg.pointsPerDay, miners });
   }
   async function summary() {
-    const day = dayOf(now()), recs = await dayMiners(day);
+    const t = now(), day = dayOf(t), recs = await dayMiners(day);
     const bank = await read('sl:bank', []);
+    // The rate: the last hour's shares and this one's so far, over the time they span, each 2^minBits salts on average.
+    const h = Math.floor(t / HOUR_MS), [prev, cur] = await Promise.all([kv.get(`sl:hour:${h - 1}`), kv.get(`sl:hour:${h}`)]);
+    const span = HOUR_MS + (t - h * HOUR_MS);
+    const rate = Math.round((((Number(prev) || 0) + (Number(cur) || 0)) * 2 ** cfg.minBits) / (span / 1000));
+    const live = Object.entries(await read('sl:live', {})).filter(([, v]) => t - v.at < cfg.liveMs)
+      .sort((a, b) => b[1].at - a[1].at).map(([miner, v]) => ({ miner, at: v.at, ...(v.house ? { house: true } : {}) }));
     return reply(200, {
-      deployer: cfg.deployer, createx: cfg.createx, minBits: cfg.minBits, bankBits: cfg.bankBits, pointsPerDay: cfg.pointsPerDay, day,
+      deployer: cfg.deployer, createx: cfg.createx, minBits: cfg.minBits, bankBits: cfg.bankBits, pointsPerDay: cfg.pointsPerDay, day, rate, live,
       today: { miners: recs.length, shares: recs.reduce((s, r) => s + r.shares, 0), weight: recs.reduce((s, r) => s + r.weight, 0) },
       top: recs.sort((a, b) => b.weight - a.weight).slice(0, 20).map((r) => ({ miner: r.miner, shares: r.shares, weight: r.weight, best: r.best })),
       bank: bank.slice(0, 10).map(({ address, bits, miner, at, house }) => ({ address, bits, miner, at, ...(house ? { house: true } : {}) })),
