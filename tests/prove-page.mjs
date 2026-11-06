@@ -35,7 +35,7 @@ let fails = 0;
 const check = (ok, what, got = '') => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${what}${ok ? '' : ` (${got})`}`); if (!ok) fails++; };
 
 // The stand-in prover: `local` is what it answers (null: nothing listens), and each POST /mine it was sent.
-async function open(browser, local, { phone = false } = {}) {
+async function open(browser, local, { phone = false, idle = false } = {}) {
   const ctx = await browser.newContext(phone ? { viewport: { width: 390, height: 800 }, userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148' } : { viewport: { width: 1100, height: 900 } });
   const page = await ctx.newPage();
   const errors = [], posts = [];
@@ -58,12 +58,12 @@ async function open(browser, local, { phone = false } = {}) {
   });
   await page.route('https://api.tacit.finance/**', (route) => {
     const u = new URL(route.request().url());
-    if (u.pathname === '/prover/pool') return json(route, { queued: 3, leased: 2, doneToday: 41, minersToday: 2, top: [{ miner: ADDR, proofs: 4 }, { miner: OTHER, proofs: 1 }], terms: { pointsPerProof: 20, proofsPerMinerDay: 30 } });
+    if (u.pathname === '/prover/pool') return json(route, { ...(idle ? {} : {}), queued: idle ? 0 : 3, leased: idle ? 0 : 2, doneToday: 41, minersToday: 2, top: [{ miner: ADDR, proofs: 4 }, { miner: OTHER, proofs: 1 }], terms: { pointsPerProof: 20, proofsPerMinerDay: 30 } });
     if (u.pathname === '/prover/blocks') return json(route, { head: { height: chain.blocks[0].height, hash: chain.blocks[0].hash, ethHead: chain.blocks[0].ethBlock + 25 }, blocks: chain.blocks });
     if (u.pathname === '/prover/board') return json(route, { queued: 0, workers: [], pay: { pointsPerProof: 20, pointsByProgram: { 'btc-state': 500 } } });
     if (u.pathname === '/prover/pool/recent') return json(route, { proofs: [{ at: Date.now() - 60_000, house: true, points: 0, secs: 31 }, { at: Date.now() - 120_000, miner: ADDR, points: 20, secs: 552 }] });
     if (u.pathname === '/prover/pool/credits') return json(route, { day, over: false, miners: [{ miner: ADDR, proofs: 4, points: 80 }] });
-    if (u.pathname === '/prover/salt') return json(route, { pointsPerDay: 1500, minBits: 26, today: { miners: 2, shares: 30, weight: 40 }, top: [{ miner: ADDR, shares: 20, weight: 22 }], bank: [{ address: '0x0000000000ab12cd34ef56ab78cd90ef12ab34cd', bits: 41, miner: OTHER }, { address: '0x0000000000cd12cd34ef56ab78cd90ef12ab34cd', bits: 40, miner: '0x68575b073de49a94e3e3acf6f3a0d6e3b66267c7', house: true }] });
+    if (u.pathname === '/prover/salt') return json(route, { pointsPerDay: 1500, minBits: 26, today: { miners: 2, shares: 30, weight: 40 }, top: [{ miner: ADDR, shares: 20, weight: 22 }], live: [{ miner: OTHER, at: Date.now() - 60_000 }, { miner: '0x68575b073de49a94e3e3acf6f3a0d6e3b66267c7', at: Date.now() - 30_000, house: true }], rate: 2_400_000, bank: [{ address: '0x0000000000ab12cd34ef56ab78cd90ef12ab34cd', bits: 41, miner: OTHER }, { address: '0x0000000000cd12cd34ef56ab78cd90ef12ab34cd', bits: 40, miner: '0x68575b073de49a94e3e3acf6f3a0d6e3b66267c7', house: true }] });
     return json(route, {}, 404);
   });
   await page.route('https://tacit-points.onrender.com/**', (route) => json(route, { enabled: true, endSec: Math.floor(Date.now() / 1000) + 86400 * 10, terms: { capWeiPerPoint: '10000000000000000' }, account: { creditedWei: '6000000000000000000' } }));
@@ -103,7 +103,8 @@ try {
     check((await page.locator('#pool i').count()) === 5 && (await page.locator('#pool i.on').count()) === 2, 'the waiting proofs are drawn, the leased ones lit');
     check((await text(page, '#feed')).includes('+0.2 TAC') && (await text(page, '#feed')).includes('a deposit, proved in 9 min'), 'the feed says who proved what, how fast and what it won', await text(page, '#feed'));
     check((await text(page, '#board')).includes('4 proofs · 0.8 TAC · 9 min each'), 'today\'s provers with their TAC and their speed', await text(page, '#board'));
-    check((await page.locator('#crowd .pod').count()) === 2 && (await page.textContent('#crowd-n')) === '2 proving now', 'the crowd: everyone who proved lately, Tacit GPU among them');
+    await page.waitForFunction(() => document.querySelector('#crowd-n').textContent === '3 online now');
+    check((await page.locator('#crowd .pod').count()) === 3, 'the crowd: everyone who proved lately and every node grinding salts, Tacit GPU among them');
     check(await page.locator('#crowd .pod.me').count() === 1, 'with this address picked out');
     const kinds = await page.locator('#chain .blk:not(.next) .k').allInnerTexts();
     check(JSON.stringify(kinds) === JSON.stringify(['Private transfer', 'Deposit', 'Private transfer', 'Private transfer']), 'each block says what it did', JSON.stringify(kinds));
@@ -141,6 +142,15 @@ try {
     await page.waitForFunction(() => document.querySelector('#salt-day').textContent.startsWith('Run the setup line again'), null, { timeout: 8000 });
     check(await page.locator('#setup').isVisible(), 'a node from before salt mining is shown the setup line, to update');
     check(errors.length === 0, 'no page errors', errors.join(' | '));
+    await ctx.close();
+  }
+  // nothing queued: the stats say what the nodes do meanwhile
+  {
+    const { page, ctx } = await open(browser, { v: null }, { idle: true });
+    await page.waitForFunction(() => document.querySelector('#l-wait').textContent === 'Mining now');
+    check((await text(page, '#n-wait')) === '2' && (await page.textContent('#l-lease')) === 'Salts a second' && (await text(page, '#n-lease')) === '2.4 M', 'with nothing queued, the nodes grinding salts and how fast', `${await text(page, '#n-wait')} ${await text(page, '#n-lease')}`);
+    await page.waitForFunction(() => document.querySelector('#next-o')?.textContent === 'mining salts');
+    check(true, 'the next block says the nodes are mining salts meanwhile');
     await ctx.close();
   }
   // an older prover: no GET /mine

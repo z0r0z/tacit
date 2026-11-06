@@ -13,7 +13,8 @@ const $ = (s) => document.querySelector(s);
 const get = (url, ms = 6000) => fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(ms) }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
-let health = null, mine = null, pool = null, points = null, tally = null, busy = false, copied = false;
+let health = null, mine = null, pool = null, points = null, tally = null, busy = false, copied = false, salts = null;
+const rateText = (r) => (r >= 1e6 ? `${(r / 1e6).toFixed(1)} M/s` : `${Math.round(r / 1e3)} k/s`);
 let blocks = [], ethHead = null, headReadAt = 0, shownTop = null, picked = null, feed = [], feedTop = 0, lastProved = null;
 
 const addr = () => cleanAddress($('#addr').value);
@@ -112,28 +113,35 @@ function paintFeed() {
   }).join('');
 }
 
-// Who is proving now: everyone with a proof in the last twenty minutes, Tacit's GPU among them, as their invaders.
+// Who is at work now: everyone with a proof in the last twenty minutes, and every node grinding salts between proofs (the salt pool's
+// `live`), Tacit's GPU among them, as their invaders.
 const ONLINE_MS = 20 * 60_000;
 function paintCrowd() {
   const t = Date.now(), seen = new Map();
   for (const p of feed) if (t - p.at < ONLINE_MS) { const k = p.house ? 'gpu' : p.miner; if (k && !seen.has(k)) seen.set(k, p); }
-  if (!seen.size) { $('#crowd-n').textContent = 'Proving now'; $('#crowd-row').innerHTML = ''; return; }
+  for (const m of salts?.live || []) { const k = m.house ? 'gpu' : m.miner; if (k && !seen.has(k)) seen.set(k, m); }
+  if (!seen.size) { $('#crowd-n').textContent = 'Online now'; $('#crowd-row').innerHTML = ''; return; }
   const faces = [...seen.keys()].slice(0, 24).map((k, i) => `<span class="pod${k === me() ? ' me' : ''}" style="--i:${i}" title="${k === 'gpu' ? 'Tacit GPU' : esc(short(k))}">${face(k === 'gpu' ? null : k, 28)}</span>`).join('');
-  $('#crowd-n').textContent = `${seen.size} proving now`;
+  $('#crowd-n').textContent = `${seen.size} online now`;
   $('#crowd-row').innerHTML = faces;
 }
 
+// With proofs waiting, what waits; with none, the nodes grinding salts meanwhile.
 function waitingText() {
   const n = (pool?.queued || 0) + (pool?.leased || 0);
-  return pool ? (n ? `${n} waiting` : 'waiting for work') : '';
+  return pool ? (n ? `${n} waiting` : salts?.live?.length ? 'mining salts' : 'waiting for work') : '';
 }
 
 function paintNet() {
   const q = pool?.queued ?? null, l = pool?.leased ?? null;
   const nx = document.getElementById('next-o');
   if (nx) nx.textContent = waitingText();
-  $('#n-wait').textContent = q == null ? '—' : String(q);
-  $('#n-lease').textContent = l == null ? '—' : String(l);
+  // Nothing queued: the two cells say what the nodes do meanwhile (how many grind salts, and how fast between them).
+  const mining = pool && !(q || l) && salts?.live?.length;
+  $('#l-wait').textContent = mining ? 'Mining now' : 'Waiting';
+  $('#l-lease').textContent = mining ? 'Salts a second' : 'Proving now';
+  $('#n-wait').textContent = mining ? String(salts.live.length) : q == null ? '—' : String(q);
+  $('#n-lease').textContent = mining ? (salts.rate ? rateText(salts.rate).replace('/s', '') : '—') : l == null ? '—' : String(l);
   $('#n-provers').textContent = pool?.minersToday == null ? '—' : String(pool.minersToday);
   $('#n-done').textContent = pool?.doneToday == null ? '—' : String(pool.doneToday);
   const n = Math.min(60, (q || 0) + (l || 0));
@@ -257,14 +265,14 @@ $('#gpu-copy').addEventListener('click', async () => {
 
 // Salt mining (worker/src/salt-pool.js): the day's points shared by work, this address's part of them so far, what this computer grinds
 // (tacit-prover's GET /mine `salt`), and the best addresses banked for Tacit's next contracts.
-let salts = null;
 const HEX40 = /^0x[0-9a-f]{40}$/;
 const cleanSalts = (s) => (s && typeof s === 'object' ? {
   pointsPerDay: count(s.pointsPerDay), miners: count(s.today?.miners), shares: count(s.today?.shares), weight: Number(s.today?.weight) || 0,
   top: (Array.isArray(s.top) ? s.top : []).map((m) => ({ miner: cleanAddress(m?.miner), weight: Number(m?.weight) || 0, shares: count(m?.shares) })).filter((m) => m.miner),
   bank: (Array.isArray(s.bank) ? s.bank : []).map((b) => ({ address: HEX40.test(String(b?.address)) ? b.address : null, bits: count(b?.bits), miner: cleanAddress(b?.miner), house: b?.house === true })).filter((b) => b.address),
+  live: (Array.isArray(s.live) ? s.live : []).map((m) => ({ miner: cleanAddress(m?.miner)?.toLowerCase() || null, house: m?.house === true })).filter((m) => m.miner).slice(0, 64),
+  rate: Number.isFinite(Number(s.rate)) && Number(s.rate) >= 0 ? Number(s.rate) : 0,
 } : null);
-const rateText = (r) => (r >= 1e6 ? `${(r / 1e6).toFixed(1)} M/s` : `${Math.round(r / 1e3)} k/s`);
 function paintSalt() {
   const potWei = salts?.pointsPerDay ? rewardWei(salts.pointsPerDay, cap()) : null;
   $('#salt-pay').textContent = potWei ? ` · ${tac(potWei)} TAC a day` : '';
@@ -281,7 +289,7 @@ function paintSalt() {
   $('#salt-row').hidden = !(on || mineRow);
   $('#salt').textContent = [mineRow ? `${mineRow.shares} shares` : null, part ? `${tac(part)} TAC so far` : null, on ? rateText(rate) : null].filter(Boolean).join(' · ') || '—';
 }
-async function readSalts() { const s = await get(`${API}/prover/salt`); if (s) salts = cleanSalts(s); paintSalt(); }
+async function readSalts() { const s = await get(`${API}/prover/salt`); if (s) salts = cleanSalts(s); paintSalt(); paintNet(); paintCrowd(); }
 
 async function copy() {
   const a = addr();

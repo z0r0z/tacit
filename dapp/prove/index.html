@@ -21,7 +21,7 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /prove/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/prove/app.js?cb=8fb9ce07">
+<link rel="modulepreload" href="/prove/app.js?cb=715ca4c5">
 <link rel="modulepreload" href="/community-prove.js?cb=55393eb1">
 <link rel="modulepreload" href="/prove/view.js?cb=0279ad9a">
 <link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
@@ -503,8 +503,8 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       <div class="net-top num">
         <div class="tip"><span class="lbl">Block</span><b id="height">—</b></div>
         <div class="stat"><span class="lbl">Last block</span><b id="last">—</b></div>
-        <div class="stat"><span class="lbl">Waiting</span><b id="n-wait">—</b></div>
-        <div class="stat"><span class="lbl">Proving now</span><b id="n-lease">—</b></div>
+        <div class="stat"><span class="lbl" id="l-wait">Waiting</span><b id="n-wait">—</b></div>
+        <div class="stat"><span class="lbl" id="l-lease">Proving now</span><b id="n-lease">—</b></div>
         <div class="stat"><span class="lbl">Community provers</span><b id="n-provers">—</b></div>
         <div class="stat"><span class="lbl">Proofs today</span><b id="n-done">—</b></div>
       </div>
@@ -673,6 +673,6 @@ RUNNER_KEY=0x… node tools/community-runner.mjs</code></pre>
 
 <div id="toast-container" class="toasts" popover="manual"></div>
 
-<script type="module" src="/prove/app.js?cb=8fb9ce07"></script>
+<script type="module" src="/prove/app.js?cb=715ca4c5"></script>
 </body>
 </html>
