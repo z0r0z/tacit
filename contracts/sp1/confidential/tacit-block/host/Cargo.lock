@@ -3033,6 +3033,7 @@ dependencies = [
  "btc-pool-halo2",
  "halo2_proofs",
  "hex",
+ "num-bigint 0.4.6",
  "serde_json",
  "sp1-core-executor",
  "tacit-block-common",

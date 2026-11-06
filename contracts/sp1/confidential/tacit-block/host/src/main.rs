@@ -43,7 +43,7 @@ use std::process::exit;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
-use tacit_block_common::{self as blk, fr_be, h64, nf_record, nf_zeros, Answers, BlockData, BlockOut, NfMember, NfWitness, Posted, SpendData, State, MEMO_LEN, NF_LEVELS, RECENT};
+use tacit_block_common::{self as blk, ops, fr_be, h64, nf_record, nf_zeros, Answers, BlockData, BlockOut, NfMember, NfWitness, Posted, SpendData, State, MEMO_LEN, NF_LEVELS, RECENT};
 
 const H2_ARTIFACTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../btc-pool-halo2/artifacts");
 
@@ -199,6 +199,8 @@ struct Prepared {
     data: SpendData,
     outs: Vec<(usize, [u8; 33], u64, Fr)>,
     memos: Vec<Vec<u8>>,
+    /// The memos of the receivers its operation names, in their order.
+    op_memos: Vec<Vec<u8>>,
 }
 
 /// A spend posted to the landing contract's queue: the bytes as posted, and the outputs it makes if a block takes it.
@@ -212,12 +214,14 @@ struct Post {
 /// of its body and openings after the memo hashes.
 fn post(p: &Prepared) -> Post {
     let memos: Vec<u8> = (0..3).flat_map(|j| p.memos.get(j).cloned().unwrap_or_else(|| vec![0u8; MEMO_LEN])).collect();
-    Post { payload: [p.publics.clone(), p.proof.clone(), p.hints.clone(), memos, p.data.to_bytes()[96..].to_vec()].concat(), outs: p.outs.clone() }
+    Post { payload: [p.publics.clone(), p.proof.clone(), p.hints.clone(), memos, p.data.to_bytes()[96..].to_vec(), p.op_memos.concat()].concat(), outs: p.outs.clone() }
 }
 
-/// The memos posted with a spend, slot by slot: what the lander publishes for the outputs a block takes from it.
+/// The memos posted with a spend, slot by slot, then its operation's: what the lander publishes for the notes a block takes from it.
 fn posted_memos(payload: &[u8]) -> Vec<Vec<u8>> {
-    (0..3).map(|i| blk::forced_memo(payload, i).to_vec()).collect()
+    let mut m: Vec<Vec<u8>> = (0..3).map(|i| blk::forced_memo(payload, i).to_vec()).collect();
+    m.extend(blk::forced_op_memos(payload).into_iter().map(<[u8]>::to_vec));
+    m
 }
 
 /// Bytes posted to the queue that are no spend a block can take.
@@ -304,6 +308,21 @@ impl Chain {
     /// hashes and the exit's address. `tag` keeps memos and blindings distinct.
     #[allow(clippy::too_many_arguments)]
     fn spend_with(&self, k: &Keys, ins: &[&Note], outs: &[(usize, [u8; 33], u64)], exit: Option<(u64, [u8; 20])>, dep: Option<u64>, tag: &str, at: usize) -> Prepared {
+        self.spend_full(k, ins, outs, exit, dep, None, tag, at)
+    }
+
+    /// The keys and memo of a note an operation makes for wallet `w` with secret `s`.
+    fn note_to(&self, w: usize, s: &[u8; 33], tag: &str) -> (ops::NoteTo, Vec<u8>) {
+        let o = output_keys(&self.wallets[w].a_pub, &self.wallets[w].n_pub, s);
+        let mut memo = format!("tacit-block op memo {tag}").into_bytes();
+        memo.resize(MEMO_LEN, 0);
+        (ops::NoteTo { npk: o.npk, rho: o.rho, memo: blk::memo_hash(&memo) }, memo)
+    }
+
+    /// As `spend_with`, with `op` = (the value it takes, the operation, its receivers' memos): the exit's value goes into the
+    /// operation, and the body is the operation's.
+    #[allow(clippy::too_many_arguments)]
+    fn spend_full(&self, k: &Keys, ins: &[&Note], outs: &[(usize, [u8; 33], u64)], exit: Option<(u64, [u8; 20])>, dep: Option<u64>, op: Option<(u64, ops::Op, Vec<Vec<u8>>)>, tag: &str, at: usize) -> Prepared {
         let tree = Tree::new(&self.leaves[..at]);
         let mut out = [Fr::from(0u64); 3];
         let mut memo_hashes = [[0u8; 32]; 3];
@@ -326,21 +345,31 @@ impl Chain {
         let exit_to = exit.map(|(_, a)| a).unwrap_or([0u8; 20]);
         // a wallet's would come from its own secret and the spend; the test's from the tag
         let salt = blk::memo_hash(format!("tacit-block test salt {tag}").as_bytes());
-        let bh = body_hash(&blk::body_bytes(&self.state.chain, &out, &memo_hashes, &exit_to, &salt));
+        let bh = match &op {
+            None => body_hash(&blk::body_bytes(&self.state.chain, &out, &memo_hashes, &exit_to, &salt)),
+            Some((_, o, _)) => body_hash(&blk::op_body_bytes(&self.state.chain, &out, &memo_hashes, o, &salt)),
+        };
         let mut inputs: [Option<InNote>; 2] = [None, None];
         for (i, n) in ins.iter().enumerate() {
             let o = owned_keys(&self.wallets[n.owner], &n.s);
             inputs[i] = Some(InNote { v: n.v, rho: o.rho, nk: o.nk.clone(), ak: o.ak, index: n.index, path: tree.path(n.index as usize), sig: sign(&o.sk, &bh) });
         }
         let opening = |v: u64, what: &str| btc_pool_halo2::model::Opening { v, r: hs_l(&format!("tacit-block test {what}"), &[tag.as_bytes()]) };
-        let exit_open = exit.map(|(v, _)| opening(v, "exit"));
+        let exit_open = exit.map(|(v, _)| opening(v, "exit")).or(op.as_ref().map(|(v, _, _)| opening(*v, "exit")));
         let dep_open = dep.map(|v| opening(v, "deposit"));
         let plain = |o: &btc_pool_halo2::model::Opening| blk::Opening { v: o.v, r: be32(&o.r) };
-        let data = SpendData { memo_hashes, exit_to, salt, dep: dep_open.as_ref().map(plain), exit: exit_open.as_ref().map(plain) };
+        let data = SpendData { memo_hashes, exit_to, salt, dep: dep_open.as_ref().map(plain), exit: exit_open.as_ref().map(plain), op: op.as_ref().map(|(_, o, _)| o.clone()) };
         let w = build_witness(tree.root, bh, self.asset_f, &inputs, &outputs, exit_open, dep_open).unwrap_or_else(|e| fail(&e));
         let mut p = prove(k, &w, made, data);
         p.memos = memos;
+        p.op_memos = op.map(|(_, _, m)| m).unwrap_or_default();
         p
+    }
+
+    /// Wallet `owner`'s note at `leaf` (made by an operation), of value `v` and secret `s`, found in the tree.
+    fn made_note(&self, leaf: &Fr, owner: usize, s: &[u8; 33], v: u64) -> Note {
+        let index = self.leaves.iter().position(|l| l == leaf).unwrap_or_else(|| fail("an operation's note is not in the tree")) as u64;
+        Note { owner, s: *s, v, index }
     }
 
     /// A posted spend as the block's program sees it before its proof, and the builder's answers: whether its proof verifies (checked here
@@ -443,6 +472,17 @@ impl Chain {
         rebuilt.nf_root = public.root();
         rebuilt.nf_size = public.records.len() as u64;
         rebuilt.remember(fr_be(&rebuilt.notes.root));
+        // and the pools, from the changes the block publishes
+        for c in &data.pools {
+            let p = ops::Pool::from_bytes(&c[..ops::POOL_LEN]).ok_or("a published pool does not decode")?;
+            match rebuilt.pools.iter().position(|q| q.x == p.x && q.y == p.y) {
+                Some(i) => rebuilt.pools[i] = p,
+                None => {
+                    let at = rebuilt.pools.iter().position(|q| (fr_be(&q.x), fr_be(&q.y)) > (fr_be(&p.x), fr_be(&p.y))).unwrap_or(rebuilt.pools.len());
+                    rebuilt.pools.insert(at, p);
+                }
+            }
+        }
         // and the queue's position from what was posted to it
         for p in posts {
             rebuilt.queue_len += 1;
@@ -480,7 +520,7 @@ fn prove(k: &Keys, w: &SpendWitness, outs: Vec<(usize, [u8; 33], u64, Fr)>, data
         fail("a spend proof does not verify natively");
     }
     let (hints, _) = agg::record_hints(&k.vparams, k.pk.get_vk(), &publics, &proof).unwrap_or_else(|e| fail(&format!("hints: {e:?}")));
-    Prepared { publics: publics.iter().flat_map(fr_be).collect(), proof, hints, spend: blk::Spend::from_publics(&publics), data, outs, memos: vec![] }
+    Prepared { publics: publics.iter().flat_map(fr_be).collect(), proof, hints, spend: blk::Spend::from_publics(&publics), data, outs, memos: vec![], op_memos: vec![] }
 }
 
 /// Runs a guest to completion: its public values, cycle count and cycles by tracked section, or why it stopped.
@@ -656,7 +696,17 @@ fn block_json(l: &Landed, memos: &[Vec<u8>]) -> Value {
         "anchors": l.data.anchors.iter().map(|a| hx(a)).collect::<Vec<_>>(),
         "deposits": hx(&l.data.deposits.concat()),
         "exits": hx(&l.data.exits.concat()),
+        "pools": hx(&l.data.pools.concat()),
     })
+}
+
+/// The token the fixture's pool pairs with ETH: the landing contract's test deploys an 18-decimal token here.
+const FIXTURE_TOKEN: [u8; 20] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x7a, 0xc1, 0x70];
+
+/// A deposit as the landing contract's test makes it: the token (zero for ETH), the value and the commitment and body its shield names.
+fn deposit_json(token: &[u8; 20], value: u64, p: &Prepared) -> Value {
+    let hx = |b: &[u8]| format!("0x{}", hex::encode(b));
+    json!({ "token": hx(token), "value": value, "cx": hx(&fr_be(&p.spend.dep[0])), "cy": hx(&fr_be(&p.spend.dep[1])), "body": hx(&fr_be(&p.spend.body)) })
 }
 
 /// The fixture for a landing contract at `lander` on `chain_id`; each block's guest input is kept beside it as
@@ -680,7 +730,62 @@ fn fixture(path: &str, chain_id: u64, lander: [u8; 20]) {
     if l3.data.nullifiers.len() != 1 || l3.out.queue_len != 1 {
         fail("the fixture's forced spend was not taken");
     }
+
+    // Blocks 3 to 5, the chain's pools. Block 3 makes a pool of ETH and the token from two deposits that go straight into it.
+    let eth = c.asset_f;
+    let mut padded = [0u8; 32];
+    padded[12..].copy_from_slice(&FIXTURE_TOKEN);
+    let tok = asset_field(&padded);
+    let x_first = fr_be(&eth) < fr_be(&tok);
+    let lp = ops::lp_asset(&eth, &tok);
+    let group = [9u8; 32];
+    let s_lp = secret(83, 0, 0);
+    let (lp_to, lp_memo) = c.note_to(4, &s_lp, "fixture lp");
+    let (back_e, back_e_memo) = c.note_to(4, &secret(83, 0, 1), "fixture lp back eth");
+    let (back_t, back_t_memo) = c.note_to(4, &secret(83, 0, 2), "fixture lp back token");
+    let add_e = c.spend_full(&k, &[], &[], None, Some(1_000_000), Some((1_000_000, ops::Op::Add { other: tok, group, min: 1, to: lp_to, back: back_e }, vec![lp_memo.clone(), back_e_memo])), "fixture add eth", c.leaves.len());
+    let add_t = of_asset(&c, tok).spend_full(&k, &[], &[], None, Some(4_000_000), Some((4_000_000, ops::Op::Add { other: eth, group, min: 1, to: lp_to, back: back_t }, vec![lp_memo, back_t_memo])), "fixture add token", c.leaves.len());
+    let l4 = c.land(&elf, &k, &[add_e.clone(), add_t.clone()]).unwrap_or_else(|e| fail(&format!("fixture pool: {e}")));
+    let shares = 2_000_000 - ops::LOCKED_LIQUIDITY as u64;
+    let lp_leaf = ops::Made { asset: lp, value: shares, to: lp_to }.leaf();
+    if c.state.pools.len() != 1 || l4.data.pools.len() != 1 || l4.data.outputs.len() != 1 || l4.data.outputs[0][..32] != fr_be(&lp_leaf) {
+        fail("the fixture's pool was not made");
+    }
+    // Block 4: swaps from deposits, ETH for the token and the token for ETH, and one whose limit the price misses.
+    let (to_c, m_c) = c.note_to(5, &secret(84, 0, 0), "fixture swap eth");
+    let (to_d, m_d) = c.note_to(6, &secret(84, 0, 1), "fixture swap token");
+    let (to_e, m_e) = c.note_to(7, &secret(84, 0, 2), "fixture swap missed");
+    let sw_c = c.spend_full(&k, &[], &[], None, Some(10_000), Some((10_000, ops::Op::Swap { want: tok, min: 1, to: to_c }, vec![m_c])), "fixture swap eth", c.leaves.len());
+    let sw_d = of_asset(&c, tok).spend_full(&k, &[], &[], None, Some(30_000), Some((30_000, ops::Op::Swap { want: eth, min: 1, to: to_d }, vec![m_d])), "fixture swap token", c.leaves.len());
+    let sw_e = c.spend_full(&k, &[], &[], None, Some(5_000), Some((5_000, ops::Op::Swap { want: tok, min: 1_000_000_000_000, to: to_e }, vec![m_e])), "fixture swap missed", c.leaves.len());
+    let l5 = c.land(&elf, &k, &[sw_c.clone(), sw_d.clone(), sw_e.clone()]).unwrap_or_else(|e| fail(&format!("fixture swaps: {e}")));
+    let (num, den) = change_price(&l5.data.pools[0]);
+    let got_c = u64::try_from(if x_first { num_bigint::BigUint::from(10_000u64) * &num / &den } else { num_bigint::BigUint::from(10_000u64) * &den / &num }).unwrap();
+    let c_leaf = ops::Made { asset: tok, value: got_c, to: to_c }.leaf();
+    let e_leaf = ops::Made { asset: eth, value: 5_000, to: to_e }.leaf();
+    if l5.data.outputs.len() != 3 || !l5.data.outputs.iter().any(|o| o[..32] == fr_be(&c_leaf)) || !l5.data.outputs.iter().any(|o| o[..32] == fr_be(&e_leaf)) {
+        fail("the fixture's swaps did not make the notes expected");
+    }
+    // Block 5: half the pool's shares taken out by a spend posted to the queue, beside a spend that exits what the ETH bought.
+    let lp_note = c.made_note(&lp_leaf, 4, &s_lp, shares);
+    let half = shares / 2;
+    let (to_x, m_x) = c.note_to(4, &secret(85, 0, 0), "fixture remove x");
+    let (to_y, m_y) = c.note_to(4, &secret(85, 0, 1), "fixture remove y");
+    let (to_b, m_b) = c.note_to(4, &secret(85, 0, 2), "fixture remove back");
+    let rm = of_asset(&c, lp).spend_full(&k, &[&lp_note], &[(4, secret(85, 0, 3), shares - half)], None, None, Some((half, ops::Op::Remove { min_x: 1, min_y: 1, to_x, to_y, back: to_b }, vec![m_x, m_y, m_b])), "fixture remove", c.leaves.len());
+    let posted_rm = post(&rm);
+    let c_note = c.made_note(&c_leaf, 5, &secret(84, 0, 0), got_c);
+    let tok_to = [0xcd; 20];
+    let tok_exit = of_asset(&c, tok).spend_with(&k, &[&c_note], &[], Some((got_c, tok_to)), None, "fixture token exit", c.leaves.len());
+    let pool_before = c.state.pools[0].clone();
+    let l6 = c.land_with(&elf, &k, &[tok_exit.clone()], &[posted_rm.clone()]).unwrap_or_else(|e| fail(&format!("fixture removal: {e}")));
+    if l6.data.nullifiers.len() != 2 || l6.data.exits.len() != 1 || c.state.pools[0].supply != pool_before.supply - half as u128 || l6.out.queue_len != 2 {
+        fail("the fixture's removal or exit was not taken");
+    }
+    let mut op_memos: Vec<Vec<u8>> = [&add_e, &add_t, &sw_c, &sw_d, &sw_e].iter().flat_map(|p| p.op_memos.clone()).collect();
+    op_memos.extend(posted_memos(&posted_rm.payload));
     let hx = |b: &[u8]| format!("0x{}", hex::encode(b));
+    let zero = [0u8; 20];
     let doc = json!({
         "chainId": chain_id,
         "lander": hx(&lander),
@@ -692,14 +797,32 @@ fn fixture(path: &str, chain_id: u64, lander: [u8; 20]) {
         "deposit": { "value": 500, "cx": hx(&fr_be(&shield.spend.dep[0])), "cy": hx(&fr_be(&shield.spend.dep[1])), "body": hx(&fr_be(&shield.spend.body)) },
         "exit": { "value": 120, "to": hx(&to) },
         "forced": hx(&posted.payload),
-        "blocks": [block_json(&l1, &shield.memos), block_json(&l2, &pay_out.memos), block_json(&l3, &posted_memos(&posted.payload))],
+        "token": hx(&FIXTURE_TOKEN),
+        "opDeposits": [
+            deposit_json(&zero, 1_000_000, &add_e),
+            deposit_json(&FIXTURE_TOKEN, 4_000_000, &add_t),
+            deposit_json(&zero, 10_000, &sw_c),
+            deposit_json(&FIXTURE_TOKEN, 30_000, &sw_d),
+            deposit_json(&zero, 5_000, &sw_e),
+        ],
+        "forcedRemove": hx(&posted_rm.payload),
+        "tokenExit": { "value": got_c, "to": hx(&tok_to) },
+        "blocks": [
+            block_json(&l1, &shield.memos),
+            block_json(&l2, &pay_out.memos),
+            block_json(&l3, &posted_memos(&posted.payload)),
+            block_json(&l4, &op_memos),
+            block_json(&l5, &op_memos),
+            block_json(&l6, &op_memos),
+        ],
     });
     std::fs::write(path, serde_json::to_string_pretty(&doc).unwrap()).unwrap_or_else(|e| fail(&format!("{path}: {e}")));
-    for (i, l) in [&l1, &l2, &l3].iter().enumerate() {
+    for (i, l) in [&l1, &l2, &l3, &l4, &l5, &l6].iter().enumerate() {
         let f = format!("{path}.b{i}.stdin");
         std::fs::write(&f, stdin_file(&l.stdin)).unwrap_or_else(|e| fail(&format!("{f}: {e}")));
     }
-    println!("{}", json!({ "fixture": path, "blocks": 3 }));
+    let p = &c.state.pools[0];
+    println!("{}", json!({ "fixture": path, "blocks": 6, "pool": [p.rx.to_string(), p.ry.to_string(), p.supply.to_string()], "token_bought": got_c, "cycles": [l1.cycles, l2.cycles, l3.cycles, l4.cycles, l5.cycles, l6.cycles] }));
 }
 
 /// Runs a block whose input `tamper` changed, expecting the guest to refuse it; the chain is left as it was.
@@ -931,6 +1054,7 @@ fn test() {
     let mut yb = c.spend(&k, &[&y[1]], &[(4, secret(97, 0, 1), 6)], "forced y bad", c.leaves.len());
     yb.proof[576 + 13 * 32] ^= 1;
     expect_refused_input(&c, &elf, &k, &[], &[post(&yb)], |b| { b[4] = vec![1u8, 0u8]; }, "a failing forced proof said to verify");
+    ops_test(&mut c, &elf, &k);
     println!("{}", json!({ "test": "ok", "note_roots": c.roots.len() }));
 }
 
@@ -951,5 +1075,211 @@ fn main() {
         }
         Some("dump") if args.len() == 3 => dump(args[1].parse().unwrap_or_else(|_| fail("N is a number")), &args[2]),
         _ => fail("usage: tacit-block measure N... | test | dump N FILE | fixture FILE | pin [--check]"),
+    }
+}
+
+
+/// A published pool change's reserves and shares as the swaps left it (before any zap went in).
+fn change_mid(c: &[u8]) -> (u128, u128, u128) {
+    let u = |i: usize| u128::from_be_bytes(c[i..i + 16].try_into().unwrap());
+    let at = ops::POOL_LEN + 64;
+    (u(at), u(at + 16), u(at + 32))
+}
+
+/// A published pool change's clearing price (numerator, denominator), as a wallet reads it.
+fn change_price(c: &[u8]) -> (num_bigint::BigUint, num_bigint::BigUint) {
+    use num_bigint::BigUint;
+    (BigUint::from_bytes_be(&c[ops::POOL_LEN..ops::POOL_LEN + 32]), BigUint::from_bytes_be(&c[ops::POOL_LEN + 32..ops::POOL_LEN + 64]))
+}
+
+/// The same chain, spending notes of `asset`.
+fn of_asset(c: &Chain, asset: Fr) -> Chain {
+    let mut d = c.clone();
+    d.asset_f = asset;
+    d
+}
+
+/// Operations: a pool of two assets made by an addition, swaps both ways cleared at one price (a limit the price misses coming back),
+/// liquidity taken out, a deposit swapped as it comes in and a forced swap, each note an operation makes found as a wallet finds it
+/// (from the published pool change and price, and its own keys); and refused, an exit of pool shares to L1 and an operation changed
+/// after its owners signed it.
+fn ops_test(c: &mut Chain, elf: &[u8], k: &Keys) {
+    use num_bigint::BigUint;
+    use ops::Op;
+    let ax = c.asset_f;
+    let ay = asset_field(&[0xcd; 32]);
+    let lp = ops::lp_asset(&ax, &ay);
+    let x_first = fr_be(&ax) < fr_be(&ay);
+    let mint_y = |c: &mut Chain, notes: &[(usize, [u8; 33], u64)]| -> Vec<Note> {
+        c.asset_f = ay;
+        let n = c.mint(notes);
+        c.asset_f = ax;
+        n
+    };
+    let leaf = |asset: &Fr, v: u64, to: &ops::NoteTo| ops::Made { asset: *asset, value: v, to: *to }.leaf();
+    let has = |l: &Landed, f: &Fr| l.data.outputs.iter().any(|o| o[..32] == fr_be(f));
+
+    // a pool: 1,000,000 x and 4,000,000 y from wallet 1, two spends naming one group
+    let nx = c.mint(&[(1, secret(110, 0, 0), 1_000_000)]);
+    let ny = mint_y(c, &[(1, secret(110, 0, 1), 4_000_000)]);
+    let s_lp = secret(111, 0, 0);
+    let (lp_to, lp_memo) = c.note_to(1, &s_lp, "lp shares");
+    let (bx, bx_memo) = c.note_to(1, &secret(111, 0, 1), "lp back x");
+    let (by, by_memo) = c.note_to(1, &secret(111, 0, 2), "lp back y");
+    let group = [7u8; 32];
+    let add_x = c.spend_full(k, &[&nx[0]], &[], None, None, Some((1_000_000, Op::Add { other: ay, group, min: 1, to: lp_to, back: bx }, vec![lp_memo.clone(), bx_memo])), "add x", c.leaves.len());
+    let add_y = of_asset(c, ay).spend_full(k, &[&ny[0]], &[], None, None, Some((4_000_000, Op::Add { other: ax, group, min: 1, to: lp_to, back: by }, vec![lp_memo, by_memo])), "add y", c.leaves.len());
+    let la = c.land(elf, k, &[add_x, add_y]).unwrap_or_else(|e| fail(&format!("a pool made by an addition: {e}")));
+    let pool = c.state.pools.first().cloned().unwrap_or_else(|| fail("no pool"));
+    let (rx, ry) = if x_first { (1_000_000u128, 4_000_000u128) } else { (4_000_000, 1_000_000) };
+    if c.state.pools.len() != 1 || (pool.rx, pool.ry, pool.supply) != (rx, ry, 2_000_000) || la.data.pools.len() != 1 {
+        fail("the addition did not make the pool expected");
+    }
+    let shares = 2_000_000 - ops::LOCKED_LIQUIDITY as u64;
+    let lp_leaf = leaf(&lp, shares, &lp_to);
+    if !has(&la, &lp_leaf) {
+        fail("the pool's shares are not among the block's notes");
+    }
+
+    // swaps both ways, and one whose limit the price misses
+    let sx = c.mint(&[(2, secret(112, 0, 0), 10_000), (4, secret(112, 0, 2), 5_000)]);
+    let sy = mint_y(c, &[(3, secret(112, 0, 1), 30_000)]);
+    let (to2, m2) = c.note_to(2, &secret(113, 0, 0), "swap 2");
+    let (to3, m3) = c.note_to(3, &secret(113, 0, 1), "swap 3");
+    let (to4, m4) = c.note_to(4, &secret(113, 0, 2), "swap 4");
+    let w2 = c.spend_full(k, &[&sx[0]], &[], None, None, Some((10_000, Op::Swap { want: ay, min: 1, to: to2 }, vec![m2])), "swap 2", c.leaves.len());
+    let w3 = of_asset(c, ay).spend_full(k, &[&sy[0]], &[], None, None, Some((30_000, Op::Swap { want: ax, min: 1, to: to3 }, vec![m3])), "swap 3", c.leaves.len());
+    let w4 = c.spend_full(k, &[&sx[1]], &[], None, None, Some((5_000, Op::Swap { want: ay, min: 1_000_000, to: to4 }, vec![m4])), "swap 4", c.leaves.len());
+    let before = c.state.pools[0].clone();
+    let ls = c.land(elf, k, &[w2, w3, w4]).unwrap_or_else(|e| fail(&format!("swaps: {e}")));
+    let after = c.state.pools[0].clone();
+    let (num, den) = change_price(&ls.data.pools[0]);
+    // a wallet's payout at the published price: x sold for y at num/den, y sold for x at den/num
+    let px = |a: u64| -> u64 { u64::try_from(BigUint::from(a) * &num / &den).unwrap() };
+    let py = |a: u64| -> u64 { u64::try_from(BigUint::from(a) * &den / &num).unwrap() };
+    let (out2, out3) = if x_first { (px(10_000), py(30_000)) } else { (py(10_000), px(30_000)) };
+    if !has(&ls, &leaf(&ay, out2, &to2)) || !has(&ls, &leaf(&ax, out3, &to3)) || !has(&ls, &leaf(&ax, 5_000, &to4)) || out2 == 0 || out3 == 0 {
+        fail("a swap's proceeds, or a missed limit's refund, are not among the block's notes");
+    }
+    if BigUint::from(after.rx) * BigUint::from(after.ry) < BigUint::from(before.rx) * BigUint::from(before.ry) {
+        fail("a clearing shrank the pool's product");
+    }
+    println!("{}", json!({ "pool": [after.rx.to_string(), after.ry.to_string()], "swap_2_x_for_y": out2, "swap_3_y_for_x": out3, "refund_4": 5_000, "cycles": ls.cycles }));
+
+    // liquidity taken out: half the shares, at the pool as the block finds it
+    let lp_note = c.made_note(&lp_leaf, 1, &s_lp, shares);
+    let half = shares / 2;
+    let (tx_, mx) = c.note_to(1, &secret(114, 0, 0), "remove x");
+    let (ty_, my) = c.note_to(1, &secret(114, 0, 1), "remove y");
+    let (tb_, mb) = c.note_to(1, &secret(114, 0, 2), "remove back");
+    let (lo, hi) = (to_note(&tx_, &ty_, x_first).0, to_note(&tx_, &ty_, x_first).1);
+    let rm = of_asset(c, lp).spend_full(k, &[&lp_note], &[(1, secret(114, 0, 3), shares - half)], None, None, Some((half, Op::Remove { min_x: 1, min_y: 1, to_x: lo, to_y: hi, back: tb_ }, vec![if x_first { mx.clone() } else { my.clone() }, if x_first { my } else { mx }, mb])), "remove", c.leaves.len());
+    let p0 = c.state.pools[0].clone();
+    let lr = c.land(elf, k, &[rm]).unwrap_or_else(|e| fail(&format!("liquidity taken out: {e}")));
+    let ox = u64::try_from(BigUint::from(half) * BigUint::from(p0.rx) / BigUint::from(p0.supply)).unwrap();
+    let oy = u64::try_from(BigUint::from(half) * BigUint::from(p0.ry) / BigUint::from(p0.supply)).unwrap();
+    if !has(&lr, &leaf(&p0.x, ox, &lo)) || !has(&lr, &leaf(&p0.y, oy, &hi)) || c.state.pools[0].supply != p0.supply - half as u128 {
+        fail("taking liquidity out did not make the notes expected");
+    }
+
+    // a deposit swapped as it comes in: a shield whose whole deposit goes into a swap
+    let (td, md) = c.note_to(5, &secret(115, 0, 0), "deposit swap");
+    let ds = c.spend_full(k, &[], &[], None, Some(7_000), Some((7_000, Op::Swap { want: ay, min: 1, to: td }, vec![md])), "deposit swap", c.leaves.len());
+    let p1 = c.state.pools[0].clone();
+    let ld = c.land(elf, k, &[ds]).unwrap_or_else(|e| fail(&format!("a deposit swapped: {e}")));
+    let (n1, d1) = change_price(&ld.data.pools[0]);
+    let got = u64::try_from(if x_first { BigUint::from(7_000u64) * &n1 / &d1 } else { BigUint::from(7_000u64) * &d1 / &n1 }).unwrap();
+    if ld.data.deposits.len() != 1 || !has(&ld, &leaf(&ay, got, &td)) || ld.data.exits.len() != 0 || p1 == c.state.pools[0] {
+        fail("a deposit swapped as it came in did not make its note");
+    }
+
+    // a forced swap, taken from the queue with its receiver's memo
+    let fx = c.mint(&[(6, secret(116, 0, 0), 2_000)]);
+    let (tf, mf) = c.note_to(6, &secret(116, 0, 1), "forced swap");
+    let fsw = c.spend_full(k, &[&fx[0]], &[], None, None, Some((2_000, Op::Swap { want: ay, min: 1, to: tf }, vec![mf])), "forced swap", c.leaves.len());
+    let lf = c.land_with(elf, k, &[], &[post(&fsw)]).unwrap_or_else(|e| fail(&format!("a forced swap: {e}")));
+    if lf.data.nullifiers.len() != 1 || lf.data.pools.len() != 1 {
+        fail("a forced swap was not taken");
+    }
+
+    // zaps: x alone (one of 20,000 and the same split in two), y alone, one whose limit the price misses, and liquidity taken out into
+    // one asset, in one block; every note as a wallet works it out from the pool as the block found it and what the block publishes
+    let lp_left = lr.notes[0].clone();
+    let zx = c.mint(&[(2, secret(118, 0, 0), 20_000), (3, secret(118, 0, 1), 10_000), (3, secret(118, 0, 2), 10_000), (4, secret(118, 0, 3), 3_000)]);
+    let zy = mint_y(c, &[(5, secret(118, 0, 4), 50_000)]);
+    let zap = |c: &Chain, n: &Note, asset: Fr, other: Fr, min: u64, w: usize, t: u8, tag: &str| -> (Prepared, ops::NoteTo, ops::NoteTo) {
+        let (to, tm) = c.note_to(w, &secret(119, 0, t), tag);
+        let (back, bm) = c.note_to(w, &secret(119, 0, t + 1), tag);
+        (of_asset(c, asset).spend_full(k, &[n], &[], None, None, Some((n.v, Op::Zap { other, min, to, back }, vec![tm, bm])), tag, c.leaves.len()), to, back)
+    };
+    let (z1, z1to, z1back) = zap(c, &zx[0], ax, ay, 1, 2, 0, "zap 20000");
+    let (z2, z2to, z2back) = zap(c, &zx[1], ax, ay, 1, 3, 2, "zap 10000 a");
+    let (z3, z3to, z3back) = zap(c, &zx[2], ax, ay, 1, 3, 4, "zap 10000 b");
+    let (z4, _, z4back) = zap(c, &zx[3], ax, ay, 1_000_000_000, 4, 6, "zap missed");
+    let (z5, z5to, z5back) = zap(c, &zy[0], ay, ax, 1, 5, 8, "zap y");
+    let (out_to, out_m) = c.note_to(1, &secret(119, 0, 10), "out to x");
+    let (out_back, out_bm) = c.note_to(1, &secret(119, 0, 11), "out back");
+    let rt = of_asset(c, lp).spend_full(k, &[&lp_left], &[], None, None, Some((lp_left.v, Op::RemoveTo { want: ax, min: 1, to: out_to, back: out_back }, vec![out_m, out_bm])), "remove to x", c.leaves.len());
+    let p0 = c.state.pools[0].clone();
+    let lz = c.land(elf, k, &[z1, z2, z3, z4, z5, rt]).unwrap_or_else(|e| fail(&format!("zaps: {e}")));
+    let ch = &lz.data.pools[0];
+    let (num, den) = change_price(ch);
+    let mid = change_mid(ch);
+    let end = c.state.pools[0].clone();
+    // x is sold for y at num/den, y for x at den/num
+    let buy = |sells_x: bool, a: u64| -> u64 { u64::try_from(if sells_x { BigUint::from(a) * &num / &den } else { BigUint::from(a) * &den / &num }).unwrap() };
+    // what a zap of `a` (selling x or not) makes, as its wallet works it out: (shares, x back, y back)
+    let zapped = |a: u64, sells_x: bool| -> (u64, u64, u64) {
+        let sold = ops::zap_part(a, if sells_x { p0.rx } else { p0.ry });
+        let bought = buy(sells_x == x_first, sold);
+        let (ex, ey) = if sells_x == x_first { ((a - sold) as u128, bought as u128) } else { (bought as u128, (a - sold) as u128) };
+        let (rx, ry, sup) = mid;
+        let s = (BigUint::from(ex) * BigUint::from(sup) / BigUint::from(rx)).min(BigUint::from(ey) * BigUint::from(sup) / BigUint::from(ry));
+        let up = |r: u128| u128::try_from((&s * BigUint::from(r) + BigUint::from(sup) - 1u8) / BigUint::from(sup)).unwrap();
+        (u64::try_from(&s).unwrap(), (ex - up(rx)) as u64, (ey - up(ry)) as u64)
+    };
+    let (px, py) = (if x_first { p0.x } else { p0.y }, if x_first { p0.y } else { p0.x });
+    let _ = (px, py);
+    let check = |what: &str, zap_leaves: Vec<(Fr, u64, ops::NoteTo)>| {
+        for (asset, v, to) in zap_leaves {
+            if v > 0 && !has(&lz, &leaf(&asset, v, &to)) {
+                fail(&format!("{what}: a note its wallet expects ({v}) is not among the block's notes"));
+            }
+        }
+    };
+    let (pool_x, pool_y) = (p0.x, p0.y);
+    let (s1, x1, y1) = zapped(20_000, true);
+    check("the zap of 20,000", vec![(lp, s1, z1to), (pool_x, x1, z1back), (pool_y, y1, z1back)]);
+    let (s2, x2, y2) = zapped(10_000, true);
+    check("the split zaps", vec![(lp, s2, z2to), (pool_x, x2, z2back), (pool_y, y2, z2back), (lp, s2, z3to), (pool_x, x2, z3back), (pool_y, y2, z3back)]);
+    check("the missed zap", vec![(ax, 3_000, z4back)]);
+    let (s5, x5, y5) = zapped(50_000, false);
+    check("the zap of y", vec![(lp, s5, z5to), (pool_x, x5, z5back), (pool_y, y5, z5back)]);
+    let e = BigUint::from(lp_left.v);
+    let (ox, oy) = (u64::try_from(&e * BigUint::from(p0.rx) / BigUint::from(p0.supply)).unwrap(), u64::try_from(&e * BigUint::from(p0.ry) / BigUint::from(p0.supply)).unwrap());
+    let (o_want, o_other) = if x_first { (ox, oy) } else { (oy, ox) };
+    check("liquidity taken out into x", vec![(ax, o_want + buy(!x_first, o_other), out_to)]);
+    // the pool's reserves a share never shrink for a zap: the shares' value only grows from `mid` to the end
+    let sq = |r: (u128, u128, u128)| BigUint::from(r.0) * BigUint::from(r.1) * BigUint::from(end.supply) * BigUint::from(end.supply) <= BigUint::from(end.rx) * BigUint::from(end.ry) * BigUint::from(r.2) * BigUint::from(r.2);
+    if !sq(mid) || s1 == 0 || s5 == 0 {
+        fail("zaps made no shares, or their shares are worth more than they put in");
+    }
+    println!("{}", json!({ "zap_20000_shares": s1, "zap_10000_shares_each": s2, "zap_y_shares": s5, "out_to_x": o_want + buy(!x_first, o_other), "cycles": lz.cycles }));
+
+    // refused: an operation changed after its owners signed it
+    let more = c.mint(&[(2, secret(117, 0, 0), 900)]);
+    let (tm, mm) = c.note_to(2, &secret(117, 0, 1), "changed");
+    let mut changed = c.spend_full(k, &[&more[0]], &[], None, None, Some((900, Op::Swap { want: ay, min: 1, to: tm }, vec![mm])), "changed", c.leaves.len());
+    changed.data.op = Some(Op::Swap { want: ay, min: 2, to: tm });
+    expect_refused(c, elf, k, &[changed], "an operation changed after its owners signed it");
+    println!("{}", json!({ "ops": "ok", "pools": c.state.pools.len(), "remove_cycles": lr.cycles, "deposit_swap_cycles": ld.cycles, "forced_swap_cycles": lf.cycles }));
+}
+
+/// A remove's two receivers in the pool's order (smaller asset first).
+fn to_note(a: &ops::NoteTo, b: &ops::NoteTo, x_first: bool) -> (ops::NoteTo, ops::NoteTo) {
+    if x_first {
+        (*a, *b)
+    } else {
+        (*b, *a)
     }
 }

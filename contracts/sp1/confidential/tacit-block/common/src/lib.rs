@@ -33,13 +33,15 @@ use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
 pub mod fast;
+pub mod ops;
 
 /// Levels of the nullifier tree: room for 2^32 records.
 pub const NF_LEVELS: usize = 32;
 /// How many of the latest note roots a block accepts as anchors without listing them.
 pub const RECENT: usize = 32;
-/// `State::to_bytes`: note root, leaf count (u64 BE), the 32 filled nodes, nullifier root, record count, recent
-/// roots, chain binding, the queue's position (u64 BE) and its hash there.
+/// `State::to_bytes` up to its pools: note root, leaf count (u64 BE), the 32 filled nodes, nullifier root, record count,
+/// recent roots, chain binding, the queue's position (u64 BE) and its hash there; then the pool count (u32 BE) and the pools
+/// (`ops::Pool::to_bytes`, by pair).
 pub const STATE_LEN: usize = 32 + 8 + 32 * TREE_DEPTH + 32 + 8 + 32 * RECENT + 32 + 8 + 32;
 /// `NfWitness::to_bytes`: low value, low next, low index (u64 BE), low path, slot path.
 pub const NF_WITNESS_LEN: usize = 32 + 32 + 8 + 2 * 32 * NF_LEVELS;
@@ -534,6 +536,8 @@ pub struct SpendData {
     pub salt: [u8; 32],
     pub dep: Option<Opening>,
     pub exit: Option<Opening>,
+    /// The operation the exit's value goes into instead of an address (`ops`): with one, the body is `op_body_bytes`.
+    pub op: Option<ops::Op>,
 }
 
 impl SpendData {
@@ -554,10 +558,21 @@ impl SpendData {
                 }
             }
         }
+        // a payment's bytes end there; an operation follows a 1
+        if let Some(op) = &self.op {
+            b.push(1);
+            b.extend(op.to_bytes());
+        }
         b
     }
 
     pub fn from_bytes(b: &[u8]) -> Option<SpendData> {
+        let (d, n) = SpendData::from_prefix(b)?;
+        (n == b.len()).then_some(d)
+    }
+
+    /// The data `to_bytes` wrote at the start of `b` (an operation there if a 1 follows the openings), and how many bytes it took.
+    pub fn from_prefix(b: &[u8]) -> Option<(SpendData, usize)> {
         let mut d = SpendData::default();
         for (i, m) in d.memo_hashes.iter_mut().enumerate() {
             m.copy_from_slice(b.get(32 * i..32 * i + 32)?);
@@ -581,7 +596,12 @@ impl SpendData {
         };
         d.dep = opening()?;
         d.exit = opening()?;
-        (at == b.len()).then_some(d)
+        if b.get(at) == Some(&1) {
+            let (op, n) = ops::Op::from_prefix(&b[at + 1..])?;
+            d.op = Some(op);
+            at += 1 + n;
+        }
+        Some((d, at))
     }
 }
 
@@ -602,6 +622,24 @@ pub fn body_bytes(chain: &[u8; 32], out: &[Fr; 3], memo_hashes: &[[u8; 32]; 3], 
         b.extend_from_slice(m);
     }
     b.extend_from_slice(exit_to);
+    b.extend_from_slice(salt);
+    b
+}
+
+const OP_BODY_DOMAIN: &[u8] = b"tacit-block-op-body-v1";
+
+/// The body of a spend that sends its exit's value into an operation: the chain's binding, the output leaves, their memo hashes, the
+/// operation and the spender's salt, signed as a payment's body is.
+pub fn op_body_bytes(chain: &[u8; 32], out: &[Fr; 3], memo_hashes: &[[u8; 32]; 3], op: &ops::Op, salt: &[u8; 32]) -> Vec<u8> {
+    let mut b = OP_BODY_DOMAIN.to_vec();
+    b.extend_from_slice(chain);
+    for o in out {
+        b.extend_from_slice(&fr_be(o));
+    }
+    for m in memo_hashes {
+        b.extend_from_slice(m);
+    }
+    b.extend(op.to_bytes());
     b.extend_from_slice(salt);
     b
 }
@@ -650,12 +688,14 @@ pub struct State {
     /// How many of the landing contract's forced spends the chain has taken or passed over, and the queue's hash after them.
     pub queue_len: u64,
     pub queue_hash: [u8; 32],
+    /// The chain's pools, by pair.
+    pub pools: Vec<ops::Pool>,
 }
 
 impl State {
     /// The state before any block, for a chain bound to `chain`.
     pub fn genesis(chain: [u8; 32]) -> State {
-        let mut s = State { notes: Notes::default(), nf_root: nf_genesis_root(), nf_size: 1, recent: [[0u8; 32]; RECENT], chain, queue_len: 0, queue_hash: [0u8; 32] };
+        let mut s = State { notes: Notes::default(), nf_root: nf_genesis_root(), nf_size: 1, recent: [[0u8; 32]; RECENT], chain, queue_len: 0, queue_hash: [0u8; 32], pools: vec![] };
         s.remember(fr_be(&s.notes.root));
         s
     }
@@ -687,13 +727,23 @@ impl State {
         b.extend_from_slice(&self.chain);
         b.extend_from_slice(&self.queue_len.to_be_bytes());
         b.extend_from_slice(&self.queue_hash);
+        b.extend_from_slice(&(self.pools.len() as u32).to_be_bytes());
+        for p in &self.pools {
+            b.extend(p.to_bytes());
+        }
         b
     }
 
     pub fn from_bytes(b: &[u8]) -> Option<State> {
-        if b.len() != STATE_LEN {
+        let n = u32::from_be_bytes(b.get(STATE_LEN..STATE_LEN + 4)?.try_into().ok()?) as usize;
+        if b.len() != STATE_LEN + 4 + n.checked_mul(ops::POOL_LEN)? {
             return None;
         }
+        let pools: Vec<ops::Pool> = b[STATE_LEN + 4..].chunks(ops::POOL_LEN).map(ops::Pool::from_bytes).collect::<Option<_>>()?;
+        if pools.windows(2).any(|w| (fr_be(&w[0].x), fr_be(&w[0].y)) >= (fr_be(&w[1].x), fr_be(&w[1].y))) {
+            return None;
+        }
+        let b = &b[..STATE_LEN];
         let root = fr_from_be(&b[..32])?;
         let len = u64::from_be_bytes(b[32..40].try_into().ok()?);
         let mut filled = [Fr::ZERO; TREE_DEPTH];
@@ -710,7 +760,7 @@ impl State {
         let chain = b[STATE_LEN - 72..STATE_LEN - 40].try_into().ok()?;
         let queue_len = u64::from_be_bytes(b[STATE_LEN - 40..STATE_LEN - 32].try_into().ok()?);
         let queue_hash = b[STATE_LEN - 32..].try_into().ok()?;
-        Some(State { notes: Notes { filled, len, root }, nf_root, nf_size, recent, chain, queue_len, queue_hash })
+        Some(State { notes: Notes { filled, len, root }, nf_root, nf_size, recent, chain, queue_len, queue_hash, pools })
     }
 
     pub fn digest(&self) -> [u8; 32] {
@@ -741,7 +791,7 @@ pub fn vk_hash(vk_digest: &[u8; 64]) -> [u8; 32] {
     h.finalize().into()
 }
 
-/// What a block proof commits, as twelve 32-byte words (`encode`). How many spends a block holds is not among them,
+/// What a block proof commits, as thirteen 32-byte words (`encode`). How many spends a block holds is not among them,
 /// and each list's length is in its hash.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BlockOut {
@@ -761,6 +811,8 @@ pub struct BlockOut {
     /// the contract checks the hash against its own and that nothing left in the queue is overdue.
     pub queue_len: u64,
     pub queue_hash: [u8; 32],
+    /// The hash of the pools the block changed, as they end (`BlockData::pools`).
+    pub pools_hash: [u8; 32],
 }
 
 fn word(n: u64) -> [u8; 32] {
@@ -790,6 +842,7 @@ impl BlockOut {
             self.vk,
             word(self.queue_len),
             self.queue_hash,
+            self.pools_hash,
         ]
         .concat()
     }
@@ -811,6 +864,9 @@ pub struct BlockData {
     pub deposits: Vec<Vec<u8>>,
     /// Exits to pay: asset ‖ value ‖ address (left-padded), 96 bytes each.
     pub exits: Vec<Vec<u8>>,
+    /// The pools the block changed, as they end, and the price each one's swaps cleared at (`ops::change_bytes`, by pair): with the
+    /// lists above, all anyone needs to rebuild the state and a wallet to work out what its operations made.
+    pub pools: Vec<Vec<u8>>,
 }
 
 /// The queue's hash after one more posted spend: SHA-256(QUEUE_DOMAIN ‖ the hash before ‖ SHA-256(what was posted)), as the
@@ -829,7 +885,9 @@ pub fn payload_hash(p: &[u8]) -> [u8; 32] {
 }
 
 /// The parts of a posted spend, when the bytes are one: its publics, proof, hints and the rest of its body and openings, each
-/// output's memo hash taken from the memo posted for it (zero for an empty output, as a body names it).
+/// output's memo hash taken from the memo posted for it (zero for an empty output, as a body names it). A spend that carries an
+/// operation is followed by a memo for each receiver the operation names (`ops::Op::receivers`), each the one its hash names, so a
+/// block that takes it can publish them.
 pub fn forced_parts(p: &[u8]) -> Option<(Vec<Fr>, &[u8], &[u8], SpendData)> {
     if p.len() < FORCED_REST_AT {
         return None;
@@ -840,8 +898,21 @@ pub fn forced_parts(p: &[u8]) -> Option<(Vec<Fr>, &[u8], &[u8], SpendData)> {
         rest.extend(if bool::from(leaf.is_zero()) { [0u8; 32] } else { memo_hash(forced_memo(p, i)) });
     }
     rest.extend_from_slice(&p[FORCED_REST_AT..]);
-    let data = SpendData::from_bytes(&rest)?;
+    let (data, used) = SpendData::from_prefix(&rest)?;
+    let receivers = data.op.as_ref().map(|op| op.receivers()).unwrap_or_default();
+    let memos = &rest[used..];
+    if memos.len() != MEMO_LEN * receivers.len() || receivers.iter().zip(memos.chunks(MEMO_LEN)).any(|(r, m)| memo_hash(m) != r.memo) {
+        return None;
+    }
     Some((publics, &p[FORCED_PUBLICS_LEN..FORCED_PUBLICS_LEN + FORCED_PROOF_LEN], &p[FORCED_PUBLICS_LEN + FORCED_PROOF_LEN..FORCED_HEAD_LEN], data))
+}
+
+/// The memos posted after a forced spend's operation, in its receivers' order (empty for a payment): what a block that takes it
+/// publishes for the notes the operation makes. `p` must be one `forced_parts` takes.
+pub fn forced_op_memos(p: &[u8]) -> Vec<&[u8]> {
+    let Some((_, _, _, d)) = forced_parts(p) else { return vec![] };
+    let n = d.op.map(|op| op.receivers().len()).unwrap_or(0);
+    p[p.len() - MEMO_LEN * n..].chunks(MEMO_LEN).collect()
 }
 
 /// The memo posted for output slot `i` of a posted spend at least FORCED_REST_AT bytes long: what the block publishes for that
@@ -976,6 +1047,8 @@ struct Effects {
     deposit: Option<Vec<u8>>,
     exit: Option<Vec<u8>>,
     nullifiers: Vec<[u8; 32]>,
+    /// The operation the exit's value goes into, if the body names one.
+    intent: Option<ops::Intent>,
 }
 
 fn effects(prev: &State, s: &Spend, d: &SpendData) -> Result<Effects, &'static str> {
@@ -983,7 +1056,7 @@ fn effects(prev: &State, s: &Spend, d: &SpendData) -> Result<Effects, &'static s
     if live.len() == 2 && live[0] == live[1] {
         return Err("one note in both input slots");
     }
-    let mut e = Effects { anchor: None, outputs: Vec::with_capacity(3), deposit: None, exit: None, nullifiers: live.iter().map(fr_be).collect() };
+    let mut e = Effects { anchor: None, outputs: Vec::with_capacity(3), deposit: None, exit: None, nullifiers: live.iter().map(fr_be).collect(), intent: None };
     if live.is_empty() {
         if is_identity(&s.dep) {
             return Err("no input and no deposit");
@@ -991,8 +1064,12 @@ fn effects(prev: &State, s: &Spend, d: &SpendData) -> Result<Effects, &'static s
     } else if s.root != prev.notes.root && !prev.knows(&fr_be(&s.root)) {
         e.anchor = Some(fr_be(&s.root));
     }
-    if body_hash(&body_bytes(&prev.chain, &s.out, &d.memo_hashes, &d.exit_to, &d.salt)) != s.body {
-        return Err("the body is not this chain's, or not its outputs, memos, exit and salt");
+    let body = match &d.op {
+        None => body_bytes(&prev.chain, &s.out, &d.memo_hashes, &d.exit_to, &d.salt),
+        Some(op) => op_body_bytes(&prev.chain, &s.out, &d.memo_hashes, op, &d.salt),
+    };
+    if body_hash(&body) != s.body {
+        return Err("the body is not this chain's, or not its outputs, memos, exit or operation, and salt");
     }
     for (o, m) in s.out.iter().zip(&d.memo_hashes) {
         if bool::from(o.is_zero()) {
@@ -1011,12 +1088,19 @@ fn effects(prev: &State, s: &Spend, d: &SpendData) -> Result<Effects, &'static s
         }
         _ => return Err("the deposit's opening is missing, wrong or of nothing"),
     }
-    match (is_identity(&s.exit), &d.exit) {
-        (true, None) if d.exit_to == [0u8; 20] => {}
-        (false, Some(o)) if o.v > 0 && d.exit_to != [0u8; 20] && commits(o, &s.exit) => {
+    match (is_identity(&s.exit), &d.exit, &d.op) {
+        (true, None, None) if d.exit_to == [0u8; 20] => {}
+        // shares of a pool never leave the chain: no token on L1 is theirs
+        (false, Some(o), None) if o.v > 0 && d.exit_to != [0u8; 20] && commits(o, &s.exit) => {
+            if prev.pools.iter().any(|p| p.shares() == s.asset) {
+                return Err("an exit of pool shares, which only the chain holds");
+            }
             e.exit = Some([fr_be(&s.asset), word(o.v), address_word(&d.exit_to)].concat())
         }
-        _ => return Err("the exit's opening or address is missing, wrong or of nothing"),
+        (false, Some(o), Some(op)) if o.v > 0 && d.exit_to == [0u8; 20] && commits(o, &s.exit) => {
+            e.intent = Some(ops::Intent { asset: s.asset, amount: o.v, op: op.clone() })
+        }
+        _ => return Err("the exit's opening, address or operation is missing, wrong or of nothing"),
     }
     Ok(e)
 }
@@ -1062,13 +1146,19 @@ pub fn apply(prev: &State, spends: &[Spend], data: &[SpendData], posted: &[Poste
     let mut outputs: Vec<(Fr, [u8; 32])> = vec![];
     let mut spent: Vec<(usize, [u8; 32])> = vec![];
     let mut lists = BlockData::default();
+    let mut intents: Vec<ops::Intent> = vec![];
     for (i, e) in chosen {
         lists.anchors.extend(e.anchor);
         lists.deposits.extend(e.deposit);
         lists.exits.extend(e.exit);
         outputs.extend(e.outputs);
+        intents.extend(e.intent);
         spent.extend(e.nullifiers.into_iter().map(|x| (i, x)));
     }
+    // the operations, on the pools, and the notes they make
+    let (pools, made, changes) = if intents.is_empty() { (prev.pools.clone(), vec![], vec![]) } else { ops::run(&prev.pools, &intents) };
+    outputs.extend(made.iter().map(|m| (m.leaf(), m.to.memo)));
+    lists.pools = changes;
     if spent.len() != nfw.len() {
         return Err(format!("{} nullifier witnesses for {} nullifiers", nfw.len(), spent.len()));
     }
@@ -1100,7 +1190,7 @@ pub fn apply(prev: &State, spends: &[Spend], data: &[SpendData], posted: &[Poste
     lists.anchors.dedup();
     lists.deposits.sort();
     lists.exits.sort();
-    let mut next = State { notes, nf_root, nf_size, recent: prev.recent, chain: prev.chain, queue_len, queue_hash };
+    let mut next = State { notes, nf_root, nf_size, recent: prev.recent, chain: prev.chain, queue_len, queue_hash, pools };
     next.remember(fr_be(&next.notes.root));
     let out = BlockOut {
         prev: prev.digest(),
@@ -1115,6 +1205,7 @@ pub fn apply(prev: &State, spends: &[Spend], data: &[SpendData], posted: &[Poste
         vk,
         queue_len,
         queue_hash,
+        pools_hash: list_hash(6, &lists.pools),
     };
     mark!("cycle-tracker-report-end: block-commit");
     Ok((next, out, lists))

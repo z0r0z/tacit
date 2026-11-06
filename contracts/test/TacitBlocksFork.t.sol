@@ -4,17 +4,20 @@ pragma solidity 0.8.37;
 import {Test} from "forge-std/Test.sol";
 import {TacitBlocks, ISP1BlockVerifier} from "../src/TacitBlocks.sol";
 import {TacitSeats, IERC20Seats} from "../src/TacitSeats.sol";
+import {Token} from "./TacitBlocks.t.sol";
 
 /// The chain `tacit-block fixture test/fixtures/tacit-blocks-mainnet.json 1 <lander>` writes, landed on a mainnet fork with the
 /// block program's real Groth16 proofs (tacit-block-gpu --groth16 on each FILE.b<i>.stdin, kept as FILE.b<i>.stdin.groth16) through
-/// the SP1 v6.1.0 Groth16 verifier the pool uses: a shield, a spend with an exit, and a block of the queue alone that takes a spend
-/// posted with `force`. Skipped unless TACIT_BLOCKS_FORK_RPC names an Ethereum node and the proofs exist.
+/// the SP1 v6.1.0 Groth16 verifier the pool uses: a shield, a spend with an exit, a block of the queue alone that takes a spend posted
+/// with `force`, a pool of ETH and a token made from two deposits, swaps both ways from deposits (one limit missed and sent back), and
+/// half the pool's shares taken out by a posted spend beside a spend that exits the token the ETH bought. Skipped unless
+/// TACIT_BLOCKS_FORK_RPC names an Ethereum node and the proofs exist.
 contract TacitBlocksForkTest is Test {
     address constant SP1_GROTH16_V6_1_0 = 0xb69f2584CBcFf99a58C4e7002E8b89Af54a6f4e2;
     /// The TAC ERC-20 on Ethereum.
     address constant TAC = 0xA1313eb9f3A445606D9583bcAc3ebeB56a858279;
     /// `cargo prove vkey --elf contracts/sp1/confidential/tacit-block/elf/tacit-block`
-    bytes32 constant BLOCK_VKEY = 0x00d087c7df46d62377a18ca898e73a52ea7fd4c5a7cd213a99872e2f8464232c;
+    bytes32 constant BLOCK_VKEY = 0x00fd2dda9a4db3b4decaa533108818f93ca34ec09c4664cc9416800a79f3f21b;
     address constant SEQ = address(0x5E9);
     uint256 constant GWEI = 1e9;
 
@@ -26,7 +29,7 @@ contract TacitBlocksForkTest is Test {
     function setUp() public {
         path = string.concat(vm.projectRoot(), "/test/fixtures/tacit-blocks-mainnet.json");
         string memory rpc = vm.envOr("TACIT_BLOCKS_FORK_RPC", string(""));
-        if (bytes(rpc).length == 0 || !vm.exists(string.concat(path, ".b2.stdin.groth16"))) return;
+        if (bytes(rpc).length == 0 || !vm.exists(string.concat(path, ".b5.stdin.groth16"))) return;
         vm.createSelectFork(rpc);
         fx = vm.readFile(path);
         address at = vm.parseJsonAddress(fx, ".lander");
@@ -34,6 +37,7 @@ contract TacitBlocksForkTest is Test {
         TacitSeats turns = new TacitSeats(IERC20Seats(TAC), 1000e18, 50, SEQ);
         deployCodeTo("TacitBlocks.sol:TacitBlocks", abi.encode(SP1_GROTH16_V6_1_0, BLOCK_VKEY, vm.parseJsonBytes32(fx, ".spendVk"), turns, uint256(600), uint256(1 hours)), at);
         blocks = TacitBlocks(at);
+        deployCodeTo("TacitBlocks.t.sol:Token", abi.encode(uint8(18)), vm.parseJsonAddress(fx, ".token"));
         ready = true;
     }
 
@@ -55,6 +59,26 @@ contract TacitBlocksForkTest is Test {
         l.anchors = vm.parseJsonBytes32Array(fx, key(b, "anchors"));
         l.deposits = vm.parseJsonBytes(fx, key(b, "deposits"));
         l.exits = vm.parseJsonBytes(fx, key(b, "exits"));
+        l.pools = vm.parseJsonBytes(fx, key(b, "pools"));
+    }
+
+    /// The fixture's deposits for its pool and swaps: ETH as value, the token from a balance.
+    function depositOps() internal {
+        for (uint256 i; i < 5; ++i) {
+            string memory d = string.concat(".opDeposits[", vm.toString(i), "]");
+            address token = vm.parseJsonAddress(fx, string.concat(d, ".token"));
+            uint256 v = vm.parseJsonUint(fx, string.concat(d, ".value"));
+            bytes32 cx = vm.parseJsonBytes32(fx, string.concat(d, ".cx"));
+            bytes32 cy = vm.parseJsonBytes32(fx, string.concat(d, ".cy"));
+            bytes32 body = vm.parseJsonBytes32(fx, string.concat(d, ".body"));
+            if (token == address(0)) {
+                blocks.deposit{value: v * GWEI}(address(0), v, cx, cy, body);
+            } else {
+                Token(token).mint(address(this), v * GWEI);
+                Token(token).approve(address(blocks), v * GWEI);
+                blocks.deposit(token, v, cx, cy, body);
+            }
+        }
     }
 
     /// What a transaction carrying `data` that spends `exec` gas executing pays in all: 21,000, calldata at 4 gas per
@@ -119,5 +143,25 @@ contract TacitBlocksForkTest is Test {
         landReal(2, "the queue alone: one forced spend");
         assertEq(blocks.height(), 3);
         assertEq(blocks.queueDone(), 1);
+
+        depositOps();
+        landReal(3, "a pool made from two deposits");
+        landReal(4, "three swaps from deposits, one limit missed");
+        bytes memory rm = vm.parseJsonBytes(fx, ".forcedRemove");
+        data = abi.encodeCall(TacitBlocks.force, (rm));
+        vm.prank(address(0xF0));
+        g = gasleft();
+        blocks.force(rm);
+        report("post a removal of liquidity to the queue", data, g - gasleft());
+        landReal(5, "a forced removal of liquidity and a token exit");
+        assertEq(blocks.height(), 6);
+        assertEq(blocks.queueDone(), 2);
+        address token = vm.parseJsonAddress(fx, ".token");
+        address tokenTo = vm.parseJsonAddress(fx, ".tokenExit.to");
+        uint256 got = vm.parseJsonUint(fx, ".tokenExit.value");
+        blocks.withdraw(token, tokenTo);
+        assertEq(Token(token).balanceOf(tokenTo), got * GWEI, "the token the ETH bought, paid on L1");
+        assertEq(address(blocks).balance, (380 + 1_000_000 + 10_000 + 5_000) * GWEI);
+        assertEq(Token(token).balanceOf(address(blocks)), (4_000_000 + 30_000 - got) * GWEI);
     }
 }

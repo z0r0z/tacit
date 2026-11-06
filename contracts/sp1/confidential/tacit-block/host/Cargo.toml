@@ -10,6 +10,7 @@ name = "tacit-block"
 path = "src/main.rs"
 
 [dependencies]
+num-bigint = "0.4"
 btc-pool-halo2 = { path = "../../btc-pool-halo2" }
 btc-pool-agg-common = { path = "../../btc-pool-agg/common" }
 tacit-block-common = { path = "../common" }

@@ -35,11 +35,17 @@ interface ITurns {
 ///         entry posted FORCE_DELAY or more before (or takes MAX_FORCED of them). So a leader cannot keep a spend out
 ///         of the chain and go on landing, and when the leaders stop landing anyone may.
 ///
+///         A spend may send its exit's value into an operation on the chain's own pools instead of to an address: a swap,
+///         or liquidity added or taken out (tacit-block-common `ops`). What it makes comes back as notes the block makes
+///         for keys the spend's body names, and that value stays on the chain: it is paid out on L1 only when a note of it
+///         exits. Shares of a pool never exit.
+///
 ///         A block's calldata carries everything it publishes: new notes (leaf and a MEMO_LEN-byte memo each, sorted
 ///         by leaf), nullifiers (ascending, the order they enter the nullifier tree), anchors older than the block
-///         program's recent roots, the deposits it took in and the exits it pays, each list checked against the
-///         hash the proof commits. Anyone can rebuild the chain's state from these lists alone. Their order says
-///         nothing of which spend an entry came from; whoever proves a block does see that.
+///         program's recent roots, the deposits it took in, the exits it pays and the pools it changed (each as the block
+///         leaves it, with the price its swaps cleared at), each list checked against the hash the proof commits. Anyone
+///         can rebuild the chain's state from these lists alone. Their order says nothing of which spend an entry came
+///         from; whoever proves a block does see that.
 ///
 ///         The binding every spend's body carries is derived here from the chain id and this contract's address,
 ///         and the genesis state from it, so a spend made for one deployment is void on any other.
@@ -70,9 +76,11 @@ contract TacitBlocks {
     bytes32 internal constant NF_GENESIS_ROOT = 0xf17b0f821760732c27b2f8e967a3e18c976a57e176de5164378fdaf3e1796f0c;
     uint256 internal constant NOTE_TREE_DEPTH = 32;
     uint256 internal constant RECENT = 32;
-    uint256 internal constant PUBLIC_WORDS = 12;
+    uint256 internal constant PUBLIC_WORDS = 13;
     uint256 internal constant DEPOSIT_LEN = 160;
     uint256 internal constant EXIT_LEN = 96;
+    /// A pool a block changed (tacit-block-common `ops::change_bytes`): its two assets, reserves and shares, then its price.
+    uint256 internal constant CHANGE_LEN = 176;
     uint256 internal constant ETH_UNIT = 1 gwei;
     /// Every memo's length (tacit-block-common MEMO_LEN), so a memo's size says nothing of what wrote it.
     uint256 public constant MEMO_LEN = 128;
@@ -80,10 +88,11 @@ contract TacitBlocks {
     uint256 public constant MAX_WINDOW = 1 days;
     /// A posted spend (tacit-block-common `forced_parts`): publics (12 words) ‖ proof (2,080 bytes) ‖ hints (20 × 64) ‖ a memo
     /// per output slot ‖ the exit's address (20) ‖ salt (32) ‖ the deposit's opening (a flag, then value (u64 BE) and
-    /// blinding (32)) ‖ the exit's opening.
+    /// blinding (32)) ‖ the exit's opening ‖ for a spend that carries an operation, a 1, the operation (305 bytes at most, a
+    /// removal's) and a memo for each receiver it names (three at most).
     uint256 internal constant FORCED_REST_AT = 12 * 32 + 2080 + 20 * 64 + 3 * MEMO_LEN;
     uint256 internal constant FORCED_MIN = FORCED_REST_AT + 20 + 32 + 1 + 1;
-    uint256 internal constant FORCED_MAX = FORCED_MIN + 2 * (8 + 32);
+    uint256 internal constant FORCED_MAX = FORCED_MIN + 2 * (8 + 32) + 1 + 305 + 3 * MEMO_LEN;
     /// @notice A block that takes this many entries of the queue may leave overdue ones to the next.
     uint256 public constant MAX_FORCED = 16;
     uint256 public constant MIN_FORCE_DELAY = 10 minutes;
@@ -172,7 +181,9 @@ contract TacitBlocks {
 
     /// @notice The lists a block publishes, in the block program's committed order (`BlockData`): the new notes'
     ///         leaves (32 bytes each) and their memos (MEMO_LEN bytes each, in the same order), nullifiers, anchors,
-    ///         deposits as asset ‖ value ‖ cx ‖ cy ‖ body (160 bytes each) and exits as asset ‖ value ‖ address (96).
+    ///         deposits as asset ‖ value ‖ cx ‖ cy ‖ body (160 bytes each), exits as asset ‖ value ‖ address (96) and the
+    ///         pools it changed as x ‖ y ‖ reserves and shares (u128 BE each) ‖ the price of x in y as numerator and
+    ///         denominator, zero when nothing traded (CHANGE_LEN each, by pair).
     struct Lists {
         bytes leaves;
         bytes memos;
@@ -180,6 +191,7 @@ contract TacitBlocks {
         bytes32[] anchors;
         bytes deposits;
         bytes exits;
+        bytes pools;
     }
 
     modifier nonReentrant() {
@@ -208,8 +220,8 @@ contract TacitBlocks {
         bytes32 chain = sha256(abi.encodePacked(CHAIN_DOMAIN, block.chainid, address(this)));
         CHAIN = chain;
         // State::genesis(chain).digest(): the empty note tree (its root, no leaves, every filled node zero), the
-        // nullifier tree holding its head record, the recent roots with the empty root newest, the binding, and the
-        // queue's start (no entries, hash zero).
+        // nullifier tree holding its head record, the recent roots with the empty root newest, the binding, the
+        // queue's start (no entries, hash zero) and no pools.
         state = sha256(
             abi.encodePacked(
                 STATE_DOMAIN,
@@ -222,7 +234,8 @@ contract TacitBlocks {
                 EMPTY_NOTE_ROOT,
                 chain,
                 uint64(0),
-                bytes32(0)
+                bytes32(0),
+                uint32(0)
             )
         );
         noteRoot = EMPTY_NOTE_ROOT;
@@ -280,9 +293,9 @@ contract TacitBlocks {
     ///         the rest of its body and openings (tacit-block-common `forced_parts`). The block program takes a spend whose
     ///         proof verifies, whose body and openings check out and whose notes are unspent, and passes over anything else.
     ///         What only this contract knows is checked here, so that no entry can make a block unlandable: a spend of notes
-    ///         is proven against a note root a block ended at, an exit is of an asset deposited before, and a deposit is one
-    ///         the sender made and has no entry already queued for (no other spend may then take it in before the chain
-    ///         reaches this entry). What is posted is public: a forced spend's nullifiers, outputs, memos, deposit and exit
+    ///         is proven against a note root a block ended at, an exit to an address is of an asset deposited before (one
+    ///         into an operation stays on the chain), and a deposit is one the sender made and has no entry already queued
+    ///         for (no other spend may then take it in before the chain reaches this entry). What is posted is public: a forced spend's nullifiers, outputs, memos, deposit and exit
     ///         are linked on L1 to one another and to the address that posts it, which for a spend a leader takes only the
     ///         block's prover sees, and a deposit's or exit's opening (its value) is in clear; the values of its notes stay
     ///         hidden. Bytes are queued as posted: the same spend posted twice, or with the flag bit halo2's point encoding
@@ -294,7 +307,14 @@ contract TacitBlocks {
             bytes32 root = bytes32(payload[0:32]);
             if (!knownRoot[root]) revert UnknownAnchor(root);
         }
-        if (!_isIdentity(payload[256:320]) && unitOf[asset] == 0) revert UnknownAsset(asset);
+        // past the openings, an operation follows if a 1 does (as the block program parses it, which takes nothing after a
+        // payment's openings)
+        uint256 at = FORCED_REST_AT + 52;
+        at += payload[at] == 0x01 ? 41 : 1;
+        if (at >= payload.length) revert BadPayload();
+        at += payload[at] == 0x01 ? 41 : 1;
+        bool op = at < payload.length && payload[at] == 0x01;
+        if (!op && !_isIdentity(payload[256:320]) && unitOf[asset] == 0) revert UnknownAsset(asset);
         uint256 i = queued;
         if (!_isIdentity(payload[320:384])) {
             if (payload[FORCED_REST_AT + 52] != 0x01) revert BadPayload();
@@ -310,7 +330,7 @@ contract TacitBlocks {
         emit Forced(i, msg.sender, payload);
     }
 
-    /// @notice Lands the next block: its proof, its twelve public words and the lists it publishes.
+    /// @notice Lands the next block: its proof, its thirteen public words and the lists it publishes.
     function land(bytes calldata publicValues, bytes calldata proof, Lists calldata lists) external nonReentrant {
         if (block.timestamp < uint256(lastLanded) + WINDOW) {
             address lead = TURNS.turn();
@@ -318,7 +338,7 @@ contract TacitBlocks {
         }
         if (publicValues.length != 32 * PUBLIC_WORDS) revert BadPublicValues();
         VERIFIER.verifyProof(BLOCK_VKEY, publicValues, proof);
-        bytes32[12] memory w = abi.decode(publicValues, (bytes32[12]));
+        bytes32[13] memory w = abi.decode(publicValues, (bytes32[13]));
         if (w[0] != state || w[2] != noteRoot) revert NotOnTop();
         if (w[9] != SPEND_VK) revert WrongRelation();
         // how far through the queue the chain is after the block, and the queue's hash there (the program only moves
@@ -359,6 +379,9 @@ contract TacitBlocks {
             if (to >> 160 != 0 || to == 0) revert BadAddress(i);
             owed[tokenOf[asset]][address(uint160(to))] += uint256(bytes32(exits[EXIT_LEN * i + 32:EXIT_LEN * i + 64])) * unit;
         }
+        // the pools are the block program's to check; they are published so anyone can rebuild them and a wallet can work out
+        // what its operations made
+        if (lists.pools.length % CHANGE_LEN != 0 || _listHash(6, lists.pools.length / CHANGE_LEN, lists.pools) != w[12]) revert BadList(6);
 
         state = w[1];
         noteRoot = w[3];
