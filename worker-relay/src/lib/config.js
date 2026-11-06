@@ -160,6 +160,10 @@ export const CFG = {
   // from the relay wallet that holds the subname, at gas no dearer than SNAPSHOT_POINTER_MAX_GWEI.
   snapshotPointer: process.env.SNAPSHOT_POINTER === '1',
   snapshotPointerMaxGwei: num('SNAPSHOT_POINTER_MAX_GWEI', 3),
+  // The same step appends the tacit chain's next header (TacitHeaders.append) every TACIT_HEADERS_EVERY_SECS when TACIT_HEADERS names the
+  // deployed contract, at the same gas ceiling; off until then.
+  tacitHeaders: opt('TACIT_HEADERS', ''),
+  tacitHeadersEverySecs: num('TACIT_HEADERS_EVERY_SECS', 6 * 3600),
   // How the feeder and the attest wait for gas (lib/gas-pace.js). The ceiling above is the bar in a usual market; once the last day's
   // HEADER_FOLLOW_PCT percentile is above it, that percentile is the bar, so gas settling higher for good does not freeze the relay
   // until its staleness bound. Under max(HEADER_CHEAP_GWEI, the HEADER_CHEAP_PCT percentile) gas is cheap and batches are small.

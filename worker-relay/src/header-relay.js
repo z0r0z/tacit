@@ -371,6 +371,24 @@ async function cycleOnce() {
   return true;
 }
 
+// The tacit chain's next header on Ethereum (contracts/src/TacitHeaders.sol), from the same wallet, every TACIT_HEADERS_EVERY_SECS while
+// gas is cheap. Simulated first, so a header with nothing new (Unchanged) or one already in this block (SameBlock) costs nothing.
+const HEADERS_ABI = [{ type: 'function', name: 'append', stateMutability: 'nonpayable', inputs: [], outputs: [{ type: 'bytes32' }] }];
+let headedAt = 0;
+async function tacitHeaderStep() {
+  if (!CFG.tacitHeaders || Date.now() - headedAt < CFG.tacitHeadersEverySecs * 1000) return;
+  try {
+    const blk = await publicClient.getBlock({ blockTag: 'latest' });
+    const gwei = Number(nextBaseFee(blk) ?? blk.baseFeePerGas) / 1e9;
+    if (!(gwei <= CFG.snapshotPointerMaxGwei)) return;
+    headedAt = Date.now();
+    try { await publicClient.simulateContract({ address: CFG.tacitHeaders, abi: HEADERS_ABI, functionName: 'append', account: relayWallet.account }); }
+    catch (e) { log('tacit header: nothing new to append'); return; }
+    const hash = await withNonceRetry('tacit header', () => relayWallet.writeContract({ address: CFG.tacitHeaders, abi: HEADERS_ABI, functionName: 'append' }), { log });
+    log(`tacit header appended tx=${hash}`);
+  } catch (e) { log('tacit header step:', String(e.message || e).slice(0, 160)); }
+}
+
 // snapshot.tacit.wei, after the headers (lib/snapshot-pointer.js): a GET and a read each time, a send about once a day while gas is cheap.
 let pointedAt = 0;
 async function pointerStep() {
@@ -406,16 +424,18 @@ async function main() {
       if (!worked) { log('relay caught up to pace — cron run done'); break; }
     }
     await pointerStep();
+    await tacitHeaderStep();
     return;
   }
   for (;;) {
     try { await cycle(); } catch (e) { log('cycle error (continuing):', e.message); }
     await pointerStep();
+    await tacitHeaderStep();
     await sleep(CFG.reflectionPollSecs);
   }
 }
 
-export { cycle as headerCycle, pointerStep as snapshotPointerStep };
+export { cycle as headerCycle, pointerStep as snapshotPointerStep, tacitHeaderStep };
 if (import.meta.url === `file://${process.argv[1]}`) {
   main().catch((e) => { console.error('fatal', e); process.exit(1); });
 }
