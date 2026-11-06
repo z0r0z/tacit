@@ -516,7 +516,7 @@ test('a bridge says how long ago it began and, when it is done, where the TAC is
   onChange(want); await tick(5);
   const rows = [...m.$('fx-list').querySelectorAll('.fx-rec')];
   assert.match(text(rows[0]), /10 minutes ago/); assert.match(text(rows[1]), /2 hours ago/);
-  assert.equal(rows[0].querySelector('a[href="/assets/"]'), null); assert.ok(rows[1].querySelector('a[href="/assets/"]'), 'a finished bridge points to where the TAC is');
+  assert.equal(rows[0].querySelector('a[href="/"]'), null); assert.ok(rows[1].querySelector('a[href="/"]'), 'a finished bridge points to where the TAC is');
   assert.match(text(m.$('fx-list')), /Keep this page open until it is done/);
   onChange([want[1]]); await tick(5);
   assert.doesNotMatch(text(m.$('fx-list')), /Keep this page open/, 'with nothing under way it is not said');

@@ -203,14 +203,14 @@ test('a send that failed on chain is made again; one not mined yet is not made t
 });
 
 // ── a direct payout (no escrow) ──
-function payoutSetup({ C, notes = [], balance = 2n * E18, fee = 100_000n, withdraw = null } = {}) {
+function payoutSetup({ C, notes = [], balance = 2n * E18, fee = 100_000n, withdraw = null, knows = null } = {}) {
   const mem = new Map(), store = { getItem: (k) => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, String(v)) };
   const W = { balance, notes, calls: [], seen: [] };
   const w = {
     sync: async () => ({ balance: W.balance, leaves: 40, block: 100 }), notes: () => W.notes, quote: async () => ({ fee: String(fee) }), refundBox: async () => REFUND_BOX,
     withdraw: async (a) => { W.calls.push(a); return withdraw ? withdraw(a, W, store) : PAYOUT; },
   };
-  const L = makeLater({ keyHex: async () => '22'.repeat(32), signer: { address: PAYER }, ethCall: async () => '0x', store, walletOf: () => w, chain: { chainId: 1, rpc: [C.url] } });
+  const L = makeLater({ keyHex: async () => '22'.repeat(32), signer: { address: PAYER }, ethCall: async () => '0x', store, walletOf: () => w, chain: { chainId: 1, rpc: [C.url] }, knows });
   return { L, W, store, mem };
 }
 const SWAP = E18;
@@ -339,6 +339,29 @@ test('a receipt that cannot be read falls back to the notes, then the balance, a
   const s = payoutSetup({ C, balance: 5n * E18, notes: [] }), { L } = s;
   const plan = await sentPlan(s, { state: 'unsure', outTx: PAYOUT, outIns: [31] });
   assert.strictEqual((await L.check(plan)).state, 'done', 'the note is gone');
+});
+
+test('a payout whose hash no node could be asked about is kept in doubt with its hash, not called done', async () => {
+  const C = await chain();
+  const s = payoutSetup({ C, knows: async () => undefined }), { L, store } = s;
+  const plan = await L.adopt({ swapWei: SWAP, token: ZERO, sym: 'ETH', dec: 18, to: TO, feeWei: 100_000n });
+  await assert.rejects(L.swapOut(plan, { shown: await L.offer(plan), via: 'relay' }), /may still have sent/);
+  const kept = JSON.parse(store.getItem('tacit-swap-later-v1'))[0];
+  assert.strictEqual(kept.state, 'unsure');
+  assert.strictEqual(kept.swapTx, PAYOUT, 'the hash is kept for the check');
+});
+
+test('a payout still being sent (marked so, with nothing yet to judge it by) is held in doubt by a check, not offered again', async () => {
+  const C = await chain();
+  const mk = async (over) => { const s = payoutSetup({ C, balance: 3n * E18, notes: [{ index: 31, v: '1' }] }); return { ...s, plan: await sentPlan(s, over) }; };
+  // the tab that holds the job is still proving or waiting: a check from here finds no hash and no spent note, and leaves it
+  const young = await mk({ state: 'swapping', swapAt: Date.now() - 12 * 60e3 });
+  const held = await young.L.check(young.plan);
+  assert.strictEqual(held.state, 'swapping');
+  assert.match(held.err, /not in a block yet/);
+  // twenty minutes on, nothing came of it: offered again
+  const old = await mk({ state: 'swapping', swapAt: Date.now() - 21 * 60e3 });
+  assert.strictEqual((await old.L.check(old.plan)).state, 'waiting');
 });
 
 // ── a deposit box the card paid from the wallet into a token pool's private balance (walletIntoGo), kept with its intent and its pool's router ──

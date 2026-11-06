@@ -1,10 +1,10 @@
 import { DEPLOYMENTS } from '/vault/deployments.js?cb=4af96594';
 import * as M from '/vault/math.js?cb=ac1ed53e';
 import { makeRpc, RPCS, ARCHIVE, HISTORY, makeReader, QUEUE_EXPIRY } from '/vault/chain.js?cb=872255e6';
-import { makeFeed } from '/vault/feed.js?cb=e8f26c4c';
-import { makePools } from '/vault/pools.js?cb=fe4fb94e';
-import { makeVaultEngine, KIND, BATCH_MAX, StopWaiting } from '/vault/engine.js?cb=148b91db';
-import { makeConnect, UserStopped } from '/trade/connect.js?cb=a64b9cec';
+import { makeFeed } from '/vault/feed.js?cb=2b040bd0';
+import { makePools } from '/vault/pools.js?cb=8f67fde3';
+import { makeVaultEngine, KIND, BATCH_MAX, StopWaiting } from '/vault/engine.js?cb=f5dcb208';
+import { makeConnect, UserStopped } from '/trade/connect.js?cb=39145e86';
 
 const $ = (s, r = document) => r.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -49,7 +49,7 @@ const connect = makeConnect({
   describe: 'Borrow against TAC', name: 'tacit borrow', rpc,
   busy: () => S.busy,
   say: (t) => say(t),
-  onChange: () => { detectBatch(); if (side === 'tac') pools.read(); if (S.busy || side !== 'tac') return; if (!S.view) { refresh(); } else renderAll(); },
+  onChange: () => { detectBatch(); if (side === 'tac') pools.read(); if (S.busy || side !== 'tac') return; if (!S.view) { if (S.seq) refresh(); } else renderAll(); },   // the first read waits for a remembered wallet (`restored`, below): an account that arrives before it is read by it
   restore: false,
 });
 const { wallet, W } = connect;
@@ -412,7 +412,13 @@ function keepInHash() {
   if (h !== location.hash) history.replaceState(null, '', location.pathname + location.search + h);
 }
 const onBtc = () => location.hash === '#btc';
-let side = null, tacStarted = false, btcP = null, tacHash = '';
+let side = null, tacStarted = false, btcM = null, btcBusy = false, tacHash = '';
+// The Bitcoin side's status board: read as the side is shown and again every 30 s while it is, as the TAC side's figures are
+function loadBtcSide() {
+  if (btcBusy) return;
+  btcBusy = true;
+  (btcM ||= import('/vault/btc.js?cb=ba40f53b')).then((m) => m.loadBtc($('#btc'), { batch })).catch((e) => { btcM = null; console.warn('bitcoin side:', e?.message || e); }).finally(() => { btcBusy = false; });
+}
 function showSide() {
   const s = onBtc() ? 'btc' : 'tac';
   if (s === side) return false;
@@ -421,11 +427,11 @@ function showSide() {
   document.querySelectorAll('.via a[data-side]').forEach((a) => { if (a.dataset.side === s) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
   if (s === 'btc') {
     $('#wallet-chip').hidden = false;                                              // the same wallet posts a lock's bond, so its chip stays
-    btcP ||= import('/vault/btc.js?cb=ba40f53b').then((m) => m.loadBtc($('#btc'), { batch })).catch((e) => { btcP = null; console.warn('bitcoin side:', e?.message || e); });
+    loadBtcSide();
     return true;
   }
   renderAll();
-  if (!tacStarted) { tacStarted = true; checkRouter(); if (VS.length) refresh().then(() => loadFeed()); }
+  if (!tacStarted) { tacStarted = true; checkRouter(); if (VS.length) restored.then(() => refresh().then(() => loadFeed())); }
   else refresh();
   return true;
 }
@@ -444,7 +450,7 @@ let mineP = null;
 $('#btc').addEventListener('click', (e) => {
   if (mineP || !e.target.closest('[data-mine="open"]')) return;
   e.stopImmediatePropagation();
-  mineP = import('/vault/mine.js?cb=f3e9831a').then((m) => { m.mountMine($('#btc-mine'), { ticket: $('#btc-tk'), pick: pickProvider, wallet, W, connect: connectWallet }); $('#btc-mine [data-mine="open"]')?.click(); })
+  mineP = import('/vault/mine.js?cb=f0f9dcf5').then((m) => { m.mountMine($('#btc-mine'), { ticket: $('#btc-tk'), pick: pickProvider, wallet, W, connect: connectWallet }); $('#btc-mine [data-mine="open"]')?.click(); })
     .catch((err) => { mineP = null; console.warn('your position:', err?.message || err); });
 });
 const refresh = () => load().catch((e) => { console.warn('vault read:', e?.message || e); if (!S.loaded) S.failed = true; }).then(() => { renderAll(); pools.read(); });
@@ -475,15 +481,16 @@ document.addEventListener('click', (e) => {
   if (m && !e.composedPath().some((n) => n.id === 'btc')) { e.preventDefault(); const p = params(); p.delete('a'); history.replaceState(null, '', location.pathname + (p.toString() ? `#${p}` : '')); S.view = null; refresh(); }
 });
 addEventListener('hashchange', () => { if (onBtc()) { showSide(); return; } readHash(); if (!showSide()) refresh(); });
-document.addEventListener('visibilitychange', () => { if (!document.hidden && !S.busy && side === 'tac') refresh(); });
-connect.restore();
+document.addEventListener('visibilitychange', () => { if (document.hidden || S.busy) return; if (side === 'tac') refresh(); else if (side === 'btc') loadBtcSide(); });
+// A wallet remembered from an earlier visit is given a moment to come back before the first read, so that read is the account's
+const restored = Promise.race([connect.restore(), new Promise((r) => setTimeout(r, 1500))]);
 
 setInterval(() => {
   const els = document.querySelectorAll('[data-cd]');
   els.forEach((el) => { const left = Number(el.dataset.cd) - chainNow(); el.textContent = M.clock(left); if (left <= 0 && !S.busy) renderPos(); });
   document.querySelectorAll('[data-ago]').forEach((el) => { el.textContent = agoText(now() - Number(el.dataset.ago)); });
 }, 1000);
-setInterval(() => { if (!document.hidden && !S.busy && side === 'tac') refresh(); }, 30e3);
+setInterval(() => { if (document.hidden || S.busy) return; if (side === 'tac') refresh(); else if (side === 'btc') loadBtcSide(); }, 30e3);
 setInterval(() => { if (!document.hidden && !S.busy && !F.busy && side === 'tac') loadFeed(); }, 60e3);
 
 readHash();

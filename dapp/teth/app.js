@@ -1,14 +1,14 @@
 import { mountChart, fmtLocalStamp, fmtLocalTime } from '/trade/chart.js?cb=04207026';
-import { makeConnect, UserStopped } from '/trade/connect.js?cb=a64b9cec';
-import { makeKeySession, signInSheet, Cancelled } from '/trade/key.js?cb=26d9c07b';
-import { readPool, heldHistory, heldBars, rangesFor, barSize, recentMoves, movedSince, readRates, readProgram, poolRows, positionsIn, programEnds, wrapQuote, shown, POOL, WRAP_TIP } from '/teth/read.js?cb=bf18d06a';
-import { wrapEth, wrapFirst, settle, readHeld, finish, wrapIssue, relayWords, selfable, selfFinish, settleCost, proveOwn, ownWords, ownable, deviceWords, relayState, relayStopped, forgetUx, getUx } from '/teth/wrap.js?cb=45873b34';
-import { ownPref, setOwnPref, devicePref, setDevicePref, deviceProver, proverFor, readCredit, proofsFor, fundFromWallet, quoteEth, quoteEthFor, fundWithEth, loadSelfProver, tokenBalance } from '/teth/prover.js?cb=00ae90c6';
+import { makeConnect, UserStopped } from '/trade/connect.js?cb=39145e86';
+import { makeKeySession, signInSheet, Cancelled } from '/trade/key.js?cb=d110df5e';
+import { readPool, heldHistory, heldBars, rangesFor, barSize, recentMoves, movedSince, readRates, readProgram, poolRows, positionsIn, programEnds, wrapQuote, shown, POOL, WRAP_TIP } from '/teth/read.js?cb=9364ab31';
+import { wrapEth, wrapFirst, settle, readHeld, finish, wrapIssue, relayWords, selfable, selfFinish, settleCost, proveOwn, ownWords, ownable, deviceWords, relayState, relayStopped, forgetUx, getUx } from '/teth/wrap.js?cb=58047310';
+import { ownPref, setOwnPref, devicePref, setDevicePref, deviceProver, proverFor, readCredit, proofsFor, fundFromWallet, quoteEth, quoteEthFor, fundWithEth, loadSelfProver, tokenBalance } from '/teth/prover.js?cb=b065e0b4';
 import { overlay } from '/trade/sheet.js?cb=84cda8f2';
 import { mountDepth } from '/trade/depth.js?cb=438b534c';
 import { candlesFromTrades, closeAt } from '/trade/tape.js?cb=714b0344';
-import { readMarket, isActive, bookState, refSats, premium, vsEth, satsTxt, ladders, bookPrime, summary, fillBars, BTC_ID } from '/teth/market.js?cb=9355f94d';
-import { $, esc, now, rpc, fmtUnits, plain, parseUnits, grp, sig, usd, pct, ago, short, E10, E18 } from '/trade/util.js?cb=e8317464';
+import { readMarket, isActive, bookState, refSats, premium, vsEth, satsTxt, ladders, bookPrime, summary, fillBars, BTC_ID } from '/teth/market.js?cb=8e6bd162';
+import { $, esc, now, rpc, fmtUnits, plain, parseUnits, grp, sig, usd, pct, ago, short, E10, E18 } from '/trade/util.js?cb=ba5a02b1';
 
 const ETHBLUE = '#627eea', ORANGE = '#f7931a';
 const SCAN = 'https://etherscan.io/';
@@ -17,7 +17,7 @@ const PRESETS = [['0.01 ETH', '0.01'], ['0.05 ETH', '0.05'], ['0.25 ETH', '0.25'
 
 const D = { pool: null, hist: null, rates: {}, program: null, rows: [], floor: null, held: null, bal: null, btc: null, btcFailed: false };
 let amtTimer = 0;
-const S = { mode: 'get', amt: '', useAmt: '', quote: null, seq: 0, busy: false, range: null, unit: 'eth', chart: 'held', bunit: 'usd', btcAll: false, stuck: null, left: null, cost: null, steps: null, ready: false, ownOnce: null, kept: null };
+const S = { mode: 'get', amt: '', useAmt: '', quote: null, seq: 0, busy: false, range: null, unit: 'eth', chart: 'held', bunit: 'usd', btcAll: false, stuck: null, left: null, cost: null, steps: null, ready: false, ownOnce: null, kept: null, refused: null };
 
 const tn = (s) => esc(s).replace(/\b(tETH|cBTC|cUSD)\b/g, '<span class="tn">$1</span>');
 const compact = (x) => (x >= 1e6 ? `$${(x / 1e6).toFixed(x >= 1e7 ? 0 : 1)}M` : x >= 1e3 ? `$${(x / 1e3).toFixed(x >= 1e4 ? 0 : 1)}k` : usd(x));
@@ -227,7 +227,7 @@ async function requote() {
     const [q, rs] = await Promise.all([wrapQuote(wei), relayState()]);
     if (my !== S.seq) return;
     const held = rs?.state === 'held';
-    S.quote = { wei, ...q, held, ...(held ? { tip: q.proveTip } : {}) };
+    S.quote = { wei, ...q, held, at: Date.now(), ...(held ? { tip: q.proveTip } : {}) };
     if (S.quote.held && !S.cost) fillCost();
   } catch (e) { if (my !== S.seq) return; S.quote = { wei, err: e.message || 'The relay could not quote.' }; }
   renderQuote(); renderGo();
@@ -357,9 +357,17 @@ function renderWaiting() {
 
 async function press({ anyway = false } = {}) {
   if (!W.account) { await connect.connect(); return; }
-  const q = S.quote;
+  let q = S.quote;
   if (S.busy || S.stuck) return;
   if (!q || q.wei !== getWei() || q.tip == null) { clearTimeout(amtTimer); requote(); return; }
+  // The relay's tip follows gas, so one read more than a minute ago is read again at the press: the press goes on with the fresh one unless it rose by half.
+  if (laneOf(q) === 'relay' && Date.now() - (q.at || 0) > 60e3) {
+    await requote();
+    const fresh = S.quote;
+    if (!fresh || fresh.wei !== q.wei || fresh.tip == null) return;
+    if (fresh.tip * 2n > q.tip * 3n) { say('The relay’s tip moved while this was open. Check the amounts and press again.'); return; }
+    q = fresh;
+  }
   if (key.unlocked && laneOf(q) !== laneNow()) { requote(); say('This Tacit wallet proves another way, so the amounts were read again. Check them and press again.'); return; }
   if (q.device || q.own) { await proveFirst(q, q.device ? 'device' : 'own'); return; }
   // The relay's sponsored proof first, then one transaction with the tip in it; the deposit goes first only when the relay has no
@@ -425,10 +433,13 @@ async function proveFirst(q, lane) {
     if (W.account !== from) throw new Error('Your wallet switched accounts. Nothing was sent. Try again.');
     if (lane === 'relay' && relayStopped(await relayState())) { paintSteps(null); return 'relay-refused'; }
     // A proof kept from a press that did not send, or a wrap of this amount kept ready (on this page or the front page's prove sheet). It needs no
-    // proving, so neither the credit nor this computer's prover is asked for; it still goes with its prover, so the transaction carries no tip.
+    // proving, so neither the credit nor this computer's prover is asked for; it still goes with its prover (`keptBy`), and the relay's tip rides only
+    // on a proof the relay (or its proof pool) made: one proved on this computer or with the holder's own credit carries none.
     const vs = await vouchers(), pub = key.key.pubHex;
     const v = vs.list(pub, 'cETH', 'ready').find((x) => x.amount === String(q.wei));
-    const kept = S.kept && S.kept.wei === q.wei && S.kept.lane === lane && S.kept.pub === pub ? S.kept.r : v ? vs.call(v) : null;
+    const mine = S.kept && S.kept.wei === q.wei && S.kept.lane === lane && S.kept.pub === pub;
+    const kept = mine ? S.kept.r : v ? vs.call(v) : null, keptBy = kept ? (mine ? lane : v.by || null) : null;
+    const tipped = lane === 'relay' && !['device', 'own'].includes(keptBy);
     let prover = null;
     if (lane === 'own' && kept) prover = (await ensureProver()).prove;
     else if (lane === 'own') {
@@ -444,14 +455,14 @@ async function proveFirst(q, lane) {
       if (!d) { paintSteps(null); say('The prover on this computer isn’t answering, so nothing was sent. Start tacit-prover and press again, or <button class="linkbtn" type="button" id="ps-open">change how it is proved</button>.', true); return; }
       prover = d.prove;
     }
-    const r = await wrapFirst({ priv: () => key.priv(), wei: q.wei, from, wallet, say: step, prover, ready: kept, ...(lane === 'relay' ? { tip: q.tip, to: q.to } : {}) });
+    const r = await wrapFirst({ priv: () => key.priv(), wei: q.wei, from, wallet, say: step, prover, ready: kept, ...(tipped ? { tip: q.tip, to: q.to } : {}) });
     if (r.built?.depositId) vs.drop(pub, r.built.depositId);
     S.kept = null;
     // The kept proof's transaction had landed before: its deposit is private already, and nothing was sent now.
     if (r.already) { paintSteps(null); say(`That proof was sent already, so its ${esc(fmtUnits(q.wei, 18, 8))} tETH is private and nothing was sent this time. Press again for a new deposit.`); loadHeld(true); return; }
     S.ownOnce = null;
     paintSteps(null, { all: true });
-    const by = lane === 'device' ? ' Proved on this computer.' : lane === 'relay' ? ' Proved by Tacit’s relay before anything left your wallet.' : ` Proved with your own credit${S.pubInput ? ' (its input went public: Succinct’s network was not taking private inputs)' : ''}.`;
+    const made = keptBy || lane, by = made === 'device' ? ' Proved on this computer.' : made === 'own' ? ` Proved with your own credit${S.pubInput ? ' (its input went public: Succinct’s network was not taking private inputs)' : ''}.` : ' Proved by Tacit’s relay before anything left your wallet.';
     say(`<span class="ok">Done.</span> ${esc(fmtUnits(q.wei, 18, 8))} tETH is private now, ready to send, swap, farm or bridge.${r.hash ? ` Sent ${txLink(r.hash)}.` : ''}${by} <a href="#" data-mode-go="use">What next →</a>`);
     S.amt = ''; $('#amt').value = ''; S.quote = null; S.seq++; renderQuote(); keepInHash();
     const before = D.held?.pub === key.key.pubHex ? D.held.value ?? null : null;
@@ -465,7 +476,7 @@ async function proveFirst(q, lane) {
 }
 // Wraps proved and then not sent, or kept ready from the front page's prove sheet: one store for both pages (/wrap-vouchers.js).
 let vouchP = null;
-const vouchers = () => (vouchP ||= import('/wrap-vouchers.js?cb=c2a1a1dd').then((m) => m.makeVouchers(), (e) => { vouchP = null; throw e; }));
+const vouchers = () => (vouchP ||= import('/wrap-vouchers.js?cb=adaa5fa2').then((m) => m.makeVouchers(), (e) => { vouchP = null; throw e; }));
 function firstSay(lane, set, q) {
   S.pubInput = false;
   return (k, d) => {
@@ -487,11 +498,17 @@ function firstSay(lane, set, q) {
 }
 function failFirst(e, at, q, lane) {
   if (e instanceof Cancelled || e?.unlockCancelled) { paintSteps(null); say(''); return; }
+  let keep = '';
   if (e?.ready) {
-    S.kept = { r: e.ready, wei: q.wei, lane, pub: key.key?.pubHex };
-    if (key.key?.pubHex) vouchers().then((vs) => vs.keep(key.key.pubHex, 'cETH', e.ready)).catch(() => {});
+    const id = e.ready.built?.depositId, pub = key.key?.pubHex, refused = !!(e.unsent && e.revert && id);
+    // A proof the pool refuses at two presses running is refused for good: it is let go, and the next press proves afresh.
+    if (refused && S.refused === id) { S.kept = null; S.refused = null; if (pub) vouchers().then((vs) => vs.drop(pub, id)).catch(() => {}); keep = ' That proof was refused twice, so it was discarded: the next press proves afresh.'; }
+    else {
+      S.refused = refused ? id : null; S.kept = { r: e.ready, wei: q.wei, lane, pub };
+      if (pub) vouchers().then((vs) => vs.keep(pub, 'cETH', e.ready, lane)).catch(() => {});
+      keep = ' The proof is kept: press again to send it.';
+    }
   }
-  const keep = e?.ready ? ' The proof is kept: press again to send it.' : '';
   if (e instanceof UserStopped || e?.userStopped || e?.code === 4001) { paintSteps(null); say(`${esc(e.message)}${keep}`); return; }
   paintSteps(at, { failed: true });
   // Sent and not yet confirmed: the deposit and its settle land together or not at all, so it is only waited on.
@@ -1049,7 +1066,7 @@ function renderFarm() {
   const p = D.program, e = p?.epoch, rows = D.rows, px = ethUsd(), tacUsd = D.rates.tacEth && px ? D.rates.tacEth * px : null;
   if (!p) { $('#fm-stats').innerHTML = '<p class="note">Reading the farms…</p>'; return; }
   if (!e?.active || !rows.length) { $('#fm-stats').innerHTML = `<p class="note">The farms are between reward periods. They show here when the next one starts.</p>`; $('#pools').innerHTML = ''; $('#fm-note').textContent = ''; return; }
-  const aprs = rows.map((r) => r.apr).filter((a) => a != null), day = Number(e.ratePerDayTac), end = programEnds(p);
+  const aprs = rows.map((r) => r.apr).filter((a) => a != null), day = rows.reduce((a, r) => a + r.perDay, 0), end = programEnds(p);
   const cell = (k, v, s = '') => `<div><span class="k">${k}</span><b class="num">${v}</b>${s ? `<span class="s">${s}</span>` : ''}</div>`;
   $('#fm-stats').innerHTML = cell('Best APR now', aprs.length ? aprTxt(Math.max(...aprs)) : '—', 'paid in TAC, swap fees on top')
     + cell('Rewards', `<svg class="tk xs inl" aria-hidden="true"><use href="#tk-tac"/></svg>${Math.round(day).toLocaleString('en-US')} TAC`, `a day${tacUsd ? ` · about ${usd(day * tacUsd)}` : ''}`)
@@ -1105,10 +1122,9 @@ function renderAbout() {
 async function loadFront() { const p = await readPool(false); if (p) D.pool = p; }
 async function loadWhole() {
   const p = await readPool(true);
-  if (!p?.flows) return;
+  if (!p) return;
   D.pool = { ...(D.pool || {}), ...p, flows: null };
-  D.hist = heldHistory(p.flows, p.held);
-  D.hist.pts = D.hist.pts;
+  if (p.flows) D.hist = heldHistory(p.flows, p.held);
 }
 async function loadRates() { D.rates = { ...D.rates, ...(await readRates()) }; }
 async function loadFarms() { const p = await readProgram(); if (p?.epoch) D.program = p; D.rows = poolRows(D.program, D.rates); }
@@ -1124,10 +1140,16 @@ $('#amt').addEventListener('input', (e) => { S.amt = e.target.value; renderGo();
 $('#amt').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !$('#go').disabled) $('#go').click(); });
 $('#amt').addEventListener('focus', () => { getUx().then((t) => t.warmWrapLogs?.()).catch(() => {}); }, { once: true });
 $('#chips').addEventListener('click', (e) => { const b = e.target.closest('[data-amt]'); if (!b || S.busy) return; S.amt = b.dataset.amt; $('#amt').value = S.amt; renderChips(); requote(); keepInHash(); });
-$('#in-bal').addEventListener('click', () => {
+$('#in-bal').addEventListener('click', async () => {
   const have = spendable();
   if (have == null || S.busy) return;
-  const v = have > GAS_RESERVE ? ((have - GAS_RESERVE) / E10) * E10 : 0n;
+  let v = have > GAS_RESERVE ? ((have - GAS_RESERVE) / E10) * E10 : 0n;
+  // On the relay's lane the tip comes out of the same ETH: Max is the balance less the reserve and the tip quoted for that much (a smaller amount asks no larger a tip).
+  if (v && laneNow() === 'relay') {
+    S.amt = plain(v); $('#amt').value = S.amt; const my = ++S.seq; S.quote = { wei: v, loading: true }; renderChips(); renderQuote(); renderGo();
+    try { const { tip } = await wrapQuote(v); v = v > tip ? ((v - tip) / E10) * E10 : 0n; } catch { }
+    if (my !== S.seq) return;
+  }
   S.amt = v ? plain(v) : ''; $('#amt').value = S.amt; renderChips(); requote(); keepInHash();
 });
 $('#go').addEventListener('click', () => { say(''); press(); });
@@ -1174,14 +1196,15 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && $('#hint
 }
 
 renderChips(); renderQuote(); renderGo(); renderAbout(); renderLanes(); renderBtc(); renderOwn();
+// the pool's own view of the stats (preloaded) carries the head's figures and the history, so it is the one read of them at the start; the short view serves the minute's tick
 const whole = loadWhole().catch(() => {});
 whole.then(() => { S.histFailed = !D.hist; renderChart(); renderMoves(); renderHead(); });
-Promise.allSettled([loadMarket().then(() => { renderBtc(); renderLanes(); renderChart(); }), loadFront().then(renderHead), loadRates().then(() => { renderHead(); renderLanes(); renderQuote(); return loadFarms(); }).then(paintAll), loadFloor().then(() => { renderAbout(); renderUse(); })]).then(() => {
+Promise.allSettled([loadMarket().then(() => { renderBtc(); renderLanes(); renderChart(); }), whole, loadRates().then(() => { renderHead(); renderLanes(); renderQuote(); return loadFarms(); }).then(paintAll), loadFloor().then(() => { renderAbout(); renderUse(); })]).then(() => {
   const params = new URLSearchParams(location.hash.replace(/^#/, ''));
   if (params.get('mode') === 'use') setMode('use');
   S.ready = true;
   if (params.get('amount') && S.mode === 'get') { S.amt = params.get('amount'); $('#amt').value = S.amt; renderChips(); requote(); } else keepInHash();
   paintAll();
-  whole.then(() => { S.histFailed = !D.hist; paintAll(); });
 });
-setInterval(() => { if (!document.hidden && !S.busy) { loadFront().then(renderHead).catch(() => {}); loadRates().then(() => loadFarms()).then(paintAll).catch(() => {}); loadMarket().then(paintAll).catch(() => {}); if (W.account) readBalances().then(() => { renderBalance(); renderGo(); }).catch(() => {}); } }, 60e3);
+// the minute's reads, painted once when they are all in
+setInterval(() => { if (!document.hidden && !S.busy) { Promise.allSettled([loadFront(), loadRates().then(() => loadFarms()), loadMarket()]).then(paintAll); if (W.account) readBalances().then(() => { renderBalance(); renderGo(); }).catch(() => {}); } }, 60e3);

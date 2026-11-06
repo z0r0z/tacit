@@ -9,6 +9,15 @@ export const IN_DONE = ['minted', 'reclaimed'], IN_HELD = ['not-recorded', 'stop
 export const IN_BURN_SENT = ['burn-submitted', 'burn-mined', 'registered', 'folded', 'minted'];
 // a relay wait that ran out (the mint may still land): asked again sooner than a refusal
 export const waitRanOut = (e) => /settle timed out|status polling for job/i.test(e?.message || '');
+// A burn held back by the miner's rate (`feeWait`) or by a coin held for the key's other burns (`checkWait.fund`) is looked at again ten minutes
+// after the last look, or once another of the key's burns is sent (its change frees a coin), since a look reads the chains and builds the burn
+// again. `others` is the key's list of bridges.
+export const WAIT_LOOK_MS = 10 * 60e3;
+export function waitLookDue(rec, others = [], now = Date.now()) {
+  const w = rec.checkWait?.fund ? rec.checkWait : rec.feeWait;
+  if (!w || now - Number(w.at || 0) >= WAIT_LOOK_MS) return true;
+  return !!rec.checkWait?.fund && others.some((r) => r.id !== rec.id && IN_BURN_SENT.includes(r.stage) && Number(r.updatedAt || 0) > Number(w.at || 0));
+}
 
 // One pass over a key's bridges in: a mint armed with the relay where it can be, a burn sent where the holder's plan (or a finished history
 // check) says to, a ready mint sent when its retry is due, and every other bridge read again from the chains.
@@ -22,7 +31,7 @@ export async function stepIn({ ux, pub, withKey, priv, planOf = () => null, aliv
     try {
       let after;
       if (rec.stage === 'traced' && (planOf(rec)?.burn || rec.checkWait?.go) && !rec.lastError) {
-        after = await withKey(() => ux.advance(pub, rec.id, { walletPriv: priv(), maxFeeRate: planOf(rec)?.burn?.maxRate ?? null }), pub);
+        after = waitLookDue(rec, ux.list(pub)) ? await withKey(() => ux.advance(pub, rec.id, { walletPriv: priv(), maxFeeRate: planOf(rec)?.burn?.maxRate ?? null }), pub) : rec;
         if (after.stage === 'burn-signed') after = await ux.advance(pub, rec.id).catch(() => ux.list(pub).find((r) => r.id === rec.id) || after);
         if (IN_BURN_SENT.includes(after.stage)) on.burnSent?.(after);
         else if (after.feeWait && !rec.feeWait) moved = true;

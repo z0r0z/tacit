@@ -181,9 +181,14 @@ export async function startNote(t, { withKey, mem, pub, walletPub, priv, note, p
   if (!c.ok) return { why: checkText(c.pf.steps.find((x) => !x.ok) || { name: '' }, errText) };
   const coins = await withKey((k) => freeCoins(k)), r = priceNote(t, { note, pf: c.pf, coins });
   if (coins && r.short) return { why: NO_SATS };
-  const rec = await withKey((k) => begin(k, { review: r, priv: priv() }));
-  const plan = { at: Date.now(), ...(r.one ? {} : { burn: { maxRate: burnMaxRate(c.pf) } }), ...(publicTo ? { publicTo } : {}) };
-  if (plan.burn || plan.publicTo) planSet(mem, pub, rec.id, plan);
+  // The bridge's record is named by its note (burndep-ux recordId), so the plan is kept under that name before anything is sent: a page closed
+  // on the broadcast still has it. A start that fails leaves no plan behind.
+  const id = `${String(note.txid).replace(/^0x/, '').toLowerCase()}:${Number(note.vout)}`;
+  const plan = { at: Date.now(), ...(r.one ? {} : { burn: { maxRate: burnMaxRate(c.pf) } }), ...(publicTo ? { publicTo } : {}) }, planned = !!(plan.burn || plan.publicTo);
+  if (planned) planSet(mem, pub, id, plan);
+  let rec;
+  try { rec = await withKey((k) => begin(k, { review: r, priv: priv() })); }
+  catch (e) { if (planned) planSet(mem, pub, id, null); throw e; }
   try { await withKey((k) => { k.invalidateHoldingsCache?.(); }); } catch { /* the next read is fresh enough */ }
   return { rec };
 }
@@ -220,10 +225,11 @@ export async function bulkFee(t, { bulk, kind, coins }) {
   const sendTx = (ns) => sendCost(t, { rate, coins, noteSats: sats(ns), k: ns.length });
   const txs = kind === 'merge' ? bulk.merge.groups.map((g) => sendTx(g.notes))
     : [...bulk.all.burns.map((n) => burnTx([n])), ...bulk.all.sends.map((g) => sendTx(g.notes)), ...bulk.all.privates.map((n) => sendTx([n]))];
-  const need = txs.reduce((s, x) => s + x.need, 0), free = (coins || []).reduce((s, c) => s + Math.max(0, Number(c?.value) || 0), 0), burn = burnTx([{ sats: 546 }]).fee;
-  // What comes after the first transactions: the burn of each merged or sent note, and for a note the proof does not track its move and its burn.
-  let fee = txs.reduce((s, x) => s + x.fee, 0), later = (kind === 'merge' ? bulk.merge.groups.length : bulk.all.sends.length + bulk.all.privates.length) * burn;
-  if (kind === 'all') for (const n of bulk.all.checks) { const c = ux.bridgeCost({ path: 'deposit', feeRate: rate, coins: coins || [], noteSats: n.sats, burnRate: rate }); fee += c.fee; later += c.later; }
+  const free = (coins || []).reduce((s, c) => s + Math.max(0, Number(c?.value) || 0), 0), burn = burnTx([{ sats: 546 }]).fee;
+  // What comes after the first transactions: the burn of each merged or sent note, and for a note the proof does not track its move and its burn
+  // (the move's coin covers that burn's fee too, so its need counts with the rest).
+  let fee = txs.reduce((s, x) => s + x.fee, 0), need = txs.reduce((s, x) => s + x.need, 0), later = (kind === 'merge' ? bulk.merge.groups.length : bulk.all.sends.length + bulk.all.privates.length) * burn;
+  if (kind === 'all') for (const n of bulk.all.checks) { const c = ux.bridgeCost({ path: 'deposit', feeRate: rate, coins: coins || [], noteSats: n.sats, burnRate: rate }); fee += c.fee; need += c.need; later += c.later; }
   return { fee, later, need, free, short: !!coins && free < need, autoMaxFee: Math.max(3000, Math.ceil(burn * 2)) };
 }
 

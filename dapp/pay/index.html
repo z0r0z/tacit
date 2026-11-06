@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-Olfb5ZCPuMLmdzW11jkrOEM4WExpawN9s/mj4rG+k5w=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://tacit-api.onrender.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-0JhLf2GOF8MqandPQf50sqLPho6CZImrgGpDM6AqeEQ=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://tacit-api.onrender.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay</title>
 <meta name="description" content="Pay BTC, TAC and ETH privately from one key and one tacit1 address. Every payment is made on your device.">
@@ -1202,18 +1202,20 @@ function loadBtc(force = false) {
     const addr = t.wallet.address(), scan = t.scanHoldings(force);
     scan.catch(() => {});
     const utxos = await t.getUtxos(addr);
-    let sats = 0n, pending = 0n;
+    let pending = 0n;
     const same = BTC.pub === pub, skip = same ? BTC.skip : null, coins = [];
     const coinOf = (u) => ({ k: `${u.txid}:${u.vout}`, v: Number(u.value || 0), conf: !!u.status?.confirmed, own: !u.status?.confirmed && OWN_TX.get(`${addr}|${u.txid}`) === true });
+    // the balance is the coins a send can pick: the holdings scan sets the others aside (asset carriers, unverified or unclassified outputs)
+    const spendable = (list) => list.reduce((n, c) => (c.conf || c.own ? n + BigInt(c.v) : n), 0n);
     for (const u of utxos || []) {
       const v = BigInt(u.value || 0);
       if (v <= SATS_DUST) continue;
       const own = !u.status?.confirmed && await ownChange(t, u.txid, addr);
       if (!skip?.has(coinOf(u).k)) coins.push(coinOf(u));
-      if (u.status?.confirmed || own) sats += v; else pending += v;
+      if (!u.status?.confirmed && !own) pending += v;
     }
     if (!live()) return;
-    Object.assign(BTC, { pub, addr, sats, pending, coins, err: null, part: true, got: Math.max(same ? BTC.got : 0, 1), silent: same ? BTC.silent : 0n, silentList: same ? BTC.silentList : [], held: same ? BTC.held : [] });
+    Object.assign(BTC, { pub, addr, sats: spendable(coins), pending, coins, err: null, part: true, got: Math.max(same ? BTC.got : 0, 1), silent: same ? BTC.silent : 0n, silentList: same ? BTC.silentList : [], held: same ? BTC.held : [] });
     render();
     if (!BTC.sp) { try { BTC.sp = await t.walletSilentPaymentAddress(); } catch {} if (BTC.sp && live()) render(); }
     if (ANN.pub !== pub) Object.assign(ANN, { pub, seen: new Set(Object.keys(t.loadSpCredits() || {})), fresh: new Set() });
@@ -1235,7 +1237,7 @@ function loadBtc(force = false) {
     let safe = coins;
     try { if (h instanceof Map) safe = t.selectSatsUtxosSafe(utxos || [], h).map(coinOf); } catch {}
     const ok = new Set(safe.map((c) => c.k));
-    Object.assign(BTC, { held, coins: safe, skip: new Set((utxos || []).map(coinOf).filter((c) => c.v > Number(SATS_DUST) && !ok.has(c.k)).map((c) => c.k)), got: Math.max(BTC.got, 2) });
+    Object.assign(BTC, { held, coins: safe, sats: spendable(safe), skip: new Set((utxos || []).map(coinOf).filter((c) => c.v > Number(SATS_DUST) && !ok.has(c.k)).map((c) => c.k)), got: Math.max(BTC.got, 2) });
     render();
     const after = await readSilent(t, false);
     if (!live()) return;
@@ -1271,7 +1273,7 @@ const btcRoute = memoRoute(async (raw) => {
   throw new Error('Enter a tacit1…, sp1… or bc1… address, or a name.');
 });
 const getUx = lazy(async () => {
-  const [{ makeConfidentialPoolUx }, dep] = await Promise.all([import('/confidential-pool-ux.js?cb=5c178c1b'), import('/confidential-deployments.js')]);
+  const [{ makeConfidentialPoolUx }, dep] = await Promise.all([import('/confidential-pool-ux.js?cb=fea4ab97'), import('/confidential-deployments.js')]);
   dep.setActiveNetwork('mainnet');
   return makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256, network: 'mainnet' });
 });
@@ -1367,6 +1369,8 @@ async function poolSend(r, v, raw, status, anchor = null) {
     res = await withKey(async (t) => {
       going(status, 'Finding a new key for this payment…');
       const sk = await X.saleKeys(t, pw, TAC.notes || [], X.TAC_ASSET_MAINNET, { addresses: [info.address] });
+      // a counter one of this browser's jobs holds is not reused: a second tab pressed in the seconds before the first tab's hold is written derives the same free key
+      if (poolJobs(pub).some((j) => j.counter === sk.free && j.state !== 'gone')) throw new Error('Another payment is still being taken out of the pool from this wallet. Nothing was sent. Wait a few minutes, then try again.');
       const key = X.saleKey(pw, sk.free);
       putPoolJobs(pub, [...poolJobs(pub), { id, to: r.to, script: bytesToHex(script), sats: v.toString(), units: q.units.toString(), counter: key.counter, state: 'posting', at: Date.now() }]);
       if (!poolJobs(pub).some((j) => j.id === id)) throw new Error('This browser could not save the payment, so nothing was sent. Free some space or allow this site’s data, then try again.');
@@ -1771,10 +1775,20 @@ function pollHints() {
   })().then((n) => { if (n > 0 && S.key?.pubHex === pub) loadBtc(true); return Math.max(0, n); }).finally(() => { if (HINTQ.p === p) HINTQ.p = null; });
   return p;
 }
-setInterval(() => { if (!document.hidden && S.key && !BTC.loading) pollHints().catch(() => {}); }, 20e3);
+setInterval(() => { if (!document.hidden && S.key && !BTC.loading) pollHints().catch(() => {}); }, 60e3);
+// The balance read's look at the hints, inside its key turn: one read at a time per key. A poll already reading is left to finish
+// (it reads the balance again when it finds a payment), and a poll asked meanwhile is answered with this read's count.
 async function hintsForMe(t, pub) {
-  const r = await hintsRead(pub);
-  if (r) await hintsLook(t, pub, r);
+  if (HINTQ.p && HINTQ.pub === pub) return;
+  HINTQ.pub = pub;
+  const p = HINTQ.p = (async () => {
+    const r = await hintsRead(pub);
+    if (!r) return 0;
+    const n0 = Object.keys(t.loadSpCredits() || {}).length;
+    await hintsLook(t, pub, r);
+    return Math.max(0, Object.keys(t.loadSpCredits() || {}).length - n0);
+  })().finally(() => { if (HINTQ.p === p) HINTQ.p = null; });
+  await p;
 }
 async function hintsRead(pub) {
   const [t, H] = await Promise.all([loadTacit(), getHints()]);
@@ -1786,7 +1800,8 @@ async function hintsRead(pub) {
   const after = await H.readHints(SP_HINTS, st.after || 0, async (id, e, c) => {
     const tx = H.openHint(privs, e, c);
     if (tx && !todo.has(tx)) todo.set(tx, { tx, at: Date.now() });
-    if (++n % 20 === 0) await new Promise((r) => setTimeout(r, 0));
+    if (++n % 8 === 0) await new Promise((r) => setTimeout(r, 0));
+    if (n % 2000 === 0 && S.key?.pubHex === pub) writeJson(k, { after: id, retry: [...todo.values()] });   // a read cut short carries on from here
   }, fetch, { maxPages: 5 });
   const now = Date.now(), keep = [...todo.values()].filter((x) => now - x.at < 7 * 86400e3).sort((a, b) => b.at - a.at).slice(0, 200);
   return { k, after, keep, now, due: keep.filter((x) => (x.next || 0) <= now).slice(0, 12) };
@@ -2283,7 +2298,7 @@ function paintFound() {
       <div class="req-m">In ${btcTx(f.txid)}. ${S.key ? '' : 'Open your Tacit wallet below to see whether it is yours.'}</div>`);
     sayOnce($('#fd-status'), FOUND.busy ? html`<span class="spin" aria-hidden="true"></span>Checking…` : FOUND.res || '');
   });
-  $('#fd-x').onclick = () => { FOUND.v = null; FOUND.res = null; paintFound(); };
+  $('#fd-x').onclick = () => { FOUND.v = null; FOUND.res = null; if (parseFound(location.hash)?.txid === f.txid) showView(); paintFound(); };
   const re = $('#fd-re');
   if (re) re.onclick = () => checkFound();
 }
@@ -2327,6 +2342,7 @@ async function checkFound() {
       : gone ? html`${fmt(gone, 8, 8)} BTC was for you in it, and has been spent since.`
       : html`That payment is not addressed to this wallet.`;
     if (sats || plain || gone) S.mode = 'btc'; else if (tac) S.mode = 'tac';
+    if (parseFound(location.hash)?.txid === f.txid) showView();
     render(); loadMode(true);
   } catch (e) { FOUND.res = html`<span class="err">${errText(e)}</span>${e?.again ? html` <button class="link" type="button" id="fd-re">Try again</button>` : ''}`; }
   FOUND.busy = false;
@@ -2582,7 +2598,8 @@ async function actSilent(b, pub) {
 async function actTac(pub) {
   const X = await getSecret(), client = X.poolClientFor('mainnet');
   if (S.key?.pubHex !== pub) throw new Error('Your Tacit wallet changed.');
-  const pw = TAC.pub === pub && TAC.pw ? TAC.pw : X.poolWalletFor(hexToBytes(S.key.priv), 'mainnet');
+  // the key's one pool wallet object, shared with the balance read: the pool client keeps each leaf's trial decrypt per wallet object
+  const pw = poolWallet() || (TAC.early = { pub, pw: X.poolWalletFor(hexToBytes(S.key.priv), 'mainnet') }).pw;
   const feed = await client.allNotes(), leaves = new Map(), byIndex = new Map();
   for (const n of feed) {
     byIndex.set(n.leafIndex, n);
@@ -2855,7 +2872,7 @@ function render() {
     mount(tabs, html`${TABS[S.mode].map(([k, l]) => html`<button type="button" role="tab" id="tab-${k}" data-tab="${k}" aria-controls="form" aria-selected="${k === tab ? 'true' : 'false'}" tabindex="${k === tab ? '0' : '-1'}">${l}</button>`)}`);
     $$('#tabs [data-tab]').forEach((b) => b.onclick = () => {
       S.tab[S.mode] = b.dataset.tab; if (!S.sending) say($('#status'), '');
-      if (!parseReq(location.hash)) showView();
+      if (!parseReq(location.hash) && !parseFound(location.hash)) showView();
       render(); $('#tabs [aria-selected="true"]')?.focus();
     });
   }
@@ -2879,6 +2896,7 @@ function render() {
     const pre = PRE.v;
     if (pre && pre.mode === S.mode && tab === 'send' && (to || amt) && Date.now() - pre.at < 10 * 60e3) {
       PRE.v = null;
+      if (parsePre(location.hash)) showView();
       if (to && pre.to) to.value = pre.to;
       if (amt && pre.amount) amt.value = trimZeros(plain(pre.amount));
       (to && pre.to ? to : amt).dispatchEvent(new Event('input'));
@@ -2941,8 +2959,9 @@ function applyHash() {
   if (forwardOld(location.hash)) return true;
   const h = location.hash.replace(/^#/, '');
   if (!h) return;
+  // a pre-filled form, a payment request and a payment link keep their hash until they are used, so a reload before the wallet is open still carries them
   const pre = parsePre('#' + h);
-  if (pre) { PRE.v = pre; S.mode = pre.mode; S.tab[pre.mode] = 'send'; S.drawn = null; showView(); return; }
+  if (pre) { PRE.v = pre; S.mode = pre.mode; S.tab[pre.mode] = 'send'; S.drawn = null; return; }
   const rq = parseReq('#' + h);
   if (rq) {
     HREQ.v = rq; S.mode = rq.mode; S.tab[rq.mode] = 'send'; S.drawn = null; resolveReq();
@@ -2950,8 +2969,8 @@ function applyHash() {
     return;
   }
   const f = parseFound('#' + h), v = /^(btc|tac)(?:\/([a-z]+))?$/.exec(h);
-  if (f) { FOUND.v = f; FOUND.res = null; S.mode = f.kind === 'st' ? 'tac' : 'btc'; }
-  else if (v) { S.mode = v[1]; S.tab[v[1]] = TABS[v[1]].some(([k]) => k === v[2]) ? v[2] : 'send'; }
+  if (f) { FOUND.v = f; FOUND.res = null; S.mode = f.kind === 'st' ? 'tac' : 'btc'; return; }
+  if (v) { S.mode = v[1]; S.tab[v[1]] = TABS[v[1]].some(([k]) => k === v[2]) ? v[2] : 'send'; }
   showView();
 }
 document.addEventListener('keydown', (e) => {

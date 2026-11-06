@@ -89,7 +89,7 @@ run_pid() {
 
 # SP1's Groth16 files in the folder the SDK reads them from ($HOME/.sp1/circuits/groth16/<version>; the SDK skips its own fetch when the folder
 # exists), fetched in CIRCUITS_PARTS ranges at once, checked against the pin, unpacked beside it and moved into place whole. A folder left by
-# a fetch cut short (it still holds artifacts.tar.gz) is cleared first. Returns 1, having said why, when it could not: the worker then does
+# a fetch cut short (it still holds artifacts.tar.gz) is cleared first, and so are the parts of one. Returns 1, having said why, when it could not: the worker then does
 # its own, slower fetch.
 fetch_circuits() {
   dir="${SP1_GROTH16_CIRCUIT_PATH:-$HOME/.sp1/circuits/groth16}"; dest="$dir/$PIN_CIRCUITS"
@@ -101,7 +101,7 @@ fetch_circuits() {
   mkdir -p "$dir" || return 1
   need="${TACIT_CIRCUITS_MIN_GB:-20}"; free=$(df -Pk "$dir" | awk 'NR==2 {print int($4 / 1048576)}')
   case $free in ''|*[!0-9]*) ;; *) [ "$free" -ge "$need" ] || { say "note: only $free GB are free where SP1's files go (it needs about $need GB while it unpacks)"; return 1; } ;; esac
-  tmp="$dir/.part-$$"; rm -rf "$tmp"; mkdir -p "$tmp/x" || return 1
+  tmp="$dir/.part-$$"; rm -rf "$dir"/.part-*; mkdir -p "$tmp/x" || return 1
   say "Fetching SP1's Groth16 proving files (about $((PIN_CIRCUITS_BYTES / 1000000000)) GB) over $parts connections"
   chunk=$(( (PIN_CIRCUITS_BYTES + parts - 1) / parts ))
   # one range into its file, picking up where a dropped or stalled connection left it (what curl got is appended as it comes)
@@ -123,6 +123,8 @@ fetch_circuits() {
     wait
   ) &
   dl=$!
+  # a run cut short takes its half-fetched parts with it
+  trap 'kill "$dl" 2>/dev/null; rm -rf "$tmp"; exit 1' INT TERM
   while kill -0 "$dl" 2>/dev/null; do
     sleep "${TACIT_CIRCUITS_POLL:-15}"
     say "  $(du -sk "$tmp" | awk '{print int($1 / 1024)}') MB of $((PIN_CIRCUITS_BYTES / 1000000))"
@@ -140,8 +142,11 @@ fetch_circuits() {
   # shellcheck disable=SC2086
   cat $list | tar -Pxzf - -C "$tmp/x" 2>/dev/null || { say "note: SP1's files did not unpack"; rm -rf "$tmp"; return 1; }
   rm -f $list
+  # the folder is replaced whole: moved into one that appeared meanwhile, the files would land in a subfolder of it
+  rm -rf "$dest"
   mv "$tmp/x" "$dest" || { rm -rf "$tmp"; return 1; }
   rm -rf "$tmp"
+  trap - INT TERM
 }
 
 main() {
@@ -196,6 +201,9 @@ main() {
   [ "$got" = "$PIN_WORKER" ] || { rm -f "$BIN.part"; die "the download's sha256 is $got, not the pinned $PIN_WORKER: nothing was run."; }
   chmod +x "$BIN.part" && mv -f "$BIN.part" "$BIN"
   say "Checked its sha256 ($(printf '%s' "$got" | cut -c1-12)...)"
+  # A run from before goes first, with its group (SP1's server in it), before the folder its first batch may be fetching into is touched.
+  p=$(run_pid); [ -z "$p" ] || kill -- "-$p" 2>/dev/null || true
+  n=0; while [ "$n" -lt 10 ] && [ -n "$(run_pid)" ]; do sleep 1; n=$((n + 1)); done
   if [ -n "$small" ]; then
     srv="$HOME/.sp1/bin/sp1-gpu-server"
     mkdir -p "$HOME/.sp1/bin"
@@ -208,7 +216,6 @@ main() {
   fi
   fetch_circuits || say "The worker fetches SP1's files itself on its first start instead; that takes longer."
   # One worker at a time, restarted after a crash with a pause; it re-reads nothing between starts but this script's settings.
-  p=$(run_pid); [ -z "$p" ] || kill -- "-$p" 2>/dev/null || true
   cat > "$HOME_DIR/run.sh" <<EOF
 #!/bin/sh
 cd "$HOME_DIR"

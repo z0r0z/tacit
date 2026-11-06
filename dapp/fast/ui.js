@@ -139,7 +139,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
         <div class="kv"><b>${esc(r.title)}</b><span class="num">${esc(fmtTac(r.amount))} TAC${r.receive && r.receive !== '0' ? ` → ${esc(fmtTac(r.receive))} TAC` : ''}</span></div>
         ${r.returned ? '' : `<ol class="fx-steps" aria-label="Steps">${r.steps.map((s, i) => `<li${i < r.at || r.ended ? ' class="on"' : i === r.at ? ' class="at"' : ''}>${esc(s)}</li>`).join('')}</ol>`}
         <p class="note">${esc(r.detail)}${r.error && !r.ended ? ` <span class="err">${esc(r.error)}</span>` : ''}</p>
-        <p class="note fx-meta">${esc(ago(r.created))}${r.lockTxid ? ` · <a href="${SCAN}${esc(r.lockTxid)}" target="_blank" rel="noopener noreferrer">Bitcoin lock ↗</a>` : ''}${r.ended && !r.returned ? ' · <a href="/assets/">Your TAC in Assets</a>' : ''}</p>
+        <p class="note fx-meta">${esc(ago(r.created))}${r.lockTxid ? ` · <a href="${SCAN}${esc(r.lockTxid)}" target="_blank" rel="noopener noreferrer">Bitcoin lock ↗</a>` : ''}${r.ended && !r.returned ? ' · <a href="/">Your TAC, on the front page</a>' : ''}</p>
       </div>`).join('') + (open ? '<p class="note">Keep this page open until it is done: each step is taken as Bitcoin confirms.</p>' : '') : '';
   }
 
@@ -191,11 +191,13 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
     if (S.sess) return S.sess;
     if (S.opening) return S.opening;
     const pub = keyS.key.pubHex;
-    S.opening = (async () => {
+    // an open the card no longer waits for (the key locked or changed under it, and a newer open may be under way) installs nothing and
+    // leaves the card as the newer one draws it
+    const me = S.opening = (async () => {
       S.busy = true; note('Reading your TAC on Bitcoin…'); paintForm();
       try {
         const sess = await open();
-        if (!keyS.unlocked || keyS.key.pubHex !== pub) return null;
+        if (!keyS.unlocked || keyS.key.pubHex !== pub || S.opening !== me) return null;
         S.sess = sess; S.pub = pub;
         S.want = wants ? wants.kept(pub) : null; S.told = false; watchWant();
         S.bal = await sess.balance();
@@ -204,13 +206,14 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
         note('');
         return sess;
       } catch (e) {
+        if (S.opening !== me) return null;
         S.sess = null; note(wording(e), !slowNet(e));
         // Ethereum's nodes not answering is passing: the key is read again on its own
         if (slowNet(e)) setTimeout(() => { if (keyS.unlocked && keyS.key.pubHex === pub && !S.sess) openSession(); }, retryMs);
         return null;
-      } finally { S.busy = false; S.opening = null; paint(); }
+      } finally { if (S.opening === me) { S.busy = false; S.opening = null; paint(); } }
     })();
-    return S.opening;
+    return me;
   }
   // a key opened anywhere on the page (the provider panel too) or changed for another is read here at once, so the card never asks to open a wallet that is open
   keyS.onChange(() => {
@@ -336,7 +339,15 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
       // those that pay as much cannot hold it: the next quote is shown, for one more press
       const rest = /cannot hold that amount/.test(String((e && e.message) || e)) ? quotes.filter((x) => !fits.includes(x)) : [];
       if (rest.length) { S.quotes = rest; S.quote = rest[0].quote; S.best = rest[0].provider; again = true; } else note(wording(e), true);
-    } finally { S.busy = false; paint(); if (again) { sure(); note(`The quote changed. ${S.note}`); paintForm(); } }
+    } finally {
+      // the quote shown again may be another provider's: what its lock costs on Bitcoin is read for it, as for a quote just typed for
+      if (again) {
+        S.cost = null;
+        if (S.sess && S.sess.cost) { const sess = S.sess, seq = S.seq, c = await sess.cost({ quote: S.quote, provider: S.best }).catch(() => null); if (seq === S.seq && S.sess === sess && c) S.cost = c; }
+      }
+      S.busy = false; paint();
+      if (again && S.quote) { if (S.cost && S.cost.short) note(`The quote changed. ${shortText(S.cost)}`, true); else { sure(); note(`The quote changed. ${S.note}`); } paintForm(); }
+    }
   }
   $('fx-go').addEventListener('click', go);
 

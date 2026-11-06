@@ -1,19 +1,19 @@
 // /prove/: the network's blocks as they land, the proofs waiting and the provers making them, and this computer's own prover, started
 // and paused from here. The computer's tacit-prover (installed once with the line the page shows) answers on 127.0.0.1; the API's chain
 // (GET /prover/blocks) and proof pool, and the points service, say what the network did and what an address has made and been paid.
-import { cleanAddress, proveCommand, utcDay, mineLines } from '/community-prove.js?cb=199f0ad4';
+import { cleanAddress, proveCommand, utcDay, mineLines, capOf } from '/community-prove.js?cb=30714a9f';
 import { localState, jobView, headline, isPhone, isWindows, setupText } from '/prove/view.js?cb=80de18a0';
 import { invaderSvg, gpuSvg } from '/prove/invader.js?cb=e8a5ec59';
 import { short, cells, opsText, tac, rewardWei, ago, took, fresh, blockAgo, kindOf, KINDS, kindText, median, untilDayEnds, cleanBlock, cleanProof, cleanMiner } from '/prove/chain.js?cb=8a988a34';
 
 const API = 'https://api.tacit.finance', POINTS = 'https://tacit-points.onrender.com', LOCAL = 'http://127.0.0.1:47815';
 const SAVED_ADDR = 'tacit-prove-address';                          // shared with the keeper page's card
-const SHOW = 40;
+const SHOW = 40, FEW = 5;                                          // blocks on the strip, and how many are read each time once it is drawn
 const $ = (s) => document.querySelector(s);
 const get = (url, ms = 6000) => fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(ms) }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
-let health = null, mine = null, pool = null, points = null, tally = null, busy = false, copied = false, salts = null, cross = [];
+let health = null, mine = null, pool = null, points = null, tally = null, busy = false, copied = false, salts = null, cross = [], misses = 0;
 // The setup line's kind of computer, from the browser; the switch above the line changes it (setting up another computer).
 let os = isWindows(navigator.userAgent) ? 'win' : 'unix';
 const rateText = (r) => (r >= 1e6 ? `${(r / 1e6).toFixed(1)} M/s` : `${Math.round(r / 1e3)} k/s`);
@@ -26,7 +26,7 @@ const cleanPool = (p) => (p ? { queued: count(p.queued), leased: count(p.leased)
   done24h: count(p.done24h), miners24h: count(p.miners24h),
   top: (p.top || []).map(cleanMiner).filter(Boolean), terms: { pointsPerProof: count(p.terms?.pointsPerProof), proofsPerMinerDay: count(p.terms?.proofsPerMinerDay) } } : null);
 const me = () => addr()?.toLowerCase() || null;
-const cap = () => (points?.enabled && points?.terms && !points.terms.off ? points.terms.capWeiPerPoint : null);
+const cap = () => capOf(points);
 // A node's face: the zOrgz invader its address picks (invader.js), or Tacit's GPU's own. An image, so each picture keeps its own gradient.
 const faces = new Map();
 const face = (a, px = 18) => {
@@ -74,9 +74,11 @@ async function readRemote() {
   paintNet(); paintFeed(); paintDetail(); paintGpu();
 }
 
-// The chain, read often: a new block lands at the front of the strip.
+// The chain, read often: a new block lands at the front of the strip. Once the strip is drawn only the newest few are asked for, and the
+// whole window again when every one of those is new (the API's `cross` list comes whole either way).
 async function readChain() {
-  const c = await get(`${API}/prover/blocks?limit=${SHOW}`);
+  let c = await get(`${API}/prover/blocks?limit=${shownTop == null ? SHOW : FEW}`);
+  if (shownTop != null && c?.blocks?.length >= FEW && fresh(c.blocks.map(cleanBlock).filter(Boolean), shownTop).length >= FEW) c = await get(`${API}/prover/blocks?limit=${SHOW}`);
   if (!c?.blocks) { $('#chain').hidden = !blocks.length; return; }
   c.blocks = c.blocks.map(cleanBlock).filter(Boolean);
   // No blocks yet (or none that read as one): the strip stays as it is.
@@ -168,7 +170,7 @@ async function readFeed() {
 }
 
 function paintFeed() {
-  if (!feed.length) return;
+  if (!feed.length) { if (!$('#feed .empty')) $('#feed').innerHTML = '<li class="empty">Nothing yet today.</li>'; return; }
   $('#feed').innerHTML = feed.slice(0, 8).map((p) => {
     const r = rewardWei(p.points, cap());
     // This address's own proofs are marked by the row (an edge), not a longer name, so every row stays on one line.
@@ -196,6 +198,7 @@ function waitingText() {
   return pool ? (n ? `${n} waiting` : salts?.live?.length ? 'mining salts' : 'waiting for work') : '';
 }
 
+let poolShown = null;
 function paintNet() {
   const q = pool?.queued ?? null, l = pool?.leased ?? null;
   const nx = document.getElementById('next-o');
@@ -210,15 +213,16 @@ function paintNet() {
   $('#n-provers').textContent = provers == null ? '—' : String(provers);
   $('#n-done').textContent = done == null ? '—' : String(done);
   const n = Math.min(60, (q || 0) + (l || 0));
-  $('#pool').innerHTML = Array.from({ length: n }, (_, k) => `<i class="${k < (l || 0) ? 'on' : ''}" style="--k:${k}"></i>`).join('')
+  const dots = Array.from({ length: n }, (_, k) => `<i class="${k < (l || 0) ? 'on' : ''}" style="--k:${k}"></i>`).join('')
     + ((q || 0) + (l || 0) > n ? `<span>+${(q || 0) + (l || 0) - n}</span>` : '');
+  if (dots !== poolShown) { poolShown = dots; $('#pool').innerHTML = dots; }   // drawn again only when the counts change, so the lit squares keep their beat
   paintBoard();
 }
 
 // Today's provers: their proofs, the TAC those earn and how fast they usually prove (from the newest proofs).
 function paintBoard() {
   const top = pool?.top || [], pts = new Map((tally?.miners || []).map((m) => [String(m.miner).toLowerCase(), m.points]));
-  if (!top.length) return;
+  if (!top.length) { if (!$('#board .empty')) $('#board').innerHTML = '<li class="empty">Nobody yet. Be first.</li>'; return; }
   const row = (m, i) => {
     const r = rewardWei(pts.get(String(m.miner).toLowerCase()), cap()), s = median(feed.filter((p) => p.miner === m.miner).map((p) => p.secs));
     return `<li${m.miner === me() ? ' class="me"' : ''}><span class="rk num">${i + 1}.</span>${who(m.miner)}<small>${m.proofs} ${m.proofs === 1 ? 'proof' : 'proofs'}</small><b>${r ? `${tac(r)} TAC` : ''}</b><small class="spd">${s ? `${esc(took(s))} each` : ''}</small></li>`;
@@ -227,6 +231,7 @@ function paintBoard() {
   $('#board').innerHTML = top.slice(0, 8).map(row).join('') + (mine >= 8 ? `<li class="gap" aria-hidden="true"></li>${row(top[mine], mine)}` : '');
 }
 
+let paidShown = null;
 function paint() {
   const state = localState(health, mine), h = headline(state, mine), job = jobView(mine?.job);
   $('#state').dataset.s = state;
@@ -289,7 +294,8 @@ function paint() {
   if (perDay && per) $('#pace').textContent = `about ${tac(per * BigInt(perDay))} TAC a day (${perDay} proofs)`;
   const credited = points?.account?.creditedWei;
   $('#paid-row').hidden = !/^\d+$/.test(String(credited ?? ''));
-  if (!$('#paid-row').hidden) $('#paid').innerHTML = `${esc(tac(credited))} TAC · <a href="/rewards/">Rewards</a>`;
+  const paid = $('#paid-row').hidden ? paidShown : `${esc(tac(credited))} TAC · <a href="/rewards/">Rewards</a>`;
+  if (paid !== paidShown) { paidShown = paid; $('#paid').innerHTML = paid; }
   $('#run').textContent = mine?.proved ? String(mine.proved) : '0';
   $('#run-row').hidden = !mine || typeof mine.on !== 'boolean';
   paintSalt();
@@ -305,6 +311,7 @@ function paintMe() {
   el.innerHTML = o ? `${face(o, 40)}<span>This computer pays ${esc(short(o))}</span>` : a ? `${face(a, 40)}<span>${esc(short(a))}</span>` : '';
 }
 
+let remoteTimer = 0, markedFor = null;
 function addressChanged() {
   const a = addr();
   paintMe();
@@ -312,10 +319,13 @@ function addressChanged() {
   $('#addr').setAttribute('aria-invalid', typed && !a ? 'true' : 'false');
   $('#addr-bad').textContent = typed && !a ? (/\.eth$/i.test(typed) ? 'Use the 0x address, not the name.' : 'That is not an address: 0x and 40 letters or digits.') : '';
   if (a) { try { localStorage.setItem(SAVED_ADDR, a); } catch {} }
+  misses = 0;
   paint();
-  if (blocks.length) paintChain(new Set());
-  paintFeed(); paintCrowd(); paintGpu();
-  readRemote().then(paint);
+  // The strip, the feed, the crowd and the GPU card mark this address: drawn again when it is another one, not on every keystroke; the
+  // points service is asked once the typing pauses.
+  if (markedFor !== me()) { markedFor = me(); if (blocks.length) paintChain(new Set()); paintFeed(); paintCrowd(); paintGpu(); }
+  clearTimeout(remoteTimer);
+  remoteTimer = setTimeout(() => readRemote().then(paint), 300);
 }
 
 async function toggle() {
@@ -383,6 +393,7 @@ const cleanSalts = (s) => (s && typeof s === 'object' ? {
   live: (Array.isArray(s.live) ? s.live : []).map((m) => ({ miner: cleanAddress(m?.miner)?.toLowerCase() || null, house: m?.house === true })).filter((m) => m.miner).slice(0, 64),
   rate: Number.isFinite(Number(s.rate)) && Number(s.rate) >= 0 ? Number(s.rate) : 0,
 } : null);
+let bankShown = null;
 function paintSalt() {
   const potWei = salts?.pointsPerDay ? rewardWei(salts.pointsPerDay, cap()) : null;
   // What the day's proofs leave of the daily pot so far (worker/src/salt-pool.js): it shrinks as proofs come in, so "up to".
@@ -395,10 +406,11 @@ function paintSalt() {
   const finds = banked || (salts?.top || []).filter((m) => m.best).map((m) => ({ ...m.best, miner: m.miner })).sort((a, b) => b.bits - a.bits);
   $('#salt-bank-h').hidden = !finds.length;
   $('#salt-bank-h').textContent = banked ? 'Banked for deploys' : 'Best found today';
-  $('#salt-bank').innerHTML = finds.slice(0, 5).map((b) => {
+  const bank = finds.slice(0, 5).map((b) => {
     const z = Math.floor((b.bits || 0) / 4);
     return `<li><code><b>${esc(b.address.slice(0, 2 + z))}</b>${esc(b.address.slice(2 + z, 18))}…</code><small>${b.house ? `<span class="who">${face(null)}Tacit GPU</span>` : b.miner ? who(b.miner) : ''}</small></li>`;
   }).join('');
+  if (bank !== bankShown) { bankShown = bank; $('#salt-bank').innerHTML = bank; }   // rows with a picture each: drawn again only when they change
   const rate = Number(mine?.salt?.rate), mineRow = (salts?.top || []).find((m) => m.miner.toLowerCase() === me());
   const part = mineRow && salts.weight && salts.pointsPerDay ? rewardWei(Math.floor((salts.pointsPerDay * mineRow.weight) / salts.weight), cap()) : null;
   const on = mine?.salt?.on === true && Number.isFinite(rate) && rate > 0;
@@ -410,7 +422,7 @@ async function readSalts() { const s = await get(`${API}/prover/salt`); if (s) s
 async function copy() {
   const a = addr();
   if (!a) { askAddress(); return; }
-  try { await navigator.clipboard.writeText(proveCommand(a)); copied = true; paint(); say(setupText(os).copied); }
+  try { await navigator.clipboard.writeText(proveCommand(a)); copied = true; misses = 0; paint(); say(setupText(os).copied); }
   catch {
     const sel = getSelection(), range = document.createRange();
     range.selectNodeContents($('#cmd')); sel.removeAllRanges(); sel.addRange(range);
@@ -421,7 +433,7 @@ async function copy() {
 // The Relay and Bitcoin tabs' code (the wallet, the header relay, the board's settles) is most of the page's weight and most visitors never
 // open those tabs, so it loads when one opens, when the wallet chip is pressed, or once the page has settled.
 let opsLoad = null;
-const loadOps = () => (opsLoad ||= import('/prove/ops.js?cb=6a667df6'));
+const loadOps = () => (opsLoad ||= import('/prove/ops.js?cb=26caafdc'));
 $('#wallet').addEventListener('click', async (e) => {
   if (opsLoad) return;                                             // loaded: ops.js has its own handler on the chip
   e.preventDefault();
@@ -504,8 +516,8 @@ $('#chain').addEventListener('click', (e) => {
 
 try { const saved = localStorage.getItem(SAVED_ADDR); if (cleanAddress(saved)) $('#addr').value = saved; } catch {}
 paintMe();
-// One read that throws is let go: the next goes on at its time.
-const loop = (fn, ms, idle) => { const run = async () => { try { await fn(); } catch {} setTimeout(run, document.hidden ? idle : ms); }; run(); };
+// One read that throws is let go: the next goes on at its time. `ms` may be a function, asked before each wait.
+const loop = (fn, ms, idle) => { const run = async () => { try { await fn(); } catch {} setTimeout(run, document.hidden ? idle : typeof ms === 'function' ? ms() : ms); }; run(); };
 // The chain every six seconds, the pool and the feed every ten, the points service every half minute.
 loop(readChain, 6000, 30000);
 loop(readFeed, 10000, 60000);
@@ -543,6 +555,7 @@ if (isPhone(navigator.userAgent)) {
     try { await navigator.clipboard.writeText('wsl --install'); $('#wsl-copy').textContent = 'Copied'; setTimeout(() => { $('#wsl-copy').textContent = 'Copy'; }, 1500); } catch {}
   });
   paint();
-  // The computer is read every two seconds: it is on this machine.
-  loop(async () => { await readLocal(); paint(); }, 2000, 10000);
+  // The computer is read every two seconds: it is on this machine. With nothing answering after a few tries it is read every ten, and every
+  // two again once the line is copied or the address changes (a prover may be about to start).
+  loop(async () => { await readLocal(); misses = health ? 0 : misses + 1; paint(); }, () => (misses > 5 ? 10000 : 2000), 10000);
 }

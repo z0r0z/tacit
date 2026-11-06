@@ -82,8 +82,10 @@ export function mount(host, ctx) {
   const listable = () => held().filter((n) => ready.has(opKey(n)) && !listing(n));
   const chosen = () => { const l = listable(); return l.find((n) => opKey(n) === pick) || l[0] || null; };
 
+  // the price as typed, read by the page's amount rule (a decimal comma is a point; a lone comma before three digits is refused)
+  const price = () => { try { return Number(parseUnits(priceEl.value, 8)) / 1e8; } catch { return NaN; } };
   function recompute() {
-    const px = Number(priceEl.value);
+    const px = price();
     const n = chosen();
     let units = n ? n.value : 0n;
     if (!n) { try { units = parseUnits(amt.value); } catch { units = 0n; } }
@@ -158,6 +160,8 @@ export function mount(host, ctx) {
 
   // A payout script a listing takes (secret.js payoutScriptFor: bc1q… or bc1p…, checksummed).
   const payoutScript = (addr) => ctx.S.payoutScriptFor(addr);
+  // The newest Bitcoin block's time.
+  const tipTime = async () => { const r = await fetch(`${ctx.T.NET.api}/blocks`); const b = r.ok ? await r.json() : null; return Number(b?.[0]?.timestamp) || 0; };
   // The listing, signed by the sale key in this page's turn of tacit.js (secret.js listFromSaleKey).
   const listAs = (key, note, opts) => ctx.turn(async () => {
     if (!ctx.T.wallet.priv) throw new Error('Open your Tacit wallet first.');
@@ -175,8 +179,11 @@ export function mount(host, ctx) {
     await look();
     if (ctx.poolWallet !== pw || sale?.free == null) throw new Error('Your Tacit wallet changed, so nothing was done.');
     const r = await S.exitToSaleKey(ctx.T, {
-      poolWallet: pw, amount: units, asset: S.TAC_ASSET_MAINNET, key: S.saleKey(pw, sale.free),
+      poolWallet: pw, amount: units, asset: S.TAC_ASSET_MAINNET, key: S.saleKey(pw, sale.free), maxFee: ctx.feeCap?.() ?? null,
       say: (m) => say('st-sats-1', m),
+    }).catch((e) => {
+      if (e?.feeMoved == null || !ctx.feeMoved) throw e;
+      try { ctx.feeMoved(e); } finally { render(); }   // the page takes up the new fee and says so; the fee line here follows it
     });
     if (r.wait) {
       say('st-sats-1', `Your newest note needs ${ctx.blocksText(r.wait)} before it can be spent against a settled block. Try again after that.`);
@@ -200,16 +207,18 @@ export function mount(host, ctx) {
     const script = payoutScript(dest), T = ctx.T;
     if (hexOf(script) === hexOf(T.p2wpkhScript(T.wallet.pub))) throw new Error('That is this wallet’s own address. Use one from another wallet, so the sats land apart from it.');
     if ((sale?.keys || []).some((k) => k.scriptPubKey === hexOf(script))) throw new Error('That is a key this page made for a sale. Use an address from another wallet.');
-    const px = Number(priceEl.value);
+    const px = price();
     if (!Number.isFinite(px) || px <= 0) throw new Error('Set a price in sats per TAC.');
     const sats = Math.floor((Number(n.value) / 1e8) * px);
     if (sats < 546) throw new Error('That comes to less than the 546-sat dust limit. Raise the price.');
     const days = Number(lasts.value) || 3;
+    // the listing runs by the chain's clock where that is ahead of this device's: a device hours slow would list for less than chosen, or not at all
+    const now = Math.max(Math.floor(Date.now() / 1000), await tipTime().catch(() => 0));
 
     say('st-sats-2', 'Signing the listing with the sale key…');
     const rec = await listAs(n.key, n, {
       sats,
-      expiry: Math.floor(Date.now() / 1000) + days * DAY,
+      expiry: now + days * DAY,
       payoutScript: script,
       onProgress: (m) => say('st-sats-2', String(m)),
     });
@@ -236,6 +245,8 @@ export function mount(host, ctx) {
 
   function render() {
     const f = fee(), rows = held();
+    // the field being typed in keeps its place: putting it back under the host takes its focus
+    const at = document.activeElement, kept = at && host.contains(at) ? at : null, s0 = kept?.selectionStart, s1 = kept?.selectionEnd;
     fill(host,
       el('p', { class: 'note', style: 'margin-top:0' },
         'Sell shielded TAC for sats. A new key made for this sale lists it, and the buyer pays sats straight to an address you name. This wallet’s address takes no part, so nothing ties those sats to it.'),
@@ -269,6 +280,7 @@ export function mount(host, ctx) {
       statusStep2,
       el('p', { class: 'note' }, 'Listing is a free signature and stands until it ends. The relay sees your connection when it takes the TAC out and the market when you list, so Tor or a VPN for the listing keeps the two apart.'),
     );
+    if (kept && host.contains(kept)) { kept.focus({ preventScroll: true }); try { if (s0 != null) kept.setSelectionRange(s0, s1); } catch { /* a field with no selection */ } }
     host.querySelectorAll('input[name="sats-pick"]').forEach((r, i) => r.addEventListener('change', () => { pick = opKey(listable()[i]); recompute(); }));
     btnList.disabled = !chosen();
     recompute();
@@ -279,7 +291,8 @@ export function mount(host, ctx) {
   window.addEventListener('tac:wallet', () => { sale = null; ready.clear(); pick = null; readErr = false; render(); look().catch(() => {}); });
 
   render();
-  markPriceSats().then((m) => { if (m) { mark = m; if (!priceEl.value) priceEl.value = pxText(m); } }).catch(() => {}).finally(() => { markRead = true; render(); });
+  // the page's header already holds the mark price once it has read it; the market is asked only while it does not
+  (ctx.markSats != null ? Promise.resolve(ctx.markSats) : markPriceSats()).then((m) => { if (m) { mark = m; if (!priceEl.value) priceEl.value = pxText(m); } }).catch(() => {}).finally(() => { markRead = true; render(); });
   openSales().then((b) => { book = b; render(); }).catch(() => {});
   look().catch(() => {});
 }

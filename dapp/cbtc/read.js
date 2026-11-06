@@ -1,8 +1,8 @@
 import { MULTICALL3, TAC_POOL_ASSET_ID, CETH_POOL_ASSET_ID, _internal } from '/evm-trade-venues.js?cb=dda58fa8';
 import { keccak_256 } from '/vendor/tacit-deps.min.js';
 import { ETH_LOG_NODES } from '/eth-nodes.js';
-import { ethCall, rpc, wordAt, word, strip } from '/trade/util.js?cb=e8317464';
-import { POOL, heldHistory } from '/teth/read.js?cb=bf18d06a';
+import { ethCall, rpc, wordAt, word, strip } from '/trade/util.js?cb=ba5a02b1';
+import { POOL, heldHistory } from '/teth/read.js?cb=9364ab31';
 
 export const ENGINE = '0x000000003f608BDdF0ca45934003ffb9DbDF70DB';
 export const WSTETH = '0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0';
@@ -126,13 +126,13 @@ export async function readHistory({ locked, out }) {
 export const lockStep = (l) => (l.minted ? 'minted' : !l.bonded ? 'post its bond' : !l.recorded ? 'waiting for its proof' : 'ready to mint');
 export async function readLocks({ ux, priv, hist }) {
   const all = await hist.locks(priv);
-  const states = await Promise.all(all.map((l) => ux.cbtcLockState(l.lockTxid, l.lockVout)));
-  const live = all.filter((_, i) => !states[i].spent && !states[i].redeemed);
-  if (!live.length) return [];
+  if (!all.length) return [];
   const op = (l) => strip(ux.pool.outpointKey('0x' + l.lockTxid.match(/../g).reverse().join(''), l.lockVout));
-  const r = await batch(live.flatMap((l) => [{ to: POOL, data: SEL.cbtcLockVBtc + op(l) }, { to: ENGINE, data: SEL.escrowSufficient + op(l) + word(l.vBtc) }, { to: POOL, data: SEL.cbtcMinted + op(l) }]));
+  // one batch for every lock: what the pool records of it, whether it is spent or redeemed (those are left out), its bond and its mint
+  const r = await batch(all.flatMap((l) => [{ to: POOL, data: SEL.cbtcLockVBtc + op(l) }, { to: POOL, data: SEL.lockSpent + op(l) }, { to: POOL, data: SEL.lockRedeemed + op(l) },
+    { to: ENGINE, data: SEL.escrowSufficient + op(l) + word(l.vBtc) }, { to: POOL, data: SEL.cbtcMinted + op(l) }]));
   const w = (i) => (r[i] ? wordAt(r[i], 0) : 0n);
-  return live.map((l, i) => ({ ...l, sats: BigInt(l.vBtc), recorded: w(3 * i) === BigInt(l.vBtc), bonded: w(3 * i + 1) === 1n, minted: w(3 * i + 2) === 1n }));
+  return all.flatMap((l, i) => (w(5 * i + 1) !== 0n || w(5 * i + 2) !== 0n ? [] : [{ ...l, sats: BigInt(l.vBtc), recorded: w(5 * i) === BigInt(l.vBtc), bonded: w(5 * i + 3) === 1n, minted: w(5 * i + 4) === 1n }]));
 }
 export async function readLoans({ ux, priv }) {
   const cdp = await ux.recoverCdpPositions({ walletPriv: priv });

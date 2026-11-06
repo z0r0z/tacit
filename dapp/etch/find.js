@@ -1,6 +1,6 @@
 // tacit.finance/etch, Discover: the assets etched on Bitcoin, from the registry the API keeps, searched in the page. The registry is read once (about 70 KB for
 // every asset), a name and a logo come from each asset's metadata on IPFS through the API's batch read, and nothing here needs tacit.js or a key.
-import { API } from '/trade/util.js?cb=e8317464';
+import { API } from '/trade/util.js?cb=ba5a02b1';
 
 const NET = 'mainnet';
 const CID = /^(?:Qm[1-9A-HJ-NP-Za-km-z]{44}|baf[a-z0-9]{50,80})$/i;
@@ -65,17 +65,18 @@ export async function readNames(assets, onRead = () => {}, fetcher = fetch) {
 // What a search matches: a ticker or a name that holds it, or an asset id that begins with it (four hex digits or more). An id is compared without its 0x,
 // so a Bitcoin asset's bare id and a token's 0x address are found either way.
 const bare = (s) => s.replace(/^0x/, '');
+const ID_TERM = /^(0x)?[0-9a-f]{4,64}$/;
 export function matches(a, q) {
   const t = String(q || '').trim().toLowerCase();
   if (!t) return true;
-  return a.ticker.toLowerCase().includes(t) || a.name.toLowerCase().includes(t) || (/^(0x)?[0-9a-f]{4,64}$/.test(t) && bare(a.id).startsWith(bare(t)));
+  return a.ticker.toLowerCase().includes(t) || a.name.toLowerCase().includes(t) || (ID_TERM.test(t) && bare(a.id).startsWith(bare(t)));
 }
 // The ticker typed exactly (or an asset id), then tickers that begin with it, then the rest. Among exact ones the listed asset comes first, then the earliest of
 // its ticker; everything else keeps the order it came in (newest first).
 export function search(assets, q) {
   const t = String(q || '').trim().toLowerCase();
   if (!t) return assets;
-  const key = (a, i) => { const exact = a.ticker.toLowerCase() === t || (!!bare(t) && bare(a.id).startsWith(bare(t))); return [exact ? 0 : a.ticker.toLowerCase().startsWith(t) ? 1 : 2, exact && !a.verified ? 1 : 0, exact && a.later ? 1 : 0, i]; };
+  const key = (a, i) => { const exact = a.ticker.toLowerCase() === t || (ID_TERM.test(t) && bare(a.id).startsWith(bare(t))); return [exact ? 0 : a.ticker.toLowerCase().startsWith(t) ? 1 : 2, exact && !a.verified ? 1 : 0, exact && a.later ? 1 : 0, i]; };
   const cmp = (x, y) => { for (let n = 0; n < 4; n++) if (x[n] !== y[n]) return x[n] - y[n]; return 0; };
   return assets.filter((a) => matches(a, t)).map((a, i) => [a, key(a, i)]).sort((x, y) => cmp(x[1], y[1])).map(([a]) => a);
 }

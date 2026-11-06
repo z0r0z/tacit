@@ -83,9 +83,10 @@ is_address() {
 
 short_addr() { printf '%s...%s' "$(printf '%s' "$1" | cut -c1-6)" "$(printf '%s' "$1" | cut -c39-42)"; }
 
-# The address a service installed earlier mines for (a re-run without one keeps it): launchd's plist, or systemd's unit.
+# The address an install from before mines for (a re-run without one keeps it): what the page last set (mine.json, which wins over
+# TACIT_MINE while it exists), else launchd's plist, systemd's unit or the run script.
 existing_mine() {
-  for f in "$HOME/Library/LaunchAgents/finance.tacit.prover.plist" "$HOME/.config/systemd/user/tacit-prover.service" "$RUN_SH"; do
+  for f in "$HOME_DIR/mine.json" "$HOME/Library/LaunchAgents/finance.tacit.prover.plist" "$HOME/.config/systemd/user/tacit-prover.service" "$RUN_SH"; do
     [ -f "$f" ] && { grep -Eo '0x[0-9a-fA-F]{40}' "$f" | head -1; return 0; }
   done
   return 0
@@ -233,7 +234,9 @@ do_install() {
   want=${TACIT_PROVER_SHA256:-}; from="the sha256 you gave"
   if [ -z "$want" ] && [ "$TAG" = "$PIN_TAG" ]; then want=$(pin_for "$PLAT"); from="the sha256 pinned in this script"; fi
   if [ -z "$want" ]; then
-    want=$(curl -fsSL --retry 3 --connect-timeout 20 "$BASE/$asset.sha256" | awk '{print $1}') || die "could not read $BASE/$asset.sha256"
+    want=$(curl -fsSL --retry 3 --connect-timeout 20 "$BASE/$asset.sha256") || die "could not read $BASE/$asset.sha256"
+    want=$(printf '%s' "$want" | awk '{print $1}')
+    [ -n "$want" ] || die "$BASE/$asset.sha256 is empty, so nothing was installed."
     from="the release's own checksum file ($TAG is not pinned in this script)"
   fi
   want=$(printf '%s' "$want" | tr 'A-F' 'a-f')

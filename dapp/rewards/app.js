@@ -1,19 +1,19 @@
 import { secp, keccak_256 } from '/vendor/tacit-deps.min.js';
 import { makeConfidentialNames, makeMainnetCall, MAINNET_RPCS, NameError } from '/confidential-names.js?cb=d41cb8bd';
 import { bodyType } from '/rpc-body.js';
-import { makeTacAirdrop } from '/tac-airdrop.js?cb=6a6bb45f';
-import { makeConnect, UserStopped } from '/trade/connect.js?cb=a64b9cec';
-import { rpc as readRpc } from '/trade/util.js?cb=e8317464';
-import { nodeHealth } from '/trade/rpc.js?cb=f575ef91';
-import { batchReads } from '/trade/batch.js?cb=11d17343';
+import { makeTacAirdrop } from '/tac-airdrop.js';
+import { makeConnect, UserStopped } from '/trade/connect.js?cb=39145e86';
+import { rpc as readRpc } from '/trade/util.js?cb=ba5a02b1';
+import { nodeHealth } from '/trade/rpc.js';
+import { batchReads } from '/trade/batch.js';
 import { TAC, POOL, FARM, aprText, readPrecision, readSpot, readStake, privateFarms } from '/trade/farm-read.js?cb=112a01b9';
-import { rememberOwed } from '/trade/rewards-dot.js?cb=36212f5c';
+import { rememberOwed } from '/trade/rewards-dot.js?cb=a0612927';
 import { readTasks } from '/rewards/earn.js?cb=74689244';
-import { readCampaign, bestApr, notTrading } from '/trade/lp-campaign.js?cb=b17cf1fe';
+import { readCampaign, bestApr, notTrading } from '/trade/lp-campaign.js?cb=e1b8a224';
 import { DEPLOYMENTS } from '/vault/deployments.js?cb=4af96594';
 
 const NO_SEND = ['0x0000000000000000000000000000000000000000', '0xa1313eb9f3a445606d9583bcac3ebeb56a858279', '0x000000c918e44a3a443937fa7594ea4f7c95d6b9', '0x4b4cb98d0c836c2783ac46f0078b904dab533ae8'];
-const API = 'https://api.tacit.finance', DISTRIBUTOR = '0x000000C918e44A3a443937fA7594eA4f7C95D6b9', BOARD = 500, KEEP = 60e3, RECENT = 'tacit-rewards-recent-v1';
+const API = 'https://api.tacit.finance', DISTRIBUTOR = '0x000000C918e44A3a443937fA7594eA4f7C95D6b9', BOARD = 500, KEEP = 60e3, RECENT = 'tacit-rewards-recent-v1', PENDING = 'tacit-rewards-pending-v1';
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => document.querySelectorAll(s);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -172,7 +172,8 @@ function pointsRow(p, address) {
     + (t ? `<p class="st mute">Today ${Math.round(t.points).toLocaleString('en-US')} points · ${pct}% of the day${t.tac != null ? ` · about ${tac(t.tac)} TAC` : ''}</p>` : '')
     + (p.claimed > 0n && p.owed <= 0n ? `<p class="st mute">${tac(p.claimed)} TAC claimed so far</p>` : '')
     + (p.points > 0 && p.clock ? `<p class="st mute clock">${clockLine(p.clock)}</p>` : '')
-    + (p.owed > 0n ? claimUi('points', `Claim ${tac(p.owed)} TAC`, address, '/#points', tac(p.owed), p.owed) : '')
+    // an amount the chain did not confirm is not offered: the row says unavailable, and the button reads again
+    + (p.owed > 0n ? (p.unread ? '<button class="act" type="button" data-again>Check again</button>' : claimUi('points', `Claim ${tac(p.owed)} TAC`, address, '/#points', tac(p.owed), p.owed)) : '')
     + (p.points > 0 ? `<details class="fold x" data-days="${address}"><summary>Points by day</summary><div class="fold-b">${kv}<div class="days"></div><p class="more"><a href="/#points">Holding proof and more in the app →</a></p></div></details>` : '')
     + '</div>';
 }
@@ -241,6 +242,26 @@ function fillRank(address, p) {
   if (p.error || !(p.points > 0)) return;
   rankOf(address).then((k) => { const el = $('#rank'); if (el && out.dataset.address === address) el.textContent = k > 0 ? ` · Rank #${k.toLocaleString('en-US')}` : k === 0 ? ` · Outside the top ${BOARD}` : ''; });
 }
+let shownPts = null, clockTimer = 0;   // the points row on screen, and the timer for the moment its day settles
+function paintPoints(address, p) {
+  paint('#c-pts', pointsRow(p, address)); fillRank(address, p);
+  shownPts = { address, p };
+  clearTimeout(clockTimer);
+  // once the day settles the row is read again: the countdown gives way to the day's TAC and its Claim button
+  const at = p.clock?.settleAt;
+  if (at > Date.now()) clockTimer = setTimeout(() => settledDay(address, at), at - Date.now() + 5e3);
+}
+async function settledDay(address, was) {
+  for (let i = 0; i < 5 && out.dataset.address === address; i++) {
+    kept.delete('cap'); kept.delete(`points:${address}`);
+    const p = await readPoints(address);
+    if (out.dataset.address !== address) return;
+    if (!p.error && p.clock?.settleAt !== was) { paintPoints(address, p); tot.pts = p.owed; paintTotal(); claimedNow(address, null, p0(p)); return; }
+    await sleep(60e3);   // the day's TAC is counted a little after its clock
+  }
+}
+// the countdown on the row keeps time between repaints
+setInterval(() => { const el = $('#c-pts .clock'); if (el && shownPts && out.dataset.address === shownPts.address && shownPts.p.clock) el.textContent = clockLine(shownPts.p.clock); }, 60e3);
 
 const COIN = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#0a0a0a"/><circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2.5"/><path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="#f7931a" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11L21 11" stroke="#f7931a" stroke-width="2.4" stroke-linecap="round"/></svg>')}`;
 function confetti() {
@@ -277,6 +298,17 @@ function confetti() {
 
 const word = (n) => BigInt(n).toString(16).padStart(64, '0');
 const txLink = (h) => `<a href="https://etherscan.io/tx/${h}" target="_blank" rel="noopener noreferrer">${h.slice(0, 10)}…${h.slice(-6)} ↗</a>`;
+// A claim sent and not confirmed when its wait ran out, by (kind, address): a press looks it up before sending another. It is 'pending' while
+// a node still holds it, 'gone' once none does and it has gone unconfirmed for a quarter of an hour (a node asked may not have seen one still
+// going round), otherwise what its receipt says.
+const pendingOf = () => { try { const v = JSON.parse(store.get(PENDING) || '{}'); return v && typeof v === 'object' ? v : {}; } catch { return {}; } };
+const pendingSet = (k, v) => { const all = pendingOf(); if (v) all[k] = v; else delete all[k]; store.set(PENDING, JSON.stringify(all)); };
+async function pendingState({ hash, at }) {
+  const rc = await readRpc('eth_getTransactionReceipt', [hash], undefined, { health }).catch(() => null);
+  if (rc) return rc.status === '0x1' ? 'confirmed' : 'failed';
+  const tx = await readRpc('eth_getTransactionByHash', [hash], undefined, { health }).catch(() => undefined);
+  return tx === null && Date.now() - at > 10 * 60e3 ? 'gone' : 'pending';
+}
 async function signedIn(address) {
   if (!W.account && !(await connect.connect())) throw new UserStopped();
   const mine = String(W.account || '').toLowerCase();
@@ -318,9 +350,12 @@ async function claim(kind, address, btn, to = '') {
     await signedIn(address);
     btn.textContent = 'Confirm in your wallet…'; react('think');
     const send = (t) => wallet.sendTx({ to: t.to, data: t.data, from: address });
-    hash = kind === 'airdrop' ? (await (dest ? air.claimTo(address, dest, { send }) : air.claim(address, { from: address, send }))).txHash : await pointsTx(address);
+    const key = `${kind}:${address}`, earlier = pendingOf()[key], state = earlier ? await pendingState(earlier) : null;
+    if (state === 'pending') { hash = earlier.hash; throw Object.assign(new Error('Your earlier claim is not confirmed yet. Wait for it, or speed it up or cancel it in your wallet, before claiming again.'), { still: true }); }
+    if (earlier) pendingSet(key, null);
+    hash = state === 'confirmed' ? earlier.hash : kind === 'airdrop' ? (await (dest ? air.claimTo(address, dest, { send }) : air.claim(address, { from: address, send }))).txHash : await pointsTx(address);
     btn.textContent = 'Claiming…'; say(`<p class="note-claim st mute">Claiming ${esc(amt)} TAC · ${txLink(hash)}</p>`);
-    const rc = await wallet.receipt(hash);
+    const rc = await wallet.receipt(hash).catch((e) => { pendingSet(key, { hash, at: Date.now() }); throw e; });   // not confirmed when the wait ran out: kept, so a press does not send it twice
     if (rc.status !== '0x1') throw new Error(`The transaction failed (${hash.slice(0, 10)}…). Nothing was claimed.`);
     $('#done')?.querySelector('.note-claim')?.remove();
     $('#done')?.insertAdjacentHTML('beforeend', `<p class="done"><b>Claimed ${esc(amt)} TAC${dest ? ` to ${short(dest)}` : ''}</b>${txLink(hash)}${dest ? '' : '<button class="linkbtn" type="button" data-watch>Add TAC to wallet</button>'}</p>`);
@@ -335,12 +370,13 @@ async function claim(kind, address, btn, to = '') {
       if (!(kind === 'airdrop' ? a.claimable : !p.error && p.owed >= was)) break;
     }
     if (out.dataset.address === address) {
-      paint('#c-air', airdropRow(a, address)); paint('#c-pts', pointsRow(p, address)); fillRank(address, p); claimedNow(address, a0(a), p0(p));
+      paint('#c-air', airdropRow(a, address)); paintPoints(address, p); claimedNow(address, a0(a), p0(p));
       tot.air = a.claimable ? BigInt(a.amountWei) : 0n; tot.pts = p.error ? 0n : p.owed; tot.bad = a.reason === 'error' || !!p.error || tot.bad; paintTotal();
     }
   } catch (e) {
-    react(e instanceof UserStopped ? 'idle' : 'shake');
-    say(`<p class="note-claim st ${e instanceof UserStopped ? 'mute' : 'warn'}">${esc(e.message || 'The claim did not go through.')}${hash ? ` · ${txLink(hash)}` : ''}</p>`);
+    const soft = e instanceof UserStopped || e.still;
+    react(soft ? 'idle' : 'shake');
+    say(`<p class="note-claim st ${soft ? 'mute' : 'warn'}">${esc(e.message || 'The claim did not go through.')}${hash ? ` · ${txLink(hash)}` : ''}</p>`);
     btn.textContent = label;
   } finally { claiming = false; if (btn.isConnected) btn.disabled = false; }
 }
@@ -403,7 +439,7 @@ function paintPrivate(list) {
 // The holder's own private positions (rewards/farms.js): loaded on the first press, so the page reads nothing more until then
 const pickProvider = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : list[0]?.uuid; };
 let farmsP = null;
-const openFarms = () => (farmsP ||= import('/rewards/farms.js?cb=6d02c021').then((m) => { const f = m.mountFarms($('#pf-mine'), { pick: pickProvider, names: () => new Map(PRIV.map((x) => [x.pid, x.name])), pair: (pid) => { const icons = PRIV.find((x) => String(x.pid) === String(pid))?.icons || []; return icons.length ? pairIcons(icons) : ''; }, program: () => PROG, wallet, W, connect: () => connect.connect() }); $('#pf-mine [data-pf="open"]')?.click(); return f; })
+const openFarms = () => (farmsP ||= import('/rewards/farms.js?cb=c5ee3884').then((m) => { const f = m.mountFarms($('#pf-mine'), { pick: pickProvider, names: () => new Map(PRIV.map((x) => [x.pid, x.name])), pair: (pid) => { const icons = PRIV.find((x) => String(x.pid) === String(pid))?.icons || []; return icons.length ? pairIcons(icons) : ''; }, program: () => PROG, wallet, W, connect: () => connect.connect() }); $('#pf-mine [data-pf="open"]')?.click(); return f; })
   .catch((err) => { farmsP = null; console.warn('your positions:', err?.message || err); }));
 $('#pf-mine').addEventListener('click', (e) => {
   if (farmsP || !e.target.closest('[data-pf="open"]')) return;
@@ -464,7 +500,7 @@ let farmUi = null, farmFor = null, farmSeq = 0, ethUsd = 0, hasStake = false;
 const eth4 = (wei) => (Number(wei) / 1e18).toLocaleString('en-US', { maximumSignificantDigits: 3 });
 const wordOf = (a) => a.slice(2).toLowerCase().padStart(64, '0');
 function mountedFarm() {
-  return farmUi ||= Promise.all([import('/trade/farm.js?cb=5f577f5c'), import('/trade/util.js?cb=e8317464'), import('/evm-trade-venues.js?cb=dda58fa8'),
+  return farmUi ||= Promise.all([import('/trade/farm.js?cb=5f577f5c'), import('/trade/util.js?cb=ba5a02b1'), import('/evm-trade-venues.js?cb=dda58fa8'),
     call({ to: ETH_USD, data: '0xfeaf968c' }).then((r) => { ethUsd = Number(BigInt(`0x${r.slice(66, 130)}`)) / 1e8; }, () => {})])
     .then(([{ mountFarm }, U, E]) => {
       const ethCall = (to, data, block = 'latest', o = {}) => U.rpc('eth_call', [{ to, data, ...(o.from ? { from: o.from } : {}), ...(o.value ? { value: `0x${BigInt(o.value).toString(16)}` } : {}) }, block]);
@@ -661,7 +697,7 @@ async function run(raw) {
       else if (can.air !== null && can.pts !== null) { given = true; react('idle'); }
     };
     a.then((s) => { if (my !== seq) return; paint('#c-air', airdropRow(s, who.address)); can.air = s.reason === 'error' ? undefined : !!s.claimable; answer(); claimedNow(who.address, a0(s), null); tot.air = s.claimable ? BigInt(s.amountWei) : 0n; if (s.reason === 'error') tot.bad = true; paintTotal(); });
-    p.then((v) => { if (my !== seq) return; paint('#c-pts', pointsRow(v, who.address)); fillRank(who.address, v); can.pts = v.error ? undefined : v.owed > 0n; answer(); claimedNow(who.address, null, p0(v)); tot.pts = v.error ? 0n : v.owed; if (v.error) tot.bad = true; paintTotal(); });
+    p.then((v) => { if (my !== seq) return; paintPoints(who.address, v); can.pts = v.error ? undefined : v.owed > 0n; answer(); claimedNow(who.address, null, p0(v)); tot.pts = v.error ? 0n : v.owed; if (v.error) tot.bad = true; paintTotal(); });
     const fm = readFarmFor(who.address);
     fm.then((r) => { if (my === seq) showStake(who.address, r); });
     await Promise.allSettled([a, p, fm]);
@@ -697,6 +733,7 @@ document.addEventListener('click', async (e) => {
   if (e.target.closest('[data-open-farm]')) { openTheFarm(); return; }
   if (e.target.closest('[data-earn]')) { e.preventDefault(); openEarn(); return; }
   if (e.target.closest('[data-clear]')) { store.set(RECENT, '[]'); showRecent(); return; }
+  if (e.target.closest('[data-again]')) { const a = out.dataset.address; if (a) { kept.delete(`points:${a}`); readPoints(a).then((p) => { if (out.dataset.address === a) { paintPoints(a, p); tot.pts = p.error ? 0n : p.owed; paintTotal(); } }); } return; }
   if (cl) { const toward = cl.dataset.claim === 'airdrop-to'; claim(toward ? 'airdrop' : cl.dataset.claim, cl.dataset.addr, cl, toward ? $('#to-q').value.trim() || ' ' : ''); return; }
   if (e.target.closest('[data-to-show]')) { const f = $('#to-f'); f.hidden = false; e.target.closest('.to').hidden = true; $('#to-q').focus(); return; }
   if (e.target.closest('[data-watch]')) { wallet.watchAsset({ address: TAC, symbol: 'TAC', decimals: 18 }).catch(() => {}); return; }

@@ -9,7 +9,7 @@
 //   w.takers(amount)        the providers online that take `amount` now: [{ id, name }]
 //   w.waiting()             what is waiting on the boards: { count, total, items: [{ pub, amount }] smallest first }
 
-import { signWant, checkWant, checkAd } from '/fastbridge-board.js?cb=0152bd20';
+import { signWant, checkWant, checkAd } from '/fastbridge-board.js';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=850e1c5e';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 

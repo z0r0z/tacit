@@ -5,13 +5,13 @@
 import { makeEvmWallet } from '/evm-wallet.js?cb=b400cbe7';
 import { announceWalletConnect, wcSheets, dialogHost, WC_PROJECT_ID } from '/walletconnect.js?cb=e0b29a34';
 import { makeHeaderRelayAdvance } from '/header-relay-advance.js?cb=1c3a7226';
-import { POOL, SEL_ANCESTRY, ATTEST_GAS, SETTLE_GAS, readProof, attestRefusal, encodeAttest, needsAncestry, ancestryCalls, ethText, ethFeeWei, feeWeiOf, readPrices, boardSummary, pickSettle, readBoard, reportLanded, settleCalldata } from '/community-ops.js?cb=92fe7a2d';
+import { POOL, SEL_ANCESTRY, ATTEST_GAS, SETTLE_GAS, readProof, attestRefusal, encodeAttest, needsAncestry, ancestryCalls, ethText, ethFeeWei, feeWeiOf, readPrices, boardSummary, sendable, pickSettle, readBoard, reportLanded, settleCalldata } from '/community-ops.js';
 import { bodyType } from '/rpc-body.js';
 import { secp, keccak_256, sha256 } from '/vendor/tacit-deps.min.js';
 import { makeEvmAccount } from '/evm-account.js?cb=e48ce3f6';
 import { makeEvmTx } from '/evm-tx.js?cb=ed0eafb7';
 import { makeNostrBoard, mergeBoards } from '/nostr-board.js?cb=0feadbff';
-import { makeAutoRelay, AUTO_RESERVE_WEI } from '/prove/autorelay.js?cb=3dfd8552';
+import { makeAutoRelay, AUTO_RESERVE_WEI } from '/prove/autorelay.js?cb=6d43079e';
 
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -61,7 +61,12 @@ let repaintPlan = null;
 async function busy(btn, fn) {
   if (btn.getAttribute('aria-busy') === 'true') return;
   btn.setAttribute('aria-busy', 'true');
-  try { await fn(); } catch (e) { toast(errText(e), true); } finally { btn.removeAttribute('aria-busy'); if (btn.id === 'btn-advance') repaintPlan?.(); if (btn.id === 'btn-board') paintBoard(); }
+  try { await fn(); } catch (e) { toast(errText(e), true); if (e?.hash) onItsWay(btn, e.hash); } finally { btn.removeAttribute('aria-busy'); if (btn.id === 'btn-advance') repaintPlan?.(); if (btn.id === 'btn-board') paintBoard(); }
+}
+// A send refused because the wallet's last one is still on its way: that one's link goes on the card's status line, under the button.
+function onItsWay(btn, hash) {
+  const st = btn.parentElement?.querySelector('.status') || btn.closest('.panel')?.querySelector('.status');
+  if (st) st.innerHTML = `Still on its way: ${txLink(hash, short(hash, 8))}.`;
 }
 
 // ── wallet: a bare injected-wallet connection, nothing Tacit-specific — anyone's wallet pays its own gas ──────
@@ -112,17 +117,35 @@ window.addEventListener('tacit:evm-accounts', (e) => {
   S.address = /^0x[0-9a-f]{40}$/.test(a) ? a : null;
   paintWallet();
 });
+// The wallet's last send from here is kept until its receipt is seen (across reloads too): while it is still on its way nothing else is
+// sent from that account, since the next transaction could only land after it, and the same call sent again would revert.
+const PENDING = 'tacit-prove-wallet-pending-v1';
+const pendingGet = () => { try { return JSON.parse(localStorage.getItem(PENDING) || 'null'); } catch { return null; } };
+const pendingSet = (p) => { try { if (p) localStorage.setItem(PENDING, JSON.stringify(p)); else localStorage.removeItem(PENDING); } catch {} };
+async function stillOnItsWay() {
+  const p = pendingGet();
+  if (!p || String(p.from).toLowerCase() !== String(S.address).toLowerCase()) return null;
+  if (await rpc('eth_getTransactionReceipt', [p.hash])) { pendingSet(null); return null; }
+  if (!(await rpc('eth_getTransactionByHash', [p.hash]))) { pendingSet(null); return null; }   // dropped, or replaced in the wallet
+  return p;
+}
+async function noneOnItsWay() {
+  const p = await stillOnItsWay();
+  if (p) throw Object.assign(new Error('Your wallet’s last transaction from here is still on its way. Wait for it to land, or speed it up or cancel it in your wallet, then try again.'), { hash: p.hash });
+}
 async function send({ to, data, gas, value = 0n }) {
   if (!S.address) await connect();
   await ensureMainnet();
+  await noneOnItsWay();
   const hash = await S.provider.request({ method: 'eth_sendTransaction', params: [{ from: S.address, to, data, gas: '0x' + gas.toString(16), chainId: '0x1', ...(value ? { value: '0x' + value.toString(16) } : {}) }] });
   if (!TX_HASH.test(String(hash))) throw new Error('The wallet did not return a transaction hash.');
+  pendingSet({ from: S.address, hash: String(hash).toLowerCase(), at: Date.now() });
   return String(hash).toLowerCase();
 }
-// A missed poll is tried again; a transaction still unconfirmed after five minutes is left to Etherscan.
+// A missed poll is tried again; a transaction still unconfirmed after five minutes is left to Etherscan, and stays the wallet's last send.
 async function waitReceipt(hash) {
   for (let i = 0; i < 100; i++) {
-    try { const r = await rpc('eth_getTransactionReceipt', [hash]); if (r) return r; } catch {}
+    try { const r = await rpc('eth_getTransactionReceipt', [hash]); if (r) { if (pendingGet()?.hash === hash) pendingSet(null); return r; } } catch {}
     await sleep(3000);
   }
   throw new Error('Not confirmed after 5 minutes. It can still land: follow it on Etherscan from the link above.');
@@ -366,6 +389,8 @@ async function doSubmitProof() {
 // The board's figures, the job sent next (the one paying the most) and the settle itself all come from dapp/community-ops.js, as the runner's do.
 let board = null, boardErr = false;
 const passed = new Set();                                         // jobs the pool refused here: not offered again on this page
+const taken = new Set();                                          // jobs a send has in hand, the wallet's or the relay account's: the other leaves them alone
+const skip = { has: (id) => passed.has(id) || taken.has(id) };
 // The board is the API's and Nostr's (nostr-board.js): the proofs posted to public relays, which any visitor here also copies the API's
 // jobs to, so the board goes on when the API does not. Nostr is read at most once a minute; either half may be missing.
 const NB = makeNostrBoard({ pool: POOL });
@@ -397,9 +422,9 @@ async function mirror(api) {
   }
 }
 const reportIf = (jobId, txHash) => (String(jobId).startsWith('nostr:') ? Promise.resolve() : reportLanded({ api: API, jobId, txHash }));
-// What a settle pays its sender, in words: its ETH, and its TAC apart (a TAC pool unit is 10^10 of TAC's 18-decimal units).
+// What a settle (or several together) pays its sender, in words: its ETH, and its TAC apart (a TAC pool unit is 10^10 of TAC's 18-decimal units).
 function feeText(pv) {
-  const eth = ethFeeWei(pv), tacWei = feeWeiOf(pv, { tacWeiPerUnit: 10n ** 10n }) - eth;
+  const pvs = [].concat(pv), eth = pvs.reduce((a, p) => a + ethFeeWei(p), 0n), tacWei = pvs.reduce((a, p) => a + feeWeiOf(p, { tacWeiPerUnit: 10n ** 10n }), 0n) - eth;
   return [eth > 0n ? `${ethText(eth)} ETH` : null, tacWei > 0n ? `${ethText(tacWei)} TAC` : null].filter(Boolean).join(' and ');
 }
 async function refreshBoard() {
@@ -411,14 +436,15 @@ function paintBoard() {
   const box = $('#board-box'), btn = $('#btn-board');
   if (!board) { if (boardErr) box.innerHTML = '<p>Could not read the board. The page tries again every minute.</p>'; }
   else {
-    const s = boardSummary(board.jobs, { prices: PRICES }), fees = s.feeWei > 0n ? `${ethText(s.feeWei)} ETH in fees` : s.feeUsd > 0 ? `≈ $${s.feeUsd.toFixed(2)} in fees` : 'no fee';
+    const s = boardSummary(board.jobs, { prices: PRICES }), legs = feeText(board.jobs.filter((j) => sendable(j)).map((j) => j.publicValues));
+    const fees = legs ? `${legs} in fees` : s.feeUsd > 0 ? `≈ $${s.feeUsd.toFixed(2)} in fees` : 'no fee';
     const eth = ethFor(SETTLE_GAS);
     box.innerHTML = `<p>${s.waiting ? `${esc(plural(s.waiting, 'settle'))} waiting · ${esc(fees)}${eth ? ` · network fee ${eth.startsWith('<') ? esc(eth) : `≈ ${esc(eth)}`} ETH each` : ''}` : 'Nothing waiting.'}</p>`;
     const where = !board.api ? 'The API’s board is not answering: these are the ones posted on Nostr.' : board.nostr == null ? '' : `Read from the API and ${board.nostr ? `Nostr (${int(board.nostr)} posted there)` : 'Nostr'}.`;
     if (where) box.innerHTML += `<p class="mute">${esc(where)}</p>`;
   }
   if (btn.getAttribute('aria-busy') === 'true') return;           // a send in progress keeps its button
-  const next = board && pickSettle(board.jobs, { skip: passed, prices: PRICES });
+  const next = board && pickSettle(board.jobs, { skip, prices: PRICES });
   btn.disabled = !next;
   btn.textContent = next ? 'Send one' : 'Nothing to send';
 }
@@ -426,24 +452,29 @@ async function doSendOne() {
   const out = $('#board-status');
   out.textContent = '';
   if (!S.address) await connect();
+  await noneOnItsWay();                                           // a settle of this wallet's still on its way is said before the board is read
   await refreshBoard();
-  const job = board && pickSettle(board.jobs, { skip: passed, prices: await prices() });
+  const job = board && pickSettle(board.jobs, { skip, prices: await prices() });
   if (!job) { toast('Nothing is waiting to be sent.'); return; }
   const data = settleCalldata(job), fee = feeText(job.publicValues);
-  // Run it first: a settle another wallet sent first, or one the pool no longer takes, costs gas to find out, and the node tells us for free.
-  try { await rpc('eth_call', [{ from: S.address, to: POOL, data }, 'latest']); }
-  catch { passed.add(job.jobId); throw new Error('The pool would not take this settle, so nothing was sent: another wallet most likely sent it first.'); }
-  const est = BigInt(await rpc('eth_estimateGas', [{ from: S.address, to: POOL, data }]));
-  out.textContent = 'Confirm the transaction in your wallet.';
-  let txHash;
-  try { txHash = await send({ to: POOL, data, gas: (est * 125n) / 100n }); }
-  catch (e) { out.textContent = ''; throw e; }
-  out.innerHTML = `Sent ${txLink(txHash, short(txHash, 8))}. Waiting for it to land…`;
-  const rcpt = await waitReceipt(txHash);
-  if (!landed(rcpt)) { out.innerHTML = `Reverted: ${txLink(txHash, short(txHash, 8))}.`; passed.add(job.jobId); throw new Error('The settle reverted: another wallet may have sent it first. Nothing was lost but its network fee.'); }
-  await reportIf(job.jobId, txHash).catch(() => {});
-  out.innerHTML = `Landed: ${txLink(txHash, short(txHash, 8))}.${fee ? ` ${esc(fee)} went to ${esc(short(S.address))}.` : ''}`;
-  toast('Settle sent');
+  taken.add(job.jobId);
+  try {
+    // Run it first: a settle another wallet sent first, or one the pool no longer takes, costs gas to find out, and the node tells us for free.
+    try { await rpc('eth_call', [{ from: S.address, to: POOL, data }, 'latest']); }
+    catch { passed.add(job.jobId); throw new Error('The pool would not take this settle, so nothing was sent: another wallet most likely sent it first.'); }
+    const est = BigInt(await rpc('eth_estimateGas', [{ from: S.address, to: POOL, data }]));
+    out.textContent = 'Confirm the transaction in your wallet.';
+    let txHash;
+    try { txHash = await send({ to: POOL, data, gas: (est * 125n) / 100n }); }
+    catch (e) { out.textContent = ''; throw e; }
+    out.innerHTML = `Sent ${txLink(txHash, short(txHash, 8))}. Waiting for it to land…`;
+    // One still on its way when the wait gives up is not offered again on this page, to either sender: a second one could only revert.
+    const rcpt = await waitReceipt(txHash).catch((e) => { passed.add(job.jobId); throw e; });
+    if (!landed(rcpt)) { out.innerHTML = `Reverted: ${txLink(txHash, short(txHash, 8))}.`; passed.add(job.jobId); throw new Error('The settle reverted: another wallet may have sent it first. Nothing was lost but its network fee.'); }
+    await reportIf(job.jobId, txHash).catch(() => {});
+    out.innerHTML = `Landed: ${txLink(txHash, short(txHash, 8))}.${fee ? ` ${esc(fee)} went to ${esc(short(S.address))}.` : ''}`;
+    toast('Settle sent');
+  } finally { taken.delete(job.jobId); }
   refreshBoard().catch(() => {});
 }
 
@@ -453,7 +484,7 @@ const RELAY_KEY = 'tacit-relay-account-v1', AUTO_ON = 'tacit-relay-auto-v1', AUT
 const PROTECT = 'https://rpc.flashbots.net/fast?hint=hash';
 const evmAcct = makeEvmAccount({ secp, keccak256: keccak_256, sha256 }), evmTx = makeEvmTx({ secp, keccak256: keccak_256 });
 const ls = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch {} } };
-const A = { acct: null, relay: null, on: false, running: false, said: '', bal: null, adding: false };
+const A = { acct: null, relay: null, on: false, running: false, said: '', bal: null, adding: false, taking: false };
 function relayAcct(make = false) {
   if (A.acct) return A.acct;
   let priv = ls.get(RELAY_KEY);
@@ -474,17 +505,18 @@ async function sendPrivate(raw) {
 function autoRelay() {
   const a = relayAcct(true);
   return (A.relay ||= makeAutoRelay({ address: a.address, rpc, sign: (tx) => evmTx.signEip1559(tx, a.priv), sendPrivate,
-    board: () => readBoards(), landed: (jobId, txHash) => reportIf(jobId, txHash),
+    board: () => readBoards(), landed: (jobId, txHash) => reportIf(jobId, txHash), taken,
     store: { get: () => { try { return JSON.parse(ls.get(AUTO_DAY) || 'null'); } catch { return null; } }, set: (v) => ls.set(AUTO_DAY, JSON.stringify(v)) } }));
 }
-async function paintAuto() {
+// `read` false keeps the balance a pass just read.
+async function paintAuto(read = true) {
   const box = $('#auto-box'), btn = $('#btn-auto');
   if (!box) return;
   const a = relayAcct();
-  if (a) A.bal = await rpc('eth_getBalance', [a.address, 'latest']).then(BigInt, () => A.bal);
+  if (a && read) A.bal = await rpc('eth_getBalance', [a.address, 'latest']).then(BigInt, () => A.bal);
   const t = a ? autoRelay().today() : null;
   box.innerHTML = a ? `<p>Relay account <b title="${esc(a.address)}">${esc(short(a.address))}</b> <button class="link" type="button" data-auto-copy>copy</button> · ${A.bal == null ? '—' : `${esc(ethText(A.bal))} ETH`}`
-      + ` · <button class="link" type="button" data-auto-add${A.adding ? ' disabled' : ''}>Add 0.01 ETH</button>${A.bal > 0n ? ' · <button class="link" type="button" data-auto-out>Take out</button>' : ''}</p>`
+      + ` · <button class="link" type="button" data-auto-add${A.adding ? ' disabled' : ''}>Add 0.01 ETH</button>${A.bal > 0n ? ` · <button class="link" type="button" data-auto-out${A.taking ? ' disabled' : ''}>Take out</button>` : ''}</p>`
       + `<p>Today: ${esc(plural(t.sent, 'settle'))} sent · earned ${esc(ethText(BigInt(t.earnedWei)))} ETH · gas ${esc(ethText(BigInt(t.gasWei)))} ETH</p>`
     : '<p>Start makes a relay account in this browser. Add a little ETH to it for gas; keep only that much there.</p>';
   btn.textContent = A.on ? 'Stop' : 'Start';
@@ -492,12 +524,18 @@ async function paintAuto() {
   const low = A.on && A.bal != null && A.bal < AUTO_RESERVE_WEI * 2n;
   $('#auto-status').textContent = low ? 'Add a little ETH to the relay account: it starts sending once it holds enough for gas.' : A.said;
 }
+const inFlight = () => (relayAcct() ? autoRelay().today().inFlight : null);
+// With the relay off, a settle still on its way is seen home all the same (counted, reported), and nothing new is sent.
 async function autoTick() {
-  if (!A.on || A.running) return;
+  if (A.running || !(A.on || inFlight())) return;
   A.running = true;
-  try { const r = await autoRelay().pass(); A.said = r.why; if (r.did === 'landed') toast('A settle landed; its fee is in the relay account'); }
+  let read = true;
+  try {
+    if (A.on) { const r = await autoRelay().pass(); A.said = r.why; if (r.bal != null) { A.bal = r.bal; read = false; } if (r.did === 'landed') toast('A settle landed; its fee is in the relay account'); }
+    else if (await autoRelay().check() === 'landed') toast('A settle landed; its fee is in the relay account');
+  }
   catch (e) { A.said = `Could not read the board or the chain just now (${String(e?.message || e).slice(0, 80)}). It tries again.`; }
-  finally { A.running = false; paintAuto().catch(() => {}); }
+  finally { A.running = false; paintAuto(read).catch(() => {}); }
 }
 function autoSet(on) {
   A.on = on; ls.set(AUTO_ON, on ? '1' : null);
@@ -517,18 +555,26 @@ async function autoAdd() {
     toast('0.01 ETH added to the relay account');
   } finally { A.adding = false; }
 }
+// One at a time, as the add is. Nothing leaves while the relay is on or a settle is on its way: that settle's gas stays in the account, and a
+// private send is not in the public mempool, so a transfer signed meanwhile would take its nonce.
 async function autoOut() {
+  if (A.taking) return;
+  if (A.on) throw new Error('Stop the relay first, then take out what the account holds.');
+  if (A.running || inFlight()) throw new Error('A settle is still on its way from the relay account. Wait for it to land, then take out.');
   const a = relayAcct();
   if (!a) return;
-  if (!S.address) await connect();
-  const [bal, nonce, block] = await Promise.all([rpc('eth_getBalance', [a.address, 'latest']).then(BigInt), rpc('eth_getTransactionCount', [a.address, 'pending']).then(BigInt), rpc('eth_getBlockByNumber', ['latest', false])]);
-  const tip = 10n ** 8n, maxFee = BigInt(block.baseFeePerGas) * 2n + tip, value = bal - 21000n * maxFee;
-  if (value <= 0n) throw new Error('The relay account holds too little to cover the transfer’s own network fee.');
-  const { raw } = evmTx.signEip1559({ chainId: 1n, nonce, maxPriorityFeePerGas: tip, maxFeePerGas: maxFee, gasLimit: 21000n, to: S.address, value, data: '0x' }, a.priv);
-  const hash = await rpc('eth_sendRawTransaction', [raw]);
-  A.said = `Sending ${ethText(value)} ETH to ${short(S.address)}…`; paintAuto();
-  if (!landed(await waitReceipt(hash))) throw new Error('That transfer did not go through.');
-  toast('Taken out to your wallet');
+  A.taking = true; paintAuto();
+  try {
+    if (!S.address) await connect();
+    const [bal, nonce, block] = await Promise.all([rpc('eth_getBalance', [a.address, 'latest']).then(BigInt), rpc('eth_getTransactionCount', [a.address, 'pending']).then(BigInt), rpc('eth_getBlockByNumber', ['latest', false])]);
+    const tip = 10n ** 8n, maxFee = BigInt(block.baseFeePerGas) * 2n + tip, value = bal - 21000n * maxFee;
+    if (value <= 0n) throw new Error('The relay account holds too little to cover the transfer’s own network fee.');
+    const { raw } = evmTx.signEip1559({ chainId: 1n, nonce, maxPriorityFeePerGas: tip, maxFeePerGas: maxFee, gasLimit: 21000n, to: S.address, value, data: '0x' }, a.priv);
+    const hash = await rpc('eth_sendRawTransaction', [raw]);
+    A.said = `Sending ${ethText(value)} ETH to ${short(S.address)}…`; paintAuto();
+    if (!landed(await waitReceipt(hash))) throw new Error('That transfer did not go through.');
+    toast('Taken out to your wallet');
+  } finally { A.taking = false; }
 }
 
 // The proof market's board (GET /market/orders): the orders waiting for a prover, each a holder's wrap and the TAC it pays at most.

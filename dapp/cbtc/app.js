@@ -5,12 +5,12 @@
 // transactions, and it is done on tacit.finance's Borrow sheet, which each button here opens; this page sizes the bond for an amount before it does.
 import { sha256 } from '/vendor/tacit-deps.min.js';
 import { mountChart, fmtLocalStamp, fmtLocalTime } from '/trade/chart.js?cb=04207026';
-import { makeConnect } from '/trade/connect.js?cb=a64b9cec';
-import { makeKeySession, signInSheet } from '/trade/key.js?cb=26d9c07b';
-import { getUx, forgetUx } from '/trade/poolux.js?cb=a64920c6';
-import { readRates, readProgram, heldBars, rangesFor, barSize } from '/teth/read.js?cb=bf18d06a';
-import { totalsOf, readEngine, sizeBond, coverage, readPools, poolRows, farmApr, readLocks, readLoans, readHeld, readHistory, positionsIn, lockStep, CBTC_ID, ENGINE, WSTETH } from '/cbtc/read.js?cb=a6ce642d';
-import { $, esc, api, now, fmtUnits, parseUnits, grp, usd, short, sig } from '/trade/util.js?cb=e8317464';
+import { makeConnect } from '/trade/connect.js?cb=39145e86';
+import { makeKeySession, signInSheet } from '/trade/key.js?cb=d110df5e';
+import { getUx, forgetUx } from '/trade/poolux.js?cb=435f1138';
+import { readRates, readProgram, heldBars, rangesFor, barSize } from '/teth/read.js?cb=9364ab31';
+import { totalsOf, readEngine, sizeBond, coverage, readPools, poolRows, farmApr, readLocks, readLoans, readHeld, readHistory, positionsIn, lockStep, CBTC_ID, ENGINE, WSTETH } from '/cbtc/read.js?cb=0204770c';
+import { $, esc, api, now, fmtUnits, parseUnits, grp, usd, short, sig } from '/trade/util.js?cb=ba5a02b1';
 
 const SCAN = 'https://etherscan.io/', MEMPOOL = 'https://mempool.space/';
 const PRESETS = [['0.001 BTC', '0.001'], ['0.01 BTC', '0.01'], ['0.1 BTC', '0.1']];
@@ -314,4 +314,5 @@ Promise.allSettled([totals, loadChain().then(() => { renderHead(); renderBacking
   paintAll();
 });
 let tick = 0;
-setInterval(() => { if (!document.hidden) { loadTotals().then(paintAll).catch(() => {}); loadChain().then(() => loadPools()).then(paintAll).catch(() => {}); if (++tick % 5 === 0) loadHistory().then(paintAll); } }, 60e3);
+// the minute's reads (the history every fifth minute), painted once when they are all in
+setInterval(() => { if (!document.hidden) Promise.allSettled([loadTotals(), loadChain().then(() => loadPools()), ++tick % 5 === 0 ? loadHistory() : null]).then(paintAll); }, 60e3);

@@ -3,13 +3,13 @@
 // a whole cBTC note and its repayment, the mint and the loans relayed. Paying the deposit address from a wallet in the browser, a note cut to
 // size and a relay that will not take it (the front page sends it from the Tacit account) are the front page's: those link there. Nothing here is loaded until the holder asks: this module, the key, the pool and Bitcoin's history come in on that press.
 import { sha256, hmac, secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
-import { makeKeySession, signInSheet } from '/trade/key.js?cb=26d9c07b';
-import { getUx, forgetUx } from '/trade/poolux.js?cb=a64920c6';
-import { readLocks, readLoans, readHeld, readEngine, lockStep, ENGINE, WSTETH } from '/cbtc/read.js?cb=a6ce642d';
-import { makeLoans, exactNotes, bondGap, bondCall, outpointOf, lockPad, loanHealth, borrowAt, SAFE_RATIOS } from '/btc-borrow.js?cb=13923518';
+import { makeKeySession, signInSheet } from '/trade/key.js?cb=d110df5e';
+import { getUx, forgetUx } from '/trade/poolux.js?cb=435f1138';
+import { readLocks, readLoans, readHeld, readEngine, lockStep, ENGINE, WSTETH } from '/cbtc/read.js?cb=0204770c';
+import { makeLoans, exactNotes, bondGap, bondCall, outpointOf, lockPad, loanHealth, borrowAt, SAFE_RATIOS } from '/btc-borrow.js?cb=c3dcce7a';
 import { makeRunner } from '/activity.js?cb=8ccbc552';
 import { relayRefused, relayWords } from '/relay-outcome.js?cb=9db7155a';
-import { esc, short, grp, parseUnits, word, wordAt } from '/trade/util.js?cb=e8317464';
+import { esc, short, grp, plain, parseUnits, word, wordAt } from '/trade/util.js?cb=ba5a02b1';
 
 const API = 'https://api.tacit.finance';
 // Bitcoin's explorers, in order: a read that fails at one is asked of the next
@@ -204,7 +204,7 @@ export function mountMine(root, { ticket = null, pick, wallet = null, W = null, 
 
   function say(text, kind = '') { if (D) { D.said = { text, kind }; paint(); } }
   async function act(name, fn) {
-    if (!D || D.busy) return;
+    if (!D || D.busy || D.reading) return;
     const mine = D;
     mine.busy = name; say('');
     try { const text = await fn(); if (D?.pub === mine.pub) say(text, 'ok'); }
@@ -227,7 +227,7 @@ export function mountMine(root, { ticket = null, pick, wallet = null, W = null, 
     return `Collateral ratio <b class="${h.level}">${esc(String(Math.round(h.ratio)))}%</b>${h.liqAt ? `; liquidated below $${esc(Math.round(h.liqAt).toLocaleString('en-US'))} a bitcoin` : ''}.${h.level === 'err' ? ` That is under the ${esc(String(e.ratio))}% floor: borrow less.` : ''}`;
   }
   const tk = (id) => `<svg class="tk" aria-hidden="true"><use href="#tk-${id}"/></svg>`;
-  const off = () => (D.busy ? ' disabled' : '');
+  const off = () => (D.busy || D.reading ? ' disabled' : '');                   // no press while a step is under way or a read is in flight: its figures replace these
   function updateHealth() { const el = ticket.querySelector('#bm-health'); if (el && D?.form) el.innerHTML = healthHtml(chosenNote(), D.form.amt); }
   // Borrow: a cBTC note, the cUSD against it (the safer ratios a press away), how the loan would stand, the button.
   function form() {
@@ -253,11 +253,11 @@ export function mountMine(root, { ticket = null, pick, wallet = null, W = null, 
   function lockForm() {
     const d = D.dep;
     if (!d) return D.errs?.dep ? `<p class="hint err">Could not read your deposit address: ${esc(D.errs.dep)}</p>` : '<p class="empty">Reading your deposit address…</p>';
-    const most = d.sats > d.pad ? d.sats - d.pad : 0n;
+    const most = d.sats > d.pad ? d.sats - d.pad : 0n;                             // Max is the exact sats: a display figure rounds, up to more than the address holds
     return `<div class="bm-lock">
       <div class="lbl"><span>Your deposit address</span><button class="linkbtn" type="button" data-mine="copy" data-copy="${esc(d.addr)}">Copy</button></div>
       <div class="bm-addr"><code>${esc(d.addr)}</code></div>
-      <div class="lbl"><span>BTC to lock</span>${most >= 10000n ? `<button class="linkbtn" type="button" data-mine="lockmax" data-v="${esc(btcTxt(most))}"${off()}>Up to ${esc(btcTxt(most))} · Max</button>` : ''}</div>
+      <div class="lbl"><span>BTC to lock</span>${most >= 10000n ? `<button class="linkbtn" type="button" data-mine="lockmax" data-v="${esc(plain(most, 8))}"${off()}>Up to ${esc(plain(most, 8))} · Max</button>` : ''}</div>
       <div class="amt"><input id="bm-lock" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="BTC to lock" value="${esc(D.form.lock || '')}"${off()}><span class="u">${tk('btc')}BTC</span></div>
       <div class="rows">
         <div class="kv"><span>At the address</span><b class="num">${esc(btcTxt(d.sats))} BTC${d.pending > 0n ? `<small>${esc(btcTxt(d.pending))} on its way</small>` : ''}</b></div>
@@ -328,7 +328,7 @@ export function mountMine(root, { ticket = null, pick, wallet = null, W = null, 
       if (what === 'mint') { const i = Number(b.dataset.i); return act(`mint:${i}`, () => mint(i)); }
       if (what === 'lockbtc') return act('lockbtc', lockBtc);
       if (what === 'copy') { navigator.clipboard?.writeText(b.dataset.copy).catch(() => {}); b.textContent = 'Copied'; return; }
-      signInSheet(key, { pick, why: 'Open your Tacit wallet to see your locks, loans and cBTC. Nothing is stored or sent.' }).then(() => read(), () => {});
+      signInSheet(key, { pick, why: 'Open your Tacit wallet to see your locks, loans and cBTC. Nothing is stored or sent.' }).catch(() => {});   // the key opening is a change of it, and that starts the read (below)
     });
   }
   key.onChange(() => { if (key.unlocked && D?.pub !== key.key.pubHex) read(); else paint(); });

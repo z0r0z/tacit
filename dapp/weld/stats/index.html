@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module (its sha256 pinned in script-src by build/build.mjs) and the reading it imports. It reads
      public data only: no wallet, no key; it keeps the last reading, and the chain data behind it, to read on from. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-Q/qZF+maf04VY+l1zGSY97ABfNlFNymCWEUo5GX2Yjk='; connect-src https://api.tacit.finance https://mainnet.gateway.tenderly.co https://ethereum-rpc.publicnode.com https://eth.drpc.org https://mainnet.base.org https://base-rpc.publicnode.com https://base.gateway.tenderly.co https://rpc.mainnet.chain.robinhood.com https://eth.blockscout.com https://base.blockscout.com https://api.routescan.io https://mempool.space https://blockstream.info https://rpc.mevblocker.io https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://rpc.flashbots.net https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io https://1rpc.io; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-gLz8aiDSy60OIM/JCEwATIfbReE+uvTR4E6ETIXJBVA='; connect-src https://api.tacit.finance https://mainnet.gateway.tenderly.co https://ethereum-rpc.publicnode.com https://eth.drpc.org https://mainnet.base.org https://base-rpc.publicnode.com https://base.gateway.tenderly.co https://rpc.mainnet.chain.robinhood.com https://eth.blockscout.com https://base.blockscout.com https://api.routescan.io https://mempool.space https://blockstream.info https://rpc.mevblocker.io https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://rpc.flashbots.net https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io https://1rpc.io; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#E8E0CC" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#15130E" media="(prefers-color-scheme: dark)">
@@ -441,7 +441,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
 <script type="module">
 // The page paints; the reading itself (what is read, from where, and how each figure is counted) is ./read.js, which the
 // API also runs for the shared snapshot. It reads public data only: no wallet, no key.
-import { makeStatsReader, mergeReadings, privateEth, toJson, fromJson, A, API, CHAINS } from '/weld/stats/read.js?cb=e44a640c';
+import { makeStatsReader, mergeReadings, privateEth, toJson, fromJson, A, API, CHAINS } from '/weld/stats/read.js?cb=a2a5b035';
 import { bodyType } from '/rpc-body.js';
 
 const EXPLORER = { 1: 'https://etherscan.io', 8453: 'https://basescan.org', 4663: 'https://robinhoodchain.blockscout.com' };
@@ -765,11 +765,18 @@ async function run() {
   let best = last.get();
   if (best) { showAll(best); note(best, 'updating…'); }
   const force = /[?&]fresh/.test(location.search);
-  // The API's shared reading, refreshed every quarter hour: one small request, and nothing asked of an explorer from here.
+  // The API's shared reading, refreshed every quarter hour: one small request, and nothing asked of an explorer from here. It stands as it is,
+  // however old or partial (a part it lacks is carried over from the last reading, or shown as not read): a reading from here, which pages the
+  // pool's whole transaction lists through the keyless explorers, is only for when there is no shared reading to be had.
   if (!force) {
     const snap = await fetch(`${API}/stats?view=page`, { signal: AbortSignal.timeout(6e3) }).then((r) => (r.ok ? r.text() : null)).then((t) => (t ? fromJson(t) : null)).catch(() => null);
     if (snap?.at && (!best || snap.at > best.at)) { best = mergeReadings(best, snap); showAll(best); last.set(best); }
-    if (best && Date.now() - best.at < FRESH_MS && !best.partial) { note(best); const b = best; withTip(b).then(() => note(b)); return; }
+    if (snap?.at || (best && Date.now() - best.at < FRESH_MS && !best.partial)) {
+      for (const g of Object.keys(PLACE)) if (!best[g]) unread(g);
+      if (!best.dev) $('#f-dev').hidden = true;
+      note(best); const b = best; withTip(b).then(() => note(b));
+      return;
+    }
     if (best) note(best, 'updating…');
   }
   // Read from here, on from what the last reading kept; each part is painted as it arrives.

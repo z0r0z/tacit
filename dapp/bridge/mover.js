@@ -2,12 +2,12 @@
 // and the two presses that need only the relay (the burn of a moved bridge, the mint of a recorded one). Nothing is loaded until the holder asks:
 // this module, the key sheet and tacit.js (four megabytes) all come in on that press. Starting a bridge is the front page's Bridge tab. Merging, bridging all, minting to another address,
 // paying the mint from a wallet and proving it oneself stay on the front page, which these rows link to.
-import { makeKeySession, signInSheet } from '/trade/key.js?cb=26d9c07b';
+import { makeKeySession, signInSheet } from '/trade/key.js?cb=d110df5e';
 import { makeTacitSession } from '/tacit-session.js?cb=a2d34bb2';
-import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverEvery } from '/bridge-tick.js?cb=b9adb91d';
-import { ROUTES } from '/bridge/track.js?cb=279d33bf';
-import { parseUnits } from '/trade/util.js?cb=e8317464';
-import { forgetUx } from '/trade/poolux.js?cb=a64920c6';
+import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverEvery } from '/bridge-tick.js?cb=4e721860';
+import { ROUTES } from '/bridge/track.js?cb=c4ce3ac0';
+import { parseUnits } from '/trade/util.js?cb=ba5a02b1';
+import { forgetUx } from '/trade/poolux.js?cb=435f1138';
 import { relayWords } from '/relay-outcome.js?cb=9db7155a';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 
@@ -31,7 +31,7 @@ const BURN_SENT = ['burn-submitted', 'burn-mined', 'registered', 'folded', 'mint
 export function mountMover({ pick, repaint = () => {}, say = () => {}, onState = () => {} } = {}) {
   const key = makeKeySession({ moved: (why) => { lockNow(); say(why); } });
   const TS = makeTacitSession({ url: TACIT_URL, key: () => (key.unlocked ? { pubHex: key.key.pubHex, priv: bytesToHex(key.priv()) } : null), secp, bytesToHex, hexToBytes });
-  let timer = null, busy = false, pressing = false, last = 0, loadSaid = false;     // pressing: a press is running (the tick waits for it, so a ready step is not taken by itself meanwhile)
+  let timer = null, busy = false, pressing = false, last = 0, loadSaid = false;     // busy: a pass is running (a press runs beside it: the engines lease each bridge, and a mint's wait for the relay lasts minutes); pressing: a press is running (the tick waits for it, so a ready step is not taken by itself meanwhile)
   const rechecked = {};                                                              // when a burn whose claim was not matched was last looked at again (stepOut waits ten minutes)
 
   const journaledIn = (pub) => { try { return /"stage":"(?!minted"|reclaimed")/.test(localStorage.getItem(`tacit-burndep-bridge-v1:mainnet:${pub}`) || ''); } catch { return false; } };
@@ -39,7 +39,7 @@ export function mountMover({ pick, repaint = () => {}, say = () => {}, onState =
 
   // One pass: the way in for the open key, the way out for every key with a journal here (only the Bitcoin step needs the open key).
   async function tick(force = false) {
-    if (busy || !key.unlocked || (!force && Date.now() - last < EVERY - 1000)) return;
+    if (busy || pressing || !key.unlocked || (!force && Date.now() - last < EVERY - 1000)) return;
     busy = true; last = Date.now();
     const pub = key.key.pubHex;
     try {
@@ -194,17 +194,18 @@ export function mountMover({ pick, repaint = () => {}, say = () => {}, onState =
     const pub = key.key.pubHex;
     if (!row) return;
     if (row.pub && row.pub !== pub) return say('That bridge belongs to another Tacit key. Open that one to move it on.');
-    if (busy) return say('Checking your bridges: press again in a moment.');
-    busy = true; pressing = true;
+    if (pressing) return say('The last press is still running: press again when it is done.');
+    pressing = true;
     try {
       const T = await TS.load();
       await (row.dir === 'out' ? pressOut : pressIn)(T, pub, row, kind);
     } catch (e) {
       const f = e?.fundWait ? `Still no free coin of ${Number(e.needSats).toLocaleString('en-US')} sats on this key’s Bitcoin address. This goes on by itself once it is there.`
-        : /another tab/i.test(txt(e)) ? 'This bridge is being moved on in another tab. Wait for it there, or close that tab and try again.' : null;
+        : /another tab/i.test(txt(e)) ? 'This bridge is being moved on in another tab. Wait for it there, or close that tab and try again.'
+        : /in this page right now/i.test(txt(e)) ? 'This page is moving this bridge on right now. Its row says where it stands.' : null;
       const w = relayWords(e);
       say(f || w?.text || txt(e), !!w?.front);
-    } finally { busy = false; pressing = false; repaint(); }
+    } finally { pressing = false; repaint(); }
   }
 
   return { toggle, press, tick, find, findOut, armed, get pressing() { return pressing; }, get open() { return key.unlocked; }, get pub() { return key.key?.pubHex || null; } };

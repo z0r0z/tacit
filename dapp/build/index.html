@@ -497,7 +497,7 @@ await tacit.farmUnbond({ walletPriv, position: pos });</code></pre></div>
   deriveDestBlinding: (nu) => deriveBridgeMintBlinding({ privkey: priv, nullifier: nu }),
   isSpendable: (u) => isPlainSats(u) });
 <span class="c">// once the burn is 24 blocks deep</span>
-await tacit.bridgeMint({ ...b.mintArgs, recovery });</code></pre></div>
+await tacit.bridgeMint.bridgeMint({ ...b.mintArgs, recovery });</code></pre></div>
   <ul>
     <li>A mint at fee 0 is relayed free, so a holder with no ETH can finish.</li>
     <li>Check the note first: <code>GET /reflection/note-witness?leaf=</code> finds it if it can bridge.</li>

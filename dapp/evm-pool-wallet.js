@@ -213,26 +213,30 @@ const RECEIVED_TOPIC = hex(keccak_256(te.encode('Received(address,uint256,uint25
 
 // A JSON-RPC reader over one or more URLs: each call tries them in turn, starting at the one that answered last, and
 // fails only when all do (a revert is final at the first). The error thrown carries every node's error as `all`. A node
-// gets `timeoutMs` to answer before the next is tried, so one that stops responding cannot stall every read behind it.
+// gets `timeoutMs` to answer before the next is tried, so one that stops responding cannot stall every read behind it,
+// and the next call starts after it even when none of the others answered either, so a retry does not wait on it again.
+// `rpc.node` is the URL that answered last.
 export function jsonRpc(urls, fetchImpl = globalThis.fetch.bind(globalThis), { timeoutMs = 25_000 } = {}) {
   const list = Array.isArray(urls) ? urls : [urls];
   let id = 0, first = 0;
+  const timedOut = (e) => e?.name === 'TimeoutError' || e?.name === 'AbortError';
   // `{ found: true }` for a record that is known to exist (a transaction in a deep block): a node that answers null for it does
   // not have it (one that keeps recent history only does), so the next is asked, and null comes back only when none has it.
   const single = async (method, params = [], { found = false } = {}) => {
-    const all = []; let none = false;
+    const all = [], start = first; let none = false;
     for (let k = 0; k < list.length; k++) {
-      const at = (first + k) % list.length, url = list[at];
+      const at = (start + k) % list.length, url = list[at];
       try {
         const r = await fetchImpl(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params }), signal: AbortSignal.timeout?.(timeoutMs) });
         const j = await r.json();
         if (j.error) throw Object.assign(new Error(j.error.message || 'rpc error'), { rpc: j.error });
         if (j.result === undefined) throw new Error(`rpc: no result (HTTP ${r.status})`);
         if (found && j.result == null) { none = true; continue; }
-        first = at;
+        first = at; single.node = url;
         return j.result;
       } catch (e) {
         if (e.rpc && /revert/i.test(e.message) && (method === 'eth_call' || method === 'eth_estimateGas')) throw e;
+        if (timedOut(e)) first = (at + 1) % list.length;
         all.push(e);
       }
     }
@@ -246,9 +250,9 @@ export function jsonRpc(urls, fetchImpl = globalThis.fetch.bind(globalThis), { t
   // as failed. Throws when no node takes it, and the caller asks one at a time.
   const noBatch = new Set();
   single.batch = async (calls) => {
-    const all = [];
+    const all = [], start = first;
     for (let k = 0; k < list.length; k++) {
-      const at = (first + k) % list.length, url = list[at];
+      const at = (start + k) % list.length, url = list[at];
       if (noBatch.has(url)) continue;
       try {
         const base = id; id += calls.length;
@@ -266,9 +270,9 @@ export function jsonRpc(urls, fetchImpl = globalThis.fetch.bind(globalThis), { t
           return !x ? new Error('no answer') : x.error ? Object.assign(new Error(x.error.message || 'rpc error'), { rpc: x.error }) : x.result;
         });
         if (calls.length && out.every((x) => x instanceof Error)) throw out[0];
-        first = at;
+        first = at; single.node = url;
         return out;
-      } catch (e) { all.push(e); }
+      } catch (e) { if (timedOut(e)) first = (at + 1) % list.length; all.push(e); }
     }
     throw Object.assign(all[all.length - 1] || new Error('no node takes batches'), { all });
   };
@@ -474,13 +478,13 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
       tree.append((o.leaves || []).map(BigInt), (o.notes || []).map((n) => n.index));
     }
     const st = { nextRefund: 1, attempts: {}, ...o, tree };
-    delete st.leaves;
-    delete st.spent;
+    delete st.leaves;         // `spent` (a state saved with every nullifier) stays for the migration below, which drops it
     return st;
   };
   let saved = blank();
   try { saved = loadState(store?.get(skey)) || blank(); } catch { saved = blank(); }
   let view = null; // saved state plus the unconfirmed tail, from the last sync
+  let tail = { after: null, ts: [], rs: [] }; // that tail's events, and the block the saved state had read through when they were read
 
   // Receive boxes watched: box 0 (the public receive address) and the refund boxes of call intents, indices 1 up
   // to REFUND_GAP past the next unused one, so a wallet restored from its seed alone still finds every refund.
@@ -507,8 +511,8 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
   }
   saved = { ...saved, notes: saved.notes.map(withKeys) };
   { // state saved with every nullifier: keep only the notes still unspent
-    let old = null;
-    try { old = JSON.parse(openState(keys.v, store?.get(skey)) || 'null')?.spent; } catch {}
+    const old = saved.spent;
+    delete saved.spent;
     if (old) {
       const s = new Set(old);
       for (const n of saved.notes) if (s.has(n.nf)) saved.tree.untrack(n.index);
@@ -517,9 +521,17 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
   }
   // The stored state is sealed under a key from the wallet's view scalar, so another script on this origin reading
   // storage finds balances and note positions only as ciphertext. A state saved before this loads as plain JSON.
+  // A write the store does not keep (it is out of room: the set throws, or swallows that and the old text stays) leaves
+  // the state in memory for this visit, and summary() says so (`stored` false), so a page can tell that the next visit
+  // reads the history again. A state begun at a catch-up point is not written over the whole history another wallet on
+  // this store has taken in: the next read goes on from that instead.
+  let stored = true;
   const persist = () => {
+    if (!store) return;
+    if (saved.from) { try { const s = loadState(store.get(skey)); if (s && !s.from && s.block >= saved.from.block) return; } catch {} }
     const bare = { ...saved, tree: saved.tree.toJSON(), notes: saved.notes.map(({ sk, nk, nf, ...rest }) => rest) };
-    try { store?.set(skey, sealState(keys.v, JSON.stringify(bare))); } catch {}
+    const text = sealState(keys.v, JSON.stringify(bare));
+    try { store.set(skey, text); stored = store.get(skey) === text; } catch { stored = false; }
   };
   const noteKey = (n) => `${n.index}`;
   // The attempt number of the next spend built from the note with nullifier `nf` (see paymentKey), remembered with the
@@ -556,11 +568,11 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
   };
 
   // Appends `transacts` to a copy of `state`, keeping a path for each leaf found to be ours: a memo that opens, or
-  // the leaf a Received event of one of our boxes names (the same transaction, so the same batch).
-  function absorb(state, transacts, receipts) {
+  // the leaf a Received event of one of our boxes names (the same transaction, so the same batch). The state's tree is
+  // copied unless a working copy is given (absorbPaced hands every slice the one it made).
+  function absorb(state, transacts, receipts, tree = state.tree.clone()) {
     const spent = new Map(); // nullifier → the block of the Transact that spent it
     const notes = new Map(state.notes.map((n) => [noteKey(n), n]));
-    const tree = state.tree.clone();
     const received = new Map(receipts.map((r) => [r.index, r]));
     const leafAt = new Map();
     const want = [];
@@ -618,8 +630,9 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
     const sliceOf = new Map();
     transacts.forEach((t, i) => { if (t.outLeaf[0] !== 0n || t.outLeaf[1] !== 0n) for (let k = 0; k < 2; k++) sliceOf.set(t.firstIndex + k, Math.floor(i / SLICE)); });
     let st = state, t0 = Date.now();
+    const tree = state.tree.clone();
     for (let i = 0; i < transacts.length; i += SLICE) {
-      st = absorb(st, transacts.slice(i, i + SLICE), receipts.filter((r) => (sliceOf.get(r.index) ?? 0) === i / SLICE));
+      st = absorb(st, transacts.slice(i, i + SLICE), receipts.filter((r) => (sliceOf.get(r.index) ?? 0) === i / SLICE), tree);
       if (Date.now() - t0 > 40) { await sleep(0); t0 = Date.now(); }
     }
     return st;
@@ -685,7 +698,8 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
         const size = BigInt(await view32('rootSize(bytes32)', ['bytes32'], [next.tree.root]));
         if (size !== BigInt(next.tree.size)) throw new Error('feed leaves do not match the pool');
       }
-      saved = next;
+      // `nextRefund` from the live state: a refund box taken while the page was read raised it past the snapshot's.
+      saved = { ...next, nextRefund: Math.max(next.nextRefund, saved.nextRefund) };
       persist();
     }
   }
@@ -786,7 +800,10 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
       if (b.block !== saved.block) return false;
       if (b.tree.size !== saved.tree.size || b.tree.root !== saved.tree.root) { dropBack(); return false; }
       saved = { ...b, notes: b.notes.map(withKeys), attempts: { ...b.attempts, ...saved.attempts }, nextRefund: Math.max(b.nextRefund, saved.nextRefund), pointed: saved.from };
-      view = null; readAt = 0; persist(); dropBack();
+      // The unconfirmed tail of the last read goes onto the whole history as it was on the point's state, so a note younger
+      // than `confirmations` stays in view, and can be chosen for a spend, across the join.
+      try { view = tail.after === saved.block ? absorb(saved, tail.ts, tail.rs) : null; } catch { view = null; }
+      readAt = 0; persist(); dropBack();
       return true;
     });
     reading = run;
@@ -803,7 +820,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
   async function readNew(until = Infinity) {
     // Another wallet on this page, or another tab, has taken the whole history in place of a point: go on from that.
     if (saved.from) { try { const s = loadState(store?.get(skey)); if (s && !s.from && s.block >= saved.from.block) { saved = { ...s, notes: s.notes.map(withKeys), attempts: { ...s.attempts, ...saved.attempts }, nextRefund: Math.max(s.nextRefund, saved.nextRefund) }; view = null; } } catch {} }
-    const tip = Number(BigInt(await chain.rpc('eth_blockNumber')));
+    const tip = Number(BigInt(await chain.rpc('eth_blockNumber'))), tipNode = chain.rpc.node;
     const safe = Math.min(tip - confirmations, until);
     // Nothing read yet: the newest point the pool vouches for, the history behind it read later.
     if (saved.block < Number(chain.deployBlock ?? 0) && !saved.tree.size && until === Infinity) {
@@ -817,19 +834,25 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
     // of it leaves out both events of a sweep or neither. Every Received event of the router is read and ours picked
     // out here, so the node is not told which boxes are one wallet's.
     const got = await logs([chain.pool, chain.router], [[TRANSACT_TOPIC, RECEIVED_TOPIC]], from, tip);
+    // Logs from another node than the one that named the tip (that one failed them) can stop short of it, at the other's
+    // own head: what is kept as read ends at the lower of the two heads, so no leaf between them is passed over.
+    const head = chain.rpc.node !== tipNode ? Number(BigInt(await chain.rpc('eth_blockNumber'))) : tip;
+    const kept = Math.min(safe, head - confirmations);
     const of = (l, address, t) => String(l.address).toLowerCase() === address.toLowerCase() && String(l.topics?.[0]).toLowerCase() === t;
     const ts = got.filter((l) => of(l, chain.pool, TRANSACT_TOPIC)).map(decodeTransact).sort((a, b) => a.block - b.block || a.firstIndex - b.firstIndex);
     const rs = ours(got.filter((l) => of(l, chain.router, RECEIVED_TOPIC)).map(decodeReceived));
-    if (safe >= from) {
-      const next = { ...(await absorbPaced(saved, ts.filter((t) => t.block <= safe), rs.filter((r) => r.block <= safe))), block: safe };
+    if (kept >= from) {
+      const next = { ...(await absorbPaced(saved, ts.filter((t) => t.block <= kept), rs.filter((r) => r.block <= kept))), block: kept };
       if (next.tree.size !== saved.tree.size) {
         const size = BigInt(await view32('rootSize(bytes32)', ['bytes32'], [next.tree.root]));
         if (size !== BigInt(next.tree.size)) throw new Error('the node\'s logs do not match the pool');
       }
-      saved = next;
+      // `nextRefund` from the live state: a refund box taken during the read raised it past the snapshot's.
+      saved = { ...next, nextRefund: Math.max(next.nextRefund, saved.nextRefund) };
       persist();
     }
-    try { view = absorb(saved, ts.filter((t) => t.block > safe), rs.filter((r) => r.block > safe)); }
+    tail = { after: saved.block, ts: ts.filter((t) => t.block > kept), rs: rs.filter((r) => r.block > kept) };
+    try { view = absorb(saved, tail.ts, tail.rs); }
     catch (e) { if (e instanceof Error) e.tail = true; throw e; }
     return summary();
   }
@@ -845,7 +868,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
   const free = () => unspent().filter((n) => !taken(n));
   function summary() {
     const u = unspent();
-    return { balance: u.reduce((a, n) => a + BigInt(n.v), 0n), notes: u.length, leaves: state().tree.size, block: saved.block, behind: saved.from ? { size: saved.from.size, block: saved.from.block } : null };
+    return { balance: u.reduce((a, n) => a + BigInt(n.v), 0n), notes: u.length, leaves: state().tree.size, block: saved.block, behind: saved.from ? { size: saved.from.size, block: saved.from.block } : null, stored };
   }
 
   // ── spending ──
@@ -1177,9 +1200,13 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
   }
 
   // Merges the two largest notes into one, repeatedly, until two notes cover `need` (each merge pays a fee). Refuses
-  // before the first merge when no run of them would, so no fee is paid for a spend that cannot happen.
-  async function prepare(need, q, onStep) {
-    const fee = q ? BigInt(q.fee) : 0n;
+  // before the first merge when no run of them would, so no fee is paid for a spend that cannot happen. A merge is an
+  // ordinary spend: where `q` is priced for a call (withdrawAndCall, toV1), `mergeQuote` gives the ordinary quote it
+  // pays, asked for only once a merge is needed.
+  async function prepare(need, q, onStep, mergeQuote = null) {
+    const ready = select(need);
+    if (ready) { claim(ready); return ready; }
+    const mq = q && mergeQuote ? await mergeQuote() : q, fee = mq ? BigInt(mq.fee) : 0n;
     if (mergePlan(free().map((n) => n.v), need, fee) == null) {
       throw new Error(mergePlan(unspent().map((n) => n.v), need, fee) == null ? 'not enough in the pool for this amount and its fee' : 'another spend from this wallet is under way and holds those funds; try again when it has finished');
     }
@@ -1192,7 +1219,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
       if (total <= fee) break;
       onStep('combining notes first');
       claim([u[0], u[1]]);
-      await transact({ ins: [u[0], u[1]], outs: [{ to: keys, value: total - fee }, null], q, onStep });
+      await transact({ ins: [u[0], u[1]], outs: [{ to: keys, value: total - fee }, null], q: mq, onStep });
       await waitFor(() => unspent().some((n) => BigInt(n.v) === total - fee));
     }
     throw new Error('not enough in the pool for this amount and its fee');
@@ -1216,6 +1243,8 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
   };
   const NODE_INTERFACE = '0x00000000000000000000000000000000000000C8';
   const hasCode = async (rpc, a) => { const c = await rpc('eth_getCode', [a, 'latest']); return !!c && c !== '0x'; };
+  // The chain's time in unix seconds, its latest block's, which a call intent's deadline counts from (this device's clock only where no node serves the block).
+  const chainNow = () => chain.rpc('eth_getBlockByNumber', ['latest', false]).then((b) => Number(BigInt(b.timestamp))).catch(() => Math.floor(Date.now() / 1000));
 
   const api = {
     address: keys.address,
@@ -1308,7 +1337,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
       const self_ = via === 'self';
       const q = self_ ? null : withinFee(await keeperGet(`/quote?gas=${gas ?? 450_000 + 250_000 * (intent.calls?.length ?? 1)}`), maxFee);
       const fee = q ? BigInt(q.fee) : 0n;
-      const ins = await prepare(a + fee, q, onStep);
+      const ins = await prepare(a + fee, q, onStep, () => quoteFor(via, null, maxFee));
       const change = ins.reduce((s, n) => s + BigInt(n.v), 0n) - a - fee;
       return transact({
         ins, outs: [change > 0n ? { to: self, value: change } : null, null], extAmount: -a, recipient: callEscrowAddress(intent, chain.router),
@@ -1410,7 +1439,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
     // sweeps it into a note there (watchReceive on the L2 wallet). Arrives in minutes. The amount and the address
     // are public on Ethereum; which note paid is not. l2Rpc (a jsonRpc on the L2) is needed for Robinhood Chain,
     // whose retryable is priced from the L2. `now`: the chain's time in unix seconds, which its hour-long deadline
-    // counts from (this device's clock by default). → tx hash.
+    // counts from (the chain's latest block by default). → tx hash.
     async bridgeOut({ toChainId, amount, l2Rpc = null, maxFee = null, now = null, onStep = () => {} }) {
       ethOnly('Bridging out');
       if (Number(chain.chainId) !== 1) throw new Error('bridging out starts from the Ethereum pool');
@@ -1440,7 +1469,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
       const { call: c, value } = bridgeEthCall(args);
       const refund = await api.refundBox();
       const nonce = BigInt(hex(globalThis.crypto.getRandomValues(new Uint8Array(16))));
-      const intent = callIntent({ calls: [c], refund, deadline: BigInt((now ?? Math.floor(Date.now() / 1000)) + 3600), nonce });
+      const intent = callIntent({ calls: [c], refund, deadline: BigInt((now ?? (await chainNow())) + 3600), nonce });
       // The OP portal burns L1 gas to buy the deposit's L2 gas (~620k in all); a retryable costs ~100k.
       return api.withdrawAndCall({ intent, amount: value, gas: b.kind === 'op' ? 1_300_000 : 700_000, maxFee, onStep });
     },
@@ -1462,10 +1491,10 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
         assetId: V1_TETH_ASSET_ID, amount: a, tip: 0n, tipTo: ZERO, commit,
         // Only a box funded and never completed is reclaimable; withdrawToV1 funds and completes in one call.
         refund: await api.refundBox(),
-        deadline: BigInt((now ?? Math.floor(Date.now() / 1000)) + 3600), nonce: BigInt(hex(globalThis.crypto.getRandomValues(new Uint8Array(16)))),
+        deadline: BigInt((now ?? (await chainNow())) + 3600), nonce: BigInt(hex(globalThis.crypto.getRandomValues(new Uint8Array(16)))),
       };
       const box = '0x' + String(await chain.rpc('eth_call', [{ to: chain.router, data: calldata(`wrapBoxOf(${WRAP_SIG})`, [{ tuple: WRAP_TYPES }], [wrapValues(intent)]) }, 'latest'])).slice(-40);
-      const ins = await prepare(a + fee, q, onStep);
+      const ins = await prepare(a + fee, q, onStep, () => quoteFor(via, null, maxFee));
       const change = ins.reduce((s, n) => s + BigInt(n.v), 0n) - a - fee;
       return transact({
         ins, outs: [change > 0n ? { to: self, value: change } : null, null], extAmount: -a, recipient: box, q, onStep,

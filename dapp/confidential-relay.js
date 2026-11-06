@@ -95,6 +95,19 @@ export function makeConfidentialRelay({ base, others = [], fetchImpl, guard, che
     try { Promise.resolve(f(`${root}/prover/pool/hold`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).catch(() => {}); } catch { }
   }
 
+  // A submit the relay did not answer (none in half a minute, or a 5xx from its edge with no word of the relay's own) may have been taken all the
+  // same: the error says so in the words of a wait that ran out, which a page does not send again. The relay's refusals (a 4xx, or an answer
+  // that names its code) come back as they are.
+  const SUBMIT_MS = 30e3;
+  async function postSubmit(at, body, kind) {
+    const unanswered = (cause) => Object.assign(new Error(`${kind} timed out: the relay did not answer the request, which it may have taken all the same`), { unanswered: true, cause });
+    let res;
+    try { res = await f(`${at}/confidential/submit`, { method: 'POST', headers: { 'content-type': 'application/json' }, body, ...within(SUBMIT_MS) }); }
+    catch (e) { throw unanswered(e); }
+    try { return await asJson(res); }
+    catch (e) { if (!e || e.httpStatus == null || (e.httpStatus >= 500 && !e.code)) throw unanswered(e); throw e; }
+  }
+
   // `exit`: a relayed unwrap's ConfidentialRouter ExitRecipe, which the relay activates once the settle has paid its escrow (never sealed).
   // `ahead`: a prove-only job asked for before its press, which the API takes only while the prover board is up (it costs no credit)
   async function submitOp({ type, op, leaves = [], outputs = null, ephRand, memos = null, mode, feeAsset = null, lockMemos = null, depositTx = null, exit = null, ahead = false } = {}, waitOpts) {
@@ -116,13 +129,10 @@ export function makeConfidentialRelay({ base, others = [], fetchImpl, guard, che
       sealedJobs.delete(opKey);
     }
     const sealedIn = sealing ? await sealer({ type, op, memos: sealedMemos }) : null;
-    const res = await f(`${at}/confidential/submit`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(sealedIn
-        ? { type, mode: 'sealed', sealed: sealedIn, memos: sealedMemos, ...(feeAsset ? { feeAsset } : {}) }
-        : { type, op, memos: sealedMemos, ...(mode ? { mode } : {}), ...(feeAsset ? { feeAsset } : {}), ...(depositTx ? { depositTx } : {}), ...(exit ? { exit } : {}), ...(ahead ? { ahead: true } : {}) }, bigintSafe),
-    });
-    const body = await asJson(res);
+    const body = await postSubmit(at, JSON.stringify(sealedIn
+      ? { type, mode: 'sealed', sealed: sealedIn, memos: sealedMemos, ...(feeAsset ? { feeAsset } : {}) }
+      : { type, op, memos: sealedMemos, ...(mode ? { mode } : {}), ...(feeAsset ? { feeAsset } : {}), ...(depositTx ? { depositTx } : {}), ...(exit ? { exit } : {}), ...(ahead ? { ahead: true } : {}) }, bigintSafe),
+    mode === 'prove' ? 'prove' : 'settle');
     if (body && body.jobId) body.jobId = tagId(body.jobId, at);
     if (body && body.jobId) {
       if (opKey) sealedJobs.set(opKey, body.jobId);
@@ -188,7 +198,7 @@ export function makeConfidentialRelay({ base, others = [], fetchImpl, guard, che
       try { const st = await status(jobId); state.errors = 0; return st; }
       catch (e) {
         state.errors = (state.errors || 0) + 1;
-        if (state.errors >= maxErrors) throw new Error(`status polling for job ${jobId} failed ${state.errors} times in a row (${e && e.message || e}); the job may still be running`);
+        if (state.errors >= maxErrors) throw Object.assign(new Error(`status polling for job ${jobId} failed ${state.errors} times in a row (${e && e.message || e}); the job may still be running`), { unreachable: true });
         await wait(intervalMs);
       }
     }
@@ -310,11 +320,7 @@ export function makeConfidentialRelay({ base, others = [], fetchImpl, guard, che
   async function postProof({ type, publicValues, proof, memos = [], exit = null }) {
     if (alts.length) await state();
     const at = pick;
-    const res = await f(`${at}/confidential/submit`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ type, mode: 'preproven', publicValues, proof, memos, ...(exit ? { exit } : {}) }),
-    });
-    const body = await asJson(res);
+    const body = await postSubmit(at, JSON.stringify({ type, mode: 'preproven', publicValues, proof, memos, ...(exit ? { exit } : {}) }), 'settle');
     if (body && body.jobId) { body.jobId = tagId(body.jobId, at); jobTypes.set(body.jobId, type); announce({ ...body, type }); }
     return body;
   }

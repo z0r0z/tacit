@@ -65,7 +65,7 @@ const poolId = (a, b, fee) => { const [lo, hi] = BigInt(a) <= BigInt(b) ? [a, b]
 const POOLS = new Map([[poolId(CBTC, CETH, 30), [CETH, CBTC, 63593972n, 730828n, 6810283n]], [poolId(CBTC, TAC, 30), [CBTC, TAC, 2n, 762494n, 1000n]]]);
 const seenOps = new Map();                                                                     // outpoint → what the pool says of it, in the order they are first asked about: 20 live locks of equal size and one spent on Bitcoin (the pool keeps its sats on record)
 const lockOf = (op) => { if (!seenOps.has(op)) { const k = seenOps.size; seenOps.set(op, { sats: 569540n, spent: k >= 20, minted: k !== 19, bond: k >= 20 ? 800000000000000n : 240000000000000000n }); } return seenOps.get(op); };
-const chain = { lockStates: new Map(), engine: true, logs: true };                                 // lockStates: outpoint word → { recorded, bonded, minted }
+const chain = { lockStates: new Map(), engine: true, logs: true };                                 // lockStates: outpoint word → { recorded, bonded, minted, spent }
 const SEL = { latest: '0xfeaf968c', sqrt: '0x2af1f249', ratio: '0x4827ecb3', liq: '0x1432d93f', usd: '0xd5901347', wstForBtc: '0x7dd55c2b', perWst: '0xbb2952fc', req: '0x034448ed', pools: '0xb5217bb4',
   lockV: '0x7cea1c1a', escrowOk: '0x058e18b0', minted: '0xe2c2a40c', spent: '0x993ed045', redeemed: '0xb5229671', escrowTotal: '0xe06e89c9' };
 function answerCall({ to, data }) {
@@ -83,7 +83,7 @@ function answerCall({ to, data }) {
     const p = POOLS.get(data.slice(10, 74));
     return p ? '0x' + [1n, 0n, 0n, p[2], p[3], 30n, p[4]].map(w32).join('') : '0x' + '0'.repeat(64 * 7);
   }
-  if (sel === SEL.spent || sel === SEL.redeemed) return '0x' + w32(sel === SEL.spent && lockOf(data.slice(10, 74)).spent && !chain.lockStates.has(data.slice(10, 74)) ? 1n : 0n);
+  if (sel === SEL.spent || sel === SEL.redeemed) { const op = data.slice(10, 74), s = chain.lockStates.get(op); return '0x' + w32((s ? s[sel === SEL.spent ? 'spent' : 'redeemed'] : sel === SEL.spent && lockOf(op).spent) ? 1n : 0n); }
   if (sel === SEL.escrowTotal) return '0x' + w32(lockOf(data.slice(10, 74)).bond);
   if ([SEL.lockV, SEL.escrowOk, SEL.minted].includes(sel)) {
     const op = data.slice(10, 74), s = chain.lockStates.get(op) || { recorded: true, bonded: true, minted: lockOf(op).minted, sats: lockOf(op).sats };
@@ -282,8 +282,8 @@ try {
   const op = (v) => '00'.repeat(31) + v.toString(16).padStart(2, '0');
   chain.lockStates.set(op(1), { recorded: true, bonded: true, minted: true, sats: 5000000n });
   chain.lockStates.set(op(2), { recorded: true, bonded: true, minted: false, sats: 1000000n });
-  chain.lockStates.set(op(3), { recorded: false, bonded: false, minted: false, sats: 200000n });
-  const mineCfg = { positions: [{ pid: 2, shares: String(6810283 / 4), pendingTac: '1.5', unlockAt: 0 }], locks: [lockA, lockB, lockC], cbtc: 4200000, cusd: 123400000000, loans: [{ live: true, debtValue: '90000000000', basket: [{ asset: CBTC, value: '5000000' }] }, { live: false, debtValue: '5', basket: [] }], states: { 3: { spent: true } } };
+  chain.lockStates.set(op(3), { recorded: false, bonded: false, minted: false, sats: 200000n, spent: true });   // spent on Bitcoin: the pool has retired it
+  const mineCfg = { positions: [{ pid: 2, shares: String(6810283 / 4), pendingTac: '1.5', unlockAt: 0 }], locks: [lockA, lockB, lockC], cbtc: 4200000, cusd: 123400000000, loans: [{ live: true, debtValue: '90000000000', basket: [{ asset: CBTC, value: '5000000' }] }, { live: false, debtValue: '5', basket: [] }] };
   await cfg(p, mineCfg);
   await p.click('#mode-seg [data-mode="use"]');
   await p.click('#signin');
@@ -343,8 +343,8 @@ try {
   const vm = (await text(p, '#btc-mine')).replace(/\s+/g, ' ');
   ok(/cBTC, private0\.042/.test(vm) && /cUSD, private1,234/.test(vm) && /Loan900 cUSD/.test(vm) && /0\.05 BTC/.test(vm) && /0\.01 BTC/.test(vm) && !/0\.002 BTC/.test(vm),
     `vault: the key's private cBTC and cUSD, its loan and its two live locks (${vm.slice(0, 220)})`);
-  const vlinks = await p.$$eval('#btc-mine a', (a) => a.map((x) => `${x.textContent}:${x.getAttribute('href')}`));
-  ok(vlinks.join() === 'Send from a wallet in this browser →:/#lock' && !!(await p.$('#btc-mine [data-mine="mint"]')) && !!(await p.$('#btc-mine [data-mine="bond"]')) && !!(await p.$('#btc-mine [data-mine="repay"]')), `vault: each lock's next step and the loan are done from here (${vlinks.join(' ') || 'no links'})`);
+  ok(!(await p.$('#btc-mine a')) && !!(await p.$('#btc-mine [data-mine="mint"]')) && !!(await p.$('#btc-mine [data-mine="bond"]')) && !!(await p.$('#btc-mine [data-mine="repay"]')) && (await p.getAttribute('#btc-tk [data-mine="tab"][data-t="borrow"]', 'aria-pressed')) === 'true',
+    'vault: each lock\'s next step and the loan are done from here, with no link away, and the ticket opens on Borrow once there is cBTC to put up');
   // a lock ready to mint is minted from here, relayed, its blinding from the key and the anchor
   await p.click('#btc-mine [data-mine="mint"]');
   await until(p, () => /cBTC minted/.test(document.querySelector('#bm-status')?.textContent || ''), null, 30000);
@@ -367,19 +367,27 @@ try {
   const jb = await p.evaluate(() => (JSON.parse(localStorage.getItem('tacit-lite-activity-v1') || '{}').items || []).map((x) => `${x.label}:${x.status}`));
   ok(jb.includes('Post the bond for 0.003 BTC:confirmed'), `vault: sent, the bond is followed to its receipt and journaled (${jb.join(' | ')})`);
   walletAccepts = false;
-  // BTC sent to the key's deposit address from any wallet is locked from here, keeping what the lock's fees need
-  const dep = (await text(p, '#btc-mine .bm-lock')).replace(/\s+/g, ' ');
-  ok(/Deposit addressbc1qde/.test(dep) && /It holds0\.0006 BTC/.test(dep) && /0\.00005 on its way/.test(dep) && /keeping about 0\.0000199 BTC for fees/.test(dep), `vault: the deposit address, what it holds and what is on its way, and the fees a lock keeps back (${dep.slice(0, 220)})`);
+  // BTC sent to the key's deposit address from any wallet is locked from the ticket's Lock BTC tab, keeping what the lock's fees need
+  await p.click('#btc-tk [data-mine="tab"][data-t="lock"]');
+  await p.waitForSelector('#btc-tk .bm-lock');
+  const dep = (await text(p, '#btc-tk .bm-lock')).replace(/\s+/g, ' ');
+  ok(/Your deposit addressCopy bc1qde/.test(dep) && /At the address0\.0006 BTC0\.00005 on its way/.test(dep) && /Kept for feesabout 0\.0000199 BTC/.test(dep), `vault: the deposit address, what it holds and what is on its way, and the fees a lock keeps back (${dep.slice(0, 220)})`);
+  const tlinks = await p.$$eval('#btc-tk a', (a) => a.map((x) => `${x.textContent}:${x.getAttribute('href')}`));
+  ok(tlinks.join() === 'Send from a wallet in this browser →:/#lock', `vault: paying the address from a wallet in the browser is the front page's (${tlinks.join(' ') || 'no links'})`);
+  // Max is the exact sats the address holds less the fees (60,000 − 1,990 = 58,010), which a lock takes; a rounded figure it would refuse
+  await p.click('#btc-tk [data-mine="lockmax"]');
+  ok(/Up to 0\.0005801 · Max/.test(dep) && (await p.inputValue('#bm-lock')) === '0.0005801', `vault: Max puts the exact sats the address can lock in the field (${await p.inputValue('#bm-lock')})`);
   await p.fill('#bm-lock', '0.0006');
-  await p.click('#btc-mine [data-mine="lockbtc"]');
+  await p.click('#btc-tk [data-mine="lockbtc"]');
   await until(p, () => /Wait for the deposit to confirm/.test(document.querySelector('#bm-status')?.textContent || ''), null, 20000);
   ok(true, 'vault: a lock its fees would take past what is confirmed, with the rest on its way, waits for it to confirm');
   await p.fill('#bm-lock', '0.0007');
-  await p.click('#btc-mine [data-mine="lockbtc"]');
+  await p.click('#btc-tk [data-mine="lockbtc"]');
   await until(p, () => /Not enough BTC at the deposit address/.test(document.querySelector('#bm-status')?.textContent || ''), null, 20000);
   ok(!(await ux(p)).calls.some((c) => c[0] === 'lock'), 'vault: and more than the address will hold is refused, both before anything is signed');
+  chain.lockStates.set(op(7), { recorded: false, bonded: false, minted: false, sats: 50000n });   // the lock made below (vout 7): the pool has no record of it yet, and it is not spent
   await p.fill('#bm-lock', '0.0005');
-  await p.click('#btc-mine [data-mine="lockbtc"]');
+  await p.click('#btc-tk [data-mine="lockbtc"]');
   await until(p, () => /Locked/.test(document.querySelector('#bm-status')?.textContent || ''), null, 30000);
   const lk = (await ux(p)).calls.filter((c) => c[0] === 'lock' || c[0] === 'syncCbtcLockReservations').map((c) => c.join('|'));
   ok(lk.join(' ') === `syncCbtcLockReservations lock|50000|${'78'.repeat(32)}:1`, `vault: the pool's reservations are read first, then 0.0005 BTC is locked, the coin not yet confirmed left alone (${lk.join(' ')})`);

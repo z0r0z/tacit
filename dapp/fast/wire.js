@@ -9,16 +9,16 @@
 //
 //   T  tacit.js with the key's wallet open     withKey(fn)  a call under that key (tacit-session.js)     ux  the pool module (trade/poolux.js)
 
-import { makeBtcWallet } from '/bitcoin-taproot-wallet.js?cb=6e90dd96';
-import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js?cb=77320a94';
+import { makeBtcWallet } from '/bitcoin-taproot-wallet.js';
+import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js';
 import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=94a5530b';
 import { makeFastBridgeEvm } from '/fastbridge-evm.js?cb=22471d6a';
-import { makeHttpCounter, makeCounter } from '/fastbridge-http.js?cb=11295986';
+import { makeHttpCounter, makeCounter } from '/fastbridge-http.js';
 import { makeFastBridgeMarket, makeLocalStore, termsOf } from '/fastbridge-client.js?cb=cc5708ff';
 import { makeLpService } from '/fastbridge-provider.js?cb=8b3cb635';
 import { makeMailboxCounter, makeMailboxServer, makeAdPublisher, readProviders, gatewayOf } from '/fastbridge-mailbox.js?cb=38553280';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=850e1c5e';
-import { signSchnorr } from '/bulletproofs.js?cb=132d3648';
+import { signSchnorr } from '/bulletproofs.js';
 import { makeBtcBind, openBoundNote, fastLaneNote, makePoolRoots } from '/btc-bind.js?cb=b686d883';
 import { p2trAddress } from '/crossout-notes.js?cb=591df470';
 import { secp, sha256, keccak_256, hmac, hexToBytes } from '/vendor/tacit-deps.min.js';
@@ -313,7 +313,7 @@ export async function openProvider({ T, ux, priv, pubHex, boards = [], name = nu
   const keys = gatewayOf(priv);
   // more Bitcoin confirmations for a larger amount
   const confs = (v) => (BigInt(v) >= 10_000n * 10n ** 8n ? 3 : BigInt(v) >= 1_000n * 10n ** 8n ? 2 : 1);
-  let service = null, stops = [], running = false, accepting = false, lastError = null, busy = false;
+  let service = null, stops = [], running = false, starting = false, accepting = false, lastError = null, busy = false;
 
   async function status() {
     const recs = await swaps.list();
@@ -339,12 +339,15 @@ export async function openProvider({ T, ux, priv, pubHex, boards = [], name = nu
   // Starts the swaps that are open on their way (the takes and the refunds are not to be left), and, when `accept` is set, answers
   // requests and posts the ad on every board. Settings: { feeBps, flatFee, minAmount, maxAmount } in base units.
   async function start({ settings = {}, accept = true } = {}) {
-    if (running) return;
+    // a start is not running until it has read the holds it keeps and the Bitcoin lock of each; a second start in that time would step the
+    // same swaps twice, so there is one at a time
+    if (running || starting) return;
+    starting = true;
     // what the service finds wrong is said in the panel (a lock it could not check, a request that failed), not kept from the one who provides
     const said = (o) => { if (o.level === 'error' || o.level === 'warn') lastError = `${o.msg}${o.error ? `: ${o.error}` : ''}`.slice(0, 200); };
     evmLog = said;
     service = makeLpService({ seed, btc, evm, swaps, quoteStore, config: configOf({ ...PROVIDER_DEFAULTS, ...settings }), now, log: said });
-    await service.start();
+    try { await service.start(); } finally { starting = false; }
     running = true; accepting = !!accept; lastError = null;
     const note = (o) => { lastError = o.error || o.msg || null; };
     // what is new is taken on only while the one who provides is at the page: a quote, a reservation, or an offer for a swap not stored yet

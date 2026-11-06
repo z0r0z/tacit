@@ -8,6 +8,7 @@
 // What this makes is an Ethereum token. The pool takes it as an escrow asset (registerWrappedAuto), and the pool never links an escrow asset to a Bitcoin id
 // (ReflectionLib.register: CrossChainEscrow), so it does not cross the bridge to Bitcoin; an asset that crosses is etched on Bitcoin.
 import { FIXED_SUPPLY_MINTER_INIT } from '/etch/minter.js?cb=4a0d243a';
+import { MULTICALL3, encodeBatch, decodeBatch } from '../trade/batch.js';
 
 // contracts/deployments/1.json
 export const FACTORY = '0x0000000042c2D57499Df64BAF81bfA2C6E100535', POOL = '0x000000000Ed1eabD231Be41d93b719056F7febFC', CREATEX = '0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed';
@@ -145,6 +146,18 @@ export function cidString(digest) {
   if (bits) out += B32[(acc << (5 - bits)) & 31];
   return `b${out}`;
 }
+// Reads of many tokens as one Multicall3 call (in parts of a hundred): each answer's data, or null for one the token did not answer. A part the
+// batch call itself could not answer is read one token at a time.
+async function multi(read, calls) {
+  const out = [];
+  for (let i = 0; i < calls.length; i += 100) {
+    const part = calls.slice(i, i + 100);
+    let got = null;
+    try { got = decodeBatch(await read('eth_call', [{ to: MULTICALL3, data: encodeBatch(part) }, 'latest']), part.length); } catch { /* each by itself */ }
+    out.push(...(got || (await Promise.all(part.map((c) => read('eth_call', [c, 'latest']).catch(() => null))))));
+  }
+  return out;
+}
 export const LOG_SPAN = 50_000;
 export async function listEtches(read, hosts, { span = LOG_SPAN, at = 4 } = {}) {
   const head = parseInt(await read('eth_blockNumber', []), 16);
@@ -170,7 +183,7 @@ export async function listEtches(read, hosts, { span = LOG_SPAN, at = 4 } = {}) 
     out.push({ id: token, chain: 'eth', ticker: symbol, decimals: parseInt(d.slice(64, 128), 16), cid: /^0x0+$/.test(cid) ? null : cidString(cid), height: parseInt(l.blockNumber, 16), etchTxid: l.transactionHash, minter, name: '', logo: null, verified: false, mintable: false, holders: 0, later: false, same: 0, supply: null, at: 0 });
   }
   await Promise.all([
-    ...out.map(async (a) => { try { a.supply = BigInt(await read('eth_call', [{ to: a.id, data: SEL.totalSupply }, 'latest'])); } catch { /* a supply that cannot be read is not shown */ } }),
+    multi(read, out.map((a) => ({ to: a.id, data: SEL.totalSupply }))).then((got) => out.forEach((a, i) => { try { if (got[i]) a.supply = BigInt(got[i]); } catch { /* a supply that cannot be read is not shown */ } })),
     ...[...new Set(out.map((a) => a.height))].map(async (h) => { try { const ts = Number((await read('eth_getBlockByNumber', ['0x' + h.toString(16), false]))?.timestamp); for (const a of out) if (a.height === h) a.at = ts || 0; } catch { /* the date is a convenience */ } }),
   ]);
   const by = new Map();
@@ -181,6 +194,7 @@ export async function listEtches(read, hosts, { span = LOG_SPAN, at = 4 } = {}) 
 // What `account` holds of each token.
 export async function balances(read, account, tokens) {
   const out = {};
-  await Promise.all(tokens.map(async (t) => { try { out[t] = BigInt(await read('eth_call', [{ to: t, data: SEL.balanceOf + addr(account) }, 'latest'])); } catch { /* unread */ } }));
+  const got = await multi(read, tokens.map((t) => ({ to: t, data: SEL.balanceOf + addr(account) })));
+  tokens.forEach((t, i) => { try { if (got[i]) out[t] = BigInt(got[i]); } catch { /* unread */ } });
   return out;
 }

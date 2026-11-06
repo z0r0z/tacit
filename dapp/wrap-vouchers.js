@@ -5,7 +5,7 @@
 // the proving time; sent by anyone, it can only fund the key's own note.
 //
 // A voucher: { ticker, amount (base units, decimal string), index, commit, depositId, leaf, assetId, at, status: 'proving' | 'ready',
-// by ('device' | 'relay' | 'pool'), job? (the proving job, to pick up after a reload), publicValues?, proof?, memos? }. Every proof is
+// by ('device' | 'own' | 'relay' | 'pool' | 'market': who proved it), job? (the proving job, to pick up after a reload), publicValues?, proof?, memos? }. Every proof is
 // checked to be for its own note (confidential-pool-ux.js wrapProofFits) before it is kept.
 //
 // A full store must not lose a proof quietly. A write the browser refuses first makes room (the vouchers of other keys, the oldest
@@ -97,10 +97,10 @@ export function makeVouchers({ storage = globalThis.localStorage } = {}) {
     stockSizes,
     fitWrap,
     put(pub, v) { write(pub, [...read(pub).filter((x) => x.depositId !== v.depositId), v]); },
-    // A wrap proved and then not sent, kept as a ready voucher: { built, proven } as the pool module's proveWrap returns them.
-    keep(pub, ticker, { built, proven }) {
+    // A wrap proved and then not sent, kept as a ready voucher: { built, proven } as the pool module's proveWrap returns them, and `by`, who proved it.
+    keep(pub, ticker, { built, proven }, by = null) {
       this.put(pub, { ticker, amount: String(built.amount), index: built.index, commit: built.commit, depositId: built.depositId, leaf: built.leaf,
-        assetId: built.wrapArgs.assetId, at: Date.now(), status: 'ready', publicValues: proven.publicValues, proof: proven.proof, memos: proven.memos });
+        assetId: built.wrapArgs.assetId, at: Date.now(), status: 'ready', ...(by ? { by } : {}), publicValues: proven.publicValues, proof: proven.proof, memos: proven.memos });
     },
     drop(pub, depositId) { write(pub, read(pub).filter((x) => x.depositId !== depositId)); },
     // The proof a voucher carries, as the pool module's wrapSettleCall takes a built wrap and its proof.

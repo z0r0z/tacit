@@ -1,12 +1,12 @@
 // tacit.finance/etch: an asset made on Bitcoin, and a search of the ones that exist. Create takes a ticker and a supply (a name, a logo and a link are optional)
 // and etches it from the Tacit key the visitor opens; Discover searches the registry. tacit.js and the key come in when the visitor first touches the form
 // (/trade/btc.js signs them in), not before. The asset is the key's own the moment the reveal is sent, so the front page's wallet lists it as it lists TAC.
-import { $, esc, fmtUnits, parseUnits, short } from '/trade/util.js?cb=e8317464';
+import { $, esc, fmtUnits, parseUnits, short } from '/trade/util.js?cb=ba5a02b1';
 import { ETH_LOG_NODES } from '/eth-nodes.js';
 import { day } from '/trade/fmt.js?cb=32b1744b';
-import { loadAssets, readNames, search, ipfs } from '/etch/find.js?cb=4376bbcc';
+import { loadAssets, readNames, search, ipfs } from '/etch/find.js?cb=c6d1da75';
 
-const BTC_MODULE = '/trade/btc.js?cb=8a4b33cd', ETH_MODULE = '/etch/eth.js?cb=370b1297', WALLET_MODULE = '/trade/wallet.js?cb=88b623b8', SHEET_MODULE = '/trade/sheet.js?cb=84cda8f2', UTIL_MODULE = '/trade/util.js?cb=e8317464';
+const BTC_MODULE = '/trade/btc.js?cb=8a4b33cd', ETH_MODULE = '/etch/eth.js?cb=96e842d9', WALLET_MODULE = '/trade/wallet.js?cb=88b623b8', SHEET_MODULE = '/trade/sheet.js?cb=84cda8f2', UTIL_MODULE = '/trade/util.js?cb=ba5a02b1';
 const DECIMALS_OF = { btc: [0, 2, 6, 8], eth: [0, 6, 8, 18] };
 // What the pool can hold of an asset, in its base units (2^64 − 1 in-system units); on Bitcoin, the etch's own limit.
 const maxFor = (dec) => (S.chain === 'eth' ? ((1n << 64n) - 1n) * 10n ** BigInt(dec - Math.min(dec, 8)) : MAX_BASE);
@@ -273,12 +273,15 @@ function reset() {
 
 // ── the logo: pinned to IPFS through the API, then named in the envelope by its CID ──
 const lgSay = (t, err = false) => { const s = $('#lg-s'); s.textContent = t; s.style.color = err ? 'var(--err)' : ''; };
+// The image chosen last is the logo: an upload still in flight when another is chosen, or the logo is removed, is dropped when it lands.
+let lgSeq = 0;
 ui.lg.addEventListener('change', async () => {
   const f = ui.lg.files && ui.lg.files[0];
   ui.lg.value = '';
   if (!f) return;
   if (!LOGO_TYPES.has(f.type)) return lgSay('PNG, JPEG or WebP', true);
   if (f.size > LOGO_MAX) return lgSay('2 MB at most', true);
+  const my = ++lgSeq;
   lgSay('Uploading…');
   S.uploading = true; paint();
   const url = URL.createObjectURL(f);
@@ -287,15 +290,17 @@ ui.lg.addEventListener('change', async () => {
     fd.append('file', f);
     const r = await fetch(`${API}/pin`, { method: 'POST', body: fd, signal: AbortSignal.timeout(30e3) });
     const j = await r.json().catch(() => ({}));
+    if (my !== lgSeq) { URL.revokeObjectURL(url); return; }
     if (!r.ok || !j.cid) throw new Error(j.error || `the upload failed (${r.status})`);
     if (S.logo) URL.revokeObjectURL(S.logo.url);
     S.logo = { uri: `ipfs://${j.cid}`, url };
     lgSay(''); $('#lg-x').hidden = false; paintMark($('#lg-mark'), '', '', url);
     paint(); needQuote();
-  } catch (e) { URL.revokeObjectURL(url); lgSay(e?.message || 'The upload failed', true); }
-  finally { S.uploading = false; paint(); }
+  } catch (e) { URL.revokeObjectURL(url); if (my === lgSeq) lgSay(e?.message || 'The upload failed', true); }
+  finally { if (my === lgSeq) { S.uploading = false; paint(); } }
 });
 $('#lg-x').addEventListener('click', () => {
+  lgSeq++; S.uploading = false;
   if (S.logo) URL.revokeObjectURL(S.logo.url);
   S.logo = null; $('#lg-x').hidden = true; paintMark($('#lg-mark'), '', '', null); lgSay('');
   paint(); needQuote();
@@ -395,20 +400,19 @@ async function actEth() {
     const plan = await lane.E.plan({ account, symbol: job.ticker, decimals: job.dec, supply: job.base, cid, register: job.reg }, lane.rpc);
     const cost = plan.gas * (S.eth.gasPrice || 0n) * 12n / 10n;
     if (S.eth.bal != null && cost > 0n && S.eth.bal < cost) { say(`Needs about ${esc(fmtUnits(cost, 18, 5))} ETH for the network fee. Your wallet holds ${esc(fmtUnits(S.eth.bal, 18, 5))}.`, 'err'); return; }
-    let made = false;
-    try {
-      const hashes = await lane.E.send(plan, lane.wallet, { read: lane.rpc, step: (i, n, label) => say(n > 1 ? `${esc(label)} (${i} of ${n})…` : `${esc(label)}…`) });
-      made = true;
-      say('Checking what was made…');
-      const v = await lane.E.verify(plan, lane.rpc);
-      S.done = { eth: true, job, plan, hashes, verified: v, ticker: job.ticker, base: job.base, dec: job.dec, logo: job.logo?.url || null, logoUri: job.logo?.uri || null, reg: job.reg, registered: job.reg };
-    } catch (e) {
+    let hashes, note = null;
+    try { hashes = await lane.E.send(plan, lane.wallet, { read: lane.rpc, step: (i, n, label) => say(n > 1 ? `${esc(label)} (${i} of ${n})…` : `${esc(label)}…`) }); }
+    catch (e) {
       if (!e?.partial?.length) throw e;
       // the token was made and a later call was not: what exists is said, and the page shows it
-      const v = await lane.E.verify(plan, lane.rpc).catch(() => ({ ok: false, checks: {} }));
-      S.done = { eth: true, job, plan, hashes: e.partial, verified: v, ticker: job.ticker, base: job.base, dec: job.dec, logo: job.logo?.url || null, logoUri: job.logo?.uri || null, reg: job.reg, registered: false, note: stopped(e) ? 'Registering it with the pool was not confirmed in your wallet. The token is made.' : `Could not register it with the pool: ${e.message}. The token is made.` };
+      hashes = e.partial;
+      note = stopped(e) ? 'Registering it with the pool was not confirmed in your wallet. The token is made.' : `Could not register it with the pool: ${e.message}. The token is made.`;
     }
+    // The token exists once its create call is mined, so it is kept before the chain is asked what was made: a read that fails leaves it shown, unchecked, not unrecorded.
+    S.done = { eth: true, job, plan, hashes, verified: { ok: false, checks: {} }, ticker: job.ticker, base: job.base, dec: job.dec, logo: job.logo?.url || null, logoUri: job.logo?.uri || null, reg: job.reg, registered: job.reg && !note, note };
     rememberEth(S.done, job);
+    say('Checking what was made…');
+    S.done.verified = await lane.E.verify(plan, lane.rpc).catch(() => ({ ok: false, checks: {} }));
     showDoneEth();
   } catch (e) {
     say(stopped(e) ? 'Nothing was sent.' : esc(e?.message || String(e)), stopped(e) ? '' : 'err');
@@ -507,8 +511,11 @@ function ensureEthList() {
 async function ethHeld() {
   try {
     const lane = await ethLane(), a = lane.wallet.state.account;
-    if (!a || !S.ethList?.length) return;
-    S.held = await lane.E.balances(lane.rpc, a, knownEth().map((x) => x.id));
+    if (!a) { if (Object.keys(S.held).length) { S.held = {}; paintList(); } return; }
+    if (!S.ethList?.length) return;
+    const held = await lane.E.balances(lane.rpc, a, knownEth().map((x) => x.id));
+    if (lane.wallet.state.account !== a) return;
+    S.held = held;
     paintList();
   } catch { /* what is held is a convenience */ }
 }

@@ -26,7 +26,7 @@ const SCAN = 'https://mempool.space/tx/';
 
 export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_000n }, root, keyS, open, hasOpen = () => false, settings = { get: () => null, set: () => {} }, waiting = null, notify = () => {}, ask = async () => {}, signIn = null, linkOf = (id) => `https://tacit.finance/fast/#with=${id}`, waitMs = 60000, retryMs = 15000, refreshMs = every }) {
   const doc = root.ownerDocument;
-  const S = { sess: null, pub: null, inv: null, st: null, loading: false, note: '', bad: false, timer: 0, opened: false, wait: null, seen: null };
+  const S = { sess: null, pub: null, inv: null, st: null, loading: false, busy: false, invAt: 0, note: '', bad: false, timer: 0, opened: false, wait: null, seen: null };
 
   root.hidden = true;
   root.innerHTML = `
@@ -86,8 +86,8 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
     }
     const go = $('pv-go');
     go.hidden = !inv && !locked;
-    go.textContent = locked ? 'Open wallet' : accepting() ? 'Stop providing' : 'Start providing';
-    go.disabled = !locked && short();
+    go.textContent = locked ? 'Open wallet' : S.busy ? 'Working…' : accepting() ? 'Stop providing' : 'Start providing';
+    go.disabled = !locked && (short() || S.busy);
     if (st && st.lastError && !S.note) $('pv-st').textContent = st.lastError;
     keepAwake();
   }
@@ -132,7 +132,7 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
       const sess = await open();
       if (!keyS.unlocked || keyS.key.pubHex !== pub) return;
       S.sess = sess; S.pub = pub;
-      S.inv = await sess.inventory();
+      S.inv = await sess.inventory(); S.invAt = Date.now();
       const kept = settings.get(pub) || {};
       $('pv-fee').value = ((kept.feeBps ?? 30) / 100).toFixed(2);
       // the default is what is held, down to four places, so it reads whole in the field and is never more than is held
@@ -153,33 +153,44 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
     } finally { S.loading = false; paint(); poll(); }
   }
 
+  // the private TAC is a scan of the pool's notes: it is read again when a bridge opened or ended since the last look, else twice a minute
+  const invEvery = 30000;
   function poll() {
     clearInterval(S.timer);
     if (!S.sess) return;
-    S.timer = setInterval(async () => { try { S.st = await S.sess.status(); S.inv = await S.sess.inventory().catch(() => S.inv); paint(); } catch { /* the next look */ } }, refreshMs);
+    S.timer = setInterval(async () => {
+      try {
+        const was = S.st; S.st = await S.sess.status();
+        if (!was || S.st.open !== was.open || S.st.done !== was.done || Date.now() - S.invAt > invEvery) { S.inv = await S.sess.inventory().catch(() => S.inv); S.invAt = Date.now(); }
+        paint();
+      } catch { /* the next look */ }
+    }, refreshMs);
   }
 
+  // one press at a time: a start is not running until it has read what it holds, and a second press meanwhile would start a second service
   async function go() {
-    if (!S.sess || !S.inv) return;
-    if (accepting()) {
-      // stopping takes no new bridges; the ones open are still seen to the end
-      S.sess.stop();
-      const st = await S.sess.status();
-      if (st.open) { await S.sess.start({ accept: false }); note('No new bridges. Keep this page open until the open ones are done.'); } else note('Stopped.');
-      S.st = await S.sess.status(); paint();
-      return;
-    }
-    const r = read();
-    if (r.why) { note(r.why, true); return; }
-    if (S.inv.pool < MIN_AMOUNT) { note('Make some TAC private on the front page first.', true); return; }
-    settings.set(S.pub, { feeBps: r.feeBps, maxAmount: r.maxAmount.toString() });
+    if (!S.sess || !S.inv || S.busy) return;
+    S.busy = true; paint();
     try {
-      if (running()) S.sess.stop();
-      await S.sess.start({ settings: { feeBps: r.feeBps, maxAmount: r.maxAmount }, accept: true });
-      S.st = await S.sess.status();
-      note('Providing. Keep this page open until your bridges are done.');
-    } catch (e) { note(String((e && e.message) || e).slice(0, 160), true); }
-    paint();
+      if (accepting()) {
+        // stopping takes no new bridges; the ones open are still seen to the end
+        S.sess.stop();
+        const st = await S.sess.status();
+        if (st.open) { await S.sess.start({ accept: false }); note('No new bridges. Keep this page open until the open ones are done.'); } else note('Stopped.');
+        S.st = await S.sess.status();
+        return;
+      }
+      const r = read();
+      if (r.why) { note(r.why, true); return; }
+      if (S.inv.pool < MIN_AMOUNT) { note('Make some TAC private on the front page first.', true); return; }
+      settings.set(S.pub, { feeBps: r.feeBps, maxAmount: r.maxAmount.toString() });
+      try {
+        if (running()) S.sess.stop();
+        await S.sess.start({ settings: { feeBps: r.feeBps, maxAmount: r.maxAmount }, accept: true });
+        S.st = await S.sess.status();
+        note('Providing. Keep this page open until your bridges are done.');
+      } catch (e) { note(String((e && e.message) || e).slice(0, 160), true); }
+    } finally { S.busy = false; paint(); }
   }
   $('pv-go').addEventListener('click', async () => {
     // before a key, the button opens one; the panel reads it once it is open (keyS.onChange below)

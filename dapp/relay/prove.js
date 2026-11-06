@@ -3,10 +3,19 @@
 // PROVE with the prover account as the recipient, in one transaction. Only the visitor's own balances are read; never the prover account's.
 import { PROVER, PROVE, ZROUTER, PROVE_PER_PROOF, SLIPPAGE_BPS, transferData, balanceOfData, quoteEthToProve } from '/relay/abi.js?cb=190ea12d';
 import { UserStopped } from '/trade/wallet.js?cb=88b623b8';
-import { rpc, esc, fmtUnits, parseUnits, plain, grp, short } from '/trade/util.js?cb=e8317464';
+import { rpc, esc, fmtUnits, parseUnits, plain, grp, short } from '/trade/util.js?cb=ba5a02b1';
 
 const SCAN = 'https://etherscan.io/';
 const QUOTE_TTL = 60e3;                                                            // a quote older than this is read again before it is sent
+// The chain's time, for a swap's deadline: the latest block's timestamp, read with a quote and kept for a minute as an offset from the device's
+// clock, whose own time would otherwise set the deadline (already past when the clock runs slow, longer than meant when it runs fast).
+let clock = null;
+async function chainNow() {
+  if (!clock || Date.now() - clock.at > QUOTE_TTL) {
+    try { const t = Number(BigInt((await rpc('eth_getBlockByNumber', ['latest', false])).timestamp)) * 1000; if (t > 0) clock = { skew: t - Date.now(), at: Date.now() }; } catch { /* the device's clock */ }
+  }
+  return Math.floor((Date.now() + (clock ? clock.skew : 0)) / 1000);
+}
 const proofs = (wei) => Math.floor(Number(wei) / 1e18 / PROVE_PER_PROOF);
 const link = (h) => `<a href="${SCAN}tx/${esc(h)}" target="_blank" rel="noopener noreferrer">${esc(h.slice(0, 10))}… ↗</a>`;
 const kv = (k, v) => `<div class="kv"><span>${k}</span><b class="num">${v}</b></div>`;
@@ -34,7 +43,7 @@ export function mountProve({ el, wallet, W, connect, say }) {
     if (P.mode !== 'eth' || !wei) { P.quote = null; render(); return; }
     P.quote = { wei, loading: true }; render();
     try {
-      const q = await quoteEthToProve({ call: ({ to, data, gas }) => rpc('eth_call', [{ to, data, gas }, 'latest']), to: PROVER, wei, noRoute: 'No route from ETH to PROVE was found. Try again in a moment, or send PROVE.' });
+      const q = await quoteEthToProve({ call: ({ to, data, gas }) => rpc('eth_call', [{ to, data, gas }, 'latest']), to: PROVER, wei, noRoute: 'No route from ETH to PROVE was found. Try again in a moment, or send PROVE.', now: await chainNow() });
       if (my !== P.seq) return;
       P.quote = q;
     } catch (e) {

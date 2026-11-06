@@ -493,12 +493,13 @@ export function makePools({ el, cfg, esc, rpc, ethCall, batch, wallet, W, synthO
   function cell(key) {
     if (!keys.includes(key) || !synthOf(key)) return null;
     if (!V(key)) return '<span class="mute">…</span>';
-    const x = list(key).find(seeded);
+    const x = list(key).find((m) => seeded(m) && inRange(m)) || list(key).find(seeded);   // the seeded market that trades, before one whose price has left its band
     if (!x) {
       const n = termsNow(), unopened = n && n.create > 0n && list(key).some((m) => P.camp?.pools?.some((p) => p.pool === m.pool.toLowerCase() && !p.openPaid));
       return unopened ? `Not open yet<small>opening earns ${esc(tacText(n.create))} TAC</small>` : 'Not open yet';
     }
     const q = x.m.synthIs1 ? x.r0 : x.r1, now = px(x), depth = `${esc(qFmt(x.m, q, 2))} ${esc(x.m.quote.sym)} in the pool`;
+    if (x.sqrtNow == null) return `<b>—</b><small>the price could not be read · ${depth}</small>`;
     if (!inRange(x)) return `<b>Not trading</b><small>price outside the market’s range · ${depth}</small>`;   // a price outside the range is not one anything trades at
     return now && !small(now) ? `<b>${esc(near(now, 18, 4))}</b> ${esc(x.m.quote.sym)}<small>${depth}</small>` : now ? `<b>${esc(pxText(x.m, symOf(key), now))}</b><small>${depth}</small>` : `<b>${esc(qFmt(x.m, q, 2))}</b> ${esc(x.m.quote.sym)}<small>in the pool</small>`;
   }

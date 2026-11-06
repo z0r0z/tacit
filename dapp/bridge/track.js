@@ -115,7 +115,7 @@ export function inDue(r, now = Date.now(), plan = null) {
 
 // What the API last said about a bridge's history check, as a fragment ('' when it said nothing or has not been heard from for
 // minutes): so many checks ahead of it, or what it is doing while it runs (reading its history, so many of so many transactions, or
-// checking them), or the line full. Only `progress` and `busy` are read out of
+// checking them), or the line full. Only `progress`, `busy` and `fund` are read out of
 // the record's `checkWait`. The front page words the same fragment in its own copy (brCheckNote, dapp/index.html).
 const CHECK_NOTE_FRESH_MS = 3 * 60_000;
 export function checkNote(cw, now = Date.now()) {
@@ -164,7 +164,9 @@ export function inRow(r, now = Date.now(), plan = null) {
     // a bridge that paid someone else ends in a payment to them, not a private note for the key
     at: done ? 4 : (IN_AT[r.stage] ?? 0), steps: r.stealth ? [...route.steps.slice(0, 3), 'Paid privately'] : route.steps, href: route.href, paid: !!r.stealth,
     done, back: IN_BACK.includes(r.stage), moving: ['reclaim-sent', 'recovering'].includes(r.stage), held: ['not-recorded', 'stopped'].includes(r.stage),
-    due: done ? '' : inDue(r, now, plan), acts: done || IN_BACK.includes(r.stage) ? [] : inActs(r, inDue(r, now, plan), now), armed: !!(r.arm && r.arm.ok), checking: r.stage === 'traced' && !!r.checkWait && !r.lastError,
+    due: done ? '' : inDue(r, now, plan), acts: done || IN_BACK.includes(r.stage) ? [] : inActs(r, inDue(r, now, plan), now), armed: !!(r.arm && r.arm.ok), checking: r.stage === 'traced' && !!r.checkWait && !r.checkWait.fund && !r.lastError,
+    // a burn waiting for a coin: every free coin at the address is held for the key's other burns, whose change frees one
+    coinWait: r.stage === 'traced' && r.checkWait?.fund === 'others' && !r.lastError,
     checkNote: r.stage === 'traced' && !r.lastError ? checkNote(r.checkWait, now) : '',
     btcTx: inBtcTx(r, burnTxid), btcHeight: num(r.burnHeight), ethTx: minted ? '0x' + minted : null,
     since: num(r.createdAt), doneAt: num(r.mintedAt), err: r.lastError?.message ? String(r.lastError.message).slice(0, 240) : null,
@@ -181,6 +183,7 @@ export function rowNote(row) {
   if (row.dir === 'in' && row.feeWait) parts.push(`Moved. The miner’s rate is ${row.feeWait.rate.toFixed(1)} sat/vB, over the ${row.feeWait.max} sat/vB allowed (twice the rate quoted), so its burn waits for the rate to fall. Burn it sends it now at today’s rate.`);
   else if (row.err) parts.push(`${String(row.err).replace(/^(crossout-ux|burndep-ux):\s*/, '')}${row.tries > 1 ? ` (${row.tries} tries)` : ''}`);
   const acts = (row.acts || []).map((a) => a.kind);
+  if (row.coinWait) parts.push('Its burn goes on its own once another burn’s change comes back, or sooner with a little bitcoin added to this key’s Bitcoin address.');
   if (row.dir === 'in' && row.stage === 'stopped') parts.push('This bridge paused before its burn, and your TAC is untouched. Move it back to your wallet, then bridge it again: it goes in one step.');
   if (row.dir === 'in' && row.stage === 'not-recorded' && acts.includes('recover')) parts.push('This bridge did not complete. Recover returns your TAC to your Bitcoin address so you can try again.');
   if (row.dir === 'in' && row.stage === 'not-recorded' && !acts.includes('recover')) parts.push('Bitcoin’s proof on Ethereum passed the burn without recording it, so it cannot be minted. Keep this row and its transaction ids, and ask for help with them.');
@@ -308,6 +311,10 @@ export function btcSpan(blocks) {
 export function liveLine(row, live) {
   if (row.done || row.back) return '';
   if (row.checking) return `Its history is being checked before its burn${row.checkNote ? `: ${row.checkNote}` : ''}`;
+  if (row.coinWait) return 'Waiting for a free coin: this key’s bitcoin is held for its other burns';
+  // a two-step bridge's burn goes to a miner, not the mempool: its block is read once it is mined, and its move's block says nothing of it
+  if (row.stage === 'burn-submitted') return 'The burn is with the miner, waiting for a block';
+  if (row.stage === 'burn-signed') return 'The burn is signed and is sent to the miner on its own';
   if (!live) return '';
   if (row.dir === 'in') {
     const tx = row.btcTx && live.txs?.get(row.btcTx);

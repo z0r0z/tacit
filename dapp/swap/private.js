@@ -6,10 +6,10 @@
 // out of the pool (to ETH or a token, at an address) routes the note to tETH and then exits that note, through an exit recipe for a token. The
 // relay proves and sends each step. Nothing here is loaded until the first private swap, or the first ask for a private balance; the key is
 // held in this visit's memory only.
-import { makeKeySession, signInSheet, Cancelled } from '/trade/key.js?cb=26d9c07b';
-import { forgetUx } from '/trade/poolux.js?cb=a64920c6';
-import { wrapEth, wrapFirst, wrapCalldata, settle, relayState, relayStopped, relayWords } from '/teth/wrap.js?cb=45873b34';
-import { wrapQuote, WRAP_TIP } from '/teth/read.js?cb=bf18d06a';
+import { makeKeySession, signInSheet, Cancelled } from '/trade/key.js?cb=d110df5e';
+import { forgetUx } from '/trade/poolux.js?cb=435f1138';
+import { wrapEth, wrapFirst, wrapCalldata, settle, relayState, relayStopped, relayWords } from '/teth/wrap.js?cb=58047310';
+import { wrapQuote, WRAP_TIP } from '/teth/read.js?cb=9364ab31';
 import { secp, keccak_256, sha256, bytesToHex } from '/vendor/tacit-deps.min.js';
 import { makeRunner } from '/activity.js?cb=8ccbc552';
 
@@ -18,7 +18,7 @@ export { Cancelled, relayWords };
 // A Tacit address, a shielded pubkey or a name (name.wei, .gwei, .eth) as the key a private payment is made to. → { pubHex, name? }; throws with a
 // sentence for the person when it is none of them (an Ethereum account address is refused: a private payment needs a Tacit address).
 let namesP = null;
-const names = () => (namesP ||= import('/confidential-names.js').then(({ makeConfidentialNames, makeMainnetCall }) => makeConfidentialNames({ call: makeMainnetCall(), secp, keccak256: keccak_256 })).catch((e) => { namesP = null; throw e; }));
+const names = () => (namesP ||= import('/confidential-names.js?cb=d41cb8bd').then(({ makeConfidentialNames, makeMainnetCall }) => makeConfidentialNames({ call: makeMainnetCall(), secp, keccak256: keccak_256 })).catch((e) => { namesP = null; throw e; }));
 export async function resolveTacit(raw) {
   const n = await names();
   const local = (s) => {
@@ -149,7 +149,8 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
           const kept = proofsRead(pub)[k];
           if (kept) {
             const r = unpackProof(kept), s2 = { k, pub, index: kept.built.index, r, p: Promise.resolve(r) };
-            const made = wordOf(await t.ethCall(t.cfg.pool, '0x7da9874f' + String(r.built.depositId).replace(/^0x/, '').padStart(64, '0')).catch(() => '0x'));
+            const made = await t.ethCall(t.cfg.pool, '0x7da9874f' + String(r.built.depositId).replace(/^0x/, '').padStart(64, '0')).then(wordOf, () => null);
+            if (made == null) continue;                                      // a read that failed says nothing of the deposit: the proof stays, and is read again on the next pass
             if (made === 0n && !(await stale(s2))) { AH.set(k, s2); onReady(); continue; }
             proofPut(pub, k, null);
           }
@@ -240,7 +241,7 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
   }
   // A slot whose swap went out: its index is spent, and the next swap of that size takes a new one.
   const spent = (slot) => { AH.delete(slot.k); if (slot.typed) typedIndex = null; else { slotIdxPut(slot.pub, slot.k, null); proofPut(slot.pub, slot.k, null); } };
-  const wordOf = (h) => { try { return BigInt(String(h).slice(0, 66)); } catch { return 1n; } };
+  const wordOf = (h) => { try { return BigInt(String(h).slice(0, 66)); } catch { return null; } };       // a call's first word, or null for an answer that is not one
   // A wallet swap through one pool proved by the holder's own prover before anything is deposited: no ahead flag (the relay's board only), no fee bound in.
   async function ownProveSwap(plan, say) {
     const t = await getUx(), hop = plan.path[0], priv = key.priv();
@@ -265,7 +266,7 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
     }
   }
   let vouchP = null;
-  const vouchers = () => (vouchP ||= import('/wrap-vouchers.js?cb=c2a1a1dd').then((m) => m.makeVouchers()));
+  const vouchers = () => (vouchP ||= import('/wrap-vouchers.js?cb=adaa5fa2').then((m) => m.makeVouchers()));
 
   // A note of exactly `units`: one held, or one cut to size by a send to itself (the smallest note that covers it and the relay's fee, else up
   // to 16 notes combined, largest first). The cut's fee comes out of the notes, so the amount swapped is the amount asked.

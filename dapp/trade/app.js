@@ -10,8 +10,8 @@ import { decodeTape, chartBars, continuous, invert, ethLaneUsd, btcLaneUsd, cand
 import { mountChart, fmtLocalStamp, fmtLocalTime } from '/trade/chart.js?cb=04207026';
 import { mountDepth } from '/trade/depth.js?cb=438b534c';
 import { readBook, planBuy as planBoardBuy, planSell as planBoardSell, refine as refineBoards, buildFill as buildBoardFill, BOARD_NAMES } from '/zboards.js?cb=e8d21aec';
-import { makeConnect, UserStopped } from '/trade/connect.js?cb=a64b9cec';
-import { takeEarly } from '/trade/rpc.js?cb=f575ef91';
+import { makeConnect, UserStopped } from '/trade/connect.js?cb=39145e86';
+import { takeEarly, hedgedRpc, nodeHealth, shareReads } from '/trade/rpc.js';
 import { mountFarm } from '/trade/farm.js?cb=5f577f5c';
 import { grp, sig, group, satsFmt, day as dayFmt, warm as warmFormatters } from '/trade/fmt.js?cb=32b1744b';
 import { makePointsNote } from '/points-note.js?cb=dc44d257';
@@ -33,7 +33,10 @@ const word = (v) => BigInt(v).toString(16).padStart(64, '0');
 const wordAt = (hex, i) => BigInt('0x' + (strip(hex).slice(i * 64, (i + 1) * 64) || '0'));
 const now = () => Math.floor(Date.now() / 1000);
 
-const rpc = (method, params) => takeEarly(RPCS, method, params);
+// A node that failed lately is asked last (nodeHealth, carried across the visit's pages), and a read asked for twice at once goes to the nodes once (shareReads).
+const health = nodeHealth({ store: (() => { try { return localStorage; } catch { return null; } })() });
+const shared = shareReads((hosts, method, params, o) => hedgedRpc(hosts, method, params, { ...o, health }));
+const rpc = (method, params) => takeEarly(RPCS, method, params, { rpc: shared });
 const ethCall = (to, data, block = 'latest', o = {}) => rpc('eth_call', [{ to, data, ...(o.from ? { from: o.from } : {}), ...(o.value ? { value: o.value } : {}), ...(o.gas ? { gas: o.gas } : {}) }, block]);
 const batch = async (calls) => _internal.decAggregate3(await ethCall(MULTICALL3, _internal.encAggregate3(calls)), calls.length);
 const venues = makeEvmTradeVenues({ ethCall, keccak256: keccak_256 });
@@ -51,7 +54,7 @@ const PRIV_TIERS = [30, 5, 100, 1];
 
 const D = { gasPrice: null, chainFailed: false, tapeFailed: false, btcFailed: false, bookFailed: false, ethUsd: null, btcUsd: null, perEth: null, priv: null, precision: null, ethSupply: null, btc: null, book: null, bidsRead: false, zb: null, zbFailed: false, tape: { fine: [], coarse: [] }, readAt: 0 };
 const ME = { pub: null, how: '', pageKey: null };
-const S = { side: 'buy', amt: '', book: null, pin: null, lane: 'eth', unit: 'usd', range: null, log: false, slip: 50, bal: null, busy: false, tf: { eth: null, btc: null }, kind: 'line', quote: null, seq: 0, zq: null };
+const S = { side: 'buy', amt: '', book: null, pin: null, lane: 'eth', unit: 'usd', range: null, log: false, slip: 50, bal: null, busy: false, tf: { eth: null, btc: null }, kind: 'line', quote: null, seq: 0, zq: null, pending: null };
 const TF = { eth: [['5m', 300], ['15m', 900], ['1h', 3600], ['4h', 14400], ['1d', 86400]], btc: [['1h', 3600], ['4h', 14400], ['1d', 86400], ['1w', 604800]] };
 const CHART_KEY = 'tacit-trade-chart-v1';
 try {
@@ -168,7 +171,15 @@ const usdOf = (eth) => (eth != null && D.ethUsd ? eth * D.ethUsd : null);
 const btcUsdPerTac = () => (D.btc?.mark && D.btcUsd ? (D.btc.mark * D.btcUsd) / 1e8 : null);
 const laneGap = (other) => { const base = usdOf(priceEth()); return base && other ? gap(base, other) : null; };
 const gapClass = (g) => (g == null ? '' : Math.abs(g) < 0.01 ? 'mute' : g > 0 ? 'up' : 'down');
-const chainDeadline = (s) => BigInt((D.chainT ? D.chainT + (now() - D.chainAt) : now()) + s);
+// A deadline `s` seconds on, by the chain's own clock (Multicall3's timestamp, read with the pools): a device's clock can be far off. Read here when the pools' read has not brought it yet.
+async function chainDeadline(s) {
+  if (!D.chainT) {
+    const ct = await ethCall(MULTICALL3, '0x0f28c97d').catch(() => null);
+    if (!ct) throw new Error('Could not read the chain’s time, so nothing was sent. Try again in a moment.');
+    D.chainT = Number(wordAt(ct, 0)); D.chainAt = now();
+  }
+  return BigInt(D.chainT + (now() - D.chainAt) + s);
+}
 const tacitEth = () => D.priv?.price ?? null;
 
 const ethAt = (t) => { const f = D.tape.fine; return f.length && t >= f[0].t ? closeAt(f, t) : closeAt(D.tape.coarse, t); };
@@ -469,7 +480,7 @@ async function requote(quiet = false) {
   fitAmt();
   const my = ++S.seq, wei = getAmount(), dir = dirOf(), buy = S.side === 'buy';
   if (!quiet) { S.quote = null; keepInHash(); if (!S.busy) { $('#status').textContent = ''; $('#status').dataset.kind = ''; } }
-  if (!wei || wei <= 0n) { S.quote = null; S.qfail = false; renderQuote(null); renderVenues(null); return; }
+  if (!wei || wei <= 0n) { S.quote = null; S.qfail = false; renderQuote(null); renderVenues(null); renderBook(); return; }
   if (!quiet) { if (S.shown === S.side) { $('.p-ticket').classList.add('stale'); renderChips(); renderGo(); } else renderQuote({ busy: true }); }
   if (quiet) S.refreshing = true;
   try {
@@ -601,7 +612,7 @@ function renderQuote(q) {
     + detailsHtml(planOf(q))
     + (q.priv && via === 'pools' ? html`<p class="privnote"><a href="${esc(privLink(q))}">Swap privately through the Tacit pool →</a></p>` : '');
   const approves = !buy && via === 'pools' && rt.pick !== 'split' && rt.single.venue === 'tacit-amm';
-  $('#tk-note').textContent = `${buy ? 'One transaction' : approves ? 'An approval of your TAC for the Tacit pool (the first time), then one transaction' : 'A free permit signature, then one transaction'}, checked before it is sent.${via === 'boards' ? ' If an order is filled first, nothing is sent.' : rt.pick === 'split' ? ' If the split fails the check, it goes to one pool.' : ''}`;
+  $('#tk-note').textContent = `${buy ? 'One transaction' : approves ? 'An approval of your TAC for the Tacit pool, then one transaction' : 'A free permit signature, then one transaction'}, checked before it is sent.${via === 'boards' ? ' If an order is filled first, nothing is sent.' : rt.pick === 'split' ? ' If the split fails the check, it goes to one pool.' : ''}`;
   S.shown = S.side;
   renderGo();
 }
@@ -789,14 +800,19 @@ function peekText(kind, i) {
 
 const depth = mountDepth($('#depthchart'), { onPick: (e) => { if (e?.order && bookTab() === 'eth') pinOrder(e.order.key); } });
 const SWAP_TOPIC = '0x2a9237ff5aa599ef4c5ee4b1142b53429d5755e2685fe6288b2e3320202115f5';
+// About a day of the pool's swaps (6,900 blocks) the first time; after that only the blocks since the last read, added to what is held, which is cut back to the day.
+const TRADES_BLOCKS = 6900;
 async function loadTrades() {
-  const head = await rpc('eth_getBlockByNumber', ['latest', false]), n = Number(BigInt(head.number)), ts = Number(BigInt(head.timestamp));
-  const logs = await rpc('eth_getLogs', [{ address: PRECISION_POOL, topics: [SWAP_TOPIC], fromBlock: `0x${(n - 6900).toString(16)}`, toBlock: 'latest' }]);
-  D.trades = logs.map((l) => {
-    const buy = BigInt(l.topics[1]) === 0n, a = wordAt(l.data, 0), b = wordAt(l.data, 1);
-    return { lane: 'eth', t: ts - (n - Number(BigInt(l.blockNumber))) * 12, side: buy ? 'buy' : 'sell', tac: Number(buy ? b : a) / 1e18, eth: Number(buy ? a : b) / 1e18, tx: l.transactionHash, to: `0x${String(l.topics[2] || '').slice(26).toLowerCase()}` };
+  const head = await rpc('eth_getBlockByNumber', ['latest', false]), n = Number(BigInt(head.number)), ts = Number(BigInt(head.timestamp)), floor = n - TRADES_BLOCKS;
+  const from = D.trades && D.tradesBlock ? Math.max(D.tradesBlock + 1, floor) : floor;
+  const logs = from > n ? [] : await rpc('eth_getLogs', [{ address: PRECISION_POOL, topics: [SWAP_TOPIC], fromBlock: `0x${from.toString(16)}`, toBlock: `0x${n.toString(16)}` }]);
+  const fresh = logs.map((l) => {
+    const buy = BigInt(l.topics[1]) === 0n, a = wordAt(l.data, 0), b = wordAt(l.data, 1), block = Number(BigInt(l.blockNumber));
+    return { lane: 'eth', t: ts - (n - block) * 12, block, id: `${l.transactionHash}:${l.logIndex}`, side: buy ? 'buy' : 'sell', tac: Number(buy ? b : a) / 1e18, eth: Number(buy ? a : b) / 1e18, tx: l.transactionHash, to: `0x${String(l.topics[2] || '').slice(26).toLowerCase()}` };
   }).filter((x) => x.tac > 0 && x.eth > 0);
-  D.tradesAt = now();
+  const ids = new Set(fresh.map((x) => x.id));
+  D.trades = [...(from > floor ? D.trades.filter((x) => x.block > floor && !ids.has(x.id)) : []), ...fresh];
+  D.tradesBlock = n; D.tradesAt = now();
 }
 let tradesBusy = false;
 async function ensureTrades(force = false) {
@@ -1118,12 +1134,13 @@ async function preparePools(P, from) {
   const buy = P.buy, dir = P.dir;
   say('Reading the price again…');
   const rt = await venues.route({ dir, amountIn: P.wei, account: from, gasPrice: gasPrice() });
-  if (!rt.single) throw new Error('No pool can fill this right now.');
+  // the route is null for both pools when no node answered as well as when neither can fill the amount
+  if (!rt.single) throw new Error(rt.r.precision == null && rt.r.tacitAmm == null ? 'Could not read the pools, so nothing was sent. Try again in a moment.' : 'No pool can fill this right now.');
   const venue = P.rt.single.venue, pick = P.split ? rt.split : (rt.r.ranked || []).find((x) => x.venue === venue);
   if (!pick) { say('That route is no longer offered. Nothing was sent; press again for the new quote.'); requote(true); return null; }
   if (BigInt(pick.amountOut) < P.floor) { say('The price moved below the least you accept. Nothing was sent; the quote above is the new one.'); requote(true); return null; }
   const floorFor = (route) => { const f = (BigInt(route.amountOut) * BigInt(10000 - S.slip)) / 10000n; return f > P.floor ? f : P.floor; };
-  const dl = chainDeadline(1200);
+  const dl = await chainDeadline(1200);
   const prepare = async (route) => {
     const isSplit = !!route.legs, floor = floorFor(route);
     const make = (permit) => (isSplit ? venues.buildSplit({ split: route, account: from, minOut: floor, deadline: dl, permit }) : venues.build({ quote: route, dir, account: from, minOut: floor, deadline: dl, permit }));
@@ -1153,7 +1170,7 @@ async function prepareBoards(P, from) {
   const fine = again.fills.length ? await refineBoards({ ethCall, plan: again }) : null;
   if (!fine) return stop('These orders can no longer be filled together. Nothing was sent; the quote above is the new one.');
   if (fine.get < P.floor) return stop('The price moved below the least you accept. Nothing was sent; the quote above is the new one.');
-  const dl = chainDeadline(1200);
+  const dl = await chainDeadline(1200);
   const make = (permit) => buildBoardFill({ plan: fine, side, token: TAC_ERC20, account: from, deadline: dl, slipBps: S.slip, permit, floor: P.floor });
   const tx = await withTacAccess({ make, buy, permit: true, from, dl });
   say('Checking it first…');
@@ -1173,7 +1190,17 @@ async function sendAndReport(tx, { from, buy, P }) {
   const eth0P = rpc('eth_getBalance', [from, 'latest']).then((x) => BigInt(x), () => null);
   const hash = await wallet.sendTx({ ...tx, from }), eth0 = await eth0P;
   say(`Sent ${txLink(hash)}. Waiting for it to land…`);
-  const rc = await wallet.receipt(hash);
+  let rc;
+  try { rc = await wallet.receipt(hash); }
+  catch (e) {
+    // Not seen landing within the wait: the ticket is cleared and the hash kept, so the next press asks the chain about it before anything else is sent.
+    S.pending = { hash, from, buy, P, eth0 }; clearTicket(); readBalances().then(renderBalance).catch(() => {});
+    throw e;
+  }
+  await landed(rc, { hash, from, buy, P, eth0 });
+}
+// A trade's receipt: what it paid out, the ticket cleared, the page's figures read again.
+async function landed(rc, { hash, from, buy, P, eth0 }) {
   if (rc.status !== '0x1') throw new Error(`The transaction failed (${hash.slice(0, 10)}…). Nothing was lost but its network fee.`);
   let got;
   if (buy) { const T = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef', me = '0x' + word(BigInt(from)); got = rc.logs.filter((l) => l.address.toLowerCase() === TAC_ERC20.toLowerCase() && l.topics[0] === T && l.topics[2]?.toLowerCase() === me).reduce((a, l) => a + BigInt(l.data), 0n); }
@@ -1181,13 +1208,28 @@ async function sendAndReport(tx, { from, buy, P }) {
   if (!buy) got = await ethReceived(from, rc, eth0);
   const tacOut = buy ? got : P?.wei, ethOut = buy ? P?.wei : got;
   if (tacOut != null && ethOut != null) noteAct({ who: lc(from), lane: 'eth', kind: buy ? 'bought' : 'sold', tac: Number(tacOut) / 1e18, paid: Number(ethOut) / 1e18, unit: 'eth', tx: hash });
-  S.seq++; S.quote = null; S.qfail = false; S.ack = null; S.amt = ''; S.pin = null; $('#amt').value = ''; fitAmt(); keepInHash();
-  renderBalance(); renderQuote(null); renderVenues(null); renderPin();
+  clearTicket();
   D.tradesStale = true; if (['trades', 'mine'].includes(bookTab())) ensureTrades(true); renderChart();
   loadChain().then(paintAll).catch(() => {});
   loadTapes({ coarse: false }).then(paintAll).catch(() => {});
   loadBoards().then(paintAll).catch(() => {});
   say(`<span class="ok">${buy ? 'Bought' : 'Sold'}.</span> ${got != null ? `${buy ? 'Received' : 'Received about'} ${esc(fmtUnits(got, 18, buy ? 2 : 6))} ${buy ? 'TAC' : 'ETH'} · ` : ''}${txLink(hash)}${buy && !tacAdded() ? ' · <button class="linkbtn" type="button" id="add-tac">Add TAC to your wallet</button>' : ''}${buy && got ? ` · <button class="linkbtn" type="button" id="farm-it" data-tac="${got}">Farm it</button>` : ''}`);
+}
+function clearTicket() { S.seq++; S.quote = null; S.qfail = false; S.ack = null; S.amt = ''; S.pin = null; $('#amt').value = ''; fitAmt(); keepInHash(); renderBalance(); renderQuote(null); renderVenues(null); renderPin(); }
+// A trade not seen landing within the wait keeps its hash (S.pending), and a press asks the chain about it before anything else is sent: landed, it gets its
+// bookkeeping as if the wait had seen it; still in the mempool, nothing is sent; unknown to the nodes (dropped, or replaced from the wallet), the press goes on.
+async function checkPending() {
+  const p = S.pending;
+  if (!p) return true;
+  say(`Checking the earlier transaction ${txLink(p.hash)} first…`);
+  const read = (method) => rpc(method, [p.hash]).catch(() => undefined);
+  const rc = await read('eth_getTransactionReceipt');
+  if (rc) { S.pending = null; await landed(rc, p); return false; }
+  const tx = rc === undefined ? undefined : await read('eth_getTransactionByHash');
+  if (tx === undefined) throw new Error('Could not check the earlier transaction, so nothing was sent. Try again in a moment.');
+  if (tx) { say(`Still waiting for ${txLink(p.hash)} to land, so nothing was sent. Your wallet can speed it up or cancel it.`); return false; }
+  S.pending = null;
+  return true;
 }
 
 const TAC_ADDED = 'tacit-trade-tac-added';
@@ -1209,6 +1251,7 @@ async function execute(P) {
   const from = W.account;
   S.busy = true; lockTicket(); renderGo();
   try {
+    if (!(await checkPending())) return;
     const tx = await (P.via === 'boards' ? prepareBoards(P, from) : preparePools(P, from));
     if (tx) await sendAndReport(tx, { from, buy: P.buy, P });
   } catch (e) {
@@ -1325,13 +1368,11 @@ function poll(back = false) {
   if (document.hidden) return;
   const n = ++polls, full = back || n % 5 === 0, lists = back || n % 2 === 0 || ['btc', 'mine'].includes(bookTab());
   polledAt = now();
-  const reads = [loadChain(), loadTapes({ coarse: full }), loadBitcoin({ lists }), loadBoards()];
-  for (const read of reads) read.then(paintAll, paintAll);
-  if (D.retrying) Promise.allSettled(reads).then(() => { D.retrying = false; paintAll(); });
+  Promise.allSettled([loadChain(), loadTapes({ coarse: full }), loadBitcoin({ lists }), loadBoards()]).then(() => { D.retrying = false; paintAll(); });
   if ((S.quote || S.qfail) && !S.busy && !S.refreshing) requote(true);
   if (W.account && !S.busy) readBalances().then(() => { renderBalance(); renderGo(); });
   if (!farm.busy()) farm.refresh();
-  if (bookTab() === 'trades') ensureTrades(true); else if (W.account && n % 5 === 0) ensureTrades();
+  if (bookTab() === 'trades' || (W.account && n % 5 === 0)) ensureTrades();
   if (bitcoin?.session.unlocked && !bitcoin.isOpen) bitcoin.refresh().catch(() => {});
 }
 setInterval(poll, 60e3);

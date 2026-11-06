@@ -1,6 +1,6 @@
-import { getUx, forgetUx } from '/trade/poolux.js?cb=a64920c6';
-import { WRAP_TIP, WRAP_WITH_TIP, CETH_ID, POOL } from '/teth/read.js?cb=bf18d06a';
-import { strip, word, rpc, ethCall, api, E10 } from '/trade/util.js?cb=e8317464';
+import { getUx, forgetUx } from '/trade/poolux.js?cb=435f1138';
+import { WRAP_TIP, WRAP_WITH_TIP, CETH_ID, POOL } from '/teth/read.js?cb=9364ab31';
+import { strip, word, rpc, ethCall, api, E10 } from '/trade/util.js?cb=ba5a02b1';
 
 export { getUx, forgetUx };
 
@@ -89,7 +89,7 @@ export async function wrapFirst({ priv, wei, tip = 0n, to = null, from, wallet, 
   try { await rpc('eth_call', [{ from, to: call.to, value: '0x' + call.value.toString(16), data: call.data }, 'latest']); }
   catch (e) {
     if (await consumed(r.built)) return { hash: null, built: r.built, already: true };
-    throw Object.assign(new Error(e?.revert ? 'The deposit would not go through, so nothing was sent. Try again in a moment.' : 'The deposit could not be checked, so nothing was sent. Try again in a moment.'), { ready: r, unsent: true });   // (refused before the wallet was asked)
+    throw Object.assign(new Error(e?.revert ? 'The deposit would not go through, so nothing was sent. Try again in a moment.' : 'The deposit could not be checked, so nothing was sent. Try again in a moment.'), { ready: r, unsent: true, revert: !!e?.revert });   // (refused before the wallet was asked)
   }
   say('confirm');
   let hash;
@@ -246,7 +246,7 @@ export async function selfFinish({ t = null, built, hash = null, jobId = null, o
 }
 
 const stages = new WeakMap();
-const stageOf = async (t) => stages.get(t) || (await import('/confidential-stage.js').then(({ makeConfidentialStage }) => { const st = makeConfidentialStage({ ux: t }); stages.set(t, st); return st; }));
+const stageOf = async (t) => stages.get(t) || (await import('/confidential-stage.js?cb=d625f4a6').then(({ makeConfidentialStage }) => { const st = makeConfidentialStage({ ux: t }); stages.set(t, st); return st; }));
 export async function readHeld({ priv, ux = null }) {
   const t = ux || await getUx();
   const r = await t.balance(priv(), { cbtc: false, bridge: false, positions: true });
@@ -274,7 +274,8 @@ export async function finish({ priv, pending, ux = null, say = () => {}, self = 
       done++;
     } catch (e) {
       err ||= e; left.push({ ...p, jobId: e?.deposit?.jobId || jobId || e?.open?.jobId || null, open: e?.open || null });
-      if (own) { left.push(...pending.slice(i + 1)); break; }
+      // the own-credit way stops at any failure, and a settle declined in the wallet stops the relay-proves way: the rest are not asked for
+      if (own || (self && declined(e))) { left.push(...pending.slice(i + 1)); break; }
     }
   }
   return { done, err, left };

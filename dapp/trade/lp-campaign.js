@@ -1,5 +1,6 @@
 // What the points service's liquidity campaign pays for liquidity in a pool of TACD or TACE, as it applies it (worker-relay/src/lib/points-lp.js): each UTC day's
 // pot is shared between the weighted dollars held, and no dollar is paid more than the cap. The pools it pays for are matched to a vault by the two tokens each trades.
+import { batchReads } from './batch.js';
 export const POINTS = 'https://tacit-points.onrender.com';
 const WAD = 10n ** 18n, BPS = 10000n;
 const TOKEN0 = '0x0dfe1681', TOKEN1 = '0xd21220a7', SQRT_NOW = '0x2af1f249', SQRT_LOW = '0x5c5ac485', SQRT_HIGH = '0x87e43840';
@@ -29,10 +30,12 @@ export async function readCampaign({ ethCall, synths }) {
   if (!rate) return null;
   const synth = Object.fromEntries(Object.entries(synths).map(([k, a]) => [k, String(a).toLowerCase()])), lists = () => Object.fromEntries(Object.keys(synth).map((k) => [k, []]));
   const weights = lists(), idle = lists();
+  // the five reads of every pool go out as one Multicall3 call (a pool whose read fails in the batch is asked alone, so its failure stays its own)
+  const call = batchReads((tx) => ethCall(tx.to, tx.data)), read = (to, data) => call({ to, data });
   await Promise.all(rate.pools.map(async (p) => {
     const [[a, b], off] = await Promise.all([
-      Promise.all([ethCall(p.pool, TOKEN0), ethCall(p.pool, TOKEN1)]).then((r) => r.map(addrOf)).catch(() => []),
-      Promise.all([SQRT_NOW, SQRT_LOW, SQRT_HIGH].map((s) => ethCall(p.pool, s).then(BigInt))).then(([now, lo, hi]) => !(now > lo && now < hi)).catch(() => false),
+      Promise.all([read(p.pool, TOKEN0), read(p.pool, TOKEN1)]).then((r) => r.map(addrOf)).catch(() => []),
+      Promise.all([SQRT_NOW, SQRT_LOW, SQRT_HIGH].map((s) => read(p.pool, s).then(BigInt))).then(([now, lo, hi]) => !(now > lo && now < hi)).catch(() => false),
     ]);
     for (const k of Object.keys(synth)) if (a === synth[k] || b === synth[k]) (off ? idle : weights)[k].push(p.weight);
   }));

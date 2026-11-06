@@ -6,10 +6,10 @@
 // is a step the service has read from the chain), so that a visit does not download the code of every contract a job deployed.
 //
 // Open jobs are shown in full; a job that is done is a tile with its result, and opens to what it did when it is clicked.
-import { makeConnect, UserStopped } from '/trade/connect.js?cb=a64b9cec';
+import { makeConnect, UserStopped } from '/trade/connect.js?cb=39145e86';
 import { esc } from '/trade/sheet.js?cb=84cda8f2';
-import { rpc, RPCS, $, short, fmtUnits } from '/trade/util.js?cb=e8317464';
-import { bodyType } from '/trade/rpc.js?cb=f575ef91';
+import { rpc, RPCS, $, short, fmtUnits } from '/trade/util.js?cb=ba5a02b1';
+import { bodyType } from '/trade/rpc.js';
 import { checkPayload, checkStep } from '/tasks/verify.js?cb=b8174dad';
 
 const POINTS = 'https://tacit-points.onrender.com';
@@ -18,7 +18,7 @@ const ETHERSCAN = 'https://etherscan.io';
 // The chains a job's steps may be on: the nodes the page reads them from, the explorer that shows them, and what a wallet needs to add one.
 const CHAINS = {
   1: { name: 'Ethereum', explorer: ETHERSCAN, hosts: RPCS },
-  8453: { name: 'Base', explorer: 'https://basescan.org', hosts: ['https://mainnet.base.org', 'https://base.gateway.tenderly.co', 'https://base-rpc.publicnode.com', 'https://base.drpc.org'] },
+  8453: { name: 'Base', explorer: 'https://basescan.org', hosts: ['https://mainnet.base.org', 'https://base-rpc.publicnode.com', 'https://base.drpc.org'] },
   4663: { name: 'Robinhood Chain', explorer: 'https://robinhoodchain.blockscout.com', hosts: ['https://rpc.mainnet.chain.robinhood.com', 'https://robinhood.drpc.org'] },
 };
 // What the reader has set (Endpoints, below): nodes per chain, the rewards service and the keepers. A chain with nodes of the reader's own
@@ -188,11 +188,18 @@ function economics(job) {
 }
 
 // ── drawing ──
+// The cards are drawn again whenever something they show changes: what is typed in their forms, the chain chosen for a pasted hash and
+// the field being typed in, with its caret, are carried over to the new ones.
+const FIELDS = '.paste textarea, .paste select, .review textarea';
 function renderAll() {
   renderStats();
-  const typed = Object.fromEntries([...document.querySelectorAll('.paste textarea, .review textarea')].map((t) => [t.dataset.for, t.value]));
+  const fields = [...document.querySelectorAll(FIELDS)], typed = Object.fromEntries(fields.map((t) => [t.dataset.for, t.value]));
+  const at = fields.find((t) => t === document.activeElement), caret = at ? { key: at.dataset.for, start: at.selectionStart, end: at.selectionEnd } : null;
   renderJobs();
-  for (const t of document.querySelectorAll('.paste textarea, .review textarea')) if (typed[t.dataset.for]) t.value = typed[t.dataset.for];
+  for (const t of document.querySelectorAll(FIELDS)) {
+    if (typed[t.dataset.for]) t.value = typed[t.dataset.for];
+    if (caret && t.dataset.for === caret.key) { t.focus({ preventScroll: true }); if (t.setSelectionRange && caret.start != null) t.setSelectionRange(caret.start, caret.end); }
+  }
   paintNotice();
 }
 
@@ -366,7 +373,7 @@ const claimPanel = (job, todo, open, status = true) => `<section class="panel p-
           ${todo.filter((s, i) => todo.findIndex((x) => x.ask === s.ask) === i).map((s) => `<form class="review" autocomplete="off" data-job="${esc(job.id)}" data-step="${esc(s.id)}">
             <label class="lbl"><span>${esc(s.ask)}</span>
               <textarea rows="2" spellcheck="false" data-for="${esc(`${job.id}/${s.id}`)}" placeholder="Bitcoin transaction id"></textarea></label>
-            <button class="btn ghost" type="submit" ${open ? '' : 'disabled'}>${W.account ? 'Claim' : 'Connect wallet'}</button>
+            <button class="btn ghost" type="submit" ${open && S.running !== job.id ? '' : 'disabled'}>${S.running === job.id ? 'Sending…' : W.account ? 'Claim' : 'Connect wallet'}</button>
           </form>`).join('')}
           ${status ? `<div class="status" role="status" data-for="${esc(job.id)}"></div>` : ''}
         </section>`;
@@ -446,7 +453,7 @@ function openBody(job) {
           <form class="paste" autocomplete="off" data-for="${esc(job.id)}">
             <label class="lbl"><span>Sent a step yourself? Paste its transaction hash</span>
               <textarea rows="2" spellcheck="false" data-for="${esc(job.id)}" placeholder="0x… (one or more transaction hashes)"></textarea></label>
-            ${manyChains(job) ? `<label class="lbl"><span>On which chain</span><select>${[...new Set(job.steps.map((s) => chainOf(job, s)))].map((id) => `<option value="${id}">${esc(CHAINS[id].name)}</option>`).join('')}</select></label>` : ''}
+            ${manyChains(job) ? `<label class="lbl"><span>On which chain</span><select data-for="${esc(job.id)}:chain">${[...new Set(job.steps.map((s) => chainOf(job, s)))].map((id) => `<option value="${id}">${esc(CHAINS[id].name)}</option>`).join('')}</select></label>` : ''}
             <button class="btn ghost" type="submit">Claim</button>
           </form>
         </section>
@@ -474,11 +481,14 @@ function paste(form) {
   settle();
 }
 
+// the gas price is read again after a minute: the cards are drawn far more often than it moves
+let gasAt = 0, gasPrice = 0n;
 async function gasNote() {
   const els = document.querySelectorAll('.gasnote');
   if (!els.length) return;
   try {
-    const p = BigInt(await rpc('eth_gasPrice', []));
+    if (Date.now() - gasAt > 60e3) { gasPrice = BigInt(await rpc('eth_gasPrice', [])); gasAt = Date.now(); }
+    const p = gasPrice;
     for (const el of els) {
       const job = S.jobs.find((j) => j.id === el.closest('article')?.id);
       if (!job) continue;
@@ -522,15 +532,16 @@ async function go(job, only = null) {
   try {
     if (!(await verify(job))) { say('A transaction does not match the plan, so nothing was sent.', true); return; }
     const payload = S.payload[job.id];
+    // the chain is asked once, about every step not yet seen on it; a step this send lands is on it by its receipt
+    const done = S.done[job.id] = await readDone(job, { chain: true });
     for (const [i, s] of job.steps.entries()) {
       if (only && s.id !== only) continue;
-      S.done[job.id] = await readDone(job, { chain: true });
-      if (S.done[job.id][s.id] === null) throw new Error('Could not read that step from the chain just now, so nothing was sent for it. Try again in a moment.');
-      if (S.done[job.id][s.id]) { if (only) say('That step is already on the chain.'); continue; }
+      if (done[s.id] === null) throw new Error('Could not read that step from the chain just now, so nothing was sent for it. Try again in a moment.');
+      if (done[s.id]) { if (only) say('That step is already on the chain.'); continue; }
       // A point goes to the registry, which must be on that chain first.
       if (s.kind === 'post') {
         const reg = job.steps.find((r) => r.kind === 'createx' && r.bound === false && chainOf(job, r) === chainOf(job, s) && r.expected.toLowerCase() === s.to.toLowerCase());
-        if (reg && !S.done[job.id][reg.id]) { if (only) throw new Error(`The registry on ${CHAINS[chainOf(job, s)].name} is not on the chain yet: send its step first.`); continue; }
+        if (reg && !done[reg.id]) { if (only) throw new Error(`The registry on ${CHAINS[chainOf(job, s)].name} is not on the chain yet: send its step first.`); continue; }
       }
       const id = chainOf(job, s), tx = s.kind === 'post' ? await pointTx(job, s) : payload.steps[i];
       if (checkStep(job, s, tx).length) throw new Error('A transaction no longer matches the plan.');
@@ -540,6 +551,7 @@ async function go(job, only = null) {
       const rc = await conn.wallet.receipt(hash, { read: (m, p) => readOn(id, m, p), where: `the ${CHAINS[id].name} explorer` });
       if (rc.status !== '0x1') throw new Error(`Step ${i + 1} failed (${short(hash, 6)}). Nothing more was sent.`);
       track(hash, id, job.id);
+      done[s.id] = true;
       renderAll();
     }
     S.done[job.id] = await readDone(job, { chain: true });
@@ -552,14 +564,17 @@ async function go(job, only = null) {
 
 // The account to be paid sends itself the Bitcoin transaction id, so nobody else can name that account for this work.
 async function sendReview(form) {
+  if (S.running) return;
   if (!W.account) { await conn.connect(); return; }
   const job = S.jobs.find((j) => j.id === form.dataset.job), txid = form.querySelector('textarea').value.trim().toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(txid)) { say('That is not a Bitcoin transaction id.', true, job.id); return; }
+  S.running = job.id; renderAll();
   try {
     say('Confirm in your wallet…', false, job.id);
     const hash = await conn.wallet.sendTx({ to: W.account, data: `0x${txid}`, value: 0n, from: W.account, chain: null });
     say(`Sent: ${link(`${ETHERSCAN}/tx/${hash}`, esc(short(hash, 6)))}. Post this link in ${link(DISCORD, 'Discord')} for review.`, false, job.id);
   } catch (e) { say(esc(e instanceof UserStopped ? 'Cancelled in your wallet.' : (e.message || 'The wallet did not send it.')), !(e instanceof UserStopped), job.id); }
+  finally { S.running = null; renderAll(); }
 }
 
 // ── naming steps to the service ──
