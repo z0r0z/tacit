@@ -1,11 +1,17 @@
-Lets sp1-gpu-server (sp1 v6.2.3, sp1-gpu/crates/prover_components/src/builder.rs) run on cards under 24 GB for programs
-whose shards are small. Unchanged without the env: SP1_GPU_MIN_GB (default 24) is the gate on ceil(VRAM GiB)+4, and
-SP1_GPU_ELEMENT_THRESHOLD overrides the core shard's element threshold (default 402,653,184; 301,989,888 under 30 GB).
-Our ordinary ops are under 1M cycles, so a threshold of 1<<27 (134M elements) still holds some thirty of them per shard.
-
+diff --git a/sp1-gpu/crates/prover_components/src/builder.rs b/sp1-gpu/crates/prover_components/src/builder.rs
+index fda8d07..36e1ae9 100644
 --- a/sp1-gpu/crates/prover_components/src/builder.rs
 +++ b/sp1-gpu/crates/prover_components/src/builder.rs
-@@
+@@ -26,7 +26,7 @@ use crate::{
+ pub fn local_gpu_opts() -> SP1CoreOpts {
+     let mut opts = SP1CoreOpts::default();
+ 
+-    let log2_shard_size = 24;
++    let log2_shard_size: usize = std::env::var("SP1_GPU_LOG_SHARD_SIZE").ok().and_then(|s| s.parse().ok()).unwrap_or(24);
+     opts.shard_size = 1 << log2_shard_size;
+ 
+     let gb = 1024.0 * 1024.0 * 1024.0;
+@@ -34,8 +34,9 @@ pub fn local_gpu_opts() -> SP1CoreOpts {
      // Get the amount of memory on the GPU.
      let gpu_memory_gb: usize = (((cuda_memory_info().unwrap().1 as f64) / gb).ceil() as usize) + 4;
  
@@ -16,14 +22,12 @@ Our ordinary ops are under 1M cycles, so a threshold of 1<<27 (134M elements) st
 +        panic!("Unsupported GPU memory: {gpu_memory_gb}, must be at least {min_gb}GB (SP1_GPU_MIN_GB)");
      }
  
--    let shard_threshold = if gpu_memory_gb <= 30 {
-+    let default_threshold = if gpu_memory_gb <= 30 {
-         ELEMENT_THRESHOLD - (1 << 26) - (1 << 25)
-     } else {
+     let shard_threshold = if gpu_memory_gb <= 30 {
+@@ -44,6 +45,7 @@ pub fn local_gpu_opts() -> SP1CoreOpts {
          ELEMENT_THRESHOLD
      };
-+    let shard_threshold =
-+        std::env::var("SP1_GPU_ELEMENT_THRESHOLD").ok().and_then(|s| s.parse::<u64>().ok()).unwrap_or(default_threshold);
  
++    let shard_threshold = std::env::var("SP1_GPU_ELEMENT_THRESHOLD").ok().and_then(|s| s.parse().ok()).unwrap_or(shard_threshold);
      tracing::debug!("Shard threshold: {shard_threshold}");
      opts.sharding_threshold.element_threshold = shard_threshold;
+ 
