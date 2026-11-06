@@ -303,13 +303,14 @@ pre.cmd { margin: 16px 0 0; padding: 12px 14px; background: var(--field); border
 @media (max-width: 560px) { .ops .cards { grid-template-columns: minmax(0, 1fr); } }
 .tab > .ops { margin-top: 30px; }
 .gpu { margin-top: 18px; max-width: 720px; }
-.pair { margin-top: 18px; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
+.cols.pair { display: grid; gap: 18px; margin-top: 18px; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
 .pair .gpu { margin-top: 0; max-width: none; }
 #salt-bank-h { margin: 16px 0 0; }
-@media (max-width: 820px) { .pair { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 820px) { .cols.pair { grid-template-columns: minmax(0, 1fr); } }
 .gpu h3 { font: 400 clamp(22px, 3.6vw, 28px)/1.1 var(--serif); margin: 4px 0 0; }
 .gpu h3 span { color: var(--orange); }
 .gpu .btn { margin-top: 12px; }
+.gpu .hint code { font: inherit; color: var(--ink); }
 .bank { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 6px; }
 .bank li { display: flex; justify-content: space-between; gap: 12px; font: 13px/1.4 var(--mono); }
 .bank li code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -593,6 +594,14 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       </section>
     </div>
     <div class="cols pair">
+      <section class="panel gpu" aria-labelledby="h-gpu">
+        <p class="eyebrow"><span>NVIDIA GPU with 24 GB</span></p>
+        <h3 id="h-gpu">Prove Bitcoin batches<span id="btc-pay"></span></h3>
+        <p class="hint">Your GPU proves the batches that bring Bitcoin's state into the pool and mines salts between them. It runs on its own: no key, no ETH.</p>
+        <pre class="cmd"><code id="gpu-cmd">curl -fsSL https://tacit.finance/prove-gpu.sh | sh -s -- 0xYourAddress</code></pre>
+        <button class="btn ghost" id="gpu-copy" type="button">Copy</button>
+        <p class="hint">x86-64 Linux with CUDA 12; Windows through WSL 2 is untested. Put <code>--status</code> in place of the address to check on it.</p>
+      </section>
       <section class="panel gpu" aria-labelledby="h-salt">
         <p class="eyebrow"><span>Between proofs</span></p>
         <h3 id="h-salt">Mine deploy addresses<span id="salt-pay"></span></h3>
@@ -600,19 +609,12 @@ footer.sf svg.fill { width: 16px; height: 16px; }
         <p class="eyebrow" id="salt-bank-h" hidden></p>
         <ol id="salt-bank" class="bank"></ol>
       </section>
-      <section class="panel gpu" aria-labelledby="h-gpu">
-        <p class="eyebrow"><span>Big GPU?</span></p>
-        <h3 id="h-gpu">Prove Bitcoin batches<span id="btc-pay"></span></h3>
-        <pre class="cmd"><code id="gpu-cmd">curl -fsSL https://tacit.finance/prove-gpu.sh | sh -s -- 0xYourAddress</code></pre>
-        <button class="btn ghost" id="gpu-copy" type="button">Copy</button>
-        <p class="hint">x86-64 Linux, an NVIDIA GPU with 24 GB or more, and CUDA 12.</p>
-      </section>
     </div>
       <div class="ops">
   <section class="grp" id="g-prove" aria-labelledby="h-market">
-    <h2 id="h-market"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg>GPU provers: prove for TAC</h2>
+    <h2 id="h-market"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg>Take paid proof orders</h2>
     <div class="panel">
-      <p class="lede">Holders who want a proof fast sign a fee in TAC. Your computer claims the order, proves it, and is paid from their permit the moment the pool accepts it.</p>
+      <p class="lede">Optional, beside your node. Holders who want a proof fast sign a fee in TAC. Your computer claims the order, proves it, and is paid from their permit the moment the pool accepts it.</p>
       <div class="plan num" id="prove-box"><p><span class="sk" style="--w:22ch"></span></p></div>
       <pre class="cmd"><code>curl -fsSL https://tacit.finance/prove.sh | sh   # installs tacit-prover and keeps it running (127.0.0.1)
 git clone https://github.com/src-company/tacit
