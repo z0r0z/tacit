@@ -24,7 +24,7 @@
 <link rel="preconnect" href="https://rpc.mainnet.chain.robinhood.com" crossorigin>
 <!-- preload-roots: /tasks/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/tasks/app.js?cb=16edbee2">
+<link rel="modulepreload" href="/tasks/app.js?cb=1dd125d3">
 <link rel="modulepreload" href="/trade/connect.js?cb=a64b9cec">
 <link rel="modulepreload" href="/walletconnect.js?cb=e0b29a34">
 <link rel="modulepreload" href="/trade/wallet.js?cb=88b623b8">
@@ -85,6 +85,7 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .mute { color: var(--mute); }
 .err { color: var(--err); }
 .ok { color: var(--ok); }
+.warn, .kv b.warn { color: var(--warn); }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .tk { width: 28px; height: 28px; display: block; flex: none; border-radius: 50%; }
 .tk.xs { width: 14px; height: 14px; }
@@ -160,6 +161,13 @@ main { min-height: calc(100svh - 100px); }                          /* the foote
 .pill.ok { color: var(--ok); border-color: var(--ok); } .pill.mute { color: var(--mute); }
 .job-body { padding: 0 20px 20px; border-top: 1px solid var(--hair); }
 .job-body[hidden] { display: none; }
+/* the jobs that are done: two to a row where there is room, a tile opened to what it did taking the whole row */
+.done-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.done-grid .job { margin: 0; }
+.done-grid .job.is-open { grid-column: 1 / -1; }
+.job.done .job-head { gap: 10px; }
+.job.done .job-foot { flex-wrap: wrap; padding-top: 10px; border-top: 1px solid var(--hair); }
+@media (max-width: 760px) { .done-grid { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 480px) { .job-head { padding: 16px 44px 14px 14px; } .job-head::after { right: 16px; } .job-body { padding: 0 14px 16px; } }
 
 /* inside an open job */
@@ -168,7 +176,7 @@ main { min-height: calc(100svh - 100px); }                          /* the foote
 @media (max-width: 900px) {
   .grid { grid-template-columns: minmax(0, 1fr); }
   .col { display: contents; }
-  .p-about { order: 1; } .p-ticket { order: 2; } .p-steps { order: 3; } .p-rewards { order: 4; } .p-mine { order: 5; }
+  .p-about { order: 1; } .p-ticket { order: 2; } .p-steps { order: 3; } .p-rewards { order: 4; } .p-mine { order: 5; } .p-claim { order: 3; }
 }
 .job-body .panel { background: var(--field); }
 .result { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px 18px; margin: 16px 0 0; padding: 12px 14px; background: var(--field); border-left: 2px solid var(--ok); }
@@ -456,6 +464,6 @@ footer.sf svg.fill { width: 16px; height: 16px; }
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/tasks/app.js?cb=16edbee2"></script>
+<script type="module" src="/tasks/app.js?cb=1dd125d3"></script>
 </body>
 </html>

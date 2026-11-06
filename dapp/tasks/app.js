@@ -218,7 +218,7 @@ function renderJobs() {
   root.innerHTML = `
     <h2 class="sec-h">Open jobs <span class="num">${open.length}</span></h2>
     ${open.length ? open.map(card).join('') : '<p class="none">No open jobs right now. The next one will show up here.</p>'}
-    ${done.length ? `<h2 class="sec-h">Done <span class="num">${done.length}</span></h2>${done.map(card).join('')}` : ''}`;
+    ${done.length ? `<h2 class="sec-h">Done <span class="num">${done.length}</span></h2><div class="done-grid">${done.map(card).join('')}</div>` : ''}`;
   root.querySelectorAll('[data-toggle]').forEach((b) => {
     b.onclick = () => {
       const job = S.jobs.find((j) => j.id === b.dataset.toggle);
@@ -242,7 +242,7 @@ function card(job) {
   const reviewed = job.steps.every((s) => s.kind === 'review');
   let fig = '—', cap = 'shown when rewards open', foot = reviewed ? '' : `${(own.reduce((x, s) => x + s.gas, 0) / 1e6).toFixed(1)}M gas${manyChains(job) ? ` ${mark(job.chainId)}` : ''}`;
   if (st === 'done') {
-    fig = res.count ? `${tac(res.total)}<small>TAC</small>` : '—';
+    fig = res.count ? `${tacR(res.total)}<small>TAC</small>` : '—';
     const waiting = pendingFor(job).length;
     cap = res.count ? `paid to ${res.senders.map((a) => short(a)).join(', ')}` : waiting ? 'waiting for twelve confirmations' : S.api?.enabled && job.opensAt && Date.now() / 1000 >= job.opensAt ? 'no reward claimed yet' : 'deployed outside the rewards';
     foot = res.last ? `Done ${day(res.last)}` : 'Done';
@@ -257,7 +257,7 @@ function card(job) {
       <span class="job-top"><b>${esc(job.title)}</b><span class="pill ${cls}">${label}</span></span>
       <span class="job-sub">${esc(job.tagline)}${manyChains(job) ? ` ${jobChains(job).map(mark).join('')}` : ''}</span>
       <span class="job-fig"><span class="big num">${fig}</span><span class="cap">${cap}</span></span>
-      <span class="bar" role="img" aria-label="${n} of ${total} ${where}"><i style="width:${(100 * n) / total}%"></i></span>
+      ${st === 'done' ? '' : `<span class="bar" role="img" aria-label="${n} of ${total} ${where}"><i style="width:${(100 * n) / total}%"></i></span>`}
       <span class="job-foot"><span>${n} of ${total} ${where}</span><span>${foot}</span></span>
     </button>
     <div class="job-body" id="body-${esc(job.id)}"${exp ? '' : ' hidden'}>${exp ? (st === 'done' ? doneBody(job, res) : openBody(job)) : ''}</div>
@@ -360,12 +360,13 @@ function reviewRow(job, s, i) {
 }
 // The claim forms of the steps a reviewed job has left: each names the Bitcoin transaction of a bridge and is paid to the wallet that claims.
 // `status` is false where the page already has this job's status line.
-const claimPanel = (job, todo, open, status = true) => `<section class="panel p-mine" aria-label="Claim">
+// The claim names only the Bitcoin transaction (the role is read from it), so the roles that ask the same question share one form.
+const claimPanel = (job, todo, open, status = true) => `<section class="panel p-mine p-claim" aria-label="Claim">
           <p class="eyebrow">Claim</p>
-          ${todo.map((s) => `<form class="review" autocomplete="off" data-job="${esc(job.id)}" data-step="${esc(s.id)}">
+          ${todo.filter((s, i) => todo.findIndex((x) => x.ask === s.ask) === i).map((s) => `<form class="review" autocomplete="off" data-job="${esc(job.id)}" data-step="${esc(s.id)}">
             <label class="lbl"><span>${esc(s.ask)}</span>
               <textarea rows="2" spellcheck="false" data-for="${esc(`${job.id}/${s.id}`)}" placeholder="Bitcoin transaction id"></textarea></label>
-            <button class="btn ghost" type="submit" ${open ? '' : 'disabled'}>${W.account ? `Claim as ${esc(s.label.toLowerCase())}` : 'Connect wallet'}</button>
+            <button class="btn ghost" type="submit" ${open ? '' : 'disabled'}>${W.account ? 'Claim' : 'Connect wallet'}</button>
           </form>`).join('')}
           ${status ? `<div class="status" role="status" data-for="${esc(job.id)}"></div>` : ''}
         </section>`;
@@ -393,7 +394,7 @@ function reviewBody(job) {
         </section>` : ''}
         ${claimPanel(job, todo, open)}
         ${a?.enabled ? `<section class="panel p-rewards" aria-label="Rewards"><p class="eyebrow">Rewards</p>
-          <div class="rows"><div class="kv"><span>Budget left</span><b class="num">${tac(BigInt(a.budget.remainingWei), 0)} of ${tac(a.budget.totalWei, 0)} TAC</b></div><div class="kv"><span>Open until</span><b>${esc(day(a.endSec))}</b></div></div></section>` : ''}
+          <div class="rows"><div class="kv"><span>Budget left</span><b class="num${BigInt(a.budget.remainingWei) < todo.reduce((x, s) => x + BigInt(s.minWei ?? 0), 0n) ? ' warn' : ''}">${tac(BigInt(a.budget.remainingWei), 0)} of ${tac(a.budget.totalWei, 0)} TAC</b></div><div class="kv"><span>Open until</span><b>${esc(day(a.endSec))}</b></div></div></section>` : ''}
       </div>
     </div>`;
 }
