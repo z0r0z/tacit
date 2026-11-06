@@ -92,7 +92,7 @@ existing_mine() {
 }
 
 # Inside WSL uname says Linux: WSL sets WSL_DISTRO_NAME, and its kernel's version line names Microsoft.
-is_wsl() { [ -n "${WSL_DISTRO_NAME:-}" ] || grep -qi microsoft "${TACIT_PROC_VERSION:-/proc/version}" 2>/dev/null; }
+is_wsl() { [ -n "${WSL_DISTRO_NAME:-}" ] || { [ ! -f /.dockerenv ] && [ ! -f /run/.containerenv ] && grep -qi microsoft "${TACIT_PROC_VERSION:-/proc/version}" 2>/dev/null; }; }
 
 # The Linux build asks for glibc 2.34 or newer and would not start on an older one, so that is said before the download. A version that
 # does not read as one (another libc) is left to the program.
@@ -109,7 +109,15 @@ check_glibc() {
 
 # systemd's user manager, which keeps the prover running and starts it at login. WSL runs it only when /etc/wsl.conf turns systemd on,
 # and a container has none.
-user_systemd() { command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; }
+user_systemd() {
+  command -v systemctl >/dev/null 2>&1 || return 1
+  # su and sudo -u leave XDG_RUNTIME_DIR unset though the user's manager may run (linger); systemctl --user finds it there.
+  if [ -z "${XDG_RUNTIME_DIR:-}" ] && [ -d "/run/user/$(id -u)" ]; then XDG_RUNTIME_DIR=/run/user/$(id -u); export XDG_RUNTIME_DIR; fi
+  systemctl --user show-environment >/dev/null 2>&1
+}
+
+# A value as one single-quoted shell word, for the run script.
+shq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
 # Without one the prover runs in the background from $RUN_SH, which writes its own pid before it becomes the program. The pid is only
 # taken as the prover's while that process is running the installed program.
@@ -119,7 +127,7 @@ background_pid() {
   case $bgp in ''|*[!0-9]*) return 0 ;; esac
   kill -0 "$bgp" 2>/dev/null || return 0
   if [ -r "/proc/$bgp/cmdline" ]; then args=$(tr '\0' ' ' < "/proc/$bgp/cmdline" 2>/dev/null || true); else args=$(ps -p "$bgp" -o args= 2>/dev/null || true); fi
-  case $args in *"$BIN"*) printf '%s' "$bgp" ;; esac
+  case $args in *"$BIN serve"*) printf '%s' "$bgp" ;; esac
   return 0
 }
 
@@ -129,6 +137,8 @@ stop_background() {
     kill "$bgp" 2>/dev/null || true
     n=0
     while [ "$n" -lt 10 ] && kill -0 "$bgp" 2>/dev/null; do sleep 1; n=$((n + 1)); done
+    # Still the prover after 10 s: killed outright, as systemd and launchd would, rather than forgotten while it holds the port.
+    if [ "$(background_pid)" = "$bgp" ]; then kill -9 "$bgp" 2>/dev/null || true; sleep 1; fi
   fi
   rm -f "$RUN_PID"
 }
@@ -137,10 +147,10 @@ start_background() {
   stop_background
   cat > "$RUN_SH" <<EOF
 #!/bin/sh
-echo \$\$ > "$RUN_PID"
-cd "$HOME_DIR" || exit 1
-export TACIT_PROVER_DIR="$HOME_DIR" TACIT_MINE="$1"
-exec "$BIN" serve >> "$HOME_DIR/daemon.log" 2>&1
+echo \$\$ > $(shq "$RUN_PID")
+cd $(shq "$HOME_DIR") || exit 1
+export TACIT_PROVER_DIR=$(shq "$HOME_DIR") TACIT_MINE=$(shq "$1")
+exec $(shq "$BIN") serve >> $(shq "$HOME_DIR/daemon.log") 2>&1
 EOF
   chmod 755 "$RUN_SH"
   # Out of the terminal's session, so closing the terminal or pressing Ctrl-C there leaves it running.
@@ -251,11 +261,11 @@ do_install() {
     return 0
   fi
   bg=
-  # A unit installed earlier stays in charge: from a shell where systemctl --user does not answer for it (sudo, su, cron), a second copy
-  # beside it would only load the keys twice and fight it for the port.
-  if [ "$(uname -s)" = Linux ] && [ ! -f "$HOME/.config/systemd/user/tacit-prover.service" ] && ! user_systemd; then
+  # A unit installed earlier stays in charge while systemd runs: from a shell where systemctl --user does not answer for it (sudo, su,
+  # cron), a second copy beside it would only load the keys twice and fight it for the port. With systemd off since (WSL), it is inert.
+  if [ "$(uname -s)" = Linux ] && { [ ! -f "$HOME/.config/systemd/user/tacit-prover.service" ] || [ ! -d "$SYSTEMD_RUN" ]; } && ! user_systemd; then
     bg=1
-    if is_wsl && [ -d /run/systemd/system ]; then
+    if is_wsl && [ -d "$SYSTEMD_RUN" ]; then
       say "systemd runs in this Ubuntu, but not for $(id -un) (systemctl --user does not answer), so tacit-prover runs in the background"
       say "until WSL stops. To have it start by itself, run wsl --shutdown in PowerShell, open Ubuntu again and run this command again."
     elif is_wsl; then
@@ -391,7 +401,7 @@ do_status() {
 do_uninstall() {
   stop_background
   rm -f "$RUN_SH"
-  if [ -x "$BIN" ]; then
+  if [ -x "$BIN" ] && { [ "$(uname -s)" = Darwin ] || user_systemd; }; then
     TACIT_PROVER_DIR="$HOME_DIR" "$BIN" uninstall || true
   elif [ "$(uname -s)" = Darwin ]; then
     launchctl bootout "gui/$(id -u)/finance.tacit.prover" >/dev/null 2>&1 || true
@@ -413,12 +423,15 @@ main() {
   TAG=${TACIT_PROVER_TAG:-$PIN_TAG}
   BASE=${TACIT_PROVER_BASE:-https://github.com/src-company/tacit/releases/download/$TAG}
   HOME_DIR=${TACIT_PROVER_HOME:-$HOME/.tacit-prover}
+  case $HOME_DIR in /*) ;; *) HOME_DIR=$PWD/$HOME_DIR ;; esac
   API=${TACIT_POOL_API:-https://api.tacit.finance}
   POINTS=${TACIT_POINTS_API:-https://tacit-points.onrender.com}
   PORT=${TACIT_PROVER_PORT:-47815}
   BIN=$HOME_DIR/bin/tacit-prover
   RUN_SH=$HOME_DIR/run.sh
   RUN_PID=$HOME_DIR/run.pid
+  # systemd is the init here (sd_booted); TACIT_SYSTEMD_RUN stands in for it in the tests, as TACIT_PROC_VERSION does for /proc/version
+  SYSTEMD_RUN=${TACIT_SYSTEMD_RUN:-/run/systemd/system}
 
   cmd=install
   addr=
