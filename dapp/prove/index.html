@@ -642,14 +642,14 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       <section class="panel side" aria-labelledby="h-gpu" data-card="gpu">
         <p class="eyebrow"><span>NVIDIA GPU</span></p>
         <h3 id="h-gpu">Prove Bitcoin batches<span id="btc-pay"></span></h3>
-        <p class="hint">GPUs take turns proving the batches that carry Bitcoin's state into the pool, and mine salts between turns. No key, no ETH.</p>
+        <p class="hint">GPUs take turns proving the batches that carry Bitcoin's state into the pool, and prove deposits and mine salts between turns. No key, no ETH.</p>
         <div class="pair"><pre class="cmd"><code id="gpu-cmd">curl -fsSL https://tacit.finance/prove-gpu.sh | sh -s -- 0xYourAddress</code></pre><button class="btn ghost" id="gpu-copy" type="button">Copy</button></div>
         <div class="rows num">
           <div class="kv"><span>GPUs online</span><b id="gpu-n">—</b></div>
           <div class="kv" id="gpu-me-row" hidden><span>Your GPU</span><b id="gpu-me">—</b></div>
           <div class="kv"><span>Paid</span><b>each UTC day · <a href="/rewards/">Rewards</a></b></div>
         </div>
-        <p class="hint">x86-64 Linux, CUDA 12. Bitcoin batches need 24 GB or more: an RTX 3090, 4090, 5090, A5000 or bigger. A smaller card gets the regular node, proving on the CPU. Windows (WSL 2) is untested. <code>--status</code> in place of the address checks on it.</p>
+        <p class="hint">x86-64 Linux, CUDA 12, a card of 16 GB or more. Bitcoin batches need 24 GB: an RTX 3090, 4090, 5090, A5000 or bigger. A 16 to 23 GB card, such as an RTX A4000, 4060 Ti 16 GB, 4080 or 5080, proves deposits. A smaller card gets the regular node, proving on the CPU. Windows (WSL 2) is untested. <code>--status</code> in place of the address checks on it.</p>
       </section>
       <section class="panel side" aria-labelledby="h-salt" data-card="salts">
         <p class="eyebrow"><span>Between proofs</span></p>

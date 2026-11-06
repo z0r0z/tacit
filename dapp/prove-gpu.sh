@@ -1,24 +1,33 @@
 #!/bin/sh
-# Prove Bitcoin batches for Tacit from a machine with a large NVIDIA GPU, for TAC. This installs tacit-prover-worker (the build pinned below, its
-# sha256 checked before anything is run) and keeps it running in community mode: it takes its turn at the prover board's public Bitcoin-state
-# batches (the board gives each batch to one machine, in turn), and each batch the relay takes earns the address the board's points for it,
-# paid in TAC by the points service. No key, no token, no ETH.
+# Prove for Tacit from a machine with an NVIDIA GPU, for TAC. This installs tacit-prover-worker (the build pinned below, its sha256 checked
+# before anything is run) and keeps it running in community mode. A card of 24 GB or more takes its turn at the prover board's public
+# Bitcoin-state batches (the board gives each batch to one machine, in turn), and each batch the relay takes earns the address the board's
+# points for it. A card of 16 to 23 GB, which a batch does not fit, proves the proof pool's wraps instead (deposits proved ahead for the pages;
+# their inputs hold no secret) with SP1's GPU server built for less memory, pinned below, and each wrap the pool takes earns the pool's points.
+# Bigger cards prove wraps too, between batches. The TAC comes from the points service. No key, no token, no ETH.
 #
 #   curl -fsSL https://tacit.finance/prove-gpu.sh | sh -s -- 0xYourAddress    install it and start it; the TAC goes to that address
 #   curl -fsSL https://tacit.finance/prove-gpu.sh | sh -s -- --status         is it running, and its last lines
 #   curl -fsSL https://tacit.finance/prove-gpu.sh | sh -s -- --stop           stop it
 #
-# x86-64 Linux with an NVIDIA GPU of 24 GB or more, its CUDA 12 driver and the CUDA 12 runtime, libcudart.so.12 (a rented RTX 3090, 4090,
-# A5000 or larger works). A batch is billions of cycles: tens of minutes on such a GPU. The first start fetches SP1's GPU server and its
-# Groth16 artifacts (about 8 GB). Under WSL 2 the GPU is the Windows driver's, and nothing here has been run there yet. A smaller or older
-# card (under 24 GB, or before compute capability 8.0) gets the regular node instead (prove.sh, for the same address).
+# x86-64 Linux with an NVIDIA GPU of 16 GB or more and compute capability 8.0 or newer (an RTX A4000, 4060 Ti 16 GB, 4080, 5080 or larger), its
+# CUDA 12 driver and the CUDA 12 runtime, libcudart.so.12. A batch is billions of cycles: tens of minutes on a 24 GB GPU; a wrap a minute or
+# two. The first start fetches SP1's GPU server and its Groth16 artifacts (about 8 GB). Under WSL 2 the GPU is the Windows driver's, and
+# nothing here has been run there yet. A smaller or older card gets the regular node instead (prove.sh, for the same address).
 # The whole script is one function called on the last line, so a download cut short runs nothing. Environment: TACIT_GPU_HOME is where it
 # lives (~/.tacit-gpu).
 
 set -eu
 
-PIN_TAG=prover-bins-v17
-PIN_WORKER=9c8297ad19808b033301e25e37206e26f0e300f7aec03a730b52b45b6f5a4327
+PIN_TAG=prover-bins-v18
+PIN_WORKER=56a8196dd060977da1627d8e9d1787bb5b200f640c794f3cb59bf8b625de49fc
+# SP1's GPU server for a card under 24 GB: sp1 v6.3.1 with contracts/sp1/confidential/prover-worker/sp1-gpu/lowmem.patch, built by
+# .github/workflows/build-sp1-gpu-lowmem.yml. It is the stock server unless the SP1_GPU_* settings are set, which run.sh does for such a card:
+# smaller shards, so a proof fits in the card's memory. It takes the stock server's place in ~/.sp1/bin, where the worker's SDK looks for it.
+PIN_SERVER_LOWMEM=399f57725142ad827fcf4631131571279348566d5960849f5926e5573fbe05b5
+# A 16 GB card's core-shard size (SP1_GPU_ELEMENT_THRESHOLD). Measured on an RTX A4000 (16 GB): a wrap peaks at 15.3 GB of the card, at this
+# size or half of it. A 12 GB card does not fit SP1 6.3.1's GPU prover: its proving keys alone hold about 8.6 GB of the card.
+SHARD_16GB=134217728
 # SP1's Groth16 proving files the worker's SP1 version asks for (its first proof fetches them over one connection, slowly, and a fetch cut
 # short leaves a folder it takes for finished): pinned with the worker, fetched here over several connections and checked.
 PIN_CIRCUITS=v6.1.0
@@ -160,16 +169,23 @@ main() {
     if is_wsl; then die "no NVIDIA driver found (nvidia-smi). In WSL it is the Windows one: install NVIDIA's driver on Windows, and no Linux driver inside Ubuntu."; fi
     die "no NVIDIA driver found (nvidia-smi). This proves on a GPU."
   fi
-  mem=$("$smi" --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ')
-  case $mem in ''|*[!0-9]*) die "nvidia-smi did not say how much memory the GPU has (${mem:-nothing}); a Bitcoin batch needs 24 GB or more." ;; esac
-  [ "$mem" -ge 23000 ] || node_instead "This GPU has $mem MiB, and a Bitcoin batch needs a 24 GB card"
-  # SP1's GPU server carries code for sm_80 (Ampere) and newer only; the best card counts, and a driver too old to say is left to the server.
-  cc=$("$smi" --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | tr -d ' ' | sort -rn | head -1)
-  case $cc in [1-7].[0-9]) node_instead "This GPU is compute capability $cc, and SP1's GPU server needs 8.0 or newer (an RTX 3090, A5000 or later)" ;; esac
-  # Under WSL the card also draws Windows' desktop, and what Windows holds is not there for a batch.
+  # The card with the most memory proves, and the others (one driving the display, say) are left alone. nvidia-smi numbers the cards in PCI
+  # order, as CUDA does with CUDA_DEVICE_ORDER=PCI_BUS_ID, which run.sh sets.
+  best=$("$smi" --query-gpu=index,memory.total --format=csv,noheader,nounits 2>/dev/null | tr -d ' ' | sort -t, -k2 -rn | head -1)
+  gpu=${best%%,*}; mem=${best#*,}
+  case $gpu in ''|*[!0-9]*) die "nvidia-smi did not list the GPUs (${best:-nothing}); the GPU prover needs one of 16 GB or more." ;; esac
+  case $mem in ''|*[!0-9]*) die "nvidia-smi did not say how much memory the GPU has (${mem:-nothing}); the GPU prover needs 16 GB or more." ;; esac
+  [ "$mem" -ge 15000 ] || node_instead "This GPU has $mem MiB, and SP1's GPU prover needs a 16 GB card"
+  # SP1's GPU server carries code for sm_80 (Ampere) and newer only; a driver too old to say is left to the server.
+  cc=$("$smi" --id="$gpu" --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | tr -d ' ' | head -1)
+  case $cc in [1-7].[0-9]) node_instead "This GPU is compute capability $cc, and SP1's GPU server needs 8.0 or newer (an RTX A4000, 3090 or later)" ;; esac
+  # A card under 24 GB takes no Bitcoin batch: it proves the pool's wraps with the smaller server, its shards sized for its memory.
+  small=
+  [ "$mem" -ge 23000 ] || small="BTC_STATE=0 SP1_GPU_MIN_GB=16 SP1_GPU_ELEMENT_THRESHOLD=$SHARD_16GB"
+  # Under WSL the card also draws Windows' desktop, and what Windows holds is not there for a proof.
   if is_wsl; then
-    used=$("$smi" --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ')
-    case $used in ''|*[!0-9]*) ;; *) [ "$used" -lt 1024 ] || say "note: Windows is using $used MiB of this GPU now, and a Bitcoin batch is sized for a 24 GB card: close games and other GPU programs while it proves." ;; esac
+    used=$("$smi" --id="$gpu" --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ')
+    case $used in ''|*[!0-9]*) ;; *) [ "$used" -lt 1024 ] || say "note: Windows is using $used MiB of this GPU now, and a proof is sized for the card's whole memory: close games and other GPU programs while it proves." ;; esac
   fi
   has_cudart || die "SP1's GPU server needs the CUDA 12 runtime, libcudart.so.12, which comes with the CUDA toolkit and not with the driver. On Ubuntu: add NVIDIA's CUDA repository (https://developer.nvidia.com/cuda-downloads, Linux > x86_64 > Ubuntu, or WSL-Ubuntu inside WSL) and sudo apt install cuda-cudart-12-8; or set LD_LIBRARY_PATH to the folder that has it."
   command -v curl >/dev/null 2>&1 || die "curl is needed."
@@ -180,6 +196,16 @@ main() {
   [ "$got" = "$PIN_WORKER" ] || { rm -f "$BIN.part"; die "the download's sha256 is $got, not the pinned $PIN_WORKER: nothing was run."; }
   chmod +x "$BIN.part" && mv -f "$BIN.part" "$BIN"
   say "Checked its sha256 ($(printf '%s' "$got" | cut -c1-12)...)"
+  if [ -n "$small" ]; then
+    srv="$HOME/.sp1/bin/sp1-gpu-server"
+    mkdir -p "$HOME/.sp1/bin"
+    say "Downloading SP1's GPU server for a card under 24 GB ($PIN_TAG)"
+    curl -fsSL -o "$srv.part" "$BASE/$PIN_TAG/sp1-gpu-server-lowmem"
+    got=$(sha256sum "$srv.part" | cut -d' ' -f1)
+    [ "$got" = "$PIN_SERVER_LOWMEM" ] || { rm -f "$srv.part"; die "the server's sha256 is $got, not the pinned $PIN_SERVER_LOWMEM: nothing was run."; }
+    chmod +x "$srv.part" && mv -f "$srv.part" "$srv"
+    say "Checked its sha256 ($(printf '%s' "$got" | cut -c1-12)...)"
+  fi
   fetch_circuits || say "The worker fetches SP1's files itself on its first start instead; that takes longer."
   # One worker at a time, restarted after a crash with a pause; it re-reads nothing between starts but this script's settings.
   p=$(run_pid); [ -z "$p" ] || kill -- "-$p" 2>/dev/null || true
@@ -189,9 +215,9 @@ cd "$HOME_DIR"
 pause=15
 while true; do
   t=\$(date +%s)
-  # CUDA numbers the cards as nvidia-smi does (PCI order), so SP1's server proves on the card the checks above measured, not the fastest.
-  COMMUNITY_MINER=$ADDR WORKER_NAME=gpu-$(printf '%s' "$ADDR" | cut -c3-8) EXPECT_VKEY=$POOL_VKEY WARM=0 POLL_MS=4000 CUDA_DEVICE_ORDER=PCI_BUS_ID RELOAD_FLAG="$HOME_DIR/reload" \\
-    WORKER_KEY_FILE="$HOME_DIR/worker.key" PAUSE_FLAG="$HOME_DIR/pause" RECYCLE_FLAG="$HOME_DIR/recycle" "$BIN"
+  # CUDA numbers the cards as nvidia-smi does (PCI order), so SP1's server proves on the card the checks above measured (GPU_DEVICE).
+  COMMUNITY_MINER=$ADDR WORKER_NAME=gpu-$(printf '%s' "$ADDR" | cut -c3-8) EXPECT_VKEY=$POOL_VKEY WARM=0 POLL_MS=4000 CUDA_DEVICE_ORDER=PCI_BUS_ID GPU_DEVICE=$gpu RELOAD_FLAG="$HOME_DIR/reload" \\
+    WORKER_KEY_FILE="$HOME_DIR/worker.key" PAUSE_FLAG="$HOME_DIR/pause" RECYCLE_FLAG="$HOME_DIR/recycle" POOL_LEASE_FILE="$HOME_DIR/pool-lease.json" $small "$BIN"
   # SP1's GPU server goes when the worker lets it go, not when the worker aborts: what is left in this group (this script leads it) goes
   # before the next start, so a crash never leaves a server holding the GPU's memory.
   trap '' TERM; kill -- -\$\$ 2>/dev/null; trap - TERM
@@ -203,7 +229,12 @@ EOF
   chmod +x "$HOME_DIR/run.sh"
   (setsid sh "$HOME_DIR/run.sh" >> "$HOME_DIR/worker.log" 2>&1 & echo $! > "$HOME_DIR/run.pid")
   say ""
-  say "tacit-prover-worker is running for $(printf '%s' "$ADDR" | cut -c1-6)...$(printf '%s' "$ADDR" | cut -c39-42). Bitcoin batches the relay takes from it earn that address TAC."
+  who="$(printf '%s' "$ADDR" | cut -c1-6)...$(printf '%s' "$ADDR" | cut -c39-42)"
+  if [ -n "$small" ]; then
+    say "tacit-prover-worker is running for $who. This card proves the pool's wraps (a Bitcoin batch needs 24 GB), and each wrap the pool takes earns that address TAC."
+  else
+    say "tacit-prover-worker is running for $who. Bitcoin batches the relay takes from it earn that address TAC, and wraps for the pool between them."
+  fi
   say "Watch it:  tacit.finance/prove   or   curl -fsSL https://tacit.finance/prove-gpu.sh | sh -s -- --status"
   say "Its log:   $HOME_DIR/worker.log"
   if is_wsl; then say "WSL stops Ubuntu a few seconds after its last window closes, and the worker with it: keep an Ubuntu window open while it proves."; fi

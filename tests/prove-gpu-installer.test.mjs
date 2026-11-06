@@ -2,8 +2,9 @@
 // ldconfig, nvidia-smi and curl on the PATH and the regular node's installer served from a local file, so nothing here touches this
 // machine's GPU, services or the network.
 //
-// What matters: a card under 24 GB, or older than compute capability 8.0, gets the regular node for the same address instead of a dead
-// end; TACIT_GPU_ONLY=1 stops there instead; a 24 GB card of a new enough kind goes past both gates to the worker's download.
+// What matters: a card under 16 GB, or older than compute capability 8.0, gets the regular node for the same address instead of a dead
+// end; TACIT_GPU_ONLY=1 stops there instead; a card of 16 GB or more of a new enough kind goes past both gates to the worker's download;
+// a card under 24 GB also gets the pinned smaller GPU server and the settings that size its proofs to its memory, and takes no batches.
 //
 // Run: node --test tests/prove-gpu-installer.test.mjs
 
@@ -17,7 +18,14 @@ import { join } from 'node:path';
 const SCRIPT = readFileSync(new URL('../dapp/prove-gpu.sh', import.meta.url), 'utf8');
 const ADDR = '0x1234567890abcdef1234567890abcdef12345678';
 
-function world({ mem, cc = '8.9' }) {
+// nvidia-smi as a machine with these cards would answer: the list of (index, memory) and, per card (--id=N), its compute capability
+function smiShim(cards) {
+  const list = cards.map((c, i) => `${i}, ${c.mem}`).join('\\n');
+  const ccs = cards.map((c, i) => `*--id=${i}*compute_cap*) echo "${c.cc}" ;;`).join(' ');
+  return `case "$*" in *index,memory.total*) printf '${list}\\n' ;; ${ccs} *memory.used*) echo 10 ;; *) echo ok ;; esac`;
+}
+
+function world({ mem, cc = '8.9', cards = null }) {
   const dir = mkdtempSync(join(tmpdir(), 'prove-gpu-'));
   const bin = join(dir, 'bin');
   mkdirSync(bin);
@@ -25,7 +33,7 @@ function world({ mem, cc = '8.9' }) {
   shim('uname', 'case "$1" in -m) echo x86_64 ;; *) echo Linux ;; esac');
   shim('ldd', 'echo "ldd (Ubuntu GLIBC 2.35-0ubuntu3.8) 2.35"');
   shim('ldconfig', 'exit 1');
-  shim('nvidia-smi', `case "$*" in *memory.total*) echo "${mem}" ;; *compute_cap*) echo "${cc}" ;; *memory.used*) echo 10 ;; *) echo ok ;; esac`);
+  shim('nvidia-smi', smiShim(cards || [{ mem, cc }]));
   // the node's installer comes from a file; anything else would be the network, which this test never reaches
   shim('curl', 'case "$*" in *file://*) exec /usr/bin/curl "$@" ;; *) echo "curl: no network here: $*" >&2; exit 22 ;; esac');
   const node = join(dir, 'prove.sh');
@@ -41,21 +49,28 @@ function run(w, env = {}) {
   });
 }
 
-test('a 16 GB card gets the regular node for the same address', () => {
-  const w = world({ mem: 16376 });
+test('a 12 GB card gets the regular node for the same address', () => {
+  const w = world({ mem: 12288 });
   const r = run(w);
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /This GPU has 16376 MiB, and a Bitcoin batch needs a 24 GB card\. Setting up the regular node instead/);
+  assert.match(r.stdout, /This GPU has 12288 MiB, and SP1's GPU prover needs a 16 GB card\. Setting up the regular node instead/);
   assert.match(r.stdout, /node set up for 0x1234567890abcdef1234567890abcdef12345678/);
   assert.equal(readFileSync(w.log, 'utf8'), `node installer for ${ADDR}\n`);
 });
 
 test('TACIT_GPU_ONLY=1 stops instead of setting up the node', () => {
-  const w = world({ mem: 12288 });
+  const w = world({ mem: 8192 });
   const r = run(w, { TACIT_GPU_ONLY: '1' });
   assert.equal(r.status, 1);
-  assert.match(r.stdout, /This GPU has 12288 MiB/);
+  assert.match(r.stdout, /This GPU has 8192 MiB/);
   assert.equal(existsSync(w.log), false);
+});
+
+test('a 16 GB card of a new enough kind goes past both gates to the worker', () => {
+  const w = world({ mem: 16376, cc: '8.6' });
+  const r = run(w);
+  assert.match(r.stdout, /Downloading tacit-prover-worker/);
+  assert.equal(existsSync(w.log), false, 'no node installed for a card the GPU lane takes');
 });
 
 test('a 24 GB card older than compute capability 8.0 gets the node too', () => {
@@ -177,4 +192,126 @@ test('with too little room it says so and leaves the fetch to the worker', async
   assert.match(r.stdout, /only \d+ GB are free/);
   assert.match(r.stdout, /rc=1/);
   assert.equal(w.hits.n, 0);
+});
+
+// ── The whole install against a release served here: the worker, and for a card under 24 GB the smaller GPU server, each checked ──
+const pinOf = (name) => new RegExp(`^${name}=(.*)$`, 'm').exec(SCRIPT)[1];
+
+async function releaseWorld({ mem, cc = '8.6', cards = null, serverBytes = null }) {
+  const dir = mkd(join(tmpdir(), 'prove-gpu-release-'));
+  const home = join(dir, 'home'); mkdirSync(home);
+  // the Groth16 files already in place, so the fetch is skipped
+  mkdirSync(join(home, '.sp1/circuits/groth16', pinOf('PIN_CIRCUITS')), { recursive: true });
+  const bin = join(dir, 'bin'); mkdirSync(bin);
+  const shim = (name, body) => writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+  shim('uname', 'case "$1" in -m) echo x86_64 ;; *) echo Linux ;; esac');
+  shim('ldd', 'echo "ldd (Ubuntu GLIBC 2.35-0ubuntu3.8) 2.35"');
+  shim('ldconfig', 'exit 1');
+  shim('nvidia-smi', smiShim(cards || [{ mem, cc }]));
+  shim('sha256sum', 'exec shasum -a 256 "$@"');
+  shim('setsid', 'exec "$@"');
+  // the worker as served: it writes down what it was started with and ends the loop around it
+  const worker = Buffer.from(`#!/bin/sh\nenv > "${join(dir, 'worker-env.txt')}"\nkill -9 $PPID 2>/dev/null\nexit 0\n`);
+  const server = serverBytes || Buffer.from('#!/bin/sh\necho 6.3.1\n');
+  const files = { '/prover-bins-v18/tacit-prover-worker': worker, '/prover-bins-v18/sp1-gpu-server-lowmem': server };
+  const hits = [];
+  const http_ = http.createServer((req, res) => { hits.push(req.url); const b = files[req.url]; if (!b) { res.writeHead(404); return res.end(); } res.writeHead(200); res.end(b); });
+  await new Promise((r) => http_.listen(0, '127.0.0.1', r));
+  const sha = (b) => createHash('sha256').update(b).digest('hex');
+  const script = SCRIPT
+    .replace(/^BASE=.*$/m, `BASE="http://127.0.0.1:${http_.address().port}"`)
+    .replace(/^PIN_TAG=.*$/m, 'PIN_TAG=prover-bins-v18')
+    .replace(/^PIN_WORKER=.*$/m, `PIN_WORKER=${sha(worker)}`)
+    .replace(/^PIN_SERVER_LOWMEM=.*$/m, `PIN_SERVER_LOWMEM=${sha(Buffer.from('#!/bin/sh\necho 6.3.1\n'))}`);
+  return { dir, home, bin, server, http: http_, hits, script, gpuHome: join(home, '.tacit-gpu') };
+}
+
+function install(w) {
+  return new Promise((resolve) => {
+    // TACIT_GPU_ONLY: a card that would get the regular node stops instead of fetching it
+    const c = spawn('sh', ['-s', '--', ADDR], { env: { PATH: `${w.bin}:/usr/bin:/bin`, HOME: w.home, TACIT_GPU_HOME: w.gpuHome, TACIT_PROC_VERSION: '/dev/null', TACIT_GPU_ONLY: '1' } });
+    let stdout = '', stderr = '';
+    c.stdout.on('data', (d) => { stdout += d; }); c.stderr.on('data', (d) => { stderr += d; });
+    c.on('close', (status) => resolve({ status, stdout, stderr }));
+    c.stdin.end(w.script);
+  });
+}
+
+// the worker's environment once run.sh has started it
+async function startedWith(w) {
+  const f = join(w.dir, 'worker-env.txt');
+  for (let i = 0; i < 50 && !existsSync(f); i++) await new Promise((r) => setTimeout(r, 100));
+  return existsSync(f) ? readFileSync(f, 'utf8') : '';
+}
+
+test('a 16 GB card gets the pinned smaller server and its pool-only settings', async () => {
+  const w = await releaseWorld({ mem: 16376 });
+  const r = await install(w);
+  const env = await startedWith(w);
+  w.http.close();
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /Downloading SP1's GPU server for a card under 24 GB/);
+  assert.deepEqual(readFileSync(join(w.home, '.sp1/bin/sp1-gpu-server')), w.server, 'where the SDK looks for it');
+  assert.match(r.stdout, /This card proves the pool's wraps \(a Bitcoin batch needs 24 GB\)/);
+  assert.match(env, /^BTC_STATE=0$/m);
+  assert.match(env, new RegExp(`^SP1_GPU_ELEMENT_THRESHOLD=${pinOf('SHARD_16GB')}$`, 'm'));
+  assert.match(env, /^SP1_GPU_MIN_GB=16$/m);
+  assert.match(env, new RegExp(`^POOL_LEASE_FILE=${w.gpuHome}/pool-lease.json$`, 'm'));
+  assert.match(env, new RegExp(`^COMMUNITY_MINER=${ADDR}$`, 'm'));
+});
+
+test('a 20 GB card proves the pool\'s wraps too', async () => {
+  const w = await releaseWorld({ mem: 20470 });
+  const r = await install(w);
+  const env = await startedWith(w);
+  w.http.close();
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(env, new RegExp(`^SP1_GPU_ELEMENT_THRESHOLD=${pinOf('SHARD_16GB')}$`, 'm'));
+  assert.match(env, /^BTC_STATE=0$/m);
+});
+
+test('a 24 GB card keeps the stock server and its batches', async () => {
+  const w = await releaseWorld({ mem: 24576 });
+  const r = await install(w);
+  const env = await startedWith(w);
+  w.http.close();
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(w.hits.includes('/prover-bins-v18/sp1-gpu-server-lowmem'), false);
+  assert.equal(existsSync(join(w.home, '.sp1/bin/sp1-gpu-server')), false, 'the worker\'s SDK fetches the stock one');
+  assert.match(r.stdout, /Bitcoin batches the relay takes from it earn that address TAC/);
+  assert.doesNotMatch(env, /^BTC_STATE=/m);
+  assert.doesNotMatch(env, /^SP1_GPU_/m);
+  assert.match(env, /^POOL_LEASE_FILE=/m);
+});
+
+test('a smaller server that does not match its pin is not installed and nothing is started', async () => {
+  const w = await releaseWorld({ mem: 16376, serverBytes: Buffer.from('#!/bin/sh\necho tampered\n') });
+  const r = await install(w);
+  w.http.close();
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /the server's sha256 is [0-9a-f]{64}, not the pinned/);
+  assert.equal(existsSync(join(w.home, '.sp1/bin/sp1-gpu-server')), false);
+  assert.equal(existsSync(join(w.home, '.sp1/bin/sp1-gpu-server.part')), false);
+  assert.equal(existsSync(join(w.gpuHome, 'run.sh')), false);
+});
+
+test('on a machine with two cards the one with the most memory proves, and only it is checked', async () => {
+  const w = await releaseWorld({ cards: [{ mem: 8192, cc: '7.5' }, { mem: 24576, cc: '8.9' }] });
+  const r = await install(w);
+  const env = await startedWith(w);
+  w.http.close();
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(env, /^GPU_DEVICE=1$/m);
+  assert.match(env, /^CUDA_DEVICE_ORDER=PCI_BUS_ID$/m);
+  assert.doesNotMatch(env, /^BTC_STATE=/m, 'the 24 GB card takes batches');
+  assert.doesNotMatch(r.stdout, /compute capability/, 'the small old card is not the one checked');
+});
+
+test('a single card proves as card 0', async () => {
+  const w = await releaseWorld({ mem: 16376 });
+  const r = await install(w);
+  const env = await startedWith(w);
+  w.http.close();
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(env, /^GPU_DEVICE=0$/m);
 });
