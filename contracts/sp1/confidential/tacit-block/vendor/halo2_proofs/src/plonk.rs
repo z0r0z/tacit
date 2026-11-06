@@ -157,7 +157,56 @@ where
         }
         let fixed_commitments: Vec<_> = (0..num_fixed_columns).map(|_| C::read(reader, format)).collect::<Result<_, _>>()?;
         let permutation = permutation::VerifyingKey::read(reader, &cs.permutation, format)?;
-        Ok(Self::from_parts_with_repr(domain, fixed_commitments, permutation, cs, vec![], compress_selectors == 1, Some(repr)))
+        Ok(Self::from_parts_with_repr(domain, fixed_commitments, permutation, cs, vec![], compress_selectors == 1, Some(repr), None))
+    }
+
+    /// As `read_with_cs`, for a system written without its custom gates (`ConstraintSystem::to_compact_without_gates`): the gates
+    /// come as `program`, the bytes `gate_program_bytes` made of the full key (the finished system's degree, then the gates' flat
+    /// program), so neither their expression trees nor the walk for the system's degree is ever built.
+    pub fn read_with_program<R: io::Read>(
+        reader: &mut R,
+        format: SerdeFormat,
+        cs: ConstraintSystem<C::Scalar>,
+        degree: usize,
+        repr: C::Scalar,
+        program: &[u8],
+    ) -> io::Result<Self> {
+        let bad = |what: &str| io::Error::new(io::ErrorKind::InvalidData, what.to_string());
+        if !cs.gates.is_empty() {
+            return Err(bad("a system with its gates is read with read_with_cs"));
+        }
+        let cs_degree = program.get(..4).map(|d| u32::from_le_bytes(d.try_into().unwrap()) as usize).ok_or_else(|| bad("no gate program"))?;
+        let gates = GateProgram::from_bytes(&program[4..]).ok_or_else(|| bad("not a gate program"))?;
+        let mut head = [0u8; 3];
+        reader.read_exact(&mut head)?;
+        let [version, k, compress_selectors] = head;
+        if version != VERSION || k as u32 > C::Scalar::S || compress_selectors > 1 {
+            return Err(bad("unexpected verifying key header"));
+        }
+        let domain = EvaluationDomain::new(degree as u32, k as u32);
+        let mut num_fixed_columns = [0u8; 4];
+        reader.read_exact(&mut num_fixed_columns)?;
+        let num_fixed_columns = u32::from_le_bytes(num_fixed_columns);
+        if num_fixed_columns as usize != cs.num_fixed_columns {
+            return Err(bad("fixed columns differ from the constraint system's"));
+        }
+        let fixed_commitments: Vec<_> = (0..num_fixed_columns).map(|_| C::read(reader, format)).collect::<Result<_, _>>()?;
+        let permutation = permutation::VerifyingKey::read(reader, &cs.permutation, format)?;
+        let vk = Self::from_parts_with_repr(domain, fixed_commitments, permutation, cs, vec![], compress_selectors == 1, Some(repr), Some(cs_degree));
+        vk.gate_program.set(gates).map_err(|_| bad("gate program already set"))?;
+        Ok(vk)
+    }
+
+    /// What `read_with_program` takes for this key's custom gates: the finished system's degree (u32 LE), then the gates' flat program.
+    pub fn gate_program_bytes(&self) -> Vec<u8> {
+        let mut b = (self.cs_degree as u32).to_le_bytes().to_vec();
+        b.extend(self.gate_program().to_bytes());
+        b
+    }
+
+    /// The finished constraint system's degree (the permutation argument's chunks follow it).
+    pub fn cs_degree(&self) -> usize {
+        self.cs_degree
     }
 
     /// As `read`; with `repr = Some(r)` the transcript representation is taken as given instead
@@ -259,6 +308,7 @@ where
             selectors,
             compress_selectors,
             repr,
+            None,
         ))
     }
 
@@ -310,7 +360,7 @@ impl<C: CurveAffine> VerifyingKey<C> {
     where
         C::ScalarExt: FromUniformBytes<64>,
     {
-        Self::from_parts_with_repr(domain, fixed_commitments, permutation, cs, selectors, compress_selectors, None)
+        Self::from_parts_with_repr(domain, fixed_commitments, permutation, cs, selectors, compress_selectors, None, None)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -322,12 +372,13 @@ impl<C: CurveAffine> VerifyingKey<C> {
         selectors: Vec<Vec<bool>>,
         compress_selectors: bool,
         repr: Option<C::Scalar>,
+        cs_degree: Option<usize>,
     ) -> Self
     where
         C::ScalarExt: FromUniformBytes<64>,
     {
         // Compute cached values.
-        let cs_degree = cs.degree();
+        let cs_degree = cs_degree.unwrap_or_else(|| cs.degree());
 
         let mut vk = Self {
             domain,
@@ -561,7 +612,11 @@ impl<C: CurveAffine> VerifyingKey<C> {
 
     /// The custom gates as one flat program with shared subexpressions, built on first use.
     pub(crate) fn gate_program(&self) -> &GateProgram<C::Scalar> {
-        self.gate_program.get_or_init(|| GateProgram::new(&self.cs.gates))
+        self.gate_program.get_or_init(|| {
+            // a key read without its gates (`read_with_program`) has its program set; an empty one here would check no gate at all
+            assert!(!self.cs.gates.is_empty(), "a key without its gates has no gate program");
+            GateProgram::new(&self.cs.gates)
+        })
     }
 }
 

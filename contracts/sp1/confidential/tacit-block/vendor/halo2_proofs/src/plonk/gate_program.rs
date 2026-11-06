@@ -8,7 +8,7 @@ use ff::PrimeField;
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 enum Op<F> {
     Constant(F),
     Fixed(usize),
@@ -63,9 +63,39 @@ fn bytes32<F: PrimeField>(f: &F) -> [u8; 32] {
     b
 }
 
+struct Reader<'a> {
+    b: &'a [u8],
+    at: usize,
+}
+
+impl Reader<'_> {
+    fn byte(&mut self) -> Option<u8> {
+        let v = *self.b.get(self.at)?;
+        self.at += 1;
+        Some(v)
+    }
+    fn u(&mut self) -> Option<usize> {
+        let v = u32::from_le_bytes(self.b.get(self.at..self.at + 4)?.try_into().ok()?) as usize;
+        self.at += 4;
+        Some(v)
+    }
+    /// A field element as `bytes32` wrote it: its canonical bytes, zero-padded to 32.
+    fn f<F: PrimeField>(&mut self) -> Option<F> {
+        let w = self.b.get(self.at..self.at + 32)?;
+        self.at += 32;
+        let mut r = F::Repr::default();
+        let n = r.as_ref().len();
+        if w[n..].iter().any(|&x| x != 0) {
+            return None;
+        }
+        r.as_mut().copy_from_slice(&w[..n]);
+        Option::from(F::from_repr(r))
+    }
+}
+
 /// Nodes in evaluation order (every operand before its use) and, for each gate polynomial in gate order, the
 /// node holding its value.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct GateProgram<F> {
     ops: Vec<Op<F>>,
     outputs: Vec<usize>,
@@ -133,6 +163,92 @@ impl<F: PrimeField> GateProgram<F> {
                 self.push(Key::Scaled(a, bytes32(f)), Op::Scaled(a, *f), seen)
             }
         }
+    }
+
+    /// The program as bytes for `from_bytes`: the op count, each op as a tag and its operands (a node as u32 LE, a constant as its
+    /// canonical bytes), then the output count and the outputs.
+    pub(crate) fn to_bytes(&self) -> Vec<u8> {
+        let mut b = Vec::with_capacity(8 + self.ops.len() * 9 + self.outputs.len() * 4);
+        let u = |b: &mut Vec<u8>, x: usize| b.extend((x as u32).to_le_bytes());
+        u(&mut b, self.ops.len());
+        for op in &self.ops {
+            match op {
+                Op::Constant(c) => {
+                    b.push(0);
+                    b.extend(bytes32(c));
+                }
+                Op::Fixed(i) => {
+                    b.push(1);
+                    u(&mut b, *i);
+                }
+                Op::Advice(i) => {
+                    b.push(2);
+                    u(&mut b, *i);
+                }
+                Op::Instance(i) => {
+                    b.push(3);
+                    u(&mut b, *i);
+                }
+                Op::Challenge(i) => {
+                    b.push(4);
+                    u(&mut b, *i);
+                }
+                Op::Negated(a) => {
+                    b.push(5);
+                    u(&mut b, *a);
+                }
+                Op::Sum(a, c) => {
+                    b.push(6);
+                    u(&mut b, *a);
+                    u(&mut b, *c);
+                }
+                Op::Product(a, c) => {
+                    b.push(7);
+                    u(&mut b, *a);
+                    u(&mut b, *c);
+                }
+                Op::Scaled(a, f) => {
+                    b.push(8);
+                    u(&mut b, *a);
+                    b.extend(bytes32(f));
+                }
+            }
+        }
+        u(&mut b, self.outputs.len());
+        for o in &self.outputs {
+            u(&mut b, *o);
+        }
+        b
+    }
+
+    /// The program `to_bytes` wrote, or `None` for bytes that are not one: every operand names an earlier node, every constant is
+    /// canonical, every output is a node, and nothing is left over.
+    pub(crate) fn from_bytes(b: &[u8]) -> Option<Self> {
+        let mut r = Reader { b, at: 0 };
+        let n = r.u()?;
+        let mut ops = Vec::with_capacity(n);
+        for id in 0..n {
+            let before = |x: usize| (x < id).then_some(x);
+            let op = match r.byte()? {
+                0 => Op::Constant(r.f()?),
+                1 => Op::Fixed(r.u()?),
+                2 => Op::Advice(r.u()?),
+                3 => Op::Instance(r.u()?),
+                4 => Op::Challenge(r.u()?),
+                5 => Op::Negated(before(r.u()?)?),
+                6 => Op::Sum(before(r.u()?)?, before(r.u()?)?),
+                7 => Op::Product(before(r.u()?)?, before(r.u()?)?),
+                8 => Op::Scaled(before(r.u()?)?, r.f()?),
+                _ => return None,
+            };
+            ops.push(op);
+        }
+        let k = r.u()?;
+        let mut outputs = Vec::with_capacity(k);
+        for _ in 0..k {
+            outputs.push(r.u().filter(|&o| o < n)?);
+        }
+        (r.at == b.len()).then_some(GateProgram { ops, outputs })
     }
 
     /// Every gate polynomial's value from the proof's evaluations, in gate order.

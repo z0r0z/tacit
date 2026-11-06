@@ -187,6 +187,23 @@ impl<F: PrimeField> ConstraintSystem<F> {
     /// This system as bytes for `from_compact`, with `degree`, the degree its evaluation domain is built for
     /// (the configured system's, before selector compression). Panics on lookups, shuffles or annotations.
     pub fn to_compact(&self, degree: usize) -> Vec<u8> {
+        self.compact(degree, true)
+    }
+
+    /// As `to_compact`, leaving the custom gates out: a verifier that reads the key with `VerifyingKey::read_with_program` takes
+    /// them as their flat program instead, which costs far less to read than the expression trees.
+    pub fn to_compact_without_gates(&self, degree: usize) -> Vec<u8> {
+        self.compact(degree, false)
+    }
+
+    /// This system with its custom gates left out, as `to_compact_without_gates` writes it.
+    pub fn without_gates(&self) -> Self {
+        let mut cs = self.clone();
+        cs.gates.clear();
+        cs
+    }
+
+    fn compact(&self, degree: usize, gates: bool) -> Vec<u8> {
         assert!(self.lookups.is_empty() && self.shuffles.is_empty() && self.general_column_annotations.is_empty(), "not encoded");
         let mut w = W::default();
         w.u(degree);
@@ -207,8 +224,10 @@ impl<F: PrimeField> ConstraintSystem<F> {
         for c in &self.selector_map {
             w.u(c.index);
         }
-        w.u(self.gates.len());
-        for g in &self.gates {
+        let none = vec![];
+        let all = if gates { &self.gates } else { &none };
+        w.u(all.len());
+        for g in all {
             w.s(&g.name);
             w.u(g.constraint_names.len());
             for n in &g.constraint_names {

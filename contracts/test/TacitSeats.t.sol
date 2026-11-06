@@ -21,75 +21,133 @@ contract TacitSeatsTest is Test {
     Token tac;
     TacitSeats seats;
     uint256 constant SEAT = 1000e18;
-    uint256 constant SLOT = 10 minutes;
+    uint256 constant SLOT = 50;
     address constant BOOT = address(0xB007);
     address constant A = address(0xA);
     address constant B = address(0xB);
     address constant C = address(0xC);
+    uint256 epochBlocks;
 
     function setUp() public {
         tac = new Token(18);
         seats = new TacitSeats(IERC20Seats(address(tac)), SEAT, SLOT, BOOT);
-        vm.warp(1_000_000 * SLOT);
+        epochBlocks = SLOT * seats.EPOCH_SLOTS();
+        toEpoch(1000, 10);
     }
 
-    function join(address who) internal returns (uint256 seat) {
+    /// Block `offset` of epoch `e`, its seed (the hash of the block before it began) set to one made from `e`.
+    function toEpoch(uint256 e, uint256 offset) internal {
+        vm.roll(e * epochBlocks + offset);
+        vm.setBlockhash(e * epochBlocks - 1, keccak256(abi.encode("seed", e)));
+    }
+
+    function join(address who) internal returns (uint256 i) {
         tac.mint(who, SEAT);
         vm.startPrank(who);
         tac.approve(address(seats), SEAT);
-        seat = seats.join();
+        i = seats.join();
         vm.stopPrank();
     }
 
-    function test_theBootstrapLeadsWhileNoSeatIsHeld() public {
-        assertEq(seats.leader(), BOOT);
-        uint256 s = join(A);
-        assertEq(seats.leader(), A);
-        vm.prank(A);
-        seats.leave(s);
-        assertEq(seats.leader(), BOOT);
-    }
-
-    function test_aHolderOfTwoSeatsLeadsTwoTurnsInThree() public {
-        join(A);
-        join(B);
-        join(A);
-        assertEq(seats.seatsOf(A), 2);
-        // turn 1,000,000 is seat 1,000,000 mod 3 = 1
-        uint256 t = block.timestamp;
-        assertEq(seats.leaderAt(t), B);
-        assertEq(seats.leaderAt(t + SLOT), A);
-        assertEq(seats.leaderAt(t + 2 * SLOT), A);
-        assertEq(seats.leaderAt(t + 3 * SLOT), B);
-    }
-
-    function test_turnsCycleThroughTheSeats() public {
-        join(A);
-        join(B);
-        join(C);
-        // seat (t / SLOT) mod 3
-        uint256 base = (block.timestamp / SLOT) * SLOT;
-        address[3] memory order = [A, B, C];
-        for (uint256 k; k < 6; ++k) {
-            uint256 t = base + k * SLOT;
-            assertEq(seats.leaderAt(t), order[((t / SLOT) % 3)]);
-            assertEq(seats.leaderAt(t + SLOT - 1), order[((t / SLOT) % 3)], "a turn lasts SLOT");
+    /// Who leads each slot of the current epoch, as the seats stand.
+    function turnsNow() internal view returns (address[] memory t) {
+        uint256 start = seats.epoch() * epochBlocks;
+        t = new address[](seats.EPOCH_SLOTS());
+        for (uint256 j; j < t.length; ++j) {
+            t[j] = seats.leaderAt(start + j * SLOT);
         }
-        assertEq(tac.balanceOf(address(seats)), 3 * SEAT);
     }
 
-    function test_leavingMovesTheLastSeatIntoItsPlace() public {
+    function test_theBootstrapLeadsUntilASeatIsInTheDraw() public {
+        assertEq(seats.leader(), BOOT);
+        join(A);
+        assertEq(seats.leader(), BOOT, "a seat taken now is in the draw from the next epoch");
+        assertEq(seats.seats(), 0);
+        toEpoch(1001, 0);
+        assertEq(seats.seats(), 1);
+        assertEq(seats.leader(), A);
+    }
+
+    function test_noHolderCanChangeTheTurnsOfTheEpochUnderWay() public {
+        // A holds 2 of 8 seats
+        join(A);
+        join(A);
+        for (uint256 i; i < 6; ++i) {
+            join(address(uint160(0x100 + i)));
+        }
+        toEpoch(1001, 0);
+        seats.turn();
+        address[] memory before = turnsNow();
+        // halfway through the epoch A takes three more seats and leaves two, as the attack in the review did
+        vm.roll(block.number + 8 * SLOT);
+        join(A);
+        join(A);
+        join(A);
+        vm.startPrank(A);
+        seats.leave(0);
+        seats.leave(1);
+        vm.stopPrank();
+        address[] memory after_ = turnsNow();
+        for (uint256 j; j < before.length; ++j) {
+            assertEq(after_[j], before[j], "a turn of the epoch under way moved");
+        }
+        assertEq(seats.seats(), 8, "the draw holds the seats the epoch began with");
+        toEpoch(1002, 0);
+        assertEq(seats.seats(), 9, "8, three taken, two left");
+        assertEq(seats.seatsOf(A), 3);
+    }
+
+    function test_aSeatLeftLeadsToTheEndOfItsEpochThenTheLastTakesItsPlace() public {
         join(A);
         join(B);
         join(C);
+        toEpoch(1001, 0);
         vm.expectEmit(address(seats));
-        emit TacitSeats.Left(A, 0, C, block.timestamp + seats.EXIT_DELAY());
+        emit TacitSeats.Left(A, 0, C, 1002, block.timestamp + seats.EXIT_DELAY());
         vm.prank(A);
         seats.leave(0);
-        assertEq(seats.seats(), 2);
-        assertEq(seats.seatAt(0), C);
-        assertEq(seats.seatAt(1), B);
+        assertEq(seats.seatAt(0, false), A, "still A's in this epoch's draw");
+        assertEq(seats.seatAt(0, true), C);
+        assertEq(seats.seatAt(1, true), B);
         assertEq(seats.seatsOf(A), 0);
+        toEpoch(1002, 0);
+        assertEq(seats.seats(), 2);
+        assertEq(seats.seatAt(0, false), C);
+    }
+
+    function test_eachSeatLeadsItsShareOfTurns() public {
+        join(A);
+        join(A);
+        join(B);
+        join(C);
+        uint256 a;
+        uint256 total;
+        for (uint256 e = 1001; e < 1101; ++e) {
+            toEpoch(e, 0);
+            address[] memory t = turnsNow();
+            for (uint256 j; j < t.length; ++j) {
+                if (t[j] == A) ++a;
+                ++total;
+            }
+        }
+        // 2 seats of 4 over 1,600 turns: about half
+        assertGt(a * 100, total * 45);
+        assertLt(a * 100, total * 55);
+    }
+
+    function test_anEpochsSeedIsKeptByTurnOrItHasNoLeader() public {
+        join(A);
+        join(B);
+        toEpoch(1001, 5);
+        address lead = seats.turn();
+        assertTrue(lead == A || lead == B);
+        assertEq(seats.seedOf(1001), keccak256(abi.encode("seed", 1001)));
+        vm.roll(block.number + 300);
+        assertEq(seats.leader() == address(0), false, "a kept seed outlasts the block hash");
+        // an epoch nobody asked about within 256 blocks of its start has no leader, so anyone may land in it
+        toEpoch(1002, 300);
+        assertEq(seats.leader(), address(0));
+        assertEq(seats.turn(), address(0));
     }
 
     function test_onlyItsHolderLeavesASeat() public {
@@ -100,6 +158,17 @@ contract TacitSeatsTest is Test {
         vm.prank(A);
         vm.expectRevert(TacitSeats.NotYours.selector);
         seats.leave(1);
+    }
+
+    function test_onlyHoldersAnnounce() public {
+        vm.prank(A);
+        vm.expectRevert(TacitSeats.NotYours.selector);
+        seats.announce("https://a.example");
+        join(A);
+        vm.expectEmit(address(seats));
+        emit TacitSeats.Endpoint(A, "https://a.example");
+        vm.prank(A);
+        seats.announce("https://a.example");
     }
 
     function test_aSeatsTacComesBackAfterTheExitDelay() public {
@@ -160,8 +229,8 @@ contract TacitSeatsTest is Test {
         vm.expectRevert(TacitSeats.BadTerms.selector);
         new TacitSeats(IERC20Seats(address(tac)), 0, SLOT, BOOT);
         vm.expectRevert(TacitSeats.BadTerms.selector);
-        new TacitSeats(IERC20Seats(address(tac)), SEAT, 1 minutes - 1, BOOT);
+        new TacitSeats(IERC20Seats(address(tac)), SEAT, 4, BOOT);
         vm.expectRevert(TacitSeats.BadTerms.selector);
-        new TacitSeats(IERC20Seats(address(tac)), SEAT, 1 hours + 1, BOOT);
+        new TacitSeats(IERC20Seats(address(tac)), SEAT, 301, BOOT);
     }
 }

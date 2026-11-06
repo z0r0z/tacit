@@ -9,9 +9,10 @@ interface IERC20Min {
     function balanceOf(address who) external view returns (uint256);
 }
 
-/// Whose turn it is to land (TacitSeats: TAC stakers by turns).
+/// Whose turn it is to land (TacitSeats: TAC stakers by turns). `turn` may keep what it needs to say so (an epoch's seed); zero means no
+/// one leads now.
 interface ITurns {
-    function leader() external view returns (address);
+    function turn() external returns (address);
 }
 
 /// @notice Lands Tacit blocks on Ethereum and holds the ETH and tokens their notes are worth.
@@ -21,7 +22,13 @@ interface ITurns {
 ///         next. A block lands only on top of that digest, so there is one history. Until the chain has gone
 ///         `WINDOW` seconds without a block, only the leader of the current turn (`TURNS`, TAC stakers in turn) may
 ///         land, so what it has confirmed lands as confirmed and no one else's proof of the same height is wasted;
-///         after that anyone with a valid block may.
+///         after that, or in a turn no one leads, anyone with a valid block may.
+///
+///         A block proven against the state lands only if nothing it relies on has changed meanwhile, so whoever proves one
+///         leaves margins: no deposit within an hour of RECLAIM_AFTER (anyone may reclaim it then), no deposit its depositor
+///         has queued (a queued deposit is taken in only through its entry), every queue entry that turns FORCE_DELAY old
+///         before the block can land, and no more than it can land before its turn ends. A block that is refused is proven
+///         again.
 ///
 ///         Anyone may post a spend to the queue (`force`). Every block takes the queue's next entries in order, the
 ///         block program taking each sound one and passing over the rest, and a block lands only if it reaches every
@@ -275,8 +282,11 @@ contract TacitBlocks {
     ///         What only this contract knows is checked here, so that no entry can make a block unlandable: a spend of notes
     ///         is proven against a note root a block ended at, an exit is of an asset deposited before, and a deposit is one
     ///         the sender made and has no entry already queued for (no other spend may then take it in before the chain
-    ///         reaches this entry). What is posted is public: a forced spend's nullifiers, outputs, memos and exit are
-    ///         linked on L1, which for a spend a leader takes only the block's prover sees. Its amounts stay hidden.
+    ///         reaches this entry). What is posted is public: a forced spend's nullifiers, outputs, memos, deposit and exit
+    ///         are linked on L1 to one another and to the address that posts it, which for a spend a leader takes only the
+    ///         block's prover sees, and a deposit's or exit's opening (its value) is in clear; the values of its notes stay
+    ///         hidden. Bytes are queued as posted: the same spend posted twice, or with the flag bit halo2's point encoding
+    ///         ignores flipped, is two entries, of which a block takes at most one.
     function force(bytes calldata payload) external nonReentrant {
         if (payload.length < FORCED_MIN || payload.length > FORCED_MAX) revert BadPayload();
         bytes32 asset = bytes32(payload[64:96]);
@@ -302,7 +312,10 @@ contract TacitBlocks {
 
     /// @notice Lands the next block: its proof, its twelve public words and the lists it publishes.
     function land(bytes calldata publicValues, bytes calldata proof, Lists calldata lists) external nonReentrant {
-        if (block.timestamp < uint256(lastLanded) + WINDOW && msg.sender != TURNS.leader()) revert NotYourTurn();
+        if (block.timestamp < uint256(lastLanded) + WINDOW) {
+            address lead = TURNS.turn();
+            if (lead != address(0) && msg.sender != lead) revert NotYourTurn();
+        }
         if (publicValues.length != 32 * PUBLIC_WORDS) revert BadPublicValues();
         VERIFIER.verifyProof(BLOCK_VKEY, publicValues, proof);
         bytes32[12] memory w = abi.decode(publicValues, (bytes32[12]));

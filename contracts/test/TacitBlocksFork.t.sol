@@ -14,7 +14,7 @@ contract TacitBlocksForkTest is Test {
     /// The TAC ERC-20 on Ethereum.
     address constant TAC = 0xA1313eb9f3A445606D9583bcAc3ebeB56a858279;
     /// `cargo prove vkey --elf contracts/sp1/confidential/tacit-block/elf/tacit-block`
-    bytes32 constant BLOCK_VKEY = 0x00eca3f04c5b16c739d3f11bb7829513251a602fdd1d048935e3654b4c9b73bc;
+    bytes32 constant BLOCK_VKEY = 0x00d087c7df46d62377a18ca898e73a52ea7fd4c5a7cd213a99872e2f8464232c;
     address constant SEQ = address(0x5E9);
     uint256 constant GWEI = 1e9;
 
@@ -31,7 +31,7 @@ contract TacitBlocksForkTest is Test {
         fx = vm.readFile(path);
         address at = vm.parseJsonAddress(fx, ".lander");
         // no seat is held on the fork, so SEQ leads every turn
-        TacitSeats turns = new TacitSeats(IERC20Seats(TAC), 1000e18, 10 minutes, SEQ);
+        TacitSeats turns = new TacitSeats(IERC20Seats(TAC), 1000e18, 50, SEQ);
         deployCodeTo("TacitBlocks.sol:TacitBlocks", abi.encode(SP1_GROTH16_V6_1_0, BLOCK_VKEY, vm.parseJsonBytes32(fx, ".spendVk"), turns, uint256(600), uint256(1 hours)), at);
         blocks = TacitBlocks(at);
         ready = true;

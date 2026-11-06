@@ -32,6 +32,8 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
+pub mod fast;
+
 /// Levels of the nullifier tree: room for 2^32 records.
 pub const NF_LEVELS: usize = 32;
 /// How many of the latest note roots a block accepts as anchors without listing them.
@@ -103,23 +105,13 @@ pub fn node_hash(a: &Fr, b: &Fr) -> Fr {
     poseidon(&[*a, *b])
 }
 
-/// The note tree's constants as `tacit-block pin` writes artifacts/note-tree.bin: Poseidon's t = 3 round
-/// constants (round-major) and MDS matrix (row-major), then the empty subtree roots from the leaf level up, each
-/// 32 little-endian canonical bytes. The zkVM reads them from the file instead of parsing them.
+/// The note tree's constants as `tacit-block pin` writes artifacts/note-tree.bin: Poseidon's t = 3 constants in the shape
+/// `fast::poseidon_consts` lays them out (partial rounds made sparse), then the empty subtree roots from the leaf level up,
+/// each 32 little-endian canonical bytes. The zkVM reads them from the file instead of deriving them.
 pub fn note_tree_consts() -> Vec<u8> {
-    use btc_pool_halo2::model::{mds, partial_rounds, round_constant, FULL_ROUNDS};
-    assert_eq!(partial_rounds(3), NOTE_PARTIAL_ROUNDS, "Poseidon's partial rounds");
     let mut b = vec![];
-    for k in 0..(FULL_ROUNDS + partial_rounds(3)) * 3 {
-        b.extend_from_slice(round_constant(3, k / 3, k % 3).to_repr().as_ref());
-    }
-    for i in 0..3 {
-        for j in 0..3 {
-            b.extend_from_slice(mds(3, i, j).to_repr().as_ref());
-        }
-    }
-    for z in zeros() {
-        b.extend_from_slice(z.to_repr().as_ref());
+    for f in fast::poseidon_consts().iter().chain(zeros().iter()) {
+        b.extend_from_slice(f.to_repr().as_ref());
     }
     b
 }
@@ -129,10 +121,10 @@ mod zk {
     use super::*;
     use btc_pool_halo2::model::FULL_ROUNDS;
 
+    use crate::fast::{self, Fe};
+
     const NOTE_TREE: &[u8] = include_bytes!("../../artifacts/note-tree.bin");
-    const fn partial_rounds(_t: usize) -> usize {
-        NOTE_PARTIAL_ROUNDS
-    }
+    const PEDERSEN: &[u8] = include_bytes!("../../artifacts/pedersen.bin");
 
     /// One message schedule for the whole run: h64 writes its first sixteen words, the extend precompile the rest.
     static mut SCHEDULE: [u64; 64] = [0; 64];
@@ -160,8 +152,7 @@ mod zk {
     /// The BN254 scalar field's modulus r, little-endian limbs.
     const P: U = [0x43e1f593f0000001, 0x2833e84879b97091, 0xb85045b68181585d, 0x30644e72e131a029];
 
-    fn at(i: usize) -> U {
-        let b = &NOTE_TREE[32 * i..32 * i + 32];
+    fn le(b: &[u8]) -> U {
         [0, 1, 2, 3].map(|k| u64::from_le_bytes(b[8 * k..8 * k + 8].try_into().unwrap()))
     }
 
@@ -217,68 +208,82 @@ mod zk {
         x
     }
 
-    fn pow5(x: &U) -> U {
-        let x2 = mul(x, x);
-        let x4 = mul(&x2, &x2);
-        mul(&x4, x)
-    }
-
-    struct Tables {
-        c: Vec<U>,
-        m: [[U; 3]; 3],
-        partial: usize,
-    }
-
-    fn tables() -> &'static Tables {
-        static T: OnceLock<Tables> = OnceLock::new();
-        T.get_or_init(|| {
-            let partial = partial_rounds(3);
-            let n = (FULL_ROUNDS + partial) * 3;
-            assert_eq!(NOTE_TREE.len(), 32 * (n + 9 + TREE_DEPTH + 1), "note-tree.bin");
-            let c = (0..n).map(at).collect();
-            let mut m = [[[0u64; 4]; 3]; 3];
-            for (i, row) in m.iter_mut().enumerate() {
-                for (j, e) in row.iter_mut().enumerate() {
-                    *e = at(n + 3 * i + j);
-                }
+    /// a - b mod r for a, b < r.
+    #[inline(always)]
+    fn sub(a: &U, b: &U) -> U {
+        let mut d = [0u64; 4];
+        let mut borrow = 0u64;
+        for i in 0..4 {
+            let (x, b1) = a[i].overflowing_sub(b[i]);
+            let (y, b2) = x.overflowing_sub(borrow);
+            d[i] = y;
+            borrow = b1 as u64 + b2 as u64;
+        }
+        if borrow != 0 {
+            let mut carry = 0u64;
+            for i in 0..4 {
+                let (x, c1) = d[i].overflowing_add(P[i]);
+                let (y, c2) = x.overflowing_add(carry);
+                d[i] = y;
+                carry = c1 as u64 + c2 as u64;
             }
-            Tables { c, m, partial }
+        }
+        d
+    }
+
+    impl Fe for U {
+        fn zero() -> Self {
+            [0; 4]
+        }
+        fn one() -> Self {
+            [1, 0, 0, 0]
+        }
+        fn from_u64(v: u64) -> Self {
+            [v, 0, 0, 0]
+        }
+        fn add(&self, o: &Self) -> Self {
+            add(self, o)
+        }
+        fn sub(&self, o: &Self) -> Self {
+            sub(self, o)
+        }
+        fn mul(&self, o: &Self) -> Self {
+            mul(self, o)
+        }
+        fn same(&self, o: &Self) -> bool {
+            self == o
+        }
+    }
+
+    fn consts() -> &'static Vec<U> {
+        static C: OnceLock<Vec<U>> = OnceLock::new();
+        C.get_or_init(|| {
+            assert_eq!(NOTE_TREE.len(), 32 * (fast::POSEIDON_CONSTS + TREE_DEPTH + 1), "note-tree.bin");
+            (0..fast::POSEIDON_CONSTS).map(|i| le(&NOTE_TREE[32 * i..32 * i + 32])).collect()
         })
     }
 
-    /// circomlib Poseidon(a, b): state [0, a, b], 8 full rounds around 57 partial, output state[0].
+    /// circomlib Poseidon(a, b) on canonical limbs, its partial rounds sparse (`fast::poseidon2`).
     pub fn poseidon2(a: &Fr, b: &Fr) -> Fr {
-        let t = tables();
-        let half = FULL_ROUNDS / 2;
-        let mut s = [[0u64; 4], limbs(a), limbs(b)];
-        for r in 0..FULL_ROUNDS + t.partial {
-            for j in 0..3 {
-                s[j] = add(&s[j], &t.c[r * 3 + j]);
-            }
-            if r < half || r >= half + t.partial {
-                for x in s.iter_mut() {
-                    *x = pow5(x);
-                }
-            } else {
-                s[0] = pow5(&s[0]);
-            }
-            let mut n = [[0u64; 4]; 3];
-            for (i, row) in t.m.iter().enumerate() {
-                n[i] = add(&add(&mul(&row[0], &s[0]), &mul(&row[1], &s[1])), &mul(&row[2], &s[2]));
-            }
-            s = n;
-        }
-        fr(&s[0])
+        let k = consts();
+        fr(&fast::poseidon2(&|i| k[i], &limbs(a), &limbs(b)))
     }
 
     /// The empty subtree roots from note-tree.bin.
     pub fn zeros() -> [Fr; TREE_DEPTH + 1] {
-        let base = (FULL_ROUNDS + partial_rounds(3)) * 3 + 9;
         let mut z = [Fr::ZERO; TREE_DEPTH + 1];
         for (i, x) in z.iter_mut().enumerate() {
-            *x = fr(&at(base + i));
+            let at = 32 * (fast::POSEIDON_CONSTS + i);
+            *x = fr(&le(&NOTE_TREE[at..at + 32]));
         }
         z
+    }
+
+    /// Whether `o` opens `c`, from the fixed-base tables in pedersen.bin (`fast::pedersen`).
+    pub fn commits(o: &Opening, c: &[Fr; 2]) -> bool {
+        assert_eq!(PEDERSEN.len(), 96 * fast::TABLE_POINTS, "pedersen.bin");
+        let p = fast::pedersen(&|i| le(&PEDERSEN[32 * i..32 * i + 32]), o.v, &fast::blinding(&o.r));
+        fast::is(&p, &[limbs(&c[0]), limbs(&c[1])])
     }
 }
 
@@ -619,9 +624,17 @@ pub fn memo_hash(memo: &[u8]) -> [u8; 32] {
     h.finalize().into()
 }
 
-/// Whether `o` opens the BabyJubJub Pedersen commitment `c`, as btc-pool-halo2 commits.
+/// Whether `o` opens the BabyJubJub Pedersen commitment `c`, as btc-pool-halo2 commits (in the zkVM from fixed-base tables,
+/// `fast::pedersen`, which `fast::check` holds to the reference).
 fn commits(o: &Opening, c: &[Fr; 2]) -> bool {
-    pedersen_bjj(&BigUint::from(o.v), &BigUint::from_bytes_be(&o.r)) == *c
+    #[cfg(target_os = "zkvm")]
+    {
+        return zk::commits(o, c);
+    }
+    #[allow(unreachable_code)]
+    {
+        pedersen_bjj(&BigUint::from(o.v), &BigUint::from_bytes_be(&o.r)) == *c
+    }
 }
 
 /// What a block moves: the note tree, the nullifier tree's root and record count, the last `RECENT` note roots,
@@ -837,19 +850,126 @@ pub fn forced_memo(p: &[u8], i: usize) -> &[u8] {
     &p[FORCED_HEAD_LEN + MEMO_LEN * i..FORCED_HEAD_LEN + MEMO_LEN * (i + 1)]
 }
 
-/// A spend from the landing contract's queue (`force`), as a block learns of it: the hash of what was posted, the spend and the rest
-/// of its body when the bytes are one, whether its proof verifies (checked on its own, not in the block's batch), and for each live
-/// nullifier either nothing or the record that shows the note was spent before this block.
-#[derive(Clone, Debug)]
-pub struct Forced {
-    pub payload_hash: [u8; 32],
-    pub spend: Option<(Spend, SpendData)>,
-    pub proof_ok: bool,
+/// The proof and hints of a posted spend at least FORCED_HEAD_LEN bytes long.
+pub fn forced_proof(p: &[u8]) -> (&[u8], &[u8]) {
+    (&p[FORCED_PUBLICS_LEN..FORCED_PUBLICS_LEN + FORCED_PROOF_LEN], &p[FORCED_PUBLICS_LEN + FORCED_PROOF_LEN..FORCED_HEAD_LEN])
+}
+
+/// A posted spend's answers, as whoever builds the block gives them: whether its proof verifies, then for each live nullifier 0, or 1
+/// and the record that shows the note spent before the block. The program holds the builder to each: a proof said to verify joins the
+/// block's one pairing, and one said not to is checked on its own and must fail; a record must be in the tree, and a note said to be
+/// unspent must go into it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Answers {
+    pub verifies: bool,
     pub members: Vec<Option<NfMember>>,
+}
+
+impl Answers {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut b = vec![self.verifies as u8];
+        for m in &self.members {
+            match m {
+                None => b.push(0),
+                Some(m) => {
+                    b.push(1);
+                    b.extend(m.to_bytes());
+                }
+            }
+        }
+        b
+    }
+
+    pub fn from_bytes(b: &[u8]) -> Option<Answers> {
+        let (&v, mut rest) = b.split_first()?;
+        if v > 1 {
+            return None;
+        }
+        let mut members = vec![];
+        while let Some((&tag, after)) = rest.split_first() {
+            match tag {
+                0 => {
+                    members.push(None);
+                    rest = after;
+                }
+                1 => {
+                    members.push(Some(NfMember::from_bytes(after.get(..NF_MEMBER_LEN)?)?));
+                    rest = &after[NF_MEMBER_LEN..];
+                }
+                _ => return None,
+            }
+        }
+        Some(Answers { verifies: v == 1, members })
+    }
+}
+
+/// A spend from the landing contract's queue (`force`), as a block sees it before looking at its proof: the hash of what was posted,
+/// and the spend when the bytes are one none of whose notes the tree shows spent and whose body and openings check out.
+#[derive(Clone, Debug)]
+pub struct Posted {
+    pub payload_hash: [u8; 32],
+    pub candidate: Option<Candidate>,
+}
+
+/// A posted spend that only its proof and the spends before it in the block decide on: its publics, and what taking it does.
+#[derive(Clone, Debug)]
+pub struct Candidate {
+    pub publics: Vec<Fr>,
+    effects: Effects,
+}
+
+/// What a block learns of posted bytes before the proof in them, the cheap checks first, so that bytes no block could take cost a block
+/// next to nothing: that they are a spend, that none of its notes is in the tree (`members`: the builder's answers, each checked), and
+/// that its body and openings check out. Err: a wrong answer (a record not in the tree, or answers for another number of notes), which
+/// refuses the block.
+pub fn posted(prev: &State, payload: &[u8], members: &[Option<NfMember>]) -> Result<Posted, String> {
+    let payload_hash = payload_hash(payload);
+    let none = Posted { payload_hash, candidate: None };
+    let Some((publics, _, _, data)) = forced_parts(payload) else { return Ok(none) };
+    let spend = Spend::from_publics(&publics);
+    let live = spend.live_nullifiers();
+    if members.len() != live.len() {
+        return Err(format!("{} answers for {} notes", members.len(), live.len()));
+    }
+    let mut spent = false;
+    for (nf, m) in live.iter().zip(members) {
+        if let Some(m) = m {
+            if !nf_member(&prev.nf_root, prev.nf_size, &fr_be(nf), m) {
+                return Err("a note said to be spent is not in the tree".into());
+            }
+            spent = true;
+        }
+    }
+    if spent {
+        return Ok(none);
+    }
+    Ok(match effects(prev, &spend, &data) {
+        Ok(effects) => Posted { payload_hash, candidate: Some(Candidate { publics, effects }) },
+        Err(_) => none,
+    })
+}
+
+/// Which posted spends a block takes, in queue order: a candidate none of whose notes a spend before it in the block spends (the block's
+/// own come first) and whose proof verifies, which `verifies(j, candidate)` says and is asked only of those.
+pub fn take(spends: &[Spend], posted: &[Posted], mut verifies: impl FnMut(usize, &Candidate) -> bool) -> Vec<bool> {
+    let mut used: BTreeSet<[u8; 32]> = spends.iter().flat_map(|s| s.live_nullifiers()).map(|x| fr_be(&x)).collect();
+    posted
+        .iter()
+        .enumerate()
+        .map(|(j, p)| {
+            let Some(c) = &p.candidate else { return false };
+            if c.effects.nullifiers.iter().any(|x| used.contains(x)) || !verifies(j, c) {
+                return false;
+            }
+            used.extend(c.effects.nullifiers.iter().copied());
+            true
+        })
+        .collect()
 }
 
 /// What a spend does to a block once its body and openings check out: the anchor it lists (one older than the recent roots), its
 /// outputs (leaf, memo hash), its deposit and exit records and its live nullifiers. The nullifier tree is not consulted here.
+#[derive(Clone, Debug)]
 struct Effects {
     anchor: Option<[u8; 32]>,
     outputs: Vec<(Fr, [u8; 32])>,
@@ -901,73 +1021,48 @@ fn effects(prev: &State, s: &Spend, d: &SpendData) -> Result<Effects, &'static s
     Ok(e)
 }
 
-/// The spends a block takes: `(index, effects)`, the block's own as 0..n and the forced ones as n + their place in `forced`, and the
-/// queue's position and hash after the forced spends. A spend of the block's own that does not check out refuses the block. A forced
-/// spend is taken when its proof verifies, its body and openings check out and none of its notes was spent before it (before this
-/// block, which a record of the tree shows, or earlier in it); otherwise it is passed over. The queue moves past it either way.
-fn select(prev: &State, spends: &[Spend], data: &[SpendData], forced: &[Forced]) -> Result<(Vec<(usize, Effects)>, u64, [u8; 32]), String> {
-    if data.len() != spends.len() {
-        return Err(format!("{} spend data for {} spends", data.len(), spends.len()));
+/// The non-zero nullifiers a block will enter into the tree, smallest first: those of its own spends and of the posted spends it takes,
+/// for whoever builds the block to make their witnesses.
+pub fn block_nullifiers(spends: &[Spend], posted: &[Posted], taken: &[bool]) -> Vec<[u8; 32]> {
+    let mut all: Vec<[u8; 32]> = spends.iter().flat_map(|s| s.live_nullifiers()).map(|x| fr_be(&x)).collect();
+    for (p, t) in posted.iter().zip(taken) {
+        if let (true, Some(c)) = (*t, &p.candidate) {
+            all.extend(c.effects.nullifiers.iter().copied());
+        }
     }
-    let n = spends.len();
-    let mut taken: Vec<(usize, Effects)> = Vec::with_capacity(n + forced.len());
-    for (i, (s, d)) in spends.iter().zip(data).enumerate() {
-        taken.push((i, effects(prev, s, d).map_err(|e| format!("spend {i}: {e}"))?));
-    }
-    let mut used: BTreeSet<[u8; 32]> = taken.iter().flat_map(|(_, e)| e.nullifiers.iter().copied()).collect();
-    let (mut queue_len, mut queue_hash) = (prev.queue_len, prev.queue_hash);
-    for (j, f) in forced.iter().enumerate() {
-        queue_len += 1;
-        queue_hash = queue_step(&queue_hash, &f.payload_hash);
-        let Some((s, d)) = &f.spend else { continue };
-        if !f.proof_ok {
-            continue;
-        }
-        let Ok(e) = effects(prev, s, d) else { continue };
-        if f.members.len() != e.nullifiers.len() {
-            return Err(format!("forced spend {j}: {} answers for {} nullifiers", f.members.len(), e.nullifiers.len()));
-        }
-        let mut spent_before = false;
-        for (nf, m) in e.nullifiers.iter().zip(&f.members) {
-            if let Some(m) = m {
-                if !nf_member(&prev.nf_root, prev.nf_size, nf, m) {
-                    return Err(format!("forced spend {j}: a note said to be spent is not in the tree"));
-                }
-                spent_before = true;
-            }
-        }
-        if spent_before || e.nullifiers.iter().any(|x| used.contains(x)) {
-            continue;
-        }
-        used.extend(e.nullifiers.iter().copied());
-        taken.push((n + j, e));
-    }
-    Ok((taken, queue_len, queue_hash))
-}
-
-/// The non-zero nullifiers a block will enter into the tree, smallest first: those of its own spends and of the forced spends it
-/// takes, for whoever builds the block to make their witnesses.
-pub fn block_nullifiers(prev: &State, spends: &[Spend], data: &[SpendData], forced: &[Forced]) -> Result<Vec<[u8; 32]>, String> {
-    let (taken, _, _) = select(prev, spends, data, forced)?;
-    let mut all: Vec<[u8; 32]> = taken.into_iter().flat_map(|(_, e)| e.nullifiers).collect();
     all.sort();
-    Ok(all)
+    all
 }
 
 /// Applies a block to `prev`: its own spends (each proof checked separately; the guest folds them into one pairing), then the next
-/// `forced.len()` spends of the landing contract's queue, in queue order, taken or passed over as `select` decides. The choice is the
-/// program's, so whoever builds the block cannot keep a sound forced spend out of the chain. `nfw[j]` is the witness for the j-th
-/// smallest non-zero nullifier of every spend taken, against the tree as the smaller ones left it: nullifiers enter in ascending
-/// order, so the tree is a function of the published list alone.
-pub fn apply(prev: &State, spends: &[Spend], data: &[SpendData], forced: &[Forced], nfw: &[NfWitness], vk: [u8; 32]) -> Result<(State, BlockOut, BlockData), String> {
+/// `posted.len()` spends of the landing contract's queue in queue order, those `taken` (as `take` decides, so that whoever builds the
+/// block cannot keep a sound one out) joining it; the queue moves past every one. A spend of the block's own that does not check out
+/// refuses the block. `nfw[j]` is the witness for the j-th smallest non-zero nullifier of every spend taken, against the tree as the
+/// smaller ones left it: nullifiers enter in ascending order, so the tree is a function of the published list alone.
+pub fn apply(prev: &State, spends: &[Spend], data: &[SpendData], posted: &[Posted], taken: &[bool], nfw: &[NfWitness], vk: [u8; 32]) -> Result<(State, BlockOut, BlockData), String> {
     mark!("cycle-tracker-report-start: block-scan");
+    if data.len() != spends.len() || taken.len() != posted.len() {
+        return Err(format!("{} spend data for {} spends, {} choices for {} posted", data.len(), spends.len(), taken.len(), posted.len()));
+    }
     let n = spends.len();
     let who = |i: usize| if i < n { format!("spend {i}") } else { format!("forced spend {}", i - n) };
-    let (taken, queue_len, queue_hash) = select(prev, spends, data, forced)?;
+    let mut chosen: Vec<(usize, Effects)> = Vec::with_capacity(n + posted.len());
+    for (i, (s, d)) in spends.iter().zip(data).enumerate() {
+        chosen.push((i, effects(prev, s, d).map_err(|e| format!("spend {i}: {e}"))?));
+    }
+    let (mut queue_len, mut queue_hash) = (prev.queue_len, prev.queue_hash);
+    for (j, (p, t)) in posted.iter().zip(taken).enumerate() {
+        queue_len += 1;
+        queue_hash = queue_step(&queue_hash, &p.payload_hash);
+        if *t {
+            let c = p.candidate.as_ref().ok_or_else(|| format!("forced spend {j}: taken, but no spend"))?;
+            chosen.push((n + j, c.effects.clone()));
+        }
+    }
     let mut outputs: Vec<(Fr, [u8; 32])> = vec![];
     let mut spent: Vec<(usize, [u8; 32])> = vec![];
     let mut lists = BlockData::default();
-    for (i, e) in taken {
+    for (i, e) in chosen {
         lists.anchors.extend(e.anchor);
         lists.deposits.extend(e.deposit);
         lists.exits.extend(e.exit);

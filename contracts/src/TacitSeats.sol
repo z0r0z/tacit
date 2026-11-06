@@ -5,31 +5,50 @@ interface IERC20Seats {
     function balanceOf(address who) external view returns (uint256);
 }
 
-/// @notice Whose turn it is to land the next Tacit block. A seat is SEAT of TAC locked here; the seats take turns of
-///         SLOT seconds in order (seat (now / SLOT) mod the number of seats), and with no seats BOOTSTRAP leads. A
-///         holder may take as many seats as it locks TAC for.
+/// @notice Whose turn it is to land the next Tacit block. A seat is SEAT of TAC locked here, and a holder may take as many seats as it
+///         locks TAC for. Time runs in slots of SLOT_BLOCKS Ethereum blocks and epochs of EPOCH_SLOTS slots. Each slot one seat leads,
+///         drawn from the epoch's seats by the slot's number and the epoch's seed: the hash of the block just before the epoch began.
+///         A seat taken or left counts from the next epoch, so an epoch's seats are fixed before its seed exists, and no holder can
+///         choose its turns by taking or leaving seats: over time each seat leads its share of them. With no seats, BOOTSTRAP leads.
 ///
-///         Nothing here has an owner: no one can take a seat away, change the terms or move a stake. A seat is left
-///         only by its holder, whose TAC comes back EXIT_DELAY later, so a stake cannot take turns and leave at once.
-///         Turns follow the seat list, so they shift whenever a seat is taken or left.
+///         Nothing here has an owner: no one can take a seat away, change the terms or move a stake. A seat is left only by its holder,
+///         whose TAC comes back EXIT_DELAY later.
 ///
-///         A turn only says who proves the next block. A leader that lands nothing holds the chain back until the
-///         landing contract lets anyone land (its WINDOW after the last landing), and one that leaves a spend out
-///         cannot keep it out (the landing contract's queue).
+///         A turn only says who proves the next block. A leader that lands nothing holds the chain back until the landing contract lets
+///         anyone land (its WINDOW after the last landing), and one that leaves a spend out cannot keep it out (the landing contract's
+///         queue). An epoch's seed is kept the first time anyone asks for a turn in it (`turn`, which landing does); a block hash is in
+///         reach for 256 blocks, so an epoch whose seed nobody kept by then has no leader, and anyone may land in it.
+///
+///         A leader that starts a block late in its slot may not land it in time; a leader proves only what it can land before its
+///         slot ends.
 contract TacitSeats {
     IERC20Seats public immutable TAC;
     /// @notice The TAC one seat locks.
     uint256 public immutable SEAT;
-    /// @notice How long each turn lasts.
-    uint256 public immutable SLOT;
+    /// @notice How many Ethereum blocks each turn lasts.
+    uint256 public immutable SLOT_BLOCKS;
     /// @notice Who leads while no one holds a seat.
     address public immutable BOOTSTRAP;
+    uint256 public constant EPOCH_SLOTS = 16;
     uint256 public constant EXIT_DELAY = 7 days;
-    uint256 public constant MIN_SLOT = 1 minutes;
-    uint256 public constant MAX_SLOT = 1 hours;
+    uint256 public constant MIN_SLOT_BLOCKS = 5;
+    uint256 public constant MAX_SLOT_BLOCKS = 300;
 
-    address[] internal held;
-    /// @notice How many seats each holder has.
+    /// A seat's holder in the draw, and the holder that takes its place from epoch `nextFrom` on (none while it is 0). Every change counts
+    /// from the epoch after the one it is made in, so two holders are all a seat ever needs.
+    struct Seat {
+        address holder;
+        address next;
+        uint64 nextFrom;
+    }
+    mapping(uint256 => Seat) internal seat;
+    /// How many seats the draw has, and how many from epoch `countNextFrom` on.
+    uint64 internal count;
+    uint64 internal countNext;
+    uint64 internal countNextFrom;
+    /// @notice The seeds kept, by epoch.
+    mapping(uint256 => bytes32) public seedOf;
+    /// @notice How many seats each holder has from the next epoch on.
     mapping(address => uint256) public seatsOf;
     struct Leaving {
         uint192 amount;
@@ -38,12 +57,14 @@ contract TacitSeats {
     /// @notice TAC of seats left and not yet claimed, and when it may be (the latest seat left sets it).
     mapping(address => Leaving) public leaving;
 
-    event Joined(address indexed who, uint256 seat);
-    /// @notice `who` left `seat`; the last seat, held by `moved`, took its place (`moved` is zero when the last seat
+    /// @notice `who` took `seat`, which is in the draw from `epoch` on.
+    event Joined(address indexed who, uint256 seat, uint256 epoch);
+    /// @notice `who` left `seat` (from `epoch` on); the last seat, held by `moved`, takes its place (`moved` is zero when the last seat
     ///         was the one left).
-    event Left(address indexed who, uint256 seat, address moved, uint256 until);
+    event Left(address indexed who, uint256 seat, address moved, uint256 epoch, uint256 until);
     event Claimed(address indexed who, uint256 amount);
-    /// @notice Where `who` takes spends for the blocks it lands: whatever it says, for wallets to find it.
+    /// @notice Where `who`, a seat holder, takes spends for the blocks it lands: what it says, for wallets to find it (a wallet uses only
+    ///         the latest one of a holder of a seat in the current epoch).
     event Endpoint(address indexed who, string url);
 
     error BadTerms();
@@ -52,41 +73,46 @@ contract TacitSeats {
     error Nothing();
     error TransferFailed();
 
-    constructor(IERC20Seats tac, uint256 seat, uint256 slot, address bootstrap) {
-        if (address(tac).code.length == 0 || seat == 0 || seat > type(uint192).max / 2 ** 32) revert BadTerms();
-        if (slot < MIN_SLOT || slot > MAX_SLOT) revert BadTerms();
+    constructor(IERC20Seats tac, uint256 seatStake, uint256 slotBlocks, address bootstrap) {
+        if (address(tac).code.length == 0 || seatStake == 0 || seatStake > type(uint192).max / 2 ** 32) revert BadTerms();
+        if (slotBlocks < MIN_SLOT_BLOCKS || slotBlocks > MAX_SLOT_BLOCKS) revert BadTerms();
         TAC = tac;
-        SEAT = seat;
-        SLOT = slot;
+        SEAT = seatStake;
+        SLOT_BLOCKS = slotBlocks;
         BOOTSTRAP = bootstrap;
     }
 
-    /// @notice Locks SEAT of TAC (approved to this contract) for one more seat.
-    function join() external returns (uint256 seat) {
+    /// @notice Locks SEAT of TAC (approved to this contract) for one more seat, in the draw from the next epoch on.
+    function join() external returns (uint256 i) {
         uint256 before = TAC.balanceOf(address(this));
         _call(abi.encodeWithSelector(0x23b872dd, msg.sender, address(this), SEAT));
         if (TAC.balanceOf(address(this)) - before != SEAT) revert TransferFailed();
-        seat = held.length;
-        held.push(msg.sender);
+        uint256 next = epoch() + 1;
+        i = _countAt(next);
+        _setSeat(i, msg.sender);
+        _setCount(i + 1);
         seatsOf[msg.sender] += 1;
-        emit Joined(msg.sender, seat);
+        emit Joined(msg.sender, i, next);
     }
 
-    /// @notice Gives up seat `seat`, which the caller holds; its TAC may be claimed EXIT_DELAY from now.
-    function leave(uint256 seat) external {
-        if (seat >= held.length || held[seat] != msg.sender) revert NotYours();
-        uint256 last = held.length - 1;
+    /// @notice Gives up seat `i` (as the next epoch numbers it), which the caller holds: from the next epoch on it is out of the draw, and
+    ///         its TAC may be claimed EXIT_DELAY from now.
+    function leave(uint256 i) external {
+        uint256 next = epoch() + 1;
+        uint256 n = _countAt(next);
+        if (i >= n || _holderAt(i, next) != msg.sender) revert NotYours();
+        uint256 last = n - 1;
         address moved;
-        if (seat != last) {
-            moved = held[last];
-            held[seat] = moved;
+        if (i != last) {
+            moved = _holderAt(last, next);
+            _setSeat(i, moved);
         }
-        held.pop();
+        _setCount(last);
         seatsOf[msg.sender] -= 1;
         Leaving storage l = leaving[msg.sender];
         l.amount += uint192(SEAT);
         l.until = uint64(block.timestamp + EXIT_DELAY);
-        emit Left(msg.sender, seat, moved, l.until);
+        emit Left(msg.sender, i, moved, next, l.until);
     }
 
     /// @notice Sends the caller the TAC of the seats it left, once EXIT_DELAY has passed since it left the last.
@@ -99,28 +125,82 @@ contract TacitSeats {
         emit Claimed(msg.sender, l.amount);
     }
 
-    /// @notice Says where the caller takes spends.
+    /// @notice Says where the caller, a seat holder, takes spends.
     function announce(string calldata url) external {
+        if (seatsOf[msg.sender] == 0) revert NotYours();
         emit Endpoint(msg.sender, url);
     }
 
-    /// @notice Who leads now: the landing contract lets only it land until the chain has gone WINDOW without a block.
-    function leader() external view returns (address) {
-        return leaderAt(block.timestamp);
+    /// @notice Who leads now, keeping this epoch's seed if no one has yet. Anyone may call it; landing does.
+    function turn() external returns (address) {
+        uint256 e = epoch();
+        if (seedOf[e] == 0) {
+            bytes32 s = seedAt(e);
+            if (s != 0) seedOf[e] = s;
+        }
+        return leader();
     }
 
-    /// @notice Who leads at time `t` if the seats stay as they are.
-    function leaderAt(uint256 t) public view returns (address) {
-        uint256 n = held.length;
-        return n == 0 ? BOOTSTRAP : held[(t / SLOT) % n];
+    /// @notice Who leads now: zero when this epoch's seed is out of reach and was never kept.
+    function leader() public view returns (address) {
+        return leaderAt(block.number);
     }
 
+    /// @notice Who leads at block `b` of this epoch or the next, as the seats stand: zero while that epoch's seed is unknown.
+    function leaderAt(uint256 b) public view returns (address) {
+        uint256 e = b / (SLOT_BLOCKS * EPOCH_SLOTS);
+        uint256 n = _countAt(e);
+        if (n == 0) return BOOTSTRAP;
+        bytes32 s = seedAt(e);
+        if (s == 0) return address(0);
+        return _holderAt(uint256(keccak256(abi.encode(s, b / SLOT_BLOCKS))) % n, e);
+    }
+
+    /// @notice Epoch `e`'s seed: the one kept, else the hash of the block before the epoch began while it is in reach, else zero.
+    function seedAt(uint256 e) public view returns (bytes32 s) {
+        s = seedOf[e];
+        if (s != 0 || e == 0) return s;
+        uint256 b = e * SLOT_BLOCKS * EPOCH_SLOTS - 1;
+        if (block.number > b && block.number - b <= 256) s = blockhash(b);
+    }
+
+    function epoch() public view returns (uint256) {
+        return block.number / (SLOT_BLOCKS * EPOCH_SLOTS);
+    }
+
+    /// @notice How many seats this epoch draws from.
     function seats() external view returns (uint256) {
-        return held.length;
+        return _countAt(epoch());
     }
 
-    function seatAt(uint256 seat) external view returns (address) {
-        return held[seat];
+    /// @notice Who holds seat `i` in this epoch's draw (or, with `next`, the next epoch's).
+    function seatAt(uint256 i, bool next) external view returns (address) {
+        return _holderAt(i, epoch() + (next ? 1 : 0));
+    }
+
+    function _holderAt(uint256 i, uint256 e) internal view returns (address) {
+        Seat storage s = seat[i];
+        return s.nextFrom != 0 && s.nextFrom <= e ? s.next : s.holder;
+    }
+
+    function _countAt(uint256 e) internal view returns (uint256) {
+        return countNextFrom != 0 && countNextFrom <= e ? countNext : count;
+    }
+
+    /// @dev Seat `i`'s holder from the next epoch on (the version in force now becomes the current one first).
+    function _setSeat(uint256 i, address who) internal {
+        uint64 next = uint64(epoch() + 1);
+        Seat storage s = seat[i];
+        if (s.nextFrom != 0 && s.nextFrom < next) s.holder = s.next;
+        s.next = who;
+        s.nextFrom = next;
+    }
+
+    function _setCount(uint256 n) internal {
+        uint64 next = uint64(epoch() + 1);
+        if (countNextFrom != 0 && countNextFrom < next) count = countNext;
+        countNext = uint64(n);
+        countNextFrom = next;
     }
 
     /// @dev A TAC call that must succeed and return true or nothing.

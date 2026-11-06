@@ -64,7 +64,7 @@ contract TacitBlocksTest is Test {
         verifier = new AcceptAll();
         tac = new Token(18);
         // no one holds a seat, so SEQ leads every turn
-        turns = new TacitSeats(IERC20Seats(address(tac)), 1000e18, 10 minutes, SEQ);
+        turns = new TacitSeats(IERC20Seats(address(tac)), 1000e18, 50, SEQ);
         blocks = deploy(vm.parseJsonBytes32(fx, ".spendVk"));
     }
 
@@ -513,9 +513,8 @@ contract TacitBlocksTest is Test {
         assertEq(blocks.height(), 1);
     }
 
-    function test_stakersLandInTurn() public {
-        address a = address(0xA);
-        address b = address(0xB);
+    /// Two holders' seats in the draw: the start of the next epoch, its seed set.
+    function twoSeats(address a, address b) internal returns (uint256 e, uint256 epochBlocks) {
         for (uint256 i; i < 2; ++i) {
             address who = i == 0 ? a : b;
             tac.mint(who, 1000e18);
@@ -524,29 +523,44 @@ contract TacitBlocksTest is Test {
             turns.join();
             vm.stopPrank();
         }
-        // turns of ten minutes, seat (now / 600) mod 2: a's turn, halfway through it
-        uint256 t = 1200 * 100;
-        vm.warp(t + 300);
-        assertEq(turns.leader(), a);
+        epochBlocks = turns.SLOT_BLOCKS() * turns.EPOCH_SLOTS();
+        e = block.number / epochBlocks + 1;
+        vm.roll(e * epochBlocks);
+        vm.setBlockhash(e * epochBlocks - 1, keccak256("an epoch's seed"));
+    }
+
+    function test_stakersLandInTurn() public {
+        address a = address(0xA);
+        address b = address(0xB);
+        (uint256 e, uint256 epochBlocks) = twoSeats(a, b);
+        address lead = turns.leader();
+        assertTrue(lead == a || lead == b);
+        address other = lead == a ? b : a;
         depositFixture();
-        vm.prank(a);
-        blocks.land(pv(0), "", lists(0));
-        // within WINDOW of that landing only the turn's leader lands: not the bootstrap, not another seat
-        bytes memory p1 = pv(1);
-        TacitBlocks.Lists memory l1 = lists(1);
+        bytes memory p0 = pv(0);
+        TacitBlocks.Lists memory l0 = lists(0);
+        // within WINDOW of the last landing only the turn's leader lands: not the bootstrap, not another seat
         vm.prank(SEQ);
         vm.expectRevert(TacitBlocks.NotYourTurn.selector);
-        blocks.land(p1, "", l1);
-        vm.prank(b);
+        blocks.land(p0, "", l0);
+        vm.prank(other);
+        vm.expectRevert(TacitBlocks.NotYourTurn.selector);
+        blocks.land(p0, "", l0);
+        vm.prank(lead);
+        blocks.land(p0, "", l0);
+        assertEq(turns.seedOf(e), keccak256("an epoch's seed"), "landing keeps the epoch's seed");
+        // a later turn of the other seat
+        uint256 slot = turns.SLOT_BLOCKS();
+        uint256 j = 1;
+        while (j < turns.EPOCH_SLOTS() && turns.leaderAt(e * epochBlocks + j * slot) != other) ++j;
+        assertLt(j, turns.EPOCH_SLOTS(), "the other seat leads a turn of the epoch");
+        vm.roll(e * epochBlocks + j * slot);
+        bytes memory p1 = pv(1);
+        TacitBlocks.Lists memory l1 = lists(1);
+        vm.prank(lead);
         vm.expectRevert(TacitBlocks.NotYourTurn.selector);
         blocks.land(p1, "", l1);
-        // b's turn
-        vm.warp(t + 600);
-        assertEq(turns.leader(), b);
-        vm.prank(a);
-        vm.expectRevert(TacitBlocks.NotYourTurn.selector);
-        blocks.land(p1, "", l1);
-        vm.prank(b);
+        vm.prank(other);
         blocks.land(p1, "", l1);
         // and once the chain has gone WINDOW without a block, anyone with one lands
         blocks.force(vm.parseJsonBytes(fx, ".forced"));
@@ -555,10 +569,25 @@ contract TacitBlocksTest is Test {
         vm.prank(address(0xF00D));
         vm.expectRevert(TacitBlocks.NotYourTurn.selector);
         blocks.land(p2, "", l2);
-        vm.warp(t + 600 + WINDOW);
+        vm.warp(block.timestamp + WINDOW);
         vm.prank(address(0xF00D));
         blocks.land(p2, "", l2);
         assertEq(blocks.height(), 3);
+    }
+
+    function test_aTurnNoOneLeadsIsAnyones() public {
+        (uint256 e, uint256 epochBlocks) = twoSeats(address(0xA), address(0xB));
+        // the epoch's seed was never kept and its block hash is out of reach: no one leads
+        vm.roll(e * epochBlocks + 300);
+        assertEq(turns.leader(), address(0));
+        depositFixture();
+        vm.prank(SEQ);
+        blocks.land(pv(0), "", lists(0));
+        bytes memory p1 = pv(1);
+        TacitBlocks.Lists memory l1 = lists(1);
+        vm.prank(address(0xF00D));
+        blocks.land(p1, "", l1);
+        assertEq(blocks.height(), 2);
     }
 
     function test_depositValuesAndCommitments() public {
