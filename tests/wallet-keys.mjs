@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // What the Wallet sheet and the Bitcoin tab's Receive show of the open key (dapp/index.html), in a real browser under the page's own CSP, with a pasted key and a
 // Bitcoin address that holds 0.0025 BTC and 0.00007 arriving (the page's only answers; every other host is refused):
-//   · the Tacit address: its two ends at first, the whole 276 characters after Show all, and Copy puts the whole one on the clipboard;
+//   · the Tacit address heads the sheet on a card of its own: its two ends at first, the whole 276 characters after Show all, and Copy address puts
+//     the whole one on the clipboard; it is not listed a second time below;
 //   · the public key: the key's compressed secp256k1 point, in full, and Copy puts it on the clipboard;
-//   · the Bitcoin address: the key's own bc1q…, the same one Receive shows;
+//   · the Bitcoin address: the key's own bc1q…, the same one Receive shows; the Tacit account: the key's own 0x, the one Add ETH shows;
 //   · Balances: the Bitcoin address's BTC (and what is arriving) is a row under Bitcoin, read when the sheet opens, matching the landing card;
 //   · Receive carries the public key and a folded Tacit address too;
 //   · the Bitcoin address has a QR code (the same drawing as the page's other codes), in the sheet and in Receive;
@@ -38,7 +39,7 @@ const KEY = '11'.repeat(31) + '22';
 const PUB = Buffer.from(secp.getPublicKey(Uint8Array.from(Buffer.from(KEY, 'hex')), true)).toString('hex');
 const TACIT = unifiedAddress(KEY).address;
 const CORS = { 'access-control-allow-origin': '*', 'content-type': 'application/json' };
-let utxoReads = 0;
+let utxoReads = 0, lastRead = 0;
 const UTXOS = [{ txid: 'aa'.repeat(32), vout: 0, value: 250000, status: { confirmed: true, block_height: 900000, block_time: 1700000000 } }, { txid: 'bb'.repeat(32), vout: 1, value: 7000, status: { confirmed: false } }];
 
 const browser = await chromium.launch({ args: ['--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1'] });
@@ -47,7 +48,7 @@ try {
   await ctx.route('**/*', (r) => {
     const u = r.request().url();
     if (u.startsWith(BASE)) return r.continue();
-    if (/\/address\/[^/]+\/utxo/.test(u)) { utxoReads++; return r.fulfill({ status: 200, headers: CORS, body: JSON.stringify(UTXOS) }); }
+    if (/\/address\/[^/]+\/utxo/.test(u)) { utxoReads++; lastRead = Date.now(); return r.fulfill({ status: 200, headers: CORS, body: JSON.stringify(UTXOS) }); }
     return r.abort();
   });
   const page = await ctx.newPage();
@@ -66,17 +67,24 @@ try {
   const row = (label) => `${keys} .keyrow:has(.kv > span:first-child:text-is("${label}"))`;
   const text = (sel) => page.$eval(sel, (e) => e.textContent.trim());
 
-  // the Tacit address: its ends, then the whole of it
+  // the Tacit address, on the card at the top: its ends, then the whole of it
+  const hero = '#w-tacit';
   ok(TACIT.length === 276, 'the unified Tacit address is the 276-character one');
-  const ends = await text(`${row('Tacit address')} .ends`);
-  ok(ends.startsWith(TACIT.slice(0, 28)) && ends.endsWith(TACIT.slice(-12)) && ends.length < 60, `the Tacit address shows its two ends first: ${ends}`);
-  ok(!(await page.isVisible(`${row('Tacit address')} .full`)), 'and not the whole until it is asked for');
-  await page.click(`${row('Tacit address')} [data-fold]`);
-  ok(await page.isVisible(`${row('Tacit address')} .full`) && (await text(`${row('Tacit address')} .full code`)) === TACIT, 'Show all gives the whole address');
-  ok((await text(`${row('Tacit address')} [data-fold]`)) === 'Show less' && (await page.getAttribute(`${row('Tacit address')} [data-fold]`, 'aria-expanded')) === 'true', 'and the button says it can be closed');
-  await page.click(`${row('Tacit address')} [data-copy-addr]`);
-  ok((await page.evaluate(() => navigator.clipboard.readText())) === TACIT, 'Copy puts the whole Tacit address on the clipboard, folded or not');
+  const ends = await text(`${hero} .ends`);
+  ok(ends.startsWith(TACIT.slice(0, 14)) && ends.endsWith(TACIT.slice(-12)) && ends.length < 60, `the Tacit address shows its two ends first: ${ends}`);
+  ok(!(await page.isVisible(`${hero} .full`)), 'and not the whole until it is asked for');
+  await page.click(`${hero} [data-fold]`);
+  ok(await page.isVisible(`${hero} .full`) && (await text(`${hero} .full code`)) === TACIT && !(await page.isVisible(`${hero} .ends`)), 'Show all gives the whole address in place of its ends');
+  ok((await text(`${hero} [data-fold]`)) === 'Show less' && (await page.getAttribute(`${hero} [data-fold]`, 'aria-expanded')) === 'true', 'and the button says it can be closed');
+  await page.click('#w-copy');
+  ok((await page.evaluate(() => navigator.clipboard.readText())) === TACIT, 'Copy address puts the whole Tacit address on the clipboard, folded or not');
   ok((await page.$$eval('#toast-container .toast', (es) => es.map((e) => e.textContent))).some((t) => t.includes('Tacit address copied')), 'and says which thing was copied');
+  ok(!(await page.$(row('Tacit address'))) && (await page.$$eval('#wallet-body code', (es, t) => es.filter((e) => e.textContent.trim() === t).length, TACIT)) === 1, 'the address is not listed again below the card');
+  ok(/^Opened with a pasted key/.test(await text(`${hero} .by`)) && !!(await page.$(`${hero} .by #w-lock`)), 'the card says how the key was opened, with Lock beside it');
+
+  // the Tacit account: the key's own 0x, the address Add ETH asks to be sent to
+  const acct = await text(`${row('Tacit account')} code`);
+  ok(/^0x[0-9a-fA-F]{40}$/.test(acct) && acct === (await page.$eval('#ac-form [data-copy]', (b) => b.dataset.copy)), `the Tacit account is listed, the same one Add ETH shows: ${acct.slice(0, 10)}…`);
 
   // the public key
   ok((await text(`${row('Public key')} code`)) === PUB && PUB.length === 66, `the public key is the key's compressed point, in full: ${PUB.slice(0, 12)}…`);
@@ -84,7 +92,7 @@ try {
   ok((await page.evaluate(() => navigator.clipboard.readText())) === PUB, 'Copy puts it on the clipboard');
 
   // the Bitcoin address, which the Bitcoin tab's Receive shows too
-  await page.waitForFunction(() => /^bc1q[0-9a-z]{38}$/.test(document.querySelector('#w-keys .keyrow:nth-of-type(3) code')?.textContent || ''), null, { timeout: 20000 }).catch(() => {});
+  await page.waitForFunction(() => /^bc1q[0-9a-z]{38}$/.test([...document.querySelectorAll('#w-keys .keyrow')].find((r) => r.querySelector('.kv > span')?.textContent.trim() === 'Bitcoin address')?.querySelector('code')?.textContent || ''), null, { timeout: 20000 }).catch(() => {});
   const bc = await text(`${row('Bitcoin address')} code`);
   ok(/^bc1q[0-9a-z]{38}$/.test(bc), `the key's own Bitcoin address is there: ${bc}`);
 
@@ -122,6 +130,8 @@ try {
   // Refresh reads the Bitcoin address again
   await page.click('#wallet');
   await page.waitForSelector('#wbal-re', { timeout: 15000 });
+  // tacit.js answers an address's coins from a 15-second cache, so Refresh is pressed once the last read is older than that
+  await page.waitForTimeout(Math.max(0, lastRead + 15500 - Date.now()));
   const before = utxoReads;
   await page.click('#wbal-re');
   await page.waitForFunction((n) => document.querySelector('#wbal-re')?.textContent === 'Refresh' && !document.querySelector('#wbal-re').disabled, null, { timeout: 60000 }).catch(() => {});

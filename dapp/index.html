@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-WTBNh0a48iiISQAnWrc5WJtqfAjOm7jJC5oOfYwODV0=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-esbDKrFNILG0ShiGLsGSPlnwKE47xz7Z2r0Pra9f0XQ=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -884,8 +884,13 @@ dialog.sheet { width: min(560px, calc(100vw - 32px)); max-height: min(90vh, 900p
 dialog.sheet[open] { animation: rise .22s cubic-bezier(.2,.8,.2,1); }
 dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
 @keyframes rise { from { opacity: 0; transform: translateY(14px); } }
-.sheet-in { padding: 24px 24px 28px; }
-.sheet-head { display: flex; align-items: center; gap: 14px; margin-bottom: 22px; }
+.sheet-in { padding: 24px 24px 28px; --sx: 24px; --st: 24px; }
+/* The head stays at the top of a long sheet, so its title and close are there at any scroll; a hairline shows under it once the sheet has moved */
+.sheet-head { display: flex; align-items: center; gap: 14px; position: sticky; top: 0; z-index: 4; margin: calc(-1 * var(--st)) calc(-1 * var(--sx)) 8px; padding: var(--st) var(--sx) 14px; background: var(--card); }
+@supports (animation-timeline: scroll()) {
+  .sheet-head { animation: head-line linear both; animation-timeline: scroll(nearest); animation-range: 0 16px; }
+  @keyframes head-line { to { box-shadow: 0 1px 0 var(--hair); } }
+}
 .sheet-head h2 { font: 400 32px/1 var(--serif); letter-spacing: -.01em; margin: 0; }
 .sheet-head h2:focus { outline: none; }
 .x { margin-left: auto; width: var(--tap); height: var(--tap); display: grid; place-items: center; font-size: 22px; line-height: 1;
@@ -1152,9 +1157,38 @@ a.opt { color: inherit; text-decoration: none; }
 .lockmore[open] > summary { margin-bottom: 8px; }
 .gate-p { color: var(--mute); font-size: 13px; text-align: center; max-width: 42ch; margin: 18px auto 14px; }
 .lede-s { color: var(--mute); font-size: 13px; margin: 0 0 14px; }
-.who { text-align: center; padding: 6px 0 18px; margin-bottom: 6px; border-bottom: 1px solid var(--hair); }
+/* The open key's Tacit address, on a card of its own: the address, its ID, how the key was opened */
+.who { text-align: center; padding: 20px 16px 16px; margin-bottom: 8px; background: var(--field); border: 1px solid var(--hair); border-radius: 16px; }
 .who .addr { font: 500 18px/1.3 var(--mono); letter-spacing: -.01em; overflow-wrap: anywhere; }
+.who .full code { font: 500 12.5px/1.5 var(--mono); color: var(--ink); overflow-wrap: anywhere; user-select: all; }
 .who .u { font-size: 12px; color: var(--mute); margin-top: 4px; }
+.who .u .chs { vertical-align: -3px; margin-left: 2px; }
+.who .row2 .btn { min-height: 44px; margin-top: 14px; }
+.who .by { margin-top: 12px; }
+.who .by .link { font-size: 12px; }
+/* Sign-in for a returning visitor: the Tacit wallets this browser has opened, each by how it opens; the other ways in as one row */
+.opt.mine .opt-t .num { font: 500 14px var(--mono); letter-spacing: -.01em; overflow-wrap: anywhere; }
+.opt.mine .opt-t::after { content: '→'; margin-left: auto; padding-left: 8px; color: var(--mute); transition: transform .15s var(--ease); }
+@media (hover: hover) { .opt.mine:hover:not(:disabled) .opt-t::after { color: var(--ink); transform: translateX(3px); } }
+.opt.mine .opt-m { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; }
+.opt.mine .opt-m .tk { width: 14px; height: 14px; }
+.wl-on { display: inline-flex; align-items: center; gap: 5px; color: var(--ok); }
+.wl-on::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.opts > .lbl { margin: 10px 0 -2px; }
+.opts > .lbl:first-child { margin-top: 0; }
+.ways { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 8px; }
+.way { display: flex; flex-direction: column; align-items: center; gap: 7px; min-height: 76px; padding: 13px 6px 11px; font: inherit; font-size: 13px; color: var(--ink);
+  background: var(--field); border: 1px solid var(--hair-2); border-radius: 14px; cursor: pointer; transition: border-color .15s; }
+.way .tk { width: 24px; height: 24px; }
+@media (hover: hover) { .way:hover:not(:disabled) { border-color: var(--ink); } }
+.way:disabled { opacity: .5; cursor: progress; }
+.way[aria-busy="true"] { opacity: 1; border-color: var(--ink); }
+.way[aria-busy="true"] .tk { animation: spin 1.2s linear infinite; }
+.wl-foot { margin-top: 16px; padding-top: 10px; border-top: 1px solid var(--hair); }
+.eth-line { flex-wrap: wrap; row-gap: 6px; }
+.eth-line > span:first-child { display: inline-flex; align-items: center; }
+.eth-line b { display: inline-flex; flex-wrap: wrap; align-items: baseline; justify-content: flex-end; gap: 4px 12px; margin-left: auto; }
+.kv.pf { margin-top: 10px; }
 dialog.layer { width: min(460px, calc(100vw - 32px)); }
 #pass-modal .pass-hint { font-size: 12px; min-height: 18px; margin-top: 4px; color: var(--mute); }
 #pass-modal .pass-hint.error { color: var(--err); }
@@ -1176,7 +1210,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   .top { gap: 12px; }
   .brand { gap: 8px; }
   dialog.sheet { width: 100vw; max-width: 100vw; margin: auto 0 0; max-height: 92vh; max-height: 92dvh; border-width: 1px 0 0; border-radius: 18px 18px 0 0; }
-  .sheet-in { padding: 20px 16px calc(24px + env(safe-area-inset-bottom)); }
+  .sheet-in { padding: 20px 16px calc(24px + env(safe-area-inset-bottom)); --sx: 16px; --st: 20px; }
   .big { font-size: 46px; }
   .dash { margin: 28px 0 0; }
   .dash-g { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -3750,7 +3784,8 @@ document.addEventListener('click', (e) => {
   evm.disconnect();
   S.provider = null; rerender('wallet');
 });
-const ethLine = () => (S.wallet && S.provider ? html`<div class="kv"><span>${S.provider.isWalletConnect ? 'WalletConnect' : chainTag(1)}</span><b>${short(S.wallet, 6)} <button class="link" type="button" data-wc-change>Change account</button> <button class="link" type="button" data-wc-off>Disconnect</button></b></div>` : '');
+// The Ethereum wallet connected now, to change or disconnect; `named` when a row above already shows it, connected
+const ethLine = (named = false) => (S.wallet && S.provider ? html`<div class="kv eth-line"><span>${S.provider.isWalletConnect ? 'WalletConnect' : chainTag(1)}</span><b>${named ? '' : html`<span class="num">${short(S.wallet, 6)}</span>`}<button class="link" type="button" data-wc-change>Change account</button><button class="link" type="button" data-wc-off>Disconnect</button></b></div>` : '');
 const S = { address: null, wallet: null, provider: null, key: null, acct: null, pay: null };
 // The Swap tab's card (swap/card.js), once drawn, and the private swaps in it that wait for a key to be opened (the hero's Swap tab, below)
 const SWC = { el: null, card: null, p: null, ask: null, url: false, keyw: new Set() };
@@ -3801,7 +3836,15 @@ const viaText = (k) => {
 let UNI = null;
 const loadUnified = lazy(async () => (UNI = await import('/tacit-unified.js?cb=a5b3a042')));
 const addressFor = (privHex) => { try { if (UNI) return UNI.unifiedAddress(privHex).address; } catch {} return tacitAddress(privHex); };
-const rememberKey = (key) => { const { priv, tacit, ...pub } = key; try { if (key.mode === 'key') localStorage.removeItem(LITE_ID); else localStorage.setItem(LITE_ID, JSON.stringify(tacit ? { ...pub, tacit } : pub)); } catch {} };
+const rememberKey = (key) => {
+  const { priv, tacit, ...pub } = key;
+  try { if (key.mode === 'key') localStorage.removeItem(LITE_ID); else localStorage.setItem(LITE_ID, JSON.stringify(tacit ? { ...pub, tacit } : pub)); } catch {}
+  if (key.mode !== 'key' && tacit) { const m = store.get(ADDR_SEEN) || {}; delete m[key.pubHex]; store.set(ADDR_SEEN, Object.fromEntries([...Object.entries(m), [key.pubHex, tacit]].slice(-8))); }
+};
+// The Tacit address of each key opened here (public: the pubkey's address, never a pasted key's), so the sign-in names a remembered wallet by it
+// even where the record that offers it holds only the pubkey (a key saved in this browser, opened on tacit.finance)
+const ADDR_SEEN = 'tacit-lite-addr-v1';
+const seenAddr = (w) => w?.tacit || store.get(ADDR_SEEN)?.[String(w?.pubHex || '').toLowerCase()] || null;
 function setKey(k) {
   const pubHex = String(k.pubHex || pubOf(k.priv)).replace(/^0x/, '').toLowerCase();
   if (pubOf(k.priv) !== pubHex) throw new Error('That wallet opened a different key than expected. Nothing was changed.');
@@ -3903,22 +3946,44 @@ const open = {
   },
 };
 
+// How a remembered wallet opens, as a line of its own (viaText reads inside a sentence) and as a mark: the wallet it signs with, or a key
+const viaLine = (k) => (k.mode === 'passkey' ? `Passkey “${k.label || 'Tacit'}”` : k.mode === 'local' ? 'Key saved in this browser'
+  : k.mode === 'ext' ? html`Key funded by <span class="nw">${short(k.address || '', 6)}</span>` : viaText(k));
+const viaMark = (k) => html`<svg class="tk" aria-hidden="true"><use href="#${k.mode === 'eth' ? 'tk-eth' : k.mode === 'btc' || k.mode === 'ext' ? 'tk-btc' : 'i-key'}"/></svg>`;
+// A remembered wallet opened with the Ethereum wallet connected now: that wallet's signature opens it with no other popup
+const openerOn = (k) => !!(k?.mode === 'eth' && S.wallet && S.provider && String(k.address || '').toLowerCase() === S.wallet.toLowerCase());
 function signIn(id, first = 'eth') {
   const known = knownWallet(), other = otherWallet();
-  const saved = known?.mode !== 'local' && isPub(readJson('tacit-wallet-v1:mainnet')?.pub);
+  const saved = known?.mode !== 'local' && other?.mode !== 'local' && isPub(readJson('tacit-wallet-v1:mainnet')?.pub);
   const pk = isPasskeyAvailable();
   const opt = (k, title, sub, cls = '') => html`<button class="opt ${cls}" type="button" data-in="${k}"><span class="opt-t">${title}</span><span class="opt-m">${sub}</span></button>`;
+  const links = html`<p class="more">${saved ? html`<button class="link" type="button" data-in="local">Saved in this browser</button>` : ''}
+      <button class="link" type="button" data-in="paste">Paste a key</button>${pk && known ? html`<button class="link" type="button" data-in="new">New passkey wallet</button>` : ''}</p>
+    <div class="amt text" id="${id}-paste" hidden><input id="${id}-hex" type="password" placeholder="64-character Tacit key" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Tacit key"><button class="link" type="button" data-in="key">Open</button></div>`;
+  if (known || other) {
+    // A returning visitor: each Tacit wallet this browser opened, by its address and how it opens, then the other ways in, smaller
+    const mine = (k, w, main) => {
+      const t = seenAddr(w);
+      return opt(k, html`<svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>${t ? html`<span class="num">${tacitShort(t)}</span>` : html`<b>Your Tacit wallet</b>`}`,
+        html`${viaMark(w)}<span>${viaLine(w)}</span>${openerOn(w) ? html`<span class="wl-on">connected</span>` : ''}`, `mine${main ? ' main' : ''}`);
+    };
+    const way = (k, icon, name, title) => html`<button class="way" type="button" data-in="${k}" title="${title}"><svg class="tk" aria-hidden="true"><use href="#${icon}"/></svg><span>${name}</span></button>`;
+    const eth = way('eth', 'tk-eth', 'Ethereum', 'MetaMask, Rabby, Rainbow, any browser wallet, or WalletConnect'), btc = way('btc', 'tk-btc', 'Bitcoin', 'Xverse, Leather or UniSat');
+    return html`<div class="opts" id="${id}-in">
+      <div class="lbl"><span>Continue as</span></div>
+      ${known ? mine('known', known, true) : ''}${other ? mine('other', other, !known) : ''}
+      <div class="lbl"><span>Or open another wallet</span></div>
+      <div class="ways">${first === 'btc' ? [btc, eth] : [eth, btc]}${pk ? way('passkey', 'i-key', 'Passkey', 'Touch ID, Windows Hello or a security key') : ''}</div>
+      ${links}
+    </div>`;
+  }
   const walletEth = opt('eth', html`<svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>Ethereum wallet`, 'MetaMask, Rabby, Rainbow, any browser wallet, or WalletConnect. One free signature, two the first time.');
   const walletBtc = opt('btc', html`<svg class="tk sm" aria-hidden="true"><use href="#tk-btc"/></svg>Bitcoin wallet`, 'Xverse, Leather or UniSat. One free signature, two the first time.');
   return html`<div class="opts" id="${id}-in">
-    ${known ? opt('known', html`<svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>${known.tacit ? html`Continue as <b>${short(known.tacit, 7)}</b>` : 'Continue with your Tacit wallet'}`, html`Opens with ${viaText(known)}, the same wallet as everywhere on tacit.finance.`, 'main') : ''}
-    ${other ? opt('other', html`<svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>${other.tacit ? html`Continue as <b>${short(other.tacit, 7)}</b>` : 'Your other Tacit wallet'}`, html`A different wallet, opened here before with ${viaText(other)}.`) : ''}
     ${(first === 'btc' ? [walletBtc, walletEth] : [walletEth, walletBtc])}
     ${pk ? opt('passkey', html`<svg class="tk sm" aria-hidden="true"><use href="#i-key"/></svg>Passkey`, 'Already made one? Touch ID, Windows Hello or a security key.') : ''}
-    ${pk && !known ? opt('new', html`<svg class="tk sm" aria-hidden="true"><use href="#i-key"/></svg>No wallet yet? Create one`, 'Touch ID, Face ID or Windows Hello. Nothing to install.') : ''}
-    <p class="more">${saved ? html`<button class="link" type="button" data-in="local">Saved in this browser</button>` : ''}
-      <button class="link" type="button" data-in="paste">Paste a key</button>${pk && known ? html`<button class="link" type="button" data-in="new">New passkey wallet</button>` : ''}</p>
-    <div class="amt text" id="${id}-paste" hidden><input id="${id}-hex" type="password" placeholder="64-character Tacit key" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Tacit key"><button class="link" type="button" data-in="key">Open</button></div>
+    ${pk ? opt('new', html`<svg class="tk sm" aria-hidden="true"><use href="#i-key"/></svg>No wallet yet? Create one`, 'Touch ID, Face ID or Windows Hello. Nothing to install.') : ''}
+    ${links}
   </div>`;
 }
 let signing = false;
@@ -4239,40 +4304,48 @@ function wbClick(e) {
   else if (b.dataset.wbLink) openLink(b.dataset.wbLink);
   else dashGo(b);
 }
-// What the open key hands out to be paid or sent to, whichever way it was opened (an Ethereum or Bitcoin wallet, a passkey, a pasted key): the Tacit address, the public key it is made from, and the key's own Bitcoin address.
-const walletKeys = () => html`<div class="lbl"><span>Addresses and public key</span></div>
-  ${keyRow('Tacit address', S.key.tacit, 'Tacit address', 'Other Tacit wallets pay you here, privately.', { fold: 90 })}
-  ${keyRow('Public key', S.key.pubHex, 'Public key', 'For a Send box that asks for a key.')}
-  ${keyRow('Bitcoin address', plainAddr(), 'Bitcoin address', 'Sats from any wallet or exchange.', { qr: true })}`;
+// What else the open key hands out, whichever way it was opened (an Ethereum or Bitcoin wallet, a passkey, a pasted key): its own Bitcoin address and its Tacit account on
+// Ethereum, both public, and the public key they are made from. The Tacit address, the private one, heads the sheet.
+const walletKeys = () => html`<div class="lbl sep"><span>Public addresses and key</span></div>
+  ${keyRow('Bitcoin address', plainAddr(), 'Bitcoin address', 'Sats from any wallet or exchange.', { qr: true })}
+  ${keyRow('Tacit account', S.acct.address, 'Tacit account address', 'This key’s Ethereum account. ETH here pays for its transactions.')}
+  ${keyRow('Public key', S.key.pubHex, 'Public key', 'For a Send box that asks for a key.')}`;
 render.wallet = () => {
   const el = $('#wallet-body');
   if (!S.key) {
-    mount(el, html`<p class="lede-s">One key for your private balances on Bitcoin and Ethereum. Signing in sends nothing and costs nothing, and the same wallet or passkey always opens the same Tacit wallet.</p>${signIn('ws')}
-      ${ethLine()}`);
+    const known = knownWallet(), other = otherWallet();
+    mount(el, html`${known || other ? '' : html`<p class="lede-s">One key for your private balances on Bitcoin and Ethereum. Signing in sends nothing and costs nothing, and the same wallet or passkey always opens the same Tacit wallet.</p>`}${signIn('ws')}
+      ${S.wallet && S.provider ? html`<div class="wl-foot">${ethLine(openerOn(known) || openerOn(other))}</div>` : ''}`);
     return wireSignIn(el, 'ws', () => $('#sheet-wallet').close());
   }
   const k = S.key, kept = k.mode === 'ext' || k.mode === 'local', a = S.acct, pays = payer(), btcAddr = T?.extWallet?.state?.address || (k.mode === 'btc' || k.mode === 'ext' ? k.address : null);
+  // a Bitcoin wallet connected beside the key; the one it was opened with is named on the card already
+  const btcOther = btcAddr && btcAddr !== k.address;
   const eth = html`<svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>`;
   mount(el, html`
-    <div class="who"><div class="addr num">${k.tacit ? short(k.tacit, 12) : '…'}</div><div class="u">Your Tacit address · opened with ${viaText(k)}</div>
-      ${k.tacit ? html`<div class="u">ID <b class="num">${addressId(k.tacit)}</b> · a payer sees the same ID</div>` : ''}
-      <div class="row2"><button class="btn ghost" type="button" id="w-copy" ${k.tacit ? '' : 'disabled'}>Copy address</button><button class="btn ghost" type="button" id="w-lock">Lock</button></div></div>
+    <div class="who keyrow" id="w-tacit">
+      ${k.tacit ? html`<div class="addr num ends">${short(k.tacit, 12)}</div><div class="full"><code>${k.tacit}</code></div>` : html`<div class="addr num">…</div>`}
+      <div class="u">Your Tacit address · paid privately on ${chainMarks(['btc', 1])}</div>
+      ${k.tacit ? html`<div class="u">ID <b class="num">${addressId(k.tacit)}</b> · a payer sees it too</div>` : ''}
+      <div class="row2"><button class="btn ghost" type="button" id="w-copy" ${k.tacit ? '' : 'disabled'}>Copy address</button><button class="btn ghost" type="button" data-fold aria-expanded="false" ${k.tacit ? '' : 'disabled'}>Show all</button></div>
+      <div class="u by">Opened with ${viaText(k)} · <button class="link" type="button" id="w-lock">Lock</button></div></div>
     <div id="wbal-box">${walletBalances()}</div>
     <div id="w-keys">${walletKeys()}</div>
-    <div class="lbl" id="pay-h"><span>Public transactions come from</span></div>
+    <div class="lbl sep" id="pay-h"><span>Public transactions come from</span></div>
     <div class="opts" role="radiogroup" aria-labelledby="pay-h">
-      <button class="opt${pays === 'tacit' ? ' main' : ''}" type="button" role="radio" aria-checked="${String(pays === 'tacit')}" data-pay="tacit"><span class="opt-t">${eth}Tacit account${pays === 'tacit' ? html`<span class="tag">pays</span>` : ''}<span class="num w-bal" id="ac-abal"><span class="sk" style="--w:5ch"></span></span></span><span class="opt-m">${short(a.address, 8)} · this key’s own, signs here with no popup</span></button>
+      <button class="opt${pays === 'tacit' ? ' main' : ''}" type="button" role="radio" aria-checked="${String(pays === 'tacit')}" data-pay="tacit"><span class="opt-t">${eth}Tacit account${pays === 'tacit' ? html`<span class="tag">pays</span>` : ''}<span class="num w-bal" id="ac-abal"><span class="sk" style="--w:5ch"></span></span></span><span class="opt-m">This key’s own: signs here with no popup</span></button>
       <button class="opt${pays === 'wallet' ? ' main' : ''}" type="button" role="radio" aria-checked="${String(pays === 'wallet')}" data-pay="wallet"><span class="opt-t">${eth}Wallet${pays === 'wallet' ? html`<span class="tag">pays</span>` : ''}<span class="num w-bal" id="ac-wbal">${S.wallet ? html`<span class="sk" style="--w:5ch"></span>` : ''}</span></span><span class="opt-m">${S.wallet ? short(S.wallet, 8) : 'Connect one to pay from it'}</span></button>
     </div>
     <p class="note" id="ac-l2" hidden></p>
-    <div class="kv"><span>Proofs</span><b>${devOn() ? 'This computer' : spOn() ? 'Your own prover credit' : 'Tacit’s relay'}</b><button class="link" type="button" data-prove-open>${ownOn() ? 'manage' : 'prove them yourself'}</button></div>
+    <div class="kv pf"><span>Proofs</span><b>${devOn() ? 'This computer' : spOn() ? 'Your own prover credit' : 'Tacit’s relay'}</b><button class="link" type="button" data-prove-open>${ownOn() ? 'manage' : 'prove them yourself'}</button></div>
     ${segSub('wal', WAL.mode, [['add', 'Add ETH'], ['out', 'Send out']])}
     <div id="ac-form"></div>
     <div class="status" role="status" id="ac-status"></div>
-    ${btcAddr ? html`<div class="kv sep"><span>${chainTag('btc')}</span><b>${short(btcAddr, 8)}</b></div>` : ''}
+    ${btcOther || (S.wallet && S.provider) ? html`<div class="lbl sep"><span>Connected</span></div>` : ''}
+    ${btcOther ? html`<div class="kv"><span>${chainTag('btc')}</span><b>${short(btcAddr, 8)}</b></div>` : ''}
     ${ethLine()}
-    ${kept ? html`<p class="note"><button class="link" type="button" id="w-backup">Copy key to back up</button></p>` : ''}
-    <p class="note">${kept ? 'This key is kept in this browser only, so clearing the browser’s data loses it. Copy it somewhere private: anyone who has it controls these funds, and pasting it back opens them again.' : k.mode === 'key' ? 'You pasted this key and it is not saved here, so closing the tab forgets it. Keep your own copy somewhere private: anyone who has it controls these funds.' : 'Your wallet or passkey is the only way back to these funds: keep it safe.'} The key stays in this tab, and whoever holds it holds the Tacit account too. Private payments to your Tacit address reach you here and everywhere on tacit.finance.</p>`);
+    <div class="lbl sep"><span>Your key</span>${kept ? html`<button type="button" id="w-backup">Copy key to back up</button>` : ''}</div>
+    <p class="note">${kept ? 'Kept in this browser only: clearing its data loses it.' : k.mode === 'key' ? 'Pasted and not saved: closing the tab forgets it.' : 'Your wallet or passkey opens it again: keep that safe.'} Anyone who has the key holds these funds and the Tacit account.</p>`);
   $('#w-copy').onclick = () => k.tacit && copy(k.tacit, 'Tacit address copied');
   if (!plainAddr()) loadPlain().then(() => { const w = $('#w-keys'); if (w?.isConnected && S.key?.pubHex === k.pubHex) mount(w, walletKeys()); }).catch(() => {});
   // the Bitcoin address is read when the sheet opens, as the Bitcoin tab does, so its balance is here without a visit there
@@ -4299,7 +4372,7 @@ render.wallet = () => {
   if (WAL.mode === 'add') {
     mount(f, html`
       <div class="kv"><span>Address</span><b class="mono">${short(a.address, 10)}</b><button class="link" type="button" data-copy="${a.address}">copy</button></div>
-      <p class="note">Send ETH to it from any wallet or exchange. On Ethereum it pays for everything here; on ${chainMarks([8453, 4663])}, for the private pool there.${S.wallet ? ' Or add some from your wallet here; that links the two on chain.' : html` Or <button class="link" type="button" id="ac-connect">connect a wallet</button> to add from it.`}</p>
+      <p class="note">Send ETH to it from any wallet or exchange. On Ethereum it pays for everything here; on <span class="nw">${chainMarks([8453, 4663])},</span> for the private pool there.${S.wallet ? ' Or add some from your wallet here; that links the two on chain.' : html` Or <button class="link" type="button" id="ac-connect">connect a wallet</button> to add from it.`}</p>
       ${S.wallet ? html`${amountField()}<button class="btn" type="button" id="ac-go">Add from wallet</button>` : ''}`);
     const cn = $('#ac-connect');
     if (cn) cn.onclick = () => busy(cn, async () => { try { await connect(); setPayer('tacit'); } catch (e) { sayErr(status, e); } });

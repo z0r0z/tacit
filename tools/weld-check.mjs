@@ -2848,7 +2848,7 @@ await step('keys', async () => {
   await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
   const txt = await shown(r.page);
   const addr = addrIn(txt);
-  ok(/opened with Ethereum/.test(txt) && addr, `keys: an Ethereum signature opens ${addr}`);
+  ok(/Opened with Ethereum/.test(txt) && addr, `keys: an Ethereum signature opens ${addr}`);
   await lock(r.page);
   ok(/Continue as tacit1/.test(await walletText(r.page)), 'keys: once locked, the sheet offers to continue with the same wallet');
   await r.page.click('#wallet-body [data-in="known"]');
@@ -2936,7 +2936,7 @@ await step('bitcoin', async () => {
   await r.page.click('#wallet-body [data-in="btc"]');
   await until(r.page, () => !!document.querySelector('#wallet-dot.on'), null, 120000);
   const txt = await shown(r.page);
-  ok(/opened with Bitcoin bc1qte/.test(txt), `bitcoin: a Bitcoin wallet's signature opens a key (${addrIn(txt)})`);
+  ok(/Opened with Bitcoin bc1qte/.test(txt), `bitcoin: a Bitcoin wallet's signature opens a key (${addrIn(txt)})`);
   await lock(r.page);
   await r.page.click('#wallet-body [data-in="known"]');
   await until(r.page, () => !!document.querySelector('#wallet-dot.on'), null, 120000);
@@ -2962,7 +2962,7 @@ await step('passkey', async () => {
   await r.page.click('#wallet-body [data-in="new"]');
   await until(r.page, () => !!document.querySelector('#wallet-dot.on'), null, 60000);
   const txt = await shown(r.page), addr = addrIn(txt);
-  ok(/opened with passkey/.test(txt) && addr, `passkey: a new passkey wallet opens ${addr}`);
+  ok(/Opened with passkey/.test(txt) && addr, `passkey: a new passkey wallet opens ${addr}`);
   ok(await r.page.evaluate(() => Object.keys(JSON.parse(localStorage.getItem('tacit-prf-v1') || '{}')).length === 1), 'passkey: tacit.finance\'s passkey list gains the wallet');
   await lock(r.page);
   await r.page.click('#wallet-body [data-in="passkey"]');
