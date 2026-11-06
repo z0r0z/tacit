@@ -207,7 +207,7 @@ const DAPP = new URL('../dapp/', import.meta.url).pathname;
 const bwText = (page) => page.evaluate((s) => [...document.querySelectorAll(s)].map((e) => e.textContent).join(' '), '#bw-status, #bw-s1, #bw-s2, #bw-s3, #bw-s4');
 // `ui`: the front page's tile and landing, the steps a look-and-copy pass needs (tools/weld-ui.sh runs them on a pinned, cached fork)
 const UI_STEPS = 'links,swapurl,swapfield,hints,hxbridge,hxfold,hxnudge,tradelinks';
-const ONLY = new Set((process.argv[2] === 'ui' ? UI_STEPS : process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,hxbridgeu,usdtwrap,usdtwrapw,usdtout,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,swaphere,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,nohost,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,relayfail,selfwallet,slowline,fastroute').split(','));
+const ONLY = new Set((process.argv[2] === 'ui' ? UI_STEPS : process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,hxbridgeu,usdtwrap,usdtwrapw,usdtout,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,swaphere,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,nohost,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,tileahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,relayfail,selfwallet,slowline,fastroute').split(','));
 const FORK = process.argv[3] || 'https://mainnet.gateway.tenderly.co';
 const SHOTS = process.env.SHOTS || null;
 const PORT = 20000 + Math.floor(Math.random() * 2000), WEB = PORT + 1;
@@ -8654,6 +8654,83 @@ await step('lockahead', async () => {
     if (r.errors.length) { fails++; console.log('FAIL lockahead page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }
 });
+// The tile's Send proves ahead as the send forms do. tETH of a note's exact amount to a Tacit address (the amount typed first, the recipient after) has its
+// lock proved once both stand, and the press posts it; tETH out to an Ethereum address one note covers is proved ahead on the relay's board, and the press
+// posts that proof. The Ethereum address is shown short under the field.
+await step('tileahead', async () => {
+  {
+    const r = await openFarmKey('5e4f'.padEnd(64, '8'), { notes: [[FARM_CETH, 500000n], [FARM_CETH, 1500000n]], positions: [], swap: true });
+    const p = r.page;
+    try {
+      await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
+      await p.click('[data-hxm="send"]');
+      await p.selectOption('#hx-sa', 'eth');
+      await until(p, () => /^Balance 0\.02/.test(document.querySelector('#hx-bal')?.textContent || ''), null, 420000);
+      await p.fill('#hx-amt', '0.005');
+      await p.fill('#hx-rcpt', tacit1('abd'.padEnd(64, '9')));
+      await until(p, () => /They get\s*about/.test(document.querySelector('#hx-receipt')?.textContent || '') && /ID /.test(document.querySelector('#hx-rc')?.textContent || '') && !document.querySelector('#hx-go').disabled, null, 420000)
+        .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | rc: ${await text(p, '#hx-rc')} | ${(await text(p, '#hx-receipt')).replace(/\s+/g, ' ')}`); });
+      await until(p, () => (window.__swapCalls || []).some((c) => c.lockAhead), null, 60000).catch(() => {});
+      const before = await p.evaluate(() => window.__swapCalls);
+      ok(before.filter((c) => c.lockAhead === '500000' && c.note === '500000').length === 1 && !before.some((c) => c.split || c.cutAhead || c.lock),
+        `tileahead: the tile's lock of the 0.005 note is proved once the recipient is read, and no note is cut (${JSON.stringify(before)})`);
+      await p.click('#hx-go');
+      await until(p, () => (window.__swapCalls || []).some((c) => c.lockPosted || c.lock) || /class="err"/.test(document.querySelector('#hx-ss')?.innerHTML || ''), null, 240000).catch(() => {});
+      const calls = await p.evaluate(() => window.__swapCalls);
+      ok(calls.some((c) => c.lockPosted === '500000') && !calls.some((c) => c.lock), `tileahead: the tile's press posts that lock and proves none (${JSON.stringify(calls)} ${await text(p, '#hx-ss')})`);
+      if (r.errors.length) { fails++; console.log('FAIL tileahead page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+    } finally { await r.browser.close(); }
+  }
+  const r = await openPage({ account: A0, key: K0 });
+  await r.page.route(/\/confidential-pool-ux\.js\?cb=/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: `
+    import * as real from '/confidential-pool-ux.js?stub=real';
+    export * from '/confidential-pool-ux.js?stub=real';
+    export function makeConfidentialPoolUx(o) {
+      const ux = real.makeConfidentialPoolUx(o), balance = ux.balance;
+      let made = null;
+      ux.balance = async (priv, opts) => {
+        const b = await balance(priv, opts);
+        const hx = typeof priv === 'string' ? priv : '0x' + [...priv].map((x) => x.toString(16).padStart(2, '0')).join('');
+        made ||= [['50', 0], ['40', 1]].map(([cents, index]) => {
+          const w = ux.buildWrap({ walletPriv: hx, amountWei: (BigInt(cents) * 10n ** 16n).toString(), ticker: 'cETH', index });
+          return ux.indexer.recover([{ type: 'LeavesInserted', firstLeafIndex: 0, leaves: [w.leaf], memos: [w.memo] }], hx)[0];
+        });
+        b.notes = [...b.notes, ...made];
+        for (const n of made) { const g = b.byAsset[n.asset] ||= { asset: n.asset, value: 0n, notes: [] }; g.value = BigInt(g.value) + BigInt(n.value); g.notes = [...g.notes, n]; }
+        return b;
+      };
+      ux.quoteOpFee = async () => '100000';
+      return ux;
+    }` }));
+  const p = r.page, DEAD = '0x000000000000000000000000000000000000dEaD';
+  try {
+    proveStub = true;
+    await p.goto(r.url);
+    await p.waitForSelector('#hx-body .hx-h');
+    await pasteKey(p, 'e418'.padEnd(64, '3'));
+    await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
+    await p.click('[data-hxm="send"]');
+    await p.selectOption('#hx-sa', 'eth');
+    await until(p, () => /^Balance 0\.9/.test(document.querySelector('#hx-bal')?.textContent || ''), null, 420000);
+    const s0 = submits.length;
+    await p.fill('#hx-rcpt', DEAD);
+    ok((await text(p, '#hx-rc')).trim() === '0x00000000…0000dEaD' && !(await p.$eval('#hx-rc', (e) => e.hidden)), `tileahead: an Ethereum address is shown short under the field (${await text(p, '#hx-rc')})`);
+    await p.fill('#hx-amt', '0.3');
+    await until(p, () => /They get/.test(document.querySelector('#hx-receipt')?.textContent || '') && !document.querySelector('#hx-go').disabled, null, QUOTE_WAIT);
+    await chainUntil(async () => submits.slice(s0).some((x) => x.mode === 'prove'), 60000);
+    const asked = submits.slice(s0).find((x) => x.mode === 'prove');
+    ok(asked && asked.type === 'sendunwrap' && asked.ahead === true && BigInt(asked.op?.fee || 0) > 0n && asked.op?.recipient?.toLowerCase() === DEAD.toLowerCase(),
+      `tileahead: once the tile's send to an address stands, the relay is asked to prove it ahead, on its board only (${asked ? `${asked.type}/${asked.mode}/ahead ${asked.ahead}` : 'none'})`);
+    await sleep(1500);
+    const s1 = submits.length;
+    await p.click('#hx-go');
+    await until(p, () => /Done\./.test(document.querySelector('#hx-ss')?.textContent || '') || /class="err"/.test(document.querySelector('#hx-ss')?.innerHTML || ''), null, 240000).catch(() => {});
+    const after = submits.slice(s1);
+    ok(/Done\./.test(await text(p, '#hx-ss')) && after.length === 1 && after[0].mode === 'preproven' && after[0].type === 'sendunwrap',
+      `tileahead: the tile's press posts that proof for the relay to send, nothing proved anew (${after.map((x) => `${x.type}/${x.mode}`)}; ${await text(p, '#hx-ss')})`);
+    if (r.errors.length) { fails++; console.log('FAIL tileahead page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { proveStub = false; await r.browser.close(); }
+});
 
 // The Earn tab does a private join itself, with no sheet: tETH alone is quoted in the card (what half swapped adds, the relay's fees, the network fee), Max takes
 // what the pool takes of it, and the press cuts the swap note, swaps it in the farm's pool, cuts what pairs with the return and bonds both, each step said
@@ -10505,6 +10582,53 @@ await step('tour', async () => {
     await r.browser.close();
   }
   ok(true, `tour: screenshots in ${SHOTS}`);
+});
+// The tile's three ETH ways, looked at: Shield (wallet ETH to tETH), Send (tETH to a tacit1 address and to an 0x one) and Earn (the wallet's ETH zapped into a
+// private farm, LP only, and private tETH joined), first as a visitor whose wallet is not connected, then with a key holding tETH; each state's tile is saved
+// and what it says is logged. Opt-in (`ethtour`), and it writes to SHOTS.
+await step('ethtour', async () => {
+  if (!SHOTS) throw new Error('the eth tour needs SHOTS=<dir>');
+  const REC = tacit1('d1'.padEnd(64, '7')), DEAD = '0x000000000000000000000000000000000000dEaD', only = (process.env.ETHTOUR || '').split(',').filter(Boolean);
+  const settle = (p) => p.waitForFunction(() => { const g = document.querySelector('#hx-swap #go') || document.querySelector('#hx-go'); return !!g && !/Reading…|Finding|Checking|Pricing|Working/.test(g.textContent) && g.getAttribute('aria-busy') !== 'true'; }, null, { timeout: 120000 }).catch(() => {});
+  for (const [tag, viewport] of [['desk', { width: 1280, height: 1300 }], ['phone', { width: 390, height: 1500 }]]) {
+    for (const keyed of [false, true]) {
+      const t = `${tag}-${keyed ? 'key' : 'new'}`;
+      if (only.length && !only.includes(t)) continue;
+      const r = await openPage({ account: A0, key: K0, viewport, locked: !keyed });
+      const p = r.page;
+      const snap = async (name) => {
+        await p.waitForTimeout(1200);
+        await p.locator('#hx').screenshot({ path: join(SHOTS, `eth-${t}-${name}.png`) });
+        console.log(`   ${t} ${name}: ${(await p.evaluate(() => (document.querySelector('#hx-panel')?.innerText || '').replace(/\s+/g, ' '))).slice(0, 900)}`);
+      };
+      try {
+        if (keyed) await rxStub(p);
+        await p.goto(r.url);
+        await p.waitForSelector('#hx-body .hx-h', { timeout: 120000 });
+        if (keyed) {
+          await go(p, '#wallet'); await p.waitForSelector('#wallet-body [data-in="eth"]'); await p.click('#wallet-body [data-in="eth"]');
+          await until(p, () => !!document.querySelector('#wallet-dot.on'), null, 120000);
+          await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
+        }
+        await tabClick(p, 'shield'); await p.waitForSelector(MV.amt, { timeout: 120000 }); await settle(p); await snap('shield');
+        if (keyed) { await p.fill(MV.amt, '99999'); await settle(p); await p.waitForTimeout(3000); await snap('shield-over'); }
+        await p.fill(MV.amt, '0.1'); await settle(p); await p.waitForTimeout(3000); await snap('shield-01');
+        await tabClick(p, 'send'); await p.waitForSelector('#hx-amt');
+        if (keyed) { await p.selectOption('#hx-sa', 'eth').catch(() => {}); await until(p, () => /^Balance 0\.55/.test(document.querySelector('#hx-bal')?.textContent || ''), null, 300000).catch(() => {}); }
+        await settle(p); await snap('send');
+        await p.fill('#hx-rcpt', REC); await p.fill('#hx-amt', '0.1'); await settle(p); await p.waitForTimeout(3000); await snap('send-tacit');
+        await p.fill('#hx-rcpt', DEAD); await p.fill('#hx-amt', '0.25'); await settle(p); await p.waitForTimeout(3000); await snap('send-0x');
+        await tabClick(p, 'earn'); await p.waitForSelector('#hx-amt');
+        await p.selectOption('#hx-from', 'ether').catch(() => {}); await settle(p); await snap('earn');
+        await p.fill('#hx-amt', '0.1'); await settle(p); await p.waitForTimeout(4000); await snap('earn-01');
+        await p.click('[data-hxlp="1"]').catch(() => {}); await settle(p); await p.waitForTimeout(3000); await snap('earn-lp');
+        await p.click('[data-hxlp="0"]').catch(() => {});
+        if (keyed) { await p.selectOption('#hx-from', 'eth').catch(() => {}); await p.fill('#hx-amt', '0.1'); await settle(p); await p.waitForTimeout(4000); await snap('earn-teth'); }
+        if (r.errors.length) console.log(`   ${t} page errors: ${r.errors.slice(0, 3).join(' | ')}`);
+      } catch (e) { console.log(`   ${t} stopped: ${e.message.split('\n')[0]}`); } finally { await r.browser.close(); }
+    }
+  }
+  ok(true, `ethtour: screenshots in ${SHOTS}`);
 });
 // Steps the relay proved and nobody sent, as an earlier visit left them in Activity: a relayed withdrawal it holds open, a split proved for
 // a page that closed before sending it, and one a relay took to send minutes ago. Each offers "Send it now" from the paying account,

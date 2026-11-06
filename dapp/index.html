@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-V211eNCjuVPnlvpArb1pnZN/acLqsHa0PfnkjFoeiSM=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-xdFvnw2bzwCyz6r+clFwpJyP4WEDhjZpyds+kZ2vIO8=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -688,6 +688,7 @@ a.di { color: inherit; text-decoration: none; }
 .hx-path li::before { content: counter(s); display: inline-grid; place-items: center; width: 17px; height: 17px; border-radius: 50%; font-size: 10px; border: 1px solid var(--hair-2); }
 .hx-path li.on { color: var(--ink); } .hx-path li.on::before { color: var(--paper); background: var(--ink); border-color: var(--ink); }
 .hx-path li.ok::before { content: '✓'; color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+@media (max-width: 440px) { .hx-path { gap: 6px 10px; font-size: 11px; } .hx-path li { gap: 5px; } }
 .hx-fin { margin: 0 0 10px; } .hx-fin .callout { margin: 0; }
 .hx-next { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; margin: 12px 0 0; font: 12px var(--mono); color: var(--mute); }
 .hx-next button { min-height: 30px; padding: 0 14px; font: 500 12px var(--mono); color: var(--ink); background: var(--card); border: 1px solid var(--hair-2); border-radius: 999px; cursor: pointer; }
@@ -4947,7 +4948,7 @@ function depositOf(t, d) {
     shown: shownAs(meta?.ticker), sheet: DEPOSIT_SHEET[meta?.ticker] || 'eth' };
 }
 const pendingFor = (sheet) => (S.key && P.scan?.pending || []).filter((p) => p.sheet === sheet && !taken(kDep(p)));
-const tethComing = () => pendingFor('eth').length > 0 || listed().some((x) => !ended(x) && /^Wrap [\d.,]+ ETH into tETH$/.test(x.label || ''));
+const tethComing = () => pendingFor('eth').length > 0 || listed().some((x) => !ended(x) && /^(Shield [\d.,]+ ETH|Wrap [\d.,]+ ETH into tETH)$/.test(x.label || ''));
 const COMING_TETH = 'Your tETH is on its way: the relay settles it, usually within a few minutes.';
 let comingT = 0;
 function comingPoll(sheet) {
@@ -5274,7 +5275,7 @@ async function wrapNow({ run, x, status, line, anchor, sheet = 'eth', clear, mov
     const fresh = await readWrapTip(x.wei).catch(() => null);
     if (fresh && fresh.tip * 2n > x.tip * 3n) { say(status, 'The relay’s tip moved while this was open. It is shown again: check it and press once more.'); moved(); return; }
   }
-  run.go({ label: `Wrap ${fmt(x.wei, 18, 6)} ETH into tETH`, status: line, clear });
+  run.go({ label: `Shield ${fmt(x.wei, 18, 6)} ETH`, status: line, clear });
   let hash = null, landed = false, t = null, priv = null, w = null;
   try {
     t = await getUx(); priv = walletPriv();
@@ -5305,7 +5306,7 @@ async function wrapNow({ run, x, status, line, anchor, sheet = 'eth', clear, mov
           ready = await waitPoolVoucher(pub, 'cETH', x.wei, 20e3);
         }
         if (!ready) {
-          say(status, 'Tacit’s relay is proving your wrap first, about a minute. Nothing has left your wallet yet…');
+          say(status, `Tacit’s prover is making your proof first, ${proveEta()}. Nothing has left your wallet yet…`);
           if (VOUCH.ahead?.relay && VOUCH.ahead.wei !== String(x.wei)) await VOUCH.ahead.p.catch(() => {});
           // started now; the pool's proof of the same amount is still taken if it lands first
           const made = (proveAhead('cETH', x.wei, { relay: true, now: true }) || Promise.resolve()).catch(() => {});
@@ -5323,7 +5324,7 @@ async function wrapNow({ run, x, status, line, anchor, sheet = 'eth', clear, mov
     w = t.buildWrap({ walletPriv: priv, amountWei: x.wei, ticker: 'cETH', index });
     run.take(kDep(w));
     run.check();
-    hash = runTx(run, await sendTx({ to: ADDR.wrapTip, data: SEL.wrapWithTip + strip(w.commit) + word(x.wei) + addrWord(x.to), value: x.wei + x.tip, via, label: `Deposit ${fmt(x.wei, 18, 6)} ETH to wrap` }), 'Deposit', 'Depositing');
+    hash = runTx(run, await sendTx({ to: ADDR.wrapTip, data: SEL.wrapWithTip + strip(w.commit) + word(x.wei) + addrWord(x.to), value: x.wei + x.tip, via, label: `Deposit ${fmt(x.wei, 18, 6)} ETH to shield` }), 'Deposit', 'Depositing');
     rewardPop(anchor, { pts: hxPts('wrap', Number(x.wei) / 1e18)?.pts });
     say(status, html`Deposit sent ${txLink(hash)}. Waiting for it to land…`);
     await waitTx(hash);
@@ -11893,11 +11894,11 @@ async function zapNow({ run, p, z, status, bond = true, clear = () => {}, moved 
       // a prover of their own that is set but not answering (this computer's, not running) counts as none set: the rest of the ways are tried, not the relay's settle
       const ownUsable = ownNow(['wrap']) && await ownCan(['wrap']).catch(() => false);
       const creditP = ownUsable ? null : ownCreditCovers();
-      if (VOUCH.ahead?.poolId === p.poolId && VOUCH.ahead.relay) { tell('Your share is being proved, about a minute. Nothing has left your wallet yet…'); await Promise.race([VOUCH.ahead.p, sleep((await creditP) ? 45e3 : 90e3)]); }
+      if (VOUCH.ahead?.poolId === p.poolId && VOUCH.ahead.relay) { tell(`Your share’s proof is being made, ${proveEta()}. Nothing has left your wallet yet…`); await Promise.race([VOUCH.ahead.p, sleep((await creditP) ? 45e3 : 90e3)]); }
       // none made: the relay proves it first, as it does a wrap (pressed, so ahead of the early ones), and one transaction then zaps, mints and settles it
       // from this account; not the zap first with the relay's settle and gas left to wait on
       else if (!(await lpReady(p.poolId, z.wei, res)) && !ownUsable && await relayProving()) {
-        tell('Tacit’s relay is proving your share first, about a minute. Nothing has left your wallet yet…');
+        tell(`Tacit’s prover is making your share’s proof first, ${proveEta()}. Nothing has left your wallet yet…`);
         const proving = lpProve(p.poolId, { shares: plan.shares, relay: true, now: true }) || Promise.resolve();
         await Promise.race([proving, sleep((await creditP) ? 45e3 : 75e3)]).catch(() => {});
       }
@@ -11992,7 +11993,7 @@ async function zapNow({ run, p, z, status, bond = true, clear = () => {}, moved 
     if (hash && !landed && (/reverted/.test(e?.message || '') || e?.dropped)) zapDone(built.depositId);   // nothing went in: nothing to finish
     if (e?.dropped && built) t.releaseShareIndex({ walletPriv: priv, poolId: p.poolId, index: built.index });   // a kept proof's index stays with its voucher
     // once the share is a private note the zap's record is gone (and Finish it with it): the note waits under Your private farming
-    if (landed && !e?.offered && !e?.said) e = Object.assign(new Error(rec?.settled ? `Your share is a private note: ${errText(e)} Farm it from Your private farming.` : `Your zap landed and its share is safe: ${errText(e)} Press Finish it to make it private and farm it.`), { said: true });
+    if (landed && !e?.offered && !e?.said) e = Object.assign(new Error(rec?.settled ? `Your share is a private note: ${errText(e)} Farm it from ${farmedAt(status)}.` : `Your zap landed and its share is safe: ${errText(e)} Press Finish it to make it private and farm it.`), { said: true });
     if (e?.pending && pendingSent(status, e)) { run.release(true); return; }   // sent, not confirmed: the button stays off, and the zap's record waits to be finished
     run.fail(status, e);
     await Promise.allSettled([scanPrivate(true)]); rerender('farm');
@@ -12112,9 +12113,10 @@ async function zapShareFirst({ run, t, p, built, index, shares, maxEth, tokenB, 
 }
 // A zap's share, from its deposit to the farm: the relay settles the deposit into the private share note (the same OP_WRAP a wrap's deposit
 // takes), then the note is bonded. The record is kept only until the deposit is settled: from there the note is the key's (its memo finds
-// it on any device), and a share note not yet bonded shows under Your private farming with Farm it.
+// it on any device), and a share note not yet bonded shows with Farm it (farmedAt: where, as the line saying so is read).
 // With `bond` false the share stays a private LP note, earning the pool's fees, to farm, send on or take out later.
 // → 'landing' (the zap has not landed yet), 'gone' (it never will: reverted, or replaced and past its deadline) or 'done'.
+const farmedAt = (status) => (status?.id === 'hx-zs' ? 'Yours, below' : 'Your private farming');
 async function zapFinish(run, p, rec, built, tell, status, { bond = true } = {}) {
   const t = await getUx(), priv = walletPriv(), here = !!built;   // a zap that landed in this press hands its note over, and the scan may lag the block
   built ||= t.buildShareWrap({ walletPriv: priv, poolId: rec.poolId, shares: BigInt(rec.shares), index: rec.index });
@@ -12145,13 +12147,13 @@ async function zapFinish(run, p, rec, built, tell, status, { bond = true } = {})
   let note = held();
   for (let i = 0, n = st === 1n || here ? 8 : 1; i < n && !note; i++) { await scanPrivate(true).catch(() => {}); note = held(); if (!note && i < n - 1) await sleep(4000); }
   if (!bond && note) {
-    tell(html`<span class="ok">Your ${pairName(p.pair)} share is a private note.</span> It earns the pool’s fees; farm it for TAC from Your private farming.`);
+    tell(html`<span class="ok">Your ${pairName(p.pair)} share is a private note.</span> It earns the pool’s fees; farm it for TAC from ${farmedAt(status)}.`);
     toast('Your share is private');
     await Promise.allSettled([loadPositions()]); rerender('farm');
     return 'done';
   }
   if (!note || !freeNotes([note]).length) {
-    tell(html`<span class="ok">Your share is a private note.</span> If it is not in the farm yet, it shows under Your private farming, with Farm it.`);
+    tell(html`<span class="ok">Your share is a private note.</span> If it is not in the farm yet, it shows under ${farmedAt(status)}, with Farm it.`);
     await Promise.allSettled([loadPositions()]); rerender('farm');
     return 'done';
   }
@@ -14222,7 +14224,7 @@ const hxWrapReady = (units) => !!(units && S.key && VOUCH.mod?.pick(S.key.pubHex
 // A wrap's or a zap's Proof row: made already (one kept ready fits it), or who makes it now and about how long it takes
 const proofRow = (ready, making = false) => (ready ? ['Proof', 'made already: no wait', 'ok']
   : ownNow(['wrap']) ? ['Proof', devOn() ? 'on this computer, a few minutes' : 'with your own credit, about a minute']
-  : ['Proof', making ? 'being made now, about 30 s' : 'by Tacit’s prover, about 30 s']);
+  : ['Proof', `${making ? 'being made now' : 'by Tacit’s prover'}, ${proveEta()}`]);
 // The community prover pool's recent pace (its board, read at most once a minute): the median wait for a prover and the median proof, and a
 // block to settle it. Unknown until the board has a few recent proofs.
 var BOARD = { s: null, at: 0 };                                        // (var: paintAct, early in the page, reads it)
@@ -14237,8 +14239,10 @@ function boardEta() {
   return BOARD.s;
 }
 const etaText = (s) => (s < 90 ? `about ${Math.max(10, Math.round(s / 5) * 5)} s` : `about ${Math.round(s / 60)} min`);
+// How long a proof by Tacit's prover takes now (the board's pace, less the block that settles it): what a receipt promises and what the steps say while it is made
+const proveEta = () => { const s = boardEta(); return s ? etaText(Math.max(15, s - 12)) : 'about 30 s'; };
 // Shield's receipt says when the ETH is private, from the proof's row: at once when it is made already, else how long it takes
-const hxPrivIn = (r) => { const eta = boardEta(), v = r[1].replace(/^made already: no wait$/, 'at once: its proof is made').replace(/^(by Tacit’s prover|being made now), about 30 s$/, eta ? etaText(eta) : 'about 30 s'); return ['Private in', v, r[2], /computer|credit/.test(v) ? 'Proved here, then settled on Ethereum' : 'Proved by the community prover pool, then settled on Ethereum: its proof is made ahead for the sizes kept ready']; };
+const hxPrivIn = (r) => { const eta = boardEta(), v = r[1].replace(/^made already: no wait$/, 'at once: its proof is made').replace(/^(by Tacit’s prover|being made now), about .+$/, eta ? etaText(eta) : 'about 30 s'); return ['Private in', v, r[2], /computer|credit/.test(v) ? 'Proved here, then settled on Ethereum' : 'Proved by the community prover pool, then settled on Ethereum: its proof is made ahead for the sizes kept ready']; };
 // The tile's wrap, its amount standing a moment with a key open and no wrap kept ready that fits: asked of the relay ahead, as the wrap form
 // asks it, so the press finds the proof made (or nearly) and sends one transaction.
 let hxWaT = 0;
@@ -14255,7 +14259,10 @@ function hxWrapAhead(units) {
     if (p) { hxQuote(); p.then(() => hxQuote(), () => {}); }
   }, 1500);
 }
+// (more than the paying account holds with the tip is said before the press, as the press would say it)
+const hxWrapOver = (units, tip) => { const bal = units ? hxHeldOf('ether', 1)?.[0] : null; return bal != null && units * E10 + (ownNow(['wrap']) || typeof tip !== 'bigint' ? 0n : tip) > bal; };
 const hxWrapSay = (units, tip) => ({ out: units ? fmt(units, 8, 6) : null, go: 'Shield ETH', pk: 'wrap', tip,
+  ...(hxWrapOver(units, tip) ? { warn: true, line: `More ETH than ${your()} holds, with the relay’s tip. Try Max.` } : {}),
   rc: units ? [ownNow(['wrap']) ? ['Relay tip', 'none: your own proof'] : ['Relay tip', tip ? `${fmt(tip, 18, 6)} ETH` : tip === undefined ? 'shown next' : tip == null ? '…' : 'none', '', 'Paid on top, to the relay that settles the deposit'],
     hxPrivIn(S.key ? proofRow(hxWrapReady(units), hxWrapMaking(units)) : proofRow(false)),
     ['Chain sees', `your ${fmt(units, 8, 6)} ETH going in`]] : [] });
@@ -14419,12 +14426,18 @@ async function hxSendQuote(units) {
   const [split, claim] = await Promise.all([held != null && !exact && !ownNow(['transfer', 'stealthlock']) ? t.quoteOpFee(tk, 'transfer').then(BigInt) : 0n, t.quoteOpFee(tk, 'stealthclaim').then(BigInt)]);
   const over = held != null && units + split > held, small = units <= claim * 2n;
   if (split && !over && !small) cutAhead(k, units, split);
+  else if (!over && !small) hxLockAhead(k, units);
   return { warn: over || small,
     line: over ? feeRoom(units, split, held, P.scan?.[k]?.notes, show, dp) || `You hold ${show(held)}.`
       : small ? `Send more than ${show(claim * 2n)}: the recipient’s claim costs a relay fee of about ${show(claim)}.` : '',
     rc: over || small ? [] : [['They get', `about ${show(units - claim)}`], ['Claim fee', show(claim), '', 'They claim the payment with their key; the relay that sends their claim takes this from what they get'],
       split ? [notes.some((n) => BigInt(n.value) >= units + split) ? 'Splits a note' : 'Combines notes', `${show(split)} first`] : null, ...hxSendSees()] };
 }
+// A private send of a note's exact amount to a Tacit address or a name, its lock proved while it stands (lockAhead), as the send forms do: to the recipient the check below read
+const hxLockAhead = (k = HX.send, units = hxUnits()) => {
+  const w = HX.rcRes?.raw === HX.rcpt ? HX.rcRes.r : null;
+  if (HX.tab === 'send' && !HX.ask && !HX.sending && units && w?.pubHex && !hxRcptKind() && ['eth', 'tac', 'cusd', 'cbtc'].includes(k)) lockAhead(k, units, w);
+};
 // A name with no Tacit address published, paid at the name's Ethereum address instead (out of the pool): { raw, address }, set by the check below.
 const hxNamed = (r = HX.rcpt) => !!HX.rcName && HX.rcName.raw === r && !hxIsLp();
 const hxTo = () => (hxNamed() ? HX.rcName.address : HX.rcpt);
@@ -14443,6 +14456,10 @@ async function hxSendOutQuote(units) {
   const minFee = own ? 0n : await t.quoteOpFee(tk, exitKind(k, units)), fee = own ? 0n : t.quoteUnwrapFee(units, tk, { minFee }).fee;
   const size = own || held == null || notes.some((n) => BigInt(n.value) >= units) ? 0n : BigInt(await t.quoteOpFee(tk, 'transfer'));
   const over = held != null && units + size > held, small = units <= fee;
+  // tETH out to an address one note covers, proved ahead once it has stood a moment, as the Withdraw form does: the press then only posts the proof
+  clearTimeout(EXIT_AHEAD.typing);
+  const to = hxTo();
+  if (k === 'eth' && !own && !over && !small && !size && held != null && !HX.sending && !sealOn()) EXIT_AHEAD.typing = setTimeout(() => { if (HX.tab === 'send' && HX.send === 'eth' && !HX.sending && hxUnits() === units && hxTo() === to) exitAheadFor(units, to, minFee); }, 1500);
   return { warn: over || small, fee, minFee, own,
     line: over ? feeRoom(units, size, held, P.scan?.[k]?.notes, show, dp) || `You hold ${show(held)}.`
       : small ? `Send more than ${show(fee)}: the relay fee comes out of it.` : '',
@@ -14530,6 +14547,8 @@ function hxRcptCheck() {
   if (hxNamed(raw) && !HX.ask && !hxSendBtc()) return hxSendWallet() ? show(false, html`${HX.rcName.name} has no Tacit address, so it is sent to <span class="mono">${short(HX.rcName.address, 10)}</span>, publicly`) : outTo(HX.rcName);
   // a name sent Bitcoin is read here too, so where it points is shown before the press; the other Bitcoin forms say what they are
   const btcName = hxSendBtc() && /\.(eth|wei|gwei)$/i.test(raw), pool = hxSendWallet() || !!hxPayP();
+  // an Ethereum address, its two ends under the field to check against the one meant (a phone's field cuts it)
+  if (/^0x[0-9a-fA-F]{40}$/.test(raw) && !HX.ask && !hxSendBtc()) return show(false, html`<span class="mono">${short(raw, 8)}</span>`);
   if (!raw || HX.ask || (hxSendBtc() && !btcName) || hxRcptKind()) return;
   hxRcT = setTimeout(() => {
     if (btcName) {
@@ -14547,6 +14566,8 @@ function hxRcptCheck() {
       if (!to && !r.name) return;
       HX.rcRes = { raw, r };
       show(false, html`${r.name ? html`${r.name} → ` : ''}<span class="mono">${short(to, 10)}</span>${to ? html` · ID <b class="num">${addressId(to)}</b>` : ''}`);
+      // the amount was typed first: its quote stands, so the send it makes can be proved now
+      if (!pool && HX.q && !HX.q.busy && !HX.q.warn && HX.q.eth === Number(hxUnits()) / 1e8) hxLockAhead();
     }, (e) => {
       if (e?.code === 'no-pool') return show(true, html`${e.message}`);
       if (e?.code === 'bad-recipient') return show(full, html`${/^bp1/i.test(raw) ? (pool ? 'That pool address (bp1…) is not whole or has a typo. Paste it again.' : 'That is a pool address (bp1…), which takes ETH paid in from a wallet. A private send needs a tacit1… address or a name.') : /^tacit1/i.test(raw) ? 'That Tacit address is not whole or has a typo. Paste it again.' : 'That is not a Tacit address or a name. Use tacit1…, name.wei or 0x….'}`);
@@ -15352,7 +15373,8 @@ async function hxQuote() {
       const lpOnly = HX.lp && HX.from === 'ether' && !pub, lpFee = lpOnly ? (HX.zq?.res?.feeBps ?? FARM.program?.pools?.find((x) => String(x.pid) === pick.k)?.reserves?.feeBps ?? 30) / 100 : 0;
       return done({ out: units && !lpOnly ? sig(ex?.day ?? pick.day) : null, rows, pick: pick.k, unit: 'TAC a day', pk: two && !zap ? 'wrap' : null,
         go: ex?.go || (pub ? (tacSrc ? 'Farm with TAC' : 'Farm with ETH') : zap ? (lpOnly ? 'Add as private LP' : 'Zap into the farm') : two ? 'Shield ETH' : 'Farm privately'),
-        rc: [['How', js?.how || (pub ? `half swapped to ${tacSrc ? 'ETH' : 'TAC'}, both staked` : zap ? 'one transaction' : 'half swapped inside the pool')],
+        // (the wallet's ETH picked and the private tETH held covering it: the tETH is what goes in, and the receipt says so)
+        rc: [['How', `${js && HX.from === 'ether' ? `your private tETH${HX.jq?.mode === 'pair' ? ' and TAC' : ''}, ` : ''}${js?.how || (pub ? `half swapped to ${tacSrc ? 'ETH' : 'TAC'}, both staked` : zap ? 'one transaction' : 'half swapped inside the pool')}`],
           lpOnly ? ['You earn', `the pool’s ${lpFee}% fee on every swap${pick.apr != null ? `, about ${pctFmt(pick.apr)} a year (last week)` : ''}`] : null,
           pub || js ? null : ['Chain sees', zap ? 'ETH in, private after' : 'a deposit, not whose'], two && !zap ? ['Steps', 'make the ETH private, then farm it'] : null,
           HX.zq?.sp ? ['Where', `${Math.round(Number(HX.zq.plan.ammIn) * 100 / Number(HX.zq.plan.swapIn))}% in this pool, the rest in the Precision pool`] : null,
@@ -15915,8 +15937,8 @@ function hxPtsPaint(q) {
     if (borrows) mount(pts, html`${row(borrows.map(([, , , m]) => lead(m)).join(' · '))}
       <span class="note" data-ptsnote ${PTSINFO ? '' : 'hidden'}>${borrows.map(([, , t, m]) => html`<span class="hx-pt">${t}: ${m}</span>`)}<a class="link" href="#points" data-link="points">All terms</a></span>`);
     if (p) mount(pts, html`${row(p.pts < 1 ? '< 1' : `${p.known ? '≈ ' : 'at least '}${ptsFmt(p.pts)}`)}
-      ${p.tips.map((t) => html`<span class="hx-pt">${t}</span>`)}
-      <span class="note mute" data-ptsnote ${PTSINFO ? '' : 'hidden'}>${p.why ? `${p.why}. ` : ''}${ptsWhy(q.pk === 'dev')}</span>`);
+      ${p.tips.slice(0, 1).map((t) => html`<span class="hx-pt">${t}</span>`)}
+      <span class="note mute" data-ptsnote ${PTSINFO ? '' : 'hidden'}>${p.tips.slice(1).map((t) => html`<span class="hx-pt">${t}</span>`)}${p.why ? `${p.why}. ` : ''}${ptsWhy(q.pk === 'dev')}</span>`);
   }
 }
 const hxFarmHeld = () => !HX.amt.trim() && HX.mode === 'earn' && /^\d+$/.test(String(HX.pool)) && (HX.from === 'eth' ? hxHeld() : HX.from === 'tac' ? hxHeldTac() : 0n) > 0n;
