@@ -88,7 +88,7 @@ in PowerShell, then the install command in the Ubuntu window. `prove.sh` handles
   `wsl --shutdown`. Where `systemctl --user` does not answer, the script starts the prover in the background instead (`~/.tacit-prover/run.sh`,
   `run.pid`, which `--status` and `--uninstall` know); that run does not start again by itself.
 - **Memory.** WSL gives Linux half the PC's memory unless `%UserProfile%\.wslconfig` sets `memory=` under `[wsl2]`. A proof wants 8 GB; the
-  script names the setting when WSL has less than 12 GB.
+  script names the setting when WSL has less than about 11 GB.
 - **Staying up.** WSL stops a distribution a few seconds after its last window closes (`instanceIdleTimeout` under `[general]` in
   `.wslconfig`, 15000 ms by default, `-1` for never), and Microsoft's systemd page says systemd services do not keep it alive. Linger keeps
   the user manager across logouts inside Linux and `vmIdleTimeout` times the VM, so neither keeps the prover running. Reports in
@@ -99,10 +99,11 @@ in PowerShell, then the install command in the Ubuntu window. `prove.sh` handles
 - **glibc.** The Linux build asks for glibc 2.34 or newer (Ubuntu 22.04, Debian 12); `wsl --install` gives Ubuntu 24.04, and the script
   refuses an older one before it downloads anything.
 
-`prove-gpu.sh` checks the same way under WSL: the GPU is the Windows driver's (no Linux driver inside Ubuntu), and `nvidia-smi` is in
-`/usr/lib/wsl/lib`. SP1's GPU server (`sp1-gpu-server` 6.3.1, which the worker fetches) links `libcudart.so.12`, which no driver brings:
-NVIDIA's CUDA repository for WSL-Ubuntu and `cuda-cudart-12-8`. The server is built with CUDA 12.8 for sm_80 to sm_120, and uses host
-memory registration, memory pools and cooperative launches; NVIDIA lists pinned memory as limited under WSL.
+`prove-gpu.sh` makes the same glibc check, and under WSL finds the Windows driver's `nvidia-smi` in `/usr/lib/wsl/lib` (there is no
+Linux driver inside Ubuntu). SP1's GPU server (`sp1-gpu-server` 6.3.1, which the worker fetches) links `libcudart.so.12`, which no driver
+brings: NVIDIA's CUDA repository for WSL-Ubuntu and `cuda-cudart-12-8`. The server is built with CUDA 12.8 for sm_80 to sm_120 (so the
+script refuses an older card), and uses host memory registration, memory pools and cooperative launches; NVIDIA lists pinned memory as
+limited under WSL.
 
 Not yet run on a Windows PC. The WSL paths of `prove.sh` are covered by stand-ins in `tests/prove-installer.test.mjs`.
 

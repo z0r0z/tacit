@@ -185,8 +185,9 @@ check_machine() {
   else
     kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0); mem=$(( ${kb:-0} / 1048576 ))
   fi
-  # WSL's Linux gets half the PC's memory unless told otherwise, which is what /proc/meminfo shows.
-  if is_wsl && [ "$mem" -gt 0 ] && [ "$mem" -lt 12 ]; then
+  # WSL's Linux gets half the PC's memory unless told otherwise, which is what /proc/meminfo shows (a little under what .wslconfig sets,
+  # so the memory=12GB this suggests reads as 11).
+  if is_wsl && [ "$mem" -gt 0 ] && [ "$mem" -lt 11 ]; then
     warn "WSL gives Linux about $mem GB here (half of this PC's memory, unless %UserProfile%\\.wslconfig says otherwise); a proof wants 8 GB, and is quicker with 16."
     warn "To give it more, put these two lines in %UserProfile%\\.wslconfig on Windows (memory= what you can spare, say 12GB on a 16 GB PC), run wsl --shutdown in PowerShell and open Ubuntu again:"
     warn "  [wsl2]"

@@ -34,7 +34,7 @@ has_cudart() {
   cache=$(ldconfig -p 2>/dev/null || /sbin/ldconfig -p 2>/dev/null) || cache=
   [ -n "$cache" ] || return 0
   printf '%s\n' "$cache" | grep -q 'libcudart\.so\.12 ' && return 0
-  ifs=$IFS; IFS=:
+  ifs=$IFS; IFS=':;'
   for d in ${LD_LIBRARY_PATH:-} /lib /usr/lib /lib64 /usr/lib64 /lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu; do
     [ -e "$d/libcudart.so.12" ] && { IFS=$ifs; return 0; }
   done
@@ -42,16 +42,31 @@ has_cudart() {
   return 1
 }
 
+# The worker and SP1's GPU server are built against glibc 2.34; on an older one neither starts. Another libc is left to them.
+check_glibc() {
+  v=$(ldd --version 2>&1 | head -n 1 | awk '{print $NF}')
+  maj=${v%%[!0-9]*}; rest=${v#*.}; min=${rest%%[!0-9]*}
+  { [ -n "$maj" ] && [ -n "$min" ] && [ "$v" != "$rest" ]; } || return 0
+  if [ "$maj" -lt 2 ] || { [ "$maj" -eq 2 ] && [ "$min" -lt 34 ]; }; then die "this Linux has glibc $v, and the prover needs 2.34 or newer: Ubuntu 22.04, Debian 12 or newer."; fi
+}
+
+# The pid in run.pid while that process is still this install's run.sh (a pid left from before a reboot can be anyone's).
+run_pid() {
+  p=$(cat "$HOME_DIR/run.pid" 2>/dev/null || true)
+  case $p in ''|*[!0-9]*) return 0 ;; esac
+  case $(tr '\0' ' ' 2>/dev/null < "/proc/$p/cmdline" || ps -p "$p" -o args= 2>/dev/null || true) in *"$HOME_DIR/run.sh"*) printf '%s' "$p" ;; esac
+}
+
 main() {
   HOME_DIR="${TACIT_GPU_HOME:-$HOME/.tacit-gpu}"
   BIN="$HOME_DIR/tacit-prover-worker"
   case "${1:-}" in
     --status)
-      if [ -f "$HOME_DIR/run.pid" ] && kill -0 "$(cat "$HOME_DIR/run.pid")" 2>/dev/null; then say "running (pid $(cat "$HOME_DIR/run.pid"))"; else say "not running"; fi
+      p=$(run_pid); if [ -n "$p" ]; then say "running (pid $p)"; else say "not running"; fi
       [ -f "$HOME_DIR/worker.log" ] && tail -n 8 "$HOME_DIR/worker.log"
       return 0 ;;
     --stop)
-      if [ -f "$HOME_DIR/run.pid" ]; then kill -- "-$(cat "$HOME_DIR/run.pid")" 2>/dev/null || kill "$(cat "$HOME_DIR/run.pid")" 2>/dev/null || true; rm -f "$HOME_DIR/run.pid"; fi
+      p=$(run_pid); [ -z "$p" ] || kill -- "-$p" 2>/dev/null || true; rm -f "$HOME_DIR/run.pid"
       say "stopped"
       return 0 ;;
   esac
@@ -59,6 +74,7 @@ main() {
   is_addr "$ADDR" || die "give the 0x address the TAC goes to: sh -s -- 0xYourAddress"
   case $(uname -s) in MINGW*|MSYS*|CYGWIN*) die "this does not run in Git Bash. On Windows it would run inside WSL 2 (in PowerShell: wsl --install), in the Ubuntu window." ;; esac
   [ "$(uname -s)" = Linux ] && { [ "$(uname -m)" = x86_64 ] || [ "$(uname -m)" = amd64 ]; } || die "this needs x86-64 Linux with an NVIDIA GPU."
+  check_glibc
   # In WSL the driver's tools are the Windows driver's, in /usr/lib/wsl/lib: on the PATH of Ubuntu's user, not of root.
   smi=$(command -v nvidia-smi 2>/dev/null || true)
   if [ -z "$smi" ] && [ -x /usr/lib/wsl/lib/nvidia-smi ]; then smi=/usr/lib/wsl/lib/nvidia-smi; fi
@@ -69,6 +85,9 @@ main() {
   mem=$("$smi" --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ')
   case $mem in ''|*[!0-9]*) die "nvidia-smi did not say how much memory the GPU has (${mem:-nothing}); a Bitcoin batch needs 24 GB or more." ;; esac
   [ "$mem" -ge 23000 ] || die "the GPU has $mem MiB; a Bitcoin batch needs 24 GB or more."
+  # SP1's GPU server carries code for sm_80 (Ampere) and newer only; the best card counts, and a driver too old to say is left to the server.
+  cc=$("$smi" --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | tr -d ' ' | sort -rn | head -1)
+  case $cc in [1-7].[0-9]) die "this GPU is compute capability $cc, and SP1's GPU server needs 8.0 or newer (an RTX 3090, A5000 or later)." ;; esac
   # Under WSL the card also draws Windows' desktop, and what Windows holds is not there for a batch.
   if is_wsl; then
     used=$("$smi" --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ')
@@ -84,13 +103,17 @@ main() {
   chmod +x "$BIN.part" && mv -f "$BIN.part" "$BIN"
   say "Checked its sha256 ($(printf '%s' "$got" | cut -c1-12)...)"
   # One worker at a time, restarted after a crash with a pause; it re-reads nothing between starts but this script's settings.
-  if [ -f "$HOME_DIR/run.pid" ]; then kill -- "-$(cat "$HOME_DIR/run.pid")" 2>/dev/null || true; fi
+  p=$(run_pid); [ -z "$p" ] || kill -- "-$p" 2>/dev/null || true
   cat > "$HOME_DIR/run.sh" <<EOF
 #!/bin/sh
 cd "$HOME_DIR"
+pause=15
 while true; do
+  t=\$(date +%s)
   COMMUNITY_MINER=$ADDR WORKER_NAME=gpu-$(printf '%s' "$ADDR" | cut -c3-8) EXPECT_VKEY=$POOL_VKEY WARM=0 RELOAD_FLAG="$HOME_DIR/reload" "$BIN"
-  sleep 15
+  # A worker that stops within five minutes did not start: wait twice as long each time, up to an hour.
+  if [ \$((\$(date +%s) - t)) -lt 300 ]; then pause=\$((pause < 1800 ? pause * 2 : 3600)); else pause=15; fi
+  sleep \$pause
 done
 EOF
   chmod +x "$HOME_DIR/run.sh"
