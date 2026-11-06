@@ -4,9 +4,9 @@
 import { $, esc, fmtUnits, parseUnits, short } from '/trade/util.js?cb=e8317464';
 import { ETH_LOG_NODES } from '/eth-nodes.js';
 import { day } from '/trade/fmt.js?cb=32b1744b';
-import { loadAssets, readNames, search, ipfs } from '/etch/find.js?cb=53f60dfd';
+import { loadAssets, readNames, search, ipfs } from '/etch/find.js?cb=4376bbcc';
 
-const BTC_MODULE = '/trade/btc.js?cb=8a4b33cd', ETH_MODULE = '/etch/eth.js?cb=d260693c', WALLET_MODULE = '/trade/wallet.js?cb=88b623b8', SHEET_MODULE = '/trade/sheet.js?cb=84cda8f2', UTIL_MODULE = '/trade/util.js?cb=e8317464';
+const BTC_MODULE = '/trade/btc.js?cb=8a4b33cd', ETH_MODULE = '/etch/eth.js?cb=370b1297', WALLET_MODULE = '/trade/wallet.js?cb=88b623b8', SHEET_MODULE = '/trade/sheet.js?cb=84cda8f2', UTIL_MODULE = '/trade/util.js?cb=e8317464';
 const DECIMALS_OF = { btc: [0, 2, 6, 8], eth: [0, 6, 8, 18] };
 // What the pool can hold of an asset, in its base units (2^64 − 1 in-system units); on Bitcoin, the etch's own limit.
 const maxFor = (dec) => (S.chain === 'eth' ? ((1n << 64n) - 1n) * 10n ** BigInt(dec - Math.min(dec, 8)) : MAX_BASE);
@@ -51,9 +51,8 @@ function paintMark(node, ticker, id, url) {
   node.style.backgroundImage = url ? `url("${url}")` : '';
   node.style.backgroundSize = 'cover'; node.style.backgroundPosition = 'center';
 }
-const markHtml = (a) => (a.logo
-  ? `<img class="tk" src="${esc(a.logo)}" alt="" loading="lazy" decoding="async" data-l="${esc(letters(a.ticker))}" data-c="${colour(a.id)}">`
-  : `<span class="tk letter" style="--c:${colour(a.id)}">${esc(letters(a.ticker))}</span>`);
+// the letters stay under a logo until it has loaded (some are megabytes), and are what is left when it does not load
+const markHtml = (a) => `<span class="tk letter" style="--c:${colour(a.id)}">${esc(letters(a.ticker))}${a.logo ? `<img src="${esc(a.logo)}" alt="" loading="lazy" decoding="async">` : ''}</span>`;
 
 // ── the key and tacit.js, loaded when the form is first touched ──
 function lane() {
@@ -253,8 +252,7 @@ function showDone() {
       <div class="kv"><span>Transactions</span><b><a href="${MEMPOOL}/tx/${esc(d.commitTxid)}" target="_blank" rel="noopener noreferrer">commit</a> · <a href="${MEMPOOL}/tx/${esc(d.revealTxid)}" target="_blank" rel="noopener noreferrer">reveal</a></b></div>
     </div>
     <a class="btn" href="/#bitcoin/${esc(d.assetIdHex)}">Open it in your wallet</a>
-    <a class="btn ghost" href="${market(d.assetIdHex)}">Trade it</a>
-    <button class="btn ghost" type="button" id="again">Etch another</button>
+    <div class="pair"><a class="btn ghost" href="${market(d.assetIdHex)}">Trade it</a><button class="btn ghost" type="button" id="again">Etch another</button></div>
     <p class="q${d.details && d.metadataPinned === false ? ' err' : ''}">${d.details && d.metadataPinned === false ? 'The name and details could not be saved with it. The asset itself is etched.' : 'It shows in Discover within a few minutes.'}</p>`;
   paintMark($('#d-mark'), d.ticker, d.assetIdHex, d.logo);
   $('#edit').hidden = true; $('.act').hidden = true; done.hidden = false;
@@ -429,19 +427,22 @@ function showDoneEth() {
       ${d.registered ? '<div class="kv"><span>Tacit pool</span><b>registered</b></div>' : ''}
     </div>
     <button class="btn" type="button" id="watch">Add it to your wallet</button>
-    <a class="btn ghost" href="${scan}/token/${esc(t)}" target="_blank" rel="noopener noreferrer">View on Etherscan</a>
-    <button class="btn ghost" type="button" id="again">Etch another</button>
+    <div class="pair"><a class="btn ghost" href="${scan}/token/${esc(t)}" target="_blank" rel="noopener noreferrer">Etherscan ↗</a><button class="btn ghost" type="button" id="again">Etch another</button></div>
     <p class="q${bad || d.note ? ' err' : ''}">${esc(bad || d.note || 'It is yours: nothing can mint more of it.')}</p>`;
   paintMark($('#d-mark'), d.ticker, t, d.logo);
   $('#edit').hidden = true; $('.act').hidden = true; done.hidden = false;
   $('#again').onclick = reset;
-  $('#watch').onclick = async () => { const lane = await ethLane(); const ok = await lane.E.addToWallet(lane.wallet, { token: t, symbol: d.ticker, decimals: d.dec }, d.logoUri ? `${API}/ipfs/${d.logoUri.slice(7)}` : null); $('#watch').textContent = ok ? 'Added' : 'Add it to your wallet'; };
+  $('#watch').onclick = async () => {
+    try { const lane = await ethLane(); const ok = await lane.E.addToWallet(lane.wallet, { token: t, symbol: d.ticker, decimals: d.dec }, d.logoUri ? `${API}/ipfs/${d.logoUri.slice(7)}` : null); $('#watch').textContent = ok ? 'Added' : 'Add it to your wallet'; }
+    catch { $('#watch').textContent = 'Add it in your wallet by its address'; }
+  };
   $('#again').focus();
 }
 // The switch between the two sides: the form is the same, the decimals offered and what is chosen under "more" are not.
 function setChain(c) {
   if (S.chain === c) return;
-  S.chain = c; S.dec = c === 'eth' ? 18 : 8; S.quote = c === 'btc' ? S.quote : null;
+  // the quote is the Bitcoin side's: it is asked again on the way back
+  S.chain = c; S.dec = c === 'eth' ? 18 : 8; S.quote = null; quoteKey = '';
   for (const b of document.querySelectorAll('#chain [data-chain]')) b.setAttribute('aria-checked', String(b.dataset.chain === c));
   $('#pub-row').hidden = $('#mint-row').hidden = c === 'eth'; $('#reg-row').hidden = c === 'btc';
   chips(); say('');
@@ -485,8 +486,8 @@ function paintList() {
     return;
   }
   const term = ui.find.value.trim(), all = eth ? knownEth() || S.mineEth : known(), hits = search(all, term), shown = hits.slice(0, S.shown);
-  cnt.textContent = term ? `${hits.length} found` : `${hits.length} asset${hits.length === 1 ? '' : 's'}`;
-  ui.list.innerHTML = shown.length ? shown.map(row).join('') : `<li class="empty">Nothing matches “${esc(term)}”.</li>`;
+  cnt.textContent = term ? `${hits.length} found` : hits.length ? `${hits.length} asset${hits.length === 1 ? '' : 's'}` : '';
+  ui.list.innerHTML = shown.length ? shown.map(row).join('') : `<li class="empty">${term ? `Nothing matches “${esc(term)}”.` : `Nothing etched on ${eth ? 'Ethereum' : 'Bitcoin'} yet. <button class="link" type="button" data-new>Etch the first</button>`}</li>`;
   more.hidden = hits.length <= shown.length;
 }
 let loading = null;
@@ -535,14 +536,9 @@ ui.list.addEventListener('click', (e) => {
   S.open = S.open === id ? null : id;
   paintList();
 });
-// a logo that does not load is a letter again
-ui.list.addEventListener('error', (e) => {
-  const i = e.target;
-  if (i.tagName !== 'IMG' || !i.dataset.l) return;
-  const s = document.createElement('span');
-  s.className = 'tk letter'; s.style.setProperty('--c', i.dataset.c); s.textContent = i.dataset.l;
-  i.replaceWith(s);
-}, true);
+// a logo shows once it has loaded; one that does not load leaves the letters
+ui.list.addEventListener('load', (e) => { const i = e.target; if (i.tagName === 'IMG') (i.decode ? i.decode() : Promise.resolve()).then(() => i.classList.add('ok'), () => i.remove()); }, true);
+ui.list.addEventListener('error', (e) => { if (e.target.tagName === 'IMG') e.target.remove(); }, true);
 
 // ── the two panels ──
 function setTab(t, term = null, side = null) {
@@ -555,14 +551,16 @@ function setTab(t, term = null, side = null) {
   keepUrl();
 }
 function keepUrl() {
-  const q = ui.find.value.trim(), h = S.tab === 'find' ? `#discover${q ? `=${encodeURIComponent(q)}` : S.fchain === 'eth' ? ':eth' : ''}` : '';
+  // an address names its own side; a word keeps the side it was searched on
+  const q = ui.find.value.trim(), side = S.fchain === 'eth' && !/^0x[0-9a-f]{40}$/i.test(q) ? ':eth' : '';
+  const h = S.tab === 'find' ? `#discover${side}${q ? `=${encodeURIComponent(q)}` : ''}` : '';
   try { history.replaceState(null, '', location.pathname + location.search + h); } catch { /* the address is a convenience */ }
 }
 function readUrl() {
   let h = '';
   try { h = decodeURIComponent(location.hash.slice(1)); } catch { /* an unreadable address opens Create */ }
-  if (h === 'discover:eth') return { tab: 'find', term: '', side: 'eth' };
-  return h.startsWith('discover') ? { tab: 'find', term: h.slice(9) } : { tab: 'create', term: null };
+  const m = /^discover(:eth)?(?:=([\s\S]*))?$/.exec(h);
+  return m ? { tab: 'find', term: m[2] ?? '', side: m[1] ? 'eth' : null } : { tab: 'create', term: null };
 }
 $('#t-create').addEventListener('click', () => setTab('create'));
 $('#t-find').addEventListener('click', () => setTab('find'));
@@ -589,6 +587,7 @@ $('#chain').addEventListener('click', (e) => { const b = e.target.closest('[data
 ui.reg.addEventListener('change', paint);
 document.addEventListener('click', (e) => {
   if (e.target.closest('[data-fund]')) { if (bitcoin?.session.unlocked) addSats(); return; }
+  if (e.target.closest('[data-new]')) { setTab('create'); setChain(S.fchain); ui.tk.focus(); return; }
   const f = e.target.closest('[data-find]');
   if (f) { setTab('find', f.dataset.find, 'btc'); return; }
   const c = e.target.closest('[data-copy]');

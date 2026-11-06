@@ -132,8 +132,8 @@ export const addToWallet = (wallet, p, image) => wallet.watchAsset({ address: p.
 
 // ── finding them again ──
 // The factory's own record: every token it has made is a Deployed event. Those the pool mints itself (the bridged assets, TAC among them) are not etches
-// made here, and are left out. The free node that answers a read over the factory's whole life is Tenderly's; the others refuse a range this wide, so it
-// is asked first (the read moves on to the next when it fails).
+// made here, and are left out. No free node reads the factory's whole life at once any more, so it is read in spans of LOG_SPAN blocks (the widest the
+// first nodes take; one that refuses a span passes it to the next), a few at a time.
 export const DEPLOY_BLOCK = 25998736;
 const DEPLOYED = '0x93c5d8685811454892b561b9f2a796b6f00badaadfbd6d47fd79e69219292913';
 const B32 = 'abcdefghijklmnopqrstuvwxyz234567';
@@ -145,8 +145,21 @@ export function cidString(digest) {
   if (bits) out += B32[(acc << (5 - bits)) & 31];
   return `b${out}`;
 }
-export async function listEtches(read, hosts) {
-  const logs = await read('eth_getLogs', [{ address: FACTORY, topics: [DEPLOYED], fromBlock: '0x' + DEPLOY_BLOCK.toString(16), toBlock: 'latest' }], hosts);
+export const LOG_SPAN = 50_000;
+export async function listEtches(read, hosts, { span = LOG_SPAN, at = 4 } = {}) {
+  const head = parseInt(await read('eth_blockNumber', []), 16);
+  if (!(head >= DEPLOY_BLOCK)) throw new Error('the chain head could not be read');
+  const spans = [];
+  for (let f = DEPLOY_BLOCK; f <= head; f += span) spans.push([f, Math.min(f + span - 1, head)]);
+  const parts = new Array(spans.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(at, spans.length) }, async () => {
+    while (next < spans.length) {
+      const i = next++, [f, t] = spans[i];
+      parts[i] = await read('eth_getLogs', [{ address: FACTORY, topics: [DEPLOYED], fromBlock: '0x' + f.toString(16), toBlock: '0x' + t.toString(16) }], hosts);
+    }
+  }));
+  const logs = parts.flat();
   const out = [];
   for (const l of logs) {
     const minter = '0x' + strip(l.topics[3]).slice(24), token = '0x' + strip(l.topics[2]).slice(24);

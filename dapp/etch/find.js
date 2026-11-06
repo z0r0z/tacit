@@ -21,7 +21,8 @@ export function normalize(list) {
       supply, holders: Number(a.holder_count) || 0, cid: cidOf(a.image_uri), name: '', logo: null, later: false, same: 0,
     });
   }
-  const order = (x, y) => x.height - y.height || x.at - y.at || (x.id < y.id ? -1 : 1);
+  // by when it was etched: the registry gives some assets no height, and a missing one must not read as the newest; the height orders those of one moment
+  const order = (x, y) => (x.at || Infinity) - (y.at || Infinity) || x.height - y.height || (x.id < y.id ? -1 : 1);
   const groups = new Map();
   for (const a of out) { const k = a.ticker.toLowerCase(); (groups.get(k) || groups.set(k, []).get(k)).push(a); }
   for (const g of groups.values()) { g.sort(order); g.forEach((a, i) => { a.same = g.length - 1; a.later = i > 0; }); }
