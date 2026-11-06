@@ -2,7 +2,7 @@
 // and paused from here. The computer's tacit-prover (installed once with the line the page shows) answers on 127.0.0.1; the API's chain
 // (GET /prover/blocks) and proof pool, and the points service, say what the network did and what an address has made and been paid.
 import { cleanAddress, proveCommand, utcDay, mineLines } from '/community-prove.js?cb=55393eb1';
-import { localState, jobView, headline, isPhone, isWindows, setupText } from '/prove/view.js?cb=a0f0c54d';
+import { localState, jobView, headline, isPhone, isWindows, setupText } from '/prove/view.js?cb=80de18a0';
 import { invaderSvg, gpuSvg } from '/prove/invader.js?cb=e8a5ec59';
 import { short, cells, opsText, tac, rewardWei, ago, took, fresh, blockAgo, kindOf, KINDS, kindText, median, untilDayEnds, cleanBlock, cleanProof, cleanMiner } from '/prove/chain.js?cb=8a988a34';
 
@@ -19,6 +19,7 @@ let os = isWindows(navigator.userAgent) ? 'win' : 'unix';
 const rateText = (r) => (r >= 1e6 ? `${(r / 1e6).toFixed(1)} M/s` : `${Math.round(r / 1e3)} k/s`);
 let blocks = [], ethHead = null, headReadAt = 0, shownTop = null, picked = null, feed = [], feedTop = 0, lastProved = null;
 
+const BASE_TITLE = document.title;
 const addr = () => cleanAddress($('#addr').value);
 const count = (x) => (Number.isSafeInteger(Number(x)) && Number(x) >= 0 ? Number(x) : null);
 const cleanPool = (p) => (p ? { queued: count(p.queued), leased: count(p.leased), doneToday: count(p.doneToday), minersToday: count(p.minersToday),
@@ -37,12 +38,28 @@ const who = (a, you = true) => `<span class="who">${face(a)}${esc(short(a))}${yo
 const GPU = `<span class="who gpu">${face(null)}Tacit GPU</span>`;
 const byOf = (x, you = true) => (x.house ? GPU : x.prover || x.miner ? who(x.prover || x.miner, you) : null);
 
+// Chrome asks before a public page reaches a program on this computer, and a "Block" there leaves tacit-prover looking absent. Where the
+// browser names that permission, a denial is told apart from a prover that is not installed.
+let blocked = false;
+async function readBlocked() {
+  for (const name of ['loopback-network', 'local-network-access']) {
+    try { if ((await navigator.permissions.query({ name })).state === 'denied') return true; } catch {}
+  }
+  return false;
+}
 async function readLocal() {
   health = await get(`${LOCAL}/health`, 2500);
+  blocked = health ? false : await readBlocked();
   mine = health?.ok ? await get(`${LOCAL}/mine`, 2500) : null;
   // The prover's own address fills an empty field: it is where this computer's proofs already pay.
   if (mine?.miner && !$('#addr').value) { $('#addr').value = mine.miner; addressChanged(); }
 }
+
+// A wallet connected on this page (ops.js) fills an empty field: its account is the likeliest place the TAC is meant to go.
+addEventListener('tacit:prove-wallet', (e) => {
+  const a = cleanAddress(e.detail);
+  if (a && !$('#desk').hidden && !$('#addr').value.trim()) { $('#addr').value = a; addressChanged(); }
+});
 
 let pointsFor = null;
 async function readRemote() {
@@ -216,6 +233,9 @@ function paint() {
   // Once the line is copied, a computer with no prover yet is waiting for it to start.
   $('#title').textContent = state === 'none' && copied ? 'Waiting for tacit-prover…' : h.title;
   $('#state').classList.toggle('copied', state === 'none' && copied);
+  // A tab left open shows what the node is doing; a browser that blocks the page from the computer's prover says so.
+  document.title = state === 'proving' ? `Proving · ${BASE_TITLE}` : BASE_TITLE;
+  $('#blocked').hidden = !(blocked && state === 'none');
   const forge = $('#forge');
   forge.hidden = !job;
   if (job) {
@@ -246,7 +266,7 @@ function paint() {
   setup.dataset.os = os;
   setup.toggleAttribute('data-first', state === 'none');
   for (const b of setup.querySelectorAll('[data-os]')) b.setAttribute('aria-pressed', String(b.dataset.os === os));
-  $('#copy').textContent = words.button;
+  $('#copy').textContent = addr() ? words.button : words.need;
   $('#setup-hint').textContent = words.hint;
   $('#cmd').textContent = proveCommand(addr());
   const l = mineLines(pool, points, { tally, address: addr() });
@@ -269,10 +289,7 @@ function paint() {
   if (perDay && per) $('#pace').textContent = `about ${tac(per * BigInt(perDay))} TAC a day (${perDay} proofs)`;
   const credited = points?.account?.creditedWei;
   $('#paid-row').hidden = !/^\d+$/.test(String(credited ?? ''));
-  if (!$('#paid-row').hidden) $('#paid').textContent = `${tac(credited)} TAC`;
-  // The node card's Share: with proofs today, the day's own count.
-  const share = document.querySelector('[data-card="node"] .share-x');
-  if (share) share.href = shareHref('node', mineRow ? `I'm running a Tacit prover node: ${mineRow.proofs} privacy ${mineRow.proofs === 1 ? 'proof' : 'proofs'} today, mining TAC.` : null);
+  if (!$('#paid-row').hidden) $('#paid').innerHTML = `${esc(tac(credited))} TAC · <a href="/rewards/">Rewards</a>`;
   $('#run').textContent = mine?.proved ? String(mine.proved) : '0';
   $('#run-row').hidden = !mine || typeof mine.on !== 'boolean';
   paintSalt();
@@ -291,7 +308,9 @@ function paintMe() {
 function addressChanged() {
   const a = addr();
   paintMe();
-  $('#addr').setAttribute('aria-invalid', $('#addr').value.trim() && !a ? 'true' : 'false');
+  const typed = $('#addr').value.trim();
+  $('#addr').setAttribute('aria-invalid', typed && !a ? 'true' : 'false');
+  $('#addr-bad').textContent = typed && !a ? (/\.eth$/i.test(typed) ? 'Use the 0x address, not the name.' : 'That is not an address: 0x and 40 letters or digits.') : '';
   if (a) { try { localStorage.setItem(SAVED_ADDR, a); } catch {} }
   paint();
   if (blocks.length) paintChain(new Set());
@@ -331,6 +350,7 @@ const gpuOn = (g) => g.proving || (g.seen != null && g.seen < 120);
 const gpuCommand = () => `curl -fsSL https://tacit.finance/prove-gpu.sh | sh -s -- ${addr() || '0xYourAddress'}`;
 function paintGpu() {
   $('#gpu-cmd').textContent = gpuCommand();
+  $('#gpu-copy').textContent = gpuCopied ? 'Copied' : addr() || $('#desk').hidden ? 'Copy' : 'Add address';
   const pts = Number(boardPay?.pointsByProgram?.[BTC]), r = Number.isSafeInteger(pts) ? rewardWei(pts, cap()) : null;
   $('#btc-pay').textContent = r ? ` · ${tac(r)} TAC each` : '';
   $('#gpu-n').textContent = gpus ? String(gpus.filter(gpuOn).length) : '—';
@@ -339,9 +359,18 @@ function paintGpu() {
   if (g) $('#gpu-me').textContent = `${g.proving ? 'proving a batch' : gpuOn(g) ? 'waiting for its turn' : `seen ${ago(Date.now() - (g.seen || 0) * 1000)}`} · ${g.proved} ${g.proved === 1 ? 'batch' : 'batches'}`;
 }
 async function readBoardPay() { const s = await get(`${API}/prover/board`); if (s?.pay) boardPay = s.pay; if (s) gpus = cleanGpus(s.workers); paintGpu(); }
+let gpuCopied = false;
 $('#gpu-copy').addEventListener('click', async () => {
-  try { await navigator.clipboard.writeText(gpuCommand()); $('#gpu-copy').textContent = 'Copied'; setTimeout(() => { $('#gpu-copy').textContent = 'Copy'; }, 1500); } catch {}
+  if (!addr() && !$('#desk').hidden) { askAddress(); return; }
+  try { await navigator.clipboard.writeText(gpuCommand()); gpuCopied = true; paintGpu(); setTimeout(() => { gpuCopied = false; paintGpu(); }, 1500); } catch {}
 });
+// A copy button with no address to put in its line takes the reader to the field.
+function askAddress() {
+  const f = $('#addr');
+  f.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+  f.focus();
+  say('Enter the address the TAC goes to.', true);
+}
 
 // Salt mining (worker/src/salt-pool.js): the day's points shared by work, this address's part of them so far, what this computer grinds
 // (tacit-prover's GET /mine `salt`), and the best addresses banked for Tacit's next contracts.
@@ -380,7 +409,7 @@ async function readSalts() { const s = await get(`${API}/prover/salt`); if (s) s
 
 async function copy() {
   const a = addr();
-  if (!a) { $('#addr').focus(); say('Enter the address the TAC goes to.', true); return; }
+  if (!a) { askAddress(); return; }
   try { await navigator.clipboard.writeText(proveCommand(a)); copied = true; paint(); say(setupText(os).copied); }
   catch {
     const sel = getSelection(), range = document.createRange();
@@ -392,7 +421,7 @@ async function copy() {
 // The Relay and Bitcoin tabs' code (the wallet, the header relay, the board's settles) is most of the page's weight and most visitors never
 // open those tabs, so it loads when one opens, when the wallet chip is pressed, or once the page has settled.
 let opsLoad = null;
-const loadOps = () => (opsLoad ||= import('/prove/ops.js?cb=b158c34d'));
+const loadOps = () => (opsLoad ||= import('/prove/ops.js?cb=edfadafa'));
 $('#wallet').addEventListener('click', async (e) => {
   if (opsLoad) return;                                             // loaded: ops.js has its own handler on the chip
   e.preventDefault();
@@ -404,7 +433,7 @@ addEventListener('load', () => setTimeout(() => whenIdle(() => loadOps().then((m
 
 // The node's jobs as tabs: #tab=relay or #tab=bitcoin opens one (a link from a waiting lock carries need= and why= beside it), and the
 // other jobs' reads start the first time one of their tabs opens. Each card has its own link too, /prove/#<its data-card>: that opens
-// its tab, brings it into view and marks it for a moment; its Share posts the link to X with the card's line (data-share).
+// its tab, brings it into view and marks it for a moment; each card's Link copies that address.
 const TABS = ['prove', 'relay', 'bitcoin'];
 const CARDS = new Map([...document.querySelectorAll('[data-card]')].map((el) => [el.dataset.card, el]));
 const cardOf = () => (CARDS.has(location.hash.slice(1)) ? location.hash.slice(1) : null);
@@ -428,17 +457,23 @@ function showCard(name, behavior = matchMedia('(prefers-reduced-motion: reduce)'
   const el = CARDS.get(name);
   showTab(tabFor(el), { write: false });
   el.scrollIntoView({ block: 'start', behavior });
-  el.classList.remove('lit'); void el.offsetWidth; el.classList.add('lit');
+  mark(el);
 }
-const X_MARK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.638 7.584H.474l8.6-9.83L0 1.154h7.594l5.243 6.932ZM17.61 20.644h2.039L6.486 3.24H4.298Z"/></svg>';
-function shareHref(name, text) {
-  return `https://x.com/intent/post?text=${encodeURIComponent(text || CARDS.get(name)?.dataset.share || 'tacit prove')}&url=${encodeURIComponent(`https://tacit.finance/prove/#${name}`)}`;
-}
+const mark = (el) => { el.classList.remove('lit'); void el.offsetWidth; el.classList.add('lit'); };
+const LINK_MARK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg>';
 for (const [name, el] of CARDS) {
   const a = document.createElement('a');
-  a.className = 'share-x'; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.title = 'Share on X';
-  a.href = shareHref(name);
-  a.innerHTML = `${X_MARK}<span>Share</span>`;
+  a.className = 'card-link'; a.href = `#${name}`; a.title = 'Copy a link to this card'; a.setAttribute('aria-label', 'Copy a link to this card');
+  a.innerHTML = `${LINK_MARK}<span>Link</span>`;
+  a.addEventListener('click', async (e) => {
+    e.preventDefault();
+    history.replaceState(null, '', `${location.pathname}${location.search}#${name}`);
+    mark(el);
+    let said = 'In the address bar';
+    try { await navigator.clipboard.writeText(`https://tacit.finance/prove/#${name}`); said = 'Copied'; } catch {}
+    a.classList.add('done'); a.lastChild.textContent = said; $('#live').textContent = said === 'Copied' ? 'Link copied' : '';
+    clearTimeout(a.t); a.t = setTimeout(() => { a.classList.remove('done'); a.lastChild.textContent = 'Link'; }, 1600);
+  });
   (el.querySelector('.eyebrow') || el.querySelector('h2'))?.append(a);
 }
 for (const n of TABS) $(`#tb-${n}`).addEventListener('click', () => showTab(n));
@@ -491,6 +526,11 @@ async function readCheckpoint() {
   el.hidden = false;
 }
 loop(readCheckpoint, 300000, 900000);
+$('#send-page').addEventListener('click', async (e) => {
+  const url = 'https://tacit.finance/prove/', b = e.currentTarget;
+  try { if (navigator.share) { await navigator.share({ title: 'tacit prove', url }); return; } } catch (x) { if (x?.name === 'AbortError') return; }
+  try { await navigator.clipboard.writeText(url); b.textContent = 'Link copied'; setTimeout(() => { b.textContent = 'Send this page to my computer'; }, 1800); } catch {}
+});
 if (isPhone(navigator.userAgent)) {
   $('#phone').hidden = false;
   $('#desk').hidden = true;

@@ -128,6 +128,13 @@ async function run(name, { proof, simulateRevert = null, chain = '0x1', attested
     await ctx.route(`https://${host}/**`, (route) => route.fulfill({ status: 200, contentType: 'text/plain', headers: { 'access-control-allow-origin': '*' }, body: '970124' }));
   }
   const page = await ctx.newPage();
+  // The public Nostr relays are the outside world: a page under test must never post its stand-in jobs to them or read other people's, so
+  // each is an empty relay (it ends every read at once and takes every post).
+  await page.routeWebSocket(/^wss:\/\//, (ws) => ws.onMessage((m) => {
+    let d; try { d = JSON.parse(String(m)); } catch { return; }
+    if (d[0] === 'REQ') ws.send(JSON.stringify(['EOSE', d[1]]));
+    else if (d[0] === 'EVENT') ws.send(JSON.stringify(['OK', d[1]?.id, true, '']));
+  }));
   if (clock) await page.clock.install();
   page.on('pageerror', (e) => { console.log('     page error:', e.message); });
   await page.goto(`http://127.0.0.1:${WEB}/prove/#tab=${name.startsWith('board') ? 'relay' : 'bitcoin'}`);

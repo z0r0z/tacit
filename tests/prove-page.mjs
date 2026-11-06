@@ -36,9 +36,17 @@ const check = (ok, what, got = '') => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${w
 
 // The stand-in prover: `local` is what it answers (null: nothing listens), and each POST /mine it was sent.
 const WINDOWS_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
-async function open(browser, local, { phone = false, idle = false, ua = null, hash = '' } = {}) {
+async function open(browser, local, { phone = false, idle = false, ua = null, hash = '', init = null } = {}) {
   const ctx = await browser.newContext(phone ? { viewport: { width: 390, height: 800 }, userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148' } : { viewport: { width: 1100, height: 900 }, ...(ua ? { userAgent: ua } : {}) });
   const page = await ctx.newPage();
+  // The public Nostr relays are the outside world: a page under test must never post its stand-in jobs to them or read other people's, so
+  // each is an empty relay (it ends every read at once and takes every post).
+  await page.routeWebSocket(/^wss:\/\//, (ws) => ws.onMessage((m) => {
+    let d; try { d = JSON.parse(String(m)); } catch { return; }
+    if (d[0] === 'REQ') ws.send(JSON.stringify(['EOSE', d[1]]));
+    else if (d[0] === 'EVENT') ws.send(JSON.stringify(['OK', d[1]?.id, true, '']));
+  }));
+  if (init) await page.addInitScript(init);
   const errors = [], posts = [];
   page.on('pageerror', (e) => errors.push(e.message));
   // a public Nostr relay that is down (the Relay tab reads several) is the outside world, not the page
@@ -84,9 +92,19 @@ try {
     const { page, ctx, errors } = await open(browser, local);
     await page.waitForFunction(() => document.querySelector('#title').textContent === 'Set up this computer');
     check(await page.locator('#setup').isVisible(), 'not set up: the setup line is shown');
-    check(!(await page.locator('#setup .wsl').isVisible()) && (await text(page, '#copy')) === 'Copy, then paste in Terminal', 'on a Mac, the line alone, pasted in Terminal');
+    check(!(await page.locator('#setup .wsl').isVisible()), 'on a Mac, the line alone');
+    check((await text(page, '#copy')) === 'Enter your address first' && (await text(page, '#gpu-copy')) === 'Add address', 'with no address the copy buttons ask for one', `${await text(page, '#copy')} | ${await text(page, '#gpu-copy')}`);
     check(!(await page.locator('#go').isVisible()), 'not set up: no start button');
+    await page.fill('#addr', '0x12');
+    check((await text(page, '#addr-bad')).startsWith('That is not an address') && (await page.getAttribute('#addr', 'aria-invalid')) === 'true', 'a half-typed address is told so', await text(page, '#addr-bad'));
+    await page.fill('#addr', 'vitalik.eth');
+    check((await text(page, '#addr-bad')) === 'Use the 0x address, not the name.', 'a name is told to be an address');
+    await page.click('#copy');
+    check(await page.evaluate(() => document.activeElement.id) === 'addr', 'pressing a copy button without an address moves to the field');
     await page.fill('#addr', ADDR);
+    check((await text(page, '#addr-bad')) === '' && (await text(page, '#copy')) === 'Copy, then paste in Terminal' && (await text(page, '#gpu-copy')) === 'Copy', 'a good address clears it and the buttons copy', `${await text(page, '#copy')}`);
+    check((await text(page, '#setup-hint')).includes('6.2 GB'), 'the setup says how big the first download is', await text(page, '#setup-hint'));
+    check(await page.locator('#blocked').isHidden(), 'a prover that is just not installed is not called blocked');
     check((await text(page, '#cmd')).endsWith(ADDR), 'the setup line carries the address', await text(page, '#cmd'));
     await page.waitForFunction(() => document.querySelector('#btc-pay').textContent.includes('TAC'), null, { timeout: 8000 }).catch(() => {});
     check((await page.textContent('#btc-pay')) === ' · 10 TAC each', 'the GPU card says what a Bitcoin batch pays', await page.textContent('#btc-pay'));
@@ -100,7 +118,7 @@ try {
     check((await text(page, '#title')) === 'Waiting for tacit-prover…', 'once copied, the page waits for the prover', await text(page, '#title'));
     await page.waitForFunction(() => document.querySelector('#today').textContent.includes('4 proofs'));
     check((await text(page, '#pays')).includes('0.2 TAC a proof'), 'what a proof pays is read from the services', await text(page, '#pays'));
-    check((await text(page, '#paid')) === '6 TAC', 'what was paid', await text(page, '#paid'));
+    check((await text(page, '#paid')) === '6 TAC · Rewards' && (await page.getAttribute('#paid a', 'href')) === '/rewards/', 'what was paid, with the way to Rewards', await text(page, '#paid'));
     await page.waitForFunction(() => document.querySelectorAll('#chain .blk:not(.next):not(.xc)').length === 4);
     check((await text(page, '#height')) === '#9,389', 'the tip is the newest block', await text(page, '#height'));
     check((await text(page, '#last')) === '5 min ago', 'the newest block\'s age is read from Ethereum\'s head', await text(page, '#last'));
@@ -128,8 +146,6 @@ try {
     check((await text(page, '#payout')).startsWith('after the day ends, in '), 'and when it is paid', await text(page, '#payout'));
     if (Date.now() % 86400000 >= 7200000) check((await text(page, '#pace')).includes('TAC a day ('), 'and the pace at today\'s rate', await text(page, '#pace'));
     else check(await page.locator('#pace-row').isHidden(), 'no pace in the day\'s first two hours');
-    const share = await page.getAttribute('[data-card="node"] .share-x', 'href');
-    check(share.startsWith('https://x.com/intent/post?') && share.includes('4%20privacy%20proofs'), 'the node card\'s Share carries the day\'s count once it has proved', share);
     check((await page.locator('#chain .blk.gpu').count()) === 1 && (await page.locator('#chain .blk.gpu').innerText()).includes('Tacit GPU'), 'a block Tacit\'s GPU proved says so');
     const gpuRow = await page.locator('#feed li').first().innerText();
     check(gpuRow.includes('Tacit GPU') && !gpuRow.includes('TAC '), 'the feed shows Tacit\'s GPU, earning nothing', gpuRow);
@@ -177,11 +193,11 @@ try {
     // drawn, not only laid out: no inherited style (such as the reward pop's opacity) hides the steps
     check(await page.evaluate(() => [...document.querySelectorAll('#setup .wsl, #setup .wsl *')].every((e) => getComputedStyle(e).opacity === '1')), 'and its steps are drawn');
     check((await page.getAttribute('#setup [data-os="win"]', 'aria-pressed')) === 'true', 'and the switch says Windows');
-    check((await text(page, '#copy')) === 'Copy, then paste in Ubuntu', 'the line is pasted in Ubuntu', await text(page, '#copy'));
     await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
     await page.click('#wsl-copy');
     check((await page.evaluate(() => navigator.clipboard.readText())) === 'wsl --install', 'the first step copies wsl --install');
     await page.fill('#addr', ADDR);
+    check((await text(page, '#copy')) === 'Copy, then paste in Ubuntu', 'the line is pasted in Ubuntu', await text(page, '#copy'));
     await page.click('#copy');
     check((await page.evaluate(() => navigator.clipboard.readText())).endsWith(ADDR), 'the second copies the setup line for the address');
     check((await text(page, '#say')).startsWith('Copied. Paste it in Ubuntu'), 'and says where to paste it', await text(page, '#say'));
@@ -218,6 +234,7 @@ try {
     check((await text(page, '#salt-pay')).includes('up to 15 TAC today') && (await page.locator('#salt-bank li').count()) === 2 && (await text(page, '#salt-bank')).includes('Tacit GPU'), 'the salt pot and the best addresses banked, Tacit GPU\'s named so', await text(page, '#salt-pay'));
     local.v.mine = { ...local.v.mine, job: { id: 'j1', secs: 120, stage: 'shrink', eta: 360 }, proved: 2 };
     await page.waitForFunction(() => document.querySelector('#title').textContent === 'Proving');
+    check((await page.title()) === 'Proving · tacit prove', 'a tab left open says it is proving', await page.title());
     const st = await text(page, '#stage'), steps = await page.locator('#forge li').evaluateAll((ls) => ls.map((l) => l.className));
     check(st === 'Compressing · about 6 min left', 'proving: the stage and the time left', st);
     check(JSON.stringify(steps) === JSON.stringify(['done', 'now spin', '', '']), 'proving: the forge shows the first stage done and the second under way', JSON.stringify(steps));
@@ -268,22 +285,43 @@ try {
     }
     await ctx.close();
   }
-  // each card's own link (/prove/#<card>) and its Share to X
+  // a browser that refuses the page the computer's prover (Chrome's local network permission) is told so; a connected wallet fills an empty field
+  {
+    const { page, ctx, errors } = await open(browser, { v: null }, { init: () => {
+      const q = navigator.permissions.query.bind(navigator.permissions);
+      navigator.permissions.query = (d) => (d.name === 'loopback-network' ? Promise.resolve({ state: 'denied' }) : q(d));
+    } });
+    await page.waitForFunction(() => !document.querySelector('#blocked').hidden, null, { timeout: 6000 }).catch(() => {});
+    check(await page.locator('#blocked').isVisible() && (await text(page, '#blocked')).includes('local network access'), 'a browser that blocks the local prover says how to allow it', await text(page, '#blocked'));
+    await page.evaluate((a) => dispatchEvent(new CustomEvent('tacit:prove-wallet', { detail: a })), ADDR);
+    check((await page.inputValue('#addr')) === ADDR && (await text(page, '#copy')) === 'Copy, then paste in Terminal', 'a wallet connected on the page fills the empty field');
+    await page.evaluate((a) => dispatchEvent(new CustomEvent('tacit:prove-wallet', { detail: a })), OTHER);
+    check((await page.inputValue('#addr')) === ADDR, 'and never replaces an address already there');
+    check(errors.length === 0, 'no page errors', errors.join(' | '));
+    await ctx.close();
+  }
+  // each card's own link (/prove/#<card>), and the Link on each card that copies it
   {
     const { page, ctx, errors } = await open(browser, { v: null }, { hash: '#gpu' });
+    await ctx.grantPermissions(['clipboard-read', 'clipboard-write']);
     await page.waitForTimeout(300);
     const gpu = page.locator('[data-card="gpu"]');
     check(await page.locator('#t-prove').isVisible() && await gpu.evaluate((el) => el.classList.contains('lit')), '#gpu opens the Prove tab and marks the GPU card');
     await page.waitForTimeout(1200);
     const box = await gpu.boundingBox();
     check(box && box.y >= 0 && box.y < 120, 'and brings it to the top of the window', JSON.stringify(box));
-    const cards = await page.locator('[data-card]').count(), shares = await page.locator('.share-x').count();
-    check(cards >= 11 && shares === cards, 'every card has its Share', `${shares} of ${cards}`);
-    const href = await page.getAttribute('[data-card="gpu"] .share-x', 'href');
-    const q = new URL(href).searchParams;
-    check(href.startsWith('https://x.com/intent/post?') && q.get('url') === 'https://tacit.finance/prove/#gpu' && q.get('text').includes('24 GB'), "the GPU card's Share posts its own link and line", href);
+    const cards = await page.locator('[data-card]').count(), links = await page.locator('.card-link').count();
+    check(cards >= 11 && links === cards && (await page.locator('[data-share], .share-x, a[href*="x.com/intent"]').count()) === 0, 'every card has its Link and none posts to X', `${links} of ${cards}`);
+    await page.evaluate(() => { history.replaceState(null, '', location.pathname); });
+    await page.click('[data-card="salts"] .card-link');
+    check((await page.evaluate(() => navigator.clipboard.readText())) === 'https://tacit.finance/prove/#salts', "a card's Link copies the card's address", await page.evaluate(() => navigator.clipboard.readText()));
+    check(new URL(page.url()).hash === '#salts' && (await text(page, '[data-card="salts"] .card-link')) === 'Copied' && await page.locator('[data-card="salts"]').evaluate((el) => el.classList.contains('lit')), 'and puts it in the address bar, marks the card and says Copied', page.url());
+    await page.waitForFunction(() => document.querySelector('[data-card="salts"] .card-link').textContent === 'Link', null, { timeout: 4000 });
+    check(true, 'the Link goes back to its name');
     await page.evaluate(() => { location.hash = 'send'; });
     await page.waitForTimeout(400);
+    await page.click('[data-card="send"] .card-link');
+    check((await page.evaluate(() => navigator.clipboard.readText())) === 'https://tacit.finance/prove/#send', "a Relay card's Link copies its address too");
     check(await page.locator('#t-relay').isVisible() && await page.locator('[data-card="send"]').evaluate((el) => el.classList.contains('lit')), '#send opens the Relay tab at its card');
     await page.click('#tb-bitcoin');
     check(new URL(page.url()).hash === '#tab=bitcoin', 'a tab pressed after a card link puts the tab alone in the address', page.url());
@@ -308,6 +346,10 @@ try {
   {
     const { page, ctx } = await open(browser, { v: null }, { phone: true });
     check(await page.locator('#phone').isVisible() && !(await page.locator('#desk').isVisible()), 'a phone is told to open it on a computer');
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+    await page.click('#send-page');
+    await page.waitForFunction(() => document.querySelector('#send-page').textContent === 'Link copied', null, { timeout: 3000 }).catch(() => {});
+    check((await text(page, '#send-page')) === 'Link copied' && (await page.evaluate(() => navigator.clipboard.readText())) === 'https://tacit.finance/prove/', 'and can send the page on (the link copied where there is no share sheet)', await text(page, '#send-page'));
     const over = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
     check(!over, 'no sideways scroll on a phone');
     await shot(page, 'prove-phone');
