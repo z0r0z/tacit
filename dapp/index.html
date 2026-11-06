@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-cEYsOVc+x0FuU2qWakspC70djVrcak+rVvlGnmXS9zQ=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-aHjOvhwb3wRJ9fteXvwTWLA42UJ0+7XGU2X2cAwm7u4=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -3448,7 +3448,7 @@ function offerPaused(spec) {
   const own = { ...spec, own: true, open: null };
   own.id = String(++selfdoSeq); SELFDO[own.id] = own;
   own.keys ||= spec.run ? [...spec.run.keys] : [];
-  say(spec.status(), html`<span>${msg}</span><div class="actr-f"><button class="link" type="button" data-prove-add="${own.id}">Prove it yourself</button> with your own prover credit${(() => { const k = keepLink(keepFor(spec)); return k ? html`. ${k}` : ''; })()}.</div>`);
+  say(spec.status(), html`<span>${msg}</span><div class="actr-f"><button class="link" type="button" data-prove-add="${own.id}">Prove it yourself</button> with your own prover credit${[].concat(spec.types || []).every((x) => DEVICE_TYPES.includes(x)) ? html`, or <button class="link" type="button" data-prove-dev="${own.id}">prove it on this computer</button>` : ''}${(() => { const k = keepLink(keepFor(spec)); return k ? html`. ${k}` : ''; })()}.</div>`);
   return Object.assign(new Error(msg), { offered: true, said: true });
 }
 function offerProveSelf(spec, e) {
@@ -3460,7 +3460,20 @@ function offerProveSelf(spec, e) {
   say(spec.status(), html`<span class="err">${msg}</span><div class="actr-f"><button class="link" type="button" data-prove-add="${own.id}">Prove it yourself</button> with your own prover credit instead.</div>`);
   return Object.assign(new Error(msg), { offered: true, said: true });
 }
+// This computer's prover for one action the relay is not proving: looked for at the press (the browser asks before a page first reaches the local
+// network), used for this action alone, then the choice made in Prove is put back. With none here, the way to set one up.
+async function devOnce(run, spec) {
+  const st = spec.status?.(), tell = (v) => { if (st) say(st, v); };
+  tell('Looking for the prover on this computer…');
+  const d = await devProver({ fresh: true }).catch(() => null);
+  if (!d || ![].concat(spec.types || []).every((x) => d.supports(x))) { tell(html`No prover runs on this computer yet. <a href="/prove/">Set up this computer</a>, then press again.`); return; }
+  const r = (await getUx()).relay;
+  r.useProver?.(d.prove); r.useSealer?.(null);
+  try { await selfDo(run, { ...spec, own: true }); } finally { r.useProver?.(null); spApply(); }
+}
 document.addEventListener('click', (e) => {
+  const d = e.target.closest?.('[data-prove-dev]'), spec = d && SELFDO[d.dataset.proveDev];
+  if (spec) { busy(d, (run) => devOnce(run, spec)); return; }
   const b = e.target.closest?.('[data-prove-add], [data-prove-open]');
   if (!b) return;
   SP.then = b.dataset.proveAdd ? SELFDO[b.dataset.proveAdd] || null : SP.then;

@@ -13266,6 +13266,12 @@ await step('relaystate', async () => {
     await until(r.page, () => /Nothing was sent yet/.test(document.querySelector('#v1-status')?.textContent || ''), null, 300000).catch(() => {});
     ok(/Nothing was sent yet\. Try again in a few minutes, or:/.test(await said()) && !!(await r.page.$('#v1-status [data-prove-add]')) && !(await r.page.$('#v1-status [data-keepline]')) && submits.length === s0,
       `relaystate: paused at the press, a withdrawal offers proving it yourself, not the line, and nothing is submitted (${await said()})`);
+    // and, a withdrawal being something this computer's prover takes, proving it here; pressed with none running, the way to set one up
+    ok(!!(await r.page.$('#v1-status [data-prove-dev]')), `relaystate: and proving it on this computer (${await said()})`);
+    await r.ctx.route(/127\.0\.0\.1:47815|localhost:47815/, (route) => route.abort());     // (no prover here, whatever runs on the test machine)
+    await r.page.click('#v1-status [data-prove-dev]');
+    await until(r.page, () => /Set up this computer/.test(document.querySelector('#v1-status')?.textContent || ''), null, 60000).catch(() => {});
+    ok(/No prover runs on this computer yet\. Set up this computer, then press again\./.test(await said()) && submits.length === s0, `relaystate: with no prover here, it says how to set one up, and nothing is submitted (${await said()})`);
     // A private send does not expire: it can wait its turn in line, and pressed, goes to the relay.
     await tab('send');
     await r.page.fill('#s-to', tacit1('abd'.padEnd(64, '5')));
