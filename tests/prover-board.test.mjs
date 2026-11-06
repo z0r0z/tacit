@@ -393,10 +393,10 @@ test('points: each proof the relay takes from a community machine counts for its
 
 test('points config: env sets the points and a count a day, 0 points pays nothing, no count or 0 is no count, nonsense keeps the default', () => {
   const btc = (n) => ({ pointsByProgram: { 'btc-state': n } });
-  assert.deepEqual(proverBoardConfig({}), { pointsPerProof: 20, proofsPerMinerDay: Infinity, ...btc(500) });
+  assert.deepEqual(proverBoardConfig({}), { pointsPerProof: 20, proofsPerMinerDay: Infinity, ...btc(1000) });
   assert.deepEqual(proverBoardConfig({ POINTS_BOARD_PER_PROOF: '50', POINTS_BOARD_DAILY_CAP: '10', POINTS_BOARD_BTC_PER_PROOF: '800' }), { pointsPerProof: 50, proofsPerMinerDay: 10, ...btc(800) });
   assert.deepEqual(proverBoardConfig({ POINTS_BOARD_PER_PROOF: '0', POINTS_BOARD_DAILY_CAP: '0', POINTS_BOARD_BTC_PER_PROOF: '0' }), { pointsPerProof: 0, proofsPerMinerDay: Infinity, ...btc(0) });
-  assert.deepEqual(proverBoardConfig({ POINTS_BOARD_PER_PROOF: 'lots', POINTS_BOARD_DAILY_CAP: '-1' }), { pointsPerProof: 20, proofsPerMinerDay: Infinity, ...btc(500) });
+  assert.deepEqual(proverBoardConfig({ POINTS_BOARD_PER_PROOF: 'lots', POINTS_BOARD_DAILY_CAP: '-1' }), { pointsPerProof: 20, proofsPerMinerDay: Infinity, ...btc(1000) });
 });
 
 test('the Bitcoin-state program: public groth16 work, its input kept apart and deleted with the job, leased for hours, raced only by machines that prove it', async () => {
@@ -452,4 +452,81 @@ test('a community Bitcoin batch earns its own points, and the summary says what 
   const day = Math.floor(now() / 86400000);
   assert.deepEqual((await b.credits(day)).body.miners, [{ miner, proofs: 1, points: 500 }]);
   assert.deepEqual((await b.summary()).pay, { pointsPerProof: 20, pointsByProgram: { 'btc-state': 500 } });
+});
+
+const gpu = (h) => ({ name: 'c-0x' + h.repeat(20), classes: ['public'], community: true });
+const batchOn = (b) => { let k = 0; return () => b.post({ class: 'public', program: 'btc-state', stdin: Buffer.from(`batch ${++k} ${t}`).toString('base64'), cycleLimit: 1e11, gasLimit: 1e11, deadline: now() / 1000 + 7200 }); };
+const answer = async (b, w, jobId, ok = true) => {
+  await b.result({ worker: w, jobId, publicValues: '0x' + '11'.repeat(64 * 8), proof: '0x' + '22'.repeat(260) });
+  return b.raceVerdict({ jobId, worker: w.name, ok });
+};
+
+test('community: Bitcoin batches go to one machine at a time, in turn, the one longest since its last turn first', async () => {
+  t = 5_000_000;
+  const b = makeProverBoard({ storage: store(), now }), batch = batchOn(b);
+  const a = gpu('a1'), c = gpu('c3');
+  const ask = (w) => b.claim({ worker: w, classes: ['public'], programs: ['btc-state'] });
+  assert.equal(await ask(a), null); assert.equal(await ask(c), null);
+  const b1 = await batch();
+  assert.equal(await ask(c), null, 'not c\'s turn: a has waited as long and its name comes first');
+  assert.equal((await ask(a)).jobId, b1.jobId, 'a\'s turn');
+  assert.equal(await ask(c), null, 'one machine to a batch');
+  let row = async (w) => (await b.summary()).workers.find((x) => x.name === w.name);
+  assert.equal((await row(a)).racing, 'btc-state', 'the summary says a is proving');
+  assert.equal((await row(c)).racing, null);
+  t += 1000;
+  const b2 = await batch();
+  assert.equal(await ask(a), null, 'a is proving');
+  assert.equal((await ask(c)).jobId, b2.jobId, 'so the next batch is c\'s');
+  assert.deepEqual(await answer(b, a, b1.jobId), { ok: true, status: 'proved' });
+  assert.deepEqual(await answer(b, c, b2.jobId), { ok: true, status: 'proved' });
+  t += 1000;
+  assert.equal(await ask(c), null); assert.equal(await ask(a), null);
+  const b3 = await batch();
+  assert.equal(await ask(c), null, 'a had its last turn longer ago');
+  assert.equal((await ask(a)).jobId, b3.jobId);
+  assert.deepEqual([(await row(a)).turns, (await row(c)).turns], [2, 1]);
+  const day = Math.floor(now() / 86400000);
+  assert.deepEqual((await b.credits(day)).body.miners.map((m) => m.points), [1000, 1000], 'each batch taken pays its machine');
+  // a public settle job is still raced by any machine that proves it
+  const pub = await b.post({ class: 'public', stdin, cycleLimit: 1e6, gasLimit: 1e8, deadline: now() / 1000 + 600 });
+  const both = [gpu('e5'), gpu('f6')];
+  for (const w of both) assert.equal((await b.claim({ worker: w, classes: ['public'] })).jobId, pub.jobId);
+});
+
+test('community: a machine that has stopped asking is not waited for, and one that gave a turn back or let it lapse goes after the others', async () => {
+  t = 6_000_000;
+  const b = makeProverBoard({ storage: store(), now }), batch = batchOn(b);
+  const ask = (w) => b.claim({ worker: w, classes: ['public'], programs: ['btc-state'] });
+  const x = gpu('a7'), y = gpu('b8');
+  assert.equal(await ask(x), null);
+  t += PROVER_BOARD.turnSeenMs + 1;
+  assert.equal(await ask(y), null);
+  const b1 = await batch();
+  assert.equal((await ask(y)).jobId, b1.jobId, 'x has not asked in half a minute: y\'s turn');
+  assert.deepEqual(await answer(b, y, b1.jobId), { ok: true, status: 'proved' });
+  // p gives its turn back: the batch is q's, and p waits behind q next time though its last turn is older (x and y have gone quiet)
+  const p = gpu('c9'), q = gpu('da');
+  t += PROVER_BOARD.turnSeenMs + 1;
+  assert.equal(await ask(p), null); assert.equal(await ask(q), null);
+  const b2 = await batch();
+  assert.equal((await ask(p)).jobId, b2.jobId);
+  assert.deepEqual(await b.result({ worker: p, jobId: b2.jobId, error: 'out of memory' }), { ok: true, status: 'dropped' });
+  assert.equal(await ask(p), null, 'a batch is offered to a machine once');
+  assert.equal((await ask(q)).jobId, b2.jobId, 'the batch p gave back is q\'s turn');
+  assert.deepEqual(await answer(b, q, b2.jobId), { ok: true, status: 'proved' });
+  t += 1000;
+  assert.equal(await ask(p), null); assert.equal(await ask(q), null);
+  const b3 = await batch();
+  assert.equal(await ask(p), null, 'p gave its last turn back: q first');
+  assert.equal((await ask(q)).jobId, b3.jobId);
+  // q's turn lapses (the relay stops waiting and the network proves it): q goes behind p for a while
+  assert.deepEqual(await b.cancel({ jobId: b3.jobId }), { ok: true, status: 'cancelled' });
+  const s = await b.summary();
+  assert.deepEqual([s.workers.find((w) => w.name === p.name).lapsed, s.workers.find((w) => w.name === q.name).lapsed], [1, 1]);
+  t += PROVER_BOARD.turnTroubleMs + 1;
+  assert.equal(await ask(q), null); assert.equal(await ask(p), null);
+  const b4 = await batch();
+  assert.equal(await ask(q), null, 'both troubles are old now: p, whose last turn is older, first');
+  assert.equal((await ask(p)).jobId, b4.jobId);
 });

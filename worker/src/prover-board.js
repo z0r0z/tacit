@@ -43,14 +43,21 @@ export const PROVER_BOARD = Object.freeze({
   // claim takes the job from no one, and a community proof does not close it: it waits beside the job as a candidate, the relay checks it
   // (a simulated settle, as for any board proof) and takes the first that passes, while Tacit's own worker goes on with the job. A slow
   // machine never holds a user's op up, and a bad proof costs the relay one check and its maker a mark, nothing more.
+  // A Bitcoin batch is not raced: it is tens of minutes on a large GPU, so the machines that prove it take turns, one to a batch. A batch
+  // goes to the machine longest since its last turn of those waiting for one (asked for work in the last turnSeenMs, proving nothing), and
+  // a machine whose last turn was refused, dropped or not answered goes after the others for turnTroubleMs. A turn not answered leaves
+  // the batch to the prover network once the relay stops waiting, as a batch nobody took would.
   communityRacers: 8,                                  // community machines racing one job at most
   communityPrograms: Object.freeze(['confidential', 'btc-state']), // what a community machine may race, when it says it proves it
   communityOpen: 1,                                    // jobs one community machine races at a time
+  turnPrograms: Object.freeze(['btc-state']),          // community jobs given to one machine at a time, in turn
+  turnSeenMs: 30_000,
+  turnTroubleMs: 6 * 3600_000,
   communityKept: 200,                                  // community records kept on the summary (the most recently seen)
   maxCandidatePvBytes: 16 * 1024,                      // a race candidate's public values (a wrap's or a Bitcoin batch's are a few KB)
   pointsPerProof: 20,                                  // POINTS_BOARD_PER_PROOF: for each community proof the relay takes
-  // A Bitcoin batch is billions of cycles, tens of minutes on a large GPU, and costs about 16 PROVE on the prover network: it earns its own.
-  pointsByProgram: Object.freeze({ 'btc-state': 500 }),  // POINTS_BOARD_BTC_PER_PROOF
+  // A Bitcoin batch is billions of cycles, tens of minutes on a large GPU: it earns its own.
+  pointsByProgram: Object.freeze({ 'btc-state': 1000 }), // POINTS_BOARD_BTC_PER_PROOF
   proofsPerMinerDay: Infinity,                         // POINTS_BOARD_DAILY_CAP: proofs an address is credited for in a UTC day (none: every proof)
   daySecs: 40 * 86400,                                 // a day's tally outlives the campaign's reading of it
 });
@@ -237,6 +244,8 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
       if (!j) return { ok: false, error: 'no such job' };
       if (!['queued', 'claimed', 'proved'].includes(j.status)) return { ok: true, status: j.status };
       if (reason === 'bad' && j.worker) await bump(j.worker, 'bad');
+      // a turn the relay stopped waiting for counts against the machine whose turn it was
+      if (PROVER_BOARD.turnPrograms.includes(j.program) && ['queued', 'claimed'].includes(j.status)) for (const r of liveRacers(j)) await mark(r, 'lapsed');
       j.status = 'cancelled'; await end(j); j.cancelReason = reason;
       await storage.putJob(j.id, j);
       return { ok: true, status: 'cancelled' };
@@ -267,6 +276,16 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
       .sort((a, b) => (a.miner < b.miner ? -1 : 1));
     return { status: 200, body: { day, over: t >= (day + 1) * DAY_MS, pointsPerProof: pay.pointsPerProof, miners } };
   }
+
+  // A mark on a machine's record that does not count as seeing it (a turn it let lapse is not a sign it is there).
+  async function mark(name, field) {
+    const ws = await workers(), w = ws[name];
+    if (!w) return;
+    w[field] = (w[field] || 0) + 1;
+    if (field === 'lapsed') w.lastLapseAt = clock();
+    await storage.putWorkers(ws);
+  }
+  const liveRacers = (j) => (j.racers || []).filter((r) => clock() - ((j.racedAt || {})[r] || 0) < leaseFor(j));
 
   async function bump(name, field, pubkey = null, programs = null, community = false) {
     const ws = await workers();
@@ -314,33 +333,52 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
 
   // A community machine joins the race for the oldest public job it is not already racing (unsealed, groth16, a program it says it proves:
   // the pool's settle guest unless it names others). Its answer is taken in `result` while the job is open, whoever else has claimed it.
+  // A Bitcoin batch (turnPrograms) is one machine's at a time: it is offered only to the machine whose turn it is (nextTurn).
   function communityClaim(worker, can = ['confidential']) {
     const races = can.filter((p) => PROVER_BOARD.communityPrograms.includes(p));
     return exclusive(async () => {
       await bump(worker.name, null, null, races, true);
       const pend = await sweep(await storage.getPending());
       await storage.putPending(pend);
-      let open = 0;
-      const racing = (j) => (j.racers || []).includes(worker.name) && clock() - ((j.racedAt || {})[worker.name] || 0) < leaseFor(j);
-      for (const jid of pend) { const j = await storage.getJob(jid); if (j && ['queued', 'claimed'].includes(j.status) && racing(j)) open++; }
-      if (open >= PROVER_BOARD.communityOpen) return null;
-      for (const jid of pend) {
-        const j = await storage.getJob(jid);
-        if (!j || !['queued', 'claimed'].includes(j.status) || j.class !== 'public' || j.sealed || !races.includes(j.program || 'confidential') || !(j.stdin || j.stdinKept)) continue;
+      const open = [];
+      for (const jid of pend) { const j = await storage.getJob(jid); if (j && ['queued', 'claimed'].includes(j.status)) open.push(j); }
+      if (open.filter((j) => liveRacers(j).includes(worker.name)).length >= PROVER_BOARD.communityOpen) return null;
+      let ws = null;
+      for (const j of open) {
+        if (j.class !== 'public' || j.sealed || !races.includes(j.program || 'confidential') || !(j.stdin || j.stdinKept)) continue;
         // a racer that took the job and never answered gives its place up once the job's lease time has passed
-        const lease = leaseFor(j), since = j.racedAt || {};
-        const racers = (j.racers || []).filter((r) => clock() - (since[r] || 0) < lease);
+        const since = j.racedAt || {};
+        const racers = liveRacers(j);
         // racing now, or raced it before (answered or dropped out): offered once
         if ((j.raced || []).includes(worker.name) || racers.length >= PROVER_BOARD.communityRacers) continue;
+        if (PROVER_BOARD.turnPrograms.includes(j.program)) {
+          if (racers.length) continue;                                   // another machine's turn
+          ws = ws || await workers();
+          if (nextTurn(ws, open, j) !== worker.name) continue;
+          ws[worker.name].lastTurnAt = clock(); ws[worker.name].turns = (ws[worker.name].turns || 0) + 1;
+          await storage.putWorkers(ws);
+        }
         j.racers = [...racers, worker.name];
         j.racedAt = Object.fromEntries([...racers, worker.name].map((r) => [r, r === worker.name ? clock() : since[r]]));
         j.raced = [...(j.raced || []), worker.name].slice(-4 * PROVER_BOARD.communityRacers);
-        await storage.putJob(jid, j);
+        await storage.putJob(j.id, j);
         return { jobId: j.id, class: j.class, program: j.program || 'confidential', mode: 'groth16', stdin: await inputOf(j), sealed: null, cycleLimit: j.cycleLimit, gasLimit: j.gasLimit,
           deadline: j.deadline, leaseUntil: j.deadline * 1000, label: j.label, race: true };
       }
       return null;
     });
+  }
+
+  // Whose turn a batch is: of the machines that prove its program, asked for work in the last turnSeenMs, are proving nothing and have not
+  // had this batch, the one longest since its last turn; one with a refused, dropped or unanswered turn in the last turnTroubleMs after the
+  // rest, and the name breaks a tie.
+  function nextTurn(ws, open, j) {
+    const t = clock(), busy = new Set(open.flatMap(liveRacers));
+    const trouble = (w) => { const at = Math.max(w.lastBadAt || 0, w.lastLapseAt || 0); return at > 0 && t - at < PROVER_BOARD.turnTroubleMs ? 1 : 0; };
+    const waiting = Object.entries(ws).filter(([n, w]) => w.community && (w.programs || []).includes(j.program) && t - (w.lastSeen || 0) < PROVER_BOARD.turnSeenMs
+      && !busy.has(n) && !(j.raced || []).includes(n));
+    waiting.sort(([na, a], [nb, b]) => trouble(a) - trouble(b) || (a.lastTurnAt || 0) - (b.lastTurnAt || 0) || (na < nb ? -1 : na > nb ? 1 : 0));
+    return waiting.length ? waiting[0][0] : null;
   }
 
   // The worker's answer: the proof with its public values (hex), or why it could not prove the job. A groth16 proof is the hex
@@ -355,6 +393,8 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
         if (!(j.racers || []).includes(worker.name)) return { ok: false, error: 'not racing this job' };
         if (!['queued', 'claimed'].includes(j.status)) return { ok: false, error: `job is ${j.status}` };
         j.racers = j.racers.filter((x) => x !== worker.name);
+        // a turn given back: the next machine's, and this one waits behind the others for a while
+        if (error != null && PROVER_BOARD.turnPrograms.includes(j.program)) await mark(worker.name, 'lapsed');
         if (error == null) {
           if (!isHex(publicValues) || publicValues.length < 2 + 64 * 2 || publicValues.length > 2 + 2 * PROVER_BOARD.maxCandidatePvBytes) return { ok: false, error: 'publicValues must be the hex of the proof\'s public values' };
           if (!isHex(proof) || proof.length < 2 + 2 * 4 || proof.length > 2 + 2 * 4096) return { ok: false, error: 'proof must be the hex of the groth16 proof bytes' };
@@ -389,16 +429,19 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
   async function summary() {
     const pend = await storage.getPending();
     const counts = { queued: 0, claimed: 0, proved: 0, failed: 0 };
-    const waits = [], proves = [];
+    const waits = [], proves = [], racing = new Map();
     for (const jid of pend) {
       const j = await storage.getJob(jid);
       if (!j) continue;
       const live = j.status === 'claimed' && clock() > j.leaseUntil ? 'queued' : j.status;
       if (counts[live] != null) counts[live]++;
+      if (['queued', 'claimed'].includes(j.status)) for (const r of liveRacers(j)) racing.set(r, j.program || 'confidential');
       if (j.status === 'proved' && j.postedAt && j.claimedAt && j.endedAt) { waits.push((j.claimedAt - j.postedAt) / 1000); proves.push((j.endedAt - j.claimedAt) / 1000); }
     }
     const ws = await workers();
-    const list = Object.entries(ws).map(([name, w]) => ({ name, proved: w.proved || 0, failed: w.failed || 0, bad: w.bad || 0, lastBadSeconds: w.lastBadAt ? Math.max(0, Math.floor((clock() - w.lastBadAt) / 1000)) : null, lastSeenSeconds: w.lastSeen ? Math.max(0, Math.floor((clock() - w.lastSeen) / 1000)) : null, pubkey: w.pubkey || null, programs: w.programs || ['confidential'], ...(w.community ? { community: true } : {}) }))
+    const list = Object.entries(ws).map(([name, w]) => ({ name, proved: w.proved || 0, failed: w.failed || 0, bad: w.bad || 0, lastBadSeconds: w.lastBadAt ? Math.max(0, Math.floor((clock() - w.lastBadAt) / 1000)) : null, lastSeenSeconds: w.lastSeen ? Math.max(0, Math.floor((clock() - w.lastSeen) / 1000)) : null, pubkey: w.pubkey || null, programs: w.programs || ['confidential'],
+      // a community machine: the program it is proving now (it asks for nothing meanwhile), and the turns it has had
+      ...(w.community ? { community: true, racing: racing.get(name) || null, turns: w.turns || 0, lapsed: w.lapsed || 0 } : {}) }))
       .sort((a, b) => b.proved - a.proved || a.name.localeCompare(b.name));
     // How the jobs finished in the last hour fared (a job stays readable that long), in seconds: the wait for a claim, which is a worker busy with other
     // work (the proof pool's stock, an Ethereum-state proof), and the time to prove. On 2026-10-30 the wait was 1 s at the median and 24 s at the 90th

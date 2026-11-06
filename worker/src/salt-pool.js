@@ -26,7 +26,7 @@ export const SALT_POOL = Object.freeze({
   createx: '0xba5ed099633d3b313e4d5f7bdc1305d3c28ba5ed',
   minBits: 26,              // SALT_MIN_BITS: a share's address starts with this many zero bits (about a minute of four laptop cores)
   maxWeightBits: 20,
-  pointsPerDay: 1_000_000,  // POINTS_SALT_DAILY: the most a day's salts may share (by default no less than the whole pot)
+  pointsPerDay: 5000,       // POINTS_SALT_DAILY: the most a day's salts may share, whatever the pot (proofs take the rest)
   potPoints: 5000,          // the campaign's daily points when its terms cannot be read (50 TAC at 0.01 TAC a point)
   bankBits: 32,             // SALT_BANK_BITS: the best bankKeep salts at least this good (four zero bytes) are kept for deploys
   bankKeep: 64,
