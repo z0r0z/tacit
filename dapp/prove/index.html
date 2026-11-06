@@ -21,7 +21,7 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /prove/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/prove/app.js?cb=d07fda8c">
+<link rel="modulepreload" href="/prove/app.js?cb=22b99f8d">
 <link rel="modulepreload" href="/community-prove.js?cb=55393eb1">
 <link rel="modulepreload" href="/prove/view.js?cb=0279ad9a">
 <link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
@@ -614,6 +614,15 @@ RUNNER_KEY=0x… node tools/community-runner.mjs prove</code></pre>
       <p class="status" id="board-status" role="status"></p>
     </div>
   </section>
+  <section class="grp" id="g-auto" aria-labelledby="h-auto">
+    <h2 id="h-auto"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg>Send them while this tab is open</h2>
+    <div class="panel">
+      <p class="lede">A relay account kept in this browser sends each settle whose fee pays its gas with a fifth to spare. It sends through Flashbots Protect, so one another sender takes first costs nothing, and the fees it earns pay for the next.</p>
+      <div class="plan num" id="auto-box"><p><span class="sk" style="--w:22ch"></span></p></div>
+      <button class="btn" id="btn-auto" type="button">Start</button>
+      <p class="status" id="auto-status" role="status"></p>
+    </div>
+  </section>
   <section class="grp" id="g-run" aria-labelledby="h-run">
     <h2 id="h-run"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg>Run it on your machine</h2>
     <div class="panel">
@@ -689,6 +698,6 @@ RUNNER_KEY=0x… node tools/community-runner.mjs</code></pre>
 
 <div id="toast-container" class="toasts" popover="manual"></div>
 
-<script type="module" src="/prove/app.js?cb=d07fda8c"></script>
+<script type="module" src="/prove/app.js?cb=22b99f8d"></script>
 </body>
 </html>

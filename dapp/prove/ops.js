@@ -7,6 +7,10 @@ import { announceWalletConnect, wcSheets, dialogHost, WC_PROJECT_ID } from '/wal
 import { makeHeaderRelayAdvance } from '/header-relay-advance.js?cb=1c3a7226';
 import { POOL, SEL_ANCESTRY, ATTEST_GAS, SETTLE_GAS, readProof, attestRefusal, encodeAttest, needsAncestry, ancestryCalls, ethText, ethFeeWei, boardSummary, pickSettle, readBoard, reportLanded, settleCalldata } from '/community-ops.js?cb=ec01725e';
 import { bodyType } from '/rpc-body.js';
+import { secp, keccak_256, sha256 } from '/vendor/tacit-deps.min.js';
+import { makeEvmAccount } from '/evm-account.js?cb=e48ce3f6';
+import { makeEvmTx } from '/evm-tx.js?cb=ed0eafb7';
+import { makeAutoRelay, AUTO_RESERVE_WEI } from '/prove/autorelay.js?cb=a83848c2';
 
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -107,10 +111,10 @@ window.addEventListener('tacit:evm-accounts', (e) => {
   S.address = /^0x[0-9a-f]{40}$/.test(a) ? a : null;
   paintWallet();
 });
-async function send({ to, data, gas }) {
+async function send({ to, data, gas, value = 0n }) {
   if (!S.address) await connect();
   await ensureMainnet();
-  const hash = await S.provider.request({ method: 'eth_sendTransaction', params: [{ from: S.address, to, data, gas: '0x' + gas.toString(16), chainId: '0x1' }] });
+  const hash = await S.provider.request({ method: 'eth_sendTransaction', params: [{ from: S.address, to, data, gas: '0x' + gas.toString(16), chainId: '0x1', ...(value ? { value: '0x' + value.toString(16) } : {}) }] });
   if (!TX_HASH.test(String(hash))) throw new Error('The wallet did not return a transaction hash.');
   return String(hash).toLowerCase();
 }
@@ -402,6 +406,84 @@ async function doSendOne() {
   refreshBoard().catch(() => {});
 }
 
+// ── the board's settles sent while this tab is open (prove/autorelay.js), from a relay account kept in this browser: it signs with no
+// popup, so it holds only gas money. Its key never leaves this browser; Take out sends what it holds to the connected wallet.
+const RELAY_KEY = 'tacit-relay-account-v1', AUTO_ON = 'tacit-relay-auto-v1', AUTO_DAY = 'tacit-relay-day-v1';
+const PROTECT = 'https://rpc.flashbots.net/fast?hint=hash';
+const evmAcct = makeEvmAccount({ secp, keccak256: keccak_256, sha256 }), evmTx = makeEvmTx({ secp, keccak256: keccak_256 });
+const ls = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch {} } };
+const A = { acct: null, relay: null, on: false, running: false, said: '', bal: null };
+function relayAcct(make = false) {
+  if (A.acct) return A.acct;
+  let priv = ls.get(RELAY_KEY);
+  if (!/^0x[0-9a-f]{64}$/.test(priv || '')) {
+    if (!make) return null;
+    priv = '0x' + evmAcct.toValidScalar(crypto.getRandomValues(new Uint8Array(32))).toString(16).padStart(64, '0');
+    ls.set(RELAY_KEY, priv);
+  }
+  A.acct = { priv, address: evmAcct.addressFromPriv(priv) };
+  return A.acct;
+}
+async function sendPrivate(raw) {
+  const j = await fetch(PROTECT, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_sendRawTransaction', params: [raw] }) }).then((r) => r.json());
+  if (j.error || !TX_HASH.test(j.result || '')) throw new Error(j.error?.message || 'Flashbots Protect did not take it');
+  return j.result.toLowerCase();
+}
+function autoRelay() {
+  const a = relayAcct(true);
+  return (A.relay ||= makeAutoRelay({ address: a.address, rpc, sign: (tx) => evmTx.signEip1559(tx, a.priv), sendPrivate,
+    board: () => readBoard({ api: API }), landed: (jobId, txHash) => reportLanded({ api: API, jobId, txHash }),
+    store: { get: () => { try { return JSON.parse(ls.get(AUTO_DAY) || 'null'); } catch { return null; } }, set: (v) => ls.set(AUTO_DAY, JSON.stringify(v)) } }));
+}
+async function paintAuto() {
+  const box = $('#auto-box'), btn = $('#btn-auto');
+  if (!box) return;
+  const a = relayAcct();
+  if (a) A.bal = await rpc('eth_getBalance', [a.address, 'latest']).then(BigInt, () => A.bal);
+  const t = a ? autoRelay().today() : null;
+  box.innerHTML = a ? `<p>Relay account <b title="${esc(a.address)}">${esc(short(a.address))}</b> <button class="link" type="button" data-auto-copy>copy</button> · ${A.bal == null ? '—' : `${esc(ethText(A.bal))} ETH`}`
+      + ` · <button class="link" type="button" data-auto-add>Add 0.01 ETH</button>${A.bal > 0n ? ' · <button class="link" type="button" data-auto-out>Take out</button>' : ''}</p>`
+      + `<p>Today: ${esc(plural(t.sent, 'settle'))} sent · earned ${esc(ethText(BigInt(t.earnedWei)))} ETH · gas ${esc(ethText(BigInt(t.gasWei)))} ETH</p>`
+    : '<p>Start makes a relay account in this browser. Add a little ETH to it for gas; keep only that much there.</p>';
+  btn.textContent = A.on ? 'Stop' : 'Start';
+  btn.setAttribute('aria-pressed', String(A.on));
+  const low = A.on && A.bal != null && A.bal < AUTO_RESERVE_WEI * 2n;
+  $('#auto-status').textContent = low ? 'Add a little ETH to the relay account: it starts sending once it holds enough for gas.' : A.said;
+}
+async function autoTick() {
+  if (!A.on || A.running) return;
+  A.running = true;
+  try { const r = await autoRelay().pass(); A.said = r.why; if (r.did === 'landed') toast('A settle landed; its fee is in the relay account'); }
+  catch (e) { A.said = `Could not read the board or the chain just now (${String(e?.message || e).slice(0, 80)}). It tries again.`; }
+  finally { A.running = false; paintAuto().catch(() => {}); }
+}
+function autoSet(on) {
+  A.on = on; ls.set(AUTO_ON, on ? '1' : null);
+  A.said = on ? 'Watching the board…' : 'Stopped.';
+  if (on) { relayAcct(true); autoTick(); }
+  paintAuto().catch(() => {});
+}
+async function autoAdd() {
+  const a = relayAcct(true);
+  const hash = await send({ to: a.address, data: '0x', gas: 21000n, value: 10n ** 16n });
+  A.said = 'Sending 0.01 ETH to the relay account…'; paintAuto();
+  if (!landed(await waitReceipt(hash))) throw new Error('That transfer did not go through.');
+  toast('0.01 ETH added to the relay account');
+}
+async function autoOut() {
+  const a = relayAcct();
+  if (!a) return;
+  if (!S.address) await connect();
+  const [bal, nonce, block] = await Promise.all([rpc('eth_getBalance', [a.address, 'latest']).then(BigInt), rpc('eth_getTransactionCount', [a.address, 'pending']).then(BigInt), rpc('eth_getBlockByNumber', ['latest', false])]);
+  const tip = 10n ** 8n, maxFee = BigInt(block.baseFeePerGas) * 2n + tip, value = bal - 21000n * maxFee;
+  if (value <= 0n) throw new Error('The relay account holds too little to cover the transfer’s own network fee.');
+  const { raw } = evmTx.signEip1559({ chainId: 1n, nonce, maxPriorityFeePerGas: tip, maxFeePerGas: maxFee, gasLimit: 21000n, to: S.address, value, data: '0x' }, a.priv);
+  const hash = await rpc('eth_sendRawTransaction', [raw]);
+  A.said = `Sending ${ethText(value)} ETH to ${short(S.address)}…`; paintAuto();
+  if (!landed(await waitReceipt(hash))) throw new Error('That transfer did not go through.');
+  toast('Taken out to your wallet');
+}
+
 // The proof market's board (GET /market/orders): the orders waiting for a prover, each a holder's wrap and the TAC it pays at most.
 async function refreshMarket() {
   const box = $('#prove-box');
@@ -428,6 +510,14 @@ $('#btn-advance').addEventListener('click', (e) => busy(e.currentTarget, doAdvan
 $('#btn-ancestry').addEventListener('click', (e) => busy(e.currentTarget, doAncestry));
 $('#btn-proof').addEventListener('click', (e) => busy(e.currentTarget, doSubmitProof));
 $('#btn-board').addEventListener('click', (e) => busy(e.currentTarget, doSendOne));
+$('#btn-auto')?.addEventListener('click', () => autoSet(!A.on));
+$('#auto-box')?.addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  if (b.matches('[data-auto-copy]')) { navigator.clipboard?.writeText(relayAcct()?.address || '').then(() => toast('Address copied'), () => {}); return; }
+  if (b.matches('[data-auto-add]')) busy(b, autoAdd).then(() => paintAuto());
+  if (b.matches('[data-auto-out]')) busy(b, autoOut).then(() => paintAuto());
+});
 window.addEventListener('hashchange', () => { readLink(); if (started) refresh().catch(() => {}); });
 
 paintWallet();
@@ -458,3 +548,9 @@ export function startOps() {
   setInterval(() => { if (inView()) readAll(); }, 60000);
   document.addEventListener('visibilitychange', () => { if (inView() && Date.now() - lastRead > 60000) readAll(); });
 }
+
+// The board's settles: every 20 s while it is on, from the moment the page opens and whichever tab shows (a hidden tab's timers slow to
+// once a minute). One started before is started again when the page is opened again.
+paintAuto().catch(() => {});
+if (ls.get(AUTO_ON) === '1' && relayAcct()) autoSet(true);
+setInterval(autoTick, 20000);
