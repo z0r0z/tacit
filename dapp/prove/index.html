@@ -629,7 +629,8 @@ RUNNER_KEY=0x… node tools/community-runner.mjs prove</code></pre>
       <p class="lede">One key advances the relay, lands published proofs and sends the board’s settles for their fees.</p>
       <pre class="cmd"><code>git clone https://github.com/src-company/tacit
 cd tacit &amp;&amp; npm ci --omit=dev
-RUNNER_KEY=0x… node tools/community-runner.mjs</code></pre>
+RUNNER_KEY=0x… node tools/community-runner.mjs
+node tools/community-runner.mjs mirror   # no key: keeps the board public on Nostr</code></pre>
       <p class="plan"><a href="https://github.com/src-company/tacit/blob/main/docs/COMMUNITY-OPS.md" target="_blank" rel="noopener noreferrer">Modes and costs</a> · <a href="https://github.com/src-company/tacit/tree/main/contracts/sp1/confidential/device-prover" target="_blank" rel="noopener noreferrer">Prove on your own device</a></p>
     </div>
   </section>
