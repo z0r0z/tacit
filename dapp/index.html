@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-z8VtlggQsIYTIrlQpXjPBe4hoRklf07toL9/XE409SM=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-0DBU3Ea+9kU77tYdccnfEu35nrtKmCnyLTt1ijaTdYs=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -64,7 +64,7 @@
 <link rel="modulepreload" href="/bridge-tick.js?cb=b9adb91d">
 <link rel="modulepreload" href="/tacit-session.js?cb=a2d34bb2">
 <link rel="modulepreload" href="/activity.js?cb=8ccbc552">
-<link rel="modulepreload" href="/swap/card.js?cb=09bfcd2c">
+<link rel="modulepreload" href="/swap/card.js?cb=10b5d54a">
 <link rel="modulepreload" href="/trade/wallet.js?cb=88b623b8">
 <link rel="modulepreload" href="/trade/util.js?cb=e8317464">
 <link rel="modulepreload" href="/trade/rpc.js?cb=f575ef91">
@@ -1911,7 +1911,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
 // preload-later:begin
 // preload-later:end
 // preload-intent:begin
-const WARM_MODULES = ["/confidential-pool-ux.js?cb=65a2268e","/confidential-deployments.js","/confidential-deployments.generated.js","/trade/rpc.js","/confidential-indexer.js","/confidential-pool.js","/evm-confidential.js","/bulletproofs.js","/bulletproofs-plus.js","/burn-deposit-bitcoin.js","/burn-deposit-provenance.js","/burn-deposit-assembler.js","/confidential-memo.js","/confidential-evm-log.js","/confidential-relay.js","/confidential-invoice.js","/confidential-recovery-guard.js","/confidential-router.js","/confidential-transfer.js","/confidential-route.js","/confidential-swap.js","/confidential-swap-coordinator.js","/confidential-lp.js","/confidential-cdp.js","/confidential-farm.js","/confidential-farm-program.js","/confidential-defi-actions.js","/confidential-stealth.js","/confidential-airdrop.js","/tac-airdrop.js","/confidential-lock-scan.js","/confidential-bridge-mint.js","/bridge-burn-broadcast.js","/pool-snapshot.js","/confidential-recovery.js","/bridge-mint-recovery.js","/confidential-secret-store.js","/confidential-recovery-btc.js","/bitcoin-taproot-wallet.js","/cbtc-note-recovery.js"];
+const WARM_MODULES = ["/confidential-pool-ux.js?cb=f625f29e","/confidential-deployments.js","/confidential-deployments.generated.js","/trade/rpc.js","/confidential-indexer.js","/confidential-pool.js","/evm-confidential.js","/bulletproofs.js","/bulletproofs-plus.js","/burn-deposit-bitcoin.js","/burn-deposit-provenance.js","/burn-deposit-assembler.js","/confidential-memo.js","/confidential-evm-log.js","/confidential-relay.js","/confidential-invoice.js","/confidential-recovery-guard.js","/confidential-router.js","/confidential-transfer.js","/confidential-route.js","/confidential-swap.js","/confidential-swap-coordinator.js","/confidential-lp.js","/confidential-cdp.js","/confidential-farm.js","/confidential-farm-program.js","/confidential-defi-actions.js","/confidential-stealth.js","/confidential-airdrop.js","/tac-airdrop.js","/confidential-lock-scan.js","/confidential-bridge-mint.js","/bridge-burn-broadcast.js","/pool-snapshot.js","/confidential-recovery.js","/bridge-mint-recovery.js","/confidential-secret-store.js","/confidential-recovery-btc.js","/bitcoin-taproot-wallet.js","/cbtc-note-recovery.js"];
 // preload-intent:end
 import '/storage-fallback.js';
 import { secp, keccak_256, sha256, hmac, bytesToHex, hexToBytes, concatBytes } from '/vendor/tacit-deps.min.js';
@@ -3519,7 +3519,7 @@ async function devAnyoneNow(run, spec) {
   let a;
   try {
     tell(`This computer is proving it with a fee of ${fmt(fee, 8, 6)} tETH for whoever sends it. Nothing needs ETH of yours…`);
-    a = await spec.anyone({ t, priv, fee, waitOpts: spTell(run.wait(null, 40 * 60e3), tell) });
+    a = await spec.anyone({ t, priv, fee, run, proveBatch: d.proveBatch, waitOpts: spTell(run.wait(null, 40 * 60e3), tell) });
   } finally { r.useProver?.(null); spApply(); }
   tell('Proved. Posting it where anyone can send it…');
   const job = { type: a.type, publicValues: a.proven.publicValues, proof: a.proven.proof, memos: a.memos || [], expiresAt: a.deadlineMs };
@@ -3527,13 +3527,14 @@ async function devAnyoneNow(run, spec) {
   const [n, api] = await Promise.allSettled([nb.post(job), r.postProof({ type: job.type, publicValues: job.publicValues, proof: job.proof, memos: job.memos })]);
   const relays = n.status === 'fulfilled' ? n.value.relays.length : 0, onApi = api.status === 'fulfilled' && !!api.value?.jobId;
   if (!relays && !onApi) throw Object.assign(new Error('It is proved, but neither the Nostr relays nor the board took it. Nothing was spent: press again in a minute.'), { said: true });
-  const by = new Date(a.deadlineMs).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-  tell(html`<span class="ok">Posted</span> ${relays ? `to ${relays} Nostr relay${relays === 1 ? '' : 's'}` : ''}${relays && onApi ? ' and ' : ''}${onApi ? 'the open board' : ''}. Anyone can send it and earn its fee; it goes through when someone does, by ${by}. If nobody has by then, nothing is spent.`);
+  const by = a.deadlineMs ? new Date(a.deadlineMs).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : null;
+  const where = `${relays ? `to ${relays} Nostr relay${relays === 1 ? '' : 's'}` : ''}${relays && onApi ? ' and ' : ''}${onApi ? 'the open board' : ''}`;
+  tell(html`<span class="ok">Posted</span> ${where}. Anyone can send it and earn its fee; it goes through when someone does${by ? html`, by ${by}. If nobody has by then, nothing is spent.` : '. It stays good until then, or until you spend these notes another way.'}`);
   toast(`${spec.label}: posted for anyone to send`);
   const label = spec.label;
-  t.watchSpent({ walletPriv: priv, note: a.note, untilMs: a.deadlineMs, everyMs: 60e3 }).then((w) => {
-    if (w === 'settled') { toast(`${label}: done`); tell(html`<span class="ok">Done.</span> Someone sent it.`); scanPrivate(true).catch(() => {}); }
-    else tell('Nobody sent it before its deadline, so nothing was spent. The note is still yours: press again to post it once more.');
+  t.watchSpent({ walletPriv: priv, note: a.note, untilMs: a.deadlineMs || Date.now() + 86400e3, everyMs: 60e3 }).then((w) => {
+    if (w === 'settled') { toast(`${label}: done`); tell(html`<span class="ok">Done.</span> Someone sent it.${spec.then ? ` ${spec.then}` : ''}`); scanPrivate(true).catch(() => {}); }
+    else tell(a.deadlineMs ? 'Nobody sent it before its deadline, so nothing was spent. The note is still yours: press again to post it once more.' : 'Nobody has sent it yet. Your notes are still yours: it can still go through, or press again to post it once more.');
   }, () => {});
 }
 document.addEventListener('click', (e) => {
@@ -4920,7 +4921,7 @@ function wireSub(el, name, set) { $$(`[data-${name}]`, el).forEach((b) => b.oncl
 const warmPool = (() => { let on = false; return () => { if (on) return; on = true; for (const u of WARM_MODULES) document.head.append(Object.assign(document.createElement('link'), { rel: 'modulepreload', href: u })); }; })();
 const getUx = lazy(async () => {
   warmPool();
-  const [{ makeConfidentialPoolUx, setExternalTacHolders }, dep] = await Promise.all([import('/confidential-pool-ux.js?cb=65a2268e'), import('/confidential-deployments.js')]);
+  const [{ makeConfidentialPoolUx, setExternalTacHolders }, dep] = await Promise.all([import('/confidential-pool-ux.js?cb=f625f29e'), import('/confidential-deployments.js')]);
   dep.setActiveNetwork('mainnet');
   setExternalTacHolders(() => (S.wallet ? [S.wallet] : []));
   const ux = makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256, network: 'mainnet' });
@@ -5473,8 +5474,9 @@ async function resolveTo(raw) {
 }
 const POOL_TK = { eth: 'cETH', tac: 'cTAC', cbtc: 'cBTC', cusd: 'cUSD', rtac: 'cTAC' };
 // The notes a cut to size spends for `need` (the amount and its fee): the smallest that covers it, else the largest first, up to 16.
-function cutPick(k, need) {
-  const up = freeNotes(P.scan?.[k]?.notes).sort(byValue);
+// (`run`: the notes it holds itself count as free to it)
+function cutPick(k, need, run = null) {
+  const up = (run ? (P.scan?.[k]?.notes || []).filter((n) => !takenByOther(run, kNote(n))) : freeNotes(P.scan?.[k]?.notes)).sort(byValue);
   const picked = up.filter((x) => BigInt(x.value) >= need).slice(0, 1);
   let sum = picked.length ? BigInt(picked[0].value) : 0n;
   for (const x of picked.length ? [] : [...up].reverse()) { if (sum >= need || picked.length === 16) break; picked.push(x); sum += BigInt(x.value); }
@@ -5543,6 +5545,13 @@ async function noteFor(run, t, priv, amount, fits, status, k = 'eth') {
   const line = () => (status.id && document.getElementById(status.id)) || status;
   await proveOr({ run, types: ['transfer'], held: true, label: doing, sheet: run.sheet, then: 'Your note is ready. Press the button again to send it.', carry: 'press the button again to carry on from there', status: line,
     wait: stepWait, go: (x) => cut(0n, { selfSettle: x.selfSettle, waitOpts: x.waitOpts }),
+    // (tETH, whose fee any sender values: the cut proved here with a fee for whoever sends it, posted for anyone)
+    ...(k === 'eth' ? { anyone: (y) => {
+      const p = sum >= amount + BigInt(y.fee) ? picked : cutPick(k, amount + BigInt(y.fee), y.run).picked;
+      if (p.reduce((a, n) => a + BigInt(n.value), 0n) < amount + BigInt(y.fee)) throw Object.assign(new Error(`Your notes do not cover this and its sender’s fee of ${fmt(y.fee, 8, 6)} tETH. Try a little less.`), { said: true });
+      y.run?.take(...p.map(kNote));
+      return y.t.cutForAnyone({ walletPriv: y.priv, notes: p, amount, fee: y.fee, waitOpts: y.waitOpts });
+    } } : {}),
     relayed: async () => {
       // proved while the amount stood (cutAhead): posted for the relay to send (a minute at most for one still being made)
       if (CA.k === `${k}:${amount}` && CA.notes === picked.map(kNote).join()) {
@@ -5590,6 +5599,15 @@ async function stealthSendNow({ run, k, label, w, raw, units, field, status, lin
   const sendArgs = { t, priv, note, who: w, units, ticker: POOL_TK[k] };
   const r = await proveOr({ run, types: ['stealthlock'], label, sheet, ...(proveAfter ? { after: proveAfter } : {}), status: line,
     go: (x) => lockSend({ ...sendArgs, selfSettle: x.selfSettle, waitOpts: x.waitOpts }),
+    // (tETH: the lock and a transfer of another note that pays its sender, in one proof made here, posted for anyone: a lock carries no fee)
+    ...(k === 'eth' ? { anyone: async (y) => {
+      const feeNote = (P.scan?.[k]?.notes || []).filter((n) => kNote(n) !== kNote(note) && !takenByOther(y.run, kNote(n)) && BigInt(n.value) > 2n * BigInt(y.fee)).sort(byValue)[0];
+      if (!feeNote) throw Object.assign(new Error(`To send it with no ETH, a second private tETH note pays its sender’s fee of ${fmt(y.fee, 8, 6)} tETH, and you hold none besides this one. Add a little tETH, or try again when the relay is back.`), { said: true });
+      y.run?.take(kNote(feeNote));
+      const a = await y.t.lockForAnyone({ walletPriv: y.priv, recipientPubHex: w.pubHex, note, feeNote, fee: y.fee, proveBatch: y.proveBatch });
+      await keepLock(y.priv, a.built, {}, w, POOL_TK[k]);
+      return a;
+    } } : {}),
     relayed: async () => {
       // proved while the send stood (lockAhead): posted for the relay to send (a minute at most for one still being made)
       if (LA.k === `${kNote(note)}:${w.pubHex}`) {
@@ -16834,7 +16852,7 @@ function swcPace(id) {
   if (b) b.dataset.pace = id;
   else q.insertAdjacentHTML('afterend', html`<div class="pace" data-card="1" data-pace="${id}"><div class="actr-bar" role="progressbar" aria-label="How far along" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i style="width:0%"></i></div><span></span></div>`.s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=09bfcd2c').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=10b5d54a').catch((e) => { SWC.p = null; throw e; }));
 // the card held to the tab's flow; back on the Swap tab it opens on the swap it showed there
 function swcFlow() {
   hxPathPaint();

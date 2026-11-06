@@ -2865,6 +2865,30 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return { notes, amount: BigInt(amount), fee: BigInt(fee), recipientPubHex, proven, leaves: b.leaves, memos: proven.memos || b.memos };
   }
   const transferAheadSend = (a, o) => _postAhead('transfer', a, o);
+  // Proofs anyone may send for their fee (exitForAnyone below), for a private send. A transfer pays only its holder (a note's owner comes
+  // from the recipient's own spend key) and a stealth lock carries no fee, so a send goes in two parts:
+  //  - cutForAnyone: `amount` cut from `notes` to the holder's own key, `fee` bound in for its sender (when no note of exactly the amount is held);
+  //  - lockForAnyone: ONE proof of two ops (the guest proves any ops in one run): the stealth lock of `note` for the recipient, and a transfer of
+  //    `feeNote` to the holder's own key that pays `fee` to whoever sends it. `proveBatch(items)` is the holder's prover (device-prover.js).
+  // Neither carries a deadline: each stays good until sent, or until the holder spends one of its notes another way. → { type, note, proven, memos, deadlineMs: 0, built? }
+  async function cutForAnyone({ walletPriv, notes, amount, fee, waitOpts } = {}) {
+    const b = buildTransferOp({ walletPriv, notes, recipientPubHex: identity(walletPriv).pubHex, amount: BigInt(amount), fee: BigInt(fee), feeUsd: null });
+    const proven = await relay.prove({ type: 'transfer', op: b.op, leaves: b.leaves, outputs: b.outputs, ephRand: b.ephRand, memos: b.memos }, waitOpts);
+    if (!proven || !proven.publicValues) throw new Error(proven && proven.error || 'cutForAnyone: no proof');
+    return { type: 'transfer', note: notes[0], proven, memos: proven.memos || b.memos, deadlineMs: 0 };
+  }
+  async function lockForAnyone({ walletPriv, recipientPubHex, note, feeNote, fee, deadline, proveBatch, onUpdate } = {}) {
+    const id = identity(walletPriv);
+    if (String(recipientPubHex).toLowerCase() === String(id.pubHex).toLowerCase()) throw new Error('lockForAnyone: that is your own address');
+    if (!feeNote || BigInt(feeNote.value) <= BigInt(fee)) throw new Error('lockForAnyone: the fee note does not cover the fee');
+    if (String(feeNote.root).toLowerCase() !== String(note.root).toLowerCase()) throw new Error('lockForAnyone: the two notes are read at different roots; read the balance again');
+    const { op: lockOp, memo, built } = _stealthBuild({ id, recipientPubHex, note, asset: note.asset, amount: BigInt(note.value), deadline });
+    const t = buildTransferOp({ walletPriv, notes: [feeNote], recipientPubHex: id.pubHex, amount: BigInt(feeNote.value) - BigInt(fee), fee: BigInt(fee), feeUsd: null });
+    guard.assertOutputsRecoverable({ leaves: t.leaves, outputs: t.outputs, memos: t.memos });
+    const r = await proveBatch([{ type: 'stealthlock', op: lockOp, memos: [memo] }, { type: 'transfer', op: t.op, memos: t.memos }], { onUpdate });
+    if (!r || !r.publicValues) throw new Error('lockForAnyone: no proof');
+    return { type: 'stealthlock', note, proven: { publicValues: r.publicValues, proof: r.proof }, memos: [memo, ...t.memos], built, deadlineMs: 0 };
+  }
   async function _postAhead(type, a, { waitOpts } = {}) {
     // a refusal (the pool would not take it now: its note spent, its pools traded) comes back as an error or as an answer with no job: either way nothing was posted
     const posted = await relay.postProof({ type, publicValues: a.proven.publicValues, proof: a.proven.proof, memos: a.memos })
@@ -3513,7 +3537,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // useWallet(get): the page's own connected-wallet provider for Ethereum mainnet reads as a last resort (get() -> provider or null); without one, an
   // injected wallet this site is already connected to is used.
   return { cfg, assets: _poolAssets, assetByTicker, account, identity, rpc, useWallet: (get) => { _walletGet = typeof get === 'function' ? get : null; }, ethCall, fetchEvents, balance, poolStatsFromEvents, tickerOf, poolTickerOf,
-    deriveOutput, receiveCode, parseReceiveCode, buildWrap, buildShareWrap, nextShareIndex, releaseShareIndex, shareDeposits, nextWrapIndex, warmWrapLogs, releaseWrapIndex, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, wrapAndMintCusdCall, resumeWrapAndSend, proveWrap, wrapProofFits, wrapSettleCall, sendPreparedTx, buildTransferOp, transfer, stealthSend, scanStealthLocks, stealthClaim, stealthRefund, stealthLockPosition, crossOut, payInvoice, quoteUnwrapFee, ladderFee: _ladderFee, poolLeafCount, refreshFarmPending, holderFeeBps, setPublicTacHeld, quoteTransferFee, quoteOpFee: gasAwareMinFee, feeUsdFor, relayFeeEligible, buildUnwrap, unwrap, sendUnwrap, sendUnwrapExitOp: _sendUnwrapExit, exitAhead, exitAheadSend, exitForAnyone, watchSpent, addBridgeAmountHint, buildAttestMeta, chainBindingHex,
+    deriveOutput, receiveCode, parseReceiveCode, buildWrap, buildShareWrap, nextShareIndex, releaseShareIndex, shareDeposits, nextWrapIndex, warmWrapLogs, releaseWrapIndex, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, wrapAndMintCusdCall, resumeWrapAndSend, proveWrap, wrapProofFits, wrapSettleCall, sendPreparedTx, buildTransferOp, transfer, stealthSend, scanStealthLocks, stealthClaim, stealthRefund, stealthLockPosition, crossOut, payInvoice, quoteUnwrapFee, ladderFee: _ladderFee, poolLeafCount, refreshFarmPending, holderFeeBps, setPublicTacHeld, quoteTransferFee, quoteOpFee: gasAwareMinFee, feeUsdFor, relayFeeEligible, buildUnwrap, unwrap, sendUnwrap, sendUnwrapExitOp: _sendUnwrapExit, exitAhead, exitAheadSend, exitForAnyone, watchSpent, cutForAnyone, lockForAnyone, addBridgeAmountHint, buildAttestMeta, chainBindingHex,
     settleFromAccount, erc2612Nonce: _erc2612Nonce, waitReceipt: _waitReceipt, poolReserves, poolFeeApr, poolCurrentRoot, sameRoot, routePoolId, quoteRoute, route, routeAhead, routeAheadSend, transferAhead, transferAheadSend, stealthSendAhead, stealthSendAheadSend, swapBatched, swapBatchPending, swapBatchFlush, lpBondPosition, buildLpBondOp, lpBond, farmProgram, farmBond, farmPositions, importFarmPosition, recover, recoverCdpPositions, scanSentLocks, farmHarvest, farmUnbond, farmRedeem, buildFastlaneExitOp, fastlaneExit, lpAdd, lpRemove, quoteLpAdd, wrapLp, wrapSwap, buildWrapSwap, submitWrapSwap, proveWrapSwap, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle, settleCalldata,
     cbtcLockState, syncCbtcLockReservations, cbtcBonds, forgetKeys: forget,
     relay, indexer, evmLog, evmTx, pool, memo, router: _router, stealth: _stealth, bridgeMint: _bridgeMint, bridgeBurn: _bridgeBurn, bridgeBurnToPool, airdrop: _airdrop, tacAirdrop: _tacAirdrop, lockScan: _lockScan };

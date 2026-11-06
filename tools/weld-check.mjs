@@ -13670,16 +13670,20 @@ await step('anyone', async () => {
       ux.balance = async (priv, opts) => {
         const b = await balance(priv, opts);
         const hx = typeof priv === 'string' ? priv : '0x' + [...priv].map((x) => x.toString(16).padStart(2, '0')).join('');
-        made ||= [['50', 0], ['30', 1]].map(([cents, index]) => {
-          const w = ux.buildWrap({ walletPriv: hx, amountWei: (BigInt(cents) * 10n ** 16n).toString(), ticker: 'cETH', index });
-          return ux.indexer.recover([{ type: 'LeavesInserted', firstLeafIndex: 0, leaves: [w.leaf], memos: [w.memo] }], hx)[0];
-        });
+        // (one tree for all four, as a real read gives every note the same root)
+        if (!made) {
+          const ws = [['50', 0], ['30', 1], ['20', 2], ['40', 3]].map(([cents, index]) => ux.buildWrap({ walletPriv: hx, amountWei: (BigInt(cents) * 10n ** 16n).toString(), ticker: 'cETH', index }));
+          made = ux.indexer.recover([{ type: 'LeavesInserted', firstLeafIndex: 0, leaves: ws.map((w) => w.leaf), memos: ws.map((w) => w.memo) }], hx);
+        }
         const n = made[0]; window.__stubKey = 'n:' + String(n.leaf || n.nullifier || (n.cx + ':' + n.cy)).toLowerCase();
         b.notes = [...b.notes, ...made];
         for (const x of made) { const g = b.byAsset[x.asset] ||= { asset: x.asset, value: 0n, notes: [] }; g.value = BigInt(g.value) + BigInt(x.value); g.notes = [...g.notes, x]; }
         return b;
       };
       ux.quoteOpFee = async () => '100000';
+      const lfa = ux.lockForAnyone, cfa = ux.cutForAnyone;
+      ux.lockForAnyone = async (x) => { const r = await lfa(x); window.__lfa = { fee: String(x.fee), note: String(x.note.value), feeNote: String(x.feeNote.value) }; return r; };
+      ux.cutForAnyone = async (x) => { const r = await cfa(x); window.__cfa = { fee: String(x.fee), amount: String(x.amount), notes: x.notes.length }; return r; };
       const efa = ux.exitForAnyone;
       ux.exitForAnyone = async (x) => { const r = await efa(x); window.__efa = { fee: String(r.out.fee), want: String(x.fee), deadline: r.deadlineMs, payout: String(r.out.payout) }; return r; };
       return ux;
@@ -13738,10 +13742,10 @@ await step('anyone', async () => {
     await r.page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
     await go(r.page, '#private');
     await r.page.waitForSelector('[data-v1="out"]', { timeout: 600000 });
-    await until(r.page, () => /Private 0\.8 tETH/.test(document.querySelector('#sheet-eth')?.textContent || ''), null, 600000).catch(() => {});
+    await until(r.page, () => /Private 1\.4 tETH/.test(document.querySelector('#sheet-eth')?.textContent || ''), null, 600000).catch(() => {});
     relayStateNow = 'paused';
     const s0 = submits.length, w0 = walletTxs.length, d0 = dev.asked.length;
-    await withdraw('0.1');
+    await withdraw('0.45');                                     // (only the 0.5 note fits: the others stay for the sends below)
     await until(r.page, () => !!document.querySelector('#v1-status [data-prove-anyone]'), null, 300000).catch(() => {});
     ok(/let anyone send it for a small fee, with no ETH of your own/.test(await said()), `anyone: with the relay paused, a withdrawal also offers letting anyone send it (${await said()})`);
     await r.page.click('#v1-status [data-prove-anyone]');
@@ -13752,9 +13756,34 @@ await step('anyone', async () => {
       && walletTxs.length === w0 && !submits.slice(s0).some((x) => (x.mode || 'settle') === 'settle'),
       `anyone: proved on this computer, posted to every Nostr relay with a deadline hours out, no transaction from any wallet and nothing handed to the relay to send (${await said()}; asked ${asked.map((x) => x.type)}, posts ${posts.length})`);
     const efa = await r.page.evaluate(() => window.__efa);
-    ok(efa && BigInt(efa.fee) > 0n && BigInt(efa.fee) >= BigInt(efa.want) && BigInt(efa.payout) + BigInt(efa.fee) === 10000000n && efa.deadline > Date.now() + 2 * 3600e3,
-      `anyone: the withdrawal binds the sender's fee (asked ${efa?.want}, bound ${efa?.fee}, paid out ${efa?.payout} of 0.1 tETH) and a deadline hours out`);
+    ok(efa && BigInt(efa.fee) > 0n && BigInt(efa.fee) >= BigInt(efa.want) && BigInt(efa.payout) + BigInt(efa.fee) === 45000000n && efa.deadline > Date.now() + 2 * 3600e3,
+      `anyone: the withdrawal binds the sender's fee (asked ${efa?.want}, bound ${efa?.fee}, paid out ${efa?.payout} of 0.45 tETH) and a deadline hours out`);
 
+    // A private tETH send of a note held exactly: the lock and a transfer of another note that pays the sender, ONE proof made here, posted.
+    const sendTo = async (amt) => {
+      await tab('send');
+      await r.page.fill('#s-to', tacit1('abe'.padEnd(64, '5')));
+      await r.page.fill('#s-amt', amt);
+      await until(r.page, () => /They get about/.test(document.querySelector('#s-rcpt')?.textContent || '') && !document.querySelector('#s-go').disabled, null, QUOTE_WAIT);
+      await r.page.click('#s-go');
+      await until(r.page, () => !!document.querySelector('#v1-status [data-prove-anyone]'), null, 300000).catch(() => {});
+      ok(/let anyone send it/.test(await said()), `anyone: a private send of ${amt} tETH offers it (${await said()})`);
+      await r.page.click('#v1-status [data-prove-anyone]');
+      await until(r.page, () => /Posted|class="err"/.test(document.querySelector('#v1-status')?.innerHTML || ''), null, 300000).catch(() => {});
+    };
+    let p0 = (await r.page.evaluate(() => window.__nostr)).length, d1 = dev.asked.length, w1 = walletTxs.length;
+    await sendTo('0.2');
+    let posts2 = (await r.page.evaluate(() => window.__nostr)).slice(p0);
+    const lf = await r.page.evaluate(() => window.__lfa);
+    ok(/Posted/.test(await said()) && dev.asked.slice(d1).map((x) => x.type).join() === 'batch' && posts2.length === 4 && lf && lf.note === '20000000' && BigInt(lf.feeNote) > 2n * BigInt(lf.fee) && BigInt(lf.fee) > 0n && walletTxs.length === w1,
+      `anyone: the send of a 0.2 tETH note is the lock and a fee transfer in one proof made here, posted, no wallet transaction (${JSON.stringify(lf)}; asked ${dev.asked.slice(d1).map((x) => x.type)}; ${await said()})`);
+    // and with no note of exactly the amount: the cut first, proved here with its fee, posted
+    p0 = (await r.page.evaluate(() => window.__nostr)).length; d1 = dev.asked.length;
+    await sendTo('0.15');
+    posts2 = (await r.page.evaluate(() => window.__nostr)).slice(p0);
+    const cf = await r.page.evaluate(() => window.__cfa);
+    ok(/Posted/.test(await said()) && dev.asked.slice(d1).map((x) => x.type).join() === 'transfer' && posts2.length === 4 && cf && cf.amount === '15000000' && BigInt(cf.fee) > 0n && walletTxs.length === w1,
+      `anyone: with no note of the amount, the cut is proved here with the sender's fee and posted first (${JSON.stringify(cf)}; ${await said()})`);
     if (r.errors.length) { fails++; console.log('FAIL anyone page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { relayStateNow = 'ok'; if (restore) await restore(); await r.browser.close(); }
 });
