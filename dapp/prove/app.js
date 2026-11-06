@@ -373,6 +373,17 @@ loop(async () => { const p = await get(`${API}/prover/pool`); if (p) pool = clea
 loop(readRemote, 30000, 120000);
 loop(readBoardPay, 60000, 300000);
 loop(readSalts, 30000, 120000);
+// The day's checkpoint (worker/src/pool-snapshot-job.js): the tacit block, Bitcoin's height as the pool sees it, and the manifest on IPFS
+// that holds them, named on Ethereum by snapshot.tacit.wei. Anyone can rebuild every part of it from Ethereum.
+const HEX32 = /^0x[0-9a-f]{64}$/i, CID = /^b[a-z2-7]{58}$/;
+async function readCheckpoint() {
+  const s = await get(`${API}/pool/snapshot`), c = s?.checkpoint, el = $('#checkpoint');
+  const height = count(c?.tacit?.height), btc = count(c?.bitcoin?.relayTip);
+  if (!CID.test(String(s?.cid)) || height == null || !HEX32.test(String(c?.tacit?.hash))) { el.hidden = true; return; }
+  el.innerHTML = `Checkpoint: block #${height.toLocaleString('en-US')} <code>${esc(c.tacit.hash.slice(0, 10))}…</code>${btc != null ? ` · Bitcoin ${btc.toLocaleString('en-US')}` : ''} · <a href="https://ipfs.filebase.io/ipfs/${esc(s.cid)}" target="_blank" rel="noopener noreferrer">snapshot.tacit.wei</a>`;
+  el.hidden = false;
+}
+loop(readCheckpoint, 300000, 900000);
 if (isPhone(navigator.userAgent)) {
   $('#phone').hidden = false;
   $('#desk').hidden = true;

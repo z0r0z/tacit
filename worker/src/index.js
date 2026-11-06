@@ -3795,9 +3795,30 @@ const POOL_SP1_VERIFIER = '0xb69f2584CBcFf99a58C4e7002E8b89Af54a6f4e2';   // the
 const POOL_PROGRAM_VKEY = '0x006cd47fd23937a6d247696cace28c22d2c6a8280447e6ac45a3571de232d6e3'; // the settle guest the pool pins
 // GET /prover/blocks?limit=&before=: the pool's history as blocks (tacit-chain.js), newest first, with the tip's height and hash.
 // The pool snapshot on IPFS (pool-snapshot-job.js, dapp/pool-snapshot.js): a run on the cron tick when POOL_SNAPSHOT=1 and Filebase is set,
-// one at a time across both API services. GET /pool/snapshot names the newest manifest it pinned ({ cid, to, at, trees }); a page reads the
-// snapshot.tacit.wei record first and this only when there is none.
+// one at a time across both API services. GET /pool/snapshot names the newest manifest it pinned ({ cid, to, at, trees, checkpoint }); a page
+// reads the snapshot.tacit.wei record first and this only when there is none.
 let _snapJob = null;
+const SEL_RELAY_TIP_HEIGHT = '0x1fd4827a', SEL_RELAY_TIP = '0x' + bytesToHex(keccak_256(new TextEncoder().encode('tip()'))).slice(0, 8);
+const SLOT_KNOWN_BITCOIN_SPENT_ROOT = '0x' + (79).toString(16).padStart(64, '0');
+// The cross-chain checkpoint at Ethereum block `to`: that block's hash, the tacit chain's newest block at or before it, and the Bitcoin side
+// as the pool saw it then (BitcoinLightRelay's tip, the pool's knownBitcoinSpentRoot).
+async function poolCheckpoint(env, d, to) {
+  const tag = '0x' + to.toString(16), nodes = ETH_LOG_NODES.map((rpc) => (m, p) => _ethRpcOrThrow(rpc, m, p));
+  const rpc = async (m, p) => { let last; for (const n of nodes) { try { return await n(m, p); } catch (e) { last = e; } } throw last; };
+  const [blk, tipH, tipHash, spent, view] = await Promise.all([
+    rpc('eth_getBlockByNumber', [tag, false]),
+    d.headerRelay ? rpc('eth_call', [{ to: d.headerRelay, data: SEL_RELAY_TIP_HEIGHT }, tag]) : null,
+    d.headerRelay ? rpc('eth_call', [{ to: d.headerRelay, data: SEL_RELAY_TIP }, tag]) : null,
+    rpc('eth_getStorageAt', [d.pool, SLOT_KNOWN_BITCOIN_SPENT_ROOT, tag]),
+    chainView(env)?.blocks({ limit: 100 }).catch(() => null),
+  ]);
+  const tb = (view?.blocks || []).find((b) => Number(b.ethBlock) <= to);
+  return {
+    eth: { block: to, hash: blk?.hash || null },
+    tacit: tb ? { height: tb.height, hash: tb.hash, ethBlock: tb.ethBlock } : null,
+    bitcoin: { relayTip: tipH ? Number(BigInt(tipH)) : null, relayTipHash: tipHash || null, spentRoot: spent || null },
+  };
+}
 async function poolSnapshotTick(env) {
   const d = _CONFIDENTIAL_DEPLOYMENTS?.mainnet, kv = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
   if (env.POOL_SNAPSHOT !== '1' || !_filebaseConfigured(env) || !d || !d.pool || !kv) return null;
@@ -3812,6 +3833,7 @@ async function poolSnapshotTick(env) {
       fetchImpl: fetch, sha256, keccak256: keccak_256, decodeLogs: evmLog.decodeLogs,
       pool: d.pool, manager: d.farm && d.farm.manager, deployBlock: Number(d.deployBlock) || 0,
       topics: [T.LeavesInserted, T.NullifiersSpent, T.LockLeavesInserted, T.Wrap, T.CdpPositionInserted, T.CrossOutRecorded, ...(d.farm && d.farm.manager ? [T.Bonded, T.Harvested] : [])],
+      checkpoint: (to) => poolCheckpoint(env, d, to),
     });
   }
   const r = await _snapJob.run();
@@ -3826,13 +3848,17 @@ async function handlePoolSnapshot(req, env, url, cors) {
 }
 
 let _chain = null;
-async function handleChainBlocks(req, env, url, cors) {
+function chainView(env) {
   const idx = confIndex(env), kv = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
-  if (!idx || !kv) return jsonResponse({ error: 'not found' }, 404, cors);
+  if (!idx || !kv) return null;
   if (!_chain) {
     const pool = buildProofPool(env, { verify: async () => ({}) });
     _chain = makeChain({ kv, index: idx, minedBy: (leaves) => (pool ? pool.minedBy(leaves) : {}) });
   }
+  return _chain;
+}
+async function handleChainBlocks(req, env, url, cors) {
+  if (!chainView(env)) return jsonResponse({ error: 'not found' }, 404, cors);
   try {
     const out = await _chain.blocks({ limit: url.searchParams.get('limit'), before: url.searchParams.get('before') });
     return jsonResponse(out, 200, { ...cors, 'Cache-Control': 'public, max-age=5' });

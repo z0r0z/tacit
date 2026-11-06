@@ -19,7 +19,10 @@ export const SNAPSHOT_JOB = Object.freeze({
 
 // kv: { get, put }. rpcs: [(method, params) → result, throwing on any error]. pin(bytes) → its raw CID (Filebase), throwing on failure.
 // fetchImpl: for the last piece when this process has not kept it. Everything else is the pool's: pool, manager, deployBlock, topics.
-export function makePoolSnapshotJob({ kv, rpcs, pin, fetchImpl, sha256, keccak256, decodeLogs, pool, manager, deployBlock, topics, chainId = 1, now = Date.now, cfg = SNAPSHOT_JOB }) {
+// checkpoint(to) → the cross-chain checkpoint at the snapshot's block, or null: Ethereum's block and hash, the tacit chain's tip as of
+// that block, and the Bitcoin side as the pool sees it (the light relay's tip, the reflected spent root). It rides in the manifest, so
+// snapshot.tacit.wei names a checkpoint of the whole pool each day; anyone can rebuild every part of it from Ethereum.
+export function makePoolSnapshotJob({ kv, rpcs, pin, fetchImpl, sha256, keccak256, decodeLogs, pool, manager, deployBlock, topics, chainId = 1, checkpoint = null, now = Date.now, cfg = SNAPSHOT_JOB }) {
   const addresses = [pool, ...(manager ? [manager] : [])];
   const read = async (k) => { const s = await kv.get(k); try { return s == null ? null : JSON.parse(s); } catch { return null; } };
   let tail = null; // { cid, logs }: the last piece's logs, kept between runs in this process
@@ -79,10 +82,11 @@ export function makePoolSnapshotJob({ kv, rpcs, pin, fetchImpl, sha256, keccak25
     await kv.put('snap:state', JSON.stringify(next));
     if (got.to < head - 300) return { status: 'behind', to: got.to };
     const trees = treesOfFrontiers(next.frontiers);
-    const manifest = new TextEncoder().encode(JSON.stringify({ v: SNAPSHOT.version, chainId, pool, addresses, topics, deployBlock: Number(deployBlock), to: next.to, pieces: next.pieces, trees, at: next.at }));
+    const cp = checkpoint ? await checkpoint(next.to).catch(() => null) : null;
+    const manifest = new TextEncoder().encode(JSON.stringify({ v: SNAPSHOT.version, chainId, pool, addresses, topics, deployBlock: Number(deployBlock), to: next.to, pieces: next.pieces, trees, ...(cp ? { checkpoint: cp } : {}), at: next.at }));
     const cid = await pin(manifest);
     if (cid !== rawCid(manifest, sha256)) throw new Error(`pin gave ${cid} for the manifest`);
-    await kv.put('snap:pub', JSON.stringify({ v: 1, cid, to: next.to, at: next.at, trees }));
+    await kv.put('snap:pub', JSON.stringify({ v: 1, cid, to: next.to, at: next.at, trees, ...(cp ? { checkpoint: cp } : {}) }));
     return { status: 'published', to: next.to, cid };
   }
   return { run };

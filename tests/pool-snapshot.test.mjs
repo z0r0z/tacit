@@ -233,7 +233,7 @@ test('with every gateway lying, or no record, the page reads from launch as befo
 
 // tacit-api's job (worker/src/pool-snapshot-job.js) over a chain stood in for, pinning into a map the gateways serve.
 const { makePoolSnapshotJob, SNAPSHOT_JOB } = await import('../worker/src/pool-snapshot-job.js');
-function jobWorld(chain, { refuseOver = Infinity, cfg: over = {} } = {}) {
+function jobWorld(chain, { refuseOver = Infinity, cfg: over = {}, checkpoint = null } = {}) {
   const kvm = new Map(), files = new Map(), pinned = [];
   let head = 0;
   const rpc = async (method, params) => {
@@ -250,7 +250,7 @@ function jobWorld(chain, { refuseOver = Infinity, cfg: over = {} } = {}) {
     kv: { get: async (k) => kvm.get(k) ?? null, put: async (k, v) => { kvm.set(k, v); } }, rpcs: [rpc],
     pin: async (b) => { const c = rawCid(b, sha256); files.set(c, b); pinned.push(c); return c; },
     fetchImpl: gatewayFetch(files), sha256, keccak256: keccak_256, decodeLogs: evmLog.decodeLogs,
-    pool: cfg.pool, manager: cfg.farm.manager, deployBlock: Number(cfg.deployBlock), topics, now, cfg: { ...SNAPSHOT_JOB, final: 0, span: 200, cutChars: 3000, ...over },
+    pool: cfg.pool, manager: cfg.farm.manager, deployBlock: Number(cfg.deployBlock), topics, now, checkpoint, cfg: { ...SNAPSHOT_JOB, final: 0, span: 200, cutChars: 3000, ...over },
   });
   return { kvm, files, pinned, job, setHead: (h) => { head = h; }, topics };
 }
@@ -299,3 +299,20 @@ const makeShort = (w, now) => {
   const j = w.job(now);
   return { run: () => j.run() };
 };
+
+test('the manifest carries the cross-chain checkpoint at its block; one that cannot be read is left out, the snapshot still made', async () => {
+  const chain = history(40);
+  const end = Number(BigInt(chain[chain.length - 1].blockNumber));
+  const cp = (to) => ({ eth: { block: to, hash: h32(to) }, tacit: { height: 39, hash: h32(77) }, bitcoin: { relayTip: 974739, relayTipHash: h32(5), spentRoot: h32(6) } });
+  const w = jobWorld(chain, { checkpoint: async (to) => cp(to) });
+  w.setHead(end + 400);
+  const r = await w.job(() => Date.now()).run();
+  const m = JSON.parse(new TextDecoder().decode(w.files.get(r.cid)));
+  assert.deepEqual(m.checkpoint, cp(r.to));
+  assert.deepEqual(JSON.parse(w.kvm.get('snap:pub')).checkpoint, cp(r.to), 'and so does GET /pool/snapshot');
+  const w2 = jobWorld(chain, { checkpoint: async () => { throw new Error('node down'); } });
+  w2.setHead(end + 400);
+  const r2 = await w2.job(() => Date.now()).run();
+  assert.equal(r2.status, 'published');
+  assert.equal(JSON.parse(new TextDecoder().decode(w2.files.get(r2.cid))).checkpoint, undefined);
+});

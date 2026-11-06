@@ -21,7 +21,7 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /prove/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/prove/app.js?cb=1c0eeab7">
+<link rel="modulepreload" href="/prove/app.js?cb=e63c11f5">
 <link rel="modulepreload" href="/community-prove.js?cb=55393eb1">
 <link rel="modulepreload" href="/prove/view.js?cb=0279ad9a">
 <link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
@@ -112,6 +112,7 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 
 .linkbtn { background: none; border: 0; padding: 0; cursor: pointer; color: var(--ink); text-decoration: underline; text-underline-offset: 3px; font-size: inherit; }
 .hint { margin: 12px 0 0; font-size: 12.5px; color: var(--mute); }
+.checkpoint code { font: inherit; color: var(--ink, inherit); }
 .hint:empty { display: none; }
 .btn { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 52px; margin-top: 16px; padding: 10px 16px; font-weight: 500; text-decoration: none;
   color: var(--card); background: var(--ink); border: 1px solid var(--ink); cursor: pointer; transition: background .15s, color .15s; }
@@ -516,6 +517,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       <div class="crowd" id="crowd"><span class="lbl" id="crowd-n">Proving now</span><div class="crowd-row" id="crowd-row"></div></div>
       <div class="pool" id="pool" aria-hidden="true"></div>
       <ol class="chain" id="chain" aria-label="Newest blocks"></ol>
+      <p class="hint checkpoint" id="checkpoint" hidden></p>
       <div class="detail" id="detail" hidden></div>
     </section>
 
@@ -681,6 +683,6 @@ RUNNER_KEY=0x… node tools/community-runner.mjs</code></pre>
 
 <div id="toast-container" class="toasts" popover="manual"></div>
 
-<script type="module" src="/prove/app.js?cb=1c0eeab7"></script>
+<script type="module" src="/prove/app.js?cb=e63c11f5"></script>
 </body>
 </html>
