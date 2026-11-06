@@ -55,6 +55,7 @@ export function mount(host, ctx) {
   const plain = (u) => fmt(u).replace(/,/g, '');
 
   let mark = null;          // sats per whole TAC
+  let markRead = false;     // the market's price has answered (or failed)
   let book = null;          // open sales on the mainnet book
   let sale = null;          // S.saleKeys: { keys: the sale keys used, each with the TAC still at it, free: the next key }
   let looking = null, lookingFor = null;       // that read, while it runs, and the wallet it is for
@@ -64,7 +65,7 @@ export function mount(host, ctx) {
 
   const amt = el('input', { id: 'sats-amt', inputmode: 'decimal', autocomplete: 'off', placeholder: '0.00' });
   const payout = el('input', { id: 'sats-payout', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', placeholder: 'bc1…' });
-  const priceEl = el('input', { id: 'sats-price', inputmode: 'numeric', autocomplete: 'off', placeholder: '—' });
+  const priceEl = el('input', { id: 'sats-price', inputmode: 'decimal', autocomplete: 'off', placeholder: '—' });
   const lasts = el('select', { id: 'sats-lasts' }, ...LASTS.map(([d, t]) => el('option', d === 3 ? { value: String(d), selected: '' } : { value: String(d) }, t)));
   const quote = el('div', { class: 'kv' }, el('span', {}, 'You receive'), el('b', { id: 'sats-quote' }, '—'));
   const payHint = el('p', { class: 'note', id: 'sats-payout-hint' });
@@ -244,7 +245,7 @@ export function mount(host, ctx) {
       el('div', { class: 'amt' }, amt, el('span', { class: 'u' }, 'TAC')),
 
       el('div', { class: 'lbl' }, el('label', { for: 'sats-price' }, 'Price'),
-        mark ? el('button', { class: 'link', type: 'button', onclick: () => { priceEl.value = pxText(mark); recompute(); } }, `Market · ${pxText(mark)} sats`) : el('span', {}, 'Market price unavailable')),
+        mark ? el('button', { class: 'link', type: 'button', onclick: () => { priceEl.value = pxText(mark); recompute(); } }, `Market · ${pxText(mark)} sats`) : el('span', {}, markRead ? 'Market price unavailable' : 'Reading the market…')),
       el('div', { class: 'amt' }, priceEl, el('span', { class: 'u' }, 'sats / TAC')),
       quote,
       book?.count != null ? el('div', { class: 'kv' }, el('span', {}, 'Open sales on the book'), el('b', {}, String(book.count))) : null,
@@ -278,7 +279,7 @@ export function mount(host, ctx) {
   window.addEventListener('tac:wallet', () => { sale = null; ready.clear(); pick = null; readErr = false; render(); look().catch(() => {}); });
 
   render();
-  markPriceSats().then((m) => { if (m) { mark = m; if (!priceEl.value) priceEl.value = pxText(m); render(); } }).catch(() => {});
+  markPriceSats().then((m) => { if (m) { mark = m; if (!priceEl.value) priceEl.value = pxText(m); } }).catch(() => {}).finally(() => { markRead = true; render(); });
   openSales().then((b) => { book = b; render(); }).catch(() => {});
   look().catch(() => {});
 }

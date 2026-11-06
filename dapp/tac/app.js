@@ -1,7 +1,7 @@
 
 const TACIT_URL = '/tacit.js?cb=187d27e1';
 const SECRET_URL = '/sats/secret.js?cb=d10eac01';
-const SATS_URL = '/tac/sats.js?cb=3708074c';
+const SATS_URL = '/tac/sats.js?cb=870a84c8';
 const CLAIM_URL = '/tac/claim.js?cb=27a72592';
 const UNIFIED_URL = '/tacit-unified.js?cb=a5b3a042';
 const KNOWN_URL = '/tacit-wallet-known.js?cb=ed4c75b7';
@@ -506,9 +506,10 @@ function watchPassphrase() {
 }
 
 function paintReceive() {
-  $('recv-addr').value = poolWallet ? poolWallet.addressString : 'Open your Tacit wallet to see it';
-  $('recv-tacit').value = !poolWallet ? 'Open your Tacit wallet to see it'
-    : tacitAddress === false ? 'Not available here: use the pool address below.' : tacitAddress || 'Deriving your Tacit address…';
+  const shut = 'Open your Tacit wallet to see it';
+  $('recv-addr').value = poolWallet ? poolWallet.addressString : '';
+  $('recv-tacit').value = poolWallet && tacitAddress ? tacitAddress : '';
+  $('recv-tacit').placeholder = !poolWallet ? shut : tacitAddress === false ? 'Not available here: use the pool address below.' : 'Deriving your Tacit address…';
 }
 async function loadTacitAddress(fresh = false) {
   const pw = poolWallet;
@@ -584,6 +585,8 @@ function renderBalances() {
   const sT = shieldedTotal(), pT = publicTotal();
   $('bal-shielded').textContent = !unlocked() ? '—' : shielded.loading ? '…' : fmt(sT);
   $('bal-public').textContent = !unlocked() ? '—' : pub.loading ? '…' : fmt(pT);
+  $('bal-shielded').classList.toggle('nil', !unlocked() || shielded.loading);
+  $('bal-public').classList.toggle('nil', !unlocked() || pub.loading);
   $('bal-shielded-sats').textContent = unlocked() && !shielded.loading && sT > 0n ? satsText(sT) : '';
   $('bal-public-sats').textContent = unlocked() && !pub.loading && pT > 0n ? satsText(pT) : '';
   const n = (shielded.notes || []).filter((x) => !x.spent && BigInt(x.value) > 0n).length;
@@ -620,7 +623,7 @@ function offerCombine() {
 }
 
 function renderAmountHints() {
-  for (const [field, hint] of [['send-amt', 'send-sats'], ['exit-amt', 'exit-sats']]) {
+  for (const [field, hint] of [['send-amt', 'send-sats'], ['exit-amt', 'exit-sats'], ['claim-amt', 'claim-sats']]) {
     const el = $(hint); if (!el) continue;
     let units = 0n;
     try { units = parseUnits($(field).value); } catch { units = 0n; }
@@ -956,7 +959,9 @@ async function makeClaimLink() {
   const amount = parseUnits($('claim-amt').value);
   if (amount <= 0n) throw new Error('Enter an amount above zero.');
   if (!shielded.notes.length) await loadShielded();
-  if (amount + relayFeeUnits() > shieldedTotal()) throw new Error('More than your shielded balance.');
+  if (amount + relayFeeUnits() > shieldedTotal()) {
+    throw new Error(relayFeeUnits() > 0n ? `More than your shielded balance with the relay’s ${fmt(relayFeeUnits())} TAC fee.` : 'More than your shielded balance.');
+  }
   const pin = $('claim-pin').value.trim();
   let secret = null;
   const r = await C.createClaim(T, {
@@ -1096,7 +1101,7 @@ function renderSats() {
   const maxInto = (field, statusId) => async () => {
     await ensureKey();
     if (!shielded.notes.length && !shielded.loading) await loadShielded();
-    const total = shieldedTotal() - (field === 'send-amt' ? relayFeeUnits() : 0n);
+    const total = shieldedTotal() - (field === 'exit-amt' ? 0n : relayFeeUnits());
     if (total <= 0n) return say(statusId, 'Nothing shielded yet. Shield some TAC first.');
     $(field).value = fmtPlain(total);
     $(field).dispatchEvent(new Event('input', { bubbles: true }));
@@ -1104,6 +1109,7 @@ function renderSats() {
   };
   $('send-max').onclick = () => maxInto('send-amt', 'st-send')().catch((e) => errSay('st-send', e));
   $('exit-max').onclick = () => maxInto('exit-amt', 'st-exit')().catch((e) => errSay('st-exit', e));
+  $('claim-max').onclick = () => maxInto('claim-amt', 'st-claim-make')().catch((e) => errSay('st-claim-make', e));
   $('btn-copy').onclick = () => {
     if (!poolWallet) return say('st-recv', 'Open your Tacit wallet first: your pool address is derived from its key.');
     copyText(poolWallet.addressString).then((ok) => say('st-recv', ok ? 'Pool address copied.' : 'Could not copy: the browser refused clipboard access.'));
@@ -1114,10 +1120,7 @@ function renderSats() {
     copyText(tacitAddress).then((ok) => say('st-recv', ok ? 'Tacit address copied.' : 'Could not copy: the browser refused clipboard access.'));
   };
   $('btn-claim-make').onclick = (e) => busy(e.currentTarget, 'st-claim-make', makeClaimLink);
-  $('claim-amt').addEventListener('input', () => {
-    let u = 0n; try { u = parseUnits($('claim-amt').value); } catch {}
-    $('claim-sats').textContent = u > 0n ? satsText(u) : '';
-  });
+  $('claim-amt').addEventListener('input', renderAmountHints);
   $('btn-scan').onclick = (e) => busy(e.currentTarget, 'st-recv', () => scanEverything('st-recv'));
 
   const openFrag = () => {
