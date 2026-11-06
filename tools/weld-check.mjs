@@ -8462,9 +8462,9 @@ await step('hxsendways', async () => {
     // ETH to an address, from the tile (the picker opened on Private, where the held coin is: Wallet is one press away)
     await p.click('#hx .pk .pk-kind [data-kind="wallet"]');
     await p.click('#hx .pk .pk-r[data-v="ether"]');
-    await until(p, () => /^To 0x… or a name: a public transfer\. To tacit1…: paid into their private ETH\.$/.test(document.querySelector('#hx-way')?.textContent || ''), null, 30000)
-      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await text(p, '#hx-way')}`); });
-    ok(true, `hxsendways: with no recipient yet, the line says what each kind of address does (${await text(p, '#hx-way')})`);
+    await until(p, () => document.querySelector('#hx-sa')?.value === 'ether' && document.querySelector('#hx-way')?.hidden === true && /From your wallet\. A tacit1 address is paid privately, an 0x address in the open\./.test(document.querySelector('#hx-lead')?.textContent || ''), null, 30000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await text(p, '#hx-lead')} | ${await text(p, '#hx-way')}`); });
+    ok(true, `hxsendways: with no recipient yet, the lead under the tabs says what each kind of address does (${await text(p, '#hx-lead')})`);
     const e0 = BigInt(await rpc('eth_getBalance', [eth0, 'latest']));
     await p.fill('#hx-rcpt', eth0); await p.fill('#hx-amt', '0.25');
     await until(p, () => /^They get: 0\.25 ETH \| Network fee: paid by your Tacit account \| Chain sees: your Tacit account, the address and the amount/.test(window.__said()) && document.querySelector('#hx-go')?.textContent === 'Send ETH', null, 60000)
@@ -10260,99 +10260,6 @@ await step('tradelinks', async () => {
       if (r.errors.length) { fails++; console.log('FAIL tradelinks page errors: ' + r.errors.slice(0, 3).join(' | ')); }
     } finally { await r.browser.close(); }
   }
-});
-
-// The price strip under the header: TAC, cBTC and tETH, each with its own mark, a link to its trade page and a dollar price read from the one shared multicall. It reserves
-// its row, so the hero does not move when the figures arrive; TAC links to the trade page; at a phone's width it fits.
-await step('pxs', async () => {
-  for (const [name, viewport] of [['desktop', { width: 1280, height: 900 }], ['phone', { width: 360, height: 740 }]]) {
-    const r = await openPage({ account: A0, key: K0, viewport });
-    const p = r.page;
-    try {
-      await p.goto(r.url);
-      await p.waitForSelector('#hx-body .hx-h');
-      const top0 = await p.$eval('.hero', (e) => e.getBoundingClientRect().top);
-      await p.waitForFunction(() => document.querySelector('#pxs.on'), null, { timeout: 120000 });
-      const s = await p.evaluate(() => {
-        const items = [...document.querySelectorAll('#pxs .px')].map((x) => ({ name: x.querySelector('b').textContent, val: Number(x.querySelector('.num').textContent.replace(/[$,]/g, '')), mark: x.querySelector('use').getAttribute('href'), href: x.getAttribute('href') }));
-        return { items, top: document.querySelector('.hero').getBoundingClientRect().top, scroll: document.documentElement.scrollWidth > innerWidth + 1, h: document.querySelector('#pxs').getBoundingClientRect().height };
-      });
-      const [tac, btc, eth] = s.items;                                                      // the cBTC and tETH entries: bitcoin's and ETH's dollars
-      ok(s.items.map((x) => x.name).join() === 'TAC,cBTC,tETH' && s.items.map((x) => x.mark).join() === '#tk-tac,#tk-cbtc,#tk-teth', `pxs (${name}): the strip names TAC, cBTC and tETH, each with its own mark (${s.items.map((x) => `${x.name} ${x.val}`).join(', ')})`);
-      ok(btc.val > 1000 && eth.val > 100 && btc.val / eth.val > 5 && btc.val / eth.val < 200 && tac.val > 0 && tac.val < eth.val, `pxs (${name}): the dollar prices are sane against one another (BTC ${btc.val}, ETH ${eth.val}, TAC ${tac.val})`);
-      ok(tac.href === '/trade/tac/' && btc.href === '/cbtc/' && eth.href === '/teth/', `pxs (${name}): each is a link to its own trade page`);
-      ok(Math.abs(s.top - top0) < 1 && s.h >= 18, `pxs (${name}): the row was already there, so the hero did not move when the prices arrived (${Math.round(s.top - top0)}px)`);
-      ok(!s.scroll, `pxs (${name}): and the page does not scroll sideways`);
-      if (r.errors.length) { fails++; console.log('FAIL pxs page errors: ' + r.errors.slice(0, 3).join(' | ')); }
-    } finally { await r.browser.close(); }
-  }
-});
-
-// A return visit draws the prices it last read before it reads them again: figures kept less than an hour ago show at once and the reading
-// replaces them; older ones are never drawn.
-await step('pxsback', async () => {
-  const seedAt = (ago) => ({ fn: ({ ago }) => {
-    if (!localStorage.getItem('tacit-front-pxs-v1')) localStorage.setItem('tacit-front-pxs-v1', JSON.stringify({ at: Date.now() - ago, v: { mid: 0.00007, ethBtc: 31.5, usdBtc: 99999 } }));
-    window.__seen = [];
-    const note = () => { const e = document.querySelector('#pxs'); const t = e && e.classList.contains('on') ? e.textContent : ''; if (t && window.__seen[window.__seen.length - 1] !== t) window.__seen.push(t); };
-    new MutationObserver(note).observe(document, { childList: true, subtree: true, attributes: true, characterData: true });
-  }, arg: { ago } });
-  for (const [name, ago, shown] of [['fresh', 5 * 60e3, true], ['old', 3 * 3600e3, false]]) {
-    const r = await openPage({ account: A0, key: K0, init: seedAt(ago) });
-    const p = r.page;
-    try {
-      await p.goto(r.url);
-      await p.waitForSelector('#hx-body .hx-h');
-      await p.waitForFunction(() => window.__seen.some((t) => !t.includes('99,999')) , null, { timeout: 120000 });
-      const seen = await p.evaluate(() => window.__seen);
-      ok(shown ? seen[0].includes('$99,999') : !seen.some((t) => t.includes('99,999')), `pxsback (${name}): ${shown ? 'the figures kept five minutes ago show first' : 'figures kept three hours ago are not drawn'} (${JSON.stringify(seen[0])})`);
-      const last = seen[seen.length - 1], btc = Number((last.match(/cBTC\$([\d,]+)/) || [])[1]?.replace(/,/g, ''));
-      ok(btc > 1000 && btc !== 99999, `pxsback (${name}): the reading replaces them (${last})`);
-      if (r.errors.length) { fails++; console.log('FAIL pxsback page errors: ' + r.errors.slice(0, 3).join(' | ')); }
-    } finally { await r.browser.close(); }
-  }
-});
-
-// The farms under the prices: the public pool and each private pool the Earn tab offers, as its pair and its APR, best first. The row keeps its
-// height (the hero does not move when the farms arrive), scrolls instead of widening the page on a phone, and a press opens the Earn tab on that
-// pool with the same APR in its row. Between reward periods only the public pool is left.
-await step('fmchips', async () => {
-  const read = (p) => p.evaluate(() => ({
-    chips: [...document.querySelectorAll('#fms a')].map((a) => ({ apr: Number(a.querySelector('b').textContent.replace(/[,%+]/g, '')), icons: [...a.querySelectorAll('use')].map((u) => u.getAttribute('href')).join(), hx: a.dataset.hx, href: a.getAttribute('href') })),
-    top: document.querySelector('.hero').getBoundingClientRect().top, h: document.querySelector('#fms').getBoundingClientRect().height, scroll: document.documentElement.scrollWidth > innerWidth + 1,
-  }));
-  for (const [name, viewport] of [['desktop', { width: 1280, height: 900 }], ['phone', { width: 360, height: 740 }]]) {
-    const r = await openPage({ account: A0, key: K0, viewport });
-    const p = r.page;
-    try {
-      await p.goto(r.url);
-      await p.waitForSelector('#hx-body .hx-h');
-      const top0 = await p.$eval('.hero', (e) => e.getBoundingClientRect().top);
-      await p.waitForFunction(() => document.querySelector('#fms.on'), null, { timeout: 120000 });
-      const s = await read(p), pub = s.chips.find((c) => c.hx === 'earn:ether:public');
-      ok(s.chips.length >= 2 && !!pub && pub.icons === '#tk-tac,#tk-eth' && s.chips.every((c) => c.apr > 0 && c.icons.split(',').length === 2), `fmchips (${name}): the public pool and the private pools, each a pair of marks and its APR (${s.chips.map((c) => `${c.hx.slice(11)} ${c.apr}%`).join(', ')})`);
-      ok(s.chips.every((c, i) => i === 0 || s.chips[i - 1].apr >= c.apr), `fmchips (${name}): best APR first`);
-      ok(s.chips.every((c) => c.hx === 'earn:ether:public' ? c.href === '#farm/public' : /^earn:ether:p\d+$/.test(c.hx) && c.href === `#farm/private-${c.hx.slice(12)}`), `fmchips (${name}): each keeps its farm's link for a new tab`);
-      ok(Math.abs(s.top - top0) < 1 && s.h >= 24 && !s.scroll, `fmchips (${name}): the row was already there, so the hero did not move (${Math.round(s.top - top0)}px), and the page does not scroll sideways`);
-      for (const c of [s.chips[0], pub]) {
-        const key = c.hx === 'earn:ether:public' ? 'precision' : c.hx.slice(12);
-        await p.click(`#fms a[data-hx="${c.hx}"]`);
-        await until(p, (k) => document.querySelector(`#hx-routes [data-hxr="${k}"]`)?.getAttribute('aria-checked') === 'true', key, 120000);
-        const row = await p.$eval(`#hx-routes [data-hxr="${key}"]`, (e) => e.textContent.replace(/\s+/g, ' '));
-        ok(c.apr >= 10000 || row.includes(`${c.apr.toLocaleString('en-US')}%`),`fmchips (${name}): ${c.hx} opens the Earn tab on that pool, with its APR in the row (${row.slice(0, 60)})`);
-      }
-      if (r.errors.length) { fails++; console.log('FAIL fmchips page errors: ' + r.errors.slice(0, 3).join(' | ')); }
-    } finally { await r.browser.close(); }
-  }
-  const r = await openPage({ account: A0, key: K0 });
-  await r.page.route(/^https:\/\/api\.tacit\.finance\/farm\/program/, async (route) => { try { const res = await route.fetch(); const j = await res.json(); j.epoch = { ...(j.epoch || {}), active: false }; await route.fulfill({ response: res, json: j }); } catch { } });   // a read still out as the page closes is let go
-  try {
-    await r.page.goto(r.url);
-    await r.page.waitForFunction(() => document.querySelector('#fms.on'), null, { timeout: 120000 });
-    const s = await read(r.page);
-    ok(s.chips.length === 1 && s.chips[0].hx === 'earn:ether:public', `fmchips: between reward periods only the public pool is left (${s.chips.map((c) => c.hx).join()})`);
-    if (r.errors.length) { fails++; console.log('FAIL fmchips page errors: ' + r.errors.slice(0, 3).join(' | ')); }
-  } finally { await r.page.unrouteAll({ behavior: 'ignoreErrors' }); await r.browser.close(); }          // a poll's fetch may still be in flight
 });
 
 // The card's Shield by what is held: each source has its own ways (a way that moves ETH into the Tacit pool needs Ethereum, so a pool on
