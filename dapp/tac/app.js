@@ -1020,11 +1020,15 @@ async function showClaim(payload) {
     try {
       const r = await C.readClaim(S, S.pool, { secret32: parsed.secret32, pin: pinField.value.trim(), network: 'mainnet', asset: S.TAC_ASSET_MAINNET });
       if (mine !== looked) return;
-      const has = r.total > 0n && !claimed;
+      const has = r.total > 0n && !claimed, gone = claimed || (!has && r.seen > 0);
+      // no note under the link at all is a payment still on its way (or, with a PIN, the wrong PIN), not a claim
+      const why = has ? `${fmt(r.total)} TAC${satsText(r.total) ? ' · ' + satsText(r.total) : ''}` : gone ? 'Already claimed' : parsed.pinned ? 'Check the PIN' : 'Not arrived yet';
       line.replaceChildren(
-        Object.assign(document.createElement('span'), { textContent: has ? 'Waiting for you' : 'Nothing under this link' }),
-        Object.assign(document.createElement('b'), { className: 'num', textContent: has ? `${fmt(r.total)} TAC${satsText(r.total) ? ' · ' + satsText(r.total) : ''}` : parsed.pinned && !claimed ? 'Check the PIN' : 'Already claimed' }));
+        Object.assign(document.createElement('span'), { textContent: has ? 'Waiting for you' : gone ? 'Nothing under this link' : 'Nothing here yet' }),
+        Object.assign(document.createElement('b'), { className: 'num', textContent: why }));
       btn.disabled = !has;
+      clearTimeout(showClaim._again);
+      if (!has && !gone) showClaim._again = setTimeout(() => { if (!document.hidden) refresh(); else showClaim._again = setTimeout(refresh, 60e3); }, 60e3);   // a payment a few blocks out shows up without a reload
     } catch (e) { if (mine === looked) { line.replaceChildren(); errSayInto(line, e); } }
   }
 
