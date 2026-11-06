@@ -91,7 +91,7 @@ test('the API’s board and the Nostr posts as one, each proof once', () => {
 });
 
 test('the pages that read the board let the browser reach every relay', () => {
-  for (const page of ['dapp/prove/index.html']) {
+  for (const page of ['dapp/prove/index.html', 'dapp/index.html']) {
     const csp = readFileSync(new URL('../' + page, import.meta.url), 'utf8').match(/connect-src([^;"]*)/)?.[1].split(/\s+/) || [];
     for (const r of NOSTR_RELAYS) assert.ok(csp.includes(r), `${page} lets the page reach ${r}`);
   }

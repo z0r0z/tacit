@@ -3233,6 +3233,39 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return { ...a.out, jobId: posted.jobId, status: checked.status || landed.status, txHash: checked.txHash || landed.txHash, ...(checked.memoCheck ? { memoCheck: checked.memoCheck } : {}) };
   }
 
+  // An exit anyone may send for its fee: proved with the prover the page set (the holder's own machine, say), with `fee` (in the note's asset)
+  // bound in for whoever sends it and a deadline `ttl` seconds out, then handed back for the page to post where any sender finds it (the
+  // Nostr board, the API's). It needs no ETH and no relay; a proof nobody sends by its deadline lapses and the note stays the holder's.
+  // → { type, note, proven, memos, out, deadlineMs }
+  async function exitForAnyone({ note, walletPriv, recipient, amount, fee, ttl = 3 * 3600, waitOpts } = {}) {
+    if (!note) throw new Error('exitForAnyone: note required');
+    amount = BigInt(amount);
+    const feeOpts = { feeBps: 0, minFee: BigInt(fee) };
+    if (_exitKind(note, amount) === 'unwrap') {
+      const built = buildUnwrap({ note, walletPriv, recipient, feeOpts, ttlSecs: ttl });
+      const proven = await relay.prove({ type: 'unwrap', op: built.op, memos: [] }, waitOpts);
+      if (!proven || !proven.publicValues) throw new Error(proven && proven.error || 'exitForAnyone: no proof');
+      return { type: 'unwrap', note, proven, memos: [], out: built, deadlineMs: Number(built.op.deadline || 0) * 1000 };
+    }
+    const x = await _sendUnwrapExit({ note, walletPriv, recipient, amount, feeOpts, ttl });
+    const proven = await relay.prove({ type: 'sendunwrap', op: x.op, leaves: [x.changeLeaf], outputs: x.changeOut, ephRand: x.ephRand }, waitOpts);
+    if (!proven || !proven.publicValues) throw new Error(proven && proven.error || 'exitForAnyone: no proof');
+    return { type: 'sendunwrap', note, proven, memos: proven.memos || [], out: x.out, deadlineMs: Number(x.op.opDeadline || 0) * 1000 };
+  }
+  // Until `note` leaves the holder's balance (spent: an exit someone sent) or `untilMs` passes. → 'settled' | 'expired'
+  async function watchSpent({ walletPriv, note, untilMs, everyMs = 30000, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
+    const same = (n) => { try { return BigInt(n.cx) === BigInt(note.cx) && BigInt(n.cy) === BigInt(note.cy); } catch { return false; } };
+    let misses = 0;
+    for (;;) {
+      try {
+        const held = (await balance(walletPriv)).byAsset[String(note.asset).toLowerCase()];
+        if (held?.notes?.some(same)) misses = 0; else if (++misses >= 2) return 'settled';
+      } catch { }
+      if (Date.now() > untilMs + 120e3) return 'expired';
+      await sleep(everyMs);
+    }
+  }
+
   // A note of exactly the amount leaves by plain unwrap, whose floor is lower than send-and-unwrap's (no change note to make).
   const _exitKind = (note, amount) => (BigInt(note.value) === BigInt(amount) ? 'unwrap' : 'sendunwrap');
   async function sendUnwrap(args = {}) {
@@ -3480,7 +3513,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // useWallet(get): the page's own connected-wallet provider for Ethereum mainnet reads as a last resort (get() -> provider or null); without one, an
   // injected wallet this site is already connected to is used.
   return { cfg, assets: _poolAssets, assetByTicker, account, identity, rpc, useWallet: (get) => { _walletGet = typeof get === 'function' ? get : null; }, ethCall, fetchEvents, balance, poolStatsFromEvents, tickerOf, poolTickerOf,
-    deriveOutput, receiveCode, parseReceiveCode, buildWrap, buildShareWrap, nextShareIndex, releaseShareIndex, shareDeposits, nextWrapIndex, warmWrapLogs, releaseWrapIndex, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, wrapAndMintCusdCall, resumeWrapAndSend, proveWrap, wrapProofFits, wrapSettleCall, sendPreparedTx, buildTransferOp, transfer, stealthSend, scanStealthLocks, stealthClaim, stealthRefund, stealthLockPosition, crossOut, payInvoice, quoteUnwrapFee, ladderFee: _ladderFee, poolLeafCount, refreshFarmPending, holderFeeBps, setPublicTacHeld, quoteTransferFee, quoteOpFee: gasAwareMinFee, feeUsdFor, relayFeeEligible, buildUnwrap, unwrap, sendUnwrap, sendUnwrapExitOp: _sendUnwrapExit, exitAhead, exitAheadSend, addBridgeAmountHint, buildAttestMeta, chainBindingHex,
+    deriveOutput, receiveCode, parseReceiveCode, buildWrap, buildShareWrap, nextShareIndex, releaseShareIndex, shareDeposits, nextWrapIndex, warmWrapLogs, releaseWrapIndex, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, wrapAndMintCusdCall, resumeWrapAndSend, proveWrap, wrapProofFits, wrapSettleCall, sendPreparedTx, buildTransferOp, transfer, stealthSend, scanStealthLocks, stealthClaim, stealthRefund, stealthLockPosition, crossOut, payInvoice, quoteUnwrapFee, ladderFee: _ladderFee, poolLeafCount, refreshFarmPending, holderFeeBps, setPublicTacHeld, quoteTransferFee, quoteOpFee: gasAwareMinFee, feeUsdFor, relayFeeEligible, buildUnwrap, unwrap, sendUnwrap, sendUnwrapExitOp: _sendUnwrapExit, exitAhead, exitAheadSend, exitForAnyone, watchSpent, addBridgeAmountHint, buildAttestMeta, chainBindingHex,
     settleFromAccount, erc2612Nonce: _erc2612Nonce, waitReceipt: _waitReceipt, poolReserves, poolFeeApr, poolCurrentRoot, sameRoot, routePoolId, quoteRoute, route, routeAhead, routeAheadSend, transferAhead, transferAheadSend, stealthSendAhead, stealthSendAheadSend, swapBatched, swapBatchPending, swapBatchFlush, lpBondPosition, buildLpBondOp, lpBond, farmProgram, farmBond, farmPositions, importFarmPosition, recover, recoverCdpPositions, scanSentLocks, farmHarvest, farmUnbond, farmRedeem, buildFastlaneExitOp, fastlaneExit, lpAdd, lpRemove, quoteLpAdd, wrapLp, wrapSwap, buildWrapSwap, submitWrapSwap, proveWrapSwap, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle, settleCalldata,
     cbtcLockState, syncCbtcLockReservations, cbtcBonds, forgetKeys: forget,
     relay, indexer, evmLog, evmTx, pool, memo, router: _router, stealth: _stealth, bridgeMint: _bridgeMint, bridgeBurn: _bridgeBurn, bridgeBurnToPool, airdrop: _airdrop, tacAirdrop: _tacAirdrop, lockScan: _lockScan };

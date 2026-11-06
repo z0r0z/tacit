@@ -179,6 +179,7 @@
 //            wallet, Activity naming its steps; too little credit, a request not taken, an op it cannot prove, and a pool that moved
 //   nohost     every Tacit server refused: the page loads, a key opens, a withdrawal is proved on this computer and settled from the wallet
 //   swaphere   the tile's private swap with the relay paused: offered on this computer, proved there, settled from the wallet
+//   anyone     relay paused: a withdrawal proved on this computer with a sender's fee and posted to the Nostr relays (stood in here)
 //   selfdevice the prove sheet's switch for this computer's prover (tacit-prover on 127.0.0.1, answered here): it looks for the prover and turns
 //            the own-credit switch off; a withdrawal proved there and settled from the wallet, nothing to the relay; a swap it does not take
 //            goes to the relay with a note; a proof it could not make offers Try again or the relay
@@ -207,7 +208,7 @@ const DAPP = new URL('../dapp/', import.meta.url).pathname;
 const bwText = (page) => page.evaluate((s) => [...document.querySelectorAll(s)].map((e) => e.textContent).join(' '), '#bw-status, #bw-s1, #bw-s2, #bw-s3, #bw-s4');
 // `ui`: the front page's tile and landing, the steps a look-and-copy pass needs (tools/weld-ui.sh runs them on a pinned, cached fork)
 const UI_STEPS = 'links,swapurl,swapfield,hints,hxbridge,hxfold,hxnudge,tradelinks';
-const ONLY = new Set((process.argv[2] === 'ui' ? UI_STEPS : process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,hxbridgeu,usdtwrap,usdtwrapw,usdtout,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,swaphere,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,nohost,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,tileahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,relayfail,selfwallet,slowline,fastroute').split(','));
+const ONLY = new Set((process.argv[2] === 'ui' ? UI_STEPS : process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,hxbridgeu,usdtwrap,usdtwrapw,usdtout,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,swaphere,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,nohost,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,tileahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,anyone,relayfail,selfwallet,slowline,fastroute').split(','));
 const FORK = process.argv[3] || 'https://mainnet.gateway.tenderly.co';
 const SHOTS = process.env.SHOTS || null;
 const PORT = 20000 + Math.floor(Math.random() * 2000), WEB = PORT + 1;
@@ -13656,6 +13657,108 @@ await step('relaystate', async () => {
 
 // A relayed harvest whose proof the relay could not make (it reaches the page as "settle failed: prove failed: …"): the sheet says so in plain
 // words and offers proving it yourself.
+await step('anyone', async () => {
+  const r = await openPage({ account: A0, key: K0 });
+  const hex = 'ce1b'.padEnd(64, '6');
+  const want = makeEvmAccount({ secp, keccak256: keccak_256, sha256 }).deriveEvmAccount(Buffer.from(hex, 'hex'), 'mainnet').address;
+  await r.page.route(/\/confidential-pool-ux\.js\?cb=/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: `
+    import * as real from '/confidential-pool-ux.js?stub=real';
+    export * from '/confidential-pool-ux.js?stub=real';
+    export function makeConfidentialPoolUx(o) {
+      const ux = real.makeConfidentialPoolUx(o), balance = ux.balance;
+      let made = null;
+      ux.balance = async (priv, opts) => {
+        const b = await balance(priv, opts);
+        const hx = typeof priv === 'string' ? priv : '0x' + [...priv].map((x) => x.toString(16).padStart(2, '0')).join('');
+        made ||= [['50', 0], ['30', 1]].map(([cents, index]) => {
+          const w = ux.buildWrap({ walletPriv: hx, amountWei: (BigInt(cents) * 10n ** 16n).toString(), ticker: 'cETH', index });
+          return ux.indexer.recover([{ type: 'LeavesInserted', firstLeafIndex: 0, leaves: [w.leaf], memos: [w.memo] }], hx)[0];
+        });
+        const n = made[0]; window.__stubKey = 'n:' + String(n.leaf || n.nullifier || (n.cx + ':' + n.cy)).toLowerCase();
+        b.notes = [...b.notes, ...made];
+        for (const x of made) { const g = b.byAsset[x.asset] ||= { asset: x.asset, value: 0n, notes: [] }; g.value = BigInt(g.value) + BigInt(x.value); g.notes = [...g.notes, x]; }
+        return b;
+      };
+      ux.quoteOpFee = async () => '100000';
+      const efa = ux.exitForAnyone;
+      ux.exitForAnyone = async (x) => { const r = await efa(x); window.__efa = { fee: String(r.out.fee), want: String(x.fee), deadline: r.deadlineMs, payout: String(r.out.payout) }; return r; };
+      return ux;
+    }` }));
+  const said = () => text(r.page, '#v1-status').then((t) => t.replace(/\s+/g, ' '));
+  const idle = () => until(r.page, () => !document.querySelector('#sheet-eth [aria-busy="true"]'), null, 600000);
+  // A tab holds still while an action in the sheet still runs (its balance read after it): pressed again until it moves.
+  const tab = async (m) => {
+    await idle();
+    for (let i = 0; i < 300; i++) {
+      if (await r.page.$eval(`[data-v1="${m}"]`, (b) => b.getAttribute('aria-selected') === 'true').catch(() => false)) return;
+      await r.page.click(`[data-v1="${m}"]`).catch(() => {});
+      await sleep(2000);
+    }
+    throw new Error(`the ${m} tab did not open`);
+  };
+  const withdraw = async (amt) => {
+    await tab('out');
+    await r.page.fill('#o-to', '0x000000000000000000000000000000000000dEaD');
+    await r.page.fill('#o-amt', amt);
+    await until(r.page, () => !document.querySelector('#o-rcpt')?.hidden && !document.querySelector('#o-go')?.disabled, null, QUOTE_WAIT);
+    await r.page.click('#o-go');
+  };
+  const dev = { up: true, fail: false, slow: 0, asked: [], polls: {} };
+  await r.page.route('http://127.0.0.1:47815/**', (route) => {
+    const q = route.request(), u = new URL(q.url());
+    const cors = { 'access-control-allow-origin': q.headers().origin || '*', 'access-control-allow-private-network': 'true', 'access-control-allow-headers': 'content-type', 'access-control-allow-methods': 'GET, POST' };
+    if (!dev.up) return route.abort('connectionrefused');
+    if (q.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors, body: '' });
+    const json = (b) => route.fulfill({ status: 200, contentType: 'application/json', headers: cors, body: JSON.stringify(b) });
+    if (u.pathname === '/health') return json({ ok: true, vkey: '0x006cd47fd23937a6d247696cace28c22d2c6a8280447e6ac45a3571de232d6e3', busy: false, queued: 0, gpu: 'Apple M2' });
+    if (u.pathname === '/prove') { dev.asked.push(JSON.parse(q.postData() || '{}')); return json({ id: 'w' + dev.asked.length }); }
+    if (u.pathname === '/job') {
+      const id = String(u.searchParams.get('id')), job = dev.asked[Number(id.slice(1)) - 1], op = job?.type === 'wrap' ? wrapOpFromStdin(job.stdin, STUB_CETH) : null;
+      dev.polls[id] = (dev.polls[id] || 0) + 1;
+      if (!dev.fail && dev.polls[id] <= dev.slow) return json({ status: 'proving', secs: 420 + dev.polls[id] * 3, stage: 'wrap', eta: 280 });
+      return json(dev.fail ? { status: 'failed', error: 'the guest rejects this input' } : { status: 'done', secs: 240, publicValues: op ? wrapPv(op) : '0x' + '01'.repeat(32), proof: '0x' + '07'.repeat(32) });
+    }
+    return route.fulfill({ status: 404, headers: cors, body: '{}' });
+  });
+  // the Nostr relays, answered here: what is posted is kept, nothing reaches a real relay
+  await r.ctx.addInitScript(() => {
+    window.__nostr = [];
+    window.WebSocket = class {
+      constructor(url) { this.url = url; setTimeout(() => this.onopen?.(), 0); }
+      send(m) { const x = JSON.parse(m); if (x[0] === 'EVENT') { window.__nostr.push({ url: this.url, ev: x[1] }); setTimeout(() => this.onmessage?.({ data: JSON.stringify(['OK', x[1].id, true, '']) }), 0); }
+        if (x[0] === 'REQ') setTimeout(() => this.onmessage?.({ data: JSON.stringify(['EOSE', x[1]]) }), 0); }
+      close() {}
+    };
+  });
+  let restore = null;
+  try {
+    await r.page.goto(r.url);
+    await r.page.waitForSelector('#hx-body .hx-h');
+    await pasteKey(r.page, hex);
+    await r.page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
+    await go(r.page, '#private');
+    await r.page.waitForSelector('[data-v1="out"]', { timeout: 600000 });
+    await until(r.page, () => /Private 0\.8 tETH/.test(document.querySelector('#sheet-eth')?.textContent || ''), null, 600000).catch(() => {});
+    relayStateNow = 'paused';
+    const s0 = submits.length, w0 = walletTxs.length, d0 = dev.asked.length;
+    await withdraw('0.1');
+    await until(r.page, () => !!document.querySelector('#v1-status [data-prove-anyone]'), null, 300000).catch(() => {});
+    ok(/let anyone send it for a small fee, with no ETH of your own/.test(await said()), `anyone: with the relay paused, a withdrawal also offers letting anyone send it (${await said()})`);
+    await r.page.click('#v1-status [data-prove-anyone]');
+    await until(r.page, () => /Posted|class="err"/.test(document.querySelector('#v1-status')?.innerHTML || ''), null, 300000).catch(() => {});
+    const posts = await r.page.evaluate(() => window.__nostr), c = posts[0] ? JSON.parse(posts[0].ev.content) : null;
+    const asked = dev.asked.slice(d0);
+    ok(/Posted/.test(await said()) && asked.length === 1 && asked[0].type === 'sendunwrap' && posts.length === 4 && posts.every((x) => x.ev.kind === 30078) && c?.type === 'sendunwrap' && c.expiresAt > Date.now() + 2 * 3600e3
+      && walletTxs.length === w0 && !submits.slice(s0).some((x) => (x.mode || 'settle') === 'settle'),
+      `anyone: proved on this computer, posted to every Nostr relay with a deadline hours out, no transaction from any wallet and nothing handed to the relay to send (${await said()}; asked ${asked.map((x) => x.type)}, posts ${posts.length})`);
+    const efa = await r.page.evaluate(() => window.__efa);
+    ok(efa && BigInt(efa.fee) > 0n && BigInt(efa.fee) >= BigInt(efa.want) && BigInt(efa.payout) + BigInt(efa.fee) === 10000000n && efa.deadline > Date.now() + 2 * 3600e3,
+      `anyone: the withdrawal binds the sender's fee (asked ${efa?.want}, bound ${efa?.fee}, paid out ${efa?.payout} of 0.1 tETH) and a deadline hours out`);
+
+    if (r.errors.length) { fails++; console.log('FAIL anyone page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { relayStateNow = 'ok'; if (restore) await restore(); await r.browser.close(); }
+});
+
 await step('relayfail', async () => {
   const r = await openFarmKey('0fe2'.padEnd(64, '6'), { notes: [], positions: [farmPos(7, 150000000, 1234560000, '12.3456')], chain: true, held: true });
   const p = r.page, was = statusError;
