@@ -78,10 +78,11 @@ async function readChain() {
 // with the eth-state proof it folds for the Bitcoin side (its slot). Each is placed among the settles by the Ethereum block it landed in.
 const HEX32B = /^0x[0-9a-f]{64}$/i;
 const cleanCross = (x) => (x && HEX32B.test(String(x.digest)) && count(x.bitcoin) && count(x.ethBlock)
-  ? { digest: String(x.digest).toLowerCase(), bitcoin: count(x.bitcoin), ethBlock: count(x.ethBlock), tx: HEX32B.test(String(x.tx)) ? x.tx : null, slot: count(x.ethereum?.slot) } : null);
+  ? { digest: String(x.digest).toLowerCase(), bitcoin: count(x.bitcoin), ethBlock: count(x.ethBlock), tx: HEX32B.test(String(x.tx)) ? x.tx : null, slot: count(x.ethereum?.slot),
+    house: x.by?.house === true, miner: cleanAddress(x.by?.miner)?.toLowerCase() || null } : null);
 function crossTile(x) {
   const what = `Bitcoin to ${x.bitcoin.toLocaleString('en-US')}${x.slot ? `, Ethereum slot ${x.slot.toLocaleString('en-US')}` : ''}`;
-  const body = `<span class="cube"><span class="glyph" aria-hidden="true">₿</span></span><span class="h num">₿ ${x.bitcoin.toLocaleString('en-US')}</span><span class="o"><span class="k k-xc">Cross-chain</span></span><span class="t">${esc(blockAgo(x.ethBlock, ethHead) || '')}</span>`;
+  const body = `<span class="cube"><span class="glyph" aria-hidden="true">₿</span></span><span class="h num">₿ ${x.bitcoin.toLocaleString('en-US')}</span><span class="o"><span class="k k-xc">Cross-chain</span>${byOf(x) || ''}</span><span class="t">${esc(blockAgo(x.ethBlock, ethHead) || '')}</span>`;
   return `<li class="blk xc" title="${esc(what)}">${x.tx ? `<a href="https://etherscan.io/tx/${esc(x.tx)}" target="_blank" rel="noopener noreferrer" aria-label="Cross-chain block: ${esc(what)}">${body}</a>` : body}</li>`;
 }
 

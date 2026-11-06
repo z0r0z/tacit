@@ -953,8 +953,16 @@ async function recordCrossBlock(env, { jobId, attestedTo, txHash, eth }) {
     }
   }
   const pv = eth && typeof eth.ethPv === 'string' ? eth.ethPv : null;
+  // Who mined it: the board notes the worker that proved each Bitcoin batch (prover-board.js end); a community worker is c-<address>.
+  let by = null;
+  try {
+    const note = JSON.parse((await (env.CONFIDENTIAL_KV || env.REGISTRY_KV).get(`pb:note:btc:${String(jobId).toLowerCase()}`)) || 'null');
+    const w = String(note?.worker || '');
+    if (/^c-0x[0-9a-f]{40}$/i.test(w)) by = { miner: w.slice(2).toLowerCase() };
+    else if (w) by = { house: true };
+  } catch { by = null; }
   const rec = {
-    digest: String(jobId).toLowerCase(), bitcoin: Number(attestedTo) || null, tx: txHash || null, ethBlock, at: Date.now(),
+    digest: String(jobId).toLowerCase(), bitcoin: Number(attestedTo) || null, tx: txHash || null, ethBlock, at: Date.now(), ...(by ? { by } : {}),
     ...(pv && pv.replace(/^0x/, '').length >= 64 * 7 ? { ethereum: { digest: pvWord(pv, 1), slot: Number(BigInt(pvWord(pv, 5))) } } : {}),
   };
   let list = [];

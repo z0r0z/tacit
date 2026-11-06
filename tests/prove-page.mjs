@@ -59,7 +59,7 @@ async function open(browser, local, { phone = false, idle = false } = {}) {
   await page.route('https://api.tacit.finance/**', (route) => {
     const u = new URL(route.request().url());
     if (u.pathname === '/prover/pool') return json(route, { ...(idle ? {} : {}), queued: idle ? 0 : 3, leased: idle ? 0 : 2, doneToday: 41, minersToday: 2, done24h: 433, miners24h: 11, top: [{ miner: ADDR, proofs: 4 }, { miner: OTHER, proofs: 1 }], terms: { pointsPerProof: 20, proofsPerMinerDay: 30 } });
-    if (u.pathname === '/prover/blocks') return json(route, { head: { height: chain.blocks[0].height, hash: chain.blocks[0].hash, ethHead: chain.blocks[0].ethBlock + 25 }, blocks: chain.blocks, cross: [{ digest: '0x' + '89'.repeat(32), bitcoin: 974721, ethereum: { digest: '0x' + '54'.repeat(32), slot: 15592000 }, tx: '0x' + 'ab'.repeat(32), ethBlock: chain.blocks[0].ethBlock, at: Date.now() }] });
+    if (u.pathname === '/prover/blocks') return json(route, { head: { height: chain.blocks[0].height, hash: chain.blocks[0].hash, ethHead: chain.blocks[0].ethBlock + 25 }, blocks: chain.blocks, cross: [{ digest: '0x' + '89'.repeat(32), bitcoin: 974721, ethereum: { digest: '0x' + '54'.repeat(32), slot: 15592000 }, tx: '0x' + 'ab'.repeat(32), ethBlock: chain.blocks[0].ethBlock, at: Date.now(), by: { miner: OTHER } }] });
     if (u.pathname === '/prover/board') return json(route, { queued: 0, workers: [], pay: { pointsPerProof: 20, pointsByProgram: { 'btc-state': 500 } } });
     if (u.pathname === '/prover/pool/recent') return json(route, { proofs: [{ at: Date.now() - 60_000, house: true, points: 0, secs: 31 }, { at: Date.now() - 120_000, miner: ADDR, points: 20, secs: 552 }] });
     if (u.pathname === '/prover/pool/credits') return json(route, { day, over: false, miners: [{ miner: ADDR, proofs: 4, points: 80 }] });
@@ -107,7 +107,7 @@ try {
     await page.waitForFunction(() => document.querySelector('#crowd-n').textContent === '3 online now');
     check((await page.locator('#crowd .pod').count()) === 3, 'the crowd: everyone who proved lately and every node grinding salts, Tacit GPU among them');
     check(await page.locator('#crowd .pod.me').count() === 1, 'with this address picked out');
-    check((await page.locator('#chain .blk.xc').count()) === 1 && (await text(page, '#chain .blk.xc')).includes('974,721') && (await page.getAttribute('#chain .blk.xc a', 'href')).includes('etherscan.io/tx/0xabab'), 'a cross-chain block stands among the settles, with Bitcoin\'s height and its landing');
+    check((await page.locator('#chain .blk.xc').count()) === 1 && (await text(page, '#chain .blk.xc')).includes('974,721') && (await page.getAttribute('#chain .blk.xc a', 'href')).includes('etherscan.io/tx/0xabab') && (await page.locator('#chain .blk.xc .who').count()) === 1, 'a cross-chain block stands among the settles, with Bitcoin\'s height, its landing and who mined it');
     await page.waitForFunction(() => !document.querySelector('#checkpoint').hidden);
     check((await text(page, '#checkpoint')).includes('#9,441') && (await text(page, '#checkpoint')).includes('Bitcoin 974,721') && (await text(page, '#checkpoint')).includes('Ethereum slot 13,450,016'), 'the day\'s checkpoint: the block, Bitcoin\'s height and where it is kept', await text(page, '#checkpoint'));
     check((await page.locator('#feed li.me').count()) === 1 && !(await text(page, '#feed')).includes('· you'), 'its own proofs in the feed are marked by the row, the name kept short');

@@ -401,7 +401,8 @@ test('points config: env sets the points and a count a day, 0 points pays nothin
 
 test('the Bitcoin-state program: public groth16 work, its input kept apart and deleted with the job, leased for hours, raced only by machines that prove it', async () => {
   const s = store(), kept = new Map();
-  Object.assign(s, { putStdin: async (id, v) => { kept.set(id, v); }, getStdin: async (id) => kept.get(id) ?? null, deleteStdin: async (id) => { kept.delete(id); } });
+  const notes = new Map();
+  Object.assign(s, { putStdin: async (id, v) => { kept.set(id, v); }, getStdin: async (id) => kept.get(id) ?? null, deleteStdin: async (id) => { kept.delete(id); }, putNote: async (k, v) => { notes.set(k, v); } });
   const b = makeProverBoard({ storage: s, now });
   const big = Buffer.alloc(3 * 1024 * 1024, 7).toString('base64');
   await assert.rejects(b.post({ class: 'private', program: 'btc-state', stdin: big, cycleLimit: 1e11, gasLimit: 1e11, deadline: now() / 1000 + 7200 }), /class is public/);
@@ -421,6 +422,7 @@ test('the Bitcoin-state program: public groth16 work, its input kept apart and d
   assert.deepEqual(await b.result({ worker: tacit, jobId, publicValues: '0x' + '11'.repeat(64 * 8), proof: '0x' + '22'.repeat(260) }), { ok: true, status: 'proved' });
   assert.equal(kept.has(jobId), false, 'the input goes when the job is over');
   assert.equal((await b.status(jobId)).proof, '0x' + '22'.repeat(260));
+  assert.equal(notes.get('btc:0x' + '11'.repeat(32)).worker, tacit.name, 'who proved the batch is noted under its new digest (word 6), for the cross-chain block it lands as');
 });
 
 test('a community racer that never answers gives its place up after the job\'s lease, and a candidate\'s public values are capped', async () => {

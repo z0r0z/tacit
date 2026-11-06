@@ -144,7 +144,16 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
   }
   const over = (j) => { j.stdin = null; j.sealed = null; j.endedAt = clock(); };
   // over, and a kept input deleted with it
-  const end = async (j) => { over(j); if (j.stdinKept && storage.deleteStdin) { await storage.deleteStdin(j.id); j.stdinKept = false; } };
+  const end = async (j) => {
+    over(j);
+    if (j.stdinKept && storage.deleteStdin) { await storage.deleteStdin(j.id); j.stdinKept = false; }
+    // Who made a Bitcoin batch's proof, under the batch's new digest (public-value word 6), for the cross-chain block it lands as
+    // (index.js recordCrossBlock): the job itself is gone by then.
+    if (j.status === 'proved' && j.program === 'btc-state' && storage.putNote && typeof j.publicValues === 'string' && j.publicValues.length >= 2 + 64 * 7) {
+      const digest = '0x' + j.publicValues.slice(2 + 64 * 6, 2 + 64 * 7);
+      await storage.putNote(`btc:${digest}`, { worker: j.worker || null, at: clock() }).catch(() => {});
+    }
+  };
   const inputOf = async (j) => (j.stdinKept && storage.getStdin ? await storage.getStdin(j.id) : j.stdin);
   const leaseFor = (j) => PROVER_BOARD.leaseMsByProgram[j.program] || PROVER_BOARD.leaseMs;
   // A compressed proof lives under its own key when the storage has one (buildProverBoard's KV does), else on the record.
@@ -416,6 +425,7 @@ export function buildProverBoard(env, { hash } = {}) {
     putProof: async (id, proof) => KV.put('pb:proof:' + id, proof),
     getProof: async (id) => KV.get('pb:proof:' + id),
     deleteProof: async (id) => KV.delete('pb:proof:' + id),
+    putNote: async (k, v) => KV.put('pb:note:' + k, JSON.stringify(v), { expirationTtl: 3 * 86400 }),
     putStdin: async (id, stdin) => KV.put('pb:stdin:' + id, stdin),
     getStdin: async (id) => KV.get('pb:stdin:' + id),
     deleteStdin: async (id) => KV.delete('pb:stdin:' + id),
