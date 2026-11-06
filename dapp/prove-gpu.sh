@@ -125,7 +125,11 @@ cd "$HOME_DIR"
 pause=15
 while true; do
   t=\$(date +%s)
-  COMMUNITY_MINER=$ADDR WORKER_NAME=gpu-$(printf '%s' "$ADDR" | cut -c3-8) EXPECT_VKEY=$POOL_VKEY WARM=0 RELOAD_FLAG="$HOME_DIR/reload" "$BIN"
+  COMMUNITY_MINER=$ADDR WORKER_NAME=gpu-$(printf '%s' "$ADDR" | cut -c3-8) EXPECT_VKEY=$POOL_VKEY WARM=0 RELOAD_FLAG="$HOME_DIR/reload" \\
+    WORKER_KEY_FILE="$HOME_DIR/worker.key" PAUSE_FLAG="$HOME_DIR/pause" RECYCLE_FLAG="$HOME_DIR/recycle" "$BIN"
+  # SP1's GPU server goes when the worker lets it go, not when the worker aborts: what is left in this group (this script leads it) goes
+  # before the next start, so a crash never leaves a server holding the GPU's memory.
+  trap '' TERM; kill -- -\$\$ 2>/dev/null; trap - TERM
   # A worker that stops within five minutes did not start: wait twice as long each time, up to an hour.
   if [ \$((\$(date +%s) - t)) -lt 300 ]; then pause=\$((pause < 1800 ? pause * 2 : 3600)); else pause=15; fi
   sleep \$pause
