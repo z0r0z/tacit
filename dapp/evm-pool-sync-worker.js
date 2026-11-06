@@ -28,8 +28,8 @@ self.onmessage = async ({ data: { id, priv, chain: c, pool, router, entries, poo
       const rpcs = new Map(), rpcOf = (urls) => { const k = JSON.stringify(urls); if (!rpcs.has(k)) rpcs.set(k, batchedRpc(jsonRpc(urls))); return rpcs.get(k); };
       await Promise.all(pools.map(async (p, part) => {
         try {
-          const s = await walletOf(id, keys, p.chain, p.pool, p.router, kept, rpcOf(p.chain.rpc)).sync();
-          self.postMessage({ id, part, ok: true, balance: String(s.balance) });
+          const s = await walletOf(id, keys, p.chain, p.pool, p.router, kept, rpcOf(p.chain.rpc), !!p.partial).sync();
+          self.postMessage({ id, part, ok: true, balance: String(s.balance), behind: !!s.behind });
         } catch (e) { self.postMessage({ id, part, ok: false, error: String(e?.message || e) }); }
       }));
       self.postMessage({ id, ok: true });

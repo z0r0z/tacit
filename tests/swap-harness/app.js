@@ -4,7 +4,7 @@
 import { makeConnect } from '/trade/connect.js?cb=a64b9cec';
 import { rpc, api, esc, fmtUnits, parseUnits, plain, usd, $ } from '/trade/util.js?cb=e8317464';
 import { aprText } from '/trade/farm-read.js?cb=112a01b9';
-import { mountSwapCard, ethCall, batch } from '/swap/card.js?cb=b6c02009';
+import { mountSwapCard, ethCall, batch } from '/swap/card.js?cb=9fad1998';
 
 const txLink = (h) => `<a href="https://etherscan.io/tx/${esc(h)}" target="_blank" rel="noopener noreferrer">${esc(h.slice(0, 10))}…↗</a>`;
 const P = { tab: location.hash === '#earn' ? 'earn' : 'swap', farm: 'precision', farms: null, px: {} };

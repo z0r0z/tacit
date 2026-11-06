@@ -15703,6 +15703,8 @@ const _STEALTH_AUTO_SCAN_PROTOCOL_TOKENS = {
 const _stealthAutoScanRanPubs = new Set();
 function _triggerStealthAutoScanInBackground(holdings) {
   if (!WORKER_BASE) return;
+  // a page that looks for its own assets' payments itself (tacit pay's TAC refresh) turns this off: it costs a first visit ~200 transaction reads
+  if (globalThis.__TACIT_NO_STEALTH_AUTOSCAN__ === true) return;
   let walletAddr = null;
   let walletPubHex = null;
   try { walletAddr = wallet.address(); walletPubHex = bytesToHex(wallet.pub); } catch { return; }

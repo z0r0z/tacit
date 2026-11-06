@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-z8fV6457qy3hfc0IBQu0Z5T2XvPqFjw3Qj+mTrPKkx0=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-IxpCE1ULQ+xL4EulQ2FwWb+wXK/CI66Hp2JWC5yNgv0=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -64,7 +64,7 @@
 <link rel="modulepreload" href="/bridge-tick.js?cb=b9adb91d">
 <link rel="modulepreload" href="/tacit-session.js?cb=a2d34bb2">
 <link rel="modulepreload" href="/activity.js?cb=8ccbc552">
-<link rel="modulepreload" href="/swap/card.js?cb=b6c02009">
+<link rel="modulepreload" href="/swap/card.js?cb=9fad1998">
 <link rel="modulepreload" href="/trade/wallet.js?cb=88b623b8">
 <link rel="modulepreload" href="/trade/util.js?cb=e8317464">
 <link rel="modulepreload" href="/trade/rpc.js?cb=f575ef91">
@@ -2027,7 +2027,7 @@ const SEL = {
 const ZERO = '0x0000000000000000000000000000000000000000';
 const DEVICE_CHAINS = [
   { chainId: 1, name: 'Ethereum', rpc: ETH_NODES, explorer: 'https://etherscan.io', keeper: 'https://tacit-evm-pool-keepers.onrender.com/1/evm-pool/keeper', deployBlock: 26069245, confirmations: 3 },
-  { chainId: 8453, name: 'Base', rpc: ['https://mainnet.base.org', 'https://base.drpc.org', 'https://base.rpc.blxrbdn.com'], explorer: 'https://basescan.org', keeper: 'https://tacit-evm-pool-keepers.onrender.com/8453/evm-pool/keeper', deployBlock: 51864014, confirmations: 10 },
+  { chainId: 8453, name: 'Base', rpc: ['https://mainnet.base.org', 'https://base-rpc.publicnode.com', 'https://base.drpc.org'], explorer: 'https://basescan.org', keeper: 'https://tacit-evm-pool-keepers.onrender.com/8453/evm-pool/keeper', deployBlock: 51864014, confirmations: 10 },
   { chainId: 4663, name: 'Robinhood', rpc: ['https://rpc.mainnet.chain.robinhood.com'], explorer: 'https://robinhoodchain.blockscout.com', keeper: 'https://tacit-evm-pool-keepers.onrender.com/4663/evm-pool/keeper', deployBlock: 73991661, confirmations: 10 },
 ];
 const EVM_POOL = '0x000000c2A20657CE25f2Ba99737933D031AFBEE9', EVM_ROUTER = '0x0000006C96Afa6f1cD4DF8FE19bc0d8B6A6Cd7B5';
@@ -2161,7 +2161,9 @@ const plain = (v, dec) => fmt(v, dec, dec).replace(/,/g, '');
 const big = (v) => { try { return v == null || v === '' ? null : BigInt(v); } catch { return null; } };
 const lsKv = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
 const devBal = (id, pub) => big(store.get(`tacit-lite-device-bal-v1:${id}:${pub}`)?.v);
-const devBalSet = (id, pub, v) => store.set(`tacit-lite-device-bal-v1:${id}:${pub}`, { v: v.toString(), at: Date.now() });
+// `behind`: only the notes after the pool's catch-up point are counted yet (the history behind it is still being read)
+const devBalSet = (id, pub, v, behind = false) => store.set(`tacit-lite-device-bal-v1:${id}:${pub}`, { v: v.toString(), at: Date.now(), ...(behind ? { behind: true } : {}) });
+const devBehind = (id, pub) => !!store.get(`tacit-lite-device-bal-v1:${id}:${pub}`)?.behind;
 // A day as en-GB writes it (21 Dec 2026), without Intl: the first toLocaleDateString of a locale takes tens of milliseconds, and the airdrop's deadline is written with it before the tile is drawn.
 const DAY_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sept', 'Oct', 'Nov', 'Dec'];
 const dayFmt = (sec) => { const d = new Date(sec * 1000); return Number.isNaN(d.getTime()) ? 'Invalid Date' : `${d.getDate()} ${DAY_MONTHS[d.getMonth()]} ${d.getFullYear()}`; };
@@ -3874,7 +3876,7 @@ function setKey(k) {
   });
 }
 
-const TACIT_URL = '/tacit.js?cb=63fac4ae';
+const TACIT_URL = '/tacit.js?cb=187d27e1';
 let T = null;
 // tacit.js under this page's key, one call at a time (/tacit-session.js)
 const TS = makeTacitSession({ url: TACIT_URL, key: () => S.key, secp, bytesToHex, hexToBytes, onLoad: (m) => { T = m; } });
@@ -7051,14 +7053,16 @@ const PSW = { w: null, n: 0, wait: new Map(), q: Promise.resolve() };
 function pswWorker() {
   try {
     if (PSW.w) return PSW.w;
-    const w = PSW.w = new Worker('/evm-pool-sync-worker.js?cb=48dce069', { type: 'module' });
+    const w = PSW.w = new Worker('/evm-pool-sync-worker.js?cb=622147ab', { type: 'module' });
     w.onmessage = (e) => { const f = PSW.wait.get(e.data?.id); if (f) { if (!e.data.write && e.data.part == null) PSW.wait.delete(e.data.id); f(e.data); } };
     w.onerror = () => { for (const f of PSW.wait.values()) f({ ok: false }); PSW.wait.clear(); PSW.w = null; };
     return w;
   } catch { return null; }
 }
 const pswEntries = (prefixes) => { const out = {}; try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && prefixes.some((x) => k.startsWith(x))) out[k] = localStorage.getItem(k); } } catch {} return out; };
-function poolSyncInWorker(c) {
+// `partial`: a key with nothing read starts at the pool's catch-up point; `back`: the history behind it, read beside the queue (it can take
+// minutes on Base, and the pickers' reads do not wait for it), into the state the page's wallet then takes in (adopt).
+function poolSyncInWorker(c, { partial = false, back = false } = {}) {
   const pub = S.key?.pubHex;
   if (!pub || typeof Worker !== 'function') return Promise.resolve(false);
   const run = () => new Promise((resolve) => {
@@ -7072,10 +7076,10 @@ function poolSyncInWorker(c) {
     });
     let priv;
     try { priv = walletPriv(); } catch { PSW.wait.delete(id); return resolve(false); }
-    w.postMessage({ id, priv, pool, router, entries,
+    w.postMessage({ id, priv, pool, router, entries, partial, back,
       chain: { chainId: c.chainId, keeper: c.keeper, rpc: c.rpc, deployBlock: c.deployBlock, confirmations: c.confirmations, logChunk: c.logChunk, token: c.token } });
   });
-  return (PSW.q = PSW.q.then(run, run));
+  return back ? run() : (PSW.q = PSW.q.then(run, run));
 }
 // Several pools in one message to the worker, read side by side there, their calls to one chain's nodes going out in batches: each pool's
 // balance comes to `onPart(i, balance | null)` as it is known.
@@ -7089,12 +7093,12 @@ function poolsInWorker(list, onPart) {
     const id = ++PSW.n, entries = pswEntries(list.map((c) => `tacit-evm-pool-v1:${c.chainId}:${c.pool.toLowerCase()}:`));
     PSW.wait.set(id, (m) => {
       if (m.write) { if (S.key?.pubHex === pub) try { localStorage.setItem(...m.write); } catch {} return; }
-      if (m.part != null) { if (S.key?.pubHex === pub) onPart(m.part, m.ok ? BigInt(m.balance) : null); return; }
+      if (m.part != null) { if (S.key?.pubHex === pub) onPart(m.part, m.ok ? BigInt(m.balance) : null, !!m.behind); return; }
       resolve(!!m.ok);
     });
     let priv;
     try { priv = walletPriv(); } catch { PSW.wait.delete(id); return resolve(false); }
-    w.postMessage({ id, priv, entries, pools: list.map((c) => ({ pool: c.pool, router: c.router,
+    w.postMessage({ id, priv, entries, pools: list.map((c) => ({ pool: c.pool, router: c.router, partial: c.pool === EVM_POOL,
       chain: { chainId: c.chainId, keeper: c.keeper, rpc: c.rpc, deployBlock: c.deployBlock, confirmations: c.confirmations, logChunk: c.logChunk, token: c.token } })) });
   });
   return (PSW.q = PSW.q.then(run, run));
@@ -7104,7 +7108,7 @@ function poolsInWorker(list, onPart) {
 // read again after a minute; one being read says so in the pickers.
 const PB = { pub: null, at: {}, p: {} };
 const payPoolCfg = (id) => { const t = TOKEN_POOLS.find((p) => p.slug === id); if (t) return tokCfg(t); const c = DEVICE_CHAINS.find((x) => String(x.chainId) === id); return c ? { ...c, pool: EVM_POOL, router: EVM_ROUTER } : null; };
-const payReading = (id) => !!S.key && PB.pub === S.key.pubHex && !!PB.p[String(id)];
+const payReading = (id) => !!S.key && ((PB.pub === S.key.pubHex && !!PB.p[String(id)]) || devBehind(id, S.key.pubHex));
 function payBals(ids) {
   const pub = S.key?.pubHex;
   if (!pub || typeof Worker !== 'function') return Promise.resolve();
@@ -7113,10 +7117,10 @@ function payBals(ids) {
   const want = ids.filter((id) => !PB.p[id] && Date.now() - (PB.at[id] || 0) > 60e3).map((id) => [id, payPoolCfg(id)]).filter(([, c]) => c);
   if (want.length) {
     const left = new Set(want.map(([id]) => id));
-    const run = poolsInWorker(want.map(([, c]) => c), (i, bal) => {
+    const run = poolsInWorker(want.map(([, c]) => c), (i, bal, behind) => {
       const id = want[i][0];
       left.delete(id); delete PB.p[id]; PB.at[id] = Date.now();
-      if (bal != null) devBalSet(id, pub, bal);
+      if (bal != null) devBalSet(id, pub, bal, behind);
       dashSoon();
     }).finally(() => { if (PB.pub !== pub) return; for (const id of left) { delete PB.p[id]; PB.at[id] = Date.now(); } dashSoon(); });
     for (const [id] of want) PB.p[id] = run;
@@ -7129,11 +7133,11 @@ async function deviceWallet() {
   const m = await getDeviceMods(), c = DEV.chain;
   const keys = m.evmPoolKeys(m.zk, walletPriv());
   DEV.W = m.makeEvmPoolWallet({
-    zk: m.zk, keys, keeper: c.keeper, store: lsKv,
+    zk: m.zk, keys, keeper: c.keeper, store: lsKv, partial: true,
     chain: { chainId: c.chainId, pool: EVM_POOL, router: EVM_ROUTER, rpc: m.jsonRpc(c.rpc), deployBlock: c.deployBlock, confirmations: c.confirmations, logChunk: c.logChunk },
     prove: async (input) => (await prover(provingNote))(input),
   });
-  DEV.key = S.key.pubHex + c.chainId; DEV.bal = null;
+  DEV.key = S.key.pubHex + c.chainId; DEV.bal = null; DEV.behind = null;
   DEV.W.watchReceive().catch(() => {});
   return DEV.W;
 }
@@ -7172,17 +7176,36 @@ function deviceSync(fresh = false) {
   if (DEV.syncing && !fresh) return DEV.syncing;
   const prev = DEV.syncing || Promise.resolve();
   const p = DEV.syncing = prev.catch(() => {}).then(async () => {
-    if (!(DEV.W && DEV.key === S.key?.pubHex + DEV.chain.chainId)) await poolSyncInWorker(DEV.chain);
+    if (!(DEV.W && DEV.key === S.key?.pubHex + DEV.chain.chainId)) await poolSyncInWorker(DEV.chain, { partial: true });
     const W = await deviceWallet();
     const [s, q] = await Promise.all([W.sync(), W.quote().catch(() => null)]);
     if (DEV.W === W) {
-      DEV.bal = s.balance; DEV.quote = q; DEV.gq = {}; DEV.err = null; DEV.at = Date.now();
-      devBalSet(DEV.chain.chainId, S.key.pubHex, s.balance);
+      DEV.bal = s.balance; DEV.behind = s.behind; DEV.quote = q; DEV.gq = {}; DEV.err = null; DEV.at = Date.now();
+      devBalSet(DEV.chain.chainId, S.key.pubHex, s.balance, !!s.behind);
+      if (s.behind) devBackfill(DEV.chain, W);
       dashSoon();
       holdingSoon(W, DEV.chain.chainId);
     }
   }).finally(() => { if (DEV.syncing === p) DEV.syncing = null; });
   return p;
+}
+// A pool wallet begun at the catch-up point counts the notes after it at once; the history behind it is read in the worker (here, a slice at a
+// time, where there is none), taken in, and the pool read again so its balance is whole. One at a time for each chain and key.
+const DBACK = {};
+function devBackfill(c, W) {
+  const pub = S.key?.pubHex, k = `${pub}:${c.chainId}`;
+  if (!pub || DBACK[k]) return;
+  DBACK[k] = (async () => {
+    for (let i = 0; i < 4 && S.key?.pubHex === pub; i++) {
+      if (!(await poolSyncInWorker(c, { back: true }))) { await W.backfill(); break; }
+      if (await W.adopt()) break;
+    }
+    if (S.key?.pubHex !== pub) return;
+    const s = await W.sync();
+    devBalSet(c.chainId, pub, s.balance, !!s.behind); dashSoon();
+    if (DEV.chain.chainId === c.chainId && DEV.W && DEV.W !== W) deviceSync(true).then(() => rerender('eth')).catch(() => {});
+    else if (DEV.W === W) { DEV.bal = s.balance; DEV.behind = s.behind; rerender('eth'); }
+  })().catch(() => {}).finally(() => { setTimeout(() => { delete DBACK[k]; }, 120e3); });
 }
 const POINTS_DIRECT = 'https://tacit-points.onrender.com';
 const HOLD_CONSENT = 'tacit-holding-consent-v1';
@@ -7295,12 +7318,13 @@ function loadHeld(force = false) {
   const priv = walletPriv();
   const one = async (c) => {
     if (c.chainId === DEV.chain.chainId) return deviceSync();
-    await poolSyncInWorker(c);
+    await poolSyncInWorker(c, { partial: true });
     const m = await getDeviceMods();
-    const W = m.makeEvmPoolWallet({ zk: m.zk, keys: m.evmPoolKeys(m.zk, priv), keeper: c.keeper, store: lsKv, prove: null,
+    const W = m.makeEvmPoolWallet({ zk: m.zk, keys: m.evmPoolKeys(m.zk, priv), keeper: c.keeper, store: lsKv, prove: null, partial: true,
       chain: { chainId: c.chainId, pool: EVM_POOL, router: EVM_ROUTER, rpc: m.jsonRpc(c.rpc), deployBlock: c.deployBlock, confirmations: c.confirmations, logChunk: c.logChunk } });
     const s = await W.sync();
-    if (S.key?.pubHex === pub) { devBalSet(c.chainId, pub, s.balance); dashSoon(); }
+    if (S.key?.pubHex === pub) { devBalSet(c.chainId, pub, s.balance, !!s.behind); dashSoon(); }
+    if (S.key?.pubHex === pub && s.behind) devBackfill(c, W);
     if (S.key?.pubHex === pub) holdingSoon(W, c.chainId);
   };
   const seen = (c) => (devBal(c.chainId, pub) ?? 0n) > 0n;
@@ -7332,7 +7356,7 @@ async function devResolve(raw) {
 }
 
 const T_TRANSACT = '0x' + bytesToHex(keccak_256(new TextEncoder().encode('Transact(bytes32,bytes32,bytes32,bytes32,uint256,bytes32,address,int256,address,uint256,bytes,bytes)')));
-const LOG_RPC = { 1: ETH_LOG_NODES, 8453: ['https://base.gateway.tenderly.co', 'https://mainnet.base.org'] };
+const LOG_RPC = { 1: ETH_LOG_NODES, 8453: ['https://base-rpc.publicnode.com', 'https://mainnet.base.org'] };
 const POOLQ = {};
 function poolStats(c) {
   const key = `tacit-pay-pool-v1:${c.chainId}:${EVM_POOL.toLowerCase()}`, part = `${key}:part`, q = POOLQ[c.chainId] ||= { v: store.get(key), p: null, at: 0, failAt: 0 };
@@ -7463,7 +7487,7 @@ function renderDevice(el) {
     ${segSub('chain', String(c.chainId), devPools())}
     <div class="bal">
       <span class="pair"><svg class="tk md" aria-hidden="true"><use href="#tk-eth"/></svg><svg class="tk md" aria-hidden="true"><use href="#tk-peth"/></svg></span>
-      <div><div class="v num">${DEV.bal != null ? fmt(DEV.bal, 18, 6) : DEV.err ? html`<span class="err">—</span>` : last != null ? html`<span class="stale">${fmt(last, 18, 6)}</span>` : html`<span class="sk" style="--w:8ch"></span>`}</div><div class="u">ETH, private on ${chainTag(c.chainId)}</div></div>
+      <div><div class="v num">${DEV.bal != null ? fmt(DEV.bal, 18, 6) : DEV.err ? html`<span class="err">—</span>` : last != null ? html`<span class="stale">${fmt(last, 18, 6)}</span>` : html`<span class="sk" style="--w:8ch"></span>`}</div><div class="u">ETH, private on ${chainTag(c.chainId)}${DEV.bal != null && DEV.behind ? ' · reading older history' : ''}</div></div>
       <div class="side">${DEV.err ? html`<button class="link" type="button" id="d-rescan">retry</button>` : DEV.bal != null ? html`<button class="link" type="button" id="d-rescan">refresh</button>` : 'updating…'}</div>
     </div>
     ${segSub('dev', DEV.mode, [['deposit', 'Deposit'], ['send', 'Send'], ['out', 'Withdraw'], ['receive', 'Receive']])}
@@ -7524,7 +7548,7 @@ function renderDevice(el) {
   if (W && !DEV.plan && DEV.mode === 'out') getDeviceMods().then((m) => { DEV.plan = m.mergePlan; rerender('eth'); }).catch(() => {});
   const merges = (amount, fee) => (W && DEV.plan ? DEV.plan(W.notes().map((n) => n.v), amount + fee, fee) : DEV.bal != null && amount + fee <= DEV.bal ? 0 : null);
   const combineRow = (m, fee) => (m && fee ? html`<div class="kv"><span>Relay fee to combine notes${m > 1 ? ` (${m}×)` : ''}</span><b>at most ${upEth(capOf(fee) * BigInt(m))} ETH</b></div>` : '');
-  const overText = (amount, fee) => (DEV.bal == null || amount + fee > DEV.bal ? (fee ? 'More than your private balance, once the relay fee is counted.' : 'More than your private balance.')
+  const overText = (amount, fee) => (DEV.bal == null || amount + fee > DEV.bal ? (fee ? 'More than your private balance, once the relay fee is counted.' : 'More than your private balance.') + (DEV.behind ? ' Your older history is still being read.' : '')
     : fee ? 'More than your private balance, once the relay fees to combine its notes are counted.' : 'More than one withdrawal can take: your private balance is spread over too many notes.');
   const maxOut = (fee) => { let lo = 0n, hi = DEV.bal ?? 0n; while (lo < hi) { const mid = (lo + hi + 1n) / 2n; if (merges(mid, fee) != null) lo = mid; else hi = mid - 1n; } return lo; };
   const maxPriv = DEV.bal != null ? html`<button type="button" id="d-maxp" aria-label="Use all: ${fmt(DEV.bal, 18, 4)} ETH private">Private ${fmt(DEV.bal, 18, 4)} ETH</button>` : '';
@@ -7711,7 +7735,7 @@ function renderDevice(el) {
 
 function setDeviceChain(c) {
   DEV.tok = null; DEV.chain = c; store.set('tacit-lite-device-chain', c.chainId);
-  DEV.W = null; DEV.bal = null; DEV.quote = null; DEV.gq = {}; DEV.err = null; DEV.self = false;
+  DEV.W = null; DEV.bal = null; DEV.behind = null; DEV.quote = null; DEV.gq = {}; DEV.err = null; DEV.self = false;
 }
 
 // The device sheet's token pools (TOKEN_POOLS): the ETH pools' contract and proofs with an ERC-20 asset. The paying account sends a deposit
@@ -13812,7 +13836,8 @@ function dashItems() {
     let dev = null;
     const on = [];
     for (const c of DEVICE_CHAINS) { const v = devBal(c.chainId, k); if (v != null) { dev = (dev || 0n) + v; if (v > 0n) on.push(c.chainId); } }
-    out.push({ key: 'dev', icon: 'tk-eth', label: 'ETH', dec: 18, max: 5, v: dev, meta: on.length ? html`private on ${chainMarks(on)}` : 'private', open: 'device', show: dev > 0n, swap: dev > 0n && on.includes(1) ? 'eth' : null });
+    const older = DEVICE_CHAINS.some((c) => devBehind(c.chainId, k));
+    out.push({ key: 'dev', icon: 'tk-eth', label: 'ETH', dec: 18, max: 5, v: dev, meta: older ? 'private, reading older history' : on.length ? html`private on ${chainMarks(on)}` : 'private', open: 'device', show: dev > 0n, swap: dev > 0n && on.includes(1) ? 'eth' : null });
     const devTac = devBal('tac', k);
     out.push({ key: 'devtac', icon: 'tk-tac', label: 'TAC', dec: 18, max: 2, v: devTac, meta: 'private on this device', open: 'device/tac', show: devTac > 0n, swap: devTac > 0n ? 'tac' : null });
     // the other token pools on this device (TACD and TACE beside the vaults, and any a private swap went through), each a row when it holds some
@@ -14815,7 +14840,7 @@ function hxSendGo() {
     if (dp) { if (S.key && devBal(dp.slug, S.key.pubHex) === 0n) return; if (S.key) return hxSendTokGo(dp, amt, to, hxRcptKind() === 'eth'); hxDraft({ mode: 'tsend', slug: dp.slug, to, amt }); return openLink(`device/${dp.slug}/${hxRcptKind() === 'eth' ? 'withdraw' : 'send'}`); } }
   if (k === 'pp') {
     const c = hxChain();
-    if (S.key && devBal(c.chainId, S.key.pubHex) === 0n) return;
+    if (S.key && devBal(c.chainId, S.key.pubHex) === 0n && !devBehind(c.chainId, S.key.pubHex)) return;
     if (hxRcptKind() === 'eth') { if (S.key) return hxSendPoolOutGo(c, amt, to); DEV.dest = 'addr'; hxDraft({ mode: 'dout', amt, to, chain: c.chainId }); return openLink(`device/${chainSlug(c)}/withdraw`); }
     location.href = `/pay/eth/#send&chain=${c.chainId}&to=${encodeURIComponent(to)}${amt ? `&amount=${encodeURIComponent(amt)}` : ''}`; return;
   }
@@ -16932,7 +16957,7 @@ function swcPace(id) {
   if (b) b.dataset.pace = id;
   else q.insertAdjacentHTML('afterend', html`<div class="pace" data-card="1" data-pace="${id}"><div class="actr-bar" role="progressbar" aria-label="How far along" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i style="width:0%"></i></div><span></span></div>`.s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=b6c02009').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=9fad1998').catch((e) => { SWC.p = null; throw e; }));
 // the card held to the tab's flow; back on the Swap tab it opens on the swap it showed there
 function swcFlow() {
   hxPathPaint();

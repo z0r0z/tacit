@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-Bknty29/eyBvTtBt+Wb9v79DIOkoHpLVCslh1tDgPZc=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://tacit-api.onrender.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-4f+tPUgXneMvtT5nKVwEBwROU3sGRasJhUnB1lS/tpE=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://tacit-api.onrender.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay</title>
 <meta name="description" content="Pay BTC, TAC and ETH privately from one key and one tacit1 address. Every payment is made on your device.">
@@ -897,7 +897,7 @@ function otherWallet() { return knownWallets(KNOWN_IDS).other; }
 const viaText = (k) => ({ eth: `Ethereum ${short(k.address || '')}`, btc: `Bitcoin ${short(k.address || '', 6)}`, ext: `a key funded by ${short(k.address || '', 6)}`,
   passkey: `passkey “${k.label || 'Tacit'}”`, local: 'the key saved in this browser', key: 'a pasted key' })[k.mode] || 'your wallet';
 
-const TACIT_URL = '/tacit.js?cb=63fac4ae';
+const TACIT_URL = '/tacit.js?cb=187d27e1';
 const SHARED_NET = 'tacit-network-v1', PREV_NET = 'tacit-pay-prev-net-v1';
 const SHARED_WALLET_KEYS = ['tacit-eth-identity', 'tacit-btc-identity', 'tacit-active-mode-v1', 'tacit-ext-mode-v1', 'tacit-ext-state-v1',
   ...['mainnet', 'signet'].flatMap((n) => [`tacit-eth-identity:${n}`, `tacit-btc-identity:${n}`, `tacit-active-mode-v1:${n}`])];
@@ -913,6 +913,7 @@ const hintTacit = () => {
 const loadTacit = lazy(async () => {
   try { const cur = localStorage.getItem(SHARED_NET); if (sessionStorage.getItem(PREV_NET) === null && cur !== 'mainnet') sessionStorage.setItem(PREV_NET, cur ?? ''); localStorage.setItem(SHARED_NET, 'mainnet'); } catch {}
   globalThis.__TACIT_NO_INIT__ = true;
+  globalThis.__TACIT_NO_STEALTH_AUTOSCAN__ = true;      // the TAC refresh looks through TAC's own transfers for payments to the key (lookForMe)
   (await import('/pass-dialog.js?cb=033f3fbd')).mountPassDialog();
   watchDialog($('#pass-dialog'));
   T = await import(TACIT_URL);
@@ -1571,6 +1572,7 @@ function btcSend(f) {
       if (sent.again) { const e2 = await btcFee(r, v).catch(() => null); return askHigh(r, v, sent.again, e2?.rate === sent.again ? e2.fee : null); }
       const txid = sent.txid, paidFee = Number(sent.fee) || 0;
       markPaid('btc', raw, v, txid);
+      withKey((t) => { if (Object.values(t.loadSpCredits() || {}).some((c) => c?.spendingTxid === txid)) keepSpTx(pub, txid); }, pub).catch(() => {});
       actJust({ mode: 'btc', kind: 'sent', v, tx: txid, fee: paidFee || null, to: r.kind === 'addr' ? r.to : null });
       amt.value = '';
       toast(`Sent ${fmt(v, 8, 8)} BTC`);
@@ -2291,10 +2293,15 @@ async function checkFound() {
   Object.assign(FOUND, { busy: true, res: null }); paintFound();
   const pub = S.key.pubHex;
   try {
-    const { sats, tokens, plain } = await withKey(async (t) => {
-      let sats = 0n, tokens = [];
+    const { sats, tokens, plain, gone } = await withKey(async (t) => {
+      let sats = 0n, tokens = [], gone = 0n;
       if (f.kind !== 'st') {
-        try { for (const x of await t.discoverSilentPaymentFromTxid(f.txid)) sats += BigInt(x.sats || 0); }
+        try {
+          for (const x of await t.discoverSilentPaymentFromTxid(f.txid)) {
+            const out = await esplora(`/tx/${f.txid}/outspend/${x.vout}`).catch(() => null);
+            if (out?.spent) gone += BigInt(x.sats || 0); else sats += BigInt(x.sats || 0);
+          }
+        }
         catch (e) {
           if (/missing or malformed/.test(e?.message || '')) throw unread(t, f.txid);
           if (/not fully indexed/.test(e?.message || '')) throw Object.assign(new Error('That transaction is not indexed yet. Try again in a minute.'), { again: true });
@@ -2311,14 +2318,15 @@ async function checkFound() {
       // a plain payment to the wallet's own address, its txid pasted
       let plain = 0n;
       if (!sats && !tokens.length) { const tx = await t.getTx(f.txid).catch(() => null), a = t.wallet.address(); for (const o of tx?.vout || []) if (o.scriptpubkey_address === a) plain += BigInt(o.value || 0); }
-      return { sats, tokens, plain };
+      return { sats, tokens, plain, gone };
     });
     const tac = tokens.filter((x) => lc(x.assetIdHex) === TAC_ID).reduce((a, x) => a + BigInt(x.amount), 0n);
     FOUND.res = sats ? html`<span class="ok">${fmt(sats, 8, 8)} BTC for you, now in your balance.</span>`
       : tac ? html`<span class="ok">${fmt(tac, 8, 4)} TAC for you, at your Bitcoin address. Shield it from TAC → Move.</span>`
       : plain ? html`<span class="ok">${fmt(plain, 8, 8)} BTC came to your Bitcoin address in it.</span>`
+      : gone ? html`${fmt(gone, 8, 8)} BTC was for you in it, and has been spent since.`
       : html`That payment is not addressed to this wallet.`;
-    if (sats || plain) S.mode = 'btc'; else if (tac) S.mode = 'tac';
+    if (sats || plain || gone) S.mode = 'btc'; else if (tac) S.mode = 'tac';
     render(); loadMode(true);
   } catch (e) { FOUND.res = html`<span class="err">${errText(e)}</span>${e?.again ? html` <button class="link" type="button" id="fd-re">Try again</button>` : ''}`; }
   FOUND.busy = false;
@@ -2520,11 +2528,18 @@ function addPage(b, list) {
   b.more = conf.length >= 25;
   if (conf.length) Object.assign(b, { last: conf.at(-1).txid, oldest: conf.at(-1).status.block_time || b.oldest });
 }
+// Sends this browser paid from silent-payment coins alone: they touch no output of the Bitcoin address, so its history never lists them, and
+// the coins' records go once the send confirms; kept per key (the newest 40) so Activity can still read them.
+const SP_TX = 'tacit-pay-sptx-v1:';
+const spTxs = (pub) => (readJson(SP_TX + pub) || []).filter((x) => /^[0-9a-f]{64}$/.test(x));
+const keepSpTx = (pub, txid) => writeJson(SP_TX + pub, [txid, ...spTxs(pub).filter((x) => x !== txid)].slice(0, 40));
 async function actBtc(pub) {
   const snap = await withKey((t) => ({ addr: t.wallet.address(), credits: { ...(t.loadSpCredits() || {}) } }), pub);
   const prev = ACT.pub === pub && ACT.btc?.addr === snap.addr ? ACT.btc : null;
   const b = { addr: snap.addr, credits: snap.credits, txs: new Map(), spv: prev ? prev.spv : new Map(), more: false, last: null, oldest: null };
   addPage(b, await esplora(`/address/${b.addr}/txs`));
+  const spent = [...new Set([...spTxs(pub), ...Object.values(b.credits).map((c) => c?.spendingTxid).filter(Boolean)])].filter((id) => !b.txs.has(id)).slice(0, 12);
+  for (let i = 0; i < spent.length; i += 6) await Promise.all(spent.slice(i, i + 6).map(async (id) => { const tx = await esplora(`/tx/${id}`).catch(() => null); if (tx?.txid === id) b.txs.set(id, tx); }));
   if (prev?.oldest && b.more && (!b.oldest || prev.oldest < b.oldest)) {
     for (const [id, tx] of prev.txs) if (!b.txs.has(id) && tx.status?.confirmed) b.txs.set(id, tx);
     Object.assign(b, { more: prev.more, last: prev.last, oldest: prev.oldest });
