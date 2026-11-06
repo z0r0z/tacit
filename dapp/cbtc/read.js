@@ -86,12 +86,18 @@ const TOPIC = { posted: '0x0c008a699968f2a24063b7eb14d9239b2430c502fda280245345c
   closed: '0xc0ede5b75ee32986e50a2a39fa32dbf5e8eff1c91a46cd127591edebd91b4db9', liquidated: '0x28d08a2db16236ca56b1223ba30ba49824b860a3e7eb8c5a1c1224697aa3ebd1' };
 // The engine's events since it was deployed, read in ranges the public nodes serve (the widest of them takes 50,000 blocks).
 const FROM_BLOCK = 25998000, SPAN = 45000;
+// Three ranges at a time, each kept in its place.
 async function engineLogs() {
-  const head = Number(BigInt(await rpc('eth_blockNumber', [], ETH_LOG_NODES))), out = [];
-  for (let from = FROM_BLOCK; from <= head; from += SPAN) {
-    out.push(...await rpc('eth_getLogs', [{ address: ENGINE, topics: [Object.values(TOPIC)], fromBlock: '0x' + from.toString(16), toBlock: '0x' + Math.min(from + SPAN - 1, head).toString(16) }], ETH_LOG_NODES));
-  }
-  return out;
+  const head = Number(BigInt(await rpc('eth_blockNumber', [], ETH_LOG_NODES))), spans = [];
+  for (let from = FROM_BLOCK; from <= head; from += SPAN) spans.push([from, Math.min(from + SPAN - 1, head)]);
+  const out = new Array(spans.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(3, spans.length) }, async () => {
+    for (let j = next++; j < spans.length; j = next++) {
+      out[j] = await rpc('eth_getLogs', [{ address: ENGINE, topics: [Object.values(TOPIC)], fromBlock: '0x' + spans[j][0].toString(16), toBlock: '0x' + spans[j][1].toString(16) }], ETH_LOG_NODES);
+    }
+  }));
+  return out.flat();
 }
 export async function readHistory({ locked, out }) {
   const logs = await engineLogs();

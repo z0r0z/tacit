@@ -6,7 +6,7 @@ import { makeConnect, UserStopped } from '/trade/connect.js?cb=a64b9cec';
 import { TAC, POOL, FARM, aprText, readPrecision, readSpot, readStake, privateFarms } from '/trade/farm-read.js?cb=112a01b9';
 import { rememberOwed } from '/trade/rewards-dot.js?cb=36212f5c';
 import { readTasks } from '/rewards/earn.js?cb=74689244';
-import { readCampaign, bestApr } from '/trade/lp-campaign.js?cb=9d89e80f';
+import { readCampaign, bestApr, notTrading } from '/trade/lp-campaign.js?cb=b17cf1fe';
 import { DEPLOYMENTS } from '/vault/deployments.js?cb=4af96594';
 
 const NO_SEND = ['0x0000000000000000000000000000000000000000', '0xa1313eb9f3a445606d9583bcac3ebeb56a858279', '0x000000c918e44a3a443937fa7594ea4f7c95d6b9', '0x4b4cb98d0c836c2783ac46f0078b904dab533ae8'];
@@ -400,11 +400,11 @@ function notePoints(c) {
   $('#pts-f').textContent = over ? '' : tac(BigInt(c.program.dayBudgetWei || 0), 0);
   $('#pts-s').innerHTML = over ? `${dot(false)}The program has ended` : `${dot(true)}Day ${c.programDay} of ${c.programDays} · split by points`;
 }
-// TACD's and TACE's pools: shown while the liquidity campaign pays for them, each with the most a dollar in one of them earns a year
+// TACD's and TACE's pools: shown while the liquidity campaign pays for them and one of them trades, each with the most a dollar in one of them earns a year
 function noteLiquidity(c, tacUsd = 0) {
   for (const [key, id] of [['usd', 'lp-usd'], ['eth', 'lp-eth']]) {
     const row = $(`#${id}`), apr = c ? bestApr(c, key, tacUsd) : null;
-    row.hidden = !c;
+    row.hidden = !c || notTrading(c, key);
     row.classList.remove('wait');
     row.querySelector('.apr').textContent = apr == null ? '' : aprText(apr);
   }
@@ -439,7 +439,7 @@ let farmUi = null, farmFor = null, farmSeq = 0, ethUsd = 0, hasStake = false;
 const eth4 = (wei) => (Number(wei) / 1e18).toLocaleString('en-US', { maximumSignificantDigits: 3 });
 const wordOf = (a) => a.slice(2).toLowerCase().padStart(64, '0');
 function mountedFarm() {
-  return farmUi ||= Promise.all([import('/trade/farm.js?cb=e3f70b9d'), import('/trade/util.js?cb=e8317464'), import('/evm-trade-venues.js?cb=dda58fa8'),
+  return farmUi ||= Promise.all([import('/trade/farm.js?cb=5f577f5c'), import('/trade/util.js?cb=e8317464'), import('/evm-trade-venues.js?cb=dda58fa8'),
     call({ to: ETH_USD, data: '0xfeaf968c' }).then((r) => { ethUsd = Number(BigInt(`0x${r.slice(66, 130)}`)) / 1e8; }, () => {})])
     .then(([{ mountFarm }, U, E]) => {
       const ethCall = (to, data, block = 'latest', o = {}) => U.rpc('eth_call', [{ to, data, ...(o.from ? { from: o.from } : {}), ...(o.value ? { value: `0x${BigInt(o.value).toString(16)}` } : {}) }, block]);

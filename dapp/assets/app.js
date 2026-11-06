@@ -1,7 +1,7 @@
 // tacit.finance/assets: Tacit's own assets, each row leading to its page. A price is shown where there is one: TAC at the Precision pool, tETH at
 // Chainlink's ETH and cBTC at its BTC (each is worth what it is made of), read once on arrival. Under them, the farms where liquidity earns TAC (farms.js).
 import { ethCall, wordAt, now, usd, $ } from '/trade/util.js?cb=e8317464';
-import { showFarms } from '/assets/farms.js?cb=94da1f3c';
+import { showFarms } from '/assets/farms.js?cb=df70c204';
 
 const CHAINLINK = { eth: '0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419', btc: '0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c' };
 const PRECISION_POOL = '0x0155358241411dB868BA714aE7c83A27087e3D6E';

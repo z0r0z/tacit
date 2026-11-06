@@ -1012,7 +1012,7 @@ function renderUse() {
   const cur = $('#use-amt')?.value ?? S.useAmt;
   $('#uses').innerHTML = `<div class="lbl"><span>Amount</span><span class="mute">optional</span></div><div class="amt"><input id="use-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="tETH to use" value="${esc(cur)}"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-teth"/></svg>tETH</span></div>`
     + `<div id="use-rows">${useRowsHtml()}</div>`;
-  $('#use-note').textContent = 'These open tacit.finance. Swap and Back to ETH carry your amount. Sign in there with the same wallet or passkey.';
+  $('#use-note').textContent = 'These open on the front page. Swap and Back to ETH carry your amount. Use the same wallet or passkey there.';
 }
 const useRowsHtml = () => useLinks().map(([href, t, sub, kind, mark]) => `<a class="use" href="${esc(href)}"${kind === 'scroll' ? ' data-scroll' : ''}><svg class="tk sm" aria-hidden="true"><use href="#tk-${mark}"/></svg><b>${esc(t)}</b><span>${esc(sub)}</span><i aria-hidden="true">→</i></a>`).join('');
 
@@ -1039,15 +1039,15 @@ function renderFarm() {
   const icon = (k) => `<svg class="tk sm" aria-hidden="true"><use href="#tk-${k}"/></svg>`;
   const mine = key.unlocked && D.held?.pub === key.key.pubHex ? positionsIn(rows, D.held.positions) : new Map();
   const dp = (r) => (r.other === 'cBTC' ? 6 : 2), amt = (x, d) => (x < 0.01 && x > 0 ? 'under 0.01' : grp(x, d));
-  const farmedPct = (f) => { const p = f * 100; return p > 0 && p < 1 ? 'under 1%' : p >= 99.5 && p < 99.95 ? `${p.toFixed(1)}%` : `${Math.round(p)}%`; };
+  // each farm is joined on the front page's Earn card, on that pool, with ETH from the wallet or tETH already private
   $('#pools').innerHTML = rows.map((r) => {
     const m = mine.get(r.pid);
-    return `<a class="pf" href="/#farm/private-${r.pid}"><span class="nm"><span class="pairtk">${icon('teth')}${icon(r.other.toLowerCase())}</span>${esc(r.name)}${m ? '<span class="tag">yours</span>' : ''}</span><span class="rt num">${esc(aprTxt(r.apr))}<small>${r.perDay > 0 ? `${Math.round(r.perDay).toLocaleString('en-US')} TAC a day` : 'no reward now'}</small></span><i aria-hidden="true">→</i>`
-      + `<span class="sb">${esc(r.depthEth < 0.01 ? 'under 0.01' : grp(r.depthEth, 2))} ETH deep${r.bondedPct != null ? ` · ${farmedPct(r.bondedPct)} farmed` : ''} · holds ${esc(amt(r.tethSide, 2))} tETH + ${esc(amt(r.otherSide, dp(r)))} ${esc(r.other)}</span>`
+    return `<a class="pf" href="/#card=earn:ether:p${r.pid}"><span class="nm"><span class="pairtk">${icon('teth')}${icon(r.other.toLowerCase())}</span>${esc(r.name)}${m ? '<span class="tag">yours</span>' : ''}</span><span class="rt num">${esc(aprTxt(r.apr))}<small>APR</small></span><i aria-hidden="true">→</i>`
+      + `<span class="sb">${esc(r.depthEth < 0.01 ? 'under 0.01' : grp(r.depthEth, 2))} ETH deep · ${r.perDay > 0 ? `${Math.round(r.perDay).toLocaleString('en-US')} TAC a day` : 'no reward now'}</span>`
       + (m ? `<span class="sb mine">Yours: ${esc(amt(m.teth, 4))} tETH + ${esc(amt(m.other, dp(r)))} ${esc(r.other)} · ${esc(grp(m.earned, 2))} TAC earned${m.perDay > 0 ? ` · about ${esc(m.perDay >= 10 ? grp(m.perDay, 0) : m.perDay.toFixed(2))} TAC a day` : ''}</span>` : '') + '</a>';
   }).join('');
   const heldHere = key.unlocked && D.held?.pub === key.key.pubHex;
-  $('#fm-note').innerHTML = `Join, harvest and exit on tacit.finance. ${!key.unlocked ? '<button class="linkbtn" type="button" id="fm-signin">Sign in to see yours</button>' : heldHere && D.held.loading ? 'Reading your positions…' : heldHere && D.held.positions == null && !D.held.err ? 'Could not read your positions.' : ''}`;
+  $('#fm-note').innerHTML = `Join with ETH or tETH. ${!key.unlocked ? '<button class="linkbtn" type="button" id="fm-signin">Sign in to see yours</button>' : heldHere && D.held.loading ? 'Reading your positions…' : heldHere && D.held.positions == null && !D.held.err ? 'Could not read your positions.' : ''}`;
 }
 
 function renderMoves() {

@@ -415,8 +415,8 @@ try {
   await p.keyboard.press('Escape');
   // the farms
   const farms = await p.$$eval('.pf', (as) => as.map((a) => ({ href: a.getAttribute('href'), t: a.textContent.replace(/\s+/g, ' ').trim() })));
-  ok(farms.map((f) => f.href).join() === '/#farm/private-0,/#farm/private-1,/#farm/private-2', 'each farm opens on the front page at its own pool');
-  ok(/tETH \/ TAC/.test(farms[0].t) && /554 TAC a day/.test(farms[0].t) && /\d+%/.test(farms[0].t) && /ETH deep/.test(farms[0].t) && /farmed/.test(farms[0].t), `a farm says its pool, what it pays and its APR, its depth and share farmed (${farms[0].t.slice(0, 120)})`);
+  ok(farms.map((f) => f.href).join() === '/#card=earn:ether:p0,/#card=earn:ether:p1,/#card=earn:ether:p2', 'each farm opens on the front page\'s Earn card at its own pool');
+  ok(/tETH \/ TAC/.test(farms[0].t) && /554 TAC a day/.test(farms[0].t) && /\d+%/.test(farms[0].t) && /ETH deep/.test(farms[0].t), `a farm says its pool, what it pays and its APR, and its depth (${farms[0].t.slice(0, 120)})`);
   const stat = await text(p, '#fm-stats');
   ok(/Best APR now/.test(stat) && /1,108 TAC/.test(stat) && /Stream ends/.test(stat), `the farms' figures (${stat.slice(0, 100)})`);
   const aprs = await p.$$eval('.pf .rt', (rs) => rs.map((x) => parseInt(x.firstChild.textContent.replace(/[^\d]/g, '')) || 0));

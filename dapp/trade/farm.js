@@ -107,8 +107,8 @@ export function mountFarm(host, ctx) {
     const pairName = (pair) => { const k = String(pair).split('/').map((y) => (y === 'cETH' ? 'tETH' : y)); if (k[1] === 'tETH') k.reverse(); return k.join(' / '); };
     const aprOf = (pool) => (x.tacEth ? shieldedApr(pool, x.tacEth, { ethUsd: F.px?.ethUsd ?? ethUsd(), btcUsd: F.px?.btcUsd }) : null);
     $('#fm-prog').innerHTML = e?.active && p.pools?.length
-      ? `<div class="fm-ph" title="Private positions: who farms and how much is not shown. Each opens with your Tacit wallet on the main page."><b>Private farms</b><span>${group(Math.round(Number(e.ratePerDayTac)))} TAC a day more, to ${dayFmt(e.periodFinish)}</span></div>`
-        + p.pools.filter((pool) => Number(pool.tacPerDayForPool) > 0).map((pool) => `<a class="fm-pf" href="/#farm/private-${Number(pool.pid)}"><span class="pair">${esc(pairName(pool.pair))}</span><span class="d">${group(Math.round(Number(pool.tacPerDayForPool)))} TAC a day</span><b class="num">${aprTxt(aprOf(pool))}</b><i aria-hidden="true">→</i></a>`).join('')
+      ? `<div class="fm-ph" title="Private positions: who farms and how much is not shown. Each is joined on the front page's Earn card, with ETH or private tETH."><b>Private farms</b><span>${group(Math.round(Number(e.ratePerDayTac)))} TAC a day more, to ${dayFmt(e.periodFinish)}</span></div>`
+        + p.pools.filter((pool) => Number(pool.tacPerDayForPool) > 0).map((pool) => `<a class="fm-pf" href="/#card=earn:ether:p${Number(pool.pid)}"><span class="pair">${esc(pairName(pool.pair))}</span><span class="d">${group(Math.round(Number(pool.tacPerDayForPool)))} TAC a day</span><b class="num">${aprTxt(aprOf(pool))}</b><i aria-hidden="true">→</i></a>`).join('')
 
       : '';
   }

@@ -25,15 +25,15 @@
 <link rel="preload" href="/fonts/ibm-plex-mono-500-latin.woff2" as="font" type="font/woff2" crossorigin>
 <!-- preload-roots: /assets/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/assets/app.js?cb=09cdb846">
+<link rel="modulepreload" href="/assets/app.js?cb=160207ea">
 <link rel="modulepreload" href="/trade/util.js?cb=e8317464">
 <link rel="modulepreload" href="/trade/rpc.js?cb=f575ef91">
 <link rel="modulepreload" href="/rpc-body.js">
 <link rel="modulepreload" href="/eth-nodes.js">
 <link rel="modulepreload" href="/trade/fmt.js?cb=32b1744b">
-<link rel="modulepreload" href="/assets/farms.js?cb=94da1f3c">
+<link rel="modulepreload" href="/assets/farms.js?cb=df70c204">
 <link rel="modulepreload" href="/trade/farm-read.js?cb=112a01b9">
-<link rel="modulepreload" href="/trade/lp-campaign.js?cb=9d89e80f">
+<link rel="modulepreload" href="/trade/lp-campaign.js?cb=b17cf1fe">
 <link rel="modulepreload" href="/vault/deployments.js?cb=4af96594">
 <!-- preload:end -->
 <style>
@@ -90,12 +90,15 @@ a { color: inherit; text-underline-offset: 3px; text-decoration-thickness: 1px; 
 .hero h1 { font: 400 clamp(48px, 7.4vw, 88px)/.92 var(--serif); letter-spacing: -.025em; margin: 0; }
 .hero h1 em { font-style: italic; }
 
-/* the assets, a row each: its mark, its name and price, what it is */
+/* the assets, a row each: its mark, its name and price, what it is, and under that what to do with it: the asset's own move (the whole row opens its page) and,
+   once the farms are read, the most a farm that pairs it pays */
 .al { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 56px; border-top: 1px solid var(--hair); }
-.al li { border-bottom: 1px solid var(--hair); }
-.al a { display: grid; grid-template-columns: 52px minmax(0, 1fr) auto; align-items: center; gap: 18px; padding: 24px 0; color: inherit; text-decoration: none; }
+.al li { position: relative; display: grid; grid-template-columns: 52px minmax(0, 1fr); align-items: start; gap: 18px; padding: 22px 0 20px; border-bottom: 1px solid var(--hair); }
 .al .tk { width: 52px; height: 52px; transition: transform .3s var(--spring); }
-.al .t { display: grid; gap: 3px; min-width: 0; }
+.al .t { display: grid; gap: 12px; min-width: 0; }
+.al .m { display: grid; gap: 3px; min-width: 0; color: inherit; text-decoration: none; }
+.al .m::after { content: ''; position: absolute; inset: 0; }
+.al .m:focus-visible { outline: none; } .al .m:focus-visible::after { outline: 2px solid var(--ink); outline-offset: 2px; }
 .al .n { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 14px; }
 .al .n b { font: 400 30px/1.1 var(--serif); letter-spacing: -.01em; }
 .al .n small { font: 400 13px var(--mono); color: var(--mute); min-width: 5ch; }
@@ -103,12 +106,23 @@ a { color: inherit; text-underline-offset: 3px; text-decoration-thickness: 1px; 
 .al .d small { display: block; font: 400 12px var(--mono); }
 .al .d .tk { display: inline-block; width: 16px; height: 16px; margin: 0 4px 0 0; vertical-align: -3px; transition: none; }
 .al .d .cm { display: inline-flex; gap: 3px; vertical-align: -2px; } .al .d .cm .tk { margin: 0; }
-@media (hover: hover) { .al a:hover .d .tk { transform: none; } }
-.al .go { font-size: 16px; color: var(--mute); transition: transform .3s var(--spring), color .15s; }
-@media (hover: hover) { .al a:hover .tk { transform: scale(1.06); } .al a:hover .go { transform: translateX(4px); color: var(--ink); } }
+.al .acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.al .vb, .al .ern { display: inline-flex; align-items: center; gap: 6px; box-sizing: border-box; min-height: 34px; padding: 0 14px; border-radius: 999px; font: 500 12.5px/1 var(--mono); white-space: nowrap; }
+.al .vb { color: var(--ink); border: 1px solid var(--ink); transition: background-color .15s, color .15s; }
+.al .vb i { font-style: normal; transition: transform .3s var(--spring); }
+.al .ern { position: relative; z-index: 1; color: var(--mute); font-weight: 400; text-decoration: none; border: 1px solid var(--hair-2); transition: border-color .15s, color .15s; }
+.al .ern b { font-weight: 500; color: var(--ok); }
+.al .ern[hidden] { display: none; }
+@media (hover: hover) {
+  .al li:has(.m:hover) > .tk { transform: scale(1.06); }
+  .al .m:hover + .acts .vb { background: var(--ink); color: var(--paper); } .al .m:hover + .acts .vb i { transform: translateX(3px); }
+  .al .ern:hover { color: var(--ink); border-color: var(--ink); }
+}
+@media (pointer: coarse) { .al .vb, .al .ern { min-height: 40px; } }
 @media (max-width: 860px) { .al { grid-template-columns: minmax(0, 1fr); } .hero { padding-top: 18px; } }
+@media (max-width: 480px) { .al li { grid-template-columns: 44px minmax(0, 1fr); gap: 14px; } .al .tk { width: 44px; height: 44px; } .al .n b { font-size: 28px; } }
 
-/* the farms, one row: the mark, the name, and the APR it pays now */
+/* the farms, a tile each: the pair, what kind of pool, the APR it pays now and the TAC a day behind it; a tile goes where the farm is joined */
 .fr { padding-top: 44px; }
 .fr-h { display: flex; align-items: baseline; justify-content: space-between; gap: 6px 24px; }
 .fr-h h2 { margin: 0; font: 400 clamp(30px, 4vw, 40px)/1.1 var(--serif); letter-spacing: -.015em; }
@@ -116,7 +130,7 @@ a { color: inherit; text-underline-offset: 3px; text-decoration-thickness: 1px; 
 .fr-h a { flex: none; font-size: 13px; color: var(--mute); }
 @media (hover: hover) { .fr-h a:hover { color: var(--ink); } }
 .fr-s { margin: 6px 0 18px; font-size: 13px; color: var(--mute); max-width: 62ch; text-wrap: balance; }
-.fl { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.fl { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .fl a { display: grid; grid-template-rows: auto 1fr auto; gap: 16px; height: 100%; padding: 18px 18px 16px; color: inherit; text-decoration: none; background: var(--card); border: 1px solid var(--hair); border-radius: 18px; transition: border-color .15s, transform .3s var(--spring); }
 .fl .tk { width: 34px; height: 34px; }
 .fl .pair { display: flex; }
@@ -308,22 +322,24 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       <h1 id="hero-h">Tacit <em>assets</em></h1>
     </section>
     <ul class="al">
-      <li><a href="/trade/tac/"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span class="t"><span class="n"><b>TAC</b><small class="num" id="px-tac"></small></span><span class="d">Tacit’s token, traded on <span class="cm" role="img" aria-label="Ethereum and Bitcoin" title="Ethereum and Bitcoin"><svg class="tk" aria-hidden="true"><use href="#c-eth"/></svg><svg class="tk" aria-hidden="true"><use href="#c-btc"/></svg></span></span></span><span class="go" aria-hidden="true">→</span></a></li>
-      <li><a href="/teth/"><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg><span class="t"><span class="n"><b>tETH</b><small class="num" id="px-teth"></small></span><span class="d">ETH made private in the Tacit pool.</span></span><span class="go" aria-hidden="true">→</span></a></li>
-      <li><a href="/cbtc/"><svg class="tk" aria-hidden="true"><use href="#tk-cbtc"/></svg><span class="t"><span class="n"><b>cBTC</b><small class="num" id="px-cbtc"></small></span><span class="d">Private bitcoin, 1:1 with BTC locked at your own address.<small>In public: <svg class="tk" aria-hidden="true"><use href="#tk-tacbtc"/></svg>tacBTC</small></span></span><span class="go" aria-hidden="true">→</span></a></li>
-      <li><a href="/vault/#btc"><svg class="tk" aria-hidden="true"><use href="#tk-cusd"/></svg><span class="t"><span class="n"><b>cUSD</b></span><span class="d">A private dollar borrowed against cBTC.<small>In public: <svg class="tk" aria-hidden="true"><use href="#tk-tacusd"/></svg>tacUSD</small></span></span><span class="go" aria-hidden="true">→</span></a></li>
-      <li><a href="/vault/#v=usd"><svg class="tk" aria-hidden="true"><use href="#tk-tacd"/></svg><span class="t"><span class="n"><b>TACD</b></span><span class="d">A dollar borrowed against TAC.</span></span><span class="go" aria-hidden="true">→</span></a></li>
-      <li><a href="/vault/#v=eth"><svg class="tk" aria-hidden="true"><use href="#tk-tace"/></svg><span class="t"><span class="n"><b>TACE</b></span><span class="d">Ether borrowed against TAC.</span></span><span class="go" aria-hidden="true">→</span></a></li>
+      <li><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><div class="t"><a class="m" href="/trade/tac/"><span class="n"><b>TAC</b><small class="num" id="px-tac"></small></span><span class="d">Tacit’s token, traded on <span class="cm" role="img" aria-label="Ethereum and Bitcoin" title="Ethereum and Bitcoin"><svg class="tk" aria-hidden="true"><use href="#c-eth"/></svg><svg class="tk" aria-hidden="true"><use href="#c-btc"/></svg></span></span></a><div class="acts"><span class="vb" aria-hidden="true">Buy TAC <i>→</i></span><a class="ern" id="er-tac" data-sym="TAC" hidden></a></div></div></li>
+      <li><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg><div class="t"><a class="m" href="/teth/"><span class="n"><b>tETH</b><small class="num" id="px-teth"></small></span><span class="d">ETH made private in the Tacit pool.</span></a><div class="acts"><span class="vb" aria-hidden="true">Get tETH <i>→</i></span><a class="ern" id="er-teth" data-sym="tETH" hidden></a></div></div></li>
+      <li><svg class="tk" aria-hidden="true"><use href="#tk-cbtc"/></svg><div class="t"><a class="m" href="/cbtc/"><span class="n"><b>cBTC</b><small class="num" id="px-cbtc"></small></span><span class="d">Private bitcoin, 1:1 with BTC locked at your own address.<small>In public: <svg class="tk" aria-hidden="true"><use href="#tk-tacbtc"/></svg>tacBTC</small></span></a><div class="acts"><span class="vb" aria-hidden="true">Lock BTC <i>→</i></span><a class="ern" id="er-cbtc" data-sym="cBTC" hidden></a></div></div></li>
+      <li><svg class="tk" aria-hidden="true"><use href="#tk-cusd"/></svg><div class="t"><a class="m" href="/vault/#btc"><span class="n"><b>cUSD</b></span><span class="d">A private dollar borrowed against cBTC.<small>In public: <svg class="tk" aria-hidden="true"><use href="#tk-tacusd"/></svg>tacUSD</small></span></a><div class="acts"><span class="vb" aria-hidden="true">Borrow cUSD <i>→</i></span><a class="ern" id="er-cusd" data-sym="cUSD" hidden></a></div></div></li>
+      <li><svg class="tk" aria-hidden="true"><use href="#tk-tacd"/></svg><div class="t"><a class="m" href="/vault/#v=usd"><span class="n"><b>TACD</b></span><span class="d">A dollar borrowed against TAC.</span></a><div class="acts"><span class="vb" aria-hidden="true">Borrow TACD <i>→</i></span><a class="ern" id="er-tacd" data-sym="TACD" hidden></a></div></div></li>
+      <li><svg class="tk" aria-hidden="true"><use href="#tk-tace"/></svg><div class="t"><a class="m" href="/vault/#v=eth"><span class="n"><b>TACE</b></span><span class="d">Ether borrowed against TAC.</span></a><div class="acts"><span class="vb" aria-hidden="true">Borrow TACE <i>→</i></span><a class="ern" id="er-tace" data-sym="TACE" hidden></a></div></div></li>
     </ul>
 
     <section class="fr" aria-labelledby="fr-h">
       <div class="fr-h"><h2 id="fr-h">Farm <em>TAC</em></h2><a href="/rewards/">All rewards <span aria-hidden="true">→</span></a></div>
       <p class="fr-s">Liquidity earns TAC. The deeper the TACD and TACE pools, the better borrowing against TAC works.</p>
-      <ul class="fl">
-        <li><a id="fr-pub" href="/#farm/public"><span class="pair"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg></span><span class="n"><b>TAC / ETH</b><small class="sub">Public farm</small></span><span class="a"><b class="num apr"></b><small>APR now</small><span class="go" aria-hidden="true">→</span></span></a></li>
-        <li><a id="fr-prv" href="/#farm"><span class="pair"><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-cusd"/></svg></span><span class="n"><b>Private farms</b><small class="sub">Hidden pools</small></span><span class="a"><b class="num apr"></b><small>best APR now</small><span class="go" aria-hidden="true">→</span></span></a></li>
-        <li><a id="fr-tacd" href="/vault/#v=usd&amp;pools"><span class="pair"><svg class="tk" aria-hidden="true"><use href="#tk-tacd"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-usdc"/></svg></span><span class="n"><b>TACD / USDC</b><small class="sub">Borrow market</small></span><span class="a"><b class="num apr"></b><small>best APR now</small><span class="go" aria-hidden="true">→</span></span></a></li>
-        <li><a id="fr-tace" href="/vault/#v=eth&amp;pools"><span class="pair"><svg class="tk" aria-hidden="true"><use href="#tk-tace"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg></span><span class="n"><b>TACE / ETH</b><small class="sub">Borrow market</small></span><span class="a"><b class="num apr"></b><small>best APR now</small><span class="go" aria-hidden="true">→</span></span></a></li>
+      <ul class="fl" id="fl">
+        <li><a id="fr-pub" data-pair="TAC ETH" href="/#card=earn:ether:public"><span class="pair"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg></span><span class="n"><b>TAC / ETH</b><small class="sub">Public pool</small></span><span class="a"><b class="num apr"></b><small class="day">APR now</small><span class="go" aria-hidden="true">→</span></span></a></li>
+        <li><a id="fr-p0" data-pair="tETH TAC" href="/#card=earn:ether:p0"><span class="pair"><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg></span><span class="n"><b>tETH / TAC</b><small class="sub">Private pool</small></span><span class="a"><b class="num apr"></b><small class="day">APR now</small><span class="go" aria-hidden="true">→</span></span></a></li>
+        <li><a id="fr-p1" data-pair="tETH cUSD" href="/#card=earn:ether:p1"><span class="pair"><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-cusd"/></svg></span><span class="n"><b>tETH / cUSD</b><small class="sub">Private pool</small></span><span class="a"><b class="num apr"></b><small class="day">APR now</small><span class="go" aria-hidden="true">→</span></span></a></li>
+        <li><a id="fr-p2" data-pair="tETH cBTC" href="/#card=earn:ether:p2"><span class="pair"><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-cbtc"/></svg></span><span class="n"><b>tETH / cBTC</b><small class="sub">Private pool</small></span><span class="a"><b class="num apr"></b><small class="day">APR now</small><span class="go" aria-hidden="true">→</span></span></a></li>
+        <li><a id="fr-tacd" data-pair="TACD USDC" href="/vault/#v=usd&amp;pools"><span class="pair"><svg class="tk" aria-hidden="true"><use href="#tk-tacd"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-usdc"/></svg></span><span class="n"><b>TACD / USDC</b><small class="sub">Borrow market</small></span><span class="a"><b class="num apr"></b><small class="day">APR now</small><span class="go" aria-hidden="true">→</span></span></a></li>
+        <li><a id="fr-tace" data-pair="TACE ETH" href="/vault/#v=eth&amp;pools"><span class="pair"><svg class="tk" aria-hidden="true"><use href="#tk-tace"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg></span><span class="n"><b>TACE / ETH</b><small class="sub">Borrow market</small></span><span class="a"><b class="num apr"></b><small class="day">APR now</small><span class="go" aria-hidden="true">→</span></span></a></li>
       </ul>
     </section>
   </main>
@@ -343,6 +359,6 @@ footer.sf svg.fill { width: 16px; height: 16px; }
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/assets/app.js?cb=09cdb846"></script>
+<script type="module" src="/assets/app.js?cb=160207ea"></script>
 </body>
 </html>

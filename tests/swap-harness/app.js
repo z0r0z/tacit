@@ -41,7 +41,7 @@ function paintEarn() {
   $('#farm').hidden = f.k !== 'precision';
   $('#privfarm').hidden = f.k === 'precision';
   if (f.k === 'precision' && !farmUi) {
-    farmUi = import('/trade/farm.js?cb=e3f70b9d').then(({ mountFarm }) => mountFarm($('#farm'), { ethCall, batch, rpc, api, wallet, W, connect: () => connect.connect(), fmtUnits, parseUnits, esc, usd, ethUsd: () => P.px.ethUsd, txLink, onDone: () => card.readBalances() }));
+    farmUi = import('/trade/farm.js?cb=5f577f5c').then(({ mountFarm }) => mountFarm($('#farm'), { ethCall, batch, rpc, api, wallet, W, connect: () => connect.connect(), fmtUnits, parseUnits, esc, usd, ethUsd: () => P.px.ethUsd, txLink, onDone: () => card.readBalances() }));
   }
   if (f.k !== 'precision') $('#privfarm').innerHTML = `<a class="go priv" href="/#farm/private-${f.pid}">Farm ${esc(f.name)} privately →</a>`;
 }

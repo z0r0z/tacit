@@ -283,6 +283,9 @@ export function makePools({ el, cfg, esc, rpc, ethCall, batch, wallet, W, synthO
     if (!st.acc) label = 'Connect wallet';
     else if (!open && !typedAny) {
       if (st.exists) { dis = true; why = 'Created. Add liquidity to open it for trading.'; }
+    } else if (open && st.sqrtNow != null && !inRange(st)) {
+      // a deposit goes in at the pool's own price, and this one sits outside the band the market trades in: it takes none until it is back inside
+      label = 'Not trading'; dis = true; why = 'The price is outside this market’s range, so it takes no deposits now.';
     } else {
       const pl = planNow(st);
       if (!pl.ok) { dis = true; if (open && pl.why === 'Enter an amount') label = 'Enter an amount'; else if (pl.why !== 'Enter an amount') why = pl.why; }
@@ -295,8 +298,7 @@ export function makePools({ el, cfg, esc, rpc, ethCall, batch, wallet, W, synthO
     }
     if (open && st.acc && !dis) {
       const now = px(st);
-      if (!inRange(st)) note = 'The price is outside this market’s range, so it is not trading now.';
-      else if (now && m.refQps) {
+      if (now && m.refQps) {
         const dev = now > m.refQps ? (now - m.refQps) * 100n / m.refQps : (m.refQps - now) * 100n / m.refQps;
         if (dev >= OFF_PEG) note = `The pool trades ${dev}% away from ${pxText(m, sym, m.refQps)}. A deposit takes the pool as it stands.`;
       }

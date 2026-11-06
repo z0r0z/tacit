@@ -5497,9 +5497,10 @@ await step('rewardsearn', async () => {
     const farms = await rows(n.page, '#farms > .ern:not([data-lp])').then(async (r) => r.concat(await rows(n.page, '#farms > [data-lp]')));
     ok(/^TAC \/ ETH Public · \d[\d,]* TAC a day [\d,]+% APR now Farm$/.test(farms[0]), `rewardsearn: the Precision farm is the first row, with what it streams and its APR (${farms[0]})`);
     ok(farms.length === 6 && /^tETH \/ TAC Private · 554 TAC a day [\d,]+% APR now Farm$/.test(farms[1]) && /^tETH \/ cUSD Private · 332 TAC a day [\d,]+% APR now Farm$/.test(farms[2]) && /^tETH \/ cBTC Private · 222 TAC a day [\d,]+% APR now Farm$/.test(farms[3]), `rewardsearn: then the private farms from the farm program, each with its stream and APR (${farms.slice(1, 4).join(' | ')})`);
-    await until(n.page, () => !document.querySelector('#lp-usd')?.classList.contains('wait') && /\d/.test(document.querySelector('#lp-usd .apr')?.textContent || '') && /\d/.test(document.querySelector('#lp-eth .apr')?.textContent || ''), null, 90000);
-    const lpRows = await rows(n.page, '#farms > [data-lp]'), lpHrefs = await n.page.$$eval('#farms > [data-lp]', (a) => a.map((x) => x.getAttribute('href')));
-    ok(/^TACD \/ USDC Borrow market [\d,]+% best APR now Supply$/.test(lpRows[0]) && /^TACE \/ ETH Borrow market [\d,]+% best APR now Supply$/.test(lpRows[1]) && lpHrefs.join(' ') === '/vault/#v=usd&pools /vault/#v=eth&pools', `rewardsearn: and the TACD and TACE pools the liquidity campaign pays for, each with its APR, leading to its markets on the Borrow page (${lpRows.join(' | ')} ${lpHrefs.join(' ')})`);
+    // a market whose campaign pools all trade outside their bands takes no deposit, so its row is left out (on mainnet, TACD's two pools since early November)
+    await until(n.page, () => ['#lp-usd', '#lp-eth'].every((i) => { const r = document.querySelector(i); return r && !r.classList.contains('wait') && (r.hidden || /\d/.test(r.querySelector('.apr')?.textContent || '')); }), null, 90000);
+    const lpRows = await rows(n.page, '#farms > [data-lp]:not([hidden])'), lpHrefs = await n.page.$$eval('#farms > [data-lp]:not([hidden])', (a) => a.map((x) => x.getAttribute('href')));
+    ok(lpRows.length >= 1 && lpRows.every((r, i) => /^(TACD \/ USDC|TACE \/ ETH) Borrow market [\d,]+% best APR now Supply$/.test(r) && lpHrefs[i] === `/vault/#v=${/^TACD/.test(r) ? 'usd' : 'eth'}&pools`), `rewardsearn: and the TACD and TACE pools the liquidity campaign pays for that trade, each with its APR, leading to its markets on the Borrow page (${lpRows.join(' | ')} ${lpHrefs.join(' ')})`);
     const hrefs = await n.page.$$eval('#farms a[data-priv]', (a) => a.map((x) => x.getAttribute('href')));
     ok(hrefs.join(' ') === '/#farm/private-0 /#farm/private-1 /#farm/private-2', `rewardsearn: each private farm leads to its own farm (${hrefs.join(' ')})`);
     await until(n.page, () => !!document.querySelector('#pts-f')?.textContent && !!document.querySelector('#tk-f')?.textContent, null, 60000);
@@ -5686,7 +5687,7 @@ await step('rewardsfarm', async () => {
       await until(n.page, () => /Your stake/.test(document.querySelector('#fm-pos')?.textContent || '') && !document.querySelector('#fm-pos').hidden, null, 120000);
       ok(!(await text(n.page, '#farm-note')) && (await tacOf(LISTED)) === 0n, 'rewardsfarm: farm it all and the card stays for the stake, with its claim and withdrawal and no "nothing to farm" note');
       const pf = await n.page.$$eval('#fm-prog .fm-pf', (a) => a.map((x) => `${x.getAttribute('href')} ${x.innerText.replace(/\s+/g, ' ').trim()}`));
-      ok(pf.length === 3 && /^\/#farm\/private-0 tETH \/ TAC\s*554 TAC a day\s*[\d,]+%/.test(pf[0]), `rewardsfarm: the module still lists the private farms in the card (hidden here, the rows of the page are those) with their streams and APRs (${pf[0]})`);
+      ok(pf.length === 3 && /^\/#card=earn:ether:p0 tETH \/ TAC\s*554 TAC a day\s*[\d,]+%/.test(pf[0]), `rewardsfarm: the module still lists the private farms in the card (hidden here, the rows of the page are those) with their streams and APRs (${pf[0]})`);
       // A day on: claim what the stake earned, and it is filled in to farm again, with the ETH that pairs with it.
       await rpc('evm_increaseTime', [86400]); await rpc('evm_mine', []);
       const tac0 = await tacOf(LISTED);

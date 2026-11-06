@@ -9,15 +9,16 @@ import { makeConnect } from '/trade/connect.js?cb=a64b9cec';
 import { makeKeySession, signInSheet } from '/trade/key.js?cb=26d9c07b';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=b4055e46';
 import { readRates, readProgram, heldBars, rangesFor, barSize } from '/teth/read.js?cb=bf18d06a';
-import { totalsOf, readEngine, sizeBond, coverage, readPools, poolRows, farmApr, readLocks, readLoans, readHeld, readHistory, positionsIn, lockStep, CBTC_ID, ENGINE, WSTETH } from '/cbtc/read.js?cb=708f1132';
+import { totalsOf, readEngine, sizeBond, coverage, readPools, poolRows, farmApr, readLocks, readLoans, readHeld, readHistory, positionsIn, lockStep, CBTC_ID, ENGINE, WSTETH } from '/cbtc/read.js?cb=a6ce642d';
 import { $, esc, api, now, fmtUnits, parseUnits, grp, usd, short, sig } from '/trade/util.js?cb=e8317464';
 
 const SCAN = 'https://etherscan.io/', MEMPOOL = 'https://mempool.space/';
 const PRESETS = [['0.001 BTC', '0.001'], ['0.01 BTC', '0.01'], ['0.1 BTC', '0.1']];
 const D = { totals: null, engine: null, rates: {}, program: null, pools: null, rows: [], size: null, mine: null, hist: null, live: null, histFailed: false };
 // The totals as the page shows them: the stats' reading, with what the per-lock reads say of the live locks (minted sats, bonds) once those are in: the stats
-// count a spent lock's mint and bond too, until its bond is slashed or taken back.
-const tot = () => (D.totals ? { ...D.totals, ...(D.live || {}) } : null);
+// count a spent lock's mint and bond too, until its bond is slashed or taken back. Their lock count is of live locks only, so their mints are not set against it:
+// the minted figures wait for the per-lock reads (null until then), and only if those cannot be read are the stats' shown, as all time (`allTime`).
+const tot = () => (!D.totals ? null : D.live ? { ...D.totals, ...D.live } : D.histFailed ? { ...D.totals, allTime: true } : { ...D.totals, minted: null, mints: null });
 const S = { mode: 'get', amt: '', seq: 0, chart: 'locked', range: null, unit: 'btc' };
 
 const tn = (s) => esc(s).replace(/\b(tETH|cBTC|cUSD)\b/g, '<span class="tn">$1</span>');   // a token's own spelling inside an uppercase label
@@ -37,9 +38,9 @@ function renderHead() {
   const px = usdBtc(), T = tot();
   $('#px-usd').textContent = px != null ? usd(px) : 'cBTC';
   document.title = px != null ? `cBTC ${usd(px)} · tacit` : 'tacit cBTC';
-  const bits = ['<span title="Lock bitcoin and the same amount is minted as cBTC"><b class="num">1 cBTC</b> = 1 BTC, locked</span>'];
+  const bits = ['<span title="Lock bitcoin and the same amount is minted as cBTC"><b class="num">1 cBTC</b> = 1 BTC</span>'];
   if (T) {
-    bits.push(`<span><b class="num">${esc(btcTxt(T.minted))} cBTC</b>${px != null ? ` (${compact(Number(T.minted) / 1e8 * px)})` : ''} minted</span>`);
+    bits.push(`<span><b class="num">${esc(btcTxt(T.locked))} BTC</b>${px != null ? ` (${compact(Number(T.locked) / 1e8 * px)})` : ''} locked</span>`);
     bits.push(`<span>${grp(T.locks, 0)} lock${T.locks === 1 ? '' : 's'} · ${grp(T.open, 0)} loan${T.open === 1 ? '' : 's'} open</span>`);
   }
   $('#px-sub').innerHTML = T || px != null ? bits.join('') : '<span class="mute">Reading the locks…</span>';
@@ -70,8 +71,12 @@ function renderBacking() {
     rows.push(row('eth', 'ETH bond', `${Math.round(cov.ratio * 100)}% of locked BTC`, `<div class="cov-bar"><i class="eth" style="width:${w.toFixed(1)}%"></i><u style="left:${tick.toFixed(1)}%" title="1.5×"></u></div>`,
       `<b>${wstTxt} wstETH</b> (${compact(cov.bondUsd)}) in ${grp(T.bonds, 0)} bond${T.bonds === 1 ? '' : 's'} · at least 1.5× each (dashed line) · lost if its BTC is spent`));
   } else rows.push(row('eth', 'ETH bond', `${grp(Number(T.bond) / 1e18, 2)} wstETH`, '', 'Held by the collateral engine.'));
-  const mintedPct = T.locked > 0n ? Number(T.minted * 1000n / T.locked) / 10 : null;
-  rows.push(row('cbtc', 'cBTC minted',`${esc(btcTxt(T.minted))} of ${esc(btcTxt(T.locked))}`, mintedPct != null ? `<div class="cov-bar"><i style="width:${Math.min(100, mintedPct)}%"></i></div>` : '', `${grp(T.mints, 0)} of ${grp(T.locks, 0)} live lock${T.locks === 1 ? '' : 's'} minted, 1:1${T.tacbtc > 0n ? ` · ${esc(grp(Number(T.tacbtc) / 1e18, 5))} BTC withdrawn as public tacBTC` : ''}`));
+  // minted, of the live locks: the bar is held empty while their reads are under way, and the stats' all-time figure stands in only if they fail
+  const wait = T.minted == null, mintedPct = !wait && !T.allTime && T.locked > 0n ? Number(T.minted * 1000n / T.locked) / 10 : null;
+  const tb = T.tacbtc > 0n ? ` · ${esc(grp(Number(T.tacbtc) / 1e18, 5))} BTC withdrawn as public tacBTC` : '';
+  rows.push(row('cbtc', 'cBTC minted', wait ? '<i class="sk"></i>' : T.allTime ? `${esc(btcTxt(T.minted))} all time` : `${esc(btcTxt(T.minted))} of ${esc(btcTxt(T.locked))}`,
+    `<div class="cov-bar"><i style="width:${mintedPct != null ? Math.min(100, mintedPct) : 0}%"></i></div>`,
+    wait ? 'Reading the locks…' : T.allTime ? `${grp(T.mints, 0)} minted all time, 1:1, spent and redeemed locks included${tb}` : `${grp(T.mints, 0)} of ${grp(T.locks, 0)} live lock${T.locks === 1 ? '' : 's'} minted, 1:1${tb}`));
   rows.push(row('cusd', 'cUSD lent',`${cusdTxt(T.out)} out`, '', `<b>${grp(T.open, 0)} open loan${T.open === 1 ? '' : 's'}</b> · ${cusdTxt(T.borrowed)} borrowed · ${cusdTxt(T.repaid)} repaid · ${cusdTxt(T.liquidated)} liquidated · ${D.engine?.ratio ?? 150}% to borrow, liquidated under ${D.engine?.liq ?? 130}%`));
   const html = rows.join('');
   if ($('#cov').__h !== html) { $('#cov').__h = html; $('#cov').innerHTML = html; }
@@ -217,7 +222,7 @@ function renderUse() {
     ['#farm', 'Earn TAC', 'Join a farm with cBTC alone.', 'scroll', 'tac'],
     ['/#lock', 'Take a bond back', 'Before minting, or after you redeem. Spending the BTC any other way forfeits it.', '', 'eth']];
   $('#uses').innerHTML = rows.map(([href, t, sub, k, ico]) => `<a class="use" href="${esc(href)}"${k === 'scroll' ? ' data-scroll' : ''}>${mark(ico, 'tk sm')}<b>${esc(t)}</b><span>${esc(sub)}</span><i aria-hidden="true">→</i></a>`).join('');
-  $('#use-note').textContent = 'These open tacit.finance. Use the same wallet or passkey.';
+  $('#use-note').textContent = 'These open on the front page. Use the same wallet or passkey there.';
 }
 
 // ── the farms that pay for the pools that hold cBTC (each pool's price is in the head's dropdown) ──
@@ -236,9 +241,9 @@ function renderFarm() {
   const mine = mineOk() ? positionsIn(D.rows, D.mine.held?.positions) : new Map(), amt = (x, d) => (x < 0.00001 && x > 0 ? 'under 0.00001' : grp(x, d));
   $('#pools').innerHTML = rows.map((r) => {
     const apr = farmApr(r, p, { usdBtc: px, ethUsd: ethUsd(), tacEth: D.rates.tacEth }), dust = (r.depthUsd ?? 0) < DUST_USD, m = mine.get(r.farm.pid);
-    return `<a class="pf" href="/#farm/private-${r.farm.pid}"><span class="nm"><span class="pairtk">${icon('cbtc')}${icon(ico[r.other])}</span>${esc(r.name)}${m ? '<span class="tag">yours</span>' : ''}</span><span class="rt num">${esc(aprTxt(apr))}<small>${esc(Math.round(r.farm.perDay).toLocaleString('en-US'))} TAC a day</small></span><i aria-hidden="true">→</i><span class="sb">${r.depthUsd == null ? '' : `${dust ? 'under $25' : compact(r.depthUsd)} deep · `}${esc(grp(r.cbtc, r.cbtc < 1 ? 5 : 2))} cBTC + ${esc(grp(r.side, r.side < 1 ? 4 : 2))} ${esc(r.other)}</span>${m ? `<span class="sb mine">Yours: ${esc(amt(m.cbtc, 6))} cBTC + ${esc(amt(m.side, 4))} ${esc(r.other)} · ${esc(grp(m.earned, 2))} TAC earned${m.perDay > 0 ? ` · about ${esc(m.perDay >= 10 ? grp(m.perDay, 0) : m.perDay.toFixed(2))} TAC a day` : ''}</span>` : ''}</a>`;
+    return `<a class="pf" href="/#farm/private-${r.farm.pid}"><span class="nm"><span class="pairtk">${icon('cbtc')}${icon(ico[r.other])}</span>${esc(r.name)}${m ? '<span class="tag">yours</span>' : ''}</span><span class="rt num">${esc(aprTxt(apr))}<small>APR</small></span><i aria-hidden="true">→</i><span class="sb">${r.depthUsd == null ? '' : `${dust ? 'under $25' : compact(r.depthUsd)} deep · `}${esc(Math.round(r.farm.perDay).toLocaleString('en-US'))} TAC a day</span>${m ? `<span class="sb mine">Yours: ${esc(amt(m.cbtc, 6))} cBTC + ${esc(amt(m.side, 4))} ${esc(r.other)} · ${esc(grp(m.earned, 2))} TAC earned${m.perDay > 0 ? ` · about ${esc(m.perDay >= 10 ? grp(m.perDay, 0) : m.perDay.toFixed(2))} TAC a day` : ''}</span>` : ''}</a>`;
   }).join('');
-  $('#fm-note').innerHTML = `Join on tacit.finance with cBTC, the paired asset or both.`;
+  $('#fm-note').innerHTML = `Join with cBTC, ${esc(rows.map((r) => r.other).join(' or '))} or both.`;
 }
 
 // ── about ──

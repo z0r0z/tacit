@@ -209,10 +209,10 @@ try {
   // ── the page on its own: what backs cBTC, the pools, the farms ──
   r = await openPage({ width: 1280, height: 1000 });
   p = r.page;
-  await until(p, () => document.querySelector('#px-usd').textContent.startsWith('$') && document.querySelectorAll('#lanes .lane').length === 3 && document.querySelectorAll('.pf').length === 1 && document.querySelector('#cov .cov-row:nth-child(2)') && document.querySelector('#chart .line') && /0\.108213/.test(document.querySelector('#px-sub').textContent));
+  await until(p, () => document.querySelector('#px-usd').textContent.startsWith('$') && document.querySelectorAll('#lanes .lane').length === 3 && document.querySelectorAll('.pf').length === 1 && document.querySelector('#cov .cov-row:nth-child(2)') && document.querySelector('#chart .line') && /0\.113908 BTC/.test(document.querySelector('#px-sub').textContent));
   ok((await text(p, '#px-usd')) === `$${BTC_USD.toLocaleString('en-US')}` && (await p.title()) === `cBTC $${BTC_USD.toLocaleString('en-US')} · tacit`, `the headline is the engine's price of bitcoin (${await text(p, '#px-usd')})`);
   const sub = await text(p, '#px-sub');
-  ok(/1 cBTC = 1 BTC, locked/.test(sub) && /0\.108213 cBTC/.test(sub) && /20 locks · 13 loans open/.test(sub), `the line under it: what is minted, how many locks and loans (${sub})`);
+  ok(/1 cBTC = 1 BTC/.test(sub) && /0\.113908 BTC \(\$[\d.,]+k?\) locked/.test(sub) && /20 locks · 13 loans open/.test(sub), `the line under it: the BTC locked (the figure the stats and the per-lock reads agree on), how many locks and loans (${sub})`);
   await p.evaluate(() => { document.querySelector('#hints').open = true; });                   // the lanes sit in a closed dropdown, whose text is not drawn
   const heads = await p.$$eval('#fm-h, #i-h, #lanes .lane .k', (els) => els.map((e) => e.innerText));
   await p.evaluate(() => { document.querySelector('#hints').open = false; });
