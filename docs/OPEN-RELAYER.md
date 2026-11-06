@@ -47,6 +47,18 @@ A proof lands on the board in one of two ways:
 
 [`worker/src/confidential-open.js`](../worker/src/confidential-open.js) reads these fields and builds the call.
 
+**The board on Nostr.** The same proofs are also posted to public Nostr relays (`wss://relay.damus.io`,
+`wss://nos.lol`, `wss://relay.primal.net`, `wss://offchain.pub`), so the board does not depend on this API.
+
+- **Who posts them:** holders whose page proved an action for anyone to send, /prove/ tabs, and
+  `community-runner` copying this API's board.
+- **The event:** kind 30078 with tags `t` = `tacit-board-v1`, `d` = `tacit-board-v1:<sha256 of the public values>`,
+  a NIP-40 `expiration` and a NIP-13 `nonce` (12 bits of work). The content is JSON
+  `{ v: 1, chainId, pool, type, publicValues, proof, memos, expiresAt }`.
+- **The keys:** each post is signed with a key made for it alone.
+- **Checking:** [`dapp/nostr-board.js`](../dapp/nostr-board.js) posts, reads and checks them. Trust nothing in a post:
+  simulate the settle before sending.
+
 **Running a relayer.** [`worker-relay/src/open-relayer.js`](../worker-relay/src/open-relayer.js) is a
 complete one. It:
 
@@ -64,6 +76,10 @@ RELAYER_KEY=0x… RPC_URL=https://… node src/open-relayer.js     # MARGIN_BPS=
 
 [`tools/community-runner.mjs settles`](../tools/community-runner.mjs) does the same from the repository root with no
 `worker-relay` install, beside the header and proof modes ([COMMUNITY-OPS.md](./COMMUNITY-OPS.md)).
+
+`open-relayer.js` is the smallest one: it reads this API and counts tETH fees only.
+[`tools/community-runner.mjs`](../tools/community-runner.mjs) `settles` also reads the Nostr board and counts TAC
+fees ([COMMUNITY-OPS.md](./COMMUNITY-OPS.md)).
 
 Other senders take jobs too, Tacit's relay among them. Simulate before every send: if you lose the race,
 the cost is that simulation, not a reverted transaction.

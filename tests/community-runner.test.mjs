@@ -8,7 +8,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { readConfig, headersVerdict, attestVerdict, gasAllows, makeSigner, makeRunner, MODES } from '../tools/community-runner.mjs';
-import { POOL, ETH_ASSET_ID, ETH_UNIT_SCALE, SEL_ATTEST, SEL_ATTESTED_DIGEST } from '../dapp/community-ops.js';
+import { POOL, ETH_ASSET_ID, ETH_UNIT_SCALE, SEL_ATTEST, SEL_ATTESTED_DIGEST, TAC_ASSET_ID } from '../dapp/community-ops.js';
+import { makePost } from '../dapp/nostr-board.js';
 
 const ANVIL0 = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80';
 const word = (v) => BigInt(v).toString(16).padStart(64, '0');
@@ -22,7 +23,7 @@ test('configuration: modes, defaults, and what is refused', () => {
   assert.equal(c.rpcUrl, 'https://ethereum-rpc.publicnode.com');
   assert.equal(c.sendRpcUrl, 'https://rpc.flashbots.net/fast?hint=hash');
   assert.equal(c.api, 'https://api.tacit.finance');
-  assert.deepEqual(c.secs, { headers: 300, attest: 60, settles: 15, prove: 10, board: 5 });
+  assert.deepEqual(c.secs, { headers: 300, attest: 60, settles: 15, prove: 10, board: 5, mirror: 60 });
   assert.deepEqual(readConfig({ DRY_RUN: '1' }, ['prove']).modes, ['prove'], 'proving for the market is opt-in: a mode of its own');
   assert.ok(!c.modes.includes('prove'), 'and not part of all');
   assert.equal(c.marginBps, 2000n);
@@ -85,7 +86,7 @@ function pv(wei) {
   head[7] = word(19 * 32);
   return '0x' + word(32) + head.join('') + word(1) + ETH_ASSET_ID.slice(2) + word(wei / ETH_UNIT_SCALE);
 }
-function world({ board = [], proof = null, digest = '0x' + 'aa'.repeat(32), baseFee = 10n ** 9n, refuse = null } = {}) {
+function world({ board = [], proof = null, digest = '0x' + 'aa'.repeat(32), baseFee = 10n ** 9n, refuse = null, apiDown = false, tacPool = null } = {}) {
   const seen = { rpc: [], sent: [], landed: [], gets: [] };
   const json = (b, status = 200) => ({ ok: status < 400, status, json: async () => b, text: async () => String(b) });
   const fetchImpl = async (url, init = {}) => {
@@ -106,6 +107,7 @@ function world({ board = [], proof = null, digest = '0x' + 'aa'.repeat(32), base
       if (method === 'eth_call') {
         const { data, from } = params[0];
         if (data === SEL_ATTESTED_DIGEST) return r(digest);
+        if (tacPool && data.startsWith('0xb5217bb4')) return r(tacPool);                // pools(bytes32): the TAC/tETH pool
         if (data === '0x1fd4827a') return r('0x' + word(1000));                 // tipHeight()
         if (data === '0x2755cd2d') return r('0x' + '11'.repeat(32));            // tip()
         if (from && refuse && data.startsWith(refuse)) return json({ jsonrpc: '2.0', id: 1, error: { code: 3, message: 'execution reverted', data: '0xe677decb' } });
@@ -114,7 +116,7 @@ function world({ board = [], proof = null, digest = '0x' + 'aa'.repeat(32), base
       throw new Error('unstubbed ' + method);
     }
     seen.gets.push(u.pathname);
-    if (u.pathname === '/confidential/open') return json({ pool: POOL, jobs: board });
+    if (u.pathname === '/confidential/open') return apiDown ? json({ error: 'down' }, 502) : json({ pool: POOL, jobs: board });
     if (u.pathname === '/confidential/landed') { seen.landed.push(JSON.parse(init.body)); return json({ ok: true, status: 'settled' }); }
     if (u.pathname === '/reflection/proof') return json({ ok: true, proof });
     if (u.pathname === '/reflection/status') return json({ attestedHeight: 976, confirmations: 24 });
@@ -124,7 +126,7 @@ function world({ board = [], proof = null, digest = '0x' + 'aa'.repeat(32), base
   };
   return { fetchImpl, seen };
 }
-const cfgOf = (env) => readConfig({ RPC_URL: 'http://rpc.test', SEND_RPC_URL: 'http://send.test', API_BASE: 'http://api.test', ESPLORA_URL: 'http://btc.test/api', ONCE: '1', ...env }, []);
+const cfgOf = (env) => readConfig({ RPC_URL: 'http://rpc.test', SEND_RPC_URL: 'http://send.test', API_BASE: 'http://api.test', ESPLORA_URL: 'http://btc.test/api', ONCE: '1', NOSTR: '0', ...env }, []);
 const boardJob = (wei, id = 1) => ({ jobId: '0x' + word(id), type: 'transfer', status: 'open', publicValues: pv(wei), proof: '0x' + 'cd'.repeat(260), memos: ['0x' + 'ee'.repeat(40)], openSince: 1, expiresAt: 0 });
 const quiet = (lines) => (...a) => lines.push(a.join(' '));
 
@@ -152,7 +154,7 @@ test('a live settles pass sends the job that pays, from the runner’s key, and 
   const hash = keccakHex(seen.sent[0]);
   assert.deepEqual(seen.landed, [{ jobId: '0x' + word(2), txHash: hash }], 'the job that pays its 400k gas at 1.1 gwei with 20% to spare, reported by its hash');
   assert.ok(seen.sent[0].includes('717fd7f2'), 'a settle()');
-  assert.ok(lines.some((l) => /landed in block 16, 0\.0020 ETH to 0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266/.test(l)), lines.join('\n'));
+  assert.ok(lines.some((l) => /landed in block 16, 0\.0020 ETH of fees to 0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266/.test(l)), lines.join('\n'));
 });
 
 test('a settle the pool refuses is passed over, and an attest it refuses is not sent', async () => {
@@ -210,4 +212,61 @@ test('board: races the prover board\'s public jobs with the tacit-prover beside 
   jobs = [{ jobId: '0xjob2', stdin, deadline: Math.floor(Date.now() / 1000) + 1, label: 'wrap', race: true }];
   assert.equal(await r.passes.board(), false);
   assert.deepEqual(posted[1], { miner: MINER, jobId: '0xjob2', error: 'too slow for its deadline' });
+});
+
+// The board on Nostr (dapp/nostr-board.js), its relays stood in here: what is posted is kept and read back.
+function relays() {
+  const store = [];
+  class WS {
+    constructor(url) { this.url = url; setTimeout(() => this.onopen?.(), 0); }
+    send(m) {
+      const x = JSON.parse(m), out = (v) => setTimeout(() => this.onmessage?.({ data: JSON.stringify(v) }), 0);
+      if (x[0] === 'EVENT') { store.push(x[1]); out(['OK', x[1].id, true, '']); }
+      if (x[0] === 'REQ') { for (const e of store) out(['EVENT', x[1], e]); out(['EOSE', x[1]]); }
+    }
+    close() {}
+  }
+  return { WS, store };
+}
+
+test('settles: with the API down, a proof posted on Nostr is sent, and no landing is reported to the API', async () => {
+  const { WS, store } = relays();
+  store.push(makePost(boardJob(2n * 10n ** 15n, 7), { pool: POOL }));
+  const { fetchImpl, seen } = world({ apiDown: true });
+  const lines = [];
+  const r = makeRunner(cfgOf({ RUNNER_KEY: ANVIL0, NOSTR: '1', NOSTR_RELAYS: 'wss://a.test' }), { fetchImpl, WS, log: quiet(lines) });
+  assert.equal(await r.passes.settles(), true);
+  assert.equal(seen.sent.length, 1, 'sent');
+  assert.equal(seen.landed.length, 0, 'the API is not told: the chain is the record');
+  assert.ok(lines.some((l) => /read from Nostr/.test(l)), lines.join('\n'));
+});
+
+test('mirror: the API\'s open job no relay carries is posted once, with no key', async () => {
+  const { WS, store } = relays();
+  const { fetchImpl } = world({ board: [boardJob(10n ** 15n, 3)] });
+  const cfg = readConfig({ RPC_URL: 'http://rpc.test', API_BASE: 'http://api.test', ONCE: '1', NOSTR: '1', NOSTR_RELAYS: 'wss://a.test,wss://b.test' }, ['mirror']);
+  const r = makeRunner(cfg, { fetchImpl, WS, log: () => {} });
+  await r.passes.mirror();
+  await r.passes.mirror();
+  assert.equal(store.length, 2, 'one post, to each of the two relays');
+  assert.equal(JSON.parse(store[0].content).type, 'transfer');
+  assert.throws(() => readConfig({ ONCE: '1' }, ['settles']), /RUNNER_KEY/);
+  assert.equal(readConfig({ ONCE: '1' }, ['mirror']).modes[0], 'mirror', 'mirror needs no key');
+});
+
+test('settles: a TAC fee counts at the TAC/tETH pool\'s price, taken at 80%', async () => {
+  const tacPv = (units) => {
+    const head = Array.from({ length: 19 }, () => word(0));
+    head[7] = word(19 * 32);
+    return '0x' + word(32) + head.join('') + word(1) + TAC_ASSET_ID.slice(2) + word(units);
+  };
+  const job = { ...boardJob(0n, 9), publicValues: tacPv(100n * 10n ** 8n) };            // 100 TAC
+  const tacPool = '0x' + word(1) + ETH_ASSET_ID.slice(2) + TAC_ASSET_ID.slice(2) + word(440_000_000n) + word(8_524_000_000_000n) + word(30) + word(1);
+  const none = world({ board: [job] });
+  const r0 = makeRunner(cfgOf({ RUNNER_KEY: ANVIL0 }), { fetchImpl: none.fetchImpl, log: () => {} });
+  assert.equal(await r0.passes.settles(), false, 'with no price read, TAC counts nothing');
+  const { fetchImpl, seen } = world({ board: [job], tacPool });
+  const r = makeRunner(cfgOf({ RUNNER_KEY: ANVIL0 }), { fetchImpl, log: () => {} });
+  assert.equal(await r.passes.settles(), true, '100 TAC (~0.004 ETH) pays 400k gas at 1.1 gwei');
+  assert.equal(seen.sent.length, 1);
 });

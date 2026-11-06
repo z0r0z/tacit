@@ -5,8 +5,11 @@
 //   headers  BitcoinLightRelay.advanceTip, when the next proof is waiting on the relay (dapp/header-relay-advance.js)
 //   attest   a proof Tacit's prover has published and not landed, to attestBitcoinStateProven; first advanceReflectionAncestry()
 //            while the proofs are more than 2,016 blocks behind the relay (dapp/community-ops.js)
-//   settles  the open board's settles whose tETH fee covers their gas with a margin, each reported landed (dapp/community-ops.js)
+//   settles  the open board's settles whose fee (tETH, or TAC at 80% of the TAC/tETH pool's price) covers their gas with a margin, read
+//            from Tacit's API and from public Nostr relays (dapp/nostr-board.js), so it goes on when the API does not; each pass also copies
+//            the API's waiting proofs to the relays (dapp/community-ops.js)
 //   all      the three, each on its own cadence (the default)
+//   mirror   (opt-in, not in `all`, needs no key) only copy the API's waiting proofs to the Nostr relays, so the board stays public
 //   prove    (opt-in, not in `all`) take the proof market's orders: prove each holder's wrap on this machine with tacit-prover and be paid in TAC
 //            from their permit when the pool accepts it. Run `node tools/community-runner.mjs prove` beside tacit-prover (127.0.0.1:47815).
 //   board    (opt-in, not in `all`, needs no key) race Tacit's own prover for the prover board's public jobs: ops whose program input holds
@@ -18,6 +21,7 @@
 // time, each waited for before the next.
 //
 //   RUNNER_KEY=0x… node tools/community-runner.mjs [headers|attest|settles|all]
+//   node tools/community-runner.mjs mirror                       keep the board public on Nostr, no key
 //   DRY_RUN=1 ONCE=1 node tools/community-runner.mjs            what it would send, then exit; with no key it simulates from a throwaway one
 //
 // Env:
@@ -31,7 +35,9 @@
 //   HEADERS_MIN_BEHIND=3   headers go out once the relay is this many blocks behind Bitcoin's tip less 2 and the next proof waits on it
 //   HEADERS_NEED=<height>  carry the relay to this Bitcoin height (a lock's or deposit's block + 24) whatever the pacing
 //   ATTEST_AFTER_SECS=120  how long a published proof is left to Tacit's own prover before this key sends it
-//   MARGIN_BPS=2000        a settle is sent when its tETH fee pays its gas with this much to spare (2000 = 20%)
+//   MARGIN_BPS=2000        a settle is sent when its fee pays its gas with this much to spare (2000 = 20%)
+//   NOSTR=1                read and copy the board on Nostr (0: the API's board alone). Needs a WebSocket: Node 22, or Node 20 with
+//                          --experimental-websocket          NOSTR_RELAYS=wss://…,wss://…   the relays (default dapp/nostr-board.js's)
 //   MAX_GAS_GWEI=5         headers, attests and ancestry calls wait while the base fee is above this (0 = no ceiling); settles are
 //                          priced by their fee instead
 //   PRIORITY_GWEI=0.1      the tip each transaction offers
@@ -47,9 +53,10 @@ import { makeHeaderRelayAdvance } from '../dapp/header-relay-advance.js';
 import { makeMarketSolver } from '../worker-relay/src/lib/market-solver.js';
 import { encodeClaim, encodeFulfill } from '../dapp/proof-market.js';
 import {
-  POOL, SEL_ANCESTRY, SETTLE_GAS, readProof, attestRefusal, encodeAttest, needsAncestry, ancestryCalls, ethText, ethFeeWei, feeCovers,
+  POOL, SEL_ANCESTRY, SETTLE_GAS, readProof, attestRefusal, encodeAttest, needsAncestry, ancestryCalls, ethText, feeWeiOf, readPrices, feeCovers,
   boardSummary, pickSettle, readBoard, reportLanded, settleCalldata,
 } from '../dapp/community-ops.js';
+import { makeNostrBoard, mergeBoards, NOSTR_RELAYS } from '../dapp/nostr-board.js';
 
 secp.etc.hmacSha256Sync = (key, ...m) => hmac(sha256, key, secp.etc.concatBytes(...m));
 
@@ -65,19 +72,20 @@ export function readConfig(env = process.env, argv = process.argv.slice(2)) {
   const v = (k, d) => (env[k] != null && String(env[k]).trim() !== '' ? String(env[k]).trim() : d);
   const num = (k, d) => { const n = Number(v(k, d)); if (!Number.isFinite(n) || n < 0) throw new Error(`${k} must be a number of 0 or more`); return n; };
   const mode = String(argv.find((a) => !a.startsWith('-')) || v('MODE', 'all')).toLowerCase();
-  if (mode !== 'all' && mode !== 'prove' && mode !== 'board' && !MODES.includes(mode)) throw new Error(`unknown mode "${mode}": headers, attest, settles, prove, board or all`);
+  if (mode !== 'all' && mode !== 'prove' && mode !== 'board' && mode !== 'mirror' && !MODES.includes(mode)) throw new Error(`unknown mode "${mode}": headers, attest, settles, prove, board, mirror or all`);
   const need = v('HEADERS_NEED', null);
   if (need != null && !/^\d{1,8}$/.test(need)) throw new Error('HEADERS_NEED must be a Bitcoin block height');
   const dryRun = v('DRY_RUN', '0') === '1', key = v('RUNNER_KEY', null);
   const miner = v('MINER', null);
   if (miner != null && !/^0x[0-9a-fA-F]{40}$/.test(miner)) throw new Error('MINER must be the 0x address the board credits');
   if (mode === 'board' && !key && !miner) throw new Error('set MINER=0x<the address the board credits>');
-  if (!key && !dryRun && mode !== 'board') throw new Error('set RUNNER_KEY=0x<a key holding a little ETH for gas>, or DRY_RUN=1 to see what would be sent');
+  if (!key && !dryRun && mode !== 'board' && mode !== 'mirror') throw new Error('set RUNNER_KEY=0x<a key holding a little ETH for gas>, or DRY_RUN=1 to see what would be sent');
   return {
     modes: mode === 'all' ? MODES.slice() : [mode], dryRun, once: v('ONCE', '0') === '1', key, miner,
     rpcUrl: v('RPC_URL', 'https://ethereum-rpc.publicnode.com'), sendRpcUrl: v('SEND_RPC_URL', 'https://rpc.flashbots.net/fast?hint=hash'),
     api: v('API_BASE', 'https://api.tacit.finance').replace(/\/+$/, ''), esplora: v('ESPLORA_URL', 'https://blockstream.info/api').replace(/\/+$/, ''),
-    secs: { headers: num('HEADERS_SECS', 300), attest: num('ATTEST_SECS', 60), settles: num('SETTLES_SECS', 15), prove: num('PROVE_SECS', 10), board: num('BOARD_SECS', 5) },
+    secs: { headers: num('HEADERS_SECS', 300), attest: num('ATTEST_SECS', 60), settles: num('SETTLES_SECS', 15), prove: num('PROVE_SECS', 10), board: num('BOARD_SECS', 5), mirror: num('MIRROR_SECS', 60) },
+    nostr: v('NOSTR', '1') !== '0', nostrRelays: v('NOSTR_RELAYS', NOSTR_RELAYS.join(',')).split(',').map((x) => x.trim()).filter((x) => /^wss:\/\//.test(x)),
     marketAddr: v('MARKET_ADDR', '0x0000000033Dd45B1686Ba37e5F6e4ABDdaC17609'), deviceProver: v('DEVICE_PROVER', 'http://127.0.0.1:47815').replace(/\/+$/, ''), minTacWei: BigInt(v('MIN_TAC_WEI', '0')),
     headersMinBehind: num('HEADERS_MIN_BEHIND', 3), headersNeed: need == null ? null : Number(need),
     attestAfterMs: num('ATTEST_AFTER_SECS', 120) * 1000, marginBps: BigInt(Math.round(num('MARGIN_BPS', 2000))),
@@ -125,7 +133,7 @@ export const throwawayKey = () => '0x' + bytesToHex(secp.utils.randomPrivateKey(
 
 class DryRun extends Error {}
 
-export function makeRunner(cfg, { log = (...a) => console.log(`[runner ${new Date().toISOString()}]`, ...a), fetchImpl = (...a) => globalThis.fetch(...a) } = {}) {
+export function makeRunner(cfg, { log = (...a) => console.log(`[runner ${new Date().toISOString()}]`, ...a), fetchImpl = (...a) => globalThis.fetch(...a), WS = globalThis.WebSocket } = {}) {
   const signer = makeSigner(cfg.key || throwawayKey());
   const from = signer.address;
   async function rpcAt(url, method, params) {
@@ -234,26 +242,70 @@ export function makeRunner(cfg, { log = (...a) => console.log(`[runner ${new Dat
     return sent('attest', `attestBitcoinStateProven (Bitcoin to ${read.rec.attestedTo})`, await settled(sendTx({ to: POOL, data, gas: (gas * 125n) / 100n, label: 'attestBitcoinStateProven' })));
   }
 
+  // The board on Nostr (nostr-board.js), read at most once a minute; TAC's worth to a sender (community-ops.js readPrices), likewise.
+  const nb = cfg.nostr && typeof WS === 'function' ? makeNostrBoard({ pool: POOL, relays: cfg.nostrRelays, WS }) : null;
+  if (cfg.nostr && !nb && (cfg.modes.includes('settles') || cfg.modes.includes('mirror'))) log('Nostr board off: this Node has no WebSocket (use Node 22, or run with --experimental-websocket); the API\'s board alone');
+  let nostrAt = 0, nostrJobs = null, pricesAt = 0, prices = null;
+  async function nostrRead() {
+    if (nb && Date.now() - nostrAt > 60_000) { nostrAt = Date.now(); nostrJobs = await nb.read().catch(() => nostrJobs); }
+    return nostrJobs;
+  }
+  async function priced() {
+    if (Date.now() - pricesAt > 60_000) { pricesAt = Date.now(); prices = await readPrices({ call }).catch(() => prices); }
+    return prices;
+  }
+  // The API's board and Nostr's as one; either may be missing, not both.
+  async function boards() {
+    const [a, n] = await Promise.allSettled([readBoard({ api: cfg.api, fetchImpl }), nostrRead()]);
+    const api = a.status === 'fulfilled' ? a.value.jobs : null, nostr = n.status === 'fulfilled' ? n.value : null;
+    if (!api && !nostr) throw new Error(`neither the API's board nor the Nostr relays answered (${a.reason?.message || 'no relay'})`);
+    return { api, nostr, jobs: mergeBoards(api, nostr) };
+  }
+  // The API's open jobs that no relay carries yet, posted from here: up to four a pass, each once an hour.
+  const mirrored = new Map();
+  async function mirrorJobs(api, nostr) {
+    if (!nb || !api || !nostr) return 0;
+    const on = new Set(nostr.map((j) => j.publicValues.toLowerCase())), now = Date.now();
+    for (const [k, at] of mirrored) if (now - at > 3600_000) mirrored.delete(k);
+    let n = 0;
+    for (const j of api.filter((x) => x.status === 'open' && x.publicValues && x.proof && Array.isArray(x.memos) && !on.has(x.publicValues.toLowerCase()) && !mirrored.has(x.publicValues.toLowerCase())).slice(0, 4)) {
+      mirrored.set(j.publicValues.toLowerCase(), now);
+      if (cfg.dryRun) { log(`DRY_RUN would post job ${String(j.jobId).slice(0, 10)} (${j.type}) to ${nb.relays.length} Nostr relays`); n++; continue; }
+      const r = await nb.post(j).catch(() => null);
+      if (r?.relays.length) { n++; log(`mirror: job ${String(j.jobId).slice(0, 10)} (${j.type}) posted to ${r.relays.length} of ${nb.relays.length} Nostr relays`); }
+    }
+    return n;
+  }
+  async function mirror() {
+    const { api, nostr } = await boards();
+    if (!nb) { say('mirror', 'Nostr board off: nothing to copy to'); return false; }
+    const n = await mirrorJobs(api, nostr);
+    if (!n) say('mirror', api ? `the API's ${api.length} job(s) are on Nostr already, or none is open` : 'the API\'s board did not answer');
+    return false;                                                   // (each pass waits its cadence: the relays are read at most once a minute)
+  }
+
   const tried = new Map();                                          // jobId -> when the pool last refused it here: passed over for 10 minutes
   async function settles() {
-    const { jobs } = await readBoard({ api: cfg.api, fetchImpl });
+    const b = await boards(), jobs = b.jobs, px = await priced();
+    mirrorJobs(b.api, b.nostr).catch(() => {});
     if (!jobs.length) { say('settles', 'nothing waiting on the board'); return false; }
     // Deadlines are the chain's: a job is judged by the latest block's time, as the pool judges it.
     const blk = await latestBlock(), nowMs = Number(BigInt(blk.timestamp)) * 1000, unit = BigInt(blk.baseFeePerGas) + cfg.priorityWei, now = Date.now();
-    const s = boardSummary(jobs, { nowMs });
+    const s = boardSummary(jobs, { nowMs, prices: px });
     if (!s.waiting) { say('settles', `${jobs.length} on the board, none open to send`); return false; }
     const skip = new Set([...tried].filter(([, at]) => now - at < 10 * 60_000).map(([id]) => id));
-    const job = pickSettle(jobs, { costWei: SETTLE_GAS * unit, marginBps: cfg.marginBps, nowMs, skip });
-    if (!job) { say('settles', `${s.waiting} waiting (${ethText(s.feeWei)} ETH in tETH fees): none pays its gas at ${gweiText(unit)} gwei with MARGIN_BPS=${cfg.marginBps} to spare`); return false; }
-    const data = settleCalldata(job), fee = ethFeeWei(job.publicValues);
+    const job = pickSettle(jobs, { costWei: SETTLE_GAS * unit, marginBps: cfg.marginBps, nowMs, skip, prices: px });
+    if (!job) { say('settles', `${s.waiting} waiting (${ethText(s.feeWei)} ETH in fees): none pays its gas at ${gweiText(unit)} gwei with MARGIN_BPS=${cfg.marginBps} to spare`); return false; }
+    const data = settleCalldata(job), fee = feeWeiOf(job.publicValues, px);
     let gas;
     try { gas = await simulate(POOL, data); } catch (e) { tried.set(job.jobId, now); say('settles', `job ${job.jobId.slice(0, 10)}: the pool would not take it now (${String(e.message).slice(0, 120)})`); return true; }
     if (!feeCovers(fee, gas * unit, cfg.marginBps)) { tried.set(job.jobId, now); say('settles', `job ${job.jobId.slice(0, 10)}: at its own estimate of ${gas} gas its fee of ${ethText(fee)} ETH no longer pays with the margin`); return true; }
     say('settles', `job ${job.jobId.slice(0, 10)} (${job.type}): pays ${ethText(fee)} ETH, about ${ethText(gas * unit)} ETH of gas`);
     const r = await settled(sendTx({ to: POOL, data, gas: (gas * 12n) / 10n, label: `settle ${job.jobId.slice(0, 10)}` }));
     if (!r || !ok(r.receipt)) { tried.set(job.jobId, now); return sent('settles', `settle ${job.jobId.slice(0, 10)}`, r); }
-    const rep = await reportLanded({ api: cfg.api, fetchImpl, jobId: job.jobId, txHash: r.hash }).catch((e) => ({ ok: false, status: e.message }));
-    log(`settles: job ${job.jobId.slice(0, 10)} landed in block ${BigInt(r.receipt.blockNumber)}, ${ethText(fee)} ETH to ${from}; reported ${rep.ok ? 'and recorded' : `(the API answered ${rep.status})`}`);
+    // (a job read from Nostr alone has no API record: the chain is its record)
+    const rep = job.via === 'nostr' ? { ok: true, nostr: true } : await reportLanded({ api: cfg.api, fetchImpl, jobId: job.jobId, txHash: r.hash }).catch((e) => ({ ok: false, status: e.message }));
+    log(`settles: job ${job.jobId.slice(0, 10)} landed in block ${BigInt(r.receipt.blockNumber)}, ${ethText(fee)} ETH of fees to ${from}; ${rep.nostr ? 'read from Nostr' : `reported ${rep.ok ? 'and recorded' : `(the API answered ${rep.status})`}`}`);
     return true;
   }
 
@@ -349,12 +401,12 @@ export function makeRunner(cfg, { log = (...a) => console.log(`[runner ${new Dat
     const [chain, bal, code] = await Promise.all([rpc('eth_chainId', []), rpc('eth_getBalance', [from, 'latest']), rpc('eth_getCode', [from, 'latest'])]);
     if (Number(chain) !== 1) throw new Error(`RPC_URL is on chain ${Number(chain)}, not Ethereum mainnet`);
     log(`${cfg.dryRun ? 'DRY_RUN: nothing is sent. ' : ''}${cfg.key ? 'key' : 'throwaway key'} ${from}, ${ethText(BigInt(bal))} ETH; modes ${cfg.modes.join(', ')}; sends to ${new URL(cfg.sendRpcUrl).host}`);
-    if (!cfg.dryRun && BigInt(bal) === 0n) log('this key holds no ETH: every send would fail until it has some for gas');
+    if (!cfg.dryRun && BigInt(bal) === 0n && cfg.modes.some((m) => m !== 'mirror' && m !== 'board')) log('this key holds no ETH: every send would fail until it has some for gas');
     // The board pays its fees in ETH to the sending account; an account with code (an EIP-7702 delegation) runs that code on them.
     if (code && code !== '0x') log(`${from} has code (${code.slice(0, 10)}…): the board's ETH fees go to that code. Use a fresh key`);
   }
 
-  return { from, start, passes: { headers, attest, settles, prove, board } };
+  return { from, start, passes: { headers, attest, settles, prove, board, mirror } };
 }
 
 async function main() {

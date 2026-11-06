@@ -12,7 +12,7 @@ The page and the runner build the same calls from the same modules:
 
 ## Run it
 
-Node 20 or later.
+Node 22 or later. Node 20 runs everything but the Nostr board unless started with `--experimental-websocket`.
 
 ```sh
 git clone https://github.com/src-company/tacit
@@ -20,6 +20,7 @@ cd tacit && npm ci --omit=dev
 DRY_RUN=1 ONCE=1 node tools/community-runner.mjs           # what it would send now; no key needed
 RUNNER_KEY=0x… node tools/community-runner.mjs             # all three modes, each on its own loop
 RUNNER_KEY=0x… node tools/community-runner.mjs settles     # one mode: headers, attest or settles
+node tools/community-runner.mjs mirror                       # keep the board public on Nostr; no key, no gas
 ```
 
 Use a fresh key that holds only ETH for gas. The board pays its fees to the sending account, and an account with
@@ -39,6 +40,8 @@ code (an EIP-7702 delegation) runs that code on them; the runner says so at star
 | `HEADERS_NEED` | | A Bitcoin height to carry the relay to, whatever the pacing: a cBTC lock's or bridge deposit's block + 24. |
 | `ATTEST_AFTER_SECS` | 120 | See *attest*. |
 | `MARGIN_BPS` | 2000 | See *settles*. |
+| `NOSTR` | 1 | Read and copy the board on public Nostr relays (see *settles*). 0: the API's board alone. |
+| `NOSTR_RELAYS` | `wss://relay.damus.io`, `wss://nos.lol`, `wss://relay.primal.net`, `wss://offchain.pub` | Comma separated. |
 | `MAX_GAS_GWEI` | 5 | Headers, attests and ancestry calls wait while the base fee is above this. 0 turns the ceiling off. |
 | `PRIORITY_GWEI` | 0.1 | The tip each transaction offers. |
 
@@ -78,20 +81,36 @@ Lands a proof of Bitcoin's state that Tacit's prover has published (`GET /reflec
 
 ### settles
 
-Sends the open board's settles (`GET /confidential/open`, see [OPEN-RELAYER.md](./OPEN-RELAYER.md)) with
-`ConfidentialPool.settle(publicValues, proof, memos)`, and reports each landing (`POST /confidential/landed`).
+Sends the open board's settles with `ConfidentialPool.settle(publicValues, proof, memos)`. The board is read from
+two places, and either one alone is enough:
+
+- Tacit's API (`GET /confidential/open`, see [OPEN-RELAYER.md](./OPEN-RELAYER.md)). A landing is reported back
+  (`POST /confidential/landed`).
+- Public Nostr relays: proofs that holders, /prove/ tabs and other runners posted there
+  ([`dapp/nostr-board.js`](../dapp/nostr-board.js)). Each pass also copies the API's open jobs that no relay carries
+  yet, so the board stays public if the API stops answering. A job read from Nostr alone needs no report: the chain
+  is its record.
 
 - **When.** A job is open (no other sender has taken it), whole, and more than two minutes from its deadline, by
-  the latest block's time. Of those, the runner takes the oldest whose tETH fee pays its gas with `MARGIN_BPS` to
+  the latest block's time. Of those, the runner takes the oldest whose fee pays its gas with `MARGIN_BPS` to
   spare: first at 600,000 gas, then again at the job's own estimate. A job the pool refuses in simulation is passed
   over for ten minutes.
+- **What a fee is worth.** tETH legs at their face value in ETH. TAC legs at 80% of the TAC/tETH pool's spot price,
+  read from the pool's reserves at most once a minute. The discount covers the price risk of being paid in TAC.
+  Moving that price far enough to fool a sender costs more than the gas a sender could lose.
 - **Costs.** A recent transfer's settle used 348,054 gas; the runner prices a job at 600,000 before its own estimate.
 - **Earns.** Each fee leg the proof binds, paid to the sending account inside the same transaction: tETH legs as
-  ETH. A fork of mainnet replaying a real settle paid the runner its 0.0062 ETH fee less 0.000084 ETH of gas. Legs in
-  other assets are paid too but are not counted when choosing what to send. Jobs reach the board when Tacit's relay
-  has proved a settle it is not sending yet, or when a holder posts a proof made with their own prover; Tacit's
-  relay sends its own as soon as it can, so the first sender is paid.
+  ETH, TAC legs as TAC. A fork of mainnet replaying a real settle paid the runner its 0.0062 ETH fee less 0.000084 ETH
+  of gas. Legs in other assets are paid too but are not counted when choosing what to send. Jobs reach the board when
+  Tacit's relay has proved a settle it is not sending yet, or when a holder posts a proof made with their own prover
+  (tacit.finance offers this when its relay is not proving: the holder's computer proves the action with a fee for
+  its sender). Tacit's relay sends its own as soon as it can, so the first sender is paid.
 - The board API allows a burst of 30 reads and one every 2 seconds after that, per IP address.
+
+### mirror (opt-in, not part of `all`)
+
+Copies the API's open jobs to the Nostr relays, as *settles* does on each pass, and sends nothing. It needs no key
+and no gas, so anyone can keep the board public. Up to four jobs a minute, each posted once an hour.
 
 ### prove (opt-in, not part of `all`)
 
