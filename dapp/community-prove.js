@@ -56,7 +56,7 @@ const count = (n, one) => `${n} ${n === 1 ? one : `${one}s`}`;
 export function mineLines(pool, mine, { tally = null, address = null, nowSec = Date.now() / 1000 } = {}) {
   const t = mineTerms(pool, mine, nowSec);
   const pays = !t ? null
-    : `Up to ${tacText(t.perProofWei)} TAC a proof${t.proofsPerDay ? `, ${t.proofsPerDay} proofs a day` : ''}`;
+    : `Up to ${tacText(t.perProofWei)} TAC a proof${t.proofsPerDay ? `, up to ${t.proofsPerDay} a day` : ''}`;
   const me = cleanAddress(address)?.toLowerCase();
   const row = me && Array.isArray(tally?.miners) ? tally.miners.find((m) => String(m?.miner).toLowerCase() === me) : null;
   const today = !me || !Array.isArray(tally?.miners) ? null

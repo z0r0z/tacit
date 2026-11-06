@@ -57,7 +57,7 @@ test('a proof pays its points times the cap, and the daily limit is the pool\'s'
 test('the card says what pays in a line, what the address made today, and what it has been credited', () => {
   const tally = { day: 20757, over: false, pointsPerProof: 20, miners: [{ miner: ADDR.toLowerCase(), proofs: 2, points: 40 }, { miner: OTHER, proofs: 1, points: 20 }] };
   const l = mineLines(POOL, { ...MINE, account: { address: ADDR, creditedWei: '6200000000000000000' } }, { tally, address: ADDR, nowSec: NOW });
-  assert.equal(l.pays, 'Up to 0.2 TAC a proof, 30 proofs a day');
+  assert.equal(l.pays, 'Up to 0.2 TAC a proof, up to 30 a day');
   assert.equal(mineLines({ ...POOL, terms: { pointsPerProof: 20, proofsPerMinerDay: null } }, MINE, { tally, address: ADDR, nowSec: NOW }).pays, 'Up to 0.2 TAC a proof', 'no count a day, none said');
   assert.equal(l.today, '2 proofs, 40 points today');
   assert.equal(l.credited, '6.2 TAC credited');
@@ -81,7 +81,7 @@ test('the pool tallies by UTC day', () => {
 
 test('a change of terms on the service changes the card', () => {
   const l = mineLines({ ...POOL, terms: { pointsPerProof: 10, proofsPerMinerDay: 12 } }, { ...MINE, terms: { ...MINE.terms, capWeiPerPoint: '50000000000000000' } }, { nowSec: NOW });
-  assert.equal(l.pays, 'Up to 0.5 TAC a proof, 12 proofs a day');       // 10 × 0.05
+  assert.equal(l.pays, 'Up to 0.5 TAC a proof, up to 12 a day');       // 10 × 0.05
 });
 
 test('nothing is promised when mining does not pay: off, ended, no terms today, or unreadable', () => {

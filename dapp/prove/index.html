@@ -21,8 +21,8 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /prove/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/prove/app.js?cb=74856eb3">
-<link rel="modulepreload" href="/community-prove.js?cb=55393eb1">
+<link rel="modulepreload" href="/prove/app.js?cb=6387efa1">
+<link rel="modulepreload" href="/community-prove.js?cb=199f0ad4">
 <link rel="modulepreload" href="/prove/view.js?cb=80de18a0">
 <link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
@@ -628,7 +628,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
           <div class="kv" id="run-row" hidden><span>Since the node started</span><b id="run">0</b></div>
           <div class="kv" id="paid-row" hidden><span>Paid so far</span><b id="paid">—</b></div>
         </div>
-        <p class="hint">Your node proves your own deposits too. <a href="/">Make a private deposit</a> and watch it land as a block.</p>
+        <p class="hint">When the app's relay is busy, it can prove your own deposits on this node, free, and nothing about them leaves this computer. <a href="/">Make a private deposit</a></p>
       </section>
 
       <section class="panel feed" aria-label="Activity" data-card="activity">
@@ -640,7 +640,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
     </div>
     <div class="cols pair">
       <section class="panel side" aria-labelledby="h-gpu" data-card="gpu">
-        <p class="eyebrow"><span>NVIDIA GPU, 24 GB or more</span></p>
+        <p class="eyebrow"><span>NVIDIA GPU</span></p>
         <h3 id="h-gpu">Prove Bitcoin batches<span id="btc-pay"></span></h3>
         <p class="hint">GPUs take turns proving the batches that carry Bitcoin's state into the pool, and mine salts between turns. No key, no ETH.</p>
         <div class="pair"><pre class="cmd"><code id="gpu-cmd">curl -fsSL https://tacit.finance/prove-gpu.sh | sh -s -- 0xYourAddress</code></pre><button class="btn ghost" id="gpu-copy" type="button">Copy</button></div>
@@ -649,12 +649,12 @@ footer.sf svg.fill { width: 16px; height: 16px; }
           <div class="kv" id="gpu-me-row" hidden><span>Your GPU</span><b id="gpu-me">—</b></div>
           <div class="kv"><span>Paid</span><b>each UTC day · <a href="/rewards/">Rewards</a></b></div>
         </div>
-        <p class="hint">x86-64 Linux, CUDA 12: an RTX 3090, 4090, 5090, A5000 or bigger. A smaller card gets the regular node. Windows (WSL 2) is untested. <code>--status</code> in place of the address checks on it.</p>
+        <p class="hint">x86-64 Linux, CUDA 12. Bitcoin batches need 24 GB or more: an RTX 3090, 4090, 5090, A5000 or bigger. A smaller card gets the regular node, proving on the CPU. Windows (WSL 2) is untested. <code>--status</code> in place of the address checks on it.</p>
       </section>
       <section class="panel side" aria-labelledby="h-salt" data-card="salts">
         <p class="eyebrow"><span>Between proofs</span></p>
-        <h3 id="h-salt">Mine deploy addresses<span id="salt-pay"></span></h3>
-        <p class="hint" id="salt-day">Your node grinds salts for Tacit's next contracts while it waits. A proof always comes first.</p>
+        <h3 id="h-salt">Mine contract addresses<span id="salt-pay"></span></h3>
+        <p class="hint" id="salt-day">While it waits, your node searches for the addresses Tacit's next contracts deploy to, the ones starting with the most zeros. A proof always comes first.</p>
         <p class="eyebrow" id="salt-bank-h" hidden></p>
         <ol id="salt-bank" class="bank"></ol>
       </section>
@@ -737,7 +737,7 @@ node tools/community-runner.mjs mirror   # no key: keeps the board public on Nos
     </div>
     <div class="callout">
       <p>Each proof covers one batch of Bitcoin blocks. <a href="/prove/#gpu">GPUs on this page</a> take turns making them for TAC; with none online, Tacit’s prover makes it on the Succinct network, paid in <a href="https://etherscan.io/address/0x6BEF15D938d4E72056AC92Ea4bDD0D76B1C4ad29" target="_blank" rel="noopener">PROVE</a>.</p>
-      <p>Tacit’s prover looks for a new batch every 5 minutes. Anyone can run it on the same public inputs with their own Succinct account: <a href="https://github.com/src-company/tacit/blob/main/worker-relay/src/reflection-folder.js" target="_blank" rel="noopener">reflection-folder.js</a>.</p>
+      <p>Tacit’s prover looks for a new batch every 30 seconds. Anyone can run it on the same public inputs with their own Succinct account: <a href="https://github.com/src-company/tacit/blob/main/worker-relay/src/reflection-folder.js" target="_blank" rel="noopener">reflection-folder.js</a>.</p>
     </div>
   </section>
     </div>
@@ -767,6 +767,6 @@ node tools/community-runner.mjs mirror   # no key: keeps the board public on Nos
 
 <div id="toast-container" class="toasts" popover="manual"></div>
 
-<script type="module" src="/prove/app.js?cb=74856eb3"></script>
+<script type="module" src="/prove/app.js?cb=6387efa1"></script>
 </body>
 </html>

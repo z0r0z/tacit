@@ -1,7 +1,7 @@
 // /prove/: the network's blocks as they land, the proofs waiting and the provers making them, and this computer's own prover, started
 // and paused from here. The computer's tacit-prover (installed once with the line the page shows) answers on 127.0.0.1; the API's chain
 // (GET /prover/blocks) and proof pool, and the points service, say what the network did and what an address has made and been paid.
-import { cleanAddress, proveCommand, utcDay, mineLines } from '/community-prove.js?cb=55393eb1';
+import { cleanAddress, proveCommand, utcDay, mineLines } from '/community-prove.js?cb=199f0ad4';
 import { localState, jobView, headline, isPhone, isWindows, setupText } from '/prove/view.js?cb=80de18a0';
 import { invaderSvg, gpuSvg } from '/prove/invader.js?cb=e8a5ec59';
 import { short, cells, opsText, tac, rewardWei, ago, took, fresh, blockAgo, kindOf, KINDS, kindText, median, untilDayEnds, cleanBlock, cleanProof, cleanMiner } from '/prove/chain.js?cb=8a988a34';
@@ -328,7 +328,7 @@ async function toggle() {
     const j = await r.json().catch(() => null);
     if (!r.ok) throw new Error(j?.error || `tacit-prover answered ${r.status}`);
     mine = j;
-    say(sw ? `This computer now pays ${short(a)}.` : on ? 'Started. The first proof on this computer downloads 6.2 GB first.' : (mine.job ? 'Pausing after the proof under way.' : 'Paused.'));
+    say(sw ? `This computer now pays ${short(a)}.` : on ? 'Started. The first proof downloads 6.2 GB before it begins.' : (mine.job ? 'Pausing after the proof under way.' : 'Paused.'));
   } catch (e) { say(e.message || 'tacit-prover did not answer.', true); }
   busy = false; paint();
 }
@@ -389,7 +389,7 @@ function paintSalt() {
   $('#salt-pay').textContent = potWei ? ` · up to ${tac(potWei)} TAC today` : '';
   // A node from before salt mining (its /mine has no `salt`) is told how to start: the setup line installs the newest.
   if (mine && !('salt' in mine)) $('#salt-day').textContent = 'Run the setup line again to update tacit-prover: it then mines salts between proofs.';
-  else if (salts) $('#salt-day').textContent = `Shared by work: ${salts.miners || 0} ${salts.miners === 1 ? 'node' : 'nodes'}, ${(salts.shares || 0).toLocaleString('en-US')} shares today. A proof always comes first.`;
+  else if (salts) $('#salt-day').textContent = `Split by work between ${salts.miners || 0} ${salts.miners === 1 ? 'node' : 'nodes'} today (${(salts.shares || 0).toLocaleString('en-US')} shares). A proof always comes first.`;
   // The bank's best (five zero bytes and better); until it has one, the best addresses ground today, so the panel shows the hunt.
   const banked = salts?.bank?.length ? salts.bank : null;
   const finds = banked || (salts?.top || []).filter((m) => m.best).map((m) => ({ ...m.best, miner: m.miner })).sort((a, b) => b.bits - a.bits);
@@ -421,7 +421,7 @@ async function copy() {
 // The Relay and Bitcoin tabs' code (the wallet, the header relay, the board's settles) is most of the page's weight and most visitors never
 // open those tabs, so it loads when one opens, when the wallet chip is pressed, or once the page has settled.
 let opsLoad = null;
-const loadOps = () => (opsLoad ||= import('/prove/ops.js?cb=edfadafa'));
+const loadOps = () => (opsLoad ||= import('/prove/ops.js?cb=6a667df6'));
 $('#wallet').addEventListener('click', async (e) => {
   if (opsLoad) return;                                             // loaded: ops.js has its own handler on the chip
   e.preventDefault();

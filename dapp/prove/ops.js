@@ -270,7 +270,7 @@ async function doAdvance() {
     if (result.action !== 'advance') { out.textContent = 'Nothing to advance now: the relay moved since this page read it.'; toast('Nothing to advance.'); return; }
     stripSet(batches.length + 1, 'done');
     if (!result.sent.length) { out.textContent = `The relay reached block ${int(result.to)} before your batches went out, so nothing was sent.`; toast('Nothing to send'); return; }
-    out.textContent = `The relay now has block ${int(result.to)}. Tacit’s prover looks for a new batch every 5 minutes; the next proof can cover Bitcoin to block ${int(result.to - result.confirmations)}.`;
+    out.textContent = `The relay now has block ${int(result.to)}. Tacit’s prover looks for a new batch every 30 seconds; the next proof can cover Bitcoin to block ${int(result.to - result.confirmations)}.`;
     toast('Header relay advanced');
   } catch (e) {
     if (at >= 0) { stripSet(at + 1, 'bad'); const cell = row(at); if (cell && !/landed/.test(cell.textContent)) cell.textContent = 'stopped'; }
