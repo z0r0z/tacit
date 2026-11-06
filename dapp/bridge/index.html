@@ -513,7 +513,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
 @font-face { font-family: 'Instrument Serif Fallback N'; src: local('Noto Serif'), local('NotoSerif'); size-adjust: 70.5%; ascent-override: 140.4%; descent-override: 44%; line-gap-override: 0%; }
 @font-face { font-family: 'Instrument Serif Fallback N'; font-style: italic; src: local('Noto Serif Italic'), local('NotoSerif-Italic'); size-adjust: 76.3%; ascent-override: 129.7%; descent-override: 40.6%; line-gap-override: 0%; }
 </style>
-<script src="/chrome.js?cb=73051f76" defer></script>
+<script src="/chrome.js?cb=4b1414c7" defer></script>
 <!-- chrome:head:end -->
 </head>
 <body>
@@ -998,7 +998,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
         <details><summary>Is there a limit?</summary><p>While the bridge is new, per bridge: <span id="fq-lim">TAC 20 to 1,000 to Bitcoin and up to 1,000 back; tETH 0.001 to 0.5 to Bitcoin and up to 0.5 back; cBTC 0.00001 to 0.5 to Bitcoin and up to 0.5 back; cUSD 10 to 1,000 to Bitcoin and up to 1,000 back; cUSDT 2 to 100 to Bitcoin and up to 100 back</span>. A note goes back whole, so split a larger one first. TAC that Bitcoin’s proof has not reached moves in two steps, a move and then a burn, each waiting for a proof, usually within a day. Up to 255 transfers of a note’s history are proven.</p></details>
         <details><summary>What does it cost?</summary><p>From Bitcoin you pay the Bitcoin network fee, and Tacit covers the Ethereum mint for now. To Bitcoin, a small relay fee comes out of the note and the Bitcoin fee, in sats, is paid from your Bitcoin address. Each cost shows before you sign.</p></details>
         <details><summary>Is there a faster way?</summary><p>For TAC from Bitcoin, yes: the <a href="/fast/">fast bridge</a> pays you private TAC from a provider’s own in about 15 minutes, for the provider’s fee. Your TAC is locked on Bitcoin until the provider pays, and comes back to you after about a day if it does not. Anyone with private TAC can be a provider there.</p></details>
-        <details><summary>Can I close the page?</summary><p>Yes, nothing is lost. A step that needs your key waits until you open the page, and a note that was moved but not burned can be moved back.</p></details>
+        <details><summary>Can I close the page?</summary><p>Yes, nothing is lost. A step that needs your key, such as the burn of a note that was moved to its burn address, waits until you open the page with your wallet. A note that was moved but not burned can also be moved back.</p></details>
         <details><summary>I cleared my browser. Is my bridge lost?</summary><p>No. A bridge is rebuilt from your key. Open tacit.finance with your key and it is found again from your Bitcoin address shortly after the page opens, whether it was moved or burned, and TAC that has arrived is in your private balance. TAC sent privately to your tacit1 address and TAC you bridged to Bitcoin are looked for once more within a minute. If one is still not listed, add it with its burn or move transaction id under “A bridge you started is not listed” on the Bridge tab.</p></details>
       </div>
     </section>
