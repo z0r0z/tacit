@@ -21,7 +21,7 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /prove/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/prove/app.js?cb=37d253f2">
+<link rel="modulepreload" href="/prove/app.js?cb=455dcf61">
 <link rel="modulepreload" href="/community-prove.js?cb=55393eb1">
 <link rel="modulepreload" href="/prove/view.js?cb=0279ad9a">
 <link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
@@ -167,6 +167,12 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .blk .o .k { display: block; color: var(--ink); }
 .blk .o .k-deposit { color: var(--ok); }
 .blk .o .k-batch { color: var(--orange); }
+/* a cross-chain block: Bitcoin's state taken into the pool (and the pool's carried to Bitcoin) */
+.blk .o .k-xc { color: var(--orange); }
+.blk.xc a { display: grid; gap: 6px; justify-items: start; color: var(--ink); text-decoration: none; }
+.blk.xc .cube { display: grid; grid-template-columns: 1fr; grid-auto-rows: 1fr; place-items: center; align-content: stretch; border-color: var(--orange); box-shadow: 4px 4px 0 color-mix(in srgb, var(--orange) 35%, transparent); }
+.blk.xc .glyph { font: 600 28px/1 var(--serif); color: var(--orange); }
+.blk.xc a:hover .cube { transform: translate(-2px, -2px); }
 #share { margin-top: 14px; }
 .who { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; }
 .who i { width: 12px; height: 12px; flex: none; border-radius: 3px; background: var(--c, var(--hair-2)); }
@@ -683,6 +689,6 @@ RUNNER_KEY=0x… node tools/community-runner.mjs</code></pre>
 
 <div id="toast-container" class="toasts" popover="manual"></div>
 
-<script type="module" src="/prove/app.js?cb=37d253f2"></script>
+<script type="module" src="/prove/app.js?cb=455dcf61"></script>
 </body>
 </html>

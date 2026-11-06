@@ -939,6 +939,30 @@ async function readReflectionStash(env, network, jobId) {
   };
 }
 
+// The tacit chain's cross-chain blocks (GET /prover/blocks `cross`): each landed reflection batch, which takes Bitcoin's tacit state
+// into the pool up to `bitcoin` and folds the eth-state proof that carries the pool's state to Bitcoin (its digest and finalized slot).
+// Both are proofs someone made; this keeps the newest, with the Ethereum block the batch landed in, so the page places them among the
+// settles. xc:recent ([{ digest, bitcoin, ethereum?: { digest, slot }, tx, ethBlock, at }], newest last).
+const CROSS_KEEP = 60;
+async function recordCrossBlock(env, { jobId, attestedTo, txHash, eth }) {
+  if (!env.REGISTRY_KV) return;
+  let ethBlock = null;
+  if (/^0x[0-9a-f]{64}$/i.test(String(txHash || ''))) {
+    for (const rpc of ETH_LOG_NODES.slice(0, 3)) {
+      try { const rc = await _ethRpcOrThrow(rpc, 'eth_getTransactionReceipt', [txHash]); if (rc?.blockNumber) { ethBlock = Number(BigInt(rc.blockNumber)); break; } } catch {}
+    }
+  }
+  const pv = eth && typeof eth.ethPv === 'string' ? eth.ethPv : null;
+  const rec = {
+    digest: String(jobId).toLowerCase(), bitcoin: Number(attestedTo) || null, tx: txHash || null, ethBlock, at: Date.now(),
+    ...(pv && pv.replace(/^0x/, '').length >= 64 * 7 ? { ethereum: { digest: pvWord(pv, 1), slot: Number(BigInt(pvWord(pv, 5))) } } : {}),
+  };
+  let list = [];
+  try { list = JSON.parse((await env.REGISTRY_KV.get('xc:recent')) || '[]'); } catch { list = []; }
+  if (list.some((x) => x.digest === rec.digest)) return;
+  await env.REGISTRY_KV.put('xc:recent', JSON.stringify([...list, rec].slice(-CROSS_KEEP)));
+}
+
 // Advance the cursor to a stashed candidate and settle everything that hangs off a landed batch: drop the stash,
 // promote the eth-state candidate it folded, and note when the last successful attest happened.
 async function applyReflectionAck(env, network, att, jobId, stash, attestedTo, txHash = '') {
@@ -951,6 +975,7 @@ async function applyReflectionAck(env, network, att, jobId, stash, attestedTo, t
   } catch { /* an unreadable record is replaced by the next publish */ }
   // Only a real advance counts as the lane moving: a stale or duplicate ack must not restart the stall clock.
   if (r.advanced) await env.REGISTRY_KV.put(reflectionLastAckKey(network), JSON.stringify({ at: Date.now(), attestedTo, jobId: String(jobId), txHash: txHash || '' }));
+  if (r.advanced && network === 'mainnet') await recordCrossBlock(env, { jobId, attestedTo, txHash, eth: stash.ethCandidate }).catch(() => {});
   // Promotion: this job's newDigest is on-chain, so the eth-state candidate it folded is the one the pool now holds
   // and becomes confirmed, for the NEXT batch to build on. While it is still the pending candidate, the pending slot
   // is freed. When the pending slot has moved on before the batch landed (the candidate aged past the staleness
@@ -3884,6 +3909,8 @@ async function handleChainBlocks(req, env, url, cors) {
   if (!chainView(env)) return jsonResponse({ error: 'not found' }, 404, cors);
   try {
     const out = await _chain.blocks({ limit: url.searchParams.get('limit'), before: url.searchParams.get('before') });
+    // and the newest cross-chain blocks (recordCrossBlock), newest first
+    try { out.cross = JSON.parse((await env.REGISTRY_KV?.get('xc:recent')) || '[]').slice(-20).reverse(); } catch { out.cross = []; }
     return jsonResponse(out, 200, { ...cors, 'Cache-Control': 'public, max-age=5' });
   } catch (e) {
     return jsonResponse({ error: String((e && e.message) || e).slice(0, 200) }, 503, { ...cors, 'Cache-Control': 'no-store' });

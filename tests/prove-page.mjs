@@ -59,7 +59,7 @@ async function open(browser, local, { phone = false, idle = false } = {}) {
   await page.route('https://api.tacit.finance/**', (route) => {
     const u = new URL(route.request().url());
     if (u.pathname === '/prover/pool') return json(route, { ...(idle ? {} : {}), queued: idle ? 0 : 3, leased: idle ? 0 : 2, doneToday: 41, minersToday: 2, done24h: 433, miners24h: 11, top: [{ miner: ADDR, proofs: 4 }, { miner: OTHER, proofs: 1 }], terms: { pointsPerProof: 20, proofsPerMinerDay: 30 } });
-    if (u.pathname === '/prover/blocks') return json(route, { head: { height: chain.blocks[0].height, hash: chain.blocks[0].hash, ethHead: chain.blocks[0].ethBlock + 25 }, blocks: chain.blocks });
+    if (u.pathname === '/prover/blocks') return json(route, { head: { height: chain.blocks[0].height, hash: chain.blocks[0].hash, ethHead: chain.blocks[0].ethBlock + 25 }, blocks: chain.blocks, cross: [{ digest: '0x' + '89'.repeat(32), bitcoin: 974721, ethereum: { digest: '0x' + '54'.repeat(32), slot: 15592000 }, tx: '0x' + 'ab'.repeat(32), ethBlock: chain.blocks[0].ethBlock, at: Date.now() }] });
     if (u.pathname === '/prover/board') return json(route, { queued: 0, workers: [], pay: { pointsPerProof: 20, pointsByProgram: { 'btc-state': 500 } } });
     if (u.pathname === '/prover/pool/recent') return json(route, { proofs: [{ at: Date.now() - 60_000, house: true, points: 0, secs: 31 }, { at: Date.now() - 120_000, miner: ADDR, points: 20, secs: 552 }] });
     if (u.pathname === '/prover/pool/credits') return json(route, { day, over: false, miners: [{ miner: ADDR, proofs: 4, points: 80 }] });
@@ -95,10 +95,10 @@ try {
     await page.waitForFunction(() => document.querySelector('#today').textContent.includes('4 proofs'));
     check((await text(page, '#pays')).includes('0.2 TAC a proof'), 'what a proof pays is read from the services', await text(page, '#pays'));
     check((await text(page, '#paid')) === '6 TAC credited', 'what was paid', await text(page, '#paid'));
-    await page.waitForFunction(() => document.querySelectorAll('#chain .blk:not(.next)').length === 4);
+    await page.waitForFunction(() => document.querySelectorAll('#chain .blk:not(.next):not(.xc)').length === 4);
     check((await text(page, '#height')) === '#9,389', 'the tip is the newest block', await text(page, '#height'));
     check((await text(page, '#last')) === '5 min ago', 'the newest block\'s age is read from Ethereum\'s head', await text(page, '#last'));
-    check((await page.locator('#chain .blk:not(.next) .t').first().innerText()) === '5 min ago', 'each block says how long ago it was');
+    check((await page.locator('#chain .blk:not(.next):not(.xc) .t').first().innerText()) === '5 min ago', 'each block says how long ago it was');
     check((await page.locator('#chain .blk.won').count()) === 2, 'blocks a community prover proved are marked');
     check((await page.locator('#chain .blk.mine').count()) === 1, 'the address\'s own block is picked out');
     check((await page.locator('#pool i').count()) === 5 && (await page.locator('#pool i.on').count()) === 2, 'the waiting proofs are drawn, the leased ones lit');
@@ -107,11 +107,12 @@ try {
     await page.waitForFunction(() => document.querySelector('#crowd-n').textContent === '3 online now');
     check((await page.locator('#crowd .pod').count()) === 3, 'the crowd: everyone who proved lately and every node grinding salts, Tacit GPU among them');
     check(await page.locator('#crowd .pod.me').count() === 1, 'with this address picked out');
+    check((await page.locator('#chain .blk.xc').count()) === 1 && (await text(page, '#chain .blk.xc')).includes('974,721') && (await page.getAttribute('#chain .blk.xc a', 'href')).includes('etherscan.io/tx/0xabab'), 'a cross-chain block stands among the settles, with Bitcoin\'s height and its landing');
     await page.waitForFunction(() => !document.querySelector('#checkpoint').hidden);
     check((await text(page, '#checkpoint')).includes('#9,441') && (await text(page, '#checkpoint')).includes('Bitcoin 974,721') && (await text(page, '#checkpoint')).includes('Ethereum slot 13,450,016'), 'the day\'s checkpoint: the block, Bitcoin\'s height and where it is kept', await text(page, '#checkpoint'));
     check((await page.locator('#feed li.me').count()) === 1 && !(await text(page, '#feed')).includes('· you'), 'its own proofs in the feed are marked by the row, the name kept short');
     check((await text(page, '#n-done')) === '433' && (await text(page, '#n-provers')) === '11', 'the headline counts are the last 24 hours, not since midnight UTC', `${await text(page, '#n-done')} ${await text(page, '#n-provers')}`);
-    const kinds = await page.locator('#chain .blk:not(.next) .k').allInnerTexts();
+    const kinds = await page.locator('#chain .blk:not(.next):not(.xc) .k').allInnerTexts();
     check(JSON.stringify(kinds) === JSON.stringify(['Private transfer', 'Deposit', 'Private transfer', 'Private transfer']), 'each block says what it did', JSON.stringify(kinds));
     check((await text(page, '#today')) === '4 proofs · 0.8 TAC', 'the rig says what today earned', await text(page, '#today'));
     check((await text(page, '#payout')).startsWith('after the day ends, in '), 'and when it is paid', await text(page, '#payout'));
@@ -134,7 +135,7 @@ try {
     check(det.includes('Won') && det.includes('0.2 TAC') && det.includes('you') && det.includes('Deposit') && det.includes('2 new notes · 1 deposit') && det.includes('Make a private deposit'), 'a block opens with what it did, a link to do it, who proved it and what it won', det);
     // a new block lands at the front
     chain.blocks = [blk(9390, { notes: 0, spent: 2 }), ...chain.blocks];
-    await page.waitForFunction(() => document.querySelector('#chain .blk:not(.next)')?.dataset.h === '9390', null, { timeout: 12000 });
+    await page.waitForFunction(() => document.querySelector('#chain .blk:not(.next):not(.xc)')?.dataset.h === '9390', null, { timeout: 12000 });
     check(await page.locator('#chain .blk.new').count() === 1, 'a new block lands with the landing animation');
     check((await page.locator('#chain .blk').first().getAttribute('class')).includes('next'), 'the next block stays at the front');
     check((await text(page, '#height')) === '#9,390', 'the tip moves on');
@@ -238,9 +239,9 @@ try {
     const saved = chain.blocks;
     chain.blocks = [{ height: '<img id=pwn src=x>', hash: '0x1', tx: '"><b id=pwn2>', ethBlock: '<i id=pwn3>', notes: 1, spent: 0 }, blk(7, { prover: '<b id=pwn4>x</b>', points: '<b id=pwn5>' })];
     const { page, ctx, errors } = await open(browser, { v: null });
-    await page.waitForFunction(() => document.querySelectorAll('#chain .blk:not(.next)').length === 1);
+    await page.waitForFunction(() => document.querySelectorAll('#chain .blk:not(.next):not(.xc)').length === 1);
     const pwned = await page.evaluate(() => ['pwn', 'pwn2', 'pwn3', 'pwn4', 'pwn5'].filter((i) => document.getElementById(i)));
-    check(pwned.length === 0 && (await page.locator('#chain .blk:not(.next)').first().getAttribute('data-h')) === '7', 'markup in an API answer never reaches the page', JSON.stringify(pwned));
+    check(pwned.length === 0 && (await page.locator('#chain .blk:not(.next):not(.xc)').first().getAttribute('data-h')) === '7', 'markup in an API answer never reaches the page', JSON.stringify(pwned));
     check(errors.length === 0, 'and nothing breaks', errors.join(' | '));
     chain.blocks = saved;
     await ctx.close();

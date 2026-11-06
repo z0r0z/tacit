@@ -13,7 +13,7 @@ const $ = (s) => document.querySelector(s);
 const get = (url, ms = 6000) => fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(ms) }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
-let health = null, mine = null, pool = null, points = null, tally = null, busy = false, copied = false, salts = null;
+let health = null, mine = null, pool = null, points = null, tally = null, busy = false, copied = false, salts = null, cross = [];
 const rateText = (r) => (r >= 1e6 ? `${(r / 1e6).toFixed(1)} M/s` : `${Math.round(r / 1e3)} k/s`);
 let blocks = [], ethHead = null, headReadAt = 0, shownTop = null, picked = null, feed = [], feedTop = 0, lastProved = null;
 
@@ -60,8 +60,11 @@ async function readChain() {
   // An API from before the tip carried Ethereum's head: the settle index says it, read at most once a minute.
   else if (Date.now() - headReadAt > 60000) { headReadAt = Date.now(); const hb = Number((await get(`${API}/confidential/index?limit=1`))?.headBlock); if (Number.isSafeInteger(hb)) ethHead = hb; }
   $('#last').textContent = c.blocks[0] ? (blockAgo(c.blocks[0].ethBlock, ethHead) || '—') : '—';
+  const xc = (Array.isArray(c.cross) ? c.cross : []).map(cleanCross).filter(Boolean);
+  const xcNew = xc.map((x) => x.digest).join() !== cross.map((x) => x.digest).join();
+  cross = xc;
   const add = fresh(c.blocks, shownTop);
-  if (!add.length && shownTop != null) return;
+  if (!add.length && shownTop != null) { if (xcNew) paintChain(new Set()); return; }
   const first = shownTop == null;
   blocks = [...add, ...blocks].slice(0, SHOW);
   shownTop = blocks[0]?.height ?? shownTop;
@@ -71,16 +74,39 @@ async function readChain() {
   if (!first) { h.classList.remove('bump'); void h.offsetWidth; h.classList.add('bump'); }
 }
 
+// A cross-chain block (GET /prover/blocks `cross`): a landed reflection batch, Bitcoin's tacit state taken into the pool up to `bitcoin`,
+// with the eth-state proof it folds for the Bitcoin side (its slot). Each is placed among the settles by the Ethereum block it landed in.
+const HEX32B = /^0x[0-9a-f]{64}$/i;
+const cleanCross = (x) => (x && HEX32B.test(String(x.digest)) && count(x.bitcoin) && count(x.ethBlock)
+  ? { digest: String(x.digest).toLowerCase(), bitcoin: count(x.bitcoin), ethBlock: count(x.ethBlock), tx: HEX32B.test(String(x.tx)) ? x.tx : null, slot: count(x.ethereum?.slot) } : null);
+function crossTile(x) {
+  const what = `Bitcoin to ${x.bitcoin.toLocaleString('en-US')}${x.slot ? `, Ethereum slot ${x.slot.toLocaleString('en-US')}` : ''}`;
+  const body = `<span class="cube"><span class="glyph" aria-hidden="true">₿</span></span><span class="h num">₿ ${x.bitcoin.toLocaleString('en-US')}</span><span class="o"><span class="k k-xc">Cross-chain</span></span><span class="t">${esc(blockAgo(x.ethBlock, ethHead) || '')}</span>`;
+  return `<li class="blk xc" title="${esc(what)}">${x.tx ? `<a href="https://etherscan.io/tx/${esc(x.tx)}" target="_blank" rel="noopener noreferrer" aria-label="Cross-chain block: ${esc(what)}">${body}</a>` : body}</li>`;
+}
+
 function paintChain(landing) {
   const ol = $('#chain');
   ol.hidden = false;
+  const oldest = blocks.length ? blocks[blocks.length - 1].ethBlock : Infinity;
+  const xs = cross.filter((x) => x.ethBlock >= oldest);
+  // Newest first by Ethereum block; a cross-chain block goes before the settles of its own Ethereum block and older.
+  const at = (eb) => xs.filter((x) => x.ethBlock >= eb && !x.done);
   ol.innerHTML = `<li class="blk next" aria-label="The next block"><span class="cube ghost"><i></i><i></i><i></i></span><span class="h">next</span><span class="o" id="next-o">${esc(waitingText())}</span></li>` + blocks.map((b) => {
+    const before = at(b.ethBlock).map((x) => { x.done = true; return crossTile(x); }).join('');
+    return before + settleTile(b, landing);
+  }).join('');
+  for (const x of xs) delete x.done;
+  paintDetail();
+}
+
+function settleTile(b, landing) {
+  {
     const c = cells(b), mineB = b.prover && b.prover === me();
     return `<li class="blk${b.prover ? ' won' : ''}${b.house ? ' gpu' : ''}${mineB ? ' mine' : ''}${landing.has(b.height) ? ' new' : ''}" data-h="${b.height}" aria-current="${picked === b.height}">
       <button type="button" aria-label="Block ${b.height}, ${esc(kindText(b))}, ${esc(opsText(b))}"><span class="cube">${c.cells.map((k) => `<i class="${k}"></i>`).join('')}${b.house || b.prover ? `<span class="badge">${face(b.house ? null : b.prover, 26)}</span>` : ''}</span>
       <span class="h num">#${b.height.toLocaleString('en-US')}</span><span class="o"><span class="k k-${kindOf(b)}">${esc(kindText(b))}</span>${byOf(b) || ''}</span><span class="t">${esc(blockAgo(b.ethBlock, ethHead) || '')}</span></button></li>`;
-  }).join('');
-  paintDetail();
+  }
 }
 
 function paintDetail() {
