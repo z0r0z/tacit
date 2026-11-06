@@ -278,6 +278,8 @@ a { color: inherit; text-underline-offset: 3px; text-decoration-thickness: 1px; 
 .wide { margin: 48px 0 0; }
 .fig.big { padding: 22px 26px; }
 .fig.big svg.d { min-width: 0; }
+/* who can run reflection: three boxes in a row, stacked on a phone (each drawing its own svg) */
+#run .rn { display: none; }
 /* the reflection drawing: two lanes of blocks slide under a fixed proven edge, each on its own layer (transform only) */
 .rfw { position: relative; }
 .rfw .rf-top { position: relative; }
@@ -315,7 +317,8 @@ a { color: inherit; text-underline-offset: 3px; text-decoration-thickness: 1px; 
 #mv-dir { margin: 16px 0 0; }
 @media (max-width: 760px) {
   .fig.big { overflow-x: auto; padding: 16px; }
-  .fig.big:not(#mv) .rfw, .fig.big:not(#mv):not(#rf) svg.d { min-width: 620px; }
+  .fig.big:not(#mv) .rfw { min-width: 620px; }
+  #run .rw { display: none; } #run .rn { display: block; }
   #mv { overflow: visible; }
   .cap3 { grid-template-columns: 1fr; gap: 16px; }
 }
@@ -897,7 +900,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
         <p>Tacit’s services keep it current, and so can you.</p>
       </div>
       <figure class="fig big" style="margin:22px 0 0">
-        <svg class="d" viewBox="0 0 1000 232" role="img" aria-label="Anyone can send Bitcoin’s headers to the relay, make the proof, and submit it to the pool">
+        <svg class="d rw" viewBox="0 0 1000 232" role="img" aria-label="Anyone can send Bitcoin’s headers to the relay, make the proof, and submit it to the pool">
           <path class="ln s-btc flow" d="M290 108 H380"/>
           <path class="ln ink flow" d="M620 108 H710"/>
           <circle class="btc pkt" r="4"><animateMotion dur="2.2s" repeatCount="indefinite" path="M290 108 H380"/></circle>
@@ -924,6 +927,31 @@ footer.sf svg.fill { width: 16px; height: 16px; }
           <text class="m" x="500" y="184" text-anchor="middle">your own Succinct account</text>
           <text class="m" x="825" y="184" text-anchor="middle">attestBitcoinStateProven(proof)</text>
           <path class="brk" d="M60 200v6h880v-6"/><text class="m" x="500" y="224" text-anchor="middle">no permission · you pay only the network fee</text>
+        </svg>
+        <!-- the same, top to bottom, for a phone -->
+        <svg class="d rn" viewBox="0 0 300 520" role="img" aria-label="Anyone can send Bitcoin’s headers to the relay, make the proof, and submit it to the pool">
+          <path class="ln s-btc flow" d="M150 142 V164"/>
+          <path class="ln ink flow" d="M150 302 V324"/>
+          <circle class="btc pkt" r="4"><animateMotion dur="2.2s" repeatCount="indefinite" path="M150 142 V164"/></circle>
+          <circle class="fi pkt" r="4"><animateMotion dur="2.2s" begin="1.1s" repeatCount="indefinite" path="M150 302 V324"/></circle>
+          <rect class="bx s-btc" x="20" y="16" width="260" height="92" rx="12"/>
+          <g class="btc"><rect x="40" y="40" width="22" height="22" rx="4" opacity=".25"/><rect x="68" y="40" width="22" height="22" rx="4" opacity=".5"/><rect x="96" y="40" width="22" height="22" rx="4"/></g>
+          <text x="40" y="86">header relay</text>
+          <rect class="bx ink" x="20" y="176" width="260" height="92" rx="12"/>
+          <circle class="fi" cx="48" cy="212" r="14"/><text x="42.5" y="217" style="fill:var(--paper);font-size:14px">π</text>
+          <text x="72" y="216">reflection prover</text>
+          <text class="m" x="40" y="246">same program, same inputs</text>
+          <rect class="bx s-eth" x="20" y="336" width="260" height="92" rx="12"/>
+          <g class="eth"><path d="M54 354l10 16-10 6-10-6z" opacity=".6"/><path d="M54 378l10-6-10 16-10-16z"/></g>
+          <text x="82" y="376">the pool</text>
+          <text class="m" x="40" y="406">verifies the proof</text>
+          <g><rect class="pill" x="111" y="4" width="78" height="24" rx="12"/><text class="pt" x="150" y="20" text-anchor="middle">anyone</text></g>
+          <g><rect class="pill" x="111" y="164" width="78" height="24" rx="12"/><text class="pt" x="150" y="180" text-anchor="middle">anyone</text></g>
+          <g><rect class="pill" x="111" y="324" width="78" height="24" rx="12"/><text class="pt" x="150" y="340" text-anchor="middle">anyone</text></g>
+          <text class="m" x="150" y="130" text-anchor="middle">advanceTip(headers)</text>
+          <text class="m" x="150" y="290" text-anchor="middle">your own Succinct account</text>
+          <text class="m" x="150" y="450" text-anchor="middle">attestBitcoinStateProven(proof)</text>
+          <path class="brk" d="M20 466v6h260v-6"/><text class="m" x="150" y="490" text-anchor="middle">no permission</text><text class="m" x="150" y="506" text-anchor="middle">you pay only the network fee</text>
         </svg>
       </figure>
       <ol class="cap3">

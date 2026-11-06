@@ -235,7 +235,7 @@ try {
     ok(/TAC 20 to 1,000 to Bitcoin and up to 1,000 back/.test(faq) && /tETH 0\.001 to 0\.5 to Bitcoin and up to 0\.5 back/.test(faq) && /cBTC 0\.00001 to 0\.5 to Bitcoin and up to 0\.5 back/.test(faq) && /cUSD 10 to 1,000 to Bitcoin and up to 1,000 back/.test(faq) && /255 transfers/.test(faq), 'the limits answer gives each asset its own range, both ways, and the history it proves');
     ok(/To Bitcoin, a small relay fee comes out of the note/.test(faq) && /Tacit covers the Ethereum mint/.test(faq), 'and the cost answer is right for both directions');
     ok(!/allowance|free/i.test(await page.textContent('.faq')), 'the answers keep to plain words about who pays');
-    ok(await page.getAttribute('.runcta .go', 'href') === '/prove/#tab=bitcoin' && (await page.$$('#run .cap3 li')).length === 3 && (await page.$$('#run .pill')).length === 3, 'anyone can run it: three steps, each open to anyone, and a door to community ops');
+    ok(await page.getAttribute('.runcta .go', 'href') === '/prove/#tab=bitcoin' && (await page.$$('#run .cap3 li')).length === 3 && (await page.$$('#run .rw .pill')).length === 3 && (await page.$$('#run .rn .pill')).length === 3 && await page.isVisible('#run .rw') && !(await page.isVisible('#run .rn')), 'anyone can run it: three steps, each open to anyone, and a door to community ops');
     ok(await page.getAttribute('.trio a', 'href') === '#run', 'and the top of the page points to it');
     const body = await page.textContent('main');
     ok(!/same commitment|same note|without opening/i.test(body) && /fresh note of the same value/.test(body), 'a bridge is said to mint a fresh note of the same value, not the same note');
@@ -265,6 +265,7 @@ try {
       await page.evaluate((q) => { document.querySelector(q).scrollIntoView({ block: 'start' }); scrollBy(0, -60); }, id); await page.waitForTimeout(900); await shot(page, name);
     }
     ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'the wide drawings scroll inside their frames, not the page');
+    ok(await page.isVisible('#run .rn') && !(await page.isVisible('#run .rw')) && await page.$eval('#run .fig', (f) => f.scrollWidth <= f.clientWidth), 'who can run reflection is drawn top to bottom on a phone, with nothing to scroll');
     ok(errors.length === 0, `no console errors on a phone${errors.length ? ': ' + errors.join(' | ').slice(0, 400) : ''}`);
     await browser.close();
   }
