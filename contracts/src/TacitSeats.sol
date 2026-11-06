@@ -134,7 +134,8 @@ contract TacitSeats {
     /// @notice Who leads now, keeping this epoch's seed if no one has yet. Anyone may call it; landing does.
     function turn() external returns (address) {
         uint256 e = epoch();
-        if (seedOf[e] == 0) {
+        // with no seat in the draw BOOTSTRAP leads and no seed is needed
+        if (seedOf[e] == 0 && _countAt(e) != 0) {
             bytes32 s = seedAt(e);
             if (s != 0) seedOf[e] = s;
         }
