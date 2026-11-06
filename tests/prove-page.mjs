@@ -106,6 +106,7 @@ try {
     await page.waitForFunction(() => document.querySelector('#crowd-n').textContent === '3 online now');
     check((await page.locator('#crowd .pod').count()) === 3, 'the crowd: everyone who proved lately and every node grinding salts, Tacit GPU among them');
     check(await page.locator('#crowd .pod.me').count() === 1, 'with this address picked out');
+    check((await page.locator('#feed li.me').count()) === 1 && !(await text(page, '#feed')).includes('· you'), 'its own proofs in the feed are marked by the row, the name kept short');
     check((await text(page, '#n-done')) === '433' && (await text(page, '#n-provers')) === '11', 'the headline counts are the last 24 hours, not since midnight UTC', `${await text(page, '#n-done')} ${await text(page, '#n-provers')}`);
     const kinds = await page.locator('#chain .blk:not(.next) .k').allInnerTexts();
     check(JSON.stringify(kinds) === JSON.stringify(['Private transfer', 'Deposit', 'Private transfer', 'Private transfer']), 'each block says what it did', JSON.stringify(kinds));

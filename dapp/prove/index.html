@@ -21,7 +21,7 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /prove/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/prove/app.js?cb=41744c42">
+<link rel="modulepreload" href="/prove/app.js?cb=1c0eeab7">
 <link rel="modulepreload" href="/community-prove.js?cb=55393eb1">
 <link rel="modulepreload" href="/prove/view.js?cb=0279ad9a">
 <link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
@@ -327,6 +327,7 @@ dialog.sheet::backdrop { background: rgba(0,0,0,.45); backdrop-filter: blur(2px)
 .feed li { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--hair); font-size: 12.5px; }
 .feed li:last-child { border-bottom: 0; }
 .feed li.new { animation: fresh 1.6s ease-out; }
+.feed li.me { box-shadow: inset 2px 0 0 var(--orange); padding-left: 10px; }
 @keyframes fresh { from { background: color-mix(in srgb, var(--orange) 18%, transparent); } }
 .feed li b { font-weight: 500; color: var(--orange); white-space: nowrap; }
 .feed li small { color: var(--mute); white-space: nowrap; }
@@ -680,6 +681,6 @@ RUNNER_KEY=0x… node tools/community-runner.mjs</code></pre>
 
 <div id="toast-container" class="toasts" popover="manual"></div>
 
-<script type="module" src="/prove/app.js?cb=41744c42"></script>
+<script type="module" src="/prove/app.js?cb=1c0eeab7"></script>
 </body>
 </html>

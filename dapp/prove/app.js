@@ -31,9 +31,9 @@ const face = (a, px = 18) => {
   if (!faces.has(k)) faces.set(k, `data:image/svg+xml;base64,${btoa(a ? invaderSvg(a, 64) : gpuSvg(64))}`);
   return `<img class="inv" src="${faces.get(k)}" width="${px}" height="${px}" alt="">`;
 };
-const who = (a) => `<span class="who">${face(a)}${esc(short(a))}${a === me() ? ' · you' : ''}</span>`;
+const who = (a, you = true) => `<span class="who">${face(a)}${esc(short(a))}${you && a === me() ? ' · you' : ''}</span>`;
 const GPU = `<span class="who gpu">${face(null)}Tacit GPU</span>`;
-const byOf = (x) => (x.house ? GPU : x.prover || x.miner ? who(x.prover || x.miner) : null);
+const byOf = (x, you = true) => (x.house ? GPU : x.prover || x.miner ? who(x.prover || x.miner, you) : null);
 
 async function readLocal() {
   health = await get(`${LOCAL}/health`, 2500);
@@ -110,7 +110,9 @@ function paintFeed() {
   if (!feed.length) return;
   $('#feed').innerHTML = feed.slice(0, 8).map((p) => {
     const r = rewardWei(p.points, cap());
-    return `<li class="${p.at > feedTop && feedTop ? 'new' : ''}"><span class="by">${byOf(p)}<small>a deposit, proved in ${esc(took(p.secs))}</small></span>${r ? `<b>+${tac(r)} TAC</b>` : ''}<small>${esc(ago(p.at))}</small></li>`;
+    // This address's own proofs are marked by the row (an edge), not a longer name, so every row stays on one line.
+    const mine = !p.house && p.miner && String(p.miner).toLowerCase() === me();
+    return `<li class="${[p.at > feedTop && feedTop ? 'new' : '', mine ? 'me' : ''].filter(Boolean).join(' ')}"${mine ? ' title="Your node"' : ''}><span class="by">${byOf(p, false)}<small>a deposit, proved in ${esc(took(p.secs))}</small></span>${r ? `<b>+${tac(r)} TAC</b>` : ''}<small>${esc(ago(p.at))}</small></li>`;
   }).join('');
 }
 
