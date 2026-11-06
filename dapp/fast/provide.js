@@ -12,6 +12,7 @@
 //   waiting()   -> { count, total, items }: the bridges waiting on the boards for a provider (fast/want.js), shown to anyone who could provide
 //   notify(t)   a notice for a new waiting bridge this key could take (the page shows it while the tab is hidden); ask() asks leave for it
 //   linkOf(id)  the address of the page that pairs a bridger with this key's provider
+//   signIn()    opens the key (the page's wallet sheet): given, the panel is shown before a key too, so anyone who comes by finds that they can provide
 //   -> { busy() }   whether closing the page now would leave a swap untended
 
 import { DEC, ONE, esc, fmtTac, parseTac, slowNet, pairId } from './fmt.js';
@@ -23,7 +24,7 @@ const percent = (text) => { const t = String(text).trim().replace('%', ''); if (
 const every = 5000;
 const SCAN = 'https://mempool.space/tx/';
 
-export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_000n }, root, keyS, open, hasOpen = () => false, settings = { get: () => null, set: () => {} }, waiting = null, notify = () => {}, ask = async () => {}, linkOf = (id) => `https://tacit.finance/fast/#with=${id}`, waitMs = 60000, retryMs = 15000, refreshMs = every }) {
+export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_000n }, root, keyS, open, hasOpen = () => false, settings = { get: () => null, set: () => {} }, waiting = null, notify = () => {}, ask = async () => {}, signIn = null, linkOf = (id) => `https://tacit.finance/fast/#with=${id}`, waitMs = 60000, retryMs = 15000, refreshMs = every }) {
   const doc = root.ownerDocument;
   const S = { sess: null, pub: null, inv: null, st: null, loading: false, note: '', bad: false, timer: 0, opened: false, wait: null, seen: null };
 
@@ -58,7 +59,8 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
   // too little private TAC for the smallest bridge, and not providing (a provider that is on can always stop)
   const short = () => !!(S.inv && S.inv.pool < MIN_AMOUNT && !accepting());
   function paint() {
-    root.hidden = !keyS.unlocked;
+    const locked = !keyS.unlocked;
+    root.hidden = locked && !signIn;
     const inv = S.inv, st = S.st, w = S.wait && S.wait.count ? S.wait : null;
     $('pv-waiting').textContent = w ? ` · ${w.count} waiting` : '';
     $('pv-want').hidden = !w;
@@ -71,7 +73,7 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
       <div class="kv"><span>Held for bridges under way</span><b class="num">${esc(fmtTac(st.held))} TAC</b></div>
       <div class="kv"><span>Free to lend now</span><b class="num">${esc(fmtTac(inv.pool > st.held ? inv.pool - st.held : 0n))} TAC</b></div>` : ''}${short() ? `
       <p class="empty">Providing takes at least ${esc(fmtTac(MIN_AMOUNT))} private TAC. <a href="/#card=bridge">Make TAC private ↗</a></p>` : ''}${inv.claimPub ? `
-      <div class="kv"><span>Your link</span><b><button class="link" type="button" id="pv-link" data-link="${esc(linkOf(pairId(inv.claimPub)))}">copy</button></b></div>` : ''}` : '';
+      <div class="kv"><span>Your link</span><b><button class="linkbtn" type="button" id="pv-link" data-link="${esc(linkOf(pairId(inv.claimPub)))}">copy</button></b></div>` : ''}` : '';
     $('pv-set').hidden = !inv || accepting();
     const run = $('pv-run');
     run.hidden = !st || !(st.running || st.lastTake);
@@ -83,9 +85,9 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
         <div class="kv"><span>Last take</span><b><a href="${SCAN}${esc(st.lastTake)}" target="_blank" rel="noopener noreferrer">Bitcoin transaction ↗</a></b></div>` : ''}`;
     }
     const go = $('pv-go');
-    go.hidden = !inv;
-    go.textContent = accepting() ? 'Stop providing' : 'Start providing';
-    go.disabled = short();
+    go.hidden = !inv && !locked;
+    go.textContent = locked ? 'Open wallet' : accepting() ? 'Stop providing' : 'Start providing';
+    go.disabled = !locked && short();
     if (st && st.lastError && !S.note) $('pv-st').textContent = st.lastError;
     keepAwake();
   }
@@ -179,7 +181,12 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
     } catch (e) { note(String((e && e.message) || e).slice(0, 160), true); }
     paint();
   }
-  $('pv-go').addEventListener('click', () => { if (!accepting()) ask().catch(() => {}); go(); });
+  $('pv-go').addEventListener('click', async () => {
+    // before a key, the button opens one; the panel reads it once it is open (keyS.onChange below)
+    if (!keyS.unlocked) { if (signIn) { try { await signIn(); } catch (e) { if (!e?.unlockCancelled) note(String((e && e.message) || e).slice(0, 160), true); } } return; }
+    if (!accepting()) ask().catch(() => {});
+    go();
+  });
   root.addEventListener('click', async (e) => {
     const b = e.target.closest && e.target.closest('#pv-link');
     if (!b) return;

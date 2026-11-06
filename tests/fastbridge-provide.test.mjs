@@ -41,11 +41,40 @@ function mount(over = {}) {
     root, keyS: key, refreshMs: over.refreshMs ?? 5000,
     open: async () => { state.opens++; return stub.session; }, hasOpen: over.hasOpen || (() => false),
     settings: { get: (p) => kept.get(p) || null, set: (p, v) => { kept.set(p, v); saved.push(v); } },
-    waiting: over.waiting || null, notify: over.notify, ask: over.ask, waitMs: over.waitMs ?? 60000,
+    waiting: over.waiting || null, notify: over.notify, ask: over.ask, waitMs: over.waitMs ?? 60000, signIn: over.signIn || null,
   });
   return { dom, doc, root, key, stub, ui, state, saved, $: (id) => doc.getElementById(id), load: async () => { key.open(); root.open = true; root.dispatchEvent(new dom.window.Event('toggle')); await until(() => !root.querySelector('#pv-go').hidden, 'the panel'); } };
 }
 const text = (e) => { const out = [], w = e.ownerDocument.createTreeWalker(e, 4); for (let n = w.nextNode(); n; n = w.nextNode()) if (n.nodeValue.trim()) out.push(n.nodeValue.trim()); return out.join(' '); };
+
+test('with a way to open the key, the panel is there before a key too: Open wallet, then what the key can provide', async () => {
+  let asked = 0;
+  const key = keyStub();
+  const m = mount({ key, signIn: async () => { asked++; key.open(); } });
+  assert.equal(m.root.hidden, false, 'a visitor finds that anyone can provide');
+  assert.equal(m.$('pv-go').hidden, false); assert.equal(m.$('pv-go').textContent, 'Open wallet'); assert.equal(m.$('pv-go').disabled, false);
+  assert.equal(m.$('pv-set').hidden, true, 'no fee or size before a key');
+  m.root.open = true; m.root.dispatchEvent(new m.dom.window.Event('toggle'));
+  assert.equal(m.state.opens, 0, 'nothing is read before a key');
+  m.$('pv-go').click();
+  await until(() => /Your private TAC/.test(text(m.$('pv-inv'))), 'the inventory once the key opens');
+  assert.equal(asked, 1); assert.equal(m.$('pv-go').textContent, 'Start providing');
+  assert.equal(m.stub.calls.starts.length, 0, 'opening the key starts nothing');
+  key.lock();
+  assert.equal(m.root.hidden, false); assert.equal(m.$('pv-go').textContent, 'Open wallet');
+  // the sheet closed without a key: nothing said, nothing read
+  const n = mount({ signIn: async () => { throw Object.assign(new Error('Cancelled.'), { unlockCancelled: true }); } });
+  n.$('pv-go').click(); await new Promise((r) => setTimeout(r, 10));
+  assert.equal(n.$('pv-st').textContent, ''); assert.equal(n.state.opens, 0);
+  const bad = mount({ signIn: async () => { throw new Error('the wallet refused'); } });
+  bad.$('pv-go').click(); await until(() => /refused/.test(bad.$('pv-st').textContent), 'the error');
+});
+
+test('the copy link is drawn as the page\'s link button, not a bare button', async () => {
+  const m = mount();
+  await m.load();
+  assert.equal(m.$('pv-link').className, 'linkbtn');
+});
 
 test('the panel shows when a key is open, reads what the key can provide only when it is opened, and offers a fee and a size', async () => {
   const m = mount();

@@ -189,15 +189,52 @@ test('every provider online is a tile, the key\'s own first and marked, with its
 });
 
 test('a provider that cannot take even its least is full, not a range that ends below where it starts', async () => {
+  const tileOf = (m, name) => [...m.$('fx-tiles').querySelectorAll('.lp-tile')].find((t) => t.querySelector('.lp-top b').textContent === name);
   for (const available of ['0', String(5n * TAC)]) {
-    const m = mount({ providers: [provider('Empty', { available })] });
+    const m = mount({ providers: [provider('Empty', { available }), provider('Other', { feeBps: 50 })] });
     await until(() => !m.$('fx-tiles').hidden, 'the tile');
-    assert.match(text(m.$('fx-tiles')), /Takes full right now/, `available ${available}`);
+    assert.match(text(tileOf(m, 'Empty')), /Takes full right now/, `available ${available}`);
     assert.doesNotMatch(text(m.$('fx-tiles')), /to (0|5) TAC/);
+    // the summary's range is the one the providers with room take: not the full one's least
+    assert.match(text(m.$('fx-lp')), /10 to 1,000 TAC/); assert.doesNotMatch(text(m.$('fx-lp')), /to (0|5) TAC/);
   }
-  const m = mount({ providers: [provider('Some', { available: String(300n * TAC) })] });
+  const m = mount({ providers: [provider('Some', { available: String(300n * TAC) }), provider('Other', { feeBps: 50 })] });
   await until(() => !m.$('fx-tiles').hidden, 'the tile');
-  assert.match(text(m.$('fx-tiles')), /Takes 10 to 300 TAC/, 'a provider with room says its range');
+  assert.match(text(tileOf(m, 'Some')), /Takes 10 to 300 TAC/, 'a provider with room says its range');
+  // a lone provider is the summary line already: no tile repeats it
+  const one = mount({ providers: [provider('Alone')] });
+  await until(() => /Alone/.test(text(one.$('fx-lp'))), 'the summary');
+  assert.equal(one.$('fx-tiles').hidden, true);
+});
+
+test('a full provider\'s least is not the summary\'s: the range is what the providers with room take, and the lowest fee among them', async () => {
+  const m = mount({ providers: [provider('Full', { feeBps: 5, minAmount: String(5n * TAC), available: String(2n * TAC) }), provider('Room', { feeBps: 40, minAmount: String(50n * TAC), available: String(500n * TAC) })] });
+  await until(() => /online/.test(text(m.$('fx-lp'))), 'the summary');
+  const t = text(m.$('fx-lp'));
+  assert.match(t, /2 providers online/); assert.match(t, /from 0\.40%/, 'the fee of the one that can take a bridge'); assert.match(t, /50 to 500 TAC now/);
+  assert.doesNotMatch(t, /5 to 2 TAC|5 to 500/);
+});
+
+test('every provider full: Max is what the key holds, to wait with, not nothing', async () => {
+  const wants = { kept: () => null, start: async () => null, stop: async () => {} };
+  const m = mount({ wants, providers: [provider('Empty', { available: '0' })], session: sessionStub({ balance: 42n * TAC }) });
+  await signIn(m);
+  m.$('fx-max').click(); await tick(5);
+  assert.equal(m.$('fx-amt').value, '42');
+  assert.equal(m.$('fx-go').textContent, 'Wait for a provider');
+  m.ui.destroy();
+});
+
+test('providers gone: one empty read keeps the providers read (a board may not have answered), two in a row say none is online', async () => {
+  let list = [provider('A')];
+  const m = mount({ discover: async () => list, refreshMs: 1 });
+  await until(() => /^A\b/.test(text(m.$('fx-lp'))), 'the provider');
+  await signIn(m);
+  list = [];
+  typeIn(m, '20'); await tick(10);
+  assert.match(text(m.$('fx-lp')), /^A\b/, 'one empty read: the provider stands');
+  typeIn(m, '21'); await until(() => /No provider is online/.test(text(m.$('fx-lp'))), 'none online after a second empty read');
+  m.ui.destroy();
 });
 
 test('the key\'s own provider is not one to bridge with: it is left out of the summary and of the quotes', async () => {
@@ -380,7 +417,7 @@ test('errors from the start are said plainly: a note already in a bridge, notes 
   }
 });
 
-test('a key that locks or changes drops the session: the form closes, the timer stops, the amount is gone', async () => {
+test('a key that locks or changes drops the session: the form closes, the timer stops, the amount is gone; another key is read at once', async () => {
   const m = mount();
   await signIn(m);
   typeIn(m, '50'); await until(() => !m.$('fx-recv').hidden, 'a quote');
@@ -388,11 +425,24 @@ test('a key that locks or changes drops the session: the form closes, the timer 
   assert.equal(m.$('fx-form').hidden, true); assert.equal(m.$('fx-go').textContent, 'Open wallet'); assert.match(m.$('fx-st').textContent, /locked/);
   assert.equal(m.st.calls.stops, 1); assert.equal(m.$('fx-amt').value, '');
   assert.equal(m.$('fx-go').hidden, false); m.$('fx-go').click(); await until(() => !m.$('fx-form').hidden, 'the form after a new key');
-  assert.equal(m.state.opens, 2);
+  assert.equal(m.state.opens, 2, 'one read for the key opened by the press');
+  typeIn(m, '60');
   m.key.open('03' + 'ee'.repeat(32)); await tick(10);
-  assert.equal(m.st.calls.stops, 2);
-  assert.equal(m.$('fx-form').hidden, true);
+  assert.equal(m.st.calls.stops, 2, 'the first key\'s session is stopped');
+  assert.equal(m.$('fx-amt').value, '', 'its amount is gone');
+  await until(() => !m.$('fx-form').hidden, 'the other key read without a press');
+  assert.equal(m.state.opens, 3);
   m.ui.lock('Your wallet switched accounts.'); assert.match(m.$('fx-st').textContent, /switched accounts/);
+});
+
+test('a key opened elsewhere on the page (the provider panel) is read here too: the card never asks to open a wallet that is open', async () => {
+  const m = mount();
+  await until(() => m.$('fx-go').textContent === 'Open wallet', 'the button');
+  m.key.open();
+  await until(() => !m.$('fx-form').hidden, 'the form');
+  assert.equal(m.state.signIns, 0); assert.equal(m.state.opens, 1);
+  assert.notEqual(m.$('fx-go').textContent, 'Open wallet');
+  m.ui.destroy();
 });
 
 test('what the providers can take now: the amount is capped by it, and the providers are read again as an amount is typed', async () => {
@@ -424,10 +474,11 @@ test('a provider with nothing to take is full, not a range that ends at nothing;
   const m = mount({ providers: [provider('Empty', { available: '0' })] });
   await until(() => /fee/.test(text(m.$('fx-lp'))), 'the summary');
   assert.match(text(m.$('fx-lp')), /full right now/); assert.doesNotMatch(text(m.$('fx-lp')), /to 0 TAC/);
-  assert.match(text(m.$('fx-tiles')), /Takes full right now/);
+  assert.equal(m.$('fx-tiles').hidden, true, 'a lone provider is the summary line, not a tile as well');
   const n = mount({ providers: [] });
   await until(() => /No provider is online/.test(text(n.$('fx-lp'))), 'the offline line');
-  assert.equal(n.$('fx-lp').querySelector('a').getAttribute('href'), '/#card=bridge', 'the regular bridge is one click away');
+  assert.equal(n.$('fx-alt').querySelector('a').getAttribute('href'), '/#card=bridge', 'the regular bridge is one click away');
+  assert.match(text(n.$('fx-alt')), /regular bridge/);
 });
 
 test('what the lock costs on Bitcoin is read before the press: the fee shown, and an address that cannot pay it stops the press and says what to add', async () => {

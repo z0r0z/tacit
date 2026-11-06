@@ -90,6 +90,18 @@ test('the providers are read once for a while, and again after it; one that goes
   assert.equal((await fr.offer(100n * TAC)).ok, true, 'a read that fails keeps the list it had'); assert.equal(reads, 2);
 });
 
+test('providers gone: one empty read keeps the list (a board may not have answered), a second in a row empties it, and the tab stops offering them', async () => {
+  let list = [provider('A')], t = 0;
+  const fr = makeFastRoute({ discover: async () => list, open: async () => session(), refreshMs: 1000, now: () => t });
+  assert.equal((await fr.offer(100n * TAC)).ok, true);
+  list = []; t = 1500;
+  assert.equal((await fr.offer(100n * TAC)).ok, true, 'one empty read: the provider stands');
+  t = 3000;
+  assert.equal((await fr.offer(100n * TAC)).why, 'none', 'two in a row: none online');
+  list = [provider('B')]; t = 4500;
+  assert.equal((await fr.offer(100n * TAC)).provider.name, 'B', 'a provider back is offered at once');
+});
+
 test('the lock\'s cost and the bridge itself are for exactly the note picked, with the provider that was quoted', async () => {
   const s = session();
   const fr = routeOf([provider('A')], s);

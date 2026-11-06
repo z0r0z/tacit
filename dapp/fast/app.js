@@ -4,8 +4,8 @@ import { makeKeySession, signInSheet } from '/trade/key.js?cb=26d9c07b';
 import { makeTacitSession } from '/tacit-session.js?cb=a2d34bb2';
 import { getUx as loadUx, forgetUx } from '/trade/poolux.js?cb=a64920c6';
 import { onMainnet, connectedInjected } from '/eth-nodes.js';
-import { mountFast } from '/fast/ui.js?cb=a813acb5';
-import { mountProvide } from '/fast/provide.js?cb=badff501';
+import { mountFast } from '/fast/ui.js?cb=f2a1debb';
+import { mountProvide } from '/fast/provide.js?cb=e2396025';
 import { mountBound } from '/fast/bound.js?cb=862c8d6e';
 import { openFast, openProvider, openBound, discoverProviders, PROVIDER_DEFAULTS } from '/fast/wire.js?cb=a7b67508';
 import { makeWants } from '/fast/want.js?cb=3dad1fd3';
@@ -75,9 +75,9 @@ const notify = (text) => {
 
 // /fast/#with=<id>: a provider's pairing link (fast/fmt.js pairId), kept for this visit
 const PIN = (/^#with=([0-9a-f]{16})$/i.exec(location.hash) || [])[1]?.toLowerCase() || null;
+const signIn = () => signInSheet(keyS, { icons: true, why: 'Open your Tacit wallet to bridge or provide TAC.' });
 ui = mountFast({
-  root: document.getElementById('gate'), keyS, wants, notify, pinned: () => PIN,
-  signIn: () => signInSheet(keyS, { icons: true, why: 'Open your Tacit wallet to bridge or provide TAC.' }),
+  root: document.getElementById('gate'), keyS, wants, notify, pinned: () => PIN, signIn,
   discover: () => discoverProviders(LISTS),
   open: async () => {
     const pubHex = keyS.key.pubHex, priv = keyS.priv(), ux = await getUx();
@@ -94,7 +94,7 @@ mountBound({
 });
 
 const provide = mountProvide({
-  base: PROVIDER_DEFAULTS, notify, ask: () => wants.ask(), root: document.getElementById('provide'), keyS, hasOpen, settings, waiting: () => wants.waiting(),
+  base: PROVIDER_DEFAULTS, notify, ask: () => wants.ask(), root: document.getElementById('provide'), keyS, hasOpen, settings, waiting: () => wants.waiting(), signIn,
   open: async () => {
     const pubHex = keyS.key.pubHex, priv = keyS.priv(), ux = await getUx();
     return TS.withKey((T) => openProvider({ T, ux, priv, pubHex, boards: LISTS.boards, wallet: sendWallet, ask }), pubHex);

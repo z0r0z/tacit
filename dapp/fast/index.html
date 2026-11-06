@@ -23,7 +23,7 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /fast/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/fast/app.js?cb=f100a51b">
+<link rel="modulepreload" href="/fast/app.js?cb=609c6305">
 <link rel="modulepreload" href="/trade/btc-session.js?cb=d93e4816">
 <link rel="modulepreload" href="/prf-wallet.js">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
@@ -39,10 +39,10 @@
 <link rel="modulepreload" href="/trade/fmt.js?cb=32b1744b">
 <link rel="modulepreload" href="/tacit-session.js?cb=a2d34bb2">
 <link rel="modulepreload" href="/trade/poolux.js?cb=a64920c6">
-<link rel="modulepreload" href="/fast/ui.js?cb=a813acb5">
+<link rel="modulepreload" href="/fast/ui.js?cb=f2a1debb">
 <link rel="modulepreload" href="/fast/fmt.js">
 <link rel="modulepreload" href="/fast/route.js">
-<link rel="modulepreload" href="/fast/provide.js?cb=badff501">
+<link rel="modulepreload" href="/fast/provide.js?cb=e2396025">
 <link rel="modulepreload" href="/fast/bound.js?cb=862c8d6e">
 <link rel="modulepreload" href="/fast/wire.js?cb=a7b67508">
 <link rel="modulepreload" href="/bitcoin-taproot-wallet.js?cb=6e90dd96">
@@ -141,16 +141,20 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .brand b { font: italic 400 30px/1 var(--serif); letter-spacing: -.01em; }
 .brand i { font-style: normal; font-size: 12px; color: var(--mute); text-transform: uppercase; letter-spacing: .12em; }
 
-/* the head */
-.hero { padding: 26px 0 18px; }
-.hero h1 { font: 400 clamp(40px, 7vw, 72px)/.95 var(--serif); letter-spacing: -.025em; margin: 0; display: flex; align-items: center; gap: .2em; }
-.hero h1 .tk { width: .62em; height: .62em; margin-top: .04em; }
+/* the head: centred over the bridge, as the bridge page draws its own */
+.hero { max-width: 560px; margin: 0 auto; padding: clamp(20px, 6vh, 56px) 0 4px; text-align: center; }
+.hero h1 { font: 400 clamp(44px, 8vw, 72px)/.95 var(--serif); letter-spacing: -.025em; margin: 0; }
 .hero h1 em { font-style: italic; }
-.hero .sub { margin: 12px 0 0; color: var(--mute); font-size: 13px; max-width: 64ch; }
+.hero .sub { margin: 14px auto 0; color: var(--mute); font-size: 13px; max-width: 44ch; }
+.hero .note { text-align: left; }
 
 /* the page */
-.panel { background: var(--card); border: 1px solid var(--hair); padding: 22px; min-width: 0; }
+.panel { background: var(--card); border: 1px solid var(--hair); border-radius: 16px; padding: 22px; min-width: 0; }
 @media (max-width: 480px) { .panel { padding: 18px 14px; } }
+#gate { box-shadow: 0 30px 60px -48px rgba(0,0,0,.5); }
+/* the other way in: the regular bridge, under the button */
+.alt { margin: 12px 0 0; font-size: 12px; color: var(--mute); text-align: center; }
+.alt a { color: var(--ink); }
 .eyebrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); margin: 0 0 12px; }
 .eyebrow .who { letter-spacing: 0; text-transform: none; font-size: 11.5px; }
 .note { font-size: 12.5px; color: var(--mute); margin: 12px 0 0; }
@@ -219,7 +223,7 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 
 /* the bridge */
-.gate { max-width: 560px; margin: 22px 0 0; }
+.gate { max-width: 560px; margin: 22px auto 0; }
 .gate .rows { margin-top: 12px; }
 .gate .rows.flat { margin-top: 0; }
 .gate #fx-form { margin-top: 0; }
@@ -239,22 +243,25 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .fx-amt span { color: var(--mute); }
 .pv { padding: 0; margin-top: 22px; }
 /* every provider online, the key's own among them */
-.lp-tiles { max-width: 560px; margin: 22px 0 0; }
-.lp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; }
-.lp-tile { min-width: 0; padding: 14px 16px; background: var(--card); border: 1px solid var(--hair); }
+.lp-tiles { max-width: 560px; margin: 28px auto 0; }
+.lp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
+.lp-tile { min-width: 0; padding: 14px 16px; background: var(--card); border: 1px solid var(--hair); border-radius: 12px; }
 .lp-tile.mine { border-color: var(--ink); }
 .lp-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
 .lp-top b { font-weight: 500; font-size: 13px; overflow-wrap: anywhere; }
 .lp-tag { flex: none; font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
-.lp-tile .kv { flex-wrap: wrap; column-gap: 8px; row-gap: 0; padding: 3px 0; }
-.lp-tile .kv b { margin-left: auto; white-space: nowrap; }
+.lp-tile .kv { padding: 3px 0; }
+.lp-tile .kv b { white-space: nowrap; }
 .pv > summary { cursor: pointer; padding: 18px 22px; list-style: none; font-weight: 500; }
+.pv > summary .pv-waiting { font-weight: 400; color: var(--mute); }
 .pv > summary::-webkit-details-marker { display: none; }
 .pv > summary::after { content: '+'; float: right; color: var(--mute); }
 .pv[open] > summary::after { content: '–'; }
 .pv-in { padding: 0 22px 22px; }
 .pv-in .note { margin-top: 0; }
 .bd-note { align-items: baseline; }
+.bd-note > span, .bd-note > b { white-space: nowrap; }
+@media (max-width: 420px) { .bd-note { flex-wrap: wrap; } #ready .bd-note .linkbtn.bd-off { margin-left: auto; } }
 .bd-note .linkbtn, .bd-note > b { margin-left: auto; }
 .bd-note .linkbtn.bd-off { margin-left: 14px; color: var(--mute); }
 #ready .fx-amt { margin-top: 12px; }
@@ -434,8 +441,8 @@ footer.sf svg.fill { width: 16px; height: 16px; }
 
   <main>
     <section class="hero" aria-labelledby="h">
-      <h1 id="h"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span>tacit <em>fast</em></span></h1>
-      <p class="sub">TAC from Bitcoin to your private balance, in minutes.</p>
+      <h1 id="h">Bridge in <em>minutes</em></h1>
+      <p class="sub">TAC from Bitcoin to your private balance, paid out by a provider.</p>
       <noscript><p class="note">This page needs JavaScript.</p></noscript>
       <p class="note" id="fx-wallet" role="status" hidden>The relay is holding a step of your bridge: confirm it in your wallet to send it yourself. Your wallet’s address is seen sending it.</p>
     </section>
@@ -461,6 +468,6 @@ footer.sf svg.fill { width: 16px; height: 16px; }
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/fast/app.js?cb=f100a51b"></script>
+<script type="module" src="/fast/app.js?cb=609c6305"></script>
 </body>
 </html>
