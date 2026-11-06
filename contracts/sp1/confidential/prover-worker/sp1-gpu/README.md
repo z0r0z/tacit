@@ -21,3 +21,15 @@ cp "$HOME/.sp1-lowmem/bin/sp1-gpu-server" "$HOME/.sp1/bin/sp1-gpu-server"
 Measured 2026-11-06 on an RTX A4000 (16 GB, 16 cores), the worker's BENCH over tests/fixtures/sp1-stdin with
 `SP1_GPU_MIN_GB=16 SP1_GPU_ELEMENT_THRESHOLD=134217728`: every op proves to Groth16, at most 15.3 GB of the card in use;
 fastlane 152 s cold, 110 s warm; swap 88 s, 81 s; transfer 113 s. An Apple-silicon laptop takes about nine minutes an op.
+
+The same card proves the pool's wraps at `SP1_GPU_ELEMENT_THRESHOLD=134217728` in 115 s cold and 82 to 87 s warm, peaking at 15.3 GB of
+its 16; half that threshold peaks the same, so a wrap's peak is in the prover's fixed parts, not its core shards. prove-gpu.sh gives a
+card of 16 to 23 GB this server and threshold, and the worker proves the pool's wraps on it (BTC_STATE=0).
+
+A 12 GB card (an RTX 3080 Ti, measured 2026-11-06) does not fit, whatever the settings: once its keys are set up the server holds
+about 8.6 GB of the card (the core program's and the recursion programs' preprocessed traces and their commitments), and a wrap's
+first core shard needs about 2.7 GB more at any shard size, so an allocation fails with about 11.3 GB live. Making it fit would
+take changing what the server keeps on the card between proofs, not these settings.
+
+`.github/workflows/build-sp1-gpu-lowmem.yml` builds the server from the pinned v6.3.1 commit with this patch, for sm_80, 86, 89 and
+120 in one binary, as a workflow artifact for a prover-bins release.
