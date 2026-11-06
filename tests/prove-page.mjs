@@ -36,7 +36,7 @@ const check = (ok, what, got = '') => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${w
 
 // The stand-in prover: `local` is what it answers (null: nothing listens), and each POST /mine it was sent.
 const WINDOWS_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
-async function open(browser, local, { phone = false, idle = false, ua = null } = {}) {
+async function open(browser, local, { phone = false, idle = false, ua = null, hash = '' } = {}) {
   const ctx = await browser.newContext(phone ? { viewport: { width: 390, height: 800 }, userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148' } : { viewport: { width: 1100, height: 900 }, ...(ua ? { userAgent: ua } : {}) });
   const page = await ctx.newPage();
   const errors = [], posts = [];
@@ -62,7 +62,7 @@ async function open(browser, local, { phone = false, idle = false, ua = null } =
     const u = new URL(route.request().url());
     if (u.pathname === '/prover/pool') return json(route, { ...(idle ? {} : {}), queued: idle ? 0 : 3, leased: idle ? 0 : 2, doneToday: 41, minersToday: 2, done24h: 433, miners24h: 11, top: [{ miner: ADDR, proofs: 4 }, { miner: OTHER, proofs: 1 }], terms: { pointsPerProof: 20, proofsPerMinerDay: 30 } });
     if (u.pathname === '/prover/blocks') return json(route, { head: { height: chain.blocks[0].height, hash: chain.blocks[0].hash, ethHead: chain.blocks[0].ethBlock + 25 }, blocks: chain.blocks, cross: [{ digest: '0x' + '89'.repeat(32), bitcoin: 974721, ethereum: { digest: '0x' + '54'.repeat(32), slot: 15592000 }, tx: '0x' + 'ab'.repeat(32), ethBlock: chain.blocks[0].ethBlock, at: Date.now(), by: { miner: OTHER } }] });
-    if (u.pathname === '/prover/board') return json(route, { queued: 0, workers: [], pay: { pointsPerProof: 20, pointsByProgram: { 'btc-state': 500 } } });
+    if (u.pathname === '/prover/board') return json(route, { queued: 0, workers: [{ name: `c-${ADDR}`, community: true, programs: ['btc-state'], proved: 3, lastSeenSeconds: 4, racing: null }, { name: `c-${OTHER}`, community: true, programs: ['btc-state'], proved: 1, lastSeenSeconds: 2400, racing: 'btc-state' }, { name: 'c-0x' + 'cd'.repeat(20), community: true, programs: ['btc-state'], proved: 0, lastSeenSeconds: 90000, racing: null }, { name: 'c-0x' + 'ef'.repeat(20), community: true, programs: ['confidential'], proved: 5, lastSeenSeconds: 2 }, { name: 'tacit-a5000', programs: ['confidential', 'eth-state'], proved: 9, lastSeenSeconds: 0 }], pay: { pointsPerProof: 20, pointsByProgram: { 'btc-state': 1000 } } });
     if (u.pathname === '/prover/pool/recent') return json(route, { proofs: [{ at: Date.now() - 60_000, house: true, points: 0, secs: 31 }, { at: Date.now() - 120_000, miner: ADDR, points: 20, secs: 552 }] });
     if (u.pathname === '/prover/pool/credits') return json(route, { day, over: false, miners: [{ miner: ADDR, proofs: 4, points: 80 }] });
     if (u.pathname === '/pool/snapshot') return json(route, { v: 1, cid: 'bafkreia4g6iad4ec3634pd5lsfcqsmenqcc5oyn3mm2kwezybpwv6iltom', to: 26352486, checkpoint: { eth: { block: 26352486, hash: '0x' + 'e9'.repeat(32) }, tacit: { height: 9441, hash: '0xec803dcef9a1a4c0f64a919b491a226ce22e9d30be225c76a148b0a22b62eb41' }, bitcoin: { relayTip: 974739, reflection: { height: 974721 } }, ethereum: { finalizedSlot: 13450016 } } });
@@ -70,7 +70,7 @@ async function open(browser, local, { phone = false, idle = false, ua = null } =
     return json(route, {}, 404);
   });
   await page.route('https://tacit-points.onrender.com/**', (route) => json(route, { enabled: true, endSec: Math.floor(Date.now() / 1000) + 86400 * 10, terms: { capWeiPerPoint: '10000000000000000' }, account: { creditedWei: '6000000000000000000' } }));
-  await page.goto(`${ORIGIN}/prove/`);
+  await page.goto(`${ORIGIN}/prove/${hash}`);
   return { page, ctx, errors, posts };
 }
 const text = (page, s) => page.locator(s).innerText();
@@ -89,8 +89,11 @@ try {
     await page.fill('#addr', ADDR);
     check((await text(page, '#cmd')).endsWith(ADDR), 'the setup line carries the address', await text(page, '#cmd'));
     await page.waitForFunction(() => document.querySelector('#btc-pay').textContent.includes('TAC'), null, { timeout: 8000 }).catch(() => {});
-    check((await page.textContent('#btc-pay')) === ' · about 5 TAC each', 'the GPU card says what a Bitcoin batch pays', await page.textContent('#btc-pay'));
+    check((await page.textContent('#btc-pay')) === ' · 10 TAC each', 'the GPU card says what a Bitcoin batch pays', await page.textContent('#btc-pay'));
     check((await text(page, '#gpu-cmd')) === `curl -fsSL https://tacit.finance/prove-gpu.sh | sh -s -- ${ADDR}`, 'with the GPU command for the address', await text(page, '#gpu-cmd'));
+    await page.waitForFunction(() => document.querySelector('#gpu-n').textContent !== '—', null, { timeout: 8000 }).catch(() => {});
+    check((await text(page, '#gpu-n')) === '2', 'GPUs online: one asked for work just now, one is proving a batch; one gone a day and a settle-only machine are not', await text(page, '#gpu-n'));
+    check((await text(page, '#gpu-me')) === 'waiting for its turn · 3 batches', "the address's own GPU, from its board name", await text(page, '#gpu-me'));
     await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
     await page.click('#copy');
     await page.waitForFunction(() => document.querySelector('#title').textContent === 'Waiting for tacit-prover…', null, { timeout: 5000 }).catch(() => {});
@@ -259,6 +262,30 @@ try {
       check(h.get('tab') === tab && (!extra || `need=${h.get('need')}&why=${h.get('why')}` === extra) && await page.locator(`#t-${tab}`).isVisible(),
         `/weld/keeper/${from || ''} goes to the ${tab} tab${extra ? ', keeping what the lock needs' : ''}`, page.url());
     }
+    await ctx.close();
+  }
+  // each card's own link (/prove/#<card>) and its Share to X
+  {
+    const { page, ctx, errors } = await open(browser, { v: null }, { hash: '#gpu' });
+    await page.waitForTimeout(300);
+    const gpu = page.locator('[data-card="gpu"]');
+    check(await page.locator('#t-prove').isVisible() && await gpu.evaluate((el) => el.classList.contains('lit')), '#gpu opens the Prove tab and marks the GPU card');
+    await page.waitForTimeout(1200);
+    const box = await gpu.boundingBox();
+    check(box && box.y >= 0 && box.y < 120, 'and brings it to the top of the window', JSON.stringify(box));
+    const cards = await page.locator('[data-card]').count(), shares = await page.locator('.share-x').count();
+    check(cards >= 11 && shares === cards, 'every card has its Share', `${shares} of ${cards}`);
+    const href = await page.getAttribute('[data-card="gpu"] .share-x', 'href');
+    const q = new URL(href).searchParams;
+    check(href.startsWith('https://x.com/intent/post?') && q.get('url') === 'https://tacit.finance/prove/#gpu' && q.get('text').includes('24 GB'), "the GPU card's Share posts its own link and line", href);
+    await page.evaluate(() => { location.hash = 'send'; });
+    await page.waitForTimeout(400);
+    check(await page.locator('#t-relay').isVisible() && await page.locator('[data-card="send"]').evaluate((el) => el.classList.contains('lit')), '#send opens the Relay tab at its card');
+    await page.click('#tb-bitcoin');
+    check(new URL(page.url()).hash === '#tab=bitcoin', 'a tab pressed after a card link puts the tab alone in the address', page.url());
+    await page.click('#tb-prove');
+    check(new URL(page.url()).hash === '', 'and Prove clears it', page.url());
+    check(errors.length === 0, 'no page errors', errors.join(' | '));
     await ctx.close();
   }
   // an API answer carrying markup: dropped before anything is drawn

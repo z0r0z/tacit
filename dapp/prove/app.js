@@ -249,7 +249,7 @@ function paint() {
   $('#paid').textContent = l.credited || '—';
   const share = $('#share');
   share.hidden = !mineRow;
-  if (mineRow) share.href = `https://x.com/intent/post?text=${encodeURIComponent(`I'm running a Tacit prover node: ${mineRow.proofs} privacy ${mineRow.proofs === 1 ? 'proof' : 'proofs'} today, mining TAC.`)}&url=${encodeURIComponent('https://tacit.finance/prove')}`;
+  if (mineRow) share.href = `https://x.com/intent/post?text=${encodeURIComponent(`I'm running a Tacit prover node: ${mineRow.proofs} privacy ${mineRow.proofs === 1 ? 'proof' : 'proofs'} today, mining TAC.`)}&url=${encodeURIComponent('https://tacit.finance/prove/#node')}`;
   $('#run').textContent = mine?.proved ? String(mine.proved) : '0';
   $('#run-row').hidden = !mine || typeof mine.on !== 'boolean';
   paintSalt();
@@ -291,15 +291,25 @@ function say(text, bad = false) {
   s.classList.toggle('err', bad);
 }
 
-// The GPU card: the command for this address, and what a Bitcoin batch pays (the board's points for it, at the most a point is paid today).
-let boardPay = null;
+// The GPU card: the command for this address, what a Bitcoin batch pays (the board's points for it, at the most a point is paid today),
+// how many GPUs are on the board (asked for work in the last two minutes, or proving a batch: one asks for nothing while it proves), and
+// this address's own GPU (its board name is c-<address>).
+let boardPay = null, gpus = null;
+const BTC = 'btc-state', GPU_NAME = /^c-(0x[0-9a-f]{40})$/;
+const cleanGpus = (ws) => (Array.isArray(ws) ? ws.filter((w) => w && w.community === true && GPU_NAME.test(String(w.name)) && Array.isArray(w.programs) && w.programs.includes(BTC))
+  .map((w) => ({ miner: GPU_NAME.exec(w.name)[1], proved: count(w.proved) || 0, seen: count(w.lastSeenSeconds), proving: w.racing === BTC })) : null);
+const gpuOn = (g) => g.proving || (g.seen != null && g.seen < 120);
 const gpuCommand = () => `curl -fsSL https://tacit.finance/prove-gpu.sh | sh -s -- ${addr() || '0xYourAddress'}`;
 function paintGpu() {
   $('#gpu-cmd').textContent = gpuCommand();
-  const pts = Number(boardPay?.pointsByProgram?.['btc-state']), r = Number.isSafeInteger(pts) ? rewardWei(pts, cap()) : null;
-  $('#btc-pay').textContent = r ? ` · about ${tac(r)} TAC each` : '';
+  const pts = Number(boardPay?.pointsByProgram?.[BTC]), r = Number.isSafeInteger(pts) ? rewardWei(pts, cap()) : null;
+  $('#btc-pay').textContent = r ? ` · ${tac(r)} TAC each` : '';
+  $('#gpu-n').textContent = gpus ? String(gpus.filter(gpuOn).length) : '—';
+  const g = gpus && me() ? gpus.find((x) => x.miner === me()) : null;
+  $('#gpu-me-row').hidden = !g;
+  if (g) $('#gpu-me').textContent = `${g.proving ? 'proving a batch' : gpuOn(g) ? 'waiting for its turn' : `seen ${ago(Date.now() - (g.seen || 0) * 1000)}`} · ${g.proved} ${g.proved === 1 ? 'batch' : 'batches'}`;
 }
-async function readBoardPay() { const s = await get(`${API}/prover/board`); if (s?.pay) boardPay = s.pay; paintGpu(); }
+async function readBoardPay() { const s = await get(`${API}/prover/board`); if (s?.pay) boardPay = s.pay; if (s) gpus = cleanGpus(s.workers); paintGpu(); }
 $('#gpu-copy').addEventListener('click', async () => {
   try { await navigator.clipboard.writeText(gpuCommand()); $('#gpu-copy').textContent = 'Copied'; setTimeout(() => { $('#gpu-copy').textContent = 'Copy'; }, 1500); } catch {}
 });
@@ -364,8 +374,11 @@ const whenIdle = (fn) => ('requestIdleCallback' in window ? requestIdleCallback(
 addEventListener('load', () => setTimeout(() => whenIdle(() => loadOps().then((m) => m.startMarket()).catch(() => {})), 2500), { once: true });
 
 // The node's jobs as tabs: #tab=relay or #tab=bitcoin opens one (a link from a waiting lock carries need= and why= beside it), and the
-// other jobs' reads start the first time one of their tabs opens.
+// other jobs' reads start the first time one of their tabs opens. Each card has its own link too, /prove/#<its data-card>: that opens
+// its tab, brings it into view and marks it for a moment; its Share posts the link to X with the card's line (data-share).
 const TABS = ['prove', 'relay', 'bitcoin'];
+const CARDS = new Map([...document.querySelectorAll('[data-card]')].map((el) => [el.dataset.card, el]));
+const cardOf = () => (CARDS.has(location.hash.slice(1)) ? location.hash.slice(1) : null);
 function showTab(name, { write = true } = {}) {
   const t = TABS.includes(name) ? name : 'prove';
   for (const n of TABS) {
@@ -375,12 +388,27 @@ function showTab(name, { write = true } = {}) {
   }
   if (t !== 'prove') loadOps().then((m) => m.startOps()).catch(() => {});
   if (write) {
-    const h = new URLSearchParams(location.hash.slice(1));
+    const h = new URLSearchParams(cardOf() ? '' : location.hash.slice(1));
     if (t === 'prove') h.delete('tab'); else h.set('tab', t);
     history.replaceState(null, '', `${location.pathname}${location.search}${[...h].length ? `#${h}` : ''}`);
   }
 }
-const tabOf = () => new URLSearchParams(location.hash.slice(1)).get('tab') || 'prove';
+const tabFor = (el) => el.closest('[role="tabpanel"]')?.id.slice(2) || 'prove';
+const tabOf = () => (cardOf() ? tabFor(CARDS.get(cardOf())) : new URLSearchParams(location.hash.slice(1)).get('tab') || 'prove');
+function showCard(name, behavior = matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth') {
+  const el = CARDS.get(name);
+  showTab(tabFor(el), { write: false });
+  el.scrollIntoView({ block: 'start', behavior });
+  el.classList.remove('lit'); void el.offsetWidth; el.classList.add('lit');
+}
+const X_MARK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.638 7.584H.474l8.6-9.83L0 1.154h7.594l5.243 6.932ZM17.61 20.644h2.039L6.486 3.24H4.298Z"/></svg>';
+for (const [name, el] of CARDS) {
+  const a = document.createElement('a');
+  a.className = 'share-x'; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.title = 'Share on X';
+  a.href = `https://x.com/intent/post?text=${encodeURIComponent(el.dataset.share || 'tacit prove')}&url=${encodeURIComponent(`https://tacit.finance/prove/#${name}`)}`;
+  a.innerHTML = `${X_MARK}<span>Share</span>`;
+  (el.querySelector('.eyebrow') || el.querySelector('h2'))?.append(a);
+}
 for (const n of TABS) $(`#tb-${n}`).addEventListener('click', () => showTab(n));
 $('.tabs').addEventListener('keydown', (e) => {
   const i = TABS.indexOf(tabOf()), d = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
@@ -388,8 +416,15 @@ $('.tabs').addEventListener('keydown', (e) => {
   const n = TABS[(i + d + TABS.length) % TABS.length];
   showTab(n); $(`#tb-${n}`).focus();
 });
-window.addEventListener('hashchange', () => showTab(tabOf(), { write: false }));
-showTab(tabOf(), { write: false });
+window.addEventListener('hashchange', () => (cardOf() ? showCard(cardOf()) : showTab(tabOf(), { write: false })));
+if (cardOf()) {
+  showCard(cardOf(), 'auto');
+  // and again once the network strip and the rows above have their height, unless the reader has scrolled meanwhile
+  let moved = false;
+  addEventListener('wheel', () => { moved = true; }, { once: true, passive: true });
+  addEventListener('touchmove', () => { moved = true; }, { once: true, passive: true });
+  setTimeout(() => { if (!moved && cardOf()) CARDS.get(cardOf()).scrollIntoView({ block: 'start' }); }, 900);
+} else showTab(tabOf(), { write: false });
 
 $('#chain').addEventListener('click', (e) => {
   const li = e.target.closest('.blk');

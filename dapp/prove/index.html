@@ -21,7 +21,7 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /prove/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/prove/app.js?cb=5b8cbf02">
+<link rel="modulepreload" href="/prove/app.js?cb=1fdc615b">
 <link rel="modulepreload" href="/community-prove.js?cb=55393eb1">
 <link rel="modulepreload" href="/prove/view.js?cb=a0f0c54d">
 <link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
@@ -311,6 +311,20 @@ pre.cmd { margin: 16px 0 0; padding: 12px 14px; background: var(--field); border
 .gpu h3 span { color: var(--orange); }
 .gpu .btn { margin-top: 12px; }
 .gpu .hint code { font: inherit; color: var(--ink); }
+.gpu .pair .btn { margin-top: 0; }
+.gpu .rows { margin-top: 14px; }
+.gpu .kv b a { color: var(--ink); }
+/* each card's own link (/prove/#gpu), and the Share to X app.js puts in its eyebrow or heading */
+[data-card] { scroll-margin-top: 16px; }
+[data-card].lit { animation: lit 2.6s ease-out; }
+@keyframes lit { 0%, 45% { outline: 2px solid var(--orange); outline-offset: 4px; } 100% { outline: 2px solid transparent; outline-offset: 4px; } }
+.share-x { display: inline-flex; align-items: center; gap: 5px; flex: none; padding: 4px 6px; margin: -4px -6px -4px auto; border-radius: 6px; color: var(--mute); text-decoration: none;
+  font: 500 11px/1 var(--mono); letter-spacing: 0; text-transform: none; }
+.share-x svg { width: 11px; height: 11px; fill: currentColor; }
+.eyebrow .me { margin-left: auto; }
+.eyebrow .me + .share-x { margin-left: 4px; }
+@media (hover: hover) { .share-x:hover { color: var(--ink); background: var(--hair); } }
+@media (pointer: coarse) { .share-x { padding: 10px; margin: -10px -10px -10px auto; } .eyebrow .me + .share-x { margin-left: 0; } }
 .bank { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 6px; }
 .bank li { display: flex; justify-content: space-between; gap: 12px; font: 13px/1.4 var(--mono); }
 .bank li code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -552,7 +566,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
         <p class="empty">Proving needs a computer: a Mac with Apple silicon, Linux, or Windows. Open this page there.</p>
       </section>
 
-      <section class="panel" id="desk" aria-live="polite">
+      <section class="panel" id="desk" aria-live="polite" data-card="node" data-share="Run a prover node for @tacitfi: your computer proves private transactions and earns TAC.">
         <p class="eyebrow"><span>Your node</span><span class="me" id="me"></span></p>
         <label class="fld" for="addr"><span>Pays to</span><input id="addr" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="0x…" maxlength="64"></label>
         <div class="state" id="state" data-s="none"><span class="dot" aria-hidden="true"></span><h2 id="title">Looking for tacit-prover…</h2><span class="win num" id="win" aria-live="polite"></span></div>
@@ -586,7 +600,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
         <p class="hint">Your node proves your own deposits too. <a href="/">Make a private deposit</a> and watch it land as a block.</p>
       </section>
 
-      <section class="panel feed" aria-label="Activity">
+      <section class="panel feed" aria-label="Activity" data-card="activity" data-share="Private transactions, proved live by people's computers on @tacitfi.">
         <p class="eyebrow">Just proved</p>
         <ol id="feed"><li class="empty">Nothing yet today.</li></ol>
         <p class="eyebrow">Today's provers</p>
@@ -594,15 +608,19 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       </section>
     </div>
     <div class="cols pair">
-      <section class="panel gpu" aria-labelledby="h-gpu">
-        <p class="eyebrow"><span>NVIDIA GPU with 24 GB</span></p>
+      <section class="panel gpu" aria-labelledby="h-gpu" data-card="gpu" data-share="Got an NVIDIA GPU with 24 GB or more? It can prove Bitcoin batches for @tacitfi and earn TAC for each one.">
+        <p class="eyebrow"><span>NVIDIA GPU, 24 GB or more</span></p>
         <h3 id="h-gpu">Prove Bitcoin batches<span id="btc-pay"></span></h3>
-        <p class="hint">Your GPU proves the batches that bring Bitcoin's state into the pool and mines salts between them. It runs on its own: no key, no ETH.</p>
-        <pre class="cmd"><code id="gpu-cmd">curl -fsSL https://tacit.finance/prove-gpu.sh | sh -s -- 0xYourAddress</code></pre>
-        <button class="btn ghost" id="gpu-copy" type="button">Copy</button>
-        <p class="hint">x86-64 Linux with CUDA 12; Windows through WSL 2 is untested. Put <code>--status</code> in place of the address to check on it.</p>
+        <p class="hint">GPUs take turns proving the batches that carry Bitcoin's state into the pool, and mine salts between turns. No key, no ETH.</p>
+        <div class="pair"><pre class="cmd"><code id="gpu-cmd">curl -fsSL https://tacit.finance/prove-gpu.sh | sh -s -- 0xYourAddress</code></pre><button class="btn ghost" id="gpu-copy" type="button">Copy</button></div>
+        <div class="rows num">
+          <div class="kv"><span>GPUs online</span><b id="gpu-n">—</b></div>
+          <div class="kv" id="gpu-me-row" hidden><span>Your GPU</span><b id="gpu-me">—</b></div>
+          <div class="kv"><span>Paid</span><b>each UTC day · <a href="/rewards/">Rewards</a></b></div>
+        </div>
+        <p class="hint">x86-64 Linux with CUDA 12: an RTX 3090, 4090 or 5090, an A5000 or bigger. Windows through WSL 2 is untested. Put <code>--status</code> in place of the address to check on it.</p>
       </section>
-      <section class="panel gpu" aria-labelledby="h-salt">
+      <section class="panel gpu" aria-labelledby="h-salt" data-card="salts" data-share="My computer mines deploy addresses for @tacitfi between proofs and earns TAC.">
         <p class="eyebrow"><span>Between proofs</span></p>
         <h3 id="h-salt">Mine deploy addresses<span id="salt-pay"></span></h3>
         <p class="hint" id="salt-day">Your node grinds salts for Tacit's next contracts while it waits. A proof always comes first.</p>
@@ -611,7 +629,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       </section>
     </div>
       <div class="ops">
-  <section class="grp" id="g-prove" aria-labelledby="h-market">
+  <section class="grp" id="g-prove" aria-labelledby="h-market" data-card="orders" data-share="Take paid proof orders on @tacitfi and get paid in TAC.">
     <h2 id="h-market"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg>Take paid proof orders</h2>
     <div class="panel">
       <p class="lede">Optional, beside your node. Holders who want a proof fast sign a fee in TAC. Your computer claims the order, proves it, and is paid from their permit the moment the pool accepts it.</p>
@@ -628,7 +646,7 @@ RUNNER_KEY=0x… node tools/community-runner.mjs prove</code></pre>
 
     <div class="tab ops" id="t-relay" role="tabpanel" aria-labelledby="tb-relay" hidden>
       <p class="lede">Send proved settles to Ethereum from your own wallet. Each one pays its fee to the wallet that sends it.</p>
-  <section class="grp" id="g-board" aria-labelledby="h-board">
+  <section class="grp" id="g-board" aria-labelledby="h-board" data-card="send" data-share="Send waiting @tacitfi settles to Ethereum and keep their fees.">
     <h2 id="h-board"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg>Send a waiting settle</h2>
     <div class="panel">
       <p class="lede">Each proof on the open board pays its fee to the wallet that sends it.</p>
@@ -637,7 +655,7 @@ RUNNER_KEY=0x… node tools/community-runner.mjs prove</code></pre>
       <p class="status" id="board-status" role="status"></p>
     </div>
   </section>
-  <section class="grp" id="g-auto" aria-labelledby="h-auto">
+  <section class="grp" id="g-auto" aria-labelledby="h-auto" data-card="auto" data-share="Relay @tacitfi settles from a browser tab and keep their fees.">
     <h2 id="h-auto"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg>Send them while this tab is open</h2>
     <div class="panel">
       <p class="lede">A relay account kept in this browser sends each settle whose fee pays its gas with a fifth to spare. It sends through Flashbots Protect, so one another sender takes first costs nothing, and the fees it earns pay for the next.</p>
@@ -646,7 +664,7 @@ RUNNER_KEY=0x… node tools/community-runner.mjs prove</code></pre>
       <p class="status" id="auto-status" role="status"></p>
     </div>
   </section>
-  <section class="grp" id="g-run" aria-labelledby="h-run">
+  <section class="grp" id="g-run" aria-labelledby="h-run" data-card="runner" data-share="Run a @tacitfi node on your own machine: it relays, lands proofs and keeps the fees.">
     <h2 id="h-run"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg>Run it on your machine</h2>
     <div class="panel">
       <p class="lede">One key advances the relay, lands published proofs and sends the board’s settles for their fees.</p>
@@ -662,11 +680,11 @@ node tools/community-runner.mjs mirror   # no key: keeps the board public on Nos
     <div class="tab ops" id="t-bitcoin" role="tabpanel" aria-labelledby="tb-bitcoin" hidden>
       <p class="lede">Two permissionless calls keep Bitcoin’s state current on Ethereum: the header relay and the proofs. When one is behind, move it from your own wallet and pay only the network fee.</p>
       <p class="asof num" id="asof">Reading the relay…</p>
-  <section class="grp" id="g-wait" aria-labelledby="h-wait">
+  <section class="grp" id="g-wait" aria-labelledby="h-wait" data-card="bitcoin" data-share="Bitcoin's state on Ethereum, live on @tacitfi.">
     <h2 id="h-wait"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg>Where things stand</h2>
     <div class="cards" id="cards-wait"></div>
   </section>
-  <section class="grp" id="g-advance" aria-labelledby="h-advance">
+  <section class="grp" id="g-advance" aria-labelledby="h-advance" data-card="headers" data-share="Advance @tacitfi's Bitcoin header relay from your own wallet.">
     <h2 id="h-advance"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg>Advance the header relay</h2>
     <div class="panel">
       <p class="lede">Sends Bitcoin’s block headers to <code>BitcoinLightRelay.advanceTip</code>. The contract checks each header’s proof of work, so only real blocks are accepted. Up to 40 headers per transaction, each confirmed in your wallet.</p>
@@ -682,7 +700,7 @@ node tools/community-runner.mjs mirror   # no key: keeps the board public on Nos
       </div>
     </div>
   </section>
-  <section class="grp" id="g-attest" aria-labelledby="h-attest">
+  <section class="grp" id="g-attest" aria-labelledby="h-attest" data-card="attest" data-share="Submit a Bitcoin state proof to @tacitfi from any wallet.">
     <h2 id="h-attest"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg>Submit a proof</h2>
     <div class="panel">
       <p class="lede">Tacit’s prover publishes each proof, then submits it itself. Any wallet can submit one that is still waiting: <code>attestBitcoinStateProven</code> takes any valid proof over the pool’s current state.</p>
@@ -722,6 +740,6 @@ node tools/community-runner.mjs mirror   # no key: keeps the board public on Nos
 
 <div id="toast-container" class="toasts" popover="manual"></div>
 
-<script type="module" src="/prove/app.js?cb=5b8cbf02"></script>
+<script type="module" src="/prove/app.js?cb=1fdc615b"></script>
 </body>
 </html>
