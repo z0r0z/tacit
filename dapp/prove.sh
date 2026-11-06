@@ -251,7 +251,9 @@ do_install() {
     return 0
   fi
   bg=
-  if [ "$(uname -s)" = Linux ] && ! user_systemd; then
+  # A unit installed earlier stays in charge: from a shell where systemctl --user does not answer for it (sudo, su, cron), a second copy
+  # beside it would only load the keys twice and fight it for the port.
+  if [ "$(uname -s)" = Linux ] && [ ! -f "$HOME/.config/systemd/user/tacit-prover.service" ] && ! user_systemd; then
     bg=1
     if is_wsl && [ -d /run/systemd/system ]; then
       say "systemd runs in this Ubuntu, but not for $(id -un) (systemctl --user does not answer), so tacit-prover runs in the background"

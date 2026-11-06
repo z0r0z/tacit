@@ -266,6 +266,8 @@ test('in WSL with systemd off it runs in the background, says how to turn system
   assert.match(r.out, /systemd is off in this Ubuntu, so tacit-prover runs in the background until WSL stops/);
   assert.match(r.out, /\/etc\/wsl\.conf[^\n]*\n {2}\[boot\]\n {2}systemd=true\n/);
   assert.doesNotMatch(w.read('fake-prover.log'), /^install/m, 'no service was asked for');
+  // the pid is the program's once run.sh has exec'd it, a moment before the program writes its first line
+  for (let i = 0; i < 40 && !/^serve /m.test(w.read('fake-prover.log')); i++) await new Promise((s) => setTimeout(s, 50));
   assert.match(w.read('fake-prover.log'), new RegExp(`^serve mine=${ADDR} dir=${w.home}/\\.tacit-prover$`, 'm'));
   const pid = Number(w.read('.tacit-prover/run.pid'));
   assert.ok(pid > 1 && alive(pid), 'the program runs, and the pid it wrote is its own');
@@ -291,7 +293,7 @@ test('in WSL with systemd off it runs in the background, says how to turn system
   assert.equal(r.code, 0, r.err);
   const next = Number(w.read('.tacit-prover/run.pid'));
   assert.ok(next !== pid && !alive(pid) && alive(next));
-  assert.match(w.read('fake-prover.log').trim().split('\n').pop(), new RegExp(`^serve mine=${ADDR} `));
+  assert.match(w.read('.tacit-prover/run.sh'), new RegExp(`TACIT_MINE="${ADDR}"`));
 
   // With systemd on, the install takes over and the background run is stopped, so it does not hold the port.
   r = await w.run([ADDR], wsl(w));
@@ -345,6 +347,17 @@ test('on Linux with no systemd user manager it runs in the background, with no W
   assert.ok(alive(Number(w.read('.tacit-prover/run.pid'))));
   assert.doesNotMatch(r.out + r.err, /wsl/i);
   assert.doesNotMatch(w.read('system.log'), /curl\.exe/);
+}));
+
+test('a re-run where systemctl --user does not answer leaves an installed unit alone instead of starting a second copy beside it', withWorld(async (w) => {
+  const units = join(w.home, '.config/systemd/user');
+  mkdirSync(units, { recursive: true });
+  writeFileSync(join(units, 'tacit-prover.service'), `[Service]\nEnvironment=TACIT_MINE=${ADDR}\n`);
+  // The real program's install fails where systemctl --user does (main.rs service()).
+  const r = await w.run([], linuxEnv(w, { FAKE_NO_USER_SYSTEMD: '1', FAKE_INSTALL_FAILS: '1' }));
+  assert.ok(!existsSync(join(w.home, '.tacit-prover/run.pid')), 'no background copy beside the unit');
+  assert.equal(r.code, 1);
+  assert.match(r.err, /could not be set to start at login/);
 }));
 
 test('WSL 1 is told to move to WSL 2', withWorld(async (w) => {
