@@ -1,0 +1,21 @@
+[package]
+name = "tacit-block-gpu"
+version = "0.1.0"
+edition = "2021"
+
+# Proves Tacit blocks on an NVIDIA GPU (24 GB class, CUDA 12) with SP1's CUDA prover; the SDK fetches
+# sp1-gpu-server and the Groth16 artifacts into ~/.sp1 on first use.
+#   cargo build --release
+#   ./target/release/tacit-block-gpu ../elf/tacit-block block-10.stdin block-100.stdin --groth16
+[workspace]
+
+[[bin]]
+name = "tacit-block-gpu"
+path = "src/main.rs"
+
+[dependencies]
+sp1-sdk = { version = "=6.2.3", features = ["blocking", "cuda"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3

@@ -1,0 +1,4 @@
+# build outputs and generated block inputs
+*/target/
+stdin/
+elf/tacit-block-prof

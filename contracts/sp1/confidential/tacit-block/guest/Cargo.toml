@@ -1,0 +1,34 @@
+[package]
+name = "tacit-block-guest"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[[bin]]
+name = "tacit-block"
+path = "src/main.rs"
+
+[dependencies]
+sp1-zkvm = "=6.2.3"
+sp1-lib = "=6.2.3"
+btc-pool-halo2 = { path = "../../btc-pool-halo2" }
+btc-pool-agg-common = { path = "../../btc-pool-agg/common" }
+tacit-block-common = { path = "../common" }
+halo2_proofs = { git = "https://github.com/privacy-scaling-explorations/halo2", tag = "v0.3.0", default-features = false, features = ["batch", "fast-vk-read"] }
+halo2curves = { version = "=0.6.1", default-features = false, features = ["zkvm-mulmod"] }
+ff = "0.13"
+group = "0.13"
+bn = { git = "https://github.com/sp1-patches/bn", tag = "patch-0.6.0-sp1-6.2.0-substrate-bn", package = "substrate-bn" }
+
+[patch."https://github.com/privacy-scaling-explorations/halo2"]
+halo2_proofs = { path = "../vendor/halo2_proofs" }
+
+[patch.crates-io]
+halo2curves = { path = "../vendor/halo2curves" }
+sha2 = { git = "https://github.com/sp1-patches/RustCrypto-hashes", package = "sha2", tag = "patch-sha2-0.10.8-sp1-6.2.0" }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1

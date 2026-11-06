@@ -1,0 +1,32 @@
+[package]
+name = "tacit-block-host"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[[bin]]
+name = "tacit-block"
+path = "src/main.rs"
+
+[dependencies]
+btc-pool-halo2 = { path = "../../btc-pool-halo2" }
+btc-pool-agg-common = { path = "../../btc-pool-agg/common" }
+tacit-block-common = { path = "../common" }
+halo2_proofs = { git = "https://github.com/privacy-scaling-explorations/halo2", tag = "v0.3.0", default-features = false, features = ["batch"] }
+blake2 = "0.10"
+serde_json = "1"
+hex = "0.4"
+# profiling: the executor sums the guest's cycle-tracker sections.
+sp1-core-executor = { version = "=6.2.4", features = ["profiling"] }
+
+[patch."https://github.com/privacy-scaling-explorations/halo2"]
+halo2_proofs = { path = "../vendor/halo2_proofs" }
+
+[patch.crates-io]
+halo2curves = { path = "../vendor/halo2curves" }
+
+[profile.release]
+overflow-checks = true
+debug = 0
+incremental = false
