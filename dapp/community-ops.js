@@ -20,6 +20,23 @@ export const SETTLE_GAS = 600_000n;                 // an ordinary settle: price
 // tETH, the asset the board's fees are valued in here: its pool asset id and the wei one in-pool unit is worth.
 export const ETH_ASSET_ID = '0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
 export const ETH_UNIT_SCALE = 10_000_000_000n;
+// TAC, valued too: at the TAC/tETH pool's spot price (its 0.3% pool on this pool contract, public reserves), taken at 80% for the price
+// risk of a sender paid in TAC. A sender fooled by a moved price loses only the gas it chose to spend; moving the price costs more.
+export const TAC_ASSET_ID = '0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
+export const TAC_ETH_POOL_ID = '0x248497bf6f943cd2b39a04bf5841056c58dfd7ef196188cb4f0ac1fd11dc7c00';   // keccak(tETH ‖ TAC ‖ be32(30)), lower id first
+export const TAC_DISCOUNT_BPS = 8000n;
+const SEL_POOLS = '0xb5217bb4';                     // pools(bytes32) → init, assetA, assetB, reserveA, reserveB, feeBps, totalShares
+// The wei one TAC pool unit is worth to a sender, from the pool's reserves of tETH and TAC (both in pool units), with the discount.
+export const tacWeiPerUnit = (ethUnits, tacUnits) => (BigInt(tacUnits) > 0n ? (BigInt(ethUnits) * ETH_UNIT_SCALE * TAC_DISCOUNT_BPS) / (BigInt(tacUnits) * 10000n) : 0n);
+// It read from the pool with `call(to, data)`: → { tacWeiPerUnit } or null when the pool is not there.
+export async function readPrices({ call }) {
+  const h = String(await call(POOL, SEL_POOLS + TAC_ETH_POOL_ID.slice(2))).replace(/^0x/, '');
+  const w = (i) => BigInt('0x' + (h.slice(i * 64, i * 64 + 64) || '0'));
+  if (h.length < 64 * 7 || w(0) === 0n) return null;
+  const aIsEth = lc('0x' + h.slice(64, 128)) === ETH_ASSET_ID;
+  const per = aIsEth ? tacWeiPerUnit(w(3), w(4)) : tacWeiPerUnit(w(4), w(3));
+  return per > 0n ? { tacWeiPerUnit: per } : null;
+}
 
 const HEX_BYTES = /^0x(?:[0-9a-f]{2})+$/i, WORD = /^0x[0-9a-f]{64}$/i;
 const lc = (s) => String(s || '').toLowerCase();
@@ -73,6 +90,12 @@ export function ethFeeWei(publicValues) {
   try { return pvFees(publicValues).filter((f) => lc(f.assetId) === ETH_ASSET_ID).reduce((a, f) => a + f.value * ETH_UNIT_SCALE, 0n); }
   catch { return 0n; }
 }
+// ... and with `prices` (readPrices): its TAC legs too, at what a sender takes TAC to be worth.
+export function feeWeiOf(publicValues, prices = null) {
+  const per = prices?.tacWeiPerUnit ? BigInt(prices.tacWeiPerUnit) : 0n;
+  try { return pvFees(publicValues).reduce((a, f) => a + (lc(f.assetId) === ETH_ASSET_ID ? f.value * ETH_UNIT_SCALE : lc(f.assetId) === TAC_ASSET_ID ? f.value * per : 0n), 0n); }
+  catch { return 0n; }
+}
 // When a job's settle stops being accepted, in ms (0 = never): the board's figure, else the deadline its proof commits to.
 export function expiresAtMs(job) {
   const by = Number(job?.expiresAt) || 0;
@@ -89,16 +112,16 @@ export function sendable(job, { nowMs = Date.now(), marginMs = 120_000 } = {}) {
 export function boardSummary(jobs, opts = {}) {
   const ready = (jobs || []).filter((j) => sendable(j, opts));
   const feeUsd = ready.reduce((a, j) => a + (Number.isFinite(j.feeUsd) && j.feeUsd > 0 ? j.feeUsd : 0), 0);
-  return { waiting: ready.length, feeWei: ready.reduce((a, j) => a + ethFeeWei(j.publicValues), 0n), feeUsd };
+  return { waiting: ready.length, feeWei: ready.reduce((a, j) => a + feeWeiOf(j.publicValues, opts.prices), 0n), feeUsd };
 }
 // Whether a fee pays `costWei` with `marginBps` to spare.
 export const feeCovers = (feeWei, costWei, marginBps = 0n) => BigInt(feeWei) >= (BigInt(costWei) * (10000n + BigInt(marginBps))) / 10000n;
 // The job to send next, or null. With `costWei`: the oldest whose tETH fee covers that cost with `marginBps` to spare, as a relayer
 // that sends only what pays picks. Without: the one paying the most (in tETH, then by the board's USD figure), oldest among equals.
 // `skip` holds job ids to pass over (ones that would not go through a moment ago).
-export function pickSettle(jobs, { costWei = null, marginBps = 0n, nowMs = Date.now(), marginMs = 120_000, skip = null } = {}) {
+export function pickSettle(jobs, { costWei = null, marginBps = 0n, nowMs = Date.now(), marginMs = 120_000, skip = null, prices = null } = {}) {
   const live = (jobs || []).filter((j) => sendable(j, { nowMs, marginMs }) && !(skip && skip.has(j.jobId)))
-    .map((j) => ({ j, fee: ethFeeWei(j.publicValues), usd: Number(j.feeUsd) || 0, since: Number(j.openSince) || 0 }));
+    .map((j) => ({ j, fee: feeWeiOf(j.publicValues, prices), usd: Number(j.feeUsd) || 0, since: Number(j.openSince) || 0 }));
   if (costWei != null) return live.filter((x) => feeCovers(x.fee, costWei, marginBps)).sort((a, b) => a.since - b.since)[0]?.j || null;
   return live.sort((a, b) => (b.fee > a.fee ? 1 : b.fee < a.fee ? -1 : 0) || b.usd - a.usd || a.since - b.since)[0]?.j || null;
 }

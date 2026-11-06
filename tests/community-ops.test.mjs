@@ -202,3 +202,24 @@ test('the relay sends a posted step the API took on its free settles (a stealth 
   assert.equal(pickOpen([{ ...base, jobId: 'b', type: 'stealthlock' }], opts), null, 'not taken on the free settles: it pays nothing, so it waits');
   assert.equal(pickOpen([{ ...base, jobId: 'c', type: 'transfer' }], opts), null);
 });
+
+// TAC fees, valued at the TAC/tETH pool's spot price taken at 80%.
+test('a TAC fee counts at what the TAC/tETH pool says, taken at 80%; without a price it counts nothing', async () => {
+  const w = (v) => BigInt(v).toString(16).padStart(64, '0');
+  // the live shape of pools(bytes32): init, assetA (tETH, the lower id), assetB (TAC), reserveA, reserveB, feeBps, totalShares
+  const reply = '0x' + w(1) + ops.ETH_ASSET_ID.slice(2) + ops.TAC_ASSET_ID.slice(2) + w(440_000_000n) + w(8_524_000_000_000n) + w(30) + w(1);
+  let asked = null;
+  const px = await ops.readPrices({ call: async (to, data) => { asked = { to, data }; return reply; } });
+  assert.equal(asked.to, ops.POOL);
+  assert.equal(asked.data, '0xb5217bb4' + ops.TAC_ETH_POOL_ID.slice(2));
+  assert.equal(px.tacWeiPerUnit, ops.tacWeiPerUnit(440_000_000n, 8_524_000_000_000n));
+  // 1 TAC (1e8 units) at 4.4 tETH / 85,240 TAC is ~5.16e13 wei, taken at 80%
+  const perTac = px.tacWeiPerUnit * 10n ** 8n;
+  assert.ok(perTac > 41_000_000_000_000n && perTac < 42_000_000_000_000n, String(perTac));
+  const tacJob = job(9, { fee: 100n * 10n ** 8n, asset: ops.TAC_ASSET_ID });          // 100 TAC
+  assert.equal(ops.feeWeiOf(tacJob.publicValues, null), 0n);
+  assert.equal(ops.feeWeiOf(tacJob.publicValues, px), 100n * 10n ** 8n * px.tacWeiPerUnit);
+  assert.equal(ops.pickSettle([tacJob], { costWei: 10n ** 15n }), null, 'no price: not picked');
+  assert.equal(ops.pickSettle([tacJob], { costWei: 10n ** 15n, prices: px })?.jobId, tacJob.jobId, 'with it: 100 TAC (~0.004 ETH) covers 0.001 ETH');
+  assert.equal(await ops.readPrices({ call: async () => '0x' + w(0).repeat(7) }), null, 'no pool: no price');
+});

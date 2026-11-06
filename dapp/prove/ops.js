@@ -5,13 +5,13 @@
 import { makeEvmWallet } from '/evm-wallet.js?cb=b400cbe7';
 import { announceWalletConnect, wcSheets, dialogHost, WC_PROJECT_ID } from '/walletconnect.js?cb=e0b29a34';
 import { makeHeaderRelayAdvance } from '/header-relay-advance.js?cb=1c3a7226';
-import { POOL, SEL_ANCESTRY, ATTEST_GAS, SETTLE_GAS, readProof, attestRefusal, encodeAttest, needsAncestry, ancestryCalls, ethText, ethFeeWei, boardSummary, pickSettle, readBoard, reportLanded, settleCalldata } from '/community-ops.js?cb=ec01725e';
+import { POOL, SEL_ANCESTRY, ATTEST_GAS, SETTLE_GAS, readProof, attestRefusal, encodeAttest, needsAncestry, ancestryCalls, ethText, feeWeiOf, readPrices, boardSummary, pickSettle, readBoard, reportLanded, settleCalldata } from '/community-ops.js?cb=92fe7a2d';
 import { bodyType } from '/rpc-body.js';
 import { secp, keccak_256, sha256 } from '/vendor/tacit-deps.min.js';
 import { makeEvmAccount } from '/evm-account.js?cb=e48ce3f6';
 import { makeEvmTx } from '/evm-tx.js?cb=ed0eafb7';
 import { makeNostrBoard, mergeBoards } from '/nostr-board.js?cb=0feadbff';
-import { makeAutoRelay, AUTO_RESERVE_WEI } from '/prove/autorelay.js?cb=a83848c2';
+import { makeAutoRelay, AUTO_RESERVE_WEI } from '/prove/autorelay.js?cb=f740e1d6';
 
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -370,6 +370,12 @@ const passed = new Set();                                         // jobs the po
 const NB = makeNostrBoard({ pool: POOL });
 const MIRRORED = new Map();                                       // proofs this tab has posted, by public values: not posted again for an hour
 let nostrAt = 0, nostrJobs = null;
+// TAC's worth to a sender (community-ops.js readPrices: the TAC/tETH pool at 80%), read at most once a minute: a TAC fee counts with it.
+let PRICES = null, pricesAt = 0;
+async function prices() {
+  if (Date.now() - pricesAt > 60e3) { pricesAt = Date.now(); PRICES = await readPrices({ call: (to, data) => rpc('eth_call', [{ to, data }, 'latest']) }).catch(() => PRICES); }
+  return PRICES;
+}
 async function readBoards() {
   const fresh = Date.now() - nostrAt > 60e3;
   const [a, n] = await Promise.allSettled([readBoard({ api: API }), fresh ? NB.read() : Promise.resolve(nostrJobs)]);
@@ -391,6 +397,7 @@ async function mirror(api) {
 }
 const reportIf = (jobId, txHash) => (String(jobId).startsWith('nostr:') ? Promise.resolve() : reportLanded({ api: API, jobId, txHash }));
 async function refreshBoard() {
+  await prices().catch(() => {});
   try { board = await readBoards(); boardErr = false; } catch { boardErr = true; }   // a board read before stays shown
   paintBoard();
 }
@@ -398,14 +405,14 @@ function paintBoard() {
   const box = $('#board-box'), btn = $('#btn-board');
   if (!board) { if (boardErr) box.innerHTML = '<p>Could not read the board. The page tries again every minute.</p>'; }
   else {
-    const s = boardSummary(board.jobs), fees = s.feeWei > 0n ? `${ethText(s.feeWei)} ETH in fees` : s.feeUsd > 0 ? `≈ $${s.feeUsd.toFixed(2)} in fees` : 'no fee';
+    const s = boardSummary(board.jobs, { prices: PRICES }), fees = s.feeWei > 0n ? `${ethText(s.feeWei)} ETH in fees` : s.feeUsd > 0 ? `≈ $${s.feeUsd.toFixed(2)} in fees` : 'no fee';
     const eth = ethFor(SETTLE_GAS);
     box.innerHTML = `<p>${s.waiting ? `${esc(plural(s.waiting, 'settle'))} waiting · ${esc(fees)}${eth ? ` · network fee ${eth.startsWith('<') ? esc(eth) : `≈ ${esc(eth)}`} ETH each` : ''}` : 'Nothing waiting.'}</p>`;
     const where = !board.api ? 'The API’s board is not answering: these are the ones posted on Nostr.' : board.nostr == null ? '' : `Read from the API and ${board.nostr ? `Nostr (${int(board.nostr)} posted there)` : 'Nostr'}.`;
     if (where) box.innerHTML += `<p class="mute">${esc(where)}</p>`;
   }
   if (btn.getAttribute('aria-busy') === 'true') return;           // a send in progress keeps its button
-  const next = board && pickSettle(board.jobs, { skip: passed });
+  const next = board && pickSettle(board.jobs, { skip: passed, prices: PRICES });
   btn.disabled = !next;
   btn.textContent = next ? 'Send one' : 'Nothing to send';
 }
@@ -414,9 +421,9 @@ async function doSendOne() {
   out.textContent = '';
   if (!S.address) await connect();
   await refreshBoard();
-  const job = board && pickSettle(board.jobs, { skip: passed });
+  const job = board && pickSettle(board.jobs, { skip: passed, prices: await prices() });
   if (!job) { toast('Nothing is waiting to be sent.'); return; }
-  const data = settleCalldata(job), fee = ethFeeWei(job.publicValues);
+  const data = settleCalldata(job), fee = feeWeiOf(job.publicValues, PRICES);
   // Run it first: a settle another wallet sent first, or one the pool no longer takes, costs gas to find out, and the node tells us for free.
   try { await rpc('eth_call', [{ from: S.address, to: POOL, data }, 'latest']); }
   catch { passed.add(job.jobId); throw new Error('The pool would not take this settle, so nothing was sent: another wallet most likely sent it first.'); }
@@ -459,7 +466,7 @@ async function sendPrivate(raw) {
 }
 function autoRelay() {
   const a = relayAcct(true);
-  return (A.relay ||= makeAutoRelay({ address: a.address, rpc, sign: (tx) => evmTx.signEip1559(tx, a.priv), sendPrivate,
+  return (A.relay ||= makeAutoRelay({ address: a.address, rpc, prices, sign: (tx) => evmTx.signEip1559(tx, a.priv), sendPrivate,
     board: () => readBoards(), landed: (jobId, txHash) => reportIf(jobId, txHash),
     store: { get: () => { try { return JSON.parse(ls.get(AUTO_DAY) || 'null'); } catch { return null; } }, set: (v) => ls.set(AUTO_DAY, JSON.stringify(v)) } }));
 }

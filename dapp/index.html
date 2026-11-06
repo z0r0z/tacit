@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-0DBU3Ea+9kU77tYdccnfEu35nrtKmCnyLTt1ijaTdYs=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-WTBNh0a48iiISQAnWrc5WJtqfAjOm7jJC5oOfYwODV0=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -3492,12 +3492,19 @@ async function devOnce(run, spec) {
   };
   try { await selfDo(run, { ...spec, own: true, go }); } finally { d.allowLive?.(false); r.useProver?.(null); spApply(); }
 }
-// The fee a proof posted for anyone carries, in tETH's pool units: twice a settle's gas at today's price (600k gas, the figure community
-// senders price a board job by, with a fifth on top: worker-relay open-board.js, prove/autorelay.js), and at least 0.0001 ETH.
-async function anyoneFee() {
+// The fee a proof posted for anyone carries, in pool units of the asset it is paid in (`k`: tETH, or TAC): twice a settle's gas at today's
+// price (600k gas, the figure community senders price a board job by, with a fifth on top: worker-relay open-board.js, prove/autorelay.js),
+// at least 0.0001 ETH. TAC at what those senders take it to be worth (community-ops.js: the TAC/tETH pool at 80%), with a tenth more for drift.
+const ANYONE_K = new Set(['eth', 'tac']);
+const anyoneUnit = (k) => (k === 'tac' ? 'TAC' : 'tETH');
+async function anyoneFee(k = 'eth') {
   let wei = 600000n * BigInt(await rpc('eth_gasPrice', [])) * 2n;
   if (wei < 10n ** 14n) wei = 10n ** 14n;
-  return (wei + 10n ** 10n - 1n) / 10n ** 10n;
+  if (k !== 'tac') return (wei + 10n ** 10n - 1n) / 10n ** 10n;
+  const px = await (await import('/community-ops.js?cb=92fe7a2d')).readPrices({ call: (to, data) => rpc('eth_call', [{ to, data }, 'latest']) }).catch(() => null);
+  if (!px) throw Object.assign(new Error('TAC’s price could not be read just now, so its sender’s fee cannot be set. Nothing was sent: try again in a moment.'), { said: true });
+  const per = BigInt(px.tacWeiPerUnit), want = (wei * 11n) / 10n;
+  return (want + per - 1n) / per;
 }
 const nostrMod = lazy(() => import('/nostr-board.js?cb=0feadbff'));
 // An action proved on this computer with a fee for whoever sends it, then posted where anyone finds it: the Nostr relays (nostr-board.js)
@@ -3511,14 +3518,14 @@ async function devAnyoneNow(run, spec) {
   tell('Looking for the prover on this computer…');
   const d = await devProver({ fresh: true }).catch(() => null);
   if (!d) { tell(html`No prover runs on this computer yet. <a href="/prove/">Set up this computer</a>, then press again.`); return; }
-  const t = await getUx(), priv = walletPriv(), fee = await anyoneFee();
+  const k = spec.anyoneK || 'eth', t = await getUx(), priv = walletPriv(), fee = await anyoneFee(k);
   run.label = spec.label;
   run.take(...(spec.keys || []));
   const r = t.relay;
   r.useProver?.(d.prove); r.useSealer?.(null);
   let a;
   try {
-    tell(`This computer is proving it with a fee of ${fmt(fee, 8, 6)} tETH for whoever sends it. Nothing needs ETH of yours…`);
+    tell(`This computer is proving it with a fee of ${fmt(fee, 8, k === 'tac' ? 2 : 6)} ${anyoneUnit(k)} for whoever sends it. Nothing needs ETH of yours…`);
     a = await spec.anyone({ t, priv, fee, run, proveBatch: d.proveBatch, waitOpts: spTell(run.wait(null, 40 * 60e3), tell) });
   } finally { r.useProver?.(null); spApply(); }
   tell('Proved. Posting it where anyone can send it…');
@@ -5546,9 +5553,9 @@ async function noteFor(run, t, priv, amount, fits, status, k = 'eth') {
   await proveOr({ run, types: ['transfer'], held: true, label: doing, sheet: run.sheet, then: 'Your note is ready. Press the button again to send it.', carry: 'press the button again to carry on from there', status: line,
     wait: stepWait, go: (x) => cut(0n, { selfSettle: x.selfSettle, waitOpts: x.waitOpts }),
     // (tETH, whose fee any sender values: the cut proved here with a fee for whoever sends it, posted for anyone)
-    ...(k === 'eth' ? { anyone: (y) => {
+    ...(ANYONE_K.has(k) ? { anyoneK: k, anyone: (y) => {
       const p = sum >= amount + BigInt(y.fee) ? picked : cutPick(k, amount + BigInt(y.fee), y.run).picked;
-      if (p.reduce((a, n) => a + BigInt(n.value), 0n) < amount + BigInt(y.fee)) throw Object.assign(new Error(`Your notes do not cover this and its sender’s fee of ${fmt(y.fee, 8, 6)} tETH. Try a little less.`), { said: true });
+      if (p.reduce((a, n) => a + BigInt(n.value), 0n) < amount + BigInt(y.fee)) throw Object.assign(new Error(`Your notes do not cover this and its sender’s fee of ${fmt(y.fee, 8, 6)} ${anyoneUnit(k)}. Try a little less.`), { said: true });
       y.run?.take(...p.map(kNote));
       return y.t.cutForAnyone({ walletPriv: y.priv, notes: p, amount, fee: y.fee, waitOpts: y.waitOpts });
     } } : {}),
@@ -5600,9 +5607,9 @@ async function stealthSendNow({ run, k, label, w, raw, units, field, status, lin
   const r = await proveOr({ run, types: ['stealthlock'], label, sheet, ...(proveAfter ? { after: proveAfter } : {}), status: line,
     go: (x) => lockSend({ ...sendArgs, selfSettle: x.selfSettle, waitOpts: x.waitOpts }),
     // (tETH: the lock and a transfer of another note that pays its sender, in one proof made here, posted for anyone: a lock carries no fee)
-    ...(k === 'eth' ? { anyone: async (y) => {
+    ...(ANYONE_K.has(k) ? { anyoneK: k, anyone: async (y) => {
       const feeNote = (P.scan?.[k]?.notes || []).filter((n) => kNote(n) !== kNote(note) && !takenByOther(y.run, kNote(n)) && BigInt(n.value) > 2n * BigInt(y.fee)).sort(byValue)[0];
-      if (!feeNote) throw Object.assign(new Error(`To send it with no ETH, a second private tETH note pays its sender’s fee of ${fmt(y.fee, 8, 6)} tETH, and you hold none besides this one. Add a little tETH, or try again when the relay is back.`), { said: true });
+      if (!feeNote) throw Object.assign(new Error(`To send it with no ETH, a second private ${anyoneUnit(k)} note pays its sender’s fee of ${fmt(y.fee, 8, 6)} ${anyoneUnit(k)}, and you hold none besides this one. Add a little ${anyoneUnit(k)}, or try again when the relay is back.`), { said: true });
       y.run?.take(kNote(feeNote));
       const a = await y.t.lockForAnyone({ walletPriv: y.priv, recipientPubHex: w.pubHex, note, feeNote, fee: y.fee, proveBatch: y.proveBatch });
       await keepLock(y.priv, a.built, {}, w, POOL_TK[k]);
@@ -5635,7 +5642,7 @@ async function assetOutNow({ run, k, label, units, recipient, as, fee = null, ow
     feeOpts = { minFee };
   }
   run.say(status, `The relay is proving your transfer, which arrives as ${as}…`);
-  await proveOr({ run, types: ['sendunwrap', 'unwrap'], exit: true, go: exitGo(note, recipient, units), label, sheet, ...(proveAfter ? { after: proveAfter } : {}), status: line,
+  await proveOr({ run, types: ['sendunwrap', 'unwrap'], exit: true, go: exitGo(note, recipient, units), ...(k === 'tac' ? { anyoneK: k, anyone: anyoneExit(note, recipient, units) } : {}), label, sheet, ...(proveAfter ? { after: proveAfter } : {}), status: line,
     relayed: () => t.sendUnwrap({ note, walletPriv: priv, recipient, amount: units, ...(feeOpts ? { feeOpts } : {}), waitOpts: run.wait(null, 15 * 60e3, { exit: { to: recipient, units: String(units), note: kNote(note), from: k, sheet } }) }) });
   await scanPrivate(true).catch(() => {});
   after();
@@ -5851,7 +5858,7 @@ async function unwrapNow({ run, x, raw, status, line, sheet = 'eth', clear, move
       return;
     }
     run.say(status, 'The relay is proving your withdrawal…');
-    await proveOr({ run, types: ['sendunwrap', 'unwrap'], exit: true, go: exitGo(note, recipient, x.units), anyone: anyoneExit(note, recipient, x.units), label, sheet, status: line,
+    await proveOr({ run, types: ['sendunwrap', 'unwrap'], exit: true, go: exitGo(note, recipient, x.units), anyoneK: 'eth', anyone: anyoneExit(note, recipient, x.units), label, sheet, status: line,
       relayed: () => t.sendUnwrap({ note, walletPriv: priv, recipient, amount: x.units, ...(feeOpts ? { feeOpts } : {}), waitOpts: run.wait(null, 15 * 60e3, { exit }) }) });
     await scanPrivate(true).catch(() => {});
     after();

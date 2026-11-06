@@ -4,7 +4,7 @@
 // One send at a time; a day's gas is capped, and a reserve stays in the account. The fee is paid to the sending account (the pool pays
 // every fee leg its proof binds to msg.sender), so the ETH it earns pays for the next ones. Deps are injected so the passes are tested
 // (tests/prove-autorelay.test.mjs).
-import { POOL, SETTLE_GAS, ethFeeWei, feeCovers, pickSettle, settleCalldata } from '../community-ops.js';
+import { POOL, SETTLE_GAS, feeWeiOf, feeCovers, pickSettle, settleCalldata } from '../community-ops.js';
 
 export const AUTO_MARGIN_BPS = 2000n;                      // a fifth over the settle's cost, as worker-relay/src/open-relayer.js asks
 export const AUTO_DAY_GAS_WEI = 10n ** 16n;                // at most 0.01 ETH of gas a day
@@ -15,7 +15,7 @@ const day = (ms) => Math.floor(ms / 86400e3);
 
 // `rpc(method, params)` reads and simulates; `sendPrivate(raw)` sends through Protect; `sign(tx)` → { raw, hash } for the relay account
 // at `address`; `board()` and `landed(jobId, txHash)` the API's; `store` { get(), set(v) } keeps the day's figures and the send in flight.
-export function makeAutoRelay({ address, rpc, sign, sendPrivate, board, landed, store, now = () => Date.now(), marginBps = AUTO_MARGIN_BPS, dayGasWei = AUTO_DAY_GAS_WEI, reserveWei = AUTO_RESERVE_WEI }) {
+export function makeAutoRelay({ address, rpc, sign, sendPrivate, board, landed, store, prices = () => null, now = () => Date.now(), marginBps = AUTO_MARGIN_BPS, dayGasWei = AUTO_DAY_GAS_WEI, reserveWei = AUTO_RESERVE_WEI }) {
   const passed = new Map();                                // jobs the pool refused here: left alone for ten minutes
   const read = () => {
     const s = store.get() || {};
@@ -55,13 +55,14 @@ export function makeAutoRelay({ address, rpc, sign, sendPrivate, board, landed, 
     const bal = BigInt(balHex), gasPrice = BigInt(gasHex);
     for (const [id, at] of passed) if (now() - at > 10 * 60e3) passed.delete(id);
     const b = await board();
-    const job = pickSettle(b.jobs, { costWei: SETTLE_GAS * gasPrice, marginBps, skip: new Set(passed.keys()), nowMs: now() });
+    const px = await prices();
+    const job = pickSettle(b.jobs, { costWei: SETTLE_GAS * gasPrice, marginBps, skip: new Set(passed.keys()), nowMs: now(), prices: px });
     if (!job) return { did: 'idle', why: 'Nothing on the board pays its gas right now.' };
     const data = settleCalldata(job), call = { from: address, to: POOL, data };
     try { await rpc('eth_call', [call, 'latest']); }
     catch { passed.set(job.jobId, now()); return { did: 'idle', why: 'The next settle would not go through (another sender most likely took it).', job }; }
     const gasLimit = (BigInt(await rpc('eth_estimateGas', [call])) * 6n) / 5n;
-    const tip = 10n ** 8n, maxFee = BigInt(blockObj.baseFeePerGas) * 2n + tip, worst = gasLimit * maxFee, fee = ethFeeWei(job.publicValues);
+    const tip = 10n ** 8n, maxFee = BigInt(blockObj.baseFeePerGas) * 2n + tip, worst = gasLimit * maxFee, fee = feeWeiOf(job.publicValues, px);
     // priced again at its own estimate and today's base fee, before anything is signed
     if (!feeCovers(fee, (BigInt(blockObj.baseFeePerGas) + tip) * gasLimit, marginBps)) { passed.set(job.jobId, now()); return { did: 'idle', why: 'The next settle’s fee does not cover its gas at its own estimate.', job }; }
     if (BigInt(s.gasWei) + worst > dayGasWei) return { did: 'stopped', why: 'Today’s gas allowance is used. It goes on tomorrow.' };
