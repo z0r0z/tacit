@@ -491,7 +491,9 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
     const miners = Object.entries(rec.miners).filter(([, m]) => m.proofs > 0);
     const day = await lastDay(t);
     return reply(200, {
-      queued: q.length + Object.keys(L).length - live, leased: live, doneToday: rec.done, minersToday: miners.length, done24h: day.done, miners24h: day.miners,
+      // today is inside the last 24 hours, so never fewer than today's (the hours count only from when this began keeping them)
+      queued: q.length + Object.keys(L).length - live, leased: live, doneToday: rec.done, minersToday: miners.length,
+      done24h: Math.max(day.done, rec.done), miners24h: Math.max(day.miners, miners.length),
       top: miners.map(([miner, m]) => ({ miner, proofs: m.proofs })).sort((a, b) => b.proofs - a.proofs || (a.miner < b.miner ? -1 : 1)).slice(0, cfg.top),
       terms: { pointsPerProof: cfg.pointsPerProof, proofsPerMinerDay: cfg.proofsPerMinerDay, leaseMs: cfg.leaseMs },
     });
