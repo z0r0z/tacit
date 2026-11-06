@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-9HZMM3fkjnWpbsfph53fCgY4zTgZrRO/5tIB8nDxpF8=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-wwXnKL3R3Aboto0twGRgM5FwLqxa7WoNXrMKnWzPDBw=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -263,6 +263,8 @@ main:focus { outline: none; }
 }
 .chip.act svg { width: 18px; height: 18px; flex: none; }
 .chip.act.busy { color: var(--warn); }
+.chip.act.busy svg { animation: pulse 1.6s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .chip.act.busy svg, .actr-h .dot.live, .stp .now i { animation: none; } }
 .chip.act #act-n { position: absolute; top: -8px; right: -8px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
   font: 500 10.5px/18px var(--mono); letter-spacing: 0; text-align: center; color: var(--card); background: var(--ink); }
 
@@ -318,6 +320,14 @@ a.di { color: inherit; text-decoration: none; }
 .actr-h { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .actr-h b { font-weight: 500; min-width: 0; overflow-wrap: anywhere; }
 .actr-h span { flex: none; font-size: 12px; color: var(--mute); }
+.actr-h .num { display: inline-flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
+.actr-h .dot.live { width: 6px; height: 6px; border-radius: 50%; background: var(--orange); animation: pulse 1.6s ease-in-out infinite; }
+.actr-m { display: inline-block; width: 1.2em; font-style: normal; font-size: 12px; }
+.actr.fin { gap: 4px; padding: 11px 0; }
+.actr.fin .actr-h b { font-weight: 400; }
+.acts-h { display: flex; align-items: center; gap: 8px; margin: 20px 0 8px; font: 500 11px/1 var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--mute); }
+.acts-h:first-child { margin-top: 0; }
+.acts-h .num { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; font-size: 10.5px; line-height: 18px; text-align: center; letter-spacing: 0; color: var(--card); background: var(--ink); }
 .stp { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 0; list-style: none; margin: 0; padding: 0; font-size: 12px; color: var(--mute); }
 .stp li { display: inline-flex; align-items: center; gap: 6px; }
 .stp li + li::before { content: ''; width: 14px; height: 1px; margin: 0 8px; background: var(--hair-2); }
@@ -334,7 +344,7 @@ a.di { color: inherit; text-decoration: none; }
 .pace .actr-bar { flex: 1; }
 .pace > span { font-size: 12px; color: var(--mute); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .actr-bar i { display: block; height: 100%; background: var(--ink); border-radius: 2px; transition: width 1s linear; }
-.actr-f a { color: var(--ink); }
+.actr-f a { color: var(--ink); white-space: nowrap; }
 .actr-f.err { color: var(--err); }
 .actr-f.err a { color: inherit; }
 .selfopt .go, .actr-f.selfopt .go { display: inline-flex; align-items: center; min-height: 28px; margin: 4px 0 0; padding: 3px 10px; border: 1px solid var(--ink); border-radius: 6px; color: var(--ink); font-size: 12px; font-weight: 500; text-decoration: none; }
@@ -3639,6 +3649,8 @@ const devBar = (row) => { const pc = paceOf(row); return pc ? paceView(row.id, p
 // there while it runs, taken away when it ends; a sheet drawn again gets it back on the next tick).
 function paceTick() {
   if (document.hidden) return;
+  if ($('#sheet-act').open) for (const s of $$('#act-body [data-since]')) { const t = clock(Date.now() - Number(s.dataset.since)); if (s.textContent !== t) s.textContent = t; }
+  if (!RUNS.size && !document.querySelector('.pace')) return;
   const taken = new Set();
   for (const run of [...RUNS].sort((a, b) => b.n - a.n)) {
     const st = run.live ? run.to?.status : null, el = typeof st === 'function' ? st() : st || null;
@@ -3661,22 +3673,31 @@ function paceTick() {
   }
 }
 setInterval(paceTick, 1000);
+// A finished row that went through drops its steps (all done) and says so with a mark; one still going carries a live dot by its clock.
 const actRow = (it) => {
   const b = actBridge(it), open = !!b && b.stage !== 'minted', done = ended(it) && !open;
-  return html`<li class="actr" data-act="${it.id}">
-  <div class="actr-h"><b>${it.label}</b>${done ? html`<span>${ago(b?.mintedAt || it.end || it.up || it.at)}</span>` : html`<span class="num" data-since="${it.at}">${clock(Date.now() - it.at)}</span>`}</div>
-  ${b ? actBridgeBody(it, b) : html`<ol class="stp">${actSteps(it)}</ol>${devBar(it)}${actFoot(it)}`}${otherKey(it) ? html`<div class="actr-f">Made in another Tacit wallet. Open it to act on it.</div>` : ''}</li>`;
+  const good = done && (it.status === 'settled' || it.status === 'confirmed'), bad = done && !good && !actStale(it);
+  const mark = good ? html`<i class="actr-m ok" aria-label="Done">✓</i>` : bad ? html`<i class="actr-m err" aria-label="Did not go through">✕</i>` : '';
+  return html`<li class="actr${done ? ' fin' : ''}" data-act="${it.id}">
+  <div class="actr-h"><b>${mark}${it.label}</b>${done ? html`<span>${ago(b?.mintedAt || it.end || it.up || it.at)}</span>` : html`<span class="num"><i class="dot live" aria-hidden="true"></i><span data-since="${it.at}">${clock(Date.now() - it.at)}</span></span>`}</div>
+  ${b ? actBridgeBody(it, b) : html`${good ? '' : html`<ol class="stp">${actSteps(it)}</ol>`}${devBar(it)}${actFoot(it)}`}${otherKey(it) ? html`<div class="actr-f">Made in another Tacit wallet. Open it to act on it.</div>` : ''}</li>`;
 };
 let ACT_VIEW = '';
 // A stopped row whose same action was sent again within a day and went through is no longer news (a retried attempt keeps its own receipt: its id carries a ~), and a stopped one from days ago is not offered a retry (its own
 // balance read is what answers whether it still holds).
 const actStale = (it) => Date.now() - (it.end || it.up || it.at) > 86400e3;
 const actRedone = (it, all) => (it.status === 'failed' || it.status === 'unknown') && !String(it.id).includes('~') && all.some((x) => x !== it && x.label === it.label && x.at > it.at && x.at - (it.end || it.at) < 86400e3 && (x.status === 'settled' || x.status === 'confirmed'));
+// What is still going comes first, under its own heading, then the rest
+function actGroups(items) {
+  const on = items.filter((x) => !actDone(x)), off = items.filter(actDone);
+  const head = (t, n) => html`<h3 class="acts-h">${t}${n ? html` <span class="num">${n}</span>` : ''}</h3>`;
+  return html`${on.length ? html`${off.length ? head('In progress', on.length) : ''}<ol class="acts">${on.map(actRow)}</ol>` : ''}${off.length ? html`${on.length ? head('Earlier') : ''}<ol class="acts">${off.map(actRow)}</ol>` : ''}`;
+}
 function renderAct() {
   const el = $('#act-body'), items = listed().filter((it, _, all) => !actRedone(it, all)), can = typeof Notification === 'function';
   const on = can && !!store.get(NOTIFY_KEY) && Notification.permission === 'granted';
   const view = html`
-    ${items.length ? html`<ol class="acts">${items.map(actRow)}</ol>` : html`<p class="gate-p">Nothing yet. What you send from this page, and what the relay proves for you, shows up here as it happens.</p>`}
+    ${items.length ? actGroups(items) : html`<p class="gate-p">Nothing yet. What you send from this page, and what the relay proves for you, shows up here as it happens.</p>`}
     ${can ? html`<label class="pick"><input type="checkbox" id="act-notify" ${on ? 'checked' : ''}><span>Notify me when something finishes while this tab is in the background.</span></label>` : ''}
     <div class="status" role="status" id="act-note"></div>
     <div class="act-foot"><span>Kept in this browser only. Your balances never depend on it.</span>${items.some(actDone) ? html`<button class="link" type="button" id="act-clear">Clear finished</button>` : ''}</div>`;
@@ -3750,7 +3771,6 @@ document.addEventListener('click', (e) => {
 });
 $('#act').onclick = openAct;
 document.addEventListener('click', (e) => { if (e.target.closest?.('[data-act-open]')) { e.preventDefault(); openAct(); } });
-setInterval(() => { if ($('#sheet-act').open) for (const s of $$('#act-body [data-since]')) s.textContent = clock(Date.now() - Number(s.dataset.since)); }, 1000);
 addEventListener('storage', (e) => {
   if (e.key !== ACT_KEY) return;
   let theirs = [], cleared = 0;
