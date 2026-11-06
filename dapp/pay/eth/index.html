@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-RAZ8ukjVhPWCXOoI49EH+ObFV8P4qYqaD+ahRgJXLtM=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-Li02KdzE9K9boJEpTy8YNyZH0/UHW4hAjUaluUM4C/4=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay · ETH</title>
 <meta name="description" content="Private ETH payments on Ethereum, Base and Robinhood Chain, proved on your device and recovered from your key.">
@@ -1441,8 +1441,8 @@ function syncChain(c, fresh = false) {
     const rest = Promise.all([chainKeeper(c) ? W.quote().catch((e) => { quoteErr = e; return null; }) : null, boxBalances(c, W, boxes)]);
     const s = await W.sync();
     if (st.W !== W || S.key?.pubHex !== pub) return;
-    if (st.shownBy === W && s.leaves < st.leaves && Date.now() - (st.behind ||= Date.now()) < 60e3) { Object.assign(st, { err: null, at: Date.now(), fails: 0 }); return; }
-    st.behind = 0;
+    if (st.shownBy === W && s.leaves < st.leaves && Date.now() - (st.lagAt ||= Date.now()) < 60e3) { Object.assign(st, { err: null, at: Date.now(), fails: 0 }); return; }
+    st.lagAt = 0;
     if (st.bal != null && st.bal !== s.balance) {
       historyOf(c, true);
       boxScan(c, linkIndex() ?? (boxTop(c) ?? 0) + 1, 1);
@@ -1655,8 +1655,9 @@ async function giftKeys(chainId, count, nap = null) {
   return ks.slice(0, count);
 }
 function giftIndex(c) {
+  // (a history still read from a catch-up point lacks the older links: an index from it could be one a link already uses)
   const h = S.key && CH[c.chainId].hist;
-  if (!h) return null;
+  if (!h || h.partial) return null;
   let n = giftLocal().n[c.chainId] || 0;
   for (const g of h.gifts || []) if (g.i + 1 > n) n = g.i + 1;
   return n;
@@ -2186,7 +2187,8 @@ function privacyWait(c) {
 }
 function privacyCheck(c, amount, to, via) {
   const st = CH[c.chainId], v = POOLQ[c.chainId]?.v, h = st.hist;
-  if (!v || !h) { privacyWait(c); return null; }
+  // (a history still read from a catch-up point lacks the older deposits this compares against: it says nothing until it is whole)
+  if (!v || !h || h.partial) { privacyWait(c); return null; }
   const mine = [...h.rows.filter((r) => r.kind === 'dep' || r.kind === 'from' || r.kind === 'box' || r.kind === 'link'), ...JUST[c.chainId].filter((j) => !h.rows.some((r) => lc(r.tx) === lc(j.tx)))];
   const notes = [];
   let level = 'strong';
@@ -3329,10 +3331,10 @@ function formWithdraw(f) {
     if (!a) throw new Error('Enter an amount.');
     const W = await walletOn(c);
     if (l2) {
-      const ok = (x) => !!CH[x.chainId].hist && !CH[x.chainId].histErr, missing = () => CHAINS.filter((x) => !ok(x) && (x === CHAINS[0] || boxTop(x) == null));
+      const ok = (x) => !!CH[x.chainId].hist && !CH[x.chainId].histErr && !CH[x.chainId].hist.partial, missing = () => CHAINS.filter((x) => !ok(x) && (x === CHAINS[0] || boxTop(x) == null));
       let k = linkIndex();
       if (k == null) {
-        await Promise.all(missing().map((x) => (x === CHAINS[0] ? historyOf(x, true).catch(() => {}) : boxScan(x))));
+        await Promise.all(missing().map((x) => (x === CHAINS[0] && !CH[x.chainId].hist?.partial ? historyOf(x, true).catch(() => {}) : boxScan(x))));
         k = linkIndex();
       }
       if (k == null) throw new Error(`Could not read your addresses on ${new Intl.ListFormat('en-GB').format(missing().map((x) => x.full))}, which this move needs to pick an address no payment link uses. Try again in a moment.`);
@@ -3418,7 +3420,7 @@ function linkWaitView() {
   const busy = [], failed = [];
   for (const c of CHAINS) {
     const st = CH[c.chainId], histOk = !!st.hist && !st.histErr, boxDown = !!BOXST.err[c.chainId] && !BOXST.p[c.chainId];
-    const needHist = (c === CHAINS[0] && !histOk) || (boxDown && !histOk), needBoxes = boxTop(c) == null && !histOk;
+    const needHist = (c === CHAINS[0] && !histOk) || (boxDown && !histOk), needBoxes = boxTop(c) == null && (!histOk || !!st.hist.partial);
     if (!needHist && !needBoxes) continue;
     if (needHist && st.histErr && !st.histing) { failed.push(c); continue; }
     busy.push(needHist ? `your ${c.full} history${st.histWork?.of ? ` (${st.histWork.read} of ${st.histWork.of})` : st.histProg != null ? ` (${Math.floor(st.histProg * 100)}%)` : ''}`

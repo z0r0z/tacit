@@ -39,6 +39,7 @@ async function chain(state = {}) {
       if (method === 'eth_call') {
         const data = params[0].data;
         if (data.startsWith(SELECTORS.boxOf)) return ok('0x' + S.boxAt.slice(2).toLowerCase().padStart(64, '0'));
+        if (data.startsWith('0x70a08231')) return ok('0x' + (S.tokenBal ?? 0n).toString(16).padStart(64, '0'));      // a token's balanceOf
         if (data.startsWith(SELECTORS.reclaim)) {
           if (S.sim === 'down') return res.end('not json');
           if (S.sim === 'expired') return err('execution reverted', SELECTORS.notExpired);
@@ -338,4 +339,37 @@ test('a receipt that cannot be read falls back to the notes, then the balance, a
   const s = payoutSetup({ C, balance: 5n * E18, notes: [] }), { L } = s;
   const plan = await sentPlan(s, { state: 'unsure', outTx: PAYOUT, outIns: [31] });
   assert.strictEqual((await L.check(plan)).state, 'done', 'the note is gone');
+});
+
+// ── a deposit box the card paid from the wallet into a token pool's private balance (walletIntoGo), kept with its intent and its pool's router ──
+test('a token pool\'s deposit box kept by the card is sent back through that pool\'s router, in its token, once its deadline has passed, and only once', async () => {
+  const TOKEN_ROUTER = '0x' + '7e'.repeat(20);
+  const C = await chain({ tokenBal: 4_200_000n }), ctx = boxedSetup({ C }), sentAt = [];
+  const rec = { router: TOKEN_ROUTER, box: BOX, token: USDC, intent: intentOf({ amount: 100_000_000n, refund: PAYER, deadline: Math.floor(Date.now() / 1000) - 60 }) };
+  const r = await ctx.L.reclaimIntoBox(rec, { onSent: (h, held) => sentAt.push([h, held]) });
+  assert.strictEqual(ctx.sent.length, 1, 'one transaction');
+  const tx = ctx.sent[0], w = words(tx.data);
+  assert.strictEqual(tx.to, TOKEN_ROUTER, 'the router of the pool the box belongs to');
+  assert.ok(tx.data.startsWith(SELECTORS.reclaim), 'reclaimDeposit(intent, token)');
+  assert.strictEqual('0x' + w[8].slice(24), USDC, 'the token the box holds');
+  assert.strictEqual('0x' + w[5].slice(24), PAYER, 'to the refund the box was made with');
+  assert.deepStrictEqual(sentAt, [[SEND, 4_200_000n]], 'the hash is handed back before the wait');
+  assert.strictEqual(r.held, 4_200_000n);
+  C.receipts[SEND] = { status: '0x1' };
+  const again = await ctx.L.reclaimIntoBox({ ...rec, reclaimTx: SEND, reclaimAt: Date.now(), reclaimHeld: '4200000' });
+  assert.strictEqual(again.again, true);
+  assert.strictEqual(ctx.sent.length, 1, 'never twice');
+});
+
+test('a kept deposit box is not sent back before its deadline, when it is empty, or when its record does not make it', async () => {
+  const C = await chain({ tokenBal: 5n }), ctx = boxedSetup({ C });
+  const rec = { router: '0x' + '7e'.repeat(20), box: BOX, token: USDC, intent: intentOf({ amount: 1000n, refund: PAYER, deadline: Math.floor(Date.now() / 1000) + 600 }) };
+  await assert.rejects(ctx.L.reclaimIntoBox(rec), /once its deadline has passed.*Nothing was sent/);
+  const late = { ...rec, intent: { ...rec.intent, deadline: String(Math.floor(Date.now() / 1000) - 60) } };
+  C.tokenBal = 0n;
+  await assert.rejects(ctx.L.reclaimIntoBox(late), /holds nothing.*Nothing was sent/);
+  C.tokenBal = 5n; C.boxAt = '0x' + 'bb'.repeat(20);
+  await assert.rejects(ctx.L.reclaimIntoBox(late), /does not match its box/);
+  await assert.rejects(ctx.L.reclaimIntoBox({ ...late, router: null }), /incomplete/);
+  assert.strictEqual(ctx.sent.length, 0);
 });

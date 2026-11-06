@@ -5,9 +5,9 @@
 import { makeKeySession, signInSheet } from '/trade/key.js?cb=26d9c07b';
 import { makeTacitSession } from '/tacit-session.js?cb=a2d34bb2';
 import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverEvery } from '/bridge-tick.js?cb=b9adb91d';
-import { ROUTES } from '/bridge/track.js?cb=616e7608';
+import { ROUTES } from '/bridge/track.js?cb=279d33bf';
 import { parseUnits } from '/trade/util.js?cb=e8317464';
-import { forgetUx } from '/trade/poolux.js?cb=b4055e46';
+import { forgetUx } from '/trade/poolux.js?cb=a64920c6';
 import { relayWords } from '/relay-outcome.js?cb=9db7155a';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 
@@ -82,7 +82,7 @@ export function mountMover({ pick, repaint = () => {}, say = () => {}, onState =
     try {
       say('Checking the burn and rebuilding the bridge…');
       const T = await TS.load();
-      await T.crossoutUx().recoverFromEthTx('0x' + h, key.priv(), { amount: v });
+      await T.crossoutUx().recoverFromEthTx('0x' + h, key.priv(), { amountOf: (dec) => parseUnits(amountText || '', dec) || null });
       say('✓ Found it. It shows under Your bridges.'); last = 0; tick(true);
       return true;
     } catch (e) { say(txt(e)); return false; } finally { repaint(); }

@@ -120,7 +120,7 @@ export function makePools({ el, cfg, esc, rpc, ethCall, batch, wallet, W, synthO
   const list = (key) => V(key)?.markets || [];
   const selected = (key) => { const l = list(key), id = P.sel[key]; return l.find((x) => x.pool === id) || l[0] || null; };
   const seeded = (x) => !!x && x.exists && x.supply > 0n;
-  const inRange = (x) => !!x && x.sqrtNow != null && x.sqrtNow > x.m.t.sqrtPLow && x.sqrtNow < x.m.t.sqrtPHigh;
+  const inRange = (x) => !!x && x.sqrtNow != null && x.sqrtNow >= x.m.t.sqrtPLow && x.sqrtNow <= x.m.t.sqrtPHigh;   // the pool's _priceInRange: its band ends trade
   const px = (x) => priceOf(x.m, x.sqrtNow);
   function view(key) {
     const x = selected(key), v = V(key);
@@ -332,7 +332,7 @@ export function makePools({ el, cfg, esc, rpc, ethCall, batch, wallet, W, synthO
       const pl = planNow(st);
       if (!pl.ok) { dis = true; if (open && pl.why === 'Enter an amount') label = 'Enter an amount'; else if (pl.why !== 'Enter an amount') why = pl.why; }
       else if (pl.plan.send.s > st.balS) { label = `Not enough ${sym}`; dis = true; why = `Borrow ${sym} above, then add it here.`; }
-      else if (pl.plan.send.q > st.balQ) { label = `Not enough ${qs}`; dis = true; }
+      else if (pl.plan.send.q + (m.quote.addr ? 0n : GAS_KEEP) > st.balQ) { label = `Not enough ${qs}`; dis = true; if (!m.quote.addr && pl.plan.send.q <= st.balQ) why = 'Keep a little ETH for the fee.'; }
       else {
         const steps = (st.allowS < pl.plan.send.s ? 1 : 0) + (m.quote.addr && st.allowQ < pl.plan.send.q ? 1 : 0);
         if (steps) note = `${steps} approval${steps > 1 ? 's' : ''} first, then ${st.exists ? 'the deposit' : 'the pool and the deposit'}. Each is a confirmation.`;

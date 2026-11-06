@@ -107,19 +107,26 @@ const OUT = { state: h('div', { class: 'status', role: 'status' }), edit: h('div
 const clearOut = () => { for (const o of Object.values(OUT)) say(o, ''); };
 const isOwner = () => !!S.account && !!S.owner && lc(S.account) === lc(S.owner);
 
+// A read of a splitter that is no longer the one shown (another was opened while it ran) is dropped, so the actions never act on its list.
+const moved = (a) => lc(S.addr) !== lc(a);
 async function load() {
   if (!S.addr) { paint(); return; }
+  const at = S.addr;
   S.err = null;
   try {
     const [sh, ow, bal, blk] = await Promise.all([
-      rpc('eth_call', [{ to: S.addr, data: SEL.shares }, 'latest']), rpc('eth_call', [{ to: S.addr, data: SEL.owner }, 'latest']),
-      rpc('eth_getBalance', [S.addr, 'latest']), rpc('eth_blockNumber', []),
+      rpc('eth_call', [{ to: at, data: SEL.shares }, 'latest']), rpc('eth_call', [{ to: at, data: SEL.owner }, 'latest']),
+      rpc('eth_getBalance', [at, 'latest']), rpc('eth_blockNumber', []),
     ]);
+    if (moved(at)) return;
     if (!sh || sh === '0x' || !ow || ow === '0x') throw new Error('empty');
     S.shares = decodeShares(sh); S.owner = decodeAddress(ow); S.balance = BigInt(bal); S.block = parseInt(blk, 16);
-    S.recip = await Promise.all(S.shares.to.map((a) => rpc('eth_getBalance', [a, 'latest']).then(BigInt).catch(() => null)));
+    const recip = await Promise.all(S.shares.to.map((a) => rpc('eth_getBalance', [a, 'latest']).then(BigInt).catch(() => null)));
+    if (moved(at)) return;
+    S.recip = recip;
     if (!S.dirty) S.rows = S.shares.to.map((a, i) => [a, String(S.shares.weight[i])]);
   } catch (e) {
+    if (moved(at)) return;
     S.shares = null;
     S.err = e.message === 'empty' || e.revert ? 'No splitter answers at that address.' : 'Could not read that address. Try again in a moment.';
   }
@@ -128,12 +135,15 @@ async function load() {
 }
 async function loadExtras() {
   if (!S.addr || !S.shares) return;
+  const at = S.addr;
   const [quote, logs] = await Promise.all([
     fetch(`${API}/confidential/quote?asset=cETH`, { cache: 'no-store', signal: AbortSignal.timeout(10000) }).then((r) => r.json()).then((j) => j.tipSplitter || j.recommendedTipRecipient || null).catch(() => null),
-    rpc('eth_getLogs', [{ address: S.addr, topics: [TOPIC.distributed], fromBlock: '0x' + Math.max(0, S.block - 100000).toString(16), toBlock: 'latest' }]).catch(() => []),
+    rpc('eth_getLogs', [{ address: at, topics: [TOPIC.distributed], fromBlock: '0x' + Math.max(0, S.block - 100000).toString(16), toBlock: 'latest' }]).catch(() => null),
   ]);
+  if (moved(at)) return;
   S.quote = quote;
-  S.logs = (logs || []).slice(-5).reverse().map((l) => ({ amount: BigInt(l.data), block: parseInt(l.blockNumber, 16), tx: l.transactionHash }));
+  // null: the history could not be read (most public nodes refuse a range this wide), which is not the same as nothing sent
+  S.logs = logs && logs.slice(-5).reverse().map((l) => ({ amount: BigInt(l.data), block: parseInt(l.blockNumber, 16), tx: l.transactionHash }));
   paintState();
 }
 
@@ -234,7 +244,7 @@ function paintState() {
       h('div', { class: 'bal num' }, S.recip[i] == null ? '' : `${fmtEth(S.recip[i], 4)} ETH held`)))),
     h('div', { class: 'rows' },
       h('div', { class: 'kv' }, h('span', {}, 'Owner'), h('b', {}, nameOf(S.owner) ? `${nameOf(S.owner)} · ${short(S.owner, 6)}` : S.owner)),
-      S.logs.length ? S.logs.map((l) => h('div', { class: 'log' }, h('span', {}, `Sent on ${ago(S.block - l.block)}`), h('b', { class: 'num' }, scan(`tx/${l.tx}`, `${fmtEth(l.amount)} ETH`)))) : h('div', { class: 'kv' }, h('span', {}, 'Sent on'), h('b', {}, 'nothing in the last two weeks'))));
+      S.logs?.length ? S.logs.map((l) => h('div', { class: 'log' }, h('span', {}, `Sent on ${ago(S.block - l.block)}`), h('b', { class: 'num' }, scan(`tx/${l.tx}`, `${fmtEth(l.amount)} ETH`)))) : h('div', { class: 'kv' }, h('span', {}, 'Sent on'), h('b', {}, S.logs ? 'nothing in the last two weeks' : 'could not be read just now'))));
 }
 
 function paintEdit() {
@@ -350,7 +360,7 @@ function paintDeploy() {
     const rc = await waitReceipt(tx);
     if (!isAddress(rc.contractAddress)) throw new Error('The transaction did not create a contract.');
     S.addr = rc.contractAddress; S.dirty = false; S.rows = null; D.ownerOk = false;
-    store.set({ addr: S.addr, args: encDeployArgs(D.owner, to, weight), tx });
+    store.set({ addr: S.addr, deployed: { addr: S.addr, args: encDeployArgs(D.owner, to, weight), tx } });   // its own key: opening another splitter leaves it be
     location.hash = S.addr;
     say_(h('span', { class: 'ok' }, 'Deployed at ', scan(`address/${S.addr}`, S.addr), '.'));
     await load();
@@ -376,11 +386,12 @@ function paintDeploy() {
 }
 
 function paintNext() {
-  const el = $('#p-next'), st = store.get();
+  // (a record from before the deploy had its own key is not read: opening another splitter overwrote its address, so its args may be another's)
+  const el = $('#p-next'), dep = store.get().deployed;
   if (!S.addr || !S.shares) { el.hidden = true; return; }
   el.hidden = false;
-  const mine = st.args && lc(st.addr) === lc(S.addr);
-  const lines = { verify: `forge verify-contract ${S.addr} src/EthSplitter.sol:EthSplitter --chain mainnet --compiler-version 0.8.37 --num-of-optimizations 1 --via-ir --evm-version prague${mine ? ` --constructor-args 0x${st.args}` : ' --constructor-args <the hex from the deploy>'} --watch`,
+  const mine = dep?.args && lc(dep.addr) === lc(S.addr);
+  const lines = { verify: `forge verify-contract ${S.addr} src/EthSplitter.sol:EthSplitter --chain mainnet --compiler-version 0.8.37 --num-of-optimizations 1 --via-ir --evm-version prague${mine ? ` --constructor-args 0x${dep.args}` : ' --constructor-args <the hex from the deploy>'} --watch`,
     api: `RELAY_TIP_SPLITTER_ADDR=${S.addr}\nSPLITTER_ADDR=${S.addr}`, settle: `SPLITTER_ADDR=${S.addr}` };
   const copyBlock = (key, label, text) => h('div', { class: 'cmd' }, h('div', { class: 'cmd-h' }, h('span', { class: 'mute' }, label), h('button', { class: 'linkbtn', type: 'button', onclick: (e) => copy(text, e.target) }, 'Copy')), h('pre', {}, text));
   mount(el,

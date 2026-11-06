@@ -80,7 +80,8 @@ export async function createClaim(tacit, { S, pool, poolWallet, amount, asset, p
   return {
     ...r,
     secret32,
-    link: claimUrl(location.origin, encodeClaim({ secret32, txid: r.revealTxid, network, pinned: !!pin })),
+    // a relayed payment that came back without its id has no link yet: the sender finds it once the pool counts the note
+    link: r.revealTxid ? claimUrl(location.origin, encodeClaim({ secret32, txid: r.revealTxid, network, pinned: !!pin })) : null,
   };
 }
 
@@ -88,7 +89,8 @@ export async function createClaim(tacit, { S, pool, poolWallet, amount, asset, p
 export async function readClaim(S, pool, { secret32, pin = '', network = 'mainnet', asset }) {
   const w = claimPoolWallet(pool, secret32, { pin, network });
   const notes = await S.poolNotes(w, asset);
-  const live = notes.filter((n) => !n.spent && BigInt(n.value) > 0n);
+  // a claim this device just made is spent here before the pool's feed says so
+  const live = (S.pendingView ? S.pendingView(notes, asset, w).live : notes.filter((n) => !n.spent)).filter((n) => BigInt(n.value) > 0n);
   return { wallet: w, notes: live, total: live.reduce((t, n) => t + BigInt(n.value), 0n), seen: notes.length };
 }
 

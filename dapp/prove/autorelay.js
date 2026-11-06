@@ -4,7 +4,7 @@
 // One send at a time; a day's gas is capped, and a reserve stays in the account. The fee is paid to the sending account (the pool pays
 // every fee leg its proof binds to msg.sender), so the ETH it earns pays for the next ones. Deps are injected so the passes are tested
 // (tests/prove-autorelay.test.mjs).
-import { POOL, SETTLE_GAS, feeWeiOf, feeCovers, pickSettle, settleCalldata } from '../community-ops.js';
+import { POOL, SETTLE_GAS, ethFeeWei, feeWeiOf, feeCovers, pickSettle, settleCalldata } from '../community-ops.js';
 
 export const AUTO_MARGIN_BPS = 2000n;                      // a fifth over the settle's cost, as worker-relay/src/open-relayer.js asks
 export const AUTO_DAY_GAS_WEI = 10n ** 16n;                // at most 0.01 ETH of gas a day
@@ -71,7 +71,8 @@ export function makeAutoRelay({ address, rpc, sign, sendPrivate, board, landed, 
     const { raw, hash } = sign({ chainId: 1n, nonce, maxPriorityFeePerGas: tip, maxFeePerGas: maxFee, gasLimit, to: POOL, value: 0n, data });
     const h = await sendPrivate(raw).catch(() => null);
     if (!h) return { did: 'idle', why: 'Flashbots Protect did not take it; the next pass tries again.', job };
-    s.inFlight = { jobId: job.jobId, hash: String(h).toLowerCase() === String(hash).toLowerCase() ? hash : h, block: Number(BigInt(blockObj.number)), feeWei: String(fee) };
+    // what it earns is counted in ETH: its tETH legs only, whatever `prices` made of a TAC leg
+    s.inFlight = { jobId: job.jobId, hash: String(h).toLowerCase() === String(hash).toLowerCase() ? hash : h, block: Number(BigInt(blockObj.number)), feeWei: String(ethFeeWei(job.publicValues)) };
     write(s);
     return { did: 'sent', why: 'Sent privately. Waiting for it to land…', job, hash: s.inFlight.hash };
   }

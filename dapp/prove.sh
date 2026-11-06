@@ -276,6 +276,8 @@ do_install() {
     else
       say "systemd's user manager does not answer here (systemctl --user), so tacit-prover runs in the background until this computer stops."
     fi
+    # What the page last set (mine.json) wins over TACIT_MINE, so an address given here is made to win, as the service's install does.
+    [ -z "$1" ] || rm -f "$HOME_DIR/mine.json"
     start_background "$addr"
   else
     # A background run from an install before systemd was on would hold the port.
@@ -337,7 +339,15 @@ do_install() {
   say "Watch, pause or start it: https://tacit.finance/prove/"
   say "Check on it:  curl -fsSL https://tacit.finance/prove.sh | sh -s -- --status"
   say "Remove it:    curl -fsSL https://tacit.finance/prove.sh | sh -s -- --uninstall"
-  say "Its log:      $HOME_DIR/daemon.log"
+  # systemd's unit logs to the journal, not to a file.
+  if [ -z "$bg" ] && [ "$(uname -s)" = Linux ]; then say "Its log:      journalctl --user -u tacit-prover -f"; else say "Its log:      $HOME_DIR/daemon.log"; fi
+}
+
+# The prover's log as daemon.log has it, or with no such file the unit's journal (systemd's unit logs there), its messages alone.
+prover_log() {
+  if [ -f "$HOME_DIR/daemon.log" ]; then cat "$HOME_DIR/daemon.log"
+  else journalctl --user -u tacit-prover --no-pager -o cat 2>/dev/null || true
+  fi
 }
 
 do_status() {
@@ -369,11 +379,10 @@ do_status() {
   if curl -fsS --max-time 3 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then say "Answering  yes, on 127.0.0.1:$PORT"; else say "Answering  no (stopped, or still loading its keys)"; fi
   if [ -n "$addr" ]; then say "Mining for $addr"; else say "Mining for no address (it proves for this computer's pages only)"; fi
 
-  log=$HOME_DIR/daemon.log
-  if [ -f "$log" ]; then
-    last=$(grep -E 'pool job|mining the proof pool' "$log" 2>/dev/null | tail -1 | sed 's/^tacit-prover: //' || true)
+  if [ -f "$HOME_DIR/daemon.log" ] || { [ "$(uname -s)" != Darwin ] && [ -f "$unit" ] && command -v journalctl >/dev/null 2>&1; }; then
+    last=$(prover_log | grep -E 'pool job|mining the proof pool' | tail -1 | sed 's/^tacit-prover: //' || true)
     [ -z "$last" ] || say "Last       $last"
-    n=$(grep -c ' points to ' "$log" 2>/dev/null || true)
+    n=$(prover_log | grep -c ' points to ' || true)
     say "Accepted   ${n:-0} in this log"
   fi
 

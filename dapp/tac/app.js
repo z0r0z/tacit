@@ -2,7 +2,7 @@
 const TACIT_URL = '/tacit.js?cb=187d27e1';
 const SECRET_URL = '/sats/secret.js?cb=d10eac01';
 const SATS_URL = '/tac/sats.js?cb=3708074c';
-const CLAIM_URL = '/tac/claim.js?cb=1523631a';
+const CLAIM_URL = '/tac/claim.js?cb=27a72592';
 const UNIFIED_URL = '/tacit-unified.js?cb=a5b3a042';
 const KNOWN_URL = '/tacit-wallet-known.js?cb=ed4c75b7';
 const EVM_URL = '/evm-wallet.js?cb=b400cbe7';
@@ -80,7 +80,9 @@ for (const ev of ['input', 'change']) document.addEventListener(ev, ({ target: i
   amountHint(i, bad ? amountWhy(t, DECIMALS) : '');
 }, true);
 const short = (a, n = 4) => { if (!a) return ''; const head = /^tacit1/.test(a) ? 10 + n : n + 2; return a.length > head + n + 2 ? `${a.slice(0, head)}…${a.slice(-n)}` : a; };
+// A relayed payment can come back without its id (the relay says it posted, not in which transaction): it went out in the relay's batch.
 const txLink = (txid) => {
+  if (!txid) return document.createTextNode('the relay’s batch');
   const a = document.createElement('a');
   a.href = `https://mempool.space/tx/${txid}`; a.target = '_blank'; a.rel = 'noopener noreferrer';
   a.textContent = `${txid.slice(0, 10)}…`;
@@ -587,7 +589,7 @@ function renderBalances() {
   const n = (shielded.notes || []).filter((x) => !x.spent && BigInt(x.value) > 0n).length;
   $('bal-note').textContent = !unlocked() ? 'Open your Tacit wallet to see your balances.'
     : `${n} shielded note${n === 1 ? '' : 's'} only you can see.`;
-  if (unlocked() && !shielded.loading && liveNotes().length > 4) {
+  if (unlocked() && !shielded.loading && liveNotes().length > 2) {   // a payment spends two notes at most: Withdraw and claim links need this too
     const b = Object.assign(document.createElement('button'), { className: 'link', type: 'button', textContent: 'Combine notes' });
     b.onclick = offerCombine;
     $('bal-note').append(' ', b);
@@ -733,7 +735,7 @@ async function doCombine(statusId, then, anchor = null) {
     throw said(`The relay’s fee changed to ${fmt(e.feeMoved)} TAC. Check it and press again.`);
   }
   if (r.wait) return waitBox(statusId, r, (tip) => doCombine(statusId, then, tip));
-  say(statusId, 'Combining: the new note counts after three Bitcoin confirmations, about 30 minutes.', then ? ` ${then} ` : ' ', txLink(r.revealTxid));
+  say(statusId, 'Combining in ', txLink(r.revealTxid), ': the new note counts after three Bitcoin confirmations, about 30 minutes.', then ? ` ${then}` : '');
   await loadShielded();
 }
 
@@ -973,6 +975,10 @@ async function makeClaimLink() {
   }
   if (secret) patchClaimLink(secret, { txid: r.revealTxid, link: r.link });
   $('claim-amt').value = ''; $('claim-pin').value = '';
+  if (!r.link) {   // the relay posted it without saying where: the link is read back from the note once the pool counts it
+    say('st-claim-make', `${fmt(amount)} TAC went out in the relay’s batch. Its link is under Links made on this device: press Find the link there in a few blocks.`);
+    return loadShielded();
+  }
   const box = document.createElement('div');
   const field = document.createElement('input');
   field.readOnly = true; field.value = r.link; field.setAttribute('aria-label', 'Claim link');
@@ -1002,17 +1008,18 @@ async function showClaim(payload) {
   const btn = document.createElement('button'); btn.className = 'btn'; btn.textContent = 'Claim to your wallet';
   const st = document.createElement('div'); st.className = 'status'; st.id = 'st-claim'; st.setAttribute('role', 'status');
 
-  let looked = 0;
+  let looked = 0, claimed = false;   // claimed here: the pool's feed can still show the note for a few blocks
   async function refresh() {
     const mine = ++looked;
     line.replaceChildren(document.createTextNode('Checking…'));
     try {
       const r = await C.readClaim(S, S.pool, { secret32: parsed.secret32, pin: pinField.value.trim(), network: 'mainnet', asset: S.TAC_ASSET_MAINNET });
       if (mine !== looked) return;
+      const has = r.total > 0n && !claimed;
       line.replaceChildren(
-        Object.assign(document.createElement('span'), { textContent: r.total > 0n ? 'Waiting for you' : 'Nothing under this link' }),
-        Object.assign(document.createElement('b'), { className: 'num', textContent: r.total > 0n ? `${fmt(r.total)} TAC${satsText(r.total) ? ' · ' + satsText(r.total) : ''}` : parsed.pinned ? 'Check the PIN' : 'Already claimed' }));
-      btn.disabled = r.total <= 0n;
+        Object.assign(document.createElement('span'), { textContent: has ? 'Waiting for you' : 'Nothing under this link' }),
+        Object.assign(document.createElement('b'), { className: 'num', textContent: has ? `${fmt(r.total)} TAC${satsText(r.total) ? ' · ' + satsText(r.total) : ''}` : parsed.pinned && !claimed ? 'Check the PIN' : 'Already claimed' }));
+      btn.disabled = !has;
     } catch (e) { if (mine === looked) { line.replaceChildren(); errSayInto(line, e); } }
   }
 
@@ -1029,10 +1036,11 @@ async function showClaim(payload) {
       asset: S.TAC_ASSET_MAINNET, toAddress: poolWallet.addressString, fmt, say: (m) => { st.textContent = m; }, askSelf: askSelfPost('st-claim'),
     });
     if (r.wait) { st.textContent = `The note needs ${r.wait} more Bitcoin block${r.wait === 1 ? '' : 's'} (≈ ${r.wait * 10} min) before it can move. Try again after that.`; return; }
+    claimed = true;
     st.replaceChildren(document.createTextNode('Claimed to your wallet in '), txLink(r.revealTxid), document.createTextNode(r.relayed ? '. The fee came out of the TAC, so it cost you no bitcoin.' : '.'));
     await refreshAll();
     await refresh();
-  });
+  }).then(() => { if (claimed) btn.disabled = true; });   // busy hands the button back as it was before the press
 
   host.replaceChildren(
     Object.assign(document.createElement('p'), { className: 'note', style: 'margin-top:0', textContent: parsed.pinned ? 'Enter the PIN you were given.' : 'Claiming moves the TAC into a wallet only you control.' }),

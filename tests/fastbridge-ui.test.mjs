@@ -261,6 +261,30 @@ test('the best of several quotes is shown with its provider, every provider that
   assert.deepEqual(m.st.calls.starts[0].quotes.map((x) => x.provider.name), ['Cheap', 'Slow'], 'the best first, then the next to try');
 });
 
+test('a quote asked again at the press that pays less than the one confirmed is shown, not locked: the next press locks on it', async () => {
+  const st = sessionStub(), quoteAll = st.session.quoteAll;
+  let round = 0;
+  st.session.quoteAll = async (providers, units) => {
+    const r = await quoteAll(providers, units);
+    round++;
+    // the first quote ends within the minute and a half the press asks again in; the one asked again keeps 3%, more than the 1.3% confirmed
+    if (round === 1) for (const x of r.quotes) x.quote.validUntil = Math.floor(Date.now() / 1000) + 30;
+    else for (const x of r.quotes) { x.quote.fee = units * 300n / 10000n; x.quote.evmAmount = units - x.quote.fee; x.quote.id = 'q2'; }
+    return r;
+  };
+  const m = mount({ session: st });
+  await signIn(m);
+  typeIn(m, '100'); await until(() => !m.$('fx-recv').hidden, 'the quote');
+  await press(m);
+  m.$('fx-go').click();
+  await until(() => /The quote changed/.test(m.$('fx-st').textContent), 'the new figure said');
+  assert.equal(st.calls.starts.length, 0, 'nothing was locked on the lower quote');
+  assert.match(m.$('fx-st').textContent, /paid you 97 private TAC/);
+  m.$('fx-go').click();
+  await until(() => st.calls.starts.length === 1, 'the start on the new quote');
+  assert.equal(st.calls.starts[0].quotes[0].quote.evmAmount, 97n * TAC);
+});
+
 test('a bridger who came by a provider\'s link is paired with it when it quotes, even when another is cheaper, and with the best when it does not', async () => {
   const ps = [provider('Linked', { feeBps: 50 }), provider('Cheap', { feeBps: 20 })];
   const m = mount({ providers: ps, pinned: () => pairId('Linked') });

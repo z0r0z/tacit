@@ -70,6 +70,8 @@ const S = { jobs: [], folded: [], api: null, asked: false, done: {}, loaded: fal
 const remembered = () => { try { return JSON.parse(localStorage.getItem(STORE)) || {}; } catch { return {}; } };
 const remember = (o) => { try { localStorage.setItem(STORE, JSON.stringify(o)); } catch { /* private window: the page works without it */ } };
 S.hashes = remembered();
+// The hashes still waiting under a job: each is kept with the job it was sent or pasted for (one kept before that is shown under every job).
+const pendingFor = (job) => Object.entries(S.hashes).filter(([, v]) => v.state === 'pending' && (!v.job || v.job === job.id));
 
 // ── the notice under a job's ticket. It is kept, because the cards are drawn again whenever something they show changes. ──
 let notice = { id: null, text: '', bad: false };
@@ -241,7 +243,7 @@ function card(job) {
   let fig = '—', cap = 'shown when rewards open', foot = reviewed ? '' : `${(own.reduce((x, s) => x + s.gas, 0) / 1e6).toFixed(1)}M gas${manyChains(job) ? ` ${mark(job.chainId)}` : ''}`;
   if (st === 'done') {
     fig = res.count ? `${tac(res.total)}<small>TAC</small>` : '—';
-    const waiting = Object.values(S.hashes).filter((v) => v.state === 'pending').length;
+    const waiting = pendingFor(job).length;
     cap = res.count ? `paid to ${res.senders.map((a) => short(a)).join(', ')}` : waiting ? 'waiting for twelve confirmations' : S.api?.enabled && job.opensAt && Date.now() / 1000 >= job.opensAt ? 'no reward claimed yet' : 'deployed outside the rewards';
     foot = res.last ? `Done ${day(res.last)}` : 'Done';
   } else if (reviewed) {
@@ -453,7 +455,7 @@ function openBody(job) {
 
 function mineList(job) {
   const mine = (S.api?.claims ?? []).filter((c) => c.job === job.id && W.account && c.address.toLowerCase() === W.account.toLowerCase());
-  const waiting = Object.entries(S.hashes).filter(([, v]) => v.state === 'pending');
+  const waiting = pendingFor(job);
   if (!mine.length && !waiting.length) return `<p class="empty">${W.account ? 'None yet.' : 'Connect a wallet to see the steps credited to it.'}</p>`;
   const label = (id) => job.steps.find((s) => s.id === id)?.label ?? id;
   const total = mine.reduce((x, c) => x + BigInt(c.wei), 0n);
@@ -465,7 +467,7 @@ function paste(form) {
   const found = [...new Set(area.value.match(/0x[0-9a-fA-F]{64}/g) || [])];
   if (!found.length) { say('No transaction hash found there.', true, form.dataset.for); return; }
   const chainId = Number(form.querySelector('select')?.value || 1);
-  found.forEach((h) => track(h, chainId));
+  found.forEach((h) => track(h, chainId, form.dataset.for));
   area.value = '';
   say(`Checking ${found.length} transaction${found.length > 1 ? 's' : ''} with the rewards service…`, false, form.dataset.for);
   settle();
@@ -536,7 +538,7 @@ async function go(job, only = null) {
       say(`Step ${i + 1} sent: ${link(`${CHAINS[id].explorer}/tx/${hash}`, esc(short(hash, 6)))}. Waiting for it to land…`);
       const rc = await conn.wallet.receipt(hash, { read: (m, p) => readOn(id, m, p), where: `the ${CHAINS[id].name} explorer` });
       if (rc.status !== '0x1') throw new Error(`Step ${i + 1} failed (${short(hash, 6)}). Nothing more was sent.`);
-      track(hash, id);
+      track(hash, id, job.id);
       renderAll();
     }
     S.done[job.id] = await readDone(job, { chain: true });
@@ -560,9 +562,9 @@ async function sendReview(form) {
 }
 
 // ── naming steps to the service ──
-function track(hash, chainId = 1) {
+function track(hash, chainId = 1, job = null) {
   const h = hash.toLowerCase();
-  if (!S.hashes[h]) S.hashes[h] = { state: 'pending', note: 'waiting for confirmations', chainId, at: Date.now() };
+  if (!S.hashes[h]) S.hashes[h] = { state: 'pending', note: 'waiting for confirmations', chainId, job, at: Date.now() };
   remember(S.hashes);
 }
 let settling = false;

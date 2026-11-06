@@ -527,8 +527,9 @@ export function makeCrossoutUx(deps) {
   function list(walletPub) { return loadAll(walletPub); }
   function abandon(walletPub, id) { saveAll(walletPub, loadAll(walletPub).filter((r) => r.id !== id)); }
 
-  async function recoverFromEthTx(settleTxHash, walletPriv, { amount } = {}) {
-    if (amount == null) throw new Error('crossout-ux: recoverFromEthTx needs { amount } -- the value that arrives on Bitcoin, the note less any relay fee (not recoverable from chain data alone)');
+  // `amountOf(dec)`: the amount as typed, read in the decimals of the asset the burn turns out to be (cUSDT has 6, the rest 8)
+  async function recoverFromEthTx(settleTxHash, walletPriv, { amount, amountOf = null } = {}) {
+    if (amount == null && typeof amountOf !== 'function') throw new Error('crossout-ux: recoverFromEthTx needs { amount } -- the value that arrives on Bitcoin, the note less any relay fee (not recoverable from chain data alone)');
     const walletPub = secp.getPublicKey(walletPriv, true);
     const receipt = await rpc('eth_getTransactionReceipt', [settleTxHash]);
     if (!receipt) throw new Error('crossout-ux: no receipt for this transaction hash (not yet mined, or wrong network)');
@@ -540,6 +541,10 @@ export function makeCrossoutUx(deps) {
     const ev = events[0];
     const a = assetOf(ev.assetId);
     if (!a) throw new Error('crossout-ux: this crossOut is for a different asset');
+    if (amount == null) {
+      amount = amountOf(a.dec ?? 8);
+      if (amount == null) throw new Error(`That amount has more decimals than ${a.ticker} has (${a.dec ?? 8}).`);
+    }
 
     const destXonly = bytesToHexLocal(freshPrims(walletPriv).wallet.xonly());
     let dest = deriveDest(walletPriv, ev.nullifier, amount, a.assetId, destXonly), fee = null, value = null;

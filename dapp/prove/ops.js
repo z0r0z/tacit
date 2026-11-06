@@ -5,13 +5,13 @@
 import { makeEvmWallet } from '/evm-wallet.js?cb=b400cbe7';
 import { announceWalletConnect, wcSheets, dialogHost, WC_PROJECT_ID } from '/walletconnect.js?cb=e0b29a34';
 import { makeHeaderRelayAdvance } from '/header-relay-advance.js?cb=1c3a7226';
-import { POOL, SEL_ANCESTRY, ATTEST_GAS, SETTLE_GAS, readProof, attestRefusal, encodeAttest, needsAncestry, ancestryCalls, ethText, feeWeiOf, readPrices, boardSummary, pickSettle, readBoard, reportLanded, settleCalldata } from '/community-ops.js?cb=92fe7a2d';
+import { POOL, SEL_ANCESTRY, ATTEST_GAS, SETTLE_GAS, readProof, attestRefusal, encodeAttest, needsAncestry, ancestryCalls, ethText, ethFeeWei, feeWeiOf, readPrices, boardSummary, pickSettle, readBoard, reportLanded, settleCalldata } from '/community-ops.js?cb=92fe7a2d';
 import { bodyType } from '/rpc-body.js';
 import { secp, keccak_256, sha256 } from '/vendor/tacit-deps.min.js';
 import { makeEvmAccount } from '/evm-account.js?cb=e48ce3f6';
 import { makeEvmTx } from '/evm-tx.js?cb=ed0eafb7';
 import { makeNostrBoard, mergeBoards } from '/nostr-board.js?cb=0feadbff';
-import { makeAutoRelay, AUTO_RESERVE_WEI } from '/prove/autorelay.js?cb=f740e1d6';
+import { makeAutoRelay, AUTO_RESERVE_WEI } from '/prove/autorelay.js?cb=3dfd8552';
 
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -396,6 +396,11 @@ async function mirror(api) {
   }
 }
 const reportIf = (jobId, txHash) => (String(jobId).startsWith('nostr:') ? Promise.resolve() : reportLanded({ api: API, jobId, txHash }));
+// What a settle pays its sender, in words: its ETH, and its TAC apart (a TAC pool unit is 10^10 of TAC's 18-decimal units).
+function feeText(pv) {
+  const eth = ethFeeWei(pv), tacWei = feeWeiOf(pv, { tacWeiPerUnit: 10n ** 10n }) - eth;
+  return [eth > 0n ? `${ethText(eth)} ETH` : null, tacWei > 0n ? `${ethText(tacWei)} TAC` : null].filter(Boolean).join(' and ');
+}
 async function refreshBoard() {
   await prices().catch(() => {});
   try { board = await readBoards(); boardErr = false; } catch { boardErr = true; }   // a board read before stays shown
@@ -423,7 +428,7 @@ async function doSendOne() {
   await refreshBoard();
   const job = board && pickSettle(board.jobs, { skip: passed, prices: await prices() });
   if (!job) { toast('Nothing is waiting to be sent.'); return; }
-  const data = settleCalldata(job), fee = feeWeiOf(job.publicValues, PRICES);
+  const data = settleCalldata(job), fee = feeText(job.publicValues);
   // Run it first: a settle another wallet sent first, or one the pool no longer takes, costs gas to find out, and the node tells us for free.
   try { await rpc('eth_call', [{ from: S.address, to: POOL, data }, 'latest']); }
   catch { passed.add(job.jobId); throw new Error('The pool would not take this settle, so nothing was sent: another wallet most likely sent it first.'); }
@@ -436,7 +441,7 @@ async function doSendOne() {
   const rcpt = await waitReceipt(txHash);
   if (!landed(rcpt)) { out.innerHTML = `Reverted: ${txLink(txHash, short(txHash, 8))}.`; passed.add(job.jobId); throw new Error('The settle reverted: another wallet may have sent it first. Nothing was lost but its network fee.'); }
   await reportIf(job.jobId, txHash).catch(() => {});
-  out.innerHTML = `Landed: ${txLink(txHash, short(txHash, 8))}.${fee > 0n ? ` ${esc(ethText(fee))} ETH went to ${esc(short(S.address))}.` : ''}`;
+  out.innerHTML = `Landed: ${txLink(txHash, short(txHash, 8))}.${fee ? ` ${esc(fee)} went to ${esc(short(S.address))}.` : ''}`;
   toast('Settle sent');
   refreshBoard().catch(() => {});
 }
@@ -447,7 +452,7 @@ const RELAY_KEY = 'tacit-relay-account-v1', AUTO_ON = 'tacit-relay-auto-v1', AUT
 const PROTECT = 'https://rpc.flashbots.net/fast?hint=hash';
 const evmAcct = makeEvmAccount({ secp, keccak256: keccak_256, sha256 }), evmTx = makeEvmTx({ secp, keccak256: keccak_256 });
 const ls = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch {} } };
-const A = { acct: null, relay: null, on: false, running: false, said: '', bal: null };
+const A = { acct: null, relay: null, on: false, running: false, said: '', bal: null, adding: false };
 function relayAcct(make = false) {
   if (A.acct) return A.acct;
   let priv = ls.get(RELAY_KEY);
@@ -464,9 +469,10 @@ async function sendPrivate(raw) {
   if (j.error || !TX_HASH.test(j.result || '')) throw new Error(j.error?.message || 'Flashbots Protect did not take it');
   return j.result.toLowerCase();
 }
+// No `prices`: a TAC fee leg is paid to the relay account as TAC, which Take out does not send, so it takes only settles whose ETH pays the gas.
 function autoRelay() {
   const a = relayAcct(true);
-  return (A.relay ||= makeAutoRelay({ address: a.address, rpc, prices, sign: (tx) => evmTx.signEip1559(tx, a.priv), sendPrivate,
+  return (A.relay ||= makeAutoRelay({ address: a.address, rpc, sign: (tx) => evmTx.signEip1559(tx, a.priv), sendPrivate,
     board: () => readBoards(), landed: (jobId, txHash) => reportIf(jobId, txHash),
     store: { get: () => { try { return JSON.parse(ls.get(AUTO_DAY) || 'null'); } catch { return null; } }, set: (v) => ls.set(AUTO_DAY, JSON.stringify(v)) } }));
 }
@@ -477,7 +483,7 @@ async function paintAuto() {
   if (a) A.bal = await rpc('eth_getBalance', [a.address, 'latest']).then(BigInt, () => A.bal);
   const t = a ? autoRelay().today() : null;
   box.innerHTML = a ? `<p>Relay account <b title="${esc(a.address)}">${esc(short(a.address))}</b> <button class="link" type="button" data-auto-copy>copy</button> · ${A.bal == null ? '—' : `${esc(ethText(A.bal))} ETH`}`
-      + ` · <button class="link" type="button" data-auto-add>Add 0.01 ETH</button>${A.bal > 0n ? ' · <button class="link" type="button" data-auto-out>Take out</button>' : ''}</p>`
+      + ` · <button class="link" type="button" data-auto-add${A.adding ? ' disabled' : ''}>Add 0.01 ETH</button>${A.bal > 0n ? ' · <button class="link" type="button" data-auto-out>Take out</button>' : ''}</p>`
       + `<p>Today: ${esc(plural(t.sent, 'settle'))} sent · earned ${esc(ethText(BigInt(t.earnedWei)))} ETH · gas ${esc(ethText(BigInt(t.gasWei)))} ETH</p>`
     : '<p>Start makes a relay account in this browser. Add a little ETH to it for gas; keep only that much there.</p>';
   btn.textContent = A.on ? 'Stop' : 'Start';
@@ -498,12 +504,17 @@ function autoSet(on) {
   if (on) { relayAcct(true); autoTick(); }
   paintAuto().catch(() => {});
 }
+// One add at a time: the box is drawn again while it waits (a fresh button each time), so the add in flight is kept here, not on the button.
 async function autoAdd() {
-  const a = relayAcct(true);
-  const hash = await send({ to: a.address, data: '0x', gas: 21000n, value: 10n ** 16n });
-  A.said = 'Sending 0.01 ETH to the relay account…'; paintAuto();
-  if (!landed(await waitReceipt(hash))) throw new Error('That transfer did not go through.');
-  toast('0.01 ETH added to the relay account');
+  if (A.adding) return;
+  A.adding = true; paintAuto();
+  try {
+    const a = relayAcct(true);
+    const hash = await send({ to: a.address, data: '0x', gas: 21000n, value: 10n ** 16n });
+    A.said = 'Sending 0.01 ETH to the relay account…'; paintAuto();
+    if (!landed(await waitReceipt(hash))) throw new Error('That transfer did not go through.');
+    toast('0.01 ETH added to the relay account');
+  } finally { A.adding = false; }
 }
 async function autoOut() {
   const a = relayAcct();

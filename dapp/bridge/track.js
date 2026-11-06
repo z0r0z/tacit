@@ -349,7 +349,8 @@ export function readyNow(row, live) {
 // moves bridges on (mover.js), which takes the step the chains say is ready by itself on its next pass: it is not put to the holder.
 export function nextOf(row, live = null, auto = false) {
   if (row.done || row.back) return { due: '', self: false };
-  if (row.due) return { due: row.due, self: false };
+  // (a covered bridge out, with its key open on the mover's page, is sent on by that page: the row says so, and it is not put to the holder)
+  if (row.due) return auto && row.dir === 'out' && row.stage === 'covered' && row.due === 'Send to Bitcoin' ? { due: '', self: true } : { due: row.due, self: false };
   const ready = readyNow(row, live);
   if (ready) return auto ? { due: '', self: true } : { due: ready, self: false };
   if (row.dir === 'in') {

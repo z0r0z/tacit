@@ -152,7 +152,8 @@ export async function listEtches(read, hosts) {
     const minter = '0x' + strip(l.topics[3]).slice(24), token = '0x' + strip(l.topics[2]).slice(24);
     if (minter === POOL.toLowerCase()) continue;
     const d = strip(l.data), len = parseInt(d.slice(3 * 64, 4 * 64), 16), cid = '0x' + d.slice(2 * 64, 3 * 64);
-    const symbol = decodeURIComponent(d.slice(4 * 64, 4 * 64 + len * 2).replace(/(..)/g, '%$1'));
+    // anyone can deploy a symbol that is not UTF-8: it reads with replacement marks rather than failing the whole list
+    const symbol = new TextDecoder().decode(Uint8Array.from(d.slice(4 * 64, 4 * 64 + len * 2).match(/../g) || [], (b) => parseInt(b, 16)));
     out.push({ id: token, chain: 'eth', ticker: symbol, decimals: parseInt(d.slice(64, 128), 16), cid: /^0x0+$/.test(cid) ? null : cidString(cid), height: parseInt(l.blockNumber, 16), etchTxid: l.transactionHash, minter, name: '', logo: null, verified: false, mintable: false, holders: 0, later: false, same: 0, supply: null, at: 0 });
   }
   await Promise.all([

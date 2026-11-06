@@ -9,7 +9,7 @@
 //
 // self-prover.js is loaded the first time it is needed. Nothing here keeps a key: each use derives the account from the page's `priv()`.
 import { secp, keccak_256, sha256, hmac, concatBytes } from '/vendor/tacit-deps.min.js';
-import { quoteEthToProve, ethForProve, ZROUTER } from '/relay/abi.js?cb=5078b247';
+import { quoteEthToProve, ethForProve, ZROUTER } from '/relay/abi.js?cb=190ea12d';
 import { rpc, ethCall, strip, word, now } from '/trade/util.js?cb=e8317464';
 
 // The permit is signed synchronously, which noble's secp256k1 does once it is given an HMAC (as tacit.js and the sats page give it).
@@ -50,6 +50,8 @@ export function deviceProver() {
 
 const addr = (a) => strip(a).toLowerCase().padStart(64, '0');
 const hexv = (v) => '0x' + BigInt(v).toString(16);
+// The latest block's time, so a device clock that runs slow does not set a deadline already past; the device's own when the block cannot be read.
+const chainNow = () => rpc('eth_getBlockByNumber', ['latest', false]).then((b) => { const t = Number(BigInt(b.timestamp)); return t > 0 ? t : now(); }).catch(() => now());
 
 // The prover for the key open on the page: self-prover.js's, with the Tacit account as the requester and the module's funding helpers as `sp`.
 // `ux` is the pool module (its account() derives the Tacit account); `keyPriv()` the page's key.
@@ -94,8 +96,8 @@ async function sendChecked({ wallet, from, tx, say }) {
 // contract) is signed here by the Tacit account, over PROVE's own nonce and domain read from the chain.
 async function depositHeld({ prover, wallet, from, amountWei, say }) {
   const sp = prover.sp, acct = prover.address;
-  const [nonce, domainSeparator] = await Promise.all([ethCall(sp.PROVE_TOKEN, sp.NONCES_SELECTOR + addr(acct)), ethCall(sp.PROVE_TOKEN, sp.DOMAIN_SEPARATOR_SELECTOR)]);
-  const deadline = BigInt(now() + 3600);
+  const [nonce, domainSeparator, t] = await Promise.all([ethCall(sp.PROVE_TOKEN, sp.NONCES_SELECTOR + addr(acct)), ethCall(sp.PROVE_TOKEN, sp.DOMAIN_SEPARATOR_SELECTOR), chainNow()]);
+  const deadline = BigInt(t + 3600);
   const { v, r, s } = sp.signPermit({ secp, keccak256: keccak_256, privHex: prover.accountPriv(), owner: acct, amountWei, nonce: BigInt(nonce), deadline, domainSeparator });
   say('deposit');
   return sendChecked({ wallet, from, tx: { to: sp.VAPP, data: sp.permitAndDepositData({ from: acct, amountWei, deadline, v, r, s }) }, say });
@@ -120,15 +122,21 @@ export async function fundFromWallet({ prover, wallet, from, amountWei, say = ()
 // shown: it spends exactly what was asked, pays the Tacit account, and guards a least amount out (relay/abi.js holds the checks every page shares).
 const readCall = ({ to, data, gas }) => rpc('eth_call', [{ to, data, gas }, 'latest']);
 const NO_ROUTE = 'Could not find a route from ETH to PROVE. Try again in a moment, or add PROVE from your wallet.';
-export const quoteEth = ({ prover, wei }) => quoteEthToProve({ call: readCall, to: prover.address, wei, noRoute: NO_ROUTE });
+export const quoteEth = async ({ prover, wei }) => quoteEthToProve({ call: readCall, to: prover.address, wei, noRoute: NO_ROUTE, now: await chainNow() });
 // The same quote for the ETH that buys at least `want` PROVE, with a little over so the least the swap may buy still covers it.
-export const quoteEthFor = ({ prover, want }) => ethForProve({ call: readCall, to: prover.address, want, noRoute: NO_ROUTE });
+export const quoteEthFor = async ({ prover, want }) => ethForProve({ call: readCall, to: prover.address, want, noRoute: NO_ROUTE, now: await chainNow() });
 // ETH swapped to PROVE for the Tacit account, then all the PROVE it holds deposited into its credit. → { hashes, deposited }
+// A node a block behind still shows the PROVE from before the swap, so it is read again for about 20 seconds until it rises. Given up, the error
+// carries `swapped`: the swap is not to be sent again, only the deposit.
 export async function fundWithEth({ prover, wallet, from, quote, say = () => {} }) {
+  const sp = prover.sp, read = () => tokenBalance(sp, prover.address).catch(() => null);
+  const before = await read();
   say('swap');
   const hashes = [await sendChecked({ wallet, from, tx: { to: ZROUTER, data: quote.callData, value: quote.msgValue }, say })];
-  const held = await tokenBalance(prover.sp, prover.address);
-  if (held < prover.sp.MIN_DEPOSIT_WEI) throw new Error('The swap landed, but its PROVE has not reached your Tacit account yet. Add PROVE again in a moment: PROVE already in the account is used first.');
+  const up = (v) => v != null && v >= sp.MIN_DEPOSIT_WEI && (before == null || v > before);
+  let held = await read();
+  for (let i = 0; i < 10 && !up(held); i++) { await new Promise((r) => setTimeout(r, 2000)); held = await read(); }
+  if (!up(held)) throw Object.assign(new Error('The swap landed, but its PROVE has not shown in your Tacit account yet. In a moment, press Add PROVE again: it deposits the PROVE already there, with no second swap.'), { swapped: hashes[0] });
   hashes.push(await depositHeld({ prover, wallet, from, amountWei: held, say }));
   return { hashes, deposited: held };
 }

@@ -4,7 +4,7 @@
 // size and a relay that will not take it (the front page sends it from the Tacit account) are the front page's: those link there. Nothing here is loaded until the holder asks: this module, the key, the pool and Bitcoin's history come in on that press.
 import { sha256, hmac, secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 import { makeKeySession, signInSheet } from '/trade/key.js?cb=26d9c07b';
-import { getUx, forgetUx } from '/trade/poolux.js?cb=b4055e46';
+import { getUx, forgetUx } from '/trade/poolux.js?cb=a64920c6';
 import { readLocks, readLoans, readHeld, readEngine, lockStep, ENGINE, WSTETH } from '/cbtc/read.js?cb=a6ce642d';
 import { makeLoans, exactNotes, bondGap, bondCall, outpointOf, lockPad, loanHealth, borrowAt, SAFE_RATIOS } from '/btc-borrow.js?cb=13923518';
 import { makeRunner } from '/activity.js?cb=8ccbc552';

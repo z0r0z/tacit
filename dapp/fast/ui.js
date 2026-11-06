@@ -289,30 +289,39 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
     if (!S.quote) return;
     if (S.cost && S.cost.short) { note(shortText(S.cost), true); return; }
     // a lock on Bitcoin is not taken back for about a day if the provider stops: the first press says so, the same press again goes
-    const key = `${S.quote.id}|${S.quote.btcValue}`, who = S.best && S.best.name ? S.best.name : 'the provider';
-    if (!(S.sure && S.sure.key === key && Date.now() - S.sure.at < 180e3)) {
-      S.sure = { key, at: Date.now() };
+    const sure = () => {
+      const who = S.best && S.best.name ? S.best.name : 'the provider';
+      S.sure = { key: `${S.quote.id}|${S.quote.btcValue}`, at: Date.now() };
       note(`${highFee(S.quote) ? `High fee: ${who} keeps ${fmtTac(S.quote.fee)} TAC (${pct(S.quote.fee, S.quote.btcValue)}). ` : ''}This locks ${fmtTac(S.quote.btcValue)} TAC on Bitcoin until ${who} has paid you ${fmtTac(S.quote.evmAmount)} private TAC in the pool, in about ${minutesFor(S.quote.minConfs)} minutes. If it does not, the lock returns to your address after about a day. Press again to bridge.`);
-      paintForm();
-      return;
-    }
+    };
+    if (!(S.sure && S.sure.key === `${S.quote.id}|${S.quote.btcValue}` && Date.now() - S.sure.at < 180e3)) { sure(); paintForm(); return; }
     S.sure = null;
     S.busy = true; note('Locking your TAC on Bitcoin…'); paintForm();
+    let again = false, quotes = S.quotes, fits = [];
     try {
       // a quote close to its end is asked for again, from every provider that gave one
       const soon = Math.floor(Date.now() / 1000) + 90;
-      let quotes = S.quotes;
       if (quotes.some((x) => Number(x.quote.validUntil) <= soon)) {
         const r = await S.sess.quoteAll(quotes.map((x) => x.provider), S.quote.btcValue);
         if (!r.quotes.length) throw new Error('the quote expired');
         quotes = pinFirst(r.quotes);
       }
-      await S.sess.start({ quotes });
+      // the first quote tried pays at least what the holder pressed for (a lower one, asked again, is shown and asks for one more press); the ones
+      // tried after it, should it not hold the amount, are those that pay as much or carry no high fee
+      const floor = BigInt(S.quote.evmAmount);
+      if (!quotes.length) throw new Error('the quote expired');
+      if (BigInt(quotes[0].quote.evmAmount) < floor) { S.quotes = quotes; S.quote = quotes[0].quote; S.best = quotes[0].provider; again = true; return; }
+      fits = quotes.filter((x) => BigInt(x.quote.evmAmount) >= floor || !highFee(x.quote));
+      await S.sess.start({ quotes: fits });
       if (S.want) { const pub = S.pub; S.want = null; S.told = false; clearInterval(S.watch); wants.stop(pub).catch(() => {}); }
       S.recs = await S.sess.records(); S.quotes = []; S.quote = null; S.best = null; S.amt = ''; $('fx-amt').value = '';
       note('Started. It is listed below, and each step is taken as Bitcoin confirms.');
       S.sess.balance().then((b) => { S.bal = b; paintForm(); }).catch(() => {});
-    } catch (e) { note(wording(e), true); } finally { S.busy = false; paint(); }
+    } catch (e) {
+      // those that pay as much cannot hold it: the next quote is shown, for one more press
+      const rest = /cannot hold that amount/.test(String((e && e.message) || e)) ? quotes.filter((x) => !fits.includes(x)) : [];
+      if (rest.length) { S.quotes = rest; S.quote = rest[0].quote; S.best = rest[0].provider; again = true; } else note(wording(e), true);
+    } finally { S.busy = false; paint(); if (again) { sure(); note(`The quote changed. ${S.note}`); paintForm(); } }
   }
   $('fx-go').addEventListener('click', go);
 

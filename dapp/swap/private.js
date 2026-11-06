@@ -7,8 +7,8 @@
 // relay proves and sends each step. Nothing here is loaded until the first private swap, or the first ask for a private balance; the key is
 // held in this visit's memory only.
 import { makeKeySession, signInSheet, Cancelled } from '/trade/key.js?cb=26d9c07b';
-import { forgetUx } from '/trade/poolux.js?cb=b4055e46';
-import { wrapEth, wrapFirst, wrapCalldata, settle, relayState, relayStopped, relayWords } from '/teth/wrap.js?cb=31e18c5c';
+import { forgetUx } from '/trade/poolux.js?cb=a64920c6';
+import { wrapEth, wrapFirst, wrapCalldata, settle, relayState, relayStopped, relayWords } from '/teth/wrap.js?cb=45873b34';
 import { wrapQuote, WRAP_TIP } from '/teth/read.js?cb=bf18d06a';
 import { secp, keccak_256, sha256, bytesToHex } from '/vendor/tacit-deps.min.js';
 import { makeRunner } from '/activity.js?cb=8ccbc552';
@@ -253,9 +253,16 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
   const declined = (e) => e?.code === 4001 || !!e?.userStopped || /user (rejected|denied)|rejected the request|denied transaction/i.test(String(e?.shortMessage || e?.message || e || ''));
   // One router transaction for a proof made before anything was deposited (a swap proved ahead, or a wrap kept ready): null when the router
   // would refuse it (a pool traded since, a wrap already sent), with nothing sent.
-  async function oneTx(ready, { wei, tip, to, from, wallet, say }) {
+  // `here`: on this computer a refusal is proved again only when the pool really traded; any other failure is the one shown. `unsent` runs when nothing went out.
+  async function oneTx(ready, { wei, tip, to, from, wallet, say, here = false, unsent = null }) {
     try { const r = await wrapFirst({ priv: () => key.priv(), wei, tip, to, from, wallet, say, ux: await getUx(), ready }); return r.already ? null : r; }
-    catch (e) { if (declined(e) || !e?.ready || e.sent) throw e; return null; }
+    catch (e) {
+      // (only when nothing can have gone out: a no in the wallet, a send that reverted, or a refusal before the wallet was asked; a wallet error may follow a send)
+      if (e?.ready && !e.sent && (declined(e) || e.reverted || e.unsent)) try { unsent?.(); } catch { }
+      if (declined(e) || !e?.ready || e.sent) throw e;
+      if (here && !(await stale({ r: ready }).catch(() => true))) throw e;
+      return null;
+    }
   }
   let vouchP = null;
   const vouchers = () => (vouchP ||= import('/wrap-vouchers.js?cb=c2a1a1dd').then((m) => m.makeVouchers()));
@@ -590,13 +597,16 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
         // (on this computer, a proof the pool traded past is made again at the new price, twice at most)
         for (let i = 0; i < (HERE ? 3 : 1); i++) {
           if (i) say('again');
+          let ownR = null;
           if (own) {
-            r = await ownProveSwap(plan, say).catch(() => null);
+            r = ownR = await ownProveSwap(plan, say).catch(() => null);
             mine = !!r && /^spn:/.test(String(r.proven?.jobId || ''));
           }
           // 1. proved ahead: one transaction, the wrap's tip and the swap's fee paid on top in ETH as the quote showed them
           if (!r && !relayDown) r = await aheadFor(plan, say);
-          one = r && await oneTx(r, { wei: plan.wei, tip: mine ? 0n : tq.tip + BigInt(plan.fee) * E10, to: mine ? null : tq.to, from, wallet, say });
+          // (an index this press reserved for its own proof is handed back when that proof's deposit never went out)
+          const unsent = ownR && Number.isInteger(ownR.built?.index) ? () => t.releaseWrapIndex?.({ walletPriv: key.priv(), ticker: 'cETH', index: ownR.built.index }) : null;
+          one = r && await oneTx(r, { wei: plan.wei, tip: mine ? 0n : tq.tip + BigInt(plan.fee) * E10, to: mine ? null : tq.to, from, wallet, say, here: HERE, unsent });
           if (one || !HERE || !r) break;
         }
         if (!one && relayDown) throw new Error('This private swap can’t start right now and your own prover could not prove it, so nothing was sent. Try again in a few minutes.');

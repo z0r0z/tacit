@@ -33,7 +33,8 @@ export function makeConfidentialRelay({ base, others = [], fetchImpl, guard, che
     try {
       if (!st || !st.jobId || typeof globalThis.dispatchEvent !== 'function' || typeof CustomEvent !== 'function') return;
       const detail = { jobId: st.jobId, type: st.type || jobTypes.get(st.jobId) || null, status: st.status || 'unknown',
-        txHash: st.txHash || null, error: st.error || null, lane: st.lane || null, sealed: !!st.sealed, at: Date.now(), ...(jobBy.get(st.jobId) ? { by: jobBy.get(st.jobId) } : {}) };
+        txHash: st.txHash || null, error: st.error || null, lane: st.lane || null, sealed: !!st.sealed, at: Date.now(), ...(jobBy.get(st.jobId) ? { by: jobBy.get(st.jobId) } : {}),
+        ...(st.proveOnly ? { proveOnly: true } : {}), ...(st.early ? { early: true } : {}), ...(st.stage ? { stage: st.stage } : {}) };
       globalThis.dispatchEvent(new CustomEvent('tacit:job', { detail }));
     } catch { }
   }
@@ -54,12 +55,14 @@ export function makeConfidentialRelay({ base, others = [], fetchImpl, guard, che
   }
 
   let stateAt = 0, stateLast = null, stateReading = null;
+  // (a read the relay never answers is given up, so one hung request does not hold every later read or a wait past its own limit)
+  const within = (ms) => (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function' ? { signal: AbortSignal.timeout(ms) } : undefined);
   async function state() {
     if (stateReading) return stateReading;
     if (stateAt && Date.now() - stateAt < 15_000) return stateLast;
     const read = async (at) => {
       try {
-        const res = await f(`${at}/confidential/relay`);
+        const res = await f(`${at}/confidential/relay`, within(10e3));
         if (!res.ok) return null;
         const b = JSON.parse(await res.text());
         if (!b || typeof b.state !== 'string') return null;
@@ -174,7 +177,7 @@ export function makeConfidentialRelay({ base, others = [], fetchImpl, guard, che
 
   async function status(jobId) {
     if (OWN_ID.test(String(jobId))) return ownJobs.get(jobId) || { jobId, status: 'unknown' };
-    const res = await f(`${jobRoot(jobId)}/confidential/status?id=${encodeURIComponent(bareId(jobId))}`);
+    const res = await f(`${jobRoot(jobId)}/confidential/status?id=${encodeURIComponent(bareId(jobId))}`, within(15e3));
     if (res.status === 404) return { jobId, status: 'unknown' };
     const body = await asJson(res);
     return body && body.jobId != null ? { ...body, jobId } : body;

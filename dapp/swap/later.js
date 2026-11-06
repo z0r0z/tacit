@@ -838,6 +838,43 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
     p.reclaimedAt = Date.now(); p.err = 'The deposit box was sent back to an address only your key controls.'; save(p);
     return { plan: p, hash: h, wei: held, to: refund };
   }
+  // A deposit box the card paid from the wallet into a pool's private balance (walletIntoGo), sent back once its deadline has passed: the router
+  // returns all of `token` it still holds (what is left above what the pool took; all of it, for a box the pool's relay never completed) to the
+  // intent's refund, the key's Tacit account. `rec`: { router, box, intent, token, reclaimTx?, reclaimAt? } as the card keeps it; `onSent(hash)`
+  // lets the card keep the hash before the wait, so a second press looks at that send and makes no other. → { hash, held, to }
+  async function reclaimIntoBox(rec, { onStep = () => {}, onSent = () => {} } = {}) {
+    const router = rec?.router, token = lc(rec?.token || ZERO);
+    if (!router || !rec?.box || !rec?.intent) throw new Error('This deposit box record is incomplete. Nothing was sent.');
+    if (rec.reclaimTx) {
+      const rc = await boxRead('eth_getTransactionReceipt', [rec.reclaimTx], { found: true }).catch(() => null);
+      if (rc && rc.status === '0x1') return { hash: rec.reclaimTx, held: BigInt(rec.reclaimHeld || 0), to: lc(rec.intent.refund), again: true };
+      if (!rc && Date.now() - (rec.reclaimAt || 0) < 30 * 60e3) throw new Error('The send-back is still being mined. Check again in a few minutes; nothing more was sent.');
+    }
+    const m = await mods(), args = boxArgs({ boxIntent: rec.intent }), refund = lc(rec.intent.refund), deadline = Number(rec.intent.deadline);
+    const at = '0x' + String(await boxRead('eth_call', [{ to: router, data: m.gw.calldata(`depositBoxOf(${DEPOSIT_SIG})`, [{ tuple: DEPOSIT_TUPLE }], [args]) }, 'latest'])).slice(-40);
+    if (lc(at) !== lc(rec.box)) throw new Error('This deposit box record does not match its box. Nothing was sent.');
+    const held = token === ZERO ? BigInt(await boxRead('eth_getBalance', [rec.box, 'latest']))
+      : BigInt(await boxRead('eth_call', [{ to: token, data: '0x70a08231' + lc(rec.box).replace(/^0x/, '').padStart(64, '0') }, 'latest']));
+    if (held === 0n) throw new Error('The deposit box holds nothing, so there is nothing to send back. Nothing was sent.');
+    if (secs() <= deadline) throw new Error(`The box can be sent back once its deadline has passed, in about ${Math.ceil((deadline - secs()) / 60) + 1} min. Nothing was sent.`);
+    const data = m.gw.calldata(`reclaimDeposit(${DEPOSIT_SIG},address)`, [{ tuple: DEPOSIT_TUPLE }, 'address'], [args, token]);
+    if (signer.ready) await signer.ready();
+    if (!signer.address) throw new Error('Connect a wallet to send it from.');
+    try { await (signer.rpc || boxRead)('eth_call', [{ from: signer.address, to: router, data }, 'latest']); }
+    catch (e) {
+      const d = revertData(e);
+      if (d.startsWith(NOT_EXPIRED)) throw new Error('The box’s deadline has not passed yet. Nothing was sent; try again in a few minutes.');
+      if (d.startsWith(NOTHING_TO_RECLAIM)) throw new Error('The deposit box holds nothing, so there is nothing to send back. Nothing was sent.');
+      if (!d && !e?.rpc) throw new Error('Could not check the send-back just now, so nothing was sent. Try again in a moment.');
+      throw new Error(`The router would refuse it: ${String(e?.message || e).slice(0, 120)}. Nothing was sent.`);
+    }
+    onStep('confirm in your wallet');
+    const h = await signer.send({ to: router, data, value: 0n });
+    onSent(h, held);
+    onStep('waiting for the block');
+    await mined(h, 'The send-back failed on chain, so the box still holds it. Nothing was returned.');
+    return { hash: h, held, to: refund };
+  }
 
   // How the wait goes: the notes the pool has made since the deposit (each deposit, payment, change and withdrawal makes one or two) and the time since.
   async function blend(plan) {
@@ -1017,5 +1054,5 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
     } finally { save(plan); }
   }
 
-  return { start, startBoxed, ahead, adopt, swapIntoPool, depositBoxFor, blend, offer, swapOut, shield, check, reclaimBox, boxHolds, forget, warm, modules: mods, hopOf, openPool, plans: () => readPlans(store), get proveMs() { return prover.ms; }, get proverReady() { return prover.ready; } };
+  return { start, startBoxed, ahead, adopt, swapIntoPool, depositBoxFor, blend, offer, swapOut, shield, check, reclaimBox, reclaimIntoBox, boxHolds, forget, warm, modules: mods, hopOf, openPool, plans: () => readPlans(store), get proveMs() { return prover.ms; }, get proverReady() { return prover.ready; } };
 }

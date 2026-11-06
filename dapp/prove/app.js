@@ -44,11 +44,16 @@ async function readLocal() {
   if (mine?.miner && !$('#addr').value) { $('#addr').value = mine.miner; addressChanged(); }
 }
 
+let pointsFor = null;
 async function readRemote() {
   const a = addr();
   const [m, t] = await Promise.all([get(`${POINTS}/mine${a ? `?address=${a.toLowerCase()}` : ''}`), get(`${API}/prover/pool/credits?day=${utcDay()}`)]);
   if (a !== addr()) return;
-  points = m; tally = t ? { ...t, miners: (t.miners || []).map(cleanMiner).filter(Boolean) } : t;
+  // A read that fails keeps what the last one said for the same address, so one missed answer does not blank the TAC figures.
+  const same = a === pointsFor;
+  pointsFor = a;
+  points = m || (same ? points : null);
+  tally = t ? { ...t, miners: (t.miners || []).map(cleanMiner).filter(Boolean) } : same ? tally : null;
   paintNet(); paintFeed(); paintDetail(); paintGpu();
 }
 
@@ -57,6 +62,8 @@ async function readChain() {
   const c = await get(`${API}/prover/blocks?limit=${SHOW}`);
   if (!c?.blocks) { $('#chain').hidden = !blocks.length; return; }
   c.blocks = c.blocks.map(cleanBlock).filter(Boolean);
+  // No blocks yet (or none that read as one): the strip stays as it is.
+  if (!c.blocks.length) { $('#chain').hidden = !blocks.length; return; }
   if (c.head) c.head.ethHead = Number.isSafeInteger(Number(c.head.ethHead)) ? Number(c.head.ethHead) : null;
   if (c.head?.ethHead != null) ethHead = c.head.ethHead;
   // An API from before the tip carried Ethereum's head: the settle index says it, read at most once a minute.
@@ -66,7 +73,7 @@ async function readChain() {
   const xcNew = xc.map((x) => x.digest).join() !== cross.map((x) => x.digest).join();
   cross = xc;
   const add = fresh(c.blocks, shownTop);
-  if (!add.length && shownTop != null) { if (xcNew) paintChain(new Set()); return; }
+  if (!add.length && shownTop != null) { if (xcNew) paintChain(new Set()); else paintAges(); return; }
   const first = shownTop == null;
   blocks = [...add, ...blocks].slice(0, SHOW);
   shownTop = blocks[0]?.height ?? shownTop;
@@ -84,7 +91,7 @@ const cleanCross = (x) => (x && HEX32B.test(String(x.digest)) && count(x.bitcoin
     house: x.by?.house === true, miner: cleanAddress(x.by?.miner)?.toLowerCase() || null } : null);
 function crossTile(x) {
   const what = `Bitcoin to ${x.bitcoin.toLocaleString('en-US')}${x.slot ? `, Ethereum slot ${x.slot.toLocaleString('en-US')}` : ''}`;
-  const body = `<span class="cube"><span class="glyph" aria-hidden="true">₿</span></span><span class="h num">₿ ${x.bitcoin.toLocaleString('en-US')}</span><span class="o"><span class="k k-xc">Cross-chain</span>${byOf(x) || ''}</span><span class="t">${esc(blockAgo(x.ethBlock, ethHead) || '')}</span>`;
+  const body = `<span class="cube"><span class="glyph" aria-hidden="true">₿</span></span><span class="h num">₿ ${x.bitcoin.toLocaleString('en-US')}</span><span class="o"><span class="k k-xc">Cross-chain</span>${byOf(x) || ''}</span><span class="t" data-eb="${x.ethBlock}">${esc(blockAgo(x.ethBlock, ethHead) || '')}</span>`;
   return `<li class="blk xc" title="${esc(what)}">${x.tx ? `<a href="https://etherscan.io/tx/${esc(x.tx)}" target="_blank" rel="noopener noreferrer" aria-label="Cross-chain block: ${esc(what)}">${body}</a>` : body}</li>`;
 }
 
@@ -108,7 +115,15 @@ function settleTile(b, landing) {
     const c = cells(b), mineB = b.prover && b.prover === me();
     return `<li class="blk${b.prover ? ' won' : ''}${b.house ? ' gpu' : ''}${mineB ? ' mine' : ''}${landing.has(b.height) ? ' new' : ''}" data-h="${b.height}" aria-current="${picked === b.height}">
       <button type="button" aria-label="Block ${b.height}, ${esc(kindText(b))}, ${esc(opsText(b))}"><span class="cube">${c.cells.map((k) => `<i class="${k}"></i>`).join('')}${b.house || b.prover ? `<span class="badge">${face(b.house ? null : b.prover, 26)}</span>` : ''}</span>
-      <span class="h num">#${b.height.toLocaleString('en-US')}</span><span class="o"><span class="k k-${kindOf(b)}">${esc(kindText(b))}</span>${byOf(b) || ''}</span><span class="t">${esc(blockAgo(b.ethBlock, ethHead) || '')}</span></button></li>`;
+      <span class="h num">#${b.height.toLocaleString('en-US')}</span><span class="o"><span class="k k-${kindOf(b)}">${esc(kindText(b))}</span>${byOf(b) || ''}</span><span class="t" data-eb="${b.ethBlock}">${esc(blockAgo(b.ethBlock, ethHead) || '')}</span></button></li>`;
+  }
+}
+
+// Between new blocks the tiles' ages move on with Ethereum's head, written in place (the strip is not drawn again).
+function paintAges() {
+  for (const t of $('#chain').querySelectorAll('.t[data-eb]')) {
+    const s = blockAgo(Number(t.dataset.eb), ethHead) || '';
+    if (t.textContent !== s) t.textContent = s;
   }
 }
 
@@ -220,8 +235,9 @@ function paint() {
   }
   const go = $('#go');
   go.hidden = !h.button;
-  go.textContent = h.button || '';
+  go.textContent = other() ? 'Pay to this address' : h.button || '';
   go.disabled = busy;
+  paintMe();
   // the setup line also updates a node from before salt mining (its /mine has no `salt`)
   const setup = $('#setup'), words = setupText(os);
   setup.hidden = state !== 'none' && state !== 'old' && !(mine && !('salt' in mine));
@@ -255,9 +271,14 @@ function paint() {
   paintSalt();
 }
 
+// The address this computer's prover pays while it is on, when that is not the one in the field: the node says so, and its button moves it.
+const other = () => { const m = mine?.on ? cleanAddress(mine.miner) : null; return m && me() && m.toLowerCase() !== me() ? m : null; };
+let meShown = null;
 function paintMe() {
-  const a = addr(), el = $('#me');
-  el.innerHTML = a ? `${face(a, 40)}<span>${esc(short(a))}</span>` : '';
+  const a = addr(), o = other(), el = $('#me');
+  if (meShown === `${a}|${o}`) return;                             // drawn again only when it changes, so the invader keeps marching
+  meShown = `${a}|${o}`;
+  el.innerHTML = o ? `${face(o, 40)}<span>This computer pays ${esc(short(o))}</span>` : a ? `${face(a, 40)}<span>${esc(short(a))}</span>` : '';
 }
 
 function addressChanged() {
@@ -272,7 +293,8 @@ function addressChanged() {
 }
 
 async function toggle() {
-  const on = !mine?.on, a = addr();
+  // Paying another address, the button moves this computer to the field's: a Start with that address.
+  const sw = !!other(), on = sw || !mine?.on, a = addr();
   if (on && !a) { $('#addr').focus(); say('Enter the address the TAC goes to.', true); return; }
   busy = true; paint();
   try {
@@ -280,7 +302,7 @@ async function toggle() {
     const j = await r.json().catch(() => null);
     if (!r.ok) throw new Error(j?.error || `tacit-prover answered ${r.status}`);
     mine = j;
-    say(on ? 'Started. The first proof on this computer downloads 6.2 GB first.' : (mine.job ? 'Pausing after the proof under way.' : 'Paused.'));
+    say(sw ? `This computer now pays ${short(a)}.` : on ? 'Started. The first proof on this computer downloads 6.2 GB first.' : (mine.job ? 'Pausing after the proof under way.' : 'Paused.'));
   } catch (e) { say(e.message || 'tacit-prover did not answer.', true); }
   busy = false; paint();
 }
@@ -363,7 +385,7 @@ async function copy() {
 // The Relay and Bitcoin tabs' code (the wallet, the header relay, the board's settles) is most of the page's weight and most visitors never
 // open those tabs, so it loads when one opens, when the wallet chip is pressed, or once the page has settled.
 let opsLoad = null;
-const loadOps = () => (opsLoad ||= import('/prove/ops.js?cb=77e027d4'));
+const loadOps = () => (opsLoad ||= import('/prove/ops.js?cb=b158c34d'));
 $('#wallet').addEventListener('click', async (e) => {
   if (opsLoad) return;                                             // loaded: ops.js has its own handler on the chip
   e.preventDefault();
@@ -437,7 +459,8 @@ $('#chain').addEventListener('click', (e) => {
 
 try { const saved = localStorage.getItem(SAVED_ADDR); if (cleanAddress(saved)) $('#addr').value = saved; } catch {}
 paintMe();
-const loop = (fn, ms, idle) => { const run = async () => { await fn(); setTimeout(run, document.hidden ? idle : ms); }; run(); };
+// One read that throws is let go: the next goes on at its time.
+const loop = (fn, ms, idle) => { const run = async () => { try { await fn(); } catch {} setTimeout(run, document.hidden ? idle : ms); }; run(); };
 // The chain every six seconds, the pool and the feed every ten, the points service every half minute.
 loop(readChain, 6000, 30000);
 loop(readFeed, 10000, 60000);

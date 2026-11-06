@@ -59,12 +59,15 @@ function checksumOk(a) {
 }
 
 const kept = new Map();
-function keep(key, make) {
+// (a read is shared while it is fresh, but not one whose signal a later lookup aborted: that one ends as a failed read; and a read that fails
+// takes out only its own entry, not a newer one)
+function keep(key, make, signal = null) {
   const hit = kept.get(key);
-  if (hit && Date.now() - hit.at < KEEP) return hit.p;
+  if (hit && Date.now() - hit.at < KEEP && !hit.signal?.aborted) return hit.p;
   const p = make();
-  kept.set(key, { at: Date.now(), p });
-  p.then((v) => { if (v == null || v.reason === 'error' || v.error) kept.delete(key); }, () => kept.delete(key));
+  kept.set(key, { at: Date.now(), p, signal });
+  const drop = () => { if (kept.get(key)?.p === p) kept.delete(key); };
+  p.then((v) => { if (v == null || v.reason === 'error' || v.error) drop(); }, drop);
   return p;
 }
 
@@ -104,7 +107,7 @@ function readPoints(address, signal) {
       today = { points: pts, pct: pts / all * 100, tac: own ?? (prog ? (prog.cap != null && mp * prog.cap / 1000000n < share ? mp * prog.cap / 1000000n : share) : null) };
     }
     return { points: Number(p.points) || 0, earned, claimed, owed: c?.proof && earned > claimed ? earned - claimed : 0n, unread: paid === null && earned > 0n, today, clock: prog && prog.programDay <= prog.programDays ? { day: prog.programDay, days: prog.programDays, settleAt: prog.settleAt } : null };
-  });
+  }, signal);
 }
 const readAirdrop = (address) => keep(`airdrop:${address}`, () => air.status(address));
 
@@ -282,6 +285,7 @@ async function signedIn(address) {
 }
 async function pointsTx(address) {
   const attempt = async (c) => {
+    if (!c) throw new Error('Could not read your claim just now. Nothing was sent: try again in a moment.');
     const proof = c?.proof;
     if (!proof?.length || !c.cumulativeAmount) throw new Error('Nothing left to claim here.');
     const data = `0x2f52ebb7${word(c.cumulativeAmount)}${word(64)}${word(proof.length)}${proof.map((h) => h.replace(/^0x/, '').padStart(64, '0')).join('')}`;
@@ -399,7 +403,7 @@ function paintPrivate(list) {
 // The holder's own private positions (rewards/farms.js): loaded on the first press, so the page reads nothing more until then
 const pickProvider = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : list[0]?.uuid; };
 let farmsP = null;
-const openFarms = () => (farmsP ||= import('/rewards/farms.js?cb=9c8700e4').then((m) => { const f = m.mountFarms($('#pf-mine'), { pick: pickProvider, names: () => new Map(PRIV.map((x) => [x.pid, x.name])), pair: (pid) => { const icons = PRIV.find((x) => String(x.pid) === String(pid))?.icons || []; return icons.length ? pairIcons(icons) : ''; }, program: () => PROG, wallet, W, connect: () => connect.connect() }); $('#pf-mine [data-pf="open"]')?.click(); return f; })
+const openFarms = () => (farmsP ||= import('/rewards/farms.js?cb=6d02c021').then((m) => { const f = m.mountFarms($('#pf-mine'), { pick: pickProvider, names: () => new Map(PRIV.map((x) => [x.pid, x.name])), pair: (pid) => { const icons = PRIV.find((x) => String(x.pid) === String(pid))?.icons || []; return icons.length ? pairIcons(icons) : ''; }, program: () => PROG, wallet, W, connect: () => connect.connect() }); $('#pf-mine [data-pf="open"]')?.click(); return f; })
   .catch((err) => { farmsP = null; console.warn('your positions:', err?.message || err); }));
 $('#pf-mine').addEventListener('click', (e) => {
   if (farmsP || !e.target.closest('[data-pf="open"]')) return;

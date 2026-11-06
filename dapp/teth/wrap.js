@@ -1,4 +1,4 @@
-import { getUx, forgetUx } from '/trade/poolux.js?cb=b4055e46';
+import { getUx, forgetUx } from '/trade/poolux.js?cb=a64920c6';
 import { WRAP_TIP, WRAP_WITH_TIP, CETH_ID, POOL } from '/teth/read.js?cb=bf18d06a';
 import { strip, word, rpc, ethCall, api, E10 } from '/trade/util.js?cb=e8317464';
 
@@ -89,7 +89,7 @@ export async function wrapFirst({ priv, wei, tip = 0n, to = null, from, wallet, 
   try { await rpc('eth_call', [{ from, to: call.to, value: '0x' + call.value.toString(16), data: call.data }, 'latest']); }
   catch (e) {
     if (await consumed(r.built)) return { hash: null, built: r.built, already: true };
-    throw Object.assign(new Error(e?.revert ? 'The deposit would not go through, so nothing was sent. Try again in a moment.' : 'The deposit could not be checked, so nothing was sent. Try again in a moment.'), { ready: r });
+    throw Object.assign(new Error(e?.revert ? 'The deposit would not go through, so nothing was sent. Try again in a moment.' : 'The deposit could not be checked, so nothing was sent. Try again in a moment.'), { ready: r, unsent: true });   // (refused before the wallet was asked)
   }
   say('confirm');
   let hash;

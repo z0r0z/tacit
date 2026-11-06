@@ -1924,7 +1924,9 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   async function farmUnbond({ walletPriv, position, forfeitPending = false, selfSettle = null, waitOpts } = {}) {
     const farm = _farmCfg();
     const rc = await _farmReceipt({ walletPriv, position });
-    if (rc.cur.unlockAt > Math.floor(Date.now() / 1000)) throw new Error(`farm-unbond: locked until ${rc.cur.unlockAt}`);
+    // the bond is over by the chain's clock (the pool's check), not the device's
+    const chainSecs = await rpc('eth_getBlockByNumber', ['latest', false]).then((b) => Number(BigInt(b.timestamp))).catch(() => Math.floor(Date.now() / 1000));
+    if (rc.cur.unlockAt > chainSecs) throw new Error(`farm-unbond: locked until ${rc.cur.unlockAt}`);
     const pendingUnits = BigInt(rc.cur.pendingUnits || 0);
     if (!forfeitPending && pendingUnits > FARM_UNBOND_DUST_UNITS) {
       throw new Error(`farm-unbond: ${pendingUnits} reward units are still pending and would be forfeited; harvest first, or pass forfeitPending: true`);
@@ -2885,9 +2887,10 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const { op: lockOp, memo, built } = _stealthBuild({ id, recipientPubHex, note, asset: note.asset, amount: BigInt(note.value), deadline });
     const t = buildTransferOp({ walletPriv, notes: [feeNote], recipientPubHex: id.pubHex, amount: BigInt(feeNote.value) - BigInt(fee), fee: BigInt(fee), feeUsd: null });
     guard.assertOutputsRecoverable({ leaves: t.leaves, outputs: t.outputs, memos: t.memos });
-    const r = await proveBatch([{ type: 'stealthlock', op: lockOp, memos: [memo] }, { type: 'transfer', op: t.op, memos: t.memos }], { onUpdate });
+    // the transfer goes first: the pool pairs memos with the note leaves first and the lock leaves after them, and the guest commits them in op order
+    const r = await proveBatch([{ type: 'transfer', op: t.op, memos: t.memos }, { type: 'stealthlock', op: lockOp, memos: [memo] }], { onUpdate });
     if (!r || !r.publicValues) throw new Error('lockForAnyone: no proof');
-    return { type: 'stealthlock', note, proven: { publicValues: r.publicValues, proof: r.proof }, memos: [memo, ...t.memos], built, deadlineMs: 0 };
+    return { type: 'stealthlock', note, proven: { publicValues: r.publicValues, proof: r.proof }, memos: [...t.memos, memo], built, deadlineMs: 0 };
   }
   async function _postAhead(type, a, { waitOpts } = {}) {
     // a refusal (the pool would not take it now: its note spent, its pools traded) comes back as an error or as an answer with no job: either way nothing was posted
@@ -3246,8 +3249,9 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // The press: the proof made ahead is posted for the relay to send, then waited for as a relayed exit is, the change note's memo checked.
   async function exitAheadSend(a, { walletPriv, waitOpts } = {}) {
     const memos = a.proven.memos || a.memos || [];
-    const posted = await relay.postProof({ type: a.type, publicValues: a.proven.publicValues, proof: a.proven.proof, memos });
-    if (!posted || !posted.jobId) throw new Error((posted && posted.error) || 'the relay would not take the proof made ahead');
+    // a refusal comes back as an error (a 4xx/429/503) or as an answer with no job: either way nothing was posted, and the exit can go the usual way
+    const posted = await relay.postProof({ type: a.type, publicValues: a.proven.publicValues, proof: a.proven.proof, memos }).catch((e) => ({ error: String(e && e.message || e) }));
+    if (!posted || !posted.jobId) throw Object.assign(new Error((posted && posted.error) || 'the relay would not take the proof made ahead'), { notPosted: true });
     const st = await waitForExit({ walletPriv, note: a.note, jobId: posted.jobId, waitOpts });
     let landed = st;
     if (!landed.txHash && landed.status === 'settled') {
