@@ -10,7 +10,7 @@
 // campaign's daily amount over its most a point earns), up to pointsPerDay: proofs come first, and the salts fill the rest. They are
 // shared between the day's miners by weight once the day is
 // over (GET /prover/salt/credits, which the points service pays from beside the proof pool's tally): more machines share the same points,
-// so what a day costs never grows with them. Salts at least bankBits good are kept (GET /prover/salt/bank): the addresses Tacit deploys
+// so what a day costs never grows with them. The best bankKeep salts found (at least bankBits good) are kept (GET /prover/salt/bank): the addresses Tacit deploys
 // its next contracts to. Tacit's own machines (SALT_HOUSE, the deployer by default) are counted as grinding and banked, and never share the points.
 //
 // Who is grinding now (every address that sent shares in the last liveMs, Tacit's own named so) and how fast the network grinds (the shares
@@ -28,7 +28,7 @@ export const SALT_POOL = Object.freeze({
   maxWeightBits: 20,
   pointsPerDay: 1_000_000,  // POINTS_SALT_DAILY: the most a day's salts may share (by default no less than the whole pot)
   potPoints: 5000,          // the campaign's daily points when its terms cannot be read (50 TAC at 0.01 TAC a point)
-  bankBits: 40,             // SALT_BANK_BITS: five zero bytes and better are kept for deploys
+  bankBits: 32,             // SALT_BANK_BITS: the best bankKeep salts at least this good (four zero bytes) are kept for deploys
   bankKeep: 64,
   perCall: 64,              // salts one send may carry
   sendEveryMs: 20_000,      // one send per client this often
@@ -108,7 +108,7 @@ export function makeSaltPool({ kv, cfg = SALT_POOL, now = () => Date.now(), lock
         await write(`sl:seen:${raw}`, { miner, at: t }, cfg.seenSecs);
         const w = 2 ** Math.min(bits - cfg.minBits, cfg.maxWeightBits);
         accepted++; weight += w;
-        if (!rec.best || bits > rec.best.bits) rec.best = { address, bits };
+        if (!rec.best || bits > rec.best.bits) rec.best = { address, bits, salt: raw };
         if (bits >= cfg.bankBits) banked.push({ salt: raw, address, bits, miner, at: t, ...(house ? { house: true } : {}) });
       }
       if (accepted) {
@@ -117,9 +117,12 @@ export function makeSaltPool({ kv, cfg = SALT_POOL, now = () => Date.now(), lock
           await write(`sl:m:${day}:${miner}`, rec, cfg.daySecs);
           if (wasNew) { const list = await read(`sl:miners:${day}`, []); if (!list.includes(miner)) { list.push(miner); await write(`sl:miners:${day}`, list, cfg.daySecs); } }
         }
+        // The bank is the best bankKeep salts found so far: it is written only when one of these enters it, so once it is full it
+        // changes only on a better find.
         if (banked.length) {
-          const bank = [...await read('sl:bank', []), ...banked].sort((a, b) => b.bits - a.bits || a.at - b.at).slice(0, cfg.bankKeep);
-          await write('sl:bank', bank);
+          const old = await read('sl:bank', []);
+          const bank = [...old, ...banked].sort((a, b) => b.bits - a.bits || a.at - b.at).slice(0, cfg.bankKeep);
+          if (bank.some((b) => banked.includes(b))) await write('sl:bank', bank);
         }
         const live = Object.fromEntries(Object.entries(await read('sl:live', {})).filter(([, v]) => t - v.at < cfg.liveMs));
         live[miner] = { at: t, ...(house ? { house: true } : {}) };

@@ -127,3 +127,21 @@ test('the salts share what the day\'s proofs leave of the campaign\'s daily poin
   const blind = makeSaltPool({ kv, cfg: SALT_POOL, now: () => t, potPoints: async () => { throw new Error('down'); }, proofPoints: async () => 0 });
   assert.equal((await blind.credits(500)).body.pointsPerDay, SALT_POOL.potPoints, 'the campaign\'s terms unread: the default pot');
 });
+
+test('the bank is the best salts found so far, capped: a better find enters it, a weaker one once it is full does not; each miner keeps its best salt', async () => {
+  let t = 600 * DAY + 1000;
+  const kv = kvStore(), writes = [];
+  const put = kv.put; kv.put = async (k, v, o) => { if (k === 'sl:bank') writes.push(k); return put(k, v, o); };
+  const pool = makeSaltPool({ kv, cfg: { ...SALT_POOL, minBits: 8, bankBits: 9, bankKeep: 2, sendEveryMs: 0 }, now: () => t });
+  const a = grind(600, 11), b = grind(600, 12), weak = (() => { for (;;) { const g = grind(600, 9); if (g.bits < 11) return g; } })();
+  await pool.submit({ miner: A, salts: [a.salt, b.salt], client: 'c1' });
+  assert.equal(writes.length, 1);
+  await pool.submit({ miner: A, salts: [weak.salt], client: 'c1' });
+  assert.equal(writes.length, 1, 'a weaker find than the full bank holds writes nothing');
+  assert.deepEqual((await pool.bank()).body.bank.map((x) => x.salt).sort(), [a.salt, b.salt].sort());
+  const better = grind(600, Math.max(a.bits, b.bits) + 1);
+  await pool.submit({ miner: B, salts: [better.salt], client: 'c2' });
+  assert.equal(writes.length, 2);
+  assert.ok((await pool.bank()).body.bank.some((x) => x.salt === better.salt), 'a better one enters');
+  assert.equal(JSON.parse(kv.m.get(`sl:m:600:${A}`)).best.salt, [a, b].sort((x, y) => y.bits - x.bits)[0].salt, 'the miner\'s best is kept with its salt');
+});
