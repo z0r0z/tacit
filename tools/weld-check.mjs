@@ -3303,7 +3303,7 @@ await step('bridge', async () => {
   await until(r.page, () => document.querySelector('#hx-go')?.textContent === 'Bridge TAC from Bitcoin', null, 120000);
   const hxBtc = (await text(r.page, '#hx-body')).replace(/\s+/g, ' '), btcSaid = await r.page.evaluate(() => window.__said());
   await shot(r.page, 'hx-bitcoin');
-  ok(/Bridge TAC from Bitcoin/.test(hxBtc) && /Limit: 1,000 TAC a bridge/.test(btcSaid) && !/relay fee/i.test(hxBtc) && /Bitcoin fee: in sats/.test(btcSaid) && /Time: a few hours, at most a day/.test(btcSaid), `bridge: the landing card's TAC-from-Bitcoin way says what the one-step bridge costs, the most one bridge takes and how long it takes, as the Bridge tab does (${hxBtc.slice(0, 200)})`);
+  ok(/Bridge TAC from Bitcoin/.test(hxBtc) && /Limit: 1,000 TAC a bridge/.test(btcSaid) && !/relay fee/i.test(hxBtc) && /Bitcoin fee: (in sats|about [\d,]+ sats)/.test(btcSaid) && /Time: (a few hours, at most a day|about \d+ hours)/.test(btcSaid), `bridge: the landing card's TAC-from-Bitcoin way says what the one-step bridge costs, the most one bridge takes and how long it takes, as the Bridge tab does (${hxBtc.slice(0, 200)})`);
   // A signed-in key also sees what the Bridge tab lists, read when the tab opens: the stubbed notes (250, 1,500, 30 and 40 TAC), the
   // three that can be picked (the Bridge tab checks each one's proof when it is picked), the one over the limit, and the bridges under way (four, two of them waiting for a press from the holder).
   await until(r.page, () => /1,820 TAC on Bitcoin, in 4 notes/.test(document.querySelector('#hx-have')?.textContent || ''), null, 240000);
@@ -3617,7 +3617,7 @@ await step('fastroute', async () => {
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | go: ${await text(r.page, '#hx-go')} | alt: ${await text(r.page, '#hx-alt')} | q: ${await text(r.page, '#hx-q')} | rc: ${(await text(r.page, '#hx-receipt')).replace(/\s+/g, ' ')}`); });
     const regSteps = (await r.page.$$eval('.hx-brs li', (xs) => xs.map((x) => x.textContent.replace(/\s+/g, ' ').trim()))).join(' > ');
     ok(regSteps === 'Burned on Bitcoin > Confirmed > Proven on Ethereum > Minted privately', `fastroute: and the regular bridge has its steps back (${regSteps})`);
-    ok((await text(r.page, '#hx-go')) === 'Bridge TAC from Bitcoin' && /Time\s*usually within a few hours/.test((await text(r.page, '#hx-receipt')).replace(/\s+/g, ' ')), 'fastroute: the regular bridge is one press away, checks the note as it always did, says its own time, and offers the fast one back');
+    ok((await text(r.page, '#hx-go')) === 'Bridge TAC from Bitcoin' && /Time\s*(a few hours, at most a day|about \d+ hours)/.test((await text(r.page, '#hx-receipt')).replace(/\s+/g, ' ')), 'fastroute: the regular bridge is one press away, checks the note as it always did, says its own time, and offers the fast one back');
     // a note no provider takes keeps the regular bridge, and says why the fast one was not offered
     await rowClick(r.page, `#hx-routes [data-hxr="${N2}:0"]`);
     await until(r.page, () => /Fast bridge\s*providers take 100 to 1,000 TAC now/.test((document.querySelector('#hx-receipt')?.textContent || '').replace(/\s+/g, ' ')), null, 240000)
@@ -9627,7 +9627,7 @@ await step('hxout', async () => {
     await until(p, () => document.querySelector('#hx-out')?.textContent === '21' && /Cuts a note/.test(window.__said()), null, 240000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | said: ${await said(p).catch(() => '?')} | out: ${await text(p, BRG.out).catch(() => '?')} | dash: ${(await text(p, '#dash-g').catch(() => '?')).replace(/\s+/g, ' ').slice(0, 200)}`); });
     const line = await said(p);
-    ok(line === 'Arrives: 21 TAC on Bitcoin | Relay fee: 4 TAC | Cuts a note: 2 TAC first | Bitcoin fee: in sats, from your Bitcoin address | Limits: 20 to 1,000 TAC a bridge | Time: a few hours, at most a day', `hxout: 25 TAC arrives as 21 (the relay's 4 TAC floor, 8 TAC if it has moved), the cut of a note this size said, the limits said (${line})`);
+    ok(/^Arrives: 21 TAC on Bitcoin \| Relay fee: 4 TAC \| Cuts a note: 2 TAC first \| Bitcoin fee: (in sats, from your Bitcoin address|about [\d,]+ sats( \(\$[\d.]+\))?) \| Limits: 20 to 1,000 TAC a bridge \| Time: (a few hours, at most a day|longer than usual: the proof is about \d+ hours behind)$/.test(line), `hxout: 25 TAC arrives as 21 (the relay's 4 TAC floor, 8 TAC if it has moved), the cut of a note this size said, the limits said (${line})`);
     await sheetsSeen(p);
     await p.click(BRG.go);
     await until(p, () => (document.querySelector('#hx-ss')?.textContent || '').trim() !== '', null, 240000)
@@ -9664,7 +9664,7 @@ await step('hxout', async () => {
     await until(p, () => /tETH a bridge/.test(window.__said()) && document.querySelector('#hx-go')?.textContent === 'Bridge tETH to Bitcoin', null, 240000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | card: ${await body()}`); });
     const tethLine = await said(p);
-    ok(/Relay fee: [\d.]+ tETH \| Bitcoin fee: in sats, from your Bitcoin address \| Limits: [\d.]+ to [\d.]+ tETH a bridge \| Time: a few hours, at most a day/.test(tethLine) && !/TAC/.test(tethLine), `hxout: tETH is quoted as tETH, in its own words, with the time the sheet gives (${tethLine.slice(0, 160)})`);
+    ok(/Relay fee: [\d.]+ tETH \| Bitcoin fee: (in sats, from your Bitcoin address|about [\d,]+ sats( \(\$[\d.]+\))?) \| Limits: [\d.]+ to [\d.]+ tETH a bridge \| Time: (a few hours, at most a day|longer than usual: the proof is about \d+ hours behind)/.test(tethLine) && !/TAC/.test(tethLine), `hxout: tETH is quoted as tETH, in its own words, with the time the sheet gives (${tethLine.slice(0, 160)})`);
     await bridgeTo(p, 'tac', '25');
     await until(p, () => /Limits: 20 to 1,000 TAC a bridge/.test(window.__said()), null, 120000);
     const tacLine = await said(p);

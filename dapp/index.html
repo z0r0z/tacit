@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-xdFvnw2bzwCyz6r+clFwpJyP4WEDhjZpyds+kZ2vIO8=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-Q0aFIggWCLfpD+RvaePW9Hgp8o38ZL1vxl8Y0HYYYy4=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -1941,7 +1941,7 @@ import { UNBOND_DUST, HARVEST_WORTH, unharvested, bFor, aFor, farmManager, ladde
 import { relayCode, proveCapped, proved, relayRefused, jobSaid, calmText } from '/relay-outcome.js?cb=9db7155a';
 import { makeLoans, bondGap, lockPad as lockPadOf } from '/btc-borrow.js?cb=13923518';
 import { makeOutFee, limitText, proofWarn, fundingText, onTheWay } from '/bridge-out.js?cb=ecf49203';
-import { ROUTES as BR_WAYS } from '/bridge/track.js?cb=616e7608';
+import { ROUTES as BR_WAYS, LIMITS as BR_LIMITS, satsOut, satsBack } from '/bridge/track.js?cb=616e7608';
 import { SERVED as SERVED_POOLS, keeperIdOf, makeTokenPools, KEEPERS as POOL_KEEPERS, RELAYER as POOL_RELAYER } from '/evm-pool-tokens.js?cb=a3c182f7';
 import { bridgeError, checkText, listNotes as listBridgeNotes, begin as beginBridge, toSelf as noteToSelf, through as brThrough, transfers as brTransfers, longCount as brLongCount, longReason as brLongReason, needsSend as brNeedsSend, firstStep as brFirst, overCap as brOver, haltText as bridgeHaltText, halts as brHalts, mergeSend, startNote, tryAgain, bulkFee, prepsAfterPass, runMerge as bridgeRunMerge, runAll as bridgeRunAll } from '/bridge-in.js?cb=4a6878a3';
 import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverEvery, IN_DONE, IN_HELD, IN_BURN_SENT, waitRanOut } from '/bridge-tick.js?cb=b9adb91d';
@@ -14082,6 +14082,34 @@ const hxBrSources = () => Object.keys(HX_BR).filter((k) => hxWays(k).includes(HX
 const hxBrTo = (sf) => (HX_BR[sf] === 'btc' ? 'bitcoin' : 'private');
 const HX_BR_ASSET = { tb: 'teth', eth: 'teth', ether: 'teth', cbtc: 'cbtc', kb: 'cbtc', cusd: 'cusd', ub: 'cusd', wusdt: 'cusdt', cusdt: 'cusdt', ut: 'cusdt' };
 const hxBrSteps = (sf) => BR_WAYS[HX_BR_ASSET[sf] || 'tac'][HX_BR[sf] === 'btc' ? 'out' : 'in'].steps;
+// What one bridge to Bitcoin takes while the bridge is new, from the bridge page's table (tests/bridge-track.test.mjs holds it to crossout-ux's),
+// so a quote names it without loading tacit.js, which builds the bridge itself only once it is pressed
+const xoLim = (a) => { const l = BR_LIMITS[a.key]?.out; return l ? { minRaw: l.min || 0n, capRaw: l.max } : null; };
+// What a bridge's Bitcoin side costs and takes now, for its receipt: Bitcoin's fastest fee rate (the one its Bitcoin step is priced at) and how far
+// Bitcoin's proof on Ethereum is behind Bitcoin's tip, read at most every five minutes. A row whose figure is not known keeps its plain words.
+const BRX = { rate: null, confs: 24, lag: null, at: 0, p: null };
+const brxFresh = () => Date.now() - BRX.at < 300e3;
+function brxRead() {
+  if (BRX.p || brxFresh()) return BRX.p || Promise.resolve();
+  const status = fetch(`${API}/reflection/status?network=mainnet`, { signal: within(20e3) }).then((r) => (r.ok ? r.json() : null));
+  return (BRX.p = Promise.all([
+    esplora('/v1/fees/recommended').then((f) => { if (Number(f?.fastestFee) > 0) BRX.rate = Number(f.fastestFee); }),
+    Promise.all([status, esplora('/blocks/tip/height').catch(() => null)]).then(([s, tip]) => {
+      if (Number.isInteger(s?.confirmations)) BRX.confs = s.confirmations;
+      const h = Math.max(Number(tip) || 0, Number(s?.tipHeight) || 0);
+      if (Number.isInteger(s?.attestedHeight) && h) BRX.lag = Math.max(0, h - s.attestedHeight);
+    }),
+  ].map((p) => p.catch(() => {}))).then(() => { BRX.at = Date.now(); BRX.p = null; }));
+}
+// A receipt's Bitcoin fee and time: `dir` 'out' (to Bitcoin: its step there is a commit and a reveal, paid from the key's Bitcoin address) or 'in' (a note
+// burned on Bitcoin: its confirmations, then the next proof). A proof running late says so, as the bridge page does.
+function brxRows(dir) {
+  const sats = BRX.rate ? (dir === 'out' ? satsOut(BRX.rate) : satsBack(BRX.rate)) : null, usd = sats ? hxUsd('sats', sats) : '';
+  const late = BRX.lag != null && BRX.lag > BRX.confs + 12, hrs = Math.round((late ? BRX.lag : BRX.confs) / 6);
+  return [['Bitcoin fee', sats ? `about ${sats.toLocaleString('en-US')} sats${usd ? ` (${usd})` : ''}` : dir === 'out' ? 'in sats, from your Bitcoin address' : 'in sats', '', 'Paid from your Bitcoin address'],
+    ['Time', BRX.lag == null ? 'a few hours, at most a day' : dir === 'in' ? `about ${hrs} hours${late ? ', longer than usual' : ''}` : late ? `longer than usual: the proof is about ${Math.round((BRX.lag - BRX.confs) / 6)} hours behind` : 'a few hours, at most a day', '',
+      dir === 'in' ? `${BRX.confs} Bitcoin confirmations, then the next proof` : 'Ethereum finalizes, the next proof covers it, then the Bitcoin step is sent']];
+}
 const hxChain = () => DEVICE_CHAINS.find((c) => c.chainId === HX.chain) || DEVICE_CHAINS[0];
 const hxChainPick = () => ['pay', 'ppout'].includes(HX.mode) || (HX.tab === 'send' && HX.send === 'pp');
 function hxNorm() {
@@ -15293,6 +15321,8 @@ async function hxQuote() {
   if (HX.tab === 'swap' && !HXM.key) return;
   const my = ++HX.seq, units = hxUnits(), m = HX.mode, ethN = units ? Number(units) / 1e8 : 0;
   const done = (q) => { if (my === HX.seq) { HX.q = { eth: ethN, ...q }; paintHxQ(); } };
+  // a bridge's receipt names Bitcoin's fee and the proof's pace once they are read: drawn before they came, it is drawn again when they do
+  if (HX.tab === 'bridge' && !brxFresh()) brxRead().then(() => { if (my === HX.seq && !HX.q?.busy) hxQuote(); });
   HX.held = hxHeld(); HX.heldTac = hxHeldTac(); HX.heldSend = hxSendHeld();
   if (m === 'send') HX.rk = hxRcptKind() + (hxSendFit() ? '!' : '') + (hxSendMe() ? ':me' : '');
   if (m === 'send' && HX.ask) return done({ rc: hxAskSays() });
@@ -15325,8 +15355,10 @@ async function hxQuote() {
   }
   { const h = hxHandoff(m, units); if (h) return done(h); }
   HX.q = { ...(HX.q || {}), busy: true }; paintHxQ();
+  // a key with an amount to bridge out is about to press: the bridge itself (tacit.js) loads meanwhile, never ahead of the quote
+  if (S.key && units && HX.tab === 'bridge' && (m === 'xo' || (m === 'btc' && HX.dir === 'out'))) xoUx().catch(() => {});
   // the bridge's terms, the same on both of its sides
-  const bridge = (u, lim, min, dp, dec = 8) => [['Bitcoin fee', 'in sats, from your Bitcoin address'], ['Limits', lim ? `${fmt(min, dec, dp)} to ${fmt(lim.capRaw, dec, dp)} ${u} a bridge` : `a small amount a bridge`, '', 'While the bridge is new'], ['Time', 'a few hours, at most a day']];
+  const bridge =(u, lim, min, dp, dec = 8) => { const [fee, time] = brxRows('out'); return [fee, ['Limits', lim ? `${fmt(min, dec, dp)} to ${fmt(lim.capRaw, dec, dp)} ${u} a bridge` : `a small amount a bridge`, '', 'While the bridge is new'], time]; };
   try {
     if (hxWrapMode()) {
       if (units) { hxWarmWrap(); hxWrapAhead(units); }
@@ -15389,8 +15421,8 @@ async function hxQuote() {
         warn: !!pick.dry || !!wp || !!ex?.warn || !!zline, line: wp ? 'A zap of yours is waiting to be farmed.' : ex?.line || zline || (pick.dry ? 'Between reward periods: nothing streams until the next one starts.' : '') });
     }
     if (m === 'btc' && HX.from === 'tac') {
-      const [t, ux] = await Promise.all([getUx(), xoUx().catch(() => null)]), a = XA.tac;
-      const lim = ux?.assetOf(a.id), fee = await xoFee(t, a), min = lim?.minRaw > 0n ? lim.minRaw : a.min;
+      const t = await getUx(), a = XA.tac;
+      const lim = xoLim(a), fee = await xoFee(t, a), min = lim?.minRaw > 0n ? lim.minRaw : a.min;
       const held = S.key && P.scan ? spendable(a.k) : null, needPrivate = held != null && (units ? units > held : held === 0n);
       const inRange = units > fee && (!lim || (units >= min && units <= lim.capRaw));
       const cut = units && held != null && !needPrivate && !freeNotes(P.scan[a.k].notes).some((n) => BigInt(n.value) === units) ? BigInt(await t.quoteOpFee(a.pool, 'transfer')) : 0n;
@@ -15405,10 +15437,11 @@ async function hxQuote() {
     if (m === 'xo') {
       // cBTC, cUSD or cUSDT to Bitcoin: its relay fee and limits, what the key holds, and a cut first when no note is the amount. USDT still in the wallet
       // is made private first (the card does that, then this).
-      const a = XA[HX.xa], dec = xdec(a), [t, ux] = await Promise.all([getUx(), xoUx().catch(() => null)]);
-      const lim = ux?.assetOf(a.id), fee = await xoFee(t, a), min = lim?.minRaw > 0n ? lim.minRaw : 0n;
+      const a = XA[HX.xa], dec = xdec(a), t = await getUx();
+      const lim = xoLim(a), fee = await xoFee(t, a), min = lim?.minRaw > 0n ? lim.minRaw : 0n;
       const wallet = HX.sf === 'wusdt', held = S.key && P.scan ? spendable(a.k) : null, wal = wallet ? hxWalletBal('wusdt') : null;
-      const needPrivate = wallet && !!units && !(held != null && held >= units);
+      // two steps, as the wallet's ETH is, unless the private USDT held covers the amount
+      const needPrivate = wallet && !(units && held != null && held >= units);
       const over = wallet ? needPrivate && wal != null && units > wal : held != null && !!units && units > held;
       const inRange = units > fee && (!lim || (units >= min && units <= lim.capRaw)), range = lim ? `${fmt(min, dec, a.dp)} to ${fmt(lim.capRaw, dec, a.dp)} ${a.ticker}` : 'a small amount';
       const cut = !needPrivate && units && held != null && !over && !freeNotes(P.scan[a.k].notes).some((n) => BigInt(n.value) === units) ? BigInt(await t.quoteOpFee(a.pool, 'transfer')) : 0n;
@@ -15419,8 +15452,8 @@ async function hxQuote() {
         warn: !!units && (!inRange || over), line: over ? (wallet ? `You hold ${fmt(wal, dec, 4)} USDT in ${your()}.` : `You hold ${fmt(held, dec, a.dp)} ${a.ticker} privately.`) : units && !inRange ? (units <= fee ? `Send more than the relay fee, ${fmt(fee, dec, Math.max(a.dp, 4))} ${a.ticker}.` : `A bridge takes ${range} while this is new.`) : '' });
     }
     if (m === 'btc') {
-      const two = hxTwo(units), [t, ux] = await Promise.all([getUx(), xoUx().catch(() => null)]);
-      const lim = ux?.assetOf(CETH_ID), fee = BigInt(await t.quoteOpFee('cETH', 'bridgeburn'));
+      const two = hxTwo(units), t = await getUx();
+      const lim = xoLim(XA.teth), fee = BigInt(await t.quoteOpFee('cETH', 'bridgeburn'));
       const min = lim?.minRaw || 0n, range = lim ? `${fmt(min, 8, 6)} to ${fmt(lim.capRaw, 8, 6)} tETH` : 'a small amount', inRange = units > fee && (!lim || (units >= min && units <= lim.capRaw));
       return done({ out: units ? (inRange ? fmt(units - fee, 8, 6) : '—') : null, go: two ? 'Shield ETH' : 'Bridge tETH to Bitcoin', pk: two ? 'wrap' : null,
         rc: units && !inRange ? [] : [units ? ['Arrives', `${fmt(units - fee, 8, 6)} tETH on Bitcoin`] : null, ['Relay fee', `${fmt(fee, 8, 6)} tETH`], ...bridge('tETH', lim, min, 6), two ? ['Steps', 'make the ETH private, then bridge it'] : null],
@@ -16388,7 +16421,8 @@ async function hxBridgeOutGo(a, units) {
 // form reviews it (xbReview), and the press does what the form does (xbBringNow). The asset is tETH's, or the one the way names.
 const hxBackA = () => (HX.mode === 'tbback' ? XA.teth : XA[HX.xa]);
 async function hxBackQuote(my, done) {
-  const a = hxBackA(), name = `Your ${a.ticker} on Bitcoin`, base = { out: 'All', go: `Bring ${a.ticker} back`, rc: [['Arrives', `private ${a.ticker} on Ethereum`], ['How', 'by proof of Bitcoin'], ['Notes', 'listed below']] };
+  const a = hxBackA(), name = `Your ${a.ticker} on Bitcoin`, cap = BR_LIMITS[a.key]?.in.max, [btcFee, time] = brxRows('in');
+  const base = { out: 'All', go: `Bring ${a.ticker} back`, rc: [['Arrives', `private ${a.ticker} on Ethereum`], cap ? ['Limit', `${fmt(cap, xdec(a), a.dp)} ${a.ticker} a bridge`, '', 'While the bridge is new'] : null, btcFee, time] };
   if (!S.key) return done(base);
   const XB = xbOf(a), pub = S.key.pubHex;
   await loadBridged(false, a);
@@ -16409,7 +16443,7 @@ async function hxBackQuote(my, done) {
   if (my !== HX.seq) return;
   if (!R.r) return done({ ...shown, pick: XB.pick, warn: true, line: R.stop || '' });
   return done({ ...shown, pick: XB.pick, out: fmt(R.total, xdec(a), a.dp), go: R.count > 1 ? `Bring ${R.count} notes back` : `Bring ${a.ticker} back`,
-    rc: [['Arrives', `${fmt(R.total, xdec(a), a.dp)} private ${a.ticker} on Ethereum${R.count > 1 ? `, in ${R.count} notes` : ''}`], ['Bitcoin fee', `about ${R.fee.toLocaleString('en-US')} sats${R.count > 1 ? ' in all' : ''}`], ['Relay fee', 'none'], ['Time', 'a few hours, at most a day']],
+    rc: [['Arrives', `${fmt(R.total, xdec(a), a.dp)} private ${a.ticker} on Ethereum${R.count > 1 ? `, in ${R.count} notes` : ''}`], ['Bitcoin fee', `about ${R.fee.toLocaleString('en-US')} sats${R.count > 1 ? ' in all' : ''}`], ['Relay fee', 'none'], time],
     warn: R.short || (R.count > 1 && R.reach < R.count), line: R.short || (R.count > 1 && R.reach < R.count) ? xbShortText(R, pub) : '' });
 }
 // Bringing bridged notes back from the Bridge tab. A burn cannot be undone, so the first press reviews the pick and says what the Bitcoin step costs, and the same press again (the same pick, within three minutes) sends it.
@@ -16457,7 +16491,8 @@ async function brReview(pub, n, onProgress) {
   return { r: { key: rvKey, note: n, pf, cost, short: !!coins && !cost.ok }, cost };
 }
 async function hxBridgeInQuote(my, done) {
-  const base = { out: 'Private', go: 'Bridge TAC from Bitcoin', rc: [['Arrives', 'private TAC on Ethereum'], ['Limit', '1,000 TAC a bridge'], ['Bitcoin fee', 'in sats'], ['Time', 'a few hours, at most a day']] };
+  const [btcFee, time] = brxRows('in');
+  const base = { out: 'Private', go: 'Bridge TAC from Bitcoin', rc: [['Arrives', 'private TAC on Ethereum'], ['Limit', `${fmt(BR_LIMITS.tac.in.max, 8, 4)} TAC a bridge`, '', 'While the bridge is new'], btcFee, time] };
   if (!S.key) return done(base);
   const pub = S.key.pubHex;
   await loadBridge().catch(() => {});
@@ -16482,7 +16517,7 @@ async function hxBridgeInQuote(my, done) {
   if (my !== HX.seq) return;
   if (!R.r) return done({ ...shown, ...other, pick: BR.pick, warn: true, line: R.stop || '' });
   const sats = (v) => `${Number(v).toLocaleString('en-US')} sats`, amtText = fmt(BigInt(n.amount), 8, 4);
-  return done({ ...shown, ...other, pick: BR.pick, out: amtText, rc: [['Arrives', `${amtText} private TAC on Ethereum`], ['Bitcoin fee', `≈ ${sats(R.cost.fee)}`], ['Relay fee', 'none'], ['Time', 'usually within a few hours, once Bitcoin’s proof on Ethereum records the burn'], hxFastWhy(F)].filter(Boolean),
+  return done({ ...shown, ...other, pick: BR.pick, out: amtText, rc: [['Arrives', `${amtText} private TAC on Ethereum`], ['Bitcoin fee', `≈ ${sats(R.cost.fee)}`], ['Relay fee', 'none'], time, hxFastWhy(F)].filter(Boolean),
     warn: R.r.short, line: R.r.short ? `This key’s Bitcoin address has ${fmt(BigInt(R.cost.have || 0), 8, 8)} BTC free for fees, short of the ${sats(R.cost.need)} this needs. Add some from Receive on the Bitcoin tab.` : '' });
 }
 // TAC brought in from Bitcoin from the Bridge tab. A burn cannot be undone, so the first press checks the note and says what the Bitcoin step costs, and the same press again (this note, within three minutes) sends it.
