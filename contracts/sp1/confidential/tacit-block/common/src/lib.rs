@@ -7,12 +7,18 @@
 //! - the block's new notes join the Poseidon note tree sorted by value, so a note's position does not say
 //!   which spend made it.
 //!
+//! Each spend's body hash (which its inputs' owners sign) is checked against the tacit chain's body: the chain's
+//! binding, the output leaves, their memo hashes and the address an exit pays. Deposits and exits are opened
+//! here and committed as plain records (asset, value, and the body a depositor named or the address an exit
+//! pays) for the contract that lands the block to match and pay; the bodies themselves are never published.
+//!
 //! A spend's anchor, the note root its inputs are proven against, is checked against the last `RECENT` roots the
 //! state remembers; only an older one is listed in `anchors`, for whoever lands the block to check against the
 //! roots it has seen. So the anchors nearly every spend uses never reach a public list that would say when the
 //! spend was proven.
 
-use btc_pool_halo2::model::{poseidon, zeros, TREE_DEPTH};
+use btc_pool_halo2::model::{body_hash, pedersen_bjj, poseidon, zeros, TREE_DEPTH};
+use num_bigint::BigUint;
 use ff::{Field, PrimeField};
 use halo2_proofs::halo2curves::bn256::Fr;
 use sha2::digest::generic_array::GenericArray;
@@ -23,8 +29,9 @@ use std::sync::OnceLock;
 pub const NF_LEVELS: usize = 32;
 /// How many of the latest note roots a block accepts as anchors without listing them.
 pub const RECENT: usize = 32;
-/// `State::to_bytes`: note root, leaf count (u64 BE), the 32 filled nodes, nullifier root, record count, recent roots.
-pub const STATE_LEN: usize = 32 + 8 + 32 * TREE_DEPTH + 32 + 8 + 32 * RECENT;
+/// `State::to_bytes`: note root, leaf count (u64 BE), the 32 filled nodes, nullifier root, record count, recent
+/// roots, chain binding.
+pub const STATE_LEN: usize = 32 + 8 + 32 * TREE_DEPTH + 32 + 8 + 32 * RECENT + 32;
 /// `NfWitness::to_bytes`: low value, low next, low index (u64 BE), low path, slot path.
 pub const NF_WITNESS_LEN: usize = 32 + 32 + 8 + 2 * 32 * NF_LEVELS;
 
@@ -416,25 +423,122 @@ impl Spend {
     }
 }
 
-/// What a block moves: the note tree, the nullifier tree's root and record count, and the last `RECENT` note
-/// roots, newest last (an unused slot is zero, which no note root is).
+/// A Pedersen commitment's opening: the value and the blinding (32 bytes, big-endian).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Opening {
+    pub v: u64,
+    pub r: [u8; 32],
+}
+
+/// What a block takes about a spend besides its proof: the rest of its body (its outputs' memo hashes, zero for an
+/// empty output, and the address an exit pays, zero for none) and the openings of its deposit and exit.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SpendData {
+    pub memo_hashes: [[u8; 32]; 3],
+    pub exit_to: [u8; 20],
+    pub dep: Option<Opening>,
+    pub exit: Option<Opening>,
+}
+
+impl SpendData {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut b = vec![];
+        for m in &self.memo_hashes {
+            b.extend_from_slice(m);
+        }
+        b.extend_from_slice(&self.exit_to);
+        for o in [self.dep, self.exit] {
+            match o {
+                None => b.push(0),
+                Some(o) => {
+                    b.push(1);
+                    b.extend_from_slice(&o.v.to_be_bytes());
+                    b.extend_from_slice(&o.r);
+                }
+            }
+        }
+        b
+    }
+
+    pub fn from_bytes(b: &[u8]) -> Option<SpendData> {
+        let mut d = SpendData::default();
+        for (i, m) in d.memo_hashes.iter_mut().enumerate() {
+            m.copy_from_slice(b.get(32 * i..32 * i + 32)?);
+        }
+        d.exit_to.copy_from_slice(b.get(96..116)?);
+        let mut at = 116;
+        let mut opening = || -> Option<Option<Opening>> {
+            let flag = *b.get(at)?;
+            at += 1;
+            match flag {
+                0 => Some(None),
+                1 => {
+                    let v = u64::from_be_bytes(b.get(at..at + 8)?.try_into().ok()?);
+                    let r = b.get(at + 8..at + 40)?.try_into().ok()?;
+                    at += 40;
+                    Some(Some(Opening { v, r }))
+                }
+                _ => None,
+            }
+        };
+        d.dep = opening()?;
+        d.exit = opening()?;
+        (at == b.len()).then_some(d)
+    }
+}
+
+const BODY_DOMAIN: &[u8] = b"tacit-block-body-v1";
+const MEMO_DOMAIN: &[u8] = b"tacit-block-memo-v1";
+
+/// A tacit-chain spend's body, which the owners of its inputs sign (the circuit checks their signatures over its
+/// hash): the chain's binding, the output leaves, their memo hashes and the address an exit pays. A block checks
+/// each spend's body hash against these, so whoever proves the block can change none of them.
+pub fn body_bytes(chain: &[u8; 32], out: &[Fr; 3], memo_hashes: &[[u8; 32]; 3], exit_to: &[u8; 20]) -> Vec<u8> {
+    let mut b = BODY_DOMAIN.to_vec();
+    b.extend_from_slice(chain);
+    for o in out {
+        b.extend_from_slice(&fr_be(o));
+    }
+    for m in memo_hashes {
+        b.extend_from_slice(m);
+    }
+    b.extend_from_slice(exit_to);
+    b
+}
+
+/// The hash a body carries for an output's memo.
+pub fn memo_hash(memo: &[u8]) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(MEMO_DOMAIN);
+    h.update(memo);
+    h.finalize().into()
+}
+
+/// Whether `o` opens the BabyJubJub Pedersen commitment `c`, as btc-pool-halo2 commits.
+fn commits(o: &Opening, c: &[Fr; 2]) -> bool {
+    pedersen_bjj(&BigUint::from(o.v), &BigUint::from_bytes_be(&o.r)) == *c
+}
+
+/// What a block moves: the note tree, the nullifier tree's root and record count, the last `RECENT` note roots,
+/// newest last (an unused slot is zero, which no note root is), and the chain's binding, which every spend's
+/// body carries so a spend made for one deployment is void on another.
 #[derive(Clone, Debug, PartialEq)]
 pub struct State {
     pub notes: Notes,
     pub nf_root: [u8; 32],
     pub nf_size: u64,
     pub recent: [[u8; 32]; RECENT],
-}
-
-impl Default for State {
-    fn default() -> Self {
-        let mut s = State { notes: Notes::default(), nf_root: nf_genesis_root(), nf_size: 1, recent: [[0u8; 32]; RECENT] };
-        s.remember(fr_be(&s.notes.root));
-        s
-    }
+    pub chain: [u8; 32],
 }
 
 impl State {
+    /// The state before any block, for a chain bound to `chain`.
+    pub fn genesis(chain: [u8; 32]) -> State {
+        let mut s = State { notes: Notes::default(), nf_root: nf_genesis_root(), nf_size: 1, recent: [[0u8; 32]; RECENT], chain };
+        s.remember(fr_be(&s.notes.root));
+        s
+    }
+
     /// Keeps `root` as the newest recent root, dropping the oldest (a root already newest is kept once).
     pub fn remember(&mut self, root: [u8; 32]) {
         if self.recent[RECENT - 1] != root {
@@ -459,6 +563,7 @@ impl State {
         for r in &self.recent {
             b.extend_from_slice(r);
         }
+        b.extend_from_slice(&self.chain);
         b
     }
 
@@ -479,7 +584,8 @@ impl State {
         for (i, r) in recent.iter_mut().enumerate() {
             r.copy_from_slice(&b[at + 40 + 32 * i..at + 72 + 32 * i]);
         }
-        Some(State { notes: Notes { filled, len, root }, nf_root, nf_size, recent })
+        let chain = b[STATE_LEN - 32..].try_into().ok()?;
+        Some(State { notes: Notes { filled, len, root }, nf_root, nf_size, recent, chain })
     }
 
     pub fn digest(&self) -> [u8; 32] {
@@ -516,23 +622,28 @@ pub struct BlockOut {
     /// State digests before and after.
     pub prev: [u8; 32],
     pub next: [u8; 32],
-    /// Note roots before and after: the starting root is every spend's default anchor, and the new root
-    /// is the one later spends prove against.
+    /// Note roots before and after.
     pub prev_root: [u8; 32],
     pub next_root: [u8; 32],
     pub spends: u64,
-    pub leaves: u64,
-    pub leaves_hash: [u8; 32],
+    pub outputs: u64,
+    pub outputs_hash: [u8; 32],
     pub nullifiers_hash: [u8; 32],
     pub anchors_hash: [u8; 32],
-    pub bodies_hash: [u8; 32],
-    pub boundary_hash: [u8; 32],
+    pub deposits_hash: [u8; 32],
+    pub exits_hash: [u8; 32],
     pub vk: [u8; 32],
 }
 
 fn word(n: u64) -> [u8; 32] {
     let mut w = [0u8; 32];
     w[24..].copy_from_slice(&n.to_be_bytes());
+    w
+}
+
+fn address_word(a: &[u8; 20]) -> [u8; 32] {
+    let mut w = [0u8; 32];
+    w[12..].copy_from_slice(a);
     w
 }
 
@@ -544,12 +655,12 @@ impl BlockOut {
             self.prev_root,
             self.next_root,
             word(self.spends),
-            word(self.leaves),
-            self.leaves_hash,
+            word(self.outputs),
+            self.outputs_hash,
             self.nullifiers_hash,
             self.anchors_hash,
-            self.bodies_hash,
-            self.boundary_hash,
+            self.deposits_hash,
+            self.exits_hash,
             self.vk,
         ]
         .concat()
@@ -557,29 +668,36 @@ impl BlockOut {
 }
 
 /// The lists a block's hashes commit, in committed order: what a lander publishes so anyone can rebuild the
-/// state and find their notes. Every list is sorted, so none of them says which spend an entry came from.
+/// state and find their notes. Every list is sorted and no spend body is in any, so none of them says which
+/// spend an entry came from.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BlockData {
-    /// New note leaves, in the order they join the tree.
-    pub leaves: Vec<[u8; 32]>,
+    /// New notes in the order they join the tree: leaf ‖ the hash of its memo (the memo itself, which the
+    /// recipient decrypts, is published beside it).
+    pub outputs: Vec<[u8; 64]>,
     pub nullifiers: Vec<[u8; 32]>,
     /// Distinct anchors older than the state's recent roots.
     pub anchors: Vec<[u8; 32]>,
-    pub bodies: Vec<[u8; 32]>,
-    /// The spends that cross the pool's boundary: bodyHash ‖ asset ‖ exitC ‖ depC, 192 bytes each.
-    pub boundary: Vec<Vec<u8>>,
+    /// Deposits a spend took in: asset ‖ value ‖ commitment (x ‖ y) ‖ the spend's body hash, which the depositor
+    /// named when depositing, 160 bytes each.
+    pub deposits: Vec<Vec<u8>>,
+    /// Exits to pay: asset ‖ value ‖ address (left-padded), 96 bytes each.
+    pub exits: Vec<Vec<u8>>,
 }
 
 /// Applies a block's spends to `prev`, each spend's proof checked separately (the guest folds them into one
-/// pairing). `nfw[j]` is the witness for the j-th non-zero nullifier, in spend order and slot order, against
-/// the tree as the nullifiers before it left it.
-pub fn apply(prev: &State, spends: &[Spend], nfw: &[NfWitness], vk: [u8; 32]) -> Result<(State, BlockOut, BlockData), String> {
+/// pairing). `data[i]` is the rest of spend i's body and its openings; `nfw[j]` is the witness for the j-th
+/// non-zero nullifier, in spend order and slot order, against the tree as the nullifiers before it left it.
+pub fn apply(prev: &State, spends: &[Spend], data: &[SpendData], nfw: &[NfWitness], vk: [u8; 32]) -> Result<(State, BlockOut, BlockData), String> {
     mark!("cycle-tracker-report-start: block-scan");
+    if data.len() != spends.len() {
+        return Err(format!("{} spend data for {} spends", data.len(), spends.len()));
+    }
     let start = prev.notes.root;
-    let mut leaves: Vec<Fr> = vec![];
+    let mut outputs: Vec<(Fr, [u8; 32])> = vec![];
     let mut spent: Vec<(usize, [u8; 32])> = vec![];
-    let mut data = BlockData::default();
-    for (i, s) in spends.iter().enumerate() {
+    let mut lists = BlockData::default();
+    for (i, (s, d)) in spends.iter().zip(data).enumerate() {
         let live = s.live_nullifiers();
         if live.len() == 2 && live[0] == live[1] {
             return Err(format!("spend {i}: one note in both input slots"));
@@ -589,14 +707,35 @@ pub fn apply(prev: &State, spends: &[Spend], nfw: &[NfWitness], vk: [u8; 32]) ->
                 return Err(format!("spend {i}: no input and no deposit"));
             }
         } else if s.root != start && !prev.knows(&fr_be(&s.root)) {
-            data.anchors.push(fr_be(&s.root));
+            lists.anchors.push(fr_be(&s.root));
+        }
+        if body_hash(&body_bytes(&prev.chain, &s.out, &d.memo_hashes, &d.exit_to)) != s.body {
+            return Err(format!("spend {i}: the body is not this chain's, or not its outputs, memos and exit"));
+        }
+        for (o, m) in s.out.iter().zip(&d.memo_hashes) {
+            if bool::from(o.is_zero()) {
+                if *m != [0u8; 32] {
+                    return Err(format!("spend {i}: a memo for an empty output"));
+                }
+            } else {
+                outputs.push((*o, *m));
+            }
+        }
+        match (is_identity(&s.dep), &d.dep) {
+            (true, None) => {}
+            (false, Some(o)) if commits(o, &s.dep) => {
+                lists.deposits.push([fr_be(&s.asset), word(o.v), fr_be(&s.dep[0]), fr_be(&s.dep[1]), fr_be(&s.body)].concat())
+            }
+            _ => return Err(format!("spend {i}: the deposit's opening is missing or wrong")),
+        }
+        match (is_identity(&s.exit), &d.exit) {
+            (true, None) if d.exit_to == [0u8; 20] => {}
+            (false, Some(o)) if d.exit_to != [0u8; 20] && commits(o, &s.exit) => {
+                lists.exits.push([fr_be(&s.asset), word(o.v), address_word(&d.exit_to)].concat())
+            }
+            _ => return Err(format!("spend {i}: the exit's opening or address is missing or wrong")),
         }
         spent.extend(live.iter().map(|nf| (i, fr_be(nf))));
-        leaves.extend(s.out.iter().copied().filter(|o| !bool::from(o.is_zero())));
-        data.bodies.push(fr_be(&s.body));
-        if !is_identity(&s.exit) || !is_identity(&s.dep) {
-            data.boundary.push([s.body, s.asset, s.exit[0], s.exit[1], s.dep[0], s.dep[1]].iter().flat_map(fr_be).collect());
-        }
     }
     if spent.len() != nfw.len() {
         return Err(format!("{} nullifier witnesses for {} nullifiers", nfw.len(), spent.len()));
@@ -608,24 +747,25 @@ pub fn apply(prev: &State, spends: &[Spend], nfw: &[NfWitness], vk: [u8; 32]) ->
     for ((i, key), w) in spent.iter().zip(nfw) {
         nf_root = nf_insert(&nf_root, nf_size, key, w).map_err(|e| format!("spend {i}: {e}"))?;
         nf_size += 1;
-        data.nullifiers.push(*key);
+        lists.nullifiers.push(*key);
     }
     mark!("cycle-tracker-report-end: block-nullifiers");
 
     mark!("cycle-tracker-report-start: block-notes");
-    leaves.sort_by_key(fr_be);
+    outputs.sort_by_key(|(o, _)| fr_be(o));
+    let leaves: Vec<Fr> = outputs.iter().map(|(o, _)| *o).collect();
     let mut notes = prev.notes.clone();
     notes.append(&leaves)?;
     mark!("cycle-tracker-report-end: block-notes");
 
     mark!("cycle-tracker-report-start: block-commit");
-    data.leaves = leaves.iter().map(fr_be).collect();
-    data.nullifiers.sort();
-    data.anchors.sort();
-    data.anchors.dedup();
-    data.bodies.sort();
-    data.boundary.sort();
-    let mut next = State { notes, nf_root, nf_size, recent: prev.recent };
+    lists.outputs = outputs.iter().map(|(o, m)| [fr_be(o), *m].concat().try_into().unwrap()).collect();
+    lists.nullifiers.sort();
+    lists.anchors.sort();
+    lists.anchors.dedup();
+    lists.deposits.sort();
+    lists.exits.sort();
+    let mut next = State { notes, nf_root, nf_size, recent: prev.recent, chain: prev.chain };
     next.remember(fr_be(&next.notes.root));
     let out = BlockOut {
         prev: prev.digest(),
@@ -633,14 +773,14 @@ pub fn apply(prev: &State, spends: &[Spend], nfw: &[NfWitness], vk: [u8; 32]) ->
         prev_root: fr_be(&start),
         next_root: fr_be(&next.notes.root),
         spends: spends.len() as u64,
-        leaves: data.leaves.len() as u64,
-        leaves_hash: list_hash(1, &data.leaves),
-        nullifiers_hash: list_hash(2, &data.nullifiers),
-        anchors_hash: list_hash(3, &data.anchors),
-        bodies_hash: list_hash(4, &data.bodies),
-        boundary_hash: list_hash(5, &data.boundary),
+        outputs: lists.outputs.len() as u64,
+        outputs_hash: list_hash(1, &lists.outputs),
+        nullifiers_hash: list_hash(2, &lists.nullifiers),
+        anchors_hash: list_hash(3, &lists.anchors),
+        deposits_hash: list_hash(4, &lists.deposits),
+        exits_hash: list_hash(5, &lists.exits),
         vk,
     };
     mark!("cycle-tracker-report-end: block-commit");
-    Ok((next, out, data))
+    Ok((next, out, lists))
 }

@@ -9,6 +9,9 @@
 //!                            older root is listed as an anchor, then the blocks the guest must refuse: a note
 //!                            spent twice in one block, a note spent again in a later block, a tampered proof
 //! tacit-block dump N FILE    one block of N spends as the guest's stdin, for tacit-block-gpu
+//! tacit-block fixture FILE  a two-block chain of ETH notes as the landing contract's test replays it: the genesis
+//!                            state, a 500-wei shield (and the deposit that precedes it on L1), then a spend that
+//!                            keeps 380 and exits 120, with each block's public values and everything it publishes
 //! tacit-block pin [--check]  write the guest's artifacts, or check the committed ones (exit 1 on a mismatch): the
 //!                            spend key's digest, transcript representative and verifier params (as btc-pool-agg
 //!                            derives them), verifier-cs.bin, the spend circuit's finished constraint system the
@@ -21,7 +24,8 @@
 use btc_pool_agg_common as agg;
 use btc_pool_halo2 as h2;
 use btc_pool_halo2::model::{
-    asset_field, body_hash, build_witness, fr_u64, leaf_of, output_keys, owned_keys, sign, wallet_keys, InNote, OutNote, SpendWitness, Tree, Wallet,
+    asset_field, be32, body_hash, build_witness, fr_u64, hs_l, leaf_of, output_keys, owned_keys, sign, wallet_keys, InNote, OutNote, SpendWitness, Tree,
+    Wallet,
 };
 use halo2_proofs::halo2curves::bn256::{Bn256, Fr};
 use halo2_proofs::poly::kzg::commitment::ParamsKZG;
@@ -32,7 +36,7 @@ use std::process::exit;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
-use tacit_block_common::{self as blk, fr_be, h64, nf_record, nf_zeros, BlockData, BlockOut, NfWitness, State, NF_LEVELS, RECENT};
+use tacit_block_common::{self as blk, fr_be, h64, nf_record, nf_zeros, BlockData, BlockOut, NfWitness, SpendData, State, NF_LEVELS, RECENT};
 
 const H2_ARTIFACTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../btc-pool-halo2/artifacts");
 
@@ -156,6 +160,9 @@ fn secret(tag: u8, a: u32, b: u8) -> [u8; 33] {
     s
 }
 
+/// The binding the test chain's spends carry in their bodies.
+const TEST_CHAIN: [u8; 32] = [0x7a; 32];
+
 /// The test chain: every leaf in tree order, the state as the guest carries it, the nullifier tree replayed
 /// by the host, and the note roots the chain has had.
 #[derive(Clone)]
@@ -168,14 +175,17 @@ struct Chain {
     roots: Vec<Fr>,
 }
 
-/// A spend ready for the guest, with the outputs it makes (wallet, secret, value, leaf).
+/// A spend ready for the guest: its proof, the rest of its body and its openings, and the outputs it makes
+/// (wallet, secret, value, leaf).
 #[derive(Clone)]
 struct Prepared {
     publics: Vec<u8>,
     proof: Vec<u8>,
     hints: Vec<u8>,
     spend: blk::Spend,
+    data: SpendData,
     outs: Vec<(usize, [u8; 33], u64, Fr)>,
+    memos: Vec<Vec<u8>>,
 }
 
 /// A block the guest took.
@@ -192,7 +202,7 @@ struct Landed {
 impl Chain {
     fn new(wallets: usize) -> Chain {
         let wallets = Rc::new((0..wallets).map(|i| wallet_keys(&[i as u8 + 1; 32], "signet")).collect());
-        let state = State::default();
+        let state = State::genesis(TEST_CHAIN);
         let nf = NfTree::new();
         if nf.root() != state.nf_root {
             fail("the replayed nullifier tree does not start where the state does");
@@ -222,26 +232,48 @@ impl Chain {
 
     /// A spend of `ins`, proven against the tree as it was with `at` leaves, paying `outs` (wallet, secret,
     /// value).
-    fn spend(&self, k: &Keys, ins: &[&Note], outs: &[(usize, [u8; 33], u64)], body: &str, at: usize) -> Prepared {
+    fn spend(&self, k: &Keys, ins: &[&Note], outs: &[(usize, [u8; 33], u64)], tag: &str, at: usize) -> Prepared {
+        self.spend_with(k, ins, outs, None, None, tag, at)
+    }
+
+    /// As `spend`, with an exit of `exit` (value, address) and a deposit of `dep` (value); a deposit with no
+    /// inputs is a shield. Its body is the tacit chain's: this chain's binding, the output leaves, their memo
+    /// hashes and the exit's address. `tag` keeps memos and blindings distinct.
+    #[allow(clippy::too_many_arguments)]
+    fn spend_with(&self, k: &Keys, ins: &[&Note], outs: &[(usize, [u8; 33], u64)], exit: Option<(u64, [u8; 20])>, dep: Option<u64>, tag: &str, at: usize) -> Prepared {
         let tree = Tree::new(&self.leaves[..at]);
-        let bh = body_hash(body.as_bytes());
-        let mut inputs: [Option<InNote>; 2] = [None, None];
-        for (i, n) in ins.iter().enumerate() {
-            let o = owned_keys(&self.wallets[n.owner], &n.s);
-            inputs[i] = Some(InNote { v: n.v, rho: o.rho, nk: o.nk.clone(), ak: o.ak, index: n.index, path: tree.path(n.index as usize), sig: sign(&o.sk, &bh) });
-        }
+        let mut out = [Fr::from(0u64); 3];
+        let mut memo_hashes = [[0u8; 32]; 3];
         let mut outputs: [Option<OutNote>; 3] = [None, None, None];
         let mut made = vec![];
+        let mut memos = vec![];
         for (j, (w, s, v)) in outs.iter().enumerate() {
             let o = output_keys(&self.wallets[*w].a_pub, &self.wallets[*w].n_pub, s);
             if owned_keys(&self.wallets[*w], s).npk != o.npk {
                 fail("an output's owner cannot derive its keys");
             }
-            made.push((*w, *s, *v, leaf_of(&self.asset_f, &fr_u64(*v), &o.npk, &o.rho)));
+            out[j] = leaf_of(&self.asset_f, &fr_u64(*v), &o.npk, &o.rho);
+            memos.push(format!("tacit-block memo {tag} {j}").into_bytes());
+            memo_hashes[j] = blk::memo_hash(&memos[j]);
+            made.push((*w, *s, *v, out[j]));
             outputs[j] = Some(OutNote { v: *v, npk: o.npk, rho: o.rho });
         }
-        let w = build_witness(tree.root, bh, self.asset_f, &inputs, &outputs, None, None).unwrap_or_else(|e| fail(&e));
-        prove(k, &w, made)
+        let exit_to = exit.map(|(_, a)| a).unwrap_or([0u8; 20]);
+        let bh = body_hash(&blk::body_bytes(&self.state.chain, &out, &memo_hashes, &exit_to));
+        let mut inputs: [Option<InNote>; 2] = [None, None];
+        for (i, n) in ins.iter().enumerate() {
+            let o = owned_keys(&self.wallets[n.owner], &n.s);
+            inputs[i] = Some(InNote { v: n.v, rho: o.rho, nk: o.nk.clone(), ak: o.ak, index: n.index, path: tree.path(n.index as usize), sig: sign(&o.sk, &bh) });
+        }
+        let opening = |v: u64, what: &str| btc_pool_halo2::model::Opening { v, r: hs_l(&format!("tacit-block test {what}"), &[tag.as_bytes()]) };
+        let exit_open = exit.map(|(v, _)| opening(v, "exit"));
+        let dep_open = dep.map(|v| opening(v, "deposit"));
+        let plain = |o: &btc_pool_halo2::model::Opening| blk::Opening { v: o.v, r: be32(&o.r) };
+        let data = SpendData { memo_hashes, exit_to, dep: dep_open.as_ref().map(plain), exit: exit_open.as_ref().map(plain) };
+        let w = build_witness(tree.root, bh, self.asset_f, &inputs, &outputs, exit_open, dep_open).unwrap_or_else(|e| fail(&e));
+        let mut p = prove(k, &w, made, data);
+        p.memos = memos;
+        p
     }
 
     /// The guest's input for a block of `spends` on this chain, and the nullifier witnesses it carries; the
@@ -260,6 +292,7 @@ impl Chain {
                 nfw.push(w);
             }
             bufs.push(wb);
+            bufs.push(p.data.to_bytes());
         }
         (bufs, nfw)
     }
@@ -281,13 +314,14 @@ impl Chain {
             }
         };
         let list: Vec<blk::Spend> = spends.iter().map(|p| p.spend.clone()).collect();
-        let (next, out, data) = blk::apply(&self.state, &list, &nfw, blk::vk_hash(&k.digest)).unwrap_or_else(|e| fail(&format!("the guest took a block apply refuses: {e}")));
+        let extra: Vec<SpendData> = spends.iter().map(|p| p.data.clone()).collect();
+        let (next, out, data) = blk::apply(&self.state, &list, &extra, &nfw, blk::vk_hash(&k.digest)).unwrap_or_else(|e| fail(&format!("the guest took a block apply refuses: {e}")));
         if pv != out.encode() {
             fail("the guest committed other public values than apply");
         }
         let prev_len = self.leaves.len() as u64;
-        for l in &data.leaves {
-            self.leaves.push(blk::fr_from_be(l).unwrap());
+        for o in &data.outputs {
+            self.leaves.push(blk::fr_from_be(&o[..32]).unwrap());
         }
         if Tree::new(&self.leaves).root != next.notes.root {
             fail("the block's note root differs from the tree built from every leaf");
@@ -298,7 +332,7 @@ impl Chain {
         let mut notes = vec![];
         for p in spends {
             for (w, s, v, leaf) in &p.outs {
-                let pos = data.leaves.iter().position(|l| *l == fr_be(leaf)).ok_or("an output is not among the block's leaves")?;
+                let pos = data.outputs.iter().position(|o| o[..32] == fr_be(leaf)).ok_or("an output is not among the block's outputs")?;
                 notes.push(Note { owner: *w, s: *s, v: *v, index: prev_len + pos as u64 });
             }
         }
@@ -308,14 +342,14 @@ impl Chain {
     }
 }
 
-fn prove(k: &Keys, w: &SpendWitness, outs: Vec<(usize, [u8; 33], u64, Fr)>) -> Prepared {
+fn prove(k: &Keys, w: &SpendWitness, outs: Vec<(usize, [u8; 33], u64, Fr)>, data: SpendData) -> Prepared {
     let proof = h2::prove(&k.params, &k.pk, w).unwrap_or_else(|e| fail(&e));
     let publics = w.publics();
     if !h2::verify(&k.params, k.pk.get_vk(), &publics, &proof) {
         fail("a spend proof does not verify natively");
     }
     let (hints, _) = agg::record_hints(&k.vparams, k.pk.get_vk(), &publics, &proof).unwrap_or_else(|e| fail(&format!("hints: {e:?}")));
-    Prepared { publics: publics.iter().flat_map(fr_be).collect(), proof, hints, spend: blk::Spend::from_publics(&publics), outs }
+    Prepared { publics: publics.iter().flat_map(fr_be).collect(), proof, hints, spend: blk::Spend::from_publics(&publics), data, outs, memos: vec![] }
 }
 
 /// Runs a guest to completion: its public values, cycle count and cycles by tracked section, or why it stopped.
@@ -334,6 +368,13 @@ fn execute(elf: &[u8], bufs: &[Vec<u8>]) -> Result<(Vec<u8>, u64, Value), String
     sections.sort();
     let sections = Value::Object(sections.into_iter().map(|(k, v)| (k, json!(v))).collect::<Map<String, Value>>());
     Ok((ex.into_public_values_stream(), cycles, sections))
+}
+
+/// A value as a 32-byte big-endian word.
+fn word32(v: u64) -> [u8; 32] {
+    let mut w = [0u8; 32];
+    w[24..].copy_from_slice(&v.to_be_bytes());
+    w
 }
 
 fn elf(var: &str, default: &str) -> Vec<u8> {
@@ -373,7 +414,7 @@ fn measure(sizes: &[usize]) {
             "{}",
             json!({
                 "spends": n, "cycles": l.cycles, "cycles_per_spend": l.cycles / n as u64, "agg_cycles": agg_cycles,
-                "sections": l.sections, "leaves": l.out.leaves, "nullifiers": l.data.nullifiers.len(),
+                "sections": l.sections, "outputs": l.out.outputs, "nullifiers": l.data.nullifiers.len(),
                 "stdin_bytes": l.stdin_bytes, "execute_secs": l.secs, "client_proofs_secs": prove_secs,
             })
         );
@@ -453,6 +494,48 @@ fn pin(check: bool) {
     println!("{}", json!({ "files": files.iter().map(|(n, b)| json!({ "name": n, "bytes": b.len() })).collect::<Vec<_>>(), "check": check, "ok": true }));
 }
 
+/// A landed block as the landing contract's test reads it: its public values and every list it publishes, the
+/// memos in the order of the outputs they belong to.
+fn block_json(l: &Landed, spends: &[Prepared]) -> Value {
+    let hx = |b: &[u8]| format!("0x{}", hex::encode(b));
+    let memo_of = |h: &[u8]| -> Vec<u8> {
+        spends.iter().flat_map(|p| p.memos.iter()).find(|m| blk::memo_hash(m)[..] == *h).cloned().unwrap_or_else(|| fail("an output without its memo"))
+    };
+    json!({
+        "publicValues": hx(&l.out.encode()),
+        "outputs": hx(&l.data.outputs.concat()),
+        "memos": l.data.outputs.iter().map(|o| hx(&memo_of(&o[32..]))).collect::<Vec<_>>(),
+        "nullifiers": l.data.nullifiers.iter().map(|n| hx(n)).collect::<Vec<_>>(),
+        "anchors": l.data.anchors.iter().map(|a| hx(a)).collect::<Vec<_>>(),
+        "deposits": hx(&l.data.deposits.concat()),
+        "exits": hx(&l.data.exits.concat()),
+    })
+}
+
+fn fixture(path: &str) {
+    let k = keys();
+    let elf = elf("TACIT_BLOCK_ELF", BLOCK_ELF);
+    let mut c = Chain::new(8);
+    c.asset_f = asset_field(&[0u8; 32]);
+    let genesis = c.state.clone();
+    let shield = c.spend_with(&k, &[], &[(2, secret(80, 0, 0), 500)], None, Some(500), "fixture shield", 0);
+    let l1 = c.land(&elf, &k, &[shield.clone()]).unwrap_or_else(|e| fail(&format!("fixture shield: {e}")));
+    let to = [0xab; 20];
+    let pay_out = c.spend_with(&k, &[&l1.notes[0].clone()], &[(2, secret(81, 0, 0), 380)], Some((120, to)), None, "fixture exit", c.leaves.len());
+    let l2 = c.land(&elf, &k, &[pay_out.clone()]).unwrap_or_else(|e| fail(&format!("fixture exit: {e}")));
+    let hx = |b: &[u8]| format!("0x{}", hex::encode(b));
+    let doc = json!({
+        "genesisState": hx(&genesis.digest()),
+        "genesisRoot": hx(&fr_be(&genesis.notes.root)),
+        "spendVk": hx(&blk::vk_hash(&k.digest)),
+        "deposit": { "value": 500, "cx": hx(&fr_be(&shield.spend.dep[0])), "cy": hx(&fr_be(&shield.spend.dep[1])), "body": hx(&fr_be(&shield.spend.body)) },
+        "exit": { "value": 120, "to": hx(&to) },
+        "blocks": [block_json(&l1, &[shield]), block_json(&l2, &[pay_out])],
+    });
+    std::fs::write(path, serde_json::to_string_pretty(&doc).unwrap()).unwrap_or_else(|e| fail(&format!("{path}: {e}")));
+    println!("{}", json!({ "fixture": path, "blocks": 2 }));
+}
+
 fn expect_refused(c: &mut Chain, elf: &[u8], k: &Keys, spends: &[Prepared], what: &str) {
     match c.land(elf, k, spends) {
         Ok(_) => fail(&format!("the guest took {what}")),
@@ -469,10 +552,10 @@ fn test() {
     // Block 1: four spends of fresh notes, all against the root the block starts from.
     let b1 = spends_of(&mut c, &k, 4, 10);
     let l1 = c.land(&elf, &k, &b1).unwrap_or_else(|e| fail(&format!("block 1: {e}")));
-    if !l1.data.anchors.is_empty() || l1.out.leaves != 12 || l1.data.nullifiers.len() != 8 {
+    if !l1.data.anchors.is_empty() || l1.out.outputs != 12 || l1.data.nullifiers.len() != 8 {
         fail("block 1 committed other lists than expected");
     }
-    println!("{}", json!({ "block": 1, "spends": 4, "leaves": l1.out.leaves, "cycles": l1.cycles, "next_root": hex::encode(l1.out.next_root) }));
+    println!("{}", json!({ "block": 1, "spends": 4, "outputs": l1.out.outputs, "cycles": l1.cycles, "next_root": hex::encode(l1.out.next_root) }));
 
     // Block 2: wallet 1 spends the 900 it received in block 1, against block 1's root.
     let received = l1.notes.iter().find(|n| n.owner == 1 && n.v == 900).cloned().unwrap_or_else(|| fail("no note for wallet 1"));
@@ -507,6 +590,39 @@ fn test() {
     }
     println!("{}", json!({ "recent_anchor_unlisted": hex::encode(fr_be(&old_root)), "aged_anchor_listed": true }));
 
+    // A deposit: a shield of 500 into a note of wallet 2. The block commits the record the landing contract matches
+    // with the deposit made on L1: asset, value, commitment and the body the depositor named.
+    let shield = c.spend_with(&k, &[], &[(2, secret(70, 0, 0), 500)], None, Some(500), "shield", c.leaves.len());
+    let l5 = c.land(&elf, &k, &[shield.clone()]).unwrap_or_else(|e| fail(&format!("shield: {e}")));
+    let want_dep = [fr_be(&c.asset_f), word32(500), fr_be(&shield.spend.dep[0]), fr_be(&shield.spend.dep[1]), fr_be(&shield.spend.body)].concat();
+    if l5.data.deposits != vec![want_dep] || !l5.data.exits.is_empty() {
+        fail("the shield's deposit record is not the one expected");
+    }
+    // An exit: wallet 2 spends that note, keeps 380 and pays 120 out to an address its body names.
+    let deposited = l5.notes[0].clone();
+    let to = [0xab; 20];
+    let pay_out = c.spend_with(&k, &[&deposited], &[(2, secret(71, 0, 0), 380)], Some((120, to)), None, "exit", c.leaves.len());
+    let l6 = c.land(&elf, &k, &[pay_out]).unwrap_or_else(|e| fail(&format!("exit: {e}")));
+    let mut to_word = [0u8; 32];
+    to_word[12..].copy_from_slice(&to);
+    if l6.data.exits != vec![[fr_be(&c.asset_f), word32(120), to_word].concat()] || !l6.data.deposits.is_empty() {
+        fail("the exit's record is not the one expected");
+    }
+    println!("{}", json!({ "deposit_record": true, "exit_record": true }));
+
+    // Refused: a deposit opened to another value, an exit to an address its body does not name, a memo its body
+    // does not name.
+    let mut bad_dep = c.spend_with(&k, &[], &[(3, secret(72, 0, 0), 50)], None, Some(50), "bad deposit", c.leaves.len());
+    bad_dep.data.dep.as_mut().unwrap().v = 51;
+    expect_refused(&mut c, &elf, &k, &[bad_dep], "a deposit opened to another value");
+    let held = c.mint(&[(4, secret(73, 0, 0), 60), (4, secret(73, 0, 1), 70)]);
+    let mut bad_to = c.spend_with(&k, &[&held[0]], &[(4, secret(74, 0, 0), 40)], Some((20, [0xcd; 20])), None, "bad exit", c.leaves.len());
+    bad_to.data.exit_to = [0xee; 20];
+    expect_refused(&mut c, &elf, &k, &[bad_to], "an exit to an address its body does not name");
+    let mut bad_memo = c.spend(&k, &[&held[1]], &[(5, secret(75, 0, 0), 70)], "bad memo", c.leaves.len());
+    bad_memo.data.memo_hashes[0][0] ^= 1;
+    expect_refused(&mut c, &elf, &k, &[bad_memo], "a memo its body does not name");
+
     // Refused: one note spent twice in one block (two spends, two bodies, the same nullifier).
     let fresh = c.mint(&[(2, secret(60, 0, 0), 10)]);
     let at = c.leaves.len();
@@ -537,7 +653,8 @@ fn main() {
         }
         Some("test") => test(),
         Some("pin") => pin(args.iter().any(|a| a == "--check")),
+        Some("fixture") if args.len() == 2 => fixture(&args[1]),
         Some("dump") if args.len() == 3 => dump(args[1].parse().unwrap_or_else(|_| fail("N is a number")), &args[2]),
-        _ => fail("usage: tacit-block measure N... | test | dump N FILE | pin [--check]"),
+        _ => fail("usage: tacit-block measure N... | test | dump N FILE | fixture FILE | pin [--check]"),
     }
 }

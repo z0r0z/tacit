@@ -1214,6 +1214,7 @@ dependencies = [
  "btc-pool-halo2",
  "ff",
  "halo2_proofs",
+ "num-bigint 0.4.8",
  "sha2",
  "sp1-lib",
 ]

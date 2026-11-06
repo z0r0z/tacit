@@ -2,8 +2,9 @@
 //! the block starts from by all of them (tacit-block-common `apply`).
 //!
 //! stdin (raw buffers): the starting state (`State::to_bytes`), n (u32 LE), then per spend: publics (12 ×
-//! 32-byte big-endian field elements), proof (2,080 bytes), hints (20 × 64 bytes) and its nullifier witnesses
-//! (`NfWitness::to_bytes` for each non-zero nullifier, slot order).
+//! 32-byte big-endian field elements), proof (2,080 bytes), hints (20 × 64 bytes), its nullifier witnesses
+//! (`NfWitness::to_bytes` for each non-zero nullifier, slot order) and the rest of its body and openings
+//! (`SpendData::to_bytes`).
 //! Public values: `BlockOut::encode`, twelve 32-byte words. The guest panics, so no proof is produced, unless
 //! every proof verifies and the block applies.
 #![no_main]
@@ -16,7 +17,7 @@ use halo2_proofs::plonk::{ConstraintSystem, VerifyingKey};
 use halo2_proofs::SerdeFormat;
 use sp1_lib::bn254::Bn254Point;
 use sp1_lib::utils::{AffinePoint, WeierstrassAffinePoint};
-use tacit_block_common::{self as blk, NfWitness, Spend, State, NF_WITNESS_LEN};
+use tacit_block_common::{self as blk, NfWitness, Spend, SpendData, State, NF_WITNESS_LEN};
 
 /// The pinned spend verification key, its digest and transcript representative, and the verifier params, as
 /// `tacit-block pin` derives them (the same values btc-pool-agg pins).
@@ -42,6 +43,7 @@ pub fn main() {
     let mut raw = Vec::with_capacity(n);
     let mut spends = Vec::with_capacity(n);
     let mut nfw = vec![];
+    let mut data = Vec::with_capacity(n);
     for _ in 0..n {
         let publics = sp1_zkvm::io::read_vec();
         let proof = sp1_zkvm::io::read_vec();
@@ -56,6 +58,7 @@ pub fn main() {
         for c in witnesses.chunks(NF_WITNESS_LEN) {
             nfw.push(NfWitness::from_bytes(c).expect("nullifier witness"));
         }
+        data.push(SpendData::from_bytes(&sp1_zkvm::io::read_vec()).expect("spend data"));
         spends.push(s);
         raw.push((publics, p, proof, hints));
     }
@@ -99,7 +102,7 @@ pub fn main() {
     assert!(ok, "pairing check failed");
     println!("cycle-tracker-report-end: pairing");
 
-    let (_, out, _) = blk::apply(&state, &spends, &nfw, blk::vk_hash(&VK_DIGEST)).expect("block rejected");
+    let (_, out, _) = blk::apply(&state, &spends, &data, &nfw, blk::vk_hash(&VK_DIGEST)).expect("block rejected");
     sp1_zkvm::io::commit_slice(&out.encode());
 }
 
