@@ -17,6 +17,7 @@ import { withNonceRetry } from './lib/nonce-retry.js';
 import { publicClient, relayWallet, HEADER_RELAY, RELAY_ABI, baseFeeHistory } from './lib/chain.js';
 import { planHeaderAdvance } from './lib/header-plan.js';
 import { cbtcLockDemand } from './lib/reflection-demand.js';
+import { noteLockDemand } from './lib/attest-demand.js';
 import { tipFor, TIP_HISTORY_BLOCKS, TIP_PERCENTILE } from './lib/gas-tip.js';
 import { tipLadder, sendPatient, raised } from './lib/patient-send.js';
 import { baseFeeWait } from './lib/base-fee-wait.js';
@@ -323,6 +324,7 @@ async function cycleOnce() {
     .catch((e) => { log(`demand check unavailable (${String(e.message).slice(0, 80)})`); return null; });
   const gwei = dear || null;
   const ripe = !!demand?.waiting && demand.oldestAgeBlocks >= CFG.demandGraceBlocks;
+  if (demand) noteLockDemand({ waiting: demand.waiting, ripe });
   const urgent = ripe && !(gwei && gwei > CFG.demandMaxGasGwei);
   if (demand?.waiting) {
     const why = !ripe ? `bonded ${Math.round((demand.oldestAgeBlocks * 12) / 60)} min ago, before it can have its confirmations — keeping to cheap gas for now`

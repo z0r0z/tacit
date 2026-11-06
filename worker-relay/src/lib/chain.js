@@ -233,6 +233,13 @@ export const ZROUTER = getAddress(ADDR.zRouter);
 export async function readPool(fn, args = [], at = {}) {
   return publicClient.readContract({ address: POOL, abi: POOL_ABI, functionName: fn, args, ...at });
 }
+// The pool's cross-out and consume counts, the two an attest must match (at `at`, else the latest), or null when they cannot be read.
+export async function readPoolCounts(at = {}) {
+  try {
+    const [crossOuts, consumed] = await Promise.all([readPool('attestedCrossOutCount', [], at), readPool('attestedBitcoinConsumedCount', [], at)]);
+    return { crossOuts: BigInt(crossOuts), consumed: BigInt(consumed) };
+  } catch { return null; }
+}
 
 // The digest the pool has attested up to — the reflection-folder's idempotency check (skip a batch that
 // is already on-chain, and recognise an "already attested" revert so it acks instead of looping).

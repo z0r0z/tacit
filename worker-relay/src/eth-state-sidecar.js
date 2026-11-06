@@ -38,11 +38,12 @@ import { keccak256 } from 'viem';
 import { CFG } from './lib/config.js';
 import { reflectionEthState, reflectionEthStatePublish, reflectionEthStateClear, heartbeat, heartbeatIdle } from './lib/worker-client.js';
 import { proveEthState, commitEthProveState } from './lib/prover.js';
-import { readPool } from './lib/chain.js';
+import { readPool, readPoolCounts } from './lib/chain.js';
 import { safeErr } from './lib/safe-err.js';
 import { resumeMismatch, rebuildFromConfirmed } from './lib/eth-state-resume.js';
 import { finalizedHead, finalityNotAdvanced } from './lib/beacon-finality.js';
-import { countsBehind } from './lib/attest-counts.js';
+import { countsBehind, pvCounts } from './lib/attest-counts.js';
+import { noteFoldedCounts } from './lib/attest-demand.js';
 import { inflightRecord, inflightCounts, makeCoverWait } from './lib/eth-state-counts.js';
 
 const log = (...a) => console.log(`[eth-state ${new Date().toISOString()}]`, ...a);
@@ -120,13 +121,6 @@ function isStale(publishedAt) {
 async function readLocalInflight() {
   try { return JSON.parse(await readFile(LOCAL_INFLIGHT_PATH, 'utf8')); } catch { return null; }
 }
-// The pool's cross-out and consume counts (at `at`, else the latest), or null when they cannot be read.
-async function poolCounts(at) {
-  try {
-    const [crossOuts, consumed] = await Promise.all([readPool('attestedCrossOutCount', [], at), readPool('attestedBitcoinConsumedCount', [], at)]);
-    return { crossOuts: BigInt(crossOuts), consumed: BigInt(consumed) };
-  } catch { return null; }
-}
 const coverWait = makeCoverWait({ boundMs: CFG.ethStateFinalityCoverSecs * 1000 });
 
 // One cycle: resolve any local in-flight candidate against the server's view of the world, then produce
@@ -139,6 +133,8 @@ async function cycle() {
     log(`the API could not say what is pending (HTTP ${state.unavailable}) — asking again next cycle`);
     return false;
   }
+  // What the last landed batch carried to Bitcoin: the attest gate goes at once while the pool has moved past it.
+  noteFoldedCounts(state.confirmed?.ethPv ? pvCounts(state.confirmed.ethPv) : null);
   let pendingLive = !!(state.pending && !isStale(state.pending.publishedAt));
 
   const local = await readLocalInflight();
@@ -149,7 +145,7 @@ async function cycle() {
       await rm(LOCAL_INFLIGHT_PATH, { force: true });
     } else if (state.pending && state.pending.contentHash === local.contentHash && !isStale(state.pending.publishedAt)) {
       // A candidate the pool has moved past can never be folded, so it is replaced now rather than held to the staleness ceiling.
-      const behind = countsBehind(inflightCounts(local), await poolCounts());
+      const behind = countsBehind(inflightCounts(local), await readPoolCounts());
       if (!behind) {
         log(`local candidate ${local.contentHash} still pending confirmation — waiting`);
         return false;
@@ -250,8 +246,8 @@ async function cycle() {
   // A candidate proves the pool at the finalized head, so cross-outs and consumes recorded after it would leave the candidate behind
   // the pool on arrival: wait for finality to cover them, for at most ETH_STATE_FINALITY_COVER_SECS.
   if (head) {
-    const atHead = await poolCounts(head.block ? { blockNumber: BigInt(head.block) } : { blockTag: 'finalized' });
-    const uncovered = countsBehind(atHead, await poolCounts());
+    const atHead = await readPoolCounts(head.block ? { blockNumber: BigInt(head.block) } : { blockTag: 'finalized' });
+    const uncovered = countsBehind(atHead, await readPoolCounts());
     if (coverWait(uncovered)) {
       log(`the finalized head (block ${head.block ?? '?'}) holds ${uncovered} — waiting for finality to cover them before asking the network to prove`);
       await heartbeat('eth-state', 'waiting for finality to cover the pool\'s latest cross-outs');

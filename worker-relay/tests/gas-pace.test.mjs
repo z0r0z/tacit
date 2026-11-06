@@ -7,7 +7,7 @@ import { percentile, paceBars, headerPace, headerHoldText, attestPace, attestGat
 const flat = (g, n = 7200) => Array.from({ length: n }, () => g);
 // the live header settings (render.yaml) with the new knobs at their defaults
 const HEADER = { ceilGwei: 0.3, followPct: 30, cheapGwei: 0.15, cheapPct: 12, minBatch: 20, minCheap: 3, maxWaitMin: 480, staleBlocks: 144, spikeGwei: 1, spikeMult: 8 };
-const ATTEST = { minBlocks: 6, waitMin: 60, cheapGwei: 0.15, cheapPct: 12, spikeGwei: 1, spikeMult: 8 };
+const ATTEST = { minBlocks: 6, waitMin: 60 };
 
 test('a percentile is read from the sorted numbers, and nothing has none', () => {
   assert.equal(percentile([5, 1, 3, 2, 4], 0), 1);
@@ -95,29 +95,23 @@ test('the hold line says what it waits for and the latest it goes', () => {
   assert.match(s, /at 144 headers/);
 });
 
-test('attest: cheap gas goes as blocks come; dear gas waits for company, for a bounded time', () => {
-  const h = flat(0.06);
-  assert.equal(attestPace({ price: 0.1, matured: 1, ageMin: 0, history: h, params: ATTEST }).go, true, 'cheap: one block is enough, as before');
-  const few = attestPace({ price: 0.55, matured: 3, ageMin: 10, history: h, params: ATTEST });
-  assert.equal(few.go, false);
-  assert.match(few.reason, /3 of 6 blocks matured with gas at 0\.550 gwei/);
+test('attest: a few blocks wait for company at any gas, for a bounded time, unless someone waits on them', () => {
+  const few = attestPace({ matured: 3, ageMin: 10, params: ATTEST });
+  assert.equal(few.go, false, 'three blocks wait, whatever gas costs: the proof base fee is the same at any price');
+  assert.match(few.reason, /3 of 6 blocks matured/);
   assert.match(few.reason, /in 50 min at the latest/);
-  assert.equal(attestPace({ price: 0.55, matured: 6, ageMin: 0, history: h, params: ATTEST }).go, true, 'six blocks go');
-  assert.equal(attestPace({ price: 0.55, matured: 2, ageMin: 60, history: h, params: ATTEST }).go, true, 'an hour is the bound');
-  assert.equal(attestPace({ price: 0.55, matured: 2, ageMin: 59.9, history: h, params: ATTEST }).go, false);
-  assert.equal(attestPace({ price: 0.55, matured: 0, ageMin: 0, history: h, params: ATTEST }).go, false, 'nothing matured is nothing to attest');
-  assert.equal(attestPace({ price: 0.55, matured: 1, ageMin: 0, history: h, params: { ...ATTEST, minBlocks: 1 } }).go, true, 'batching off');
-  assert.equal(attestPace({ price: 0.55, matured: 1, ageMin: 0, history: h, params: { ...ATTEST, waitMin: 0 } }).go, true, 'a zero wait is off');
-});
-
-test('attest: a market that moved up is not treated as dear for ever', () => {
-  const h = flat(0.5);
-  assert.equal(attestPace({ price: 0.5, matured: 1, ageMin: 0, history: h, params: ATTEST }).go, false, 'at its own norm it is not cheap (under the 12th percentile)');
-  assert.equal(attestPace({ price: 0.4, matured: 1, ageMin: 0, history: h, params: ATTEST }).go, true, 'a dip below the day\'s low end is');
+  assert.equal(attestPace({ matured: 6, ageMin: 0, params: ATTEST }).go, true, 'six blocks go');
+  assert.equal(attestPace({ matured: 2, ageMin: 60, params: ATTEST }).go, true, 'an hour is the bound');
+  assert.equal(attestPace({ matured: 2, ageMin: 59.9, params: ATTEST }).go, false);
+  const urgent = attestPace({ matured: 1, ageMin: 0, urgent: '1 bonded cBTC lock(s) wait on these blocks', params: ATTEST });
+  assert.deepEqual([urgent.go, urgent.reason], [true, '1 bonded cBTC lock(s) wait on these blocks'], 'a user waiting: one block goes');
+  assert.equal(attestPace({ matured: 0, ageMin: 0, urgent: 'x', params: ATTEST }).go, false, 'nothing matured is nothing to attest');
+  assert.equal(attestPace({ matured: 1, ageMin: 0, params: { ...ATTEST, minBlocks: 1 } }).go, true, 'batching off');
+  assert.equal(attestPace({ matured: 1, ageMin: 0, params: { ...ATTEST, waitMin: 0 } }).go, true, 'a zero wait is off');
 });
 
 test('the attest gate: nothing matured builds no job (but probes now and then), matured blocks follow the pace, and no reading proceeds', () => {
-  const base = { confirmations: 24, price: 0.55, history: flat(0.06), now: 10_000_000, params: ATTEST };
+  const base = { confirmations: 24, now: 10_000_000, params: ATTEST };
   const relay = attestGate({ ...base, relayTip: 973810, attested: 973786, probedAt: base.now - 60_000 });
   assert.equal(relay.go, false);
   assert.equal(relay.key, 'relay');
@@ -126,15 +120,15 @@ test('the attest gate: nothing matured builds no job (but probes now and then), 
   const probe = attestGate({ ...base, relayTip: 973810, attested: 973786, probedAt: base.now - 11 * 60_000 });
   assert.deepEqual([probe.go, probe.probe, probe.probedAt], [true, true, base.now], 'a job is asked for every ten minutes, so the drift and lost-ack checks still run');
   const few = attestGate({ ...base, relayTip: 973813, attested: 973786, probedAt: base.now });
-  assert.deepEqual([few.go, few.key, few.matured, few.since], [false, 'dear', 3, base.now], '3 blocks matured, gas dear: the wait starts now');
+  assert.deepEqual([few.go, few.key, few.matured, few.since], [false, 'company', 3, base.now], '3 blocks matured: the wait starts now');
+  const wanted = attestGate({ ...base, relayTip: 973813, attested: 973786, probedAt: base.now, urgent: 'Ethereum has moved past the last batch' });
+  assert.deepEqual([wanted.go, wanted.why], [true, 'Ethereum has moved past the last batch'], 'someone waiting: it goes now');
   const later = attestGate({ ...base, relayTip: 973813, attested: 973786, since: base.now - 61 * 60_000, probedAt: base.now });
   assert.equal(later.go, true, 'an hour on, it goes');
   const full = attestGate({ ...base, relayTip: 973820, attested: 973786, probedAt: base.now });
   assert.deepEqual([full.go, full.matured], [true, 10]);
   assert.equal(attestGate({ ...base, relayTip: 973813, attested: null }), null, 'the cursor cannot be read: proceed as before');
   assert.equal(attestGate({ ...base, relayTip: 0, attested: 973786 }), null);
-  const noPrice = attestGate({ ...base, price: NaN, relayTip: 973813, attested: 973786, probedAt: base.now });
-  assert.equal(noPrice.go, true, 'a price that cannot be read is not a reason to wait');
 });
 
 test('the next block\'s base fee follows the fullness of this one', () => {

@@ -94,33 +94,33 @@ export function headerHoldText({ price, pending, pace, params: p }) {
 }
 
 // The attest's decision for the blocks now matured and not yet attested.
-//   params  { minBlocks, waitMin, cheapGwei, cheapPct, spikeGwei, spikeMult }
+//   params  { minBlocks, waitMin }
 //   matured how many blocks the relay's tip has matured past the attested height; ageMin how long the oldest has been waiting
+//   urgent  why someone is waiting on these blocks (lib/attest-demand.js), or null
 // → { go, reason }
-// An attest costs the same gas whatever number of blocks it covers (and a proof request its base fee), so while gas is dear a few
-// blocks wait for company, for at most waitMin; while it is cheap they go as they come, as before. An absolute spike guard
-// (MAX_GAS_GWEI) is the folder's own and is read separately.
-export function attestPace({ price, matured, ageMin, history, params: p }) {
+// An attest pays the same proof base fee and about the same gas whatever number of blocks it covers, at any gas price, so a few
+// blocks wait for company, for at most waitMin, unless someone is waiting on them. An absolute spike guard (MAX_GAS_GWEI) is the
+// folder's own and is read separately.
+export function attestPace({ matured, ageMin, urgent = null, params: p }) {
   const m = Math.floor(Number(matured)) || 0;
   if (m < 1) return { go: false, reason: 'no block has matured yet' };
   if (!(p.minBlocks > 1) || !(p.waitMin > 0)) return { go: true, reason: 'batching is off' };
-  const bars = paceBars(history, p);
-  if (price < bars.cheap) return { go: true, reason: `gas ${g(price)} gwei is cheap` };
+  if (urgent) return { go: true, reason: urgent };
   if (m >= p.minBlocks) return { go: true, reason: `${m} blocks have matured` };
   if (Number(ageMin) >= p.waitMin) return { go: true, reason: `the oldest has waited ${mins(ageMin)}` };
   const left = Math.max(1, Math.ceil(p.waitMin - (Number(ageMin) || 0)));
-  return { go: false, reason: `${m} of ${p.minBlocks} blocks matured with gas at ${g(price)} gwei (cheap is under ${g(bars.cheap)}) — attesting at ${p.minBlocks} blocks, or cheap gas, or in ${mins(left)} at the latest` };
+  return { go: false, reason: `${m} of ${p.minBlocks} blocks matured — attesting at ${p.minBlocks} blocks, or in ${mins(left)} at the latest, or at once when someone waits on them` };
 }
 
 // Whether to ask for an attest job now, from where the relay and the attested cursor stand. Pure; the folder reads the chain and
 // the API and keeps `since` (when the oldest matured block was first seen, ms) and `probedAt` between calls.
 //   relayTip / attested / confirmations   the relay's tip, the API's attested height, the pool's maturity depth
-//   price, history, params                as attestPace
+//   urgent, params                        as attestPace
 // → null when there is nothing to go on (the folder proceeds as before), else
 //   { go, matured, since, probedAt, key?, text?, beat?, why? }   `since`/`probedAt` are the state to keep
 // With nothing matured no job is built (the relay is behind), except one probe every `probeEveryMs` so the folder's drift and
 // lost-ack checks, which live behind the job, still run.
-export function attestGate({ relayTip, attested, confirmations, price, history, now, since = null, probedAt = 0, probeEveryMs = 10 * 60_000, params }) {
+export function attestGate({ relayTip, attested, confirmations, now, since = null, probedAt = 0, probeEveryMs = 10 * 60_000, urgent = null, params }) {
   if (attested == null || !(Number(relayTip) > 0) || !Number.isFinite(Number(attested))) return null;
   const matured = Number(relayTip) - Number(confirmations) - Number(attested);
   if (matured < 1) {
@@ -129,8 +129,7 @@ export function attestGate({ relayTip, attested, confirmations, price, history, 
     return { go: false, matured, since: null, probedAt, key: 'relay', text: `no block has matured past the attested ${attested}: the relay's tip is ${relayTip} and the next batch needs ${need} — waiting for the header feeder`, beat: `waiting for relay tip ${need} (now ${relayTip})` };
   }
   const first = since ?? now;
-  if (!Number.isFinite(price)) return { go: true, matured, since: first, probedAt };
-  const pace = attestPace({ price, matured, ageMin: (now - first) / 60_000, history, params });
+  const pace = attestPace({ matured, ageMin: (now - first) / 60_000, urgent, params });
   if (pace.go) return { go: true, matured, since: first, probedAt, why: pace.reason };
-  return { go: false, matured, since: first, probedAt, key: 'dear', text: pace.reason, beat: `holding ${matured} matured block(s) for company while gas is dear` };
+  return { go: false, matured, since: first, probedAt, key: 'company', text: pace.reason, beat: `holding ${matured} matured block(s) for company` };
 }
