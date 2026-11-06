@@ -165,7 +165,16 @@ do_install() {
     say "  $BIN mine ${addr:-0xYourAddress}"
     return 0
   fi
-  if ! out=$(TACIT_PROVER_DIR="$HOME_DIR" TACIT_MINE="$addr" "$BIN" install 2>&1); then
+  # An update on a Mac: the old program is booted out and gone before the new one is loaded. launchctl bootout returns before the old
+  # process has exited, and loading the label meanwhile fails ("Bootstrap failed: 5: Input/output error"), so this waits for it (up to
+  # 30 s), and tries the load once more after a pause if it still fails.
+  if [ "$(uname -s)" = Darwin ]; then
+    dom="gui/$(id -u)"
+    launchctl bootout "$dom/finance.tacit.prover" >/dev/null 2>&1 || true
+    n=0
+    while [ "$n" -lt 30 ] && launchctl print "$dom/finance.tacit.prover" >/dev/null 2>&1; do sleep 1; n=$((n + 1)); done
+  fi
+  if ! out=$(TACIT_PROVER_DIR="$HOME_DIR" TACIT_MINE="$addr" "$BIN" install 2>&1) && { sleep 5; ! out=$(TACIT_PROVER_DIR="$HOME_DIR" TACIT_MINE="$addr" "$BIN" install 2>&1); }; then
     printf '%s\n' "$out" >&2
     say "It could not be set to start at login. It is installed, and runs in a terminal (leave the window open) with:" >&2
     say "  $BIN mine ${addr:-0xYourAddress}" >&2

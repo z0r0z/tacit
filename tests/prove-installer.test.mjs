@@ -79,7 +79,8 @@ function shims(dir) {
   const put = (name, body) => writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
   put('uname', 'case "$1" in -m) echo "${FAKE_ARCH:-arm64}" ;; *) echo "${FAKE_OS:-Darwin}" ;; esac');
   put('sysctl', 'case "$2" in hw.optional.arm64) echo "${FAKE_ARM64:-1}" ;; hw.memsize) echo "${FAKE_MEM:-17179869184}" ;; *) exit 1 ;; esac');
-  put('launchctl', 'echo "launchctl $*" >> "$HOME/system.log"; [ "$1" != print ] || printf "gui/501/finance.tacit.prover = {\\n\\tpath = x\\n\\tstate = %s\\n}\\n" "${FAKE_LAUNCHD:-running}"');
+  // After a bootout the label is gone for the next print (the old program has exited), then loaded again as the install loads it.
+  put('launchctl', 'echo "launchctl $*" >> "$HOME/system.log"; [ "$1" != bootout ] || touch "$HOME/.out"; if [ "$1" = print ] && [ -f "$HOME/.out" ]; then rm -f "$HOME/.out"; exit 113; fi; [ "$1" != print ] || printf "gui/501/finance.tacit.prover = {\\n\\tpath = x\\n\\tstate = %s\\n}\\n" "${FAKE_LAUNCHD:-running}"');
   put('systemctl', 'echo "systemctl $*" >> "$HOME/system.log"; case "$2" in is-active) echo "${FAKE_SYSTEMD:-active}" ;; esac');
   put('loginctl', 'echo "Linger=${FAKE_LINGER:-no}"');
   return bin;
@@ -168,7 +169,8 @@ test('each machine gets its own asset, and the ones with none are told why', wit
   assert.equal(r.code, 0, r.err);
   assert.deepEqual(w.srv.seen.filter((p) => p.startsWith('/rel/')), ['/rel/tacit-prover-macos-arm64.tar.gz']);
   assert.doesNotMatch(r.out, /enable-linger/);
-  assert.equal(w.read('system.log'), systemBefore, 'on a Mac the script asks nothing of launchd itself: the program\'s own install boots the old one out');
+  assert.match(w.read('system.log').slice(systemBefore.length), /launchctl bootout gui\/\d+\/finance\.tacit\.prover\nlaunchctl print gui\/\d+\/finance\.tacit\.prover/,
+    'on a Mac an update boots the old program out and waits until it is gone before the new one is loaded');
 
   for (const [env, why] of [
     [{ FAKE_OS: 'Darwin', FAKE_ARCH: 'x86_64', FAKE_ARM64: '0' }, /needs an Apple-silicon Mac.*x86_64/],
