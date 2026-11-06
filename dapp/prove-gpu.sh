@@ -10,7 +10,8 @@
 #
 # x86-64 Linux with an NVIDIA GPU of 24 GB or more, its CUDA 12 driver and the CUDA 12 runtime, libcudart.so.12 (a rented RTX 3090, 4090,
 # A5000 or larger works). A batch is billions of cycles: tens of minutes on such a GPU. The first start fetches SP1's GPU server and its
-# Groth16 artifacts (about 8 GB). Under WSL 2 the GPU is the Windows driver's, and nothing here has been run there yet.
+# Groth16 artifacts (about 8 GB). Under WSL 2 the GPU is the Windows driver's, and nothing here has been run there yet. A smaller or older
+# card (under 24 GB, or before compute capability 8.0) gets the regular node instead (prove.sh, for the same address).
 # The whole script is one function called on the last line, so a download cut short runs nothing. Environment: TACIT_GPU_HOME is where it
 # lives (~/.tacit-gpu).
 
@@ -44,6 +45,19 @@ has_cudart() {
 }
 
 # The worker and SP1's GPU server are built against glibc 2.34; on an older one neither starts. Another libc is left to them.
+# A card SP1's GPU server cannot take still sits in a computer that can prove: the regular node (prove.sh) proves the pool's deposits and
+# mines salts on its CPU, for the same address. TACIT_GPU_ONLY=1 stops here instead; TACIT_NODE_SCRIPT is where prove.sh comes from.
+node_instead() {
+  say "$1. Setting up the regular node instead: it proves the pool's deposits and mines salts on this computer's CPU, for $ADDR."
+  [ "${TACIT_GPU_ONLY:-}" != 1 ] || exit 1
+  command -v curl >/dev/null 2>&1 || die "curl is needed."
+  node=$(mktemp)
+  curl -fsSL "${TACIT_NODE_SCRIPT:-https://tacit.finance/prove.sh}" -o "$node" || { rm -f "$node"; die "the node's installer did not download: run curl -fsSL https://tacit.finance/prove.sh | sh -s -- $ADDR"; }
+  rc=0; sh "$node" "$ADDR" || rc=$?
+  rm -f "$node"
+  exit "$rc"
+}
+
 check_glibc() {
   v=$(ldd --version 2>&1 | head -n 1 | awk '{print $NF}')
   maj=${v%%[!0-9]*}; rest=${v#*.}; min=${rest%%[!0-9]*}
@@ -85,10 +99,10 @@ main() {
   fi
   mem=$("$smi" --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ')
   case $mem in ''|*[!0-9]*) die "nvidia-smi did not say how much memory the GPU has (${mem:-nothing}); a Bitcoin batch needs 24 GB or more." ;; esac
-  [ "$mem" -ge 23000 ] || die "the GPU has $mem MiB; a Bitcoin batch needs 24 GB or more."
+  [ "$mem" -ge 23000 ] || node_instead "This GPU has $mem MiB, and a Bitcoin batch needs a 24 GB card"
   # SP1's GPU server carries code for sm_80 (Ampere) and newer only; the best card counts, and a driver too old to say is left to the server.
   cc=$("$smi" --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | tr -d ' ' | sort -rn | head -1)
-  case $cc in [1-7].[0-9]) die "this GPU is compute capability $cc, and SP1's GPU server needs 8.0 or newer (an RTX 3090, A5000 or later)." ;; esac
+  case $cc in [1-7].[0-9]) node_instead "This GPU is compute capability $cc, and SP1's GPU server needs 8.0 or newer (an RTX 3090, A5000 or later)" ;; esac
   # Under WSL the card also draws Windows' desktop, and what Windows holds is not there for a batch.
   if is_wsl; then
     used=$("$smi" --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ')
