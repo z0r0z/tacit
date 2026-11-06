@@ -139,6 +139,7 @@ export function loadKeeperConfig(env = process.env) {
     // TAC: the lowest price read over this long is the one fees are counted at
     rateWindowSecs: int(env, 'EVM_POOL_KEEPER_RATE_WINDOW_SECS', 600),
     marginBps: big(env, 'EVM_POOL_KEEPER_MARGIN_BPS', 2000n),
+    relayMarginBps: big(env, 'EVM_POOL_KEEPER_RELAY_MARGIN_BPS', 500n),
     depositGas: big(env, 'EVM_POOL_KEEPER_DEPOSIT_GAS', 500000n),
     wrapGas: big(env, 'EVM_POOL_KEEPER_WRAP_GAS', 300000n),
     sweepGas: big(env, 'EVM_POOL_KEEPER_SWEEP_GAS', 600000n),

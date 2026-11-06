@@ -18,7 +18,7 @@ const E18 = 10n ** 18n;
 
 // Whether `reward` (in `token` base units) pays for `gas` at `gasPrice`, with the margin on top, and meets the
 // token's minimum unless `floor` is false. A token with neither a minimum nor a price configured is never completed.
-export function coverCheck({ reward, token, gas, gasPrice, cfg, floor = true }) {
+export function coverCheck({ reward, token, gas, gasPrice, cfg, floor = true, marginBps = cfg.marginBps }) {
   const t = token.toLowerCase();
   const min = cfg.minFees.get(t);
   const rate = cfg.rates.get(t);
@@ -27,13 +27,17 @@ export function coverCheck({ reward, token, gas, gasPrice, cfg, floor = true }) 
   if (floor && min !== undefined && BigInt(reward) < min) return { ok: false, reason: `reward ${reward} is below the ${min} minimum` };
   if (rate !== undefined) {
     const cost = BigInt(gas) * BigInt(gasPrice);
-    const need = cost + (cost * cfg.marginBps) / 10000n;
+    const need = cost + (cost * marginBps) / 10000n;
     const value = (BigInt(reward) * rate) / E18;
     if (value < need) return { ok: false, reason: `reward worth ${value} wei is below the ${need} wei cost` };
   }
   const limit = (BigInt(gas) * 13n) / 10n;
   return { ok: true, gas: limit > cfg.gasCap ? cfg.gasCap : limit };
 }
+
+// The margin a relayed send must clear when it arrives: the quote keeps marginBps on top, but gas moves between a quote and
+// the send, so a fee that still pays for the send is taken down to relayMarginBps (never above the quote's).
+export const relayMarginOf = (cfg) => (cfg.relayMarginBps === undefined || cfg.relayMarginBps > cfg.marginBps ? cfg.marginBps : cfg.relayMarginBps);
 
 // The smallest fee, in `token` base units, that coverCheck accepts for `gas` at `gasPrice` (with the same `floor`).
 export function quoteFee({ token, gas, gasPrice, cfg, floor = true }) {
