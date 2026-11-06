@@ -37,6 +37,8 @@
 // for Tacit's own tokens, are off. Between jobs its spare CPU cores grind deploy salts for the same address (salt.rs; SALT_THREADS, half
 // the cores by default, 0 is off). Tacit's own box grinds too, earning nothing (the pool gives the house no weight), when SALT_MINER
 // names the house address (the deployer).
+// GPU_DEVICE (default 0): the card to prove on, as nvidia-smi numbers them (with CUDA_DEVICE_ORDER=PCI_BUS_ID, CUDA numbers them the same
+// way); prove-gpu.sh names the card with the most memory, so a machine whose first card drives its display proves on the bigger one.
 // RELOAD_FLAG (default /workspace/worker.reload): when that file exists and no job is in hand, the worker removes it and
 // exits 0, so the loop around it starts a fresh worker (and GPU server) with whatever binary and env are now in place,
 // never in the middle of a proof.
@@ -177,7 +179,8 @@ fn main() {
     }
     println!("[{name}] building the CUDA prover and the proving key (once)...");
     let t0 = Instant::now();
-    let client = ProverClient::builder().cuda().build();
+    let device: u32 = env_or("GPU_DEVICE", "0").trim().parse().expect("GPU_DEVICE is a card's number, as nvidia-smi gives it");
+    let client = ProverClient::builder().cuda().with_device_id(device).build();
     let pk = client.setup(Elf::Static(ELF)).expect("setup failed");
     let vk = pk.verifying_key().bytes32();
     println!("[{name}] VKEY={vk} ({:.1} s)", t0.elapsed().as_secs_f64());
