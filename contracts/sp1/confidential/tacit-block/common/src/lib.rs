@@ -29,6 +29,7 @@ use ff::{Field, PrimeField};
 use halo2_proofs::halo2curves::bn256::Fr;
 use sha2::digest::generic_array::GenericArray;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
 /// Levels of the nullifier tree: room for 2^32 records.
@@ -36,10 +37,21 @@ pub const NF_LEVELS: usize = 32;
 /// How many of the latest note roots a block accepts as anchors without listing them.
 pub const RECENT: usize = 32;
 /// `State::to_bytes`: note root, leaf count (u64 BE), the 32 filled nodes, nullifier root, record count, recent
-/// roots, chain binding.
-pub const STATE_LEN: usize = 32 + 8 + 32 * TREE_DEPTH + 32 + 8 + 32 * RECENT + 32;
+/// roots, chain binding, the queue's position (u64 BE) and its hash there.
+pub const STATE_LEN: usize = 32 + 8 + 32 * TREE_DEPTH + 32 + 8 + 32 * RECENT + 32 + 8 + 32;
 /// `NfWitness::to_bytes`: low value, low next, low index (u64 BE), low path, slot path.
 pub const NF_WITNESS_LEN: usize = 32 + 32 + 8 + 2 * 32 * NF_LEVELS;
+/// `NfMember::to_bytes`: the record's next value, its index (u64 BE) and its path.
+pub const NF_MEMBER_LEN: usize = 32 + 8 + 32 * NF_LEVELS;
+/// A forced spend as posted to the landing contract's queue: its publics (12 × 32-byte big-endian field elements), its proof, the
+/// proof's hints (20 × 64 bytes), a memo for each output slot (MEMO_LEN bytes, an empty output's ignored), then the rest of
+/// `SpendData::to_bytes` after the memo hashes, which the memos give. The memos ride along so that whoever lands the block can
+/// publish them: a block lists every output's memo, and a hash alone could not be published.
+pub const FORCED_PUBLICS_LEN: usize = 12 * 32;
+pub const FORCED_PROOF_LEN: usize = 2080;
+pub const FORCED_HINTS_LEN: usize = 20 * 64;
+pub const FORCED_HEAD_LEN: usize = FORCED_PUBLICS_LEN + FORCED_PROOF_LEN + FORCED_HINTS_LEN;
+pub const FORCED_REST_AT: usize = FORCED_HEAD_LEN + 3 * MEMO_LEN;
 /// Every memo's length, so a memo's size says nothing of what wrote it (the landing contract refuses others).
 pub const MEMO_LEN: usize = 128;
 /// btc-pool-halo2's partial rounds for Poseidon with t = 3 (`partial_rounds(3)`, which parses constants to say so;
@@ -50,6 +62,7 @@ const STATE_DOMAIN: &[u8] = b"tacit-block-state-v1";
 const LIST_DOMAIN: &[u8] = b"tacit-block-list-v1";
 const VK_DOMAIN: &[u8] = b"tacit-block-vk-v1";
 const CHAIN_DOMAIN: &[u8] = b"tacit-block-chain-v1";
+const QUEUE_DOMAIN: &[u8] = b"tacit-block-queue-v1";
 const SHA256_IV: [u32; 8] = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
 
 /// Cycle-tracker markers in the zkVM (the executor sums each name); nothing elsewhere.
@@ -438,6 +451,38 @@ pub fn nf_insert(root: &[u8; 32], size: u64, v: &[u8; 32], w: &NfWitness) -> Res
     Ok(nf_root_of(&nf_record(v, &w.low_next), size, &w.slot_path))
 }
 
+/// That a value is already in the nullifier tree: its own record's next value, index and path.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NfMember {
+    pub next: [u8; 32],
+    pub index: u64,
+    pub path: Vec<[u8; 32]>,
+}
+
+impl NfMember {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut b = Vec::with_capacity(NF_MEMBER_LEN);
+        b.extend_from_slice(&self.next);
+        b.extend_from_slice(&self.index.to_be_bytes());
+        for s in &self.path {
+            b.extend_from_slice(s);
+        }
+        b
+    }
+
+    pub fn from_bytes(b: &[u8]) -> Option<NfMember> {
+        if b.len() != NF_MEMBER_LEN {
+            return None;
+        }
+        Some(NfMember { next: b[..32].try_into().ok()?, index: u64::from_be_bytes(b[32..40].try_into().ok()?), path: b[40..].chunks(32).map(|c| c.try_into().unwrap()).collect() })
+    }
+}
+
+/// Whether `v` is one of the values of the tree with root `root` and `size` records.
+pub fn nf_member(root: &[u8; 32], size: u64, v: &[u8; 32], w: &NfMember) -> bool {
+    *v != [0u8; 32] && w.index < size && w.path.len() == NF_LEVELS && nf_root_of(&nf_record(v, &w.next), w.index, &w.path) == *root
+}
+
 /// One spend proof's public inputs, in spend.circom's order: root, bodyHash, asset, nf[2], outLeaf[3],
 /// exitC[2], depC[2]. An empty input slot has nullifier 0, an empty output slot leaf 0, and no exit or deposit
 /// is the identity point (0, 1).
@@ -589,12 +634,15 @@ pub struct State {
     pub nf_size: u64,
     pub recent: [[u8; 32]; RECENT],
     pub chain: [u8; 32],
+    /// How many of the landing contract's forced spends the chain has taken or passed over, and the queue's hash after them.
+    pub queue_len: u64,
+    pub queue_hash: [u8; 32],
 }
 
 impl State {
     /// The state before any block, for a chain bound to `chain`.
     pub fn genesis(chain: [u8; 32]) -> State {
-        let mut s = State { notes: Notes::default(), nf_root: nf_genesis_root(), nf_size: 1, recent: [[0u8; 32]; RECENT], chain };
+        let mut s = State { notes: Notes::default(), nf_root: nf_genesis_root(), nf_size: 1, recent: [[0u8; 32]; RECENT], chain, queue_len: 0, queue_hash: [0u8; 32] };
         s.remember(fr_be(&s.notes.root));
         s
     }
@@ -624,6 +672,8 @@ impl State {
             b.extend_from_slice(r);
         }
         b.extend_from_slice(&self.chain);
+        b.extend_from_slice(&self.queue_len.to_be_bytes());
+        b.extend_from_slice(&self.queue_hash);
         b
     }
 
@@ -644,8 +694,10 @@ impl State {
         for (i, r) in recent.iter_mut().enumerate() {
             r.copy_from_slice(&b[at + 40 + 32 * i..at + 72 + 32 * i]);
         }
-        let chain = b[STATE_LEN - 32..].try_into().ok()?;
-        Some(State { notes: Notes { filled, len, root }, nf_root, nf_size, recent, chain })
+        let chain = b[STATE_LEN - 72..STATE_LEN - 40].try_into().ok()?;
+        let queue_len = u64::from_be_bytes(b[STATE_LEN - 40..STATE_LEN - 32].try_into().ok()?);
+        let queue_hash = b[STATE_LEN - 32..].try_into().ok()?;
+        Some(State { notes: Notes { filled, len, root }, nf_root, nf_size, recent, chain, queue_len, queue_hash })
     }
 
     pub fn digest(&self) -> [u8; 32] {
@@ -676,7 +728,7 @@ pub fn vk_hash(vk_digest: &[u8; 64]) -> [u8; 32] {
     h.finalize().into()
 }
 
-/// What a block proof commits, as ten 32-byte words (`encode`). How many spends a block holds is not among them,
+/// What a block proof commits, as twelve 32-byte words (`encode`). How many spends a block holds is not among them,
 /// and each list's length is in its hash.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BlockOut {
@@ -692,6 +744,10 @@ pub struct BlockOut {
     pub deposits_hash: [u8; 32],
     pub exits_hash: [u8; 32],
     pub vk: [u8; 32],
+    /// How far through the landing contract's queue of forced spends the chain is after the block, and the queue's hash there:
+    /// the contract checks the hash against its own and that nothing left in the queue is overdue.
+    pub queue_len: u64,
+    pub queue_hash: [u8; 32],
 }
 
 fn word(n: u64) -> [u8; 32] {
@@ -719,6 +775,8 @@ impl BlockOut {
             self.deposits_hash,
             self.exits_hash,
             self.vk,
+            word(self.queue_len),
+            self.queue_hash,
         ]
         .concat()
     }
@@ -742,59 +800,179 @@ pub struct BlockData {
     pub exits: Vec<Vec<u8>>,
 }
 
-/// Applies a block's spends to `prev`, each spend's proof checked separately (the guest folds them into one
-/// pairing). `data[i]` is the rest of spend i's body and its openings; `nfw[j]` is the witness for the block's
-/// j-th smallest non-zero nullifier, against the tree as the smaller ones left it: nullifiers enter in ascending
-/// order, so the tree is a function of the published list alone.
-pub fn apply(prev: &State, spends: &[Spend], data: &[SpendData], nfw: &[NfWitness], vk: [u8; 32]) -> Result<(State, BlockOut, BlockData), String> {
-    mark!("cycle-tracker-report-start: block-scan");
+/// The queue's hash after one more posted spend: SHA-256(QUEUE_DOMAIN ‖ the hash before ‖ SHA-256(what was posted)), as the
+/// landing contract chains it.
+pub fn queue_step(before: &[u8; 32], payload_hash: &[u8; 32]) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(QUEUE_DOMAIN);
+    h.update(before);
+    h.update(payload_hash);
+    h.finalize().into()
+}
+
+/// SHA-256 of what was posted to the queue.
+pub fn payload_hash(p: &[u8]) -> [u8; 32] {
+    Sha256::digest(p).into()
+}
+
+/// The parts of a posted spend, when the bytes are one: its publics, proof, hints and the rest of its body and openings, each
+/// output's memo hash taken from the memo posted for it (zero for an empty output, as a body names it).
+pub fn forced_parts(p: &[u8]) -> Option<(Vec<Fr>, &[u8], &[u8], SpendData)> {
+    if p.len() < FORCED_REST_AT {
+        return None;
+    }
+    let publics: Vec<Fr> = p[..FORCED_PUBLICS_LEN].chunks(32).map(fr_from_be).collect::<Option<_>>()?;
+    let mut rest = Vec::with_capacity(96 + p.len() - FORCED_REST_AT);
+    for (i, leaf) in publics[5..8].iter().enumerate() {
+        rest.extend(if bool::from(leaf.is_zero()) { [0u8; 32] } else { memo_hash(forced_memo(p, i)) });
+    }
+    rest.extend_from_slice(&p[FORCED_REST_AT..]);
+    let data = SpendData::from_bytes(&rest)?;
+    Some((publics, &p[FORCED_PUBLICS_LEN..FORCED_PUBLICS_LEN + FORCED_PROOF_LEN], &p[FORCED_PUBLICS_LEN + FORCED_PROOF_LEN..FORCED_HEAD_LEN], data))
+}
+
+/// The memo posted for output slot `i` of a posted spend at least FORCED_REST_AT bytes long: what the block publishes for that
+/// output when it takes the spend.
+pub fn forced_memo(p: &[u8], i: usize) -> &[u8] {
+    &p[FORCED_HEAD_LEN + MEMO_LEN * i..FORCED_HEAD_LEN + MEMO_LEN * (i + 1)]
+}
+
+/// A spend from the landing contract's queue (`force`), as a block learns of it: the hash of what was posted, the spend and the rest
+/// of its body when the bytes are one, whether its proof verifies (checked on its own, not in the block's batch), and for each live
+/// nullifier either nothing or the record that shows the note was spent before this block.
+#[derive(Clone, Debug)]
+pub struct Forced {
+    pub payload_hash: [u8; 32],
+    pub spend: Option<(Spend, SpendData)>,
+    pub proof_ok: bool,
+    pub members: Vec<Option<NfMember>>,
+}
+
+/// What a spend does to a block once its body and openings check out: the anchor it lists (one older than the recent roots), its
+/// outputs (leaf, memo hash), its deposit and exit records and its live nullifiers. The nullifier tree is not consulted here.
+struct Effects {
+    anchor: Option<[u8; 32]>,
+    outputs: Vec<(Fr, [u8; 32])>,
+    deposit: Option<Vec<u8>>,
+    exit: Option<Vec<u8>>,
+    nullifiers: Vec<[u8; 32]>,
+}
+
+fn effects(prev: &State, s: &Spend, d: &SpendData) -> Result<Effects, &'static str> {
+    let live = s.live_nullifiers();
+    if live.len() == 2 && live[0] == live[1] {
+        return Err("one note in both input slots");
+    }
+    let mut e = Effects { anchor: None, outputs: Vec::with_capacity(3), deposit: None, exit: None, nullifiers: live.iter().map(fr_be).collect() };
+    if live.is_empty() {
+        if is_identity(&s.dep) {
+            return Err("no input and no deposit");
+        }
+    } else if s.root != prev.notes.root && !prev.knows(&fr_be(&s.root)) {
+        e.anchor = Some(fr_be(&s.root));
+    }
+    if body_hash(&body_bytes(&prev.chain, &s.out, &d.memo_hashes, &d.exit_to, &d.salt)) != s.body {
+        return Err("the body is not this chain's, or not its outputs, memos, exit and salt");
+    }
+    for (o, m) in s.out.iter().zip(&d.memo_hashes) {
+        if bool::from(o.is_zero()) {
+            if *m != [0u8; 32] {
+                return Err("a memo for an empty output");
+            }
+        } else {
+            e.outputs.push((*o, *m));
+        }
+    }
+    // a deposit or exit of nothing could never be made or paid on L1: refused here, not left to the lander
+    match (is_identity(&s.dep), &d.dep) {
+        (true, None) => {}
+        (false, Some(o)) if o.v > 0 && commits(o, &s.dep) => {
+            e.deposit = Some([fr_be(&s.asset), word(o.v), fr_be(&s.dep[0]), fr_be(&s.dep[1]), fr_be(&s.body)].concat())
+        }
+        _ => return Err("the deposit's opening is missing, wrong or of nothing"),
+    }
+    match (is_identity(&s.exit), &d.exit) {
+        (true, None) if d.exit_to == [0u8; 20] => {}
+        (false, Some(o)) if o.v > 0 && d.exit_to != [0u8; 20] && commits(o, &s.exit) => {
+            e.exit = Some([fr_be(&s.asset), word(o.v), address_word(&d.exit_to)].concat())
+        }
+        _ => return Err("the exit's opening or address is missing, wrong or of nothing"),
+    }
+    Ok(e)
+}
+
+/// The spends a block takes: `(index, effects)`, the block's own as 0..n and the forced ones as n + their place in `forced`, and the
+/// queue's position and hash after the forced spends. A spend of the block's own that does not check out refuses the block. A forced
+/// spend is taken when its proof verifies, its body and openings check out and none of its notes was spent before it (before this
+/// block, which a record of the tree shows, or earlier in it); otherwise it is passed over. The queue moves past it either way.
+fn select(prev: &State, spends: &[Spend], data: &[SpendData], forced: &[Forced]) -> Result<(Vec<(usize, Effects)>, u64, [u8; 32]), String> {
     if data.len() != spends.len() {
         return Err(format!("{} spend data for {} spends", data.len(), spends.len()));
     }
-    let start = prev.notes.root;
+    let n = spends.len();
+    let mut taken: Vec<(usize, Effects)> = Vec::with_capacity(n + forced.len());
+    for (i, (s, d)) in spends.iter().zip(data).enumerate() {
+        taken.push((i, effects(prev, s, d).map_err(|e| format!("spend {i}: {e}"))?));
+    }
+    let mut used: BTreeSet<[u8; 32]> = taken.iter().flat_map(|(_, e)| e.nullifiers.iter().copied()).collect();
+    let (mut queue_len, mut queue_hash) = (prev.queue_len, prev.queue_hash);
+    for (j, f) in forced.iter().enumerate() {
+        queue_len += 1;
+        queue_hash = queue_step(&queue_hash, &f.payload_hash);
+        let Some((s, d)) = &f.spend else { continue };
+        if !f.proof_ok {
+            continue;
+        }
+        let Ok(e) = effects(prev, s, d) else { continue };
+        if f.members.len() != e.nullifiers.len() {
+            return Err(format!("forced spend {j}: {} answers for {} nullifiers", f.members.len(), e.nullifiers.len()));
+        }
+        let mut spent_before = false;
+        for (nf, m) in e.nullifiers.iter().zip(&f.members) {
+            if let Some(m) = m {
+                if !nf_member(&prev.nf_root, prev.nf_size, nf, m) {
+                    return Err(format!("forced spend {j}: a note said to be spent is not in the tree"));
+                }
+                spent_before = true;
+            }
+        }
+        if spent_before || e.nullifiers.iter().any(|x| used.contains(x)) {
+            continue;
+        }
+        used.extend(e.nullifiers.iter().copied());
+        taken.push((n + j, e));
+    }
+    Ok((taken, queue_len, queue_hash))
+}
+
+/// The non-zero nullifiers a block will enter into the tree, smallest first: those of its own spends and of the forced spends it
+/// takes, for whoever builds the block to make their witnesses.
+pub fn block_nullifiers(prev: &State, spends: &[Spend], data: &[SpendData], forced: &[Forced]) -> Result<Vec<[u8; 32]>, String> {
+    let (taken, _, _) = select(prev, spends, data, forced)?;
+    let mut all: Vec<[u8; 32]> = taken.into_iter().flat_map(|(_, e)| e.nullifiers).collect();
+    all.sort();
+    Ok(all)
+}
+
+/// Applies a block to `prev`: its own spends (each proof checked separately; the guest folds them into one pairing), then the next
+/// `forced.len()` spends of the landing contract's queue, in queue order, taken or passed over as `select` decides. The choice is the
+/// program's, so whoever builds the block cannot keep a sound forced spend out of the chain. `nfw[j]` is the witness for the j-th
+/// smallest non-zero nullifier of every spend taken, against the tree as the smaller ones left it: nullifiers enter in ascending
+/// order, so the tree is a function of the published list alone.
+pub fn apply(prev: &State, spends: &[Spend], data: &[SpendData], forced: &[Forced], nfw: &[NfWitness], vk: [u8; 32]) -> Result<(State, BlockOut, BlockData), String> {
+    mark!("cycle-tracker-report-start: block-scan");
+    let n = spends.len();
+    let who = |i: usize| if i < n { format!("spend {i}") } else { format!("forced spend {}", i - n) };
+    let (taken, queue_len, queue_hash) = select(prev, spends, data, forced)?;
     let mut outputs: Vec<(Fr, [u8; 32])> = vec![];
     let mut spent: Vec<(usize, [u8; 32])> = vec![];
     let mut lists = BlockData::default();
-    for (i, (s, d)) in spends.iter().zip(data).enumerate() {
-        let live = s.live_nullifiers();
-        if live.len() == 2 && live[0] == live[1] {
-            return Err(format!("spend {i}: one note in both input slots"));
-        }
-        if live.is_empty() {
-            if is_identity(&s.dep) {
-                return Err(format!("spend {i}: no input and no deposit"));
-            }
-        } else if s.root != start && !prev.knows(&fr_be(&s.root)) {
-            lists.anchors.push(fr_be(&s.root));
-        }
-        if body_hash(&body_bytes(&prev.chain, &s.out, &d.memo_hashes, &d.exit_to, &d.salt)) != s.body {
-            return Err(format!("spend {i}: the body is not this chain's, or not its outputs, memos, exit and salt"));
-        }
-        for (o, m) in s.out.iter().zip(&d.memo_hashes) {
-            if bool::from(o.is_zero()) {
-                if *m != [0u8; 32] {
-                    return Err(format!("spend {i}: a memo for an empty output"));
-                }
-            } else {
-                outputs.push((*o, *m));
-            }
-        }
-        // a deposit or exit of nothing could never be made or paid on L1: refused here, not left to the lander
-        match (is_identity(&s.dep), &d.dep) {
-            (true, None) => {}
-            (false, Some(o)) if o.v > 0 && commits(o, &s.dep) => {
-                lists.deposits.push([fr_be(&s.asset), word(o.v), fr_be(&s.dep[0]), fr_be(&s.dep[1]), fr_be(&s.body)].concat())
-            }
-            _ => return Err(format!("spend {i}: the deposit's opening is missing, wrong or of nothing")),
-        }
-        match (is_identity(&s.exit), &d.exit) {
-            (true, None) if d.exit_to == [0u8; 20] => {}
-            (false, Some(o)) if o.v > 0 && d.exit_to != [0u8; 20] && commits(o, &s.exit) => {
-                lists.exits.push([fr_be(&s.asset), word(o.v), address_word(&d.exit_to)].concat())
-            }
-            _ => return Err(format!("spend {i}: the exit's opening or address is missing, wrong or of nothing")),
-        }
-        spent.extend(live.iter().map(|nf| (i, fr_be(nf))));
+    for (i, e) in taken {
+        lists.anchors.extend(e.anchor);
+        lists.deposits.extend(e.deposit);
+        lists.exits.extend(e.exit);
+        outputs.extend(e.outputs);
+        spent.extend(e.nullifiers.into_iter().map(|x| (i, x)));
     }
     if spent.len() != nfw.len() {
         return Err(format!("{} nullifier witnesses for {} nullifiers", nfw.len(), spent.len()));
@@ -804,11 +982,11 @@ pub fn apply(prev: &State, spends: &[Spend], data: &[SpendData], nfw: &[NfWitnes
     mark!("cycle-tracker-report-start: block-nullifiers");
     spent.sort_by(|a, b| a.1.cmp(&b.1));
     if let Some(w) = spent.windows(2).find(|w| w[0].1 == w[1].1) {
-        return Err(format!("spends {} and {}: one note spent twice", w[0].0, w[1].0));
+        return Err(format!("{} and {}: one note spent twice", who(w[0].0), who(w[1].0)));
     }
     let (mut nf_root, mut nf_size) = (prev.nf_root, prev.nf_size);
     for ((i, key), w) in spent.iter().zip(nfw) {
-        nf_root = nf_insert(&nf_root, nf_size, key, w).map_err(|e| format!("spend {i}: {e}"))?;
+        nf_root = nf_insert(&nf_root, nf_size, key, w).map_err(|e| format!("{}: {e}", who(*i)))?;
         nf_size += 1;
         lists.nullifiers.push(*key);
     }
@@ -827,12 +1005,12 @@ pub fn apply(prev: &State, spends: &[Spend], data: &[SpendData], nfw: &[NfWitnes
     lists.anchors.dedup();
     lists.deposits.sort();
     lists.exits.sort();
-    let mut next = State { notes, nf_root, nf_size, recent: prev.recent, chain: prev.chain };
+    let mut next = State { notes, nf_root, nf_size, recent: prev.recent, chain: prev.chain, queue_len, queue_hash };
     next.remember(fr_be(&next.notes.root));
     let out = BlockOut {
         prev: prev.digest(),
         next: next.digest(),
-        prev_root: fr_be(&start),
+        prev_root: fr_be(&prev.notes.root),
         next_root: fr_be(&next.notes.root),
         outputs_hash: list_hash(1, &lists.outputs),
         nullifiers_hash: list_hash(2, &lists.nullifiers),
@@ -840,6 +1018,8 @@ pub fn apply(prev: &State, spends: &[Spend], data: &[SpendData], nfw: &[NfWitnes
         deposits_hash: list_hash(4, &lists.deposits),
         exits_hash: list_hash(5, &lists.exits),
         vk,
+        queue_len,
+        queue_hash,
     };
     mark!("cycle-tracker-report-end: block-commit");
     Ok((next, out, lists))

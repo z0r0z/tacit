@@ -3,10 +3,14 @@
 //!
 //! stdin (raw buffers): the starting state (`State::to_bytes`), n (u32 LE), then per spend: publics (12 ×
 //! 32-byte big-endian field elements), proof (2,080 bytes), hints (20 × 64 bytes) and the rest of its body and
-//! openings (`SpendData::to_bytes`); then one buffer of the block's nullifier witnesses (`NfWitness::to_bytes`
-//! for each non-zero nullifier, smallest first).
-//! Public values: `BlockOut::encode`, ten 32-byte words. The guest panics, so no proof is produced, unless
-//! every proof verifies and the block applies.
+//! openings (`SpendData::to_bytes`); then m (u32 LE), the next forced spends of the landing contract's queue, each
+//! as what was posted and its answers (for each live nullifier, 0, or 1 and the `NfMember` that shows the note
+//! spent before this block); then one buffer of the nullifier witnesses of every spend taken (`NfWitness::to_bytes`,
+//! smallest first).
+//! Public values: `BlockOut::encode`, twelve 32-byte words. The guest panics, so no proof is produced, unless
+//! every proof of the block's own verifies and the block applies. A forced spend's proof is checked on its own,
+//! and one that fails, or bytes that are no spend at all, only pass the spend over: what anyone posted cannot stop
+//! a block.
 #![no_main]
 sp1_zkvm::entrypoint!(main);
 
@@ -17,7 +21,7 @@ use halo2_proofs::plonk::{ConstraintSystem, VerifyingKey};
 use halo2_proofs::SerdeFormat;
 use sp1_lib::bn254::Bn254Point;
 use sp1_lib::utils::{AffinePoint, WeierstrassAffinePoint};
-use tacit_block_common::{self as blk, NfWitness, Spend, SpendData, State, NF_WITNESS_LEN};
+use tacit_block_common::{self as blk, Forced, NfMember, NfWitness, Spend, SpendData, State, NF_MEMBER_LEN, NF_WITNESS_LEN};
 
 /// The pinned spend verification key, its digest and transcript representative, and the verifier params, as
 /// `tacit-block pin` derives them (the same values btc-pool-agg pins).
@@ -39,7 +43,6 @@ pub fn main() {
     println!("cycle-tracker-report-start: read");
     let state = State::from_bytes(&sp1_zkvm::io::read_vec()).expect("starting state");
     let n = read_u32() as usize;
-    assert!(n >= 1, "no spends");
     let mut raw = Vec::with_capacity(n);
     let mut spends = Vec::with_capacity(n);
     let mut data = Vec::with_capacity(n);
@@ -55,6 +58,9 @@ pub fn main() {
         spends.push(Spend::from_publics(&p));
         raw.push((publics, p, proof, hints));
     }
+    let m = read_u32() as usize;
+    assert!(n + m >= 1, "an empty block");
+    let posted: Vec<(Vec<u8>, Vec<u8>)> = (0..m).map(|_| (sp1_zkvm::io::read_vec(), sp1_zkvm::io::read_vec())).collect();
     let witnesses = sp1_zkvm::io::read_vec();
     assert_eq!(witnesses.len() % NF_WITNESS_LEN, 0, "nullifier witnesses length");
     let nfw: Vec<NfWitness> = witnesses.chunks(NF_WITNESS_LEN).map(|c| NfWitness::from_bytes(c).expect("nullifier witness")).collect();
@@ -89,19 +95,64 @@ pub fn main() {
     println!("cycle-tracker-report-end: proofs");
 
     println!("cycle-tracker-report-start: pairing");
+    assert!(n == 0 || pairs(&batch, &g2, &s_g2), "pairing check failed");
+    println!("cycle-tracker-report-end: pairing");
+
+    // The forced spends: each proof on its own (a bad one must not sink the block's batch), anything that fails passing it over.
+    println!("cycle-tracker-report-start: forced");
+    let forced: Vec<Forced> = posted
+        .iter()
+        .map(|(payload, answers)| {
+            let parts = blk::forced_parts(payload);
+            let proof_ok = parts.as_ref().is_some_and(|(publics, proof, hints, _)| {
+                let mut tr = HintRead::new(proof, Mode::Hint(hints, 0));
+                let Ok(dm) = agg::to_dual_msm(&params, &vk, publics, &mut tr) else { return false };
+                if !(tr.consumed() && tr.hints_used() == agg::PROOF_POINTS) {
+                    return false;
+                }
+                let mut one = Batch::default();
+                one.add(&dm, None);
+                pairs(&one, &g2, &s_g2)
+            });
+            Forced { payload_hash: blk::payload_hash(payload), spend: parts.map(|(p, _, _, d)| (Spend::from_publics(&p), d)), proof_ok, members: read_answers(answers) }
+        })
+        .collect();
+    println!("cycle-tracker-report-end: forced");
+
+    let (_, out, _) = blk::apply(&state, &spends, &data, &forced, &nfw, blk::vk_hash(&VK_DIGEST)).expect("block rejected");
+    sp1_zkvm::io::commit_slice(&out.encode());
+    // the run ends here: dropping the key, the proofs and the batch would only spend cycles freeing memory
+    std::mem::forget((vk, params, batch, raw, spends, data, nfw, forced, posted));
+}
+
+/// A forced spend's answers as the block's builder gives them: per live nullifier, 0, or 1 and the record that shows it spent.
+fn read_answers(b: &[u8]) -> Vec<Option<NfMember>> {
+    let mut out = vec![];
+    let mut at = 0;
+    while at < b.len() {
+        match b[at] {
+            0 => {
+                out.push(None);
+                at += 1;
+            }
+            1 => {
+                out.push(Some(NfMember::from_bytes(b.get(at + 1..at + 1 + NF_MEMBER_LEN).expect("membership answer")).expect("membership answer")));
+                at += 1 + NF_MEMBER_LEN;
+            }
+            _ => panic!("membership answer"),
+        }
+    }
+    out
+}
+
+/// Whether a batch of dual MSMs holds: e(left, τ·g2) = e(right, g2), its MSMs on the bn254 precompiles.
+fn pairs(batch: &Batch, g2: &G2Affine, s_g2: &G2Affine) -> bool {
     let lb: Vec<[u64; 8]> = batch.left.iter().map(|(_, p)| to_sp1(p)).collect();
     let ls: Vec<[u64; 4]> = batch.left.iter().map(|(s, _)| scalar_limbs(s)).collect();
     let rb: Vec<[u64; 8]> = batch.right.iter().map(|(_, p)| to_sp1(p)).collect();
     let rs: Vec<[u64; 4]> = batch.right.iter().map(|(s, _)| scalar_limbs(s)).collect();
     let (l, rr) = (msm(&lb, &ls), msm(&rb, &rs));
-    let ok = bn::pairing_batch(&[(bn_g1(&l), bn_g2(&s_g2)), (-bn_g1(&rr), bn_g2(&g2))]) == bn::Gt::one();
-    assert!(ok, "pairing check failed");
-    println!("cycle-tracker-report-end: pairing");
-
-    let (_, out, _) = blk::apply(&state, &spends, &data, &nfw, blk::vk_hash(&VK_DIGEST)).expect("block rejected");
-    sp1_zkvm::io::commit_slice(&out.encode());
-    // the run ends here: dropping the key, the proofs and the batch would only spend cycles freeing memory
-    std::mem::forget((vk, params, batch, raw, spends, data, nfw));
+    bn::pairing_batch(&[(bn_g1(&l), bn_g2(s_g2)), (-bn_g1(&rr), bn_g2(g2))]) == bn::Gt::one()
 }
 
 fn limbs4(b: &[u8]) -> [u64; 4] {

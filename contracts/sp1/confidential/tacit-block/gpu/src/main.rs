@@ -1,15 +1,20 @@
 //! tacit-block-gpu: proves Tacit blocks on this machine's GPU (SP1's CUDA prover) and prints how long each
 //! stage takes, as JSON lines.
 //!
-//! tacit-block-gpu ELF FILE... [--groth16]   FILE is a block's stdin as `tacit-block dump` writes it. Per FILE:
-//! execute (cycles and prover gas), the compressed proof (the block proof), and with --groth16 the Groth16
-//! wrap a landing contract verifies. Every proof is verified, and its public values compared with the
-//! execution's, before its time is printed.
+//! tacit-block-gpu ELF FILE... [--groth16]   FILE is a block's stdin as `tacit-block dump` or `tacit-block fixture`
+//! writes it. Per FILE: execute (cycles and prover gas), the compressed proof (the block proof), and with --groth16
+//! the Groth16 wrap a landing contract verifies, kept beside FILE as FILE.groth16 (hex: the proof bytes the SP1
+//! verifier takes, then a line of the public values). Every proof is verified, and its public values compared with
+//! the execution's, before its time is printed.
 
 use serde_json::json;
 use sp1_sdk::blocking::{ProveRequest, Prover, ProverClient};
 use sp1_sdk::{Elf, HashableKey, ProvingKey, SP1Stdin};
 use std::time::Instant;
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
 
 fn fail(msg: &str) -> ! {
     eprintln!("tacit-block-gpu: {msg}");
@@ -68,8 +73,15 @@ fn main() {
             let g = client.prove(&pk, stdin).groth16().cycle_limit(limit).run().unwrap_or_else(|e| fail(&format!("{f}: groth16 proof: {e}")));
             let groth16_secs = t.elapsed().as_secs_f64();
             client.verify(&g, pk.verifying_key(), None).unwrap_or_else(|e| fail(&format!("{f}: groth16 proof does not verify: {e}")));
+            if g.public_values.as_slice() != pv.as_slice() {
+                fail(&format!("{f}: the groth16 proof commits other public values"));
+            }
+            let out = format!("{f}.groth16");
+            std::fs::write(&out, format!("0x{}\n0x{}\n", hex(&g.bytes()), hex(g.public_values.as_slice())))
+                .unwrap_or_else(|e| fail(&format!("{out}: {e}")));
             line["groth16_secs"] = json!(groth16_secs);
             line["groth16_bytes"] = json!(g.bytes().len());
+            line["groth16_file"] = json!(out);
         }
         println!("{line}");
     }

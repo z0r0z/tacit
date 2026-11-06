@@ -12,10 +12,11 @@
 //!                            or again in a later one, a proof with a commitment, an evaluation or a point's hint
 //!                            changed
 //! tacit-block dump N FILE    one block of N spends as the guest's stdin, for tacit-block-gpu
-//! tacit-block fixture FILE  a two-block chain of ETH notes as the landing contract's test replays it, bound to the
-//!                            contract the test puts at FIXTURE_LANDER on chain 31337: the genesis state, a shield of
-//!                            500 units (and the deposit that precedes it on L1), then a spend that keeps 380 and
-//!                            exits 120, with each block's public values and everything it publishes
+//! tacit-block fixture FILE [CHAIN_ID LANDER]   a three-block chain of ETH notes as the landing contract's test replays it,
+//!                            bound to the contract at LANDER on CHAIN_ID (default: where the test puts it, on chain 31337): the
+//!                            genesis state, a shield of 500 units (and the deposit that precedes it on L1), a spend that keeps 380
+//!                            and exits 120, and a block that takes only the queue, a forced spend of the 380 posted on L1; each
+//!                            block's public values and everything it publishes, and its guest input beside FILE as FILE.b<i>.stdin
 //! tacit-block pin [--check]  write the guest's artifacts, or check the committed ones (exit 1 on a mismatch): the
 //!                            spend key's digest, transcript representative and verifier params (as btc-pool-agg
 //!                            derives them), verifier-cs.bin, the spend circuit's finished constraint system the
@@ -40,7 +41,7 @@ use std::process::exit;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
-use tacit_block_common::{self as blk, fr_be, h64, nf_record, nf_zeros, BlockData, BlockOut, NfWitness, SpendData, State, MEMO_LEN, NF_LEVELS, RECENT};
+use tacit_block_common::{self as blk, fr_be, h64, nf_record, nf_zeros, BlockData, BlockOut, NfMember, NfWitness, SpendData, State, MEMO_LEN, NF_LEVELS, RECENT};
 
 const H2_ARTIFACTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../btc-pool-halo2/artifacts");
 
@@ -198,6 +199,30 @@ struct Prepared {
     memos: Vec<Vec<u8>>,
 }
 
+/// A spend posted to the landing contract's queue: the bytes as posted, and the outputs it makes if a block takes it.
+#[derive(Clone)]
+struct Post {
+    payload: Vec<u8>,
+    outs: Vec<(usize, [u8; 33], u64, Fr)>,
+}
+
+/// A prepared spend as `force` takes it: publics ‖ proof ‖ hints ‖ a memo per output slot (zeros for an empty one) ‖ the rest
+/// of its body and openings after the memo hashes.
+fn post(p: &Prepared) -> Post {
+    let memos: Vec<u8> = (0..3).flat_map(|j| p.memos.get(j).cloned().unwrap_or_else(|| vec![0u8; MEMO_LEN])).collect();
+    Post { payload: [p.publics.clone(), p.proof.clone(), p.hints.clone(), memos, p.data.to_bytes()[96..].to_vec()].concat(), outs: p.outs.clone() }
+}
+
+/// The memos posted with a spend, slot by slot: what the lander publishes for the outputs a block takes from it.
+fn posted_memos(payload: &[u8]) -> Vec<Vec<u8>> {
+    (0..3).map(|i| blk::forced_memo(payload, i).to_vec()).collect()
+}
+
+/// Bytes posted to the queue that are no spend a block can take.
+fn junk(payload: Vec<u8>) -> Post {
+    Post { payload, outs: vec![] }
+}
+
 /// A block the guest took.
 struct Landed {
     out: BlockOut,
@@ -207,6 +232,18 @@ struct Landed {
     sections: Value,
     secs: f64,
     stdin_bytes: usize,
+    /// The guest's input for the block, buffer by buffer.
+    stdin: Vec<Vec<u8>>,
+}
+
+/// Buffers as one file: u32 LE count, then each as a u32 LE length and its bytes (what tacit-block-gpu reads).
+fn stdin_file(bufs: &[Vec<u8>]) -> Vec<u8> {
+    let mut file = (bufs.len() as u32).to_le_bytes().to_vec();
+    for b in bufs {
+        file.extend((b.len() as u32).to_le_bytes());
+        file.extend(b);
+    }
+    file
 }
 
 impl Chain {
@@ -294,9 +331,44 @@ impl Chain {
         p
     }
 
-    /// The guest's input for a block of `spends` on this chain, and the nullifier witnesses it carries (the
-    /// block's nullifiers smallest first, as they enter the tree); the host's nullifier tree takes them as it goes.
-    fn block_input(&mut self, spends: &[Prepared]) -> (Vec<Vec<u8>>, Vec<NfWitness>) {
+    /// A posted spend as the block's program learns of it, and its answers in the guest's form: for each live nullifier, 0, or 1
+    /// and the record that shows it spent before the block. Its proof is checked here as the guest checks it: it verifies, and its
+    /// hints are the ones its points make (a point has one hint the guest takes).
+    fn forced_view(&self, k: &Keys, payload: &[u8]) -> (blk::Forced, Vec<u8>) {
+        let parts = blk::forced_parts(payload);
+        let proof_ok = parts.as_ref().is_some_and(|(publics, proof, hints, _)| {
+            let Ok(fixed) = <[Fr; 12]>::try_from(publics.as_slice()) else { return false };
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                h2::verify(&k.params, k.pk.get_vk(), &fixed, proof)
+                    && agg::record_hints(&k.vparams, k.pk.get_vk(), publics, proof).map(|(h, _)| h.as_slice() == *hints).unwrap_or(false)
+            }))
+            .unwrap_or(false)
+        });
+        let spend = parts.map(|(p, _, _, d)| (blk::Spend::from_publics(&p), d));
+        let (mut answers, mut members) = (vec![], vec![]);
+        if let Some((s, _)) = &spend {
+            for nf in s.live_nullifiers() {
+                match self.nf.by_value.get(&fr_be(&nf)) {
+                    Some(&i) => {
+                        let m = NfMember { next: self.nf.records[i as usize].1, index: i, path: self.nf.path(i) };
+                        answers.push(1);
+                        answers.extend(m.to_bytes());
+                        members.push(Some(m));
+                    }
+                    None => {
+                        answers.push(0);
+                        members.push(None);
+                    }
+                }
+            }
+        }
+        (blk::Forced { payload_hash: blk::payload_hash(payload), spend, proof_ok, members }, answers)
+    }
+
+    /// The guest's input for a block of `spends` and the next `posts` of the queue on this chain, the nullifier witnesses it
+    /// carries (the nullifiers of every spend it takes, smallest first, as they enter the tree) and the forced spends as the
+    /// program sees them; the host's nullifier tree takes the nullifiers as it goes.
+    fn block_input(&mut self, k: &Keys, spends: &[Prepared], posts: &[Post]) -> (Vec<Vec<u8>>, Vec<NfWitness>, Vec<blk::Forced>) {
         let mut bufs = vec![self.state.to_bytes(), (spends.len() as u32).to_le_bytes().to_vec()];
         for p in spends {
             bufs.push(p.publics.clone());
@@ -304,18 +376,37 @@ impl Chain {
             bufs.push(p.hints.clone());
             bufs.push(p.data.to_bytes());
         }
-        let mut keys: Vec<[u8; 32]> = spends.iter().flat_map(|p| p.spend.live_nullifiers()).map(|nf| fr_be(&nf)).collect();
-        keys.sort();
+        bufs.push((posts.len() as u32).to_le_bytes().to_vec());
+        let mut forced = vec![];
+        for p in posts {
+            let (f, answers) = self.forced_view(k, &p.payload);
+            bufs.push(p.payload.clone());
+            bufs.push(answers);
+            forced.push(f);
+        }
+        let list: Vec<blk::Spend> = spends.iter().map(|p| p.spend.clone()).collect();
+        let extra: Vec<SpendData> = spends.iter().map(|p| p.data.clone()).collect();
+        // a block the program refuses still gets witnesses for its own spends' nullifiers, so the guest can say why
+        let keys = blk::block_nullifiers(&self.state, &list, &extra, &forced).unwrap_or_else(|_| {
+            let mut own: Vec<[u8; 32]> = spends.iter().flat_map(|p| p.spend.live_nullifiers()).map(|nf| fr_be(&nf)).collect();
+            own.sort();
+            own
+        });
         let nfw: Vec<NfWitness> = keys.iter().map(|k| self.nf.insert(k)).collect();
         bufs.push(nfw.iter().flat_map(NfWitness::to_bytes).collect());
-        (bufs, nfw)
+        (bufs, nfw, forced)
     }
 
     /// Runs a block through the guest and lands it on the chain if the guest takes it; checks the guest's
     /// public values against `apply` and the new state against the independent replay.
     fn land(&mut self, elf: &[u8], k: &Keys, spends: &[Prepared]) -> Result<Landed, String> {
+        self.land_with(elf, k, spends, &[])
+    }
+
+    /// As `land`, with the next `posts` of the landing contract's queue.
+    fn land_with(&mut self, elf: &[u8], k: &Keys, spends: &[Prepared], posts: &[Post]) -> Result<Landed, String> {
         let before = self.clone();
-        let (bufs, nfw) = self.block_input(spends);
+        let (bufs, nfw, forced) = self.block_input(k, spends, posts);
         let stdin_bytes = bufs.iter().map(Vec::len).sum();
         let t = Instant::now();
         let run = execute(elf, &bufs);
@@ -329,7 +420,7 @@ impl Chain {
         };
         let list: Vec<blk::Spend> = spends.iter().map(|p| p.spend.clone()).collect();
         let extra: Vec<SpendData> = spends.iter().map(|p| p.data.clone()).collect();
-        let (next, out, data) = blk::apply(&self.state, &list, &extra, &nfw, blk::vk_hash(&k.digest)).unwrap_or_else(|e| fail(&format!("the guest took a block apply refuses: {e}")));
+        let (next, out, data) = blk::apply(&self.state, &list, &extra, &forced, &nfw, blk::vk_hash(&k.digest)).unwrap_or_else(|e| fail(&format!("the guest took a block apply refuses: {e}")));
         if pv != out.encode() {
             fail("the guest committed other public values than apply");
         }
@@ -355,6 +446,11 @@ impl Chain {
         rebuilt.nf_root = public.root();
         rebuilt.nf_size = public.records.len() as u64;
         rebuilt.remember(fr_be(&rebuilt.notes.root));
+        // and the queue's position from what was posted to it
+        for p in posts {
+            rebuilt.queue_len += 1;
+            rebuilt.queue_hash = blk::queue_step(&rebuilt.queue_hash, &blk::payload_hash(&p.payload));
+        }
         if rebuilt.digest() != out.next {
             fail("the next state cannot be rebuilt from the lists the block publishes");
         }
@@ -366,9 +462,17 @@ impl Chain {
                 notes.push(Note { owner: *w, s: *s, v: *v, index: prev_len + pos as u64 });
             }
         }
+        // a forced spend's outputs, when the block took it
+        for p in posts {
+            for (w, s, v, leaf) in &p.outs {
+                if let Some(pos) = data.outputs.iter().position(|o| o[..32] == fr_be(leaf)) {
+                    notes.push(Note { owner: *w, s: *s, v: *v, index: prev_len + pos as u64 });
+                }
+            }
+        }
         self.state = next;
         self.roots.push(self.state.notes.root);
-        Ok(Landed { out, data, notes, cycles, sections, secs, stdin_bytes })
+        Ok(Landed { out, data, notes, cycles, sections, secs, stdin_bytes, stdin: bufs })
     }
 }
 
@@ -457,12 +561,8 @@ fn dump(n: usize, path: &str) {
     let k = keys();
     let mut c = Chain::new(8);
     let spends = spends_of(&mut c, &k, n, 10);
-    let (bufs, _) = c.clone().block_input(&spends);
-    let mut file = (bufs.len() as u32).to_le_bytes().to_vec();
-    for b in &bufs {
-        file.extend((b.len() as u32).to_le_bytes());
-        file.extend(b);
-    }
+    let (bufs, _, _) = c.clone().block_input(&k, &spends, &[]);
+    let file = stdin_file(&bufs);
     let l = c.land(&elf("TACIT_BLOCK_ELF", BLOCK_ELF), &k, &spends).unwrap_or_else(|e| fail(&e));
     std::fs::write(path, &file).unwrap_or_else(|e| fail(&format!("{path}: {e}")));
     println!("{}", json!({ "spends": n, "file": path, "bytes": file.len(), "cycles": l.cycles, "public_values": hex::encode(l.out.encode()) }));
@@ -525,12 +625,10 @@ fn pin(check: bool) {
 }
 
 /// A landed block as the landing contract's test reads it: its public values and every list as the contract takes
-/// it, the leaves and the memos (MEMO_LEN bytes each, in the order of the outputs) packed.
-fn block_json(l: &Landed, spends: &[Prepared]) -> Value {
+/// it, the leaves and the memos (MEMO_LEN bytes each, in the order of the outputs, found among `memos`) packed.
+fn block_json(l: &Landed, memos: &[Vec<u8>]) -> Value {
     let hx = |b: &[u8]| format!("0x{}", hex::encode(b));
-    let memo_of = |h: &[u8]| -> Vec<u8> {
-        spends.iter().flat_map(|p| p.memos.iter()).find(|m| blk::memo_hash(m)[..] == *h).cloned().unwrap_or_else(|| fail("an output without its memo"))
-    };
+    let memo_of = |h: &[u8]| -> Vec<u8> { memos.iter().find(|m| blk::memo_hash(m)[..] == *h).cloned().unwrap_or_else(|| fail("an output without its memo")) };
     json!({
         "publicValues": hx(&l.out.encode()),
         "leaves": hx(&l.data.outputs.iter().flat_map(|o| o[..32].to_vec()).collect::<Vec<u8>>()),
@@ -542,10 +640,12 @@ fn block_json(l: &Landed, spends: &[Prepared]) -> Value {
     })
 }
 
-fn fixture(path: &str) {
+/// The fixture for a landing contract at `lander` on `chain_id`; each block's guest input is kept beside it as
+/// FILE.b<i>.stdin, for tacit-block-gpu to prove.
+fn fixture(path: &str, chain_id: u64, lander: [u8; 20]) {
     let k = keys();
     let elf = elf("TACIT_BLOCK_ELF", BLOCK_ELF);
-    let chain = blk::chain_binding(FIXTURE_CHAIN_ID, &FIXTURE_LANDER);
+    let chain = blk::chain_binding(chain_id, &lander);
     let mut c = Chain::bound(8, chain);
     c.asset_f = asset_field(&[0u8; 32]);
     let genesis = c.state.clone();
@@ -554,10 +654,17 @@ fn fixture(path: &str) {
     let to = [0xab; 20];
     let pay_out = c.spend_with(&k, &[&l1.notes[0].clone()], &[(2, secret(81, 0, 0), 380)], Some((120, to)), None, "fixture exit", c.leaves.len());
     let l2 = c.land(&elf, &k, &[pay_out.clone()]).unwrap_or_else(|e| fail(&format!("fixture exit: {e}")));
+    // Block 2 takes only the queue: the 380 kept in block 1, spent by a forced spend posted on L1 (`force`).
+    let forced = c.spend(&k, &[&l2.notes[0].clone()], &[(3, secret(82, 0, 0), 380)], "fixture forced", c.leaves.len());
+    let posted = post(&forced);
+    let l3 = c.land_with(&elf, &k, &[], &[posted.clone()]).unwrap_or_else(|e| fail(&format!("fixture forced: {e}")));
+    if l3.data.nullifiers.len() != 1 || l3.out.queue_len != 1 {
+        fail("the fixture's forced spend was not taken");
+    }
     let hx = |b: &[u8]| format!("0x{}", hex::encode(b));
     let doc = json!({
-        "chainId": FIXTURE_CHAIN_ID,
-        "lander": hx(&FIXTURE_LANDER),
+        "chainId": chain_id,
+        "lander": hx(&lander),
         "chain": hx(&chain),
         "genesisState": hx(&genesis.digest()),
         "genesisRoot": hx(&fr_be(&genesis.notes.root)),
@@ -565,10 +672,25 @@ fn fixture(path: &str) {
         "spendVk": hx(&blk::vk_hash(&k.digest)),
         "deposit": { "value": 500, "cx": hx(&fr_be(&shield.spend.dep[0])), "cy": hx(&fr_be(&shield.spend.dep[1])), "body": hx(&fr_be(&shield.spend.body)) },
         "exit": { "value": 120, "to": hx(&to) },
-        "blocks": [block_json(&l1, &[shield]), block_json(&l2, &[pay_out])],
+        "forced": hx(&posted.payload),
+        "blocks": [block_json(&l1, &shield.memos), block_json(&l2, &pay_out.memos), block_json(&l3, &posted_memos(&posted.payload))],
     });
     std::fs::write(path, serde_json::to_string_pretty(&doc).unwrap()).unwrap_or_else(|e| fail(&format!("{path}: {e}")));
-    println!("{}", json!({ "fixture": path, "blocks": 2 }));
+    for (i, l) in [&l1, &l2, &l3].iter().enumerate() {
+        let f = format!("{path}.b{i}.stdin");
+        std::fs::write(&f, stdin_file(&l.stdin)).unwrap_or_else(|e| fail(&format!("{f}: {e}")));
+    }
+    println!("{}", json!({ "fixture": path, "blocks": 3 }));
+}
+
+/// Runs a block whose input `tamper` changed, expecting the guest to refuse it; the chain is left as it was.
+fn expect_refused_input(c: &Chain, elf: &[u8], k: &Keys, spends: &[Prepared], posts: &[Post], tamper: impl FnOnce(&mut Vec<Vec<u8>>), what: &str) {
+    let (mut bufs, _, _) = c.clone().block_input(k, spends, posts);
+    tamper(&mut bufs);
+    match execute(elf, &bufs) {
+        Ok(_) => fail(&format!("the guest took {what}")),
+        Err(e) => println!("{}", json!({ "refused": what, "why": e })),
+    }
 }
 
 fn expect_refused(c: &mut Chain, elf: &[u8], k: &Keys, spends: &[Prepared], what: &str) {
@@ -697,6 +819,54 @@ fn test() {
 
     // And one spend of that note, alone, still lands.
     c.land(&elf, &k, &[twice_a]).unwrap_or_else(|e| fail(&format!("one spend of the twice-spent note: {e}")));
+
+    // Forced spends: what anyone posts to the landing contract's queue, which every block takes in order. A sound one is taken, even
+    // by a block with no spends of its own.
+    let ql = c.state.queue_len;
+    let fnotes = c.mint(&[(6, secret(90, 0, 0), 25), (6, secret(90, 0, 1), 15), (7, secret(90, 0, 2), 5)]);
+    let good = c.spend(&k, &[&fnotes[0]], &[(7, secret(91, 0, 0), 25)], "forced good", c.leaves.len());
+    let lf = c.land_with(&elf, &k, &[], &[post(&good)]).unwrap_or_else(|e| fail(&format!("a forced spend alone: {e}")));
+    if lf.out.queue_len != ql + 1 || lf.data.nullifiers != vec![fr_be(&good.spend.live_nullifiers()[0])] || lf.notes.len() != 1 {
+        fail("a sound forced spend was not taken");
+    }
+    // Passed over, the queue moving past each: a proof that fails, a memo other than the one its body names, bytes that are no
+    // spend (short, a non-canonical public, a body that does not decode, an all-zero proof with zero hints), and a note spent
+    // before this block.
+    let mut bad_f = c.spend(&k, &[&fnotes[1]], &[(7, secret(92, 0, 0), 15)], "forced bad proof", c.leaves.len());
+    bad_f.proof[576 + 13 * 32] ^= 1;
+    let mut bad_memo_f = post(&c.spend(&k, &[&fnotes[1]], &[(7, secret(92, 0, 1), 15)], "forced bad memo", c.leaves.len()));
+    bad_memo_f.payload[blk::FORCED_HEAD_LEN] ^= 1;
+    let mut noncanon = post(&good).payload;
+    noncanon[..32].fill(0xff);
+    let zeros = [vec![0u8; blk::FORCED_REST_AT], SpendData::default().to_bytes()[96..].to_vec()].concat();
+    let own = c.spend(&k, &[&fnotes[2]], &[(6, secret(93, 0, 0), 5)], "own beside forced", c.leaves.len());
+    let posts = [post(&bad_f), bad_memo_f, junk(vec![0xab; 77]), junk(noncanon), junk(vec![0; blk::FORCED_REST_AT + 3]), junk(zeros), post(&good)];
+    let lp = c.land_with(&elf, &k, &[own.clone()], &posts).unwrap_or_else(|e| fail(&format!("forced spends passed over: {e}")));
+    if lp.out.queue_len != ql + 1 + posts.len() as u64 || lp.data.nullifiers != vec![fr_be(&own.spend.live_nullifiers()[0])] {
+        fail("a forced spend that should be passed over was taken, or the queue did not move past it");
+    }
+    // A forced spend of the note one of the block's own spends: the block's own is taken, the forced one passed over.
+    let x = c.mint(&[(5, secret(94, 0, 0), 9)]);
+    let xa = c.spend(&k, &[&x[0]], &[(4, secret(95, 0, 0), 9)], "own of x", c.leaves.len());
+    let xb = c.spend(&k, &[&x[0]], &[(3, secret(95, 0, 1), 9)], "forced of x", c.leaves.len());
+    let lx = c.land_with(&elf, &k, &[xa], &[post(&xb)]).unwrap_or_else(|e| fail(&format!("own and forced of one note: {e}")));
+    if lx.data.nullifiers.len() != 1 || lx.notes.len() != 1 || lx.out.queue_len != ql + 2 + posts.len() as u64 {
+        fail("the block's own spend and a forced one of the same note were not resolved for the block's own");
+    }
+    // A forced shield: taken, its deposit record listed for the landing contract to match with the deposit made on L1.
+    let fs = c.spend_with(&k, &[], &[(4, secret(98, 0, 0), 77)], None, Some(77), "forced shield", c.leaves.len());
+    let ls = c.land_with(&elf, &k, &[], &[post(&fs)]).unwrap_or_else(|e| fail(&format!("a forced shield: {e}")));
+    let want_fs = [fr_be(&c.asset_f), word32(77), fr_be(&fs.spend.dep[0]), fr_be(&fs.spend.dep[1]), fr_be(&fs.spend.body)].concat();
+    if ls.data.deposits != vec![want_fs] || ls.notes.len() != 1 {
+        fail("a forced shield was not taken with its deposit record");
+    }
+    println!("{}", json!({ "forced_taken": true, "forced_passed_over": posts.len(), "forced_shield": true, "forced_cycles": lf.cycles, "queue_len": ls.out.queue_len }));
+    // Whoever builds the block cannot say a note is spent when it is not, nor leave out that it is: the guest refuses the block.
+    let y = c.mint(&[(5, secret(96, 0, 0), 8)]);
+    let yf = post(&c.spend(&k, &[&y[0]], &[(4, secret(97, 0, 0), 8)], "forced y", c.leaves.len()));
+    let head = NfMember { next: [0u8; 32], index: 0, path: c.nf.path(0) };
+    expect_refused_input(&c, &elf, &k, &[], &[yf], |b| { b[4] = [vec![1u8], head.to_bytes()].concat(); }, "a forced spend said to be spent when it is not");
+    expect_refused_input(&c, &elf, &k, &[], &[post(&good)], |b| { b[4] = vec![0u8]; }, "a forced spend of a spent note said to be unspent");
     println!("{}", json!({ "test": "ok", "note_roots": c.roots.len() }));
 }
 
@@ -709,7 +879,12 @@ fn main() {
         }
         Some("test") => test(),
         Some("pin") => pin(args.iter().any(|a| a == "--check")),
-        Some("fixture") if args.len() == 2 => fixture(&args[1]),
+        Some("fixture") if args.len() == 2 => fixture(&args[1], FIXTURE_CHAIN_ID, FIXTURE_LANDER),
+        Some("fixture") if args.len() == 4 => {
+            let id: u64 = args[2].parse().unwrap_or_else(|_| fail("the chain id is a number"));
+            let lander: [u8; 20] = hex::decode(args[3].trim_start_matches("0x")).ok().and_then(|b| b.try_into().ok()).unwrap_or_else(|| fail("the lander is a 20-byte address"));
+            fixture(&args[1], id, lander)
+        }
         Some("dump") if args.len() == 3 => dump(args[1].parse().unwrap_or_else(|_| fail("N is a number")), &args[2]),
         _ => fail("usage: tacit-block measure N... | test | dump N FILE | fixture FILE | pin [--check]"),
     }
