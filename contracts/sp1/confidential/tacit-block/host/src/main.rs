@@ -5,13 +5,17 @@
 //! tacit-block measure N...   per N: one block of N spends (two inputs, three outputs each); prints the block
 //!                            guest's cycles, its cycles by section, and btc-pool-agg's for the same proofs, as
 //!                            JSON lines
-//! tacit-block test           a two-block chain, where a note received in block 1 is spent in block 2 and an
-//!                            older root is listed as an anchor, then the blocks the guest must refuse: a note
-//!                            spent twice in one block, a note spent again in a later block, a tampered proof
+//! tacit-block test           a chain where a note received in block 1 is spent in block 2 and an older root is
+//!                            listed as an anchor, a shield and an exit, each block's next state rebuilt from what
+//!                            it publishes alone, then the blocks the guest must refuse: openings, addresses and
+//!                            memos the bodies do not name, a deposit of nothing, a note spent twice in one block
+//!                            or again in a later one, a proof with a commitment, an evaluation or a point's hint
+//!                            changed
 //! tacit-block dump N FILE    one block of N spends as the guest's stdin, for tacit-block-gpu
-//! tacit-block fixture FILE  a two-block chain of ETH notes as the landing contract's test replays it: the genesis
-//!                            state, a 500-wei shield (and the deposit that precedes it on L1), then a spend that
-//!                            keeps 380 and exits 120, with each block's public values and everything it publishes
+//! tacit-block fixture FILE  a two-block chain of ETH notes as the landing contract's test replays it, bound to the
+//!                            contract the test puts at FIXTURE_LANDER on chain 31337: the genesis state, a shield of
+//!                            500 units (and the deposit that precedes it on L1), then a spend that keeps 380 and
+//!                            exits 120, with each block's public values and everything it publishes
 //! tacit-block pin [--check]  write the guest's artifacts, or check the committed ones (exit 1 on a mismatch): the
 //!                            spend key's digest, transcript representative and verifier params (as btc-pool-agg
 //!                            derives them), verifier-cs.bin, the spend circuit's finished constraint system the
@@ -36,7 +40,7 @@ use std::process::exit;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
-use tacit_block_common::{self as blk, fr_be, h64, nf_record, nf_zeros, BlockData, BlockOut, NfWitness, SpendData, State, NF_LEVELS, RECENT};
+use tacit_block_common::{self as blk, fr_be, h64, nf_record, nf_zeros, BlockData, BlockOut, NfWitness, SpendData, State, MEMO_LEN, NF_LEVELS, RECENT};
 
 const H2_ARTIFACTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../btc-pool-halo2/artifacts");
 
@@ -162,9 +166,14 @@ fn secret(tag: u8, a: u32, b: u8) -> [u8; 33] {
 
 /// The binding the test chain's spends carry in their bodies.
 const TEST_CHAIN: [u8; 32] = [0x7a; 32];
+/// Where the landing contract's test deploys it (on Foundry's chain 31337), so the fixture's spends carry the
+/// binding that contract derives for itself.
+const FIXTURE_LANDER: [u8; 20] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x0b, 0x10, 0xc5];
+const FIXTURE_CHAIN_ID: u64 = 31337;
 
 /// The test chain: every leaf in tree order, the state as the guest carries it, the nullifier tree replayed
-/// by the host, and the note roots the chain has had.
+/// by the host as the guest takes the nullifiers, another replayed only from the lists blocks publish, and the
+/// note roots the chain has had.
 #[derive(Clone)]
 struct Chain {
     wallets: Rc<Vec<Wallet>>,
@@ -172,6 +181,7 @@ struct Chain {
     leaves: Vec<Fr>,
     state: State,
     nf: NfTree,
+    public_nf: NfTree,
     roots: Vec<Fr>,
 }
 
@@ -201,14 +211,18 @@ struct Landed {
 
 impl Chain {
     fn new(wallets: usize) -> Chain {
+        Chain::bound(wallets, TEST_CHAIN)
+    }
+
+    fn bound(wallets: usize, chain: [u8; 32]) -> Chain {
         let wallets = Rc::new((0..wallets).map(|i| wallet_keys(&[i as u8 + 1; 32], "signet")).collect());
-        let state = State::genesis(TEST_CHAIN);
+        let state = State::genesis(chain);
         let nf = NfTree::new();
         if nf.root() != state.nf_root {
             fail("the replayed nullifier tree does not start where the state does");
         }
         let roots = vec![state.notes.root];
-        Chain { wallets, asset_f: asset_field(&[0xabu8; 32]), leaves: vec![], state, nf, roots }
+        Chain { wallets, asset_f: asset_field(&[0xabu8; 32]), leaves: vec![], state, public_nf: nf.clone(), nf, roots }
     }
 
     /// Notes that enter the tree without a spend (the test's genesis), appended as a block appends them.
@@ -253,13 +267,17 @@ impl Chain {
                 fail("an output's owner cannot derive its keys");
             }
             out[j] = leaf_of(&self.asset_f, &fr_u64(*v), &o.npk, &o.rho);
-            memos.push(format!("tacit-block memo {tag} {j}").into_bytes());
-            memo_hashes[j] = blk::memo_hash(&memos[j]);
+            let mut memo = format!("tacit-block memo {tag} {j}").into_bytes();
+            memo.resize(MEMO_LEN, 0);
+            memo_hashes[j] = blk::memo_hash(&memo);
+            memos.push(memo);
             made.push((*w, *s, *v, out[j]));
             outputs[j] = Some(OutNote { v: *v, npk: o.npk, rho: o.rho });
         }
         let exit_to = exit.map(|(_, a)| a).unwrap_or([0u8; 20]);
-        let bh = body_hash(&blk::body_bytes(&self.state.chain, &out, &memo_hashes, &exit_to));
+        // a wallet's would come from its own secret and the spend; the test's from the tag
+        let salt = blk::memo_hash(format!("tacit-block test salt {tag}").as_bytes());
+        let bh = body_hash(&blk::body_bytes(&self.state.chain, &out, &memo_hashes, &exit_to, &salt));
         let mut inputs: [Option<InNote>; 2] = [None, None];
         for (i, n) in ins.iter().enumerate() {
             let o = owned_keys(&self.wallets[n.owner], &n.s);
@@ -269,31 +287,27 @@ impl Chain {
         let exit_open = exit.map(|(v, _)| opening(v, "exit"));
         let dep_open = dep.map(|v| opening(v, "deposit"));
         let plain = |o: &btc_pool_halo2::model::Opening| blk::Opening { v: o.v, r: be32(&o.r) };
-        let data = SpendData { memo_hashes, exit_to, dep: dep_open.as_ref().map(plain), exit: exit_open.as_ref().map(plain) };
+        let data = SpendData { memo_hashes, exit_to, salt, dep: dep_open.as_ref().map(plain), exit: exit_open.as_ref().map(plain) };
         let w = build_witness(tree.root, bh, self.asset_f, &inputs, &outputs, exit_open, dep_open).unwrap_or_else(|e| fail(&e));
         let mut p = prove(k, &w, made, data);
         p.memos = memos;
         p
     }
 
-    /// The guest's input for a block of `spends` on this chain, and the nullifier witnesses it carries; the
-    /// host's nullifier tree takes the block's nullifiers as it goes.
+    /// The guest's input for a block of `spends` on this chain, and the nullifier witnesses it carries (the
+    /// block's nullifiers smallest first, as they enter the tree); the host's nullifier tree takes them as it goes.
     fn block_input(&mut self, spends: &[Prepared]) -> (Vec<Vec<u8>>, Vec<NfWitness>) {
         let mut bufs = vec![self.state.to_bytes(), (spends.len() as u32).to_le_bytes().to_vec()];
-        let mut nfw = vec![];
         for p in spends {
             bufs.push(p.publics.clone());
             bufs.push(p.proof.clone());
             bufs.push(p.hints.clone());
-            let mut wb = vec![];
-            for nf in p.spend.live_nullifiers() {
-                let w = self.nf.insert(&fr_be(&nf));
-                wb.extend(w.to_bytes());
-                nfw.push(w);
-            }
-            bufs.push(wb);
             bufs.push(p.data.to_bytes());
         }
+        let mut keys: Vec<[u8; 32]> = spends.iter().flat_map(|p| p.spend.live_nullifiers()).map(|nf| fr_be(&nf)).collect();
+        keys.sort();
+        let nfw: Vec<NfWitness> = keys.iter().map(|k| self.nf.insert(k)).collect();
+        bufs.push(nfw.iter().flat_map(NfWitness::to_bytes).collect());
         (bufs, nfw)
     }
 
@@ -329,6 +343,22 @@ impl Chain {
         if self.nf.root() != next.nf_root || self.nf.records.len() as u64 != next.nf_size {
             fail("the block's nullifier tree differs from the replayed one");
         }
+        // Anyone holding the state before can rebuild the one after from what the block publishes alone: its
+        // outputs into the note tree and its nullifiers into the nullifier tree, each in list order.
+        let mut public = self.public_nf.clone();
+        for n in &data.nullifiers {
+            public.insert(n);
+        }
+        let mut rebuilt = self.state.clone();
+        let leaves: Vec<Fr> = data.outputs.iter().map(|o| blk::fr_from_be(&o[..32]).unwrap()).collect();
+        rebuilt.notes.append(&leaves).map_err(String::from)?;
+        rebuilt.nf_root = public.root();
+        rebuilt.nf_size = public.records.len() as u64;
+        rebuilt.remember(fr_be(&rebuilt.notes.root));
+        if rebuilt.digest() != out.next {
+            fail("the next state cannot be rebuilt from the lists the block publishes");
+        }
+        self.public_nf = public;
         let mut notes = vec![];
         for p in spends {
             for (w, s, v, leaf) in &p.outs {
@@ -414,7 +444,7 @@ fn measure(sizes: &[usize]) {
             "{}",
             json!({
                 "spends": n, "cycles": l.cycles, "cycles_per_spend": l.cycles / n as u64, "agg_cycles": agg_cycles,
-                "sections": l.sections, "outputs": l.out.outputs, "nullifiers": l.data.nullifiers.len(),
+                "sections": l.sections, "outputs": l.data.outputs.len(), "nullifiers": l.data.nullifiers.len(),
                 "stdin_bytes": l.stdin_bytes, "execute_secs": l.secs, "client_proofs_secs": prove_secs,
             })
         );
@@ -494,8 +524,8 @@ fn pin(check: bool) {
     println!("{}", json!({ "files": files.iter().map(|(n, b)| json!({ "name": n, "bytes": b.len() })).collect::<Vec<_>>(), "check": check, "ok": true }));
 }
 
-/// A landed block as the landing contract's test reads it: its public values and every list it publishes, the
-/// memos in the order of the outputs they belong to.
+/// A landed block as the landing contract's test reads it: its public values and every list as the contract takes
+/// it, the leaves and the memos (MEMO_LEN bytes each, in the order of the outputs) packed.
 fn block_json(l: &Landed, spends: &[Prepared]) -> Value {
     let hx = |b: &[u8]| format!("0x{}", hex::encode(b));
     let memo_of = |h: &[u8]| -> Vec<u8> {
@@ -503,8 +533,8 @@ fn block_json(l: &Landed, spends: &[Prepared]) -> Value {
     };
     json!({
         "publicValues": hx(&l.out.encode()),
-        "outputs": hx(&l.data.outputs.concat()),
-        "memos": l.data.outputs.iter().map(|o| hx(&memo_of(&o[32..]))).collect::<Vec<_>>(),
+        "leaves": hx(&l.data.outputs.iter().flat_map(|o| o[..32].to_vec()).collect::<Vec<u8>>()),
+        "memos": hx(&l.data.outputs.iter().flat_map(|o| memo_of(&o[32..])).collect::<Vec<u8>>()),
         "nullifiers": l.data.nullifiers.iter().map(|n| hx(n)).collect::<Vec<_>>(),
         "anchors": l.data.anchors.iter().map(|a| hx(a)).collect::<Vec<_>>(),
         "deposits": hx(&l.data.deposits.concat()),
@@ -515,7 +545,8 @@ fn block_json(l: &Landed, spends: &[Prepared]) -> Value {
 fn fixture(path: &str) {
     let k = keys();
     let elf = elf("TACIT_BLOCK_ELF", BLOCK_ELF);
-    let mut c = Chain::new(8);
+    let chain = blk::chain_binding(FIXTURE_CHAIN_ID, &FIXTURE_LANDER);
+    let mut c = Chain::bound(8, chain);
     c.asset_f = asset_field(&[0u8; 32]);
     let genesis = c.state.clone();
     let shield = c.spend_with(&k, &[], &[(2, secret(80, 0, 0), 500)], None, Some(500), "fixture shield", 0);
@@ -525,8 +556,12 @@ fn fixture(path: &str) {
     let l2 = c.land(&elf, &k, &[pay_out.clone()]).unwrap_or_else(|e| fail(&format!("fixture exit: {e}")));
     let hx = |b: &[u8]| format!("0x{}", hex::encode(b));
     let doc = json!({
+        "chainId": FIXTURE_CHAIN_ID,
+        "lander": hx(&FIXTURE_LANDER),
+        "chain": hx(&chain),
         "genesisState": hx(&genesis.digest()),
         "genesisRoot": hx(&fr_be(&genesis.notes.root)),
+        "nullifierGenesisRoot": hx(&genesis.nf_root),
         "spendVk": hx(&blk::vk_hash(&k.digest)),
         "deposit": { "value": 500, "cx": hx(&fr_be(&shield.spend.dep[0])), "cy": hx(&fr_be(&shield.spend.dep[1])), "body": hx(&fr_be(&shield.spend.body)) },
         "exit": { "value": 120, "to": hx(&to) },
@@ -552,10 +587,10 @@ fn test() {
     // Block 1: four spends of fresh notes, all against the root the block starts from.
     let b1 = spends_of(&mut c, &k, 4, 10);
     let l1 = c.land(&elf, &k, &b1).unwrap_or_else(|e| fail(&format!("block 1: {e}")));
-    if !l1.data.anchors.is_empty() || l1.out.outputs != 12 || l1.data.nullifiers.len() != 8 {
+    if !l1.data.anchors.is_empty() || l1.data.outputs.len() != 12 || l1.data.nullifiers.len() != 8 {
         fail("block 1 committed other lists than expected");
     }
-    println!("{}", json!({ "block": 1, "spends": 4, "outputs": l1.out.outputs, "cycles": l1.cycles, "next_root": hex::encode(l1.out.next_root) }));
+    println!("{}", json!({ "block": 1, "spends": 4, "outputs": l1.data.outputs.len(), "cycles": l1.cycles, "next_root": hex::encode(l1.out.next_root) }));
 
     // Block 2: wallet 1 spends the 900 it received in block 1, against block 1's root.
     let received = l1.notes.iter().find(|n| n.owner == 1 && n.v == 900).cloned().unwrap_or_else(|| fail("no note for wallet 1"));
@@ -622,6 +657,12 @@ fn test() {
     let mut bad_memo = c.spend(&k, &[&held[1]], &[(5, secret(75, 0, 0), 70)], "bad memo", c.leaves.len());
     bad_memo.data.memo_hashes[0][0] ^= 1;
     expect_refused(&mut c, &elf, &k, &[bad_memo], "a memo its body does not name");
+    let mut bad_salt = c.spend(&k, &[&held[1]], &[(5, secret(75, 0, 1), 70)], "bad salt", c.leaves.len());
+    bad_salt.data.salt[31] ^= 1;
+    expect_refused(&mut c, &elf, &k, &[bad_salt], "a salt its body does not name");
+    // A shield of nothing: a sound proof, but a deposit of 0 could never be made on L1, so the block could never land.
+    let nothing = c.spend_with(&k, &[], &[(3, secret(76, 0, 0), 0)], None, Some(0), "deposit of nothing", c.leaves.len());
+    expect_refused(&mut c, &elf, &k, &[nothing], "a deposit of nothing");
 
     // Refused: one note spent twice in one block (two spends, two bodies, the same nullifier).
     let fresh = c.mint(&[(2, secret(60, 0, 0), 10)]);
@@ -634,10 +675,25 @@ fn test() {
     let again = c.spend(&k, &[&received], &[(6, secret(62, 0, 0), 900)], "tacit-block spent again", at1);
     expect_refused(&mut c, &elf, &k, &[again], "a note spent again in a later block");
 
-    // Refused: a tampered proof.
+    // Refused: a tampered proof, in a commitment (its first 576 bytes are the points read before the evaluations),
+    // in an evaluation (the lowest byte of the fourteenth scalar, which stays canonical), and a point's hint
+    // negated (y → q − y, still on the curve, so only the check against the compressed point stands in the way).
     let mut bad = twice_a.clone();
     bad.proof[100] ^= 1;
     expect_refused(&mut c, &elf, &k, &[bad], "a tampered proof");
+    let mut bad_eval = twice_a.clone();
+    bad_eval.proof[576 + 13 * 32] ^= 1;
+    expect_refused(&mut c, &elf, &k, &[bad_eval], "a proof with an evaluation changed");
+    {
+        use halo2_proofs::halo2curves::bn256::Fq;
+        use halo2_proofs::halo2curves::ff::PrimeField;
+        let mut bad_hint = twice_a.clone();
+        let mut yb = [0u8; 32];
+        yb.copy_from_slice(&bad_hint.hints[32..64]);
+        let y: Fq = Option::from(Fq::from_repr(yb)).unwrap_or_else(|| fail("hint y"));
+        bad_hint.hints[32..64].copy_from_slice((-y).to_repr().as_ref());
+        expect_refused(&mut c, &elf, &k, &[bad_hint], "a proof whose first point's hint is its negation");
+    }
 
     // And one spend of that note, alone, still lands.
     c.land(&elf, &k, &[twice_a]).unwrap_or_else(|e| fail(&format!("one spend of the twice-spent note: {e}")));

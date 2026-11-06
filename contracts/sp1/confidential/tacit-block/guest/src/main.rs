@@ -2,10 +2,10 @@
 //! the block starts from by all of them (tacit-block-common `apply`).
 //!
 //! stdin (raw buffers): the starting state (`State::to_bytes`), n (u32 LE), then per spend: publics (12 ×
-//! 32-byte big-endian field elements), proof (2,080 bytes), hints (20 × 64 bytes), its nullifier witnesses
-//! (`NfWitness::to_bytes` for each non-zero nullifier, slot order) and the rest of its body and openings
-//! (`SpendData::to_bytes`).
-//! Public values: `BlockOut::encode`, twelve 32-byte words. The guest panics, so no proof is produced, unless
+//! 32-byte big-endian field elements), proof (2,080 bytes), hints (20 × 64 bytes) and the rest of its body and
+//! openings (`SpendData::to_bytes`); then one buffer of the block's nullifier witnesses (`NfWitness::to_bytes`
+//! for each non-zero nullifier, smallest first).
+//! Public values: `BlockOut::encode`, ten 32-byte words. The guest panics, so no proof is produced, unless
 //! every proof verifies and the block applies.
 #![no_main]
 sp1_zkvm::entrypoint!(main);
@@ -42,26 +42,22 @@ pub fn main() {
     assert!(n >= 1, "no spends");
     let mut raw = Vec::with_capacity(n);
     let mut spends = Vec::with_capacity(n);
-    let mut nfw = vec![];
     let mut data = Vec::with_capacity(n);
     for _ in 0..n {
         let publics = sp1_zkvm::io::read_vec();
         let proof = sp1_zkvm::io::read_vec();
         let hints = sp1_zkvm::io::read_vec();
-        let witnesses = sp1_zkvm::io::read_vec();
         assert_eq!(publics.len(), agg::PUBLICS_LEN, "publics length");
         assert_eq!(proof.len(), agg::PROOF_LEN, "proof length");
         assert_eq!(hints.len(), agg::HINTS_LEN, "hints length");
         let p = agg::publics_from_be(&publics).expect("publics not canonical");
-        let s = Spend::from_publics(&p);
-        assert_eq!(witnesses.len(), s.live_nullifiers().len() * NF_WITNESS_LEN, "nullifier witnesses length");
-        for c in witnesses.chunks(NF_WITNESS_LEN) {
-            nfw.push(NfWitness::from_bytes(c).expect("nullifier witness"));
-        }
         data.push(SpendData::from_bytes(&sp1_zkvm::io::read_vec()).expect("spend data"));
-        spends.push(s);
+        spends.push(Spend::from_publics(&p));
         raw.push((publics, p, proof, hints));
     }
+    let witnesses = sp1_zkvm::io::read_vec();
+    assert_eq!(witnesses.len() % NF_WITNESS_LEN, 0, "nullifier witnesses length");
+    let nfw: Vec<NfWitness> = witnesses.chunks(NF_WITNESS_LEN).map(|c| NfWitness::from_bytes(c).expect("nullifier witness")).collect();
     println!("cycle-tracker-report-end: read");
 
     println!("cycle-tracker-report-start: proofs");
@@ -104,6 +100,8 @@ pub fn main() {
 
     let (_, out, _) = blk::apply(&state, &spends, &data, &nfw, blk::vk_hash(&VK_DIGEST)).expect("block rejected");
     sp1_zkvm::io::commit_slice(&out.encode());
+    // the run ends here: dropping the key, the proofs and the batch would only spend cycles freeing memory
+    std::mem::forget((vk, params, batch, raw, spends, data, nfw));
 }
 
 fn limbs4(b: &[u8]) -> [u64; 4] {

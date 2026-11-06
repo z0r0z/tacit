@@ -20,7 +20,6 @@ mod batch;
 #[cfg(feature = "batch")]
 pub use batch::BatchVerifier;
 
-/// Returns a boolean indicating whether or not the proof is valid
 /// Cycle-tracker markers in the zkVM (the executor sums each name); nothing elsewhere.
 macro_rules! track {
     ($l:literal) => {
@@ -29,6 +28,13 @@ macro_rules! track {
     };
 }
 
+/// x^n for the domain's n = 2^k: k squarings (the generic power takes a product per bit of a 64-bit exponent).
+fn x_to_n<'params, C: crate::arithmetic::CurveAffine, P: Params<'params, C>>(params: &P, x: C::Scalar) -> C::Scalar {
+    debug_assert_eq!(params.n(), 1u64 << params.k());
+    (0..params.k()).fold(x, |a, _| a.square())
+}
+
+/// Returns a boolean indicating whether or not the proof is valid
 pub fn verify_proof<
     'params,
     Scheme: CommitmentScheme,
@@ -196,7 +202,7 @@ where
             })
             .collect::<Result<Vec<_>, _>>()?
     } else {
-        let xn = x.pow([params.n()]);
+        let xn = x_to_n(params, *x);
         let (min_rotation, max_rotation) =
             vk.cs
                 .instance_queries
@@ -279,7 +285,7 @@ where
     // commitments open to the correct values.
     let vanishing = {
         // x^n
-        let xn = x.pow([params.n()]);
+        let xn = x_to_n(params, *x);
 
         let blinding_factors = vk.cs.blinding_factors();
         let l_evals = vk

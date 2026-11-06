@@ -2,20 +2,26 @@
 //!
 //! A block checks many Halo2 spend proofs (btc-pool-halo2, the Bitcoin pool's spend relation) and moves one
 //! state by all of them:
-//! - every non-zero nullifier enters the nullifier tree, a sorted list of records in a depth-32 Merkle tree,
-//!   so a note spent in this block or in any earlier one cannot be spent again;
+//! - every non-zero nullifier enters the nullifier tree, a sorted list of records in a depth-32 Merkle tree, in
+//!   ascending order, so a note spent in this block or in any earlier one cannot be spent again and the tree is
+//!   the same whoever builds it from the published nullifiers;
 //! - the block's new notes join the Poseidon note tree sorted by value, so a note's position does not say
 //!   which spend made it.
 //!
 //! Each spend's body hash (which its inputs' owners sign) is checked against the tacit chain's body: the chain's
-//! binding, the output leaves, their memo hashes and the address an exit pays. Deposits and exits are opened
-//! here and committed as plain records (asset, value, and the body a depositor named or the address an exit
-//! pays) for the contract that lands the block to match and pay; the bodies themselves are never published.
+//! binding, the output leaves, their memo hashes, the address an exit pays and a salt the spender keeps. Deposits
+//! and exits are opened here and committed as plain records (asset, value, and the body hash a depositor named or
+//! the address an exit pays) for the contract that lands the block to match and pay. A body is never published;
+//! a depositor's body hash is, and its salt keeps anyone from matching it to the outputs it names.
 //!
 //! A spend's anchor, the note root its inputs are proven against, is checked against the last `RECENT` roots the
 //! state remembers; only an older one is listed in `anchors`, for whoever lands the block to check against the
 //! roots it has seen. So the anchors nearly every spend uses never reach a public list that would say when the
 //! spend was proven.
+//!
+//! What the lists cannot hide from whoever proves the block: which nullifiers, outputs, deposit and exit came
+//! from the same spend, and each deposit's and exit's opening. A block proof before its final wrap is not
+//! zero-knowledge, so it is never published.
 
 use btc_pool_halo2::model::{body_hash, pedersen_bjj, poseidon, zeros, TREE_DEPTH};
 use num_bigint::BigUint;
@@ -34,10 +40,16 @@ pub const RECENT: usize = 32;
 pub const STATE_LEN: usize = 32 + 8 + 32 * TREE_DEPTH + 32 + 8 + 32 * RECENT + 32;
 /// `NfWitness::to_bytes`: low value, low next, low index (u64 BE), low path, slot path.
 pub const NF_WITNESS_LEN: usize = 32 + 32 + 8 + 2 * 32 * NF_LEVELS;
+/// Every memo's length, so a memo's size says nothing of what wrote it (the landing contract refuses others).
+pub const MEMO_LEN: usize = 128;
+/// btc-pool-halo2's partial rounds for Poseidon with t = 3 (`partial_rounds(3)`, which parses constants to say so;
+/// `note_tree_consts` checks it).
+pub const NOTE_PARTIAL_ROUNDS: usize = 57;
 
 const STATE_DOMAIN: &[u8] = b"tacit-block-state-v1";
 const LIST_DOMAIN: &[u8] = b"tacit-block-list-v1";
 const VK_DOMAIN: &[u8] = b"tacit-block-vk-v1";
+const CHAIN_DOMAIN: &[u8] = b"tacit-block-chain-v1";
 const SHA256_IV: [u32; 8] = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
 
 /// Cycle-tracker markers in the zkVM (the executor sums each name); nothing elsewhere.
@@ -83,6 +95,7 @@ pub fn node_hash(a: &Fr, b: &Fr) -> Fr {
 /// 32 little-endian canonical bytes. The zkVM reads them from the file instead of parsing them.
 pub fn note_tree_consts() -> Vec<u8> {
     use btc_pool_halo2::model::{mds, partial_rounds, round_constant, FULL_ROUNDS};
+    assert_eq!(partial_rounds(3), NOTE_PARTIAL_ROUNDS, "Poseidon's partial rounds");
     let mut b = vec![];
     for k in 0..(FULL_ROUNDS + partial_rounds(3)) * 3 {
         b.extend_from_slice(round_constant(3, k / 3, k % 3).to_repr().as_ref());
@@ -101,9 +114,34 @@ pub fn note_tree_consts() -> Vec<u8> {
 #[cfg(target_os = "zkvm")]
 mod zk {
     use super::*;
-    use btc_pool_halo2::model::{partial_rounds, FULL_ROUNDS};
+    use btc_pool_halo2::model::FULL_ROUNDS;
 
     const NOTE_TREE: &[u8] = include_bytes!("../../artifacts/note-tree.bin");
+    const fn partial_rounds(_t: usize) -> usize {
+        NOTE_PARTIAL_ROUNDS
+    }
+
+    /// One message schedule for the whole run: h64 writes its first sixteen words, the extend precompile the rest.
+    static mut SCHEDULE: [u64; 64] = [0; 64];
+
+    /// h64 on SHA-256's precompiles (each word in a u64, as SP1's take them).
+    pub fn h64(a: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
+        let mut s: [u64; 8] = SHA256_IV.map(|x| x as u64);
+        unsafe {
+            let w = &mut *core::ptr::addr_of_mut!(SCHEDULE);
+            for i in 0..8 {
+                w[i] = u32::from_be_bytes([a[4 * i], a[4 * i + 1], a[4 * i + 2], a[4 * i + 3]]) as u64;
+                w[8 + i] = u32::from_be_bytes([b[4 * i], b[4 * i + 1], b[4 * i + 2], b[4 * i + 3]]) as u64;
+            }
+            sp1_lib::syscall_sha256_extend(w);
+            sp1_lib::syscall_sha256_compress(w, &mut s);
+        }
+        let mut out = [0u8; 32];
+        for i in 0..8 {
+            out[4 * i..4 * i + 4].copy_from_slice(&(s[i] as u32).to_be_bytes());
+        }
+        out
+    }
 
     type U = [u64; 4];
     /// The BN254 scalar field's modulus r, little-endian limbs.
@@ -288,7 +326,13 @@ impl Notes {
 }
 
 /// The nullifier tree's hash: SHA-256's compression function on the one 64-byte block a ‖ b, from SHA-256's IV.
+/// A record and an inner node hash alike; every path is NF_LEVELS long, so a record is only ever read at a leaf.
 pub fn h64(a: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
+    #[cfg(target_os = "zkvm")]
+    {
+        return zk::h64(a, b);
+    }
+    #[allow(unreachable_code)]
     let mut block = [0u8; 64];
     block[..32].copy_from_slice(a);
     block[32..].copy_from_slice(b);
@@ -381,7 +425,7 @@ pub fn nf_insert(root: &[u8; 32], size: u64, v: &[u8; 32], w: &NfWitness) -> Res
     if w.low_path.len() != NF_LEVELS || w.slot_path.len() != NF_LEVELS {
         return Err("nullifier path length");
     }
-    if nf_root_of(&nf_record(&w.low_value, &w.low_next), w.low_index, &w.low_path) != *root {
+    if w.low_index >= size || nf_root_of(&nf_record(&w.low_value, &w.low_next), w.low_index, &w.low_path) != *root {
         return Err("the record below the nullifier is not in the tree");
     }
     if !(w.low_value < *v && (w.low_next == [0u8; 32] || *v < w.low_next)) {
@@ -431,11 +475,13 @@ pub struct Opening {
 }
 
 /// What a block takes about a spend besides its proof: the rest of its body (its outputs' memo hashes, zero for an
-/// empty output, and the address an exit pays, zero for none) and the openings of its deposit and exit.
+/// empty output, the address an exit pays, zero for none, and the spender's salt) and the openings of its deposit
+/// and exit. A wallet derives the salt from its own secret and the spend, so it is found again from the keys alone.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SpendData {
     pub memo_hashes: [[u8; 32]; 3],
     pub exit_to: [u8; 20],
+    pub salt: [u8; 32],
     pub dep: Option<Opening>,
     pub exit: Option<Opening>,
 }
@@ -447,6 +493,7 @@ impl SpendData {
             b.extend_from_slice(m);
         }
         b.extend_from_slice(&self.exit_to);
+        b.extend_from_slice(&self.salt);
         for o in [self.dep, self.exit] {
             match o {
                 None => b.push(0),
@@ -466,7 +513,8 @@ impl SpendData {
             m.copy_from_slice(b.get(32 * i..32 * i + 32)?);
         }
         d.exit_to.copy_from_slice(b.get(96..116)?);
-        let mut at = 116;
+        d.salt.copy_from_slice(b.get(116..148)?);
+        let mut at = 148;
         let mut opening = || -> Option<Option<Opening>> {
             let flag = *b.get(at)?;
             at += 1;
@@ -491,9 +539,10 @@ const BODY_DOMAIN: &[u8] = b"tacit-block-body-v1";
 const MEMO_DOMAIN: &[u8] = b"tacit-block-memo-v1";
 
 /// A tacit-chain spend's body, which the owners of its inputs sign (the circuit checks their signatures over its
-/// hash): the chain's binding, the output leaves, their memo hashes and the address an exit pays. A block checks
-/// each spend's body hash against these, so whoever proves the block can change none of them.
-pub fn body_bytes(chain: &[u8; 32], out: &[Fr; 3], memo_hashes: &[[u8; 32]; 3], exit_to: &[u8; 20]) -> Vec<u8> {
+/// hash): the chain's binding, the output leaves, their memo hashes, the address an exit pays and the spender's
+/// salt. A block checks each spend's body hash against these, so whoever proves the block can change none of them;
+/// the salt keeps a body hash that is published (a depositor's) from being matched to the outputs it names.
+pub fn body_bytes(chain: &[u8; 32], out: &[Fr; 3], memo_hashes: &[[u8; 32]; 3], exit_to: &[u8; 20], salt: &[u8; 32]) -> Vec<u8> {
     let mut b = BODY_DOMAIN.to_vec();
     b.extend_from_slice(chain);
     for o in out {
@@ -503,7 +552,18 @@ pub fn body_bytes(chain: &[u8; 32], out: &[Fr; 3], memo_hashes: &[[u8; 32]; 3], 
         b.extend_from_slice(m);
     }
     b.extend_from_slice(exit_to);
+    b.extend_from_slice(salt);
     b
+}
+
+/// The binding a deployment's spends carry: SHA-256(CHAIN_DOMAIN ‖ chain id (32-byte BE) ‖ the landing contract),
+/// which the contract derives for itself, so no two deployments share one.
+pub fn chain_binding(chain_id: u64, lander: &[u8; 20]) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(CHAIN_DOMAIN);
+    h.update(word(chain_id));
+    h.update(lander);
+    h.finalize().into()
 }
 
 /// The hash a body carries for an output's memo.
@@ -616,7 +676,8 @@ pub fn vk_hash(vk_digest: &[u8; 64]) -> [u8; 32] {
     h.finalize().into()
 }
 
-/// What a block proof commits, as twelve 32-byte words (`encode`).
+/// What a block proof commits, as ten 32-byte words (`encode`). How many spends a block holds is not among them,
+/// and each list's length is in its hash.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BlockOut {
     /// State digests before and after.
@@ -625,8 +686,6 @@ pub struct BlockOut {
     /// Note roots before and after.
     pub prev_root: [u8; 32],
     pub next_root: [u8; 32],
-    pub spends: u64,
-    pub outputs: u64,
     pub outputs_hash: [u8; 32],
     pub nullifiers_hash: [u8; 32],
     pub anchors_hash: [u8; 32],
@@ -654,8 +713,6 @@ impl BlockOut {
             self.next,
             self.prev_root,
             self.next_root,
-            word(self.spends),
-            word(self.outputs),
             self.outputs_hash,
             self.nullifiers_hash,
             self.anchors_hash,
@@ -668,8 +725,8 @@ impl BlockOut {
 }
 
 /// The lists a block's hashes commit, in committed order: what a lander publishes so anyone can rebuild the
-/// state and find their notes. Every list is sorted and no spend body is in any, so none of them says which
-/// spend an entry came from.
+/// state (outputs join the note tree in this order, nullifiers the nullifier tree in this order) and find their
+/// notes. Every list is sorted, so its order says nothing of which spend an entry came from.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BlockData {
     /// New notes in the order they join the tree: leaf ‖ the hash of its memo (the memo itself, which the
@@ -686,8 +743,9 @@ pub struct BlockData {
 }
 
 /// Applies a block's spends to `prev`, each spend's proof checked separately (the guest folds them into one
-/// pairing). `data[i]` is the rest of spend i's body and its openings; `nfw[j]` is the witness for the j-th
-/// non-zero nullifier, in spend order and slot order, against the tree as the nullifiers before it left it.
+/// pairing). `data[i]` is the rest of spend i's body and its openings; `nfw[j]` is the witness for the block's
+/// j-th smallest non-zero nullifier, against the tree as the smaller ones left it: nullifiers enter in ascending
+/// order, so the tree is a function of the published list alone.
 pub fn apply(prev: &State, spends: &[Spend], data: &[SpendData], nfw: &[NfWitness], vk: [u8; 32]) -> Result<(State, BlockOut, BlockData), String> {
     mark!("cycle-tracker-report-start: block-scan");
     if data.len() != spends.len() {
@@ -709,8 +767,8 @@ pub fn apply(prev: &State, spends: &[Spend], data: &[SpendData], nfw: &[NfWitnes
         } else if s.root != start && !prev.knows(&fr_be(&s.root)) {
             lists.anchors.push(fr_be(&s.root));
         }
-        if body_hash(&body_bytes(&prev.chain, &s.out, &d.memo_hashes, &d.exit_to)) != s.body {
-            return Err(format!("spend {i}: the body is not this chain's, or not its outputs, memos and exit"));
+        if body_hash(&body_bytes(&prev.chain, &s.out, &d.memo_hashes, &d.exit_to, &d.salt)) != s.body {
+            return Err(format!("spend {i}: the body is not this chain's, or not its outputs, memos, exit and salt"));
         }
         for (o, m) in s.out.iter().zip(&d.memo_hashes) {
             if bool::from(o.is_zero()) {
@@ -721,19 +779,20 @@ pub fn apply(prev: &State, spends: &[Spend], data: &[SpendData], nfw: &[NfWitnes
                 outputs.push((*o, *m));
             }
         }
+        // a deposit or exit of nothing could never be made or paid on L1: refused here, not left to the lander
         match (is_identity(&s.dep), &d.dep) {
             (true, None) => {}
-            (false, Some(o)) if commits(o, &s.dep) => {
+            (false, Some(o)) if o.v > 0 && commits(o, &s.dep) => {
                 lists.deposits.push([fr_be(&s.asset), word(o.v), fr_be(&s.dep[0]), fr_be(&s.dep[1]), fr_be(&s.body)].concat())
             }
-            _ => return Err(format!("spend {i}: the deposit's opening is missing or wrong")),
+            _ => return Err(format!("spend {i}: the deposit's opening is missing, wrong or of nothing")),
         }
         match (is_identity(&s.exit), &d.exit) {
             (true, None) if d.exit_to == [0u8; 20] => {}
-            (false, Some(o)) if d.exit_to != [0u8; 20] && commits(o, &s.exit) => {
+            (false, Some(o)) if o.v > 0 && d.exit_to != [0u8; 20] && commits(o, &s.exit) => {
                 lists.exits.push([fr_be(&s.asset), word(o.v), address_word(&d.exit_to)].concat())
             }
-            _ => return Err(format!("spend {i}: the exit's opening or address is missing or wrong")),
+            _ => return Err(format!("spend {i}: the exit's opening or address is missing, wrong or of nothing")),
         }
         spent.extend(live.iter().map(|nf| (i, fr_be(nf))));
     }
@@ -743,6 +802,10 @@ pub fn apply(prev: &State, spends: &[Spend], data: &[SpendData], nfw: &[NfWitnes
     mark!("cycle-tracker-report-end: block-scan");
 
     mark!("cycle-tracker-report-start: block-nullifiers");
+    spent.sort_by(|a, b| a.1.cmp(&b.1));
+    if let Some(w) = spent.windows(2).find(|w| w[0].1 == w[1].1) {
+        return Err(format!("spends {} and {}: one note spent twice", w[0].0, w[1].0));
+    }
     let (mut nf_root, mut nf_size) = (prev.nf_root, prev.nf_size);
     for ((i, key), w) in spent.iter().zip(nfw) {
         nf_root = nf_insert(&nf_root, nf_size, key, w).map_err(|e| format!("spend {i}: {e}"))?;
@@ -760,7 +823,6 @@ pub fn apply(prev: &State, spends: &[Spend], data: &[SpendData], nfw: &[NfWitnes
 
     mark!("cycle-tracker-report-start: block-commit");
     lists.outputs = outputs.iter().map(|(o, m)| [fr_be(o), *m].concat().try_into().unwrap()).collect();
-    lists.nullifiers.sort();
     lists.anchors.sort();
     lists.anchors.dedup();
     lists.deposits.sort();
@@ -772,8 +834,6 @@ pub fn apply(prev: &State, spends: &[Spend], data: &[SpendData], nfw: &[NfWitnes
         next: next.digest(),
         prev_root: fr_be(&start),
         next_root: fr_be(&next.notes.root),
-        spends: spends.len() as u64,
-        outputs: lists.outputs.len() as u64,
         outputs_hash: list_hash(1, &lists.outputs),
         nullifiers_hash: list_hash(2, &lists.nullifiers),
         anchors_hash: list_hash(3, &lists.anchors),

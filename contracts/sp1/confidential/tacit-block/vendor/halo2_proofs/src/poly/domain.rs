@@ -31,7 +31,13 @@ pub struct EvaluationDomain<F: Field> {
     extended_ifft_divisor: F,
     t_evaluations: Vec<F>,
     barycentric_weight: F,
+    // ω^r and ω^-r for r up to ROTATION_TABLE, so rotating by a query's rotation is one product, not a power
+    omega_pows: Vec<F>,
+    omega_inv_pows: Vec<F>,
 }
+
+/// The largest rotation `rotate_omega` looks up instead of raising ω to it (a circuit's queries rotate by a few rows).
+const ROTATION_TABLE: usize = 32;
 
 impl<F: WithSmallOrderMulGroup<3>> EvaluationDomain<F> {
     /// This constructs a new evaluation domain object based on the provided
@@ -126,6 +132,17 @@ impl<F: WithSmallOrderMulGroup<3>> EvaluationDomain<F> {
             .chain(Some(&mut omega_inv))
             .batch_invert();
 
+        let pows = |w: F| {
+            let mut v = Vec::with_capacity(ROTATION_TABLE + 1);
+            let mut p = F::ONE;
+            for _ in 0..=ROTATION_TABLE {
+                v.push(p);
+                p *= w;
+            }
+            v
+        };
+        let (omega_pows, omega_inv_pows) = (pows(omega), pows(omega_inv));
+
         EvaluationDomain {
             n,
             k,
@@ -141,6 +158,8 @@ impl<F: WithSmallOrderMulGroup<3>> EvaluationDomain<F> {
             extended_ifft_divisor,
             t_evaluations,
             barycentric_weight,
+            omega_pows,
+            omega_inv_pows,
         }
     }
 
@@ -394,6 +413,10 @@ impl<F: WithSmallOrderMulGroup<3>> EvaluationDomain<F> {
     /// Multiplies a value by some power of $\omega$, essentially rotating over
     /// the domain.
     pub fn rotate_omega(&self, value: F, rotation: Rotation) -> F {
+        let r = rotation.0.unsigned_abs() as usize;
+        if r <= ROTATION_TABLE {
+            return value * if rotation.0 >= 0 { self.omega_pows[r] } else { self.omega_inv_pows[r] };
+        }
         let mut point = value;
         if rotation.0 >= 0 {
             point *= &self.get_omega().pow_vartime([rotation.0 as u64]);
