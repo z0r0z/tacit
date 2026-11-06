@@ -162,7 +162,7 @@ export const CONFIDENTIAL_DEPLOYMENTS = {
     rpcs: MAINNET_RPCS,
     logRpcs: ETH_LOG_NODES,
     relayBase: 'https://api.tacit.finance',
-    // Other relays running the same API (worker/ + worker-relay/, see worker-relay/README.md), tried in order while relayBase is not proving
+    // Other relays running the same API (docs/RUN-A-RELAY.md), tried in order while relayBase is not proving
     // and sending. Each is an https origin; adding one here also adds it to the pages' connect-src (tests/relay-list.test.mjs checks).
     relays: [],
     evmNetwork: 'mainnet',

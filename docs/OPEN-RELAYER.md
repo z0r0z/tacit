@@ -8,6 +8,8 @@ binds to `msg.sender`. Who sends a settle changes nothing else. That leaves thre
 - **Prove an op with your own Succinct prover account**, then send it yourself or post it to the board.
 - **Pay for the relay's proofs** with PROVE.
 
+To run a whole relay (take actions from pages, prove them and send them), see [RUN-A-RELAY.md](./RUN-A-RELAY.md).
+
 API base `https://api.tacit.finance`. Every route here is public and CORS-open.
 
 ## The open board
