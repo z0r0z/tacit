@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-YTc3b+TiydfJsupv+IEdYu4+CNSNmDfr5C/5VcDsTDo=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-eRpWS7B6QzpkwaRYCV25y8ggl1CpQ6/npHwZJQnFc+s=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -64,7 +64,7 @@
 <link rel="modulepreload" href="/bridge-tick.js?cb=4e721860">
 <link rel="modulepreload" href="/tacit-session.js?cb=a2d34bb2">
 <link rel="modulepreload" href="/activity.js?cb=8ccbc552">
-<link rel="modulepreload" href="/swap/card.js?cb=0aba4958">
+<link rel="modulepreload" href="/swap/card.js?cb=20f52972">
 <link rel="modulepreload" href="/trade/wallet.js?cb=88b623b8">
 <link rel="modulepreload" href="/trade/util.js?cb=ba5a02b1">
 <link rel="modulepreload" href="/trade/rpc.js">
@@ -17134,11 +17134,22 @@ const swcWait = (label, timeoutMs) => ({ timeoutMs, sleep, onJob: (jobId) => { a
 function swcPace(id) {
   const q = $('#hx-swap #q');
   if (!q) return;
-  const b = q.nextElementSibling?.matches?.('.pace[data-card]') ? q.nextElementSibling : null;
-  if (b) b.dataset.pace = id;
+  const b = q.nextElementSibling?.matches?.('.pace[data-card], .pace[data-eta]') ? q.nextElementSibling : null;
+  // a bar already there for this step's estimate (swcBar) is the job's from here: its own pace, not the estimate
+  if (b) { delete b.dataset.eta; delete b.dataset.start; b.dataset.card = '1'; b.dataset.pace = id; }
   else q.insertAdjacentHTML('afterend', html`<div class="pace" data-card="1" data-pace="${id}"><div class="actr-bar" role="progressbar" aria-label="How far along" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i style="width:0%"></i></div><span></span></div>`.s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=0aba4958').catch((e) => { SWC.p = null; throw e; }));
+// The steps of the card's private moves that wait on the relay or a prover, and about how long each takes (seconds): the bar under the status line fills over it,
+// and a relay job that comes up for the step takes the bar over (swcPace). One bar a line: the next step, or the end of the run (k ''), takes it away.
+const SWC_SECS = { ahead: () => proveSecs(), own: 60, route: 60, send: 60, proving: 60, swap: 60, split: 60, combine: 60, exit: 60, exitswap: 60, posted: 10 };
+function swcBar(k) {
+  const q = $('#hx-swap #q');
+  if (!q) return;
+  for (const b of q.parentNode.querySelectorAll('.pace[data-card], .pace[data-eta]')) b.remove();
+  const s = SWC_SECS[k];
+  if (s) proveBar(q, typeof s === 'function' ? s() : s);
+}
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=20f52972').catch((e) => { SWC.p = null; throw e; }));
 // the card held to the tab's flow; back on the Swap tab it opens on the swap it showed there
 function swcFlow() {
   hxPathPaint();
@@ -17223,6 +17234,7 @@ function hxSwap() {
             off: async () => { LOCAL.prover?.allowLive?.(false); (await getUx()).relay.useProver?.(null); spApply(); } } },
         // the pair and its sides are kept in this browser, the amount for the visit only, as the other tabs keep theirs
         onChange: () => { hxLeadPaint(); if (SWC.auto || SWC.card?.flow) return; const p = SWC.card.params(), amt = p.get('amt') || ''; p.delete('amt'); HX.swq = p.toString(); hxRemember(); try { sessionStorage.setItem(HX_AMT, JSON.stringify({ sig: 'swap', amt })); } catch { } },
+        pace: (k) => swcBar(k),
         onDone: () => { HXW.clear(); HXWB.at = 0; hxBalPaint(); if (S.key) scanPrivate(true).catch(() => {}); dashSoon(); },
         // a tab picked while the card was busy: drawn now that it is idle
         onIdle: () => { if (SWC.el?.isConnected) { swcFlow(); swcAsk(); hxLeadPaint(); } },

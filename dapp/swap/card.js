@@ -107,6 +107,8 @@ const S = {
 };
 // The page the card is drawn on: its root, and what the page hands it (see mountSwapCard). Every element the card reads is looked for inside it.
 let ROOT = null, H = {}, wallet = null, W = {};
+// A step that waits on the relay or a prover: the page draws a bar under the status line for it (H.pace, with the step's name), taken away at the next step and, with '', when the run ends
+const paced = (k) => { try { H.pace?.(k); } catch { } };
 const $ = (s) => ROOT.querySelector(s);
 const changed = () => H.onChange?.();
 // The last swaps made from this browser, so a swap does not vanish with the line that said "Done": a short sentence and its transaction.
@@ -2536,7 +2538,7 @@ async function privateGo(r, kind = 'private', here = false) {
   }
   const pay = tokenOf(S.pay), get = tokenOf(S.get), what = `${tidy(plain(units, 8))} ${pay.sym}`, payKey = S.pay, earned = rowPts(r, q);
   let popped = false;
-  const step = (k, h) => (say((here && HERE_SAY[k]) || {
+  const step = (k, h) => (paced(k), say((here && HERE_SAY[k]) || {
     prepare: 'Preparing the deposit…', confirm: 'Confirm the deposit in your wallet…', sent: `Deposit sent ${h ? txLink(h) : ''}. Waiting for it to land…`,
     proving: `Deposited ${h ? txLink(h) : ''}. The relay is making it private, about a minute…`, note: 'Private now. Finding its note…',
     split: 'The relay is cutting a note to the amount first, about a minute…', combine: 'The relay is combining your notes into one of the amount first, about a minute…',
@@ -2594,7 +2596,7 @@ async function privateGo(r, kind = 'private', here = false) {
     else if (e?.deposit) say(`${esc(m ? m.relayWords(e) : e.message)} Your ETH is in the Tacit pool ${e.deposit.hash ? txLink(e.deposit.hash) : ''}, not lost: <a href="/teth/">finish it on the tETH page →</a>`, 'err', true);
     else say(esc(m ? m.relayWords(e) : e?.message || String(e)), 'err', true);
   } finally {
-    S.busy = false; changed(); paint(); H.onDone?.();
+    paced(''); S.busy = false; changed(); paint(); H.onDone?.();
     if (S.pay !== payKey || !S.q) requote(true);
     PV?.read(true).then(paint, () => {});
     if (fromWallet) readBalances().then(paintSides, () => {});
@@ -2634,8 +2636,8 @@ async function pinGo(r) {
     const plan = { wallet: true, wei: q.ethIn, units: q.ethIn / E10, asset: IDS.eth, ticker: 'cETH', fee: q.fee ?? 0n,
       path: getKey === 'teth' ? [] : (q.pools || []).map((p) => ({ assetNext: IDS[p.b], feeBps: p.feeBps })),
       minOut: poolFloor(r.out / E10, slip), label: `Swap ${what} for ${get.sym} privately`, sendTo: toTacit, outTicker: POOL_TK[PK[getKey]] };
-    const step = (k, x) => say({ prepare: 'Swapped to ETH. Preparing the deposit…', confirm: 'Confirm the deposit in your wallet…', sent: `Deposit sent ${x ? txLink(x) : ''}. Waiting for it to land…`,
-      proving: `Deposited ${x ? txLink(x) : ''}. The relay is making it private, about a minute…`, note: 'Private now. Finding its note…', route: 'The relay is proving your private swap, about a minute…', ahead: 'Finishing the proof of your swap…', posted: 'The relay is sending your private swap, its proof is made, a few moments…', own: 'Proving your swap with your own prover, about a minute. Nothing has left your wallet yet…', check: 'Checking it first…', swap: `Deposited ${x ? txLink(x) : ''}. The relay is proving your swap, about a minute…`, send: 'The relay is sending it on to them, about a minute…' }[k] || '');
+    const step = (k, x) => (paced(k), say({ prepare: 'Swapped to ETH. Preparing the deposit…', confirm: 'Confirm the deposit in your wallet…', sent: `Deposit sent ${x ? txLink(x) : ''}. Waiting for it to land…`,
+      proving: `Deposited ${x ? txLink(x) : ''}. The relay is making it private, about a minute…`, note: 'Private now. Finding its note…', route: 'The relay is proving your private swap, about a minute…', ahead: 'Finishing the proof of your swap…', posted: 'The relay is sending your private swap, its proof is made, a few moments…', own: 'Proving your swap with your own prover, about a minute. Nothing has left your wallet yet…', check: 'Checking it first…', swap: `Deposited ${x ? txLink(x) : ''}. The relay is proving your swap, about a minute…`, send: 'The relay is sending it on to them, about a minute…' }[k] || ''));
     const res = await pv.swap(plan, { wallet, from, say: step });
     if (!popped) { popped = true; reward(earned); }
     const got = res.made != null ? `${tidy(plain(res.made, 8))} tETH` : `about ${tidy(amtFmt(res.out * E10, 18))} ${get.sym}`;
@@ -2660,7 +2662,7 @@ async function pinGo(r) {
     else if (h) say(`The swap to ETH was sent ${txLink(h)} but its result could not be read: ${why}. Check your wallet before swapping again.`, 'err', true);
     else say(e?.html ? e.message : why, 'err', true);
   } finally {
-    S.busy = false; changed(); paint(); H.onDone?.();
+    paced(''); S.busy = false; changed(); paint(); H.onDone?.();
     if (!S.q) requote(true);
     PV?.read(true).then(paint, () => {});
     readBalances().then(paintSides, () => {});

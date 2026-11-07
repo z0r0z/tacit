@@ -12051,6 +12051,11 @@ await step('swaphere', async () => {
     await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); location.hash = ''; });
     await p.goto(r.url + '?from=tETH&to=TAC&private=both&amt=0.05');
     await pasteKey(p, hex);
+    // the key's own address pays here, chosen (a wallet pays by default now): it holds no ETH, which is said before anything is proved
+    await toWallet(p);
+    await p.waitForSelector('[data-pay="tacit"]', { timeout: 60000 });
+    await p.click('[data-pay="tacit"]');
+    await until(p, () => document.querySelector('[data-pay="tacit"]')?.classList.contains('main'));
     await p.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
     await p.waitForSelector('#hx-swap #amt', { timeout: 120000 });
     relayStateNow = 'paused';
@@ -12102,19 +12107,21 @@ await step('routeahead', async () => {
   };
   try {
     await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
-    await p.click('[data-hxm="swap"]');
-    await until(p, () => /^tETH/.test((document.querySelector('#hx-swap #pay-coin')?.textContent || '').trim()) && /Balance 0\.25 · Max/.test(document.querySelector('#hx-swap #pay-side')?.textContent || ''), null, 300000);
-    await p.click('#hx-swap #get-coin'); await p.waitForSelector('#pk .pk-r:visible');
-    await p.evaluate(() => { let g = ''; for (const el of document.querySelectorAll('#pk .pk-g, #pk .pk-r')) { if (el.classList.contains('pk-g')) { g = el.textContent; continue; } if (/^Private/.test(g) && el.querySelector('b')?.textContent.trim() === 'TAC') { el.click(); return; } } });
-    await until(p, () => /^TAC/.test((document.querySelector('#hx-swap #get-coin')?.textContent || '').trim()) && /private/i.test(document.querySelector('#hx-swap #get-at')?.textContent || ''), null, 60000)
-      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | get: ${await text(p, '#hx-swap #get-coin')} / ${await text(p, '#hx-swap #get-at')}`); });
+    await tabClick(p, 'shield');
+    await until(p, () => /You hold 0\.25 tETH privately/.test(document.querySelector('#hx-have')?.textContent || ''), null, 300000);
+    await p.click('[data-hxin="swap:eth:tac"]');                                    // "Swap it": private tETH for TAC
+    await until(p, () => /^TAC/.test((document.querySelector('#hx-swap #get-coin')?.textContent || '').trim()) && /private/i.test(document.querySelector('#hx-swap #get-at')?.textContent || '') && /Balance 0\.25/.test(document.querySelector('#hx-swap #pay-side')?.textContent || ''), null, 90000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | pay ${await text(p, '#hx-swap #pay-coin')} / ${await text(p, '#hx-swap #pay-side')} | get ${await text(p, '#hx-swap #get-coin')} / ${await text(p, '#hx-swap #get-at')}`); });
     await p.fill('#hx-swap #amt', '0.05');
     await until(p, () => /Proof\s*made: the relay only sends it/.test(document.querySelector('#hx-swap #rcpt')?.textContent || ''), null, 300000).catch(() => {});
     const asked = (await calls()).filter((c) => c.ahead);
     ok(asked.length === 1 && asked[0].amountIn === '5000000' && asked[0].noteValue === '25000000' && BigInt(asked[0].fee) === 100000n && /Proof\s*made: the relay only sends it/.test(await q('#rcpt')),
       `routeahead: the quote stood, the route over part of the larger note is proved ahead with the relay's fee bound in, and the receipt says it is made (${JSON.stringify(asked)}; ${(await q('#rcpt')).match(/Proof.{0,40}/)?.[0]})`);
+    await p.evaluate(() => { window.__barSeen = []; new MutationObserver((ms) => { for (const m of ms) for (const x of m.addedNodes) if (x.matches?.('.pace')) window.__barSeen.push(x.dataset.eta ? 'estimate' : 'job'); }).observe(document.querySelector('#hx-swap'), { childList: true, subtree: true }); });
     await press((await calls()).length);
     let all = await calls();
+    const seen = await p.evaluate(() => window.__barSeen);
+    ok(seen.length > 0 && !(await p.$('#hx-swap .pace')), `routeahead: while the relay sends it a bar stands under the status line (${seen}), and it is gone once the swap is done`);
     ok(/Done\./.test(await q('#q')) && all.filter((c) => c.posted && !c.refused).length === 1 && !all.some((c) => !c.ahead && !c.posted && !c.split),
       `routeahead: the press posts that proof for the relay to send and asks no route of the relay (${all.map((c) => (c.ahead ? 'ahead' : c.posted ? 'posted' : c.split ? 'split' : 'route')).join(' > ')}; ${(await q('#q')).slice(0, 100)})`);
     if (r.errors.length) { fails++; console.log('FAIL routeahead page errors: ' + r.errors.slice(0, 3).join(' | ')); }
