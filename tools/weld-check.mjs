@@ -144,7 +144,7 @@
 //            limits, its button opens the TAC sheet's To Bitcoin side with the amount, and a key short of private TAC is sent to make some
 //   hxlink   the same button with no key open: the Bridge tab asks for one, still addressed as the way out, and opens on that side with the amount
 //   pxsback  the price strip on a return visit: prices kept less than an hour ago show at once and the reading replaces them; older ones are not drawn
-//   fmchips  the farms under the prices: the public pool and each private pool as a pair and its APR, best first, the row's height kept so the hero never moves, a press opening the Earn tab on that pool (the same APR in its row), and between reward periods only the public pool is left
+//   fmchips  the farms under the rewards line: the public pool and each private pool as a pair and its APR, best first, the row's height kept so the hero never moves, a press opening the Earn tab on that pool (the same APR in its row), and between reward periods only the public pool is left
 //   hxways  the card's Shield by what is held: each source lists its own ways, the chain picker shows for the ETH-only pools alone,
 //            payments ETH goes to its own chain's Deposit form with the amount, Borrow hands its BTC to the lock form
 //   activity relayed jobs (dispatched as tacit:job, as the relay client does) move Queued → Proving → Done or Failed, with
@@ -10340,6 +10340,48 @@ await step('tradelinks', async () => {
       if (r.errors.length) { fails++; console.log('FAIL tradelinks page errors: ' + r.errors.slice(0, 3).join(' | ')); }
     } finally { await r.browser.close(); }
   }
+});
+
+// The farms under the rewards line: the public pool and each private pool the Earn tab offers, as its pair and its APR, best first. The row keeps its
+// height (the hero does not move when the farms arrive), scrolls instead of widening the page on a phone, and a press opens the Earn tab on that
+// pool with the same APR in its row. Between reward periods only the public pool is left.
+await step('fmchips', async () => {
+  const read = (p) => p.evaluate(() => ({
+    chips: [...document.querySelectorAll('#fms a')].map((a) => ({ apr: Number(a.querySelector('b').textContent.replace(/[,%+]/g, '')), icons: [...a.querySelectorAll('use')].map((u) => u.getAttribute('href')).join(), hx: a.dataset.hx, href: a.getAttribute('href') })),
+    top: document.querySelector('.hero').getBoundingClientRect().top, h: document.querySelector('#fms').getBoundingClientRect().height, scroll: document.documentElement.scrollWidth > innerWidth + 1,
+  }));
+  for (const [name, viewport] of [['desktop', { width: 1280, height: 900 }], ['phone', { width: 360, height: 740 }]]) {
+    const r = await openPage({ account: A0, key: K0, viewport });
+    const p = r.page;
+    try {
+      await p.goto(r.url);
+      await p.waitForSelector('#hx-body .hx-h');
+      const top0 = await p.$eval('.hero', (e) => e.getBoundingClientRect().top);
+      await p.waitForFunction(() => document.querySelector('#fms.on'), null, { timeout: 120000 });
+      const s = await read(p), pub = s.chips.find((c) => c.hx === 'earn:ether:public');
+      ok(s.chips.length >= 2 && !!pub && pub.icons === '#tk-tac,#tk-eth' && s.chips.every((c) => c.apr > 0 && c.icons.split(',').length === 2), `fmchips (${name}): the public pool and the private pools, each a pair of marks and its APR (${s.chips.map((c) => `${c.hx.slice(11)} ${c.apr}%`).join(', ')})`);
+      ok(s.chips.every((c, i) => i === 0 || s.chips[i - 1].apr >= c.apr), `fmchips (${name}): best APR first`);
+      ok(s.chips.every((c) => c.hx === 'earn:ether:public' ? c.href === '#farm/public' : /^earn:ether:p\d+$/.test(c.hx) && c.href === `#farm/private-${c.hx.slice(12)}`), `fmchips (${name}): each keeps its farm's link for a new tab`);
+      ok(Math.abs(s.top - top0) < 1 && s.h >= 24 && !s.scroll, `fmchips (${name}): the row was already there, so the hero did not move (${Math.round(s.top - top0)}px), and the page does not scroll sideways`);
+      for (const c of [s.chips[0], pub]) {
+        const key = c.hx === 'earn:ether:public' ? 'precision' : c.hx.slice(12);
+        await p.click(`#fms a[data-hx="${c.hx}"]`);
+        await until(p, (k) => document.querySelector(`#hx-routes [data-hxr="${k}"]`)?.getAttribute('aria-checked') === 'true', key, 120000);
+        const row = await p.$eval(`#hx-routes [data-hxr="${key}"]`, (e) => e.textContent.replace(/\s+/g, ' '));
+        ok(c.apr >= 10000 || row.includes(`${c.apr.toLocaleString('en-US')}%`),`fmchips (${name}): ${c.hx} opens the Earn tab on that pool, with its APR in the row (${row.slice(0, 60)})`);
+      }
+      if (r.errors.length) { fails++; console.log('FAIL fmchips page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+    } finally { await r.browser.close(); }
+  }
+  const r = await openPage({ account: A0, key: K0 });
+  await r.page.route(/^https:\/\/api\.tacit\.finance\/farm\/program/, async (route) => { try { const res = await route.fetch(); const j = await res.json(); j.epoch = { ...(j.epoch || {}), active: false }; await route.fulfill({ response: res, json: j }); } catch { } });   // a read still out as the page closes is let go
+  try {
+    await r.page.goto(r.url);
+    await r.page.waitForFunction(() => document.querySelector('#fms.on'), null, { timeout: 120000 });
+    const s = await read(r.page);
+    ok(s.chips.length === 1 && s.chips[0].hx === 'earn:ether:public', `fmchips: between reward periods only the public pool is left (${s.chips.map((c) => c.hx).join()})`);
+    if (r.errors.length) { fails++; console.log('FAIL fmchips page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { await r.page.unrouteAll({ behavior: 'ignoreErrors' }); await r.browser.close(); }          // a poll's fetch may still be in flight
 });
 
 // The card's Shield by what is held: each source has its own ways (a way that moves ETH into the Tacit pool needs Ethereum, so a pool on
