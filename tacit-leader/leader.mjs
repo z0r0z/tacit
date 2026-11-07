@@ -21,7 +21,11 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { keccak_256 } from '../dapp/vendor/tacit-deps.min.js';
 import { decode, decodeLand, landCalldata, selector, encode, hexOf, bytesOf } from './abi.mjs';
-import { makeRpc, send, addressOf, num } from './rpc.mjs';
+import { makeRpc, send as sendTx, addressOf, num } from './rpc.mjs';
+
+// one transaction at a time from the leader's key, so the seed's, a sweep's, a landing's and the hops' never take the same nonce
+let txLock = Promise.resolve();
+const send = (...a) => { const r = txLock.then(() => sendTx(...a)); txLock = r.catch(() => {}); return r; };
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const env = process.env;
@@ -147,8 +151,9 @@ let firstSeen = null;
 
 // An epoch's turns are drawn from the beacon randomness of the first block of its first SEED_BLOCKS in which anyone keeps it
 // (TacitSeats.turn): kept by no one in time, the epoch has no leader. A leader keeps it as the epoch begins.
-let seedKeptFor = -1;
+let seedKeptFor = -1, seedSending = false;
 async function keepSeed() {
+  if (seedSending) return;
   const [turns] = await view('TURNS()', ['address']);
   const [[slot], [epochSlots], [seedBlocks], [lead], [seats]] = await Promise.all([
     view('SLOT_BLOCKS()', ['uint256'], [], turns), view('EPOCH_SLOTS()', ['uint256'], [], turns), view('SEED_BLOCKS()', ['uint256'], [], turns),
@@ -156,14 +161,22 @@ async function keepSeed() {
   ]);
   const b = BigInt(num(await rpc.call('eth_blockNumber')));
   const len = BigInt(slot) * BigInt(epochSlots), e = b / len;
-  if (BigInt(seats) === 0n || BigInt(lead) !== 0n || b - e * len < 1n || b - e * len > BigInt(seedBlocks) || Number(e) === seedKeptFor) return;
-  seedKeptFor = Number(e);
-  const receipt = await send(rpc, KEY, turns, selector('turn()'), { chainId: num(await rpc.call('eth_chainId')) });
-  log({ seedKept: Number(e), tx: receipt.transactionHash });
+  // `b` is the latest block: a transaction sent now lands in b + 1 or later, which must be one of the epoch's blocks 1 to SEED_BLOCKS
+  if (BigInt(seats) === 0n || BigInt(lead) !== 0n || b - e * len >= BigInt(seedBlocks) || Number(e) === seedKeptFor) return;
+  seedSending = true;
+  try {
+    const receipt = await send(rpc, KEY, turns, selector('turn()'), { chainId: num(await rpc.call('eth_chainId')), tip: 3_000_000_000n });
+    seedKeptFor = Number(e);
+    log({ seedKept: Number(e), tx: receipt.transactionHash });
+  } finally {
+    seedSending = false;
+  }
 }
 
+const unfundedSince = new Map();
+const DROP_UNFUNDED = Number(env.DROP_UNFUNDED_SECS || 3600) * 1000;
+
 async function step() {
-  await keepSeed().catch((e) => log({ seedNotKept: String(e.message || e) }));
   await sync();
   const [done, queued, lastLanded, window_, forceDelay] = await Promise.all([
     view('queueDone()', ['uint256']), view('queued()', ['uint256']), view('lastLanded()', ['uint256']), view('WINDOW()', ['uint256']), view('FORCE_DELAY()', ['uint256']),
@@ -171,12 +184,26 @@ async function step() {
   const pool = await node('GET', '/mempool');
   // a spend that takes a deposit in lands only if that deposit is waiting on Ethereum (and not queued behind a forced entry the block does not reach)
   const exclude = [];
-  for (const d of pool.deposits) {
-    const key = [hexOf(keccak_256(bytesOf(d.deposit)))];
-    let [from, , forcedAt] = await view('pending(bytes32)', ['address', 'uint256', 'uint256'], key);
-    // a shield paid to its inbox (the confidential pool's unwrap pays one): sweep it in once it holds the deposit
-    if (BigInt(from) === 0n && d.back && await sweepInbox(d.deposit, d.back)) [from, , forcedAt] = await view('pending(bytes32)', ['address', 'uint256', 'uint256'], key);
-    if (BigInt(from) === 0n || Number(forcedAt) > done) exclude.push(d.id);
+  const pendingOf = (d) => view('pending(bytes32)', ['address', 'uint256', 'uint256'], [hexOf(keccak_256(bytesOf(d.deposit)))]);
+  const looked = await Promise.all(pool.deposits.map(async (d) => [d, await pendingOf(d)]));
+  for (const [d, [from0]] of looked) {
+    let from = from0;
+    // a shield paid to its inbox (the confidential pool's unwrap pays one): sweep it in once it holds the deposit, trying each way
+    // back it was sent with
+    for (const back of BigInt(from) === 0n ? d.backs || [] : []) {
+      if (await sweepInbox(d.deposit, back)) { [from] = await pendingOf(d); break; }
+    }
+    if (BigInt(from) === 0n) {
+      exclude.push(d.id);
+      unfundedSince.set(d.id, unfundedSince.get(d.id) ?? Date.now());
+    } else unfundedSince.delete(d.id);
+  }
+  // a shield whose deposit has not come within DROP_UNFUNDED_SECS is dropped, so unfunded ones cannot fill the mempool
+  const stale = [...unfundedSince].filter(([, t]) => Date.now() - t > DROP_UNFUNDED).map(([id]) => id);
+  if (stale.length) {
+    await node('POST', '/drop', { ids: stale });
+    for (const id of stale) unfundedSince.delete(id);
+    log({ dropped: stale.length });
   }
   const waiting = pool.spends.length - exclude.length + pool.settles.length;
   const entries = [];
@@ -243,6 +270,8 @@ async function main() {
   process.on('exit', stopNode);
   for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { stopNode(); process.exit(0); });
   for (let i = 0; i < 120; i++) { try { await fetch(`http://${NODE_ADDR}/state`); break; } catch { await new Promise((r) => setTimeout(r, 500)); } }
+  // the epoch's seed has a window of a few blocks: watched on its own, not between a block's proving and landing
+  setInterval(() => keepSeed().catch((e) => log({ seedNotKept: String(e.message || e) })), 4000);
   for (;;) {
     try { await step(); } catch (e) { log({ error: String(e.message || e) }); }
     await new Promise((r) => setTimeout(r, POLL));

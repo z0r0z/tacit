@@ -28,6 +28,16 @@ use tacit_block_common::{self as blk, lock::Settle, SpendData, MEMO_LEN};
 
 const MAX_BODY: usize = 4 << 20;
 const MAX_PENDING: usize = 256;
+/// Shields wait on a deposit only Ethereum shows: at most this many, so spends of notes always find room.
+const MAX_SHIELDS: usize = 128;
+/// How many request bodies are read at once (each on its own thread, so a slow sender holds up only itself).
+const MAX_READERS: usize = 64;
+/// Directory writes allowed per client address per hour.
+const DIRECTORY_PER_HOUR: u32 = 30;
+/// Spends refused for good (no valid proof, bad memos, another asset), remembered so a resend costs nothing: at most this many.
+const MAX_REFUSED: usize = 4096;
+/// How many ways back one inbox shield may carry (the first sent could be wrong; every one is tried).
+const MAX_BACKS: usize = 4;
 
 fn hexv(v: &Value) -> Result<Vec<u8>, String> {
     let s = v.as_str().ok_or("a hex string")?;
@@ -49,7 +59,7 @@ struct Entry {
     memos: Vec<Vec<u8>>,
     /// For a shield paid to its inbox (TacitBlocks.inbox) rather than deposited: the confidential pool commitment the inbox's
     /// address fixes, which the leader needs to sweep it in.
-    back: Option<String>,
+    back: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -76,6 +86,8 @@ pub struct Leader {
     built: Option<Built>,
     /// Full chain addresses by the hash a Tacit address's chain lane carries (content-addressed: a payer checks what it gets).
     directory: Directory,
+    refused: BTreeMap<String, String>,
+    writes: BTreeMap<std::net::IpAddr, (u64, u32)>,
 }
 
 /// Chain addresses by SHA-256("tacit-chain-address-v1" ‖ address), kept in memory and appended to TACIT_NODE_DIRECTORY (one hex
@@ -129,7 +141,7 @@ impl Directory {
 
 impl Leader {
     pub fn new(chain: [u8; 32], keys: Keys, asset: Option<[u8; 32]>) -> Leader {
-        Leader { node: Node::genesis(chain), keys, asset, pending: vec![], settles: vec![], receipts: BTreeMap::new(), built: None, directory: Directory::open(std::env::var("TACIT_NODE_DIRECTORY").ok().filter(|f| !f.is_empty())) }
+        Leader { node: Node::genesis(chain), keys, asset, pending: vec![], settles: vec![], receipts: BTreeMap::new(), built: None, directory: Directory::open(std::env::var("TACIT_NODE_DIRECTORY").ok().filter(|f| !f.is_empty())), refused: BTreeMap::new(), writes: BTreeMap::new() }
     }
 
     fn spends(&self, extra: Option<&Entry>) -> Vec<SpendIn> {
@@ -157,8 +169,59 @@ impl Leader {
         let publics = hexv(&b["publics"])?;
         let proof = hexv(&b["proof"])?;
         let data = SpendData::from_bytes(&hexv(&b["data"])?).ok_or("spend data does not parse")?;
-        let p = tacit_block_agg_publics(&publics)?;
-        let hints = self.keys.check(&p, &proof).ok_or("the spend's proof does not verify")?;
+        let mut id_in = publics.clone();
+        id_in.extend(data.to_bytes());
+        let id = hex::encode(blk::payload_hash(&id_in));
+        let mut backs = vec![];
+        if let Some(h) = b["back"].as_str() {
+            let v = hexv(&serde_json::Value::String(h.into()))?;
+            if v.len() != 32 {
+                return Err("back is a 32-byte commitment".into());
+            }
+            backs.push(hx(&v));
+        }
+        if let Some(e) = self.pending.iter_mut().find(|e| e.id == id) {
+            for x in backs {
+                if !e.back.contains(&x) && e.back.len() < MAX_BACKS {
+                    e.back.push(x);
+                }
+            }
+            return Ok(self.receipts[&id].clone());
+        }
+        if self.receipts.contains_key(&id) {
+            return Ok(self.receipts[&id].clone());
+        }
+        if let Some(e) = self.refused.get(&id) {
+            return Err(e.clone());
+        }
+        let checked = self.check_spend(&publics, &proof, &data, b);
+        let (hints, memos) = match checked {
+            Ok(x) => x,
+            Err(e) => {
+                if self.refused.len() >= MAX_REFUSED {
+                    self.refused.clear();
+                }
+                self.refused.insert(id.clone(), e.clone());
+                return Err(e);
+            }
+        };
+        let shield = !blk::Spend::from_publics(&tacit_block_agg_publics(&publics)?).spent_keys().is_empty()
+            && blk::Spend::from_publics(&tacit_block_agg_publics(&publics)?).live_nullifiers().is_empty();
+        if shield && self.pending.iter().filter(|e| e.spend.data.dep.is_some() && tacit_block_agg_publics(&e.spend.publics).map(|p| blk::Spend::from_publics(&p).live_nullifiers().is_empty()).unwrap_or(false)).count() >= MAX_SHIELDS {
+            return Err("too many shields wait on their deposits".into());
+        }
+        let entry = Entry { id: id.clone(), spend: SpendIn { publics, proof, hints, data }, memos, back: backs };
+        self.node.build(&self.spends(Some(&entry)), &self.settles_list(None), &[], now, &[]).map_err(|e| format!("not takeable now: {e}"))?;
+        self.pending.push(entry);
+        let r = json!({ "id": id, "status": "queued" });
+        self.receipts.insert(id, r.clone());
+        Ok(r)
+    }
+
+    /// What can be checked of a spend on its own, whose failure is for good: its proof, asset, root, and memos.
+    fn check_spend(&self, publics: &[u8], proof: &[u8], data: &SpendData, b: &Value) -> Result<(Vec<u8>, Vec<Vec<u8>>), String> {
+        let p = tacit_block_agg_publics(publics)?;
+        let hints = self.keys.check(&p, proof).ok_or("the spend's proof does not verify")?;
         let memos: Vec<Vec<u8>> = b["memos"].as_array().ok_or("memos")?.iter().map(hexv).collect::<Result<_, _>>()?;
         let op_memos: Vec<Vec<u8>> = b["opMemos"].as_array().map(|a| a.iter().map(hexv).collect::<Result<_, _>>()).transpose()?.unwrap_or_default();
         let spend = blk::Spend::from_publics(&p);
@@ -177,28 +240,7 @@ impl Leader {
         if op_memos.len() != receivers.len() || op_memos.iter().zip(&receivers).any(|(m, r)| m.len() != MEMO_LEN || blk::memo_hash(m) != r.memo) {
             return Err("a memo for each note the operation makes".into());
         }
-        let mut id_in = publics.clone();
-        id_in.extend(data.to_bytes());
-        let id = hex::encode(blk::payload_hash(&id_in));
-        if self.receipts.contains_key(&id) {
-            return Ok(self.receipts[&id].clone());
-        }
-        let back = match b["back"].as_str() {
-            Some(h) => {
-                let v = hexv(&serde_json::Value::String(h.into()))?;
-                if v.len() != 32 {
-                    return Err("back is a 32-byte commitment".into());
-                }
-                Some(hx(&v))
-            }
-            None => None,
-        };
-        let entry = Entry { id: id.clone(), spend: SpendIn { publics, proof, hints, data }, memos: memos.into_iter().chain(op_memos).collect(), back };
-        self.node.build(&self.spends(Some(&entry)), &self.settles_list(None), &[], now, &[]).map_err(|e| format!("not takeable now: {e}"))?;
-        self.pending.push(entry);
-        let r = json!({ "id": id, "status": "queued" });
-        self.receipts.insert(id, r.clone());
-        Ok(r)
+        Ok((hints, memos.into_iter().chain(op_memos).collect()))
     }
 
     fn settle(&mut self, b: &Value, now: u64) -> Result<Value, String> {
@@ -337,8 +379,8 @@ impl Leader {
         Ok(self.state())
     }
 
-    fn route(&mut self, method: &str, url: &str, body: &Value, now: u64, admin: bool) -> Result<Value, (u16, String)> {
-        if method == "POST" && matches!(url, "/build" | "/landed") && !admin {
+    fn route(&mut self, method: &str, url: &str, body: &Value, now: u64, admin: bool, ip: Option<std::net::IpAddr>) -> Result<Value, (u16, String)> {
+        if method == "POST" && matches!(url, "/build" | "/landed" | "/drop") && !admin {
             return Err((403, "the leader's own".into()));
         }
         let (path, query) = url.split_once('?').unwrap_or((url, ""));
@@ -365,7 +407,30 @@ impl Leader {
                 let nf: [u8; 32] = hex::decode(p[7..].trim_start_matches("0x")).ok().and_then(|b| b.try_into().ok()).ok_or(bad("a 32-byte nullifier".into()))?;
                 Ok(json!({ "spent": self.node.spent(&nf) }))
             }
+            ("POST", "/drop") => {
+                // the leader's: spends it gave up on (a shield whose deposit never came)
+                let ids: Vec<String> = body["ids"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
+                let before = self.pending.len();
+                self.pending.retain(|e| !ids.contains(&e.id));
+                for id in &ids {
+                    self.receipts.remove(id);
+                }
+                Ok(json!({ "dropped": before - self.pending.len() }))
+            }
             ("POST", "/address") => {
+                if let Some(ip) = ip.filter(|_| !admin) {
+                    let w = self.writes.entry(ip).or_insert((now, 0));
+                    if now >= w.0 + 3600 {
+                        *w = (now, 0);
+                    }
+                    if w.1 >= DIRECTORY_PER_HOUR {
+                        return Err((429, "too many addresses from here this hour".into()));
+                    }
+                    w.1 += 1;
+                    if self.writes.len() > 100_000 {
+                        self.writes.retain(|_, w| now < w.0 + 3600);
+                    }
+                }
                 let a = hexv(&body["address"]).map_err(bad)?;
                 let h = self.directory.add(a).map_err(bad)?;
                 Ok(json!({ "hash": hx(&h) }))
@@ -381,7 +446,7 @@ impl Leader {
                 // the deposit each spend takes in, which must be waiting on Ethereum for a block that holds it to land
                 "deposits": self.pending.iter().filter_map(|e| {
                     let p = tacit_block_agg_publics(&e.spend.publics).ok()?;
-                    blk::deposit_record(&blk::Spend::from_publics(&p), &e.spend.data).map(|d| json!({ "id": e.id, "deposit": hx(&d), "back": e.back }))
+                    blk::deposit_record(&blk::Spend::from_publics(&p), &e.spend.data).map(|d| json!({ "id": e.id, "deposit": hx(&d), "backs": e.back }))
                 }).collect::<Vec<_>>(),
             })),
             ("POST", "/spend") => self.spend(body, now).map_err(bad),
@@ -407,15 +472,38 @@ pub fn serve(addr: &str, mut leader: Leader) -> Result<(), String> {
             .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Headers"[..], &b"content-type"[..]).unwrap())
             .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap())
     };
-    for mut req in server.incoming_requests() {
+    // bodies are read on their own threads and handed here whole: a sender that never finishes its body holds up only its thread
+    let (tx, rx) = std::sync::mpsc::channel::<(tiny_http::Request, Vec<u8>)>();
+    let readers = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    std::thread::spawn(move || {
+        for mut req in server.incoming_requests() {
+            if req.method().as_str() == "OPTIONS" {
+                let _ = req.respond(cors(tiny_http::Response::from_data(vec![]).with_status_code(204)));
+                continue;
+            }
+            if readers.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= MAX_READERS {
+                readers.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                let _ = req.respond(cors(tiny_http::Response::from_data(b"{\"error\":\"busy\"}".to_vec()).with_status_code(503)));
+                continue;
+            }
+            let (tx, readers) = (tx.clone(), readers.clone());
+            std::thread::spawn(move || {
+                let mut raw = vec![];
+                let _ = req.as_reader().take(MAX_BODY as u64 + 1).read_to_end(&mut raw);
+                readers.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                let _ = tx.send((req, raw));
+            });
+        }
+    });
+    let trust_proxy = std::env::var("TACIT_NODE_TRUST_PROXY").is_ok_and(|v| v == "1");
+    for (req, raw) in rx {
         let method = req.method().as_str().to_string();
         let url = req.url().to_string();
-        if method == "OPTIONS" {
-            let _ = req.respond(cors(tiny_http::Response::from_data(vec![]).with_status_code(204)));
-            continue;
-        }
-        let mut raw = vec![];
-        let _ = req.as_reader().take(MAX_BODY as u64 + 1).read_to_end(&mut raw);
+        // the client's address: the socket's, or behind a proxy that sets it, the first X-Forwarded-For
+        let forwarded = trust_proxy
+            .then(|| req.headers().iter().find(|h| h.field.equiv("X-Forwarded-For")).and_then(|h| h.value.as_str().split(',').next()?.trim().parse().ok()))
+            .flatten();
+        let ip = forwarded.or_else(|| req.remote_addr().map(|a| a.ip()));
         let (code, payload) = if raw.len() > MAX_BODY {
             (413, json!({ "error": "too large" }))
         } else {
@@ -427,7 +515,7 @@ pub fn serve(addr: &str, mut leader: Leader) -> Result<(), String> {
                 Some(t) => bearer.as_deref() == Some(&format!("Bearer {t}")),
                 None => req.remote_addr().is_some_and(|a| a.ip().is_loopback()),
             };
-            match leader.route(&method, &url, &body, now, admin) {
+            match leader.route(&method, &url, &body, now, admin, ip) {
                 Ok(v) => (200, v),
                 Err((c, e)) => (c, json!({ "error": e })),
             }
