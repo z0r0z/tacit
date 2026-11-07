@@ -26,6 +26,7 @@ COPY contracts/sp1/confidential/tacit-block/artifacts contracts/sp1/confidential
 COPY dapp/*.js dapp/
 COPY dapp/vendor/*.js dapp/vendor/
 COPY tacit-leader tacit-leader
+COPY worker-relay/src/lib/board-prover.js worker-relay/src/lib/board-prover.js
 ENV TACIT_NODE_TRUST_PROXY=1
 # the node serves on Render's port; the leader reaches it there too
 CMD ["sh", "-c", "NODE_ADDR=0.0.0.0:${PORT:-10000} exec node tacit-leader/leader.mjs"]

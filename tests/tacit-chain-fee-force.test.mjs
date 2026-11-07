@@ -102,6 +102,8 @@ try {
   assert.equal(bare.submission.memos.length, 2, 'his note padded with a zero one, no fee note');
   const refused = bare.submit().then(() => null, (e) => e);
   await until(async () => (await api('GET', '/mempool')).spends.length > 0, 'bob\'s shield');
+  // the leader quotes on every pass; proofs on a busy machine can outlast the quote window, so quote again before checking
+  await node('POST', '/fee', desk.quote({ now: Math.floor(Date.now() / 1000), baseFee: 0n, price: null }));
   const out = await admitPaying({ desk, node, paying, ids: (await node('GET', '/mempool')).spends });
   assert.equal(out.length, 1, 'the leader refused it');
   const err = await refused;

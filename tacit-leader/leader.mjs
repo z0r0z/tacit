@@ -7,7 +7,9 @@
 //   LEADER_KEY      the key that lands blocks (a seat holder's, or any key once the window has passed); needs a little ETH
 //   NODE_BIN        tacit-block-node (default: ../contracts/sp1/confidential/tacit-block/node/target/release/tacit-block-node)
 //   NODE_ADDR       where it serves wallets (default 127.0.0.1:8787); TACIT_NODE_ADMIN is the token its leader endpoints need
-//   PROVER          'stub' (a verifier that takes any proof, for tests) or a command that proves a guest input file, e.g.
+//   PROVER          'board' (Tacit's prover board: BOARD_URL, default https://api.tacit.finance, BOARD_TOKEN, BOARD_WAIT_SECS, then
+//                   PROVER_FALLBACK, a command, if no proof that lands comes in time), 'stub' (a verifier that takes any proof, for
+//                   tests) or a command that proves a guest input file, e.g.
 //                   `tacit-block-gpu elf/tacit-block {stdin} --groth16`, leaving {stdin}.groth16 (0x proof, 0x public values)
 //   MIN_SPENDS      build when this many spends are waiting (default 1)       MAX_WAIT_SECS   or when the oldest has waited this long (default 20)
 //   POLL_SECS       how often it looks (default 6)                            ARCHIVE_DIR     every block built is kept here (blobs need it)
@@ -25,6 +27,7 @@ import { keccak_256 } from '../dapp/vendor/tacit-deps.min.js';
 import { decode, decodeLand, landCalldata, selector, encode, hexOf, bytesOf } from './abi.mjs';
 import { makeRpc, send as sendTx, addressOf, num, suggestedTip } from './rpc.mjs';
 import { feeTerms, readPrice, makeFeeDesk, admitPaying } from './fees.mjs';
+import { makeBoardProver } from '../worker-relay/src/lib/board-prover.js';
 
 // one transaction at a time from the leader's key, so the seed's, a sweep's, a landing's and the hops' never take the same nonce
 let txLock = Promise.resolve();
@@ -149,13 +152,65 @@ async function sync() {
   syncedTo = head;
 }
 
+// PROVER=board: the block goes to Tacit's prover board (BOARD_URL's /prover/jobs, with BOARD_TOKEN) as public work any community machine
+// that proves the 'tacit-block' program may race for; the first proof a simulated landing of this very block accepts is used. A proof
+// that would not land is refused (and counts against its maker), so the board can add provers but never a wrong block. If none comes
+// within BOARD_WAIT_SECS, PROVER_FALLBACK (a command, as PROVER would be) proves it.
+const BOARD_URL = (env.BOARD_URL || 'https://api.tacit.finance').replace(/\/$/, '');
+const BOARD_WAIT = Number(env.BOARD_WAIT_SECS || 900) * 1000;
+let board = null;
+const listsOf = (l) => ({ leaves: bytesOf(l.leaves), memos: bytesOf(l.memos), nullifiers: l.nullifiers, anchors: l.anchors, deposits: bytesOf(l.deposits), exits: bytesOf(l.exits), hops: bytesOf(l.hops), claims: bytesOf(l.claims), blobs: bytesOf(l.blobs), migrations: bytesOf(l.migrations), migrationTotals: bytesOf(l.migrationTotals) });
+/// bincode(SP1Stdin { buffer, ptr: 0, proofs: [] }) for the node's guest input (its buffers, each as the guest's read_vec reads it).
+function sp1Stdin(file) {
+  const f = bytesOf(file), dv = new DataView(f.buffer, f.byteOffset, f.byteLength);
+  const n = dv.getUint32(0, true), bufs = [];
+  for (let i = 0, at = 4; i < n; i++) { const len = dv.getUint32(at, true); bufs.push(f.subarray(at + 4, at + 4 + len)); at += 4 + len; }
+  const out = new Uint8Array(24 + bufs.reduce((t, b) => t + 8 + b.length, 0)), ov = new DataView(out.buffer);
+  let off = 0;
+  const u64 = (v) => { ov.setBigUint64(off, BigInt(v), true); off += 8; };
+  u64(bufs.length);
+  for (const b of bufs) { u64(b.length); out.set(b, off); off += b.length; }
+  u64(0);
+  u64(0);
+  return out;
+}
+async function boardApi(method, path, body) {
+  const r = await fetch(BOARD_URL + path, { method, headers: { 'content-type': 'application/json', authorization: `Bearer ${env.BOARD_TOKEN || ''}` }, body: body ? JSON.stringify(body) : undefined });
+  return r.json().catch(() => ({ ok: false, error: `HTTP ${r.status}` }));
+}
+async function proveOnBoard(built) {
+  board ||= makeBoardProver({
+    post: (b) => boardApi('POST', '/prover/jobs', b),
+    status: (id) => boardApi('GET', `/prover/jobs?id=${encodeURIComponent(id)}`),
+    cancel: (id, reason) => boardApi('POST', '/prover/jobs/cancel', { jobId: id, reason }),
+    race: (jobId, worker, ok) => boardApi('POST', '/prover/jobs/race', { jobId, worker, ok }),
+    verify: async () => false,
+    waitMs: BOARD_WAIT, log: (m) => log({ board: m }),
+  });
+  const lists = listsOf(built.lists);
+  // a proof is this block's only if the contract would land it now: the same public values, and a simulated land from this leader
+  const check = async ({ publicValues, proof }) => {
+    if (String(publicValues).toLowerCase() !== String(built.publicValues).toLowerCase()) return false;
+    try { await rpc.call('eth_call', [{ from: me, to: BLOCKS, data: hexOf(landCalldata(bytesOf(publicValues), bytesOf(proof), lists)) }, 'latest']); return true; } catch (e) { return /NotYourTurn|BadTime|BadQueue|NotOnTop/i.test(String(e.message)) ? 'stale' : false; }
+  };
+  const r = await board.prove({ stdin: sp1Stdin(built.stdin), cls: 'public', program: 'tacit-block', cycleLimit: 2_000_000_000, gasLimit: 1e12, label: 'tacit-block', check });
+  return r.proof;
+}
+
 async function prove(built) {
   if (PROVER === 'stub') return '0x';
+  if (PROVER === 'board') {
+    try { return await proveOnBoard(built); } catch (e) {
+      if (!env.PROVER_FALLBACK) throw e;
+      log({ boardMissed: String(e.message || e).slice(0, 200), fallback: true });
+    }
+  }
+  const command = PROVER === 'board' ? env.PROVER_FALLBACK : PROVER;
   mkdirSync(ARCHIVE, { recursive: true });
   const file = join(ARCHIVE, `pending-${Date.now()}.stdin`);
   writeFileSync(file, bytesOf(built.stdin));
   await new Promise((res, rej) => {
-    const p = spawn('sh', ['-c', PROVER.replaceAll('{stdin}', file)], { stdio: ['ignore', 'inherit', 'inherit'] });
+    const p = spawn('sh', ['-c', command.replaceAll('{stdin}', file)], { stdio: ['ignore', 'inherit', 'inherit'] });
     p.on('exit', (c) => (c === 0 ? res() : rej(new Error(`the prover exited ${c}`))));
   });
   const [proof, pv] = readFileSync(`${file}.groth16`, 'utf8').trim().split('\n');
@@ -260,7 +315,7 @@ async function step() {
   const proof = await prove(built);
   const pv = bytesOf(built.publicValues);
   const l = built.lists;
-  const lists = { leaves: bytesOf(l.leaves), memos: bytesOf(l.memos), nullifiers: l.nullifiers, anchors: l.anchors, deposits: bytesOf(l.deposits), exits: bytesOf(l.exits), hops: bytesOf(l.hops), claims: bytesOf(l.claims), blobs: bytesOf(l.blobs), migrations: bytesOf(l.migrations), migrationTotals: bytesOf(l.migrationTotals) };
+  const lists = listsOf(l);
   mkdirSync(ARCHIVE, { recursive: true });
   writeFileSync(join(ARCHIVE, `${nodeHeight + 1}.json`), JSON.stringify({ publicValues: built.publicValues, lists: l, includes: built.includes }));
   const chainId = num(await rpc.call('eth_chainId'));

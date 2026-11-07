@@ -56,6 +56,7 @@ if (cmd === 'create') {
 } else if (cmd === 'secrets') {
   const id = arg('service');
   if (!/^srv-/.test(id || '')) fail('--service srv-…');
+  // BOARD_TOKEN is tacit-api's CONFIDENTIAL_BOX_TOKEN (the relay's own), set by hand on the service: it is not kept in this keychain
   for (const [key, name] of [['LEADER_KEY', 'tacit-chain-leader-key'], ['LEADER_CHAIN_SEED', 'tacit-chain-leader-seed'], ['TACIT_NODE_ADMIN', 'tacit-chain-node-admin']]) {
     await api('PUT', `/services/${id}/env-vars/${key}`, { value: send ? keychain(name) : '0x' + '0'.repeat(64) });
     if (send) console.log(`${key} set from ${name}`);
