@@ -233,6 +233,9 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
   a, button, summary, input, select, textarea, label, [role="button"], [role="tab"] { touch-action: manipulation; }
   button.link, .linkbtn { position: relative; }
   button.link::after, .linkbtn::after { content: ''; position: absolute; inset: -8px -6px; }
+  /* the mark and name at the header's left are 26-30px tall: the target reaches to the chips' 44 */
+  header.top a.brand { position: relative; }
+  header.top a.brand::after { content: ''; position: absolute; inset: -8px -6px; }
 }
 
 /* the menu: under the header's right edge, whatever the width */
