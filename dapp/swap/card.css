@@ -379,7 +379,7 @@
 /* a token row's kind: Private (dashed, like the ring on its mark), Public, Bitcoin; shown only while searching, when the switch and the headings are gone */
 .swc .pk-r b .pk-t { display: none; margin-left: 8px; padding: 0 6px; font: 500 9.5px/16px var(--mono); letter-spacing: .07em; text-transform: uppercase; border-radius: 999px; vertical-align: 2px; color: var(--mute); border: 1px solid color-mix(in srgb, currentColor 30%, transparent); }
 .swc .pk-r b .pk-t::after { content: attr(data-t); }
-.swc .pk-r b .pk-t-defi, .swc .pk-r b .pk-t-pay { border-style: dashed; color: var(--ink); }
+.swc .pk-r b .pk-t-defi, .swc .pk-r b .pk-t-pay, .swc .pk-r b .pk-t-chain { border-style: dashed; color: var(--ink); }
 .swc #pk-l.srch .pk-r b .pk-t { display: inline-block; }
 /* Shield and Withdraw: the To coin follows the From coin, so it is no picker */
 .swc.flow #get-coin { cursor: default; pointer-events: none; }

@@ -3,7 +3,7 @@ const TACIT_URL = '/tacit.js?cb=187d27e1';
 const SECRET_URL = '/sats/secret.js?cb=d10eac01';
 const SATS_URL = '/tac/sats.js?cb=37cf5ec2';
 const CLAIM_URL = '/tac/claim.js?cb=15b8bd50';
-const UNIFIED_URL = '/tacit-unified.js?cb=a5b3a042';
+const UNIFIED_URL = '/tacit-unified.js?cb=c268c3d8';
 const KNOWN_URL = '/tacit-wallet-known.js?cb=ed4c75b7';
 const EVM_URL = '/evm-wallet.js?cb=b400cbe7';
 const WC_URL = '/walletconnect.js?cb=e0b29a34';

@@ -13,8 +13,9 @@ const { encodeTacitAddress } = makeTacitAddress({ secp });
 const pool = makeBtcShieldedPool({ secp, keccak256: keccak_256, sha256 });
 const toBig = (b) => b.reduce((n, x) => (n << 8n) | BigInt(x), 0n);
 
-// key: the 32-byte Tacit key (bytes or hex); left as given. → { address, poolAddress }
-export function unifiedAddress(key) {
+// key: the 32-byte Tacit key (bytes or hex); left as given. chainHash: the key's tacit chain lane (32 bytes), once the chain is on; without it the
+// address is as it always was. → { address, poolAddress }
+export function unifiedAddress(key, chainHash) {
   const k = typeof key === 'string' ? hexToBytes(key.replace(/^0x/, '')) : Uint8Array.from(key);
   let seed = null;
   try {
@@ -23,7 +24,7 @@ export function unifiedAddress(key) {
     const btcScanPub = secp.getPublicKey(hexToBytes(scan.toString(16).padStart(64, '0')), true);
     seed = hmac(sha256, k, POOL_SEED_TAG);
     const w = pool.walletFromSeed(seed, 'mainnet');
-    const address = encodeTacitAddress({ network: 'mainnet', btcSpendPub: spendPub, btcScanPub, evmOwnerPub: spendPub, poolKeys: hexToBytes(w.address.replace(/^0x/, '')) });
+    const address = encodeTacitAddress({ network: 'mainnet', btcSpendPub: spendPub, btcScanPub, evmOwnerPub: spendPub, poolKeys: hexToBytes(w.address.replace(/^0x/, '')), ...(chainHash ? { chainHash } : {}) });
     return { address, poolAddress: w.addressString };
   } finally { k.fill(0); seed?.fill(0); }
 }

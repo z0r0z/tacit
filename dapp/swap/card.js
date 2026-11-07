@@ -266,7 +266,9 @@ const getPriv = () => S.outP || hidden();
 // coin between places otherwise is the page's: H.moves names the move, prices it and starts it, and the card shows what it says.
 const moving = () => !!H.moves;
 const atOf = (side) => S.at[side] || ((side === 'pay' ? S.inP : S.outP) ? 'defi' : 'wallet');
-const isPrivAt = (at) => at === 'defi' || at === 'pay';
+const isPrivAt = (at) => at === 'defi' || at === 'pay' || at === 'chain';
+// The tacit chain: TAC held privately on Tacit's own chain, a place of its own once the page says the chain is there (H.moves.onChain)
+const onChain = () => moving() && !!H.moves.onChain?.();
 const sameCoin = (a, b) => a === b || [a, b].every((k) => isEth(k) || k === 'teth');
 // the pair as the card makes it itself, each side where pa and ga say
 const native = (pay, pa, get, ga) => ((pa === 'wallet' || pa === 'defi') && (ga === 'wallet' || ga === 'defi') ? kindOf(pay, get, pa === 'defi', ga === 'defi') : null);
@@ -288,17 +290,18 @@ const PAY_COINS = [lc(R.ZERO), USDC_K, USDT_K, lc(R.TAC)];
 // Where a coin is held, as a small mark: the wallet's glyph, each pool's own mark (the DeFi pool's tETH ring, the Pay pool's dashed ETH ring) and
 // Bitcoin's. The corner of each field, the picker's group headers and its anchors all wear them, so the place reads at a glance.
 const WALLET_MARK = '<svg class="pl" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4.2h9.6a1.4 1.4 0 0 1 1.4 1.4v6.6a1.4 1.4 0 0 1-1.4 1.4H3.9a1.4 1.4 0 0 1-1.4-1.4V3.6a1.4 1.4 0 0 1 1.4-1.4h7.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><circle cx="10.6" cy="9" r=".95" fill="currentColor"/></svg>';
-const MARK_USE = { pay: 'tk-peth', defi: 'tk-teth', btc: 'c-btc' };
+const MARK_USE = { pay: 'tk-peth', defi: 'tk-teth', btc: 'c-btc', chain: 'tk-tac' };
 const placeMark = (at) => (at === 'wallet' ? WALLET_MARK : MARK_USE[at] ? `<svg class="tk xs" aria-hidden="true"><use href="#${MARK_USE[at]}"/></svg>` : '');
 // what each place is for, said once under its group in the picker: the same coin (TAC most of all) is held in several, and this is what tells them apart
 // The picker asks where a coin is held as three kinds, and nothing finer: the wallet's (public), private (the DeFi pool's and the Pay pool's, which a row tells apart by
 // what it is for, not by the pool's name: the tips still name them) and Bitcoin's. A row's key still names its place (@defi:, @pay:, @btc:).
-const KIND = { wallet: 'wallet', defi: 'private', pay: 'private', btc: 'bitcoin' };
+const KIND = { wallet: 'wallet', defi: 'private', pay: 'private', chain: 'private', btc: 'bitcoin' };
 const KIND_NAME = { wallet: 'Wallet', private: 'Private', bitcoin: 'Bitcoin' };
 const KIND_NOTE = { wallet: 'Public, in your wallet. Swaps use the best public liquidity.', bitcoin: 'TAC and tETH at your Bitcoin address.' };
 const KIND_TIP = { wallet: 'Your wallet: public, on Ethereum', bitcoin: 'Bitcoin: TAC and tETH at your Bitcoin address', private: 'Private: tETH, TAC, cUSD and cBTC to swap, farm and borrow with (the DeFi pool), and ETH, USDC, USDT and TAC to pay anyone with (the Pay pool)' };
 const PLACE_TIP = { wallet: 'Your wallet: public, on Ethereum', pay: 'Pay pool: ETH, USDC, USDT and TAC held privately, proved on this device and paid out to any address',
-  defi: 'DeFi pool: tETH, TAC, cUSD and cBTC held privately, to swap, farm and borrow with', btc: 'Bitcoin: TAC and tETH at your Bitcoin address' };
+  defi: 'DeFi pool: tETH, TAC, cUSD and cBTC held privately, to swap, farm and borrow with', btc: 'Bitcoin: TAC and tETH at your Bitcoin address',
+  chain: 'Tacit chain: TAC held privately on its own chain, paid to anyone there' };
 const payPool = (k) => PAY_COINS.includes(k);
 const exitOut = (pay, get) => (get === pay ? !isEth(pay) : isEth(get) || get === lc(R.TAC) || (isListed(get) && !tacitKey(get) && get !== lc(R.WETH)));
 // (the ETH Pay pool's other chains are the page's own moves: a swap out runs on Ethereum's pools)
@@ -313,7 +316,7 @@ const exitOf = (pay = S.pay, pa = atOf('pay'), get = S.get, ga = atOf('get')) =>
 };
 const intoPool = () => !!exitOf()?.into;
 const exiting = () => !!exitOf();
-const PLACES = ['defi', 'wallet', 'pay', 'btc'];
+const PLACES = ['defi', 'wallet', 'pay', 'btc', 'chain'];
 const goes = (side, k, at) => PLACES.some((oa) => placeCoins(side === 'pay' ? 'get' : 'pay', oa).some((o) => (side === 'pay' ? pairOk(k, at, o, oa) : pairOk(o, oa, k, at))));
 const placed = () => moving() && !!(S.at.pay || S.at.get || moveOf());
 // The front page's Shield and Withdraw tabs are this card held to one coin: Shield takes a wallet coin to the same coin held privately (in the
@@ -323,7 +326,7 @@ function flowGet(k, at) {
   if (FLOW === 'withdraw') { const w = coinAt(k, 'wallet'); return isPrivAt(at) && pairOk(k, at, w, 'wallet') ? [w, 'wallet'] : null; }
   if (at !== 'wallet') return null;
   const cur = isPrivAt(atOf('get')) ? atOf('get') : 'defi';
-  for (const h of [cur, cur === 'defi' ? 'pay' : 'defi']) { const g = coinAt(k, h); if (sameMoney(k, g) && pairOk(k, 'wallet', g, h)) return [g, h]; }
+  for (const h of [cur, ...['defi', 'pay', 'chain'].filter((x) => x !== cur)]) { const g = coinAt(k, h); if (sameMoney(k, g) && pairOk(k, 'wallet', g, h)) return [g, h]; }
   return null;
 }
 function flowFit() { const g = flowGet(S.pay, atOf('pay')); if (!g) return false; setAt('get', g[1]); S.get = g[0]; return true; }
@@ -333,12 +336,13 @@ function coinAt(k, at) {
   if (at === 'defi') return isEth(k) ? 'teth' : inPool(k) ? k : 'teth';
   if (at === 'wallet') return k === 'teth' ? lc(R.ZERO) : k;
   if (at === 'pay') return payPool(k) ? k : lc(R.ZERO);
+  if (at === 'chain') return lc(R.TAC);
   return isEth(k) || k === 'teth' ? 'teth' : lc(R.TAC);
 }
 // what a place offers a side: the Pay pool takes ETH and TAC and pays ETH out; Bitcoin holds TAC and tETH
-const placeCoins = (side, at) => (at === 'pay' ? PAY_COINS : at === 'btc' ? [lc(R.TAC), 'teth'] : at === 'defi' ? POOL_COINS : [lc(R.ZERO), lc(R.TAC)]);
+const placeCoins = (side, at) => (at === 'chain' ? (onChain() ? [lc(R.TAC)] : []) : at === 'pay' ? PAY_COINS : at === 'btc' ? [lc(R.TAC), 'teth'] : at === 'defi' ? POOL_COINS : [lc(R.ZERO), lc(R.TAC)]);
 function setAt(side, at) {
-  S.at[side] = at === 'pay' || at === 'btc' ? at : null;
+  S.at[side] = at === 'pay' || at === 'btc' || at === 'chain' ? at : null;
   if (side === 'pay') S.inP = at === 'defi';
   else { S.outP = at === 'defi'; if (at !== 'wallet') LATER.on = false; }
 }
@@ -377,6 +381,7 @@ function homesHtml() {
   if (!eth && !tac) return '';
   const dk = eth ? 'teth' : lc(R.TAC), pk = eth ? lc(R.ZERO) : lc(R.TAC);
   if (!pairOk(S.pay, pa, dk, 'defi') || !pairOk(S.pay, pa, pk, 'pay')) return '';
+  const ch = tac && pairOk(S.pay, pa, lc(R.TAC), 'chain');
   // the Pay pool row names where it pays (ETH's on each chain it has, TAC's on Ethereum); the chain itself is picked under the rows
   const at = atOf('get'), cs = eth ? H.moves.chains?.() || [] : [], where = cs.length > 1 ? chainMarks(cs) : 'Ethereum';
   // what each home earns in TAC points for ETH from the wallet (a wrap into the DeFi pool, a deposit into the Pay pool): for the amount typed,
@@ -386,8 +391,9 @@ function homesHtml() {
   const row = (home, t, sub, icon, act) => `<button type="button" role="radio" class="c${HOMES_OPEN ? '' : ' one'}" data-home="${home}" aria-checked="${String(at === home)}" tabindex="${at === home ? 0 : -1}"><svg class="tk" aria-hidden="true"><use href="#tk-${icon}"/></svg><span class="rt"><b>${t}</b><small>${sub}</small></span>${cue(act)}${HOMES_OPEN ? '<span class="rd" aria-hidden="true"></span>' : ''}</button>`;
   // the chosen home alone, with a way to change it, until the choice is opened
   const defi = row('defi', 'Swap, farm, borrow', 'DeFi pool', eth ? 'teth' : 'tac', 'wrap'), pay = row('pay', 'Pay anyone', `Pay pool · ${where}`, eth ? 'peth' : 'tac', 'dev');
-  if (!HOMES_OPEN) return `<div class="rows-h"><span>Use it to</span><span class="chg">Change</span></div>${at === 'pay' ? pay : defi}`;
-  return `<div class="rows-h"><span>Use it to</span></div>${defi}${pay}`;
+  const chain = ch ? row('chain', 'Pay on the Tacit chain', 'TAC only, on its own chain', 'tac', null) : '';
+  if (!HOMES_OPEN) return `<div class="rows-h"><span>Use it to</span><span class="chg">Change</span></div>${at === 'pay' ? pay : at === 'chain' ? chain : defi}`;
+  return `<div class="rows-h"><span>Use it to</span></div>${defi}${pay}${chain}`;
 }
 // the Pay pool's chain, while ETH is in it on either side
 function chainHtml() {
@@ -832,7 +838,7 @@ function paintMode() {
   ROOT.classList.toggle('btc', S.btc); if ($('#btc')) $('#btc').hidden = !S.btc; $('.sw-foot').hidden = !slips;
   ROOT.querySelectorAll('.mode [data-mode]').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.mode === 'bitcoin' ? S.btc : !S.btc)));
 }
-const shownAt = (k, at) => { const t = tokenOf(k, at === 'defi'); return at === 'pay' && t ? (isEth(k) ? { ...t, icon: 'peth' } : { ...t, pvt: true }) : at === 'defi' && t && k === lc(R.TAC) ? { ...t, pvt: true } : t; };
+const shownAt = (k, at) => { const t = tokenOf(k, at === 'defi'); return at === 'chain' && t ? { ...t, pvt: true } : at === 'pay' && t ? (isEth(k) ? { ...t, icon: 'peth' } : { ...t, pvt: true }) : at === 'defi' && t && k === lc(R.TAC) ? { ...t, pvt: true } : t; };
 let PAYWARM = 0;
 function paintSides() {
   let pay = shownAt(S.pay, atOf('pay')), get = shownAt(S.get, atOf('get'));
@@ -854,7 +860,7 @@ function paintSides() {
     const a = atOf(s), el = $(`#${s}-at`), mk = moving() ? placeMark(a) : '';
     if (!el) continue;
     el.className = `where${isPrivAt(a) ? ' priv' : ''}${mk && a !== 'wallet' ? ' pool' : ''}${moving() ? ' go-pick' : ''}`;
-    const text = a === 'btc' ? 'Bitcoin' : isPrivAt(a) ? 'Private' : 'Wallet';
+    const text = a === 'btc' ? 'Bitcoin' : a === 'chain' ? 'Tacit chain' : isPrivAt(a) ? 'Private' : 'Wallet';
     if (el.dataset.k !== `${a}`) { el.dataset.k = `${a}`; el.innerHTML = `${mk}${text}`; }
     if (moving()) { el.title = `${PLACE_TIP[a] || ''}. Press to choose another`; el.setAttribute('role', 'button'); el.tabIndex = 0; }
   }
@@ -2671,7 +2677,7 @@ async function pinGo(r) {
 
 let pkClose = null, pkIO = null;
 // a picker row's key: a coin and the place it is held, but for the wallet's (a plain address)
-const ATK = /^@(pay|btc|defi|wallet):(.+)$/;
+const ATK = /^@(pay|btc|defi|wallet|chain):(.+)$/;
 let PKKIND = null;                    // the kind the open picker is on, kept when its list is drawn again
 function openPicker(side, again = false) {
   pkClose?.({ keep: true });
@@ -2688,7 +2694,7 @@ function openPicker(side, again = false) {
   // DeFi pool's, on the front page the Pay pool's and Bitcoin's, then the rest of the token list. A key names its place (@defi:, @pay:, @btc:).
   const wl = held(listed().map((t) => t.addr)), top = wl.filter((k) => tacitPooled(k) || S.bal[k] > 0n), rest = wl.filter((k) => !top.includes(k));
   // [heading, keys, kind, id]: the wallet's coins with a pool or a balance lead, then the private ones (both pools), Bitcoin's, then the rest of the list (the wallet's too)
-  const groups = [['Wallet', top, 'wallet', 'wallet'], ['Private', [...POOL_COINS.map((k) => `@defi:${k}`), ...(moving() ? placeCoins(side, 'pay').map((k) => `@pay:${k}`) : [])], 'private', 'defi'],
+  const groups = [['Wallet', top, 'wallet', 'wallet'], ['Private', [...POOL_COINS.map((k) => `@defi:${k}`), ...(moving() ? placeCoins(side, 'pay').map((k) => `@pay:${k}`) : []), ...placeCoins(side, 'chain').map((k) => `@chain:${k}`)], 'private', 'defi'],
     ...(moving() ? [['Bitcoin', placeCoins(side, 'btc').map((k) => `@btc:${k}`), 'bitcoin', 'btc']] : []),
     ['More tokens', rest, 'wallet', 'more']].map((g) => (FLOW ? [g[0], g[3] === 'more' || g[2] !== (FLOW === 'shield' ? 'wallet' : 'private') ? [] : g[1].filter((key) => { const m = ATK.exec(key); return !!flowGet(m ? m[2] : key, m ? m[1] : 'wallet'); }), g[2], g[3]] : g)).filter(([, ks]) => ks.length);
   const kinds = ['wallet', 'private', 'bitcoin'].filter((kd) => groups.some((g) => g[2] === kd));
@@ -2697,7 +2703,7 @@ function openPicker(side, again = false) {
   PKKIND = kind;
   const keys = groups.flatMap(([, ks]) => ks), cs = H.moves?.chains?.() || [], chains = cs.length;
   const SUB = { teth: 'ETH, made private', [lc(R.TAC)]: 'Tacit’s token', [lc(R.CUSD)]: 'a dollar borrowed against cBTC', [lc(R.CBTC)]: 'bitcoin, 1:1 with BTC' };
-  const PLACE_TAG = { wallet: 'Public', defi: 'Private', pay: 'Private', btc: 'Bitcoin' };
+  const PLACE_TAG = { wallet: 'Public', defi: 'Private', pay: 'Private', chain: 'Private', btc: 'Bitcoin' };
   const row = (key) => {
     const m = ATK.exec(key), a = m ? m[1] : 'wallet', k = m ? m[2] : key, t = shownAt(k, a);
     if (!t) return null;
@@ -2708,7 +2714,7 @@ function openPicker(side, again = false) {
     // (under its own line in the Private list the coin need not say so again: the suffix is what tells the two TACs apart once a search has taken the lines away)
     const sub = a === 'defi' ? `${esc(SUB[k] || '')}${twin ? `<span class="pk-tw">${SUB[k] ? ' · ' : ''}swap, farm, borrow</span>` : ''}`
       : a === 'pay' ? `${isEth(k) ? 'private ETH' : k === USDC_K || k === USDT_K ? 'a private dollar' : 'private TAC'} · pay anyone on ${isEth(k) && chains > 1 ? chainMarks(cs) : 'Ethereum'}`
-      : a === 'btc' ? 'at your Bitcoin address' : esc((t.custom ? `${t.addr.slice(0, 8)}…${t.addr.slice(-6)}` : t.name) || '');
+      : a === 'chain' ? 'private TAC · on the Tacit chain' : a === 'btc' ? 'at your Bitcoin address' : esc((t.custom ? `${t.addr.slice(0, 8)}…${t.addr.slice(-6)}` : t.name) || '');
     return { ok, at: a, html: `<button type="button" class="pk-r${ok ? '' : ' off'}"${ok ? '' : ' aria-disabled="true"'} data-k="${esc(key)}" data-kind="${KIND[a]}"${KIND[a] === kind ? '' : ' hidden'}${moving() && a !== 'wallet' ? ` title="${esc(PLACE_TIP[a] || '')}"` : ''} aria-current="${a === at && k === cur}">${coin(t, '', a === 'wallet')}<span><b>${esc(t.sym)}<i class="pk-t pk-t-${a}" data-t="${PLACE_TAG[a]}"></i></b><small>${sub}</small></span><em>${rowBal(side, key)}</em></button>` };
   };
   warmPrivate(); H.moves?.warm?.();
@@ -2717,7 +2723,7 @@ function openPicker(side, again = false) {
   const list = groups.map(([g, ks, kd, id]) => {
     const rs = ks.map(row).filter(Boolean), hide = kd === kind ? '' : ' hidden', ordered = (xs) => [...xs.filter((r) => r.ok), ...xs.filter((r) => !r.ok)].map((r) => r.html).join('');
     // the Private list holds both pools' coins on the front page: each pool's under a line of its own that says what they are for, so a coin held in both (ETH, TAC) is not read as one
-    const homes = kd === 'private' && moving() ? [['defi', 'Swap, farm, borrow'], ['pay', 'Pay anyone']].filter(([h]) => rs.some((r) => r.at === h)) : [], split = homes.length > 1;
+    const homes = kd === 'private' && moving() ? [['defi', 'Swap, farm, borrow'], ['pay', 'Pay anyone'], ['chain', 'Tacit chain']].filter(([h]) => rs.some((r) => r.at === h)) : [], split = homes.length > 1;
     const rows = split ? homes.map(([h, label]) => `<p class="pk-sub" data-kind="${kd}"${hide}>${label}</p>${ordered(rs.filter((r) => r.at === h))}`).join('') : ordered(rs);
     const note = kd === 'private' ? (moving() ? (split ? 'Held privately.' : 'Held privately. Swap, farm and borrow, or pay anyone.') : 'Held privately in Tacit’s pool, to swap, farm and borrow with.') : KIND_NOTE[kd];
     return `<p class="pk-g${id === 'more' ? '' : ' kh'}" data-g="${id}" data-kind="${kd}"${hide}>${esc(g)}</p>${noted.has(kd) ? '' : (noted.add(kd), `<p class="pk-d" data-kind="${kd}"${hide}>${esc(note)}</p>`)}${rows}`;
@@ -2831,7 +2837,7 @@ function choose(side, k) {
     return;
   }
   if (m || S.at.pay || S.at.get) {
-    const at = m ? m[1] : S.at[side] === 'pay' || S.at[side] === 'btc' ? (inPool(k) ? 'defi' : 'wallet') : atOf(side), real = m ? m[2] : k, was = side === 'pay' ? S.pay : S.get;
+    const at = m ? m[1] : S.at[side] === 'pay' || S.at[side] === 'btc' || S.at[side] === 'chain' ? (inPool(k) ? 'defi' : 'wallet') : atOf(side), real = m ? m[2] : k, was = side === 'pay' ? S.pay : S.get;
     const back = { at: { ...S.at }, inP: S.inP, outP: S.outP, pay: S.pay, get: S.get, later: LATER.on };
     setAt(side, at); if (side === 'pay') S.pay = real; else S.get = real;
     if (!mend(side)) { Object.assign(S, { at: back.at, inP: back.inP, outP: back.outP, pay: back.pay, get: back.get }); LATER.on = back.later; return; }
@@ -2872,9 +2878,10 @@ function applyParams(p) {
   const find = (v) => { if (!v) return null; const x = linkName(v); return x === 'teth' ? 'teth' : (listed().find((t) => nameIs(t, x) || t.addr === x)?.addr) || null; };
   const pv = p.get('private'), f = find(p.get('from')), t = find(p.get('to'));
   const fa = p.get('from-at'), ta = p.get('to-at');
-  if (moving() && (['pay', 'btc'].includes(fa) || ['pay', 'btc'].includes(ta))) {
-    setAt('pay', ['pay', 'btc'].includes(fa) ? fa : pv === 'from' || pv === 'both' ? 'defi' : 'wallet');
-    setAt('get', ['pay', 'btc'].includes(ta) ? ta : pv === 'to' || pv === 'both' ? 'defi' : 'wallet');
+  const AT = ['pay', 'btc', ...(onChain() ? ['chain'] : [])];
+  if (moving() && (AT.includes(fa) || AT.includes(ta))) {
+    setAt('pay', AT.includes(fa) ? fa : pv === 'from' || pv === 'both' ? 'defi' : 'wallet');
+    setAt('get', AT.includes(ta) ? ta : pv === 'to' || pv === 'both' ? 'defi' : 'wallet');
     S.pay = coinAt(f || lc(R.ZERO), atOf('pay')); S.get = coinAt(t || lc(R.TAC), atOf('get'));
     if (!mend('pay')) { setAt('pay', 'wallet'); setAt('get', 'wallet'); S.pay = lc(R.ZERO); S.get = lc(R.TAC); return; }
     const a = p.get('amt');
