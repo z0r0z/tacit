@@ -8,9 +8,9 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { keccak_256 } from '@noble/hashes/sha3';
 import { makeHalo2System } from '../dapp/btc-pool-halo2-prover.js';
-import { assetField, poolShare, sharesToPay, worthOf } from '../dapp/tacit-chain-wallet.js';
+import { assetField, poolShare, sharesFor, sharesToPay, worthOf } from '../dapp/tacit-chain-wallet.js';
 const T = 100_000_000n; // 1 TAC in units
-import { makeChainClient } from '../dapp/tacit-chain-client.js';
+import { makeChainClient, sharesWorth } from '../dapp/tacit-chain-client.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BIN = join(HERE, '../contracts/sp1/confidential/tacit-block/node/target/release/tacit-block-node');
@@ -46,8 +46,16 @@ const store = () => { const m = new Map(); return { getItem: (k) => m.get(k) ?? 
 try {
   for (let i = 0; i < 60; i++) { try { await fetch(LEADER + '/state'); break; } catch { await new Promise((r) => setTimeout(r, 500)); } }
   const { chain } = await api('GET', '/state');
-  // the contract's two words the client reads
-  const rpcCall = async (m, [{ data }]) => (data.startsWith('0x' + sel('CHAIN()')) ? chain : data.startsWith('0x' + sel('TAC_ASSET()')) ? assetHex : (() => { throw new Error('unexpected call'); })());
+  // what the client reads of the landing contract: its binding and asset, and the pool and shares it holds (here the node's, which
+  // a landed block leaves equal to the contract's)
+  const word = (v) => '0x' + BigInt(v).toString(16).padStart(64, '0');
+  const rpcCall = async (m, [{ data }]) => {
+    if (data.startsWith('0x' + sel('CHAIN()'))) return chain;
+    if (data.startsWith('0x' + sel('TAC_ASSET()'))) return assetHex;
+    if (data.startsWith('0x' + sel('pool()'))) return word((await api('GET', '/state')).pool);
+    if (data.startsWith('0x' + sel('shares()'))) return word((await api('GET', '/state')).shares);
+    throw new Error('unexpected call');
+  };
   const cfg = { blocks: BLOCKS, leader: LEADER };
   const aliceStore = store();
   const alice = makeChainClient({ cfg, rpcCall, priv: new Uint8Array(32).fill(0x11), system, storage: aliceStore });
@@ -57,19 +65,19 @@ try {
   // are one unit each, less the margin a shield leaves for the rate to rise
   const sh = await alice.shield(1000n * T);
   assert.equal(sh.deposit.amount, 1000n * T);
-  assert.equal(sh.deposit.shares, 1000n * T * 9990n / 10000n);
+  assert.equal(sh.deposit.shares, sharesFor(1000n * T, { pool: 0n, shares: 0n }));
   assert.ok(sh.depositCalldata.startsWith('0x' + sel('deposit(uint256,uint256,bytes32,bytes32,bytes32)')));
   await Promise.all([sh.submit(), landBlock()]);
   assert.equal(await alice.scan(), sh.deposit.shares);
   const r0 = await alice.rate();
   assert.deepEqual(r0, { pool: 1000n * T, shares: sh.deposit.shares }, 'the margin stayed with the pool');
-  assert.equal(await alice.worth(), 1000n * T, 'her shares are worth what she put in');
+  assert.ok(await alice.worth() <= 1000n * T && await alice.worth() >= 1000n * T * 9997n / 10000n, 'her shares are worth what she put in, less the margin');
 
   // Bob publishes his chain address; Alice pays him from the 32-byte hash alone
   await bob.publish();
   const to = await alice.resolve(await bob.lane());
   await Promise.all([alice.pay(to, 300n * T), landBlock()]);
-  const payShares = (300n * T * r0.shares + r0.pool - 1n) / r0.pool;
+  const payShares = sharesWorth(300n * T, r0);
   assert.equal(await alice.scan(), sh.deposit.shares - payShares - poolShare(r0));
   assert.equal(await bob.scan(), payShares);
   assert.ok(await bob.worth() >= 300n * T, 'bob holds at least what alice paid');
