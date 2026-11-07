@@ -50,11 +50,14 @@ pub const STATE_LEN: usize = 32 + 8 + 32 * TREE_DEPTH + 32 + 8 + 32 * RECENT + 3
 /// balance shown to anyone. A spend of notes that sends nothing out gives the holders at least MIN_POOL_FEE units' worth of shares.
 /// 0.1% of what leaves, and never less than MIN_POOL_FEE.
 pub const EXIT_FEE_BPS: u128 = 10;
-/// 0.002 TAC: what every spend of notes gives the holders at least (a pool share, an exit's fee, a lock's settle).
+/// 0.002 TAC: what every spend of notes gives the holders at least (a pool share, an exit's fee; a lock's settle gives EXIT_FEE_BPS).
 pub const MIN_POOL_FEE: u128 = 200_000;
-/// The shares a lock's claim or refund note is worth less than the lock: the holders' part, fixed so the locker knows the note's value
-/// when it seals its memo (a share is worth at least a unit, so this is at least MIN_POOL_FEE units).
-pub const LOCK_POOL_SHARES: u64 = MIN_POOL_FEE as u64;
+/// The shares a lock's claim or refund note is worth less than the lock: the holders' part, EXIT_FEE_BPS of the lock (rounded up, at
+/// least one share), in the lock's own shares, so the locker knows the note's value when it seals its memo and no change in a share's
+/// price can raise it.
+pub fn lock_fee(value: u64) -> u64 {
+    ((value as u128 * EXIT_FEE_BPS).div_ceil(10_000) as u64).max(1)
+}
 /// The rate counts this many units of pool and shares that no note holds (one TAC of each): no deposit or burn can set a share's price
 /// alone, and what is left in a pool with no shares is not the next depositor's.
 pub const VIRTUAL: u128 = 100_000_000;
@@ -1175,7 +1178,7 @@ fn settle_effects(prev: &State, s: &lock::Settle, time: u64) -> Result<Effects, 
     Ok(Effects {
         anchor,
         // the note is the lock less the holders' part (fixed, so the locker sealed its memo with this value)
-        outputs: vec![(poseidon(&[s.asset, Fr::from(s.value.checked_sub(LOCK_POOL_SHARES).ok_or("a lock worth no more than its pool share")?), to.npk, to.rho]), to.memo)],
+        outputs: vec![(poseidon(&[s.asset, Fr::from(s.value.checked_sub(lock_fee(s.value)).filter(|v| *v > 0).ok_or("a lock worth no more than its pool share")?), to.npk, to.rho]), to.memo)],
         deposit: None,
         exit: None,
         nullifiers: vec![fr_be(&lock::lock_nullifier(&s.leaf(), s.index))],
@@ -1183,7 +1186,7 @@ fn settle_effects(prev: &State, s: &lock::Settle, time: u64) -> Result<Effects, 
         claim: s.sig,
         migration: None,
         shares_in: 0,
-        shares_out: LOCK_POOL_SHARES,
+        shares_out: lock_fee(s.value),
         paid_in: 0,
         paid_out: 0,
     })
@@ -1253,7 +1256,7 @@ fn effects(prev: &State, s: &Spend, d: &SpendData) -> Result<Effects, &'static s
             e.hop = Some(ops::hop_bytes(&s.asset, o.amount, commit));
             (e.shares_out, e.paid_out) = (o.v, o.amount);
         }
-        (false, Some(o), Some(ops::Op::Lock { lock, memo })) if o.v > LOCK_POOL_SHARES && o.amount == 0 && d.exit_to == [0u8; 20] && commits(o, &s.exit) => {
+        (false, Some(o), Some(ops::Op::Lock { lock, memo })) if o.v > lock_fee(o.v) && o.amount == 0 && d.exit_to == [0u8; 20] && commits(o, &s.exit) => {
             e.outputs.push((lock.leaf(&s.asset, o.v), *memo))
         }
         (false, Some(o), Some(ops::Op::Migrate { to, note })) if *to != [0u8; 20] && out(o) => {

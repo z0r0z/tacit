@@ -223,7 +223,7 @@ contract TacitBlocks {
     ///         its proof says (the block program keeps both, so this only ever stops a block if the program or the verifier were wrong).
     uint256 public inChain;
     /// @notice The TAC behind every note (units) and the shares the notes count, as the last block left them: a share is worth
-    ///         pool / shares units (one while there are none). It only rises: deposits buy shares at it, exits, hops and migrations
+    ///         pool / shares units (with the block program's virtual unit of pool and shares counted). It only rises: deposits buy shares at it, exits, hops and migrations
     ///         pay out at it less the program's exit fee, and spends give the holders pool shares.
     uint64 public pool;
     uint64 public shares;
@@ -417,7 +417,8 @@ contract TacitBlocks {
     /// @notice A shield with no ETH: `owner` signed an ERC-2612 permit for its inbox (the spender) of `amount` units of TAC and
     ///         `fee` more, and whoever sends this, paying the gas, takes the fee. Creating the inbox pulls the permitted TAC, and
     ///         the permit names the inbox, which names the shield: no one can put the TAC to any other use. A permit already used
-    ///         (front-run) is passed over and the allowance it left is used.
+    ///         (front-run) is passed over and the allowance it left is used. Only what the inbox lacks is pulled; an inbox that already
+    ///         holds more than the deposit pays the caller the excess, up to `fee`, as `sweep` would leave it with the chain.
     function sweepWithPermit(
         uint256 shareCount,
         uint256 amount,

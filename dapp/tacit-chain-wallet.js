@@ -25,8 +25,9 @@ const OP_POOL = 4;
 // while there are none. These mirror the program's checks exactly, so a spend built with them is one it takes.
 export const EXIT_FEE_BPS = 10n;
 export const MIN_POOL_FEE = 200_000n;
-/// The shares a lock's claim or refund note is worth less than the lock (the holders' part): seal its memos with lock value less this.
-export const LOCK_POOL_SHARES = MIN_POOL_FEE;
+/// The shares a lock's claim or refund note is worth less than the lock of `value` shares (the holders' part: EXIT_FEE_BPS of it,
+/// rounded up, at least one): seal its memos with the lock's value less this (common/src/lib.rs `lock_fee`).
+export const lockFee = (value) => { const f = ceilDiv(BigInt(value) * EXIT_FEE_BPS, 10_000n); return f > 0n ? f : 1n; };
 /// The units of pool and shares the rate counts that no note holds (common/src/lib.rs VIRTUAL).
 export const VIRTUAL = 100_000_000n;
 const rateOf = ({ pool, shares }) => [BigInt(pool) + VIRTUAL, BigInt(shares) + VIRTUAL];
