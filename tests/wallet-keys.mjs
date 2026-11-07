@@ -62,6 +62,9 @@ try {
   await page.click('#ws-in [data-in="key"]');
   await page.waitForFunction(() => (document.querySelector('#wd-id')?.textContent || '').length > 12, null, { timeout: 30000 });
   await page.click('#wallet');
+  await page.waitForSelector('#w-keys summary', { timeout: 20000 });
+  ok(await page.$eval('#w-keys details', (d) => !d.open) && !(await page.isVisible('#w-keys .keyrow')), 'the public addresses and key are shut until asked for');
+  await page.click('#w-keys summary');
   await page.waitForSelector('#w-keys .keyrow', { timeout: 20000 });
   const keys = '#w-keys';
   const row = (label) => `${keys} .keyrow:has(.kv > span:first-child:text-is("${label}"))`;

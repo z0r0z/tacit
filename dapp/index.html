@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-DdmcOJsdGLNHyXQ4oAk5wjBI0uDEwp8fkvJh43AlGmQ=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-Pa6ZMroyE1QuoEVS8Cuy6Ec9VLysmTOFWXhQBJvZzDc=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -1048,6 +1048,11 @@ a.btn { text-decoration: none; white-space: nowrap; }
 .keyrow.open .full { display: block; }
 .nw { white-space: nowrap; }
 .lbl.sep { border-top: 1px solid var(--hair); margin-top: 20px; padding-top: 14px; }
+.w-acc { border-top: 1px solid var(--hair); margin-top: 20px; }
+.w-acc summary { display: flex; justify-content: space-between; padding: 14px 0 6px; font-size: 12px; color: var(--mute); cursor: pointer; list-style: none; }
+.w-acc summary::-webkit-details-marker { display: none; }
+.w-acc summary::after { content: '▾'; }
+.w-acc[open] summary::after { content: '▴'; }
 .blk + .blk { margin-top: 16px; }
 .blk .note { margin-top: 4px; }
 .warn { color: var(--warn); }
@@ -4238,7 +4243,9 @@ function l2Balances(who) {
 const WB_MARK = { TAC: 'tk-tac', tETH: 'tk-teth', cBTC: 'tk-cbtc', cUSD: 'tk-cusd', cUSDT: 'tk-usdt' };
 const wbRow = (r) => {
   const mark = r.mark ? html`<span class="tk letter" style="--c:${markColor(r.markId)}" aria-hidden="true">${r.mark.slice(0, 2).toUpperCase()}</span>` : html`<svg class="tk" aria-hidden="true"><use href="#${r.icon}"/></svg>`;
-  const v = r.v != null ? html`${fmt(r.v, r.dec, r.max)}` : r.err ? '—' : html`<span class="sk" style="--w:7ch"></span>`;
+  // while a row is being read, what it held when this key last looked (the panel keeps it), dimmed, rather than a blank
+  const prev = r.v == null && !r.err ? big(DASH.base?.v?.[r.key]?.v) : null;
+  const v = r.v != null ? html`${fmt(r.v, r.dec, r.max)}` : prev != null ? html`<span class="stale">${fmt(prev, r.dec, r.max)}</span>` : r.err ? '—' : html`<span class="sk" style="--w:7ch"></span>`;
   // `notes`: how many private notes make up the balance, where the key's scan has them
   const meta = r.err ? 'could not read right now' : html`${r.meta || ''}${r.pending ? html`${r.meta ? ' · ' : ''}${fmt(r.pending, r.dec, r.max)} arriving` : ''}${r.notes > 0 ? html`${r.meta || r.pending ? ' · ' : ''}${r.notes} note${r.notes === 1 ? '' : 's'}` : ''}`;
   const usd = r.v != null ? dashRowUsd(r) : null;
@@ -4282,11 +4289,12 @@ function wbClick(e) {
   dashGo(b);
 }
 // What else the open key hands out, whichever way it was opened (an Ethereum or Bitcoin wallet, a passkey, a pasted key): its own Bitcoin address and its Tacit account on
-// Ethereum, both public, and the public key they are made from. The Tacit address, the private one, heads the sheet.
-const walletKeys = () => html`<div class="lbl sep"><span>Public addresses and key</span></div>
+// Ethereum, both public, and the public key they are made from. The Tacit address, the private one, sits on its own card above; these are one press away, kept shut
+// until asked for (`open`: it was open when the block is drawn again).
+const walletKeys = (open = false) => html`<details class="w-acc"${open ? ' open' : ''}><summary>Addresses and public key</summary>
   ${keyRow('Bitcoin address', plainAddr(), 'Bitcoin address', 'Sats from any wallet or exchange.', { qr: true })}
   ${keyRow('Ethereum address', S.acct.address, 'Ethereum address', 'This key’s own. ETH sent here can pay instead of a wallet.')}
-  ${keyRow('Public key', S.key.pubHex, 'Public key', 'For a Send box that asks for a key.')}`;
+  ${keyRow('Public key', S.key.pubHex, 'Public key', 'For a Send box that asks for a key.')}</details>`;
 render.wallet = () => {
   const el = $('#wallet-body');
   if (!S.key) {
@@ -4324,7 +4332,7 @@ render.wallet = () => {
     <div class="lbl sep"><span>Your key</span>${kept ? html`<button type="button" id="w-backup">Copy key to back up</button>` : ''}</div>
     <p class="note">${kept ? 'Kept in this browser only: clearing its data loses it.' : k.mode === 'key' ? 'Pasted and not saved: closing the tab forgets it.' : 'Your wallet or passkey opens it again: keep that safe.'} Anyone who has the key holds these funds and the Tacit account.</p>`);
   $('#w-copy').onclick = () => k.tacit && copy(k.tacit, 'Tacit address copied');
-  if (!plainAddr()) loadPlain().then(() => { const w = $('#w-keys'); if (w?.isConnected && S.key?.pubHex === k.pubHex) mount(w, walletKeys()); }).catch(() => {});
+  if (!plainAddr()) loadPlain().then(() => { const w = $('#w-keys'); if (w?.isConnected && S.key?.pubHex === k.pubHex) mount(w, walletKeys(!!w.querySelector('details')?.open)); }).catch(() => {});
   // the Bitcoin address is read when the sheet opens, as the Bitcoin tab does, so its balance is here without a visit there
   loadBtc().then(paintWalletBal, paintWalletBal);
   $('#wbal-box').onclick = wbClick;
