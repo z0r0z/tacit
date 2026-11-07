@@ -97,8 +97,9 @@ contract TacitBlocksTest is Test {
     uint256 constant FORCE_DELAY = 1 hours;
     uint256 constant UNIT = 1e10;
     bytes32 constant CTAC = 0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b;
-    uint256 constant FORCED_REST_AT = 384 + 2080 + 1280 + 3 * 128;
-    uint256 constant FORCED_MAX = FORCED_REST_AT + 20 + 32 + 2 * 41 + 1 + 265 + 128;
+    uint256 constant MEMO = 64;
+    uint256 constant FORCED_REST_AT = 384 + 2080 + 1280 + 3 * MEMO;
+    uint256 constant FORCED_MAX = FORCED_REST_AT + 20 + 32 + 2 * 41 + 1 + 265 + MEMO;
 
     function setUp() public {
         fx = vm.readFile(string.concat(vm.projectRoot(), "/test/fixtures/tacit-blocks.json"));
@@ -194,9 +195,9 @@ contract TacitBlocksTest is Test {
         uint256 n = l.leaves.length / 32;
         bytes memory items;
         for (uint256 i; i < n; ++i) {
-            bytes memory memo = new bytes(128);
-            for (uint256 j; j < 128; ++j) {
-                memo[j] = l.memos[128 * i + j];
+            bytes memory memo = new bytes(MEMO);
+            for (uint256 j; j < MEMO; ++j) {
+                memo[j] = l.memos[MEMO * i + j];
             }
             bytes32 leaf;
             bytes memory leaves = l.leaves;
@@ -322,6 +323,28 @@ contract TacitBlocksTest is Test {
         assertEq(tac.balanceOf(address(blocks)), 120 * UNIT, "only the exit's credit is left");
         blocks.withdraw(vm.parseJsonAddress(fx, ".exit.to"));
         assertEq(tac.balanceOf(address(blocks)), 0);
+    }
+
+    /// Both of the fixture's hops sent on in one transaction; a batch naming one hop twice sends it once and refuses the second.
+    function test_hopsSentTogether() public {
+        toTheHop();
+        land(3);
+        blocks.force(vm.parseJsonBytes(fx, ".forcedHop"));
+        land(4);
+        uint256[] memory values = new uint256[](2);
+        bytes32[] memory commits = new bytes32[](2);
+        values[0] = vm.parseJsonUint(fx, ".hop.value");
+        commits[0] = vm.parseJsonBytes32(fx, ".hop.commit");
+        values[1] = vm.parseJsonUint(fx, ".hop2.value");
+        commits[1] = vm.parseJsonBytes32(fx, ".hop2.commit");
+        uint256[] memory twice = new uint256[](2);
+        bytes32[] memory twiceC = new bytes32[](2);
+        (twice[0], twice[1], twiceC[0], twiceC[1]) = (values[0], values[0], commits[0], commits[0]);
+        vm.expectRevert(TacitBlocks.NoSuchHop.selector);
+        blocks.sendHops(twice, twiceC);
+        blocks.sendHops(values, commits);
+        assertEq(pool.wraps(), 2);
+        assertEq(tac.balanceOf(address(blocks)), 120 * UNIT, "only the exit's credit is left");
     }
 
     function test_hopsMustBeTheCommittedOnes() public {

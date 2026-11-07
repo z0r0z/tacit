@@ -65,7 +65,7 @@ fn replay(path: &str) {
         let published = Published {
             words: words32(&bytes(&b["publicValues"])),
             leaves: words32(&bytes(&b["leaves"])),
-            memos: bytes(&b["memos"]).chunks(128).map(<[u8]>::to_vec).collect(),
+            memos: bytes(&b["memos"]).chunks(tacit_block_common::MEMO_LEN).map(<[u8]>::to_vec).collect(),
             nullifiers: b["nullifiers"].as_array().unwrap_or_else(|| fail("nullifiers")).iter().map(|n| bytes(n).try_into().unwrap()).collect(),
         };
         node.land(&published).unwrap_or_else(|e| fail(&format!("block {i}: {e}")));

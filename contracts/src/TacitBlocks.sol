@@ -103,7 +103,7 @@ contract TacitBlocks {
     /// @notice A unit of value: 10^-8 TAC in the token's smallest units.
     uint256 public constant UNIT = 1e10;
     /// Every memo's length (tacit-block-common MEMO_LEN), so a memo's size says nothing of what wrote it.
-    uint256 public constant MEMO_LEN = 128;
+    uint256 public constant MEMO_LEN = 64;
     uint256 public constant RECLAIM_AFTER = 7 days;
     uint256 public constant MAX_WINDOW = 1 days;
     /// A posted spend (tacit-block-common `forced_parts`): publics (12 words) ‖ proof (2,080 bytes) ‖ hints (20 × 64) ‖ a memo
@@ -465,6 +465,18 @@ contract TacitBlocks {
     ///         TAC from this contract and records the deposit; the note it names is made there when it is wrapped in). Anyone
     ///         may call it.
     function sendHop(uint256 value, bytes32 commit) external nonReentrant {
+        _sendHop(value, commit);
+    }
+
+    /// @notice Sends several landed hops on in one transaction.
+    function sendHops(uint256[] calldata values, bytes32[] calldata commits) external nonReentrant {
+        if (values.length != commits.length) revert NoSuchHop();
+        for (uint256 i; i < values.length; ++i) {
+            _sendHop(values[i], commits[i]);
+        }
+    }
+
+    function _sendHop(uint256 value, bytes32 commit) internal {
         bytes32 key = keccak256(abi.encode(value, commit));
         if (hops[key] == 0) revert NoSuchHop();
         hops[key] -= 1;
