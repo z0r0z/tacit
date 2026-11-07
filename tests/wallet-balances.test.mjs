@@ -7,7 +7,7 @@ const keys = (rs) => rs.map((r) => r.key);
 
 // the panel's rows as the page builds them, with a key that holds some of each
 const items = [
-  row('teth', 50000000n, { core: true, meta: 'private', notes: 3 }),
+  row('teth', 50000000n, { core: true, meta: 'private', noteVals: [30000000n, 15000000n, 5000000n] }),
   row('dev', 0n, { show: false }),
   row('devtac', 3n * 10n ** 18n, { show: true }),
   row('tac', 7n * 10n ** 18n, { core: true }),
@@ -27,7 +27,7 @@ const items = [
   assert.deepEqual(keys(r.bitcoin), ['btc', 'sats-tac', 'tethbtc']);
   assert.equal(r.bitcoin[0].v, null, 'BTC is still being read');
   assert.equal(r.bitcoin[0].err, false);
-  assert.equal(r.ethereum[0].notes, 3, 'a row keeps the count of private notes behind it');
+  assert.deepEqual(r.ethereum[0].noteVals, [30000000n, 15000000n, 5000000n], 'a row keeps the private notes behind it');
   assert.deepEqual(keys(r.ethereum), ['teth', 'devtac', 'tac'],'zero rows and rows that are not balances (points, rewards, loans, airdrop) are left out');
 }
 

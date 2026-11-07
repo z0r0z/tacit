@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-Qfr2yiwo+3j/YXzNHqoxvaPTOY2MvNxSjDXWWSyImtU=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-BACjSOPjiS/dPg4pYuSqP/bOvZSZZdKJ9OlDKHhHqPE=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -51,7 +51,7 @@
 <link rel="modulepreload" href="/zrouter-guard.js">
 <link rel="modulepreload" href="/confidential-payout.js?cb=c27b4853">
 <link rel="modulepreload" href="/address-id.js?cb=c4fa5a58">
-<link rel="modulepreload" href="/wallet-balances.js?cb=0c7e7c40">
+<link rel="modulepreload" href="/wallet-balances.js?cb=b768cab5">
 <link rel="modulepreload" href="/trade/farm-read.js?cb=112a01b9">
 <link rel="modulepreload" href="/bridge-all.js?cb=4b6de3ff">
 <link rel="modulepreload" href="/lp-zap.js?cb=4823580d">
@@ -1073,6 +1073,12 @@ a.btn { text-decoration: none; white-space: nowrap; }
 .w-acc summary::-webkit-details-marker { display: none; }
 .w-acc summary::after { content: '▾'; }
 .w-acc[open] summary::after { content: '▴'; }
+.w-notes { margin-top: 8px; }
+.w-notes summary b { margin: 0 auto 0 8px; font-weight: 400; color: var(--ink); }
+.wnl { list-style: none; margin: 0; padding: 0 0 6px; }
+.wnl li { display: flex; gap: 12px; padding: 5px 0; font-size: 12px; line-height: 1.5; }
+.wnl-k { flex: none; width: 52px; color: var(--ink); }
+.wnl-v { min-width: 0; color: var(--mute); overflow-wrap: anywhere; }
 .blk + .blk { margin-top: 16px; }
 .blk .note { margin-top: 4px; }
 .warn { color: var(--warn); }
@@ -1922,7 +1928,7 @@ import { parseRecipient } from '/confidential-payout.js?cb=c27b4853';
 import { planMerge, planAll, countAll, opsCompared } from '/bridge-all.js?cb=4b6de3ff';
 import { aprFrom, shieldedApr as shieldedAprOf, poolWorthEth } from '/trade/farm-read.js?cb=112a01b9';
 import { addressId } from '/address-id.js?cb=c4fa5a58';
-import { balanceRows } from '/wallet-balances.js?cb=0c7e7c40';
+import { balanceRows } from '/wallet-balances.js?cb=b768cab5';
 import { PXS_KEY, PX_CALLS, pxFigures, paintPx, pxState } from '/px-strip.js?cb=fe8eebc5';
 import { zapPlan, zapPlanFor, zapCalldata, zapSettleCalldata, zapSplitSearch, zapWorth } from '/lp-zap.js?cb=4823580d';
 import { rewardPop } from '/reward-pop.js?cb=1b53f6d4';
@@ -4303,8 +4309,9 @@ const wbRow = (r) => {
   // while a row is being read, what it held when this key last looked (the panel keeps it), dimmed, rather than a blank
   const prev = r.v == null && !r.err ? big(DASH.base?.v?.[r.key]?.v) : null;
   const v = r.v != null ? html`${fmt(r.v, r.dec, r.max)}` : prev != null ? html`<span class="stale">${fmt(prev, r.dec, r.max)}</span>` : r.err ? '—' : html`<span class="sk" style="--w:7ch"></span>`;
-  // `notes`: how many private notes make up the balance, where the key's scan has them
-  const meta = r.err ? 'could not read right now' : html`${r.meta || ''}${r.pending ? html`${r.meta ? ' · ' : ''}${fmt(r.pending, r.dec, r.max)} arriving` : ''}${r.notes > 0 ? html`${r.meta || r.pending ? ' · ' : ''}${r.notes} note${r.notes === 1 ? '' : 's'}` : ''}`;
+  // `noteVals`: the private notes that make up the balance, where the key's scan has them
+  const nn = r.noteVals?.length || 0;
+  const meta = r.err ? 'could not read right now' : html`${r.meta || ''}${r.pending ? html`${r.meta ? ' · ' : ''}${fmt(r.pending, r.dec, r.max)} arriving` : ''}${nn > 0 ? html`${r.meta || r.pending ? ' · ' : ''}${nn} note${nn === 1 ? '' : 's'}` : ''}`;
   const usd = r.v != null ? dashRowUsd(r) : null;
   const body = html`<span class="wb-k">${mark}${r.label}</span><span class="wb-v num">${v}</span><span class="wb-m">${meta}</span><span class="wb-u num">${usd != null ? usdSmall(usd) : ''}</span>`;
   const go = r.href ? html`<a class="wb-go" href="${r.href}">${body}</a>`
@@ -4322,9 +4329,12 @@ function walletBalances() {
   // the whole of it in dollars, once the prices are read, and how much of that is private
   const w = DASH.worth, total = w?.all > 0 ? html`<div class="wb-tot"><small>≈</small><b class="num">${usdFmt(w.all)}</b>${w.priv >= w.all * 0.999 ? html`<span>all private</span>` : w.priv > 0 ? html`<span>${usdFmt(w.priv)} private</span>` : ''}</div>` : '';
   const group = (name, rows, empty) => html`<div class="lbl"><span>${name}</span></div>${rows.length ? html`<ul class="wbal">${rows.map(wbRow)}</ul>` : html`<p class="note">${empty}</p>`}`;
+  // the private notes behind the balances, one line an asset (the largest first, a dozen at most), shut until asked for and kept open when this is drawn again
+  const withNotes = ethereum.filter((r) => r.noteVals?.length), count = withNotes.reduce((a, r) => a + r.noteVals.length, 0), kept = !!$('#wbal-box .w-notes')?.open;
+  const notes = count ? html`<details class="w-acc w-notes"${kept ? ' open' : ''}><summary>Private notes<b class="num">${count}</b></summary><ul class="wnl">${withNotes.map((r) => html`<li><span class="wnl-k">${r.label}</span><span class="wnl-v num">${r.noteVals.slice(0, 12).map((x) => fmt(x, r.dec, r.dec <= 8 ? 6 : 4)).join(' · ')}${r.noteVals.length > 12 ? ` · +${r.noteVals.length - 12} more` : ''}</span></li>`)}</ul></details>` : '';
   return html`<div class="wb-top"><div><div class="wb-tl">Balances</div>${total}</div><button type="button" id="wbal-re"${wbReading ? ' disabled' : ''}>${wbReading ? 'Reading…' : 'Refresh'}</button></div>
     ${group(chainTag('btc'), bitcoin, '')}
-    ${group(chainTag(1), ethereum, 'Nothing held privately or in your wallet yet.')}`;
+    ${group(chainTag(1), ethereum, 'Nothing held privately or in your wallet yet.')}${notes}`;
 }
 function paintWalletBal() {
   const w = $('#wbal-box');
@@ -13990,10 +14000,12 @@ let dashQ = 0, dashSaveT = 0;
 function dashSoon() { if (!dashQ) dashQ = requestAnimationFrame(() => { dashQ = 0; paintDash(); hxSync(); }); }
 // The colour of an asset's mark, taken from its id as /etch/ takes it, so the asset looks the same in both.
 const markColor = (id) => { let h = 7; for (const c of String(id)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return `hsl(${h % 360} 38% 48%)`; };
+// The notes of a private asset as amounts, the largest first, in the row's own units (`scale` takes the note's units to them: TAC's are 8 places, the row's 18), or null while unread
+const noteVals = (g, scale = 1n) => (g?.notes ? g.notes.map((n) => BigInt(n.value) * scale).sort((a, b) => (a < b ? 1 : a > b ? -1 : 0)) : null);
 function dashItems() {
   const k = S.key?.pubHex, s = k ? P.scan : null, scanErr = !!(k && !s && P.err), out = [];
   if (k) {
-    out.push({ key: 'teth', icon: 'tk-teth', label: 'tETH', dec: 8, max: 6, v: s ? s.eth.value + P.coming : P.coming > 0n ? P.coming : null, err: scanErr && !(P.coming > 0n), meta: s?.reading ? 'private, reading older notes…' : 'private', open: 'private', core: true, notes: s?.eth.notes.length });
+    out.push({ key: 'teth', icon: 'tk-teth', label: 'tETH', dec: 8, max: 6, v: s ? s.eth.value + P.coming : P.coming > 0n ? P.coming : null, err: scanErr && !(P.coming > 0n), meta: s?.reading ? 'private, reading older notes…' : 'private', open: 'private', core: true, noteVals: noteVals(s?.eth) });
     let dev = null;
     const on = [];
     for (const c of DEVICE_CHAINS) { const v = devBal(c.chainId, k); if (v != null) { dev = (dev || 0n) + v; if (v > 0n) on.push(c.chainId); } }
@@ -14027,7 +14039,7 @@ function dashItems() {
   }
   const who = [...new Set([S.wallet, S.acct?.address].filter(Boolean).map((a) => a.toLowerCase()))].join();
   const pubTac = who && TACB.who === who ? TACB.erc : null, privTac = k ? (s ? s.tac.value * E10 : null) : 0n;
-  out.push({ key: 'tac', icon: 'tk-tac', label: 'TAC', dec: 18, max: 2, v: pubTac != null && privTac != null ? pubTac + privTac : null, priv: privTac, err: scanErr || (!!who && TACB.who !== who && !!TACB.err), open: 'tac', core: true, notes: s?.tac.notes.length,
+  out.push({ key: 'tac', icon: 'tk-tac', label: 'TAC', dec: 18, max: 2, v: pubTac != null && privTac != null ? pubTac + privTac : null, priv: privTac, err: scanErr || (!!who && TACB.who !== who && !!TACB.err), open: 'tac', core: true, noteVals: noteVals(s?.tac, E10),
     meta: !k ? 'on Ethereum' : pubTac != null && privTac != null ? `${fmt(privTac, 18, 2)} private · ${fmt(pubTac, 18, 2)} public` : '' });
   if (k) {
     const b = BTC.pub === k ? BTC : null, onBtc = BTC_NOTE_ASSETS.map((x) => [x, b?.held.find((a) => a.id === x.id)]).filter(([, h]) => h), lk = LOCKNOTE.pub === k ? LOCKNOTE : null;
@@ -14039,10 +14051,10 @@ function dashItems() {
     for (const a of sats || []) out.push({ key: `sats-${a.ticker.toLowerCase()}`, icon: a.ticker === 'TAC' ? 'tk-tac' : 'tk-cbtc', label: a.ticker, dec: a.decimals, max: a.ticker === 'TAC' ? 2 : 6,
       v: a.value, meta: 'Secret Sats, private on Bitcoin', href: a.ticker === 'TAC' ? '/tac/' : '/sats/', show: a.value > 0n });
     const cb = s && !s.cbtcUnread ? s.cbtc.notes.reduce((a, n) => a + BigInt(n.value), 0n) : null;
-    out.push({ key: 'cbtc', icon: 'tk-cbtc', label: 'cBTC', dec: 8, max: 6, v: cb, err: scanErr, meta: lk?.text || 'private', open: 'borrow', show: cb > 0n || !!lk?.text, notes: cb != null ? s.cbtc.notes.length : null });
+    out.push({ key: 'cbtc', icon: 'tk-cbtc', label: 'cBTC', dec: 8, max: 6, v: cb, err: scanErr, meta: lk?.text || 'private', open: 'borrow', show: cb > 0n || !!lk?.text, noteVals: cb != null ? noteVals(s.cbtc) : null });
     out.push({ key: 'cusd', icon: 'tk-cusd', label: 'cUSD', dec: 8, max: 2, v: s ? s.cusd.value : null, err: scanErr, open: 'borrow', show: s?.cusd.value > 0n || !!lk?.borrowed,
-      meta: lk?.borrowed ? `${fmt(lk.borrowed, 8, 2)} borrowed` : 'private', notes: s?.cusd.notes.length });
-    out.push({ key: 'cusdt', icon: 'tk-usdt', label: 'USDT', dec: 6, max: 2, v: s ? s.cusdt.value : null, err: scanErr, open: 'usdt', meta: 'private', show: s?.cusdt.value > 0n, notes: s?.cusdt.notes.length });
+      meta: lk?.borrowed ? `${fmt(lk.borrowed, 8, 2)} borrowed` : 'private', noteVals: noteVals(s?.cusd) });
+    out.push({ key: 'cusdt', icon: 'tk-usdt', label: 'USDT', dec: 6, max: 2, v: s ? s.cusdt.value : null, err: scanErr, open: 'usdt', meta: 'private', show: s?.cusdt.value > 0n, noteVals: noteVals(s?.cusdt) });
   }
   if (who && PUBX.who === who) {
     out.push({ key: 'tacbtc', icon: 'tk-tacbtc', label: 'tacBTC', dec: 18, max: 6, v: PUBX.tacbtc, meta: 'public', asset: 'tacbtc', show: PUBX.tacbtc > 0n });
