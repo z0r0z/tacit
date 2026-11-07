@@ -67,7 +67,8 @@ async function newContext(wallets, { phone = false } = {}) {
 async function open(ctx, path) {
   const page = await ctx.newPage(), errors = [], blocked = [];
   page.on('pageerror', (e) => errors.push(String(e.message || e)));
-  page.on('console', (m) => { if (m.type() === 'error') { const t = m.text(); if (/Content Security Policy|Refused to/i.test(t)) blocked.push(t); else if (!/Failed to load resource|net::|ERR_FAILED/.test(t)) errors.push(t); } });
+  // a request that could not leave the machine, or a public relay (a WebSocket, which the route above does not catch) that is down, is not the page's error
+  page.on('console', (m) => { if (m.type() === 'error') { const t = m.text(); if (/Content Security Policy|Refused to/i.test(t)) blocked.push(t); else if (!/Failed to load resource|net::|ERR_FAILED|WebSocket connection to 'wss?:\/\/(?!127\.0\.0\.1|localhost)/.test(t)) errors.push(t); } });
   await page.goto(`http://127.0.0.1:${WEB}${path}`);
   return { page, errors, blocked };
 }

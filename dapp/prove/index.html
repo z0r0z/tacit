@@ -356,9 +356,11 @@ pre.cmd { margin: 16px 0 0; padding: 12px 14px; background: var(--field); border
 
 /* the wallet chip's short label, the wallet app's pairing sheet, the toasts */
 .chip .narrow { display: none; }
-/* the chip keeps one width whatever it says, so a wallet that reconnects after the page has drawn moves nothing */
+/* the chip keeps one width whatever it says, so a wallet that reconnects after the page has drawn moves nothing: nor does anything in it, the label being a box
+   of the width of the longest thing it says (its text centered in it), so the dot and the words stay where they were as it changes */
 #wallet { width: calc(14ch + 48px); justify-content: center; }
-@media (max-width: 430px) { #wallet { width: calc(11ch + 42px); } }
+#wallet-label { flex: none; min-width: 14ch; text-align: center; }
+@media (max-width: 430px) { #wallet { width: calc(11ch + 42px); } #wallet-label { min-width: 11ch; } }
 @media (max-width: 430px) { .chip .wide { display: none; } .chip .narrow { display: inline; } }
 .chip[aria-busy="true"] { cursor: progress; }
 dialog.sheet { width: min(480px, calc(100vw - 32px)); max-height: min(90vh, 900px); padding: 0; overflow: auto; color: var(--ink); background: var(--card); border: 1px solid var(--ink); box-shadow: 0 12px 40px rgba(0,0,0,.25); }
