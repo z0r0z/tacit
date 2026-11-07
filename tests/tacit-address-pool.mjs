@@ -115,16 +115,27 @@ await test('poolKeysOf and poolAddressOf are inverses; the pool lane is a bp1 pa
   assert.throws(() => poolKeysOf(V0), /not a pool address/);
 });
 
+await test('the chain lane is a 32-byte hash after every other lane', () => {
+  const base = decodeBech32m(UNIFIED).payloadBytes;
+  const h = Uint8Array.from({ length: 32 }, (_, i) => i + 1);
+  const c = Uint8Array.from([...base, ...h]); c[1] |= 0x08;
+  const d = decodeTacitAddress(bech(c));
+  assert.equal(hex(d.lanes.chain.hash), hex(h));
+  assert.equal(d.lanes.pool.poolAddress, BP, 'the pool lane is read as before');
+  const short = Uint8Array.from([...base, ...h.slice(1)]); short[1] |= 0x08;
+  assert.throws(() => decodeTacitAddress(bech(short)), /payload length/);
+});
+
 await test('lanes a reader does not know are ignored; with none, the length is exact', () => {
   const base = decodeBech32m(UNIFIED).payloadBytes, v0 = decodeBech32m(V0).payloadBytes;
   const withFlags = (p, flags, extra = []) => { const c = Uint8Array.from([...p, ...extra]); c[1] = flags; return bech(c); };
-  const later = withFlags(base, 0x8d, Array(40).fill(9));
+  const later = withFlags(base, 0x95, Array(40).fill(9));
   assert.equal(decodeTacitAddress(later).lanes.pool.poolAddress, BP);
   assert.equal(names.decodeTacitAddress(later).pool, BP);
   assert.equal(names.decodeTacitAddress(later).key, names.decodeTacitAddress(V0).key);
-  const laterExplicit = withFlags(decodeBech32m(EXPLICIT).payloadBytes, 0x0f, Array(40).fill(9));
+  const laterExplicit = withFlags(decodeBech32m(EXPLICIT).payloadBytes, 0x17, Array(40).fill(9));
   assert.equal(decodeTacitAddress(laterExplicit).lanes.pool.poolAddress, BP);
-  const laterNoPool = withFlags(v0, 0x0b, Array(12).fill(1));
+  const laterNoPool = withFlags(v0, 0x13, Array(12).fill(1));
   assert.deepEqual(Object.keys(decodeTacitAddress(laterNoPool).lanes), ['btc', 'evm']);
   assert.equal(names.decodeTacitAddress(laterNoPool).key, names.decodeTacitAddress(V0).key);
   assert.throws(() => decodeTacitAddress(withFlags(base, 0x85, [1])), /payload length/);

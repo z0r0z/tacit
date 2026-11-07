@@ -71,8 +71,22 @@ export function makeChainWallet({ poseidon, prover, chain, asset, network = 'mai
   }
 
   const ADDRESS_LEN = 128 + 33 + 1184;
+  const addressBytes = (a) => concatBytes(be(a.A[0], 32), be(a.A[1], 32), be(a.N[0], 32), be(a.N[1], 32), a.scanPub, a.kemPub);
+  /// What a Tacit address's chain lane carries: SHA-256("tacit-chain-address-v1" ‖ the full address).
+  const chainAddressHash = (a) => sha256(concatBytes(te.encode('tacit-chain-address-v1'), addressBytes(a)));
+  /// The full address for a chain lane's hash, from a leader's directory, checked against the hash (a directory can only withhold it).
+  async function resolve(hash, leader) {
+    const h = bytes(hash, 32, 'chain address hash');
+    const full = await leader.address(hx(h));
+    if (!full) throw new Error('tacit-chain-wallet: no leader knows this chain address yet');
+    const a = decodeAddress('tc1' + String(full).replace(/^0x/, ''));
+    if (hx(chainAddressHash(a)) !== hx(h)) throw new Error('tacit-chain-wallet: the directory answered with another address');
+    return a;
+  }
+  /// Publishes this wallet's full address to a leader's directory, so a Tacit address with its chain lane can be paid.
+  const publish = (k, leader) => leader.publish(hx(addressBytes(address(k))));
   function encodeAddress(a) {
-    return 'tc1' + hx(concatBytes(be(a.A[0], 32), be(a.A[1], 32), be(a.N[0], 32), be(a.N[1], 32), a.scanPub, a.kemPub)).slice(2);
+    return 'tc1' + hx(addressBytes(a)).slice(2);
   }
   function decodeAddress(s) {
     if (!String(s).startsWith('tc1')) throw new Error('tacit-chain-wallet: not a tacit chain address');
@@ -170,7 +184,7 @@ export function makeChainWallet({ poseidon, prover, chain, asset, network = 'mai
     return { notes, spent, next };
   }
 
-  return { keys, address, encodeAddress, decodeAddress, spend, scan, makeNote, Z };
+  return { keys, address, encodeAddress, decodeAddress, chainAddressHash, resolve, publish, spend, scan, makeNote, Z };
 }
 
 export { sha256, lockOp };

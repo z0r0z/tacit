@@ -9,6 +9,7 @@
 //!   GET  /spent/0x…              whether a nullifier has entered the tree
 //!   GET  /receipt/ID             a submission: queued, or landed in a block
 //!   GET  /mempool                what is waiting
+//!   POST /address                { address } → { hash }      GET /address/<hash> → { address }   (the chain lane's directory)
 //!   POST /spend                  { publics, proof, data, memos[], opMemos[], back? } → { id }   (back: a shield paid to its inbox)
 //!   POST /settle                 { settle, memo } → { id }
 //!   POST /build                  { time, blobs?: bool, queue?: [payload…], max?: n, exclude?: [id…] } → the block: guest input, public values, lists
@@ -73,11 +74,62 @@ pub struct Leader {
     settles: Vec<SettleEntry>,
     receipts: BTreeMap<String, Value>,
     built: Option<Built>,
+    /// Full chain addresses by the hash a Tacit address's chain lane carries (content-addressed: a payer checks what it gets).
+    directory: Directory,
+}
+
+/// Chain addresses by SHA-256("tacit-chain-address-v1" ‖ address), kept in memory and appended to TACIT_NODE_DIRECTORY (one hex
+/// address a line) when set, at most DIRECTORY_MAX.
+pub struct Directory {
+    map: BTreeMap<[u8; 32], Vec<u8>>,
+    file: Option<String>,
+}
+const ADDRESS_LEN: usize = 128 + 33 + 1184;
+const DIRECTORY_MAX: usize = 250_000;
+
+impl Directory {
+    pub fn open(file: Option<String>) -> Directory {
+        let mut d = Directory { map: BTreeMap::new(), file: None };
+        if let Some(f) = &file {
+            if let Ok(text) = std::fs::read_to_string(f) {
+                for line in text.lines() {
+                    if let Ok(b) = hex::decode(line.trim()) {
+                        let _ = d.add(b);
+                    }
+                }
+            }
+        }
+        d.file = file;
+        d
+    }
+    pub fn hash(address: &[u8]) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        Sha256::new().chain_update(b"tacit-chain-address-v1").chain_update(address).finalize().into()
+    }
+    pub fn add(&mut self, address: Vec<u8>) -> Result<[u8; 32], String> {
+        if address.len() != ADDRESS_LEN {
+            return Err(format!("a chain address is {ADDRESS_LEN} bytes"));
+        }
+        let h = Self::hash(&address);
+        if self.map.contains_key(&h) {
+            return Ok(h);
+        }
+        if self.map.len() >= DIRECTORY_MAX {
+            return Err("the directory is full".into());
+        }
+        if let Some(f) = &self.file {
+            use std::io::Write;
+            let mut out = std::fs::OpenOptions::new().create(true).append(true).open(f).map_err(|e| e.to_string())?;
+            writeln!(out, "{}", hex::encode(&address)).map_err(|e| e.to_string())?;
+        }
+        self.map.insert(h, address);
+        Ok(h)
+    }
 }
 
 impl Leader {
     pub fn new(chain: [u8; 32], keys: Keys, asset: Option<[u8; 32]>) -> Leader {
-        Leader { node: Node::genesis(chain), keys, asset, pending: vec![], settles: vec![], receipts: BTreeMap::new(), built: None }
+        Leader { node: Node::genesis(chain), keys, asset, pending: vec![], settles: vec![], receipts: BTreeMap::new(), built: None, directory: Directory::open(std::env::var("TACIT_NODE_DIRECTORY").ok().filter(|f| !f.is_empty())) }
     }
 
     fn spends(&self, extra: Option<&Entry>) -> Vec<SpendIn> {
@@ -312,6 +364,15 @@ impl Leader {
             ("GET", p) if p.starts_with("/spent/") => {
                 let nf: [u8; 32] = hex::decode(p[7..].trim_start_matches("0x")).ok().and_then(|b| b.try_into().ok()).ok_or(bad("a 32-byte nullifier".into()))?;
                 Ok(json!({ "spent": self.node.spent(&nf) }))
+            }
+            ("POST", "/address") => {
+                let a = hexv(&body["address"]).map_err(bad)?;
+                let h = self.directory.add(a).map_err(bad)?;
+                Ok(json!({ "hash": hx(&h) }))
+            }
+            ("GET", p) if p.starts_with("/address/") => {
+                let h: [u8; 32] = hex::decode(p[9..].trim_start_matches("0x")).ok().and_then(|b| b.try_into().ok()).ok_or(bad("a 32-byte hash".into()))?;
+                self.directory.map.get(&h).map(|a| json!({ "address": hx(a) })).ok_or((404, "no such address".to_string()))
             }
             ("GET", p) if p.starts_with("/receipt/") => self.receipts.get(&p[9..]).cloned().ok_or((404, "no such submission".to_string())),
             ("GET", "/mempool") => Ok(json!({

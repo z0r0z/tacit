@@ -37,6 +37,8 @@ const leader = {
   path: async (i) => (await api('GET', `/path/${i}`)),
   notes: async (from, limit) => api('GET', `/notes?from=${from}&limit=${limit}`),
   spent: async (nf) => (await api('GET', `/spent/${nf}`)).spent,
+  address: async (h) => (await api('GET', `/address/${h}`)).address,
+  publish: async (a) => (await api('POST', '/address', { address: a })).hash,
 };
 /// What the real leader does between a block's build and its landing on Ethereum, here without the chain.
 async function landBlock() {
@@ -79,9 +81,19 @@ try {
   let mine = await w.scan(alice, leader);
   assert.deepEqual(mine.notes.map((n) => n.value), [1000n]);
 
-  // 3. Alice pays Bob 300 and keeps 700
+  // 3. Bob's Tacit address carries only the 32-byte hash of his chain address; he publishes the full one to the leader's
+  //    directory and Alice resolves it from the hash (a directory that answers with any other address is caught)
+  const bobHash = w.chainAddressHash(w.address(bob));
+  assert.equal(await w.publish(bob, leader), hx(bobHash));
+  const bobResolved = await w.resolve(bobHash, leader);
+  assert.deepEqual(bobResolved.kemPub, w.address(bob).kemPub);
+  await assert.rejects(w.resolve(new Uint8Array(32), leader), /no leader knows/);
+  const liar = { address: async () => w.encodeAddress(w.address(alice)).slice(3) };
+  await assert.rejects(w.resolve(bobHash, liar), /another address/);
+
+  // Alice pays Bob 300 and keeps 700
   t0 = Date.now();
-  const pay = await w.spend(alice, { inputs: mine.notes, outputs: [{ to: w.address(bob), value: 300n }], leader });
+  const pay = await w.spend(alice, { inputs: mine.notes, outputs: [{ to: bobResolved, value: 300n }], leader });
   time('payment proof', t0);
   r = await api('POST', '/spend', pay.submission);
   assert.ok(r.ok, `payment refused: ${r.error}`);
