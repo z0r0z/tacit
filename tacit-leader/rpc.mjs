@@ -1,5 +1,5 @@
 // A JSON-RPC client with retries, and the transaction sender the leader uses (EIP-1559, signed in-process).
-import { secp, keccak_256 } from '../dapp/vendor/tacit-deps.min.js';
+import { secp, keccak_256, hmac, sha256, concatBytes } from '../dapp/vendor/tacit-deps.min.js';
 import { makeEvmTx } from '../dapp/evm-tx.js';
 import { hexOf, bytesOf } from './abi.mjs';
 
@@ -21,6 +21,8 @@ export function makeRpc(url, { retries = 4 } = {}) {
 }
 
 export const num = (h) => Number(BigInt(h));
+// the secp library signs synchronously only once it is given an HMAC (RFC 6979 nonces)
+secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, concatBytes(...m));
 const evmTx = makeEvmTx({ secp, keccak256: keccak_256 });
 
 /// The address of a private key.

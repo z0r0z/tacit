@@ -186,6 +186,9 @@ async function main() {
   const [lander] = [BLOCKS];
   const child = spawn(NODE_BIN, ['serve', String(num(await rpc.call('eth_chainId'))), `${lander}@${NODE_ADDR}`], { stdio: ['ignore', 'inherit', 'inherit'], env: { ...env } });
   child.on('exit', (c) => { log({ nodeExited: c }); process.exit(1); });
+  const stopNode = () => child.kill();
+  process.on('exit', stopNode);
+  for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { stopNode(); process.exit(0); });
   for (let i = 0; i < 120; i++) { try { await fetch(`http://${NODE_ADDR}/state`); break; } catch { await new Promise((r) => setTimeout(r, 500)); } }
   for (;;) {
     try { await step(); } catch (e) { log({ error: String(e.message || e) }); }

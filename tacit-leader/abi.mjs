@@ -1,5 +1,5 @@
 // The slice of Solidity's ABI the tacit leader needs: uint256, bytes32, address, bytes, bytes32[] and tuples of them, encoded and decoded.
-// A type is 'uint256' | 'bytes32' | 'address' | 'bytes' | 'bytes32[]' | { tuple: [types] }.
+// A type is 'uint256' | 'bytes32' | 'address' | 'bytes' | 'bytes32[]' | 'uint256[]' | { tuple: [types] }.
 import { keccak_256, concatBytes } from '../dapp/vendor/tacit-deps.min.js';
 
 const te = new TextEncoder();
@@ -8,7 +8,7 @@ export const bytesOf = (h) => (h instanceof Uint8Array ? h : Uint8Array.from(Buf
 
 const word = (x) => { let v = BigInt(x); const o = new Uint8Array(32); for (let i = 31; i >= 0; i--) { o[i] = Number(v & 0xffn); v >>= 8n; } return o; };
 const pad32 = (n) => Math.ceil(n / 32) * 32;
-const dynamic = (t) => t === 'bytes' || t === 'bytes32[]' || (typeof t === 'object' && t.tuple.some(dynamic));
+const dynamic = (t) => t === 'bytes' || t === 'bytes32[]' || t === 'uint256[]' || (typeof t === 'object' && t.tuple.some(dynamic));
 
 export function selector(signature) { return keccak_256(te.encode(signature)).slice(0, 4); }
 
@@ -26,6 +26,7 @@ export function encode(types, values) {
     let body;
     if (t === 'bytes') { const b = bytesOf(v); body = concatBytes(word(b.length), b, new Uint8Array(pad32(b.length) - b.length)); }
     else if (t === 'bytes32[]') body = concatBytes(word(v.length), ...v.map((x) => bytesOf(x)));
+    else if (t === 'uint256[]') body = concatBytes(word(v.length), ...v.map((x) => word(BigInt(x))));
     else body = encode(t.tuple, v);
     heads.push(word(headSize + tailSize));
     tails.push(body);
@@ -43,6 +44,7 @@ export function decode(types, data) {
     const off = Number(BigInt(hexOf(w)));
     if (t === 'bytes') { const len = Number(BigInt(hexOf(data.subarray(off, off + 32)))); out.push(data.slice(off + 32, off + 32 + len)); }
     else if (t === 'bytes32[]') { const len = Number(BigInt(hexOf(data.subarray(off, off + 32)))); out.push(Array.from({ length: len }, (_, k) => hexOf(data.subarray(off + 32 + 32 * k, off + 64 + 32 * k)))); }
+    else if (t === 'uint256[]') { const len = Number(BigInt(hexOf(data.subarray(off, off + 32)))); out.push(Array.from({ length: len }, (_, k) => BigInt(hexOf(data.subarray(off + 32 + 32 * k, off + 64 + 32 * k))))); }
     else out.push(decode(t.tuple, data.subarray(off)));
   });
   return out;
