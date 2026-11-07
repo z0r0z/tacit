@@ -21,7 +21,7 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /prove/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/prove/app.js?cb=c727d4bd">
+<link rel="modulepreload" href="/prove/app.js?cb=90ca40ed">
 <link rel="modulepreload" href="/community-prove.js?cb=30714a9f">
 <link rel="modulepreload" href="/prove/view.js?cb=80de18a0">
 <link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
@@ -174,6 +174,11 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .blk.xc .cube { display: grid; grid-template-columns: 1fr; grid-auto-rows: 1fr; place-items: center; align-content: stretch; border-color: var(--orange); box-shadow: 4px 4px 0 color-mix(in srgb, var(--orange) 35%, transparent); }
 .blk.xc .glyph { font: 600 28px/1 var(--serif); color: var(--orange); }
 .blk.xc a:hover .cube { transform: translate(-2px, -2px); }
+/* a tacit chain block: the cross-chain tile's shape, in the chain's own colour */
+.blk .o .k-tc { color: var(--green); }
+.blk.xc.tc .cube { border-color: var(--green); box-shadow: 4px 4px 0 color-mix(in srgb, var(--green) 35%, transparent); }
+.blk.xc.tc .glyph { display: grid; place-items: center; color: var(--green); }
+.blk.xc.tc .glyph svg { width: 26px; height: 26px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 #share { margin-top: 14px; }
 .who { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; }
 .who i { width: 12px; height: 12px; flex: none; border-radius: 3px; background: var(--c, var(--hair-2)); }
@@ -796,6 +801,6 @@ node tools/community-runner.mjs mirror   # no key: keeps the board public on Nos
 
 <div id="toast-container" class="toasts" popover="manual"></div>
 
-<script type="module" src="/prove/app.js?cb=c727d4bd"></script>
+<script type="module" src="/prove/app.js?cb=90ca40ed"></script>
 </body>
 </html>

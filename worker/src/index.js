@@ -971,6 +971,41 @@ async function recordCrossBlock(env, { jobId, attestedTo, txHash, eth }) {
   await env.REGISTRY_KV.put('xc:recent', JSON.stringify([...list, rec].slice(-CROSS_KEEP)));
 }
 
+// The tacit chain's own blocks (GET /prover/blocks `rollup`): each block TacitBlocks took (its Landed log: the height, the Ethereum block and
+// transaction, the account that landed it), read from Ethereum at most every 15 s, two blocks behind the head (a public node a block behind
+// refuses logs up to another's head), and kept newest last in tc:recent ({ to, list }).
+const TACIT_BLOCKS = '0x00000000000a9147ffd8d41d152d730ca5f84e6c', TACIT_BLOCKS_FROM = 26366005;
+const T_TACIT_LANDED = '0x' + bytesToHex(keccak_256(new TextEncoder().encode('Landed(uint256,bytes32,bytes32,address)')));
+const ROLLUP_KEEP = 60;
+let _rollupAt = 0;
+async function rollupBlocks(env) {
+  const kv = env.REGISTRY_KV;
+  if (!kv) return [];
+  let st = null;
+  try { st = JSON.parse((await kv.get('tc:recent')) || 'null'); } catch { st = null; }
+  if (!st || !Array.isArray(st.list)) st = { to: TACIT_BLOCKS_FROM - 1, list: [] };
+  if (Date.now() - _rollupAt > 15_000) {
+    _rollupAt = Date.now();
+    for (const rpc of ETH_LOG_NODES.slice(0, 3)) {
+      try {
+        const head = Number(BigInt(await _ethRpcOrThrow(rpc, 'eth_blockNumber', []))) - 2;
+        if (head <= st.to) break;
+        const to = Math.min(head, st.to + 9000);
+        const logs = await _ethRpcOrThrow(rpc, 'eth_getLogs', [{ address: TACIT_BLOCKS, topics: [T_TACIT_LANDED], fromBlock: '0x' + (st.to + 1).toString(16), toBlock: '0x' + to.toString(16) }]);
+        for (const l of logs || []) {
+          const height = Number(BigInt(l.topics[1]));
+          if (st.list.some((x) => x.height === height)) continue;
+          st.list.push({ height, ethBlock: Number(BigInt(l.blockNumber)), tx: l.transactionHash, by: '0x' + String(l.topics[2] || '').slice(26) });
+        }
+        st = { to, list: st.list.sort((a, b) => a.height - b.height).slice(-ROLLUP_KEEP) };
+        await kv.put('tc:recent', JSON.stringify(st));
+        break;
+      } catch { /* the next node */ }
+    }
+  }
+  return st.list.slice(-20).reverse();
+}
+
 // Advance the cursor to a stashed candidate and settle everything that hangs off a landed batch: drop the stash,
 // promote the eth-state candidate it folded, and note when the last successful attest happened.
 async function applyReflectionAck(env, network, att, jobId, stash, attestedTo, txHash = '') {
@@ -3919,6 +3954,8 @@ async function handleChainBlocks(req, env, url, cors) {
     const out = await _chain.blocks({ limit: url.searchParams.get('limit'), before: url.searchParams.get('before') });
     // and the newest cross-chain blocks (recordCrossBlock), newest first
     try { out.cross = JSON.parse((await env.REGISTRY_KV?.get('xc:recent')) || '[]').slice(-20).reverse(); } catch { out.cross = []; }
+    // and the tacit chain's newest blocks (rollupBlocks), newest first
+    try { out.rollup = await rollupBlocks(env); } catch { out.rollup = []; }
     return jsonResponse(out, 200, { ...cors, 'Cache-Control': 'public, max-age=5' });
   } catch (e) {
     return jsonResponse({ error: String((e && e.message) || e).slice(0, 200) }, 503, { ...cors, 'Cache-Control': 'no-store' });

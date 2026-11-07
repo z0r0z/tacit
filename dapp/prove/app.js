@@ -13,7 +13,7 @@ const $ = (s) => document.querySelector(s);
 const get = (url, ms = 6000) => fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(ms) }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
-let health = null, mine = null, pool = null, points = null, tally = null, busy = false, copied = false, salts = null, cross = [], misses = 0;
+let health = null, mine = null, pool = null, points = null, tally = null, busy = false, copied = false, salts = null, cross = [], rollup = [], misses = 0;
 // The setup line's kind of computer, from the browser; the switch above the line changes it (setting up another computer).
 let os = isWindows(navigator.userAgent) ? 'win' : 'unix';
 const rateText = (r) => (r >= 1e6 ? `${(r / 1e6).toFixed(1)} M/s` : `${Math.round(r / 1e3)} k/s`);
@@ -91,8 +91,11 @@ async function readChain() {
   const xc = (Array.isArray(c.cross) ? c.cross : []).map(cleanCross).filter(Boolean);
   const xcNew = xc.map((x) => x.digest).join() !== cross.map((x) => x.digest).join();
   cross = xc;
+  const rb = (Array.isArray(c.rollup) ? c.rollup : []).map(cleanRollup).filter(Boolean);
+  const rbNew = rb.map((x) => x.height).join() !== rollup.map((x) => x.height).join();
+  rollup = rb;
   const add = fresh(c.blocks, shownTop);
-  if (!add.length && shownTop != null) { if (xcNew) paintChain(new Set()); else paintAges(); return; }
+  if (!add.length && shownTop != null) { if (xcNew || rbNew) paintChain(new Set()); else paintAges(); return; }
   const first = shownTop == null;
   blocks = [...add, ...blocks].slice(0, SHOW);
   shownTop = blocks[0]?.height ?? shownTop;
@@ -114,18 +117,29 @@ function crossTile(x) {
   return `<li class="blk xc" title="${esc(what)}">${x.tx ? `<a href="https://etherscan.io/tx/${esc(x.tx)}" target="_blank" rel="noopener noreferrer" aria-label="Cross-chain block: ${esc(what)}">${body}</a>` : body}</li>`;
 }
 
+// A tacit chain block (GET /prover/blocks `rollup`): a block of TAC payments the chain's leader landed on Ethereum, proved by a GPU on the
+// board. Placed among the settles by the Ethereum block it landed in, as a cross-chain block is.
+const cleanRollup = (x) => (x && count(x.height) && count(x.ethBlock) ? { height: count(x.height), ethBlock: count(x.ethBlock), tx: HEX32B.test(String(x.tx)) ? x.tx : null } : null);
+const LINK_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3.1-3.1a4 4 0 0 0-5.7-5.7l-1.2 1.2"/><path d="M14 10a4 4 0 0 0-5.7 0l-3.1 3.1a4 4 0 0 0 5.7 5.7l1.2-1.2"/></svg>';
+function rollupTile(x) {
+  const what = `Tacit chain block ${x.height.toLocaleString('en-US')}`;
+  const body = `<span class="cube"><span class="glyph">${LINK_ICON}</span></span><span class="h num">#${x.height.toLocaleString('en-US')}</span><span class="o"><span class="k k-tc">Tacit chain</span></span><span class="t" data-eb="${x.ethBlock}">${esc(blockAgo(x.ethBlock, ethHead) || '')}</span>`;
+  return `<li class="blk xc tc" title="${esc(what)}">${x.tx ? `<a href="https://etherscan.io/tx/${esc(x.tx)}" target="_blank" rel="noopener noreferrer" aria-label="${esc(what)}">${body}</a>` : body}</li>`;
+}
+
 function paintChain(landing) {
   const ol = $('#chain');
   ol.hidden = false;
   const oldest = blocks.length ? blocks[blocks.length - 1].ethBlock : Infinity;
-  const xs = cross.filter((x) => x.ethBlock >= oldest);
-  // Newest first by Ethereum block; a cross-chain block goes before the settles of its own Ethereum block and older.
-  const at = (eb) => xs.filter((x) => x.ethBlock >= eb && !x.done);
+  // the cross-chain and tacit chain blocks in the window, newest first by Ethereum block: each goes before the settles of its own Ethereum
+  // block and older
+  const extra = [...cross.filter((x) => x.ethBlock >= oldest).map((x) => ({ eb: x.ethBlock, tile: () => crossTile(x) })),
+    ...rollup.filter((x) => x.ethBlock >= oldest).map((x) => ({ eb: x.ethBlock, tile: () => rollupTile(x) }))].sort((a, b) => b.eb - a.eb);
+  const at = (eb) => extra.filter((e) => e.eb >= eb && !e.done);
   ol.innerHTML = `<li class="blk next" aria-label="The next block"><span class="cube ghost"><i></i><i></i><i></i></span><span class="h">next</span><span class="o" id="next-o">${esc(waitingText())}</span></li>` + blocks.map((b) => {
-    const before = at(b.ethBlock).map((x) => { x.done = true; return crossTile(x); }).join('');
+    const before = at(b.ethBlock).map((e) => { e.done = true; return e.tile(); }).join('');
     return before + settleTile(b, landing);
   }).join('');
-  for (const x of xs) delete x.done;
   paintDetail();
 }
 
