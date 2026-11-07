@@ -2996,11 +2996,15 @@ await step('acct', async () => {
   await r.page.waitForSelector('#ac-form [data-copy]', { timeout: 60000 });
   const shownAddr = await r.page.$eval('#ac-form [data-copy]', (b) => b.dataset.copy);
   ok(shownAddr === want && viaUx === want, `acct: the Tacit account is the key's own, as tacit.finance derives it (${want.slice(0, 10)}…, pool-ux ${viaUx.slice(0, 10)}…)`);
-  ok(await r.page.$eval('[data-pay="tacit"]', (b) => b.classList.contains('main')), 'acct: with no wallet connected, the Tacit account pays');
-  // The public farm, opened while the account holds no ETH: it says so before anything is typed, with the way to add some, and Max says why it fills nothing.
+  // A new key's own address is unused: with a wallet in the browser, the wallet pays (connected at the press), not an address nobody funded.
+  await until(r.page, () => document.querySelector('[data-pay="wallet"]')?.classList.contains('main'), null, 60000);
+  ok(/Connects when you press/.test(await text(r.page, '[data-pay="wallet"]')), 'acct: with no wallet connected and the key\'s address unused, the wallet pays, connected at the press');
+  await r.page.click('[data-pay="tacit"]');
+  await until(r.page, () => document.querySelector('[data-pay="tacit"]')?.classList.contains('main'));
+  // The public farm, opened while the key's address is chosen and holds no ETH: it says so before anything is typed, with the wallet a press away, and Max says why it fills nothing.
   await go(r.page, '#farm');
-  await r.page.waitForSelector('#pf-fund [data-fund]', { timeout: 60000 }).catch(() => {});
-  ok(!!(await r.page.$('#pf-fund [data-fund]')) && /no ETH/.test(await text(r.page, '#pf-fund')), 'acct: the farm of an account with no ETH says so, with a way to add some');
+  await r.page.waitForSelector('#pf-fund [data-paywallet]', { timeout: 60000 }).catch(() => {});
+  ok(!!(await r.page.$('#pf-fund [data-paywallet]')) && /no ETH/.test(await text(r.page, '#pf-fund')), 'acct: the farm of a chosen address with no ETH says so, with the wallet a press away');
   await r.page.click('#pf-max');
   ok(/Max keeps/.test(await text(r.page, '#pf-status')) && !(await r.page.inputValue('#pf-amt')), `acct: Max with no ETH to spare says why it fills nothing (${await text(r.page, '#pf-status')})`);
   await rpc('anvil_setBalance', [want, '0x' + (10n ** 17n).toString(16)]);             // funded from outside, as an exchange would
