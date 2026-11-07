@@ -145,7 +145,25 @@ async function prove(built) {
 
 let firstSeen = null;
 
+// An epoch's turns are drawn from the beacon randomness of the first block of its first SEED_BLOCKS in which anyone keeps it
+// (TacitSeats.turn): kept by no one in time, the epoch has no leader. A leader keeps it as the epoch begins.
+let seedKeptFor = -1;
+async function keepSeed() {
+  const [turns] = await view('TURNS()', ['address']);
+  const [[slot], [epochSlots], [seedBlocks], [lead], [seats]] = await Promise.all([
+    view('SLOT_BLOCKS()', ['uint256'], [], turns), view('EPOCH_SLOTS()', ['uint256'], [], turns), view('SEED_BLOCKS()', ['uint256'], [], turns),
+    view('leader()', ['address'], [], turns), view('seats()', ['uint256'], [], turns),
+  ]);
+  const b = BigInt(num(await rpc.call('eth_blockNumber')));
+  const len = BigInt(slot) * BigInt(epochSlots), e = b / len;
+  if (BigInt(seats) === 0n || BigInt(lead) !== 0n || b - e * len >= BigInt(seedBlocks) || Number(e) === seedKeptFor) return;
+  seedKeptFor = Number(e);
+  const receipt = await send(rpc, KEY, turns, selector('turn()'), { chainId: num(await rpc.call('eth_chainId')) });
+  log({ seedKept: Number(e), tx: receipt.transactionHash });
+}
+
 async function step() {
+  await keepSeed().catch((e) => log({ seedNotKept: String(e.message || e) }));
   await sync();
   const [done, queued, lastLanded, window_, forceDelay] = await Promise.all([
     view('queueDone()', ['uint256']), view('queued()', ['uint256']), view('lastLanded()', ['uint256']), view('WINDOW()', ['uint256']), view('FORCE_DELAY()', ['uint256']),

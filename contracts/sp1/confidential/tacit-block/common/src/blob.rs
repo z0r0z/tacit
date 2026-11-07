@@ -130,14 +130,14 @@ fn to_be(x: &U) -> [u8; 32] {
     out
 }
 
-/// A 32-byte big-endian value reduced mod r (it is below 2^256 < 2r, so one subtraction does).
+/// A 32-byte big-endian value reduced mod r. 2^256 is above 2r (r is about 2^254.9) but below 3r, so up to two subtractions:
+/// the point-evaluation precompile refuses any z of r or more.
 fn reduce(be: &[u8; 32]) -> U {
-    let x = from_be(be);
-    if lt(&x, &R) {
-        x
-    } else {
-        sub(&x, &R)
+    let mut x = from_be(be);
+    while !lt(&x, &R) {
+        x = sub(&x, &R);
     }
+    x
 }
 
 /// The stream's data-only lists as one stream: leaves and memos (count, then each leaf ‖ memo), nullifiers, claims.
@@ -309,4 +309,18 @@ pub fn claims(stream: &[u8], commitments: &[[u8; 48]]) -> Option<(Vec<[u8; 96]>,
         all.push(item);
     }
     Some((all, h.finalize().into()))
+}
+
+#[cfg(test)]
+mod reduce_tests {
+    use super::*;
+
+    /// Every 32-byte value comes out below r, including those of 2r or more (about 9.4% of SHA-256 outputs), which one
+    /// subtraction left at r or above.
+    #[test]
+    fn reduces_below_r() {
+        for be in [[0xffu8; 32], [0xe8u8; 32], [0x74u8; 32], [0u8; 32]] {
+            assert!(lt(&reduce(&be), &R));
+        }
+    }
 }

@@ -208,7 +208,7 @@ impl Node {
             let members: Vec<Option<NfMember>> = match blk::lock::forced_settle(payload, MEMO_LEN) {
                 Some((s, _)) => vec![self.nf.member(&fr_be(&blk::lock::lock_nullifier(&s.leaf(), s.index)))],
                 None => blk::forced_parts(payload)
-                    .map(|(p, _, _, _)| blk::Spend::from_publics(&p).live_nullifiers())
+                    .map(|(p, _, _, _)| blk::Spend::from_publics(&p).spent_keys())
                     .unwrap_or_default()
                     .iter()
                     .map(|n| self.nf.member(&fr_be(n)))

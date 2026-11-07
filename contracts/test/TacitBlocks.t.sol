@@ -71,7 +71,15 @@ contract ConfidentialStandIn is IConfidentialPool {
         return (id == tacId, tac, unitScale, bytes32(0), minted, 18);
     }
 
+    /// The pool takes a deposit commitment once: refusing every wrap stands in for one wrapped there first.
+    bool public refuse;
+
+    function setRefuse(bool r) external {
+        refuse = r;
+    }
+
     function wrap(bytes32 assetId, uint256 amount, bytes32 commit) external payable {
+        require(!refuse, "DepositExists");
         require(assetId == tacId && msg.value == 0, "not TAC");
         Token(tac).burn(msg.sender, amount);
         wraps += 1;
@@ -285,7 +293,7 @@ abstract contract TacitBlocksFixture is Test {
         epochBlocks = turns.SLOT_BLOCKS() * turns.EPOCH_SLOTS();
         e = block.number / epochBlocks + 1;
         vm.roll(e * epochBlocks);
-        vm.setBlockhash(e * epochBlocks - 1, keccak256("an epoch's seed"));
+        vm.prevrandao(keccak256("an epoch's seed"));
     }
 
     function lockDeposits() internal {
@@ -734,7 +742,8 @@ contract TacitBlocksMoreTest is TacitBlocksFixture {
         address a = address(0xA);
         address b = address(0xB);
         (uint256 e, uint256 epochBlocks) = twoSeats(a, b);
-        address lead = turns.leader();
+        assertEq(turns.leader(), address(0), "no leader until the seed is kept");
+        address lead = turns.turn();
         assertTrue(lead == a || lead == b);
         address other = lead == a ? b : a;
         depositFixture();
@@ -749,7 +758,7 @@ contract TacitBlocksMoreTest is TacitBlocksFixture {
         blocks.land(p0, "", l0);
         vm.prank(lead);
         blocks.land(p0, "", l0);
-        assertEq(turns.seedOf(e), keccak256("an epoch's seed"), "landing keeps the epoch's seed");
+        assertEq(turns.seedOf(e), keccak256(abi.encode(keccak256("an epoch's seed"), e)), "landing keeps the epoch's seed");
         // a later turn of the other seat
         uint256 slot = turns.SLOT_BLOCKS();
         uint256 j = 1;
@@ -778,9 +787,10 @@ contract TacitBlocksMoreTest is TacitBlocksFixture {
 
     function test_aTurnNoOneLeadsIsAnyones() public {
         (uint256 e, uint256 epochBlocks) = twoSeats(address(0xA), address(0xB));
-        // the epoch's seed was never kept and its block hash is out of reach: no one leads
-        vm.roll(e * epochBlocks + 300);
-        assertEq(turns.leader(), address(0));
+        // the epoch's seed was not kept in its first SEED_BLOCKS: no one leads, and keeping it later does nothing
+        vm.roll(e * epochBlocks + turns.SEED_BLOCKS());
+        assertEq(turns.turn(), address(0));
+        assertEq(turns.seedOf(e), bytes32(0));
         depositFixture();
         vm.prank(SEQ);
         blocks.land(pv(0), "", lists(0));
@@ -834,7 +844,8 @@ contract TacitBlocksMoreTest is TacitBlocksFixture {
         assertEq(box.codehash, blocks.INBOX_CODEHASH());
         (address from,,) = blocks.pending(keccak256(abi.encode(blocks.TAC_ASSET(), v, cx, cy, body)));
         assertEq(from, box);
-        vm.expectRevert(TacitBlocks.DepositPending.selector);
+        // its inbox is created once: a second sweep cannot create it again
+        vm.expectRevert();
         blocks.sweep(v, cx, cy, body, back);
         // a later payment to a created inbox cannot be swept again, and nothing can be paid back to it
         vm.warp(block.timestamp + blocks.RECLAIM_AFTER());

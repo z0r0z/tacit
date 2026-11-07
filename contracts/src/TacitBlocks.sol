@@ -197,6 +197,10 @@ contract TacitBlocks {
     mapping(address => uint256) public owed;
     /// @notice Hops landed and not yet sent into the confidential pool, by keccak256(value, commit): how many.
     mapping(bytes32 => uint256) public hops;
+    /// @notice What the chain's notes are worth, in units: the deposits blocks took in less the exits and hops they made. A block
+    ///         that would take out more than this cannot land, whatever its proof says (the block program balances every spend,
+    ///         so this only ever stops a block if the program or the verifier were wrong).
+    uint256 public inChain;
 
     /// @notice keccak256 of TacitInbox's creation code, for `inbox`; and the code a created inbox is left with.
     bytes32 public immutable INBOX_INIT_HASH = keccak256(type(TacitInbox).creationCode);
@@ -213,6 +217,8 @@ contract TacitBlocks {
     /// @notice A swept deposit no block took, sent back into the confidential pool for `back`.
     event Returned(uint256 value, bytes32 back);
     event Hopped(uint256 value, bytes32 commit);
+    /// @notice The confidential pool refused a hop's deposit (one for `commit` already exists there): the hop stays, to be sent again.
+    event HopRefused(uint256 value, bytes32 commit);
     /// @notice The `index`th entry of the queue: what a block's builder hands the block program, and the memos it
     ///         publishes for the outputs of a spend the block takes.
     event Forced(uint256 indexed index, address indexed by, bytes payload);
@@ -249,6 +255,8 @@ contract TacitBlocks {
     error BadBlob(uint256 blob);
     error NotInbox();
     error SweptDeposit();
+    error Insolvent();
+    error HopNotTaken();
 
     /// @notice The lists a block publishes, in the block program's committed order (`BlockData`): the new notes'
     ///         leaves (32 bytes each) and their memos (MEMO_LEN bytes each, in the same order), nullifiers, anchors,
@@ -365,16 +373,25 @@ contract TacitBlocks {
 
     /// @notice Takes a paid inbox's TAC in as the deposit for its shield spend (what `deposit` does for TAC approved here).
     ///         Anyone may call it, a leader before it lands the spend. More than `value` units in the inbox stays with the chain.
-    ///         A swept deposit cannot be queued with `force` (its depositor has no address here): if no block takes it in
-    ///         within RECLAIM_AFTER, anyone sends it back into the confidential pool for `back`.
+    ///         Anyone may queue the spend that takes a swept deposit in (`force`): only that spend can, its body being the
+    ///         deposit's. If no block takes it in within RECLAIM_AFTER, anyone sends it back into the confidential pool for
+    ///         `back`. If the spend's key is already held by a deposit made with `deposit`, the inbox's TAC goes back into the
+    ///         confidential pool at once. An inbox is created once: TAC paid to it after its sweep stays there.
     function sweep(uint256 value, bytes32 cx, bytes32 cy, bytes32 body, bytes32 back) external nonReentrant {
         if (value == 0 || value > type(uint64).max) revert BadValue();
         if (!_onCurve(uint256(cx), uint256(cy)) || uint256(body) >= R) revert BadCommitment();
         bytes32 key = keccak256(abi.encode(TAC_ASSET, value, cx, cy, body));
-        if (pending[key].from != address(0)) revert DepositPending();
         uint256 before = IERC20Min(TAC).balanceOf(address(this));
         address box = address(new TacitInbox{salt: keccak256(abi.encode(TAC_ASSET, value, cx, cy, body, back))}());
         if (IERC20Min(TAC).balanceOf(address(this)) - before < value * UNIT) revert BadValue();
+        if (pending[key].from != address(0)) {
+            // another deposit holds the spend's key (made with `deposit` ahead of this sweep): the inbox's TAC goes straight back
+            // into the confidential pool for `back`, so no one can keep it from both the chain and the way back
+            CONFIDENTIAL.wrap(CONFIDENTIAL_TAC, value * UNIT, back);
+            emit Swept(box, back);
+            emit Returned(value, back);
+            return;
+        }
         pending[key] = Pending(box, uint40(block.timestamp), 0);
         emit Deposited(value, cx, cy, body, box);
         emit Swept(box, back);
@@ -388,6 +405,7 @@ contract TacitBlocks {
         if (p.from == address(0)) revert NotPending();
         if (p.from != inbox(value, cx, cy, body, back)) revert NotInbox();
         if (block.timestamp < uint256(p.at) + RECLAIM_AFTER) revert TooSoon();
+        if (p.forced > queueDone) revert DepositQueued();
         delete pending[key];
         CONFIDENTIAL.wrap(CONFIDENTIAL_TAC, value * UNIT, back);
         emit Returned(value, back);
@@ -421,7 +439,10 @@ contract TacitBlocks {
     ///         two entries, of which a block takes at most one. A claim or refund of a lock may be posted too (SETTLE_MARK ‖ the
     ///         settle ‖ the memo of the note it makes), shown against a root a block ended at; a block takes it if its time
     ///         allows (a claim while the block lands before the deadline, a refund from the deadline on) and passes it over
-    ///         otherwise, so a claim is posted with time to spare: FORCE_DELAY and TIME_WINDOW before the deadline.
+    ///         otherwise. A claim is posted with time to spare: the chain must reach it (FORCE_DELAY, then up to WINDOW before
+    ///         anyone may land a block that does, and that block's proving) and land it TIME_WINDOW before the deadline, so a
+    ///         wallet posts it at least FORCE_DELAY + WINDOW + TIME_WINDOW + a day before. A refund is posted from TIME_WINDOW
+    ///         after the deadline (a block may name a time up to TIME_WINDOW before it lands).
     function force(bytes calldata payload) external nonReentrant {
         if (payload.length >= 32 && bytes32(payload[0:32]) == SETTLE_MARK) {
             if (payload.length != SETTLE_CLAIM_LEN && payload.length != SETTLE_REFUND_LEN) revert BadPayload();
@@ -442,7 +463,8 @@ contract TacitBlocks {
             if (payload[FORCED_REST_AT + 52] != 0x01) revert BadPayload();
             uint256 value = uint64(bytes8(payload[FORCED_REST_AT + 53:FORCED_REST_AT + 61]));
             Pending storage p = pending[keccak256(abi.encode(asset, value, bytes32(payload[320:352]), bytes32(payload[352:384]), bytes32(payload[32:64])))];
-            if (p.from != msg.sender) revert NotDepositor();
+            // its depositor's, or a swept one's (whose depositor has no address here: anyone may queue the one spend that takes it)
+            if (p.from != msg.sender && (p.from == address(0) || p.from.codehash != INBOX_CODEHASH)) revert NotDepositor();
             if (p.forced > queueDone) revert DepositQueued();
             p.forced = uint56(i + 1);
         }
@@ -457,9 +479,16 @@ contract TacitBlocks {
         emit Forced(i, msg.sender, payload);
     }
 
+    /// @notice Whether a queued entry has waited FORCE_DELAY + WINDOW without the chain reaching it: anyone may land until it does.
+    function backlogged() public view returns (bool) {
+        return queueDone < queued && block.timestamp >= queuedAt[queueDone] + FORCE_DELAY + WINDOW;
+    }
+
     /// @notice Lands the next block: its proof, its fifteen public words and the lists it publishes.
     function land(bytes calldata publicValues, bytes calldata proof, Lists calldata lists) external nonReentrant {
-        if (block.timestamp < uint256(lastLanded) + WINDOW) {
+        // the leader of the turn lands until WINDOW passes with no block, or until a queued entry has waited FORCE_DELAY + WINDOW
+        // (so leaders that land only what they must cannot hold the queue back: anyone may then land a block that reaches it)
+        if (block.timestamp < uint256(lastLanded) + WINDOW && !backlogged()) {
             address lead = TURNS.turn();
             if (lead != address(0) && msg.sender != lead) revert NotYourTurn();
         }
@@ -496,8 +525,10 @@ contract TacitBlocks {
         if (deposits.length % DEPOSIT_LEN != 0) revert BadList(4);
         uint256 nDeposits = deposits.length / DEPOSIT_LEN;
         if (_listHash(4, nDeposits, deposits) != w[7]) revert BadList(4);
+        uint256 worth = inChain;
         for (uint256 i; i < nDeposits; ++i) {
             bytes32 key = keccak256(deposits[DEPOSIT_LEN * i:DEPOSIT_LEN * (i + 1)]);
+            worth += uint256(bytes32(deposits[DEPOSIT_LEN * i + 32:DEPOSIT_LEN * i + 64]));
             Pending storage p = pending[key];
             if (p.from == address(0)) revert NoSuchDeposit(i);
             // one its depositor queued is taken in by the block that reaches the entry, or after it by any spend
@@ -514,7 +545,10 @@ contract TacitBlocks {
             if (asset != TAC_ASSET) revert NotTac(asset);
             uint256 to = uint256(bytes32(exits[EXIT_LEN * i + 64:EXIT_LEN * (i + 1)]));
             if (to >> 160 != 0 || to == 0) revert BadAddress(i);
-            owed[address(uint160(to))] += uint256(bytes32(exits[EXIT_LEN * i + 32:EXIT_LEN * i + 64])) * UNIT;
+            uint256 out = uint256(bytes32(exits[EXIT_LEN * i + 32:EXIT_LEN * i + 64]));
+            if (out > worth) revert Insolvent();
+            worth -= out;
+            owed[address(uint160(to))] += out * UNIT;
         }
 
         bytes calldata hopList = lists.hops;
@@ -524,8 +558,12 @@ contract TacitBlocks {
         for (uint256 i; i < nHops; ++i) {
             bytes32 asset = bytes32(hopList[HOP_LEN * i:HOP_LEN * i + 32]);
             if (asset != TAC_ASSET) revert NotTac(asset);
+            uint256 out = uint256(bytes32(hopList[HOP_LEN * i + 32:HOP_LEN * i + 64]));
+            if (out > worth) revert Insolvent();
+            worth -= out;
             hops[keccak256(hopList[HOP_LEN * i + 32:HOP_LEN * (i + 1)])] += 1;
         }
+        inChain = worth;
 
         state = w[1];
         noteRoot = w[3];
@@ -538,7 +576,9 @@ contract TacitBlocks {
     }
 
     /// @notice Sends `to` the TAC exits have credited it. Anyone may call it.
+    ///         Not to this contract, the token or a deposit's inbox, which could never pass it on: what an exit credits them stays.
     function withdraw(address to) external nonReentrant {
+        if (to == address(this) || to == TAC || to.codehash == INBOX_CODEHASH) revert BadAddress(0);
         uint256 amount = owed[to];
         owed[to] = 0;
         _call(abi.encodeWithSelector(0xa9059cbb, to, amount));
@@ -549,10 +589,10 @@ contract TacitBlocks {
     ///         TAC from this contract and records the deposit; the note it names is made there when it is wrapped in). Anyone
     ///         may call it.
     function sendHop(uint256 value, bytes32 commit) external nonReentrant {
-        _sendHop(value, commit);
+        if (!_sendHop(value, commit)) revert HopNotTaken();
     }
 
-    /// @notice Sends several landed hops on in one transaction.
+    /// @notice Sends several landed hops on in one transaction; one the confidential pool refuses stays, and the rest go on.
     function sendHops(uint256[] calldata values, bytes32[] calldata commits) external nonReentrant {
         if (values.length != commits.length) revert NoSuchHop();
         for (uint256 i; i < values.length; ++i) {
@@ -560,12 +600,21 @@ contract TacitBlocks {
         }
     }
 
-    function _sendHop(uint256 value, bytes32 commit) internal {
+    /// @dev False, with the hop kept, when the pool refuses the deposit: it takes a commitment once, so one wrapped there by anyone
+    ///      first (or a second hop to the same commitment) is refused. The note that deposit names is made all the same, from the
+    ///      other one, so the hop's owner loses nothing; what the refused hop held stays with this contract.
+    function _sendHop(uint256 value, bytes32 commit) internal returns (bool) {
         bytes32 key = keccak256(abi.encode(value, commit));
         if (hops[key] == 0) revert NoSuchHop();
         hops[key] -= 1;
-        CONFIDENTIAL.wrap(CONFIDENTIAL_TAC, value * UNIT, commit);
-        emit Hopped(value, commit);
+        try CONFIDENTIAL.wrap(CONFIDENTIAL_TAC, value * UNIT, commit) {
+            emit Hopped(value, commit);
+            return true;
+        } catch {
+            hops[key] += 1;
+            emit HopRefused(value, commit);
+            return false;
+        }
     }
 
     /// @dev A block whose lists are in blobs: each blob's versioned hash is the transaction's, and its commitment opens to the value the

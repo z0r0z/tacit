@@ -32,7 +32,7 @@ pub const SETTLE_REFUND: u8 = 2;
 /// What a claim or refund posted to the landing contract's queue starts with: no spend's first public (a field element) is it.
 pub const SETTLE_MARK: [u8; 32] = [0xff; 32];
 
-fn field_of(tag: &[u8], parts: &[&[u8]]) -> Fr {
+pub(crate) fn field_of(tag: &[u8], parts: &[&[u8]]) -> Fr {
     let mut wide = [0u8; 64];
     for (i, half) in wide.chunks_mut(32).enumerate() {
         let mut h = Sha256::new();

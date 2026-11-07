@@ -410,7 +410,7 @@ impl Chain {
             .unwrap_or(false)
         });
         let members: Vec<Option<NfMember>> = parts
-            .map(|(p, _, _, _)| blk::Spend::from_publics(&p).live_nullifiers())
+            .map(|(p, _, _, _)| blk::Spend::from_publics(&p).spent_keys())
             .unwrap_or_default()
             .iter()
             .map(|nf| self.nf.by_value.get(&fr_be(nf)).map(|&i| NfMember { next: self.nf.records[i as usize].1, index: i, path: self.nf.path(i) }))

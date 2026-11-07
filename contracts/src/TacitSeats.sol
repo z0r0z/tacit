@@ -7,17 +7,20 @@ interface IERC20Seats {
 
 /// @notice Whose turn it is to land the next Tacit block. A seat is SEAT of TAC locked here, and a holder may take as many seats as it
 ///         locks TAC for. Time runs in slots of SLOT_BLOCKS Ethereum blocks and epochs of EPOCH_SLOTS slots. Each slot one seat leads,
-///         drawn from the epoch's seats by the slot's number and the epoch's seed: the hash of the block just before the epoch began.
-///         A seat taken or left counts from the next epoch, so an epoch's seats are fixed before its seed exists, and no holder can
-///         choose its turns by taking or leaving seats: over time each seat leads its share of them. With no seats, BOOTSTRAP leads.
+///         drawn from the epoch's seats by the slot's number and the epoch's seed: the beacon chain's randomness (`block.prevrandao`)
+///         in the first block of the epoch's first SEED_BLOCKS in which anyone keeps it (`turn`). A seat taken or left counts from the
+///         next epoch, so an epoch's seats are fixed before its seed exists, and no holder can choose its turns by taking or leaving
+///         seats: over time each seat leads its share of them. A block hash would not do: whoever builds the block can try as many
+///         as it likes. The beacon randomness of a block is fixed before the block is built, so the most anyone can choose is which of
+///         the first SEED_BLOCKS keeps it (a proposer can also withhold its block, about one bit more). With no seats, BOOTSTRAP leads.
 ///
 ///         Nothing here has an owner: no one can take a seat away, change the terms or move a stake. A seat is left only by its holder,
 ///         whose TAC comes back EXIT_DELAY later.
 ///
 ///         A turn only says who proves the next block. A leader that lands nothing holds the chain back until the landing contract lets
 ///         anyone land (its WINDOW after the last landing), and one that leaves a spend out cannot keep it out (the landing contract's
-///         queue). An epoch's seed is kept the first time anyone asks for a turn in it (`turn`, which landing does); a block hash is in
-///         reach for 256 blocks, so an epoch whose seed nobody kept by then has no leader, and anyone may land in it.
+///         queue). An epoch whose seed nobody kept in its first SEED_BLOCKS has no leader, and anyone may land in it; a leader keeps
+///         it by calling `turn` as the epoch begins (landing calls it too, but a landing that reverts keeps nothing).
 ///
 ///         A leader that starts a block late in its slot may not land it in time; a leader proves only what it can land before its
 ///         slot ends.
@@ -33,6 +36,8 @@ contract TacitSeats {
     uint256 public constant EXIT_DELAY = 7 days;
     uint256 public constant MIN_SLOT_BLOCKS = 5;
     uint256 public constant MAX_SLOT_BLOCKS = 300;
+    /// @notice How many blocks from an epoch's start its seed can be kept in.
+    uint256 public constant SEED_BLOCKS = 4;
 
     /// A seat's holder in the draw, and the holder that takes its place from epoch `nextFrom` on (none while it is 0). Every change counts
     /// from the epoch after the one it is made in, so two holders are all a seat ever needs.
@@ -135,19 +140,19 @@ contract TacitSeats {
     function turn() external returns (address) {
         uint256 e = epoch();
         // with no seat in the draw BOOTSTRAP leads and no seed is needed
-        if (seedOf[e] == 0 && _countAt(e) != 0) {
-            bytes32 s = seedAt(e);
-            if (s != 0) seedOf[e] = s;
+        if (seedOf[e] == 0 && _countAt(e) != 0 && block.number - e * SLOT_BLOCKS * EPOCH_SLOTS < SEED_BLOCKS) {
+            bytes32 s = keccak256(abi.encode(block.prevrandao, e));
+            seedOf[e] = s == 0 ? bytes32(uint256(1)) : s;
         }
         return leader();
     }
 
-    /// @notice Who leads now: zero when this epoch's seed is out of reach and was never kept.
+    /// @notice Who leads now: zero while this epoch's seed is not kept (and for good once its first SEED_BLOCKS have passed).
     function leader() public view returns (address) {
         return leaderAt(block.number);
     }
 
-    /// @notice Who leads at block `b` of this epoch or the next, as the seats stand: zero while that epoch's seed is unknown.
+    /// @notice Who leads at block `b` of an epoch, as the seats stand: zero while that epoch's seed is not kept.
     function leaderAt(uint256 b) public view returns (address) {
         uint256 e = b / (SLOT_BLOCKS * EPOCH_SLOTS);
         uint256 n = _countAt(e);
@@ -157,12 +162,9 @@ contract TacitSeats {
         return _holderAt(uint256(keccak256(abi.encode(s, b / SLOT_BLOCKS))) % n, e);
     }
 
-    /// @notice Epoch `e`'s seed: the one kept, else the hash of the block before the epoch began while it is in reach, else zero.
-    function seedAt(uint256 e) public view returns (bytes32 s) {
-        s = seedOf[e];
-        if (s != 0 || e == 0) return s;
-        uint256 b = e * SLOT_BLOCKS * EPOCH_SLOTS - 1;
-        if (block.number > b && block.number - b <= 256) s = blockhash(b);
+    /// @notice Epoch `e`'s seed: the one kept, else zero.
+    function seedAt(uint256 e) public view returns (bytes32) {
+        return seedOf[e];
     }
 
     function epoch() public view returns (uint256) {

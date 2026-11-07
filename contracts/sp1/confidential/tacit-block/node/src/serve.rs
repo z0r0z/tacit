@@ -330,7 +330,7 @@ impl Leader {
         }
         let node = &self.node;
         self.pending.retain(|e| {
-            let spent = tacit_block_agg_publics(&e.spend.publics).map(|p| blk::Spend::from_publics(&p).live_nullifiers().iter().any(|n| node.spent(&blk::fr_be(n)))).unwrap_or(true);
+            let spent = tacit_block_agg_publics(&e.spend.publics).map(|p| blk::Spend::from_publics(&p).spent_keys().iter().any(|n| node.spent(&blk::fr_be(n)))).unwrap_or(true);
             !included.contains(&e.id) && !spent
         });
         self.settles.retain(|e| !included.contains(&e.id) && !node.spent(&blk::fr_be(&blk::lock::lock_nullifier(&e.settle.leaf(), e.settle.index))));

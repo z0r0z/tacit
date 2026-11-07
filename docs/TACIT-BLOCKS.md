@@ -41,7 +41,9 @@ any other. The block program checks every body, every opening of a deposit or ex
   anyone **refunds** it, making the `refundTo` note. A lock is spent once, by a nullifier in the same tree. This is the chain's half of the
   fast bridge's adaptor swap: the recipient pre-signs its claim adapted to the swap's point T, and the signature the block publishes gives
   the other leg's party the secret `t = s - s~`. A block names a time and lands only within `TIME_WINDOW` (1 h) of it; a claim is taken while
-  `time + TIME_WINDOW <= deadline`, a refund from `time >= deadline`.
+  `time + TIME_WINDOW <= deadline`, a refund from `time >= deadline`. Forced, a claim is posted at least `FORCE_DELAY + WINDOW + TIME_WINDOW`
+  and a day before its deadline (the chain must reach it, then prove and land a block early enough), and a refund from `TIME_WINDOW` after
+  it; the swap's other leg leaves the same headroom on its own timelock.
 
 The chain has no pools or liquidity of its own: swaps and liquidity happen in the confidential pool, where this chain's value arrives by a hop.
 
@@ -68,8 +70,11 @@ Anyone can rebuild the chain's state from the lists alone (`tacit-block-node rep
 
 ## Landing (`TacitBlocks.land`)
 
-Only the leader of the current turn (`TacitSeats`: TAC stakers drawn by an unmanipulable seed) may land until `WINDOW` seconds pass with no
-block; then anyone may. The contract checks the proof, that the block extends the held state, the time, the queue, and:
+Only the leader of the current turn may land until `WINDOW` seconds pass with no block, or until a queued entry has waited `FORCE_DELAY +
+WINDOW` (leaders that land only the entries they must cannot hold the queue back); then anyone may. Turns (`TacitSeats`) are TAC stakers
+drawn by the epoch's seed: the beacon chain's randomness (`prevrandao`) in the first block of the epoch's first `SEED_BLOCKS` (4) in which
+anyone keeps it, which a leader does as the epoch begins. A block hash would not do (its builder can try as many as it likes); this way the
+most anyone chooses is which of four blocks keeps it, and an epoch whose seed no one kept in time has no leader, so anyone may land in it. The contract checks the proof, that the block extends the held state, the time, the queue, and:
 
 * **Calldata mode** (word 15 = 0): the new notes and memos, nullifiers and claims are in the call, each list checked against its hash.
 * **Blob mode** (word 15 != 0): they are in the transaction's blobs. The program builds the data stream, and for each blob (KZG commitment
@@ -78,8 +83,17 @@ block; then anyone may. The contract checks the proof, that the block extends th
   two polynomials that agree at a point drawn after both were fixed are the same, so the blobs hold exactly the stream. The leader picks
   the mode per block, whichever costs less. Blob data is pruned by Ethereum after about 18 days, so wallets and indexers must keep or fetch
   an archive; calldata is kept for good.
-* Deposits, exits, hops and anchors are always in calldata, since the contract acts on them. A deposit taken in must have been made on L1
-  (`deposit`), bound to the shield spend that takes it in; an exit is credited to its address (`withdraw` sends it on, by anyone).
+* Deposits, exits, hops and anchors are always in calldata, since the contract acts on them. A deposit taken in must have been made on L1,
+  bound to the shield spend that takes it in, and a spend takes in one deposit ever (its deposit's nullifier, `Poseidon(tag, C, body)`,
+  enters the nullifier tree); an exit is credited to its address (`withdraw` sends it on, by anyone). The contract keeps what the chain's
+  notes are worth (`inChain`: deposits taken in, less exits and hops) and refuses a block that would take out more, whatever its proof.
+* **Deposits.** `deposit` takes approved TAC. An **inbox** takes TAC with no approval and no call: `inbox(value, C, body, back)` is a
+  CREATE2 address the confidential pool's unwrap (which only mints to an address) or anyone pays, and `sweep` (the leader's, or anyone's)
+  takes it in. Anyone may queue the one spend that takes a swept deposit in; if none does within 7 days, `giveBack` wraps it into the
+  confidential pool for `back`, and a sweep that finds the spend's key already held by another deposit wraps it there at once. An inbox is
+  created once: what is paid to it after its sweep stays there.
+* **Hops** are sent by anyone (`sendHop(s)`); one the confidential pool refuses (it takes a commitment once) stays, to be sent again, and
+  wallets use a fresh commitment for each.
 
 **Forced inclusion.** Anyone posts a spend (or a claim or refund) to the queue with `force`. Every block takes the queue's next entries in
 order, the program taking each sound one and passing over the rest, and a block lands only if it reaches every entry posted `FORCE_DELAY`

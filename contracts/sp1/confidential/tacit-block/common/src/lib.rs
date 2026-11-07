@@ -520,6 +520,23 @@ impl Spend {
     pub fn live_nullifiers(&self) -> Vec<Fr> {
         self.nf.iter().copied().filter(|x| !bool::from(x.is_zero())).collect()
     }
+
+    /// What the spend uses up for good, each entering the nullifier tree: its notes' nullifiers and, for a spend that takes a
+    /// deposit in, the deposit's (`deposit_nullifier`), so the same spend can take no second deposit made for it (and a block
+    /// holding it twice, as its own and as a queued entry, takes it once).
+    pub fn spent_keys(&self) -> Vec<Fr> {
+        let mut k = self.live_nullifiers();
+        if !is_identity(&self.dep) {
+            k.push(deposit_nullifier(self));
+        }
+        k
+    }
+}
+
+/// A deposit's nullifier: Poseidon(tag, commitment x, commitment y, the spend's body hash). The commitment and the body name the
+/// one spend the deposit was made for.
+pub fn deposit_nullifier(s: &Spend) -> Fr {
+    poseidon(&[lock::field_of(b"tacit-block-deposit-nf-v1", &[]), s.dep[0], s.dep[1], s.body])
 }
 
 /// A Pedersen commitment's opening: the value and the blinding (32 bytes, big-endian).
@@ -1023,7 +1040,7 @@ pub fn posted(prev: &State, payload: &[u8], members: &[Option<NfMember>], time: 
     }
     let Some((publics, _, _, data)) = forced_parts(payload) else { return Ok(none) };
     let spend = Spend::from_publics(&publics);
-    let live = spend.live_nullifiers();
+    let live = spend.spent_keys();
     if members.len() != live.len() {
         return Err(format!("{} answers for {} notes", members.len(), live.len()));
     }
@@ -1048,7 +1065,7 @@ pub fn posted(prev: &State, payload: &[u8], members: &[Option<NfMember>], time: 
 /// Which posted spends a block takes, in queue order: a candidate none of whose notes a spend before it in the block spends (the block's
 /// own come first) and whose proof verifies, which `verifies(j, candidate)` says and is asked only of those.
 pub fn take(spends: &[Spend], settles: &[lock::Settle], posted: &[Posted], mut verifies: impl FnMut(usize, &Candidate) -> bool) -> Vec<bool> {
-    let mut used: BTreeSet<[u8; 32]> = spends.iter().flat_map(|s| s.live_nullifiers()).map(|x| fr_be(&x)).collect();
+    let mut used: BTreeSet<[u8; 32]> = spends.iter().flat_map(|s| s.spent_keys()).map(|x| fr_be(&x)).collect();
     used.extend(settles.iter().map(|s| fr_be(&lock::lock_nullifier(&s.leaf(), s.index))));
     posted
         .iter()
@@ -1112,7 +1129,7 @@ fn effects(prev: &State, s: &Spend, d: &SpendData) -> Result<Effects, &'static s
     if live.len() == 2 && live[0] == live[1] {
         return Err("one note in both input slots");
     }
-    let mut e = Effects { anchor: None, outputs: Vec::with_capacity(3), deposit: None, exit: None, nullifiers: live.iter().map(fr_be).collect(), hop: None, claim: None };
+    let mut e = Effects { anchor: None, outputs: Vec::with_capacity(3), deposit: None, exit: None, nullifiers: s.spent_keys().iter().map(fr_be).collect(), hop: None, claim: None };
     if live.is_empty() {
         if is_identity(&s.dep) {
             return Err("no input and no deposit");
@@ -1163,7 +1180,7 @@ fn effects(prev: &State, s: &Spend, d: &SpendData) -> Result<Effects, &'static s
 /// The non-zero nullifiers a block will enter into the tree, smallest first: those of its own spends and of the posted spends it takes,
 /// for whoever builds the block to make their witnesses.
 pub fn block_nullifiers(spends: &[Spend], settles: &[lock::Settle], posted: &[Posted], taken: &[bool]) -> Vec<[u8; 32]> {
-    let mut all: Vec<[u8; 32]> = spends.iter().flat_map(|s| s.live_nullifiers()).map(|x| fr_be(&x)).collect();
+    let mut all: Vec<[u8; 32]> = spends.iter().flat_map(|s| s.spent_keys()).map(|x| fr_be(&x)).collect();
     all.extend(settles.iter().map(|s| fr_be(&lock::lock_nullifier(&s.leaf(), s.index))));
     for (p, t) in posted.iter().zip(taken) {
         if let (true, Some(c)) = (*t, &p.candidate) {
