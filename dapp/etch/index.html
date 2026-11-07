@@ -25,7 +25,7 @@
 <link rel="preload" href="/fonts/ibm-plex-mono-500-latin.woff2" as="font" type="font/woff2" crossorigin>
 <!-- preload-roots: /etch/app.js | | /trade/btc.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/etch/app.js?cb=794596a1">
+<link rel="modulepreload" href="/etch/app.js?cb=e62df5ad">
 <link rel="modulepreload" href="/trade/util.js?cb=ba5a02b1">
 <link rel="modulepreload" href="/trade/rpc.js">
 <link rel="modulepreload" href="/rpc-body.js">
@@ -247,6 +247,8 @@ img.tk { object-fit: cover; background: var(--field); }
 
 /* A very narrow screen */
 @media (max-width: 380px) { .amt { font-size: 34px; } .as-n b { font-size: 20px; } }
+/* A text field under 16px makes iOS zoom the page in when it is focused, and leave it zoomed: on a touch screen they are 16px. */
+@media (pointer: coarse) { .fld input[type="text"] { font-size: 16px; } .fld textarea { font-size: 16px; } .srch input { font-size: 16px; } }
 </style>
 <!-- chrome:head:begin inline -->
 <style>
@@ -316,6 +318,16 @@ header.top .chip:active { transform: scale(.97); }
 header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
 @container top (max-width: 480px) { header.top .chip { padding: 0 12px 0 11px; } header.top .chip.act { padding: 0; } }
 @media (pointer: coarse) { .sn > a, .sn summary, header.top .chip, footer.sf nav a { height: var(--tap, 44px); } }
+/* Touch, on every page that wears this: a quick double tap on a control does not zoom the page, and a text button takes a press a thumb can land (its box does not
+   change: the target reaches past it). */
+@media (pointer: coarse) {
+  a, button, summary, input, select, textarea, label, [role="button"], [role="tab"] { touch-action: manipulation; }
+  button.link, .linkbtn { position: relative; }
+  button.link::after, .linkbtn::after { content: ''; position: absolute; inset: -8px -6px; }
+  /* the mark and name at the header's left are 26-30px tall: the target reaches to the chips' 44 */
+  header.top a.brand { position: relative; }
+  header.top a.brand::after { content: ''; position: absolute; inset: -8px -6px; }
+}
 
 /* the menu: under the header's right edge, whatever the width */
 .sm-p {
@@ -500,12 +512,12 @@ footer.sf svg.fill { width: 16px; height: 16px; }
 </div>
 <!-- warm:begin -->
 <template id="warm">
-<link rel="modulepreload" href="/trade/btc.js?cb=8a4b33cd">
-<link rel="modulepreload" href="/trade/btc-session.js?cb=d93e4816">
+<link rel="modulepreload" href="/trade/btc.js?cb=124a5ce8">
+<link rel="modulepreload" href="/trade/btc-session.js?cb=71870db7">
 <link rel="modulepreload" href="/trade/sheet.js?cb=84cda8f2">
 </template>
 <!-- warm:end -->
 <div class="sr" id="live" role="status" aria-live="polite"></div>
-<script type="module" src="/etch/app.js?cb=794596a1"></script>
+<script type="module" src="/etch/app.js?cb=e62df5ad"></script>
 </body>
 </html>

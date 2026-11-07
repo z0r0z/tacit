@@ -40,11 +40,12 @@ forgetKeys();
 const src = (await import('node:fs')).readFileSync(new URL('../dapp/confidential-pool-ux.js', import.meta.url), 'utf8');
 ok('the history cache is keyed by a pubkey hash, not the private key', /const key = _hex\(sha256\(secp\.getPublicKey\(privBytes\(priv\), true\)\)\);/.test(src) && !/const key = _hex\(privBytes\(priv\)\)/.test(src));
 ok('the bridge-mint memo is keyed by the pubkey', /const wk = lc\(id\.pubHex\);/.test(src) && !/_hex\(privBytes\(id\.priv\)\)/.test(src));
-ok('forgetKeys clears the key map and the caches read with it', /const forget = \(\) => \{ _ownKeys\.clear\(\); _btcHistoryCache\.clear\(\); _bridgeFound\.clear\(\); \};/.test(src));
+ok('forgetKeys clears the key map and the caches read with it', /const forget = \(\) => \{ _ownKeys\.clear\(\); _btcHistoryCache\.clear\(\); _bridgeFound\.clear\(\); _wrapWalks\.clear\(\); \};/.test(src));
 
 console.log('\ntacit.js: lock, key switch and refused unlocks');
 const tsrc = (await import('node:fs')).readFileSync(new URL('../dapp/tacit.js', import.meta.url), 'utf8');
-ok('the lock button forgets the pool helpers\' copies', /\/\/ The pool helpers' copies of the key go too, so locking forgets every one\.\n\s+try \{ forgetPoolKeys\(\); \} catch \{\}/.test(tsrc));
+// (dapp/tacit.js is built with its comments stripped, so the lock is pinned by what it does: it stops the pollers, drops the holdings cache, then forgets the helpers' copies)
+ok('the lock button forgets the pool helpers\' copies', /stopMakerClaimPoller\(\); \} catch \{\}[\s\S]{0,200}invalidateHoldingsCache\(\);\n\s+try \{ forgetPoolKeys\(\); \} catch \{\}/.test(tsrc));
 ok('every identity change forgets them', /function _onIdentityChanged\(prevPubHex\) \{[\s\S]{0,600}forgetPoolKeys\(\)/.test(tsrc));
 ok('a refused Ethereum unlock zeroes its key first', /if \(!this\.state\.netUnverified\) \{\n\s+priv\.fill\(0\);/.test(tsrc));
 ok('a refused Bitcoin unlock zeroes its key first', /if \(!cached\.netUnverified\) \{\n\s+priv\.fill\(0\);/.test(tsrc));

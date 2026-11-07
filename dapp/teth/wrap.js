@@ -1,4 +1,4 @@
-import { getUx, forgetUx } from '/trade/poolux.js?cb=435f1138';
+import { getUx, forgetUx } from '/trade/poolux.js?cb=89ac6e27';
 import { WRAP_TIP, WRAP_WITH_TIP, CETH_ID, POOL } from '/teth/read.js?cb=9364ab31';
 import { strip, word, rpc, ethCall, api, E10 } from '/trade/util.js?cb=ba5a02b1';
 
@@ -246,7 +246,7 @@ export async function selfFinish({ t = null, built, hash = null, jobId = null, o
 }
 
 const stages = new WeakMap();
-const stageOf = async (t) => stages.get(t) || (await import('/confidential-stage.js?cb=d625f4a6').then(({ makeConfidentialStage }) => { const st = makeConfidentialStage({ ux: t }); stages.set(t, st); return st; }));
+const stageOf = async (t) => stages.get(t) || (await import('/confidential-stage.js?cb=8dfd1b9f').then(({ makeConfidentialStage }) => { const st = makeConfidentialStage({ ux: t }); stages.set(t, st); return st; }));
 export async function readHeld({ priv, ux = null }) {
   const t = ux || await getUx();
   const r = await t.balance(priv(), { cbtc: false, bridge: false, positions: true });

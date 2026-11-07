@@ -294,5 +294,12 @@ export function makeConfidentialStage({ ux: t, now = () => Math.floor(Date.now()
     return { jobId: posted.jobId, txHash: st.txHash || null, amountOut: p.built.amountOut, ahead: p === ready };
   }
 
-  return { stageFee, buildStage, stageNote, stageBatch, stageBatchSelf, staged, splitPending, proveSwap, stillFits, pressSwap, rescueKey, stageRecipe };
+  // What a note must hold to be cut for exactly `units` (a fixed size): the size and the stage's fee, in the pool's units; null if it cannot be sized.
+  // The note must hold more than this (buildStage), so a card can tell a note that is only just over the size from one that works.
+  async function stageNeed(units) {
+    const part = sizeFor(BigInt(units), await stageFee('sendunwrap'));
+    return part ? part.amount : null;
+  }
+
+  return { stageFee, stageNeed, buildStage, stageNote, stageBatch, stageBatchSelf, staged, splitPending, proveSwap, stillFits, pressSwap, rescueKey, stageRecipe };
 }

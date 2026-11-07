@@ -74,6 +74,8 @@ async function newContext() {
   await ctx.exposeFunction('__log', (m) => { calls.push(m); });
   await ctx.addInitScript(WALLET);
   await ctx.route(/^https?:\/\/(?!127\.0\.0\.1)/, (r) => r.abort());
+  // nor does a WebSocket (the pages dial public Nostr relays) leave it: closed at once, as a relay that is down would
+  await ctx.routeWebSocket(/^wss?:\/\/(?!127\.0\.0\.1|localhost)/, (ws) => ws.close());
   // the computer's own prover (a page may look for it): never this machine's real one
   await ctx.route('http://127.0.0.1:47815/**', (r) => r.abort('connectionrefused'));
   return { ctx, calls, asked: (m) => calls.filter((c) => c === m).length, clear: () => { calls.length = 0; } };

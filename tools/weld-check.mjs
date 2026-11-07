@@ -143,8 +143,7 @@
 //   hxout    the landing card's Bitcoin tab, going out: the assets it offers follow the two settings, TAC is quoted at its relay floor and
 //            limits, its button opens the TAC sheet's To Bitcoin side with the amount, and a key short of private TAC is sent to make some
 //   hxlink   the same button with no key open: the Bridge tab asks for one, still addressed as the way out, and opens on that side with the amount
-//   pxsback  the price strip on a return visit: prices kept less than an hour ago show at once and the reading replaces them; older ones are not drawn
-//   fmchips  the farms under the prices: the public pool and each private pool as a pair and its APR, best first, the row's height kept so the hero never moves, a press opening the Earn tab on that pool (the same APR in its row), and between reward periods only the public pool is left
+//   fmchips  the farms under the rewards line: the public pool and each private pool as a pair and its APR, best first, the row's height kept so the hero never moves, a press opening the Earn tab on that pool (the same APR in its row), and between reward periods only the public pool is left
 //   hxways  the card's Shield by what is held: each source lists its own ways, the chain picker shows for the ETH-only pools alone,
 //            payments ETH goes to its own chain's Deposit form with the amount, Borrow hands its BTC to the lock form
 //   activity relayed jobs (dispatched as tacit:job, as the relay client does) move Queued → Proving → Done or Failed, with
@@ -213,7 +212,7 @@ const DAPP = new URL('../dapp/', import.meta.url).pathname;
 const bwText = (page) => page.evaluate((s) => [...document.querySelectorAll(s)].map((e) => e.textContent).join(' '), '#bw-status, #bw-s1, #bw-s2, #bw-s3, #bw-s4');
 // `ui`: the front page's tile and landing, the steps a look-and-copy pass needs (tools/weld-ui.sh runs them on a pinned, cached fork)
 const UI_STEPS = 'links,swapurl,swapfield,hints,hxbridge,hxfold,hxnudge,tradelinks';
-const ONLY = new Set((process.argv[2] === 'ui' ? UI_STEPS : process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,hxbridgeu,usdtwrap,usdtwrapw,usdtout,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,swaphere,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,shieldsrc,shieldwc,provebar,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,nohost,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,tileahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,anyone,relayfail,selfwallet,slowline,fastroute,chainoff,chaintile').split(','));
+const ONLY = new Set((process.argv[2] === 'ui' ? UI_STEPS : process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,hxbridgeu,usdtwrap,usdtwrapw,usdtout,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,swaphere,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,shieldsrc,shieldwc,provebar,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,nohost,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,tileahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,anyone,relayfail,selfwallet,slowline,fastroute,chainoff,chaintile').split(','));
 const FORK = process.argv[3] || 'https://mainnet.gateway.tenderly.co';
 const SHOTS = process.env.SHOTS || null;
 const PORT = 20000 + Math.floor(Math.random() * 2000), WEB = PORT + 1;
@@ -559,6 +558,14 @@ const until = (page, fn, arg, timeout = 60000) => page.waitForFunction(fn, arg, 
 // a tab of the card: Bridge and Borrow sit under its More tab, which is opened first when they are not shown
 // a route row of the card: Earn shows only the farm it picked until its Change opens the others
 const rowClick = async (page, sel) => { const c = await page.$('#hx-routes .chg'); if (c && !(await page.isVisible(sel))) await c.click(); await page.click(sel); };
+// The key's own address chosen to pay (a wallet pays by default now, while the key's address is unused): for the checks that are about it
+const acctPays = async (p) => {
+  await p.evaluate(() => { location.hash = ''; location.hash = '#wallet'; });
+  await p.waitForSelector('[data-pay="tacit"]', { timeout: 60000 });
+  await p.click('[data-pay="tacit"]');
+  await until(p, () => document.querySelector('[data-pay="tacit"]')?.classList.contains('main'));
+  await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
+};
 const tabClick = async (page, k) => { if (!(await page.$(`[data-hxm="${k}"]`))) await page.click('[data-hxm="more"]'); await page.click(`[data-hxm="${k}"]`); };
 // The card folds away a way beside the one in use behind a line that opens them: a test opens it before it presses one.
 const reveal = async (page, sel, timeout = 120000) => { await page.waitForSelector(sel, { state: 'attached', timeout }); if (!(await page.isVisible(sel))) await page.locator('[data-hxmore]:visible').first().click(); };
@@ -1630,8 +1637,8 @@ await step('devtacacct', async () => {
     await until(p, () => !!document.querySelector('#wallet-dot.on'));
     await p.evaluate(() => { location.hash = ''; location.hash = '#device/tac/deposit'; });
     await p.waitForSelector('#d-amt', { timeout: 120000 });
-    await until(p, () => /Tacit account/.test(document.querySelector('#d-max')?.textContent || '') && /\d/.test(document.querySelector('#d-wb')?.textContent || ''), null, 60000);
-    ok(/Tacit account 20 TAC/.test((await text(p, '#d-max')).trim()), `devtacacct: Max names the Tacit account's TAC (${(await text(p, '#d-max')).trim()})`);
+    await until(p, () => /Key address/.test(document.querySelector('#d-max')?.textContent || '') && /\d/.test(document.querySelector('#d-wb')?.textContent || ''), null, 60000);
+    ok(/Key address 20 TAC/.test((await text(p, '#d-max')).trim()), `devtacacct: Max names the Key address's TAC (${(await text(p, '#d-max')).trim()})`);
     const n0 = await nonce(), p0 = await tacOf(TPOOL), w0 = await tacOf(want), m0 = walletTxs.length;
     await p.fill('#d-amt', '4');
     await until(p, () => !document.querySelector('#d-go').disabled, null, 60000);
@@ -2039,6 +2046,7 @@ await step('locks', async () => {
     await r.page.fill('#ws-hex', hex);
     await r.page.click('#wallet-body [data-in="key"]');
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
+    await acctPays(r.page);
     await until(r.page, () => /BTC locked · post its bond/.test(document.querySelector('#dash-g')?.textContent || ''), null, 120000).catch(() => {});
     const foot = await text(r.page, '#dash-g');
     ok(/0\.0002\d* BTC locked · post its bond/.test(foot), `locks: the dashboard names the lock's next step (${foot.slice(0, 160)})`);
@@ -2048,9 +2056,9 @@ await step('locks', async () => {
     ok(/0\.0002\d* BTC in your own output/.test(b) && /Your locks/.test(b) && /post its bond · shown above/.test(b), `locks: the sheet opens on the oldest lock still to mint and lists the others (${b.slice(0, 120)})`);
     ok(!!(await r.page.$('#borrow-body details.lockmore #bw-lock')), 'locks: another lock can be made from the sheet');
     ok(!!(await r.page.$('#bw-bond, #bw-topup')), 'locks: the lock it follows offers its bond');
-    await until(r.page, () => /Paid from your (Tacit account|wallet)[^]*?\d ETH/.test(document.querySelector('#borrow-body')?.textContent || ''), null, 60000).catch(() => {});
+    await until(r.page, () => /Paid from (this key’s address|your wallet)[^]*?\d ETH/.test(document.querySelector('#borrow-body')?.textContent || ''), null, 60000).catch(() => {});
     const bt = await body(), short = !!(await r.page.$('#bw-topup'));
-    ok(/Paid from your (Tacit account|wallet)/.test(bt) && (short ? /Top up your Tacit account from a connected wallet/.test(bt) && !(await r.page.$('#bw-bond')) : !(await r.page.$eval('#bw-bond', (x) => x.disabled))),
+    ok(/Paid from (this key’s address|your wallet)/.test(bt) && (short ? /Top up this key’s address from a connected wallet/.test(bt) && !(await r.page.$('#bw-bond')) : !(await r.page.$eval('#bw-bond', (x) => x.disabled))),
       `locks: the bond names the account that pays and what it holds, and offers a top-up when short (${(bt.match(/Paid from.{0,60}?ETH/) || [''])[0]}${short ? ' · Top up from wallet' : ''})`);
     await r.page.click('#borrow-body [data-pick]');
     await until(r.page, () => /0\.0003\d* BTC in your own output/.test((document.querySelector('#borrow-body')?.textContent || '').replace(/\s+/g, ' ')), null, 60000).catch(() => {});
@@ -2338,7 +2346,7 @@ await step('shieldwallet', async () => {
     });
     await maxIs(r.page, 'your wallet 40(\\.00)?$');
     ok(true, `shieldwallet: the paying wallet's own public TAC is offered (${await text(r.page, '#tsh-max')})`);
-    await until(r.page, () => /10 TAC is also in your Tacit account/.test(document.querySelector('#tac-shield')?.textContent || ''), null, 60000);
+    await until(r.page, () => /10 TAC is also in this key’s address/.test(document.querySelector('#tac-shield')?.textContent || ''), null, 60000);
     ok(!!(await r.page.$('#tsh-switch')), 'shieldwallet: and the Tacit account\'s TAC is a press away');
     await r.page.fill('#tsh-amt', '25');
     await until(r.page, () => !document.querySelector('#tsh-go').disabled, null, 30000);
@@ -2354,7 +2362,7 @@ await step('shieldwallet', async () => {
     ok(/deposit is (in the Tacit pool|safe in the pool)/.test(st) && /press Finish/.test(st), `shieldwallet: the settle is left to Finish like every other wrap here (${st.slice(0, 120)})`);
     ok(await r.page.$eval('#tsh-amt', (i) => i.value === ''), 'shieldwallet: the amount field empties once the deposit lands');
     await r.page.click('#tsh-switch');
-    await maxIs(r.page, 'your Tacit account 10(\\.00)?$');
+    await maxIs(r.page, 'this key’s address 10(\\.00)?$');
     ok(true, 'shieldwallet: switching the paying account offers the Tacit account\'s TAC');
     if (r.errors.length) { fails++; console.log('FAIL shieldwallet page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }
@@ -2365,7 +2373,7 @@ await step('shieldwallet', async () => {
   try {
     await open(r2, hex2);
     await r2.page.waitForSelector('#tac-shield #tsh-go', { timeout: 240000 });
-    await maxIs(r2.page, 'your Tacit account 10(\\.00)?$');
+    await maxIs(r2.page, 'this key’s address 10(\\.00)?$');
     ok(!/also in/.test(await text(r2.page, '#tac-shield')) && !(await r2.page.$('#tsh-switch')), `shieldwallet: with no TAC in the wallet, the Tacit account's is offered as before (${await text(r2.page, '#tsh-max')})`);
     if (r2.errors.length) { fails++; console.log('FAIL shieldwallet (2) page errors: ' + r2.errors.slice(0, 3).join(' | ')); }
   } finally { await r2.browser.close(); }
@@ -2426,7 +2434,7 @@ await step('farmjoin', async () => {
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${(await text(r.page, '#sj-rcpt-0')).replace(/\s+/g, ' ')}`); });
     await shot(r.page, 'farmjoin');
     const rc = (await text(r.page, '#sj-rcpt-0')).replace(/\s+/g, ' ');
-    ok(/Share of the farm/.test(rc) && /Relay fee to split your notes/.test(rc) && /Network fee, from your Tacit account/.test(rc), `farmjoin: Max quotes both sides, the split fees and the gas (${rc})`);
+    ok(/Share of the farm/.test(rc) && /Relay fee to split your notes/.test(rc) && /Network fee, from this key’s address/.test(rc), `farmjoin: Max quotes both sides, the split fees and the gas (${rc})`);
     if (/Earns about/.test(rc)) ok(/APR on this deposit\s*(about [\d,]+%|over 100,000%)/.test(rc) && /Swap fees come on top/.test(rc), 'farmjoin: and the APR for this deposit');
     // An amount finer than a note's eight decimals is said, not left as a button that stays disabled with no reason.
     await r.page.fill('#sj-a-0', '0.123456789');
@@ -2534,6 +2542,7 @@ await step('selfexit', async () => {
     await r.page.fill('#ws-hex', hex);
     await r.page.click('#wallet-body [data-in="key"]');
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
+    await acctPays(r.page);
     await rpc('anvil_setBalance', [want, '0x0']);
     await r.page.evaluate(() => { location.hash = ''; location.hash = '#tac'; });
     await r.page.waitForSelector('#tac-pub', { timeout: 240000 }).catch(async (e) => {
@@ -2550,7 +2559,7 @@ await step('selfexit', async () => {
       await r.page.click('#tac-bal-status [data-selfdo]');
       await until(r.page, () => /Send a little ETH/.test(document.querySelector('#tac-bal-status')?.textContent || ''), null, 120000);
       const need = await text(r.page, '#tac-bal-status');
-      ok(/network fee, about [\d.]+ ETH/.test(need) && need.includes(want.slice(0, 8)) || /Tacit account/.test(need), `selfexit: an account without ETH is told the fee and to add some (${need.replace(/\s+/g, ' ').slice(0, 160)})`);
+      ok(/network fee, about [\d.]+ ETH/.test(need) && need.includes(want.slice(0, 8)) || /key’s address/.test(need), `selfexit: an account without ETH is told the fee and to add some (${need.replace(/\s+/g, ' ').slice(0, 160)})`);
       // Funded, it asks the relay for the proof only (no fee in the op) and sends settle() itself.
       await rpc('anvil_setBalance', [want, '0x' + (10n ** 17n).toString(16)]);
       proveStub = true;
@@ -3304,6 +3313,7 @@ await step('bridge', async () => {
   await r.page.fill('#ws-hex', hex);
   await r.page.click('#wallet-body [data-in="key"]');
   await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
+  await acctPays(r.page);
   // The dashboard names the bridges waiting for their holder, and opens the Bridge tab.
   await until(r.page, () => /bridges of TAC to Ethereum are waiting for you/.test(document.querySelector('#dash-due')?.textContent || ''), null, 60000);
   ok(/2 bridges of TAC to Ethereum are waiting for you/.test(await text(r.page, '#dash-due')), `bridge: the dashboard says two bridges wait for a press from their holder (${(await text(r.page, '#dash-due')).replace(/\s+/g, ' ').slice(0, 120)})`);
@@ -3370,7 +3380,7 @@ await step('bridge', async () => {
   ok(dumps === before, `bridge: redrawing the sheet does not run the check, or read the reflection state, again (${before} → ${dumps})`);
   // The receipt offers public TAC on arrival, off unless asked for (a one-step bridge has no burn to send for the holder), and it stays as set across a redraw.
   const opt = await r.page.$$eval('#br-rcpt .pick', (xs) => xs.map((x) => [x.querySelector('input')?.id, x.querySelector('input')?.checked, x.textContent.replace(/\s+/g, ' ').trim().slice(0, 90)]));
-  ok(opt.length === 1 && opt[0][0] === 'br-public' && opt[0][1] === false && /Make it public TAC when it arrives, in your Tacit account/.test(opt[0][2]), `bridge: a one-step receipt offers public TAC on arrival, unticked, and nothing to send for the holder (${JSON.stringify(opt)})`);
+  ok(opt.length === 1 && opt[0][0] === 'br-public' && opt[0][1] === false && /Make it public TAC when it arrives, in this key’s address/.test(opt[0][2]), `bridge: a one-step receipt offers public TAC on arrival, unticked, and nothing to send for the holder (${JSON.stringify(opt)})`);
   await r.page.check('#br-public');
   await redrawTac(r.page);
   await until(r.page, () => !!document.querySelector('#br-public'), null, 60000);
@@ -5537,7 +5547,7 @@ await step('rewardsearn', async () => {
     await until(n.page, () => /Connect wallet/.test(document.querySelector('#fm-go')?.textContent || '') && /APR now/.test(document.querySelector('#fm-stats')?.textContent || ''), null, 90000);
     ok((await n.page.getAttribute('#fm-mode [data-fm="eth"]', 'aria-pressed')) === 'true' && !(await text(n.page, '#farm-note')), 'rewardsearn: the farm opens in place with its figures and its form on ETH alone, and nothing warns that no wallet is connected');
     ok(!(await n.page.$eval('#fm-prog', (e) => e.checkVisibility())), 'rewardsearn: the module\'s own list of private farms stays out of the way, since the rows below are those');
-    ok((await n.page.getAttribute('#farm .fm-alt a', 'href')) === '/#farm/public' && /Tacit account/.test(await text(n.page, '#farm .fm-alt')), 'rewardsearn: and the farm says where a Tacit account farms: the app\'s public farm');
+    ok((await n.page.getAttribute('#farm .fm-alt a', 'href')) === '/#farm/public' && /Signed in to Tacit/.test(await text(n.page, '#farm .fm-alt')), 'rewardsearn: and the farm says where a Tacit account farms: the app\'s public farm');
     await n.page.click('#farm > summary');
     ok(!(await n.page.evaluate(() => document.querySelector('#farm').open)), 'rewardsearn: and closes again');
     // Points opens in place: the ways to earn and the leaderboard.
@@ -6469,6 +6479,7 @@ await step('receipts', async () => {
     await r.page.goto(r.url);
     await r.page.waitForSelector('#hx-body .hx-h');
     await pasteKey(r.page, 'e1'.padEnd(64, '5'));
+    await acctPays(r.page);
     await toV1();
     await sub('send');
     await until(r.page, () => /Private 0\.55 tETH/.test(document.querySelector('#s-max')?.textContent || ''), null, 240000)
@@ -6509,11 +6520,11 @@ await step('receipts', async () => {
 
     // The withdrawal has now been in line for a while (the offer comes after 90 seconds): the dashboard offers it from the
     // Tacit account, in plain words that say nothing of the relay's wallet, and so does its receipt in Activity.
-    const nudged = await until(r.page, () => /Withdraw 0\.25 ETH to .* has been in line for a few minutes\. You can send it now from your Tacit account, with no relay fee\./.test(document.querySelector('#dash-due')?.textContent || ''), null, 150000).then(() => true, () => false);
+    const nudged = await until(r.page, () => /Withdraw 0\.25 ETH to .* has been in line for a few minutes\. You can send it now from this key’s address, with no relay fee\./.test(document.querySelector('#dash-due')?.textContent || ''), null, 150000).then(() => true, () => false);
     ok(nudged, `receipts: a withdrawal in line a few minutes is offered from the Tacit account on the dashboard (${(await text(r.page, '#dash-due')).replace(/\s+/g, ' ').slice(0, 140)})`);
     await r.page.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); });
     await r.page.click('#act'); await r.page.waitForSelector('#sheet-act[open]');
-    const offer = await until(r.page, () => /Send it from your Tacit account\s+instead/.test(document.querySelector('#act-body')?.textContent || ''), null, 30000).then(() => true, () => false);
+    const offer = await until(r.page, () => /Send it from this key’s address\s+instead/.test(document.querySelector('#act-body')?.textContent || ''), null, 30000).then(() => true, () => false);
     ok(offer && !/gas|top/i.test((await text(r.page, '#act-body')).replace(/network fee|no relay fee|pays the network/gi, '')), 'receipts: and so is its receipt in Activity, with no word about the relay running short');
     await r.page.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); });
     await r.page.evaluate(() => { location.hash = '#private'; });
@@ -6568,6 +6579,7 @@ await step('receipts', async () => {
     // E: private TAC made public, one relayed unwrap per note, each its own receipt. Both notes are taken when pressed,
     // so the offer goes away at once, and the second is queued after the first settles, with nothing pressed.
     await pasteKey(r.page, 'e1'.padEnd(64, '5'));                             // a pasted key does not outlive a reload
+    await acctPays(r.page);
     await r.page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
     await r.page.evaluate(() => { location.hash = ''; location.hash = '#tac'; });
     await r.page.waitForSelector('#tac-pub', { timeout: 240000 });
@@ -8356,7 +8368,7 @@ await step('hxsendtac', async () => {
     ok(true, `hxsendtac: TAC in the wallet shows the wallet's balance with Max (${await text(p, '#hx-bal')})`);
     ok(!(await p.$('#hx-ask')), 'hxsendtac: there is no payment request for the ERC-20 (its recipient is an Ethereum address)');
     await p.fill('#hx-rcpt', eth0); await p.fill('#hx-amt', '15');
-    await until(p, () => /^They get: 15 TAC \| Network fee: paid by your (wallet|Tacit account) \| Chain sees: your (wallet|Tacit account), the address and the amount$/.test(window.__said()), null, 120000)
+    await until(p, () => /^They get: 15 TAC \| Network fee: paid by (your wallet|this key’s address) \| Chain sees: (your wallet|this key’s address), the address and the amount$/.test(window.__said()), null, 120000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await line()}`); });
     ok(await text(p, '#hx-go') === 'Send TAC' && !(await p.$eval('#hx-go', (b) => b.disabled)), `hxsendtac: an Ethereum address gets a plain public transfer, quoted (${await line()})`);
     await look('hxsendtac-send');
@@ -8377,7 +8389,7 @@ await step('hxsendtac', async () => {
     // Shield: TAC in the wallet becomes private TAC; the amount goes to the TAC sheet's form.
     await lander(p);
     await move(p, 'shield:wtac:defi', '10');
-    await until(p, () => /Sent: in one transaction from your (wallet|Tacit account), with a permit/.test(window.__said()), null, 60000);
+    await until(p, () => /Sent: in one transaction from (your wallet|this key’s address), with a permit/.test(window.__said()), null, 60000);
     ok(await goText(p) === 'Shield TAC', `hxsendtac: the Swap card offers wallet TAC as private TAC (${await line()})`);
     await look('hxsendtac-shield');
     // its button makes the TAC private from the card itself (step tachere does it end to end), so the card is left alone here
@@ -8495,14 +8507,14 @@ await step('hxsendways', async () => {
     // ETH to an address, from the tile (the picker opened on Private, where the held coin is: Wallet is one press away)
     await p.click('#hx .pk .pk-kind [data-kind="wallet"]');
     await p.click('#hx .pk .pk-r[data-v="ether"]');
-    await until(p, () => document.querySelector('#hx-sa')?.value === 'ether' && document.querySelector('#hx-way')?.hidden === true && /From your wallet\. A tacit1 address is paid privately, an 0x address in the open\./.test(document.querySelector('#hx-lead')?.textContent || ''), null, 30000)
+    await until(p, () => document.querySelector('#hx-sa')?.value === 'ether' && document.querySelector('#hx-way')?.hidden === true && /tacit1 is paid privately, 0x in the open\./.test(document.querySelector('#hx-lead')?.textContent || ''), null, 30000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await text(p, '#hx-lead')} | ${await text(p, '#hx-way')}`); });
     ok(true, `hxsendways: with no recipient yet, the lead under the tabs says what each kind of address does (${await text(p, '#hx-lead')})`);
     const e0 = BigInt(await rpc('eth_getBalance', [eth0, 'latest']));
     await p.fill('#hx-rcpt', eth0); await p.fill('#hx-amt', '0.25');
-    await until(p, () => /^They get: 0\.25 ETH \| Network fee: paid by your Tacit account \| Chain sees: your Tacit account, the address and the amount/.test(window.__said()) && document.querySelector('#hx-go')?.textContent === 'Send ETH', null, 60000)
+    await until(p, () => /^They get: 0\.25 ETH \| Network fee: paid by this key’s address \| Chain sees: this key’s address, the address and the amount/.test(window.__said()) && document.querySelector('#hx-go')?.textContent === 'Send ETH', null, 60000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)} | ${await text(p, '#hx-go')}`); });
-    ok(/^A public transfer from your Tacit account$/.test(await text(p, '#hx-way')), `hxsendways: an 0x address is a public transfer (${await text(p, '#hx-way')}; ${await said(p)})`);
+    ok(/^A public transfer from this key’s address$/.test(await text(p, '#hx-way')), `hxsendways: an 0x address is a public transfer (${await text(p, '#hx-way')}; ${await said(p)})`);
     await p.click('#hx-go');
     await until(p, () => /Sent\./.test(document.querySelector('#hx-ss')?.textContent || ''), null, 240000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await text(p, '#hx-ss')}`); });
@@ -8510,7 +8522,7 @@ await step('hxsendways', async () => {
     // USDC to someone's Tacit address: into their private USDC, by the pool's Deposit
     await p.selectOption('#hx-sa', 'wusdc');
     await p.fill('#hx-rcpt', them); await p.fill('#hx-amt', '10');
-    await until(p, () => /^Into their private USDC: the deposit shows, not whose it is$/.test(document.querySelector('#hx-way')?.textContent || '') && document.querySelector('#hx-go')?.textContent === 'Pay them privately' && /^They get: 10 USDC, private for payments \| Fee: the network fee only \| Chain sees: a deposit from your Tacit account, not whose it is/.test(window.__said()), null, 60000)
+    await until(p, () => /^Into their private USDC: the deposit shows, not whose it is$/.test(document.querySelector('#hx-way')?.textContent || '') && document.querySelector('#hx-go')?.textContent === 'Pay them privately' && /^They get: 10 USDC, private for payments \| Fee: the network fee only \| Chain sees: a deposit from this key’s address, not whose it is/.test(window.__said()), null, 60000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await text(p, '#hx-way')} | ${await said(p)} | ${await text(p, '#hx-go')}`); });
     ok(true, `hxsendways: a Tacit address is paid into their payments pool (${await text(p, '#hx-way')})`);
     await p.fill('#hx-rcpt', old);
@@ -8623,7 +8635,7 @@ await step('farmzap', async () => {
     await until(p, () => /Swaps/.test(document.querySelector('#sj-rcpt-0')?.textContent || '') && !document.querySelector('#sj-go-0').disabled, null, 420000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${(await text(p, '#sj-rcpt-0')).replace(/\s+/g, ' ')}`); });
     const rc = (await text(p, '#sj-rcpt-0')).replace(/\s+/g, ' ');
-    ok((await p.inputValue('#sj-a-0')) === '0.02' && /Swaps\s*0\.0\d+ tETH for about [\d.,]+ TAC/.test(rc) && /Then adds\s*0\.0\d+ tETH \+ [\d.,]+ TAC/.test(rc) && /Relay fee for the swap/.test(rc) && !/Relay fee to split your notes/.test(rc) && /Share of the farm/.test(rc) && /Network fee, from your Tacit account/.test(rc),
+    ok((await p.inputValue('#sj-a-0')) === '0.02' && /Swaps\s*0\.0\d+ tETH for about [\d.,]+ TAC/.test(rc) && /Then adds\s*0\.0\d+ tETH \+ [\d.,]+ TAC/.test(rc) && /Relay fee for the swap/.test(rc) && !/Relay fee to split your notes/.test(rc) && /Share of the farm/.test(rc) && /Network fee, from this key’s address/.test(rc),
       `farmzap: Max takes the whole balance, and the quote says what is swapped, what both sides add, and the fees, with no note to split (${rc})`);
     await shot(p, 'farmzap');
     await p.evaluate(() => { window.__poolMoves = true; });
@@ -9044,7 +9056,7 @@ await step('farmzapeth', async () => {
     await until(p, () => /Swaps/.test(document.querySelector('#sz-rcpt-0')?.textContent || '') && !document.querySelector('#sz-go-0').disabled, null, 420000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${(await text(p, '#sz-rcpt-0')).replace(/\s+/g, ' ')}`); });
     const rc = (await text(p, '#sz-rcpt-0')).replace(/\s+/g, ' ');
-    ok(/Swaps\s*0\.0\d+ ETH for about [\d.,]+ TAC/.test(rc) && /Then adds\s*0\.0\d+ ETH \+ [\d.,]+ TAC/.test(rc) && /Share of the farm/.test(rc) && !/about 0 TAC/.test(rc) && /Network fee, from your Tacit account/.test(rc) && /the relay makes your share private and farms it/.test(rc),
+    ok(/Swaps\s*0\.0\d+ ETH for about [\d.,]+ TAC/.test(rc) && /Then adds\s*0\.0\d+ ETH \+ [\d.,]+ TAC/.test(rc) && /Share of the farm/.test(rc) && !/about 0 TAC/.test(rc) && /Network fee, from this key’s address/.test(rc) && /the relay makes your share private and farms it/.test(rc),
       `farmzapeth: the quote says what is swapped inside the pool, what both sides add, the share and the network fee, with no refund row too small to show (${rc})`);
     await shot(p, 'farmzapeth');
     await p.setViewportSize({ width: 390, height: 780 });
@@ -9302,7 +9314,7 @@ await step('farmzapsplit', async () => {
     await until(p, () => /Swaps/.test(document.querySelector('#sz-rcpt-0')?.textContent || '') && !document.querySelector('#sz-go-0').disabled, null, 420000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${(await text(p, '#sz-rcpt-0')).replace(/\s+/g, ' ')}`); });
     const rc = (await text(p, '#sz-rcpt-0')).replace(/\s+/g, ' ');
-    ok(/Where\s*\d+% in this pool, the rest in the Precision pool/.test(rc) && /Back to your Tacit account\s*about [\d.,]+ TAC/.test(rc), `farmzapsplit: a 0.6 ETH zap splits its swap with the Precision pool and says so (${rc.slice(0, 260)})`);
+    ok(/Where\s*\d+% in this pool, the rest in the Precision pool/.test(rc) && /Back to this key’s address\s*about [\d.,]+ TAC/.test(rc), `farmzapsplit: a 0.6 ETH zap splits its swap with the Precision pool and says so (${rc.slice(0, 260)})`);
     await shot(p, 'farmzapsplit');
     const t0 = await total();
     await p.click('#sz-go-0');
@@ -9530,7 +9542,7 @@ await step('farmqueue', async () => {
 // wallet pays. The tip is the relay's proof alone (the press sends the one transaction itself), and the button stays filled on hover.
 await step('shieldsrc', async () => {
   const r = await openPage({ account: A0, key: K0, colorScheme: 'dark', viewport: { width: 1280, height: 1300 } });
-  const p = r.page, ERR = /Tacit account holds/;
+  const p = r.page, ERR = /(Tacit account|key’s address) holds/;
   try {
     await p.route(/\/confidential\/quote\?/, (route) => route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' },
       body: JSON.stringify({ relayFeeEligible: true, recommendedTipRecipient: '0x' + '6c'.repeat(20), tipSplitter: '0x' + '5e'.repeat(20), recommendedWrapTipWei: '90000000000000', recommendedProveTipWei: '20000000000000' }) }));
@@ -10043,7 +10055,7 @@ await step('hxpanel', async () => {
     // More than the tETH held: the zap, which opens the farm on ETH with the amount; or, by its link, the ETH made private first, and the
     // wrap's sheet names the farm next, which then opens with the same amount.
     await press('earn', '1', '0', 'Zap into the farm');
-    await until(p, () => /More ETH than your Tacit account holds/.test(document.querySelector('#hx-q')?.textContent || ''), null, 240000);
+    await until(p, () => /More ETH than this key’s address holds/.test(document.querySelector('#hx-q')?.textContent || ''), null, 240000);
     ok(!(await p.$('#sheet-farm[open]')), 'hxpanel: a private farm for more than the tETH held is the zap, from the card: with more ETH than the account holds it says so and opens nothing');
     await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
     await p.click('[data-hxm="earn"]');
@@ -10326,8 +10338,9 @@ await step('hxsats', async () => {
   try {
     await p.goto(r.url);
     await p.waitForSelector('#hx-body .hx-h');
-    await Promise.all([p.waitForURL(/\/trade\/tac\/#btc=buy$/, { timeout: 30000 }), p.click('#tc-tac .tp-flow [data-hx="swap:sats:tac"]')]);
-    ok(true, 'hxsats: Sats in (TAC\'s private payments) goes to TAC\'s page with its Bitcoin market open, to buy');
+    await p.goto(r.url + '#card=swap:sats:tac');
+    await p.waitForURL(/\/trade\/tac\/#btc=buy$/, { timeout: 30000 });
+    ok(true, 'hxsats: a link to buy TAC with sats goes to TAC\'s page with its Bitcoin market open, to buy');
     await p.goto(r.url + '#card=swap:tac:sats');
     await p.waitForURL(/\/trade\/tac\/#btc=sell$/, { timeout: 30000 });
     ok(true, 'hxsats: a link to sell TAC for sats goes there to sell');
@@ -10366,6 +10379,48 @@ await step('tradelinks', async () => {
       if (r.errors.length) { fails++; console.log('FAIL tradelinks page errors: ' + r.errors.slice(0, 3).join(' | ')); }
     } finally { await r.browser.close(); }
   }
+});
+
+// The farms under the rewards line: the public pool and each private pool the Earn tab offers, as its pair and its APR, best first. The row keeps its
+// height (the hero does not move when the farms arrive), scrolls instead of widening the page on a phone, and a press opens the Earn tab on that
+// pool with the same APR in its row. Between reward periods only the public pool is left.
+await step('fmchips', async () => {
+  const read = (p) => p.evaluate(() => ({
+    chips: [...document.querySelectorAll('#fms a')].map((a) => ({ apr: Number(a.querySelector('b').textContent.replace(/[,%+]/g, '')), icons: [...a.querySelectorAll('use')].map((u) => u.getAttribute('href')).join(), hx: a.dataset.hx, href: a.getAttribute('href') })),
+    top: document.querySelector('.hero').getBoundingClientRect().top, h: document.querySelector('#fms').getBoundingClientRect().height, scroll: document.documentElement.scrollWidth > innerWidth + 1,
+  }));
+  for (const [name, viewport] of [['desktop', { width: 1280, height: 900 }], ['phone', { width: 360, height: 740 }]]) {
+    const r = await openPage({ account: A0, key: K0, viewport });
+    const p = r.page;
+    try {
+      await p.goto(r.url);
+      await p.waitForSelector('#hx-body .hx-h');
+      const top0 = await p.$eval('.hero', (e) => e.getBoundingClientRect().top);
+      await p.waitForFunction(() => document.querySelector('#fms.on'), null, { timeout: 120000 });
+      const s = await read(p), pub = s.chips.find((c) => c.hx === 'earn:ether:public');
+      ok(s.chips.length >= 2 && !!pub && pub.icons === '#tk-tac,#tk-eth' && s.chips.every((c) => c.apr > 0 && c.icons.split(',').length === 2), `fmchips (${name}): the public pool and the private pools, each a pair of marks and its APR (${s.chips.map((c) => `${c.hx.slice(11)} ${c.apr}%`).join(', ')})`);
+      ok(s.chips.every((c, i) => i === 0 || s.chips[i - 1].apr >= c.apr), `fmchips (${name}): best APR first`);
+      ok(s.chips.every((c) => c.hx === 'earn:ether:public' ? c.href === '#farm/public' : /^earn:ether:p\d+$/.test(c.hx) && c.href === `#farm/private-${c.hx.slice(12)}`), `fmchips (${name}): each keeps its farm's link for a new tab`);
+      ok(Math.abs(s.top - top0) < 1 && s.h >= 24 && !s.scroll, `fmchips (${name}): the row was already there, so the hero did not move (${Math.round(s.top - top0)}px), and the page does not scroll sideways`);
+      for (const c of [s.chips[0], pub]) {
+        const key = c.hx === 'earn:ether:public' ? 'precision' : c.hx.slice(12);
+        await p.click(`#fms a[data-hx="${c.hx}"]`);
+        await until(p, (k) => document.querySelector(`#hx-routes [data-hxr="${k}"]`)?.getAttribute('aria-checked') === 'true', key, 120000);
+        const row = await p.$eval(`#hx-routes [data-hxr="${key}"]`, (e) => e.textContent.replace(/\s+/g, ' '));
+        ok(c.apr >= 10000 || row.includes(`${c.apr.toLocaleString('en-US')}%`),`fmchips (${name}): ${c.hx} opens the Earn tab on that pool, with its APR in the row (${row.slice(0, 60)})`);
+      }
+      if (r.errors.length) { fails++; console.log('FAIL fmchips page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+    } finally { await r.browser.close(); }
+  }
+  const r = await openPage({ account: A0, key: K0 });
+  await r.page.route(/^https:\/\/api\.tacit\.finance\/farm\/program/, async (route) => { try { const res = await route.fetch(); const j = await res.json(); j.epoch = { ...(j.epoch || {}), active: false }; await route.fulfill({ response: res, json: j }); } catch { } });   // a read still out as the page closes is let go
+  try {
+    await r.page.goto(r.url);
+    await r.page.waitForFunction(() => document.querySelector('#fms.on'), null, { timeout: 120000 });
+    const s = await read(r.page);
+    ok(s.chips.length === 1 && s.chips[0].hx === 'earn:ether:public', `fmchips: between reward periods only the public pool is left (${s.chips.map((c) => c.hx).join()})`);
+    if (r.errors.length) { fails++; console.log('FAIL fmchips page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { await r.page.unrouteAll({ behavior: 'ignoreErrors' }); await r.browser.close(); }          // a poll's fetch may still be in flight
 });
 
 // The card's Shield by what is held: each source has its own ways (a way that moves ETH into the Tacit pool needs Ethereum, so a pool on
@@ -10816,7 +10871,7 @@ await step('heldoff', async () => {
     await openActivity(r.page);
     const offered = await until(r.page, () => [...document.querySelectorAll('#act-body .actr')].some((li) => /Withdraw 0\.1 ETH/.test(li.textContent) && li.querySelector('[data-selfdo]')), null, 60000).then(() => true, () => false);
     const rc = await receipt();
-    ok(offered && rc.id.startsWith('op:') && /can’t take this one right now/.test(rc.text) && /Send it from your Tacit account instead/.test(rc.text) && /[Nn]o relay fee/.test(rc.text) && !/gas|credit|low on/i.test(rc.text),
+    ok(offered && rc.id.startsWith('op:') && /can’t take this one right now/.test(rc.text) && /Send it from this key’s address instead/.test(rc.text) && /[Nn]o relay fee/.test(rc.text) && !/gas|credit|low on/i.test(rc.text),
       `heldoff: the exit refused after the combine went to Activity is offered on its receipt there (${rc.text.slice(0, 220)})`);
     restore = await stubPoolSettle('ok');
     if (offered) await r.page.click(`[data-act="${rc.id}"] [data-selfdo]`);
@@ -10871,6 +10926,7 @@ await step('selfwallet', async () => {
     await r.page.goto(r.url);
     await r.page.waitForSelector('#hx-body .hx-h');
     await pasteKey(r.page, hx);
+    await acctPays(r.page);
     await r.page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
     await go(r.page, '#private');
     await r.page.waitForSelector('#sheet-eth[open]');
@@ -10882,7 +10938,7 @@ await step('selfwallet', async () => {
     await r.page.click('#o-go');
     await r.page.waitForSelector('#v1-status [data-selfdo-as]', { timeout: 120000 });
     const offer = await said();
-    ok(/can’t take this one right now/.test(offer) && /Send it from your Tacit account/.test(offer) && /Send it from your wallet instead/.test(offer) && !/gas|credit|low on/i.test(offer),
+    ok(/can’t take this one right now/.test(offer) && /Send it from this key’s address/.test(offer) && /Send it from your wallet instead/.test(offer) && !/gas|credit|low on/i.test(offer),
       `selfwallet: a refused exit names the wallet beside the Tacit account (${offer.slice(0, 220)})`);
     restore = await stubPoolSettle('ok');
     const w0 = walletTxs.length;
@@ -10978,7 +11034,7 @@ await step('slowline', async () => {
     await until(p, () => /costs about [\d.]+ ETH/.test(document.querySelector('#sf-act-0')?.textContent || ''), null, 30000).catch(() => {});
     const late = (await text(p, '#sf-act-0')).replace(/\s+/g, ' ');
     if (SHOTS) await p.locator('#sf-act-0').screenshot({ path: join(SHOTS, 'weld-offer.png') });
-    ok(/It is taking longer than usual\. It keeps its place in line/.test(late) && /Send it from your Tacit account/.test(late) && /costs about [\d.]+ ETH/.test(late) && /Send it from your wallet instead/.test(late) && !/low on|out of/i.test(late),
+    ok(/It is taking longer than usual\. It keeps its place in line/.test(late) && /Send it from this key’s address/.test(late) && /costs about [\d.]+ ETH/.test(late) && /Send it from your wallet instead/.test(late) && !/low on|out of/i.test(late),
       `slowline: three minutes on, it is offered to the paying account with the cost (${late})`);
     if (r.errors.length) { fails++; console.log('FAIL slowline page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { pendingNext = 0; await r.browser.close(); }
@@ -11907,8 +11963,8 @@ await step('holdpublic', async () => {
     await until(r.page, () => !document.querySelector('#bw-rcpt')?.hidden, null, 60000).catch(() => {});
     const b0 = await r.page.evaluate(() => (document.querySelector('#bw-hold')?.textContent || '').replace(/\s+/g, ' '));
     const rc = (await text(r.page, '#bw-rcpt')).replace(/\s+/g, ' ');
-    ok(/0\.0003 tacBTC in your Tacit account/.test(b0) && !(await r.page.$('#bw-pts')), `holdpublic: the form offers the tacBTC the account holds (${b0.slice(0, 90)})`);
-    ok(/Collateral ratio\s*200%/.test(rc) && /One transaction from your Tacit account/.test(rc), `holdpublic: it sizes at 200% and says it is one transaction (${rc.trim().slice(0, 150)})`);
+    ok(/0\.0003 tacBTC in this key’s address/.test(b0) && !(await r.page.$('#bw-pts')), `holdpublic: the form offers the tacBTC the account holds (${b0.slice(0, 90)})`);
+    ok(/Collateral ratio\s*200%/.test(rc) && /One transaction from this key’s address/.test(rc), `holdpublic: it sizes at 200% and says it is one transaction (${rc.trim().slice(0, 150)})`);
     await r.page.click('#bw-borrow');
     await until(r.page, () => /Nothing was sent|could not|reverted/i.test([...document.querySelectorAll('#bw-status, #bw-s4')].map((e) => e.textContent).join(' ')), null, 240000).catch(() => {});
     const said = await bwText(r.page);
@@ -12203,6 +12259,35 @@ await step('stageready', async () => {
   } finally { await r.browser.close(); }
 });
 
+// A private tETH balance held as small notes (0.0101 as two): the card offers the kept sizes and no Keep ready, since each size is cut from one note
+// that holds more than it. With one 0.0101 note it is offered.
+await step('keepsmall', async () => {
+  // `fee`: the stage says what a note must hold for a size (the size and 30000 units of fee); without it an older stage, and a note over the size counts
+  const stageStub = (page, fee) => page.route(/\/confidential-stage\.js(\?|$)/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: `
+    export function makeConfidentialStage() { return { splitPending: async () => ({ staged: [], waiting: [] })${fee ? ', stageNeed: async (u) => BigInt(u) + 30000n' : ''} }; }` }));
+  for (const [hex, notes, want, why, fee] of [['59c8'.padEnd(64, '5'), [500000n, 510000n], '0.01 0.1', 'two small notes'], ['5ad9'.padEnd(64, '5'), [1010000n], '0.01 0.1 Keep ready', 'one note over the size'],
+    ['5be0'.padEnd(64, '5'), [1010000n], '0.01 0.1', 'one note over the size but not over it and the fee', true], ['5cf1'.padEnd(64, '5'), [1100000n], '0.01 0.1 Keep ready', 'one note over the size and the fee', true]]) {
+    const acct = makeEvmAccount({ secp, keccak256: keccak_256, sha256 }).deriveEvmAccount(Buffer.from(hex, 'hex'), 'mainnet').address;
+    const r = await openFarmKey(hex, { notes: notes.map((v) => [FARM_CETH, v]), fees: { route: 100000 }, swap: true }, undefined, async (page) => { await stageStub(page, fee); await rpc('anvil_setBalance', [acct, '0x0']); });
+    const p = r.page, chips = () => p.evaluate(() => [...document.querySelectorAll('#hx-swap #pay-usd button')].map((b) => b.textContent.trim()).join(' '));
+    try {
+      await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
+      await p.click('[data-hxm="swap"]');
+      await p.waitForSelector('#hx-swap #pay-coin');
+      await p.click('#hx-swap #pay-coin'); await p.waitForSelector('#pk .pk-r:visible');
+      await p.evaluate(() => { let g = ''; for (const el of document.querySelectorAll('#pk .pk-g, #pk .pk-r')) { if (el.classList.contains('pk-g')) { g = el.textContent; continue; } if (/^Private/.test(g) && el.querySelector('b')?.textContent.trim() === 'tETH') { el.click(); return; } } });
+      await until(p, () => /^tETH/.test((document.querySelector('#hx-swap #pay-coin')?.textContent || '').trim()) && /Balance 0\.01[01]+ · Max/.test(document.querySelector('#hx-swap #pay-side')?.textContent || ''), null, 300000)
+        .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | pay: ${await text(p, '#hx-swap #pay-coin')} / ${await text(p, '#hx-swap #pay-side')}`); });
+      await p.click('#hx-swap #get-coin'); await p.waitForSelector('#pk .pk-r:visible');
+      await p.evaluate(() => { let g = ''; for (const el of document.querySelectorAll('#pk .pk-g, #pk .pk-r')) { if (el.classList.contains('pk-g')) { g = el.textContent; continue; } if (/^Private/.test(g) && el.querySelector('b')?.textContent.trim() === 'TAC') { el.click(); return; } } });
+      await until(p, () => /0\.01/.test(document.querySelector('#hx-swap #pay-usd')?.textContent || ''), null, 120000).catch(() => {});
+      await sleep(2500);
+      const c = await chips();
+      ok(c === want, `keepsmall: with ${why}, tETH to private TAC offers "${want}" (${c})`);
+      if (r.errors.length) { fails++; console.log('FAIL keepsmall page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+    } finally { await r.browser.close(); }
+  }
+});
 // With this computer's prover chosen, Keep ready stages the key's tETH notes whole and together, with one proof made here (the device prover and
 // the stage module are stubbed: the batch's proof, its settle and its one recipe are checked by tests/stage-batch-fork.mjs); the sizes kept ready
 // are then the staged deposits' own, and a press swaps one of them with no route asked of the relay.
@@ -12306,8 +12391,7 @@ await step('zapfirst', async () => {
   try {
     proveStub = true;
     await p.goto(r.url);
-    await until(p, () => [...document.querySelectorAll('[data-hx]')].some((a) => /^earn:ether:p\d+$/.test(a.dataset.hx) && /^tETH \/ TAC/.test(a.title)), null, 240000);
-    const spec = await p.evaluate(() => [...document.querySelectorAll('[data-hx]')].find((a) => /^earn:ether:p\d+$/.test(a.dataset.hx) && /^tETH \/ TAC/.test(a.title)).dataset.hx.split(':')[2]);          // the tETH / TAC farm's own link, as the landing lists it
+    const spec = 'p0';          // the tETH / TAC farm (the landing's farm links, which this read the id from, are gone)
     await p.goto(r.url + `#card=earn:ether:${spec}&amt=0.01`);
     await p.waitForSelector('#hx-amt', { timeout: 120000 });
     await until(p, () => document.querySelector('#hx-amt')?.value === '0.01' && document.querySelector('[data-hxm="earn"]')?.getAttribute('aria-selected') === 'true', null, 120000)
@@ -12315,11 +12399,13 @@ await step('zapfirst', async () => {
     await p.waitForSelector('#hx-routes [data-hxr]', { state: 'attached', timeout: 300000 }).catch(() => {});
     await until(p, () => /Zap into the farm/.test(document.querySelector('#hx-go')?.textContent || ''), null, 60000).catch(() => {});
     ok(!(await p.$('#wallet-dot.on')) && /Zap into the farm/.test(await text(p, '#hx-go')), `zapfirst: the link opens the Earn card with 0.01 ETH in it and nothing signed in (${(await text(p, '#hx-go')).trim()}; link ${spec}; card ${(await text(p, '#hx')).replace(/\s+/g, ' ').slice(0, 300)}; routes ${(await p.$$eval('#hx-routes [data-hxr]', (bs) => bs.map((b) => `${b.dataset.hxr}${b.getAttribute('aria-checked') === 'true' ? '*' : ''}`))).join(' ')})`);
+    await p.evaluate(() => { window.__barSeen = []; new MutationObserver((ms) => { for (const m of ms) for (const x of m.addedNodes) if (x.matches?.('.pace[data-eta]')) window.__barSeen.push(x.querySelector('[role=progressbar]')?.getAttribute('aria-label')); }).observe(document.body, { childList: true, subtree: true }); });
     const s0 = submits.length, w0 = walletTxs.length;
     await p.click('#hx-go');
     await until(p, () => (window.__farmCalls || []).some((c) => c.startsWith('bond:')) || /class="err"/.test(document.querySelector('#hx-zs')?.innerHTML || ''), null, 400000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | zs ${(await text(p, '#hx-zs').catch(() => '?')).slice(0, 160)} | key ${!!(await p.$('#wallet-dot.on'))} | submits ${submits.slice(s0).map((x) => `${x.type}/${x.mode || 'settle'}${x.ahead ? '/ahead' : ''}`)}`); });
     const asked = submits.slice(s0), sent = walletTxs.slice(w0), zap = sent.filter((x) => String(x.to).toLowerCase() === ROUTER_ADDR);
+    { const seen = await p.evaluate(() => window.__barSeen); ok(seen.length > 0 && !(await p.$('.pace[data-eta]')), `zapfirst: while the relay proves the share a bar stands under the status line, and it is gone after (${seen.length} shown)`); }
     ok(!!(await p.$('#wallet-dot.on')), 'zapfirst: the press opened the Tacit wallet with the connected one');
     ok(asked.some((x) => x.type === 'wrap' && x.mode === 'prove' && !x.ahead) && !asked.some((x) => x.type === 'wrap' && (x.mode || 'settle') === 'settle'),
       `zapfirst: the share was proved first, pressed and not early, and the relay was asked to settle nothing (${asked.map((x) => `${x.type}/${x.mode || 'settle'}${x.ahead ? '/ahead' : ''}`)})`);
@@ -13692,7 +13778,7 @@ await step('relaystate', async () => {
     await withdraw('0.5');
     await until(r.page, () => /can’t send this one right now/.test(document.querySelector('#v1-status')?.textContent || ''), null, 300000).catch(() => {});
     const held = await said();
-    ok(/The relay can’t send this one right now\./.test(held) && /Send it from your Tacit account\s*The relay proves it, and your Tacit account pays the network fee/.test(held) && !/Keep it in line/.test(held),
+    ok(/The relay can’t send this one right now\./.test(held) && /Send it from this key’s address\s*The relay proves it, and this key’s address pays the network fee/.test(held) && !/Keep it in line/.test(held),
       `relaystate: held at the press, the withdrawal is offered from the paying account, the relay proving it (${held})`);
     proveStub = true; restore = await stubPoolSettle('ok');
     const s1 = submits.length;

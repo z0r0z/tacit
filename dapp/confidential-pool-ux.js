@@ -1357,7 +1357,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       if (held < want) {
         const dec = Number(meta.decimals ?? 18), unit = shownTicker(ticker);
         const show = (v) => { const t = (Number(v) / 10 ** dec).toLocaleString('en-US', { maximumFractionDigits: 6 }); return `${t} ${unit}`; };
-        throw new Error(`your Tacit account ${acct.address} holds ${show(held)}; wrapping ${show(want)} needs that much there first`);
+        throw new Error(`this key’s address ${acct.address} holds ${show(held)}; wrapping ${show(want)} needs that much there first`);
       }
     }
     const sent = await _sendEvmTx({ acct, to: w.to, value: BigInt(w.value), data: w.calldata, gasLimit, send: broadcast });

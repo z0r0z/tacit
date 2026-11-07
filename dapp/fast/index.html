@@ -23,8 +23,8 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /fast/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/fast/app.js?cb=6b7de3fa">
-<link rel="modulepreload" href="/trade/btc-session.js?cb=d93e4816">
+<link rel="modulepreload" href="/fast/app.js?cb=19c1fb81">
+<link rel="modulepreload" href="/trade/btc-session.js?cb=71870db7">
 <link rel="modulepreload" href="/prf-wallet.js">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="/trade/key.js?cb=d110df5e">
@@ -38,7 +38,7 @@
 <link rel="modulepreload" href="/eth-nodes.js">
 <link rel="modulepreload" href="/trade/fmt.js?cb=32b1744b">
 <link rel="modulepreload" href="/tacit-session.js?cb=a2d34bb2">
-<link rel="modulepreload" href="/trade/poolux.js?cb=435f1138">
+<link rel="modulepreload" href="/trade/poolux.js?cb=89ac6e27">
 <link rel="modulepreload" href="/fast/ui.js?cb=3dc29710">
 <link rel="modulepreload" href="/fast/fmt.js">
 <link rel="modulepreload" href="/fast/route.js">
@@ -151,7 +151,7 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 /* the other way in: the regular bridge, under the button */
 .alt { margin: 12px 0 0; font-size: 12px; color: var(--mute); text-align: center; }
 .alt a { color: var(--ink); }
-.eyebrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); margin: 0 0 12px; }
+.eyebrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); margin: 0 0 12px; }
 .eyebrow .who { letter-spacing: 0; text-transform: none; font-size: 11.5px; }
 .note { font-size: 12.5px; color: var(--mute); margin: 12px 0 0; }
 .note a { color: var(--ink); }
@@ -231,7 +231,7 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .fx-big output { font: 400 clamp(30px, 6vw, 40px)/1.1 var(--serif); letter-spacing: -.01em; overflow-wrap: anywhere; }
 .fx-big span { color: var(--mute); }
 .fx-meta { margin-top: 2px; font-size: 11.5px; }
-.gate .rows-h { font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); margin: 0 0 6px; }
+.gate .rows-h { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); margin: 0 0 6px; }
 .fx-amt { display: flex; align-items: baseline; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--hair-2); }
 .fx-amt input { flex: 1 1 auto; min-width: 0; font: 400 clamp(30px, 6vw, 40px)/1.1 var(--serif); letter-spacing: -.01em; background: transparent; border: 0; outline: 0; padding: 0; }
 .fx-amt input:focus-visible { outline: none; }
@@ -245,7 +245,7 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .lp-tile.mine { border-color: var(--ink); }
 .lp-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
 .lp-top b { font-weight: 500; font-size: 13px; overflow-wrap: anywhere; }
-.lp-tag { flex: none; font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
+.lp-tag { flex: none; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
 .lp-tile .kv { padding: 3px 0; }
 .lp-tile .kv b { white-space: nowrap; }
 .pv > summary { cursor: pointer; padding: 18px 22px; list-style: none; font-weight: 500; }
@@ -273,7 +273,7 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .fx-steps li { padding-top: 6px; border-top: 2px solid var(--hair-2); }
 .fx-steps li.on { border-top-color: var(--ok); color: var(--ink); }
 .fx-steps li.at { border-top-color: var(--orange); color: var(--ink); }
-@media (max-width: 480px) { .fx-steps { font-size: 10.5px; gap: 4px; } }
+@media (max-width: 480px) { .fx-steps { font-size: 11px; gap: 4px; } }
 </style>
 <!-- chrome:head:begin inline -->
 <style>
@@ -343,6 +343,16 @@ header.top .chip:active { transform: scale(.97); }
 header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
 @container top (max-width: 480px) { header.top .chip { padding: 0 12px 0 11px; } header.top .chip.act { padding: 0; } }
 @media (pointer: coarse) { .sn > a, .sn summary, header.top .chip, footer.sf nav a { height: var(--tap, 44px); } }
+/* Touch, on every page that wears this: a quick double tap on a control does not zoom the page, and a text button takes a press a thumb can land (its box does not
+   change: the target reaches past it). */
+@media (pointer: coarse) {
+  a, button, summary, input, select, textarea, label, [role="button"], [role="tab"] { touch-action: manipulation; }
+  button.link, .linkbtn { position: relative; }
+  button.link::after, .linkbtn::after { content: ''; position: absolute; inset: -8px -6px; }
+  /* the mark and name at the header's left are 26-30px tall: the target reaches to the chips' 44 */
+  header.top a.brand { position: relative; }
+  header.top a.brand::after { content: ''; position: absolute; inset: -8px -6px; }
+}
 
 /* the menu: under the header's right edge, whatever the width */
 .sm-p {
@@ -464,6 +474,6 @@ footer.sf svg.fill { width: 16px; height: 16px; }
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/fast/app.js?cb=6b7de3fa"></script>
+<script type="module" src="/fast/app.js?cb=19c1fb81"></script>
 </body>
 </html>

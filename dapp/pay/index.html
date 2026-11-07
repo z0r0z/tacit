@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-pkrq1T5uKbQDBVMSU/1WbjEKgr/hsItA/pDTs97mejA=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://tacit-api.onrender.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-nzyxfK4p7+LOg9ZJLeaZZtU7AaWdRbYu4DQpWIU7TIw=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://tacit-api.onrender.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay</title>
 <meta name="description" content="Pay BTC, TAC and ETH privately from one key and one tacit1 address. Every payment is made on your device.">
@@ -428,6 +428,8 @@ details.card > summary h2 { font: 400 28px/1.05 var(--serif); letter-spacing: -.
 .how { display: grid; gap: 14px; }
 .how b { display: flex; align-items: center; gap: 8px; font-weight: 500; }
 .how p { margin: 4px 0 0; font-size: 12.5px; color: var(--mute); }
+/* A text field under 16px makes iOS zoom the page in when it is focused, and leave it zoomed: on a touch screen they are 16px. */
+@media (pointer: coarse) { .amt.text input { font-size: 16px; } .save input { font-size: 16px; } }
 </style>
 <!-- chrome:head:begin inline -->
 <style>
@@ -497,6 +499,16 @@ header.top .chip:active { transform: scale(.97); }
 header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
 @container top (max-width: 480px) { header.top .chip { padding: 0 12px 0 11px; } header.top .chip.act { padding: 0; } }
 @media (pointer: coarse) { .sn > a, .sn summary, header.top .chip, footer.sf nav a { height: var(--tap, 44px); } }
+/* Touch, on every page that wears this: a quick double tap on a control does not zoom the page, and a text button takes a press a thumb can land (its box does not
+   change: the target reaches past it). */
+@media (pointer: coarse) {
+  a, button, summary, input, select, textarea, label, [role="button"], [role="tab"] { touch-action: manipulation; }
+  button.link, .linkbtn { position: relative; }
+  button.link::after, .linkbtn::after { content: ''; position: absolute; inset: -8px -6px; }
+  /* the mark and name at the header's left are 26-30px tall: the target reaches to the chips' 44 */
+  header.top a.brand { position: relative; }
+  header.top a.brand::after { content: ''; position: absolute; inset: -8px -6px; }
+}
 
 /* the menu: under the header's right edge, whatever the width */
 .sm-p {
@@ -897,7 +909,7 @@ function otherWallet() { return knownWallets(KNOWN_IDS).other; }
 const viaText = (k) => ({ eth: `Ethereum ${short(k.address || '')}`, btc: `Bitcoin ${short(k.address || '', 6)}`, ext: `a key funded by ${short(k.address || '', 6)}`,
   passkey: `passkey “${k.label || 'Tacit'}”`, local: 'the key saved in this browser', key: 'a pasted key' })[k.mode] || 'your wallet';
 
-const TACIT_URL = '/tacit.js?cb=187d27e1';
+const TACIT_URL = '/tacit.js?cb=add7bef4';
 const SHARED_NET = 'tacit-network-v1', PREV_NET = 'tacit-pay-prev-net-v1';
 const SHARED_WALLET_KEYS = ['tacit-eth-identity', 'tacit-btc-identity', 'tacit-active-mode-v1', 'tacit-ext-mode-v1', 'tacit-ext-state-v1',
   ...['mainnet', 'signet'].flatMap((n) => [`tacit-eth-identity:${n}`, `tacit-btc-identity:${n}`, `tacit-active-mode-v1:${n}`])];
@@ -1273,7 +1285,7 @@ const btcRoute = memoRoute(async (raw) => {
   throw new Error('Enter a tacit1…, sp1… or bc1… address, or a name.');
 });
 const getUx = lazy(async () => {
-  const [{ makeConfidentialPoolUx }, dep] = await Promise.all([import('/confidential-pool-ux.js?cb=fea4ab97'), import('/confidential-deployments.js')]);
+  const [{ makeConfidentialPoolUx }, dep] = await Promise.all([import('/confidential-pool-ux.js?cb=57c4a7e5'), import('/confidential-deployments.js')]);
   dep.setActiveNetwork('mainnet');
   return makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256, network: 'mainnet' });
 });

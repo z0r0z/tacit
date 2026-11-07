@@ -22,7 +22,7 @@
 <link rel="preconnect" href="https://tacit-points.onrender.com" crossorigin>
 <!-- preload-roots: /vault/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/vault/app.js?cb=92b3ee73">
+<link rel="modulepreload" href="/vault/app.js?cb=02d8a270">
 <link rel="modulepreload" href="/vault/deployments.js?cb=4af96594">
 <link rel="modulepreload" href="/vault/math.js?cb=ac1ed53e">
 <link rel="modulepreload" href="/vault/chain.js?cb=872255e6">
@@ -174,7 +174,7 @@ h1 .s-tac { display: contents; }
   #btc-pos { order: 1; } #btc-ticket { order: 2; } #btc-board { order: 3; } #btc-how { order: 4; } .tac-l { order: 5; }}
 .panel { background: var(--card); border: 1px solid var(--hair); padding: 22px; min-width: 0; }
 @media (max-width: 480px) { .panel { padding: 18px 14px; } }
-.eyebrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); margin: 0 0 12px; }
+.eyebrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); margin: 0 0 12px; }
 .eyebrow .who { letter-spacing: 0; text-transform: none; font-size: 11.5px; }
 .eyebrow .st { letter-spacing: 0; text-transform: none; font-size: 11.5px; }
 .note { font-size: 12.5px; color: var(--mute); margin: 12px 0 0; }
@@ -244,13 +244,13 @@ main { min-height: calc(100svh - 100px); }                          /* the foote
 .promo[hidden], .reward[hidden] { display: none; }
 .promo .linkbtn { margin-left: 4px; color: var(--ink); font-size: inherit; }
 .reward { margin: 12px 0 0; padding: 8px 12px 6px; background: var(--field); border-left: 2px solid var(--amber); }
-.reward .rwd-h { margin: 0 0 4px; font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }                                    /* .kv sets display, which would otherwise show a row the page has hidden */
+.reward .rwd-h { margin: 0 0 4px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }                                    /* .kv sets display, which would otherwise show a row the page has hidden */
 .rows.flat { margin-top: 0; border-top: 0; padding-top: 0; }
 .paused { margin: 12px 0 0; padding: 10px 12px; font-size: 12.5px; background: var(--field); border-left: 2px solid var(--amber); }
 
 /* a vault's health */
 .z-liquidation { color: var(--red); } .z-redemption { color: var(--amber); } .z-safe { color: var(--green); }
-.hb { margin: 18px 0 2px; font-size: 10.5px; container-type: inline-size; }
+.hb { margin: 18px 0 2px; font-size: 11px; container-type: inline-size; }
 .hb-top { position: relative; height: 18px; color: var(--ink); }
 .hb-top span { position: absolute; bottom: 3px; transform: translateX(-100%); padding-right: 7px; white-space: nowrap; }
 .hb-bar { position: relative; display: flex; height: 28px; border: 1px solid var(--hair-2); }
@@ -340,6 +340,7 @@ input::placeholder { color: var(--mute); opacity: .7; }
 .way-t { display: flex; align-items: center; gap: 10px; font-weight: 500; }
 
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+@media (pointer: coarse) { .sel select { font-size: 16px; } }
 </style>
 <!-- chrome:head:begin inline -->
 <style>
@@ -409,6 +410,16 @@ header.top .chip:active { transform: scale(.97); }
 header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
 @container top (max-width: 480px) { header.top .chip { padding: 0 12px 0 11px; } header.top .chip.act { padding: 0; } }
 @media (pointer: coarse) { .sn > a, .sn summary, header.top .chip, footer.sf nav a { height: var(--tap, 44px); } }
+/* Touch, on every page that wears this: a quick double tap on a control does not zoom the page, and a text button takes a press a thumb can land (its box does not
+   change: the target reaches past it). */
+@media (pointer: coarse) {
+  a, button, summary, input, select, textarea, label, [role="button"], [role="tab"] { touch-action: manipulation; }
+  button.link, .linkbtn { position: relative; }
+  button.link::after, .linkbtn::after { content: ''; position: absolute; inset: -8px -6px; }
+  /* the mark and name at the header's left are 26-30px tall: the target reaches to the chips' 44 */
+  header.top a.brand { position: relative; }
+  header.top a.brand::after { content: ''; position: absolute; inset: -8px -6px; }
+}
 
 /* the menu: under the header's right edge, whatever the width */
 .sm-p {
@@ -608,6 +619,6 @@ footer.sf svg.fill { width: 16px; height: 16px; }
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/vault/app.js?cb=92b3ee73"></script>
+<script type="module" src="/vault/app.js?cb=02d8a270"></script>
 </body>
 </html>

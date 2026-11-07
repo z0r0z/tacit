@@ -29,7 +29,7 @@
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
 <!-- preload-roots: /bridge/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/bridge/app.js?cb=cec70bfb">
+<link rel="modulepreload" href="/bridge/app.js?cb=39bcaae5">
 <link rel="modulepreload" href="/bridge/track.js?cb=c4ce3ac0">
 <link rel="modulepreload" href="/rpc-body.js">
 <!-- preload:end -->
@@ -468,6 +468,16 @@ header.top .chip:active { transform: scale(.97); }
 header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
 @container top (max-width: 480px) { header.top .chip { padding: 0 12px 0 11px; } header.top .chip.act { padding: 0; } }
 @media (pointer: coarse) { .sn > a, .sn summary, header.top .chip, footer.sf nav a { height: var(--tap, 44px); } }
+/* Touch, on every page that wears this: a quick double tap on a control does not zoom the page, and a text button takes a press a thumb can land (its box does not
+   change: the target reaches past it). */
+@media (pointer: coarse) {
+  a, button, summary, input, select, textarea, label, [role="button"], [role="tab"] { touch-action: manipulation; }
+  button.link, .linkbtn { position: relative; }
+  button.link::after, .linkbtn::after { content: ''; position: absolute; inset: -8px -6px; }
+  /* the mark and name at the header's left are 26-30px tall: the target reaches to the chips' 44 */
+  header.top a.brand { position: relative; }
+  header.top a.brand::after { content: ''; position: absolute; inset: -8px -6px; }
+}
 
 /* the menu: under the header's right edge, whatever the width */
 .sm-p {
@@ -1033,6 +1043,6 @@ footer.sf svg.fill { width: 16px; height: 16px; }
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/bridge/app.js?cb=cec70bfb"></script>
+<script type="module" src="/bridge/app.js?cb=39bcaae5"></script>
 </body>
 </html>

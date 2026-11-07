@@ -78,8 +78,12 @@ globalThis.fetch = async (url, init = {}) => {
       const rows = from === 0 ? [{ leafIndex: 0, txid: 'a0'.repeat(32), height: 1000, leaf: note.leaf, asset: note.asset, pk_eph: note.pkEph, ct_note: note.ctNote }] : [];
       return json({ height: 1006, from, notes: rows, next: rows.length ? 1 : from });
     }
+    // the pool's whole list of spent notes, which the wallet's notes are checked against (no request names one of them); nothing is spent
+    if (p === '/btc-pool/nullifiers') return json({ nullifiers: [], next: null });
     if (p.startsWith('/btc-pool/nullifier/')) return json({ spent: false });
     let m;
+    // the root at an anchor, which the paths the wallet works out from the feed are checked against
+    if ((m = p.match(/^\/btc-pool\/root\/(\d+)$/))) return json({ root: '0x' + bytesToHex(st.tree.rootAndPathAt(0, 1).root), retained: true });
     if ((m = p.match(/^\/btc-pool\/path\/(\d+)$/))) {
       const at = Number(u.searchParams.get('at'));
       const { root, path } = st.tree.rootAndPathAt(Number(m[1]), 1);

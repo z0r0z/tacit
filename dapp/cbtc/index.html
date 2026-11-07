@@ -26,7 +26,7 @@
 <link rel="preload" as="fetch" href="https://api.tacit.finance/farm/program?network=mainnet" crossorigin fetchpriority="low">
 <!-- preload-roots: /cbtc/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/cbtc/app.js?cb=1bec9449">
+<link rel="modulepreload" href="/cbtc/app.js?cb=1e6dd432">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="/trade/chart.js?cb=04207026">
 <link rel="modulepreload" href="/trade/fmt.js?cb=32b1744b">
@@ -43,7 +43,7 @@
 <link rel="modulepreload" href="/tacit-wallet-known.js?cb=ed4c75b7">
 <link rel="modulepreload" href="/evm-wallet.js?cb=b400cbe7">
 <link rel="modulepreload" href="/identity-message.js">
-<link rel="modulepreload" href="/trade/poolux.js?cb=435f1138">
+<link rel="modulepreload" href="/trade/poolux.js?cb=89ac6e27">
 <link rel="modulepreload" href="/teth/read.js?cb=9364ab31">
 <link rel="modulepreload" href="/evm-trade-venues.js?cb=dda58fa8">
 <link rel="modulepreload" href="/zrouter-guard.js">
@@ -158,7 +158,7 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .lanes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; }
 .lane { padding: 11px 14px 10px 0; min-width: 0; }
 .lane + .lane { padding-left: 16px; border-left: 1px solid var(--hair); }
-.lane .k { display: flex; align-items: center; gap: 6px; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--mute); }
+.lane .k { display: flex; align-items: center; gap: 6px; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--mute); }
 .lane .k .sw { width: 6px; height: 6px; border-radius: 50%; flex: none; opacity: .85; }
 .lane .v { display: inline; margin: 0; font: 500 15px/1.5 var(--mono); letter-spacing: -.01em; }
 .lane .s { display: inline; margin-left: 8px; font-size: 11.5px; color: var(--mute); }
@@ -179,7 +179,7 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 @media (max-width: 980px) { .grid { grid-template-columns: minmax(0, 1fr); grid-template-areas: "ticket" "chart" "farm" "depth" "info"; } .side { display: contents; } .p-ticket { grid-area: ticket; } .p-farm { grid-area: farm; } }
 .panel { background: var(--card); border: 1px solid var(--hair); padding: 22px; min-width: 0; }
 @media (max-width: 480px) { .panel { padding: 18px 14px; } }
-.eyebrow { display: flex; align-items: center; gap: 8px; font-size: 10.5px; font-weight: 400; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); margin: 0 0 12px; }
+.eyebrow { display: flex; align-items: center; gap: 8px; font-size: 11px; font-weight: 400; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); margin: 0 0 12px; }
 .h2 { font: 400 30px/1.02 var(--serif); letter-spacing: -.01em; margin: 0 0 14px; }
 .note { font-size: 12.5px; color: var(--mute); margin: 12px 0 0; }
 .note a { color: var(--ink); }
@@ -204,7 +204,7 @@ code { font-size: 12px; overflow-wrap: anywhere; }
 .chart-svg { display: block; width: 100%; height: 100%; overflow: visible; }
 .chart-empty { margin: 0; padding: 60px 0; text-align: center; color: var(--mute); }
 .chart .grid { stroke: var(--hair); stroke-width: 1; } .chart .grid.v { stroke-dasharray: 2 4; }
-.chart .axis { fill: var(--mute); font-size: 10.5px; } .chart .axis.mid { text-anchor: middle; }
+.chart .axis { fill: var(--mute); font-size: 11px; } .chart .axis.mid { text-anchor: middle; }
 .chart .wick { stroke-width: 1.2; } .chart .body { stroke-width: 0; }
 .chart .wick.up { stroke: var(--up); } .chart .body.up { fill: var(--up); } .chart .vol.up { fill: var(--up); opacity: .22; }
 .chart .wick.down { stroke: var(--down); } .chart .body.down { fill: var(--down); } .chart .vol.down { fill: var(--down); opacity: .22; }
@@ -226,7 +226,7 @@ code { font-size: 12px; overflow-wrap: anywhere; }
 .chart .halo { opacity: .22; transform-box: fill-box; transform-origin: center; animation: pulse 2.4s ease-out 4; }
 @keyframes pulse { 0% { transform: scale(.5); opacity: .35; } 100% { transform: scale(1.5); opacity: 0; } }
 .chart .markdot { fill: var(--card); stroke-width: 1.5; }
-.chart .mark { font-size: 10.5px; fill: var(--ink); font-weight: 500; paint-order: stroke; stroke: var(--card); stroke-width: 3px; stroke-linejoin: round; }
+.chart .mark { font-size: 11px; fill: var(--ink); font-weight: 500; paint-order: stroke; stroke: var(--card); stroke-width: 3px; stroke-linejoin: round; }
 .chart .cross .cd { fill: var(--card); stroke-width: 2; }
 .chart .clab { fill: var(--ink); } .chart .clabt { fill: var(--card); font-size: 10px; font-weight: 500; }
 .chart .selband { fill: var(--ink); opacity: .08; } .chart-svg { -webkit-user-select: none; user-select: none; }
@@ -245,7 +245,7 @@ code { font-size: 12px; overflow-wrap: anywhere; }
 @media (max-width: 760px) { .hero .sub.tac { min-height: 5.3em; } .hero .stats { display: grid; grid-template-columns: repeat(2, auto); justify-content: start; gap: 2px 22px; width: 100%; } .hero .stats .st { white-space: nowrap; } }
 @media (max-width: 374px) { .hero .sub.tac { min-height: 9.2em; } .hero .stats { grid-template-columns: auto; } }
 .hero .chgs { display: inline-flex; flex-wrap: wrap; gap: 2px 14px; } .hero .chg i { font-style: normal; color: var(--mute); margin-right: 3px; } .hero .chg.mute { color: var(--mute); }
-.trades td small { display: inline; margin-left: 8px; font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; } .trades .up { color: var(--up); } .trades .down { color: var(--down); }
+.trades td small { display: inline; margin-left: 8px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; } .trades .up { color: var(--up); } .trades .down { color: var(--down); }
 .trades td { padding: 8px 8px; } .trades td.go { text-align: right; width: 1%; } .trades td.go a { color: var(--mute); text-decoration: none; } .trades td.go a:hover { color: var(--ink); }
 .chart:focus-visible, .chart-svg:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; } .chart-svg:focus:not(:focus-visible) { outline: none; }
 .more { margin: 12px 0 0; font-size: 12.5px; }
@@ -276,7 +276,7 @@ input::placeholder { color: var(--mute); opacity: .7; }
 .kv { display: flex; justify-content: space-between; gap: 12px; font-size: 12.5px; color: var(--mute); padding: 5px 0; }
 .kv b { font-weight: 400; color: var(--ink); text-align: right; overflow-wrap: anywhere; }
 .splitnote { margin: 8px 0 0; font-size: 12px; color: var(--mute); }
-.splitbar { display: flex; gap: 2px; margin: 2px 0 8px; height: 22px; font-size: 10.5px; letter-spacing: .02em; }
+.splitbar { display: flex; gap: 2px; margin: 2px 0 8px; height: 22px; font-size: 11px; letter-spacing: .02em; }
 .splitbar span { display: flex; align-items: center; min-width: 0; padding: 0 8px; overflow: hidden; white-space: nowrap; color: #fff; }
 .splitbar .pp { background: #4a63d6; } .splitbar .tp { background: #15803d; }
 .kv b .gain { font-style: normal; color: var(--up); margin-left: 4px; }
@@ -322,7 +322,7 @@ input::placeholder { color: var(--mute); opacity: .7; }
 /* where it trades */
 .table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .table th, .table td { padding: 10px 8px; text-align: left; border-top: 1px solid var(--hair); vertical-align: top; }
-.table th { font-weight: 400; color: var(--mute); font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; border-top: 0; padding-top: 0; }
+.table th { font-weight: 400; color: var(--mute); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; border-top: 0; padding-top: 0; }
 .table td.r, .table th.r { text-align: right; }
 .table td b { font-weight: 500; }
 .table small { display: block; color: var(--mute); font-size: 11.5px; margin-top: 2px; }
@@ -354,7 +354,7 @@ button.ob-row { cursor: pointer; }
 button.ob-row:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
 @media (pointer: coarse) { .ob-row { min-height: 36px; } }
 .ob-row .p { font-weight: 500; } .ob-row.ask .p { color: color-mix(in srgb, var(--down) 90%, var(--ink)); } .ob-row.bid .p { color: color-mix(in srgb, var(--up) 90%, var(--ink)); }
-.ob-row .p small { display: inline; margin-left: 6px; font-weight: 400; font-size: 10.5px; color: var(--mute); }
+.ob-row .p small { display: inline; margin-left: 6px; font-weight: 400; font-size: 11px; color: var(--mute); }
 .ob-row .a, .ob-row .t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .ob-row .t { color: var(--mute); }
 .ob-row.mine { box-shadow: inset 3px 0 0 var(--mute); } .ob-row.take { box-shadow: inset 3px 0 0 var(--orange); }
 .ob-tag { font-style: normal; font-size: 9px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--warn); margin-right: 6px; }
@@ -373,7 +373,7 @@ button.ob-row:focus-visible { outline: 2px solid var(--ink); outline-offset: -2p
 .yours td small { margin-left: 8px; text-transform: none; letter-spacing: 0; } .yours tbody tr:first-child td { border-top: 0; }
 .yours td.r, .yours td.go, .yours.recent td:first-child { white-space: nowrap; }
 @media (max-width: 560px) { .yours td small { display: block; margin-left: 0; } .yours.recent td { padding-left: 4px; padding-right: 4px; } }
-.ob-more { display: block; width: 100%; height: 32px; background: none; border: 0; border-top: 1px solid var(--hair); font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--mute); cursor: pointer; }
+.ob-more { display: block; width: 100%; height: 32px; background: none; border: 0; border-top: 1px solid var(--hair); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--mute); cursor: pointer; }
 @media (hover: hover) { .ob-more:hover { color: var(--ink); background: var(--field); } }
 @container (max-width: 560px) { .ob-row .p small { display: none; } }
 .hints .up { color: var(--up); } .hints .down { color: var(--down); }
@@ -599,6 +599,16 @@ header.top .chip:active { transform: scale(.97); }
 header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
 @container top (max-width: 480px) { header.top .chip { padding: 0 12px 0 11px; } header.top .chip.act { padding: 0; } }
 @media (pointer: coarse) { .sn > a, .sn summary, header.top .chip, footer.sf nav a { height: var(--tap, 44px); } }
+/* Touch, on every page that wears this: a quick double tap on a control does not zoom the page, and a text button takes a press a thumb can land (its box does not
+   change: the target reaches past it). */
+@media (pointer: coarse) {
+  a, button, summary, input, select, textarea, label, [role="button"], [role="tab"] { touch-action: manipulation; }
+  button.link, .linkbtn { position: relative; }
+  button.link::after, .linkbtn::after { content: ''; position: absolute; inset: -8px -6px; }
+  /* the mark and name at the header's left are 26-30px tall: the target reaches to the chips' 44 */
+  header.top a.brand { position: relative; }
+  header.top a.brand::after { content: ''; position: absolute; inset: -8px -6px; }
+}
 
 /* the menu: under the header's right edge, whatever the width */
 .sm-p {
@@ -797,6 +807,6 @@ footer.sf svg.fill { width: 16px; height: 16px; }
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/cbtc/app.js?cb=1bec9449"></script>
+<script type="module" src="/cbtc/app.js?cb=1e6dd432"></script>
 </body>
 </html>

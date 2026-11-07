@@ -114,3 +114,41 @@ test('a deposit declined after USDT\'s allowance was reset to zero says so, not 
   const go = fn('laterGo');
   assert.match(go, /stopped \? \(e\?\.zeroed \? `Your \$\{esc\(e\.zeroed\)\} allowance was set to zero; nothing else was sent\.` : 'Nothing was sent\.'\)/);
 });
+
+// ── Keep ready is offered only while one note can be cut ──
+// Each size is cut from ONE free tETH note that holds more than it and the stage's fee (private.js stageSizes), so a balance of small notes, whatever it totals, has nothing to keep ready,
+// and a note only just over the size cannot pay the fee. `need` is what the stage module says a note must hold (undefined: not read yet).
+test('Keep ready is offered when one note holds more than a size not kept ready and its fee, not when the balance is in small notes', () => {
+  const make = (notes, { held = true, need = () => undefined } = {}) => new Function('IDS', 'PK', 'PV', 'paint', `${fn('keepable')}; return keepable;`)({ ceth: '0xid' }, { teth: 'ceth' },
+    { held: held ? {} : null, of: () => ({ notes: notes.map((value) => ({ value })) }), stageNeed: need }, () => {});
+  const sizes = [1000000n, 10000000n];                                          // 0.01 and 0.1 tETH, in the pool's 8 decimals
+  assert.strictEqual(make([500000n, 510000n])(sizes), false, '0.0101 tETH as two notes: none holds 0.01');
+  assert.strictEqual(make([1010000n])(sizes), true, 'one 0.0101 note holds 0.01 and a little over (the fee not read yet)');
+  assert.strictEqual(make([1000000n])(sizes), false, 'a note of exactly the size leaves nothing for the fee');
+  assert.strictEqual(make([1010000n])([10000000n]), false, 'only 0.1 is missing and the note is smaller');
+  assert.strictEqual(make([25000000n])([10000000n]), true);
+  assert.strictEqual(make([25000000n])([]), false, 'every size is kept ready already');
+  assert.strictEqual(make([25000000n], { held: false })(sizes), false, 'nothing is offered before the notes are read');
+  assert.strictEqual(make([])(sizes), false, 'or with no note');
+  // the fee read: a note must hold more than the size and the fee
+  const fee = (u) => (u === 1000000n ? 1030000n : 10030000n);
+  assert.strictEqual(make([1010000n], { need: fee })(sizes), false, 'a 0.0101 note is over 0.01 but not over it and the fee');
+  assert.strictEqual(make([1100000n], { need: fee })(sizes), true, 'a note over the size and the fee');
+  assert.strictEqual(make([1010000n, 25000000n], { need: fee })([1000000n]), true, 'a larger note elsewhere pays it');
+  assert.strictEqual(make([25000000n], { need: () => null })(sizes), false, 'a size the stage cannot price is not offered');
+});
+
+test('a Keep ready that staged nothing says which of the two it was', () => {
+  const go = fn('stageGo');
+  assert.match(go, /no single tETH note holds a size and its fee/, 'a balance of small notes is said');
+  assert.match(go, /Each size is cut from one note, and notes are not joined/);
+  assert.match(go, /if \(n \|\| !left\.length\) say\('Kept ready\./, 'every size already staged is not an error');
+});
+
+test('the stage module prices a size and private.js cuts from a note over it and its fee', async () => {
+  const stage = readFileSync(new URL('../dapp/confidential-stage.js', import.meta.url), 'utf8'), priv = readFileSync(new URL('../dapp/swap/private.js', import.meta.url), 'utf8');
+  assert.match(stage, /async function stageNeed\(units\) \{\s*const part = sizeFor\(BigInt\(units\), await stageFee\('sendunwrap'\)\);\s*return part \? part\.amount : null;/, 'the size and the partial unwrap\'s fee, as buildStage sizes it');
+  assert.match(stage, /return \{ stageFee, stageNeed,/, 'and the stage hands it out');
+  assert.match(priv, /filter\(\(x\) => BigInt\(x\.value\) > \(need \?\? units\)\)/, 'stageSizes cuts from a note over the size and its fee, so it never picks one only just over');
+  assert.match(priv, /stagedSizes, stageNeed, stageSizes,/, 'and the card can read it');
+});

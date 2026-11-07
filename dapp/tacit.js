@@ -18336,7 +18336,7 @@ function _burndepFriendlyError(e) {
   if (/timed? ?out|timeout/i.test(m)) return 'That took too long to answer. Try again.';
   if (/another tab/i.test(m)) return 'This bridge is being advanced in another open tab right now. Wait for it to finish there, or close that tab and retry here.';
   const short = m.match(/insufficient ETH for gas: (0x[0-9a-fA-F]{40})/);
-  if (short) return `Your Tacit account ${short[1]} needs a little ETH for gas to finish this: send about 0.003 ETH to it, then press Finish again.`;
+  if (short) return `This key’s address ${short[1]} needs a little ETH for gas to finish this: send about 0.003 ETH to it, then press Finish again.`;
   return m;
 }
 function _burndepRelayRefused(err) {
@@ -18376,7 +18376,7 @@ function _renderHoldingsBurndepBridges(listEl) {
       : keepRow ? 'Bitcoin’s proof on Ethereum passed the burn without recording it, so it cannot be minted. Keep this row and its transaction ids, and ask for help with them.' : _BURNDEP_NOTE[rec.stage];
     const selfOffer = (rec.stage === 'folded' || rec.stage === 'rfolded') && failing && _burndepRelayRefused(rec.lastError);
     const noteHtml = (noteText ? `<div style="margin-top:3px;max-width:52ch;">${escapeHtml(noteText)}</div>` : '')
-      + (selfOffer ? `<div style="margin-top:3px;max-width:52ch;">The relay can’t take this mint right now. You can finish it from your Tacit account instead: it pays a little ETH for gas (about 0.001–0.003 ETH) and no relay fee.</div>` : '');
+      + (selfOffer ? `<div style="margin-top:3px;max-width:52ch;">The relay can’t take this mint right now. You can finish it from this key’s address instead: it pays a little ETH for gas (about 0.001–0.003 ETH) and no relay fee.</div>` : '');
     const errorHtml = failing
       ? `<div style="color:var(--red-warn);margin-top:2px;">⚠ ${escapeHtml(_burndepFriendlyError(rec.lastError))}${rec.errorCount > 1 ? ` (×${rec.errorCount})` : ''}</div>`
       : '';
