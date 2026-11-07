@@ -11,7 +11,7 @@ import { execFileSync } from 'node:child_process';
 import {
   ZERO_ADDR, TAC_ERC20, TAC_POOL_ASSET_ID, CETH_POOL_ASSET_ID,
   ZROUTER, ZQUOTER_V2, PRECISION_ROUTE, PRECISION_LENS, PRECISION_POLICY, PRECISION_GUARD,
-  PRECISION_POOL, TACIT_AMM, TACIT_AMM_TIERS, TACIT_AMM_UNIT_SCALE, BOARD_V2, BOARD_V1, BOARD_VIEW,
+  PRECISION_POOL, TACIT_AMM, CONF_ROUTER, TACIT_AMM_TIERS, TACIT_AMM_UNIT_SCALE, BOARD_V2, BOARD_V1, BOARD_VIEW,
   BOARD_SWAP_BOL, MULTICALL3, VENUES, WETH, ZQUOTER_V4, V4_TAC_POOLS,
   makeEvmTradeVenues, zswapDeepLink, encErc20Allowance, encErc20Approve, encErc20BalanceOf, decUint256,
   _internal,
@@ -400,6 +400,23 @@ const B32 = '0x' + 'ab'.repeat(32);
   assert.equal(tacitTacInBuilt.approval.token.toLowerCase(), TAC_ERC20.toLowerCase());
   assert.equal(tacitTacInBuilt.approval.spender.toLowerCase(), TACIT_AMM.toLowerCase());
   ok('build() sends a TAC-in Tacit AMM swap direct to the AMM (approve first), never through snwap');
+
+  // With the seller's EIP-2612 permit the same sale is one call into the confidential router (bound to the same AMM), which pulls the TAC by the permit.
+  assert.equal(tacitTacInBuilt.approval.permitSpender.toLowerCase(), CONF_ROUTER.toLowerCase(), 'the permit is signed to the router, not the AMM');
+  const dl = 1900000000n, rs = { r: '0x' + '11'.repeat(32), s: '0x' + '22'.repeat(32) };
+  const permit = { value: tacitTacInQuote.amountIn, deadline: dl, v: 27, ...rs };
+  const viaRouter = venues.build({ quote: tacitTacInQuote, dir: 'TAC_TO_ETH', account: A1, slippageBps: 50, deadline: dl, permit });
+  assert.equal(viaRouter.to.toLowerCase(), CONF_ROUTER.toLowerCase());
+  assert.equal(viaRouter.value, 0n);
+  assert.equal(viaRouter.approval, null, 'a permit leaves nothing to approve');
+  const minOutTac = (tacitTacInQuote.amountOut * 9950n) / 10000n;
+  assert.equal(viaRouter.data.toLowerCase(), cast('calldata', 'swapPublicWithPermit(address,address,uint32,uint256,uint256,uint64,address,uint8,bytes32,bytes32)',
+    TAC_ERC20, ZERO_ADDR, '30', tacitTacInQuote.amountIn.toString(), minOutTac.toString(), dl.toString(), A1, '27', rs.r, rs.s).toLowerCase());
+  assert.equal(viaRouter.data.slice(0, 10), '0x53c87456');
+  assert.throws(() => venues.build({ quote: tacitTacInQuote, dir: 'TAC_TO_ETH', account: A1, deadline: dl, permit: { ...permit, deadline: dl + 1n } }), /expire together/, 'a permit that outlives the swap is refused');
+  assert.throws(() => venues.build({ quote: tacitTacInQuote, dir: 'TAC_TO_ETH', account: A1, deadline: dl, permit: { ...permit, value: permit.value - 1n } }), /amount sold/, 'a permit for another amount is refused');
+  assert.throws(() => venues.build({ quote: tacitTacInQuote, dir: 'TAC_TO_ETH', account: A1, to: CONF_ROUTER, deadline: dl, permit }), /router/, 'the router never receives the output');
+  ok('build() with a permit sends a TAC-in Tacit AMM swap through the confidential router (swapPublicWithPermit, no approval), pinned to cast, and refuses a permit that does not match the sale');
 }
 
 // ── quoteZQuoter with no deadline (the trade tile asks it that way) ──

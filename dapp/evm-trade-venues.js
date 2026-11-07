@@ -14,6 +14,8 @@ export const PRECISION_POLICY = '0x00000045fc7b570Be4d71F67219508ebD295EC6D';
 export const PRECISION_GUARD = '0x00000057B53fB5feEdedaf7066e1f1C7002b1961';
 export const PRECISION_POOL = '0x0155358241411dB868BA714aE7c83A27087e3D6E';
 export const TACIT_AMM = '0x00000000E36C7EC997CC59DCda9E03673B448119';
+// The confidential pool's router, bound to the same pool and AMM: its swapPublicWithPermit takes a token's EIP-2612 permit and swaps it through the AMM in one call.
+export const CONF_ROUTER = '0x000000005dA3E3B73726af3c774Deeb9472D4992';
 export const TACIT_AMM_TIERS = [30, 5, 100, 1];
 export const TACIT_AMM_UNIT_SCALE = 10n ** 10n;
 export const BOARD_V2 = '0x000000dA7bb4B2A9E3e80e9A4D4157E26CA6189b';
@@ -56,6 +58,7 @@ const SEL = {
   quoteV4: '61d65dee',
   tacitQuote: '3bc1414a',
   tacitSwap: 'cfdf9dcc',
+  confSwapPermit: '53c87456',
   buildBestSwap: 'e7798987',
   boardCandidates: '5f452988',
   allowance: 'dd62ed3e',
@@ -248,14 +251,27 @@ async function quoteTacitAmm({ ethCall, dir, amountIn, block }) {
   return { venue: VENUES.TACIT_AMM, amountIn: aligned, dustIn: amountIn - aligned, amountOut: best.amountOut, feeBps: best.feeBps, assetIn, assetOut };
 }
 
-function buildTacitAmmSwap({ quote, dir, account, to = account, minOut, deadline }) {
+// swapPublicWithPermit(tokenIn, tokenOut, feeBps, amountIn, minAmountOut, deadline, to, v, r, s): `deadline` is the swap's and the permit's expiry both.
+function encConfRouterSwapPermit({ tokenIn, tokenOut, feeBps, amountIn, minOut, deadline, to, v, r, s }) {
+  return '0x' + SEL.confSwapPermit + addrWord(tokenIn) + addrWord(tokenOut) + word(feeBps) + word(amountIn) + word(minOut) + word(deadline) + addrWord(to) + word(v) + bytes32Word(r) + bytes32Word(s);
+}
+
+// ETH in rides zRouter. TAC in cannot (the AMM would pull from zRouter's executor, not the seller), so it goes direct to the AMM behind an approval, or, given the
+// seller's EIP-2612 permit (signed to the confidential router, `approval.permitSpender`, for `amountIn` until `deadline`), through the confidential router in one call.
+function buildTacitAmmSwap({ quote, dir, account, to = account, minOut, deadline, permit = null }) {
   const { assetIn, assetOut, feeBps, amountIn } = quote;
   if (dir === 'ETH_TO_TAC') {
     const swapData = encTacitSwap({ assetIn, assetOut, feeBps, amountIn, minOut, deadline, to });
     const leg = encSnwap({ tokenIn: ZERO_ADDR, amountIn, recipient: to, tokenOut: TAC_ERC20, minOut, executor: TACIT_AMM, data: swapData });
     return { to: ZROUTER, data: encZRouterMulticall([leg]), value: amountIn, approval: null };
   }
-  return { to: TACIT_AMM, data: encTacitSwap({ assetIn, assetOut, feeBps, amountIn, minOut, deadline, to }), value: 0n, approval: { token: TAC_ERC20, spender: TACIT_AMM, amount: amountIn } };
+  if (permit) {
+    if (permit.deadline != null && BigInt(permit.deadline) !== BigInt(deadline)) throw new Error('build: the permit and the swap must expire together');
+    if (permit.value != null && BigInt(permit.value) !== BigInt(amountIn)) throw new Error('build: the permit must be for the amount sold');
+    if (String(to).toLowerCase() === CONF_ROUTER.toLowerCase()) throw new Error('build: the output cannot be paid to the router');
+    return { to: CONF_ROUTER, data: encConfRouterSwapPermit({ tokenIn: TAC_ERC20, tokenOut: ZERO_ADDR, feeBps, amountIn, minOut, deadline, to, v: permit.v, r: permit.r, s: permit.s }), value: 0n, approval: null };
+  }
+  return { to: TACIT_AMM, data: encTacitSwap({ assetIn, assetOut, feeBps, amountIn, minOut, deadline, to }), value: 0n, approval: { token: TAC_ERC20, spender: TACIT_AMM, amount: amountIn, permitSpender: CONF_ROUTER } };
 }
 
 const NO_ROUTE_SELECTOR = '6586e129';
@@ -510,7 +526,7 @@ export function makeEvmTradeVenues({ ethCall, keccak256 } = {}) {
       if (typeof keccak256 !== 'function' && quote.tokenIn !== ZERO_ADDR) throw new Error('build: keccak256 required for a TAC-in Precision route');
       return buildPrecisionSwap({ quote, account, to, minOut, deadline: dl, keccak256, permit: quote.tokenIn === ZERO_ADDR ? null : permit });
     }
-    if (quote.venue === VENUES.TACIT_AMM) return buildTacitAmmSwap({ quote, dir, account, to, minOut, deadline: dl });
+    if (quote.venue === VENUES.TACIT_AMM) return buildTacitAmmSwap({ quote, dir, account, to, minOut, deadline: dl, permit });
     if (quote.venue === VENUES.ZQUOTER) {
       if (String(to).toLowerCase() !== String(account).toLowerCase()) throw new Error('build: a zQuoter route is quoted for one recipient');
       return buildZQuoterSwap({ quote });

@@ -3,7 +3,7 @@ import { keccak_256 } from '/vendor/tacit-deps.min.js';
 import { ETH_NODES } from '/eth-nodes.js';
 import {
   makeEvmTradeVenues, zswapDeepLink, encErc20Approve, PRECISION_POOL, TAC_ERC20, TACIT_AMM, MULTICALL3, CETH_POOL_ASSET_ID, TAC_POOL_ASSET_ID, _internal,
-} from '/evm-trade-venues.js?cb=dda58fa8';
+} from '/evm-trade-venues.js?cb=1f321cc2';
 import { getConfidentialDeployment } from '/confidential-deployments.js';
 import { buildBook, planBuy, planSell as planBtcSell, ladderLevels } from '/btc-book.js?cb=0a09ab9e';
 import { decodeTape, chartBars, continuous, invert, ethLaneUsd, btcLaneUsd, candlesFromTrades, tradePrices, closeAt, volumeSince, gap, TAPE_FINE, TAPE_COARSE, TAPE_WORDS } from '/trade/tape.js?cb=714b0344';
@@ -611,8 +611,7 @@ function renderQuote(q) {
     + html`<div class="kv"><span>Price</span><b>${esc(priceTxt)}</b></div>` + (pts ? html`<div class="kv"><span>Points</span><b>${pts}</b></div>` : '') + (split ? '' : note)
     + detailsHtml(planOf(q))
     + (q.priv && via === 'pools' ? html`<p class="privnote"><a href="${esc(privLink(q))}">Swap privately through the Tacit pool →</a></p>` : '');
-  const approves = !buy && via === 'pools' && rt.pick !== 'split' && rt.single.venue === 'tacit-amm';
-  $('#tk-note').textContent = `${buy ? 'One transaction' : approves ? 'An approval of your TAC for the Tacit pool, then one transaction' : 'A free permit signature, then one transaction'}, checked before it is sent.${via === 'boards' ? ' If an order is filled first, nothing is sent.' : rt.pick === 'split' ? ' If the split fails the check, it goes to one pool.' : ''}`;
+  $('#tk-note').textContent = `${buy ? 'One transaction' : 'A free permit signature, then one transaction'}, checked before it is sent.${via === 'boards' ? ' If an order is filled first, nothing is sent.' : rt.pick === 'split' ? ' If the split fails the check, it goes to one pool.' : ''}`;
   S.shown = S.side;
   renderGo();
 }
@@ -1026,7 +1025,7 @@ function renderBorrow() {
   if (BW.q && BW.key === key) setHtml(el, borrowHtml(BW.q, tac));
   if ((BW.key === key && now() - BW.at < 60) || BW.busy) return;
   BW.busy = true;
-  (BW.mod ||= import('/vault/quote.js?cb=4820f55f').catch((e) => { BW.mod = null; throw e; })).then((m) => m.quoteBorrow({ tac, account: who, rpc }))
+  (BW.mod ||= import('/vault/quote.js?cb=5d63394f').catch((e) => { BW.mod = null; throw e; })).then((m) => m.quoteBorrow({ tac, account: who, rpc }))
     .then((q) => { BW.q = q; }, (e) => { console.warn('borrow quote:', e?.message || e); BW.q = null; })
     .then(() => { BW.key = key; BW.at = now(); })
     .finally(() => { BW.busy = false; if (W.account && `${lc(W.account)}:${S.bal?.tac}` === key) setHtml(el, borrowHtml(BW.q, tac)); else renderBorrow(); });
@@ -1067,7 +1066,7 @@ function detailsHtml(P) {
     <div class="slip"><span class="mute">Slippage</span><div class="seg sm" id="slip-seg" role="group" aria-label="Slippage">${[[50, '0.5%'], [100, '1%'], [300, '3%']].map(([v, l]) => `<button type="button" data-slip="${v}" aria-pressed="${S.slip === v}">${l}</button>`).join('')}</div></div>
     ${big ? `<label class="ack"><input type="checkbox" id="ack"${acked(P) ? ' checked' : ''}><span>I accept losing about ${Math.round(P.impact * 100)}% of this ${buy ? 'purchase' : 'sale'} ${P.via === 'boards' ? 'against the Precision pool’s price' : 'to price impact. A smaller amount moves it less'}.</span></label>` : ''}`;
 }
-const ROUTE_GAS = { precision: [152000, 175000], 'tacit-amm': [131000, 130000], split: [261000, 315000] };
+const ROUTE_GAS = { precision: [152000, 175000], 'tacit-amm': [131000, 182000], split: [261000, 315000] };
 function feeHtml(P) {
   const units = (P.via === 'boards' ? null : ROUTE_GAS[P.split ? 'split' : P.rt.single.venue])?.[P.buy ? 0 : 1];
   if (!units || D.gasPrice == null) return '';
@@ -1117,7 +1116,8 @@ async function withTacAccess({ make, buy, permit, from, dl }) {
         say('Sign the permit for your TAC in your wallet. The signature costs nothing.');
         const nonce = wordAt(nonceRaw, 0);
         try {
-          const sig = await wallet.signPermit({ token: TAC_ERC20, name: 'Tacit Token', spender: tx.approval.spender, value: tx.approval.amount, deadline: dl, nonce, owner: from });
+          // The Tacit pool takes a permit through the confidential router (the AMM itself only pulls from an approval), so the signature names that router.
+          const sig = await wallet.signPermit({ token: TAC_ERC20, name: 'Tacit Token', spender: tx.approval.permitSpender || tx.approval.spender, value: tx.approval.amount, deadline: dl, nonce, owner: from });
           tx = make({ value: tx.approval.amount, deadline: dl, ...sig });
         } catch (e) {
           // A wallet that cannot sign a permit (a smart-contract account, or one without typed-data signing) approves the pool instead, and the trade goes without a signature. A "no" ends it.
@@ -1144,7 +1144,7 @@ async function preparePools(P, from) {
   const prepare = async (route) => {
     const isSplit = !!route.legs, floor = floorFor(route);
     const make = (permit) => (isSplit ? venues.buildSplit({ split: route, account: from, minOut: floor, deadline: dl, permit }) : venues.build({ quote: route, dir, account: from, minOut: floor, deadline: dl, permit }));
-    const tx = await withTacAccess({ make, buy, permit: route.venue === 'precision' || isSplit, from, dl });
+    const tx = await withTacAccess({ make, buy, permit: route.venue === 'precision' || route.venue === 'tacit-amm' || isSplit, from, dl });
     say('Checking it first…');
     return { tx, sim: await venues.simulate({ tx, from }) };
   };

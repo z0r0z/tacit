@@ -8,8 +8,8 @@
 // held in this visit's memory only.
 import { makeKeySession, signInSheet, Cancelled } from '/trade/key.js?cb=d110df5e';
 import { forgetUx } from '/trade/poolux.js?cb=89ac6e27';
-import { wrapEth, wrapFirst, wrapCalldata, settle, relayState, relayStopped, relayWords } from '/teth/wrap.js?cb=46463fd4';
-import { wrapQuote, WRAP_TIP } from '/teth/read.js?cb=9364ab31';
+import { wrapEth, wrapFirst, wrapCalldata, settle, relayState, relayStopped, relayWords } from '/teth/wrap.js?cb=b09792d3';
+import { wrapQuote, WRAP_TIP } from '/teth/read.js?cb=5313656c';
 import { secp, keccak_256, sha256, bytesToHex } from '/vendor/tacit-deps.min.js';
 import { makeRunner } from '/activity.js?cb=8ccbc552';
 

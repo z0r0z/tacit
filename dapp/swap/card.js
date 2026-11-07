@@ -2,7 +2,7 @@
 // front page's Swap tab: `mountSwapCard(root, host)` draws it in `root`, and the page hands it its wallet (the front page also its Tacit key, its
 // pool module and its Activity journal). One card to a page: its state is this module's.
 import { keccak_256 } from '/vendor/tacit-deps.min.js';
-import { makeEvmTradeVenues, _internal as V, MULTICALL3 } from '/evm-trade-venues.js?cb=dda58fa8';
+import { makeEvmTradeVenues, _internal as V, MULTICALL3 } from '/evm-trade-venues.js?cb=1f321cc2';
 import { UserStopped } from '/trade/wallet.js?cb=88b623b8';
 import { rpc, API, api, esc, fmtUnits, parseUnits, plain, usd, sig, E10, E18, ago } from '/trade/util.js?cb=ba5a02b1';
 import { nodeHealth, hedgeDelay } from '/trade/rpc.js';
@@ -781,7 +781,7 @@ const tipFor = (units) => {
   const k = String(units), c = TIPS.get(k);
   if (c && Date.now() - c.at < 30e3) return c.p;
   for (const [x, v] of TIPS) if (Date.now() - v.at >= 30e3) TIPS.delete(x);
-  const p = import('/teth/read.js?cb=9364ab31').then((m) => m.wrapQuote(units * E10)).then((x) => x.tip, () => { if (TIPS.get(k)?.p === p) TIPS.delete(k); return null; });
+  const p = import('/teth/read.js?cb=5313656c').then((m) => m.wrapQuote(units * E10)).then((x) => x.tip, () => { if (TIPS.get(k)?.p === p) TIPS.delete(k); return null; });
   TIPS.set(k, { p, at: Date.now() });
   return p;
 };
@@ -1390,7 +1390,7 @@ async function prepare(P, from) {
     const make = (permit) => (isSplit ? venues.buildSplit({ split: pick, account: from, to: dest, minOut: floor, deadline: dl, permit }) : venues.build({ quote: pick, dir, account: from, to: dest, minOut: floor, deadline: dl, permit }));
     tx = make();
     if (tx.approval && RELAY_MODE) { if (lc(tx.approval.spender) !== lc(tx.to)) throw new Error('This route needs a different spender, so it cannot be paid for in TAC. Pick another route or add a little ETH.'); RELAY_MODE.amountIn = P.wei; }
-    else if (tx.approval) tx = await withAccess({ tx, make, from, dl, permit: pick.venue === 'precision' || isSplit });
+    else if (tx.approval) tx = await withAccess({ tx, make, from, dl, permit: pick.venue === 'precision' || pick.venue === 'tacit-amm' || isSplit });
   } else if (P.kind === 'amm') {
     const q = await R.quoteAmm({ ethCall, tokenIn: isEth(P.pay) ? R.ZERO : P.pay, tokenOut: isEth(P.get) ? R.ZERO : P.get, amountIn: P.wei });
     if (!q || q.amountOut < P.floor) return moved();
@@ -1463,7 +1463,7 @@ async function withAccess({ tx, make, from, dl, permit }) {
   if (permit) {
     say('Sign the permit for your TAC in your wallet. The signature costs nothing.');
     try {
-      const sig = R.splitSig(await signTyped(R.permitTyped({ token: R.TAC, name: 'Tacit Token', version: '1', owner: from, spender: tx.approval.spender, value: tx.approval.amount, nonce: acc.nonce, deadline: dl }), from));
+      const sig = R.splitSig(await signTyped(R.permitTyped({ token: R.TAC, name: 'Tacit Token', version: '1', owner: from, spender: tx.approval.permitSpender || tx.approval.spender, value: tx.approval.amount, nonce: acc.nonce, deadline: dl }), from));
       return make({ value: tx.approval.amount, deadline: dl, ...sig });
     } catch (e) {
       // A wallet that cannot sign a permit (a smart-contract account, or one without typed-data signing) approves the pool instead, and the swap goes without a signature. A "no" ends it.
@@ -2398,7 +2398,7 @@ async function exitGo() {
 // ── a private swap, made on this card: the Tacit key is opened here (private.js), and the relay proves and sends each step ──
 let PVP = null, PV = null;
 const pickWallet = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : list[0]?.uuid; };
-const pvLoad = () => (PVP ||= import('/swap/private.js?cb=30a8d1d3').then((m) => {
+const pvLoad = () => (PVP ||= import('/swap/private.js?cb=93332cde').then((m) => {
   PV = m.makePrivate({ getUx, pick: pickWallet, ...H.key, now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()), onKey: (why) => { if (why) say(esc(why), 'err', true); else { PV.read().then(paint, () => {}); if (plans().some((x) => x.state === 'waiting')) ltLoad().then(readBlend, () => {}); } paint(); } });
   PV.mod = m;
   return PV;
