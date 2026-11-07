@@ -79,6 +79,14 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("replay") if args.len() == 2 => replay(&args[1]),
-        _ => fail("usage: tacit-block-node replay FIXTURE"),
+        Some("serve") if args.len() == 3 => {
+            let chain_id: u64 = args[1].parse().unwrap_or_else(|_| fail("the chain id is a number"));
+            let (lander, addr) = args[2].split_once('@').unwrap_or_else(|| fail("serve CHAINID LANDER@HOST:PORT"));
+            let lander: [u8; 20] = hex::decode(lander.trim_start_matches("0x")).ok().and_then(|b| b.try_into().ok()).unwrap_or_else(|| fail("the lander is a 20-byte address"));
+            let keys = tacit_block_node::keys::Keys::load().unwrap_or_else(|e| fail(&e));
+            let leader = tacit_block_node::serve::Leader::new(tacit_block_common::chain_binding(chain_id, &lander), keys);
+            tacit_block_node::serve::serve(addr, leader).unwrap_or_else(|e| fail(&e));
+        }
+        _ => fail("usage: tacit-block-node replay FIXTURE | serve CHAINID LANDER@HOST:PORT"),
     }
 }

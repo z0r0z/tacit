@@ -7,6 +7,10 @@
 //! digest its proof committed. `Node::build` makes the block program's input for the next block from spends, claims and refunds, and
 //! the queue's next entries.
 
+pub mod blobs;
+pub mod keys;
+pub mod serve;
+
 use btc_pool_agg_common as agg;
 use btc_pool_halo2::model::Tree;
 use halo2_proofs::halo2curves::bn256::Fr;
