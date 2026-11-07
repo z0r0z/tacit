@@ -544,3 +544,15 @@ test('community: a machine that has stopped asking is not waited for, and one th
   assert.equal(await ask(q), null, 'both troubles are old now: p, whose last turn is older, first');
   assert.equal((await ask(p)).jobId, b4.jobId);
 });
+
+test('a token machine takes the pool\'s waiting jobs before a tacit chain block, and the block once none waits', async () => {
+  const b = makeProverBoard({ storage: store(), now });
+  const block = await b.post({ class: 'public', program: 'tacit-block', stdin: Buffer.from('a block').toString('base64'), cycleLimit: 1e9, gasLimit: 1e9, deadline: now() / 1000 + 900, label: 'tacit-block' });
+  t += 1000;
+  const wrap = await b.post({ class: 'private', stdin: Buffer.from('a wrap').toString('base64'), cycleLimit: 1e6, gasLimit: 1e8, deadline: now() / 1000 + 600, label: 'wrap' });
+  const ask = (worker) => b.claim({ worker, classes: ['private', 'public'], programs: ['confidential', 'tacit-block'] });
+  assert.equal((await ask(tacit)).jobId, wrap.jobId, 'the wrap posted after the block goes first');
+  const other = await ask({ name: 'tacit-4090', classes: ['private', 'public'] });
+  assert.equal(other.jobId, block.jobId, 'the block, once no other job waits');
+  assert.equal(other.program, 'tacit-block');
+});

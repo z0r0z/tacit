@@ -322,9 +322,11 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
       let open = 0;
       for (const jid of pend) { const j = await storage.getJob(jid); if (j && j.status === 'claimed' && j.worker === worker.name) open++; }
       if (open >= PROVER_BOARD.maxOpenPerWorker) return null;
-      for (const jid of pend) {
+      // the pool's own proofs first: a tacit chain block (public work community machines race too) is taken only when no other job waits
+      for (const pass of [0, 1]) for (const jid of pend) {
         const j = await storage.getJob(jid);
         if (!j || j.status !== 'queued' || !classes.includes(j.class) || !worker.classes.includes(j.class) || !can.includes(j.program || 'confidential')) continue;
+        if (Number((j.program || 'confidential') === 'tacit-block') !== pass) continue;
         if (j.sealed && j.sealed.worker !== worker.name) continue; // sealed to another worker: not even offered
         j.status = 'claimed'; j.worker = worker.name; j.claimedAt = clock(); j.leaseUntil = clock() + leaseFor(j);
         await storage.putJob(jid, j);
