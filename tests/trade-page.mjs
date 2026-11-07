@@ -52,6 +52,7 @@ const until = (page, fn, arg, timeout = 90000) => page.waitForFunction(fn, arg, 
 
 const cast = (...a) => execFileSync('cast', a, { encoding: 'utf8' }).trim();
 const rpcA = async (method, params = []) => { const j = await (await fetch(ANVIL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) })).json(); if (j.error) throw Object.assign(new Error(j.error.message), { code: j.error.code }); return j.result; };
+const CONF_ROUTER = '0x000000005dA3E3B73726af3c774Deeb9472D4992', TACIT_AMM_ADDR = '0x00000000E36C7EC997CC59DCda9E03673B448119';
 const TACADDR = '0xA1313eb9f3A445606D9583bcAc3ebeB56a858279', ROUTER = '0x000000000000FB114709235f1ccBFfb925F600e4', MC3 = '0xcA11bde05977b3631167028862bE2a173976CA11';
 const tacBal = async (a) => BigInt(await rpcA('eth_call', [{ to: TACADDR, data: '0x70a08231' + a.slice(2).toLowerCase().padStart(64, '0') }, 'latest']));
 const ethBal = async (a) => BigInt(await rpcA('eth_getBalance', [a, 'latest']));
@@ -205,7 +206,7 @@ try {
   ok((await p.$$eval('#chart .halo', (h) => h.length)) === 1 && (await p.$$eval('.hero h1 svg.tk', (h) => h.length)) === 1 && (await p.$eval('.hero h1 svg.tk', (e) => e.getBoundingClientRect().width)) > 30 && (await p.$$eval('main use[href="#tk-tac"]', (u) => u.length)) >= 7, 'the live price is marked, and the TAC mark sits beside the price and on the page\'s headings');
   await p.click('[data-kind="candles"]'); await until(p, () => document.querySelectorAll('#chart .body').length > 5);
   const c4 = await candles(p);
-  ok(c4 >= 30 && c4 <= 190, `the Ethereum lane draws the 4-hour tape as candles (${c4})`);          // a month of 4-hour bars is 181, and the bars at its two ends add a few
+  ok(c4 >= 30 && c4 <= 550, `the Ethereum lane draws the 4-hour tape as candles (${c4})`);          // 6 bars a day, and the whole tape is drawn in them until it is 90 days old (then in days): 540, and the bars at its two ends add a few
   const nowRead = (await text(p, '#ch-read .px')).trim();
   ok((await p.$$eval('#chart .tagtext', (t) => t.map((x) => x.textContent))).includes(nowRead), `with the Precision pool's price now at the edge, as the line above reads it (${nowRead})`);
   // the move over a range is the same in candles as on the line, and the past day's is the head's 24h move
@@ -390,6 +391,30 @@ try {
 
   // ── trading from the page: a wallet in the browser, backed by the fork ──
   const E18 = 10n ** 18n;
+  // a sale the Tacit pool wins takes the permit too: signed to the confidential router, then one transaction to it, with no approval left behind.
+  // It runs on the fork as it starts, before any purchase moves the pools: the Tacit pool pays more for a small sale there, as it does on mainnet.
+  {
+    const tw = await fundedWallet(2n * E18, 100n * E18), tc = await openPage({ width: 1280, height: 900 }, tw), tp = tc.page;
+    await until(tp, () => /^\$/.test(document.querySelector('#px-usd')?.textContent || ''), null, 240000);
+    await tp.click('#go'); await until(tp, () => /Balance/.test(document.querySelector('#in-bal')?.textContent || ''), null, 60000);
+    await tp.click('[data-side="sell"]'); await tp.fill('#amt', '20');
+    await until(tp, () => /sell TAC/i.test(document.querySelector('#go')?.textContent || '') && !document.querySelector('#go').disabled && !document.querySelector('.p-ticket').classList.contains('stale'), null, 240000);
+    const via = (await tp.$eval('#route .kv b', (e) => e.textContent.trim())), note = (await text(tp, '#tk-note')).trim();
+    ok(/^A free permit signature, then one transaction/.test(note), `a sale's ticket promises a permit signature, never an approval (${note.slice(0, 60)})`);
+    if (via !== 'Tacit pool') console.log(`  skip - the Precision pool is the better price for 20 TAC on this fork (${via}); the Tacit pool's permit is pinned in tests/evm-trade-venues.mjs`);
+    else {
+      const tt0 = await tacBal(tw.account);
+      await tp.click('#go');
+      await until(tp, () => /Sold\./.test(document.querySelector('#status')?.textContent || '') || document.querySelector('#status .err'), null, 300000);
+      const allow = async (s) => BigInt(await rpcA('eth_call', [{ to: TACADDR, data: '0xdd62ed3e' + tw.account.slice(2).toLowerCase().padStart(64, '0') + s.slice(2).toLowerCase().padStart(64, '0') }, 'latest']));
+      ok(/Sold\./.test(await text(tp, '#status')) && tt0 - (await tacBal(tw.account)) === 20n * E18, `the 20 TAC are gone and ETH came back (${(await text(tp, '#status')).slice(0, 50)})`);
+      const sent = tc.walletLog.sends[0];
+      ok(tc.walletLog.signs === 1 && tc.walletLog.sends.length === 1 && sent.to.toLowerCase() === CONF_ROUTER.toLowerCase() && sent.data.startsWith('0x53c87456'), `with one permit signed and one transaction sent, to the confidential router's swapPublicWithPermit (${tc.walletLog.signs} signed, ${tc.walletLog.sends.length} sent, to ${sent?.to}, ${sent?.data?.slice(0, 10)})`);
+      ok((await allow(CONF_ROUTER)) === 0n && (await allow(TACIT_AMM_ADDR)) === 0n && (await tacBal(CONF_ROUTER)) === 0n, 'and no allowance is left to the router or the AMM, and the router holds no TAC');
+    }
+    ok(tc.errors.length === 0 && tc.blocked.length === 0, `no page errors or blocked requests (${[...tc.errors, ...tc.blocked].slice(0, 2).join(' | ')})`);
+    await tc.browser.close();
+  }
   {
     const me = await fundedWallet(10n * E18, 30000n * E18);
     const w = await openPage({ width: 1280, height: 900 }, me);
@@ -533,14 +558,14 @@ try {
 
     // a sale that splits: the permit is signed in the wallet, then one transaction
     await q.click('[data-side="sell"]');
-    await q.fill('#amt', '12000');
+    await q.fill('#amt', '30000');                // large enough to move the price over 10% at the pools' depth today (12,000 TAC moved it 7.5%)
     await until(q, () => /Split across/.test(document.querySelector('#route')?.textContent || '') && /sell TAC/i.test(document.querySelector('#go')?.textContent || ''), null, 240000);
     ok(await q.$eval('#go', (b) => b.disabled) && /I accept losing about \d+%/.test(await text(q, '#route')), 'a sale that moves the price over 10% waits for the box to be ticked');
     await q.check('#ack'); ok(!(await q.$eval('#go', (b) => b.disabled)), 'ticking it lets the sale go');
     const e1 = await ethBal(me.account), t1 = await tacBal(me.account), n1 = BigInt(await rpcA('eth_getTransactionCount', [me.account, 'latest']));
     await q.click('#go');
     await until(q, () => /Sold\./.test(document.querySelector('#status')?.textContent || '') || document.querySelector('#status .err'), null, 300000);
-    ok(/Sold\. Received about [\d.,]+ ETH/.test(await text(q, '#status')) && t1 - (await tacBal(me.account)) === 12000n * E18 && (await ethBal(me.account)) > e1 + 5n * 10n ** 17n, `12,000 TAC sold through the split for ETH (${(await text(q, '#status')).slice(0, 70)})`);
+    ok(/Sold\. Received about [\d.,]+ ETH/.test(await text(q, '#status')) && t1 - (await tacBal(me.account)) === 30000n * E18 && (await ethBal(me.account)) > e1 + 5n * 10n ** 17n, `30,000 TAC sold through the split for ETH (${(await text(q, '#status')).slice(0, 70)})`);
     ok(w.walletLog.sends.every((t) => t.from.toLowerCase() === me.account.toLowerCase()), 'every transaction was sent from the account that traded');
     ok(w.walletLog.signs === 1 && BigInt(await rpcA('eth_getTransactionCount', [me.account, 'latest'])) === n1 + 1n, 'with the permit signed once in the wallet and one transaction sent: no approval, no allowance');
     ok((await tacBal(MC3)) === mc0, 'and Multicall3 holds no TAC');
@@ -556,10 +581,9 @@ try {
       await sp.click('#go'); await until(sp, () => /Balance/.test(document.querySelector('#in-bal')?.textContent || ''), null, 60000);
       await sp.click('[data-side="sell"]'); await sp.fill('#amt', '5000');
       await until(sp, () => /sell TAC/i.test(document.querySelector('#go')?.textContent || '') && !document.querySelector('#go').disabled, null, 240000);
-      const permitRoute = /Precision pool|Split across/.test(await text(sp, '#route'));
       await sp.click('#go');
       await until(sp, () => /Sold\./.test(document.querySelector('#status')?.textContent || '') || document.querySelector('#status .err'), null, 300000);
-      ok(/Sold\./.test(await text(sp, '#status')) && sc.walletLog.signs === 0 && sc.walletLog.signAttempts === (permitRoute ? 1 : 0) && sc.walletLog.sends.length === 2, `a wallet that cannot sign a permit sells by an approval and a transaction (${sc.walletLog.sends.length} sent, ${sc.walletLog.signAttempts} permit asked; ${(await text(sp, '#status')).slice(0, 50)})`);
+      ok(/Sold\./.test(await text(sp, '#status')) && sc.walletLog.signs === 0 && sc.walletLog.signAttempts === 1 && sc.walletLog.sends.length === 2, `a wallet that cannot sign a permit is asked for one, then sells by an approval and a transaction (${sc.walletLog.sends.length} sent, ${sc.walletLog.signAttempts} permit asked; ${(await text(sp, '#status')).slice(0, 50)})`);
       await sc.browser.close();
     }
 

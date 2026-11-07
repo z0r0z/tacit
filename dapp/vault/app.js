@@ -1,9 +1,9 @@
 import { DEPLOYMENTS } from '/vault/deployments.js?cb=4af96594';
 import * as M from '/vault/math.js?cb=ac1ed53e';
-import { makeRpc, RPCS, ARCHIVE, HISTORY, makeReader, QUEUE_EXPIRY } from '/vault/chain.js?cb=872255e6';
-import { makeFeed } from '/vault/feed.js?cb=2b040bd0';
-import { makePools } from '/vault/pools.js?cb=8f67fde3';
-import { makeVaultEngine, KIND, BATCH_MAX, StopWaiting } from '/vault/engine.js?cb=f5dcb208';
+import { makeRpc, RPCS, ARCHIVE, HISTORY, makeReader, QUEUE_EXPIRY } from '/vault/chain.js?cb=ebe79b37';
+import { makeFeed } from '/vault/feed.js?cb=00271e4a';
+import { makePools } from '/vault/pools.js?cb=af05311d';
+import { makeVaultEngine, KIND, BATCH_MAX, StopWaiting } from '/vault/engine.js?cb=8eb2759d';
 import { makeConnect, UserStopped } from '/trade/connect.js?cb=39145e86';
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -450,7 +450,7 @@ let mineP = null;
 $('#btc').addEventListener('click', (e) => {
   if (mineP || !e.target.closest('[data-mine="open"]')) return;
   e.stopImmediatePropagation();
-  mineP = import('/vault/mine.js?cb=742ee397').then((m) => { m.mountMine($('#btc-mine'), { ticket: $('#btc-tk'), pick: pickProvider, wallet, W, connect: connectWallet }); $('#btc-mine [data-mine="open"]')?.click(); })
+  mineP = import('/vault/mine.js?cb=53fa8840').then((m) => { m.mountMine($('#btc-mine'), { ticket: $('#btc-tk'), pick: pickProvider, wallet, W, connect: connectWallet }); $('#btc-mine [data-mine="open"]')?.click(); })
     .catch((err) => { mineP = null; console.warn('your position:', err?.message || err); });
 });
 const refresh = () => load().catch((e) => { console.warn('vault read:', e?.message || e); if (!S.loaded) S.failed = true; }).then(() => { renderAll(); pools.read(); });

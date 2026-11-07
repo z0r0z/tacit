@@ -8,8 +8,8 @@ import { mountChart, fmtLocalStamp, fmtLocalTime } from '/trade/chart.js?cb=0420
 import { makeConnect } from '/trade/connect.js?cb=39145e86';
 import { makeKeySession, signInSheet } from '/trade/key.js?cb=d110df5e';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=89ac6e27';
-import { readRates, readProgram, heldBars, rangesFor, barSize } from '/teth/read.js?cb=9364ab31';
-import { totalsOf, readEngine, sizeBond, coverage, readPools, poolRows, farmApr, readLocks, readLoans, readHeld, readHistory, positionsIn, lockStep, CBTC_ID, ENGINE, WSTETH } from '/cbtc/read.js?cb=0204770c';
+import { readRates, readProgram, heldBars, rangesFor, barSize } from '/teth/read.js?cb=5313656c';
+import { totalsOf, readEngine, sizeBond, coverage, readPools, poolRows, farmApr, readLocks, readLoans, readHeld, readHistory, positionsIn, lockStep, CBTC_ID, ENGINE, WSTETH } from '/cbtc/read.js?cb=2e71b61b';
 import { $, esc, api, now, fmtUnits, parseUnits, grp, usd, short, sig } from '/trade/util.js?cb=ba5a02b1';
 
 const SCAN = 'https://etherscan.io/', MEMPOOL = 'https://mempool.space/';

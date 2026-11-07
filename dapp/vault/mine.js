@@ -5,7 +5,7 @@
 import { sha256, hmac, secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 import { makeKeySession, signInSheet } from '/trade/key.js?cb=d110df5e';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=89ac6e27';
-import { readLocks, readLoans, readHeld, readEngine, lockStep, ENGINE, WSTETH } from '/cbtc/read.js?cb=0204770c';
+import { readLocks, readLoans, readHeld, readEngine, lockStep, ENGINE, WSTETH } from '/cbtc/read.js?cb=2e71b61b';
 import { makeLoans, exactNotes, bondGap, bondCall, outpointOf, lockPad, loanHealth, borrowAt, SAFE_RATIOS } from '/btc-borrow.js?cb=c3dcce7a';
 import { makeRunner } from '/activity.js?cb=8ccbc552';
 import { relayRefused, relayWords } from '/relay-outcome.js?cb=9db7155a';
