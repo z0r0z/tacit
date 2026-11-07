@@ -107,7 +107,7 @@ contract TacitBlocks {
     /// @notice A unit of value: 10^-8 TAC in the token's smallest units.
     uint256 public constant UNIT = 1e10;
     /// Every memo's length (tacit-block-common MEMO_LEN), so a memo's size says nothing of what wrote it.
-    uint256 public constant MEMO_LEN = 832;
+    uint256 public constant MEMO_LEN = 1152;
     uint256 public constant RECLAIM_AFTER = 7 days;
     uint256 public constant MAX_WINDOW = 1 days;
     /// A posted spend (tacit-block-common `forced_parts`): publics (12 words) ‖ proof (2,080 bytes) ‖ hints (20 × 64) ‖ a memo

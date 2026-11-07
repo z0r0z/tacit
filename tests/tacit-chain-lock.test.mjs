@@ -41,7 +41,7 @@ test('settles and a forced refund are the program\'s', () => {
   const s = { asset: big(V.asset), value: V.value, lock, index: 5, root: 99n, path };
   assert.equal(hx(L.settleBytes({ ...s, kind: SETTLE_CLAIM, sig: '0x' + '66'.repeat(64) })), V.claimBytes);
   assert.equal(hx(L.settleBytes({ ...s, kind: SETTLE_REFUND })), V.refundBytes);
-  assert.equal(hx(L.forcedSettle({ ...s, kind: SETTLE_REFUND }, new Uint8Array(832).fill(0x77))), V.forcedRefund);
+  assert.equal(hx(L.forcedSettle({ ...s, kind: SETTLE_REFUND }, new Uint8Array(1152).fill(0x77))), V.forcedRefund);
   assert.throws(() => L.settleBytes({ ...s, kind: SETTLE_REFUND, sig: '0x' + '66'.repeat(64) }));
   assert.throws(() => L.settleBytes({ ...s, kind: SETTLE_CLAIM }));
 });

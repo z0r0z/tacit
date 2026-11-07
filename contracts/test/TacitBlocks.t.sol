@@ -93,7 +93,7 @@ abstract contract TacitBlocksFixture is Test {
     uint256 constant FORCE_DELAY = 1 hours;
     uint256 constant UNIT = 1e10;
     bytes32 constant CTAC = 0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b;
-    uint256 constant MEMO = 832;
+    uint256 constant MEMO = 1152;
     uint256 constant FORCED_REST_AT = 384 + 2080 + 1280 + 3 * MEMO;
     uint256 constant FORCED_MAX = FORCED_REST_AT + 20 + 32 + 2 * 41 + 1 + 265 + MEMO;
 

@@ -58,9 +58,9 @@ pub const FORCED_HINTS_LEN: usize = 20 * 64;
 pub const FORCED_HEAD_LEN: usize = FORCED_PUBLICS_LEN + FORCED_PROOF_LEN + FORCED_HINTS_LEN;
 pub const FORCED_REST_AT: usize = FORCED_HEAD_LEN + 3 * MEMO_LEN;
 /// Every memo's length, so a memo's size says nothing of what wrote it (the landing contract refuses others).
-/// Every memo's length: an ML-KEM-512 ciphertext (768) ‖ a secp256k1 ephemeral key (33) ‖ the value (8) ‖ an AEAD tag (16), padded:
-/// what a hybrid post-quantum memo needs (the program never reads inside one; only its hash and size are fixed).
-pub const MEMO_LEN: usize = 832;
+/// Every memo's length: an ML-KEM-768 ciphertext (1,088) ‖ a secp256k1 ephemeral key (33) ‖ the value (8) ‖ a tag (16), padded to a multiple
+/// of 128: what a hybrid post-quantum memo needs (the program never reads inside one; only its hash and size are fixed).
+pub const MEMO_LEN: usize = 1152;
 /// btc-pool-halo2's partial rounds for Poseidon with t = 3 (`partial_rounds(3)`, which parses constants to say so;
 /// `note_tree_consts` checks it).
 pub const NOTE_PARTIAL_ROUNDS: usize = 57;

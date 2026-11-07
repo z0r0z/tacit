@@ -1442,7 +1442,7 @@ fn blob_test(c: &mut Chain, elf: &[u8], k: &Keys) {
     // the blobs buffer: after the spends, the settles, the time
     let at = 2 + 4 * 2 + 1 + 0 + 1;
     let mut tampered = l.stdin.clone();
-    if tampered[at].len() < 4 + 48 + 832 {
+    if tampered[at].len() < 4 + 48 + MEMO_LEN {
         fail("the blob block's input is not as expected");
     }
     tampered[at][4 + 48 + 5] ^= 1;
