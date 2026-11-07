@@ -394,12 +394,14 @@ function homesHtml() {
   // or for one ETH before one is
   const wei = isEth(S.pay) && pa === 'wallet' ? parseUnits(S.amt, 18) || 0n : null;
   const cue = (act) => { const p = wei == null ? null : ptsFor(act, wei > 0n ? wei : 10n ** 18n); return `<span class="ra">${p ? `<span>${ptsTag(p, false)}</span><small>${wei > 0n ? 'points' : 'points/ETH'}</small>` : ''}</span>`; };
-  const row = (home, t, sub, icon, act) => `<button type="button" role="radio" class="c${HOMES_OPEN ? '' : ' one'}" data-home="${home}" aria-checked="${String(at === home)}" tabindex="${at === home ? 0 : -1}"><svg class="tk" aria-hidden="true"><use href="#tk-${icon}"/></svg><span class="rt"><b>${t}</b><small>${sub}</small></span>${cue(act)}${HOMES_OPEN ? '<span class="rd" aria-hidden="true"></span>' : ''}</button>`;
+  // TAC, with the chain there: every place shown at once, so the choice is seen (the DeFi pool, the chain, the Pay pool), not one behind Change
+  const open = HOMES_OPEN || ch;
+  const row = (home, t, sub, icon, act) => `<button type="button" role="radio" class="c${open ? '' : ' one'}" data-home="${home}" aria-checked="${String(at === home)}" tabindex="${at === home ? 0 : -1}"><svg class="tk" aria-hidden="true"><use href="#tk-${icon}"/></svg><span class="rt"><b>${t}</b><small>${sub}</small></span>${cue(act)}${open ? '<span class="rd" aria-hidden="true"></span>' : ''}</button>`;
   // the chosen home alone, with a way to change it, until the choice is opened
   const defi = row('defi', 'Swap, farm, borrow', 'DeFi pool', eth ? 'teth' : 'tac', 'wrap'), pay = row('pay', 'Pay anyone', `Pay pool · ${where}`, eth ? 'peth' : 'tac', 'dev');
-  const chain = ch ? row('chain', 'Fast private TAC', 'on the Tacit chain, pay anyone there', 'tac', null) : '';
-  if (!HOMES_OPEN) return `<div class="rows-h"><span>Use it to</span><span class="chg" aria-hidden="true">Change</span></div>${at === 'pay' ? pay : at === 'chain' ? chain : defi}`;
-  return `<div class="rows-h"><span>Use it to</span></div>${defi}${pay}${chain}`;
+  const chain = ch ? row('chain', 'Fast private TAC', 'Tacit chain · quick sends, about a cent each', 'tac', null) : '';
+  if (!open) return `<div class="rows-h"><span>Use it to</span><span class="chg" aria-hidden="true">Change</span></div>${at === 'pay' ? pay : at === 'chain' ? chain : defi}`;
+  return `<div class="rows-h"${HOMES_OPEN ? '' : ' data-open="1"'}><span>Use it to</span></div>${defi}${chain}${pay}`;
 }
 // Withdraw from the Tacit chain: to the wallet, or into the private pool, chosen as a home is
 function chainOutHtml() {
@@ -3139,7 +3141,7 @@ function wire() {
   });
   $('#to-in').addEventListener('keydown', (e) => { if (e.key === 'Escape') { S.toOpen = false; paintSides(); $('#get-where').focus(); } });
   $('#go').addEventListener('click', go);
-  $('#homes')?.addEventListener('click', (e) => { const b = e.target.closest('[data-home]') || (!HOMES_OPEN && e.target.closest('.chg') ? $('#homes [data-home]') : null); if (!b) return; if (!HOMES_OPEN) { HOMES_OPEN = true; paint(); return; } HOMES_OPEN = false; if (b.dataset.home === atOf('get')) paint(); else setHome(b.dataset.home); });
+  $('#homes')?.addEventListener('click', (e) => { const b = e.target.closest('[data-home]') || (!HOMES_OPEN && e.target.closest('.chg') ? $('#homes [data-home]') : null); if (!b) return; if (!HOMES_OPEN && !$('#homes [data-open]')) { HOMES_OPEN = true; paint(); return; } HOMES_OPEN = false; if (b.dataset.home === atOf('get')) paint(); else setHome(b.dataset.home); });
   if ($('#homes')) arrows($('#homes'), 'data-home');
   $('#chain')?.addEventListener('change', (e) => {
     if (e.target.id !== 'chain-sel') return;

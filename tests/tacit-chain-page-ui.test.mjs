@@ -87,7 +87,7 @@ test('no key: a Sign in button that asks for one', () => {
   const { ui, root, calls } = mount();
   ui.render({ on: true, status: STATUS, now: NOW, key: null });
   const b = root.querySelector('#mine [data-act="signin"]');
-  assert.equal(b.textContent, 'Sign in');
+  assert.equal(b.textContent, 'Open your wallet');
   b.click();
   assert.deepEqual(calls, ['signIn']);
 });

@@ -104,8 +104,8 @@ function statusHtml(st, now) {
 }
 
 function keyHtml(k, now, note) {
-  if (!k) return `<p class="eyebrow">Yours</p><p class="empty">Sign in to see your TAC on the Tacit chain.</p>
-    <button class="btn" type="button" data-act="signin">Sign in</button>${note ? `<p class="status">${esc(note)}</p>` : ''}`;
+  if (!k) return `<p class="eyebrow">Yours</p><p class="empty">Your TAC on the Tacit chain is in your wallet, with the rest of your coins.</p>
+    <button class="btn" type="button" data-act="signin">Open your wallet</button>${note ? `<p class="status">${esc(note)}</p>` : ''}`;
   const pub = k.published === false ? `<button class="linkbtn" type="button" data-act="publish"${k.publishing ? ' disabled' : ''}>${k.publishing ? 'Publishing…' : 'Publish'}</button>`
     : k.published === true ? '<span class="mute">Published</span>' : '';
   const addr = k.address ? `<span class="mono" title="${esc(k.address)}">${esc(shortAddr(k.address))}</span>` : '<span class="mute">Reading…</span>';
