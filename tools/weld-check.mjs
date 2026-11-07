@@ -208,7 +208,7 @@ const DAPP = new URL('../dapp/', import.meta.url).pathname;
 const bwText = (page) => page.evaluate((s) => [...document.querySelectorAll(s)].map((e) => e.textContent).join(' '), '#bw-status, #bw-s1, #bw-s2, #bw-s3, #bw-s4');
 // `ui`: the front page's tile and landing, the steps a look-and-copy pass needs (tools/weld-ui.sh runs them on a pinned, cached fork)
 const UI_STEPS = 'links,swapurl,swapfield,hints,hxbridge,hxfold,hxnudge,tradelinks';
-const ONLY = new Set((process.argv[2] === 'ui' ? UI_STEPS : process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,hxbridgeu,usdtwrap,usdtwrapw,usdtout,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,swaphere,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,shieldsrc,shieldwc,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,nohost,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,tileahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,anyone,relayfail,selfwallet,slowline,fastroute').split(','));
+const ONLY = new Set((process.argv[2] === 'ui' ? UI_STEPS : process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,hxbridgeu,usdtwrap,usdtwrapw,usdtout,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,swaphere,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,shieldsrc,shieldwc,provebar,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,nohost,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,tileahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,anyone,relayfail,selfwallet,slowline,fastroute').split(','));
 const FORK = process.argv[3] || 'https://mainnet.gateway.tenderly.co';
 const SHOTS = process.env.SHOTS || null;
 const PORT = 20000 + Math.floor(Math.random() * 2000), WEB = PORT + 1;
@@ -288,6 +288,9 @@ let statusError = 'stubbed in the fork check';
 // With `proveStub`, a job asked for as a proof only reads proven (a stand-in proof, with the memos it was sent with),
 // for a page that sends the settle itself.
 let proveStub = false;
+// `proveHold`: ms a stand-in proof takes to read proven, so a press can be made while the proof is still being made.
+let proveHold = 0;
+const heldJobs = {};
 const provenJobs = {};
 // `refuseWith`: what a refused submit answers instead of the free-settle refusal ({ code, error }: relay_held, prove_budget …).
 // `refuseTypes`: refuse only submits of these op types (with refuseSubmits counting them). `openNext`: that many settle-mode submits
@@ -369,7 +372,10 @@ async function openPage({ account, key = null, host = '127.0.0.1', init = null, 
     }
     if (sub) {
       const jobId = 'stub-' + (submits.push(sub));
-      if (proveStub && sub.mode === 'prove') provenJobs[jobId] = { memos: sub.memos || [], ...(sub.type === 'wrap' && sub.op ? { pv: wrapPv(sub.op) } : sub.type === 'wrapswap' && sub.op ? { pv: wrapSwapPv(sub.op) } : {}) };
+      if (proveStub && sub.mode === 'prove') {
+        const made = () => { provenJobs[jobId] = { memos: sub.memos || [], ...(sub.type === 'wrap' && sub.op ? { pv: wrapPv(sub.op) } : sub.type === 'wrapswap' && sub.op ? { pv: wrapSwapPv(sub.op) } : {}) }; };
+        if (proveHold) { heldJobs[jobId] = true; setTimeout(() => { delete heldJobs[jobId]; made(); }, proveHold); } else made();
+      }
       if (openNext > 0 && (sub.mode || 'settle') === 'settle') { openNext--; openJobs[jobId] = { type: sub.type, memos: sub.memos || [], status: 'open' }; }
       if (pendingNext > 0 && (sub.mode || 'settle') === 'settle') { pendingNext--; pendingJobs[jobId] = sub.type; }          // a job that stays in the relay's line
       if (sub.mode === 'preproven') postedJobs[jobId] = { type: sub.type, txHash: '0x' + 'ad'.repeat(32) };               // the relay sends a posted proof
@@ -387,6 +393,7 @@ async function openPage({ account, key = null, host = '127.0.0.1', init = null, 
     }
     if (u.pathname === '/confidential/status') {
       const id = u.searchParams.get('id'), pj = provenJobs[id], oj = openJobs[id];
+      if (heldJobs[id]) return json(route, { jobId: id, type: 'wrap', mode: 'prove', status: 'pending', txHash: null, error: null, createdAt: Date.now() });
       if (pendingJobs[id]) return json(route, { jobId: id, type: pendingJobs[id], mode: 'settle', status: 'pending', txHash: null, error: null, createdAt: Date.now() });
       if (postedJobs[id]) return json(route, { jobId: id, type: postedJobs[id].type, mode: 'preproven', status: 'settled', txHash: postedJobs[id].txHash, error: null });
       if (pj) return json(route, { jobId: id, mode: 'prove', status: 'proven', publicValues: pj.pv || '0x' + '01'.repeat(32), proof: '0x' + '02'.repeat(32), memos: pj.memos });
@@ -7695,12 +7702,13 @@ await step('hxteth', async () => {
   const lander = () => p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
   try {
     await lander();
-    await p.click('[data-hxm="swap"]');
+    await tabClick(p, 'shield');
     await until(p, () => /You hold 0\.25 tETH privately/.test(document.querySelector('#hx-have')?.textContent || ''), null, 300000);
     ok(await p.$$eval('#hx-have [data-hxin]', (b) => b.map((x) => x.dataset.hxin).join()) === 'send:eth,swap:eth:tac,shield:eth:wallet', 'hxteth: the Swap card says the tETH held, with Send, Swap and Back to ETH a press away');
     await p.click('[data-hxin="shield:eth:wallet"]');
-    const turned = await p.evaluate(() => [document.querySelector('#hx-swap #pay-coin')?.textContent.trim(), document.querySelector('#hx-swap #get-coin')?.textContent.trim(), document.activeElement?.id || document.activeElement?.tagName]);
-    ok(/^tETH/.test(turned[0]) && /^ETH/.test(turned[1]) && turned[2] === 'amt', `hxteth: Back to ETH turns the Swap card to taking tETH out, with the keyboard in the amount (${turned.join(' → ')})`);
+    await until(p, () => /^Withdraw/.test(document.querySelector('#hx-swap #go')?.textContent.trim() || ''), null, 30000).catch(() => {});
+    const turned = await p.evaluate(() => [document.querySelector('#hx-swap #pay-coin')?.textContent.trim(), document.querySelector('#hx-swap #go')?.textContent.trim(), document.activeElement?.id || document.activeElement?.tagName]);
+    ok(/^t?ETH/.test(turned[0]) && /^Withdraw/.test(turned[1]) && turned[2] === 'amt', `hxteth: Back to ETH turns the Swap card to taking tETH out, with the keyboard in the amount (${turned.join(' → ')})`);
     await p.fill('#hx-swap #amt', '0.1');
     await until(p, () => /Arrives: in your wallet \| Relay fee: [\d.]+ ETH, out of it$/.test(window.__said()), null, 240000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await line()}`); });
@@ -12818,7 +12826,7 @@ await step('wrapfirst', async () => {
     ok(submits.slice(s0).filter((x) => x.type === 'wrap' && x.mode === 'prove').length === 1, `wrapfirst: the relay's proof is asked for once the amount settles (${submits.slice(s0).map((x) => `${x.type}/${x.mode}`)})`);
     await until(r.page, () => /ready now/.test(document.querySelector('#w-rcpt')?.textContent || ''), null, 60000).catch(() => {});
     ok(/ready now/.test(await text(r.page, '#w-rcpt')), `wrapfirst: the receipt says the proof is ready (${(await text(r.page, '#w-rcpt')).replace(/\s+/g, ' ').slice(0, 140)})`);
-    const tip = await r.page.evaluate(() => /Relay tip\s*([\d.]+) ETH/.exec(document.querySelector('#w-rcpt')?.textContent || '')?.[1] || null);
+    const tip = await r.page.evaluate(() => /Proof fee\s*([\d.]+) ETH/.exec(document.querySelector('#w-rcpt')?.textContent || '')?.[1] || null);
     await r.page.click('#w-go');
     await until(r.page, () => /Done\./.test(document.querySelector('#v1-status')?.textContent || '') || /class="err"/.test(document.querySelector('#v1-status')?.innerHTML || ''), null, 300000).catch(() => {});
     const sent = walletTxs.slice(w0), call = sent.find((x) => String(x.to).toLowerCase() === ROUTER_ADDR);
@@ -12837,6 +12845,42 @@ await step('wrapfirst', async () => {
       `wrapfirst: with no sponsored proofs left the deposit goes first, with its tip (${walletTxs.slice(w1).map((x) => `${x.to.slice(0, 10)}/${x.data.slice(0, 10)}`)}; ${(await text(r.page, '#sheet-eth')).replace(/\s+/g, ' ').slice(0, 400)}; ${submits.slice(-3).map((x) => `${x.type}/${x.mode}`)})`);
     if (r.errors.length) { fails++; console.log('FAIL wrapfirst page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { proveStub = false; refuseSubmits = 0; refuseTypes = null; refuseWith = null; await rpc('anvil_setCode', [ROUTER_ADDR, routerCode]); await r.browser.close(); }
+});
+
+// While Tacit's prover makes the proof a Shield waits on (before anything is sent), the tile shows a bar under its status line that fills over
+// the prover's usual time, and takes it away when the proof is made and the one transaction goes.
+await step('provebar', async () => {
+  const r = await openPage({ account: A0, key: K0 });
+  const hex = 'b4a7'.padEnd(64, '3');
+  const ROUTER_ADDR = '0x000000005da3e3b73726af3c774deeb9472d4992', routerCode = await rpc('eth_getCode', [ROUTER_ADDR, 'latest']);
+  const p = r.page, bars = () => p.evaluate(() => [...document.querySelectorAll('#hx-swap .pace[data-eta]')].map((b) => `${b.querySelector('[role=progressbar]')?.getAttribute('aria-valuenow')}% ${b.lastElementChild?.textContent}`));
+  try {
+    await rpc('anvil_setCode', [ROUTER_ADDR, '0x00']);
+    proveStub = true; proveHold = 14000;
+    await p.goto(r.url);
+    await p.waitForSelector('#hx-body .hx-h');
+    await pasteKey(p, hex);
+    await toWallet(p);
+    await p.waitForSelector('[data-pay="wallet"]');
+    await p.click('[data-pay="wallet"]');
+    await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
+    await tabClick(p, 'shield'); await p.waitForSelector(MV.amt, { timeout: 120000 });
+    await p.fill(MV.amt, '0.05');
+    await until(p, () => /^Shield ETH$/.test((document.querySelector('#hx-swap #go')?.textContent || '').trim()) && !document.querySelector('#hx-swap #go').disabled, null, 120000);
+    await p.click(MV.go);
+    await until(p, () => /making your proof|nearly made/.test(document.querySelector('#hx-mz')?.textContent || ''), null, 60000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await text(p, '#hx-mz')} | ${await text(p, '#hx-swap')}`); });
+    await until(p, () => document.querySelectorAll('#hx-swap .pace[data-eta]').length === 1, null, 10000).catch(() => {});
+    const b1 = await bars();
+    ok(b1.length === 1 && /about|a few|a little/.test(b1[0]), `provebar: while the proof is made, one bar under the status line says how long is left (${b1}${b1.length ? '' : ` | ${await p.evaluate(() => `mv-st ${document.querySelector('#mv-st')?.innerHTML.slice(0, 300)} | all ${[...document.querySelectorAll('.pace')].map((x) => x.outerHTML.slice(0, 80))} | mz ${!!document.querySelector('#hx-mz')} in ${document.querySelector('#hx-mz')?.parentElement?.id}`)}`})`);
+    await sleep(3500);
+    const b2 = await bars();
+    if (SHOTS) await p.locator('#hx').screenshot({ path: join(SHOTS, 'provebar.png') });
+    ok(b2.length === 1 && parseInt(b2[0]) > parseInt(b1[0]), `provebar: and it fills as the time passes (${b1} → ${b2})`);
+    await until(p, () => /Done\./.test(document.querySelector('#hx-mz')?.textContent || '') || /class="err"/.test(document.querySelector('#hx-mz')?.innerHTML || ''), null, 120000).catch(() => {});
+    ok((await bars()).length === 0 && /Done\./.test(await text(p, '#hx-mz')), `provebar: it is gone once the proof is made and the transaction has gone (${(await text(p, '#hx-mz')).replace(/\s+/g, ' ').slice(0, 90)})`);
+    if (r.errors.length) { fails++; console.log('FAIL provebar page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { proveStub = false; proveHold = 0; await rpc('anvil_setCode', [ROUTER_ADDR, routerCode]); await r.browser.close(); }
 });
 
 // Wraps kept ready by the community proof pool: with no prover of your own, a size picked in the prove sheet is asked of the pool

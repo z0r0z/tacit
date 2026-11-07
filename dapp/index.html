@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-Pa6ZMroyE1QuoEVS8Cuy6Ec9VLysmTOFWXhQBJvZzDc=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-YTc3b+TiydfJsupv+IEdYu4+CNSNmDfr5C/5VcDsTDo=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -3582,6 +3582,13 @@ function paceTick() {
     else if (bar.dataset.pace !== id) bar.dataset.pace = id;
   }
   for (const b of document.querySelectorAll('.pace[data-run]')) { const run = [...RUNS].find((r) => String(r.n) === b.dataset.run); if (!run?.live) b.remove(); }
+  // a wait with no job to follow yet (proveBar): filled over the prover's usual time, held near the end, and said so when it runs long
+  for (const b of document.querySelectorAll('.pace[data-eta]')) {
+    const spent = (Date.now() - Number(b.dataset.start)) / 1000, eta = Number(b.dataset.eta), pct = Math.min(95, Math.round((100 * spent) / eta)), bar = b.firstElementChild, t = b.lastElementChild;
+    if (bar.getAttribute('aria-valuenow') !== String(pct)) { bar.setAttribute('aria-valuenow', String(pct)); bar.firstElementChild.style.width = `${pct}%`; }
+    const w = spent < eta ? leftWords(eta - spent) : 'a little longer';
+    if (t.textContent !== w) t.textContent = w;
+  }
   for (const b of document.querySelectorAll('.pace[data-pace]')) {
     const pc = paceOf(actGet(b.dataset.pace));
     if (!pc) { if (b.dataset.run || b.dataset.card) b.remove(); continue; }
@@ -3592,6 +3599,19 @@ function paceTick() {
   }
 }
 setInterval(paceTick, 1000);
+// A bar under a status line (`status`, an element) for a wait with no job to follow yet: the proof made before anything is sent. It fills over
+// `secs`, the prover's usual time, and is taken away by the function this returns. One at a time under a line.
+function proveBar(status, secs) {
+  const el = typeof status === 'function' ? status() : status;
+  if (!el?.isConnected) return () => {};
+  el.parentNode.querySelectorAll('.pace[data-eta]').forEach((b) => b.remove());
+  const bar = Object.assign(document.createElement('div'), { className: 'pace' });
+  bar.dataset.eta = String(Math.max(5, secs)); bar.dataset.start = String(Date.now());
+  bar.innerHTML = '<div class="actr-bar" role="progressbar" aria-label="Making your proof" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i style="width:0%"></i></div><span></span>';
+  el.after(bar);
+  paceTick();
+  return () => bar.remove();
+}
 // A finished row that went through drops its steps (all done) and says so with a mark; one still going carries a live dot by its clock.
 const actRow = (it) => {
   const b = actBridge(it), open = !!b && b.stage !== 'minted', done = ended(it) && !open;
@@ -5463,16 +5483,20 @@ async function wrapNow({ run, x, via = payer(), status, line, anchor, sheet = 'e
         // would queue on the same prover behind it, so the one under way is waited for a little first.
         if (!ready && (await poolMaking(pub, 'cETH', x.wei))) {
           say(status, 'Your proof is nearly made. Nothing has left your wallet yet…');
-          ready = await waitPoolVoucher(pub, 'cETH', x.wei, 20e3);
+          const stop = proveBar(status, 15);
+          try { ready = await waitPoolVoucher(pub, 'cETH', x.wei, 20e3); } finally { stop(); }
         }
         if (!ready) {
           say(status, `Tacit’s prover is making your proof first, ${proveEta()}. Nothing has left your wallet yet…`);
-          if (VOUCH.ahead?.relay && VOUCH.ahead.wei !== String(x.wei)) await VOUCH.ahead.p.catch(() => {});
-          // started now; the pool's proof of the same amount is still taken if it lands first
-          const made = (proveAhead('cETH', x.wei, { relay: true, now: true }) || Promise.resolve()).catch(() => {});
-          await Promise.race([made, racePoolVoucher(pub, 'cETH', x.wei, 5 * 60e3)]);
-          ready = (await vouchers()).pick(pub, 'cETH', x.wei);
-          if (!ready && (await poolMaking(pub, 'cETH', x.wei))) ready = await waitPoolVoucher(pub, 'cETH', x.wei, 60e3);
+          const stop = proveBar(status, proveSecs());
+          try {
+            if (VOUCH.ahead?.relay && VOUCH.ahead.wei !== String(x.wei)) await VOUCH.ahead.p.catch(() => {});
+            // started now; the pool's proof of the same amount is still taken if it lands first
+            const made = (proveAhead('cETH', x.wei, { relay: true, now: true }) || Promise.resolve()).catch(() => {});
+            await Promise.race([made, racePoolVoucher(pub, 'cETH', x.wei, 5 * 60e3)]);
+            ready = (await vouchers()).pick(pub, 'cETH', x.wei);
+            if (!ready && (await poolMaking(pub, 'cETH', x.wei))) ready = await waitPoolVoucher(pub, 'cETH', x.wei, 60e3);
+          } finally { stop(); }
         }
         if (!ready) break;
         try { await sendVouchers({ run, t, via, list: ready, status, sheet, pop, tip: { wei: x.tip, to: x.to } }); after(); return; }
@@ -5549,7 +5573,7 @@ function v1Wrap(el, status) {
       if (!own && !ready && S.key) VOUCH.typing = setTimeout(async () => { if (still() && !(await poolMaking(S.key.pubHex, 'cETH', wei)) && (await relayProving())) proveAhead('cETH', wei, { relay: true })?.then(async () => { if (still() && go.getAttribute('aria-busy') !== 'true' && (await vouchers()).pick(S.key.pubHex, 'cETH', wei)) input.dispatchEvent(new Event('input')); }, () => {}); }, 1500);
       mount(rc, html`
         <div class="kv"><span>You get</span><b>${fmt(wei, 18, 8)} tETH</b></div>
-        <div class="kv"><span>Relay tip</span><b>${own ? `none: ${devOn() ? 'proved on this computer' : 'you prove it with your own credit'}` : `${fmt(tip, 18, 6)} ETH`}</b></div>
+        <div class="kv"><span>Proof fee</span><b>${own ? `none: ${devOn() ? 'proved on this computer' : 'you prove it with your own credit'}` : `${fmt(tip, 18, 6)} ETH`}</b></div>
         ${ready ? html`<div class="kv"><span>Proof</span><b>ready now${own ? ', made here earlier' : ''}${ready.length > 1 ? ` (${ready.length} wraps, one confirmation where your wallet batches)` : ''}</b></div>` : ''}
         <div class="kv"><span>${payName()} sends</span><b>${fmt(wei + tip, 18, 6)} ETH</b></div>
         ${pointsRow(wei, 'v1')}`);
@@ -12160,13 +12184,17 @@ async function zapNow({ run, p, z, status, bond = true, clear = () => {}, moved 
       // a prover of their own that is set but not answering (this computer's, not running) counts as none set: the rest of the ways are tried, not the relay's settle
       const ownUsable = ownNow(['wrap']) && await ownCan(['wrap']).catch(() => false);
       const creditP = ownUsable ? null : ownCreditCovers();
-      if (VOUCH.ahead?.poolId === p.poolId && VOUCH.ahead.relay) { tell(`Your share’s proof is being made, ${proveEta()}. Nothing has left your wallet yet…`); await Promise.race([VOUCH.ahead.p, sleep((await creditP) ? 45e3 : 90e3)]); }
+      if (VOUCH.ahead?.poolId === p.poolId && VOUCH.ahead.relay) {
+        tell(`Your share’s proof is being made, ${proveEta()}. Nothing has left your wallet yet…`);
+        const stop = proveBar(status, proveSecs());
+        try { await Promise.race([VOUCH.ahead.p, sleep((await creditP) ? 45e3 : 90e3)]); } finally { stop(); }
+      }
       // none made: the relay proves it first, as it does a wrap (pressed, so ahead of the early ones), and one transaction then zaps, mints and settles it
       // from this account; not the zap first with the relay's settle and gas left to wait on
       else if (!(await lpReady(p.poolId, z.wei, res)) && !ownUsable && await relayProving()) {
         tell(`Tacit’s prover is making your share’s proof first, ${proveEta()}. Nothing has left your wallet yet…`);
-        const proving = lpProve(p.poolId, { shares: plan.shares, relay: true, now: true }) || Promise.resolve();
-        await Promise.race([proving, sleep((await creditP) ? 45e3 : 75e3)]).catch(() => {});
+        const proving = lpProve(p.poolId, { shares: plan.shares, relay: true, now: true }) || Promise.resolve(), stop = proveBar(status, proveSecs());
+        try { await Promise.race([proving, sleep((await creditP) ? 45e3 : 75e3)]).catch(() => {}); } finally { stop(); }
       }
       // Tacit's prover gave no share (away, capped, or slow) and they hold credit that covers one: it is proved with that, and the zap goes in one transaction
       if (creditP && !(await lpReady(p.poolId, z.wei, res))) {
@@ -14549,7 +14577,8 @@ function boardEta() {
 }
 const etaText = (s) => (s < 90 ? `about ${Math.max(10, Math.round(s / 5) * 5)} s` : `about ${Math.round(s / 60)} min`);
 // How long a proof by Tacit's prover takes now (the board's pace, less the block that settles it): what a receipt promises and what the steps say while it is made
-const proveEta = () => { const s = boardEta(); return s ? etaText(Math.max(15, s - 12)) : 'about 30 s'; };
+const proveSecs = () => { const s = boardEta(); return s ? Math.max(15, s - 12) : 30; };
+const proveEta = () => etaText(proveSecs());
 // Shield's receipt says when the ETH is private, from the proof's row: at once when it is made already, else how long it takes
 const hxPrivIn = (r) => { const eta = boardEta(), v = r[1].replace(/^made already: no wait$/, 'at once: its proof is made').replace(/^(by Tacit’s prover|being made now), about .+$/, eta ? etaText(eta) : 'about 30 s'); return ['Private in', v, r[2], /computer|credit/.test(v) ? 'Proved here, then settled on Ethereum' : 'Proved by the community prover pool, then settled on Ethereum: its proof is made ahead for the sizes kept ready']; };
 // The tile's wrap, its amount standing a moment with a key open and no wrap kept ready that fits: asked of the relay ahead, as the wrap form
