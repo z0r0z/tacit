@@ -2,16 +2,21 @@
 // nothing on the chain links to the user's other addresses), its notes found from the chain's memos (scanned once, then only what
 // is new), and the moves: shield TAC from Ethereum (approved deposit, or an inbox the confidential pool's unwrap pays), pay a chain
 // address, withdraw to an Ethereum address, hop into the confidential pool. Every spend is proven here (the pool's Halo2 prover),
-// then handed to the chain's leader.
+// then handed to the chain's leader, with a note paying the leader its fee (GET /fee) when it asks one.
 //
 //   const c = makeChainClient({ cfg: tacitChain(), rpcCall, priv, system: () => halo2System, storage: localStorage });
 //   await c.ready();  c.balance();  await c.scan();
 //   const s = await c.shield(units)    → { deposit (for TacitBlocks.deposit), inbox(back) → address, submit({ back? }) }
 //   await c.pay(fullAddress, units)    → receipt;   await c.withdraw('0x…', units);   await c.hop(commit, units)
 //
+// Every spend handed to the leader is kept in `storage` until it lands (`pending()`), so a reload, a leader that refuses it or one that
+// is gone loses nothing: `forcePayload(submission)` gets from any node the bytes TacitBlocks.force takes, and `forceCalldata` posts them
+// from the user's own Ethereum account; the chain must then take it within FORCE_DELAY. A shield deposit no block took in goes back with
+// `reclaimCalldata` (a deposit, after RECLAIM_AFTER) or `giveBackCalldata` (an inbox).
+//
 // Amounts are TAC in units of 1e-8 (1e10 of the token's smallest units). Notes count shares of the chain's pool, worth more as the
-// chain's fees stay with its holders: `balance()` is in shares, `worth()` in units at the leader's latest rate. A spend takes at most
-// two notes: more is refused with a message to move fewer at once (two notes of yours merge into one by paying yourself).
+// chain's fees stay with its holders: `balance()` is in shares, `worth()` in units at the rate the landing contract holds (read from
+// Ethereum, not the leader). A spend takes at most two notes: more is refused with a message to move fewer at once.
 import { sha256, keccak_256, hmac, concatBytes } from './vendor/tacit-deps.min.js';
 import { poseidon2, poseidon3, poseidon4, poseidon5 } from './vendor/tacit-poseidon.min.js';
 import { makeChainWallet, hopOp, poolOp, worthOf, sharesFor, sharesToPay, poolShare } from './tacit-chain-wallet.js';
@@ -24,15 +29,44 @@ const hx = (b) => '0x' + Array.from(b, (x) => x.toString(16).padStart(2, '0')).j
 const word = (v) => BigInt(v).toString(16).padStart(64, '0');
 const strip = (h) => String(h).replace(/^0x/, '').toLowerCase();
 const sel = (sig) => hx(keccak_256(te.encode(sig)).slice(0, 4)).slice(2);
+const hexBytes = (h) => Uint8Array.from(strip(h).match(/../g) || [], (x) => parseInt(x, 16));
+const big = (h) => BigInt('0x' + (strip(h) || '0'));
+const ZERO_LEAF = '0x' + '0'.repeat(64);
+/// The sizes of a posted spend's parts (tacit-block-common `forced_parts`).
+const PUBLICS_LEN = 12 * 32, PROOF_LEN = 2080, HINTS_LEN = 20 * 64, MEMO_LEN = 1152;
+/// How long a spend kept here is offered again before it is given up on (a deposit goes back after 7 days).
+const KEEP_MS = 30 * 864e5;
 
 /// The chain seed of a Tacit private key: one-way and domain-separated, like the Ethereum account and the Bitcoin pool seed.
 export const chainSeed = (priv) => hmac(sha256, priv, te.encode('tacit-chain-seed-v1'));
 
+/// The fewest shares worth at least `units` at `rate`.
+export function sharesWorth(units, rate) {
+  let n = sharesFor(units, rate, 0n);
+  while (worthOf(n, rate) < BigInt(units)) n += 1n;
+  return n;
+}
+
+/// The bytes TacitBlocks.force takes for a submission (what POST /spend takes), with the given hints (node/src/serve.rs `forced_payload`):
+/// publics ‖ proof ‖ hints ‖ a memo per output slot (zeros for an empty one) ‖ the spend data after its memo hashes ‖ the operation's memos.
+export function forcedBytes(submission, hints) {
+  const publics = hexBytes(submission.publics), proof = hexBytes(submission.proof), data = hexBytes(submission.data), h = hints instanceof Uint8Array ? hints : hexBytes(hints);
+  if (publics.length !== PUBLICS_LEN || proof.length !== PROOF_LEN || h.length !== HINTS_LEN) throw new Error('tacit chain: not a spend that can be posted');
+  const memos = (submission.memos || []).map(hexBytes);
+  const slots = [0, 1, 2].map((i) => {
+    if (publics.subarray(32 * (5 + i), 32 * (6 + i)).every((x) => x === 0)) return new Uint8Array(MEMO_LEN);
+    const m = memos.shift();
+    if (!m || m.length !== MEMO_LEN) throw new Error('tacit chain: a memo for each new note');
+    return m;
+  });
+  return concatBytes(publics, proof, h, ...slots, data.subarray(96), ...(submission.opMemos || []).map(hexBytes));
+}
+
 export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalThis.localStorage, fetchImpl = (...a) => globalThis.fetch(...a) }) {
   if (!cfg) throw new Error('tacit chain: not deployed');
   const call = async (sig, args = '') => strip(await rpcCall('eth_call', [{ to: cfg.blocks, data: '0x' + sel(sig) + args }, 'latest']));
-  const api = async (method, path, body) => {
-    const r = await fetchImpl(cfg.leader + path, { method, headers: { 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+  const api = async (method, path, body, base = cfg.leader) => {
+    const r = await fetchImpl(base + path, { method, headers: { 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
     const j = await r.json().catch(() => ({}));
     return { ok: r.ok, status: r.status, ...j };
   };
@@ -43,9 +77,10 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
     address: async (h) => (await api('GET', `/address/${h}`)).address,
     publish: async (a) => (await api('POST', '/address', { address: a })).hash,
   };
-  let w = null, me = null, prover = null;
+  let w = null, me = null, prover = null, assetHex = null;
   const st = { next: 0, notes: [] };   // notes: { index, value, s (hex), leaf, nullifier }
-  const key = () => `tacit-chain-notes-v1:${cfg.blocks.toLowerCase()}:${hx(w.chainAddressHash(w.address(me))).slice(2, 18)}`;
+  const lane = () => hx(w.chainAddressHash(w.address(me))).slice(2, 18);
+  const key = () => `tacit-chain-notes-v1:${cfg.blocks.toLowerCase()}:${lane()}`;
   const save = () => { try { storage?.setItem(key(), JSON.stringify({ next: st.next, notes: st.notes.map((n) => ({ ...n, value: String(n.value), leaf: String(n.leaf) })) })); } catch {} };
   const load = () => {
     try {
@@ -60,6 +95,7 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
     const [chain, asset] = await Promise.all([call('CHAIN()'), call('TAC_ASSET()')]);
     w = makeChainWallet({ poseidon, prover: { prove: async (i, o) => (await proverP()).prove(i, o) }, chain: '0x' + chain, asset: BigInt('0x' + asset) });
     me = w.keys(chainSeed(priv));
+    assetHex = asset.padStart(64, '0');
     load();
   }
 
@@ -73,38 +109,91 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
     return balance();
   }
   const balance = () => st.notes.reduce((t, n) => t + BigInt(n.value), 0n);
-  /// The pool and shares as the chain's latest block left them (a share is worth pool / shares units).
-  let lastRate = { pool: 0n, shares: 0n };
+  /// The pool and shares the landing contract holds on Ethereum (a share is worth pool / shares units, with the program's virtual units):
+  /// read from Ethereum, so a leader cannot make a spend pay out or buy at another rate than the chain's.
   async function rate() {
-    const s = await api('GET', '/state');
-    if (!s.ok) throw new Error('the leader did not answer');
-    lastRate = { pool: BigInt(s.pool ?? 0), shares: BigInt(s.shares ?? 0) };
-    return lastRate;
+    const [pool, shares] = await Promise.all([call('pool()'), call('shares()')]);
+    return { pool: big(pool), shares: big(shares) };
   }
-  const hexBytes = (h) => Uint8Array.from(strip(h).match(/../g) || [], (x) => parseInt(x, 16));
   const owned = () => st.notes.map((n) => ({ ...n, s: hexBytes(n.s) }));
+
+  /// The leader's fee: { units, to (its chain address) }, units 0 when it asks none.
+  async function fee() {
+    await ready();
+    const f = await api('GET', '/fee');
+    if (!f.ok) throw new Error('the Tacit chain’s leader did not answer');
+    const units = /^\d+$/.test(String(f.fee ?? '')) ? BigInt(f.fee) : 0n;
+    if (units === 0n) return { units: 0n, to: null };
+    if (typeof f.address !== 'string') throw new Error('the leader asks a fee but names no address for it');
+    return { units, to: w.decodeAddress(f.address) };
+  }
+  /// The fee for a spend about to be proved: none when the leader cannot be reached (such a spend can be posted to Ethereum instead).
+  const feeNow = () => fee().catch(() => ({ units: 0n, to: null }));
+  const feeOut = (f, r) => (f.units > 0n ? [{ to: f.to, value: sharesWorth(f.units, r) }] : []);
 
   /// Up to two notes covering `need`: the fewest, largest first.
   function inputs(need) {
     const ns = owned().sort((a, b) => (BigInt(b.value) > BigInt(a.value) ? 1 : -1));
     if (ns[0] && BigInt(ns[0].value) >= need) return [ns.filter((n) => BigInt(n.value) >= need).pop()];
     if (ns.length >= 2 && BigInt(ns[0].value) + BigInt(ns[1].value) >= need) return ns.slice(0, 2);
-    throw new Error(balance() >= need ? 'that amount spans more than two of your chain notes: move part of it first' : 'more than you hold on the tacit chain');
+    throw new Error(balance() >= need ? 'that amount spans more than two of your chain notes: move part of it first' : 'more than you hold on the tacit chain, with its fees');
   }
+  /// The most two notes hold (a spend takes at most two).
+  const topTwo = () => owned().map((n) => BigInt(n.value)).sort((a, b) => (b > a ? 1 : -1)).slice(0, 2).reduce((a, b) => a + b, 0n);
 
-  /// Hands a spend to the leader and waits for it to land; drops the notes it spends from the wallet's list.
-  async function submit(spent, extra = {}, { onStatus, timeoutMs = 30 * 60e3 } = {}) {
-    const r = await api('POST', '/spend', { ...spent.submission, ...extra });
-    if (!r.ok) throw new Error(r.error || `the leader refused the spend (${r.status})`);
-    onStatus?.({ id: r.id, status: 'queued' });
+  // ── spends kept until they land: { id, kind, units, submission, extra, nullifiers, leaves, deposit?, from?, tx?, forced?, at }
+  const pkey = () => `tacit-chain-pending-v1:${cfg.blocks.toLowerCase()}:${lane()}`;
+  const kept = () => { try { return JSON.parse(storage?.getItem(pkey()) || '[]'); } catch { return []; } };
+  const keepAll = (list) => { try { list.length ? storage?.setItem(pkey(), JSON.stringify(list)) : storage?.removeItem?.(pkey()); } catch {} };
+  const idOf = (submission) => strip(hx(sha256(concatBytes(hexBytes(submission.publics), hexBytes(submission.data)))));
+  function remember(spent, meta) {
+    const id = idOf(spent.submission);
+    const list = kept().filter((e) => e.id !== id);
+    const old = kept().find((e) => e.id === id);
+    const leaves = [5, 6, 7].map((i) => '0x' + strip(spent.submission.publics).slice(64 * i, 64 * i + 64)).filter((l) => l !== ZERO_LEAF);
+    const e = { ...old, ...meta, id, submission: spent.submission, nullifiers: spent.nullifiers || [], leaves, at: old?.at ?? Date.now() };
+    if (spent.deposit) e.deposit = { shares: String(spent.deposit.shares), amount: String(spent.deposit.amount), cx: spent.deposit.cx, cy: spent.deposit.cy, body: spent.deposit.body };
+    list.push(e);
+    keepAll(list);
+    return e;
+  }
+  const forget = (id) => keepAll(kept().filter((e) => e.id !== id));
+  const mark = (id, meta) => keepAll(kept().map((e) => (e.id === id ? { ...e, ...meta } : e)));
+  /// Whether a kept spend is done with: its notes are in the tree (it landed), or a note it spends was spent another way.
+  async function settled(e) {
+    for (const l of e.leaves || []) if ((await api('GET', `/leaf/${l}`)).ok) return 'landed';
+    for (const nf of e.nullifiers || []) if (await leader.spent(nf)) return 'spent';
+    return null;
+  }
+  const keptErr = (err, e) => Object.assign(err, { kept: e });
+
+  /// Hands a spend to the leader and waits for it to land; drops the notes it spends from the wallet's list. The spend is kept until it
+  /// lands. onStatus: { status: 'queued' | 'slow' (not landed after `slowMs`: it can be posted to Ethereum) | 'landed', id, kept }. A
+  /// refusal, a leader that does not answer or no longer has it, or the timeout throws with `err.kept`.
+  async function submit(spent, extra = {}, { onStatus, timeoutMs = 30 * 60e3, slowMs = 10 * 60e3, kind = 'spend', units = null, meta = {} } = {}) {
+    const e = remember(spent, { kind, units: units == null ? null : String(units), extra, ...meta });
+    let r;
+    try { r = await api('POST', '/spend', { ...spent.submission, ...extra }); } catch { throw keptErr(new Error('the Tacit chain’s leader did not answer'), e); }
+    if (!r.ok) throw keptErr(new Error(r.error || `the leader refused the spend (${r.status})`), e);
+    onStatus?.({ id: r.id, status: 'queued', kept: e });
     const t0 = Date.now();
+    let slow = false, looked = t0;
     for (;;) {
-      const rc = await api('GET', `/receipt/${r.id}`);
-      if (rc.status === 'landed') break;
-      if (Date.now() - t0 > timeoutMs) throw new Error('not landed yet: it stays with the leader, and lands when a block takes it');
+      const rc = await api('GET', `/receipt/${r.id}`).catch(() => null);
+      if (rc?.ok && rc.status === 'landed') break;
+      if (rc?.ok && rc.status === 'refused') throw keptErr(new Error(rc.error || 'the leader refused the spend'), e);
+      if (rc && !rc.ok && rc.status === 404) {
+        if (await settled(e).catch(() => null)) break;
+        throw keptErr(new Error('the leader no longer has this spend'), e);
+      }
+      // a spend posted to Ethereum meanwhile lands without a receipt from the leader
+      if (Date.now() - looked > 30e3) { looked = Date.now(); if (await settled(e).catch(() => null)) break; }
+      if (!slow && Date.now() - t0 > slowMs) { slow = true; onStatus?.({ id: r.id, status: 'slow', kept: e }); }
+      if (Date.now() - t0 > timeoutMs) throw keptErr(new Error('not landed yet: it stays with the leader, and lands when a block takes it'), e);
       await new Promise((ok) => setTimeout(ok, 4000));
     }
-    const gone = new Set(spent.nullifiers.map(strip));
+    forget(e.id);
+    const gone = new Set((spent.nullifiers || []).map(strip));
     st.notes = st.notes.filter((n) => !gone.has(strip(n.nullifier)));
     save();
     onStatus?.({ id: r.id, status: 'landed' });
@@ -116,55 +205,133 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
     return w.spend(me, { ...opts, leader });
   }
 
+  /// The bytes TacitBlocks.force takes for a kept spend's submission, from the leader or another node (`cfg.nodes`): every byte but the
+  /// hints is checked to be this spend's (hints a node got wrong only make a block pass the entry over).
+  async function forcePayload(submission) {
+    let last = new Error('no node could make the posting');
+    for (const base of [cfg.leader, ...(cfg.nodes || [])].filter(Boolean)) {
+      try {
+        const r = await api('POST', '/forced', submission, base);
+        if (!r.ok || typeof r.payload !== 'string') { last = new Error(r.error || `the node refused (${r.status})`); continue; }
+        const p = hexBytes(r.payload), at = PUBLICS_LEN + PROOF_LEN;
+        if (p.length < at + HINTS_LEN || hx(forcedBytes(submission, p.subarray(at, at + HINTS_LEN))) !== hx(p)) { last = new Error('a node answered with another spend'); continue; }
+        return r.payload;
+      } catch (err) { last = err; }
+    }
+    throw last;
+  }
+  const depWords = (d) => word(d.shares) + word(d.amount) + strip(d.cx) + strip(d.cy) + strip(d.body);
+
   return {
-    ready, scan, balance,
+    ready, scan, balance, rate, fee,
     address: async () => { await ready(); return w.address(me); },
     /// The 32-byte hash a Tacit address's chain lane carries.
     lane: async () => { await ready(); return w.chainAddressHash(w.address(me)); },
     publish: async () => { await ready(); return w.publish(me, leader); },
     resolve: async (hash) => { await ready(); return w.resolve(hash, leader); },
-    rate,
-    /// Hands a shield's kept submission to the leader again (its deposit made, the hand-over cut off), and waits for it to land.
-    resubmit: (submission, extra = {}, o = {}) => submit({ submission, nullifiers: [] }, extra, o),
+    /// Hands a kept spend (from `pending()`) to the leader again, and waits for it to land.
+    resubmit: (e, o = {}) => submit({ submission: e.submission, nullifiers: e.nullifiers }, e.extra || {}, { kind: e.kind, units: e.units, ...o }),
     /// What this wallet's notes are worth now, in units.
     worth: async () => worthOf(balance(), await rate()),
-    /// A shield of `amount` units: the shares it buys at the chain's rate (with a little margin, which stays with the holders), proven;
-    /// then pay its deposit (`depositCalldata` after approving TAC, TAC to `inbox(back)`, or a holder's permit for that inbox), then `submit`.
+    /// The spends handed over and not landed, oldest first (those that landed or whose notes went another way are dropped here).
+    async pending() {
+      await ready();
+      const left = [];
+      for (const e of kept()) {
+        if (Date.now() - e.at > KEEP_MS) continue;
+        if (await settled(e).catch(() => null)) continue;
+        left.push(e);
+      }
+      keepAll(left);
+      return left;
+    },
+    forget: async (id) => { await ready(); forget(id); },
+    forcePayload,
+    /// TacitBlocks.force(payload): from the user's Ethereum account (a shield's from the account that made its deposit).
+    forceCalldata: (payload) => {
+      const b = strip(payload);
+      return '0x' + sel('force(bytes)') + word(32) + word(b.length / 2) + b.padEnd(Math.ceil(b.length / 64) * 64, '0');
+    },
+    /// Records that a kept spend was posted to Ethereum (its transaction), so it is not offered again.
+    posted: async (id, tx) => { await ready(); mark(id, { forced: { tx, at: Date.now() } }); },
+    /// How long the chain has to take a posted spend in, in seconds.
+    forceDelay: async () => Number(big(await call('FORCE_DELAY()'))),
+    /// A shield deposit as the landing contract holds it: { from, at (seconds), forced } (from zero: none, taken in or sent back).
+    async depositState(d) {
+      await ready();
+      const k = hx(keccak_256(hexBytes(assetHex + word(d.shares) + strip(d.cx) + strip(d.cy) + strip(d.body) + word(d.amount))));
+      const r = await call('pending(bytes32)', strip(k));
+      return { from: '0x' + r.slice(24, 64), at: Number(big(r.slice(64, 128))), forced: Number(big(r.slice(128, 192))) };
+    },
+    reclaimAfter: async () => Number(big(await call('RECLAIM_AFTER()'))),
+    /// TacitBlocks.reclaim: a deposit no block took in, back to whoever made it, from RECLAIM_AFTER on (anyone may send it).
+    reclaimCalldata: (d) => '0x' + sel('reclaim(uint256,uint256,bytes32,bytes32,bytes32)') + depWords(d),
+    /// TacitBlocks.giveBack: an inbox's deposit no block took in, into the confidential pool for `back`, from RECLAIM_AFTER on.
+    giveBackCalldata: (d, back) => '0x' + sel('giveBack(uint256,uint256,bytes32,bytes32,bytes32,bytes32)') + depWords(d) + strip(back),
+    /// What a move of `units` costs now and whether the notes cover it: { fee (the leader's, units), holders (units the chain's holders
+    /// keep: a payment's pool share, an exit's fee, a shield's margin), arrives (a shield's: what its shares are worth), most (the most
+    /// that can move now, in units) }.
+    async quote(kind, units = 0n) {
+      await ready();
+      const [r, f] = await Promise.all([rate(), feeNow()]);
+      const feeSh = f.units > 0n ? sharesWorth(f.units, r) : 0n;
+      const u = BigInt(units || 0n);
+      if (kind === 'shield') {
+        const sh = sharesFor(u, r);
+        const arrives = sh > feeSh ? worthOf(sh - feeSh, r) : 0n;
+        return { fee: f.units, holders: u > arrives + f.units ? u - arrives - f.units : 0n, arrives, most: null };
+      }
+      const avail = topTwo() - feeSh - (kind === 'pay' ? poolShare(r) : 0n);
+      if (kind === 'pay') return { fee: f.units, holders: worthOf(poolShare(r), r), most: avail > 0n ? worthOf(avail, r) : 0n };
+      let lo = 0n, hi = avail > 0n ? worthOf(avail, r) : 0n;
+      while (lo < hi) { const mid = (lo + hi + 1n) / 2n; if (sharesToPay(mid, r) <= avail) lo = mid; else hi = mid - 1n; }
+      return { fee: f.units, holders: u > 0n ? worthOf(sharesToPay(u, r), r) - u : 0n, most: lo };
+    },
+    /// A shield of `amount` units: the shares it buys at the chain's rate (with a little margin, which stays with the holders), less the
+    /// leader's fee, proven; then pay its deposit (`depositCalldata` after approving TAC, TAC to `inbox(back)`, or a holder's permit for
+    /// that inbox), then `submit` ({ back?, permit?, from?, tx? }: from and tx, the deposit's account and transaction, are kept with it).
     async shield(amount, { onProgress } = {}) {
-      const r = await rate();
+      await ready();
+      const [r, f] = await Promise.all([rate(), feeNow()]);
       const shares = sharesFor(amount, r);
-      if (shares <= 0n) throw new Error('too little to buy a share');
-      const s = await spend({ dep: { v: shares, amount: BigInt(amount) }, onProgress });
+      const out = feeOut(f, r);
+      if (shares <= (out[0]?.value ?? 0n)) throw new Error(out.length ? 'too little to cover the leader’s fee' : 'too little to buy a share');
+      const s = await spend({ dep: { v: shares, amount: BigInt(amount) }, outputs: out, onProgress });
       const d = s.deposit;
-      const args = word(d.shares) + word(d.amount) + strip(d.cx) + strip(d.cy) + strip(d.body);
+      const args = depWords(d);
       return {
         deposit: d,
-        // what the leader takes, kept by the page so a hand-over a reload cut off can be made again (`resubmit`)
+        fee: f.units,
+        // what the leader takes, kept until it lands so a hand-over a reload cut off can be made again (`resubmit`)
         submission: s.submission,
         depositCalldata: '0x' + sel('deposit(uint256,uint256,bytes32,bytes32,bytes32)') + args,
         inbox: async (back) => '0x' + (await call('inbox(uint256,uint256,bytes32,bytes32,bytes32,bytes32)', args + strip(back))).slice(24),
         // o.back: a shield paid to its inbox; o.permit: { owner, fee, deadline, v, r, s, back }, a holder's permit for that inbox
-        submit: (o = {}) => submit(s, { ...(o.back ? { back: o.back } : {}), ...(o.permit ? { permit: o.permit } : {}) }, o),
+        submit: (o = {}) => submit(s, { ...(o.back ? { back: o.back } : {}), ...(o.permit ? { permit: o.permit } : {}) }, { ...o, kind: 'shield', units: amount, meta: { from: o.from, tx: o.tx, back: o.back || o.permit?.back } }),
       };
     },
-    /// Pays `to` notes worth `amount` units, giving the chain's holders their pool share.
+    /// Pays `to` notes worth `amount` units, giving the chain's holders their pool share and the leader its fee.
     async pay(to, amount, o = {}) {
-      const r = await rate();
-      const [p, sh] = BigInt(r.shares) === 0n ? [1n, 1n] : [r.pool, r.shares];
-      const shares = (BigInt(amount) * sh + p - 1n) / p;
-      const pool = poolShare(r);
-      return submit(await spend({ inputs: inputs(shares + pool), outputs: [{ to, value: shares }], exit: { v: pool, amount: 0n, op: poolOp() }, onProgress: o.onProgress }), {}, o);
+      await ready();
+      const [r, f] = await Promise.all([rate(), feeNow()]);
+      const shares = sharesWorth(amount, r), pool = poolShare(r), out = feeOut(f, r);
+      const ins = inputs(shares + pool + (out[0]?.value ?? 0n));
+      return submit(await spend({ inputs: ins, outputs: [{ to, value: shares }, ...out], exit: { v: pool, amount: 0n, op: poolOp() }, onProgress: o.onProgress }), {}, { ...o, kind: 'pay', units: amount });
     },
-    /// Withdraws exactly `amount` units to an Ethereum address (the exit fee is on top, in shares).
+    /// Withdraws exactly `amount` units to an Ethereum address (the exit fee and the leader's on top, in shares).
     async withdraw(to, amount, o = {}) {
       if (!/^0x[0-9a-fA-F]{40}$/.test(to)) throw new Error('an Ethereum address');
-      const shares = sharesToPay(amount, await rate());
-      return submit(await spend({ inputs: inputs(shares), exit: { v: shares, amount: BigInt(amount), to }, onProgress: o.onProgress }), {}, o);
+      await ready();
+      const [r, f] = await Promise.all([rate(), feeNow()]);
+      const shares = sharesToPay(amount, r), out = feeOut(f, r);
+      return submit(await spend({ inputs: inputs(shares + (out[0]?.value ?? 0n)), outputs: out, exit: { v: shares, amount: BigInt(amount), to }, onProgress: o.onProgress }), {}, { ...o, kind: 'withdraw', units: amount, meta: { to } });
     },
     /// Exactly `amount` units into the confidential pool as its deposit for `commit` (a fresh one, which the pool's wrap then takes in).
     async hop(commit, amount, o = {}) {
-      const shares = sharesToPay(amount, await rate());
-      return submit(await spend({ inputs: inputs(shares), exit: { v: shares, amount: BigInt(amount), op: hopOp(commit) }, onProgress: o.onProgress }), {}, o);
+      await ready();
+      const [r, f] = await Promise.all([rate(), feeNow()]);
+      const shares = sharesToPay(amount, r), out = feeOut(f, r);
+      return submit(await spend({ inputs: inputs(shares + (out[0]?.value ?? 0n)), outputs: out, exit: { v: shares, amount: BigInt(amount), op: hopOp(commit) }, onProgress: o.onProgress }), {}, { ...o, kind: 'hop', units: amount });
     },
     /// What `withdraw` credits an address and has not sent yet, in the token's smallest units; anyone may send it (TacitBlocks.withdraw).
     owed: async (addr) => BigInt('0x' + (await call('owed(address)', strip(addr).padStart(64, '0')))),
