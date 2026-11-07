@@ -139,7 +139,8 @@ async function logs(address, topics, from, to) {
 
 /// Reads the blocks that landed since the last look and replays them into the node, and the forced queue's entries.
 async function sync() {
-  const head = num(await rpc.call('eth_blockNumber'));
+  // two blocks behind the head: a public RPC answers from several nodes, and one a block behind refuses logs up to another's head
+  const head = num(await rpc.call('eth_blockNumber')) - 2;
   if (head <= syncedTo) return;
   for (const lg of await logs(BLOCKS, [T_FORCED], syncedTo + 1, head)) forced.set(num(lg.topics[1]), decode(['bytes'], bytesOf(lg.data))[0]);
   for (const lg of await logs(BLOCKS, [T_LANDED], syncedTo + 1, head)) {

@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-0JvUOeZxZGRNEeBZgPGwdP0keWPv/MbVoafjeAN8p10=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-vbIEXoMk/CHyyLIyofvjJgrX4LUuBXZzMFam+rnB+1k=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -14997,11 +14997,14 @@ async function hxChainQuote(m, units) {
   const amt = units ? fmt(units, 8, 6) : null, n = (u) => `${amt ? `${amt} ` : ''}${u}`;
   if (m === 'chainshield') {
     // signed once (the leader sends it in for its sweep fee, on top) or sent in one transfer: the total that leaves the wallet is said either way
-    const held = hxWalletBal('wtac'), signed = hxChainWay() === 'permit', sf = signed && S.key && chainOn() ? await chainSweepFee().catch(() => 0n) : 0n;
+    const held = hxWalletBal('wtac'), signed = hxChainWay() === 'permit', sf = signed && chainOn() ? await chainSweepFee().catch(() => 0n) : 0n;
     const total = units ? units * E10 + sf : 0n, over = !!units && held != null && total > held;
+    // over only because of the fee: the most that fits, and the way in with no fee when the wallet has ETH for one transaction
+    const fits = over && sf && held > sf ? held - sf : 0n;
+    const overLine = fits ? `With the leader’s fee of ${fmt(sf, 18, 4)} TAC, up to ${fmt(fits, 18, 4)} TAC (Max)${hxChainEth() ? ', or send it in one transaction with no fee' : ''}.` : `More than the ${fmt(held ?? 0n, 18, 4)} TAC in ${your()}.`;
     const q = !over && units && S.key && chainOn() ? await chainQuote('shield', units).catch(() => null) : null;
     if (chainOverCap(q, units)) return { out: '—', go: 'Shield TAC', warn: true, line: chainCapLine(q.cap), rc: [] };
-    return { out: q ? fmt(q.arrives, 8, 6) : amt, go: 'Shield TAC', warn: over, line: over ? `More than the ${fmt(held, 18, 4)} TAC in ${your()}${sf ? ', with the leader’s fee' : ''}.` : '',
+    return { out: q ? fmt(q.arrives, 8, 6) : amt, go: 'Shield TAC', warn: over, line: over ? overLine : '',
       rc: over ? [] : [['Arrives', q ? `about ${fmt(q.arrives, 8, 4)} TAC on the Tacit chain` : n('TAC on the Tacit chain, a little less'), '', 'Shares of the chain’s pool, worth a little less than the deposit, and more as the chain’s fees stay with its holders'],
         chainFeeRow(q, 'a small margin'), units && sf ? ['Total', `${fmt(total, 18, 4)} TAC`, '', `${fmt(units, 8, 4)} TAC, and ${fmt(sf, 18, 4)} TAC to the leader that sends it in for you`] : null,
         ['Proof', 'on this device, about half a minute'], ['Sent', signed ? `one signature in ${your()}, no ETH` : `one transaction from ${your()}`], ['Chain sees', 'a deposit, not whose']] };
@@ -15897,7 +15900,7 @@ const hxMoves = {
     if (!h) return null;
     const keep = await hxKeep(sf, cid), cap = await hxCapOf(key).catch(() => null);
     // (the wallet's TAC signed onto the Tacit chain leaves the leader's sweep fee, which the permit adds on top)
-    const sweep = key === 'wtac>chain' && hxChainWay() === 'permit' && chainOn() && S.key ? await chainSweepFee().catch(() => 0n) : 0n;
+    const sweep = key === 'wtac>chain' && hxChainWay() === 'permit' && chainOn() ? await chainSweepFee().catch(() => 0n) : 0n;
     let left = h[0] > keep + sweep ? h[0] - keep - sweep : 0n;
     if (cap != null && left > cap) left = cap;
     const v = left ? (h[1] === 18 ? plain(left / E10, 8) : plain(left, h[1])) : '';
@@ -16713,6 +16716,8 @@ function hxGo() {
   if (m === 'unwrap') return hxUnwrapGo(units);
   if (m === 'tacpub') return hxTacPublicGo();
   if (m === 'tacwrap') return hxTacWrapGo(units);
+  // a chain move its quote warned against (over the balance with the fee, over the cap) waits: the line under the tile says why, before anything is proved
+  if (String(m).startsWith('chain') && HX.q?.warn) return;
   if (m === 'chainshield') return hxChainShieldGo(units);
   if (m === 'chainout') return hxChainOutGo(units);
   if (m === 'chainin') return hxChainInGo(units);
@@ -17173,11 +17178,21 @@ async function hxChainShieldGo(units) {
 const CHAIN_TX_ETH = 3n * 10n ** 14n;
 const hxChainEth = () => (hxWalletBal('ether') ?? 0n) >= CHAIN_TX_ETH;
 const hxChainWay = () => (HX.chainWay === 'tx' && hxChainEth() ? 'tx' : 'permit');
-// The leader's sweep fee (TAC wei) for a permitted shield, read with its fee at most once a minute; 0 when it names none or does not answer
+// The leader's sweep fee (TAC wei) for a permitted shield, read at most once a minute; 0 when it names none or does not answer. It is the leader's
+// public GET /fee, so it is read with no key: the quote says it (and Max leaves room for it) before anyone signs in
+const CHAIN_SWEEP = { v: null, at: 0, p: null };
+function chainLeaderUrl() {
+  try { const d = JSON.parse(localStorage.getItem('tacit-chain-dev') || 'null'); if (d && /^https?:\/\//.test(d.leader || '')) return d.leader; } catch {}
+  return TACIT_CHAIN_PAGE.leader;
+}
 function chainSweepFee() {
-  if (CH.sweepAt && Date.now() - CH.sweepAt < 60e3) return Promise.resolve(CH.sweep ?? 0n);
-  const mine = CH;
-  return chainClient().then((c) => c.fee()).then((f) => { mine.sweep = f.sweepFee; mine.sweepAt = Date.now(); return f.sweepFee; }, () => 0n);
+  if (CHAIN_SWEEP.at && Date.now() - CHAIN_SWEEP.at < 60e3) return Promise.resolve(CHAIN_SWEEP.v ?? 0n);
+  const url = chainLeaderUrl();
+  if (!chainOn() || !url) return Promise.resolve(0n);
+  return (CHAIN_SWEEP.p ||= fetch(url.replace(/\/$/, '') + '/fee', { signal: AbortSignal.timeout(10e3) })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((f) => { const v = /^\d+$/.test(String(f?.sweepFee ?? '')) ? BigInt(f.sweepFee) : 0n; CHAIN_SWEEP.v = v; CHAIN_SWEEP.at = Date.now(); return v; }, () => CHAIN_SWEEP.v ?? 0n)
+    .finally(() => { CHAIN_SWEEP.p = null; }));
 }
 // A wallet that cannot sign a permit (typed data) says so in its own words; one the user declined is not that
 const permitUnsupported = (e) => !walletDeclined(e) && (e?.code === 4200 || e?.code === -32601 || /not supported|unsupported|does not support|not implemented|method not found|signTypedData/i.test(String(e?.message || e || '')));
