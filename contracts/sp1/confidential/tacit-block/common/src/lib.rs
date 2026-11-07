@@ -32,6 +32,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
+pub mod blob;
 pub mod fast;
 pub mod lock;
 pub mod ops;
@@ -57,7 +58,9 @@ pub const FORCED_HINTS_LEN: usize = 20 * 64;
 pub const FORCED_HEAD_LEN: usize = FORCED_PUBLICS_LEN + FORCED_PROOF_LEN + FORCED_HINTS_LEN;
 pub const FORCED_REST_AT: usize = FORCED_HEAD_LEN + 3 * MEMO_LEN;
 /// Every memo's length, so a memo's size says nothing of what wrote it (the landing contract refuses others).
-pub const MEMO_LEN: usize = 64;
+/// Every memo's length: an ML-KEM-512 ciphertext (768) ‖ a secp256k1 ephemeral key (33) ‖ the value (8) ‖ an AEAD tag (16), padded:
+/// what a hybrid post-quantum memo needs (the program never reads inside one; only its hash and size are fixed).
+pub const MEMO_LEN: usize = 832;
 /// btc-pool-halo2's partial rounds for Poseidon with t = 3 (`partial_rounds(3)`, which parses constants to say so;
 /// `note_tree_consts` checks it).
 pub const NOTE_PARTIAL_ROUNDS: usize = 57;
@@ -806,6 +809,9 @@ pub struct BlockOut {
     /// The time the block names (unix seconds): it lands only from it to `lock::TIME_WINDOW` after, and its claims and refunds are
     /// decided by it.
     pub time: u64,
+    /// For a block whose data-only lists travel in blobs, SHA-256 of each blob's (versioned hash, z, y) (`blob::claims`); zero for
+    /// one whose lists are in its calldata.
+    pub blobs_hash: [u8; 32],
 }
 
 fn word(n: u64) -> [u8; 32] {
@@ -838,6 +844,7 @@ impl BlockOut {
             self.hops_hash,
             self.claims_hash,
             word(self.time),
+            self.blobs_hash,
         ]
         .concat()
     }
@@ -1165,7 +1172,7 @@ pub fn block_nullifiers(spends: &[Spend], settles: &[lock::Settle], posted: &[Po
 /// refuses the block. `nfw[j]` is the witness for the j-th smallest non-zero nullifier of every spend taken, against the tree as the
 /// smaller ones left it: nullifiers enter in ascending order, so the tree is a function of the published list alone.
 #[allow(clippy::too_many_arguments)]
-pub fn apply(prev: &State, spends: &[Spend], data: &[SpendData], settles: &[lock::Settle], posted: &[Posted], taken: &[bool], nfw: &[NfWitness], vk: [u8; 32], time: u64) -> Result<(State, BlockOut, BlockData), String> {
+pub fn apply(prev: &State, spends: &[Spend], data: &[SpendData], settles: &[lock::Settle], posted: &[Posted], taken: &[bool], nfw: &[NfWitness], vk: [u8; 32], time: u64, blobs: &[u8]) -> Result<(State, BlockOut, BlockData), String> {
     mark!("cycle-tracker-report-start: block-scan");
     if data.len() != spends.len() || taken.len() != posted.len() {
         return Err(format!("{} spend data for {} spends, {} choices for {} posted", data.len(), spends.len(), taken.len(), posted.len()));
@@ -1260,7 +1267,34 @@ pub fn apply(prev: &State, spends: &[Spend], data: &[SpendData], settles: &[lock
         hops_hash: list_hash(6, &lists.hops),
         claims_hash: list_hash(7, &lists.claims),
         time,
+        blobs_hash: blobs_hash(&lists, blobs)?,
     };
     mark!("cycle-tracker-report-end: block-commit");
     Ok((next, out, lists))
 }
+
+/// The blob claims' hash for a block whose lists travel in blobs: `blobs` is empty for one whose lists are in calldata, else the blob
+/// count (u32 BE), each blob's KZG commitment (48 bytes) and every new note's memo in the block's output order, each checked against
+/// the hash the block commits for it.
+fn blobs_hash(lists: &BlockData, blobs: &[u8]) -> Result<[u8; 32], String> {
+    if blobs.is_empty() {
+        return Ok([0u8; 32]);
+    }
+    let n = u32::from_be_bytes(blobs.get(..4).ok_or("blob input")?.try_into().unwrap()) as usize;
+    let at = 4 + 48 * n;
+    let commitments: Vec<[u8; 48]> = blobs.get(4..at).ok_or("blob commitments")?.chunks(48).map(|c| c.try_into().unwrap()).collect();
+    let memos = &blobs[at..];
+    if n == 0 || memos.len() != MEMO_LEN * lists.outputs.len() {
+        return Err("a blob block names its blobs and every new note's memo".into());
+    }
+    let mut outputs = Vec::with_capacity(lists.outputs.len());
+    for (o, m) in lists.outputs.iter().zip(memos.chunks(MEMO_LEN)) {
+        if memo_hash(m)[..] != o[32..] {
+            return Err("a memo is not the one its note commits".into());
+        }
+        outputs.push((o[..32].try_into().unwrap(), m.to_vec()));
+    }
+    let stream = blob::stream(&outputs, &lists.nullifiers, &lists.claims);
+    blob::claims(&stream, &commitments).map(|(_, h)| h).ok_or_else(|| "the blobs are not as many as the block's data fills".into())
+}
+

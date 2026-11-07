@@ -21,7 +21,7 @@ fn words32(b: &[u8]) -> Vec<[u8; 32]> {
 }
 
 /// The block's own inputs, as its guest input carries them: spends, settles, time and the queue's entries with whether each verifies.
-fn inputs(bufs: &[Vec<u8>]) -> (Vec<SpendIn>, Vec<Settle>, u64, Vec<(Vec<u8>, bool)>) {
+fn inputs(bufs: &[Vec<u8>]) -> (Vec<SpendIn>, Vec<Settle>, u64, Vec<u8>, Vec<(Vec<u8>, bool)>) {
     let u32_at = |i: usize| u32::from_le_bytes(bufs[i].clone().try_into().unwrap_or_else(|_| fail("a count"))) as usize;
     let n = u32_at(1);
     let mut at = 2;
@@ -37,10 +37,12 @@ fn inputs(bufs: &[Vec<u8>]) -> (Vec<SpendIn>, Vec<Settle>, u64, Vec<(Vec<u8>, bo
     at += k;
     let time = u64::from_le_bytes(bufs[at].clone().try_into().unwrap_or_else(|_| fail("time")));
     at += 1;
+    let blobs = bufs[at].clone();
+    at += 1;
     let m = u32_at(at);
     at += 1;
     let posts = (0..m).map(|j| (bufs[at + 2 * j].clone(), bufs[at + 2 * j + 1].first() == Some(&1))).collect();
-    (spends, settles, time, posts)
+    (spends, settles, time, blobs, posts)
 }
 
 fn replay(path: &str) {
@@ -54,8 +56,8 @@ fn replay(path: &str) {
     for (i, b) in blocks.iter().enumerate() {
         let stdin = std::fs::read(format!("{path}.b{i}.stdin")).unwrap_or_else(|e| fail(&format!("{path}.b{i}.stdin: {e}")));
         let bufs = read_stdin_file(&stdin).unwrap_or_else(|| fail("a guest input file"));
-        let (spends, settles, time, posts) = inputs(&bufs);
-        let (built, out, _) = node.build(&spends, &settles, &posts, time).unwrap_or_else(|e| fail(&format!("block {i}: {e}")));
+        let (spends, settles, time, blobs, posts) = inputs(&bufs);
+        let (built, out, _) = node.build(&spends, &settles, &posts, time, &blobs).unwrap_or_else(|e| fail(&format!("block {i}: {e}")));
         if built != bufs {
             fail(&format!("block {i}: the node's guest input differs from the host's"));
         }

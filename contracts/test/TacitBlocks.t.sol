@@ -80,12 +80,8 @@ contract ConfidentialStandIn is IConfidentialPool {
     }
 }
 
-/// Lands the chain tacit-block's host writes (`tacit-block fixture`): the block program's own public values and lists for a shield
-/// of 500 units of TAC, a spend that keeps 380 and exits 120 to an address, a block of the queue alone that takes a spend of the 380
-/// posted with `force`, a spend that hops 300 into the confidential pool keeping 80, and a block of the queue alone that takes a hop
-/// of the 80 posted with `force`. The fixture's spends are bound to the contract at its `lander` on chain 31337, so that is where the
-/// test puts it, and its TAC is the token at the fixture's `tac`.
-contract TacitBlocksTest is Test {
+/// The fixture chain and everything the landing contract's tests share.
+abstract contract TacitBlocksFixture is Test {
     TacitBlocks blocks;
     ISP1BlockVerifier verifier;
     TacitSeats turns;
@@ -97,7 +93,7 @@ contract TacitBlocksTest is Test {
     uint256 constant FORCE_DELAY = 1 hours;
     uint256 constant UNIT = 1e10;
     bytes32 constant CTAC = 0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b;
-    uint256 constant MEMO = 64;
+    uint256 constant MEMO = 832;
     uint256 constant FORCED_REST_AT = 384 + 2080 + 1280 + 3 * MEMO;
     uint256 constant FORCED_MAX = FORCED_REST_AT + 20 + 32 + 2 * 41 + 1 + 265 + MEMO;
 
@@ -128,8 +124,8 @@ contract TacitBlocksTest is Test {
         return vm.parseJsonBytes(fx, key(b, "publicValues"));
     }
 
-    function words(uint256 b) internal view returns (bytes32[15] memory) {
-        return abi.decode(pv(b), (bytes32[15]));
+    function words(uint256 b) internal view returns (bytes32[16] memory) {
+        return abi.decode(pv(b), (bytes32[16]));
     }
 
     function lists(uint256 b) internal view returns (TacitBlocks.Lists memory l) {
@@ -141,6 +137,25 @@ contract TacitBlocksTest is Test {
         l.exits = vm.parseJsonBytes(fx, key(b, "exits"));
         l.hops = vm.parseJsonBytes(fx, key(b, "hops"));
         l.claims = vm.parseJsonBytes(fx, key(b, "claims"));
+        l.blobs = vm.parseJsonBytes(fx, key(b, "blobs"));
+    }
+
+    /// The transaction a blob block is landed in: its blobs' versioned hashes set, its data-only lists left out.
+    function asBlobBlock(TacitBlocks.Lists memory l) internal {
+        uint256 n = l.blobs.length / 160;
+        bytes32[] memory hashes = new bytes32[](n);
+        for (uint256 i; i < n; ++i) {
+            bytes memory c = new bytes(48);
+            for (uint256 j; j < 48; ++j) {
+                c[j] = l.blobs[160 * i + j];
+            }
+            hashes[i] = bytes32((uint256(sha256(c)) & (type(uint256).max >> 8)) | (uint256(1) << 248));
+        }
+        vm.blobhashes(hashes);
+        delete l.leaves;
+        delete l.memos;
+        delete l.nullifiers;
+        delete l.claims;
     }
 
     function dep() internal view returns (uint256 v, bytes32 cx, bytes32 cy, bytes32 body) {
@@ -179,7 +194,7 @@ contract TacitBlocksTest is Test {
     /// Public values for a block on top of the current state that publishes only `l` and moves the queue to `done`
     /// (the verifier here takes any proof, so the landing rules alone decide).
     function craftQ(TacitBlocks.Lists memory l, uint256 done) internal view returns (bytes memory) {
-        bytes32[15] memory w = abi.decode(craft(l), (bytes32[15]));
+        bytes32[16] memory w = abi.decode(craft(l), (bytes32[16]));
         w[10] = bytes32(done);
         w[11] = blocks.queueHash(done);
         return abi.encode(w);
@@ -187,7 +202,7 @@ contract TacitBlocksTest is Test {
 
     /// As `craftQ`, leaving the queue where it is.
     function craft(TacitBlocks.Lists memory l) internal view returns (bytes memory) {
-        bytes32[15] memory w;
+        bytes32[16] memory w;
         w[0] = blocks.state();
         w[1] = keccak256(abi.encode("next", blocks.height()));
         w[2] = blocks.noteRoot();
@@ -217,6 +232,7 @@ contract TacitBlocksTest is Test {
         w[12] = listHash(6, l.hops.length / 96, l.hops);
         w[13] = listHash(7, l.claims.length / 64, l.claims);
         w[14] = bytes32(block.timestamp);
+        w[15] = bytes32(0);
         return abi.encode(w);
     }
 
@@ -256,6 +272,53 @@ contract TacitBlocksTest is Test {
         return keccak256(abi.encode(value, commit));
     }
 
+    /// Two holders' seats in the draw: the start of the next epoch, its seed set.
+    function twoSeats(address a, address b) internal returns (uint256 e, uint256 epochBlocks) {
+        for (uint256 i; i < 2; ++i) {
+            address who = i == 0 ? a : b;
+            tac.mint(who, 1000e18);
+            vm.startPrank(who);
+            tac.approve(address(turns), 1000e18);
+            turns.join();
+            vm.stopPrank();
+        }
+        epochBlocks = turns.SLOT_BLOCKS() * turns.EPOCH_SLOTS();
+        e = block.number / epochBlocks + 1;
+        vm.roll(e * epochBlocks);
+        vm.setBlockhash(e * epochBlocks - 1, keccak256("an epoch's seed"));
+    }
+
+    function lockDeposits() internal {
+        for (uint256 i; i < 2; ++i) {
+            string memory d = string.concat(".lockDeposits[", vm.toString(i), "]");
+            uint256 v = vm.parseJsonUint(fx, string.concat(d, ".value"));
+            tac.mint(address(this), v * UNIT);
+            tac.approve(address(blocks), v * UNIT);
+            blocks.deposit(v, vm.parseJsonBytes32(fx, string.concat(d, ".cx")), vm.parseJsonBytes32(fx, string.concat(d, ".cy")), vm.parseJsonBytes32(fx, string.concat(d, ".body")));
+        }
+    }
+
+    /// The fixture through its forced refund (block 7), ready for block 8, whose lists travel in a blob.
+    function toTheBlobBlock() internal {
+        toTheHop();
+        land(3);
+        blocks.force(vm.parseJsonBytes(fx, ".forcedHop"));
+        land(4);
+        lockDeposits();
+        land(5);
+        land(6);
+        blocks.force(vm.parseJsonBytes(fx, ".forcedRefund"));
+        land(7);
+    }
+}
+
+/// Lands the chain tacit-block's host writes (`tacit-block fixture`): the block program's own public values and lists for a shield
+/// of 500 units of TAC, a spend that keeps 380 and exits 120 to an address, a block of the queue alone that takes a spend of the 380
+/// posted with `force`, a spend that hops 300 into the confidential pool keeping 80, and a block of the queue alone that takes a hop
+/// of the 80 posted with `force`. The fixture's spends are bound to the contract at its `lander` on chain 31337, so that is where the
+/// test puts it, and its TAC is the token at the fixture's `tac`.
+contract TacitBlocksTest is TacitBlocksFixture {
+
     function test_genesisIsTheProgramsBoundHere() public view {
         assertEq(blocks.CHAIN(), vm.parseJsonBytes32(fx, ".chain"), "the binding derived from the chain id and the address");
         assertEq(blocks.state(), vm.parseJsonBytes32(fx, ".genesisState"), "the program's genesis state for it");
@@ -292,88 +355,6 @@ contract TacitBlocksTest is Test {
         assertEq(blocks.height(), 3);
         assertEq(blocks.queueDone(), 1);
         assertEq(blocks.state(), words(2)[1]);
-    }
-
-    /// Block 3 hops 300 into the confidential pool and block 4 takes a hop of the 80 posted to the queue: each is kept until anyone
-    /// sends it on, which the pool takes as its deposit for the hop's commitment, burning the TAC.
-    function test_hopsGoIntoTheConfidentialPool() public {
-        toTheHop();
-        uint256 v = vm.parseJsonUint(fx, ".hop.value");
-        bytes32 commit = vm.parseJsonBytes32(fx, ".hop.commit");
-        vm.expectRevert(TacitBlocks.NoSuchHop.selector);
-        blocks.sendHop(v, commit);
-        land(3);
-        assertEq(blocks.hops(hopKey(v, commit)), 1);
-        vm.prank(address(0xBEEF));
-        blocks.sendHop(v, commit);
-        assertEq(pool.wraps(), 1);
-        assertEq(pool.lastAmount(), 300 * UNIT, "the hop's value in the pool's unit, unchanged");
-        assertEq(pool.lastCommit(), commit);
-        // 500 in, 120 owed to the exit's address, 300 gone into the pool
-        assertEq(tac.balanceOf(address(blocks)), 200 * UNIT);
-        vm.expectRevert(TacitBlocks.NoSuchHop.selector);
-        blocks.sendHop(v, commit);
-        // the 80 hops in through the queue
-        bytes memory forced = vm.parseJsonBytes(fx, ".forcedHop");
-        blocks.force(forced);
-        land(4);
-        assertEq(blocks.queueDone(), 2);
-        blocks.sendHop(vm.parseJsonUint(fx, ".hop2.value"), vm.parseJsonBytes32(fx, ".hop2.commit"));
-        assertEq(pool.lastAmount(), 80 * UNIT);
-        assertEq(tac.balanceOf(address(blocks)), 120 * UNIT, "only the exit's credit is left");
-        blocks.withdraw(vm.parseJsonAddress(fx, ".exit.to"));
-        assertEq(tac.balanceOf(address(blocks)), 0);
-    }
-
-    /// Both of the fixture's hops sent on in one transaction; a batch naming one hop twice sends it once and refuses the second.
-    function test_hopsSentTogether() public {
-        toTheHop();
-        land(3);
-        blocks.force(vm.parseJsonBytes(fx, ".forcedHop"));
-        land(4);
-        uint256[] memory values = new uint256[](2);
-        bytes32[] memory commits = new bytes32[](2);
-        values[0] = vm.parseJsonUint(fx, ".hop.value");
-        commits[0] = vm.parseJsonBytes32(fx, ".hop.commit");
-        values[1] = vm.parseJsonUint(fx, ".hop2.value");
-        commits[1] = vm.parseJsonBytes32(fx, ".hop2.commit");
-        uint256[] memory twice = new uint256[](2);
-        bytes32[] memory twiceC = new bytes32[](2);
-        (twice[0], twice[1], twiceC[0], twiceC[1]) = (values[0], values[0], commits[0], commits[0]);
-        vm.expectRevert(TacitBlocks.NoSuchHop.selector);
-        blocks.sendHops(twice, twiceC);
-        blocks.sendHops(values, commits);
-        assertEq(pool.wraps(), 2);
-        assertEq(tac.balanceOf(address(blocks)), 120 * UNIT, "only the exit's credit is left");
-    }
-
-    function test_hopsMustBeTheCommittedOnes() public {
-        toTheHop();
-        bytes memory p3 = pv(3);
-        TacitBlocks.Lists memory l3 = lists(3);
-        assertEq(l3.hops.length, 96);
-        l3.hops[95] = bytes1(uint8(l3.hops[95]) ^ 1);
-        vm.prank(SEQ);
-        vm.expectRevert(abi.encodeWithSelector(TacitBlocks.BadList.selector, 6));
-        blocks.land(p3, "", l3);
-        l3 = lists(3);
-        l3.hops = bytes.concat(l3.hops, hex"00");
-        vm.prank(SEQ);
-        vm.expectRevert(abi.encodeWithSelector(TacitBlocks.BadList.selector, 6));
-        blocks.land(p3, "", l3);
-        l3.hops = "";
-        vm.prank(SEQ);
-        vm.expectRevert(abi.encodeWithSelector(TacitBlocks.BadList.selector, 6));
-        blocks.land(p3, "", l3);
-        // a hop of another asset could never be sent on
-        TacitBlocks.Lists memory l;
-        l.hops = abi.encode(keccak256("not TAC"), uint256(1), bytes32(uint256(7)));
-        bytes memory p = craft(l);
-        vm.prank(SEQ);
-        vm.expectRevert(abi.encodeWithSelector(TacitBlocks.NotTac.selector, keccak256("not TAC")));
-        blocks.land(p, "", l);
-        land(3);
-        assertEq(blocks.height(), 4);
     }
 
     function test_aForcedSpendNamesARootABlockEndedAt() public {
@@ -479,12 +460,12 @@ contract TacitBlocksTest is Test {
     function test_theQueueWordsMustBeTheContracts() public {
         blocks.force(posting(nothing(), false, 0));
         TacitBlocks.Lists memory none;
-        bytes32[15] memory w = abi.decode(craftQ(none, 1), (bytes32[15]));
+        bytes32[16] memory w = abi.decode(craftQ(none, 1), (bytes32[16]));
         w[11] = keccak256("another queue");
         vm.prank(SEQ);
         vm.expectRevert(TacitBlocks.BadQueue.selector);
         blocks.land(abi.encode(w), "", none);
-        w = abi.decode(craftQ(none, 1), (bytes32[15]));
+        w = abi.decode(craftQ(none, 1), (bytes32[16]));
         w[10] = bytes32(uint256(2));
         vm.prank(SEQ);
         vm.expectRevert(TacitBlocks.BadQueue.selector);
@@ -561,7 +542,7 @@ contract TacitBlocksTest is Test {
         blocks.land(p0, "", l0);
         // a block whose note root before is not the one held, though its state digest is
         TacitBlocks.Lists memory none;
-        bytes32[15] memory w = abi.decode(craft(none), (bytes32[15]));
+        bytes32[16] memory w = abi.decode(craft(none), (bytes32[16]));
         w[2] = keccak256("another root");
         vm.prank(SEQ);
         vm.expectRevert(TacitBlocks.NotOnTop.selector);
@@ -662,21 +643,91 @@ contract TacitBlocksTest is Test {
         blocks.land(p0, "", l0);
         assertEq(blocks.height(), 1);
     }
+}
 
-    /// Two holders' seats in the draw: the start of the next epoch, its seed set.
-    function twoSeats(address a, address b) internal returns (uint256 e, uint256 epochBlocks) {
-        for (uint256 i; i < 2; ++i) {
-            address who = i == 0 ? a : b;
-            tac.mint(who, 1000e18);
-            vm.startPrank(who);
-            tac.approve(address(turns), 1000e18);
-            turns.join();
-            vm.stopPrank();
-        }
-        epochBlocks = turns.SLOT_BLOCKS() * turns.EPOCH_SLOTS();
-        e = block.number / epochBlocks + 1;
-        vm.roll(e * epochBlocks);
-        vm.setBlockhash(e * epochBlocks - 1, keccak256("an epoch's seed"));
+/// Hops, locks, the block's time and blobs, turns, deposits and the constructor's checks, on the same fixture.
+contract TacitBlocksMoreTest is TacitBlocksFixture {
+
+    /// Block 3 hops 300 into the confidential pool and block 4 takes a hop of the 80 posted to the queue: each is kept until anyone
+    /// sends it on, which the pool takes as its deposit for the hop's commitment, burning the TAC.
+    function test_hopsGoIntoTheConfidentialPool() public {
+        toTheHop();
+        uint256 v = vm.parseJsonUint(fx, ".hop.value");
+        bytes32 commit = vm.parseJsonBytes32(fx, ".hop.commit");
+        vm.expectRevert(TacitBlocks.NoSuchHop.selector);
+        blocks.sendHop(v, commit);
+        land(3);
+        assertEq(blocks.hops(hopKey(v, commit)), 1);
+        vm.prank(address(0xBEEF));
+        blocks.sendHop(v, commit);
+        assertEq(pool.wraps(), 1);
+        assertEq(pool.lastAmount(), 300 * UNIT, "the hop's value in the pool's unit, unchanged");
+        assertEq(pool.lastCommit(), commit);
+        // 500 in, 120 owed to the exit's address, 300 gone into the pool
+        assertEq(tac.balanceOf(address(blocks)), 200 * UNIT);
+        vm.expectRevert(TacitBlocks.NoSuchHop.selector);
+        blocks.sendHop(v, commit);
+        // the 80 hops in through the queue
+        bytes memory forced = vm.parseJsonBytes(fx, ".forcedHop");
+        blocks.force(forced);
+        land(4);
+        assertEq(blocks.queueDone(), 2);
+        blocks.sendHop(vm.parseJsonUint(fx, ".hop2.value"), vm.parseJsonBytes32(fx, ".hop2.commit"));
+        assertEq(pool.lastAmount(), 80 * UNIT);
+        assertEq(tac.balanceOf(address(blocks)), 120 * UNIT, "only the exit's credit is left");
+        blocks.withdraw(vm.parseJsonAddress(fx, ".exit.to"));
+        assertEq(tac.balanceOf(address(blocks)), 0);
+    }
+
+    /// Both of the fixture's hops sent on in one transaction; a batch naming one hop twice sends it once and refuses the second.
+    function test_hopsSentTogether() public {
+        toTheHop();
+        land(3);
+        blocks.force(vm.parseJsonBytes(fx, ".forcedHop"));
+        land(4);
+        uint256[] memory values = new uint256[](2);
+        bytes32[] memory commits = new bytes32[](2);
+        values[0] = vm.parseJsonUint(fx, ".hop.value");
+        commits[0] = vm.parseJsonBytes32(fx, ".hop.commit");
+        values[1] = vm.parseJsonUint(fx, ".hop2.value");
+        commits[1] = vm.parseJsonBytes32(fx, ".hop2.commit");
+        uint256[] memory twice = new uint256[](2);
+        bytes32[] memory twiceC = new bytes32[](2);
+        (twice[0], twice[1], twiceC[0], twiceC[1]) = (values[0], values[0], commits[0], commits[0]);
+        vm.expectRevert(TacitBlocks.NoSuchHop.selector);
+        blocks.sendHops(twice, twiceC);
+        blocks.sendHops(values, commits);
+        assertEq(pool.wraps(), 2);
+        assertEq(tac.balanceOf(address(blocks)), 120 * UNIT, "only the exit's credit is left");
+    }
+
+    function test_hopsMustBeTheCommittedOnes() public {
+        toTheHop();
+        bytes memory p3 = pv(3);
+        TacitBlocks.Lists memory l3 = lists(3);
+        assertEq(l3.hops.length, 96);
+        l3.hops[95] = bytes1(uint8(l3.hops[95]) ^ 1);
+        vm.prank(SEQ);
+        vm.expectRevert(abi.encodeWithSelector(TacitBlocks.BadList.selector, 6));
+        blocks.land(p3, "", l3);
+        l3 = lists(3);
+        l3.hops = bytes.concat(l3.hops, hex"00");
+        vm.prank(SEQ);
+        vm.expectRevert(abi.encodeWithSelector(TacitBlocks.BadList.selector, 6));
+        blocks.land(p3, "", l3);
+        l3.hops = "";
+        vm.prank(SEQ);
+        vm.expectRevert(abi.encodeWithSelector(TacitBlocks.BadList.selector, 6));
+        blocks.land(p3, "", l3);
+        // a hop of another asset could never be sent on
+        TacitBlocks.Lists memory l;
+        l.hops = abi.encode(keccak256("not TAC"), uint256(1), bytes32(uint256(7)));
+        bytes memory p = craft(l);
+        vm.prank(SEQ);
+        vm.expectRevert(abi.encodeWithSelector(TacitBlocks.NotTac.selector, keccak256("not TAC")));
+        blocks.land(p, "", l);
+        land(3);
+        assertEq(blocks.height(), 4);
     }
 
     function test_stakersLandInTurn() public {
@@ -786,16 +837,6 @@ contract TacitBlocksTest is Test {
         blocks.land(p0, "", l0);
     }
 
-    function lockDeposits() internal {
-        for (uint256 i; i < 2; ++i) {
-            string memory d = string.concat(".lockDeposits[", vm.toString(i), "]");
-            uint256 v = vm.parseJsonUint(fx, string.concat(d, ".value"));
-            tac.mint(address(this), v * UNIT);
-            tac.approve(address(blocks), v * UNIT);
-            blocks.deposit(v, vm.parseJsonBytes32(fx, string.concat(d, ".cx")), vm.parseJsonBytes32(fx, string.concat(d, ".cy")), vm.parseJsonBytes32(fx, string.concat(d, ".body")));
-        }
-    }
-
     /// The fixture through its hops, then two deposits straight into locks (block 5), the recipient's claim of the first (block 6,
     /// publishing its signature) and a refund of the second posted to the queue (block 7, naming its deadline).
     function test_locksClaimsAndRefunds() public {
@@ -815,6 +856,62 @@ contract TacitBlocksTest is Test {
         assertEq(blocks.queueDone(), 3);
         // what stays on the chain: 120 owed to the exit, 300 + 80 to send into the pool, 1,000 claimed and 500 refunded as notes
         assertEq(tac.balanceOf(address(blocks)), (120 + 380 + 1_500) * UNIT);
+    }
+
+    /// Block 8 pays the claimed note on in two; its notes, memos and nullifiers are in a blob, which the contract checks only
+    /// through the program's commitment and the point-evaluation precompile.
+    function test_aBlockWhoseListsAreInABlob() public {
+        toTheBlobBlock();
+        bytes memory p8 = pv(8);
+        assertTrue(words(8)[15] != bytes32(0), "the block commits its blob");
+        TacitBlocks.Lists memory l = lists(8);
+        assertEq(l.blobs.length, 160);
+        // without the blob in the transaction
+        TacitBlocks.Lists memory noBlob = lists(8);
+        delete noBlob.leaves;
+        delete noBlob.memos;
+        delete noBlob.nullifiers;
+        delete noBlob.claims;
+        vm.prank(SEQ);
+        vm.expectRevert(abi.encodeWithSelector(TacitBlocks.BadBlob.selector, 0));
+        blocks.land(p8, "", noBlob);
+        // with the data lists as well as the blob
+        TacitBlocks.Lists memory both = lists(8);
+        asBlobBlock(both);
+        both.nullifiers = lists(8).nullifiers;
+        vm.prank(SEQ);
+        vm.expectRevert(abi.encodeWithSelector(TacitBlocks.BadList.selector, 8));
+        blocks.land(p8, "", both);
+        // a commitment that opens to another value than the program computed
+        TacitBlocks.Lists memory wrong = lists(8);
+        wrong.blobs[100] = bytes1(uint8(wrong.blobs[100]) ^ 1);
+        asBlobBlock(wrong);
+        vm.prank(SEQ);
+        vm.expectRevert(abi.encodeWithSelector(TacitBlocks.BadBlob.selector, 0));
+        blocks.land(p8, "", wrong);
+        // a proof of another opening
+        TacitBlocks.Lists memory bad = lists(8);
+        bad.blobs[150] = bytes1(uint8(bad.blobs[150]) ^ 1);
+        asBlobBlock(bad);
+        vm.prank(SEQ);
+        vm.expectRevert(abi.encodeWithSelector(TacitBlocks.BadBlob.selector, 0));
+        blocks.land(p8, "", bad);
+        // and the block lands with the blob it committed
+        asBlobBlock(l);
+        vm.prank(SEQ);
+        blocks.land(p8, "", l);
+        assertEq(blocks.height(), 9);
+        assertEq(blocks.state(), words(8)[1]);
+    }
+
+    /// A block that commits no blob carries its data in calldata, and a blob in it is refused.
+    function test_aCalldataBlockTakesNoBlob() public {
+        depositFixture();
+        TacitBlocks.Lists memory l0 = lists(0);
+        l0.blobs = new bytes(160);
+        vm.prank(SEQ);
+        vm.expectRevert(abi.encodeWithSelector(TacitBlocks.BadList.selector, 8));
+        blocks.land(pv(0), "", l0);
     }
 
     function test_aBlockLandsWithinItsTime() public {

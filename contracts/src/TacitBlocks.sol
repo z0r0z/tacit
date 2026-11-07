@@ -91,19 +91,23 @@ contract TacitBlocks {
     bytes32 internal constant NF_GENESIS_ROOT = 0xf17b0f821760732c27b2f8e967a3e18c976a57e176de5164378fdaf3e1796f0c;
     uint256 internal constant NOTE_TREE_DEPTH = 32;
     uint256 internal constant RECENT = 32;
-    uint256 internal constant PUBLIC_WORDS = 15;
+    uint256 internal constant PUBLIC_WORDS = 16;
     uint256 internal constant DEPOSIT_LEN = 160;
     uint256 internal constant EXIT_LEN = 96;
     /// A hop (tacit-block-common `ops::hop_bytes`): asset ‖ value ‖ the confidential pool's commitment.
     uint256 internal constant HOP_LEN = 96;
     /// A claim's signature (R.x ‖ s).
     uint256 internal constant CLAIM_LEN = 64;
+    /// What a block whose lists travel in blobs shows for each blob: its KZG commitment (48), the point the program opened it at
+    /// (32), the value there (32) and the proof (48).
+    uint256 internal constant BLOB_OPENING_LEN = 160;
+    address internal constant POINT_EVALUATION = address(0x0a);
     /// @notice How long after the time a block names it may land (tacit-block-common `lock::TIME_WINDOW`).
     uint256 public constant TIME_WINDOW = 1 hours;
     /// @notice A unit of value: 10^-8 TAC in the token's smallest units.
     uint256 public constant UNIT = 1e10;
     /// Every memo's length (tacit-block-common MEMO_LEN), so a memo's size says nothing of what wrote it.
-    uint256 public constant MEMO_LEN = 64;
+    uint256 public constant MEMO_LEN = 832;
     uint256 public constant RECLAIM_AFTER = 7 days;
     uint256 public constant MAX_WINDOW = 1 days;
     /// A posted spend (tacit-block-common `forced_parts`): publics (12 words) ‖ proof (2,080 bytes) ‖ hints (20 × 64) ‖ a memo
@@ -215,11 +219,13 @@ contract TacitBlocks {
     error QueueOverdue();
     error NoSuchHop();
     error BadTime();
+    error BadBlob(uint256 blob);
 
     /// @notice The lists a block publishes, in the block program's committed order (`BlockData`): the new notes'
     ///         leaves (32 bytes each) and their memos (MEMO_LEN bytes each, in the same order), nullifiers, anchors,
     ///         deposits as asset ‖ value ‖ cx ‖ cy ‖ body (160 bytes each), exits as asset ‖ value ‖ address (96),
-    ///         hops as asset ‖ value ‖ the confidential pool's commitment (96) and claims' signatures (64).
+    ///         hops as asset ‖ value ‖ the confidential pool's commitment (96), claims' signatures (64) and, for a block whose
+    ///         notes, memos, nullifiers and claims travel in EIP-4844 blobs instead (its public words say so), each blob's opening.
     struct Lists {
         bytes leaves;
         bytes memos;
@@ -229,6 +235,7 @@ contract TacitBlocks {
         bytes exits;
         bytes hops;
         bytes claims;
+        bytes blobs;
     }
 
     modifier nonReentrant() {
@@ -388,7 +395,7 @@ contract TacitBlocks {
         }
         if (publicValues.length != 32 * PUBLIC_WORDS) revert BadPublicValues();
         VERIFIER.verifyProof(BLOCK_VKEY, publicValues, proof);
-        bytes32[15] memory w = abi.decode(publicValues, (bytes32[15]));
+        bytes32[16] memory w = abi.decode(publicValues, (bytes32[16]));
         if (w[0] != state || w[2] != noteRoot) revert NotOnTop();
         // the time the block names, by which its claims and refunds were decided
         if (block.timestamp < uint256(w[14]) || block.timestamp > uint256(w[14]) + TIME_WINDOW) revert BadTime();
@@ -399,8 +406,17 @@ contract TacitBlocks {
         if (done < queueDone || done > queued || w[11] != queueHash[done]) revert BadQueue();
         if (done < queued && block.timestamp >= queuedAt[done] + FORCE_DELAY && done - queueDone < MAX_FORCED) revert QueueOverdue();
 
-        _checkOutputs(lists.leaves, lists.memos, w[4]);
-        if (_listHash(2, lists.nullifiers.length, abi.encodePacked(lists.nullifiers)) != w[5]) revert BadList(2);
+        if (w[15] == 0) {
+            // the notes, nullifiers and claims are in this call's data, each list checked against the hash the proof commits
+            if (lists.blobs.length != 0) revert BadList(8);
+            _checkOutputs(lists.leaves, lists.memos, w[4]);
+            if (_listHash(2, lists.nullifiers.length, abi.encodePacked(lists.nullifiers)) != w[5]) revert BadList(2);
+            if (lists.claims.length % CLAIM_LEN != 0 || _listHash(7, lists.claims.length / CLAIM_LEN, lists.claims) != w[13]) revert BadList(7);
+        } else {
+            // they are in the transaction's blobs, which the program proved hold exactly them; nothing here acts on them
+            if (lists.leaves.length != 0 || lists.memos.length != 0 || lists.nullifiers.length != 0 || lists.claims.length != 0) revert BadList(8);
+            _checkBlobs(lists.blobs, w[15]);
+        }
         if (_listHash(3, lists.anchors.length, abi.encodePacked(lists.anchors)) != w[6]) revert BadList(3);
         for (uint256 i; i < lists.anchors.length; ++i) {
             if (!knownRoot[lists.anchors[i]]) revert UnknownAnchor(lists.anchors[i]);
@@ -440,8 +456,6 @@ contract TacitBlocks {
             if (asset != TAC_ASSET) revert NotTac(asset);
             hops[keccak256(hopList[HOP_LEN * i + 32:HOP_LEN * (i + 1)])] += 1;
         }
-        // the claims' signatures, published for the swaps' counterparties
-        if (lists.claims.length % CLAIM_LEN != 0 || _listHash(7, lists.claims.length / CLAIM_LEN, lists.claims) != w[13]) revert BadList(7);
 
         state = w[1];
         noteRoot = w[3];
@@ -482,6 +496,32 @@ contract TacitBlocks {
         hops[key] -= 1;
         CONFIDENTIAL.wrap(CONFIDENTIAL_TAC, value * UNIT, commit);
         emit Hopped(value, commit);
+    }
+
+    /// @dev A block whose lists are in blobs: each blob's versioned hash is the transaction's, and its commitment opens to the value the
+    ///      program computed at the point it drew (the point-evaluation precompile); the program committed SHA-256 of every (versioned
+    ///      hash, point, value), so the blobs hold exactly the data the block's lists are made of.
+    function _checkBlobs(bytes calldata data, bytes32 want) internal view {
+        if (data.length == 0 || data.length % BLOB_OPENING_LEN != 0) revert BadList(8);
+        uint256 n = data.length / BLOB_OPENING_LEN;
+        bytes memory items = new bytes(96 * n);
+        for (uint256 i; i < n; ++i) {
+            bytes calldata o = data[BLOB_OPENING_LEN * i:BLOB_OPENING_LEN * (i + 1)];
+            // EIP-4844's versioned hash: 0x01 ‖ SHA-256(commitment)[1:]
+            bytes32 vh = bytes32((uint256(sha256(o[0:48])) & (type(uint256).max >> 8)) | (uint256(1) << 248));
+            if (blobhash(i) != vh) revert BadBlob(i);
+            (bool ok, bytes memory ret) = POINT_EVALUATION.staticcall(abi.encodePacked(vh, o[48:80], o[80:112], o[0:48], o[112:160]));
+            if (!ok || ret.length != 64) revert BadBlob(i);
+            bytes32 z = bytes32(o[48:80]);
+            bytes32 y = bytes32(o[80:112]);
+            assembly {
+                let at := add(add(items, 32), mul(96, i))
+                mstore(at, vh)
+                mstore(add(at, 32), z)
+                mstore(add(at, 64), y)
+            }
+        }
+        if (sha256(items) != want) revert BadList(8);
     }
 
     /// @dev The outputs list as the block program commits it (leaf ‖ memo hash, 64 bytes each), rebuilt from the

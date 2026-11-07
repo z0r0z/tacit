@@ -188,6 +188,9 @@ struct Chain {
     roots: Vec<Fr>,
     /// The time the chain's next block names (unix seconds).
     time: u64,
+    /// Whether the next block's data-only lists travel in blobs, and memos beyond those its spends and posts carry (a claim's, say).
+    blobs: bool,
+    memo_pool: Vec<Vec<u8>>,
 }
 
 /// A spend ready for the guest: its proof, the rest of its body and its openings, and the outputs it makes
@@ -246,6 +249,8 @@ fn bad_memo_like(c: &Chain, k: &Keys) -> Post {
 
 /// A block the guest took.
 struct Landed {
+    /// For a block whose lists travelled in blobs: each blob's KZG commitment, the point it is opened at, the value there and the proof.
+    blob_openings: Vec<BlobOpening>,
     out: BlockOut,
     data: BlockData,
     notes: Vec<Note>,
@@ -255,6 +260,14 @@ struct Landed {
     stdin_bytes: usize,
     /// The guest's input for the block, buffer by buffer.
     stdin: Vec<Vec<u8>>,
+}
+
+#[derive(Clone)]
+struct BlobOpening {
+    commitment: [u8; 48],
+    z: [u8; 32],
+    y: [u8; 32],
+    proof: [u8; 48],
 }
 
 /// Buffers as one file: u32 LE count, then each as a u32 LE length and its bytes (what tacit-block-gpu reads).
@@ -280,7 +293,7 @@ impl Chain {
             fail("the replayed nullifier tree does not start where the state does");
         }
         let roots = vec![state.notes.root];
-        Chain { wallets, asset_f: asset_field(&[0xabu8; 32]), leaves: vec![], state, public_nf: nf.clone(), nf, roots, time: 1_800_000_000 }
+        Chain { wallets, asset_f: asset_field(&[0xabu8; 32]), leaves: vec![], state, public_nf: nf.clone(), nf, roots, time: 1_800_000_000, blobs: false, memo_pool: vec![] }
     }
 
     /// Notes that enter the tree without a spend (the test's genesis), appended as a block appends them.
@@ -409,7 +422,7 @@ impl Chain {
     /// The guest's input for a block of `spends` and the next `posts` of the queue on this chain, the nullifier witnesses it
     /// carries (the nullifiers of every spend it takes, smallest first, as they enter the tree), and the posted spends as the
     /// program sees them with which of them it takes; the host's nullifier tree takes the nullifiers as it goes.
-    fn block_input(&mut self, k: &Keys, spends: &[Prepared], settles: &[blk::lock::Settle], posts: &[Post]) -> (Vec<Vec<u8>>, Vec<NfWitness>, Vec<Posted>, Vec<bool>) {
+    fn block_input(&mut self, k: &Keys, spends: &[Prepared], settles: &[blk::lock::Settle], posts: &[Post], blobs: &[u8]) -> (Vec<Vec<u8>>, Vec<NfWitness>, Vec<Posted>, Vec<bool>) {
         let mut bufs = vec![self.state.to_bytes(), (spends.len() as u32).to_le_bytes().to_vec()];
         for p in spends {
             bufs.push(p.publics.clone());
@@ -422,6 +435,7 @@ impl Chain {
             bufs.push(s.to_bytes());
         }
         bufs.push(self.time.to_le_bytes().to_vec());
+        bufs.push(blobs.to_vec());
         bufs.push((posts.len() as u32).to_le_bytes().to_vec());
         let (mut posted, mut verifies) = (vec![], vec![]);
         for p in posts {
@@ -453,7 +467,57 @@ impl Chain {
     /// As `land_with`, with the block's own claims and refunds of locks.
     fn land_full(&mut self, elf: &[u8], k: &Keys, spends: &[Prepared], settles: &[blk::lock::Settle], posts: &[Post]) -> Result<Landed, String> {
         let before = self.clone();
-        let (bufs, nfw, posted, taken) = self.block_input(k, spends, settles, posts);
+        let list: Vec<blk::Spend> = spends.iter().map(|p| p.spend.clone()).collect();
+        let extra: Vec<SpendData> = spends.iter().map(|p| p.data.clone()).collect();
+        // A block whose lists travel in blobs: find what they are by running the block once without, then commit the blobs.
+        let (blobs_buf, blob_openings) = if self.blobs {
+            let mut probe = self.clone();
+            let (_, nfw0, posted0, taken0) = probe.block_input(k, spends, settles, posts, &[]);
+            let (_, _, data0) = blk::apply(&self.state, &list, &extra, settles, &posted0, &taken0, &nfw0, blk::vk_hash(&k.digest), self.time, &[]).map_err(|e| e.to_string())?;
+            let mut pool: Vec<Vec<u8>> = self.memo_pool.clone();
+            for p in spends {
+                pool.extend(p.memos.iter().cloned());
+                pool.extend(p.op_memos.iter().cloned());
+            }
+            for p in posts {
+                pool.extend(posted_memos(&p.payload));
+            }
+            let mut memos = vec![];
+            let mut outputs = vec![];
+            for o in &data0.outputs {
+                let m = pool.iter().find(|m| blk::memo_hash(m)[..] == o[32..]).cloned().ok_or("an output without its memo")?;
+                outputs.push((<[u8; 32]>::try_from(&o[..32]).unwrap(), m.clone()));
+                memos.extend(m);
+            }
+            let stream = blk::blob::stream(&outputs, &data0.nullifiers, &data0.claims);
+            let settings = c_kzg::ethereum_kzg_settings(0);
+            let n = blk::blob::blobs_for(stream.len());
+            let mut commitments = vec![];
+            for i in 0..n {
+                let blob = c_kzg::Blob::from_bytes(&blk::blob::blob(&stream, i)).map_err(|e| format!("blob: {e:?}"))?;
+                commitments.push(settings.blob_to_kzg_commitment(&blob).map_err(|e| format!("commitment: {e:?}"))?.to_bytes().into_inner());
+            }
+            let (claims, _) = blk::blob::claims(&stream, &commitments).ok_or("blob claims")?;
+            let mut openings = vec![];
+            for (i, c) in claims.iter().enumerate() {
+                let blob = c_kzg::Blob::from_bytes(&blk::blob::blob(&stream, i)).map_err(|e| format!("blob: {e:?}"))?;
+                let z = c_kzg::Bytes32::from_bytes(&c[32..64]).map_err(|e| format!("z: {e:?}"))?;
+                let (proof, y) = settings.compute_kzg_proof(&blob, &z).map_err(|e| format!("kzg proof: {e:?}"))?;
+                if y.as_slice() != &c[64..96] {
+                    return Err("the program's blob evaluation differs from the KZG library's".into());
+                }
+                openings.push(BlobOpening { commitment: commitments[i], z: c[32..64].try_into().unwrap(), y: c[64..96].try_into().unwrap(), proof: proof.to_bytes().into_inner() });
+            }
+            let mut buf = (n as u32).to_be_bytes().to_vec();
+            for c in &commitments {
+                buf.extend(c);
+            }
+            buf.extend(memos);
+            (buf, openings)
+        } else {
+            (vec![], vec![])
+        };
+        let (bufs, nfw, posted, taken) = self.block_input(k, spends, settles, posts, &blobs_buf);
         let stdin_bytes = bufs.iter().map(Vec::len).sum();
         let t = Instant::now();
         let run = execute(elf, &bufs);
@@ -465,9 +529,7 @@ impl Chain {
                 return Err(e);
             }
         };
-        let list: Vec<blk::Spend> = spends.iter().map(|p| p.spend.clone()).collect();
-        let extra: Vec<SpendData> = spends.iter().map(|p| p.data.clone()).collect();
-        let (next, out, data) = blk::apply(&self.state, &list, &extra, settles, &posted, &taken, &nfw, blk::vk_hash(&k.digest), self.time).unwrap_or_else(|e| fail(&format!("the guest took a block apply refuses: {e}")));
+        let (next, out, data) = blk::apply(&self.state, &list, &extra, settles, &posted, &taken, &nfw, blk::vk_hash(&k.digest), self.time, &blobs_buf).unwrap_or_else(|e| fail(&format!("the guest took a block apply refuses: {e}")));
         if pv != out.encode() {
             fail("the guest committed other public values than apply");
         }
@@ -519,7 +581,7 @@ impl Chain {
         }
         self.state = next;
         self.roots.push(self.state.notes.root);
-        Ok(Landed { out, data, notes, cycles, sections, secs, stdin_bytes, stdin: bufs })
+        Ok(Landed { blob_openings, out, data, notes, cycles, sections, secs, stdin_bytes, stdin: bufs })
     }
 }
 
@@ -608,7 +670,7 @@ fn dump(n: usize, path: &str) {
     let k = keys();
     let mut c = Chain::new(8);
     let spends = spends_of(&mut c, &k, n, 10);
-    let (bufs, _, _, _) = c.clone().block_input(&k, &spends, &[], &[]);
+    let (bufs, _, _, _) = c.clone().block_input(&k, &spends, &[], &[], &[]);
     let file = stdin_file(&bufs);
     let l = c.land(&elf("TACIT_BLOCK_ELF", BLOCK_ELF), &k, &spends).unwrap_or_else(|e| fail(&e));
     std::fs::write(path, &file).unwrap_or_else(|e| fail(&format!("{path}: {e}")));
@@ -696,6 +758,7 @@ fn pin(check: bool) {
 /// A landed block as the landing contract's test reads it: its public values and every list as the contract takes
 /// it, the leaves and the memos (MEMO_LEN bytes each, in the order of the outputs, found among `memos`) packed.
 fn block_json(l: &Landed, memos: &[Vec<u8>]) -> Value {
+    let blobs: Vec<u8> = l.blob_openings.iter().flat_map(|o| [o.commitment.to_vec(), o.z.to_vec(), o.y.to_vec(), o.proof.to_vec()].concat()).collect();
     let hx = |b: &[u8]| format!("0x{}", hex::encode(b));
     let memo_of = |h: &[u8]| -> Vec<u8> { memos.iter().find(|m| blk::memo_hash(m)[..] == *h).cloned().unwrap_or_else(|| fail("an output without its memo")) };
     json!({
@@ -708,6 +771,7 @@ fn block_json(l: &Landed, memos: &[Vec<u8>]) -> Value {
         "exits": hx(&l.data.exits.concat()),
         "hops": hx(&l.data.hops.concat()),
         "claims": hx(&l.data.claims.concat()),
+        "blobs": hx(&blobs),
     })
 }
 
@@ -795,6 +859,16 @@ fn fixture(path: &str, chain_id: u64, lander: [u8; 20]) {
     if l8.data.nullifiers.len() != 1 || l8.out.queue_len != 3 {
         fail("the fixture's forced refund was not taken");
     }
+    // Block 8, whose lists travel in a blob: the claimed note paid on in two.
+    let claimed_leaf = leaf_of(&c.asset_f, &fr_u64(1_000), &la.claim_to.npk, &la.claim_to.rho);
+    let claimed = c.made_note(&claimed_leaf, 4, &secret(84, 0, 0), 1_000);
+    let blob_pay = c.spend(&k, &[&claimed], &[(6, secret(86, 0, 0), 600), (4, secret(86, 0, 1), 400)], "fixture blob pay", c.leaves.len());
+    c.blobs = true;
+    let l9 = c.land(&elf, &k, &[blob_pay.clone()]).unwrap_or_else(|e| fail(&format!("fixture blob block: {e}")));
+    c.blobs = false;
+    if l9.blob_openings.len() != 1 || l9.out.blobs_hash == [0u8; 32] || l9.data.outputs.len() != 2 {
+        fail("the fixture's blob block did not carry its lists in a blob");
+    }
     let hx = |b: &[u8]| format!("0x{}", hex::encode(b));
     let doc = json!({
         "chainId": chain_id,
@@ -827,19 +901,20 @@ fn fixture(path: &str, chain_id: u64, lander: [u8; 20]) {
             block_json(&l6, &[ma, mb]),
             block_json(&l7, &[cma]),
             block_json(&l8, &[rmb]),
+            block_json(&l9, &blob_pay.memos),
         ],
     });
     std::fs::write(path, serde_json::to_string_pretty(&doc).unwrap()).unwrap_or_else(|e| fail(&format!("{path}: {e}")));
-    for (i, l) in [&l1, &l2, &l3, &l4, &l5, &l6, &l7, &l8].iter().enumerate() {
+    for (i, l) in [&l1, &l2, &l3, &l4, &l5, &l6, &l7, &l8, &l9].iter().enumerate() {
         let f = format!("{path}.b{i}.stdin");
         std::fs::write(&f, stdin_file(&l.stdin)).unwrap_or_else(|e| fail(&format!("{f}: {e}")));
     }
-    println!("{}", json!({ "fixture": path, "blocks": 8, "cycles": [l1.cycles, l2.cycles, l3.cycles, l4.cycles, l5.cycles, l6.cycles, l7.cycles, l8.cycles] }));
+    println!("{}", json!({ "fixture": path, "blocks": 9, "cycles": [l1.cycles, l2.cycles, l3.cycles, l4.cycles, l5.cycles, l6.cycles, l7.cycles, l8.cycles, l9.cycles] }));
 }
 
 /// Runs a block whose input `tamper` changed, expecting the guest to refuse it; the chain is left as it was.
 fn expect_refused_input(c: &Chain, elf: &[u8], k: &Keys, spends: &[Prepared], posts: &[Post], tamper: impl FnOnce(&mut Vec<Vec<u8>>), what: &str) {
-    let (mut bufs, _, _, _) = c.clone().block_input(k, spends, &[], posts);
+    let (mut bufs, _, _, _) = c.clone().block_input(k, spends, &[], posts, &[]);
     tamper(&mut bufs);
     match execute(elf, &bufs) {
         Ok(_) => fail(&format!("the guest took {what}")),
@@ -1068,6 +1143,7 @@ fn test() {
     expect_refused_input(&c, &elf, &k, &[], &[post(&yb)], |b| { b[4] = vec![1u8, 0u8]; }, "a failing forced proof said to verify");
     ops_test(&mut c, &elf, &k);
     lock_test(&mut c, &elf, &k);
+    blob_test(&mut c, &elf, &k);
     println!("{}", json!({ "test": "ok", "note_roots": c.roots.len() }));
 }
 
@@ -1342,4 +1418,44 @@ fn lock_vectors(path: &str) {
     });
     std::fs::write(path, serde_json::to_string_pretty(&doc).unwrap()).unwrap_or_else(|e| fail(&format!("{path}: {e}")));
     println!("{}", json!({ "vectors": path }));
+}
+
+/// A block whose lists travel in blobs: the program's evaluation of the blob equals the KZG library's, the block commits the openings,
+/// and the program refuses a block whose memos are not the ones its notes commit or whose blobs are not as many as its data fills.
+fn blob_test(c: &mut Chain, elf: &[u8], k: &Keys) {
+    let n = c.mint(&[(1, secret(130, 0, 0), 500), (2, secret(130, 0, 1), 300)]);
+    let a = c.spend(k, &[&n[0]], &[(3, secret(131, 0, 0), 200), (1, secret(131, 0, 1), 300)], "blob a", c.leaves.len());
+    let b = c.spend(k, &[&n[1]], &[(4, secret(131, 0, 2), 300)], "blob b", c.leaves.len());
+    c.blobs = true;
+    let before = c.clone();
+    let l = c.land(elf, k, &[a.clone(), b.clone()]).unwrap_or_else(|e| fail(&format!("a blob block: {e}")));
+    if l.blob_openings.len() != 1 || l.data.outputs.len() != 3 || l.out.blobs_hash == [0u8; 32] {
+        fail("a blob block did not commit its blob");
+    }
+    // the calldata block of the same spends commits no blob
+    let mut cd = before.clone();
+    cd.blobs = false;
+    let lc = cd.land(elf, k, &[a.clone(), b.clone()]).unwrap_or_else(|e| fail(&format!("the same block in calldata: {e}")));
+    if lc.out.blobs_hash != [0u8; 32] || lc.data.outputs != l.data.outputs {
+        fail("a block in calldata differs in more than its blob word");
+    }
+    // the blobs buffer: after the spends, the settles, the time
+    let at = 2 + 4 * 2 + 1 + 0 + 1;
+    let mut tampered = l.stdin.clone();
+    if tampered[at].len() < 4 + 48 + 832 {
+        fail("the blob block's input is not as expected");
+    }
+    tampered[at][4 + 48 + 5] ^= 1;
+    match execute(elf, &tampered) {
+        Ok(_) => fail("the guest took a blob block with a memo that is not its note's"),
+        Err(e) => println!("{}", json!({ "refused": "a blob block with a memo that is not its note's", "why": e })),
+    }
+    let mut two = l.stdin.clone();
+    two[at][3] = 2;
+    match execute(elf, &two) {
+        Ok(_) => fail("the guest took a blob block naming more blobs than its data fills"),
+        Err(e) => println!("{}", json!({ "refused": "a blob block naming more blobs than its data fills", "why": e })),
+    }
+    c.blobs = false;
+    println!("{}", json!({ "blobs": "ok", "blob_block_cycles": l.cycles, "calldata_block_cycles": lc.cycles, "blob_extra_cycles": l.cycles as i64 - lc.cycles as i64 }));
 }

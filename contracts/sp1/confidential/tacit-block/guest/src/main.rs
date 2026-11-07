@@ -64,6 +64,7 @@ pub fn main() {
     let k = read_u32() as usize;
     let settles: Vec<blk::lock::Settle> = (0..k).map(|_| blk::lock::Settle::from_bytes(&sp1_zkvm::io::read_vec()).expect("settle")).collect();
     let time = u64::from_le_bytes(sp1_zkvm::io::read_vec().try_into().expect("time"));
+    let blobs = sp1_zkvm::io::read_vec();
     let m = read_u32() as usize;
     assert!(n + k + m >= 1, "an empty block");
     let posted_raw: Vec<(Vec<u8>, Vec<u8>)> = (0..m).map(|_| (sp1_zkvm::io::read_vec(), sp1_zkvm::io::read_vec())).collect();
@@ -150,7 +151,7 @@ pub fn main() {
     assert!(total == 0 || pairs(&batch, &g2, &s_g2), "pairing check failed");
     println!("cycle-tracker-report-end: pairing");
 
-    let (_, out, _) = blk::apply(&state, &spends, &data, &settles, &posted, &taken, &nfw, blk::vk_hash(&VK_DIGEST), time).expect("block rejected");
+    let (_, out, _) = blk::apply(&state, &spends, &data, &settles, &posted, &taken, &nfw, blk::vk_hash(&VK_DIGEST), time, &blobs).expect("block rejected");
     sp1_zkvm::io::commit_slice(&out.encode());
     // the run ends here: dropping the key, the proofs and the batch would only spend cycles freeing memory
     std::mem::forget((vk, params, batch, raw, spends, data, settles, nfw, posted, posted_raw, answers));

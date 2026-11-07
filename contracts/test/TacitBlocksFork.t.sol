@@ -30,7 +30,7 @@ contract TacitBlocksForkTest is Test {
     address constant CONFIDENTIAL = 0x000000000Ed1eabD231Be41d93b719056F7febFC;
     bytes32 constant CTAC = 0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b;
     /// `cargo prove vkey --elf contracts/sp1/confidential/tacit-block/elf/tacit-block`
-    bytes32 constant BLOCK_VKEY = 0x001fe9a541c79760efb00dd9d7780be8c59a959e9433fd7f1f58b1a05eca8cad;
+    bytes32 constant BLOCK_VKEY = 0x0034f82809a3e0f4955bbbbea520d598189d032604ec4e27d2bdf22d3239f577;
     address constant SEQ = address(0x5E9);
     uint256 constant UNIT = 1e10;
 
@@ -42,7 +42,7 @@ contract TacitBlocksForkTest is Test {
     function setUp() public {
         path = string.concat(vm.projectRoot(), "/test/fixtures/tacit-blocks-mainnet.json");
         string memory rpc = vm.envOr("TACIT_BLOCKS_FORK_RPC", string(""));
-        if (bytes(rpc).length == 0 || !vm.exists(string.concat(path, ".b7.stdin.groth16"))) return;
+        if (bytes(rpc).length == 0 || !vm.exists(string.concat(path, ".b8.stdin.groth16"))) return;
         vm.createSelectFork(rpc);
         fx = vm.readFile(path);
         vm.warp(vm.parseJsonUint(fx, ".time"));
@@ -78,11 +78,31 @@ contract TacitBlocksForkTest is Test {
         l.exits = vm.parseJsonBytes(fx, key(b, "exits"));
         l.hops = vm.parseJsonBytes(fx, key(b, "hops"));
         l.claims = vm.parseJsonBytes(fx, key(b, "claims"));
+        l.blobs = vm.parseJsonBytes(fx, key(b, "blobs"));
+    }
+
+    /// A blob block is landed with its blobs' versioned hashes in the transaction and its data-only lists left out.
+    function asBlobBlock(TacitBlocks.Lists memory l) internal {
+        uint256 n = l.blobs.length / 160;
+        if (n == 0) return;
+        bytes32[] memory hashes = new bytes32[](n);
+        for (uint256 i; i < n; ++i) {
+            bytes memory c = new bytes(48);
+            for (uint256 j; j < 48; ++j) {
+                c[j] = l.blobs[160 * i + j];
+            }
+            hashes[i] = bytes32((uint256(sha256(c)) & (type(uint256).max >> 8)) | (uint256(1) << 248));
+        }
+        vm.blobhashes(hashes);
+        delete l.leaves;
+        delete l.memos;
+        delete l.nullifiers;
+        delete l.claims;
     }
 
     /// Moves the clock to the time block `b` names when it is later.
     function toTime(uint256 b) internal {
-        uint256 t = uint256(abi.decode(vm.parseJsonBytes(fx, key(b, "publicValues")), (bytes32[15]))[14]);
+        uint256 t = uint256(abi.decode(vm.parseJsonBytes(fx, key(b, "publicValues")), (bytes32[16]))[14]);
         if (block.timestamp < t) vm.warp(t);
     }
 
@@ -117,6 +137,7 @@ contract TacitBlocksForkTest is Test {
         (bytes memory pf, bytes memory pv) = proof(b);
         assertEq(pv, vm.parseJsonBytes(fx, key(b, "publicValues")), "the proof commits the fixture's public values");
         TacitBlocks.Lists memory l = lists(b);
+        asBlobBlock(l);
         toTime(b);
         bytes memory data = abi.encodeCall(TacitBlocks.land, (pv, pf, l));
         vm.prank(SEQ);
@@ -188,6 +209,8 @@ contract TacitBlocksForkTest is Test {
         landReal(7, "the queue alone: a refund after its deadline");
         assertEq(blocks.height(), 8);
         assertEq(blocks.queueDone(), 3);
+        landReal(8, "a payment whose notes, memos and nullifiers are in a blob");
+        assertEq(blocks.height(), 9);
         assertEq(IERC20Fork(TAC).balanceOf(address(blocks)), 1_500 * UNIT, "the claimed and refunded locks stay on the chain as notes");
     }
 
@@ -211,14 +234,16 @@ contract TacitBlocksForkTest is Test {
         deal(TAC, address(this), v * UNIT);
         IERC20Fork(TAC).approve(address(blocks), v * UNIT);
         blocks.deposit(v, vm.parseJsonBytes32(fx, ".deposit.cx"), vm.parseJsonBytes32(fx, ".deposit.cy"), vm.parseJsonBytes32(fx, ".deposit.body"));
-        for (uint256 b; b < 8; ++b) {
+        for (uint256 b; b < 9; ++b) {
             if (b == 2) blocks.force(vm.parseJsonBytes(fx, ".forced"));
             if (b == 4) blocks.force(vm.parseJsonBytes(fx, ".forcedHop"));
             if (b == 5) lockDeposits();
             if (b == 7) blocks.force(vm.parseJsonBytes(fx, ".forcedRefund"));
             toTime(b);
+            TacitBlocks.Lists memory l = lists(b);
+            asBlobBlock(l);
             vm.prank(SEQ);
-            blocks.land(vm.parseJsonBytes(fx, key(b, "publicValues")), "", lists(b));
+            blocks.land(vm.parseJsonBytes(fx, key(b, "publicValues")), "", l);
             if (b == 3) sendHop(vm.parseJsonUint(fx, ".hop.value"), vm.parseJsonBytes32(fx, ".hop.commit"), "send a hop into the live confidential pool");
         }
         sendHop(vm.parseJsonUint(fx, ".hop2.value"), vm.parseJsonBytes32(fx, ".hop2.commit"), "send the forced hop on");

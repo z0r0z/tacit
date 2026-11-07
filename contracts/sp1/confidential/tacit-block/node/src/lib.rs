@@ -127,7 +127,7 @@ impl Node {
 
     /// Replays a landed block from what it publishes, refusing one whose replay does not reach the state its proof committed.
     pub fn land(&mut self, b: &Published) -> Result<(), String> {
-        if b.words.len() != 15 {
+        if b.words.len() != 16 {
             return Err(format!("{} public words", b.words.len()));
         }
         if b.words[0] != self.state.digest() || b.words[2] != fr_be(&self.state.notes.root) {
@@ -174,7 +174,7 @@ impl Node {
 
     /// The block program's input for the next block of `spends`, `settles` and the queue's next entries `posts` (each with whether
     /// its proof verifies, which the caller checks natively), naming `time`; and what the program will commit and publish for it.
-    pub fn build(&self, spends: &[SpendIn], settles: &[Settle], posts: &[(Vec<u8>, bool)], time: u64) -> Result<(Vec<Vec<u8>>, BlockOut, BlockData), String> {
+    pub fn build(&self, spends: &[SpendIn], settles: &[Settle], posts: &[(Vec<u8>, bool)], time: u64, blobs: &[u8]) -> Result<(Vec<Vec<u8>>, BlockOut, BlockData), String> {
         let mut bufs = vec![self.state.to_bytes(), (spends.len() as u32).to_le_bytes().to_vec()];
         let mut list = vec![];
         let mut data = vec![];
@@ -192,6 +192,7 @@ impl Node {
             bufs.push(s.to_bytes());
         }
         bufs.push(time.to_le_bytes().to_vec());
+        bufs.push(blobs.to_vec());
         bufs.push((posts.len() as u32).to_le_bytes().to_vec());
         let mut posted = vec![];
         let mut verifies = vec![];
@@ -216,7 +217,7 @@ impl Node {
         let mut nf = self.nf.clone();
         let nfw: Vec<NfWitness> = keys.iter().map(|k| nf.insert(k)).collect();
         bufs.push(nfw.iter().flat_map(NfWitness::to_bytes).collect());
-        let (_, out, published) = blk::apply(&self.state, &list, &data, settles, &posted, &taken, &nfw, blk::vk_hash(&vk_digest()), time)?;
+        let (_, out, published) = blk::apply(&self.state, &list, &data, settles, &posted, &taken, &nfw, blk::vk_hash(&vk_digest()), time, blobs)?;
         Ok((bufs, out, published))
     }
 }

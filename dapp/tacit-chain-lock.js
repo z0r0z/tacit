@@ -21,7 +21,7 @@ import * as adaptor from './adaptor-signature.js';
 
 export const P_FR = 0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001n;
 export const TIME_WINDOW = 3600;
-export const MEMO_LEN = 64;
+export const MEMO_LEN = 832;
 export const TREE_DEPTH = 32;
 export const OP_LOCK = 2;
 export const SETTLE_CLAIM = 1;
