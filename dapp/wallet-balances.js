@@ -2,7 +2,7 @@
 // from (so the two never disagree) and the read of the key's Bitcoin address, and gives back the rows of each place: no network, no page state.
 //
 //   balanceRows(items, btc, tokens) → { bitcoin: [row], ethereum: [row] }
-//     items   the panel's rows: { key, label, v (bigint, or null while it is read), dec, max, meta, icon | icons | mark, core?, show?, err? }
+//     items   the panel's rows: { key, label, v (bigint, or null while it is read), dec, max, meta, icon | icons | mark, core?, show?, err?, notes? (how many private notes hold it) }
 //     btc     the key's Bitcoin address as read: { ready, err?, sats, silent, pending, held: [{ id, ticker, decimals, balance, known }] }, or null before any read
 //     tokens  { icon(id) → the id of the asset's mark or null, dp(id) → the places to show it to }
 // A row is the panel's own, or { key, label, v, dec, max, meta, icon | mark + markId, open, btcAsset?, pending?, err? }: `open` is the sheet its row goes to.
