@@ -16874,7 +16874,7 @@ const chainSlow = (st) => ({ status, kept }) => { if (status === 'slow' && kept)
 const chainFailed = (st, e) => { if (!e?.kept) return false; chainOffer(st, e.kept, `${errText(e).replace(/\.$/, '')}.`); e.offered = true; chainScan(true).then(() => chainClient()).then(chainKeptRead).catch(() => {}); return true; };
 // A kept spend posted to TacitBlocks' forced queue from the user's account (a shield's from the account that made its deposit)
 async function chainForce(b) {
-  const id = b.dataset.chainforce, st = b.closest('.hx-ck')?.querySelector('#hx-ck-st') || b.closest('.status') || b.parentElement;
+  const id = b.dataset.chainforce, st = b.closest('.hx-ck')?.querySelector('#hx-ck-st') || b.closest(STATUS_AT) || b.parentElement;
   return busy(b, async (run) => {
     try {
       const c = await chainClient(), e = (await c.pending()).find((x) => x.id === id);
@@ -16937,7 +16937,7 @@ async function chainSweep(b) {
 }
 // A hop that landed and was not sent on: sent into the private pool from the paying account (anyone may), where its deposit is finished as a wrap's
 async function chainHopSend(b) {
-  const commit = b.dataset.chainhop, st = b.closest('.hx-ck')?.querySelector('#hx-ck-st') || b.closest('.status') || b.parentElement;
+  const commit = b.dataset.chainhop, st = b.closest('.hx-ck')?.querySelector('#hx-ck-st') || b.closest(STATUS_AT) || b.parentElement;
   return busy(b, async (run) => {
     try {
       const c = await chainClient(), same = (x) => x.commit.toLowerCase() === commit.toLowerCase(), h = CH.hops.find(same) || (await c.hopsWaiting()).find(same);
