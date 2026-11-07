@@ -2851,7 +2851,7 @@ await step('keys', async () => {
   const addr = addrIn(txt);
   ok(/Opened with Ethereum/.test(txt) && addr, `keys: an Ethereum signature opens ${addr}`);
   await lock(r.page);
-  ok(/Continue as tacit1/.test(await walletText(r.page)), 'keys: once locked, the sheet offers to continue with the same wallet');
+  ok(/Open your wallet tacit1/.test(await walletText(r.page)), 'keys: once locked, the sheet offers to open the same wallet');
   await r.page.click('#wallet-body [data-in="known"]');
   await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
   ok((await shown(r.page)).includes(addr), 'keys: continuing reopens the same tacit1 address');
@@ -7199,8 +7199,8 @@ await step('lpsend', async () => {
   const p = r.page, to = tacit1('abe'.padEnd(64, '5'));
   try {
     await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); document.querySelector('#dash')?.scrollIntoView(); });
-    await until(p, () => !!document.querySelector('#dash [data-hx="send:lp0"]'), null, 240000).catch(() => {});
-    ok(!!(await p.$('#dash [data-hx="send:lp0"]')), 'lpsend: the dashboard row of the LP position offers Send');
+    await until(p, () => !!document.querySelector('#dash [data-dash-open="farm/private-0"]'), null, 240000).catch(() => {});
+    ok(!!(await p.$('#dash [data-dash-open="farm/private-0"]')), 'lpsend: the dashboard lists the LP position');
     await p.evaluate(() => window.scrollTo(0, 0));
     await p.click('[data-hxm="send"]');
     await p.click('#hx [data-pk="hx-sa"]');
@@ -7537,8 +7537,8 @@ await step('rsend', async () => {
   const p = r.page, to = tacit1('abd'.padEnd(64, '5'));
   try {
     await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); document.querySelector('#dash')?.scrollIntoView(); });
-    await until(p, () => !!document.querySelector('#dash [data-hx="send:rtac"]'), null, 240000).catch(() => {});
-    ok(/wTAC/.test(await text(p, '#dash').catch(() => '')) && !!(await p.$('#dash [data-hx="send:rtac"]')), 'rsend: the dashboard has a wTAC row, private farm rewards, that offers Send');
+    await until(p, () => /wTAC/.test(document.querySelector('#dash')?.textContent || ''), null, 240000).catch(() => {});
+    ok(/wTAC/.test(await text(p, '#dash').catch(() => '')), 'rsend: the dashboard has a wTAC row, private farm rewards');
     await p.evaluate(() => window.scrollTo(0, 0));
     await p.click('[data-hxm="send"]');
     await p.click('#hx [data-pk="hx-sa"]');
@@ -7788,19 +7788,17 @@ await step('hxsend', async () => {
     await p.click('[data-hxm="send"]');
     await until(p, () => /Balance 0\.25 · Max/.test(document.querySelector('#hx-bal')?.textContent || ''), null, 300000);
     ok(await p.$eval('#hx-sa', (e) => e.value) === 'eth', 'hxsend: a key holding tETH opens Send on it');
-    // Each private holding on Your Tacit has a Send of its own, and it sets the card to that asset.
-    await until(p, () => document.querySelectorAll('#dash-g .di-send').length >= 4, null, 300000);
-    const sends = await p.$$eval('#dash-g .di-send', (b) => b.map((x) => x.dataset.hx).sort().join());
-    ok(sends === 'send:cbtc,send:cusd,send:eth,send:tac', `hxsend: Your Tacit offers Send on tETH, TAC, cUSD and cBTC and nowhere it holds none (${sends})`);
+    // A send link names an asset, and it sets the card to that asset (once the key's cUSD and cBTC are read).
+    await until(p, () => document.querySelectorAll('#dash-g [data-dash-open="borrow"]').length >= 2, null, 300000);
     if (SHOTS) {
       await p.locator('#dash').screenshot({ path: join(SHOTS, 'weld-hxsend-dash.png') });
       await p.setViewportSize({ width: 390, height: 900 });
       await p.locator('#dash').screenshot({ path: join(SHOTS, 'weld-hxsend-dash-phone.png') });
       await p.setViewportSize({ width: 1280, height: 900 });
     }
-    await p.click('#dash-g .di-send[data-hx="send:cusd"]');
+    await p.evaluate(() => { location.hash = '#card=send:cusd'; });
     await until(p, () => document.querySelector('[data-hxm="send"]')?.getAttribute('aria-selected') === 'true' && document.querySelector('#hx-sa')?.value === 'cusd', null, 60000);
-    ok(true, 'hxsend: a holding\'s Send sets the card to Send on that asset');
+    ok(true, 'hxsend: a send link sets the card to Send on that asset');
     await lander(p);
     await p.click('[data-hxm="send"]');
     await p.selectOption('#hx-sa', 'eth');
@@ -7954,9 +7952,9 @@ await step('hxsend', async () => {
     ok(true, 'hxsend: opening that link fills Send with the address, cUSD and the amount');
     // A Send button elsewhere on the page opens Send, even after Request was used.
     await q.click('#hx-ask');
-    await q.click('#dash-g .di-send[data-hx="send:cusd"]');
+    await q.evaluate(() => { location.hash = '#card=send:cusd'; });
     await until(q, () => !!document.querySelector('#hx-rcpt') && /Send privately/.test(document.querySelector('#hx-go')?.textContent || ''), null, 60000);
-    ok(true, 'hxsend: a Send button on Your Tacit opens Send, not Request, after Request was used');
+    ok(true, 'hxsend: a send link opens Send, not Request, after Request was used');
     if (r2.errors.length) { fails++; console.log('FAIL hxsend page errors: ' + r2.errors.slice(0, 3).join(' | ')); }
   } finally { await r2.browser.close(); }
 });
@@ -8122,11 +8120,11 @@ await step('hxexit', async () => {
     ok(/Deposited/.test(await text(p, '#d-status')), `hxexit: 25 USDC are in the USDC pool (${held} in all)`);
     await until(p, (h) => (document.querySelector('.bal .v')?.textContent?.trim() || '').replace(/,/g, '').replace(/\.0+$/, '') === h, held, 120000);
     await lander();
-    // the holdings panel offers a Swap on what the pool holds: it opens the card on that USDC going out to ETH
-    await until(p, () => !!document.querySelector('[data-hx="pay:usdc"]'), null, 120000);
-    await p.click('[data-hx="pay:usdc"]');
+    // the holdings panel lists what the pool holds, and a link opens the card on that USDC going out to ETH
+    await until(p, () => !!document.querySelector('#dash [data-dash-open="device/usdc"]'), null, 120000);
+    await p.evaluate(() => { location.hash = '#card=pay:usdc:eth'; });
     await until(p, () => /^USDC/.test(document.querySelector('#hx-swap #pay-coin')?.textContent || '') && document.querySelector('#hx-swap #pay-at')?.textContent === 'Private' && /^ETH/.test(document.querySelector('#hx-swap #get-coin')?.textContent || ''), null, 120000);
-    ok(true, 'hxexit: the holdings panel has a Swap on the USDC the pool holds, which opens the card on it going out to ETH');
+    ok(true, 'hxexit: the holdings panel lists the USDC the pool holds, and a link opens the card on it going out to ETH');
     await lander();
     // the card opened on that pool's USDC, going out as USDC (a swap's route is zQuoter's, whose scans are too slow on a fork: tests/swap-held-exit-fork.mjs prices those)
     await p.goto(r.url + '#card=pay:usdc:usdc');
@@ -8389,9 +8387,6 @@ await step('hxsendtac', async () => {
     await q.click('#hx-have [data-hxin]');
     await until(q, () => document.querySelector('[data-hxm="shield"]')?.getAttribute('aria-selected') === 'true' && /^TAC/.test((document.querySelector('#hx-swap #pay-coin')?.textContent || '').trim()) && document.querySelector('#hx-swap #pay-at')?.textContent === 'Wallet', null, 60000);
     ok(true, 'hxsendtac: and that opens the Swap card on TAC in the wallet');
-    await until(q, () => document.querySelectorAll('#dash-g .di-send[data-hx="send:wtac"]').length === 1, null, 120000)
-      .catch(async () => { throw new Error(`no dashboard send on TAC: ${await q.$$eval('#dash-g .di-send', (b) => b.map((x) => x.dataset.hx).join())}`); });
-    ok(true, 'hxsendtac: Your Tacit offers Send on TAC held only in the wallet');
     if (r2.errors.length) { fails++; console.log('FAIL hxsendtac page errors: ' + r2.errors.slice(0, 3).join(' | ')); }
   } finally { await r2.browser.close(); }
 });

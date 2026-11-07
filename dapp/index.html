@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-mG47dPW68ens74+V/A5KF6YMkaUOF2MQhTm2OtT3zqM=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-6dJBpcVh/7kzbyTqhHq3vNLar1DymbF3UdaWA4aMpEw=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -273,10 +273,6 @@ a.di { color: inherit; text-decoration: none; }
 .di-m .up { color: var(--ok); }
 .di-v small { font-size: 12px; font-weight: 400; color: var(--mute); letter-spacing: 0; }
 .dash-g li { position: relative; }
-.di-send::after { content: ''; position: absolute; inset: -6px -4px; }
-.di-send { position: absolute; top: 9px; right: 10px; padding: 3px 11px; font: 12px var(--mono); color: var(--ink); background: var(--card); border: 1px solid var(--hair-2); border-radius: 999px; cursor: pointer; transition: border-color .15s; }
-@media (hover: hover) { .di-send:hover { border-color: var(--ink); } }
-@media (pointer: coarse) { .di-send { padding: 7px 14px; } }
 
 /* ── activity ── */
 .acts { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--hair); }
@@ -951,6 +947,7 @@ a.btn { text-decoration: none; white-space: nowrap; }
 .status a { color: var(--ink); }
 .note { font-size: 13px; color: var(--mute); margin: 12px 0 0; }
 .note.err { color: var(--err); }
+.opts .lbl + .note { margin: 0 0 10px; }
 .rcpt .note { margin: 6px 0 2px; }
 .gate { text-align: center; padding: 26px 8px 8px; }
 .gate p { color: var(--mute); margin: 0 auto 4px; max-width: 38ch; font-size: 13px; }
@@ -3736,7 +3733,7 @@ document.addEventListener('click', (e) => {
   S.provider = null; rerender('wallet');
 });
 // The Ethereum wallet connected now, to change or disconnect; `named` when a row above already shows it, connected
-const ethLine = (named = false) => (S.wallet && S.provider ? html`<div class="kv eth-line"><span>${S.provider.isWalletConnect ? 'WalletConnect' : chainTag(1)}</span><b>${named ? '' : html`<span class="num">${short(S.wallet, 6)}</span>`}<button class="link" type="button" data-wc-change>Change account</button><button class="link" type="button" data-wc-off>Disconnect</button></b></div>` : '');
+const ethLine = (named = false) => (S.wallet && S.provider ? html`<div class="kv eth-line"><span>${S.provider.isWalletConnect ? 'WalletConnect' : chainTag(1)}</span><b>${named ? '' : html`<span class="num">${short(S.wallet, 4)}</span>`}<button class="link" type="button" data-wc-change>Change account</button><button class="link" type="button" data-wc-off>Disconnect</button></b></div>` : '');
 const S = { address: null, wallet: null, provider: null, key: null, acct: null, pay: null };
 // The Swap tab's card (swap/card.js), once drawn, and the private swaps in it that wait for a key to be opened (the hero's Swap tab, below)
 const SWC = { el: null, card: null, p: null, ask: null, url: false, keyw: new Set() };
@@ -3926,10 +3923,8 @@ const open = {
   },
 };
 
-// How a remembered wallet opens, as a line of its own (viaText reads inside a sentence) and as a mark: the wallet it signs with, or a key
-const viaLine = (k) => (k.mode === 'passkey' ? `Passkey “${k.label || 'Tacit'}”` : k.mode === 'local' ? 'Key saved in this browser'
-  : k.mode === 'ext' ? html`Key funded by <span class="nw">${short(k.address || '', 6)}</span>` : viaText(k));
-const viaMark = (k) => html`<svg class="tk" aria-hidden="true"><use href="#${k.mode === 'eth' ? 'tk-eth' : k.mode === 'btc' || k.mode === 'ext' ? 'tk-btc' : 'i-key'}"/></svg>`;
+// How a remembered wallet opens, as a mark: the wallet it signs with, or a key
+const viaMark =(k) => html`<svg class="tk" aria-hidden="true"><use href="#${k.mode === 'eth' ? 'tk-eth' : k.mode === 'btc' || k.mode === 'ext' ? 'tk-btc' : 'i-key'}"/></svg>`;
 // A remembered wallet opened with the Ethereum wallet connected now: that wallet's signature opens it with no other popup
 const openerOn = (k) => !!(k?.mode === 'eth' && S.wallet && S.provider && String(k.address || '').toLowerCase() === S.wallet.toLowerCase());
 function signIn(id, first = 'eth') {
@@ -3941,19 +3936,22 @@ function signIn(id, first = 'eth') {
       <button class="link" type="button" data-in="paste">Paste a key</button>${pk && known ? html`<button class="link" type="button" data-in="new">New passkey wallet</button>` : ''}</p>
     <div class="amt text" id="${id}-paste" hidden><input id="${id}-hex" type="password" placeholder="64-character Tacit key" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Tacit key"><button class="link" type="button" data-in="key">Open</button></div>`;
   if (known || other) {
-    // A returning visitor: each Tacit wallet this browser opened, by its address and how it opens, then the other ways in, smaller
+    // A returning visitor: each Tacit wallet this browser opened, by its address and what opens it (they are different keys, each with its own balances), then the other ways in, smaller
     const mine = (k, w, main) => {
       const t = seenAddr(w);
-      return opt(k, html`<svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>${t ? html`<span class="num">${tacitShort(t)}</span>` : html`<b>Your Tacit wallet</b>`}`,
-        html`${viaMark(w)}<span>${viaLine(w)}</span>${openerOn(w) ? html`<span class="wl-on">connected</span>` : ''}`, `mine${main ? ' main' : ''}`);
+      return opt(k, html`<svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>${t ? html`<span class="num">${tacitShort(t)}</span>` : html`<b>Tacit wallet</b>`}`,
+        html`${viaMark(w)}<span>Opens with ${viaText(w)}</span>${openerOn(w) ? html`<span class="wl-on">connected</span>` : ''}`, `mine${main ? ' main' : ''}`);
     };
     const way = (k, icon, name, title) => html`<button class="way" type="button" data-in="${k}" title="${title}"><svg class="tk" aria-hidden="true"><use href="#${icon}"/></svg><span>${name}</span></button>`;
     const eth = way('eth', 'tk-eth', 'Ethereum', 'MetaMask, Rabby, Rainbow, any browser wallet, or WalletConnect'), btc = way('btc', 'tk-btc', 'Bitcoin', 'Xverse, Leather or UniSat');
+    // the Ethereum wallet connected now is already offered above, as what opens one of the wallets
+    const ways = (first === 'btc' ? [btc, eth] : [eth, btc]).filter((x) => !(x === eth && (openerOn(known) || openerOn(other))));
     return html`<div class="opts" id="${id}-in">
-      <div class="lbl"><span>Continue as</span></div>
+      <div class="lbl"><span>${known && other ? 'Open a wallet' : 'Open your wallet'}</span></div>
+      ${known && other ? html`<p class="note">Two separate wallets, each with its own address and balances.</p>` : ''}
       ${known ? mine('known', known, true) : ''}${other ? mine('other', other, !known) : ''}
-      <div class="lbl"><span>Or open another wallet</span></div>
-      <div class="ways">${first === 'btc' ? [btc, eth] : [eth, btc]}${pk ? way('passkey', 'i-key', 'Passkey', 'Touch ID, Windows Hello or a security key') : ''}</div>
+      <div class="lbl"><span>Other ways in</span></div>
+      <div class="ways">${ways}${pk ? way('passkey', 'i-key', 'Passkey', 'Touch ID, Windows Hello or a security key') : ''}</div>
       ${links}
     </div>`;
   }
@@ -4294,7 +4292,7 @@ render.wallet = () => {
   if (!S.key) {
     const known = knownWallet(), other = otherWallet();
     mount(el, html`${known || other ? '' : html`<p class="lede-s">One key for your private balances on Bitcoin and Ethereum. Signing in sends nothing and costs nothing, and the same wallet or passkey always opens the same Tacit wallet.</p>`}${signIn('ws')}
-      ${S.wallet && S.provider ? html`<div class="wl-foot">${ethLine(openerOn(known) || openerOn(other))}</div>` : ''}`);
+      ${S.wallet && S.provider ? html`<div class="wl-foot"><div class="lbl"><span>Connected</span></div>${ethLine()}</div>` : ''}`);
     return wireSignIn(el, 'ws', () => $('#sheet-wallet').close());
   }
   const k = S.key, kept = k.mode === 'ext' || k.mode === 'local', a = S.acct, pays = payer(), btcAddr = T?.extWallet?.state?.address || (k.mode === 'btc' || k.mode === 'ext' ? k.address : null);
@@ -13922,19 +13920,19 @@ const markColor = (id) => { let h = 7; for (const c of String(id)) h = (h * 31 +
 function dashItems() {
   const k = S.key?.pubHex, s = k ? P.scan : null, scanErr = !!(k && !s && P.err), out = [];
   if (k) {
-    out.push({ key: 'teth', icon: 'tk-teth', label: 'tETH', dec: 8, max: 6, v: s ? s.eth.value + P.coming : P.coming > 0n ? P.coming : null, err: scanErr && !(P.coming > 0n), meta: s?.reading ? 'private, reading older notes…' : 'private', open: 'private', core: true, send: spendable('eth') > 0n ? 'eth' : null });
+    out.push({ key: 'teth', icon: 'tk-teth', label: 'tETH', dec: 8, max: 6, v: s ? s.eth.value + P.coming : P.coming > 0n ? P.coming : null, err: scanErr && !(P.coming > 0n), meta: s?.reading ? 'private, reading older notes…' : 'private', open: 'private', core: true });
     let dev = null;
     const on = [];
     for (const c of DEVICE_CHAINS) { const v = devBal(c.chainId, k); if (v != null) { dev = (dev || 0n) + v; if (v > 0n) on.push(c.chainId); } }
     const older = DEVICE_CHAINS.some((c) => devBehind(c.chainId, k));
-    out.push({ key: 'dev', icon: 'tk-eth', label: 'ETH', dec: 18, max: 5, v: dev, meta: older ? 'private, reading older history' : on.length ? html`private on ${chainMarks(on)}` : 'private', open: 'device', show: dev > 0n, swap: dev > 0n && on.includes(1) ? 'eth' : null });
+    out.push({ key: 'dev', icon: 'tk-eth', label: 'ETH', dec: 18, max: 5, v: dev, meta: older ? 'private, reading older history' : on.length ? html`private on ${chainMarks(on)}` : 'private', open: 'device', show: dev > 0n });
     const devTac = devBal('tac', k);
-    out.push({ key: 'devtac', icon: 'tk-tac', label: 'TAC', dec: 18, max: 2, v: devTac, meta: 'private on this device', open: 'device/tac', show: devTac > 0n, swap: devTac > 0n ? 'tac' : null });
+    out.push({ key: 'devtac', icon: 'tk-tac', label: 'TAC', dec: 18, max: 2, v: devTac, meta: 'private on this device', open: 'device/tac', show: devTac > 0n });
     // the other token pools on this device (TACD and TACE beside the vaults, and any a private swap went through), each a row when it holds some
     for (const p of TOKEN_POOLS) {
       if (p.slug === 'tac') continue;
       const v = devBal(p.slug, k);
-      out.push({ key: p.slug === 'tacd' || p.slug === 'tace' ? `dev${p.slug}` : `devtok-${p.slug}`, icon: p.icon, label: p.sym, dec: p.dec ?? 18, max: 4, v, meta: 'private on this device', open: `device/${p.slug}`, show: v > 0n, swap: v > 0n && ['usdc', 'usdt'].includes(String(p.sym).toLowerCase()) ? String(p.sym).toLowerCase() : null });
+      out.push({ key: p.slug === 'tacd' || p.slug === 'tace' ? `dev${p.slug}` : `devtok-${p.slug}`, icon: p.icon, label: p.sym, dec: p.dec ?? 18, max: 4, v, meta: 'private on this device', open: `device/${p.slug}`, show: v > 0n });
     }
     // What a key holds on its Bitcoin address: read again whenever it is known to have held some (or has a bridge under way), and shown from
     // what it last held until the read is back, so it is there on every visit and not only the first of the day.
@@ -13956,20 +13954,20 @@ function dashItems() {
   }
   const who = [...new Set([S.wallet, S.acct?.address].filter(Boolean).map((a) => a.toLowerCase()))].join();
   const pubTac = who && TACB.who === who ? TACB.erc : null, privTac = k ? (s ? s.tac.value * E10 : null) : 0n;
-  out.push({ key: 'tac', icon: 'tk-tac', label: 'TAC', dec: 18, max: 2, v: pubTac != null && privTac != null ? pubTac + privTac : null, priv: privTac, err: scanErr || (!!who && TACB.who !== who && !!TACB.err), open: 'tac', core: true, send: spendable('tac') > 0n ? 'tac' : pubTac > 0n ? 'wtac' : null,
+  out.push({ key: 'tac', icon: 'tk-tac', label: 'TAC', dec: 18, max: 2, v: pubTac != null && privTac != null ? pubTac + privTac : null, priv: privTac, err: scanErr || (!!who && TACB.who !== who && !!TACB.err), open: 'tac', core: true,
     meta: !k ? 'on Ethereum' : pubTac != null && privTac != null ? `${fmt(privTac, 18, 2)} private · ${fmt(pubTac, 18, 2)} public` : '' });
   if (k) {
     const b = BTC.pub === k ? BTC : null, onBtc = BTC_NOTE_ASSETS.map((x) => [x, b?.held.find((a) => a.id === x.id)]).filter(([, h]) => h), lk = LOCKNOTE.pub === k ? LOCKNOTE : null;
-    out.push({ key: 'btc', icon: 'tk-btc', label: 'BTC', dec: 8, max: 6, v: b?.got === 3 ? b.sats + b.silent : null, lazy: true, open: 'btc', send: b?.got === 3 && b.sats + b.silent > 0n ? 'btc' : null, show: !!b && (b.sats + b.silent > 0n || onBtc.length > 0),
+    out.push({ key: 'btc', icon: 'tk-btc', label: 'BTC', dec: 8, max: 6, v: b?.got === 3 ? b.sats + b.silent : null, lazy: true, open: 'btc', show: !!b && (b.sats + b.silent > 0n || onBtc.length > 0),
       meta: onBtc.length ? `and ${onBtc.map(([x, h]) => `${fmt(h.balance, h.decimals, x === CHAIN_ASSETS.tac ? 2 : x.dp)} ${x.ticker}`).join(' and ')} on Bitcoin` : b ? 'at your Bitcoin address' : 'open to read' });
     // Any other asset the key holds there (one etched on /etch/, or bought), each as a row of its own that opens its send form in the Bitcoin sheet.
     for (const a of b?.held || []) if (a.known && a.balance > 0n && !assetById(a.id)) out.push({ key: `btc-${a.id.slice(0, 16)}`, mark: a.ticker, markId: a.id, label: a.ticker, dec: a.decimals, max: Math.min(a.decimals, 4), v: a.balance, meta: 'on Bitcoin', open: 'btc', btcAsset: a.id, show: true });
     const sats = HELD.pub === k ? HELD.sats : null;
     for (const a of sats || []) out.push({ key: `sats-${a.ticker.toLowerCase()}`, icon: a.ticker === 'TAC' ? 'tk-tac' : 'tk-cbtc', label: a.ticker, dec: a.decimals, max: a.ticker === 'TAC' ? 2 : 6,
-      v: a.value, meta: 'Secret Sats, private on Bitcoin', href: a.ticker === 'TAC' ? '/tac/' : '/sats/', show: a.value > 0n, send: a.ticker === 'TAC' && a.value > 0n ? 'tacb' : null });
+      v: a.value, meta: 'Secret Sats, private on Bitcoin', href: a.ticker === 'TAC' ? '/tac/' : '/sats/', show: a.value > 0n });
     const cb = s && !s.cbtcUnread ? s.cbtc.notes.reduce((a, n) => a + BigInt(n.value), 0n) : null;
-    out.push({ key: 'cbtc', icon: 'tk-cbtc', label: 'cBTC', dec: 8, max: 6, v: cb, err: scanErr, meta: lk?.text || 'private', open: 'borrow', send: spendable('cbtc') > 0n ? 'cbtc' : null, show: cb > 0n || !!lk?.text });
-    out.push({ key: 'cusd', icon: 'tk-cusd', label: 'cUSD', dec: 8, max: 2, v: s ? s.cusd.value : null, err: scanErr, open: 'borrow', send: spendable('cusd') > 0n ? 'cusd' : null, show: s?.cusd.value > 0n || !!lk?.borrowed,
+    out.push({ key: 'cbtc', icon: 'tk-cbtc', label: 'cBTC', dec: 8, max: 6, v: cb, err: scanErr, meta: lk?.text || 'private', open: 'borrow', show: cb > 0n || !!lk?.text });
+    out.push({ key: 'cusd', icon: 'tk-cusd', label: 'cUSD', dec: 8, max: 2, v: s ? s.cusd.value : null, err: scanErr, open: 'borrow', show: s?.cusd.value > 0n || !!lk?.borrowed,
       meta: lk?.borrowed ? `${fmt(lk.borrowed, 8, 2)} borrowed` : 'private' });
     out.push({ key: 'cusdt', icon: 'tk-usdt', label: 'USDT', dec: 6, max: 2, v: s ? s.cusdt.value : null, err: scanErr, open: 'usdt', meta: 'private', show: s?.cusdt.value > 0n });
   }
@@ -13993,7 +13991,7 @@ function dashItems() {
       const farmed = (FARM.positions ?? s?.farmPositions ?? []).filter((y) => Number(y.pid) === Number(p.pid)).reduce((a, y) => a + (big(y.shares) || 0n), 0n);
       const icons = ['tk-teth', LOGO[String(p.pair).split('/').find((t) => t !== 'cETH')] || 'tk-tac'];
       if (farmed) out.push({ key: `lpf-${p.pid}`, icons, ring: true, label: pairName(p.pair), unit: 'ETH', dec: 18, max: 4, v: sharesEth(p, farmed) ?? null, noDelta: true, show: true, open: `farm/private-${p.pid}`, meta: 'private, farming' });
-      if (loose) out.push({ key: `lp-${p.pid}`, icons, label: pairName(p.pair), unit: 'ETH', dec: 18, max: 4, v: sharesEth(p, loose) ?? null, noDelta: true, show: true, open: `farm/private-${p.pid}`, meta: 'private, LP only', send: `lp${p.pid}` });
+      if (loose) out.push({ key: `lp-${p.pid}`, icons, label: pairName(p.pair), unit: 'ETH', dec: 18, max: 4, v: sharesEth(p, loose) ?? null, noDelta: true, show: true, open: `farm/private-${p.pid}`, meta: 'private, LP only' });
     }
   }
   // the public pool's stake (the wallet's, not the key's): worth about twice its ETH side, counted in the total but not as private
@@ -14001,7 +13999,7 @@ function dashItems() {
   // wTAC held privately (harvested farm rewards) and in the wallet, one row at TAC's 18 decimals: sent on from the card's Send, turned into TAC in the farm sheet
   { const rw = s ? spendable('rtac') : 0n, ww = wtacHere();
     if (rw > 0n || ww > 0n) out.push({ key: 'rtac', icon: 'tk-tac', label: 'wTAC', unit: 'wTAC', dec: 18, max: 2, v: rw * (big(FARM.program?.unitScale) || E10) + ww, show: true, open: 'farm',
-      meta: rw && ww ? `private, and some in ${your()}` : rw ? 'private, farm rewards' : `in ${your()}, farm rewards`, send: rw > 0n ? 'rtac' : null }); }
+      meta: rw && ww ? `private, and some in ${your()}` : rw ? 'private, farm rewards' : `in ${your()}, farm rewards` }); }
   const x = FARM.precision && FARM.precision.who === S.address ? FARM.precision : null, pos = S.key ? FARM.positions || [] : [];
   if (x?.staked > 0n || x?.earned > 0n || pos.length) {
     const scale = big(FARM.program?.unitScale) || E10, earned = (x ? earnedNow(x) : 0n) + pos.reduce((a, p) => a + (big(p.pendingUnits) || 0n) * scale, 0n);
@@ -14087,9 +14085,8 @@ function paintDash0() {
       : it.err || it.lazy ? '—' : html`<span class="sk" style="--w:7ch"></span>`;
     const body = html`<span class="di-k">${it.icons ? html`<span class="pair${it.ring ? ' farm' : ''}">${it.icons.map((i) => html`<svg class="tk" aria-hidden="true"><use href="#${i}"/></svg>`)}</span>` : it.mark ? html`<span class="tk letter" style="--c:${markColor(it.markId)}" aria-hidden="true">${it.mark.slice(0, 2).toUpperCase()}</span>` : html`<svg class="tk" aria-hidden="true"><use href="#${it.icon}"/></svg>`}${it.label}${it.live ? html`<span class="dot live"></span>` : ''}</span>
       <span class="di-v num">${value}</span><span class="di-m${it.err || it.wrap ? ' wrap' : ''}">${delta}${it.err ? 'could not read · open to retry' : it.meta || (it.v == null ? html`<span class="sk" style="--w:12ch"></span>` : '')}</span>`;
-    const send = it.send ? html`<button class="di-send" type="button" data-hx="send:${it.send}" aria-label="Send ${it.label}">Send</button>` : it.swap ? html`<button class="di-send" type="button" data-hx="pay:${it.swap}" aria-label="Swap ${it.label} held privately">Swap</button>` : '';
-    return it.href ? html`<li><a class="di" href="${it.href}">${body}</a>${send}</li>`
-      : html`<li><button class="di" type="button" ${it.asset ? html`data-asset="${it.asset}"` : html`data-dash-open="${it.open}"${it.btcAsset ? html` data-btc-asset="${it.btcAsset}"` : ''}`}>${body}</button>${send}</li>`;
+    return it.href ? html`<li><a class="di" href="${it.href}">${body}</a></li>`
+      : html`<li><button class="di" type="button" ${it.asset ? html`data-asset="${it.asset}"` : html`data-dash-open="${it.open}"${it.btcAsset ? html` data-btc-asset="${it.btcAsset}"` : ''}`}>${body}</button></li>`;
   };
   const items = dashItems().filter((it) => it.core || it.show || Number(base[it.key]?.v || 0) > 0);
   const worth = k ? dashWorth(items) : null, tot = $('#hold-tot');

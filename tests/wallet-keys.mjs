@@ -4,7 +4,7 @@
 //   · the Tacit address is on a card of its own under the balances: its two ends at first, the whole 276 characters after Show all, and Copy puts
 //     the whole one on the clipboard; it is not listed a second time below;
 //   · the public key: the key's compressed secp256k1 point, in full, and Copy puts it on the clipboard;
-//   · the Bitcoin address: the key's own bc1q…, the same one Receive shows; the Tacit account: the key's own 0x, the one Add ETH shows;
+//   · the Bitcoin address: the key's own bc1q…, the same one Receive shows; the Ethereum address: the key's own 0x, the one Add ETH shows;
 //   · Balances: the Bitcoin address's BTC (and what is arriving) is a row under Bitcoin, read when the sheet opens, matching the landing card;
 //   · Receive carries the public key and a folded Tacit address too;
 //   · the Bitcoin address has a QR code (the same drawing as the page's other codes), in the sheet and in Receive;
@@ -82,9 +82,9 @@ try {
   ok(!(await page.$(row('Tacit address'))) && (await page.$$eval('#wallet-body code', (es, t) => es.filter((e) => e.textContent.trim() === t).length, TACIT)) === 1, 'the address is not listed again below the card');
   ok(/^Opened with a pasted key/.test(await text(`${hero} .by`)) && !!(await page.$(`${hero} .by #w-lock`)), 'the card says how the key was opened, with Lock beside it');
 
-  // the Tacit account: the key's own 0x, the address Add ETH asks to be sent to
-  const acct = await text(`${row('Tacit account')} code`);
-  ok(/^0x[0-9a-fA-F]{40}$/.test(acct) && acct === (await page.$eval('#ac-form [data-copy]', (b) => b.dataset.copy)), `the Tacit account is listed, the same one Add ETH shows: ${acct.slice(0, 10)}…`);
+  // the key's Ethereum address: its own 0x, the address Add ETH asks to be sent to
+  const acct = await text(`${row('Ethereum address')} code`);
+  ok(/^0x[0-9a-fA-F]{40}$/.test(acct) && acct === (await page.$eval('#ac-form [data-copy]', (b) => b.dataset.copy)), `the key's Ethereum address is listed, the same one Add ETH shows: ${acct.slice(0, 10)}…`);
 
   // the public key
   ok((await text(`${row('Public key')} code`)) === PUB && PUB.length === 66, `the public key is the key's compressed point, in full: ${PUB.slice(0, 12)}…`);
