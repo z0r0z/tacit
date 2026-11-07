@@ -368,6 +368,9 @@ a.di { color: inherit; text-decoration: none; }
 @media (hover: hover) { .news:hover .go { color: var(--ink); transform: translateX(4px); } }
 .hero h1 { font: 400 clamp(40px, 6.2vw, 76px)/1.02 var(--serif); letter-spacing: -.03em; margin: 0 auto 18px; text-wrap: balance; }
 .hero h1 em { font-style: italic; }
+/* The two coins the headline names, round and side by side. */
+.hero h1 .hero-pair { display: inline-flex; gap: .1em; vertical-align: -.025em; margin-left: .2em; }
+.hero h1 .hero-pair .tk { width: .74em; height: .74em; }
 .hero .sub { font-size: 14px; line-height: 1.55; max-width: 64ch; margin: 0 auto; color: var(--mute); text-wrap: balance; }
 .hero .sub b { font-weight: 500; color: var(--ink); }
 /* A plain text link, as the quiet kind of call to action. */
@@ -1492,7 +1495,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
   <main id="main" tabindex="-1">
   <section class="hero" aria-labelledby="hero-h">
     <div class="hero-t">
-      <h1 id="hero-h">Private DeFi on <em>BTC and ETH</em>.</h1>
+      <h1 id="hero-h">Private DeFi<span class="sr"> on BTC and ETH</span><span class="hero-pair" aria-hidden="true"><svg class="tk"><use href="#tk-btc"/></svg><svg class="tk"><use href="#tk-eth"/></svg></span></h1>
       <p class="sub">One <b>tacit1</b>&nbsp;ID for both chains. Private inside the pool.</p>
     </div>
     <section class="hx" id="hx" aria-label="Shield, swap, send, earn, withdraw, bridge or borrow"><div id="hx-body"><div class="hx-sk" aria-hidden="true"><i class="t"></i><i class="f"></i><i class="f"></i><i class="p"></i><i class="g"></i></div></div></section>
