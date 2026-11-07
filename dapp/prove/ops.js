@@ -584,6 +584,9 @@ async function refreshMarket() {
   try { const r = await fetch(`${API}/market/orders?limit=50`, { cache: 'no-store' }); if (r.ok) j = await r.json(); else if (r.status === 404) { $('#g-prove').hidden = true; return; } } catch {}
   if (!j) { box.innerHTML = '<p>Could not read the board. The page tries again every minute.</p>'; return; }
   const os = j.orders || [], most = os.reduce((m, o) => (BigInt(o.intent.maxFee) > m ? BigInt(o.intent.maxFee) : m), 0n);
+  // The how-to opens by itself once orders are waiting, unless it was opened or shut by hand.
+  const how = $('#prove-how');
+  if (how && os.length && !how.dataset.hand) how.open = true;
   box.innerHTML = os.length ? `<p>${esc(plural(os.length, 'order'))} waiting · the best pays up to ${esc((Number(most / 10n ** 14n) / 1e4).toFixed(2))} TAC</p>` : '<p>No orders waiting. Tacit’s relay takes them first, so orders reach the board when it is busy.</p>';
 }
 

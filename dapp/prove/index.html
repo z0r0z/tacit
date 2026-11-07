@@ -21,7 +21,7 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /prove/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/prove/app.js?cb=8c3dcee3">
+<link rel="modulepreload" href="/prove/app.js?cb=c69a4f09">
 <link rel="modulepreload" href="/community-prove.js?cb=30714a9f">
 <link rel="modulepreload" href="/prove/view.js?cb=80de18a0">
 <link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
@@ -347,6 +347,12 @@ pre.cmd { margin: 16px 0 0; padding: 12px 14px; background: var(--field); border
 .bank li { display: flex; justify-content: space-between; gap: 12px; font: 13px/1.4 var(--mono); }
 .bank li code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bank li code b { color: var(--orange); font-weight: 600; }
+.bank li.new { animation: fresh 1.6s ease-out; }
+#prove-how > summary { cursor: pointer; margin-top: 14px; font-size: 12.5px; color: var(--mute); }
+#prove-how[open] > summary { color: var(--ink); }
+#feed-idle { margin: -8px 0 18px; }
+#salt-best-h { margin-top: 16px; }
+#feed-idle a { color: var(--ink); }
 
 /* the wallet chip's short label, the wallet app's pairing sheet, the toasts */
 .chip .narrow { display: none; }
@@ -621,6 +627,9 @@ footer.sf svg.fill { width: 16px; height: 16px; }
         <p class="status" id="say"></p>
         <div class="rows num">
           <div class="kv"><span>Each proof</span><b id="pays">—</b></div>
+          <div class="kv" id="typ-row" hidden><span>Typical proof</span><b id="typ">—</b></div>
+          <div class="kv" id="saltpot-row" hidden><span>Salts, a day</span><b id="saltpot">—</b></div>
+          <div class="kv" id="pot-row" hidden><span>Prover pot</span><b id="pot">—</b></div>
           <div class="kv" id="today-row" hidden><span>Today</span><b id="today">—</b></div>
           <div class="kv" id="pace-row" hidden><span>At this pace</span><b id="pace">—</b></div>
           <div class="kv" id="salt-row" hidden><span>Salts today</span><b id="salt">—</b></div>
@@ -634,6 +643,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       <section class="panel feed" aria-label="Activity" data-card="activity">
         <p class="eyebrow">Just now</p>
         <ol id="feed"><li class="empty">Nothing yet today.</li></ol>
+        <p class="hint" id="feed-idle" hidden>Quiet right now. <a href="/">A private deposit</a> starts the next proof.</p>
         <p class="eyebrow">Today's provers</p>
         <ol id="board"><li class="empty">Nobody yet. Be first.</li></ol>
       </section>
@@ -655,6 +665,8 @@ footer.sf svg.fill { width: 16px; height: 16px; }
         <p class="eyebrow"><span>Between proofs</span></p>
         <h3 id="h-salt">Mine contract addresses<span id="salt-pay"></span></h3>
         <p class="hint" id="salt-day">While it waits, your node searches for the addresses Tacit's next contracts deploy to, the ones starting with the most zeros. A proof always comes first.</p>
+        <p class="eyebrow" id="salt-best-h" hidden></p>
+        <ol id="salt-best" class="bank"></ol>
         <p class="eyebrow" id="salt-bank-h" hidden></p>
         <ol id="salt-bank" class="bank"></ol>
       </section>
@@ -664,11 +676,13 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       <h3 id="h-market">Take paid proof orders<span> · fees in TAC</span></h3>
       <p class="hint">Holders who want a proof fast sign a fee in TAC. Your computer claims the order, proves it, and is paid from their permit once the pool accepts it.</p>
       <div class="plan num" id="prove-box"><p><span class="sk" style="--w:22ch"></span></p></div>
+      <details id="prove-how"><summary>How to take them</summary>
       <pre class="cmd multi"><code>curl -fsSL https://tacit.finance/prove.sh | sh   # the node, if this computer has none yet
 git clone https://github.com/src-company/tacit
 cd tacit &amp;&amp; npm ci --omit=dev
 RUNNER_KEY=0x… node tools/community-runner.mjs prove</code></pre>
       <p class="hint">The key needs a little ETH for gas. Nothing moves unless the pool takes your proof. <a href="https://github.com/src-company/tacit/blob/main/docs/COMMUNITY-OPS.md" target="_blank" rel="noopener noreferrer">What it costs and earns</a> · <a href="https://etherscan.io/address/0x0000000033Dd45B1686Ba37e5F6e4ABDdaC17609" target="_blank" rel="noopener noreferrer">Market contract</a></p>
+      </details>
     </section>
     </div>
 
@@ -767,6 +781,6 @@ node tools/community-runner.mjs mirror   # no key: keeps the board public on Nos
 
 <div id="toast-container" class="toasts" popover="manual"></div>
 
-<script type="module" src="/prove/app.js?cb=8c3dcee3"></script>
+<script type="module" src="/prove/app.js?cb=c69a4f09"></script>
 </body>
 </html>

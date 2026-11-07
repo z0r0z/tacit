@@ -71,7 +71,7 @@ async function readRemote() {
   pointsFor = a;
   points = m || (same ? points : null);
   tally = t ? { ...t, miners: (t.miners || []).map(cleanMiner).filter(Boolean) } : same ? tally : null;
-  paintNet(); paintFeed(); paintDetail(); paintGpu();
+  paintNet(); paintFeed(); paintDetail(); paintGpu(); paintPot();
 }
 
 // The chain, read often: a new block lands at the front of the strip. Once the strip is drawn only the newest few are asked for, and the
@@ -174,6 +174,17 @@ async function readFeed() {
 const SALTS_SHOWN = 4, SALT_FRESH_MS = 24 * 3600_000;
 // A find's quality as its address starts: whole zero bytes (a byte is 8 bits).
 const zeroBytes = (bits) => { const n = Math.floor(bits / 8); return `${n} leading zero byte${n === 1 ? '' : 's'}`; };
+// What a find is worth so far: the day's salt pot is shared by weight (a find weighs 2^(bits - minBits), up to the cap) and paid after the day ends, so
+// this is its part of the pot at the weight the day has now, and it shrinks as the day's weight grows. Tacit's own earn nothing; a find from an earlier
+// UTC day is already paid (its day's weight is not known here).
+const utcStart = () => Date.now() - (Date.now() % 86400000);
+function saltAward(f) {
+  const cp = cap(), total = Math.floor(salts?.weight || 0);
+  if (f.house || !cp || !total || !salts?.pointsPerDay || (f.at != null && f.at < utcStart())) return null;
+  const w = 2 ** Math.min(f.bits - (salts.minBits ?? 26), salts.maxWeightBits ?? 20);
+  return w >= 1 ? (BigInt(salts.pointsPerDay) * BigInt(Math.round(w)) * BigInt(cp)) / BigInt(total) : null;
+}
+const awardText = (wei) => { if (wei == null) return ''; const t = tac(wei, 2); return t === '0' ? '< 0.01 TAC' : `≈ +${t} TAC`; };
 function goodSalts() {
   const seen = new Set(), t = Date.now();
   return (salts?.recent || []).filter((f) => t - f.at < SALT_FRESH_MS && f.at <= t + 60_000)
@@ -181,14 +192,22 @@ function goodSalts() {
     .filter((f) => { const k = `${f.house ? 'gpu' : f.miner}:${f.at}`; if (seen.has(k)) return false; seen.add(k); return true; })
     .slice(0, SALTS_SHOWN);
 }
+// With nothing waiting and no proof for ten minutes, the feed says why it is still, and where the next proof comes from.
+const IDLE_MS = 10 * 60_000;
+function paintIdle() {
+  paintPot();
+  $('#feed-idle').hidden = !(pool && !(pool.queued || pool.leased) && !(feed[0]?.at && Date.now() - feed[0].at < IDLE_MS));
+}
 function paintFeed() {
+  paintIdle();
   const rows = [...feed.slice(0, 8).map((p) => ({ ...p, kind: 'proof' })), ...goodSalts().map((f) => ({ ...f, kind: 'salt' }))].sort((a, b) => b.at - a.at).slice(0, 8);
   if (!rows.length) { if (!$('#feed .empty')) $('#feed').innerHTML = '<li class="empty">Nothing yet today.</li>'; return; }
   $('#feed').innerHTML = rows.map((p) => {
     // This address's own proofs are marked by the row (an edge), not a longer name, so every row stays on one line.
     const mine = !p.house && p.miner && String(p.miner).toLowerCase() === me();
     const top = p.kind === 'salt' ? saltTop : feedTop, fresh = top > 0 && p.at > top;
-    if (p.kind === 'salt') return `<li class="${['salt', fresh ? 'new' : '', mine ? 'me' : ''].filter(Boolean).join(' ')}"${mine ? ' title="Your node"' : ''}><span class="by">${byOf(p, false)}<small>good salt, ${zeroBytes(p.bits)}</small></span><b></b><small>${esc(ago(p.at))}</small></li>`;
+    const award = p.kind === 'salt' ? saltAward(p) : null;
+    if (p.kind === 'salt') return `<li class="${['salt', fresh ? 'new' : '', mine ? 'me' : ''].filter(Boolean).join(' ')}"${mine ? ' title="Your node"' : ''}><span class="by">${byOf(p, false)}<small>good salt, ${zeroBytes(p.bits)}</small></span><b${award ? ' title="Its part of today\'s salt pot so far, paid after the day ends"' : ''}>${esc(awardText(award))}</b><small>${esc(ago(p.at))}</small></li>`;
     const r = rewardWei(p.points, cap());
     return `<li class="${[fresh ? 'new' : '', mine ? 'me' : ''].filter(Boolean).join(' ')}"${mine ? ' title="Your node"' : ''}><span class="by">${byOf(p, false)}<small>a deposit, proved in ${esc(took(p.secs))}</small></span><b>${r ? `+${tac(r)} TAC` : ''}</b><small>${esc(ago(p.at))}</small></li>`;
   }).join('');
@@ -230,6 +249,7 @@ function paintNet() {
   const n = Math.min(60, (q || 0) + (l || 0));
   const dots = Array.from({ length: n }, (_, k) => `<i class="${k < (l || 0) ? 'on' : ''}" style="--k:${k}"></i>`).join('')
     + ((q || 0) + (l || 0) > n ? `<span>+${(q || 0) + (l || 0) - n}</span>` : '');
+  paintIdle();
   if (dots !== poolShown) { poolShown = dots; $('#pool').innerHTML = dots; }   // drawn again only when the counts change, so the lit squares keep their beat
   paintBoard();
 }
@@ -240,10 +260,21 @@ function paintBoard() {
   if (!top.length) { if (!$('#board .empty')) $('#board').innerHTML = '<li class="empty">Nobody yet. Be first.</li>'; return; }
   const row = (m, i) => {
     const r = rewardWei(pts.get(String(m.miner).toLowerCase()), cap()), s = median(feed.filter((p) => p.miner === m.miner).map((p) => p.secs));
-    return `<li${m.miner === me() ? ' class="me"' : ''}><span class="rk num">${i + 1}.</span>${who(m.miner)}<small>${m.proofs} ${m.proofs === 1 ? 'proof' : 'proofs'}</small><b>${r ? `${tac(r)} TAC` : ''}</b><small class="spd">${s ? `${esc(took(s))} each` : ''}</small></li>`;
+    return `<li${m.miner === me() ? ' class="me"' : ''}><span class="rk num">${i + 1}.</span>${who(m.miner)}<small>${m.proofs} ${m.proofs === 1 ? 'proof' : 'proofs'}</small><b>${r ? `${tac(r)} TAC` : ''}</b><small class="spd">${s ? `${esc(took(s))} each` : '–'}</small></li>`;
   };
   const mine = me() ? top.findIndex((m) => m.miner === me()) : -1;
   $('#board').innerHTML = top.slice(0, 8).map(row).join('') + (mine >= 8 ? `<li class="gap" aria-hidden="true"></li>${row(top[mine], mine)}` : '');
+}
+
+// The prover pot (GET /mine pocket): what the campaign has paid and what is left.
+function paintPot() {
+  // What a computer can expect: how long a proof takes the community (the middle of the newest, Tacit's own left out), and the salt pot's day.
+  const secs = median(feed.filter((p) => !p.house && p.secs).map((p) => p.secs)), sp = salts?.pointsPerDay ? rewardWei(salts.pointsPerDay, cap()) : null;
+  $('#typ-row').hidden = !secs; if (secs) $('#typ').textContent = took(secs);
+  $('#saltpot-row').hidden = !sp; if (sp) $('#saltpot').textContent = `up to ${tac(sp)} TAC, shared by work`;
+  const k = points?.pocket, ok = k && /^\d+$/.test(String(k.remainingWei)) && /^\d+$/.test(String(k.creditedWei));
+  $('#pot-row').hidden = !ok;
+  if (ok) $('#pot').textContent = `${Number(tac(k.remainingWei, 0)).toLocaleString('en-US')} TAC left · ${Number(tac(k.creditedWei, 0)).toLocaleString('en-US')} paid`;
 }
 
 let paidShown = null;
@@ -291,6 +322,7 @@ function paint() {
   $('#cmd').textContent = proveCommand(addr());
   const l = mineLines(pool, points, { tally, address: addr() });
   $('#pays').textContent = l.pays || '—';
+  paintPot();
   const mineRow = (tally?.miners || []).find((m) => String(m.miner).toLowerCase() === me());
   const earned = mineRow ? rewardWei(mineRow.points, cap()) : null;
   $('#today').textContent = mineRow ? `${mineRow.proofs} ${mineRow.proofs === 1 ? 'proof' : 'proofs'}${earned ? ` · ${tac(earned)} TAC` : ''}` : (l.today || '—');
@@ -367,10 +399,12 @@ function say(text, bad = false) {
 // The GPU card: the command for this address, what a Bitcoin batch pays (the board's points for it, at the most a point is paid today),
 // how many GPUs are on the board (asked for work in the last two minutes, or proving a batch: one asks for nothing while it proves), and
 // this address's own GPU (its board name is c-<address>).
-let boardPay = null, gpus = null;
+let boardPay = null, gpus = null, houseGpu = null;
 const BTC = 'btc-state', GPU_NAME = /^c-(0x[0-9a-f]{40})$/;
 const cleanGpus = (ws) => (Array.isArray(ws) ? ws.filter((w) => w && w.community === true && GPU_NAME.test(String(w.name)) && Array.isArray(w.programs) && w.programs.includes(BTC))
   .map((w) => ({ miner: GPU_NAME.exec(w.name)[1], proved: count(w.proved) || 0, seen: count(w.lastSeenSeconds), proving: w.racing === BTC })) : null);
+// Tacit's own GPU is on the board under its own name (not a community `c-` one): on when it asked for work in the last two minutes.
+const houseOn = (ws) => (Array.isArray(ws) ? ws.some((w) => w && w.community !== true && count(w.lastSeenSeconds) != null && w.lastSeenSeconds < 120) : null);
 const gpuOn = (g) => g.proving || (g.seen != null && g.seen < 120);
 const gpuCommand = () => `curl -fsSL https://tacit.finance/prove-gpu.sh | sh -s -- ${addr() || '0xYourAddress'}`;
 function paintGpu() {
@@ -378,12 +412,12 @@ function paintGpu() {
   $('#gpu-copy').textContent = gpuCopied ? 'Copied' : addr() || $('#desk').hidden ? 'Copy' : 'Add address';
   const pts = Number(boardPay?.pointsByProgram?.[BTC]), r = Number.isSafeInteger(pts) ? rewardWei(pts, cap()) : null;
   $('#btc-pay').textContent = r ? ` · ${tac(r)} TAC each` : '';
-  $('#gpu-n').textContent = gpus ? String(gpus.filter(gpuOn).length) : '—';
+  $('#gpu-n').textContent = gpus ? (houseGpu ? `${gpus.filter(gpuOn).length + 1} · Tacit's ${gpus.filter(gpuOn).length ? 'included' : 'own'}` : String(gpus.filter(gpuOn).length)) : '—';
   const g = gpus && me() ? gpus.find((x) => x.miner === me()) : null;
   $('#gpu-me-row').hidden = !g;
   if (g) $('#gpu-me').textContent = `${g.proving ? 'proving a batch' : gpuOn(g) ? 'waiting for its turn' : `seen ${ago(Date.now() - (g.seen || 0) * 1000)}`} · ${g.proved} ${g.proved === 1 ? 'batch' : 'batches'}`;
 }
-async function readBoardPay() { const s = await get(`${API}/prover/board`); if (s?.pay) boardPay = s.pay; if (s) gpus = cleanGpus(s.workers); paintGpu(); }
+async function readBoardPay() { const s = await get(`${API}/prover/board`); if (s?.pay) boardPay = s.pay; if (s) { gpus = cleanGpus(s.workers); houseGpu = houseOn(s.workers); } paintGpu(); }
 let gpuCopied = false;
 $('#gpu-copy').addEventListener('click', async () => {
   if (!addr() && !$('#desk').hidden) { askAddress(); return; }
@@ -401,7 +435,7 @@ function askAddress() {
 // (tacit-prover's GET /mine `salt`), and the best addresses banked for Tacit's next contracts.
 const HEX40 = /^0x[0-9a-f]{40}$/;
 const cleanSalts = (s) => (s && typeof s === 'object' ? {
-  pointsPerDay: count(s.pointsPerDay), miners: count(s.today?.miners), shares: count(s.today?.shares), weight: Number(s.today?.weight) || 0,
+  minBits: count(s.minBits), maxWeightBits: count(s.maxWeightBits), pointsPerDay: count(s.pointsPerDay), miners: count(s.today?.miners), shares: count(s.today?.shares), weight: Number(s.today?.weight) || 0,
   top: (Array.isArray(s.top) ? s.top : []).map((m) => ({ miner: cleanAddress(m?.miner), weight: Number(m?.weight) || 0, shares: count(m?.shares),
     best: HEX40.test(String(m?.best?.address)) && count(m?.best?.bits) ? { address: m.best.address, bits: m.best.bits } : null })).filter((m) => m.miner),
   bank: (Array.isArray(s.bank) ? s.bank : []).map((b) => ({ address: HEX40.test(String(b?.address)) ? b.address : null, bits: count(b?.bits), miner: cleanAddress(b?.miner), house: b?.house === true, at: count(b?.at) })).filter((b) => b.address),
@@ -411,7 +445,12 @@ const cleanSalts = (s) => (s && typeof s === 'object' ? {
   live: (Array.isArray(s.live) ? s.live : []).map((m) => ({ miner: cleanAddress(m?.miner)?.toLowerCase() || null, house: m?.house === true })).filter((m) => m.miner).slice(0, 64),
   rate: Number.isFinite(Number(s.rate)) && Number(s.rate) >= 0 ? Number(s.rate) : 0,
 } : null);
-let bankShown = null;
+let bankShown = null, bestShown = null, bestHtmlShown = null;
+// An address's row: its zero bytes picked out, and who found it.
+const saltRow = (b, cls = '') => {
+  const z = Math.floor((b.bits || 0) / 4);
+  return `<li${cls ? ` class="${cls}"` : ''}><code><b>${esc(b.address.slice(0, 2 + z))}</b>${esc(b.address.slice(2 + z, 18))}…</code><small>${b.house ? `<span class="who">${face(null)}Tacit GPU</span>` : b.miner ? who(b.miner) : ''}</small></li>`;
+};
 function paintSalt() {
   const potWei = salts?.pointsPerDay ? rewardWei(salts.pointsPerDay, cap()) : null;
   // What the day's proofs leave of the daily pot so far (worker/src/salt-pool.js): it shrinks as proofs come in, so "up to".
@@ -419,15 +458,23 @@ function paintSalt() {
   // A node from before salt mining (its /mine has no `salt`) is told how to start: the setup line installs the newest.
   if (mine && !('salt' in mine)) $('#salt-day').textContent = 'Run the setup line again to update tacit-prover: it then mines salts between proofs.';
   else if (salts) $('#salt-day').textContent = `Split by work between ${salts.miners || 0} ${salts.miners === 1 ? 'node' : 'nodes'} today (${(salts.shares || 0).toLocaleString('en-US')} shares). A proof always comes first.`;
+  // The day's best find, on its own line (the bank's own stars below it): from the nodes' bests today and any find the pool lists as made today.
+  const t0 = utcStart();
+  const best = [...(salts?.top || []).filter((m) => m.best).map((m) => ({ ...m.best, miner: m.miner })), ...(salts?.bank || []).filter((b) => b.at >= t0), ...(salts?.recent || []).filter((b) => b.at >= t0)]
+    .reduce((a, b) => (!a || b.bits > a.bits ? b : a), null);
+  $('#salt-best-h').hidden = !best;
+  if (best) {
+    const aw = saltAward(best);
+    $('#salt-best-h').textContent = `Best today · ${zeroBytes(best.bits)}${aw ? ` · ${awardText(aw)}` : ''}`;
+  }
+  const bestHtml = best ? saltRow(best, bestShown != null && bestShown !== best.address ? 'new' : '') : '';
+  if (bestHtml !== bestHtmlShown) { bestHtmlShown = bestHtml; bestShown = best?.address ?? bestShown; $('#salt-best').innerHTML = bestHtml; }
   // The bank's best (five zero bytes and better); until it has one, the best addresses ground today, so the panel shows the hunt.
   const banked = salts?.bank?.length ? salts.bank : null;
-  const finds = banked || (salts?.top || []).filter((m) => m.best).map((m) => ({ ...m.best, miner: m.miner })).sort((a, b) => b.bits - a.bits);
+  const finds = (banked || (salts?.top || []).filter((m) => m.best).map((m) => ({ ...m.best, miner: m.miner })).sort((a, b) => b.bits - a.bits)).filter((b) => b.address !== best?.address);
   $('#salt-bank-h').hidden = !finds.length;
   $('#salt-bank-h').textContent = banked ? 'Banked for deploys' : 'Best found today';
-  const bank = finds.slice(0, 5).map((b) => {
-    const z = Math.floor((b.bits || 0) / 4);
-    return `<li><code><b>${esc(b.address.slice(0, 2 + z))}</b>${esc(b.address.slice(2 + z, 18))}…</code><small>${b.house ? `<span class="who">${face(null)}Tacit GPU</span>` : b.miner ? who(b.miner) : ''}</small></li>`;
-  }).join('');
+  const bank = finds.slice(0, 5).map((b) => saltRow(b)).join('');
   if (bank !== bankShown) { bankShown = bank; $('#salt-bank').innerHTML = bank; }   // rows with a picture each: drawn again only when they change
   const rate = Number(mine?.salt?.rate), mineRow = (salts?.top || []).find((m) => m.miner.toLowerCase() === me());
   const part = mineRow && salts.weight && salts.pointsPerDay ? rewardWei(Math.floor((salts.pointsPerDay * mineRow.weight) / salts.weight), cap()) : null;
@@ -455,7 +502,7 @@ async function copy() {
 // The Relay and Bitcoin tabs' code (the wallet, the header relay, the board's settles) is most of the page's weight and most visitors never
 // open those tabs, so it loads when one opens, when the wallet chip is pressed, or once the page has settled.
 let opsLoad = null;
-const loadOps = () => (opsLoad ||= import('/prove/ops.js?cb=26caafdc'));
+const loadOps = () => (opsLoad ||= import('/prove/ops.js?cb=58b49702'));
 $('#wallet').addEventListener('click', async (e) => {
   if (opsLoad) return;                                             // loaded: ops.js has its own handler on the chip
   e.preventDefault();

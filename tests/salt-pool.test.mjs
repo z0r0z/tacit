@@ -71,6 +71,7 @@ test('a day\'s points are shared by weight once it is over, and good salts are b
   assert.ok(bank.length >= 1 && bank.every((x) => x.bits >= 10) && bank.every((x, i) => i === 0 || bank[i - 1].bits >= x.bits));
   const s = (await pool.summary()).body;
   assert.equal(s.deployer, SALT_POOL.deployer);
+  assert.equal(s.maxWeightBits, SALT_POOL.maxWeightBits, 'the cap on a find\'s weight is told, so a page can say what a find is worth');
 });
 
 test('config: env sets the share size, the points and the bank; nonsense keeps the defaults', () => {

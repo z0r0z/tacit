@@ -166,7 +166,7 @@ export function makeSaltPool({ kv, cfg = SALT_POOL, now = () => Date.now(), lock
       .sort((a, b) => b[1].at - a[1].at).map(([miner, v]) => ({ miner, at: v.at, ...(v.house ? { house: true } : {}) }));
     return reply(200, {
       // today's pot so far: it shrinks as the day's proofs come in
-      deployer: cfg.deployer, createx: cfg.createx, minBits: cfg.minBits, bankBits: cfg.bankBits, pointsPerDay: await saltPot(day), day, rate, live,
+      deployer: cfg.deployer, createx: cfg.createx, minBits: cfg.minBits, maxWeightBits: cfg.maxWeightBits, bankBits: cfg.bankBits, pointsPerDay: await saltPot(day), day, rate, live,
       today: { miners: recs.length, shares: recs.reduce((s, r) => s + r.shares, 0), weight: recs.reduce((s, r) => s + r.weight, 0) },
       top: recs.sort((a, b) => b.weight - a.weight).slice(0, 20).map((r) => ({ miner: r.miner, shares: r.shares, weight: r.weight, best: r.best })),
       bank: bank.slice(0, 10).map(({ address, bits, miner, at, house }) => ({ address, bits, miner, at, ...(house ? { house: true } : {}) })),
