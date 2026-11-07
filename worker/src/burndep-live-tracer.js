@@ -187,9 +187,15 @@ export function makeLiveBurnDepositTracer({ env, apiText, apiRawBytes, network, 
     }
     if (rec.kind === 'funding') return { kind: 'funding' };
     if (rec.kind === 'unrecognized-envelope') {
+      // 0x6c shields a note into the Bitcoin shielded pool and 0x6d spends from it (the note an exit makes). The guest takes only
+      // transfer envelopes as a hop (parse_cxfer_envelope_full) and checks each one's kernel; a pool spend is proved by a Halo2
+      // circuit the reflection does not run, so a history through one is not provable and this is not a hop left unwritten.
+      const pool = /^6[cd]$/i.test(rec.opcode);
       throw new Error(`burndep-live-tracer: ${prevTxidDisplay}:${prevVout} carries an envelope this module does not `
-        + `recognize as a resolvable leaf (opcode 0x${rec.opcode}) — likely a CMINT or bound-asset hop, `
-        + `neither implemented; see ops/DESIGN-burndep-live-tracer.md`);
+        + `recognize as a resolvable leaf (opcode 0x${rec.opcode}) — `
+        + (pool ? 'a Bitcoin shielded-pool shield or exit: the reflection proof does not follow notes through the pool, '
+          + 'so a history through it cannot be bridged to Ethereum, and no change to this tracer alters that; see ops/DESIGN-burndep-live-tracer.md'
+          : 'likely a CMINT or bound-asset hop, neither implemented; see ops/DESIGN-burndep-live-tracer.md'));
     }
     throw new Error(`burndep-live-tracer: input ${prevTxidDisplay}:${prevVout} classified as '${rec.foldType}', `
       + 'which this module does not resolve a commitment for');
