@@ -48,6 +48,10 @@ const MAX_WAIT = Number(env.MAX_WAIT_SECS || 20) * 1000;
 // At most this many of its own spends a block (MAX_SPENDS): with up to 16 entries of the queue beside them, a block's calldata stays under
 // the 128 KB a node takes in one transaction (a spend's lists are about 2.4 KB). Blobs lift this.
 const MAX_SPENDS = Number(env.MAX_SPENDS || 32);
+// Launch cap: the most TAC (units of 1e-8) one shield may bring in through this leader (SHIELD_CAP, default 1,000 TAC; 0 for none). A
+// larger one is dropped before its inbox is swept, its receipt saying so; its owner may still post it to Ethereum (force) or take it
+// back. The contract has no cap: this is the leader's own, published with its fee (GET /fee `shieldCap`) so wallets refuse it first.
+const SHIELD_CAP = BigInt(env.SHIELD_CAP ?? 100_000_000_000);
 const POLL = Number(env.POLL_SECS || 6) * 1000;
 const ARCHIVE = env.ARCHIVE_DIR || join(HERE, 'archive');
 const ADMIN = env.TACIT_NODE_ADMIN || '';
@@ -252,7 +256,7 @@ let desk = null;
 async function quoteFee() {
   const blk = await rpc.call('eth_getBlockByNumber', ['latest', false]);
   const price = await readPrice(async (to, data) => rpc.call('eth_call', [{ to, data }, 'latest']), desk.terms).catch(() => null);
-  const q = desk.quote({ now: Math.floor(Date.now() / 1000), baseFee: BigInt(blk.baseFeePerGas || 0), price, tip: await suggestedTip(rpc) });
+  const q = { ...desk.quote({ now: Math.floor(Date.now() / 1000), baseFee: BigInt(blk.baseFeePerGas || 0), price, tip: await suggestedTip(rpc) }), shieldCap: String(SHIELD_CAP) };
   await node('POST', '/fee', q);
   return q;
 }
@@ -271,6 +275,13 @@ async function step() {
   const ids = (await node('GET', '/mempool')).spends;
   if (desk) await admitPaying({ desk, node, paying, ids, log });
   const pool = await node('POST', '/pending', {});
+  // the launch cap, before any inbox is swept for a shield over it
+  const over = SHIELD_CAP > 0n ? pool.spends.filter((d) => d.deposit && BigInt('0x' + String(d.deposit).replace(/^0x/, '').slice(320, 384)) > SHIELD_CAP).map((d) => d.id) : [];
+  if (over.length) {
+    await node('POST', '/drop', { ids: over, reason: `this leader takes shields of at most ${Number(SHIELD_CAP) / 1e8} TAC for now: post it to Ethereum yourself, or take it back` });
+    pool.spends = pool.spends.filter((d) => !over.includes(d.id));
+    log({ overCap: over.length });
+  }
   const fees = desk ? { only: pool.spends.map((s) => s.id).filter((id) => paying.has(id)) } : {};
   // a spend that takes a deposit in lands only if that deposit is waiting on Ethereum (and not queued behind a forced entry the block does not reach)
   const exclude = [];
@@ -366,7 +377,7 @@ async function main() {
     desk = makeFeeDesk({ seed: CHAIN_SEED, chain, asset: tacAsset, terms: feeTerms(env) });
     log({ fee: await quoteFee().then((q) => q.fee) });
     setInterval(() => quoteFee().catch((e) => log({ feeNotQuoted: String(e.message || e) })), FEE_REFRESH);
-  }
+  } else await node('POST', '/fee', { fee: '0', shieldCap: String(SHIELD_CAP) });
   // the epoch's seed has a window of a few blocks: watched on its own, not between a block's proving and landing
   setInterval(() => keepSeed().catch((e) => log({ seedNotKept: String(e.message || e) })), 4000);
   for (;;) {
