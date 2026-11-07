@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // What the Wallet sheet and the Bitcoin tab's Receive show of the open key (dapp/index.html), in a real browser under the page's own CSP, with a pasted key and a
 // Bitcoin address that holds 0.0025 BTC and 0.00007 arriving (the page's only answers; every other host is refused):
-//   · the Tacit address heads the sheet on a card of its own: its two ends at first, the whole 276 characters after Show all, and Copy address puts
+//   · the Tacit address is on a card of its own under the balances: its two ends at first, the whole 276 characters after Show all, and Copy puts
 //     the whole one on the clipboard; it is not listed a second time below;
 //   · the public key: the key's compressed secp256k1 point, in full, and Copy puts it on the clipboard;
 //   · the Bitcoin address: the key's own bc1q…, the same one Receive shows; the Tacit account: the key's own 0x, the one Add ETH shows;
@@ -102,6 +102,8 @@ try {
   ok(/Bitcoin/.test(bal) && /BTC\s*0\.0025/.test(bal.replace(/\s+/g, ' ')) && /0\.00007 arriving/.test(bal), `Balances lists the Bitcoin address's BTC and what is arriving: ${bal.replace(/\s+/g, ' ').slice(0, 120)}`);
   ok(bal.indexOf('Bitcoin') < bal.indexOf('Ethereum'), 'Bitcoin and Ethereum are separate groups');
   ok((await page.$$('#wbal-box .wbal li')).length >= 2, 'each asset is a row of its own');
+  ok((await page.$$eval('#wbal-box .wbal li', (es) => es.every((e) => e.querySelectorAll('button, a').length <= 1))), 'a row is one press: no button of its own beside it');
+  ok(await page.evaluate(() => { const b = document.querySelector('#wbal-box'), a = document.querySelector('#w-tacit'); return !!(b.compareDocumentPosition(a) & Node.DOCUMENT_POSITION_FOLLOWING); }), 'the balances come before the Tacit address card');
 
   // the old placeholder row is gone
   ok(!/connects when you lock BTC/.test(await text('#wallet-body')), 'the sheet no longer says the Bitcoin wallet "connects when you lock BTC to borrow"');
