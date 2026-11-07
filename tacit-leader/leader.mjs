@@ -11,6 +11,8 @@
 //                   `tacit-block-gpu elf/tacit-block {stdin} --groth16`, leaving {stdin}.groth16 (0x proof, 0x public values)
 //   MIN_SPENDS      build when this many spends are waiting (default 1)       MAX_WAIT_SECS   or when the oldest has waited this long (default 20)
 //   POLL_SECS       how often it looks (default 6)                            ARCHIVE_DIR     every block built is kept here (blobs need it)
+//   LEADER_CHAIN_SEED  the leader's chain keys (32 bytes, hex): every spend then pays it a fee as a note to its chain address, quoted on
+//                   GET /fee and checked before a block takes the spend (fees.mjs has the terms, FEE_*); with none, no fee is asked
 //
 // A block's data goes in calldata here; blob mode is built into the program, the contract and the node (`POST /build {blobs: true}`) and is
 // switched on once the sender of blob transactions is.
@@ -22,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 import { keccak_256 } from '../dapp/vendor/tacit-deps.min.js';
 import { decode, decodeLand, landCalldata, selector, encode, hexOf, bytesOf } from './abi.mjs';
 import { makeRpc, send as sendTx, addressOf, num } from './rpc.mjs';
+import { feeTerms, readPrice, makeFeeDesk, admitPaying } from './fees.mjs';
 
 // one transaction at a time from the leader's key, so the seed's, a sweep's, a landing's and the hops' never take the same nonce
 let txLock = Promise.resolve();
@@ -44,6 +47,8 @@ const ARCHIVE = env.ARCHIVE_DIR || join(HERE, 'archive');
 const ADMIN = env.TACIT_NODE_ADMIN || '';
 const MEMO_LEN = 1152;
 const MAX_FORCED = 16;
+const CHAIN_SEED = env.LEADER_CHAIN_SEED || '';
+const FEE_REFRESH = Number(env.FEE_REFRESH_SECS || 60) * 1000;
 
 const rpc = makeRpc(RPC_URL);
 const me = addressOf(KEY);
@@ -184,6 +189,19 @@ async function keepSeed() {
   }
 }
 
+// The fee: quoted on the node (GET /fee) from Ethereum's base fee and TAC's price in the confidential pool, refreshed every FEE_REFRESH_SECS
+let desk = null;
+async function quoteFee() {
+  const blk = await rpc.call('eth_getBlockByNumber', ['latest', false]);
+  const price = await readPrice(async (to, data) => rpc.call('eth_call', [{ to, data }, 'latest']), desk.terms).catch(() => null);
+  const q = desk.quote({ now: Math.floor(Date.now() / 1000), baseFee: BigInt(blk.baseFeePerGas || 0), price });
+  await node('POST', '/fee', q);
+  return q;
+}
+
+// Spends seen to pay the fee (by id): each is opened once; one that does not pay is refused, its receipt saying so
+const paying = new Set();
+
 const unfundedSince = new Map();
 const DROP_UNFUNDED = Number(env.DROP_UNFUNDED_SECS || 3600) * 1000;
 
@@ -192,11 +210,14 @@ async function step() {
   const [done, queued, lastLanded, window_, forceDelay] = await Promise.all([
     view('queueDone()', ['uint256']), view('queued()', ['uint256']), view('lastLanded()', ['uint256']), view('WINDOW()', ['uint256']), view('FORCE_DELAY()', ['uint256']),
   ]).then((r) => r.map((x) => Number(x[0])));
-  const pool = await node('GET', '/mempool');
+  const ids = (await node('GET', '/mempool')).spends;
+  if (desk) await admitPaying({ desk, node, paying, ids, log });
+  const pool = await node('POST', '/pending', {});
+  const fees = desk ? { only: pool.spends.map((s) => s.id).filter((id) => paying.has(id)) } : {};
   // a spend that takes a deposit in lands only if that deposit is waiting on Ethereum (and not queued behind a forced entry the block does not reach)
   const exclude = [];
   const pendingOf = (d) => view('pending(bytes32)', ['address', 'uint256', 'uint256'], [hexOf(keccak_256(bytesOf(d.deposit)))]);
-  const looked = await Promise.all(pool.deposits.map(async (d) => [d, await pendingOf(d)]));
+  const looked = await Promise.all(pool.spends.filter((d) => d.deposit).map(async (d) => [d, await pendingOf(d)]));
   for (const [d, [from0]] of looked) {
     let from = from0;
     // a shield paid to its inbox (the confidential pool's unwrap pays one): sweep it in once it holds the deposit, trying each way
@@ -217,7 +238,7 @@ async function step() {
     for (const id of stale) unfundedSince.delete(id);
     log({ dropped: stale.length });
   }
-  const waiting = pool.spends.length - exclude.length + pool.settles.length;
+  const waiting = pool.spends.filter((s) => !exclude.includes(s.id) && (!fees.only || fees.only.includes(s.id))).length + pool.settles.length;
   const entries = [];
   for (let i = done; i < Math.min(queued, done + MAX_FORCED); i++) {
     if (!forced.has(i)) throw new Error(`queue entry ${i} is not among the events read`);
@@ -234,7 +255,7 @@ async function step() {
     const [lead] = await view('turn()', ['address'], [], (await view('TURNS()', ['address']))[0]);
     if (BigInt(lead) !== 0n && lead.toLowerCase() !== me.toLowerCase()) { log({ waiting: 'not this leader\'s turn', lead }); return; }
   }
-  const built = await node('POST', '/build', { time: now, queue: entries.map((e) => hexOf(e)), max: 64, exclude });
+  const built = await node('POST', '/build', { time: now, queue: entries.map((e) => hexOf(e)), max: 64, exclude, ...fees });
   log({ built: nodeHeight + 1, spends: built.includes.length, queueTaken: built.queueTaken });
   const proof = await prove(built);
   const pv = bytesOf(built.publicValues);
@@ -282,6 +303,12 @@ async function main() {
   process.on('exit', stopNode);
   for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { stopNode(); process.exit(0); });
   for (let i = 0; i < 120; i++) { try { await fetch(`http://${NODE_ADDR}/state`); break; } catch { await new Promise((r) => setTimeout(r, 500)); } }
+  if (CHAIN_SEED) {
+    const [chain] = await view('CHAIN()', ['bytes32']);
+    desk = makeFeeDesk({ seed: CHAIN_SEED, chain, asset: tacAsset, terms: feeTerms(env) });
+    log({ fee: await quoteFee().then((q) => q.fee) });
+    setInterval(() => quoteFee().catch((e) => log({ feeNotQuoted: String(e.message || e) })), FEE_REFRESH);
+  }
   // the epoch's seed has a window of a few blocks: watched on its own, not between a block's proving and landing
   setInterval(() => keepSeed().catch((e) => log({ seedNotKept: String(e.message || e) })), 4000);
   for (;;) {
