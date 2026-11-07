@@ -1,7 +1,7 @@
 // Where the tacit chain is: its landing contract and a leader's API. Null until the chain is deployed, which hides every chain
 // option in the app. A browser can point at another deployment (a local fork) with localStorage 'tacit-chain-dev' =
 // {"blocks":"0x…","leader":"http://127.0.0.1:…"}; that setting is the browser's own and changes nothing for anyone else.
-export const TACIT_CHAIN = { blocks: null, leader: null };
+export const TACIT_CHAIN = { blocks: '0x00000000000a9147ffd8d41d152d730ca5f84e6c', leader: 'https://tacit-chain-leader.onrender.com' };
 
 export function tacitChain() {
   try {

@@ -90,7 +90,8 @@ function statusHtml(st, now) {
   if (st == null) return `<p class="eyebrow">Status</p><p class="empty">Reading…</p>`;
   if (st === 'error') return `<p class="eyebrow">Status</p><p class="empty">Could not read the chain. Try again in a moment.</p>`;
   const L = st.leader, off = '<span class="mute">not answering</span>';
-  const last = st.lastLanded > 0 ? ago(now / 1000 - st.lastLanded) : 'none yet';
+  // (the contract stamps its deploy time as the last landing: no block has landed until the height moves)
+  const last = st.height > 0 && st.lastLanded > 0 ? ago(now / 1000 - st.lastLanded) : 'none yet';
   return `<p class="eyebrow">Status</p><div class="rows flat">
     ${row('Status', '<span class="live"><i class="dot on" aria-hidden="true"></i>Live</span>')}
     ${row('Blocks', `<span class="num">${esc(Number(st.height).toLocaleString('en-US'))}</span>`)}

@@ -1,5 +1,5 @@
-import { tacitChain } from '/tacit-chain-config.js?cb=76219357';
-import { mountChain } from '/chain/ui.js?cb=b61ef9a5';
+import { tacitChain } from '/tacit-chain-config.js?cb=803c3298';
+import { mountChain } from '/chain/ui.js?cb=bb1ee7be';
 
 // The tacit chain's page: the chain read from Ethereum (the landing contract) and its leader, and with a Tacit key open (trade/key.js, the
 // same sheet as /fast/) the key's balance there, its Tacit address with the chain lane, and anything of its that waits, each linked to the
