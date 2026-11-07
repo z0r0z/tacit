@@ -548,7 +548,12 @@ async function readBalances(fresh = true) {
 }
 
 const live = (t) => { $('#sw-live').textContent = t; };
-const say = (h, cls = '', stick = false) => { if (stick) S.note = { h, cls }; const q = $('#q'); q.className = `q${cls ? ` ${cls}` : ''}`; q.innerHTML = h; };
+// A press's steps and its ending are the line (and the bar under it) to watch: below the fold of a short window, it is brought into view, only when it is out of it.
+const say = (h, cls = '', stick = false) => {
+  if (stick) S.note = { h, cls };
+  const q = $('#q'); q.className = `q${cls ? ` ${cls}` : ''}`; q.innerHTML = h;
+  if (stick || S.busy) try { q.scrollIntoView({ block: 'nearest', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }); } catch { }
+};
 // The wallet moved to another account, or one was connected: its balances are read again, and the quote made again for it.
 function walletChanged() { S.bal = {}; LATER.p2 = {}; LATER.dgas = null; LATER.dgasTok = null; paint(); readBalances().then(paint); if (S.q) requote(true); }
 async function signTyped(typed, from) {
