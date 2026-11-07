@@ -9,7 +9,7 @@
 //!   GET  /spent/0x…              whether a nullifier has entered the tree
 //!   GET  /receipt/ID             a submission: queued, or landed in a block
 //!   GET  /mempool                what is waiting
-//!   POST /spend                  { publics, proof, data, memos[], opMemos[] } → { id }
+//!   POST /spend                  { publics, proof, data, memos[], opMemos[], back? } → { id }   (back: a shield paid to its inbox)
 //!   POST /settle                 { settle, memo } → { id }
 //!   POST /build                  { time, blobs?: bool, queue?: [payload…], max?: n, exclude?: [id…] } → the block: guest input, public values, lists
 //!   POST /landed                 { words[16], leaves[], memos[], nullifiers[] } → replays a landed block and clears what it took
@@ -46,6 +46,9 @@ struct Entry {
     id: String,
     spend: SpendIn,
     memos: Vec<Vec<u8>>,
+    /// For a shield paid to its inbox (TacitBlocks.inbox) rather than deposited: the confidential pool commitment the inbox's
+    /// address fixes, which the leader needs to sweep it in.
+    back: Option<String>,
 }
 
 #[derive(Clone)]
@@ -128,7 +131,17 @@ impl Leader {
         if self.receipts.contains_key(&id) {
             return Ok(self.receipts[&id].clone());
         }
-        let entry = Entry { id: id.clone(), spend: SpendIn { publics, proof, hints, data }, memos: memos.into_iter().chain(op_memos).collect() };
+        let back = match b["back"].as_str() {
+            Some(h) => {
+                let v = hexv(&serde_json::Value::String(h.into()))?;
+                if v.len() != 32 {
+                    return Err("back is a 32-byte commitment".into());
+                }
+                Some(hx(&v))
+            }
+            None => None,
+        };
+        let entry = Entry { id: id.clone(), spend: SpendIn { publics, proof, hints, data }, memos: memos.into_iter().chain(op_memos).collect(), back };
         self.node.build(&self.spends(Some(&entry)), &self.settles_list(None), &[], now, &[]).map_err(|e| format!("not takeable now: {e}"))?;
         self.pending.push(entry);
         let r = json!({ "id": id, "status": "queued" });
@@ -307,7 +320,7 @@ impl Leader {
                 // the deposit each spend takes in, which must be waiting on Ethereum for a block that holds it to land
                 "deposits": self.pending.iter().filter_map(|e| {
                     let p = tacit_block_agg_publics(&e.spend.publics).ok()?;
-                    blk::deposit_record(&blk::Spend::from_publics(&p), &e.spend.data).map(|d| json!({ "id": e.id, "deposit": hx(&d) }))
+                    blk::deposit_record(&blk::Spend::from_publics(&p), &e.spend.data).map(|d| json!({ "id": e.id, "deposit": hx(&d), "back": e.back }))
                 }).collect::<Vec<_>>(),
             })),
             ("POST", "/spend") => self.spend(body, now).map_err(bad),

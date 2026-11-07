@@ -54,6 +54,31 @@ async function view(sig, types, args = [], to = BLOCKS) {
   return decode(types, bytesOf(r));
 }
 
+// TacitBlocks.sweep for a deposit record (asset ‖ value ‖ cx ‖ cy ‖ body) whose inbox holds its TAC; false if it does not yet.
+const swept = new Set();
+async function sweepInbox(record, back) {
+  const r = bytesOf(record);
+  const w = (i) => hexOf(r.subarray(32 * i, 32 * i + 32));
+  const value = BigInt(w(1));
+  const args = [value, w(2), w(3), w(4), back];
+  const types = ['uint256', 'bytes32', 'bytes32', 'bytes32', 'bytes32'];
+  const sig = (name) => `${name}(uint256,bytes32,bytes32,bytes32,bytes32)`;
+  const [box] = decode(['address'], bytesOf(await rpc.call('eth_call', [{ to: BLOCKS, data: hexOf(new Uint8Array([...selector(sig('inbox')), ...encode(types, args)])) }, 'latest'])));
+  const [tac] = await view('TAC()', ['address']);
+  const [held] = decode(['uint256'], bytesOf(await rpc.call('eth_call', [{ to: tac, data: hexOf(new Uint8Array([...selector('balanceOf(address)'), ...encode(['address'], [box])])) }, 'latest'])));
+  if (BigInt(held) < value * 10n ** 10n || swept.has(box)) return false;
+  swept.add(box);
+  try {
+    const receipt = await send(rpc, KEY, BLOCKS, new Uint8Array([...selector(sig('sweep')), ...encode(types, args)]), { chainId: num(await rpc.call('eth_chainId')) });
+    log({ swept: box, value: String(value), tx: receipt.transactionHash });
+    return true;
+  } catch (e) {
+    swept.delete(box);
+    log({ sweepFailed: box, error: String(e.message || e) });
+    return false;
+  }
+}
+
 async function node(method, path, body) {
   const r = await fetch(`http://${NODE_ADDR}${path}`, { method, headers: { 'content-type': 'application/json', ...(ADMIN ? { authorization: `Bearer ${ADMIN}` } : {}) }, body: body ? JSON.stringify(body) : undefined });
   const j = await r.json();
@@ -129,7 +154,10 @@ async function step() {
   // a spend that takes a deposit in lands only if that deposit is waiting on Ethereum (and not queued behind a forced entry the block does not reach)
   const exclude = [];
   for (const d of pool.deposits) {
-    const [from, , forcedAt] = await view('pending(bytes32)', ['address', 'uint256', 'uint256'], [hexOf(keccak_256(bytesOf(d.deposit)))]);
+    const key = [hexOf(keccak_256(bytesOf(d.deposit)))];
+    let [from, , forcedAt] = await view('pending(bytes32)', ['address', 'uint256', 'uint256'], key);
+    // a shield paid to its inbox (the confidential pool's unwrap pays one): sweep it in once it holds the deposit
+    if (BigInt(from) === 0n && d.back && await sweepInbox(d.deposit, d.back)) [from, , forcedAt] = await view('pending(bytes32)', ['address', 'uint256', 'uint256'], key);
     if (BigInt(from) === 0n || Number(forcedAt) > done) exclude.push(d.id);
   }
   const waiting = pool.spends.length - exclude.length + pool.settles.length;

@@ -77,7 +77,7 @@ async function main() {
   const w = makeChainWallet({ poseidon, prover, chain, asset });
   const alice = w.keys(new Uint8Array(32).fill(0xa1));
   const bob = w.keys(new Uint8Array(32).fill(0xb2));
-  const submit = async (s) => { const r = await api('POST', '/spend', s.submission); assert.ok(r.ok, `the leader refused a spend: ${r.error}`); };
+  const submit = async (s, extra = {}) => { const r = await api('POST', '/spend', { ...s.submission, ...extra }); assert.ok(r.ok, `the leader refused a spend: ${r.error}`); };
 
   // 1. Alice shields 1,000 units (she makes the deposit on Ethereum, then proves the spend that takes it in)
   const tacBefore = BigInt(call(TAC, 'balanceOf(address)(uint256)', blocks));
@@ -87,18 +87,31 @@ async function main() {
   await waitHeight(1);
   console.log('1. Alice shielded 1,000 units');
 
+  // 1b. Carol comes from the confidential pool: its unwrap mints her TAC straight to her shield's inbox (no address of hers, no
+  //     approval), and the leader sweeps it in before it lands her shield
+  const carol = w.keys(new Uint8Array(32).fill(0xc3));
+  const cshield = await w.spend(carol, { dep: { v: 250n }, leader: wallet });
+  const back = '0x' + 'b4'.repeat(32);
+  const box = call(blocks, 'inbox(uint256,bytes32,bytes32,bytes32,bytes32)(address)', String(cshield.deposit.value), cshield.deposit.cx, cshield.deposit.cy, cshield.deposit.body, back);
+  cast('send', TAC, 'mint(address,uint256)', box, (250n * UNIT).toString(), '--from', POOL, '--unlocked', '--rpc-url', RPC);
+  await submit(cshield, { back });
+  await waitHeight(2);
+  assert.deepEqual((await w.scan(carol, wallet)).notes.map((n) => n.value), [250n]);
+  assert.ok(leaderLog.some((l) => l.includes('"swept"')), 'the leader swept the inbox');
+  console.log('1b. Carol shielded 250 straight from a confidential pool unwrap, through her inbox');
+
   // 2. she pays Bob 300 privately
   const aliceNotes = (await w.scan(alice, wallet)).notes;
   assert.deepEqual(aliceNotes.map((n) => n.value), [1000n]);
   await submit(await w.spend(alice, { inputs: aliceNotes, outputs: [{ to: w.address(bob), value: 300n }], leader: wallet }));
-  await waitHeight(2);
+  await waitHeight(3);
   const bobNotes = (await w.scan(bob, wallet)).notes;
   assert.deepEqual(bobNotes.map((n) => n.value), [300n]);
   console.log('2. Alice paid Bob 300; Bob found the note from the chain\'s memos alone');
 
   // 3. Bob withdraws 120 to an Ethereum address
   await submit(await w.spend(bob, { inputs: bobNotes, exit: { v: 120n, to: BOB_L1 }, leader: wallet }));
-  await waitHeight(3);
+  await waitHeight(4);
   assert.equal(BigInt(call(blocks, 'owed(address)(uint256)', BOB_L1)), 120n * UNIT);
   send(blocks, 'withdraw(address)', [BOB_L1]);
   assert.equal(BigInt(call(TAC, 'balanceOf(address)(uint256)', BOB_L1)), 120n * UNIT);
@@ -109,19 +122,21 @@ async function main() {
   assert.deepEqual(bobLeft.map((n) => n.value), [180n]);
   const supplyBefore = BigInt(call(TAC, 'totalSupply()(uint256)'));
   await submit(await w.spend(bob, { inputs: bobLeft, exit: { v: 100n, op: hopOp('0x' + '5a'.repeat(32)) }, leader: wallet }));
-  await waitHeight(4);
+  await waitHeight(5);
   for (let i = 0; i < 30 && !leaderLog.some((l) => l.includes('hopsSent')); i++) await new Promise((r) => setTimeout(r, 1000));
   assert.ok(leaderLog.some((l) => l.includes('hopsSent')), 'the leader sent the hop on');
   assert.equal(supplyBefore - BigInt(call(TAC, 'totalSupply()(uint256)')), 100n * UNIT, 'the confidential pool burned the hopped TAC');
   console.log('4. Bob hopped 100 into the confidential pool');
 
-  // 5. what the contract holds is what the notes are worth: Alice 700, Bob 80
+  // 5. what the contract holds is what the notes are worth: Alice 700, Bob 80, Carol 250
   const aliceEnd = (await w.scan(alice, wallet)).notes.reduce((t, n) => t + n.value, 0n);
   const bobEnd = (await w.scan(bob, wallet)).notes.reduce((t, n) => t + n.value, 0n);
   assert.equal(aliceEnd, 700n);
   assert.equal(bobEnd, 80n);
+  const carolEnd = (await w.scan(carol, wallet)).notes.reduce((t, n) => t + n.value, 0n);
+  assert.equal(carolEnd, 250n);
   const held = BigInt(call(TAC, 'balanceOf(address)(uint256)', blocks)) - tacBefore;
-  assert.equal(held, (aliceEnd + bobEnd) * UNIT, 'the contract holds exactly what the notes are worth');
+  assert.equal(held, (aliceEnd + bobEnd + carolEnd) * UNIT, 'the contract holds exactly what the notes are worth');
   const st = await api('GET', '/state');
   assert.equal(st.state, call(blocks, 'state()(bytes32)'));
   console.log(JSON.stringify({ ok: true, height: st.height, aliceUnits: Number(aliceEnd), bobUnits: Number(bobEnd), heldUnits: Number(held / UNIT) }));

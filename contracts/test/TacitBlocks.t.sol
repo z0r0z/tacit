@@ -814,6 +814,61 @@ contract TacitBlocksMoreTest is TacitBlocksFixture {
         blocks.deposit(v + 1, cx, cy, body);
     }
 
+    /// TAC paid to a deposit's inbox (as the confidential pool's unwrap pays it) is swept in by anyone, once; the block takes it in
+    /// like any deposit; a swept deposit no block took goes back into the confidential pool for the commitment its inbox fixed.
+    function test_anInboxIsSweptIn() public {
+        (uint256 v, bytes32 cx, bytes32 cy, bytes32 body) = dep();
+        bytes32 back = keccak256("back");
+        address box = blocks.inbox(v, cx, cy, body, back);
+        assertTrue(box != blocks.inbox(v, cx, cy, body, keccak256("other")), "the way back fixes the inbox");
+        vm.expectRevert(TacitBlocks.BadValue.selector);
+        blocks.sweep(v, cx, cy, body, back);
+        tac.mint(box, v * UNIT - 1);
+        vm.expectRevert(TacitBlocks.BadValue.selector);
+        blocks.sweep(v, cx, cy, body, back);
+        tac.mint(box, 1 + 5);
+        vm.prank(address(0xBEEF));
+        blocks.sweep(v, cx, cy, body, back);
+        assertEq(tac.balanceOf(box), 0);
+        assertEq(tac.balanceOf(address(blocks)), v * UNIT + 5, "everything in the inbox, the extra staying with the chain");
+        assertEq(box.codehash, blocks.INBOX_CODEHASH());
+        (address from,,) = blocks.pending(keccak256(abi.encode(blocks.TAC_ASSET(), v, cx, cy, body)));
+        assertEq(from, box);
+        vm.expectRevert(TacitBlocks.DepositPending.selector);
+        blocks.sweep(v, cx, cy, body, back);
+        // a later payment to a created inbox cannot be swept again, and nothing can be paid back to it
+        vm.warp(block.timestamp + blocks.RECLAIM_AFTER());
+        vm.expectRevert(TacitBlocks.SweptDeposit.selector);
+        blocks.reclaim(v, cx, cy, body);
+        vm.expectRevert(TacitBlocks.NotInbox.selector);
+        blocks.giveBack(v, cx, cy, body, keccak256("other"));
+        // its depositor has no address here: it cannot be queued
+        blocks.giveBack(v, cx, cy, body, back);
+        assertEq(pool.lastCommit(), back);
+        assertEq(pool.lastAmount(), v * UNIT);
+        assertEq(tac.balanceOf(address(blocks)), 5);
+        vm.expectRevert(TacitBlocks.NotPending.selector);
+        blocks.giveBack(v, cx, cy, body, back);
+        tac.mint(box, v * UNIT);
+        vm.expectRevert();
+        blocks.sweep(v, cx, cy, body, back);
+    }
+
+    /// A swept deposit lands like a deposit made with `deposit`, and giving it back before RECLAIM_AFTER is refused.
+    function test_aSweptDepositLands() public {
+        (uint256 v, bytes32 cx, bytes32 cy, bytes32 body) = dep();
+        bytes32 back = keccak256("back");
+        tac.mint(blocks.inbox(v, cx, cy, body, back), v * UNIT);
+        blocks.sweep(v, cx, cy, body, back);
+        vm.expectRevert(TacitBlocks.TooSoon.selector);
+        blocks.giveBack(v, cx, cy, body, back);
+        land(0);
+        assertEq(blocks.height(), 1);
+        vm.warp(block.timestamp + blocks.RECLAIM_AFTER());
+        vm.expectRevert(TacitBlocks.NotPending.selector);
+        blocks.giveBack(v, cx, cy, body, back);
+    }
+
     function test_aDepositNoBlockTookGoesBack() public {
         (uint256 v, bytes32 cx, bytes32 cy, bytes32 body) = dep();
         address alice = address(0xA11CE);
