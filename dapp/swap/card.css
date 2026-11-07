@@ -385,3 +385,11 @@
 .swc.flow #get-coin { cursor: default; pointer-events: none; }
 .swc.flow #get-coin .car { display: none; }
 .swc .flow-tip { margin: 10px 0 0; font: 11.5px/1.5 var(--mono); color: var(--mute); text-align: center; text-wrap: balance; }
+/* A text field under 16px makes iOS zoom the page in when it is focused, and leave it zoomed: on a touch screen they are 16px. */
+@media (pointer: coarse) { .swc .to input { font-size: 16px; } }
+/* Touch: the card's place pickers ("Wallet", "Private", "to an address") are small underlined words: the target reaches past them, the layout is unchanged. */
+@media (pointer: coarse) {
+  .swc button.where { position: relative; touch-action: manipulation; }
+  .swc button.where::after { content: ''; position: absolute; inset: -9px -6px; }
+  .swc button, .swc a { touch-action: manipulation; }
+}

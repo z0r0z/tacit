@@ -75,13 +75,13 @@ button { font: inherit; color: inherit; letter-spacing: inherit; }
 .hero .sub { margin: 14px 0 0; color: var(--mute); font-size: 13.5px; max-width: 62ch; }
 .facts { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0 0; padding: 0; list-style: none; font-size: 12px; }
 .facts li { display: inline-flex; gap: 8px; align-items: baseline; padding: 5px 10px; background: var(--card); border: 1px solid var(--hair); max-width: 100%; }
-.facts span { font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); flex: none; }
+.facts span { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); flex: none; }
 .facts b { font-weight: 400; overflow-wrap: anywhere; }
 
 /* the two pools */
 .pools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 26px 0 0; }
 .pool { display: grid; grid-template-rows: auto auto 1fr auto; gap: 10px; padding: 18px 20px; background: var(--card); border: 1px solid var(--hair-2); min-width: 0; }
-.pool .k { margin: 0; font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
+.pool .k { margin: 0; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
 .pool h2 { margin: 0; font: 400 32px/1 var(--serif); letter-spacing: -.015em; }
 .pool h2 em { font-style: italic; }
 .pool dl { margin: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 14px; font-size: 12.5px; align-content: start; }
@@ -94,7 +94,7 @@ button { font: inherit; color: inherit; letter-spacing: inherit; }
 /* the page: contents beside one reading column */
 .doc { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 40px; margin-top: 40px; }
 .toc { position: sticky; top: 16px; align-self: start; max-height: calc(100vh - 32px); overflow-y: auto; font-size: 12.5px; padding-bottom: 12px; }
-.toc p { margin: 14px 0 6px; font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
+.toc p { margin: 14px 0 6px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
 .toc p:first-child { margin-top: 0; }
 .toc ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 1px; }
 .toc a { display: block; padding: 3px 0 3px 10px; color: var(--mute); text-decoration: none; border-left: 1px solid var(--hair); }
@@ -112,7 +112,7 @@ button { font: inherit; color: inherit; letter-spacing: inherit; }
 article { min-width: 0; }
 .part { padding: 0 0 34px; margin: 0 0 34px; border-bottom: 1px solid var(--hair); scroll-margin-top: 16px; }
 .part:last-child { border-bottom: 0; }
-.kick { margin: 0 0 6px; font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
+.kick { margin: 0 0 6px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
 .part h2 { font: 400 clamp(30px, 4.4vw, 40px)/1.02 var(--serif); letter-spacing: -.015em; margin: 0 0 14px; text-wrap: balance; }
 .part h2 em { font-style: italic; }
 .part h3 { font: 400 24px/1.1 var(--serif); letter-spacing: -.01em; margin: 26px 0 8px; text-wrap: balance; }
@@ -131,7 +131,7 @@ code { font: inherit; font-size: .95em; padding: 0 .3em; background: var(--field
 
 .tbl { overflow-x: auto; margin: 4px 0 16px; border: 1px solid var(--hair); background: var(--card); }
 .tbl table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-.tbl th { text-align: left; font-weight: 400; font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--mute); padding: 8px 12px; border-bottom: 1px solid var(--hair-2); }
+.tbl th { text-align: left; font-weight: 400; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--mute); padding: 8px 12px; border-bottom: 1px solid var(--hair-2); }
 .tbl td { padding: 8px 12px; border-top: 1px solid var(--hair); vertical-align: top; }
 .tbl td.h { font-size: 11.5px; word-break: break-all; font-variant-numeric: tabular-nums; }
 .tbl td.t { white-space: nowrap; }
@@ -140,7 +140,7 @@ code { font: inherit; font-size: .95em; padding: 0 .3em; background: var(--field
 .tbl code { font-size: .92em; }
 
 .box { max-width: 72ch; margin: 6px 0 16px; padding: 12px 16px; background: var(--card); border: 1px solid var(--hair); border-left: 2px solid var(--warn); }
-.box > b:first-child { display: block; margin-bottom: 4px; font-size: 10.5px; font-weight: 400; letter-spacing: .1em; text-transform: uppercase; color: var(--warn); }
+.box > b:first-child { display: block; margin-bottom: 4px; font-size: 11px; font-weight: 400; letter-spacing: .1em; text-transform: uppercase; color: var(--warn); }
 .box ul { margin: 0; }
 .box p:last-child { margin-bottom: 0; }
 
@@ -235,6 +235,13 @@ header.top .chip:active { transform: scale(.97); }
 header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
 @container top (max-width: 480px) { header.top .chip { padding: 0 12px 0 11px; } header.top .chip.act { padding: 0; } }
 @media (pointer: coarse) { .sn > a, .sn summary, header.top .chip, footer.sf nav a { height: var(--tap, 44px); } }
+/* Touch, on every page that wears this: a quick double tap on a control does not zoom the page, and a text button takes a press a thumb can land (its box does not
+   change: the target reaches past it). */
+@media (pointer: coarse) {
+  a, button, summary, input, select, textarea, label, [role="button"], [role="tab"] { touch-action: manipulation; }
+  button.link, .linkbtn { position: relative; }
+  button.link::after, .linkbtn::after { content: ''; position: absolute; inset: -8px -6px; }
+}
 
 /* the menu: under the header's right edge, whatever the width */
 .sm-p {

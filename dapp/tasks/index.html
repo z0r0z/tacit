@@ -110,7 +110,7 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 /* the page */
 .panel { background: var(--card); border: 1px solid var(--hair); padding: 22px; min-width: 0; }
 @media (max-width: 480px) { .panel { padding: 18px 14px; } }
-.eyebrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); margin: 0 0 12px; }
+.eyebrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); margin: 0 0 12px; }
 .eyebrow .who { letter-spacing: 0; text-transform: none; font-size: 11.5px; }
 .note { font-size: 12.5px; color: var(--mute); margin: 12px 0 0; }
 .note a { color: var(--ink); }
@@ -129,7 +129,7 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .stats span { font-size: 11.5px; color: var(--mute); }
 @media (max-width: 560px) { .stats > div { padding: 12px 12px; } .stats span { font-size: 11px; } }
 
-.sec-h { display: flex; align-items: baseline; gap: 10px; margin: 30px 0 12px; font-size: 10.5px; font-weight: 400; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
+.sec-h { display: flex; align-items: baseline; gap: 10px; margin: 30px 0 12px; font-size: 11px; font-weight: 400; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
 .sec-h span { padding: 0 7px; font-size: 11px; letter-spacing: 0; border: 1px solid var(--hair-2); }
 .none { margin: 0; padding: 22px; font-size: 13px; color: var(--mute); border: 1px dashed var(--hair-2); }
 
@@ -187,11 +187,11 @@ main { min-height: calc(100svh - 100px); }                          /* the foote
 .abouts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 28px; margin: 18px 0 0; }
 .panel .abouts { grid-template-columns: minmax(0, 1fr); margin-top: 0; }
 @media (max-width: 760px) { .abouts { grid-template-columns: minmax(0, 1fr); } }
-.sec h3 { margin: 0 0 3px; font-size: 10.5px; font-weight: 400; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
+.sec h3 { margin: 0 0 3px; font-size: 11px; font-weight: 400; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
 .sec p { margin: 0; font-size: 13px; max-width: 70ch; }
 .links { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 14px 0 0; font-size: 12.5px; }
 .links a { color: var(--ink); }
-.grp-h { margin: 18px 0 0; padding-top: 12px; border-top: 1px solid var(--hair-2); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); display: flex; justify-content: space-between; }
+.grp-h { margin: 18px 0 0; padding-top: 12px; border-top: 1px solid var(--hair-2); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); display: flex; justify-content: space-between; }
 .panel .grp-h:first-of-type { margin-top: 10px; }
 .steps { list-style: none; margin: 4px 0 0; padding: 0; }
 .step { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; gap: 2px 12px; align-items: start; padding: 9px 0; border-top: 1px solid var(--hair); font-size: 12.5px; }
@@ -277,6 +277,9 @@ textarea:focus, .paste select:focus { outline: none; border-color: var(--ink); }
 .way-t { display: flex; align-items: center; gap: 10px; font-weight: 500; }
 
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+/* A text field under 16px makes iOS zoom the page in when it is focused, and leave it zoomed: on a touch screen they are 16px. */
+@media (pointer: coarse) { textarea { font-size: 16px; } .ends input { font-size: 16px; } }
+@media (pointer: coarse) { .paste select { font-size: 16px; } }
 </style>
 <!-- chrome:head:begin inline -->
 <style>
@@ -346,6 +349,13 @@ header.top .chip:active { transform: scale(.97); }
 header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
 @container top (max-width: 480px) { header.top .chip { padding: 0 12px 0 11px; } header.top .chip.act { padding: 0; } }
 @media (pointer: coarse) { .sn > a, .sn summary, header.top .chip, footer.sf nav a { height: var(--tap, 44px); } }
+/* Touch, on every page that wears this: a quick double tap on a control does not zoom the page, and a text button takes a press a thumb can land (its box does not
+   change: the target reaches past it). */
+@media (pointer: coarse) {
+  a, button, summary, input, select, textarea, label, [role="button"], [role="tab"] { touch-action: manipulation; }
+  button.link, .linkbtn { position: relative; }
+  button.link::after, .linkbtn::after { content: ''; position: absolute; inset: -8px -6px; }
+}
 
 /* the menu: under the header's right edge, whatever the width */
 .sm-p {
