@@ -114,3 +114,25 @@ test('a deposit declined after USDT\'s allowance was reset to zero says so, not 
   const go = fn('laterGo');
   assert.match(go, /stopped \? \(e\?\.zeroed \? `Your \$\{esc\(e\.zeroed\)\} allowance was set to zero; nothing else was sent\.` : 'Nothing was sent\.'\)/);
 });
+
+// ── Keep ready is offered only while one note can be cut ──
+// Each size is cut from ONE free tETH note that holds more than it (private.js stageSizes), so a balance of small notes, whatever it totals, has nothing to keep ready.
+test('Keep ready is offered when one note holds more than a size not kept ready, not when the balance is in small notes', () => {
+  const make = (notes, held = true) => new Function('IDS', 'PK', 'PV', `${fn('keepable')}; return keepable;`)({ ceth: '0xid' }, { teth: 'ceth' }, { held: held ? {} : null, of: () => ({ notes: notes.map((value) => ({ value })) }) });
+  const sizes = [1000000n, 10000000n];                                          // 0.01 and 0.1 tETH, in the pool's 8 decimals
+  assert.strictEqual(make([500000n, 510000n])(sizes), false, '0.0101 tETH as two notes: none holds 0.01');
+  assert.strictEqual(make([1010000n])(sizes), true, 'one 0.0101 note holds 0.01 and a little over');
+  assert.strictEqual(make([1000000n])(sizes), false, 'a note of exactly the size leaves nothing for the fee');
+  assert.strictEqual(make([1010000n])([10000000n]), false, 'only 0.1 is missing and the note is smaller');
+  assert.strictEqual(make([25000000n])([10000000n]), true);
+  assert.strictEqual(make([25000000n])([]), false, 'every size is kept ready already');
+  assert.strictEqual(make([25000000n], false)(sizes), false, 'nothing is offered before the notes are read');
+  assert.strictEqual(make([])(sizes), false, 'or with no note');
+});
+
+test('a Keep ready that staged nothing says which of the two it was', () => {
+  const go = fn('stageGo');
+  assert.match(go, /no single tETH note holds a size and its fee/, 'a balance of small notes is said');
+  assert.match(go, /Each size is cut from one note, and notes are not joined/);
+  assert.match(go, /if \(n \|\| !left\.length\) say\('Kept ready\./, 'every size already staged is not an error');
+});

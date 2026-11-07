@@ -2403,11 +2403,19 @@ function stagedChips() {
     else if ((privBal('teth') ?? 0n) > 0n) chips.push({ v: 'Keep ready', act: true });
     return chips;
   }
-  const units = KEEP_SWAP.map((v) => parseUnits(v, 8)), bal = privBal('teth'), miss = units.filter((u) => !have.includes(u));
+  const units = KEEP_SWAP.map((v) => parseUnits(v, 8)), miss = units.filter((u) => !have.includes(u));
   const chips = KEEP_SWAP.map((v, i) => ({ v, rd: have.includes(units[i]), t: 'Kept ready: one fast proof' }));
   if (PV.isStaging()) chips.push({ v: 'Keeping ready…', act: true, off: true });
-  else if (miss.length && bal != null && bal > miss[0] * E10) chips.push({ v: 'Keep ready', act: true });
+  else if (keepable(miss)) chips.push({ v: 'Keep ready', act: true });
   return chips;
+}
+// Each size not kept ready yet is cut from ONE free tETH note that holds more than it (private.js stageSizes: the relay's fee comes out of that note and notes are not joined), so Keep ready is
+// offered only while a note does: a balance in small notes can total more than a size and have no such note
+function keepable(miss) {
+  const id = IDS[PK.teth];
+  if (!miss.length || !PV?.held || !id) return false;
+  const top = PV.of(id).notes.reduce((m, n) => (BigInt(n.value) > m ? BigInt(n.value) : m), 0n);
+  return miss.some((u) => top > u);
 }
 async function stageGo() {
   let pv = null;
@@ -2421,7 +2429,11 @@ async function stageGo() {
     }
     const p = pv.stageSizes({ sizes: KEEP_SWAP.map((v) => parseUnits(v, 8)), say: (u) => { say(`Keeping ${esc(tidy(amtFmt(u * E10, 18)))} tETH ready to swap…`, '', true); paint(); }, onStaged: () => pv.read(true).then(paint, paint) });
     paint();
-    const n = await p; S.note = ''; say(n ? 'Kept ready. Pick a size to swap it in one fast proof.' : 'Nothing to keep ready: no tETH note holds a size and its fees.', n ? '' : 'err', true);
+    const n = await p; S.note = '';
+    // none staged: every size already was, or no one note holds a size and its fee (each size is cut from a single note)
+    const left = KEEP_SWAP.map((v) => parseUnits(v, 8)).filter((u) => !(pv.stagedSizes?.() || []).includes(u));
+    if (n || !left.length) say('Kept ready. Pick a size to swap it in one fast proof.', '', true);
+    else say('Nothing to keep ready: no single tETH note holds a size and its fee. Each size is cut from one note, and notes are not joined.', 'err', true);
   } catch (e) { say(esc(e?.message || String(e)), 'err', true); }
   finally { pv?.read(true).then(paint, paint); }
 }
