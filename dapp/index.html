@@ -1030,8 +1030,9 @@ a.btn { text-decoration: none; white-space: nowrap; }
 .wbal .wb-go { display: grid; grid-template-columns: 1fr auto; align-items: baseline; gap: 1px 12px; width: calc(100% + 16px); margin: 0 -8px; padding: 9px 8px; text-align: left; color: inherit; font: inherit; text-decoration: none; background: none; border: 0; border-radius: 8px; }
 .wbal button.wb-go, .wbal a.wb-go { cursor: pointer; }
 @media (hover: hover) { .wbal button.wb-go:hover, .wbal a.wb-go:hover { background: var(--soft); } }
-.wbal .wb-do { position: absolute; right: 0; bottom: 9px; padding: 2px 11px; font: 12px var(--mono); color: var(--ink); background: var(--card); border: 1px solid var(--hair-2); border-radius: 999px; cursor: pointer; }
-.wbal li:has(.wb-do) .wb-m { padding-right: 76px; }
+.wbal .wb-do { position: absolute; right: 0; top: 50%; transform: translateY(-50%); box-sizing: border-box; min-width: 72px; padding: 5px 12px; font: 12px/1.2 var(--mono); text-align: center; color: var(--ink); background: var(--card); border: 1px solid var(--hair-2); border-radius: 999px; cursor: pointer; }
+@media (hover: hover) { .wbal .wb-do:hover { border-color: var(--mute); } }
+.wbal:has(.wb-do) .wb-go { padding-right: 92px; }
 .wbal .wb-k { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink); }
 .wbal .wb-k .tk { width: 20px; height: 20px; }
 .wbal .wb-k .tk.letter { font-size: 8px; }
