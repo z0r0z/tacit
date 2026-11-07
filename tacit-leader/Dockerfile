@@ -11,6 +11,8 @@
 FROM rust:1.95-bookworm AS node
 WORKDIR /src
 COPY contracts/sp1/confidential/btc-pool-halo2 contracts/sp1/confidential/btc-pool-halo2
+# btc-pool-halo2 takes its Poseidon constants from this sibling crate's file (#[path] in its model.rs)
+COPY contracts/sp1/confidential/btc-pool-zk-core/src/poseidon_constants.rs contracts/sp1/confidential/btc-pool-zk-core/src/poseidon_constants.rs
 COPY contracts/sp1/confidential/btc-pool-agg/common contracts/sp1/confidential/btc-pool-agg/common
 COPY contracts/sp1/confidential/tacit-block/common contracts/sp1/confidential/tacit-block/common
 COPY contracts/sp1/confidential/tacit-block/node contracts/sp1/confidential/tacit-block/node

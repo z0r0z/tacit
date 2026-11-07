@@ -27,6 +27,7 @@
 !contracts/sp1/confidential/btc-pool-halo2/src
 !contracts/sp1/confidential/btc-pool-halo2/artifacts
 !contracts/sp1/confidential/btc-pool-agg/common
+!contracts/sp1/confidential/btc-pool-zk-core/src/poseidon_constants.rs
 !contracts/sp1/confidential/tacit-block/common
 !contracts/sp1/confidential/tacit-block/node
 !contracts/sp1/confidential/tacit-block/vendor
