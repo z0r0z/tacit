@@ -1415,6 +1415,7 @@ fn lock_vectors(path: &str) {
         "refundBytes": hx(&refund.to_bytes()),
         "forcedRefund": hx(&[SETTLE_MARK.to_vec(), refund.to_bytes(), memo].concat()),
         "opBytes": hx(&op.to_bytes()),
+        "memoHashOf77": hx(&blk::memo_hash(&vec![0x77u8; MEMO_LEN])),
     });
     std::fs::write(path, serde_json::to_string_pretty(&doc).unwrap()).unwrap_or_else(|e| fail(&format!("{path}: {e}")));
     println!("{}", json!({ "vectors": path }));

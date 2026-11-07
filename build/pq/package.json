@@ -1,0 +1,10 @@
+{
+  "name": "tacit-pq-build",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Builds dapp/vendor/tacit-pq.min.js: ML-KEM-768 (FIPS 203) from @noble/post-quantum, for the tacit chain's hybrid memos.",
+  "dependencies": {
+    "@noble/post-quantum": "0.7.1"
+  }
+}
