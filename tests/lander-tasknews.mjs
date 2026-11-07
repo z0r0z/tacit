@@ -97,8 +97,8 @@ const OPEN = [meta('amm-route', 'Deploy the swap route', NOW - 60)];
 {
   const { ctx, page } = await open({ service: api([{ id: 'amm-route', estimateWei: String(30n * TAC), steps: [step('01-amm-route', 30)] }]), jobs: OPEN, viewport: { width: 390, height: 844 } });
   await settle(page, true);
-  const g = await page.evaluate(() => { const a = document.getElementById('air-news').getBoundingClientRect(), t = document.getElementById('task-news').getBoundingClientRect(), h = document.getElementById('hero-h').getBoundingClientRect(); return { apart: a.right <= t.left || t.right <= a.left || a.bottom <= t.top || t.bottom <= a.top, tBottom: t.bottom, h1: h.top, over: document.documentElement.scrollWidth - document.documentElement.clientWidth, right: t.right, vw: innerWidth }; });
-  ok(g.apart && g.over === 0 && g.right <= g.vw && g.tBottom <= g.h1, 'at a phone width the two lines wrap, stay inside the page and stay above the title');
+  const g = await page.evaluate(() => { const a = document.getElementById('air-news').getBoundingClientRect(), t = document.getElementById('task-news').getBoundingClientRect(), tile = document.getElementById('hx').getBoundingClientRect(); return { apart: a.right <= t.left || t.right <= a.left || a.bottom <= t.top || t.bottom <= a.top, top: Math.min(a.top, t.top), tile: tile.bottom, over: document.documentElement.scrollWidth - document.documentElement.clientWidth, right: t.right, vw: innerWidth }; });
+  ok(g.apart && g.over === 0 && g.right <= g.vw && g.top >= g.tile, 'at a phone width the two lines wrap, stay inside the page and sit below the tile');
   if (SHOTS) await page.screenshot({ path: join(SHOTS, 'lander-task-phone.png') });
   await ctx.close();
 }
