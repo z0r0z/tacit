@@ -89,7 +89,8 @@ async function deploy(s, key) {
         for (let i = 0; i < 90 && !(r = await rpc.call('eth_getTransactionReceipt', [h])); i++) await sleep(2000);
         if (!r || r.status !== '0x1') throw new Error(`tx ${h} did not succeed`);
       } else {
-        r = await send(rpc, key, kit.factory, data, { chainId: kit.chainId, tip: TIP });
+        // send() takes the calldata as bytes
+        r = await send(rpc, key, kit.factory, Buffer.from(data.slice(2), 'hex'), { chainId: kit.chainId, tip: TIP });
       }
       return r;
     } catch (e) {
