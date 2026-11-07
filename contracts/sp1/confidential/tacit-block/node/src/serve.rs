@@ -11,7 +11,7 @@
 //!   GET  /mempool                what is waiting
 //!   POST /spend                  { publics, proof, data, memos[], opMemos[] } → { id }
 //!   POST /settle                 { settle, memo } → { id }
-//!   POST /build                  { time, blobs?: bool, queue?: [payload…], max?: n } → the block: guest input, public values, lists
+//!   POST /build                  { time, blobs?: bool, queue?: [payload…], max?: n, exclude?: [id…] } → the block: guest input, public values, lists
 //!   POST /landed                 { words[16], leaves[], memos[], nullifiers[] } → replays a landed block and clears what it took
 //!
 //! `/build` and `/landed` are the leader's own: they need `Authorization: Bearer $TACIT_NODE_ADMIN`, or, with none set, a loopback caller
@@ -64,6 +64,8 @@ struct Built {
 pub struct Leader {
     node: Node,
     keys: Keys,
+    /// The asset field of TAC: a spend of any other could never be landed (the contract takes only TAC in, out and on), so none is admitted.
+    asset: Option<[u8; 32]>,
     pending: Vec<Entry>,
     settles: Vec<SettleEntry>,
     receipts: BTreeMap<String, Value>,
@@ -71,8 +73,8 @@ pub struct Leader {
 }
 
 impl Leader {
-    pub fn new(chain: [u8; 32], keys: Keys) -> Leader {
-        Leader { node: Node::genesis(chain), keys, pending: vec![], settles: vec![], receipts: BTreeMap::new(), built: None }
+    pub fn new(chain: [u8; 32], keys: Keys, asset: Option<[u8; 32]>) -> Leader {
+        Leader { node: Node::genesis(chain), keys, asset, pending: vec![], settles: vec![], receipts: BTreeMap::new(), built: None }
     }
 
     fn spends(&self, extra: Option<&Entry>) -> Vec<SpendIn> {
@@ -105,6 +107,13 @@ impl Leader {
         let memos: Vec<Vec<u8>> = b["memos"].as_array().ok_or("memos")?.iter().map(hexv).collect::<Result<_, _>>()?;
         let op_memos: Vec<Vec<u8>> = b["opMemos"].as_array().map(|a| a.iter().map(hexv).collect::<Result<_, _>>()).transpose()?.unwrap_or_default();
         let spend = blk::Spend::from_publics(&p);
+        if self.asset.is_some_and(|a| blk::fr_be(&spend.asset) != a) {
+            return Err("only TAC moves on this chain".into());
+        }
+        // a spend of notes names a root a block ended at: the landing contract refuses any other, and a block holding one could not land
+        if !spend.live_nullifiers().is_empty() && !self.node.roots.contains(&blk::fr_be(&spend.root)) {
+            return Err("the spend names a note root no block ended at".into());
+        }
         let slots: Vec<usize> = (0..3).filter(|i| !bool::from(spend.out[*i].is_zero())).collect();
         if memos.len() != slots.len() || memos.iter().zip(&slots).any(|(m, i)| m.len() != MEMO_LEN || blk::memo_hash(m) != data.memo_hashes[*i]) {
             return Err("a memo for each new note, each the one its body names".into());
@@ -141,6 +150,12 @@ impl Leader {
         if self.receipts.contains_key(&id) {
             return Ok(self.receipts[&id].clone());
         }
+        if !self.node.roots.contains(&blk::fr_be(&settle.root)) {
+            return Err("the settle names a note root no block ended at".into());
+        }
+        if self.asset.is_some_and(|a| blk::fr_be(&settle.asset) != a) {
+            return Err("only TAC moves on this chain".into());
+        }
         let entry = SettleEntry { id: id.clone(), settle, memo };
         self.node.build(&self.spends(None), &self.settles_list(Some(&entry)), &[], now, &[]).map_err(|e| format!("not takeable now: {e}"))?;
         self.settles.push(entry);
@@ -154,9 +169,10 @@ impl Leader {
         let time = b["time"].as_u64().ok_or("time")?;
         let max = b["max"].as_u64().unwrap_or(64) as usize;
         let want_blobs = b["blobs"].as_bool().unwrap_or(false);
+        let exclude: Vec<String> = b["exclude"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
         let queue: Vec<Vec<u8>> = b["queue"].as_array().map(|a| a.iter().map(hexv).collect::<Result<_, _>>()).transpose()?.unwrap_or_default();
         // keep only what is takeable at this time, oldest first
-        let mut spends = self.pending.clone();
+        let mut spends: Vec<Entry> = self.pending.iter().filter(|e| !exclude.contains(&e.id)).cloned().collect();
         spends.truncate(max);
         let mut settles = self.settles.clone();
         settles.truncate(max.saturating_sub(spends.len()));
@@ -285,7 +301,15 @@ impl Leader {
                 Ok(json!({ "spent": self.node.spent(&nf) }))
             }
             ("GET", p) if p.starts_with("/receipt/") => self.receipts.get(&p[9..]).cloned().ok_or((404, "no such submission".to_string())),
-            ("GET", "/mempool") => Ok(json!({ "spends": self.pending.iter().map(|e| e.id.clone()).collect::<Vec<_>>(), "settles": self.settles.iter().map(|e| e.id.clone()).collect::<Vec<_>>() })),
+            ("GET", "/mempool") => Ok(json!({
+                "spends": self.pending.iter().map(|e| e.id.clone()).collect::<Vec<_>>(),
+                "settles": self.settles.iter().map(|e| e.id.clone()).collect::<Vec<_>>(),
+                // the deposit each spend takes in, which must be waiting on Ethereum for a block that holds it to land
+                "deposits": self.pending.iter().filter_map(|e| {
+                    let p = tacit_block_agg_publics(&e.spend.publics).ok()?;
+                    blk::deposit_record(&blk::Spend::from_publics(&p), &e.spend.data).map(|d| json!({ "id": e.id, "deposit": hx(&d) }))
+                }).collect::<Vec<_>>(),
+            })),
             ("POST", "/spend") => self.spend(body, now).map_err(bad),
             ("POST", "/settle") => self.settle(body, now).map_err(bad),
             ("POST", "/build") => self.build(body).map_err(bad),

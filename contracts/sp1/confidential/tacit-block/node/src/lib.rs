@@ -113,6 +113,8 @@ pub struct SpendIn {
 #[derive(Clone)]
 pub struct Node {
     pub state: State,
+    /// Every note root a block has ended at: what the landing contract takes an old anchor to be.
+    pub roots: std::collections::BTreeSet<[u8; 32]>,
     /// Every leaf in tree order, and the memo published with each.
     pub leaves: Vec<Fr>,
     pub memos: Vec<Vec<u8>>,
@@ -126,7 +128,8 @@ impl Node {
         let state = State::genesis(chain);
         let nf = NfTree::default();
         assert_eq!(nf.root(), state.nf_root, "the nullifier tree starts where the state does");
-        Node { state, leaves: vec![], memos: vec![], nf, height: 0 }
+        let roots = std::collections::BTreeSet::from([fr_be(&state.notes.root)]);
+        Node { state, roots, leaves: vec![], memos: vec![], nf, height: 0 }
     }
 
     /// Replays a landed block from what it publishes, refusing one whose replay does not reach the state its proof committed.
@@ -155,6 +158,7 @@ impl Node {
         if next.digest() != b.words[1] || fr_be(&next.notes.root) != b.words[3] {
             return Err("the block's lists do not lead to the state its proof committed".into());
         }
+        self.roots.insert(fr_be(&next.notes.root));
         self.state = next;
         self.leaves.extend(leaves);
         self.memos.extend(b.memos.iter().cloned());

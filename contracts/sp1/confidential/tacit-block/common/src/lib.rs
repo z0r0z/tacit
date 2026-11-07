@@ -1099,6 +1099,14 @@ fn settle_effects(prev: &State, s: &lock::Settle, time: u64) -> Result<Effects, 
     })
 }
 
+/// The deposit a spend takes in, as a block publishes and the landing contract looks it up: asset ‖ value ‖ commitment (x ‖ y) ‖ body hash.
+pub fn deposit_record(s: &Spend, d: &SpendData) -> Option<Vec<u8>> {
+    if is_identity(&s.dep) {
+        return None;
+    }
+    d.dep.map(|o| [fr_be(&s.asset), word(o.v), fr_be(&s.dep[0]), fr_be(&s.dep[1]), fr_be(&s.body)].concat())
+}
+
 fn effects(prev: &State, s: &Spend, d: &SpendData) -> Result<Effects, &'static str> {
     let live = s.live_nullifiers();
     if live.len() == 2 && live[0] == live[1] {

@@ -126,7 +126,13 @@ async function step() {
     view('queueDone()', ['uint256']), view('queued()', ['uint256']), view('lastLanded()', ['uint256']), view('WINDOW()', ['uint256']), view('FORCE_DELAY()', ['uint256']),
   ]).then((r) => r.map((x) => Number(x[0])));
   const pool = await node('GET', '/mempool');
-  const waiting = pool.spends.length + pool.settles.length;
+  // a spend that takes a deposit in lands only if that deposit is waiting on Ethereum (and not queued behind a forced entry the block does not reach)
+  const exclude = [];
+  for (const d of pool.deposits) {
+    const [from, , forcedAt] = await view('pending(bytes32)', ['address', 'uint256', 'uint256'], [hexOf(keccak_256(bytesOf(d.deposit)))]);
+    if (BigInt(from) === 0n || Number(forcedAt) > done) exclude.push(d.id);
+  }
+  const waiting = pool.spends.length - exclude.length + pool.settles.length;
   const entries = [];
   for (let i = done; i < Math.min(queued, done + MAX_FORCED); i++) {
     if (!forced.has(i)) throw new Error(`queue entry ${i} is not among the events read`);
@@ -143,7 +149,7 @@ async function step() {
     const [lead] = await view('turn()', ['address'], [], (await view('TURNS()', ['address']))[0]);
     if (BigInt(lead) !== 0n && lead.toLowerCase() !== me.toLowerCase()) { log({ waiting: 'not this leader\'s turn', lead }); return; }
   }
-  const built = await node('POST', '/build', { time: now, queue: entries.map((e) => hexOf(e)), max: 64 });
+  const built = await node('POST', '/build', { time: now, queue: entries.map((e) => hexOf(e)), max: 64, exclude });
   log({ built: nodeHeight + 1, spends: built.includes.length, queueTaken: built.queueTaken });
   const proof = await prove(built);
   const pv = bytesOf(built.publicValues);
@@ -184,7 +190,8 @@ async function main() {
   const [chainHeight] = await view('height()', ['uint256']);
   log({ leader: me, blocks: BLOCKS, chainHeight: Number(chainHeight) });
   const [lander] = [BLOCKS];
-  const child = spawn(NODE_BIN, ['serve', String(num(await rpc.call('eth_chainId'))), `${lander}@${NODE_ADDR}`], { stdio: ['ignore', 'inherit', 'inherit'], env: { ...env } });
+  const [tacAsset] = await view('TAC_ASSET()', ['bytes32']);
+  const child = spawn(NODE_BIN, ['serve', String(num(await rpc.call('eth_chainId'))), `${lander}@${NODE_ADDR}`], { stdio: ['ignore', 'inherit', 'inherit'], env: { ...env, TACIT_NODE_ASSET: tacAsset } });
   child.on('exit', (c) => { log({ nodeExited: c }); process.exit(1); });
   const stopNode = () => child.kill();
   process.on('exit', stopNode);

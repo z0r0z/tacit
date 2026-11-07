@@ -84,7 +84,9 @@ fn main() {
             let (lander, addr) = args[2].split_once('@').unwrap_or_else(|| fail("serve CHAINID LANDER@HOST:PORT"));
             let lander: [u8; 20] = hex::decode(lander.trim_start_matches("0x")).ok().and_then(|b| b.try_into().ok()).unwrap_or_else(|| fail("the lander is a 20-byte address"));
             let keys = tacit_block_node::keys::Keys::load().unwrap_or_else(|e| fail(&e));
-            let leader = tacit_block_node::serve::Leader::new(tacit_block_common::chain_binding(chain_id, &lander), keys);
+            // TACIT_NODE_ASSET: TAC's asset field (the contract's TAC_ASSET), the only asset a spend may move
+            let asset: Option<[u8; 32]> = std::env::var("TACIT_NODE_ASSET").ok().filter(|a| !a.is_empty()).map(|a| hex::decode(a.trim_start_matches("0x")).ok().and_then(|b| b.try_into().ok()).unwrap_or_else(|| fail("TACIT_NODE_ASSET is a 32-byte word")));
+            let leader = tacit_block_node::serve::Leader::new(tacit_block_common::chain_binding(chain_id, &lander), keys, asset);
             tacit_block_node::serve::serve(addr, leader).unwrap_or_else(|e| fail(&e));
         }
         _ => fail("usage: tacit-block-node replay FIXTURE | serve CHAINID LANDER@HOST:PORT"),
