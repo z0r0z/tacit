@@ -130,8 +130,12 @@ abstract contract TacitBlocksFixture is Test {
     uint256 constant MEMO = 1152;
     uint256 constant FORCED_REST_AT = 384 + 2080 + 1280 + 3 * MEMO;
     uint256 constant FORCED_MAX = FORCED_REST_AT + 20 + 32 + 2 * 49 + 1 + 265 + MEMO;
-    /// The shares a lock's claim or refund gives the holders (tacit-block-common LOCK_POOL_SHARES).
-    uint256 constant LOCK_POOL_SHARES = 200_000;
+    /// The shares a lock of `v` shares gives the holders when it is claimed or refunded (tacit-block-common `lock_fee`): 0.1% of them,
+    /// rounded up, at least one.
+    function lockFee(uint256 v) internal pure returns (uint256) {
+        uint256 f = (v * 10 + 9_999) / 10_000;
+        return f == 0 ? 1 : f;
+    }
 
     function setUp() public {
         fx = vm.readFile(string.concat(vm.projectRoot(), "/test/fixtures/tacit-blocks.json"));
@@ -1067,8 +1071,10 @@ contract TacitBlocksMoreTest is TacitBlocksFixture {
         assertEq(blocks.queueDone(), 3);
         // what stays on the chain: the exit's credit, the two hops to send into the pool, and the TAC behind the notes (1,000 claimed
         // and 500 refunded, the fees left before them); each settle gave the holders its pool share, those shares ended
-        uint256 lockShares = vm.parseJsonUint(fx, ".lockDeposits[0].shares") + vm.parseJsonUint(fx, ".lockDeposits[1].shares");
-        assertEq(blocks.shares(), lockShares - 2 * LOCK_POOL_SHARES, "the locks' shares less two pool shares, now the claimed and refunded notes'");
+        uint256 la = vm.parseJsonUint(fx, ".lockDeposits[0].shares");
+        uint256 lb = vm.parseJsonUint(fx, ".lockDeposits[1].shares");
+        assertEq(lockFee(la), la / 1_000, "0.1% of the lock's own shares");
+        assertEq(blocks.shares(), la + lb - lockFee(la) - lockFee(lb), "the locks' shares less their fees, now the claimed and refunded notes'");
         (uint256 p5,) = poolOf(5);
         assertEq(blocks.pool(), p5, "a settle moves no TAC");
         assertEq(blocks.pool(), blocks.inChain());

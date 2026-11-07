@@ -46,7 +46,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 use tacit_block_common::{
-    self as blk, ops, fr_be, h64, nf_record, nf_zeros, Answers, BlockData, BlockOut, NfMember, NfWitness, Posted, SpendData, State, EXIT_FEE_BPS, LOCK_POOL_SHARES,
+    self as blk, ops, fr_be, h64, nf_record, nf_zeros, Answers, BlockData, BlockOut, NfMember, NfWitness, Posted, SpendData, State, EXIT_FEE_BPS,
     MEMO_LEN, MIN_POOL_FEE, NF_LEVELS, RECENT, VIRTUAL,
 };
 
@@ -967,12 +967,12 @@ fn fixture(path: &str, chain_id: u64, lander: [u8; 20]) {
     }
     // Block 8, whose lists travel in a blob: the claimed note (the lock less its pool share) paid on in two, its pool share out of the
     // second.
-    let claimed_leaf = leaf_of(&c.asset_f, &fr_u64(va - LOCK_POOL_SHARES), &la.claim_to.npk, &la.claim_to.rho);
-    let claimed = c.made_note(&claimed_leaf, 4, &secret(84, 0, 0), va - LOCK_POOL_SHARES);
+    let claimed_leaf = leaf_of(&c.asset_f, &fr_u64(va - blk::lock_fee(va)), &la.claim_to.npk, &la.claim_to.rho);
+    let claimed = c.made_note(&claimed_leaf, 4, &secret(84, 0, 0), va - blk::lock_fee(va));
     let blob_pay = c.spend(&k, &[&claimed], &[(6, secret(86, 0, 0), 600 * TAC), (4, secret(86, 0, 1), claimed.v - 600 * TAC)], "fixture blob pay", c.leaves.len());
     // and the refunded 500 (less its pool share): 200 of it moved to a successor chain, the rest kept
-    let refunded_leaf = leaf_of(&c.asset_f, &fr_u64(vb - LOCK_POOL_SHARES), &lb.refund_to.npk, &lb.refund_to.rho);
-    let refunded = c.made_note(&refunded_leaf, 5, &secret(84, 1, 1), vb - LOCK_POOL_SHARES);
+    let refunded_leaf = leaf_of(&c.asset_f, &fr_u64(vb - blk::lock_fee(vb)), &lb.refund_to.npk, &lb.refund_to.rho);
+    let refunded = c.made_note(&refunded_leaf, 5, &secret(84, 1, 1), vb - blk::lock_fee(vb));
     let successor = [0x5c; 20];
     let successor_note = [0x77; 32];
     let moved = pay_amount(&c.state, 200 * TAC);
@@ -1294,6 +1294,7 @@ fn test() {
     blob_test(&mut c, &elf, &k);
     shares_test(&elf, &k);
     virtual_test(&elf, &k);
+    lock_fee_test(&elf, &k);
     println!("{}", json!({ "test": "ok", "note_roots": c.roots.len() }));
 }
 
@@ -1483,14 +1484,14 @@ fn lock_test(c: &mut Chain, elf: &[u8], k: &Keys) {
         Ok(_) => fail("a claim that could land after its deadline was taken"),
         Err(e) => println!("{}", json!({ "refused": "a claim that could land after its deadline", "why": e })),
     }
-    // the claim pays the holders their part, as a payment does: its note is the lock less LOCK_POOL_SHARES, which end
+    // the claim pays the holders their part, as a payment does: its note is the lock less 0.1% of its shares (`lock_fee`), which end
     let before = (c.state.pool, c.state.shares);
     let lc = c.land_full(elf, k, &[], &[claim.clone()], &[]).unwrap_or_else(|e| fail(&format!("a claim: {e}")));
-    let want = leaf_of(&a, &fr_u64(v1 - LOCK_POOL_SHARES), &l1.claim_to.npk, &l1.claim_to.rho);
+    let want = leaf_of(&a, &fr_u64(v1 - blk::lock_fee(v1)), &l1.claim_to.npk, &l1.claim_to.rho);
     if lc.data.claims.len() != 1 || lc.data.outputs.len() != 1 || lc.data.outputs[0][..32] != fr_be(&want) || lc.data.outputs[0][32..] != blk::memo_hash(&cm1) {
         fail("the claim did not make the recipient's note and publish its signature");
     }
-    if (lc.out.pool, lc.out.shares) != (before.0, before.1 - LOCK_POOL_SHARES) || worth(&c.state, LOCK_POOL_SHARES) < MIN_POOL_FEE as u64 {
+    if (lc.out.pool, lc.out.shares) != (before.0, before.1 - blk::lock_fee(v1)) || blk::lock_fee(v1) != v1 / 1_000 {
         fail("a lock and its claim did not give the holders their pool share");
     }
     // the counterparty reads the secret from the published signature and its pre-signature
@@ -1511,16 +1512,16 @@ fn lock_test(c: &mut Chain, elf: &[u8], k: &Keys) {
     c.time = l2.deadline;
     let before = (c.state.pool, c.state.shares);
     let lr = c.land_full(elf, k, &[], &[refund], &[]).unwrap_or_else(|e| fail(&format!("a refund: {e}")));
-    let back = leaf_of(&a, &fr_u64(v2 - LOCK_POOL_SHARES), &l2.refund_to.npk, &l2.refund_to.rho);
+    let back = leaf_of(&a, &fr_u64(v2 - blk::lock_fee(v2)), &l2.refund_to.npk, &l2.refund_to.rho);
     if lr.data.outputs.len() != 1 || lr.data.outputs[0][..32] != fr_be(&back) || lr.data.outputs[0][32..] != blk::memo_hash(&rm2) || !lr.data.claims.is_empty() {
         fail("the refund did not make the locker's note");
     }
-    if (lr.out.pool, lr.out.shares) != (before.0, before.1 - LOCK_POOL_SHARES) {
+    if (lr.out.pool, lr.out.shares) != (before.0, before.1 - blk::lock_fee(v2)) {
         fail("a refund did not give the holders their pool share");
     }
-    // refused: a lock no larger than the pool share its settle takes (here a deposit straight into it)
+    // refused: a lock no larger than the pool share its settle takes, one share (here a deposit straight into it)
     let (l0, m0, _, _) = lock_of(c, 9, c.time + 100_000);
-    let tiny = c.spend_full(k, &[], &[], None, Some(LOCK_POOL_SHARES), Some((LOCK_POOL_SHARES, ops::Op::Lock { lock: l0, memo: blk::memo_hash(&m0) }, vec![m0])), "lock of its pool share", c.leaves.len());
+    let tiny = c.spend_full(k, &[], &[], None, Some(1), Some((1, ops::Op::Lock { lock: l0, memo: blk::memo_hash(&m0) }, vec![m0])), "lock of its pool share", c.leaves.len());
     expect_refused_for(c, elf, k, &[tiny], "the exit's opening, address or operation", "a lock no larger than its pool share");
 
     // a claim posted to the queue is taken; one posted too late is passed over and the chain goes on
@@ -1810,4 +1811,50 @@ fn virtual_test(elf: &[u8], k: &Keys) {
         fail("the next depositor took the dust");
     }
     println!("{}", json!({ "virtual": "ok", "overpaid_then": overpaid, "burnt_then": burnt, "dust": left, "after_dust": [paid, held] }));
+}
+
+/// A lock's settle gives the holders 0.1% of the lock's own shares (`lock_fee`), whatever a share costs: after a donation has raised a
+/// share's price a thousandfold, a 10 TAC lock refunded still pays 0.1% of it, where a fee fixed in shares (200,000 of them) would now
+/// cost 2 TAC.
+fn lock_fee_test(elf: &[u8], k: &Keys) {
+    use blk::lock::{Lock, Settle, SETTLE_REFUND};
+    let mut c = Chain::new(8);
+    // the donation: one share bought for 1,000 TAC, so a share costs about 1,001 units
+    let one = c.spend_priced(k, &[], &[(1, secret(160, 0, 0), 1)], None, Some(1), None, [1_000 * TAC, 0], "lock fee donation", 0);
+    c.land(elf, k, &[one]).unwrap_or_else(|e| fail(&format!("lock fee donation: {e}")));
+    let price = buy_amount(&c.state, 1);
+    if price < 1_000 {
+        fail("the donation did not raise a share's price");
+    }
+    // a deposit of about 10 TAC straight into a lock, refunded at its deadline
+    let (p, n) = rate(&c.state);
+    let v = (10 * TAC as u128 * n / p) as u64;
+    let (claim_to, _) = c.note_to(3, &secret(161, 0, 1), "lock fee claim");
+    let (refund_to, rm) = c.note_to(2, &secret(161, 0, 0), "lock fee refund");
+    let mut lm = b"tacit-block lock fee lock".to_vec();
+    lm.resize(MEMO_LEN, 0);
+    let lock = Lock { recipient: schnorr::key(schnorr::scalar("lock fee recipient")).0, deadline: c.time + 10, claim_to, refund_to };
+    let s = c.spend_full(k, &[], &[], None, Some(v), Some((v, ops::Op::Lock { lock, memo: blk::memo_hash(&lm) }, vec![lm])), "lock fee lock", c.leaves.len());
+    c.land(elf, k, &[s]).unwrap_or_else(|e| fail(&format!("lock fee lock: {e}")));
+    let leaf = lock.leaf(&c.asset_f, v);
+    let index = c.leaves.iter().position(|l| *l == leaf).unwrap_or_else(|| fail("the lock is not in the tree"));
+    let tree = Tree::new(&c.leaves);
+    let refund = Settle { kind: SETTLE_REFUND, asset: c.asset_f, value: v, lock, index: index as u64, root: tree.root, path: tree.path(index), sig: None };
+    c.time = lock.deadline;
+    let before = c.state.clone();
+    let lr = c.land_full(elf, k, &[], &[refund], &[]).unwrap_or_else(|e| fail(&format!("lock fee refund: {e}")));
+    let fee = blk::lock_fee(v);
+    let back = leaf_of(&c.asset_f, &fr_u64(v - fee), &refund_to.npk, &refund_to.rho);
+    if fee != v.div_ceil(1_000) || lr.data.outputs.len() != 1 || lr.data.outputs[0][..32] != fr_be(&back) || lr.data.outputs[0][32..] != blk::memo_hash(&rm) {
+        fail("a refund's note is not the lock less 0.1% of its shares");
+    }
+    if (c.state.pool, c.state.shares) != (before.pool, before.shares - fee) {
+        fail("a refund did not end its fee's shares");
+    }
+    // what the fee is worth: 0.1% of the lock's worth (to a share's price), far below what 200,000 shares cost now
+    let (fee_worth, lock_worth, fixed) = (worth(&before, fee), worth(&before, v), worth(&before, 200_000));
+    if fee_worth > lock_worth / 1_000 + price || fixed < 100 * fee_worth {
+        fail("a lock's fee rose with a share's price");
+    }
+    println!("{}", json!({ "lock_fee": "ok", "share_price": price, "lock_shares": v, "fee_shares": fee, "fee_worth": fee_worth, "lock_worth": lock_worth, "fixed_200k_worth": fixed }));
 }
