@@ -6493,7 +6493,7 @@ await step('receipts', async () => {
     await r.page.click('#s-go');
     await until(r.page, () => /Sent to the relay/.test(document.querySelector('#v1-status')?.textContent || ''), null, 60000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | status: ${await text(r.page, '#v1-status')} | errors: ${r.errors.slice(0, 2).join(' | ')}`); });
-    ok(/first step is with the relay/.test(await text(r.page, '#v1-status')) && /Keep this page open until the last is sent/.test(await text(r.page, '#v1-status')), 'receipts: a send that starts with a split says more steps follow, and to keep the page open');
+    ok(/Splitting a note to 0\.1 tETH first/.test(await text(r.page, '#v1-status')) && /Keep this page open until it is sent/.test(await text(r.page, '#v1-status')), 'receipts: a send that starts with a split says it is splitting, and to keep the page open');
     const a0 = await rx();
     ok(a0.calls.length === 1 && a0.calls[0].type === 'transfer' && a0.calls[0].spend[0] === a0.notes[1][0], `receipts: the send splits the 0.2 note first (${JSON.stringify(a0.calls)})`);
     ok(await r.page.$eval('#s-amt', (i) => i.value === '') && await r.page.$eval('#s-go', (b) => b.disabled), 'receipts: the sheet comes back with an empty form as soon as the relay has the split');

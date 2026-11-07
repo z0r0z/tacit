@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-LuGoX3hShvZmHfEbjdKypiUKztiJNE5OW2IfhyRl4Dc=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-MnMFRTmoOtOuFES+jxNShcYmp/IidI47Vzag9H7TvDA=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -65,7 +65,7 @@
 <link rel="modulepreload" href="/bridge-tick.js?cb=4e721860">
 <link rel="modulepreload" href="/tacit-session.js?cb=a2d34bb2">
 <link rel="modulepreload" href="/activity.js?cb=8ccbc552">
-<link rel="modulepreload" href="/swap/card.js?cb=628d7b87">
+<link rel="modulepreload" href="/swap/card.js?cb=24fd9507">
 <link rel="modulepreload" href="/trade/wallet.js?cb=88b623b8">
 <link rel="modulepreload" href="/trade/util.js?cb=ba5a02b1">
 <link rel="modulepreload" href="/trade/rpc.js">
@@ -407,6 +407,7 @@ a.di { color: inherit; text-decoration: none; }
 /* What /front-guard.js says under the skeleton when the script has not drawn the card (a file of it never arrived, or is slow): one line and the reload. */
 .hx-say { display: flex; align-items: center; justify-content: center; gap: 10px; margin: 0 16px 16px; font: 500 13px var(--mono); color: var(--mute); }
 .hx-say button { font: inherit; color: var(--ink); background: none; border: 0; padding: 0; text-decoration: underline; cursor: pointer; }
+#hx-ss { scroll-margin-bottom: 56px; }
 .hx-h { --i: 0; --n: 6; position: relative; display: grid; grid-template-columns: repeat(var(--n), 1fr); padding: 4px 8px 0; border-bottom: 1px solid var(--hair); }
 .hx-h::after { content: ''; position: absolute; bottom: -1px; height: 2px; border-radius: 2px; background: var(--ink); width: calc((100% - 16px) / var(--n) * .5);
   left: calc(8px + (100% - 16px) / var(--n) * (var(--i) + .25)); transition: left .4s var(--spring); }
@@ -2270,11 +2271,14 @@ const keptDeposit = (e, landed, where = '') => {
 };
 const FLASH = {};
 const FLASH_OF = {};
-const say = (el, view) => { if (!el) return; const v = view instanceof Raw ? view : html`${view}`; if (el.id && el.isConnected) { FLASH[el.id] = v; FLASH_OF[el.id] = el.closest('dialog')?.id || ''; } mount(el, v); };
+// The tile's press line (and the bar under it) is what to watch while something runs: one that falls just below the fold of a short window is brought into view, one the reader has scrolled away from is left where it is.
+const seen = (el) => { try { const r = el.getBoundingClientRect(); if (r.height && r.bottom + 56 > innerHeight && r.top < innerHeight + 300) el.scrollIntoView({ block: 'nearest', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }); } catch { } };
+const say = (el, view) => { if (!el) return; const v = view instanceof Raw ? view : html`${view}`; if (el.id && el.isConnected) { FLASH[el.id] = v; FLASH_OF[el.id] = el.closest('dialog')?.id || ''; } mount(el, v); if (el.id === 'hx-ss') seen(el); };
 const sayErr = (el, e) => { if (e?.offered) return; say(el, html`<span class="err">${errText(e)}</span>`); };
 const RETRY = {};
 const sayRetry = (el, e, name) => say(el, html`<span class="err">${errText(e)}</span> <button class="link" type="button" data-retry="${name}">Try again</button>`);
 document.addEventListener('click', (e) => { const b = e.target.closest?.('[data-retry]'); if (b) RETRY[b.dataset.retry]?.(); });
+document.addEventListener('click', (e) => { const b = e.target.closest?.('[data-share]'); if (b) copy(b.dataset.share, 'Note copied'); });
 const warn = (rc, view) => { rc.insertAdjacentHTML('beforeend', html`<p class="note err" role="alert">${view}</p>`.s); rc.hidden = false; };
 const quoteErr = (rc, e) => { mount(rc, html``); warn(rc, errText(e)); };
 function sayLive(el, view) {
@@ -2601,15 +2605,20 @@ function runJob(run, jobId, step, self = null) {
   run.jobs.push(id);
   if (to?.one && !run.op) { run.op = `op:${Date.now().toString(36)}${(++runSeq).toString(36)}`; RUN_OF.set(run.op, run); }
   JOBS.set(jobId, { run, in: run.nest || (to?.one ? run.op : null), label: main ? to?.label || run.label : step.step || step, self });
-  if (to && !run.away && !OWN_JOB.test(jobId)) { try { handoff(run, main); } catch (e) { console.error('hand-off', e); } }
+  if (to && !run.away && !OWN_JOB.test(jobId)) { try { handoff(run, main, step); } catch (e) { console.error('hand-off', e); } }
+  // the step after the first one the line spoke of: the line names it, as the first was named
+  else if (to?.doing && main && run.away) { const d = document.querySelector(`[data-op="${run.op}"] .hx-step`); if (d) d.textContent = `${stepWord(to.steps, to.steps)}${to.doing}. ${KEEP_OPEN}`; }
   if (!to?.one) return;
-  const op = actGet(run.op) || actPut(run.op, { kind: 'op', label: to.label, steps: [], status: 'pending', pub: run.pub, dest: to.dest || null, sheet: run.sheet || undefined, own: OWN_JOB.test(jobId) ? (DEV_JOB.test(jobId) ? 'device' : true) : undefined });
+  const op = actGet(run.op) || actPut(run.op, { kind: 'op', label: to.label, steps: [], status: 'pending', pub: run.pub, dest: to.dest || null, closing: to.done || undefined, share: to.share || undefined, sheet: run.sheet || undefined, own: OWN_JOB.test(jobId) ? (DEV_JOB.test(jobId) ? 'device' : true) : undefined });
   for (const t of run.txs.splice(0)) { const x = actGet(t.id); if (x) { x.in = run.op; op.steps.push({ id: t.id, main: false, step: t.step, doing: t.doing }); } }
   op.steps.push({ id, main, step: main ? null : step.step, doing: main ? null : step.doing });
   if (self && main) op.self = self;
   actSave(); paintAct();
 }
-function handoff(run, main = true) {
+const KEEP_OPEN = 'Keep this page open until it is sent.';
+// A send is a cut to size (when no note is the amount) and then the send itself: `to.steps` says so where the flow knows it, and the line counts.
+const stepWord = (n, of) => (of ? `Step ${n} of ${of}: ` : '');
+function handoff(run, main = true, step = null) {
   run.away = true;
   try { run.to.clear?.(); } catch {}
   deferred.add(run.sheet);
@@ -2620,7 +2629,7 @@ function handoff(run, main = true) {
   const act = html`<button class="btn ghost" type="button" data-act-open>Follow it in Activity</button>`;
   const where = run.to.dest ? html` → ${run.to.dest}` : '';
   say(el, !main ? html`<div data-op="${run.op}"><b class="ok">✓ Sent to the relay</b>
-      <div>${run.to.label}${where}: its first step is with the relay and more follow. Keep this page open until the last is sent; Activity shows each.</div>${act}</div>`
+      ${step?.doing && !run.to.dest ? html`<div class="hx-step">${stepWord(1, run.to.steps)}${step.doing}. ${KEEP_OPEN}</div>` : html`<div class="hx-step">${run.to.label}${where}: its first step is with the relay and more follow. Keep this page open until the last is sent; Activity shows each.</div>`}${act}</div>`
     : run.to.one ? html`<div data-op="${run.op}"><b class="ok">✓ Sent to the relay</b>
       <div>${run.to.label}${where}. It is proved in about a minute and then goes through on its own: you can close this or start something else.</div>${act}</div>`
     : html`<div data-batch="${run.n}"><b class="ok">✓ Sent to the relay</b>
@@ -2792,7 +2801,7 @@ function actSaid(it, prev) {
   const link = it.hash ? html`<a href="${txUrl(it)}" target="_blank" rel="noopener">${txMark(it)}${txSite(it)} ↗</a>` : '';
   const good = it.status === 'settled' || it.status === 'confirmed', bad = it.status === 'failed' || it.status === 'unknown';
   const line = it.kind === 'op' && (good || bad) ? document.querySelector(`[data-op="${it.id}"]`)?.closest(STATUS_AT) : null;
-  if (line) say(line, good ? html`<span class="ok">✓ ${it.label}: done.</span>${it.dest ? html` Now at ${it.dest}.` : ''} ${link}` : html`<span class="err">${it.label} did not go through: ${linked(failText(it))}</span>`);
+  if (line) say(line, good ? html`<span class="ok">✓ ${it.label}: done.</span>${it.dest ? html` Now at ${it.dest}.` : ''}${it.closing ? html` ${it.closing}` : ''}${it.share ? html` <button class="link" type="button" data-share="${it.share}">Copy a note for them</button>` : ''} ${link}` : html`<span class="err">${it.label} did not go through: ${linked(failText(it))}</span>`);
   const shown = !!line && inView;
   const spn = ownJob(it.id) || it.own;
   if ((it.kind === 'job' || it.kind === 'op') && prev == null && !ended(it)) {
@@ -2800,7 +2809,7 @@ function actSaid(it, prev) {
     else if (!(run?.noted && inView)) toast(html`${it.label}: queued for the relay. ${view}`);
   }
   else if (good && ['failed', 'stale', 'unknown'].includes(prev) && !it.sent) toast(html`${it.label} went through after all. ${link}`, false, 9000);
-  else if (good && !mine && !shown) toast(html`${it.label}: done. ${link}`, false, 7000);
+  else if (good && !mine && !shown) toast(html`${it.label}: done.${it.closing ? html` ${it.closing}` : ''} ${link}`, false, 7000);
   else if (bad && !shown && !(mine && inView)) toast(html`${it.label} did not go through: ${linked(failText(it))} ${view}`, true, 9000);
   if (good || bad) notifyOS(it, good);
   if ((good || bad) && !mine && prev != null) afterActivity();
@@ -5911,7 +5920,8 @@ const nameAddrM = memoRoute(async (raw) => (await getNames()).resolveAddress(Str
 // element the steps are said in, `line()` the one Activity and a failure use; `clear` empties what was typed once it is going, `after` redraws when it is over, `proveAfter` is what a proof made later runs.
 // A failure is thrown for the press to say.
 async function stealthSendNow({ run, k, label, w, raw, units, field, status, line, sheet = 'eth', clear, after, proveAfter }) {
-  run.go({ label, status: line, clear });
+  run.go({ label, status: line, clear, steps: 2, doing: 'Locking it to a one-time address only they can open', done: 'They claim it in their Tacit wallet.',
+    share: `I sent you ${fmt(units, 8, 6)} ${shownAs(POOL_TK[k])} privately on Tacit. Sign in at https://tacit.finance with your Tacit wallet to claim it.` });
   await pinned(w, () => resolveToM(raw, null, true), field);
   const t = await getUx(), priv = walletPriv();
   const note = await noteFor(run, t, priv, units, (n) => BigInt(n.value) === units, status, k);
@@ -5948,7 +5958,7 @@ async function stealthSendNow({ run, k, label, w, raw, units, field, status, lin
 // relay proves the exit. `status`, `line`, `clear`, `after` and `proveAfter` are as for stealthSendNow; a failure is thrown for the press to say. `fee` is the relay fee as shown (`own`: none, a proof of your own):
 // read again once the note is ready, one above it stops here, and the one sent is pinned. With none shown the pool module reads it as it sends.
 async function assetOutNow({ run, k, label, units, recipient, as, fee = null, own = false, status, line, sheet = 'eth', clear, after, proveAfter }) {
-  run.go({ label, status: line, clear });
+  run.go({ label, status: line, clear, steps: 2, doing: 'Sending it out of the pool' });
   const t = await getUx(), priv = walletPriv();
   const note = await noteFor(run, t, priv, units, (n) => BigInt(n.value) >= units, status, k);
   let feeOpts = null;
@@ -17984,7 +17994,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=628d7b87').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=24fd9507').catch((e) => { SWC.p = null; throw e; }));
 // the card held to the tab's flow; back on the Swap tab it opens on the swap it showed there
 function swcFlow() {
   hxPathPaint();

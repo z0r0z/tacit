@@ -548,11 +548,11 @@ async function readBalances(fresh = true) {
 }
 
 const live = (t) => { $('#sw-live').textContent = t; };
-// A press's steps and its ending are the line (and the bar under it) to watch: below the fold of a short window, it is brought into view, only when it is out of it.
+// A press's steps and its ending are the line (and the bar under it) to watch: one that falls just below the fold of a short window is brought into view; one the reader has scrolled away from is left where it is.
 const say = (h, cls = '', stick = false) => {
   if (stick) S.note = { h, cls };
   const q = $('#q'); q.className = `q${cls ? ` ${cls}` : ''}`; q.innerHTML = h;
-  if (stick || S.busy) try { q.scrollIntoView({ block: 'nearest', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }); } catch { }
+  if (stick || S.busy) try { const r = q.getBoundingClientRect(); if (r.height && r.bottom + 56 > innerHeight && r.top < innerHeight + 300) q.scrollIntoView({ block: 'nearest', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }); } catch { }
 };
 // The wallet moved to another account, or one was connected: its balances are read again, and the quote made again for it.
 function walletChanged() { S.bal = {}; LATER.p2 = {}; LATER.dgas = null; LATER.dgasTok = null; paint(); readBalances().then(paint); if (S.q) requote(true); }
