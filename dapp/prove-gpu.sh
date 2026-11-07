@@ -19,8 +19,8 @@
 
 set -eu
 
-PIN_TAG=prover-bins-v18
-PIN_WORKER=56a8196dd060977da1627d8e9d1787bb5b200f640c794f3cb59bf8b625de49fc
+PIN_TAG=prover-bins-v19
+PIN_WORKER=7368e9e62d826c2326b5efd599e6c252b351822f1c6caf995208f0733434a7f6
 # SP1's GPU server for a card under 24 GB: sp1 v6.3.1 with contracts/sp1/confidential/prover-worker/sp1-gpu/lowmem.patch, built by
 # .github/workflows/build-sp1-gpu-lowmem.yml. It is the stock server unless the SP1_GPU_* settings are set, which run.sh does for such a card:
 # smaller shards, so a proof fits in the card's memory. It takes the stock server's place in ~/.sp1/bin, where the worker's SDK looks for it.
