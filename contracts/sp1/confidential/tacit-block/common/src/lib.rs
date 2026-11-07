@@ -893,7 +893,8 @@ pub struct BlockData {
     /// The recipients' signatures of the locks the block's claims settle (R.x ‖ s, 64 bytes each), sorted: where a swap's
     /// counterparty reads its secret.
     pub claims: Vec<[u8; 64]>,
-    /// Moves to successor chains: the successor's address ‖ the note it makes there (`ops::MIGRATION_LEN`), sorted.
+    /// Moves to successor chains: the successor's address ‖ the move's item (`ops::migration_item`, which binds the note there and the
+    /// value, hiding the value), `ops::MIGRATION_LEN` bytes, sorted.
     pub migrations: Vec<[u8; 52]>,
     /// What the landing contract sends each successor: its address (left-padded) ‖ the block's total to it, sorted, one per successor.
     pub migration_totals: Vec<[u8; 64]>,
@@ -1256,7 +1257,7 @@ pub fn apply(prev: &State, spends: &[Spend], data: &[SpendData], settles: &[lock
         lists.hops.extend(e.hop);
         lists.claims.extend(e.claim);
         if let Some((to, note, v)) = e.migration {
-            lists.migrations.push([to.as_slice(), note.as_slice()].concat().try_into().unwrap());
+            lists.migrations.push([to.as_slice(), ops::migration_item(&to, &note, v).as_slice()].concat().try_into().unwrap());
             migrated.push((to, v));
         }
         spent.extend(e.nullifiers.into_iter().map(|x| (i, x)));

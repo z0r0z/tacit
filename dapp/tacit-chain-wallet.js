@@ -57,7 +57,13 @@ export const hopOp = (commit) => concatBytes(Uint8Array.of(OP_HOP), bytes(commit
 
 /// A migration's operation bytes: the exit's value to the successor chain `to` (its landing contract), for the note `note` names there.
 /// The block publishes only each successor's total, so the amount stays hidden and the note keeps this chain's anonymity set.
-export const migrateOp = (to, note) => concatBytes(Uint8Array.of(OP_MIGRATE), bytes(to, 20, 'successor'), bytes(note, 32, 'note'));
+export const migrateOp = (to, note) => {
+  const t = bytes(to, 20, 'successor');
+  if (t.every((x) => x === 0)) throw new Error('tacit-chain-wallet: a successor address');
+  return concatBytes(Uint8Array.of(OP_MIGRATE), t, bytes(note, 32, 'note'));
+};
+/// The item a migration publishes (the block program's `migration_item`), which a successor checks the note and value it is shown against.
+export const migrationItem = (to, note, value) => sha256(concatBytes(te.encode('tacit-block-migrate-v1'), bytes(to, 20, 'successor'), bytes(note, 32, 'note'), be(value, 8)));
 
 export function makeChainWallet({ poseidon, prover, chain, asset, network = 'mainnet' }) {
   const Z = makeBtcPoolZk({ poseidon });

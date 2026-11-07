@@ -46,9 +46,12 @@ any other. The block program checks every body, every opening of a deposit or ex
   it; the swap's other leg leaves the same headroom on its own timelock.
 
 * **Migrate** (`OP_MIGRATE`, 3): the exit's value moves to a successor chain the spender names (`to`, its landing contract), for a
-  note `note` names there (the successor's own commitment, opaque here). The block publishes the move (`to ‖ note`, 52 bytes) and,
-  per successor, only the block's total to it, never a spend's value; the landing contract sends each total to its successor as the
-  block lands and keeps the hash of the block's moves (`migrationsOf(height)`), from which the successor makes its notes. The spend
+  note `note` names there (the successor's own commitment, opaque here). The block publishes the move as `to ‖ SHA-256("tacit-block-
+  migrate-v1" ‖ to ‖ note ‖ value)` (52 bytes: the item binds the value and hides it, `note` carrying randomness) and, per successor,
+  only the block's total to it; the landing contract sends each total to its successor as the block lands and keeps the hash of the
+  block's moves (`migrationsOf(height)`) and each successor's total (`migrated(height, to)`). A successor makes a note from a move
+  once it is shown a list with that hash, the move's position in it and the note and value its item binds, using each (height,
+  position) once and making no more from a block than its total there. The spend
   proves its notes are among all of this chain's, so a migrated note keeps this chain's anonymity set and its amount stays hidden
   (a block's total to a successor shows what moved there in that block, so a wallet moves in a block others move in too). This is how
   a future chain (post-quantum proofs, or one that does what the confidential pool does) takes users and their privacy with it, with

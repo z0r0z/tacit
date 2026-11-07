@@ -204,6 +204,10 @@ contract TacitBlocks {
     ///         count ‖ successor ‖ note …)`), by height: a successor chain makes the notes of those naming it once it has been shown
     ///         a list with this hash. The TAC they hold was sent to it as the block landed (`Migrated`).
     mapping(uint256 => bytes32) public migrationsOf;
+    /// @notice What each landed block moved to each successor, in units (its total, sent to it as the block landed): a successor
+    ///         makes notes worth no more than this from a block. Each move it makes one from is a position in that block's list,
+    ///         used once; its item (`SHA-256("tacit-block-migrate-v1" ‖ to ‖ note ‖ value)`) binds the note and the value.
+    mapping(uint256 => mapping(address => uint256)) public migrated;
     /// @notice What the chain's notes are worth, in units: the deposits blocks took in less the exits and hops they made. A block
     ///         that would take out more than this cannot land, whatever its proof says (the block program balances every spend,
     ///         so this only ever stops a block if the program or the verifier were wrong).
@@ -609,6 +613,7 @@ contract TacitBlocks {
             uint256 out = uint256(bytes32(totals[MIGRATION_TOTAL_LEN * i + 32:MIGRATION_TOTAL_LEN * (i + 1)]));
             if (out > worth) revert Insolvent();
             worth -= out;
+            migrated[h][to] = out;
             _call(abi.encodeWithSelector(0xa9059cbb, to, out * UNIT));
             emit Migrated(h, to, out);
         }

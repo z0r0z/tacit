@@ -64,7 +64,7 @@ const BTC_ELF: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../e
 // The tacit chain's block program (contracts/sp1/confidential/tacit-block), and the key its landing contract verifies under
 // (TacitBlocks.BLOCK_VKEY): a block proof is public work, any machine that proves it may race for it.
 const BLOCK_ELF: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../tacit-block/elf/tacit-block"));
-const TACIT_BLOCK_VKEY: &str = "0x00e1fa949b13abde296733e199ba0ced38310c1cf55d9d476012c8b34e2e0a9d";
+const TACIT_BLOCK_VKEY: &str = "0x000ffc78504d1d7d2a42562db9d683d5f94c11a7feae3c14beaf37fc76ed5880";
 // The pool's BITCOIN_RELAY_VKEY (contracts/deployments/1.json, elf-vkey-pin.json): the key a Bitcoin-state proof must verify under.
 const BITCOIN_RELAY_VKEY: &str = "0x00bb158ba04f18a100f998af0e3b074b5368771f22b8b6e4fd1d66823a074bc5";
 // The recursion digest of the eth-reflection guest's key, as the Bitcoin reflection guest checks it (reflect.rs).

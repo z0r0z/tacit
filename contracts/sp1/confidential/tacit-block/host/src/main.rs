@@ -880,7 +880,7 @@ fn fixture(path: &str, chain_id: u64, lander: [u8; 20]) {
     let mut total = [0u8; 64];
     total[12..32].copy_from_slice(&successor);
     total[56..].copy_from_slice(&200u64.to_be_bytes());
-    if l9.data.migrations != vec![<[u8; 52]>::try_from([successor.as_slice(), successor_note.as_slice()].concat()).unwrap()] || l9.data.migration_totals != vec![total] {
+    if l9.data.migrations != vec![<[u8; 52]>::try_from([successor.as_slice(), ops::migration_item(&successor, &successor_note, 200).as_slice()].concat()).unwrap()] || l9.data.migration_totals != vec![total] {
         fail("the fixture's migration did not publish its move and its successor's total, and nothing else");
     }
     let hx = |b: &[u8]| format!("0x{}", hex::encode(b));

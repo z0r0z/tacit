@@ -130,7 +130,8 @@ contract TacitBlocksFixesTest is TacitBlocksFixture {
         address successor = vm.parseJsonAddress(fx, ".migration.to");
         uint256 v = vm.parseJsonUint(fx, ".migration.value");
         TacitBlocks.Lists memory l = lists(8);
-        assertEq(l.migrations, abi.encodePacked(successor, vm.parseJsonBytes32(fx, ".migration.note")), "the move: successor and note, no value");
+        bytes32 note = vm.parseJsonBytes32(fx, ".migration.note");
+        assertEq(l.migrations, abi.encodePacked(successor, sha256(abi.encodePacked("tacit-block-migrate-v1", successor, note, uint64(v)))), "the move: successor and an item binding note and value");
         assertEq(l.migrationTotals, abi.encodePacked(bytes32(uint256(uint160(successor))), bytes32(v)));
         uint256 before = blocks.inChain();
         asBlobBlock(l);
@@ -141,6 +142,7 @@ contract TacitBlocksFixesTest is TacitBlocksFixture {
         assertEq(blocks.inChain(), before - v, "the chain's notes are worth that much less");
         assertEq(blocks.migrationsOf(9), words(8)[16], "the moves' hash, for the successor");
         assertEq(blocks.migrationsOf(8), bytes32(0));
+        assertEq(blocks.migrated(9, successor), v, "the successor's total, for it to reconcile against");
     }
 
     /// The moves and totals must be the ones the proof committed, and no block can move more than the chain holds.

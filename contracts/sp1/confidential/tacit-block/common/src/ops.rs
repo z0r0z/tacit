@@ -112,8 +112,14 @@ pub fn hop_bytes(asset: &Fr, value: u64, commit: &[u8; 32]) -> Vec<u8> {
 }
 
 pub const HOP_LEN: usize = 96;
-/// A migration as a block publishes it: the successor's address ‖ the note it makes there, 52 bytes (its value is in the successor's
-/// total alone).
+/// A migration as a block publishes it: the successor's address ‖ its item (`migration_item`), 52 bytes.
 pub const MIGRATION_LEN: usize = 52;
+/// What a migration publishes besides its successor: SHA-256("tacit-block-migrate-v1" ‖ to ‖ note ‖ value, 8 bytes big-endian). It
+/// binds the value the note there may be made with, and hides it while `note` carries randomness (a successor's commitment does): the
+/// mover shows the successor `note` and the value, which it checks against this item, once per (height, position in the list).
+pub fn migration_item(to: &[u8; 20], note: &[u8; 32], value: u64) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    Sha256::new().chain_update(b"tacit-block-migrate-v1").chain_update(to).chain_update(note).chain_update(value.to_be_bytes()).finalize().into()
+}
 /// A successor's total for a block: its address (left-padded) ‖ the value (u64 in a 32-byte word), 64 bytes.
 pub const MIGRATION_TOTAL_LEN: usize = 64;
