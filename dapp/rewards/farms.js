@@ -4,7 +4,7 @@
 // ratio). Joining with one side (a swap first) and what only an unwrap sent yourself can do are the front page's: they link there.
 // Nothing here is loaded until the holder asks: this module, the key and the pool all come in on that press.
 import { makeKeySession, signInSheet } from '/trade/key.js?cb=d110df5e';
-import { getUx, forgetUx } from '/trade/poolux.js?cb=435f1138';
+import { getUx, forgetUx } from '/trade/poolux.js?cb=89ac6e27';
 import { makeRunner } from '/activity.js?cb=8ccbc552';
 import { canHarvest, canUnbond, unharvested, locked, harvest, unbond, rewardNotes, relayable, redeem, wtacWithdrawCall, wtacBalanceCall, worthHarvesting, lpNotes, takeOut, HARVEST_WORTH, UNBOND_DUST, bFor, joinTerms, notesOf, exactOf, cutPick, cutSized, bond } from '/farm-ops.js?cb=0933a4c8';
 import { relayWords } from '/relay-outcome.js?cb=9db7155a';
@@ -132,7 +132,7 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
     const rc = await wallet.receipt(hash);
     J.put(id, rc?.status === '0x1' ? { status: 'confirmed' } : { status: 'failed', err: 'The transaction reverted.' });
     if (rc?.status !== '0x1') throw new Error('Turning the wTAC into TAC did not go through. The wTAC is in your wallet: press again.');
-    return `Turned ${tacTxt(bal)} wTAC into TAC, in your wallet.${small ? ` ${small} smaller reward${small === 1 ? ' is' : 's are'} worth less than the relay’s fee to unwrap: the front page can send ${small === 1 ? 'it' : 'them'} from your Tacit account.` : ''}`;
+    return `Turned ${tacTxt(bal)} wTAC into TAC, in your wallet.${small ? ` ${small} smaller reward${small === 1 ? ' is' : 's are'} worth less than the relay’s fee to unwrap: the front page can send ${small === 1 ? 'it' : 'them'} from this key’s address.` : ''}`;
   }
 
   // Out of a farm: the reward harvested if it is worth it through the relay, the position unbonded (giving up what it earned since the harvest,

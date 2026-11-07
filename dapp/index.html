@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-LYZWVt62mZFmBUlilNqlT69RH2zZ2oclzoS0EqLzFTg=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-Qfr2yiwo+3j/YXzNHqoxvaPTOY2MvNxSjDXWWSyImtU=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -64,7 +64,7 @@
 <link rel="modulepreload" href="/bridge-tick.js?cb=4e721860">
 <link rel="modulepreload" href="/tacit-session.js?cb=a2d34bb2">
 <link rel="modulepreload" href="/activity.js?cb=8ccbc552">
-<link rel="modulepreload" href="/swap/card.js?cb=20f52972">
+<link rel="modulepreload" href="/swap/card.js?cb=cde14860">
 <link rel="modulepreload" href="/trade/wallet.js?cb=88b623b8">
 <link rel="modulepreload" href="/trade/util.js?cb=ba5a02b1">
 <link rel="modulepreload" href="/trade/rpc.js">
@@ -1902,7 +1902,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
 // preload-later:begin
 // preload-later:end
 // preload-intent:begin
-const WARM_MODULES = ["/confidential-pool-ux.js?cb=fea4ab97","/confidential-deployments.js","/confidential-deployments.generated.js","/confidential-indexer.js","/confidential-pool.js","/evm-confidential.js","/bulletproofs.js","/bulletproofs-plus.js","/burn-deposit-bitcoin.js","/burn-deposit-provenance.js","/burn-deposit-assembler.js","/confidential-memo.js","/confidential-evm-log.js","/confidential-relay.js","/confidential-invoice.js","/confidential-recovery-guard.js","/confidential-router.js","/confidential-transfer.js","/confidential-route.js","/confidential-swap.js","/confidential-swap-coordinator.js","/confidential-lp.js","/confidential-cdp.js","/confidential-farm.js","/confidential-farm-program.js","/confidential-defi-actions.js","/confidential-stealth.js","/confidential-airdrop.js","/confidential-lock-scan.js","/confidential-bridge-mint.js","/bridge-burn-broadcast.js","/pool-snapshot.js","/confidential-recovery.js","/bridge-mint-recovery.js","/confidential-secret-store.js","/confidential-recovery-btc.js","/bitcoin-taproot-wallet.js","/cbtc-note-recovery.js"];
+const WARM_MODULES = ["/confidential-pool-ux.js?cb=57c4a7e5","/confidential-deployments.js","/confidential-deployments.generated.js","/confidential-indexer.js","/confidential-pool.js","/evm-confidential.js","/bulletproofs.js","/bulletproofs-plus.js","/burn-deposit-bitcoin.js","/burn-deposit-provenance.js","/burn-deposit-assembler.js","/confidential-memo.js","/confidential-evm-log.js","/confidential-relay.js","/confidential-invoice.js","/confidential-recovery-guard.js","/confidential-router.js","/confidential-transfer.js","/confidential-route.js","/confidential-swap.js","/confidential-swap-coordinator.js","/confidential-lp.js","/confidential-cdp.js","/confidential-farm.js","/confidential-farm-program.js","/confidential-defi-actions.js","/confidential-stealth.js","/confidential-airdrop.js","/confidential-lock-scan.js","/confidential-bridge-mint.js","/bridge-burn-broadcast.js","/pool-snapshot.js","/confidential-recovery.js","/bridge-mint-recovery.js","/confidential-secret-store.js","/confidential-recovery-btc.js","/bitcoin-taproot-wallet.js","/cbtc-note-recovery.js"];
 // preload-intent:end
 import '/storage-fallback.js';
 import { secp, keccak_256, sha256, hmac, bytesToHex, hexToBytes, concatBytes } from '/vendor/tacit-deps.min.js';
@@ -3001,7 +3001,7 @@ document.addEventListener('click', async (e) => {
   if (!b || b.getAttribute('aria-busy') === 'true') return;
   const id = b.dataset.sendopenAs;
   b.setAttribute('aria-busy', 'true');
-  try { await payOther(); } catch (x) { actPut(id, { selfErr: errText(x) }); return; } finally { b.removeAttribute('aria-busy'); }
+  try { await payOther(b.dataset.as); } catch (x) { actPut(id, { selfErr: errText(x) }); return; } finally { b.removeAttribute('aria-busy'); }
   sendOpenFrom(id);
 });
 async function depositDone(t, built) {
@@ -3426,13 +3426,14 @@ const alts = (a, b) => (a && b ? html`<span class="alts">${a} · ${b}</span>` : 
 // Pressed, it connects a wallet if none is, makes the other the one that pays (as the wallet menu does) and sends from it.
 const otherPay = () => (S.key ? (payer() === 'tacit' ? 'wallet' : 'tacit') : null);
 const otherSelf = (kind, id) => {
-  const o = otherPay(), who = o === 'wallet' ? 'your wallet' : 'your Tacit account';
+  const o = otherPay(), who = o === 'wallet' ? 'your wallet' : 'this key’s address';
   if (!o) return '';
-  return kind === 'open' ? html`<button class="link" type="button" data-sendopen-as="${id}">Send it from ${who} instead</button>` : html`<button class="link" type="button" data-selfdo-as="${id}">Send it from ${who} instead</button>`;
+  return kind === 'open' ? html`<button class="link" type="button" data-sendopen-as="${id}" data-as="${o}">Send it from ${who} instead</button>` : html`<button class="link" type="button" data-selfdo-as="${id}" data-as="${o}">Send it from ${who} instead</button>`;
 };
-async function payOther() {
-  const o = otherPay();
-  if (!o) return;
+// `as`: the account the pressed button named (the payer can turn between the offer and the press, as a balance is read)
+async function payOther(as) {
+  const o = as === 'wallet' || as === 'tacit' ? as : otherPay();
+  if (!o || !S.key) return;
   if (o === 'wallet' && !S.wallet) await connect();
   setPayer(o);
 }
@@ -3441,7 +3442,7 @@ document.addEventListener('click', (e) => {
   const spec = b && SELFDO[b.dataset.selfdoAs];
   if (!spec) return;
   busy(b, async (run) => {
-    try { await payOther(); } catch (x) { if (spec.on) actPut(spec.on, { selfErr: errText(x) }); else run.fail(spec.status(), x); return; }
+    try { await payOther(b.dataset.as); } catch (x) { if (spec.on) actPut(spec.on, { selfErr: errText(x) }); else run.fail(spec.status(), x); return; }
     return selfDo(run, spec);
   });
 });
@@ -3832,7 +3833,7 @@ payer.raw = (used) => {
   if (S.pay === 'tacit' || !evm.available()) return 'tacit';
   return (typeof used === 'function' ? used() : used) === false ? 'wallet' : 'tacit';
 };
-const payName = () => (payer() === 'tacit' ? 'Tacit account' : 'Wallet');
+const payName = () => (payer() === 'tacit' ? 'Key address' : 'Wallet');
 function syncAccount() {
   if (!S.key) S.acct = null;
   else if (S.acct?.pub !== S.key.pubHex) S.acct = { pub: S.key.pubHex, ...evmAcct.deriveEvmAccount(walletPriv(), 'mainnet') };
@@ -3909,7 +3910,7 @@ function setKey(k) {
   });
 }
 
-const TACIT_URL = '/tacit.js?cb=187d27e1';
+const TACIT_URL = '/tacit.js?cb=add7bef4';
 let T = null;
 // tacit.js under this page's key, one call at a time (/tacit-session.js)
 const TS = makeTacitSession({ url: TACIT_URL, key: () => S.key, secp, bytesToHex, hexToBytes, onLoad: (m) => { T = m; } });
@@ -4169,7 +4170,7 @@ async function sendFromTacitNow({ to, data, value, chainId, sweep = false, prote
     call('eth_getBalance', [a.address, 'latest']).then(BigInt), call('eth_getTransactionCount', [a.address, 'pending']).then(BigInt),
     call('eth_getBlockByNumber', ['latest', false]), call('eth_maxPriorityFeePerGas', []).then(BigInt).catch(() => 0n),
   ]);
-  const short_ = (need) => new Error(`Your Tacit account holds ${fmt(bal, 18, 5)} ETH${where}; this needs about ${fmt(need, 18, 5)}. ${chainId === 1 ? 'Add ETH to it from the wallet menu.' : `Send ETH${where} to it, ${a.address}.`}`);
+  const short_ = (need) => new Error(`This key’s address holds ${fmt(bal, 18, 5)} ETH${where}; this needs about ${fmt(need, 18, 5)}. ${chainId === 1 ? 'Add ETH to it from the wallet menu.' : `Send ETH${where} to it, ${a.address}.`}`);
   if (bal < value) throw short_(value);
   const gasLimit = (BigInt(await call('eth_estimateGas', [tx])) * 6n) / 5n;
   const prio = !tip ? 10n ** 8n : tip < 15n * 10n ** 8n ? tip : 15n * 10n ** 8n, maxFee = BigInt(block.baseFeePerGas) * 2n + prio;
@@ -4183,7 +4184,7 @@ async function sendFromTacitNow({ to, data, value, chainId, sweep = false, prote
   const pm = chainId === 1 ? protectGet(chainId, a.address) : null;
   if (pm && BigInt(pm.nonce) >= nonce) {
     if (await call('eth_getTransactionReceipt', [pm.hash]).catch(() => null)) { if (BigInt(pm.nonce) + 1n > n) n = BigInt(pm.nonce) + 1n; }
-    else if (Number(BigInt(block.number)) <= pm.block + PROTECT_BLOCKS + 2) throw new Error('A transaction from your Tacit account is still on its way privately: it lands within about five minutes, or not at all. Try again then.');
+    else if (Number(BigInt(block.number)) <= pm.block + PROTECT_BLOCKS + 2) throw new Error('A transaction from this key’s address is still on its way privately: it lands within about five minutes, or not at all. Try again then.');
   }
   if (pm) protectSet(chainId, a.address, null);
   const { raw } = evmTx.signEip1559({ chainId: BigInt(chainId), nonce: n, maxPriorityFeePerGas: prio, maxFeePerGas: maxFee, gasLimit, to, value, data: tx.data }, a.priv);
@@ -4386,7 +4387,7 @@ render.wallet = () => {
     ${btcOther ? html`<div class="kv"><span>${chainTag('btc')}</span><b>${short(btcAddr, 8)}</b></div>` : ''}
     ${ethLine()}
     <div class="lbl sep"><span>Your key</span>${kept ? html`<button type="button" id="w-backup">Copy key to back up</button>` : ''}</div>
-    <p class="note">${kept ? 'Kept in this browser only: clearing its data loses it.' : k.mode === 'key' ? 'Pasted and not saved: closing the tab forgets it.' : 'Your wallet or passkey opens it again: keep that safe.'} Anyone who has the key holds these funds and the Tacit account.</p>`);
+    <p class="note">${kept ? 'Kept in this browser only: clearing its data loses it.' : k.mode === 'key' ? 'Pasted and not saved: closing the tab forgets it.' : 'Your wallet or passkey opens it again: keep that safe.'} Anyone who has the key holds these funds and the address that goes with it.</p>`);
   $('#w-copy').onclick = () => k.tacit && copy(k.tacit, 'Tacit address copied');
   if (!plainAddr()) loadPlain().then(() => { const w = $('#w-keys'); if (w?.isConnected && S.key?.pubHex === k.pubHex) mount(w, walletKeys(!!w.querySelector('details')?.open)); }).catch(() => {});
   // the Bitcoin address is read when the sheet opens, as the Bitcoin tab does, so its balance is here without a visit there
@@ -4427,7 +4428,7 @@ render.wallet = () => {
       ${tac ? html`<div class="lbl"><span>Amount</span><button type="button" id="ac-max">Max</button></div>
         <div class="amt"><input id="ac-mv" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="TAC"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div>`
         : amountField(html`<button type="button" id="ac-max">Max</button>`)}
-      <button class="btn" type="button" id="ac-go">Send from Tacit account</button>`);
+      <button class="btn" type="button" id="ac-go">Send from key address</button>`);
     wireSub(f, 'wala', (v) => { WAL.asset = v; WAL.all = false; keep($('#sheet-wallet'), render.wallet); });
     wireSub(f, 'walc', (v) => { WAL.chain = Number(v); WAL.all = false; keep($('#sheet-wallet'), render.wallet); });
     $('#ac-mv').addEventListener('input', (e) => { if (e.isTrusted) WAL.all = false; });
@@ -4452,7 +4453,7 @@ render.wallet = () => {
       if (!value) throw new Error('Enter an amount.');
       const out = WAL.mode === 'out', tac = out && WAL.asset === 'tac', chainId = out && !tac ? WAL.chain : 1;
       const c = DEVICE_CHAINS.find((x) => x.chainId === chainId);
-      const label = tac ? `Send ${fmt(value, 18, 6)} TAC out` : out ? `Send ${fmt(value, 18, 6)} ETH out${chainId === 1 ? '' : ` on ${chainFull(c.chainId)}`}` : `Add ${fmt(value, 18, 6)} ETH to your Tacit account`;
+      const label = tac ? `Send ${fmt(value, 18, 6)} TAC out` : out ? `Send ${fmt(value, 18, 6)} ETH out${chainId === 1 ? '' : ` on ${chainFull(c.chainId)}`}` : `Add ${fmt(value, 18, 6)} ETH to this key’s address`;
       base = c.explorer;
       const all = out && !tac && WAL.all;
       hash = await sendTx(tac ? { to: ADDR.tac, data: SEL.transfer + addrWord(to) + word(value), via: 'tacit', label } : { to, data: '0x', value, via: out ? 'tacit' : 'wallet', chainId, label, sweep: all });
@@ -4499,7 +4500,7 @@ function paintProve() {
   set('sp-proofs', SP.credit == null ? '—' : `about ${proofsFor(SP.credit)} proof${proofsFor(SP.credit) === 1 ? '' : 's'}`);
   set('sp-eth', SP.acctEth == null ? '—' : `${fmt(SP.acctEth, 18, 4)} ETH`);
   const hb = $('#sp-hold');
-  if (hb) { hb.textContent = SP.src === 'acct' ? (SP.held == null ? '' : `Tacit account ${proveFmt(SP.held, 4)} PROVE`) : SP.src === 'eth' ? (SP.wEth == null ? '' : `Wallet ${fmt(SP.wEth, 18, 4)} ETH`) : (SP.wProve == null ? '' : `Wallet ${proveFmt(SP.wProve, 4)} PROVE`); }
+  if (hb) { hb.textContent = SP.src === 'acct' ? (SP.held == null ? '' : `Key address ${proveFmt(SP.held, 4)} PROVE`) : SP.src === 'eth' ? (SP.wEth == null ? '' : `Wallet ${fmt(SP.wEth, 18, 4)} ETH`) : (SP.wProve == null ? '' : `Wallet ${proveFmt(SP.wProve, 4)} PROVE`); }
   if (SP.src === 'eth' && ($('#prove-body .sp-size')?.dataset.sizes ?? '') !== sizesNow().join(',') && !$('#prove-body [aria-busy="true"]')) { reProve(); return; }
   if (!SP.srcChosen && SP.src === 'prove' && SP.wProve === 0n && SP.wEth > 0n && !$('#sp-amt')?.value && !$('#prove-body [aria-busy="true"]')) { SP.src = 'eth'; reProve(); return; }
   if (SP.src !== 'acct' && SP.held > 0n && !$('[data-sps="acct"]') && !$('#prove-body [aria-busy="true"]')) reProve();
@@ -4540,7 +4541,7 @@ function sizeRow() {
 function renderProve() {
   const el = $('#prove-body');
   if (!S.key) {
-    mount(el, html`<p class="gate-p">Open your Tacit wallet first: its Tacit account is your prover account, and its credit pays for your proofs.</p>${signIn(el.id)}`);
+    mount(el, html`<p class="gate-p">Open your Tacit wallet first: its Ethereum address is your prover account, and its credit pays for your proofs.</p>${signIn(el.id)}`);
     return wireSignIn(el, el.id, () => openProve());
   }
   const a = S.acct, on = spOn(), dev = devOn(), seal = sealOn(), src = SP.src === 'acct' && !(SP.held > 0n) ? 'prove' : SP.src;
@@ -4556,13 +4557,13 @@ function renderProve() {
     </div>`
     : way === 'credit' ? html`<ol class="steps">
       <li class="step done"><span class="n">1</span><div><h3>Your prover account</h3>
-        <div class="kv"><span>Tacit account</span><b class="mono">${short(a.address, 8)}</b><button class="link" type="button" data-copy="${a.address}">copy</button></div>
+        <div class="kv"><span>Key address</span><b class="mono">${short(a.address, 8)}</b><button class="link" type="button" data-copy="${a.address}">copy</button></div>
         <div class="kv"><span>Prover credit</span><b class="num" id="sp-credit"><span class="sk" style="--w:7ch"></span></b></div>
         <div class="kv"><span>Enough for</span><b id="sp-proofs"><span class="sk" style="--w:9ch"></span></b></div>
         <div class="kv"><span>ETH for network fees</span><b class="num" id="sp-eth"><span class="sk" style="--w:6ch"></span></b><button class="link" type="button" data-fund>Add ETH</button></div>
         <p class="note">PROVE you add shows here a few minutes after it lands.</p></div></li>
       <li class="${credit == null || short_ ? 'step now' : 'step done'}"><span class="n">2</span><div><h3>Add PROVE</h3>
-        ${segSub('sps', src, [['prove', 'PROVE from wallet'], ['eth', 'ETH from wallet'], ...(SP.held > 0n ? [['acct', 'PROVE in Tacit account']] : [])])}
+        ${segSub('sps', src, [['prove', 'PROVE from wallet'], ['eth', 'ETH from wallet'], ...(SP.held > 0n ? [['acct', 'PROVE in key address']] : [])])}
         <div class="lbl"><span>${src === 'eth' ? 'ETH to pay' : 'PROVE to add'}</span><button type="button" id="sp-max"><span id="sp-hold"></span></button></div>
         <div class="amt"><input id="sp-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="${unit} to ${src === 'eth' ? 'pay' : 'add'}"><span class="u">${unit}</span></div>
         ${src === 'eth' ? sizeRow() : ''}
@@ -4626,7 +4627,7 @@ function renderProve() {
         return;
       }
       mount(rc, html`<div class="kv"><span>Your credit then covers</span><b>about ${proofsWord(proofsFor((SP.credit ?? 0n) + wei))}</b></div>
-        <div class="kv"><span>${src === 'acct' ? 'From' : 'Paid by'}</span><b>${src === 'acct' ? 'your Tacit account, two transactions' : 'your wallet; your Tacit account signs the deposit here'}</b></div>`);
+        <div class="kv"><span>${src === 'acct' ? 'From' : 'Paid by'}</span><b>${src === 'acct' ? 'this key’s address, two transactions' : 'your wallet; this key’s address signs the deposit here'}</b></div>`);
       rc.hidden = false;
       go.disabled = false;
     });
@@ -4701,7 +4702,7 @@ async function spFund(src, wei, tell) {
   const m = await spMod(), a = S.acct, prove = m.PROVE_TOKEN;
   const heldNow = () => ethCall(prove, m.BALANCE_OF_SELECTOR + addrWord(a.address)).then((x) => wordAt(x, 0));
   if (src === 'acct') {
-    tell('Approving the deposit from your Tacit account…');
+    tell('Approving the deposit from this key’s address…');
     const h1 = await spSend({ to: prove, data: m.approveData(wei), via: 'tacit', label: `Approve ${proveFmt(wei, 4)} PROVE for the prover network` });
     await waitTx(h1);
     tell(html`Depositing it… ${txLink(h1)}`);
@@ -4716,7 +4717,7 @@ async function spFund(src, wei, tell) {
     await waitTx(x.hash).catch((e) => { if (!e?.pending) SP.landed = null; throw e; });
     let got = 0n;
     for (let i = 0; i < 4 && got < m.MIN_DEPOSIT_WEI; i++) { if (i) await sleep(4000); got = (await heldNow()) - x.before; }
-    if (got < m.MIN_DEPOSIT_WEI) throw Object.assign(new Error('The swap landed, but the PROVE it bought has not shown in your Tacit account yet. Press again in a minute to add it.'), { said: true });
+    if (got < m.MIN_DEPOSIT_WEI) throw Object.assign(new Error('The swap landed, but the PROVE it bought has not shown in this key’s address yet. Press again in a minute to add it.'), { said: true });
     return (x.amount = got);
   };
   const landed = src === 'eth' && SP.landed && SP.landed.wei === wei && SP.landed.who === a.address && Date.now() - SP.landed.at < 30 * 60e3 ? SP.landed : null;
@@ -4726,17 +4727,17 @@ async function spFund(src, wei, tell) {
   } else if (src === 'eth') {
     const q = SP.q && SP.q.wei === wei && Date.now() - SP.q.at < 60e3 ? SP.q : await spQuote(wei);
     const before = await heldNow();
-    tell('Confirm the swap in your wallet: ETH to PROVE, for your Tacit account…');
-    const h = await spSend({ to: q.router, data: q.callData, value: q.msgValue, via: 'wallet', label: `Swap ${fmt(wei, 18, 6)} ETH to PROVE for your Tacit account` });
+    tell('Confirm the swap in your wallet: ETH to PROVE, for this key’s address…');
+    const h = await spSend({ to: q.router, data: q.callData, value: q.msgValue, via: 'wallet', label: `Swap ${fmt(wei, 18, 6)} ETH to PROVE for this key’s address` });
     SP.landed = { wei, who: a.address, hash: h, before, amount: null, at: Date.now() };
     tell(html`Swapping… ${txLink(h)}`);
     amount = await bought(SP.landed);
   } else {
     const held = await heldNow();
     if (held < wei) {
-      tell(`Confirm in your wallet: ${proveFmt(wei - held, 4)} PROVE to your Tacit account…`);
-      const h = await spSend({ to: prove, data: '0x' + SEL.transfer + addrWord(a.address) + word(wei - held), via: 'wallet', label: `Send ${proveFmt(wei - held, 4)} PROVE to your Tacit account` });
-      tell(html`Sending PROVE to your Tacit account… ${txLink(h)}`);
+      tell(`Confirm in your wallet: ${proveFmt(wei - held, 4)} PROVE to this key’s address…`);
+      const h = await spSend({ to: prove, data: '0x' + SEL.transfer + addrWord(a.address) + word(wei - held), via: 'wallet', label: `Send ${proveFmt(wei - held, 4)} PROVE to this key’s address` });
+      tell(html`Sending PROVE to this key’s address… ${txLink(h)}`);
       await waitTx(h);
     }
   }
@@ -4818,10 +4819,10 @@ function noEthYet(el, wei, chain, then) {
   const has = evm.available();
   mount(el, html`<div class="callout"><span>${has ? 'This key’s address' : 'Your Ethereum address for Tacit'}, <code class="addr">${short(S.acct?.address || '', 6)}</code>, has no ETH${chain ? ` on ${chain}` : ''} yet. ${has ? html`Pay from your wallet instead, or send ETH to it, then ${then} here.` : `Send some to it from any wallet or exchange, then ${then} here.`}</span>${has ? html`<button class="btn" type="button" data-paywallet>Pay from wallet</button>` : html`<button class="btn ghost" type="button" data-fund>Add ETH</button>`}</div>`);
 }
-const mine = () => (payer() === 'tacit' ? 'My Tacit account' : 'My wallet');
+const mine = () => (payer() === 'tacit' ? 'This key’s address' : 'My wallet');
 const ownAccount = (a) => !!a && [S.address, S.wallet, S.acct?.address].some((x) => x && String(x).toLowerCase() === String(a).toLowerCase());
 const linkNote = () => html`<p class="note">This is one of your own accounts, where deposits come from, so a withdrawal to it can be matched to them on chain. A fresh address keeps them apart.</p>`.s;
-const your = (via = payer()) => (via === 'tacit' ? 'your Tacit account' : 'your wallet');
+const your = (via = payer()) => (via === 'tacit' ? 'this key’s address' : 'your wallet');
 
 const GH = 'https://github.com/src-company/tacit/blob/main/', ETHERSCAN = (a, kind = 'address') => `${SCAN}/${kind}/${a}`;
 const ASSETS = {
@@ -5074,7 +5075,7 @@ function needKey(el, why, first) {
   wireSignIn(el, el.id);
   return false;
 }
-const SEG_NAME = { us: 'USDT', brm: 'Bridge direction', xseg: 'Bridge direction', bwbx: 'Asset', wal: 'Tacit account', wala: 'Asset', walc: 'Chain', v1: 'Tacit pool', swf: 'Swap from', swt: 'Swap for', chain: 'Chain', dev: 'On this device',
+const SEG_NAME = { us: 'USDT', brm: 'Bridge direction', xseg: 'Bridge direction', bwbx: 'Asset', wal: 'Key address', wala: 'Asset', walc: 'Chain', v1: 'Tacit pool', swf: 'Swap from', swt: 'Swap for', chain: 'Chain', dev: 'On this device',
   dest: 'Withdraw to', sps: 'Pay with', btcm: 'Bitcoin', btca: 'Asset', plv: 'Leaderboard period', pfp: 'Share to withdraw', pfr: 'Withdraw as', pfm: 'Farm with' };
 const segSub = (name, cur, items) => html`<div class="seg sub" role="tablist"${SEG_NAME[name] ? html` aria-label="${SEG_NAME[name]}"` : ''}>${items.map(([k, label]) => html`<button type="button" role="tab" data-${name}="${k}" aria-selected="${k === cur}">${label}</button>`)}</div>`;
 function wireSub(el, name, set) { $$(`[data-${name}]`, el).forEach((b) => b.onclick = () => { if (!running(sheetOf(b))) { set(b.getAttribute(`data-${name}`)); syncLink(); } }); }
@@ -5082,7 +5083,7 @@ function wireSub(el, name, set) { $$(`[data-${name}]`, el).forEach((b) => b.oncl
 const warmPool = (() => { let on = false; return () => { if (on) return; on = true; for (const u of WARM_MODULES) document.head.append(Object.assign(document.createElement('link'), { rel: 'modulepreload', href: u })); }; })();
 const getUx = lazy(async () => {
   warmPool();
-  const [{ makeConfidentialPoolUx, setExternalTacHolders }, dep] = await Promise.all([import('/confidential-pool-ux.js?cb=fea4ab97'), import('/confidential-deployments.js')]);
+  const [{ makeConfidentialPoolUx, setExternalTacHolders }, dep] = await Promise.all([import('/confidential-pool-ux.js?cb=57c4a7e5'), import('/confidential-deployments.js')]);
   dep.setActiveNetwork('mainnet');
   setExternalTacHolders(() => (S.wallet ? [S.wallet] : []));
   const ux = makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256, network: 'mainnet' });
@@ -6931,7 +6932,7 @@ async function usdtWrapNow({ run, units, src, status, line, sheet = 'usdt', clea
       await proveFirstWrap({ run, t, priv, via: src, wei: units, status, sheet, ticker: 'cUSDT', token: USDT_TOKEN });
       await refresh(); after(); return;
     }
-    say(status, src === 'wallet' ? 'Preparing your note, about half a minute…' : 'Sending from your Tacit account…');
+    say(status, src === 'wallet' ? 'Preparing your note, about half a minute…' : 'Sending from this key’s address…');
     run.check();
     const index = await t.nextWrapIndex({ walletPriv: priv, ticker: 'cUSDT' });
     giveBack = () => { try { t.releaseWrapIndex?.({ walletPriv: priv, ticker: 'cUSDT', index }); } catch { } };
@@ -7517,7 +7518,7 @@ function privacyCheck(c, amount, to, self) {
   let level = 'part';
   const fair = (t) => { notes.push(t); if (level === 'part') level = 'fair'; };
   const is = (a) => !!to && !!a && to.toLowerCase() === a.toLowerCase();
-  if (is(S.wallet) || is(S.acct?.address)) { level = 'weak'; notes.push(`This is your ${is(S.wallet) ? 'connected wallet' : 'Tacit account'}: withdrawing to it links it to the pool. A fresh address keeps them apart.`); }
+  if (is(S.wallet) || is(S.acct?.address)) { level = 'weak'; notes.push(`This is your ${is(S.wallet) ? 'connected wallet' : 'key’s own address'}: withdrawing to it links it to the pool. A fresh address keeps them apart.`); }
   const mine = [];
   for (const n of W.notes()) {
     const nv = BigInt(n.v), xs = v.ins.filter(([b, x]) => b === n.block && (BigInt(x) === nv || (n.kind === 'receive' && BigInt(x) > nv && (BigInt(x) - nv) * 400n <= BigInt(x)))).map(([, x]) => BigInt(x));
@@ -10342,7 +10343,7 @@ async function tacWrapNow({ run, wei, src, status, line, sheet = 'tac', clear, a
       await loadTacHoldings(true).catch(() => {}); after();
       return;
     }
-    say(status, src === 'wallet' ? 'Preparing your note, about half a minute…' : 'Sending from your Tacit account…');
+    say(status, src === 'wallet' ? 'Preparing your note, about half a minute…' : 'Sending from this key’s address…');
     run.check();
     // the wrap's index goes back if nothing is sent (as wrapNow), or enough tries would put a later deposit out of reach of a recovery from the key
     const index = await t.nextWrapIndex({ walletPriv: priv, ticker: 'TAC' });
@@ -10374,8 +10375,8 @@ function tacShield(el, status, acctBal, walletBal) {
   if (!el) return;
   const via = payer(), src = acctBal > 0n && (via === 'tacit' || !(walletBal > 0n)) ? 'tacit' : via === 'wallet' && walletBal > 0n ? 'wallet' : null;
   const alt = src === 'wallet' ? (acctBal > 0n ? 'tacit' : null) : (via === 'tacit' && walletBal > 0n ? 'wallet' : null);
-  const balance = src === 'wallet' ? walletBal : acctBal, from = src === 'wallet' ? 'your wallet' : 'your Tacit account';
-  const swap = alt ? html`<p class="note">${fmt(alt === 'wallet' ? walletBal : acctBal, 18, 2)} TAC is ${src ? 'also ' : ''}in ${alt === 'wallet' ? 'your connected wallet' : 'your Tacit account'}. <button class="link" type="button" id="tsh-switch">Shield it from there</button></p>` : '';
+  const balance = src === 'wallet' ? walletBal : acctBal, from = src === 'wallet' ? 'your wallet' : 'this key’s address';
+  const swap = alt ? html`<p class="note">${fmt(alt === 'wallet' ? walletBal : acctBal, 18, 2)} TAC is ${src ? 'also ' : ''}in ${alt === 'wallet' ? 'your connected wallet' : 'this key’s address'}. <button class="link" type="button" id="tsh-switch">Shield it from there</button></p>` : '';
   const wireSwap = () => { const sw = $('#tsh-switch', el); if (sw) sw.onclick = () => busy(sw, async () => { try { setPayer(alt); } catch (e) { toast(errText(e), true); } }); };
   if (!src) { mount(el, html`${swap}`); wireSwap(); return; }
   mount(el, html`
@@ -10491,7 +10492,7 @@ const PT_ACTS = { wrap: ['Wrapped ETH into the Tacit pool', 'ETH'], evmpooldepos
 const ptChain = (id) => (Number(id || 1) === 1 ? { name: 'Ethereum', explorer: SCAN } : DEVICE_CHAINS.find((c) => c.chainId === Number(id)) || null);
 const potLeft = () => { const s = 86400 - (now() % 86400), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60); return h ? `${h}h ${String(m).padStart(2, '0')}m` : `${m}m`; };
 const dayLeft = () => { const s = 86400 - (now() % 86400), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60); return h ? `${h} h ${m} min` : `${Math.max(1, m)} min`; };
-const pointsWho = () => [...new Map([[S.acct?.address, 'Tacit account'], [S.wallet, 'Wallet']].filter(([a]) => a).map(([a, l]) => [a.toLowerCase(), l]))];
+const pointsWho = () => [...new Map([[S.acct?.address, 'Key address'], [S.wallet, 'Wallet']].filter(([a]) => a).map(([a, l]) => [a.toLowerCase(), l]))];
 const ptsFmt = (n) => Math.round(Number(n) || 0).toLocaleString('en-US');
 const utcDay = (sec) => Math.floor(Number(sec) / 86400);
 const dayShort = (d) => new Date(d * 864e5).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
@@ -11615,7 +11616,7 @@ function renderPrecision(el) {
   if (S.address) FARM.signIn = false;
   if (!S.address) {
     if (FARM.signIn && !S.key) {
-      needKey(el, 'Farm from your Tacit account. Add ETH to it, and TAC to farm with both.');
+      needKey(el, 'Farm from this key’s address. Add ETH to it, and TAC to farm with both.');
       el.insertAdjacentHTML('beforeend', html`<p class="note"><button class="link" type="button" id="pf-back">Connect a browser wallet instead</button></p>`.s);
       $('#pf-back').onclick = () => { FARM.signIn = false; rerender('farm'); };
       return;
@@ -13117,7 +13118,7 @@ async function takeBond(run, ref, status) {
     const hash = await sendTx({ to: b.take.to, data: b.take.data, via, label: `Take back a ${fmt(b.share, 18, 5)} wstETH bond` });
     say(status, html`Taking the bond back… ${txLink(hash)}`);
     await waitTx(hash);
-    say(status, html`<span class="ok">The bond is back in your ${via === 'tacit' ? 'Tacit account' : 'wallet'} as wstETH.</span> ${txLink(hash)}`);
+    say(status, html`<span class="ok">The bond is back in your ${via === 'tacit' ? 'key’s address' : 'wallet'} as wstETH.</span> ${txLink(hash)}`);
     toast('Bond taken back');
     await settleBorrow();
   } catch (e) { txFail(run, status, e); }
@@ -13135,7 +13136,7 @@ function bondsBlock() {
     ${locks.map((l) => html`<div class="kv"><span>${l.vBtc ? `${fmt(l.vBtc, 8, 8)} BTC` : 'Lock'} · ${link(l)}${l.everyday ? ' · everyday address' : ''}</span><b class="${l.state === 'forfeit' ? 'err' : ''}">${fmt(l.total, 18, 5)} wstETH${l.par ? ` · ${fmt(l.total * 100n / l.par, 2, 2)}× the BTC` : ''} · ${what[l.state]}</b></div>
       ${l.state === 'backing' && l.par ? html`<button class="btn ghost" type="button" data-bond-add="${l.op}">Add 0.25× to this bond</button>` : ''}
       ${l.state === 'backing' && l.txid && redeemOn() ? html`<button class="btn ghost" type="button" data-redeem="${l.op}">Redeem this lock</button>` : ''}
-      ${l.bonds.filter((b) => b.take && bondVia(b.account)).map((b) => html`<button class="btn ghost" type="button" data-bond-take="${l.op}|${b.contract}|${b.account}">Take back ${fmt(b.share, 18, 5)} wstETH to your ${bondVia(b.account) === 'tacit' ? 'Tacit account' : 'wallet'}</button>`)}`)}
+      ${l.bonds.filter((b) => b.take && bondVia(b.account)).map((b) => html`<button class="btn ghost" type="button" data-bond-take="${l.op}|${b.contract}|${b.account}">Take back ${fmt(b.share, 18, 5)} wstETH to your ${bondVia(b.account) === 'tacit' ? 'Key address' : 'wallet'}</button>`)}`)}
     ${everyday ? html`<p class="note">${everyday === 1 ? 'One lock holds its' : `${everyday} locks hold their`} BTC at your everyday Bitcoin address, where early locks put it. This app never spends it, but another Bitcoin wallet using this key would see it as spendable, and spending it gives up its bond. Keep this key out of other Bitcoin wallets until you redeem.</p>` : ''}
     <p class="note">A bond is held as wstETH, which keeps earning staking yield, and comes back as wstETH to the account that posted it, before its lock is minted against or once the lock is redeemed. It must be at least 1.5× the BTC when the lock is minted against, then moves with the price of ETH in BTC; adding to it keeps the lock well covered. Spending a lock’s BTC any other way gives its bond to the insurance reserve.</p>
     ${redeemPanel()}
@@ -13310,10 +13311,10 @@ const BWX = {
       const bal = BigInt(await rpc('eth_getBalance', [acct, 'latest'])), gap = ((st.payEth + BF.gas) * 105n) / 100n - bal;
       if (gap > 0n) {
         if (!S.wallet) { const was = payer(); await connect(); if (was === 'tacit' && payer() !== 'tacit') setPayer('tacit'); }
-        say(where(), `Confirm ${fmt(gap, 18, 5)} ETH to your Tacit account in your wallet…`);
+        say(where(), `Confirm ${fmt(gap, 18, 5)} ETH to this key’s address in your wallet…`);
         run.check();
-        const h = await sendTx({ to: acct, data: '0x', value: gap, via: 'wallet', label: `Add ${fmt(gap, 18, 6)} ETH to your Tacit account` });
-        say(where(), html`Topping up your Tacit account… ${txLink(h)}`);
+        const h = await sendTx({ to: acct, data: '0x', value: gap, via: 'wallet', label: `Add ${fmt(gap, 18, 6)} ETH to this key’s address` });
+        say(where(), html`Topping up this key’s address… ${txLink(h)}`);
         await waitTx(h);
       }
       run.check();
@@ -13611,7 +13612,7 @@ render.borrow = () => {
           <div class="d">${s2 ? 'Posted as wstETH, earning while it bonds the lock. Spending the BTC without redeeming forfeits it.' : s1 && st.payEth ? html`${fmt(st.payEth, 18, 5)} ETH${st.have ? ' more, as the price moved since the bond was posted' : ''}, staked as wstETH and earning while it bonds the lock. Spending the BTC without redeeming forfeits it.` : 'A bond of wstETH worth at least 1.5× the BTC, staked from your ETH in one transaction. Refundable, as wstETH.'}</div>
           ${s1 && !s2 ? (st.payEth ? html`
             <div class="kv"><span>Paid from ${your()}${payer() === 'tacit' && S.acct ? html` · <span class="mono">${short(S.acct.address, 6)}</span> <button class="link" type="button" data-copy="${S.acct.address}">copy</button>` : ''}</span><b>${bf?.bal == null ? '…' : html`${fmt(bf.bal, 18, 5)} ETH`}</b></div>
-            ${shortEth && !bwCanWst(st) ? html`<p class="note err">The bond and its network fee come to about ${fmt(need, 18, 5)} ETH. ${payer() === 'tacit' ? html`Top up your Tacit account from a connected wallet and the bond posts in the same go, or <button class="link" type="button" data-fund>add ETH another way</button> and post it once that arrives.` : 'Add ETH to your wallet, and Post bond opens once it arrives.'}</p>` : ''}
+            ${shortEth && !bwCanWst(st) ? html`<p class="note err">The bond and its network fee come to about ${fmt(need, 18, 5)} ETH. ${payer() === 'tacit' ? html`Top up this key’s address from a connected wallet and the bond posts in the same go, or <button class="link" type="button" data-fund>add ETH another way</button> and post it once that arrives.` : 'Add ETH to your wallet, and Post bond opens once it arrives.'}</p>` : ''}
             ${bwCanWst(st) ? html`<p class="note">${your().replace(/^./, (c) => c.toUpperCase())} holds ${fmt(st.wst, 18, 5)} wstETH: the bond can be ${fmt(st.gapWst, 18, 5)} of it, approved by a signature and posted in the same transaction.</p>
               <button class="btn" type="button" id="bw-bond" data-bw-bond="wst">${st.have ? 'Top up bond' : 'Post bond'} with wstETH</button><button class="btn ghost" type="button" data-bw-bond="eth" ${shortEth ? 'disabled' : ''}>Or with ${fmt(st.payEth, 18, 5)} ETH</button>`
               : shortEth && payer() === 'tacit' ? html`<button class="btn" type="button" id="bw-topup">Top up from wallet and post bond</button>` : html`<button class="btn" type="button" id="bw-bond" data-bw-bond="eth" ${shortEth ? 'disabled' : ''}>${st.have ? 'Top up bond' : 'Post bond'}</button>`}
@@ -14682,7 +14683,7 @@ function hxJoinSay(p, jq) {
   if (jq.small) return { ...none, line: `Add more than ${fmt(jq.small, 8, dp[kS])} ${unit[kS]}: the relay’s fees for the swap and the note cuts come out of it.` };
   const { q, a, b, shares } = jq, res = j.res, bonded = BigInt(p.totalShares || 0), day = FARM.program?.epoch?.active ? Number(p.tacPerDayForPool) * Number(shares) / Number(bonded + shares) : 0;
   const gas = ['Network fee', `about ${fmt(j.gas, 18, 5)} ETH`, '', `Sent from ${your()}, which makes the bond`], adds = ['Adds', `${fmt(a, 8, 6)} tETH + ${fmt(b, 8, dpB)} ${other}`];
-  const low = `${payer() === 'tacit' ? 'Your Tacit account' : 'Your wallet'} holds too little ETH for the network fee.`;
+  const low = `${payer() === 'tacit' ? 'This key’s address' : 'Your wallet'} holds too little ETH for the network fee.`;
   if (q.kind === 'pair') {
     const cut = jq.fA + (jq.fB ? jq.fB * res.reserveA / res.reserveB : 0n), fee = [jq.fA ? `${fmt(jq.fA, 8, 6)} tETH` : '', jq.fB ? `${fmt(jq.fB, 8, dpB)} ${other}` : ''].filter(Boolean).join(' + ');
     const line = q.over ? `More than your private balance covers${fee ? ' with the relay fee' : ''}. Try Max.` : q.gasShort ? low
@@ -16021,7 +16022,7 @@ function hxBalPaint() {
     return;
   }
   const [v, dec] = h, typed = hxUnits(), dev = hxPayP(), over = !!typed && v > 0n && (!dev && dec === 18 ? typed * E10 : typed) > v, max = v > 0n && !(HX.tab === 'send' && hxSendBtc());
-  const view = html`<button type="button" id="hx-max"${over ? html` class="over"` : ''} ${max ? '' : 'disabled'}>${wrapEth && hxWrapVia() === 'tacit' ? 'Tacit account' : 'Balance'} ${fmt(v, dec, dec === 18 ? 4 : 6)}${max ? ' · Max' : ''}</button>`;
+  const view = html`<button type="button" id="hx-max"${over ? html` class="over"` : ''} ${max ? '' : 'disabled'}>${wrapEth && hxWrapVia() === 'tacit' ? 'Key address' : 'Balance'} ${fmt(v, dec, dec === 18 ? 4 : 6)}${max ? ' · Max' : ''}</button>`;
   // two coins can read alike (USDC and USDT, 'Balance 12.5 · Max'): the press belongs to this one
   const key = `${HX.tab}|${src}|${dev?.slug ?? ''}|${v}|${view.s}`;
   if (el.__h === key) return;
@@ -17183,7 +17184,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=20f52972').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=cde14860').catch((e) => { SWC.p = null; throw e; }));
 // the card held to the tab's flow; back on the Swap tab it opens on the swap it showed there
 function swcFlow() {
   hxPathPaint();

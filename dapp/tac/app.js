@@ -1,5 +1,5 @@
 
-const TACIT_URL = '/tacit.js?cb=187d27e1';
+const TACIT_URL = '/tacit.js?cb=add7bef4';
 const SECRET_URL = '/sats/secret.js?cb=d10eac01';
 const SATS_URL = '/tac/sats.js?cb=37cf5ec2';
 const CLAIM_URL = '/tac/claim.js?cb=15b8bd50';

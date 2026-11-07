@@ -1027,7 +1027,7 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
       onStep('waiting for the TAC');
       let got = (await held()) - before;
       for (let i = 0; i < 30 && got < least; i++) { await sleep(4000); got = (await held()) - before; }
-      if (got <= 0n || (paid && got < paid)) throw new Error('The TAC has not reached your Tacit account yet. Press again in a minute.');
+      if (got <= 0n || (paid && got < paid)) throw new Error('The TAC has not reached this key’s address yet. Press again in a minute.');
       const take = paid || got;
       amount = take - (take % scale);
       if (amount <= 0n) throw new Error('Too little TAC to make private.');
