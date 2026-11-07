@@ -1,0 +1,31 @@
+[package]
+name = "tacit-block-node"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "tacit-block-node"
+path = "src/main.rs"
+
+[dependencies]
+btc-pool-halo2 = { path = "../../btc-pool-halo2" }
+btc-pool-agg-common = { path = "../../btc-pool-agg/common" }
+tacit-block-common = { path = "../common" }
+halo2_proofs = { git = "https://github.com/privacy-scaling-explorations/halo2", tag = "v0.3.0", default-features = false, features = ["batch"] }
+serde_json = "1"
+hex = "0.4"
+
+[patch."https://github.com/privacy-scaling-explorations/halo2"]
+halo2_proofs = { path = "../vendor/halo2_proofs" }
+
+[patch.crates-io]
+halo2curves = { path = "../vendor/halo2curves" }
+
+[profile.release]
+overflow-checks = true
+debug = 0
