@@ -894,7 +894,9 @@
           "kind": "review",
           "to": "0x0000000000000000000000000000000000000000",
           "gas": 22000,
-          "approved": [],
+          "approved": [
+            "0x9f30faaf9ba73f673cc364218a608f5316b7c0f41ff5703329aeafd028277fd2"
+          ],
           "minWei": "250000000000000000000",
           "maxWei": "250000000000000000000",
           "label": "Tester, fourth",
