@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-mArBL4PM6LaIZizvSJM87B8dmS9KnUZNRNNT9IsmUQM=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-gC4bUR6JDhm+lfxPFvLEY1ZelxIPClqbQ4s65Z3QUxI=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -64,7 +64,7 @@
 <link rel="modulepreload" href="/bridge-tick.js?cb=4e721860">
 <link rel="modulepreload" href="/tacit-session.js?cb=a2d34bb2">
 <link rel="modulepreload" href="/activity.js?cb=8ccbc552">
-<link rel="modulepreload" href="/swap/card.js?cb=6534cd3d">
+<link rel="modulepreload" href="/swap/card.js?cb=bb66e10c">
 <link rel="modulepreload" href="/trade/wallet.js?cb=88b623b8">
 <link rel="modulepreload" href="/trade/util.js?cb=ba5a02b1">
 <link rel="modulepreload" href="/trade/rpc.js">
@@ -2638,9 +2638,11 @@ function endRun(run) {
   batchLine(run);
   runsPrune();
 }
+// where a run's line is said: a sheet's status box, or the tile's own line under its button (a Send, Shield or farm in place), where the relay's result is drawn when it comes
+const STATUS_AT = '.status, #hx-ss, #hx-mz, #hx-zs';
 function batchLine(run) {
   if (!run.to || run.to.one || run.live || !run.jobs.length || openJobs(run)) return;
-  const el = document.querySelector(`[data-batch="${run.n}"]`)?.closest('.status');
+  const el = document.querySelector(`[data-batch="${run.n}"]`)?.closest(STATUS_AT);
   if (!el) return;
   const all = run.jobs.map(actGet).filter(Boolean), bad = all.filter((x) => badStatus(x.status));
   say(el, !bad.length ? html`<span class="ok">✓ ${run.to.label}: done.</span>${run.to.dest ? html` Now at ${run.to.dest}.` : ''}`
@@ -2784,7 +2786,7 @@ function actSaid(it, prev) {
   const view = html`<button class="link" type="button" data-act-open>Activity</button>`;
   const link = it.hash ? html`<a href="${txUrl(it)}" target="_blank" rel="noopener">${txMark(it)}${txSite(it)} ↗</a>` : '';
   const good = it.status === 'settled' || it.status === 'confirmed', bad = it.status === 'failed' || it.status === 'unknown';
-  const line = it.kind === 'op' && (good || bad) ? document.querySelector(`[data-op="${it.id}"]`)?.closest('.status') : null;
+  const line = it.kind === 'op' && (good || bad) ? document.querySelector(`[data-op="${it.id}"]`)?.closest(STATUS_AT) : null;
   if (line) say(line, good ? html`<span class="ok">✓ ${it.label}: done.</span>${it.dest ? html` Now at ${it.dest}.` : ''} ${link}` : html`<span class="err">${it.label} did not go through: ${linked(failText(it))}</span>`);
   const shown = !!line && inView;
   const spn = ownJob(it.id) || it.own;
@@ -15612,6 +15614,9 @@ const hxMoves = {
   // a move the page does in place keeps the card's button on Working… (card.working) and says its steps in the slot under it
   go: (key, amt) => { if (HX.tab !== 'swap') return; hxMoveSet(key, amt); hxNorm(); hxGo(); },
   idle: () => { HXM.key = null; HXM.cb = null; },
+  // the page did what was typed and the card emptied: the amount is gone here too, and a quote still out for it is let go (a balance read landing after
+  // would price the old amount against what is left, and warn over the empty card)
+  cleared: (key) => { if (HX.tab !== 'swap') return; HX.seq++; hxMoveSet(key, ''); },
   // what a move's source holds, in the card's units (18 decimals), and what Max puts in: that, less what its own fees keep back
   warm: () => hxWarmBals(Object.values(HX_MV_SRC).filter((k) => k !== 'btc')),      // (the Bitcoin TAC row shows no amount here: reading it would load the Bitcoin wallet for nothing)
   // a pool's balance changed (something left it): read again at once, not after the minute the page keeps it
@@ -17204,7 +17209,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=6534cd3d').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=bb66e10c').catch((e) => { SWC.p = null; throw e; }));
 // the card held to the tab's flow; back on the Swap tab it opens on the swap it showed there
 function swcFlow() {
   hxPathPaint();
@@ -17807,6 +17812,8 @@ function hxSync() {
   hxBalPaint();
   hxHave();
   hxBwUpdate();
+  // not while a press is under way: it has taken its notes already, so the amount still typed would be priced against what is left and warn "You hold 0"; the amount goes once it is going
+  if (HX.sending || SWC.card?.busy) return;
   if (!['send', 'borrow'].includes(HX.mode) && HX.from === 'ether' && hxHeld() !== HX.held) hxQuoteSoon();
   if (HX.mode === 'unwrap' && hxUnits() && hxHeld() !== HX.held) hxQuoteSoon();
   if (HX.mode === 'send' && hxUnits() && hxSendHeld() !== HX.heldSend) hxQuoteSoon();

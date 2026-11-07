@@ -3242,7 +3242,9 @@ export function mountSwapCard(root, host = {}) {
       if (!on) { paint(); H.onDone?.(); readBalances().then(paintSides, () => {}); }
     },
     // the page did what was typed: it is emptied, and the quote with it
-    clear: () => { S.amt = ''; S.q = null; S.mq = null; changed(); paint(); },
+    // (a move's quote still in flight, or one the page prices again when a balance lands, is let go and the page told the amount is gone: left as it was, the old amount
+    // is priced against the balance the press just spent and says "More ETH than you hold" over an empty card)
+    clear: () => { clearTimeout(qTimer); S.seq++; S.amt = ''; S.q = null; S.mq = null; changed(); paint(); const mk = moveOf(); if (mk) H.moves?.cleared?.(mk); },
     closePicker: () => pkClose?.({ quiet: true }),
     pickerBals,
     get busy() { return S.busy; },
