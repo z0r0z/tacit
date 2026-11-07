@@ -32,13 +32,21 @@ export function addressOf(priv) {
 }
 
 /// Signs and sends a call to `to` with `data` from `priv`, waits for its receipt: → the receipt.
-export async function send(rpc, priv, to, data, { chainId, gasPad = 1.25, tip = 1_000_000_000n, wait = true } = {}) {
+/// The priority fee to offer: the node's suggestion (eth_maxPriorityFeePerGas), kept within [0.01, 2] gwei, 0.1 gwei if it has none.
+export async function suggestedTip(rpc) {
+  const t = await rpc.call('eth_maxPriorityFeePerGas').then((x) => BigInt(x), () => 100_000_000n);
+  return t < 10_000_000n ? 10_000_000n : t > 2_000_000_000n ? 2_000_000_000n : t;
+}
+
+export async function send(rpc, priv, to, data, { chainId, gasPad = 1.25, tip = null, wait = true } = {}) {
   const from = addressOf(priv);
-  const [nonce, block, est] = await Promise.all([
+  const [nonce, block, est, suggested] = await Promise.all([
     rpc.call('eth_getTransactionCount', [from, 'pending']),
     rpc.call('eth_getBlockByNumber', ['latest', false]),
     rpc.call('eth_estimateGas', [{ from, to, data: hexOf(data) }]),
+    tip == null ? suggestedTip(rpc) : null,
   ]);
+  tip ??= suggested;
   const base = BigInt(block.baseFeePerGas || 0);
   const maxFee = base * 2n + tip;
   const { raw, hash } = evmTx.signEip1559({ chainId, nonce: BigInt(nonce), maxPriorityFeePerGas: tip, maxFeePerGas: maxFee, gasLimit: BigInt(Math.ceil(num(est) * gasPad)), to, value: 0n, data: hexOf(data) }, hexOf(bytesOf(priv)).slice(2));

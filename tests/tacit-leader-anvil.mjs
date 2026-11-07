@@ -65,7 +65,7 @@ async function main() {
   cast('rpc', 'anvil_impersonateAccount', POOL, '--rpc-url', RPC);
   cast('send', TAC, 'mint(address,uint256)', USER.addr, '100000000000000000000000', '--from', POOL, '--unlocked', '--rpc-url', RPC);
   send(TAC, 'approve(address,uint256)', [blocks, '100000000000000000000000']);
-  const deposit = (d) => send(blocks, 'deposit(uint256,bytes32,bytes32,bytes32)', [String(d.value), d.cx, d.cy, d.body]);
+  const deposit = (d) => send(blocks, 'deposit(uint256,uint256,bytes32,bytes32,bytes32)', [String(d.shares), String(d.amount), d.cx, d.cy, d.body]);
 
   const leaderEnv = { ...process.env, RPC_URL: RPC, BLOCKS: blocks, FROM_BLOCK: String(fromBlock), LEADER_KEY: LEADER.key, NODE_ADDR: NODE, PROVER: 'stub', MIN_SPENDS: '1', MAX_WAIT_SECS: '1', POLL_SECS: '1', ARCHIVE_DIR: join(dir, 'archive'), TACIT_NODE_ADMIN: 'test-admin-token' };
   const leader = spawn('node', [join(ROOT, 'tacit-leader/leader.mjs')], { env: leaderEnv, stdio: ['ignore', 'pipe', 'inherit'] });
@@ -116,7 +116,7 @@ async function main() {
     for (const s of spends) {
       const outs = [5, 6, 7].map((w) => s.publics.subarray(32 * w, 32 * w + 32)).map((x) => x.some((v) => v !== 0));
       const memos = [0, 1, 2].filter((k) => outs[k]).map((k) => hx(byHash(s.data.subarray(32 * k, 32 * k + 32))));
-      let o = 148; o += s.data[o] === 1 ? 41 : 1; o += s.data[o] === 1 ? 41 : 1;
+      let o = 148; o += s.data[o] === 1 ? 49 : 1; o += s.data[o] === 1 ? 49 : 1;
       const opMemos = s.data[o] === 1 && s.data[o + 1] === 2 ? [hx(byHash(s.data.subarray(s.data.length - 32)))] : [];
       const r = await api('POST', '/spend', { publics: hx(s.publics), proof: hx(s.proof), data: hx(s.data), memos, opMemos });
       assert.ok(r.ok, `block ${b}: the leader refused a spend: ${r.error}`);

@@ -31,8 +31,8 @@ function readStdin(file) {
 /// Spend data: 3 memo hashes ‖ exit address (20) ‖ salt (32) ‖ deposit opening ‖ exit opening ‖ [1 ‖ operation].
 function opMemoHash(data) {
   let at = 148;
-  at += data[at] === 1 ? 41 : 1;
-  at += data[at] === 1 ? 41 : 1;
+  at += data[at] === 1 ? 49 : 1;
+  at += data[at] === 1 ? 49 : 1;
   if (data[at] !== 1) return [];
   const op = data.subarray(at + 1);
   return op[0] === 2 ? [op.subarray(op.length - 32)] : []; // a lock's memo hash is the end of its operation; a hop makes no note

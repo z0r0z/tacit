@@ -11,7 +11,7 @@
 // so a wallet that proved against a quote a minute old is not refused.
 //
 //   LEADER_CHAIN_SEED  32 bytes (hex): the leader's chain keys; with none, no fee is asked
-//   FEE_SPEND_GAS (45000)  FEE_BLOCK_GAS (300000)  FEE_BATCH (8)  FEE_TIP_WEI (1 gwei, what the leader tips a landing)  FEE_MARGIN_BPS (2000)
+//   FEE_SPEND_GAS (45000)  FEE_BLOCK_GAS (300000)  FEE_BATCH (8)  FEE_TIP_WEI (default: the tip the leader offers, its node's suggestion)  FEE_MARGIN_BPS (2000)
 //   FEE_MIN (100000 units, 0.001 TAC)  FEE_TAC_PER_ETH (none)  FEE_WINDOW_SECS (600)  FEE_PRICE_READS (5)
 
 import { poseidon2, poseidon3, poseidon4, poseidon5 } from '../dapp/vendor/tacit-poseidon.min.js';
@@ -38,7 +38,7 @@ export function feeTerms(env = {}) {
     fallback = [BigInt(i || 0) * 10n ** 8n + BigInt((f + '00000000').slice(0, 8)), 10n ** 18n];   // TAC units per wei, as a fraction
   }
   return {
-    spendGas: n('FEE_SPEND_GAS', 45000), blockGas: n('FEE_BLOCK_GAS', 300000), batch: n('FEE_BATCH', 8), tipWei: n('FEE_TIP_WEI', 1_000_000_000),
+    spendGas: n('FEE_SPEND_GAS', 45000), blockGas: n('FEE_BLOCK_GAS', 300000), batch: n('FEE_BATCH', 8), tipWei: env.FEE_TIP_WEI ? n('FEE_TIP_WEI', 0) : null,
     marginBps: n('FEE_MARGIN_BPS', 2000), min: n('FEE_MIN', 100_000), fallback, window: Number(env.FEE_WINDOW_SECS || 600), reads: Number(env.FEE_PRICE_READS || 5),
     pool: env.FEE_POOL || PRICE_POOL, poolId: env.FEE_POOL_ID || TAC_ETH_POOL_ID,
   };
@@ -55,10 +55,10 @@ export async function readPrice(call, terms) {
 }
 
 /// The fee in units for a base fee (wei) and a price (TAC units per wei, a fraction), at least the minimum.
-export function feeOf(terms, baseFee, price) {
+export function feeOf(terms, baseFee, price, tip = null) {
   if (!price) return terms.min;
   const gas = terms.spendGas + ceilDiv(terms.blockGas, terms.batch);
-  const wei = gas * (BigInt(baseFee) + terms.tipWei);
+  const wei = gas * (BigInt(baseFee) + BigInt(tip ?? terms.tipWei ?? 100_000_000n));
   const units = ceilDiv(ceilDiv(wei * price[0], price[1]) * (10_000n + terms.marginBps), 10_000n);
   return units > terms.min ? units : terms.min;
 }
@@ -91,11 +91,11 @@ export function makeFeeDesk({ seed, chain, asset, terms }) {
   const desk = { wallet, keys, address, asset: BigInt(asset), terms, quoted };
 
   /// The fee now, from a fresh price read (null when none could be made: the median of what was read before, else the fallback).
-  desk.quote = ({ now, baseFee, price }) => {
+  desk.quote = ({ now, baseFee, price, tip = null }) => {
     if (price) { prices.push(price); while (prices.length > terms.reads) prices.shift(); }
     const sorted = [...prices].sort((a, b) => (a[0] * b[1] < b[0] * a[1] ? -1 : a[0] * b[1] > b[0] * a[1] ? 1 : 0));
     const use = sorted.length ? sorted[(sorted.length - 1) >> 1] : terms.fallback;
-    const fee = feeOf(terms, baseFee, use);
+    const fee = feeOf(terms, baseFee, use, tip);
     quoted.push({ fee, at: now });
     while (quoted.length && quoted[0].at < now - terms.window) quoted.shift();
     return { address, fee: String(fee), at: now, window: terms.window };

@@ -23,7 +23,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { keccak_256 } from '../dapp/vendor/tacit-deps.min.js';
 import { decode, decodeLand, landCalldata, selector, encode, hexOf, bytesOf } from './abi.mjs';
-import { makeRpc, send as sendTx, addressOf, num } from './rpc.mjs';
+import { makeRpc, send as sendTx, addressOf, num, suggestedTip } from './rpc.mjs';
 import { feeTerms, readPrice, makeFeeDesk, admitPaying } from './fees.mjs';
 
 // one transaction at a time from the leader's key, so the seed's, a sweep's, a landing's and the hops' never take the same nonce
@@ -181,7 +181,7 @@ async function keepSeed() {
   if (BigInt(seats) === 0n || BigInt(lead) !== 0n || b - e * len >= BigInt(seedBlocks) || Number(e) === seedKeptFor) return;
   seedSending = true;
   try {
-    const receipt = await send(rpc, KEY, turns, selector('turn()'), { chainId: num(await rpc.call('eth_chainId')), tip: 3_000_000_000n });
+    const receipt = await send(rpc, KEY, turns, selector('turn()'), { chainId: num(await rpc.call('eth_chainId')), tip: 1_000_000_000n });
     seedKeptFor = Number(e);
     log({ seedKept: Number(e), tx: receipt.transactionHash });
   } finally {
@@ -194,7 +194,7 @@ let desk = null;
 async function quoteFee() {
   const blk = await rpc.call('eth_getBlockByNumber', ['latest', false]);
   const price = await readPrice(async (to, data) => rpc.call('eth_call', [{ to, data }, 'latest']), desk.terms).catch(() => null);
-  const q = desk.quote({ now: Math.floor(Date.now() / 1000), baseFee: BigInt(blk.baseFeePerGas || 0), price });
+  const q = desk.quote({ now: Math.floor(Date.now() / 1000), baseFee: BigInt(blk.baseFeePerGas || 0), price, tip: await suggestedTip(rpc) });
   await node('POST', '/fee', q);
   return q;
 }
