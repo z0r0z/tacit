@@ -580,16 +580,23 @@ a.di { color: inherit; text-decoration: none; }
 
 /* One ID, two chains: Bitcoin left, Ethereum right, the key between them, one lane for each thing that crosses. */
 /* How it works, in three: the tile's own tabs drawn small (Shield, a swap, Withdraw), each pressed in its turn, each opening its tab */
-.hw { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 0 0 56px; padding: 0; list-style: none; }
-.hw button { display: grid; gap: 16px; width: 100%; height: 100%; padding: 0; text-align: left; color: inherit; background: none; border: 0; cursor: pointer; }
+.hw { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 0 0 44px; padding: 0; list-style: none; }
+/* each row's chain, named over its three cards */
+.hw-k { display: flex; align-items: center; gap: 10px; margin: 0 0 14px; font: 500 12px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--mute); }
+.hw-k .tk { width: 22px; height: 22px; }
+/* the bridge card's own head: smaller than the section's, the same voice */
+.wd-hh { margin: 12px 0 18px; }
+.wd-hh h3 { margin: 0; font: 400 clamp(26px, 3.2vw, 36px)/1.1 var(--serif); letter-spacing: -.02em; text-wrap: balance; }
+.wd-hh h3 em { font-style: italic; }
+.hw button, .hw a { display: grid; align-content: start; text-decoration: none; gap: 16px; width: 100%; height: 100%; padding: 0; text-align: left; color: inherit; background: none; border: 0; cursor: pointer; }
 .hw-t { display: grid; gap: 6px; padding: 14px; background: var(--card); border: 1px solid var(--hair); border-radius: 18px; transition: transform .25s var(--spring), box-shadow .25s; }
-@media (hover: hover) { .hw button:hover .hw-t { transform: translateY(-3px); box-shadow: var(--lift); } }
-.hw button:focus-visible { outline: none; } .hw button:focus-visible .hw-t { outline: 2px solid var(--ink); outline-offset: 3px; }
+@media (hover: hover) { .hw button:hover .hw-t, .hw a:hover .hw-t { transform: translateY(-3px); box-shadow: var(--lift); } }
+.hw button:focus-visible, .hw a:focus-visible { outline: none; } .hw button:focus-visible .hw-t, .hw a:focus-visible .hw-t { outline: 2px solid var(--ink); outline-offset: 3px; }
 .hw-f { display: grid; gap: 6px; padding: 10px 12px; background: var(--field); border-radius: 12px; }
 .hw-fh { display: flex; justify-content: space-between; font: 11px var(--mono); color: var(--mute); }
 .hw-fh i { font-style: normal; } .hw-f.priv .hw-fh i::before { content: ''; display: inline-block; width: 6px; height: 6px; margin-right: 5px; border-radius: 50%; background: var(--ink); vertical-align: 1px; }
 .hw-fm { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.hw-fm b { font: 400 28px/1 var(--serif); letter-spacing: -.02em; }
+.hw-fm b { height: 28px; font: 400 28px/1 var(--serif); letter-spacing: -.02em; }
 .hw-c { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px 4px 4px; font: 500 12px var(--mono); background: var(--card); border: 1px solid var(--hair); border-radius: 999px; }
 .hw-c .tk { width: 20px; height: 20px; }
 .hw-go { display: block; margin-top: 4px; padding: 11px; text-align: center; font: 500 12px var(--mono); color: var(--mute); background: color-mix(in srgb, var(--ink) 7%, transparent); border-radius: 12px; }
@@ -1503,22 +1510,23 @@ footer.sf svg.fill { width: 16px; height: 16px; }
 
 
   <section class="sx" id="how" aria-labelledby="how-h">
-    <div class="sx-h"><h2 id="how-h">How it <em>works</em>.</h2></div>
-    <ol class="hw" aria-label="Three steps">
+    <div class="sx-h"><h2 id="how-h">How it <em>works</em>.</h2><p>The same three steps, on Ethereum or on Bitcoin.</p></div>
+    <h3 class="hw-k" id="hw-k-eth"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg>On Ethereum</h3>
+    <ol class="hw" aria-labelledby="hw-k-eth">
       <li><button type="button" data-hx="shield">
         <span class="hw-t" aria-hidden="true">
           <span class="hw-f"><span class="hw-fh">From<i>Wallet</i></span><span class="hw-fm"><b>0.1</b><span class="hw-c"><svg class="tk"><use href="#tk-eth"/></svg>ETH</span></span></span>
           <span class="hw-f priv"><span class="hw-fh">To<i>Private</i></span><span class="hw-fm"><b class="hw-o">0.1</b><span class="hw-c"><svg class="tk"><use href="#tk-teth"/></svg>ETH</span></span></span>
           <span class="hw-go">Shield ETH</span>
         </span>
-        <span class="hw-h"><b>Shield</b> ETH, USDC, USDT or TAC into the private pool.</span></button></li>
+        <span class="hw-h"><b>Shield</b> ETH, USDC, USDT or TAC from your wallet into the private pool.</span></button></li>
       <li><button type="button" data-hx="swap">
         <span class="hw-t" aria-hidden="true">
           <span class="hw-f priv"><span class="hw-fh">From<i>Private</i></span><span class="hw-fm"><b>0.1</b><span class="hw-c"><svg class="tk"><use href="#tk-teth"/></svg>ETH</span></span></span>
           <span class="hw-f priv"><span class="hw-fh">To<i>Private</i></span><span class="hw-fm"><b class="hw-o">225</b><span class="hw-c"><svg class="tk"><use href="#tk-usdc"/></svg>USDC</span></span></span>
           <span class="hw-go">Swap privately</span>
         </span>
-        <span class="hw-h"><b>Use it</b> to swap, send, earn and borrow, unseen.</span></button></li>
+        <span class="hw-h"><b>Use it</b> to swap, send, earn and borrow, with your address on none of it.</span></button></li>
       <li><button type="button" data-hx="withdraw">
         <span class="hw-t" aria-hidden="true">
           <span class="hw-f priv"><span class="hw-fh">From<i>Private</i></span><span class="hw-fm"><b>225</b><span class="hw-c"><svg class="tk"><use href="#tk-usdc"/></svg>USDC</span></span></span>
@@ -1527,7 +1535,32 @@ footer.sf svg.fill { width: 16px; height: 16px; }
         </span>
         <span class="hw-h"><b>Withdraw</b> to any address. The chain sees where it went, not from whom.</span></button></li>
     </ol>
-    <div class="wd">
+    <h3 class="hw-k" id="hw-k-btc"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg>On Bitcoin</h3>
+    <ol class="hw" aria-labelledby="hw-k-btc">
+      <li><button type="button" data-hx="swap:sats:tac">
+        <span class="hw-t" aria-hidden="true">
+          <span class="hw-f"><span class="hw-fh">From<i>Wallet</i></span><span class="hw-fm"><b>100,000</b><span class="hw-c"><svg class="tk"><use href="#tk-btc"/></svg>sats</span></span></span>
+          <span class="hw-f priv"><span class="hw-fh">To<i>Confidential</i></span><span class="hw-fm"><b class="hw-o">600</b><span class="hw-c"><svg class="tk"><use href="#tk-tac"/></svg>TAC</span></span></span>
+          <span class="hw-go">Buy TAC with sats</span>
+        </span>
+        <span class="hw-h"><b>Sats in</b> for TAC, its amounts hidden from the start.</span></button></li>
+      <li><button type="button" data-hx="shield:btc:pool">
+        <span class="hw-t" aria-hidden="true">
+          <span class="hw-f priv"><span class="hw-fh">From<i>Confidential</i></span><span class="hw-fm"><b>600</b><span class="hw-c"><svg class="tk"><use href="#tk-tac"/></svg>TAC</span></span></span>
+          <span class="hw-f priv"><span class="hw-fh">To<i>Shielded</i></span><span class="hw-fm"><b class="hw-o">600</b><span class="hw-c"><svg class="tk"><use href="#tk-tac"/></svg>TAC</span></span></span>
+          <span class="hw-go">Shield TAC</span>
+        </span>
+        <span class="hw-h"><b>Shield</b> it in TAC’s pool, where nothing ties it to the sats it came from.</span></button></li>
+      <li><a href="/tac/#withdraw/sats">
+        <span class="hw-t" aria-hidden="true">
+          <span class="hw-f priv"><span class="hw-fh">From<i>Shielded</i></span><span class="hw-fm"><b>600</b><span class="hw-c"><svg class="tk"><use href="#tk-tac"/></svg>TAC</span></span></span>
+          <span class="hw-f"><span class="hw-fh">To<i>Wallet</i></span><span class="hw-fm"><b class="hw-o">98,000</b><span class="hw-c"><svg class="tk"><use href="#tk-btc"/></svg>sats</span></span></span>
+          <span class="hw-go">Sell for sats</span>
+        </span>
+        <span class="hw-h"><b>Sats out</b> to any address, unlinked from the sats that went in.</span></a></li>
+    </ol>
+    <div class="sx-h wd-hh"><h3 id="wd-h">One ID, <em>both chains</em>.</h3><p>Your tacit1 ID holds what you own on Bitcoin and on Ethereum. Move it between them, or lock bitcoin to use it on Ethereum.</p></div>
+    <div class="wd" role="group" aria-labelledby="wd-h">
       <div class="wd-top">
         <span class="wd-ch"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg>Bitcoin</span>
         <button class="wd-key" type="button" data-signin aria-label="Your tacit1 ID: sign in or make one"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><code id="wd-id">tacit1…</code><small>from your wallet or a passkey</small></button>
@@ -1549,6 +1582,11 @@ footer.sf svg.fill { width: 16px; height: 16px; }
           <button class="wd-wire" type="button" data-hx="shield:eth:btc" aria-label="Bridge tETH between Ethereum and Bitcoin, both ways"><i class="wd-wl"></i><span>bridge</span></button>
           <button class="wd-end r" type="button" data-hx="shield:ether:defi"><span><b>tETH</b><small>private ETH, one for one</small></span><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg></button>
         </li>
+        <li class="wd-lane">
+          <button class="wd-end" type="button" data-hx="shield:ut:back"><svg class="tk" aria-hidden="true"><use href="#tk-usdt"/></svg><span><b>USDT</b><small>your dollars, on Bitcoin</small></span></button>
+          <button class="wd-wire" type="button" data-hx="shield:cusdt:btc" aria-label="Bridge USDT between Ethereum and Bitcoin, both ways"><i class="wd-wl"></i><span>bridge</span></button>
+          <button class="wd-end r" type="button" data-hx="shield:wusdt:pay"><span><b>USDT</b><small>private dollars, one for one</small></span><svg class="tk" aria-hidden="true"><use href="#tk-usdt"/></svg></button>
+        </li>
       </ol>
       <div class="kept" id="kept"><h3 class="kept-h">Bitcoin, proven on Ethereum<a href="/weld/stats/">All stats <span aria-hidden="true">→</span></a></h3><div id="kept-v"></div></div>
     </div>
@@ -1563,7 +1601,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       </div></div></div>
       <div class="tc-shadow"></div>
     </div>
-    <p class="tc-idea">Bitcoin-native and bitcoin-backed assets, private on Ethereum. Anyone can build new ones.</p>
+    <p class="tc-idea">Assets born on Bitcoin or backed by it, private on Ethereum. Anyone can make more.</p>
     <div class="tc-as" role="tablist" aria-label="Tacit’s assets">
       <button type="button" role="tab" id="tc-t-tac" aria-controls="tc-tac" aria-selected="true" data-tc="tac"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</button>
       <button type="button" role="tab" id="tc-t-teth" aria-controls="tc-teth" aria-selected="false" tabindex="-1" data-tc="teth"><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg>tETH</button>
@@ -1581,13 +1619,12 @@ footer.sf svg.fill { width: 16px; height: 16px; }
         <div><dt>sale or VC</dt><dd>None</dd></div>
       </dl>
       <div class="tc-pay" role="group" aria-labelledby="tp-h">
-        <h3 id="tp-h">Private bitcoin payments, today.</h3>
+        <h3 id="tp-h">Buy it, farm it, borrow against it.</h3>
         <ol class="tp-flow">
-          <li><button type="button" data-hx="swap:sats:tac"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg><span><b>Sats in</b><small>swapped for TAC</small></span></button></li>
-          <li><button type="button" data-hx="shield:btc:pool"><svg class="g" aria-hidden="true"><use href="#g-shield"/></svg><span><b>Shielded</b><small>in TAC’s pool</small></span></button></li>
-          <li><a href="/tac/#withdraw/sats"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg><span><b>Sats out</b><small>to any address, unlinked</small></span></a></li>
+          <li><button type="button" data-hx="swap:ether:tac"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span><b>Bought</b><small>for ETH, or for sats on Bitcoin</small></span></button></li>
+          <li><button type="button" data-hx="earn:tac"><svg class="g" aria-hidden="true"><use href="#g-earn"/></svg><span><b>Farmed</b><small>privately, in its pools</small></span></button></li>
+          <li><a href="/vault/"><svg class="tk" aria-hidden="true"><use href="#tk-tacd"/></svg><span><b>Borrowed against</b><small>for dollars or ether, at 0%</small></span></a></li>
         </ol>
-        <p class="tp-note">Trade on Bitcoin too: a native AMM, its pairs already seeded and swapped.</p>
       </div>
       <div class="tc-links"><button class="btn" type="button" data-hx="swap:ether:tac">Buy TAC</button><a class="tl" href="/trade/tac/">Price and chart →</a><a class="tl" href="/verify.html">Verify TAC →</a><a class="tl" href="https://github.com/src-company/tacit/blob/main/docs/TAC.md" rel="noopener">About TAC →</a><a class="tl" href="https://github.com/src-company/tacit/blob/main/SPEC.md" rel="noopener" title="Tacit’s spec for confidential tokens and peer-to-peer swaps on Bitcoin">The spec →</a></div>
     </div>
