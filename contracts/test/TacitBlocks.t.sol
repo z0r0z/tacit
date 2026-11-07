@@ -130,6 +130,8 @@ abstract contract TacitBlocksFixture is Test {
     uint256 constant MEMO = 1152;
     uint256 constant FORCED_REST_AT = 384 + 2080 + 1280 + 3 * MEMO;
     uint256 constant FORCED_MAX = FORCED_REST_AT + 20 + 32 + 2 * 49 + 1 + 265 + MEMO;
+    /// The shares a lock's claim or refund gives the holders (tacit-block-common LOCK_POOL_SHARES).
+    uint256 constant LOCK_POOL_SHARES = 200_000;
 
     function setUp() public {
         fx = vm.readFile(string.concat(vm.projectRoot(), "/test/fixtures/tacit-blocks.json"));
@@ -1064,9 +1066,11 @@ contract TacitBlocksMoreTest is TacitBlocksFixture {
         assertEq(blocks.height(), 8);
         assertEq(blocks.queueDone(), 3);
         // what stays on the chain: the exit's credit, the two hops to send into the pool, and the TAC behind the notes (1,000 claimed
-        // and 500 refunded, the fees left before them)
+        // and 500 refunded, the fees left before them); each settle gave the holders its pool share, those shares ended
         uint256 lockShares = vm.parseJsonUint(fx, ".lockDeposits[0].shares") + vm.parseJsonUint(fx, ".lockDeposits[1].shares");
-        assertEq(blocks.shares(), lockShares, "the locks' shares, now the claimed and refunded notes'");
+        assertEq(blocks.shares(), lockShares - 2 * LOCK_POOL_SHARES, "the locks' shares less two pool shares, now the claimed and refunded notes'");
+        (uint256 p5,) = poolOf(5);
+        assertEq(blocks.pool(), p5, "a settle moves no TAC");
         assertEq(blocks.pool(), blocks.inChain());
         assertEq(
             tac.balanceOf(address(blocks)),
@@ -1291,6 +1295,53 @@ contract TacitBlocksPermitTest is TacitBlocksFixture {
         blocks.sweep(s, a, cx, cy, body, back);
         assertEq(tac.balanceOf(holder), 10 * (a * UNIT + fee), "nothing moved");
         assertEq(tac.balanceOf(address(blocks)), 0);
+    }
+
+    /// An inbox already paid the deposit's TAC another way (an unwrap, a transfer) and also permitted pulls only what it lacks: the
+    /// fee here, from the holder, and nothing past the permit's shortfall.
+    function test_aPaidInboxPullsOnlyTheShortfall() public {
+        (uint256 s, uint256 a, bytes32 cx, bytes32 cy, bytes32 body) = dep();
+        bytes32 back = keccak256("back");
+        uint256 pk = 0xA11CE;
+        address holder = vm.addr(pk);
+        uint256 fee = 2e15;
+        tac.mint(holder, a * UNIT + fee);
+        address box = blocks.inbox(s, a, cx, cy, body, back);
+        tac.mint(box, a * UNIT);
+        uint256 deadline = block.timestamp + 1 hours;
+        (uint8 v, bytes32 r, bytes32 sig) = signPermit(pk, box, a * UNIT + fee, deadline);
+        vm.prank(address(0xBEEF));
+        blocks.sweepWithPermit(s, a, cx, cy, body, back, holder, fee, deadline, v, r, sig);
+        assertEq(tac.balanceOf(holder), a * UNIT, "only the shortfall, the fee, was pulled");
+        assertEq(tac.allowance(holder, box), a * UNIT, "the rest of the permit is left unused");
+        assertEq(tac.balanceOf(address(0xBEEF)), fee);
+        assertEq(tac.balanceOf(address(blocks)), a * UNIT);
+        assertEq(tac.balanceOf(box), 0);
+        (address from,,) = blocks.pending(depKey(s, a, cx, cy, body));
+        assertEq(from, box);
+    }
+
+    /// An inbox paid in full (the deposit's TAC and the fee) pulls nothing, whatever permit comes with the sweep: the holder's TAC and
+    /// allowance are untouched. With nothing to pull no permit is needed, so whoever sends it takes the fee the inbox was paid.
+    function test_aFullyPaidInboxPullsNothing() public {
+        (uint256 s, uint256 a, bytes32 cx, bytes32 cy, bytes32 body) = dep();
+        bytes32 back = keccak256("back");
+        uint256 pk = 0xA11CE;
+        address holder = vm.addr(pk);
+        uint256 fee = 2e15;
+        tac.mint(holder, a * UNIT + fee);
+        address box = blocks.inbox(s, a, cx, cy, body, back);
+        tac.mint(box, a * UNIT + fee);
+        // no permit at all: the signature is junk and the holder never approved the inbox
+        vm.prank(address(0xBEEF));
+        blocks.sweepWithPermit(s, a, cx, cy, body, back, holder, fee, block.timestamp + 1 hours, 27, bytes32(uint256(1)), bytes32(uint256(2)));
+        assertEq(tac.balanceOf(holder), a * UNIT + fee, "nothing pulled");
+        assertEq(tac.allowance(holder, box), 0);
+        assertEq(tac.nonces(holder), 0);
+        assertEq(tac.balanceOf(address(0xBEEF)), fee, "the fee the inbox was paid");
+        assertEq(tac.balanceOf(address(blocks)), a * UNIT);
+        (address from,,) = blocks.pending(depKey(s, a, cx, cy, body));
+        assertEq(from, box);
     }
 
     /// A permit someone sends to the token first (taking it out of the mempool) leaves its allowance to the inbox: the sweep passes

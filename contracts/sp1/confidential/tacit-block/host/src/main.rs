@@ -46,8 +46,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 use tacit_block_common::{
-    self as blk, ops, fr_be, h64, nf_record, nf_zeros, Answers, BlockData, BlockOut, NfMember, NfWitness, Posted, SpendData, State, EXIT_FEE_BPS, MEMO_LEN, MIN_POOL_FEE,
-    NF_LEVELS, RECENT,
+    self as blk, ops, fr_be, h64, nf_record, nf_zeros, Answers, BlockData, BlockOut, NfMember, NfWitness, Posted, SpendData, State, EXIT_FEE_BPS, LOCK_POOL_SHARES,
+    MEMO_LEN, MIN_POOL_FEE, NF_LEVELS, RECENT, VIRTUAL,
 };
 
 const H2_ARTIFACTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../btc-pool-halo2/artifacts");
@@ -172,17 +172,19 @@ fn secret(tag: u8, a: u32, b: u8) -> [u8; 33] {
     s
 }
 
-/// A whole TAC in the chain's units (10^-8 TAC). The tests count in whole TAC, so a payment's pool share (MIN_POOL_FEE, 0.01 TAC)
+/// A whole TAC in the chain's units (10^-8 TAC). The tests count in whole TAC, so a payment's pool share (MIN_POOL_FEE, 0.002 TAC)
 /// is a small part of every note.
 const TAC: u64 = 100_000_000;
 
-/// The chain's rate before a block, as the program reads it: (pool, shares), one unit a share while there are none.
+/// The chain's rate before a block, as the program reads it: (pool, shares), each with VIRTUAL added.
 fn rate(s: &State) -> (u128, u128) {
-    if s.shares == 0 {
-        (1, 1)
-    } else {
-        (s.pool as u128, s.shares as u128)
-    }
+    (s.pool as u128 + VIRTUAL, s.shares as u128 + VIRTUAL)
+}
+
+/// What `shares` are worth at the rate (units, rounded down): what an exit of them is priced at before its fee.
+fn worth(s: &State, shares: u64) -> u64 {
+    let (p, n) = rate(s);
+    (shares as u128 * p / n) as u64
 }
 
 /// The least TAC (units) that buys `shares` at the rate: what a wallet pays for a deposit (the program's `covers`, at its edge).
@@ -191,13 +193,13 @@ fn buy_amount(s: &State, shares: u64) -> u64 {
     u64::try_from((shares as u128 * p).div_ceil(n)).unwrap_or_else(|_| fail("a deposit's price overflows"))
 }
 
-/// The most TAC (units) ending `shares` pays out: their worth less EXIT_FEE_BPS of it, the fee rounded up (the program's `pays`, at
-/// its edge).
+/// The most TAC (units) ending `shares` pays out: their worth less the exit fee, EXIT_FEE_BPS of it (rounded up) and at least
+/// MIN_POOL_FEE units (the program's `pays`, at its edge); 0 when they are worth less than the fee, which no amount pays.
 fn pay_amount(s: &State, shares: u64) -> u64 {
     let (p, n) = rate(s);
     let worth = shares as u128 * p;
-    let fee = worth / 10_000 * EXIT_FEE_BPS + (worth % 10_000 * EXIT_FEE_BPS).div_ceil(10_000);
-    ((worth - fee) / n) as u64
+    let fee = (worth / 10_000 * EXIT_FEE_BPS + (worth % 10_000 * EXIT_FEE_BPS).div_ceil(10_000)).max(MIN_POOL_FEE * n);
+    (worth.saturating_sub(fee) / n) as u64
 }
 
 /// The fewest shares worth MIN_POOL_FEE at the rate: the pool share a payment gives the holders (the program's `worth_at_least`).
@@ -405,6 +407,19 @@ impl Chain {
     /// and a lock or a pool share moves none.
     #[allow(clippy::too_many_arguments)]
     fn spend_raw(&self, k: &Keys, ins: &[&Note], outs: &[(usize, [u8; 33], u64)], exit: Option<(u64, [u8; 20])>, dep: Option<u64>, op: Option<(u64, ops::Op, Vec<Vec<u8>>)>, tag: &str, at: usize) -> Prepared {
+        let paid_in = dep.map(|v| buy_amount(&self.state, v)).unwrap_or(0);
+        let paid_out = match &op {
+            Some((_, ops::Op::Lock { .. } | ops::Op::Pool, _)) => 0,
+            Some((v, _, _)) => pay_amount(&self.state, *v),
+            None => exit.map(|(v, _)| pay_amount(&self.state, v)).unwrap_or(0),
+        };
+        self.spend_priced(k, ins, outs, exit, dep, op, [paid_in, paid_out], tag, at)
+    }
+
+    /// As `spend_raw`, with the TAC its owners sign to cross the edge given: `amounts` = [the deposit's, the exit's] (units), which its
+    /// body names and its openings carry.
+    #[allow(clippy::too_many_arguments)]
+    fn spend_priced(&self, k: &Keys, ins: &[&Note], outs: &[(usize, [u8; 33], u64)], exit: Option<(u64, [u8; 20])>, dep: Option<u64>, op: Option<(u64, ops::Op, Vec<Vec<u8>>)>, amounts: [u64; 2], tag: &str, at: usize) -> Prepared {
         let tree = Tree::new(&self.leaves[..at]);
         let mut out = [Fr::from(0u64); 3];
         let mut memo_hashes = [[0u8; 32]; 3];
@@ -428,8 +443,8 @@ impl Chain {
         // a wallet's would come from its own secret and the spend; the test's from the tag
         let salt = blk::memo_hash(format!("tacit-block test salt {tag}").as_bytes());
         let bh = match &op {
-            None => body_hash(&blk::body_bytes(&self.state.chain, &out, &memo_hashes, &exit_to, &salt)),
-            Some((_, o, _)) => body_hash(&blk::op_body_bytes(&self.state.chain, &out, &memo_hashes, o, &salt)),
+            None => body_hash(&blk::body_bytes(&self.state.chain, &out, &memo_hashes, &exit_to, &amounts, &salt)),
+            Some((_, o, _)) => body_hash(&blk::op_body_bytes(&self.state.chain, &out, &memo_hashes, o, &amounts, &salt)),
         };
         let mut inputs: [Option<InNote>; 2] = [None, None];
         for (i, n) in ins.iter().enumerate() {
@@ -439,19 +454,13 @@ impl Chain {
         let opening = |v: u64, what: &str| btc_pool_halo2::model::Opening { v, r: hs_l(&format!("tacit-block test {what}"), &[tag.as_bytes()]) };
         let exit_open = exit.map(|(v, _)| opening(v, "exit")).or(op.as_ref().map(|(v, _, _)| opening(*v, "exit")));
         let dep_open = dep.map(|v| opening(v, "deposit"));
-        let paid_in = dep.map(|v| buy_amount(&self.state, v)).unwrap_or(0);
-        let paid_out = match &op {
-            Some((_, ops::Op::Lock { .. } | ops::Op::Pool, _)) => 0,
-            Some((v, _, _)) => pay_amount(&self.state, *v),
-            None => exit.map(|(v, _)| pay_amount(&self.state, v)).unwrap_or(0),
-        };
         let plain = |o: &btc_pool_halo2::model::Opening, amount: u64| blk::Opening { v: o.v, r: be32(&o.r), amount };
         let data = SpendData {
             memo_hashes,
             exit_to,
             salt,
-            dep: dep_open.as_ref().map(|o| plain(o, paid_in)),
-            exit: exit_open.as_ref().map(|o| plain(o, paid_out)),
+            dep: dep_open.as_ref().map(|o| plain(o, amounts[0])),
+            exit: exit_open.as_ref().map(|o| plain(o, amounts[1])),
             op: op.as_ref().map(|(_, o, _)| o.clone()),
         };
         let w = build_witness(tree.root, bh, self.asset_f, &inputs, &outputs, exit_open, dep_open).unwrap_or_else(|e| fail(&e));
@@ -956,17 +965,18 @@ fn fixture(path: &str, chain_id: u64, lander: [u8; 20]) {
     if l8.data.nullifiers.len() != 1 || l8.out.queue_len != 3 {
         fail("the fixture's forced refund was not taken");
     }
-    // Block 8, whose lists travel in a blob: the claimed note paid on in two, its pool share out of the second.
-    let claimed_leaf = leaf_of(&c.asset_f, &fr_u64(va), &la.claim_to.npk, &la.claim_to.rho);
-    let claimed = c.made_note(&claimed_leaf, 4, &secret(84, 0, 0), va);
-    let blob_pay = c.spend(&k, &[&claimed], &[(6, secret(86, 0, 0), 600 * TAC), (4, secret(86, 0, 1), 400 * TAC)], "fixture blob pay", c.leaves.len());
-    // and the refunded 500: 200 of it moved to a successor chain, 300 kept
-    let refunded_leaf = leaf_of(&c.asset_f, &fr_u64(vb), &lb.refund_to.npk, &lb.refund_to.rho);
-    let refunded = c.made_note(&refunded_leaf, 5, &secret(84, 1, 1), vb);
+    // Block 8, whose lists travel in a blob: the claimed note (the lock less its pool share) paid on in two, its pool share out of the
+    // second.
+    let claimed_leaf = leaf_of(&c.asset_f, &fr_u64(va - LOCK_POOL_SHARES), &la.claim_to.npk, &la.claim_to.rho);
+    let claimed = c.made_note(&claimed_leaf, 4, &secret(84, 0, 0), va - LOCK_POOL_SHARES);
+    let blob_pay = c.spend(&k, &[&claimed], &[(6, secret(86, 0, 0), 600 * TAC), (4, secret(86, 0, 1), claimed.v - 600 * TAC)], "fixture blob pay", c.leaves.len());
+    // and the refunded 500 (less its pool share): 200 of it moved to a successor chain, the rest kept
+    let refunded_leaf = leaf_of(&c.asset_f, &fr_u64(vb - LOCK_POOL_SHARES), &lb.refund_to.npk, &lb.refund_to.rho);
+    let refunded = c.made_note(&refunded_leaf, 5, &secret(84, 1, 1), vb - LOCK_POOL_SHARES);
     let successor = [0x5c; 20];
     let successor_note = [0x77; 32];
     let moved = pay_amount(&c.state, 200 * TAC);
-    let migrate = c.spend_full(&k, &[&refunded], &[(5, secret(87, 0, 0), 300 * TAC)], None, None, Some((200 * TAC, ops::Op::Migrate { to: successor, note: successor_note }, vec![])), "fixture migrate", c.leaves.len());
+    let migrate = c.spend_full(&k, &[&refunded], &[(5, secret(87, 0, 0), refunded.v - 200 * TAC)], None, None, Some((200 * TAC, ops::Op::Migrate { to: successor, note: successor_note }, vec![])), "fixture migrate", c.leaves.len());
     c.blobs = true;
     let l9 = c.land(&elf, &k, &[blob_pay.clone(), migrate.clone()]).unwrap_or_else(|e| fail(&format!("fixture blob block: {e}")));
     c.blobs = false;
@@ -1283,6 +1293,7 @@ fn test() {
     lock_test(&mut c, &elf, &k);
     blob_test(&mut c, &elf, &k);
     shares_test(&elf, &k);
+    virtual_test(&elf, &k);
     println!("{}", json!({ "test": "ok", "note_roots": c.roots.len() }));
 }
 
@@ -1472,10 +1483,15 @@ fn lock_test(c: &mut Chain, elf: &[u8], k: &Keys) {
         Ok(_) => fail("a claim that could land after its deadline was taken"),
         Err(e) => println!("{}", json!({ "refused": "a claim that could land after its deadline", "why": e })),
     }
+    // the claim pays the holders their part, as a payment does: its note is the lock less LOCK_POOL_SHARES, which end
+    let before = (c.state.pool, c.state.shares);
     let lc = c.land_full(elf, k, &[], &[claim.clone()], &[]).unwrap_or_else(|e| fail(&format!("a claim: {e}")));
-    let want = leaf_of(&a, &fr_u64(v1), &l1.claim_to.npk, &l1.claim_to.rho);
+    let want = leaf_of(&a, &fr_u64(v1 - LOCK_POOL_SHARES), &l1.claim_to.npk, &l1.claim_to.rho);
     if lc.data.claims.len() != 1 || lc.data.outputs.len() != 1 || lc.data.outputs[0][..32] != fr_be(&want) || lc.data.outputs[0][32..] != blk::memo_hash(&cm1) {
         fail("the claim did not make the recipient's note and publish its signature");
+    }
+    if (lc.out.pool, lc.out.shares) != (before.0, before.1 - LOCK_POOL_SHARES) || worth(&c.state, LOCK_POOL_SHARES) < MIN_POOL_FEE as u64 {
+        fail("a lock and its claim did not give the holders their pool share");
     }
     // the counterparty reads the secret from the published signature and its pre-signature
     if schnorr::s_of(&lc.data.claims[0]) - s_tilde != t {
@@ -1493,11 +1509,19 @@ fn lock_test(c: &mut Chain, elf: &[u8], k: &Keys) {
         Err(e) => println!("{}", json!({ "refused": "a refund before its deadline", "why": e })),
     }
     c.time = l2.deadline;
+    let before = (c.state.pool, c.state.shares);
     let lr = c.land_full(elf, k, &[], &[refund], &[]).unwrap_or_else(|e| fail(&format!("a refund: {e}")));
-    let back = leaf_of(&a, &fr_u64(v2), &l2.refund_to.npk, &l2.refund_to.rho);
+    let back = leaf_of(&a, &fr_u64(v2 - LOCK_POOL_SHARES), &l2.refund_to.npk, &l2.refund_to.rho);
     if lr.data.outputs.len() != 1 || lr.data.outputs[0][..32] != fr_be(&back) || lr.data.outputs[0][32..] != blk::memo_hash(&rm2) || !lr.data.claims.is_empty() {
         fail("the refund did not make the locker's note");
     }
+    if (lr.out.pool, lr.out.shares) != (before.0, before.1 - LOCK_POOL_SHARES) {
+        fail("a refund did not give the holders their pool share");
+    }
+    // refused: a lock no larger than the pool share its settle takes (here a deposit straight into it)
+    let (l0, m0, _, _) = lock_of(c, 9, c.time + 100_000);
+    let tiny = c.spend_full(k, &[], &[], None, Some(LOCK_POOL_SHARES), Some((LOCK_POOL_SHARES, ops::Op::Lock { lock: l0, memo: blk::memo_hash(&m0) }, vec![m0])), "lock of its pool share", c.leaves.len());
+    expect_refused_for(c, elf, k, &[tiny], "the exit's opening, address or operation", "a lock no larger than its pool share");
 
     // a claim posted to the queue is taken; one posted too late is passed over and the chain goes on
     let (l3, m3, cm3, _) = lock_of(c, 2, c.time + 100_000);
@@ -1605,20 +1629,24 @@ fn blob_test(c: &mut Chain, elf: &[u8], k: &Keys) {
     println!("{}", json!({ "blobs": "ok", "blob_block_cycles": l.cycles, "calldata_block_cycles": lc.cycles, "blob_extra_cycles": l.cycles as i64 - lc.cycles as i64 }));
 }
 
-/// Whether the rate went up from `a` to `b` (each (pool, shares)): b.pool / b.shares > a.pool / a.shares.
+/// Whether the rate went up from `a` to `b` (each (pool, shares), counted as the program counts them, VIRTUAL added to each).
 fn rose(a: (u64, u64), b: (u64, u64)) -> bool {
-    b.0 as u128 * a.1 as u128 > a.0 as u128 * b.1 as u128
+    let v = |x: (u64, u64)| (x.0 as u128 + VIRTUAL, x.1 as u128 + VIRTUAL);
+    let (a, b) = (v(a), v(b));
+    b.0 * a.1 > a.0 * b.1
 }
 
-/// Notes count shares of the pool, on a fresh chain: a shield buys them a unit each, an exit pays out their worth less the 0.1% fee,
-/// which stays, and a payment's pool share ends shares while the TAC behind them stays, so the rate rises after each, and a deposit
-/// then pays more than a unit a share. At each the edges hold: an exit paying out a unit more than allowed, a payment of notes
-/// without a pool share, a pool share a share short of 0.01 TAC's worth and a deposit paying a unit less than its shares' worth are
-/// refused.
+/// Notes count shares of the pool, on a fresh chain: a shield buys them a unit each, an exit pays out their worth less the 0.1% fee
+/// (and never less than MIN_POOL_FEE), which stays, and a payment's pool share ends shares while the TAC behind them stays, so the
+/// rate rises after each, and a deposit then pays more than a unit a share. At each the edges hold: an exit signed for a unit more
+/// than allowed, a payment of notes without a pool share, a pool share a share short of MIN_POOL_FEE's worth, a deposit signed for a
+/// unit less than its shares' worth and an exit worth less than the fee floor are refused; and every amount is signed, so one changed
+/// after its owners signed it (a deposit's, an exit's, a hop's, a migration's) is refused.
 fn shares_test(elf: &[u8], k: &Keys) {
     use ops::Op;
     let mut c = Chain::new(8);
     let at = |c: &Chain| (c.state.pool, c.state.shares);
+    let body = "the body is not this chain's";
 
     // a shield of 1,000 TAC: 1,000 TAC of shares, a unit each
     let shield = c.spend_with(k, &[], &[(1, secret(140, 0, 0), 1_000 * TAC)], None, Some(1_000 * TAC), "shares shield", 0);
@@ -1627,15 +1655,20 @@ fn shares_test(elf: &[u8], k: &Keys) {
         fail("a shield on a fresh chain did not buy its shares a unit each");
     }
 
-    // an exit of 100 TAC of shares pays out at most 99.9 TAC: a unit more is refused
+    // an exit of 100 TAC of shares pays out at most 99.9 TAC: signed for a unit more it is refused, and its amount changed after
+    // signing is too
     let held = l.notes[0].clone();
-    let exit = c.spend_with(k, &[&held], &[(1, secret(141, 0, 0), 900 * TAC)], Some((100 * TAC, [0xe1; 20])), None, "shares exit", c.leaves.len());
+    let outs = [(1, secret(141, 0, 0), 900 * TAC)];
+    let to_e1 = Some((100 * TAC, [0xe1; 20]));
+    let exit = c.spend_with(k, &[&held], &outs, to_e1, None, "shares exit", c.leaves.len());
     if exit.data.exit.map(|o| o.amount) != Some(9_990_000_000) {
         fail("an exit's most is not its shares' worth less 0.1%");
     }
-    let mut over = exit.clone();
-    over.data.exit.as_mut().unwrap().amount += 1;
-    expect_refused_for(&mut c, elf, k, &[over], "pays out more than its shares are worth", "an exit paying out a unit more than its shares' worth less the fee");
+    let over = c.spend_priced(k, &[&held], &outs, to_e1, None, None, [0, 9_990_000_001], "shares exit over", c.leaves.len());
+    expect_refused_for(&mut c, elf, k, &[over], "pays out more than its shares are worth", "an exit signed for a unit more than its shares' worth less the fee");
+    let mut changed = exit.clone();
+    changed.data.exit.as_mut().unwrap().amount -= 1;
+    expect_refused_for(&mut c, elf, k, &[changed], body, "an exit's amount changed after its owners signed it");
     let r0 = at(&c);
     let l = c.land(elf, k, &[exit]).unwrap_or_else(|e| fail(&format!("shares exit: {e}")));
     let mut to = [0u8; 32];
@@ -1646,18 +1679,18 @@ fn shares_test(elf: &[u8], k: &Keys) {
         fail("an exit did not leave its fee in the pool");
     }
 
-    // a payment's pool share: the fewest shares worth 0.01 TAC at the new rate, fewer than 0.01 TAC of shares now
+    // a payment's pool share: the fewest shares worth MIN_POOL_FEE at the new rate, fewer than MIN_POOL_FEE shares now
     let kept = l.notes[0].clone();
     let share = pool_share(&c.state);
-    if share != 999_889 {
-        fail("a pool share is not the fewest shares worth 0.01 TAC");
+    if share != 199_978 {
+        fail("a pool share is not the fewest shares worth MIN_POOL_FEE");
     }
     // refused: a payment of notes that sends nothing out and gives the holders nothing, and one whose pool share is a share short
     let bare = c.spend_raw(k, &[&kept], &[(2, secret(142, 0, 0), 500 * TAC), (1, secret(142, 0, 1), 400 * TAC)], None, None, None, "shares bare", c.leaves.len());
     expect_refused_for(&mut c, elf, k, &[bare], "gives the holders their pool share", "a payment of notes without a pool share");
     let outs = [(2, secret(142, 0, 2), 500 * TAC), (1, secret(142, 0, 3), 400 * TAC - (share - 1))];
     let short = c.spend_full(k, &[&kept], &outs, None, None, Some((share - 1, Op::Pool, vec![])), "shares short", c.leaves.len());
-    expect_refused_for(&mut c, elf, k, &[short], "the exit's opening, address or operation", "a pool share worth less than 0.01 TAC");
+    expect_refused_for(&mut c, elf, k, &[short], "the exit's opening, address or operation", "a pool share worth less than MIN_POOL_FEE");
     // the payment with its pool share lands: those shares end and the TAC behind them stays, so the rate rises again
     let pay = c.spend(k, &[&kept], &[(2, secret(142, 0, 4), 500 * TAC), (1, secret(142, 0, 5), 400 * TAC)], "shares pay", c.leaves.len());
     let l = c.land(elf, k, &[pay.clone()]).unwrap_or_else(|e| fail(&format!("shares pay: {e}")));
@@ -1665,20 +1698,116 @@ fn shares_test(elf: &[u8], k: &Keys) {
     if pay.data.op != Some(Op::Pool) || pay.data.exit.map(|o| (o.v, o.amount)) != Some((share, 0)) || r2 != (r1.0, r1.1 - share) || !rose(r1, r2) || l.notes[1].v != 400 * TAC - share {
         fail("a payment's pool share did not end its shares and keep their TAC");
     }
+    let (five, four) = (l.notes[0].clone(), l.notes[1].clone());
 
-    // a deposit now pays more than a unit a share: a unit less than the least that covers them is refused, that least taken in
+    // a deposit now pays more than a unit a share: signed for a unit less than the least that covers them it is refused, its amount
+    // changed after signing is too, and that least is taken in
     let price = buy_amount(&c.state, 100 * TAC);
-    if price <= 100 * TAC || price as u128 * r2.1 as u128 >= (100 * TAC) as u128 * r2.0 as u128 + r2.1 as u128 {
+    let (p, n) = (r2.0 as u128 + VIRTUAL, r2.1 as u128 + VIRTUAL);
+    if price <= 100 * TAC || price as u128 * n < (100 * TAC) as u128 * p || (price - 1) as u128 * n >= (100 * TAC) as u128 * p {
         fail("a deposit's price is not the least that covers its shares");
     }
-    let dep = c.spend_with(k, &[], &[(3, secret(143, 0, 0), 100 * TAC)], None, Some(100 * TAC), "shares deposit", c.leaves.len());
-    let mut under = dep.clone();
-    under.data.dep.as_mut().unwrap().amount -= 1;
-    expect_refused_for(&mut c, elf, k, &[under], "pays less than its shares are worth", "a deposit paying a unit less than its shares' worth");
+    let outs = [(3, secret(143, 0, 0), 100 * TAC)];
+    let under = c.spend_priced(k, &[], &outs, None, Some(100 * TAC), None, [price - 1, 0], "shares deposit under", c.leaves.len());
+    expect_refused_for(&mut c, elf, k, &[under], "pays less than its shares are worth", "a deposit signed for a unit less than its shares' worth");
+    let dep = c.spend_with(k, &[], &outs, None, Some(100 * TAC), "shares deposit", c.leaves.len());
+    let mut changed = dep.clone();
+    changed.data.dep.as_mut().unwrap().amount += 1;
+    expect_refused_for(&mut c, elf, k, &[changed], body, "a deposit's amount changed after its owner signed it");
     let l = c.land(elf, k, &[dep]).unwrap_or_else(|e| fail(&format!("shares deposit: {e}")));
     let r3 = at(&c);
     if word_u64(&l.data.deposits[0][160..192]) != price || r3 != (r2.0 + price, r2.1 + 100 * TAC) || rose(r3, r2) {
         fail("a deposit at the new rate was not taken at its price, or lowered the rate");
     }
-    println!("{}", json!({ "shares": "ok", "rates": [r0, r1, r2, r3], "pool_share": share, "deposit_price": price }));
+
+    // a tiny exit to its owner's own address pays the fee floor, MIN_POOL_FEE, not 0.1% (which would be half of it); one worth less
+    // than the floor pays nothing out and is refused
+    let note = l.notes[0].clone();
+    let paid = pay_amount(&c.state, TAC);
+    let (p, n) = (r3.0 as u128 + VIRTUAL, r3.1 as u128 + VIRTUAL);
+    if TAC as u128 * p - paid as u128 * n < MIN_POOL_FEE * n || paid as u128 * n + n <= TAC as u128 * p - MIN_POOL_FEE * n {
+        fail("a tiny exit's most is not its worth less MIN_POOL_FEE");
+    }
+    let own = [0xa5; 20];
+    let outs = [(3, secret(144, 0, 0), 99 * TAC)];
+    let tiny = c.spend_with(k, &[&note], &outs, Some((TAC, own)), None, "shares tiny exit", c.leaves.len());
+    let dust = 100_000;
+    let outs_dust = [(3, secret(144, 0, 1), 100 * TAC - dust)];
+    let below = c.spend_priced(k, &[&note], &outs_dust, Some((dust, own)), None, None, [0, 1], "shares dust exit", c.leaves.len());
+    expect_refused_for(&mut c, elf, k, &[below], "pays out more than its shares are worth", "an exit worth less than the fee floor");
+    let l = c.land(elf, k, &[tiny]).unwrap_or_else(|e| fail(&format!("shares tiny exit: {e}")));
+    let r4 = at(&c);
+    if word_u64(&l.data.exits[0][32..64]) != paid || r4 != (r3.0 - paid, r3.1 - TAC) || !rose(r3, r4) {
+        fail("a tiny exit did not leave the fee floor in the pool");
+    }
+
+    // a hop's and a migration's amounts are signed too: changed after signing, each is refused
+    let mut hop = c.spend_full(k, &[&five], &[], None, None, Some((five.v, Op::Hop { commit: [0x61; 32] }, vec![])), "shares hop", c.leaves.len());
+    hop.data.exit.as_mut().unwrap().amount -= 1;
+    expect_refused_for(&mut c, elf, k, &[hop], body, "a hop's amount changed after its owners signed it");
+    let mut mv = c.spend_full(k, &[&four], &[], None, None, Some((four.v, Op::Migrate { to: [0x5d; 20], note: [0x62; 32] }, vec![])), "shares migrate", c.leaves.len());
+    mv.data.exit.as_mut().unwrap().amount -= 1;
+    expect_refused_for(&mut c, elf, k, &[mv], body, "a migration's amount changed after its owners signed it");
+    println!("{}", json!({ "shares": "ok", "rates": [r0, r1, r2, r3, r4], "pool_share": share, "deposit_price": price, "tiny_exit_paid": paid }));
+}
+
+/// The rate counts VIRTUAL units of pool and shares that no note holds, so no one sets a share's price alone: a first depositor who
+/// overpays for one share, or burns all but one of its shares into the pool, gives that TAC away and moves the price only as far as a
+/// later depositor pays for again in full (it loses at most a share's price to rounding); and what is left in a pool with no shares
+/// (exit fees) stays with the virtual shares, not with the next depositor.
+fn virtual_test(elf: &[u8], k: &Keys) {
+    use ops::Op;
+    // a later depositor buys about `spend` TAC of shares at the rate and is checked to hold, at the rate after, what it paid (less at
+    // most one share's price)
+    let later = |c: &mut Chain, tag: &str, spend: u64| -> (u64, u64) {
+        let (p, n) = rate(&c.state);
+        let shares = (spend as u128 * n / p) as u64;
+        let price = buy_amount(&c.state, shares);
+        let one = buy_amount(&c.state, 1);
+        let d = c.spend_with(k, &[], &[(6, secret(151, 0, tag.len() as u8), shares)], None, Some(shares), tag, c.leaves.len());
+        c.land(elf, k, &[d]).unwrap_or_else(|e| fail(&format!("{tag}: {e}")));
+        let held = worth(&c.state, shares);
+        if held > price || price - held > one {
+            fail(&format!("{tag}: a later depositor paid {price} for shares worth {held}, a share costing {one}"));
+        }
+        (price, held)
+    };
+
+    // overpaid: one share bought for 1,000 TAC
+    let mut c = Chain::new(8);
+    let one = c.spend_priced(k, &[], &[(1, secret(150, 0, 0), 1)], None, Some(1), None, [1_000 * TAC, 0], "inflate overpay", 0);
+    c.land(elf, k, &[one]).unwrap_or_else(|e| fail(&format!("inflate overpay: {e}")));
+    let price_after = buy_amount(&c.state, 1);
+    if (c.state.pool, c.state.shares) != (1_000 * TAC, 1) || price_after > 1_002 || worth(&c.state, 1) > 1_001 {
+        fail("one overpaid share set its own price");
+    }
+    let overpaid = later(&mut c, "after an overpaid share", 500 * TAC);
+
+    // burnt: 1,000 TAC of shares, all but one given to the pool
+    let mut c = Chain::new(8);
+    let shield = c.spend_with(k, &[], &[(1, secret(150, 1, 0), 1_000 * TAC)], None, Some(1_000 * TAC), "inflate shield", 0);
+    let l = c.land(elf, k, &[shield]).unwrap_or_else(|e| fail(&format!("inflate shield: {e}")));
+    let burn = c.spend_full(k, &[&l.notes[0]], &[(1, secret(150, 1, 1), 1)], None, None, Some((1_000 * TAC - 1, Op::Pool, vec![])), "inflate burn", c.leaves.len());
+    c.land(elf, k, &[burn]).unwrap_or_else(|e| fail(&format!("inflate burn: {e}")));
+    if (c.state.pool, c.state.shares) != (1_000 * TAC, 1) || worth(&c.state, 1) > 1_001 {
+        fail("one share left after a burn kept the pool");
+    }
+    let burnt = later(&mut c, "after a burn to one share", 500 * TAC);
+
+    // dust: every share exits, the fees stay in a pool with no shares; the next depositor's shares are worth what it paid, not that
+    let mut c = Chain::new(8);
+    let shield = c.spend_with(k, &[], &[(1, secret(150, 2, 0), 1_000 * TAC)], None, Some(1_000 * TAC), "dust shield", 0);
+    let l = c.land(elf, k, &[shield]).unwrap_or_else(|e| fail(&format!("dust shield: {e}")));
+    let all = c.spend_with(k, &[&l.notes[0]], &[], Some((1_000 * TAC, [0xd0; 20])), None, "dust exit", c.leaves.len());
+    c.land(elf, k, &[all]).unwrap_or_else(|e| fail(&format!("dust exit: {e}")));
+    let left = c.state.pool;
+    if c.state.shares != 0 || left != TAC {
+        fail("an exit of every share did not leave its fee in a pool with no shares");
+    }
+    // (`later` holds it to no more than it paid: with no virtual shares it would have held what it paid and all of the dust)
+    let (paid, held) = later(&mut c, "after dust", 100 * TAC);
+    if c.state.pool != left + paid || held > paid {
+        fail("the next depositor took the dust");
+    }
+    println!("{}", json!({ "virtual": "ok", "overpaid_then": overpaid, "burnt_then": burnt, "dust": left, "after_dust": [paid, held] }));
 }
