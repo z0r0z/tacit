@@ -246,7 +246,7 @@ export async function selfFinish({ t = null, built, hash = null, jobId = null, o
 }
 
 const stages = new WeakMap();
-const stageOf = async (t) => stages.get(t) || (await import('/confidential-stage.js?cb=d625f4a6').then(({ makeConfidentialStage }) => { const st = makeConfidentialStage({ ux: t }); stages.set(t, st); return st; }));
+const stageOf = async (t) => stages.get(t) || (await import('/confidential-stage.js?cb=8dfd1b9f').then(({ makeConfidentialStage }) => { const st = makeConfidentialStage({ ux: t }); stages.set(t, st); return st; }));
 export async function readHeld({ priv, ux = null }) {
   const t = ux || await getUx();
   const r = await t.balance(priv(), { cbtc: false, bridge: false, positions: true });

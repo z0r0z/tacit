@@ -8,7 +8,7 @@
 // held in this visit's memory only.
 import { makeKeySession, signInSheet, Cancelled } from '/trade/key.js?cb=d110df5e';
 import { forgetUx } from '/trade/poolux.js?cb=89ac6e27';
-import { wrapEth, wrapFirst, wrapCalldata, settle, relayState, relayStopped, relayWords } from '/teth/wrap.js?cb=7685b3c9';
+import { wrapEth, wrapFirst, wrapCalldata, settle, relayState, relayStopped, relayWords } from '/teth/wrap.js?cb=46463fd4';
 import { wrapQuote, WRAP_TIP } from '/teth/read.js?cb=9364ab31';
 import { secp, keccak_256, sha256, bytesToHex } from '/vendor/tacit-deps.min.js';
 import { makeRunner } from '/activity.js?cb=8ccbc552';
@@ -308,7 +308,7 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
   // amount, swapped through one pool from it: the press's proof holds no secret, so it is the relay's board (or any prover) that makes it, and
   // the note's key was used only when the deposit was staged. → { txHash, out } or null when no staged deposit fits.
   let stageP = null;
-  const stage = async () => (stageP ||= (async () => { const t = await getUx(); const { makeConfidentialStage } = await import('/confidential-stage.js?cb=d625f4a6'); return makeConfidentialStage({ ux: t }); })());
+  const stage = async () => (stageP ||= (async () => { const t = await getUx(); const { makeConfidentialStage } = await import('/confidential-stage.js?cb=8dfd1b9f'); return makeConfidentialStage({ ux: t }); })());
   async function stagedSwap(plan, say) {
     const t = await getUx();
     if (plan.path?.length !== 1 || lc(plan.asset) !== lc(t.assetByTicker.cETH.assetId)) return null;
@@ -342,7 +342,17 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
     stagedP ||= stage().then((st) => st.splitPending(h.pending)).then((s) => { stagedAt = { held: h, sizes: s.staged.map((x) => BigInt(x.value)) }; onReady(); }, () => {}).finally(() => { stagedP = null; });
     return stagedAt?.sizes ?? null;
   }
-  // Each size not staged yet is staged from the smallest tETH note that holds more than it, one after another; the relay's fee and the
+  // What a note must hold (more than) to be cut for a size, in tETH units: the size and the stage's fee. undefined until read (and when the stage cannot say),
+  // null when it cannot be sized; read again after five minutes, the last answer standing meanwhile. `onReady` is told when one has been read.
+  const NEED = new Map(), NEED_P = new Map();
+  function stageNeed(units, onReady = () => {}) {
+    const k = String(units), hit = NEED.get(k);
+    if (!hit || Date.now() - hit.at > 5 * 60e3) {
+      if (!NEED_P.has(k)) NEED_P.set(k, stage().then((st) => (st.stageNeed ? st.stageNeed(units).then((v) => (v == null ? null : BigInt(v))) : undefined)).then((v) => { NEED.set(k, { at: Date.now(), v }); onReady(); }, () => {}).finally(() => NEED_P.delete(k)));
+    }
+    return hit?.v;
+  }
+  // Each size not staged yet is staged from the smallest tETH note that holds more than it and its fee, one after another; the relay's fee and the
   // activation's gas come out of that note and the rest comes back as a hidden change note. → how many were staged.
   let staging = null;
   function stageSizes({ sizes, say = () => {}, onStaged = () => {} }) {
@@ -353,12 +363,14 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
       for (const units of sizes) {
         // the note an earlier stage spent comes back as change once the pool's new notes are read: a few looks, a few seconds apart
         let note = null, have = [];
+        // (a note only just over the size cannot pay the fee: the smallest that can is cut, as the card's chip counted)
+        const need = st.stageNeed ? await st.stageNeed(units).then((v) => (v == null ? null : BigInt(v)), () => null) : null;
         for (let i = 0; i < (n ? 12 : 1) && !note; i++) {
           if (i) await sleep(5000);
           await read(true);
           have = await st.splitPending(held.pending).then((s) => s.staged.map((x) => BigInt(x.value)), () => []);
           if (have.includes(units)) break;
-          note = of(eth).notes.filter((x) => BigInt(x.value) > units).sort(byValue)[0] || null;
+          note = of(eth).notes.filter((x) => BigInt(x.value) > (need ?? units)).sort(byValue)[0] || null;
         }
         if (have.includes(units)) continue;
         if (!note) break;
@@ -760,7 +772,7 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
   }
 
   return {
-    open, lock, reset, read, swap, swapOut, exitCalls, of, most, keyHex, sendPrivate, ahead, aheadOf, routeAhead, routeAheadOf, keep, tierOf, stagedSizes, stageSizes, stageWhole, deviceStaging, isStaging,
+    open, lock, reset, read, swap, swapOut, exitCalls, of, most, keyHex, sendPrivate, ahead, aheadOf, routeAhead, routeAheadOf, keep, tierOf, stagedSizes, stageNeed, stageSizes, stageWhole, deviceStaging, isStaging,
     // the checks a swap makes before anything leaves a wallet, for a page that first sells a token for the ETH it will make private
     swapHere, get canHere() { return !!here && !!selfSettle; },
     relayOpen, priceOk: (asset, units, path, fee, minOut) => (path?.length ? price(asset, units, path, fee, minOut) : Promise.resolve(null)),

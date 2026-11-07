@@ -12236,11 +12236,13 @@ await step('stageready', async () => {
 // A private tETH balance held as small notes (0.0101 as two): the card offers the kept sizes and no Keep ready, since each size is cut from one note
 // that holds more than it. With one 0.0101 note it is offered.
 await step('keepsmall', async () => {
-  const stageStub = (page) => page.route(/\/confidential-stage\.js(\?|$)/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: `
-    export function makeConfidentialStage() { return { splitPending: async () => ({ staged: [], waiting: [] }) }; }` }));
-  for (const [hex, notes, want, why] of [['59c8'.padEnd(64, '5'), [500000n, 510000n], '0.01 0.1', 'two small notes'], ['5ad9'.padEnd(64, '5'), [1010000n], '0.01 0.1 Keep ready', 'one note over the size']]) {
+  // `fee`: the stage says what a note must hold for a size (the size and 30000 units of fee); without it an older stage, and a note over the size counts
+  const stageStub = (page, fee) => page.route(/\/confidential-stage\.js(\?|$)/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: `
+    export function makeConfidentialStage() { return { splitPending: async () => ({ staged: [], waiting: [] })${fee ? ', stageNeed: async (u) => BigInt(u) + 30000n' : ''} }; }` }));
+  for (const [hex, notes, want, why, fee] of [['59c8'.padEnd(64, '5'), [500000n, 510000n], '0.01 0.1', 'two small notes'], ['5ad9'.padEnd(64, '5'), [1010000n], '0.01 0.1 Keep ready', 'one note over the size'],
+    ['5be0'.padEnd(64, '5'), [1010000n], '0.01 0.1', 'one note over the size but not over it and the fee', true], ['5cf1'.padEnd(64, '5'), [1100000n], '0.01 0.1 Keep ready', 'one note over the size and the fee', true]]) {
     const acct = makeEvmAccount({ secp, keccak256: keccak_256, sha256 }).deriveEvmAccount(Buffer.from(hex, 'hex'), 'mainnet').address;
-    const r = await openFarmKey(hex, { notes: notes.map((v) => [FARM_CETH, v]), fees: { route: 100000 }, swap: true }, undefined, async (page) => { await stageStub(page); await rpc('anvil_setBalance', [acct, '0x0']); });
+    const r = await openFarmKey(hex, { notes: notes.map((v) => [FARM_CETH, v]), fees: { route: 100000 }, swap: true }, undefined, async (page) => { await stageStub(page, fee); await rpc('anvil_setBalance', [acct, '0x0']); });
     const p = r.page, chips = () => p.evaluate(() => [...document.querySelectorAll('#hx-swap #pay-usd button')].map((b) => b.textContent.trim()).join(' '));
     try {
       await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
@@ -12248,7 +12250,7 @@ await step('keepsmall', async () => {
       await p.waitForSelector('#hx-swap #pay-coin');
       await p.click('#hx-swap #pay-coin'); await p.waitForSelector('#pk .pk-r:visible');
       await p.evaluate(() => { let g = ''; for (const el of document.querySelectorAll('#pk .pk-g, #pk .pk-r')) { if (el.classList.contains('pk-g')) { g = el.textContent; continue; } if (/^Private/.test(g) && el.querySelector('b')?.textContent.trim() === 'tETH') { el.click(); return; } } });
-      await until(p, () => /^tETH/.test((document.querySelector('#hx-swap #pay-coin')?.textContent || '').trim()) && /Balance 0\.0101 · Max/.test(document.querySelector('#hx-swap #pay-side')?.textContent || ''), null, 300000)
+      await until(p, () => /^tETH/.test((document.querySelector('#hx-swap #pay-coin')?.textContent || '').trim()) && /Balance 0\.01[01]+ · Max/.test(document.querySelector('#hx-swap #pay-side')?.textContent || ''), null, 300000)
         .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | pay: ${await text(p, '#hx-swap #pay-coin')} / ${await text(p, '#hx-swap #pay-side')}`); });
       await p.click('#hx-swap #get-coin'); await p.waitForSelector('#pk .pk-r:visible');
       await p.evaluate(() => { let g = ''; for (const el of document.querySelectorAll('#pk .pk-g, #pk .pk-r')) { if (el.classList.contains('pk-g')) { g = el.textContent; continue; } if (/^Private/.test(g) && el.querySelector('b')?.textContent.trim() === 'TAC') { el.click(); return; } } });

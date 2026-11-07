@@ -2373,7 +2373,7 @@ async function exitGo() {
 // ── a private swap, made on this card: the Tacit key is opened here (private.js), and the relay proves and sends each step ──
 let PVP = null, PV = null;
 const pickWallet = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : list[0]?.uuid; };
-const pvLoad = () => (PVP ||= import('/swap/private.js?cb=538bd56c').then((m) => {
+const pvLoad = () => (PVP ||= import('/swap/private.js?cb=30a8d1d3').then((m) => {
   PV = m.makePrivate({ getUx, pick: pickWallet, ...H.key, now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()), onKey: (why) => { if (why) say(esc(why), 'err', true); else { PV.read().then(paint, () => {}); if (plans().some((x) => x.state === 'waiting')) ltLoad().then(readBlend, () => {}); } paint(); } });
   PV.mod = m;
   return PV;
@@ -2409,13 +2409,14 @@ function stagedChips() {
   else if (keepable(miss)) chips.push({ v: 'Keep ready', act: true });
   return chips;
 }
-// Each size not kept ready yet is cut from ONE free tETH note that holds more than it (private.js stageSizes: the relay's fee comes out of that note and notes are not joined), so Keep ready is
-// offered only while a note does: a balance in small notes can total more than a size and have no such note
+// Each size not kept ready yet is cut from ONE free tETH note that holds more than it and the stage's fee (private.js stageSizes: the fee comes out of that note and notes are not joined), so Keep ready is
+// offered only while a note does: a balance in small notes can total more than a size and have no such note, and a note only just over the size cannot pay the fee. The fee is read once (stageNeed);
+// until it is, a note over the size counts.
 function keepable(miss) {
   const id = IDS[PK.teth];
   if (!miss.length || !PV?.held || !id) return false;
   const top = PV.of(id).notes.reduce((m, n) => (BigInt(n.value) > m ? BigInt(n.value) : m), 0n);
-  return miss.some((u) => top > u);
+  return miss.some((u) => { const need = PV.stageNeed?.(u, paint); return need === undefined ? top > u : need !== null && top > need; });
 }
 async function stageGo() {
   let pv = null;

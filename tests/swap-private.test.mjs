@@ -477,3 +477,36 @@ test('a swap with no recipient sends nothing on', async () => {
   const r = await (await load(ux)).swap(plan({ path: [{ assetNext: TAC, feeBps: 30 }], minOut: 800n }), { wallet: {}, from: '0xme' });
   assert.strictEqual(M.stealths.length, 0); assert.strictEqual(r.sent, undefined);
 });
+
+// Keep ready: each size is cut from the smallest note that holds more than it and the stage's fee (stageNeed), so a note only just over the size is not the one picked
+test('Keep ready cuts a size from the smallest note over it and its fee, not one only just over it', async () => {
+  const { M, ux } = setup({ notes: [note('0xa', 1010000), note('0xb', 25000000)], staged: new Error('unused') });
+  const cut = [];
+  const stage = { splitPending: async () => ({ staged: [], waiting: [] }), stageNote: async ({ note: n, amountWei }) => { cut.push([n.leaf, amountWei]); } };
+  M.stage = { ...stage, stageNeed: async (u) => u + 30000n };
+  const pv = await load(ux);
+  await pv.open();
+  assert.strictEqual(await pv.stageSizes({ sizes: [1000000n] }), 1);
+  assert.deepStrictEqual(cut, [['0xb', 1000000n * 10n ** 10n]], 'the 0.0101 note is over 0.01 but not over it and the fee');
+  // a stage that cannot say what a note must hold (an older one) cuts from the smallest note over the size, as before
+  cut.length = 0; M.stage = stage;
+  const pv2 = await load(ux);
+  await pv2.open();
+  assert.strictEqual(await pv2.stageSizes({ sizes: [1000000n] }), 1);
+  assert.deepStrictEqual(cut, [['0xa', 1000000n * 10n ** 10n]]);
+});
+
+test('what a note must hold for a size is read once and then answered at once', async () => {
+  const { M, ux } = setup({ notes: [note('0xa', 25000000)], staged: new Error('unused') });
+  let reads = 0, ready = 0;
+  M.stage = { splitPending: async () => ({ staged: [], waiting: [] }), stageNeed: async (u) => { reads++; return u === 1000000n ? 1030000n : null; } };
+  const pv = await load(ux);
+  assert.strictEqual(pv.stageNeed(1000000n, () => ready++), undefined, 'not read yet');
+  await new Promise((r) => setTimeout(r, 20));
+  assert.strictEqual(ready, 1);
+  assert.strictEqual(pv.stageNeed(1000000n, () => ready++), 1030000n);
+  assert.strictEqual(pv.stageNeed(1000000n), 1030000n);
+  assert.strictEqual(reads, 1, 'asked once');
+  pv.stageNeed(10000000n); await new Promise((r) => setTimeout(r, 20));
+  assert.strictEqual(pv.stageNeed(10000000n), null, 'a size that cannot be priced is null, not undefined');
+});
