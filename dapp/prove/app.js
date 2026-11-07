@@ -400,9 +400,10 @@ function say(text, bad = false) {
 // how many GPUs are on the board (asked for work in the last two minutes, or proving a batch: one asks for nothing while it proves), and
 // this address's own GPU (its board name is c-<address>).
 let boardPay = null, gpus = null, houseGpu = null;
-const BTC = 'btc-state', GPU_NAME = /^c-(0x[0-9a-f]{40})$/;
-const cleanGpus = (ws) => (Array.isArray(ws) ? ws.filter((w) => w && w.community === true && GPU_NAME.test(String(w.name)) && Array.isArray(w.programs) && w.programs.includes(BTC))
-  .map((w) => ({ miner: GPU_NAME.exec(w.name)[1], proved: count(w.proved) || 0, seen: count(w.lastSeenSeconds), proving: w.racing === BTC })) : null);
+// A GPU proves Bitcoin batches and, once the board offers them, the Tacit chain's blocks (program 'tacit-block'): both are public work.
+const BTC = 'btc-state', BLOCK = 'tacit-block', GPU_NAME = /^c-(0x[0-9a-f]{40})$/;
+const cleanGpus = (ws) => (Array.isArray(ws) ? ws.filter((w) => w && w.community === true && GPU_NAME.test(String(w.name)) && Array.isArray(w.programs) && (w.programs.includes(BTC) || w.programs.includes(BLOCK)))
+  .map((w) => ({ miner: GPU_NAME.exec(w.name)[1], proved: count(w.proved) || 0, seen: count(w.lastSeenSeconds), proving: w.racing === BTC ? 'a batch' : w.racing === BLOCK ? 'a block' : null, blocks: w.programs.includes(BLOCK) })) : null);
 // Tacit's own GPU is on the board under its own name (not a community `c-` one): on when it asked for work in the last two minutes.
 const houseOn = (ws) => (Array.isArray(ws) ? ws.some((w) => w && w.community !== true && count(w.lastSeenSeconds) != null && w.lastSeenSeconds < 120) : null);
 const gpuOn = (g) => g.proving || (g.seen != null && g.seen < 120);
@@ -411,11 +412,13 @@ function paintGpu() {
   $('#gpu-cmd').textContent = gpuCommand();
   $('#gpu-copy').textContent = gpuCopied ? 'Copied' : addr() || $('#desk').hidden ? 'Copy' : 'Add address';
   const pts = Number(boardPay?.pointsByProgram?.[BTC]), r = Number.isSafeInteger(pts) ? rewardWei(pts, cap()) : null;
-  $('#btc-pay').textContent = r ? ` · ${tac(r)} TAC each` : '';
+  const bpts = Number(boardPay?.pointsByProgram?.[BLOCK]), br = Number.isSafeInteger(bpts) ? rewardWei(bpts, cap()) : null;
+  $('#btc-pay').textContent = r && br ? ` · ${tac(r)} TAC a batch, ${tac(br)} a chain block` : r ? ` · ${tac(r)} TAC each` : '';
   $('#gpu-n').textContent = gpus ? (houseGpu ? `${gpus.filter(gpuOn).length + 1} · Tacit's ${gpus.filter(gpuOn).length ? 'included' : 'own'}` : String(gpus.filter(gpuOn).length)) : '—';
   const g = gpus && me() ? gpus.find((x) => x.miner === me()) : null;
   $('#gpu-me-row').hidden = !g;
-  if (g) $('#gpu-me').textContent = `${g.proving ? 'proving a batch' : gpuOn(g) ? 'waiting for its turn' : `seen ${ago(Date.now() - (g.seen || 0) * 1000)}`} · ${g.proved} ${g.proved === 1 ? 'batch' : 'batches'}`;
+  const unit = g?.blocks ? ['proof', 'proofs'] : ['batch', 'batches'];
+  if (g) $('#gpu-me').textContent = `${g.proving ? `proving ${g.proving}` : gpuOn(g) ? 'waiting for its turn' : `seen ${ago(Date.now() - (g.seen || 0) * 1000)}`} · ${g.proved} ${g.proved === 1 ? unit[0] : unit[1]}`;
 }
 async function readBoardPay() { const s = await get(`${API}/prover/board`); if (s?.pay) boardPay = s.pay; if (s) { gpus = cleanGpus(s.workers); houseGpu = houseOn(s.workers); } paintGpu(); }
 let gpuCopied = false;
