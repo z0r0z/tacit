@@ -30,6 +30,8 @@ export const SALT_POOL = Object.freeze({
   potPoints: 5000,          // the campaign's daily points when its terms cannot be read (50 TAC at 0.01 TAC a point)
   bankBits: 32,             // SALT_BANK_BITS: the best bankKeep salts at least this good (four zero bytes) are kept for deploys
   bankKeep: 64,
+  goodBits: 34,             // SALT_GOOD_BITS: a find at least this good goes on the page's activity feed (about one every few minutes at today's rate)
+  recentKeep: 30,           // the newest good finds kept for that feed
   perCall: 64,              // salts one send may carry
   sendEveryMs: 20_000,      // one send per client this often
   seenSecs: 3 * 86400,
@@ -48,6 +50,7 @@ export function saltPoolConfig(env = {}) {
     minBits: n(env.SALT_MIN_BITS, SALT_POOL.minBits, 16, 64),
     pointsPerDay: n(env.POINTS_SALT_DAILY, SALT_POOL.pointsPerDay, 0, 1_000_000),
     bankBits: n(env.SALT_BANK_BITS, SALT_POOL.bankBits, 24, 96),
+    goodBits: n(env.SALT_GOOD_BITS, SALT_POOL.goodBits, 24, 96),
     house: String(env.SALT_HOUSE || SALT_POOL.deployer).split(',').map((a) => a.trim().toLowerCase()).filter((a) => ADDR.test(a)),
   });
 }
@@ -97,7 +100,7 @@ export function makeSaltPool({ kv, cfg = SALT_POOL, now = () => Date.now(), lock
       const wasNew = rec.shares === 0;
       // Tacit's own machines (cfg.house, the deployer by default) bank what they find and earn nothing: they never share the day's points.
       const house = (cfg.house || [SALT_POOL.deployer]).includes(miner);
-      const rejected = [], banked = [];
+      const rejected = [], banked = [], good = [];
       let accepted = 0, weight = 0;
       for (const raw of [...new Set(salts.map((s) => String(s).toLowerCase()))]) {
         if (!SALT.test(raw) || raw.slice(2, 44) !== head) { rejected.push({ salt: raw.slice(0, 66), why: 'not a salt of Tacit\'s deployer' }); continue; }
@@ -110,6 +113,7 @@ export function makeSaltPool({ kv, cfg = SALT_POOL, now = () => Date.now(), lock
         accepted++; weight += w;
         if (!rec.best || bits > rec.best.bits) rec.best = { address, bits, salt: raw };
         if (bits >= cfg.bankBits) banked.push({ salt: raw, address, bits, miner, at: t, ...(house ? { house: true } : {}) });
+        if (bits >= cfg.goodBits) good.push({ address, bits, miner, at: t, ...(house ? { house: true } : {}) });
       }
       if (accepted) {
         if (!house) {
@@ -124,6 +128,8 @@ export function makeSaltPool({ kv, cfg = SALT_POOL, now = () => Date.now(), lock
           const bank = [...old, ...banked].sort((a, b) => b.bits - a.bits || a.at - b.at).slice(0, cfg.bankKeep);
           if (bank.some((b) => banked.includes(b))) await write('sl:bank', bank);
         }
+        // The newest good finds, newest first, for the page's activity feed: written only when a send brings one.
+        if (good.length) await write('sl:recent', [...good.sort((a, b) => b.bits - a.bits), ...await read('sl:recent', [])].slice(0, cfg.recentKeep));
         const live = Object.fromEntries(Object.entries(await read('sl:live', {})).filter(([, v]) => t - v.at < cfg.liveMs));
         live[miner] = { at: t, ...(house ? { house: true } : {}) };
         await write('sl:live', live);
@@ -165,6 +171,7 @@ export function makeSaltPool({ kv, cfg = SALT_POOL, now = () => Date.now(), lock
       top: recs.sort((a, b) => b.weight - a.weight).slice(0, 20).map((r) => ({ miner: r.miner, shares: r.shares, weight: r.weight, best: r.best })),
       bank: bank.slice(0, 10).map(({ address, bits, miner, at, house }) => ({ address, bits, miner, at, ...(house ? { house: true } : {}) })),
       banked: bank.length,
+      recent: (await read('sl:recent', [])).slice(0, 12).map(({ address, bits, miner, at, house }) => ({ address, bits, miner, at, ...(house ? { house: true } : {}) })),
     });
   }
   async function bankList() { return reply(200, { bank: await read('sl:bank', []) }); }

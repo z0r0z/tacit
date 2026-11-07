@@ -17,7 +17,7 @@ let health = null, mine = null, pool = null, points = null, tally = null, busy =
 // The setup line's kind of computer, from the browser; the switch above the line changes it (setting up another computer).
 let os = isWindows(navigator.userAgent) ? 'win' : 'unix';
 const rateText = (r) => (r >= 1e6 ? `${(r / 1e6).toFixed(1)} M/s` : `${Math.round(r / 1e3)} k/s`);
-let blocks = [], ethHead = null, headReadAt = 0, shownTop = null, picked = null, feed = [], feedTop = 0, lastProved = null;
+let blocks = [], ethHead = null, headReadAt = 0, shownTop = null, picked = null, feed = [], feedTop = 0, saltTop = 0, lastProved = null;
 
 const BASE_TITLE = document.title;
 const addr = () => cleanAddress($('#addr').value);
@@ -169,13 +169,26 @@ async function readFeed() {
   feedTop = Math.max(feedTop, feed[0]?.at || 0);
 }
 
+// The feed: the community's proofs, and the good salts the nodes mined (`recent`, which the salt pool keeps: finds past its SALT_GOOD_BITS; one
+// row for a send's best, at most SALTS_SHOWN of them so a run of finds never pushes every proof off), newest first.
+const SALTS_SHOWN = 4, SALT_FRESH_MS = 24 * 3600_000;
+function goodSalts() {
+  const seen = new Set(), t = Date.now();
+  return (salts?.recent || []).filter((f) => t - f.at < SALT_FRESH_MS && f.at <= t + 60_000)
+    .sort((a, b) => b.at - a.at || b.bits - a.bits)
+    .filter((f) => { const k = `${f.house ? 'gpu' : f.miner}:${f.at}`; if (seen.has(k)) return false; seen.add(k); return true; })
+    .slice(0, SALTS_SHOWN);
+}
 function paintFeed() {
-  if (!feed.length) { if (!$('#feed .empty')) $('#feed').innerHTML = '<li class="empty">Nothing yet today.</li>'; return; }
-  $('#feed').innerHTML = feed.slice(0, 8).map((p) => {
-    const r = rewardWei(p.points, cap());
+  const rows = [...feed.slice(0, 8).map((p) => ({ ...p, kind: 'proof' })), ...goodSalts().map((f) => ({ ...f, kind: 'salt' }))].sort((a, b) => b.at - a.at).slice(0, 8);
+  if (!rows.length) { if (!$('#feed .empty')) $('#feed').innerHTML = '<li class="empty">Nothing yet today.</li>'; return; }
+  $('#feed').innerHTML = rows.map((p) => {
     // This address's own proofs are marked by the row (an edge), not a longer name, so every row stays on one line.
     const mine = !p.house && p.miner && String(p.miner).toLowerCase() === me();
-    return `<li class="${[p.at > feedTop && feedTop ? 'new' : '', mine ? 'me' : ''].filter(Boolean).join(' ')}"${mine ? ' title="Your node"' : ''}><span class="by">${byOf(p, false)}<small>a deposit, proved in ${esc(took(p.secs))}</small></span><b>${r ? `+${tac(r)} TAC` : ''}</b><small>${esc(ago(p.at))}</small></li>`;
+    const top = p.kind === 'salt' ? saltTop : feedTop, fresh = top > 0 && p.at > top;
+    if (p.kind === 'salt') return `<li class="${['salt', fresh ? 'new' : '', mine ? 'me' : ''].filter(Boolean).join(' ')}"${mine ? ' title="Your node"' : ''}><span class="by">${byOf(p, false)}<small>mined a good salt, ${p.bits} zero bits</small></span><b></b><small>${esc(ago(p.at))}</small></li>`;
+    const r = rewardWei(p.points, cap());
+    return `<li class="${[fresh ? 'new' : '', mine ? 'me' : ''].filter(Boolean).join(' ')}"${mine ? ' title="Your node"' : ''}><span class="by">${byOf(p, false)}<small>a deposit, proved in ${esc(took(p.secs))}</small></span><b>${r ? `+${tac(r)} TAC` : ''}</b><small>${esc(ago(p.at))}</small></li>`;
   }).join('');
 }
 
@@ -389,7 +402,10 @@ const cleanSalts = (s) => (s && typeof s === 'object' ? {
   pointsPerDay: count(s.pointsPerDay), miners: count(s.today?.miners), shares: count(s.today?.shares), weight: Number(s.today?.weight) || 0,
   top: (Array.isArray(s.top) ? s.top : []).map((m) => ({ miner: cleanAddress(m?.miner), weight: Number(m?.weight) || 0, shares: count(m?.shares),
     best: HEX40.test(String(m?.best?.address)) && count(m?.best?.bits) ? { address: m.best.address, bits: m.best.bits } : null })).filter((m) => m.miner),
-  bank: (Array.isArray(s.bank) ? s.bank : []).map((b) => ({ address: HEX40.test(String(b?.address)) ? b.address : null, bits: count(b?.bits), miner: cleanAddress(b?.miner), house: b?.house === true })).filter((b) => b.address),
+  bank: (Array.isArray(s.bank) ? s.bank : []).map((b) => ({ address: HEX40.test(String(b?.address)) ? b.address : null, bits: count(b?.bits), miner: cleanAddress(b?.miner), house: b?.house === true, at: count(b?.at) })).filter((b) => b.address),
+  // The newest good finds (`recent`, from the API that keeps them); an older API has only the bank, whose finds carry a time too.
+  recent: (Array.isArray(s.recent) ? s.recent : Array.isArray(s.bank) ? s.bank : []).map((b) => ({ address: HEX40.test(String(b?.address)) ? b.address : null, bits: count(b?.bits), miner: cleanAddress(b?.miner), house: b?.house === true, at: count(b?.at) }))
+    .filter((b) => b.address && b.bits && b.at && (b.house || b.miner)),
   live: (Array.isArray(s.live) ? s.live : []).map((m) => ({ miner: cleanAddress(m?.miner)?.toLowerCase() || null, house: m?.house === true })).filter((m) => m.miner).slice(0, 64),
   rate: Number.isFinite(Number(s.rate)) && Number(s.rate) >= 0 ? Number(s.rate) : 0,
 } : null);
@@ -417,7 +433,11 @@ function paintSalt() {
   $('#salt-row').hidden = !(on || mineRow);
   $('#salt').textContent = [mineRow ? `${(mineRow.shares || 0).toLocaleString('en-US')} shares` : null, part ? `${tac(part)} TAC so far` : null, on ? rateText(rate) : null].filter(Boolean).join(' · ') || '—';
 }
-async function readSalts() { const s = await get(`${API}/prover/salt`); if (s) salts = cleanSalts(s); paintSalt(); paintNet(); paintCrowd(); }
+async function readSalts() {
+  const s = await get(`${API}/prover/salt`); if (s) salts = cleanSalts(s);
+  paintSalt(); paintNet(); paintCrowd(); paintFeed();
+  saltTop = Math.max(saltTop, goodSalts()[0]?.at || 0);
+}
 
 async function copy() {
   const a = addr();

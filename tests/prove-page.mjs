@@ -34,6 +34,10 @@ const chain = { blocks: [blk(9389), blk(9388, { notes: 2, spent: 0, deposits: 1,
 let fails = 0;
 const check = (ok, what, got = '') => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${what}${ok ? '' : ` (${got})`}`); if (!ok) fails++; };
 
+// The salt pool's newest good finds: two from one send (one row, the better), the house's, and one from two days ago (not shown).
+const SALT_ADDR = '0x0000000000ab12cd34ef56ab78cd90ef12ab34cd', HOUSE = '0x68575b073de49a94e3e3acf6f3a0d6e3b66267c7';
+const SALT_FINDS = () => { const at = Date.now() - 90_000; return [{ address: SALT_ADDR, bits: 38, miner: OTHER, at }, { address: SALT_ADDR, bits: 36, miner: OTHER, at },
+  { address: SALT_ADDR, bits: 41, miner: HOUSE, at: Date.now() - 150_000, house: true }, { address: SALT_ADDR, bits: 45, miner: OTHER, at: Date.now() - 2 * 86400000 }]; };
 // The stand-in prover: `local` is what it answers (null: nothing listens), and each POST /mine it was sent.
 const WINDOWS_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
 async function open(browser, local, { phone = false, idle = false, ua = null, hash = '', init = null } = {}) {
@@ -74,7 +78,7 @@ async function open(browser, local, { phone = false, idle = false, ua = null, ha
     if (u.pathname === '/prover/pool/recent') return json(route, { proofs: [{ at: Date.now() - 60_000, house: true, points: 0, secs: 31 }, { at: Date.now() - 120_000, miner: ADDR, points: 20, secs: 552 }] });
     if (u.pathname === '/prover/pool/credits') return json(route, { day, over: false, miners: [{ miner: ADDR, proofs: 4, points: 80 }] });
     if (u.pathname === '/pool/snapshot') return json(route, { v: 1, cid: 'bafkreia4g6iad4ec3634pd5lsfcqsmenqcc5oyn3mm2kwezybpwv6iltom', to: 26352486, checkpoint: { eth: { block: 26352486, hash: '0x' + 'e9'.repeat(32) }, tacit: { height: 9441, hash: '0xec803dcef9a1a4c0f64a919b491a226ce22e9d30be225c76a148b0a22b62eb41' }, bitcoin: { relayTip: 974739, reflection: { height: 974721 } }, ethereum: { finalizedSlot: 13450016 } } });
-    if (u.pathname === '/prover/salt') return json(route, { pointsPerDay: 1500, minBits: 26, today: { miners: 2, shares: 30, weight: 40 }, top: [{ miner: ADDR, shares: 20, weight: 22 }], live: [{ miner: OTHER, at: Date.now() - 60_000 }, { miner: '0x68575b073de49a94e3e3acf6f3a0d6e3b66267c7', at: Date.now() - 30_000, house: true }], rate: 2_400_000, bank: [{ address: '0x0000000000ab12cd34ef56ab78cd90ef12ab34cd', bits: 41, miner: OTHER }, { address: '0x0000000000cd12cd34ef56ab78cd90ef12ab34cd', bits: 40, miner: '0x68575b073de49a94e3e3acf6f3a0d6e3b66267c7', house: true }] });
+    if (u.pathname === '/prover/salt') return json(route, { recent: SALT_FINDS(), pointsPerDay: 1500, minBits: 26, today: { miners: 2, shares: 30, weight: 40 }, top: [{ miner: ADDR, shares: 20, weight: 22 }], live: [{ miner: OTHER, at: Date.now() - 60_000 }, { miner: '0x68575b073de49a94e3e3acf6f3a0d6e3b66267c7', at: Date.now() - 30_000, house: true }], rate: 2_400_000, bank: [{ address: '0x0000000000ab12cd34ef56ab78cd90ef12ab34cd', bits: 41, miner: OTHER }, { address: '0x0000000000cd12cd34ef56ab78cd90ef12ab34cd', bits: 40, miner: '0x68575b073de49a94e3e3acf6f3a0d6e3b66267c7', house: true }] });
     return json(route, {}, 404);
   });
   await page.route('https://tacit-points.onrender.com/**', (route) => json(route, { enabled: true, endSec: Math.floor(Date.now() / 1000) + 86400 * 10, terms: { capWeiPerPoint: '10000000000000000' }, account: { creditedWei: '6000000000000000000' } }));
@@ -147,6 +151,12 @@ try {
     if (Date.now() % 86400000 >= 7200000) check((await text(page, '#pace')).includes('TAC a day ('), 'and the pace at today\'s rate', await text(page, '#pace'));
     else check(await page.locator('#pace-row').isHidden(), 'no pace in the day\'s first two hours');
     check((await page.locator('#chain .blk.gpu').count()) === 1 && (await page.locator('#chain .blk.gpu').innerText()).includes('Tacit GPU'), 'a block Tacit\'s GPU proved says so');
+    const feedText = await text(page, '#feed');
+    check(feedText.includes('mined a good salt, 38 zero bits') && feedText.includes('mined a good salt, 41 zero bits'), 'the feed shows the good salts the nodes mined', feedText);
+    check(!feedText.includes('36 zero bits') && !feedText.includes('45 zero bits'), 'a send shows its best find once, and a day-old find is not shown', feedText);
+    check((await page.locator('#feed li').count()) === 4 && (await page.locator('#feed li.salt').count()) === 2, 'proofs and salts share the feed, newest first');
+    check((await page.locator('#feed li.salt').allInnerTexts()).every((x) => !x.includes('TAC')), 'a salt row claims no TAC');
+    check((await page.locator('#feed li.salt .who.gpu').count()) === 1, 'Tacit\'s GPU is named on its own find');
     const gpuRow = await page.locator('#feed li').first().innerText();
     check(gpuRow.includes('Tacit GPU') && !gpuRow.includes('TAC '), 'the feed shows Tacit\'s GPU, earning nothing', gpuRow);
     check(!(await text(page, '#board')).includes('Tacit GPU'), 'Tacit\'s GPU is never on the leaderboard');
