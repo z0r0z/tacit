@@ -525,6 +525,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
+name = "k256"
+version = "0.13.4"
+source = "git+https://github.com/sp1-patches/elliptic-curves?tag=patch-k256-13.4-sp1-6.2.0#41374de1febd88e67faa695a5641ae46460a8cb6"
+dependencies = [
+ "cfg-if",
+ "elliptic-curve",
+ "hex",
+ "sp1-lib",
+]
+
+[[package]]
 name = "keccak"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1214,6 +1225,7 @@ dependencies = [
  "btc-pool-halo2",
  "ff",
  "halo2_proofs",
+ "k256",
  "num-bigint 0.4.8",
  "sha2",
  "sp1-lib",

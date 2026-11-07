@@ -186,6 +186,8 @@ struct Chain {
     nf: NfTree,
     public_nf: NfTree,
     roots: Vec<Fr>,
+    /// The time the chain's next block names (unix seconds).
+    time: u64,
 }
 
 /// A spend ready for the guest: its proof, the rest of its body and its openings, and the outputs it makes
@@ -219,6 +221,9 @@ fn post(p: &Prepared) -> Post {
 
 /// The memos posted with a spend, slot by slot, then its operation's: what the lander publishes for the notes a block takes from it.
 fn posted_memos(payload: &[u8]) -> Vec<Vec<u8>> {
+    if let Some((_, memo)) = blk::lock::forced_settle(payload, MEMO_LEN) {
+        return vec![memo.to_vec()];
+    }
     let mut m: Vec<Vec<u8>> = (0..3).map(|i| blk::forced_memo(payload, i).to_vec()).collect();
     m.extend(blk::forced_op_memos(payload).into_iter().map(<[u8]>::to_vec));
     m
@@ -275,7 +280,7 @@ impl Chain {
             fail("the replayed nullifier tree does not start where the state does");
         }
         let roots = vec![state.notes.root];
-        Chain { wallets, asset_f: asset_field(&[0xabu8; 32]), leaves: vec![], state, public_nf: nf.clone(), nf, roots }
+        Chain { wallets, asset_f: asset_field(&[0xabu8; 32]), leaves: vec![], state, public_nf: nf.clone(), nf, roots, time: 1_800_000_000 }
     }
 
     /// Notes that enter the tree without a spend (the test's genesis), appended as a block appends them.
@@ -376,6 +381,12 @@ impl Chain {
     /// as the guest checks it: it verifies, and its hints are the ones its points make, a point having one hint the guest takes) and, for
     /// each live nullifier, nothing or the record that shows it spent before the block.
     fn forced_view(&self, k: &Keys, payload: &[u8]) -> (Posted, Answers) {
+        if let Some((s, _)) = blk::lock::forced_settle(payload, MEMO_LEN) {
+            let nf = fr_be(&blk::lock::lock_nullifier(&s.leaf(), s.index));
+            let members = vec![self.nf.by_value.get(&nf).map(|&i| NfMember { next: self.nf.records[i as usize].1, index: i, path: self.nf.path(i) })];
+            let posted = blk::posted(&self.state, payload, &members, self.time).unwrap_or_else(|e| fail(&format!("the host's own answers: {e}")));
+            return (posted, Answers { verifies: false, members });
+        }
         let parts = blk::forced_parts(payload);
         let verifies = parts.as_ref().is_some_and(|(publics, proof, hints, _)| {
             let Ok(fixed) = <[Fr; 12]>::try_from(publics.as_slice()) else { return false };
@@ -391,14 +402,14 @@ impl Chain {
             .iter()
             .map(|nf| self.nf.by_value.get(&fr_be(nf)).map(|&i| NfMember { next: self.nf.records[i as usize].1, index: i, path: self.nf.path(i) }))
             .collect();
-        let posted = blk::posted(&self.state, payload, &members).unwrap_or_else(|e| fail(&format!("the host's own answers: {e}")));
+        let posted = blk::posted(&self.state, payload, &members, self.time).unwrap_or_else(|e| fail(&format!("the host's own answers: {e}")));
         (posted, Answers { verifies, members })
     }
 
     /// The guest's input for a block of `spends` and the next `posts` of the queue on this chain, the nullifier witnesses it
     /// carries (the nullifiers of every spend it takes, smallest first, as they enter the tree), and the posted spends as the
     /// program sees them with which of them it takes; the host's nullifier tree takes the nullifiers as it goes.
-    fn block_input(&mut self, k: &Keys, spends: &[Prepared], posts: &[Post]) -> (Vec<Vec<u8>>, Vec<NfWitness>, Vec<Posted>, Vec<bool>) {
+    fn block_input(&mut self, k: &Keys, spends: &[Prepared], settles: &[blk::lock::Settle], posts: &[Post]) -> (Vec<Vec<u8>>, Vec<NfWitness>, Vec<Posted>, Vec<bool>) {
         let mut bufs = vec![self.state.to_bytes(), (spends.len() as u32).to_le_bytes().to_vec()];
         for p in spends {
             bufs.push(p.publics.clone());
@@ -406,6 +417,11 @@ impl Chain {
             bufs.push(p.hints.clone());
             bufs.push(p.data.to_bytes());
         }
+        bufs.push((settles.len() as u32).to_le_bytes().to_vec());
+        for s in settles {
+            bufs.push(s.to_bytes());
+        }
+        bufs.push(self.time.to_le_bytes().to_vec());
         bufs.push((posts.len() as u32).to_le_bytes().to_vec());
         let (mut posted, mut verifies) = (vec![], vec![]);
         for p in posts {
@@ -416,8 +432,8 @@ impl Chain {
             posted.push(f);
         }
         let list: Vec<blk::Spend> = spends.iter().map(|p| p.spend.clone()).collect();
-        let taken = blk::take(&list, &posted, |j, _| verifies[j]);
-        let keys = blk::block_nullifiers(&list, &posted, &taken);
+        let taken = blk::take(&list, settles, &posted, |j, _| verifies[j]);
+        let keys = blk::block_nullifiers(&list, settles, &posted, &taken);
         let nfw: Vec<NfWitness> = keys.iter().map(|k| self.nf.insert(k)).collect();
         bufs.push(nfw.iter().flat_map(NfWitness::to_bytes).collect());
         (bufs, nfw, posted, taken)
@@ -431,8 +447,13 @@ impl Chain {
 
     /// As `land`, with the next `posts` of the landing contract's queue.
     fn land_with(&mut self, elf: &[u8], k: &Keys, spends: &[Prepared], posts: &[Post]) -> Result<Landed, String> {
+        self.land_full(elf, k, spends, &[], posts)
+    }
+
+    /// As `land_with`, with the block's own claims and refunds of locks.
+    fn land_full(&mut self, elf: &[u8], k: &Keys, spends: &[Prepared], settles: &[blk::lock::Settle], posts: &[Post]) -> Result<Landed, String> {
         let before = self.clone();
-        let (bufs, nfw, posted, taken) = self.block_input(k, spends, posts);
+        let (bufs, nfw, posted, taken) = self.block_input(k, spends, settles, posts);
         let stdin_bytes = bufs.iter().map(Vec::len).sum();
         let t = Instant::now();
         let run = execute(elf, &bufs);
@@ -446,7 +467,7 @@ impl Chain {
         };
         let list: Vec<blk::Spend> = spends.iter().map(|p| p.spend.clone()).collect();
         let extra: Vec<SpendData> = spends.iter().map(|p| p.data.clone()).collect();
-        let (next, out, data) = blk::apply(&self.state, &list, &extra, &posted, &taken, &nfw, blk::vk_hash(&k.digest)).unwrap_or_else(|e| fail(&format!("the guest took a block apply refuses: {e}")));
+        let (next, out, data) = blk::apply(&self.state, &list, &extra, settles, &posted, &taken, &nfw, blk::vk_hash(&k.digest), self.time).unwrap_or_else(|e| fail(&format!("the guest took a block apply refuses: {e}")));
         if pv != out.encode() {
             fail("the guest committed other public values than apply");
         }
@@ -587,7 +608,7 @@ fn dump(n: usize, path: &str) {
     let k = keys();
     let mut c = Chain::new(8);
     let spends = spends_of(&mut c, &k, n, 10);
-    let (bufs, _, _, _) = c.clone().block_input(&k, &spends, &[]);
+    let (bufs, _, _, _) = c.clone().block_input(&k, &spends, &[], &[]);
     let file = stdin_file(&bufs);
     let l = c.land(&elf("TACIT_BLOCK_ELF", BLOCK_ELF), &k, &spends).unwrap_or_else(|e| fail(&e));
     std::fs::write(path, &file).unwrap_or_else(|e| fail(&format!("{path}: {e}")));
@@ -686,6 +707,7 @@ fn block_json(l: &Landed, memos: &[Vec<u8>]) -> Value {
         "deposits": hx(&l.data.deposits.concat()),
         "exits": hx(&l.data.exits.concat()),
         "hops": hx(&l.data.hops.concat()),
+        "claims": hx(&l.data.claims.concat()),
     })
 }
 
@@ -732,6 +754,47 @@ fn fixture(path: &str, chain_id: u64, lander: [u8; 20]) {
     if l5.data.hops != vec![ops::hop_bytes(&c.asset_f, 80, &commit2)] || l5.out.queue_len != 2 {
         fail("the fixture's forced hop was not taken");
     }
+    // Block 5: two deposits that go straight into locks, one for a day and one for ten seconds.
+    use blk::lock::{claim_message, Lock, Settle, SETTLE_CLAIM, SETTLE_MARK, SETTLE_REFUND};
+    let t0 = c.time;
+    let d_recipient = schnorr::scalar("fixture recipient");
+    let (recipient, _) = schnorr::key(d_recipient);
+    let lock_of = |c: &Chain, t: u8, deadline: u64| -> (Lock, Vec<u8>, Vec<u8>, Vec<u8>) {
+        let (claim_to, cm) = c.note_to(4, &secret(84, 0, t), "fixture claim");
+        let (refund_to, rm) = c.note_to(5, &secret(84, 1, t), "fixture refund");
+        let mut lm = format!("tacit-block fixture lock {t}").into_bytes();
+        lm.resize(MEMO_LEN, 0);
+        (Lock { recipient, deadline, claim_to, refund_to }, lm, cm, rm)
+    };
+    let (la, ma, cma, _) = lock_of(&c, 0, t0 + 86_400);
+    let (lb, mb, _, rmb) = lock_of(&c, 1, t0 + 10);
+    let lock_a = c.spend_full(&k, &[], &[], None, Some(1_000), Some((1_000, ops::Op::Lock { lock: la, memo: blk::memo_hash(&ma) }, vec![ma.clone()])), "fixture lock a", c.leaves.len());
+    let lock_b = c.spend_full(&k, &[], &[], None, Some(500), Some((500, ops::Op::Lock { lock: lb, memo: blk::memo_hash(&mb) }, vec![mb.clone()])), "fixture lock b", c.leaves.len());
+    let l6 = c.land(&elf, &k, &[lock_a.clone(), lock_b.clone()]).unwrap_or_else(|e| fail(&format!("fixture locks: {e}")));
+    let settle_of = |c: &Chain, kind: u8, lock: &Lock, value: u64, sig: Option<[u8; 64]>| -> Settle {
+        let leaf = lock.leaf(&c.asset_f, value);
+        let index = c.leaves.iter().position(|l| *l == leaf).unwrap_or_else(|| fail("a fixture lock is not in the tree")) as u64;
+        let tree = Tree::new(&c.leaves);
+        Settle { kind, asset: c.asset_f, value, lock: *lock, index, root: tree.root, path: tree.path(index as usize), sig }
+    };
+    // Block 6: the recipient claims the day lock with its pre-signature adapted to the swap's point, completed.
+    let t_secret = schnorr::scalar("fixture swap secret");
+    let msg = claim_message(&c.state.chain, &la.leaf(&c.asset_f, 1_000));
+    let (rx, s_tilde) = schnorr::pre_sign(d_recipient, k256::ProjectivePoint::GENERATOR * t_secret, &msg, "fixture claim nonce");
+    let claim_sig = schnorr::sig(&rx, &(s_tilde + t_secret));
+    let claim = settle_of(&c, SETTLE_CLAIM, &la, 1_000, Some(claim_sig));
+    let l7 = c.land_full(&elf, &k, &[], &[claim], &[]).unwrap_or_else(|e| fail(&format!("fixture claim: {e}")));
+    if l7.data.claims != vec![claim_sig] {
+        fail("the fixture's claim did not publish its signature");
+    }
+    // Block 7 names the ten-second lock's deadline and takes only the queue: its refund, posted by anyone.
+    let refund = settle_of(&c, SETTLE_REFUND, &lb, 500, None);
+    let posted_refund = Post { payload: [SETTLE_MARK.to_vec(), refund.to_bytes(), rmb.clone()].concat(), outs: vec![] };
+    c.time = lb.deadline;
+    let l8 = c.land_with(&elf, &k, &[], &[posted_refund.clone()]).unwrap_or_else(|e| fail(&format!("fixture forced refund: {e}")));
+    if l8.data.nullifiers.len() != 1 || l8.out.queue_len != 3 {
+        fail("the fixture's forced refund was not taken");
+    }
     let hx = |b: &[u8]| format!("0x{}", hex::encode(b));
     let doc = json!({
         "chainId": chain_id,
@@ -748,25 +811,35 @@ fn fixture(path: &str, chain_id: u64, lander: [u8; 20]) {
         "hop": { "value": 300, "commit": hx(&commit) },
         "forcedHop": hx(&posted_hop.payload),
         "hop2": { "value": 80, "commit": hx(&commit2) },
+        "lockDeposits": [
+            { "value": 1_000, "cx": hx(&fr_be(&lock_a.spend.dep[0])), "cy": hx(&fr_be(&lock_a.spend.dep[1])), "body": hx(&fr_be(&lock_a.spend.body)) },
+            { "value": 500, "cx": hx(&fr_be(&lock_b.spend.dep[0])), "cy": hx(&fr_be(&lock_b.spend.dep[1])), "body": hx(&fr_be(&lock_b.spend.body)) },
+        ],
+        "claimSig": hx(&claim_sig),
+        "forcedRefund": hx(&posted_refund.payload),
+        "time": t0,
         "blocks": [
             block_json(&l1, &shield.memos),
             block_json(&l2, &pay_out.memos),
             block_json(&l3, &posted_memos(&posted.payload)),
             block_json(&l4, &hop.memos),
             block_json(&l5, &posted_memos(&posted_hop.payload)),
+            block_json(&l6, &[ma, mb]),
+            block_json(&l7, &[cma]),
+            block_json(&l8, &[rmb]),
         ],
     });
     std::fs::write(path, serde_json::to_string_pretty(&doc).unwrap()).unwrap_or_else(|e| fail(&format!("{path}: {e}")));
-    for (i, l) in [&l1, &l2, &l3, &l4, &l5].iter().enumerate() {
+    for (i, l) in [&l1, &l2, &l3, &l4, &l5, &l6, &l7, &l8].iter().enumerate() {
         let f = format!("{path}.b{i}.stdin");
         std::fs::write(&f, stdin_file(&l.stdin)).unwrap_or_else(|e| fail(&format!("{f}: {e}")));
     }
-    println!("{}", json!({ "fixture": path, "blocks": 5, "cycles": [l1.cycles, l2.cycles, l3.cycles, l4.cycles, l5.cycles] }));
+    println!("{}", json!({ "fixture": path, "blocks": 8, "cycles": [l1.cycles, l2.cycles, l3.cycles, l4.cycles, l5.cycles, l6.cycles, l7.cycles, l8.cycles] }));
 }
 
 /// Runs a block whose input `tamper` changed, expecting the guest to refuse it; the chain is left as it was.
 fn expect_refused_input(c: &Chain, elf: &[u8], k: &Keys, spends: &[Prepared], posts: &[Post], tamper: impl FnOnce(&mut Vec<Vec<u8>>), what: &str) {
-    let (mut bufs, _, _, _) = c.clone().block_input(k, spends, posts);
+    let (mut bufs, _, _, _) = c.clone().block_input(k, spends, &[], posts);
     tamper(&mut bufs);
     match execute(elf, &bufs) {
         Ok(_) => fail(&format!("the guest took {what}")),
@@ -994,6 +1067,7 @@ fn test() {
     yb.proof[576 + 13 * 32] ^= 1;
     expect_refused_input(&c, &elf, &k, &[], &[post(&yb)], |b| { b[4] = vec![1u8, 0u8]; }, "a failing forced proof said to verify");
     ops_test(&mut c, &elf, &k);
+    lock_test(&mut c, &elf, &k);
     println!("{}", json!({ "test": "ok", "note_roots": c.roots.len() }));
 }
 
@@ -1062,4 +1136,166 @@ fn ops_test(c: &mut Chain, elf: &[u8], k: &Keys) {
     changed.data.op = Some(Op::Hop { commit: [7; 32] });
     expect_refused(c, elf, k, &[changed], "a hop changed after its owners signed it");
     println!("{}", json!({ "ops": "ok", "two_hops_cycles": lh.cycles, "deposit_hop_cycles": ld.cycles, "forced_hop_cycles": lf.cycles }));
+}
+
+/// BIP-340 signing with adaptor points, as the two sides of a swap do it.
+mod schnorr {
+    use k256::elliptic_curve::ops::Reduce;
+    use k256::elliptic_curve::point::AffineCoordinates;
+    use k256::elliptic_curve::PrimeField;
+    use k256::{FieldBytes, ProjectivePoint, Scalar, U256};
+    use sha2::{Digest, Sha256};
+
+    fn tagged(tag: &[u8], parts: &[&[u8]]) -> [u8; 32] {
+        let t: [u8; 32] = Sha256::digest(tag).into();
+        let mut h = Sha256::new();
+        h.update(t);
+        h.update(t);
+        for p in parts {
+            h.update(p);
+        }
+        h.finalize().into()
+    }
+
+    pub fn scalar(seed: &str) -> Scalar {
+        <Scalar as Reduce<U256>>::reduce_bytes(FieldBytes::from_slice(&Sha256::digest(seed.as_bytes())))
+    }
+
+    fn x(p: &ProjectivePoint) -> [u8; 32] {
+        p.to_affine().x().into()
+    }
+
+    /// The x-only key of `d`, and the secret that signs for it (negated when `d`·G has an odd y).
+    pub fn key(d: Scalar) -> ([u8; 32], Scalar) {
+        let p = (ProjectivePoint::GENERATOR * d).to_affine();
+        (p.x().into(), if bool::from(p.y_is_odd()) { -d } else { d })
+    }
+
+    /// A pre-signature by `d` over `msg` adapted to `t`·G: (R.x, s̃) with R = k·G + t·G of even y. Completed by adding t.
+    pub fn pre_sign(d: Scalar, t_point: ProjectivePoint, msg: &[u8; 32], seed: &str) -> ([u8; 32], Scalar) {
+        let (px, d) = key(d);
+        for i in 0u32.. {
+            let k = scalar(&format!("{seed} {i}"));
+            let r = ProjectivePoint::GENERATOR * k + t_point;
+            if bool::from(r.to_affine().y_is_odd()) {
+                continue;
+            }
+            let rx = x(&r);
+            let e = <Scalar as Reduce<U256>>::reduce_bytes(FieldBytes::from_slice(&tagged(b"BIP0340/challenge", &[&rx, &px, msg])));
+            return (rx, k + e * d);
+        }
+        unreachable!()
+    }
+
+    pub fn sig(rx: &[u8; 32], s: &Scalar) -> [u8; 64] {
+        let mut out = [0u8; 64];
+        out[..32].copy_from_slice(rx);
+        out[32..].copy_from_slice(&s.to_repr());
+        out
+    }
+
+    pub fn s_of(sig: &[u8; 64]) -> Scalar {
+        Option::from(Scalar::from_repr(*FieldBytes::from_slice(&sig[32..]))).unwrap()
+    }
+}
+
+/// Locks: one claimed by its recipient's adapted signature (the counterparty reading the swap's secret from what the block publishes),
+/// one refunded after its deadline, a claim posted to the queue taken and an expired one passed over; refused, a second claim of one
+/// lock, a claim signed by another key, a claim too close to the deadline and a refund before it.
+fn lock_test(c: &mut Chain, elf: &[u8], k: &Keys) {
+    use blk::lock::{claim_message, Lock, Settle, SETTLE_CLAIM, SETTLE_MARK, SETTLE_REFUND, TIME_WINDOW};
+    use k256::ProjectivePoint;
+    let a = c.asset_f;
+    let n = c.mint(&[(1, secret(120, 0, 0), 1_000), (1, secret(120, 0, 1), 300), (1, secret(120, 0, 2), 200), (1, secret(120, 0, 3), 100)]);
+    let d_recipient = schnorr::scalar("recipient");
+    let (recipient, _) = schnorr::key(d_recipient);
+    let lock_of = |c: &Chain, t: u8, deadline: u64| -> (Lock, Vec<u8>, Vec<u8>, Vec<u8>) {
+        let (claim_to, claim_memo) = c.note_to(2, &secret(121, 0, t), "claim");
+        let (refund_to, refund_memo) = c.note_to(1, &secret(121, 1, t), "refund");
+        let mut lock_memo = format!("tacit-block lock memo {t}").into_bytes();
+        lock_memo.resize(MEMO_LEN, 0);
+        (Lock { recipient, deadline, claim_to, refund_to }, lock_memo, claim_memo, refund_memo)
+    };
+    let index_of = |c: &Chain, leaf: &Fr| c.leaves.iter().position(|l| l == leaf).unwrap_or_else(|| fail("a lock is not in the tree")) as u64;
+    let settle = |c: &Chain, kind: u8, lock: &Lock, value: u64, sig: Option<[u8; 64]>| -> Settle {
+        let leaf = lock.leaf(&a, value);
+        let index = index_of(c, &leaf);
+        let tree = Tree::new(&c.leaves);
+        Settle { kind, asset: a, value, lock: *lock, index, root: tree.root, path: tree.path(index as usize), sig }
+    };
+
+    // a lock of 600 (400 kept) and one of 300, made in one block
+    let (l1, m1, cm1, _) = lock_of(c, 0, c.time + 100_000);
+    let (l2, m2, _, rm2) = lock_of(c, 1, c.time + 50);
+    let s1 = c.spend_full(k, &[&n[0]], &[(1, secret(122, 0, 0), 400)], None, None, Some((600, ops::Op::Lock { lock: l1, memo: blk::memo_hash(&m1) }, vec![m1])), "lock 600", c.leaves.len());
+    let s2 = c.spend_full(k, &[&n[1]], &[], None, None, Some((300, ops::Op::Lock { lock: l2, memo: blk::memo_hash(&m2) }, vec![m2])), "lock 300", c.leaves.len());
+    let ll = c.land(elf, k, &[s1, s2]).unwrap_or_else(|e| fail(&format!("locks: {e}")));
+    if ll.data.outputs.len() != 3 || !ll.data.exits.is_empty() {
+        fail("two locks and a change were not the block's notes");
+    }
+
+    // the claim: the recipient's pre-signature adapted to T = t·G, which the counterparty holds, completed with t
+    let t = schnorr::scalar("the swap's secret");
+    let msg = claim_message(&c.state.chain, &l1.leaf(&a, 600));
+    let (rx, s_tilde) = schnorr::pre_sign(d_recipient, ProjectivePoint::GENERATOR * t, &msg, "claim nonce");
+    let claim = settle(c, SETTLE_CLAIM, &l1, 600, Some(schnorr::sig(&rx, &(s_tilde + t))));
+    let mut wrong = claim.clone();
+    wrong.sig = Some(schnorr::sig(&rx, &(s_tilde + t + schnorr::scalar("off by one"))));
+    match c.clone().land_full(elf, k, &[], &[wrong], &[]) {
+        Ok(_) => fail("a claim with a wrong signature was taken"),
+        Err(e) => println!("{}", json!({ "refused": "a claim with a wrong signature", "why": e })),
+    }
+    let mut late = c.clone();
+    late.time = l1.deadline - TIME_WINDOW + 1;
+    match late.land_full(elf, k, &[], &[claim.clone()], &[]) {
+        Ok(_) => fail("a claim that could land after its deadline was taken"),
+        Err(e) => println!("{}", json!({ "refused": "a claim that could land after its deadline", "why": e })),
+    }
+    let lc = c.land_full(elf, k, &[], &[claim.clone()], &[]).unwrap_or_else(|e| fail(&format!("a claim: {e}")));
+    let want = leaf_of(&a, &fr_u64(600), &l1.claim_to.npk, &l1.claim_to.rho);
+    if lc.data.claims.len() != 1 || lc.data.outputs.len() != 1 || lc.data.outputs[0][..32] != fr_be(&want) || lc.data.outputs[0][32..] != blk::memo_hash(&cm1) {
+        fail("the claim did not make the recipient's note and publish its signature");
+    }
+    // the counterparty reads the secret from the published signature and its pre-signature
+    if schnorr::s_of(&lc.data.claims[0]) - s_tilde != t {
+        fail("the published claim does not give the counterparty the swap's secret");
+    }
+    match c.clone().land_full(elf, k, &[], &[claim], &[]) {
+        Ok(_) => fail("a lock was claimed twice"),
+        Err(e) => println!("{}", json!({ "refused": "a second claim of one lock", "why": e })),
+    }
+
+    // the refund, only from the deadline on
+    let refund = settle(c, SETTLE_REFUND, &l2, 300, None);
+    match c.clone().land_full(elf, k, &[], &[refund.clone()], &[]) {
+        Ok(_) => fail("a refund before its deadline was taken"),
+        Err(e) => println!("{}", json!({ "refused": "a refund before its deadline", "why": e })),
+    }
+    c.time = l2.deadline;
+    let lr = c.land_full(elf, k, &[], &[refund], &[]).unwrap_or_else(|e| fail(&format!("a refund: {e}")));
+    let back = leaf_of(&a, &fr_u64(300), &l2.refund_to.npk, &l2.refund_to.rho);
+    if lr.data.outputs.len() != 1 || lr.data.outputs[0][..32] != fr_be(&back) || lr.data.outputs[0][32..] != blk::memo_hash(&rm2) || !lr.data.claims.is_empty() {
+        fail("the refund did not make the locker's note");
+    }
+
+    // a claim posted to the queue is taken; one posted too late is passed over and the chain goes on
+    let (l3, m3, cm3, _) = lock_of(c, 2, c.time + 100_000);
+    let (l4, m4, cm4, _) = lock_of(c, 3, c.time + TIME_WINDOW + 10);
+    let s3 = c.spend_full(k, &[&n[2]], &[], None, None, Some((200, ops::Op::Lock { lock: l3, memo: blk::memo_hash(&m3) }, vec![m3])), "lock 200", c.leaves.len());
+    let s4 = c.spend_full(k, &[&n[3]], &[], None, None, Some((100, ops::Op::Lock { lock: l4, memo: blk::memo_hash(&m4) }, vec![m4])), "lock 100", c.leaves.len());
+    c.land(elf, k, &[s3, s4]).unwrap_or_else(|e| fail(&format!("two more locks: {e}")));
+    let sign = |c: &Chain, lock: &Lock, value: u64, tag: &str| -> [u8; 64] {
+        let msg = claim_message(&c.state.chain, &lock.leaf(&a, value));
+        let (rx, s) = schnorr::pre_sign(d_recipient, ProjectivePoint::GENERATOR * schnorr::scalar(tag), &msg, tag);
+        schnorr::sig(&rx, &(s + schnorr::scalar(tag)))
+    };
+    let posted_settle = |s: &Settle, memo: &[u8]| Post { payload: [SETTLE_MARK.to_vec(), s.to_bytes(), memo.to_vec()].concat(), outs: vec![] };
+    let p3 = posted_settle(&settle(c, SETTLE_CLAIM, &l3, 200, Some(sign(c, &l3, 200, "t3"))), &cm3);
+    let p4 = posted_settle(&settle(c, SETTLE_CLAIM, &l4, 100, Some(sign(c, &l4, 100, "t4"))), &cm4);
+    c.time += 20;
+    let lf = c.land_with(elf, k, &[], &[p3, p4]).unwrap_or_else(|e| fail(&format!("forced claims: {e}")));
+    if lf.data.claims.len() != 1 || lf.data.nullifiers.len() != 1 || lf.out.queue_len != c.state.queue_len {
+        fail("a forced claim was not taken, or an expired one was");
+    }
+    println!("{}", json!({ "locks": "ok", "lock_cycles": ll.cycles, "claim_cycles": lc.cycles, "refund_cycles": lr.cycles, "forced_claims_cycles": lf.cycles }));
 }

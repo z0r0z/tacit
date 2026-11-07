@@ -33,6 +33,7 @@ use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
 pub mod fast;
+pub mod lock;
 pub mod ops;
 
 /// Levels of the nullifier tree: room for 2^32 records.
@@ -800,6 +801,11 @@ pub struct BlockOut {
     pub queue_hash: [u8; 32],
     /// The hash of the hops the block sends into the confidential pool (`BlockData::hops`).
     pub hops_hash: [u8; 32],
+    /// The hash of the claim signatures the block publishes (`BlockData::claims`).
+    pub claims_hash: [u8; 32],
+    /// The time the block names (unix seconds): it lands only from it to `lock::TIME_WINDOW` after, and its claims and refunds are
+    /// decided by it.
+    pub time: u64,
 }
 
 fn word(n: u64) -> [u8; 32] {
@@ -830,6 +836,8 @@ impl BlockOut {
             word(self.queue_len),
             self.queue_hash,
             self.hops_hash,
+            self.claims_hash,
+            word(self.time),
         ]
         .concat()
     }
@@ -853,6 +861,9 @@ pub struct BlockData {
     pub exits: Vec<Vec<u8>>,
     /// Hops into the confidential pool on Ethereum: asset ‖ value ‖ the pool's commitment (`ops::hop_bytes`), 96 bytes each, sorted.
     pub hops: Vec<Vec<u8>>,
+    /// The recipients' signatures of the locks the block's claims settle (R.x ‖ s, 64 bytes each), sorted: where a swap's
+    /// counterparty reads its secret.
+    pub claims: Vec<[u8; 64]>,
 }
 
 /// The queue's hash after one more posted spend: SHA-256(QUEUE_DOMAIN ‖ the hash before ‖ SHA-256(what was posted)), as the
@@ -972,6 +983,8 @@ pub struct Posted {
 #[derive(Clone, Debug)]
 pub struct Candidate {
     pub publics: Vec<Fr>,
+    /// Whether a proof decides it (a spend) or it is decided already (a claim or refund, checked here).
+    pub needs_proof: bool,
     effects: Effects,
 }
 
@@ -979,9 +992,28 @@ pub struct Candidate {
 /// next to nothing: that they are a spend, that none of its notes is in the tree (`members`: the builder's answers, each checked), and
 /// that its body and openings check out. Err: a wrong answer (a record not in the tree, or answers for another number of notes), which
 /// refuses the block.
-pub fn posted(prev: &State, payload: &[u8], members: &[Option<NfMember>]) -> Result<Posted, String> {
+pub fn posted(prev: &State, payload: &[u8], members: &[Option<NfMember>], time: u64) -> Result<Posted, String> {
     let payload_hash = payload_hash(payload);
     let none = Posted { payload_hash, candidate: None };
+    if let Some((settle, memo)) = lock::forced_settle(payload, MEMO_LEN) {
+        if members.len() != 1 {
+            return Err(format!("{} answers for one lock", members.len()));
+        }
+        if let Some(m) = &members[0] {
+            if !nf_member(&prev.nf_root, prev.nf_size, &fr_be(&lock::lock_nullifier(&settle.leaf(), settle.index)), m) {
+                return Err("a lock said to be settled is not in the tree".into());
+            }
+            return Ok(none);
+        }
+        return Ok(match settle_effects(prev, &settle, time) {
+            Ok(effects) if memo_hash(memo) == settle.to().memo => Posted { payload_hash, candidate: Some(Candidate { publics: vec![], needs_proof: false, effects }) },
+            _ => none,
+        });
+    }
+    if payload.get(..32) == Some(&lock::SETTLE_MARK[..]) {
+        // marked bytes that are no settle are no spend either
+        return if members.is_empty() { Ok(none) } else { Err("answers for bytes that are no spend".into()) };
+    }
     let Some((publics, _, _, data)) = forced_parts(payload) else { return Ok(none) };
     let spend = Spend::from_publics(&publics);
     let live = spend.live_nullifiers();
@@ -1001,21 +1033,22 @@ pub fn posted(prev: &State, payload: &[u8], members: &[Option<NfMember>]) -> Res
         return Ok(none);
     }
     Ok(match effects(prev, &spend, &data) {
-        Ok(effects) => Posted { payload_hash, candidate: Some(Candidate { publics, effects }) },
+        Ok(effects) => Posted { payload_hash, candidate: Some(Candidate { publics, needs_proof: true, effects }) },
         Err(_) => none,
     })
 }
 
 /// Which posted spends a block takes, in queue order: a candidate none of whose notes a spend before it in the block spends (the block's
 /// own come first) and whose proof verifies, which `verifies(j, candidate)` says and is asked only of those.
-pub fn take(spends: &[Spend], posted: &[Posted], mut verifies: impl FnMut(usize, &Candidate) -> bool) -> Vec<bool> {
+pub fn take(spends: &[Spend], settles: &[lock::Settle], posted: &[Posted], mut verifies: impl FnMut(usize, &Candidate) -> bool) -> Vec<bool> {
     let mut used: BTreeSet<[u8; 32]> = spends.iter().flat_map(|s| s.live_nullifiers()).map(|x| fr_be(&x)).collect();
+    used.extend(settles.iter().map(|s| fr_be(&lock::lock_nullifier(&s.leaf(), s.index))));
     posted
         .iter()
         .enumerate()
         .map(|(j, p)| {
             let Some(c) = &p.candidate else { return false };
-            if c.effects.nullifiers.iter().any(|x| used.contains(x)) || !verifies(j, c) {
+            if c.effects.nullifiers.iter().any(|x| used.contains(x)) || (c.needs_proof && !verifies(j, c)) {
                 return false;
             }
             used.extend(c.effects.nullifiers.iter().copied());
@@ -1035,6 +1068,28 @@ struct Effects {
     nullifiers: Vec<[u8; 32]>,
     /// A hop into the confidential pool (`ops::hop_bytes`), when the body sends the exit's value there.
     hop: Option<Vec<u8>>,
+    /// A claim's signature, published.
+    claim: Option<[u8; 64]>,
+}
+
+/// What a claim or refund does to a block, when the block's time allows it: the anchor its path leads to (one older than the recent
+/// roots), the lock's nullifier, and the note it makes.
+fn settle_effects(prev: &State, s: &lock::Settle, time: u64) -> Result<Effects, &'static str> {
+    if s.value == 0 || !s.allowed(&prev.chain, time) {
+        return Err("a lock not at the root it names, a claim not signed by its recipient or not before its deadline, or a refund before its deadline");
+    }
+    let root = fr_be(&s.root);
+    let anchor = (root != fr_be(&prev.notes.root) && !prev.knows(&root)).then_some(root);
+    let to = s.to();
+    Ok(Effects {
+        anchor,
+        outputs: vec![(poseidon(&[s.asset, Fr::from(s.value), to.npk, to.rho]), to.memo)],
+        deposit: None,
+        exit: None,
+        nullifiers: vec![fr_be(&lock::lock_nullifier(&s.leaf(), s.index))],
+        hop: None,
+        claim: s.sig,
+    })
 }
 
 fn effects(prev: &State, s: &Spend, d: &SpendData) -> Result<Effects, &'static str> {
@@ -1042,7 +1097,7 @@ fn effects(prev: &State, s: &Spend, d: &SpendData) -> Result<Effects, &'static s
     if live.len() == 2 && live[0] == live[1] {
         return Err("one note in both input slots");
     }
-    let mut e = Effects { anchor: None, outputs: Vec::with_capacity(3), deposit: None, exit: None, nullifiers: live.iter().map(fr_be).collect(), hop: None };
+    let mut e = Effects { anchor: None, outputs: Vec::with_capacity(3), deposit: None, exit: None, nullifiers: live.iter().map(fr_be).collect(), hop: None, claim: None };
     if live.is_empty() {
         if is_identity(&s.dep) {
             return Err("no input and no deposit");
@@ -1082,6 +1137,9 @@ fn effects(prev: &State, s: &Spend, d: &SpendData) -> Result<Effects, &'static s
         (false, Some(o), Some(ops::Op::Hop { commit })) if o.v > 0 && d.exit_to == [0u8; 20] && commits(o, &s.exit) => {
             e.hop = Some(ops::hop_bytes(&s.asset, o.v, commit))
         }
+        (false, Some(o), Some(ops::Op::Lock { lock, memo })) if o.v > 0 && d.exit_to == [0u8; 20] && commits(o, &s.exit) => {
+            e.outputs.push((lock.leaf(&s.asset, o.v), *memo))
+        }
         _ => return Err("the exit's opening, address or operation is missing, wrong or of nothing"),
     }
     Ok(e)
@@ -1089,8 +1147,9 @@ fn effects(prev: &State, s: &Spend, d: &SpendData) -> Result<Effects, &'static s
 
 /// The non-zero nullifiers a block will enter into the tree, smallest first: those of its own spends and of the posted spends it takes,
 /// for whoever builds the block to make their witnesses.
-pub fn block_nullifiers(spends: &[Spend], posted: &[Posted], taken: &[bool]) -> Vec<[u8; 32]> {
+pub fn block_nullifiers(spends: &[Spend], settles: &[lock::Settle], posted: &[Posted], taken: &[bool]) -> Vec<[u8; 32]> {
     let mut all: Vec<[u8; 32]> = spends.iter().flat_map(|s| s.live_nullifiers()).map(|x| fr_be(&x)).collect();
+    all.extend(settles.iter().map(|s| fr_be(&lock::lock_nullifier(&s.leaf(), s.index))));
     for (p, t) in posted.iter().zip(taken) {
         if let (true, Some(c)) = (*t, &p.candidate) {
             all.extend(c.effects.nullifiers.iter().copied());
@@ -1105,16 +1164,29 @@ pub fn block_nullifiers(spends: &[Spend], posted: &[Posted], taken: &[bool]) -> 
 /// block cannot keep a sound one out) joining it; the queue moves past every one. A spend of the block's own that does not check out
 /// refuses the block. `nfw[j]` is the witness for the j-th smallest non-zero nullifier of every spend taken, against the tree as the
 /// smaller ones left it: nullifiers enter in ascending order, so the tree is a function of the published list alone.
-pub fn apply(prev: &State, spends: &[Spend], data: &[SpendData], posted: &[Posted], taken: &[bool], nfw: &[NfWitness], vk: [u8; 32]) -> Result<(State, BlockOut, BlockData), String> {
+#[allow(clippy::too_many_arguments)]
+pub fn apply(prev: &State, spends: &[Spend], data: &[SpendData], settles: &[lock::Settle], posted: &[Posted], taken: &[bool], nfw: &[NfWitness], vk: [u8; 32], time: u64) -> Result<(State, BlockOut, BlockData), String> {
     mark!("cycle-tracker-report-start: block-scan");
     if data.len() != spends.len() || taken.len() != posted.len() {
         return Err(format!("{} spend data for {} spends, {} choices for {} posted", data.len(), spends.len(), taken.len(), posted.len()));
     }
     let n = spends.len();
-    let who = |i: usize| if i < n { format!("spend {i}") } else { format!("forced spend {}", i - n) };
-    let mut chosen: Vec<(usize, Effects)> = Vec::with_capacity(n + posted.len());
+    let k = settles.len();
+    let who = |i: usize| {
+        if i < n {
+            format!("spend {i}")
+        } else if i < n + k {
+            format!("settle {}", i - n)
+        } else {
+            format!("forced spend {}", i - n - k)
+        }
+    };
+    let mut chosen: Vec<(usize, Effects)> = Vec::with_capacity(n + k + posted.len());
     for (i, (s, d)) in spends.iter().zip(data).enumerate() {
         chosen.push((i, effects(prev, s, d).map_err(|e| format!("spend {i}: {e}"))?));
+    }
+    for (i, s) in settles.iter().enumerate() {
+        chosen.push((n + i, settle_effects(prev, s, time).map_err(|e| format!("settle {i}: {e}"))?));
     }
     let (mut queue_len, mut queue_hash) = (prev.queue_len, prev.queue_hash);
     for (j, (p, t)) in posted.iter().zip(taken).enumerate() {
@@ -1122,7 +1194,7 @@ pub fn apply(prev: &State, spends: &[Spend], data: &[SpendData], posted: &[Poste
         queue_hash = queue_step(&queue_hash, &p.payload_hash);
         if *t {
             let c = p.candidate.as_ref().ok_or_else(|| format!("forced spend {j}: taken, but no spend"))?;
-            chosen.push((n + j, c.effects.clone()));
+            chosen.push((n + k + j, c.effects.clone()));
         }
     }
     let mut outputs: Vec<(Fr, [u8; 32])> = vec![];
@@ -1134,6 +1206,7 @@ pub fn apply(prev: &State, spends: &[Spend], data: &[SpendData], posted: &[Poste
         lists.exits.extend(e.exit);
         outputs.extend(e.outputs);
         lists.hops.extend(e.hop);
+        lists.claims.extend(e.claim);
         spent.extend(e.nullifiers.into_iter().map(|x| (i, x)));
     }
     if spent.len() != nfw.len() {
@@ -1168,6 +1241,7 @@ pub fn apply(prev: &State, spends: &[Spend], data: &[SpendData], posted: &[Poste
     lists.deposits.sort();
     lists.exits.sort();
     lists.hops.sort();
+    lists.claims.sort();
     let mut next = State { notes, nf_root, nf_size, recent: prev.recent, chain: prev.chain, queue_len, queue_hash };
     next.remember(fr_be(&next.notes.root));
     let out = BlockOut {
@@ -1184,6 +1258,8 @@ pub fn apply(prev: &State, spends: &[Spend], data: &[SpendData], posted: &[Poste
         queue_len,
         queue_hash,
         hops_hash: list_hash(6, &lists.hops),
+        claims_hash: list_hash(7, &lists.claims),
+        time,
     };
     mark!("cycle-tracker-report-end: block-commit");
     Ok((next, out, lists))

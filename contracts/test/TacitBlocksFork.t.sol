@@ -15,7 +15,8 @@ interface IERC20Fork {
 /// block program's real Groth16 proofs (tacit-block-gpu --groth16 on each FILE.b<i>.stdin, kept as FILE.b<i>.stdin.groth16) through
 /// the SP1 v6.1.0 Groth16 verifier the pool uses, in real TAC, its hops going into the live confidential pool: a shield, a spend with
 /// an exit, a block of the queue alone that takes a spend posted with `force`, a hop of 300 into the confidential pool, and a block
-/// of the queue alone that takes a hop posted with `force`. Skipped unless TACIT_BLOCKS_FORK_RPC names an Ethereum node and the
+/// of the queue alone that takes a hop posted with `force`, two deposits straight into locks, the recipient's claim of one (its
+/// signature published) and a refund of the other posted with `force`. Skipped unless TACIT_BLOCKS_FORK_RPC names an Ethereum node and the
 /// proofs exist.
 /// Accepts every proof, for checking the live confidential pool's side of a hop before real proofs exist.
 contract AcceptAllFork is ISP1BlockVerifier {
@@ -29,7 +30,7 @@ contract TacitBlocksForkTest is Test {
     address constant CONFIDENTIAL = 0x000000000Ed1eabD231Be41d93b719056F7febFC;
     bytes32 constant CTAC = 0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b;
     /// `cargo prove vkey --elf contracts/sp1/confidential/tacit-block/elf/tacit-block`
-    bytes32 constant BLOCK_VKEY = 0x008cac7f438f56169c6173013632003e1e12acbc7b321227a31b1bfc26dd0ab0;
+    bytes32 constant BLOCK_VKEY = 0x00c03963e7a28f659b5d209030a8a3098fc6fab6be845768acc802508227a382;
     address constant SEQ = address(0x5E9);
     uint256 constant UNIT = 1e10;
 
@@ -41,9 +42,10 @@ contract TacitBlocksForkTest is Test {
     function setUp() public {
         path = string.concat(vm.projectRoot(), "/test/fixtures/tacit-blocks-mainnet.json");
         string memory rpc = vm.envOr("TACIT_BLOCKS_FORK_RPC", string(""));
-        if (bytes(rpc).length == 0 || !vm.exists(string.concat(path, ".b4.stdin.groth16"))) return;
+        if (bytes(rpc).length == 0 || !vm.exists(string.concat(path, ".b7.stdin.groth16"))) return;
         vm.createSelectFork(rpc);
         fx = vm.readFile(path);
+        vm.warp(vm.parseJsonUint(fx, ".time"));
         address at = vm.parseJsonAddress(fx, ".lander");
         // no seat is held on the fork, so SEQ leads every turn
         TacitSeats turns = new TacitSeats(IERC20Seats(TAC), 1000e18, 50, SEQ);
@@ -75,6 +77,23 @@ contract TacitBlocksForkTest is Test {
         l.deposits = vm.parseJsonBytes(fx, key(b, "deposits"));
         l.exits = vm.parseJsonBytes(fx, key(b, "exits"));
         l.hops = vm.parseJsonBytes(fx, key(b, "hops"));
+        l.claims = vm.parseJsonBytes(fx, key(b, "claims"));
+    }
+
+    /// Moves the clock to the time block `b` names when it is later.
+    function toTime(uint256 b) internal {
+        uint256 t = uint256(abi.decode(vm.parseJsonBytes(fx, key(b, "publicValues")), (bytes32[15]))[14]);
+        if (block.timestamp < t) vm.warp(t);
+    }
+
+    function lockDeposits() internal {
+        for (uint256 i; i < 2; ++i) {
+            string memory d = string.concat(".lockDeposits[", vm.toString(i), "]");
+            uint256 v = vm.parseJsonUint(fx, string.concat(d, ".value"));
+            deal(TAC, address(this), v * UNIT);
+            IERC20Fork(TAC).approve(address(blocks), v * UNIT);
+            blocks.deposit(v, vm.parseJsonBytes32(fx, string.concat(d, ".cx")), vm.parseJsonBytes32(fx, string.concat(d, ".cy")), vm.parseJsonBytes32(fx, string.concat(d, ".body")));
+        }
     }
 
     /// What a transaction carrying `data` that spends `exec` gas executing pays in all: 21,000, calldata at 4 gas per
@@ -98,6 +117,7 @@ contract TacitBlocksForkTest is Test {
         (bytes memory pf, bytes memory pv) = proof(b);
         assertEq(pv, vm.parseJsonBytes(fx, key(b, "publicValues")), "the proof commits the fixture's public values");
         TacitBlocks.Lists memory l = lists(b);
+        toTime(b);
         bytes memory data = abi.encodeCall(TacitBlocks.land, (pv, pf, l));
         vm.prank(SEQ);
         uint256 g = gasleft();
@@ -154,9 +174,21 @@ contract TacitBlocksForkTest is Test {
         blocks.force(forcedHop);
         landReal(4, "the queue alone: one forced hop");
         sendHop(vm.parseJsonUint(fx, ".hop2.value"), vm.parseJsonBytes32(fx, ".hop2.commit"), "send the forced hop on");
-        assertEq(blocks.height(), 5);
-        assertEq(blocks.queueDone(), 2);
         assertEq(IERC20Fork(TAC).balanceOf(address(blocks)), 0, "every TAC that came in went out: an exit and two hops");
+
+        lockDeposits();
+        landReal(5, "two deposits straight into locks");
+        landReal(6, "a claim of a lock, its signature published");
+        bytes memory refund = vm.parseJsonBytes(fx, ".forcedRefund");
+        data = abi.encodeCall(TacitBlocks.force, (refund));
+        vm.prank(address(0xF0));
+        g = gasleft();
+        blocks.force(refund);
+        report("post a refund to the queue", data, g - gasleft());
+        landReal(7, "the queue alone: a refund after its deadline");
+        assertEq(blocks.height(), 8);
+        assertEq(blocks.queueDone(), 3);
+        assertEq(IERC20Fork(TAC).balanceOf(address(blocks)), 1_500 * UNIT, "the claimed and refunded locks stay on the chain as notes");
     }
 
     /// The same chain landed through a verifier that takes any proof, so the live confidential pool's side is checked without
@@ -167,6 +199,7 @@ contract TacitBlocksForkTest is Test {
         if (bytes(rpc).length == 0) return;
         vm.createSelectFork(rpc);
         fx = vm.readFile(path);
+        vm.warp(vm.parseJsonUint(fx, ".time"));
         TacitSeats turns = new TacitSeats(IERC20Seats(TAC), 1000e18, 50, SEQ);
         deployCodeTo(
             "TacitBlocks.sol:TacitBlocks",
@@ -178,15 +211,18 @@ contract TacitBlocksForkTest is Test {
         deal(TAC, address(this), v * UNIT);
         IERC20Fork(TAC).approve(address(blocks), v * UNIT);
         blocks.deposit(v, vm.parseJsonBytes32(fx, ".deposit.cx"), vm.parseJsonBytes32(fx, ".deposit.cy"), vm.parseJsonBytes32(fx, ".deposit.body"));
-        for (uint256 b; b < 5; ++b) {
+        for (uint256 b; b < 8; ++b) {
             if (b == 2) blocks.force(vm.parseJsonBytes(fx, ".forced"));
             if (b == 4) blocks.force(vm.parseJsonBytes(fx, ".forcedHop"));
+            if (b == 5) lockDeposits();
+            if (b == 7) blocks.force(vm.parseJsonBytes(fx, ".forcedRefund"));
+            toTime(b);
             vm.prank(SEQ);
             blocks.land(vm.parseJsonBytes(fx, key(b, "publicValues")), "", lists(b));
             if (b == 3) sendHop(vm.parseJsonUint(fx, ".hop.value"), vm.parseJsonBytes32(fx, ".hop.commit"), "send a hop into the live confidential pool");
         }
         sendHop(vm.parseJsonUint(fx, ".hop2.value"), vm.parseJsonBytes32(fx, ".hop2.commit"), "send the forced hop on");
         blocks.withdraw(vm.parseJsonAddress(fx, ".exit.to"));
-        assertEq(IERC20Fork(TAC).balanceOf(address(blocks)), 0, "every TAC that came in went out: an exit and two hops");
+        assertEq(IERC20Fork(TAC).balanceOf(address(blocks)), 1_500 * UNIT, "out: an exit and two hops; on the chain: the two locks' notes");
     }
 }

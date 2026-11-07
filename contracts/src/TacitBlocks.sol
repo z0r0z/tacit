@@ -50,10 +50,16 @@ interface ITurns {
 ///         spend's body names by that pool's commitment, so the value moves from this chain's notes to that pool's with no
 ///         address of the spender's in between, joining that pool's liquidity and anonymity set.
 ///
+///         A spend may also put its value in a lock, the chain's half of an atomic swap with another chain (the fast bridge's
+///         adaptor swap): its recipient claims it with a BIP-340 signature before a deadline, the block publishing the
+///         signature (from which the swap's counterparty, holding the recipient's adapted pre-signature, reads the swap's
+///         secret), and from the deadline anyone may refund it to the locker. A block names a time and lands only within
+///         TIME_WINDOW of it; the block program decides claims and refunds by that time alone.
+///
 ///         A block's calldata carries everything it publishes: new notes (leaf and a MEMO_LEN-byte memo each, sorted
 ///         by leaf), nullifiers (ascending, the order they enter the nullifier tree), anchors older than the block
-///         program's recent roots, the deposits it took in, the exits it pays and the hops it sends, each list checked
-///         against the hash the proof commits. Anyone can rebuild the chain's state from these lists alone. Their order
+///         program's recent roots, the deposits it took in, the exits it pays, the hops it sends and its claims'
+///         signatures, each list checked against the hash the proof commits. Anyone can rebuild the chain's state from these lists alone. Their order
 ///         says nothing of which spend an entry came from; whoever proves a block does see that.
 ///
 ///         The binding every spend's body carries is derived here from the chain id and this contract's address,
@@ -85,11 +91,15 @@ contract TacitBlocks {
     bytes32 internal constant NF_GENESIS_ROOT = 0xf17b0f821760732c27b2f8e967a3e18c976a57e176de5164378fdaf3e1796f0c;
     uint256 internal constant NOTE_TREE_DEPTH = 32;
     uint256 internal constant RECENT = 32;
-    uint256 internal constant PUBLIC_WORDS = 13;
+    uint256 internal constant PUBLIC_WORDS = 15;
     uint256 internal constant DEPOSIT_LEN = 160;
     uint256 internal constant EXIT_LEN = 96;
     /// A hop (tacit-block-common `ops::hop_bytes`): asset ‖ value ‖ the confidential pool's commitment.
     uint256 internal constant HOP_LEN = 96;
+    /// A claim's signature (R.x ‖ s).
+    uint256 internal constant CLAIM_LEN = 64;
+    /// @notice How long after the time a block names it may land (tacit-block-common `lock::TIME_WINDOW`).
+    uint256 public constant TIME_WINDOW = 1 hours;
     /// @notice A unit of value: 10^-8 TAC in the token's smallest units.
     uint256 public constant UNIT = 1e10;
     /// Every memo's length (tacit-block-common MEMO_LEN), so a memo's size says nothing of what wrote it.
@@ -98,10 +108,18 @@ contract TacitBlocks {
     uint256 public constant MAX_WINDOW = 1 days;
     /// A posted spend (tacit-block-common `forced_parts`): publics (12 words) ‖ proof (2,080 bytes) ‖ hints (20 × 64) ‖ a memo
     /// per output slot ‖ the exit's address (20) ‖ salt (32) ‖ the deposit's opening (a flag, then value (u64 BE) and
-    /// blinding (32)) ‖ the exit's opening ‖ for a hop, a 1 and the operation (its tag and the commitment, 33 bytes).
+    /// blinding (32)) ‖ the exit's opening ‖ for an operation, a 1 and the operation (a hop's 33 bytes, a lock's 265) and, for a
+    /// lock, the memo of its leaf.
     uint256 internal constant FORCED_REST_AT = 12 * 32 + 2080 + 20 * 64 + 3 * MEMO_LEN;
     uint256 internal constant FORCED_MIN = FORCED_REST_AT + 20 + 32 + 1 + 1;
-    uint256 internal constant FORCED_MAX = FORCED_MIN + 2 * (8 + 32) + 1 + 33;
+    uint256 internal constant FORCED_MAX = FORCED_MIN + 2 * (8 + 32) + 1 + 265 + MEMO_LEN;
+    /// A claim or refund posted to the queue (tacit-block-common `lock::forced_settle`): SETTLE_MARK ‖ kind ‖ asset ‖ value (u64)
+    /// ‖ the lock's terms (232) ‖ index (u64) ‖ the root its path leads to ‖ the path (32 × 32) ‖ a claim's signature ‖ the memo of
+    /// the note it makes.
+    bytes32 internal constant SETTLE_MARK = bytes32(type(uint256).max);
+    uint256 internal constant SETTLE_ROOT_AT = 32 + 1 + 32 + 8 + 232 + 8;
+    uint256 internal constant SETTLE_REFUND_LEN = SETTLE_ROOT_AT + 32 + 32 * 32 + MEMO_LEN;
+    uint256 internal constant SETTLE_CLAIM_LEN = SETTLE_REFUND_LEN + 64;
     /// @notice A block that takes this many entries of the queue may leave overdue ones to the next.
     uint256 public constant MAX_FORCED = 16;
     uint256 public constant MIN_FORCE_DELAY = 10 minutes;
@@ -196,11 +214,12 @@ contract TacitBlocks {
     error BadQueue();
     error QueueOverdue();
     error NoSuchHop();
+    error BadTime();
 
     /// @notice The lists a block publishes, in the block program's committed order (`BlockData`): the new notes'
     ///         leaves (32 bytes each) and their memos (MEMO_LEN bytes each, in the same order), nullifiers, anchors,
-    ///         deposits as asset ‖ value ‖ cx ‖ cy ‖ body (160 bytes each), exits as asset ‖ value ‖ address (96) and
-    ///         hops as asset ‖ value ‖ the confidential pool's commitment (96).
+    ///         deposits as asset ‖ value ‖ cx ‖ cy ‖ body (160 bytes each), exits as asset ‖ value ‖ address (96),
+    ///         hops as asset ‖ value ‖ the confidential pool's commitment (96) and claims' signatures (64).
     struct Lists {
         bytes leaves;
         bytes memos;
@@ -209,6 +228,7 @@ contract TacitBlocks {
         bytes deposits;
         bytes exits;
         bytes hops;
+        bytes claims;
     }
 
     modifier nonReentrant() {
@@ -321,8 +341,18 @@ contract TacitBlocks {
     ///         on L1 to one another and to the address that posts it, which for a spend a leader takes only the block's prover
     ///         sees, and a deposit's or exit's opening (its value) is in clear; the values of its notes stay hidden. Bytes are
     ///         queued as posted: the same spend posted twice, or with the flag bit halo2's point encoding ignores flipped, is
-    ///         two entries, of which a block takes at most one.
+    ///         two entries, of which a block takes at most one. A claim or refund of a lock may be posted too (SETTLE_MARK ‖ the
+    ///         settle ‖ the memo of the note it makes), shown against a root a block ended at; a block takes it if its time
+    ///         allows (a claim while the block lands before the deadline, a refund from the deadline on) and passes it over
+    ///         otherwise, so a claim is posted with time to spare: FORCE_DELAY and TIME_WINDOW before the deadline.
     function force(bytes calldata payload) external nonReentrant {
+        if (payload.length >= 32 && bytes32(payload[0:32]) == SETTLE_MARK) {
+            if (payload.length != SETTLE_CLAIM_LEN && payload.length != SETTLE_REFUND_LEN) revert BadPayload();
+            bytes32 settleRoot = bytes32(payload[SETTLE_ROOT_AT:SETTLE_ROOT_AT + 32]);
+            if (!knownRoot[settleRoot]) revert UnknownAnchor(settleRoot);
+            _enqueue(payload);
+            return;
+        }
         if (payload.length < FORCED_MIN || payload.length > FORCED_MAX) revert BadPayload();
         bytes32 asset = bytes32(payload[64:96]);
         if (bytes32(payload[96:128]) != 0 || bytes32(payload[128:160]) != 0) {
@@ -339,13 +369,18 @@ contract TacitBlocks {
             if (p.forced > queueDone) revert DepositQueued();
             p.forced = uint56(i + 1);
         }
+        _enqueue(payload);
+    }
+
+    function _enqueue(bytes calldata payload) internal {
+        uint256 i = queued;
         queueHash[i + 1] = sha256(abi.encodePacked(QUEUE_DOMAIN, queueHash[i], sha256(payload)));
         queuedAt[i] = block.timestamp;
         queued = uint64(i + 1);
         emit Forced(i, msg.sender, payload);
     }
 
-    /// @notice Lands the next block: its proof, its thirteen public words and the lists it publishes.
+    /// @notice Lands the next block: its proof, its fifteen public words and the lists it publishes.
     function land(bytes calldata publicValues, bytes calldata proof, Lists calldata lists) external nonReentrant {
         if (block.timestamp < uint256(lastLanded) + WINDOW) {
             address lead = TURNS.turn();
@@ -353,8 +388,10 @@ contract TacitBlocks {
         }
         if (publicValues.length != 32 * PUBLIC_WORDS) revert BadPublicValues();
         VERIFIER.verifyProof(BLOCK_VKEY, publicValues, proof);
-        bytes32[13] memory w = abi.decode(publicValues, (bytes32[13]));
+        bytes32[15] memory w = abi.decode(publicValues, (bytes32[15]));
         if (w[0] != state || w[2] != noteRoot) revert NotOnTop();
+        // the time the block names, by which its claims and refunds were decided
+        if (block.timestamp < uint256(w[14]) || block.timestamp > uint256(w[14]) + TIME_WINDOW) revert BadTime();
         if (w[9] != SPEND_VK) revert WrongRelation();
         // how far through the queue the chain is after the block, and the queue's hash there (the program only moves
         // it on, from where the state digest says it was)
@@ -403,6 +440,8 @@ contract TacitBlocks {
             if (asset != TAC_ASSET) revert NotTac(asset);
             hops[keccak256(hopList[HOP_LEN * i + 32:HOP_LEN * (i + 1)])] += 1;
         }
+        // the claims' signatures, published for the swaps' counterparties
+        if (lists.claims.length % CLAIM_LEN != 0 || _listHash(7, lists.claims.length / CLAIM_LEN, lists.claims) != w[13]) revert BadList(7);
 
         state = w[1];
         noteRoot = w[3];

@@ -8,11 +8,14 @@
 //! The chain keeps no liquidity of its own: what an operation does with value on Ethereum happens in the confidential pool there
 //! (V1), so the chain adds to that pool's liquidity and anonymity set instead of splitting them.
 
-use super::{fr_be, fr_from_be, Fr};
+use super::{fr_be, fr_from_be, lock::{Lock, LOCK_LEN}, Fr};
 
 /// Sends the exit's value into the confidential pool on Ethereum as a deposit for the note `commit` names there (the pool's
 /// `wrap(asset, amount, commit)`): one exit and one deposit, with no address of the spender's in between.
 pub const OP_HOP: u8 = 1;
+/// Puts the exit's value in a lock (`lock`): a leaf of the note tree its recipient may claim before a deadline and anyone may refund
+/// to the locker from it, published with the memo `memo` hashes.
+pub const OP_LOCK: u8 = 2;
 
 /// A note the block program makes: whose (the one-time keys of `leaf_of`) and the hash of the memo published with it (the spender's,
 /// encrypted to whoever owns the keys, so the note is found again from the keys alone), as the body names them.
@@ -28,6 +31,8 @@ pub enum Op {
     /// The exit's value into the confidential pool, as a deposit for `commit` (that pool's keccak(Cx ‖ Cy ‖ owner) of the note it
     /// makes).
     Hop { commit: [u8; 32] },
+    /// The exit's value into a lock with these terms, its leaf published with the memo `memo` hashes.
+    Lock { lock: Lock, memo: [u8; 32] },
 }
 
 struct R<'a>(&'a [u8]);
@@ -51,6 +56,11 @@ impl Op {
                 b.push(OP_HOP);
                 b.extend(commit);
             }
+            Op::Lock { lock, memo } => {
+                b.push(OP_LOCK);
+                b.extend(lock.to_bytes());
+                b.extend(memo);
+            }
         }
         b
     }
@@ -66,6 +76,7 @@ impl Op {
         let mut r = R(b);
         let op = match r.take(1)?[0] {
             OP_HOP => Op::Hop { commit: r.take(32)?.try_into().ok()? },
+            OP_LOCK => Op::Lock { lock: Lock::from_bytes(r.take(LOCK_LEN)?)?, memo: r.take(32)?.try_into().ok()? },
             _ => return None,
         };
         Some((op, b.len() - r.0.len()))
@@ -76,6 +87,8 @@ impl Op {
     pub fn receivers(&self) -> Vec<NoteTo> {
         match self {
             Op::Hop { .. } => vec![],
+            // the lock's own leaf, whose memo the forced spend posts like an output's
+            Op::Lock { memo, .. } => vec![NoteTo { npk: Fr::from(0u64), rho: Fr::from(0u64), memo: *memo }],
         }
     }
 }

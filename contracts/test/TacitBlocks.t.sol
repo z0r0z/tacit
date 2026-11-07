@@ -98,10 +98,12 @@ contract TacitBlocksTest is Test {
     uint256 constant UNIT = 1e10;
     bytes32 constant CTAC = 0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b;
     uint256 constant FORCED_REST_AT = 384 + 2080 + 1280 + 3 * 128;
-    uint256 constant FORCED_MAX = FORCED_REST_AT + 20 + 32 + 2 * 41 + 1 + 33;
+    uint256 constant FORCED_MAX = FORCED_REST_AT + 20 + 32 + 2 * 41 + 1 + 265 + 128;
 
     function setUp() public {
         fx = vm.readFile(string.concat(vm.projectRoot(), "/test/fixtures/tacit-blocks.json"));
+        // the time the fixture's blocks name (block 7 names a later one)
+        vm.warp(vm.parseJsonUint(fx, ".time"));
         verifier = new AcceptAll();
         deployCodeTo("TacitBlocks.t.sol:Token", abi.encode(uint8(18)), vm.parseJsonAddress(fx, ".tac"));
         tac = Token(vm.parseJsonAddress(fx, ".tac"));
@@ -125,8 +127,8 @@ contract TacitBlocksTest is Test {
         return vm.parseJsonBytes(fx, key(b, "publicValues"));
     }
 
-    function words(uint256 b) internal view returns (bytes32[13] memory) {
-        return abi.decode(pv(b), (bytes32[13]));
+    function words(uint256 b) internal view returns (bytes32[15] memory) {
+        return abi.decode(pv(b), (bytes32[15]));
     }
 
     function lists(uint256 b) internal view returns (TacitBlocks.Lists memory l) {
@@ -137,6 +139,7 @@ contract TacitBlocksTest is Test {
         l.deposits = vm.parseJsonBytes(fx, key(b, "deposits"));
         l.exits = vm.parseJsonBytes(fx, key(b, "exits"));
         l.hops = vm.parseJsonBytes(fx, key(b, "hops"));
+        l.claims = vm.parseJsonBytes(fx, key(b, "claims"));
     }
 
     function dep() internal view returns (uint256 v, bytes32 cx, bytes32 cy, bytes32 body) {
@@ -154,6 +157,7 @@ contract TacitBlocksTest is Test {
     }
 
     function land(uint256 b) internal {
+        if (block.timestamp < uint256(words(b)[14])) vm.warp(uint256(words(b)[14]));
         vm.prank(SEQ);
         blocks.land(pv(b), "", lists(b));
     }
@@ -174,7 +178,7 @@ contract TacitBlocksTest is Test {
     /// Public values for a block on top of the current state that publishes only `l` and moves the queue to `done`
     /// (the verifier here takes any proof, so the landing rules alone decide).
     function craftQ(TacitBlocks.Lists memory l, uint256 done) internal view returns (bytes memory) {
-        bytes32[13] memory w = abi.decode(craft(l), (bytes32[13]));
+        bytes32[15] memory w = abi.decode(craft(l), (bytes32[15]));
         w[10] = bytes32(done);
         w[11] = blocks.queueHash(done);
         return abi.encode(w);
@@ -182,7 +186,7 @@ contract TacitBlocksTest is Test {
 
     /// As `craftQ`, leaving the queue where it is.
     function craft(TacitBlocks.Lists memory l) internal view returns (bytes memory) {
-        bytes32[13] memory w;
+        bytes32[15] memory w;
         w[0] = blocks.state();
         w[1] = keccak256(abi.encode("next", blocks.height()));
         w[2] = blocks.noteRoot();
@@ -210,6 +214,8 @@ contract TacitBlocksTest is Test {
         w[10] = bytes32(uint256(blocks.queueDone()));
         w[11] = blocks.queueHash(blocks.queueDone());
         w[12] = listHash(6, l.hops.length / 96, l.hops);
+        w[13] = listHash(7, l.claims.length / 64, l.claims);
+        w[14] = bytes32(block.timestamp);
         return abi.encode(w);
     }
 
@@ -450,12 +456,12 @@ contract TacitBlocksTest is Test {
     function test_theQueueWordsMustBeTheContracts() public {
         blocks.force(posting(nothing(), false, 0));
         TacitBlocks.Lists memory none;
-        bytes32[13] memory w = abi.decode(craftQ(none, 1), (bytes32[13]));
+        bytes32[15] memory w = abi.decode(craftQ(none, 1), (bytes32[15]));
         w[11] = keccak256("another queue");
         vm.prank(SEQ);
         vm.expectRevert(TacitBlocks.BadQueue.selector);
         blocks.land(abi.encode(w), "", none);
-        w = abi.decode(craftQ(none, 1), (bytes32[13]));
+        w = abi.decode(craftQ(none, 1), (bytes32[15]));
         w[10] = bytes32(uint256(2));
         vm.prank(SEQ);
         vm.expectRevert(TacitBlocks.BadQueue.selector);
@@ -532,7 +538,7 @@ contract TacitBlocksTest is Test {
         blocks.land(p0, "", l0);
         // a block whose note root before is not the one held, though its state digest is
         TacitBlocks.Lists memory none;
-        bytes32[13] memory w = abi.decode(craft(none), (bytes32[13]));
+        bytes32[15] memory w = abi.decode(craft(none), (bytes32[15]));
         w[2] = keccak256("another root");
         vm.prank(SEQ);
         vm.expectRevert(TacitBlocks.NotOnTop.selector);
@@ -751,9 +757,93 @@ contract TacitBlocksTest is Test {
         blocks.reclaim(v, cx, cy, body);
         bytes memory p0 = pv(0);
         TacitBlocks.Lists memory l0 = lists(0);
+        vm.warp(vm.parseJsonUint(fx, ".time"));
         vm.prank(SEQ);
         vm.expectRevert(abi.encodeWithSelector(TacitBlocks.NoSuchDeposit.selector, 0));
         blocks.land(p0, "", l0);
+    }
+
+    function lockDeposits() internal {
+        for (uint256 i; i < 2; ++i) {
+            string memory d = string.concat(".lockDeposits[", vm.toString(i), "]");
+            uint256 v = vm.parseJsonUint(fx, string.concat(d, ".value"));
+            tac.mint(address(this), v * UNIT);
+            tac.approve(address(blocks), v * UNIT);
+            blocks.deposit(v, vm.parseJsonBytes32(fx, string.concat(d, ".cx")), vm.parseJsonBytes32(fx, string.concat(d, ".cy")), vm.parseJsonBytes32(fx, string.concat(d, ".body")));
+        }
+    }
+
+    /// The fixture through its hops, then two deposits straight into locks (block 5), the recipient's claim of the first (block 6,
+    /// publishing its signature) and a refund of the second posted to the queue (block 7, naming its deadline).
+    function test_locksClaimsAndRefunds() public {
+        toTheHop();
+        land(3);
+        blocks.force(vm.parseJsonBytes(fx, ".forcedHop"));
+        land(4);
+        lockDeposits();
+        land(5);
+        land(6);
+        assertEq(lists(6).claims, vm.parseJsonBytes(fx, ".claimSig"), "the claim's signature is published for the swap's counterparty");
+        bytes memory refund = vm.parseJsonBytes(fx, ".forcedRefund");
+        vm.prank(address(0xF00D));
+        blocks.force(refund);
+        land(7);
+        assertEq(blocks.height(), 8);
+        assertEq(blocks.queueDone(), 3);
+        // what stays on the chain: 120 owed to the exit, 300 + 80 to send into the pool, 1,000 claimed and 500 refunded as notes
+        assertEq(tac.balanceOf(address(blocks)), (120 + 380 + 1_500) * UNIT);
+    }
+
+    function test_aBlockLandsWithinItsTime() public {
+        depositFixture();
+        uint256 t = uint256(words(0)[14]);
+        bytes memory p0 = pv(0);
+        TacitBlocks.Lists memory l0 = lists(0);
+        vm.warp(t - 1);
+        vm.prank(SEQ);
+        vm.expectRevert(TacitBlocks.BadTime.selector);
+        blocks.land(p0, "", l0);
+        vm.warp(t + blocks.TIME_WINDOW() + 1);
+        vm.prank(SEQ);
+        vm.expectRevert(TacitBlocks.BadTime.selector);
+        blocks.land(p0, "", l0);
+        vm.warp(t + blocks.TIME_WINDOW());
+        vm.prank(SEQ);
+        blocks.land(p0, "", l0);
+        assertEq(blocks.height(), 1);
+    }
+
+    function test_claimsMustBeTheCommittedOnes() public {
+        toTheHop();
+        land(3);
+        blocks.force(vm.parseJsonBytes(fx, ".forcedHop"));
+        land(4);
+        lockDeposits();
+        land(5);
+        bytes memory p6 = pv(6);
+        TacitBlocks.Lists memory l6 = lists(6);
+        l6.claims[63] = bytes1(uint8(l6.claims[63]) ^ 1);
+        vm.prank(SEQ);
+        vm.expectRevert(abi.encodeWithSelector(TacitBlocks.BadList.selector, 7));
+        blocks.land(p6, "", l6);
+        l6.claims = "";
+        vm.prank(SEQ);
+        vm.expectRevert(abi.encodeWithSelector(TacitBlocks.BadList.selector, 7));
+        blocks.land(p6, "", l6);
+        land(6);
+    }
+
+    /// A claim or refund is posted only at its exact size and against a root a block ended at.
+    function test_whatForceRefusesOfASettle() public {
+        bytes memory refund = vm.parseJsonBytes(fx, ".forcedRefund");
+        bytes32 root;
+        assembly {
+            root := mload(add(add(refund, 32), 313))
+        }
+        vm.expectRevert(abi.encodeWithSelector(TacitBlocks.UnknownAnchor.selector, root));
+        blocks.force(refund);
+        vm.expectRevert(TacitBlocks.BadPayload.selector);
+        blocks.force(bytes.concat(refund, hex"00"));
     }
 
     function test_constructorChecks() public {

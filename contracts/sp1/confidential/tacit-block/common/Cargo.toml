@@ -9,6 +9,7 @@ halo2_proofs = { git = "https://github.com/privacy-scaling-explorations/halo2", 
 ff = "0.13"
 sha2 = { version = "0.10", features = ["compress"] }
 num-bigint = "0.4"
+k256 = { version = "0.13", default-features = false, features = ["arithmetic"] }
 
 [target.'cfg(target_os = "zkvm")'.dependencies]
 sp1-lib = "=6.2.3"

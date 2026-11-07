@@ -61,8 +61,11 @@ pub fn main() {
         spends.push(Spend::from_publics(&p));
         raw.push((publics, p, proof, hints));
     }
+    let k = read_u32() as usize;
+    let settles: Vec<blk::lock::Settle> = (0..k).map(|_| blk::lock::Settle::from_bytes(&sp1_zkvm::io::read_vec()).expect("settle")).collect();
+    let time = u64::from_le_bytes(sp1_zkvm::io::read_vec().try_into().expect("time"));
     let m = read_u32() as usize;
-    assert!(n + m >= 1, "an empty block");
+    assert!(n + k + m >= 1, "an empty block");
     let posted_raw: Vec<(Vec<u8>, Vec<u8>)> = (0..m).map(|_| (sp1_zkvm::io::read_vec(), sp1_zkvm::io::read_vec())).collect();
     let witnesses = sp1_zkvm::io::read_vec();
     assert_eq!(witnesses.len() % NF_WITNESS_LEN, 0, "nullifier witnesses length");
@@ -76,7 +79,7 @@ pub fn main() {
         .iter()
         .zip(&answers)
         .enumerate()
-        .map(|(j, ((p, _), a))| blk::posted(&state, p, &a.members).unwrap_or_else(|e| panic!("forced spend {j}: {e}")))
+        .map(|(j, ((p, _), a))| blk::posted(&state, p, &a.members, time).unwrap_or_else(|e| panic!("forced spend {j}: {e}")))
         .collect();
     println!("cycle-tracker-report-end: forced-checks");
 
@@ -93,7 +96,7 @@ pub fn main() {
     // one it says does not verify must fail here, on its own, so a sound spend cannot be passed over.
     println!("cycle-tracker-report-start: forced");
     let mut joined: Vec<usize> = vec![];
-    let taken = blk::take(&spends, &posted, |j, c| {
+    let taken = blk::take(&spends, &settles, &posted, |j, c| {
         if answers[j].verifies {
             joined.push(j);
             return true;
@@ -147,10 +150,10 @@ pub fn main() {
     assert!(total == 0 || pairs(&batch, &g2, &s_g2), "pairing check failed");
     println!("cycle-tracker-report-end: pairing");
 
-    let (_, out, _) = blk::apply(&state, &spends, &data, &posted, &taken, &nfw, blk::vk_hash(&VK_DIGEST)).expect("block rejected");
+    let (_, out, _) = blk::apply(&state, &spends, &data, &settles, &posted, &taken, &nfw, blk::vk_hash(&VK_DIGEST), time).expect("block rejected");
     sp1_zkvm::io::commit_slice(&out.encode());
     // the run ends here: dropping the key, the proofs and the batch would only spend cycles freeing memory
-    std::mem::forget((vk, params, batch, raw, spends, data, nfw, posted, posted_raw, answers));
+    std::mem::forget((vk, params, batch, raw, spends, data, settles, nfw, posted, posted_raw, answers));
 }
 
 /// Whether a batch of dual MSMs holds: e(left, τ·g2) = e(right, g2), its MSMs on the bn254 precompiles.
