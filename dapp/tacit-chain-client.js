@@ -9,11 +9,12 @@
 //   const s = await c.shield(units)    → { deposit (for TacitBlocks.deposit), inbox(back) → address, submit({ back? }) }
 //   await c.pay(fullAddress, units)    → receipt;   await c.withdraw('0x…', units);   await c.hop(commit, units)
 //
-// Amounts are in chain units (1e-8 TAC, 1e10 of the token's smallest units). A spend takes at most two notes: more is refused with a
-// message to move fewer at once (two notes of yours merge into one by paying yourself).
+// Amounts are TAC in units of 1e-8 (1e10 of the token's smallest units). Notes count shares of the chain's pool, worth more as the
+// chain's fees stay with its holders: `balance()` is in shares, `worth()` in units at the leader's latest rate. A spend takes at most
+// two notes: more is refused with a message to move fewer at once (two notes of yours merge into one by paying yourself).
 import { sha256, keccak_256, hmac, concatBytes } from './vendor/tacit-deps.min.js';
 import { poseidon2, poseidon3, poseidon4, poseidon5 } from './vendor/tacit-poseidon.min.js';
-import { makeChainWallet, hopOp } from './tacit-chain-wallet.js';
+import { makeChainWallet, hopOp, poolOp, worthOf, sharesFor, sharesToPay, poolShare } from './tacit-chain-wallet.js';
 
 export const UNIT = 10n ** 10n;
 const te = new TextEncoder();
@@ -72,6 +73,14 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
     return balance();
   }
   const balance = () => st.notes.reduce((t, n) => t + BigInt(n.value), 0n);
+  /// The pool and shares as the chain's latest block left them (a share is worth pool / shares units).
+  let lastRate = { pool: 0n, shares: 0n };
+  async function rate() {
+    const s = await api('GET', '/state');
+    if (!s.ok) throw new Error('the leader did not answer');
+    lastRate = { pool: BigInt(s.pool ?? 0), shares: BigInt(s.shares ?? 0) };
+    return lastRate;
+  }
   const hexBytes = (h) => Uint8Array.from(strip(h).match(/../g) || [], (x) => parseInt(x, 16));
   const owned = () => st.notes.map((n) => ({ ...n, s: hexBytes(n.s) }));
 
@@ -114,27 +123,48 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
     lane: async () => { await ready(); return w.chainAddressHash(w.address(me)); },
     publish: async () => { await ready(); return w.publish(me, leader); },
     resolve: async (hash) => { await ready(); return w.resolve(hash, leader); },
-    /// A shield of `units`: prove it, then pay its deposit (`deposit` after approving TAC, or TAC to `inbox(back)`), then `submit`.
-    async shield(units, { onProgress } = {}) {
-      const s = await spend({ dep: { v: BigInt(units) }, onProgress });
+    rate,
+    /// Hands a shield's kept submission to the leader again (its deposit made, the hand-over cut off), and waits for it to land.
+    resubmit: (submission, extra = {}, o = {}) => submit({ submission, nullifiers: [] }, extra, o),
+    /// What this wallet's notes are worth now, in units.
+    worth: async () => worthOf(balance(), await rate()),
+    /// A shield of `amount` units: the shares it buys at the chain's rate (with a little margin, which stays with the holders), proven;
+    /// then pay its deposit (`depositCalldata` after approving TAC, TAC to `inbox(back)`, or a holder's permit for that inbox), then `submit`.
+    async shield(amount, { onProgress } = {}) {
+      const r = await rate();
+      const shares = sharesFor(amount, r);
+      if (shares <= 0n) throw new Error('too little to buy a share');
+      const s = await spend({ dep: { v: shares, amount: BigInt(amount) }, onProgress });
       const d = s.deposit;
+      const args = word(d.shares) + word(d.amount) + strip(d.cx) + strip(d.cy) + strip(d.body);
       return {
         deposit: d,
-        depositCalldata: '0x' + sel('deposit(uint256,bytes32,bytes32,bytes32)') + word(d.value) + strip(d.cx) + strip(d.cy) + strip(d.body),
-        inbox: async (back) => '0x' + (await call('inbox(uint256,bytes32,bytes32,bytes32,bytes32)', word(d.value) + strip(d.cx) + strip(d.cy) + strip(d.body) + strip(back))).slice(24),
-        submit: (o = {}) => submit(s, o.back ? { back: o.back } : {}, o),
+        // what the leader takes, kept by the page so a hand-over a reload cut off can be made again (`resubmit`)
+        submission: s.submission,
+        depositCalldata: '0x' + sel('deposit(uint256,uint256,bytes32,bytes32,bytes32)') + args,
+        inbox: async (back) => '0x' + (await call('inbox(uint256,uint256,bytes32,bytes32,bytes32,bytes32)', args + strip(back))).slice(24),
+        // o.back: a shield paid to its inbox; o.permit: { owner, fee, deadline, v, r, s, back }, a holder's permit for that inbox
+        submit: (o = {}) => submit(s, { ...(o.back ? { back: o.back } : {}), ...(o.permit ? { permit: o.permit } : {}) }, o),
       };
     },
-    async pay(to, units, o = {}) {
-      return submit(await spend({ inputs: inputs(BigInt(units)), outputs: [{ to, value: BigInt(units) }], onProgress: o.onProgress }), {}, o);
+    /// Pays `to` notes worth `amount` units, giving the chain's holders their pool share.
+    async pay(to, amount, o = {}) {
+      const r = await rate();
+      const [p, sh] = BigInt(r.shares) === 0n ? [1n, 1n] : [r.pool, r.shares];
+      const shares = (BigInt(amount) * sh + p - 1n) / p;
+      const pool = poolShare(r);
+      return submit(await spend({ inputs: inputs(shares + pool), outputs: [{ to, value: shares }], exit: { v: pool, amount: 0n, op: poolOp() }, onProgress: o.onProgress }), {}, o);
     },
-    async withdraw(to, units, o = {}) {
+    /// Withdraws exactly `amount` units to an Ethereum address (the exit fee is on top, in shares).
+    async withdraw(to, amount, o = {}) {
       if (!/^0x[0-9a-fA-F]{40}$/.test(to)) throw new Error('an Ethereum address');
-      return submit(await spend({ inputs: inputs(BigInt(units)), exit: { v: BigInt(units), to }, onProgress: o.onProgress }), {}, o);
+      const shares = sharesToPay(amount, await rate());
+      return submit(await spend({ inputs: inputs(shares), exit: { v: shares, amount: BigInt(amount), to }, onProgress: o.onProgress }), {}, o);
     },
-    /// Into the confidential pool as its deposit for `commit` (a fresh one, which the pool's wrap then takes in).
-    async hop(commit, units, o = {}) {
-      return submit(await spend({ inputs: inputs(BigInt(units)), exit: { v: BigInt(units), op: hopOp(commit) }, onProgress: o.onProgress }), {}, o);
+    /// Exactly `amount` units into the confidential pool as its deposit for `commit` (a fresh one, which the pool's wrap then takes in).
+    async hop(commit, amount, o = {}) {
+      const shares = sharesToPay(amount, await rate());
+      return submit(await spend({ inputs: inputs(shares), exit: { v: shares, amount: BigInt(amount), op: hopOp(commit) }, onProgress: o.onProgress }), {}, o);
     },
     /// What `withdraw` credits an address and has not sent yet, in the token's smallest units; anyone may send it (TacitBlocks.withdraw).
     owed: async (addr) => BigInt('0x' + (await call('owed(address)', strip(addr).padStart(64, '0')))),

@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { poseidon2, poseidon3, poseidon4, poseidon5 } from 'poseidon-lite';
 import { makeHalo2System } from '../dapp/btc-pool-halo2-prover.js';
-import { makeChainWallet, hopOp } from '../dapp/tacit-chain-wallet.js';
+import { makeChainWallet, hopOp, poolOp, poolShare, sharesToPay, worthOf } from '../dapp/tacit-chain-wallet.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..');
@@ -54,8 +54,8 @@ async function main() {
 
   cast('rpc', 'anvil_setBalance', POOL, '0x56BC75E2D63100000', '--rpc-url', RPC);
   cast('rpc', 'anvil_impersonateAccount', POOL, '--rpc-url', RPC);
-  cast('send', TAC, 'mint(address,uint256)', USER.addr, (10000n * UNIT).toString(), '--from', POOL, '--unlocked', '--rpc-url', RPC);
-  send(TAC, 'approve(address,uint256)', [blocks, (10000n * UNIT).toString()]);
+  cast('send', TAC, 'mint(address,uint256)', USER.addr, (10000n * 100_000_000n * UNIT).toString(), '--from', POOL, '--unlocked', '--rpc-url', RPC);
+  send(TAC, 'approve(address,uint256)', [blocks, (10000n * 100_000_000n * UNIT).toString()]);
 
   const leader = spawn('node', [join(ROOT, 'tacit-leader/leader.mjs')], {
     env: { ...process.env, RPC_URL: RPC, BLOCKS: blocks, FROM_BLOCK: String(fromBlock), LEADER_KEY: LEADER.key, NODE_ADDR: NODE, PROVER: 'stub', MIN_SPENDS: '1', MAX_WAIT_SECS: '1', POLL_SECS: '1', ARCHIVE_DIR: join(mkdtempSync(join(tmpdir(), 'tacit-story-')), 'a'), TACIT_NODE_ADMIN: 'story-token' },
@@ -79,67 +79,78 @@ async function main() {
   const bob = w.keys(new Uint8Array(32).fill(0xb2));
   const submit = async (s, extra = {}) => { const r = await api('POST', '/spend', { ...s.submission, ...extra }); assert.ok(r.ok, `the leader refused a spend: ${r.error}`); };
 
-  // 1. Alice shields 1,000 units (she makes the deposit on Ethereum, then proves the spend that takes it in)
+  // shares and the rate: one unit a share to start; the exit fee and pool shares raise it
+  const rate = async () => { const st = await api('GET', '/state'); return { pool: BigInt(st.pool), shares: BigInt(st.shares) }; };
+  const T = 100_000_000n; // 1 TAC in units
+
+  // 1. Alice shields 1,000 TAC (she makes the deposit on Ethereum, then proves the spend that takes it in)
   const tacBefore = BigInt(call(TAC, 'balanceOf(address)(uint256)', blocks));
-  const shield = await w.spend(alice, { dep: { v: 1000n }, leader: wallet });
-  send(blocks, 'deposit(uint256,bytes32,bytes32,bytes32)', [String(shield.deposit.value), shield.deposit.cx, shield.deposit.cy, shield.deposit.body]);
+  const shield = await w.spend(alice, { dep: { v: 1000n * T, amount: 1000n * T }, leader: wallet });
+  const d = shield.deposit;
+  send(blocks, 'deposit(uint256,uint256,bytes32,bytes32,bytes32)', [String(d.shares), String(d.amount), d.cx, d.cy, d.body]);
   await submit(shield);
   await waitHeight(1);
-  console.log('1. Alice shielded 1,000 units');
+  console.log('1. Alice shielded 1,000 TAC');
 
   // 1b. Carol comes from the confidential pool: its unwrap mints her TAC straight to her shield's inbox (no address of hers, no
   //     approval), and the leader sweeps it in before it lands her shield
   const carol = w.keys(new Uint8Array(32).fill(0xc3));
-  const cshield = await w.spend(carol, { dep: { v: 250n }, leader: wallet });
+  const cshield = await w.spend(carol, { dep: { v: 250n * T, amount: 250n * T }, leader: wallet });
+  const cd = cshield.deposit;
   const back = '0x' + 'b4'.repeat(32);
-  const box = call(blocks, 'inbox(uint256,bytes32,bytes32,bytes32,bytes32)(address)', String(cshield.deposit.value), cshield.deposit.cx, cshield.deposit.cy, cshield.deposit.body, back);
-  cast('send', TAC, 'mint(address,uint256)', box, (250n * UNIT).toString(), '--from', POOL, '--unlocked', '--rpc-url', RPC);
+  const box = call(blocks, 'inbox(uint256,uint256,bytes32,bytes32,bytes32,bytes32)(address)', String(cd.shares), String(cd.amount), cd.cx, cd.cy, cd.body, back);
+  cast('send', TAC, 'mint(address,uint256)', box, (250n * T * UNIT).toString(), '--from', POOL, '--unlocked', '--rpc-url', RPC);
   await submit(cshield, { back });
   await waitHeight(2);
-  assert.deepEqual((await w.scan(carol, wallet)).notes.map((n) => n.value), [250n]);
+  assert.deepEqual((await w.scan(carol, wallet)).notes.map((n) => n.value), [250n * T]);
   assert.ok(leaderLog.some((l) => l.includes('"swept"')), 'the leader swept the inbox');
-  console.log('1b. Carol shielded 250 straight from a confidential pool unwrap, through her inbox');
+  console.log('1b. Carol shielded 250 TAC straight from a confidential pool unwrap, through her inbox');
 
-  // 2. she pays Bob 300 privately
+  // 2. she pays Bob 300 privately, giving the holders their pool share
   const aliceNotes = (await w.scan(alice, wallet)).notes;
-  assert.deepEqual(aliceNotes.map((n) => n.value), [1000n]);
-  await submit(await w.spend(alice, { inputs: aliceNotes, outputs: [{ to: w.address(bob), value: 300n }], leader: wallet }));
+  assert.deepEqual(aliceNotes.map((n) => n.value), [1000n * T]);
+  const share = poolShare(await rate());
+  await submit(await w.spend(alice, { inputs: aliceNotes, outputs: [{ to: w.address(bob), value: 300n * T }], exit: { v: share, amount: 0n, op: poolOp() }, leader: wallet }));
   await waitHeight(3);
   const bobNotes = (await w.scan(bob, wallet)).notes;
-  assert.deepEqual(bobNotes.map((n) => n.value), [300n]);
-  console.log('2. Alice paid Bob 300; Bob found the note from the chain\'s memos alone');
+  assert.deepEqual(bobNotes.map((n) => n.value), [300n * T]);
+  console.log('2. Alice paid Bob 300 TAC; Bob found the note from the chain\'s memos alone');
 
-  // 3. Bob withdraws 120 to an Ethereum address
-  await submit(await w.spend(bob, { inputs: bobNotes, exit: { v: 120n, to: BOB_L1 }, leader: wallet }));
+  // 3. Bob withdraws exactly 120 TAC to an Ethereum address, the exit fee on top in shares
+  const out = sharesToPay(120n * T, await rate());
+  await submit(await w.spend(bob, { inputs: bobNotes, exit: { v: out, amount: 120n * T, to: BOB_L1 }, leader: wallet }));
   await waitHeight(4);
-  assert.equal(BigInt(call(blocks, 'owed(address)(uint256)', BOB_L1)), 120n * UNIT);
+  assert.equal(BigInt(call(blocks, 'owed(address)(uint256)', BOB_L1)), 120n * T * UNIT);
   send(blocks, 'withdraw(address)', [BOB_L1]);
-  assert.equal(BigInt(call(TAC, 'balanceOf(address)(uint256)', BOB_L1)), 120n * UNIT);
-  console.log('3. Bob withdrew 120 to an Ethereum address');
+  assert.equal(BigInt(call(TAC, 'balanceOf(address)(uint256)', BOB_L1)), 120n * T * UNIT);
+  console.log('3. Bob withdrew 120 TAC to an Ethereum address');
 
-  // 4. Bob hops 100 into the confidential pool: the leader sends it on, the pool burns the TAC held here
+  // 4. Bob hops exactly 100 TAC into the confidential pool: the leader sends it on, the pool burns the TAC held here
   const bobLeft = (await w.scan(bob, wallet)).notes;
-  assert.deepEqual(bobLeft.map((n) => n.value), [180n]);
+  assert.deepEqual(bobLeft.map((n) => n.value), [300n * T - out]);
   const supplyBefore = BigInt(call(TAC, 'totalSupply()(uint256)'));
-  await submit(await w.spend(bob, { inputs: bobLeft, exit: { v: 100n, op: hopOp('0x' + '5a'.repeat(32)) }, leader: wallet }));
+  const hopOut = sharesToPay(100n * T, await rate());
+  await submit(await w.spend(bob, { inputs: bobLeft, exit: { v: hopOut, amount: 100n * T, op: hopOp('0x' + '5a'.repeat(32)) }, leader: wallet }));
   await waitHeight(5);
   for (let i = 0; i < 30 && !leaderLog.some((l) => l.includes('hopsSent')); i++) await new Promise((r) => setTimeout(r, 1000));
   assert.ok(leaderLog.some((l) => l.includes('hopsSent')), 'the leader sent the hop on');
-  assert.equal(supplyBefore - BigInt(call(TAC, 'totalSupply()(uint256)')), 100n * UNIT, 'the confidential pool burned the hopped TAC');
-  console.log('4. Bob hopped 100 into the confidential pool');
+  assert.equal(supplyBefore - BigInt(call(TAC, 'totalSupply()(uint256)')), 100n * T * UNIT, 'the confidential pool burned exactly the hopped TAC');
+  console.log('4. Bob hopped 100 TAC into the confidential pool');
 
-  // 5. what the contract holds is what the notes are worth: Alice 700, Bob 80, Carol 250
-  const aliceEnd = (await w.scan(alice, wallet)).notes.reduce((t, n) => t + n.value, 0n);
-  const bobEnd = (await w.scan(bob, wallet)).notes.reduce((t, n) => t + n.value, 0n);
-  assert.equal(aliceEnd, 700n);
-  assert.equal(bobEnd, 80n);
-  const carolEnd = (await w.scan(carol, wallet)).notes.reduce((t, n) => t + n.value, 0n);
-  assert.equal(carolEnd, 250n);
+  // 5. the contract holds exactly the pool, the pool is the program's, and the fees stayed with the holders
+  const r = await rate();
+  assert.equal(r.pool, 1030n * T, '1,250 in, 220 out');
+  assert.equal(BigInt(call(blocks, 'pool()(uint64)')), r.pool);
+  assert.equal(BigInt(call(blocks, 'shares()(uint64)')), r.shares);
   const held = BigInt(call(TAC, 'balanceOf(address)(uint256)', blocks)) - tacBefore;
-  assert.equal(held, (aliceEnd + bobEnd + carolEnd) * UNIT, 'the contract holds exactly what the notes are worth');
+  assert.equal(held, r.pool * UNIT, 'the contract holds exactly the pool');
+  const notes = async (k) => (await w.scan(k, wallet)).notes.reduce((t, n) => t + n.value, 0n);
+  const [aliceEnd, bobEnd, carolEnd] = [await notes(alice), await notes(bob), await notes(carol)];
+  assert.equal(aliceEnd + bobEnd + carolEnd, r.shares, 'every share is in someone\'s notes');
+  assert.ok(worthOf(carolEnd, r) > 250n * T, 'Carol earned from the others\' fees without moving');
   const st = await api('GET', '/state');
   assert.equal(st.state, call(blocks, 'state()(bytes32)'));
-  console.log(JSON.stringify({ ok: true, height: st.height, aliceUnits: Number(aliceEnd), bobUnits: Number(bobEnd), heldUnits: Number(held / UNIT) }));
+  console.log(JSON.stringify({ ok: true, height: st.height, aliceTac: Number(worthOf(aliceEnd, r)) / 1e8, bobTac: Number(worthOf(bobEnd, r)) / 1e8, carolTac: Number(worthOf(carolEnd, r)) / 1e8, heldTac: Number(held / UNIT) / 1e8 }));
 }
 
 main().then(() => { stop(); process.exit(0); }).catch((e) => { console.error(e); stop(); process.exit(1); });

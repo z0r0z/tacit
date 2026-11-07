@@ -8,7 +8,8 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { keccak_256 } from '@noble/hashes/sha3';
 import { makeHalo2System } from '../dapp/btc-pool-halo2-prover.js';
-import { assetField } from '../dapp/tacit-chain-wallet.js';
+import { assetField, poolShare, sharesToPay, worthOf } from '../dapp/tacit-chain-wallet.js';
+const T = 100_000_000n; // 1 TAC in units
 import { makeChainClient } from '../dapp/tacit-chain-client.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -52,34 +53,46 @@ try {
   const alice = makeChainClient({ cfg, rpcCall, priv: new Uint8Array(32).fill(0x11), system, storage: aliceStore });
   const bob = makeChainClient({ cfg, rpcCall, priv: new Uint8Array(32).fill(0x22), system, storage: store() });
 
-  // Alice shields 1,000 units (the deposit on Ethereum is the landing contract's business; the node takes the spend)
-  const sh = await alice.shield(1000n);
-  assert.equal(sh.deposit.value, 1000n);
-  assert.ok(sh.depositCalldata.startsWith('0x' + sel('deposit(uint256,bytes32,bytes32,bytes32)')));
+  // Alice shields 1,000 TAC (the deposit on Ethereum is the landing contract's business; the node takes the spend): the first shares
+  // are one unit each, less the margin a shield leaves for the rate to rise
+  const sh = await alice.shield(1000n * T);
+  assert.equal(sh.deposit.amount, 1000n * T);
+  assert.equal(sh.deposit.shares, 1000n * T * 9990n / 10000n);
+  assert.ok(sh.depositCalldata.startsWith('0x' + sel('deposit(uint256,uint256,bytes32,bytes32,bytes32)')));
   await Promise.all([sh.submit(), landBlock()]);
-  assert.equal(await alice.scan(), 1000n);
+  assert.equal(await alice.scan(), sh.deposit.shares);
+  const r0 = await alice.rate();
+  assert.deepEqual(r0, { pool: 1000n * T, shares: sh.deposit.shares }, 'the margin stayed with the pool');
+  assert.equal(await alice.worth(), 1000n * T, 'her shares are worth what she put in');
 
   // Bob publishes his chain address; Alice pays him from the 32-byte hash alone
   await bob.publish();
   const to = await alice.resolve(await bob.lane());
-  await Promise.all([alice.pay(to, 300n), landBlock()]);
-  assert.equal(await alice.scan(), 700n);
-  assert.equal(await bob.scan(), 300n);
+  await Promise.all([alice.pay(to, 300n * T), landBlock()]);
+  const payShares = (300n * T * r0.shares + r0.pool - 1n) / r0.pool;
+  assert.equal(await alice.scan(), sh.deposit.shares - payShares - poolShare(r0));
+  assert.equal(await bob.scan(), payShares);
+  assert.ok(await bob.worth() >= 300n * T, 'bob holds at least what alice paid');
 
   // a client made again from the same storage resumes from where its scan stopped
   const again = makeChainClient({ cfg, rpcCall, priv: new Uint8Array(32).fill(0x11), system, storage: aliceStore });
   await again.ready();
-  assert.equal(again.balance(), 700n);
+  assert.equal(again.balance(), alice.balance());
 
-  // Bob withdraws 120 to Ethereum and hops 100 into the confidential pool
-  const b1 = (await Promise.all([bob.withdraw('0x90F79bf6EB2c4f870365E785982E1f101E93b906', 120n), landBlock()]))[1];
-  assert.equal(b1.lists.exits.length, 2 + 96 * 2);
-  assert.equal(await bob.scan(), 180n);
-  const b2 = (await Promise.all([bob.hop('0x' + '5a'.repeat(32), 100n), landBlock()]))[1];
-  assert.equal(b2.lists.hops.length, 2 + 96 * 2);
-  assert.equal(await bob.scan(), 80n);
-  await assert.rejects(bob.pay(to, 81n), /more than you hold/);
-  console.log(JSON.stringify({ ok: true, alice: String(again.balance()), bob: String(bob.balance()) }));
+  // Bob withdraws exactly 120 TAC to Ethereum and hops exactly 100 into the confidential pool (the exit fee on top, in shares)
+  const r1 = await bob.rate();
+  const b1 = (await Promise.all([bob.withdraw('0x90F79bf6EB2c4f870365E785982E1f101E93b906', 120n * T), landBlock()]))[1];
+  assert.equal(BigInt('0x' + b1.lists.exits.slice(2 + 64, 2 + 128)), 120n * T, 'the exit pays exactly 120 TAC');
+  assert.equal(await bob.scan(), payShares - sharesToPay(120n * T, r1));
+  const r2 = await bob.rate();
+  assert.ok(r2.pool * r1.shares > r1.pool * r2.shares, 'the exit fee raised the rate');
+  const b2 = (await Promise.all([bob.hop('0x' + '5a'.repeat(32), 100n * T), landBlock()]))[1];
+  assert.equal(BigInt('0x' + b2.lists.hops.slice(2 + 64, 2 + 128)), 100n * T, 'the hop is exactly 100 TAC, as the confidential pool needs');
+  await bob.scan();
+  await assert.rejects(bob.pay(to, 1000n * T), /more than you hold/);
+  const r3 = await bob.rate();
+  assert.equal(r3.pool, 1000n * T - 220n * T, 'the pool lost exactly what left');
+  console.log(JSON.stringify({ ok: true, aliceTac: String(worthOf(again.balance(), r3)), bobTac: String(worthOf(bob.balance(), r3)), rate: String(r3.pool * 10n ** 8n / r3.shares) }));
 } finally {
   server.kill();
 }

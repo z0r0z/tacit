@@ -9,7 +9,8 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { poseidon2, poseidon3, poseidon4, poseidon5 } from 'poseidon-lite';
 import { makeHalo2System } from '../dapp/btc-pool-halo2-prover.js';
-import { makeChainWallet, assetField, hopOp } from '../dapp/tacit-chain-wallet.js';
+import { makeChainWallet, assetField, hopOp, poolOp, poolShare, sharesToPay } from '../dapp/tacit-chain-wallet.js';
+const T = 100_000_000n; // 1 TAC in units
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BIN = join(HERE, '../contracts/sp1/confidential/tacit-block/node/target/release/tacit-block-node');
@@ -68,18 +69,21 @@ try {
 
   // 1. Alice shields 1,000 units: a deposit with no inputs, her note and a zero-valued one made
   let t0 = Date.now();
-  const shield = await w.spend(alice, { dep: { v: 1000n }, leader });
+  const shield = await w.spend(alice, { dep: { v: 1000n * T, amount: 1000n * T }, leader });
   time('shield proof', t0);
-  assert.equal(shield.deposit.value, 1000n);
+  assert.equal(shield.deposit.shares, 1000n * T);
+  assert.equal(shield.deposit.amount, 1000n * T);
   assert.equal(shield.created.length, 2, 'padded to two output notes');
   let r = await api('POST', '/spend', shield.submission);
   assert.ok(r.ok, `shield refused: ${r.error}`);
   const b1 = await landBlock();
-  assert.equal(b1.lists.deposits.length, 2 + 160 * 2, 'the block takes the deposit in');
+  assert.equal(b1.lists.deposits.length, 2 + 192 * 2, 'the block takes the deposit in');
+  const rate = async () => { const st = await api('GET', '/state'); return { pool: BigInt(st.pool), shares: BigInt(st.shares) }; };
+  assert.deepEqual(await rate(), { pool: 1000n * T, shares: 1000n * T }, 'one unit a share to start');
 
   // 2. Alice finds her note from the chain's memos alone
   let mine = await w.scan(alice, leader);
-  assert.deepEqual(mine.notes.map((n) => n.value), [1000n]);
+  assert.deepEqual(mine.notes.map((n) => n.value), [1000n * T]);
 
   // 3. Bob's Tacit address carries only the 32-byte hash of his chain address; he publishes the full one to the leader's
   //    directory and Alice resolves it from the hash (a directory that answers with any other address is caught)
@@ -93,7 +97,11 @@ try {
 
   // Alice pays Bob 300 and keeps 700
   t0 = Date.now();
-  const pay = await w.spend(alice, { inputs: mine.notes, outputs: [{ to: bobResolved, value: 300n }], leader });
+  const share = poolShare(await rate());
+  // a payment with no pool share is refused by the program, so the leader will not take it
+  const bare = await w.spend(alice, { inputs: mine.notes, outputs: [{ to: bobResolved, value: 300n * T }], leader });
+  assert.ok(!(await api('POST', '/spend', bare.submission)).ok, 'a payment gives the holders their pool share');
+  const pay = await w.spend(alice, { inputs: mine.notes, outputs: [{ to: bobResolved, value: 300n * T }], exit: { v: share, amount: 0n, op: poolOp() }, leader });
   time('payment proof', t0);
   r = await api('POST', '/spend', pay.submission);
   assert.ok(r.ok, `payment refused: ${r.error}`);
@@ -103,15 +111,17 @@ try {
 
   // 4. Bob finds 300; Alice finds her change and her old note spent
   const bobScan = await w.scan(bob, leader);
-  assert.deepEqual(bobScan.notes.map((n) => n.value), [300n]);
+  assert.deepEqual(bobScan.notes.map((n) => n.value), [300n * T]);
   const aliceScan = await w.scan(alice, leader);
-  assert.deepEqual(aliceScan.notes.map((n) => n.value), [700n]);
-  assert.deepEqual(aliceScan.spent.map((n) => n.value), [1000n]);
+  assert.deepEqual(aliceScan.notes.map((n) => n.value), [700n * T - share]);
+  assert.deepEqual(aliceScan.spent.map((n) => n.value), [1000n * T]);
+  const r1 = await rate();
+  assert.deepEqual(r1, { pool: 1000n * T, shares: 1000n * T - share }, 'the pool share ended shares and kept their TAC');
   const nobody = w.keys(new Uint8Array(32).fill(0x77));
   assert.deepEqual((await w.scan(nobody, leader)).notes, [], 'no one else sees them');
 
   // 5. a spend of a note that is already spent is refused
-  const again = await w.spend(alice, { inputs: mine.notes, outputs: [{ to: w.address(bob), value: 1n }], leader }).catch((e) => e);
+  const again = await w.spend(alice, { inputs: mine.notes, outputs: [{ to: w.address(bob), value: 1n * T }], exit: { v: share, amount: 0n, op: poolOp() }, leader }).catch((e) => e);
   assert.ok(again.submission, 'the wallet still builds it');
   r = await api('POST', '/spend', again.submission);
   assert.ok(!r.ok, 'the leader refuses a note already spent');
@@ -119,18 +129,22 @@ try {
   // 6. Bob hops 100 into the confidential pool, keeping 200
   t0 = Date.now();
   const commit = '0x' + '5a'.repeat(32);
-  const hop = await w.spend(bob, { inputs: bobScan.notes, exit: { v: 100n, op: hopOp(commit) }, leader });
+  const hopShares = sharesToPay(100n * T, r1);
+  const hop = await w.spend(bob, { inputs: bobScan.notes, exit: { v: hopShares, amount: 100n * T, op: hopOp(commit) }, leader });
   time('hop proof', t0);
   r = await api('POST', '/spend', hop.submission);
   assert.ok(r.ok, `hop refused: ${r.error}`);
   const b3 = await landBlock();
   assert.equal(b3.lists.hops.length, 2 + 96 * 2, 'the block sends one hop');
   const bobAfter = await w.scan(bob, leader);
-  assert.deepEqual(bobAfter.notes.map((n) => n.value), [200n]);
+  assert.deepEqual(bobAfter.notes.map((n) => n.value), [300n * T - hopShares]);
+  const r2 = await rate();
+  assert.equal(r2.pool, 900n * T, 'exactly 100 TAC left');
+  assert.ok(r2.pool * r1.shares > r1.pool * r2.shares, 'the exit fee stayed: each share is worth more');
 
   // 7. a spend of another asset, and one naming a root no block ended at, cannot be admitted
   const other = makeChainWallet({ poseidon, prover, chain: st0.chain, asset: asset + 1n });
-  const wrongAsset = await other.spend(other.keys(new Uint8Array(32).fill(1)), { dep: { v: 5n }, leader });
+  const wrongAsset = await other.spend(other.keys(new Uint8Array(32).fill(1)), { dep: { v: 5n * T, amount: 5n * T }, leader });
   r = await api('POST', '/spend', wrongAsset.submission);
   assert.ok(!r.ok && /only TAC/.test(r.error), 'only TAC moves here');
 

@@ -19,6 +19,42 @@ export { assetField };
 const te = new TextEncoder();
 const OP_HOP = 1;
 const OP_MIGRATE = 3;
+const OP_POOL = 4;
+
+// ── shares (common/src/lib.rs): notes count shares of the chain's pool; a share is worth pool / shares units (1e-8 TAC), one
+// while there are none. These mirror the program's checks exactly, so a spend built with them is one it takes.
+export const EXIT_FEE_BPS = 10n;
+export const MIN_POOL_FEE = 1_000_000n;
+const rateOf = ({ pool, shares }) => (BigInt(shares) === 0n ? [1n, 1n] : [BigInt(pool), BigInt(shares)]);
+const ceilDiv = (a, b) => (a + b - 1n) / b;
+/// What `shares` are worth now, in units (rounded down).
+export const worthOf = (shares, rate) => { const [p, s] = rateOf(rate); return BigInt(shares) * p / s; };
+/// The most shares `amount` units buy at `rate` (the program's `covers`), less `marginBps` for the rate to rise before the shield lands.
+export function sharesFor(amount, rate, marginBps = 10n) {
+  const [p, s] = rateOf(rate);
+  return BigInt(amount) * s * (10_000n - BigInt(marginBps)) / (p * 10_000n);
+}
+/// Whether `shares` may pay out `amount` units (the program's `pays`: their worth less EXIT_FEE_BPS, the fee rounded up).
+export function pays(amount, shares, rate) {
+  const [p, s] = rateOf(rate);
+  const worth = BigInt(shares) * p;
+  const fee = worth / 10_000n * EXIT_FEE_BPS + ceilDiv(worth % 10_000n * EXIT_FEE_BPS, 10_000n);
+  return BigInt(amount) * s <= worth - fee;
+}
+/// The fewest shares that pay out `amount` units at `rate`, the exit fee included.
+export function sharesToPay(amount, rate) {
+  const [p, s] = rateOf(rate);
+  let n = ceilDiv(BigInt(amount) * s * 10_000n, p * (10_000n - EXIT_FEE_BPS));
+  while (!pays(amount, n, rate)) n += 1n;
+  return n;
+}
+/// The fewest shares worth MIN_POOL_FEE: a payment's pool share.
+export function poolShare(rate) {
+  const [p, s] = rateOf(rate);
+  return ceilDiv(MIN_POOL_FEE * s, p);
+}
+/// A pool share's operation bytes: the exit's shares to the chain's holders.
+export const poolOp = () => Uint8Array.of(OP_POOL);
 const hx = (b) => '0x' + Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
 const bytes = (h, n, what) => {
   const b = h instanceof Uint8Array ? h : Uint8Array.from(String(h).replace(/^0x/, '').match(/../g) || [], (x) => parseInt(x, 16));
@@ -44,7 +80,7 @@ export function opBodyBytes(chain, outs, memoHashes, opBytes, salt) {
   return concatBytes(OP_BODY_DOMAIN, bytes(chain, 32, 'chain'), ...outs.map((o) => be(o, 32)), ...memoHashes, opBytes, bytes(salt, 32, 'salt'));
 }
 
-const opening = (o) => (o ? concatBytes(Uint8Array.of(1), be(o.v, 8), be(o.r, 32)) : Uint8Array.of(0));
+const opening = (o) => (o ? concatBytes(Uint8Array.of(1), be(o.v, 8), be(o.r, 32), be(o.amount ?? 0n, 8)) : Uint8Array.of(0));
 
 /// The rest of a spend beside its proof (common/src/lib.rs `SpendData::to_bytes`): memo hashes, exit address, salt, the deposit's and the
 /// exit's openings, and an operation after a 1.
@@ -152,9 +188,10 @@ export function makeChainWallet({ poseidon, prover, chain, asset, network = 'mai
     }
     while (witnessIn.length < ZK_N_IN) witnessIn.push(null);
 
-    const depO = dep ? { v: BigInt(dep.v), r: randomBlinding() } : null;
-    const exitO = exit ? { v: BigInt(exit.v), r: randomBlinding() } : null;
-    const w = Z.buildWitness({ root, bodyHash: bh, assetF, inputs: witnessIn, outputs: slots.map((o) => (o ? { v: o.v, npk: o.npk, rho: o.rho } : null)), exit: exitO, dep: depO });
+    // shares in the commitments; the TAC crossing the edge (a deposit's amount, an exit's, hop's or migration's payout) beside them
+    const depO = dep ? { v: BigInt(dep.v), r: randomBlinding(), amount: BigInt(dep.amount) } : null;
+    const exitO = exit ? { v: BigInt(exit.v), r: randomBlinding(), amount: BigInt(exit.amount ?? 0n) } : null;
+    const w = Z.buildWitness({ root, bodyHash: bh, assetF, inputs: witnessIn, outputs: slots.map((o) => (o ? { v: o.v, npk: o.npk, rho: o.rho } : null)), exit: exitO && { v: exitO.v, r: exitO.r }, dep: depO && { v: depO.v, r: depO.r } });
     const proved = await prover.prove(w.input, { onProgress });
     const signals = proved.publicSignals.map(BigInt);
     const publics = concatBytes(...signals.map((x) => be(x, 32)));
@@ -163,7 +200,7 @@ export function makeChainWallet({ poseidon, prover, chain, asset, network = 'mai
     const submission = { publics: hx(publics), proof: hx(proved.wire), data: hx(data), memos, opMemos: opMemo ? [hx(opMemo)] : [] };
     const created = outs.map((o, j) => ({ slot: j, value: o.v, self: o.self, s: o.s, leaf: o.leaf }));
     // a shield: what TacitBlocks.deposit takes (the commitment is the deposit's public inputs, the body hash is the spend's)
-    const deposit = depO ? { value: depO.v, cx: hx(be(signals[10], 32)), cy: hx(be(signals[11], 32)), body: hx(be(signals[1], 32)) } : null;
+    const deposit = depO ? { shares: depO.v, amount: depO.amount, cx: hx(be(signals[10], 32)), cy: hx(be(signals[11], 32)), body: hx(be(signals[1], 32)) } : null;
     return { submission, deposit, created, publics: signals, nullifiers: signals.slice(3, 5).filter((x) => x !== 0n).map((x) => hx(be(x, 32))) };
   }
 

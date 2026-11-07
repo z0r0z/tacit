@@ -58,23 +58,34 @@ async function view(sig, types, args = [], to = BLOCKS) {
   return decode(types, bytesOf(r));
 }
 
-// TacitBlocks.sweep for a deposit record (asset ‖ value ‖ cx ‖ cy ‖ body) whose inbox holds its TAC; false if it does not yet.
+// TacitBlocks.sweep for a deposit record (asset ‖ shares ‖ cx ‖ cy ‖ body ‖ amount) whose inbox holds its TAC, or, with a holder's
+// permit for the inbox, TacitBlocks.sweepWithPermit, which pulls it (the leader pays the gas and takes the permit's fee); false if
+// neither can be done yet.
 const swept = new Set();
-async function sweepInbox(record, back) {
+async function sweepInbox(record, back, permit = null) {
   const r = bytesOf(record);
   const w = (i) => hexOf(r.subarray(32 * i, 32 * i + 32));
-  const value = BigInt(w(1));
-  const args = [value, w(2), w(3), w(4), back];
-  const types = ['uint256', 'bytes32', 'bytes32', 'bytes32', 'bytes32'];
-  const sig = (name) => `${name}(uint256,bytes32,bytes32,bytes32,bytes32)`;
-  const [box] = decode(['address'], bytesOf(await rpc.call('eth_call', [{ to: BLOCKS, data: hexOf(new Uint8Array([...selector(sig('inbox')), ...encode(types, args)])) }, 'latest'])));
+  const shareCount = BigInt(w(1)), amount = BigInt(w(5));
+  const args = [shareCount, amount, w(2), w(3), w(4), back];
+  const types = ['uint256', 'uint256', 'bytes32', 'bytes32', 'bytes32', 'bytes32'];
+  const [box] = decode(['address'], bytesOf(await rpc.call('eth_call', [{ to: BLOCKS, data: hexOf(new Uint8Array([...selector('inbox(uint256,uint256,bytes32,bytes32,bytes32,bytes32)'), ...encode(types, args)])) }, 'latest'])));
+  if (swept.has(box)) return false;
   const [tac] = await view('TAC()', ['address']);
   const [held] = decode(['uint256'], bytesOf(await rpc.call('eth_call', [{ to: tac, data: hexOf(new Uint8Array([...selector('balanceOf(address)'), ...encode(['address'], [box])])) }, 'latest'])));
-  if (BigInt(held) < value * 10n ** 10n || swept.has(box)) return false;
+  let data;
+  if (BigInt(held) >= amount * 10n ** 10n) {
+    data = new Uint8Array([...selector('sweep(uint256,uint256,bytes32,bytes32,bytes32,bytes32)'), ...encode(types, args)]);
+  } else if (permit && permit.back === back) {
+    const pTypes = [...types, 'address', 'uint256', 'uint256', 'uint256', 'bytes32', 'bytes32'];
+    data = new Uint8Array([...selector('sweepWithPermit(uint256,uint256,bytes32,bytes32,bytes32,bytes32,address,uint256,uint256,uint8,bytes32,bytes32)'),
+      ...encode(pTypes, [...args, permit.owner, BigInt(permit.fee), BigInt(permit.deadline), BigInt(permit.v), permit.r, permit.s])]);
+    // the permit's pull must succeed now: a simulation that reverts (a moved balance, a used permit with no allowance left) sends nothing
+    try { await rpc.call('eth_call', [{ from: me, to: BLOCKS, data: hexOf(data) }, 'latest']); } catch { return false; }
+  } else return false;
   swept.add(box);
   try {
-    const receipt = await send(rpc, KEY, BLOCKS, new Uint8Array([...selector(sig('sweep')), ...encode(types, args)]), { chainId: num(await rpc.call('eth_chainId')) });
-    log({ swept: box, value: String(value), tx: receipt.transactionHash });
+    const receipt = await send(rpc, KEY, BLOCKS, data, { chainId: num(await rpc.call('eth_chainId')) });
+    log({ swept: box, shares: String(shareCount), amount: String(amount), permit: !!permit, tx: receipt.transactionHash });
     return true;
   } catch (e) {
     swept.delete(box);
@@ -190,8 +201,9 @@ async function step() {
     let from = from0;
     // a shield paid to its inbox (the confidential pool's unwrap pays one): sweep it in once it holds the deposit, trying each way
     // back it was sent with
-    for (const back of BigInt(from) === 0n ? d.backs || [] : []) {
-      if (await sweepInbox(d.deposit, back)) { [from] = await pendingOf(d); break; }
+    const backs = [...new Set([...(d.backs || []), ...(d.permit?.back ? [d.permit.back] : [])])];
+    for (const back of BigInt(from) === 0n ? backs : []) {
+      if (await sweepInbox(d.deposit, back, d.permit)) { [from] = await pendingOf(d); break; }
     }
     if (BigInt(from) === 0n) {
       exclude.push(d.id);

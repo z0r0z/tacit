@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      TODO(tacit chain): once it is deployed, its leader's origin (TACIT_CHAIN_PAGE.leader in the module) goes in connect-src. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-DQanYX4XnN5ZIGik7JtcDF8Go4R5/on5BttMfjSMiLY=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-y1SVIehe/GUn/EViTXcgBNjJMjLnyh/+zRkaXBnajEU=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -3899,7 +3899,7 @@ function chainClient() {
   if (CH.pub !== S.key.pubHex) chainReset(S.key.pubHex);
   if (CH.p) return CH.p;
   const priv = walletPriv(), mine = CH;
-  const p = mine.p = Promise.all([import('/tacit-chain-config.js?cb=76219357'), import('/tacit-chain-client.js?cb=ca75af83'), import('/btc-pool-client.js?cb=0fc57c0e')]).then(async ([cf, cm, pm]) => {
+  const p = mine.p = Promise.all([import('/tacit-chain-config.js?cb=76219357'), import('/tacit-chain-client.js?cb=76417b85'), import('/btc-pool-client.js?cb=0fc57c0e')]).then(async ([cf, cm, pm]) => {
     const cfg = cf.tacitChain();
     if (!cfg) throw new Error('The Tacit chain is not available here.');
     const pool = pm.makePoolClient({ base: '/btc-pool/' });
@@ -3920,7 +3920,8 @@ function chainScan(force = false) {
   // (a forced read while one is under way waits for it, then reads again: what landed meanwhile may not be in the one under way)
   if (mine.scanP) return force ? mine.scanP.then(() => (CH === mine ? chainScan(true) : null)) : mine.scanP;
   if (!force && mine.at && Date.now() - mine.at < 30e3) return Promise.resolve(mine.bal);
-  const p = mine.scanP = chainClient().then((c) => c.scan()).then((b) => { mine.bal = b; mine.err = null; return b; }, (e) => { mine.err = e; return null; })
+  // notes count shares of the chain's pool: what is shown is what they are worth in TAC at the leader's latest rate
+  const p = mine.scanP = chainClient().then((c) => c.scan().then(() => c.worth())).then((b) => { mine.bal = b; mine.err = null; return b; }, (e) => { mine.err = e; return null; })
     .finally(() => { mine.scanP = null; mine.at = Date.now(); if (CH === mine) { try { hxBalPaint(); dashSoon(); } catch { } } });
   return p;
 }
@@ -3930,6 +3931,11 @@ async function chainSettle(ok) { for (let i = 0; i < 15; i++) { const b = await 
 const chainHeld = () => { if (!chainOn() || !S.key) return null; chainScan(); return CH.pub === S.key.pubHex ? CH.bal : null; };
 // A key opened with the chain on: its client made, its balance read, its address given the chain lane, and the address published (once a session) so
 // a payer holding only the Tacit address can resolve it
+// A shield's deposit made and its hand-over not yet done, kept in this browser so a reload can finish it: { units, hash, submission }.
+// The submission holds no secret (the notes' keys come from the key and the memos).
+const chainKeptKey = (pub) => `tacit-chain-held:${CH.cfg?.blocks?.toLowerCase()}:${pub}`;
+function chainKept(pub) { try { return JSON.parse(localStorage.getItem(chainKeptKey(pub)) || 'null'); } catch { return null; } }
+function chainKeep(pub, v) { try { v ? localStorage.setItem(chainKeptKey(pub), JSON.stringify(v)) : localStorage.removeItem(chainKeptKey(pub)); } catch { } }
 async function chainStart() {
   if (!chainOn() || !S.key) return;
   const key = S.key;
@@ -3946,6 +3952,9 @@ async function chainStart() {
     let done = false;
     try { done = sessionStorage.getItem(k) === '1'; } catch { }
     if (!done && !CH.pubd) { await c.publish(); CH.pubd = true; try { sessionStorage.setItem(k, '1'); } catch { } }
+    // a shield whose deposit landed but whose hand-over a reload cut off: handed over again, quietly
+    const kept = chainKept(key.pubHex);
+    if (kept?.hash && kept.submission) c.resubmit(kept.submission).then(() => { chainKeep(key.pubHex, null); chainScan(true); }, () => {});
   } catch (e) { if (S.key === key) CH.err = e; }
 }
 // A Tacit address's chain lane, or null (an address from before the chain, or not one)
@@ -16752,6 +16761,12 @@ async function hxChainShieldGo(units) {
     let bar = () => {}, s = CH.held?.units === units ? CH.held.s : null, hash = CH.held?.units === units ? CH.held.hash : null;
     try {
       const c = await chainClient();
+      // one a reload cut off, of this amount: its deposit is made, so it is handed over again, not made again
+      const kept = !s && chainKept(S.key.pubHex);
+      if (kept && BigInt(kept.units) === units && kept.hash && kept.submission) {
+        s = { submit: () => c.resubmit(kept.submission) };
+        hash = kept.hash;
+      }
       if (!s) {
         say(st, 'Proving it on this device…'); bar = proveBar(st, CHAIN_PROVE_S);
         s = await c.shield(units);
@@ -16772,15 +16787,19 @@ async function hxChainShieldGo(units) {
         say(st, html`Sent ${txLink(hash)}. Waiting for it to land…`);
         await waitTx(hash);
         CH.held = { units, s, hash };
+        chainKeep(S.key.pubHex, { units: String(units), hash, submission: s.submission });
       }
       say(st, html`Deposited ${txLink(hash)}. Waiting for the Tacit chain to take it in…`);
       await s.submit();
       CH.held = null;
+      chainKeep(S.key.pubHex, null);
       const was = CH.bal ?? 0n;
       say(st, html`<span class="ok">Shielded.</span> ${fmt(units, 8, 4)} TAC is on the Tacit chain. ${txLink(hash)}`);
       toast('Shielded to the Tacit chain');
       hxWalletBals(true);
-      await chainSettle((b) => b >= was + units);
+      dashSoon();
+      // the shares bought are worth the deposit less the little margin a shield leaves for the rate to rise (it stays with the holders)
+      await chainSettle((b) => b >= was + units * 9980n / 10000n);
       hxMoveAfter();
     } catch (e) {
       bar();
@@ -16819,7 +16838,7 @@ async function hxChainOutGo(units) {
       say(st, html`<span class="ok">Done.</span> ${fmt(owed, 18, 4)} TAC is in ${your(via)}. ${txLink(hash)}`);
       toast('Withdrawn from the Tacit chain');
       hxWalletBals(true);
-      await chainSettle((b) => held == null || b >= held - units);
+      await chainSettle((b) => held == null || b < held);
       hxMoveAfter();
     } catch (e) {
       bar();
@@ -16846,7 +16865,7 @@ async function hxChainPayGo(units, raw) {
       say(st, html`<span class="ok">Sent.</span> ${fmt(units, 8, 4)} TAC on the Tacit chain.`);
       toast('Sent on the Tacit chain');
       hxSendClear();
-      await chainSettle((b) => held == null || b >= held - units);
+      await chainSettle((b) => held == null || b < held);
       hxSendAfter();
     } catch (e) { bar(); run.fail(st, e); }
   });

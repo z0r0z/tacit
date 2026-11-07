@@ -134,7 +134,7 @@ impl Node {
 
     /// Replays a landed block from what it publishes, refusing one whose replay does not reach the state its proof committed.
     pub fn land(&mut self, b: &Published) -> Result<(), String> {
-        if b.words.len() != 18 {
+        if b.words.len() != 19 {
             return Err(format!("{} public words", b.words.len()));
         }
         if b.words[0] != self.state.digest() || b.words[2] != fr_be(&self.state.notes.root) {
@@ -155,6 +155,9 @@ impl Node {
         next.remember(fr_be(&next.notes.root));
         next.queue_len = u64::from_be_bytes(b.words[10][24..].try_into().unwrap());
         next.queue_hash = b.words[11];
+        // the pool and the shares the block committed (its state digest checks them below)
+        next.pool = u64::from_be_bytes(b.words[18][16..24].try_into().unwrap());
+        next.shares = u64::from_be_bytes(b.words[18][24..].try_into().unwrap());
         if next.digest() != b.words[1] || fr_be(&next.notes.root) != b.words[3] {
             return Err("the block's lists do not lead to the state its proof committed".into());
         }

@@ -10,10 +10,11 @@
 //!   GET  /receipt/ID             a submission: queued, or landed in a block
 //!   GET  /mempool                what is waiting
 //!   POST /address                { address } → { hash }      GET /address/<hash> → { address }   (the chain lane's directory)
-//!   POST /spend                  { publics, proof, data, memos[], opMemos[], back? } → { id }   (back: a shield paid to its inbox)
+//!   POST /spend                  { publics, proof, data, memos[], opMemos[], back?, permit? } → { id }   (back: a shield paid to its inbox;
+//!                                permit: { owner, fee, deadline, v, r, s, back } a holder's permit for it, TacitBlocks.sweepWithPermit)
 //!   POST /settle                 { settle, memo } → { id }
 //!   POST /build                  { time, blobs?: bool, queue?: [payload…], max?: n, exclude?: [id…] } → the block: guest input, public values, lists
-//!   POST /landed                 { words[18], leaves[], memos[], nullifiers[] } → replays a landed block and clears what it took
+//!   POST /landed                 { words[19], leaves[], memos[], nullifiers[] } → replays a landed block and clears what it took
 //!
 //! `/build` and `/landed` are the leader's own: they need `Authorization: Bearer $TACIT_NODE_ADMIN`, or, with none set, a loopback caller
 //! (`/landed` takes the caller's word that a block landed, so the public must never reach it). The rest is open: a wallet's reads and its
@@ -60,6 +61,8 @@ struct Entry {
     /// For a shield paid to its inbox (TacitBlocks.inbox) rather than deposited: the confidential pool commitment the inbox's
     /// address fixes, which the leader needs to sweep it in.
     back: Vec<String>,
+    /// A holder's permit for the shield's inbox (`TacitBlocks.sweepWithPermit`): { owner, fee, deadline, v, r, s, back }.
+    permit: Option<Value>,
 }
 
 #[derive(Clone)]
@@ -158,6 +161,8 @@ impl Leader {
             "height": self.node.height, "state": hx(&s.digest()), "noteRoot": hx(&blk::fr_be(&s.notes.root)), "leaves": self.node.leaves.len(),
             "nullifiers": self.node.nf.records.len() - 1, "queue": { "len": s.queue_len, "hash": hx(&s.queue_hash) }, "chain": hx(&s.chain),
             "pending": self.pending.len(), "settles": self.settles.len(),
+            // a share is worth pool / shares units of 1e-8 TAC (one while there are none)
+            "pool": s.pool.to_string(), "shares": s.shares.to_string(),
         })
     }
 
@@ -210,7 +215,8 @@ impl Leader {
         if shield && self.pending.iter().filter(|e| e.spend.data.dep.is_some() && tacit_block_agg_publics(&e.spend.publics).map(|p| blk::Spend::from_publics(&p).live_nullifiers().is_empty()).unwrap_or(false)).count() >= MAX_SHIELDS {
             return Err("too many shields wait on their deposits".into());
         }
-        let entry = Entry { id: id.clone(), spend: SpendIn { publics, proof, hints, data }, memos, back: backs };
+        let permit = b.get("permit").filter(|p| p.is_object() && p.to_string().len() < 1024).cloned();
+        let entry = Entry { id: id.clone(), spend: SpendIn { publics, proof, hints, data }, memos, back: backs, permit };
         self.node.build(&self.spends(Some(&entry)), &self.settles_list(None), &[], now, &[]).map_err(|e| format!("not takeable now: {e}"))?;
         self.pending.push(entry);
         let r = json!({ "id": id, "status": "queued" });
@@ -448,7 +454,7 @@ impl Leader {
                 // the deposit each spend takes in, which must be waiting on Ethereum for a block that holds it to land
                 "deposits": self.pending.iter().filter_map(|e| {
                     let p = tacit_block_agg_publics(&e.spend.publics).ok()?;
-                    blk::deposit_record(&blk::Spend::from_publics(&p), &e.spend.data).map(|d| json!({ "id": e.id, "deposit": hx(&d), "backs": e.back }))
+                    blk::deposit_record(&blk::Spend::from_publics(&p), &e.spend.data).map(|d| json!({ "id": e.id, "deposit": hx(&d), "backs": e.back, "permit": e.permit }))
                 }).collect::<Vec<_>>(),
             })),
             ("POST", "/spend") => self.spend(body, now).map_err(bad),
