@@ -110,11 +110,14 @@ contract TacitBlocks {
     bytes32 internal constant NF_GENESIS_ROOT = 0xf17b0f821760732c27b2f8e967a3e18c976a57e176de5164378fdaf3e1796f0c;
     uint256 internal constant NOTE_TREE_DEPTH = 32;
     uint256 internal constant RECENT = 32;
-    uint256 internal constant PUBLIC_WORDS = 16;
+    uint256 internal constant PUBLIC_WORDS = 18;
     uint256 internal constant DEPOSIT_LEN = 160;
     uint256 internal constant EXIT_LEN = 96;
     /// A hop (tacit-block-common `ops::hop_bytes`): asset ‖ value ‖ the confidential pool's commitment.
     uint256 internal constant HOP_LEN = 96;
+    /// A migration (successor ‖ the note it makes there) and a successor's total for a block (its address, left-padded ‖ value).
+    uint256 internal constant MIGRATION_LEN = 52;
+    uint256 internal constant MIGRATION_TOTAL_LEN = 64;
     /// A claim's signature (R.x ‖ s).
     uint256 internal constant CLAIM_LEN = 64;
     /// What a block whose lists travel in blobs shows for each blob: its KZG commitment (48), the point the program opened it at
@@ -197,6 +200,10 @@ contract TacitBlocks {
     mapping(address => uint256) public owed;
     /// @notice Hops landed and not yet sent into the confidential pool, by keccak256(value, commit): how many.
     mapping(bytes32 => uint256) public hops;
+    /// @notice The hash of each landed block's migrations (the block program's list tag 8, `SHA-256("tacit-block-list-v1" ‖ 8 ‖
+    ///         count ‖ successor ‖ note …)`), by height: a successor chain makes the notes of those naming it once it has been shown
+    ///         a list with this hash. The TAC they hold was sent to it as the block landed (`Migrated`).
+    mapping(uint256 => bytes32) public migrationsOf;
     /// @notice What the chain's notes are worth, in units: the deposits blocks took in less the exits and hops they made. A block
     ///         that would take out more than this cannot land, whatever its proof says (the block program balances every spend,
     ///         so this only ever stops a block if the program or the verifier were wrong).
@@ -217,6 +224,8 @@ contract TacitBlocks {
     /// @notice A swept deposit no block took, sent back into the confidential pool for `back`.
     event Returned(uint256 value, bytes32 back);
     event Hopped(uint256 value, bytes32 commit);
+    /// @notice A block's moves to the successor chain `to`, `value` units in all, sent to it as the block landed.
+    event Migrated(uint256 indexed height, address indexed to, uint256 value);
     /// @notice The confidential pool refused a hop's deposit (one for `commit` already exists there): the hop stays, to be sent again.
     event HopRefused(uint256 value, bytes32 commit);
     /// @notice The `index`th entry of the queue: what a block's builder hands the block program, and the memos it
@@ -274,6 +283,8 @@ contract TacitBlocks {
         bytes hops;
         bytes claims;
         bytes blobs;
+        bytes migrations;
+        bytes migrationTotals;
     }
 
     modifier nonReentrant() {
@@ -499,7 +510,7 @@ contract TacitBlocks {
         }
         if (publicValues.length != 32 * PUBLIC_WORDS) revert BadPublicValues();
         VERIFIER.verifyProof(BLOCK_VKEY, publicValues, proof);
-        bytes32[16] memory w = abi.decode(publicValues, (bytes32[16]));
+        bytes32[18] memory w = abi.decode(publicValues, (bytes32[18]));
         if (w[0] != state || w[2] != noteRoot) revert NotOnTop();
         // the time the block names, by which its claims and refunds were decided
         if (block.timestamp < uint256(w[14]) || block.timestamp > uint256(w[14]) + TIME_WINDOW) revert BadTime();
@@ -569,7 +580,7 @@ contract TacitBlocks {
             worth -= out;
             hops[keccak256(hopList[HOP_LEN * i + 32:HOP_LEN * (i + 1)])] += 1;
         }
-        inChain = worth;
+        inChain = _migrate(lists.migrations, lists.migrationTotals, w[16], w[17], worth, height + 1);
 
         state = w[1];
         noteRoot = w[3];
@@ -579,6 +590,29 @@ contract TacitBlocks {
         height = h;
         lastLanded = uint64(block.timestamp);
         emit Landed(h, w[1], w[3], msg.sender);
+    }
+
+    /// @dev A block's migrations: the lists checked against the words the proof committed, the hash of the moves kept for successors,
+    ///      and each successor's total sent to it (an address the program allows: twenty bytes, not zero; one that is this contract
+    ///      or cannot use TAC leaves it where it lands, which only its own movers chose). → what the chain's notes are then worth.
+    function _migrate(bytes calldata moves, bytes calldata totals, bytes32 movesHash, bytes32 totalsHash, uint256 worth, uint256 h)
+        internal
+        returns (uint256)
+    {
+        if (moves.length % MIGRATION_LEN != 0 || _listHash(8, moves.length / MIGRATION_LEN, moves) != movesHash) revert BadList(9);
+        if (totals.length % MIGRATION_TOTAL_LEN != 0) revert BadList(10);
+        uint256 n = totals.length / MIGRATION_TOTAL_LEN;
+        if (_listHash(9, n, totals) != totalsHash) revert BadList(10);
+        if (moves.length != 0) migrationsOf[h] = movesHash;
+        for (uint256 i; i < n; ++i) {
+            address to = address(uint160(uint256(bytes32(totals[MIGRATION_TOTAL_LEN * i:MIGRATION_TOTAL_LEN * i + 32]))));
+            uint256 out = uint256(bytes32(totals[MIGRATION_TOTAL_LEN * i + 32:MIGRATION_TOTAL_LEN * (i + 1)]));
+            if (out > worth) revert Insolvent();
+            worth -= out;
+            _call(abi.encodeWithSelector(0xa9059cbb, to, out * UNIT));
+            emit Migrated(h, to, out);
+        }
+        return worth;
     }
 
     /// @notice Sends `to` the TAC exits have credited it. Anyone may call it.

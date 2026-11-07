@@ -772,6 +772,8 @@ fn block_json(l: &Landed, memos: &[Vec<u8>]) -> Value {
         "hops": hx(&l.data.hops.concat()),
         "claims": hx(&l.data.claims.concat()),
         "blobs": hx(&blobs),
+        "migrations": hx(&l.data.migrations.concat()),
+        "migrationTotals": hx(&l.data.migration_totals.concat()),
     })
 }
 
@@ -863,11 +865,23 @@ fn fixture(path: &str, chain_id: u64, lander: [u8; 20]) {
     let claimed_leaf = leaf_of(&c.asset_f, &fr_u64(1_000), &la.claim_to.npk, &la.claim_to.rho);
     let claimed = c.made_note(&claimed_leaf, 4, &secret(84, 0, 0), 1_000);
     let blob_pay = c.spend(&k, &[&claimed], &[(6, secret(86, 0, 0), 600), (4, secret(86, 0, 1), 400)], "fixture blob pay", c.leaves.len());
+    // and the refunded 500: 200 of it moved to a successor chain, 300 kept
+    let refunded_leaf = leaf_of(&c.asset_f, &fr_u64(500), &lb.refund_to.npk, &lb.refund_to.rho);
+    let refunded = c.made_note(&refunded_leaf, 5, &secret(84, 1, 1), 500);
+    let successor = [0x5c; 20];
+    let successor_note = [0x77; 32];
+    let migrate = c.spend_full(&k, &[&refunded], &[(5, secret(87, 0, 0), 300)], None, None, Some((200, ops::Op::Migrate { to: successor, note: successor_note }, vec![])), "fixture migrate", c.leaves.len());
     c.blobs = true;
-    let l9 = c.land(&elf, &k, &[blob_pay.clone()]).unwrap_or_else(|e| fail(&format!("fixture blob block: {e}")));
+    let l9 = c.land(&elf, &k, &[blob_pay.clone(), migrate.clone()]).unwrap_or_else(|e| fail(&format!("fixture blob block: {e}")));
     c.blobs = false;
-    if l9.blob_openings.len() != 1 || l9.out.blobs_hash == [0u8; 32] || l9.data.outputs.len() != 2 {
+    if l9.blob_openings.len() != 1 || l9.out.blobs_hash == [0u8; 32] || l9.data.outputs.len() != 3 {
         fail("the fixture's blob block did not carry its lists in a blob");
+    }
+    let mut total = [0u8; 64];
+    total[12..32].copy_from_slice(&successor);
+    total[56..].copy_from_slice(&200u64.to_be_bytes());
+    if l9.data.migrations != vec![<[u8; 52]>::try_from([successor.as_slice(), successor_note.as_slice()].concat()).unwrap()] || l9.data.migration_totals != vec![total] {
+        fail("the fixture's migration did not publish its move and its successor's total, and nothing else");
     }
     let hx = |b: &[u8]| format!("0x{}", hex::encode(b));
     let doc = json!({
@@ -881,6 +895,7 @@ fn fixture(path: &str, chain_id: u64, lander: [u8; 20]) {
         "spendVk": hx(&blk::vk_hash(&k.digest)),
         "deposit": { "value": 500, "cx": hx(&fr_be(&shield.spend.dep[0])), "cy": hx(&fr_be(&shield.spend.dep[1])), "body": hx(&fr_be(&shield.spend.body)) },
         "exit": { "value": 120, "to": hx(&to) },
+        "migration": { "to": hx(&successor), "note": hx(&successor_note), "value": 200 },
         "forced": hx(&posted.payload),
         "hop": { "value": 300, "commit": hx(&commit) },
         "forcedHop": hx(&posted_hop.payload),
@@ -901,7 +916,7 @@ fn fixture(path: &str, chain_id: u64, lander: [u8; 20]) {
             block_json(&l6, &[ma, mb]),
             block_json(&l7, &[cma]),
             block_json(&l8, &[rmb]),
-            block_json(&l9, &blob_pay.memos),
+            block_json(&l9, &[blob_pay.memos.clone(), migrate.memos.clone()].concat()),
         ],
     });
     std::fs::write(path, serde_json::to_string_pretty(&doc).unwrap()).unwrap_or_else(|e| fail(&format!("{path}: {e}")));

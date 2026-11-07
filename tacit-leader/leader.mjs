@@ -227,7 +227,7 @@ async function step() {
   const proof = await prove(built);
   const pv = bytesOf(built.publicValues);
   const l = built.lists;
-  const lists = { leaves: bytesOf(l.leaves), memos: bytesOf(l.memos), nullifiers: l.nullifiers, anchors: l.anchors, deposits: bytesOf(l.deposits), exits: bytesOf(l.exits), hops: bytesOf(l.hops), claims: bytesOf(l.claims), blobs: bytesOf(l.blobs) };
+  const lists = { leaves: bytesOf(l.leaves), memos: bytesOf(l.memos), nullifiers: l.nullifiers, anchors: l.anchors, deposits: bytesOf(l.deposits), exits: bytesOf(l.exits), hops: bytesOf(l.hops), claims: bytesOf(l.claims), blobs: bytesOf(l.blobs), migrations: bytesOf(l.migrations), migrationTotals: bytesOf(l.migrationTotals) };
   mkdirSync(ARCHIVE, { recursive: true });
   writeFileSync(join(ARCHIVE, `${nodeHeight + 1}.json`), JSON.stringify({ publicValues: built.publicValues, lists: l, includes: built.includes }));
   const chainId = num(await rpc.call('eth_chainId'));

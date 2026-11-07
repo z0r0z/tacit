@@ -799,7 +799,7 @@ pub fn vk_hash(vk_digest: &[u8; 64]) -> [u8; 32] {
     h.finalize().into()
 }
 
-/// What a block proof commits, as thirteen 32-byte words (`encode`). How many spends a block holds is not among them,
+/// What a block proof commits, as eighteen 32-byte words (`encode`). How many spends a block holds is not among them,
 /// and each list's length is in its hash.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BlockOut {
@@ -829,6 +829,9 @@ pub struct BlockOut {
     /// For a block whose data-only lists travel in blobs, SHA-256 of each blob's (versioned hash, z, y) (`blob::claims`); zero for
     /// one whose lists are in its calldata.
     pub blobs_hash: [u8; 32],
+    /// The hashes of the block's migrations (`BlockData::migrations`) and of each successor's total (`BlockData::migration_totals`).
+    pub migrations_hash: [u8; 32],
+    pub migration_totals_hash: [u8; 32],
 }
 
 fn word(n: u64) -> [u8; 32] {
@@ -862,6 +865,8 @@ impl BlockOut {
             self.claims_hash,
             word(self.time),
             self.blobs_hash,
+            self.migrations_hash,
+            self.migration_totals_hash,
         ]
         .concat()
     }
@@ -888,6 +893,10 @@ pub struct BlockData {
     /// The recipients' signatures of the locks the block's claims settle (R.x ‖ s, 64 bytes each), sorted: where a swap's
     /// counterparty reads its secret.
     pub claims: Vec<[u8; 64]>,
+    /// Moves to successor chains: the successor's address ‖ the note it makes there (`ops::MIGRATION_LEN`), sorted.
+    pub migrations: Vec<[u8; 52]>,
+    /// What the landing contract sends each successor: its address (left-padded) ‖ the block's total to it, sorted, one per successor.
+    pub migration_totals: Vec<[u8; 64]>,
 }
 
 /// The queue's hash after one more posted spend: SHA-256(QUEUE_DOMAIN ‖ the hash before ‖ SHA-256(what was posted)), as the
@@ -1094,6 +1103,8 @@ struct Effects {
     hop: Option<Vec<u8>>,
     /// A claim's signature, published.
     claim: Option<[u8; 64]>,
+    /// A move to a successor chain: (its address, the note there, the value).
+    migration: Option<([u8; 20], [u8; 32], u64)>,
 }
 
 /// What a claim or refund does to a block, when the block's time allows it: the anchor its path leads to (one older than the recent
@@ -1113,6 +1124,7 @@ fn settle_effects(prev: &State, s: &lock::Settle, time: u64) -> Result<Effects, 
         nullifiers: vec![fr_be(&lock::lock_nullifier(&s.leaf(), s.index))],
         hop: None,
         claim: s.sig,
+        migration: None,
     })
 }
 
@@ -1129,7 +1141,7 @@ fn effects(prev: &State, s: &Spend, d: &SpendData) -> Result<Effects, &'static s
     if live.len() == 2 && live[0] == live[1] {
         return Err("one note in both input slots");
     }
-    let mut e = Effects { anchor: None, outputs: Vec::with_capacity(3), deposit: None, exit: None, nullifiers: s.spent_keys().iter().map(fr_be).collect(), hop: None, claim: None };
+    let mut e = Effects { anchor: None, outputs: Vec::with_capacity(3), deposit: None, exit: None, nullifiers: s.spent_keys().iter().map(fr_be).collect(), hop: None, claim: None, migration: None };
     if live.is_empty() {
         if is_identity(&s.dep) {
             return Err("no input and no deposit");
@@ -1171,6 +1183,9 @@ fn effects(prev: &State, s: &Spend, d: &SpendData) -> Result<Effects, &'static s
         }
         (false, Some(o), Some(ops::Op::Lock { lock, memo })) if o.v > 0 && d.exit_to == [0u8; 20] && commits(o, &s.exit) => {
             e.outputs.push((lock.leaf(&s.asset, o.v), *memo))
+        }
+        (false, Some(o), Some(ops::Op::Migrate { to, note })) if o.v > 0 && d.exit_to == [0u8; 20] && *to != [0u8; 20] && commits(o, &s.exit) => {
+            e.migration = Some((*to, *note, o.v))
         }
         _ => return Err("the exit's opening, address or operation is missing, wrong or of nothing"),
     }
@@ -1232,6 +1247,7 @@ pub fn apply(prev: &State, spends: &[Spend], data: &[SpendData], settles: &[lock
     let mut outputs: Vec<(Fr, [u8; 32])> = vec![];
     let mut spent: Vec<(usize, [u8; 32])> = vec![];
     let mut lists = BlockData::default();
+    let mut migrated: Vec<([u8; 20], u64)> = vec![];
     for (i, e) in chosen {
         lists.anchors.extend(e.anchor);
         lists.deposits.extend(e.deposit);
@@ -1239,6 +1255,10 @@ pub fn apply(prev: &State, spends: &[Spend], data: &[SpendData], settles: &[lock
         outputs.extend(e.outputs);
         lists.hops.extend(e.hop);
         lists.claims.extend(e.claim);
+        if let Some((to, note, v)) = e.migration {
+            lists.migrations.push([to.as_slice(), note.as_slice()].concat().try_into().unwrap());
+            migrated.push((to, v));
+        }
         spent.extend(e.nullifiers.into_iter().map(|x| (i, x)));
     }
     if spent.len() != nfw.len() {
@@ -1274,6 +1294,18 @@ pub fn apply(prev: &State, spends: &[Spend], data: &[SpendData], settles: &[lock
     lists.exits.sort();
     lists.hops.sort();
     lists.claims.sort();
+    lists.migrations.sort();
+    // one total per successor (a block's values sum within u64: each is a note's, and the chain's whole supply fits)
+    migrated.sort();
+    for (to, v) in migrated {
+        match lists.migration_totals.last_mut() {
+            Some(t) if t[12..32] == to => {
+                let sum = u64::from_be_bytes(t[56..64].try_into().unwrap()).checked_add(v).ok_or("a successor's total overflows")?;
+                t[56..64].copy_from_slice(&sum.to_be_bytes());
+            }
+            _ => lists.migration_totals.push([address_word(&to), word(v)].concat().try_into().unwrap()),
+        }
+    }
     let mut next = State { notes, nf_root, nf_size, recent: prev.recent, chain: prev.chain, queue_len, queue_hash };
     next.remember(fr_be(&next.notes.root));
     let out = BlockOut {
@@ -1293,6 +1325,8 @@ pub fn apply(prev: &State, spends: &[Spend], data: &[SpendData], settles: &[lock
         claims_hash: list_hash(7, &lists.claims),
         time,
         blobs_hash: blobs_hash(&lists, blobs)?,
+        migrations_hash: list_hash(8, &lists.migrations),
+        migration_totals_hash: list_hash(9, &lists.migration_totals),
     };
     mark!("cycle-tracker-report-end: block-commit");
     Ok((next, out, lists))

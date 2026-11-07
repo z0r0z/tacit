@@ -18,6 +18,7 @@ import { lockOp } from './tacit-chain-lock.js';
 export { assetField };
 const te = new TextEncoder();
 const OP_HOP = 1;
+const OP_MIGRATE = 3;
 const hx = (b) => '0x' + Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
 const bytes = (h, n, what) => {
   const b = h instanceof Uint8Array ? h : Uint8Array.from(String(h).replace(/^0x/, '').match(/../g) || [], (x) => parseInt(x, 16));
@@ -53,6 +54,10 @@ export function spendData({ memoHashes, exitTo, salt, dep, exit, opBytes }) {
 
 /// A hop's operation bytes: the exit's value into the confidential pool as a deposit for `commit` (its keccak(Cx ‖ Cy ‖ owner)).
 export const hopOp = (commit) => concatBytes(Uint8Array.of(OP_HOP), bytes(commit, 32, 'commit'));
+
+/// A migration's operation bytes: the exit's value to the successor chain `to` (its landing contract), for the note `note` names there.
+/// The block publishes only each successor's total, so the amount stays hidden and the note keeps this chain's anonymity set.
+export const migrateOp = (to, note) => concatBytes(Uint8Array.of(OP_MIGRATE), bytes(to, 20, 'successor'), bytes(note, 32, 'note'));
 
 export function makeChainWallet({ poseidon, prover, chain, asset, network = 'mainnet' }) {
   const Z = makeBtcPoolZk({ poseidon });

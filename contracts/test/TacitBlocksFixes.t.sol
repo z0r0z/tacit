@@ -122,4 +122,44 @@ contract TacitBlocksFixesTest is TacitBlocksFixture {
         vm.expectRevert(abi.encodeWithSelector(TacitBlocks.BadAddress.selector, 0));
         blocks.withdraw(address(tac));
     }
+
+    /// A spend that moves 200 of its note to a successor chain: the block publishes the move and the successor's total alone, the TAC
+    /// goes to the successor as the block lands, and the hash of the moves is kept for the successor to make its notes from.
+    function test_aMigrationPaysItsSuccessor() public {
+        toTheBlobBlock();
+        address successor = vm.parseJsonAddress(fx, ".migration.to");
+        uint256 v = vm.parseJsonUint(fx, ".migration.value");
+        TacitBlocks.Lists memory l = lists(8);
+        assertEq(l.migrations, abi.encodePacked(successor, vm.parseJsonBytes32(fx, ".migration.note")), "the move: successor and note, no value");
+        assertEq(l.migrationTotals, abi.encodePacked(bytes32(uint256(uint160(successor))), bytes32(v)));
+        uint256 before = blocks.inChain();
+        asBlobBlock(l);
+        bytes memory p8 = pv(8);
+        vm.prank(SEQ);
+        blocks.land(p8, "", l);
+        assertEq(tac.balanceOf(successor), v * UNIT, "the successor holds what moved to it");
+        assertEq(blocks.inChain(), before - v, "the chain's notes are worth that much less");
+        assertEq(blocks.migrationsOf(9), words(8)[16], "the moves' hash, for the successor");
+        assertEq(blocks.migrationsOf(8), bytes32(0));
+    }
+
+    /// The moves and totals must be the ones the proof committed, and no block can move more than the chain holds.
+    function test_whatAMigrationCannotDo() public {
+        TacitBlocks.Lists memory l;
+        l.migrations = abi.encodePacked(address(0x5C), bytes32(uint256(7)));
+        l.migrationTotals = abi.encodePacked(bytes32(uint256(uint160(address(0x5C)))), bytes32(uint256(1)));
+        bytes memory p = craft(l);
+        vm.prank(SEQ);
+        vm.expectRevert(TacitBlocks.Insolvent.selector);
+        blocks.land(p, "", l);
+        l.migrations = abi.encodePacked(address(0x5C), bytes32(uint256(8)));
+        vm.prank(SEQ);
+        vm.expectRevert(abi.encodeWithSelector(TacitBlocks.BadList.selector, 9));
+        blocks.land(p, "", l);
+        l.migrations = abi.encodePacked(address(0x5C), bytes32(uint256(7)));
+        l.migrationTotals = abi.encodePacked(bytes32(uint256(uint160(address(0x5C)))), bytes32(uint256(2)));
+        vm.prank(SEQ);
+        vm.expectRevert(abi.encodeWithSelector(TacitBlocks.BadList.selector, 10));
+        blocks.land(p, "", l);
+    }
 }

@@ -132,8 +132,8 @@ abstract contract TacitBlocksFixture is Test {
         return vm.parseJsonBytes(fx, key(b, "publicValues"));
     }
 
-    function words(uint256 b) internal view returns (bytes32[16] memory) {
-        return abi.decode(pv(b), (bytes32[16]));
+    function words(uint256 b) internal view returns (bytes32[18] memory) {
+        return abi.decode(pv(b), (bytes32[18]));
     }
 
     function lists(uint256 b) internal view returns (TacitBlocks.Lists memory l) {
@@ -146,6 +146,8 @@ abstract contract TacitBlocksFixture is Test {
         l.hops = vm.parseJsonBytes(fx, key(b, "hops"));
         l.claims = vm.parseJsonBytes(fx, key(b, "claims"));
         l.blobs = vm.parseJsonBytes(fx, key(b, "blobs"));
+        l.migrations = vm.parseJsonBytes(fx, key(b, "migrations"));
+        l.migrationTotals = vm.parseJsonBytes(fx, key(b, "migrationTotals"));
     }
 
     /// The transaction a blob block is landed in: its blobs' versioned hashes set, its data-only lists left out.
@@ -202,7 +204,7 @@ abstract contract TacitBlocksFixture is Test {
     /// Public values for a block on top of the current state that publishes only `l` and moves the queue to `done`
     /// (the verifier here takes any proof, so the landing rules alone decide).
     function craftQ(TacitBlocks.Lists memory l, uint256 done) internal view returns (bytes memory) {
-        bytes32[16] memory w = abi.decode(craft(l), (bytes32[16]));
+        bytes32[18] memory w = abi.decode(craft(l), (bytes32[18]));
         w[10] = bytes32(done);
         w[11] = blocks.queueHash(done);
         return abi.encode(w);
@@ -210,7 +212,7 @@ abstract contract TacitBlocksFixture is Test {
 
     /// As `craftQ`, leaving the queue where it is.
     function craft(TacitBlocks.Lists memory l) internal view returns (bytes memory) {
-        bytes32[16] memory w;
+        bytes32[18] memory w;
         w[0] = blocks.state();
         w[1] = keccak256(abi.encode("next", blocks.height()));
         w[2] = blocks.noteRoot();
@@ -241,6 +243,8 @@ abstract contract TacitBlocksFixture is Test {
         w[13] = listHash(7, l.claims.length / 64, l.claims);
         w[14] = bytes32(block.timestamp);
         w[15] = bytes32(0);
+        w[16] = listHash(8, l.migrations.length / 52, l.migrations);
+        w[17] = listHash(9, l.migrationTotals.length / 64, l.migrationTotals);
         return abi.encode(w);
     }
 
@@ -468,12 +472,12 @@ contract TacitBlocksTest is TacitBlocksFixture {
     function test_theQueueWordsMustBeTheContracts() public {
         blocks.force(posting(nothing(), false, 0));
         TacitBlocks.Lists memory none;
-        bytes32[16] memory w = abi.decode(craftQ(none, 1), (bytes32[16]));
+        bytes32[18] memory w = abi.decode(craftQ(none, 1), (bytes32[18]));
         w[11] = keccak256("another queue");
         vm.prank(SEQ);
         vm.expectRevert(TacitBlocks.BadQueue.selector);
         blocks.land(abi.encode(w), "", none);
-        w = abi.decode(craftQ(none, 1), (bytes32[16]));
+        w = abi.decode(craftQ(none, 1), (bytes32[18]));
         w[10] = bytes32(uint256(2));
         vm.prank(SEQ);
         vm.expectRevert(TacitBlocks.BadQueue.selector);
@@ -558,7 +562,7 @@ contract TacitBlocksTest is TacitBlocksFixture {
         blocks.land(p0, "", l0);
         // a block whose note root before is not the one held, though its state digest is
         TacitBlocks.Lists memory none;
-        bytes32[16] memory w = abi.decode(craft(none), (bytes32[16]));
+        bytes32[18] memory w = abi.decode(craft(none), (bytes32[18]));
         w[2] = keccak256("another root");
         vm.prank(SEQ);
         vm.expectRevert(TacitBlocks.NotOnTop.selector);

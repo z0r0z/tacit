@@ -14,6 +14,9 @@
 // (proved compressed: the proof is the base64 of the bincode SP1ProofWithPublicValues, which eth_prove's finish mode checks) and
 // 'btc-state' (the Bitcoin reflection guest, proved groth16: the proof is the hex attestBitcoinStateProven takes; its input is Bitcoin's
 // blocks and a public Ethereum proof, so it is public work, large and slow: kept under its own key and leased for longer).
+// 'tacit-block' (the tacit chain's block program, proved groth16: the proof is the hex TacitBlocks.land takes; its input is the block's
+// spends, each already proven by its owner, and the chain's public state, so it is public work that community machines race, the leader
+// checking each candidate with a simulated landing).
 // A worker says which programs it proves when it claims (old workers say nothing: 'confidential'), and is offered only those.
 //
 // Storage (KV, portable to Cloudflare's): pb:pending (ids, oldest first), pb:job:<id>, pb:stdin:<id> (a btc-state input, kept apart like
@@ -23,13 +26,13 @@
 
 export const PROVER_BOARD = Object.freeze({
   classes: Object.freeze(['private', 'public', 'eth-state']),
-  programs: Object.freeze(['confidential', 'eth-state', 'btc-state']),
+  programs: Object.freeze(['confidential', 'eth-state', 'btc-state', 'tacit-block']),
   // Each program's proof mode and the classes its jobs may carry.
-  modes: Object.freeze({ confidential: 'groth16', 'eth-state': 'compressed', 'btc-state': 'groth16' }),
-  programClasses: Object.freeze({ confidential: Object.freeze(['private', 'public']), 'eth-state': Object.freeze(['eth-state']), 'btc-state': Object.freeze(['public']) }),
+  modes: Object.freeze({ confidential: 'groth16', 'eth-state': 'compressed', 'btc-state': 'groth16', 'tacit-block': 'groth16' }),
+  programClasses: Object.freeze({ confidential: Object.freeze(['private', 'public']), 'eth-state': Object.freeze(['eth-state']), 'btc-state': Object.freeze(['public']), 'tacit-block': Object.freeze(['public']) }),
   maxCompressedProofBytes: 2 * 1024 * 1024,            // a compressed proof of the eth-reflection guest is about 1.3 MB
   leaseMs: 5 * 60_000,                                 // a claim lasts this long without a result
-  leaseMsByProgram: Object.freeze({ 'btc-state': 2 * 3600_000 }), // a Bitcoin batch is billions of cycles
+  leaseMsByProgram: Object.freeze({ 'btc-state': 2 * 3600_000, 'tacit-block': 15 * 60_000 }), // a Bitcoin batch is billions of cycles; a block, millions
   // Programs whose input is kept under its own key (pb:stdin:<id>) and read only for the claim that proves it, not on every read of the job.
   keptInput: Object.freeze(['btc-state']),
   keepMs: 60 * 60_000,                                 // a finished or cancelled job stays readable this long
@@ -48,7 +51,7 @@ export const PROVER_BOARD = Object.freeze({
   // a machine whose last turn was refused, dropped or not answered goes after the others for turnTroubleMs. A turn not answered leaves
   // the batch to the prover network once the relay stops waiting, as a batch nobody took would.
   communityRacers: 8,                                  // community machines racing one job at most
-  communityPrograms: Object.freeze(['confidential', 'btc-state']), // what a community machine may race, when it says it proves it
+  communityPrograms: Object.freeze(['confidential', 'btc-state', 'tacit-block']), // what a community machine may race, when it says it proves it
   communityOpen: 1,                                    // jobs one community machine races at a time
   turnPrograms: Object.freeze(['btc-state']),          // community jobs given to one machine at a time, in turn
   turnSeenMs: 30_000,
@@ -57,7 +60,7 @@ export const PROVER_BOARD = Object.freeze({
   maxCandidatePvBytes: 16 * 1024,                      // a race candidate's public values (a wrap's or a Bitcoin batch's are a few KB)
   pointsPerProof: 20,                                  // POINTS_BOARD_PER_PROOF: for each community proof the relay takes
   // A Bitcoin batch is billions of cycles, tens of minutes on a large GPU: it earns its own.
-  pointsByProgram: Object.freeze({ 'btc-state': 1000 }), // POINTS_BOARD_BTC_PER_PROOF
+  pointsByProgram: Object.freeze({ 'btc-state': 1000, 'tacit-block': 100 }), // POINTS_BOARD_BTC_PER_PROOF; a block, a few minutes of GPU
   proofsPerMinerDay: Infinity,                         // POINTS_BOARD_DAILY_CAP: proofs an address is credited for in a UTC day (none: every proof)
   daySecs: 40 * 86400,                                 // a day's tally outlives the campaign's reading of it
 });
@@ -73,7 +76,7 @@ export function proverBoardConfig(env = {}) {
   return Object.freeze({
     pointsPerProof: n(env.POINTS_BOARD_PER_PROOF, PROVER_BOARD.pointsPerProof),
     proofsPerMinerDay: n(env.POINTS_BOARD_DAILY_CAP, PROVER_BOARD.proofsPerMinerDay, 1),
-    pointsByProgram: Object.freeze({ 'btc-state': n(env.POINTS_BOARD_BTC_PER_PROOF, PROVER_BOARD.pointsByProgram['btc-state']) }),
+    pointsByProgram: Object.freeze({ 'btc-state': n(env.POINTS_BOARD_BTC_PER_PROOF, PROVER_BOARD.pointsByProgram['btc-state']), 'tacit-block': n(env.POINTS_BOARD_BLOCK_PER_PROOF, PROVER_BOARD.pointsByProgram['tacit-block']) }),
   });
 }
 const DAY_MS = 86_400_000;

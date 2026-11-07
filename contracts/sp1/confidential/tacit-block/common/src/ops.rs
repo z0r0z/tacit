@@ -16,6 +16,9 @@ pub const OP_HOP: u8 = 1;
 /// Puts the exit's value in a lock (`lock`): a leaf of the note tree its recipient may claim before a deadline and anyone may refund
 /// to the locker from it, published with the memo `memo` hashes.
 pub const OP_LOCK: u8 = 2;
+/// Moves the exit's value to a successor chain (`to`, its landing contract), where the note `note` names is made: the way off this
+/// chain that keeps a note's amount hidden and its anonymity set (the block publishes each successor's total, never a spend's value).
+pub const OP_MIGRATE: u8 = 3;
 
 /// A note the block program makes: whose (the one-time keys of `leaf_of`) and the hash of the memo published with it (the spender's,
 /// encrypted to whoever owns the keys, so the note is found again from the keys alone), as the body names them.
@@ -33,6 +36,8 @@ pub enum Op {
     Hop { commit: [u8; 32] },
     /// The exit's value into a lock with these terms, its leaf published with the memo `memo` hashes.
     Lock { lock: Lock, memo: [u8; 32] },
+    /// The exit's value to the successor chain `to`, for the note `note` names there (the successor's own commitment, opaque here).
+    Migrate { to: [u8; 20], note: [u8; 32] },
 }
 
 struct R<'a>(&'a [u8]);
@@ -61,6 +66,11 @@ impl Op {
                 b.extend(lock.to_bytes());
                 b.extend(memo);
             }
+            Op::Migrate { to, note } => {
+                b.push(OP_MIGRATE);
+                b.extend(to);
+                b.extend(note);
+            }
         }
         b
     }
@@ -77,6 +87,7 @@ impl Op {
         let op = match r.take(1)?[0] {
             OP_HOP => Op::Hop { commit: r.take(32)?.try_into().ok()? },
             OP_LOCK => Op::Lock { lock: Lock::from_bytes(r.take(LOCK_LEN)?)?, memo: r.take(32)?.try_into().ok()? },
+            OP_MIGRATE => Op::Migrate { to: r.take(20)?.try_into().ok()?, note: r.take(32)?.try_into().ok()? },
             _ => return None,
         };
         Some((op, b.len() - r.0.len()))
@@ -86,7 +97,7 @@ impl Op {
     /// order. A hop makes none on this chain.
     pub fn receivers(&self) -> Vec<NoteTo> {
         match self {
-            Op::Hop { .. } => vec![],
+            Op::Hop { .. } | Op::Migrate { .. } => vec![],
             // the lock's own leaf, whose memo the forced spend posts like an output's
             Op::Lock { memo, .. } => vec![NoteTo { npk: Fr::from(0u64), rho: Fr::from(0u64), memo: *memo }],
         }
@@ -101,3 +112,8 @@ pub fn hop_bytes(asset: &Fr, value: u64, commit: &[u8; 32]) -> Vec<u8> {
 }
 
 pub const HOP_LEN: usize = 96;
+/// A migration as a block publishes it: the successor's address ‖ the note it makes there, 52 bytes (its value is in the successor's
+/// total alone).
+pub const MIGRATION_LEN: usize = 52;
+/// A successor's total for a block: its address (left-padded) ‖ the value (u64 in a 32-byte word), 64 bytes.
+pub const MIGRATION_TOTAL_LEN: usize = 64;

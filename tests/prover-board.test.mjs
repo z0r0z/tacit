@@ -392,11 +392,25 @@ test('points: each proof the relay takes from a community machine counts for its
 });
 
 test('points config: env sets the points and a count a day, 0 points pays nothing, no count or 0 is no count, nonsense keeps the default', () => {
-  const btc = (n) => ({ pointsByProgram: { 'btc-state': n } });
+  const btc = (n, k = 100) => ({ pointsByProgram: { 'btc-state': n, 'tacit-block': k } });
   assert.deepEqual(proverBoardConfig({}), { pointsPerProof: 20, proofsPerMinerDay: Infinity, ...btc(1000) });
   assert.deepEqual(proverBoardConfig({ POINTS_BOARD_PER_PROOF: '50', POINTS_BOARD_DAILY_CAP: '10', POINTS_BOARD_BTC_PER_PROOF: '800' }), { pointsPerProof: 50, proofsPerMinerDay: 10, ...btc(800) });
   assert.deepEqual(proverBoardConfig({ POINTS_BOARD_PER_PROOF: '0', POINTS_BOARD_DAILY_CAP: '0', POINTS_BOARD_BTC_PER_PROOF: '0' }), { pointsPerProof: 0, proofsPerMinerDay: Infinity, ...btc(0) });
   assert.deepEqual(proverBoardConfig({ POINTS_BOARD_PER_PROOF: 'lots', POINTS_BOARD_DAILY_CAP: '-1' }), { pointsPerProof: 20, proofsPerMinerDay: Infinity, ...btc(1000) });
+  assert.deepEqual(proverBoardConfig({ POINTS_BOARD_BLOCK_PER_PROOF: '250' }), { pointsPerProof: 20, proofsPerMinerDay: Infinity, ...btc(1000, 250) });
+});
+
+test('the tacit chain\'s block program: public groth16 work any community machine that proves it may race', async () => {
+  const b = makeProverBoard({ storage: store(), now });
+  const stdin = Buffer.alloc(64 * 1024, 3).toString('base64');
+  await assert.rejects(b.post({ class: 'private', program: 'tacit-block', stdin, cycleLimit: 1e9, gasLimit: 1e9, deadline: now() / 1000 + 900 }), /class is public/);
+  await assert.rejects(b.post({ class: 'public', program: 'tacit-block', mode: 'compressed', stdin, cycleLimit: 1e9, gasLimit: 1e9, deadline: now() / 1000 + 900 }), /proved groth16/);
+  const { jobId } = await b.post({ class: 'public', program: 'tacit-block', stdin, cycleLimit: 1e9, gasLimit: 1e9, deadline: now() / 1000 + 900, label: 'tacit-block' });
+  const st = await b.status(jobId);
+  assert.equal(st.program, 'tacit-block');
+  assert.equal(st.mode, 'groth16');
+  assert.ok(PROVER_BOARD.communityPrograms.includes('tacit-block'));
+  assert.ok(!PROVER_BOARD.turnPrograms.includes('tacit-block'), 'raced, not taken in turns: a block is minutes of work');
 });
 
 test('the Bitcoin-state program: public groth16 work, its input kept apart and deleted with the job, leased for hours, raced only by machines that prove it', async () => {

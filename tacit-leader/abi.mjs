@@ -50,12 +50,13 @@ export function decode(types, data) {
   return out;
 }
 
-export const LISTS = { tuple: ['bytes', 'bytes', 'bytes32[]', 'bytes32[]', 'bytes', 'bytes', 'bytes', 'bytes', 'bytes'] };
-export const LAND = 'land(bytes,bytes,(bytes,bytes,bytes32[],bytes32[],bytes,bytes,bytes,bytes,bytes))';
+export const LISTS = { tuple: ['bytes', 'bytes', 'bytes32[]', 'bytes32[]', 'bytes', 'bytes', 'bytes', 'bytes', 'bytes', 'bytes', 'bytes'] };
+export const LAND = 'land(bytes,bytes,(bytes,bytes,bytes32[],bytes32[],bytes,bytes,bytes,bytes,bytes,bytes,bytes))';
 
-/// Calldata for TacitBlocks.land(publicValues, proof, lists), lists as { leaves, memos, nullifiers, anchors, deposits, exits, hops, claims, blobs }.
+/// Calldata for TacitBlocks.land(publicValues, proof, lists), lists as { leaves, memos, nullifiers, anchors, deposits, exits, hops, claims, blobs,
+/// migrations, migrationTotals }.
 export function landCalldata(publicValues, proof, l) {
-  const lists = [l.leaves, l.memos, l.nullifiers, l.anchors, l.deposits, l.exits, l.hops, l.claims, l.blobs];
+  const lists = [l.leaves, l.memos, l.nullifiers, l.anchors, l.deposits, l.exits, l.hops, l.claims, l.blobs, l.migrations ?? new Uint8Array(0), l.migrationTotals ?? new Uint8Array(0)];
   return concatBytes(selector(LAND), encode(['bytes', 'bytes', LISTS], [publicValues, proof, lists]));
 }
 
@@ -64,6 +65,6 @@ export function decodeLand(input) {
   const b = bytesOf(input);
   if (hexOf(b.subarray(0, 4)) !== hexOf(selector(LAND))) return null;
   const [publicValues, proof, lists] = decode(['bytes', 'bytes', LISTS], b.subarray(4));
-  const [leaves, memos, nullifiers, anchors, deposits, exits, hops, claims, blobs] = lists;
-  return { publicValues, proof, lists: { leaves, memos, nullifiers, anchors, deposits, exits, hops, claims, blobs } };
+  const [leaves, memos, nullifiers, anchors, deposits, exits, hops, claims, blobs, migrations, migrationTotals] = lists;
+  return { publicValues, proof, lists: { leaves, memos, nullifiers, anchors, deposits, exits, hops, claims, blobs, migrations, migrationTotals } };
 }

@@ -13,7 +13,7 @@
 //!   POST /spend                  { publics, proof, data, memos[], opMemos[], back? } → { id }   (back: a shield paid to its inbox)
 //!   POST /settle                 { settle, memo } → { id }
 //!   POST /build                  { time, blobs?: bool, queue?: [payload…], max?: n, exclude?: [id…] } → the block: guest input, public values, lists
-//!   POST /landed                 { words[16], leaves[], memos[], nullifiers[] } → replays a landed block and clears what it took
+//!   POST /landed                 { words[18], leaves[], memos[], nullifiers[] } → replays a landed block and clears what it took
 //!
 //! `/build` and `/landed` are the leader's own: they need `Authorization: Bearer $TACIT_NODE_ADMIN`, or, with none set, a loopback caller
 //! (`/landed` takes the caller's word that a block landed, so the public must never reach it). The rest is open: a wallet's reads and its
@@ -349,6 +349,8 @@ impl Leader {
                 "exits": hx(&data.exits.concat()),
                 "hops": hx(&data.hops.concat()),
                 "claims": hx(&data.claims.concat()),
+                "migrations": hx(&data.migrations.concat()),
+                "migrationTotals": hx(&data.migration_totals.concat()),
                 "blobs": hx(&openings.iter().flat_map(blobs::BlobOpening::to_bytes).collect::<Vec<u8>>()),
             },
             "blobData": hexes(&raw_blobs),

@@ -134,7 +134,7 @@ impl Node {
 
     /// Replays a landed block from what it publishes, refusing one whose replay does not reach the state its proof committed.
     pub fn land(&mut self, b: &Published) -> Result<(), String> {
-        if b.words.len() != 16 {
+        if b.words.len() != 18 {
             return Err(format!("{} public words", b.words.len()));
         }
         if b.words[0] != self.state.digest() || b.words[2] != fr_be(&self.state.notes.root) {

@@ -45,6 +45,15 @@ any other. The block program checks every body, every opening of a deposit or ex
   and a day before its deadline (the chain must reach it, then prove and land a block early enough), and a refund from `TIME_WINDOW` after
   it; the swap's other leg leaves the same headroom on its own timelock.
 
+* **Migrate** (`OP_MIGRATE`, 3): the exit's value moves to a successor chain the spender names (`to`, its landing contract), for a
+  note `note` names there (the successor's own commitment, opaque here). The block publishes the move (`to ‖ note`, 52 bytes) and,
+  per successor, only the block's total to it, never a spend's value; the landing contract sends each total to its successor as the
+  block lands and keeps the hash of the block's moves (`migrationsOf(height)`), from which the successor makes its notes. The spend
+  proves its notes are among all of this chain's, so a migrated note keeps this chain's anonymity set and its amount stays hidden
+  (a block's total to a successor shows what moved there in that block, so a wallet moves in a block others move in too). This is how
+  a future chain (post-quantum proofs, or one that does what the confidential pool does) takes users and their privacy with it, with
+  no owner or upgrade key: each user names the successor of their own notes.
+
 The chain has no pools or liquidity of its own: swaps and liquidity happen in the confidential pool, where this chain's value arrives by a hop.
 
 ## A block
@@ -52,7 +61,7 @@ The chain has no pools or liquidity of its own: swaps and liquidity happen in th
 Input: the state, the block's own spends and settles (claims and refunds), the time, an optional blob buffer, and the next entries of the
 forced queue (below), with the builder's answers about them. The state is the note tree (Poseidon, depth 32), the nullifier tree (indexed,
 SHA-256), the last 32 note roots, the chain binding and the queue's position. The program verifies every proof in **one pairing** (a random
-linear combination), applies the block, and commits sixteen 32-byte words:
+linear combination), applies the block, and commits eighteen 32-byte words:
 
 | # | word | | # | word |
 |---|---|---|---|---|
@@ -64,6 +73,8 @@ linear combination), applies the block, and commits sixteen 32-byte words:
 | 5 | nullifiers hash (tag 2) | | 13 | claims hash (tag 7) |
 | 6 | old anchors hash (tag 3) | | 14 | the block's time |
 | 7 | deposits hash (tag 4) | | 15 | blobs hash (zero in calldata mode) |
+| | | | 16 | migrations hash (tag 8) |
+| | | | 17 | successors' totals hash (tag 9) |
 
 Every list is `SHA-256("tacit-block-list-v1" ‖ tag ‖ count ‖ items)`, sorted, so a list's order says nothing of which spend an item came from.
 Anyone can rebuild the chain's state from the lists alone (`tacit-block-node replay`).

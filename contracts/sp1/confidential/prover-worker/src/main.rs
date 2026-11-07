@@ -61,6 +61,10 @@ use sp1_sdk::{
 const ELF: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../elf/cxfer-guest"));
 const ETH_ELF: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../eth-reflection/elf/eth_reflection"));
 const BTC_ELF: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../elf/reflection-prover"));
+// The tacit chain's block program (contracts/sp1/confidential/tacit-block), and the key its landing contract verifies under
+// (TacitBlocks.BLOCK_VKEY): a block proof is public work, any machine that proves it may race for it.
+const BLOCK_ELF: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../tacit-block/elf/tacit-block"));
+const TACIT_BLOCK_VKEY: &str = "0x00e1fa949b13abde296733e199ba0ced38310c1cf55d9d476012c8b34e2e0a9d";
 // The pool's BITCOIN_RELAY_VKEY (contracts/deployments/1.json, elf-vkey-pin.json): the key a Bitcoin-state proof must verify under.
 const BITCOIN_RELAY_VKEY: &str = "0x00bb158ba04f18a100f998af0e3b074b5368771f22b8b6e4fd1d66823a074bc5";
 // The recursion digest of the eth-reflection guest's key, as the Bitcoin reflection guest checks it (reflect.rs).
@@ -283,6 +287,9 @@ fn main() {
     let btc_on = env_or("BTC_STATE", if community.is_some() { "1" } else { "0" }) == "1";
     let mut btc_key: Option<Result<_, String>> = None;
     let btc_limit = env_or("BTC_JOB_TIMEOUT_SECS", "7200").parse::<u64>().unwrap_or(7200);
+    // The tacit chain's blocks (TACIT_BLOCK, on by default): a few million cycles each, raced like any public job.
+    let block_on = env_or("TACIT_BLOCK", "1") == "1";
+    let mut block_key: Option<Result<_, String>> = None;
     // A proof that never ends (a GPU kernel that hangs leaves the server alive and silent, and the client waiting on it for ever) is
     // ended from outside: a watchdog thread sees a job in hand for longer than JOB_TIMEOUT_SECS (15 minutes by default, three times a
     // long op) and exits the process, so the loop around it starts a fresh worker and GPU server and the job goes back to the board.
@@ -344,9 +351,17 @@ fn main() {
         }
         let eth_claims = eth_on && !matches!(eth_key, Some(Err(_)));
         let btc_claims = btc_on && !matches!(btc_key, Some(Err(_)));
-        let (claim_classes, programs) = if community.is_some() { (vec!["public".to_string()], vec!["btc-state"]) } else { claim_scope(&classes, eth_claims, btc_claims) };
-        // a community worker that takes no Bitcoin turns has nothing to claim at the board
-        let claimed: Result<Claim, String> = if community.is_some() && !btc_claims {
+        let block_claims = block_on && !matches!(block_key, Some(Err(_)));
+        let (claim_classes, programs) = if community.is_some() {
+            let mut p = vec![];
+            if btc_claims { p.push("btc-state"); }
+            if block_claims { p.push("tacit-block"); }
+            (vec!["public".to_string()], p)
+        } else {
+            claim_scope(&classes, eth_claims, btc_claims, block_claims)
+        };
+        // a community worker that proves neither Bitcoin batches nor blocks has nothing to claim at the board
+        let claimed: Result<Claim, String> = if community.is_some() && programs.is_empty() {
             Ok(Claim { job: None })
         } else {
             agent
@@ -442,6 +457,7 @@ fn main() {
                 None | Some("confidential") => {}
                 Some("eth-state") => return eth_state_proof(&client, &mut eth_key, stdin, cycles),
                 Some("btc-state") if btc_on => return btc_state_proof(&client, &mut btc_key, stdin, cycles),
+                Some("tacit-block") if block_on => return tacit_block_proof(&client, &mut block_key, stdin, cycles),
                 Some(other) => return Err(format!("this worker does not prove the {other} program")),
             }
             let proof = client.prove(&pk, stdin).groth16().cycle_limit(cycles).run().map_err(|e| format!("groth16 proof failed: {e}"))?;
@@ -496,18 +512,47 @@ fn main() {
 // The classes and programs a claim asks for: with the Ethereum-state program on, its class and program are added to the
 // configured ones (CLASSES), so a worker.env written before it needs no change; the Bitcoin-state program is public work, so it
 // adds that class and the program.
-fn claim_scope(classes: &[String], eth: bool, btc: bool) -> (Vec<String>, Vec<&'static str>) {
+fn claim_scope(classes: &[String], eth: bool, btc: bool, block: bool) -> (Vec<String>, Vec<&'static str>) {
     let mut cls = classes.to_vec();
     if eth && !cls.iter().any(|c| c == "eth-state") {
         cls.push("eth-state".to_string());
     }
-    if btc && !cls.iter().any(|c| c == "public") {
+    if (btc || block) && !cls.iter().any(|c| c == "public") {
         cls.push("public".to_string());
     }
     let mut programs = vec!["confidential"];
     if eth { programs.push("eth-state"); }
     if btc { programs.push("btc-state"); }
+    if block { programs.push("tacit-block"); }
     (cls, programs)
+}
+
+// One tacit chain block: the block program proved groth16, the proof the landing contract's `land` takes. Its key is set up on the
+// first job and kept; one that is not TACIT_BLOCK_VKEY is refused for good, which drops the program from the claims.
+fn tacit_block_proof<P: Prover>(
+    client: &P,
+    block_key: &mut Option<Result<P::ProvingKey, String>>,
+    stdin: SP1Stdin,
+    cycles: u64,
+) -> Result<(Vec<u8>, String), String> {
+    if block_key.is_none() {
+        let t = Instant::now();
+        let k = client.setup(Elf::Static(BLOCK_ELF)).map_err(|e| format!("tacit-block setup failed: {e}"))?;
+        let vk = k.verifying_key().bytes32();
+        *block_key = Some(if vk.to_lowercase() == TACIT_BLOCK_VKEY {
+            println!("tacit-block key set up in {:.1} s ({vk})", t.elapsed().as_secs_f64());
+            Ok(k)
+        } else {
+            Err(format!("the tacit-block guest's key {vk} is not TACIT_BLOCK_VKEY; tacit-block jobs are off"))
+        });
+    }
+    let pk = match block_key.as_ref() {
+        Some(Ok(k)) => k,
+        Some(Err(why)) => return Err(why.clone()),
+        None => unreachable!(),
+    };
+    let proof = client.prove(pk, stdin).groth16().cycle_limit(cycles).run().map_err(|e| format!("groth16 proof failed: {e}"))?;
+    Ok((proof.public_values.as_slice().to_vec(), format!("0x{}", hex::encode(proof.bytes()))))
 }
 
 // One Bitcoin-state job: the Bitcoin reflection guest proved groth16 on the same GPU server. Its key is set up on the first job and
