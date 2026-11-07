@@ -10,14 +10,40 @@ contract AcceptAll is ISP1BlockVerifier {
     function verifyProof(bytes32, bytes calldata, bytes calldata) external pure {}
 }
 
-/// A token with `d` decimals that anyone may mint and the confidential pool stand-in burns from.
+/// A token with `d` decimals that anyone may mint and the confidential pool stand-in burns from, with an ERC-2612 permit.
 contract Token {
     uint8 public immutable decimals;
     mapping(address => uint256) public balanceOf;
     mapping(address => mapping(address => uint256)) public allowance;
+    mapping(address => uint256) public nonces;
+    bytes32 public constant PERMIT_TYPEHASH =
+        keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)");
 
     constructor(uint8 d) {
         decimals = d;
+    }
+
+    /// Computed on each call, so a token put at an address with `deployCodeTo` signs for that address.
+    function DOMAIN_SEPARATOR() public view returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+                keccak256("Token"),
+                keccak256("1"),
+                block.chainid,
+                address(this)
+            )
+        );
+    }
+
+    function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external {
+        require(block.timestamp <= deadline, "expired");
+        bytes32 digest = keccak256(
+            abi.encodePacked(hex"1901", DOMAIN_SEPARATOR(), keccak256(abi.encode(PERMIT_TYPEHASH, owner, spender, value, nonces[owner]++, deadline)))
+        );
+        address signer = ecrecover(digest, v, r, s);
+        require(signer != address(0) && signer == owner, "bad permit");
+        allowance[owner][spender] = value;
     }
 
     function mint(address to, uint256 v) external {
@@ -103,7 +129,7 @@ abstract contract TacitBlocksFixture is Test {
     bytes32 constant CTAC = 0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b;
     uint256 constant MEMO = 1152;
     uint256 constant FORCED_REST_AT = 384 + 2080 + 1280 + 3 * MEMO;
-    uint256 constant FORCED_MAX = FORCED_REST_AT + 20 + 32 + 2 * 41 + 1 + 265 + MEMO;
+    uint256 constant FORCED_MAX = FORCED_REST_AT + 20 + 32 + 2 * 49 + 1 + 265 + MEMO;
 
     function setUp() public {
         fx = vm.readFile(string.concat(vm.projectRoot(), "/test/fixtures/tacit-blocks.json"));
@@ -132,8 +158,14 @@ abstract contract TacitBlocksFixture is Test {
         return vm.parseJsonBytes(fx, key(b, "publicValues"));
     }
 
-    function words(uint256 b) internal view returns (bytes32[18] memory) {
-        return abi.decode(pv(b), (bytes32[18]));
+    function words(uint256 b) internal view returns (bytes32[19] memory) {
+        return abi.decode(pv(b), (bytes32[19]));
+    }
+
+    /// The pool and the shares block `b` leaves (its word 18: 16 zero bytes ‖ pool ‖ shares).
+    function poolOf(uint256 b) internal view returns (uint256 p, uint256 s) {
+        uint256 w = uint256(words(b)[18]);
+        (p, s) = (uint64(w >> 64), uint64(w));
     }
 
     function lists(uint256 b) internal view returns (TacitBlocks.Lists memory l) {
@@ -168,24 +200,44 @@ abstract contract TacitBlocksFixture is Test {
         delete l.claims;
     }
 
-    function dep() internal view returns (uint256 v, bytes32 cx, bytes32 cy, bytes32 body) {
-        v = vm.parseJsonUint(fx, ".deposit.value");
+    /// The fixture's shield deposit: the shares it buys and the TAC (units) it pays for them.
+    function dep() internal view returns (uint256 s, uint256 a, bytes32 cx, bytes32 cy, bytes32 body) {
+        s = vm.parseJsonUint(fx, ".deposit.shares");
+        a = vm.parseJsonUint(fx, ".deposit.amount");
         cx = vm.parseJsonBytes32(fx, ".deposit.cx");
         cy = vm.parseJsonBytes32(fx, ".deposit.cy");
         body = vm.parseJsonBytes32(fx, ".deposit.body");
     }
 
+    /// A deposit's key in `pending`: keccak256 of the record the block program publishes for it.
+    function depKey(uint256 s, uint256 a, bytes32 cx, bytes32 cy, bytes32 body) internal view returns (bytes32) {
+        return keccak256(abi.encode(blocks.TAC_ASSET(), s, cx, cy, body, a));
+    }
+
     function depositFixture() internal {
-        (uint256 v, bytes32 cx, bytes32 cy, bytes32 body) = dep();
-        tac.mint(address(this), v * UNIT);
-        tac.approve(address(blocks), v * UNIT);
-        blocks.deposit(v, cx, cy, body);
+        (uint256 s, uint256 a, bytes32 cx, bytes32 cy, bytes32 body) = dep();
+        tac.mint(address(this), a * UNIT);
+        tac.approve(address(blocks), a * UNIT);
+        blocks.deposit(s, a, cx, cy, body);
+    }
+
+    /// The TAC (units) the fixture's exit, hops and migration pay out.
+    function amountOf(string memory what) internal view returns (uint256) {
+        return vm.parseJsonUint(fx, string.concat(".", what, ".amount"));
     }
 
     function land(uint256 b) internal {
-        if (block.timestamp < uint256(words(b)[14])) vm.warp(uint256(words(b)[14]));
+        // read once: every read of the fixture copies all of it into memory, which a test pays for quadratically
+        bytes memory p = pv(b);
+        uint256 t = uint256(abi.decode(p, (bytes32[19]))[14]);
+        if (block.timestamp < t) vm.warp(t);
         vm.prank(SEQ);
-        blocks.land(pv(b), "", lists(b));
+        blocks.land(p, "", lists(b));
+    }
+
+    /// A copy of `l` to change, without reading the fixture again.
+    function copyOf(TacitBlocks.Lists memory l) internal pure returns (TacitBlocks.Lists memory) {
+        return abi.decode(abi.encode(l), (TacitBlocks.Lists));
     }
 
     /// The fixture's first three blocks, the queue's entry for block 2 posted.
@@ -204,15 +256,43 @@ abstract contract TacitBlocksFixture is Test {
     /// Public values for a block on top of the current state that publishes only `l` and moves the queue to `done`
     /// (the verifier here takes any proof, so the landing rules alone decide).
     function craftQ(TacitBlocks.Lists memory l, uint256 done) internal view returns (bytes memory) {
-        bytes32[18] memory w = abi.decode(craft(l), (bytes32[18]));
+        bytes32[19] memory w = abi.decode(craft(l), (bytes32[19]));
         w[10] = bytes32(done);
         w[11] = blocks.queueHash(done);
         return abi.encode(w);
     }
 
+    function wordAt(bytes memory b, uint256 at) internal pure returns (uint256 w) {
+        assembly {
+            w := mload(add(add(b, 32), at))
+        }
+    }
+
+    /// The pool word a block publishing `l` carries: the contract's count (`inChain`, plus the TAC its deposits pay in, less what
+    /// its exits, hops and migrations pay out; zero where that is below zero, which the contract refuses before it reads the word)
+    /// and the shares, those its deposits buy added.
+    function poolWord(TacitBlocks.Lists memory l) internal view returns (bytes32) {
+        int256 worth = int256(blocks.inChain());
+        uint256 s = blocks.shares();
+        for (uint256 i; i < l.deposits.length / 192; ++i) {
+            worth += int256(wordAt(l.deposits, 192 * i + 160));
+            s += wordAt(l.deposits, 192 * i + 32);
+        }
+        for (uint256 i; i < l.exits.length / 96; ++i) {
+            worth -= int256(wordAt(l.exits, 96 * i + 32));
+        }
+        for (uint256 i; i < l.hops.length / 96; ++i) {
+            worth -= int256(wordAt(l.hops, 96 * i + 32));
+        }
+        for (uint256 i; i < l.migrationTotals.length / 64; ++i) {
+            worth -= int256(wordAt(l.migrationTotals, 64 * i + 32));
+        }
+        return bytes32(((worth < 0 ? 0 : uint256(worth)) << 64) | s);
+    }
+
     /// As `craftQ`, leaving the queue where it is.
     function craft(TacitBlocks.Lists memory l) internal view returns (bytes memory) {
-        bytes32[18] memory w;
+        bytes32[19] memory w;
         w[0] = blocks.state();
         w[1] = keccak256(abi.encode("next", blocks.height()));
         w[2] = blocks.noteRoot();
@@ -234,7 +314,7 @@ abstract contract TacitBlocksFixture is Test {
         w[4] = listHash(1, n, items);
         w[5] = listHash(2, l.nullifiers.length, abi.encodePacked(l.nullifiers));
         w[6] = listHash(3, l.anchors.length, abi.encodePacked(l.anchors));
-        w[7] = listHash(4, l.deposits.length / 160, l.deposits);
+        w[7] = listHash(4, l.deposits.length / 192, l.deposits);
         w[8] = listHash(5, l.exits.length / 96, l.exits);
         w[9] = blocks.SPEND_VK();
         w[10] = bytes32(uint256(blocks.queueDone()));
@@ -245,6 +325,7 @@ abstract contract TacitBlocksFixture is Test {
         w[15] = bytes32(0);
         w[16] = listHash(8, l.migrations.length / 52, l.migrations);
         w[17] = listHash(9, l.migrationTotals.length / 64, l.migrationTotals);
+        w[18] = poolWord(l);
         return abi.encode(w);
     }
 
@@ -254,22 +335,22 @@ abstract contract TacitBlocksFixture is Test {
         w[11] = bytes32(uint256(1));
     }
 
-    /// A payload `force` takes with publics `w`, a zero proof, hints and memos, and the deposit's opening present (of
-    /// `value`) or not: the block program passes it over, and what `force` checks is under test.
-    function posting(bytes32[12] memory w, bool opened, uint64 value) internal pure returns (bytes memory) {
-        bytes memory d = opened ? bytes.concat(hex"01", bytes8(value), new bytes(32)) : bytes(hex"00");
+    /// A payload `force` takes with publics `w`, a zero proof, hints and memos, and the deposit's opening present (of `shareCount`,
+    /// paying `amount`) or not: the block program passes it over, and what `force` checks is under test.
+    function posting(bytes32[12] memory w, bool opened, uint64 shareCount, uint64 amount) internal pure returns (bytes memory) {
+        bytes memory d = opened ? bytes.concat(hex"01", bytes8(shareCount), new bytes(32), bytes8(amount)) : bytes(hex"00");
         return bytes.concat(abi.encodePacked(w), new bytes(FORCED_REST_AT - 384), new bytes(20 + 32), d, hex"00");
     }
 
     /// A shield of the fixture's deposit as `force` takes it.
     function shieldPosting() internal view returns (bytes memory) {
-        (uint256 v, bytes32 cx, bytes32 cy, bytes32 body) = dep();
+        (uint256 s, uint256 a, bytes32 cx, bytes32 cy, bytes32 body) = dep();
         bytes32[12] memory w = nothing();
         w[1] = body;
         w[2] = blocks.TAC_ASSET();
         w[10] = cx;
         w[11] = cy;
-        return posting(w, true, uint64(v));
+        return posting(w, true, uint64(s), uint64(a));
     }
 
     function queueStep(bytes32 before, bytes memory p) internal pure returns (bytes32) {
@@ -303,10 +384,11 @@ abstract contract TacitBlocksFixture is Test {
     function lockDeposits() internal {
         for (uint256 i; i < 2; ++i) {
             string memory d = string.concat(".lockDeposits[", vm.toString(i), "]");
-            uint256 v = vm.parseJsonUint(fx, string.concat(d, ".value"));
-            tac.mint(address(this), v * UNIT);
-            tac.approve(address(blocks), v * UNIT);
-            blocks.deposit(v, vm.parseJsonBytes32(fx, string.concat(d, ".cx")), vm.parseJsonBytes32(fx, string.concat(d, ".cy")), vm.parseJsonBytes32(fx, string.concat(d, ".body")));
+            uint256 s = vm.parseJsonUint(fx, string.concat(d, ".shares"));
+            uint256 a = vm.parseJsonUint(fx, string.concat(d, ".amount"));
+            tac.mint(address(this), a * UNIT);
+            tac.approve(address(blocks), a * UNIT);
+            blocks.deposit(s, a, vm.parseJsonBytes32(fx, string.concat(d, ".cx")), vm.parseJsonBytes32(fx, string.concat(d, ".cy")), vm.parseJsonBytes32(fx, string.concat(d, ".body")));
         }
     }
 
@@ -325,10 +407,10 @@ abstract contract TacitBlocksFixture is Test {
 }
 
 /// Lands the chain tacit-block's host writes (`tacit-block fixture`): the block program's own public values and lists for a shield
-/// of 500 units of TAC, a spend that keeps 380 and exits 120 to an address, a block of the queue alone that takes a spend of the 380
-/// posted with `force`, a spend that hops 300 into the confidential pool keeping 80, and a block of the queue alone that takes a hop
-/// of the 80 posted with `force`. The fixture's spends are bound to the contract at its `lander` on chain 31337, so that is where the
-/// test puts it, and its TAC is the token at the fixture's `tac`.
+/// of 500 TAC of shares, a spend that keeps 380 and exits 120 to an address (paid out less the exit fee), a block of the queue alone
+/// that takes a payment of the 380 posted with `force` (its pool share out of it), a spend that hops 300 into the confidential pool
+/// keeping the rest, and a block of the queue alone that takes a hop of the rest posted with `force`. The fixture's spends are bound to
+/// the contract at its `lander` on chain 31337, so that is where the test puts it, and its TAC is the token at the fixture's `tac`.
 contract TacitBlocksTest is TacitBlocksFixture {
 
     function test_genesisIsTheProgramsBoundHere() public view {
@@ -336,27 +418,46 @@ contract TacitBlocksTest is TacitBlocksFixture {
         assertEq(blocks.state(), vm.parseJsonBytes32(fx, ".genesisState"), "the program's genesis state for it");
         assertEq(blocks.noteRoot(), vm.parseJsonBytes32(fx, ".genesisRoot"));
         assertEq(block.chainid, vm.parseJsonUint(fx, ".chainId"));
+        assertEq(blocks.pool(), 0);
+        assertEq(blocks.shares(), 0);
+    }
+
+    /// The pool and the shares the last block left, as the contract keeps them: its word 18, and the TAC it counts for the notes.
+    function assertPool(uint256 b) internal view {
+        (uint256 p, uint256 s) = poolOf(b);
+        assertEq(blocks.pool(), p, "the pool the block's proof committed");
+        assertEq(blocks.shares(), s, "the shares the block's proof committed");
+        assertEq(blocks.inChain(), p, "the TAC the contract counts for the notes");
     }
 
     function test_landsTheChain() public {
         depositFixture();
-        assertEq(tac.balanceOf(address(blocks)), 500 * UNIT);
+        (uint256 s, uint256 a,,,) = dep();
+        assertEq(tac.balanceOf(address(blocks)), a * UNIT);
         land(0);
         assertEq(blocks.height(), 1);
         assertEq(blocks.state(), words(0)[1]);
         assertEq(blocks.noteRoot(), words(0)[3]);
         assertTrue(blocks.knownRoot(words(0)[3]));
+        assertPool(0);
+        assertEq(blocks.pool(), a, "the TAC the shield paid in");
+        assertEq(blocks.shares(), s, "the shares it bought, a unit each on a fresh chain");
         land(1);
         assertEq(blocks.height(), 2);
         assertEq(blocks.state(), words(1)[1]);
+        assertPool(1);
         address to = vm.parseJsonAddress(fx, ".exit.to");
-        assertEq(blocks.owed(to), 120 * UNIT, "120 units: 120 x 10^-8 TAC");
+        uint256 out = amountOf("exit");
+        assertEq(out, 120e8 - 120e8 / 1000, "120 TAC of shares paid out less the 0.1% exit fee");
+        assertEq(blocks.owed(to), out * UNIT, "units of 10^-8 TAC");
+        assertEq(blocks.pool(), a - out, "the fee stays with the notes");
+        assertEq(blocks.shares(), s - 120e8);
         vm.prank(address(0xBEEF));
         blocks.withdraw(to);
-        assertEq(tac.balanceOf(to), 120 * UNIT, "anyone sends an exit on, to its address");
-        assertEq(tac.balanceOf(address(blocks)), 380 * UNIT);
+        assertEq(tac.balanceOf(to), out * UNIT, "anyone sends an exit on, to its address");
+        assertEq(tac.balanceOf(address(blocks)), (a - out) * UNIT);
         assertEq(blocks.owed(to), 0);
-        // block 2 takes the queue alone: the spend of the 380 someone posted
+        // block 2 takes the queue alone: the payment of the 380 someone posted
         bytes memory forced = vm.parseJsonBytes(fx, ".forced");
         vm.prank(address(0xF0));
         blocks.force(forced);
@@ -367,6 +468,10 @@ contract TacitBlocksTest is TacitBlocksFixture {
         assertEq(blocks.height(), 3);
         assertEq(blocks.queueDone(), 1);
         assertEq(blocks.state(), words(2)[1]);
+        assertPool(2);
+        // its pool share ended shares and kept their TAC: the rate rose
+        assertEq(blocks.pool(), a - out);
+        assertLt(blocks.shares(), s - 120e8);
     }
 
     function test_aForcedSpendNamesARootABlockEndedAt() public {
@@ -382,7 +487,7 @@ contract TacitBlocksTest is TacitBlocksFixture {
     }
 
     function test_whatForceRefuses() public {
-        bytes memory ok = posting(nothing(), false, 0);
+        bytes memory ok = posting(nothing(), false, 0, 0);
         vm.expectRevert(TacitBlocks.BadPayload.selector);
         blocks.force(bytes.concat(ok, new bytes(FORCED_MAX - ok.length + 1)));
         bytes memory short = new bytes(ok.length - 1);
@@ -393,7 +498,7 @@ contract TacitBlocksTest is TacitBlocksFixture {
         w[2] = keccak256("not TAC");
         w[8] = bytes32(uint256(5));
         vm.expectRevert(abi.encodeWithSelector(TacitBlocks.NotTac.selector, w[2]));
-        blocks.force(posting(w, false, 0));
+        blocks.force(posting(w, false, 0, 0));
         // a deposit is named by its opening, and only its depositor may queue it
         depositFixture();
         bytes memory s = shieldPosting();
@@ -408,6 +513,11 @@ contract TacitBlocksTest is TacitBlocksFixture {
         other[FORCED_REST_AT + 60] = bytes1(uint8(other[FORCED_REST_AT + 60]) ^ 1);
         vm.expectRevert(TacitBlocks.NotDepositor.selector);
         blocks.force(other);
+        // a deposit is named by the TAC it paid as well as its shares
+        other = shieldPosting();
+        other[FORCED_REST_AT + 100] = bytes1(uint8(other[FORCED_REST_AT + 100]) ^ 1);
+        vm.expectRevert(TacitBlocks.NotDepositor.selector);
+        blocks.force(other);
         blocks.force(s);
         vm.expectRevert(TacitBlocks.DepositQueued.selector);
         blocks.force(s);
@@ -418,7 +528,7 @@ contract TacitBlocksTest is TacitBlocksFixture {
     }
 
     function test_aBlockMustReachEveryOverdueEntry() public {
-        bytes memory junk = posting(nothing(), false, 0);
+        bytes memory junk = posting(nothing(), false, 0, 0);
         blocks.force(junk);
         TacitBlocks.Lists memory none;
         // a block may leave a young entry for later
@@ -448,7 +558,7 @@ contract TacitBlocksTest is TacitBlocksFixture {
         for (uint256 i; i < n; ++i) {
             bytes32[12] memory w = nothing();
             w[5] = bytes32(i + 1);
-            blocks.force(posting(w, false, 0));
+            blocks.force(posting(w, false, 0, 0));
         }
         vm.warp(block.timestamp + FORCE_DELAY);
         TacitBlocks.Lists memory none;
@@ -470,14 +580,14 @@ contract TacitBlocksTest is TacitBlocksFixture {
     }
 
     function test_theQueueWordsMustBeTheContracts() public {
-        blocks.force(posting(nothing(), false, 0));
+        blocks.force(posting(nothing(), false, 0, 0));
         TacitBlocks.Lists memory none;
-        bytes32[18] memory w = abi.decode(craftQ(none, 1), (bytes32[18]));
+        bytes32[19] memory w = abi.decode(craftQ(none, 1), (bytes32[19]));
         w[11] = keccak256("another queue");
         vm.prank(SEQ);
         vm.expectRevert(TacitBlocks.BadQueue.selector);
         blocks.land(abi.encode(w), "", none);
-        w = abi.decode(craftQ(none, 1), (bytes32[18]));
+        w = abi.decode(craftQ(none, 1), (bytes32[19]));
         w[10] = bytes32(uint256(2));
         vm.prank(SEQ);
         vm.expectRevert(TacitBlocks.BadQueue.selector);
@@ -486,14 +596,14 @@ contract TacitBlocksTest is TacitBlocksFixture {
 
     function test_aQueuedDepositWaitsForItsEntry() public {
         depositFixture();
-        (uint256 v, bytes32 cx, bytes32 cy, bytes32 body) = dep();
+        (uint256 s, uint256 a, bytes32 cx, bytes32 cy, bytes32 body) = dep();
         blocks.force(shieldPosting());
-        (,, uint56 forced) = blocks.pending(keccak256(abi.encode(blocks.TAC_ASSET(), v, cx, cy, body)));
+        (,, uint56 forced) = blocks.pending(depKey(s, a, cx, cy, body));
         assertEq(forced, 1);
         // not reclaimed before the chain reaches the entry
         vm.warp(block.timestamp + blocks.RECLAIM_AFTER());
         vm.expectRevert(TacitBlocks.DepositQueued.selector);
-        blocks.reclaim(v, cx, cy, body);
+        blocks.reclaim(s, a, cx, cy, body);
         // the block that reaches the entry takes it in
         TacitBlocks.Lists memory l0 = lists(0);
         TacitBlocks.Lists memory l;
@@ -502,7 +612,7 @@ contract TacitBlocksTest is TacitBlocksFixture {
         vm.prank(SEQ);
         blocks.land(p, "", l);
         vm.expectRevert(TacitBlocks.NotPending.selector);
-        blocks.reclaim(v, cx, cy, body);
+        blocks.reclaim(s, a, cx, cy, body);
     }
 
     /// A queued entry does not hold its deposit back from the spend it names: a block may take it in first (the program then
@@ -519,7 +629,7 @@ contract TacitBlocksTest is TacitBlocksFixture {
 
     function test_aQueuedDepositPassedOverIsFreeAgain() public {
         depositFixture();
-        (uint256 v, bytes32 cx, bytes32 cy, bytes32 body) = dep();
+        (uint256 sh, uint256 a, bytes32 cx, bytes32 cy, bytes32 body) = dep();
         bytes memory s = shieldPosting();
         blocks.force(s);
         TacitBlocks.Lists memory none;
@@ -533,8 +643,8 @@ contract TacitBlocksTest is TacitBlocksFixture {
         blocks.land(p, "", none);
         vm.warp(block.timestamp + blocks.RECLAIM_AFTER());
         uint256 before = tac.balanceOf(address(this));
-        blocks.reclaim(v, cx, cy, body);
-        assertEq(tac.balanceOf(address(this)) - before, v * UNIT);
+        blocks.reclaim(sh, a, cx, cy, body);
+        assertEq(tac.balanceOf(address(this)) - before, a * UNIT);
     }
 
     function test_assetFieldIsTheCircuits() public view {
@@ -562,7 +672,7 @@ contract TacitBlocksTest is TacitBlocksFixture {
         blocks.land(p0, "", l0);
         // a block whose note root before is not the one held, though its state digest is
         TacitBlocks.Lists memory none;
-        bytes32[18] memory w = abi.decode(craft(none), (bytes32[18]));
+        bytes32[19] memory w = abi.decode(craft(none), (bytes32[19]));
         w[2] = keccak256("another root");
         vm.prank(SEQ);
         vm.expectRevert(TacitBlocks.NotOnTop.selector);
@@ -668,11 +778,13 @@ contract TacitBlocksTest is TacitBlocksFixture {
 /// Hops, locks, the block's time and blobs, turns, deposits and the constructor's checks, on the same fixture.
 contract TacitBlocksMoreTest is TacitBlocksFixture {
 
-    /// Block 3 hops 300 into the confidential pool and block 4 takes a hop of the 80 posted to the queue: each is kept until anyone
+    /// Block 3 hops 300 into the confidential pool and block 4 takes a hop of the rest posted to the queue: each is kept until anyone
     /// sends it on, which the pool takes as its deposit for the hop's commitment, burning the TAC.
     function test_hopsGoIntoTheConfidentialPool() public {
         toTheHop();
-        uint256 v = vm.parseJsonUint(fx, ".hop.value");
+        (, uint256 a,,,) = dep();
+        address to = vm.parseJsonAddress(fx, ".exit.to");
+        uint256 v = amountOf("hop");
         bytes32 commit = vm.parseJsonBytes32(fx, ".hop.commit");
         vm.expectRevert(TacitBlocks.NoSuchHop.selector);
         blocks.sendHop(v, commit);
@@ -681,22 +793,26 @@ contract TacitBlocksMoreTest is TacitBlocksFixture {
         vm.prank(address(0xBEEF));
         blocks.sendHop(v, commit);
         assertEq(pool.wraps(), 1);
-        assertEq(pool.lastAmount(), 300 * UNIT, "the hop's value in the pool's unit, unchanged");
+        assertEq(pool.lastAmount(), v * UNIT, "the TAC the hop paid out, in the pool's unit, unchanged");
         assertEq(pool.lastCommit(), commit);
-        // 500 in, 120 owed to the exit's address, 300 gone into the pool
-        assertEq(tac.balanceOf(address(blocks)), 200 * UNIT);
+        // 500 in, the exit's credit owed to its address, the hop gone into the pool, the rest behind the notes
+        assertEq(tac.balanceOf(address(blocks)), (a - v) * UNIT);
+        assertEq(tac.balanceOf(address(blocks)), blocks.owed(to) + blocks.inChain() * UNIT);
         vm.expectRevert(TacitBlocks.NoSuchHop.selector);
         blocks.sendHop(v, commit);
-        // the 80 hops in through the queue
+        // the rest hops in through the queue, ending every share
         bytes memory forced = vm.parseJsonBytes(fx, ".forcedHop");
         blocks.force(forced);
         land(4);
         assertEq(blocks.queueDone(), 2);
-        blocks.sendHop(vm.parseJsonUint(fx, ".hop2.value"), vm.parseJsonBytes32(fx, ".hop2.commit"));
-        assertEq(pool.lastAmount(), 80 * UNIT);
-        assertEq(tac.balanceOf(address(blocks)), 120 * UNIT, "only the exit's credit is left");
-        blocks.withdraw(vm.parseJsonAddress(fx, ".exit.to"));
-        assertEq(tac.balanceOf(address(blocks)), 0);
+        blocks.sendHop(amountOf("hop2"), vm.parseJsonBytes32(fx, ".hop2.commit"));
+        assertEq(pool.lastAmount(), amountOf("hop2") * UNIT);
+        assertEq(blocks.shares(), 0, "no notes left");
+        assertGt(blocks.inChain(), 0, "the exit fees stay with the chain");
+        assertEq(blocks.pool(), blocks.inChain());
+        assertEq(tac.balanceOf(address(blocks)), blocks.owed(to) + blocks.inChain() * UNIT, "the exit's credit and the fees are left");
+        blocks.withdraw(to);
+        assertEq(tac.balanceOf(address(blocks)), blocks.inChain() * UNIT);
     }
 
     /// Both of the fixture's hops sent on in one transaction; a batch naming one hop twice sends it once and refuses the second.
@@ -707,9 +823,9 @@ contract TacitBlocksMoreTest is TacitBlocksFixture {
         land(4);
         uint256[] memory values = new uint256[](2);
         bytes32[] memory commits = new bytes32[](2);
-        values[0] = vm.parseJsonUint(fx, ".hop.value");
+        values[0] = amountOf("hop");
         commits[0] = vm.parseJsonBytes32(fx, ".hop.commit");
-        values[1] = vm.parseJsonUint(fx, ".hop2.value");
+        values[1] = amountOf("hop2");
         commits[1] = vm.parseJsonBytes32(fx, ".hop2.commit");
         uint256[] memory twice = new uint256[](2);
         bytes32[] memory twiceC = new bytes32[](2);
@@ -718,7 +834,11 @@ contract TacitBlocksMoreTest is TacitBlocksFixture {
         blocks.sendHops(twice, twiceC);
         blocks.sendHops(values, commits);
         assertEq(pool.wraps(), 2);
-        assertEq(tac.balanceOf(address(blocks)), 120 * UNIT, "only the exit's credit is left");
+        assertEq(
+            tac.balanceOf(address(blocks)),
+            blocks.owed(vm.parseJsonAddress(fx, ".exit.to")) + blocks.inChain() * UNIT,
+            "only the exit's credit and the fees are left"
+        );
     }
 
     function test_hopsMustBeTheCommittedOnes() public {
@@ -814,99 +934,110 @@ contract TacitBlocksMoreTest is TacitBlocksFixture {
     }
 
     function test_depositValuesAndCommitments() public {
-        (uint256 v, bytes32 cx, bytes32 cy, bytes32 body) = dep();
+        (uint256 s, uint256 a, bytes32 cx, bytes32 cy, bytes32 body) = dep();
         tac.mint(address(this), 2 ** 70 * UNIT);
         tac.approve(address(blocks), type(uint256).max);
         vm.expectRevert(TacitBlocks.BadValue.selector);
-        blocks.deposit(0, cx, cy, body);
+        blocks.deposit(0, a, cx, cy, body);
         vm.expectRevert(TacitBlocks.BadValue.selector);
-        blocks.deposit(2 ** 64, cx, cy, body);
+        blocks.deposit(2 ** 64, a, cx, cy, body);
+        vm.expectRevert(TacitBlocks.BadValue.selector);
+        blocks.deposit(s, 0, cx, cy, body);
+        vm.expectRevert(TacitBlocks.BadValue.selector);
+        blocks.deposit(s, 2 ** 64, cx, cy, body);
         vm.expectRevert(TacitBlocks.BadCommitment.selector);
-        blocks.deposit(v, cx, bytes32(uint256(cy) ^ 1), body);
+        blocks.deposit(s, a, cx, bytes32(uint256(cy) ^ 1), body);
         vm.expectRevert(TacitBlocks.BadCommitment.selector);
-        blocks.deposit(v, 0, bytes32(uint256(1)), body);
+        blocks.deposit(s, a, 0, bytes32(uint256(1)), body);
         vm.expectRevert(TacitBlocks.BadCommitment.selector);
-        blocks.deposit(v, cx, cy, bytes32(type(uint256).max));
-        blocks.deposit(v, cx, cy, body);
+        blocks.deposit(s, a, cx, cy, bytes32(type(uint256).max));
+        uint256 before = tac.balanceOf(address(this));
+        blocks.deposit(s, a, cx, cy, body);
+        assertEq(before - tac.balanceOf(address(this)), a * UNIT, "the TAC it pays, not its shares");
         vm.expectRevert(TacitBlocks.DepositPending.selector);
-        blocks.deposit(v, cx, cy, body);
+        blocks.deposit(s, a, cx, cy, body);
+        // the same shield paying another amount is another deposit, which only a spend naming that amount can take in
+        blocks.deposit(s, a + 1, cx, cy, body);
+        (address from,,) = blocks.pending(depKey(s, a + 1, cx, cy, body));
+        assertEq(from, address(this));
         // without TAC approved nothing is taken
         vm.prank(address(0xA11CE));
         vm.expectRevert();
-        blocks.deposit(v + 1, cx, cy, body);
+        blocks.deposit(s + 1, a, cx, cy, body);
     }
 
     /// TAC paid to a deposit's inbox (as the confidential pool's unwrap pays it) is swept in by anyone, once; the block takes it in
     /// like any deposit; a swept deposit no block took goes back into the confidential pool for the commitment its inbox fixed.
     function test_anInboxIsSweptIn() public {
-        (uint256 v, bytes32 cx, bytes32 cy, bytes32 body) = dep();
+        (uint256 s, uint256 v, bytes32 cx, bytes32 cy, bytes32 body) = dep();
         bytes32 back = keccak256("back");
-        address box = blocks.inbox(v, cx, cy, body, back);
-        assertTrue(box != blocks.inbox(v, cx, cy, body, keccak256("other")), "the way back fixes the inbox");
+        address box = blocks.inbox(s, v, cx, cy, body, back);
+        assertTrue(box != blocks.inbox(s, v, cx, cy, body, keccak256("other")), "the way back fixes the inbox");
+        assertTrue(box != blocks.inbox(s, v + 1, cx, cy, body, back), "so does the TAC it pays");
         vm.expectRevert(TacitBlocks.BadValue.selector);
-        blocks.sweep(v, cx, cy, body, back);
+        blocks.sweep(s, v, cx, cy, body, back);
         tac.mint(box, v * UNIT - 1);
         vm.expectRevert(TacitBlocks.BadValue.selector);
-        blocks.sweep(v, cx, cy, body, back);
+        blocks.sweep(s, v, cx, cy, body, back);
         tac.mint(box, 1 + 5);
         vm.prank(address(0xBEEF));
-        blocks.sweep(v, cx, cy, body, back);
+        blocks.sweep(s, v, cx, cy, body, back);
         assertEq(tac.balanceOf(box), 0);
         assertEq(tac.balanceOf(address(blocks)), v * UNIT + 5, "everything in the inbox, the extra staying with the chain");
         assertEq(box.codehash, blocks.INBOX_CODEHASH());
-        (address from,,) = blocks.pending(keccak256(abi.encode(blocks.TAC_ASSET(), v, cx, cy, body)));
+        (address from,,) = blocks.pending(depKey(s, v, cx, cy, body));
         assertEq(from, box);
         // its inbox is created once: a second sweep cannot create it again
         vm.expectRevert();
-        blocks.sweep(v, cx, cy, body, back);
+        blocks.sweep(s, v, cx, cy, body, back);
         // a later payment to a created inbox cannot be swept again, and nothing can be paid back to it
         vm.warp(block.timestamp + blocks.RECLAIM_AFTER());
         vm.expectRevert(TacitBlocks.SweptDeposit.selector);
-        blocks.reclaim(v, cx, cy, body);
+        blocks.reclaim(s, v, cx, cy, body);
         vm.expectRevert(TacitBlocks.NotInbox.selector);
-        blocks.giveBack(v, cx, cy, body, keccak256("other"));
+        blocks.giveBack(s, v, cx, cy, body, keccak256("other"));
         // its depositor has no address here: it cannot be queued
-        blocks.giveBack(v, cx, cy, body, back);
+        blocks.giveBack(s, v, cx, cy, body, back);
         assertEq(pool.lastCommit(), back);
         assertEq(pool.lastAmount(), v * UNIT);
         assertEq(tac.balanceOf(address(blocks)), 5);
         vm.expectRevert(TacitBlocks.NotPending.selector);
-        blocks.giveBack(v, cx, cy, body, back);
+        blocks.giveBack(s, v, cx, cy, body, back);
         tac.mint(box, v * UNIT);
         vm.expectRevert();
-        blocks.sweep(v, cx, cy, body, back);
+        blocks.sweep(s, v, cx, cy, body, back);
     }
 
     /// A swept deposit lands like a deposit made with `deposit`, and giving it back before RECLAIM_AFTER is refused.
     function test_aSweptDepositLands() public {
-        (uint256 v, bytes32 cx, bytes32 cy, bytes32 body) = dep();
+        (uint256 s, uint256 v, bytes32 cx, bytes32 cy, bytes32 body) = dep();
         bytes32 back = keccak256("back");
-        tac.mint(blocks.inbox(v, cx, cy, body, back), v * UNIT);
-        blocks.sweep(v, cx, cy, body, back);
+        tac.mint(blocks.inbox(s, v, cx, cy, body, back), v * UNIT);
+        blocks.sweep(s, v, cx, cy, body, back);
         vm.expectRevert(TacitBlocks.TooSoon.selector);
-        blocks.giveBack(v, cx, cy, body, back);
+        blocks.giveBack(s, v, cx, cy, body, back);
         land(0);
         assertEq(blocks.height(), 1);
         vm.warp(block.timestamp + blocks.RECLAIM_AFTER());
         vm.expectRevert(TacitBlocks.NotPending.selector);
-        blocks.giveBack(v, cx, cy, body, back);
+        blocks.giveBack(s, v, cx, cy, body, back);
     }
 
     function test_aDepositNoBlockTookGoesBack() public {
-        (uint256 v, bytes32 cx, bytes32 cy, bytes32 body) = dep();
+        (uint256 s, uint256 v, bytes32 cx, bytes32 cy, bytes32 body) = dep();
         address alice = address(0xA11CE);
         tac.mint(alice, v * UNIT);
         vm.startPrank(alice);
         tac.approve(address(blocks), v * UNIT);
-        blocks.deposit(v, cx, cy, body);
+        blocks.deposit(s, v, cx, cy, body);
         vm.stopPrank();
         vm.expectRevert(TacitBlocks.TooSoon.selector);
-        blocks.reclaim(v, cx, cy, body);
+        blocks.reclaim(s, v, cx, cy, body);
         vm.warp(block.timestamp + blocks.RECLAIM_AFTER());
-        blocks.reclaim(v, cx, cy, body);
+        blocks.reclaim(s, v, cx, cy, body);
         assertEq(tac.balanceOf(alice), v * UNIT, "back to whoever made it, whoever asks");
         vm.expectRevert(TacitBlocks.NotPending.selector);
-        blocks.reclaim(v, cx, cy, body);
+        blocks.reclaim(s, v, cx, cy, body);
         bytes memory p0 = pv(0);
         TacitBlocks.Lists memory l0 = lists(0);
         vm.warp(vm.parseJsonUint(fx, ".time"));
@@ -932,8 +1063,15 @@ contract TacitBlocksMoreTest is TacitBlocksFixture {
         land(7);
         assertEq(blocks.height(), 8);
         assertEq(blocks.queueDone(), 3);
-        // what stays on the chain: 120 owed to the exit, 300 + 80 to send into the pool, 1,000 claimed and 500 refunded as notes
-        assertEq(tac.balanceOf(address(blocks)), (120 + 380 + 1_500) * UNIT);
+        // what stays on the chain: the exit's credit, the two hops to send into the pool, and the TAC behind the notes (1,000 claimed
+        // and 500 refunded, the fees left before them)
+        uint256 lockShares = vm.parseJsonUint(fx, ".lockDeposits[0].shares") + vm.parseJsonUint(fx, ".lockDeposits[1].shares");
+        assertEq(blocks.shares(), lockShares, "the locks' shares, now the claimed and refunded notes'");
+        assertEq(blocks.pool(), blocks.inChain());
+        assertEq(
+            tac.balanceOf(address(blocks)),
+            blocks.owed(vm.parseJsonAddress(fx, ".exit.to")) + (amountOf("hop") + amountOf("hop2") + blocks.inChain()) * UNIT
+        );
     }
 
     /// Block 8 pays the claimed note on in two; its notes, memos and nullifiers are in a blob, which the contract checks only
@@ -941,11 +1079,12 @@ contract TacitBlocksMoreTest is TacitBlocksFixture {
     function test_aBlockWhoseListsAreInABlob() public {
         toTheBlobBlock();
         bytes memory p8 = pv(8);
-        assertTrue(words(8)[15] != bytes32(0), "the block commits its blob");
+        bytes32[19] memory w8 = abi.decode(p8, (bytes32[19]));
+        assertTrue(w8[15] != bytes32(0), "the block commits its blob");
         TacitBlocks.Lists memory l = lists(8);
         assertEq(l.blobs.length, 160);
         // without the blob in the transaction
-        TacitBlocks.Lists memory noBlob = lists(8);
+        TacitBlocks.Lists memory noBlob = copyOf(l);
         delete noBlob.leaves;
         delete noBlob.memos;
         delete noBlob.nullifiers;
@@ -954,32 +1093,39 @@ contract TacitBlocksMoreTest is TacitBlocksFixture {
         vm.expectRevert(abi.encodeWithSelector(TacitBlocks.BadBlob.selector, 0));
         blocks.land(p8, "", noBlob);
         // with the data lists as well as the blob
-        TacitBlocks.Lists memory both = lists(8);
+        TacitBlocks.Lists memory both = copyOf(l);
         asBlobBlock(both);
-        both.nullifiers = lists(8).nullifiers;
+        both.nullifiers = l.nullifiers;
         vm.prank(SEQ);
         vm.expectRevert(abi.encodeWithSelector(TacitBlocks.BadList.selector, 8));
         blocks.land(p8, "", both);
         // a commitment that opens to another value than the program computed
-        TacitBlocks.Lists memory wrong = lists(8);
+        TacitBlocks.Lists memory wrong = copyOf(l);
         wrong.blobs[100] = bytes1(uint8(wrong.blobs[100]) ^ 1);
         asBlobBlock(wrong);
         vm.prank(SEQ);
         vm.expectRevert(abi.encodeWithSelector(TacitBlocks.BadBlob.selector, 0));
         blocks.land(p8, "", wrong);
         // a proof of another opening
-        TacitBlocks.Lists memory bad = lists(8);
+        TacitBlocks.Lists memory bad = copyOf(l);
         bad.blobs[150] = bytes1(uint8(bad.blobs[150]) ^ 1);
         asBlobBlock(bad);
         vm.prank(SEQ);
         vm.expectRevert(abi.encodeWithSelector(TacitBlocks.BadBlob.selector, 0));
         blocks.land(p8, "", bad);
         // and the block lands with the blob it committed
+        uint256 sharesBefore = blocks.shares();
         asBlobBlock(l);
         vm.prank(SEQ);
         blocks.land(p8, "", l);
         assertEq(blocks.height(), 9);
-        assertEq(blocks.state(), words(8)[1]);
+        assertEq(blocks.state(), w8[1]);
+        (uint256 p, uint256 s) = (uint64(uint256(w8[18]) >> 64), uint64(uint256(w8[18])));
+        assertEq(blocks.pool(), p);
+        assertEq(blocks.shares(), s);
+        assertEq(blocks.inChain(), p);
+        // the payment's pool share and the migration's shares ended
+        assertLt(s, sharesBefore - 200e8);
     }
 
     /// A block that commits no blob carries its data in calldata, and a blob in it is refused.
@@ -1066,5 +1212,107 @@ contract TacitBlocksMoreTest is TacitBlocksFixture {
         pool.setTerms(1e10, false);
         vm.expectRevert(TacitBlocks.BadPool.selector);
         new TacitBlocks(verifier, bytes32(0), bytes32(0), ITurns(address(turns)), WINDOW, FORCE_DELAY, address(tac), pool, CTAC);
+    }
+}
+
+/// Shields with no ETH: a holder's ERC-2612 permit to a deposit's inbox, sent by anyone for a fee (`sweepWithPermit`).
+contract TacitBlocksPermitTest is TacitBlocksFixture {
+    /// The signature of `owner` (key `pk`) on an ERC-2612 permit of `value` TAC to `spender`, its next nonce and `deadline`.
+    function signPermit(uint256 pk, address spender, uint256 value, uint256 deadline) internal view returns (uint8 v, bytes32 r, bytes32 s) {
+        address owner = vm.addr(pk);
+        bytes32 digest = keccak256(
+            abi.encodePacked(
+                hex"1901", tac.DOMAIN_SEPARATOR(), keccak256(abi.encode(tac.PERMIT_TYPEHASH(), owner, spender, value, tac.nonces(owner), deadline))
+            )
+        );
+        (v, r, s) = vm.sign(pk, digest);
+    }
+
+    /// A shield with no ETH: the holder signs a permit of the deposit's TAC and a fee to its inbox, anyone sends it, and the sender
+    /// takes the fee; the deposit is swept in, from the holder straight to the chain, and lands like any other.
+    function test_aPermittedShieldIsSweptIn() public {
+        (uint256 s, uint256 a, bytes32 cx, bytes32 cy, bytes32 body) = dep();
+        bytes32 back = keccak256("back");
+        uint256 pk = 0xA11CE;
+        address holder = vm.addr(pk);
+        uint256 fee = 3e15;
+        tac.mint(holder, a * UNIT + fee);
+        address box = blocks.inbox(s, a, cx, cy, body, back);
+        uint256 deadline = block.timestamp + 1 hours;
+        (uint8 v, bytes32 r, bytes32 sig) = signPermit(pk, box, a * UNIT + fee, deadline);
+        address relayer = address(0xBEEF);
+        vm.prank(relayer);
+        blocks.sweepWithPermit(s, a, cx, cy, body, back, holder, fee, deadline, v, r, sig);
+        assertEq(tac.balanceOf(relayer), fee, "whoever sends it takes the fee");
+        assertEq(tac.balanceOf(holder), 0);
+        assertEq(tac.balanceOf(address(blocks)), a * UNIT, "the deposit's TAC, nothing else");
+        assertEq(tac.balanceOf(box), 0);
+        assertEq(tac.allowance(holder, box), 0, "the permit used up");
+        assertEq(box.codehash, blocks.INBOX_CODEHASH());
+        (address from,,) = blocks.pending(depKey(s, a, cx, cy, body));
+        assertEq(from, box, "a swept deposit, given back to `back` if no block takes it");
+        (address pullFrom, uint256 pullAmount) = blocks.pullOrder();
+        assertEq(pullFrom, address(0));
+        assertEq(pullAmount, 0);
+        // sent again, the inbox exists: nothing more is pulled
+        vm.prank(relayer);
+        vm.expectRevert();
+        blocks.sweepWithPermit(s, a, cx, cy, body, back, holder, fee, deadline, v, r, sig);
+        land(0);
+        assertEq(blocks.height(), 1);
+        assertEq(blocks.inChain(), a);
+    }
+
+    /// The permit names the inbox, which names the shield and its way back: it funds that shield alone. One signed for another
+    /// inbox, or for this contract, pulls nothing, and with it no other shield, way back or fee can be swept.
+    function test_aPermitNamesItsInboxOnly() public {
+        (uint256 s, uint256 a, bytes32 cx, bytes32 cy, bytes32 body) = dep();
+        bytes32 back = keccak256("back");
+        uint256 pk = 0xA11CE;
+        address holder = vm.addr(pk);
+        uint256 fee = 1e15;
+        tac.mint(holder, 10 * (a * UNIT + fee));
+        uint256 deadline = block.timestamp + 1 hours;
+        // signed for this shield's inbox: not for another way back, another shield or a larger fee
+        (uint8 v, bytes32 r, bytes32 sig) = signPermit(pk, blocks.inbox(s, a, cx, cy, body, back), a * UNIT + fee, deadline);
+        vm.expectRevert();
+        blocks.sweepWithPermit(s, a, cx, cy, body, keccak256("another way back"), holder, fee, deadline, v, r, sig);
+        vm.expectRevert();
+        blocks.sweepWithPermit(s + 1, a, cx, cy, body, back, holder, fee, deadline, v, r, sig);
+        vm.expectRevert();
+        blocks.sweepWithPermit(s, a, cx, cy, body, back, holder, fee + 1, deadline, v, r, sig);
+        // signed for the landing contract itself: no inbox can pull with it
+        (v, r, sig) = signPermit(pk, address(blocks), a * UNIT + fee, deadline);
+        tac.permit(holder, address(blocks), a * UNIT + fee, deadline, v, r, sig);
+        vm.expectRevert();
+        blocks.sweepWithPermit(s, a, cx, cy, body, back, holder, fee, deadline, v, r, sig);
+        // nor can a plain sweep of the inbox take the holder's TAC
+        vm.expectRevert(TacitBlocks.BadValue.selector);
+        blocks.sweep(s, a, cx, cy, body, back);
+        assertEq(tac.balanceOf(holder), 10 * (a * UNIT + fee), "nothing moved");
+        assertEq(tac.balanceOf(address(blocks)), 0);
+    }
+
+    /// A permit someone sends to the token first (taking it out of the mempool) leaves its allowance to the inbox: the sweep passes
+    /// the spent permit over and pulls with the allowance, so front-running it changes nothing.
+    function test_aFrontRunPermitStillSweeps() public {
+        (uint256 s, uint256 a, bytes32 cx, bytes32 cy, bytes32 body) = dep();
+        bytes32 back = keccak256("back");
+        uint256 pk = 0xA11CE;
+        address holder = vm.addr(pk);
+        uint256 fee = 2e15;
+        tac.mint(holder, a * UNIT + fee);
+        address box = blocks.inbox(s, a, cx, cy, body, back);
+        uint256 deadline = block.timestamp + 1 hours;
+        (uint8 v, bytes32 r, bytes32 sig) = signPermit(pk, box, a * UNIT + fee, deadline);
+        vm.prank(address(0xF00D));
+        tac.permit(holder, box, a * UNIT + fee, deadline, v, r, sig);
+        assertEq(tac.allowance(holder, box), a * UNIT + fee);
+        vm.prank(address(0xBEEF));
+        blocks.sweepWithPermit(s, a, cx, cy, body, back, holder, fee, deadline, v, r, sig);
+        assertEq(tac.balanceOf(address(0xBEEF)), fee);
+        assertEq(tac.balanceOf(address(blocks)), a * UNIT);
+        (address from,,) = blocks.pending(depKey(s, a, cx, cy, body));
+        assertEq(from, box);
     }
 }

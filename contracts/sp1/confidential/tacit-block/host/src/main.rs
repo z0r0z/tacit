@@ -10,13 +10,15 @@
 //!                            it publishes alone, then the blocks the guest must refuse: openings, addresses and
 //!                            memos the bodies do not name, a deposit of nothing, a note spent twice in one block
 //!                            or again in a later one, a proof with a commitment, an evaluation or a point's hint
-//!                            changed
+//!                            changed; and the pool's rate, which exits and pool shares raise, with the deposits,
+//!                            exits, payments and pool shares that break its edges refused
 //! tacit-block dump N FILE    one block of N spends as the guest's stdin, for tacit-block-gpu
-//! tacit-block fixture FILE [CHAIN_ID LANDER]   a three-block chain of ETH notes as the landing contract's test replays it,
+//! tacit-block fixture FILE [CHAIN_ID LANDER]   a nine-block chain of TAC notes as the landing contract's test replays it,
 //!                            bound to the contract at LANDER on CHAIN_ID (default: where the test puts it, on chain 31337): the
-//!                            genesis state, a shield of 500 units (and the deposit that precedes it on L1), a spend that keeps 380
-//!                            and exits 120, and a block that takes only the queue, a forced spend of the 380 posted on L1; each
-//!                            block's public values and everything it publishes, and its guest input beside FILE as FILE.b<i>.stdin
+//!                            genesis state, a shield of 500 TAC (and the deposit that precedes it on L1), a spend that keeps 380
+//!                            and exits 120, a block that takes only the queue (a forced payment of the 380 posted on L1), hops,
+//!                            locks, a claim, a refund and a blob block with a migration (`fixture`); each block's public values
+//!                            and everything it publishes, and its guest input beside FILE as FILE.b<i>.stdin
 //! tacit-block pin [--check]  write the guest's artifacts, or check the committed ones (exit 1 on a mismatch): the
 //!                            spend key's digest, transcript representative and verifier params (as btc-pool-agg
 //!                            derives them), verifier-cs.bin, the spend circuit's finished constraint system the
@@ -43,7 +45,10 @@ use std::process::exit;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
-use tacit_block_common::{self as blk, ops, fr_be, h64, nf_record, nf_zeros, Answers, BlockData, BlockOut, NfMember, NfWitness, Posted, SpendData, State, MEMO_LEN, NF_LEVELS, RECENT};
+use tacit_block_common::{
+    self as blk, ops, fr_be, h64, nf_record, nf_zeros, Answers, BlockData, BlockOut, NfMember, NfWitness, Posted, SpendData, State, EXIT_FEE_BPS, MEMO_LEN, MIN_POOL_FEE,
+    NF_LEVELS, RECENT,
+};
 
 const H2_ARTIFACTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../btc-pool-halo2/artifacts");
 
@@ -167,6 +172,45 @@ fn secret(tag: u8, a: u32, b: u8) -> [u8; 33] {
     s
 }
 
+/// A whole TAC in the chain's units (10^-8 TAC). The tests count in whole TAC, so a payment's pool share (MIN_POOL_FEE, 0.01 TAC)
+/// is a small part of every note.
+const TAC: u64 = 100_000_000;
+
+/// The chain's rate before a block, as the program reads it: (pool, shares), one unit a share while there are none.
+fn rate(s: &State) -> (u128, u128) {
+    if s.shares == 0 {
+        (1, 1)
+    } else {
+        (s.pool as u128, s.shares as u128)
+    }
+}
+
+/// The least TAC (units) that buys `shares` at the rate: what a wallet pays for a deposit (the program's `covers`, at its edge).
+fn buy_amount(s: &State, shares: u64) -> u64 {
+    let (p, n) = rate(s);
+    u64::try_from((shares as u128 * p).div_ceil(n)).unwrap_or_else(|_| fail("a deposit's price overflows"))
+}
+
+/// The most TAC (units) ending `shares` pays out: their worth less EXIT_FEE_BPS of it, the fee rounded up (the program's `pays`, at
+/// its edge).
+fn pay_amount(s: &State, shares: u64) -> u64 {
+    let (p, n) = rate(s);
+    let worth = shares as u128 * p;
+    let fee = worth / 10_000 * EXIT_FEE_BPS + (worth % 10_000 * EXIT_FEE_BPS).div_ceil(10_000);
+    ((worth - fee) / n) as u64
+}
+
+/// The fewest shares worth MIN_POOL_FEE at the rate: the pool share a payment gives the holders (the program's `worth_at_least`).
+fn pool_share(s: &State) -> u64 {
+    let (p, n) = rate(s);
+    u64::try_from((MIN_POOL_FEE * n).div_ceil(p)).unwrap_or_else(|_| fail("a pool share overflows"))
+}
+
+/// A 32-byte word's low 8 bytes, where the program writes a u64.
+fn word_u64(w: &[u8]) -> u64 {
+    u64::from_be_bytes(w[24..32].try_into().unwrap())
+}
+
 /// The binding the test chain's spends carry in their bodies.
 const TEST_CHAIN: [u8; 32] = [0x7a; 32];
 /// Where the landing contract's test deploys it (on Foundry's chain 31337), so the fixture's spends carry the
@@ -241,8 +285,8 @@ fn junk(payload: Vec<u8>) -> Post {
 /// at its proof.
 fn bad_memo_like(c: &Chain, k: &Keys) -> Post {
     let mut c = c.clone();
-    let n = c.mint(&[(1, secret(106, 0, 0), 2)]);
-    let mut p = post(&c.spend(k, &[&n[0]], &[(2, secret(106, 0, 1), 2)], "forced junk memo", c.leaves.len()));
+    let n = c.mint(&[(1, secret(106, 0, 0), 2 * TAC)]);
+    let mut p = post(&c.spend(k, &[&n[0]], &[(2, secret(106, 0, 1), 2 * TAC)], "forced junk memo", c.leaves.len()));
     p.payload[blk::FORCED_HEAD_LEN] ^= 1;
     junk(p.payload)
 }
@@ -296,7 +340,8 @@ impl Chain {
         Chain { wallets, asset_f: asset_field(&[0xabu8; 32]), leaves: vec![], state, public_nf: nf.clone(), nf, roots, time: 1_800_000_000, blobs: false, memo_pool: vec![] }
     }
 
-    /// Notes that enter the tree without a spend (the test's genesis), appended as a block appends them.
+    /// Notes that enter the tree without a spend (the test's genesis), appended as a block appends them, their shares bought at the
+    /// chain's rate as a deposit buys them, so the pool stays behind every note.
     fn mint(&mut self, notes: &[(usize, [u8; 33], u64)]) -> Vec<Note> {
         let mut out = vec![];
         let mut leaves = vec![];
@@ -305,6 +350,9 @@ impl Chain {
             leaves.push(leaf_of(&self.asset_f, &fr_u64(*v), &k.npk, &k.rho));
             out.push(Note { owner: *owner, s: *s, v: *v, index: (self.leaves.len() + leaves.len() - 1) as u64 });
         }
+        let shares: u64 = notes.iter().map(|n| n.2).sum();
+        self.state.pool += buy_amount(&self.state, shares);
+        self.state.shares += shares;
         self.state.notes.append(&leaves).unwrap_or_else(|e| fail(e));
         self.state.remember(fr_be(&self.state.notes.root));
         self.leaves.extend(&leaves);
@@ -316,12 +364,12 @@ impl Chain {
     }
 
     /// A spend of `ins`, proven against the tree as it was with `at` leaves, paying `outs` (wallet, secret,
-    /// value).
+    /// shares), its pool share taken out of the last of them (`spend_full`).
     fn spend(&self, k: &Keys, ins: &[&Note], outs: &[(usize, [u8; 33], u64)], tag: &str, at: usize) -> Prepared {
         self.spend_with(k, ins, outs, None, None, tag, at)
     }
 
-    /// As `spend`, with an exit of `exit` (value, address) and a deposit of `dep` (value); a deposit with no
+    /// As `spend`, with an exit of `exit` (shares, address) and a deposit of `dep` (shares); a deposit with no
     /// inputs is a shield. Its body is the tacit chain's: this chain's binding, the output leaves, their memo
     /// hashes and the exit's address. `tag` keeps memos and blindings distinct.
     #[allow(clippy::too_many_arguments)]
@@ -337,10 +385,26 @@ impl Chain {
         (ops::NoteTo { npk: o.npk, rho: o.rho, memo: blk::memo_hash(&memo) }, memo)
     }
 
-    /// As `spend_with`, with `op` = (the value it takes, the operation, its receivers' memos): the exit's value goes into the
-    /// operation, and the body is the operation's.
+    /// As `spend_with`, with `op` = (the shares it takes, the operation, its receivers' memos): the exit's shares go into the
+    /// operation, and the body is the operation's. A spend of notes that sends nothing out (no exit and no operation) gives the
+    /// holders their pool share, the fewest shares worth MIN_POOL_FEE, out of its last output, as a wallet's payment does.
     #[allow(clippy::too_many_arguments)]
     fn spend_full(&self, k: &Keys, ins: &[&Note], outs: &[(usize, [u8; 33], u64)], exit: Option<(u64, [u8; 20])>, dep: Option<u64>, op: Option<(u64, ops::Op, Vec<Vec<u8>>)>, tag: &str, at: usize) -> Prepared {
+        if ins.is_empty() || exit.is_some() || op.is_some() {
+            return self.spend_raw(k, ins, outs, exit, dep, op, tag, at);
+        }
+        let share = pool_share(&self.state);
+        let mut outs = outs.to_vec();
+        let last = outs.last_mut().unwrap_or_else(|| fail("a payment with no output to take its pool share from"));
+        last.2 = last.2.checked_sub(share).unwrap_or_else(|| fail("an output smaller than its pool share"));
+        self.spend_raw(k, ins, &outs, None, dep, Some((share, ops::Op::Pool, vec![])), tag, at)
+    }
+
+    /// As `spend_full`, the spend exactly as given (no pool share added). What crosses the chain's edge is priced at its rate before
+    /// the next block: a deposit pays the least TAC that buys its shares, an exit, hop or migration pays out the most its shares may,
+    /// and a lock or a pool share moves none.
+    #[allow(clippy::too_many_arguments)]
+    fn spend_raw(&self, k: &Keys, ins: &[&Note], outs: &[(usize, [u8; 33], u64)], exit: Option<(u64, [u8; 20])>, dep: Option<u64>, op: Option<(u64, ops::Op, Vec<Vec<u8>>)>, tag: &str, at: usize) -> Prepared {
         let tree = Tree::new(&self.leaves[..at]);
         let mut out = [Fr::from(0u64); 3];
         let mut memo_hashes = [[0u8; 32]; 3];
@@ -375,8 +439,21 @@ impl Chain {
         let opening = |v: u64, what: &str| btc_pool_halo2::model::Opening { v, r: hs_l(&format!("tacit-block test {what}"), &[tag.as_bytes()]) };
         let exit_open = exit.map(|(v, _)| opening(v, "exit")).or(op.as_ref().map(|(v, _, _)| opening(*v, "exit")));
         let dep_open = dep.map(|v| opening(v, "deposit"));
-        let plain = |o: &btc_pool_halo2::model::Opening| blk::Opening { v: o.v, r: be32(&o.r) };
-        let data = SpendData { memo_hashes, exit_to, salt, dep: dep_open.as_ref().map(plain), exit: exit_open.as_ref().map(plain), op: op.as_ref().map(|(_, o, _)| o.clone()) };
+        let paid_in = dep.map(|v| buy_amount(&self.state, v)).unwrap_or(0);
+        let paid_out = match &op {
+            Some((_, ops::Op::Lock { .. } | ops::Op::Pool, _)) => 0,
+            Some((v, _, _)) => pay_amount(&self.state, *v),
+            None => exit.map(|(v, _)| pay_amount(&self.state, v)).unwrap_or(0),
+        };
+        let plain = |o: &btc_pool_halo2::model::Opening, amount: u64| blk::Opening { v: o.v, r: be32(&o.r), amount };
+        let data = SpendData {
+            memo_hashes,
+            exit_to,
+            salt,
+            dep: dep_open.as_ref().map(|o| plain(o, paid_in)),
+            exit: exit_open.as_ref().map(|o| plain(o, paid_out)),
+            op: op.as_ref().map(|(_, o, _)| o.clone()),
+        };
         let w = build_witness(tree.root, bh, self.asset_f, &inputs, &outputs, exit_open, dep_open).unwrap_or_else(|e| fail(&e));
         let mut p = prove(k, &w, made, data);
         p.memos = memos;
@@ -533,6 +610,14 @@ impl Chain {
         if pv != out.encode() {
             fail("the guest committed other public values than apply");
         }
+        // The pool the block commits is what the landing contract counts from the lists alone (the TAC deposits paid in, less what
+        // exits, hops and migrations pay out), or the block could not land.
+        let counted = self.state.pool as i128 + data.deposits.iter().map(|d| word_u64(&d[160..192]) as i128).sum::<i128>()
+            - data.exits.iter().chain(&data.hops).map(|x| word_u64(&x[32..64]) as i128).sum::<i128>()
+            - data.migration_totals.iter().map(|t| word_u64(&t[32..64]) as i128).sum::<i128>();
+        if (out.pool, out.shares) != (next.pool, next.shares) || counted != out.pool as i128 || pv[18 * 32..] != blk::pool_word(next.pool, next.shares) {
+            fail("the block's pool is not the one the landing contract counts from its lists");
+        }
         let prev_len = self.leaves.len() as u64;
         for o in &data.outputs {
             self.leaves.push(blk::fr_from_be(&o[..32]).unwrap());
@@ -555,11 +640,13 @@ impl Chain {
         rebuilt.nf_root = public.root();
         rebuilt.nf_size = public.records.len() as u64;
         rebuilt.remember(fr_be(&rebuilt.notes.root));
-        // and the queue's position from what was posted to it
+        // and the queue's position from what was posted to it, the pool from what crossed the edge and the shares from its public word
         for p in posts {
             rebuilt.queue_len += 1;
             rebuilt.queue_hash = blk::queue_step(&rebuilt.queue_hash, &blk::payload_hash(&p.payload));
         }
+        rebuilt.pool = counted as u64;
+        rebuilt.shares = word_u64(&pv[18 * 32..]);
         if rebuilt.digest() != out.next {
             fail("the next state cannot be rebuilt from the lists the block publishes");
         }
@@ -624,15 +711,15 @@ fn elf(var: &str, default: &str) -> Vec<u8> {
     read(&std::env::var(var).unwrap_or_else(|_| default.into()))
 }
 
-/// N spends over 2N fresh notes: spend i takes notes 2i and 2i+1 (1,000 and 234) of wallet i mod 8 and pays
-/// 900, 300 and 34 to three wallets.
+/// N spends over 2N fresh notes: spend i takes notes 2i and 2i+1 (1,000 and 234 TAC) of wallet i mod 8 and pays
+/// 900, 300 and 34 TAC (less its pool share) to three wallets.
 fn spends_of(c: &mut Chain, k: &Keys, n: usize, tag: u8) -> Vec<Prepared> {
-    let notes: Vec<(usize, [u8; 33], u64)> = (0..n).flat_map(|i| [(i % 8, secret(tag, i as u32, 0), 1000), (i % 8, secret(tag, i as u32, 1), 234)]).collect();
+    let notes: Vec<(usize, [u8; 33], u64)> = (0..n).flat_map(|i| [(i % 8, secret(tag, i as u32, 0), 1000 * TAC), (i % 8, secret(tag, i as u32, 1), 234 * TAC)]).collect();
     let made = c.mint(&notes);
     let at = c.leaves.len();
     (0..n)
         .map(|i| {
-            let outs = [((i + 1) % 8, secret(tag + 1, i as u32, 0), 900), (i % 8, secret(tag + 1, i as u32, 1), 300), ((i + 2) % 8, secret(tag + 1, i as u32, 2), 34)];
+            let outs = [((i + 1) % 8, secret(tag + 1, i as u32, 0), 900 * TAC), (i % 8, secret(tag + 1, i as u32, 1), 300 * TAC), ((i + 2) % 8, secret(tag + 1, i as u32, 2), 34 * TAC)];
             c.spend(k, &[&made[2 * i], &made[2 * i + 1]], &outs, &format!("tacit-block spend {tag} {i}"), at)
         })
         .collect()
@@ -781,9 +868,12 @@ fn block_json(l: &Landed, memos: &[Vec<u8>]) -> Value {
 const FIXTURE_TAC: [u8; 20] = [0xa1, 0x31, 0x3e, 0xb9, 0xf3, 0xa4, 0x45, 0x60, 0x6d, 0x95, 0x83, 0xbc, 0xac, 0x3e, 0xbe, 0xb5, 0x6a, 0x85, 0x82, 0x79];
 
 /// The fixture for a landing contract at `lander` on `chain_id`; each block's guest input is kept beside it as FILE.b<i>.stdin, for
-/// tacit-block-gpu to prove. Every note is TAC: a shield of 500, a spend keeping 380 and exiting 120 to an address, a block of the
-/// queue alone that takes a spend of the 380 posted with `force`, a spend that hops 300 into the confidential pool keeping 80, and a
-/// block of the queue alone that takes a hop of the 80 posted with `force`.
+/// tacit-block-gpu to prove. Every note is TAC, counted in shares: a shield of 500 TAC, a spend keeping 380 and exiting 120 to an
+/// address, a block of the queue alone that takes a payment of the 380 posted with `force` (its pool share out of it), a spend that
+/// hops 300 into the confidential pool keeping the rest, a block of the queue alone that takes a hop of that rest posted with `force`,
+/// two deposits straight into locks, a claim of one, a refund of the other posted with `force`, and a blob block paying the claimed
+/// note on in two (with its pool share) beside a migration of 200 of the refunded one. The JSON's deposits carry the shares and the
+/// TAC paid in, its exits, hops and migration the TAC paid out, as the landing contract sees them.
 fn fixture(path: &str, chain_id: u64, lander: [u8; 20]) {
     let k = keys();
     let elf = elf("TACIT_BLOCK_ELF", BLOCK_ELF);
@@ -793,31 +883,35 @@ fn fixture(path: &str, chain_id: u64, lander: [u8; 20]) {
     padded[12..].copy_from_slice(&FIXTURE_TAC);
     c.asset_f = asset_field(&padded);
     let genesis = c.state.clone();
-    let shield = c.spend_with(&k, &[], &[(2, secret(80, 0, 0), 500)], None, Some(500), "fixture shield", 0);
+    let shield = c.spend_with(&k, &[], &[(2, secret(80, 0, 0), 500 * TAC)], None, Some(500 * TAC), "fixture shield", 0);
     let l1 = c.land(&elf, &k, &[shield.clone()]).unwrap_or_else(|e| fail(&format!("fixture shield: {e}")));
     let to = [0xab; 20];
-    let pay_out = c.spend_with(&k, &[&l1.notes[0].clone()], &[(2, secret(81, 0, 0), 380)], Some((120, to)), None, "fixture exit", c.leaves.len());
+    let pay_out = c.spend_with(&k, &[&l1.notes[0].clone()], &[(2, secret(81, 0, 0), 380 * TAC)], Some((120 * TAC, to)), None, "fixture exit", c.leaves.len());
     let l2 = c.land(&elf, &k, &[pay_out.clone()]).unwrap_or_else(|e| fail(&format!("fixture exit: {e}")));
-    // Block 2 takes only the queue: the 380 kept in block 1, spent by a forced spend posted on L1 (`force`).
-    let forced = c.spend(&k, &[&l2.notes[0].clone()], &[(3, secret(82, 0, 0), 380)], "fixture forced", c.leaves.len());
+    // Block 2 takes only the queue: the 380 kept in block 1, paid on by a forced spend posted on L1 (`force`), its pool share out of it.
+    let forced = c.spend(&k, &[&l2.notes[0].clone()], &[(3, secret(82, 0, 0), 380 * TAC)], "fixture forced", c.leaves.len());
     let posted = post(&forced);
     let l3 = c.land_with(&elf, &k, &[], &[posted.clone()]).unwrap_or_else(|e| fail(&format!("fixture forced: {e}")));
-    if l3.data.nullifiers.len() != 1 || l3.out.queue_len != 1 {
-        fail("the fixture's forced spend was not taken");
+    if l3.data.nullifiers.len() != 1 || l3.out.queue_len != 1 || forced.data.op != Some(ops::Op::Pool) {
+        fail("the fixture's forced payment was not taken with its pool share");
     }
-    // Block 3: 300 of the 380 hop into the confidential pool, 80 kept.
+    // Block 3: 300 of the 380 hop into the confidential pool, the rest kept.
     let commit = [0x51; 32];
-    let hop = c.spend_full(&k, &[&l3.notes[0].clone()], &[(3, secret(83, 0, 0), 80)], None, None, Some((300, ops::Op::Hop { commit }, vec![])), "fixture hop", c.leaves.len());
+    let kept = l3.notes[0].clone();
+    let hop_amount = pay_amount(&c.state, 300 * TAC);
+    let hop = c.spend_full(&k, &[&kept], &[(3, secret(83, 0, 0), kept.v - 300 * TAC)], None, None, Some((300 * TAC, ops::Op::Hop { commit }, vec![])), "fixture hop", c.leaves.len());
     let l4 = c.land(&elf, &k, &[hop.clone()]).unwrap_or_else(|e| fail(&format!("fixture hop: {e}")));
-    if l4.data.hops != vec![ops::hop_bytes(&c.asset_f, 300, &commit)] || !l4.data.exits.is_empty() {
+    if l4.data.hops != vec![ops::hop_bytes(&c.asset_f, hop_amount, &commit)] || !l4.data.exits.is_empty() {
         fail("the fixture's hop was not published");
     }
-    // Block 4 takes only the queue: the 80 hop in, posted with `force`.
+    // Block 4 takes only the queue: the rest hop in, posted with `force`.
     let commit2 = [0x52; 32];
-    let fhop = c.spend_full(&k, &[&l4.notes[0].clone()], &[], None, None, Some((80, ops::Op::Hop { commit: commit2 }, vec![])), "fixture forced hop", c.leaves.len());
+    let rest = l4.notes[0].clone();
+    let hop2_amount = pay_amount(&c.state, rest.v);
+    let fhop = c.spend_full(&k, &[&rest], &[], None, None, Some((rest.v, ops::Op::Hop { commit: commit2 }, vec![])), "fixture forced hop", c.leaves.len());
     let posted_hop = post(&fhop);
     let l5 = c.land_with(&elf, &k, &[], &[posted_hop.clone()]).unwrap_or_else(|e| fail(&format!("fixture forced hop: {e}")));
-    if l5.data.hops != vec![ops::hop_bytes(&c.asset_f, 80, &commit2)] || l5.out.queue_len != 2 {
+    if l5.data.hops != vec![ops::hop_bytes(&c.asset_f, hop2_amount, &commit2)] || l5.out.queue_len != 2 {
         fail("the fixture's forced hop was not taken");
     }
     // Block 5: two deposits that go straight into locks, one for a day and one for ten seconds.
@@ -834,8 +928,9 @@ fn fixture(path: &str, chain_id: u64, lander: [u8; 20]) {
     };
     let (la, ma, cma, _) = lock_of(&c, 0, t0 + 86_400);
     let (lb, mb, _, rmb) = lock_of(&c, 1, t0 + 10);
-    let lock_a = c.spend_full(&k, &[], &[], None, Some(1_000), Some((1_000, ops::Op::Lock { lock: la, memo: blk::memo_hash(&ma) }, vec![ma.clone()])), "fixture lock a", c.leaves.len());
-    let lock_b = c.spend_full(&k, &[], &[], None, Some(500), Some((500, ops::Op::Lock { lock: lb, memo: blk::memo_hash(&mb) }, vec![mb.clone()])), "fixture lock b", c.leaves.len());
+    let (va, vb) = (1_000 * TAC, 500 * TAC);
+    let lock_a = c.spend_full(&k, &[], &[], None, Some(va), Some((va, ops::Op::Lock { lock: la, memo: blk::memo_hash(&ma) }, vec![ma.clone()])), "fixture lock a", c.leaves.len());
+    let lock_b = c.spend_full(&k, &[], &[], None, Some(vb), Some((vb, ops::Op::Lock { lock: lb, memo: blk::memo_hash(&mb) }, vec![mb.clone()])), "fixture lock b", c.leaves.len());
     let l6 = c.land(&elf, &k, &[lock_a.clone(), lock_b.clone()]).unwrap_or_else(|e| fail(&format!("fixture locks: {e}")));
     let settle_of = |c: &Chain, kind: u8, lock: &Lock, value: u64, sig: Option<[u8; 64]>| -> Settle {
         let leaf = lock.leaf(&c.asset_f, value);
@@ -845,45 +940,47 @@ fn fixture(path: &str, chain_id: u64, lander: [u8; 20]) {
     };
     // Block 6: the recipient claims the day lock with its pre-signature adapted to the swap's point, completed.
     let t_secret = schnorr::scalar("fixture swap secret");
-    let msg = claim_message(&c.state.chain, &la.leaf(&c.asset_f, 1_000));
+    let msg = claim_message(&c.state.chain, &la.leaf(&c.asset_f, va));
     let (rx, s_tilde) = schnorr::pre_sign(d_recipient, k256::ProjectivePoint::GENERATOR * t_secret, &msg, "fixture claim nonce");
     let claim_sig = schnorr::sig(&rx, &(s_tilde + t_secret));
-    let claim = settle_of(&c, SETTLE_CLAIM, &la, 1_000, Some(claim_sig));
+    let claim = settle_of(&c, SETTLE_CLAIM, &la, va, Some(claim_sig));
     let l7 = c.land_full(&elf, &k, &[], &[claim], &[]).unwrap_or_else(|e| fail(&format!("fixture claim: {e}")));
     if l7.data.claims != vec![claim_sig] {
         fail("the fixture's claim did not publish its signature");
     }
     // Block 7 names the ten-second lock's deadline and takes only the queue: its refund, posted by anyone.
-    let refund = settle_of(&c, SETTLE_REFUND, &lb, 500, None);
+    let refund = settle_of(&c, SETTLE_REFUND, &lb, vb, None);
     let posted_refund = Post { payload: [SETTLE_MARK.to_vec(), refund.to_bytes(), rmb.clone()].concat(), outs: vec![] };
     c.time = lb.deadline;
     let l8 = c.land_with(&elf, &k, &[], &[posted_refund.clone()]).unwrap_or_else(|e| fail(&format!("fixture forced refund: {e}")));
     if l8.data.nullifiers.len() != 1 || l8.out.queue_len != 3 {
         fail("the fixture's forced refund was not taken");
     }
-    // Block 8, whose lists travel in a blob: the claimed note paid on in two.
-    let claimed_leaf = leaf_of(&c.asset_f, &fr_u64(1_000), &la.claim_to.npk, &la.claim_to.rho);
-    let claimed = c.made_note(&claimed_leaf, 4, &secret(84, 0, 0), 1_000);
-    let blob_pay = c.spend(&k, &[&claimed], &[(6, secret(86, 0, 0), 600), (4, secret(86, 0, 1), 400)], "fixture blob pay", c.leaves.len());
+    // Block 8, whose lists travel in a blob: the claimed note paid on in two, its pool share out of the second.
+    let claimed_leaf = leaf_of(&c.asset_f, &fr_u64(va), &la.claim_to.npk, &la.claim_to.rho);
+    let claimed = c.made_note(&claimed_leaf, 4, &secret(84, 0, 0), va);
+    let blob_pay = c.spend(&k, &[&claimed], &[(6, secret(86, 0, 0), 600 * TAC), (4, secret(86, 0, 1), 400 * TAC)], "fixture blob pay", c.leaves.len());
     // and the refunded 500: 200 of it moved to a successor chain, 300 kept
-    let refunded_leaf = leaf_of(&c.asset_f, &fr_u64(500), &lb.refund_to.npk, &lb.refund_to.rho);
-    let refunded = c.made_note(&refunded_leaf, 5, &secret(84, 1, 1), 500);
+    let refunded_leaf = leaf_of(&c.asset_f, &fr_u64(vb), &lb.refund_to.npk, &lb.refund_to.rho);
+    let refunded = c.made_note(&refunded_leaf, 5, &secret(84, 1, 1), vb);
     let successor = [0x5c; 20];
     let successor_note = [0x77; 32];
-    let migrate = c.spend_full(&k, &[&refunded], &[(5, secret(87, 0, 0), 300)], None, None, Some((200, ops::Op::Migrate { to: successor, note: successor_note }, vec![])), "fixture migrate", c.leaves.len());
+    let moved = pay_amount(&c.state, 200 * TAC);
+    let migrate = c.spend_full(&k, &[&refunded], &[(5, secret(87, 0, 0), 300 * TAC)], None, None, Some((200 * TAC, ops::Op::Migrate { to: successor, note: successor_note }, vec![])), "fixture migrate", c.leaves.len());
     c.blobs = true;
     let l9 = c.land(&elf, &k, &[blob_pay.clone(), migrate.clone()]).unwrap_or_else(|e| fail(&format!("fixture blob block: {e}")));
     c.blobs = false;
-    if l9.blob_openings.len() != 1 || l9.out.blobs_hash == [0u8; 32] || l9.data.outputs.len() != 3 {
-        fail("the fixture's blob block did not carry its lists in a blob");
+    if l9.blob_openings.len() != 1 || l9.out.blobs_hash == [0u8; 32] || l9.data.outputs.len() != 3 || blob_pay.data.op != Some(ops::Op::Pool) {
+        fail("the fixture's blob block did not carry its lists in a blob, or its payment its pool share");
     }
     let mut total = [0u8; 64];
     total[12..32].copy_from_slice(&successor);
-    total[56..].copy_from_slice(&200u64.to_be_bytes());
-    if l9.data.migrations != vec![<[u8; 52]>::try_from([successor.as_slice(), ops::migration_item(&successor, &successor_note, 200).as_slice()].concat()).unwrap()] || l9.data.migration_totals != vec![total] {
+    total[56..].copy_from_slice(&moved.to_be_bytes());
+    if l9.data.migrations != vec![<[u8; 52]>::try_from([successor.as_slice(), ops::migration_item(&successor, &successor_note, moved).as_slice()].concat()).unwrap()] || l9.data.migration_totals != vec![total] {
         fail("the fixture's migration did not publish its move and its successor's total, and nothing else");
     }
     let hx = |b: &[u8]| format!("0x{}", hex::encode(b));
+    let paid_in = |p: &Prepared| p.data.dep.unwrap_or_else(|| fail("a fixture deposit without its opening")).amount;
     let doc = json!({
         "chainId": chain_id,
         "lander": hx(&lander),
@@ -893,16 +990,16 @@ fn fixture(path: &str, chain_id: u64, lander: [u8; 20]) {
         "genesisRoot": hx(&fr_be(&genesis.notes.root)),
         "nullifierGenesisRoot": hx(&genesis.nf_root),
         "spendVk": hx(&blk::vk_hash(&k.digest)),
-        "deposit": { "value": 500, "cx": hx(&fr_be(&shield.spend.dep[0])), "cy": hx(&fr_be(&shield.spend.dep[1])), "body": hx(&fr_be(&shield.spend.body)) },
-        "exit": { "value": 120, "to": hx(&to) },
-        "migration": { "to": hx(&successor), "note": hx(&successor_note), "value": 200 },
+        "deposit": { "shares": 500 * TAC, "amount": paid_in(&shield), "cx": hx(&fr_be(&shield.spend.dep[0])), "cy": hx(&fr_be(&shield.spend.dep[1])), "body": hx(&fr_be(&shield.spend.body)) },
+        "exit": { "amount": word_u64(&l2.data.exits[0][32..64]), "to": hx(&to) },
+        "migration": { "to": hx(&successor), "note": hx(&successor_note), "amount": moved },
         "forced": hx(&posted.payload),
-        "hop": { "value": 300, "commit": hx(&commit) },
+        "hop": { "amount": hop_amount, "commit": hx(&commit) },
         "forcedHop": hx(&posted_hop.payload),
-        "hop2": { "value": 80, "commit": hx(&commit2) },
+        "hop2": { "amount": hop2_amount, "commit": hx(&commit2) },
         "lockDeposits": [
-            { "value": 1_000, "cx": hx(&fr_be(&lock_a.spend.dep[0])), "cy": hx(&fr_be(&lock_a.spend.dep[1])), "body": hx(&fr_be(&lock_a.spend.body)) },
-            { "value": 500, "cx": hx(&fr_be(&lock_b.spend.dep[0])), "cy": hx(&fr_be(&lock_b.spend.dep[1])), "body": hx(&fr_be(&lock_b.spend.body)) },
+            { "shares": va, "amount": paid_in(&lock_a), "cx": hx(&fr_be(&lock_a.spend.dep[0])), "cy": hx(&fr_be(&lock_a.spend.dep[1])), "body": hx(&fr_be(&lock_a.spend.body)) },
+            { "shares": vb, "amount": paid_in(&lock_b), "cx": hx(&fr_be(&lock_b.spend.dep[0])), "cy": hx(&fr_be(&lock_b.spend.dep[1])), "body": hx(&fr_be(&lock_b.spend.body)) },
         ],
         "claimSig": hx(&claim_sig),
         "forcedRefund": hx(&posted_refund.payload),
@@ -924,7 +1021,11 @@ fn fixture(path: &str, chain_id: u64, lander: [u8; 20]) {
         let f = format!("{path}.b{i}.stdin");
         std::fs::write(&f, stdin_file(&l.stdin)).unwrap_or_else(|e| fail(&format!("{f}: {e}")));
     }
-    println!("{}", json!({ "fixture": path, "blocks": 9, "cycles": [l1.cycles, l2.cycles, l3.cycles, l4.cycles, l5.cycles, l6.cycles, l7.cycles, l8.cycles, l9.cycles] }));
+    let all = [&l1, &l2, &l3, &l4, &l5, &l6, &l7, &l8, &l9];
+    println!(
+        "{}",
+        json!({ "fixture": path, "blocks": 9, "cycles": all.iter().map(|l| l.cycles).collect::<Vec<_>>(), "pool_shares": all.iter().map(|l| [l.out.pool, l.out.shares]).collect::<Vec<_>>() })
+    );
 }
 
 /// Runs a block whose input `tamper` changed, expecting the guest to refuse it; the chain is left as it was.
@@ -935,6 +1036,19 @@ fn expect_refused_input(c: &Chain, elf: &[u8], k: &Keys, spends: &[Prepared], po
         Ok(_) => fail(&format!("the guest took {what}")),
         Err(e) => println!("{}", json!({ "refused": what, "why": e })),
     }
+}
+
+/// As `expect_refused`, checking first that the program's rules refuse the block for `why` (`apply`, which the guest runs after the
+/// proofs), so the refusal is the one meant and not another a changed spend trips over.
+fn expect_refused_for(c: &mut Chain, elf: &[u8], k: &Keys, spends: &[Prepared], why: &str, what: &str) {
+    let (_, nfw, posted, taken) = c.clone().block_input(k, spends, &[], &[], &[]);
+    let list: Vec<blk::Spend> = spends.iter().map(|p| p.spend.clone()).collect();
+    let data: Vec<SpendData> = spends.iter().map(|p| p.data.clone()).collect();
+    match blk::apply(&c.state, &list, &data, &[], &posted, &taken, &nfw, blk::vk_hash(&k.digest), c.time, &[]) {
+        Err(e) if e.to_string().contains(why) => {}
+        other => fail(&format!("{what}: apply should refuse it for \"{why}\", not {:?}", other.err().map(|e| e.to_string()))),
+    }
+    expect_refused(c, elf, k, spends, what);
 }
 
 fn expect_refused(c: &mut Chain, elf: &[u8], k: &Keys, spends: &[Prepared], what: &str) {
@@ -959,9 +1073,9 @@ fn test() {
     println!("{}", json!({ "block": 1, "spends": 4, "outputs": l1.data.outputs.len(), "cycles": l1.cycles, "next_root": hex::encode(l1.out.next_root) }));
 
     // Block 2: wallet 1 spends the 900 it received in block 1, against block 1's root.
-    let received = l1.notes.iter().find(|n| n.owner == 1 && n.v == 900).cloned().unwrap_or_else(|| fail("no note for wallet 1"));
+    let received = l1.notes.iter().find(|n| n.owner == 1 && n.v == 900 * TAC).cloned().unwrap_or_else(|| fail("no note for wallet 1"));
     let at1 = c.leaves.len();
-    let pay = c.spend(&k, &[&received], &[(3, secret(30, 0, 0), 500), (1, secret(30, 0, 1), 400)], "tacit-block block 2 pay", at1);
+    let pay = c.spend(&k, &[&received], &[(3, secret(30, 0, 0), 500 * TAC), (1, secret(30, 0, 1), 400 * TAC)], "tacit-block block 2 pay", at1);
     let l2 = c.land(&elf, &k, &[pay]).unwrap_or_else(|e| fail(&format!("block 2: {e}")));
     if !l2.data.anchors.is_empty() || l2.data.nullifiers.len() != 1 {
         fail("block 2 committed other lists than expected");
@@ -970,12 +1084,12 @@ fn test() {
 
     // A spend proven against a root from before the last block lands without its anchor on any public list,
     // the root being among the state's recent ones; once that root has aged out, the block lists it.
-    let old = c.mint(&[(5, secret(40, 0, 0), 70), (5, secret(40, 0, 1), 30), (5, secret(40, 0, 2), 9)]);
+    let old = c.mint(&[(5, secret(40, 0, 0), 70 * TAC), (5, secret(40, 0, 1), 30 * TAC), (5, secret(40, 0, 2), 9 * TAC)]);
     let old_at = c.leaves.len();
     let old_root = c.state.notes.root;
     let filler = spends_of(&mut c, &k, 1, 50);
     c.land(&elf, &k, &filler).unwrap_or_else(|e| fail(&format!("filler block: {e}")));
-    let late = c.spend(&k, &[&old[0], &old[1]], &[(6, secret(41, 0, 0), 100)], "tacit-block recent anchor", old_at);
+    let late = c.spend(&k, &[&old[0], &old[1]], &[(6, secret(41, 0, 0), 100 * TAC)], "tacit-block recent anchor", old_at);
     let l3 = c.land(&elf, &k, &[late]).unwrap_or_else(|e| fail(&format!("recent anchor: {e}")));
     if !l3.data.anchors.is_empty() {
         fail("a recent anchor was listed");
@@ -984,46 +1098,50 @@ fn test() {
     let newest = aged.state.recent[RECENT - 1];
     aged.state.recent = [[0u8; 32]; RECENT];
     aged.state.recent[RECENT - 1] = newest;
-    let older = aged.spend(&k, &[&old[2]], &[(6, secret(42, 0, 0), 9)], "tacit-block aged anchor", old_at);
+    let older = aged.spend(&k, &[&old[2]], &[(6, secret(42, 0, 0), 9 * TAC)], "tacit-block aged anchor", old_at);
     let l4 = aged.land(&elf, &k, &[older]).unwrap_or_else(|e| fail(&format!("aged anchor: {e}")));
     if l4.data.anchors != vec![fr_be(&old_root)] {
         fail("an anchor older than the recent roots is not listed");
     }
     println!("{}", json!({ "recent_anchor_unlisted": hex::encode(fr_be(&old_root)), "aged_anchor_listed": true }));
 
-    // A deposit: a shield of 500 into a note of wallet 2. The block commits the record the landing contract matches
-    // with the deposit made on L1: asset, value, commitment and the body the depositor named.
-    let shield = c.spend_with(&k, &[], &[(2, secret(70, 0, 0), 500)], None, Some(500), "shield", c.leaves.len());
+    // A deposit: a shield of 500 TAC of shares into a note of wallet 2. The block commits the record the landing contract
+    // matches with the deposit made on L1: asset, shares, commitment, the body the depositor named and the TAC paid in, the
+    // least that buys the shares at the rate.
+    let paid_in = buy_amount(&c.state, 500 * TAC);
+    let shield = c.spend_with(&k, &[], &[(2, secret(70, 0, 0), 500 * TAC)], None, Some(500 * TAC), "shield", c.leaves.len());
     let l5 = c.land(&elf, &k, &[shield.clone()]).unwrap_or_else(|e| fail(&format!("shield: {e}")));
-    let want_dep = [fr_be(&c.asset_f), word32(500), fr_be(&shield.spend.dep[0]), fr_be(&shield.spend.dep[1]), fr_be(&shield.spend.body)].concat();
-    if l5.data.deposits != vec![want_dep] || !l5.data.exits.is_empty() {
+    let want_dep = [fr_be(&c.asset_f), word32(500 * TAC), fr_be(&shield.spend.dep[0]), fr_be(&shield.spend.dep[1]), fr_be(&shield.spend.body), word32(paid_in)].concat();
+    if l5.data.deposits != vec![want_dep] || !l5.data.exits.is_empty() || paid_in <= 500 * TAC {
         fail("the shield's deposit record is not the one expected");
     }
-    // An exit: wallet 2 spends that note, keeps 380 and pays 120 out to an address its body names.
+    // An exit: wallet 2 spends that note, keeps 380 and pays 120 out to an address its body names, as TAC: the shares' worth less
+    // the exit fee.
     let deposited = l5.notes[0].clone();
     let to = [0xab; 20];
-    let pay_out = c.spend_with(&k, &[&deposited], &[(2, secret(71, 0, 0), 380)], Some((120, to)), None, "exit", c.leaves.len());
+    let paid_out = pay_amount(&c.state, 120 * TAC);
+    let pay_out = c.spend_with(&k, &[&deposited], &[(2, secret(71, 0, 0), 380 * TAC)], Some((120 * TAC, to)), None, "exit", c.leaves.len());
     let l6 = c.land(&elf, &k, &[pay_out]).unwrap_or_else(|e| fail(&format!("exit: {e}")));
     let mut to_word = [0u8; 32];
     to_word[12..].copy_from_slice(&to);
-    if l6.data.exits != vec![[fr_be(&c.asset_f), word32(120), to_word].concat()] || !l6.data.deposits.is_empty() {
+    if l6.data.exits != vec![[fr_be(&c.asset_f), word32(paid_out), to_word].concat()] || !l6.data.deposits.is_empty() {
         fail("the exit's record is not the one expected");
     }
-    println!("{}", json!({ "deposit_record": true, "exit_record": true }));
+    println!("{}", json!({ "deposit_record": true, "exit_record": true, "paid_in": paid_in, "paid_out": paid_out }));
 
     // Refused: a deposit opened to another value, an exit to an address its body does not name, a memo its body
     // does not name.
-    let mut bad_dep = c.spend_with(&k, &[], &[(3, secret(72, 0, 0), 50)], None, Some(50), "bad deposit", c.leaves.len());
-    bad_dep.data.dep.as_mut().unwrap().v = 51;
+    let mut bad_dep = c.spend_with(&k, &[], &[(3, secret(72, 0, 0), 50 * TAC)], None, Some(50 * TAC), "bad deposit", c.leaves.len());
+    bad_dep.data.dep.as_mut().unwrap().v = 51 * TAC;
     expect_refused(&mut c, &elf, &k, &[bad_dep], "a deposit opened to another value");
-    let held = c.mint(&[(4, secret(73, 0, 0), 60), (4, secret(73, 0, 1), 70)]);
-    let mut bad_to = c.spend_with(&k, &[&held[0]], &[(4, secret(74, 0, 0), 40)], Some((20, [0xcd; 20])), None, "bad exit", c.leaves.len());
+    let held = c.mint(&[(4, secret(73, 0, 0), 60 * TAC), (4, secret(73, 0, 1), 70 * TAC)]);
+    let mut bad_to = c.spend_with(&k, &[&held[0]], &[(4, secret(74, 0, 0), 40 * TAC)], Some((20 * TAC, [0xcd; 20])), None, "bad exit", c.leaves.len());
     bad_to.data.exit_to = [0xee; 20];
     expect_refused(&mut c, &elf, &k, &[bad_to], "an exit to an address its body does not name");
-    let mut bad_memo = c.spend(&k, &[&held[1]], &[(5, secret(75, 0, 0), 70)], "bad memo", c.leaves.len());
+    let mut bad_memo = c.spend(&k, &[&held[1]], &[(5, secret(75, 0, 0), 70 * TAC)], "bad memo", c.leaves.len());
     bad_memo.data.memo_hashes[0][0] ^= 1;
     expect_refused(&mut c, &elf, &k, &[bad_memo], "a memo its body does not name");
-    let mut bad_salt = c.spend(&k, &[&held[1]], &[(5, secret(75, 0, 1), 70)], "bad salt", c.leaves.len());
+    let mut bad_salt = c.spend(&k, &[&held[1]], &[(5, secret(75, 0, 1), 70 * TAC)], "bad salt", c.leaves.len());
     bad_salt.data.salt[31] ^= 1;
     expect_refused(&mut c, &elf, &k, &[bad_salt], "a salt its body does not name");
     // A shield of nothing: a sound proof, but a deposit of 0 could never be made on L1, so the block could never land.
@@ -1031,14 +1149,14 @@ fn test() {
     expect_refused(&mut c, &elf, &k, &[nothing], "a deposit of nothing");
 
     // Refused: one note spent twice in one block (two spends, two bodies, the same nullifier).
-    let fresh = c.mint(&[(2, secret(60, 0, 0), 10)]);
+    let fresh = c.mint(&[(2, secret(60, 0, 0), 10 * TAC)]);
     let at = c.leaves.len();
-    let twice_a = c.spend(&k, &[&fresh[0]], &[(4, secret(61, 0, 0), 10)], "tacit-block twice a", at);
-    let twice_b = c.spend(&k, &[&fresh[0]], &[(5, secret(61, 0, 1), 10)], "tacit-block twice b", at);
+    let twice_a = c.spend(&k, &[&fresh[0]], &[(4, secret(61, 0, 0), 10 * TAC)], "tacit-block twice a", at);
+    let twice_b = c.spend(&k, &[&fresh[0]], &[(5, secret(61, 0, 1), 10 * TAC)], "tacit-block twice b", at);
     expect_refused(&mut c, &elf, &k, &[twice_a.clone(), twice_b], "a note spent twice in one block");
 
     // Refused: the note spent in block 2 spent again in a later block.
-    let again = c.spend(&k, &[&received], &[(6, secret(62, 0, 0), 900)], "tacit-block spent again", at1);
+    let again = c.spend(&k, &[&received], &[(6, secret(62, 0, 0), 900 * TAC)], "tacit-block spent again", at1);
     expect_refused(&mut c, &elf, &k, &[again], "a note spent again in a later block");
 
     // Refused: a tampered proof, in a commitment (its first 576 bytes are the points read before the evaluations),
@@ -1067,8 +1185,8 @@ fn test() {
     // Forced spends: what anyone posts to the landing contract's queue, which every block takes in order. A sound one is taken, even
     // by a block with no spends of its own.
     let ql = c.state.queue_len;
-    let fnotes = c.mint(&[(6, secret(90, 0, 0), 25), (6, secret(90, 0, 1), 15), (7, secret(90, 0, 2), 5)]);
-    let good = c.spend(&k, &[&fnotes[0]], &[(7, secret(91, 0, 0), 25)], "forced good", c.leaves.len());
+    let fnotes = c.mint(&[(6, secret(90, 0, 0), 25 * TAC), (6, secret(90, 0, 1), 15 * TAC), (7, secret(90, 0, 2), 5 * TAC)]);
+    let good = c.spend(&k, &[&fnotes[0]], &[(7, secret(91, 0, 0), 25 * TAC)], "forced good", c.leaves.len());
     let lf = c.land_with(&elf, &k, &[], &[post(&good)]).unwrap_or_else(|e| fail(&format!("a forced spend alone: {e}")));
     if lf.out.queue_len != ql + 1 || lf.data.nullifiers != vec![fr_be(&good.spend.live_nullifiers()[0])] || lf.notes.len() != 1 {
         fail("a sound forced spend was not taken");
@@ -1076,54 +1194,56 @@ fn test() {
     // Passed over, the queue moving past each: a proof that fails, a memo other than the one its body names, bytes that are no
     // spend (short, a non-canonical public, a body that does not decode, an all-zero proof with zero hints), and a note spent
     // before this block.
-    let mut bad_f = c.spend(&k, &[&fnotes[1]], &[(7, secret(92, 0, 0), 15)], "forced bad proof", c.leaves.len());
+    let mut bad_f = c.spend(&k, &[&fnotes[1]], &[(7, secret(92, 0, 0), 15 * TAC)], "forced bad proof", c.leaves.len());
     bad_f.proof[576 + 13 * 32] ^= 1;
-    let mut bad_memo_f = post(&c.spend(&k, &[&fnotes[1]], &[(7, secret(92, 0, 1), 15)], "forced bad memo", c.leaves.len()));
+    let mut bad_memo_f = post(&c.spend(&k, &[&fnotes[1]], &[(7, secret(92, 0, 1), 15 * TAC)], "forced bad memo", c.leaves.len()));
     bad_memo_f.payload[blk::FORCED_HEAD_LEN] ^= 1;
     let mut noncanon = post(&good).payload;
     noncanon[..32].fill(0xff);
     let zeros = [vec![0u8; blk::FORCED_REST_AT], SpendData::default().to_bytes()[96..].to_vec()].concat();
-    let own = c.spend(&k, &[&fnotes[2]], &[(6, secret(93, 0, 0), 5)], "own beside forced", c.leaves.len());
+    let own = c.spend(&k, &[&fnotes[2]], &[(6, secret(93, 0, 0), 5 * TAC)], "own beside forced", c.leaves.len());
     let posts = [post(&bad_f), bad_memo_f, junk(vec![0xab; 77]), junk(noncanon), junk(vec![0; blk::FORCED_REST_AT + 3]), junk(zeros), post(&good)];
     let lp = c.land_with(&elf, &k, &[own.clone()], &posts).unwrap_or_else(|e| fail(&format!("forced spends passed over: {e}")));
     if lp.out.queue_len != ql + 1 + posts.len() as u64 || lp.data.nullifiers != vec![fr_be(&own.spend.live_nullifiers()[0])] {
         fail("a forced spend that should be passed over was taken, or the queue did not move past it");
     }
     // A forced spend of the note one of the block's own spends: the block's own is taken, the forced one passed over.
-    let x = c.mint(&[(5, secret(94, 0, 0), 9)]);
-    let xa = c.spend(&k, &[&x[0]], &[(4, secret(95, 0, 0), 9)], "own of x", c.leaves.len());
-    let xb = c.spend(&k, &[&x[0]], &[(3, secret(95, 0, 1), 9)], "forced of x", c.leaves.len());
+    let x = c.mint(&[(5, secret(94, 0, 0), 9 * TAC)]);
+    let xa = c.spend(&k, &[&x[0]], &[(4, secret(95, 0, 0), 9 * TAC)], "own of x", c.leaves.len());
+    let xb = c.spend(&k, &[&x[0]], &[(3, secret(95, 0, 1), 9 * TAC)], "forced of x", c.leaves.len());
     let lx = c.land_with(&elf, &k, &[xa], &[post(&xb)]).unwrap_or_else(|e| fail(&format!("own and forced of one note: {e}")));
     if lx.data.nullifiers.len() != 1 || lx.notes.len() != 1 || lx.out.queue_len != ql + 2 + posts.len() as u64 {
         fail("the block's own spend and a forced one of the same note were not resolved for the block's own");
     }
     // A forced shield: taken, its deposit record listed for the landing contract to match with the deposit made on L1.
-    let fs = c.spend_with(&k, &[], &[(4, secret(98, 0, 0), 77)], None, Some(77), "forced shield", c.leaves.len());
+    let fs_paid = buy_amount(&c.state, 77 * TAC);
+    let fs = c.spend_with(&k, &[], &[(4, secret(98, 0, 0), 77 * TAC)], None, Some(77 * TAC), "forced shield", c.leaves.len());
     let ls = c.land_with(&elf, &k, &[], &[post(&fs)]).unwrap_or_else(|e| fail(&format!("a forced shield: {e}")));
-    let want_fs = [fr_be(&c.asset_f), word32(77), fr_be(&fs.spend.dep[0]), fr_be(&fs.spend.dep[1]), fr_be(&fs.spend.body)].concat();
+    let want_fs = [fr_be(&c.asset_f), word32(77 * TAC), fr_be(&fs.spend.dep[0]), fr_be(&fs.spend.dep[1]), fr_be(&fs.spend.body), word32(fs_paid)].concat();
     if ls.data.deposits != vec![want_fs] || ls.notes.len() != 1 {
         fail("a forced shield was not taken with its deposit record");
     }
     // A forced exit: taken, its exit record listed for the landing contract to credit.
-    let ex = c.mint(&[(3, secret(99, 0, 0), 40)]);
-    let fe = c.spend_with(&k, &[&ex[0]], &[(3, secret(99, 0, 1), 30)], Some((10, [0xee; 20])), None, "forced exit", c.leaves.len());
+    let ex = c.mint(&[(3, secret(99, 0, 0), 40 * TAC)]);
+    let fe_paid = pay_amount(&c.state, 10 * TAC);
+    let fe = c.spend_with(&k, &[&ex[0]], &[(3, secret(99, 0, 1), 30 * TAC)], Some((10 * TAC, [0xee; 20])), None, "forced exit", c.leaves.len());
     let le = c.land_with(&elf, &k, &[], &[post(&fe)]).unwrap_or_else(|e| fail(&format!("a forced exit: {e}")));
     let mut ee = [0u8; 32];
     ee[12..].copy_from_slice(&[0xee; 20]);
-    if le.data.exits != vec![[fr_be(&c.asset_f), word32(10), ee].concat()] || le.notes.len() != 1 {
+    if le.data.exits != vec![[fr_be(&c.asset_f), word32(fe_paid), ee].concat()] || le.notes.len() != 1 {
         fail("a forced exit was not taken with its exit record");
     }
     // Two forced spends of one note in one block: the first taken, the second passed over, the queue past both.
-    let tw = c.mint(&[(2, secret(100, 0, 0), 12)]);
-    let ta = c.spend(&k, &[&tw[0]], &[(4, secret(100, 0, 1), 12)], "forced twice a", c.leaves.len());
-    let tb = c.spend(&k, &[&tw[0]], &[(5, secret(100, 0, 2), 12)], "forced twice b", c.leaves.len());
+    let tw = c.mint(&[(2, secret(100, 0, 0), 12 * TAC)]);
+    let ta = c.spend(&k, &[&tw[0]], &[(4, secret(100, 0, 1), 12 * TAC)], "forced twice a", c.leaves.len());
+    let tb = c.spend(&k, &[&tw[0]], &[(5, secret(100, 0, 2), 12 * TAC)], "forced twice b", c.leaves.len());
     let q0 = c.state.queue_len;
     let lt = c.land_with(&elf, &k, &[], &[post(&ta), post(&tb)]).unwrap_or_else(|e| fail(&format!("two forced of one note: {e}")));
     if lt.data.nullifiers.len() != 1 || lt.notes.len() != 1 || lt.notes[0].owner != 4 || lt.out.queue_len != q0 + 2 {
         fail("of two forced spends of one note, not the first alone was taken");
     }
     // A forced spend proven against a root older than the state's recent ones: taken, its anchor listed for the contract to check.
-    let anc = c.mint(&[(6, secret(101, 0, 0), 21)]);
+    let anc = c.mint(&[(6, secret(101, 0, 0), 21 * TAC)]);
     let anc_at = c.leaves.len();
     let anc_root = c.state.notes.root;
     let filler2 = spends_of(&mut c, &k, 1, 102);
@@ -1132,33 +1252,37 @@ fn test() {
     let newest2 = aged2.state.recent[RECENT - 1];
     aged2.state.recent = [[0u8; 32]; RECENT];
     aged2.state.recent[RECENT - 1] = newest2;
-    let fa = aged2.spend(&k, &[&anc[0]], &[(6, secret(103, 0, 0), 21)], "forced aged anchor", anc_at);
+    let fa = aged2.spend(&k, &[&anc[0]], &[(6, secret(103, 0, 0), 21 * TAC)], "forced aged anchor", anc_at);
     let la = aged2.land_with(&elf, &k, &[], &[post(&fa)]).unwrap_or_else(|e| fail(&format!("a forced spend with an aged anchor: {e}")));
     if la.data.anchors != vec![fr_be(&anc_root)] || la.data.nullifiers.len() != 1 {
         fail("a forced spend proven against an aged root was not taken with its anchor listed");
     }
     // What a forced spend costs a block: alone, and beside another (the second joins the block's one pairing).
-    let pair = c.mint(&[(2, secret(104, 0, 0), 3), (2, secret(104, 0, 1), 4)]);
-    let p1 = c.spend(&k, &[&pair[0]], &[(3, secret(105, 0, 0), 3)], "forced pair 1", c.leaves.len());
-    let p2 = c.spend(&k, &[&pair[1]], &[(3, secret(105, 0, 1), 4)], "forced pair 2", c.leaves.len());
+    let pair = c.mint(&[(2, secret(104, 0, 0), 3 * TAC), (2, secret(104, 0, 1), 4 * TAC)]);
+    let p1 = c.spend(&k, &[&pair[0]], &[(3, secret(105, 0, 0), 3 * TAC)], "forced pair 1", c.leaves.len());
+    let p2 = c.spend(&k, &[&pair[1]], &[(3, secret(105, 0, 1), 4 * TAC)], "forced pair 2", c.leaves.len());
     let l2f = c.land_with(&elf, &k, &[], &[post(&p1), post(&p2)]).unwrap_or_else(|e| fail(&format!("two forced spends: {e}")));
     let junk_only = c.land_with(&elf, &k, &[], &[bad_memo_like(&c, &k)]).map(|l| l.cycles).unwrap_or_else(|e| fail(&format!("a block of junk: {e}")));
     println!("{}", json!({ "forced_taken": true, "forced_passed_over": posts.len(), "forced_shield": true, "forced_exit": true, "forced_twice": true, "forced_aged_anchor": true,
         "forced_alone_cycles": lf.cycles, "two_forced_cycles": l2f.cycles, "junk_alone_cycles": junk_only, "queue_len": c.state.queue_len }));
     // Whoever builds the block cannot say a note is spent when it is not, nor leave out that it is, nor say a sound proof fails or a
     // failing one verifies: the guest refuses the block.
-    let y = c.mint(&[(5, secret(96, 0, 0), 8), (5, secret(96, 0, 1), 6)]);
-    let yf = post(&c.spend(&k, &[&y[0]], &[(4, secret(97, 0, 0), 8)], "forced y", c.leaves.len()));
+    let y = c.mint(&[(5, secret(96, 0, 0), 8 * TAC), (5, secret(96, 0, 1), 6 * TAC)]);
+    let yf = post(&c.spend(&k, &[&y[0]], &[(4, secret(97, 0, 0), 8 * TAC)], "forced y", c.leaves.len()));
     let head = NfMember { next: [0u8; 32], index: 0, path: c.nf.path(0) };
-    expect_refused_input(&c, &elf, &k, &[], &[yf.clone()], |b| { b[4] = [vec![1u8, 1u8], head.to_bytes()].concat(); }, "a forced spend said to be spent when it is not");
-    expect_refused_input(&c, &elf, &k, &[], &[post(&good)], |b| { b[4] = vec![1u8, 0u8]; }, "a forced spend of a spent note said to be unspent");
-    expect_refused_input(&c, &elf, &k, &[], &[yf], |b| { b[4] = vec![0u8, 0u8]; }, "a sound forced proof said not to verify");
-    let mut yb = c.spend(&k, &[&y[1]], &[(4, secret(97, 0, 1), 6)], "forced y bad", c.leaves.len());
+    // the answers for a block of one posted spend and nothing else: after the state, the spends' and settles' counts, the time, the
+    // blobs, the posts' count and the payload
+    const ANSWERS: usize = 7;
+    expect_refused_input(&c, &elf, &k, &[], &[yf.clone()], |b| { b[ANSWERS] = [vec![1u8, 1u8], head.to_bytes()].concat(); }, "a forced spend said to be spent when it is not");
+    expect_refused_input(&c, &elf, &k, &[], &[post(&good)], |b| { b[ANSWERS] = vec![1u8, 0u8]; }, "a forced spend of a spent note said to be unspent");
+    expect_refused_input(&c, &elf, &k, &[], &[yf], |b| { b[ANSWERS] = vec![0u8, 0u8]; }, "a sound forced proof said not to verify");
+    let mut yb = c.spend(&k, &[&y[1]], &[(4, secret(97, 0, 1), 6 * TAC)], "forced y bad", c.leaves.len());
     yb.proof[576 + 13 * 32] ^= 1;
-    expect_refused_input(&c, &elf, &k, &[], &[post(&yb)], |b| { b[4] = vec![1u8, 0u8]; }, "a failing forced proof said to verify");
+    expect_refused_input(&c, &elf, &k, &[], &[post(&yb)], |b| { b[ANSWERS] = vec![1u8, 0u8]; }, "a failing forced proof said to verify");
     ops_test(&mut c, &elf, &k);
     lock_test(&mut c, &elf, &k);
     blob_test(&mut c, &elf, &k);
+    shares_test(&elf, &k);
     println!("{}", json!({ "test": "ok", "note_roots": c.roots.len() }));
 }
 
@@ -1192,39 +1316,42 @@ fn of_asset(c: &Chain, asset: Fr) -> Chain {
 }
 
 /// Hops into the confidential pool: from notes (with change), a deposit that hops straight on, one posted to the queue, and two in a
-/// block, each published as asset ‖ value ‖ commitment, no note made for it, nothing exited; refused, a hop whose body also names an
-/// address, and a hop changed after its owners signed it.
+/// block, each published as asset ‖ TAC paid out ‖ commitment, no note made for it, nothing exited; refused, a hop whose body also
+/// names an address, and a hop changed after its owners signed it.
 fn ops_test(c: &mut Chain, elf: &[u8], k: &Keys) {
     use ops::Op;
     let a = c.asset_f;
-    let n = c.mint(&[(1, secret(110, 0, 0), 1_000), (2, secret(110, 0, 1), 700), (3, secret(110, 0, 2), 50)]);
+    let n = c.mint(&[(1, secret(110, 0, 0), 1_000 * TAC), (2, secret(110, 0, 1), 700 * TAC), (3, secret(110, 0, 2), 50 * TAC)]);
     // a hop of 600 with 400 kept, beside a hop of all 700
-    let h1 = c.spend_full(k, &[&n[0]], &[(1, secret(111, 0, 0), 400)], None, None, Some((600, Op::Hop { commit: [1; 32] }, vec![])), "hop 600", c.leaves.len());
-    let h2 = c.spend_full(k, &[&n[1]], &[], None, None, Some((700, Op::Hop { commit: [2; 32] }, vec![])), "hop 700", c.leaves.len());
-    let lh = c.land(elf, k, &[h1, h2]).unwrap_or_else(|e| fail(&format!("hops: {e}")));
-    let mut want = vec![ops::hop_bytes(&a, 600, &[1; 32]), ops::hop_bytes(&a, 700, &[2; 32])];
+    let h1 = c.spend_full(k, &[&n[0]], &[(1, secret(111, 0, 0), 400 * TAC)], None, None, Some((600 * TAC, Op::Hop { commit: [1; 32] }, vec![])), "hop 600", c.leaves.len());
+    let h2 = c.spend_full(k, &[&n[1]], &[], None, None, Some((700 * TAC, Op::Hop { commit: [2; 32] }, vec![])), "hop 700", c.leaves.len());
+    let mut want = vec![ops::hop_bytes(&a, pay_amount(&c.state, 600 * TAC), &[1; 32]), ops::hop_bytes(&a, pay_amount(&c.state, 700 * TAC), &[2; 32])];
     want.sort();
+    let lh = c.land(elf, k, &[h1, h2]).unwrap_or_else(|e| fail(&format!("hops: {e}")));
     if lh.data.hops != want || lh.data.outputs.len() != 1 || !lh.data.exits.is_empty() || lh.data.nullifiers.len() != 2 {
         fail("two hops were not published as expected");
     }
-    // a deposit that hops straight on: in and out in one block, nothing left on the chain
-    let dh = c.spend_full(k, &[], &[], None, Some(250), Some((250, Op::Hop { commit: [3; 32] }, vec![])), "deposit hop", c.leaves.len());
+    // a deposit that hops straight on: in and out in one block, no share left on the chain, the exit fee left in the pool
+    let before = (c.state.pool, c.state.shares);
+    let (dh_in, dh_out) = (buy_amount(&c.state, 250 * TAC), pay_amount(&c.state, 250 * TAC));
+    let dh = c.spend_full(k, &[], &[], None, Some(250 * TAC), Some((250 * TAC, Op::Hop { commit: [3; 32] }, vec![])), "deposit hop", c.leaves.len());
     let ld = c.land(elf, k, &[dh]).unwrap_or_else(|e| fail(&format!("a deposit hopped on: {e}")));
-    if ld.data.deposits.len() != 1 || ld.data.hops != vec![ops::hop_bytes(&a, 250, &[3; 32])] || !ld.data.outputs.is_empty() {
+    if ld.data.deposits.len() != 1 || ld.data.hops != vec![ops::hop_bytes(&a, dh_out, &[3; 32])] || !ld.data.outputs.is_empty() || (ld.out.pool, ld.out.shares) != (before.0 + dh_in - dh_out, before.1) {
         fail("a deposit hopped straight on was not published as expected");
     }
     // a hop posted to the queue
-    let fh = c.spend_full(k, &[&n[2]], &[], None, None, Some((50, Op::Hop { commit: [4; 32] }, vec![])), "forced hop", c.leaves.len());
+    let fh_out = pay_amount(&c.state, 50 * TAC);
+    let fh = c.spend_full(k, &[&n[2]], &[], None, None, Some((50 * TAC, Op::Hop { commit: [4; 32] }, vec![])), "forced hop", c.leaves.len());
     let lf = c.land_with(elf, k, &[], &[post(&fh)]).unwrap_or_else(|e| fail(&format!("a forced hop: {e}")));
-    if lf.data.hops != vec![ops::hop_bytes(&a, 50, &[4; 32])] || lf.data.nullifiers.len() != 1 {
+    if lf.data.hops != vec![ops::hop_bytes(&a, fh_out, &[4; 32])] || lf.data.nullifiers.len() != 1 {
         fail("a forced hop was not taken");
     }
     // refused: a hop whose body also names an address, and a hop changed after its owners signed it
-    let more = c.mint(&[(2, secret(112, 0, 0), 90), (2, secret(112, 0, 1), 90)]);
-    let mut both = c.spend_full(k, &[&more[0]], &[], Some((90, [0xee; 20])), None, Some((90, Op::Hop { commit: [5; 32] }, vec![])), "hop and address", c.leaves.len());
+    let more = c.mint(&[(2, secret(112, 0, 0), 90 * TAC), (2, secret(112, 0, 1), 90 * TAC)]);
+    let mut both = c.spend_full(k, &[&more[0]], &[], Some((90 * TAC, [0xee; 20])), None, Some((90 * TAC, Op::Hop { commit: [5; 32] }, vec![])), "hop and address", c.leaves.len());
     both.data.exit_to = [0xee; 20];
     expect_refused(c, elf, k, &[both], "a hop that also names an address");
-    let mut changed = c.spend_full(k, &[&more[1]], &[], None, None, Some((90, Op::Hop { commit: [6; 32] }, vec![])), "changed hop", c.leaves.len());
+    let mut changed = c.spend_full(k, &[&more[1]], &[], None, None, Some((90 * TAC, Op::Hop { commit: [6; 32] }, vec![])), "changed hop", c.leaves.len());
     changed.data.op = Some(Op::Hop { commit: [7; 32] });
     expect_refused(c, elf, k, &[changed], "a hop changed after its owners signed it");
     println!("{}", json!({ "ops": "ok", "two_hops_cycles": lh.cycles, "deposit_hop_cycles": ld.cycles, "forced_hop_cycles": lf.cycles }));
@@ -1298,7 +1425,7 @@ fn lock_test(c: &mut Chain, elf: &[u8], k: &Keys) {
     use blk::lock::{claim_message, Lock, Settle, SETTLE_CLAIM, SETTLE_MARK, SETTLE_REFUND, TIME_WINDOW};
     use k256::ProjectivePoint;
     let a = c.asset_f;
-    let n = c.mint(&[(1, secret(120, 0, 0), 1_000), (1, secret(120, 0, 1), 300), (1, secret(120, 0, 2), 200), (1, secret(120, 0, 3), 100)]);
+    let n = c.mint(&[(1, secret(120, 0, 0), 1_000 * TAC), (1, secret(120, 0, 1), 300 * TAC), (1, secret(120, 0, 2), 200 * TAC), (1, secret(120, 0, 3), 100 * TAC)]);
     let d_recipient = schnorr::scalar("recipient");
     let (recipient, _) = schnorr::key(d_recipient);
     let lock_of = |c: &Chain, t: u8, deadline: u64| -> (Lock, Vec<u8>, Vec<u8>, Vec<u8>) {
@@ -1316,21 +1443,23 @@ fn lock_test(c: &mut Chain, elf: &[u8], k: &Keys) {
         Settle { kind, asset: a, value, lock: *lock, index, root: tree.root, path: tree.path(index as usize), sig }
     };
 
-    // a lock of 600 (400 kept) and one of 300, made in one block
+    // a lock of 600 (400 kept) and one of 300, made in one block: the shares stay on the chain, in the locks' leaves
     let (l1, m1, cm1, _) = lock_of(c, 0, c.time + 100_000);
     let (l2, m2, _, rm2) = lock_of(c, 1, c.time + 50);
-    let s1 = c.spend_full(k, &[&n[0]], &[(1, secret(122, 0, 0), 400)], None, None, Some((600, ops::Op::Lock { lock: l1, memo: blk::memo_hash(&m1) }, vec![m1])), "lock 600", c.leaves.len());
-    let s2 = c.spend_full(k, &[&n[1]], &[], None, None, Some((300, ops::Op::Lock { lock: l2, memo: blk::memo_hash(&m2) }, vec![m2])), "lock 300", c.leaves.len());
+    let (v1, v2, v3, v4) = (600 * TAC, 300 * TAC, 200 * TAC, 100 * TAC);
+    let s1 = c.spend_full(k, &[&n[0]], &[(1, secret(122, 0, 0), 400 * TAC)], None, None, Some((v1, ops::Op::Lock { lock: l1, memo: blk::memo_hash(&m1) }, vec![m1])), "lock 600", c.leaves.len());
+    let s2 = c.spend_full(k, &[&n[1]], &[], None, None, Some((v2, ops::Op::Lock { lock: l2, memo: blk::memo_hash(&m2) }, vec![m2])), "lock 300", c.leaves.len());
+    let before = (c.state.pool, c.state.shares);
     let ll = c.land(elf, k, &[s1, s2]).unwrap_or_else(|e| fail(&format!("locks: {e}")));
-    if ll.data.outputs.len() != 3 || !ll.data.exits.is_empty() {
+    if ll.data.outputs.len() != 3 || !ll.data.exits.is_empty() || (ll.out.pool, ll.out.shares) != before {
         fail("two locks and a change were not the block's notes");
     }
 
     // the claim: the recipient's pre-signature adapted to T = t·G, which the counterparty holds, completed with t
     let t = schnorr::scalar("the swap's secret");
-    let msg = claim_message(&c.state.chain, &l1.leaf(&a, 600));
+    let msg = claim_message(&c.state.chain, &l1.leaf(&a, v1));
     let (rx, s_tilde) = schnorr::pre_sign(d_recipient, ProjectivePoint::GENERATOR * t, &msg, "claim nonce");
-    let claim = settle(c, SETTLE_CLAIM, &l1, 600, Some(schnorr::sig(&rx, &(s_tilde + t))));
+    let claim = settle(c, SETTLE_CLAIM, &l1, v1, Some(schnorr::sig(&rx, &(s_tilde + t))));
     let mut wrong = claim.clone();
     wrong.sig = Some(schnorr::sig(&rx, &(s_tilde + t + schnorr::scalar("off by one"))));
     match c.clone().land_full(elf, k, &[], &[wrong], &[]) {
@@ -1344,7 +1473,7 @@ fn lock_test(c: &mut Chain, elf: &[u8], k: &Keys) {
         Err(e) => println!("{}", json!({ "refused": "a claim that could land after its deadline", "why": e })),
     }
     let lc = c.land_full(elf, k, &[], &[claim.clone()], &[]).unwrap_or_else(|e| fail(&format!("a claim: {e}")));
-    let want = leaf_of(&a, &fr_u64(600), &l1.claim_to.npk, &l1.claim_to.rho);
+    let want = leaf_of(&a, &fr_u64(v1), &l1.claim_to.npk, &l1.claim_to.rho);
     if lc.data.claims.len() != 1 || lc.data.outputs.len() != 1 || lc.data.outputs[0][..32] != fr_be(&want) || lc.data.outputs[0][32..] != blk::memo_hash(&cm1) {
         fail("the claim did not make the recipient's note and publish its signature");
     }
@@ -1358,14 +1487,14 @@ fn lock_test(c: &mut Chain, elf: &[u8], k: &Keys) {
     }
 
     // the refund, only from the deadline on
-    let refund = settle(c, SETTLE_REFUND, &l2, 300, None);
+    let refund = settle(c, SETTLE_REFUND, &l2, v2, None);
     match c.clone().land_full(elf, k, &[], &[refund.clone()], &[]) {
         Ok(_) => fail("a refund before its deadline was taken"),
         Err(e) => println!("{}", json!({ "refused": "a refund before its deadline", "why": e })),
     }
     c.time = l2.deadline;
     let lr = c.land_full(elf, k, &[], &[refund], &[]).unwrap_or_else(|e| fail(&format!("a refund: {e}")));
-    let back = leaf_of(&a, &fr_u64(300), &l2.refund_to.npk, &l2.refund_to.rho);
+    let back = leaf_of(&a, &fr_u64(v2), &l2.refund_to.npk, &l2.refund_to.rho);
     if lr.data.outputs.len() != 1 || lr.data.outputs[0][..32] != fr_be(&back) || lr.data.outputs[0][32..] != blk::memo_hash(&rm2) || !lr.data.claims.is_empty() {
         fail("the refund did not make the locker's note");
     }
@@ -1373,8 +1502,8 @@ fn lock_test(c: &mut Chain, elf: &[u8], k: &Keys) {
     // a claim posted to the queue is taken; one posted too late is passed over and the chain goes on
     let (l3, m3, cm3, _) = lock_of(c, 2, c.time + 100_000);
     let (l4, m4, cm4, _) = lock_of(c, 3, c.time + TIME_WINDOW + 10);
-    let s3 = c.spend_full(k, &[&n[2]], &[], None, None, Some((200, ops::Op::Lock { lock: l3, memo: blk::memo_hash(&m3) }, vec![m3])), "lock 200", c.leaves.len());
-    let s4 = c.spend_full(k, &[&n[3]], &[], None, None, Some((100, ops::Op::Lock { lock: l4, memo: blk::memo_hash(&m4) }, vec![m4])), "lock 100", c.leaves.len());
+    let s3 = c.spend_full(k, &[&n[2]], &[], None, None, Some((v3, ops::Op::Lock { lock: l3, memo: blk::memo_hash(&m3) }, vec![m3])), "lock 200", c.leaves.len());
+    let s4 = c.spend_full(k, &[&n[3]], &[], None, None, Some((v4, ops::Op::Lock { lock: l4, memo: blk::memo_hash(&m4) }, vec![m4])), "lock 100", c.leaves.len());
     c.land(elf, k, &[s3, s4]).unwrap_or_else(|e| fail(&format!("two more locks: {e}")));
     let sign = |c: &Chain, lock: &Lock, value: u64, tag: &str| -> [u8; 64] {
         let msg = claim_message(&c.state.chain, &lock.leaf(&a, value));
@@ -1382,8 +1511,8 @@ fn lock_test(c: &mut Chain, elf: &[u8], k: &Keys) {
         schnorr::sig(&rx, &(s + schnorr::scalar(tag)))
     };
     let posted_settle = |s: &Settle, memo: &[u8]| Post { payload: [SETTLE_MARK.to_vec(), s.to_bytes(), memo.to_vec()].concat(), outs: vec![] };
-    let p3 = posted_settle(&settle(c, SETTLE_CLAIM, &l3, 200, Some(sign(c, &l3, 200, "t3"))), &cm3);
-    let p4 = posted_settle(&settle(c, SETTLE_CLAIM, &l4, 100, Some(sign(c, &l4, 100, "t4"))), &cm4);
+    let p3 = posted_settle(&settle(c, SETTLE_CLAIM, &l3, v3, Some(sign(c, &l3, v3, "t3"))), &cm3);
+    let p4 = posted_settle(&settle(c, SETTLE_CLAIM, &l4, v4, Some(sign(c, &l4, v4, "t4"))), &cm4);
     c.time += 20;
     let lf = c.land_with(elf, k, &[], &[p3, p4]).unwrap_or_else(|e| fail(&format!("forced claims: {e}")));
     if lf.data.claims.len() != 1 || lf.data.nullifiers.len() != 1 || lf.out.queue_len != c.state.queue_len {
@@ -1439,9 +1568,9 @@ fn lock_vectors(path: &str) {
 /// A block whose lists travel in blobs: the program's evaluation of the blob equals the KZG library's, the block commits the openings,
 /// and the program refuses a block whose memos are not the ones its notes commit or whose blobs are not as many as its data fills.
 fn blob_test(c: &mut Chain, elf: &[u8], k: &Keys) {
-    let n = c.mint(&[(1, secret(130, 0, 0), 500), (2, secret(130, 0, 1), 300)]);
-    let a = c.spend(k, &[&n[0]], &[(3, secret(131, 0, 0), 200), (1, secret(131, 0, 1), 300)], "blob a", c.leaves.len());
-    let b = c.spend(k, &[&n[1]], &[(4, secret(131, 0, 2), 300)], "blob b", c.leaves.len());
+    let n = c.mint(&[(1, secret(130, 0, 0), 500 * TAC), (2, secret(130, 0, 1), 300 * TAC)]);
+    let a = c.spend(k, &[&n[0]], &[(3, secret(131, 0, 0), 200 * TAC), (1, secret(131, 0, 1), 300 * TAC)], "blob a", c.leaves.len());
+    let b = c.spend(k, &[&n[1]], &[(4, secret(131, 0, 2), 300 * TAC)], "blob b", c.leaves.len());
     c.blobs = true;
     let before = c.clone();
     let l = c.land(elf, k, &[a.clone(), b.clone()]).unwrap_or_else(|e| fail(&format!("a blob block: {e}")));
@@ -1474,4 +1603,82 @@ fn blob_test(c: &mut Chain, elf: &[u8], k: &Keys) {
     }
     c.blobs = false;
     println!("{}", json!({ "blobs": "ok", "blob_block_cycles": l.cycles, "calldata_block_cycles": lc.cycles, "blob_extra_cycles": l.cycles as i64 - lc.cycles as i64 }));
+}
+
+/// Whether the rate went up from `a` to `b` (each (pool, shares)): b.pool / b.shares > a.pool / a.shares.
+fn rose(a: (u64, u64), b: (u64, u64)) -> bool {
+    b.0 as u128 * a.1 as u128 > a.0 as u128 * b.1 as u128
+}
+
+/// Notes count shares of the pool, on a fresh chain: a shield buys them a unit each, an exit pays out their worth less the 0.1% fee,
+/// which stays, and a payment's pool share ends shares while the TAC behind them stays, so the rate rises after each, and a deposit
+/// then pays more than a unit a share. At each the edges hold: an exit paying out a unit more than allowed, a payment of notes
+/// without a pool share, a pool share a share short of 0.01 TAC's worth and a deposit paying a unit less than its shares' worth are
+/// refused.
+fn shares_test(elf: &[u8], k: &Keys) {
+    use ops::Op;
+    let mut c = Chain::new(8);
+    let at = |c: &Chain| (c.state.pool, c.state.shares);
+
+    // a shield of 1,000 TAC: 1,000 TAC of shares, a unit each
+    let shield = c.spend_with(k, &[], &[(1, secret(140, 0, 0), 1_000 * TAC)], None, Some(1_000 * TAC), "shares shield", 0);
+    let l = c.land(elf, k, &[shield.clone()]).unwrap_or_else(|e| fail(&format!("shares shield: {e}")));
+    if shield.data.dep.map(|o| o.amount) != Some(1_000 * TAC) || (l.out.pool, l.out.shares) != (1_000 * TAC, 1_000 * TAC) {
+        fail("a shield on a fresh chain did not buy its shares a unit each");
+    }
+
+    // an exit of 100 TAC of shares pays out at most 99.9 TAC: a unit more is refused
+    let held = l.notes[0].clone();
+    let exit = c.spend_with(k, &[&held], &[(1, secret(141, 0, 0), 900 * TAC)], Some((100 * TAC, [0xe1; 20])), None, "shares exit", c.leaves.len());
+    if exit.data.exit.map(|o| o.amount) != Some(9_990_000_000) {
+        fail("an exit's most is not its shares' worth less 0.1%");
+    }
+    let mut over = exit.clone();
+    over.data.exit.as_mut().unwrap().amount += 1;
+    expect_refused_for(&mut c, elf, k, &[over], "pays out more than its shares are worth", "an exit paying out a unit more than its shares' worth less the fee");
+    let r0 = at(&c);
+    let l = c.land(elf, k, &[exit]).unwrap_or_else(|e| fail(&format!("shares exit: {e}")));
+    let mut to = [0u8; 32];
+    to[12..].copy_from_slice(&[0xe1; 20]);
+    // the 0.1 TAC fee stays behind the 900 TAC of shares left: the rate rises
+    let r1 = at(&c);
+    if l.data.exits != vec![[fr_be(&c.asset_f), word32(9_990_000_000), to].concat()] || r1 != (90_010_000_000, 900 * TAC) || !rose(r0, r1) {
+        fail("an exit did not leave its fee in the pool");
+    }
+
+    // a payment's pool share: the fewest shares worth 0.01 TAC at the new rate, fewer than 0.01 TAC of shares now
+    let kept = l.notes[0].clone();
+    let share = pool_share(&c.state);
+    if share != 999_889 {
+        fail("a pool share is not the fewest shares worth 0.01 TAC");
+    }
+    // refused: a payment of notes that sends nothing out and gives the holders nothing, and one whose pool share is a share short
+    let bare = c.spend_raw(k, &[&kept], &[(2, secret(142, 0, 0), 500 * TAC), (1, secret(142, 0, 1), 400 * TAC)], None, None, None, "shares bare", c.leaves.len());
+    expect_refused_for(&mut c, elf, k, &[bare], "gives the holders their pool share", "a payment of notes without a pool share");
+    let outs = [(2, secret(142, 0, 2), 500 * TAC), (1, secret(142, 0, 3), 400 * TAC - (share - 1))];
+    let short = c.spend_full(k, &[&kept], &outs, None, None, Some((share - 1, Op::Pool, vec![])), "shares short", c.leaves.len());
+    expect_refused_for(&mut c, elf, k, &[short], "the exit's opening, address or operation", "a pool share worth less than 0.01 TAC");
+    // the payment with its pool share lands: those shares end and the TAC behind them stays, so the rate rises again
+    let pay = c.spend(k, &[&kept], &[(2, secret(142, 0, 4), 500 * TAC), (1, secret(142, 0, 5), 400 * TAC)], "shares pay", c.leaves.len());
+    let l = c.land(elf, k, &[pay.clone()]).unwrap_or_else(|e| fail(&format!("shares pay: {e}")));
+    let r2 = at(&c);
+    if pay.data.op != Some(Op::Pool) || pay.data.exit.map(|o| (o.v, o.amount)) != Some((share, 0)) || r2 != (r1.0, r1.1 - share) || !rose(r1, r2) || l.notes[1].v != 400 * TAC - share {
+        fail("a payment's pool share did not end its shares and keep their TAC");
+    }
+
+    // a deposit now pays more than a unit a share: a unit less than the least that covers them is refused, that least taken in
+    let price = buy_amount(&c.state, 100 * TAC);
+    if price <= 100 * TAC || price as u128 * r2.1 as u128 >= (100 * TAC) as u128 * r2.0 as u128 + r2.1 as u128 {
+        fail("a deposit's price is not the least that covers its shares");
+    }
+    let dep = c.spend_with(k, &[], &[(3, secret(143, 0, 0), 100 * TAC)], None, Some(100 * TAC), "shares deposit", c.leaves.len());
+    let mut under = dep.clone();
+    under.data.dep.as_mut().unwrap().amount -= 1;
+    expect_refused_for(&mut c, elf, k, &[under], "pays less than its shares are worth", "a deposit paying a unit less than its shares' worth");
+    let l = c.land(elf, k, &[dep]).unwrap_or_else(|e| fail(&format!("shares deposit: {e}")));
+    let r3 = at(&c);
+    if word_u64(&l.data.deposits[0][160..192]) != price || r3 != (r2.0 + price, r2.1 + 100 * TAC) || rose(r3, r2) {
+        fail("a deposit at the new rate was not taken at its price, or lowered the rate");
+    }
+    println!("{}", json!({ "shares": "ok", "rates": [r0, r1, r2, r3], "pool_share": share, "deposit_price": price }));
 }
