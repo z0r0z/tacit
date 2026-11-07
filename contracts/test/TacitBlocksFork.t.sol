@@ -29,7 +29,7 @@ contract TacitBlocksForkTest is Test {
     address constant CONFIDENTIAL = 0x000000000Ed1eabD231Be41d93b719056F7febFC;
     bytes32 constant CTAC = 0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b;
     /// `cargo prove vkey --elf contracts/sp1/confidential/tacit-block/elf/tacit-block`
-    bytes32 constant BLOCK_VKEY = 0x0000000000000000000000000000000000000000000000000000000000000000;
+    bytes32 constant BLOCK_VKEY = 0x008cac7f438f56169c6173013632003e1e12acbc7b321227a31b1bfc26dd0ab0;
     address constant SEQ = address(0x5E9);
     uint256 constant UNIT = 1e10;
 
