@@ -36,8 +36,8 @@ const check = (ok, what, got = '') => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${w
 
 // The salt pool's newest good finds: two from one send (one row, the better), the house's, and one from two days ago (not shown).
 const SALT_ADDR = '0x0000000000ab12cd34ef56ab78cd90ef12ab34cd', HOUSE = '0x68575b073de49a94e3e3acf6f3a0d6e3b66267c7';
-const SALT_FINDS = () => { const at = Date.now() - 90_000; return [{ address: SALT_ADDR, bits: 38, miner: OTHER, at }, { address: SALT_ADDR, bits: 36, miner: OTHER, at },
-  { address: SALT_ADDR, bits: 41, miner: HOUSE, at: Date.now() - 150_000, house: true }, { address: SALT_ADDR, bits: 45, miner: OTHER, at: Date.now() - 2 * 86400000 }]; };
+const SALT_FINDS = () => { const at = Date.now() - 90_000; return [{ address: SALT_ADDR, bits: 44, miner: OTHER, at }, { address: SALT_ADDR, bits: 33, miner: OTHER, at },
+  { address: SALT_ADDR, bits: 41, miner: HOUSE, at: Date.now() - 150_000, house: true }, { address: SALT_ADDR, bits: 56, miner: OTHER, at: Date.now() - 2 * 86400000 }]; };
 // The stand-in prover: `local` is what it answers (null: nothing listens), and each POST /mine it was sent.
 const WINDOWS_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
 async function open(browser, local, { phone = false, idle = false, ua = null, hash = '', init = null } = {}) {
@@ -152,8 +152,8 @@ try {
     else check(await page.locator('#pace-row').isHidden(), 'no pace in the day\'s first two hours');
     check((await page.locator('#chain .blk.gpu').count()) === 1 && (await page.locator('#chain .blk.gpu').innerText()).includes('Tacit GPU'), 'a block Tacit\'s GPU proved says so');
     const feedText = await text(page, '#feed');
-    check(feedText.includes('mined a good salt, 38 zero bits') && feedText.includes('mined a good salt, 41 zero bits'), 'the feed shows the good salts the nodes mined', feedText);
-    check(!feedText.includes('36 zero bits') && !feedText.includes('45 zero bits'), 'a send shows its best find once, and a day-old find is not shown', feedText);
+    check((feedText.match(/good salt, 5 leading zero bytes/g) || []).length === 2, 'the feed shows the good salts the nodes mined, in leading zero bytes', feedText);
+    check(!feedText.includes('4 leading zero bytes') && !feedText.includes('7 leading zero bytes') && !feedText.includes(' bits'), 'a send shows its best find once, a day-old find is not shown, and no bits', feedText);
     check((await page.locator('#feed li').count()) === 4 && (await page.locator('#feed li.salt').count()) === 2, 'proofs and salts share the feed, newest first');
     check((await page.locator('#feed li.salt').allInnerTexts()).every((x) => !x.includes('TAC')), 'a salt row claims no TAC');
     check((await page.locator('#feed li.salt .who.gpu').count()) === 1, 'Tacit\'s GPU is named on its own find');

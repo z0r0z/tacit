@@ -175,6 +175,7 @@ test('good finds go on a ring for the activity feed, newest first and capped; we
 
 test('config: SALT_GOOD_BITS sets the feed\'s bar; nonsense keeps the default', () => {
   assert.equal(saltPoolConfig({}).goodBits, SALT_POOL.goodBits);
+  assert.equal(SALT_POOL.goodBits, 32, 'four leading zero bytes');
   assert.equal(saltPoolConfig({ SALT_GOOD_BITS: '36' }).goodBits, 36);
   assert.equal(saltPoolConfig({ SALT_GOOD_BITS: '3' }).goodBits, SALT_POOL.goodBits);
   assert.equal(saltPoolConfig({ SALT_GOOD_BITS: 'x' }).goodBits, SALT_POOL.goodBits);

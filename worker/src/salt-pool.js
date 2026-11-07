@@ -30,7 +30,7 @@ export const SALT_POOL = Object.freeze({
   potPoints: 5000,          // the campaign's daily points when its terms cannot be read (50 TAC at 0.01 TAC a point)
   bankBits: 32,             // SALT_BANK_BITS: the best bankKeep salts at least this good (four zero bytes) are kept for deploys
   bankKeep: 64,
-  goodBits: 34,             // SALT_GOOD_BITS: a find at least this good goes on the page's activity feed (about one every few minutes at today's rate)
+  goodBits: 32,             // SALT_GOOD_BITS: a find at least this good (four zero bytes) goes on the page's activity feed (about one a minute at today's rate)
   recentKeep: 30,           // the newest good finds kept for that feed
   perCall: 64,              // salts one send may carry
   sendEveryMs: 20_000,      // one send per client this often

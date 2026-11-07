@@ -169,9 +169,11 @@ async function readFeed() {
   feedTop = Math.max(feedTop, feed[0]?.at || 0);
 }
 
-// The feed: the community's proofs, and the good salts the nodes mined (`recent`, which the salt pool keeps: finds past its SALT_GOOD_BITS; one
+// The feed: the community's proofs, and the good salts the nodes mined (`recent`, which the salt pool keeps: finds of four zero bytes or more; one
 // row for a send's best, at most SALTS_SHOWN of them so a run of finds never pushes every proof off), newest first.
 const SALTS_SHOWN = 4, SALT_FRESH_MS = 24 * 3600_000;
+// A find's quality as its address starts: whole zero bytes (a byte is 8 bits).
+const zeroBytes = (bits) => { const n = Math.floor(bits / 8); return `${n} leading zero byte${n === 1 ? '' : 's'}`; };
 function goodSalts() {
   const seen = new Set(), t = Date.now();
   return (salts?.recent || []).filter((f) => t - f.at < SALT_FRESH_MS && f.at <= t + 60_000)
@@ -186,7 +188,7 @@ function paintFeed() {
     // This address's own proofs are marked by the row (an edge), not a longer name, so every row stays on one line.
     const mine = !p.house && p.miner && String(p.miner).toLowerCase() === me();
     const top = p.kind === 'salt' ? saltTop : feedTop, fresh = top > 0 && p.at > top;
-    if (p.kind === 'salt') return `<li class="${['salt', fresh ? 'new' : '', mine ? 'me' : ''].filter(Boolean).join(' ')}"${mine ? ' title="Your node"' : ''}><span class="by">${byOf(p, false)}<small>mined a good salt, ${p.bits} zero bits</small></span><b></b><small>${esc(ago(p.at))}</small></li>`;
+    if (p.kind === 'salt') return `<li class="${['salt', fresh ? 'new' : '', mine ? 'me' : ''].filter(Boolean).join(' ')}"${mine ? ' title="Your node"' : ''}><span class="by">${byOf(p, false)}<small>good salt, ${zeroBytes(p.bits)}</small></span><b></b><small>${esc(ago(p.at))}</small></li>`;
     const r = rewardWei(p.points, cap());
     return `<li class="${[fresh ? 'new' : '', mine ? 'me' : ''].filter(Boolean).join(' ')}"${mine ? ' title="Your node"' : ''}><span class="by">${byOf(p, false)}<small>a deposit, proved in ${esc(took(p.secs))}</small></span><b>${r ? `+${tac(r)} TAC` : ''}</b><small>${esc(ago(p.at))}</small></li>`;
   }).join('');
