@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-gC4bUR6JDhm+lfxPFvLEY1ZelxIPClqbQ4s65Z3QUxI=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-wLb9sGYk3wecvcyC8c4aQPi6ifiEDgrVrTzf4TEcbko=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -3660,8 +3660,10 @@ function proveBar(status, secs) {
   bar.dataset.eta = String(Math.max(5, secs)); bar.dataset.start = String(Date.now());
   bar.innerHTML = '<div class="actr-bar" role="progressbar" aria-label="Making your proof" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i style="width:0%"></i></div><span></span>';
   el.after(bar);
+  // (the Send tab's line is moved into each new draw of the tile: its bar goes with it)
+  el.__bar = bar;
   paceTick();
-  return () => bar.remove();
+  return () => { if (el.__bar === bar) el.__bar = null; bar.remove(); };
 }
 // A finished row that went through drops its steps (all done) and says so with a mark; one still going carries a live dot by its clock.
 const actRow = (it) => {
@@ -5687,7 +5689,7 @@ function lockAhead(k, units, who) {
   LA.t = setTimeout(async () => {
     if (!(await relayProving())) return;
     const t = await getUx();
-    LA.k = key; LA.a = null;
+    LA.k = key; LA.a = null; LA.at = Date.now();
     LA.p = t.stealthSendAhead({ walletPriv: walletPriv(), recipientPubHex: who.pubHex, note, amount: units })
       .then((a) => { if (LA.k === key) LA.a = a; return a; }, () => { if (LA.k === key) LA.k = null; return null; });
   }, 1500);
@@ -5803,7 +5805,9 @@ async function stealthSendNow({ run, k, label, w, raw, units, field, status, lin
     relayed: async () => {
       // proved while the send stood (lockAhead): posted for the relay to send (a minute at most for one still being made)
       if (LA.k === `${kNote(note)}:${w.pubHex}`) {
-        const a = LA.a || await Promise.race([LA.p, sleep(60e3).then(() => null)]);
+        let a = LA.a;
+        // still being proved (it began when the form stood still): the press waits on it, and the line under the button shows what is left of the proof, as any proof made before a send does
+        if (!a) { const stop = proveBar(status, Math.max(8, proveSecs() - (Date.now() - (LA.at || Date.now())) / 1000)); try { a = await Promise.race([LA.p, sleep(60e3).then(() => null)]); } finally { stop(); } }
         LA.k = null;
         if (a) { try { return await lockSendAhead({ t, priv, a, who: w, ticker: POOL_TK[k], waitOpts: run.wait(null, 15 * 60e3) }); } catch (e) { if (!e?.notPosted) throw e; } }
       }
@@ -17462,7 +17466,7 @@ function paintHx() {
   if (m === 'borrow' && HX.bsrc === 'btc' && HX.bwFace === 'track') { hxBwPaint(); return; }
   if (m === 'borrow' && $('#hx-bw-s') && FLASH['hx-bw-s']) mount($('#hx-bw-s'), FLASH['hx-bw-s']);
   if (HX.zs && $('#hx-zs-at')) $('#hx-zs-at').replaceWith(HX.zs);
-  if (HX.ss && $('#hx-ss-at')) { if (!HX.sending && HX.ss.dataset.k !== hxSsKey()) say(HX.ss, ''); $('#hx-ss-at').replaceWith(HX.ss); }
+  if (HX.ss && $('#hx-ss-at')) { if (!HX.sending && HX.ss.dataset.k !== hxSsKey()) say(HX.ss, ''); $('#hx-ss-at').replaceWith(HX.ss); if (HX.ss.__bar) HX.ss.after(HX.ss.__bar); }
   if (HX.zapping || HX.sending) { const g = $('#hx-go'); if (g) { g.setAttribute('aria-busy', 'true'); g.disabled = true; } }
   $('#hx-bw-back')?.addEventListener('click', () => { HX.bwMore = false; paintHx(); });
   const press = m === 'send' ? hxSendGo : hxGo;
