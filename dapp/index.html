@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-+/AaCatHxRIehIfF5hnClmIlPPHIAlnYKOvV/RYAshc=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-mG47dPW68ens74+V/A5KF6YMkaUOF2MQhTm2OtT3zqM=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -3724,7 +3724,7 @@ announceWalletConnect({
   chains: DEVICE_CHAINS.map((c) => c.chainId),
   rpcMap: Object.fromEntries(DEVICE_CHAINS.map((c) => [c.chainId, c.rpc[0]])),
   metadata: { name: 'tacit', description: 'Private DeFi on Bitcoin and Ethereum', url: location.origin, icons: [`${location.origin}/tac-logo.png`] },
-  onPair: (x) => wcSheet.onPair(x),
+  onPair: (x) => { const done = wcSheet.onPair(x); wcNoApp(x.cancel); return done; },
   onAsk: (x) => wcSheet.onAsk(x),
 });
 const wcSheet = wcSheets(dialogHost({ dialog: $('#sheet-wc'), title: $('#wc-h'), body: $('#wc-body') }));
@@ -3772,7 +3772,7 @@ const payer = () => payer.raw(acctUsed);
 // (`used`: the account's use as read, or the reader; unknown counts as used, which is how a key with no wallet was always paid for)
 payer.raw = (used) => {
   if (!S.key || S.pay === 'wallet' || (S.wallet && S.pay !== 'tacit')) return 'wallet';
-  if (S.pay === 'tacit' || !evm.hasBrowserWallet()) return 'tacit';
+  if (S.pay === 'tacit' || !evm.available()) return 'tacit';
   return (typeof used === 'function' ? used() : used) === false ? 'wallet' : 'tacit';
 };
 const payName = () => (payer() === 'tacit' ? 'Tacit account' : 'Wallet');
@@ -4312,7 +4312,7 @@ render.wallet = () => {
     <div id="w-keys">${walletKeys()}</div>
     <div class="lbl sep" id="pay-h"><span>Public ETH comes from</span></div>
     <div class="opts" role="radiogroup" aria-labelledby="pay-h">
-      <button class="opt${pays === 'wallet' ? ' main' : ''}" type="button" role="radio" aria-checked="${String(pays === 'wallet')}" data-pay="wallet"><span class="opt-t">${eth}Your wallet${pays === 'wallet' ? html`<span class="tag">pays</span>` : ''}<span class="num w-bal" id="ac-wbal">${S.wallet ? html`<span class="sk" style="--w:5ch"></span>` : ''}</span></span><span class="opt-m">${S.wallet ? short(S.wallet, 8) : evm.hasBrowserWallet() ? 'Connects when you press' : 'Connect one to pay from it'}</span></button>
+      <button class="opt${pays === 'wallet' ? ' main' : ''}" type="button" role="radio" aria-checked="${String(pays === 'wallet')}" data-pay="wallet"><span class="opt-t">${eth}Your wallet${pays === 'wallet' ? html`<span class="tag">pays</span>` : ''}<span class="num w-bal" id="ac-wbal">${S.wallet ? html`<span class="sk" style="--w:5ch"></span>` : ''}</span></span><span class="opt-m">${S.wallet ? short(S.wallet, 8) : evm.available() ? 'Connects when you press' : 'Connect one to pay from it'}</span></button>
       <button class="opt${pays === 'tacit' ? ' main' : ''}" type="button" role="radio" aria-checked="${String(pays === 'tacit')}" data-pay="tacit"><span class="opt-t">${eth}This key’s address${pays === 'tacit' ? html`<span class="tag">pays</span>` : ''}<span class="num w-bal" id="ac-abal"><span class="sk" style="--w:5ch"></span></span></span><span class="opt-m">No popups: send ETH to it first</span></button>
     </div>
     <p class="note" id="ac-l2" hidden></p>
@@ -4722,21 +4722,38 @@ document.addEventListener('keydown', (e) => {
 document.addEventListener('click', (e) => { if (e.target.closest?.('[data-fund]')) { WAL.mode = 'add'; openSheet('wallet'); } });
 // the Shield card's wallet, connected from its balance corner: the key stays as it is, and the card is priced again for the wallet's ETH
 document.addEventListener('click', (e) => { if (e.target.closest?.('[data-hxconnect]')) connect({ key: false }).then(() => { HX.q = null; hxBalPaint(); hxQuote(); }, (x) => toast(x?.message || 'The wallet did not connect.')); });
+// The wallet-app pairing, opened to pay with a key open: someone with no wallet app at all can pay from the key's own address instead,
+// once ETH is sent to it (from an exchange); the pairing is let go, and the next press goes that way.
+function wcNoApp(cancel) {
+  const body = $('#wc-body'), a = S.acct?.address;
+  if (!body || !S.key || !a || S.pay === 'tacit') return;
+  const box = document.createElement('div');
+  box.className = 'note';
+  box.style.marginTop = '14px';
+  mount(box, html`No wallet app? Send ETH to this key’s own address from any exchange, and pay from it instead: <code class="addr">${short(a, 8)}</code>
+    <button class="link" type="button" data-wc-copyacct>Copy</button> <button class="link" type="button" data-wc-useacct>Pay from it</button>`);
+  body.append(box);
+  box.querySelector('[data-wc-copyacct]').onclick = () => copy(a, 'Address copied');
+  box.querySelector('[data-wc-useacct]').onclick = () => {
+    setPayer('tacit'); try { cancel?.(); } catch { } $('#sheet-wc')?.close();
+    toast('This key’s address pays now. Send ETH to it, then press again.');
+  };
+}
 // the key's own address chosen to pay and short: the wallet this browser has is a press away
 document.addEventListener('click', (e) => { if (e.target.closest?.('[data-paywallet]') && S.key) setPayer('wallet'); });
 // Max over a balance the wallet holds, pressed before the wallet is connected: it connects, and Max is pressed again on the form drawn for it
 document.addEventListener('click', (e) => {
   const b = e.target.closest?.('#w-max, #pf-max, #pf-tmax, #d-max');
-  if (!b || !S.key || S.wallet || payer() !== 'wallet' || !evm.hasBrowserWallet()) return;
+  if (!b || !S.key || S.wallet || payer() !== 'wallet' || !evm.available()) return;
   e.preventDefault(); e.stopImmediatePropagation();
   const id = b.id;
   connect({ key: false }).then(() => setTimeout(() => document.getElementById(id)?.click(), 300), (x) => toast(x?.message || 'The wallet did not connect.'));
 }, true);
-const toWalletBtn = () => (evm.hasBrowserWallet() ? html` <button class="link" type="button" data-paywallet>Pay from your wallet</button>` : html``);
+const toWalletBtn = () => (evm.available() ? html` <button class="link" type="button" data-paywallet>Pay from your wallet</button>` : html``);
 const lowEth = () => (payer() === 'tacit' ? html`More than this key’s address holds.${toWalletBtn()} <button class="link" type="button" data-fund>Add ETH</button>` : 'More than your wallet holds.');
 function noEthYet(el, wei, chain, then) {
   if (!el?.isConnected || wei !== 0n || payer() !== 'tacit') return;
-  const has = evm.hasBrowserWallet();
+  const has = evm.available();
   mount(el, html`<div class="callout"><span>${has ? 'This key’s address' : 'Your Ethereum address for Tacit'}, <code class="addr">${short(S.acct?.address || '', 6)}</code>, has no ETH${chain ? ` on ${chain}` : ''} yet. ${has ? html`Pay from your wallet instead, or send ETH to it, then ${then} here.` : `Send some to it from any wallet or exchange, then ${then} here.`}</span>${has ? html`<button class="btn" type="button" data-paywallet>Pay from wallet</button>` : html`<button class="btn ghost" type="button" data-fund>Add ETH</button>`}</div>`);
 }
 const mine = () => (payer() === 'tacit' ? 'My Tacit account' : 'My wallet');
@@ -14553,7 +14570,7 @@ function hxWrapVia(units = hxUnits()) {
   if (!S.key || p === 'wallet') return p;
   const need = units ? units * E10 : 1n, acct = hxEthOf(S.acct?.address);
   if (acct == null || acct >= need) return 'tacit';
-  if (!S.wallet) return evm.hasBrowserWallet() ? 'wallet' : 'tacit';
+  if (!S.wallet) return evm.available() ? 'wallet' : 'tacit';
   const w = hxEthOf(S.wallet);
   return w != null && w > acct ? 'wallet' : 'tacit';
 }

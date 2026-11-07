@@ -208,7 +208,7 @@ const DAPP = new URL('../dapp/', import.meta.url).pathname;
 const bwText = (page) => page.evaluate((s) => [...document.querySelectorAll(s)].map((e) => e.textContent).join(' '), '#bw-status, #bw-s1, #bw-s2, #bw-s3, #bw-s4');
 // `ui`: the front page's tile and landing, the steps a look-and-copy pass needs (tools/weld-ui.sh runs them on a pinned, cached fork)
 const UI_STEPS = 'links,swapurl,swapfield,hints,hxbridge,hxfold,hxnudge,tradelinks';
-const ONLY = new Set((process.argv[2] === 'ui' ? UI_STEPS : process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,hxbridgeu,usdtwrap,usdtwrapw,usdtout,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,swaphere,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,shieldsrc,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,nohost,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,tileahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,anyone,relayfail,selfwallet,slowline,fastroute').split(','));
+const ONLY = new Set((process.argv[2] === 'ui' ? UI_STEPS : process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,hxbridgeu,usdtwrap,usdtwrapw,usdtout,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,swaphere,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,shieldsrc,shieldwc,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,nohost,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,tileahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,anyone,relayfail,selfwallet,slowline,fastroute').split(','));
 const FORK = process.argv[3] || 'https://mainnet.gateway.tenderly.co';
 const SHOTS = process.env.SHOTS || null;
 const PORT = 20000 + Math.floor(Math.random() * 2000), WEB = PORT + 1;
@@ -9535,6 +9535,38 @@ await step('shieldsrc', async () => {
     if (SHOTS) await p.locator('#hx').screenshot({ path: join(SHOTS, 'shieldsrc-hover.png') });
     ok(look.bg !== 'rgba(0, 0, 0, 0)' && look.bg !== look.card && look.ring !== 'none', `shieldsrc: the button keeps its fill on hover (${look.bg} on ${look.card}, ${look.ring})`);
     if (r.errors.length) { fails++; console.log('FAIL shieldsrc page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { await r.browser.close(); }
+});
+// A phone with no wallet extension (WalletConnect only) and a new key: Shield still asks for a wallet (a wallet app, paired at the press),
+// and the pairing offers the key's own address to those with no wallet app, which then pays.
+await step('shieldwc', async () => {
+  const r = await openPage({ account: A0, key: K0, viewport: { width: 390, height: 1300 }, init: { fn: () => { delete window.ethereum; }, arg: null } });
+  const p = r.page;
+  try {
+    await p.goto(r.url + '#wallet');
+    await p.click('#wallet-body [data-in="paste"]');
+    await p.fill('#ws-hex', '3c0a'.padEnd(64, '4'));
+    await p.click('#wallet-body [data-in="key"]');
+    await until(p, () => !!document.querySelector('#wallet-dot.on'));
+    await toWallet(p);
+    await until(p, () => document.querySelector('[data-pay="wallet"]')?.classList.contains('main'), null, 60000).catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | dot ${await p.evaluate(() => document.querySelector('#wallet-dot')?.className)} | pay ${(await text(p, '#wallet-body .opts').catch(() => '')).replace(/\s+/g, ' ')}`); });
+    ok(/Connects when you press/.test(await text(p, '[data-pay="wallet"]')), 'shieldwc: with only WalletConnect, a new key\'s payments still come from a wallet, paired at the press');
+    await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
+    await tabClick(p, 'shield'); await p.waitForSelector(MV.amt, { timeout: 120000 });
+    await p.fill(MV.amt, '0.001');
+    await until(p, () => /Connect wallet and shield/.test(document.querySelector('#hx-swap #go')?.textContent || ''), null, 90000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | go ${await text(p, MV.go)} | ${await said(p)}`); });
+    ok(true, 'shieldwc: Shield says it connects a wallet');
+    await p.click(MV.go);
+    const paired = await until(p, () => !!document.querySelector('#sheet-wc[open] [data-wc-useacct]'), null, 45000).then(() => true, () => false);
+    if (!paired) { console.log(`     shieldwc: the pairing sheet did not open here (WalletConnect's relay unreachable from the test?): ${(await text(p, '#hx-swap')).replace(/\s+/g, ' ').slice(-160)}`); return; }
+    ok(/No wallet app\?/.test(await text(p, '#wc-body')), 'shieldwc: the pairing offers the key\'s own address to those with no wallet app');
+    await p.click('[data-wc-useacct]');
+    await until(p, () => !document.querySelector('#sheet-wc[open]'), null, 20000);
+    await toWallet(p);
+    await until(p, () => document.querySelector('[data-pay="tacit"]')?.classList.contains('main'), null, 30000);
+    ok(true, 'shieldwc: and pressed, the key\'s address pays');
+    if (r.errors.length) { fails++; console.log('FAIL shieldwc page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }
 });
 // The Shield card's relay tip is the relay's own for the amount typed. It turns on the size while the amount is small (3% of it, up to a
