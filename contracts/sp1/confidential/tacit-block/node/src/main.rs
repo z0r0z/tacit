@@ -1,6 +1,8 @@
 //! tacit-block-node replay FIXTURE   replays a fixture chain (`tacit-block fixture`) from what each block publishes alone, checking
 //!                                   every block reaches the state its proof committed, and rebuilds each block's guest input
 //!                                   (FIXTURE.b<i>.stdin) from the replayed state and the block's own spends, byte for byte.
+//! tacit-block-node forced FILE      parses a posted spend (the hex bytes TacitBlocks.force takes, in FILE) as the block program does
+//!                                   (`forced_parts`) and prints its parts: publics, proof, hints, spend data and the operation's memos.
 
 use serde_json::{json, Value};
 use std::process::exit;
@@ -75,10 +77,21 @@ fn replay(path: &str) {
     println!("{}", json!({ "replayed": blocks.len(), "height": node.height, "leaves": node.leaves.len(), "nullifiers": node.nf.records.len() - 1, "state": hex::encode(node.state.digest()) }));
 }
 
+fn forced(path: &str) {
+    let text = std::fs::read_to_string(path).unwrap_or_else(|e| fail(&format!("{path}: {e}")));
+    let p = hex::decode(text.trim().trim_start_matches("0x")).unwrap_or_else(|_| fail("the file holds hex"));
+    let (_, proof, hints, data) = tacit_block_common::forced_parts(&p).unwrap_or_else(|| fail("not a posted spend"));
+    let h = |b: &[u8]| format!("0x{}", hex::encode(b));
+    let memos: Vec<String> = (0..3).map(|i| h(tacit_block_common::forced_memo(&p, i))).collect();
+    let op_memos: Vec<String> = tacit_block_common::forced_op_memos(&p).iter().map(|m| h(m)).collect();
+    println!("{}", json!({ "publics": h(&p[..tacit_block_common::FORCED_PUBLICS_LEN]), "proof": h(proof), "hints": h(hints), "data": h(&data.to_bytes()), "memos": memos, "opMemos": op_memos, "bytes": p.len() }));
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("replay") if args.len() == 2 => replay(&args[1]),
+        Some("forced") if args.len() == 2 => forced(&args[1]),
         Some("serve") if args.len() == 3 => {
             let chain_id: u64 = args[1].parse().unwrap_or_else(|_| fail("the chain id is a number"));
             let (lander, addr) = args[2].split_once('@').unwrap_or_else(|| fail("serve CHAINID LANDER@HOST:PORT"));
@@ -89,6 +102,6 @@ fn main() {
             let leader = tacit_block_node::serve::Leader::new(tacit_block_common::chain_binding(chain_id, &lander), keys, asset);
             tacit_block_node::serve::serve(addr, leader).unwrap_or_else(|e| fail(&e));
         }
-        _ => fail("usage: tacit-block-node replay FIXTURE | serve CHAINID LANDER@HOST:PORT"),
+        _ => fail("usage: tacit-block-node replay FIXTURE | forced FILE | serve CHAINID LANDER@HOST:PORT"),
     }
 }

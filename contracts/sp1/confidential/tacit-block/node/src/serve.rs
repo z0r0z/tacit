@@ -7,25 +7,37 @@
 //!   GET  /notes?from=N&limit=M   leaves and their memos from leaf N on (what a wallet scans)
 //!   GET  /path/N                 the note root and the path of leaf N
 //!   GET  /spent/0x…              whether a nullifier has entered the tree
-//!   GET  /receipt/ID             a submission: queued, or landed in a block
-//!   GET  /mempool                what is waiting
+//!   GET  /leaf/0x…               where a leaf is in the note tree (a spend landed once its notes are there)
+//!   GET  /receipt/ID             a submission: queued, landed in a block, or refused (with why)
+//!   GET  /mempool                the ids of what is waiting
+//!   GET  /fee                    the leader's fee: { address (its chain address), fee (units of 1e-8 TAC), at }, fee "0" when it asks none
 //!   POST /address                { address } → { hash }      GET /address/<hash> → { address }   (the chain lane's directory)
 //!   POST /spend                  { publics, proof, data, memos[], opMemos[], back?, permit? } → { id }   (back: a shield paid to its inbox;
 //!                                permit: { owner, fee, deadline, v, r, s, back } a holder's permit for it, TacitBlocks.sweepWithPermit)
 //!   POST /settle                 { settle, memo } → { id }
-//!   POST /build                  { time, blobs?: bool, queue?: [payload…], max?: n, exclude?: [id…] } → the block: guest input, public values, lists
-//!   POST /landed                 { words[19], leaves[], memos[], nullifiers[] } → replays a landed block and clears what it took
+//!   POST /forced                 a spend as /spend takes it → { payload }: the bytes TacitBlocks.force takes for it (its hints worked out
+//!                                here), for a spend no leader takes. Any node serves it; it is checked as /spend checks a spend.
 //!
-//! `/build` and `/landed` are the leader's own: they need `Authorization: Bearer $TACIT_NODE_ADMIN`, or, with none set, a loopback caller
-//! (`/landed` takes the caller's word that a block landed, so the public must never reach it). The rest is open: a wallet's reads and its
-//! submissions, which are checked on the way in.
+//! The leader's own (`Authorization: Bearer $TACIT_NODE_ADMIN`, or, with none set, a loopback caller; `/landed` takes the caller's word
+//! that a block landed, so the public must never reach these):
+//!   POST /build                  { time, blobs?: bool, queue?: [payload…], max?: n, exclude?: [id…], only?: [id…] } → the block: guest
+//!                                input, public values, lists. Only spends in `only` are taken when it is given.
+//!   POST /landed                 { words[19], leaves[], memos[], nullifiers[] } → replays a landed block and clears what it took
+//!   POST /pending                { memos?: [id…] } → each waiting spend's deposit, ways back, permit and output leaves, and the memos
+//!                                of the spends named (what the leader opens to find its fee)
+//!   POST /drop                   { ids, reason? } → spends given up on; with a reason they are refused for good, the receipt saying why
+//!   POST /fee                    { address, fee, at, … } → what GET /fee serves
+//!
+//! Every waiting spend and settle stays one a block could take on its own: each is checked alone against the chain at admission, when a
+//! block is built and after each block lands, and one that no longer passes leaves the mempool with its reason on its receipt (a shield
+//! whose margin the rate has passed, a claim past its deadline, a note spent another way). So no one entry can stop blocks being built.
 
 use crate::{blobs, keys::Keys, stdin_file, Node, Published, SpendIn};
 use ff::Field;
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
-use tacit_block_common::{self as blk, lock::Settle, SpendData, MEMO_LEN};
+use tacit_block_common::{self as blk, lock::Settle, SpendData, FORCED_HINTS_LEN, FORCED_PROOF_LEN, FORCED_PUBLICS_LEN, FORCED_REST_AT, MEMO_LEN};
 
 const MAX_BODY: usize = 4 << 20;
 const MAX_PENDING: usize = 256;
@@ -39,6 +51,12 @@ const DIRECTORY_PER_HOUR: u32 = 30;
 const MAX_REFUSED: usize = 4096;
 /// How many ways back one inbox shield may carry (the first sent could be wrong; every one is tried).
 const MAX_BACKS: usize = 4;
+/// The sizes TacitBlocks.force takes a posted spend in (its FORCED_MIN and FORCED_MAX): no operation and no openings, up to both
+/// openings, the longest operation and one receiver's memo.
+const FORCED_MIN: usize = FORCED_REST_AT + 20 + 32 + 1 + 1;
+const FORCED_MAX: usize = FORCED_MIN + 2 * (8 + 32 + 8) + 1 + 265 + MEMO_LEN;
+/// What GET /fee holds at most (a chain address and a few numbers).
+const MAX_FEE_QUOTE: usize = 8 << 10;
 
 fn hexv(v: &Value) -> Result<Vec<u8>, String> {
     let s = v.as_str().ok_or("a hex string")?;
@@ -53,11 +71,24 @@ fn word32(v: &Value) -> Result<[u8; 32], String> {
     hexv(v)?.try_into().map_err(|_| "a 32-byte word".to_string())
 }
 
+fn ids_of(v: &Value) -> Vec<String> {
+    v.as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default()
+}
+
+/// A spend's three output leaves from its publics (words 5 to 7), zero for an empty slot.
+fn out_leaves(publics: &[u8]) -> [[u8; 32]; 3] {
+    std::array::from_fn(|i| publics[32 * (5 + i)..32 * (6 + i)].try_into().unwrap())
+}
+
 #[derive(Clone)]
 struct Entry {
     id: String,
     spend: SpendIn,
+    /// The memo of each new note, in slot order (empty slots have none), and of each note its operation makes.
     memos: Vec<Vec<u8>>,
+    op_memos: Vec<Vec<u8>>,
+    /// What taking it enters the nullifier tree: its notes' nullifiers and its deposit's.
+    keys: Vec<[u8; 32]>,
     /// For a shield paid to its inbox (TacitBlocks.inbox) rather than deposited: the confidential pool commitment the inbox's
     /// address fixes, which the leader needs to sweep it in.
     back: Vec<String>,
@@ -65,11 +96,18 @@ struct Entry {
     permit: Option<Value>,
 }
 
+impl Entry {
+    fn shield(&self) -> bool {
+        self.spend.data.dep.is_some() && self.keys.len() == 1
+    }
+}
+
 #[derive(Clone)]
 struct SettleEntry {
     id: String,
     settle: Settle,
     memo: Vec<u8>,
+    key: [u8; 32],
 }
 
 /// A block built and waiting for its proof and its landing.
@@ -91,6 +129,8 @@ pub struct Leader {
     directory: Directory,
     refused: BTreeMap<String, String>,
     writes: BTreeMap<std::net::IpAddr, (u64, u32)>,
+    /// What GET /fee serves: the leader's chain address and its fee, set by the leader (POST /fee).
+    fee: Value,
 }
 
 /// Chain addresses by SHA-256("tacit-chain-address-v1" ‖ address), kept in memory and appended to TACIT_NODE_DIRECTORY (one hex
@@ -142,17 +182,55 @@ impl Directory {
     }
 }
 
+/// The bytes TacitBlocks.force takes for a spend (tacit-block-common `forced_parts`): publics ‖ proof ‖ hints ‖ a memo per output slot
+/// (zeros for an empty one) ‖ the rest of its body and openings ‖ the memos of the notes its operation makes. Checked to parse back to
+/// this very spend and to be a size the contract takes.
+pub fn forced_payload(publics: &[u8], proof: &[u8], hints: &[u8], data: &SpendData, memos: &[Vec<u8>], op_memos: &[Vec<u8>]) -> Result<Vec<u8>, String> {
+    if publics.len() != FORCED_PUBLICS_LEN || proof.len() != FORCED_PROOF_LEN || hints.len() != FORCED_HINTS_LEN {
+        return Err("a spend whose publics, proof or hints are not the sizes a posted spend has".into());
+    }
+    let mut p = Vec::with_capacity(FORCED_MAX);
+    p.extend_from_slice(publics);
+    p.extend_from_slice(proof);
+    p.extend_from_slice(hints);
+    let mut slot_memos = memos.iter();
+    for leaf in out_leaves(publics) {
+        if leaf == [0u8; 32] {
+            p.extend_from_slice(&[0u8; MEMO_LEN]);
+        } else {
+            p.extend_from_slice(slot_memos.next().ok_or("a memo for each new note")?);
+        }
+    }
+    p.extend_from_slice(&data.to_bytes()[96..]);
+    for m in op_memos {
+        p.extend_from_slice(m);
+    }
+    let fields = tacit_block_agg_publics(publics)?;
+    let (pp, pr, ph, pd) = blk::forced_parts(&p).ok_or("the posting does not parse as a spend")?;
+    if pp != fields || pr != proof || ph != hints || pd != *data {
+        return Err("the posting parses as another spend (a memo hash named for an empty output?)".into());
+    }
+    if p.len() < FORCED_MIN || p.len() > FORCED_MAX {
+        return Err(format!("a posting of {} bytes, which the landing contract does not take", p.len()));
+    }
+    Ok(p)
+}
+
 impl Leader {
     pub fn new(chain: [u8; 32], keys: Keys, asset: Option<[u8; 32]>) -> Leader {
-        Leader { node: Node::genesis(chain), keys, asset, pending: vec![], settles: vec![], receipts: BTreeMap::new(), built: None, directory: Directory::open(std::env::var("TACIT_NODE_DIRECTORY").ok().filter(|f| !f.is_empty())), refused: BTreeMap::new(), writes: BTreeMap::new() }
-    }
-
-    fn spends(&self, extra: Option<&Entry>) -> Vec<SpendIn> {
-        self.pending.iter().chain(extra).map(|e| e.spend.clone()).collect()
-    }
-
-    fn settles_list(&self, extra: Option<&SettleEntry>) -> Vec<Settle> {
-        self.settles.iter().chain(extra).map(|e| e.settle.clone()).collect()
+        Leader {
+            node: Node::genesis(chain),
+            keys,
+            asset,
+            pending: vec![],
+            settles: vec![],
+            receipts: BTreeMap::new(),
+            built: None,
+            directory: Directory::open(std::env::var("TACIT_NODE_DIRECTORY").ok().filter(|f| !f.is_empty())),
+            refused: BTreeMap::new(),
+            writes: BTreeMap::new(),
+            fee: json!({ "fee": "0" }),
+        }
     }
 
     fn state(&self) -> Value {
@@ -161,12 +239,63 @@ impl Leader {
             "height": self.node.height, "state": hx(&s.digest()), "noteRoot": hx(&blk::fr_be(&s.notes.root)), "leaves": self.node.leaves.len(),
             "nullifiers": self.node.nf.records.len() - 1, "queue": { "len": s.queue_len, "hash": hx(&s.queue_hash) }, "chain": hx(&s.chain),
             "pending": self.pending.len(), "settles": self.settles.len(),
-            // a share is worth pool / shares units of 1e-8 TAC (one while there are none)
+            // a share is worth pool / shares units of 1e-8 TAC (each counted with the program's virtual units)
             "pool": s.pool.to_string(), "shares": s.shares.to_string(),
         })
     }
 
-    /// A spend handed in: its proof checked natively, its memos matched to its body, and a trial block of the mempool and it taken.
+    /// Whether a block of this spend alone could be built at `time`: its body, openings and the rate, its notes and deposit unspent.
+    fn takeable(&self, e: &Entry, time: u64) -> Result<(), String> {
+        self.node.build(std::slice::from_ref(&e.spend), &[], &[], time, &[]).map(|_| ())
+    }
+
+    fn settle_takeable(&self, s: &SettleEntry, time: u64) -> Result<(), String> {
+        self.node.build(&[], std::slice::from_ref(&s.settle), &[], time, &[]).map(|_| ())
+    }
+
+    fn refuse(&mut self, id: &str, why: String) {
+        if self.refused.len() >= MAX_REFUSED {
+            self.refused.clear();
+        }
+        self.refused.insert(id.to_string(), why.clone());
+        self.receipts.insert(id.to_string(), json!({ "id": id, "status": "refused", "error": why }));
+    }
+
+    /// Takes out of the mempool every spend (and with `settles`, every settle) that no block could take at `time` on its own, each refused
+    /// with its reason; one whose notes are among `landed` (a block's new leaves: it went in another way, posted to the queue) reads as
+    /// landed at `height`. Settles are judged by the clock of a block that landed, never a block's proposed time, which may run behind.
+    fn prune(&mut self, time: u64, landed: &BTreeSet<[u8; 32]>, height: u64, settles: bool) -> usize {
+        let mut gone = 0;
+        for e in std::mem::take(&mut self.pending) {
+            match self.takeable(&e, time) {
+                Ok(()) => self.pending.push(e),
+                Err(why) => {
+                    gone += 1;
+                    if out_leaves(&e.spend.publics).iter().any(|l| *l != [0u8; 32] && landed.contains(l)) {
+                        self.receipts.insert(e.id.clone(), json!({ "id": e.id, "status": "landed", "height": height }));
+                    } else {
+                        self.refuse(&e.id, format!("no longer takeable: {why}"));
+                    }
+                }
+            }
+        }
+        if !settles {
+            return gone;
+        }
+        for s in std::mem::take(&mut self.settles) {
+            match self.settle_takeable(&s, time) {
+                Ok(()) => self.settles.push(s),
+                Err(why) => {
+                    gone += 1;
+                    self.refuse(&s.id, format!("no longer takeable: {why}"));
+                }
+            }
+        }
+        gone
+    }
+
+    /// A spend handed in: its proof checked natively, its memos matched to its body, and it checked alone against the chain and against
+    /// the notes the waiting spends spend.
     fn spend(&mut self, b: &Value, now: u64) -> Result<Value, String> {
         if self.pending.len() + self.settles.len() >= MAX_PENDING {
             return Err("the mempool is full".into());
@@ -193,14 +322,13 @@ impl Leader {
             }
             return Ok(self.receipts[&id].clone());
         }
-        if self.receipts.contains_key(&id) {
-            return Ok(self.receipts[&id].clone());
-        }
         if let Some(e) = self.refused.get(&id) {
             return Err(e.clone());
         }
-        let checked = self.check_spend(&publics, &proof, &data, b);
-        let (hints, memos) = match checked {
+        if self.receipts.contains_key(&id) {
+            return Ok(self.receipts[&id].clone());
+        }
+        let (hints, memos, op_memos) = match self.check_spend(&publics, &proof, &data, b) {
             Ok(x) => x,
             Err(e) => {
                 if self.refused.len() >= MAX_REFUSED {
@@ -210,22 +338,26 @@ impl Leader {
                 return Err(e);
             }
         };
-        let shield = !blk::Spend::from_publics(&tacit_block_agg_publics(&publics)?).spent_keys().is_empty()
-            && blk::Spend::from_publics(&tacit_block_agg_publics(&publics)?).live_nullifiers().is_empty();
-        if shield && self.pending.iter().filter(|e| e.spend.data.dep.is_some() && tacit_block_agg_publics(&e.spend.publics).map(|p| blk::Spend::from_publics(&p).live_nullifiers().is_empty()).unwrap_or(false)).count() >= MAX_SHIELDS {
+        let keys: Vec<[u8; 32]> = blk::Spend::from_publics(&tacit_block_agg_publics(&publics)?).spent_keys().iter().map(blk::fr_be).collect();
+        let permit = b.get("permit").filter(|p| p.is_object() && p.to_string().len() < 1024).cloned();
+        let entry = Entry { id: id.clone(), spend: SpendIn { publics, proof, hints, data }, memos, op_memos, keys, back: backs, permit };
+        if entry.shield() && self.pending.iter().filter(|e| e.shield()).count() >= MAX_SHIELDS {
             return Err("too many shields wait on their deposits".into());
         }
-        let permit = b.get("permit").filter(|p| p.is_object() && p.to_string().len() < 1024).cloned();
-        let entry = Entry { id: id.clone(), spend: SpendIn { publics, proof, hints, data }, memos, back: backs, permit };
-        self.node.build(&self.spends(Some(&entry)), &self.settles_list(None), &[], now, &[]).map_err(|e| format!("not takeable now: {e}"))?;
+        if self.pending.iter().any(|e| e.keys.iter().any(|k| entry.keys.contains(k))) {
+            return Err("a note it spends is being spent by a spend already waiting".into());
+        }
+        self.takeable(&entry, now).map_err(|e| format!("not takeable now: {e}"))?;
         self.pending.push(entry);
         let r = json!({ "id": id, "status": "queued" });
         self.receipts.insert(id, r.clone());
         Ok(r)
     }
 
-    /// What can be checked of a spend on its own, whose failure is for good: its proof, asset, root, and memos.
-    fn check_spend(&self, publics: &[u8], proof: &[u8], data: &SpendData, b: &Value) -> Result<(Vec<u8>, Vec<Vec<u8>>), String> {
+    /// What can be checked of a spend on its own, whose failure is for good: its proof, asset, root, and memos. → its hints, the memo of
+    /// each new note in slot order, and the memos of the notes its operation makes.
+    #[allow(clippy::type_complexity)]
+    fn check_spend(&self, publics: &[u8], proof: &[u8], data: &SpendData, b: &Value) -> Result<(Vec<u8>, Vec<Vec<u8>>, Vec<Vec<u8>>), String> {
         let p = tacit_block_agg_publics(publics)?;
         let hints = self.keys.check(&p, proof).ok_or("the spend's proof does not verify")?;
         let memos: Vec<Vec<u8>> = b["memos"].as_array().ok_or("memos")?.iter().map(hexv).collect::<Result<_, _>>()?;
@@ -246,7 +378,17 @@ impl Leader {
         if op_memos.len() != receivers.len() || op_memos.iter().zip(&receivers).any(|(m, r)| m.len() != MEMO_LEN || blk::memo_hash(m) != r.memo) {
             return Err("a memo for each note the operation makes".into());
         }
-        Ok((hints, memos.into_iter().chain(op_memos).collect()))
+        Ok((hints, memos, op_memos))
+    }
+
+    /// The bytes TacitBlocks.force takes for a spend as POST /spend takes it, checked as a submitted spend is.
+    fn forced(&self, b: &Value) -> Result<Value, String> {
+        let publics = hexv(&b["publics"])?;
+        let proof = hexv(&b["proof"])?;
+        let data = SpendData::from_bytes(&hexv(&b["data"])?).ok_or("spend data does not parse")?;
+        let (hints, memos, op_memos) = self.check_spend(&publics, &proof, &data, b)?;
+        let p = forced_payload(&publics, &proof, &hints, &data, &memos, &op_memos)?;
+        Ok(json!({ "payload": hx(&p), "hash": hx(&blk::payload_hash(&p)) }))
     }
 
     fn settle(&mut self, b: &Value, now: u64) -> Result<Value, String> {
@@ -260,6 +402,9 @@ impl Leader {
             return Err("the memo of the note a settle makes".into());
         }
         let id = hex::encode(blk::payload_hash(&raw));
+        if let Some(e) = self.refused.get(&id) {
+            return Err(e.clone());
+        }
         if self.receipts.contains_key(&id) {
             return Ok(self.receipts[&id].clone());
         }
@@ -269,12 +414,43 @@ impl Leader {
         if self.asset.is_some_and(|a| blk::fr_be(&settle.asset) != a) {
             return Err("only TAC moves on this chain".into());
         }
-        let entry = SettleEntry { id: id.clone(), settle, memo };
-        self.node.build(&self.spends(None), &self.settles_list(Some(&entry)), &[], now, &[]).map_err(|e| format!("not takeable now: {e}"))?;
+        let key = blk::fr_be(&blk::lock::lock_nullifier(&settle.leaf(), settle.index));
+        let entry = SettleEntry { id: id.clone(), settle, memo, key };
+        if self.settles.iter().any(|s| s.key == key) {
+            return Err("that lock is being settled by a settle already waiting".into());
+        }
+        self.settle_takeable(&entry, now).map_err(|e| format!("not takeable now: {e}"))?;
         self.settles.push(entry);
         let r = json!({ "id": id, "status": "queued" });
         self.receipts.insert(id, r.clone());
         Ok(r)
+    }
+
+    /// Of these spends and settles (oldest first, none spending what an earlier one spends), the ones a block with the queue's entries
+    /// takes: all of them when they build together, else each in turn that still lets the block build.
+    fn select(&self, spends: Vec<Entry>, settles: Vec<SettleEntry>, posts: &[(Vec<u8>, bool)], time: u64) -> (Vec<Entry>, Vec<SettleEntry>) {
+        let try_build = |sp: &[Entry], st: &[SettleEntry]| {
+            let sp: Vec<SpendIn> = sp.iter().map(|e| e.spend.clone()).collect();
+            let st: Vec<Settle> = st.iter().map(|e| e.settle.clone()).collect();
+            self.node.build(&sp, &st, posts, time, &[]).is_ok()
+        };
+        if try_build(&spends, &settles) {
+            return (spends, settles);
+        }
+        let (mut sp, mut st) = (vec![], vec![]);
+        for e in spends {
+            sp.push(e);
+            if !try_build(&sp, &st) {
+                sp.pop();
+            }
+        }
+        for s in settles {
+            st.push(s);
+            if !try_build(&sp, &st) {
+                st.pop();
+            }
+        }
+        (sp, st)
     }
 
     /// The next block: the mempool's spends and settles and the queue's next entries, in calldata or blobs.
@@ -282,15 +458,29 @@ impl Leader {
         let time = b["time"].as_u64().ok_or("time")?;
         let max = b["max"].as_u64().unwrap_or(64) as usize;
         let want_blobs = b["blobs"].as_bool().unwrap_or(false);
-        let exclude: Vec<String> = b["exclude"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
+        let exclude = ids_of(&b["exclude"]);
+        let only = b.get("only").filter(|v| v.is_array()).map(ids_of);
         let queue: Vec<Vec<u8>> = b["queue"].as_array().map(|a| a.iter().map(hexv).collect::<Result<_, _>>()).transpose()?.unwrap_or_default();
-        // keep only what is takeable at this time, oldest first
-        let mut spends: Vec<Entry> = self.pending.iter().filter(|e| !exclude.contains(&e.id)).cloned().collect();
-        spends.truncate(max);
-        let mut settles = self.settles.clone();
-        settles.truncate(max.saturating_sub(spends.len()));
-        let sp: Vec<SpendIn> = spends.iter().map(|e| e.spend.clone()).collect();
-        let st: Vec<Settle> = settles.iter().map(|e| e.settle.clone()).collect();
+        // what no block could take at this time leaves the mempool first, so no one entry holds the rest back
+        self.prune(time, &BTreeSet::new(), self.node.height, false);
+        // oldest first, none spending what an earlier one spends
+        let mut used = BTreeSet::new();
+        let mut spends = vec![];
+        for e in &self.pending {
+            if spends.len() >= max || exclude.contains(&e.id) || only.as_ref().is_some_and(|o| !o.contains(&e.id)) || e.keys.iter().any(|k| used.contains(k)) {
+                continue;
+            }
+            used.extend(e.keys.iter().copied());
+            spends.push(e.clone());
+        }
+        let mut settles = vec![];
+        for s in &self.settles {
+            if spends.len() + settles.len() >= max || exclude.contains(&s.id) || used.contains(&s.key) {
+                continue;
+            }
+            used.insert(s.key);
+            settles.push(s.clone());
+        }
         // a posted spend is taken if its proof verifies; a posted settle's check is the program's own
         let posts: Vec<(Vec<u8>, bool)> = queue
             .iter()
@@ -299,31 +489,12 @@ impl Leader {
                 (p.clone(), ok)
             })
             .collect();
+        let (spends, settles) = self.select(spends, settles, &posts, time);
+        let sp: Vec<SpendIn> = spends.iter().map(|e| e.spend.clone()).collect();
+        let st: Vec<Settle> = settles.iter().map(|e| e.settle.clone()).collect();
         let (mut bufs, mut out, mut data) = self.node.build(&sp, &st, &posts, time, &[])?;
-        let mut openings = vec![];
-        let mut raw_blobs = vec![];
-        if want_blobs {
-            let mut pool: Vec<Vec<u8>> = spends.iter().flat_map(|e| e.memos.clone()).chain(settles.iter().map(|e| e.memo.clone())).collect();
-            for (p, _) in &posts {
-                if let Some((_, memo)) = blk::lock::forced_settle(p, MEMO_LEN) {
-                    pool.push(memo.to_vec());
-                } else if blk::forced_parts(p).is_some() {
-                    for i in 0..3 {
-                        pool.push(blk::forced_memo(p, i).to_vec());
-                    }
-                    pool.extend(blk::forced_op_memos(p).into_iter().map(<[u8]>::to_vec));
-                }
-            }
-            let (buf, raw, op) = blobs::blob_input(&data, &pool)?;
-            let rebuilt = self.node.build(&sp, &st, &posts, time, &buf)?;
-            bufs = rebuilt.0;
-            out = rebuilt.1;
-            data = rebuilt.2;
-            openings = op;
-            raw_blobs = raw;
-        }
-        // the memos published beside the new notes (calldata mode), found by their hashes
-        let mut pool: Vec<Vec<u8>> = spends.iter().flat_map(|e| e.memos.clone()).chain(settles.iter().map(|e| e.memo.clone())).collect();
+        // the memos published beside the new notes, found by their hashes
+        let mut pool: Vec<Vec<u8>> = spends.iter().flat_map(|e| e.memos.iter().chain(&e.op_memos).cloned()).chain(settles.iter().map(|e| e.memo.clone())).collect();
         for (p, _) in &posts {
             if let Some((_, memo)) = blk::lock::forced_settle(p, MEMO_LEN) {
                 pool.push(memo.to_vec());
@@ -333,6 +504,17 @@ impl Leader {
                 }
                 pool.extend(blk::forced_op_memos(p).into_iter().map(<[u8]>::to_vec));
             }
+        }
+        let mut openings = vec![];
+        let mut raw_blobs = vec![];
+        if want_blobs {
+            let (buf, raw, op) = blobs::blob_input(&data, &pool)?;
+            let rebuilt = self.node.build(&sp, &st, &posts, time, &buf)?;
+            bufs = rebuilt.0;
+            out = rebuilt.1;
+            data = rebuilt.2;
+            openings = op;
+            raw_blobs = raw;
         }
         let mut memos = vec![];
         for o in &data.outputs {
@@ -365,33 +547,52 @@ impl Leader {
         Ok(result)
     }
 
-    /// A block that landed on Ethereum: replayed from what it published, which must reach the state its proof committed.
-    fn landed(&mut self, b: &Value) -> Result<Value, String> {
+    /// A block that landed on Ethereum: replayed from what it published, which must reach the state its proof committed. What it took
+    /// leaves the mempool, and every spend and settle left is checked again against the new state.
+    fn landed(&mut self, b: &Value, now: u64) -> Result<Value, String> {
         let words: Vec<[u8; 32]> = b["words"].as_array().ok_or("words")?.iter().map(word32).collect::<Result<_, _>>()?;
         let leaves: Vec<[u8; 32]> = b["leaves"].as_array().ok_or("leaves")?.iter().map(word32).collect::<Result<_, _>>()?;
         let memos: Vec<Vec<u8>> = b["memos"].as_array().ok_or("memos")?.iter().map(hexv).collect::<Result<_, _>>()?;
         let nullifiers: Vec<[u8; 32]> = b["nullifiers"].as_array().ok_or("nullifiers")?.iter().map(word32).collect::<Result<_, _>>()?;
+        let published: BTreeSet<[u8; 32]> = leaves.iter().copied().collect();
         self.node.land(&Published { words, leaves, memos, nullifiers })?;
-        // what the block took leaves the mempool; a spend whose notes it spent another way is dropped
         let height = self.node.height;
-        let included: Vec<String> = self.built.take().map(|b| b.out["includes"].as_array().cloned().unwrap_or_default().iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
+        let included = self.built.take().map(|b| ids_of(&b.out["includes"])).unwrap_or_default();
         for id in &included {
             self.receipts.insert(id.clone(), json!({ "id": id, "status": "landed", "height": height }));
         }
-        let node = &self.node;
-        self.pending.retain(|e| {
-            let spent = tacit_block_agg_publics(&e.spend.publics).map(|p| blk::Spend::from_publics(&p).spent_keys().iter().any(|n| node.spent(&blk::fr_be(n)))).unwrap_or(true);
-            !included.contains(&e.id) && !spent
-        });
-        self.settles.retain(|e| !included.contains(&e.id) && !node.spent(&blk::fr_be(&blk::lock::lock_nullifier(&e.settle.leaf(), e.settle.index))));
+        self.pending.retain(|e| !included.contains(&e.id));
+        self.settles.retain(|e| !included.contains(&e.id));
+        self.prune(now, &published, height, true);
         Ok(self.state())
     }
 
+    /// The waiting spends as the leader needs them: each one's deposit, ways back and permit (what sweeping it in takes) and output leaves,
+    /// and for those `memos_for` names, the memo of each output slot (null for an empty one).
+    fn pending_detail(&self, memos_for: &[String]) -> Value {
+        let spends: Vec<Value> = self
+            .pending
+            .iter()
+            .map(|e| {
+                let p = tacit_block_agg_publics(&e.spend.publics).ok();
+                let deposit = p.and_then(|p| blk::deposit_record(&blk::Spend::from_publics(&p), &e.spend.data)).map(|d| hx(&d));
+                let leaves = out_leaves(&e.spend.publics);
+                let mut v = json!({ "id": e.id, "deposit": deposit, "backs": e.back, "permit": e.permit, "leaves": leaves.iter().map(|l| hx(l)).collect::<Vec<_>>() });
+                if memos_for.contains(&e.id) {
+                    let mut slot = e.memos.iter();
+                    v["memos"] = json!(leaves.iter().map(|l| if *l == [0u8; 32] { Value::Null } else { slot.next().map(|m| Value::String(hx(m))).unwrap_or(Value::Null) }).collect::<Vec<_>>());
+                }
+                v
+            })
+            .collect();
+        json!({ "spends": spends, "settles": self.settles.iter().map(|e| e.id.clone()).collect::<Vec<_>>() })
+    }
+
     fn route(&mut self, method: &str, url: &str, body: &Value, now: u64, admin: bool, ip: Option<std::net::IpAddr>) -> Result<Value, (u16, String)> {
-        if method == "POST" && matches!(url, "/build" | "/landed" | "/drop") && !admin {
+        let (path, query) = url.split_once('?').unwrap_or((url, ""));
+        if method == "POST" && matches!(path, "/build" | "/landed" | "/drop" | "/pending" | "/fee") && !admin {
             return Err((403, "the leader's own".into()));
         }
-        let (path, query) = url.split_once('?').unwrap_or((url, ""));
         let q = |k: &str| query.split('&').find_map(|kv| kv.split_once('=').filter(|(a, _)| *a == k).map(|(_, v)| v.to_string()));
         let bad = |e: String| (400u16, e);
         match (method, path) {
@@ -415,15 +616,35 @@ impl Leader {
                 let nf: [u8; 32] = hex::decode(p[7..].trim_start_matches("0x")).ok().and_then(|b| b.try_into().ok()).ok_or(bad("a 32-byte nullifier".into()))?;
                 Ok(json!({ "spent": self.node.spent(&nf) }))
             }
+            ("GET", p) if p.starts_with("/leaf/") => {
+                let leaf: [u8; 32] = hex::decode(p[6..].trim_start_matches("0x")).ok().and_then(|b| b.try_into().ok()).ok_or(bad("a 32-byte leaf".into()))?;
+                let at = self.node.leaves.iter().rposition(|l| blk::fr_be(l) == leaf).ok_or((404, "no such leaf".to_string()))?;
+                Ok(json!({ "index": at }))
+            }
             ("POST", "/drop") => {
-                // the leader's: spends it gave up on (a shield whose deposit never came)
-                let ids: Vec<String> = body["ids"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
+                // the leader's: spends it gave up on (a shield whose deposit never came), or refuses (one that pays it no fee)
+                let ids = ids_of(&body["ids"]);
+                let reason = body["reason"].as_str().filter(|r| !r.is_empty()).map(|r| r.chars().take(200).collect::<String>());
                 let before = self.pending.len();
                 self.pending.retain(|e| !ids.contains(&e.id));
                 for id in &ids {
-                    self.receipts.remove(id);
+                    match &reason {
+                        Some(r) => self.refuse(id, r.clone()),
+                        None => {
+                            self.receipts.remove(id);
+                        }
+                    }
                 }
                 Ok(json!({ "dropped": before - self.pending.len() }))
+            }
+            ("POST", "/pending") => Ok(self.pending_detail(&ids_of(&body["memos"]))),
+            ("GET", "/fee") => Ok(self.fee.clone()),
+            ("POST", "/fee") => {
+                if !body.is_object() || body.to_string().len() > MAX_FEE_QUOTE {
+                    return Err(bad("a fee quote".into()));
+                }
+                self.fee = body.clone();
+                Ok(self.fee.clone())
             }
             ("POST", "/address") => {
                 if let Some(ip) = ip.filter(|_| !admin) {
@@ -451,16 +672,12 @@ impl Leader {
             ("GET", "/mempool") => Ok(json!({
                 "spends": self.pending.iter().map(|e| e.id.clone()).collect::<Vec<_>>(),
                 "settles": self.settles.iter().map(|e| e.id.clone()).collect::<Vec<_>>(),
-                // the deposit each spend takes in, which must be waiting on Ethereum for a block that holds it to land
-                "deposits": self.pending.iter().filter_map(|e| {
-                    let p = tacit_block_agg_publics(&e.spend.publics).ok()?;
-                    blk::deposit_record(&blk::Spend::from_publics(&p), &e.spend.data).map(|d| json!({ "id": e.id, "deposit": hx(&d), "backs": e.back, "permit": e.permit }))
-                }).collect::<Vec<_>>(),
             })),
             ("POST", "/spend") => self.spend(body, now).map_err(bad),
             ("POST", "/settle") => self.settle(body, now).map_err(bad),
+            ("POST", "/forced") => self.forced(body).map_err(bad),
             ("POST", "/build") => self.build(body).map_err(bad),
-            ("POST", "/landed") => self.landed(body).map_err(bad),
+            ("POST", "/landed") => self.landed(body, now).map_err(bad),
             _ => Err((404, "not found".into())),
         }
     }
