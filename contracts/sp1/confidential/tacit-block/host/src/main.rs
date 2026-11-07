@@ -1086,6 +1086,7 @@ fn main() {
             let lander: [u8; 20] = hex::decode(args[3].trim_start_matches("0x")).ok().and_then(|b| b.try_into().ok()).unwrap_or_else(|| fail("the lander is a 20-byte address"));
             fixture(&args[1], id, lander)
         }
+        Some("lock-vectors") if args.len() == 2 => lock_vectors(&args[1]),
         Some("dump") if args.len() == 3 => dump(args[1].parse().unwrap_or_else(|_| fail("N is a number")), &args[2]),
         _ => fail("usage: tacit-block measure N... | test | dump N FILE | fixture FILE | pin [--check]"),
     }
@@ -1298,4 +1299,47 @@ fn lock_test(c: &mut Chain, elf: &[u8], k: &Keys) {
         fail("a forced claim was not taken, or an expired one was");
     }
     println!("{}", json!({ "locks": "ok", "lock_cycles": ll.cycles, "claim_cycles": lc.cycles, "refund_cycles": lr.cycles, "forced_claims_cycles": lf.cycles }));
+}
+
+/// Vectors for the lock format, as the block program computes it, for a wallet's implementation to match byte for byte.
+fn lock_vectors(path: &str) {
+    use blk::lock::{claim_message, lock_nullifier, lock_tag, Lock, Settle, SETTLE_CLAIM, SETTLE_MARK, SETTLE_REFUND};
+    let hx = |b: &[u8]| format!("0x{}", hex::encode(b));
+    let f = |n: u64| Fr::from(n);
+    let lock = Lock {
+        recipient: [0x11; 32],
+        deadline: 1_800_086_400,
+        claim_to: ops::NoteTo { npk: f(1234567), rho: f(7654321), memo: [0x22; 32] },
+        refund_to: ops::NoteTo { npk: f(42), rho: f(4242), memo: [0x33; 32] },
+    };
+    let asset = asset_field(&[0x44; 32]);
+    let leaf = lock.leaf(&asset, 1_000);
+    let chain = [0x55; 32];
+    let path_nodes: [Fr; 32] = core::array::from_fn(|i| f(1000 + i as u64));
+    let claim = Settle { kind: SETTLE_CLAIM, asset, value: 1_000, lock, index: 5, root: f(99), path: path_nodes, sig: Some([0x66; 64]) };
+    let refund = Settle { kind: SETTLE_REFUND, sig: None, ..claim.clone() };
+    let memo = vec![0x77u8; MEMO_LEN];
+    let op = ops::Op::Lock { lock, memo: [0x88; 32] };
+    let doc = json!({
+        "lock": {
+            "recipient": hx(&lock.recipient), "deadline": lock.deadline,
+            "claimTo": { "npk": hx(&fr_be(&lock.claim_to.npk)), "rho": hx(&fr_be(&lock.claim_to.rho)), "memo": hx(&lock.claim_to.memo) },
+            "refundTo": { "npk": hx(&fr_be(&lock.refund_to.npk)), "rho": hx(&fr_be(&lock.refund_to.rho)), "memo": hx(&lock.refund_to.memo) },
+        },
+        "lockBytes": hx(&lock.to_bytes()),
+        "lockTag": hx(&fr_be(&lock_tag())),
+        "asset": hx(&fr_be(&asset)),
+        "value": 1_000,
+        "leaf": hx(&fr_be(&leaf)),
+        "nullifierAt5": hx(&fr_be(&lock_nullifier(&leaf, 5))),
+        "chain": hx(&chain),
+        "claimMessage": hx(&claim_message(&chain, &leaf)),
+        "pathRootFromLeaf": hx(&fr_be(&claim.path_root())),
+        "claimBytes": hx(&claim.to_bytes()),
+        "refundBytes": hx(&refund.to_bytes()),
+        "forcedRefund": hx(&[SETTLE_MARK.to_vec(), refund.to_bytes(), memo].concat()),
+        "opBytes": hx(&op.to_bytes()),
+    });
+    std::fs::write(path, serde_json::to_string_pretty(&doc).unwrap()).unwrap_or_else(|e| fail(&format!("{path}: {e}")));
+    println!("{}", json!({ "vectors": path }));
 }
