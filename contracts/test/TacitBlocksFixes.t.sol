@@ -236,4 +236,31 @@ contract TacitBlocksFixesTest is TacitBlocksFixture {
         vm.expectRevert(abi.encodeWithSelector(TacitBlocks.BadList.selector, 10));
         blocks.land(p, "", l);
     }
+
+    /// A deposit whose amount no longer buys its shares at the rate the last block left can never be taken in (every later block prices
+    /// at that rate or a higher one): it goes back at once, not after RECLAIM_AFTER.
+    function test_aStaleDepositGoesBackAtOnce() public {
+        (,, bytes32 cx, bytes32 cy, bytes32 body) = dep();
+        // a deposit that pays twice what its shares cost at genesis lands: the pool then holds more than the shares, so a share is worth
+        // more than a unit
+        tac.mint(address(this), 1e30);
+        tac.approve(address(blocks), type(uint256).max);
+        blocks.deposit(1e9, 2e9, cx, cy, body);
+        TacitBlocks.Lists memory l;
+        l.deposits = abi.encodePacked(blocks.TAC_ASSET(), uint256(1e9), cx, cy, body, uint256(2e9));
+        bytes memory p = craft(l);
+        vm.prank(SEQ);
+        blocks.land(p, "", l);
+        assertEq(blocks.pool(), 2e9);
+        assertEq(blocks.shares(), 1e9);
+        // one priced at a unit a share no longer covers: back at once to its depositor
+        blocks.deposit(5e8, 5e8, cx, cy, body);
+        uint256 before = tac.balanceOf(address(this));
+        blocks.reclaim(5e8, 5e8, cx, cy, body);
+        assertEq(tac.balanceOf(address(this)) - before, 5e8 * UNIT);
+        // one that still covers waits as before
+        blocks.deposit(5e8, 2e9, cx, cy, body);
+        vm.expectRevert(TacitBlocks.TooSoon.selector);
+        blocks.reclaim(5e8, 2e9, cx, cy, body);
+    }
 }

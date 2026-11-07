@@ -45,6 +45,9 @@ const NODE_BIN = env.NODE_BIN || join(HERE, '../contracts/sp1/confidential/tacit
 const PROVER = env.PROVER || 'stub';
 const MIN_SPENDS = Number(env.MIN_SPENDS || 1);
 const MAX_WAIT = Number(env.MAX_WAIT_SECS || 20) * 1000;
+// At most this many of its own spends a block (MAX_SPENDS): with up to 16 entries of the queue beside them, a block's calldata stays under
+// the 128 KB a node takes in one transaction (a spend's lists are about 2.4 KB). Blobs lift this.
+const MAX_SPENDS = Number(env.MAX_SPENDS || 32);
 const POLL = Number(env.POLL_SECS || 6) * 1000;
 const ARCHIVE = env.ARCHIVE_DIR || join(HERE, 'archive');
 const ADMIN = env.TACIT_NODE_ADMIN || '';
@@ -310,7 +313,7 @@ async function step() {
     const [lead] = await view('turn()', ['address'], [], (await view('TURNS()', ['address']))[0]);
     if (BigInt(lead) !== 0n && lead.toLowerCase() !== me.toLowerCase()) { log({ waiting: 'not this leader\'s turn', lead }); return; }
   }
-  const built = await node('POST', '/build', { time: now, queue: entries.map((e) => hexOf(e)), max: 64, exclude, ...fees });
+  const built = await node('POST', '/build', { time: now, queue: entries.map((e) => hexOf(e)), max: MAX_SPENDS, exclude, ...fees });
   log({ built: nodeHeight + 1, spends: built.includes.length, queueTaken: built.queueTaken });
   const proof = await prove(built);
   const pv = bytesOf(built.publicValues);

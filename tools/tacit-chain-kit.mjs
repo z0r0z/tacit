@@ -82,6 +82,10 @@ const seatsAt = create3(seatsSalt), blocksAt = create3(blocksSalt);
 
 // the verifier must be the immutable Groth16 leaf: its codehash is checked here and on the page
 const verifierCodehash = '0x' + bytesToHex(keccak_256(hexToBytes(strip(await rpc('eth_getCode', [P.verifier, 'latest'])))));
+// the SP1 v6.1.0 Groth16 verifier, the immutable leaf (VERSION "v6.1.0", VERIFIER_HASH 0x4388a21c…), checked by hand 2026-11-08: any other
+// code at the address, or another verifier, is refused unless --verifier-codehash names it
+const PINNED_VERIFIER_CODEHASH = arg('verifier-codehash', '0xcceb864cd8a5a36b2073a8f2b32a773835cd2dd2c78a56f8e6fdb942feff04dd');
+if (verifierCodehash !== PINNED_VERIFIER_CODEHASH.toLowerCase()) fail(`the verifier's code is ${verifierCodehash}, not the pinned ${PINNED_VERIFIER_CODEHASH}`);
 const seatsInit = '0x' + artifact('TacitSeats') + addrWord(P.tac) + word(P.seat) + word(P.slot) + addrWord(P.bootstrap);
 const blocksInit = '0x' + artifact('TacitBlocks') + addrWord(P.verifier) + strip(P.vkey) + strip(P.spendVk) + addrWord(seatsAt)
   + word(P.window) + word(P.forceDelay) + addrWord(P.tac) + addrWord(P.confidential) + strip(P.confidentialTac);

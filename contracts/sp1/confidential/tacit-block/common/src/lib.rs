@@ -1256,7 +1256,11 @@ fn effects(prev: &State, s: &Spend, d: &SpendData) -> Result<Effects, &'static s
             e.hop = Some(ops::hop_bytes(&s.asset, o.amount, commit));
             (e.shares_out, e.paid_out) = (o.v, o.amount);
         }
-        (false, Some(o), Some(ops::Op::Lock { lock, memo })) if o.v > lock_fee(o.v) && o.amount == 0 && d.exit_to == [0u8; 20] && commits(o, &s.exit) => {
+        // a lock's fee is worth at least MIN_POOL_FEE when it is made (locks start at about 2 TAC): no lock carries a payment past the
+        // holders' share, and the rate only rises, so at its settle the fee is worth as much or more
+        (false, Some(o), Some(ops::Op::Lock { lock, memo }))
+            if o.v > lock_fee(o.v) && worth_at_least(lock_fee(o.v), MIN_POOL_FEE, prev) && o.amount == 0 && d.exit_to == [0u8; 20] && commits(o, &s.exit) =>
+        {
             e.outputs.push((lock.leaf(&s.asset, o.v), *memo))
         }
         (false, Some(o), Some(ops::Op::Migrate { to, note })) if *to != [0u8; 20] && out(o) => {

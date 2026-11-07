@@ -227,6 +227,8 @@ contract TacitBlocks {
     ///         pay out at it less the program's exit fee, and spends give the holders pool shares.
     uint64 public pool;
     uint64 public shares;
+    /// The units of pool and shares the block program's rate counts that no note holds (its VIRTUAL).
+    uint256 internal constant VIRTUAL = 1e8;
     address private transient pullFrom;
     uint256 private transient pullAmount;
 
@@ -474,7 +476,7 @@ contract TacitBlocks {
         Pending memory p = pending[key];
         if (p.from == address(0)) revert NotPending();
         if (p.from != inbox(shareCount, amount, cx, cy, body, back)) revert NotInbox();
-        if (block.timestamp < uint256(p.at) + RECLAIM_AFTER) revert TooSoon();
+        if (block.timestamp < uint256(p.at) + RECLAIM_AFTER && !_stale(shareCount, amount)) revert TooSoon();
         if (p.forced > queueDone) revert DepositQueued();
         delete pending[key];
         CONFIDENTIAL.wrap(CONFIDENTIAL_TAC, amount * UNIT, back);
@@ -483,17 +485,23 @@ contract TacitBlocks {
 
     /// @notice Sends a deposit no block has taken in within RECLAIM_AFTER back to whoever made it, unless an entry its
     ///         depositor queued to take it in is still ahead of the chain. Anyone may call it. (A swept deposit goes back
-    ///         with `giveBack`.)
+    ///         with `giveBack`.) One whose amount no longer buys its shares at the chain's rate goes back at once.
     function reclaim(uint256 shareCount, uint256 amount, bytes32 cx, bytes32 cy, bytes32 body) external nonReentrant {
         bytes32 key = keccak256(abi.encode(TAC_ASSET, shareCount, cx, cy, body, amount));
         Pending memory p = pending[key];
         if (p.from == address(0)) revert NotPending();
         if (p.from.codehash == INBOX_CODEHASH) revert SweptDeposit();
-        if (block.timestamp < uint256(p.at) + RECLAIM_AFTER) revert TooSoon();
+        if (block.timestamp < uint256(p.at) + RECLAIM_AFTER && !_stale(shareCount, amount)) revert TooSoon();
         if (p.forced > queueDone) revert DepositQueued();
         delete pending[key];
         _call(abi.encodeWithSelector(0xa9059cbb, p.from, amount * UNIT));
         emit Reclaimed(p.from, amount);
+    }
+
+    /// @dev Whether `amount` units no longer buy `shareCount` shares at the rate the last block left: every later block prices at that
+    ///      rate or a higher one, so no block can take the deposit in, and it may go back at once instead of after RECLAIM_AFTER.
+    function _stale(uint256 shareCount, uint256 amount) internal view returns (bool) {
+        return amount * (uint256(shares) + VIRTUAL) < shareCount * (uint256(pool) + VIRTUAL);
     }
 
     /// @dev A deposit's key: keccak256 of the record the block program publishes for it (asset ‖ shares ‖ cx ‖ cy ‖ body ‖ amount),

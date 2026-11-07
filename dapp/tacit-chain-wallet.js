@@ -28,14 +28,25 @@ export const MIN_POOL_FEE = 200_000n;
 /// The shares a lock's claim or refund note is worth less than the lock of `value` shares (the holders' part: EXIT_FEE_BPS of it,
 /// rounded up, at least one): seal its memos with the lock's value less this (common/src/lib.rs `lock_fee`).
 export const lockFee = (value) => { const f = ceilDiv(BigInt(value) * EXIT_FEE_BPS, 10_000n); return f > 0n ? f : 1n; };
+/// Whether a lock of `value` shares may be made at `rate`: its fee must be worth at least MIN_POOL_FEE (so a lock is about 2 TAC or more).
+export const lockAllowed = (value, rate) => { const [p, s] = rateOf(rate); return BigInt(value) > lockFee(value) && lockFee(value) * p >= MIN_POOL_FEE * s; };
 /// The units of pool and shares the rate counts that no note holds (common/src/lib.rs VIRTUAL).
 export const VIRTUAL = 100_000_000n;
 const rateOf = ({ pool, shares }) => [BigInt(pool) + VIRTUAL, BigInt(shares) + VIRTUAL];
 const ceilDiv = (a, b) => (a + b - 1n) / b;
 /// What `shares` are worth now, in units (rounded down).
 export const worthOf = (shares, rate) => { const [p, s] = rateOf(rate); return BigInt(shares) * p / s; };
-/// The most shares `amount` units buy at `rate` (the program's `covers`), less `marginBps` for the rate to rise before the shield lands.
-export function sharesFor(amount, rate, marginBps = 2n) {
+/// The margin a shield leaves for the rate to rise before it lands, in basis points: room for about five payments' pool shares in a
+/// small pool (each raises the rate by MIN_POOL_FEE / (pool + VIRTUAL)), 2 bps once the pool is large.
+export function shieldMargin(rate) {
+  const [p] = rateOf(rate);
+  const m = ceilDiv(5n * MIN_POOL_FEE * 10_000n, p);
+  return m < 2n ? 2n : m > 200n ? 200n : m;
+}
+/// The most shares `amount` units buy at `rate` (the program's `covers`), less `marginBps` for the rate to rise before the shield lands
+/// (by default `shieldMargin`).
+export function sharesFor(amount, rate, marginBps = null) {
+  if (marginBps == null) marginBps = shieldMargin(rate);
   const [p, s] = rateOf(rate);
   return BigInt(amount) * s * (10_000n - BigInt(marginBps)) / (p * 10_000n);
 }
