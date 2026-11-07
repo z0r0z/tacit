@@ -208,7 +208,7 @@ const DAPP = new URL('../dapp/', import.meta.url).pathname;
 const bwText = (page) => page.evaluate((s) => [...document.querySelectorAll(s)].map((e) => e.textContent).join(' '), '#bw-status, #bw-s1, #bw-s2, #bw-s3, #bw-s4');
 // `ui`: the front page's tile and landing, the steps a look-and-copy pass needs (tools/weld-ui.sh runs them on a pinned, cached fork)
 const UI_STEPS = 'links,swapurl,swapfield,hints,hxbridge,hxfold,hxnudge,tradelinks';
-const ONLY = new Set((process.argv[2] === 'ui' ? UI_STEPS : process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,hxbridgeu,usdtwrap,usdtwrapw,usdtout,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,swaphere,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,nohost,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,tileahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,anyone,relayfail,selfwallet,slowline,fastroute').split(','));
+const ONLY = new Set((process.argv[2] === 'ui' ? UI_STEPS : process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,hxbridgeu,usdtwrap,usdtwrapw,usdtout,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,swaphere,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,shieldsrc,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,nohost,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,tileahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,anyone,relayfail,selfwallet,slowline,fastroute').split(','));
 const FORK = process.argv[3] || 'https://mainnet.gateway.tenderly.co';
 const SHOTS = process.env.SHOTS || null;
 const PORT = 20000 + Math.floor(Math.random() * 2000), WEB = PORT + 1;
@@ -9492,6 +9492,47 @@ await step('farmqueue', async () => {
     if (r.errors.length) { fails++; console.log('FAIL farmqueue page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }
 });
+// Shield pays from the account that holds the ETH: a key opened on its own (pasted, a passkey) whose Tacit account is empty asks for the
+// wallet at the press, not "more than your Tacit account holds"; with the wallet connected and the empty Tacit account chosen to pay, the
+// wallet pays. The tip is the relay's proof alone (the press sends the one transaction itself), and the button stays filled on hover.
+await step('shieldsrc', async () => {
+  const r = await openPage({ account: A0, key: K0, colorScheme: 'dark', viewport: { width: 1280, height: 1300 } });
+  const p = r.page, ERR = /Tacit account holds/;
+  try {
+    await p.route(/\/confidential\/quote\?/, (route) => route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' },
+      body: JSON.stringify({ relayFeeEligible: true, recommendedTipRecipient: '0x' + '6c'.repeat(20), tipSplitter: '0x' + '5e'.repeat(20), recommendedWrapTipWei: '90000000000000', recommendedProveTipWei: '20000000000000' }) }));
+    await p.goto(r.url + '#wallet');
+    await p.click('#wallet-body [data-in="paste"]');
+    await p.fill('#ws-hex', '5e1d'.padEnd(64, '9'));
+    await p.click('#wallet-body [data-in="key"]');
+    await until(p, () => !!document.querySelector('#wallet-dot.on'));
+    await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
+    await tabClick(p, 'shield'); await p.waitForSelector(MV.amt, { timeout: 120000 });
+    await p.fill(MV.amt, '0.001');
+    await until(p, () => /Connect wallet and shield/.test(document.querySelector('#hx-swap #go')?.textContent || '') && /Proof fee: 0\.00002 ETH/.test(window.__said()), null, 90000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | go ${await text(p, MV.go)} | ${await said(p)}`); });
+    ok(!ERR.test(await said(p)), `shieldsrc: a key with an empty Tacit account and no wallet asks for the wallet, not for ETH in the Tacit account (${await said(p)})`);
+    ok(true, 'shieldsrc: the tip is the proof alone, 0.00002 ETH, not the 0.00009 that pays the relay to settle');
+    // the wallet connected, and the empty Tacit account chosen to pay anyway: the wallet holding the ETH pays
+    await toWallet(p);
+    await p.waitForSelector('[data-pay="wallet"]', { timeout: 60000 });
+    await p.click('[data-pay="wallet"]');
+    await until(p, () => document.querySelector('[data-pay="wallet"]')?.classList.contains('main'));
+    await p.click('[data-pay="tacit"]');
+    await until(p, () => document.querySelector('[data-pay="tacit"]')?.classList.contains('main'));
+    await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
+    await tabClick(p, 'shield'); await p.waitForSelector(MV.amt);
+    await p.fill(MV.amt, '0.002');
+    await until(p, () => /^Shield ETH$/.test((document.querySelector('#hx-swap #go')?.textContent || '').trim()) && /^Balance [1-9]/.test(document.querySelector('#hx-swap #pay-side')?.textContent || ''), null, 90000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | go ${await text(p, MV.go)} | side ${await text(p, '#hx-swap #pay-side')} | ${await said(p)}`); });
+    ok(!ERR.test(await said(p)), `shieldsrc: with the Tacit account chosen but empty, the wallet's ETH pays (${await text(p, '#hx-swap #pay-side')}; ${await said(p)})`);
+    await p.hover(MV.go); await sleep(400);
+    const look = await p.$eval(MV.go, (b) => { const c = getComputedStyle(b), card = getComputedStyle(b.closest('.swc') || document.body); return { bg: c.backgroundColor, ring: c.boxShadow, card: card.backgroundColor }; });
+    if (SHOTS) await p.locator('#hx').screenshot({ path: join(SHOTS, 'shieldsrc-hover.png') });
+    ok(look.bg !== 'rgba(0, 0, 0, 0)' && look.bg !== look.card && look.ring !== 'none', `shieldsrc: the button keeps its fill on hover (${look.bg} on ${look.card}, ${look.ring})`);
+    if (r.errors.length) { fails++; console.log('FAIL shieldsrc page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { await r.browser.close(); }
+});
 // The Shield card's relay tip is the relay's own for the amount typed. It turns on the size while the amount is small (3% of it, up to a
 // cap), so a small wrap is not told the tip a large one pays; and nothing is asked before an amount is typed.
 await step('hxtip', async () => {
@@ -9510,17 +9551,17 @@ await step('hxtip', async () => {
     await p.focus('#hx-swap #amt'); await sleep(1500);
     ok(asked.length === 0, `hxtip: nothing is asked of the relay before an amount is typed (${asked.length})`);
     await p.fill('#hx-swap #amt', '0.003');
-    await until(p, () => /Relay tip: 0\.00009 ETH/.test(window.__said()), null, 60000)
+    await until(p, () => /Proof fee: 0\.00009 ETH/.test(window.__said()), null, 60000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${(await text(p, '#hx')).replace(/\s+/g, ' ').slice(-200)}`); });
     ok(true, 'hxtip: a 0.003 ETH wrap says its tip is 0.00009 ETH (3% of it)');
     await p.fill('#hx-swap #amt', '0.1');
-    await until(p, () => /Relay tip: 0\.000117 ETH/.test(window.__said()), null, 60000)
+    await until(p, () => /Proof fee: 0\.000117 ETH/.test(window.__said()), null, 60000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${(await text(p, '#hx')).replace(/\s+/g, ' ').slice(-200)}`); });
     ok(asked.includes('3000000000000000') && asked.includes('100000000000000000'), `hxtip: and a 0.1 ETH wrap says the capped figure, each amount asked for itself (${asked.join(', ')})`);
     // No figure from the relay means it could not work one out just now: the card says the next step shows it, not a tip of nothing.
     noTip = true;
     await p.fill('#hx-swap #amt', '0.2');
-    await until(p, () => /Relay tip: shown next/.test(window.__said()), null, 60000)
+    await until(p, () => /Proof fee: shown next/.test(window.__said()), null, 60000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${(await text(p, '#hx-swap #q')).replace(/\s+/g, ' ')}`); });
     ok(true, 'hxtip: a quote with no tip in it is not read as a tip of nothing');
     if (r.errors.length) { fails++; console.log('FAIL hxtip page errors: ' + r.errors.slice(0, 3).join(' | ')); }

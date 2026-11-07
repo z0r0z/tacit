@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-MG0XKgnTlfizmnqU2UPNC4h08wfQ/lYbW1wiw0TpvsE=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-5KSgDqbhhNovTpZN1+f7leib8nOULmZQQ7ZsOoN2spI=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -13,7 +13,7 @@
 <link rel="preconnect" href="https://tacit-evm-pool-keepers.onrender.com" crossorigin>
 <script async src="/front-guard.js?cb=5b164dc9"></script>
 <script type="module" src="/px-strip.js?cb=fe8eebc5" async fetchpriority="high"></script>
-<link rel="preload" href="/swap/card.css?cb=8fe6e0c8" as="style">
+<link rel="preload" href="/swap/card.css?cb=7eeb3b6d" as="style">
 <link rel="preload" href="/fonts/instrument-serif-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/instrument-serif-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
@@ -1248,7 +1248,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
 }
 </style>
 <!-- the hero tile is drawn with the swap card's parts (swap/card.js, which the Swap tab mounts): its styles, after the page's own -->
-<link rel="stylesheet" href="/swap/card.css?cb=8fe6e0c8" media="print">
+<link rel="stylesheet" href="/swap/card.css?cb=7eeb3b6d" media="print">
 <!-- chrome:head:begin inline -->
 <style>
 /* The header's page links and the footer, as every page that wears them draws them. The markup is made by build/chrome.mjs and stamped
@@ -4691,6 +4691,8 @@ document.addEventListener('keydown', (e) => {
   if (live.length === 1) { e.preventDefault(); live[0].click(); }
 });
 document.addEventListener('click', (e) => { if (e.target.closest?.('[data-fund]')) { WAL.mode = 'add'; openSheet('wallet'); } });
+// the Shield card's wallet, connected from its balance corner: the key stays as it is, and the card is priced again for the wallet's ETH
+document.addEventListener('click', (e) => { if (e.target.closest?.('[data-hxconnect]')) connect({ key: false }).then(() => { HX.q = null; hxBalPaint(); hxQuote(); }, (x) => toast(x?.message || 'The wallet did not connect.')); });
 const lowEth = () => (payer() === 'tacit' ? html`More than your Tacit account holds. <button class="link" type="button" data-fund>Add ETH</button>` : 'More than your wallet holds.');
 function noEthYet(el, wei, chain, then) {
   if (!el?.isConnected || wei !== 0n || payer() !== 'tacit') return;
@@ -4699,7 +4701,7 @@ function noEthYet(el, wei, chain, then) {
 const mine = () => (payer() === 'tacit' ? 'My Tacit account' : 'My wallet');
 const ownAccount = (a) => !!a && [S.address, S.wallet, S.acct?.address].some((x) => x && String(x).toLowerCase() === String(a).toLowerCase());
 const linkNote = () => html`<p class="note">This is one of your own accounts, where deposits come from, so a withdrawal to it can be matched to them on chain. A fresh address keeps them apart.</p>`.s;
-const your = () => (payer() === 'tacit' ? 'your Tacit account' : 'your wallet');
+const your = (via = payer()) => (via === 'tacit' ? 'your Tacit account' : 'your wallet');
 
 const GH = 'https://github.com/src-company/tacit/blob/main/', ETHERSCAN = (a, kind = 'address') => `${SCAN}/${kind}/${a}`;
 const ASSETS = {
@@ -5340,6 +5342,10 @@ function outlookPaint() {
 }
 
 // What the relay asks as its tip to settle a wrap of `wei`, and where it is paid: the form's read of it and the card's. → { j, own, tip, to }
+// A shield is proved first and then sent by the paying account itself, one transaction whose gas it pays: its tip is the relay's proof alone
+// (recommendedProveTipWei), not the settle gas the relay never spends. The full tip (gas and proof) is for a deposit the relay settles, sent
+// first only while it has no proof to make.
+const selfTip = (j) => { const full = BigInt(j.recommendedWrapTipWei), pr = String(j.recommendedProveTipWei ?? ''); return /^\d+$/.test(pr) && BigInt(pr) < full ? BigInt(pr) : full; };
 async function readWrapTip(wei) {
   const r = await fetch(`${API}/confidential/quote?asset=cETH&amountWei=${wei}`, { signal: within(20e3) });
   if (!r.ok) throw new Error('The relay could not quote. Try again in a moment.');
@@ -5347,17 +5353,16 @@ async function readWrapTip(wei) {
   const own = ownNow(['wrap']);
   // No figure means the relay could not work one out just now ("ask again"); a wrap sent with no tip draws on its free settles.
   if (!own && !/^\d+$/.test(String(j.recommendedWrapTipWei ?? ''))) throw new Error('Could not get the relay’s tip, so nothing was sent. Try again in a moment.');
-  const tip = own ? 0n : BigInt(j.recommendedWrapTipWei), named = String(j.tipSplitter || j.recommendedTipRecipient || '').toLowerCase();
+  const full = own ? 0n : BigInt(j.recommendedWrapTipWei), tip = own ? 0n : selfTip(j), named = String(j.tipSplitter || j.recommendedTipRecipient || '').toLowerCase();
   const to = [ADDR.tipOps, ADDR.tipSplitter].find((a) => a.toLowerCase() === named);
   if (!to) throw new Error('The relay named a tip address this page does not know, so nothing will be sent. Try again in a moment.');
-  if (tip * 10000n > wei * 500n) throw new Error('The relay asked for more than 5% of this deposit as its tip, so nothing will be sent. A larger deposit pays a smaller share.');
-  return { j, own, tip, to };
+  if (full * 10000n > wei * 500n) throw new Error('The relay asked for more than 5% of this deposit as its tip, so nothing will be sent. A larger deposit pays a smaller share.');
+  return { j, own, tip, full, to };
 }
 // A wrap's steps, pressed from the Private sheet's form or from the Swap card: `x` is { wei, tip, to, at } (the amount, the relay's tip and where it goes). The proof is made first where it can be
 // (a kept one, the relay's, the holder's own) so one transaction deposits and settles; else the deposit goes first and the relay settles it. `status` is the element the steps are said in, `line()`
 // the one Activity and a failure use, `anchor` the button the points pop from; `moved` asks for a fresh quote, `clear` empties the amount, `after` redraws when it is over.
-async function wrapNow({ run, x, status, line, anchor, sheet = 'eth', clear, moved, after }) {
-  const via = payer();
+async function wrapNow({ run, x, via = payer(), status, line, anchor, sheet = 'eth', clear, moved, after }) {
   // The relay counts a wrap as paid work while its tip is at least half of what settling costs now. A form left open while gas
   // climbs could fall short of that, so the tip is read again after a minute and shown anew only if it has moved by half.
   if (Date.now() - x.at > 60e3) {
@@ -5409,6 +5414,8 @@ async function wrapNow({ run, x, status, line, anchor, sheet = 'eth', clear, mov
       }
     }
     say(status, 'Preparing your note…');
+    // the relay settles this one, so it is tipped for its gas as well as the proof
+    if (x.tip > 0n) { const f = await readWrapTip(x.wei).catch(() => null); if (f && f.full > x.tip) x = { ...x, tip: f.full, to: f.to }; }
     const index = await t.nextWrapIndex({ walletPriv: priv, ticker: 'cETH' });
     w = t.buildWrap({ walletPriv: priv, amountWei: x.wei, ticker: 'cETH', index });
     run.take(kDep(w));
@@ -10108,7 +10115,7 @@ async function sendVouchers({ run, t, via, list, status, sheet, pop = null, tip 
   await Promise.all(calls.map((c) => rpc('eth_call', [{ ...(from ? { from } : {}), to: c.to, data: c.data, value: '0x' + c.value.toString(16) }, 'latest'])
     .catch((e) => { throw Object.assign(new Error(`Nothing was sent: the router refuses a wrap kept ready here. ${revertText(e) || ''}`.trim()), { said: true }); })));
   run.take(...list.map((x) => kDep({ depositId: x.depositId })));
-  tell(`Proved already. Sending it from ${your()}…`);
+  tell(`Proved already. Sending it from ${your(via)}…`);
   let hash = null;
   if (calls.length > 1 && via !== 'tacit' && (await canBatch())) {
     try { hash = runTx(run, await sendBatch(calls, run.to.label), 'Wrap', 'Wrapping'); } catch (e) { if (!e?.noBatch) throw e; }
@@ -10154,7 +10161,7 @@ async function proveFirstWrap({ run, t, priv, via, wei, status, sheet, ticker = 
     const call = t.wrapSettleCall({ built: r.built, proven: r.proven, ...(token ? await wrapPermitArgs({ t, via, token, value: BigInt(r.built.amount), status }) : {}) });
     try { await rpc('eth_call', [{ ...(from ? { from } : {}), to: call.to, data: call.data, value: '0x' + call.value.toString(16) }, 'latest']); }
     catch (e) { throw Object.assign(new Error(`Nothing was sent: the router refuses this as it stands. ${revertText(e) || ''}`.trim()), { said: true }); }
-    tell(`Sending it from ${your()}…`);
+    tell(`Sending it from ${your(via)}…`);
     const hash = runTx(run, await sendTx({ to: call.to, data: call.data, value: call.value, via, label: run.to.label }), 'Wrap', 'Wrapping');
     sent = true;
     // the form is cleared as the transaction goes, so an amount typed while it lands is not wiped after
@@ -14430,9 +14437,9 @@ function hxWrapTip(units) {
   const ask = fetch(`${API}/confidential/quote?asset=cETH&amountWei=${units * E10}`, { signal: within(20e3) })
     .then(async (r) => {
       if (!r.ok) throw new Error(`quote ${r.status}`);
-      const raw = (await r.json()).recommendedWrapTipWei;
-      if (!/^\d+$/.test(String(raw ?? ''))) throw new Error('tip not named');
-      const v = BigInt(raw);
+      const j = await r.json();
+      if (!/^\d+$/.test(String(j.recommendedWrapTipWei ?? ''))) throw new Error('tip not named');
+      const v = selfTip(j);
       HXT.m.set(k, { v, at: Date.now() });
       if (HXT.m.size > 24) HXT.m.delete(HXT.m.keys().next().value);
       return v;
@@ -14484,11 +14491,26 @@ function hxWrapAhead(units) {
     if (p) { hxQuote(); p.then(() => hxQuote(), () => {}); }
   }, 1500);
 }
+// Who pays a shield from the card: the account that holds the ETH. A key opened with a passkey or a saved key, with no wallet connected,
+// has its Tacit account as payer, and a new one's is empty: the browser's wallet pays then, connected at the press. With both on hand, the
+// paying account while it covers the amount, else the one holding more.
+const hxEthOf = (who) => hxWalletRead('eth', 1, (w) => rpc('eth_getBalance', [w, 'latest']).then(BigInt, () => null), who || '');
+function hxWrapVia(units = hxUnits()) {
+  const p = payer();
+  if (!S.key || p === 'wallet') return p;
+  const need = units ? units * E10 : 1n, acct = hxEthOf(S.acct?.address);
+  if (acct == null || acct >= need) return 'tacit';
+  if (!S.wallet) return evm.hasBrowserWallet() ? 'wallet' : 'tacit';
+  const w = hxEthOf(S.wallet);
+  return w != null && w > acct ? 'wallet' : 'tacit';
+}
+const hxWrapConnect = (units = hxUnits()) => hxWrapVia(units) === 'wallet' && !S.wallet;
+const hxWrapBal = (units = hxUnits()) => (hxWrapConnect(units) ? null : hxEthOf(hxWrapVia(units) === 'tacit' ? S.acct?.address : S.wallet || S.address));
 // (more than the paying account holds with the tip is said before the press, as the press would say it)
-const hxWrapOver = (units, tip) => { const bal = units ? hxHeldOf('ether', 1)?.[0] : null; return bal != null && units * E10 + (ownNow(['wrap']) || typeof tip !== 'bigint' ? 0n : tip) > bal; };
-const hxWrapSay = (units, tip) => ({ out: units ? fmt(units, 8, 6) : null, go: 'Shield ETH', pk: 'wrap', tip,
-  ...(hxWrapOver(units, tip) ? { warn: true, line: `More ETH than ${your()} holds, with the relay’s tip. Try Max.` } : {}),
-  rc: units ? [ownNow(['wrap']) ? ['Relay tip', 'none: your own proof'] : ['Relay tip', tip ? `${fmt(tip, 18, 6)} ETH` : tip === undefined ? 'shown next' : tip == null ? '…' : 'none', '', 'Paid on top, to the relay that settles the deposit'],
+const hxWrapOver = (units, tip) => { const bal = units ? hxWrapBal(units) : null; return bal != null && units * E10 + (ownNow(['wrap']) || typeof tip !== 'bigint' ? 0n : tip) > bal; };
+const hxWrapSay = (units, tip) => ({ out: units ? fmt(units, 8, 6) : null, go: hxWrapConnect(units) ? 'Connect wallet and shield' : 'Shield ETH', pk: 'wrap', tip,
+  ...(hxWrapOver(units, tip) ? { warn: true, line: `More ETH than ${your(hxWrapVia(units))} holds, with the relay’s tip. Try Max.` } : {}),
+  rc: units ? [ownNow(['wrap']) ? ['Proof fee', 'none: your own proof'] : ['Proof fee', tip ? `${fmt(tip, 18, 6)} ETH` : tip === undefined ? 'shown next' : tip == null ? '…' : 'none', '', 'Paid on top, to Tacit’s prover for the proof. You send the one transaction yourself, so there is no relay gas to pay'],
     hxPrivIn(S.key ? proofRow(hxWrapReady(units), hxWrapMaking(units)) : proofRow(false)),
     ['Chain sees', `your ${fmt(units, 8, 6)} ETH going in`]] : [] });
 const hxWarm = () => { if (Date.now() - (HX.warm || 0) < 10e3) return; HX.warm = Date.now(); gasNow(); getUx().then((t) => t.quoteOpFee('cETH', 'route')).catch(() => {}); };
@@ -15804,7 +15826,7 @@ const hxWalletTac = (who) => hxWalletRead('tac', 1, (w) => ethCall(ADDR.tac, SEL
 function hxHeldOf(k, cid) {
   if (hxIsLp(k)) { const p = hxLpPool(k), n = p && P.scan ? freeNotes(P.scan.notes).filter(isLp(p)).reduce((a, x) => a + BigInt(x.value), 0n) : 0n, w = p ? sharesEth(p, n) : null; return w == null ? null : [w, 18]; }
   if ((HX.tab === 'send' || (HX.tab === 'swap' && HX_MV_SF_DEC[k]) || (HX.tab === 'bridge' && k === 'wusdt')) && k in HX_WTOK) { const v = hxWalletBal(k); return v == null ? null : [v, HX_WDEC[k] ?? 18, hxSendOf(k)[1]]; }
-  if (k === 'ether') { const v = hxWalletEth(cid); return v == null ? null : [v, 18, 'ETH']; }
+  if (k === 'ether') { const v = hxWrapMode() && S.key && (cid ?? 1) === 1 ? hxWrapBal() : hxWalletEth(cid); return v == null ? null : [v, 18, 'ETH']; }
   // a TAC vault takes TAC from the browser's wallet (the vault page signs with it), not the Tacit account
   if (k === 'wtac') { const v = hxWalletTac(HX.tab === 'borrow' ? S.wallet || '' : undefined); return v == null ? null : [v, 18, 'TAC']; }
   if (!S.key) return null;
@@ -15841,19 +15863,25 @@ async function hxKeep(src, cid = hxWalletChain()) {
 }
 // Under the amount, as on the swap card: what is held there and Max; with nothing held to show, the amounts most often typed, until one is
 function hxBalPaint() {
+  // Who pays a shield follows the balances as they are read (hxWrapVia), so the card is priced again when that turns: its button and its
+  // line name the one paying.
+  if (hxWrapMode() && S.key) { const v = `${hxWrapVia()}|${!!S.wallet}`; if (HX.wv !== v) { const was = HX.wv; HX.wv = v; if (was) setTimeout(() => { HX.q = null; hxQuote(); }, 0); } }
   if (HX.tab === 'swap') { hxMoveAuto(); SWC.card?.refresh?.(); }
   const el = $('#hx-bal');
   if (!el) return;
   if (hxPlaceAuto()) { paintHx(); return; }
   const src = hxAmtSrc(), h = src && !(HX.tab === 'send' && HX.ask) ? hxHeldOf(src) : null;
+  // a shield the browser's wallet pays, not connected yet: its balance is read once it connects
+  const wrapEth = src === 'ether' && hxWrapMode() && !!S.key;
   if (!h) {
     const l = HX.amt || hxSizesOn() ? null : HX_QUICK[hxAmtKind()];
-    const view = l ? html`<span class="quick">${l.map((v) => html`<button type="button" data-hxq="${v}">${Number(v).toLocaleString('en-US')}</button>`)}</span>` : html``;
+    const view = wrapEth && hxWrapConnect() ? html`<button type="button" class="link" data-hxconnect>Connect wallet</button>`
+      : l ? html`<span class="quick">${l.map((v) => html`<button type="button" data-hxq="${v}">${Number(v).toLocaleString('en-US')}</button>`)}</span>` : html``;
     if (el.__h !== view.s) { el.__h = view.s; mount(el, view); }
     return;
   }
   const [v, dec] = h, typed = hxUnits(), dev = hxPayP(), over = !!typed && v > 0n && (!dev && dec === 18 ? typed * E10 : typed) > v, max = v > 0n && !(HX.tab === 'send' && hxSendBtc());
-  const view = html`<button type="button" id="hx-max"${over ? html` class="over"` : ''} ${max ? '' : 'disabled'}>Balance ${fmt(v, dec, dec === 18 ? 4 : 6)}${max ? ' · Max' : ''}</button>`;
+  const view = html`<button type="button" id="hx-max"${over ? html` class="over"` : ''} ${max ? '' : 'disabled'}>${wrapEth && hxWrapVia() === 'tacit' ? 'Tacit account' : 'Balance'} ${fmt(v, dec, dec === 18 ? 4 : 6)}${max ? ' · Max' : ''}</button>`;
   // two coins can read alike (USDC and USDT, 'Balance 12.5 · Max'): the press belongs to this one
   const key = `${HX.tab}|${src}|${dev?.slug ?? ''}|${v}|${view.s}`;
   if (el.__h === key) return;
@@ -16438,10 +16466,14 @@ async function hxWrapGo(units) {
     try {
       const fresh = await readWrapTip(wei);
       if (!fresh.own && shown != null && fresh.tip * 2n > shown * 3n) { say(st, 'The relay’s tip moved while this was open. It is shown again: check it and press once more.'); HXT.m.delete(key); HX.q = null; hxQuote(); return; }
-      const x = { wei, tip: fresh.own ? 0n : shown != null && fresh.tip < shown ? fresh.tip : shown ?? fresh.tip, to: fresh.to, at: Date.now() }, bal = await ethBalance();
-      if (bal != null && wei + x.tip > bal) { say(st, html`<span class="err">More than ${your()} holds, with the relay’s tip.</span>`); return; }
+      // paid by the account holding the ETH (hxWrapVia): the browser's wallet is connected here when it is that one, in the same press
+      let via = hxWrapVia(units);
+      if (via === 'wallet' && !S.wallet) { say(st, 'Connect your wallet: the ETH comes from it…'); await connect({ key: false }); via = hxWrapVia(units); }
+      const who = via === 'tacit' ? S.acct?.address : S.wallet;
+      const x = { wei, tip: fresh.own ? 0n : shown != null && fresh.tip < shown ? fresh.tip : shown ?? fresh.tip, to: fresh.to, at: Date.now() }, bal = who ? await rpc('eth_getBalance', [who, 'latest']).then(BigInt, () => null) : null;
+      if (bal != null && wei + x.tip > bal) { say(st, html`<span class="err">More than ${your(via)} holds, with the relay’s tip.</span>`); return; }
       say(st, '');
-      await wrapNow({ run, x, status: st, line: () => st, anchor: go, sheet: '', clear: () => SWC.card?.clear?.(), moved: () => { HX.q = null; hxQuote(); }, after: hxMoveAfter });
+      await wrapNow({ run, x, via, status: st, line: () => st, anchor: go, sheet: '', clear: () => SWC.card?.clear?.(), moved: () => { HX.q = null; hxQuote(); }, after: hxMoveAfter });
     } catch (e) { run.fail(st, e); }
   }).finally(() => SWC.card?.working?.(false));
 }
