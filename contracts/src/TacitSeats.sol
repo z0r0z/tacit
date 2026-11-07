@@ -8,7 +8,8 @@ interface IERC20Seats {
 /// @notice Whose turn it is to land the next Tacit block. A seat is SEAT of TAC locked here, and a holder may take as many seats as it
 ///         locks TAC for. Time runs in slots of SLOT_BLOCKS Ethereum blocks and epochs of EPOCH_SLOTS slots. Each slot one seat leads,
 ///         drawn from the epoch's seats by the slot's number and the epoch's seed: the beacon chain's randomness (`block.prevrandao`)
-///         in the first block of the epoch's first SEED_BLOCKS in which anyone keeps it (`turn`). A seat taken or left counts from the
+///         in the first block of the epoch's blocks 1 to SEED_BLOCKS (block 0's is known to the proposer of the block before it, which
+///         may still take or leave seats for this epoch) in which anyone keeps it (`turn`). A seat taken or left counts from the
 ///         next epoch, so an epoch's seats are fixed before its seed exists, and no holder can choose its turns by taking or leaving
 ///         seats: over time each seat leads its share of them. A block hash would not do: whoever builds the block can try as many
 ///         as it likes. The beacon randomness of a block is fixed before the block is built, so the most anyone can choose is which of
@@ -140,7 +141,10 @@ contract TacitSeats {
     function turn() external returns (address) {
         uint256 e = epoch();
         // with no seat in the draw BOOTSTRAP leads and no seed is needed
-        if (seedOf[e] == 0 && _countAt(e) != 0 && block.number - e * SLOT_BLOCKS * EPOCH_SLOTS < SEED_BLOCKS) {
+        // from the epoch's second block: the first one's randomness is its parent's reveal, which that parent's proposer knows while
+        // it can still take or leave seats for this epoch
+        uint256 at = block.number - e * SLOT_BLOCKS * EPOCH_SLOTS;
+        if (seedOf[e] == 0 && _countAt(e) != 0 && at != 0 && at <= SEED_BLOCKS) {
             bytes32 s = keccak256(abi.encode(block.prevrandao, e));
             seedOf[e] = s == 0 ? bytes32(uint256(1)) : s;
         }

@@ -292,7 +292,7 @@ abstract contract TacitBlocksFixture is Test {
         }
         epochBlocks = turns.SLOT_BLOCKS() * turns.EPOCH_SLOTS();
         e = block.number / epochBlocks + 1;
-        vm.roll(e * epochBlocks);
+        vm.roll(e * epochBlocks + 1);
         vm.prevrandao(keccak256("an epoch's seed"));
     }
 
@@ -486,16 +486,12 @@ contract TacitBlocksTest is TacitBlocksFixture {
         blocks.force(shieldPosting());
         (,, uint56 forced) = blocks.pending(keccak256(abi.encode(blocks.TAC_ASSET(), v, cx, cy, body)));
         assertEq(forced, 1);
-        // neither taken in by another spend nor reclaimed before the chain reaches the entry
-        bytes memory p0 = pv(0);
-        TacitBlocks.Lists memory l0 = lists(0);
-        vm.prank(SEQ);
-        vm.expectRevert(TacitBlocks.DepositQueued.selector);
-        blocks.land(p0, "", l0);
+        // not reclaimed before the chain reaches the entry
         vm.warp(block.timestamp + blocks.RECLAIM_AFTER());
         vm.expectRevert(TacitBlocks.DepositQueued.selector);
         blocks.reclaim(v, cx, cy, body);
         // the block that reaches the entry takes it in
+        TacitBlocks.Lists memory l0 = lists(0);
         TacitBlocks.Lists memory l;
         l.deposits = l0.deposits;
         bytes memory p = craftQ(l, 1);
@@ -503,6 +499,18 @@ contract TacitBlocksTest is TacitBlocksFixture {
         blocks.land(p, "", l);
         vm.expectRevert(TacitBlocks.NotPending.selector);
         blocks.reclaim(v, cx, cy, body);
+    }
+
+    /// A queued entry does not hold its deposit back from the spend it names: a block may take it in first (the program then
+    /// passes the entry over, the deposit's nullifier spent), so a junk entry naming it cannot make that block unlandable.
+    function test_aQueuedDepositMayBeTakenFirst() public {
+        depositFixture();
+        blocks.force(shieldPosting());
+        bytes memory p0 = pv(0);
+        TacitBlocks.Lists memory l0 = lists(0);
+        vm.prank(SEQ);
+        blocks.land(p0, "", l0);
+        assertEq(blocks.height(), 1);
     }
 
     function test_aQueuedDepositPassedOverIsFreeAgain() public {
@@ -788,7 +796,7 @@ contract TacitBlocksMoreTest is TacitBlocksFixture {
     function test_aTurnNoOneLeadsIsAnyones() public {
         (uint256 e, uint256 epochBlocks) = twoSeats(address(0xA), address(0xB));
         // the epoch's seed was not kept in its first SEED_BLOCKS: no one leads, and keeping it later does nothing
-        vm.roll(e * epochBlocks + turns.SEED_BLOCKS());
+        vm.roll(e * epochBlocks + turns.SEED_BLOCKS() + 1);
         assertEq(turns.turn(), address(0));
         assertEq(turns.seedOf(e), bytes32(0));
         depositFixture();

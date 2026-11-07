@@ -257,6 +257,7 @@ contract TacitBlocks {
     error SweptDeposit();
     error Insolvent();
     error HopNotTaken();
+    error TooLate();
 
     /// @notice The lists a block publishes, in the block program's committed order (`BlockData`): the new notes'
     ///         leaves (32 bytes each) and their memos (MEMO_LEN bytes each, in the same order), nullifiers, anchors,
@@ -463,8 +464,12 @@ contract TacitBlocks {
             if (payload[FORCED_REST_AT + 52] != 0x01) revert BadPayload();
             uint256 value = uint64(bytes8(payload[FORCED_REST_AT + 53:FORCED_REST_AT + 61]));
             Pending storage p = pending[keccak256(abi.encode(asset, value, bytes32(payload[320:352]), bytes32(payload[352:384]), bytes32(payload[32:64])))];
-            // its depositor's, or a swept one's (whose depositor has no address here: anyone may queue the one spend that takes it)
-            if (p.from != msg.sender && (p.from == address(0) || p.from.codehash != INBOX_CODEHASH)) revert NotDepositor();
+            // its depositor's, or a swept one's (whose depositor has no address here: anyone may queue the one spend that takes it,
+            // while the chain can still reach the entry before giveBack is due, so no one can hold a swept deposit back for good)
+            if (p.from != msg.sender) {
+                if (p.from == address(0) || p.from.codehash != INBOX_CODEHASH) revert NotDepositor();
+                if (block.timestamp + FORCE_DELAY + WINDOW > uint256(p.at) + RECLAIM_AFTER) revert TooLate();
+            }
             if (p.forced > queueDone) revert DepositQueued();
             p.forced = uint56(i + 1);
         }
@@ -531,8 +536,9 @@ contract TacitBlocks {
             worth += uint256(bytes32(deposits[DEPOSIT_LEN * i + 32:DEPOSIT_LEN * i + 64]));
             Pending storage p = pending[key];
             if (p.from == address(0)) revert NoSuchDeposit(i);
-            // one its depositor queued is taken in by the block that reaches the entry, or after it by any spend
-            if (p.forced > done) revert DepositQueued();
+            // a queued entry for it does not hold it back: only the one spend the deposit names can take it in, once (its
+            // deposit nullifier), so a block may take it before reaching the entry, which the program then passes over; that a
+            // deposit is queued only keeps it from going back (reclaim, giveBack) while an entry that could take it is ahead
             delete pending[key];
         }
 

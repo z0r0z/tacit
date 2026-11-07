@@ -156,7 +156,7 @@ async function keepSeed() {
   ]);
   const b = BigInt(num(await rpc.call('eth_blockNumber')));
   const len = BigInt(slot) * BigInt(epochSlots), e = b / len;
-  if (BigInt(seats) === 0n || BigInt(lead) !== 0n || b - e * len >= BigInt(seedBlocks) || Number(e) === seedKeptFor) return;
+  if (BigInt(seats) === 0n || BigInt(lead) !== 0n || b - e * len < 1n || b - e * len > BigInt(seedBlocks) || Number(e) === seedKeptFor) return;
   seedKeptFor = Number(e);
   const receipt = await send(rpc, KEY, turns, selector('turn()'), { chainId: num(await rpc.call('eth_chainId')) });
   log({ seedKept: Number(e), tx: receipt.transactionHash });

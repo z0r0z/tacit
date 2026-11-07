@@ -35,10 +35,12 @@ contract TacitSeatsTest is Test {
         toEpoch(1000, 10);
     }
 
-    /// Block `offset` of epoch `e`, its seed (the hash of the block before it began) set to one made from `e`.
+    /// Epoch `e`, its seed kept at its block 1 from beacon randomness made from `e`; then block `offset` of it (at least 1).
     function toEpoch(uint256 e, uint256 offset) internal {
-        vm.roll(e * epochBlocks + offset);
-        vm.setBlockhash(e * epochBlocks - 1, keccak256(abi.encode("seed", e)));
+        vm.roll(e * epochBlocks + 1);
+        vm.prevrandao(keccak256(abi.encode("seed", e)));
+        seats.turn();
+        if (offset > 1) vm.roll(e * epochBlocks + offset);
     }
 
     function join(address who) internal returns (uint256 i) {
@@ -138,16 +140,22 @@ contract TacitSeatsTest is Test {
     function test_anEpochsSeedIsKeptByTurnOrItHasNoLeader() public {
         join(A);
         join(B);
-        toEpoch(1001, 5);
+        // not from the epoch's first block (its randomness is known to the block before, which can still take seats)
+        vm.roll(1001 * epochBlocks);
+        vm.prevrandao(keccak256("block 0"));
+        assertEq(seats.turn(), address(0));
+        assertEq(seats.seedOf(1001), bytes32(0));
+        vm.roll(1001 * epochBlocks + 2);
+        vm.prevrandao(keccak256("block 2"));
         address lead = seats.turn();
         assertTrue(lead == A || lead == B);
-        assertEq(seats.seedOf(1001), keccak256(abi.encode("seed", 1001)));
+        assertEq(seats.seedOf(1001), keccak256(abi.encode(keccak256("block 2"), uint256(1001))));
         vm.roll(block.number + 300);
-        assertEq(seats.leader() == address(0), false, "a kept seed outlasts the block hash");
-        // an epoch nobody asked about within 256 blocks of its start has no leader, so anyone may land in it
-        toEpoch(1002, 300);
-        assertEq(seats.leader(), address(0));
+        assertEq(seats.leader() == address(0), false, "a kept seed lasts the epoch");
+        // an epoch nobody kept the seed of in its blocks 1 to SEED_BLOCKS has no leader, so anyone may land in it
+        vm.roll(1002 * epochBlocks + seats.SEED_BLOCKS() + 1);
         assertEq(seats.turn(), address(0));
+        assertEq(seats.leader(), address(0));
     }
 
     function test_onlyItsHolderLeavesASeat() public {
