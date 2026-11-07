@@ -93,6 +93,19 @@ the wallets' business. The wallets' memo (`tacit-chain-memo.js`) is hybrid: an M
 later breaks elliptic curves cannot read a recorded memo, compute a note's keys or nullifiers, or link a note to its owner without also
 breaking ML-KEM. A wallet recovers its notes from its seed and the published memos alone.
 
+## Wallets and leaders
+
+A wallet (`dapp/tacit-chain-wallet.js`) builds a spend from a seed: the body, the notes with their hybrid memos, each input's EdDSA signature
+and the Halo2 proof (the pool's wasm prover, 17-24 s a spend in Node), padded to two output notes so every spend adds the same number of
+leaves. It submits to a leader (`POST /spend`), which checks the proof natively, that the spend's asset is TAC, that its root is one a block ended
+at, and that a trial block takes it; it finds its notes by trying every published memo (`scan`), which costs a hybrid decapsulation each (8 ms in
+pure JS: a wallet recovered from its seed at 100k notes takes minutes, so a WASM ML-KEM and workers are the wallet's to add; no protocol change).
+A shield first makes the deposit on L1 (`TacitBlocks.deposit`), whose commitment and body hash the wallet's spend names; a leader includes a
+shield only once its deposit is waiting there.
+
+A leader (`tacit-leader/`) admits only what can land: a block that held a spend of another asset, a deposit not on L1 or a root no block ended at
+would revert and could be made to by anyone. Its `/build` and `/landed` routes are its own.
+
 ## What each party sees
 
 * **Everyone**: deposits, exits and hops (amounts and addresses, on Ethereum), the count of notes and nullifiers per block, the time.
@@ -105,6 +118,6 @@ breaking ML-KEM. A wallet recovers its notes from its seed and the published mem
 ## Tests
 
 `tacit-block test` (the program on a test chain, with its refusals), `tacit-block fixture` (a nine-block chain with the landing contract's
-inputs), `tacit-block-node replay` (the same chain rebuilt from published data alone), `forge test` (`TacitBlocks.t.sol`: the landing rules;
+inputs), `tacit-block-node replay` (the same chain rebuilt from published data alone), `tests/tacit-chain-wallet.test.mjs` (the wallet's real proofs against the leader's node), `tests/tacit-leader-anvil.mjs` and `tests/tacit-chain-user-story.mjs` (the leader, and a user's whole story from an L1 deposit to a withdrawal and a hop, on a mainnet fork), `forge test` (`TacitBlocks.t.sol`: the landing rules;
 `TacitBlocksFork.t.sol`: the real Groth16 proofs through SP1's verifier and hops into the live confidential pool on a mainnet fork, with
 `TACIT_BLOCKS_FORK_RPC`), and `node --test tests/tacit-chain-*.test.mjs`.
