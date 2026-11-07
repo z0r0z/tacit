@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-TrVSl+rKYTieEdcfs7ITZFftz22WZuBJXQxzc9hBRaQ='; style-src 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self' https://ethereum-rpc.publicnode.com https://rpc.mevblocker.io https://eth.drpc.org https://1rpc.io; base-uri 'none'; form-action 'none'">
+<meta name="color-scheme" content="light dark">
+<meta name="robots" content="noindex">
+<title>tacit admin · chain</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<style>
+@font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
+@font-face { font-family: 'Instrument Serif'; font-weight: 400; font-style: italic; font-display: swap; src: url('/fonts/instrument-serif-400i-latin.woff2') format('woff2'); }
+:root {
+  --paper: #E8E0CC; --card: #F2EBD4; --field: #FAF6EA;
+  --ink: #1A1A1A; --mute: #625C4F;
+  --hair: rgba(26,26,26,.12); --hair-2: rgba(26,26,26,.28);
+  --ok: #0a7234; --warn: #9a4a00; --err: #b8341d;
+  --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --serif: 'Instrument Serif', Georgia, serif;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #15130E; --card: #1F1C15; --field: #191711;
+    --ink: #EDE5CF; --mute: #A39B85;
+    --hair: rgba(237,229,207,.12); --hair-2: rgba(237,229,207,.28);
+    --ok: #8fcf9a; --warn: #f7931a; --err: #f08a6c;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--paper); color: var(--ink); }
+body {
+  font: 13px/1.6 var(--mono); letter-spacing: -.01em;
+  background-image: radial-gradient(var(--hair) 1px, transparent 1px); background-size: 24px 24px;
+  padding: 0 max(16px, env(safe-area-inset-right)) 48px max(16px, env(safe-area-inset-left));
+}
+a { color: inherit; text-underline-offset: 3px; text-decoration-thickness: 1px; }
+button { font: inherit; color: inherit; letter-spacing: inherit; }
+:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+[hidden] { display: none !important; }
+.shell { max-width: 880px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+.top { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding: 22px 0 0; }
+.brand { display: inline-flex; align-items: baseline; gap: 10px; text-decoration: none; }
+.brand b { font: italic 400 30px/1 var(--serif); letter-spacing: -.01em; }
+.brand i { font-style: normal; font-size: 12px; color: var(--mute); text-transform: uppercase; letter-spacing: .12em; }
+.lead { margin: 0; color: var(--mute); max-width: 72ch; }
+.wallet { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.btn { min-height: 36px; padding: 6px 14px; border: 1px solid var(--hair-2); border-radius: 999px; background: var(--card); cursor: pointer; white-space: nowrap; }
+.btn:hover:not(:disabled) { border-color: var(--ink); }
+.btn:disabled { opacity: .45; cursor: default; }
+.btn.go { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.chip { padding: 4px 10px; border: 1px solid var(--hair); border-radius: 999px; background: var(--field); }
+.card { background: var(--card); border: 1px solid var(--hair); border-radius: 14px; padding: 18px 18px 16px; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.addr { font: 400 20px/1.2 var(--mono); word-break: break-all; }
+.addr .z { color: var(--ok); }
+.st { display: inline-flex; align-items: center; gap: 6px; }
+.st::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--hair-2); }
+.st.open::before { background: var(--ok); } .st.open { color: var(--ok); }
+.st.none::before { background: var(--warn); } .st.none { color: var(--warn); }
+dl { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 6px 18px; }
+dt { color: var(--mute); }
+dd { margin: 0; word-break: break-all; min-width: 0; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.steps { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
+.steps li::before { content: '· '; color: var(--mute); }
+.steps li.ok { color: var(--ok); } .steps li.ok::before { content: '✓ '; }
+.steps li.err { color: var(--err); } .steps li.err::before { content: '✗ '; }
+.note { font-size: 11px; color: var(--mute); }
+.note.err { color: var(--err); }
+@media (max-width: 560px) { dl { grid-template-columns: 1fr; gap: 2px; } dd { margin-bottom: 6px; } }
+</style>
+</head>
+<body>
+<div class="shell">
+  <header class="top">
+    <a class="brand" href="/"><b>tacit</b><i>chain deploy</i></a>
+    <div class="wallet"><span class="chip" id="who" hidden></span><span id="pick"></span><button class="btn" id="connect" type="button">Connect wallet</button></div>
+  </header>
+  <p class="lead">Deploy the tacit chain through CreateX from Tacit's deployer, at the addresses the community's salt miners found: TacitSeats first, then TacitBlocks, which names it. Each transaction is run from your address first and sent only if it creates exactly the contract at exactly the address shown.</p>
+  <section class="card" id="params" aria-label="Parameters"><span class="note">Reading the kit…</span></section>
+  <div id="cards" class="shell" style="padding:0"></div>
+</div>
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+const strip = (h) => String(h || '').replace(/^0x/, '');
+const lc = (s) => String(s || '').toLowerCase();
+const word = (v) => BigInt(v).toString(16).padStart(64, '0');
+const short = (a) => a.slice(0, 6) + '…' + a.slice(-4);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); for (const k of kids) if (k != null) e.append(k); return e; };
+const reason = (e) => String(e?.data?.message || e?.message || e).replace(/^.*?execution reverted:?\s*/i, 'reverted ').slice(0, 160);
+const W = { found: new Map(), prov: null, name: '', account: null, chain: null };
+let KIT = null;
+const S = [];   // per step: { state: 'none' | 'open', log: [[cls, text, href]], verified }
+
+async function rpc(method, params = []) {
+  let last;
+  for (const url of KIT.rpc) {
+    try {
+      const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
+      const j = await r.json();
+      if (j.error) throw Object.assign(new Error(j.error.message), { data: j.error, final: /revert/i.test(`${j.error.message} ${JSON.stringify(j.error.data ?? '')}`) });
+      return j.result;
+    } catch (e) { if (e.final) throw e; last = e; }
+  }
+  throw last || new Error('no node answered');
+}
+// CreateX.deployCreate3(bytes32 salt, bytes initCode)
+function deployData(step) {
+  const code = strip(step.initCode), len = code.length / 2;
+  return KIT.deploySelector + strip(step.salt).padStart(64, '0') + word(0x40) + word(len) + code + '0'.repeat((64 - (code.length % 64)) % 64);
+}
+const addrOf = (ret) => '0x' + strip(ret).slice(24, 64);
+const hasCode = async (a) => strip(await rpc('eth_getCode', [a, 'latest'])).length > 0;
+
+// ── the wallet: any injected one (EIP-6963, else window.ethereum) ──
+const wallets = () => { const l = [...W.found.values()]; if (!l.length && window.ethereum?.request) l.push({ info: { name: 'Browser wallet' }, provider: window.ethereum }); return l; };
+const ask = (method, params) => W.prov.request({ method, params });
+addEventListener('eip6963:announceProvider', (e) => { if (e.detail?.provider?.request) { W.found.set(e.detail.info?.uuid || String(W.found.size), e.detail); drawPick(); } });
+dispatchEvent(new Event('eip6963:requestProvider'));
+function drawPick() {
+  const l = wallets(), pick = $('pick');
+  pick.replaceChildren();
+  if (W.prov || l.length < 2) return;
+  for (const w of l) pick.append(el('button', { className: 'btn', type: 'button', textContent: w.info?.name || 'Wallet', onclick: () => connect(w) }), ' ');
+  $('connect').hidden = true;
+}
+async function connect(w) {
+  try {
+    const [account] = await w.provider.request({ method: 'eth_requestAccounts' });
+    if (!account) return;
+    W.prov = w.provider; W.name = w.info?.name || 'Wallet'; W.account = account; W.chain = Number(await ask('eth_chainId'));
+    W.prov.on?.('accountsChanged', (a) => { W.account = a?.[0] || null; if (!W.account) W.prov = null; drawWho(); draw(); });
+    W.prov.on?.('chainChanged', (c) => { W.chain = Number(c); drawWho(); draw(); });
+    drawWho(); draw();
+  } catch (e) { $('who').hidden = false; $('who').textContent = reason(e); }
+}
+function drawWho() {
+  const who = $('who');
+  $('pick').replaceChildren();
+  $('connect').hidden = !!W.prov;
+  who.hidden = !W.prov;
+  if (W.prov) who.textContent = `${W.name} · ${short(W.account)} · ${W.chain === KIT?.chainId ? 'Ethereum' : 'chain ' + W.chain}`;
+  else drawPick();
+}
+$('connect').onclick = () => { const l = wallets(); if (!l.length) { $('who').hidden = false; $('who').textContent = 'No wallet in this browser'; return; } if (l.length > 1) { drawPick(); return; } connect(l[0]); };
+const isDeployer = () => lc(W.account) === lc(KIT.deployer);
+
+// ── the page ──
+function addrView(a) {
+  const body = strip(a), zeros = body.match(/^0+/)?.[0].length || 0;
+  return el('div', { className: 'addr' }, '0x', el('span', { className: 'z', textContent: body.slice(0, zeros) }), body.slice(zeros));
+}
+function drawParams() {
+  const p = KIT.params, dl = el('dl');
+  const row = (t, v) => dl.append(el('dt', { textContent: t }), el('dd', { textContent: v }));
+  row('Deployer', `${KIT.deployer} (the salts are guarded to it)`);
+  row('Factory', `CreateX ${KIT.factory}`);
+  row('Verifier', `${p.verifier} (codehash ${p.verifierCodehash.slice(0, 18)}…, the immutable SP1 v6.1.0 Groth16 leaf)`);
+  row('Block program key', p.vkey); row('Spend relation key', p.spendVk);
+  row('TAC', p.tac); row('Confidential pool', `${p.confidential} (cTAC ${p.confidentialTac.slice(0, 18)}…)`);
+  row('Seat', `${(BigInt(p.seat) / 10n ** 18n).toLocaleString('en-US')} TAC`); row('Turn', `${p.slot} Ethereum blocks`);
+  row('Leader window', `${p.window} s`); row('Force delay', `${p.forceDelay} s`); row('Bootstrap leader', p.bootstrap);
+  $('params').replaceChildren(el('b', { textContent: 'Parameters' }), dl);
+}
+function draw() {
+  const cards = $('cards');
+  cards.replaceChildren();
+  KIT.steps.forEach((step, i) => {
+    const s = S[i], card = el('section', { className: 'card', ariaLive: 'polite' });
+    const before = i > 0 && S[i - 1].state !== 'open';
+    const ready = !!W.prov && W.chain === KIT.chainId && isDeployer() && !before && s.state !== 'open';
+    const dl = el('dl');
+    const row = (t, v) => dl.append(el('dt', { textContent: t }), el('dd', { textContent: v }));
+    row('Salt', step.salt); row('Init code hash', step.initHash); row('Init code', `${(strip(step.initCode).length / 2).toLocaleString('en-US')} bytes`);
+    const go = el('button', { className: 'btn go', type: 'button', textContent: `Deploy ${step.name}`, disabled: !ready, onclick: () => deploy(i) });
+    card.append(
+      el('div', { className: 'row' }, el('b', { textContent: `${i + 1}. ${step.name}` }), el('span', { className: `st ${s.state}`, textContent: s.state === 'open' ? (s.verified ? 'deployed, reads back as built' : 'deployed') : 'not deployed' })),
+      addrView(step.expected), dl, el('div', { className: 'row' }, go),
+      s.state === 'open' ? '' : !W.prov ? el('span', { className: 'note', textContent: 'Connect the deployer on Ethereum to deploy.' })
+        : W.chain !== KIT.chainId ? el('span', { className: 'note err', textContent: 'Switch your wallet to Ethereum.' })
+        : !isDeployer() ? el('span', { className: 'note err', textContent: `Connect ${short(KIT.deployer)}: these salts deploy only from it.` })
+        : before ? el('span', { className: 'note', textContent: `${KIT.steps[i - 1].name} first.` }) : '',
+    );
+    if (s.log.length) {
+      const ul = el('ul', { className: 'steps' });
+      for (const [cls, text, href] of s.log) ul.append(el('li', { className: cls }, href ? el('a', { href, target: '_blank', rel: 'noopener noreferrer', textContent: text }) : text));
+      card.append(ul);
+    }
+    cards.append(card);
+  });
+}
+const say = (i, cls, text, href) => { S[i].log.push([cls, text, href]); draw(); };
+
+async function deploy(i) {
+  const step = KIT.steps[i], data = deployData(step);
+  S[i].log = [];
+  try {
+    if (await hasCode(step.expected)) { await refresh(); say(i, 'ok', 'It is deployed already.'); return; }
+    let made;
+    try { made = addrOf(await rpc('eth_call', [{ from: W.account, to: KIT.factory, data }, 'latest'])); }
+    catch (e) { say(i, 'err', `The deployment would revert (${reason(e)}). Nothing was sent.`); return; }
+    if (lc(made) !== lc(step.expected)) { say(i, 'err', `It would create ${made}, not ${step.expected}. Nothing was sent.`); return; }
+    say(i, 'ok', 'Run from your address, it creates exactly the planned address.');
+    const gas = BigInt(await rpc('eth_estimateGas', [{ from: W.account, to: KIT.factory, data }]));
+    say(i, 'ok', `Gas ${(Number(gas) / 1e6).toFixed(2)}M. Sending from ${short(W.account)}…`);
+    const hash = await ask('eth_sendTransaction', [{ from: W.account, to: KIT.factory, data, gas: '0x' + (gas * 12n / 10n).toString(16) }]);
+    say(i, 'ok', 'Sent. Waiting for it to land…', `https://etherscan.io/tx/${hash}`);
+    let rc = null;
+    for (let t = 0; t < 180 && !rc; t++) { rc = await rpc('eth_getTransactionReceipt', [hash]).catch(() => null); if (!rc) await sleep(2000); }
+    if (!rc) { say(i, 'err', 'No receipt yet: check the transaction on Etherscan.', `https://etherscan.io/tx/${hash}`); return; }
+    if (rc.status !== '0x1') { say(i, 'err', 'The transaction reverted.', `https://etherscan.io/tx/${hash}`); return; }
+    await refresh();
+  } catch (e) { say(i, 'err', e?.code === 4001 ? 'Cancelled in your wallet. Nothing was sent.' : reason(e)); }
+}
+
+// what is at each address must be its contract, built with these arguments
+async function verify(i) {
+  const step = KIT.steps[i];
+  const got = await Promise.all(step.checks.map((c) => rpc('eth_call', [{ to: step.expected, data: c.sel }, 'latest']).catch(() => '0x')));
+  const bad = step.checks.filter((c, j) => lc(strip(got[j])) !== lc(strip(c.want)));
+  S[i].verified = bad.length === 0;
+  if (bad.length) say(i, 'err', `It does not read back as built: ${bad.map((c) => c.name).join(', ')}.`, `https://etherscan.io/address/${step.expected}#code`);
+}
+async function refresh() {
+  for (let i = 0; i < KIT.steps.length; i++) {
+    S[i].state = (await hasCode(KIT.steps[i].expected).catch(() => false)) ? 'open' : 'none';
+    if (S[i].state === 'open') await verify(i);
+  }
+  draw();
+}
+
+(async () => {
+  try {
+    KIT = await (await fetch('kit.json', { cache: 'no-store' })).json();
+    KIT.steps.forEach(() => S.push({ state: 'none', log: [], verified: false }));
+    drawParams();
+    await refresh();
+  } catch (e) { $('params').replaceChildren(el('span', { className: 'note err', textContent: `The kit could not be read (${reason(e)}).` })); }
+})();
+</script>
+</body>
+</html>
