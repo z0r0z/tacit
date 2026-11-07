@@ -24,27 +24,36 @@ const OP_POOL = 4;
 // ── shares (common/src/lib.rs): notes count shares of the chain's pool; a share is worth pool / shares units (1e-8 TAC), one
 // while there are none. These mirror the program's checks exactly, so a spend built with them is one it takes.
 export const EXIT_FEE_BPS = 10n;
-export const MIN_POOL_FEE = 1_000_000n;
-const rateOf = ({ pool, shares }) => (BigInt(shares) === 0n ? [1n, 1n] : [BigInt(pool), BigInt(shares)]);
+export const MIN_POOL_FEE = 200_000n;
+/// The shares a lock's claim or refund note is worth less than the lock (the holders' part): seal its memos with lock value less this.
+export const LOCK_POOL_SHARES = MIN_POOL_FEE;
+/// The units of pool and shares the rate counts that no note holds (common/src/lib.rs VIRTUAL).
+export const VIRTUAL = 100_000_000n;
+const rateOf = ({ pool, shares }) => [BigInt(pool) + VIRTUAL, BigInt(shares) + VIRTUAL];
 const ceilDiv = (a, b) => (a + b - 1n) / b;
 /// What `shares` are worth now, in units (rounded down).
 export const worthOf = (shares, rate) => { const [p, s] = rateOf(rate); return BigInt(shares) * p / s; };
 /// The most shares `amount` units buy at `rate` (the program's `covers`), less `marginBps` for the rate to rise before the shield lands.
-export function sharesFor(amount, rate, marginBps = 10n) {
+export function sharesFor(amount, rate, marginBps = 2n) {
   const [p, s] = rateOf(rate);
   return BigInt(amount) * s * (10_000n - BigInt(marginBps)) / (p * 10_000n);
 }
-/// Whether `shares` may pay out `amount` units (the program's `pays`: their worth less EXIT_FEE_BPS, the fee rounded up).
+/// Whether `shares` may pay out `amount` units (the program's `pays`: their worth less the exit fee, EXIT_FEE_BPS rounded up and at
+/// least MIN_POOL_FEE).
 export function pays(amount, shares, rate) {
   const [p, s] = rateOf(rate);
   const worth = BigInt(shares) * p;
-  const fee = worth / 10_000n * EXIT_FEE_BPS + ceilDiv(worth % 10_000n * EXIT_FEE_BPS, 10_000n);
-  return BigInt(amount) * s <= worth - fee;
+  let fee = worth / 10_000n * EXIT_FEE_BPS + ceilDiv(worth % 10_000n * EXIT_FEE_BPS, 10_000n);
+  if (fee < MIN_POOL_FEE * s) fee = MIN_POOL_FEE * s;
+  return worth >= fee && BigInt(amount) * s <= worth - fee;
 }
 /// The fewest shares that pay out `amount` units at `rate`, the exit fee included.
 export function sharesToPay(amount, rate) {
   const [p, s] = rateOf(rate);
   let n = ceilDiv(BigInt(amount) * s * 10_000n, p * (10_000n - EXIT_FEE_BPS));
+  // a small exit pays the minimum fee: start from what the amount plus that is worth
+  const floor = ceilDiv((BigInt(amount) + MIN_POOL_FEE) * s, p);
+  if (n < floor) n = floor;
   while (!pays(amount, n, rate)) n += 1n;
   return n;
 }
@@ -71,13 +80,16 @@ const BODY_DOMAIN = te.encode('tacit-block-body-v1');
 const OP_BODY_DOMAIN = te.encode('tacit-block-op-body-v1');
 
 /// A payment's body: what the program recomputes and every input's owner signed (common/src/lib.rs `body_bytes`).
-export function bodyBytes(chain, outs, memoHashes, exitTo, salt) {
-  return concatBytes(BODY_DOMAIN, bytes(chain, 32, 'chain'), ...outs.map((o) => be(o, 32)), ...memoHashes, bytes(exitTo, 20, 'exit address'), bytes(salt, 32, 'salt'));
+export function bodyBytes(chain, outs, memoHashes, exitTo, amounts, salt) {
+  return concatBytes(BODY_DOMAIN, bytes(chain, 32, 'chain'), ...outs.map((o) => be(o, 32)), ...memoHashes, bytes(exitTo, 20, 'exit address'), amountsBytes(amounts), bytes(salt, 32, 'salt'));
 }
 
+/// The TAC the owners sign to cross the edge (common/src/lib.rs `amounts_bytes`): the deposit's amount, then the exit's, u64 each.
+const amountsBytes = ([dep, exit]) => concatBytes(be(dep ?? 0n, 8), be(exit ?? 0n, 8));
+
 /// A spend that puts its exit's value in an operation: `opBytes` is the operation's serialization (`op_body_bytes`).
-export function opBodyBytes(chain, outs, memoHashes, opBytes, salt) {
-  return concatBytes(OP_BODY_DOMAIN, bytes(chain, 32, 'chain'), ...outs.map((o) => be(o, 32)), ...memoHashes, opBytes, bytes(salt, 32, 'salt'));
+export function opBodyBytes(chain, outs, memoHashes, opBytes, amounts, salt) {
+  return concatBytes(OP_BODY_DOMAIN, bytes(chain, 32, 'chain'), ...outs.map((o) => be(o, 32)), ...memoHashes, opBytes, amountsBytes(amounts), bytes(salt, 32, 'salt'));
 }
 
 const opening = (o) => (o ? concatBytes(Uint8Array.of(1), be(o.v, 8), be(o.r, 32), be(o.amount ?? 0n, 8)) : Uint8Array.of(0));
@@ -173,7 +185,8 @@ export function makeChainWallet({ poseidon, prover, chain, asset, network = 'mai
 
     const isOp = exit && exit.op;
     const exitTo = isOp || !exit ? new Uint8Array(20) : bytes(exit.to, 20, 'exit address');
-    const body = isOp ? opBodyBytes(chainB, outLeaves, memoHashes, exit.op, salt) : bodyBytes(chainB, outLeaves, memoHashes, exitTo, salt);
+    const amounts = [BigInt(dep?.amount ?? 0n), BigInt(exit?.amount ?? 0n)];
+    const body = isOp ? opBodyBytes(chainB, outLeaves, memoHashes, exit.op, amounts, salt) : bodyBytes(chainB, outLeaves, memoHashes, exitTo, amounts, salt);
     const bh = zkBodyHash(body);
 
     // the inputs: membership in the chain's current note tree, and a signature of each note's owner over the body

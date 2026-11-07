@@ -26,15 +26,16 @@ interface IConfidentialPool {
 contract TacitInbox {
     constructor() {
         address tac = TacitBlocks(msg.sender).TAC();
-        // a holder's permitted TAC (`sweepWithPermit`): the permit names this inbox, so it can fund this shield alone
-        (address from, uint256 pull) = TacitBlocks(msg.sender).pullOrder();
-        if (pull != 0) {
-            (bool pulled, bytes memory got) = tac.call(abi.encodeWithSelector(0x23b872dd, from, msg.sender, pull));
-            require(pulled && (got.length == 0 || abi.decode(got, (bool))));
-        }
         (bool ok, bytes memory ret) = tac.call(abi.encodeWithSelector(0x70a08231, address(this)));
         require(ok && ret.length == 32);
         uint256 held = abi.decode(ret, (uint256));
+        // a holder's permitted TAC (`sweepWithPermit`): the permit names this inbox, so it can fund this shield alone, and only what
+        // the inbox lacks of it is pulled (an inbox paid another way, by an unwrap or a transfer, takes nothing more)
+        (address from, uint256 pull) = TacitBlocks(msg.sender).pullOrder();
+        if (pull > held) {
+            (ok, ret) = tac.call(abi.encodeWithSelector(0x23b872dd, from, msg.sender, pull - held));
+            require(ok && (ret.length == 0 || abi.decode(ret, (bool))));
+        }
         (ok, ret) = tac.call(abi.encodeWithSelector(0xa9059cbb, msg.sender, held));
         require(ok && (ret.length == 0 || abi.decode(ret, (bool))));
         assembly {
@@ -90,7 +91,9 @@ interface ITurns {
 ///         The binding every spend's body carries is derived here from the chain id and this contract's address,
 ///         and the genesis state from it, so a spend made for one deployment is void on any other.
 ///
-///         `deposit` takes TAC and records (value, commitment, body hash); a block's deposit record consumes it, so the
+///         Notes count shares of the chain's pool (`pool` / `shares`, public word 18): deposits buy them, exits, hops and migrations
+///         pay out at their worth less the block program's exit fee, and what stays raises every share's worth.
+///         `deposit` takes TAC and records (shares, amount, commitment, body hash); a block's deposit record consumes it, so the
 ///         shield that spends it can only be the one the depositor's body named. A deposit no block has taken in within
 ///         RECLAIM_AFTER goes back to its depositor (a leader does not include one that old). Exits are credited to their
 ///         address and anyone may send a credit on with `withdraw`; hops are kept and anyone may send one on with
@@ -139,9 +142,9 @@ contract TacitBlocks {
     uint256 public constant RECLAIM_AFTER = 7 days;
     uint256 public constant MAX_WINDOW = 1 days;
     /// A posted spend (tacit-block-common `forced_parts`): publics (12 words) ‖ proof (2,080 bytes) ‖ hints (20 × 64) ‖ a memo
-    /// per output slot ‖ the exit's address (20) ‖ salt (32) ‖ the deposit's opening (a flag, then value (u64 BE) and
-    /// blinding (32)) ‖ the exit's opening ‖ for an operation, a 1 and the operation (a hop's 33 bytes, a lock's 265) and, for a
-    /// lock, the memo of its leaf.
+    /// per output slot ‖ the exit's address (20) ‖ salt (32) ‖ the deposit's opening (a flag, then shares (u64 BE), blinding (32)
+    /// and the TAC amount (u64 BE)) ‖ the exit's opening ‖ for an operation, a 1 and the operation (a hop's 33 bytes, a lock's 265, a
+    /// migration's 53, a pool share's 1) and, for a lock, the memo of its leaf.
     uint256 internal constant FORCED_REST_AT = 12 * 32 + 2080 + 20 * 64 + 3 * MEMO_LEN;
     uint256 internal constant FORCED_MIN = FORCED_REST_AT + 20 + 32 + 1 + 1;
     uint256 internal constant FORCED_MAX = FORCED_MIN + 2 * (8 + 32 + 8) + 1 + 265 + MEMO_LEN;
@@ -196,7 +199,8 @@ contract TacitBlocks {
         /// other spend may take the deposit in, and it cannot be reclaimed.
         uint56 forced;
     }
-    /// @notice Deposits not yet taken in, by keccak256(TAC_ASSET, value, cx, cy, body): who made each and when.
+    /// @notice Deposits not yet taken in, by keccak256(TAC_ASSET, shares, cx, cy, body, amount) (the record the block program
+    ///         publishes): who made each and when.
     mapping(bytes32 => Pending) public pending;
     /// @notice The queue's hash after its first k entries (zero for none), as the block program chains it, and when
     ///         each entry (from zero) was posted.
@@ -214,9 +218,9 @@ contract TacitBlocks {
     ///         makes notes worth no more than this from a block. Each move it makes one from is a position in that block's list,
     ///         used once; its item (`SHA-256("tacit-block-migrate-v1" ‖ to ‖ note ‖ value)`) binds the note and the value.
     mapping(uint256 => mapping(address => uint256)) public migrated;
-    /// @notice What the chain's notes are worth, in units: the deposits blocks took in less the exits and hops they made. A block
-    ///         that would take out more than this cannot land, whatever its proof says (the block program balances every spend,
-    ///         so this only ever stops a block if the program or the verifier were wrong).
+    /// @notice What the chain's notes are worth, in units: the TAC deposits blocks took in less the exits, hops and migrations they
+    ///         paid out. A block that would take out more than this, or whose pool (public word 18) is not this, cannot land, whatever
+    ///         its proof says (the block program keeps both, so this only ever stops a block if the program or the verifier were wrong).
     uint256 public inChain;
     /// @notice The TAC behind every note (units) and the shares the notes count, as the last block left them: a share is worth
     ///         pool / shares units (one while there are none). It only rises: deposits buy shares at it, exits, hops and migrations
@@ -287,7 +291,7 @@ contract TacitBlocks {
 
     /// @notice The lists a block publishes, in the block program's committed order (`BlockData`): the new notes'
     ///         leaves (32 bytes each) and their memos (MEMO_LEN bytes each, in the same order), nullifiers, anchors,
-    ///         deposits as asset ‖ value ‖ cx ‖ cy ‖ body (160 bytes each), exits as asset ‖ value ‖ address (96),
+    ///         deposits as asset ‖ shares ‖ cx ‖ cy ‖ body ‖ amount (192 bytes each), exits as asset ‖ amount ‖ address (96),
     ///         hops as asset ‖ value ‖ the confidential pool's commitment (96), claims' signatures (64) and, for a block whose
     ///         notes, memos, nullifiers and claims travel in EIP-4844 blobs instead (its public words say so), each blob's opening.
     struct Lists {
@@ -562,7 +566,7 @@ contract TacitBlocks {
         return queueDone < queued && block.timestamp >= queuedAt[queueDone] + FORCE_DELAY + WINDOW;
     }
 
-    /// @notice Lands the next block: its proof, its fifteen public words and the lists it publishes.
+    /// @notice Lands the next block: its proof, its nineteen public words and the lists it publishes.
     function land(bytes calldata publicValues, bytes calldata proof, Lists calldata lists) external nonReentrant {
         // the leader of the turn lands until WINDOW passes with no block, or until a queued entry has waited FORCE_DELAY + WINDOW
         // (so leaders that land only what they must cannot hold the queue back: anyone may then land a block that reaches it)

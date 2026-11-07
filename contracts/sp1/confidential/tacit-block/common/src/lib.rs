@@ -48,10 +48,16 @@ pub const STATE_LEN: usize = 32 + 8 + 32 * TREE_DEPTH + 32 + 8 + 32 * RECENT + 3
 /// (`State::shares`), one unit a share while there are none. TAC comes in at that rate (a deposit buys shares) and leaves at it less
 /// EXIT_FEE_BPS (an exit, hop or migration pays out units for shares); what stays raises the rate, so every holder earns, with no
 /// balance shown to anyone. A spend of notes that sends nothing out gives the holders at least MIN_POOL_FEE units' worth of shares.
-/// 0.1% of what leaves.
+/// 0.1% of what leaves, and never less than MIN_POOL_FEE.
 pub const EXIT_FEE_BPS: u128 = 10;
-/// 0.01 TAC a payment.
-pub const MIN_POOL_FEE: u128 = 1_000_000;
+/// 0.002 TAC: what every spend of notes gives the holders at least (a pool share, an exit's fee, a lock's settle).
+pub const MIN_POOL_FEE: u128 = 200_000;
+/// The shares a lock's claim or refund note is worth less than the lock: the holders' part, fixed so the locker knows the note's value
+/// when it seals its memo (a share is worth at least a unit, so this is at least MIN_POOL_FEE units).
+pub const LOCK_POOL_SHARES: u64 = MIN_POOL_FEE as u64;
+/// The rate counts this many units of pool and shares that no note holds (one TAC of each): no deposit or burn can set a share's price
+/// alone, and what is left in a pool with no shares is not the next depositor's.
+pub const VIRTUAL: u128 = 100_000_000;
 /// `NfWitness::to_bytes`: low value, low next, low index (u64 BE), low path, slot path.
 pub const NF_WITNESS_LEN: usize = 32 + 32 + 8 + 2 * 32 * NF_LEVELS;
 /// `NfMember::to_bytes`: the record's next value, its index (u64 BE) and its path.
@@ -645,7 +651,7 @@ const MEMO_DOMAIN: &[u8] = b"tacit-block-memo-v1";
 /// hash): the chain's binding, the output leaves, their memo hashes, the address an exit pays and the spender's
 /// salt. A block checks each spend's body hash against these, so whoever proves the block can change none of them;
 /// the salt keeps a body hash that is published (a depositor's) from being matched to the outputs it names.
-pub fn body_bytes(chain: &[u8; 32], out: &[Fr; 3], memo_hashes: &[[u8; 32]; 3], exit_to: &[u8; 20], salt: &[u8; 32]) -> Vec<u8> {
+pub fn body_bytes(chain: &[u8; 32], out: &[Fr; 3], memo_hashes: &[[u8; 32]; 3], exit_to: &[u8; 20], amounts: &[u64; 2], salt: &[u8; 32]) -> Vec<u8> {
     let mut b = BODY_DOMAIN.to_vec();
     b.extend_from_slice(chain);
     for o in out {
@@ -655,7 +661,17 @@ pub fn body_bytes(chain: &[u8; 32], out: &[Fr; 3], memo_hashes: &[[u8; 32]; 3], 
         b.extend_from_slice(m);
     }
     b.extend_from_slice(exit_to);
+    b.extend_from_slice(&amounts_bytes(amounts));
     b.extend_from_slice(salt);
+    b
+}
+
+/// The TAC a spend's owners sign to cross the chain's edge: its deposit's amount, then its exit's (0 for none), u64 big-endian each. No
+/// one between them and the block can change what an exit, hop or migration pays out, or what a deposit puts in.
+fn amounts_bytes(a: &[u64; 2]) -> [u8; 16] {
+    let mut b = [0u8; 16];
+    b[..8].copy_from_slice(&a[0].to_be_bytes());
+    b[8..].copy_from_slice(&a[1].to_be_bytes());
     b
 }
 
@@ -663,7 +679,7 @@ const OP_BODY_DOMAIN: &[u8] = b"tacit-block-op-body-v1";
 
 /// The body of a spend that sends its exit's value into an operation: the chain's binding, the output leaves, their memo hashes, the
 /// operation and the spender's salt, signed as a payment's body is.
-pub fn op_body_bytes(chain: &[u8; 32], out: &[Fr; 3], memo_hashes: &[[u8; 32]; 3], op: &ops::Op, salt: &[u8; 32]) -> Vec<u8> {
+pub fn op_body_bytes(chain: &[u8; 32], out: &[Fr; 3], memo_hashes: &[[u8; 32]; 3], op: &ops::Op, amounts: &[u64; 2], salt: &[u8; 32]) -> Vec<u8> {
     let mut b = OP_BODY_DOMAIN.to_vec();
     b.extend_from_slice(chain);
     for o in out {
@@ -673,6 +689,7 @@ pub fn op_body_bytes(chain: &[u8; 32], out: &[Fr; 3], memo_hashes: &[[u8; 32]; 3
         b.extend_from_slice(m);
     }
     b.extend(op.to_bytes());
+    b.extend_from_slice(&amounts_bytes(amounts));
     b.extend_from_slice(salt);
     b
 }
@@ -1157,7 +1174,8 @@ fn settle_effects(prev: &State, s: &lock::Settle, time: u64) -> Result<Effects, 
     let to = s.to();
     Ok(Effects {
         anchor,
-        outputs: vec![(poseidon(&[s.asset, Fr::from(s.value), to.npk, to.rho]), to.memo)],
+        // the note is the lock less the holders' part (fixed, so the locker sealed its memo with this value)
+        outputs: vec![(poseidon(&[s.asset, Fr::from(s.value.checked_sub(LOCK_POOL_SHARES).ok_or("a lock worth no more than its pool share")?), to.npk, to.rho]), to.memo)],
         deposit: None,
         exit: None,
         nullifiers: vec![fr_be(&lock::lock_nullifier(&s.leaf(), s.index))],
@@ -1165,7 +1183,7 @@ fn settle_effects(prev: &State, s: &lock::Settle, time: u64) -> Result<Effects, 
         claim: s.sig,
         migration: None,
         shares_in: 0,
-        shares_out: 0,
+        shares_out: LOCK_POOL_SHARES,
         paid_in: 0,
         paid_out: 0,
     })
@@ -1192,9 +1210,10 @@ fn effects(prev: &State, s: &Spend, d: &SpendData) -> Result<Effects, &'static s
     } else if s.root != prev.notes.root && !prev.knows(&fr_be(&s.root)) {
         e.anchor = Some(fr_be(&s.root));
     }
+    let amounts = [d.dep.map(|o| o.amount).unwrap_or(0), d.exit.map(|o| o.amount).unwrap_or(0)];
     let body = match &d.op {
-        None => body_bytes(&prev.chain, &s.out, &d.memo_hashes, &d.exit_to, &d.salt),
-        Some(op) => op_body_bytes(&prev.chain, &s.out, &d.memo_hashes, op, &d.salt),
+        None => body_bytes(&prev.chain, &s.out, &d.memo_hashes, &d.exit_to, &amounts, &d.salt),
+        Some(op) => op_body_bytes(&prev.chain, &s.out, &d.memo_hashes, op, &amounts, &d.salt),
     };
     if body_hash(&body) != s.body {
         return Err("the body is not this chain's, or not its outputs, memos, exit or operation, and salt");
@@ -1234,7 +1253,7 @@ fn effects(prev: &State, s: &Spend, d: &SpendData) -> Result<Effects, &'static s
             e.hop = Some(ops::hop_bytes(&s.asset, o.amount, commit));
             (e.shares_out, e.paid_out) = (o.v, o.amount);
         }
-        (false, Some(o), Some(ops::Op::Lock { lock, memo })) if o.v > 0 && o.amount == 0 && d.exit_to == [0u8; 20] && commits(o, &s.exit) => {
+        (false, Some(o), Some(ops::Op::Lock { lock, memo })) if o.v > LOCK_POOL_SHARES && o.amount == 0 && d.exit_to == [0u8; 20] && commits(o, &s.exit) => {
             e.outputs.push((lock.leaf(&s.asset, o.v), *memo))
         }
         (false, Some(o), Some(ops::Op::Migrate { to, note })) if *to != [0u8; 20] && out(o) => {
@@ -1249,13 +1268,11 @@ fn effects(prev: &State, s: &Spend, d: &SpendData) -> Result<Effects, &'static s
     Ok(e)
 }
 
-/// The rate before the block as (pool, shares): one unit a share while there are none.
+/// The rate before the block as (pool, shares), each with VIRTUAL added. The pool is never below the shares (a share is worth at least
+/// a unit: deposits pay at least the rate, exits take at most it), so this rate is at most the plain one, and every exit it prices is
+/// paid from the pool.
 fn rate(prev: &State) -> (u128, u128) {
-    if prev.shares == 0 {
-        (1, 1)
-    } else {
-        (prev.pool as u128, prev.shares as u128)
-    }
+    (prev.pool as u128 + VIRTUAL, prev.shares as u128 + VIRTUAL)
 }
 
 /// Whether `paid` units buy `shares`: paid / shares >= pool / shares there are (every product below 2^128).
@@ -1264,12 +1281,13 @@ fn covers(paid: u64, shares: u64, prev: &State) -> bool {
     paid as u128 * s >= shares as u128 * p
 }
 
-/// Whether `shares` may pay out `paid` units: no more than their worth less EXIT_FEE_BPS of it (the fee rounded up).
+/// Whether `shares` may pay out `paid` units: no more than their worth less the exit fee, EXIT_FEE_BPS of it (rounded up) and at least
+/// MIN_POOL_FEE units (all scaled by the shares count of the rate).
 fn pays(paid: u64, shares: u64, prev: &State) -> bool {
     let (p, s) = rate(prev);
     let worth = shares as u128 * p;
-    let fee = worth / 10_000 * EXIT_FEE_BPS + (worth % 10_000 * EXIT_FEE_BPS).div_ceil(10_000);
-    paid as u128 * s <= worth - fee
+    let fee = (worth / 10_000 * EXIT_FEE_BPS + (worth % 10_000 * EXIT_FEE_BPS).div_ceil(10_000)).max(MIN_POOL_FEE * s);
+    worth >= fee && paid as u128 * s <= worth - fee
 }
 
 /// Whether `shares` are worth at least `min` units.
