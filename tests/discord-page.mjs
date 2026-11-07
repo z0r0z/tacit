@@ -57,11 +57,15 @@ const balances = new Map();
 const stakes = new Map();
 let farmDown = false;
 const roles = [];
+const confirmations = [];
 let discordReply = () => new Response(null, { status: 204 });
 const realFetch = globalThis.fetch;
 globalThis.fetch = (url, init) => {                    // the worker's own reads: Discord's REST and the Ethereum nodes
   const u = String(url);
-  if (u.startsWith('https://discord.com/')) { roles.push(u); return Promise.resolve(discordReply()); }
+  if (u.startsWith('https://discord.com/')) {
+    if (u.includes('/webhooks/')) { confirmations.push({ url: u, body: JSON.parse(init.body) }); return Promise.resolve(new Response(null, { status: 204 })); }
+    roles.push(u); return Promise.resolve(discordReply());
+  }
   if (/^https:\/\/(ethereum-rpc\.publicnode\.com|rpc\.mevblocker\.io|eth\.merkle\.io)/.test(u)) return Promise.resolve(balanceAnswer(JSON.parse(init.body)));
   return realFetch(url, init);
 };
@@ -89,8 +93,9 @@ const personalSign = async (priv, text) => {
   return '0x' + sig.toCompactHex() + (27 + sig.recovery).toString(16);
 };
 // Discord's own call, signed as Discord signs it: clicking the persistent panel
+let interactionNumber = 0;
 async function discordVerify() {
-  const body = JSON.stringify({ type: 3, data: { component_type: 2, custom_id: DISCORD_VERIFY_BUTTON_ID }, guild_id: '223456789012345678', member: { user: { id: '123456789012345678' } } });
+  const body = JSON.stringify({ type: 3, application_id: '823456789012345678', token: `page-interaction-${++interactionNumber}`, data: { component_type: 2, custom_id: DISCORD_VERIFY_BUTTON_ID }, guild_id: '223456789012345678', member: { user: { id: '123456789012345678' } } });
   const ts = String(Math.floor(Date.now() / 1000));
   const r = await realFetch(`${API}/discord/interaction`, { method: 'POST', body, headers: { 'content-type': 'application/json', 'x-signature-ed25519': sign(null, Buffer.from(ts + body), privateKey).toString('hex'), 'x-signature-timestamp': ts } });
   const link = (await r.json()).data.content;
@@ -188,6 +193,8 @@ const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: jo
   const rec = await record(nonce);
   ok(rec.status === 'verified' && rec.holder === `eth:${rich.addr}`, 'the worker recovered that account and used the link');
   ok(roles.length === 1 && roles[0].endsWith('/guilds/223456789012345678/members/123456789012345678/roles/323456789012345678'), 'and asked Discord for the role on the member the link was made for');
+  ok(confirmations.length === 1 && /Verification succeeded!/.test(confirmations[0].body.content)
+    && confirmations[0].body.content.includes(`<@&${env.TAC_ROLE_ID}>`) && confirmations[0].url.endsWith('/messages/@original'), 'the API also confirms the granted role in the member’s private Discord reply');
   ok(await text(page, '#gate h2') === 'You have the holder role.', 'the page says so');
   await shot(page, 'discord-done');
   await page.reload({ waitUntil: 'domcontentloaded' });
@@ -230,6 +237,7 @@ const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: jo
   roles.length = 0;
   const nonce = await discordVerify();
   const { page } = await open(rich, `#gate=${nonce}`);
+  const confirmedBefore = confirmations.length;
   discordReply = () => new Response(JSON.stringify({ message: 'Missing Permissions', code: 50013 }), { status: 403 });
   await connect(page);
   await page.waitForFunction(() => document.querySelector('#go')?.textContent === 'Verify');
@@ -237,10 +245,12 @@ const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: jo
   await page.waitForFunction(() => /Discord refused/.test(document.querySelector('#note')?.textContent || ''));
   ok(/Missing Permissions/.test(await text(page, '#note')), 'a role Discord refuses is reported with Discord\'s reason');
   ok(await text(page, '#go') === 'Verify' && !(await page.isDisabled('#go')) && (await record(nonce)).status === 'pending', 'and the same link can be tried again');
+  ok(confirmations.length === confirmedBefore, 'a refused role produces no Discord success reply');
   discordReply = () => new Response(null, { status: 204 });
   await page.click('#go');
   await page.waitForFunction(() => /holder role/.test(document.querySelector('#gate h2')?.textContent || ''));
   ok((await record(nonce)).status === 'verified', 'which then gets the role');
+  ok(confirmations.length === confirmedBefore + 1, 'the successful retry updates the private Discord reply once');
   await page.context().close();
 }
 
@@ -256,6 +266,7 @@ const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: jo
   await page.click('#go');
   await page.waitForFunction(() => document.querySelector('#gate h2')?.textContent === 'You have the holder role.');
   ok(signed.length === 1 && roles.length === 1 && (await record(nonce)).holder === `eth:${farmer.addr}`, 'a farm-only holder signs once and receives the role');
+  ok(/Verification succeeded!/.test(confirmations.at(-1).body.content), 'farm-only verification also confirms success in Discord');
   ok(errs.length === 0 && csp.length === 0, 'the farm path has no browser or CSP errors');
   await page.context().close();
 }
