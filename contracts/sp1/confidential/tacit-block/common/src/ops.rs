@@ -19,6 +19,10 @@ pub const OP_LOCK: u8 = 2;
 /// Moves the exit's value to a successor chain (`to`, its landing contract), where the note `note` names is made: the way off this
 /// chain that keeps a note's amount hidden and its anonymity set (the block publishes each successor's total, never a spend's value).
 pub const OP_MIGRATE: u8 = 3;
+/// Gives the exit's value (shares) to the chain's holders: the shares end, the TAC behind them stays, so every other share is worth
+/// more. A spend of notes that sends nothing out of the chain carries one (`lib.rs` MIN_POOL_FEE): the holders' part of what moving
+/// on the chain costs.
+pub const OP_POOL: u8 = 4;
 
 /// A note the block program makes: whose (the one-time keys of `leaf_of`) and the hash of the memo published with it (the spender's,
 /// encrypted to whoever owns the keys, so the note is found again from the keys alone), as the body names them.
@@ -38,6 +42,8 @@ pub enum Op {
     Lock { lock: Lock, memo: [u8; 32] },
     /// The exit's value to the successor chain `to`, for the note `note` names there (the successor's own commitment, opaque here).
     Migrate { to: [u8; 20], note: [u8; 32] },
+    /// The exit's shares to the chain's holders.
+    Pool,
 }
 
 struct R<'a>(&'a [u8]);
@@ -71,6 +77,7 @@ impl Op {
                 b.extend(to);
                 b.extend(note);
             }
+            Op::Pool => b.push(OP_POOL),
         }
         b
     }
@@ -88,6 +95,7 @@ impl Op {
             OP_HOP => Op::Hop { commit: r.take(32)?.try_into().ok()? },
             OP_LOCK => Op::Lock { lock: Lock::from_bytes(r.take(LOCK_LEN)?)?, memo: r.take(32)?.try_into().ok()? },
             OP_MIGRATE => Op::Migrate { to: r.take(20)?.try_into().ok()?, note: r.take(32)?.try_into().ok()? },
+            OP_POOL => Op::Pool,
             _ => return None,
         };
         Some((op, b.len() - r.0.len()))
@@ -97,7 +105,7 @@ impl Op {
     /// order. A hop makes none on this chain.
     pub fn receivers(&self) -> Vec<NoteTo> {
         match self {
-            Op::Hop { .. } | Op::Migrate { .. } => vec![],
+            Op::Hop { .. } | Op::Migrate { .. } | Op::Pool => vec![],
             // the lock's own leaf, whose memo the forced spend posts like an output's
             Op::Lock { memo, .. } => vec![NoteTo { npk: Fr::from(0u64), rho: Fr::from(0u64), memo: *memo }],
         }

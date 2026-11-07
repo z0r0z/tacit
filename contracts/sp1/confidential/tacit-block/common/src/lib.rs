@@ -43,7 +43,15 @@ pub const NF_LEVELS: usize = 32;
 pub const RECENT: usize = 32;
 /// `State::to_bytes`: note root, leaf count (u64 BE), the 32 filled nodes, nullifier root, record count, recent roots, chain binding,
 /// and the queue's position (u64 BE) and its hash there.
-pub const STATE_LEN: usize = 32 + 8 + 32 * TREE_DEPTH + 32 + 8 + 32 * RECENT + 32 + 8 + 32;
+pub const STATE_LEN: usize = 32 + 8 + 32 * TREE_DEPTH + 32 + 8 + 32 * RECENT + 32 + 8 + 32 + 8 + 8;
+/// Notes count shares of the chain's pool: the TAC behind them all (`State::pool`, in units of 1e-8 TAC) over the shares there are
+/// (`State::shares`), one unit a share while there are none. TAC comes in at that rate (a deposit buys shares) and leaves at it less
+/// EXIT_FEE_BPS (an exit, hop or migration pays out units for shares); what stays raises the rate, so every holder earns, with no
+/// balance shown to anyone. A spend of notes that sends nothing out gives the holders at least MIN_POOL_FEE units' worth of shares.
+/// 0.1% of what leaves.
+pub const EXIT_FEE_BPS: u128 = 10;
+/// 0.01 TAC a payment.
+pub const MIN_POOL_FEE: u128 = 1_000_000;
 /// `NfWitness::to_bytes`: low value, low next, low index (u64 BE), low path, slot path.
 pub const NF_WITNESS_LEN: usize = 32 + 32 + 8 + 2 * 32 * NF_LEVELS;
 /// `NfMember::to_bytes`: the record's next value, its index (u64 BE) and its path.
@@ -544,6 +552,9 @@ pub fn deposit_nullifier(s: &Spend) -> Fr {
 pub struct Opening {
     pub v: u64,
     pub r: [u8; 32],
+    /// The TAC (units) that crosses the chain's edge with it: paid in for a deposit, paid out for an exit, hop or migration, zero for a
+    /// lock or a pool share. `v` is shares.
+    pub amount: u64,
 }
 
 /// What a block takes about a spend besides its proof: the rest of its body (its outputs' memo hashes, zero for an
@@ -575,6 +586,7 @@ impl SpendData {
                     b.push(1);
                     b.extend_from_slice(&o.v.to_be_bytes());
                     b.extend_from_slice(&o.r);
+                    b.extend_from_slice(&o.amount.to_be_bytes());
                 }
             }
         }
@@ -608,8 +620,9 @@ impl SpendData {
                 1 => {
                     let v = u64::from_be_bytes(b.get(at..at + 8)?.try_into().ok()?);
                     let r = b.get(at + 8..at + 40)?.try_into().ok()?;
-                    at += 40;
-                    Some(Some(Opening { v, r }))
+                    let amount = u64::from_be_bytes(b.get(at + 40..at + 48)?.try_into().ok()?);
+                    at += 48;
+                    Some(Some(Opening { v, r, amount }))
                 }
                 _ => None,
             }
@@ -708,12 +721,15 @@ pub struct State {
     /// How many of the landing contract's forced spends the chain has taken or passed over, and the queue's hash after them.
     pub queue_len: u64,
     pub queue_hash: [u8; 32],
+    /// The TAC behind every note (units) and the shares the notes count: a share is worth pool / shares.
+    pub pool: u64,
+    pub shares: u64,
 }
 
 impl State {
     /// The state before any block, for a chain bound to `chain`.
     pub fn genesis(chain: [u8; 32]) -> State {
-        let mut s = State { notes: Notes::default(), nf_root: nf_genesis_root(), nf_size: 1, recent: [[0u8; 32]; RECENT], chain, queue_len: 0, queue_hash: [0u8; 32] };
+        let mut s = State { notes: Notes::default(), nf_root: nf_genesis_root(), nf_size: 1, recent: [[0u8; 32]; RECENT], chain, queue_len: 0, queue_hash: [0u8; 32], pool: 0, shares: 0 };
         s.remember(fr_be(&s.notes.root));
         s
     }
@@ -745,6 +761,8 @@ impl State {
         b.extend_from_slice(&self.chain);
         b.extend_from_slice(&self.queue_len.to_be_bytes());
         b.extend_from_slice(&self.queue_hash);
+        b.extend_from_slice(&self.pool.to_be_bytes());
+        b.extend_from_slice(&self.shares.to_be_bytes());
         b
     }
 
@@ -765,10 +783,12 @@ impl State {
         for (i, r) in recent.iter_mut().enumerate() {
             r.copy_from_slice(&b[at + 40 + 32 * i..at + 72 + 32 * i]);
         }
-        let chain = b[STATE_LEN - 72..STATE_LEN - 40].try_into().ok()?;
-        let queue_len = u64::from_be_bytes(b[STATE_LEN - 40..STATE_LEN - 32].try_into().ok()?);
-        let queue_hash = b[STATE_LEN - 32..].try_into().ok()?;
-        Some(State { notes: Notes { filled, len, root }, nf_root, nf_size, recent, chain, queue_len, queue_hash })
+        let chain = b[STATE_LEN - 88..STATE_LEN - 56].try_into().ok()?;
+        let queue_len = u64::from_be_bytes(b[STATE_LEN - 56..STATE_LEN - 48].try_into().ok()?);
+        let queue_hash = b[STATE_LEN - 48..STATE_LEN - 16].try_into().ok()?;
+        let pool = u64::from_be_bytes(b[STATE_LEN - 16..STATE_LEN - 8].try_into().ok()?);
+        let shares = u64::from_be_bytes(b[STATE_LEN - 8..].try_into().ok()?);
+        Some(State { notes: Notes { filled, len, root }, nf_root, nf_size, recent, chain, queue_len, queue_hash, pool, shares })
     }
 
     pub fn digest(&self) -> [u8; 32] {
@@ -799,7 +819,7 @@ pub fn vk_hash(vk_digest: &[u8; 64]) -> [u8; 32] {
     h.finalize().into()
 }
 
-/// What a block proof commits, as eighteen 32-byte words (`encode`). How many spends a block holds is not among them,
+/// What a block proof commits, as nineteen 32-byte words (`encode`). How many spends a block holds is not among them,
 /// and each list's length is in its hash.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BlockOut {
@@ -832,11 +852,22 @@ pub struct BlockOut {
     /// The hashes of the block's migrations (`BlockData::migrations`) and of each successor's total (`BlockData::migration_totals`).
     pub migrations_hash: [u8; 32],
     pub migration_totals_hash: [u8; 32],
+    /// The pool and the shares after the block (`State`): what each share is worth, for anyone to read.
+    pub pool: u64,
+    pub shares: u64,
 }
 
 fn word(n: u64) -> [u8; 32] {
     let mut w = [0u8; 32];
     w[24..].copy_from_slice(&n.to_be_bytes());
+    w
+}
+
+/// The pool and the shares in one word: 16 zero bytes ‖ pool ‖ shares (u64 big-endian each).
+pub fn pool_word(pool: u64, shares: u64) -> [u8; 32] {
+    let mut w = [0u8; 32];
+    w[16..24].copy_from_slice(&pool.to_be_bytes());
+    w[24..].copy_from_slice(&shares.to_be_bytes());
     w
 }
 
@@ -867,6 +898,7 @@ impl BlockOut {
             self.blobs_hash,
             self.migrations_hash,
             self.migration_totals_hash,
+            pool_word(self.pool, self.shares),
         ]
         .concat()
     }
@@ -883,10 +915,10 @@ pub struct BlockData {
     pub nullifiers: Vec<[u8; 32]>,
     /// Distinct anchors older than the state's recent roots.
     pub anchors: Vec<[u8; 32]>,
-    /// Deposits a spend took in: asset ‖ value ‖ commitment (x ‖ y) ‖ the spend's body hash, which the depositor
-    /// named when depositing, 160 bytes each.
+    /// Deposits a spend took in: asset ‖ shares ‖ commitment (x ‖ y) ‖ the spend's body hash ‖ the TAC paid in (units), which the
+    /// depositor named when depositing, 192 bytes each.
     pub deposits: Vec<Vec<u8>>,
-    /// Exits to pay: asset ‖ value ‖ address (left-padded), 96 bytes each.
+    /// Exits to pay: asset ‖ the TAC paid out (units) ‖ address (left-padded), 96 bytes each.
     pub exits: Vec<Vec<u8>>,
     /// Hops into the confidential pool on Ethereum: asset ‖ value ‖ the pool's commitment (`ops::hop_bytes`), 96 bytes each, sorted.
     pub hops: Vec<Vec<u8>>,
@@ -1104,8 +1136,14 @@ struct Effects {
     hop: Option<Vec<u8>>,
     /// A claim's signature, published.
     claim: Option<[u8; 64]>,
-    /// A move to a successor chain: (its address, the note there, the value).
+    /// A move to a successor chain: (its address, the note there, the TAC it takes).
     migration: Option<([u8; 20], [u8; 32], u64)>,
+    /// Shares the spend makes (a deposit's) and ends (an exit's, hop's, migration's or pool share's), and the TAC that comes in and
+    /// goes out with them.
+    shares_in: u64,
+    shares_out: u64,
+    paid_in: u64,
+    paid_out: u64,
 }
 
 /// What a claim or refund does to a block, when the block's time allows it: the anchor its path leads to (one older than the recent
@@ -1126,6 +1164,10 @@ fn settle_effects(prev: &State, s: &lock::Settle, time: u64) -> Result<Effects, 
         hop: None,
         claim: s.sig,
         migration: None,
+        shares_in: 0,
+        shares_out: 0,
+        paid_in: 0,
+        paid_out: 0,
     })
 }
 
@@ -1134,7 +1176,7 @@ pub fn deposit_record(s: &Spend, d: &SpendData) -> Option<Vec<u8>> {
     if is_identity(&s.dep) {
         return None;
     }
-    d.dep.map(|o| [fr_be(&s.asset), word(o.v), fr_be(&s.dep[0]), fr_be(&s.dep[1]), fr_be(&s.body)].concat())
+    d.dep.map(|o| [fr_be(&s.asset), word(o.v), fr_be(&s.dep[0]), fr_be(&s.dep[1]), fr_be(&s.body), word(o.amount)].concat())
 }
 
 fn effects(prev: &State, s: &Spend, d: &SpendData) -> Result<Effects, &'static str> {
@@ -1142,7 +1184,7 @@ fn effects(prev: &State, s: &Spend, d: &SpendData) -> Result<Effects, &'static s
     if live.len() == 2 && live[0] == live[1] {
         return Err("one note in both input slots");
     }
-    let mut e = Effects { anchor: None, outputs: Vec::with_capacity(3), deposit: None, exit: None, nullifiers: s.spent_keys().iter().map(fr_be).collect(), hop: None, claim: None, migration: None };
+    let mut e = Effects { anchor: None, outputs: Vec::with_capacity(3), deposit: None, exit: None, nullifiers: s.spent_keys().iter().map(fr_be).collect(), hop: None, claim: None, migration: None, shares_in: 0, shares_out: 0, paid_in: 0, paid_out: 0 };
     if live.is_empty() {
         if is_identity(&s.dep) {
             return Err("no input and no deposit");
@@ -1167,30 +1209,73 @@ fn effects(prev: &State, s: &Spend, d: &SpendData) -> Result<Effects, &'static s
         }
     }
     // a deposit or exit of nothing could never be made or paid on L1: refused here, not left to the lander
+    // shares are bought at the chain's rate before the block: a deposit pays at least what its shares are worth
     match (is_identity(&s.dep), &d.dep) {
         (true, None) => {}
-        (false, Some(o)) if o.v > 0 && commits(o, &s.dep) => {
-            e.deposit = Some([fr_be(&s.asset), word(o.v), fr_be(&s.dep[0]), fr_be(&s.dep[1]), fr_be(&s.body)].concat())
+        (false, Some(o)) if o.v > 0 && o.amount > 0 && commits(o, &s.dep) && covers(o.amount, o.v, prev) => {
+            e.deposit = Some([fr_be(&s.asset), word(o.v), fr_be(&s.dep[0]), fr_be(&s.dep[1]), fr_be(&s.body), word(o.amount)].concat());
+            (e.shares_in, e.paid_in) = (o.v, o.amount);
         }
-        _ => return Err("the deposit's opening is missing, wrong or of nothing"),
+        _ => return Err("the deposit's opening is missing, wrong or of nothing, or pays less than its shares are worth"),
     }
+    // and leave at it, less the exit fee: what an exit, hop or migration pays out is at most its shares' worth less EXIT_FEE_BPS
+    let out = |o: &Opening| o.v > 0 && o.amount > 0 && d.exit_to == [0u8; 20] && commits(o, &s.exit) && pays(o.amount, o.v, prev);
     match (is_identity(&s.exit), &d.exit, &d.op) {
-        (true, None, None) if d.exit_to == [0u8; 20] => {}
-        (false, Some(o), None) if o.v > 0 && d.exit_to != [0u8; 20] && commits(o, &s.exit) => {
-            e.exit = Some([fr_be(&s.asset), word(o.v), address_word(&d.exit_to)].concat())
+        (true, None, None) if d.exit_to == [0u8; 20] => {
+            if !live.is_empty() {
+                return Err("a spend of notes sends value out (an exit, hop or migration) or gives the holders their pool share");
+            }
         }
-        (false, Some(o), Some(ops::Op::Hop { commit })) if o.v > 0 && d.exit_to == [0u8; 20] && commits(o, &s.exit) => {
-            e.hop = Some(ops::hop_bytes(&s.asset, o.v, commit))
+        (false, Some(o), None) if o.v > 0 && o.amount > 0 && d.exit_to != [0u8; 20] && commits(o, &s.exit) && pays(o.amount, o.v, prev) => {
+            e.exit = Some([fr_be(&s.asset), word(o.amount), address_word(&d.exit_to)].concat());
+            (e.shares_out, e.paid_out) = (o.v, o.amount);
         }
-        (false, Some(o), Some(ops::Op::Lock { lock, memo })) if o.v > 0 && d.exit_to == [0u8; 20] && commits(o, &s.exit) => {
+        (false, Some(o), Some(ops::Op::Hop { commit })) if out(o) => {
+            e.hop = Some(ops::hop_bytes(&s.asset, o.amount, commit));
+            (e.shares_out, e.paid_out) = (o.v, o.amount);
+        }
+        (false, Some(o), Some(ops::Op::Lock { lock, memo })) if o.v > 0 && o.amount == 0 && d.exit_to == [0u8; 20] && commits(o, &s.exit) => {
             e.outputs.push((lock.leaf(&s.asset, o.v), *memo))
         }
-        (false, Some(o), Some(ops::Op::Migrate { to, note })) if o.v > 0 && d.exit_to == [0u8; 20] && *to != [0u8; 20] && commits(o, &s.exit) => {
-            e.migration = Some((*to, *note, o.v))
+        (false, Some(o), Some(ops::Op::Migrate { to, note })) if *to != [0u8; 20] && out(o) => {
+            e.migration = Some((*to, *note, o.amount));
+            (e.shares_out, e.paid_out) = (o.v, o.amount);
         }
-        _ => return Err("the exit's opening, address or operation is missing, wrong or of nothing"),
+        (false, Some(o), Some(ops::Op::Pool)) if o.amount == 0 && d.exit_to == [0u8; 20] && commits(o, &s.exit) && worth_at_least(o.v, MIN_POOL_FEE, prev) => {
+            e.shares_out = o.v;
+        }
+        _ => return Err("the exit's opening, address or operation is missing, wrong or of nothing, or pays out more than its shares are worth"),
     }
     Ok(e)
+}
+
+/// The rate before the block as (pool, shares): one unit a share while there are none.
+fn rate(prev: &State) -> (u128, u128) {
+    if prev.shares == 0 {
+        (1, 1)
+    } else {
+        (prev.pool as u128, prev.shares as u128)
+    }
+}
+
+/// Whether `paid` units buy `shares`: paid / shares >= pool / shares there are (every product below 2^128).
+fn covers(paid: u64, shares: u64, prev: &State) -> bool {
+    let (p, s) = rate(prev);
+    paid as u128 * s >= shares as u128 * p
+}
+
+/// Whether `shares` may pay out `paid` units: no more than their worth less EXIT_FEE_BPS of it (the fee rounded up).
+fn pays(paid: u64, shares: u64, prev: &State) -> bool {
+    let (p, s) = rate(prev);
+    let worth = shares as u128 * p;
+    let fee = worth / 10_000 * EXIT_FEE_BPS + (worth % 10_000 * EXIT_FEE_BPS).div_ceil(10_000);
+    paid as u128 * s <= worth - fee
+}
+
+/// Whether `shares` are worth at least `min` units.
+fn worth_at_least(shares: u64, min: u128, prev: &State) -> bool {
+    let (p, s) = rate(prev);
+    shares as u128 * p >= min * s
 }
 
 /// The non-zero nullifiers a block will enter into the tree, smallest first: those of its own spends and of the posted spends it takes,
@@ -1249,7 +1334,14 @@ pub fn apply(prev: &State, spends: &[Spend], data: &[SpendData], settles: &[lock
     let mut spent: Vec<(usize, [u8; 32])> = vec![];
     let mut lists = BlockData::default();
     let mut migrated: Vec<([u8; 20], u64)> = vec![];
+    // the pool and the shares move by what comes in and goes out (every spend was checked against the rate before the block, so the
+    // rate after is no lower: holders are never diluted)
+    let (mut pool_in, mut pool_out, mut shares_in, mut shares_out) = (0u128, 0u128, 0u128, 0u128);
     for (i, e) in chosen {
+        pool_in += e.paid_in as u128;
+        pool_out += e.paid_out as u128;
+        shares_in += e.shares_in as u128;
+        shares_out += e.shares_out as u128;
         lists.anchors.extend(e.anchor);
         lists.deposits.extend(e.deposit);
         lists.exits.extend(e.exit);
@@ -1307,7 +1399,9 @@ pub fn apply(prev: &State, spends: &[Spend], data: &[SpendData], settles: &[lock
             _ => lists.migration_totals.push([address_word(&to), word(v)].concat().try_into().unwrap()),
         }
     }
-    let mut next = State { notes, nf_root, nf_size, recent: prev.recent, chain: prev.chain, queue_len, queue_hash };
+    let pool = u64::try_from((prev.pool as u128 + pool_in).checked_sub(pool_out).ok_or("the block pays out more than the pool holds")?).map_err(|_| "the pool overflows")?;
+    let shares = u64::try_from((prev.shares as u128 + shares_in).checked_sub(shares_out).ok_or("the block ends more shares than there are")?).map_err(|_| "the shares overflow")?;
+    let mut next = State { notes, nf_root, nf_size, recent: prev.recent, chain: prev.chain, queue_len, queue_hash, pool, shares };
     next.remember(fr_be(&next.notes.root));
     let out = BlockOut {
         prev: prev.digest(),
@@ -1328,6 +1422,8 @@ pub fn apply(prev: &State, spends: &[Spend], data: &[SpendData], settles: &[lock
         blobs_hash: blobs_hash(&lists, blobs)?,
         migrations_hash: list_hash(8, &lists.migrations),
         migration_totals_hash: list_hash(9, &lists.migration_totals),
+        pool,
+        shares,
     };
     mark!("cycle-tracker-report-end: block-commit");
     Ok((next, out, lists))

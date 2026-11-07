@@ -26,6 +26,12 @@ interface IConfidentialPool {
 contract TacitInbox {
     constructor() {
         address tac = TacitBlocks(msg.sender).TAC();
+        // a holder's permitted TAC (`sweepWithPermit`): the permit names this inbox, so it can fund this shield alone
+        (address from, uint256 pull) = TacitBlocks(msg.sender).pullOrder();
+        if (pull != 0) {
+            (bool pulled, bytes memory got) = tac.call(abi.encodeWithSelector(0x23b872dd, from, msg.sender, pull));
+            require(pulled && (got.length == 0 || abi.decode(got, (bool))));
+        }
         (bool ok, bytes memory ret) = tac.call(abi.encodeWithSelector(0x70a08231, address(this)));
         require(ok && ret.length == 32);
         uint256 held = abi.decode(ret, (uint256));
@@ -110,8 +116,8 @@ contract TacitBlocks {
     bytes32 internal constant NF_GENESIS_ROOT = 0xf17b0f821760732c27b2f8e967a3e18c976a57e176de5164378fdaf3e1796f0c;
     uint256 internal constant NOTE_TREE_DEPTH = 32;
     uint256 internal constant RECENT = 32;
-    uint256 internal constant PUBLIC_WORDS = 18;
-    uint256 internal constant DEPOSIT_LEN = 160;
+    uint256 internal constant PUBLIC_WORDS = 19;
+    uint256 internal constant DEPOSIT_LEN = 192;
     uint256 internal constant EXIT_LEN = 96;
     /// A hop (tacit-block-common `ops::hop_bytes`): asset ‖ value ‖ the confidential pool's commitment.
     uint256 internal constant HOP_LEN = 96;
@@ -138,7 +144,7 @@ contract TacitBlocks {
     /// lock, the memo of its leaf.
     uint256 internal constant FORCED_REST_AT = 12 * 32 + 2080 + 20 * 64 + 3 * MEMO_LEN;
     uint256 internal constant FORCED_MIN = FORCED_REST_AT + 20 + 32 + 1 + 1;
-    uint256 internal constant FORCED_MAX = FORCED_MIN + 2 * (8 + 32) + 1 + 265 + MEMO_LEN;
+    uint256 internal constant FORCED_MAX = FORCED_MIN + 2 * (8 + 32 + 8) + 1 + 265 + MEMO_LEN;
     /// A claim or refund posted to the queue (tacit-block-common `lock::forced_settle`): SETTLE_MARK ‖ kind ‖ asset ‖ value (u64)
     /// ‖ the lock's terms (232) ‖ index (u64) ‖ the root its path leads to ‖ the path (32 × 32) ‖ a claim's signature ‖ the memo of
     /// the note it makes.
@@ -212,6 +218,13 @@ contract TacitBlocks {
     ///         that would take out more than this cannot land, whatever its proof says (the block program balances every spend,
     ///         so this only ever stops a block if the program or the verifier were wrong).
     uint256 public inChain;
+    /// @notice The TAC behind every note (units) and the shares the notes count, as the last block left them: a share is worth
+    ///         pool / shares units (one while there are none). It only rises: deposits buy shares at it, exits, hops and migrations
+    ///         pay out at it less the program's exit fee, and spends give the holders pool shares.
+    uint64 public pool;
+    uint64 public shares;
+    address private transient pullFrom;
+    uint256 private transient pullAmount;
 
     /// @notice keccak256 of TacitInbox's creation code, for `inbox`; and the code a created inbox is left with.
     bytes32 public immutable INBOX_INIT_HASH = keccak256(type(TacitInbox).creationCode);
@@ -219,14 +232,14 @@ contract TacitBlocks {
 
     bool private transient locked;
 
-    event Deposited(uint256 value, bytes32 cx, bytes32 cy, bytes32 body, address indexed from);
+    event Deposited(uint256 shares, uint256 amount, bytes32 cx, bytes32 cy, bytes32 body, address indexed from);
     event Landed(uint256 indexed height, bytes32 state, bytes32 noteRoot, address indexed by);
     event Withdrawn(address indexed to, uint256 amount);
-    event Reclaimed(address indexed to, uint256 value);
+    event Reclaimed(address indexed to, uint256 amount);
     /// @notice A deposit swept in from its inbox, and the confidential pool deposit (`back`) it goes back to if no block takes it.
     event Swept(address indexed inbox, bytes32 back);
     /// @notice A swept deposit no block took, sent back into the confidential pool for `back`.
-    event Returned(uint256 value, bytes32 back);
+    event Returned(uint256 amount, bytes32 back);
     event Hopped(uint256 value, bytes32 commit);
     /// @notice A block's moves to the successor chain `to`, `value` units in all, sent to it as the block landed.
     event Migrated(uint256 indexed height, address indexed to, uint256 value);
@@ -350,7 +363,9 @@ contract TacitBlocks {
                 EMPTY_NOTE_ROOT,
                 chain,
                 uint64(0),
-                bytes32(0)
+                bytes32(0),
+                uint64(0),
+                uint64(0)
             )
         );
         noteRoot = EMPTY_NOTE_ROOT;
@@ -363,83 +378,125 @@ contract TacitBlocks {
         return bytes32(uint256(sha256(abi.encodePacked(ASSET_TAG, bytes32(uint256(uint160(token)))))) % R);
     }
 
-    /// @notice Deposits `value` units of TAC (approved to this contract) for the shield spend whose deposit commitment is
-    ///         (cx, cy) and whose body hash is `body`: only that spend can take it in.
-    function deposit(uint256 value, bytes32 cx, bytes32 cy, bytes32 body) external nonReentrant {
-        if (value == 0 || value > type(uint64).max) revert BadValue();
-        if (!_onCurve(uint256(cx), uint256(cy)) || uint256(body) >= R) revert BadCommitment();
-        bytes32 key = keccak256(abi.encode(TAC_ASSET, value, cx, cy, body));
+    /// @notice Deposits `amount` units of TAC (approved to this contract) for the shield spend that buys `shareCount` shares with it and
+    ///         whose deposit commitment is (cx, cy) and body hash `body`: only that spend can take it in, and only while `amount` buys
+    ///         its shares at the chain's rate (`pool` / `shares`, which only rises), so a wallet pays a little over.
+    function deposit(uint256 shareCount, uint256 amount, bytes32 cx, bytes32 cy, bytes32 body) external nonReentrant {
+        bytes32 key = _depositKey(shareCount, amount, cx, cy, body);
         if (pending[key].from != address(0)) revert DepositPending();
-        uint256 amount = value * UNIT;
         uint256 before = IERC20Min(TAC).balanceOf(address(this));
-        _call(abi.encodeWithSelector(0x23b872dd, msg.sender, address(this), amount));
-        if (IERC20Min(TAC).balanceOf(address(this)) - before != amount) revert BadValue();
+        _call(abi.encodeWithSelector(0x23b872dd, msg.sender, address(this), amount * UNIT));
+        if (IERC20Min(TAC).balanceOf(address(this)) - before != amount * UNIT) revert BadValue();
         pending[key] = Pending(msg.sender, uint40(block.timestamp), 0);
-        emit Deposited(value, cx, cy, body, msg.sender);
+        emit Deposited(shareCount, amount, cx, cy, body, msg.sender);
     }
 
-    /// @notice Where TAC is paid for the shield spend (cx, cy, body) of `value` units, with no approval and no call: the
-    ///         confidential pool unwraps straight to it, or anyone transfers to it. `back` is a confidential pool deposit
-    ///         commitment the TAC goes back into if no block takes the deposit in (`giveBack`); it is fixed by the address,
-    ///         so whoever paid the inbox decides it and no one else can change it.
-    function inbox(uint256 value, bytes32 cx, bytes32 cy, bytes32 body, bytes32 back) public view returns (address) {
-        bytes32 salt = keccak256(abi.encode(TAC_ASSET, value, cx, cy, body, back));
+    /// @notice Where TAC is paid for a shield spend with no approval and no call: the confidential pool unwraps straight to it, anyone
+    ///         transfers to it, or a holder permits it (`sweepWithPermit`). `back` is a confidential pool deposit commitment the TAC
+    ///         goes back into if no block takes the deposit in (`giveBack`); it is fixed by the address, so whoever paid the inbox
+    ///         decides it and no one else can change it.
+    function inbox(uint256 shareCount, uint256 amount, bytes32 cx, bytes32 cy, bytes32 body, bytes32 back) public view returns (address) {
+        bytes32 salt = keccak256(abi.encode(TAC_ASSET, shareCount, amount, cx, cy, body, back));
         return address(uint160(uint256(keccak256(abi.encodePacked(bytes1(0xff), address(this), salt, INBOX_INIT_HASH)))));
     }
 
     /// @notice Takes a paid inbox's TAC in as the deposit for its shield spend (what `deposit` does for TAC approved here).
-    ///         Anyone may call it, a leader before it lands the spend. More than `value` units in the inbox stays with the chain.
+    ///         Anyone may call it, a leader before it lands the spend. More than `amount` units in the inbox stays with the chain.
     ///         Anyone may queue the spend that takes a swept deposit in (`force`): only that spend can, its body being the
     ///         deposit's. If no block takes it in within RECLAIM_AFTER, anyone sends it back into the confidential pool for
     ///         `back`. If the spend's key is already held by a deposit made with `deposit`, the inbox's TAC goes back into the
     ///         confidential pool at once. An inbox is created once: TAC paid to it after its sweep stays there.
-    function sweep(uint256 value, bytes32 cx, bytes32 cy, bytes32 body, bytes32 back) external nonReentrant {
-        if (value == 0 || value > type(uint64).max) revert BadValue();
-        if (!_onCurve(uint256(cx), uint256(cy)) || uint256(body) >= R) revert BadCommitment();
-        bytes32 key = keccak256(abi.encode(TAC_ASSET, value, cx, cy, body));
+    function sweep(uint256 shareCount, uint256 amount, bytes32 cx, bytes32 cy, bytes32 body, bytes32 back) external nonReentrant {
+        _sweep(shareCount, amount, cx, cy, body, back, 0);
+    }
+
+    /// @notice A shield with no ETH: `owner` signed an ERC-2612 permit for its inbox (the spender) of `amount` units of TAC and
+    ///         `fee` more, and whoever sends this, paying the gas, takes the fee. Creating the inbox pulls the permitted TAC, and
+    ///         the permit names the inbox, which names the shield: no one can put the TAC to any other use. A permit already used
+    ///         (front-run) is passed over and the allowance it left is used.
+    function sweepWithPermit(
+        uint256 shareCount,
+        uint256 amount,
+        bytes32 cx,
+        bytes32 cy,
+        bytes32 body,
+        bytes32 back,
+        address owner,
+        uint256 fee,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external nonReentrant {
+        address box = inbox(shareCount, amount, cx, cy, body, back);
+        (bool ok,) = TAC.call(abi.encodeWithSelector(0xd505accf, owner, box, amount * UNIT + fee, deadline, v, r, s));
+        ok;
+        pullFrom = owner;
+        pullAmount = amount * UNIT + fee;
+        _sweep(shareCount, amount, cx, cy, body, back, fee);
+        pullFrom = address(0);
+        pullAmount = 0;
+        if (fee != 0) _call(abi.encodeWithSelector(0xa9059cbb, msg.sender, fee));
+    }
+
+    /// @notice What an inbox being created pulls, and from whom (`sweepWithPermit`); nothing otherwise.
+    function pullOrder() external view returns (address, uint256) {
+        return (pullFrom, pullAmount);
+    }
+
+    function _sweep(uint256 shareCount, uint256 amount, bytes32 cx, bytes32 cy, bytes32 body, bytes32 back, uint256 fee) internal {
+        bytes32 key = _depositKey(shareCount, amount, cx, cy, body);
         uint256 before = IERC20Min(TAC).balanceOf(address(this));
-        address box = address(new TacitInbox{salt: keccak256(abi.encode(TAC_ASSET, value, cx, cy, body, back))}());
-        if (IERC20Min(TAC).balanceOf(address(this)) - before < value * UNIT) revert BadValue();
+        address box = address(new TacitInbox{salt: keccak256(abi.encode(TAC_ASSET, shareCount, amount, cx, cy, body, back))}());
+        if (IERC20Min(TAC).balanceOf(address(this)) - before < amount * UNIT + fee) revert BadValue();
         if (pending[key].from != address(0)) {
             // another deposit holds the spend's key (made with `deposit` ahead of this sweep): the inbox's TAC goes straight back
             // into the confidential pool for `back`, so no one can keep it from both the chain and the way back
-            CONFIDENTIAL.wrap(CONFIDENTIAL_TAC, value * UNIT, back);
+            CONFIDENTIAL.wrap(CONFIDENTIAL_TAC, amount * UNIT, back);
             emit Swept(box, back);
-            emit Returned(value, back);
+            emit Returned(amount, back);
             return;
         }
         pending[key] = Pending(box, uint40(block.timestamp), 0);
-        emit Deposited(value, cx, cy, body, box);
+        emit Deposited(shareCount, amount, cx, cy, body, box);
         emit Swept(box, back);
     }
 
     /// @notice Sends a swept deposit no block has taken in within RECLAIM_AFTER back into the confidential pool, as its deposit
     ///         for `back` (the commitment the inbox's address fixed). Anyone may call it.
-    function giveBack(uint256 value, bytes32 cx, bytes32 cy, bytes32 body, bytes32 back) external nonReentrant {
-        bytes32 key = keccak256(abi.encode(TAC_ASSET, value, cx, cy, body));
+    function giveBack(uint256 shareCount, uint256 amount, bytes32 cx, bytes32 cy, bytes32 body, bytes32 back) external nonReentrant {
+        bytes32 key = keccak256(abi.encode(TAC_ASSET, shareCount, cx, cy, body, amount));
         Pending memory p = pending[key];
         if (p.from == address(0)) revert NotPending();
-        if (p.from != inbox(value, cx, cy, body, back)) revert NotInbox();
+        if (p.from != inbox(shareCount, amount, cx, cy, body, back)) revert NotInbox();
         if (block.timestamp < uint256(p.at) + RECLAIM_AFTER) revert TooSoon();
         if (p.forced > queueDone) revert DepositQueued();
         delete pending[key];
-        CONFIDENTIAL.wrap(CONFIDENTIAL_TAC, value * UNIT, back);
-        emit Returned(value, back);
+        CONFIDENTIAL.wrap(CONFIDENTIAL_TAC, amount * UNIT, back);
+        emit Returned(amount, back);
     }
 
     /// @notice Sends a deposit no block has taken in within RECLAIM_AFTER back to whoever made it, unless an entry its
     ///         depositor queued to take it in is still ahead of the chain. Anyone may call it. (A swept deposit goes back
     ///         with `giveBack`.)
-    function reclaim(uint256 value, bytes32 cx, bytes32 cy, bytes32 body) external nonReentrant {
-        bytes32 key = keccak256(abi.encode(TAC_ASSET, value, cx, cy, body));
+    function reclaim(uint256 shareCount, uint256 amount, bytes32 cx, bytes32 cy, bytes32 body) external nonReentrant {
+        bytes32 key = keccak256(abi.encode(TAC_ASSET, shareCount, cx, cy, body, amount));
         Pending memory p = pending[key];
         if (p.from == address(0)) revert NotPending();
         if (p.from.codehash == INBOX_CODEHASH) revert SweptDeposit();
         if (block.timestamp < uint256(p.at) + RECLAIM_AFTER) revert TooSoon();
         if (p.forced > queueDone) revert DepositQueued();
         delete pending[key];
-        _call(abi.encodeWithSelector(0xa9059cbb, p.from, value * UNIT));
-        emit Reclaimed(p.from, value);
+        _call(abi.encodeWithSelector(0xa9059cbb, p.from, amount * UNIT));
+        emit Reclaimed(p.from, amount);
+    }
+
+    /// @dev A deposit's key: keccak256 of the record the block program publishes for it (asset ‖ shares ‖ cx ‖ cy ‖ body ‖ amount),
+    ///      checked to be one a spend could take in.
+    function _depositKey(uint256 shareCount, uint256 amount, bytes32 cx, bytes32 cy, bytes32 body) internal view returns (bytes32) {
+        if (shareCount == 0 || shareCount > type(uint64).max || amount == 0 || amount > type(uint64).max) revert BadValue();
+        if (!_onCurve(uint256(cx), uint256(cy)) || uint256(body) >= R) revert BadCommitment();
+        return keccak256(abi.encode(TAC_ASSET, shareCount, cx, cy, body, amount));
     }
 
     /// @notice Posts a spend to the queue every block takes in order: publics ‖ proof ‖ hints ‖ a memo per output slot ‖
@@ -477,8 +534,9 @@ contract TacitBlocks {
         uint256 i = queued;
         if (!_isIdentity(payload[320:384])) {
             if (payload[FORCED_REST_AT + 52] != 0x01) revert BadPayload();
-            uint256 value = uint64(bytes8(payload[FORCED_REST_AT + 53:FORCED_REST_AT + 61]));
-            Pending storage p = pending[keccak256(abi.encode(asset, value, bytes32(payload[320:352]), bytes32(payload[352:384]), bytes32(payload[32:64])))];
+            uint256 shareCount = uint64(bytes8(payload[FORCED_REST_AT + 53:FORCED_REST_AT + 61]));
+            uint256 amount = uint64(bytes8(payload[FORCED_REST_AT + 93:FORCED_REST_AT + 101]));
+            Pending storage p = pending[keccak256(abi.encode(asset, shareCount, bytes32(payload[320:352]), bytes32(payload[352:384]), bytes32(payload[32:64]), amount))];
             // its depositor's, or a swept one's (whose depositor has no address here: anyone may queue the one spend that takes it,
             // while the chain can still reach the entry before giveBack is due, so no one can hold a swept deposit back for good)
             if (p.from != msg.sender) {
@@ -514,7 +572,7 @@ contract TacitBlocks {
         }
         if (publicValues.length != 32 * PUBLIC_WORDS) revert BadPublicValues();
         VERIFIER.verifyProof(BLOCK_VKEY, publicValues, proof);
-        bytes32[18] memory w = abi.decode(publicValues, (bytes32[18]));
+        bytes32[19] memory w = abi.decode(publicValues, (bytes32[19]));
         if (w[0] != state || w[2] != noteRoot) revert NotOnTop();
         // the time the block names, by which its claims and refunds were decided
         if (block.timestamp < uint256(w[14]) || block.timestamp > uint256(w[14]) + TIME_WINDOW) revert BadTime();
@@ -548,7 +606,7 @@ contract TacitBlocks {
         uint256 worth = inChain;
         for (uint256 i; i < nDeposits; ++i) {
             bytes32 key = keccak256(deposits[DEPOSIT_LEN * i:DEPOSIT_LEN * (i + 1)]);
-            worth += uint256(bytes32(deposits[DEPOSIT_LEN * i + 32:DEPOSIT_LEN * i + 64]));
+            worth += uint256(bytes32(deposits[DEPOSIT_LEN * i + 160:DEPOSIT_LEN * i + 192]));
             Pending storage p = pending[key];
             if (p.from == address(0)) revert NoSuchDeposit(i);
             // a queued entry for it does not hold it back: only the one spend the deposit names can take it in, once (its
@@ -584,7 +642,12 @@ contract TacitBlocks {
             worth -= out;
             hops[keccak256(hopList[HOP_LEN * i + 32:HOP_LEN * (i + 1)])] += 1;
         }
-        inChain = _migrate(lists.migrations, lists.migrationTotals, w[16], w[17], worth, height + 1);
+        worth = _migrate(lists.migrations, lists.migrationTotals, w[16], w[17], worth, height + 1);
+        // the program's pool (the TAC behind the notes, by its own count) is the TAC this contract holds for them, by its own
+        pool = uint64(uint256(w[18]) >> 64);
+        shares = uint64(uint256(w[18]));
+        if (uint256(w[18]) >> 128 != 0 || pool != worth) revert Insolvent();
+        inChain = worth;
 
         state = w[1];
         noteRoot = w[3];
