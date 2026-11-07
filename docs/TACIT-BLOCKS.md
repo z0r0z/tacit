@@ -18,14 +18,30 @@ design is a new chain that users move to through the confidential pool (V1) in o
 The spend relation is `btc-pool-halo2`'s: two inputs, three outputs, one asset, a deposit and an exit as BabyJubJub Pedersen
 commitments, owner signatures over a body hash. `leaf = Poseidon(asset, v, npk, rho)`, `nullifier = Poseidon(nk, leaf, index)`; a note's
 keys come from a 33-byte shared secret `s` its sender and recipient both derive (`btc-pool-zk.js` `outputKeys` / `ownedKeys`). The asset
-is TAC alone: `SHA-256("tacit-btc-pool-zk-asset-v1" ‖ token) mod r`. A value is a `u64` count of **UNIT = 10^-8 TAC** (10^10 of the token's
-smallest units), the unit the confidential pool and Bitcoin count TAC in, so a value moves between them unchanged.
+is TAC alone: `SHA-256("tacit-btc-pool-zk-asset-v1" ‖ token) mod r`. TAC amounts are `u64` counts of **UNIT = 10^-8 TAC** (10^10 of the
+token's smallest units), the unit the confidential pool and Bitcoin count TAC in. A note's value is a count of **shares** (below).
+
+## Shares and fees
+
+Notes count shares of the chain's pool. The state keeps `pool` (the TAC behind every note, in units) and `shares`; a share is worth
+`(pool + V) / (shares + V)` units, `V = 10^8` (a virtual TAC of each, which no note holds: no deposit or burn can set the price alone, and
+what is left in a pool with no shares is not the next depositor's). Every spend in a block is priced at the rate before the block.
+
+* **In.** A deposit's opening is shares; its `amount` (TAC) must buy them at the rate (wallets pay 2 bps over, which stays with the pool).
+* **Out.** An exit's, hop's or migration's opening is shares; its `amount` (TAC paid out) is at most their worth less the exit fee:
+  `EXIT_FEE_BPS = 10` (0.1%, rounded up) and at least `MIN_POOL_FEE = 200,000` units (0.002 TAC).
+* **Payments.** A spend of notes must use its exit slot: an exit, hop, lock, migration, or a **pool share** (`OP_POOL`, 4), shares worth
+  at least `MIN_POOL_FEE` that end. A lock's claim or refund note is worth the lock less `lock_fee` (0.1% of its shares, at least one).
+* What stays (fees, pool shares, margins) raises every share's worth: holders earn pro rata from what others pay, and no balance is
+  shown. The rate only rises. Public word 18 carries `pool ‖ shares` after the block, and the contract requires its pool to equal the TAC
+  it holds for the notes (`inChain`).
+* The deposit's and exit's amounts are in the body the owners sign: no one between them and the block can change what crosses the edge.
 
 A spend's **body** is what its owners sign. Which kind it is, is fixed by what its data names:
 
-* a payment: `"tacit-block-body-v1" ‖ chain ‖ 3 output leaves ‖ 3 memo hashes ‖ exit address ‖ salt`;
-* an operation: `"tacit-block-op-body-v1" ‖ chain ‖ 3 output leaves ‖ 3 memo hashes ‖ op ‖ salt`, the exit's value going into the operation
-  instead of to an address.
+* a payment: `"tacit-block-body-v1" ‖ chain ‖ 3 output leaves ‖ 3 memo hashes ‖ exit address ‖ deposit amount ‖ exit amount ‖ salt`;
+* an operation: `"tacit-block-op-body-v1" ‖ chain ‖ 3 output leaves ‖ 3 memo hashes ‖ op ‖ deposit amount ‖ exit amount ‖ salt`, the exit's
+  value going into the operation instead of to an address (amounts u64 big-endian, zero for none).
 
 `chain = SHA-256("tacit-block-chain-v1" ‖ chain id ‖ contract)`: derived by the contract, so a spend made for one deployment is void on
 any other. The block program checks every body, every opening of a deposit or exit, and that no note is spent twice.
@@ -64,7 +80,7 @@ The chain has no pools or liquidity of its own: swaps and liquidity happen in th
 Input: the state, the block's own spends and settles (claims and refunds), the time, an optional blob buffer, and the next entries of the
 forced queue (below), with the builder's answers about them. The state is the note tree (Poseidon, depth 32), the nullifier tree (indexed,
 SHA-256), the last 32 note roots, the chain binding and the queue's position. The program verifies every proof in **one pairing** (a random
-linear combination), applies the block, and commits eighteen 32-byte words:
+linear combination), applies the block, and commits nineteen 32-byte words:
 
 | # | word | | # | word |
 |---|---|---|---|---|
@@ -78,6 +94,7 @@ linear combination), applies the block, and commits eighteen 32-byte words:
 | 7 | deposits hash (tag 4) | | 15 | blobs hash (zero in calldata mode) |
 | | | | 16 | migrations hash (tag 8) |
 | | | | 17 | successors' totals hash (tag 9) |
+| | | | 18 | 16 zero bytes ‖ pool ‖ shares (u64 each) |
 
 Every list is `SHA-256("tacit-block-list-v1" ‖ tag ‖ count ‖ items)`, sorted, so a list's order says nothing of which spend an item came from.
 Anyone can rebuild the chain's state from the lists alone (`tacit-block-node replay`).
@@ -100,10 +117,13 @@ most anyone chooses is which of four blocks keeps it, and an epoch whose seed no
 * Deposits, exits, hops and anchors are always in calldata, since the contract acts on them. A deposit taken in must have been made on L1,
   bound to the shield spend that takes it in, and a spend takes in one deposit ever (its deposit's nullifier, `Poseidon(tag, C, body)`,
   enters the nullifier tree); an exit is credited to its address (`withdraw` sends it on, by anyone). The contract keeps what the chain's
-  notes are worth (`inChain`: deposits taken in, less exits and hops) and refuses a block that would take out more, whatever its proof.
-* **Deposits.** `deposit` takes approved TAC. An **inbox** takes TAC with no approval and no call: `inbox(value, C, body, back)` is a
-  CREATE2 address the confidential pool's unwrap (which only mints to an address) or anyone pays, and `sweep` (the leader's, or anyone's)
-  takes it in. Anyone may queue the one spend that takes a swept deposit in; if none does within 7 days, `giveBack` wraps it into the
+  notes are worth (`inChain`: deposits' amounts taken in, less exits, hops and migrations paid out) and refuses a block that would take out
+  more, or whose pool is not that, whatever its proof.
+* **Deposits.** `deposit(shares, amount, C, body)` takes approved TAC (records are asset ‖ shares ‖ C ‖ body ‖ amount, 192 bytes). An
+  **inbox** takes TAC with no approval and no call: `inbox(shares, amount, C, body, back)` is a CREATE2 address the confidential pool's
+  unwrap (which only mints to an address) or anyone pays, and `sweep` (the leader's, or anyone's) takes it in. `sweepWithPermit` takes it
+  from a holder with no ETH: the holder's ERC-2612 permit names the inbox, the inbox pulls what it lacks when it is created, and the
+  caller, who pays the gas, takes the permit's `fee`. Anyone may queue the one spend that takes a swept deposit in; if none does within 7 days, `giveBack` wraps it into the
   confidential pool for `back`, and a sweep that finds the spend's key already held by another deposit wraps it there at once. An inbox is
   created once: what is paid to it after its sweep stays there.
 * **Hops** are sent by anyone (`sendHop(s)`); one the confidential pool refuses (it takes a commitment once) stays, to be sent again, and
