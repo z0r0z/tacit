@@ -13,6 +13,10 @@
 //!   POST /settle                 { settle, memo } → { id }
 //!   POST /build                  { time, blobs?: bool, queue?: [payload…], max?: n } → the block: guest input, public values, lists
 //!   POST /landed                 { words[16], leaves[], memos[], nullifiers[] } → replays a landed block and clears what it took
+//!
+//! `/build` and `/landed` are the leader's own: they need `Authorization: Bearer $TACIT_NODE_ADMIN`, or, with none set, a loopback caller
+//! (`/landed` takes the caller's word that a block landed, so the public must never reach it). The rest is open: a wallet's reads and its
+//! submissions, which are checked on the way in.
 
 use crate::{blobs, keys::Keys, stdin_file, Node, Published, SpendIn};
 use ff::Field;
@@ -252,7 +256,10 @@ impl Leader {
         Ok(self.state())
     }
 
-    fn route(&mut self, method: &str, url: &str, body: &Value, now: u64) -> Result<Value, (u16, String)> {
+    fn route(&mut self, method: &str, url: &str, body: &Value, now: u64, admin: bool) -> Result<Value, (u16, String)> {
+        if method == "POST" && matches!(url, "/build" | "/landed") && !admin {
+            return Err((403, "the leader's own".into()));
+        }
         let (path, query) = url.split_once('?').unwrap_or((url, ""));
         let q = |k: &str| query.split('&').find_map(|kv| kv.split_once('=').filter(|(a, _)| *a == k).map(|(_, v)| v.to_string()));
         let bad = |e: String| (400u16, e);
@@ -316,7 +323,13 @@ pub fn serve(addr: &str, mut leader: Leader) -> Result<(), String> {
         } else {
             let body: Value = if raw.is_empty() { Value::Null } else { serde_json::from_slice(&raw).unwrap_or(Value::Null) };
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-            match leader.route(&method, &url, &body, now) {
+            let token = std::env::var("TACIT_NODE_ADMIN").ok().filter(|t| !t.is_empty());
+            let bearer = req.headers().iter().find(|h| h.field.equiv("Authorization")).map(|h| h.value.as_str().to_string());
+            let admin = match &token {
+                Some(t) => bearer.as_deref() == Some(&format!("Bearer {t}")),
+                None => req.remote_addr().is_some_and(|a| a.ip().is_loopback()),
+            };
+            match leader.route(&method, &url, &body, now, admin) {
                 Ok(v) => (200, v),
                 Err((c, e)) => (c, json!({ "error": e })),
             }
