@@ -397,7 +397,7 @@ function homesHtml() {
   const row = (home, t, sub, icon, act) => `<button type="button" role="radio" class="c${HOMES_OPEN ? '' : ' one'}" data-home="${home}" aria-checked="${String(at === home)}" tabindex="${at === home ? 0 : -1}"><svg class="tk" aria-hidden="true"><use href="#tk-${icon}"/></svg><span class="rt"><b>${t}</b><small>${sub}</small></span>${cue(act)}${HOMES_OPEN ? '<span class="rd" aria-hidden="true"></span>' : ''}</button>`;
   // the chosen home alone, with a way to change it, until the choice is opened
   const defi = row('defi', 'Swap, farm, borrow', 'DeFi pool', eth ? 'teth' : 'tac', 'wrap'), pay = row('pay', 'Pay anyone', `Pay pool · ${where}`, eth ? 'peth' : 'tac', 'dev');
-  const chain = ch ? row('chain', 'Pay on the Tacit chain', 'TAC only, on its own chain', 'tac', null) : '';
+  const chain = ch ? row('chain', 'Fast private TAC', 'on the Tacit chain, pay anyone there', 'tac', null) : '';
   if (!HOMES_OPEN) return `<div class="rows-h"><span>Use it to</span><span class="chg" aria-hidden="true">Change</span></div>${at === 'pay' ? pay : at === 'chain' ? chain : defi}`;
   return `<div class="rows-h"><span>Use it to</span></div>${defi}${pay}${chain}`;
 }
