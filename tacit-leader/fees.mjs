@@ -38,7 +38,7 @@ export function feeTerms(env = {}) {
     fallback = [BigInt(i || 0) * 10n ** 8n + BigInt((f + '00000000').slice(0, 8)), 10n ** 18n];   // TAC units per wei, as a fraction
   }
   return {
-    spendGas: n('FEE_SPEND_GAS', 45000), blockGas: n('FEE_BLOCK_GAS', 300000), batch: n('FEE_BATCH', 8), tipWei: env.FEE_TIP_WEI ? n('FEE_TIP_WEI', 0) : null,
+    spendGas: n('FEE_SPEND_GAS', 45000), sweepGas: n('FEE_SWEEP_GAS', 150000), blockGas: n('FEE_BLOCK_GAS', 300000), batch: n('FEE_BATCH', 8), tipWei: env.FEE_TIP_WEI ? n('FEE_TIP_WEI', 0) : null,
     marginBps: n('FEE_MARGIN_BPS', 2000), min: n('FEE_MIN', 100_000), fallback, window: Number(env.FEE_WINDOW_SECS || 600), reads: Number(env.FEE_PRICE_READS || 5),
     pool: env.FEE_POOL || PRICE_POOL, poolId: env.FEE_POOL_ID || TAC_ETH_POOL_ID,
   };
@@ -55,6 +55,15 @@ export async function readPrice(call, terms) {
 }
 
 /// The fee in units for a base fee (wei) and a price (TAC units per wei, a fraction), at least the minimum.
+/// What sending a holder's permit sweep costs the leader, in token wei (the permit's `fee` is in the token's units): FEE_SWEEP_GAS at the
+/// base fee and tip, at TAC's price, with the margin; the spend fee's minimum (in units) when there is no price.
+export function sweepFeeOf(terms, baseFee, price, tip = null) {
+  if (!price) return terms.min * 10n ** 10n;
+  const wei = terms.sweepGas * (BigInt(baseFee) + BigInt(tip ?? terms.tipWei ?? 100_000_000n));
+  const units = ceilDiv(ceilDiv(wei * price[0], price[1]) * (10_000n + terms.marginBps), 10_000n);
+  return (units > terms.min ? units : terms.min) * 10n ** 10n;
+}
+
 export function feeOf(terms, baseFee, price, tip = null) {
   if (!price) return terms.min;
   const gas = terms.spendGas + ceilDiv(terms.blockGas, terms.batch);
@@ -96,9 +105,15 @@ export function makeFeeDesk({ seed, chain, asset, terms }) {
     const sorted = [...prices].sort((a, b) => (a[0] * b[1] < b[0] * a[1] ? -1 : a[0] * b[1] > b[0] * a[1] ? 1 : 0));
     const use = sorted.length ? sorted[(sorted.length - 1) >> 1] : terms.fallback;
     const fee = feeOf(terms, baseFee, use, tip);
-    quoted.push({ fee, at: now });
+    const sweepFee = sweepFeeOf(terms, baseFee, use, tip);
+    quoted.push({ fee, sweepFee, at: now });
     while (quoted.length && quoted[0].at < now - terms.window) quoted.shift();
-    return { address, fee: String(fee), at: now, window: terms.window };
+    return { address, fee: String(fee), sweepFee: String(sweepFee), at: now, window: terms.window };
+  };
+  /// The least a holder's permit may pay for its sweep now (token wei): the lowest quoted in the window (null before the first quote).
+  desk.sweepAccepted = (now) => {
+    const live = quoted.filter((q) => q.at >= now - terms.window);
+    return live.length ? live.reduce((m, q) => (q.sweepFee < m ? q.sweepFee : m), live[0].sweepFee) : null;
   };
   /// The least a spend may pay now: the lowest fee quoted in the window (null before the first quote).
   desk.accepted = (now) => {

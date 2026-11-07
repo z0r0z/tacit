@@ -76,6 +76,8 @@ try {
   desk = makeFeeDesk({ seed: hx(new Uint8Array(32).fill(0x5e)), chain, asset, terms: feeTerms({ FEE_MIN: String(FEE) }) });
   const q = desk.quote({ now: Math.floor(Date.now() / 1000), baseFee: 0n, price: null });
   assert.equal(q.fee, String(FEE), 'with no price, the fee is the minimum');
+  assert.equal(q.sweepFee, String(FEE * 10n ** 10n), "a permit's sweep fee is in the token's wei: the minimum with no price");
+  assert.equal(desk.sweepAccepted(Math.floor(Date.now() / 1000)), FEE * 10n ** 10n, 'a permit paying less than the quote is not swept');
   await node('POST', '/fee', q);
   const leaderReads = { notes: (f, l) => api('GET', `/notes?from=${f}&limit=${l}`), spent: async (nf) => (await api('GET', `/spent/${nf}`)).spent };
 

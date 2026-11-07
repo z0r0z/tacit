@@ -91,6 +91,9 @@ async function sweepInbox(record, back, permit = null) {
   if (BigInt(held) >= amount * 10n ** 10n) {
     data = new Uint8Array([...selector('sweep(uint256,uint256,bytes32,bytes32,bytes32,bytes32)'), ...encode(types, args)]);
   } else if (permit && permit.back === back) {
+    // the permit's fee pays this leader's gas for the sweep: one under its quote is not sent (the holder asks for the fee again)
+    const least = desk?.sweepAccepted(Math.floor(Date.now() / 1000));
+    if (least != null && BigInt(permit.fee) < least) { log({ permitFeeShort: box, fee: String(permit.fee), need: String(least) }); return false; }
     const pTypes = [...types, 'address', 'uint256', 'uint256', 'uint256', 'bytes32', 'bytes32'];
     data = new Uint8Array([...selector('sweepWithPermit(uint256,uint256,bytes32,bytes32,bytes32,bytes32,address,uint256,uint256,uint8,bytes32,bytes32)'),
       ...encode(pTypes, [...args, permit.owner, BigInt(permit.fee), BigInt(permit.deadline), BigInt(permit.v), permit.r, permit.s])]);
