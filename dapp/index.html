@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
-     TODO(tacit chain): once it is deployed, its leader's origin (TACIT_CHAIN_PAGE.leader in the module) goes in connect-src. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-Dgr2qpuZsGY4HO5Is03N2skGdlV0d9hw7PmTo3fKcO0=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+     The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-m3ZtHJ2yneJIcn8uY9n+aTu7F2928ukk4jVjFiDckk8=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -65,7 +65,7 @@
 <link rel="modulepreload" href="/bridge-tick.js?cb=4e721860">
 <link rel="modulepreload" href="/tacit-session.js?cb=a2d34bb2">
 <link rel="modulepreload" href="/activity.js?cb=8ccbc552">
-<link rel="modulepreload" href="/swap/card.js?cb=45b4f804">
+<link rel="modulepreload" href="/swap/card.js?cb=a2ac19a7">
 <link rel="modulepreload" href="/trade/wallet.js?cb=88b623b8">
 <link rel="modulepreload" href="/trade/util.js?cb=ba5a02b1">
 <link rel="modulepreload" href="/trade/rpc.js">
@@ -663,6 +663,7 @@ a.di { color: inherit; text-decoration: none; }
 .hx-path li::before { content: counter(s); display: inline-grid; place-items: center; width: 17px; height: 17px; border-radius: 50%; font-size: 10px; border: 1px solid var(--hair-2); }
 .hx-path li.on { color: var(--ink); } .hx-path li.on::before { color: var(--paper); background: var(--ink); border-color: var(--ink); }
 .hx-path li.ok::before { content: '✓'; color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+.hx-way { margin: 10px 0 0; text-align: center; font: 12px var(--mono); color: var(--mute); }
 @media (max-width: 440px) { .hx-path { gap: 6px 10px; font-size: 11px; } .hx-path li { gap: 5px; } }
 .hx-fin { margin: 0 0 10px; } .hx-fin .callout { margin: 0; }
 .hx-next { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; margin: 12px 0 0; font: 12px var(--mono); color: var(--mute); }
@@ -3856,6 +3857,7 @@ function setKey(k) {
   S.pay = store.get(PAY)?.[pubHex] || null;
   syncAccount(); resetPrivate(); paintWallet(); refreshAll();
   SWC.card?.walletChanged();
+  setTimeout(() => { try { if (HX.chainWant) chainWantGo(); } catch { } }, 0);      // (a link to a Tacit chain move that waited for a key)
   for (const w of [...SWC.keyw]) w.ok();
   setTimeout(() => brTick(true), 4000);
   setTimeout(() => brPrepTick(true).catch(() => {}), 5000);
@@ -3879,8 +3881,8 @@ function setKey(k) {
 }
 
 // ── The tacit chain: TAC held privately on Tacit's own chain (tacit-chain-client.js), one more place for TAC in the tile (`ctac`). Hidden, and nothing
-// of it loaded, while the chain is not deployed. TACIT_CHAIN_PAGE is the page's copy of tacit-chain-config.js's TACIT_CHAIN (set both, and add the
-// leader's origin to connect-src; tests/tacit-chain-page.test.mjs holds the two copies equal); a browser points at a dev deployment with localStorage
+// of it loaded, while the chain is not deployed. TACIT_CHAIN_PAGE is the page's copy of tacit-chain-config.js's TACIT_CHAIN (tools/tacit-chain-golive.mjs
+// sets both and the leader's origin in connect-src; tests/tacit-chain-page.test.mjs holds the two copies equal); a browser points at a dev deployment with localStorage
 // 'tacit-chain-dev', as that module reads it. `var`s: a key opened early reaches these before the module has run this far. ──
 var TACIT_CHAIN_PAGE = { blocks: null, leader: null };
 var CHAIN_ON = (() => {
@@ -3899,7 +3901,7 @@ function chainClient() {
   if (CH.pub !== S.key.pubHex) chainReset(S.key.pubHex);
   if (CH.p) return CH.p;
   const priv = walletPriv(), mine = CH;
-  const p = mine.p = Promise.all([import('/tacit-chain-config.js?cb=76219357'), import('/tacit-chain-client.js?cb=3187682a'), import('/btc-pool-client.js?cb=0fc57c0e')]).then(async ([cf, cm, pm]) => {
+  const p = mine.p = Promise.all([import('/tacit-chain-config.js?cb=76219357'), import('/tacit-chain-client.js?cb=17e554e6'), import('/btc-pool-client.js?cb=0fc57c0e')]).then(async ([cf, cm, pm]) => {
     const cfg = cf.tacitChain();
     if (!cfg) throw new Error('The Tacit chain is not available here.');
     const pool = pm.makePoolClient({ base: '/btc-pool/' });
@@ -3922,7 +3924,7 @@ function chainScan(force = false) {
   if (!force && mine.at && Date.now() - mine.at < 30e3) return Promise.resolve(mine.bal);
   // notes count shares of the chain's pool: what is shown is what they are worth in TAC at the leader's latest rate
   const p = mine.scanP = chainClient().then((c) => c.scan().then(() => c.worth())).then((b) => { mine.bal = b; mine.err = null; return b; }, (e) => { mine.err = e; return null; })
-    .finally(() => { mine.scanP = null; mine.at = Date.now(); if (CH === mine) { try { hxBalPaint(); dashSoon(); } catch { } } });
+    .finally(() => { mine.scanP = null; mine.at = Date.now(); if (CH === mine) { try { if (hxSendChainAuto()) { const f = document.activeElement?.id; paintHx(); if (f) document.getElementById(f)?.focus(); } hxBalPaint(); dashSoon(); } catch { } } });
   return p;
 }
 // Read again after a spend landed until it shows (`ok(balance)`): the leader can answer the receipt a moment before its note list has the block
@@ -3976,6 +3978,20 @@ async function chainStart() {
     // a spend a reload or a leader cut off: handed over again, quietly (one already posted to Ethereum waits for the chain to take it)
     for (const e of await chainKeptRead(c)) if (!e.forced) c.resubmit(e).then(() => { chainKeptRead(c); chainScan(true); }, () => chainKeptRead(c));
   } catch (e) { if (S.key === key) CH.err = e; }
+}
+// A link to a Tacit chain move (/chain/'s, #card=…:chain or …:ctac) opened with no key yet, while the chain's places need one: kept (the route then
+// opens the wallet sheet), and the move shown once the key opens (setKey)
+function chainWantLater(spec, amt, to = '') {
+  if (!chainOn() || S.key || !String(spec).split(':').some((x) => x === 'chain' || x === 'ctac')) return false;
+  HX.chainWant = { spec, amt, to };
+  return true;
+}
+function chainWantGo() {
+  const w = HX.chainWant;
+  HX.chainWant = null;
+  if (!w || !S.key || !chainOn()) return;
+  if (w.spec === 'send:ctac') { HX.rcpt = w.to || HX.rcpt; HX.ask = false; }
+  hxPreset(w.spec, w.amt || '');
 }
 // A Tacit address's chain lane, or null (an address from before the chain, or not one)
 const chainLaneIn = (raw) => { try { return decodeTacitAddress(String(raw).toLowerCase()).lanes.chain?.hash || null; } catch { return null; } };
@@ -14588,7 +14604,7 @@ function hxWalletBals(force = false) {
   const ks = Object.keys(HX_WTOK);
   HXWB.p = multicall(ks.map((k) => (HX_WTOK[k] ? { to: HX_WTOK[k], data: SEL.balanceOf + addrWord(who) } : { to: ADDR.multicall, data: '4d2301cc' + addrWord(who) })))
     .then((r) => { if (HXWB.who !== who) return; ks.forEach((k, i) => { HXWB.v[k] = r[i] ? wordAt(r[i], 0) : null; }); HXWB.at = Date.now(); }, () => { HXWB.at = Date.now(); })
-    .finally(() => { if (HXWB.who === who) HXWB.p = null; dashSoon(); });
+    .finally(() => { if (HXWB.who === who) HXWB.p = null; dashSoon(); try { chainWayPaint(); } catch { } });     // (a transfer onto the Tacit chain is offered once ETH shows)
   dashSoon();
   return HXWB.p;
 }
@@ -14891,12 +14907,15 @@ const chainFeeRow = (q, holders) => (q ? ['Fees', `${fmt(q.holders + q.fee, 8, 4
 async function hxChainQuote(m, units) {
   const amt = units ? fmt(units, 8, 6) : null, n = (u) => `${amt ? `${amt} ` : ''}${u}`;
   if (m === 'chainshield') {
-    const held = hxWalletBal('wtac'), over = !!units && held != null && units * E10 > held;
+    // signed once (the leader sends it in for its sweep fee, on top) or sent in one transfer: the total that leaves the wallet is said either way
+    const held = hxWalletBal('wtac'), signed = hxChainWay() === 'permit', sf = signed && S.key && chainOn() ? await chainSweepFee().catch(() => 0n) : 0n;
+    const total = units ? units * E10 + sf : 0n, over = !!units && held != null && total > held;
     const q = !over && units && S.key && chainOn() ? await chainQuote('shield', units).catch(() => null) : null;
     if (chainOverCap(q, units)) return { out: '—', go: 'Shield TAC', warn: true, line: chainCapLine(q.cap), rc: [] };
-    return { out: q ? fmt(q.arrives, 8, 6) : amt, go: 'Shield TAC', warn: over, line: over ? `More than the ${fmt(held, 18, 4)} TAC in ${your()}.` : '',
+    return { out: q ? fmt(q.arrives, 8, 6) : amt, go: 'Shield TAC', warn: over, line: over ? `More than the ${fmt(held, 18, 4)} TAC in ${your()}${sf ? ', with the leader’s fee' : ''}.` : '',
       rc: over ? [] : [['Arrives', q ? `about ${fmt(q.arrives, 8, 4)} TAC on the Tacit chain` : n('TAC on the Tacit chain, a little less'), '', 'Shares of the chain’s pool, worth a little less than the deposit, and more as the chain’s fees stay with its holders'],
-        chainFeeRow(q, 'a small margin'), ['Proof', 'on this device, about half a minute'], ['Sent', `from ${your()}: an approval if needed, then the deposit`], ['Chain sees', 'a deposit, not whose']] };
+        chainFeeRow(q, 'a small margin'), units && sf ? ['Total', `${fmt(total, 18, 4)} TAC`, '', `${fmt(units, 8, 4)} TAC, and ${fmt(sf, 18, 4)} TAC to the leader that sends it in for you`] : null,
+        ['Proof', 'on this device, about half a minute'], ['Sent', signed ? `one signature in ${your()}, no ETH` : `one transaction from ${your()}`], ['Chain sees', 'a deposit, not whose']] };
   }
   if (m === 'chainin') return hxChainInQuote(units);
   const hop = m === 'chainhop', held = chainHeld(), q = S.key && chainOn() ? await chainQuote(hop ? 'hop' : 'withdraw', units || 0n).catch(() => null) : null;
@@ -15042,6 +15061,13 @@ function hxSendAuto() {
   const k = ['eth', 'tac', 'cusd', 'cbtc'].find((x) => spendable(x) > 0n) || ['pp', 'ptac', 'usdc', 'usdt'].find((x) => (hxHeldOf(x)?.[0] || 0n) > 0n) || (hxWalletTac() > 0n ? 'wtac' : null);
   if (!k || k === HX.send) return false;
   HX.send = k;
+  return true;
+}
+// A Tacit address with a Tacit chain lane, to a key that holds TAC on the chain and picked no coin: Send pays it there (fast private TAC)
+function hxSendChainAuto() {
+  if (HX.tab !== 'send' || HX.sendPick || HX.ask || HX.send === 'ctac' || !chainOn() || !S.key || !chainLaneIn(HX.rcpt || '')) return false;
+  if (!(CH.pub === S.key.pubHex && (CH.bal ?? 0n) > 0n)) return false;
+  hxKeepAmt(() => { HX.send = 'ctac'; });
   return true;
 }
 function hxSendRead() {
@@ -15761,7 +15787,9 @@ const hxMoves = {
     if (HX.amt !== amt && amt) hxNextPaint();
     hxPathPaint();
     HXM.cb = (q) => { if (q) cb({ ...q, free: hxMoveFree(), fixed: hxMoveFixed() }); };
+    const was = HXM.key;
     hxMoveSet(key, amt); hxQuote();
+    if (was !== key) hxLeadPaint();
   },
   // a move the page does in place keeps the card's button on Working… (card.working) and says its steps in the slot under it
   go: (key, amt) => { if (HX.tab !== 'swap') return; hxMoveSet(key, amt); hxNorm(); hxGo(); },
@@ -15776,7 +15804,9 @@ const hxMoves = {
     const [sf] = key.split('>'), cid = hxMoveChain(key), h = hxHeldOf(sf, cid);
     if (!h) return null;
     const keep = await hxKeep(sf, cid), cap = await hxCapOf(key).catch(() => null);
-    let left = h[0] > keep ? h[0] - keep : 0n;
+    // (the wallet's TAC signed onto the Tacit chain leaves the leader's sweep fee, which the permit adds on top)
+    const sweep = key === 'wtac>chain' && hxChainWay() === 'permit' && chainOn() && S.key ? await chainSweepFee().catch(() => 0n) : 0n;
+    let left = h[0] > keep + sweep ? h[0] - keep - sweep : 0n;
     if (cap != null && left > cap) left = cap;
     const v = left ? (h[1] === 18 ? plain(left / E10, 8) : plain(left, h[1])) : '';
     HXM.all = `${key}:${v}`;
@@ -16781,7 +16811,9 @@ function hxFinishPaint() {
 }
 // Tacit chain spends handed over and not landed, on the chain's moves: each can be posted to Ethereum from the user's own account, and a
 // shield's deposit no block took in can be taken back once RECLAIM_AFTER has passed
-const chainWhat = (e) => `${e.kind === 'shield' && !e.inbox ? 'A shield' : e.kind === 'pay' ? 'A payment' : e.kind === 'hop' || e.inbox ? 'A move' : 'A withdrawal'}${e.units ? ` of ${fmt(BigInt(e.units), 8, 4)} TAC` : ''}${e.inbox ? ' from the private pool' : e.kind === 'hop' ? ' to the private pool' : ''}`;
+// (a shield from the wallet is paid to its inbox too, by a permit or a transfer: `src` 'wallet')
+const chainPool = (e) => !!e.inbox && e.src !== 'wallet';
+const chainWhat = (e) => `${e.kind === 'shield' && !chainPool(e) ? 'A shield' : e.kind === 'pay' ? 'A payment' : e.kind === 'hop' || chainPool(e) ? 'A move' : 'A withdrawal'}${e.units ? ` of ${fmt(BigInt(e.units), 8, 4)} TAC` : ''}${chainPool(e) ? ' from the private pool' : e.kind === 'hop' ? ' to the private pool' : ''}`;
 // a landed hop the leader has not sent on into the private pool after this long is offered to send from the paying account
 const CHAIN_HOP_WAIT = 5 * 60e3, CHAIN_SWEEP_WAIT = 15 * 60e3;
 function chainKeptPaint() {
@@ -16799,7 +16831,9 @@ function chainKeptPaint() {
   }
   const now = Date.now() / 1000;
   // (a move from the private pool whose inbox no one took in yet: on its way, or once paid and left a while, sent in from the paying account)
-  const v = html`${ks.map((e) => (e.unswept ? html`<div class="callout"><span>${chainWhat(e)} is on its way to the Tacit chain.${e.paid && Date.now() - e.at > CHAIN_SWEEP_WAIT ? html` <button class="link" type="button" data-chainsweep="${e.id}">Send it in yourself</button>` : ''}</span></div>`
+  // (one paid by a permit can be sent in from the paying account too, until the permit lapses)
+  const sendable = (e) => (e.paid || (!!e.extra?.permit && Date.now() < (e.pay?.until ?? 0))) && Date.now() - e.at > CHAIN_SWEEP_WAIT;
+  const v = html`${ks.map((e) => (e.unswept ? html`<div class="callout"><span>${chainWhat(e)} is on its way to the Tacit chain.${sendable(e) ? html` <button class="link" type="button" data-chainsweep="${e.id}">Send it in yourself</button>` : ''}</span></div>`
     : html`<div class="callout"><span>${chainWhat(e)} has not landed on the Tacit chain.${e.forced ? ' It was posted to Ethereum.' : ''}
     ${e.forced ? '' : html` <button class="link" type="button" data-chainforce="${e.id}">Post it to Ethereum yourself</button>`}</span>${e.backAt && now >= e.backAt ? html`<button class="btn ghost" type="button" data-chainback="${e.id}">Take it back</button>` : ''}</div>`))}${hs.map((h) => html`<div class="callout"><span>A move of ${fmt(BigInt(h.units), 8, 4)} TAC to the private pool has not been sent on. <button class="link" type="button" data-chainhop="${h.commit}">Send it on yourself</button></span></div>`)}`;
   if (el.__h !== v.s) { el.__h = v.s; mount(el.firstChild, v); }
@@ -16852,17 +16886,17 @@ async function chainBack(b) {
     } catch (x) { run.fail(st, x); }
   });
 }
-// A move from the private pool whose inbox is paid and that no leader took in: the inbox swept in from the paying account (anyone may); it can then
-// be posted to Ethereum, and goes back into the private pool if no block takes it
+// A shield paid to its inbox (a move from the private pool, or the wallet's TAC by a transfer or a permit) that no leader took in: the inbox swept in from
+// the paying account (anyone may; a permit's with sweepWithPermit); it can then be posted to Ethereum, and goes back into the private pool if no block takes it
 async function chainSweep(b) {
   const id = b.dataset.chainsweep, st = b.closest('.hx-ck')?.querySelector('#hx-ck-st') || b.parentElement;
   return busy(b, async (run) => {
     try {
       const c = await chainClient(), e = CH.kept.find((x) => x.id === id);
       if (!e?.deposit || !e.back) return;
-      const via = payer();
+      const via = payer(), permit = !e.paid && e.extra?.permit ? e.extra.permit : null;
       say(st, `Confirm it in ${your(via)}…`);
-      const hash = runTx(run, await sendTx({ to: CH.cfg.blocks, data: c.sweepCalldata(e.deposit, e.back), via, label: 'Send a move in to the Tacit chain' }), 'Send', 'Sending');
+      const hash = runTx(run, await sendTx({ to: CH.cfg.blocks, data: permit ? c.sweepWithPermitCalldata(e.deposit, permit) : c.sweepCalldata(e.deposit, e.back), via, label: 'Send a move in to the Tacit chain' }), 'Send', 'Sending');
       say(st, html`Sent ${txLink(hash)}. Waiting for it to land…`);
       await waitTx(hash);
       say(st, html`<span class="ok">Sent in.</span> ${txLink(hash)}`);
@@ -16890,7 +16924,20 @@ async function chainHopSend(b) {
     } catch (x) { run.fail(st, x); }
   });
 }
+// Under Shield's button for the wallet's TAC onto the Tacit chain: the other way to send it in, while there is one (a transfer needs ETH in the paying account)
+function chainWayPaint() {
+  const act = SWC.el?.querySelector('.act');
+  if (!act) return;
+  const tx = hxChainWay() === 'tx', on = HX.tab === 'swap' && HX.mode === 'chainshield' && !!S.key && (tx || hxChainEth());
+  let el = act.querySelector('.hx-way');
+  if (!on) { el?.remove(); return; }
+  if (!el) { el = Object.assign(document.createElement('p'), { className: 'hx-way' }); act.querySelector('#go')?.after(el); }
+  const v = html`<button class="link" type="button" data-chainway="${tx ? 'permit' : 'tx'}">${tx ? 'Sign once instead, no ETH' : 'One transaction instead, no fee'}</button>`;
+  if (el.__h !== v.s) { el.__h = v.s; mount(el, v); }
+}
 document.addEventListener('click', (e) => {
+  const w = e.target.closest?.('[data-chainway]');
+  if (w) { if (SWC.el?.querySelector('#go')?.getAttribute('aria-busy') !== 'true') { HX.chainWay = w.dataset.chainway; HX.q = null; hxQuote(); hxPathPaint(); } return; }
   const b = e.target.closest?.('[data-chainforce], [data-chainback], [data-chainsweep], [data-chainhop]');
   if (!b) return;
   if (b.dataset.chainforce) chainForce(b); else if (b.dataset.chainback) chainBack(b); else if (b.dataset.chainsweep) chainSweep(b); else chainHopSend(b);
@@ -16899,6 +16946,7 @@ document.addEventListener('click', (e) => {
 function hxPathPaint() {
   try { hxFinishPaint(); } catch { }
   try { chainKeptPaint(); } catch { }
+  try { chainWayPaint(); } catch { }
   const act = SWC.el?.querySelector('.act');
   if (!act) return;
   const show = HX.tab === 'swap' && HX.flow === 'shield' && !(S.wallet && S.key);
@@ -16955,8 +17003,13 @@ async function hxUnwrapGo(units) {
 }
 // ── The tacit chain's moves, from the card and the Send tab: each spend is proved on this device (the Bitcoin pool's Halo2 prover), handed to the chain's
 // leader, and waited for until a block takes it. A shield's deposit and a withdrawal's send are Ethereum transactions from the paying account. ──
-// The wallet's TAC onto the chain: proved first, so nothing is sent until the proof is made; then an approval if one is short, the deposit, and the spend.
-// A deposit that landed but whose spend the leader did not take is kept for this visit, and the next press hands it over again.
+// The wallet's TAC onto the chain: proved first, so nothing is signed or sent until the proof is made. Then, by default, one signature and no ETH: a
+// permit for the shield's inbox (the amount and the leader's sweep fee), handed to the leader with the shield; the leader sends it in
+// (sweepWithPermit), paying the gas and keeping the fee. With ETH in the paying account it can be one transfer to the inbox instead, with no fee
+// (HX.chainWay 'tx'). The shield is kept here with its permit or its way back before anything moves, so a reload hands it over again. Its way back,
+// should no block take it in, is a wrap commitment of this key's for the amount (as a move from the private pool has): given back, it is private TAC.
+// A wallet that cannot sign a permit makes the deposit as before: an approval if one is short, then deposit(). A deposit made that way whose spend
+// the leader did not take is kept for this visit, and the next press hands it over again.
 async function hxChainShieldGo(units) {
   if (!S.key) return openSheet('wallet');
   const go = SWC.el?.querySelector('#go');
@@ -16972,7 +17025,7 @@ async function hxChainShieldGo(units) {
     try {
       const c = await chainClient();
       // one a reload or a leader cut off, of this amount and not posted to Ethereum: its deposit is made, so it is handed over again, not made again
-      // (a move from the private pool, paid to an inbox, is not this one's)
+      // (one paid to an inbox goes on by itself: chainStart hands it over again)
       const kept = !s && CH.kept.find((e) => e.kind === 'shield' && e.units === String(units) && !e.forced && !e.inbox);
       if (kept) {
         s = { submit: (o) => c.resubmit(kept, o) };
@@ -16985,6 +17038,7 @@ async function hxChainShieldGo(units) {
         say(st, 'Proving it on this device…'); bar = proveBar(st, CHAIN_PROVE_S);
         s = await c.shield(units);
         bar(); run.check();
+        if (await chainShieldInbox(run, c, s, units, held, st)) return;
       }
       if (hash == null) {
         who = await payingAccount();
@@ -17021,6 +17075,77 @@ async function hxChainShieldGo(units) {
       run.fail(st, CH.held ? chainSaid(`Deposited, but the Tacit chain has not taken it in yet (${errText(e).replace(/\.$/, '')}). Press again to hand it over again.`) : e);
     }
   }).finally(() => SWC.card?.working?.(false));
+}
+// How the wallet's TAC goes onto the chain: 'permit' (one signature, no ETH: the leader sends it in and keeps its sweep fee) unless 'tx' was chosen (one
+// transfer from the paying account, no fee), which needs ETH there
+const CHAIN_TX_ETH = 3n * 10n ** 14n;
+const hxChainEth = () => (hxWalletBal('ether') ?? 0n) >= CHAIN_TX_ETH;
+const hxChainWay = () => (HX.chainWay === 'tx' && hxChainEth() ? 'tx' : 'permit');
+// The leader's sweep fee (TAC wei) for a permitted shield, read with its fee at most once a minute; 0 when it names none or does not answer
+function chainSweepFee() {
+  if (CH.sweepAt && Date.now() - CH.sweepAt < 60e3) return Promise.resolve(CH.sweep ?? 0n);
+  const mine = CH;
+  return chainClient().then((c) => c.fee()).then((f) => { mine.sweep = f.sweepFee; mine.sweepAt = Date.now(); return f.sweepFee; }, () => 0n);
+}
+// A wallet that cannot sign a permit (typed data) says so in its own words; one the user declined is not that
+const permitUnsupported = (e) => !walletDeclined(e) && (e?.code === 4200 || e?.code === -32601 || /not supported|unsupported|does not support|not implemented|method not found|signTypedData/i.test(String(e?.message || e || '')));
+// The shield `s` (proved for `units`) paid through its inbox from the wallet: a permit the leader sends in, or a transfer. The shield is kept and handed to
+// the leader first, with what pays it. → true once it landed; false when the wallet cannot sign a permit (the caller makes the deposit instead).
+async function chainShieldInbox(run, c, s, units, held, st) {
+  const way = hxChainWay(), via = payer(), t = await getUx(), priv = walletPriv();
+  let index = null, kept = null, moved = false, hash = null;
+  try {
+    const owner = await payingAccount();
+    index = await t.nextWrapIndex({ walletPriv: priv, ticker: 'TAC' });
+    const back = '0x' + strip(t.buildWrap({ walletPriv: priv, amountWei: (units * E10).toString(), ticker: 'TAC', index }).commit).toLowerCase();
+    const inbox = await s.inbox(back);
+    let permit = null;
+    if (way === 'permit') {
+      const sweepFee = BigInt(s.sweepFee ?? 0n), value = s.permitValue(sweepFee);
+      if (held != null && value > held) throw chainSaid(`With the leader’s fee of ${fmt(sweepFee, 18, 4)} TAC, that is more than the ${fmt(held, 18, 4)} TAC in ${your(via)}.`);
+      const deadline = BigInt(chainNow() + 3600);
+      let sig;
+      try { sig = await permitSig({ token: ADDR.tac, name: 'Tacit Token', what: 'TAC', spender: inbox, value, deadline, status: st }); }
+      catch (e) { if (!permitUnsupported(e)) throw e; t.releaseWrapIndex?.({ walletPriv: priv, ticker: 'TAC', index }); index = null; say(st, 'Your wallet cannot sign a permit, so the TAC is approved and deposited instead.'); return false; }
+      run.check();
+      permit = { owner: owner.toLowerCase(), fee: String(sweepFee), deadline: String(deadline), v: Number(sig.v), r: sig.r, s: sig.s, back };
+      say(st, 'Handing it to the Tacit chain…');
+      kept = (await s.offer({ back, permit, meta: { inbox, src: 'wallet', pay: { until: Number(deadline) * 1000 } } })).kept;
+      moved = true;
+    } else {
+      kept = (await s.offer({ back, meta: { inbox, src: 'wallet', pay: { until: Date.now() + 80 * 60e3 } } })).kept;
+      say(st, `Confirm it in ${your(via)}…`);
+      hash = runTx(run, await sendTx({ to: ADDR.tac, data: 'a9059cbb' + addrWord(inbox) + word(units * E10), via, label: `Shield ${fmt(units, 8, 4)} TAC to the Tacit chain` }), 'Shield', 'Shielding');
+      moved = true;
+      say(st, html`Sent ${txLink(hash)}. Waiting for it to land…`);
+      await waitTx(hash);
+    }
+    try { run.to?.clear?.(); } catch { }
+    say(st, html`${permit ? 'Signed' : html`Sent ${txLink(hash)}`}. Waiting for the Tacit chain to take it in…`);
+    const was = CH.bal ?? 0n, fee = s.fee ?? 0n;
+    await s.submit({ back, ...(permit ? { permit } : {}), tx: hash || undefined, onStatus: chainSlow(st) });
+    t.releaseWrapIndex?.({ walletPriv: priv, ticker: 'TAC', index });           // (in, it has no way back to keep)
+    say(st, html`<span class="ok">Shielded.</span> About ${fmt(units - fee, 8, 4)} TAC is on the Tacit chain.${hash ? html` ${txLink(hash)}` : ''}`);
+    toast('Shielded to the Tacit chain');
+    hxWalletBals(true);
+    dashSoon();
+    chainClient().then(chainKeptRead).catch(() => {});
+    await chainSettle((b) => b >= was + (units - fee) * 9990n / 10000n);
+    hxMoveAfter();
+    return true;
+  } catch (e) {
+    if (moved) {
+      // handed over with what pays it: kept here and held by the leader, and handed over again now (and on the next visit)
+      if (kept) c.resubmit(kept).then(() => { chainKeptRead(c); chainScan(true); }, () => chainKeptRead(c));
+      chainClient().then(chainKeptRead).catch(() => {});
+      throw chainSaid(`Not on the Tacit chain yet (${errText(e).replace(/\.$/, '')}). It is kept here and goes on by itself.`);
+    }
+    // nothing moved: what was kept for it goes, and so does its way back
+    const k = kept || e?.kept;
+    if (k) await c.forget(k.id).catch(() => {});
+    if (index != null) t.releaseWrapIndex?.({ walletPriv: priv, ticker: 'TAC', index });
+    throw e?.kept ? chainSaid(`${errText(e).replace(/\.$/, '')}. Nothing was moved.`) : e;
+  }
 }
 // TAC off the chain to the paying account: the spend that credits it there, then TacitBlocks.withdraw (which anyone may send) from the paying account.
 // What the chain already owes the account goes first, with no new spend.
@@ -17792,7 +17917,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=45b4f804').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=a2ac19a7').catch((e) => { SWC.p = null; throw e; }));
 // the card held to the tab's flow; back on the Swap tab it opens on the swap it showed there
 function swcFlow() {
   hxPathPaint();
@@ -17843,12 +17968,17 @@ function hxHeadSync() {
 function hxLeadPaint() {
   const el = $('#hx-lead');
   if (!el) return;
-  const hk = hxHeadKey(), br = HX.tab === 'bridge';
+  const hk = hxHeadKey(), br = HX.tab === 'bridge', mk = HX.tab === 'swap' && chainOn() ? HXM.key : null;
   let t;
-  if (hk === 'shield') t = br ? 'From your Bitcoin address into the private pool on Ethereum.' : 'From your wallet into the private pool. Then swap, send or earn from there.';
+  // (the Tacit chain's moves name it: fast private TAC, from the wallet or the private pool, and back to either)
+  if (hk === 'shield' && mk === 'wtac>chain') t = 'Fast private TAC: from your wallet onto the Tacit chain.';
+  else if (hk === 'shield' && mk === 'tac>chain') t = 'Fast private TAC: from the private pool onto the Tacit chain.';
+  else if (hk === 'withdraw' && mk === 'ctac>wallet') t = 'Off the Tacit chain to your wallet.';
+  else if (hk === 'withdraw' && mk === 'ctac>defi') t = 'Off the Tacit chain into the private pool, to swap, farm and borrow.';
+  else if (hk === 'shield') t = br ? 'From your Bitcoin address into the private pool on Ethereum.' : 'From your wallet into the private pool. Then swap, send or earn from there.';
   else if (hk === 'withdraw') t = br ? 'Out of the private pool to your Bitcoin address.' : 'Out of the private pool to any address. The chain sees where, not from whom.';
   else if (hk === 'swap') t = SWC.card?.params?.()?.get('private') ? 'Through the private pool: nothing on chain links what goes in to what comes out.' : 'At the best onchain price. Pick Private on either side to go through the pool.';
-  else if (hk === 'send') t = HX.ask ? 'A link anyone can pay. It lands in your private balance.' : hxSendBtc() ? 'Sats from your Bitcoin wallet to any Bitcoin or tacit1 address.' : hxIsLp() ? 'A share of a farm position, sent privately.' : hxSendWallet() ? 'From your wallet. A tacit1 address is paid privately, an 0x address in the open.' : 'From your private balance. A tacit1 address stays private, an 0x address takes it out of the pool.';
+  else if (hk === 'send') t = HX.ask ? 'A link anyone can pay. It lands in your private balance.' : HX.send === 'ctac' ? 'Fast private TAC on the Tacit chain, to a tacit1 address.' : hxSendBtc() ? 'Sats from your Bitcoin wallet to any Bitcoin or tacit1 address.' : hxIsLp() ? 'A share of a farm position, sent privately.' : hxSendWallet() ? 'From your wallet. A tacit1 address is paid privately, an 0x address in the open.' : 'From your private balance. A tacit1 address stays private, an 0x address takes it out of the pool.';
   else if (hk === 'earn') t = HX.from === 'ether' ? 'ETH from your wallet into a farm, privately: one transaction, TAC every day.' : 'Private tETH into a farm: TAC every day, unseen.';
   else t = HX.tab === 'borrow' ? 'Lock BTC or deposit TAC, and borrow against it.' : 'Between Bitcoin and Ethereum, both ways.';
   if (el.textContent !== t) el.textContent = t;
@@ -18067,7 +18197,7 @@ function paintHx() {
   if (m === 'send') {
     $('#hx-sa').onchange = (e) => { HX.sendPick = true; hxKeepAmt(() => { HX.send = e.target.value; }); paintHx(); };
     const r = $('#hx-rcpt');
-    if (r) { r.oninput = (e) => { HX.rcpt = e.target.value.trim(); if (e.isTrusted) hxSelfOff(); hxRcptChanged(); hxRcptCheck(); hxRecentPaint(); hxHave(); }; r.onkeydown = enter; }
+    if (r) { r.oninput = (e) => { HX.rcpt = e.target.value.trim(); if (e.isTrusted) hxSelfOff(); if (hxSendChainAuto()) { paintHx(); const f = $('#hx-rcpt'); f?.focus(); f?.setSelectionRange?.(f.value.length, f.value.length); return; } hxRcptChanged(); hxRcptCheck(); hxRecentPaint(); hxHave(); }; r.onkeydown = enter; }
     $('#hx-ask')?.addEventListener('click', () => { HX.ask = true; paintHx(); $('#hx-amt')?.focus(); });
     $('#hx-pay')?.addEventListener('click', () => { HX.ask = false; paintHx(); $('#hx-amt')?.focus(); });
     $('#hx-chain-sel')?.addEventListener('change', (e) => { HX.chain = Number(e.target.value); HX.q = null; paintHx(); });
@@ -18514,6 +18644,7 @@ const route = () => {
   if (snd) {
     const q = new URLSearchParams(snd[2]), to = (q.get('to') || '').trim(), amt = (q.get('amt') || '').trim();
     history.replaceState(null, '', location.pathname + location.search);
+    if (snd[1] === 'ctac' && chainWantLater('send:ctac', /^\d{0,12}(?:\.\d{1,18})?$/.test(amt) ? amt : '', /^[\p{L}\p{N}._:-]{1,400}$/u.test(to) ? to : '')) { HX.rcpt = HX.chainWant.to; hxPreset('send'); openSheet('wallet'); return; }
     if (snd[1] && !hxSendList().some(([k]) => k === snd[1])) return;
     HX.rcpt = /^[\p{L}\p{N}._:-]{1,400}$/u.test(to) ? to : ''; HX.ask = false;
     hxPreset(`send:${snd[1] || HX.send}`, snd[1] && /^\d{0,12}(?:\.\d{1,18})?$/.test(amt) ? amt : '');
@@ -18521,7 +18652,14 @@ const route = () => {
     return;
   }
   const card = h.match(/^card=([a-z]+:[a-z]+:[a-z]+\d{0,3}|borrow:[a-z]+|bridge(?::[a-z]+)?|swap|earn|borrow|shield|withdraw|more)(?::(public|private))?(?:&amt=([^&]*))?(?:&lp=(1))?$/);
-  if (card) { history.replaceState(null, '', location.pathname + location.search); hxPreset(card[1], /^\d{0,12}(?:\.\d{1,18})?$/.test(card[3] || '') ? card[3] || '' : '', false, card[2] || null, card[4] === '1'); return; }
+  if (card) {
+    history.replaceState(null, '', location.pathname + location.search);
+    const amt = /^\d{0,12}(?:\.\d{1,18})?$/.test(card[3] || '') ? card[3] || '' : '';
+    const later = chainWantLater(card[1], amt);
+    hxPreset(card[1], amt, false, card[2] || null, card[4] === '1');
+    if (later) openSheet('wallet');
+    return;
+  }
   if (pay) { BTC.mode = 'receive'; BTC.check = { kind: pay[1], txid: pay[2].toLowerCase() }; openSheet('btc'); }
   else if (h) openLink(h);
 };
