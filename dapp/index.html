@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-gxDpHcszqQW1ABMVU2WeJudLf4mOQzgEtbtMZJ+lsvg=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-A6SWRADeTcOxAPmN+US4DUceooV1dtvUpFqMLGCSv8o=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -581,9 +581,13 @@ a.di { color: inherit; text-decoration: none; }
 /* One ID, two chains: Bitcoin left, Ethereum right, the key between them, one lane for each thing that crosses. */
 /* How it works, in three: the tile's own tabs drawn small (Shield, a swap, Withdraw), each pressed in its turn, each opening its tab */
 .hw { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 0 0 44px; padding: 0; list-style: none; }
-/* each row's chain, named over its three cards */
-.hw-k { display: flex; align-items: center; gap: 10px; margin: 0 0 14px; font: 500 12px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--mute); }
-.hw-k .tk { width: 22px; height: 22px; }
+.hw[hidden] { display: none; }
+/* the chain the three steps are shown on: one row at a time, switched here (showing a row starts its loop over) */
+.hw-sw { display: flex; gap: 4px; width: max-content; margin: -6px auto 22px; padding: 4px; background: var(--card); border: 1px solid var(--hair); border-radius: 999px; }
+.hw-sw button { display: inline-flex; align-items: center; gap: 8px; padding: 6px 16px 6px 6px; font: 500 12px var(--mono); color: var(--mute); background: none; border: 0; border-radius: 999px; cursor: pointer; transition: color .15s, background .15s; }
+.hw-sw button[aria-selected="true"] { color: var(--paper); background: var(--ink); }
+.hw-sw button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.hw-sw .tk { width: 22px; height: 22px; }
 /* the bridge card's own head: smaller than the section's, the same voice */
 .wd-hh { margin: 12px 0 18px; }
 .wd-hh h3 { margin: 0; font: 400 clamp(26px, 3.2vw, 36px)/1.1 var(--serif); letter-spacing: -.02em; text-wrap: balance; }
@@ -1510,9 +1514,12 @@ footer.sf svg.fill { width: 16px; height: 16px; }
 
 
   <section class="sx" id="how" aria-labelledby="how-h">
-    <div class="sx-h"><h2 id="how-h">How it <em>works</em>.</h2><p>The same three steps, on Ethereum or on Bitcoin.</p></div>
-    <h3 class="hw-k" id="hw-k-eth"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg>On Ethereum</h3>
-    <ol class="hw" aria-labelledby="hw-k-eth">
+    <div class="sx-h"><h2 id="how-h">How it <em>works</em>.</h2><p>The same three steps, on either chain.</p></div>
+    <div class="hw-sw" role="tablist" aria-label="Chain">
+      <button type="button" role="tab" id="hw-t-eth" aria-controls="hw-eth" aria-selected="true" data-hwc="eth"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg>Ethereum</button>
+      <button type="button" role="tab" id="hw-t-btc" aria-controls="hw-btc" aria-selected="false" tabindex="-1" data-hwc="btc"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg>Bitcoin</button>
+    </div>
+    <ol class="hw" id="hw-eth" role="tabpanel" aria-labelledby="hw-t-eth">
       <li><button type="button" data-hx="shield">
         <span class="hw-t" aria-hidden="true">
           <span class="hw-f"><span class="hw-fh">From<i>Wallet</i></span><span class="hw-fm"><b>0.1</b><span class="hw-c"><svg class="tk"><use href="#tk-eth"/></svg>ETH</span></span></span>
@@ -1535,8 +1542,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
         </span>
         <span class="hw-h"><b>Withdraw</b> to any address. The chain sees where it went, not from whom.</span></button></li>
     </ol>
-    <h3 class="hw-k" id="hw-k-btc"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg>On Bitcoin</h3>
-    <ol class="hw" aria-labelledby="hw-k-btc">
+    <ol class="hw" id="hw-btc" role="tabpanel" aria-labelledby="hw-t-btc" hidden>
       <li><button type="button" data-hx="swap:sats:tac">
         <span class="hw-t" aria-hidden="true">
           <span class="hw-f"><span class="hw-fh">From<i>Wallet</i></span><span class="hw-fm"><b>100,000</b><span class="hw-c"><svg class="tk"><use href="#tk-btc"/></svg>sats</span></span></span>
@@ -17819,9 +17825,19 @@ paintHints();
 refreshTape();
 loadTacPrice().catch(() => {});
 if ('IntersectionObserver' in window) { const io = new IntersectionObserver((es) => { for (const e of es) e.target.classList.toggle('rest', !e.isIntersecting); }); for (const el of $$('.tape, .wd, .hw, .tc-stage')) io.observe(el); }
+// How it works: the chain its three steps are shown on, Ethereum or Bitcoin; the arrow keys move between the two
+function hwChain(k, focus) {
+  for (const t of $$('[data-hwc]')) { const on = t.dataset.hwc === k; t.setAttribute('aria-selected', String(on)); t.tabIndex = on ? 0 : -1; $(`#hw-${t.dataset.hwc}`).hidden = !on; if (on && focus) t.focus(); }
+}
+$('.hw-sw')?.addEventListener('keydown', (e) => {
+  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+  e.preventDefault(); hwChain($('[data-hwc][aria-selected="true"]')?.dataset.hwc === 'eth' ? 'btc' : 'eth', true);
+});
 document.addEventListener('click', (e) => {
   const h = e.target.closest?.('[data-hx]');
   if (h) { e.preventDefault(); hxPreset(h.dataset.hx); return; }
+  const hc = e.target.closest?.('[data-hwc]');
+  if (hc) { hwChain(hc.dataset.hwc); return; }
   const ht = e.target.closest?.('[data-hint]');
   if (ht) { e.preventDefault(); hintGo(ht.dataset.hint); return; }
   const sc = e.target.closest?.('[data-scroll]');
