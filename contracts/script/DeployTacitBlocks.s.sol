@@ -2,7 +2,7 @@
 pragma solidity 0.8.37;
 
 import {Script, console2} from "forge-std/Script.sol";
-import {TacitBlocks, ISP1BlockVerifier, ITurns} from "../src/TacitBlocks.sol";
+import {TacitBlocks, ISP1BlockVerifier, ITurns, IConfidentialPool} from "../src/TacitBlocks.sol";
 import {TacitSeats, IERC20Seats} from "../src/TacitSeats.sol";
 
 /// @notice Deploys TacitSeats (whose turn it is to land) and TacitBlocks.
@@ -14,7 +14,10 @@ import {TacitSeats, IERC20Seats} from "../src/TacitSeats.sol";
 ///    relation as the program commits it (tacit-block `fixture` prints it as spendVk), WINDOW how long after a
 ///    landing only the turn's leader may land (at most a day), FORCE_DELAY how long a block may leave an entry of
 ///    the queue behind (ten minutes to a day; longer than a block takes to prove).
-///  - TAC is the TAC ERC-20 the seats lock, SEAT the TAC one seat locks, SLOT_BLOCKS how many Ethereum blocks each
+///  - TAC is the TAC ERC-20, the chain's one asset and what the seats lock; CONFIDENTIAL the confidential pool hops go into
+///    (on mainnet 0x000000000Ed1eabD231Be41d93b719056F7febFC, TAC's minter) and CONFIDENTIAL_TAC TAC's id there
+///    (0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b); the contract checks the pool counts TAC in its
+///    unit and mints it. SEAT is the TAC one seat locks, SLOT_BLOCKS how many Ethereum blocks each
 ///    turn lasts (5 to 300; 50 is about ten minutes) and BOOTSTRAP who leads while no one holds a seat.
 ///  - The chain's binding is derived by the contract from the chain id and its own address; a leader reads
 ///    it as CHAIN() and the wallets put it in every spend's body.
@@ -33,9 +36,11 @@ contract DeployTacitBlocks is Script {
         address bootstrap = vm.envAddress("BOOTSTRAP");
         uint256 window = vm.envOr("WINDOW", uint256(600));
         uint256 forceDelay = vm.envOr("FORCE_DELAY", uint256(1 hours));
+        IConfidentialPool confidential = IConfidentialPool(vm.envAddress("CONFIDENTIAL"));
+        bytes32 confidentialTac = vm.envBytes32("CONFIDENTIAL_TAC");
         vm.startBroadcast();
         TacitSeats turns = new TacitSeats(IERC20Seats(tac), seat, slot, bootstrap);
-        blocks = new TacitBlocks(ISP1BlockVerifier(verifier), blockVkey, spendVk, ITurns(address(turns)), window, forceDelay);
+        blocks = new TacitBlocks(ISP1BlockVerifier(verifier), blockVkey, spendVk, ITurns(address(turns)), window, forceDelay, tac, confidential, confidentialTac);
         vm.stopBroadcast();
         console2.log("TacitSeats", address(turns));
         console2.log("TacitBlocks", address(blocks));
