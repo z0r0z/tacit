@@ -386,7 +386,7 @@ function homesHtml() {
   const row = (home, t, sub, icon, act) => `<button type="button" role="radio" class="c${HOMES_OPEN ? '' : ' one'}" data-home="${home}" aria-checked="${String(at === home)}" tabindex="${at === home ? 0 : -1}"><svg class="tk" aria-hidden="true"><use href="#tk-${icon}"/></svg><span class="rt"><b>${t}</b><small>${sub}</small></span>${cue(act)}${HOMES_OPEN ? '<span class="rd" aria-hidden="true"></span>' : ''}</button>`;
   // the chosen home alone, with a way to change it, until the choice is opened
   const defi = row('defi', 'Swap, farm, borrow', 'DeFi pool', eth ? 'teth' : 'tac', 'wrap'), pay = row('pay', 'Pay anyone', `Pay pool · ${where}`, eth ? 'peth' : 'tac', 'dev');
-  if (!HOMES_OPEN) return `<div class="rows-h"><span>Use it to</span><span class="chg">Change</span></div>${at === 'pay' ? pay : defi}`;
+  if (!HOMES_OPEN) return `<div class="rows-h"><span>Use it to</span><span class="chg" aria-hidden="true">Change</span></div>${at === 'pay' ? pay : defi}`;
   return `<div class="rows-h"><span>Use it to</span></div>${defi}${pay}`;
 }
 // the Pay pool's chain, while ETH is in it on either side
@@ -3098,7 +3098,7 @@ function wire() {
   });
   $('#to-in').addEventListener('keydown', (e) => { if (e.key === 'Escape') { S.toOpen = false; paintSides(); $('#get-where').focus(); } });
   $('#go').addEventListener('click', go);
-  $('#homes')?.addEventListener('click', (e) => { const b = e.target.closest('[data-home]'); if (!b) return; if (!HOMES_OPEN) { HOMES_OPEN = true; paint(); return; } HOMES_OPEN = false; if (b.dataset.home === atOf('get')) paint(); else setHome(b.dataset.home); });
+  $('#homes')?.addEventListener('click', (e) => { const b = e.target.closest('[data-home]') || (!HOMES_OPEN && e.target.closest('.chg') ? $('#homes [data-home]') : null); if (!b) return; if (!HOMES_OPEN) { HOMES_OPEN = true; paint(); return; } HOMES_OPEN = false; if (b.dataset.home === atOf('get')) paint(); else setHome(b.dataset.home); });
   if ($('#homes')) arrows($('#homes'), 'data-home');
   $('#chain')?.addEventListener('change', (e) => {
     if (e.target.id !== 'chain-sel') return;

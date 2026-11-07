@@ -8481,7 +8481,7 @@ await step('hxsendways', async () => {
     // ETH to an address, from the tile (the picker opened on Private, where the held coin is: Wallet is one press away)
     await p.click('#hx .pk .pk-kind [data-kind="wallet"]');
     await p.click('#hx .pk .pk-r[data-v="ether"]');
-    await until(p, () => document.querySelector('#hx-sa')?.value === 'ether' && document.querySelector('#hx-way')?.hidden === true && /From your wallet\. A tacit1 address is paid privately, an 0x address in the open\./.test(document.querySelector('#hx-lead')?.textContent || ''), null, 30000)
+    await until(p, () => document.querySelector('#hx-sa')?.value === 'ether' && document.querySelector('#hx-way')?.hidden === true && /tacit1 is paid privately, 0x in the open\./.test(document.querySelector('#hx-lead')?.textContent || ''), null, 30000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await text(p, '#hx-lead')} | ${await text(p, '#hx-way')}`); });
     ok(true, `hxsendways: with no recipient yet, the lead under the tabs says what each kind of address does (${await text(p, '#hx-lead')})`);
     const e0 = BigInt(await rpc('eth_getBalance', [eth0, 'latest']));
