@@ -188,7 +188,9 @@
 //   relayfail a relayed job whose proof failed ("settle failed: prove failed: …") offers proving it yourself
 //   chainoff  with no tacit chain deployed nothing of it is fetched or shown, and a key's Tacit address is as it was
 //   chaintile the tacit chain on a fork (TacitBlocks, the real leader, a verifier that takes any proof): wallet TAC shielded onto it from the Swap card,
-//            sent to another key's Tacit address from Send, withdrawn to the paying account; the address gains its chain lane; 390 and 1280 px, light and dark
+//            sent to another key's Tacit address from Send, withdrawn to the paying account; the address gains its chain lane; 390 and 1280 px, light and dark;
+//            with the private pool: the leader's shield cap, a hop into the live pool found and settled as a wrap's deposit, private TAC onto the chain
+//            through its inbox (the relay's side stubbed: its unwrap pays the inbox, its wrap settle is recorded)
 //   PLAYWRIGHT=<path to playwright-core> node tools/weld-check.mjs [scenario,…] [fork rpc]   (SHOTS=<dir> saves screenshots)
 
 import { spawn } from 'node:child_process';
@@ -7094,7 +7096,27 @@ const stubFarmUx = async (page, o) => {
   await page.addInitScript(() => { window.__zapWay = 'relay'; new MutationObserver(() => { const b = window.__zapWay && document.querySelector(`[data-zapway="${window.__zapWay}"]`); if (b) b.click(); }).observe(document, { childList: true, subtree: true }); });
   return stubFarmUxRoute(page, o);
 };
-const stubFarmUxRoute = (page, { notes = [], positions = null, chain = false, swap = false, refuse = false, held = false, fees = null, reserves = null, zap = false }) => page.route(/\/confidential-pool-ux\.js\?cb=/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: `
+// `pool`: the relay's half of the tacit chain's moves with the private pool. An unwrap (whole note, or a send-and-unwrap) pays its recipient on the fork
+// what the relay's would: the amount less the fee its feeOpts give (quoteUnwrapFee, as buildUnwrap and the exit op compute it), recorded in
+// window.__poolOut; a wrap's settle is recorded in window.__poolWrap and its note added, its deposit left waiting on the fork.
+const poolMoveStub = () => `
+    const payOut = async (a, value, kind) => {
+      const fee = ux.quoteUnwrapFee(value, 'cTAC', a.feeOpts || {}).fee, net = BigInt(value) - fee;
+      window.__poolOut = { kind, to: String(a.recipient).toLowerCase(), value: String(value), fee: String(fee), net: String(net), feeBps: String(a.feeOpts?.feeBps), minFee: String(a.feeOpts?.minFee) };
+      await window.__payOut(String(a.recipient), String(net * 10n ** 10n));
+      add.splice(add.findIndex((x) => x.cx === a.note.cx), 1);
+      const left = BigInt(a.note.value) - BigInt(value);
+      if (left > 0n) add.push(note(a.note.asset, left));
+      return { status: 'settled', txHash: '0x' + 'c1'.repeat(32), fee, net };
+    };
+    ux.unwrap = (a) => payOut(a, BigInt(a.note.value), 'unwrap');
+    ux.sendUnwrap = (a) => (BigInt(a.amount) === BigInt(a.note.value) ? ux.unwrap(a) : payOut(a, BigInt(a.amount), 'sendunwrap'));
+    ux.submitWrapSettle = async ({ built, depositTx }) => {
+      window.__poolWrap = { depositId: String(built.depositId).toLowerCase(), value: String(built.note.value), commit: String(built.commit).toLowerCase(), depositTx };
+      add.push(note(built.note.asset, BigInt(built.note.value)));
+      return {};
+    };`;
+const stubFarmUxRoute = (page, { notes = [], positions = null, chain = false, swap = false, refuse = false, held = false, fees = null, reserves = null, zap = false, pool = false }) => page.route(/\/confidential-pool-ux\.js\?cb=/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: `
   import * as real from '/confidential-pool-ux.js?stub=real';
   export * from '/confidential-pool-ux.js?stub=real';
   export function makeConfidentialPoolUx(o) {
@@ -7124,6 +7146,7 @@ const stubFarmUxRoute = (page, { notes = [], positions = null, chain = false, sw
     ${refuse ? refuseStub() : ''}
     ${held ? heldStub() : ''}
     ${zap ? zapStub() : ''}
+    ${pool ? poolMoveStub() : ''}
     return ux;
   }` }));
 const farmPos = (n, shares, units, tac) => ({ pid: 0, pair: 'TAC/cETH', lpAsset: FARM_LP0, shares: String(shares), receiptLeaf: '0x' + String(n).repeat(64), receiptIndex: n, unlockAt: 0, pendingUnits: String(units), pendingTac: tac });
@@ -13893,7 +13916,7 @@ await step('chaintile', async () => {
   const fromBlock = Number(await rpc('eth_blockNumber'));
   const NODE = `127.0.0.1:${WEB + 1000}`, log = [];
   const leader = spawn('node', [process.env.CHAIN_LEADER || new URL('../tacit-leader/leader.mjs', import.meta.url).pathname], { stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, RPC_URL: ANVIL, BLOCKS: blocks, FROM_BLOCK: String(fromBlock), LEADER_KEY, NODE_ADDR: NODE, NODE_BIN: CHAIN_NODE_BIN, PROVER: 'stub', MIN_SPENDS: '1', MAX_WAIT_SECS: '1', POLL_SECS: '1', ARCHIVE_DIR: join(mkdtempSync(join(tmpdir(), 'tacit-tile-')), 'a'), TACIT_NODE_ADMIN: 'tile-token' } });
+    env: { ...process.env, RPC_URL: ANVIL, BLOCKS: blocks, FROM_BLOCK: String(fromBlock), LEADER_KEY, NODE_ADDR: NODE, NODE_BIN: CHAIN_NODE_BIN, PROVER: 'stub', MIN_SPENDS: '1', MAX_WAIT_SECS: '1', POLL_SECS: '1', ARCHIVE_DIR: join(mkdtempSync(join(tmpdir(), 'tacit-tile-')), 'a'), TACIT_NODE_ADMIN: 'tile-token', SHIELD_CAP: '6000000000' } });   // (a 60 TAC launch cap on a shield)
   for (const s of [leader.stdout, leader.stderr]) s.on('data', (d) => { for (const l of String(d).split('\n').filter(Boolean)) { log.push(l); if (process.env.VERBOSE) console.log('     leader', l); } });
   for (let i = 0; i < 120; i++) { try { await fetch(`http://${NODE}/state`); break; } catch { await sleep(500); } }
   const leaderUrl = `http://127.0.0.1:${WEB}/tacit-chain-leader`;
@@ -13904,9 +13927,10 @@ await step('chaintile', async () => {
       await route.fulfill({ status: r.status, contentType: 'application/json', body: await r.text() });
     } catch (e) { await route.fulfill({ status: 502, contentType: 'application/json', body: JSON.stringify({ error: e.message }) }); }
   };
-  const chainPage = async (hex, viewport, colorScheme) => {
+  const chainPage = async (hex, viewport, colorScheme, setup = null) => {
     const r = await openPage({ account: A0, key: K0, viewport, colorScheme, init: { fn: (c) => localStorage.setItem('tacit-chain-dev', JSON.stringify(c)), arg: { blocks, leader: leaderUrl } } });
     await r.ctx.route(/\/tacit-chain-leader\//, forward);
+    if (setup) await setup(r);
     await r.page.goto(r.url);
     await r.page.waitForSelector('[data-hxm="swap"]', { timeout: 120000 });
     await pasteKey(r.page, hex);
@@ -13921,6 +13945,10 @@ await step('chaintile', async () => {
   await rpc('anvil_setBalance', [aAcct, '0x' + (10n ** 18n).toString(16)]);
   await fundTac(aAcct, 100n * unit);
   const mz = (p) => p.evaluate(() => document.querySelector('#hx-mz')?.textContent || '');
+  // the card idle again (a move holds it until the chain's balance shows what landed, and a link opened meanwhile is not taken), and the chain
+  // balance it shows within a shield's margin (up to 1% on a small pool) and the fees of `v`
+  const cardIdle = (p) => until(p, () => document.querySelector('#hx-swap #go')?.getAttribute('aria-busy') !== 'true', null, 240000).catch(() => {});
+  const balNear = (v) => { const m = /Balance ([\d,.]+)/.exec(document.querySelector('#hx-swap #pay-side')?.textContent || ''); return !!m && Math.abs(Number(m[1].replace(/,/g, '')) - v) <= v * 0.015; };
   let bobAddr = '';
   try {
     // Bob opens his key once: his address carries the chain lane, the rest of it as before, and is published so a payer can resolve it
@@ -13947,9 +13975,10 @@ await step('chaintile', async () => {
       await p.click(MV.go);
       await until(p, () => /Shielded\.|class="err"/.test(document.querySelector('#hx-mz')?.innerHTML || ''), null, 900000).catch(() => {});
       ok(/Shielded\./.test(await mz(p)) && (await tacHeld(blocks)) - held0 === 25n * unit, `chaintile: 25 TAC shielded onto the chain, proved in the page (${Math.round((Date.now() - t0) / 1000)} s; ${(await mz(p)).slice(0, 120)})`);
+      await cardIdle(p);
       await move(p, 'shield:ctac:wallet');
-      await until(p, () => /Balance 25\b/.test(document.querySelector('#hx-swap #pay-side')?.textContent || ''), null, 120000).catch(() => {});
-      ok(/Balance 25\b/.test(await text(p, '#hx-swap #pay-side')), `chaintile: Withdraw shows 25 TAC on the Tacit chain (${await text(p, '#hx-swap #pay-side')} · from ${await text(p, '#hx-swap #pay-at')} · ${await goText(p)} · ${(await said(p)).slice(0, 80)})`);
+      await until(p, balNear, 25, 120000).catch(() => {});
+      ok(await p.evaluate(balNear, 25), `chaintile: Withdraw shows 25 TAC on the Tacit chain, less the shield's margin (${await text(p, '#hx-swap #pay-side')} · from ${await text(p, '#hx-swap #pay-at')} · ${await goText(p)} · ${(await said(p)).slice(0, 80)})`);
       // to Bob, from the Send tab
       await p.evaluate(() => { location.hash = 'card=send:ctac'; });
       await until(p, () => document.querySelector('#hx-sa')?.value === 'ctac', null, 60000);
@@ -13971,11 +14000,74 @@ await step('chaintile', async () => {
       await p.click(MV.go);
       await until(p, () => /Done\.|class="err"/.test(document.querySelector('#hx-mz')?.innerHTML || ''), null, 900000).catch(() => {});
       ok(/Done\./.test(await mz(p)) && (await tacHeld(aAcct)) - w0 === 5n * unit && (await tacHeld(blocks)) - held0 === 20n * unit, `chaintile: 5 TAC withdrawn to the paying account; the contract holds the 20 still on the chain (${(await mz(p)).slice(0, 120)})`);
+      await cardIdle(p);
       await move(p, 'shield:ctac:wallet');
-      await until(p, () => /Balance 10\b/.test(document.querySelector('#hx-swap #pay-side')?.textContent || ''), null, 120000).catch(() => {});
-      ok(/Balance 10\b/.test(await text(p, '#hx-swap #pay-side')), `chaintile: Alice has 10 TAC left on the chain (${await text(p, '#hx-swap #pay-side')})`);
+      await until(p, balNear, 10, 120000).catch(() => {});
+      ok(await p.evaluate(balNear, 10), `chaintile: Alice has about 10 TAC left on the chain (${await text(p, '#hx-swap #pay-side')})`);
       if (r.errors.length) { fails++; console.log('FAIL chaintile (alice) page errors: ' + r.errors.slice(0, 3).join(' | ')); }
     } finally { await r.browser.close(); }
+    // With the private pool: Alice moves 3 of her chain TAC into it (a hop to a wrap commitment of her key's, which the leader sends on into the live
+    // pool on the fork, where the pool's own scan finds the deposit and the relay's settle, stubbed, makes it a note), then 50 private TAC onto the chain
+    // (the relay's unwrap, stubbed, pays the shield's inbox on the fork what the pinned fee leaves; the leader sweeps it and takes it in)
+    {
+      const r2 = await chainPage(ALICE, { width: 1280, height: 1500 }, 'light', async (x) => {
+        await x.ctx.exposeFunction('__payOut', async (to, wei) => { await fundTac(to, BigInt(wei)); return true; });
+        await stubFarmUxRoute(x.page, { notes: [['@TAC', 50n * 10n ** 8n]], pool: true });
+      }), p2 = r2.page;
+      const POOL_ADDR_LIVE = '0x000000000Ed1eabD231Be41d93b719056F7febFC', depStatus = async (id) => BigInt((await rpc('eth_call', [{ to: POOL_ADDR_LIVE, data: '0x7da9874f' + String(id).replace(/^0x/, '') }, 'latest'])).slice(0, 66));
+      try {
+        await p2.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
+        // the leader's launch cap (60 TAC here): a shield over it is refused in one line, before anything is proved, and Max stops at it
+        await move(p2, 'shield:wtac:chain', '70');
+        await until(p2, () => /For now the Tacit chain takes up to/.test(document.querySelector('#hx-swap #q')?.textContent || ''), null, 240000).catch(() => {});
+        const capSaid = await said(p2);
+        await p2.click(MV.max).catch(() => {});
+        await until(p2, () => document.querySelector('#hx-swap #amt')?.value === '60', null, 60000).catch(() => {});
+        ok(/^For now the Tacit chain takes up to 60 TAC a shield\./.test(capSaid) && (await p2.$eval('#hx-swap #amt', (a) => a.value)) === '60',
+          `chaintile: a shield over the leader's cap is refused in one line, and Max stops at the cap (${capSaid.slice(0, 90)}; Max ${await p2.$eval('#hx-swap #amt', (a) => a.value)})`);
+        // Withdraw from the chain names both places it can go
+        await move(p2, 'shield:ctac:defi', '3');
+        await until(p2, () => document.querySelector('#hx-swap #go')?.textContent === 'Move to the private pool' && !document.querySelector('#hx-swap #go').disabled, null, 240000)
+          .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | go: ${await goText(p2)} | ${await said(p2)}`); });
+        const homesOut = await text(p2, '#hx-swap #homes'), flowOut = await p2.evaluate(() => document.querySelector('[data-flow]')?.dataset.flow);
+        ok(flowOut === 'withdraw' && /Take it to/.test(homesOut) && /private pool/.test(homesOut) && /TAC, private/.test(await said(p2)), `chaintile: Withdraw from the chain offers the private pool, quoted (${flowOut}; ${homesOut.trim()}; ${(await said(p2)).slice(0, 120)})`);
+        await shot(p2, 'chaintile-hop');
+        const hop0 = Number(await rpc('eth_blockNumber')), t1 = Date.now();
+        await p2.click(MV.go);
+        await until(p2, () => /Moved\.|class="err"|Send it on yourself/.test(document.querySelector('#hx-mz')?.innerHTML || ''), null, 900000).catch(() => {});
+        const pw = await p2.evaluate(() => window.__poolWrap || null);
+        const hopped = (await rpc('eth_getLogs', [{ address: blocks, fromBlock: '0x' + hop0.toString(16), toBlock: 'latest', topics: ['0x' + Buffer.from(keccak_256(Buffer.from('Hopped(uint256,bytes32)'))).toString('hex')] }])).map((l) => ({ value: BigInt(l.data.slice(0, 66)), commit: '0x' + l.data.slice(66, 130) }));
+        ok(/Moved\./.test(await mz(p2)) && pw?.value === '300000000' && hopped.length === 1 && hopped[0].value === 300000000n && hopped[0].commit === pw.commit && (await depStatus(pw.depositId)) === 1n,
+          `chaintile: 3 TAC hopped into the private pool: sent on by the leader, its deposit waiting in the live pool and settled as a wrap's (${Math.round((Date.now() - t1) / 1000)} s; ${(await mz(p2)).slice(0, 100)}; ${JSON.stringify(pw)})`);
+        // the deposit the stub did not take in is what the pool's own scan lists as a TAC wrap's, finished from the tile
+        await cardIdle(p2);
+        await move(p2, 'shield:ctac:defi');
+        await until(p2, () => /waiting to become private/.test(document.querySelector('#hx-swap .hx-fin')?.textContent || ''), null, 240000).catch(() => {});
+        ok(/3 TAC is waiting to become private/.test(await text(p2, '#hx-swap .hx-fin')), `chaintile: and the pool's scan finds that deposit as a TAC wrap's, to finish (${(await text(p2, '#hx-swap .hx-fin')).trim().slice(0, 100)})`);
+        // Shield takes private TAC as well as the wallet's, onto the chain
+        await cardIdle(p2);
+        await move(p2, 'shield:tac:chain', '50');
+        await until(p2, () => document.querySelector('#hx-swap #go')?.textContent === 'Move to the Tacit chain' && !document.querySelector('#hx-swap #go').disabled, null, QUOTE_WAIT)
+          .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | go: ${await goText(p2)} | ${await said(p2)}`); });
+        const flowIn = await p2.evaluate(() => document.querySelector('[data-flow]')?.dataset.flow), saidIn = await said(p2);
+        await p2.click('#hx-swap #pay-coin'); await p2.waitForSelector('#pk .pk-r', { state: 'attached' });
+        const privRow = await p2.evaluate(() => { const b = [...document.querySelectorAll('#pk .pk-r')].find((x) => /^@defi:/.test(x.dataset.k || '')); return b ? !b.classList.contains('off') : null; }); await p2.keyboard.press('Escape');
+        ok(flowIn === 'shield' && privRow === true && /Relay fee: 2 TAC/.test(saidIn) && /on the Tacit chain/.test(saidIn), `chaintile: Shield offers private TAC onto the chain, its relay fee shown (${flowIn}; ${privRow}; ${saidIn.slice(0, 160)})`);
+        await shot(p2, 'chaintile-in');
+        const held1 = await tacHeld(blocks), t2 = Date.now();
+        await p2.click(MV.go);
+        await until(p2, () => /Moved\.|class="err"/.test(document.querySelector('#hx-mz')?.innerHTML || ''), null, 900000).catch(() => {});
+        const po = await p2.evaluate(() => window.__poolOut || null), box = po?.to, boxCode = box ? await rpc('eth_getCode', [box, 'latest']) : '0x';
+        ok(/Moved\./.test(await mz(p2)) && po?.kind === 'unwrap' && po.fee === '200000000' && po.net === '4800000000' && po.feeBps === '0' && po.minFee === po.fee
+          && (await tacHeld(blocks)) - held1 === 48n * unit && boxCode !== '0x' && (await tacHeld(box)) === 0n,
+          `chaintile: 50 private TAC moved onto the chain: the relay's fee pinned at 2 TAC, its unwrap paying the inbox exactly the 48 the shield deposits, swept and taken in (${Math.round((Date.now() - t2) / 1000)} s; ${(await mz(p2)).slice(0, 100)}; ${JSON.stringify(po)})`);
+        await cardIdle(p2);
+        await move(p2, 'shield:ctac:wallet');
+        await until(p2, () => /Balance 5[45]\./.test(document.querySelector('#hx-swap #pay-side')?.textContent || ''), null, 120000).catch(() => {});
+        ok(/Balance 5[45]\./.test(await text(p2, '#hx-swap #pay-side')), `chaintile: Alice holds about 7 + 48 TAC on the chain, less the fees (${await text(p2, '#hx-swap #pay-side')})`);
+        if (r2.errors.length) { fails++; console.log('FAIL chaintile (alice, pool) page errors: ' + r2.errors.slice(0, 3).join(' | ')); }
+      } finally { await r2.browser.close(); }
+    }
     // Bob finds the 10, at a phone's width and a desktop's, light and dark, with nothing wider than the page
     for (const [w, scheme] of [[390, 'light'], [390, 'dark'], [1280, 'light'], [1280, 'dark']]) {
       const b = await chainPage(BOB, { width: w, height: 1100 }, scheme), q = b.page;

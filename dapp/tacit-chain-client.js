@@ -14,6 +14,11 @@
 // from the user's own Ethereum account; the chain must then take it within FORCE_DELAY. A shield deposit no block took in goes back with
 // `reclaimCalldata` (a deposit, after RECLAIM_AFTER) or `giveBackCalldata` (an inbox).
 //
+// Private TAC from the confidential pool comes in through an inbox: `s = shield(amount)` for exactly what the pool's unwrap pays,
+// `s.offer({ back, meta })` before anything is paid (kept here and held by the leader, which sweeps the inbox once paid), the unwrap
+// to `s.inbox(back)`, then `s.submit({ back })`; `inboxState` says whether an inbox is paid or swept, `sweepCalldata` sweeps it from the
+// user's own account. A hop that landed is kept until it is sent on into the pool (`hopsWaiting`, `sendHopCalldata`).
+//
 // Amounts are TAC in units of 1e-8 (1e10 of the token's smallest units). Notes count shares of the chain's pool, worth more as the
 // chain's fees stay with its holders: `balance()` is in shares, `worth()` in units at the rate the landing contract holds (read from
 // Ethereum, not the leader). A spend takes at most two notes: more is refused with a message to move fewer at once.
@@ -117,18 +122,25 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
   }
   const owned = () => st.notes.map((n) => ({ ...n, s: hexBytes(n.s) }));
 
-  /// The leader's fee: { units, to (its chain address) }, units 0 when it asks none.
+  /// The leader's fee: { units, to (its chain address), shieldCap }, units 0 when it asks none. `shieldCap`: the most units one shield may
+  /// deposit through this leader for now (its launch cap; a shield over it is dropped), null when it names none.
   async function fee() {
     await ready();
     const f = await api('GET', '/fee');
     if (!f.ok) throw new Error('the Tacit chain’s leader did not answer');
     const units = /^\d+$/.test(String(f.fee ?? '')) ? BigInt(f.fee) : 0n;
-    if (units === 0n) return { units: 0n, to: null };
+    const shieldCap = /^\d+$/.test(String(f.shieldCap ?? '')) && BigInt(f.shieldCap) > 0n ? BigInt(f.shieldCap) : null;
+    if (units === 0n) return { units: 0n, to: null, shieldCap };
     if (typeof f.address !== 'string') throw new Error('the leader asks a fee but names no address for it');
-    return { units, to: w.decodeAddress(f.address) };
+    return { units, to: w.decodeAddress(f.address), shieldCap };
   }
   /// The fee for a spend about to be proved: none when the leader cannot be reached (such a spend can be posted to Ethereum instead).
-  const feeNow = () => fee().catch(() => ({ units: 0n, to: null }));
+  const feeNow = () => fee().catch(() => ({ units: 0n, to: null, shieldCap: null }));
+  /// The plain line for a shield over the leader's cap.
+  const overCap = (cap) => {
+    const whole = (cap / 10n ** 8n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ','), frac = (cap % 10n ** 8n).toString().padStart(8, '0').replace(/0+$/, '');
+    return Object.assign(new Error(`For now the Tacit chain takes up to ${whole}${frac ? '.' + frac : ''} TAC a shield.`), { overCap: true, cap });
+  };
   const feeOut = (f, r) => (f.units > 0n ? [{ to: f.to, value: sharesWorth(f.units, r) }] : []);
 
   /// Up to two notes covering `need`: the fewest, largest first.
@@ -200,6 +212,23 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
     return { id: r.id };
   }
 
+  /// Hands a spend to the leader without waiting for it to land, kept here first: a shield whose deposit is not paid yet is held by the
+  /// leader until it is (an inbox it sweeps once paid, with the way back named in `extra.back`). → { id, kept }; a refusal throws with `err.kept`.
+  async function offer(spent, extra = {}, { kind = 'spend', units = null, meta = {} } = {}) {
+    const e = remember(spent, { kind, units: units == null ? null : String(units), extra, ...meta });
+    let r;
+    try { r = await api('POST', '/spend', { ...spent.submission, ...extra }); } catch { throw keptErr(new Error('the Tacit chain’s leader did not answer'), e); }
+    if (!r.ok) throw keptErr(new Error(r.error || `the leader refused the spend (${r.status})`), e);
+    return { id: r.id, kept: e };
+  }
+
+  // ── hops that landed and are not yet sent on into the confidential pool (the leader sends them as it lands; anyone may): { units, commit, at }
+  const hkey = () => `tacit-chain-hops-v1:${cfg.blocks.toLowerCase()}:${lane()}`;
+  const hopsKept = () => { try { return JSON.parse(storage?.getItem(hkey()) || '[]'); } catch { return []; } };
+  const hopsKeep = (list) => { try { list.length ? storage?.setItem(hkey(), JSON.stringify(list)) : storage?.removeItem?.(hkey()); } catch {} };
+  /// How many landed hops of `units` for `commit` the landing contract holds unsent (TacitBlocks.hops).
+  const hopsHeld = async (units, commit) => big(await call('hops(bytes32)', strip(hx(keccak_256(hexBytes(word(units) + strip(commit)))))));
+
   async function spend(opts) {
     await ready();
     return w.spend(me, { ...opts, leader });
@@ -224,6 +253,8 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
 
   return {
     ready, scan, balance, rate, fee,
+    /// The leader's launch cap on one shield's deposit, in units (null: none, or the leader could not be reached).
+    shieldCap: async () => (await feeNow()).shieldCap,
     address: async () => { await ready(); return w.address(me); },
     /// The 32-byte hash a Tacit address's chain lane carries.
     lane: async () => { await ready(); return w.chainAddressHash(w.address(me)); },
@@ -270,7 +301,7 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
     giveBackCalldata: (d, back) => '0x' + sel('giveBack(uint256,uint256,bytes32,bytes32,bytes32,bytes32)') + depWords(d) + strip(back),
     /// What a move of `units` costs now and whether the notes cover it: { fee (the leader's, units), holders (units the chain's holders
     /// keep: a payment's pool share, an exit's fee, a shield's margin), arrives (a shield's: what its shares are worth), most (the most
-    /// that can move now, in units) }.
+    /// that can move now, in units), cap (a shield's: the leader's launch cap on its deposit, null for none) }.
     async quote(kind, units = 0n) {
       await ready();
       const [r, f] = await Promise.all([rate(), feeNow()]);
@@ -279,7 +310,7 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
       if (kind === 'shield') {
         const sh = sharesFor(u, r);
         const arrives = sh > feeSh ? worthOf(sh - feeSh, r) : 0n;
-        return { fee: f.units, holders: u > arrives + f.units ? u - arrives - f.units : 0n, arrives, most: null };
+        return { fee: f.units, holders: u > arrives + f.units ? u - arrives - f.units : 0n, arrives, most: null, cap: f.shieldCap };
       }
       const avail = topTwo() - feeSh - (kind === 'pay' ? poolShare(r) : 0n);
       if (kind === 'pay') return { fee: f.units, holders: worthOf(poolShare(r), r), most: avail > 0n ? worthOf(avail, r) : 0n };
@@ -293,6 +324,8 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
     async shield(amount, { onProgress } = {}) {
       await ready();
       const [r, f] = await Promise.all([rate(), feeNow()]);
+      // the leader drops a shield over its launch cap: refused here, before anything is proved
+      if (f.shieldCap != null && BigInt(amount) > f.shieldCap) throw overCap(f.shieldCap);
       const shares = sharesFor(amount, r);
       const out = feeOut(f, r);
       if (shares <= (out[0]?.value ?? 0n)) throw new Error(out.length ? 'too little to cover the leader’s fee' : 'too little to buy a share');
@@ -308,8 +341,20 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
         inbox: async (back) => '0x' + (await call('inbox(uint256,uint256,bytes32,bytes32,bytes32,bytes32)', args + strip(back))).slice(24),
         // o.back: a shield paid to its inbox; o.permit: { owner, fee, deadline, v, r, s, back }, a holder's permit for that inbox
         submit: (o = {}) => submit(s, { ...(o.back ? { back: o.back } : {}), ...(o.permit ? { permit: o.permit } : {}) }, { ...o, kind: 'shield', units: amount, meta: { from: o.from, tx: o.tx, back: o.back || o.permit?.back } }),
+        // a shield its inbox is to be paid for: kept and handed to the leader before anything is paid, so whatever pays the inbox, the
+        // leader can sweep it in and a reload can finish it (o.meta: what goes with it, such as the inbox and what pays it)
+        offer: (o = {}) => offer(s, o.back ? { back: o.back } : {}, { kind: 'shield', units: amount, meta: { back: o.back, ...(o.meta || {}) } }),
       };
     },
+    /// An inbox's TAC (in the token's smallest units) and whether it was swept (its sweep leaves code at the address).
+    async inboxState(addr) {
+      if (!/^0x[0-9a-fA-F]{40}$/.test(addr)) throw new Error('an inbox address');
+      const [tac, code] = await Promise.all([call('TAC()'), rpcCall('eth_getCode', [addr, 'latest'])]);
+      const held = big(await rpcCall('eth_call', [{ to: '0x' + tac.slice(24), data: '0x70a08231' + strip(addr).padStart(64, '0') }, 'latest']));
+      return { held, swept: strip(code).length > 0 };
+    },
+    /// TacitBlocks.sweep: a paid inbox's TAC taken in as its shield's deposit (anyone may send it; the leader does).
+    sweepCalldata: (d, back) => '0x' + sel('sweep(uint256,uint256,bytes32,bytes32,bytes32,bytes32)') + depWords(d) + strip(back),
     /// Pays `to` notes worth `amount` units, giving the chain's holders their pool share and the leader its fee.
     async pay(to, amount, o = {}) {
       await ready();
@@ -327,12 +372,29 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
       return submit(await spend({ inputs: inputs(shares + (out[0]?.value ?? 0n)), outputs: out, exit: { v: shares, amount: BigInt(amount), to }, onProgress: o.onProgress }), {}, { ...o, kind: 'withdraw', units: amount, meta: { to } });
     },
     /// Exactly `amount` units into the confidential pool as its deposit for `commit` (a fresh one, which the pool's wrap then takes in).
+    /// Once it lands it is kept until it is sent on (`hopsWaiting`).
     async hop(commit, amount, o = {}) {
       await ready();
       const [r, f] = await Promise.all([rate(), feeNow()]);
       const shares = sharesToPay(amount, r), out = feeOut(f, r);
-      return submit(await spend({ inputs: inputs(shares + (out[0]?.value ?? 0n)), outputs: out, exit: { v: shares, amount: BigInt(amount), op: hopOp(commit) }, onProgress: o.onProgress }), {}, { ...o, kind: 'hop', units: amount });
+      const done = await submit(await spend({ inputs: inputs(shares + (out[0]?.value ?? 0n)), outputs: out, exit: { v: shares, amount: BigInt(amount), op: hopOp(commit) }, onProgress: o.onProgress }), {}, { ...o, kind: 'hop', units: amount, meta: { commit } });
+      hopsKeep([...hopsKept().filter((h) => strip(h.commit) !== strip(commit)), { units: String(amount), commit: '0x' + strip(commit), at: Date.now() }]);
+      return done;
     },
+    /// The hops that landed and the landing contract still holds (not yet sent on into the confidential pool), oldest first; those sent are dropped.
+    async hopsWaiting() {
+      await ready();
+      const left = [];
+      for (const h of hopsKept()) {
+        const n = await hopsHeld(h.units, h.commit).catch(() => null);
+        if (n === 0n) continue;
+        left.push(h);
+      }
+      hopsKeep(left);
+      return left;
+    },
+    /// TacitBlocks.sendHop: a landed hop sent on into the confidential pool (anyone may send it).
+    sendHopCalldata: (units, commit) => '0x' + sel('sendHop(uint256,bytes32)') + word(units) + strip(commit),
     /// What `withdraw` credits an address and has not sent yet, in the token's smallest units; anyone may send it (TacitBlocks.withdraw).
     owed: async (addr) => BigInt('0x' + (await call('owed(address)', strip(addr).padStart(64, '0')))),
     withdrawCalldata: (addr) => '0x' + sel('withdraw(address)') + strip(addr).padStart(64, '0'),
