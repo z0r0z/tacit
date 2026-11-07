@@ -14,6 +14,8 @@ import { makeLiveBurnDepositTracer, traceBurnDepositProvenance, rebuiltRawTx } f
 import { makeBurnDepositTracer } from '../dapp/burn-deposit-tracer.js';
 
 const FIX = JSON.parse(readFileSync(new URL('./fixtures/burndep-listing-purchase-2026-10-16.json', import.meta.url), 'utf8'));
+// fbcd761a… is a real mainnet T_BTC_SPEND (0x6d): the exit of a TAC note from the Bitcoin shielded pool at block 972,152.
+Object.assign(FIX, JSON.parse(readFileSync(new URL('./fixtures/pool-exit-tx-2026-11-07.json', import.meta.url), 'utf8')));
 const id = (prefix) => Object.keys(FIX).find((k) => k.startsWith(prefix));
 const PURCHASE = id('c654294c'), SPLIT = id('683798fa'), SPLIT_FUNDING = id('9981c2ea'), SPLIT_NOTE = id('57829e14');
 const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
@@ -71,6 +73,21 @@ test('a listing purchase that names more asset inputs than it has is refused', a
 test('an ordinary transfer with funding after a note is still refused (the guest takes every input after the leading ones)', async () => {
   const x = tracer({ patch: { [SPLIT]: [vin(SPLIT_NOTE, 0), vin(SPLIT_FUNDING, 0)] } });
   await assert.rejects(hopOf(x, SPLIT, 3), /non-confidential input at index 1/);
+});
+
+test('a transfer that spends a shielded-pool exit is refused as the pool, not as a hop left unwritten', async () => {
+  const EXIT = id('fbcd761a');
+  const x = tracer({ patch: { [SPLIT]: [vin(SPLIT_FUNDING, 0), vin(EXIT, 0)] } });
+  // The exit's envelope is opcode 0x6d, which the guest's own parse takes for no transfer.
+  assert.equal((await x.t.resolveShallow(EXIT)).kind, 'unrecognized-envelope');
+  await assert.rejects(hopOf(x, SPLIT, 3), (e) => {
+    // burndep-ux reads the opcode out of this phrase; the wording around it is for whoever reads the answer.
+    assert.match(e.message, new RegExp(`${EXIT}:0 carries an envelope .* resolvable leaf \\(opcode 0x6d\\)`));
+    assert.match(e.message, /shielded-pool/);
+    assert.match(e.message, /cannot be bridged/);
+    assert.doesNotMatch(e.message, /CMINT|neither implemented/, 'a pool exit is not a CMINT or a bound hop');
+    return true;
+  });
 });
 
 test('a hop cached before the settlement shape was tracked reads the same as a fresh one', async () => {

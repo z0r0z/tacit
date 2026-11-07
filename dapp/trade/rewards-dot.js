@@ -1,4 +1,4 @@
-import { rpc } from '/trade/util.js?cb=e8317464';
+import { rpc } from '/trade/util.js?cb=ba5a02b1';
 
 const KEY = 'tacit-rewards-owed-v1', TTL = 10 * 60e3, API = 'https://api.tacit.finance', DISTRIBUTOR = '0x000000C918e44A3a443937fA7594eA4f7C95D6b9', DUST = 10n ** 16n;
 const store = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch { } } };
@@ -18,7 +18,7 @@ async function pointsOwed(address) {
   return c.proof && earned > paid ? earned - paid : 0n;
 }
 async function airdropClaimable(address) {
-  const [{ makeTacAirdrop }, { keccak_256 }] = await Promise.all([import('/tac-airdrop.js?cb=6a6bb45f'), import('/vendor/tacit-deps.min.js')]);
+  const [{ makeTacAirdrop }, { keccak_256 }] = await Promise.all([import('/tac-airdrop.js'), import('/vendor/tacit-deps.min.js')]);
   const s = await makeTacAirdrop({ call, keccak256: keccak_256 }).status(address);
   if (s.reason === 'error') throw new Error('the airdrop could not be read');
   return !!s.claimable;

@@ -146,6 +146,11 @@ export async function reflectionEthStatePublish(body) {
   try { json = await res.json(); } catch { /* non-JSON error page */ }
   return { ok: res.ok, status: res.status, body: json };
 }
+// Drop the pending candidate (never the confirmed one), for a candidate the pool has moved past, so a fresh one can be published.
+export async function reflectionEthStateClear() {
+  const res = await postJson(`/reflection/eth-state/clear?network=${encodeURIComponent(CFG.network)}`, {});
+  return { ok: res.ok, status: res.status };
+}
 
 // The books this relay last posted, for it to take back after a restart. null = the worker could not be asked (so try again later);
 // {} = it has none stored; { ledger } = the books. Unlike getJson, a refusal is not read as "nothing there".

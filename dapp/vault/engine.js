@@ -6,7 +6,7 @@
 import * as M from '/vault/math.js?cb=ac1ed53e';
 import { makeReader, staticCalls, parseStatic, dynamicCalls, parseDynamic, timestampCall, refusal, decString, SEL, wordAt, addrWord,
   encDeposit, encWithdraw, encBorrow, encRepay, encCancel, encApprove, encPermit, encMulticall } from '/vault/chain.js?cb=872255e6';
-import { RECORD_GAS, PER_TX, GAS_ROOM, encBatch, MULTICALL3 } from '/vault/feed.js?cb=e8f26c4c';
+import { RECORD_GAS, PER_TX, GAS_ROOM, encBatch, MULTICALL3 } from '/vault/feed.js?cb=2b040bd0';
 import { simulateBundle, sendBundle, batchSupport, readMixed } from '/vault/batch.js?cb=07112350';
 import { ROUTER_SEL, encRouterRecords, encRouterBorrow, encRouterWithdraw, encRouterDeposit, encRouterRepay, encRouterPermitSynth, borrowTyped, withdrawTyped } from '/vault/router.js?cb=21df6509';
 

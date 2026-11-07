@@ -1,14 +1,14 @@
 import { openBtcWallet } from '/trade/btc-session.js?cb=d93e4816';
 import { isPasskeyAvailable } from '/prf-wallet.js';
-import { makeKeySession, signInSheet } from '/trade/key.js?cb=26d9c07b';
+import { makeKeySession, signInSheet } from '/trade/key.js?cb=d110df5e';
 import { makeTacitSession } from '/tacit-session.js?cb=a2d34bb2';
-import { getUx as loadUx, forgetUx } from '/trade/poolux.js?cb=b4055e46';
+import { getUx as loadUx, forgetUx } from '/trade/poolux.js?cb=435f1138';
 import { onMainnet, connectedInjected } from '/eth-nodes.js';
-import { mountFast } from '/fast/ui.js?cb=cddec31b';
-import { mountProvide } from '/fast/provide.js?cb=badff501';
+import { mountFast } from '/fast/ui.js?cb=3dc29710';
+import { mountProvide } from '/fast/provide.js?cb=f8ab06fd';
 import { mountBound } from '/fast/bound.js?cb=862c8d6e';
-import { openFast, openProvider, openBound, discoverProviders, PROVIDER_DEFAULTS } from '/fast/wire.js?cb=a7b67508';
-import { makeWants } from '/fast/want.js?cb=3dad1fd3';
+import { openFast, openProvider, openBound, discoverProviders, PROVIDER_DEFAULTS } from '/fast/wire.js?cb=98cbe1e8';
+import { makeWants } from '/fast/want.js?cb=ff59e842';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 
 // The fast bridge page: TAC held on Bitcoin goes to the key's private balance through a provider, and any key can be a provider
@@ -28,7 +28,8 @@ async function lists() {
     return { providers: Array.isArray(j?.providers) ? j.providers : [], boards: Array.isArray(j?.boards) ? j.boards : [] };
   } catch { return { providers: [], boards: [] }; }
 }
-const LISTS = await lists();
+// read while the page draws: the card, the panels and the key wait for nothing
+const LISTS = lists();
 
 // what a key provides is kept in this browser, apart from the swaps of the same key as a user
 const OPEN_PREFIX = (pub) => `tacit-fastlp-v1:mainnet:${pub}:swaps:`;
@@ -60,25 +61,33 @@ const ask = (on) => {
   if (on) notify('The relay is holding a step of your bridge: confirm it in your wallet.');
 };
 const getUx = async () => { const ux = await loadUx(); ux.useWallet(() => walletRead() || connectedInjected()); return ux; };
-// a Bitcoin wallet opens the key through tacit.js, which this page loads for the bridge anyway
-const keyS = makeKeySession({ moved: (why) => ui?.lock(why), ways: { btc: (k) => TS.turn(() => openBtcWallet(TS.T, { k, tPriv: TS.tPriv, passkey: isPasskeyAvailable() })) } });
+// a Bitcoin wallet opens the key through tacit.js, which this page loads for the bridge anyway. The wallet that opened the key moving to
+// another account, or locking, locks the key in full (the session, the pool module's copies and the provider go with it, through onChange),
+// and then the card says why.
+const keyS = makeKeySession({ moved: (why) => { keyS.lock(); ui?.lock(why); }, ways: { btc: (k) => TS.turn(() => openBtcWallet(TS.T, { k, tPriv: TS.tPriv, passkey: isPasskeyAvailable() })) } });
 TS = makeTacitSession({ url: TACIT_URL, key: () => (keyS.unlocked ? { pubHex: keyS.key.pubHex, priv: bytesToHex(keyS.priv()) } : null), secp, bytesToHex, hexToBytes });
 keyS.onChange(() => { if (!keyS.unlocked) { TS.drop(); forgetUx(); } });
 
-// a want kept while no provider takes the amount, and the notification when one can (asked for with the press that starts waiting)
-const wants = Object.assign(makeWants({ boards: LISTS.boards, providers: LISTS.providers }), {
+// a want kept while no provider takes the amount, and the notification when one can (asked for with the press that starts waiting).
+// What this browser keeps for a key is read from storage at once; what goes to the boards waits for lp.json to name them.
+const stored = makeWants({}), onBoards = LISTS.then((l) => makeWants({ boards: l.boards, providers: l.providers }));
+const wants = {
+  kept: (pub) => stored.kept(pub),
+  start: async (pub, units) => (await onBoards).start(pub, units),
+  stop: async (pub) => (await onBoards).stop(pub),
+  waiting: async () => (await onBoards).waiting(),
   ask: async () => { try { if (typeof Notification === 'function' && Notification.permission === 'default') await Notification.requestPermission(); } catch { /* the page says it as well */ } },
-});
+};
 const notify = (text) => {
   try { if (document.hidden && typeof Notification === 'function' && Notification.permission === 'granted') { const n = new Notification('Fast bridge', { body: text, tag: 'tacit-fast-want', icon: '/favicon.svg' }); n.onclick = () => { focus(); n.close(); }; } } catch { /* the page says it */ }
 };
 
 // /fast/#with=<id>: a provider's pairing link (fast/fmt.js pairId), kept for this visit
 const PIN = (/^#with=([0-9a-f]{16})$/i.exec(location.hash) || [])[1]?.toLowerCase() || null;
+const signIn = () => signInSheet(keyS, { icons: true, why: 'Open your Tacit wallet to bridge or provide TAC.' });
 ui = mountFast({
-  root: document.getElementById('gate'), keyS, wants, notify, pinned: () => PIN,
-  signIn: () => signInSheet(keyS, { icons: true, why: 'Open your Tacit wallet to bridge or provide TAC.' }),
-  discover: () => discoverProviders(LISTS),
+  root: document.getElementById('gate'), keyS, wants, notify, pinned: () => PIN, signIn,
+  discover: async () => discoverProviders(await LISTS),
   open: async () => {
     const pubHex = keyS.key.pubHex, priv = keyS.priv(), ux = await getUx();
     return TS.withKey((T) => openFast({ T, withKey: (fn) => TS.withKey(fn, pubHex), ux, priv, pubHex, wallet: sendWallet, ask }), pubHex);
@@ -94,10 +103,10 @@ mountBound({
 });
 
 const provide = mountProvide({
-  base: PROVIDER_DEFAULTS, notify, ask: () => wants.ask(), root: document.getElementById('provide'), keyS, hasOpen, settings, waiting: () => wants.waiting(),
+  base: PROVIDER_DEFAULTS, notify, ask: () => wants.ask(), root: document.getElementById('provide'), keyS, hasOpen, settings, waiting: () => wants.waiting(), signIn,
   open: async () => {
-    const pubHex = keyS.key.pubHex, priv = keyS.priv(), ux = await getUx();
-    return TS.withKey((T) => openProvider({ T, ux, priv, pubHex, boards: LISTS.boards, wallet: sendWallet, ask }), pubHex);
+    const pubHex = keyS.key.pubHex, priv = keyS.priv(), ux = await getUx(), { boards } = await LISTS;
+    return TS.withKey((T) => openProvider({ T, ux, priv, pubHex, boards, wallet: sendWallet, ask }), pubHex);
   },
 });
 // a page closed while it provides, or while a swap it provides is open, leaves that swap untended

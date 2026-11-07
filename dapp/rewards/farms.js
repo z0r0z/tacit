@@ -3,12 +3,12 @@
 // wallet, which turns the wTAC into TAC), and a join with both sides (each cut to size by the relay if no note fits, then bonded at the pool's
 // ratio). Joining with one side (a swap first) and what only an unwrap sent yourself can do are the front page's: they link there.
 // Nothing here is loaded until the holder asks: this module, the key and the pool all come in on that press.
-import { makeKeySession, signInSheet } from '/trade/key.js?cb=26d9c07b';
-import { getUx, forgetUx } from '/trade/poolux.js?cb=b4055e46';
+import { makeKeySession, signInSheet } from '/trade/key.js?cb=d110df5e';
+import { getUx, forgetUx } from '/trade/poolux.js?cb=435f1138';
 import { makeRunner } from '/activity.js?cb=8ccbc552';
 import { canHarvest, canUnbond, unharvested, locked, harvest, unbond, rewardNotes, relayable, redeem, wtacWithdrawCall, wtacBalanceCall, worthHarvesting, lpNotes, takeOut, HARVEST_WORTH, UNBOND_DUST, bFor, joinTerms, notesOf, exactOf, cutPick, cutSized, bond } from '/farm-ops.js?cb=0933a4c8';
 import { relayWords } from '/relay-outcome.js?cb=9db7155a';
-import { esc, wordAt, parseUnits } from '/trade/util.js?cb=e8317464';
+import { esc, wordAt, parseUnits, rpc } from '/trade/util.js?cb=ba5a02b1';
 
 const API = 'https://api.tacit.finance';
 const day = (sec) => new Date(sec * 1000).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
@@ -19,10 +19,14 @@ const units8 = (v) => (Number(v) / 1e8).toLocaleString('en-US', { maximumFractio
 const noteKey = (n) => String(n.leaf || n.nullifier || `${n.cx}:${n.cy}`).toLowerCase();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const QUOTE_FRESH = 30e3;                                                            // how long a pool's terms are used before they are read again
+const MULTICALL3 = '0xca11bde05977b3631167028862be2a173976ca11';
+// the chain's clock, read with the positions: whether a bond is over goes by it, not by this device's
+const chainNow = async (ux) => ({ at: Date.now(), t: Number(wordAt(await ux.ethCall(MULTICALL3, '0x0f28c97d'), 0)) });
 
 export function mountFarms(root, { pick, names = () => new Map(), pair = () => '', program = () => null, wallet = null, W = null, connect = null } = {}) {
   let D = null, seq = 0, runner = null, wanted = null;
   let lockedWhy = '';                                                                  // why the key was locked, when the wallet that opened it moved
+  const now = () => (D?.clock ? D.clock.t + (Date.now() - D.clock.at) / 1000 : undefined);   // the chain's time, carried on from its read
   const key = makeKeySession({ moved: (why) => { lockedWhy = why || ''; forget(); } });
   const run = () => (runner ||= makeRunner({ api: API, base: async () => (await import('/confidential-deployments.js')).getConfidentialDeployment('mainnet')?.relayBase || API, pub: () => key.key?.pubHex || null }));
   const settled = (r) => { if (r?.jobId) run().journal.put('job:' + r.jobId, { status: 'settled', hash: r.txHash || undefined }); };
@@ -44,10 +48,10 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
     const pub = key.key.pubHex, my = ++seq, priv = key.priv(), was = D?.pub === pub ? D : null;
     D = { pub, loading: !was, ...(was ? { ...was } : {}) }; paint();
     try {
-      const ux = await getUx(), [list, bal, wt] = await Promise.all([ux.farmPositions({ walletPriv: priv }), ux.balance(priv).catch(() => null), walletWtac(ux)]);
+      const ux = await getUx(), [list, bal, wt, clock] = await Promise.all([ux.farmPositions({ walletPriv: priv }), ux.balance(priv).catch(() => null), walletWtac(ux), chainNow(ux).catch(() => null)]);
       if (my !== seq || key.key?.pubHex !== pub) return;
       const cur = D?.pub === pub ? D : null;                                         // what was typed, said or started while this was read is kept
-      D = { pub, list: Array.isArray(list) ? list : [], notes: bal?.notes || [], notesOk: !!bal, wtac: wt, said: cur?.said || null, form: cur?.form || wanted || {}, terms: cur?.terms || {}, busy: cur?.busy || null };
+      D = { pub, list: Array.isArray(list) ? list : [], notes: bal?.notes || [], notesOk: !!bal, wtac: wt, clock: clock || cur?.clock || null, said: cur?.said || null, form: cur?.form || wanted || {}, terms: cur?.terms || {}, busy: cur?.busy || null };
     } catch (e) { if (my === seq) D = { pub, err: String(e?.message || e).slice(0, 160) }; }
     paint();
   }
@@ -84,7 +88,7 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
   async function doUnbond(i) {
     const pos = D.list[i];
     if (!pos) throw new Error('That position is not listed any more. Read again.');
-    if (locked(pos)) throw new Error(`The bond is over on ${day(Number(pos.unlockAt))}.`);
+    if (locked(pos, now())) throw new Error(`The bond is over on ${day(Number(pos.unlockAt))}.`);
     if (unharvested(pos)) throw new Error('Harvest first: unbonding now would give up what it has earned.');
     const priv = pinned(), t = await getUx(), label = 'Unbond from a farm';
     say('The relay is proving your unbond…');
@@ -102,6 +106,16 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
     if (!to) throw new Error('Connect a wallet to receive the TAC.');
     const priv = pinned(), t = await getUx(), mine = notes.filter((n) => relayable(t, n, rid)), small = notes.length - mine.length;
     if (!mine.length && !(D.wtac > 0n)) throw Object.assign(new Error(notes.length ? 'Your rewards are each worth less than the relay charges to unwrap them.' : 'Nothing to turn into TAC yet.'), { front: notes.length > 0 });
+    const J = run().journal;
+    // a turn into TAC sent before and not confirmed when its wait ran out is looked up first: one a node still holds is waited for, not sent
+    // again, and one no node holds is let go only after a quarter of an hour (a node asked may not have seen one still going round)
+    const earlier = J.state.items.find((x) => x.kind === 'tx' && x.status === 'pending' && /^tx:1:/.test(x.id) && /^Turn .* into TAC$/.test(x.label || '') && (!x.to || x.to.toLowerCase() === to.toLowerCase()));
+    if (earlier) {
+      const rc = await rpc('eth_getTransactionReceipt', [earlier.hash]).catch(() => null);
+      if (rc) J.put(earlier.id, rc.status === '0x1' ? { status: 'confirmed' } : { status: 'failed', err: 'The transaction reverted.' });
+      else if ((await rpc('eth_getTransactionByHash', [earlier.hash]).catch(() => true)) !== null || Date.now() - earlier.at < 15 * 60e3) throw new Error('An earlier turn into TAC is not confirmed yet. Wait for it, or speed it up or cancel it in your wallet, before pressing again.');
+      else J.put(earlier.id, { status: 'stale' });
+    }
     for (const [i, n] of mine.entries()) {
       say(`The relay is unwrapping your rewards${mine.length > 1 ? ` (${i + 1} of ${mine.length})` : ''}…`);
       settled(await redeem(t, priv(), n, to, run().wait(`Unwrap ${noteTxt(n.value)} wTAC of farm rewards`, 15 * 60e3)));
@@ -113,11 +127,11 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
     if (W.account?.toLowerCase() !== to.toLowerCase()) throw new Error('Your wallet account changed while this ran. Switch back to the account that holds the wTAC and press again.');
     priv();                                                                          // the key is still the one this started under
     say('Confirm turning the wTAC into TAC in your wallet…');
-    const hash = await wallet.sendTx({ ...wtacWithdrawCall(bal, to), from: to }), J = run().journal, id = `tx:1:${String(hash).toLowerCase()}`;
-    J.put(id, { kind: 'tx', label: `Turn ${tacTxt(bal)} wTAC into TAC`, chain: 1, hash, status: 'pending' });
+    const hash = await wallet.sendTx({ ...wtacWithdrawCall(bal, to), from: to }), id = `tx:1:${String(hash).toLowerCase()}`;
+    J.put(id, { kind: 'tx', label: `Turn ${tacTxt(bal)} wTAC into TAC`, chain: 1, hash, to, status: 'pending' });
     const rc = await wallet.receipt(hash);
     J.put(id, rc?.status === '0x1' ? { status: 'confirmed' } : { status: 'failed', err: 'The transaction reverted.' });
-    if (rc?.status !== '0x1') throw new Error('Turning the wTAC into TAC did not go through.');
+    if (rc?.status !== '0x1') throw new Error('Turning the wTAC into TAC did not go through. The wTAC is in your wallet: press again.');
     return `Turned ${tacTxt(bal)} wTAC into TAC, in your wallet.${small ? ` ${small} smaller reward${small === 1 ? ' is' : 's are'} worth less than the relay’s fee to unwrap: the front page can send ${small === 1 ? 'it' : 'them'} from your Tacit account.` : ''}`;
   }
 
@@ -128,7 +142,7 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
     const pos = D.list[i], prog = program(), pool = (prog?.pools || []).find((p) => Number(p.pid) === Number(pos?.pid));
     if (!pos) throw new Error('That position is not listed any more. Read again.');
     if (!pool?.reserves) throw new Error('The farm’s pool could not be read. Try again in a moment.');
-    if (locked(pos)) throw new Error(`The bond is over on ${day(Number(pos.unlockAt))}.`);
+    if (locked(pos, now())) throw new Error(`The bond is over on ${day(Number(pos.unlockAt))}.`);
     const priv = pinned(), t = await getUx(), rid = prog.rewardAsset, pending = BigInt(pos.pendingUnits || 0);
     const worth = worthHarvesting(t, pending, rid);
     if (pending > HARVEST_WORTH && !worth) throw Object.assign(new Error('Its reward is worth turning into TAC only by sending the unwrap yourself.'), { front: true });
@@ -247,11 +261,11 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
     else if (D.err) h = `<p class="more err">${esc(D.err)} <button class="linkbtn" type="button" data-pf="again">Try again</button></p>`;
     else {
       const rows = D.list.map((pos, i) => {
-        const b = D.busy, tac = Number(pos.pendingTac || 0), lk = locked(pos);
+        const b = D.busy, tac = Number(pos.pendingTac || 0), lk = locked(pos, now());
         return `<dl class="kv"><div><dt>${pair(pos.pid)}${esc(name(pos))}</dt><dd class="num">${esc(tac.toLocaleString('en-US', { maximumFractionDigits: 4 }))} TAC earned</dd></div>${lk ? `<div><dt>Bonded until</dt><dd>${esc(day(Number(pos.unlockAt)))}</dd></div>` : ''}</dl>
           <div class="acts">
             <button type="button" data-pf="harvest" data-i="${i}"${b || !canHarvest(pos) ? ' disabled' : ''}>${b === `harvest:${i}` ? 'Harvesting…' : 'Harvest'}</button>
-            <button type="button" data-pf="unbond" data-i="${i}"${b || !canUnbond(pos) ? ' disabled' : ''}>${b === `unbond:${i}` ? 'Unbonding…' : 'Unbond'}</button>
+            <button type="button" data-pf="unbond" data-i="${i}"${b || !canUnbond(pos, now()) ? ' disabled' : ''}>${b === `unbond:${i}` ? 'Unbonding…' : 'Unbond'}</button>
             <button type="button" data-pf="exit" data-i="${i}"${b || lk ? ' disabled' : ''}>${b === `exit:${i}` ? 'Exiting…' : 'Exit'}</button>
           </div>`;
       }).join('');

@@ -63,7 +63,7 @@ const strip = (h) => String(h).replace(/^0x/, '');
 const ZERO = '0x' + '0'.repeat(64);
 
 export function makeLoans({ sha256, hmac, secp, bytesToHex, hexToBytes, pubHex, noteRecovery = () => import('/cbtc-note-recovery.js'),
-  lockModule = () => import('/cbtc-lock-mint.js'), deployments = () => import('/confidential-deployments.js') }) {
+  lockModule = () => import('/cbtc-lock-mint.js?cb=b746689c'), deployments = () => import('/confidential-deployments.js') }) {
   // the key's loans as this browser keeps them (encrypted to the key): what a loan needs to be repaid from here
   async function positions() {
     const { makeCdpPositionStore } = await import('/confidential-secret-store.js');

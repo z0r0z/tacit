@@ -24,7 +24,7 @@ import { getAddress, isAddress, encodeFunctionData, parseAbi } from 'viem';
 import { depositIntent, callIntent, callEscrowAddress } from '../../../dapp/evm-pool-gateway.js';
 import { P_FR } from '../../../dapp/btc-pool-zk.js';
 import { ETH } from './evm-pool-keeper-config.js';
-import { coverCheck, quoteFee, receiveMinOf, subsidyRoom, sweepGasOf } from './evm-pool-keeper-loop.js';
+import { coverCheck, quoteFee, receiveMinOf, relayMarginOf, subsidyRoom, sweepGasOf } from './evm-pool-keeper-loop.js';
 import { PipelineError } from './evm-pool-keeper-pipeline.js';
 import { revertName as defaultRevertName } from './evm-pool-keeper-chain.js';
 import { safeErr } from './safe-err.js';
@@ -500,7 +500,7 @@ export function createIntakeHandler({
       catch (e) { throw estimateFailure(e); }
     }
     const price = await gasPrice();
-    const cov = coverCheck({ reward: fee, token: chain.asset, gas: est, gasPrice: price, cfg });
+    const cov = coverCheck({ reward: fee, token: chain.asset, gas: est, gasPrice: price, cfg, marginBps: relayMarginOf(cfg) });
     if (!cov.ok) throw Object.assign(bad(`fee too low: ${cov.reason}`), { needFee: quoteFee({ token: chain.asset, gas: est, gasPrice: price, cfg }).toString() });
     await mustFront(cov.gas);
     if (cfg.dryRun) return { dryRun: true, gas: est.toString() };
@@ -546,7 +546,7 @@ export function createIntakeHandler({
       catch (e) { throw estimateFailure(e); }
     }
     const price = await gasPrice();
-    const cov = coverCheck({ reward: fee, token: chain.asset, gas: est, gasPrice: price, cfg });
+    const cov = coverCheck({ reward: fee, token: chain.asset, gas: est, gasPrice: price, cfg, marginBps: relayMarginOf(cfg) });
     if (!cov.ok) throw Object.assign(bad(`fee too low: ${cov.reason}`), { needFee: quoteFee({ token: chain.asset, gas: est, gasPrice: price, cfg }).toString() });
     await mustFront(cov.gas);
     if (cfg.dryRun) return { dryRun: true, gas: est.toString() };

@@ -191,6 +191,11 @@ console.log('\nThe wallet and the etch:');
   ok(rows.some((r) => /^Network feeabout [\d,]+ sats$/.test(r)), 'the fee reads once the library is in');
   ok(rows.some((r) => r === 'In your wallet1,200 sats add'), 'and the sats the key holds');
   ok(/^Add sats$/.test(await text(page, '#go')), 'a key short of sats is offered Add sats');
+  await page.click('[data-chain="eth"]');
+  await page.click('[data-chain="btc"]');
+  await page.waitForFunction(() => /about [\d,]+ sats/.test(document.querySelector('#rcpt').textContent), null, { timeout: 5000 }).catch(() => {});
+  ok(/Network feeabout [\d,]+ sats/.test((await text(page, '#rcpt')).replace(/\s+/g, ' ')), 'to Ethereum and back, the Bitcoin fee is asked again (not left at …)');
+  await page.waitForFunction(() => /^Add sats$/.test(document.querySelector('#go').textContent), null, { timeout: 5000 }).catch(() => {});
   ok(/Needs about 4,000 sats at your wallet’s address\. It holds 1,200\./.test(await text(page, '#q')), 'and the line says how much');
   ok(await page.$eval('#rcpt dd.warn', (e) => /1,200 sats/.test(e.textContent)), 'the balance is marked in the receipt');
   await shot(page, 'create-short');
@@ -357,7 +362,7 @@ console.log('\nA logo still uploading, and a name that was not saved:');
   await page.click('#again');
   await page.click('#t-find');
   await page.waitForSelector('#list .as');
-  ok(await page.$eval('#list .as img.tk', (i) => i.src.startsWith('https://api.tacit.finance/ipfs/')), 'its logo in Discover is the pinned one, not a page-local copy that "Etch another" revoked');
+  ok(await page.$eval('#list .as .tk img', (i) => i.src.startsWith('https://api.tacit.finance/ipfs/')), 'its logo in Discover is the pinned one, not a page-local copy that "Etch another" revoked');
   await page.close();
 }
 {
@@ -407,6 +412,12 @@ console.log('\nFound again after the page is left:');
   ok(await page.$eval('#fchain [aria-checked="true"]', (e) => e.dataset.fchain) === 'eth', '#discover:eth opens the Ethereum side, and a node that cannot be read says so with a way to try again');
   await page.close();
 }
+{
+  const { page } = await fresh('/etch/#discover:eth=zed');
+  ok(await page.$eval('#fchain [aria-checked="true"]', (e) => e.dataset.fchain) === 'eth' && (await page.inputValue('#find')) === 'zed', '#discover:eth=zed opens a search on the Ethereum side');
+  ok((await page.evaluate(() => location.hash)) === '#discover:eth=zed', 'and the address keeps both');
+  await page.close();
+}
 
 console.log('\nDiscover:');
 {
@@ -425,10 +436,11 @@ console.log('\nDiscover:');
   const orange = await page.$eval(`#list .as[data-id="${hex(2)}"]`, (e) => e.textContent.replace(/\s+/g, ' '));
   ok(/Orange Coin/.test(orange), 'a name comes from the metadata');
   ok(/21,000,000/.test(orange) && /3 holders/.test(orange), 'with the supply that was published and the holders');
-  ok(await page.$eval(`#list .as[data-id="${hex(2)}"] img.tk`, (i) => i.src.startsWith('https://api.tacit.finance/ipfs/')), 'and its logo through the API’s gateway');
+  ok(await page.$eval(`#list .as[data-id="${hex(2)}"] .tk img`, (i) => i.src.startsWith('https://api.tacit.finance/ipfs/')), 'and its logo through the API’s gateway');
   const noods = await page.$eval(`#list .as[data-id="${hex(5)}"]`, (e) => e.textContent.replace(/\s+/g, ' '));
   ok(/1,000,000/.test(noods) && !/Orange/.test(noods), 'whole-number supplies read without decimals');
-  ok(await page.$eval(`#list .as[data-id="${hex(5)}"] img.tk`, (i) => /\/ipfs\/bafkrei/.test(i.src)), 'an image that is not metadata is the logo itself');
+  ok(await page.$eval(`#list .as[data-id="${hex(5)}"] .tk img`, (i) => /\/ipfs\/bafkrei/.test(i.src)), 'an image that is not metadata is the logo itself');
+  ok(await page.$eval(`#list .as[data-id="${hex(5)}"] .tk`, (e) => e.firstChild.nodeType === 3 && e.textContent.trim() === 'NO'), 'its letters are under the logo while it loads');
   ok(/Supply private/.test(await page.$eval(`#list .as[data-id="${hex(6)}"]`, (e) => e.textContent)), 'a supply that is not published says it is private');
   await shot(page, 'discover');
   // search

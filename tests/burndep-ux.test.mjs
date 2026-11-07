@@ -2078,7 +2078,7 @@ function storageContainsPrivkey(storage, priv) {
   const pool = await through("burndep-live-tracer: input aa:0 classified as 'swap_var', which this module does not resolve a commitment for");
   const arrived = await through("burndep-live-tracer: input aa:1 classified as 'crossout_mint', which this module does not resolve a commitment for");
   const shielded = await through('burndep-live-tracer: aa:0 carries an envelope this module does not recognize as a resolvable leaf (opcode 0x6c) — likely a CMINT');
-  const exited = await through('burndep-live-tracer: 78a58036a6a4de269634c0b6d5f52977dba9ce8b3c21d2bb5969bac812b133b9:0 carries an envelope this module does not recognize as a resolvable leaf (opcode 0x6d) — likely a CMINT or bound-asset hop, neither implemented; see ops/DESIGN-burndep-live-tracer.md');
+  const exited = await through('burndep-live-tracer: 78a58036a6a4de269634c0b6d5f52977dba9ce8b3c21d2bb5969bac812b133b9:0 carries an envelope this module does not recognize as a resolvable leaf (opcode 0x6d) — a Bitcoin shielded-pool shield or exit: the reflection proof does not follow notes through the pool, so a history through it cannot be bridged to Ethereum, and no change to this tracer alters that; see ops/DESIGN-burndep-live-tracer.md');
   ok(exited && !exited.ok && exited.unprovable === true && exited.through === 'shielded' && exited.at === '78a58036a6a4de269634c0b6d5f52977dba9ce8b3c21d2bb5969bac812b133b9',
     `a history through a shielded-pool exit (opcode 0x6d, the note a pool spend makes) is told as the shielded pool, not as a transaction by its id (${exited && exited.through})`);
   const dangling = await through('burn-deposit trace: outpoint not produced by a known cxfer and not a supply leaf: 0x12');

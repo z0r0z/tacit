@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src https://api.tacit.finance 'self' https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io https://eth.rpc.blxrbdn.com https://1.rpc.thirdweb.com https://1rpc.io https://mainnet.gateway.tenderly.co https://tacit-api.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://www.tacitscan.io https://eth-mainnet.nodereal.io https://rpc.flashbots.net; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src https://verify.walletconnect.org https://verify.walletconnect.com">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src https://api.tacit.finance https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud 'self' https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io https://eth.rpc.blxrbdn.com https://1.rpc.thirdweb.com https://1rpc.io https://mainnet.gateway.tenderly.co https://tacit-api.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://www.tacitscan.io https://eth-mainnet.nodereal.io https://rpc.flashbots.net; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src https://verify.walletconnect.org https://verify.walletconnect.com">
 <meta name="color-scheme" content="light dark">
 <title>tacit borrow</title>
 <meta name="description" content="Borrow TACD or TACE against TAC, or cUSD against Bitcoin.">
@@ -22,25 +22,26 @@
 <link rel="preconnect" href="https://tacit-points.onrender.com" crossorigin>
 <!-- preload-roots: /vault/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/vault/app.js?cb=ae90c38f">
+<link rel="modulepreload" href="/vault/app.js?cb=92b3ee73">
 <link rel="modulepreload" href="/vault/deployments.js?cb=4af96594">
 <link rel="modulepreload" href="/vault/math.js?cb=ac1ed53e">
 <link rel="modulepreload" href="/vault/chain.js?cb=872255e6">
 <link rel="modulepreload" href="/evm-trade-venues.js?cb=dda58fa8">
 <link rel="modulepreload" href="/zrouter-guard.js">
 <link rel="modulepreload" href="/rpc-body.js">
-<link rel="modulepreload" href="/vault/feed.js?cb=e8f26c4c">
+<link rel="modulepreload" href="/vault/feed.js?cb=2b040bd0">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
-<link rel="modulepreload" href="/vault/pools.js?cb=734d83fb">
+<link rel="modulepreload" href="/vault/pools.js?cb=8f67fde3">
 <link rel="modulepreload" href="/vault/batch.js?cb=07112350">
-<link rel="modulepreload" href="/vault/engine.js?cb=148b91db">
+<link rel="modulepreload" href="/vault/reopen.js?cb=40aab9d5">
+<link rel="modulepreload" href="/vault/engine.js?cb=f5dcb208">
 <link rel="modulepreload" href="/vault/router.js?cb=21df6509">
-<link rel="modulepreload" href="/trade/connect.js?cb=a64b9cec">
+<link rel="modulepreload" href="/trade/connect.js?cb=39145e86">
 <link rel="modulepreload" href="/walletconnect.js?cb=e0b29a34">
 <link rel="modulepreload" href="/trade/wallet.js?cb=88b623b8">
 <link rel="modulepreload" href="/trade/sheet.js?cb=84cda8f2">
-<link rel="modulepreload" href="/trade/util.js?cb=e8317464">
-<link rel="modulepreload" href="/trade/rpc.js?cb=f575ef91">
+<link rel="modulepreload" href="/trade/util.js?cb=ba5a02b1">
+<link rel="modulepreload" href="/trade/rpc.js">
 <link rel="modulepreload" href="/eth-nodes.js">
 <link rel="modulepreload" href="/trade/fmt.js?cb=32b1744b">
 <!-- preload:end -->
@@ -148,7 +149,18 @@ h1 .s-tac { display: contents; }
 .flow li + li::before { content: '→'; position: absolute; left: -10px; top: 50%; width: 10px; text-align: center; transform: translateY(-50%); color: var(--mute); }
 @media (max-width: 560px) { .flow { grid-template-columns: minmax(0, 1fr); } .flow li + li::before { content: '↓'; left: 50%; top: -10px; width: auto; height: 10px; line-height: 10px; transform: translateX(-50%); } }
 .btc-side .btn + .btn { margin-top: 10px; }
-.btc-l { margin: 0; }
+.btc-l, .tac-l { margin: 0; }
+/* the Bitcoin side's ticket: the same field, chips and button as the TAC side's, with a note picker and the deposit address */
+.sel { position: relative; display: flex; align-items: center; background: var(--field); border: 1px solid var(--hair); }
+.sel:focus-within { border-color: var(--ink); }
+.sel select { flex: 1; min-width: 0; appearance: none; -webkit-appearance: none; padding: 10px 36px 10px 14px; font-size: 14px; font-weight: 500; background: none; border: 0; outline: none; cursor: pointer; }
+.sel::after { content: '▾'; position: absolute; right: 14px; color: var(--mute); pointer-events: none; }
+.sel .tk { margin-left: 12px; width: 20px; height: 20px; }
+.bm-addr { padding: 10px 12px; background: var(--field); border: 1px dashed var(--hair-2); font-size: 11.5px; letter-spacing: -.02em; }
+#btc-tk .seg + .empty, #btc-tk .seg + .hint { margin-top: 14px; }
+.bm-addr code { font: inherit; overflow-wrap: anywhere; }
+.bm-pos .kv small .linkbtn { color: var(--ink); font-size: inherit; }
+.bm-foot { margin: 14px 0 0; padding-top: 10px; border-top: 1px solid var(--hair); }
 
 /* the page */
 .pick { max-width: none; }
@@ -159,7 +171,7 @@ h1 .s-tac { display: contents; }
   /* On a phone the page reads in the order of use: the vault, what is in it, the ticket, then the figures behind them and the markets. */
   .col { display: contents; }
   #pick-w { order: 1; } #pos { order: 2; } #ticket { order: 3; } #board { order: 4; } #feed { order: 5; } #pools { order: 6; } .btc-l { order: 7; }
-}
+  #btc-pos { order: 1; } #btc-ticket { order: 2; } #btc-board { order: 3; } #btc-how { order: 4; } .tac-l { order: 5; }}
 .panel { background: var(--card); border: 1px solid var(--hair); padding: 22px; min-width: 0; }
 @media (max-width: 480px) { .panel { padding: 18px 14px; } }
 .eyebrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); margin: 0 0 12px; }
@@ -442,7 +454,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
 @font-face { font-family: 'Instrument Serif Fallback N'; src: local('Noto Serif'), local('NotoSerif'); size-adjust: 70.5%; ascent-override: 140.4%; descent-override: 44%; line-gap-override: 0%; }
 @font-face { font-family: 'Instrument Serif Fallback N'; font-style: italic; src: local('Noto Serif Italic'), local('NotoSerif-Italic'); size-adjust: 76.3%; ascent-override: 129.7%; descent-override: 40.6%; line-gap-override: 0%; }
 </style>
-<script src="/chrome.js?cb=73051f76" defer></script>
+<script src="/chrome.js?cb=4b1414c7" defer></script>
 <!-- chrome:head:end -->
 </head>
 <body>
@@ -542,30 +554,39 @@ footer.sf svg.fill { width: 16px; height: 16px; }
   <div class="btc-side" id="btc">
     <div class="grid">
       <div class="col">
-        <section class="panel" aria-labelledby="bs-h">
+        <section class="panel" id="btc-board" aria-labelledby="bb-h">
+          <p class="eyebrow" id="bb-h"><span>Loan status</span><span class="who" data-bf-who></span></p>
+          <p class="verdict wait" data-bf-verdict><i class="sd"></i><span>Checking whether borrowing is open…</span></p>
+          <div class="bt-wrap"><table class="bt"><thead><tr><td></td><th scope="col" class="cur"><svg class="tk xs inl" aria-hidden="true"><use href="#tk-cusd"/></svg>cUSD<small>against cBTC</small></th></tr></thead><tbody>
+            <tr><th scope="row">Borrowing</th><td class="num"><span class="st s-wait" data-bf-st><i class="sd"></i><span>Checking</span></span></td></tr>
+            <tr><th scope="row">Bitcoin price</th><td class="num" data-bf="px">…</td></tr>
+            <tr><th scope="row">1 BTC borrows up to</th><td class="num" data-bf="max">…</td></tr>
+            <tr><th scope="row">Collateral needed</th><td class="num" data-bf="ratio">…</td></tr>
+            <tr><th scope="row">Liquidated below</th><td class="num" data-bf="liq">…</td></tr>
+            <tr><th scope="row">Borrowed so far</th><td class="num" data-bf="out">…</td></tr>
+          </tbody></table></div>
+        </section>
+        <section class="panel" id="btc-how" aria-labelledby="bs-h">
           <p class="eyebrow" id="bs-h">How it works</p>
           <ol class="flow">
             <li><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg><b>Lock BTC</b><span>At an address only your key can spend.</span></li>
             <li><svg class="tk" aria-hidden="true"><use href="#tk-cbtc"/></svg><b>Mint cBTC</b><span>One to one against the lock, free.</span></li>
             <li><svg class="tk" aria-hidden="true"><use href="#tk-cusd"/></svg><b>Borrow cUSD</b><span>Against the cBTC. Repay any time to reclaim it.</span></li>
           </ol>
-          <p class="note">A refundable wstETH bond worth at least 1.5× the BTC, staked from your ETH, stands behind each lock.</p>
+          <p class="note">A refundable wstETH bond worth at least 1.5× the BTC, staked from your ETH, stands behind each lock. <a href="/cbtc/">cBTC market →</a></p>
         </section>
       </div>
       <div class="col">
-        <section class="panel" aria-labelledby="bm-h">
-          <p class="eyebrow" id="bm-h">Yours</p>
-          <div id="btc-mine"><p class="note">Your locks, loans and cBTC.</p><button class="btn ghost" type="button" data-mine="open">Show mine</button></div>
-          <p class="note"><a href="/cbtc/">cBTC market →</a></p>
+        <section class="panel" id="btc-pos" aria-labelledby="bm-h">
+          <p class="eyebrow" id="bm-h">Your loans</p>
+          <div id="btc-mine"><p class="empty"><button class="linkbtn" type="button" data-mine="open">Open your Tacit wallet</button> to see your locks, loans and cBTC.</p></div>
         </section>
-        <section class="panel" id="btc-board" aria-labelledby="bb-h">
-          <p class="eyebrow" id="bb-h"><span>Bitcoin loans</span><span class="who" data-bf-who></span></p>
-          <div class="rows flat">
-            <div class="kv"><span><svg class="tk xs inl" aria-hidden="true"><use href="#tk-cusd"/></svg>cUSD lent</span><b class="num" data-bf="out">…</b></div>
-            <div class="kv"><span>Collateral needed</span><b class="num" data-bf="ratio">…</b></div>
-            <div class="kv"><span>Liquidated below</span><b class="num" data-bf="liq">…</b></div>
-          </div>
+        <section class="panel p-ticket" id="btc-ticket" aria-labelledby="bt-h">
+          <p class="eyebrow" id="bt-h"><span>Lock BTC and borrow</span><span class="st s-wait" data-bf-st><i class="sd"></i><span>Checking</span></span></p>
+          <div id="btc-tk"><p class="empty">Lock BTC at your own address, mint cBTC one to one, then borrow cUSD against it.</p>
+          <button class="btn" type="button" data-mine="open">Open your Tacit wallet</button></div>
         </section>
+        <p class="note tac-l"><a href="/vault/" data-side="tac">Or borrow TACD against TAC →</a></p>
       </div>
     </div>
   </div>
@@ -587,6 +608,6 @@ footer.sf svg.fill { width: 16px; height: 16px; }
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/vault/app.js?cb=ae90c38f"></script>
+<script type="module" src="/vault/app.js?cb=92b3ee73"></script>
 </body>
 </html>

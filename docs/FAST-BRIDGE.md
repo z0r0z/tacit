@@ -63,6 +63,13 @@ A provider in a page is for modest amounts: it answers requests and takes the Bi
 are open when the page closes are tended again the next time the key is opened. A provider that is a process (`fastbridge-lp/`)
 keeps them tended without a page.
 
+**Which notes a provider can take.** A lock's notes need only be valid Tacit notes, the validator's verdict, and that includes a
+note made by an exit from the Bitcoin shielded pool (`T_BTC_SPEND`, opcode 0x6d). Such a note cannot be bridged home by burning
+it: the burn's proof follows transfers back to the etch and does not follow a history through the pool. TAC a provider takes this
+way stays on Bitcoin, where it can be traded. A provider that rebalances by bridging home can screen locks with the regular
+bridge's own trace (`POST /reflection/burndep/trace` answers a note like this with "opcode 0x6d"); the reference provider applies
+no such screen.
+
 ## On the front page
 
 The Bridge tab's way in for TAC from Bitcoin prefers the fast bridge: when a note is picked, the tab asks the providers there are

@@ -76,16 +76,21 @@ export function makeFeed({ rpc, proofRpc = rpc, headerRpc = proofRpc }) {
   const call = (to, data, extra = {}) => rpc('eth_call', [{ to, data, ...extra }, 'latest']);
   const batch = async (list) => (list.length ? _internal.decAggregate3(await call(MULTICALL3, _internal.encAggregate3(list)), list.length) : []);
 
-  // The venue oracles behind a vault, and for each its step, longest window, pool and storage slots.
+  // The venue oracles behind a vault, and for each its step, longest window, pool and storage slots. The vault's pair is asked for on every read (the
+  // owner can put in another); the venues behind a pair never change, so they are read once and handed out as copies (a read writes its own figures on them).
+  const VENUES = new Map();                                                                                                  // vault → { pair, venues }
   async function venuesOf(vault) {
     const pair = addrAt(await call(vault, SEL.ORACLE), 0);
+    const kept = VENUES.get(vault);
+    if (kept && kept.pair === pair) return kept.venues.map((v) => ({ ...v }));
     const [a, b] = (await batch([{ to: pair, data: SEL.A }, { to: pair, data: SEL.B }])).map((r) => addrAt(r, 0));
     const out = [];
     for (const oracle of [a, b]) {
       const [step, maxWindow, pool, slots] = await batch([{ to: oracle, data: SEL.STEP }, { to: oracle, data: SEL.MAX_WINDOW }, { to: oracle, data: SEL.POOL }, { to: oracle, data: SEL.slots }]);
       out.push({ oracle, step: Number(wordAt(step, 0)), points: Number(wordAt(maxWindow, 0)) / (Number(wordAt(step, 0)) * BLOCK_SECONDS), pool: addrAt(pool, 0), slots: [`0x${strip(slots).slice(0, 64)}`, `0x${strip(slots).slice(64, 128)}`] });
     }
-    return out;
+    VENUES.set(vault, { pair, venues: out });
+    return out.map((v) => ({ ...v }));
   }
 
   // What each venue has recorded of the intervals a vault reads now (the last eight hours) and of the newer ones, newest first.

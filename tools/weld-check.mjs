@@ -208,7 +208,7 @@ const DAPP = new URL('../dapp/', import.meta.url).pathname;
 const bwText = (page) => page.evaluate((s) => [...document.querySelectorAll(s)].map((e) => e.textContent).join(' '), '#bw-status, #bw-s1, #bw-s2, #bw-s3, #bw-s4');
 // `ui`: the front page's tile and landing, the steps a look-and-copy pass needs (tools/weld-ui.sh runs them on a pinned, cached fork)
 const UI_STEPS = 'links,swapurl,swapfield,hints,hxbridge,hxfold,hxnudge,tradelinks';
-const ONLY = new Set((process.argv[2] === 'ui' ? UI_STEPS : process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,hxbridgeu,usdtwrap,usdtwrapw,usdtout,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,swaphere,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,nohost,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,tileahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,anyone,relayfail,selfwallet,slowline,fastroute').split(','));
+const ONLY = new Set((process.argv[2] === 'ui' ? UI_STEPS : process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,hxbridgeu,usdtwrap,usdtwrapw,usdtout,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,swaphere,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,shieldsrc,shieldwc,provebar,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,nohost,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,tileahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,anyone,relayfail,selfwallet,slowline,fastroute').split(','));
 const FORK = process.argv[3] || 'https://mainnet.gateway.tenderly.co';
 const SHOTS = process.env.SHOTS || null;
 const PORT = 20000 + Math.floor(Math.random() * 2000), WEB = PORT + 1;
@@ -288,6 +288,9 @@ let statusError = 'stubbed in the fork check';
 // With `proveStub`, a job asked for as a proof only reads proven (a stand-in proof, with the memos it was sent with),
 // for a page that sends the settle itself.
 let proveStub = false;
+// `proveHold`: ms a stand-in proof takes to read proven, so a press can be made while the proof is still being made.
+let proveHold = 0;
+const heldJobs = {};
 const provenJobs = {};
 // `refuseWith`: what a refused submit answers instead of the free-settle refusal ({ code, error }: relay_held, prove_budget …).
 // `refuseTypes`: refuse only submits of these op types (with refuseSubmits counting them). `openNext`: that many settle-mode submits
@@ -369,7 +372,10 @@ async function openPage({ account, key = null, host = '127.0.0.1', init = null, 
     }
     if (sub) {
       const jobId = 'stub-' + (submits.push(sub));
-      if (proveStub && sub.mode === 'prove') provenJobs[jobId] = { memos: sub.memos || [], ...(sub.type === 'wrap' && sub.op ? { pv: wrapPv(sub.op) } : sub.type === 'wrapswap' && sub.op ? { pv: wrapSwapPv(sub.op) } : {}) };
+      if (proveStub && sub.mode === 'prove') {
+        const made = () => { provenJobs[jobId] = { memos: sub.memos || [], ...(sub.type === 'wrap' && sub.op ? { pv: wrapPv(sub.op) } : sub.type === 'wrapswap' && sub.op ? { pv: wrapSwapPv(sub.op) } : {}) }; };
+        if (proveHold) { heldJobs[jobId] = true; setTimeout(() => { delete heldJobs[jobId]; made(); }, proveHold); } else made();
+      }
       if (openNext > 0 && (sub.mode || 'settle') === 'settle') { openNext--; openJobs[jobId] = { type: sub.type, memos: sub.memos || [], status: 'open' }; }
       if (pendingNext > 0 && (sub.mode || 'settle') === 'settle') { pendingNext--; pendingJobs[jobId] = sub.type; }          // a job that stays in the relay's line
       if (sub.mode === 'preproven') postedJobs[jobId] = { type: sub.type, txHash: '0x' + 'ad'.repeat(32) };               // the relay sends a posted proof
@@ -387,6 +393,7 @@ async function openPage({ account, key = null, host = '127.0.0.1', init = null, 
     }
     if (u.pathname === '/confidential/status') {
       const id = u.searchParams.get('id'), pj = provenJobs[id], oj = openJobs[id];
+      if (heldJobs[id]) return json(route, { jobId: id, type: 'wrap', mode: 'prove', status: 'pending', txHash: null, error: null, createdAt: Date.now() });
       if (pendingJobs[id]) return json(route, { jobId: id, type: pendingJobs[id], mode: 'settle', status: 'pending', txHash: null, error: null, createdAt: Date.now() });
       if (postedJobs[id]) return json(route, { jobId: id, type: postedJobs[id].type, mode: 'preproven', status: 'settled', txHash: postedJobs[id].txHash, error: null });
       if (pj) return json(route, { jobId: id, mode: 'prove', status: 'proven', publicValues: pj.pv || '0x' + '01'.repeat(32), proof: '0x' + '02'.repeat(32), memos: pj.memos });
@@ -773,10 +780,11 @@ await step('hxbridge', async () => {
       `hxbridge: #card=bridge:btc opens TAC from Bitcoin, its notes picked next, with the way in's steps (${await steps()})`);
     const opts = await p.$$eval('#hx-from option', (os) => os.map((o) => `${o.value}:${o.dataset.sub}`).join(' '));
     ok(/btc:to Ethereum, private/.test(opts) && /tac:to Bitcoin/.test(opts) && /ether:to Bitcoin, as tETH/.test(opts), `hxbridge: its From lists what crosses, each with where it goes (${opts})`);
+    ok(!!(await p.$('#hx-brl a[href="/fast/"]')), 'hxbridge: TAC from Bitcoin also leads to the fast bridge page');
     await p.click(BRG.flip);
     await until(p, () => document.querySelector('#hx-go')?.textContent === 'Bridge TAC to Bitcoin', null, 60000);
     ok((await heldAt(p)) === 'private' && /^Burned on Ethereum > Proven for Bitcoin > Sent to Bitcoin > Arrived$/.test(await steps()) && !!(await p.$('#hx-amt')), `hxbridge: the flip turns it to private TAC to Bitcoin, with the way out's steps (${await steps()})`);
-    ok(await p.$eval('#hx-brl a', (a) => a.getAttribute('href') === '/bridge/'), 'hxbridge: the line under it leads to the bridge page');
+    ok(await p.$eval('#hx-brl a', (a) => a.getAttribute('href') === '/bridge/') && !(await p.$('#hx-brl a[href="/fast/"]')), 'hxbridge: the line under it leads to the bridge page (the fast bridge is TAC from Bitcoin only)');
     await p.evaluate(() => { location.hash = ''; });
     await p.click('[data-hxm="swap"]');
     await p.click('.wd-wire[data-hx="shield:btc:eth"]');
@@ -2850,7 +2858,7 @@ await step('keys', async () => {
   const addr = addrIn(txt);
   ok(/Opened with Ethereum/.test(txt) && addr, `keys: an Ethereum signature opens ${addr}`);
   await lock(r.page);
-  ok(/Continue as tacit1/.test(await walletText(r.page)), 'keys: once locked, the sheet offers to continue with the same wallet');
+  ok(/Open your wallet tacit1/.test(await walletText(r.page)), 'keys: once locked, the sheet offers to open the same wallet');
   await r.page.click('#wallet-body [data-in="known"]');
   await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
   ok((await shown(r.page)).includes(addr), 'keys: continuing reopens the same tacit1 address');
@@ -2995,11 +3003,15 @@ await step('acct', async () => {
   await r.page.waitForSelector('#ac-form [data-copy]', { timeout: 60000 });
   const shownAddr = await r.page.$eval('#ac-form [data-copy]', (b) => b.dataset.copy);
   ok(shownAddr === want && viaUx === want, `acct: the Tacit account is the key's own, as tacit.finance derives it (${want.slice(0, 10)}…, pool-ux ${viaUx.slice(0, 10)}…)`);
-  ok(await r.page.$eval('[data-pay="tacit"]', (b) => b.classList.contains('main')), 'acct: with no wallet connected, the Tacit account pays');
-  // The public farm, opened while the account holds no ETH: it says so before anything is typed, with the way to add some, and Max says why it fills nothing.
+  // A new key's own address is unused: with a wallet in the browser, the wallet pays (connected at the press), not an address nobody funded.
+  await until(r.page, () => document.querySelector('[data-pay="wallet"]')?.classList.contains('main'), null, 60000);
+  ok(/Connects when you press/.test(await text(r.page, '[data-pay="wallet"]')), 'acct: with no wallet connected and the key\'s address unused, the wallet pays, connected at the press');
+  await r.page.click('[data-pay="tacit"]');
+  await until(r.page, () => document.querySelector('[data-pay="tacit"]')?.classList.contains('main'));
+  // The public farm, opened while the key's address is chosen and holds no ETH: it says so before anything is typed, with the wallet a press away, and Max says why it fills nothing.
   await go(r.page, '#farm');
-  await r.page.waitForSelector('#pf-fund [data-fund]', { timeout: 60000 }).catch(() => {});
-  ok(!!(await r.page.$('#pf-fund [data-fund]')) && /no ETH/.test(await text(r.page, '#pf-fund')), 'acct: the farm of an account with no ETH says so, with a way to add some');
+  await r.page.waitForSelector('#pf-fund [data-paywallet]', { timeout: 60000 }).catch(() => {});
+  ok(!!(await r.page.$('#pf-fund [data-paywallet]')) && /no ETH/.test(await text(r.page, '#pf-fund')), 'acct: the farm of a chosen address with no ETH says so, with the wallet a press away');
   await r.page.click('#pf-max');
   ok(/Max keeps/.test(await text(r.page, '#pf-status')) && !(await r.page.inputValue('#pf-amt')), `acct: Max with no ETH to spare says why it fills nothing (${await text(r.page, '#pf-status')})`);
   await rpc('anvil_setBalance', [want, '0x' + (10n ** 17n).toString(16)]);             // funded from outside, as an exchange would
@@ -7194,8 +7206,8 @@ await step('lpsend', async () => {
   const p = r.page, to = tacit1('abe'.padEnd(64, '5'));
   try {
     await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); document.querySelector('#dash')?.scrollIntoView(); });
-    await until(p, () => !!document.querySelector('#dash [data-hx="send:lp0"]'), null, 240000).catch(() => {});
-    ok(!!(await p.$('#dash [data-hx="send:lp0"]')), 'lpsend: the dashboard row of the LP position offers Send');
+    await until(p, () => !!document.querySelector('#dash [data-dash-open="farm/private-0"]'), null, 240000).catch(() => {});
+    ok(!!(await p.$('#dash [data-dash-open="farm/private-0"]')), 'lpsend: the dashboard lists the LP position');
     await p.evaluate(() => window.scrollTo(0, 0));
     await p.click('[data-hxm="send"]');
     await p.click('#hx [data-pk="hx-sa"]');
@@ -7532,8 +7544,8 @@ await step('rsend', async () => {
   const p = r.page, to = tacit1('abd'.padEnd(64, '5'));
   try {
     await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); document.querySelector('#dash')?.scrollIntoView(); });
-    await until(p, () => !!document.querySelector('#dash [data-hx="send:rtac"]'), null, 240000).catch(() => {});
-    ok(/wTAC/.test(await text(p, '#dash').catch(() => '')) && !!(await p.$('#dash [data-hx="send:rtac"]')), 'rsend: the dashboard has a wTAC row, private farm rewards, that offers Send');
+    await until(p, () => /wTAC/.test(document.querySelector('#dash')?.textContent || ''), null, 240000).catch(() => {});
+    ok(/wTAC/.test(await text(p, '#dash').catch(() => '')), 'rsend: the dashboard has a wTAC row, private farm rewards');
     await p.evaluate(() => window.scrollTo(0, 0));
     await p.click('[data-hxm="send"]');
     await p.click('#hx [data-pk="hx-sa"]');
@@ -7690,12 +7702,13 @@ await step('hxteth', async () => {
   const lander = () => p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
   try {
     await lander();
-    await p.click('[data-hxm="swap"]');
+    await tabClick(p, 'shield');
     await until(p, () => /You hold 0\.25 tETH privately/.test(document.querySelector('#hx-have')?.textContent || ''), null, 300000);
     ok(await p.$$eval('#hx-have [data-hxin]', (b) => b.map((x) => x.dataset.hxin).join()) === 'send:eth,swap:eth:tac,shield:eth:wallet', 'hxteth: the Swap card says the tETH held, with Send, Swap and Back to ETH a press away');
     await p.click('[data-hxin="shield:eth:wallet"]');
-    const turned = await p.evaluate(() => [document.querySelector('#hx-swap #pay-coin')?.textContent.trim(), document.querySelector('#hx-swap #get-coin')?.textContent.trim(), document.activeElement?.id || document.activeElement?.tagName]);
-    ok(/^tETH/.test(turned[0]) && /^ETH/.test(turned[1]) && turned[2] === 'amt', `hxteth: Back to ETH turns the Swap card to taking tETH out, with the keyboard in the amount (${turned.join(' → ')})`);
+    await until(p, () => /^Withdraw/.test(document.querySelector('#hx-swap #go')?.textContent.trim() || ''), null, 30000).catch(() => {});
+    const turned = await p.evaluate(() => [document.querySelector('#hx-swap #pay-coin')?.textContent.trim(), document.querySelector('#hx-swap #go')?.textContent.trim(), document.activeElement?.id || document.activeElement?.tagName]);
+    ok(/^t?ETH/.test(turned[0]) && /^Withdraw/.test(turned[1]) && turned[2] === 'amt', `hxteth: Back to ETH turns the Swap card to taking tETH out, with the keyboard in the amount (${turned.join(' → ')})`);
     await p.fill('#hx-swap #amt', '0.1');
     await until(p, () => /Arrives: in your wallet \| Relay fee: [\d.]+ ETH, out of it$/.test(window.__said()), null, 240000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await line()}`); });
@@ -7783,19 +7796,17 @@ await step('hxsend', async () => {
     await p.click('[data-hxm="send"]');
     await until(p, () => /Balance 0\.25 · Max/.test(document.querySelector('#hx-bal')?.textContent || ''), null, 300000);
     ok(await p.$eval('#hx-sa', (e) => e.value) === 'eth', 'hxsend: a key holding tETH opens Send on it');
-    // Each private holding on Your Tacit has a Send of its own, and it sets the card to that asset.
-    await until(p, () => document.querySelectorAll('#dash-g .di-send').length >= 4, null, 300000);
-    const sends = await p.$$eval('#dash-g .di-send', (b) => b.map((x) => x.dataset.hx).sort().join());
-    ok(sends === 'send:cbtc,send:cusd,send:eth,send:tac', `hxsend: Your Tacit offers Send on tETH, TAC, cUSD and cBTC and nowhere it holds none (${sends})`);
+    // A send link names an asset, and it sets the card to that asset (once the key's cUSD and cBTC are read).
+    await until(p, () => document.querySelectorAll('#dash-g [data-dash-open="borrow"]').length >= 2, null, 300000);
     if (SHOTS) {
       await p.locator('#dash').screenshot({ path: join(SHOTS, 'weld-hxsend-dash.png') });
       await p.setViewportSize({ width: 390, height: 900 });
       await p.locator('#dash').screenshot({ path: join(SHOTS, 'weld-hxsend-dash-phone.png') });
       await p.setViewportSize({ width: 1280, height: 900 });
     }
-    await p.click('#dash-g .di-send[data-hx="send:cusd"]');
+    await p.evaluate(() => { location.hash = '#card=send:cusd'; });
     await until(p, () => document.querySelector('[data-hxm="send"]')?.getAttribute('aria-selected') === 'true' && document.querySelector('#hx-sa')?.value === 'cusd', null, 60000);
-    ok(true, 'hxsend: a holding\'s Send sets the card to Send on that asset');
+    ok(true, 'hxsend: a send link sets the card to Send on that asset');
     await lander(p);
     await p.click('[data-hxm="send"]');
     await p.selectOption('#hx-sa', 'eth');
@@ -7949,9 +7960,9 @@ await step('hxsend', async () => {
     ok(true, 'hxsend: opening that link fills Send with the address, cUSD and the amount');
     // A Send button elsewhere on the page opens Send, even after Request was used.
     await q.click('#hx-ask');
-    await q.click('#dash-g .di-send[data-hx="send:cusd"]');
+    await q.evaluate(() => { location.hash = '#card=send:cusd'; });
     await until(q, () => !!document.querySelector('#hx-rcpt') && /Send privately/.test(document.querySelector('#hx-go')?.textContent || ''), null, 60000);
-    ok(true, 'hxsend: a Send button on Your Tacit opens Send, not Request, after Request was used');
+    ok(true, 'hxsend: a send link opens Send, not Request, after Request was used');
     if (r2.errors.length) { fails++; console.log('FAIL hxsend page errors: ' + r2.errors.slice(0, 3).join(' | ')); }
   } finally { await r2.browser.close(); }
 });
@@ -8117,11 +8128,11 @@ await step('hxexit', async () => {
     ok(/Deposited/.test(await text(p, '#d-status')), `hxexit: 25 USDC are in the USDC pool (${held} in all)`);
     await until(p, (h) => (document.querySelector('.bal .v')?.textContent?.trim() || '').replace(/,/g, '').replace(/\.0+$/, '') === h, held, 120000);
     await lander();
-    // the holdings panel offers a Swap on what the pool holds: it opens the card on that USDC going out to ETH
-    await until(p, () => !!document.querySelector('[data-hx="pay:usdc"]'), null, 120000);
-    await p.click('[data-hx="pay:usdc"]');
+    // the holdings panel lists what the pool holds, and a link opens the card on that USDC going out to ETH
+    await until(p, () => !!document.querySelector('#dash [data-dash-open="device/usdc"]'), null, 120000);
+    await p.evaluate(() => { location.hash = '#card=pay:usdc:eth'; });
     await until(p, () => /^USDC/.test(document.querySelector('#hx-swap #pay-coin')?.textContent || '') && document.querySelector('#hx-swap #pay-at')?.textContent === 'Private' && /^ETH/.test(document.querySelector('#hx-swap #get-coin')?.textContent || ''), null, 120000);
-    ok(true, 'hxexit: the holdings panel has a Swap on the USDC the pool holds, which opens the card on it going out to ETH');
+    ok(true, 'hxexit: the holdings panel lists the USDC the pool holds, and a link opens the card on it going out to ETH');
     await lander();
     // the card opened on that pool's USDC, going out as USDC (a swap's route is zQuoter's, whose scans are too slow on a fork: tests/swap-held-exit-fork.mjs prices those)
     await p.goto(r.url + '#card=pay:usdc:usdc');
@@ -8384,9 +8395,6 @@ await step('hxsendtac', async () => {
     await q.click('#hx-have [data-hxin]');
     await until(q, () => document.querySelector('[data-hxm="shield"]')?.getAttribute('aria-selected') === 'true' && /^TAC/.test((document.querySelector('#hx-swap #pay-coin')?.textContent || '').trim()) && document.querySelector('#hx-swap #pay-at')?.textContent === 'Wallet', null, 60000);
     ok(true, 'hxsendtac: and that opens the Swap card on TAC in the wallet');
-    await until(q, () => document.querySelectorAll('#dash-g .di-send[data-hx="send:wtac"]').length === 1, null, 120000)
-      .catch(async () => { throw new Error(`no dashboard send on TAC: ${await q.$$eval('#dash-g .di-send', (b) => b.map((x) => x.dataset.hx).join())}`); });
-    ok(true, 'hxsendtac: Your Tacit offers Send on TAC held only in the wallet');
     if (r2.errors.length) { fails++; console.log('FAIL hxsendtac page errors: ' + r2.errors.slice(0, 3).join(' | ')); }
   } finally { await r2.browser.close(); }
 });
@@ -8461,9 +8469,9 @@ await step('hxsendways', async () => {
     // ETH to an address, from the tile (the picker opened on Private, where the held coin is: Wallet is one press away)
     await p.click('#hx .pk .pk-kind [data-kind="wallet"]');
     await p.click('#hx .pk .pk-r[data-v="ether"]');
-    await until(p, () => /^To 0x… or a name: a public transfer\. To tacit1…: paid into their private ETH\.$/.test(document.querySelector('#hx-way')?.textContent || ''), null, 30000)
-      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await text(p, '#hx-way')}`); });
-    ok(true, `hxsendways: with no recipient yet, the line says what each kind of address does (${await text(p, '#hx-way')})`);
+    await until(p, () => document.querySelector('#hx-sa')?.value === 'ether' && document.querySelector('#hx-way')?.hidden === true && /From your wallet\. A tacit1 address is paid privately, an 0x address in the open\./.test(document.querySelector('#hx-lead')?.textContent || ''), null, 30000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await text(p, '#hx-lead')} | ${await text(p, '#hx-way')}`); });
+    ok(true, `hxsendways: with no recipient yet, the lead under the tabs says what each kind of address does (${await text(p, '#hx-lead')})`);
     const e0 = BigInt(await rpc('eth_getBalance', [eth0, 'latest']));
     await p.fill('#hx-rcpt', eth0); await p.fill('#hx-amt', '0.25');
     await until(p, () => /^They get: 0\.25 ETH \| Network fee: paid by your Tacit account \| Chain sees: your Tacit account, the address and the amount/.test(window.__said()) && document.querySelector('#hx-go')?.textContent === 'Send ETH', null, 60000)
@@ -9491,6 +9499,79 @@ await step('farmqueue', async () => {
     if (r.errors.length) { fails++; console.log('FAIL farmqueue page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }
 });
+// Shield pays from the account that holds the ETH: a key opened on its own (pasted, a passkey) whose Tacit account is empty asks for the
+// wallet at the press, not "more than your Tacit account holds"; with the wallet connected and the empty Tacit account chosen to pay, the
+// wallet pays. The tip is the relay's proof alone (the press sends the one transaction itself), and the button stays filled on hover.
+await step('shieldsrc', async () => {
+  const r = await openPage({ account: A0, key: K0, colorScheme: 'dark', viewport: { width: 1280, height: 1300 } });
+  const p = r.page, ERR = /Tacit account holds/;
+  try {
+    await p.route(/\/confidential\/quote\?/, (route) => route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' },
+      body: JSON.stringify({ relayFeeEligible: true, recommendedTipRecipient: '0x' + '6c'.repeat(20), tipSplitter: '0x' + '5e'.repeat(20), recommendedWrapTipWei: '90000000000000', recommendedProveTipWei: '20000000000000' }) }));
+    await p.goto(r.url + '#wallet');
+    await p.click('#wallet-body [data-in="paste"]');
+    await p.fill('#ws-hex', '5e1d'.padEnd(64, '9'));
+    await p.click('#wallet-body [data-in="key"]');
+    await until(p, () => !!document.querySelector('#wallet-dot.on'));
+    await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
+    await tabClick(p, 'shield'); await p.waitForSelector(MV.amt, { timeout: 120000 });
+    await p.fill(MV.amt, '0.001');
+    await until(p, () => /Connect wallet and shield/.test(document.querySelector('#hx-swap #go')?.textContent || '') && /Proof fee: 0\.00002 ETH/.test(window.__said()), null, 90000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | go ${await text(p, MV.go)} | ${await said(p)}`); });
+    ok(!ERR.test(await said(p)), `shieldsrc: a key with an empty Tacit account and no wallet asks for the wallet, not for ETH in the Tacit account (${await said(p)})`);
+    ok(true, 'shieldsrc: the tip is the proof alone, 0.00002 ETH, not the 0.00009 that pays the relay to settle');
+    // the wallet connected, and the empty Tacit account chosen to pay anyway: the wallet holding the ETH pays
+    await toWallet(p);
+    await p.waitForSelector('[data-pay="wallet"]', { timeout: 60000 });
+    await p.click('[data-pay="wallet"]');
+    await until(p, () => document.querySelector('[data-pay="wallet"]')?.classList.contains('main'));
+    await p.click('[data-pay="tacit"]');
+    await until(p, () => document.querySelector('[data-pay="tacit"]')?.classList.contains('main'));
+    await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
+    await tabClick(p, 'shield'); await p.waitForSelector(MV.amt);
+    await p.fill(MV.amt, '0.002');
+    await until(p, () => /^Shield ETH$/.test((document.querySelector('#hx-swap #go')?.textContent || '').trim()) && /^Balance [1-9]/.test(document.querySelector('#hx-swap #pay-side')?.textContent || ''), null, 90000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | go ${await text(p, MV.go)} | side ${await text(p, '#hx-swap #pay-side')} | ${await said(p)}`); });
+    ok(!ERR.test(await said(p)), `shieldsrc: with the Tacit account chosen but empty, the wallet's ETH pays (${await text(p, '#hx-swap #pay-side')}; ${await said(p)})`);
+    await p.hover(MV.go); await sleep(400);
+    const look = await p.$eval(MV.go, (b) => { const c = getComputedStyle(b), card = getComputedStyle(b.closest('.swc') || document.body); return { bg: c.backgroundColor, ring: c.boxShadow, card: card.backgroundColor }; });
+    if (SHOTS) await p.locator('#hx').screenshot({ path: join(SHOTS, 'shieldsrc-hover.png') });
+    ok(look.bg !== 'rgba(0, 0, 0, 0)' && look.bg !== look.card && look.ring !== 'none', `shieldsrc: the button keeps its fill on hover (${look.bg} on ${look.card}, ${look.ring})`);
+    if (r.errors.length) { fails++; console.log('FAIL shieldsrc page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { await r.browser.close(); }
+});
+// A phone with no wallet extension (WalletConnect only) and a new key: Shield still asks for a wallet (a wallet app, paired at the press),
+// and the pairing offers the key's own address to those with no wallet app, which then pays.
+await step('shieldwc', async () => {
+  const r = await openPage({ account: A0, key: K0, viewport: { width: 390, height: 1300 }, init: { fn: () => { delete window.ethereum; }, arg: null } });
+  const p = r.page;
+  try {
+    await p.goto(r.url + '#wallet');
+    await p.click('#wallet-body [data-in="paste"]');
+    await p.fill('#ws-hex', '3c0a'.padEnd(64, '4'));
+    await p.click('#wallet-body [data-in="key"]');
+    await until(p, () => !!document.querySelector('#wallet-dot.on'));
+    await toWallet(p);
+    await until(p, () => document.querySelector('[data-pay="wallet"]')?.classList.contains('main'), null, 60000).catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | dot ${await p.evaluate(() => document.querySelector('#wallet-dot')?.className)} | pay ${(await text(p, '#wallet-body .opts').catch(() => '')).replace(/\s+/g, ' ')}`); });
+    ok(/Connects when you press/.test(await text(p, '[data-pay="wallet"]')), 'shieldwc: with only WalletConnect, a new key\'s payments still come from a wallet, paired at the press');
+    await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
+    await tabClick(p, 'shield'); await p.waitForSelector(MV.amt, { timeout: 120000 });
+    await p.fill(MV.amt, '0.001');
+    await until(p, () => /Connect wallet and shield/.test(document.querySelector('#hx-swap #go')?.textContent || ''), null, 90000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | go ${await text(p, MV.go)} | ${await said(p)}`); });
+    ok(true, 'shieldwc: Shield says it connects a wallet');
+    await p.click(MV.go);
+    const paired = await until(p, () => !!document.querySelector('#sheet-wc[open] [data-wc-useacct]'), null, 45000).then(() => true, () => false);
+    if (!paired) { console.log(`     shieldwc: the pairing sheet did not open here (WalletConnect's relay unreachable from the test?): ${(await text(p, '#hx-swap')).replace(/\s+/g, ' ').slice(-160)}`); return; }
+    ok(/No wallet app\?/.test(await text(p, '#wc-body')), 'shieldwc: the pairing offers the key\'s own address to those with no wallet app');
+    await p.click('[data-wc-useacct]');
+    await until(p, () => !document.querySelector('#sheet-wc[open]'), null, 20000);
+    await toWallet(p);
+    await until(p, () => document.querySelector('[data-pay="tacit"]')?.classList.contains('main'), null, 30000);
+    ok(true, 'shieldwc: and pressed, the key\'s address pays');
+    if (r.errors.length) { fails++; console.log('FAIL shieldwc page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { await r.browser.close(); }
+});
 // The Shield card's relay tip is the relay's own for the amount typed. It turns on the size while the amount is small (3% of it, up to a
 // cap), so a small wrap is not told the tip a large one pays; and nothing is asked before an amount is typed.
 await step('hxtip', async () => {
@@ -9509,17 +9590,17 @@ await step('hxtip', async () => {
     await p.focus('#hx-swap #amt'); await sleep(1500);
     ok(asked.length === 0, `hxtip: nothing is asked of the relay before an amount is typed (${asked.length})`);
     await p.fill('#hx-swap #amt', '0.003');
-    await until(p, () => /Relay tip: 0\.00009 ETH/.test(window.__said()), null, 60000)
+    await until(p, () => /Proof fee: 0\.00009 ETH/.test(window.__said()), null, 60000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${(await text(p, '#hx')).replace(/\s+/g, ' ').slice(-200)}`); });
     ok(true, 'hxtip: a 0.003 ETH wrap says its tip is 0.00009 ETH (3% of it)');
     await p.fill('#hx-swap #amt', '0.1');
-    await until(p, () => /Relay tip: 0\.000117 ETH/.test(window.__said()), null, 60000)
+    await until(p, () => /Proof fee: 0\.000117 ETH/.test(window.__said()), null, 60000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${(await text(p, '#hx')).replace(/\s+/g, ' ').slice(-200)}`); });
     ok(asked.includes('3000000000000000') && asked.includes('100000000000000000'), `hxtip: and a 0.1 ETH wrap says the capped figure, each amount asked for itself (${asked.join(', ')})`);
     // No figure from the relay means it could not work one out just now: the card says the next step shows it, not a tip of nothing.
     noTip = true;
     await p.fill('#hx-swap #amt', '0.2');
-    await until(p, () => /Relay tip: shown next/.test(window.__said()), null, 60000)
+    await until(p, () => /Proof fee: shown next/.test(window.__said()), null, 60000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${(await text(p, '#hx-swap #q')).replace(/\s+/g, ' ')}`); });
     ok(true, 'hxtip: a quote with no tip in it is not read as a tip of nothing');
     if (r.errors.length) { fails++; console.log('FAIL hxtip page errors: ' + r.errors.slice(0, 3).join(' | ')); }
@@ -10259,99 +10340,6 @@ await step('tradelinks', async () => {
       if (r.errors.length) { fails++; console.log('FAIL tradelinks page errors: ' + r.errors.slice(0, 3).join(' | ')); }
     } finally { await r.browser.close(); }
   }
-});
-
-// The price strip under the header: TAC, cBTC and tETH, each with its own mark, a link to its trade page and a dollar price read from the one shared multicall. It reserves
-// its row, so the hero does not move when the figures arrive; TAC links to the trade page; at a phone's width it fits.
-await step('pxs', async () => {
-  for (const [name, viewport] of [['desktop', { width: 1280, height: 900 }], ['phone', { width: 360, height: 740 }]]) {
-    const r = await openPage({ account: A0, key: K0, viewport });
-    const p = r.page;
-    try {
-      await p.goto(r.url);
-      await p.waitForSelector('#hx-body .hx-h');
-      const top0 = await p.$eval('.hero', (e) => e.getBoundingClientRect().top);
-      await p.waitForFunction(() => document.querySelector('#pxs.on'), null, { timeout: 120000 });
-      const s = await p.evaluate(() => {
-        const items = [...document.querySelectorAll('#pxs .px')].map((x) => ({ name: x.querySelector('b').textContent, val: Number(x.querySelector('.num').textContent.replace(/[$,]/g, '')), mark: x.querySelector('use').getAttribute('href'), href: x.getAttribute('href') }));
-        return { items, top: document.querySelector('.hero').getBoundingClientRect().top, scroll: document.documentElement.scrollWidth > innerWidth + 1, h: document.querySelector('#pxs').getBoundingClientRect().height };
-      });
-      const [tac, btc, eth] = s.items;                                                      // the cBTC and tETH entries: bitcoin's and ETH's dollars
-      ok(s.items.map((x) => x.name).join() === 'TAC,cBTC,tETH' && s.items.map((x) => x.mark).join() === '#tk-tac,#tk-cbtc,#tk-teth', `pxs (${name}): the strip names TAC, cBTC and tETH, each with its own mark (${s.items.map((x) => `${x.name} ${x.val}`).join(', ')})`);
-      ok(btc.val > 1000 && eth.val > 100 && btc.val / eth.val > 5 && btc.val / eth.val < 200 && tac.val > 0 && tac.val < eth.val, `pxs (${name}): the dollar prices are sane against one another (BTC ${btc.val}, ETH ${eth.val}, TAC ${tac.val})`);
-      ok(tac.href === '/trade/tac/' && btc.href === '/cbtc/' && eth.href === '/teth/', `pxs (${name}): each is a link to its own trade page`);
-      ok(Math.abs(s.top - top0) < 1 && s.h >= 18, `pxs (${name}): the row was already there, so the hero did not move when the prices arrived (${Math.round(s.top - top0)}px)`);
-      ok(!s.scroll, `pxs (${name}): and the page does not scroll sideways`);
-      if (r.errors.length) { fails++; console.log('FAIL pxs page errors: ' + r.errors.slice(0, 3).join(' | ')); }
-    } finally { await r.browser.close(); }
-  }
-});
-
-// A return visit draws the prices it last read before it reads them again: figures kept less than an hour ago show at once and the reading
-// replaces them; older ones are never drawn.
-await step('pxsback', async () => {
-  const seedAt = (ago) => ({ fn: ({ ago }) => {
-    if (!localStorage.getItem('tacit-front-pxs-v1')) localStorage.setItem('tacit-front-pxs-v1', JSON.stringify({ at: Date.now() - ago, v: { mid: 0.00007, ethBtc: 31.5, usdBtc: 99999 } }));
-    window.__seen = [];
-    const note = () => { const e = document.querySelector('#pxs'); const t = e && e.classList.contains('on') ? e.textContent : ''; if (t && window.__seen[window.__seen.length - 1] !== t) window.__seen.push(t); };
-    new MutationObserver(note).observe(document, { childList: true, subtree: true, attributes: true, characterData: true });
-  }, arg: { ago } });
-  for (const [name, ago, shown] of [['fresh', 5 * 60e3, true], ['old', 3 * 3600e3, false]]) {
-    const r = await openPage({ account: A0, key: K0, init: seedAt(ago) });
-    const p = r.page;
-    try {
-      await p.goto(r.url);
-      await p.waitForSelector('#hx-body .hx-h');
-      await p.waitForFunction(() => window.__seen.some((t) => !t.includes('99,999')) , null, { timeout: 120000 });
-      const seen = await p.evaluate(() => window.__seen);
-      ok(shown ? seen[0].includes('$99,999') : !seen.some((t) => t.includes('99,999')), `pxsback (${name}): ${shown ? 'the figures kept five minutes ago show first' : 'figures kept three hours ago are not drawn'} (${JSON.stringify(seen[0])})`);
-      const last = seen[seen.length - 1], btc = Number((last.match(/cBTC\$([\d,]+)/) || [])[1]?.replace(/,/g, ''));
-      ok(btc > 1000 && btc !== 99999, `pxsback (${name}): the reading replaces them (${last})`);
-      if (r.errors.length) { fails++; console.log('FAIL pxsback page errors: ' + r.errors.slice(0, 3).join(' | ')); }
-    } finally { await r.browser.close(); }
-  }
-});
-
-// The farms under the prices: the public pool and each private pool the Earn tab offers, as its pair and its APR, best first. The row keeps its
-// height (the hero does not move when the farms arrive), scrolls instead of widening the page on a phone, and a press opens the Earn tab on that
-// pool with the same APR in its row. Between reward periods only the public pool is left.
-await step('fmchips', async () => {
-  const read = (p) => p.evaluate(() => ({
-    chips: [...document.querySelectorAll('#fms a')].map((a) => ({ apr: Number(a.querySelector('b').textContent.replace(/[,%+]/g, '')), icons: [...a.querySelectorAll('use')].map((u) => u.getAttribute('href')).join(), hx: a.dataset.hx, href: a.getAttribute('href') })),
-    top: document.querySelector('.hero').getBoundingClientRect().top, h: document.querySelector('#fms').getBoundingClientRect().height, scroll: document.documentElement.scrollWidth > innerWidth + 1,
-  }));
-  for (const [name, viewport] of [['desktop', { width: 1280, height: 900 }], ['phone', { width: 360, height: 740 }]]) {
-    const r = await openPage({ account: A0, key: K0, viewport });
-    const p = r.page;
-    try {
-      await p.goto(r.url);
-      await p.waitForSelector('#hx-body .hx-h');
-      const top0 = await p.$eval('.hero', (e) => e.getBoundingClientRect().top);
-      await p.waitForFunction(() => document.querySelector('#fms.on'), null, { timeout: 120000 });
-      const s = await read(p), pub = s.chips.find((c) => c.hx === 'earn:ether:public');
-      ok(s.chips.length >= 2 && !!pub && pub.icons === '#tk-tac,#tk-eth' && s.chips.every((c) => c.apr > 0 && c.icons.split(',').length === 2), `fmchips (${name}): the public pool and the private pools, each a pair of marks and its APR (${s.chips.map((c) => `${c.hx.slice(11)} ${c.apr}%`).join(', ')})`);
-      ok(s.chips.every((c, i) => i === 0 || s.chips[i - 1].apr >= c.apr), `fmchips (${name}): best APR first`);
-      ok(s.chips.every((c) => c.hx === 'earn:ether:public' ? c.href === '#farm/public' : /^earn:ether:p\d+$/.test(c.hx) && c.href === `#farm/private-${c.hx.slice(12)}`), `fmchips (${name}): each keeps its farm's link for a new tab`);
-      ok(Math.abs(s.top - top0) < 1 && s.h >= 24 && !s.scroll, `fmchips (${name}): the row was already there, so the hero did not move (${Math.round(s.top - top0)}px), and the page does not scroll sideways`);
-      for (const c of [s.chips[0], pub]) {
-        const key = c.hx === 'earn:ether:public' ? 'precision' : c.hx.slice(12);
-        await p.click(`#fms a[data-hx="${c.hx}"]`);
-        await until(p, (k) => document.querySelector(`#hx-routes [data-hxr="${k}"]`)?.getAttribute('aria-checked') === 'true', key, 120000);
-        const row = await p.$eval(`#hx-routes [data-hxr="${key}"]`, (e) => e.textContent.replace(/\s+/g, ' '));
-        ok(c.apr >= 10000 || row.includes(`${c.apr.toLocaleString('en-US')}%`),`fmchips (${name}): ${c.hx} opens the Earn tab on that pool, with its APR in the row (${row.slice(0, 60)})`);
-      }
-      if (r.errors.length) { fails++; console.log('FAIL fmchips page errors: ' + r.errors.slice(0, 3).join(' | ')); }
-    } finally { await r.browser.close(); }
-  }
-  const r = await openPage({ account: A0, key: K0 });
-  await r.page.route(/^https:\/\/api\.tacit\.finance\/farm\/program/, async (route) => { try { const res = await route.fetch(); const j = await res.json(); j.epoch = { ...(j.epoch || {}), active: false }; await route.fulfill({ response: res, json: j }); } catch { } });   // a read still out as the page closes is let go
-  try {
-    await r.page.goto(r.url);
-    await r.page.waitForFunction(() => document.querySelector('#fms.on'), null, { timeout: 120000 });
-    const s = await read(r.page);
-    ok(s.chips.length === 1 && s.chips[0].hx === 'earn:ether:public', `fmchips: between reward periods only the public pool is left (${s.chips.map((c) => c.hx).join()})`);
-    if (r.errors.length) { fails++; console.log('FAIL fmchips page errors: ' + r.errors.slice(0, 3).join(' | ')); }
-  } finally { await r.page.unrouteAll({ behavior: 'ignoreErrors' }); await r.browser.close(); }          // a poll's fetch may still be in flight
 });
 
 // The card's Shield by what is held: each source has its own ways (a way that moves ETH into the Tacit pool needs Ethereum, so a pool on
@@ -11174,12 +11162,12 @@ await step('vaultborrow', async () => {
     await r.page.waitForSelector('.bsheet.top [data-in="eth"], .bsheet.top [data-in="known"]', { timeout: 60000 });
     await r.page.click('.bsheet.top [data-in="known"], .bsheet.top [data-in="eth"]');
     await r.page.waitForSelector('#bm-note', { timeout: 300000 });
-    ok((await r.page.$$eval('#bm-note option', (o) => o.map((x) => x.textContent))).join() === '0.0002 cBTC' && /Up to about [\d.,]+ cUSD at the \d+% floor/.test(await text(r.page, '#btc-mine')),
-      `vaultborrow: a key holding a cBTC note is offered a loan against it, with the most the floor allows (${(await text(r.page, '#btc-mine .bm-form')).replace(/\s+/g, ' ').slice(0, 120)})`);
+    ok((await r.page.$$eval('#bm-note option', (o) => o.map((x) => x.textContent))).join() === '0.0002 cBTC' && /Up to about [\d.,]+ cUSD at the \d+% floor/.test(await text(r.page, '#btc-tk')),
+      `vaultborrow: a key holding a cBTC note is offered a loan against it, with the most the floor allows (${(await text(r.page, '#btc-tk .bm-form')).replace(/\s+/g, ' ').slice(0, 120)})`);
     // safer ratios are offered, and the loan being typed says how it would stand
-    const chips = await r.page.$$eval('#btc-mine .bm-chips button', (b) => b.map((x) => x.textContent));
+    const chips = await r.page.$$eval('#btc-tk .bm-chips button', (b) => b.map((x) => x.textContent));
     ok(chips.join() === '250%,200%,175%', `vaultborrow: the form offers the safer ratios (${chips})`);
-    await r.page.click('#btc-mine .bm-chips button:nth-child(2)');
+    await r.page.click('#btc-tk .bm-chips button:nth-child(2)');
     const filled = Number(await r.page.inputValue('#bm-amt')), health = (await text(r.page, '#bm-health')).replace(/\s+/g, ' ');
     ok(filled > 0 && /Collateral ratio 2\d\d%; liquidated below \$[\d,]+ a bitcoin\./.test(health) && !/borrow less/.test(health), `vaultborrow: choosing 200% fills the amount and says how the loan would stand (${filled} cUSD: ${health})`);
     await r.page.fill('#bm-amt', String(Math.ceil(filled * 4)));
@@ -11189,13 +11177,13 @@ await step('vaultborrow', async () => {
     await r.page.evaluate(() => { window.__vb.refuse = true; });
     const s0 = await store();
     await r.page.fill('#bm-amt', '5');
-    await r.page.click('#btc-mine [data-mine="borrow"]');
+    await r.page.click('#btc-tk [data-mine="borrow"]');
     await until(r.page, () => /can’t take this one/.test(document.querySelector('#bm-status')?.textContent || ''), null, 240000);
     ok((await r.page.getAttribute('#bm-status a', 'href')) === '/#borrow' && (await store()) === s0, `vaultborrow: a loan the relay refuses says so, remembers nothing, and points to the front page (${await said()})`);
     await r.page.evaluate(() => { window.__vb.refuse = false; });
     // borrowed
     await r.page.fill('#bm-amt', '5');
-    await r.page.click('#btc-mine [data-mine="borrow"]');
+    await r.page.click('#btc-tk [data-mine="borrow"]');
     await until(r.page, () => /Borrowed 5 cUSD/.test(document.querySelector('#bm-status')?.textContent || ''), null, 240000);
     const open = (await vb()).calls.filter((c) => c.kind === 'open').at(-1);
     ok(open && open.self === 'undefined' && open.debt === '500000000' && open.coll === '20000' && /^0x[0-9a-f]{64}$/.test(open.owner), `vaultborrow: the loan is relayed against the whole note (${JSON.stringify(open)})`);
@@ -12063,6 +12051,11 @@ await step('swaphere', async () => {
     await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); location.hash = ''; });
     await p.goto(r.url + '?from=tETH&to=TAC&private=both&amt=0.05');
     await pasteKey(p, hex);
+    // the key's own address pays here, chosen (a wallet pays by default now): it holds no ETH, which is said before anything is proved
+    await toWallet(p);
+    await p.waitForSelector('[data-pay="tacit"]', { timeout: 60000 });
+    await p.click('[data-pay="tacit"]');
+    await until(p, () => document.querySelector('[data-pay="tacit"]')?.classList.contains('main'));
     await p.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
     await p.waitForSelector('#hx-swap #amt', { timeout: 120000 });
     relayStateNow = 'paused';
@@ -12114,19 +12107,21 @@ await step('routeahead', async () => {
   };
   try {
     await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
-    await p.click('[data-hxm="swap"]');
-    await until(p, () => /^tETH/.test((document.querySelector('#hx-swap #pay-coin')?.textContent || '').trim()) && /Balance 0\.25 · Max/.test(document.querySelector('#hx-swap #pay-side')?.textContent || ''), null, 300000);
-    await p.click('#hx-swap #get-coin'); await p.waitForSelector('#pk .pk-r:visible');
-    await p.evaluate(() => { let g = ''; for (const el of document.querySelectorAll('#pk .pk-g, #pk .pk-r')) { if (el.classList.contains('pk-g')) { g = el.textContent; continue; } if (/^Private/.test(g) && el.querySelector('b')?.textContent.trim() === 'TAC') { el.click(); return; } } });
-    await until(p, () => /^TAC/.test((document.querySelector('#hx-swap #get-coin')?.textContent || '').trim()) && /private/i.test(document.querySelector('#hx-swap #get-at')?.textContent || ''), null, 60000)
-      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | get: ${await text(p, '#hx-swap #get-coin')} / ${await text(p, '#hx-swap #get-at')}`); });
+    await tabClick(p, 'shield');
+    await until(p, () => /You hold 0\.25 tETH privately/.test(document.querySelector('#hx-have')?.textContent || ''), null, 300000);
+    await p.click('[data-hxin="swap:eth:tac"]');                                    // "Swap it": private tETH for TAC
+    await until(p, () => /^TAC/.test((document.querySelector('#hx-swap #get-coin')?.textContent || '').trim()) && /private/i.test(document.querySelector('#hx-swap #get-at')?.textContent || '') && /Balance 0\.25/.test(document.querySelector('#hx-swap #pay-side')?.textContent || ''), null, 90000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | pay ${await text(p, '#hx-swap #pay-coin')} / ${await text(p, '#hx-swap #pay-side')} | get ${await text(p, '#hx-swap #get-coin')} / ${await text(p, '#hx-swap #get-at')}`); });
     await p.fill('#hx-swap #amt', '0.05');
     await until(p, () => /Proof\s*made: the relay only sends it/.test(document.querySelector('#hx-swap #rcpt')?.textContent || ''), null, 300000).catch(() => {});
     const asked = (await calls()).filter((c) => c.ahead);
     ok(asked.length === 1 && asked[0].amountIn === '5000000' && asked[0].noteValue === '25000000' && BigInt(asked[0].fee) === 100000n && /Proof\s*made: the relay only sends it/.test(await q('#rcpt')),
       `routeahead: the quote stood, the route over part of the larger note is proved ahead with the relay's fee bound in, and the receipt says it is made (${JSON.stringify(asked)}; ${(await q('#rcpt')).match(/Proof.{0,40}/)?.[0]})`);
+    await p.evaluate(() => { window.__barSeen = []; new MutationObserver((ms) => { for (const m of ms) for (const x of m.addedNodes) if (x.matches?.('.pace')) window.__barSeen.push(x.dataset.eta ? 'estimate' : 'job'); }).observe(document.querySelector('#hx-swap'), { childList: true, subtree: true }); });
     await press((await calls()).length);
     let all = await calls();
+    const seen = await p.evaluate(() => window.__barSeen);
+    ok(seen.length > 0 && !(await p.$('#hx-swap .pace')), `routeahead: while the relay sends it a bar stands under the status line (${seen}), and it is gone once the swap is done`);
     ok(/Done\./.test(await q('#q')) && all.filter((c) => c.posted && !c.refused).length === 1 && !all.some((c) => !c.ahead && !c.posted && !c.split),
       `routeahead: the press posts that proof for the relay to send and asks no route of the relay (${all.map((c) => (c.ahead ? 'ahead' : c.posted ? 'posted' : c.split ? 'split' : 'route')).join(' > ')}; ${(await q('#q')).slice(0, 100)})`);
     if (r.errors.length) { fails++; console.log('FAIL routeahead page errors: ' + r.errors.slice(0, 3).join(' | ')); }
@@ -12838,7 +12833,7 @@ await step('wrapfirst', async () => {
     ok(submits.slice(s0).filter((x) => x.type === 'wrap' && x.mode === 'prove').length === 1, `wrapfirst: the relay's proof is asked for once the amount settles (${submits.slice(s0).map((x) => `${x.type}/${x.mode}`)})`);
     await until(r.page, () => /ready now/.test(document.querySelector('#w-rcpt')?.textContent || ''), null, 60000).catch(() => {});
     ok(/ready now/.test(await text(r.page, '#w-rcpt')), `wrapfirst: the receipt says the proof is ready (${(await text(r.page, '#w-rcpt')).replace(/\s+/g, ' ').slice(0, 140)})`);
-    const tip = await r.page.evaluate(() => /Relay tip\s*([\d.]+) ETH/.exec(document.querySelector('#w-rcpt')?.textContent || '')?.[1] || null);
+    const tip = await r.page.evaluate(() => /Proof fee\s*([\d.]+) ETH/.exec(document.querySelector('#w-rcpt')?.textContent || '')?.[1] || null);
     await r.page.click('#w-go');
     await until(r.page, () => /Done\./.test(document.querySelector('#v1-status')?.textContent || '') || /class="err"/.test(document.querySelector('#v1-status')?.innerHTML || ''), null, 300000).catch(() => {});
     const sent = walletTxs.slice(w0), call = sent.find((x) => String(x.to).toLowerCase() === ROUTER_ADDR);
@@ -12857,6 +12852,42 @@ await step('wrapfirst', async () => {
       `wrapfirst: with no sponsored proofs left the deposit goes first, with its tip (${walletTxs.slice(w1).map((x) => `${x.to.slice(0, 10)}/${x.data.slice(0, 10)}`)}; ${(await text(r.page, '#sheet-eth')).replace(/\s+/g, ' ').slice(0, 400)}; ${submits.slice(-3).map((x) => `${x.type}/${x.mode}`)})`);
     if (r.errors.length) { fails++; console.log('FAIL wrapfirst page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { proveStub = false; refuseSubmits = 0; refuseTypes = null; refuseWith = null; await rpc('anvil_setCode', [ROUTER_ADDR, routerCode]); await r.browser.close(); }
+});
+
+// While Tacit's prover makes the proof a Shield waits on (before anything is sent), the tile shows a bar under its status line that fills over
+// the prover's usual time, and takes it away when the proof is made and the one transaction goes.
+await step('provebar', async () => {
+  const r = await openPage({ account: A0, key: K0 });
+  const hex = 'b4a7'.padEnd(64, '3');
+  const ROUTER_ADDR = '0x000000005da3e3b73726af3c774deeb9472d4992', routerCode = await rpc('eth_getCode', [ROUTER_ADDR, 'latest']);
+  const p = r.page, bars = () => p.evaluate(() => [...document.querySelectorAll('#hx-swap .pace[data-eta]')].map((b) => `${b.querySelector('[role=progressbar]')?.getAttribute('aria-valuenow')}% ${b.lastElementChild?.textContent}`));
+  try {
+    await rpc('anvil_setCode', [ROUTER_ADDR, '0x00']);
+    proveStub = true; proveHold = 14000;
+    await p.goto(r.url);
+    await p.waitForSelector('#hx-body .hx-h');
+    await pasteKey(p, hex);
+    await toWallet(p);
+    await p.waitForSelector('[data-pay="wallet"]');
+    await p.click('[data-pay="wallet"]');
+    await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
+    await tabClick(p, 'shield'); await p.waitForSelector(MV.amt, { timeout: 120000 });
+    await p.fill(MV.amt, '0.05');
+    await until(p, () => /^Shield ETH$/.test((document.querySelector('#hx-swap #go')?.textContent || '').trim()) && !document.querySelector('#hx-swap #go').disabled, null, 120000);
+    await p.click(MV.go);
+    await until(p, () => /making your proof|nearly made/.test(document.querySelector('#hx-mz')?.textContent || ''), null, 60000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await text(p, '#hx-mz')} | ${await text(p, '#hx-swap')}`); });
+    await until(p, () => document.querySelectorAll('#hx-swap .pace[data-eta]').length === 1, null, 10000).catch(() => {});
+    const b1 = await bars();
+    ok(b1.length === 1 && /about|a few|a little/.test(b1[0]), `provebar: while the proof is made, one bar under the status line says how long is left (${b1}${b1.length ? '' : ` | ${await p.evaluate(() => `mv-st ${document.querySelector('#mv-st')?.innerHTML.slice(0, 300)} | all ${[...document.querySelectorAll('.pace')].map((x) => x.outerHTML.slice(0, 80))} | mz ${!!document.querySelector('#hx-mz')} in ${document.querySelector('#hx-mz')?.parentElement?.id}`)}`})`);
+    await sleep(3500);
+    const b2 = await bars();
+    if (SHOTS) await p.locator('#hx').screenshot({ path: join(SHOTS, 'provebar.png') });
+    ok(b2.length === 1 && parseInt(b2[0]) > parseInt(b1[0]), `provebar: and it fills as the time passes (${b1} → ${b2})`);
+    await until(p, () => /Done\./.test(document.querySelector('#hx-mz')?.textContent || '') || /class="err"/.test(document.querySelector('#hx-mz')?.innerHTML || ''), null, 120000).catch(() => {});
+    ok((await bars()).length === 0 && /Done\./.test(await text(p, '#hx-mz')), `provebar: it is gone once the proof is made and the transaction has gone (${(await text(p, '#hx-mz')).replace(/\s+/g, ' ').slice(0, 90)})`);
+    if (r.errors.length) { fails++; console.log('FAIL provebar page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { proveStub = false; proveHold = 0; await rpc('anvil_setCode', [ROUTER_ADDR, routerCode]); await r.browser.close(); }
 });
 
 // Wraps kept ready by the community proof pool: with no prover of your own, a size picked in the prove sheet is asked of the pool

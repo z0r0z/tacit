@@ -30,8 +30,8 @@ let n = 0, fails = 0;
 const ok = (c, s) => { if (c) { n++; console.log('  ok   ' + s); } else { fails++; console.log('FAIL   ' + s); } };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// [width, height, a phone] around each breakpoint of the rules (640, 380, 330), and a wide screen
-const WIDTHS = [[1440, 900, false], [820, 1100, false], [641, 900, false], [640, 900, true], [412, 915, true], [390, 844, true], [375, 667, true], [360, 800, true], [340, 700, true], [320, 640, true]];
+// [width, height, a phone] either side of each breakpoint of the rules (640, 356, 349, 346), and a wide screen
+const WIDTHS = [[1440, 900, false], [820, 1100, false], [641, 900, false], [640, 900, true], [412, 915, true], [390, 844, true], [375, 667, true], [360, 800, true], [357, 800, true], [356, 800, true], [350, 800, true], [347, 700, true], [346, 700, true], [340, 700, true], [320, 640, true]];
 const browser = await chromium.launch();
 try {
   for (const [w, h, phone] of WIDTHS) {

@@ -136,7 +136,9 @@ try {
   {
     const { page, bad, shot } = await visit(`/fast/?lp=${encodeURIComponent(lp.base)}&claimPub=${claimPub}`);
     await page.waitForFunction(() => /fee/.test(document.getElementById('fx-lp')?.textContent || ''), null, { timeout: 15000 });
-    ok(/^tacit fast/.test(await text(page, 'h1')), 'the page is "tacit fast"');
+    ok((await page.title()) === 'tacit fast' && /^Bridge in minutes/.test(await text(page, 'h1')), 'the page is "tacit fast", headed "Bridge in minutes"');
+    ok(await page.$eval('#fx-alt a', (a) => a.getAttribute('href') === '/#card=bridge'), 'the regular bridge is linked from the card');
+    ok(await page.$eval('#provide', (e) => !e.hidden) && (await text(page, '#pv-go')) === 'Open wallet', 'anyone who comes by finds the provider panel, with a way to open the wallet');
     ok(/0\.30% \+ 0\.000002 TAC fee/.test(await text(page, '#fx-lp')), `the provider's fee is shown (${await text(page, '#fx-lp')})`);
     ok((await text(page, '#fx-go')) === 'Open wallet' && !(await page.$eval('#fx-go', (e) => e.hidden)), 'the button reads Open wallet');
     ok(await page.$eval('#fx-form', (e) => e.hidden), 'no form before a key');

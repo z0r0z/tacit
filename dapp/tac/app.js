@@ -1,8 +1,8 @@
 
 const TACIT_URL = '/tacit.js?cb=187d27e1';
 const SECRET_URL = '/sats/secret.js?cb=d10eac01';
-const SATS_URL = '/tac/sats.js?cb=3708074c';
-const CLAIM_URL = '/tac/claim.js?cb=1523631a';
+const SATS_URL = '/tac/sats.js?cb=37cf5ec2';
+const CLAIM_URL = '/tac/claim.js?cb=15b8bd50';
 const UNIFIED_URL = '/tacit-unified.js?cb=a5b3a042';
 const KNOWN_URL = '/tacit-wallet-known.js?cb=ed4c75b7';
 const EVM_URL = '/evm-wallet.js?cb=b400cbe7';
@@ -79,8 +79,11 @@ for (const ev of ['input', 'change']) document.addEventListener(ev, ({ target: i
   if (bad) i.setAttribute('aria-invalid', 'true'); else i.removeAttribute('aria-invalid');
   amountHint(i, bad ? amountWhy(t, DECIMALS) : '');
 }, true);
+const blocksText = (n) => `${n} more Bitcoin block${n === 1 ? '' : 's'} (≈ ${n * 10} min)`;
 const short = (a, n = 4) => { if (!a) return ''; const head = /^tacit1/.test(a) ? 10 + n : n + 2; return a.length > head + n + 2 ? `${a.slice(0, head)}…${a.slice(-n)}` : a; };
+// A relayed payment can come back without its id (the relay says it posted, not in which transaction): it went out in the relay's batch.
 const txLink = (txid) => {
+  if (!txid) return document.createTextNode('the relay’s batch');
   const a = document.createElement('a');
   a.href = `https://mempool.space/tx/${txid}`; a.target = '_blank'; a.rel = 'noopener noreferrer';
   a.textContent = `${txid.slice(0, 10)}…`;
@@ -504,9 +507,10 @@ function watchPassphrase() {
 }
 
 function paintReceive() {
-  $('recv-addr').value = poolWallet ? poolWallet.addressString : 'Open your Tacit wallet to see it';
-  $('recv-tacit').value = !poolWallet ? 'Open your Tacit wallet to see it'
-    : tacitAddress === false ? 'Not available here: use the pool address below.' : tacitAddress || 'Deriving your Tacit address…';
+  const shut = 'Open your Tacit wallet to see it';
+  $('recv-addr').value = poolWallet ? poolWallet.addressString : '';
+  $('recv-tacit').value = poolWallet && tacitAddress ? tacitAddress : '';
+  $('recv-tacit').placeholder = !poolWallet ? shut : tacitAddress === false ? 'Not available here: use the pool address below.' : 'Deriving your Tacit address…';
 }
 async function loadTacitAddress(fresh = false) {
   const pw = poolWallet;
@@ -561,12 +565,16 @@ async function loadPublic() {
   renderBalances(); renderShieldPicker();
 }
 
-async function loadShielded() {
+let shieldedP = null;   // the read under way, for a press that must see the balance before it acts
+function loadShielded() { return (shieldedP = readShielded()); }
+async function readShielded() {
   if (!poolWallet) return;
   const pw = poolWallet;
   shielded = { ...shielded, loading: true }; renderBalances();
   try {
-    const notes = await S.poolNotes(pw, S.TAC_ASSET_MAINNET);
+    // the feed the figures strip read moments ago opens this wallet's notes too, so the pool's notes are not fetched a second time for it
+    const kept = feedFresh();
+    const notes = kept ? (await S.poolClientFor('mainnet').walletNotes(S.pool, pw, { notes: await kept })).filter((n) => lc(n.asset).replace(/^0x/, '') === S.TAC_ASSET_MAINNET) : await S.poolNotes(pw, S.TAC_ASSET_MAINNET);
     if (poolWallet !== pw) return;
     shielded = { loading: false, notes };
   } catch (e) { if (poolWallet !== pw) return; shielded = { ...shielded, loading: false }; errSay('st-recv', e); }
@@ -582,12 +590,14 @@ function renderBalances() {
   const sT = shieldedTotal(), pT = publicTotal();
   $('bal-shielded').textContent = !unlocked() ? '—' : shielded.loading ? '…' : fmt(sT);
   $('bal-public').textContent = !unlocked() ? '—' : pub.loading ? '…' : fmt(pT);
+  $('bal-shielded').classList.toggle('nil', !unlocked() || shielded.loading);
+  $('bal-public').classList.toggle('nil', !unlocked() || pub.loading);
   $('bal-shielded-sats').textContent = unlocked() && !shielded.loading && sT > 0n ? satsText(sT) : '';
   $('bal-public-sats').textContent = unlocked() && !pub.loading && pT > 0n ? satsText(pT) : '';
   const n = (shielded.notes || []).filter((x) => !x.spent && BigInt(x.value) > 0n).length;
   $('bal-note').textContent = !unlocked() ? 'Open your Tacit wallet to see your balances.'
     : `${n} shielded note${n === 1 ? '' : 's'} only you can see.`;
-  if (unlocked() && !shielded.loading && liveNotes().length > 4) {
+  if (unlocked() && !shielded.loading && liveNotes().length > 2) {   // a payment spends two notes at most: Withdraw and claim links need this too
     const b = Object.assign(document.createElement('button'), { className: 'link', type: 'button', textContent: 'Combine notes' });
     b.onclick = offerCombine;
     $('bal-note').append(' ', b);
@@ -599,6 +609,7 @@ function renderBalances() {
 const liveNotes = () => (S && poolWallet ? S.pendingView(shielded.notes || [], S.TAC_ASSET_MAINNET, poolWallet).live.filter((n) => BigInt(n.value) > 0n) : []);
 const liveValues = () => liveNotes().map((n) => BigInt(n.value)).sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
 const combineFee = () => (relayLive && relayFee != null ? relayFee : null);
+const feeCap = () => (combineFee() == null ? null : (combineFee() * 5n) / 4n);   // a quote up to a quarter over the fee shown goes through; one above it is shown first
 const combineBox = (id, lead, each = false) => html`<div class="callout"><span>${lead}<small>${combineFee() != null ? `Relay fee ≈ ${fmt(combineFee())} TAC${each ? ' each' : ''}` : 'Posted from your Bitcoin address, which pays its Bitcoin fee and shows as the sender'}.</small></span><button class="btn ghost" type="button" id="${id}">Combine notes</button></div>`;
 function renderSendComb() {
   const box = $('send-comb');
@@ -618,7 +629,7 @@ function offerCombine() {
 }
 
 function renderAmountHints() {
-  for (const [field, hint] of [['send-amt', 'send-sats'], ['exit-amt', 'exit-sats']]) {
+  for (const [field, hint] of [['send-amt', 'send-sats'], ['exit-amt', 'exit-sats'], ['claim-amt', 'claim-sats']]) {
     const el = $(hint); if (!el) continue;
     let units = 0n;
     try { units = parseUnits($(field).value); } catch { units = 0n; }
@@ -659,25 +670,35 @@ function renderShieldPicker() {
   ([...sel.options].find((o) => o.value === was) || sel.options[0]).selected = true;
 }
 
+// The pool's note feed as last read here, kept as long as the pool client keeps its own read (20 s from its answer): the figures strip counts
+// its transactions, and a wallet or a claim link opened in that time scans the same bytes instead of fetching them again.
+let feedKept = null;   // { p, at }: `at` is when the read answered, null while it is under way
+function poolFeed() {
+  if (!feedKept || (feedKept.at != null && Date.now() - feedKept.at > 20e3)) {
+    const kept = { p: null, at: null };
+    kept.p = S.poolClientFor('mainnet').allNotes().then((notes) => { kept.at = Date.now(); return notes; }, (e) => { if (feedKept === kept) feedKept = null; throw e; });
+    feedKept = kept;
+  }
+  return feedKept.p;
+}
+const feedFresh = () => (feedKept && (feedKept.at == null || Date.now() - feedKept.at <= 20e3) ? feedKept.p : null);
+let relayP = null;   // the relay's fee read, which a press that sizes an amount waits for
 async function loadStats() {
   try {
     await loadSecret();
-    const st = await S.poolClientFor('mainnet').status();
+    const client = S.poolClientFor('mainnet');
+    relayP ||= client.relayInfo().then((info) => { relayLive = !!info; const f = info?.fees?.['0x' + S.TAC_ASSET_MAINNET]; relayFee = f == null ? null : BigInt(f); }, () => { relayLive = false; relayFee = null; });
+    const st = await client.status();
     $('s-set').textContent = Number(st.leafCount || 0).toLocaleString('en-US');
     $('s-height').textContent = Number(st.height || 0).toLocaleString('en-US');
     $('s-proof').textContent = st.proofSystem === 'halo2-kzg-bn254' ? 'Halo2·KZG' : (st.proofSystem || '—');
-    const feed = await S.poolClientFor('mainnet').allNotes().catch(() => null);
+    const feed = await poolFeed().catch(() => null);
     const txs = feed ? new Set(feed.filter((n) => n.txid).map((n) => n.txid)).size : null;
     $('s-txs').textContent = txs == null ? '—' : txs.toLocaleString('en-US');
   } catch {
     for (const id of ['s-set', 's-txs', 's-height', 's-proof']) if ($(id).textContent === '…') $(id).textContent = '—';
   }
-  try {
-    const info = await S.poolClientFor('mainnet').relayInfo();
-    relayLive = !!info;
-    const f = info?.fees?.['0x' + S.TAC_ASSET_MAINNET];
-    relayFee = f == null ? null : BigInt(f);
-  } catch { relayLive = false; relayFee = null; }
+  await relayP;
 }
 
 async function doShield() {
@@ -701,6 +722,14 @@ async function doShield() {
   await loadPublic(); await loadShielded();
 }
 
+// A quote above the fee shown ends the press before anything is paid: the fee shown, Max and the balance check follow the new one, and the
+// press is asked for again.
+const feeMoved = (e) => {
+  if (e?.feeMoved == null) throw e;
+  relayFee = e.feeMoved; renderSendComb();
+  throw said(`The relay’s fee changed to ${fmt(e.feeMoved)} TAC. Check it and press again.`);
+};
+
 async function doSend(anchor = null) {
   await ensureKey();
   const to = $('send-to').value.trim();
@@ -713,7 +742,7 @@ async function doSend(anchor = null) {
       ? `More than your shielded balance with the relay’s ${fmt(relayFeeUnits())} TAC fee.`
       : 'More than your shielded balance.');
   }
-  const r = await S.payPrivately(T, { poolWallet, to, amount, asset: S.TAC_ASSET_MAINNET, anchor, say: (m) => say('st-send', m), askSelf: askSelfPost('st-send') });
+  const r = await S.payPrivately(T, { poolWallet, to, amount, asset: S.TAC_ASSET_MAINNET, anchor, maxFee: feeCap(), say: (m) => say('st-send', m), askSelf: askSelfPost('st-send') }).catch(feeMoved);
   if (r.wait) return waitBox('st-send', r, (tip) => doSend(tip));
   $('send-to').value = ''; $('send-amt').value = ''; renderAmountHints();
   say('st-send', `Sent ${fmt(amount)} TAC in `, txLink(r.revealTxid), r.relayed ? '. The relay posted it, for a fee in TAC.' : '. Posted from your Bitcoin address.');
@@ -724,16 +753,9 @@ async function doCombine(statusId, then, anchor = null) {
   await ensureKey();
   if (!shielded.notes.length) await loadShielded();
   const fee = combineFee();
-  let r;
-  try {
-    r = await S.combineNotes(T, { poolWallet, asset: S.TAC_ASSET_MAINNET, anchor, noRelay: fee == null, maxFee: fee, say: (m) => say(statusId, m), askSelf: askSelfPost(statusId) });
-  } catch (e) {
-    if (e?.feeMoved == null) throw e;
-    relayFee = e.feeMoved; renderSendComb();
-    throw said(`The relay’s fee changed to ${fmt(e.feeMoved)} TAC. Check it and press again.`);
-  }
+  const r = await S.combineNotes(T, { poolWallet, asset: S.TAC_ASSET_MAINNET, anchor, noRelay: fee == null, maxFee: fee, say: (m) => say(statusId, m), askSelf: askSelfPost(statusId) }).catch(feeMoved);
   if (r.wait) return waitBox(statusId, r, (tip) => doCombine(statusId, then, tip));
-  say(statusId, 'Combining: the new note counts after three Bitcoin confirmations, about 30 minutes.', then ? ` ${then} ` : ' ', txLink(r.revealTxid));
+  say(statusId, 'Combining in ', txLink(r.revealTxid), ': the new note counts after three Bitcoin confirmations, about 30 minutes.', then ? ` ${then}` : '');
   await loadShielded();
 }
 
@@ -771,7 +793,7 @@ const askSelfPost = (statusId) => (why, { timedOut = false, signal } = {}) => ne
 function waitBox(statusId, w, retry) {
   const wrap = document.createElement('div');
   const p = document.createElement('div');
-  p.textContent = `Your newest note needs ${w.wait} more Bitcoin block${w.wait === 1 ? '' : 's'} (≈ ${w.wait * 10} min) before it can be spent against a settled block.`;
+  p.textContent = `Your newest note needs ${blocksText(w.wait)} before it can be spent against a settled block.`;
   const row = document.createElement('div');
   row.className = 'row2';
   const now = document.createElement('button');
@@ -954,11 +976,13 @@ async function makeClaimLink() {
   const amount = parseUnits($('claim-amt').value);
   if (amount <= 0n) throw new Error('Enter an amount above zero.');
   if (!shielded.notes.length) await loadShielded();
-  if (amount + relayFeeUnits() > shieldedTotal()) throw new Error('More than your shielded balance.');
+  if (amount + relayFeeUnits() > shieldedTotal()) {
+    throw new Error(relayFeeUnits() > 0n ? `More than your shielded balance with the relay’s ${fmt(relayFeeUnits())} TAC fee.` : 'More than your shielded balance.');
+  }
   const pin = $('claim-pin').value.trim();
   let secret = null;
   const r = await C.createClaim(T, {
-    S, pool: S.pool, poolWallet, amount, asset: S.TAC_ASSET_MAINNET, pin, network: 'mainnet',
+    S, pool: S.pool, poolWallet, amount, asset: S.TAC_ASSET_MAINNET, pin, network: 'mainnet', maxFee: feeCap(),
     say: (m) => say('st-claim-make', m), askSelf: askSelfPost('st-claim-make'),
     keep: ({ secret32, pinned, network }) => {
       secret = toHex(secret32);
@@ -966,13 +990,17 @@ async function makeClaimLink() {
       // storage that is full or blocked keeps nothing: the payment is not made to a key only this tab knows
       if (!claimLinks().some((x) => x.secret === secret)) throw new Error('This browser could not save the link’s key, so nothing was sent. Free some space or allow this site’s data, then try again.');
     },
-  });
+  }).catch((e) => { if (e?.feeMoved != null && secret) dropClaimLink(secret); feeMoved(e); });   // a fee refused before anything is paid leaves no link behind
   if (r.wait) {
     if (secret) dropClaimLink(secret);
-    return say('st-claim-make', `Your newest note needs ${r.wait} more Bitcoin block${r.wait === 1 ? '' : 's'} (≈ ${r.wait * 10} min) before it can be spent. Try again after that.`);
+    return say('st-claim-make', `Your newest note needs ${blocksText(r.wait)} before it can be spent. Try again after that.`);
   }
   if (secret) patchClaimLink(secret, { txid: r.revealTxid, link: r.link });
   $('claim-amt').value = ''; $('claim-pin').value = '';
+  if (!r.link) {   // the relay posted it without saying where: the link is read back from the note once the pool counts it
+    say('st-claim-make', `${fmt(amount)} TAC went out in the relay’s batch. Its link is under Links made on this device: press Find the link there in a few blocks.`);
+    return loadShielded();
+  }
   const box = document.createElement('div');
   const field = document.createElement('input');
   field.readOnly = true; field.value = r.link; field.setAttribute('aria-label', 'Claim link');
@@ -985,7 +1013,11 @@ async function makeClaimLink() {
   await loadShielded();
 }
 
+const claimTimers = { typing: 0, again: 0 };   // one claim panel at a time: a new link stops the last one's checks
+let claimGen = 0;                                // and a read of the last one's that answers late changes nothing
 async function showClaim(payload) {
+  clearTimeout(claimTimers.typing); clearTimeout(claimTimers.again);
+  const gen = ++claimGen;
   const host = $('claim-body'); const panel = $('claim-panel');
   panel.hidden = false;
   host.textContent = 'Reading the link…';
@@ -1000,20 +1032,31 @@ async function showClaim(payload) {
   pinField.className = 'field-in';
   const line = document.createElement('div'); line.className = 'kv';
   const btn = document.createElement('button'); btn.className = 'btn'; btn.textContent = 'Claim to your wallet';
+  btn.disabled = true;   // live once a read says there is something under the link
   const st = document.createElement('div'); st.className = 'status'; st.id = 'st-claim'; st.setAttribute('role', 'status');
 
-  let looked = 0;
+  let looked = 0, claimed = false;   // claimed here: the pool's feed can still show the note for a few blocks
   async function refresh() {
+    if (gen !== claimGen) return;
     const mine = ++looked;
     line.replaceChildren(document.createTextNode('Checking…'));
+    let has = false, gone = false, failed = false;
     try {
-      const r = await C.readClaim(S, S.pool, { secret32: parsed.secret32, pin: pinField.value.trim(), network: 'mainnet', asset: S.TAC_ASSET_MAINNET });
-      if (mine !== looked) return;
+      const feed = await poolFeed();
+      const r = await C.readClaim(S, S.pool, { secret32: parsed.secret32, pin: pinField.value.trim(), network: 'mainnet', asset: S.TAC_ASSET_MAINNET, feed, txid: parsed.txid });
+      if (mine !== looked || gen !== claimGen) return;
+      has = r.total > 0n && !claimed; gone = claimed || (!has && r.seen > 0);
+      // no note under the link at all: a payment still on its way while the pool has not indexed its transaction; once it has, the PIN is not
+      // the one the link was made with, or the link was changed on the way
+      const why = has ? `${fmt(r.total)} TAC${satsText(r.total) ? ' · ' + satsText(r.total) : ''}` : gone ? 'Already claimed' : r.indexed === false ? 'Not arrived yet' : parsed.pinned ? 'Check the PIN' : r.indexed ? 'Copy the whole link again' : 'Not arrived yet';
       line.replaceChildren(
-        Object.assign(document.createElement('span'), { textContent: r.total > 0n ? 'Waiting for you' : 'Nothing under this link' }),
-        Object.assign(document.createElement('b'), { className: 'num', textContent: r.total > 0n ? `${fmt(r.total)} TAC${satsText(r.total) ? ' · ' + satsText(r.total) : ''}` : parsed.pinned ? 'Check the PIN' : 'Already claimed' }));
-      btn.disabled = r.total <= 0n;
-    } catch (e) { if (mine === looked) { line.replaceChildren(); errSayInto(line, e); } }
+        Object.assign(document.createElement('span'), { textContent: has ? 'Waiting for you' : gone ? 'Nothing under this link' : 'Nothing here yet' }),
+        Object.assign(document.createElement('b'), { className: 'num', textContent: why }));
+      btn.disabled = !has;
+    } catch (e) { if (mine !== looked || gen !== claimGen) return; failed = true; line.replaceChildren(); errSayInto(line, e); }
+    clearTimeout(claimTimers.again);
+    // a payment a few blocks out, or a read that failed, is looked for again in a minute; a tab out of sight looks once it is seen again
+    if (failed || (!has && !gone)) claimTimers.again = setTimeout(() => { if (!document.hidden) refresh(); else document.addEventListener('visibilitychange', () => refresh(), { once: true }); }, 60e3);
   }
 
   btn.onclick = () => busy(btn, 'st-claim', async () => {
@@ -1028,16 +1071,17 @@ async function showClaim(payload) {
       S, pool: S.pool, secret32: parsed.secret32, pin: pinField.value.trim(), network: 'mainnet',
       asset: S.TAC_ASSET_MAINNET, toAddress: poolWallet.addressString, fmt, say: (m) => { st.textContent = m; }, askSelf: askSelfPost('st-claim'),
     });
-    if (r.wait) { st.textContent = `The note needs ${r.wait} more Bitcoin block${r.wait === 1 ? '' : 's'} (≈ ${r.wait * 10} min) before it can move. Try again after that.`; return; }
+    if (r.wait) { st.textContent = `The note needs ${blocksText(r.wait)} before it can move. Try again after that.`; return; }
+    claimed = true;
     st.replaceChildren(document.createTextNode('Claimed to your wallet in '), txLink(r.revealTxid), document.createTextNode(r.relayed ? '. The fee came out of the TAC, so it cost you no bitcoin.' : '.'));
     await refreshAll();
     await refresh();
-  });
+  }).then(() => { if (claimed) btn.disabled = true; });   // busy hands the button back as it was before the press
 
   host.replaceChildren(
     Object.assign(document.createElement('p'), { className: 'note', style: 'margin-top:0', textContent: parsed.pinned ? 'Enter the PIN you were given.' : 'Claiming moves the TAC into a wallet only you control.' }),
     ...(parsed.pinned ? [pinField] : []), line, btn, st);
-  if (parsed.pinned) pinField.addEventListener('input', () => { clearTimeout(showClaim._t); showClaim._t = setTimeout(refresh, 400); });
+  if (parsed.pinned) pinField.addEventListener('input', () => { clearTimeout(claimTimers.typing); claimTimers.typing = setTimeout(refresh, 400); });
   await refresh();
 }
 
@@ -1055,7 +1099,7 @@ function renderSats() {
   import(SATS_URL).then((m) => m.mount(host, {
     get T() { return T; }, get S() { return S; }, get poolWallet() { return poolWallet; },
     get markSats() { return markSats; }, get notes() { return shielded.notes; },
-    ensureKey, busy, say, errSay, fmt, parseUnits, shieldedTotal, txLink, loadShielded, relayFeeUnits, turn,
+    ensureKey, busy, say, errSay, fmt, blocksText, parseUnits, shieldedTotal, txLink, loadShielded, relayFeeUnits, feeCap, feeMoved, turn,
   })).catch((e) => { host.textContent = ''; delete host.dataset.ready; errSay('st-exit', e); });
 }
 
@@ -1087,8 +1131,9 @@ function renderSats() {
   $('exit-amt').addEventListener('input', renderAmountHints);
   const maxInto = (field, statusId) => async () => {
     await ensureKey();
-    if (!shielded.notes.length && !shielded.loading) await loadShielded();
-    const total = shieldedTotal() - (field === 'send-amt' ? relayFeeUnits() : 0n);
+    if (shielded.loading) await shieldedP; else if (!shielded.notes.length) await loadShielded();
+    if (relayLive == null) await relayP;   // the relay's fee comes off the amount: it is waited for rather than taken as none
+    const total = shieldedTotal() - (field === 'exit-amt' ? 0n : relayFeeUnits());
     if (total <= 0n) return say(statusId, 'Nothing shielded yet. Shield some TAC first.');
     $(field).value = fmtPlain(total);
     $(field).dispatchEvent(new Event('input', { bubbles: true }));
@@ -1096,6 +1141,7 @@ function renderSats() {
   };
   $('send-max').onclick = () => maxInto('send-amt', 'st-send')().catch((e) => errSay('st-send', e));
   $('exit-max').onclick = () => maxInto('exit-amt', 'st-exit')().catch((e) => errSay('st-exit', e));
+  $('claim-max').onclick = () => maxInto('claim-amt', 'st-claim-make')().catch((e) => errSay('st-claim-make', e));
   $('btn-copy').onclick = () => {
     if (!poolWallet) return say('st-recv', 'Open your Tacit wallet first: your pool address is derived from its key.');
     copyText(poolWallet.addressString).then((ok) => say('st-recv', ok ? 'Pool address copied.' : 'Could not copy: the browser refused clipboard access.'));
@@ -1106,10 +1152,7 @@ function renderSats() {
     copyText(tacitAddress).then((ok) => say('st-recv', ok ? 'Tacit address copied.' : 'Could not copy: the browser refused clipboard access.'));
   };
   $('btn-claim-make').onclick = (e) => busy(e.currentTarget, 'st-claim-make', makeClaimLink);
-  $('claim-amt').addEventListener('input', () => {
-    let u = 0n; try { u = parseUnits($('claim-amt').value); } catch {}
-    $('claim-sats').textContent = u > 0n ? satsText(u) : '';
-  });
+  $('claim-amt').addEventListener('input', renderAmountHints);
   $('btn-scan').onclick = (e) => busy(e.currentTarget, 'st-recv', () => scanEverything('st-recv'));
 
   const openFrag = () => {

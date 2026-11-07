@@ -71,6 +71,7 @@ test('a day\'s points are shared by weight once it is over, and good salts are b
   assert.ok(bank.length >= 1 && bank.every((x) => x.bits >= 10) && bank.every((x, i) => i === 0 || bank[i - 1].bits >= x.bits));
   const s = (await pool.summary()).body;
   assert.equal(s.deployer, SALT_POOL.deployer);
+  assert.equal(s.maxWeightBits, SALT_POOL.maxWeightBits, 'the cap on a find\'s weight is told, so a page can say what a find is worth');
 });
 
 test('config: env sets the share size, the points and the bank; nonsense keeps the defaults', () => {
@@ -144,4 +145,39 @@ test('the bank is the best salts found so far, capped: a better find enters it, 
   assert.equal(writes.length, 2);
   assert.ok((await pool.bank()).body.bank.some((x) => x.salt === better.salt), 'a better one enters');
   assert.equal(JSON.parse(kv.m.get(`sl:m:600:${A}`)).best.salt, [a, b].sort((x, y) => y.bits - x.bits)[0].salt, 'the miner\'s best is kept with its salt');
+});
+
+test('good finds go on a ring for the activity feed, newest first and capped; weaker finds, repeats and rejected salts do not; the house is marked', async () => {
+  let t = 700 * DAY + 1000;
+  const kv = kvStore();
+  const pool = makeSaltPool({ kv, cfg: { ...SALT_POOL, minBits: 8, bankBits: 20, goodBits: 10, recentKeep: 3, sendEveryMs: 0, house: [B] }, now: () => t });
+  const weak = (() => { for (;;) { const g = grind(700, 8); if (g.bits < 10) return g; } })();
+  const g1 = grind(700, 10), g2 = grind(700, 10), g3 = grind(700, 10), g4 = grind(700, 10);
+  await pool.submit({ miner: A, salts: [weak.salt], client: 'c1' });
+  assert.deepEqual((await pool.summary()).body.recent, [], 'a find under goodBits is not on the ring');
+  assert.equal(kv.m.has('sl:recent'), false, 'and writes nothing');
+  await pool.submit({ miner: A, salts: [g1.salt], client: 'c1' });
+  t += 1000;
+  await pool.submit({ miner: B, salts: [g2.salt], client: 'c2' });
+  t += 1000;
+  await pool.submit({ miner: A, salts: [g1.salt, 'not a salt'], client: 'c1' });
+  let r = (await pool.summary()).body.recent;
+  assert.deepEqual(r.map((x) => x.address), [g2.address, g1.address], 'newest first; a salt sent again is counted once and is not listed twice');
+  assert.deepEqual(r[0], { address: g2.address, bits: g2.bits, miner: B, at: t - 1000, house: true });
+  assert.equal(r[1].house, undefined);
+  t += 1000;
+  await pool.submit({ miner: A, salts: [g3.salt], client: 'c1' });
+  t += 1000;
+  await pool.submit({ miner: A, salts: [g4.salt], client: 'c1' });
+  r = (await pool.summary()).body.recent;
+  assert.deepEqual(r.map((x) => x.address), [g4.address, g3.address, g2.address], 'the ring keeps the newest recentKeep');
+  assert.ok(r.every((x) => Object.keys(x).every((k) => ['address', 'bits', 'miner', 'at', 'house'].includes(k))), 'no salt text leaves the API');
+});
+
+test('config: SALT_GOOD_BITS sets the feed\'s bar; nonsense keeps the default', () => {
+  assert.equal(saltPoolConfig({}).goodBits, SALT_POOL.goodBits);
+  assert.equal(SALT_POOL.goodBits, 32, 'four leading zero bytes');
+  assert.equal(saltPoolConfig({ SALT_GOOD_BITS: '36' }).goodBits, 36);
+  assert.equal(saltPoolConfig({ SALT_GOOD_BITS: '3' }).goodBits, SALT_POOL.goodBits);
+  assert.equal(saltPoolConfig({ SALT_GOOD_BITS: 'x' }).goodBits, SALT_POOL.goodBits);
 });

@@ -1,11 +1,11 @@
 // The open board: settles the relay has proved and holds for a sender. settle() on the pool is open to every account and pays each fee leg its
 // proof binds to whoever sends it, so any visitor with a wallet can send one: the page reads the board (the API's /confidential/open), tries the
 // settle with eth_call, has the wallet send it, and tells the API it landed. The fee shown is read from the proof's own public values.
-import { makeConfidentialRelay } from '/confidential-relay.js?cb=6cf41a88';
+import { makeConfidentialRelay } from '/confidential-relay.js?cb=78663834';
 import { CONFIDENTIAL_DEPLOYMENTS, shownTicker } from '/confidential-deployments.js?cb=e9fd905b';
-import { pvFees, pvDeadline, settleCalldata, typeWords } from '/relay/abi.js?cb=5078b247';
+import { pvFees, pvDeadline, settleCalldata, typeWords } from '/relay/abi.js?cb=190ea12d';
 import { UserStopped } from '/trade/wallet.js?cb=88b623b8';
-import { rpc, esc, fmtUnits, short } from '/trade/util.js?cb=e8317464';
+import { rpc, esc, fmtUnits, short } from '/trade/util.js?cb=ba5a02b1';
 
 const API = 'https://api.tacit.finance';
 const SCAN = 'https://etherscan.io/';
@@ -48,13 +48,13 @@ function timing(job, at = Date.now()) {
 // `wallet`, `W`, `connect`: the page's wallet (trade/connect.js). `say(html, err)`: the board's status line.
 export function mountOpen({ el, wallet, W, connect, say }) {
   const relay = makeConfidentialRelay({ base: API });
-  const S = { jobs: null, pool: null, err: false, busy: null, at: 0 };
+  const S = { jobs: null, pool: null, err: false, busy: null, at: 0, skew: 0 };
   const list = el.querySelector('#open-list');
 
   function render() {
     if (S.jobs == null) { list.innerHTML = `<p class="mute">${S.err ? 'Could not read the board. Try again in a moment.' : 'Loading…'}</p>`; return; }
     if (!S.jobs.length) { list.innerHTML = '<p class="calm">Nothing is waiting.</p>'; return; }
-    const at = Date.now();
+    const at = Date.now() + S.skew;
     list.innerHTML = S.jobs.map((j) => {
       const f = feeOf(j), sending = j.status === 'sending', mine = S.busy === j.jobId, ready = j.publicValues && j.proof && Array.isArray(j.memos) && !(expiry(j) && expiry(j) <= at);
       return `<div class="job"><div class="jt"><b>${esc(typeWords(j.type))}</b>${j.posted ? '<span class="tag" title="Proved by its holder’s own prover and posted here">posted</span>' : ''}<small>${esc(timing(j, at))}</small></div>`
@@ -63,11 +63,15 @@ export function mountOpen({ el, wallet, W, connect, say }) {
     }).join('');
   }
 
+  // The board, and with it the chain's time (the latest block's timestamp, kept as an offset from the device's clock): whether a job's deadline
+  // has passed is judged by the chain's clock, not the device's.
   async function load() {
+    const clock = rpc('eth_getBlockByNumber', ['latest', false]).then((b) => { const t = Number(BigInt(b.timestamp)) * 1000; if (t > 0) S.skew = t - Date.now(); }).catch(() => {});
     try {
       const j = await relay.openJobs({ limit: 50 });
       S.jobs = Array.isArray(j?.jobs) ? j.jobs : []; S.pool = j?.pool || null; S.err = false; S.at = Date.now();
     } catch { S.err = true; }                                                      // a board read before stays shown
+    await clock;
     render();
   }
 

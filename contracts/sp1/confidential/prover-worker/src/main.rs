@@ -11,9 +11,12 @@
 // BENCH=<dir>: no board; every `*.bin` in the directory (a bincode SP1Stdin, as tests/fixtures/sp1-stdin holds them) is
 // proved BENCH_RUNS times (default 3) and the times are printed, cold first. This is how a machine is measured.
 // POOL (default 1): with nothing from the board, the worker proves the API's proof pool (wraps pages keep ready, whose inputs hold
-// no secret): only a job that has waited POOL_MIN_AGE_SECS (default 600, so the people mining it for points get it first), leased
-// with this worker's token, which the API credits nothing; a lease is asked for at most every POOL_EVERY_SECS (default 30).
-//   POST {BOARD_URL}/prover/pool/lease  { minAgeMs }  → { id, stdin (0x bincode SP1Stdin), lease } | 204
+// no secret). Tacit's own box leases with its token, which the API credits nothing, and only a job that has waited POOL_MIN_AGE_SECS
+// (default 600, so the people mining it for points get it first); a community worker leases in its miner's name, as a miner, for the
+// pool's points (until the pool pays the address nothing more that UTC day, unless POOL_UNPAID=1). A lease is asked for at most every
+// POOL_EVERY_SECS (default 30), and the lease in hand is kept in POOL_LEASE_FILE (default /workspace/pool-lease.json) until its proof is
+// sent, so a worker that restarts proves it again instead of letting it run out.
+//   POST {BOARD_URL}/prover/pool/lease  { minAgeMs } (token) | { miner } (community)  → { id, stdin (0x bincode SP1Stdin), lease, points } | 204
 //   POST {BOARD_URL}/prover/pool/submit { id, lease, publicValues, proof } | { id, lease, error }
 // ETH_STATE (default 1): the worker also proves the Ethereum-state input eth_prove posts (program 'eth-state', class 'eth-state',
 // which the API offers only to a token trusted with 'private' or 'eth-state' work): the eth-reflection guest (pinned in build.rs),
@@ -26,12 +29,16 @@
 // job and refused (and the program dropped from the claims) unless it is the pool's BITCOIN_RELAY_VKEY. A batch is billions of
 // cycles, tens of minutes on one GPU, and a proof cannot be stopped once it starts, so it is off by default: on a box that also
 // proves users' settles, a settle that comes in meanwhile waits for it. BTC_JOB_TIMEOUT_SECS (default 7200) is its watchdog limit.
-// COMMUNITY_MINER=0x<address> (community mode): no token. The worker races the board's public Bitcoin-state batches through the open
-// community routes (POST /prover/community/claim { miner, programs: ["btc-state"] } and /prover/community/result { miner, jobId, ... }),
-// and each batch the relay takes earns that address the board's points for it (TAC from the points service). The proof pool and the
-// warm-up pings, which are for Tacit's own tokens, are off; BTC_STATE is on. Between batches its spare CPU cores grind deploy salts for
-// the same address (salt.rs; SALT_THREADS, half the cores by default, 0 is off). Tacit's own box grinds too, earning nothing
-// (the pool gives the house no weight), when SALT_MINER names the house address (the deployer).
+// COMMUNITY_MINER=0x<address> (community mode): no token. The worker takes its turn at the board's public Bitcoin-state batches (the board
+// gives each batch to one machine, in turn) through the open community routes (POST /prover/community/claim { miner, programs: ["btc-state"] }
+// and /prover/community/result { miner, jobId, ... }),
+// and each batch the relay takes earns that address the board's points for it (TAC from the points service). BTC_STATE=0 takes no
+// turns: a card under 24 GB, which the installer gives a smaller GPU server, proves the pool's wraps alone. The warm-up pings, which are
+// for Tacit's own tokens, are off. Between jobs its spare CPU cores grind deploy salts for the same address (salt.rs; SALT_THREADS, half
+// the cores by default, 0 is off). Tacit's own box grinds too, earning nothing (the pool gives the house no weight), when SALT_MINER
+// names the house address (the deployer).
+// GPU_DEVICE (default 0): the card to prove on, as nvidia-smi numbers them (with CUDA_DEVICE_ORDER=PCI_BUS_ID, CUDA numbers them the same
+// way); prove-gpu.sh names the card with the most memory, so a machine whose first card drives its display proves on the bigger one.
 // RELOAD_FLAG (default /workspace/worker.reload): when that file exists and no job is in hand, the worker removes it and
 // exits 0, so the loop around it starts a fresh worker (and GPU server) with whatever binary and env are now in place,
 // never in the middle of a proof.
@@ -44,7 +51,7 @@ use std::time::{Duration, Instant};
 use aes_gcm::{aead::{Aead, KeyInit, Payload}, Aes256Gcm, Nonce};
 use base64::Engine;
 use k256::{ecdh::diffie_hellman, elliptic_curve::sec1::ToEncodedPoint, PublicKey, SecretKey};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sp1_sdk::{
     blocking::{ProveRequest, Prover, ProverClient},
@@ -172,7 +179,8 @@ fn main() {
     }
     println!("[{name}] building the CUDA prover and the proving key (once)...");
     let t0 = Instant::now();
-    let client = ProverClient::builder().cuda().build();
+    let device: u32 = env_or("GPU_DEVICE", "0").trim().parse().expect("GPU_DEVICE is a card's number, as nvidia-smi gives it");
+    let client = ProverClient::builder().cuda().with_device_id(device).build();
     let pk = client.setup(Elf::Static(ELF)).expect("setup failed");
     let vk = pk.verifying_key().bytes32();
     println!("[{name}] VKEY={vk} ({:.1} s)", t0.elapsed().as_secs_f64());
@@ -252,7 +260,11 @@ fn main() {
     let mut recycle_from: Option<u32> = None;
     // A board job that comes in while a pool wrap is proved waits that one proof (under a minute here), well inside the relay's
     // PROVER_BOARD_WAIT_SECS before it would go to the prover network.
-    let pool_on = community.is_none() && env_or("POOL", "1") == "1";
+    let pool_on = env_or("POOL", "1") == "1";
+    let pool_lease_file = env_or("POOL_LEASE_FILE", "/workspace/pool-lease.json");
+    let pool_unpaid = env_or("POOL_UNPAID", "0") == "1";
+    // the UTC day on which the pool will lease this worker nothing more (or pay its address nothing more)
+    let mut pool_rest_day: Option<u64> = None;
     let pool_min_age_ms = env_or("POOL_MIN_AGE_SECS", "600").parse::<u64>().unwrap_or(600) * 1000;
     let pool_every = Duration::from_secs(env_or("POOL_EVERY_SECS", "30").parse::<u64>().unwrap_or(30));
     let mut pool_last: Option<Instant> = None;
@@ -268,7 +280,7 @@ fn main() {
     let eth_on = env_or("ETH_STATE", "1") == "1";
     let mut eth_key: Option<Result<_, String>> = None;
     // The Bitcoin-state program: claimed only while BTC_STATE is on and its key has not been refused.
-    let btc_on = community.is_some() || env_or("BTC_STATE", "0") == "1";
+    let btc_on = env_or("BTC_STATE", if community.is_some() { "1" } else { "0" }) == "1";
     let mut btc_key: Option<Result<_, String>> = None;
     let btc_limit = env_or("BTC_JOB_TIMEOUT_SECS", "7200").parse::<u64>().unwrap_or(7200);
     // A proof that never ends (a GPU kernel that hangs leaves the server alive and silent, and the client waiting on it for ever) is
@@ -297,6 +309,27 @@ fn main() {
             }
         });
     }
+    // A pool lease left from before a restart is proved first: letting it run out would count against this place for the day.
+    if pool_on {
+        let fresh = std::fs::metadata(&pool_lease_file).ok().and_then(|m| m.modified().ok()).and_then(|t| t.elapsed().ok()).map_or(false, |a| a < Duration::from_secs(40 * 60));
+        match std::fs::read(&pool_lease_file).ok().and_then(|b| serde_json::from_slice::<PoolLease>(&b).ok()) {
+            Some(l) if fresh => {
+                println!("[{name}] pool wrap {} was in hand before the restart: proving it", &l.id[..l.id.len().min(12)]);
+                match pool_prove(&agent, &base, &l, &pool_lease_file, &job_since, |stdin| {
+                    let p = client.prove(&pk, stdin).groth16().cycle_limit(512_000_000).run().map_err(|e| format!("groth16 proof failed: {e}"))?;
+                    Ok((p.public_values.as_slice().to_vec(), p.bytes()))
+                }) {
+                    Ok(secs) => println!("[{name}] pool wrap: proved in {secs:.1} s"),
+                    Err(e) if gpu_gone(&e) => {
+                        println!("[{name}] pool wrap: the GPU server went ({e}); exiting so the loop starts a fresh one, which proves it again");
+                        std::process::exit(2);
+                    }
+                    Err(e) => println!("[{name}] pool wrap: failed: {e}"),
+                }
+            }
+            _ => { let _ = std::fs::remove_file(&pool_lease_file); }
+        }
+    }
     loop {
         if std::path::Path::new(&pause_flag).exists() {
             if quiet % 30 == 0 { println!("[{name}] paused ({pause_flag} exists): not taking jobs"); }
@@ -312,12 +345,17 @@ fn main() {
         let eth_claims = eth_on && !matches!(eth_key, Some(Err(_)));
         let btc_claims = btc_on && !matches!(btc_key, Some(Err(_)));
         let (claim_classes, programs) = if community.is_some() { (vec!["public".to_string()], vec!["btc-state"]) } else { claim_scope(&classes, eth_claims, btc_claims) };
-        let claimed: Result<Claim, String> = agent
-            .post(&claim_url)
-            .set("Authorization", &auth)
-            .send_json(serde_json::json!({ "worker": name, "classes": claim_classes, "programs": programs, "pubkey": my_pub_hex, "miner": community }))
-            .map_err(|e| e.to_string())
-            .and_then(|r| r.into_json::<Claim>().map_err(|e| e.to_string()));
+        // a community worker that takes no Bitcoin turns has nothing to claim at the board
+        let claimed: Result<Claim, String> = if community.is_some() && !btc_claims {
+            Ok(Claim { job: None })
+        } else {
+            agent
+                .post(&claim_url)
+                .set("Authorization", &auth)
+                .send_json(serde_json::json!({ "worker": name, "classes": claim_classes, "programs": programs, "pubkey": my_pub_hex, "miner": community }))
+                .map_err(|e| e.to_string())
+                .and_then(|r| r.into_json::<Claim>().map_err(|e| e.to_string()))
+        };
         let job = match claimed {
             Ok(Claim { job: Some(j) }) => j,
             Ok(Claim { job: None }) => {
@@ -331,27 +369,41 @@ fn main() {
                     std::process::exit(4);
                 }
                 while pool_hour.front().map_or(false, |t| t.elapsed() >= Duration::from_secs(3600)) { pool_hour.pop_front(); }
-                if pool_on && board_last.elapsed() >= pool_idle && pool_hour.len() < pool_max_hour && pool_last.map_or(true, |t| t.elapsed() >= pool_every) {
+                let today = now_secs() / 86_400;
+                if pool_on && pool_rest_day != Some(today) && board_last.elapsed() >= pool_idle && pool_hour.len() < pool_max_hour && pool_last.map_or(true, |t| t.elapsed() >= pool_every) {
                     pool_last = Some(Instant::now());
-                    if let Some(outcome) = pool_job(&agent, &base, &auth, pool_min_age_ms, &job_since, |stdin| {
-                        let p = client.prove(&pk, stdin).groth16().cycle_limit(512_000_000).run().map_err(|e| format!("groth16 proof failed: {e}"))?;
-                        Ok((p.public_values.as_slice().to_vec(), p.bytes()))
-                    }) {
-                        quiet = 0;
-                        jobs_done += 1;
-                        pool_hour.push_back(Instant::now());
-                        match outcome {
-                            Ok(secs) => { failed_in_a_row = 0; println!("[{name}] pool wrap: proved in {secs:.1} s"); }
-                            Err(e) => {
-                                println!("[{name}] pool wrap: failed: {e}");
-                                failed_in_a_row += 1;
-                                if gpu_gone(&e) || failed_in_a_row >= 3 {
-                                    println!("[{name}] exiting so the loop starts a fresh worker and GPU server");
-                                    std::process::exit(2);
+                    match pool_lease(&agent, &base, &auth, community.as_deref(), pool_min_age_ms) {
+                        Leased::Job(l) => {
+                            // past the day's paid proofs the pool pays the address nothing: the one leased is proved, then no more today
+                            if community.is_some() && l.points <= 0 && !pool_unpaid {
+                                pool_rest_day = Some(today);
+                                println!("[{name}] the pool pays this address nothing more today: proving the wrap in hand, then none until 00:00 UTC");
+                            }
+                            let outcome = pool_prove(&agent, &base, &l, &pool_lease_file, &job_since, |stdin| {
+                                let p = client.prove(&pk, stdin).groth16().cycle_limit(512_000_000).run().map_err(|e| format!("groth16 proof failed: {e}"))?;
+                                Ok((p.public_values.as_slice().to_vec(), p.bytes()))
+                            });
+                            quiet = 0;
+                            jobs_done += 1;
+                            pool_hour.push_back(Instant::now());
+                            match outcome {
+                                Ok(secs) => { failed_in_a_row = 0; println!("[{name}] pool wrap: proved in {secs:.1} s"); }
+                                Err(e) => {
+                                    println!("[{name}] pool wrap: failed: {e}");
+                                    failed_in_a_row += 1;
+                                    if gpu_gone(&e) || failed_in_a_row >= 3 {
+                                        println!("[{name}] exiting so the loop starts a fresh worker and GPU server");
+                                        std::process::exit(2);
+                                    }
                                 }
                             }
+                            continue;
                         }
-                        continue;
+                        Leased::DoneForToday(why) => {
+                            pool_rest_day = Some(today);
+                            println!("[{name}] the pool leases nothing more here today: {why}");
+                        }
+                        Leased::Nothing => {}
                     }
                 }
                 quiet += 1;
@@ -528,33 +580,69 @@ fn now_secs() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(1).max(1)
 }
 
-// One proof-pool job: leased (one that has waited `min_age_ms`), proved with `prove`, and its proof (or why it could not be made)
-// sent back. → None when nothing was leased; else how long the proof took, or why it failed. The job watchdog sees it as a job.
-fn pool_job(
+// A proof-pool lease as the API hands it out (`points`: what its proof earns the miner, 0 for Tacit's own box), kept in POOL_LEASE_FILE
+// while it is proved.
+#[derive(Serialize, Deserialize)]
+struct PoolLease {
+    id: String,
+    lease: String,
+    stdin: String,
+    #[serde(default)]
+    points: i64,
+}
+
+enum Leased {
+    Job(PoolLease),
+    // nothing waiting (204), a lease already open from here (429), or no answer
+    Nothing,
+    // this place may lease nothing more today (403: proofs that did not pass, or leases let run out)
+    DoneForToday(String),
+}
+
+// A lease from the proof pool: a community worker asks as a miner, in its address's name; Tacit's own box with its token, for a job that
+// has waited `min_age_ms`.
+fn pool_lease(agent: &ureq::Agent, base: &str, auth: &str, miner: Option<&str>, min_age_ms: u64) -> Leased {
+    let req = agent.post(&format!("{base}/prover/pool/lease"));
+    let r = match miner {
+        Some(m) => req.send_json(serde_json::json!({ "miner": m })),
+        None => req.set("Authorization", auth).send_json(serde_json::json!({ "minAgeMs": min_age_ms })),
+    };
+    match r {
+        Ok(r) if r.status() == 200 => r.into_json::<PoolLease>().map_or(Leased::Nothing, Leased::Job),
+        Ok(_) => Leased::Nothing,
+        Err(ureq::Error::Status(403, r)) => Leased::DoneForToday(r.into_string().unwrap_or_default().chars().take(200).collect()),
+        Err(_) => Leased::Nothing,
+    }
+}
+
+// A leased pool job proved with `prove` and its proof (or why it could not be made) sent back, the lease kept in `file` until then.
+// → how long the proof took, or why it failed. The job watchdog sees it as a job.
+fn pool_prove(
     agent: &ureq::Agent,
     base: &str,
-    auth: &str,
-    min_age_ms: u64,
+    l: &PoolLease,
+    file: &str,
     job_since: &std::sync::atomic::AtomicU64,
     prove: impl FnOnce(SP1Stdin) -> Result<(Vec<u8>, Vec<u8>), String>,
-) -> Option<Result<f64, String>> {
-    let r = agent.post(&format!("{base}/prover/pool/lease")).set("Authorization", auth).send_json(serde_json::json!({ "minAgeMs": min_age_ms })).ok()?;
-    if r.status() != 200 {
-        return None;
-    }
-    let lease: serde_json::Value = r.into_json().ok()?;
-    let (id, tok) = (lease["id"].as_str()?.to_string(), lease["lease"].as_str()?.to_string());
-    let stdin = lease["stdin"].as_str().unwrap_or_default().to_string();
+) -> Result<f64, String> {
+    if let Ok(b) = serde_json::to_vec(l) { let _ = std::fs::write(file, b); }
     let t = Instant::now();
     job_since.store(now_secs(), std::sync::atomic::Ordering::Relaxed);
-    let outcome = hex::decode(stdin.trim_start_matches("0x"))
+    let outcome = hex::decode(l.stdin.trim_start_matches("0x"))
         .map_err(|e| format!("stdin is not hex: {e}"))
         .and_then(|b| bincode::deserialize::<SP1Stdin>(&b).map_err(|e| format!("stdin is not a bincode SP1Stdin: {e}")))
         .and_then(prove);
     job_since.store(0, std::sync::atomic::Ordering::Relaxed);
+    // A GPU server that died mid-proof is this machine's trouble, not the job's: nothing is sent (handing it back would count against
+    // this place), and the lease stays in its file for the restarted worker to prove.
+    if let Err(e) = &outcome {
+        if gpu_gone(e) {
+            return Err(e.clone());
+        }
+    }
     let body = match &outcome {
-        Ok((pv, proof)) => serde_json::json!({ "id": id, "lease": tok, "publicValues": format!("0x{}", hex::encode(pv)), "proof": format!("0x{}", hex::encode(proof)) }),
-        Err(e) => serde_json::json!({ "id": id, "lease": tok, "error": e.chars().take(300).collect::<String>() }),
+        Ok((pv, proof)) => serde_json::json!({ "id": l.id, "lease": l.lease, "publicValues": format!("0x{}", hex::encode(pv)), "proof": format!("0x{}", hex::encode(proof)) }),
+        Err(e) => serde_json::json!({ "id": l.id, "lease": l.lease, "error": e.chars().take(300).collect::<String>() }),
     };
     // The API asks Ethereum's verifier before it keeps a proof; while no node answers (503) the lease holds and the proof is sent again.
     for _ in 0..6 {
@@ -562,10 +650,11 @@ fn pool_job(
             Ok(_) => break,
             Err(ureq::Error::Status(503, _)) | Err(ureq::Error::Transport(_)) => std::thread::sleep(Duration::from_secs(20)),
             Err(ureq::Error::Status(code, r)) => {
-                println!("pool job {id}: not taken ({code}): {}", r.into_string().unwrap_or_default().chars().take(200).collect::<String>());
+                println!("pool job {}: not taken ({code}): {}", l.id, r.into_string().unwrap_or_default().chars().take(200).collect::<String>());
                 break;
             }
         }
     }
-    Some(outcome.map(|_| t.elapsed().as_secs_f64()))
+    let _ = std::fs::remove_file(file);
+    outcome.map(|_| t.elapsed().as_secs_f64())
 }

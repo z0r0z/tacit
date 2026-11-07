@@ -28,11 +28,23 @@ const unb64url = (s) => {
   return Uint8Array.from(atob(t + '='.repeat((4 - (t.length % 4)) % 4)), (c) => c.charCodeAt(0));
 };
 
-// The throwaway pool wallet a link addresses. Same (secret, pin) on both sides derives the same wallet.
+// The throwaway pool wallet a link addresses. Same (secret, pin) on both sides derives the same wallet, and the same object each time it is
+// asked for here: the pool client remembers per wallet object which leaves it has tried, so a panel's re-reads try only the leaves that are new.
+const wallets = new WeakMap();
 export function claimPoolWallet(pool, secret32, { pin = '', network = 'mainnet' } = {}) {
-  const { priv } = claimKeyFromSecret(secret32, pin);   // 32 bytes, PIN-bound exactly as transparent claims are
-  return pool.walletFromSeed(priv, network);
+  let mine = wallets.get(pool);
+  if (!mine) wallets.set(pool, (mine = new Map()));
+  const k = `${network}/${Array.from(secret32, (b) => b.toString(16).padStart(2, '0')).join('')}/${pin}`;
+  let w = mine.get(k);
+  if (!w) {
+    const { priv } = claimKeyFromSecret(secret32, pin);   // 32 bytes, PIN-bound exactly as transparent claims are
+    w = pool.walletFromSeed(priv, network);
+    mine.set(k, w);
+    if (mine.size > 8) mine.delete(mine.keys().next().value);   // a PIN typed in steps leaves the wallets of its first digits behind
+  }
+  return w;
 }
+const sameAsset = (a, b) => String(a).replace(/^0x/, '').toLowerCase() === String(b).replace(/^0x/, '').toLowerCase();
 
 export { genClaimSecret };
 
@@ -70,26 +82,32 @@ export function decodeClaim(input) {
 
 // Sender: pay a fresh throwaway pool wallet, and hand back the link that opens it.
 // `keep` is handed the secret before anything is paid, so the caller can store it first.
-// `askSelf` is payPrivately's: asked before the payment is posted from the sender's own Bitcoin address.
-export async function createClaim(tacit, { S, pool, poolWallet, amount, asset, pin = '', network = 'mainnet', say = () => {}, keep = () => {}, askSelf = null }) {
+// `askSelf` is payPrivately's: asked before the payment is posted from the sender's own Bitcoin address. `maxFee` is payPrivately's too.
+export async function createClaim(tacit, { S, pool, poolWallet, amount, asset, pin = '', network = 'mainnet', maxFee = null, say = () => {}, keep = () => {}, askSelf = null }) {
   const secret32 = genClaimSecret();
   const to = claimPoolWallet(pool, secret32, { pin, network });
   keep({ secret32, pinned: !!pin, network });
-  const r = await S.payPrivately(tacit, { poolWallet, to: to.addressString, amount, asset, say, askSelf });
+  const r = await S.payPrivately(tacit, { poolWallet, to: to.addressString, amount, asset, maxFee, say, askSelf });
   if (r.wait) return { wait: r.wait, tip: r.tip };
   return {
     ...r,
     secret32,
-    link: claimUrl(location.origin, encodeClaim({ secret32, txid: r.revealTxid, network, pinned: !!pin })),
+    // a relayed payment that came back without its id has no link yet: the sender finds it once the pool counts the note
+    link: r.revealTxid ? claimUrl(location.origin, encodeClaim({ secret32, txid: r.revealTxid, network, pinned: !!pin })) : null,
   };
 }
 
-// Recipient: what is actually sitting under this link right now.
-export async function readClaim(S, pool, { secret32, pin = '', network = 'mainnet', asset }) {
+// Recipient: what is actually sitting under this link right now. With the pool's note feed in hand (`feed`) the wallet's notes are opened
+// from it, and `indexed` says whether the link's payment (`txid`) is in the pool at all: nothing under the link is then the wrong PIN, or a link
+// changed on the way, and not a payment still on its way.
+export async function readClaim(S, pool, { secret32, pin = '', network = 'mainnet', asset, feed = null, txid = null }) {
   const w = claimPoolWallet(pool, secret32, { pin, network });
-  const notes = await S.poolNotes(w, asset);
-  const live = notes.filter((n) => !n.spent && BigInt(n.value) > 0n);
-  return { wallet: w, notes: live, total: live.reduce((t, n) => t + BigInt(n.value), 0n), seen: notes.length };
+  const notes = feed
+    ? (await S.poolClientFor(network).walletNotes(pool, w, { notes: feed })).filter((n) => !asset || sameAsset(n.asset, asset))
+    : await S.poolNotes(w, asset);
+  // a claim this device just made is spent here before the pool's feed says so
+  const live = (S.pendingView ? S.pendingView(notes, asset, w).live : notes.filter((n) => !n.spent)).filter((n) => BigInt(n.value) > 0n);
+  return { wallet: w, notes: live, total: live.reduce((t, n) => t + BigInt(n.value), 0n), seen: notes.length, indexed: feed && txid ? feed.some((n) => n.txid === txid) : null };
 }
 
 // Recipient: move it into a wallet of their own. Relayed when the relay quotes, so somebody who has never

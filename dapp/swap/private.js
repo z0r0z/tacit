@@ -6,10 +6,10 @@
 // out of the pool (to ETH or a token, at an address) routes the note to tETH and then exits that note, through an exit recipe for a token. The
 // relay proves and sends each step. Nothing here is loaded until the first private swap, or the first ask for a private balance; the key is
 // held in this visit's memory only.
-import { makeKeySession, signInSheet, Cancelled } from '/trade/key.js?cb=26d9c07b';
-import { forgetUx } from '/trade/poolux.js?cb=b4055e46';
-import { wrapEth, wrapFirst, wrapCalldata, settle, relayState, relayStopped, relayWords } from '/teth/wrap.js?cb=31e18c5c';
-import { wrapQuote, WRAP_TIP } from '/teth/read.js?cb=bf18d06a';
+import { makeKeySession, signInSheet, Cancelled } from '/trade/key.js?cb=d110df5e';
+import { forgetUx } from '/trade/poolux.js?cb=435f1138';
+import { wrapEth, wrapFirst, wrapCalldata, settle, relayState, relayStopped, relayWords } from '/teth/wrap.js?cb=58047310';
+import { wrapQuote, WRAP_TIP } from '/teth/read.js?cb=9364ab31';
 import { secp, keccak_256, sha256, bytesToHex } from '/vendor/tacit-deps.min.js';
 import { makeRunner } from '/activity.js?cb=8ccbc552';
 
@@ -18,7 +18,7 @@ export { Cancelled, relayWords };
 // A Tacit address, a shielded pubkey or a name (name.wei, .gwei, .eth) as the key a private payment is made to. → { pubHex, name? }; throws with a
 // sentence for the person when it is none of them (an Ethereum account address is refused: a private payment needs a Tacit address).
 let namesP = null;
-const names = () => (namesP ||= import('/confidential-names.js').then(({ makeConfidentialNames, makeMainnetCall }) => makeConfidentialNames({ call: makeMainnetCall(), secp, keccak256: keccak_256 })).catch((e) => { namesP = null; throw e; }));
+const names = () => (namesP ||= import('/confidential-names.js?cb=d41cb8bd').then(({ makeConfidentialNames, makeMainnetCall }) => makeConfidentialNames({ call: makeMainnetCall(), secp, keccak256: keccak_256 })).catch((e) => { namesP = null; throw e; }));
 export async function resolveTacit(raw) {
   const n = await names();
   const local = (s) => {
@@ -149,7 +149,8 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
           const kept = proofsRead(pub)[k];
           if (kept) {
             const r = unpackProof(kept), s2 = { k, pub, index: kept.built.index, r, p: Promise.resolve(r) };
-            const made = wordOf(await t.ethCall(t.cfg.pool, '0x7da9874f' + String(r.built.depositId).replace(/^0x/, '').padStart(64, '0')).catch(() => '0x'));
+            const made = await t.ethCall(t.cfg.pool, '0x7da9874f' + String(r.built.depositId).replace(/^0x/, '').padStart(64, '0')).then(wordOf, () => null);
+            if (made == null) continue;                                      // a read that failed says nothing of the deposit: the proof stays, and is read again on the next pass
             if (made === 0n && !(await stale(s2))) { AH.set(k, s2); onReady(); continue; }
             proofPut(pub, k, null);
           }
@@ -240,7 +241,7 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
   }
   // A slot whose swap went out: its index is spent, and the next swap of that size takes a new one.
   const spent = (slot) => { AH.delete(slot.k); if (slot.typed) typedIndex = null; else { slotIdxPut(slot.pub, slot.k, null); proofPut(slot.pub, slot.k, null); } };
-  const wordOf = (h) => { try { return BigInt(String(h).slice(0, 66)); } catch { return 1n; } };
+  const wordOf = (h) => { try { return BigInt(String(h).slice(0, 66)); } catch { return null; } };       // a call's first word, or null for an answer that is not one
   // A wallet swap through one pool proved by the holder's own prover before anything is deposited: no ahead flag (the relay's board only), no fee bound in.
   async function ownProveSwap(plan, say) {
     const t = await getUx(), hop = plan.path[0], priv = key.priv();
@@ -253,12 +254,19 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
   const declined = (e) => e?.code === 4001 || !!e?.userStopped || /user (rejected|denied)|rejected the request|denied transaction/i.test(String(e?.shortMessage || e?.message || e || ''));
   // One router transaction for a proof made before anything was deposited (a swap proved ahead, or a wrap kept ready): null when the router
   // would refuse it (a pool traded since, a wrap already sent), with nothing sent.
-  async function oneTx(ready, { wei, tip, to, from, wallet, say }) {
+  // `here`: on this computer a refusal is proved again only when the pool really traded; any other failure is the one shown. `unsent` runs when nothing went out.
+  async function oneTx(ready, { wei, tip, to, from, wallet, say, here = false, unsent = null }) {
     try { const r = await wrapFirst({ priv: () => key.priv(), wei, tip, to, from, wallet, say, ux: await getUx(), ready }); return r.already ? null : r; }
-    catch (e) { if (declined(e) || !e?.ready || e.sent) throw e; return null; }
+    catch (e) {
+      // (only when nothing can have gone out: a no in the wallet, a send that reverted, or a refusal before the wallet was asked; a wallet error may follow a send)
+      if (e?.ready && !e.sent && (declined(e) || e.reverted || e.unsent)) try { unsent?.(); } catch { }
+      if (declined(e) || !e?.ready || e.sent) throw e;
+      if (here && !(await stale({ r: ready }).catch(() => true))) throw e;
+      return null;
+    }
   }
   let vouchP = null;
-  const vouchers = () => (vouchP ||= import('/wrap-vouchers.js?cb=c2a1a1dd').then((m) => m.makeVouchers()));
+  const vouchers = () => (vouchP ||= import('/wrap-vouchers.js?cb=adaa5fa2').then((m) => m.makeVouchers()));
 
   // A note of exactly `units`: one held, or one cut to size by a send to itself (the smallest note that covers it and the relay's fee, else up
   // to 16 notes combined, largest first). The cut's fee comes out of the notes, so the amount swapped is the amount asked.
@@ -590,13 +598,16 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
         // (on this computer, a proof the pool traded past is made again at the new price, twice at most)
         for (let i = 0; i < (HERE ? 3 : 1); i++) {
           if (i) say('again');
+          let ownR = null;
           if (own) {
-            r = await ownProveSwap(plan, say).catch(() => null);
+            r = ownR = await ownProveSwap(plan, say).catch(() => null);
             mine = !!r && /^spn:/.test(String(r.proven?.jobId || ''));
           }
           // 1. proved ahead: one transaction, the wrap's tip and the swap's fee paid on top in ETH as the quote showed them
           if (!r && !relayDown) r = await aheadFor(plan, say);
-          one = r && await oneTx(r, { wei: plan.wei, tip: mine ? 0n : tq.tip + BigInt(plan.fee) * E10, to: mine ? null : tq.to, from, wallet, say });
+          // (an index this press reserved for its own proof is handed back when that proof's deposit never went out)
+          const unsent = ownR && Number.isInteger(ownR.built?.index) ? () => t.releaseWrapIndex?.({ walletPriv: key.priv(), ticker: 'cETH', index: ownR.built.index }) : null;
+          one = r && await oneTx(r, { wei: plan.wei, tip: mine ? 0n : tq.tip + BigInt(plan.fee) * E10, to: mine ? null : tq.to, from, wallet, say, here: HERE, unsent });
           if (one || !HERE || !r) break;
         }
         if (!one && relayDown) throw new Error('This private swap can’t start right now and your own prover could not prove it, so nothing was sent. Try again in a few minutes.');

@@ -5,30 +5,36 @@ import * as gr from '../dapp/gas-relay.js';
 
 const ACCOUNT = '0x' + '11'.repeat(20), ROUTER = '0x' + '22'.repeat(20), USED = '0xad04dc3f';
 
-// A signer whose chain answers by `chain`: `used` is what the relay contract's used-nonce read gives (a function, so it can fail), `block` the head read.
+// A chain that answers by `chain`: `used` is what the relay contract's used-nonce read gives (a function, so it can fail), `block` the head read.
+const rpcOver = (chain) => async (method, params = []) => {
+  const call = params[0] || {};
+  if (method === 'eth_call' && call.from) return '0x';                                  // the order run here first: it would go through
+  if (method === 'eth_call' && String(call.data).startsWith(USED)) return chain.used();
+  if (method === 'eth_call') return '0x' + '00'.repeat(32);                             // the token's permit nonce
+  if (method === 'eth_blockNumber') return chain.block();
+  if (method === 'eth_getLogs') return [];
+  throw new Error('unexpected ' + method);
+};
+// A signer over that chain, sending a deposit.
 function signerOver(chain) {
-  const rpc = async (method, params = []) => {
-    const call = params[0] || {};
-    if (method === 'eth_call' && call.from) return '0x';                                  // the order run here first: it would go through
-    if (method === 'eth_call' && String(call.data).startsWith(USED)) return chain.used();
-    if (method === 'eth_call') return '0x' + '00'.repeat(32);                             // the token's permit nonce
-    if (method === 'eth_blockNumber') return chain.block();
-    if (method === 'eth_getLogs') return [];
-    throw new Error('unexpected ' + method);
-  };
   const sign = { permit: async () => ({ v: 27, r: '0x' + '33'.repeat(32), s: '0x' + '44'.repeat(32) }), order: async () => '0x' + '55'.repeat(65) };
-  return gr.relaySigner({ address: ACCOUNT, token: gr.TAC, router: ROUTER, symbol: 'TAC', amount: 10n ** 18n, plan: { fee: 10n ** 17n }, rpc, step: () => {}, sign, now: () => 1_800_000_000 });
+  return gr.relaySigner({ address: ACCOUNT, token: gr.TAC, router: ROUTER, symbol: 'TAC', amount: 10n ** 18n, plan: { fee: 10n ** 17n }, rpc: rpcOver(chain), step: () => {}, sign, now: () => 1_800_000_000 });
+}
+// An order for any call (the swap card's way), placed over that chain and waited for.
+function orderOver(chain) {
+  const { order, data } = gr.buildOrder({ payer: ACCOUNT, tokenIn: gr.TAC, amountIn: 10n ** 18n, feeToken: gr.TAC, fee: 10n ** 17n, tokenOut: '0x' + '77'.repeat(20), minOut: 1n, recipient: ACCOUNT, target: ROUTER, data: '0x' + '66'.repeat(40), now: 1_800_000_000 });
+  return gr.placeOrder({ order, data, from: ACCOUNT, symbol: 'TAC', sign: { typed: async () => '0x' + '55'.repeat(65) }, rpc: rpcOver(chain), now: () => 1_800_000_000, post: async () => ({ ok: true }) });
 }
 
 // The wait is 10 minutes of three-second looks: run it on a clock that is stepped, not waited for (timers mocked, Date.now moved by hand with them).
-async function run(chain) {
+async function run(chain, start = (c) => signerOver(c).send({ to: ROUTER, data: '0x' + '66'.repeat(40) })) {
   const realFetch = globalThis.fetch, realNow = Date.now;
   let t = 1_800_000_000_000;
   globalThis.fetch = async () => ({ json: async () => ({ ok: true }) });
   Date.now = () => t;
   mock.timers.enable(['setTimeout']);
   try {
-    const p = signerOver(chain).send({ to: ROUTER, data: '0x' + '66'.repeat(40) });
+    const p = start(chain);
     let over = false, out;
     p.then((v) => { over = true; out = { v }; }, (e) => { over = true; out = { e }; });
     for (let i = 0; i < 400 && !over; i++) { await new Promise((r) => setImmediate(r)); t += 3000; mock.timers.tick(3000); }
@@ -59,4 +65,17 @@ test('an order that ran is not failed by the head read that finds its transactio
   const out = await run({ used: () => '0x' + '00'.repeat(31) + '01', block: () => { throw new Error('all nodes failed'); } });
   assert.match(out.e?.message || '', /relay sent it, but its transaction could not be found/);
   assert.doesNotMatch(out.e?.message || '', /all nodes failed/);
+});
+
+test('an order for any call: a last look that failed after earlier good ones is not "nothing was spent" either', async () => {
+  let looks = 0;
+  const out = await run({ used: () => { if (++looks < 5) return '0x' + '00'.repeat(32); throw new Error('rate limited'); }, block: () => '0x10' }, orderOver);
+  assert.match(out.e?.message || '', /could not be read, so it may have sent the order/);
+  assert.ok(!out.e?.nothingSpent, 'not marked as having spent nothing');
+});
+
+test('an order for any call the relay never ran, read to the end, says it lapsed and nothing was spent', async () => {
+  const out = await run({ used: () => '0x' + '00'.repeat(32), block: () => '0x10' }, orderOver);
+  assert.match(out.e?.message || '', /lapsed.*Nothing was spent/);
+  assert.strictEqual(out.e?.nothingSpent, true);
 });

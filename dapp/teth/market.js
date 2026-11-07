@@ -4,7 +4,7 @@
 // the last price and how far it sits from ETH) with a way into the Bitcoin market; and a quiet one that says what will appear, with ETH's price
 // in sats as its one figure.
 import { buildBook, ladderLevels } from '/btc-book.js?cb=0a09ab9e';
-import { api, esc, grp, usd } from '/trade/util.js?cb=e8317464';
+import { api, esc, grp, usd } from '/trade/util.js?cb=ba5a02b1';
 
 export const BTC_ID = '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';        // tETH on Bitcoin: the cETH asset id, without the 0x
 const BOOK_ROWS = 8;

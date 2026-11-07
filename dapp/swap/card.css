@@ -131,8 +131,10 @@
 /* A button that cannot be pressed yet has no reason to follow the screen: pinned, it covers the rows under it (most of them on a small phone). */
 .swc .act:has(.go:disabled) { position: static; background: none; }
 .swc .act .ack { margin: 0 2px 8px; }
-.swc .go { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 54px; margin-top: 14px; padding: 10px 16px; font-size: 15px; font-weight: 500; color: var(--card); background: var(--ink); border: 1px solid var(--ink); border-radius: 16px; cursor: pointer; transition: background .15s, color .15s, opacity .15s; text-decoration: none; }
-.swc .go:hover:not(:disabled) { background: transparent; color: var(--ink); }
+.swc .go { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 54px; margin-top: 14px; padding: 10px 16px; font-size: 15px; font-weight: 500; color: var(--card); background: var(--ink); border: 1px solid var(--ink); border-radius: 16px; cursor: pointer; transition: background .15s, color .15s, opacity .15s, box-shadow .15s, transform .1s; text-decoration: none; }
+/* hover keeps the fill (a cleared one sank into the tile in dark mode, where the button has no border) and rings it */
+.swc .go:hover:not(:disabled) { background: var(--ink); color: var(--card); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ink) 22%, transparent); }
+.swc .go:active:not(:disabled) { transform: scale(.99); }
 .swc .go:disabled { cursor: not-allowed; }
 @media (prefers-color-scheme: dark) { .swc .go { background: color-mix(in srgb, var(--ink) 82%, var(--card)); border-color: transparent; } }
 /* what cannot be pressed yet rests as a soft block of the tile's own tone, not the button faded */

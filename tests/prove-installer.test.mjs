@@ -32,6 +32,10 @@ case "$1" in
     [ -z "$FAKE_INSTALL_FAILS" ] || { echo "launchctl could not load the plist" >&2; exit 1; }
     echo "tacit-prover starts at login now and is starting (stand-in); its log is $HOME/.tacit-prover/daemon.log" ;;
   uninstall) printf 'uninstall\\n' >> "$HOME/fake-prover.log"; echo "tacit-prover no longer starts at login" ;;
+  serve)
+    printf 'serve mine=%s dir=%s\\n' "$TACIT_MINE" "$TACIT_PROVER_DIR" >> "$HOME/fake-prover.log"
+    if [ -n "$FAKE_IGNORE_TERM" ]; then trap '' TERM; else trap 'exit 0' TERM; fi
+    while :; do sleep 1; done ;;
   *) printf 'other %s\\n' "$*" >> "$HOME/fake-prover.log" ;;
 esac
 `;
@@ -81,14 +85,18 @@ function shims(dir) {
   put('sysctl', 'case "$2" in hw.optional.arm64) echo "${FAKE_ARM64:-1}" ;; hw.memsize) echo "${FAKE_MEM:-17179869184}" ;; *) exit 1 ;; esac');
   // After a bootout the label is gone for the next print (the old program has exited), then loaded again as the install loads it.
   put('launchctl', 'echo "launchctl $*" >> "$HOME/system.log"; [ "$1" != bootout ] || touch "$HOME/.out"; if [ "$1" = print ] && [ -f "$HOME/.out" ]; then rm -f "$HOME/.out"; exit 113; fi; [ "$1" != print ] || printf "gui/501/finance.tacit.prover = {\\n\\tpath = x\\n\\tstate = %s\\n}\\n" "${FAKE_LAUNCHD:-running}"');
-  put('systemctl', 'echo "systemctl $*" >> "$HOME/system.log"; case "$2" in is-active) echo "${FAKE_SYSTEMD:-active}" ;; esac');
+  // FAKE_NO_USER_SYSTEMD: no user manager answers, as in WSL with systemd off or in a container.
+  put('systemctl', 'echo "systemctl $*" >> "$HOME/system.log"; case "$2" in is-active) echo "${FAKE_SYSTEMD:-active}" ;; show-environment) [ -z "$FAKE_NO_USER_SYSTEMD" ] || exit 1 ;; esac');
   put('loginctl', 'echo "Linger=${FAKE_LINGER:-no}"');
+  put('ldd', 'v=${FAKE_GLIBC:-2.39}; echo "ldd (Ubuntu GLIBC $v-0ubuntu8) $v"');
+  // Windows' own curl, as WSL finds it on the PATH: it reaches the daemon unless FAKE_WIN_UNREACHABLE.
+  put('curl.exe', 'echo "curl.exe $*" >> "$HOME/system.log"; [ -z "$FAKE_WIN_UNREACHABLE" ] || exit 7; exec curl "$@"');
   return bin;
 }
 
-async function world(opts) {
+async function world(opts, homeName = 'home') {
   const dir = mkdtempSync(join(tmpdir(), 'prove-test-'));
-  const home = join(dir, 'home');
+  const home = join(dir, homeName);
   mkdirSync(home);
   const srv = await serve(dir, opts);
   const sh = shims(dir);
@@ -96,11 +104,12 @@ async function world(opts) {
     PATH: `${sh}:/usr/bin:/bin:/usr/sbin:/sbin`, HOME: home, TMPDIR: dir,
     TACIT_PROVER_BASE: `${srv.base}/rel`, TACIT_POOL_API: srv.base, TACIT_POINTS_API: srv.base, TACIT_PROVER_PORT: String(srv.port),
     TACIT_PROVER_SHA256: sha(srv.assets['tacit-prover-macos-arm64.tar.gz']),
+    TACIT_PROC_VERSION: '/dev/null',   // not WSL, even when the tests run inside it
     ...extra,
   });
-  // The script as it is served: on sh's standard input, its arguments after `-s --`.
+  // The script as it is served: on sh's standard input, its arguments after `-s --`, run from the test's own folder.
   const run = (args = [], extra = {}, script = SCRIPT) => new Promise((resolve) => {
-    const p = spawn('sh', ['-s', '--', ...args], { env: env(extra), stdio: ['pipe', 'pipe', 'pipe'] });
+    const p = spawn('sh', ['-s', '--', ...args], { cwd: dir, env: env(extra), stdio: ['pipe', 'pipe', 'pipe'] });
     let out = '', err = '';
     p.stdout.on('data', (d) => { out += d; });
     p.stderr.on('data', (d) => { err += d; });
@@ -109,11 +118,16 @@ async function world(opts) {
     p.stdin.end(script);
   });
   const read = (f) => (existsSync(join(home, f)) ? readFileSync(join(home, f), 'utf8') : '');
-  const done = () => { srv.server.close(); rmSync(dir, { recursive: true, force: true }); };
+  // A background run a test left behind is stopped with it.
+  const done = () => {
+    const pid = Number(read('.tacit-prover/run.pid'));
+    if (pid > 1) try { process.kill(pid); } catch {}
+    srv.server.close(); rmSync(dir, { recursive: true, force: true });
+  };
   return { dir, home, srv, run, read, done, bin: join(home, '.tacit-prover/bin/tacit-prover') };
 }
 
-const withWorld = (fn, opts) => async () => { const w = await world(opts); try { await fn(w); } finally { w.done(); } };
+const withWorld = (fn, opts, homeName) => async () => { const w = await world(opts, homeName); try { await fn(w); } finally { w.done(); } };
 
 test('installs the program, checks it, and hands the address to the service', withWorld(async (w) => {
   const r = await w.run([ADDR]);
@@ -232,6 +246,180 @@ test('a service that cannot be set up leaves the program installed and says how 
   assert.match(r.err, new RegExp(`${w.bin} mine ${ADDR}`));
   assert.match(r.err, /desktop session, not ssh/);
   assert.ok(existsSync(w.bin));
+}));
+
+// Ubuntu in WSL 2 as the script sees it: Linux on x86-64, WSL's distribution name, and the kernel's version line (WSL 1's names
+// Microsoft with a capital M).
+const WSL2 = 'Linux version 6.6.87.2-microsoft-standard-WSL2 (root@439a258ad544) (gcc (GCC) 11.2.0, GNU ld (GNU Binutils) 2.37) #1 SMP PREEMPT_DYNAMIC Thu Jun  5 18:30:46 UTC 2025\n';
+const WSL1 = 'Linux version 4.4.0-19041-Microsoft (Microsoft@Microsoft.com) (gcc version 5.4.0 (GCC) ) #1237-Microsoft Sat Sep 11 14:32:00 PST 2021\n';
+const linuxEnv = (w, extra = {}) => ({ FAKE_OS: 'Linux', FAKE_ARCH: 'x86_64', TACIT_PROVER_SHA256: sha(w.srv.assets['tacit-prover-linux-x86_64.tar.gz']), ...extra });
+function wsl(w, extra = {}, version = WSL2) {
+  const f = join(w.dir, 'proc-version');
+  writeFileSync(f, version);
+  return linuxEnv(w, { WSL_DISTRO_NAME: 'Ubuntu', TACIT_PROC_VERSION: f, ...extra });
+}
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+test('in WSL with systemd off it runs in the background, says how to turn systemd on, and a re-run replaces that run', withWorld(async (w) => {
+  let r = await w.run([ADDR], wsl(w, { FAKE_NO_USER_SYSTEMD: '1' }));
+  assert.equal(r.code, 0, r.err + r.out);
+  assert.match(r.out, /systemd is off in this Ubuntu, so tacit-prover runs in the background until WSL stops/);
+  assert.match(r.out, /\/etc\/wsl\.conf[^\n]*\n {2}\[boot\]\n {2}systemd=true\n/);
+  assert.doesNotMatch(w.read('fake-prover.log'), /^install/m, 'no service was asked for');
+  // the pid is the program's once run.sh has exec'd it, a moment before the program writes its first line
+  for (let i = 0; i < 40 && !/^serve /m.test(w.read('fake-prover.log')); i++) await new Promise((s) => setTimeout(s, 50));
+  assert.match(w.read('fake-prover.log'), new RegExp(`^serve mine=${ADDR} dir=${w.home}/\\.tacit-prover$`, 'm'));
+  const pid = Number(w.read('.tacit-prover/run.pid'));
+  assert.ok(pid > 1 && alive(pid), 'the program runs, and the pid it wrote is its own');
+  assert.match(r.out, /tacit-prover is running\./);
+  assert.match(r.out, /It does not start by itself: after a restart, run this again\./);
+  assert.doesNotMatch(r.out, /enable-linger/, 'linger is no help to a run outside systemd');
+  assert.match(r.out, /Windows reaches it at 127\.0\.0\.1:\d+/);
+  assert.match(r.out, /\[general\]\n {2}instanceIdleTimeout=-1\n/);
+  assert.match(r.out, /wsl --list --running/);
+
+  r = await w.run(['--status'], wsl(w));
+  assert.match(r.out, new RegExp(`Service    running in the background \\(pid ${pid}\\)`));
+  assert.match(r.out, new RegExp(`Mining for ${ADDR}`), 'the address is read back from the run script');
+
+  // A run that ended by itself (out of memory, say) is told apart from one never set up.
+  process.kill(pid);
+  for (let i = 0; i < 30 && alive(pid); i++) await new Promise((s) => setTimeout(s, 100));
+  r = await w.run(['--status'], wsl(w));
+  assert.match(r.out, /Service    stopped \(it ran in the background; run the install again, and if it stops by itself see its log\)/);
+
+  // A re-run without an address keeps the one the run had, and stops the old run before it starts the new.
+  r = await w.run([], wsl(w, { FAKE_NO_USER_SYSTEMD: '1' }));
+  assert.equal(r.code, 0, r.err);
+  const next = Number(w.read('.tacit-prover/run.pid'));
+  assert.ok(next !== pid && !alive(pid) && alive(next));
+  assert.match(w.read('.tacit-prover/run.sh'), new RegExp(`TACIT_MINE='${ADDR}'`));
+
+  // With systemd on, the install takes over and the background run is stopped, so it does not hold the port.
+  r = await w.run([ADDR], wsl(w));
+  assert.equal(r.code, 0, r.err);
+  assert.ok(!alive(next));
+  assert.match(w.read('fake-prover.log'), new RegExp(`^install mine=${ADDR} `, 'm'));
+}));
+
+test('--uninstall stops a background run, and a pid file whose number is another program\'s is left alone', withWorld(async (w) => {
+  await w.run([ADDR], wsl(w, { FAKE_NO_USER_SYSTEMD: '1' }));
+  const pid = Number(w.read('.tacit-prover/run.pid'));
+  assert.ok(alive(pid));
+  let r = await w.run(['--uninstall'], wsl(w, { FAKE_NO_USER_SYSTEMD: '1' }));
+  assert.equal(r.code, 0, r.err);
+  assert.ok(!alive(pid));
+  assert.ok(!existsSync(join(w.home, '.tacit-prover/run.sh')) && !existsSync(join(w.home, '.tacit-prover/run.pid')));
+
+  const other = spawn('sleep', ['30']);
+  try {
+    mkdirSync(join(w.home, '.tacit-prover'), { recursive: true });
+    writeFileSync(join(w.home, '.tacit-prover/run.pid'), String(other.pid));
+    r = await w.run(['--status'], wsl(w));
+    assert.match(r.out, /Service    not set to start at login/);
+    r = await w.run(['--uninstall'], wsl(w));
+    assert.equal(r.code, 0, r.err);
+    assert.ok(alive(other.pid), 'a program that is not tacit-prover is never stopped');
+  } finally { other.kill(); }
+}));
+
+test('in WSL with systemd on it installs the service, checks that Windows reaches it, and says what keeps WSL running', withWorld(async (w) => {
+  let r = await w.run([ADDR], wsl(w));
+  assert.equal(r.code, 0, r.err);
+  assert.match(w.read('fake-prover.log'), new RegExp(`^install mine=${ADDR} `, 'm'));
+  assert.match(w.read('system.log'), /systemctl --user restart tacit-prover/);
+  assert.ok(!existsSync(join(w.home, '.tacit-prover/run.pid')));
+  assert.match(r.out, /It starts at login/);
+  assert.match(r.out, /sudo loginctl enable-linger/);
+  assert.match(r.out, /Keep an Ubuntu window open while it proves: WSL stops Ubuntu, and tacit-prover with it, soon after the last one closes\./);
+  assert.match(r.out, /%UserProfile%\\\.wslconfig/);
+  assert.match(w.read('system.log'), /curl\.exe -fsS --max-time 3 http:\/\/127\.0\.0\.1:\d+\/health/);
+
+  r = await w.run([ADDR], wsl(w, { FAKE_WIN_UNREACHABLE: '1' }));
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.err, /Windows could not reach it at 127\.0\.0\.1:\d+, so the page in your Windows browser will not find it \(it proves all the same\)\. Check that %UserProfile%\\\.wslconfig does not set localhostForwarding=false\./);
+}));
+
+test('on Linux with no systemd user manager it runs in the background, with no WSL advice', withWorld(async (w) => {
+  const r = await w.run([ADDR], linuxEnv(w, { FAKE_NO_USER_SYSTEMD: '1' }));
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /systemd's user manager does not answer here \(systemctl --user\), so tacit-prover runs in the background until this computer stops/);
+  assert.ok(alive(Number(w.read('.tacit-prover/run.pid'))));
+  assert.doesNotMatch(r.out + r.err, /wsl/i);
+  assert.doesNotMatch(w.read('system.log'), /curl\.exe/);
+}));
+
+test('a re-run where systemctl --user does not answer leaves an installed unit alone instead of starting a second copy beside it', withWorld(async (w) => {
+  const units = join(w.home, '.config/systemd/user');
+  mkdirSync(units, { recursive: true });
+  writeFileSync(join(units, 'tacit-prover.service'), `[Service]\nEnvironment=TACIT_MINE=${ADDR}\n`);
+  // systemd is the init, and the real program's install fails where systemctl --user does (main.rs service()).
+  const booted = join(w.dir, 'run-systemd');
+  mkdirSync(booted);
+  let r = await w.run([], linuxEnv(w, { FAKE_NO_USER_SYSTEMD: '1', FAKE_INSTALL_FAILS: '1', TACIT_SYSTEMD_RUN: booted }));
+  assert.ok(!existsSync(join(w.home, '.tacit-prover/run.pid')), 'no background copy beside the unit');
+  assert.equal(r.code, 1);
+  assert.match(r.err, /could not be set to start at login/);
+
+  // WSL with systemd turned off since: the old unit can run nothing, so the background run is started after all.
+  r = await w.run([], wsl(w, { FAKE_NO_USER_SYSTEMD: '1' }));
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /systemd is off in this Ubuntu/);
+  assert.ok(alive(Number(w.read('.tacit-prover/run.pid'))));
+  assert.match(w.read('.tacit-prover/run.sh'), new RegExp(`TACIT_MINE='${ADDR}'`), 'with the unit\'s address');
+}));
+
+test('a background run that ignores SIGTERM is killed outright, on a re-run and on uninstall', withWorld(async (w) => {
+  await w.run([ADDR], wsl(w, { FAKE_NO_USER_SYSTEMD: '1', FAKE_IGNORE_TERM: '1' }));
+  const first = Number(w.read('.tacit-prover/run.pid'));
+  assert.ok(alive(first));
+  await w.run([ADDR], wsl(w, { FAKE_NO_USER_SYSTEMD: '1', FAKE_IGNORE_TERM: '1' }));
+  const second = Number(w.read('.tacit-prover/run.pid'));
+  assert.ok(second !== first && !alive(first) && alive(second), 'the old run is gone, not forgotten beside the new one');
+  await w.run(['--uninstall'], wsl(w, { FAKE_NO_USER_SYSTEMD: '1' }));
+  assert.ok(!alive(second));
+}));
+
+// The run script names its paths as single-quoted words, so a home folder with quotes, a dollar or a backtick in it starts (and runs nothing).
+for (const name of ['ho"me', "ho'me", 'ho$me', 'ho`touch pwned`me']) {
+  test(`a home folder named ${name} starts the background run, which --status finds and --uninstall stops`, withWorld(async (w) => {
+    let r = await w.run([ADDR], wsl(w, { FAKE_NO_USER_SYSTEMD: '1' }));
+    assert.equal(r.code, 0, r.err);
+    const pid = Number(w.read('.tacit-prover/run.pid'));
+    assert.ok(alive(pid));
+    r = await w.run(['--status'], wsl(w));
+    assert.match(r.out, new RegExp(`Service    running in the background \\(pid ${pid}\\)`));
+    await w.run(['--uninstall'], wsl(w, { FAKE_NO_USER_SYSTEMD: '1' }));
+    assert.ok(!alive(pid));
+    assert.ok(!existsSync(join(w.home, '.tacit-prover/pwned')) && !existsSync(join(w.dir, 'pwned')), 'nothing in the name was run');
+  }, undefined, name));
+}
+
+test('WSL 1 is told to move to WSL 2', withWorld(async (w) => {
+  let r = await w.run([ADDR], wsl(w, { TACIT_PROVER_NO_SERVICE: '1' }, WSL1));
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.err, /this looks like WSL 1, and tacit-prover is made for WSL 2\. In PowerShell: wsl --set-version Ubuntu 2/);
+  // Known from the kernel's line alone (sudo drops WSL_DISTRO_NAME), it still says so.
+  const { WSL_DISTRO_NAME, ...noName } = wsl(w, { TACIT_PROVER_NO_SERVICE: '1' }, WSL1);
+  r = await w.run([ADDR], noName);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.err, /looks like WSL 1/);
+  r = await w.run([ADDR], wsl(w, { TACIT_PROVER_NO_SERVICE: '1' }));
+  assert.doesNotMatch(r.err, /WSL 1/);
+}));
+
+test('a Linux older than glibc 2.34 is refused before the download, and WSL is told which Ubuntu to add', withWorld(async (w) => {
+  let r = await w.run([ADDR], linuxEnv(w, { FAKE_GLIBC: '2.31' }));
+  assert.equal(r.code, 1);
+  assert.match(r.err, /this Linux has glibc 2\.31, and tacit-prover needs 2\.34 or newer: Ubuntu 22\.04, Debian 12 or newer\.\n/);
+  r = await w.run([ADDR], wsl(w, { FAKE_GLIBC: '2.31' }));
+  assert.equal(r.code, 1);
+  assert.match(r.err, /In PowerShell: wsl --install -d Ubuntu-24\.04, then run the command in that window\./);
+  assert.deepEqual(w.srv.seen.filter((p) => p.startsWith('/rel/')), [], 'nothing was downloaded');
+  for (const v of ['2.34', '2.35', '2.40+r16+gaa1b2c3']) {
+    r = await w.run([ADDR], linuxEnv(w, { FAKE_GLIBC: v, TACIT_PROVER_NO_SERVICE: '1' }));
+    assert.equal(r.code, 0, `${v}: ${r.err}`);
+  }
 }));
 
 test('it goes on the PATH where ~/.local/bin is already, and never over a program of the same name that is not its own', withWorld(async (w) => {

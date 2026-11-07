@@ -27,16 +27,19 @@ export function tacText(wei, places = 2) {
 }
 
 
+// The most a point is paid today (GET /mine terms.capWeiPerPoint), or null while mining does not pay: off, no terms, or past the campaign's end.
+export const capOf = (mine, nowSec = Date.now() / 1000) => (mine?.enabled && mine.terms && !mine.terms.off && mine.terms.capWeiPerPoint && Number(mine.endSec) > nowSec ? mine.terms.capWeiPerPoint : null);
+
 // What mining pays now, or null when it is not paying: `pool` is GET /prover/pool (terms.pointsPerProof, terms.proofsPerMinerDay) and
 // `mine` is GET /mine (enabled, endSec, terms.capWeiPerPoint for today, null or off when none). The service shares a day's amount between
 // the day's points and pays no point more than the cap, so a proof pays up to its points times the cap, and less once the provers make
 // more proofs between them in a day than the amount covers at that pay.
 export function mineTerms(pool, mine, nowSec = Date.now() / 1000) {
-  const t = mine?.terms, p = pool?.terms;
-  if (!mine?.enabled || !t || t.off || !t.capWeiPerPoint || !(Number(mine.endSec) > nowSec)) return null;
+  const cap = capOf(mine, nowSec), p = pool?.terms;
+  if (!cap) return null;
   const points = Number(p?.pointsPerProof), perDay = Number(p?.proofsPerMinerDay);
   if (!(points > 0)) return null;
-  const perProofWei = BigInt(points) * BigInt(t.capWeiPerPoint);
+  const perProofWei = BigInt(points) * BigInt(cap);
   if (perProofWei <= 0n) return null;
   return {
     pointsPerProof: points,
@@ -56,7 +59,7 @@ const count = (n, one) => `${n} ${n === 1 ? one : `${one}s`}`;
 export function mineLines(pool, mine, { tally = null, address = null, nowSec = Date.now() / 1000 } = {}) {
   const t = mineTerms(pool, mine, nowSec);
   const pays = !t ? null
-    : `Up to ${tacText(t.perProofWei)} TAC a proof${t.proofsPerDay ? `, ${t.proofsPerDay} proofs a day` : ''}`;
+    : `Up to ${tacText(t.perProofWei)} TAC a proof${t.proofsPerDay ? `, up to ${t.proofsPerDay} a day` : ''}`;
   const me = cleanAddress(address)?.toLowerCase();
   const row = me && Array.isArray(tally?.miners) ? tally.miners.find((m) => String(m?.miner).toLowerCase() === me) : null;
   const today = !me || !Array.isArray(tally?.miners) ? null

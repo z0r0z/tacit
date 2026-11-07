@@ -170,7 +170,7 @@ function updateCacheBust(htmlBytes, appJsBytes, prebootBytes) {
 const SATS_CB_FILES = ['sats/join-worker.js', 'sats/mix.js', 'sats/secret.js', 'sats/eth.js', 'sats/app.js', 'sats/index.html'];
 // The front page (dapp/index.html) and weld's stats and keeper pages each keep their imports in their inline module, so their tokens are rewritten before
 // those modules' CSP hashes are taken (updatePinnedCsp below).
-const WELD_CB_FILES = ['btcswap-page.js', 'walletconnect.js', 'evm-pool-sync-worker.js', 'holding-prove-worker.js', 'index.html', 'weld/stats/index.html'];
+const WELD_CB_FILES = ['btc-borrow.js', 'btcswap-page.js', 'walletconnect.js', 'evm-pool-sync-worker.js', 'holding-prove-worker.js', 'index.html', 'weld/stats/index.html'];
 // dapp/pay/ and dapp/pay/eth/ are built the same way as weld: one page each, every import in its inline module.
 const PAY_CB_FILES = ['private-route.js', 'pay/index.html', 'pay/eth/index.html'];
 // dapp/tac/ is the shielded-TAC page: app.js lazy-imports sats.js, so sats.js is hashed first and the page
@@ -182,7 +182,7 @@ const TRADE_CB_FILES = ['trade/tape.js', 'trade/chart.js', 'trade/book.js', 'tra
   'trade/util.js', 'trade/poolux.js', 'trade/key.js', 'trade/connect.js', 'trade/rewards-dot.js', 'teth/read.js', 'teth/wrap.js', 'teth/prover.js', 'teth/market.js', 'teth/app.js', 'teth/index.html',
   'cbtc/read.js', 'cbtc/app.js', 'cbtc/index.html'];
 // dapp/vault/ is the borrow page: the same walk, leaves first (its arithmetic, its chain reads and its addresses), then app.js, then the page.
-const VAULT_CB_FILES = ['vault/math.js', 'vault/deployments.js', 'vault/chain.js', 'vault/feed.js', 'vault/batch.js', 'vault/router.js', 'vault/engine.js', 'vault/pools.js', 'vault/quote.js', 'vault/mine.js', 'vault/app.js', 'vault/index.html'];
+const VAULT_CB_FILES = ['vault/math.js', 'vault/deployments.js', 'vault/chain.js', 'vault/feed.js', 'vault/batch.js', 'vault/router.js', 'vault/engine.js', 'vault/reopen.js', 'vault/pools.js', 'vault/quote.js', 'vault/mine.js', 'vault/app.js', 'vault/index.html'];
 // dapp/tasks/ is the page of jobs paid in TAC: the check of a job's transactions first, then app.js, then the page (open.js is the front page's line about them).
 const TASKS_CB_FILES = ['tasks/open.js', 'tasks/verify.js', 'tasks/app.js', 'tasks/index.html'];
 // dapp/discord/ is where the verification panel sends a holder: shared message/holdings helpers, then app.js, then the page.

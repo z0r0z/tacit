@@ -77,6 +77,36 @@ The server listens on 127.0.0.1 only and answers a browser only from an allowed 
 the rest wait in a queue. A job's id is the hash of its input, so a page reloaded mid-proof picks up the same job. Finished
 proofs are kept on disk, without their inputs.
 
+## On Windows
+
+There is no Windows build. SP1 runs natively on Linux and macOS only (its install docs say so), and the code is POSIX underneath: SP1's
+executor depends on `sp1-jit`, whose shared memory is `shm_open`, `memfd` and POSIX semaphores and which does not compile for a Windows
+target, and this prover's Groth16 loader maps the key with Go's `syscall.Mmap`. So Windows runs the Linux build in WSL 2: `wsl --install`
+in PowerShell, then the install command in the Ubuntu window. `prove.sh` handles what differs there:
+
+- **systemd.** Ubuntu from `wsl --install` runs it; another distribution needs `[boot]` and `systemd=true` in `/etc/wsl.conf`, then
+  `wsl --shutdown`. Where `systemctl --user` does not answer, the script starts the prover in the background instead (`~/.tacit-prover/run.sh`,
+  `run.pid`, which `--status` and `--uninstall` know); that run does not start again by itself.
+- **Memory.** WSL gives Linux half the PC's memory unless `%UserProfile%\.wslconfig` sets `memory=` under `[wsl2]`. A proof wants 8 GB; the
+  script names the setting when WSL has less than about 11 GB.
+- **Staying up.** WSL stops a distribution a few seconds after its last window closes (`instanceIdleTimeout` under `[general]` in
+  `.wslconfig`, 15000 ms by default, `-1` for never), and Microsoft's systemd page says systemd services do not keep it alive. Linger keeps
+  the user manager across logouts inside Linux and `vmIdleTimeout` times the VM, so neither keeps the prover running. Reports in
+  microsoft/WSL#13416 differ on `instanceIdleTimeout=-1` across WSL versions; the workaround reported there is a Windows process holding a
+  session open, such as a logon task running `wsl.exe -d Ubuntu --exec sleep infinity`.
+- **The page.** It runs in the Windows browser and reaches 127.0.0.1 inside WSL through WSL's localhost forwarding (on unless
+  `.wslconfig` sets `localhostForwarding=false`); the script checks that with Windows' own `curl.exe`.
+- **glibc.** The Linux build asks for glibc 2.34 or newer (Ubuntu 22.04, Debian 12); `wsl --install` gives Ubuntu 24.04, and the script
+  refuses an older one before it downloads anything.
+
+`prove-gpu.sh` makes the same glibc check, and under WSL finds the Windows driver's `nvidia-smi` in `/usr/lib/wsl/lib` (there is no
+Linux driver inside Ubuntu). SP1's GPU server (`sp1-gpu-server` 6.3.1, which the worker fetches) links `libcudart.so.12`, which no driver
+brings: NVIDIA's CUDA repository for WSL-Ubuntu and `cuda-cudart-12-8`. The server is built with CUDA 12.8 for sm_80 to sm_120 (so the
+script refuses an older card), and uses host memory registration, memory pools and cooperative launches; NVIDIA lists pinned memory as
+limited under WSL.
+
+Not yet run on a Windows PC. The WSL paths of `prove.sh` are covered by stand-ins in `tests/prove-installer.test.mjs`.
+
 ## Mining the proof pool
 
 People keep wraps ready to send at once (a wrap's proof binds only the asset, the amount and the note's commitment, so it can be

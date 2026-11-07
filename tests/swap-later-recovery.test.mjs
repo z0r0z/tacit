@@ -39,6 +39,7 @@ async function chain(state = {}) {
       if (method === 'eth_call') {
         const data = params[0].data;
         if (data.startsWith(SELECTORS.boxOf)) return ok('0x' + S.boxAt.slice(2).toLowerCase().padStart(64, '0'));
+        if (data.startsWith('0x70a08231')) return ok('0x' + (S.tokenBal ?? 0n).toString(16).padStart(64, '0'));      // a token's balanceOf
         if (data.startsWith(SELECTORS.reclaim)) {
           if (S.sim === 'down') return res.end('not json');
           if (S.sim === 'expired') return err('execution reverted', SELECTORS.notExpired);
@@ -202,14 +203,14 @@ test('a send that failed on chain is made again; one not mined yet is not made t
 });
 
 // ── a direct payout (no escrow) ──
-function payoutSetup({ C, notes = [], balance = 2n * E18, fee = 100_000n, withdraw = null } = {}) {
+function payoutSetup({ C, notes = [], balance = 2n * E18, fee = 100_000n, withdraw = null, knows = null } = {}) {
   const mem = new Map(), store = { getItem: (k) => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, String(v)) };
   const W = { balance, notes, calls: [], seen: [] };
   const w = {
     sync: async () => ({ balance: W.balance, leaves: 40, block: 100 }), notes: () => W.notes, quote: async () => ({ fee: String(fee) }), refundBox: async () => REFUND_BOX,
     withdraw: async (a) => { W.calls.push(a); return withdraw ? withdraw(a, W, store) : PAYOUT; },
   };
-  const L = makeLater({ keyHex: async () => '22'.repeat(32), signer: { address: PAYER }, ethCall: async () => '0x', store, walletOf: () => w, chain: { chainId: 1, rpc: [C.url] } });
+  const L = makeLater({ keyHex: async () => '22'.repeat(32), signer: { address: PAYER }, ethCall: async () => '0x', store, walletOf: () => w, chain: { chainId: 1, rpc: [C.url] }, knows });
   return { L, W, store, mem };
 }
 const SWAP = E18;
@@ -338,4 +339,60 @@ test('a receipt that cannot be read falls back to the notes, then the balance, a
   const s = payoutSetup({ C, balance: 5n * E18, notes: [] }), { L } = s;
   const plan = await sentPlan(s, { state: 'unsure', outTx: PAYOUT, outIns: [31] });
   assert.strictEqual((await L.check(plan)).state, 'done', 'the note is gone');
+});
+
+test('a payout whose hash no node could be asked about is kept in doubt with its hash, not called done', async () => {
+  const C = await chain();
+  const s = payoutSetup({ C, knows: async () => undefined }), { L, store } = s;
+  const plan = await L.adopt({ swapWei: SWAP, token: ZERO, sym: 'ETH', dec: 18, to: TO, feeWei: 100_000n });
+  await assert.rejects(L.swapOut(plan, { shown: await L.offer(plan), via: 'relay' }), /may still have sent/);
+  const kept = JSON.parse(store.getItem('tacit-swap-later-v1'))[0];
+  assert.strictEqual(kept.state, 'unsure');
+  assert.strictEqual(kept.swapTx, PAYOUT, 'the hash is kept for the check');
+});
+
+test('a payout still being sent (marked so, with nothing yet to judge it by) is held in doubt by a check, not offered again', async () => {
+  const C = await chain();
+  const mk = async (over) => { const s = payoutSetup({ C, balance: 3n * E18, notes: [{ index: 31, v: '1' }] }); return { ...s, plan: await sentPlan(s, over) }; };
+  // the tab that holds the job is still proving or waiting: a check from here finds no hash and no spent note, and leaves it
+  const young = await mk({ state: 'swapping', swapAt: Date.now() - 12 * 60e3 });
+  const held = await young.L.check(young.plan);
+  assert.strictEqual(held.state, 'swapping');
+  assert.match(held.err, /not in a block yet/);
+  // twenty minutes on, nothing came of it: offered again
+  const old = await mk({ state: 'swapping', swapAt: Date.now() - 21 * 60e3 });
+  assert.strictEqual((await old.L.check(old.plan)).state, 'waiting');
+});
+
+// ── a deposit box the card paid from the wallet into a token pool's private balance (walletIntoGo), kept with its intent and its pool's router ──
+test('a token pool\'s deposit box kept by the card is sent back through that pool\'s router, in its token, once its deadline has passed, and only once', async () => {
+  const TOKEN_ROUTER = '0x' + '7e'.repeat(20);
+  const C = await chain({ tokenBal: 4_200_000n }), ctx = boxedSetup({ C }), sentAt = [];
+  const rec = { router: TOKEN_ROUTER, box: BOX, token: USDC, intent: intentOf({ amount: 100_000_000n, refund: PAYER, deadline: Math.floor(Date.now() / 1000) - 60 }) };
+  const r = await ctx.L.reclaimIntoBox(rec, { onSent: (h, held) => sentAt.push([h, held]) });
+  assert.strictEqual(ctx.sent.length, 1, 'one transaction');
+  const tx = ctx.sent[0], w = words(tx.data);
+  assert.strictEqual(tx.to, TOKEN_ROUTER, 'the router of the pool the box belongs to');
+  assert.ok(tx.data.startsWith(SELECTORS.reclaim), 'reclaimDeposit(intent, token)');
+  assert.strictEqual('0x' + w[8].slice(24), USDC, 'the token the box holds');
+  assert.strictEqual('0x' + w[5].slice(24), PAYER, 'to the refund the box was made with');
+  assert.deepStrictEqual(sentAt, [[SEND, 4_200_000n]], 'the hash is handed back before the wait');
+  assert.strictEqual(r.held, 4_200_000n);
+  C.receipts[SEND] = { status: '0x1' };
+  const again = await ctx.L.reclaimIntoBox({ ...rec, reclaimTx: SEND, reclaimAt: Date.now(), reclaimHeld: '4200000' });
+  assert.strictEqual(again.again, true);
+  assert.strictEqual(ctx.sent.length, 1, 'never twice');
+});
+
+test('a kept deposit box is not sent back before its deadline, when it is empty, or when its record does not make it', async () => {
+  const C = await chain({ tokenBal: 5n }), ctx = boxedSetup({ C });
+  const rec = { router: '0x' + '7e'.repeat(20), box: BOX, token: USDC, intent: intentOf({ amount: 1000n, refund: PAYER, deadline: Math.floor(Date.now() / 1000) + 600 }) };
+  await assert.rejects(ctx.L.reclaimIntoBox(rec), /once its deadline has passed.*Nothing was sent/);
+  const late = { ...rec, intent: { ...rec.intent, deadline: String(Math.floor(Date.now() / 1000) - 60) } };
+  C.tokenBal = 0n;
+  await assert.rejects(ctx.L.reclaimIntoBox(late), /holds nothing.*Nothing was sent/);
+  C.tokenBal = 5n; C.boxAt = '0x' + 'bb'.repeat(20);
+  await assert.rejects(ctx.L.reclaimIntoBox(late), /does not match its box/);
+  await assert.rejects(ctx.L.reclaimIntoBox({ ...late, router: null }), /incomplete/);
+  assert.strictEqual(ctx.sent.length, 0);
 });

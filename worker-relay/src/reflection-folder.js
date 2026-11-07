@@ -35,10 +35,11 @@ import { jobCounts, proofCounts, countsBehind } from './lib/attest-counts.js';
 import { staleAttestRevert } from './lib/attest-revert.js';
 import { revertSelector } from './lib/revert-data.js';
 import { encodeFunctionData } from 'viem';
-import { relayWallet, publicClient, verifyClient, readPool, readReflectionDigest, POOL, POOL_ABI, gasAboveCap, HEADER_RELAY, RELAY_ABI, baseFeeHistory } from './lib/chain.js';
+import { relayWallet, publicClient, verifyClient, readPool, readPoolCounts, readReflectionDigest, POOL, POOL_ABI, gasAboveCap, HEADER_RELAY, RELAY_ABI } from './lib/chain.js';
 import { safeErr } from './lib/safe-err.js';
 import { withNonceRetry } from './lib/nonce-retry.js';
-import { attestGate, nextBaseFee } from './lib/gas-pace.js';
+import { attestGate } from './lib/gas-pace.js';
+import { attestDemand } from './lib/attest-demand.js';
 import { makeQuietLog } from './lib/quiet-log.js';
 import { attestFundsNeed } from './lib/attest-fees.js';
 
@@ -61,23 +62,21 @@ const heldProof = makeHeldProof();
 // (no job assembled, no input built) and goes on once it covers what a request reserves.
 let creditPause = null;
 
-// While gas is dear a few matured blocks wait for company before an attest (lib/gas-pace.js): an attest costs the same gas and PROVE
-// base fee whatever number of blocks it covers. Decided before a job is built, from two cheap reads (the relay's tip and the API's
-// cursor), which also means no job is assembled for blocks the relay has not matured: while the header feeder waits for cheap gas the
-// folder used to ask the API for one every poll, only to find them unmatured. A reading that cannot be had proceeds as before.
-const ATTEST_PACE = { minBlocks: CFG.attestMinBlocks, waitMin: CFG.attestMaxWaitMin, cheapGwei: CFG.headerCheapGwei, cheapPct: CFG.headerCheapPct, spikeGwei: CFG.paceSpikeGwei, spikeMult: CFG.paceSpikeMult };
+// A few matured blocks wait for company before an attest (lib/gas-pace.js): an attest pays the same proof base fee and about the same
+// gas whatever number of blocks it covers, at any gas price. They go at once when someone waits on them (lib/attest-demand.js).
+// Decided before a job is built, from cheap reads (the relay's tip, the API's cursor, the pool's counts), which also means no job is
+// assembled for blocks the relay has not matured. A reading that cannot be had proceeds as before.
+const ATTEST_PACE = { minBlocks: CFG.attestMinBlocks, waitMin: CFG.attestMaxWaitMin };
 const PROBE_EVERY_MS = 10 * 60_000;     // with nothing matured, the job is still asked for this often: the drift and lost-ack checks live behind it
 const gateState = { since: null, probedAt: 0 };
 async function attestGateNow() {
   try {
-    const [relayTip, attested, history, blk] = await Promise.all([
+    const [relayTip, attested, live] = await Promise.all([
       publicClient.readContract({ address: HEADER_RELAY, abi: RELAY_ABI, functionName: 'tipHeight' }).then(Number),
       reflectionAttestedHeight(),
-      baseFeeHistory().catch(() => null),
-      publicClient.getBlock({ blockTag: 'latest' }),
+      readPoolCounts(),
     ]);
-    const nb = nextBaseFee(blk);
-    const g = attestGate({ relayTip, attested, confirmations: CFG.reflectionConfirmations, price: nb == null ? NaN : Number(nb) / 1e9, history, now: Date.now(), since: gateState.since, probedAt: gateState.probedAt, probeEveryMs: PROBE_EVERY_MS, params: ATTEST_PACE });
+    const g = attestGate({ relayTip, attested, confirmations: CFG.reflectionConfirmations, now: Date.now(), since: gateState.since, probedAt: gateState.probedAt, probeEveryMs: PROBE_EVERY_MS, urgent: attestDemand({ live }), params: ATTEST_PACE });
     if (g) { gateState.since = g.since; gateState.probedAt = g.probedAt; }
     return g;
   } catch (e) { log(`pace check unavailable (${String(e.message).slice(0, 80)}) — proceeding`); return null; }
@@ -217,8 +216,7 @@ async function cycle() {
   }
   // The pool takes the batch only while its counts equal the pool's (lib/attest-counts.js). A batch behind them cannot land, so no proof is
   // bought for it, and a held proof the pool has moved past is let go. An unreadable count is not a reason to stop.
-  const live = await Promise.all([readPool('attestedCrossOutCount'), readPool('attestedBitcoinConsumedCount')])
-    .then(([c, n]) => ({ crossOuts: BigInt(c), consumed: BigInt(n) })).catch(() => null);
+  const live = await readPoolCounts();
   const jobBehind = countsBehind(jobCounts(job), live);
   if (jobBehind) {
     heldProof.clear();

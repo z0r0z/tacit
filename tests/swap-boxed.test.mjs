@@ -180,10 +180,11 @@ test('an order that ran with no hash found still waits for the keeper: the hash 
   const plan = await L.startBoxed({ ...base, pollMs: 5, fund: async () => { complete(base.depositWei); return { hash: null }; } });
   assert.strictEqual(plan.state, 'waiting');
   assert.ok(!plan.depositTx, 'no hash was found');
-  // the keeper has not: unsure (no hash to say the relay sent it), and check moves it on once the note is there
+  // the keeper has not: depositing (the order ran, so the box is funded, hash or none), and check moves it on once the note is there
   const { L: L2, complete: done2 } = setup();
   await assert.rejects(L2.startBoxed({ ...base, waitMs: 30, pollMs: 5, fund: async () => ({ hash: null }) }), (e) => e.pending === true && /its deposit is on its way/.test(e.message));
-  assert.strictEqual(L2.plans()[0].state, 'unsure', 'an order that ran with no hash and no note yet is unsure');
+  assert.strictEqual(L2.plans()[0].state, 'depositing', 'an order that ran with no hash and no note yet is depositing');
+  assert.strictEqual((await L2.check(L2.plans()[0])).state, 'depositing', 'and a check before the note is there leaves it so');
   done2(base.depositWei);
   assert.strictEqual((await L2.check(L2.plans()[0])).state, 'waiting');
 });
@@ -256,7 +257,7 @@ test('once the order has run, nothing that goes wrong after is called stopped, w
   assert.strictEqual(L.plans()[0].state, 'depositing');
   const { L: L2, M: M2 } = setup();
   await assert.rejects(L2.startBoxed({ ...base, pollMs: 5, fund: async () => { M2.failSyncAfter = M2.syncs; return { hash: null }; } }), /rejected by the node/);
-  assert.strictEqual(L2.plans()[0].state, 'unsure', 'with no hash to show it: unsure');
+  assert.strictEqual(L2.plans()[0].state, 'depositing', 'with no hash to show it: depositing all the same, the order having run');
 });
 
 test('a relayed start pays an address: no address, or a private destination with none, is refused before a box is made', async () => {

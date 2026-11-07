@@ -41,3 +41,24 @@ export function headline(state, mine) {
 
 // Proving needs a computer: a phone or tablet is told so instead of being shown a Terminal line.
 export const isPhone = (ua = '') => /\b(iPhone|iPad|iPod|Android|Mobile)\b/.test(ua);
+
+// A Windows PC proves in Ubuntu on WSL 2: the same setup line, pasted in Ubuntu once `wsl --install` has put it there.
+export const isWindows = (ua = '') => /\bWindows NT\b/.test(ua);
+
+// What the setup line's button and the words around it say on each kind of computer.
+export function setupText(os) {
+  if (os === 'win') {
+    return {
+      button: 'Copy, then paste in Ubuntu',
+      hint: 'Leave the Ubuntu window open while it proves. The first proof downloads 6.2 GB.',
+      need: 'Enter your address first',
+      copied: 'Copied. Paste it in Ubuntu: it takes about a minute, and this page sees it start.',
+    };
+  }
+  return {
+    button: 'Copy, then paste in Terminal',
+    hint: 'Once per computer, on a Mac with Apple silicon or Linux. The first proof downloads 6.2 GB.',
+    need: 'Enter your address first',
+    copied: 'Copied. Paste it in Terminal: it takes about a minute, and this page sees it start.',
+  };
+}

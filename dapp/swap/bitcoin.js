@@ -1,6 +1,6 @@
 // The swap page's Bitcoin lane: tETH and TAC swapped in the Bitcoin pool, signed by a Tacit key. The page loads this when the lane is first opened. tacit.js
 // comes with it through the trade page's Bitcoin module, which also holds the key's sign-in. Nothing here builds or signs a transaction: tacit.js does.
-import { esc, fmtUnits, parseUnits, plain } from '/trade/util.js?cb=e8317464';
+import { esc, fmtUnits, parseUnits, plain } from '/trade/util.js?cb=ba5a02b1';
 import { moveSatsNeeded, MOVE_SATS_FLAT } from '/btc-book.js?cb=0a09ab9e';
 
 const BTC_MODULE = '/trade/btc.js?cb=8a4b33cd';
@@ -152,11 +152,12 @@ export function makeBitcoinLane({ host, notify = () => {}, wallet = () => null, 
 
   // ── the quote ──
   const amountBase = () => { const v = parseUnits(L.amt, TOKENS[L.pay].dec); return v && v > 0n ? v : null; };
-  function requote(now = false) {
+  // `keep` leaves the quote shown until the new one lands (the lane's own refresh: the pool's floor covers a quote that old); an amount, pair or slippage change clears it
+  function requote(now = false, keep = false) {
     clearTimeout(qTimer);
     seq++;                                                                       // a quote still on its way is for the amount before this one
-    L.q = null;
     const din = amountBase();
+    if (!keep || !din || !T || L.noPool) L.q = null;
     if (!din || !T || L.noPool) { paint(); return; }
     const run = async () => {
       const my = ++seq;
@@ -295,10 +296,11 @@ export function makeBitcoinLane({ host, notify = () => {}, wallet = () => null, 
   }
   function follow(wait = 15e3) {
     clearTimeout(poll);
-    if (!T || !L.sent.some((s) => s.state === 'waiting')) return;
+    if (!T || !L.open || !L.sent.some((s) => s.state === 'waiting')) return;
     poll = setTimeout(async () => {
-      await Promise.all(L.sent.filter((s) => s.state === 'waiting').map((s) => check(s).catch(() => {})));
-      saveSent(); paintSent(); follow();
+      // a tab in the background asks nothing of the explorer or the pool: the swaps are looked at again once it is seen
+      if (!document.hidden) { await Promise.all(L.sent.filter((s) => s.state === 'waiting').map((s) => check(s).catch(() => {}))); saveSent(); paintSent(); }
+      follow();
     }, wait);
   }
   const readMoveNeed = async () => { moveNeed = await moveSatsNeeded(() => T?.getFeeRate()); };      // the commit and reveal at the fee rate now
@@ -345,9 +347,9 @@ export function makeBitcoinLane({ host, notify = () => {}, wallet = () => null, 
       if (L.line === 'Loading…') say('');
       paint(); requote(true); readMe(); follow(1e3);
       clearInterval(refreshTimer);
-      refreshTimer = setInterval(() => { if (!document.hidden && L.open) { readPool().then(() => requote(true)).catch(() => {}); readMe(true); } }, 45e3);
+      refreshTimer = setInterval(() => { if (!document.hidden && L.open) { readPool().then(() => requote(true, true)).catch(() => {}); readMe(true); } }, 45e3);
     },
-    hide() { L.open = false; clearInterval(refreshTimer); },
+    hide() { L.open = false; clearInterval(refreshTimer); clearTimeout(poll); },
     // the side it pays from, as the page names it ('teth' or 'tac'): the other is what it gets
     pair(f) {
       const pay = f === 'tac' ? TAC : TETH;

@@ -143,6 +143,8 @@ Bitcoin → Ethereum waits for 24 Bitcoin confirmations (about four hours) and t
 lands on Ethereum about every half hour. Ethereum → Bitcoin waits for Ethereum to finalize (about 13
 minutes), then for the next proof to cover the burn, then for the Bitcoin step to confirm: a few hours in
 all. A two-step TAC bridge waits for the proof after the move and after the burn, usually within a day.
+The burn is signed with the holder's key, so the app sends it while it is open with the wallet; a moved
+note waits at its burn address until then, and can be moved back.
 [tacit.finance/bridge](https://tacit.finance/bridge/) shows the live cadence and follows every bridge a
 browser has under way.
 

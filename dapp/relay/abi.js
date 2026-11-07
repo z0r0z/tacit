@@ -75,12 +75,13 @@ export function decodeBestSwap(raw) {
 export const SLIPPAGE_BPS = 100n;                                                       // the least a swap may buy: 1% under its quote
 const QUOTE_GAS = '0x5f5e100';
 const NO_ROUTE = 'No route from ETH to PROVE was found. Try again in a moment, or add PROVE.';
-const deadlineIn = (secs) => BigInt(Math.floor(Date.now() / 1000) + secs);
+// `now`: the chain's time in seconds where the page keeps it (a device clock that runs slow would otherwise set a deadline already past)
+const deadlineIn = (secs, now) => BigInt((now ?? Math.floor(Date.now() / 1000)) + secs);
 // zQuoter's best route from `wei` of ETH to PROVE for the recipient `to`, checked before it is shown or sent: it spends exactly what was asked,
 // pays `to`, and guards a least amount out. → { wei, amountIn, amountOut, amountLimit, msgValue, callData, at, router }
-export async function quoteEthToProve({ call, to, wei, slippageBps = SLIPPAGE_BPS, noRoute = NO_ROUTE }) {
+export async function quoteEthToProve({ call, to, wei, slippageBps = SLIPPAGE_BPS, noRoute = NO_ROUTE, now }) {
   wei = BigInt(wei);
-  const deadline = deadlineIn(600);
+  const deadline = deadlineIn(600, now);
   const data = buildBestSwapData({ to, tokenIn: ETH, tokenOut: PROVE, amount: wei, slippageBps, deadline });
   let q;
   try { q = decodeBestSwap(await call({ to: ZQUOTER, data, gas: QUOTE_GAS })); }
@@ -99,17 +100,17 @@ export async function quoteEthToProve({ call, to, wei, slippageBps = SLIPPAGE_BP
 // Rounded up to a millionth of an ETH; a price that moves between the two reads is followed for up to two more.
 const STEP = 10n ** 12n;
 const roundUp = (v) => ((v + STEP - 1n) / STEP) * STEP;
-export async function ethForProve({ call, to, want, headroomBps = 150n, slippageBps = SLIPPAGE_BPS, noRoute = NO_ROUTE }) {
+export async function ethForProve({ call, to, want, headroomBps = 150n, slippageBps = SLIPPAGE_BPS, noRoute = NO_ROUTE, now }) {
   want = BigInt(want);
   if (want <= 0n) throw new Error('Enter how much PROVE to add.');
-  const data = buildBestSwapData({ to, tokenIn: ETH, tokenOut: PROVE, amount: want, slippageBps, deadline: deadlineIn(600), exactOut: true });
+  const data = buildBestSwapData({ to, tokenIn: ETH, tokenOut: PROVE, amount: want, slippageBps, deadline: deadlineIn(600, now), exactOut: true });
   let size;
   try { size = decodeBestSwap(await call({ to: ZQUOTER, data, gas: QUOTE_GAS })); }
   catch (e) { throw new Error(e?.revert ? noRoute : 'Could not read a quote.'); }
   if (!size || size.amountOut !== want || size.amountIn <= 0n) throw new Error(noRoute);
   let wei = roundUp(size.amountIn * (10000n + BigInt(headroomBps)) / 10000n);
   for (let i = 0; i < 3; i++) {
-    const q = await quoteEthToProve({ call, to, wei, slippageBps, noRoute });
+    const q = await quoteEthToProve({ call, to, wei, slippageBps, noRoute, now });
     if (q.amountLimit >= want) return q;
     wei = roundUp(wei * want * 1005n / (q.amountLimit * 1000n));
   }

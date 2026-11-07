@@ -5,7 +5,7 @@
 // the asked recipient, spends exactly the amount and pays at least its claimed output less the slippage) before it may be offered; the best
 // that passes is the route. All of it is views on the chain: nothing here leaves the page.
 // by the same paths the page imports them by, so the page holds one copy of each
-import { decodeZRouterCall, ZROUTER } from '/zrouter-guard.js?cb=2841d896';
+import { decodeZRouterCall, ZROUTER } from '/zrouter-guard.js';
 import { ZQUOTER, ZERO, SOURCES, checkRoute } from '/swap/route.js?cb=45fd31f8';
 
 const SEL = { viaEth: 'e453166e', split: '892af013', hybrid: '85f86a90', quotes: 'e1fd10bc' };

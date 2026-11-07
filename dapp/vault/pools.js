@@ -1,6 +1,7 @@
 import { word, addrWord, wordAt, SEL, encApprove } from '/vault/chain.js?cb=872255e6';
 import * as M from '/vault/math.js?cb=ac1ed53e';
-import { MULTICALL3 } from '/vault/batch.js?cb=07112350';
+import { MULTICALL3, batchSupport, simulateBundle, sendBundle } from '/vault/batch.js?cb=07112350';
+import { planReopen } from '/vault/reopen.js?cb=40aab9d5';
 
 const WAD = 10n ** 18n, ZERO = '0x0000000000000000000000000000000000000000';
 const MIN_LIQUIDITY = 1000n;
@@ -13,6 +14,7 @@ const SELS = {
   poolFor: '0x83bd1387', isPool: '0x5b16ebb7', createPool: '0xb18a0dcf', createAndSeed: '0x7163352a', seed: '0xbdc5ef29', countFor: '0x20e832ec', sliceFor: '0x64d69dc9',
   reserve0: '0x443cb4bc', reserve1: '0x5a76f25e', totalSupply: '0x18160ddd', sqrtPriceCurrent: '0x2af1f249', removeLiquidity: '0xe39b0eb5', ethBalance: '0x4d2301cc',
   token0: '0x0dfe1681', token1: '0xd21220a7', sqrtPLow: '0x5c5ac485', sqrtPHigh: '0x87e43840', fee: '0xddca3f43', hook: '0x7f5a7c7b', feeRecipient: '0x46904840', creatorFeeBps: '0x17773ebb',
+  swapExactIn: '0xa6220b66',
 };
 const CONFIG_READS = ['token0', 'token1', 'sqrtPLow', 'sqrtPHigh', 'fee', 'hook', 'feeRecipient', 'creatorFeeBps'];
 const REVERTS = {
@@ -75,10 +77,24 @@ export function addPlan(m, st, side, amount) {
   const used = m.synthIs1 ? { s: u1, q: u0 } : { s: u0, q: u1 }, other = side === 's' ? 'q' : 's';
   return { lp, used, send: { [side]: amount, [other]: used[other] * (10000n + SLACK_BPS) / 10000n }, minLP: lp * 995n / 1000n };
 }
-const callSeed = (m, to, plan, first) => {
+export const callSeed = (m, to, plan, first) => {
   const a0 = m.synthIs1 ? plan.send.q : plan.send.s, a1 = m.synthIs1 ? plan.send.s : plan.send.q;
   return (first ? SELS.createAndSeed : SELS.seed) + encMarket(m.t) + word(first ? m.sOpen : 0n) + word(a0) + word(a1) + word(plan.minLP) + addrWord(to);
 };
+// The calls that carry out a reopen plan (vault/reopen.js planReopen) for the account `from`: the deposit through the factory, at the pool's own ratio and
+// for exactly the shares planned, then the swap straight into the pool, for exactly the output planned. Each says what it spends (`pay`: a token, how much,
+// and who takes it), so the approvals can go before it; ETH goes as the call's value.
+export function reopenSteps(m, pool, factory, plan, from) {
+  const [t0, t1] = [m.t.token0, m.t.token1], steps = [], payOf = (list) => list.filter(([a, , v]) => a !== ZERO && v > 0n).map(([token, spender, amount]) => ({ token, spender, amount }));
+  if (plan.deposit) {
+    const d = plan.deposit;
+    steps.push({ kind: 'deposit', to: factory, data: SELS.seed + encMarket(m.t) + word(0n) + word(d.used0) + word(d.used1) + word(d.lp) + addrWord(from),
+      value: t0 === ZERO ? d.used0 : 0n, pay: payOf([[t0, factory, d.used0], [t1, factory, d.used1]]) });
+  }
+  const sw = plan.swap, tin = sw.zeroForOne ? t0 : t1;
+  steps.push({ kind: 'swap', to: pool, data: SELS.swapExactIn + addrWord(tin) + word(sw.amountIn) + word(sw.out) + addrWord(from), value: tin === ZERO ? sw.amountIn : 0n, pay: payOf([[tin, pool, sw.amountIn]]) });
+  return steps;
+}
 
 export function makePools({ el, cfg, esc, rpc, ethCall, batch, wallet, W, synthOf, symOf, connect, txLink, onChange }) {
   // `add`: whether the add-liquidity form is open, null until the holder opens or closes it (until then a market not yet open, a holder's own
@@ -104,7 +120,7 @@ export function makePools({ el, cfg, esc, rpc, ethCall, batch, wallet, W, synthO
   const list = (key) => V(key)?.markets || [];
   const selected = (key) => { const l = list(key), id = P.sel[key]; return l.find((x) => x.pool === id) || l[0] || null; };
   const seeded = (x) => !!x && x.exists && x.supply > 0n;
-  const inRange = (x) => !!x && x.sqrtNow != null && x.sqrtNow > x.m.t.sqrtPLow && x.sqrtNow < x.m.t.sqrtPHigh;
+  const inRange = (x) => !!x && x.sqrtNow != null && x.sqrtNow >= x.m.t.sqrtPLow && x.sqrtNow <= x.m.t.sqrtPHigh;   // the pool's _priceInRange: its band ends trade
   const px = (x) => priceOf(x.m, x.sqrtNow);
   function view(key) {
     const x = selected(key), v = V(key);
@@ -113,6 +129,26 @@ export function makePools({ el, cfg, esc, rpc, ethCall, batch, wallet, W, synthO
     return { ...x, acc: v.hold?.acc || null, balS: v.hold?.balS ?? null, allowS: v.hold?.allowS ?? null, balQ: q.bal ?? null, allowQ: q.allow ?? null };
   }
   const quoteOpen = (key, qsym) => ((key === 'usd' && qsym === 'USDC') || (key === 'eth' && qsym === 'ETH') ? [1n, 1n] : null);
+  // A market whose price has left its band: the deposit and swap that bring it back to the peg (vault/reopen.js), kept for the pool as it is, with what they take
+  // of each side (`need.s` of the vault's token, `need.q` of the quote). Each is dust; the plan looks no further than one whole token of either side.
+  const outside = (x) => seeded(x) && x.sqrtNow != null && !inRange(x);
+  const RP = new Map();
+  function reopenOf(st) {
+    const m = st.m;
+    if (!outside(st) || !m.sOpen) return null;
+    const id = `${st.pool}:${st.supply}:${st.r0}:${st.r1}`;
+    if (!RP.has(id)) {
+      const one = (synth) => 10n ** BigInt(synth ? 18 : m.quote.dec), plan = planReopen(m.t, { supply: st.supply, r0: st.r0, r1: st.r1 }, m.sOpen, { cap0: one(!m.synthIs1), cap1: one(m.synthIs1) });
+      let need = null;
+      if (plan) {
+        const n = [plan.deposit?.used0 ?? 0n, plan.deposit?.used1 ?? 0n];
+        n[plan.swap.zeroForOne ? 0 : 1] += plan.swap.amountIn;
+        need = m.synthIs1 ? { s: n[1], q: n[0] } : { s: n[0], q: n[1] };
+      }
+      RP.set(id, { plan, need });
+    }
+    return RP.get(id);
+  }
 
   async function read(key, force = false) {
     const synth = key && synthOf(key);
@@ -236,7 +272,7 @@ export function makePools({ el, cfg, esc, rpc, ethCall, batch, wallet, W, synthO
     if (!v || !st) { shapeSet(P.failed ? 'failed' : 'loading', `${head}<p class="empty">${P.failed ? 'Could not read the markets. Try again in a moment.' : 'Reading the markets…'}</p>${statusBox()}`); return; }
     const m = st.m, qs = m.quote.sym, open = seeded(st), l = list(key);
     const pick = l.length > 1 ? `<div class="seg pick2" id="pl-pick" role="group" aria-label="Which market">${l.map((x) => `<button type="button" data-m="${x.pool}" aria-pressed="${x.pool === st.pool}"${P.busy ? ' disabled' : ''}>${pair(key, x.m.quote.sym)}<span class="mk"><b>${esc(symOf(key))} / ${esc(x.m.quote.sym)}</b><small>${esc(`${tierText(x.m)}${tierText(x.m) ? ' · ' : ''}${feeText(x.m)}`)}</small></span></button>`).join('')}</div>` : '';
-    const showAdd = P.add ?? (!open || st.mine > 0n || !!(P.text.s || P.text.q));
+    const showAdd = P.add ?? (!open || st.mine > 0n || !!(P.text.s || P.text.q) || outside(st));
     const shape = [key, st.pool, open, st.exists, !!st.acc, !!m.quote.addr, st.mine > 0n, l.map((x) => x.pool).join(), showAdd].join();
     if (P.shape !== shape) {
       shapeSet(shape, `${head}${pick}
@@ -246,10 +282,12 @@ export function makePools({ el, cfg, esc, rpc, ethCall, batch, wallet, W, synthO
           </div>
         <div class="reward" id="pl-reward" hidden><p class="rwd-h">Earn TAC here</p><div class="kv" id="pl-kb" hidden><span>Opening bonus</span><b id="pl-bonus"></b></div><div class="kv" id="pl-ke" hidden><span>Daily rewards</span><b id="pl-earn"></b></div><div class="kv" id="pl-km" hidden><span>Earned so far</span><b class="num" id="pl-got"></b></div></div>
         <details class="pl-add" id="pl-add"${showAdd ? ' open' : ''}><summary>Add liquidity</summary>
+        <div id="pl-in">
         <div class="lbl"><span>${esc(sym)}</span><button class="linkbtn" id="pl-bs" type="button"></button></div>
         <div class="amt"><input id="pl-s" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="${esc(sym)} to add"><span class="u">${ico(sym.toLowerCase())}${esc(sym)}</span></div>
         <div class="lbl"><span>${esc(qs)}</span><button class="linkbtn" id="pl-bq" type="button"></button></div>
         <div class="amt"><input id="pl-q" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="${esc(qs)} to add"><span class="u">${ico(qs.toLowerCase())}${esc(qs)}</span></div>
+        </div>
         <p class="hint" id="pl-hint"></p>
         <button class="btn" id="pl-go" type="button"></button>
         </details>
@@ -283,20 +321,25 @@ export function makePools({ el, cfg, esc, rpc, ethCall, batch, wallet, W, synthO
     if (!st.acc) label = 'Connect wallet';
     else if (!open && !typedAny) {
       if (st.exists) { dis = true; why = 'Created. Add liquidity to open it for trading.'; }
-    } else if (open && st.sqrtNow != null && !inRange(st)) {
-      // a deposit goes in at the pool's own price, and this one sits outside the band the market trades in: it takes none until it is back inside
-      label = 'Not trading'; dis = true; why = 'The price is outside this market’s range, so it takes no deposits now.';
+    } else if (outside(st)) {
+      // a deposit goes in at the pool's own price, and this one sits outside the band the market trades in: what it takes first is a reopen
+      const ro = reopenOf(st), keep = m.quote.addr ? 0n : GAS_KEEP;
+      if (!ro?.plan) { label = 'Not trading'; dis = true; why = 'The price is outside this market’s range, and it cannot be reopened from here.'; }
+      else if (ro.need.s > (st.balS ?? 0n)) { label = `Not enough ${sym}`; dis = true; why = `Reopening takes ${sFmt(ro.need.s, 8)} ${sym}. Borrow ${sym} above, then reopen it here.`; }
+      else if (ro.need.q + keep > (st.balQ ?? 0n)) { label = `Not enough ${qs}`; dis = true; why = `Reopening takes ${qFmt(m, ro.need.q, 6)} ${qs}.`; }
+      else { label = 'Reopen at the peg'; note = `Its price is outside its range. A deposit and a swap of ${qFmt(m, ro.need.q, 6)} ${qs} and ${sFmt(ro.need.s, 8)} ${sym} set it back to ${pxText(m, sym, m.refQps)}, then it takes liquidity as usual.`; }
     } else {
       const pl = planNow(st);
       if (!pl.ok) { dis = true; if (open && pl.why === 'Enter an amount') label = 'Enter an amount'; else if (pl.why !== 'Enter an amount') why = pl.why; }
       else if (pl.plan.send.s > st.balS) { label = `Not enough ${sym}`; dis = true; why = `Borrow ${sym} above, then add it here.`; }
-      else if (pl.plan.send.q > st.balQ) { label = `Not enough ${qs}`; dis = true; }
+      else if (pl.plan.send.q + (m.quote.addr ? 0n : GAS_KEEP) > st.balQ) { label = `Not enough ${qs}`; dis = true; if (!m.quote.addr && pl.plan.send.q <= st.balQ) why = 'Keep a little ETH for the fee.'; }
       else {
         const steps = (st.allowS < pl.plan.send.s ? 1 : 0) + (m.quote.addr && st.allowQ < pl.plan.send.q ? 1 : 0);
         if (steps) note = `${steps} approval${steps > 1 ? 's' : ''} first, then ${st.exists ? 'the deposit' : 'the pool and the deposit'}. Each is a confirmation.`;
       }
     }
-    if (open && st.acc && !dis) {
+    const inp = bit('#pl-in'); if (inp) inp.hidden = outside(st);
+    if (open && st.acc && !dis && !outside(st)) {
       const now = px(st);
       if (now && m.refQps) {
         const dev = now > m.refQps ? (now - m.refQps) * 100n / m.refQps : (m.refQps - now) * 100n / m.refQps;
@@ -320,9 +363,9 @@ export function makePools({ el, cfg, esc, rpc, ethCall, batch, wallet, W, synthO
   const stopped = (e) => e?.code === 4001 || /user (rejected|denied)|rejected the request|request rejected|denied (transaction|message)/i.test(e?.message || '');
   const why = (e) => REVERTS[String(e?.data || '').slice(0, 10).toLowerCase()] || null;
   const call = (from, to, data, value = 0n) => rpc('eth_call', [{ from, to, data, ...(value ? { value: '0x' + value.toString(16) } : {}) }, 'latest']);
-  async function approve(from, token, amount) {
+  async function approve(from, token, amount, spender = cfg.factory) {
     say('Approve in your wallet. It lets the market take exactly this amount.');
-    const h = await wallet.sendTx({ to: token, data: encApprove(cfg.factory, amount), from });
+    const h = await wallet.sendTx({ to: token, data: encApprove(spender, amount), from });
     say(`Waiting for the approval ${txLink(h)}`);
     if ((await wallet.receipt(h)).status !== '0x1') throw new Error('The approval did not go through.');
   }
@@ -337,6 +380,38 @@ export function makePools({ el, cfg, esc, rpc, ethCall, batch, wallet, W, synthO
     say(`Sent ${txLink(h)}. Waiting for it to land…`);
     if ((await wallet.receipt(h)).status !== '0x1') throw new Error(`The transaction failed (${h.slice(0, 10)}…).`);
     say(`${done} ${txLink(h)}`);
+  }
+  const allowanceOf = async (token, owner, spender) => wordAt(await ethCall(token, SEL.allowance + addrWord(owner) + addrWord(spender)), 0);
+  async function runStep(from, x, done) {
+    for (const p of x.pay) if ((await allowanceOf(p.token, from, p.spender)) < p.amount) await approve(from, p.token, p.amount, p.spender);
+    await send(from, x.to, x.data, x.value, done, x.pay.length ? 3 : 0);
+  }
+  // The reopen's calls: one confirmation where the wallet can send several calls as one transaction (and none of them carries ETH), else one at a time, each
+  // tested first, with the swap planned again from the pool as the deposit left it.
+  async function reopen(from, key, st) {
+    const ro = reopenOf(st), sym = symOf(key);
+    if (!ro?.plan) throw new Error('This market cannot be reopened from here.');
+    const steps = reopenSteps(st.m, st.pool, cfg.factory, ro.plan, from), done = `The ${sym} / ${st.m.quote.sym} market is back at ${pxText(st.m, sym, st.m.refQps)}. Add liquidity to it as usual.`;
+    if (!steps.some((x) => x.value > 0n) && await batchSupport(W.prov, from).catch(() => false)) {
+      const calls = steps.flatMap((x) => [...x.pay.map((p) => ({ to: p.token, data: encApprove(p.spender, p.amount) })), { to: x.to, data: x.data }]);
+      const sim = await simulateBundle(rpc, from, calls);
+      if (sim.ok === false) throw new Error(why(sim.e) || 'This would fail. Nothing was sent; the figures above are current.');
+      say('Confirm in your wallet: the approvals, the deposit and the swap go as one transaction.');
+      const h = await sendBundle(W.prov, from, calls);
+      say(`${done} ${txLink(h)}`);
+      return;
+    }
+    for (const x of steps) {
+      if (x.kind === 'swap' && steps.length > 1) {
+        await read(key, true);
+        const now = view(key), again = now && outside(now) ? reopenOf(now) : null;
+        if (!now || !outside(now)) { say(done); return; }                       // someone else finished it meanwhile
+        if (!again?.plan || again.plan.deposit) throw new Error('The market moved. Try again.');
+        await runStep(from, reopenSteps(now.m, now.pool, cfg.factory, again.plan, from)[0], done);
+        return;
+      }
+      await runStep(from, x, x.kind === 'deposit' ? 'Deposited. Now the swap…' : done);
+    }
   }
   const guard = async (fn) => {
     if (P.busy) return;
@@ -358,6 +433,7 @@ export function makePools({ el, cfg, esc, rpc, ethCall, batch, wallet, W, synthO
         await send(from, cfg.factory, SELS.createPool + encMarket(mm.t), 0n, `The ${sym} / ${mm.quote.sym} pool is created. Add liquidity to open it for trading.`);
         return;
       }
+      if (outside(st)) { await reopen(from, key, st); P.add = true; return; }
       const pl = planNow(st);
       if (!pl.ok) throw new Error(pl.why);
       if (pl.plan.send.s > st.balS || pl.plan.send.q > st.balQ) throw new Error('The balance is not enough.');
@@ -417,12 +493,13 @@ export function makePools({ el, cfg, esc, rpc, ethCall, batch, wallet, W, synthO
   function cell(key) {
     if (!keys.includes(key) || !synthOf(key)) return null;
     if (!V(key)) return '<span class="mute">…</span>';
-    const x = list(key).find(seeded);
+    const x = list(key).find((m) => seeded(m) && inRange(m)) || list(key).find(seeded);   // the seeded market that trades, before one whose price has left its band
     if (!x) {
       const n = termsNow(), unopened = n && n.create > 0n && list(key).some((m) => P.camp?.pools?.some((p) => p.pool === m.pool.toLowerCase() && !p.openPaid));
       return unopened ? `Not open yet<small>opening earns ${esc(tacText(n.create))} TAC</small>` : 'Not open yet';
     }
     const q = x.m.synthIs1 ? x.r0 : x.r1, now = px(x), depth = `${esc(qFmt(x.m, q, 2))} ${esc(x.m.quote.sym)} in the pool`;
+    if (x.sqrtNow == null) return `<b>—</b><small>the price could not be read · ${depth}</small>`;
     if (!inRange(x)) return `<b>Not trading</b><small>price outside the market’s range · ${depth}</small>`;   // a price outside the range is not one anything trades at
     return now && !small(now) ? `<b>${esc(near(now, 18, 4))}</b> ${esc(x.m.quote.sym)}<small>${depth}</small>` : now ? `<b>${esc(pxText(x.m, symOf(key), now))}</b><small>${depth}</small>` : `<b>${esc(qFmt(x.m, q, 2))}</b> ${esc(x.m.quote.sym)}<small>in the pool</small>`;
   }

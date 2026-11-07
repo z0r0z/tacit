@@ -256,9 +256,9 @@ assert.equal(haltText(new Error('burndep-ux: nope'), say), 'said: Nope');
   const ten = sendCost(t, { rate: 10, coins: [{ value: 50000 }], noteSats: 5460, k: 10 });
   assert.equal(ten.fee, 1530 + 11220, 'ten notes weigh 1,122 vB');
   assert.equal(sendCost(t, { rate: 10, coins: [{ value: 4000 }, { value: 4000 }], noteSats: 1092, k: 2 }).fee, 2210 + 5620, 'coins too small for the commit are joined, and the commit grows with them');
-  const a = await bulkFee(t, { bulk, kind: 'all', coins: [{ value: 10000 }] });
-  // a burn (900), a two-note send (2,810 + 765) and a private note's send (3,006 + 765), each needing its commit
-  assert.equal(a.need, 900 + (2810 + 765) + (3006 + 765), 'a burn, a send and a private note’s send, each needing its commit'); assert.equal(a.short, false, 'free coins of 10000 cover 8246');
+  const a = await bulkFee(t, { bulk, kind: 'all', coins: [{ value: 12000 }] });
+  // a burn (900), a two-note send (2,810 + 765), a private note's send (3,006 + 765), each needing its commit, and the move of the note still being checked (2,500)
+  assert.equal(a.need, 900 + (2810 + 765) + (3006 + 765) + 2500, 'a burn, a send, a private note’s send, each needing its commit, and the checked note’s move'); assert.equal(a.short, false, 'free coins of 12000 cover 10746');
   assert.equal((await bulkFee(t, { bulk, kind: 'all', coins: [{ value: 5000 }] })).short, true, 'the same press is short of 5000, which a burn’s estimate alone would have passed');
   assert.equal(a.later, 2 * 1546 + 600, 'the burns after the two sends, and the burn after a checked note’s move');
   assert.equal((await bulkFee(t, { bulk, kind: 'merge', coins: [{ value: 100 }] })).short, true, 'coins read and short');

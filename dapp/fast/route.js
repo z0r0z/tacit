@@ -25,12 +25,13 @@ export const takes = (t, units) => units >= t.minAmount && units <= capOf(t);
 export const minutesFor = (confs = 1) => 10 * Math.max(1, Number(confs) || 1) + 5;
 
 export function makeFastRoute({ discover, open, ownId = () => null, refreshMs = 30000, now = () => Date.now() }) {
-  let list = null, at = -Infinity, reading = null;
+  let list = null, at = -Infinity, reading = null, empties = 0;
   async function providers(force = false) {
     if (!force && list && now() - at < refreshMs) return list;
     if (reading) return reading;
     reading = (async () => {
-      try { const ps = await discover(); if (ps.length || !list) list = ps; at = now(); } catch { at = now(); if (!list) list = []; }
+      // one empty read may be a board that did not answer, so the list read stands; a second in a row is the providers gone
+      try { const ps = await discover(); empties = ps.length ? 0 : empties + 1; if (ps.length || !list || empties >= 2) list = ps; at = now(); } catch { at = now(); if (!list) list = []; }
       return list;
     })().finally(() => { reading = null; });
     return reading;

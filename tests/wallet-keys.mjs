@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // What the Wallet sheet and the Bitcoin tab's Receive show of the open key (dapp/index.html), in a real browser under the page's own CSP, with a pasted key and a
 // Bitcoin address that holds 0.0025 BTC and 0.00007 arriving (the page's only answers; every other host is refused):
-//   · the Tacit address heads the sheet on a card of its own: its two ends at first, the whole 276 characters after Show all, and Copy address puts
+//   · the Tacit address is on a card of its own under the balances: its two ends at first, the whole 276 characters after Show all, and Copy puts
 //     the whole one on the clipboard; it is not listed a second time below;
 //   · the public key: the key's compressed secp256k1 point, in full, and Copy puts it on the clipboard;
-//   · the Bitcoin address: the key's own bc1q…, the same one Receive shows; the Tacit account: the key's own 0x, the one Add ETH shows;
+//   · the Bitcoin address: the key's own bc1q…, the same one Receive shows; the Ethereum address: the key's own 0x, the one Add ETH shows;
 //   · Balances: the Bitcoin address's BTC (and what is arriving) is a row under Bitcoin, read when the sheet opens, matching the landing card;
 //   · Receive carries the public key and a folded Tacit address too;
 //   · the Bitcoin address has a QR code (the same drawing as the page's other codes), in the sheet and in Receive;
@@ -62,6 +62,9 @@ try {
   await page.click('#ws-in [data-in="key"]');
   await page.waitForFunction(() => (document.querySelector('#wd-id')?.textContent || '').length > 12, null, { timeout: 30000 });
   await page.click('#wallet');
+  await page.waitForSelector('#w-keys summary', { timeout: 20000 });
+  ok(await page.$eval('#w-keys details', (d) => !d.open) && !(await page.isVisible('#w-keys .keyrow')), 'the public addresses and key are shut until asked for');
+  await page.click('#w-keys summary');
   await page.waitForSelector('#w-keys .keyrow', { timeout: 20000 });
   const keys = '#w-keys';
   const row = (label) => `${keys} .keyrow:has(.kv > span:first-child:text-is("${label}"))`;
@@ -82,9 +85,9 @@ try {
   ok(!(await page.$(row('Tacit address'))) && (await page.$$eval('#wallet-body code', (es, t) => es.filter((e) => e.textContent.trim() === t).length, TACIT)) === 1, 'the address is not listed again below the card');
   ok(/^Opened with a pasted key/.test(await text(`${hero} .by`)) && !!(await page.$(`${hero} .by #w-lock`)), 'the card says how the key was opened, with Lock beside it');
 
-  // the Tacit account: the key's own 0x, the address Add ETH asks to be sent to
-  const acct = await text(`${row('Tacit account')} code`);
-  ok(/^0x[0-9a-fA-F]{40}$/.test(acct) && acct === (await page.$eval('#ac-form [data-copy]', (b) => b.dataset.copy)), `the Tacit account is listed, the same one Add ETH shows: ${acct.slice(0, 10)}…`);
+  // the key's Ethereum address: its own 0x, the address Add ETH asks to be sent to
+  const acct = await text(`${row('Ethereum address')} code`);
+  ok(/^0x[0-9a-fA-F]{40}$/.test(acct) && acct === (await page.$eval('#ac-form [data-copy]', (b) => b.dataset.copy)), `the key's Ethereum address is listed, the same one Add ETH shows: ${acct.slice(0, 10)}…`);
 
   // the public key
   ok((await text(`${row('Public key')} code`)) === PUB && PUB.length === 66, `the public key is the key's compressed point, in full: ${PUB.slice(0, 12)}…`);
@@ -102,6 +105,8 @@ try {
   ok(/Bitcoin/.test(bal) && /BTC\s*0\.0025/.test(bal.replace(/\s+/g, ' ')) && /0\.00007 arriving/.test(bal), `Balances lists the Bitcoin address's BTC and what is arriving: ${bal.replace(/\s+/g, ' ').slice(0, 120)}`);
   ok(bal.indexOf('Bitcoin') < bal.indexOf('Ethereum'), 'Bitcoin and Ethereum are separate groups');
   ok((await page.$$('#wbal-box .wbal li')).length >= 2, 'each asset is a row of its own');
+  ok((await page.$$eval('#wbal-box .wbal li', (es) => es.every((e) => e.querySelectorAll('button, a').length <= 1))), 'a row is one press: no button of its own beside it');
+  ok(await page.evaluate(() => { const b = document.querySelector('#wbal-box'), a = document.querySelector('#w-tacit'); return !!(b.compareDocumentPosition(a) & Node.DOCUMENT_POSITION_FOLLOWING); }), 'the balances come before the Tacit address card');
 
   // the old placeholder row is gone
   ok(!/connects when you lock BTC/.test(await text('#wallet-body')), 'the sheet no longer says the Bitcoin wallet "connects when you lock BTC to borrow"');

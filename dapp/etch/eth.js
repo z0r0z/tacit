@@ -8,6 +8,7 @@
 // What this makes is an Ethereum token. The pool takes it as an escrow asset (registerWrappedAuto), and the pool never links an escrow asset to a Bitcoin id
 // (ReflectionLib.register: CrossChainEscrow), so it does not cross the bridge to Bitcoin; an asset that crosses is etched on Bitcoin.
 import { FIXED_SUPPLY_MINTER_INIT } from '/etch/minter.js?cb=4a0d243a';
+import { MULTICALL3, encodeBatch, decodeBatch } from '../trade/batch.js';
 
 // contracts/deployments/1.json
 export const FACTORY = '0x0000000042c2D57499Df64BAF81bfA2C6E100535', POOL = '0x000000000Ed1eabD231Be41d93b719056F7febFC', CREATEX = '0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed';
@@ -132,8 +133,8 @@ export const addToWallet = (wallet, p, image) => wallet.watchAsset({ address: p.
 
 // ── finding them again ──
 // The factory's own record: every token it has made is a Deployed event. Those the pool mints itself (the bridged assets, TAC among them) are not etches
-// made here, and are left out. The free node that answers a read over the factory's whole life is Tenderly's; the others refuse a range this wide, so it
-// is asked first (the read moves on to the next when it fails).
+// made here, and are left out. No free node reads the factory's whole life at once any more, so it is read in spans of LOG_SPAN blocks (the widest the
+// first nodes take; one that refuses a span passes it to the next), a few at a time.
 export const DEPLOY_BLOCK = 25998736;
 const DEPLOYED = '0x93c5d8685811454892b561b9f2a796b6f00badaadfbd6d47fd79e69219292913';
 const B32 = 'abcdefghijklmnopqrstuvwxyz234567';
@@ -145,18 +146,44 @@ export function cidString(digest) {
   if (bits) out += B32[(acc << (5 - bits)) & 31];
   return `b${out}`;
 }
-export async function listEtches(read, hosts) {
-  const logs = await read('eth_getLogs', [{ address: FACTORY, topics: [DEPLOYED], fromBlock: '0x' + DEPLOY_BLOCK.toString(16), toBlock: 'latest' }], hosts);
+// Reads of many tokens as one Multicall3 call (in parts of a hundred): each answer's data, or null for one the token did not answer. A part the
+// batch call itself could not answer is read one token at a time.
+async function multi(read, calls) {
+  const out = [];
+  for (let i = 0; i < calls.length; i += 100) {
+    const part = calls.slice(i, i + 100);
+    let got = null;
+    try { got = decodeBatch(await read('eth_call', [{ to: MULTICALL3, data: encodeBatch(part) }, 'latest']), part.length); } catch { /* each by itself */ }
+    out.push(...(got || (await Promise.all(part.map((c) => read('eth_call', [c, 'latest']).catch(() => null))))));
+  }
+  return out;
+}
+export const LOG_SPAN = 50_000;
+export async function listEtches(read, hosts, { span = LOG_SPAN, at = 4 } = {}) {
+  const head = parseInt(await read('eth_blockNumber', []), 16);
+  if (!(head >= DEPLOY_BLOCK)) throw new Error('the chain head could not be read');
+  const spans = [];
+  for (let f = DEPLOY_BLOCK; f <= head; f += span) spans.push([f, Math.min(f + span - 1, head)]);
+  const parts = new Array(spans.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(at, spans.length) }, async () => {
+    while (next < spans.length) {
+      const i = next++, [f, t] = spans[i];
+      parts[i] = await read('eth_getLogs', [{ address: FACTORY, topics: [DEPLOYED], fromBlock: '0x' + f.toString(16), toBlock: '0x' + t.toString(16) }], hosts);
+    }
+  }));
+  const logs = parts.flat();
   const out = [];
   for (const l of logs) {
     const minter = '0x' + strip(l.topics[3]).slice(24), token = '0x' + strip(l.topics[2]).slice(24);
     if (minter === POOL.toLowerCase()) continue;
     const d = strip(l.data), len = parseInt(d.slice(3 * 64, 4 * 64), 16), cid = '0x' + d.slice(2 * 64, 3 * 64);
-    const symbol = decodeURIComponent(d.slice(4 * 64, 4 * 64 + len * 2).replace(/(..)/g, '%$1'));
+    // anyone can deploy a symbol that is not UTF-8: it reads with replacement marks rather than failing the whole list
+    const symbol = new TextDecoder().decode(Uint8Array.from(d.slice(4 * 64, 4 * 64 + len * 2).match(/../g) || [], (b) => parseInt(b, 16)));
     out.push({ id: token, chain: 'eth', ticker: symbol, decimals: parseInt(d.slice(64, 128), 16), cid: /^0x0+$/.test(cid) ? null : cidString(cid), height: parseInt(l.blockNumber, 16), etchTxid: l.transactionHash, minter, name: '', logo: null, verified: false, mintable: false, holders: 0, later: false, same: 0, supply: null, at: 0 });
   }
   await Promise.all([
-    ...out.map(async (a) => { try { a.supply = BigInt(await read('eth_call', [{ to: a.id, data: SEL.totalSupply }, 'latest'])); } catch { /* a supply that cannot be read is not shown */ } }),
+    multi(read, out.map((a) => ({ to: a.id, data: SEL.totalSupply }))).then((got) => out.forEach((a, i) => { try { if (got[i]) a.supply = BigInt(got[i]); } catch { /* a supply that cannot be read is not shown */ } })),
     ...[...new Set(out.map((a) => a.height))].map(async (h) => { try { const ts = Number((await read('eth_getBlockByNumber', ['0x' + h.toString(16), false]))?.timestamp); for (const a of out) if (a.height === h) a.at = ts || 0; } catch { /* the date is a convenience */ } }),
   ]);
   const by = new Map();
@@ -167,6 +194,7 @@ export async function listEtches(read, hosts) {
 // What `account` holds of each token.
 export async function balances(read, account, tokens) {
   const out = {};
-  await Promise.all(tokens.map(async (t) => { try { out[t] = BigInt(await read('eth_call', [{ to: t, data: SEL.balanceOf + addr(account) }, 'latest'])); } catch { /* unread */ } }));
+  const got = await multi(read, tokens.map((t) => ({ to: t, data: SEL.balanceOf + addr(account) })));
+  tokens.forEach((t, i) => { try { if (got[i]) out[t] = BigInt(got[i]); } catch { /* unread */ } });
   return out;
 }

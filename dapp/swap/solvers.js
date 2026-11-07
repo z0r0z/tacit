@@ -3,7 +3,7 @@
 // solver as the taker and the recipient, so no solver is told the wallet: what it learns is the pair and the amount. The route then runs as
 // zRouter.snwap through that forwarder, which pays the wallet at least the floor or reverts (zrouter-guard's checkSnwapCall holds the call to
 // its terms before it is sent).
-import { ZROUTER, SNWAP_EXECUTORS } from '/zrouter-guard.js?cb=2841d896';
+import { ZROUTER, SNWAP_EXECUTORS } from '/zrouter-guard.js';
 
 const ETH = '0x0000000000000000000000000000000000000000', SENT = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE', ZFI = 'https://api.zfi.wei.is';
 const lc = (s) => String(s || '').toLowerCase();

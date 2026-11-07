@@ -6,11 +6,13 @@
 // is a step the service has read from the chain), so that a visit does not download the code of every contract a job deployed.
 //
 // Open jobs are shown in full; a job that is done is a tile with its result, and opens to what it did when it is clicked.
-import { makeConnect, UserStopped } from '/trade/connect.js?cb=a64b9cec';
+import { makeConnect, UserStopped } from '/trade/connect.js?cb=39145e86';
 import { esc } from '/trade/sheet.js?cb=84cda8f2';
-import { rpc, RPCS, $, short, fmtUnits } from '/trade/util.js?cb=e8317464';
-import { bodyType } from '/trade/rpc.js?cb=f575ef91';
+import { rpc, RPCS, $, short, fmtUnits } from '/trade/util.js?cb=ba5a02b1';
+import { bodyType } from '/trade/rpc.js';
 import { checkPayload, checkStep } from '/tasks/verify.js?cb=b8174dad';
+import { trace, guide } from '/tasks/inspect.js?cb=3c995729';
+import { keccak_256 } from '/vendor/tacit-deps.min.js';
 
 const POINTS = 'https://tacit-points.onrender.com';
 const KEEPERS = 'https://tacit-evm-pool-keepers.onrender.com';
@@ -18,7 +20,7 @@ const ETHERSCAN = 'https://etherscan.io';
 // The chains a job's steps may be on: the nodes the page reads them from, the explorer that shows them, and what a wallet needs to add one.
 const CHAINS = {
   1: { name: 'Ethereum', explorer: ETHERSCAN, hosts: RPCS },
-  8453: { name: 'Base', explorer: 'https://basescan.org', hosts: ['https://mainnet.base.org', 'https://base.gateway.tenderly.co', 'https://base-rpc.publicnode.com', 'https://base.drpc.org'] },
+  8453: { name: 'Base', explorer: 'https://basescan.org', hosts: ['https://mainnet.base.org', 'https://base-rpc.publicnode.com', 'https://base.drpc.org'] },
   4663: { name: 'Robinhood Chain', explorer: 'https://robinhoodchain.blockscout.com', hosts: ['https://rpc.mainnet.chain.robinhood.com', 'https://robinhood.drpc.org'] },
 };
 // What the reader has set (Endpoints, below): nodes per chain, the rewards service and the keepers. A chain with nodes of the reader's own
@@ -64,12 +66,14 @@ const hhmm = (t) => new Date(t * 1000).toISOString().slice(11, 16);
 const link = (href, text) => `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${text}</a>`;
 
 const DISCORD = 'https://discord.gg/VxYx9XSBrM';
-const S = { jobs: [], folded: [], api: null, asked: false, done: {}, loaded: false, payload: {}, verdict: {}, running: null, hashes: {}, expanded: new Map() };
+const S = { jobs: [], folded: [], api: null, asked: false, done: {}, loaded: false, payload: {}, verdict: {}, running: null, hashes: {}, trips: {}, expanded: new Map() };
 
 // ── what the browser remembers: the transactions this visitor sent or named, until the service has answered for each ──
 const remembered = () => { try { return JSON.parse(localStorage.getItem(STORE)) || {}; } catch { return {}; } };
 const remember = (o) => { try { localStorage.setItem(STORE, JSON.stringify(o)); } catch { /* private window: the page works without it */ } };
 S.hashes = remembered();
+// The hashes still waiting under a job: each is kept with the job it was sent or pasted for (one kept before that is shown under every job).
+const pendingFor = (job) => Object.entries(S.hashes).filter(([, v]) => v.state === 'pending' && (!v.job || v.job === job.id));
 
 // ── the notice under a job's ticket. It is kept, because the cards are drawn again whenever something they show changes. ──
 let notice = { id: null, text: '', bad: false };
@@ -87,6 +91,78 @@ $('#wallet-chip').hidden = false;
 
 // ── reading ──
 const get = (url) => fetch(url, { signal: AbortSignal.timeout(15e3) }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+// ── a held place: where its round trip stands ──
+// A closed job keeps a place for each tester who was in line (`held` in jobs.json: the account and the claim it sent, a transaction to itself naming a Bitcoin
+// transaction of its round trip). Each is followed from that transaction to its burn and the pool's mint (dapp/tasks/inspect.js), so a tester sees what is left
+// and nobody has to be asked. The burn reader loads only when a place is shown.
+const BTC_API = 'https://api.tacit.finance', POOL = '0x000000000Ed1eabD231Be41d93b719056F7febFC', BTC_NODES = ['https://blockstream.info/api', 'https://mempool.space/api'];
+// An explorer's answer: { data }, null when every explorer says there is no such transaction, and a throw when they could not be read.
+async function esplora(path, text = false) {
+  let missing = 0;
+  for (const base of BTC_NODES) {
+    try { const r = await fetch(base + path, { signal: AbortSignal.timeout(12e3) }); if (r.ok) return { data: text ? (await r.text()).trim() : await r.json() }; if (r.status === 404) missing++; } catch { /* the next explorer */ }
+  }
+  if (missing === BTC_NODES.length) return null;
+  throw new Error('explorers');
+}
+let burnKit = null;
+const readKit = () => (burnKit ||= Promise.all([import('/burn-deposit-bitcoin.js?cb=5a017049'), import('/confidential-crosslane-guard.js?cb=1f92a331')]));
+const tripDeps = {
+  look: async (txid) => {
+    const j = await esplora(`/tx/${txid}`);
+    if (!j) return null;
+    const { classifyConfidentialTx } = (await readKit())[0], hex = (await esplora(`/tx/${txid}/hex`, true))?.data;
+    let c = null;
+    try { c = hex ? classifyConfidentialTx(`0x${hex}`) : null; } catch { /* not a bridge transaction */ }
+    const st = j.data.status || {};
+    return { confirmed: !!st.confirmed, height: st.block_height ?? null, time: st.block_time ?? null, kind: c?.type === 'burn' ? 'burn' : c?.type === 'crossout_mint' ? 'crossout_mint' : 'other', assetId: c?.assetId, nullifier: c?.nullifier };
+  },
+  outspends: async (txid) => (await esplora(`/tx/${txid}/outspends`))?.data ?? null,
+  minted: async (nullifier) => {
+    if (!nullifier) return null;
+    const { makeCrossLaneGuard } = (await readKit())[1];
+    return makeCrossLaneGuard({ keccak256: keccak_256 }).evmNullifierSpent((a, slot, tag) => readOn(1, 'eth_getStorageAt', [a, slot, tag || 'latest']), POOL, nullifier);
+  },
+  attested: async () => (await get(`${BTC_API}/reflection/status?network=mainnet`))?.attestedHeight ?? null,
+};
+const heldOf = (job) => job.steps.filter((s) => s.held);
+function ensureTrips(job) {
+  for (const s of heldOf(job)) {
+    const cur = S.trips[s.id];
+    if (claimsOf(job).some((c) => c.step === s.id) || (cur && (cur.state === 'loading' || cur.state === 'complete' || Date.now() - cur.at < (cur.state === 'unreachable' ? 30e3 : 300e3)))) continue;
+    if (!cur) S.trips[s.id] = { state: 'loading', at: Date.now() };
+    else S.trips[s.id] = { ...cur, at: Date.now() };
+    (async () => {
+      let r;
+      try {
+        const tx = await readOn(1, 'eth_getTransactionByHash', [s.held.claim]);
+        r = /^0x[0-9a-f]{64}$/i.test(tx?.input || '') ? await trace(tx.input.slice(2), tripDeps) : { state: 'unreachable', text: 'Could not read the claim just now.' };
+      } catch { r = { state: 'unreachable', text: 'Could not read the claim just now.' }; }
+      S.trips[s.id] = { ...r, at: Date.now() };
+      renderAll();
+    })();
+  }
+}
+// What a held role says in the list: whose it is and where its round trip stands.
+const tripLine = (s) => {
+  const r = S.trips[s.id], who = `Held for ${esc(short(s.held.address))}`;
+  if (!r || r.state === 'loading') return `${who} · reading where it stands…`;
+  return `${who} · ${esc(guide(r)[0])}${r.eta ? `, the pool mints it back around ${hhmm(r.eta)} UTC` : ''}`;
+};
+// The card a closed job shows in place of the claim form: for the account that holds a place, where it stands and what is next; for others, that the places are held.
+function heldPanel(job) {
+  const mine = heldOf(job).find((s) => W.account && s.held.address.toLowerCase() === W.account.toLowerCase());
+  const shell = (body) => `<section class="panel p-mine p-claim" aria-label="Your place"><p class="eyebrow">Your place</p>${body}</section>`;
+  if (!mine) return shell(`<p class="note">${W.account ? 'This job is closed. Its places are held for the testers who were in line.' : 'This job is closed. Its places are held for the testers who were in line: connect the wallet you claimed from to see yours.'}</p>${W.account ? '' : '<button class="btn ghost" type="button" data-connect>Connect wallet</button>'}`);
+  const r = S.trips[mine.id];
+  if (!r || r.state === 'loading') return shell('<p class="note">Reading where your round trip stands…</p>');
+  const [head] = guide(r);
+  return shell(`<p class="hl"><b>${esc(head)}</b></p>
+    <p class="note">${esc(r.text)}${r.eta ? ` It should land around ${hhmm(r.eta)} UTC.` : ''}</p>
+    <div class="acts">${r.state === 'on-bitcoin' ? '<a class="btn" href="/#usdt/bitcoin/back" target="_blank" rel="noopener noreferrer">Bring it back ↗</a>' : ''}${r.burn ? link(`https://mempool.space/tx/${r.burn}`, 'Your burn on Bitcoin ↗') : ''}</div>
+    <p class="note">Your claim is in: ${link(`${ETHERSCAN}/tx/${mine.held.claim}`, 'its transaction ↗')}. There is nothing to send: you are credited once the pool has minted your USDT back.</p>`);
+}
+
 const flagged = (r) => String(r).slice(2, 66) === `${'0'.repeat(63)}1`;
 
 // A step seen on the chain stays there (a contract is not taken away, a registry's count and a flag only rise), so the steps this browser has seen done are
@@ -186,11 +262,18 @@ function economics(job) {
 }
 
 // ── drawing ──
+// The cards are drawn again whenever something they show changes: what is typed in their forms, the chain chosen for a pasted hash and
+// the field being typed in, with its caret, are carried over to the new ones.
+const FIELDS = '.paste textarea, .paste select, .review textarea';
 function renderAll() {
   renderStats();
-  const typed = Object.fromEntries([...document.querySelectorAll('.paste textarea, .review textarea')].map((t) => [t.dataset.for, t.value]));
+  const fields = [...document.querySelectorAll(FIELDS)], typed = Object.fromEntries(fields.map((t) => [t.dataset.for, t.value]));
+  const at = fields.find((t) => t === document.activeElement), caret = at ? { key: at.dataset.for, start: at.selectionStart, end: at.selectionEnd } : null;
   renderJobs();
-  for (const t of document.querySelectorAll('.paste textarea, .review textarea')) if (typed[t.dataset.for]) t.value = typed[t.dataset.for];
+  for (const t of document.querySelectorAll(FIELDS)) {
+    if (typed[t.dataset.for]) t.value = typed[t.dataset.for];
+    if (caret && t.dataset.for === caret.key) { t.focus({ preventScroll: true }); if (t.setSelectionRange && caret.start != null) t.setSelectionRange(caret.start, caret.end); }
+  }
   paintNotice();
 }
 
@@ -216,7 +299,7 @@ function renderJobs() {
   root.innerHTML = `
     <h2 class="sec-h">Open jobs <span class="num">${open.length}</span></h2>
     ${open.length ? open.map(card).join('') : '<p class="none">No open jobs right now. The next one will show up here.</p>'}
-    ${done.length ? `<h2 class="sec-h">Done <span class="num">${done.length}</span></h2>${done.map(card).join('')}` : ''}`;
+    ${done.length ? `<h2 class="sec-h">Done <span class="num">${done.length}</span></h2><div class="done-grid">${done.map(card).join('')}</div>` : ''}`;
   root.querySelectorAll('[data-toggle]').forEach((b) => {
     b.onclick = () => {
       const job = S.jobs.find((j) => j.id === b.dataset.toggle);
@@ -225,6 +308,8 @@ function renderJobs() {
       renderAll();
     };
   });
+  root.querySelectorAll('[data-connect]').forEach((b) => { b.onclick = () => conn.connect(); });
+  for (const job of S.jobs) if (isExpanded(job) && heldOf(job).length) ensureTrips(job);
   root.querySelectorAll('[data-go]').forEach((b) => { b.onclick = () => go(S.jobs.find((j) => j.id === b.dataset.go)); });
   root.querySelectorAll('[data-one]').forEach((b) => { b.onclick = () => go(S.jobs.find((j) => j.id === b.dataset.job), b.dataset.one); });
   root.querySelectorAll('[data-verify]').forEach((b) => { b.onclick = () => verify(S.jobs.find((j) => j.id === b.dataset.verify), true); });
@@ -240,8 +325,8 @@ function card(job) {
   const reviewed = job.steps.every((s) => s.kind === 'review');
   let fig = '—', cap = 'shown when rewards open', foot = reviewed ? '' : `${(own.reduce((x, s) => x + s.gas, 0) / 1e6).toFixed(1)}M gas${manyChains(job) ? ` ${mark(job.chainId)}` : ''}`;
   if (st === 'done') {
-    fig = res.count ? `${tac(res.total)}<small>TAC</small>` : '—';
-    const waiting = Object.values(S.hashes).filter((v) => v.state === 'pending').length;
+    fig = res.count ? `${tacR(res.total)}<small>TAC</small>` : '—';
+    const waiting = pendingFor(job).length;
     cap = res.count ? `paid to ${res.senders.map((a) => short(a)).join(', ')}` : waiting ? 'waiting for twelve confirmations' : S.api?.enabled && job.opensAt && Date.now() / 1000 >= job.opensAt ? 'no reward claimed yet' : 'deployed outside the rewards';
     foot = res.last ? `Done ${day(res.last)}` : 'Done';
   } else if (reviewed) {
@@ -255,7 +340,7 @@ function card(job) {
       <span class="job-top"><b>${esc(job.title)}</b><span class="pill ${cls}">${label}</span></span>
       <span class="job-sub">${esc(job.tagline)}${manyChains(job) ? ` ${jobChains(job).map(mark).join('')}` : ''}</span>
       <span class="job-fig"><span class="big num">${fig}</span><span class="cap">${cap}</span></span>
-      <span class="bar" role="img" aria-label="${n} of ${total} ${where}"><i style="width:${(100 * n) / total}%"></i></span>
+      ${st === 'done' ? '' : `<span class="bar" role="img" aria-label="${n} of ${total} ${where}"><i style="width:${(100 * n) / total}%"></i></span>`}
       <span class="job-foot"><span>${n} of ${total} ${where}</span><span>${foot}</span></span>
     </button>
     <div class="job-body" id="body-${esc(job.id)}"${exp ? '' : ' hidden'}>${exp ? (st === 'done' ? doneBody(job, res) : openBody(job)) : ''}</div>
@@ -272,12 +357,13 @@ const verifiedOn = (addr) => ` · source on ${link(`${ETHERSCAN}/address/${addr}
 function doneRow(job, s, i) {
   const cs = claimsOf(job).filter((c) => c.step === s.id);
   const id = chainOf(job, s), ex = CHAINS[id].explorer;
-  const where = s.kind === 'createx' ? link(`${ex}/address/${s.expected}`, esc(s.expected)) : s.kind === 'post' ? `A point posted to ${link(`${ex}/address/${s.to}`, 'the registry')}` : s.kind === 'review' ? 'Reviewed on both chains' : 'Call to the confidential pool';
+  const held = s.held && !cs.length;
+  const where = held ? tripLine(s) : s.kind === 'createx' ? link(`${ex}/address/${s.expected}`, esc(s.expected)) : s.kind === 'post' ? `A point posted to ${link(`${ex}/address/${s.to}`, 'the registry')}` : s.kind === 'review' ? 'Reviewed on both chains' : 'Call to the confidential pool';
   const proof = s.kind === 'createx' && job.verified && id === 1 ? verifiedOn(s.expected) : '';
   return `<li class="step is-done">
     <span class="n num">${i + 1}</span>
     <span class="what"><b>${esc(s.label)}</b><small>${atChain(job, s)}${where}${proof}${cs.map((c) => ` · ${link(`${ex}/tx/${c.txHash}`, 'transaction ↗')}`).join('')}</small></span>
-    <span class="paid num">${cs.length ? `${tac(cs.reduce((x, c) => x + BigInt(c.wei), 0n))} TAC` : '—'}</span>
+    <span class="paid num">${cs.length ? `${tac(cs.reduce((x, c) => x + BigInt(c.wei), 0n))} TAC` : held ? 'In line' : '—'}</span>
   </li>`;
 }
 
@@ -291,7 +377,7 @@ function doneBody(job, res) {
       <div class="kv"><span>When</span><b>${span}</b></div>
       <div class="kv"><span>Paid</span><b class="num">${res.count ? `${tac(res.total)} TAC` : '—'}</b></div>
     </div>
-    ${job.steps.some((s) => s.kind === 'review' && !onChain(job, s)) ? claimPanel(job, job.steps.filter((s) => s.kind === 'review' && !onChain(job, s)), isOpen(job), false) : ''}
+    ${heldOf(job).length ? heldPanel(job) : job.steps.some((s) => s.kind === 'review' && !onChain(job, s)) ? claimPanel(job, job.steps.filter((s) => s.kind === 'review' && !onChain(job, s)), isOpen(job), false) : ''}
     ${about(job)}
     ${links(job)}
     ${groupsOf(job).filter(([g]) => g !== 'Confidential pool').map(([g, rows]) => `<p class="grp-h"><span>${esc(g)}</span><span>${rows.length}</span></p>
@@ -358,12 +444,13 @@ function reviewRow(job, s, i) {
 }
 // The claim forms of the steps a reviewed job has left: each names the Bitcoin transaction of a bridge and is paid to the wallet that claims.
 // `status` is false where the page already has this job's status line.
-const claimPanel = (job, todo, open, status = true) => `<section class="panel p-mine" aria-label="Claim">
+// The claim names only the Bitcoin transaction (the role is read from it), so the roles that ask the same question share one form.
+const claimPanel = (job, todo, open, status = true) => `<section class="panel p-mine p-claim" aria-label="Claim">
           <p class="eyebrow">Claim</p>
-          ${todo.map((s) => `<form class="review" autocomplete="off" data-job="${esc(job.id)}" data-step="${esc(s.id)}">
+          ${todo.filter((s, i) => todo.findIndex((x) => x.ask === s.ask) === i).map((s) => `<form class="review" autocomplete="off" data-job="${esc(job.id)}" data-step="${esc(s.id)}">
             <label class="lbl"><span>${esc(s.ask)}</span>
               <textarea rows="2" spellcheck="false" data-for="${esc(`${job.id}/${s.id}`)}" placeholder="Bitcoin transaction id"></textarea></label>
-            <button class="btn ghost" type="submit" ${open ? '' : 'disabled'}>${W.account ? `Claim as ${esc(s.label.toLowerCase())}` : 'Connect wallet'}</button>
+            <button class="btn ghost" type="submit" ${open && S.running !== job.id ? '' : 'disabled'}>${S.running === job.id ? 'Sending…' : W.account ? 'Claim' : 'Connect wallet'}</button>
           </form>`).join('')}
           ${status ? `<div class="status" role="status" data-for="${esc(job.id)}"></div>` : ''}
         </section>`;
@@ -391,7 +478,7 @@ function reviewBody(job) {
         </section>` : ''}
         ${claimPanel(job, todo, open)}
         ${a?.enabled ? `<section class="panel p-rewards" aria-label="Rewards"><p class="eyebrow">Rewards</p>
-          <div class="rows"><div class="kv"><span>Budget left</span><b class="num">${tac(BigInt(a.budget.remainingWei), 0)} of ${tac(a.budget.totalWei, 0)} TAC</b></div><div class="kv"><span>Open until</span><b>${esc(day(a.endSec))}</b></div></div></section>` : ''}
+          <div class="rows"><div class="kv"><span>Budget left</span><b class="num${BigInt(a.budget.remainingWei) < todo.reduce((x, s) => x + BigInt(s.minWei ?? 0), 0n) ? ' warn' : ''}">${tac(BigInt(a.budget.remainingWei), 0)} of ${tac(a.budget.totalWei, 0)} TAC</b></div><div class="kv"><span>Open until</span><b>${esc(day(a.endSec))}</b></div></div></section>` : ''}
       </div>
     </div>`;
 }
@@ -443,7 +530,7 @@ function openBody(job) {
           <form class="paste" autocomplete="off" data-for="${esc(job.id)}">
             <label class="lbl"><span>Sent a step yourself? Paste its transaction hash</span>
               <textarea rows="2" spellcheck="false" data-for="${esc(job.id)}" placeholder="0x… (one or more transaction hashes)"></textarea></label>
-            ${manyChains(job) ? `<label class="lbl"><span>On which chain</span><select>${[...new Set(job.steps.map((s) => chainOf(job, s)))].map((id) => `<option value="${id}">${esc(CHAINS[id].name)}</option>`).join('')}</select></label>` : ''}
+            ${manyChains(job) ? `<label class="lbl"><span>On which chain</span><select data-for="${esc(job.id)}:chain">${[...new Set(job.steps.map((s) => chainOf(job, s)))].map((id) => `<option value="${id}">${esc(CHAINS[id].name)}</option>`).join('')}</select></label>` : ''}
             <button class="btn ghost" type="submit">Claim</button>
           </form>
         </section>
@@ -453,7 +540,7 @@ function openBody(job) {
 
 function mineList(job) {
   const mine = (S.api?.claims ?? []).filter((c) => c.job === job.id && W.account && c.address.toLowerCase() === W.account.toLowerCase());
-  const waiting = Object.entries(S.hashes).filter(([, v]) => v.state === 'pending');
+  const waiting = pendingFor(job);
   if (!mine.length && !waiting.length) return `<p class="empty">${W.account ? 'None yet.' : 'Connect a wallet to see the steps credited to it.'}</p>`;
   const label = (id) => job.steps.find((s) => s.id === id)?.label ?? id;
   const total = mine.reduce((x, c) => x + BigInt(c.wei), 0n);
@@ -465,17 +552,20 @@ function paste(form) {
   const found = [...new Set(area.value.match(/0x[0-9a-fA-F]{64}/g) || [])];
   if (!found.length) { say('No transaction hash found there.', true, form.dataset.for); return; }
   const chainId = Number(form.querySelector('select')?.value || 1);
-  found.forEach((h) => track(h, chainId));
+  found.forEach((h) => track(h, chainId, form.dataset.for));
   area.value = '';
   say(`Checking ${found.length} transaction${found.length > 1 ? 's' : ''} with the rewards service…`, false, form.dataset.for);
   settle();
 }
 
+// the gas price is read again after a minute: the cards are drawn far more often than it moves
+let gasAt = 0, gasPrice = 0n;
 async function gasNote() {
   const els = document.querySelectorAll('.gasnote');
   if (!els.length) return;
   try {
-    const p = BigInt(await rpc('eth_gasPrice', []));
+    if (Date.now() - gasAt > 60e3) { gasPrice = BigInt(await rpc('eth_gasPrice', [])); gasAt = Date.now(); }
+    const p = gasPrice;
     for (const el of els) {
       const job = S.jobs.find((j) => j.id === el.closest('article')?.id);
       if (!job) continue;
@@ -519,15 +609,16 @@ async function go(job, only = null) {
   try {
     if (!(await verify(job))) { say('A transaction does not match the plan, so nothing was sent.', true); return; }
     const payload = S.payload[job.id];
+    // the chain is asked once, about every step not yet seen on it; a step this send lands is on it by its receipt
+    const done = S.done[job.id] = await readDone(job, { chain: true });
     for (const [i, s] of job.steps.entries()) {
       if (only && s.id !== only) continue;
-      S.done[job.id] = await readDone(job, { chain: true });
-      if (S.done[job.id][s.id] === null) throw new Error('Could not read that step from the chain just now, so nothing was sent for it. Try again in a moment.');
-      if (S.done[job.id][s.id]) { if (only) say('That step is already on the chain.'); continue; }
+      if (done[s.id] === null) throw new Error('Could not read that step from the chain just now, so nothing was sent for it. Try again in a moment.');
+      if (done[s.id]) { if (only) say('That step is already on the chain.'); continue; }
       // A point goes to the registry, which must be on that chain first.
       if (s.kind === 'post') {
         const reg = job.steps.find((r) => r.kind === 'createx' && r.bound === false && chainOf(job, r) === chainOf(job, s) && r.expected.toLowerCase() === s.to.toLowerCase());
-        if (reg && !S.done[job.id][reg.id]) { if (only) throw new Error(`The registry on ${CHAINS[chainOf(job, s)].name} is not on the chain yet: send its step first.`); continue; }
+        if (reg && !done[reg.id]) { if (only) throw new Error(`The registry on ${CHAINS[chainOf(job, s)].name} is not on the chain yet: send its step first.`); continue; }
       }
       const id = chainOf(job, s), tx = s.kind === 'post' ? await pointTx(job, s) : payload.steps[i];
       if (checkStep(job, s, tx).length) throw new Error('A transaction no longer matches the plan.');
@@ -536,7 +627,8 @@ async function go(job, only = null) {
       say(`Step ${i + 1} sent: ${link(`${CHAINS[id].explorer}/tx/${hash}`, esc(short(hash, 6)))}. Waiting for it to land…`);
       const rc = await conn.wallet.receipt(hash, { read: (m, p) => readOn(id, m, p), where: `the ${CHAINS[id].name} explorer` });
       if (rc.status !== '0x1') throw new Error(`Step ${i + 1} failed (${short(hash, 6)}). Nothing more was sent.`);
-      track(hash, id);
+      track(hash, id, job.id);
+      done[s.id] = true;
       renderAll();
     }
     S.done[job.id] = await readDone(job, { chain: true });
@@ -549,20 +641,23 @@ async function go(job, only = null) {
 
 // The account to be paid sends itself the Bitcoin transaction id, so nobody else can name that account for this work.
 async function sendReview(form) {
+  if (S.running) return;
   if (!W.account) { await conn.connect(); return; }
   const job = S.jobs.find((j) => j.id === form.dataset.job), txid = form.querySelector('textarea').value.trim().toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(txid)) { say('That is not a Bitcoin transaction id.', true, job.id); return; }
+  S.running = job.id; renderAll();
   try {
     say('Confirm in your wallet…', false, job.id);
     const hash = await conn.wallet.sendTx({ to: W.account, data: `0x${txid}`, value: 0n, from: W.account, chain: null });
     say(`Sent: ${link(`${ETHERSCAN}/tx/${hash}`, esc(short(hash, 6)))}. Post this link in ${link(DISCORD, 'Discord')} for review.`, false, job.id);
   } catch (e) { say(esc(e instanceof UserStopped ? 'Cancelled in your wallet.' : (e.message || 'The wallet did not send it.')), !(e instanceof UserStopped), job.id); }
+  finally { S.running = null; renderAll(); }
 }
 
 // ── naming steps to the service ──
-function track(hash, chainId = 1) {
+function track(hash, chainId = 1, job = null) {
   const h = hash.toLowerCase();
-  if (!S.hashes[h]) S.hashes[h] = { state: 'pending', note: 'waiting for confirmations', chainId, at: Date.now() };
+  if (!S.hashes[h]) S.hashes[h] = { state: 'pending', note: 'waiting for confirmations', chainId, job, at: Date.now() };
   remember(S.hashes);
 }
 let settling = false;

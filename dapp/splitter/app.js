@@ -8,7 +8,7 @@ import {
 } from '/splitter/abi.js?cb=44661448';
 import { SPLITTER_INITCODE } from '/splitter/bytecode.js?cb=6e21588e';
 import { bodyType } from '../rpc-body.js';
-import { ETH_NODES } from '/eth-nodes.js';
+import { ETH_NODES, ETH_LOG_NODES } from '/eth-nodes.js';
 
 const API = 'https://api.tacit.finance';
 const RPCS = ETH_NODES;
@@ -56,9 +56,9 @@ const mark = (id) => { const s = document.createElementNS(SVG, 'svg'), u = docum
 const say = (el, text, cls = '') => { el.className = `status ${cls}`.trim(); mount(el, text); };
 
 // ── chain reads ──
-async function rpc(method, params) {
+async function rpc(method, params, hosts = RPCS) {
   let last;
-  for (const url of RPCS) {
+  for (const url of hosts) {
     try {
       const r = await fetch(url, { method: 'POST', headers: { 'content-type': bodyType(url) }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), signal: AbortSignal.timeout(12000) });
       const j = await r.json();
@@ -101,25 +101,32 @@ async function sendTx(tx) {
 const walletWords = (e) => (e?.code === 4001 || /user (rejected|denied)/i.test(e?.message || '') ? 'Cancelled in your wallet.' : String(e?.message || e).slice(0, 240));
 
 // ── state ──
-const S = { addr: null, account: null, owner: null, shares: null, balance: 0n, block: 0, recip: [], quote: null, logs: [], err: null, rows: null, dirty: false, deploy: { owner: OPS_MULTISIG, rows: START_ROWS.map((r) => [...r]), ownerOk: false }, gas: null };
+const S = { addr: null, account: null, owner: null, shares: null, balance: 0n, block: 0, recip: [], quote: null, logs: [], err: null, rows: null, dirty: false, sending: false, deploy: { owner: OPS_MULTISIG, rows: START_ROWS.map((r) => [...r]), ownerOk: false }, gas: null };
 // One status line per panel, made once: a panel drawn again after its transaction lands keeps what the action said.
 const OUT = { state: h('div', { class: 'status', role: 'status' }), edit: h('div', { class: 'status', role: 'status' }), deploy: h('div', { class: 'status', role: 'status' }) };
 const clearOut = () => { for (const o of Object.values(OUT)) say(o, ''); };
 const isOwner = () => !!S.account && !!S.owner && lc(S.account) === lc(S.owner);
 
+// A read of a splitter that is no longer the one shown (another was opened while it ran) is dropped, so the actions never act on its list.
+const moved = (a) => lc(S.addr) !== lc(a);
 async function load() {
   if (!S.addr) { paint(); return; }
+  const at = S.addr;
   S.err = null;
   try {
     const [sh, ow, bal, blk] = await Promise.all([
-      rpc('eth_call', [{ to: S.addr, data: SEL.shares }, 'latest']), rpc('eth_call', [{ to: S.addr, data: SEL.owner }, 'latest']),
-      rpc('eth_getBalance', [S.addr, 'latest']), rpc('eth_blockNumber', []),
+      rpc('eth_call', [{ to: at, data: SEL.shares }, 'latest']), rpc('eth_call', [{ to: at, data: SEL.owner }, 'latest']),
+      rpc('eth_getBalance', [at, 'latest']), rpc('eth_blockNumber', []),
     ]);
+    if (moved(at)) return;
     if (!sh || sh === '0x' || !ow || ow === '0x') throw new Error('empty');
     S.shares = decodeShares(sh); S.owner = decodeAddress(ow); S.balance = BigInt(bal); S.block = parseInt(blk, 16);
-    S.recip = await Promise.all(S.shares.to.map((a) => rpc('eth_getBalance', [a, 'latest']).then(BigInt).catch(() => null)));
+    const recip = await Promise.all(S.shares.to.map((a) => rpc('eth_getBalance', [a, 'latest']).then(BigInt).catch(() => null)));
+    if (moved(at)) return;
+    S.recip = recip;
     if (!S.dirty) S.rows = S.shares.to.map((a, i) => [a, String(S.shares.weight[i])]);
   } catch (e) {
+    if (moved(at)) return;
     S.shares = null;
     S.err = e.message === 'empty' || e.revert ? 'No splitter answers at that address.' : 'Could not read that address. Try again in a moment.';
   }
@@ -128,20 +135,29 @@ async function load() {
 }
 async function loadExtras() {
   if (!S.addr || !S.shares) return;
+  const at = S.addr;
   const [quote, logs] = await Promise.all([
     fetch(`${API}/confidential/quote?asset=cETH`, { cache: 'no-store', signal: AbortSignal.timeout(10000) }).then((r) => r.json()).then((j) => j.tipSplitter || j.recommendedTipRecipient || null).catch(() => null),
-    rpc('eth_getLogs', [{ address: S.addr, topics: [TOPIC.distributed], fromBlock: '0x' + Math.max(0, S.block - 100000).toString(16), toBlock: 'latest' }]).catch(() => []),
+    // the last two weeks (100,000 blocks) as the two spans of 50,000 the widest public node serves, through the nodes that serve logs
+    Promise.all([[S.block - 99999, S.block - 50000], [S.block - 49999, S.block]].map(([f, t]) => rpc('eth_getLogs', [{ address: at, topics: [TOPIC.distributed], fromBlock: '0x' + Math.max(0, f).toString(16), toBlock: '0x' + t.toString(16) }], ETH_LOG_NODES)))
+      .then((parts) => parts.flat()).catch(() => null),
   ]);
+  if (moved(at)) return;
   S.quote = quote;
-  S.logs = (logs || []).slice(-5).reverse().map((l) => ({ amount: BigInt(l.data), block: parseInt(l.blockNumber, 16), tx: l.transactionHash }));
+  // null: the history could not be read, which is not the same as nothing sent
+  S.logs = logs && logs.slice(-5).reverse().map((l) => ({ amount: BigInt(l.data), block: parseInt(l.blockNumber, 16), tx: l.transactionHash }));
   paintState();
 }
 
 // ── a button that runs one action ──
+// One action at a time: a panel drawn again while it runs (the wallet's chain or account changing, a read landing) draws its button disabled,
+// and when the action ends a button drawn over meanwhile is drawn once more, enabled.
 async function busy(btn, out, fn) {
-  if (btn.getAttribute('aria-busy') === 'true') return;
+  if (S.sending || btn.getAttribute('aria-busy') === 'true') return;
+  S.sending = true;
   btn.setAttribute('aria-busy', 'true'); btn.disabled = true;
-  try { await fn((t, c) => say(out, t, c)); } catch (e) { say(out, walletWords(e), 'err'); } finally { btn.removeAttribute('aria-busy'); btn.disabled = false; }
+  try { await fn((t, c) => say(out, t, c)); } catch (e) { say(out, walletWords(e), 'err'); }
+  finally { S.sending = false; btn.removeAttribute('aria-busy'); btn.disabled = false; if (!btn.isConnected) paint(); }
 }
 function copy(text, el) {
   const done = () => { const was = el.textContent; el.textContent = 'Copied'; setTimeout(() => { el.textContent = was; }, 1200); };
@@ -206,11 +222,12 @@ const ago = (blocks) => { const s = blocks * 12; return s < 3600 ? `${Math.max(1
 
 function paintState() {
   const el = $('#p-state');
-  if (!S.addr) { el.hidden = true; return; }
+  // with no splitter open the panel holds its status line alone (an address that is not one), first in its column, above the deploy panel
+  if (!S.addr) { mount(el, OUT.state); el.hidden = !OUT.state.textContent; if (!el.hidden) el.parentElement.prepend(el); return; }
   el.hidden = false;
   if (!S.shares) { mount(el, h('p', { class: 'eyebrow' }, 'Splitter'), h('p', { class: S.err ? 'err' : 'mute' }, S.err || 'Loading…')); return; }
   const { to, weight } = S.shares, pay = payouts(S.balance, weight), out = OUT.state;
-  const go = h('button', { class: 'btn', type: 'button', disabled: S.balance === 0n }, S.balance === 0n ? 'Nothing to send on' : 'Send it on');
+  const go = h('button', { class: 'btn', type: 'button', disabled: S.sending || S.balance === 0n }, S.balance === 0n ? 'Nothing to send on' : 'Send it on');
   go.addEventListener('click', () => busy(go, out, async (say_) => {
     say_('Confirm in your wallet…');
     const tx = await sendTx({ to: S.addr, data: encDistribute() });
@@ -234,7 +251,7 @@ function paintState() {
       h('div', { class: 'bal num' }, S.recip[i] == null ? '' : `${fmtEth(S.recip[i], 4)} ETH held`)))),
     h('div', { class: 'rows' },
       h('div', { class: 'kv' }, h('span', {}, 'Owner'), h('b', {}, nameOf(S.owner) ? `${nameOf(S.owner)} · ${short(S.owner, 6)}` : S.owner)),
-      S.logs.length ? S.logs.map((l) => h('div', { class: 'log' }, h('span', {}, `Sent on ${ago(S.block - l.block)}`), h('b', { class: 'num' }, scan(`tx/${l.tx}`, `${fmtEth(l.amount)} ETH`)))) : h('div', { class: 'kv' }, h('span', {}, 'Sent on'), h('b', {}, 'nothing in the last two weeks'))));
+      S.logs?.length ? S.logs.map((l) => h('div', { class: 'log' }, h('span', {}, `Sent on ${ago(S.block - l.block)}`), h('b', { class: 'num' }, scan(`tx/${l.tx}`, `${fmtEth(l.amount)} ETH`)))) : h('div', { class: 'kv' }, h('span', {}, 'Sent on'), h('b', {}, S.logs ? 'nothing in the last two weeks' : 'could not be read just now'))));
 }
 
 function paintEdit() {
@@ -245,7 +262,7 @@ function paintEdit() {
   const ownerNote = h('p', { class: 'note' });
   const check = () => {
     hint.textContent = rowsProblem(rows, S.addr) || ''; hint.className = 'hint err';
-    go.disabled = !isOwner() || !!rowsProblem(rows, S.addr);
+    go.disabled = S.sending || !isOwner() || !!rowsProblem(rows, S.addr);
     ownerNote.textContent = isOwner() ? 'You are connected as the owner.' : `Only the owner (${nameOf(S.owner) || short(S.owner, 8)}) can change the list. From a Safe, use the batch below.`;
     sb.redraw();
   };
@@ -334,7 +351,7 @@ function paintDeploy() {
   const bad = () => (isAddress(D.owner) ? null : 'The owner is not an address.') || rowsProblem(D.rows, null);
   const check = () => {
     const p = bad();
-    hint.textContent = p || ''; go.disabled = !!p || !D.ownerOk; dataBtn.disabled = !!p;
+    hint.textContent = p || ''; go.disabled = S.sending || !!p || !D.ownerOk; dataBtn.disabled = !!p;
     if (!p) { const { to, weight } = rowsArgs(D.rows); dataBtn.dataset.data = deployData(SPLITTER_INITCODE, D.owner, to, weight); }
     ownerName.textContent = isAddress(D.owner) ? (nameOf(D.owner) || 'Not a known Tacit wallet') : '';
   };
@@ -350,7 +367,7 @@ function paintDeploy() {
     const rc = await waitReceipt(tx);
     if (!isAddress(rc.contractAddress)) throw new Error('The transaction did not create a contract.');
     S.addr = rc.contractAddress; S.dirty = false; S.rows = null; D.ownerOk = false;
-    store.set({ addr: S.addr, args: encDeployArgs(D.owner, to, weight), tx });
+    store.set({ addr: S.addr, deployed: { addr: S.addr, args: encDeployArgs(D.owner, to, weight), tx } });   // its own key: opening another splitter leaves it be
     location.hash = S.addr;
     say_(h('span', { class: 'ok' }, 'Deployed at ', scan(`address/${S.addr}`, S.addr), '.'));
     await load();
@@ -376,11 +393,12 @@ function paintDeploy() {
 }
 
 function paintNext() {
-  const el = $('#p-next'), st = store.get();
+  // (a record from before the deploy had its own key is not read: opening another splitter overwrote its address, so its args may be another's)
+  const el = $('#p-next'), dep = store.get().deployed;
   if (!S.addr || !S.shares) { el.hidden = true; return; }
   el.hidden = false;
-  const mine = st.args && lc(st.addr) === lc(S.addr);
-  const lines = { verify: `forge verify-contract ${S.addr} src/EthSplitter.sol:EthSplitter --chain mainnet --compiler-version 0.8.37 --num-of-optimizations 1 --via-ir --evm-version prague${mine ? ` --constructor-args 0x${st.args}` : ' --constructor-args <the hex from the deploy>'} --watch`,
+  const mine = dep?.args && lc(dep.addr) === lc(S.addr);
+  const lines = { verify: `forge verify-contract ${S.addr} src/EthSplitter.sol:EthSplitter --chain mainnet --compiler-version 0.8.37 --num-of-optimizations 1 --via-ir --evm-version prague${mine ? ` --constructor-args 0x${dep.args}` : ' --constructor-args <the hex from the deploy>'} --watch`,
     api: `RELAY_TIP_SPLITTER_ADDR=${S.addr}\nSPLITTER_ADDR=${S.addr}`, settle: `SPLITTER_ADDR=${S.addr}` };
   const copyBlock = (key, label, text) => h('div', { class: 'cmd' }, h('div', { class: 'cmd-h' }, h('span', { class: 'mute' }, label), h('button', { class: 'linkbtn', type: 'button', onclick: (e) => copy(text, e.target) }, 'Copy')), h('pre', {}, text));
   mount(el,
@@ -394,7 +412,7 @@ function paintNext() {
 
 // ── start ──
 function openAddr(a) {
-  if (!isAddress(a)) { S.err = 'That is not an address.'; S.addr = null; S.shares = null; paint(); return; }
+  if (!isAddress(a)) { say(OUT.state, 'That is not an address.', 'err'); paintState(); return; }
   if (lc(a) !== lc(S.addr)) clearOut();
   S.addr = a; S.dirty = false; S.rows = null; S.shares = null; S.quote = null; S.logs = [];
   store.set({ addr: a }); history.replaceState(null, '', `#${a}`);

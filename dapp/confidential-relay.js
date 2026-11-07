@@ -33,7 +33,8 @@ export function makeConfidentialRelay({ base, others = [], fetchImpl, guard, che
     try {
       if (!st || !st.jobId || typeof globalThis.dispatchEvent !== 'function' || typeof CustomEvent !== 'function') return;
       const detail = { jobId: st.jobId, type: st.type || jobTypes.get(st.jobId) || null, status: st.status || 'unknown',
-        txHash: st.txHash || null, error: st.error || null, lane: st.lane || null, sealed: !!st.sealed, at: Date.now(), ...(jobBy.get(st.jobId) ? { by: jobBy.get(st.jobId) } : {}) };
+        txHash: st.txHash || null, error: st.error || null, lane: st.lane || null, sealed: !!st.sealed, at: Date.now(), ...(jobBy.get(st.jobId) ? { by: jobBy.get(st.jobId) } : {}),
+        ...(st.proveOnly ? { proveOnly: true } : {}), ...(st.early ? { early: true } : {}), ...(st.stage ? { stage: st.stage } : {}) };
       globalThis.dispatchEvent(new CustomEvent('tacit:job', { detail }));
     } catch { }
   }
@@ -54,12 +55,14 @@ export function makeConfidentialRelay({ base, others = [], fetchImpl, guard, che
   }
 
   let stateAt = 0, stateLast = null, stateReading = null;
+  // (a read the relay never answers is given up, so one hung request does not hold every later read or a wait past its own limit)
+  const within = (ms) => (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function' ? { signal: AbortSignal.timeout(ms) } : undefined);
   async function state() {
     if (stateReading) return stateReading;
     if (stateAt && Date.now() - stateAt < 15_000) return stateLast;
     const read = async (at) => {
       try {
-        const res = await f(`${at}/confidential/relay`);
+        const res = await f(`${at}/confidential/relay`, within(10e3));
         if (!res.ok) return null;
         const b = JSON.parse(await res.text());
         if (!b || typeof b.state !== 'string') return null;
@@ -92,6 +95,19 @@ export function makeConfidentialRelay({ base, others = [], fetchImpl, guard, che
     try { Promise.resolve(f(`${root}/prover/pool/hold`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).catch(() => {}); } catch { }
   }
 
+  // A submit the relay did not answer (none in half a minute, or a 5xx from its edge with no word of the relay's own) may have been taken all the
+  // same: the error says so in the words of a wait that ran out, which a page does not send again. The relay's refusals (a 4xx, or an answer
+  // that names its code) come back as they are.
+  const SUBMIT_MS = 30e3;
+  async function postSubmit(at, body, kind) {
+    const unanswered = (cause) => Object.assign(new Error(`${kind} timed out: the relay did not answer the request, which it may have taken all the same`), { unanswered: true, cause });
+    let res;
+    try { res = await f(`${at}/confidential/submit`, { method: 'POST', headers: { 'content-type': 'application/json' }, body, ...within(SUBMIT_MS) }); }
+    catch (e) { throw unanswered(e); }
+    try { return await asJson(res); }
+    catch (e) { if (!e || e.httpStatus == null || (e.httpStatus >= 500 && !e.code)) throw unanswered(e); throw e; }
+  }
+
   // `exit`: a relayed unwrap's ConfidentialRouter ExitRecipe, which the relay activates once the settle has paid its escrow (never sealed).
   // `ahead`: a prove-only job asked for before its press, which the API takes only while the prover board is up (it costs no credit)
   async function submitOp({ type, op, leaves = [], outputs = null, ephRand, memos = null, mode, feeAsset = null, lockMemos = null, depositTx = null, exit = null, ahead = false } = {}, waitOpts) {
@@ -113,13 +129,10 @@ export function makeConfidentialRelay({ base, others = [], fetchImpl, guard, che
       sealedJobs.delete(opKey);
     }
     const sealedIn = sealing ? await sealer({ type, op, memos: sealedMemos }) : null;
-    const res = await f(`${at}/confidential/submit`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(sealedIn
-        ? { type, mode: 'sealed', sealed: sealedIn, memos: sealedMemos, ...(feeAsset ? { feeAsset } : {}) }
-        : { type, op, memos: sealedMemos, ...(mode ? { mode } : {}), ...(feeAsset ? { feeAsset } : {}), ...(depositTx ? { depositTx } : {}), ...(exit ? { exit } : {}), ...(ahead ? { ahead: true } : {}) }, bigintSafe),
-    });
-    const body = await asJson(res);
+    const body = await postSubmit(at, JSON.stringify(sealedIn
+      ? { type, mode: 'sealed', sealed: sealedIn, memos: sealedMemos, ...(feeAsset ? { feeAsset } : {}) }
+      : { type, op, memos: sealedMemos, ...(mode ? { mode } : {}), ...(feeAsset ? { feeAsset } : {}), ...(depositTx ? { depositTx } : {}), ...(exit ? { exit } : {}), ...(ahead ? { ahead: true } : {}) }, bigintSafe),
+    mode === 'prove' ? 'prove' : 'settle');
     if (body && body.jobId) body.jobId = tagId(body.jobId, at);
     if (body && body.jobId) {
       if (opKey) sealedJobs.set(opKey, body.jobId);
@@ -174,7 +187,7 @@ export function makeConfidentialRelay({ base, others = [], fetchImpl, guard, che
 
   async function status(jobId) {
     if (OWN_ID.test(String(jobId))) return ownJobs.get(jobId) || { jobId, status: 'unknown' };
-    const res = await f(`${jobRoot(jobId)}/confidential/status?id=${encodeURIComponent(bareId(jobId))}`);
+    const res = await f(`${jobRoot(jobId)}/confidential/status?id=${encodeURIComponent(bareId(jobId))}`, within(15e3));
     if (res.status === 404) return { jobId, status: 'unknown' };
     const body = await asJson(res);
     return body && body.jobId != null ? { ...body, jobId } : body;
@@ -185,7 +198,7 @@ export function makeConfidentialRelay({ base, others = [], fetchImpl, guard, che
       try { const st = await status(jobId); state.errors = 0; return st; }
       catch (e) {
         state.errors = (state.errors || 0) + 1;
-        if (state.errors >= maxErrors) throw new Error(`status polling for job ${jobId} failed ${state.errors} times in a row (${e && e.message || e}); the job may still be running`);
+        if (state.errors >= maxErrors) throw Object.assign(new Error(`status polling for job ${jobId} failed ${state.errors} times in a row (${e && e.message || e}); the job may still be running`), { unreachable: true });
         await wait(intervalMs);
       }
     }
@@ -307,11 +320,7 @@ export function makeConfidentialRelay({ base, others = [], fetchImpl, guard, che
   async function postProof({ type, publicValues, proof, memos = [], exit = null }) {
     if (alts.length) await state();
     const at = pick;
-    const res = await f(`${at}/confidential/submit`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ type, mode: 'preproven', publicValues, proof, memos, ...(exit ? { exit } : {}) }),
-    });
-    const body = await asJson(res);
+    const body = await postSubmit(at, JSON.stringify({ type, mode: 'preproven', publicValues, proof, memos, ...(exit ? { exit } : {}) }), 'settle');
     if (body && body.jobId) { body.jobId = tagId(body.jobId, at); jobTypes.set(body.jobId, type); announce({ ...body, type }); }
     return body;
   }

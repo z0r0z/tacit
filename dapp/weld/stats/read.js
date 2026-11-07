@@ -8,6 +8,7 @@
 // for what is new.
 
 import { ETH_LOG_NODES } from '../../eth-nodes.js';
+import { bodyType } from '../../rpc-body.js';
 
 export const A = {
   pool: '0x000000000Ed1eabD231Be41d93b719056F7febFC',
@@ -53,7 +54,7 @@ export const SEL = {
 // hour on each chain, so neither a reorg nor an endpoint or explorer running behind leaves anything out for good).
 export const CHAINS = {
   1: { rpc: ETH_LOG_NODES, bs: 'https://eth.blockscout.com', final: 75, slot: 12 },
-  8453: { rpc: ['https://mainnet.base.org', 'https://base-rpc.publicnode.com', 'https://base.gateway.tenderly.co'], bs: 'https://base.blockscout.com', final: 450, slot: 2 },
+  8453: { rpc: ['https://mainnet.base.org', 'https://base-rpc.publicnode.com', 'https://base.drpc.org'], bs: 'https://base.blockscout.com', final: 450, slot: 2 },
   4663: { rpc: ['https://rpc.mainnet.chain.robinhood.com'], bs: null, final: 3600, slot: 0.1 },
 };
 export const API = 'https://api.tacit.finance';
@@ -117,7 +118,7 @@ export function makeStatsReader({ fetchImpl = (...a) => fetch(...a), gapMs = 200
   async function post(url, body, ms = 20e3) {
     let r;
     try {
-      r = await fetchImpl(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(ms) });
+      r = await fetchImpl(url, { method: 'POST', headers: { 'content-type': bodyType(url) }, body: JSON.stringify(body), signal: AbortSignal.timeout(ms) });
     } catch (e) {
       throw Object.assign(new Error((e && e.message) || String(e)), { kind: 'transport', timeout: !!e && (e.name === 'TimeoutError' || e.name === 'AbortError') });
     }
@@ -339,13 +340,15 @@ export function makeStatsReader({ fetchImpl = (...a) => fetch(...a), gapMs = 200
     const internal = once(() => txsOf('internal', 'txlistinternal'));
     const of = (address, topic) => (ls) => ls.filter((l) => l.a === lc(address) && (!topic || l.t[0] === topic));
 
-    // The sender of each deposit: one batch, then each one it missed asked node by node; a sender never changes.
+    // The sender of each deposit: batches of fifty, then each one they missed asked node by node, a few at a time; a sender never changes.
     async function senders(hashes) {
-      const todo = hashes.filter((h) => !k.senders[h]);
-      const got = todo.length ? await batch(1, todo.map((h) => ['eth_getTransactionByHash', [h]])) : [];
-      for (let i = 0; i < todo.length; i++) {
-        const from = got[i]?.from || (await rpc(1, 'eth_getTransactionByHash', [todo[i]], true).then((t) => t.from).catch(() => null));
-        if (from) k.senders[todo[i]] = lc(from);
+      const todo = hashes.filter((h) => !k.senders[h]), missed = [];
+      for (let i = 0; i < todo.length; i += 50) {
+        const part = todo.slice(i, i + 50), got = await batch(1, part.map((h) => ['eth_getTransactionByHash', [h]]));
+        part.forEach((h, j) => { if (got[j]?.from) k.senders[h] = lc(got[j].from); else missed.push(h); });
+      }
+      for (let i = 0; i < missed.length; i += 5) {
+        await Promise.all(missed.slice(i, i + 5).map((h) => rpc(1, 'eth_getTransactionByHash', [h], true).then((t) => { if (t?.from) k.senders[h] = lc(t.from); }).catch(() => {})));
       }
       return hashes.map((h) => k.senders[h] || null);
     }

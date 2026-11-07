@@ -10,7 +10,7 @@
 })();
 
 // A bridge under way shows on every page: a dot on the menu button, and its count on the menu's Bridges entry (the bridge page that follows them). It reads the journals the front page keeps for
-// its bridges in this browser (the stage and any error, nothing else), so it shows with no key open, and it follows another tab through the storage event.
+// its bridges in this browser (the stage, any error, the flags that say what it waits on, and the plans that send a burn; nothing else), so it shows with no key open, and it follows another tab through the storage event.
 (() => {
   const m = document.querySelector('.sm');
   if (!m) return;
@@ -24,21 +24,37 @@
   summary.append(dot);
   if (link) link.append(tag);
   const label = summary.getAttribute('aria-label') || 'More pages';
-  // stages that wait on the holder: the Bitcoin step to send (or its sats to add), a note not credited, a bridge in ready to mint
-  const waits = (out, r) => (out ? r.stage === 'covered' || r.stage === 'mint-rejected' : (r.stage === 'folded' || r.stage === 'rfolded') && !(r.arm && r.arm.ok));
+  // What waits on the holder, as inDue and outDue in /bridge/track.js say it (tests/chrome-bridge-count.mjs holds the two together): a press to make, or a step
+  // that has failed again and again. A burn that the holder's plan has the front page send is not waited on while it goes.
+  const MINER_WAIT = 12 * 3600e3, PLANS = 'tacit-lite-bridge-plan-v1', TAC = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
+  const tac = (r) => { const a = r.source || {}; return String(a.assetId || '').replace(/^0x/i, '').toLowerCase() === TAC || a.ticker === 'TAC'; };
+  const waits = (out, r, plan, now) => {
+    const s = r.stage, err = r.lastError, tries = r.errorCount || 0;
+    if (out) return s === 'covered' || s === 'mint-rejected' || (s === 'settled' && !!r.settle && r.settle.claimIdVerified === false)
+      || ((s === 'mint-signed' || s === 'mint-submitted') && !!err && tries >= 6 && !r.feeWait);
+    if (s === 'traced') return !(((plan && plan.burn) || (r.checkWait && r.checkWait.go)) && !err && !r.feeWait);
+    if (s === 'folded' || s === 'rfolded') return !(r.arm && r.arm.ok) && !(err && (Number(err.until) > now || err.relay));
+    if (s === 'stopped') return true;
+    if (s === 'burn-submitted') return now - Number(r.submittedAt || r.updatedAt || now) > MINER_WAIT;
+    if (s === 'not-recorded') return r.path === 'reflected' && !(r.source && r.source.p2tr) && tac(r);
+    return !!err && tries >= 3 && ['burn-signed', 'migrate-confirmed', 'rburn-signed', 'rburn-sent', 'migrate-signed', 'migrate-sent'].includes(s);
+  };
   const count = () => {
     let under = 0, needs = 0;
     try {
+      const now = Date.now();
+      let plans = {}; try { plans = JSON.parse(localStorage.getItem(PLANS) || 'null') || {}; } catch {}
       for (let i = 0; i < localStorage.length; i++) {
         const k = localStorage.key(i), out = k.startsWith(OUT);
         if (!out && !k.startsWith(IN)) continue;
         let list = null; try { list = JSON.parse(localStorage.getItem(k)); } catch {}
         if (!Array.isArray(list)) continue;
+        const own = (!out && plans[k.slice(IN.length)]) || {};
         for (const r of list) {
           const s = r && r.stage;
           if (!s || (out ? s === 'minted' : s === 'minted' || s === 'reclaimed' || s === 'recovered')) continue;
           under++;
-          if (waits(out, r)) needs++;
+          if (waits(out, r, own[r.id], now)) needs++;
         }
       }
     } catch {}
@@ -53,7 +69,7 @@
     summary.setAttribute('aria-label', label + says);
   };
   paint();
-  addEventListener('storage', (e) => { if (!e.key || e.key.startsWith(OUT) || e.key.startsWith(IN)) paint(); });
+  addEventListener('storage', (e) => { if (!e.key || e.key.startsWith(OUT) || e.key.startsWith(IN) || e.key === PLANS) paint(); });
   addEventListener('focus', paint);
   setInterval(paint, 30e3);
 })();

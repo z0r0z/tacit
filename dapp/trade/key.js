@@ -7,7 +7,7 @@ import { prfBytesToScalar, prfLogin, prfRegister, loadPrfMap, savePrfMap, isPass
 import { knownWallets } from '/tacit-wallet-known.js?cb=ed4c75b7';
 import { makeEvmWallet } from '/evm-wallet.js?cb=b400cbe7';
 import { overlay, esc } from '/trade/sheet.js?cb=84cda8f2';
-import { short } from '/trade/util.js?cb=e8317464';
+import { short } from '/trade/util.js?cb=ba5a02b1';
 
 const RECORD = 'tacit-trade-id-v1';                                           // how /trade last opened a key: public data only (the Bitcoin market writes it too)
 const KNOWN_IDS = [RECORD, 'tacit-tac-id-v1', 'tacit-pay-hub-id-v1', 'tacit-lite-id-v1', 'tacit-pay-id-v1'];

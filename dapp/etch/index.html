@@ -25,13 +25,13 @@
 <link rel="preload" href="/fonts/ibm-plex-mono-500-latin.woff2" as="font" type="font/woff2" crossorigin>
 <!-- preload-roots: /etch/app.js | | /trade/btc.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/etch/app.js?cb=2a7a7e27">
-<link rel="modulepreload" href="/trade/util.js?cb=e8317464">
-<link rel="modulepreload" href="/trade/rpc.js?cb=f575ef91">
+<link rel="modulepreload" href="/etch/app.js?cb=794596a1">
+<link rel="modulepreload" href="/trade/util.js?cb=ba5a02b1">
+<link rel="modulepreload" href="/trade/rpc.js">
 <link rel="modulepreload" href="/rpc-body.js">
 <link rel="modulepreload" href="/eth-nodes.js">
 <link rel="modulepreload" href="/trade/fmt.js?cb=32b1744b">
-<link rel="modulepreload" href="/etch/find.js?cb=28fe6e0c">
+<link rel="modulepreload" href="/etch/find.js?cb=c6d1da75">
 <!-- preload:end -->
 <style>
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
@@ -87,7 +87,9 @@ button, input, textarea { font: inherit; color: inherit; letter-spacing: inherit
 .skip:focus { top: 12px; }
 .tk { width: 28px; height: 28px; display: block; flex: none; border-radius: 50%; }
 img.tk { object-fit: cover; background: var(--field); }
-.tk.letter { display: grid; place-items: center; font: 500 12px/1 var(--mono); letter-spacing: 0; color: #fff; background: var(--c, #8F8979); }
+.tk.letter { position: relative; overflow: hidden; display: grid; place-items: center; font: 500 12px/1 var(--mono); letter-spacing: 0; color: #fff; background: var(--c, #8F8979); }
+.tk > img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: 50%; opacity: 0; transition: opacity .25s; }
+.tk > img.ok { opacity: 1; background: var(--field); }
 .shell { max-width: 1120px; margin: 0 auto; padding-bottom: 56px; }
 
 /* header */
@@ -98,6 +100,7 @@ img.tk { object-fit: cover; background: var(--field); }
 
 /* the page: a short hero beside the card on a wide screen, the card first on a narrow one */
 .stage { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 470px); gap: 28px 56px; align-items: start; padding: 24px 0 10px; }
+@media (min-width: 901px) { .hero { position: sticky; top: 24px; } }
 @media (max-width: 900px) { .stage { grid-template-columns: minmax(0, 1fr); padding-top: 18px; } }
 .hero h1 { font: 400 clamp(48px, 7.4vw, 88px)/.92 var(--serif); letter-spacing: -.025em; margin: 0; }
 .hero h1 em { font-style: italic; }
@@ -188,6 +191,8 @@ img.tk { object-fit: cover; background: var(--field); }
 .kv b { font-weight: 400; color: var(--ink); text-align: right; overflow-wrap: anywhere; }
 .kv code { font: inherit; overflow-wrap: anywhere; }
 .done .btn { margin-top: 8px; }
+.done .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%; margin-top: 8px; }
+.done .pair .btn { margin-top: 0; }
 
 /* Discover */
 .srch { position: relative; }
@@ -356,7 +361,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
 @font-face { font-family: 'Instrument Serif Fallback N'; src: local('Noto Serif'), local('NotoSerif'); size-adjust: 70.5%; ascent-override: 140.4%; descent-override: 44%; line-gap-override: 0%; }
 @font-face { font-family: 'Instrument Serif Fallback N'; font-style: italic; src: local('Noto Serif Italic'), local('NotoSerif-Italic'); size-adjust: 76.3%; ascent-override: 129.7%; descent-override: 40.6%; line-gap-override: 0%; }
 </style>
-<script src="/chrome.js?cb=73051f76" defer></script>
+<script src="/chrome.js?cb=4b1414c7" defer></script>
 <!-- chrome:head:end -->
 </head>
 <body>
@@ -501,6 +506,6 @@ footer.sf svg.fill { width: 16px; height: 16px; }
 </template>
 <!-- warm:end -->
 <div class="sr" id="live" role="status" aria-live="polite"></div>
-<script type="module" src="/etch/app.js?cb=2a7a7e27"></script>
+<script type="module" src="/etch/app.js?cb=794596a1"></script>
 </body>
 </html>

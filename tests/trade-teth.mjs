@@ -453,7 +453,7 @@ try {
   ok(r.errors.length === 0 && r.blocked.length === 0, `no page error and nothing blocked by the CSP (${[...r.errors, ...r.blocked].join(' | ').slice(0, 200)})`);
   // the pool's figures that can be read here
   const calls = r.seen.join(' ');
-  ok(/\/stats\?network=mainnet&view=front/.test(calls) && /\/stats\?network=mainnet&view=eth/.test(calls) && !r.seen.some((x) => /^\/stats\?network=mainnet$/.test(x)), 'the short reading for the head and the pool\'s own (~6 KB) for its history, never the whole 176 KB one');
+  ok(/\/stats\?network=mainnet&view=eth/.test(calls) && !r.seen.some((x) => /^\/stats\?network=mainnet$/.test(x)), 'the pool\'s own reading (~6 KB) for the head and its history, never the whole 176 KB one');
   await p.fill('#amt', '0.5');
   ok((await text(p, '#go')) === 'Connect wallet', 'with no wallet connected the button asks for one');
   await r.browser.close();
@@ -550,7 +550,7 @@ try {
   ok((await money(p)).disabled, 'more than the wallet holds is refused');
   await p.click('#in-bal');
   await until(p, () => document.querySelector('#amt').value !== '99');
-  ok((await p.inputValue('#amt')) === '4.996', `Max keeps a little back for the network fee (${await p.inputValue('#amt')})`);
+  ok((await p.inputValue('#amt')) === '4.99567121', `Max keeps the network fee and the relay's tip back (${await p.inputValue('#amt')})`);
   await p.fill('#amt', '0.1');
   await until(p, () => document.querySelector('#go').textContent === 'Sign in to make ETH private');
   await shot(p, 'quote');

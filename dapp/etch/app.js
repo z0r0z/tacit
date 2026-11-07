@@ -1,12 +1,12 @@
 // tacit.finance/etch: an asset made on Bitcoin, and a search of the ones that exist. Create takes a ticker and a supply (a name, a logo and a link are optional)
 // and etches it from the Tacit key the visitor opens; Discover searches the registry. tacit.js and the key come in when the visitor first touches the form
 // (/trade/btc.js signs them in), not before. The asset is the key's own the moment the reveal is sent, so the front page's wallet lists it as it lists TAC.
-import { $, esc, fmtUnits, parseUnits, short } from '/trade/util.js?cb=e8317464';
+import { $, esc, fmtUnits, parseUnits, short } from '/trade/util.js?cb=ba5a02b1';
 import { ETH_LOG_NODES } from '/eth-nodes.js';
 import { day } from '/trade/fmt.js?cb=32b1744b';
-import { loadAssets, readNames, search, ipfs } from '/etch/find.js?cb=28fe6e0c';
+import { loadAssets, readNames, search, ipfs } from '/etch/find.js?cb=c6d1da75';
 
-const BTC_MODULE = '/trade/btc.js?cb=8a4b33cd', ETH_MODULE = '/etch/eth.js?cb=258db1fd', WALLET_MODULE = '/trade/wallet.js?cb=88b623b8', SHEET_MODULE = '/trade/sheet.js?cb=84cda8f2', UTIL_MODULE = '/trade/util.js?cb=e8317464';
+const BTC_MODULE = '/trade/btc.js?cb=8a4b33cd', ETH_MODULE = '/etch/eth.js?cb=96e842d9', WALLET_MODULE = '/trade/wallet.js?cb=88b623b8', SHEET_MODULE = '/trade/sheet.js?cb=84cda8f2', UTIL_MODULE = '/trade/util.js?cb=ba5a02b1';
 const DECIMALS_OF = { btc: [0, 2, 6, 8], eth: [0, 6, 8, 18] };
 // What the pool can hold of an asset, in its base units (2^64 − 1 in-system units); on Bitcoin, the etch's own limit.
 const maxFor = (dec) => (S.chain === 'eth' ? ((1n << 64n) - 1n) * 10n ** BigInt(dec - Math.min(dec, 8)) : MAX_BASE);
@@ -51,9 +51,8 @@ function paintMark(node, ticker, id, url) {
   node.style.backgroundImage = url ? `url("${url}")` : '';
   node.style.backgroundSize = 'cover'; node.style.backgroundPosition = 'center';
 }
-const markHtml = (a) => (a.logo
-  ? `<img class="tk" src="${esc(a.logo)}" alt="" loading="lazy" decoding="async" data-l="${esc(letters(a.ticker))}" data-c="${colour(a.id)}">`
-  : `<span class="tk letter" style="--c:${colour(a.id)}">${esc(letters(a.ticker))}</span>`);
+// the letters stay under a logo until it has loaded (some are megabytes), and are what is left when it does not load
+const markHtml = (a) => `<span class="tk letter" style="--c:${colour(a.id)}">${esc(letters(a.ticker))}${a.logo ? `<img src="${esc(a.logo)}" alt="" loading="lazy" decoding="async">` : ''}</span>`;
 
 // ── the key and tacit.js, loaded when the form is first touched ──
 function lane() {
@@ -253,8 +252,7 @@ function showDone() {
       <div class="kv"><span>Transactions</span><b><a href="${MEMPOOL}/tx/${esc(d.commitTxid)}" target="_blank" rel="noopener noreferrer">commit</a> · <a href="${MEMPOOL}/tx/${esc(d.revealTxid)}" target="_blank" rel="noopener noreferrer">reveal</a></b></div>
     </div>
     <a class="btn" href="/#bitcoin/${esc(d.assetIdHex)}">Open it in your wallet</a>
-    <a class="btn ghost" href="${market(d.assetIdHex)}">Trade it</a>
-    <button class="btn ghost" type="button" id="again">Etch another</button>
+    <div class="pair"><a class="btn ghost" href="${market(d.assetIdHex)}">Trade it</a><button class="btn ghost" type="button" id="again">Etch another</button></div>
     <p class="q${d.details && d.metadataPinned === false ? ' err' : ''}">${d.details && d.metadataPinned === false ? 'The name and details could not be saved with it. The asset itself is etched.' : 'It shows in Discover within a few minutes.'}</p>`;
   paintMark($('#d-mark'), d.ticker, d.assetIdHex, d.logo);
   $('#edit').hidden = true; $('.act').hidden = true; done.hidden = false;
@@ -275,12 +273,15 @@ function reset() {
 
 // ── the logo: pinned to IPFS through the API, then named in the envelope by its CID ──
 const lgSay = (t, err = false) => { const s = $('#lg-s'); s.textContent = t; s.style.color = err ? 'var(--err)' : ''; };
+// The image chosen last is the logo: an upload still in flight when another is chosen, or the logo is removed, is dropped when it lands.
+let lgSeq = 0;
 ui.lg.addEventListener('change', async () => {
   const f = ui.lg.files && ui.lg.files[0];
   ui.lg.value = '';
   if (!f) return;
   if (!LOGO_TYPES.has(f.type)) return lgSay('PNG, JPEG or WebP', true);
   if (f.size > LOGO_MAX) return lgSay('2 MB at most', true);
+  const my = ++lgSeq;
   lgSay('Uploading…');
   S.uploading = true; paint();
   const url = URL.createObjectURL(f);
@@ -289,15 +290,17 @@ ui.lg.addEventListener('change', async () => {
     fd.append('file', f);
     const r = await fetch(`${API}/pin`, { method: 'POST', body: fd, signal: AbortSignal.timeout(30e3) });
     const j = await r.json().catch(() => ({}));
+    if (my !== lgSeq) { URL.revokeObjectURL(url); return; }
     if (!r.ok || !j.cid) throw new Error(j.error || `the upload failed (${r.status})`);
     if (S.logo) URL.revokeObjectURL(S.logo.url);
     S.logo = { uri: `ipfs://${j.cid}`, url };
     lgSay(''); $('#lg-x').hidden = false; paintMark($('#lg-mark'), '', '', url);
     paint(); needQuote();
-  } catch (e) { URL.revokeObjectURL(url); lgSay(e?.message || 'The upload failed', true); }
-  finally { S.uploading = false; paint(); }
+  } catch (e) { URL.revokeObjectURL(url); if (my === lgSeq) lgSay(e?.message || 'The upload failed', true); }
+  finally { if (my === lgSeq) { S.uploading = false; paint(); } }
 });
 $('#lg-x').addEventListener('click', () => {
+  lgSeq++; S.uploading = false;
   if (S.logo) URL.revokeObjectURL(S.logo.url);
   S.logo = null; $('#lg-x').hidden = true; paintMark($('#lg-mark'), '', '', null); lgSay('');
   paint(); needQuote();
@@ -397,20 +400,19 @@ async function actEth() {
     const plan = await lane.E.plan({ account, symbol: job.ticker, decimals: job.dec, supply: job.base, cid, register: job.reg }, lane.rpc);
     const cost = plan.gas * (S.eth.gasPrice || 0n) * 12n / 10n;
     if (S.eth.bal != null && cost > 0n && S.eth.bal < cost) { say(`Needs about ${esc(fmtUnits(cost, 18, 5))} ETH for the network fee. Your wallet holds ${esc(fmtUnits(S.eth.bal, 18, 5))}.`, 'err'); return; }
-    let made = false;
-    try {
-      const hashes = await lane.E.send(plan, lane.wallet, { read: lane.rpc, step: (i, n, label) => say(n > 1 ? `${esc(label)} (${i} of ${n})…` : `${esc(label)}…`) });
-      made = true;
-      say('Checking what was made…');
-      const v = await lane.E.verify(plan, lane.rpc);
-      S.done = { eth: true, job, plan, hashes, verified: v, ticker: job.ticker, base: job.base, dec: job.dec, logo: job.logo?.url || null, logoUri: job.logo?.uri || null, reg: job.reg, registered: job.reg };
-    } catch (e) {
+    let hashes, note = null;
+    try { hashes = await lane.E.send(plan, lane.wallet, { read: lane.rpc, step: (i, n, label) => say(n > 1 ? `${esc(label)} (${i} of ${n})…` : `${esc(label)}…`) }); }
+    catch (e) {
       if (!e?.partial?.length) throw e;
       // the token was made and a later call was not: what exists is said, and the page shows it
-      const v = await lane.E.verify(plan, lane.rpc).catch(() => ({ ok: false, checks: {} }));
-      S.done = { eth: true, job, plan, hashes: e.partial, verified: v, ticker: job.ticker, base: job.base, dec: job.dec, logo: job.logo?.url || null, logoUri: job.logo?.uri || null, reg: job.reg, registered: false, note: stopped(e) ? 'Registering it with the pool was not confirmed in your wallet. The token is made.' : `Could not register it with the pool: ${e.message}. The token is made.` };
+      hashes = e.partial;
+      note = stopped(e) ? 'Registering it with the pool was not confirmed in your wallet. The token is made.' : `Could not register it with the pool: ${e.message}. The token is made.`;
     }
+    // The token exists once its create call is mined, so it is kept before the chain is asked what was made: a read that fails leaves it shown, unchecked, not unrecorded.
+    S.done = { eth: true, job, plan, hashes, verified: { ok: false, checks: {} }, ticker: job.ticker, base: job.base, dec: job.dec, logo: job.logo?.url || null, logoUri: job.logo?.uri || null, reg: job.reg, registered: job.reg && !note, note };
     rememberEth(S.done, job);
+    say('Checking what was made…');
+    S.done.verified = await lane.E.verify(plan, lane.rpc).catch(() => ({ ok: false, checks: {} }));
     showDoneEth();
   } catch (e) {
     say(stopped(e) ? 'Nothing was sent.' : esc(e?.message || String(e)), stopped(e) ? '' : 'err');
@@ -429,19 +431,22 @@ function showDoneEth() {
       ${d.registered ? '<div class="kv"><span>Tacit pool</span><b>registered</b></div>' : ''}
     </div>
     <button class="btn" type="button" id="watch">Add it to your wallet</button>
-    <a class="btn ghost" href="${scan}/token/${esc(t)}" target="_blank" rel="noopener noreferrer">View on Etherscan</a>
-    <button class="btn ghost" type="button" id="again">Etch another</button>
+    <div class="pair"><a class="btn ghost" href="${scan}/token/${esc(t)}" target="_blank" rel="noopener noreferrer">Etherscan ↗</a><button class="btn ghost" type="button" id="again">Etch another</button></div>
     <p class="q${bad || d.note ? ' err' : ''}">${esc(bad || d.note || 'It is yours: nothing can mint more of it.')}</p>`;
   paintMark($('#d-mark'), d.ticker, t, d.logo);
   $('#edit').hidden = true; $('.act').hidden = true; done.hidden = false;
   $('#again').onclick = reset;
-  $('#watch').onclick = async () => { const lane = await ethLane(); const ok = await lane.E.addToWallet(lane.wallet, { token: t, symbol: d.ticker, decimals: d.dec }, d.logoUri ? `${API}/ipfs/${d.logoUri.slice(7)}` : null); $('#watch').textContent = ok ? 'Added' : 'Add it to your wallet'; };
+  $('#watch').onclick = async () => {
+    try { const lane = await ethLane(); const ok = await lane.E.addToWallet(lane.wallet, { token: t, symbol: d.ticker, decimals: d.dec }, d.logoUri ? `${API}/ipfs/${d.logoUri.slice(7)}` : null); $('#watch').textContent = ok ? 'Added' : 'Add it to your wallet'; }
+    catch { $('#watch').textContent = 'Add it in your wallet by its address'; }
+  };
   $('#again').focus();
 }
 // The switch between the two sides: the form is the same, the decimals offered and what is chosen under "more" are not.
 function setChain(c) {
   if (S.chain === c) return;
-  S.chain = c; S.dec = c === 'eth' ? 18 : 8; S.quote = c === 'btc' ? S.quote : null;
+  // the quote is the Bitcoin side's: it is asked again on the way back
+  S.chain = c; S.dec = c === 'eth' ? 18 : 8; S.quote = null; quoteKey = '';
   for (const b of document.querySelectorAll('#chain [data-chain]')) b.setAttribute('aria-checked', String(b.dataset.chain === c));
   $('#pub-row').hidden = $('#mint-row').hidden = c === 'eth'; $('#reg-row').hidden = c === 'btc';
   chips(); say('');
@@ -485,8 +490,8 @@ function paintList() {
     return;
   }
   const term = ui.find.value.trim(), all = eth ? knownEth() || S.mineEth : known(), hits = search(all, term), shown = hits.slice(0, S.shown);
-  cnt.textContent = term ? `${hits.length} found` : `${hits.length} asset${hits.length === 1 ? '' : 's'}`;
-  ui.list.innerHTML = shown.length ? shown.map(row).join('') : `<li class="empty">Nothing matches “${esc(term)}”.</li>`;
+  cnt.textContent = term ? `${hits.length} found` : hits.length ? `${hits.length} asset${hits.length === 1 ? '' : 's'}` : '';
+  ui.list.innerHTML = shown.length ? shown.map(row).join('') : `<li class="empty">${term ? `Nothing matches “${esc(term)}”.` : `Nothing etched on ${eth ? 'Ethereum' : 'Bitcoin'} yet. <button class="link" type="button" data-new>Etch the first</button>`}</li>`;
   more.hidden = hits.length <= shown.length;
 }
 let loading = null;
@@ -506,8 +511,11 @@ function ensureEthList() {
 async function ethHeld() {
   try {
     const lane = await ethLane(), a = lane.wallet.state.account;
-    if (!a || !S.ethList?.length) return;
-    S.held = await lane.E.balances(lane.rpc, a, knownEth().map((x) => x.id));
+    if (!a) { if (Object.keys(S.held).length) { S.held = {}; paintList(); } return; }
+    if (!S.ethList?.length) return;
+    const held = await lane.E.balances(lane.rpc, a, knownEth().map((x) => x.id));
+    if (lane.wallet.state.account !== a) return;
+    S.held = held;
     paintList();
   } catch { /* what is held is a convenience */ }
 }
@@ -535,14 +543,9 @@ ui.list.addEventListener('click', (e) => {
   S.open = S.open === id ? null : id;
   paintList();
 });
-// a logo that does not load is a letter again
-ui.list.addEventListener('error', (e) => {
-  const i = e.target;
-  if (i.tagName !== 'IMG' || !i.dataset.l) return;
-  const s = document.createElement('span');
-  s.className = 'tk letter'; s.style.setProperty('--c', i.dataset.c); s.textContent = i.dataset.l;
-  i.replaceWith(s);
-}, true);
+// a logo shows once it has loaded; one that does not load leaves the letters
+ui.list.addEventListener('load', (e) => { const i = e.target; if (i.tagName === 'IMG') (i.decode ? i.decode() : Promise.resolve()).then(() => i.classList.add('ok'), () => i.remove()); }, true);
+ui.list.addEventListener('error', (e) => { if (e.target.tagName === 'IMG') e.target.remove(); }, true);
 
 // ── the two panels ──
 function setTab(t, term = null, side = null) {
@@ -555,14 +558,16 @@ function setTab(t, term = null, side = null) {
   keepUrl();
 }
 function keepUrl() {
-  const q = ui.find.value.trim(), h = S.tab === 'find' ? `#discover${q ? `=${encodeURIComponent(q)}` : S.fchain === 'eth' ? ':eth' : ''}` : '';
+  // an address names its own side; a word keeps the side it was searched on
+  const q = ui.find.value.trim(), side = S.fchain === 'eth' && !/^0x[0-9a-f]{40}$/i.test(q) ? ':eth' : '';
+  const h = S.tab === 'find' ? `#discover${side}${q ? `=${encodeURIComponent(q)}` : ''}` : '';
   try { history.replaceState(null, '', location.pathname + location.search + h); } catch { /* the address is a convenience */ }
 }
 function readUrl() {
   let h = '';
   try { h = decodeURIComponent(location.hash.slice(1)); } catch { /* an unreadable address opens Create */ }
-  if (h === 'discover:eth') return { tab: 'find', term: '', side: 'eth' };
-  return h.startsWith('discover') ? { tab: 'find', term: h.slice(9) } : { tab: 'create', term: null };
+  const m = /^discover(:eth)?(?:=([\s\S]*))?$/.exec(h);
+  return m ? { tab: 'find', term: m[2] ?? '', side: m[1] ? 'eth' : null } : { tab: 'create', term: null };
 }
 $('#t-create').addEventListener('click', () => setTab('create'));
 $('#t-find').addEventListener('click', () => setTab('find'));
@@ -589,6 +594,7 @@ $('#chain').addEventListener('click', (e) => { const b = e.target.closest('[data
 ui.reg.addEventListener('change', paint);
 document.addEventListener('click', (e) => {
   if (e.target.closest('[data-fund]')) { if (bitcoin?.session.unlocked) addSats(); return; }
+  if (e.target.closest('[data-new]')) { setTab('create'); setChain(S.fchain); ui.tk.focus(); return; }
   const f = e.target.closest('[data-find]');
   if (f) { setTab('find', f.dataset.find, 'btc'); return; }
   const c = e.target.closest('[data-copy]');

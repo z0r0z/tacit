@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { balanceRows } from '../dapp/wallet-balances.js';
 
-const tokens = { icon: (id) => ({ tac: 'tk-tac', teth: 'tk-teth' })[id] || null, dp: (id) => ({ tac: 2, teth: 6 })[id], act: (id) => (id === 'tac' ? { label: 'Bridge', link: 'bridge' } : null) };
+const tokens = { icon: (id) => ({ tac: 'tk-tac', teth: 'tk-teth' })[id] || null, dp: (id) => ({ tac: 2, teth: 6 })[id] };
 const row = (key, v, more = {}) => ({ key, label: key.toUpperCase(), v, dec: 8, max: 4, ...more });
 const keys = (rs) => rs.map((r) => r.key);
 
 // the panel's rows as the page builds them, with a key that holds some of each
 const items = [
-  row('teth', 50000000n, { core: true, meta: 'private' }),
+  row('teth', 50000000n, { core: true, meta: 'private', notes: 3 }),
   row('dev', 0n, { show: false }),
   row('devtac', 3n * 10n ** 18n, { show: true }),
   row('tac', 7n * 10n ** 18n, { core: true }),
@@ -27,7 +27,8 @@ const items = [
   assert.deepEqual(keys(r.bitcoin), ['btc', 'sats-tac', 'tethbtc']);
   assert.equal(r.bitcoin[0].v, null, 'BTC is still being read');
   assert.equal(r.bitcoin[0].err, false);
-  assert.deepEqual(keys(r.ethereum), ['teth', 'devtac', 'tac'], 'zero rows and rows that are not balances (points, rewards, loans, airdrop) are left out');
+  assert.equal(r.ethereum[0].notes, 3, 'a row keeps the count of private notes behind it');
+  assert.deepEqual(keys(r.ethereum), ['teth', 'devtac', 'tac'],'zero rows and rows that are not balances (points, rewards, loans, airdrop) are left out');
 }
 
 // a failed read says so, for the row to say it could not be read
@@ -50,10 +51,10 @@ assert.equal(balanceRows(items, { ready: false, err: new Error('x') }, tokens).b
   assert.deepEqual([tac.label, tac.v, tac.dec, tac.max, tac.icon, tac.meta], ['TAC', 1200n * 10n ** 8n, 8, 2, 'tk-tac', 'on Bitcoin']);
   assert.equal(teth.icon, 'tk-teth');
   assert.deepEqual([xyz.icon, xyz.mark, xyz.markId, xyz.max], [undefined, 'XYZ', 'ab'.repeat(32), 4], 'an asset with no mark of its own is a lettered one');
-  // each row on Bitcoin goes to the Bitcoin sheet (an asset's to its send form), and TAC alone offers the bridge
+  // each row on Bitcoin goes to the Bitcoin sheet (an asset's to its send form)
   assert.deepEqual([own.open, own.btcAsset], ['btc', undefined]);
-  assert.deepEqual([tac.open, tac.btcAsset, tac.act], ['btc', 'tac', { label: 'Bridge', link: 'bridge' }]);
-  assert.deepEqual([teth.btcAsset, teth.act, xyz.btcAsset, xyz.act], ['teth', undefined, 'ab'.repeat(32), undefined]);
+  assert.deepEqual([tac.open, tac.btcAsset], ['btc', 'tac']);
+  assert.deepEqual([teth.btcAsset, xyz.btcAsset], ['teth', 'ab'.repeat(32)]);
   assert.deepEqual(keys(r.ethereum), ['teth', 'devtac', 'tac']);
 }
 

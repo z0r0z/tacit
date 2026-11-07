@@ -2,7 +2,8 @@
 // behind them is let go. node --test tests/attest-counts.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { jobCounts, proofCounts, countsBehind } from '../src/lib/attest-counts.js';
+import { readFileSync } from 'node:fs';
+import { jobCounts, pvCounts, proofCounts, countsBehind } from '../src/lib/attest-counts.js';
 
 const POOL = '0x000000000Ed1eabD231Be41d93b719056F7febFC';
 // The head of the proof the pool refused on 2026-11-05 (ConsumedCountStale): batch to 974642, 2 consumed, 11 cross-outs, 9 folded.
@@ -23,19 +24,28 @@ test('a proof that reflects another pool is checked on its folded cross-out coun
   assert.deepEqual(proofCounts(REFUSED, '0x0000000000000000000000000000000000000001'), { crossOuts: 9n, consumed: 2n });
 });
 
+test('a real Mode-B prover input is read: the eth-state public values sit beside the modeB flag', () => {
+  const input = JSON.parse(readFileSync(new URL('../../contracts/sp1/confidential/fixtures/reflection_modeb.json', import.meta.url), 'utf8'));
+  assert.equal(input.modeB, 1);
+  assert.deepEqual(jobCounts({ input }), { crossOuts: 1n, consumed: 1n });
+  assert.equal(countsBehind(jobCounts({ input }), { crossOuts: 3n, consumed: 1n }), '1 cross-out(s)/1 consumed against the pool\'s 3/1');
+});
+
 test('a Mode-B job reads its counts from the eth-state public values; a forward job has none', () => {
-  assert.deepEqual(jobCounts({ input: { modeB: { ethPv: ethPv(14, 2) } } }), { crossOuts: 14n, consumed: 2n });
-  assert.deepEqual(jobCounts({ input: { modeB: { ethPv: ethPv(11, 2).slice(2) } } }), { crossOuts: 11n, consumed: 2n }, 'without 0x');
+  assert.deepEqual(jobCounts({ input: { modeB: 1, ethPv: ethPv(14, 2) } }), { crossOuts: 14n, consumed: 2n });
+  assert.deepEqual(jobCounts({ input: { modeB: 1, ethPv: ethPv(11, 2).slice(2) } }), { crossOuts: 11n, consumed: 2n }, 'without 0x');
+  assert.equal(jobCounts({ input: { modeB: 0, ethPv: ethPv(14, 2) } }), null, 'a forward batch');
   assert.equal(jobCounts({ input: {} }), null);
   assert.equal(jobCounts(null), null);
-  assert.equal(jobCounts({ input: { modeB: { ethPv: '0x1234' } } }), null, 'too short to hold them');
+  assert.equal(jobCounts({ input: { modeB: 1, ethPv: '0x1234' } }), null, 'too short to hold them');
+  assert.deepEqual(pvCounts(ethPv(19, 2)), { crossOuts: 19n, consumed: 2n });
 });
 
 test('a job behind the pool on either count is behind; an unknown side never stops the lane', () => {
   const live = { crossOuts: 14n, consumed: 2n };
-  assert.match(countsBehind(jobCounts({ input: { modeB: { ethPv: ethPv(11, 2) } } }), live), /^11 cross-out/);
+  assert.match(countsBehind(jobCounts({ input: { modeB: 1, ethPv: ethPv(11, 2) } }), live), /^11 cross-out/);
   assert.match(countsBehind({ crossOuts: 14n, consumed: 1n }, live), /1 consumed/);
-  assert.equal(countsBehind(jobCounts({ input: { modeB: { ethPv: ethPv(14, 2) } } }), live), null);
+  assert.equal(countsBehind(jobCounts({ input: { modeB: 1, ethPv: ethPv(14, 2) } }), live), null);
   assert.equal(countsBehind(null, live), null);
   assert.equal(countsBehind({ crossOuts: 1n, consumed: 1n }, null), null);
 });

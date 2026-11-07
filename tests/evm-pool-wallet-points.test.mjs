@@ -232,4 +232,36 @@ await check('no registry, or another pool: read from the first block as before',
   assert.equal((await W.sync()).balance, 107n);
 });
 
+await check('a note younger than the confirmations stays in view, and can be chosen, across the join of the history behind a point', async () => {
+  const pool = pointed(), store = memStore();
+  const W = makeEvmPoolWallet({ zk, keys, prove: null, store, partial: true, chain: { chainId: 8453, pool: POOL, router: ROUTER, rpc: pool.node(), deployBlock: 1, confirmations: 2 } });
+  assert.equal((await W.sync()).balance, 7n);
+  pay(pool, self, 9n);                                   // a note in the newest block, within the confirmations
+  const s = await W.sync();
+  assert.equal(s.balance, 16n, 'in view, not yet kept');
+  assert.equal(s.block, pool.tip - 2);
+  await W.readBack();
+  assert.equal(await W.adopt(), true);
+  const t = W.summary();
+  assert.equal(t.behind, null);
+  assert.equal(t.balance, 116n, 'the whole history, with the young note still in view');
+  assert.ok(W.notes().some((x) => x.v === '9'), 'it can be chosen for a spend');
+});
+
+await check('a refund box taken while a read is under way keeps its number when the read\'s state is kept', async () => {
+  const pool = history(), node = pool.node(), store = memStore();
+  let during = null;
+  const rpc = async (m, p) => { if (m === 'eth_call' && during) { const f = during; during = null; await f(); } return node(m, p); };
+  const chain = { chainId: 8453, pool: POOL, router: ROUTER, rpc, deployBlock: 1, confirmations: 0 };
+  const W = makeEvmPoolWallet({ zk, keys, prove: null, store, partial: false, chain });
+  await W.sync();
+  pay(pool, other, 1n);                                  // a leaf to absorb, so the read asks the pool about the tree's root before it keeps the state
+  let box = null;
+  during = async () => { box = await W.refundBox(); };
+  await W.sync();
+  assert.ok(box, 'the box was taken during the read');
+  assert.notEqual(await W.refundBox(), box, 'the next refund box is a new one');
+  assert.notEqual(await makeEvmPoolWallet({ zk, keys, prove: null, store, partial: false, chain }).refundBox(), box, 'and so for a wallet made from the stored state');
+});
+
 console.log(`${n} checks passed`);

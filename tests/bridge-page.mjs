@@ -230,7 +230,9 @@ try {
     await page.click('#hood-dir button[data-dir="in"]');
     await page.click('.faq summary');
     ok(await page.isVisible('.faq details[open] p'), 'a question opens to its answer');
-    ok((await page.$$('.faq details')).length === 5, 'five questions');
+    ok((await page.$$('.faq details')).length === 6, 'six questions');
+    ok(!!(await page.$('.faq details a[href="/fast/"]')), 'one of them points to the fast bridge');
+    ok(await page.$eval('#bt-fast a', (a) => a.getAttribute('href') === '/fast/'), 'the card points TAC from Bitcoin to the fast bridge');
     const faq = await page.textContent('.faq');
     ok(/TAC 20 to 1,000 to Bitcoin and up to 1,000 back/.test(faq) && /tETH 0\.001 to 0\.5 to Bitcoin and up to 0\.5 back/.test(faq) && /cBTC 0\.00001 to 0\.5 to Bitcoin and up to 0\.5 back/.test(faq) && /cUSD 10 to 1,000 to Bitcoin and up to 1,000 back/.test(faq) && /255 transfers/.test(faq), 'the limits answer gives each asset its own range, both ways, and the history it proves');
     ok(/To Bitcoin, a small relay fee comes out of the note/.test(faq) && /Tacit covers the Ethereum mint/.test(faq), 'and the cost answer is right for both directions');

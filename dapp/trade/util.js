@@ -1,6 +1,6 @@
 // Small helpers the tETH page's modules share: markup, numbers, and the page's reads of the chain and the API.
 
-import { hedgedRpc, shareReads } from '/trade/rpc.js?cb=f575ef91';
+import { hedgedRpc, shareReads } from '/trade/rpc.js';
 import { ETH_NODES } from '/eth-nodes.js';
 import { grp, sig, group } from '/trade/fmt.js?cb=32b1744b';
 

@@ -124,13 +124,21 @@ export async function relayDepositPlan({ rpc, ethOf, token, chainId = 1 }) {
 /// The signer a pool wallet (dapp/evm-pool-wallet.js) deposits through instead of the account's own transaction: `send` turns the router call into a relay
 /// order and returns the relay's transaction hash once it has run (null when the pool moved since the proof: the wallet proves again).
 /// sign.permit({ token, name, version, owner, spender, value, nonce, deadline }) → { v, r, s }; sign.order(order) → a 65-byte signature; guard() throws when the page moved on.
-export function relaySigner({ address, token, router, symbol, amount, plan, rpc, step, sign, guard = () => {}, api = 'https://api.tacit.finance', decimals = 18, now = () => Math.floor(Date.now() / 1000) }) {
+/// `now()` is the chain's time in seconds where the page keeps it; without it the latest block's time is read.
+export function relaySigner({ address, token, router, symbol, amount, plan, rpc, step, sign, guard = () => {}, api = 'https://api.tacit.finance', decimals = 18, now = null }) {
   const relay = GAS_RELAY[1], meta = PERMIT_TOKENS[lc(token)];
   const fmt = (v) => { const d = 10n ** BigInt(decimals), w = BigInt(v) / d, f = (BigInt(v) % d).toString().padStart(decimals, '0').slice(0, 4).replace(/0+$/, ''); return f ? `${w}.${f}` : String(w); };
+  // the order's deadline, and the wait for it, go by the clock the contract reads (the chain's), never the device's: one that runs ahead would call a live order lapsed, one behind would sign a deadline already past
+  const clockOf = async () => {
+    if (now) return now();
+    const b = await rpc('eth_getBlockByNumber', ['latest', false]).catch(() => null);
+    if (b?.timestamp == null) throw new Error('The network’s time could not be read, so nothing was sent. Try again.');
+    return Number(BigInt(b.timestamp));
+  };
   return { address, relayed: true, send: async ({ to, data }) => {
     guard();
     if (lc(to) !== lc(router)) throw new Error('The relay only sends the deposit to the pool’s router.');
-    const clock = now(), total = BigInt(amount) + plan.fee, dl = clock + 900;
+    const clock = await clockOf(), total = BigInt(amount) + plan.fee, dl = clock + 900;
     const { order } = buildOrder({ payer: address, tokenIn: token, amountIn: amount, feeToken: token, fee: plan.fee, tokenOut: ZERO, minOut: 0n, recipient: address, target: router, data, now: clock });
     step(`Sign the ${symbol} deposit and its ${fmt(plan.fee)} ${symbol} network fee. No ETH is needed`);
     const nonce = BigInt(await rpc('eth_call', [{ to: token, data: '0x7ecebe00' + A32(address) }, 'latest']));
@@ -159,8 +167,13 @@ export function relaySigner({ address, token, router, symbol, amount, plan, rpc,
     // (a last read that failed says nothing of whether the relay sent it: another try could send twice)
     if (!done && !read) throw new Error('The relay’s answer could not be read, so it may have sent the order. Check your balance before sending anything more.');
     if (!done) throw new Error(`The relay did not send it${r ? '' : ' (it never answered)'}, and the order has now lapsed, so nothing was spent. Try again.`);
+    // the contract's Executed event for this payer and nonce, looked for a few times over: a node can answer a moment after the order ran with no log yet, or fail one read
     // (the lookup of its transaction is a courtesy: nothing in it may fail an order that ran)
-    const hash = await rpc('eth_blockNumber', []).then((h) => rpc('eth_getLogs', [{ address: relay, topics: ['0x533053a5fad9470861fb5df750d47e5f011faa03daba05299fe4bdc65f52d519', '0x' + A32(address), null, '0x' + W32(order.nonce)], fromBlock: '0x' + (BigInt(h) > 200n ? BigInt(h) - 200n : 0n).toString(16), toBlock: 'latest' }])).then((l) => l?.[0]?.transactionHash || null, () => null);
+    let hash = null;
+    for (let i = 0; i < 5 && !hash; i++) {
+      if (i) await new Promise((q) => setTimeout(q, 1000));
+      hash = await rpc('eth_blockNumber', []).then((h) => rpc('eth_getLogs', [{ address: relay, topics: ['0x533053a5fad9470861fb5df750d47e5f011faa03daba05299fe4bdc65f52d519', '0x' + A32(address), null, '0x' + W32(order.nonce)], fromBlock: '0x' + (BigInt(h) > 200n ? BigInt(h) - 200n : 0n).toString(16), toBlock: 'latest' }])).then((l) => l?.[0]?.transactionHash || null, () => null);
+    }
     if (!hash) throw new Error('The relay sent it, but its transaction could not be found. Check your balance in a moment.');
     return hash;
   } };
@@ -213,15 +226,14 @@ export async function placeOrder({ order, data, from, symbol = 'the token', sign
   if (r && !r.ok) throw stopped(`The relay did not take the order${r.error ? `: ${r.error}` : ''}. Nothing was spent.`);
   if (!r) step('The relay did not answer. Checking whether it has the order');
   const usedSel = '0xad04dc3f' + A32(from) + W32(order.nonce), t0 = Date.now(), end = t0 + Math.max(minWait, Number(order.deadline) - now() + 15) * 1000;
-  let done = false, reads = 0;
+  let done = false, read = false;
   while (Date.now() < end && !done) {
     await new Promise((q) => setTimeout(q, pollMs));
-    const used = await rpc('eth_call', [{ to: relay, data: usedSel }, 'latest']).then((x) => { reads++; return x; }, () => '0x0');
-    done = BigInt(used) === 1n;
+    done = BigInt(await rpc('eth_call', [{ to: relay, data: usedSel }, 'latest']).then((x) => { read = true; return x; }, () => { read = false; return '0x0'; })) === 1n;
     if (!done) step(`Waiting for the relay to send it (${Math.round((Date.now() - t0) / 1000)} s). Nothing leaves your wallet unless it lands`);
   }
-  // never once able to read the contract's answer (a node down the whole wait): the order may have run, so it is not called unsent
-  if (!done && !reads) throw new Error('The relay’s answer could not be read, so it may have sent the order. Check again in a moment before sending anything more.');
+  // only the last read, taken once the order can no longer run, says it lapsed unsent; one that failed says nothing of whether the relay ran it in its final seconds (another try could send twice)
+  if (!done && !read) throw new Error('The relay’s answer could not be read, so it may have sent the order. Check again in a moment before sending anything more.');
   if (!done) throw stopped(`The relay did not send it before the order lapsed${r ? '' : ' (it never answered)'}. Nothing was spent. Try again.`);
   // the contract's Executed event for this payer and nonce, a few times over: a node can answer a moment after the order ran with no log yet, or fail one read
   const head = since ?? (await rpc('eth_blockNumber', []).then((h) => BigInt(h) - 50n, () => null));

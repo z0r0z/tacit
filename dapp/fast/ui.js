@@ -20,13 +20,16 @@ const pct = (fee, of) => (of > 0n ? `${(Number((fee * 1000000n) / of) / 10000).t
 const SCAN = 'https://mempool.space/tx/';
 const big = (xs, pick) => xs.reduce((a, x) => (pick(x) > a ? pick(x) : a), 0n);
 
-// what a provider can take now: its most, or less when it says so
+// what a provider can take now: its most, or less when it says so; one with less free than its least takes nothing now
 const capOf = (p) => { const t = p.terms; return t.available != null && t.available < t.maxAmount ? t.available : t.maxAmount; };
+const hasRoom = (p) => capOf(p) >= p.terms.minAmount && capOf(p) > 0n;
 const feeLine = (t) => `${(t.feeBps / 100).toFixed(2)}%${t.flatFee > 0n ? ` + ${fmtTac(t.flatFee)} TAC` : ''}`;
+// a range of sizes, to two places: a provider's free TAC has eight, which only makes the line longer
+const range = (a, b) => `${fmtTac(a, 2)} to ${fmtTac(b, 2)} TAC`;
 
 export function mountFast({ root, keyS, signIn, open, discover, wants = null, notify = () => {}, pinned = () => null, quoteDelayMs = 350, refreshMs = 30000, retryMs = 15000, say = () => {} }) {
   const doc = root.ownerDocument;
-  const S = { providers: [], loaded: false, termsAt: 0, sess: null, pub: null, bal: null, amt: '', quotes: [], quote: null, best: null, seq: 0, busy: false, note: '', bad: false, recs: [], stop: null, timer: 0, opening: null, want: null, told: false, watch: 0, cost: null, sure: null };
+  const S = { providers: [], empties: 0, loaded: false, termsAt: 0, sess: null, pub: null, bal: null, amt: '', quotes: [], quote: null, best: null, seq: 0, busy: false, note: '', bad: false, recs: [], stop: null, timer: 0, opening: null, want: null, told: false, watch: 0, cost: null, sure: null };
 
   root.innerHTML = `
     <p class="fx-sum" id="fx-lp" aria-live="polite"></p>
@@ -42,6 +45,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
     </div>
     <button class="btn" id="fx-go" type="button" hidden>Open wallet</button>
     <p class="status" id="fx-st" role="status" aria-live="polite"></p>
+    <p class="alt" id="fx-alt">No provider fee? The <a href="/#card=bridge">regular bridge</a>, about 4 hours.</p>
     <div class="rows" id="fx-list" hidden></div>`;
   const $ = (id) => doc.getElementById(id);
 
@@ -56,13 +60,15 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
   // the providers to bridge with: not the key's own, which would only cost it the fees of a bridge with itself
   const others = () => S.providers.filter((p) => !(keyS.unlocked && keyS.key && p.id === keyS.key.pubHex));
 
-  // what the providers together offer: the amounts they take, and the lowest fee
+  // what the providers together offer: the amounts they take now (the ones with room; a full one's least is not a size anyone takes), the
+  // most any takes when it has room, and the lowest fee
   function summary() {
     const ps = others();
     if (!ps.length) return null;
-    const mins = ps.map((p) => p.terms.minAmount).sort((a, b) => (a < b ? -1 : 1));
-    const best = ps.reduce((a, b) => (b.terms.feeBps < a.terms.feeBps || (b.terms.feeBps === a.terms.feeBps && b.terms.flatFee < a.terms.flatFee) ? b : a));
-    return { count: ps.length, min: mins[0], max: big(ps, (p) => p.terms.maxAmount), cap: big(ps, capOf), best };
+    const room = ps.filter(hasRoom), from = room.length ? room : ps;
+    const mins = from.map((p) => p.terms.minAmount).sort((a, b) => (a < b ? -1 : 1));
+    const best = from.reduce((a, b) => (b.terms.feeBps < a.terms.feeBps || (b.terms.feeBps === a.terms.feeBps && b.terms.flatFee < a.terms.flatFee) ? b : a));
+    return { count: ps.length, min: mins[0], max: big(ps, (p) => p.terms.maxAmount), cap: big(room, capOf), best };
   }
 
   function paintProvider() {
@@ -71,10 +77,10 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
     // the key's own offer is not one to bridge with, but it is online: the provider is told so, not that nobody is
     const mine = keyS.unlocked && keyS.key && S.providers.some((p) => p.id === keyS.key.pubHex);
     if (S.loaded && !sm && mine) { e.textContent = 'You are the provider online. Bridgers see your offer; to bridge yourself, use another wallet.'; return; }
-    if (S.loaded && !sm) { e.innerHTML = `No provider is online right now. ${keyS.unlocked ? 'Enter an amount to wait for one, or provide below.' : 'Open your wallet to wait for one, or to provide.'} The regular bridge, which takes a few hours, is <a href="/#card=bridge">on the front page</a>.`; return; }
+    if (S.loaded && !sm) { e.textContent = `No provider is online right now. ${keyS.unlocked ? 'Enter an amount to wait for one, or provide below.' : 'Open your wallet to wait for one, or to provide.'}`; return; }
     if (!sm) { e.textContent = 'Reading the providers…'; return; }
     const t = sm.best.terms, many = sm.count > 1;
-    e.innerHTML = `<b>${many ? `${sm.count} providers online` : esc(sm.best.name || 'Provider')}</b><span>${many ? 'from ' : ''}${esc(feeLine(t))} fee</span><span>${sm.cap > 0n ? `${esc(fmtTac(sm.min))} to ${esc(fmtTac(sm.cap))} TAC${sm.cap < sm.max ? ' now' : ''}` : 'full right now'}</span>`;
+    e.innerHTML = `<b>${many ? `${sm.count} providers online` : esc(sm.best.name || 'Provider')}</b><span>${many ? 'from ' : ''}${esc(feeLine(t))} fee</span><span>${sm.cap > 0n ? `${esc(range(sm.min, sm.cap))}${sm.cap < sm.max ? ' now' : ''}` : 'full right now'}</span>`;
   }
 
   // the amount typed: what is wrong with it, or ''
@@ -133,22 +139,24 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
         <div class="kv"><b>${esc(r.title)}</b><span class="num">${esc(fmtTac(r.amount))} TAC${r.receive && r.receive !== '0' ? ` → ${esc(fmtTac(r.receive))} TAC` : ''}</span></div>
         ${r.returned ? '' : `<ol class="fx-steps" aria-label="Steps">${r.steps.map((s, i) => `<li${i < r.at || r.ended ? ' class="on"' : i === r.at ? ' class="at"' : ''}>${esc(s)}</li>`).join('')}</ol>`}
         <p class="note">${esc(r.detail)}${r.error && !r.ended ? ` <span class="err">${esc(r.error)}</span>` : ''}</p>
-        <p class="note fx-meta">${esc(ago(r.created))}${r.lockTxid ? ` · <a href="${SCAN}${esc(r.lockTxid)}" target="_blank" rel="noopener noreferrer">Bitcoin lock ↗</a>` : ''}${r.ended && !r.returned ? ' · <a href="/assets/">Your TAC in Assets</a>' : ''}</p>
+        <p class="note fx-meta">${esc(ago(r.created))}${r.lockTxid ? ` · <a href="${SCAN}${esc(r.lockTxid)}" target="_blank" rel="noopener noreferrer">Bitcoin lock ↗</a>` : ''}${r.ended && !r.returned ? ' · <a href="/">Your TAC, on the front page</a>' : ''}</p>
       </div>`).join('') + (open ? '<p class="note">Keep this page open until it is done: each step is taken as Bitcoin confirms.</p>' : '') : '';
   }
 
-  // every provider online as a tile, the key's own first and marked: what a provider sees of its own offer, and a bridger of the market
+  // every provider online as a tile, the key's own first and marked: what a provider sees of its own offer, and a bridger of the market.
+  // One provider that is not the key's own is the card's first line already, and is not drawn twice.
   function paintTiles() {
     const e = doc.getElementById('fx-tiles');
     if (!e) return;
     const me = keyS.unlocked && keyS.key ? keyS.key.pubHex : null;
     const ps = S.providers.slice().sort((a, b) => (a.id === me ? -1 : b.id === me ? 1 : a.terms.feeBps - b.terms.feeBps));
-    e.hidden = !ps.length;
-    e.innerHTML = ps.length ? `<p class="eyebrow"><span>Providers online</span><span class="who num">${ps.length}</span></p>
+    const show = ps.length > 1 || (ps.length === 1 && ps[0].id === me);
+    e.hidden = !show;
+    e.innerHTML = show ? `<p class="eyebrow"><span>Providers online</span><span class="who num">${ps.length}</span></p>
       <div class="lp-grid">${ps.map((p) => `<div class="lp-tile${p.id === me ? ' mine' : ''}">
         <div class="lp-top"><b>${esc(p.name || 'Provider')}</b>${p.id === me ? '<span class="lp-tag">You</span>' : ''}</div>
         <div class="kv"><span>Fee</span><b class="num">${esc(feeLine(p.terms))}</b></div>
-        <div class="kv"><span>Takes</span><b class="num">${capOf(p) >= p.terms.minAmount ? `${esc(fmtTac(p.terms.minAmount))} to ${esc(fmtTac(capOf(p)))} TAC` : 'full right now'}</b></div>
+        <div class="kv"><span>Takes</span><b class="num">${hasRoom(p) ? esc(range(p.terms.minAmount, capOf(p))) : 'full right now'}</b></div>
       </div>`).join('')}</div>` : '';
   }
 
@@ -161,7 +169,10 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
     S.termsAt = Date.now();
     try {
       const ps = await discover();
-      if (ps.length || !S.providers.length) S.providers = ps;
+      // one empty read may be a board that did not answer, so the providers read stand; a second in a row is providers gone, and the page
+      // stops offering them (a provider that stopped would otherwise be shown until the page is reloaded)
+      S.empties = ps.length ? 0 : S.empties + 1;
+      if (ps.length || !S.providers.length || S.empties >= 2) S.providers = ps;
     } catch { /* the providers already read stand */ }
     S.loaded = true;
     paint();
@@ -180,11 +191,13 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
     if (S.sess) return S.sess;
     if (S.opening) return S.opening;
     const pub = keyS.key.pubHex;
-    S.opening = (async () => {
+    // an open the card no longer waits for (the key locked or changed under it, and a newer open may be under way) installs nothing and
+    // leaves the card as the newer one draws it
+    const me = S.opening = (async () => {
       S.busy = true; note('Reading your TAC on Bitcoin…'); paintForm();
       try {
         const sess = await open();
-        if (!keyS.unlocked || keyS.key.pubHex !== pub) return null;
+        if (!keyS.unlocked || keyS.key.pubHex !== pub || S.opening !== me) return null;
         S.sess = sess; S.pub = pub;
         S.want = wants ? wants.kept(pub) : null; S.told = false; watchWant();
         S.bal = await sess.balance();
@@ -193,18 +206,20 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
         note('');
         return sess;
       } catch (e) {
+        if (S.opening !== me) return null;
         S.sess = null; note(wording(e), !slowNet(e));
         // Ethereum's nodes not answering is passing: the key is read again on its own
         if (slowNet(e)) setTimeout(() => { if (keyS.unlocked && keyS.key.pubHex === pub && !S.sess) openSession(); }, retryMs);
         return null;
-      } finally { S.busy = false; S.opening = null; paint(); }
+      } finally { if (S.opening === me) { S.busy = false; S.opening = null; paint(); } }
     })();
-    return S.opening;
+    return me;
   }
+  // a key opened anywhere on the page (the provider panel too) or changed for another is read here at once, so the card never asks to open a wallet that is open
   keyS.onChange(() => {
-    if (!keyS.unlocked) reset('Your Tacit wallet is locked.');
-    else if (S.sess && keyS.key.pubHex !== S.pub) reset('');
-    else paint();
+    if (!keyS.unlocked) { reset('Your Tacit wallet is locked.'); return; }
+    if (S.sess && keyS.key.pubHex !== S.pub) reset('');
+    if (!S.sess && !S.opening) openSession(); else paint();
   });
 
   // ── the amount ──
@@ -235,7 +250,8 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
   }
   $('fx-amt').addEventListener('input', typed);
   $('fx-max').addEventListener('click', () => {
-    const sm = summary(), lim = sm ? sm.cap : S.bal, cap = S.bal > lim ? lim : S.bal;
+    // up to what the providers can take now; with every one of them full, what the key holds (to wait with)
+    const sm = summary(), lim = sm && sm.cap > 0n ? sm.cap : S.bal, cap = S.bal > lim ? lim : S.bal;
     $('fx-amt').value = plain(cap);
     typed();
   });
@@ -281,7 +297,9 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
     if (S.busy) return;
     if (!keyS.unlocked) {
       try { await signIn(); } catch (e) { if (!e?.unlockCancelled) note(wording(e), true); return; }
-      await openSession();
+      // the key opening has started reading it (keyS.onChange): that read is waited for, not begun again over what it says (a read that
+      // already failed has said why, and the next press tries again)
+      if (S.opening) await S.opening; else if (!S.sess && !S.bad) await openSession();
       return;
     }
     if (!S.sess) { await openSession(); return; }
@@ -289,30 +307,47 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
     if (!S.quote) return;
     if (S.cost && S.cost.short) { note(shortText(S.cost), true); return; }
     // a lock on Bitcoin is not taken back for about a day if the provider stops: the first press says so, the same press again goes
-    const key = `${S.quote.id}|${S.quote.btcValue}`, who = S.best && S.best.name ? S.best.name : 'the provider';
-    if (!(S.sure && S.sure.key === key && Date.now() - S.sure.at < 180e3)) {
-      S.sure = { key, at: Date.now() };
+    const sure = () => {
+      const who = S.best && S.best.name ? S.best.name : 'the provider';
+      S.sure = { key: `${S.quote.id}|${S.quote.btcValue}`, at: Date.now() };
       note(`${highFee(S.quote) ? `High fee: ${who} keeps ${fmtTac(S.quote.fee)} TAC (${pct(S.quote.fee, S.quote.btcValue)}). ` : ''}This locks ${fmtTac(S.quote.btcValue)} TAC on Bitcoin until ${who} has paid you ${fmtTac(S.quote.evmAmount)} private TAC in the pool, in about ${minutesFor(S.quote.minConfs)} minutes. If it does not, the lock returns to your address after about a day. Press again to bridge.`);
-      paintForm();
-      return;
-    }
+    };
+    if (!(S.sure && S.sure.key === `${S.quote.id}|${S.quote.btcValue}` && Date.now() - S.sure.at < 180e3)) { sure(); paintForm(); return; }
     S.sure = null;
     S.busy = true; note('Locking your TAC on Bitcoin…'); paintForm();
+    let again = false, quotes = S.quotes, fits = [];
     try {
       // a quote close to its end is asked for again, from every provider that gave one
       const soon = Math.floor(Date.now() / 1000) + 90;
-      let quotes = S.quotes;
       if (quotes.some((x) => Number(x.quote.validUntil) <= soon)) {
         const r = await S.sess.quoteAll(quotes.map((x) => x.provider), S.quote.btcValue);
         if (!r.quotes.length) throw new Error('the quote expired');
         quotes = pinFirst(r.quotes);
       }
-      await S.sess.start({ quotes });
+      // the first quote tried pays at least what the holder pressed for (a lower one, asked again, is shown and asks for one more press); the ones
+      // tried after it, should it not hold the amount, are those that pay as much or carry no high fee
+      const floor = BigInt(S.quote.evmAmount);
+      if (!quotes.length) throw new Error('the quote expired');
+      if (BigInt(quotes[0].quote.evmAmount) < floor) { S.quotes = quotes; S.quote = quotes[0].quote; S.best = quotes[0].provider; again = true; return; }
+      fits = quotes.filter((x) => BigInt(x.quote.evmAmount) >= floor || !highFee(x.quote));
+      await S.sess.start({ quotes: fits });
       if (S.want) { const pub = S.pub; S.want = null; S.told = false; clearInterval(S.watch); wants.stop(pub).catch(() => {}); }
       S.recs = await S.sess.records(); S.quotes = []; S.quote = null; S.best = null; S.amt = ''; $('fx-amt').value = '';
       note('Started. It is listed below, and each step is taken as Bitcoin confirms.');
       S.sess.balance().then((b) => { S.bal = b; paintForm(); }).catch(() => {});
-    } catch (e) { note(wording(e), true); } finally { S.busy = false; paint(); }
+    } catch (e) {
+      // those that pay as much cannot hold it: the next quote is shown, for one more press
+      const rest = /cannot hold that amount/.test(String((e && e.message) || e)) ? quotes.filter((x) => !fits.includes(x)) : [];
+      if (rest.length) { S.quotes = rest; S.quote = rest[0].quote; S.best = rest[0].provider; again = true; } else note(wording(e), true);
+    } finally {
+      // the quote shown again may be another provider's: what its lock costs on Bitcoin is read for it, as for a quote just typed for
+      if (again) {
+        S.cost = null;
+        if (S.sess && S.sess.cost) { const sess = S.sess, seq = S.seq, c = await sess.cost({ quote: S.quote, provider: S.best }).catch(() => null); if (seq === S.seq && S.sess === sess && c) S.cost = c; }
+      }
+      S.busy = false; paint();
+      if (again && S.quote) { if (S.cost && S.cost.short) note(`The quote changed. ${shortText(S.cost)}`, true); else { sure(); note(`The quote changed. ${S.note}`); } paintForm(); }
+    }
   }
   $('fx-go').addEventListener('click', go);
 

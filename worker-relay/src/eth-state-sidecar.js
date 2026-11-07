@@ -36,12 +36,15 @@ import { readFile, writeFile, rm, mkdir, readdir, stat, rename } from 'node:fs/p
 import path from 'node:path';
 import { keccak256 } from 'viem';
 import { CFG } from './lib/config.js';
-import { reflectionEthState, reflectionEthStatePublish, heartbeat, heartbeatIdle } from './lib/worker-client.js';
+import { reflectionEthState, reflectionEthStatePublish, reflectionEthStateClear, heartbeat, heartbeatIdle } from './lib/worker-client.js';
 import { proveEthState, commitEthProveState } from './lib/prover.js';
-import { readPool } from './lib/chain.js';
+import { readPool, readPoolCounts } from './lib/chain.js';
 import { safeErr } from './lib/safe-err.js';
 import { resumeMismatch, rebuildFromConfirmed } from './lib/eth-state-resume.js';
-import { finalizedSlot, finalityNotAdvanced } from './lib/beacon-finality.js';
+import { finalizedHead, finalityNotAdvanced } from './lib/beacon-finality.js';
+import { countsBehind, pvCounts } from './lib/attest-counts.js';
+import { noteFoldedCounts } from './lib/attest-demand.js';
+import { inflightRecord, inflightCounts, makeCoverWait } from './lib/eth-state-counts.js';
 
 const log = (...a) => console.log(`[eth-state ${new Date().toISOString()}]`, ...a);
 const sleep = (s) => new Promise((r) => setTimeout(r, s * 1000));
@@ -118,6 +121,7 @@ function isStale(publishedAt) {
 async function readLocalInflight() {
   try { return JSON.parse(await readFile(LOCAL_INFLIGHT_PATH, 'utf8')); } catch { return null; }
 }
+const coverWait = makeCoverWait({ boundMs: CFG.ethStateFinalityCoverSecs * 1000 });
 
 // One cycle: resolve any local in-flight candidate against the server's view of the world, then produce
 // a fresh one iff nothing is live. Returns true if it did real work (an eth_prove run), false if idle.
@@ -129,7 +133,9 @@ async function cycle() {
     log(`the API could not say what is pending (HTTP ${state.unavailable}) — asking again next cycle`);
     return false;
   }
-  const pendingLive = !!(state.pending && !isStale(state.pending.publishedAt));
+  // What the last landed batch carried to Bitcoin: the attest gate goes at once while the pool has moved past it.
+  noteFoldedCounts(state.confirmed?.ethPv ? pvCounts(state.confirmed.ethPv) : null);
+  let pendingLive = !!(state.pending && !isStale(state.pending.publishedAt));
 
   const local = await readLocalInflight();
   if (local) {
@@ -138,8 +144,25 @@ async function cycle() {
       if (!CFG.ethStateDryRun) await commitEthProveState();
       await rm(LOCAL_INFLIGHT_PATH, { force: true });
     } else if (state.pending && state.pending.contentHash === local.contentHash && !isStale(state.pending.publishedAt)) {
-      log(`local candidate ${local.contentHash} still pending confirmation — waiting`);
-      return false;
+      // A candidate the pool has moved past can never be folded, so it is replaced now rather than held to the staleness ceiling.
+      const behind = countsBehind(inflightCounts(local), await readPoolCounts());
+      if (!behind) {
+        log(`local candidate ${local.contentHash} still pending confirmation — waiting`);
+        return false;
+      }
+      if (CFG.ethStateDryRun) {
+        log(`DRY_RUN=1 — local candidate ${local.contentHash} carries ${behind}; would clear it and produce a fresh one`);
+        return false;
+      }
+      const cleared = await reflectionEthStateClear();
+      if (!cleared.ok) {
+        log(`local candidate ${local.contentHash} carries ${behind}, and the API would not clear it (HTTP ${cleared.status}) — waiting`);
+        return false;
+      }
+      log(`local candidate ${local.contentHash} carries ${behind}: no batch built on it can land — cleared it, producing a fresh one`);
+      await heartbeat('eth-state', `cleared a candidate behind the pool (${behind})`);
+      await rm(LOCAL_INFLIGHT_PATH, { force: true });
+      pendingLive = false;
     } else if (state.pending && state.pending.contentHash === local.contentHash) {
       // Our own candidate is still the server's official pending slot, but it's aged past
       // ETH_STATE_PENDING_STALE_SECS — whatever was supposed to confirm it (a Bitcoin-side attest) isn't
@@ -212,14 +235,25 @@ async function cycle() {
   // The guest refuses a candidate whose finalized head has not moved past the last one's, and this stage starts the moment an
   // attest lands, often before finality has moved (every ~6.4 min). The network would refuse the request as unexecutable and the
   // retry would wait two minutes, so ask the beacon node and wait for the head. A reading that fails is not a reason to wait.
-  try {
-    const wait = finalityNotAdvanced({ committed, slot: await finalizedSlot(CFG.sourceConsensusRpc) });
-    if (wait) {
-      log(`${wait} — waiting for finality to move before asking the network to prove`);
-      await heartbeat('eth-state', 'waiting for Ethereum finality to move');
+  let head = null;
+  try { head = await finalizedHead(CFG.sourceConsensusRpc); } catch (e) { log(`finality check unavailable (${e.message}) — proceeding`); }
+  const notAdvanced = head && finalityNotAdvanced({ committed, slot: head.slot });
+  if (notAdvanced) {
+    log(`${notAdvanced} — waiting for finality to move before asking the network to prove`);
+    await heartbeat('eth-state', 'waiting for Ethereum finality to move');
+    return false;
+  }
+  // A candidate proves the pool at the finalized head, so cross-outs and consumes recorded after it would leave the candidate behind
+  // the pool on arrival: wait for finality to cover them, for at most ETH_STATE_FINALITY_COVER_SECS.
+  if (head) {
+    const atHead = await readPoolCounts(head.block ? { blockNumber: BigInt(head.block) } : { blockTag: 'finalized' });
+    const uncovered = countsBehind(atHead, await readPoolCounts());
+    if (coverWait(uncovered)) {
+      log(`the finalized head (block ${head.block ?? '?'}) holds ${uncovered} — waiting for finality to cover them before asking the network to prove`);
+      await heartbeat('eth-state', 'waiting for finality to cover the pool\'s latest cross-outs');
       return false;
     }
-  } catch (e) { log(`finality check unavailable (${e.message}) — proceeding`); }
+  }
 
   // Free local dry-run first: catches a bad witness or a
   // digest-chain mismatch via a low, early-panic cycle count before spending a real network prove on it.
@@ -259,7 +293,7 @@ async function cycle() {
   // write, the worst case is one extra harmless GET-confirms-it-anyway cycle on restart (the content hash
   // is deterministic from ethPv, recoverable by re-deriving it from the just-written local pending state
   // file) — but persisting AFTER the POST risks publishing successfully and then losing all record of it.
-  await writeFile(LOCAL_INFLIGHT_PATH, JSON.stringify({ contentHash, publishedAt: null }));
+  await writeFile(LOCAL_INFLIGHT_PATH, JSON.stringify(inflightRecord({ contentHash, ethPv: result.ethPv })));
 
   const pub = await reflectionEthStatePublish({
     ethPv: result.ethPv, crossouts: result.crossouts, consumeds: result.consumeds,
@@ -277,7 +311,7 @@ async function cycle() {
     await rm(LOCAL_INFLIGHT_PATH, { force: true });
     throw new Error(`POST /reflection/eth-state failed (${pub.status}): ${pub.body?.error || 'unknown'}`);
   }
-  await writeFile(LOCAL_INFLIGHT_PATH, JSON.stringify({ contentHash: pub.body.contentHash, publishedAt: pub.body.publishedAt }));
+  await writeFile(LOCAL_INFLIGHT_PATH, JSON.stringify(inflightRecord({ contentHash: pub.body.contentHash, publishedAt: pub.body.publishedAt, ethPv: result.ethPv })));
   log(`published contentHash=${pub.body.contentHash}`);
   await heartbeat('eth-state', `published ${pub.body.contentHash}`);
   return true;

@@ -15,7 +15,7 @@ import { loadKeeperConfig, checkKeeperSigner, parseTokenMap, RELAY_EOA } from '.
 import { openKeeperStore } from '../src/lib/evm-pool-keeper-store.js';
 import { makeLeafSync, makeFactsSync, LeafSyncError, ChunkNotKept, CatchingUp, FACT_KEYS } from '../src/lib/evm-pool-keeper-leaves.js';
 import { createIntakeHandler, parseDepositSubmission, parseWrapSubmission, parseReceiveSubmission, parseRelaySubmission, ipKey } from '../src/lib/evm-pool-keeper-intake.js';
-import { createKeeper, coverCheck, quoteFee, receiveMinOf, receiveFloorOf, subsidyOf, subsidyRoom, absorbed, sweepGasOf, forgetSweepGas, reclaimWorth } from '../src/lib/evm-pool-keeper-loop.js';
+import { createKeeper, coverCheck, quoteFee, relayMarginOf, receiveMinOf, receiveFloorOf, subsidyOf, subsidyRoom, absorbed, sweepGasOf, forgetSweepGas, reclaimWorth } from '../src/lib/evm-pool-keeper-loop.js';
 import { loadZk } from '../src/lib/evm-pool-keeper-prover.js';
 import { makeForwarder } from '../src/lib/evm-pool-forwarder.js';
 import { makeSealedGateway, makeServiceGateway } from '../src/lib/evm-pool-keeper-sealed.js';
@@ -1326,6 +1326,46 @@ await test('quoteFee: the smallest fee coverCheck accepts', () => {
   assert.ok(coverCheck({ reward: q, token: ETH, gas: 400000n, gasPrice: 10n, cfg }).ok);
   assert.ok(!coverCheck({ reward: q - 1n, token: ETH, gas: 400000n, gasPrice: 10n, cfg }).ok);
   assert.equal(quoteFee({ token: ETH, gas: 1n, gasPrice: 1n, cfg }), 1000n, 'never below the floor');
+});
+
+await test('a relayed send is accepted down to the relay margin while the quote keeps the full margin', () => {
+  const cfg = mkCfg({ minFees: new Map([[ETH, 1000n]]), rates: new Map([[ETH, 10n ** 18n]]) });
+  assert.equal(cfg.marginBps, 2000n);
+  assert.equal(cfg.relayMarginBps, 500n);
+  assert.equal(loadKeeperConfig({ ...baseEnv, EVM_POOL_KEEPER_RELAY_MARGIN_BPS: '0' }).relayMarginBps, 0n);
+  assert.equal(relayMarginOf(cfg), 500n);
+  assert.equal(relayMarginOf(mkCfg({ marginBps: 300n })), 300n, 'never above the quote margin');
+  assert.equal(relayMarginOf({ marginBps: 700n }), 700n, 'unset: the quote margin');
+  const at = (reward, m) => coverCheck({ reward, token: ETH, gas: 400000n, gasPrice: 10n, cfg, marginBps: m }).ok;
+  assert.equal(quoteFee({ token: ETH, gas: 400000n, gasPrice: 10n, cfg }), 4_800_000n);
+  assert.ok(at(4_200_000n, relayMarginOf(cfg)));
+  assert.ok(!at(4_199_999n, relayMarginOf(cfg)));
+  assert.ok(!at(4_200_000n, undefined), 'a check that passes no margin still uses the quote margin');
+  assert.ok(!coverCheck({ reward: 999n, token: ETH, gas: 1n, gasPrice: 0n, cfg, marginBps: 0n }).ok, 'the floor still applies');
+});
+
+await test('HTTP relay: a fee that covers the gas is taken after the price moved, one that does not is refused with the quote', async () => {
+  const cfg = mkCfg({ minFees: new Map(), rates: new Map([[TOKEN.toLowerCase(), 10n ** 18n]]) });
+  const store = openKeeperStore(':memory:');
+  const chain = mockChain();
+  chain.gas = 10n;
+  const handler = createIntakeHandler({ store, chain, zk, assetField, cfg, now: () => T0, log: () => {} });
+  const server = createServer(handler);
+  await new Promise((r) => server.listen(0, r));
+  const base = `http://127.0.0.1:${server.address().port}/evm-pool/keeper`;
+  const post = (path, body) => fetch(base + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  try {
+    // the mock estimates a plain transact at 350000 gas, 3,500,000 wei at price 10: the quote adds 20% (4,200,000), a relay is taken at 5% (3,675,000)
+    let r = await post('/relay', relayTx({ ext: -10_000_000n, fee: 3_674_999n }));
+    assert.equal(r.status, 400);
+    const low = await r.json();
+    assert.match(low.error, /fee too low/);
+    assert.equal(low.needFee, '4200000', 'the fee a page is told to pay is still the quote');
+    r = await post('/relay', relayTx({ ext: -10_000_000n, fee: 3_675_000n }));
+    assert.equal(r.status, 200);
+    assert.match((await r.json()).txHash, /^0x/);
+    assert.equal(await chain.balanceOf(TOKEN, KEEPER), 3_675_000n);
+  } finally { server.close(); }
 });
 
 await test('a sweep subsidy lowers the smallest balance a receive box is moved in for, and a floor keeps dust out', async () => {
