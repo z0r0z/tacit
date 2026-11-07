@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-A6SWRADeTcOxAPmN+US4DUceooV1dtvUpFqMLGCSv8o=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-LYZWVt62mZFmBUlilNqlT69RH2zZ2oclzoS0EqLzFTg=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -579,42 +579,32 @@ a.di { color: inherit; text-decoration: none; }
 .sx-h p { margin: 0; max-width: 52ch; font-size: 14px; line-height: 1.5; color: var(--mute); text-wrap: balance; }
 
 /* One ID, two chains: Bitcoin left, Ethereum right, the key between them, one lane for each thing that crosses. */
-/* How it works, in three: the tile's own tabs drawn small (Shield, a swap, Withdraw), each pressed in its turn, each opening its tab */
-.hw { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 0 0 44px; padding: 0; list-style: none; }
-.hw[hidden] { display: none; }
-/* the chain the three steps are shown on: one row at a time, switched here (showing a row starts its loop over) */
-.hw-sw { display: flex; gap: 4px; width: max-content; margin: -6px auto 22px; padding: 4px; background: var(--card); border: 1px solid var(--hair); border-radius: 999px; }
-.hw-sw button { display: inline-flex; align-items: center; gap: 8px; padding: 6px 16px 6px 6px; font: 500 12px var(--mono); color: var(--mute); background: none; border: 0; border-radius: 999px; cursor: pointer; transition: color .15s, background .15s; }
-.hw-sw button[aria-selected="true"] { color: var(--paper); background: var(--ink); }
-.hw-sw button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
-.hw-sw .tk { width: 22px; height: 22px; }
+/* How it works, as one picture: a note sealed on Bitcoin, carried by a proof to Ethereum's pool, and out to any address; each caption lights in its turn */
+.hd { margin: 0 auto 64px; max-width: 760px; }
+.hd-g { display: block; width: 100%; height: auto; overflow: visible; }
+.hd-ch { font: 400 26px var(--serif); letter-spacing: -.01em; fill: var(--ink); }
+.hd-i { font: italic 400 15px var(--serif); fill: var(--mute); }
+.hd-bl rect { fill: var(--card); stroke: var(--hair-2); }
+.hd-bl path, .hd-wire { fill: none; stroke: var(--hair-2); }
+.hd-wire { stroke-dasharray: 3 5; }
+.hd-note rect { fill: var(--field); stroke: var(--hair-2); } .hd-note circle { fill: var(--ink); }
+.hd-glow { fill: none; stroke: var(--orange); stroke-width: 1.5; }
+.hd-pool { fill: var(--card); stroke: var(--hair-2); }
+.hd-dots circle, .hd-n { fill: var(--ink); opacity: .55; } .hd-n.o { fill: var(--orange); opacity: 1; }
+.hd-c { fill: var(--orange); }
+.hd-to rect { fill: var(--card); stroke: var(--hair-2); } .hd-to .hl { fill: var(--ink); stroke: none; opacity: 0; } .hd-to text { font: 500 12px var(--mono); fill: var(--ink); }
+.hd-s { display: grid; grid-template-columns: repeat(3, 1fr); gap: 32px; margin: 36px 0 0; padding: 0; list-style: none; }
+.hd-s li { display: grid; gap: 6px; font: 13px/1.55 var(--mono); color: var(--mute); text-wrap: pretty; animation: hd-on 12s linear infinite; }
+.hd-s li:nth-child(2) { animation-delay: -8s; } .hd-s li:nth-child(3) { animation-delay: -4s; }
+.hd-s b { font: italic 400 24px/1.1 var(--serif); letter-spacing: -.01em; color: var(--ink); }
+@keyframes hd-on { 0%, 31% { opacity: 1; } 35%, 97% { opacity: .5; } 100% { opacity: 1; } }
+.hd.rest .hd-s li { animation-play-state: paused; }
+@media (prefers-reduced-motion: reduce) { .hd-s li { animation: none; } .hd-c, .hd-glow { display: none; } }
+@media (max-width: 720px) { .hd-s { grid-template-columns: 1fr; gap: 20px; max-width: 420px; margin-inline: auto; } .hd-i { font-size: 18px; } }
 /* the bridge card's own head: smaller than the section's, the same voice */
 .wd-hh { margin: 12px 0 18px; }
 .wd-hh h3 { margin: 0; font: 400 clamp(26px, 3.2vw, 36px)/1.1 var(--serif); letter-spacing: -.02em; text-wrap: balance; }
 .wd-hh h3 em { font-style: italic; }
-.hw button, .hw a { display: grid; align-content: start; text-decoration: none; gap: 16px; width: 100%; height: 100%; padding: 0; text-align: left; color: inherit; background: none; border: 0; cursor: pointer; }
-.hw-t { display: grid; gap: 6px; padding: 14px; background: var(--card); border: 1px solid var(--hair); border-radius: 18px; transition: transform .25s var(--spring), box-shadow .25s; }
-@media (hover: hover) { .hw button:hover .hw-t, .hw a:hover .hw-t { transform: translateY(-3px); box-shadow: var(--lift); } }
-.hw button:focus-visible, .hw a:focus-visible { outline: none; } .hw button:focus-visible .hw-t, .hw a:focus-visible .hw-t { outline: 2px solid var(--ink); outline-offset: 3px; }
-.hw-f { display: grid; gap: 6px; padding: 10px 12px; background: var(--field); border-radius: 12px; }
-.hw-fh { display: flex; justify-content: space-between; font: 11px var(--mono); color: var(--mute); }
-.hw-fh i { font-style: normal; } .hw-f.priv .hw-fh i::before { content: ''; display: inline-block; width: 6px; height: 6px; margin-right: 5px; border-radius: 50%; background: var(--ink); vertical-align: 1px; }
-.hw-fm { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.hw-fm b { height: 28px; font: 400 28px/1 var(--serif); letter-spacing: -.02em; }
-.hw-c { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px 4px 4px; font: 500 12px var(--mono); background: var(--card); border: 1px solid var(--hair); border-radius: 999px; }
-.hw-c .tk { width: 20px; height: 20px; }
-.hw-go { display: block; margin-top: 4px; padding: 11px; text-align: center; font: 500 12px var(--mono); color: var(--mute); background: color-mix(in srgb, var(--ink) 7%, transparent); border-radius: 12px; }
-.hw-h { padding: 0 4px; font: 13px/1.5 var(--mono); color: var(--mute); text-wrap: pretty; }
-.hw-h b { display: block; margin-bottom: 4px; font: italic 400 24px/1.1 var(--serif); letter-spacing: -.01em; color: var(--ink); }
-/* each step's turn, a third of the loop: its button fills, and what arrives comes up */
-.hw li { --d: 0s; } .hw li:nth-child(2) { --d: 3s; } .hw li:nth-child(3) { --d: 6s; }
-.hw-go { animation: hw-go 9s var(--d) infinite both; }
-.hw-o { animation: hw-o 9s var(--d) infinite both; }
-@keyframes hw-go { 0%, 4% { color: var(--mute); background: color-mix(in srgb, var(--ink) 7%, transparent); } 9%, 28% { color: var(--paper); background: var(--ink); } 34%, 100% { color: var(--mute); background: color-mix(in srgb, var(--ink) 7%, transparent); } }
-@keyframes hw-o { 0%, 8% { opacity: .28; } 16%, 100% { opacity: 1; } }
-.hw.rest .hw-go, .hw.rest .hw-o { animation-play-state: paused; }
-@media (prefers-reduced-motion: reduce) { .hw-go, .hw-o { animation: none; } }
-@media (max-width: 720px) { .hw { grid-template-columns: 1fr; gap: 28px; max-width: 420px; margin: 0 auto 48px; } }
 .wd { --end: 340px; overflow: hidden; background: var(--card); border: 1px solid var(--hair); border-radius: 18px; }
 .wd-top, .wd-lane { display: grid; grid-template-columns: var(--end) minmax(0, 1fr) var(--end); align-items: center; }
 .wd-top { padding: 22px 24px 20px; border-bottom: 1px solid var(--hair); }
@@ -1521,57 +1511,33 @@ footer.sf svg.fill { width: 16px; height: 16px; }
 
 
   <section class="sx" id="how" aria-labelledby="how-h">
-    <div class="sx-h"><h2 id="how-h">How it <em>works</em>.</h2><p>The same three steps, on either chain.</p></div>
-    <div class="hw-sw" role="tablist" aria-label="Chain">
-      <button type="button" role="tab" id="hw-t-eth" aria-controls="hw-eth" aria-selected="true" data-hwc="eth"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg>Ethereum</button>
-      <button type="button" role="tab" id="hw-t-btc" aria-controls="hw-btc" aria-selected="false" tabindex="-1" data-hwc="btc"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg>Bitcoin</button>
-    </div>
-    <ol class="hw" id="hw-eth" role="tabpanel" aria-labelledby="hw-t-eth">
-      <li><button type="button" data-hx="shield">
-        <span class="hw-t" aria-hidden="true">
-          <span class="hw-f"><span class="hw-fh">From<i>Wallet</i></span><span class="hw-fm"><b>0.1</b><span class="hw-c"><svg class="tk"><use href="#tk-eth"/></svg>ETH</span></span></span>
-          <span class="hw-f priv"><span class="hw-fh">To<i>Private</i></span><span class="hw-fm"><b class="hw-o">0.1</b><span class="hw-c"><svg class="tk"><use href="#tk-teth"/></svg>ETH</span></span></span>
-          <span class="hw-go">Shield ETH</span>
-        </span>
-        <span class="hw-h"><b>Shield</b> ETH, USDC, USDT or TAC from your wallet into the private pool.</span></button></li>
-      <li><button type="button" data-hx="swap">
-        <span class="hw-t" aria-hidden="true">
-          <span class="hw-f priv"><span class="hw-fh">From<i>Private</i></span><span class="hw-fm"><b>0.1</b><span class="hw-c"><svg class="tk"><use href="#tk-teth"/></svg>ETH</span></span></span>
-          <span class="hw-f priv"><span class="hw-fh">To<i>Private</i></span><span class="hw-fm"><b class="hw-o">225</b><span class="hw-c"><svg class="tk"><use href="#tk-usdc"/></svg>USDC</span></span></span>
-          <span class="hw-go">Swap privately</span>
-        </span>
-        <span class="hw-h"><b>Use it</b> to swap, send, earn and borrow, with your address on none of it.</span></button></li>
-      <li><button type="button" data-hx="withdraw">
-        <span class="hw-t" aria-hidden="true">
-          <span class="hw-f priv"><span class="hw-fh">From<i>Private</i></span><span class="hw-fm"><b>225</b><span class="hw-c"><svg class="tk"><use href="#tk-usdc"/></svg>USDC</span></span></span>
-          <span class="hw-f"><span class="hw-fh">To<i>Wallet</i></span><span class="hw-fm"><b class="hw-o">225</b><span class="hw-c"><svg class="tk"><use href="#tk-usdc"/></svg>USDC</span></span></span>
-          <span class="hw-go">Withdraw USDC</span>
-        </span>
-        <span class="hw-h"><b>Withdraw</b> to any address. The chain sees where it went, not from whom.</span></button></li>
-    </ol>
-    <ol class="hw" id="hw-btc" role="tabpanel" aria-labelledby="hw-t-btc" hidden>
-      <li><button type="button" data-hx="swap:sats:tac">
-        <span class="hw-t" aria-hidden="true">
-          <span class="hw-f"><span class="hw-fh">From<i>Wallet</i></span><span class="hw-fm"><b>100,000</b><span class="hw-c"><svg class="tk"><use href="#tk-btc"/></svg>sats</span></span></span>
-          <span class="hw-f priv"><span class="hw-fh">To<i>Confidential</i></span><span class="hw-fm"><b class="hw-o">600</b><span class="hw-c"><svg class="tk"><use href="#tk-tac"/></svg>TAC</span></span></span>
-          <span class="hw-go">Buy TAC with sats</span>
-        </span>
-        <span class="hw-h"><b>Sats in</b> for TAC, its amounts hidden from the start.</span></button></li>
-      <li><button type="button" data-hx="shield:btc:pool">
-        <span class="hw-t" aria-hidden="true">
-          <span class="hw-f priv"><span class="hw-fh">From<i>Confidential</i></span><span class="hw-fm"><b>600</b><span class="hw-c"><svg class="tk"><use href="#tk-tac"/></svg>TAC</span></span></span>
-          <span class="hw-f priv"><span class="hw-fh">To<i>Shielded</i></span><span class="hw-fm"><b class="hw-o">600</b><span class="hw-c"><svg class="tk"><use href="#tk-tac"/></svg>TAC</span></span></span>
-          <span class="hw-go">Shield TAC</span>
-        </span>
-        <span class="hw-h"><b>Shield</b> it in TAC’s pool, where nothing ties it to the sats it came from.</span></button></li>
-      <li><a href="/tac/#withdraw/sats">
-        <span class="hw-t" aria-hidden="true">
-          <span class="hw-f priv"><span class="hw-fh">From<i>Shielded</i></span><span class="hw-fm"><b>600</b><span class="hw-c"><svg class="tk"><use href="#tk-tac"/></svg>TAC</span></span></span>
-          <span class="hw-f"><span class="hw-fh">To<i>Wallet</i></span><span class="hw-fm"><b class="hw-o">98,000</b><span class="hw-c"><svg class="tk"><use href="#tk-btc"/></svg>sats</span></span></span>
-          <span class="hw-go">Sell for sats</span>
-        </span>
-        <span class="hw-h"><b>Sats out</b> to any address, unlinked from the sats that went in.</span></a></li>
-    </ol>
+    <div class="sx-h"><h2 id="how-h">How it <em>works</em>.</h2></div>
+    <figure class="hd">
+      <svg class="hd-g" viewBox="0 0 680 300" role="img" aria-labelledby="hd-t"><title id="hd-t">A note sealed on Bitcoin is carried by a zero-knowledge proof to Ethereum’s pool, then leaves the pool to any address.</title>
+        <defs><path id="hd-arc" d="M119 114C200 20 380 20 482 146"/><path id="hd-out" d="M590 190C598 222 608 244 616 262"/></defs>
+        <use href="#tk-btc" x="16" y="14" width="30" height="30"/><text class="hd-ch" x="54" y="38">Bitcoin</text>
+        <text class="hd-ch" x="626" y="38" text-anchor="end">Ethereum</text><use href="#tk-eth" x="634" y="14" width="30" height="30"/>
+        <g class="hd-bl"><path d="M70 145h22M146 145h22"/><rect x="16" y="118" width="54" height="54" rx="10"/><rect x="92" y="118" width="54" height="54" rx="10"/><rect x="168" y="118" width="54" height="54" rx="10"/></g>
+        <rect class="hd-glow" x="92" y="118" width="54" height="54" rx="10" opacity="0"><animate attributeName="opacity" values="0;1;1;0;0" keyTimes="0;.04;.3;.36;1" repeatCount="indefinite" dur="12s"/></rect>
+        <g class="hd-note"><rect x="99" y="135" width="40" height="20" rx="10"/><circle cx="111" cy="145" r="2"/><circle cx="119" cy="145" r="2"/><circle cx="127" cy="145" r="2"/></g>
+        <text class="hd-i" x="119" y="200" text-anchor="middle">amount sealed</text>
+        <path class="hd-wire" d="M119 114C200 20 380 20 482 146"/>
+        <text class="hd-i" x="300" y="80" text-anchor="middle">zero-knowledge proof</text>
+        <circle class="hd-pool" cx="560" cy="160" r="80"/>
+        <text class="hd-i" x="470" y="244" text-anchor="end">private pool</text>
+        <g class="hd-dots"><circle cx="619" cy="160" r="5"/><circle cx="553" cy="188" r="5"/><circle cx="554" cy="115" r="5"/><circle cx="534" cy="207" r="5"/><circle cx="609" cy="134" r="5"/><circle cx="531" cy="123" r="5"/><circle cx="572" cy="152" r="5"/><circle cx="535" cy="158" r="5"/><circle cx="592" cy="123" r="5"/><circle cx="576" cy="104" r="5"/><circle cx="514" cy="173" r="5"/><circle cx="599" cy="205" r="5"/><circle cx="561" cy="213" r="5"/><circle cx="611" cy="178" r="5"/></g>
+        <circle class="hd-n" cx="506" cy="150" r="5" opacity="0"><animate attributeName="opacity" values="0;0;.55;.55;0" keyTimes="0;.62;.63;.96;1" repeatCount="indefinite" dur="12s"/></circle>
+        <circle class="hd-n o" cx="506" cy="150" r="5" opacity="0"><animate attributeName="opacity" values="0;0;1;0;0" keyTimes="0;.62;.63;.72;1" repeatCount="indefinite" dur="12s"/></circle>
+        <circle class="hd-c" r="5" opacity="0"><animateMotion keyPoints="0;0;1;1" keyTimes="0;.34;.62;1" calcMode="linear" repeatCount="indefinite" dur="12s"><mpath href="#hd-arc"/></animateMotion><animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;.33;.35;.6;.62;1" repeatCount="indefinite" dur="12s"/></circle>
+        <circle class="hd-n" r="5"><animateMotion keyPoints="0;0;1;1" keyTimes="0;.7;.86;1" calcMode="linear" repeatCount="indefinite" dur="12s"><mpath href="#hd-out"/></animateMotion><animate attributeName="opacity" values=".55;.55;0;0;.55" keyTimes="0;.85;.88;.98;1" repeatCount="indefinite" dur="12s"/></circle>
+        <g class="hd-to"><rect x="566" y="262" width="100" height="26" rx="13"/><rect class="hl" x="566" y="262" width="100" height="26" rx="13"><animate attributeName="opacity" values="0;0;.12;.12;0" keyTimes="0;.86;.88;.97;1" repeatCount="indefinite" dur="12s"/></rect><text x="616" y="279" text-anchor="middle">any address</text></g>
+      </svg>
+      <ol class="hd-s">
+        <li><b>Sealed on Bitcoin.</b>Amounts are hidden by commitments, and every transfer proves it adds up.</li>
+        <li><b>Proven across.</b>A zero-knowledge proof carries it to Ethereum. No multisig, no signers.</li>
+        <li><b>Private on Ethereum.</b>Swap, earn and pay in the pool, then leave to any address, unlinked.</li>
+      </ol>
+    </figure>
     <div class="sx-h wd-hh"><h3 id="wd-h">One ID, <em>both chains</em>.</h3><p>Your tacit1 ID holds what you own on Bitcoin and on Ethereum. Move it between them, or lock bitcoin to use it on Ethereum.</p></div>
     <div class="wd" role="group" aria-labelledby="wd-h">
       <div class="wd-top">
@@ -17831,20 +17797,18 @@ paintHx();
 paintHints();
 refreshTape();
 loadTacPrice().catch(() => {});
-if ('IntersectionObserver' in window) { const io = new IntersectionObserver((es) => { for (const e of es) e.target.classList.toggle('rest', !e.isIntersecting); }); for (const el of $$('.tape, .wd, .hw, .tc-stage')) io.observe(el); }
-// How it works: the chain its three steps are shown on, Ethereum or Bitcoin; the arrow keys move between the two
-function hwChain(k, focus) {
-  for (const t of $$('[data-hwc]')) { const on = t.dataset.hwc === k; t.setAttribute('aria-selected', String(on)); t.tabIndex = on ? 0 : -1; $(`#hw-${t.dataset.hwc}`).hidden = !on; if (on && focus) t.focus(); }
+if ('IntersectionObserver' in window) { const io = new IntersectionObserver((es) => { for (const e of es) e.target.classList.toggle('rest', !e.isIntersecting); }); for (const el of $$('.tape, .wd, .hd, .tc-stage')) io.observe(el); }
+// How it works' picture keeps one clock with its captions: it stops while off screen (as they do) and stays still for reduced motion
+{
+  const g = $('.hd-g');
+  if (g?.pauseAnimations) {
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) { g.pauseAnimations(); g.setCurrentTime(9); }
+    else if ('IntersectionObserver' in window) new IntersectionObserver((es) => { for (const e of es) e.isIntersecting ? g.unpauseAnimations() : g.pauseAnimations(); }).observe($('.hd'));
+  }
 }
-$('.hw-sw')?.addEventListener('keydown', (e) => {
-  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
-  e.preventDefault(); hwChain($('[data-hwc][aria-selected="true"]')?.dataset.hwc === 'eth' ? 'btc' : 'eth', true);
-});
 document.addEventListener('click', (e) => {
   const h = e.target.closest?.('[data-hx]');
   if (h) { e.preventDefault(); hxPreset(h.dataset.hx); return; }
-  const hc = e.target.closest?.('[data-hwc]');
-  if (hc) { hwChain(hc.dataset.hwc); return; }
   const ht = e.target.closest?.('[data-hint]');
   if (ht) { e.preventDefault(); hintGo(ht.dataset.hint); return; }
   const sc = e.target.closest?.('[data-scroll]');

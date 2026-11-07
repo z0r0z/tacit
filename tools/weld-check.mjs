@@ -10299,9 +10299,9 @@ await step('hxsats', async () => {
   try {
     await p.goto(r.url);
     await p.waitForSelector('#hx-body .hx-h');
-    await p.click('#how [data-hwc="btc"]');
-    await Promise.all([p.waitForURL(/\/trade\/tac\/#btc=buy$/, { timeout: 30000 }), p.click('#how [data-hx="swap:sats:tac"]')]);
-    ok(true, 'hxsats: Sats in (How it works, Bitcoin) goes to TAC\'s page with its Bitcoin market open, to buy');
+    await p.goto(r.url + '#card=swap:sats:tac');
+    await p.waitForURL(/\/trade\/tac\/#btc=buy$/, { timeout: 30000 });
+    ok(true, 'hxsats: a link to buy TAC with sats goes to TAC\'s page with its Bitcoin market open, to buy');
     await p.goto(r.url + '#card=swap:tac:sats');
     await p.waitForURL(/\/trade\/tac\/#btc=sell$/, { timeout: 30000 });
     ok(true, 'hxsats: a link to sell TAC for sats goes there to sell');
