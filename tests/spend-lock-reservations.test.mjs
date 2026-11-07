@@ -23,12 +23,12 @@ globalThis.__TACIT_NO_INIT__ = true;
 localStorage.setItem('tacit-network-v1', 'mainnet');
 
 let historyUp = false;
-const posts = [];
+const posts = [];                      // the Bitcoin broadcasts: a POST to .../tx (the page also POSTs Ethereum JSON-RPC reads as it loads, which are not sends)
 let utxos = [];
 const json = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { 'content-type': 'application/json' } });
 globalThis.fetch = async (input, opts = {}) => {
   const u = String(input?.url ?? input);
-  if ((opts.method || 'GET').toUpperCase() === 'POST') { posts.push(u); return new Response('0'.repeat(64), { status: 200 }); }
+  if ((opts.method || 'GET').toUpperCase() === 'POST') { if (/\/tx(\?.*)?$/.test(u)) posts.push(u); return new Response('0'.repeat(64), { status: 200 }); }
   if (u.includes('/scripthash/')) {
     if (!historyUp) throw new Error('offline: history');
     return json([]);

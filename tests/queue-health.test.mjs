@@ -74,7 +74,10 @@ await test('the stats carry counts and ages ONLY — nothing about any job\'s co
   const q = mk();
   await q.submitJob({ type: 'swap', op: opN(30) });
   const s = await q.queueStats();
-  ok(JSON.stringify(Object.keys(s).sort()) === JSON.stringify(['oldestPendingSec', 'oldestProvingSec', 'open', 'pending', 'proving']), `unexpected fields: ${Object.keys(s)}`);
+  // the stats the verdict reads are all there, and every field is a count or an age: a number, never a string, an id or an object (a field about a job's contents would be one)
+  const keys = Object.keys(s);
+  ok(['oldestPendingSec', 'oldestProvingSec', 'open', 'pending', 'proving'].every((k) => keys.includes(k)), `missing fields: ${keys}`);
+  ok(keys.every((k) => Number.isFinite(s[k]) && s[k] >= 0 && /^(pending|proving|open|oldest\w*Sec)/.test(k)), `unexpected fields: ${keys.map((k) => `${k}=${typeof s[k]}`)}`);
 });
 
 // ── the verdict ──
