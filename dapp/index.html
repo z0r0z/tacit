@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-3pc4sO+vCGbctzFYkWJuD8HA7UqKIW3eVtHCYlHLwEQ=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-JEKInQvj76Ysb9dYbyE2jcpo5g+8piBKmAksYa9wlhs=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -765,6 +765,22 @@ a.di { color: inherit; text-decoration: none; }
   .pw-a { grid-template-columns: minmax(0, 1fr); gap: 16px; padding: 16px 0; }
   .pw-n { font-size: 24px; }
 }
+/* TACD and TACE, kept small: what they are, what anyone can do for them, what their pools pay. */
+.pg { display: grid; justify-items: center; gap: 10px; padding: 56px 0 0; text-align: center; }
+.pg-k { margin: 0; font: 500 11px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--mute); }
+.pg-t { margin: 0; font: 400 clamp(20px, 2.4vw, 26px)/1.2 var(--serif); letter-spacing: -.01em; text-wrap: balance; }
+.pg-d { margin: 0; max-width: 58ch; font-size: 13px; line-height: 1.5; color: var(--mute); text-wrap: balance; }
+.pg-l { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 4px 24px; margin-top: 6px; }
+.pg-l a { display: inline-flex; align-items: center; gap: 7px; min-height: 28px; font-size: 12px; color: var(--ink); text-decoration: none; }
+.pg-l a.tl { text-decoration: underline; text-underline-offset: 4px; font-weight: 500; }
+.pg-l .pair { display: inline-flex; }
+.pg-l .pair .tk { width: 16px; height: 16px; }
+.pg-l .pair .tk + .tk { margin-left: -5px; box-shadow: 0 0 0 1.5px var(--paper); }
+.pg-l small { font: 500 11px var(--mono); letter-spacing: .06em; color: var(--mute); transition: color .15s; }
+.pg-l small:empty { display: none; }
+@media (hover: hover) { .pg-l a:hover small { color: var(--ink); } }
+.pg-l a:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; border-radius: 4px; }
+@media (max-width: 720px) { .pg { padding-top: 44px; } }
 .ig { padding-top: 128px; }
 .pi { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 4fr); gap: 0 56px; align-items: start; }
 .pi .pw, .pi .ig { padding-top: 0; }
@@ -1271,7 +1287,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   .tc-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; width: 100%; }
   .tc-facts dd { font-size: 24px; }
   .tc-facts dt { font-size: 11px; text-wrap: balance; }
-  .tc-as { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 0; width: 100%; max-width: 440px; margin-bottom: 26px; }
+  .tc-as { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; width: 100%; max-width: 360px; margin-bottom: 26px; }
   .tc-as button { flex-direction: column; gap: 5px; padding: 4px 0 5px; font-size: clamp(14px, 4.4vw, 16px); }
   .tc-as .tk { width: 24px; height: 24px; }
   .tc-pay { margin-top: 48px; }
@@ -1574,8 +1590,6 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       <button type="button" role="tab" id="tc-t-teth" aria-controls="tc-teth" aria-selected="false" tabindex="-1" data-tc="teth"><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg>tETH</button>
       <button type="button" role="tab" id="tc-t-cbtc" aria-controls="tc-cbtc" aria-selected="false" tabindex="-1" data-tc="cbtc"><svg class="tk" aria-hidden="true"><use href="#tk-cbtc"/></svg>cBTC</button>
       <button type="button" role="tab" id="tc-t-cusd" aria-controls="tc-cusd" aria-selected="false" tabindex="-1" data-tc="cusd"><svg class="tk" aria-hidden="true"><use href="#tk-cusd"/></svg>cUSD</button>
-      <button type="button" role="tab" id="tc-t-tacd" aria-controls="tc-tacd" aria-selected="false" tabindex="-1" data-tc="tacd"><svg class="tk" aria-hidden="true"><use href="#tk-tacd"/></svg>TACD</button>
-      <button type="button" role="tab" id="tc-t-tace" aria-controls="tc-tace" aria-selected="false" tabindex="-1" data-tc="tace"><svg class="tk" aria-hidden="true"><use href="#tk-tace"/></svg>TACE</button>
     </div>
     <div class="tc-sets">
     <div class="tc-set on" id="tc-tac" role="tabpanel" aria-labelledby="tc-t-tac">
@@ -1626,30 +1640,17 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       </div>
       <div class="tc-links"><button class="btn" type="button" data-hx="borrow:cusd">Borrow cUSD</button><a class="tl" href="/vault/#btc">Borrow page →</a><a class="tl" href="/cbtc/">Loans and backing →</a><button class="tl" type="button" data-asset="cusd">About cUSD →</button></div>
     </div>
-    <div class="tc-set" id="tc-tacd" role="tabpanel" aria-labelledby="tc-t-tacd">
-      <div class="sx-h"><h2 id="tc-h-tacd">TACD is a dollar, <em>borrowed against TAC</em>.</h2></div>
-      <dl class="tc-facts">
-        <div><dt>interest</dt><dd>0%</dd></div>
-        <div><dt>APR, farming it with USDC</dt><dd class="num"><span id="tc-apr-usd"><span class="sk" style="--w:4ch"></span></span></dd></div>
-        <div><dt>to repay and take your TAC back</dt><dd>Any time</dd></div>
-      </dl>
-      <div class="tc-pay" role="group" aria-labelledby="tp-h-tacd">
-        <h3 id="tp-h-tacd">Borrow dollars, then farm them.</h3>
-      </div>
-      <div class="tc-links"><a class="btn" href="/vault/#v=usd">Borrow TACD</a><a class="tl" href="/vault/#v=usd&amp;pools">TACD pools →</a><a class="tl" href="/vault/#v=usd&amp;t=repay">Repay →</a><button class="tl" type="button" data-asset="tacd">About TACD →</button></div>
     </div>
-    <div class="tc-set" id="tc-tace" role="tabpanel" aria-labelledby="tc-t-tace">
-      <div class="sx-h"><h2 id="tc-h-tace">TACE is ether, <em>borrowed against TAC</em>.</h2></div>
-      <dl class="tc-facts">
-        <div><dt>interest</dt><dd>0%</dd></div>
-        <div><dt>APR, farming it with ETH</dt><dd class="num"><span id="tc-apr-eth"><span class="sk" style="--w:4ch"></span></span></dd></div>
-        <div><dt>to repay and take your TAC back</dt><dd>Any time</dd></div>
-      </dl>
-      <div class="tc-pay" role="group" aria-labelledby="tp-h-tace">
-        <h3 id="tp-h-tace">Borrow ether, then farm it.</h3>
-      </div>
-      <div class="tc-links"><a class="btn" href="/vault/#v=eth">Borrow TACE</a><a class="tl" href="/vault/#v=eth&amp;pools">TACE pools →</a><a class="tl" href="/vault/#v=eth&amp;t=repay">Repay →</a><button class="tl" type="button" data-asset="tace">About TACE →</button></div>
-    </div>
+  </section>
+
+  <section class="pg" aria-labelledby="pg-h">
+    <h2 class="pg-k" id="pg-h">Playground</h2>
+    <p class="pg-t">TACD and TACE are a dollar and ether, borrowed against TAC.</p>
+    <p class="pg-d">Anyone can catch the oracle up and open the pools, so positions can be redeemed.<span id="pg-pays" hidden> Liquidity earns TAC.</span></p>
+    <div class="pg-l">
+      <a href="/vault/#v=usd&amp;pools"><span class="pair"><svg class="tk" aria-hidden="true"><use href="#tk-tacd"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-usdc"/></svg></span>TACD / USDC<small id="pg-apr-usd"></small></a>
+      <a href="/vault/#v=eth&amp;pools"><span class="pair"><svg class="tk" aria-hidden="true"><use href="#tk-tace"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg></span>TACE / ETH<small id="pg-apr-eth"></small></a>
+      <a class="tl" href="/vault/">Borrow against TAC →</a>
     </div>
   </section>
 
@@ -10859,12 +10860,14 @@ function paintEarn() {
   const per = (n) => n.toLocaleString('en-US'), prog = FARM.program;
   const pools = prog?.epoch?.active && FARM.precision?.tacEth ? (prog.pools || []).map((p) => ({ p, apr: shieldedApr(p) })).filter((x) => x.apr != null).sort((a, b) => b.apr - a.apr) : [];
   const tacUsd = (fpx().ethUsd || 0) * (FARM.precision?.tacEth || 0);
-  // each vault's own rate on its TAC-section story; a vault whose pools the campaign does not pay drops the line
+  // what the campaign pays for each synth's pool, beside its link: a pool it does not pay shows no figure, and the line about earning shows only while one is paid
+  let pays = false;
   for (const k of ['usd', 'eth']) {
-    const el = $(`#tc-apr-${k}`), a = LP.m && LP.c ? LP.m.bestApr(LP.c, k, tacUsd) : null;
-    if (a != null) { el.closest('div').hidden = false; mount(el, html`${LP.c.weights[k].length > 1 ? html`<small>up to</small>` : ''}${a >= 10000 ? '10,000+' : per(Math.round(a))}%`); countUp(el); }
-    else if (LP.done && !LP.c?.weights[k]?.length) el.closest('div').hidden = true;
+    const a = LP.m && LP.c ? LP.m.bestApr(LP.c, k, tacUsd) : null;
+    mount($(`#pg-apr-${k}`), a != null ? html`${LP.c.weights[k].length > 1 ? 'up to ' : ''}${a >= 10000 ? '10,000+' : per(Math.round(a))}% APR` : html``);
+    pays ||= a != null;
   }
+  $('#pg-pays').hidden = !pays;
   paintFarmChips(pools);
 }
 // ── Quick starts above the card ──
