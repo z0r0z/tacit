@@ -14084,13 +14084,15 @@ await step('chaintile', async () => {
       await until(p, () => /has not opened the Tacit chain/.test(document.querySelector('#hx-rc')?.textContent || ''), null, 30000).catch(() => {});
       ok(/has not opened the Tacit chain/.test(await text(p, '#hx-rc')), `chaintile: an address whose key never opened the chain is refused (${await text(p, '#hx-rc')})`);
       // an Ethereum address leaves the chain there: quoted as a withdrawal (its exit fee), arriving as public TAC the leader pays out
-      await p.fill('#hx-rcpt', '0x2222222222222222222222222222222222222222');
+      await p.fill('#hx-rcpt', '0x2222222222222222222222222222222222222222'); await p.fill('#hx-amt', '1');
       await until(p, () => /at that address, public/.test(document.querySelector('#hx-receipt')?.textContent || ''), null, 60000).catch(() => {});
       const outRc = await text(p, '#hx-receipt');
       ok(/at that address, public/.test(outRc) && /exit fee/.test(await p.$eval('#hx-receipt', (e) => e.innerHTML)) && /by the leader/.test(outRc), `chaintile: Send to an 0x address is quoted as a withdrawal the leader pays out (${outRc.slice(0, 160)})`);
       // 5 out to the paying account
       await move(p, 'shield:ctac:wallet', '5');
       await until(p, () => document.querySelector('#hx-swap #go')?.textContent === 'Withdraw TAC' && !document.querySelector('#hx-swap #go').disabled, null, 120000);
+      // under Withdraw's button, the way to another address: Send's
+      ok(/Another address\? Send it there/.test(await text(p, '#hx-swap .hx-way')), `chaintile: Withdraw offers another address through Send (${await text(p, '#hx-swap .hx-way')})`);
       const w0 = await tacHeld(aAcct);
       await p.click(MV.go);
       await until(p, () => /Done\.|class="err"/.test(document.querySelector('#hx-mz')?.innerHTML || ''), null, 900000).catch(() => {});
