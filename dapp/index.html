@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-itbYg/BxQeSHeeXgrD/zEaut5StsarZhLPrbk8tf2qs=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-gedKlqKreJ/fQHFB+UsWJXiSHEZtlnU2nLKUjIvEYz8=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -66,7 +66,7 @@
 <link rel="modulepreload" href="/bridge-tick.js?cb=4e721860">
 <link rel="modulepreload" href="/tacit-session.js?cb=a2d34bb2">
 <link rel="modulepreload" href="/activity.js?cb=8ccbc552">
-<link rel="modulepreload" href="/swap/card.js?cb=6c1162bf">
+<link rel="modulepreload" href="/swap/card.js?cb=2588b147">
 <link rel="modulepreload" href="/trade/wallet.js?cb=88b623b8">
 <link rel="modulepreload" href="/trade/util.js?cb=ba5a02b1">
 <link rel="modulepreload" href="/trade/rpc.js">
@@ -4207,7 +4207,7 @@ const chainRecipient = (lanes) => chainClient().then((c) => c.recipientOf(lanes)
 const chainSaid = (m) => Object.assign(new Error(m), { said: true });
 const CHAIN_PROVE_S = 30;
 
-const TACIT_URL = '/tacit.js?cb=add7bef4';
+const TACIT_URL = '/tacit.js?cb=45ef01b2';
 let T = null;
 // tacit.js under this page's key, one call at a time (/tacit-session.js)
 const TS = makeTacitSession({ url: TACIT_URL, key: () => S.key, secp, bytesToHex, hexToBytes, onLoad: (m) => { T = m; } });
@@ -18994,7 +18994,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=6c1162bf').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=2588b147').catch((e) => { SWC.p = null; throw e; }));
 // the card held to the tab's flow; back on the Swap tab it opens on the swap it showed there
 function swcFlow() {
   hxPathPaint();

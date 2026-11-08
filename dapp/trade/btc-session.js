@@ -7,7 +7,7 @@
 
 import { tabKeyRead, tabKeyWrite, tabKeyClear, tabKeyWatch } from '/tab-key.js?cb=a4c25d0e';
 
-const TACIT_URL = '/tacit.js?cb=add7bef4', KNOWN_URL = '/tacit-wallet-known.js?cb=ed4c75b7', EVM_URL = '/evm-wallet.js?cb=c487004a';
+const TACIT_URL = '/tacit.js?cb=45ef01b2', KNOWN_URL = '/tacit-wallet-known.js?cb=ed4c75b7', EVM_URL = '/evm-wallet.js?cb=c487004a';
 const DEPS_URL = '/vendor/tacit-deps.min.js', PRF_URL = '/prf-wallet.js';
 const RECORD = 'tacit-trade-id-v1';                                           // how this page last opened a key: public data only
 const KNOWN_IDS = [RECORD, 'tacit-tac-id-v1', 'tacit-pay-hub-id-v1', 'tacit-lite-id-v1', 'tacit-pay-id-v1'];
