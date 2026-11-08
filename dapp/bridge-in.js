@@ -34,7 +34,7 @@ export function checkText(s, errText) {
   if (s.name === 'source-ownership') return 'This TAC is not at this key’s own Bitcoin address.';
   if (s.name === 'source-confirmed') return 'This TAC is waiting for its Bitcoin confirmation.';
   if (s.name === 'trace' && s.tooLong) return `This TAC has ${longCount(s)} in its history, and the bridge proves up to ${s.max}, so it goes to Ethereum by the fast bridge instead.`;
-  if (s.name === 'trace' && s.unprovable) return `This TAC’s history includes ${through(s)} the bridge’s proof does not follow${!THROUGH[s.through] && s.at ? ` (${s.at.slice(0, 8)}…${s.at.slice(-6)})` : ''}, so it cannot be bridged to Ethereum.`;
+  if (s.name === 'trace' && s.unprovable) return `This TAC’s history includes ${through(s)} the bridge’s proof does not follow${!THROUGH[s.through] && s.at ? ` (${s.at.slice(0, 8)}…${s.at.slice(-6)})` : ''}, so the regular bridge cannot take it.`;
   if (s.name === 'trace' && s.reading) return `Reading this TAC’s history from Bitcoin: ${transfers(Number(s.read) || 0)} so far. Pick it again in a few minutes and the reading goes on from there.`;
   if (s.name === 'trace') {
     const wait = /retry in ~(\d+)s/.exec(s.detail || '');

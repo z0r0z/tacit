@@ -264,6 +264,8 @@ export function describe(rec) {
 export const termsOf = (i) => ({
   feeBps: Number(i.feeBps) || 0, flatFee: BigInt(i.flatFee ?? 0), minAmount: BigInt(i.minAmount), maxAmount: BigInt(i.maxAmount),
   available: i.available == null ? null : BigInt(i.available),
+  // takes TAC whatever its history; a provider that says nothing screens locks with the bridge's trace
+  anyTac: i.anyTac === true,
 });
 
 // Swaps kept in the page's localStorage under a prefix, one entry each.

@@ -512,10 +512,10 @@ test('TAC a provider would refuse (out of the shielded pool) is not offered: the
   const m = mount({ session: st, discover: async () => [provider('Tacit')] });
   await signIn(m);
   typeIn(m, '100'); await until(() => release, 'the check under way');
-  assert.match(m.$('fx-st').textContent, /Checking that your TAC can be followed/, 'the wait is said');
+  assert.match(m.$('fx-st').textContent, /Checking your TAC/, 'the wait is said');
   release(); release = null;
   await until(() => /Nothing was locked/.test(m.$('fx-st').textContent), 'the refusal said');
-  assert.match(m.$('fx-st').textContent, /5,000 TAC of yours has a history that includes a move through Bitcoin’s shielded pool, which the bridge’s proof does not follow, so a provider would refuse the lock/);
+  assert.match(m.$('fx-st').textContent, /5,000 TAC of yours has a history that includes a move through Bitcoin’s shielded pool, which the bridge’s proof does not follow, and no provider online takes it right now/);
   assert.match(m.$('fx-st').textContent, /Your other TAC on Bitcoin, 800, can still go: try a smaller amount/);
   assert.equal(m.$('fx-st').className, 'status err');
   assert.equal(m.$('fx-recv').hidden, true, 'no quote is shown for a lock that would be refused');
@@ -529,6 +529,27 @@ test('TAC a provider would refuse (out of the shielded pool) is not offered: the
   await until(() => /Bitcoin fee/.test(text(m.$('fx-recv'))), 'the fee row'); assert.doesNotMatch(m.$('fx-st').textContent, /Checking|Nothing was locked/);
 });
 
+test('the page shows the best quote whose provider takes the TAC to be locked, and says nothing of kinds of TAC while one does', async () => {
+  const st = sessionStub();
+  const costed = [];
+  st.session.cost = async ({ provider }) => {
+    costed.push(provider.name);
+    if (!provider.terms.anyTac) throw Object.assign(new Error('fastbridge: lineage'), { code: 'lineage', refused: [{ amount: 100n * TAC, through: 'shielded' }], left: 0n });
+    return { fee: 3100, take: 8046, total: 11146, have: 50000, short: false };
+  };
+  // Cheap screens its locks, Open takes any TAC and charges more: Cheap pays the holder more, and cannot take what must be locked
+  const m = mount({ session: st, discover: async () => [provider('Cheap', { feeBps: 10, flatFee: '0' }), provider('Open', { feeBps: 50, anyTac: true })] });
+  await signIn(m);
+  typeIn(m, '100'); await until(() => /Bitcoin fee/.test(text(m.$('fx-recv'))), 'the fee row');
+  assert.deepEqual(costed, ['Cheap', 'Open'], 'the better quote was tried first');
+  assert.match(text(m.$('fx-recv')), /Provider Open/, 'and the one that takes the TAC is the one shown');
+  assert.doesNotMatch(m.$('fx-st').textContent, /history|shielded|Nothing was locked/, 'no word of kinds of TAC');
+  assert.equal(m.$('fx-go').disabled, false);
+  m.$('fx-go').click(); await until(() => /Press again/.test(m.$('fx-st').textContent), 'the first press');
+  m.$('fx-go').click(); await until(() => st.calls.starts.length === 1, 'the bridge');
+  assert.equal(st.calls.starts[0].quotes[0].provider.name, 'Open', 'the lock is begun with the provider that takes it');
+});
+
 test('a lock refused at the press (the check passed before, and not now) is said in the same words, and nothing starts', async () => {
   const st = sessionStub({ startError: Object.assign(new Error('fastbridge: lineage'), { code: 'lineage', refused: [{ amount: 3n * TAC, through: 'pool' }], left: 0n }) });
   const m = mount({ session: st, discover: async () => [provider('Tacit')] });
@@ -536,7 +557,7 @@ test('a lock refused at the press (the check passed before, and not now) is said
   typeIn(m, '100'); await until(() => !m.$('fx-go').disabled, 'the quote');
   m.$('fx-go').click(); await until(() => /Press again/.test(m.$('fx-st').textContent), 'the first press');
   m.$('fx-go').click(); await until(() => /Nothing was locked/.test(m.$('fx-st').textContent), 'the refusal');
-  assert.match(m.$('fx-st').textContent, /3 TAC of yours has a history that includes a pool or farm trade on Bitcoin/);
+  assert.match(m.$('fx-st').textContent, /3 TAC of yours has a history that includes a pool or farm trade on Bitcoin.*no provider online takes it/);
   assert.equal(st.calls.starts.length, 0);
 });
 

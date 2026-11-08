@@ -240,18 +240,27 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
         if (seq !== S.seq) return;
         if (!r.quotes.length) { note(r.failed[0] ? wording(r.failed[0].error) : 'No provider can take that amount right now.', true); return; }
         S.quotes = pinFirst(r.quotes); S.quote = S.quotes[0].quote; S.best = S.quotes[0].provider; paintForm();
-        // what the lock costs on Bitcoin, and whether this address can pay it, is read before the press and not found out at it; so is
-        // whether the TAC it would lock can be followed, which a provider checks before it pays (the cost is read from the notes that pass)
+        // what the lock costs on Bitcoin, and whether this address can pay it, is read before the press and not found out at it. The lock
+        // is priced with the notes its provider takes: the best quote whose provider takes them is the one shown, and the holder is told
+        // only when none does
         if (S.sess.cost) {
-          const sess = S.sess, checking = 'Checking that your TAC can be followed…';
+          const sess = S.sess, checking = 'Checking your TAC…';
           note(checking);
-          let lineage = null;
-          const c = await sess.cost({ quote: S.quote, provider: S.best }).catch((e) => { if (e && /^lineage/.test(e.code || '')) lineage = e; return null; });
+          let c = null, at = -1, refused = null, unread = null;
+          for (let i = 0; i < S.quotes.length && at < 0; i++) {
+            const x = S.quotes[i];
+            try { c = await sess.cost({ quote: x.quote, provider: x.provider }); at = i; }
+            catch (e) {
+              if (e && e.code === 'lineage') { refused ||= e; continue; }
+              if (e && e.code === 'lineage_unread') unread = e;
+              c = null; at = i;
+            }
+          }
           if (seq !== S.seq || S.sess !== sess) return;
           if (S.note === checking) note('');
-          // a lock on notes no provider takes is not offered; a read that failed is said, and the press looks again
-          if (lineage && lineage.code === 'lineage') { S.quotes = []; S.quote = null; S.best = null; note(wording(lineage), true); paintForm(); return; }
-          if (lineage) note(wording(lineage), true);
+          if (at < 0) { S.quotes = []; S.quote = null; S.best = null; note(wording(refused), true); paintForm(); return; }
+          if (at > 0) { S.quotes = [S.quotes[at], ...S.quotes.filter((_, k) => k !== at)]; S.quote = S.quotes[0].quote; S.best = S.quotes[0].provider; }
+          if (unread) note(wording(unread), true);
           if (c) { S.cost = c; if (c.short) note(shortText(c), true); }
           paintForm();
         }

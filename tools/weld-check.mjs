@@ -3548,9 +3548,9 @@ await step('bridgedeep', async () => {
     await r.page.check(`#bridge-body input[value="${N3}:0"]`);
     await until(r.page, () => /does not follow/.test(document.querySelector('#br-rcpt')?.textContent || '') && document.querySelectorAll('#bridge-body .brn small').length === 3, null, 120000);
     const poolText = await warn();
-    ok(/This TAC’s history includes a pool or farm trade on Bitcoin, which the bridge’s proof does not follow, so it cannot be bridged to Ethereum\./.test(poolText) && !/try again|fast bridge/i.test(poolText),
-      `bridgedeep: a history through a pool trade says the bridge does not follow it and the note cannot be bridged (a provider would refuse it), not to try again (${poolText})`);
-    ok(!(await r.page.isVisible('#br-rcpt a[href="/fast/"]')), 'bridgedeep: and does not send it to the fast bridge, which refuses it');
+    ok(/This TAC’s history includes a pool or farm trade on Bitcoin, which the bridge’s proof does not follow, so the regular bridge cannot take it\./.test(poolText) && !/try again|fast bridge/i.test(poolText),
+      `bridgedeep: a history through a pool trade says the bridge does not follow it and the regular bridge cannot take it, not to try again (${poolText})`);
+    ok(!(await r.page.isVisible('#br-rcpt a[href="/fast/"]')), 'bridgedeep: and offers no fast bridge for it while no provider online takes it');
     ok(/Its history includes a pool or farm trade on Bitcoin, which the bridge does not follow\./.test(await row(N3)) && traces === 7, `bridgedeep: and its row says so at once, after one ask (${await row(N3)})`);
     // The sheet drawn again lists both as not to be picked, without reading either history again.
     await redrawTac(r.page);

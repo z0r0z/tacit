@@ -68,14 +68,18 @@ note made by an exit from the Bitcoin shielded pool (`T_BTC_SPEND`, opcode 0x6d)
 it: the burn's proof follows transfers back to the etch and does not follow a history through the pool. TAC a provider takes this
 way stays on Bitcoin, where it can be traded. A provider that rebalances by bridging home screens locks with the regular
 bridge's own trace (`POST /reflection/burndep/trace` answers a note like this with "opcode 0x6d") and refuses such a lock after it is
-on Bitcoin, when its fees are spent and its TAC waits out the timelock; the reference provider applies no such screen. So the page asks
-the same trace of the notes a lock would spend, before the lock is built (`followed` in `dapp/fast/wire.js`, the verdicts from
-`lineage` in `dapp/burndep-ux.js`): a note the reflection tracks needs no trace; one whose history cannot be followed (some
-transfer in it is a pool or farm trade, an exit from the shielded pool, or TAC that came over from Ethereum) is left out and the
-notes picked again, and when what is left cannot cover the amount the page says so and builds nothing. A trace that cannot be
-read stops the lock too (press again). A history longer than the proof folds (255 transfers) is not refused here, since the
-trace's own verdict on it is a limit and not a refusal; whether a provider takes it is the provider's rule. The Bridge tab no longer
-sends a history of the first kind to this page.
+on Bitcoin, when its fees are spent and its TAC waits out the timelock. The reference provider applies no such screen, and says so:
+its `/info` and its signed ad carry `anyTac: true`. A provider that says nothing of it is taken to screen.
+
+The holder never picks a kind of TAC. The page sends each lock to the best provider that takes what it must spend (`begin` in
+`dapp/fast/wire.js`). Notes the proof follows go to any provider; a provider that screens is given only such notes, looked at before
+the lock is built with the trace (`lineage` in `dapp/burndep-ux.js`; a note the reflection tracks needs no trace, and a trace that
+cannot be read stops the lock rather than guess). Notes it cannot follow (a pool or farm trade, an exit from the shielded pool, TAC
+that came over from Ethereum) go only to a provider that takes any TAC, and the page passes over a better quote from a provider that
+screens for one that does. When no provider online takes what must be spent, the page says so and locks nothing. A history longer
+than the proof folds (255 transfers) is not looked at this way: the trace's verdict on it is a limit and not a refusal, and whether a
+provider takes it is the provider's rule. The Bridge tab offers the fast bridge for a note the regular bridge cannot follow when a
+provider online takes any TAC.
 
 ## On the front page
 

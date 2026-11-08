@@ -14,6 +14,7 @@ import assert from 'node:assert/strict';
 import { tacit as T, fetched } from './lib/btc-sim.mjs';
 import { secp, bytesToHex } from '../dapp/vendor/tacit-deps.min.js';
 import { makeBoard } from '../dapp/fastbridge-board.js';
+import { termsOf } from '../dapp/fastbridge-client.js';
 import { makeBoardHandler } from '../fastbridge-lp/lib/board-http.mjs';
 
 const { openFast, openProvider, discoverProviders, counterFor, notesOf, untrackedFirst, followed, TAC_ASSET, EXPLORERS } = await import('../dapp/fast/wire.js');
@@ -204,6 +205,49 @@ test('a lock is not built on a note out of the shielded pool: the lock looks at 
   T._testSetScanHoldingsOverride(null);
 });
 
+test('the lock goes to the best provider that takes what it must spend: a provider that takes any TAC is given the notes the bridge\'s proof does not follow, and the others are not', async () => {
+  const priv = key(8), pubHex = bytesToHex(secp.getPublicKey(priv, true));
+  openWallet(priv);
+  // utxo 1 is an exit from the shielded pool (the largest), 3 is followed; nothing is tracked by the reflection
+  T._testSetScanHoldingsOverride(() => holdings([[TAC_ASSET, { utxos: [{ utxo: utxo(1), amount: 5000n, blinding: 7n }, { utxo: utxo(3), amount: 900n, blinding: 9n }] }]]));
+  const asked = [];
+  const vet = async (ns) => { asked.push(ns.map((n) => n.txid[0]).join('')); return verdicts({ 1: { state: 'unprovable', through: 'shielded' }, 3: { state: 'tracked' } })(ns); };
+  const tt = { ...T, bridgeUx: () => ({ noteTracking: async () => new Map() }) };
+  const s = await openFast({ T: tt, withKey: (fn) => fn(tt), ux: { cfg: { pool: POOL } }, priv, pubHex, hrp: 'tb', counterFor: () => ({}), vet });
+  const started = [];
+  s.market.start = async (o) => { started.push(o); return { rec: {}, provider: o.quotes[0].provider }; };
+  const prov = (name, anyTac) => ({ name, ref: { kind: 'http', claimPub: '02' + name.charCodeAt(0).toString(16).repeat(32) }, terms: { anyTac } });
+  const cheap = prov('Cheap', false), open = prov('Open', true), screen2 = prov('Other', false);
+  const q = (provider, evm) => ({ provider, quote: { btcValue: 4000n, evmAmount: evm } });
+  // 4,000 TAC can only be locked by spending the exit: the better quote is a provider that screens, so it is passed over for the one that takes any
+  await s.start({ quotes: [q(cheap, 3990n), q(open, 3980n)] });
+  assert.equal(started.length, 1);
+  assert.deepEqual(started[0].quotes.map((x) => x.provider.name), ['Open'], 'the lock is begun with the provider that takes it');
+  assert.deepEqual(started[0].notes.map((n) => n.amount), [5000n, 900n], 'with the notes that cover the amount, the exit among them');
+  // only providers that screen: nothing is built, and it says why
+  const e = await s.start({ quotes: [q(cheap, 3990n), q(screen2, 3980n)] }).catch((x) => x);
+  assert.equal(e.code, 'lineage'); assert.equal(started.length, 1, 'no lock was begun');
+  // an amount the followed TAC covers needs no such provider: the best quote is used, with notes the bridge follows
+  const small = (provider, evm) => ({ provider, quote: { btcValue: 800n, evmAmount: evm } });
+  await s.start({ quotes: [small(cheap, 790n), small(open, 780n)] });
+  assert.deepEqual(started[1].quotes.map((x) => x.provider.name), ['Cheap']);
+  assert.deepEqual(s.market.clientFor(cheap.ref).pickNotes(started[1].notes, 800n).notes.map((n) => n.amount), [900n], 'the lock spends the followed note alone');
+  // the cost is for the notes its own provider takes, and a provider that takes any TAC is not asked about the history at all
+  asked.length = 0;
+  await s.cost({ quote: { btcValue: 4000n }, provider: open }).catch(() => {});
+  assert.deepEqual(asked, [], 'no look at the history');
+  const refused = await s.cost({ quote: { btcValue: 4000n }, provider: cheap }).catch((x) => x);
+  assert.equal(refused.code, 'lineage');
+  T._testSetScanHoldingsOverride(null);
+});
+
+test('a provider that says nothing of it screens: only an ad or info that says `anyTac: true` is read as taking any TAC', () => {
+  const base = { claimPub: '02' + 'ab'.repeat(32), minAmount: '1', maxAmount: '2', feeBps: 1, flatFee: '0' };
+  assert.equal(termsOf(base).anyTac, false);
+  assert.equal(termsOf({ ...base, anyTac: 'yes' }).anyTac, false, 'only the value true');
+  assert.equal(termsOf({ ...base, anyTac: true }).anyTac, true);
+});
+
 test('a key whose Bitcoin address is not the wallet\'s is refused before anything is built', async () => {
   const priv = key(5);
   openWallet(key(6));
@@ -271,6 +315,7 @@ test('a provider and a user, each from its own key, find and reach each other th
     const found = await discoverProviders({ providers: [], boards: ['https://board.example'], fetchImpl });
     assert.equal(found.length, 1);
     assert.deepEqual([found[0].id, found[0].ref.kind, found[0].terms.feeBps, found[0].terms.flatFee, found[0].terms.available], [provider.claimPub, 'mailbox', 30, TAC, 1000n * TAC]);
+    assert.equal(ad.anyTac, true, 'the provider says in its signed ad that it takes TAC whatever its history'); assert.equal(found[0].terms.anyTac, true, 'and the user\'s side reads it');
     openWallet(uPriv);
     T._testSetScanHoldingsOverride(() => holdings([[TAC_ASSET, { utxos: [{ utxo: utxo(1), amount: 500n * TAC, blinding: 7n }] }]]));
     const s = await openFast({ T, withKey: (fn) => fn(T), ux: { cfg: { pool: POOL } }, priv: uPriv, pubHex: uPub, hrp: 'tb', fetchImpl, call: { pollMs: 5 } });

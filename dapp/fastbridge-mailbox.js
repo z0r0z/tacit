@@ -115,7 +115,7 @@ export function makeAdPublisher({ board, handle, claimPriv, claimPub, keys, name
     const ad = signAd({
       claimPub, gateway: bytesToHex(keys.pub), btcAsset: strip(i.btcAsset), evmAsset: strip(i.evmAsset), minAmount: String(i.minAmount), maxAmount: String(i.maxAmount),
       available: i.available == null ? null : String(i.available), feeBps: i.feeBps, flatFee: String(i.flatFee), csvBlocks: i.csvBlocks, evmWindowSecs: i.evmWindowSecs,
-      ...(name ? { name } : {}), at: t, until: t + Math.min(600, Math.max(AD_SECS, 2 * everySecs + 60)),
+      ...(i.anyTac === true ? { anyTac: true } : {}), ...(name ? { name } : {}), at: t, until: t + Math.min(600, Math.max(AD_SECS, 2 * everySecs + 60)),
     }, claimPriv);
     await board.putAd(ad);
     return ad;

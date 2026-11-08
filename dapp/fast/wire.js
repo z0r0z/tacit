@@ -14,9 +14,9 @@ import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js';
 import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=94a5530b';
 import { makeFastBridgeEvm } from '/fastbridge-evm.js?cb=22471d6a';
 import { makeHttpCounter, makeCounter } from '/fastbridge-http.js';
-import { makeFastBridgeMarket, makeLocalStore, termsOf } from '/fastbridge-client.js?cb=5178814d';
-import { makeLpService } from '/fastbridge-provider.js?cb=8b3cb635';
-import { makeMailboxCounter, makeMailboxServer, makeAdPublisher, readProviders, gatewayOf } from '/fastbridge-mailbox.js?cb=38553280';
+import { makeFastBridgeMarket, makeLocalStore, termsOf } from '/fastbridge-client.js?cb=96037c13';
+import { makeLpService } from '/fastbridge-provider.js?cb=f1c77b91';
+import { makeMailboxCounter, makeMailboxServer, makeAdPublisher, readProviders, gatewayOf } from '/fastbridge-mailbox.js?cb=f7d5bbe7';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=850e1c5e';
 import { signSchnorr } from '/bulletproofs.js';
 import { makeBtcBind, openBoundNote, fastLaneNote, makePoolRoots } from '/btc-bind.js?cb=b686d883';
@@ -181,9 +181,12 @@ export async function openFast({ T, withKey, ux, priv, pubHex, pins = {}, wallet
     return () => { gone = true; clearInterval(timer); if (stopTend) stopTend(); release(); };
   };
   // `only` ([{ txid, vout }]) names the notes a bridge may spend, for a form that picks a note; otherwise the key's notes, the ones the
-  // bridge does not track first. Either way the notes the lock would spend are looked at first (`followed`): one a provider would refuse
-  // is left out, so a lock is never built on it.
-  const pool = async (quotes, only) => {
+  // bridge does not track first. A provider that screens a lock (it says nothing of it in its terms) is given only notes the bridge's proof
+  // follows: the notes the lock would spend are looked at first (`followed`) and one it would refuse is left out. A provider that takes any
+  // TAC (`terms.anyTac`) is given whatever covers the amount, with no look at all. So a holder never picks a kind of TAC: the lock goes
+  // to the best provider that takes what it must spend.
+  const takesAny = (x) => !!(x.provider && x.provider.terms && x.provider.terms.anyTac);
+  const pool = async (quotes, only, any = false) => {
     const all = await notes();
     let tiers;
     if (only) {
@@ -193,20 +196,36 @@ export async function openFast({ T, withKey, ux, priv, pubHex, pins = {}, wallet
       const first = await fastFirst(all, quotes);
       tiers = first === all ? [all] : [first, all];
     }
-    if (!quotes.length || !vet) return tiers[0];
+    if (!quotes.length || (!vet && !any)) return tiers[0];
     const client = market.clientFor(quotes[0].provider.ref), amount = quotes[0].quote.btcValue;
     const pick = async (set) => { const p = client.pickNotes(await client.freeNotes(set), amount); return p && p.notes; };
-    return followed(tiers, pick, vet);
+    return followed(tiers, pick, any ? async (ns) => new Map(ns.map((n) => [noteId(n), { state: 'tracked' }])) : vet);
   };
+  // The quotes are tried best first, each with the notes its provider takes; one whose notes the bridge's proof cannot follow is passed
+  // over for a provider that takes any TAC, and when there is none the holder is told (code 'lineage') and nothing is locked.
+  async function begin(quotes, only) {
+    const plans = new Map();
+    const planFor = (any) => { if (!plans.has(any)) plans.set(any, pool(quotes, only, any).then((notes) => ({ notes }), (error) => ({ error }))); return plans.get(any); };
+    let refused = null, last = null;
+    for (const x of quotes) {
+      const plan = await planFor(takesAny(x));
+      if (plan.error) { if (plan.error.code === 'lineage') { refused ||= plan.error; continue; } throw plan.error; }
+      try { return await market.start({ quotes: [x], notes: plan.notes }); } catch (e) {
+        last = e;
+        if (!/cannot hold that amount/.test(String((e && e.message) || e))) throw e;
+      }
+    }
+    throw last || refused || new Error('the provider cannot hold that amount');
+  }
   return {
     address: prims.wallet.address(), notes, balance, market,
     quoteAll: (providers, units, o) => market.quoteAll(providers, units, o),
     // what the lock would cost on Bitcoin for a quote and whether the address can pay it (nothing is stored or sent)
     cost: async ({ quote, provider, only }) => {
-      const ref = provider ? provider.ref : null;
-      return market.clientFor(ref).cost({ quote, notes: await pool([{ provider: provider || { ref }, quote }], only) });
+      const ref = provider ? provider.ref : null, p = provider || { ref };
+      return market.clientFor(ref).cost({ quote, notes: await pool([{ provider: p, quote }], only, takesAny({ provider: p })) });
     },
-    start: async ({ quotes, only }) => market.start({ quotes, notes: await pool(quotes, only) }),
+    start: async ({ quotes, only }) => begin(quotes, only),
     records: market.records, run, recover: market.recover,
   };
 }

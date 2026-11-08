@@ -145,7 +145,7 @@ test('a failure is said in the page\'s words: the sats the builder lacks, a note
   assert.match(failMessage(new Error('adaptor-btc-tx: not enough sats to fund the commit (need 9000, have 250)')), /holds 250 sats for fees, short of the 9,000 sats this needs/);
   assert.equal(failMessage(new Error('fastbridge: this note is already part of a swap')), 'This note is already in a bridge.');
   assert.match(failMessage(new Error('the provider cannot hold that amount')), /Use the regular bridge/);
-  assert.match(failMessage(Object.assign(new Error('fastbridge: lineage'), { code: 'lineage', refused: [{ amount: 7n * 10n ** 8n, through: 'shielded' }], left: 0n })), /7 TAC of yours has a history that includes a move through Bitcoin’s shielded pool.*Nothing was locked\./);
+  assert.match(failMessage(Object.assign(new Error('fastbridge: lineage'), { code: 'lineage', refused: [{ amount: 7n * 10n ** 8n, through: 'shielded' }], left: 0n })), /7 TAC of yours has a history that includes a move through Bitcoin’s shielded pool.*no provider online takes it.*Nothing was locked\./);
   assert.match(failMessage(Object.assign(new Error('fastbridge: lineage unread'), { code: 'lineage_unread' })), /Could not read this TAC’s history just now, so nothing was locked/);
   assert.equal(failMessage(new Error('')), 'Something went wrong. Try again.'); assert.equal(failMessage(new Error('x'.repeat(300))).length, 200);
   assert.match(shortText({ have: 0, need: 5 }), /holds 0 sats/);
