@@ -13,6 +13,8 @@
 //                   `tacit-block-gpu elf/tacit-block {stdin} --groth16`, leaving {stdin}.groth16 (0x proof, 0x public values)
 //   MIN_SPENDS      build when this many spends are waiting (default 1)       MAX_WAIT_SECS   or when the oldest has waited this long (default 20)
 //   POLL_SECS       how often it looks (default 6)                            ARCHIVE_DIR     every block built is kept here (blobs need it)
+//   BATCH_GWEI      over this base fee a block waits for company (default 0.5) BATCH_TARGET    that many spends (default 4)
+//   BATCH_WAIT_SECS but no longer than this (default 90): a payer is told "Sent" once the leader holds its spend, so the wait is its settling's
 //   LEADER_CHAIN_SEED  the leader's chain keys (32 bytes, hex): every spend then pays it a fee as a note to its chain address, quoted on
 //                   GET /fee and checked before a block takes the spend (fees.mjs has the terms, FEE_*); with none, no fee is asked
 //
@@ -26,7 +28,7 @@ import { fileURLToPath } from 'node:url';
 import { keccak_256 } from '../dapp/vendor/tacit-deps.min.js';
 import { decode, decodeLand, landCalldata, selector, encode, hexOf, bytesOf } from './abi.mjs';
 import { makeRpc, send as sendTx, addressOf, num, suggestedTip } from './rpc.mjs';
-import { feeTerms, readPrice, makeFeeDesk, admitPaying } from './fees.mjs';
+import { feeTerms, readPrice, makeFeeDesk, admitPaying, blockReady } from './fees.mjs';
 import { makeBoardProver } from '../worker-relay/src/lib/board-prover.js';
 
 // one transaction at a time from the leader's key, so the seed's, a sweep's, a landing's and the hops' never take the same nonce
@@ -45,6 +47,7 @@ const NODE_BIN = env.NODE_BIN || join(HERE, '../contracts/sp1/confidential/tacit
 const PROVER = env.PROVER || 'stub';
 const MIN_SPENDS = Number(env.MIN_SPENDS || 1);
 const MAX_WAIT = Number(env.MAX_WAIT_SECS || 20) * 1000;
+const BATCH_GWEI = Number(env.BATCH_GWEI ?? 0.5), BATCH_TARGET = Number(env.BATCH_TARGET || 4), BATCH_WAIT = Number(env.BATCH_WAIT_SECS ?? 90) * 1000;
 // At most this many of its own spends a block (MAX_SPENDS): with up to 16 entries of the queue beside them, a block's calldata stays under
 // the 128 KB a node takes in one transaction (a spend's lists are about 2.4 KB). Blobs lift this.
 const MAX_SPENDS = Number(env.MAX_SPENDS || 32);
@@ -336,10 +339,10 @@ async function step() {
   }
   if (!waiting && !entries.length) { firstSeen = null; return; }
   firstSeen ??= Date.now();
-  const ready = waiting >= MIN_SPENDS || entries.length > 0 || Date.now() - firstSeen >= MAX_WAIT;
-  if (!ready) return;
-  // whose turn it is: the leader, or anyone once the window has passed with no block
+  // at once while gas is cheap; when it is dear, a short wait for other spends to share the block (fees.mjs blockReady)
   const blk = await rpc.call('eth_getBlockByNumber', ['latest', false]);
+  if (!blockReady({ waiting, forced: entries.length, firstSeen, now: Date.now(), baseFee: BigInt(blk.baseFeePerGas || 0), minSpends: MIN_SPENDS, maxWaitMs: MAX_WAIT, batchGwei: BATCH_GWEI, target: BATCH_TARGET, waitMs: BATCH_WAIT })) return;
+  // whose turn it is: the leader, or anyone once the window has passed with no block
   const now = num(blk.timestamp);
   if (now < lastLanded + window_) {
     const [lead] = await view('turn()', ['address'], [], (await view('TURNS()', ['address']))[0]);

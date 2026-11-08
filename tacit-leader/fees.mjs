@@ -149,3 +149,17 @@ export async function admitPaying({ desk, node, paying, ids, now = Math.floor(Da
   }
   return refused;
 }
+
+/// Whether to build a block now. Forced entries go at once. Spends go at once while Ethereum's base fee is at or under `batchGwei`, where a block
+/// that lands alone costs little; above it a block waits for `target` spends to share its fixed cost, at most `waitMs` after the first arrived.
+/// A payer is told "Sent" once the leader holds its spend, so a wait here holds up only its settling. `minSpends` and `maxWaitMs` are the
+/// leader's own floor on a block (MIN_SPENDS, MAX_WAIT_SECS), which still holds.
+///   { waiting, forced, firstSeen (ms, the oldest waiting spend's arrival), now (ms), baseFee (wei), minSpends, maxWaitMs, batchGwei, target, waitMs }
+export function blockReady({ waiting, forced = 0, firstSeen, now, baseFee, minSpends = 1, maxWaitMs = 20e3, batchGwei = 0.5, target = 4, waitMs = 90e3 }) {
+  if (forced > 0) return true;
+  if (!waiting) return false;
+  const waited = firstSeen == null ? 0 : now - firstSeen;
+  if (waiting < minSpends && waited < maxWaitMs) return false;
+  if (Number(baseFee) <= batchGwei * 1e9) return true;
+  return waiting >= target || waited >= waitMs;
+}
