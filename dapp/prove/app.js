@@ -563,7 +563,7 @@ async function copy() {
 // The Relay and Bitcoin tabs' code (the wallet, the header relay, the board's settles) is most of the page's weight and most visitors never
 // open those tabs, so it loads when one opens, when the wallet chip is pressed, or once the page has settled.
 let opsLoad = null;
-const loadOps = () => (opsLoad ||= import('/prove/ops.js?cb=58b49702'));
+const loadOps = () => (opsLoad ||= import('/prove/ops.js?cb=b3303505'));
 $('#wallet').addEventListener('click', async (e) => {
   if (opsLoad) return;                                             // loaded: ops.js has its own handler on the chip
   e.preventDefault();
@@ -571,7 +571,7 @@ $('#wallet').addEventListener('click', async (e) => {
   $('#wallet').click();
 }, { once: true });
 const whenIdle = (fn) => ('requestIdleCallback' in window ? requestIdleCallback(fn, { timeout: 8000 }) : setTimeout(fn, 4000));
-addEventListener('load', () => setTimeout(() => whenIdle(() => loadOps().then((m) => m.startMarket()).catch(() => {})), 2500), { once: true });
+addEventListener('load', () => setTimeout(() => whenIdle(() => loadOps().catch(() => {})), 2500), { once: true });
 
 // The node's jobs as tabs: #tab=relay or #tab=bitcoin opens one (a link from a waiting lock carries need= and why= beside it), and the
 // other jobs' reads start the first time one of their tabs opens. Each card has its own link too, /prove/#<its data-card>: that opens
