@@ -21,7 +21,7 @@ const ARTIFACTS = O.artifacts || '/evm-pool/';
 // keeper: the relay's …/evm-pool/keeper base. deployBlock: where event scans start.
 const CHAINS = O.chains || [
   { chainId: 1, name: 'Ethereum', rpc: ETH_NODES, explorer: 'https://etherscan.io', keeper: 'https://tacit-evm-pool-keepers.onrender.com/1/evm-pool/keeper', deployBlock: 26069245, confirmations: 3 },
-  { chainId: 8453, name: 'Base', rpc: ['https://mainnet.base.org', 'https://base-rpc.publicnode.com', 'https://base.drpc.org'], explorer: 'https://basescan.org', keeper: 'https://tacit-evm-pool-keepers.onrender.com/8453/evm-pool/keeper', deployBlock: 51864014, confirmations: 10 },
+  { chainId: 8453, name: 'Base', rpc: ['https://base-rpc.publicnode.com', 'https://base.drpc.org', 'https://mainnet.base.org'], explorer: 'https://basescan.org', keeper: 'https://tacit-evm-pool-keepers.onrender.com/8453/evm-pool/keeper', deployBlock: 51864014, confirmations: 10 },
   { chainId: 4663, name: 'Robinhood Chain', rpc: ['https://rpc.mainnet.chain.robinhood.com'], explorer: 'https://robinhoodchain.blockscout.com', keeper: 'https://tacit-evm-pool-keepers.onrender.com/4663/evm-pool/keeper', deployBlock: 73991661, confirmations: 10 },
 ];
 const CHAIN_PREF = 'tacit-sats-eth-chain-v1';

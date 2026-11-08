@@ -54,7 +54,7 @@ export const SEL = {
 // hour on each chain, so neither a reorg nor an endpoint or explorer running behind leaves anything out for good).
 export const CHAINS = {
   1: { rpc: ETH_LOG_NODES, bs: 'https://eth.blockscout.com', final: 75, slot: 12 },
-  8453: { rpc: ['https://mainnet.base.org', 'https://base-rpc.publicnode.com', 'https://base.drpc.org'], bs: 'https://base.blockscout.com', final: 450, slot: 2 },
+  8453: { rpc: ['https://base-rpc.publicnode.com', 'https://base.drpc.org', 'https://mainnet.base.org'], bs: 'https://base.blockscout.com', final: 450, slot: 2 },
   4663: { rpc: ['https://rpc.mainnet.chain.robinhood.com'], bs: null, final: 3600, slot: 0.1 },
 };
 export const API = 'https://api.tacit.finance';

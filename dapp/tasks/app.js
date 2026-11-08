@@ -20,7 +20,7 @@ const ETHERSCAN = 'https://etherscan.io';
 // The chains a job's steps may be on: the nodes the page reads them from, the explorer that shows them, and what a wallet needs to add one.
 const CHAINS = {
   1: { name: 'Ethereum', explorer: ETHERSCAN, hosts: RPCS },
-  8453: { name: 'Base', explorer: 'https://basescan.org', hosts: ['https://mainnet.base.org', 'https://base-rpc.publicnode.com', 'https://base.drpc.org'] },
+  8453: { name: 'Base', explorer: 'https://basescan.org', hosts: ['https://base-rpc.publicnode.com', 'https://base.drpc.org', 'https://mainnet.base.org'] },
   4663: { name: 'Robinhood Chain', explorer: 'https://robinhoodchain.blockscout.com', hosts: ['https://rpc.mainnet.chain.robinhood.com', 'https://robinhood.drpc.org'] },
 };
 // What the reader has set (Endpoints, below): nodes per chain, the rewards service and the keepers. A chain with nodes of the reader's own
