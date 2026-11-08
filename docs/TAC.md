@@ -10,6 +10,13 @@ your browser and recomputes every check, with no Tacit server or indexer asked.
 
 ## What TAC does
 
+- **Private payments, on Bitcoin and on Ethereum.** On Bitcoin, TAC's amounts are hidden by default, and the
+  shielded pool hides who paid whom as well. On Ethereum, one signed permit takes TAC onto the
+  [Tacit chain](./TACIT-BLOCKS.md), a validity rollup, which needs no ETH. There a payment to anyone costs about a
+  cent of TAC and lands in about a minute. A balance there is a number of shares of the chain's pool. Every payment leaves
+  0.002 TAC in the pool and every withdrawal 0.1% (at least 0.002 TAC), so each share is worth a little more after
+  each one. The same TAC moves between the two chains by proof, and into the private pool to swap, farm and borrow.
+  [tacit.finance/tac](https://tacit.finance/tac/).
 - **Pays for gas.** A public swap or pool entry can be paid in TAC (or the token being spent) instead of ETH.
   The holder signs one order and a solver submits it through
   [TacitGasRelay](https://etherscan.io/address/0x000000197E8f0B64463B2010e568fF42090Af88d), which takes its fee
