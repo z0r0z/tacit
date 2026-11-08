@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-iWgG/7Y7rn3MnAKReryRaeka5P5fBLG5Ggsz0trUFnM=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-itbYg/BxQeSHeeXgrD/zEaut5StsarZhLPrbk8tf2qs=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -4097,7 +4097,7 @@ function chainReset(pub = null) { CH = { pub, cfg: null, p: null, bal: null, at:
 chainReset();
 // the 32-byte lane a key's address carries: this key's, once read
 function chainLaneOf(privHex) { return CH?.lane && S.key?.priv === privHex ? CH.lane : undefined; }
-const chainMods = lazy(() => Promise.all([import('/tacit-chain-config.js?cb=803c3298'), import('/tacit-chain-client.js?cb=028b2a28'), import('/btc-pool-client.js?cb=0fc57c0e')]));
+const chainMods = lazy(() => Promise.all([import('/tacit-chain-config.js?cb=803c3298'), import('/tacit-chain-client.js?cb=524fcacf'), import('/btc-pool-client.js?cb=0fc57c0e')]));
 function chainClient() {
   if (!chainOn() || !S.key) return Promise.reject(Object.assign(new Error('Open your Tacit wallet first.'), { said: true }));
   if (CH.pub !== S.key.pubHex) chainReset(S.key.pubHex);
@@ -4125,8 +4125,9 @@ function chainScan(force = false) {
   if (mine.scanP) return force ? mine.scanP.then(() => (CH === mine ? chainScan(true) : null)) : mine.scanP;
   if (!force && mine.at && Date.now() - mine.at < 30e3) return Promise.resolve(mine.bal);
   // notes count shares of the chain's pool: what is shown is what they are worth in TAC at the leader's latest rate
-  const p = mine.scanP = chainClient().then((c) => c.scan().then(() => c.worth())).then((b) => { mine.bal = b; mine.err = null; return b; }, (e) => { mine.err = e; return null; })
-    .finally(() => { mine.scanP = null; mine.at = Date.now(); if (CH === mine) { try { if (hxSendChainAuto()) { const f = document.activeElement?.id; paintHx(); if (f) document.getElementById(f)?.focus(); } hxBalPaint(); dashSoon(); } catch { } } });
+  const p = mine.scanP = chainClient().then((c) => c.scan().then(() => { mine.settling = !!c.settling?.(); return c.worth(); })).then((b) => { mine.bal = b; mine.err = null; return b; }, (e) => { mine.err = e; return null; })
+    .finally(() => { mine.scanP = null; mine.at = Date.now(); if (CH === mine) { try { if (hxSendChainAuto()) { const f = document.activeElement?.id; paintHx(); if (f) document.getElementById(f)?.focus(); } hxBalPaint(); dashSoon();
+      if (!!mine.settling !== !!mine.settlingSeen) { mine.settlingSeen = !!mine.settling; mine.qs?.clear?.(); HX.q = null; hxQuote(); if (TACP.on) tcardQuoteSoon(); } } catch { } } });
   return p;
 }
 // Read again after a spend landed until it shows (`ok(balance)`): the leader can answer the receipt a moment before its note list has the block
@@ -10769,11 +10770,13 @@ function tcardMove(need) {
   return '';
 }
 // a chain payment's cost under the recipient's line, or why it does not fit
-async function tcardChainCost(units, eth, head) {
+async function tcardChainCost(units, eth, head, to = null) {
   const held = chainHeld(), t4 = (v) => fmt(v, 8, 4);
   if (!units) return [head, true];
   const q = await chainQuote(eth ? 'withdraw' : 'pay', units).catch(() => null), most = q?.most ?? held;
+  if (most != null && units > most && CH.settling && held != null && units < held) return [html`${head}<br>Your last payment is settling: this one goes once it lands, in about a minute.`, true];
   if (most != null && units > most) return [html`${head}<br>${tcdErr(held != null && units <= held && most > 0n ? `With its fees, up to ${t4(most)} TAC.` : `You hold ${t4(held ?? 0n)} TAC on the Tacit chain.`)}${tcardMove(units)}`, false];
+  if (to && !CH.settling) chainAhead(to, units);             // (what it can pay is proved ahead)
   return [html`${head}<br>${q ? `Fees about ${t4(q.holders + q.fee)} TAC, ${t4(q.holders)} of it to the chain’s holders` : 'A small fee'} · about a minute`, true];
 }
 async function tcardSendSay(units, my) {
@@ -10793,16 +10796,16 @@ async function tcardSendSay(units, my) {
     if (r.bad) return [tcdErr(r.bad), false];
     TCARD.eth = r.eth;
     return tcardChainCost(units, r.eth, r.eth ? html`${r.name} → <span class="mono">${short(r.to, 8)}</span> · leaves the Tacit chain there as public TAC; the leader pays it out`
-      : html`${raw} → <span class="mono">${short(r.to, 10)}</span> · <b>private, on the Tacit chain</b>`);
+      : html`${raw} → <span class="mono">${short(r.to, 10)}</span> · <b>private, on the Tacit chain</b>`, r.to);
   }
   const r = tpgRoute(raw, units);
   if (r.bad) return [tcdErr(r.bad), false];
   if (r.side === 'chain') {
-    if (r.eth) return tcardChainCost(units, true, html`Leaves the Tacit chain as public TAC at that address; the leader pays it out`);
+    if (r.eth) return tcardChainCost(units, true, html`Leaves the Tacit chain as public TAC at that address; the leader pays it out`, raw);
     const lanes = tacitLanes(raw);
     if (tacitIsMine(lanes)) return [tcdErr('That is your own Tacit address.'), false];
     if (tpgKnown(lanes) === false) return [tcdErr('This Tacit address has not opened the Tacit chain yet. They open their Tacit wallet once, then it can be paid.'), false];
-    return tcardChainCost(units, false, html`<span class="mono">${short(raw, 10)}</span> · ID <b class="num">${addressId(raw)}</b> · <b>private, on the Tacit chain</b>`);
+    return tcardChainCost(units, false, html`<span class="mono">${short(raw, 10)}</span> · ID <b class="num">${addressId(raw)}</b> · <b>private, on the Tacit chain</b>`, raw);
   }
   if (r.side === 'pool') {
     const rf = TACP.relay?.relay;
@@ -10940,7 +10943,7 @@ function tpgWhyRead(force = false) {
   if (!chainOn() || (!force && (TPGW.p || Date.now() - TPGW.at < 60e3))) return TPGW.p || Promise.resolve();
   TPGW.at = Date.now();
   return (TPGW.p = Promise.all([
-    Promise.all([import('/tacit-chain-config.js?cb=803c3298'), import('/tacit-chain-client.js?cb=028b2a28'), import('/chain/ui.js?cb=94364e10'), import('/tacit-chain-wallet.js')])
+    Promise.all([import('/tacit-chain-config.js?cb=803c3298'), import('/tacit-chain-client.js?cb=524fcacf'), import('/chain/ui.js?cb=94364e10'), import('/tacit-chain-wallet.js')])
       .then(([cf, cm, ui, w]) => { TPGW.ui = ui; TPGW.w = w; return cm.chainStatus({ cfg: cf.tacitChain(), rpcCall: (m, ps) => rpc(m, ps) }); }).then((s) => { TPGW.cs = s; }, () => {}),
     fetch(`${API}/prover/blocks`, { signal: within(15e3) }).then((r) => (r.ok ? r.json() : null))
       .then((j) => { if (Array.isArray(j?.rollup)) TPGW.roll = j.rollup.filter((b) => /^\d+$/.test(String(b.pool ?? '')) && /^\d+$/.test(String(b.shares ?? '')) && Number.isInteger(b.height)); }, () => {}),
@@ -15804,8 +15807,10 @@ async function hxChainQuote(m, units) {
   }
   if (m === 'chainin') return hxChainInQuote(units);
   const hop = m === 'chainhop', held = chainHeld(), q = S.key && chainOn() ? await chainQuote(hop ? 'hop' : 'withdraw', units || 0n).catch(() => null) : null;
-  const most = q?.most ?? held, over = !!units && most != null && units > most;
-  const line = over ? (most > 0n && held != null && units <= held ? `With its fees, up to ${fmt(most, 8, 4)} TAC.` : `You hold ${fmt(held ?? 0n, 8, 4)} TAC on the Tacit chain.`) : '';
+  // short only because a payment is settling: said, and the press waits for it to land
+  const most = q?.most ?? held, wait = !!units && CH.settling && held != null && units < held && most != null && units > most, over = !!units && most != null && units > most && !wait;
+  const line = over ? (most > 0n && held != null && units <= held ? `With its fees, up to ${fmt(most, 8, 4)} TAC.` : `You hold ${fmt(held ?? 0n, 8, 4)} TAC on the Tacit chain.`)
+    : wait ? 'Your last payment is settling: this goes once it lands, in about a minute.' : '';
   if (hop) return { out: amt, go: 'Move to the private pool', warn: over, line,
     rc: over ? [] : [['Arrives', n('TAC, private'), '', 'In the private pool, to swap, farm and borrow with'], chainFeeRow(units ? q : null, 'the exit fee, 0.1% and at least 0.002 TAC'), ['Proof', 'on this device, about half a minute'], ['Chain sees', 'an amount going into the private pool, not whose']] };
   return { out: amt, go: 'Withdraw TAC', warn: over, line,
@@ -15871,8 +15876,11 @@ async function hxSendQuote(units) {
 // TAC paid on the tacit chain, proved on this device: the holders' pool share and the leader's fee on top. To an Ethereum address (or a name with no
 // Tacit address) it leaves the chain there: a withdrawal, its exit fee on top, which the leader pays out once its block lands.
 async function hxSendChainQuote(units) {
-  const out = hxRcptKind() === 'eth', held = chainHeld(), q = await chainQuote(out ? 'withdraw' : 'pay', units).catch(() => null), most = q?.most ?? held, over = most != null && units > most;
-  return { warn: over, line: over ? (held != null && units <= held && most > 0n ? `With its fees, up to ${fmt(most, 8, 4)} TAC.` : `You hold ${fmt(held ?? 0n, 8, 4)} TAC on the Tacit chain.`) : '',
+  const out = hxRcptKind() === 'eth', held = chainHeld(), q = await chainQuote(out ? 'withdraw' : 'pay', units).catch(() => null), most = q?.most ?? held;
+  const wait = CH.settling && held != null && units < held, over = most != null && units > most && !wait;
+  if (!over && !wait && units && HX.rcpt) chainAhead(hxTo(), units);
+  return { warn: over, line: over ? (held != null && units <= held && most > 0n ? `With its fees, up to ${fmt(most, 8, 4)} TAC.` : `You hold ${fmt(held ?? 0n, 8, 4)} TAC on the Tacit chain.`)
+    : wait && most != null && units > most ? 'Your last payment is settling: this one goes once it lands, in about a minute.' : '',
     rc: over ? [] : [['They get', `${fmt(units, 8, 4)} TAC ${out ? 'at that address, public' : 'on the Tacit chain'}`],
       chainFeeRow(q, out ? 'the exit fee, 0.1% and at least 0.002 TAC' : 'a pool share, at least 0.002 TAC') || ['Fees', out ? 'the exit fee and the leader’s fee' : 'a pool share and the leader’s fee'],
       ['Proof', 'on this device, about half a minute'], out ? ['Sent out', 'by the leader once its block lands, no ETH from you'] : null, ...hxSendSees()] };
@@ -18128,10 +18136,10 @@ async function chainOutRun(run, st, units, { clear = null, after = hxMoveAfter }
       held = await chainScan(true);
       const most = (await c.quote('withdraw', units).catch(() => null))?.most;
       if (held != null && units > held) throw chainSaid(`You hold ${fmt(held, 8, 4)} TAC on the Tacit chain.`);
-      if (most != null && units > most) throw chainSaid(`With its fees, you can withdraw up to ${fmt(most, 8, 4)} TAC now.`);
+      if (most != null && units > most && !CH.settling) throw chainSaid(`With its fees, you can withdraw up to ${fmt(most, 8, 4)} TAC now.`);
       say(st, 'Proving it on this device…'); bar = proveBar(st, CHAIN_PROVE_S);
-      const slow = chainSlow(st);
-      await c.withdraw(who, units, { onStatus: (x) => { if (x.status === 'queued') { bar(); chainWaiting(st, 'Proved.'); } slow(x); } });
+      // (it waits for its block: what it credits is sent out once it lands)
+      await (await chainHanded((o) => c.withdraw(who, units, o), st, () => { bar(); chainWaiting(st, 'Proved.'); })).landing;
       bar(); run.check();
       try { run.to?.clear?.(); } catch { }
       owed = await c.owed(who);
@@ -18174,6 +18182,63 @@ async function chainOutRun(run, st, units, { clear = null, after = hxMoveAfter }
     run.fail(st, walletDeclined(e) ? chainSaid('Not sent. The TAC waits for you on Ethereum: press again to send it, from any account.') : e);
   }
 }
+// A payment is sent once the leader holds it: it checked the proof and that the notes are unspent, and keeps it through a restart. `start(o)`
+// is the client's pay or withdraw; this resolves once the leader holds it, with { landing }: the promise of its landing (the block that lands
+// it, about a minute later; in an object, since an async function's promise would wait for it). A press that finds its TAC still in a payment settling waits for that one to land, then goes (about a minute at most).
+async function chainHanded(start, st, bar) {
+  for (let i = 0; ; i++) {
+    let held;
+    const got = new Promise((r) => { held = r; }), slow = chainSlow(st);
+    const landing = start({ onStatus: (x) => { if (x.status === 'queued') { bar(); held(); } slow(x); } });
+    try { await Promise.race([got, landing]); return { landing }; }
+    catch (e) {
+      if (!e?.settling || i >= 45) throw e;
+      bar();
+      say(st, 'Your last payment is settling on Ethereum. This one goes as soon as it lands…');
+      await sleep(4000); await chainScan(true);
+      say(st, 'Proving it on this device…');
+    }
+  }
+}
+// Payments proved ahead: while a Send form names someone the chain can pay and an amount it holds, the payment is proved in the background (the
+// prover runs in a worker), so the press only hands it over. The latest asked is kept; one whose notes went another way, or whose fee the leader
+// no longer takes, is proved again at the press. `raw` is what the press is given: a Tacit address, an Ethereum address, or a name's either.
+const CHA = { key: null, p: null, t: 0 };
+const chainAheadKey = (raw, units) => `${S.key?.pubHex}|${String(raw).trim().toLowerCase()}|${units}`;
+function chainAhead(raw, units) {
+  if (!chainOn() || !S.key || !units || !raw) return;
+  const key = chainAheadKey(raw, units);
+  if (CHA.key === key) return;
+  clearTimeout(CHA.t);
+  CHA.t = setTimeout(() => {
+    if (CHA.key === key) return;
+    CHA.key = key;
+    const mine = CHA.p = chainAheadMake(raw, units).catch(() => null);
+    mine.then((p) => { if (CHA.p === mine && !p) { CHA.key = null; CHA.p = null; } });
+  }, 900);
+}
+async function chainAheadMake(raw, units) {
+  const c = await chainClient();
+  if (/^0x[0-9a-fA-F]{40}$/.test(raw)) return c.prepareWithdraw(raw, units);
+  const lanes = tacitLanes(raw);
+  return lanes ? c.preparePay(await c.recipientOf(lanes), units) : null;
+}
+// the payment proved ahead for this press (waiting for it if it is still being proved), or null: it is proved at the press then
+async function chainAheadTake(raw, units, c) {
+  if (!CHA.p || CHA.key !== chainAheadKey(raw, units)) return null;
+  const p = await CHA.p;
+  CHA.key = null; CHA.p = null;
+  return p && c.fresh(p) ? p : null;
+}
+// After "Sent": a quiet note of the landing, which turns to settled once its block is on Ethereum (or says what held it up; the spend is kept
+// here and goes on by itself)
+function chainSentLine(st, lead, landing) {
+  const mark = `l${Date.now()}${Math.random().toString(36).slice(2, 6)}`;
+  say(st, html`${lead} <span class="mute" data-landing="${mark}">Settling on Ethereum, about a minute…</span>`);
+  const at = () => st?.querySelector?.(`[data-landing="${mark}"]`);
+  landing.then(() => { const el = at(); if (el) mount(el, html`Settled on Ethereum <span class="ok">✓</span>`); chainScan(true); },
+    (e) => { if (at()) chainFailed(st, e); toast('A Tacit chain payment has not landed yet. It is kept here and goes on by itself.', true); chainClient().then(chainKeptRead).catch(() => {}); chainScan(true); });
+}
 // TAC paid on the chain to a Tacit address with a chain lane, from the Send tab
 async function hxChainPayGo(units, raw) {
   await hxSendRun((run) => chainPayRun(run, HX.ss, units, raw, { status: () => HX.ss, clear: hxSendClear, after: hxSendAfter }));
@@ -18188,15 +18253,15 @@ async function chainPayRun(run, st, units, raw, { status = () => st, clear = nul
     if (/^0x[0-9a-fA-F]{40}$/.test(raw)) {
       const c = await chainClient(), held = await chainScan(true), most = (await c.quote('withdraw', units).catch(() => null))?.most;
       if (held != null && units > held) throw chainSaid(`You hold ${fmt(held, 8, 4)} TAC on the Tacit chain.`);
-      if (most != null && units > most) throw chainSaid(`With its fees, you can send up to ${fmt(most, 8, 4)} TAC now.`);
-      say(st, 'Proving it on this device…'); bar = proveBar(st, CHAIN_PROVE_S);
-      const slow = chainSlow(st);
-      await c.withdraw(raw, units, { onStatus: (x) => { if (x.status === 'queued') { bar(); chainWaiting(st, 'Proved.'); } slow(x); } });
+      if (most != null && units > most && !CH.settling) throw chainSaid(`With its fees, you can send up to ${fmt(most, 8, 4)} TAC now.`);
+      const ahead = CHA.key === chainAheadKey(raw, units) ? (say(st, 'Proving it on this device…'), await chainAheadTake(raw, units, c)) : null;
+      if (!ahead) { say(st, 'Proving it on this device…'); bar = proveBar(st, CHAIN_PROVE_S); }
+      const { landing } = await chainHanded((o) => (ahead ? c.send(ahead, o) : c.withdraw(raw, units, o)), st, () => bar());
       bar();
-      say(st, html`<span class="ok">Sent.</span> ${fmt(units, 8, 4)} TAC left the Tacit chain for <span class="mono">${short(raw, 8)}</span>; the leader pays it out there.`);
+      chainSentLine(st, html`<span class="ok">Sent.</span> ${fmt(units, 8, 4)} TAC to <span class="mono">${short(raw, 8)}</span>, paid out there by the leader.`, landing);
       toast('Sent from the Tacit chain');
       clear?.();
-      chainSettle((b) => held == null || b < held).catch(() => {});
+      chainScan(true);
       after?.();
       return;
     }
@@ -18205,17 +18270,20 @@ async function chainPayRun(run, st, units, raw, { status = () => st, clear = nul
     if (!lanes) throw chainSaid('That Tacit address does not read. Copy it again, whole.');
     const c = await chainClient(), held = await chainScan(true), most = (await c.quote('pay', units).catch(() => null))?.most;
     if (held != null && units > held) throw chainSaid(`You hold ${fmt(held, 8, 4)} TAC on the Tacit chain.`);
-    if (most != null && units > most) throw chainSaid(`With its fees, you can send up to ${fmt(most, 8, 4)} TAC now.`);
-    say(st, 'Looking up the address…');
-    const to = await c.recipientOf(lanes).catch(() => { throw chainSaid('This Tacit address has not opened the Tacit chain yet. They open their Tacit wallet once, then it can be paid.'); });
-    say(st, 'Proving it on this device…'); bar = proveBar(st, CHAIN_PROVE_S);
-    const slow = chainSlow(st);
-    await c.pay(to, units, { onStatus: (x) => { if (x.status === 'queued') { bar(); chainWaiting(st, 'Proved.'); } slow(x); } });
+    if (most != null && units > most && !CH.settling) throw chainSaid(`With its fees, you can send up to ${fmt(most, 8, 4)} TAC now.`);
+    const ahead = CHA.key === chainAheadKey(raw, units) ? (say(st, 'Proving it on this device…'), await chainAheadTake(raw, units, c)) : null;
+    let to = null;
+    if (!ahead) {
+      say(st, 'Looking up the address…');
+      to = await c.recipientOf(lanes).catch(() => { throw chainSaid('This Tacit address has not opened the Tacit chain yet. They open their Tacit wallet once, then it can be paid.'); });
+      say(st, 'Proving it on this device…'); bar = proveBar(st, CHAIN_PROVE_S);
+    }
+    const { landing } = await chainHanded((o) => (ahead ? c.send(ahead, o) : c.pay(to, units, o)), st, () => bar());
     bar();
-    say(st, html`<span class="ok">Sent.</span> ${fmt(units, 8, 4)} TAC on the Tacit chain.`);
+    chainSentLine(st, html`<span class="ok">Sent.</span> ${fmt(units, 8, 4)} TAC on the Tacit chain.`, landing);
     toast('Sent on the Tacit chain');
     clear?.();
-    chainSettle((b) => held == null || b < held).catch(() => {});
+    chainScan(true);
     after?.();
   } catch (e) { bar(); chainFailed(st, e); run.fail(st, e); }
 }
@@ -18339,9 +18407,8 @@ async function chainHopRun(run, st, units, { clear = null, after = hxMoveAfter }
     const w = t.buildWrap({ walletPriv: priv, amountWei: (units * E10).toString(), ticker: 'TAC', index });
     run.take(kDep(w));
     say(st, 'Proving it on this device…'); bar = proveBar(st, CHAIN_PROVE_S);
-    const slow = chainSlow(st);
     try {
-      await c.hop(w.commit, units, { onStatus: (x) => { if (x.status === 'queued') { bar(); chainWaiting(st, 'Proved.'); } slow(x); } });
+      await (await chainHanded((o) => c.hop(w.commit, units, o), st, () => { bar(); chainWaiting(st, 'Proved.'); })).landing;
     } catch (e) { if (!e?.kept) t.releaseWrapIndex?.({ walletPriv: priv, ticker: 'TAC', index }); throw e; }
     bar(); hopped = true; run.check();
     try { run.to?.clear?.(); } catch { }

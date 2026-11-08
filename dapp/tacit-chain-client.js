@@ -162,14 +162,20 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
     save();
     return balance();
   }
-  const balance = () => st.notes.reduce((t, n) => t + BigInt(n.value), 0n);
+  // What the wallet holds once the spends the leader holds land: its notes less those they spend, and the change they make to this wallet
+  // (counted until the note itself is read). A spend the leader refused, or one never handed over, takes nothing.
+  const held = () => kept().filter((e) => e.queued && !e.refused && (e.nullifiers || []).length);
+  const taken = () => new Set(held().flatMap((e) => e.nullifiers.map(strip)));
+  const leafKey = (l) => BigInt(l).toString(16).padStart(64, '0');
+  const settling = () => { const have = new Set(st.notes.map((n) => leafKey(n.leaf))); return held().flatMap((e) => e.own || []).filter((o) => !have.has(leafKey(o.leaf))).reduce((t, o) => t + BigInt(o.value), 0n); };
+  const balance = () => { const t = taken(); return st.notes.filter((n) => !t.has(strip(n.nullifier))).reduce((a, n) => a + BigInt(n.value), 0n) + settling(); };
   /// The pool and shares the landing contract holds on Ethereum (a share is worth pool / shares units, with the program's virtual units):
   /// read from Ethereum, so a leader cannot make a spend pay out or buy at another rate than the chain's.
   async function rate() {
     const [pool, shares] = await Promise.all([call('pool()'), call('shares()')]);
     return { pool: big(pool), shares: big(shares) };
   }
-  const owned = () => st.notes.map((n) => ({ ...n, s: hexBytes(n.s) }));
+  const owned = () => { const t = taken(); return st.notes.filter((n) => !t.has(strip(n.nullifier))).map((n) => ({ ...n, s: hexBytes(n.s) })); };
 
   /// The leader's fee: { units, to (its chain address), shieldCap, sweepFee }, units 0 when it asks none. `shieldCap`: the most units one
   /// shield may deposit through this leader for now (its launch cap; a shield over it is dropped), null when it names none. `sweepFee`: what
@@ -197,6 +203,8 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
     const ns = owned().sort((a, b) => (BigInt(b.value) > BigInt(a.value) ? 1 : -1));
     if (ns[0] && BigInt(ns[0].value) >= need) return [ns.filter((n) => BigInt(n.value) >= need).pop()];
     if (ns.length >= 2 && BigInt(ns[0].value) + BigInt(ns[1].value) >= need) return ns.slice(0, 2);
+    // what is short only waits on a spend the leader holds: its change is spendable once it lands
+    if (settling() > 0n && balance() >= need) throw Object.assign(new Error('your last payment is settling: this one can go once it lands, in about a minute'), { settling: true });
     throw new Error(balance() >= need ? 'that amount spans more than two of your chain notes: move part of it first' : 'more than you hold on the tacit chain, with its fees');
   }
   /// The most two notes hold (a spend takes at most two).
@@ -205,14 +213,16 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
   // ── spends kept until they land: { id, kind, units, submission, extra, nullifiers, leaves, deposit?, from?, tx?, forced?, at }
   const pkey = () => `tacit-chain-pending-v1:${cfg.blocks.toLowerCase()}:${lane()}`;
   const kept = () => { try { return JSON.parse(storage?.getItem(pkey()) || '[]'); } catch { return []; } };
-  const keepAll = (list) => { try { list.length ? storage?.setItem(pkey(), JSON.stringify(list)) : storage?.removeItem?.(pkey()); } catch {} };
+  // (an empty list is written as one where a storage has no removeItem, so a spend let go is never read back)
+  const keepAll = (list) => { try { if (list.length || !storage?.removeItem) storage?.setItem(pkey(), JSON.stringify(list)); else storage.removeItem(pkey()); } catch {} };
   const idOf = (submission) => strip(hx(sha256(concatBytes(hexBytes(submission.publics), hexBytes(submission.data)))));
   function remember(spent, meta) {
     const id = idOf(spent.submission);
     const list = kept().filter((e) => e.id !== id);
     const old = kept().find((e) => e.id === id);
     const leaves = [5, 6, 7].map((i) => '0x' + strip(spent.submission.publics).slice(64 * i, 64 * i + 64)).filter((l) => l !== ZERO_LEAF);
-    const e = { ...old, ...meta, id, submission: spent.submission, nullifiers: spent.nullifiers || [], leaves, at: old?.at ?? Date.now() };
+    const own = (spent.created || []).filter((c) => c.self && BigInt(c.value) > 0n).map((c) => ({ leaf: '0x' + BigInt(c.leaf).toString(16).padStart(64, '0'), value: String(c.value) }));
+    const e = { ...old, ...meta, id, submission: spent.submission, nullifiers: spent.nullifiers || [], leaves, ...(own.length || !old?.own ? { own } : {}), at: old?.at ?? Date.now() };
     if (spent.deposit) e.deposit = { shares: String(spent.deposit.shares), amount: String(spent.deposit.amount), cx: spent.deposit.cx, cy: spent.deposit.cy, body: spent.deposit.body };
     list.push(e);
     keepAll(list);
@@ -236,13 +246,14 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
     let r;
     try { r = await api('POST', '/spend', { ...spent.submission, ...extra }); } catch { throw keptErr(new Error('the Tacit chain’s leader did not answer'), e); }
     if (!r.ok) throw keptErr(new Error(r.error || `the leader refused the spend (${r.status})`), e);
+    mark(e.id, { queued: true, refused: false });
     onStatus?.({ id: r.id, status: 'queued', kept: e });
     const t0 = Date.now();
     let slow = false, looked = t0;
     for (;;) {
       const rc = await api('GET', `/receipt/${r.id}`).catch(() => null);
       if (rc?.ok && rc.status === 'landed') break;
-      if (rc?.ok && rc.status === 'refused') throw keptErr(new Error(rc.error || 'the leader refused the spend'), e);
+      if (rc?.ok && rc.status === 'refused') { mark(e.id, { refused: true }); throw keptErr(new Error(rc.error || 'the leader refused the spend'), e); }
       if (rc && !rc.ok && rc.status === 404) {
         if (await settled(e).catch(() => null)) break;
         throw keptErr(new Error('the leader no longer has this spend'), e);
@@ -253,6 +264,7 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
       if (Date.now() - t0 > timeoutMs) throw keptErr(new Error('not landed yet: it stays with the leader, and lands when a block takes it'), e);
       await new Promise((ok) => setTimeout(ok, 4000));
     }
+    await scan().catch(() => {});                                   // (its change is read before the spend that makes it is let go)
     forget(e.id);
     const gone = new Set((spent.nullifiers || []).map(strip));
     st.notes = st.notes.filter((n) => !gone.has(strip(n.nullifier)));
@@ -282,6 +294,26 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
     await ready();
     return w.spend(me, { ...opts, leader });
   }
+  // ── spends proved and not handed over: { kind, units, meta?, at, spent }. One is good while the notes it spends are this wallet's and free (no other
+  // spend took them) and the leader still takes the fee it pays: a leader takes the lowest fee it quoted in its last ten minutes, so eight here.
+  // The rate it was priced at only rises, so what it pays the pool and the leader is worth no less when it lands.
+  const AHEAD_MS = 8 * 60e3;
+  async function preparePay(to, amount, o = {}) {
+    await ready();
+    const [r, f] = await Promise.all([rate(), feeNow()]);
+    const shares = sharesWorth(amount, r), pool = poolShare(r), out = feeOut(f, r);
+    const ins = inputs(shares + pool + (out[0]?.value ?? 0n));
+    return { kind: 'pay', units: amount, at: Date.now(), spent: await spend({ inputs: ins, outputs: [{ to, value: shares }, ...out], exit: { v: pool, amount: 0n, op: poolOp() }, onProgress: o.onProgress }) };
+  }
+  async function prepareWithdraw(to, amount, o = {}) {
+    if (!/^0x[0-9a-fA-F]{40}$/.test(to)) throw new Error('an Ethereum address');
+    await ready();
+    const [r, f] = await Promise.all([rate(), feeNow()]);
+    const shares = sharesToPay(amount, r), out = feeOut(f, r);
+    return { kind: 'withdraw', units: amount, meta: { to }, at: Date.now(), spent: await spend({ inputs: inputs(shares + (out[0]?.value ?? 0n)), outputs: out, exit: { v: shares, amount: BigInt(amount), to }, onProgress: o.onProgress }) };
+  }
+  const fresh = (p) => !!p?.spent && Date.now() - p.at < AHEAD_MS && (p.spent.nullifiers || []).every((nf) => owned().some((n) => strip(n.nullifier) === strip(nf)));
+  const send = (p, o = {}) => submit(p.spent, {}, { ...o, kind: p.kind, units: p.units, ...(p.meta ? { meta: p.meta } : {}) });
 
   /// The bytes TacitBlocks.force takes for a kept spend's submission, from the leader or another node (`cfg.nodes`): every byte but the
   /// hints is checked to be this spend's (hints a node got wrong only make a block pass the entry over).
@@ -312,8 +344,10 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
     recipientOf,
     /// Hands a kept spend (from `pending()`) to the leader again, and waits for it to land.
     resubmit: (e, o = {}) => submit({ submission: e.submission, nullifiers: e.nullifiers }, e.extra || {}, { kind: e.kind, units: e.units, ...o }),
-    /// What this wallet's notes are worth now, in units.
+    /// What this wallet's notes are worth now, in units: as it will be once the spends the leader holds land.
     worth: async () => worthOf(balance(), await rate()),
+    /// Whether a spend the leader holds is still to land (its change not spendable yet).
+    settling: () => settling() > 0n || held().length > 0,
     /// The spends handed over and not landed, oldest first (those that landed or whose notes went another way are dropped here).
     async pending() {
       await ready();
@@ -416,21 +450,12 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
     sweepWithPermitCalldata: (d, p) => '0x' + sel('sweepWithPermit(uint256,uint256,bytes32,bytes32,bytes32,bytes32,address,uint256,uint256,uint8,bytes32,bytes32)') + depWords(d)
       + strip(p.back).padStart(64, '0') + strip(p.owner).padStart(64, '0') + word(p.fee) + word(p.deadline) + word(p.v) + strip(p.r).padStart(64, '0') + strip(p.s).padStart(64, '0'),
     /// Pays `to` notes worth `amount` units, giving the chain's holders their pool share and the leader its fee.
-    async pay(to, amount, o = {}) {
-      await ready();
-      const [r, f] = await Promise.all([rate(), feeNow()]);
-      const shares = sharesWorth(amount, r), pool = poolShare(r), out = feeOut(f, r);
-      const ins = inputs(shares + pool + (out[0]?.value ?? 0n));
-      return submit(await spend({ inputs: ins, outputs: [{ to, value: shares }, ...out], exit: { v: pool, amount: 0n, op: poolOp() }, onProgress: o.onProgress }), {}, { ...o, kind: 'pay', units: amount });
-    },
+    pay: async (to, amount, o = {}) => send(await preparePay(to, amount, o), o),
     /// Withdraws exactly `amount` units to an Ethereum address (the exit fee and the leader's on top, in shares).
-    async withdraw(to, amount, o = {}) {
-      if (!/^0x[0-9a-fA-F]{40}$/.test(to)) throw new Error('an Ethereum address');
-      await ready();
-      const [r, f] = await Promise.all([rate(), feeNow()]);
-      const shares = sharesToPay(amount, r), out = feeOut(f, r);
-      return submit(await spend({ inputs: inputs(shares + (out[0]?.value ?? 0n)), outputs: out, exit: { v: shares, amount: BigInt(amount), to }, onProgress: o.onProgress }), {}, { ...o, kind: 'withdraw', units: amount, meta: { to } });
-    },
+    withdraw: async (to, amount, o = {}) => send(await prepareWithdraw(to, amount, o), o),
+    // A payment or withdrawal proved ahead (while its form is filled) and handed over later: `preparePay` / `prepareWithdraw` take what pay and
+    // withdraw take and prove it; `fresh(p)` says it can still go; `send(p, o)` hands it over as pay or withdraw would.
+    preparePay, prepareWithdraw, fresh, send,
     /// Exactly `amount` units into the confidential pool as its deposit for `commit` (a fresh one, which the pool's wrap then takes in).
     /// Once it lands it is kept until it is sent on (`hopsWaiting`).
     async hop(commit, amount, o = {}) {

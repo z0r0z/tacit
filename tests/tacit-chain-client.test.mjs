@@ -42,7 +42,7 @@ async function landBlock() {
   assert.ok((await api('POST', '/landed', { words, leaves, memos, nullifiers: b.lists.nullifiers })).ok);
   return b;
 }
-const store = () => { const m = new Map(); return { getItem: (k) => m.get(k) ?? null, setItem: (k, v) => m.set(k, v), m }; };
+const store = () => { const m = new Map(); return { getItem: (k) => m.get(k) ?? null, setItem: (k, v) => m.set(k, v), removeItem: (k) => m.delete(k), m }; };
 
 try {
   for (let i = 0; i < 60; i++) { try { await fetch(LEADER + '/state'); break; } catch { await new Promise((r) => setTimeout(r, 500)); } }
@@ -87,11 +87,29 @@ try {
   const forged = (await secp.signAsync(keyMessage(bobKey, bytes(bobAddr)), new Uint8Array(32).fill(0x33))).toCompactRawBytes();
   assert.ok(!(await api('POST', '/address', { address: bobAddr, key: hx(bobKey), sig: hx(forged) })).ok, 'a signature by another key is refused');
   await assert.rejects(alice.recipientOf({ btc: { spendPub: secp.getPublicKey(new Uint8Array(32).fill(0x33), true) } }), /not opened the Tacit chain/);
-  await Promise.all([alice.pay(to, 300n * T), landBlock()]);
+  // once the leader holds the payment (before its block lands) Alice's wallet reads as it will after: her note taken, her change counted;
+  // a payment straight after it, with no other note, waits for that change
+  let queued; const held = new Promise((r) => { queued = r; });
+  const p1 = alice.pay(to, 300n * T, { onStatus: (x) => { if (x.status === 'queued') queued(); } });
+  await held;
   const payShares = sharesWorth(300n * T, r0);
+  assert.equal(alice.balance(), sh.deposit.shares - payShares - poolShare(r0), 'a payment the leader holds reads as landed');
+  assert.ok(alice.settling(), 'and it is settling');
+  await assert.rejects(alice.pay(to, 1n * T), /settling/, 'a payment straight after it waits for its change');
+  await Promise.all([p1, landBlock()]);
+  assert.ok(!alice.settling(), 'landed: nothing settles');
   assert.equal(await alice.scan(), sh.deposit.shares - payShares - poolShare(r0));
   assert.equal(await bob.scan(), payShares);
   assert.ok(await bob.worth() >= 300n * T, 'bob holds at least what alice paid');
+
+  // a payment proved ahead (while a form is filled) is handed over later as it was proved; one proved from the same note goes stale once that
+  // note is spent, and is not sent (Alice pays herself here: her wallet loses exactly the holders' pool share)
+  const self = await alice.address(), rA = await alice.rate(), before = await alice.scan();
+  const ahead = await alice.preparePay(self, 5n * T), twin = await alice.preparePay(self, 6n * T);
+  assert.ok(alice.fresh(ahead) && alice.fresh(twin), 'proved ahead, both can go');
+  await Promise.all([alice.send(ahead), landBlock()]);
+  assert.equal(await alice.scan(), before - poolShare(rA), 'the payment proved ahead landed as proved');
+  assert.ok(!alice.fresh(twin), 'the other spends a note that went: it is proved again');
 
   // a client made again from the same storage resumes from where its scan stopped
   const again = makeChainClient({ cfg, rpcCall, priv: new Uint8Array(32).fill(0x11), system, storage: aliceStore });
@@ -109,6 +127,7 @@ try {
   assert.equal(BigInt('0x' + b2.lists.hops.slice(2 + 64, 2 + 128)), 100n * T, 'the hop is exactly 100 TAC, as the confidential pool needs');
   await bob.scan();
   await assert.rejects(bob.pay(to, 1000n * T), /more than you hold/);
+  assert.ok(!bob.settling(), 'nothing of Bob\'s settles once his spends landed');
   const r3 = await bob.rate();
   assert.equal(r3.pool, 1000n * T - 220n * T, 'the pool lost exactly what left');
   console.log(JSON.stringify({ ok: true, aliceTac: String(worthOf(again.balance(), r3)), bobTac: String(worthOf(bob.balance(), r3)), rate: String(r3.pool * 10n ** 8n / r3.shares) }));
