@@ -1,6 +1,6 @@
 // The front page keeps its own copy of where the tacit chain is (TACIT_CHAIN_PAGE), so a page without the chain loads nothing of it: the copy must
 // be tacit-chain-config.js's TACIT_CHAIN, and a leader set there must be in the connect-src of every page that talks to it (the front page and
-// /chain/, which reads the config module itself). tools/tacit-chain-golive.mjs sets all of it.
+// TAC's page, /tac/, made from it, which reads the chain's figures). tools/tacit-chain-golive.mjs sets all of it.
 //   node tests/tacit-chain-page.test.mjs
 import assert from 'node:assert';
 import { readFileSync } from 'node:fs';
@@ -14,7 +14,7 @@ const copy = Function(`return (${m[1]})`)();
 assert.deepEqual(copy, TACIT_CHAIN, 'the page\'s copy is the config\'s');
 assert.ok((TACIT_CHAIN.blocks == null) === (TACIT_CHAIN.leader == null), 'the config names both the contract and the leader, or neither');
 const connect = (html) => /connect-src ([^;"]+)/.exec(/<meta http-equiv="Content-Security-Policy" content="([^"]+)"/.exec(html)[1])[1].trim().split(/\s+/);
-for (const rel of ['index.html', 'chain/index.html']) {
+for (const rel of ['index.html', 'tac/index.html']) {
   const list = connect(read(rel));
   assert.ok(!list.includes('https:') && !list.includes('*'), `${rel}: connect-src names its hosts`);
   if (TACIT_CHAIN.leader) {

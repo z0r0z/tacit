@@ -44,7 +44,8 @@ const PAY_ETH_HTML = join(DAPP_DIR, 'pay', 'eth', 'index.html');   // tacit pay'
 const CEREMONY_HTML = join(DAPP_DIR, 'ceremony', 'index.html');     // the EVM pool's trusted-setup page: one classic inline script, CSP-hash-pinned
 const SECRET_SATS_HTML = join(DAPP_DIR, 'secret-sats', 'index.html'); // the lite paper's viewer, likewise
 const TACIT_V1_HTML = join(DAPP_DIR, 'tacit-v1', 'index.html');
-const TAC_HTML = join(DAPP_DIR, 'tac', 'index.html');            // /tac/, which sends a link made for it on to TAC's home on the front page     // the whitepaper's viewer, likewise
+const TAC_HTML = join(DAPP_DIR, 'tac', 'index.html');            // /tac/, TAC's page: the front page made for that address (tacPage below)
+const CHAIN_HTML = join(DAPP_DIR, 'chain', 'index.html');        // /chain/, which sends a link made for it on to TAC's page
 const OUT_DIR    = join(HERE, 'out');                        // build artifacts (gitignored)
 const BR_OUT     = join(OUT_DIR, 'tacit.js.br');             // brotli-q11 copy for the edge route
 
@@ -175,8 +176,8 @@ const SATS_CB_FILES = ['sats/join-worker.js', 'sats/mix.js', 'sats/secret.js', '
 const WELD_CB_FILES = ['btc-borrow.js', 'btcswap-page.js', 'walletconnect.js', 'evm-pool-sync-worker.js', 'holding-prove-worker.js', 'tac/sats.js', 'tac/claim.js', 'tac/pool.js', 'index.html', 'weld/stats/index.html'];
 // dapp/pay/ and dapp/pay/eth/ are built the same way as weld: one page each, every import in its inline module.
 const PAY_CB_FILES = ['private-route.js', 'pay/index.html', 'pay/eth/index.html'];
-// dapp/tac/ holds TAC's Bitcoin pool, which the front page draws in TAC's home: pool.js lazy-imports sats.js and claim.js, so those are
-// hashed first, then pool.js (and the front page, in the weld walk above). /tac/ itself only sends a link on to the front page.
+// dapp/tac/ holds TAC's Bitcoin pool, which TAC's page draws: pool.js lazy-imports sats.js and claim.js, so those are hashed first, then pool.js
+// (and the front page, in the weld walk above). /tac/ itself is the front page made for its address (tacPage below).
 const TAC_CB_FILES = ['tac/sats.js', 'tac/claim.js', 'tac/pool.js'];
 // dapp/trade/ is the TAC trade page: its modules are hashed first (the venues module and the order book it imports are the shared ones the
 // front page uses, so their tokens come out the same), then app.js, then the page that loads it.
@@ -191,8 +192,8 @@ const TASKS_CB_FILES = ['tasks/verify.js', 'tasks/app.js', 'tasks/index.html'];
 const DISCORD_CB_FILES = ['discord/message.js', 'discord/holdings.js', 'discord/app.js', 'discord/index.html'];
 // dapp/fast/ is where TAC on Bitcoin goes to the private balance through a provider: its wiring and its page logic first, then app.js, then the page.
 const FAST_CB_FILES = ['fast/want.js', 'fast/wire.js', 'fast/ui.js', 'fast/provide.js', 'fast/app.js', 'fast/index.html'];
-// dapp/chain/ is the tacit chain's page: its drawing first, then app.js, then the page.
-const CHAIN_CB_FILES = ['chain/ui.js', 'chain/app.js', 'chain/index.html'];
+// dapp/chain/ui.js draws the tacit chain's figures (TAC's page reads its helpers); /chain/ itself sends a link on to TAC's page.
+const CHAIN_CB_FILES = ['chain/ui.js'];
 // dapp/prove/ starts and pauses proving on this computer: its words, then app.js (which also takes community-prove.js), then the page.
 const PROVE_CB_FILES = ['community-prove.js', 'prove/view.js', 'prove/chain.js', 'prove/invader.js', 'prove/ops.js', 'prove/app.js', 'prove/index.html'];
 // dapp/build/ is the page for builders: its one script, then the page.
@@ -222,6 +223,34 @@ const RELAY_CB_FILES = ['relay/abi.js', 'relay/open.js', 'relay/prove.js', 'rela
 const TRADE_PAGE = 'trade/index.html', TRADE_ASSETS = [['tac', 'trade/tac/index.html']];
 const tradeAssetPage = (slug) => readFileSync(join(DAPP_DIR, TRADE_PAGE), 'utf8').replaceAll('https://tacit.finance/trade/"', `https://tacit.finance/trade/${slug}/"`)
   .replace('<head>', `<head>\n<!-- Made from /trade/index.html by \`npm run build\` (build/build.mjs): edit that file, not this one. -->`);
+// TAC's page, /tac/, is the front page at TAC's address: the same document and module, which draws TAC's page when its address is /tac/, so a Tacit
+// key opened on either is open on both (it is held in memory only) and moving between them loads nothing again. tac/index.html is made from
+// index.html here, differing only in the head's name for it and a mark on <html> that lays it out as TAC's page before the module runs; it is
+// made last, once index.html's tokens and pin are final, and `--verify-only` fails when it is not what this makes.
+const TAC_PAGE_DESC = 'TAC: one private currency on Bitcoin and Ethereum.';
+const TAC_PAGE_SWAPS = [
+  ['<html lang="en">', '<html lang="en" data-page="tac">'],
+  ['<title>tacit defi</title>', '<title>tacit TAC</title>'],
+  ['<link rel="canonical" href="https://tacit.finance/">', '<link rel="canonical" href="https://tacit.finance/tac/">'],
+  ['<meta property="og:url" content="https://tacit.finance/">', '<meta property="og:url" content="https://tacit.finance/tac/">'],
+  ['<meta property="og:title" content="tacit defi">', '<meta property="og:title" content="tacit TAC">'],
+];
+function tacPageOf(text) {
+  for (const [a, b] of TAC_PAGE_SWAPS) {
+    if (text.split(a).length !== 2) throw new Error(`index.html has no single ${a}: update TAC_PAGE_SWAPS in build/build.mjs`);
+    text = text.replace(a, b);
+  }
+  const desc = /(<meta (?:name="description"|property="og:description") content=")[^"]*(">)/g;
+  if ((text.match(desc) || []).length !== 2) throw new Error('index.html should have one description and one og:description: update tacPageOf in build/build.mjs');
+  return text.replace(desc, (m, a, b) => `${a}${TAC_PAGE_DESC}${b}`)
+    .replace('<head>', '<head>\n<!-- Made from /index.html by `npm run build` (build/build.mjs): edit that file, not this one. -->');
+}
+function tacPage(write) {
+  const want = tacPageOf(readFileSync(WELD_HTML, 'utf8')), got = existsSync(TAC_HTML) ? readFileSync(TAC_HTML, 'utf8') : null;
+  if (got === want) return [];
+  if (write) writeFileSync(TAC_HTML, want);
+  return ['tac/index.html is not /index.html made for /tac/'];
+}
 function tradeAssetPages(write) {
   const drift = [];
   for (const [slug, rel] of TRADE_ASSETS) {
@@ -307,7 +336,7 @@ function pageCacheBust(files, write) {
 // A page whose script is a file (a CSP without inline script) has a `<!-- warm:begin --><!-- warm:end -->` block instead: the same links inside an inert
 // <template>, which the script clones into the head. The root of this group may be named by the page's own modules rather than by the page.
 // Generated here so it cannot go stale; --verify-only reports a block that no longer matches.
-const PRELOAD_PAGES = ['index.html', 'pay/index.html', 'pay/eth/index.html', 'trade/index.html', 'teth/index.html', 'cbtc/index.html', 'vault/index.html', 'tasks/index.html', 'splitter/index.html', 'relay/index.html', 'etch/index.html', 'assets/index.html', 'rewards/index.html', 'bridge/index.html', 'discord/index.html', 'fast/index.html', 'prove/index.html', 'chain/index.html'];
+const PRELOAD_PAGES = ['index.html', 'pay/index.html', 'pay/eth/index.html', 'trade/index.html', 'teth/index.html', 'cbtc/index.html', 'vault/index.html', 'tasks/index.html', 'splitter/index.html', 'relay/index.html', 'etch/index.html', 'assets/index.html', 'rewards/index.html', 'bridge/index.html', 'discord/index.html', 'fast/index.html', 'prove/index.html'];
 const STATIC_IMPORT = /(?:^|[\n;}])\s*(?:import|export)\s*(?:[^'"();]*?\sfrom\s*)?(['"])([^'"]+)\1/g;
 const WARM_BLOCK = /<!-- warm:begin -->[\s\S]*?<!-- warm:end -->/;
 const HEAD_BLOCK = /<!-- preload:begin -->[\s\S]*?<!-- preload:end -->/, LATER_BLOCK = /\/\/ preload-later:begin\n[\s\S]*?\/\/ preload-later:end/, INTENT_BLOCK = /\/\/ preload-intent:begin\n[\s\S]*?\/\/ preload-intent:end/;
@@ -479,7 +508,7 @@ const PINNED_PAGES = [
   { name: 'ceremony/index.html', file: CEREMONY_HTML, script: INLINE_CLASSIC, ...HASH_ONLY },
   { name: 'secret-sats/index.html', file: SECRET_SATS_HTML, script: INLINE_CLASSIC, ...HASH_ONLY },
   { name: 'tacit-v1/index.html', file: TACIT_V1_HTML, script: INLINE_CLASSIC, ...HASH_ONLY },
-  { name: 'tac/index.html', file: TAC_HTML, script: INLINE_CLASSIC, ...HASH_ONLY },
+  { name: 'chain/index.html', file: CHAIN_HTML, script: INLINE_CLASSIC, ...HASH_ONLY },
   // the token pools' admin page: one classic inline script, which sends what the owner presses from their wallet
   { name: 'admin/token-pools/index.html', file: join(DAPP_DIR, 'admin', 'token-pools', 'index.html'), script: INLINE_CLASSIC, ...HASH_ONLY },
   // the proof market's deploy page: one classic inline script, which sends the CreateX deployment the owner presses from their wallet
@@ -554,7 +583,7 @@ async function main() {
     if (gotPreboot !== wantPreboot) drift.push(`classic.html preboot.js ?cb=${gotPreboot} but sha256(dapp/preboot.js)=${wantPreboot}`);
     if (gotSw !== wantSw) drift.push(`sw.js CACHE_VERSION suffix ${gotSw} but sha256(vendor‖prf-wallet)=${wantSw}`);
     drift.push(...siteChrome(false), ...pageCacheBust(SATS_CB_FILES, false), ...pageCacheBust(REWARDS_CB_FILES, false), ...pageCacheBust(BRIDGE_CB_FILES, false), ...pageCacheBust(WELD_CB_FILES, false), ...pageCacheBust(TAC_CB_FILES, false), ...btcMarketCss(false), ...tethPageStyle(false), ...pageCacheBust(TRADE_CB_FILES, false), ...tradeAssetPages(false), ...pageCacheBust(VAULT_CB_FILES, false), ...pageCacheBust(TASKS_CB_FILES, false), ...pageCacheBust(DISCORD_CB_FILES, false), ...pageCacheBust(FAST_CB_FILES, false), ...pageCacheBust(CHAIN_CB_FILES, false), ...pageCacheBust(PROVE_CB_FILES, false), ...pageCacheBust(BUILD_CB_FILES, false), ...pageCacheBust(SWAP_CB_FILES, false), ...pageCacheBust(ETCH_CB_FILES, false), ...pageCacheBust(ASSETS_CB_FILES, false), ...pageCacheBust(SPLITTER_CB_FILES, false), ...pageCacheBust(RELAY_CB_FILES, false), ...pageCacheBust(PAY_CB_FILES, false));
-    drift.push(...pageImportMaps(false), ...pagePreloads(false), ...pageCacheBust(HARNESS_CB_FILES, false));
+    drift.push(...pageImportMaps(false), ...pagePreloads(false), ...pageCacheBust(HARNESS_CB_FILES, false), ...tacPage(false));
     if (drift.length) {
       console.error('✗ cache-bust tokens or preload links are stale — run `npm run build` and commit the result:');
       for (const d of drift) console.error(`    ${d}`);
@@ -639,6 +668,7 @@ async function main() {
       const v = updatePinnedCsp(page);
       if (v.digest) console.log(`• ${page.name} CSP hash: ${v.digest}${v.changed ? ' (updated)' : ' (unchanged)'}`);
     }
+    console.log(`• TAC's page: ${tacPage(true).length ? 'made again from index.html' : 'unchanged'}`);
     const swVer = updateCacheVersion(readFileSync(SW_JS), bundle, prfWallet);
     console.log(`• SW cache version: ${swVer.token}${swVer.changed ? ' (updated — will bust STATIC_CACHE)' : ' (unchanged)'}`);
     // Brotli-q11 copy for the edge-delivery route (worker handleDappBundle).

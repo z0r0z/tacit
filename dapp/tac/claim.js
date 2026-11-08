@@ -58,8 +58,8 @@ export function encodeClaim({ secret32, txid, network, pinned = false }) {
   return [LINK_VERSION, network, b64url(secret32), tx, pinned ? '1' : '0'].join('.');
 }
 
-// TAC's home on the front page opens the link (a link made before, to /tac/, is sent on there with its fragment)
-export const claimUrl = (origin, payload) => `${String(origin).replace(/\/+$/, '')}/#${FRAGMENT}=${payload}`;
+// TAC's page opens the link (one made before, to the front page's #tacclaim=, is taken there too)
+export const claimUrl = (origin, payload) => `${String(origin).replace(/\/+$/, '')}/tac/#${FRAGMENT}=${payload}`;
 
 export function decodeClaim(input) {
   if (!input || typeof input !== 'string') throw new Error('That claim link is empty.');

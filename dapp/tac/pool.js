@@ -8,6 +8,8 @@
 //   tp.claim(box, '#tacclaim=…')   a claim link's panel, drawn into `box`
 //   tp.keyChanged()                the page's key was opened, switched or locked
 //   tp.totals()                    { shielded, public } in TAC units (1e-8), null until read
+//   tp.pay(to, amount)             Send, filled with a payment the page took and pressed
+//   tp.fees(), tp.poolAddress(), tp.scan(report), tp.stats()   the relay's fee, the key's bp1… address, Scan for payments, the pool's figures
 //
 // ctx: key() → { pubHex } | null; priv() → the open key's bytes; ensureKey() returns with a key open, or shows the page's sign-in and throws
 // a quiet error; withKey(fn) → fn(T), tacit.js with the key in its wallet (the page's own turn of it); tacitAddress() → 'tacit1…' | null;
@@ -17,7 +19,7 @@
 
 const SECRET_URL = '/sats/secret.js?cb=d10eac01';
 const SATS_URL = '/tac/sats.js?cb=37cf5ec2';
-const CLAIM_URL = '/tac/claim.js?cb=67e0bca5';
+const CLAIM_URL = '/tac/claim.js?cb=dc513e91';
 const WORKER = 'https://api.tacit.finance';
 const ASSET = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
 const DECIMALS = 8;
@@ -274,13 +276,15 @@ export function makeTacPool(ctx) {
     if (found) { await ctx.withKey((t) => { t.invalidateHoldingsCache?.(); }); await loadPublic(); ctx.changed?.('bitcoin'); }
     return found;
   }
+  // (`statusId`: the panel's line to say it in, or a function the page says it with)
   async function scanEverything(statusId = 'tp-st-recv') {
+    const tell = typeof statusId === 'function' ? statusId : (m) => say(statusId, m);
     await ready();
-    say(statusId, 'Scanning…');
-    const [found] = await Promise.all([findStealth({ report: (m) => say(statusId, m) }), loadShielded()]);
+    tell('Scanning…');
+    const [found] = await Promise.all([findStealth({ report: tell }), loadShielded()]);
     if (!found) await loadPublic();
     const n = liveNotes().length;
-    say(statusId, `${n} shielded note${n === 1 ? '' : 's'}. ${found ? `${found} stealth payment${found === 1 ? '' : 's'} added to your Bitcoin balance.` : 'No new stealth payments.'}`);
+    tell(`${n} shielded note${n === 1 ? '' : 's'}. ${found ? `${found} stealth payment${found === 1 ? '' : 's'} added to your Bitcoin balance.` : 'No new stealth payments.'}`);
     ctx.changed?.();
   }
 
@@ -800,5 +804,25 @@ export function makeTacPool(ctx) {
     refresh: () => (unlocked() ? refreshAll() : Promise.resolve()),
     busy: () => busyId != null,
     totals: () => ({ shielded: shielded.read ? shieldedTotal() : null, public: pub.read ? publicTotal() : null }),
+    // a payment entered on the page: the Send tab filled with it, then pressed as its own button is
+    pay: (to, amount) => {
+      pick('send');
+      q('tp-send-to').value = String(to || ''); q('tp-send-amt').value = String(amount || '');
+      paintHints(); paintSendComb();
+      return busy(q('tp-send-go'), 'tp-st-send', () => doSend());
+    },
+    // the relay's fee for a payment (TAC units), null while it is not posting them
+    fees: () => loadRelay().then(() => ({ relay: relayLive && relayFee != null ? relayFee : null })),
+    // the key's pool address (bp1…), null with no key open
+    poolAddress: () => loadSecret().then(() => (unlocked() ? wallet()?.addressString || null : null)),
+    // Scan for payments, its words said through `report`
+    scan: (report) => scanEverything(report),
+    // the pool as anyone sees it: its notes (the anonymity set), its transactions, the Bitcoin block it has read and its proof system
+    stats: async () => {
+      await loadSecret();
+      const st = await S.poolClientFor('mainnet').status(), feed = await poolFeed().catch(() => null);
+      return { set: Number(st.leafCount || 0), height: Number(st.height || 0), proof: st.proofSystem === 'halo2-kzg-bn254' ? 'Halo2·KZG' : (st.proofSystem || '—'),
+        txs: feed ? new Set(feed.filter((n) => n.txid).map((n) => n.txid)).size : null };
+    },
   };
 }
