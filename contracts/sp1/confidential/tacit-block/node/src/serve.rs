@@ -10,7 +10,8 @@
 //!   GET  /leaf/0x…               where a leaf is in the note tree (a spend landed once its notes are there)
 //!   GET  /receipt/ID             a submission: queued, landed in a block, or refused (with why)
 //!   GET  /mempool                the ids of what is waiting
-//!   GET  /fee                    the leader's fee: { address (its chain address), fee (units of 1e-8 TAC), at }, fee "0" when it asks none
+//!   GET  /fee                    the leader's terms, as its leader posted them: { address (its chain address), fee (units of 1e-8 TAC a
+//!                                spend), sweepFee (TAC wei a permitted shield adds), shieldCap (units), at, window }, fee "0" when it asks none
 //!   POST /address                { address } → { hash }      GET /address/<hash> → { address }   (the chain lane's directory)
 //!   POST /spend                  { publics, proof, data, memos[], opMemos[], back?, permit? } → { id }   (back: a shield paid to its inbox;
 //!                                permit: { owner, fee, deadline, v, r, s, back } a holder's permit for it, TacitBlocks.sweepWithPermit)

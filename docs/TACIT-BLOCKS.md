@@ -154,6 +154,23 @@ shield only once its deposit is waiting there.
 A leader (`tacit-leader/`) admits only what can land: a block that held a spend of another asset, a deposit not on L1 or a root no block ended at
 would revert and could be made to by anyone. Its `/build` and `/landed` routes are its own.
 
+### A leader's API
+
+What a wallet uses is public, served by the leader's node (`tacit-block-node`; the live one is https://tacit-chain-leader.onrender.com):
+
+* `GET /state`: height, state digest, note root, counts, the forced queue's position, the chain binding, and `pool` and `shares` (the rate a
+  deposit buys at and an exit pays at).
+* `GET /notes?from=N&limit=M`, `/path/N`, `/spent/0x…`, `/leaf/0x…`, `/receipt/ID`, `/mempool`: what a wallet scans and follows.
+* `GET /fee`: `{ address, fee, sweepFee, shieldCap, at, window }`. A spend pays `fee` (units of 1e-8 TAC) in a note to `address`, the leader's
+  chain address. `sweepFee` (TAC's own wei) is what a shield paid by permit adds on top, for the leader to send it in (`sweepWithPermit`):
+  the gas of the sweep at the base fee and TAC's price, with a margin. `shieldCap` (units) is the most one shield may deposit through this
+  leader for now, the launch cap. A quote is honoured for `window` seconds.
+* `POST /spend` (a spend, with `back` for a shield paid to its inbox and `permit` for one paid by permit), `POST /settle`, `POST /address`
+  and `GET /address/<hash>` (the chain lane's directory), and `POST /forced`: the bytes `TacitBlocks.force` takes for a spend no leader takes.
+
+What waits lives in the leader's memory: a restart drops it, and wallets hand their kept spends over again the next time they open. Nothing
+is lost, as a deposit or a paid inbox waits on Ethereum; a leader replays every landed block from the contract's events when it starts.
+
 ## What each party sees
 
 * **Everyone**: deposits, exits and hops (amounts and addresses, on Ethereum), the count of notes and nullifiers per block, the time.
