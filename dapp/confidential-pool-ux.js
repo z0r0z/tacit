@@ -1,8 +1,9 @@
 
 import { getConfidentialDeployment, activeNetwork, syncProtectedOutpoints, shownTicker } from './confidential-deployments.js';
 import { bodyType } from './rpc-body.js';
-import { hedgedRpc, nodeHealth } from './trade/rpc.js';
+import { hedgedRpc, nodeHealth, QUOTA } from './trade/rpc.js';
 import { walletNode, connectedInjected, logSpan, refuses } from './eth-nodes.js';
+import { pace } from './rpc-pace.js';
 import { makeEvmAccount } from './evm-account.js';
 import { makeConfidentialIndexer } from './confidential-indexer.js';
 import { makeConfidentialEvmLog } from './confidential-evm-log.js';
@@ -134,9 +135,9 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // the first answer taken. What each node did is remembered for the visit (a node that failed rests and is asked last), and so is the widest range of
   // logs each serves, so the next page starts from what this one learned. The connected wallet's own node is the last resort for a read.
   const _store = (() => { try { return globalThis.localStorage || null; } catch { return null; } })();
-  const _health = nodeHealth({ store: _store, key: `tacit-pool-rpc-rest-v1:${cfg.chainId}` });
+  const _health = nodeHealth({ store: _store, key: `tacit-pool-rpc-rest-v1:${cfg.chainId}`, shared: _fetch || true });
   // logs keep their own: a node that refuses old or wide ranges (publicnode's archive, a plan's cap no narrower range meets) rests for logs only
-  const _logHealth = nodeHealth({ store: _store, key: `tacit-pool-rpc-logrest-v1:${cfg.chainId}`, strict: true });
+  const _logHealth = nodeHealth({ store: _store, key: `tacit-pool-rpc-logrest-v1:${cfg.chainId}`, strict: true, shared: _fetch || true });
   let _walletGet = null;
   const _wallet = walletNode(() => (_walletGet ? _walletGet() : Number(cfg.chainId) === 1 ? connectedInjected() : null));
   const SPANS = `tacit-pool-rpc-span-v1:${cfg.chainId}`;
@@ -147,7 +148,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   async function _post(ep, method, params, ms = 10000) {
     let r;
     try {
-      r = await _fetch(ep.url, { method: 'POST', headers: { 'content-type': bodyType(ep.url) }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), signal: AbortSignal.timeout(ms) });
+      const signal = AbortSignal.timeout(ms);
+      r = await pace(ep.url, method, () => _fetch(ep.url, { method: 'POST', headers: { 'content-type': bodyType(ep.url) }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), signal }), signal);
     } catch (e) {
       throw Object.assign(new Error((e && e.message) || String(e)), { kind: 'transport', timeout: !!e && (e.name === 'TimeoutError' || e.name === 'AbortError') });
     }
@@ -155,7 +157,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     try { j = await r.json(); } catch { }
     if (j && j.error) {
       const msg = String(j.error.message || 'rpc error');
-      throw Object.assign(new Error(msg), { kind: r.status === 429 || /rate limit|too many requests|usage limit|requests per/i.test(msg) ? 'busy' : 'rpc' });
+      throw Object.assign(new Error(msg), { kind: r.status === 429 || /rate limit|too many requests|usage limit|requests per/i.test(msg) ? 'busy' : 'rpc', quota: QUOTA.test(msg) });
     }
     if (!r.ok || !j) throw Object.assign(new Error(`rpc ${r.status}`), { kind: r.status === 429 ? 'busy' : 'http' });
     return j.result;
@@ -208,7 +210,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
             } catch (e) {
               lastErr = e;
               const n = _narrower(e, span);
-              if (!n) { _logHealth.fail(ep.url, e.kind === 'busy' ? 'limited' : e.timeout ? 'slow' : 'down'); break; }
+              if (!n) { _logHealth.fail(ep.url, e.quota ? 'quota' : e.kind === 'busy' ? 'limited' : e.timeout ? 'slow' : 'down'); break; }
               if (n.cap && n.cap < ep.span) { ep.span = n.cap; _keepSpan(ep); }
               span = n.span;
             }

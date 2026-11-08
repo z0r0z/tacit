@@ -19,6 +19,7 @@ import { makeBtcShieldedPool } from './btc-shielded-pool.js';
 import { poolAsset, extDataHash } from './evm-pool-zk.js';
 import { sharedSecrets } from './evm-pool-scan.js';
 import { refuses } from './eth-nodes.js';
+import { pace } from './rpc-pace.js';
 import { depositIntent, receiveKeys, receivedNote, receiveBoxAddress, sweepWitness, callIntent, callEscrowAddress, callIntentJson, callIntentAbi, CALL_INTENT_SIG, calldata, selector, bridgeEthCall, L2_BRIDGES, RECEIVE_FEE_BPS, RECEIVE_INDEX } from './evm-pool-gateway.js';
 
 export const MEMO_LEN = 65;
@@ -230,7 +231,8 @@ export function jsonRpc(urls, fetchImpl = globalThis.fetch.bind(globalThis), { t
     for (const at of [...turn.filter((i) => !refused(i)), ...turn.filter(refused)]) {
       const url = list[at];
       try {
-        const r = await fetchImpl(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params }), signal: AbortSignal.timeout?.(timeoutMs) });
+        const signal = AbortSignal.timeout?.(timeoutMs);
+        const r = await pace(url, method, () => fetchImpl(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params }), signal }), signal);
         const j = await r.json();
         if (j.error) throw Object.assign(new Error(j.error.message || 'rpc error'), { rpc: j.error });
         if (j.result === undefined) throw new Error(`rpc: no result (HTTP ${r.status})`);

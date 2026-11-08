@@ -6,8 +6,8 @@
 // Link: /sats#eth=<chain id>[&do=send|withdraw] opens this panel on that chain, at that form.
 
 import { makeEvmPoolZk } from '/evm-pool-zk.js?cb=2f062779';
-import { ETH_NODES } from '/eth-nodes.js';
-import { evmPoolKeys, makeEvmPoolWallet, jsonRpc } from '/evm-pool-wallet.js?cb=815abda7';
+import { ETH_NODES, BASE_NODES, ROBINHOOD_NODES } from '/eth-nodes.js';
+import { evmPoolKeys, makeEvmPoolWallet, jsonRpc } from '/evm-pool-wallet.js?cb=3e8bf2c1';
 import { vkHash } from '/evm-pool-zk-prover.js?cb=00ff69c2';
 import { poolRecipient } from '/pool-recipient.js?cb=a9311fc4';
 import { L2_BRIDGES } from '/evm-pool-gateway.js';
@@ -21,8 +21,8 @@ const ARTIFACTS = O.artifacts || '/evm-pool/';
 // keeper: the relay's …/evm-pool/keeper base. deployBlock: where event scans start.
 const CHAINS = O.chains || [
   { chainId: 1, name: 'Ethereum', rpc: ETH_NODES, explorer: 'https://etherscan.io', keeper: 'https://tacit-evm-pool-keepers.onrender.com/1/evm-pool/keeper', deployBlock: 26069245, confirmations: 3 },
-  { chainId: 8453, name: 'Base', rpc: ['https://base-rpc.publicnode.com', 'https://base.drpc.org', 'https://mainnet.base.org'], explorer: 'https://basescan.org', keeper: 'https://tacit-evm-pool-keepers.onrender.com/8453/evm-pool/keeper', deployBlock: 51864014, confirmations: 10 },
-  { chainId: 4663, name: 'Robinhood Chain', rpc: ['https://rpc.mainnet.chain.robinhood.com'], explorer: 'https://robinhoodchain.blockscout.com', keeper: 'https://tacit-evm-pool-keepers.onrender.com/4663/evm-pool/keeper', deployBlock: 73991661, confirmations: 10 },
+  { chainId: 8453, name: 'Base', rpc: BASE_NODES, explorer: 'https://basescan.org', keeper: 'https://tacit-evm-pool-keepers.onrender.com/8453/evm-pool/keeper', deployBlock: 51864014, confirmations: 10 },
+  { chainId: 4663, name: 'Robinhood Chain', rpc: ROBINHOOD_NODES, explorer: 'https://robinhoodchain.blockscout.com', keeper: 'https://tacit-evm-pool-keepers.onrender.com/4663/evm-pool/keeper', deployBlock: 73991661, confirmations: 10 },
 ];
 const CHAIN_PREF = 'tacit-sats-eth-chain-v1';
 const CACHE_NAME = 'tacit-evm-pool-artifacts-v1';

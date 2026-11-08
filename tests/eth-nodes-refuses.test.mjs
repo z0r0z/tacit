@@ -4,7 +4,7 @@
 //   node tests/eth-nodes-refuses.test.mjs
 
 import assert from 'node:assert/strict';
-import { refuses, logSpan, ETH_NODES, ETH_LOG_NODES } from '../dapp/eth-nodes.js';
+import { refuses, logSpan, ETH_NODES, ETH_LOG_NODES, BASE_NODES, ROBINHOOD_NODES } from '../dapp/eth-nodes.js';
 import { hedgedRpc } from '../dapp/trade/rpc.js';
 import { jsonRpc } from '../dapp/evm-pool-wallet.js';
 import { makeConfidentialEvmLog } from '../dapp/confidential-evm-log.js';
@@ -67,6 +67,39 @@ await test('the log list leaves out the nodes that only refuse logs (drpc) or li
   assert.ok(!ETH_LOG_NODES.includes(DRPC) && !ETH_LOG_NODES.includes(THIRDWEB));
   assert.ok(ETH_NODES.includes(DRPC) && ETH_NODES.includes(THIRDWEB));
   for (const u of [MEV, NODEREAL, PUBLIC]) assert.ok(ETH_LOG_NODES.includes(u));
+});
+
+const B_PUBLIC = 'https://base-rpc.publicnode.com', B_BLAST = 'https://base-mainnet.public.blastapi.io', B_DRPC = 'https://base.drpc.org', B_OWN = 'https://mainnet.base.org';
+const R_OWN = 'https://rpc.mainnet.chain.robinhood.com', R_DRPC = 'https://robinhood.drpc.org';
+
+await test('Base and Robinhood are listed once, here: Base\'s own endpoint last, Robinhood with a second node', () => {
+  assert.deepEqual(BASE_NODES, [B_PUBLIC, B_BLAST, B_DRPC, B_OWN]);
+  assert.deepEqual(ROBINHOOD_NODES, [R_OWN, R_DRPC]);
+});
+
+await test('on Base only publicnode serves logs; the others serve calls and state, and the ones that refuse logs are asked last for them', async () => {
+  for (const u of [B_BLAST, B_DRPC, R_DRPC]) assert.equal(refuses(u, 'eth_getLogs', logs(HEAD - 100, HEAD)), true, u);
+  for (const u of [B_PUBLIC, B_OWN, R_OWN]) assert.equal(refuses(u, 'eth_getLogs', logs(HEAD - 100, HEAD)), false, u);
+  for (const u of BASE_NODES) assert.equal(refuses(u, 'eth_call', [{ to: '0x00' }, hex(HEAD - 90_000)]), false, 'Base nodes keep their state: ' + u);
+  assert.equal(refuses(R_DRPC, 'eth_call', [{ to: '0x00' }, hex(HEAD - 90_000)]), true, 'Robinhood\'s second node does not keep old state');
+  assert.equal(refuses(R_OWN, 'eth_call', [{ to: '0x00' }, hex(HEAD - 90_000)]), false);
+  let n = nodes((url) => ({ result: url }));
+  assert.equal(await hedgedRpc([B_DRPC, B_BLAST, B_PUBLIC, B_OWN], 'eth_getLogs', logs(HEAD - 4000, HEAD), { fetchImpl: n.fetchImpl, hedgeMs: 0 }), B_PUBLIC);
+  assert.deepEqual(n.asked, [B_PUBLIC], 'logs go to the one node that serves them, whatever order the list is in');
+  n = nodes((url) => ({ result: url }));
+  const rpc = jsonRpc(BASE_NODES, n.fetchImpl);
+  assert.equal(await rpc('eth_getLogs', logs(HEAD - 4000, HEAD)), B_PUBLIC);
+  assert.deepEqual(n.asked, [B_PUBLIC]);
+});
+
+await test('with the first node of a chain down, the next one answers a plain read, on Base and on Robinhood', async () => {
+  for (const list of [BASE_NODES, ROBINHOOD_NODES]) {
+    const n = nodes((url) => (url === list[0] ? { error: 'down' } : { result: url }));
+    const r = await hedgedRpc(list, 'eth_getBalance', ['0x00', 'latest'], { fetchImpl: n.fetchImpl, hedgeMs: 0 });
+    assert.equal(r, list[1]);
+    const m = nodes((url) => (url === list[0] ? { error: 'down' } : { result: url }));
+    assert.equal(await jsonRpc(list, m.fetchImpl)('eth_getBalance', ['0x00', 'latest']), list[1]);
+  }
 });
 
 await test('the cBTC history reads (45,000-block ranges) are not turned away from the node that has served them', () => {

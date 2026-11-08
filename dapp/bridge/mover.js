@@ -7,7 +7,7 @@ import { makeTacitSession } from '/tacit-session.js?cb=a2d34bb2';
 import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverEvery } from '/bridge-tick.js?cb=4e721860';
 import { ROUTES } from '/bridge/track.js?cb=c4ce3ac0';
 import { parseUnits } from '/trade/util.js?cb=ba5a02b1';
-import { forgetUx } from '/trade/poolux.js?cb=a1e221be';
+import { forgetUx } from '/trade/poolux.js?cb=d2ed63eb';
 import { relayWords } from '/relay-outcome.js?cb=9db7155a';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 

@@ -38,6 +38,22 @@ export const ETH_ARCHIVE_NODES = [
   'https://eth-mainnet.public.blastapi.io',
 ];
 
+// The same for the other chains the pages read, kept here once so that every page lists the same nodes in the same order (measured 2026-11-08: each pair
+// below answers the same chain id, the same contract code and a head within a few blocks).
+//   Base       publicnode serves everything (calls, state at any block, logs to 50,000 blocks); blastapi and drpc serve calls and state but answer every
+//              eth_getLogs with a 400; Base's own endpoint answers 429 to a burst, so it is the last resort
+//   Robinhood  the chain's own node wants a JSON body; drpc is a second node for calls and state (its logs are refused)
+export const BASE_NODES = [
+  'https://base-rpc.publicnode.com',
+  'https://base-mainnet.public.blastapi.io',
+  'https://base.drpc.org',
+  'https://mainnet.base.org',
+];
+export const ROBINHOOD_NODES = [
+  'https://rpc.mainnet.chain.robinhood.com',
+  'https://robinhood.drpc.org',
+];
+
 // What a node is known to turn away (measured 2026-11-08 from a browser on tacit.finance), so a read it would refuse is asked of the others first: the browser
 // lists every refused request in the console, and each costs a round trip. A node is not dropped, only asked last, so one whose limits change is still reached.
 //   logs   the most blocks one eth_getLogs may span (0: none at all)
@@ -51,6 +67,9 @@ const LIMITS = {
   '1.rpc.thirdweb.com': { logs: 2000 },
   'ethereum-json-rpc.stakely.io': { logs: 25 },
   '1rpc.io/eth': { logs: 50 },
+  'base.drpc.org': { logs: 0 },
+  'base-mainnet.public.blastapi.io': { logs: 0 },
+  'robinhood.drpc.org': { logs: 0, state: true },
 };
 const limitsOf = (url) => {
   const id = String(url).replace(/^https?:\/\//, '');
