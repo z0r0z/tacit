@@ -21,7 +21,7 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /prove/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/prove/app.js?cb=051d2c68">
+<link rel="modulepreload" href="/prove/app.js?cb=94c1d9c6">
 <link rel="modulepreload" href="/community-prove.js?cb=30714a9f">
 <link rel="modulepreload" href="/prove/view.js?cb=80de18a0">
 <link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
@@ -250,6 +250,7 @@ pre.cmd { margin: 16px 0 0; padding: 12px 14px; background: var(--field); border
 .tabs { display: flex; gap: 4px; margin: 28px 0 0; border-bottom: 1px solid var(--hair); }
 .tabs button { padding: 10px 16px; min-height: var(--tap); background: none; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; cursor: pointer; color: var(--mute); font: 500 13px/1 var(--mono); }
 .tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--orange); }
+.tabs button .tk { display: inline-block; width: 16px; height: 16px; vertical-align: -3px; margin-right: 8px; }
 @media (hover: hover) { .tabs button:hover { color: var(--ink); } }
 .tab > .cols { margin-top: 18px; }
 .tab.ops > .lede { margin: 18px 0 0; }
@@ -259,7 +260,7 @@ pre.cmd { margin: 16px 0 0; padding: 12px 14px; background: var(--field); border
   .tab.ops > #g-wait .cards { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
 
-/* the moved cards (Relay, Bitcoin, the proof market): their own panels and buttons, kept to these tabs */
+/* the moved cards (Relay, Bitcoin): their own panels and buttons, kept to these tabs */
 :root { --skel: rgba(26,26,26,.08); --skel-hi: rgba(26,26,26,.02); }
 @media (prefers-color-scheme: dark) { :root { --skel: rgba(237,229,207,.07); --skel-hi: rgba(237,229,207,.15); } }
 .ops .lede { color: var(--mute); font-size: 13px; max-width: 60ch; margin: 0 0 8px; }
@@ -323,7 +324,7 @@ pre.cmd { margin: 16px 0 0; padding: 12px 14px; background: var(--field); border
 .cols.pair { display: grid; gap: 18px; margin-top: 18px; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
 #salt-bank-h { margin: 16px 0 0; }
 @media (max-width: 820px) { .cols.pair { grid-template-columns: minmax(0, 1fr); } }
-/* the cards under the node and the feed: GPU, salts, paid orders */
+/* the cards under the node and the feed: GPU, salts */
 .side h3 { font: 400 clamp(22px, 3.6vw, 28px)/1.1 var(--serif); margin: 4px 0 0; }
 .side h3 span { color: var(--orange); }
 .side .btn { margin-top: 12px; }
@@ -331,10 +332,6 @@ pre.cmd { margin: 16px 0 0; padding: 12px 14px; background: var(--field); border
 .side .pair .btn { margin-top: 0; }
 .side .rows { margin-top: 14px; }
 .side .kv b a, .side .hint a { color: var(--ink); }
-.side.wide { margin-top: 18px; }
-.side .plan { margin: 12px 0 0; font-size: 12.5px; }
-.side .plan p { margin: 0; }
-.side pre.cmd.multi { white-space: pre; overflow-x: auto; overflow-wrap: normal; }
 /* each card's own link (/prove/#gpu): app.js puts a Link in its eyebrow or heading, which copies it */
 [data-card] { scroll-margin-top: 16px; }
 [data-card].lit { animation: lit 2.6s ease-out; }
@@ -361,8 +358,6 @@ pre.cmd { margin: 16px 0 0; padding: 12px 14px; background: var(--field); border
 .bank.scroll:focus-visible { outline-offset: 4px; border-radius: 4px; }
 .bank li .dep { color: var(--ok); font: 500 11px/1 var(--mono); margin-right: 10px; text-decoration: none; }
 @media (hover: hover) { .bank li .dep:hover { text-decoration: underline; text-underline-offset: 3px; } }
-#prove-how > summary { cursor: pointer; margin-top: 14px; font-size: 12.5px; color: var(--mute); }
-#prove-how[open] > summary { color: var(--ink); }
 #feed-idle { margin: -8px 0 18px; }
 #salt-best-h { margin-top: 16px; }
 #feed-idle a { color: var(--ink); }
@@ -621,7 +616,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
     <nav class="tabs" role="tablist" aria-label="What a node does">
       <button type="button" role="tab" id="tb-prove" aria-controls="t-prove" aria-selected="true">Prove</button>
       <button type="button" role="tab" id="tb-relay" aria-controls="t-relay" aria-selected="false">Relay</button>
-      <button type="button" role="tab" id="tb-bitcoin" aria-controls="t-bitcoin" aria-selected="false">Bitcoin</button>
+      <button type="button" role="tab" id="tb-bitcoin" aria-controls="t-bitcoin" aria-selected="false"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg>Bitcoin</button>
     </nav>
 
     <div class="tab" id="t-prove" role="tabpanel" aria-labelledby="tb-prove">
@@ -699,19 +694,6 @@ footer.sf svg.fill { width: 16px; height: 16px; }
         <ol id="salt-bank" class="bank scroll" tabindex="0" aria-label="Addresses banked for deploys"></ol>
       </section>
     </div>
-    <section class="panel side wide" id="g-prove" aria-labelledby="h-market" data-card="orders">
-      <p class="eyebrow"><span>Beside your node</span></p>
-      <h3 id="h-market">Take paid proof orders<span> · fees in TAC</span></h3>
-      <p class="hint">Holders who want a proof fast sign a fee in TAC. Your computer claims the order, proves it, and is paid from their permit once the pool accepts it.</p>
-      <div class="plan num" id="prove-box"><p><span class="sk" style="--w:22ch"></span></p></div>
-      <details id="prove-how"><summary>How to take them</summary>
-      <pre class="cmd multi"><code>curl -fsSL https://tacit.finance/prove.sh | sh   # the node, if this computer has none yet
-git clone https://github.com/src-company/tacit
-cd tacit &amp;&amp; npm ci --omit=dev
-RUNNER_KEY=0x… node tools/community-runner.mjs prove</code></pre>
-      <p class="hint">The key needs a little ETH for gas. Nothing moves unless the pool takes your proof. <a href="https://github.com/src-company/tacit/blob/main/docs/COMMUNITY-OPS.md" target="_blank" rel="noopener noreferrer">What it costs and earns</a> · <a href="https://etherscan.io/address/0x0000000033Dd45B1686Ba37e5F6e4ABDdaC17609" target="_blank" rel="noopener noreferrer">Market contract</a></p>
-      </details>
-    </section>
     </div>
 
     <div class="tab ops" id="t-relay" role="tabpanel" aria-labelledby="tb-relay" hidden>
@@ -741,7 +723,7 @@ RUNNER_KEY=0x… node tools/community-runner.mjs prove</code></pre>
 cd tacit &amp;&amp; npm ci --omit=dev
 RUNNER_KEY=0x… node tools/community-runner.mjs
 node tools/community-runner.mjs mirror   # no key: keeps the board public on Nostr</code></pre>
-      <p class="plan"><a href="https://github.com/src-company/tacit/blob/main/docs/COMMUNITY-OPS.md" target="_blank" rel="noopener noreferrer">Modes and costs</a> · <a href="https://github.com/src-company/tacit/tree/main/contracts/sp1/confidential/device-prover" target="_blank" rel="noopener noreferrer">Prove on your own device</a></p>
+      <p class="plan"><a href="https://github.com/src-company/tacit/blob/main/docs/COMMUNITY-OPS.md" target="_blank" rel="noopener noreferrer">Modes and costs</a></p>
     </div>
   </section>
     </div>
@@ -809,6 +791,6 @@ node tools/community-runner.mjs mirror   # no key: keeps the board public on Nos
 
 <div id="toast-container" class="toasts" popover="manual"></div>
 
-<script type="module" src="/prove/app.js?cb=051d2c68"></script>
+<script type="module" src="/prove/app.js?cb=94c1d9c6"></script>
 </body>
 </html>

@@ -98,7 +98,7 @@ async function run(name, { proof, simulateRevert = null, chain = '0x1', attested
         if (simulateRevert) throw Object.assign(new Error('execution reverted'), { data: simulateRevert });
         return '0x';
       }
-      if (data && data.startsWith('0x717fd7f2') && from && boardRevert) throw Object.assign(new Error('execution reverted'), { data: '0x2fb0e3e0' });
+      if (data && data.startsWith('0x717fd7f2') && from && boardRevert && (boardRevert === true || boardRevert(data.toLowerCase()))) throw Object.assign(new Error('execution reverted'), { data: '0x2fb0e3e0' });
       return '0x';
     }
     if (m === 'eth_estimateGas') return params[0].data === '0xaa9e6609' ? hex(6400000) : hex(524288);   // advanceReflectionAncestry() walks up to 2,016 parents
@@ -264,14 +264,24 @@ if (want.includes('board')) {
 }
 if (want.includes('boardno')) {
   console.log('== boardno');
+  // The board is read through the pool: a settle it would refuse (sent already, or no longer valid) is not listed, so nothing waits and nothing is offered.
   const { browser, page, landed } = await run('boardno', { proof: null, jobs: [boardJob('3', 200000)], boardRevert: true });
-  await page.click('#btn-board');
-  await page.waitForSelector('.toast.bad', { timeout: 15000 });
-  ok(/another wallet most likely sent it first/.test(await page.textContent('.toast.bad')), 'the refusal reads in words');
+  ok(/Nothing waiting/.test(await page.textContent('#board-box')) && await page.isDisabled('#btn-board') && (await page.textContent('#btn-board')) === 'Nothing to send', 'a settle the pool would refuse is left off the board', (await page.textContent('#board-box')).trim());
   ok((await page.evaluate(() => window.__txs)).length === 0 && landed.length === 0, 'and nothing was sent');
-  await page.waitForFunction(() => document.querySelector('#btn-board')?.textContent === 'Nothing to send', null, { timeout: 5000 }).catch(() => {});
-  ok(await page.isDisabled('#btn-board') && (await page.textContent('#btn-board')) === 'Nothing to send', 'the refused job is not offered again');
   await browser.close();
+  // One refused and one taken: only the taken one is counted, offered and sent.
+  const dead = pvWithFee(200000).slice(2).toLowerCase();
+  const mixed = [boardJob('4', 41000), boardJob('5', 200000)];
+  const m = await run('boardmix', { proof: null, jobs: mixed, boardRevert: (data) => data.includes(dead) });
+  const mbox = await m.page.textContent('#board-box');
+  ok(/1 settle waiting · 0\.00041 ETH in fees/.test(mbox), 'of two settles the pool takes one: one waits, with its fee', mbox.trim());
+  await m.page.click('#btn-board');
+  await m.page.waitForFunction(() => /Landed/.test(document.querySelector('#board-status')?.textContent || ''), null, { timeout: 15000 });
+  const mtx = await m.page.evaluate(() => window.__txs);
+  const mj = mixed[0];
+  const mexpected = execFileSync('cast', ['calldata', 'settle(bytes,bytes,bytes[])', mj.publicValues, mj.proof, `[${mj.memos.join(',')}]`]).toString().trim();
+  ok(mtx.length === 1 && mtx[0].data.toLowerCase() === mexpected.toLowerCase() && m.landed.length === 1 && m.landed[0].jobId === mj.jobId, 'and it is the one that is sent');
+  await m.browser.close();
   const empty = await run('boardno-empty', { proof: null, jobs: [] });
   ok(/Nothing waiting/.test(await empty.page.textContent('#board-box')) && await empty.page.isDisabled('#btn-board'), 'an empty board says so');
   await empty.browser.close();

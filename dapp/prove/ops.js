@@ -1,4 +1,4 @@
-// The network's other jobs on /prove/ (the Relay and Bitcoin tabs, and the proof market's card): advance Bitcoin's header relay, submit a
+// The network's other jobs on /prove/ (the Relay and Bitcoin tabs): advance Bitcoin's header relay, submit a
 // published proof, send a waiting settle from the open board, each from the visitor's own wallet, which pays the network fee and keeps any
 // fee the settle pays. Every call is permissionless on chain; no Tacit key touches this page. Moved here from the community ops page
 // (/weld/keeper/ now sends its visitors to these tabs), with the same modules doing the planning and building.
@@ -208,7 +208,7 @@ async function refresh() {
     cardHtml({
       k: 'Proven to', chain: 'eth', v: st.attested == null ? '—' : int(st.attested), u: st.attested == null ? '' : 'block', attn: far,
       dot: lag == null ? null : lag <= 0 ? 'on' : 'warn',
-      m: lag == null ? 'not read yet' : lag <= 0 ? 'caught up with the relay' : `${plural(lag, 'block')} behind the relay`,
+      m: lag == null ? 'not read yet' : lag <= 0 ? 'caught up with the relay' : `${plural(lag, 'block')} to prove`,   // lag counts from the relay's tip less the confirmations a block needs
     }),
     cardHtml({ k: 'Bridge deposits', chain: 'btc', v: st.burnDeposits == null ? '—' : int(st.burnDeposits), m: 'recorded by the proofs' }),
   ].join('');
@@ -402,6 +402,28 @@ async function prices() {
   if (Date.now() - pricesAt > 60e3) { pricesAt = Date.now(); PRICES = await readPrices({ call: (to, data) => rpc('eth_call', [{ to, data }, 'latest']) }).catch(() => PRICES); }
   return PRICES;
 }
+// A post on Nostr outlives its settle (nothing takes one down), and the API can list one a moment after it landed. So each settle is run against
+// the pool before it is listed, as the send runs it, and one the pool would refuse (sent already, or no longer valid) is left off the board. A
+// node that cannot say (a network or rate-limit error, not a revert) leaves the job listed. An answer holds for a minute; a refusal for ten.
+const SIM_FROM = '0x000000000000000000000000000000000000dEaD';
+const SCREEN = new Map();                                         // public values → { ok, at }
+async function takeable(job) {
+  const k = String(job.publicValues).toLowerCase(), had = SCREEN.get(k);
+  if (had && Date.now() - had.at < (had.ok ? 50e3 : 600e3)) return had.ok;
+  let ok = true, data = null;
+  try { data = settleCalldata(job); } catch { ok = false; }       // a job that cannot be encoded cannot be sent
+  if (ok) {
+    try { await rpc('eth_call', [{ from: S.address || SIM_FROM, to: POOL, data }, 'latest']); }
+    catch (e) { ok = !/revert|execution error/i.test(String(e?.message)); }
+  }
+  SCREEN.set(k, { ok, at: Date.now() });
+  return ok;
+}
+async function screen(jobs) {
+  const list = jobs.slice(0, 60), ok = [];
+  for (let i = 0; i < list.length; i += 8) ok.push(...await Promise.all(list.slice(i, i + 8).map(takeable)));
+  return list.filter((_, i) => ok[i]);
+}
 async function readBoards() {
   const fresh = Date.now() - nostrAt > 60e3;
   const [a, n] = await Promise.allSettled([readBoard({ api: API }), fresh ? NB.read() : Promise.resolve(nostrJobs)]);
@@ -409,7 +431,9 @@ async function readBoards() {
   const api = a.status === 'fulfilled' ? a.value.jobs : null;
   if (!api && !nostrJobs) throw new Error('Neither the API’s board nor the Nostr relays answered.');
   if (api && nostrJobs) mirror(api).catch(() => {});
-  return { jobs: mergeBoards(api, nostrJobs), api: !!api, nostr: nostrJobs?.length ?? null };
+  const all = mergeBoards(api, nostrJobs), live = new Set((await screen(all.filter((j) => sendable(j)))).map((j) => j.jobId));
+  const jobs = all.filter((j) => !sendable(j) || live.has(j.jobId));
+  return { jobs, api: !!api, nostr: nostrJobs ? jobs.filter((j) => j.via === 'nostr').length : null };
 }
 // The API's open jobs that no relay carries yet, posted from here: two at a time, each once an hour.
 async function mirror(api) {
@@ -577,19 +601,6 @@ async function autoOut() {
   } finally { A.taking = false; }
 }
 
-// The proof market's board (GET /market/orders): the orders waiting for a prover, each a holder's wrap and the TAC it pays at most.
-async function refreshMarket() {
-  const box = $('#prove-box');
-  let j = null;
-  try { const r = await fetch(`${API}/market/orders?limit=50`, { cache: 'no-store' }); if (r.ok) j = await r.json(); else if (r.status === 404) { $('#g-prove').hidden = true; return; } } catch {}
-  if (!j) { box.innerHTML = '<p>Could not read the board. The page tries again every minute.</p>'; return; }
-  const os = j.orders || [], most = os.reduce((m, o) => (BigInt(o.intent.maxFee) > m ? BigInt(o.intent.maxFee) : m), 0n);
-  // The how-to opens by itself once orders are waiting, unless it was opened or shut by hand.
-  const how = $('#prove-how');
-  if (how && os.length && !how.dataset.hand) how.open = true;
-  box.innerHTML = os.length ? `<p>${esc(plural(os.length, 'order'))} waiting · the best pays up to ${esc((Number(most / 10n ** 14n) / 1e4).toFixed(2))} TAC</p>` : '<p>No orders waiting. Tacit’s relay takes them first, so orders reach the board when it is busy.</p>';
-}
-
 // The connected wallet is left from here (evm.disconnect): a WalletConnect session ends in the wallet app too, so the next connection can pair another app or
 // account; a browser wallet takes this site's permission back, so the next connection asks which account. Either way no page connects it again on load.
 // Change account: another account of the same wallet (its own chooser), or a new pairing for a wallet app.
@@ -623,24 +634,14 @@ evm.onElsewhere(restoreWallet);                                  // a wallet con
 // The reads start when a tab that shows them first opens (app.js calls startOps), then repeat every minute while one is in view, and at
 // once when the page comes back after longer.
 const inView = () => !document.hidden && [...document.querySelectorAll('.tab.ops')].some((t) => !t.hidden);
-const readAll = () => { refresh().catch(() => {}); refreshProof().catch(() => {}); refreshBoard().catch(() => {}); refreshMarket().catch(() => {}); };
+const readAll = () => { refresh().catch(() => {}); refreshProof().catch(() => {}); refreshBoard().catch(() => {}); };
 let started = false;
-// The Prove tab's market card reads on its own, the rest waiting for a tab that shows them: once the page has settled (app.js), then each
-// minute while the page is in view, until startOps takes it over.
-let marketOn = false;
-export function startMarket() {
-  if (marketOn || started) return;
-  marketOn = true;
-  refreshMarket().catch(() => {});
-  setInterval(() => { if (!document.hidden && !started) refreshMarket().catch(() => {}); }, 60000);
-}
 export function startOps() {
   if (started) return;
   started = true;
   refreshProof().catch(() => {});
   refresh().catch(readFailed);
   refreshBoard().catch(() => {});
-  refreshMarket().catch(() => {});
   setInterval(() => { if (inView()) readAll(); }, 60000);
   document.addEventListener('visibilitychange', () => { if (inView() && Date.now() - lastRead > 60000) readAll(); });
 }

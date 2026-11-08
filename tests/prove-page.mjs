@@ -79,7 +79,6 @@ async function open(browser, local, { phone = false, idle = false, ua = null, ha
     const u = new URL(route.request().url());
     if (u.pathname === '/prover/pool') return json(route, { ...(idle ? {} : {}), queued: idle ? 0 : 3, leased: idle ? 0 : 2, doneToday: 41, minersToday: 2, done24h: 433, miners24h: 11, top: [{ miner: ADDR, proofs: 4 }, { miner: OTHER, proofs: 1 }], terms: { pointsPerProof: 20, proofsPerMinerDay: 30 } });
     if (u.pathname === '/prover/blocks') return json(route, { head: { height: chain.blocks[0].height, hash: chain.blocks[0].hash, ethHead: chain.blocks[0].ethBlock + 25 }, blocks: chain.blocks, cross: [{ digest: '0x' + '89'.repeat(32), bitcoin: 974721, ethereum: { digest: '0x' + '54'.repeat(32), slot: 15592000 }, tx: '0x' + 'ab'.repeat(32), ethBlock: chain.blocks[0].ethBlock, at: Date.now(), by: { miner: OTHER } }] });
-    if (u.pathname === '/market/orders') return json(route, { orders: idle ? [{ intent: { maxFee: '200000000000000000' } }] : [] });
     if (u.pathname === '/prover/board') return json(route, { queued: 0, workers: [{ name: `c-${ADDR}`, community: true, programs: ['btc-state'], proved: 3, lastSeenSeconds: 4, racing: null }, { name: `c-${OTHER}`, community: true, programs: ['btc-state'], proved: 1, lastSeenSeconds: 2400, racing: 'btc-state' }, { name: 'c-0x' + 'cd'.repeat(20), community: true, programs: ['btc-state'], proved: 0, lastSeenSeconds: 90000, racing: null }, { name: 'c-0x' + 'ef'.repeat(20), community: true, programs: ['confidential'], proved: 5, lastSeenSeconds: 2 }, { name: 'tacit-a5000', programs: ['confidential', 'eth-state'], proved: 9, lastSeenSeconds: 0 }], pay: { pointsPerProof: 20, pointsByProgram: { 'btc-state': 1000 } } });
     if (u.pathname === '/prover/pool/recent') return json(route, { proofs: [{ at: Date.now() - 60_000 - (idle ? 30 * 60_000 : 0), house: true, points: 0, secs: 31 }, { at: Date.now() - 120_000 - (idle ? 30 * 60_000 : 0), miner: ADDR, points: 20, secs: 552 }] });
     if (u.pathname === '/prover/pool/credits') return json(route, { day, over: false, miners: [{ miner: ADDR, proofs: 4, points: 80 }] });
@@ -179,7 +178,8 @@ try {
     check((await text(page, '#typ')) === '9 min' && (await text(page, '#saltpot')) === 'up to 15 TAC, shared by work', 'what a computer can expect: the typical proof and the salt pot', `${await text(page, '#typ')} / ${await text(page, '#saltpot')}`);
     check((await page.locator('#board .spd').allInnerTexts()).includes('–'), 'a prover with no recent proof shows a dash for its speed, not a blank');
     check(await page.locator('#feed-idle').isHidden(), 'no idle line while proofs wait');
-    check(!(await page.locator('#prove-how').evaluate((d) => d.open)), 'the orders how-to is shut while none wait');
+    check((await page.locator('#g-prove, [data-card="orders"]').count()) === 0, 'the paid-orders card is gone from the Prove tab');
+    check((await page.locator('#tb-bitcoin svg.tk use').getAttribute('href')) === '#tk-btc' && (await page.locator('#tb-relay svg').count()) === 0, 'the Bitcoin tab carries the Bitcoin mark');
     check((await page.locator('#feed li.salt .who.gpu').count()) === 1, 'Tacit\'s GPU is named on its own find');
     const gpuRow = await page.locator('#feed li').first().innerText();
     check(gpuRow.includes('Tacit GPU') && !gpuRow.includes('TAC '), 'the feed shows Tacit\'s GPU, earning nothing', gpuRow);
@@ -219,8 +219,6 @@ try {
     check(true, 'the next block says the nodes are mining salts meanwhile');
     await page.waitForFunction(() => !document.querySelector('#feed-idle').hidden);
     check((await text(page, '#feed-idle')).includes('A private deposit starts the next proof') && (await page.getAttribute('#feed-idle a', 'href')) === '/', 'nothing waiting and no proof for ten minutes: the feed says where the next one comes from');
-    await page.waitForFunction(() => document.querySelector('#prove-how').open);
-    check(true, 'orders waiting: the how-to opens by itself');
     await ctx.close();
   }
   // a Windows PC: Ubuntu installed first, then the same line pasted in Ubuntu; the switch goes back to Mac or Linux
@@ -367,9 +365,9 @@ try {
     check(await page.locator('#t-prove').isVisible() && await gpu.evaluate((el) => el.classList.contains('lit')), '#gpu opens the Prove tab and marks the GPU card');
     await page.waitForTimeout(1200);
     const box = await gpu.boundingBox();
-    check(box && box.y >= 0 && box.y < 120, 'and brings it to the top of the window', JSON.stringify(box));
+    check(box && box.y >= 0 && box.y + box.height <= page.viewportSize().height, 'and brings it into the window', JSON.stringify(box));   // the page ends soon after it, so it cannot always reach the top
     const cards = await page.locator('[data-card]').count(), links = await page.locator('.card-link').count();
-    check(cards >= 11 && links === cards && (await page.locator('[data-share], .share-x, a[href*="x.com/intent"]').count()) === 0, 'every card has its Link and none posts to X', `${links} of ${cards}`);
+    check(cards >= 10 && links === cards && (await page.locator('[data-share], .share-x, a[href*="x.com/intent"]').count()) === 0, 'every card has its Link and none posts to X', `${links} of ${cards}`);
     await page.evaluate(() => { history.replaceState(null, '', location.pathname); });
     await page.click('[data-card="salts"] .card-link');
     check((await page.evaluate(() => navigator.clipboard.readText())) === 'https://tacit.finance/prove/#salts', "a card's Link copies the card's address", await page.evaluate(() => navigator.clipboard.readText()));
