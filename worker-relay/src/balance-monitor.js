@@ -210,6 +210,38 @@ async function checkPointsFunding() {
   }
 }
 
+// The tacit chain's leader (tacit-leader on Render): its wallet pays to land every block, so one that cannot pay for the next stops the chain
+// (what waits is not lost: deposits and paid inboxes wait on Ethereum, and wallets hand their spends over again); and spends that wait with no
+// block landing mean the leader or its prover is stuck. A block lands in about a minute (35 s on the board's GPU, then the landing).
+const TACIT_CHAIN_LEADER = process.env.TACIT_CHAIN_LEADER_URL || 'https://tacit-chain-leader.onrender.com';
+const TACIT_CHAIN_WALLET = process.env.TACIT_CHAIN_LEADER_WALLET || '0x841d93ae315E3D9AF5Fd98C09299CA62148Ff65d';
+const TACIT_LAND_GAS = 600_000n, TACIT_TIP = 10_000_000n;      // a block with a few spends lands under 450k gas; the leader tips 0.01 gwei
+const TACIT_WAIT_MS = 3 * 60_000;
+async function checkTacitChain() {
+  const state = async () => {
+    const r = await fetch(`${TACIT_CHAIN_LEADER}/state`, { signal: AbortSignal.timeout(15000) });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  };
+  let base = 0n;
+  try { base = (await publicClient.getBlock({ blockTag: 'latest' })).baseFeePerGas ?? 0n; } catch (e) { log(`tacit chain: base fee unread: ${safeErr(e)}`); }
+  const bal = await publicClient.getBalance({ address: TACIT_CHAIN_WALLET });
+  const per = TACIT_LAND_GAS * (base * 2n + TACIT_TIP), blocks = per > 0n ? Number(bal / per) : null;
+  log(`tacit chain leader wallet ${formatEther(bal)} ETH${blocks != null ? `, about ${blocks} blocks at this base fee` : ''}`);
+  const extra = { wallet: TACIT_CHAIN_WALLET, balanceWei: String(bal), blocks };
+  if (blocks != null && blocks < 5) await alert('critical', `tacit chain leader ${TACIT_CHAIN_WALLET} holds ${formatEther(bal)} ETH, about ${blocks} blocks: send it ETH or the chain stops landing`, extra);
+  else if (blocks != null && blocks < 20) await alert('warning', `tacit chain leader ${TACIT_CHAIN_WALLET} holds ${formatEther(bal)} ETH, about ${blocks} blocks: top it up`, extra);
+  let a;
+  try { a = await state(); } catch (e) { await alert('critical', `tacit chain leader not answering (${TACIT_CHAIN_LEADER}): ${safeErr(e)}`); return; }
+  if (!(Number(a.pending) > 0)) { log(`tacit chain height ${a.height}, nothing waiting`); return; }
+  await new Promise((r) => setTimeout(r, TACIT_WAIT_MS));
+  let b;
+  try { b = await state(); } catch (e) { await alert('critical', `tacit chain leader not answering (${TACIT_CHAIN_LEADER}): ${safeErr(e)}`); return; }
+  if (Number(b.pending) > 0 && Number(b.height) === Number(a.height)) {
+    await alert('warning', `tacit chain: ${b.pending} spend(s) waiting and no block landed in ${TACIT_WAIT_MS / 60000} minutes (height ${b.height}): read the tacit-chain-leader log`, { height: b.height, pending: b.pending });
+  } else log(`tacit chain height ${a.height} → ${b.height}, ${b.pending} waiting`);
+}
+
 async function checkFarmHealth() {
   const manager = process.env.FARM_MANAGER_ADDR || FARM_MANAGER_MAINNET;
   if (/^(off|none|0|false)$/i.test(manager) || /^0x0{40}$/i.test(manager)) { log('farm check disabled (FARM_MANAGER_ADDR)'); return; }
@@ -637,7 +669,7 @@ async function checkRunPod() {
 
 async function main() {
   log(`monitor run — worker=${CFG.workerBase} relay=${relayWallet ? relayWallet.account.address : '(no key on this service — watching by address)'}`);
-  const results = await Promise.allSettled([checkProve(), checkEth(), checkReflectionLag(), checkProverKinds(), checkRunPod(), checkSnapshotCapacity(), checkFarmHealth(), checkPointsFunding(), checkReflectionStall(), checkBurnsAwaitingBundle(), checkQueue(), checkEthStatePending(), checkCrossOutFold(), checkEvmPoolKeepers(), checkTacSupply(), checkBitcoinScan(), checkProverBoard()]);
+  const results = await Promise.allSettled([checkProve(), checkEth(), checkReflectionLag(), checkProverKinds(), checkRunPod(), checkSnapshotCapacity(), checkFarmHealth(), checkPointsFunding(), checkReflectionStall(), checkBurnsAwaitingBundle(), checkQueue(), checkEthStatePending(), checkCrossOutFold(), checkEvmPoolKeepers(), checkTacSupply(), checkBitcoinScan(), checkProverBoard(), checkTacitChain()]);
   for (const r of results) if (r.status === 'rejected') log('check threw:', r.reason?.message || r.reason);
   log(`monitor done — ${criticals} critical${criticals === 1 ? '' : 's'}`);
   // Exit non-zero so the cron run is marked failed even with no webhook configured. A check that THREW is
