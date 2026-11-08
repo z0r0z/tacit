@@ -21,7 +21,7 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /prove/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/prove/app.js?cb=90ca40ed">
+<link rel="modulepreload" href="/prove/app.js?cb=051d2c68">
 <link rel="modulepreload" href="/community-prove.js?cb=30714a9f">
 <link rel="modulepreload" href="/prove/view.js?cb=80de18a0">
 <link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
@@ -353,6 +353,14 @@ pre.cmd { margin: 16px 0 0; padding: 12px 14px; background: var(--field); border
 .bank li code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bank li code b { color: var(--orange); font-weight: 600; }
 .bank li.new { animation: fresh 1.6s ease-out; }
+.bank li { align-items: center; }
+.bank li small { display: flex; align-items: center; white-space: nowrap; }
+/* the banked addresses: five rows and the top of the sixth show, the rest scroll; the foot fades while there is more below */
+.bank.scroll { max-height: 134px; overflow-y: auto; padding-right: 10px; scrollbar-width: thin; scrollbar-color: var(--hair-2) transparent; }
+.bank.scroll.more { -webkit-mask-image: linear-gradient(#000 calc(100% - 30px), transparent); mask-image: linear-gradient(#000 calc(100% - 30px), transparent); }
+.bank.scroll:focus-visible { outline-offset: 4px; border-radius: 4px; }
+.bank li .dep { color: var(--ok); font: 500 11px/1 var(--mono); margin-right: 10px; text-decoration: none; }
+@media (hover: hover) { .bank li .dep:hover { text-decoration: underline; text-underline-offset: 3px; } }
 #prove-how > summary { cursor: pointer; margin-top: 14px; font-size: 12.5px; color: var(--mute); }
 #prove-how[open] > summary { color: var(--ink); }
 #feed-idle { margin: -8px 0 18px; }
@@ -688,7 +696,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
         <p class="eyebrow" id="salt-best-h" hidden></p>
         <ol id="salt-best" class="bank"></ol>
         <p class="eyebrow" id="salt-bank-h" hidden></p>
-        <ol id="salt-bank" class="bank"></ol>
+        <ol id="salt-bank" class="bank scroll" tabindex="0" aria-label="Addresses banked for deploys"></ol>
       </section>
     </div>
     <section class="panel side wide" id="g-prove" aria-labelledby="h-market" data-card="orders">
@@ -801,6 +809,6 @@ node tools/community-runner.mjs mirror   # no key: keeps the board public on Nos
 
 <div id="toast-container" class="toasts" popover="manual"></div>
 
-<script type="module" src="/prove/app.js?cb=90ca40ed"></script>
+<script type="module" src="/prove/app.js?cb=051d2c68"></script>
 </body>
 </html>
