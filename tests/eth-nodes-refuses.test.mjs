@@ -63,6 +63,12 @@ await test('the span each node starts a log scan at, from what was measured', ()
   assert.equal(refuses(ONERPC, 'eth_getLogs', logs(HEAD - 50, HEAD)), true);
 });
 
+await test('the log list leaves out the nodes that only refuse logs (drpc) or limit them at once (thirdweb), and keeps them for plain reads', () => {
+  assert.ok(!ETH_LOG_NODES.includes(DRPC) && !ETH_LOG_NODES.includes(THIRDWEB));
+  assert.ok(ETH_NODES.includes(DRPC) && ETH_NODES.includes(THIRDWEB));
+  for (const u of [MEV, NODEREAL, PUBLIC]) assert.ok(ETH_LOG_NODES.includes(u));
+});
+
 await test('the cBTC history reads (45,000-block ranges) are not turned away from the node that has served them', () => {
   assert.equal(refuses(MEV, 'eth_getLogs', logs(HEAD - 44_999, HEAD)), false);
   assert.equal(refuses(MEV, 'eth_getLogs', logs(HEAD - 45_000, HEAD)), true);

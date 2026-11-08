@@ -25,11 +25,11 @@ export const ETH_LOG_NODES = [
   'https://rpc.mevblocker.io',                                            // 50,000 blocks
   'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7',  // under 50,000
   'https://ethereum-rpc.publicnode.com',                                  // 10,000, recent blocks only
-  'https://eth.drpc.org',                                                 // under 10,000
-  'https://1.rpc.thirdweb.com',                                           // by response size
   'https://ethereum-json-rpc.stakely.io',                                 // about 1,000
   'https://1rpc.io/eth',                                                  // 50
 ];
+// Left out of the list above, though they serve plain reads: drpc answers every eth_getLogs with a 400 (its free plan), and thirdweb limits the rate
+// of a log query at once and answers a wide one by response size; as a fallback each only adds a refused request to the console.
 export const ETH_ARCHIVE_NODES = [
   'https://rpc.mevblocker.io',
   'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7',
