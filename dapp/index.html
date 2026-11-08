@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-6O5KtwSXSMhU3kzK1JV6noneB/IUP3OF+psPt52ZdXc=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-ij7QexO8N2znha4VH2kGZkcc2IT2rLFrxqQcpjTJBvk=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -1085,11 +1085,35 @@ a.btn { text-decoration: none; white-space: nowrap; }
 .opts + .seg { margin-top: 14px; }
 #tac-bal > .opts { margin: 0 0 16px; }
 .note.tb-ask { margin: 0 0 14px; }
-.parts { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: -8px 0 16px; font-size: 12px; color: var(--mute); }
-.parts b { font-weight: 400; color: var(--ink); }
-.parts > span { display: inline-flex; align-items: center; }
-.parts > span > b { margin-left: .5em; }
-.parts .cmk { vertical-align: 0; margin-right: 5px; }
+/* TAC's home: each place TAC can be, what it holds there and what can be done with it there */
+.th { list-style: none; margin: -4px 0 16px; padding: 0; }
+.th > li { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; column-gap: 10px; align-items: baseline; padding: 11px 0; border-bottom: 1px solid var(--hair); }
+.th .cmk { margin: 0; vertical-align: -3px; }
+.th-n { font-size: 13px; }
+.th-n small { margin-left: 6px; font-size: 12px; color: var(--mute); }
+.th-v { font: 500 14px/1.3 var(--mono); text-align: right; }
+.th-v .link { font-size: 12px; }
+.th-a { grid-column: 2 / -1; display: flex; flex-wrap: wrap; gap: 2px 16px; margin-top: 4px; }
+.th-a .link { font-size: 12.5px; padding: 4px 0; }
+.th-slot { grid-column: 1 / -1; }
+.tp { padding: 14px 0 4px; }
+.tp .seg.sub { margin: 0 0 10px; }
+.tp-bal { padding: 0 0 2px; }
+.tp .amt.text select { flex: 1; min-width: 0; font: 400 14px/1.4 var(--mono); color: var(--ink); background: none; border: 0; outline: none; padding: 14px; }
+.tp-sats { min-height: 18px; margin-top: 4px; font-size: 12px; color: var(--mute); }
+.tp-sep { margin-top: 26px; padding-top: 18px; border-top: 1px solid var(--hair); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; }
+.tp-sep + .note { margin-top: 0; }
+.tp .callout { margin: 10px 0 0; }
+.tp .callout .btn { flex: none; width: auto; min-height: 36px; margin: 0; padding: 6px 14px; white-space: nowrap; }
+.tp .callout small { display: block; margin-top: 3px; font-size: 12px; color: var(--mute); }
+.tp .kv b .link + .link, .tp .kv b input + .link { margin-left: 12px; }
+.tp-pin { width: 7em; font: 400 13px/1.4 var(--mono); color: var(--ink); background: var(--field); border: 1px solid var(--hair); padding: 2px 6px; }
+.tp-pin.wide { width: 100%; padding: 12px; font-size: 14px; }
+.tp-out { width: 100%; margin-top: 8px; font: 400 12px/1.4 var(--mono); color: var(--ink); background: var(--field); border: 1px solid var(--hair); padding: 10px; }
+.tac-claim { margin: 0 0 16px; padding: 12px 14px 14px; background: var(--field); border-left: 2px solid var(--orange); }
+.tac-claim .tp-lead { margin: 0 0 6px; color: var(--ink); }
+.tac-claim .btn { margin-top: 10px; }
+@media (pointer: coarse) { .tp .amt.text select, .tp-pin, .tp-out { font-size: 16px; } }
 .gs { width: 15px; height: 15px; margin-right: 5px; fill: none; stroke: var(--ink); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; flex: none; }
 .links { list-style: none; margin: 16px 0 0; padding: 12px 0 0; border-top: 1px solid var(--hair); display: grid; gap: 8px; font-size: 13px; }
 .links a { color: var(--ink); text-underline-offset: 3px; }
@@ -1448,7 +1472,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
             <a href="/pay/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 3L10.5 13.5"/><path d="M21 3l-6.5 18-4-7.5L3 9.5z"/></svg>Pay</a>
             <a href="/vault/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9.5L12 4l9 5.5"/><path d="M5.5 10v8M10 10v8M14 10v8M18.5 10v8"/><path d="M3 20.5h18"/></svg>Borrow</a>
             <a href="/bridge/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17h18"/><path d="M5 17v-3a7 7 0 0 1 14 0v3"/><path d="M9 17v-4.5M15 17v-4.5M12 17v-6"/></svg>Bridges</a>
-            <a href="/tac/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7.5 3v5.5c0 4.6-3.2 8-7.5 9.5-4.3-1.5-7.5-4.9-7.5-9.5V6z"/><path d="M9 12l2.2 2.2L15.5 10"/></svg>Shielded TAC</a>
+            <a href="/#tac"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7.5 3v5.5c0 4.6-3.2 8-7.5 9.5-4.3-1.5-7.5-4.9-7.5-9.5V6z"/><path d="M9 12l2.2 2.2L15.5 10"/></svg>TAC</a>
             <a href="/chain/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3.1-3.1a4 4 0 0 0-5.7-5.7l-1.2 1.2"/><path d="M14 10a4 4 0 0 0-5.7 0l-3.1 3.1a4 4 0 0 0 5.7 5.7l1.2-1.2"/></svg>Tacit chain</a>
             <a href="/etch/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l4.2-1 10.6-10.6a2.1 2.1 0 0 0-3-3L5.2 16z"/><path d="M13.6 7.4l3 3"/></svg>Etch</a>
             <a href="/tasks/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>Tasks</a>
@@ -1731,6 +1755,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       <button class="x" type="button" data-close aria-label="Close">×</button>
     </div>
     <details class="tpx" id="tac-px" hidden></details>
+    <div class="tac-claim" id="tac-claim" role="region" aria-label="A claim link" hidden></div>
     <div id="tac-bal"></div>
     <p class="note tac-ways"><a href="#buy" data-link="buy">Buy or sell TAC →</a> · <a href="/rewards/">Airdrop and farms →</a></p>
     <div id="bridge-body"></div>
@@ -5013,7 +5038,15 @@ const SUBLINK = {
   btc: { get: () => [VIEW.btc[BTC.mode]], set: (_, [p]) => { if (/^[0-9a-f]{64}$/.test(p || '')) { BTC.mode = 'send'; BTC.asset = p; } else BTC.mode = viewOf(VIEW.btc, p) || 'send'; } },
   pts: { get: () => [VIEW.pts[PTS.view]], set: (_, [p]) => { PTS.view = viewOf(VIEW.pts, p) || 'all'; } },
   wallet: { get: () => [VIEW.wallet[WAL.mode]], set: (_, [p]) => { WAL.mode = viewOf(VIEW.wallet, p) || 'add'; } },
-  tac: { get: () => (TAB.tac === 'bridge' && BRM.mode === 'out' ? ['out'] : []), set: (tab, [p]) => { if (tab === 'bridge') BRM.mode = p === 'out' ? 'out' : 'in'; } },
+  // #tac is TAC's home: #tac/pool[/send|/withdraw[/sats]|/receive] with the Bitcoin pool's panel open on a tab, #tac/out with the bridge on its To Bitcoin
+  // side. #bridge and #bridge/out open the same sheet and keep their own link.
+  tac: {
+    get: () => (TAB.tac === 'bridge' ? (BRM.mode === 'out' ? ['out'] : []) : TPOOL.open ? ['pool', ...(TPOOL.api?.view() || TPOOL.want)] : BRM.mode === 'out' ? ['out'] : []),
+    set: (tab, [p, ...rest]) => {
+      if (tab === 'bridge' || p === 'out' || p === 'in') BRM.mode = p === 'out' ? 'out' : 'in';
+      else if (p === 'pool') tacPoolOpen(rest[0] || 'shield', rest[1] || null);
+    },
+  },
   // #usdt, #usdt/withdraw, #usdt/bitcoin[/out|/back]: the USDT sheet's three tabs, and the Bitcoin tab's two sides
   usdt: {
     get: () => (US.mode === 'btc' ? ['bitcoin', ...(XSEG.cusdt === 'back' ? ['back'] : XSEG.cusdt === 'out' ? ['out'] : [])] : US.mode === 'out' ? ['withdraw'] : []),
@@ -5041,6 +5074,7 @@ function linkNow() {
   if ($('#sheet-prove').open) return '#prove-self';
   if ($('#sheet-act').open) return '#activity';
   const d = $('dialog.sheet[open]:not(.layer)');
+  if (d?.id === 'sheet-tac' && TPOOL?.claim) return '#tacclaim=' + TPOOL.claim;     // a claim link open stays the page's link until the sheet closes
   return d ? '#' + linkOf(d.id.replace('sheet-', '')) : '';
 }
 function syncLink() {
@@ -5056,6 +5090,7 @@ function openLink(h) {
   if (Object.hasOwn(AWAY, head)) return goAway(head);
   if (!SHEETS.includes(head) && !Object.hasOwn(ALIAS, head)) return;
   const [sheet, tab] = Object.hasOwn(ALIAS, head) ? ALIAS[head] : [head];
+  if (head === 'tac') TAB.tac = 'home';
   if (!running(sheet)) SUBLINK[sheet]?.set(tab ?? TAB[sheet], parts);
   else if (HX.draft && Date.now() - HX.draft.at < 2000) { HX.draft = null; toast('Something is still running here. Follow it in Activity, then press again.'); }
   if (head === 'lock') LOCK.focus = true;
@@ -5087,6 +5122,7 @@ function openSheet(name) {
   const [sheet, tab] = Object.hasOwn(ALIAS, name) ? ALIAS[name] : [name];
   const d = $(`#sheet-${sheet}`);
   if (!d) return;
+  if (name === 'tac') TAB.tac = 'home';
   if (sheet === 'farm') FARM.back = null;
   for (const o of $$('dialog.sheet[open]:not(.layer)')) if (o !== d) o.close();
   if (tab && !running(sheet)) selectTab(sheet, tab);
@@ -5129,7 +5165,7 @@ $('#asset-card').addEventListener('close', () => { assetOpen = null; syncLink();
 for (const b of $$('dialog [data-close]')) b.onclick = () => b.closest('dialog').close();
 $$('[data-open]').forEach((t) => t.onclick = (e) => { e.preventDefault(); openSheet(t.dataset.open); });
 const TABS = { eth: 'eth-mode', tac: 'tac-mode' };
-const TAB = { eth: 'v1', tac: 'bridge' };
+const TAB = { eth: 'v1', tac: 'home' };
 function selectTab(sheet, tab) {
   TAB[sheet] = tab;
   $$(`[data-${TABS[sheet]}]`).forEach((b) => b.setAttribute('aria-selected', String(b.dataset[TABS[sheet].replace(/-(\w)/, (_, c) => c.toUpperCase())] === tab)));
@@ -5199,6 +5235,7 @@ function resetPrivate() { fastForget(); for (const k of Object.keys(FLASH)) dele
   try { for (const x of Object.values(HOLD.byKey)) x.w = {}; FARM.positions = null; FARM.wtac = null; FARM.left = null; FARM.jm = null; FARM.auto = {}; FARM.paid = null; for (const k of Object.keys(JOIN)) delete JOIN[k]; } catch { }
   dropTacitKey();
   chainReset();
+  TPOOL?.api?.keyChanged();
   SWC.card?.keyChanged(); }
 async function scanPrivate(force = false) {
   if (!S.key) return null;
@@ -8834,7 +8871,11 @@ render.tac = () => {
   paintTacPrice();
   renderBridge($('#bridge-body'));
 };
-load.tac = () => { loadTacPrice(false, true).then(paintTacPrice).catch(() => {}); return Promise.all([BRM.mode === 'out' ? Promise.resolve() : loadBridge(), loadTacHoldings()]); };
+load.tac = () => {
+  loadTacPrice(false, true).then(paintTacPrice).catch(() => {});
+  if (S.key) loadHeld().then(() => rerender('tac'), () => {});          // what the Bitcoin pool holds, until its panel has read it
+  return Promise.all([BRM.mode === 'out' ? Promise.resolve() : loadBridge(), loadTacHoldings()]);
+};
 
 const BR = { pub: null, notes: null, at: 0, loading: null, err: null, pick: null, refl: null, reflAt: 0, reflP: null, autoAt: 0, auto: false, rv: null, acked: null, drop: null, starting: false, publishing: false, noPublic: false,
   opts: { selfburn: true, prepauto: true, public: false }, deep: new Map(), checks: new Map() };
@@ -9977,8 +10018,115 @@ async function tacPublicNow({ run, raw = '', status, line, sheet = 'tac', after 
     await Promise.allSettled([scanPrivate(true), loadTacHoldings(true)]); after();
   } catch (e) { run.fail(status, e); }
 }
+// ── TAC's home (the TAC sheet, #tac): each place TAC can be, what the key holds there and what can be done with it there. A move the tile makes is the
+// tile's (a data-hx preset: the sheet closes onto the tile); TAC's shielded pool on Bitcoin is /tac/pool.js, opened in its own row; the bridge between
+// Bitcoin and Ethereum is this sheet's own, below. `var`: a key opened early reaches resetPrivate before the module has run this far. ──
+var TPOOL = { api: null, p: null, host: null, open: false, want: ['shield'], claim: null, at: 0 };
+// each place: what it holds in TAC wei (null while read), whether its read failed, whether the total waits for it (core), and its actions
+function tacPlaces(k, who) {
+  const ch = chainOn(), way = (sf, w) => hxWays(sf).includes(w), hx = (t, spec) => ({ t, hx: spec });
+  const btcTac = k && BTC.pub === k ? BTC.held.find((a) => a.id === TAC_BTC_ID) : null, chainV = ch ? chainHeld() : null, payV = devBal('tac', k);
+  const pool = TPOOL.api?.totals().shielded ?? (HELD.pub === k ? HELD.sats?.find((a) => a.ticker === 'TAC')?.value ?? null : null);
+  const out = [
+    { key: 'wallet', t: 'Wallet', s: 'public', m: 1, core: true, v: TACB.who === who ? TACB.erc : null, bad: !!TACB.err && TACB.who !== who,
+      acts: (v) => (v > 0n ? [ch && way('wtac', 'chain') && hx('Tacit chain', 'shield:wtac:chain'), way('wtac', 'defi') && hx('DeFi pool', 'shield:wtac:defi'), hx('Swap', 'swap:tac:ether'), hx('Send', 'send:wtac')] : [hx('Buy', 'swap:ether:tac')]) },
+    ...(ch ? [{ key: 'chain', t: 'Tacit chain', s: 'private payments', m: 1, v: chainV == null ? null : chainV * E10, bad: chainV == null && !!CH.err,
+      acts: (v) => (v > 0n ? [hx('Send', 'send:ctac'), hx('To wallet', 'shield:ctac:wallet'), hx('DeFi pool', 'shield:ctac:defi')] : []) }] : []),
+    { key: 'defi', t: 'DeFi pool', s: 'private', m: 1, core: true, v: P.scan?.tac ? P.scan.tac.value * E10 : null, bad: !P.scan && !!P.err,
+      acts: (v) => (v > 0n ? [hx('Swap', 'swap:tac:ether:private'), hx('Farm', 'earn:tac'), hx('Send', 'send:tac'), hx('To wallet', 'shield:tac:wallet'), ch && way('tac', 'chain') && hx('Tacit chain', 'shield:tac:chain'), xoShown(k, XA.tac) && { t: 'To Bitcoin', th: 'bridge:out' }] : []) },
+    { key: 'btc', t: 'On Bitcoin', s: 'public', m: 'btc', core: true, v: BTC.pub === k && BTC.got >= 2 ? (btcTac ? btcTac.balance * 10n ** BigInt(18 - btcTac.decimals) : 0n) : null, bad: !!BTC.err && (BTC.pub !== k || BTC.got < 2),
+      acts: (v) => (v > 0n ? [{ t: 'Shield', th: 'pool:shield' }, { t: 'To Ethereum', th: 'bridge:in' }, hx('Send', 'send:tacb')] : []) },
+    { key: 'pool', t: 'Bitcoin pool', s: 'shielded', m: 'btc', v: pool == null ? null : pool * E10, slot: true,
+      acts: () => (TPOOL.open ? [{ t: 'Hide', th: 'pool:hide' }] : [{ t: 'Send', th: 'pool:send' }, { t: 'Withdraw', th: 'pool:withdraw' }, { t: 'Receive', th: 'pool:receive' }]) },
+  ];
+  // TAC's private payments are the Tacit chain's while it is live, so the Pay pool takes no new TAC: it is a place only while it holds some
+  if (payV > 0n) out.push({ key: 'pay', t: 'Pay pool', s: 'private', m: 1, v: payV, acts: () => [hx('Send', 'send:ptac'), { t: 'Withdraw', link: 'device/tac/withdraw' }] });
+  return out;
+}
+function tacPlacesView(places) {
+  const act = (a) => (a.hx ? html`<button class="link" type="button" data-hx="${a.hx}">${a.t}</button>` : a.link ? html`<a class="link" href="#${a.link}" data-link="${a.link}">${a.t}</a>` : html`<button class="link" type="button" data-th="${a.th}">${a.t}</button>`);
+  return html`<ul class="th" aria-label="Where your TAC is">${places.map((p) => {
+    const acts = p.v == null && !p.slot ? [] : p.acts(p.v || 0n).filter(Boolean);     // (a place still read offers nothing yet)
+    return html`<li data-place="${p.key}">${chainMark(p.m)}<span class="th-n">${p.t}<small>${p.s}</small></span>
+      <b class="th-v">${p.v != null ? fmt(p.v, 18, 2) : p.bad ? html`<span class="err">—</span> <button class="link" type="button" data-tac-retry>retry</button>` : html`<span class="sk" style="--w:4ch"></span>`}</b>
+      ${acts.length ? html`<span class="th-a">${acts.map(act)}</span>` : ''}${p.slot ? html`<div class="th-slot" id="tac-pool-slot" hidden></div>` : ''}</li>`;
+  })}</ul>`;
+}
+function tacPlaceGo(what) {
+  const [kind, arg] = what.split(':');
+  if (kind === 'pool') return arg === 'hide' ? tacPoolHide() : tacPoolOpen(arg);
+  if (kind !== 'bridge') return;
+  BRM.mode = arg === 'out' ? 'out' : 'in';
+  rerender('tac'); load.tac().then(() => rerender('tac')).catch(() => {});
+  requestAnimationFrame(() => $('#bridge-body')?.scrollIntoView({ block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }));
+}
+// The pool's panel: made once, under the page's key (the key never leaves this page), and put back in its row each time the sheet is drawn
+function tacPool() {
+  return (TPOOL.p ||= import('/tac/pool.js?cb=8144e809').then((m) => {
+    const api = m.makeTacPool({
+      key: () => (S.key ? { pubHex: S.key.pubHex } : null),
+      priv: () => walletPriv(),
+      ensureKey: tacKeyNow,
+      withKey: (fn) => withKey(fn),
+      tacitAddress: () => S.key?.tacit || null,
+      toast,
+      hold: (btn, fn) => busy(btn, () => fn()),
+      changed: (what) => { if (what === 'bitcoin' && S.key && T) loadBtc(true).catch(() => {}); rerender('tac'); dashSoon(); },
+      viewChanged: syncLink,
+      usd: (sats) => hxUsd('sats', sats),
+    });
+    TPOOL.host = document.createElement('div');
+    TPOOL.at = Date.now();
+    api.mount(TPOOL.host);
+    return (TPOOL.api = api);
+  }).catch((e) => { TPOOL.p = null; throw e; }));
+}
+function tacPoolOpen(tab = 'shield', sub = null) {
+  TPOOL.open = true; TPOOL.want = [tab, ...(sub ? [sub] : [])];
+  if (!S.key) TACB.signIn = true;
+  return tacPool().then((api) => {
+    api.show(tab, sub);
+    if (!TPOOL.open) return;
+    if ($('#sheet-tac').open) rerender('tac'); else openSheet('tac');
+    if (S.key && Date.now() - TPOOL.at > 60e3) { TPOOL.at = Date.now(); api.refresh().catch(() => {}); }
+    syncLink();
+    requestAnimationFrame(() => TPOOL.host?.isConnected && TPOOL.host.scrollIntoView({ block: 'nearest', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }));
+  }, (e) => toast(errText(e), true));
+}
+function tacPoolHide() { TPOOL.open = false; rerender('tac'); syncLink(); }
+function tacPoolPlace() {
+  const slot = $('#tac-pool-slot');
+  if (!slot || !TPOOL.host) return;
+  if (TPOOL.open && TPOOL.host.parentElement !== slot) slot.append(TPOOL.host);
+  slot.hidden = !TPOOL.open;
+}
+// A claim link (#tacclaim=…, made on this page or on /tac/ before): its panel at the top of TAC's home, claimed into the key's shielded TAC on Bitcoin
+function tacClaimOpen(payload) {
+  TPOOL.claim = payload; TAB.tac = 'home';
+  openSheet('tac');
+  const box = $('#tac-claim');
+  tacPool().then((api) => {
+    if (TPOOL.claim !== payload) return;
+    api.claim(box, payload);
+    requestAnimationFrame(() => box.closest('dialog')?.scrollTo({ top: 0 }));      // the panel is the sheet's first thing
+  }, (e) => { box.hidden = false; mount(box, html`<span class="err">${errText(e)}</span>`); });
+}
+$('#sheet-tac').addEventListener('close', () => {
+  if (!TPOOL.claim) return;
+  TPOOL.claim = null; TPOOL.api?.stopClaim();
+  const box = $('#tac-claim');
+  box.hidden = true; box.replaceChildren();
+  syncLink();
+});
+// A press in TAC's home with no key open: the sheet's own sign-in, and nothing done
+async function tacKeyNow() {
+  if (S.key) return;
+  TACB.signIn = true;
+  if ($('#sheet-tac').open) { rerender('tac'); setTimeout(() => $('#tac-bal .opt')?.focus(), 0); } else openSheet('wallet');
+  throw Object.assign(new Error('Open your Tacit wallet first.'), { said: true, quiet: true });
+}
 function renderTacBal(el) {
-  const who = [...new Set([S.wallet, S.acct?.address].filter(Boolean).map((a) => a.toLowerCase()))].join();
+  const who =[...new Set([S.wallet, S.acct?.address].filter(Boolean).map((a) => a.toLowerCase()))].join();
   if (!S.key) {
     if (!TACB.signIn && !knownWallet()) {
       mount(el, html`${S.wallet ? html`<div id="tac-send"></div><div class="status" role="status" id="tac-bal-status"></div>` : ''}<p class="note tb-ask">Holding private TAC? <button class="link" type="button" id="tb-open">Open your Tacit wallet</button> to see it, send it or make it public.</p>`);
@@ -9992,21 +10140,15 @@ function renderTacBal(el) {
     return;
   }
   if (!who) { mount(el, html``); return; }
-  const k = S.key?.pubHex, btcTac = k && BTC.pub === k ? BTC.held.find((a) => a.id === TAC_BTC_ID) : null;
-  const parts = [
-    ...(k ? [['Bitcoin', BTC.pub === k && BTC.got >= 2 ? (btcTac ? btcTac.balance * 10n ** BigInt(18 - btcTac.decimals) : 0n) : null]] : []),
-    ['Ethereum', TACB.who === who ? TACB.erc : null],
-    ...(k ? [['Private', P.scan?.tac ? P.scan.tac.value * E10 : null]] : []),
-  ];
-  const total = parts.reduce((sum, [, v]) => sum + (v || 0n), 0n), known = parts.every(([, v]) => v != null),
-    badP = !!k && !P.scan && !!P.err, badE = !!TACB.err && TACB.who !== who, badB = !!k && !!BTC.err && (BTC.pub !== k || BTC.got < 2), failed = badP || badE || badB;
+  const k = S.key?.pubHex, places = tacPlaces(k, who);
+  const core = places.filter((p) => p.core), total = places.reduce((sum, p) => sum + (p.v || 0n), 0n), known = core.every((p) => p.v != null), failed = places.some((p) => p.bad);
   mount(el, html`
     <div class="bal">
       <svg class="tk md" aria-hidden="true"><use href="#tk-tac"/></svg>
       <div><div class="v num">${known || total || failed ? fmt(total, 18, 2) : html`<span class="sk" style="--w:8ch"></span>`}</div><div class="u">TAC${known ? '' : failed ? ', some balances unavailable' : ', still reading'}</div></div>
       <div class="side"><button class="link" type="button" data-asset="tac">About TAC</button></div>
     </div>
-    <div class="parts">${parts.map(([label, v]) => html`<span>${label === 'Private' ? html`<svg class="gs" aria-hidden="true"><use href="#g-shield"/></svg>` : chainMark(label === 'Bitcoin' ? 'btc' : 1)}${label} <b class="num">${v != null ? fmt(v, 18, 2) : (label === 'Private' && badP) || (label === 'Ethereum' && badE) || (label === 'Bitcoin' && badB) ? html`<span class="err">—</span> <button class="link" type="button" data-tac-retry>retry</button>` : html`<span class="sk" style="--w:4ch"></span>`}</b></span>`)}</div>
+    ${tacPlacesView(places)}
     ${k ? shLookingNote(k) : ''}
     ${k ? depositCallout('tac', 'tac-finish') : ''}
     ${k ? html`<div id="tac-shield"></div>` : ''}
@@ -10027,6 +10169,8 @@ function renderTacBal(el) {
   tacSend($('#tac-send'), $('#tac-bal-status'));
   const pub = $('#tac-pub', el);
   if (pub) pub.onclick = () => busy(pub, (run) => tacPublicNow({ run, raw: ($('#tac-pub-to')?.value || '').trim(), status: $('#tac-bal-status'), line: () => $('#tac-bal-status'), sheet: 'tac', after: () => rerender('tac') }));
+  $$('[data-th]', el).forEach((b) => b.onclick = () => tacPlaceGo(b.dataset.th));
+  tacPoolPlace();
 }
 // Wraps proved ahead (/wrap-vouchers.js): the sizes picked in the prove sheet, kept ready on this computer while its prover is idle,
 // and any wrap proved here or with your credit that was then not sent (a wallet that declined, say). A wrap the vouchers make up
@@ -14137,7 +14281,7 @@ function dashItems() {
     for (const a of b?.held || []) if (a.known && a.balance > 0n && !assetById(a.id)) out.push({ key: `btc-${a.id.slice(0, 16)}`, mark: a.ticker, markId: a.id, label: a.ticker, dec: a.decimals, max: Math.min(a.decimals, 4), v: a.balance, meta: 'on Bitcoin', open: 'btc', btcAsset: a.id, show: true });
     const sats = HELD.pub === k ? HELD.sats : null;
     for (const a of sats || []) out.push({ key: `sats-${a.ticker.toLowerCase()}`, icon: a.ticker === 'TAC' ? 'tk-tac' : 'tk-cbtc', label: a.ticker, dec: a.decimals, max: a.ticker === 'TAC' ? 2 : 6,
-      v: a.value, meta: 'Secret Sats, private on Bitcoin', href: a.ticker === 'TAC' ? '/tac/' : '/sats/', show: a.value > 0n });
+      v: a.value, meta: 'Secret Sats, private on Bitcoin', href: a.ticker === 'TAC' ? '#tac/pool' : '/sats/', show: a.value > 0n });
     const cb = s && !s.cbtcUnread ? s.cbtc.notes.reduce((a, n) => a + BigInt(n.value), 0n) : null;
     out.push({ key: 'cbtc', icon: 'tk-cbtc', label: 'cBTC', dec: 8, max: 6, v: cb, err: scanErr, meta: lk?.text || 'private', open: 'borrow', show: cb > 0n || !!lk?.text, noteVals: cb != null ? noteVals(s.cbtc) : null });
     out.push({ key: 'cusd', icon: 'tk-cusd', label: 'cUSD', dec: 8, max: 2, v: s ? s.cusd.value : null, err: scanErr, open: 'borrow', show: s?.cusd.value > 0n || !!lk?.borrowed,
@@ -16637,7 +16781,7 @@ function hxGo() {
   const wrapFirst = (link, label, then, card = null) => { FARM.back = link ? { link, label, at: Date.now(), then, card, amt } : null; hxDraft({ mode: 'wrap', amt }); openLink('private'); };
   if (m === 'private') return hxWrapGo(units);
   if (m === 'pay' || m === 'paytac' || m === 'paytok') return hxDepositGo(m, amt);
-  if (m === 'btcpool') { location.href = '/tac/'; return; }
+  if (m === 'btcpool') return openLink('tac/pool/shield');                 // TAC shielded on Bitcoin: the pool's panel, in TAC's home
   if (m === 'unwrap') return hxUnwrapGo(units);
   if (m === 'tacpub') return hxTacPublicGo();
   if (m === 'tacwrap') return hxTacWrapGo(units);
@@ -18696,7 +18840,9 @@ const route = () => {
     if (later) openSheet('wallet');
     return;
   }
-  if (pay) { BTC.mode = 'receive'; BTC.check = { kind: pay[1], txid: pay[2].toLowerCase() }; openSheet('btc'); }
+  const tacClaim = h.match(/^tacclaim=([^&\s]+)$/);
+  if (tacClaim) tacClaimOpen(tacClaim[1]);
+  else if (pay) { BTC.mode = 'receive'; BTC.check = { kind: pay[1], txid: pay[2].toLowerCase() }; openSheet('btc'); }
   else if (h) openLink(h);
 };
 window.addEventListener('hashchange', route);

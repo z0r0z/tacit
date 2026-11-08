@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const POOL = 'https://tacit-btc-pool-mainnet.onrender.com';
-const PAGES = ['index.html', 'classic.html', 'pay/index.html', 'pay/eth/index.html', 'tac/index.html', 'sats/index.html', 'trade/index.html', 'trade/tac/index.html', 'teth/index.html', 'cbtc/index.html', 'vault/index.html', 'etch/index.html'];
+const PAGES = ['index.html', 'classic.html', 'pay/index.html', 'pay/eth/index.html', 'sats/index.html', 'trade/index.html', 'trade/tac/index.html', 'teth/index.html', 'cbtc/index.html', 'vault/index.html', 'etch/index.html'];
 
 for (const page of PAGES) {
   const html = readFileSync(new URL(`../dapp/${page}`, import.meta.url), 'utf8');
