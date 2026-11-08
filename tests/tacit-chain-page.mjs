@@ -177,7 +177,7 @@ async function visit({ viewport = { width: 1280, height: 900 }, colorScheme = 'l
 const noSideways = (page) => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
 // the key pasted in the front page's wallet sheet, which TAC's page shares
 async function signIn(page) {
-  await page.click('#tpg-top [data-signin]');
+  await page.click('#tcd-go');
   await page.waitForSelector('#sheet-wallet[open] [data-in="paste"]', { timeout: 10000 });
   await page.click('#sheet-wallet [data-in="paste"]');
   await page.fill('#ws-hex', KEY);
@@ -205,7 +205,7 @@ try {
       .then(() => ok(true, `the key's TAC on the Tacit chain, found from the note sealed to it (${WANT_BAL})`), async () => ok(false, `chain row: ${await text(page, '.tpg-leg')}`));
     await page.waitForFunction(() => /moves have not landed yet/.test(document.querySelector('#tpg-top')?.textContent || ''), null, { timeout: 30000 })
       .then(async () => ok(true, `what waits is said, with the tile's move that shows it (${await text(page, '#tpg-top .note')})`), async () => ok(false, `kept: ${await text(page, '#tpg-top')}`));
-    await page.click('#tpg-top [data-tpg="receive"]');
+    await page.click('#tcd-t-receive');
     await page.waitForFunction(() => /^tacit1/.test(document.querySelector('#tpg-p .keyrow .full code')?.textContent || ''), null, { timeout: 30000 }).catch(() => {});
     const addr = await page.$eval('#tpg-p .keyrow .full code', (e) => e.textContent.trim()).catch(() => '');
     let laneOk = false;
