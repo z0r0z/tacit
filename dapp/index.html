@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-sPhW74J+7Z5gZ3LzClpCkgy5qwKzGkob2gnYFFPQlhA=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-JO2g9RbMOxSA8uJUGGCwodp3tDwXIRLXociTFot7A5c=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -4446,13 +4446,21 @@ function permitFromTacit({ token, name, version, owner, spender, value, nonce, d
   const sig = secp.sign(keccak_256(hexToBytes('1901' + domain + struct)), hexToBytes(strip(S.acct.priv)));
   return { v: 27 + sig.recovery, r: '0x' + sig.r.toString(16).padStart(64, '0'), s: '0x' + sig.s.toString(16).padStart(64, '0') };
 }
+// While a wallet is asked for a permit: Cancel (or the shield's other way, one transaction) lets the press go, a wallet's prompt can sit unseen, or
+// behind an earlier request it still holds, and the page would otherwise wait on it for ever
+const PERMIT_WAIT = { cancel: null };
 async function permitSig({ token, name, spender, value, deadline, status, what }) {
   const owner = await payingAccount(), nonce = wordAt(await ethCall(token, '7ecebe00' + addrWord(owner)), 0);
   const permit = { token, name, version: '1', owner, spender, value, nonce, deadline };
   if (payer() === 'tacit') return permitFromTacit(permit);
-  say(status, `Sign the ${what || (name === 'Tacit Token' ? 'TAC' : /^Wrapped liquid staked/.test(name) ? 'wstETH' : 'LP')} approval in your wallet…`);
-  await ensureChain(1);
-  return evm.signErc2612({ ...permit, provider: S.provider });
+  const tk = what || (name === 'Tacit Token' ? 'TAC' : /^Wrapped liquid staked/.test(name) ? 'wstETH' : 'LP');
+  const ask = (more = '') => say(status, html`Sign the ${tk} permit in your wallet: a signature, not a transaction.${more} <button class="link" type="button" data-permit-cancel>Cancel</button>`);
+  ask();
+  const stop = new Promise((_, no) => { PERMIT_WAIT.cancel = () => no(Object.assign(new Error('Cancelled in your wallet.'), { code: 4001 })); });
+  const slow = setTimeout(() => ask(' Nothing in your wallet? It may still hold an earlier request: open it and close that one, or reload this page.'), 45e3);
+  try {
+    return await Promise.race([(async () => { await ensureChain(1); return evm.signErc2612({ ...permit, provider: S.provider }); })(), stop]);
+  } finally { clearTimeout(slow); PERMIT_WAIT.cancel = null; }
 }
 // `gone`: asked every 15 s whether the transaction can no longer land (one Protect dropped), to say so then rather than at the timeout
 async function waitTx(hash, { timeoutMs = 10 * 60e3, chainId = 1, gone = null } = {}) {
@@ -17565,7 +17573,15 @@ function chainWayPaint() {
 }
 document.addEventListener('click', (e) => {
   const w = e.target.closest?.('[data-chainway]');
-  if (w) { if (SWC.el?.querySelector('#go')?.getAttribute('aria-busy') !== 'true') { HX.chainWay = w.dataset.chainway; HX.q = null; hxQuote(); hxPathPaint(); } return; }
+  if (w) {
+    // pressed while a permit is asked for: that wait ends (nothing was signed or sent) and the other way is chosen for the next press
+    const busyNow = SWC.el?.querySelector('#go')?.getAttribute('aria-busy') === 'true';
+    if (busyNow && !PERMIT_WAIT.cancel) return;
+    if (busyNow) PERMIT_WAIT.cancel();
+    HX.chainWay = w.dataset.chainway; HX.q = null; hxQuote(); hxPathPaint();
+    if (busyNow) toast(w.dataset.chainway === 'tx' ? 'Switched to one transaction. Press Shield again.' : 'Switched to one signature. Press Shield again.');
+    return;
+  }
   const b = e.target.closest?.('[data-chainforce], [data-chainback], [data-chainsweep], [data-chainhop]');
   if (!b) return;
   if (b.dataset.chainforce) chainForce(b); else if (b.dataset.chainback) chainBack(b); else if (b.dataset.chainsweep) chainSweep(b); else chainHopSend(b);
@@ -19221,6 +19237,7 @@ if ('IntersectionObserver' in window) { const io = new IntersectionObserver((es)
 document.addEventListener('click', (e) => {
   const h = e.target.closest?.('[data-hx]');
   if (h) { e.preventDefault(); hxPreset(h.dataset.hx, h.dataset.amt || ''); return; }
+  if (e.target.closest?.('[data-permit-cancel]')) { PERMIT_WAIT.cancel?.(); return; }
   const ht = e.target.closest?.('[data-hint]');
   if (ht) { e.preventDefault(); hintGo(ht.dataset.hint); return; }
   const sc = e.target.closest?.('[data-scroll]');
