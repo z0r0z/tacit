@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-QoZROxfs1aE61pvjeN3ag06GRga1l0Es4h+EmzdLMgk=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-6O5KtwSXSMhU3kzK1JV6noneB/IUP3OF+psPt52ZdXc=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -14,7 +14,7 @@
 <link rel="preconnect" href="https://tacit-evm-pool-keepers.onrender.com" crossorigin>
 <script async src="/front-guard.js?cb=5b164dc9"></script>
 <script type="module" src="/px-strip.js?cb=fe8eebc5" async fetchpriority="high"></script>
-<link rel="preload" href="/swap/card.css?cb=368eaa9a" as="style">
+<link rel="preload" href="/swap/card.css?cb=41de2289" as="style">
 <link rel="preload" href="/fonts/instrument-serif-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/instrument-serif-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
@@ -204,13 +204,13 @@ main:focus { outline: none; }
 /* Quick starts above the card: quiet until looked at. Each is a pair of marks and a sentence with its amount in the ink; no outline until hover or focus (touch has no hover, so it keeps a faint one),
    the APR a small tag, an arrow that arrives on hover. Pressing one fills the card at 0.01 ETH, a size kept proved ahead. One line that scrolls sideways on a phone, fading at the edge it runs off. */
 .hints { display: flex; align-items: center; gap: 4px; justify-content: flex-start; margin: 20px 0 0; padding: 1px 0; overflow-x: auto; scrollbar-width: none; min-height: 30px; }
-.hints-k { flex: none; margin-right: 4px; font: 500 10.5px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
+.hints-k { flex: none; margin-right: 4px; font: 500 11px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
 .hints > :first-child { margin-inline-start: auto; } .hints > :last-child { margin-inline-end: auto; }
 .hints::-webkit-scrollbar { display: none; }
 .hint { flex: none; display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 11px 0 4px; font: inherit; font-size: 12px; letter-spacing: 0; color: var(--ink); background: transparent; border: 1px solid color-mix(in srgb, var(--hair) 70%, transparent); border-radius: 15px; cursor: pointer; white-space: nowrap; transition: background .15s, color .15s, border-color .15s, transform .1s; animation: hint-in .5s cubic-bezier(.2, .8, .2, 1) both; animation-delay: calc(var(--i, 0) * 70ms); }
 .hint .pair { display: inline-flex; } .hint .pair .tk { width: 16px; height: 16px; } .hint .pair .tk + .tk { margin-left: -5px; box-shadow: 0 0 0 1.5px var(--paper); }
 .hint b { font-weight: 500; color: var(--ink); }
-.hint small { padding: 0 0 0 2px; font: 500 9px var(--mono); letter-spacing: .08em; color: var(--mute); opacity: .8; }
+.hint small { padding: 0 0 0 2px; font: 500 11px var(--mono); letter-spacing: .06em; color: var(--mute); }
 .hint .go { font-style: normal; color: var(--mute); opacity: 0; transform: translateX(-4px); transition: opacity .15s, transform .15s; margin-left: -2px; }
 @media (hover: hover) { .hint:hover { color: var(--ink); background: color-mix(in srgb, var(--ink) 4%, transparent); border-color: color-mix(in srgb, var(--hair) 70%, transparent); } .hint:hover b { color: var(--ink); } .hint:hover .pair .tk { opacity: 1; filter: none; } .hint:hover .go { opacity: 1; transform: none; } }
 @media (hover: none) { .hint { border-color: color-mix(in srgb, var(--hair) 40%, transparent); } .hint .go { display: none; } }
@@ -343,12 +343,14 @@ a.di { color: inherit; text-decoration: none; }
 .news { display: inline-flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 2px 10px; margin: 0 0 20px; font-size: 13px; color: var(--mute); text-decoration: none; }
 .newsl { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 6px 18px; margin: 0 0 20px; }
 .newsl .news { margin: 0; }
-.newsl.below { margin: 30px 0 0; }
+.newsl.below { margin: 26px 0 0; }
+/* signed in, the Airdrop card in Your Tacit already shows it */
+.hero:has(~ #dash:not([hidden]) [data-dash-open="airdrop"]) #air-news { display: none; }
 /* The farms under the rewards line: a pair and its APR a chip, best first, each opening the tile's Earn tab on that pool's ETH zap. One quiet line, centred where it fits and
    scrolling sideways on a phone (fading at the edge it runs off); its height is kept while empty, so nothing moves when the farms are read. */
-.fms { display: flex; gap: 18px; height: 26px; margin: 22px 0 0; padding: 1px 0; overflow-x: auto; scrollbar-width: none; opacity: 0; transition: opacity .35s; }
+.fms { display: flex; gap: 18px; height: 26px; margin: 14px 0 0; padding: 1px 0; overflow-x: auto; scrollbar-width: none; opacity: 0; transition: opacity .35s; }
 .fms::-webkit-scrollbar { display: none; }
-.fms-k { flex: none; margin-right: -6px; font: 500 10.5px/24px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
+.fms-k { flex: none; margin-right: -6px; font: 500 11px/24px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
 .fms > :first-child { margin-inline-start: auto; } .fms > :last-child { margin-inline-end: auto; }
 .fms.on { opacity: 1; }
 .fms a { flex: none; display: inline-flex; align-items: center; gap: 6px; padding: 0; color: var(--mute); text-decoration: none; white-space: nowrap; font-size: 12px; line-height: 22px; transition: color .15s; }
@@ -356,14 +358,15 @@ a.di { color: inherit; text-decoration: none; }
 .fms .pair .tk { width: 16px; height: 16px; }
 .fms .pair .tk + .tk { margin-left: -5px; box-shadow: 0 0 0 1.5px var(--paper); }
 .fms b { font-weight: 400; color: var(--ink); }
-.fms small { font: 500 10px var(--mono); letter-spacing: .08em; }
+.fms small { font: 500 11px var(--mono); letter-spacing: .06em; }
 @media (hover: hover) { .fms a:hover small { color: var(--ink); } }
 .fms a:active { transform: scale(.98); }
 .fms a:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; border-radius: 4px; }
 @media (max-width: 640px) { .fms { margin: 22px -16px 0; padding: 1px 24px 1px 16px; scroll-padding: 0 16px; -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); } }
 .news b { font-weight: 500; color: var(--ink); }
+/* A dot says one thing: grey is nothing for you (and is not drawn), orange is something to claim, green is something you hold. Only the Live tape pulses. */
 .news .dot { width: 6px; height: 6px; }
-.news .dot:not(.on) { background: var(--orange); }
+.news .dot:not(.on):not(.live) { display: none; }
 .news .go { font-weight: 500; color: var(--ink); transition: transform .3s var(--spring); }
 @media (hover: hover) { .news:hover .go { color: var(--ink); transform: translateX(4px); } }
 .hero h1 { font: 400 clamp(40px, 6.2vw, 76px)/1.02 var(--serif); letter-spacing: -.03em; margin: 0 auto 18px; text-wrap: balance; }
@@ -423,8 +426,8 @@ a.di { color: inherit; text-decoration: none; }
 .hx-amt::placeholder { color: var(--faint); opacity: 1; }
 .hx-unit { font: 12px var(--mono); color: var(--mute); white-space: nowrap; }
 /* Small links keep their look and get a taller hit area (the box around them, not their size). */
-.pxs .px, .news, .kept-h a, .proof-f .tl { position: relative; }
-.pxs .px::after, .news::after, .kept-h a::after, .proof-f .tl::after { content: ''; position: absolute; inset: -7px -4px; }
+.pxs .px, .news, .kept-h a { position: relative; }
+.pxs .px::after, .news::after, .kept-h a::after { content: ''; position: absolute; inset: -7px -4px; }
 /* What the amount typed earns in the points program (a receipt row, the one right under the receipt), and the nudge toward more of it; a held key's TAC on Bitcoin. */
 .hx-pts, .hx-have { display: grid; gap: 3px; margin: 14px 2px 0; padding: 0; border: 0; font-size: 12px; line-height: 1.55; color: var(--mute); }
 .hx-pts[hidden], .hx-have[hidden] { display: none; }
@@ -560,7 +563,7 @@ a.di { color: inherit; text-decoration: none; }
 
 /* ── live: what happened lately, as a tape under the hero. It stops under the pointer and stands still under reduced motion
    (the tape can then be scrolled by hand). ── */
-.tape { display: flex; align-items: center; gap: 14px; margin-top: 44px; padding: 8px 0; font-size: 12px; color: var(--mute); }
+.tape { display: flex; align-items: center; gap: 14px; margin-top: 32px; padding: 8px 0; font-size: 12px; color: var(--mute); }
 .tape-l { flex: none; display: inline-flex; align-items: center; gap: 7px; font: 500 11px var(--mono); text-transform: uppercase; letter-spacing: .12em; color: var(--ink); }
 .tape-l .dot { animation: pulse 1.6s ease-in-out infinite; }
 .tape-v { flex: 1; min-width: 0; overflow: hidden; -webkit-mask-image: linear-gradient(90deg, transparent, #000 24px, #000 calc(100% - 48px), transparent);
@@ -584,34 +587,10 @@ a.di { color: inherit; text-decoration: none; }
 .sx-h h2 { font: 400 clamp(32px, 4.4vw, 50px)/1.06 var(--serif); letter-spacing: -.025em; margin: 0; text-wrap: balance; }
 .sx-h h2 em { font-style: italic; }
 .sx-h p { margin: 0; max-width: 52ch; font-size: 14px; line-height: 1.5; color: var(--mute); text-wrap: balance; }
+#how .sx-h p { max-width: none; }
+#how .sx-h p span { white-space: nowrap; }
 
 /* One ID, two chains: Bitcoin left, Ethereum right, the key between them, one lane for each thing that crosses. */
-/* How it works, as one picture: a note sealed on Bitcoin, carried by a proof to Ethereum's pool, and out to any address; each caption lights in its turn */
-.hd { margin: 0 auto 64px; max-width: 760px; }
-.hd-g { display: block; width: 100%; height: auto; overflow: visible; }
-.hd-ch { font: 400 26px var(--serif); letter-spacing: -.01em; fill: var(--ink); }
-.hd-i { font: italic 400 15px var(--serif); fill: var(--mute); }
-.hd-bl rect { fill: var(--card); stroke: var(--hair-2); }
-.hd-bl path, .hd-wire { fill: none; stroke: var(--hair-2); }
-.hd-wire { stroke-dasharray: 3 5; }
-.hd-note rect { fill: var(--field); stroke: var(--hair-2); } .hd-note circle { fill: var(--ink); }
-.hd-glow { fill: none; stroke: var(--orange); stroke-width: 1.5; }
-.hd-pool { fill: var(--card); stroke: var(--hair-2); }
-.hd-dots circle, .hd-n { fill: var(--ink); opacity: .55; } .hd-n.o { fill: var(--orange); opacity: 1; }
-.hd-c { fill: var(--orange); }
-.hd-to rect { fill: var(--card); stroke: var(--hair-2); } .hd-to .hl { fill: var(--ink); stroke: none; opacity: 0; } .hd-to text { font: 500 12px var(--mono); fill: var(--ink); }
-.hd-s { display: grid; grid-template-columns: repeat(3, 1fr); gap: 32px; margin: 36px 0 0; padding: 0; list-style: none; }
-.hd-s li { display: grid; gap: 6px; font: 13px/1.55 var(--mono); color: var(--mute); text-wrap: pretty; animation: hd-on 12s linear infinite; }
-.hd-s li:nth-child(2) { animation-delay: -8s; } .hd-s li:nth-child(3) { animation-delay: -4s; }
-.hd-s b { font: italic 400 24px/1.1 var(--serif); letter-spacing: -.01em; color: var(--ink); }
-@keyframes hd-on { 0%, 31% { opacity: 1; } 35%, 97% { opacity: .5; } 100% { opacity: 1; } }
-.hd.rest .hd-s li { animation-play-state: paused; }
-@media (prefers-reduced-motion: reduce) { .hd-s li { animation: none; } .hd-c, .hd-glow { display: none; } }
-@media (max-width: 720px) { .hd-s { grid-template-columns: 1fr; gap: 20px; max-width: 420px; margin-inline: auto; } .hd-i { font-size: 18px; } }
-/* the bridge card's own head: smaller than the section's, the same voice */
-.wd-hh { margin: 12px 0 18px; }
-.wd-hh h3 { margin: 0; font: 400 clamp(26px, 3.2vw, 36px)/1.1 var(--serif); letter-spacing: -.02em; text-wrap: balance; }
-.wd-hh h3 em { font-style: italic; }
 .wd { --end: 340px; overflow: hidden; background: var(--card); border: 1px solid var(--hair); border-radius: 18px; }
 .wd-top, .wd-lane { display: grid; grid-template-columns: var(--end) minmax(0, 1fr) var(--end); align-items: center; }
 .wd-top { padding: 22px 24px 20px; border-bottom: 1px solid var(--hair); }
@@ -660,6 +639,8 @@ a.di { color: inherit; text-decoration: none; }
 .kept-h { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin: 0 0 6px; font: 400 17px/1.2 var(--serif); letter-spacing: -.01em; }
 .kept-h a { font: 500 12px var(--mono); letter-spacing: 0; color: var(--ink); text-decoration: underline; text-underline-offset: 4px; }
 #kept-v { min-height: 148px; }
+#kept-v .fl-foot, #kept-v .fl-clock, #kept-v .fl-mode button { font-size: 12px; opacity: 1; }
+#kept-v .fl-s, #kept-v .fl-n small { opacity: 1; }
 
 
 /* Points: one column like the card above it. */
@@ -740,21 +721,9 @@ a.di { color: inherit; text-decoration: none; }
 .tc-facts dt { font-size: 12px; color: var(--mute); }
 .tc-facts dd { margin: 0; font: 400 40px/1.1 var(--serif); letter-spacing: -.01em; white-space: nowrap; }
 .tc-facts dd small { margin-right: 6px; font: 400 12px var(--mono); letter-spacing: 0; color: var(--mute); }
-/* Private bitcoin payments: three steps on one line, each a way in. */
-.tc-pay { width: 100%; max-width: 720px; margin: 88px 0 0; }
-.tp-note { margin: 18px 0 0; text-align: center; font-size: 12px; line-height: 1.5; color: var(--mute); text-wrap: balance; }
-.tc-pay h3 { margin: 0; font: 400 34px/1.15 var(--serif); letter-spacing: -.01em; }
-.tp-flow { position: relative; list-style: none; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 18px 0 0; padding: 0; }
-.tp-flow::before { content: ''; position: absolute; top: 34px; left: calc(100% / 6); right: calc(100% / 6); border-top: 1px solid var(--hair-2); }
-.tp-flow li + li::before { content: '→'; position: absolute; z-index: 1; left: 0; top: 34px; transform: translate(-50%, -50%); padding: 0 6px; font-size: 13px; line-height: 1; color: var(--mute); background: var(--paper); }
-.tp-flow li { position: relative; }
-.tp-flow button, .tp-flow a { display: grid; justify-items: center; gap: 10px; width: 100%; padding: 18px 8px 8px; color: var(--ink); background: none; border: 0; text-align: center; text-decoration: none; font: inherit; cursor: pointer; }
-.tp-flow .tk, .tp-flow .g { position: relative; width: 32px; height: 32px; box-shadow: 0 0 0 8px var(--paper); transition: transform .3s var(--spring); }
-.tp-flow .g { padding: 6px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; background: var(--card); border-radius: 50%; outline: 1px solid var(--hair-2); outline-offset: -1px; }
-@media (hover: hover) { .tp-flow button:hover .tk, .tp-flow a:hover .tk, .tp-flow button:hover .g { transform: translateY(-3px); } .tp-flow button:hover b, .tp-flow a:hover b { text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px; } }
-.tp-flow span { display: grid; gap: 2px; min-width: 0; }
-.tp-flow b { font: 400 19px/1.1 var(--serif); }
-.tp-flow small { font-size: 12px; line-height: 1.35; color: var(--mute); }
+/* What each asset does, in one line under its facts. */
+.tc-pay { width: 100%; max-width: 720px; margin: 64px 0 0; }
+.tc-pay h3 { margin: 0; font: 400 34px/1.15 var(--serif); letter-spacing: -.01em; text-wrap: balance; }
 /* What holding it does: four short lines under a rule. */
 .tc-idea { margin: 0 0 18px; max-width: 52ch; text-align: center; font-size: 14px; line-height: 1.5; color: var(--mute); text-wrap: balance; }
 .tc-links { display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 12px 26px; margin-top: 56px; }
@@ -805,6 +774,7 @@ a.di { color: inherit; text-decoration: none; }
 @media (max-width: 900px) {
   .pi { grid-template-columns: minmax(0, 1fr); gap: 56px; }
   .pi .ig-l { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pi .ig-l li:last-child:nth-child(odd) { grid-column: 1 / -1; }
 }
 @media (max-width: 640px) {
   .pi { gap: 48px; }
@@ -1237,8 +1207,12 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   .wd-end { padding: 16px; }
 }
 @media (max-width: 640px) {
-  .proof-f .tl { display: none; }
   .news .w { display: none; }
+  /* a long line flows as centred text, its arrow on the last word */
+  .news { display: block; max-width: 100%; text-align: center; }
+  .news > * + * { margin-left: 8px; }
+  .news .go { margin-left: 6px; }
+  .news .dot:is(.on, .live) { display: inline-block; vertical-align: .08em; }
   .newsl { margin-bottom: 14px; }
   .hero-t { margin-bottom: 20px; }
   .proof { gap: 12px 26px; }
@@ -1276,8 +1250,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   .tc-as { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 0; width: 100%; max-width: 440px; margin-bottom: 26px; }
   .tc-as button { flex-direction: column; gap: 5px; padding: 4px 0 5px; font-size: clamp(14px, 4.4vw, 16px); }
   .tc-as .tk { width: 24px; height: 24px; }
-  .tc-pay { margin-top: 56px; }
-  .tp-flow small { font-size: 11px; }
+  .tc-pay { margin-top: 48px; }
 }
 /* six tabs on the narrowest phones: a little smaller, so Withdraw keeps clear of its neighbours */
 @media (max-width: 370px) { .hx-h button { font-size: 14.5px; letter-spacing: -.02em; } }
@@ -1291,7 +1264,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
 }
 </style>
 <!-- the hero tile is drawn with the swap card's parts (swap/card.js, which the Swap tab mounts): its styles, after the page's own -->
-<link rel="stylesheet" href="/swap/card.css?cb=368eaa9a" media="print">
+<link rel="stylesheet" href="/swap/card.css?cb=41de2289" media="print">
 <!-- chrome:head:begin inline -->
 <style>
 /* The header's page links and the footer, as every page that wears them draws them. The markup is made by build/chrome.mjs and stamped
@@ -1446,6 +1419,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
     <symbol id="c-rh" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#0a0a0a"/><circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2.5"/><path d="M21.6 8.6C15.2 8.9 11 13 10.3 22.2L12.6 20.4C13.4 17.6 15.4 15.2 18.4 13.6C16.4 15.4 15 17.4 14.4 19.8C18.6 19.2 21.2 15.6 21.6 8.6Z" fill="#c8f23a"/></symbol>
     <symbol id="lg-zfi" viewBox="0 0 400 400"><rect width="400" height="400" fill="#000"/><path fill="#fff" d="M-60-20H460V90L80 310H460V420H-60V310L320 90H-60Z"/></symbol>
     <symbol id="lg-wns" viewBox="0 0 64 64"><rect width="64" height="64" fill="#0A0A0A"/><defs><path id="wns-t" d="M4,4H60"/><path id="wns-r" d="M60,4V60"/><path id="wns-b" d="M60,60H4"/><path id="wns-l" d="M4,60V4"/></defs><g font-family="'Courier New',monospace" font-size="4.2" fill="#2D5FE8" fill-opacity=".6" letter-spacing="-.3"><text><textPath href="#wns-t">//////////////////////////////</textPath></text><text><textPath href="#wns-r">//////////////////////////////</textPath></text><text><textPath href="#wns-b">//////////////////////////////</textPath></text><text><textPath href="#wns-l">//////////////////////////////</textPath></text></g><path d="M16,16V48H22L32,32L42,48H48V16H42V38L32,22L22,38V16Z" fill="#2D5FE8"/></symbol>
+    <symbol id="lg-nani" viewBox="0 0 128 128"><rect width="128" height="128" fill="#000"/><image width="128" height="128" href="data:image/webp;base64,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"/></symbol>
     <symbol id="g-shield" viewBox="0 0 24 24"><path d="M12 3l7.5 3v5.5c0 4.6-3.2 8-7.5 9.5-4.3-1.5-7.5-4.9-7.5-9.5V6z"/><path d="M9 12l2.2 2.2L15.5 10"/></symbol>
     <symbol id="g-swap" viewBox="0 0 24 24"><path d="M4 8h15l-4-4"/><path d="M20 16H5l4 4"/></symbol>
     <symbol id="g-bridge" viewBox="0 0 24 24"><path d="M3 17h18"/><path d="M5 17v-3a7 7 0 0 1 14 0v3"/><path d="M9 17v-4.5M15 17v-4.5M12 17v-6"/></symbol>
@@ -1509,12 +1483,11 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       </a>
       <div class="proof-f">
         <span class="trust">No custodian, no multisig, an immutable pool</span>
-        <a class="tl" href="#how" data-scroll="how">How it works ↓</a>
       </div>
     </div>
       <div class="newsl below">
       <a class="news" id="air-news" href="/rewards/"><span class="dot" data-dot="tac"></span><b>TAC airdrop</b><span data-foot="tac">Is your wallet in it?</span><span class="go"><span class="w">Check yours </span>→</span></a>
-      <a class="news" id="task-news" href="/tasks/" hidden><span class="dot on" aria-hidden="true"></span><b>Task</b><span data-task-t>Earn TAC</span><span class="go">→</span></a>
+      <a class="news" id="task-news" href="/tasks/" hidden><span class="dot" aria-hidden="true"></span><b>Task</b><span data-task-t>Earn TAC</span><span class="go">→</span></a>
       <a class="news" id="pts-news" href="#points" data-link="points"><span class="dot" data-dot="pts"></span><b class="num" id="ern-pts-v"><span class="sk" style="--w:4ch"></span></b><span id="ern-pts">TAC in today’s points pot</span><span class="go">→</span></a>
       </div>
     <div class="fms" id="fms" role="group" aria-label="Farms and their APR now; each opens its ETH zap"></div>
@@ -1531,35 +1504,8 @@ footer.sf svg.fill { width: 16px; height: 16px; }
   </section>
 
 
-  <section class="sx" id="how" aria-labelledby="how-h">
-    <div class="sx-h"><h2 id="how-h">How it <em>works</em>.</h2></div>
-    <figure class="hd">
-      <svg class="hd-g" viewBox="0 0 680 300" role="img" aria-labelledby="hd-t"><title id="hd-t">A note sealed on Bitcoin is carried by a zero-knowledge proof to Ethereum’s pool, then leaves the pool to any address.</title>
-        <defs><path id="hd-arc" d="M119 114C200 20 380 20 482 146"/><path id="hd-out" d="M590 190C598 222 608 244 616 262"/></defs>
-        <use href="#tk-btc" x="16" y="14" width="30" height="30"/><text class="hd-ch" x="54" y="38">Bitcoin</text>
-        <text class="hd-ch" x="626" y="38" text-anchor="end">Ethereum</text><use href="#tk-eth" x="634" y="14" width="30" height="30"/>
-        <g class="hd-bl"><path d="M70 145h22M146 145h22"/><rect x="16" y="118" width="54" height="54" rx="10"/><rect x="92" y="118" width="54" height="54" rx="10"/><rect x="168" y="118" width="54" height="54" rx="10"/></g>
-        <rect class="hd-glow" x="92" y="118" width="54" height="54" rx="10" opacity="0"><animate attributeName="opacity" values="0;1;1;0;0" keyTimes="0;.04;.3;.36;1" repeatCount="indefinite" dur="12s"/></rect>
-        <g class="hd-note"><rect x="99" y="135" width="40" height="20" rx="10"/><circle cx="111" cy="145" r="2"/><circle cx="119" cy="145" r="2"/><circle cx="127" cy="145" r="2"/></g>
-        <text class="hd-i" x="119" y="200" text-anchor="middle">amount sealed</text>
-        <path class="hd-wire" d="M119 114C200 20 380 20 482 146"/>
-        <text class="hd-i" x="300" y="80" text-anchor="middle">zero-knowledge proof</text>
-        <circle class="hd-pool" cx="560" cy="160" r="80"/>
-        <text class="hd-i" x="470" y="244" text-anchor="end">private pool</text>
-        <g class="hd-dots"><circle cx="619" cy="160" r="5"/><circle cx="553" cy="188" r="5"/><circle cx="554" cy="115" r="5"/><circle cx="534" cy="207" r="5"/><circle cx="609" cy="134" r="5"/><circle cx="531" cy="123" r="5"/><circle cx="572" cy="152" r="5"/><circle cx="535" cy="158" r="5"/><circle cx="592" cy="123" r="5"/><circle cx="576" cy="104" r="5"/><circle cx="514" cy="173" r="5"/><circle cx="599" cy="205" r="5"/><circle cx="561" cy="213" r="5"/><circle cx="611" cy="178" r="5"/></g>
-        <circle class="hd-n" cx="506" cy="150" r="5" opacity="0"><animate attributeName="opacity" values="0;0;.55;.55;0" keyTimes="0;.62;.63;.96;1" repeatCount="indefinite" dur="12s"/></circle>
-        <circle class="hd-n o" cx="506" cy="150" r="5" opacity="0"><animate attributeName="opacity" values="0;0;1;0;0" keyTimes="0;.62;.63;.72;1" repeatCount="indefinite" dur="12s"/></circle>
-        <circle class="hd-c" r="5" opacity="0"><animateMotion keyPoints="0;0;1;1" keyTimes="0;.34;.62;1" calcMode="linear" repeatCount="indefinite" dur="12s"><mpath href="#hd-arc"/></animateMotion><animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;.33;.35;.6;.62;1" repeatCount="indefinite" dur="12s"/></circle>
-        <circle class="hd-n" r="5"><animateMotion keyPoints="0;0;1;1" keyTimes="0;.7;.86;1" calcMode="linear" repeatCount="indefinite" dur="12s"><mpath href="#hd-out"/></animateMotion><animate attributeName="opacity" values=".55;.55;0;0;.55" keyTimes="0;.85;.88;.98;1" repeatCount="indefinite" dur="12s"/></circle>
-        <g class="hd-to"><rect x="566" y="262" width="100" height="26" rx="13"/><rect class="hl" x="566" y="262" width="100" height="26" rx="13"><animate attributeName="opacity" values="0;0;.12;.12;0" keyTimes="0;.86;.88;.97;1" repeatCount="indefinite" dur="12s"/></rect><text x="616" y="279" text-anchor="middle">any address</text></g>
-      </svg>
-      <ol class="hd-s">
-        <li><b>Sealed on Bitcoin.</b>Amounts are hidden by commitments, and every transfer proves it adds up.</li>
-        <li><b>Proven across.</b>A zero-knowledge proof carries it to Ethereum. No multisig, no signers.</li>
-        <li><b>Private on Ethereum.</b>Swap, earn and pay in the pool, then leave to any address, unlinked.</li>
-      </ol>
-    </figure>
-    <div class="sx-h wd-hh"><h3 id="wd-h">One ID, <em>both chains</em>.</h3><p>Your tacit1 ID holds what you own on Bitcoin and on Ethereum. Move it between them, or lock bitcoin to use it on Ethereum.</p></div>
+  <section class="sx" id="how" aria-labelledby="wd-h">
+    <div class="sx-h"><h2 id="wd-h">One ID, <em>both chains</em>.</h2><p><span>Sealed on Bitcoin.</span> <span>Proven across.</span> <span>Private on Ethereum.</span></p></div>
     <div class="wd" role="group" aria-labelledby="wd-h">
       <div class="wd-top">
         <span class="wd-ch"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg>Bitcoin</span>
@@ -1620,11 +1566,6 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       </dl>
       <div class="tc-pay" role="group" aria-labelledby="tp-h">
         <h3 id="tp-h">Buy it, farm it, borrow against it.</h3>
-        <ol class="tp-flow">
-          <li><button type="button" data-hx="swap:ether:tac"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span><b>Bought</b><small>for ETH, or for sats on Bitcoin</small></span></button></li>
-          <li><button type="button" data-hx="earn:tac"><svg class="g" aria-hidden="true"><use href="#g-earn"/></svg><span><b>Farmed</b><small>privately, in its pools</small></span></button></li>
-          <li><a href="/vault/"><svg class="tk" aria-hidden="true"><use href="#tk-tacd"/></svg><span><b>Borrowed against</b><small>for dollars or ether, at 0%</small></span></a></li>
-        </ol>
       </div>
       <div class="tc-links"><button class="btn" type="button" data-hx="swap:ether:tac">Buy TAC</button><a class="tl" href="/trade/tac/">Price and chart →</a><a class="tl" href="/verify.html">Verify TAC →</a><a class="tl" href="https://github.com/src-company/tacit/blob/main/docs/TAC.md" rel="noopener">About TAC →</a><a class="tl" href="https://github.com/src-company/tacit/blob/main/SPEC.md" rel="noopener" title="Tacit’s spec for confidential tokens and peer-to-peer swaps on Bitcoin">The spec →</a></div>
     </div>
@@ -1637,11 +1578,6 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       </dl>
       <div class="tc-pay" role="group" aria-labelledby="tp-h-teth">
         <h3 id="tp-h-teth">Private yield, on Bitcoin and Ethereum.</h3>
-        <ol class="tp-flow">
-          <li><button type="button" data-hx="shield:ether:defi"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg><span><b>ETH in</b><small>made private, one for one</small></span></button></li>
-          <li><button type="button" data-hx="earn:eth"><svg class="g" aria-hidden="true"><use href="#g-earn"/></svg><span><b>Pooled</b><small>earning TAC, unseen</small></span></button></li>
-          <li><button type="button" data-hx="shield:eth:btc"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg><span><b>On Bitcoin</b><small>bridged, to earn there too</small></span></button></li>
-        </ol>
       </div>
       <div class="tc-links"><button class="btn" type="button" data-hx="shield:ether:defi">Shield ETH</button><a class="tl" href="/teth/">Price and pools →</a><a class="tl" href="/bridge/">Bridge →</a><button class="tl" type="button" data-asset="teth">About tETH →</button></div>
     </div>
@@ -1654,11 +1590,6 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       </dl>
       <div class="tc-pay" role="group" aria-labelledby="tp-h-cbtc">
         <h3 id="tp-h-cbtc">Use bitcoin on Ethereum, without sending it.</h3>
-        <ol class="tp-flow">
-          <li><button type="button" data-hx="borrow:cbtc"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg><span><b>BTC locked</b><small>at your own address</small></span></button></li>
-          <li><button type="button" data-hx="borrow:cbtc"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg><span><b>ETH bond</b><small>refundable, behind the lock</small></span></button></li>
-          <li><button type="button" data-hx="borrow:cbtc"><svg class="tk" aria-hidden="true"><use href="#tk-cbtc"/></svg><span><b>cBTC minted</b><small>one for one, private</small></span></button></li>
-        </ol>
       </div>
       <div class="tc-links"><button class="btn" type="button" data-hx="borrow:cbtc">Lock BTC</button><a class="tl" href="/cbtc/">Price and backing →</a><a class="tl" href="/vault/#btc">Borrow page →</a><button class="tl" type="button" data-asset="cbtc">About cBTC →</button></div>
     </div>
@@ -1671,11 +1602,6 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       </dl>
       <div class="tc-pay" role="group" aria-labelledby="tp-h-cusd">
         <h3 id="tp-h-cusd">Dollars from your bitcoin, privately.</h3>
-        <ol class="tp-flow">
-          <li><button type="button" data-hx="borrow:cusd"><svg class="tk" aria-hidden="true"><use href="#tk-cbtc"/></svg><span><b>Bitcoin in</b><small>as cBTC, held for the loan</small></span></button></li>
-          <li><button type="button" data-hx="borrow:cusd"><svg class="tk" aria-hidden="true"><use href="#tk-cusd"/></svg><span><b>cUSD out</b><small>a private dollar, to you</small></span></button></li>
-          <li><button type="button" data-hx="send:cusd"><svg class="g" aria-hidden="true"><use href="#g-send"/></svg><span><b>Spent</b><small>sent to anyone, unseen</small></span></button></li>
-        </ol>
       </div>
       <div class="tc-links"><button class="btn" type="button" data-hx="borrow:cusd">Borrow cUSD</button><a class="tl" href="/vault/#btc">Borrow page →</a><a class="tl" href="/cbtc/">Loans and backing →</a><button class="tl" type="button" data-asset="cusd">About cUSD →</button></div>
     </div>
@@ -1688,11 +1614,6 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       </dl>
       <div class="tc-pay" role="group" aria-labelledby="tp-h-tacd">
         <h3 id="tp-h-tacd">Borrow dollars, then farm them.</h3>
-        <ol class="tp-flow">
-          <li><a href="/vault/#v=usd"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span><b>TAC in</b><small>deposited in your vault</small></span></a></li>
-          <li><a href="/vault/#v=usd"><svg class="tk" aria-hidden="true"><use href="#tk-tacd"/></svg><span><b>TACD out</b><small>a dollar, to your wallet</small></span></a></li>
-          <li><a href="/vault/#v=usd&amp;pools"><svg class="g" aria-hidden="true"><use href="#g-earn"/></svg><span><b>Farmed</b><small>with USDC, paid daily</small></span></a></li>
-        </ol>
       </div>
       <div class="tc-links"><a class="btn" href="/vault/#v=usd">Borrow TACD</a><a class="tl" href="/vault/#v=usd&amp;pools">TACD pools →</a><a class="tl" href="/vault/#v=usd&amp;t=repay">Repay →</a><button class="tl" type="button" data-asset="tacd">About TACD →</button></div>
     </div>
@@ -1705,11 +1626,6 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       </dl>
       <div class="tc-pay" role="group" aria-labelledby="tp-h-tace">
         <h3 id="tp-h-tace">Borrow ether, then farm it.</h3>
-        <ol class="tp-flow">
-          <li><a href="/vault/#v=eth"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span><b>TAC in</b><small>deposited in your vault</small></span></a></li>
-          <li><a href="/vault/#v=eth"><svg class="tk" aria-hidden="true"><use href="#tk-tace"/></svg><span><b>TACE out</b><small>ether, to your wallet</small></span></a></li>
-          <li><a href="/vault/#v=eth&amp;pools"><svg class="g" aria-hidden="true"><use href="#g-earn"/></svg><span><b>Farmed</b><small>with ETH, paid daily</small></span></a></li>
-        </ol>
       </div>
       <div class="tc-links"><a class="btn" href="/vault/#v=eth">Borrow TACE</a><a class="tl" href="/vault/#v=eth&amp;pools">TACE pools →</a><a class="tl" href="/vault/#v=eth&amp;t=repay">Repay →</a><button class="tl" type="button" data-asset="tace">About TACE →</button></div>
     </div>
@@ -1740,6 +1656,11 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       <li><a href="https://wei.domains" rel="noopener">
         <svg class="ig-lg" aria-hidden="true"><use href="#lg-wns"/></svg>
         <span class="ig-t"><span class="ig-n"><b>WNS</b></span><span class="ig-d">a .wei name for your tacit1&nbsp;ID</span></span>
+        <span class="ig-go" aria-hidden="true">↗</span>
+      </a></li>
+      <li><a href="https://nani.ooo/" rel="noopener">
+        <svg class="ig-lg" aria-hidden="true"><use href="#lg-nani"/></svg>
+        <span class="ig-t"><span class="ig-n"><b>nani</b></span><span class="ig-d">agentic wallet</span></span>
         <span class="ig-go" aria-hidden="true">↗</span>
       </a></li>
     </ul>
@@ -18651,15 +18572,7 @@ paintHx();
 paintHints();
 refreshTape();
 loadTacPrice().catch(() => {});
-if ('IntersectionObserver' in window) { const io = new IntersectionObserver((es) => { for (const e of es) e.target.classList.toggle('rest', !e.isIntersecting); }); for (const el of $$('.tape, .wd, .hd, .tc-stage')) io.observe(el); }
-// How it works' picture keeps one clock with its captions: it stops while off screen (as they do) and stays still for reduced motion
-{
-  const g = $('.hd-g');
-  if (g?.pauseAnimations) {
-    if (matchMedia('(prefers-reduced-motion: reduce)').matches) { g.pauseAnimations(); g.setCurrentTime(9); }
-    else if ('IntersectionObserver' in window) new IntersectionObserver((es) => { for (const e of es) e.isIntersecting ? g.unpauseAnimations() : g.pauseAnimations(); }).observe($('.hd'));
-  }
-}
+if ('IntersectionObserver' in window) { const io = new IntersectionObserver((es) => { for (const e of es) e.target.classList.toggle('rest', !e.isIntersecting); }); for (const el of $$('.tape, .wd, .tc-stage')) io.observe(el); }
 document.addEventListener('click', (e) => {
   const h = e.target.closest?.('[data-hx]');
   if (h) { e.preventDefault(); hxPreset(h.dataset.hx); return; }

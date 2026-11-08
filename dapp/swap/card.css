@@ -14,6 +14,8 @@
 .swc .where.go-pick { cursor: pointer; border-radius: 6px; transition: color .12s; }
 .swc .where.go-pick:hover, .swc .where.go-pick:focus-visible { color: var(--ink); }
 .swc .fh .where.go-pick { min-height: 24px; }
+/* the pill is the Private pick (Wallet, or a private balance): the caret says it can be pressed, as the coin's does */
+.swc .fh .where.go-pick::after { content: '▾'; margin-left: -2px; font-size: 10px; line-height: 1; opacity: .75; }
 .swc .pk-d { margin: 4px 8px 8px; font-size: 11.5px; line-height: 1.45; color: var(--mute); opacity: .85; }
 .swc .pk-g .pl { display: inline-block; margin-right: 6px; vertical-align: -3px; }
 .swc .pk-kind button .tk, .swc .pk-kind button .pl { width: 14px; height: 14px; margin: 0; }
@@ -140,7 +142,7 @@
 .swc .go:disabled { cursor: not-allowed; }
 @media (prefers-color-scheme: dark) { .swc .go { background: color-mix(in srgb, var(--ink) 82%, var(--card)); border-color: transparent; } }
 /* what cannot be pressed yet rests as a soft block of the tile's own tone, not the button faded */
-.swc .go:disabled { color: var(--mute); background: color-mix(in srgb, var(--ink) 6%, transparent); border-color: transparent; }
+.swc .go:disabled { color: color-mix(in srgb, var(--ink) 70%, var(--card)); background: color-mix(in srgb, var(--ink) 6%, transparent); border-color: var(--hair-2, color-mix(in srgb, var(--ink) 18%, transparent)); }
 .swc .q { min-height: 20px; margin: 10px 2px 0; font-size: 12px; line-height: 1.55; color: var(--mute); overflow-wrap: anywhere; }
 .swc .q a, .swc .q button.link { color: var(--ink); }
 .swc .q:empty { min-height: 0; margin: 0; }
