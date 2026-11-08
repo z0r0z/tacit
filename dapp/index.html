@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-cbvhfN3BI0yC0UpO4fGXDm+ZosX4G6y0jo2y+wNSLTg=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-sPhW74J+7Z5gZ3LzClpCkgy5qwKzGkob2gnYFFPQlhA=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -10440,6 +10440,10 @@ function tpgTop(el) {
   const places = k ? tacPlaces(k, who) : tacPlaces(null, who).filter((p) => p.key === 'wallet'), by = Object.fromEntries(places.map((p) => [p.key, p]));
   const total = places.reduce((s, p) => s + (p.v || 0n), 0n), known = places.filter((p) => p.core).every((p) => p.v != null), failed = places.some((p) => p.bad);
   const pub = (by.wallet?.v || 0n) + (by.btc?.v || 0n), usd = hxUsd('tac', Number(total) / 1e18);
+  // what one press makes private: the wallet's TAC (up to the chain's cap on one shield), or else the TAC at the Bitcoin address
+  const capWei = chainOn() && CHAIN_SWEEP.cap != null ? CHAIN_SWEEP.cap * E10 : null, wal = by.wallet?.v || 0n;
+  const overCap = wal > 0n && capWei != null && wal > capWei, privNow = wal > 0n ? (overCap ? capWei : wal) : (by.btc?.v || 0n);
+  if (chainOn() && !CHAIN_SWEEP.at && !CHAIN_SWEEP.p) chainSweepFee().then(() => rerender('tac'), () => {});
   const shares = k && TACP.sh?.pub === k ? TACP.sh.v : null;
   const note = { chain: `payments${shares > 0n ? ` · ${fmt(shares, 8, 4)} shares` : ''}`, pool: 'private on Bitcoin', defi: 'trade · farm · borrow', pay: 'from before the Tacit chain', wallet: 'public on Ethereum', btc: 'amounts hidden, address seen' };
   const rows = TPG_ROWS.filter(([key]) => by[key] && ((by[key].v || 0n) > 0n || (key === 'chain' && chainOn())));
@@ -10456,7 +10460,7 @@ function tpgTop(el) {
     ${k ? shLookingNote(k) : ''}
     ${k ? depositCallout('tac', 'tac-finish') : ''}
     ${kept.length ? html`<p class="note">${kept.length === 1 ? 'One of your Tacit chain moves has' : `${kept.length} of your Tacit chain moves have`} not landed yet. <button class="link" type="button" data-hx="${tpgKeptWay(kept[0])}">See ${kept.length === 1 ? 'it' : 'them'}</button></p>` : ''}
-    ${pub > 0n ? html`<button class="btn tpg-top-go" type="button" id="tpg-priv">Make ${fmt(pub, 18, 2)} TAC private</button>`
+    ${pub > 0n ? html`<button class="btn tpg-top-go" type="button" id="tpg-priv">Make ${fmt(privNow, 18, 2)} TAC private</button>${overCap ? html`<p class="note">One shield takes up to ${fmt(capWei, 18, 0)} TAC for now; the rest goes in the next.</p>` : ''}`
       : total > 0n ? html`<button class="btn tpg-top-go" type="button" data-tpg="pay">Pay someone</button>` : ''}
     <div class="status" role="status" id="tpg-top-st"></div>`);
   if (k) wireFinish(el, 'tac', 'tac-finish', 'tpg-top-st');
@@ -17696,7 +17700,7 @@ const hxChainEth = () => (hxWalletBal('ether') ?? 0n) >= CHAIN_TX_ETH;
 const hxChainWay = () => (HX.chainWay === 'tx' && hxChainEth() ? 'tx' : 'permit');
 // The leader's sweep fee (TAC wei) for a permitted shield, read at most once a minute; 0 when it names none or does not answer. It is the leader's
 // public GET /fee, so it is read with no key: the quote says it (and Max leaves room for it) before anyone signs in
-const CHAIN_SWEEP = { v: null, at: 0, p: null };
+const CHAIN_SWEEP = { v: null, at: 0, p: null, cap: null };
 function chainLeaderUrl() {
   try { const d = JSON.parse(localStorage.getItem('tacit-chain-dev') || 'null'); if (d && /^https?:\/\//.test(d.leader || '')) return d.leader; } catch {}
   return TACIT_CHAIN_PAGE.leader;
@@ -17707,7 +17711,12 @@ function chainSweepFee() {
   if (!chainOn() || !url) return Promise.resolve(0n);
   return (CHAIN_SWEEP.p ||= fetch(url.replace(/\/$/, '') + '/fee', { signal: AbortSignal.timeout(10e3) })
     .then((r) => (r.ok ? r.json() : null))
-    .then((f) => { const v = /^\d+$/.test(String(f?.sweepFee ?? '')) ? BigInt(f.sweepFee) : 0n; CHAIN_SWEEP.v = v; CHAIN_SWEEP.at = Date.now(); return v; }, () => CHAIN_SWEEP.v ?? 0n)
+    .then((f) => {
+      const v = /^\d+$/.test(String(f?.sweepFee ?? '')) ? BigInt(f.sweepFee) : 0n;
+      // (the launch cap on one shield, in units, rides on the same answer)
+      CHAIN_SWEEP.cap = /^\d+$/.test(String(f?.shieldCap ?? '')) && BigInt(f.shieldCap) > 0n ? BigInt(f.shieldCap) : null;
+      CHAIN_SWEEP.v = v; CHAIN_SWEEP.at = Date.now(); return v;
+    }, () => CHAIN_SWEEP.v ?? 0n)
     .finally(() => { CHAIN_SWEEP.p = null; }));
 }
 // A wallet that cannot sign a permit (typed data) says so in its own words; one the user declined is not that
