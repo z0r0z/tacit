@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-1QzFL+5mYhoNB180Ja3A59lXQVEEyUX+kDCkFZybGbU=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-rmssnY50Z2MUFINkGEUtD1CWTKx5ym+vB01cuTc4loQ=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -1090,7 +1090,7 @@ a.btn { text-decoration: none; white-space: nowrap; }
 #sheet-eth:has([data-eth-mode="dev"][aria-selected="true"]) .sp-note { display: none; }
 .steps .kv { padding: 3px 0; }
 .opts { display: grid; gap: 8px; margin-top: 4px; }
-.opt { display: grid; gap: 3px; width: 100%; padding: 12px 14px; text-align: left; cursor: pointer; background: var(--field); border: 1px solid var(--hair-2); border-radius: 16px; transition: border-color .15s; }
+.opt { display: grid; gap: 3px; width: 100%; padding: 12px 14px; text-align: left; cursor: pointer; background: var(--field); border: 1px solid var(--hair-2); border-radius: 16px; transition: border-color .15s, opacity .2s; }
 @media (hover: hover) { .opt:hover:not(:disabled) { border-color: var(--ink); } }
 .opt:disabled { opacity: .5; cursor: progress; }
 .opt.main { border-color: var(--ink); background: var(--card); }
@@ -1167,7 +1167,13 @@ a.btn { text-decoration: none; white-space: nowrap; }
 .ptd-x output { text-align: center; color: var(--ink); }
 a.opt { color: inherit; text-decoration: none; }
 .kv.sep { border-top: 1px solid var(--hair); margin-top: 18px; padding-top: 12px; }
-.opt[aria-busy="true"] .opt-t::after { content: ''; width: 11px; height: 11px; margin-left: auto; border: 1.5px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
+.opt[aria-busy="true"] { opacity: 1; border-color: var(--ink); }
+/* a row waiting on the wallet: a round ring of its own, in the slot a remembered wallet's arrow holds (that rule, below, would otherwise keep its arrow and spin it in a lopsided box) */
+.opt[aria-busy="true"] .opt-t::after, .opt.mine[aria-busy="true"] .opt-t::after { content: ''; box-sizing: border-box; flex: none; width: 14px; height: 14px; margin-left: auto; padding: 0; border: 1.5px solid var(--hair-2); border-top-color: var(--ink); border-radius: 50%; transform: none; transition: none; animation: spin .7s linear infinite; }
+/* the status that takes the place of the links under the rows while the wallet is asked: no line is added, so the sheet does not move */
+.status.wait { margin: 6px 0 0; min-height: 0; text-align: center; animation: wait-in .2s var(--ease) both; }
+@keyframes wait-in { from { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .opt[aria-busy="true"] .opt-t::after { animation-duration: 1.8s; } .way[aria-busy="true"] .tk { animation: none; } .status.wait { animation: none; } }
 .more { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 18px; margin: 6px 0 0; }
 .lockmore { margin-top: 8px; }
 .lockmore > summary { cursor: pointer; font-size: 13px; color: var(--mute); text-decoration: underline; text-underline-offset: 3px; }
@@ -1195,12 +1201,12 @@ a.opt { color: inherit; text-decoration: none; }
 .opts > .lbl:first-child { margin-top: 0; }
 .ways { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 8px; }
 .way { display: flex; flex-direction: column; align-items: center; gap: 7px; min-height: 76px; padding: 13px 6px 11px; font: inherit; font-size: 13px; color: var(--ink);
-  background: var(--field); border: 1px solid var(--hair-2); border-radius: 14px; cursor: pointer; transition: border-color .15s; }
+  background: var(--field); border: 1px solid var(--hair-2); border-radius: 14px; cursor: pointer; transition: border-color .15s, opacity .2s; }
 .way .tk { width: 24px; height: 24px; }
 @media (hover: hover) { .way:hover:not(:disabled) { border-color: var(--ink); } }
 .way:disabled { opacity: .5; cursor: progress; }
 .way[aria-busy="true"] { opacity: 1; border-color: var(--ink); }
-.way[aria-busy="true"] .tk { animation: spin 1.2s linear infinite; }
+.way[aria-busy="true"] .tk { animation: pulse 1.1s ease-in-out infinite; }
 .wl-foot { margin-top: 16px; padding-top: 10px; border-top: 1px solid var(--hair); }
 .eth-line { flex-wrap: wrap; row-gap: 6px; }
 .eth-line > span:first-child { display: inline-flex; align-items: center; }
@@ -4144,13 +4150,14 @@ function wireSignIn(root, id, after) {
       // unseen behind its icon, and the first time it asks twice)
       const stop = new Promise((_, no) => { cancelSign = () => no(Object.assign(new Error('Cancelled in your wallet.'), { code: 4001 })); });
       const wait = document.createElement('p');
-      wait.className = 'status';
+      wait.className = 'status wait';
       mount(wait, html`<span>Waiting for your wallet: sign there (the first time, twice).</span> <button class="link" type="button">Cancel</button>`);
       wait.querySelector('button').onclick = () => cancelSign?.();
       const say = wait.querySelector('span');
       let slow = null;
       signStep = (x) => { say.textContent = SIGN_SAY[x] || say.textContent; clearTimeout(slow); slow = setTimeout(() => { say.textContent = 'Still waiting. Open your wallet to answer.'; }, 10000); };
-      const shown = k === 'key' ? null : setTimeout(() => box.append(wait), 600);
+      const more = box.querySelector('.more');
+      const shown = k === 'key' ? null : setTimeout(() => { if (more?.isConnected) { more.style.display = 'none'; more.after(wait); } else box.append(wait); }, 600);
       const dlg = root.closest?.('dialog'), onClose = () => cancelSign?.();
       dlg?.addEventListener('close', onClose, { once: true });
       try {
@@ -4164,7 +4171,7 @@ function wireSignIn(root, id, after) {
         })(), stop]);
         after?.();
       } catch (e) { if (!/cancel/i.test(e?.message || '') && e?.name !== 'NotAllowedError' && e?.code !== 4001 && !e?.unlockCancelled && errText(e) !== 'Cancelled in your wallet.') toast(errText(e), true); }
-      finally { signing = false; cancelSign = null; signStep = null; clearTimeout(shown); clearTimeout(slow); wait.remove(); dlg?.removeEventListener('close', onClose); rest.forEach((x) => { x.disabled = false; }); }
+      finally { signing = false; cancelSign = null; signStep = null; clearTimeout(shown); clearTimeout(slow); wait.remove(); if (more) more.style.display = ''; dlg?.removeEventListener('close', onClose); rest.forEach((x) => { x.disabled = false; }); }
     });
   };
   box.querySelector(`#${id}-hex`)?.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); box.querySelector('[data-in="key"]')?.click(); } });
