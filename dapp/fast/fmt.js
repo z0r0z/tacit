@@ -27,3 +27,11 @@ export const pairId = (claimPub) => String(claimPub || '').replace(/^0x/, '').to
 // a fee over 5% of the amount is a high one: the fast page says so plainly, and the front page's Bridge tab does not prefer such a quote
 export const FEE_WARN_BPS = 500n;
 export const highFee = (q) => (q.highFee != null ? !!q.highFee : BigInt(q.fee) * 10000n > BigInt(q.btcValue) * FEE_WARN_BPS);
+
+// Why a lock was not built: TAC a provider would refuse, since its history passes through something the bridge's proof does not follow.
+const THROUGH = { shielded: 'a move through Bitcoin’s shielded pool', pool: 'a pool or farm trade on Bitcoin', arrived: 'TAC that came over from Ethereum' };
+export function lineageText(e) {
+  const refused = (e && e.refused) || [], kinds = [...new Set(refused.map((r) => THROUGH[r.through] || 'a transaction'))];
+  const sum = refused.reduce((s, r) => s + BigInt(r.amount || 0), 0n), left = e && e.left != null ? BigInt(e.left) : 0n;
+  return `${sum > 0n ? `${fmtTac(sum)} TAC of yours` : 'This TAC'} has a history that includes ${kinds.join(' and ') || 'a transaction'}, which the bridge’s proof does not follow, so a provider would refuse the lock. Nothing was locked.${left > 0n ? ` Your other TAC on Bitcoin, ${fmtTac(left)}, can still go: try a smaller amount.` : ''}`;
+}

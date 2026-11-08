@@ -14,7 +14,7 @@ import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js';
 import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=94a5530b';
 import { makeFastBridgeEvm } from '/fastbridge-evm.js?cb=22471d6a';
 import { makeHttpCounter, makeCounter } from '/fastbridge-http.js';
-import { makeFastBridgeMarket, makeLocalStore, termsOf } from '/fastbridge-client.js?cb=cc5708ff';
+import { makeFastBridgeMarket, makeLocalStore, termsOf } from '/fastbridge-client.js?cb=5178814d';
 import { makeLpService } from '/fastbridge-provider.js?cb=8b3cb635';
 import { makeMailboxCounter, makeMailboxServer, makeAdPublisher, readProviders, gatewayOf } from '/fastbridge-mailbox.js?cb=38553280';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=850e1c5e';
@@ -45,6 +45,42 @@ export function untrackedFirst(notes, tracks, covers) {
   if (!tracks) return notes;
   const rest = notes.filter((n) => tracks.get(`${n.txid}:${n.vout}`) !== 'tracked');
   return rest.length < notes.length && rest.length && covers(rest) ? rest : notes;
+}
+
+// A provider that screens a lock refuses a note whose history the bridge's proof cannot follow back to the etch, and one made by an exit from
+// the Bitcoin shielded pool is such a note. The lock is on Bitcoin by then: its fees are spent and its TAC waits out the timelock. So the notes
+// a lock would spend are looked at before it is built.
+//   tiers   sets of the key's notes, in the order they are tried
+//   pick    (set) -> the notes a lock for the quote would spend from it, or null when it does not cover
+//   vet     (notes) -> Map note id -> a verdict, by `state` (burndep-ux.js lineage): 'tracked', 'traced', 'long', 'unprovable', 'unread'
+// Resolves to the first set whose pick is whole and has each note followed (the lock then picks the same notes from it). A note that cannot
+// be followed is left out and the pick made again; when what is left covers nothing, the error says what was left out (code 'lineage'), and
+// one the service could not tell about stops the lock too (code 'lineage_unread'), since a lock built on a guess costs the same.
+export const noteId = (n) => `${n.txid}:${n.vout}`;
+export async function followed(tiers, pick, vet) {
+  const refused = new Map();
+  for (const tier of tiers) {
+    let set = tier.filter((n) => !refused.has(noteId(n)));
+    for (;;) {
+      const p = await pick(set);
+      if (!p) break;
+      const verdicts = await vet(p);
+      const bad = p.filter((n) => verdicts.get(noteId(n))?.state === 'unprovable');
+      if (bad.length) {
+        for (const n of bad) refused.set(noteId(n), { txid: n.txid, vout: n.vout, amount: n.amount, ...verdicts.get(noteId(n)) });
+        set = set.filter((n) => !refused.has(noteId(n)));
+        continue;
+      }
+      const unread = p.filter((n) => { const v = verdicts.get(noteId(n)); return !v || v.state === 'unread'; });
+      if (unread.length) throw Object.assign(new Error('fastbridge: lineage unread: the history of this TAC could not be read from Bitcoin just now'), { code: 'lineage_unread', unread: unread.map(noteId) });
+      return set;
+    }
+  }
+  if (refused.size) {
+    const last = tiers[tiers.length - 1], left = last.filter((n) => !refused.has(noteId(n))).reduce((s, n) => s + BigInt(n.amount), 0n);
+    throw Object.assign(new Error('fastbridge: lineage: a note this lock would spend has a history the bridge\'s proof does not follow'), { code: 'lineage', refused: [...refused.values()], left });
+  }
+  return tiers[tiers.length - 1];
 }
 
 // The counter of a provider from the reference kept with its swaps: one that serves HTTP, or one reached through a board.
@@ -122,7 +158,8 @@ function sides({ T, ux, priv, hrp, bases, fetchImpl, asset, seedTag, forNotes, w
   return { prims, btc, seed, evm };
 }
 
-export async function openFast({ T, withKey, ux, priv, pubHex, pins = {}, wallet = null, ask, fetchImpl = (...a) => fetch(...a), bases = EXPLORERS, hrp = 'bc', now, call = {}, counterFor: counterOf = (ref) => counterFor(ref, { fetchImpl, call }) }) {
+// `vet(notes)` says whether each note's history can be followed (see `followed`); the default asks the bridge's own trace.
+export async function openFast({ T, withKey, ux, priv, pubHex, pins = {}, wallet = null, ask, fetchImpl = (...a) => fetch(...a), bases = EXPLORERS, hrp = 'bc', now, call = {}, counterFor: counterOf = (ref) => counterFor(ref, { fetchImpl, call }), vet = (ns) => withKey((t) => t.bridgeUx().lineage(ns)) }) {
   const asset = { btcAsset: TAC_ASSET, evmAsset: TAC_ASSET, ...pins };
   const { prims, btc, seed, evm } = sides({ T, ux, priv, hrp, bases, fetchImpl, asset, seedTag: 'tacit-fastbridge-user-seed', wallet, ask });
   const store = makeLocalStore(`tacit-fastbridge-v1:mainnet:${pubHex}:`);
@@ -144,12 +181,22 @@ export async function openFast({ T, withKey, ux, priv, pubHex, pins = {}, wallet
     return () => { gone = true; clearInterval(timer); if (stopTend) stopTend(); release(); };
   };
   // `only` ([{ txid, vout }]) names the notes a bridge may spend, for a form that picks a note; otherwise the key's notes, the ones the
-  // bridge does not track first
+  // bridge does not track first. Either way the notes the lock would spend are looked at first (`followed`): one a provider would refuse
+  // is left out, so a lock is never built on it.
   const pool = async (quotes, only) => {
     const all = await notes();
-    if (!only) return fastFirst(all, quotes);
-    const want = new Set(only.map((o) => `${o.txid}:${o.vout}`));
-    return all.filter((n) => want.has(`${n.txid}:${n.vout}`));
+    let tiers;
+    if (only) {
+      const want = new Set(only.map((o) => `${o.txid}:${o.vout}`));
+      tiers = [all.filter((n) => want.has(`${n.txid}:${n.vout}`))];
+    } else {
+      const first = await fastFirst(all, quotes);
+      tiers = first === all ? [all] : [first, all];
+    }
+    if (!quotes.length || !vet) return tiers[0];
+    const client = market.clientFor(quotes[0].provider.ref), amount = quotes[0].quote.btcValue;
+    const pick = async (set) => { const p = client.pickNotes(await client.freeNotes(set), amount); return p && p.notes; };
+    return followed(tiers, pick, vet);
   };
   return {
     address: prims.wallet.address(), notes, balance, market,

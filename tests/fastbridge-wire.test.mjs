@@ -16,7 +16,7 @@ import { secp, bytesToHex } from '../dapp/vendor/tacit-deps.min.js';
 import { makeBoard } from '../dapp/fastbridge-board.js';
 import { makeBoardHandler } from '../fastbridge-lp/lib/board-http.mjs';
 
-const { openFast, openProvider, discoverProviders, counterFor, notesOf, untrackedFirst, TAC_ASSET, EXPLORERS } = await import('../dapp/fast/wire.js');
+const { openFast, openProvider, discoverProviders, counterFor, notesOf, untrackedFirst, followed, TAC_ASSET, EXPLORERS } = await import('../dapp/fast/wire.js');
 
 const tests = [];
 const test = (name, fn) => tests.push([name, fn]);
@@ -27,6 +27,9 @@ const POOL = '0x000000000Ed1eabD231Be41d93b719056F7febFC';
 const utxo = (n, confirmed = true, value = 546) => ({ txid: String(n).repeat(64), vout: 0, value, status: { confirmed } });
 const holdings = (entries) => new Map(entries);
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+// what the bridge's trace says of notes, by the first character of their txid (anything not listed could not be read)
+const verdicts = (table) => async (ns) => new Map(ns.map((n) => [`${n.txid}:${n.vout}`, table[n.txid[0]] || { state: 'unread', error: 'down' }]));
+const follows = verdicts({ 1: { state: 'tracked' }, 2: { state: 'tracked' }, 3: { state: 'tracked' } });
 
 test('the key\'s TAC notes: confirmed ones, as the lock takes them, and none for an asset the wallet does not hold', async () => {
   T._testSetScanHoldingsOverride(() => holdings([[TAC_ASSET, { utxos: [
@@ -72,10 +75,10 @@ test('a form that picks a note bridges exactly that note: `only` names the notes
   const priv = key(6), pubHex = bytesToHex(secp.getPublicKey(priv, true));
   openWallet(priv);
   T._testSetScanHoldingsOverride(() => holdings([[TAC_ASSET, { utxos: [{ utxo: utxo(1), amount: 5000n, blinding: 7n }, { utxo: utxo(2), amount: 700n, blinding: 8n }, { utxo: utxo(3), amount: 900n, blinding: 9n }] }]]));
-  const s = await openFast({ T, withKey: (fn) => fn(T), ux: { cfg: { pool: POOL } }, priv, pubHex, hrp: 'tb', counterFor: () => ({}) });
+  const s = await openFast({ T, withKey: (fn) => fn(T), ux: { cfg: { pool: POOL } }, priv, pubHex, hrp: 'tb', counterFor: () => ({}), vet: follows });
   let got = null;
   s.market.start = async (o) => { got = o; return { rec: {} }; };
-  const q = [{ provider: { ref: { kind: 'http', claimPub: '02' + 'aa'.repeat(32) } }, quote: {} }];
+  const q = [{ provider: { ref: { kind: 'http', claimPub: '02' + 'aa'.repeat(32) } }, quote: { btcValue: 100n } }];
   await s.start({ quotes: q, only: [{ txid: utxo(2).txid, vout: 0 }] });
   assert.deepEqual(got.notes.map((n) => n.amount), [700n], 'the one picked and no other');
   await s.start({ quotes: q, only: [{ txid: utxo(3).txid, vout: 0 }, { txid: utxo(1).txid, vout: 0 }] });
@@ -122,6 +125,83 @@ test('a swap spends the notes the bridge does not take directly (out of the shie
   assert.deepEqual(untrackedFirst(all, null, covers(10n)), all, 'tracking unknown: every note');
   assert.deepEqual(untrackedFirst([tracked], tracks, covers(10n)), [tracked], 'only tracked notes: those');
   assert.deepEqual(untrackedFirst([pool], tracks, () => false), [pool], 'only untracked notes: those, without asking');
+});
+
+test('followed: a note the bridge\'s proof cannot follow is left out and the pick made again, so no lock is built on it', async () => {
+  const n = (c, amount) => ({ txid: c.repeat(64), vout: 0, amount });
+  const exit = n('a', 5000n), small = n('b', 800n), big = n('c', 3000n);
+  // largest first until covered, as the lock picks
+  const picker = (want) => async (set) => { let sum = 0n; const out = []; for (const x of [...set].sort((p, q) => (p.amount > q.amount ? -1 : 1))) { out.push(x); sum += x.amount; if (sum >= want) return out; } return null; };
+  const table = { a: { state: 'unprovable', through: 'shielded', at: 'f'.repeat(64) }, b: { state: 'traced', hops: 3 }, c: { state: 'tracked' } };
+  const asked = [];
+  const vet = async (ns) => { asked.push(ns.map((x) => x.txid[0]).join('')); return verdicts(table)(ns); };
+
+  // the exit would be picked first (the largest): it is refused, and the pick is made again from what is left
+  const set = await followed([[exit, small, big]], picker(2000n), vet);
+  assert.deepEqual(set.map((x) => x.txid[0]), ['b', 'c'], 'the notes the lock may spend, without the exit');
+  assert.deepEqual(asked, ['a', 'c'], 'each pick was looked at, and only the notes picked');
+
+  // what the preferred notes leave, once the exit is out, does not cover it: every other note is tried
+  asked.length = 0;
+  const tiers = [[exit, small], [exit, small, big]];
+  assert.deepEqual((await followed(tiers, picker(2000n), vet)).map((x) => x.txid[0]), ['b', 'c'], 'falls back to the notes it kept back, without the exit');
+
+  // all that is left cannot cover it: the error says what was left out, and what else the key holds
+  const err = await followed([[exit, small]], picker(2000n), vet).catch((e) => e);
+  assert.equal(err.code, 'lineage');
+  assert.deepEqual(err.refused.map((r) => [r.txid[0], r.through, r.amount]), [['a', 'shielded', 5000n]]);
+  assert.equal(err.left, 800n);
+
+  // everything followed: the set comes back as it was, and a history too long for the proof is not refused
+  const same = [small, big, n('d', 1n)];
+  assert.deepEqual(await followed([same], picker(10n), verdicts({ b: { state: 'traced' }, c: { state: 'long', hops: 300, max: 255 }, d: { state: 'tracked' } })), same);
+});
+
+test('followed: a note whose history could not be read stops the lock; one that is refused is dealt with first', async () => {
+  const n = (c, amount) => ({ txid: c.repeat(64), vout: 0, amount });
+  const exit = n('a', 5000n), unread = n('e', 700n), ok = n('b', 800n);
+  const all = (set) => async () => set;
+  const err = await followed([[unread]], all([unread]), verdicts({})).catch((e) => e);
+  assert.equal(err.code, 'lineage_unread');
+  assert.deepEqual(err.unread, [`${unread.txid}:0`]);
+  // the exit is refused and the pick made again, which no longer holds the note that could not be read
+  const again = async (set) => (set.some((x) => x === exit) ? [exit, unread] : [ok]);
+  const set = await followed([[exit, unread, ok]], again, verdicts({ a: { state: 'unprovable', through: 'other' }, b: { state: 'tracked' } }));
+  assert.deepEqual(set, [unread, ok], 'the lock then picks the same notes');
+});
+
+test('a lock is not built on a note out of the shielded pool: the lock looks at the notes it would spend, and takes the others', async () => {
+  const priv = key(7), pubHex = bytesToHex(secp.getPublicKey(priv, true));
+  openWallet(priv);
+  // utxo 1 is an exit from the pool, 2 and 3 are followed; the exit is the largest, and the lock picks the smallest that covers or else the largest first
+  T._testSetScanHoldingsOverride(() => holdings([[TAC_ASSET, { utxos: [{ utxo: utxo(1), amount: 5000n, blinding: 7n }, { utxo: utxo(2), amount: 700n, blinding: 8n }, { utxo: utxo(3), amount: 900n, blinding: 9n }] }]]));
+  const vet = verdicts({ 1: { state: 'unprovable', through: 'shielded' }, 2: { state: 'traced', hops: 4 }, 3: { state: 'tracked' } });
+  // the reflection tracks utxo 3 only, so the lock prefers 1 and 2 (the bridge does not take them directly) while they cover it
+  const tt = { ...T, bridgeUx: () => ({ noteTracking: async (ns) => new Map(ns.map((x) => [`${x.txid}:${x.vout}`, x.txid[0] === '3' ? 'tracked' : 'untracked'])) }) };
+  const open = (v) => openFast({ T: tt, withKey: (fn) => fn(tt), ux: { cfg: { pool: POOL } }, priv, pubHex, hrp: 'tb', counterFor: () => ({}), vet: v });
+  const s = await open(vet);
+  let got = null;
+  s.market.start = async (o) => { got = o; return { rec: {} }; };
+  const provider = { ref: { kind: 'http', claimPub: '02' + 'aa'.repeat(32) } };
+  const quotes = (v) => [{ provider, quote: { btcValue: v } }];
+  await s.start({ quotes: quotes(1500n) });
+  assert.deepEqual(got.notes.map((n) => n.amount), [700n, 900n], 'the exit is not among the notes the lock may spend, and the tracked note is then spent too');
+  // only the exit, or more than the others hold: nothing is built, and it says why
+  for (const [q, only] of [[100n, [{ txid: utxo(1).txid, vout: 0 }]], [3000n, undefined]]) {
+    got = null;
+    const e = await s.start({ quotes: quotes(q), ...(only ? { only } : {}) }).catch((x) => x);
+    assert.equal(e.code, 'lineage', `${q}`);
+    assert.equal(got, null, 'no lock was begun');
+    assert.equal(e.refused[0].through, 'shielded');
+  }
+  // the cost of the lock is read from the same notes: the exit fails it the same way, before any lock is built
+  const e = await s.cost({ quote: { btcValue: 100n }, provider, only: [{ txid: utxo(1).txid, vout: 0 }] }).catch((x) => x);
+  assert.equal(e.code, 'lineage');
+  // a history that could not be read stops the lock (it is not guessed at)
+  const down = await open(verdicts({}));
+  down.market.start = async () => { throw new Error('built a lock on a guess'); };
+  assert.equal((await down.start({ quotes: quotes(100n) }).catch((x) => x)).code, 'lineage_unread');
+  T._testSetScanHoldingsOverride(null);
 });
 
 test('a key whose Bitcoin address is not the wallet\'s is refused before anything is built', async () => {

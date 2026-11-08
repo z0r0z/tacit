@@ -173,7 +173,7 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
     return found.map(describe);
   }
 
-  return { terms, quote, pickNotes, cost, start, tick, run, records, recover, describe, step: (rec) => bl.step(rec) };
+  return { terms, quote, pickNotes, freeNotes, cost, start, tick, run, records, recover, describe, step: (rec) => bl.step(rec) };
 }
 
 // Several providers: a quote from each, the best first, and each swap carried on with the provider it began with.

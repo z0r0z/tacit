@@ -351,6 +351,42 @@ export function makeBurnDepositUx(deps) {
     return out;
   }
 
+  // Whether a note's history can be followed back to the etch, for a caller that does not burn the note but whose counterparty may check
+  // it this way: a fast bridge provider screens a lock with this same trace, and a lock it refuses costs its holder the Bitcoin fees and a
+  // day. A note the reflection tracks needs no trace. Map note id -> a verdict, by `state`:
+  //   'tracked' | 'traced' (with `hops`)   the history is followed
+  //   'unprovable' (with `through`: 'shielded' | 'pool' | 'arrived' | 'other', and `at`, the transaction)   some transfer in it cannot be
+  //                                        followed, which never changes
+  //   'long' (with `hops`, `max`)          more transfers behind it than the proof folds
+  //   'unread' (with `reading`, `error`)   not told: the service did not answer, or is still reading a long history
+  // A verdict that is final is kept while the page stays open: the history of a confirmed note does not change.
+  const lineageKept = new Map();
+  async function lineage(notes, { onProgress = null } = {}) {
+    const out = new Map();
+    let r = null;
+    try { r = await reflected(); } catch { /* the trace tells instead */ }
+    for (const n of notes || []) {
+      const id = `${n.txid}:${n.vout}`, kept = lineageKept.get(recordId(n.txid, n.vout));
+      if (kept) { out.set(id, kept); continue; }
+      const key = outpointOf(n.txid, n.vout);
+      let v;
+      if (r && r.live.has(key) && !r.liveBound.get(key)) v = { state: 'tracked' };
+      else {
+        try { const t = await traceNote({ txid: n.txid, vout: n.vout, assetId: tacAssetId, onProgress }); v = t.hops <= MAX_HOPS_SOURCE ? { state: 'traced', hops: t.hops } : { state: 'long', hops: t.hops, max: MAX_HOPS_SOURCE }; }
+        catch (e) {
+          const m = String((e && e.message) || e), through = unprovableThrough(m), at = /burndep-live-tracer: (?:input )?([0-9a-f]{64})/i.exec(m), long = /provenance exceeded (?:maxDepth \((\d+)\)|\d+ outpoints)/.exec(m);
+          v = e && e.code === 'trace_reading' ? { state: 'unread', reading: true, read: e.read, error: m }
+            : through ? { state: 'unprovable', through, ...(at ? { at: at[1].toLowerCase() } : {}) }
+            : long ? { state: 'long', hops: Number(long[1]) || null, max: MAX_HOPS_SOURCE }
+            : { state: 'unread', error: m };
+        }
+      }
+      if (v.state !== 'unread') lineageKept.set(recordId(n.txid, n.vout), v);
+      out.set(id, v);
+    }
+    return out;
+  }
+
   async function preflightHeld({ note, walletPub }) {
     const out = { steps: [], ok: false };
     const step = (name, ok, detail) => { out.steps.push({ name, ok, detail }); return ok; };
@@ -1346,7 +1382,7 @@ export function makeBurnDepositUx(deps) {
   }
 
   return {
-    BURNDEP_BETA_CAP_RAW, assets: ASSETS, assetOf, eligibleNotes, isReserved, pickFunding, bridgeCost, noteForms, noteTracking, preflight, preflightHeld, recheckBurn, RETURN_FEE_CEILING, start, startReflected, advance, resumeAll, recoverFromTxid, discover, list, abandon,
+    BURNDEP_BETA_CAP_RAW, assets: ASSETS, assetOf, eligibleNotes, isReserved, pickFunding, bridgeCost, noteForms, noteTracking, lineage, preflight, preflightHeld, recheckBurn, RETURN_FEE_CEILING, start, startReflected, advance, resumeAll, recoverFromTxid, discover, list, abandon,
     cancelSigned, buildCancel, reclaim, recover, verify, isLive, burnRecorded, destLeaf, relayFault, mintRetryDue, armMint,
     quoteRate: () => chain.getFeeRate('priority'),
     slipstreamStatus: broadcaster.slipstreamStatus,

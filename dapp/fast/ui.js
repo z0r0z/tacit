@@ -13,9 +13,9 @@
 //   pinned()    the pairing id of a provider the bridger came by a link of (fast/fmt.js pairId), quoted first when it quotes, or null
 //   -> { lock(text), destroy() }
 
-import { DEC, ONE, esc, fmtTac, parseTac, slowNet, pairId, highFee } from './fmt.js';
+import { DEC, ONE, esc, fmtTac, parseTac, slowNet, pairId, highFee, lineageText } from './fmt.js';
 import { minutesFor } from './route.js';
-export { fmtTac, parseTac, slowNet };
+export { fmtTac, parseTac, slowNet, lineageText };
 const pct = (fee, of) => (of > 0n ? `${(Number((fee * 1000000n) / of) / 10000).toFixed(2)}%` : '');
 const SCAN = 'https://mempool.space/tx/';
 const big = (xs, pick) => xs.reduce((a, x) => (pick(x) > a ? pick(x) : a), 0n);
@@ -240,10 +240,20 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
         if (seq !== S.seq) return;
         if (!r.quotes.length) { note(r.failed[0] ? wording(r.failed[0].error) : 'No provider can take that amount right now.', true); return; }
         S.quotes = pinFirst(r.quotes); S.quote = S.quotes[0].quote; S.best = S.quotes[0].provider; paintForm();
-        // what the lock costs on Bitcoin, and whether this address can pay it, is read before the press and not found out at it
+        // what the lock costs on Bitcoin, and whether this address can pay it, is read before the press and not found out at it; so is
+        // whether the TAC it would lock can be followed, which a provider checks before it pays (the cost is read from the notes that pass)
         if (S.sess.cost) {
-          const sess = S.sess, c = await sess.cost({ quote: S.quote, provider: S.best }).catch(() => null);
-          if (seq === S.seq && S.sess === sess && c) { S.cost = c; if (c.short) note(shortText(c), true); paintForm(); }
+          const sess = S.sess, checking = 'Checking that your TAC can be followed…';
+          note(checking);
+          let lineage = null;
+          const c = await sess.cost({ quote: S.quote, provider: S.best }).catch((e) => { if (e && /^lineage/.test(e.code || '')) lineage = e; return null; });
+          if (seq !== S.seq || S.sess !== sess) return;
+          if (S.note === checking) note('');
+          // a lock on notes no provider takes is not offered; a read that failed is said, and the press looks again
+          if (lineage && lineage.code === 'lineage') { S.quotes = []; S.quote = null; S.best = null; note(wording(lineage), true); paintForm(); return; }
+          if (lineage) note(wording(lineage), true);
+          if (c) { S.cost = c; if (c.short) note(shortText(c), true); }
+          paintForm();
         }
       } catch (e) { if (seq === S.seq) note(wording(e), true); }
     }, quoteDelayMs);
@@ -358,6 +368,8 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
   function wording(e) {
     const m = e && typeof e === 'object' && 'message' in e ? String(e.message) : String(e || '');
     if (slowNet(e)) return 'Ethereum is slow to answer right now. This page tries again on its own.';
+    if (e && e.code === 'lineage') return lineageText(e);
+    if (e && e.code === 'lineage_unread') return 'Could not read this TAC’s history from Bitcoin just now, so nothing was locked. Press again to try once more.';
     if (/already part of a swap/.test(m)) return 'This note is already in a bridge.';
     if (/do not cover the amount/.test(m)) return 'Your TAC on Bitcoin does not cover that amount in one go.';
     if (/quote expired|expires too soon/.test(m)) return 'The quote ran out. Try again.';

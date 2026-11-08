@@ -2421,5 +2421,50 @@ const startMoved = async (world, ux) => {
   ok(standing.length === 1 && won.length === 1 && standing[0].burn.txid === won[0].value.burn.txid, 'and the one record that stands is the successful start\'s burn');
 }
 
+// ==== lineage: whether a note's history can be followed, for a caller that does not burn it (a fast bridge lock) ====
+// The texts are the ones the live API gave for the notes of three locks a fast bridge provider refused (2026-11-09).
+{
+  const A = 'a1'.repeat(32), B = 'b2'.repeat(32), C = 'c3'.repeat(32), D = 'd4'.repeat(32), E = 'e5'.repeat(32), F = 'f6'.repeat(32), G = '17'.repeat(32);
+  const EXIT_AT = '742d7b680afc470edf2e9cfccb3f218a17b7d3cbd2f6bf6d5fcb98048f8e6878';
+  const says = {
+    [B]: { ok: true, hops: 4, bundle: {} },
+    [C]: { status: 502, error: `trace failed: burndep-live-tracer: ${EXIT_AT}:0 carries an envelope this module does not recognize as a resolvable leaf (opcode 0x6d) — a Bitcoin shielded-pool shield or exit: the reflection proof does not follow it` },
+    [D]: { status: 502, error: 'trace failed: burn-deposit trace: outpoint not produced by a known cxfer and not a supply leaf: 0x8b9a1dabec44f36afb42737db008bc410b67c14bc1dac7c62a8305bbe7147ccf' },
+    [E]: { status: 502, error: 'trace failed: provenance exceeded maxDepth (256)' },
+    [F]: { status: 503, error: 'the service is busy' },
+    [G]: { ok: true, hops: 300, bundle: {} },
+  };
+  const run = async (notes, setup = () => {}) => {
+    const world = makeWorld(); setup(world); let traces = [];
+    const fetchImpl = async (url, opts) => {
+      if (new URL(url).pathname === '/reflection/burndep/trace') {
+        const id = JSON.parse(opts.body).note.txid; traces.push(id);
+        const r = says[id];
+        return r.status ? { ok: false, status: r.status, json: async () => ({ ok: false, error: r.error }) } : { ok: true, status: 200, json: async () => r };
+      }
+      return world.fetchImpl(url, opts);
+    };
+    const ux = makeUx({ ...world, fetchImpl }, makeMemStorage(), { sleep: async () => {} });
+    return { ux, traces: () => traces, out: await ux.lineage(notes.map((t) => ({ txid: t, vout: 0 }))) };
+  };
+  const v = (r, t) => r.out.get(`${t}:0`);
+  const all = await run([A, B, C, D, E, F, G], (w) => w.setLive(A, 0));
+  ok(v(all, A).state === 'tracked' && !all.traces().includes(A), 'a note the reflection tracks is followed without a trace');
+  ok(v(all, B).state === 'traced' && v(all, B).hops === 4, 'a note whose trace comes back is followed, with its transfers counted');
+  ok(v(all, C).state === 'unprovable' && v(all, C).through === 'shielded' && v(all, C).at === EXIT_AT, 'a history that passes an exit from the shielded pool is not followed, with the exit named');
+  ok(v(all, D).state === 'unprovable' && v(all, D).through === 'other', 'an exit note itself (not made by any transfer) is not followed either');
+  ok(v(all, E).state === 'long' && v(all, E).max === 255, 'a history past the limit is told apart from one that cannot be followed');
+  ok(v(all, G).state === 'long' && v(all, G).hops === 300, 'and so is one the trace walked but that is over the limit');
+  ok(v(all, F).state === 'unread' && /busy/.test(v(all, F).error), 'a trace the service did not answer is not a verdict');
+  // final verdicts are kept for the page; a read that failed is asked again
+  const first = await run([C, F]);
+  const second = await first.ux.lineage([{ txid: C, vout: 0 }, { txid: F, vout: 0 }]);
+  ok(second.get(`${C}:0`).state === 'unprovable' && first.traces().filter((t) => t === C).length === 1, 'a final verdict is not asked for twice');
+  ok(second.get(`${F}:0`).state === 'unread' && first.traces().filter((t) => t === F).length === 2, 'one that could not be read is');
+  // a tracked note bound to a deployment is not a plain tracked note: it is traced
+  const bound = await run([B], (w) => { w.setLive(B, 0); w.setBound(B, 0); });
+  ok(v(bound, B).state === 'traced', 'a note bound to a deployment is traced, not taken as tracked');
+}
+
 console.log(failures ? `\n${failures} FAILURES (${n} passed)` : `\nall ${n} burndep-ux checks passed`);
 process.exit(failures ? 1 : 0);

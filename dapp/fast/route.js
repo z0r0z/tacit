@@ -15,7 +15,7 @@
 //   fr.records()            -> the bridges, newest first, in words (fastbridge-client.js describe)
 //   fr.run(onChange)        -> stop(): the steps taken while the page is open
 
-import { fmtTac, highFee } from './fmt.js';
+import { fmtTac, highFee, lineageText } from './fmt.js';
 
 // What a provider takes now: its most, or less when it says so.
 export const capOf = (t) => (t.available != null && t.available < t.maxAmount ? t.available : t.maxAmount);
@@ -112,6 +112,8 @@ export function confirmText(o, amt) {
 export function failMessage(e) {
   const m = e && typeof e === 'object' && 'message' in e ? String(e.message) : String(e || ''), x = /need (\d+), have (\d+)/.exec(m);
   return x ? shortText({ need: Number(x[1]), have: Number(x[2]) })
+    : e && e.code === 'lineage' ? lineageText(e)
+    : e && e.code === 'lineage_unread' ? 'Could not read this TAC’s history just now, so nothing was locked. Try again.'
     : /already part of a swap/.test(m) ? 'This note is already in a bridge.'
     : /cannot hold that amount|cannot take/.test(m) ? 'The provider cannot take that amount right now. Use the regular bridge, or try again.'
     : m.slice(0, 200) || 'Something went wrong. Try again.';

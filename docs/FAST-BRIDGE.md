@@ -66,9 +66,16 @@ keeps them tended without a page.
 **Which notes a provider can take.** A lock's notes need only be valid Tacit notes, the validator's verdict, and that includes a
 note made by an exit from the Bitcoin shielded pool (`T_BTC_SPEND`, opcode 0x6d). Such a note cannot be bridged home by burning
 it: the burn's proof follows transfers back to the etch and does not follow a history through the pool. TAC a provider takes this
-way stays on Bitcoin, where it can be traded. A provider that rebalances by bridging home can screen locks with the regular
-bridge's own trace (`POST /reflection/burndep/trace` answers a note like this with "opcode 0x6d"); the reference provider applies
-no such screen.
+way stays on Bitcoin, where it can be traded. A provider that rebalances by bridging home screens locks with the regular
+bridge's own trace (`POST /reflection/burndep/trace` answers a note like this with "opcode 0x6d") and refuses such a lock after it is
+on Bitcoin, when its fees are spent and its TAC waits out the timelock; the reference provider applies no such screen. So the page asks
+the same trace of the notes a lock would spend, before the lock is built (`followed` in `dapp/fast/wire.js`, the verdicts from
+`lineage` in `dapp/burndep-ux.js`): a note the reflection tracks needs no trace; one whose history cannot be followed (some
+transfer in it is a pool or farm trade, an exit from the shielded pool, or TAC that came over from Ethereum) is left out and the
+notes picked again, and when what is left cannot cover the amount the page says so and builds nothing. A trace that cannot be
+read stops the lock too (press again). A history longer than the proof folds (255 transfers) is not refused here, since the
+trace's own verdict on it is a limit and not a refusal; whether a provider takes it is the provider's rule. The Bridge tab no longer
+sends a history of the first kind to this page.
 
 ## On the front page
 

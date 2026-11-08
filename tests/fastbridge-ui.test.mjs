@@ -499,6 +499,47 @@ test('what the lock costs on Bitcoin is read before the press: the fee shown, an
   typeIn(m, '102'); await until(() => !m.$('fx-go').disabled, 'the quote without a cost'); await tick(10); assert.doesNotMatch(text(m.$('fx-recv')), /Bitcoin fee/, 'a fee that was not read is not made up'); assert.equal(m.$('fx-go').disabled, false);
 });
 
+test('TAC a provider would refuse (out of the shielded pool) is not offered: the page says so before the press, and a read that failed does not stop the press', async () => {
+  const st = sessionStub();
+  const lineage = (code, extra = {}) => Object.assign(new Error('fastbridge: ' + code), { code, ...extra });
+  let release = null, mode = 'refuse';
+  st.session.cost = async () => {
+    await new Promise((r) => { release = r; });
+    if (mode === 'refuse') throw lineage('lineage', { refused: [{ txid: 'a'.repeat(64), vout: 0, amount: 5000n * TAC, state: 'unprovable', through: 'shielded' }], left: 800n * TAC });
+    if (mode === 'unread') throw lineage('lineage_unread', { unread: ['x:0'] });
+    return { fee: 3100, take: 8046, total: 11146, have: 50000, short: false };
+  };
+  const m = mount({ session: st, discover: async () => [provider('Tacit')] });
+  await signIn(m);
+  typeIn(m, '100'); await until(() => release, 'the check under way');
+  assert.match(m.$('fx-st').textContent, /Checking that your TAC can be followed/, 'the wait is said');
+  release(); release = null;
+  await until(() => /Nothing was locked/.test(m.$('fx-st').textContent), 'the refusal said');
+  assert.match(m.$('fx-st').textContent, /5,000 TAC of yours has a history that includes a move through Bitcoin’s shielded pool, which the bridge’s proof does not follow, so a provider would refuse the lock/);
+  assert.match(m.$('fx-st').textContent, /Your other TAC on Bitcoin, 800, can still go: try a smaller amount/);
+  assert.equal(m.$('fx-st').className, 'status err');
+  assert.equal(m.$('fx-recv').hidden, true, 'no quote is shown for a lock that would be refused');
+  assert.equal(m.$('fx-go').disabled, true);
+  // a history that could not be read is said, and the quote stays: the press looks again
+  mode = 'unread'; typeIn(m, '101'); await until(() => release, 'the second check'); release(); release = null;
+  await until(() => /Could not read this TAC’s history/.test(m.$('fx-st').textContent), 'the read said');
+  assert.equal(m.$('fx-recv').hidden, false, 'the quote stands'); assert.equal(m.$('fx-go').disabled, false);
+  // and a lock that passes is offered as before
+  mode = 'fine'; typeIn(m, '102'); await until(() => release, 'the third check'); release(); release = null;
+  await until(() => /Bitcoin fee/.test(text(m.$('fx-recv'))), 'the fee row'); assert.doesNotMatch(m.$('fx-st').textContent, /Checking|Nothing was locked/);
+});
+
+test('a lock refused at the press (the check passed before, and not now) is said in the same words, and nothing starts', async () => {
+  const st = sessionStub({ startError: Object.assign(new Error('fastbridge: lineage'), { code: 'lineage', refused: [{ amount: 3n * TAC, through: 'pool' }], left: 0n }) });
+  const m = mount({ session: st, discover: async () => [provider('Tacit')] });
+  await signIn(m);
+  typeIn(m, '100'); await until(() => !m.$('fx-go').disabled, 'the quote');
+  m.$('fx-go').click(); await until(() => /Press again/.test(m.$('fx-st').textContent), 'the first press');
+  m.$('fx-go').click(); await until(() => /Nothing was locked/.test(m.$('fx-st').textContent), 'the refusal');
+  assert.match(m.$('fx-st').textContent, /3 TAC of yours has a history that includes a pool or farm trade on Bitcoin/);
+  assert.equal(st.calls.starts.length, 0);
+});
+
 test('the sats the builder lacks, as it says them, are put in the page\'s words', async () => {
   const m = mount({ session: sessionStub({ startError: new Error('adaptor-btc-tx: not enough sats to fund the commit (need 9000, have 250)') }) });
   await signIn(m);
