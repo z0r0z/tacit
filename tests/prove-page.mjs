@@ -38,9 +38,14 @@ const check = (ok, what, got = '') => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${w
 const SALT_ADDR = '0x00000000009f12cd34ef56ab78cd90ef12ab34cd', HOUSE = '0x68575b073de49a94e3e3acf6f3a0d6e3b66267c7';
 const SALT_FINDS = () => { const at = Date.now() - 90_000; return [{ address: SALT_ADDR, bits: 44, miner: OTHER, at }, { address: SALT_ADDR, bits: 33, miner: OTHER, at },
   { address: SALT_ADDR, bits: 41, miner: HOUSE, at: Date.now() - 150_000, house: true }, { address: SALT_ADDR, bits: 32, miner: '0x' + 'ef'.repeat(20), at: Date.now() - 200_000 }, { address: SALT_ADDR, bits: 56, miner: OTHER, at: Date.now() - 2 * 86400000 }]; };
+// Every banked address (GET /prover/salt/bank), the best of them a contract by now (what an eth_getCode batch to the public RPC answers).
+const BANK_AT = Date.now() - 3 * 86400000, DEPLOYED = '0x00000000000a9147ffd8d41d152d730ca5f84e6c';
+const SALT_BANK = () => [{ address: DEPLOYED, bits: 44, miner: OTHER, at: BANK_AT }, { address: '0x0000000000ab12cd34ef56ab78cd90ef12ab34cd', bits: 41, miner: OTHER, at: BANK_AT },
+  { address: '0x0000000000cd12cd34ef56ab78cd90ef12ab34cd', bits: 40, miner: HOUSE, at: BANK_AT, house: true },
+  ...[1, 2, 3, 4, 5, 6].map((i) => ({ address: '0x00000000' + i + i + '12cd34ef56ab78cd90ef12ab34cd56', bits: 38 - i, miner: OTHER, at: BANK_AT }))];
 // The stand-in prover: `local` is what it answers (null: nothing listens), and each POST /mine it was sent.
 const WINDOWS_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
-async function open(browser, local, { phone = false, idle = false, ua = null, hash = '', init = null } = {}) {
+async function open(browser, local, { phone = false, idle = false, ua = null, hash = '', init = null, noBank = false } = {}) {
   const ctx = await browser.newContext(phone ? { viewport: { width: 390, height: 800 }, userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148' } : { viewport: { width: 1100, height: 900 }, ...(ua ? { userAgent: ua } : {}) });
   const page = await ctx.newPage();
   // The public Nostr relays are the outside world: a page under test must never post its stand-in jobs to them or read other people's, so
@@ -51,7 +56,7 @@ async function open(browser, local, { phone = false, idle = false, ua = null, ha
     else if (d[0] === 'EVENT') ws.send(JSON.stringify(['OK', d[1]?.id, true, '']));
   }));
   if (init) await page.addInitScript(init);
-  const errors = [], posts = [];
+  const errors = [], posts = [], codeReads = [];
   page.on('pageerror', (e) => errors.push(e.message));
   // a public Nostr relay that is down (the Relay tab reads several) is the outside world, not the page
   page.on('console', (m) => { if (m.type() === 'error' && !/Failed to load resource|ERR_|WebSocket connection to 'wss:\/\//.test(m.text())) errors.push(m.text()); });
@@ -80,11 +85,21 @@ async function open(browser, local, { phone = false, idle = false, ua = null, ha
     if (u.pathname === '/prover/pool/credits') return json(route, { day, over: false, miners: [{ miner: ADDR, proofs: 4, points: 80 }] });
     if (u.pathname === '/pool/snapshot') return json(route, { v: 1, cid: 'bafkreia4g6iad4ec3634pd5lsfcqsmenqcc5oyn3mm2kwezybpwv6iltom', to: 26352486, checkpoint: { eth: { block: 26352486, hash: '0x' + 'e9'.repeat(32) }, tacit: { height: 9441, hash: '0xec803dcef9a1a4c0f64a919b491a226ce22e9d30be225c76a148b0a22b62eb41' }, bitcoin: { relayTip: 974739, reflection: { height: 974721 } }, ethereum: { finalizedSlot: 13450016 } } });
     if (u.pathname === '/prover/salt') return json(route, { recent: SALT_FINDS(), pointsPerDay: 1500, minBits: 26, today: { miners: 2, shares: 30, weight: 400000 }, top: [{ miner: ADDR, shares: 20, weight: 2200 }], live: [{ miner: OTHER, at: Date.now() - 60_000 }, { miner: '0x68575b073de49a94e3e3acf6f3a0d6e3b66267c7', at: Date.now() - 30_000, house: true }], rate: 2_400_000, bank: [{ address: '0x0000000000ab12cd34ef56ab78cd90ef12ab34cd', bits: 41, miner: OTHER }, { address: '0x0000000000cd12cd34ef56ab78cd90ef12ab34cd', bits: 40, miner: '0x68575b073de49a94e3e3acf6f3a0d6e3b66267c7', house: true }] });
+    if (u.pathname === '/prover/salt/bank') return noBank ? json(route, {}, 500) : json(route, { bank: SALT_BANK().map((b) => ({ ...b, salt: '0x' + '00'.repeat(32) })) });
     return json(route, {}, 404);
+  });
+  // the public RPC: eth_getCode of the banked addresses is batched (the first is a contract); anything else goes to the network as before
+  await page.route('https://ethereum-rpc.publicnode.com/**', (route) => {
+    const req = route.request();
+    if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: { 'access-control-allow-origin': '*', 'access-control-allow-methods': 'POST', 'access-control-allow-headers': 'content-type' } });
+    let b = null; try { b = JSON.parse(req.postData() || 'null'); } catch {}
+    if (!Array.isArray(b) || !b.length || !b.every((x) => x.method === 'eth_getCode')) return route.fallback();
+    codeReads.push(b.length);
+    return json(route, b.map((x) => ({ jsonrpc: '2.0', id: x.id, result: String(x.params[0]).toLowerCase() === DEPLOYED ? '0x60806040' : '0x' })));
   });
   await page.route('https://tacit-points.onrender.com/**', (route) => json(route, { enabled: true, endSec: Math.floor(Date.now() / 1000) + 86400 * 10, terms: { capWeiPerPoint: '10000000000000000' }, account: { creditedWei: '6000000000000000000' }, pocket: { totalWei: '7500000000000000000000', creditedWei: '291270000000000000000', remainingWei: '7208730000000000000000' } }));
   await page.goto(`${ORIGIN}/prove/${hash}`);
-  return { page, ctx, errors, posts };
+  return { page, ctx, errors, posts, codeReads };
 }
 const text = (page, s) => page.locator(s).innerText();
 const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: join(SHOTS, `${name}.png`), fullPage: true }); };
@@ -239,10 +254,18 @@ try {
     check(await page.locator('#setup').isVisible(), 'an older prover is shown the setup line to update');
     await ctx.close();
   }
+  // the full bank not answering: the summary's best addresses are listed, none marked
+  {
+    const { page, ctx, errors } = await open(browser, { v: null }, { noBank: true });
+    await page.waitForFunction(() => document.querySelectorAll('#salt-bank li').length > 0, null, { timeout: 8000 });
+    check((await page.locator('#salt-bank li').count()) === 2 && (await page.locator('#salt-bank li.used').count()) === 0 && (await page.textContent('#salt-bank-h')) === 'Banked for deploys · 2', 'without the full list the summary\'s best addresses show', await page.textContent('#salt-bank-h'));
+    check(errors.length === 0, 'and the page has no errors', errors.join(' | '));
+    await ctx.close();
+  }
   // paused, then started from the button, then a proof under way, then paused mid-proof
   {
     const local = { v: { mine: { miner: ADDR, on: false, job: null, proved: 0 } } };
-    const { page, ctx, errors, posts } = await open(browser, local);
+    const { page, ctx, errors, posts, codeReads } = await open(browser, local);
     await page.waitForFunction(() => document.querySelector('#title').textContent === 'Paused');
     check((await page.inputValue('#addr')).toLowerCase() === ADDR, 'the prover\'s own address fills the field');
     check((await text(page, '#go')) === 'Start proving', 'paused: the button starts');
@@ -253,8 +276,20 @@ try {
     await page.waitForFunction(() => document.querySelector('#title').textContent === 'Mining salts until the next proof');
     await page.waitForFunction(() => document.querySelector('#salt').textContent.includes('M/s'));
     check((await text(page, '#salt')) === '20 shares · 0.08 TAC so far · 2.4 M/s', 'between proofs the node grinds salts: its shares, its part of the day and its speed', await text(page, '#salt'));
-    check((await page.textContent('#salt-bank-h')) === 'Banked for deploys', 'the bank says what it is');
-    check((await text(page, '#salt-pay')).includes('up to 15 TAC today') && (await page.locator('#salt-bank li').count()) === 2 && (await text(page, '#salt-bank')).includes('Tacit GPU'), 'the salt pot and the best addresses banked, Tacit GPU\'s named so', await text(page, '#salt-pay'));
+    await page.waitForFunction(() => document.querySelector('#salt-bank li.used'), null, { timeout: 8000 });
+    check((await page.textContent('#salt-bank-h')) === 'Banked for deploys · 9 · 1 deployed', 'the bank says what it is: how many are banked and how many were deployed to', await page.textContent('#salt-bank-h'));
+    check((await text(page, '#salt-pay')).includes('up to 15 TAC today') && (await text(page, '#salt-bank')).includes('Tacit GPU'), 'the salt pot and the addresses banked, Tacit GPU\'s named so', await text(page, '#salt-pay'));
+    check((await page.locator('#salt-bank li').count()) === 9, 'every banked address is listed, not the best few', String(await page.locator('#salt-bank li').count()));
+    const dep = page.locator('#salt-bank li.used');
+    check((await dep.count()) === 1 && (await dep.locator('a.dep').innerText()) === 'Deployed' && (await dep.locator('a.dep').getAttribute('href')) === `https://etherscan.io/address/${DEPLOYED}`
+      && (await dep.locator('code').getAttribute('title')) === DEPLOYED && (await dep.locator('code').innerText()).startsWith('0x00000000000a9147'), 'an address with a contract on it says so, with the link to it, and shows the whole address on hover');
+    check((await page.locator('#salt-bank li:not(.used) a').count()) === 0, 'the rest carry no link');
+    const box = await page.locator('#salt-bank').evaluate((el) => ({ over: el.scrollHeight > el.clientHeight, y: getComputedStyle(el).overflowY, tab: el.tabIndex, more: el.classList.contains('more'), h: el.clientHeight, last: el.lastElementChild.getBoundingClientRect().top > el.getBoundingClientRect().bottom }));
+    check(box.over && box.y === 'auto' && box.tab === 0 && box.more && box.last && box.h < 160, 'the list scrolls (from the keyboard too), shows the first rows with the rest below, and fades at the foot', JSON.stringify(box));
+    await page.locator('#salt-bank').evaluate((el) => { el.scrollTop = el.scrollHeight; });
+    await page.waitForFunction(() => !document.querySelector('#salt-bank').classList.contains('more') && document.querySelector('#salt-bank').lastElementChild.getBoundingClientRect().bottom <= document.querySelector('#salt-bank').getBoundingClientRect().bottom + 1);
+    check(true, 'scrolled to the end, the last address is in view and the fade is gone');
+    check(codeReads.length === 1 && codeReads[0] === 9, 'the chain is asked once, in one batch, for all the banked addresses', JSON.stringify(codeReads));
     local.v.mine = { ...local.v.mine, job: { id: 'j1', secs: 120, stage: 'shrink', eta: 360 }, proved: 2 };
     await page.waitForFunction(() => document.querySelector('#title').textContent === 'Proving');
     check((await page.title()) === 'Proving · tacit prove', 'a tab left open says it is proving', await page.title());

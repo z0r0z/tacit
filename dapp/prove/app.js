@@ -451,22 +451,28 @@ function askAddress() {
 // Salt mining (worker/src/salt-pool.js): the day's points shared by work, this address's part of them so far, what this computer grinds
 // (tacit-prover's GET /mine `salt`), and the best addresses banked for Tacit's next contracts.
 const HEX40 = /^0x[0-9a-f]{40}$/;
+const cleanFind = (b) => ({ address: HEX40.test(String(b?.address)) ? b.address : null, bits: count(b?.bits), miner: cleanAddress(b?.miner), house: b?.house === true, at: count(b?.at) });
 const cleanSalts = (s) => (s && typeof s === 'object' ? {
   minBits: count(s.minBits), maxWeightBits: count(s.maxWeightBits), pointsPerDay: count(s.pointsPerDay), miners: count(s.today?.miners), shares: count(s.today?.shares), weight: Number(s.today?.weight) || 0,
   top: (Array.isArray(s.top) ? s.top : []).map((m) => ({ miner: cleanAddress(m?.miner), weight: Number(m?.weight) || 0, shares: count(m?.shares),
     best: HEX40.test(String(m?.best?.address)) && count(m?.best?.bits) ? { address: m.best.address, bits: m.best.bits } : null })).filter((m) => m.miner),
-  bank: (Array.isArray(s.bank) ? s.bank : []).map((b) => ({ address: HEX40.test(String(b?.address)) ? b.address : null, bits: count(b?.bits), miner: cleanAddress(b?.miner), house: b?.house === true, at: count(b?.at) })).filter((b) => b.address),
+  bank: (Array.isArray(s.bank) ? s.bank : []).map(cleanFind).filter((b) => b.address), banked: count(s.banked) || 0,
   // The newest good finds (`recent`, from the API that keeps them); an older API has only the bank, whose finds carry a time too.
-  recent: (Array.isArray(s.recent) ? s.recent : Array.isArray(s.bank) ? s.bank : []).map((b) => ({ address: HEX40.test(String(b?.address)) ? b.address : null, bits: count(b?.bits), miner: cleanAddress(b?.miner), house: b?.house === true, at: count(b?.at) }))
+  recent: (Array.isArray(s.recent) ? s.recent : Array.isArray(s.bank) ? s.bank : []).map(cleanFind)
     .filter((b) => b.address && b.bits && b.at && (b.house || b.miner)),
   live: (Array.isArray(s.live) ? s.live : []).map((m) => ({ miner: cleanAddress(m?.miner)?.toLowerCase() || null, house: m?.house === true })).filter((m) => m.miner).slice(0, 64),
   rate: Number.isFinite(Number(s.rate)) && Number(s.rate) >= 0 ? Number(s.rate) : 0,
 } : null);
 let bankShown = null, bestShown = null, bestHtmlShown = null;
-// An address's row: its zero bytes picked out, and who found it.
+// Every banked address (GET /prover/salt/bank: the summary lists only the best ten), and which of them hold a contract now. A banked salt
+// can only be used by Tacit's deployer, so code at its address means it was spent: that deploy is how the work gets used.
+let fullBank = null, bankReadAt = 0;
+const deployed = new Set(), codeChecked = new Map();
+const ETH_RPCS = ['https://ethereum-rpc.publicnode.com', 'https://eth.drpc.org'], RECHECK_MS = 10 * 60_000;
+// An address's row: its zero bytes picked out, who found it, and a link to the contract if it was spent.
 const saltRow = (b, cls = '') => {
-  const z = Math.floor((b.bits || 0) / 4);
-  return `<li${cls ? ` class="${cls}"` : ''}><code><b>${esc(b.address.slice(0, 2 + z))}</b>${esc(b.address.slice(2 + z, 18))}…</code><small>${b.house ? `<span class="who">${face(null)}Tacit GPU</span>` : b.miner ? who(b.miner) : ''}</small></li>`;
+  const z = Math.floor((b.bits || 0) / 4), used = deployed.has(b.address), c = [cls, used ? 'used' : ''].filter(Boolean).join(' ');
+  return `<li${c ? ` class="${c}"` : ''}><code title="${esc(b.address)}"><b>${esc(b.address.slice(0, 2 + z))}</b>${esc(b.address.slice(2 + z, 18))}…</code><small>${used ? `<a class="dep" href="https://etherscan.io/address/${esc(b.address)}" target="_blank" rel="noopener noreferrer">Deployed</a>` : ''}${b.house ? `<span class="who">${face(null)}Tacit GPU</span>` : b.miner ? who(b.miner) : ''}</small></li>`;
 };
 function paintSalt() {
   const potWei = salts?.pointsPerDay ? rewardWei(salts.pointsPerDay, cap()) : null;
@@ -487,22 +493,60 @@ function paintSalt() {
   const bestHtml = best ? saltRow(best, bestShown != null && bestShown !== best.address ? 'new' : '') : '';
   if (bestHtml !== bestHtmlShown) { bestHtmlShown = bestHtml; bestShown = best?.address ?? bestShown; $('#salt-best').innerHTML = bestHtml; }
   // The bank's best (five zero bytes and better); until it has one, the best addresses ground today, so the panel shows the hunt.
-  const banked = salts?.bank?.length ? salts.bank : null;
+  const apiBank = salts?.bank?.length ? salts.bank : null;
+  const banked = fullBank?.length && fullBank.length >= (apiBank?.length || 0) ? fullBank : apiBank;
   const finds = (banked || (salts?.top || []).filter((m) => m.best).map((m) => ({ ...m.best, miner: m.miner })).sort((a, b) => b.bits - a.bits)).filter((b) => b.address !== best?.address);
   $('#salt-bank-h').hidden = !finds.length;
-  $('#salt-bank-h').textContent = banked ? 'Banked for deploys' : 'Best found today';
-  const bank = finds.slice(0, 5).map((b) => saltRow(b)).join('');
-  if (bank !== bankShown) { bankShown = bank; $('#salt-bank').innerHTML = bank; }   // rows with a picture each: drawn again only when they change
+  // How many are banked and how many of those have been deployed to; the list below scrolls through all of them.
+  const spent = banked ? banked.filter((b) => deployed.has(b.address)).length : 0;
+  $('#salt-bank-h').textContent = banked ? `Banked for deploys · ${Math.max(banked.length, salts?.banked || 0)}${spent ? ` · ${spent} deployed` : ''}` : 'Best found today';
+  const bank = finds.map((b) => saltRow(b)).join(''), box = $('#salt-bank');
+  if (bank !== bankShown) { bankShown = bank; const at = box.scrollTop; box.innerHTML = bank; box.scrollTop = at; }   // rows with a picture each: drawn again only when they change, where the reader had scrolled to
+  moreBelow();
   const rate = Number(mine?.salt?.rate), mineRow = (salts?.top || []).find((m) => m.miner.toLowerCase() === me());
   const part = mineRow && salts.weight && salts.pointsPerDay ? rewardWei(Math.floor((salts.pointsPerDay * mineRow.weight) / salts.weight), cap()) : null;
   const on = mine?.salt?.on === true && Number.isFinite(rate) && rate > 0;
   $('#salt-row').hidden = !(on || mineRow);
   $('#salt').textContent = [mineRow ? `${(mineRow.shares || 0).toLocaleString('en-US')} shares` : null, part ? `${tac(part)} TAC so far` : null, on ? rateText(rate) : null].filter(Boolean).join(' · ') || '—';
 }
+// A long list fades at its foot while there is more below it.
+const moreBelow = () => { const b = $('#salt-bank'); b.classList.toggle('more', b.scrollTop + b.clientHeight < b.scrollHeight - 2); };
+$('#salt-bank').addEventListener('scroll', moreBelow, { passive: true });
+// Every banked address, about once a minute (the API caches it that long).
+async function readBank() {
+  if (Date.now() - bankReadAt < 55_000) return;
+  bankReadAt = Date.now();
+  const b = await get(`${API}/prover/salt/bank`);
+  if (Array.isArray(b?.bank)) fullBank = b.bank.map(cleanFind).filter((x) => x.address);
+}
+// Which of the banked addresses hold code (one batched eth_getCode): a spent one stays spent, the rest are asked again every ten minutes.
+async function readDeployed() {
+  const now = Date.now(), due = [...new Set((fullBank || salts?.bank || []).map((b) => b.address))].filter((a) => !deployed.has(a) && now - (codeChecked.get(a) || 0) > RECHECK_MS);
+  if (!due.length) return;
+  for (const a of due) codeChecked.set(a, now - RECHECK_MS + 60_000);   // an RPC that fails is tried again in a minute, not every poll
+  const body = JSON.stringify(due.map((a, i) => ({ jsonrpc: '2.0', id: i, method: 'eth_getCode', params: [a, 'latest'] })));
+  for (const url of ETH_RPCS) {
+    try {
+      const j = await (await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body, signal: AbortSignal.timeout(8000) })).json();
+      if (!Array.isArray(j)) continue;
+      for (const x of j) {
+        const a = Number.isInteger(x?.id) ? due[x.id] : null;
+        if (!a || typeof x.result !== 'string' || !/^0x[0-9a-f]*$/i.test(x.result)) continue;
+        codeChecked.set(a, now);
+        if (x.result.length > 2) deployed.add(a);
+      }
+      return;
+    } catch {}
+  }
+}
 async function readSalts() {
   const s = await get(`${API}/prover/salt`); if (s) salts = cleanSalts(s);
+  await readBank();
   paintSalt(); paintNet(); paintCrowd(); paintFeed();
   saltTop = Math.max(saltTop, goodSalts()[0]?.at || 0);
+  const had = deployed.size;
+  await readDeployed();
+  if (deployed.size !== had) paintSalt();                           // a spent address is marked as soon as the chain says so
 }
 
 async function copy() {
