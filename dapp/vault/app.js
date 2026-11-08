@@ -450,7 +450,7 @@ let mineP = null;
 $('#btc').addEventListener('click', (e) => {
   if (mineP || !e.target.closest('[data-mine="open"]')) return;
   e.stopImmediatePropagation();
-  mineP = import('/vault/mine.js?cb=6ff0d51c').then((m) => { m.mountMine($('#btc-mine'), { ticket: $('#btc-tk'), pick: pickProvider, wallet, W, connect: connectWallet }); $('#btc-mine [data-mine="open"]')?.click(); })
+  mineP = import('/vault/mine.js?cb=b25914e5').then((m) => { m.mountMine($('#btc-mine'), { ticket: $('#btc-tk'), pick: pickProvider, wallet, W, connect: connectWallet }); $('#btc-mine [data-mine="open"]')?.click(); })
     .catch((err) => { mineP = null; console.warn('your position:', err?.message || err); });
 });
 const refresh = () => load().catch((e) => { console.warn('vault read:', e?.message || e); if (!S.loaded) S.failed = true; }).then(() => { renderAll(); pools.read(); });

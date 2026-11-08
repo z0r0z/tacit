@@ -8,6 +8,7 @@
 // it can serve this call, and it is asked only when it is reached, so last in the list it is the last resort. `health` (nodeHealth, below) is what the page
 // has learned of its nodes: those that failed lately are asked last, and what happens to each call is told to it. Neither is used unless asked for.
 import { bodyType } from '../rpc-body.js';
+import { refuses } from '../eth-nodes.js';
 export { bodyType };
 export const hedgeDelay = (fallback = 2500) => { try { const v = localStorage.getItem('tacit-trade-hedge-ms'); return v == null || v === '' || !Number.isFinite(Number(v)) ? fallback : Math.max(0, Number(v)); } catch { return fallback; } };
 const idOf = (h) => (typeof h === 'string' ? h.replace(/^https?:\/\//, '') : h.id);
@@ -38,7 +39,11 @@ export function hedgedRpc(hosts, method, params, { hedgeMs = hedgeDelay(), timeo
   return new Promise((resolve, reject) => {
     const usable = hosts.filter((h) => typeof h === 'string' || !h.usable || h.usable(method, params));
     if (!usable.length) return reject(new Error('no RPC answered'));
-    const list = health ? health.order(usable) : usable;
+    const ordered = health ? health.order(usable) : usable;
+    // a node known to refuse this read (eth-nodes.js) is asked after those that do not, in the places the URLs held; a node that is not a URL keeps its own
+    const urls = ordered.filter((h) => typeof h === 'string'), sorted = [...urls.filter((h) => !refuses(h, method, params)), ...urls.filter((h) => refuses(h, method, params))];
+    let at = 0;
+    const list = ordered.map((h) => (typeof h === 'string' ? sorted[at++] : h));
     const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), ctrls = new Set();
     let next = 0, live = 0, over = false, last = null, hedge = 0, hedged = false;
     const finish = (f, v) => { if (over) return; over = true; clearTimeout(hedge); for (const c of ctrls) c.abort(); f(v); };

@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-3G2DFdTPFHsTCx9An3SUisAxH1PNm46Jp4sxeCV83W8=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-A1w709YhxSLyPmjp9rwKlQbV2Mq+IE6a5FnrDnLnyro=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -66,7 +66,7 @@
 <link rel="modulepreload" href="/bridge-tick.js?cb=4e721860">
 <link rel="modulepreload" href="/tacit-session.js?cb=a2d34bb2">
 <link rel="modulepreload" href="/activity.js?cb=8ccbc552">
-<link rel="modulepreload" href="/swap/card.js?cb=3cb707a3">
+<link rel="modulepreload" href="/swap/card.js?cb=a82c0bff">
 <link rel="modulepreload" href="/trade/wallet.js?cb=88b623b8">
 <link rel="modulepreload" href="/trade/util.js?cb=ba5a02b1">
 <link rel="modulepreload" href="/trade/rpc.js">
@@ -2018,7 +2018,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
 // preload-later:begin
 // preload-later:end
 // preload-intent:begin
-const WARM_MODULES = ["/confidential-pool-ux.js?cb=57c4a7e5","/confidential-deployments.js","/confidential-deployments.generated.js","/confidential-indexer.js","/confidential-pool.js","/evm-confidential.js","/bulletproofs.js","/bulletproofs-plus.js","/burn-deposit-bitcoin.js","/burn-deposit-provenance.js","/burn-deposit-assembler.js","/confidential-memo.js","/confidential-evm-log.js","/confidential-relay.js","/confidential-invoice.js","/confidential-recovery-guard.js","/confidential-router.js","/confidential-transfer.js","/confidential-route.js","/confidential-swap.js","/confidential-swap-coordinator.js","/confidential-lp.js","/confidential-cdp.js","/confidential-farm.js","/confidential-farm-program.js","/confidential-defi-actions.js","/confidential-stealth.js","/confidential-airdrop.js","/confidential-lock-scan.js","/confidential-bridge-mint.js","/bridge-burn-broadcast.js","/pool-snapshot.js","/confidential-recovery.js","/bridge-mint-recovery.js","/confidential-secret-store.js","/confidential-recovery-btc.js","/bitcoin-taproot-wallet.js","/cbtc-note-recovery.js"];
+const WARM_MODULES = ["/confidential-pool-ux.js?cb=da7fe73b","/confidential-deployments.js","/confidential-deployments.generated.js","/confidential-indexer.js","/confidential-pool.js","/evm-confidential.js","/bulletproofs.js","/bulletproofs-plus.js","/burn-deposit-bitcoin.js","/burn-deposit-provenance.js","/burn-deposit-assembler.js","/confidential-memo.js","/confidential-evm-log.js","/confidential-relay.js","/confidential-invoice.js","/confidential-recovery-guard.js","/confidential-router.js","/confidential-transfer.js","/confidential-route.js","/confidential-swap.js","/confidential-swap-coordinator.js","/confidential-lp.js","/confidential-cdp.js","/confidential-farm.js","/confidential-farm-program.js","/confidential-defi-actions.js","/confidential-stealth.js","/confidential-airdrop.js","/confidential-lock-scan.js","/confidential-bridge-mint.js","/bridge-burn-broadcast.js","/pool-snapshot.js","/confidential-recovery.js","/bridge-mint-recovery.js","/confidential-secret-store.js","/confidential-recovery-btc.js","/bitcoin-taproot-wallet.js","/cbtc-note-recovery.js"];
 // preload-intent:end
 import '/storage-fallback.js';
 import { secp, keccak_256, sha256, hmac, bytesToHex, hexToBytes, concatBytes } from '/vendor/tacit-deps.min.js';
@@ -5393,7 +5393,7 @@ function wireSub(el, name, set) { $$(`[data-${name}]`, el).forEach((b) => b.oncl
 const warmPool = (() => { let on = false; return () => { if (on) return; on = true; for (const u of WARM_MODULES) document.head.append(Object.assign(document.createElement('link'), { rel: 'modulepreload', href: u })); }; })();
 const getUx = lazy(async () => {
   warmPool();
-  const [{ makeConfidentialPoolUx, setExternalTacHolders }, dep] = await Promise.all([import('/confidential-pool-ux.js?cb=57c4a7e5'), import('/confidential-deployments.js')]);
+  const [{ makeConfidentialPoolUx, setExternalTacHolders }, dep] = await Promise.all([import('/confidential-pool-ux.js?cb=da7fe73b'), import('/confidential-deployments.js')]);
   dep.setActiveNetwork('mainnet');
   setExternalTacHolders(() => (S.wallet ? [S.wallet] : []));
   const ux = makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256, network: 'mainnet' });
@@ -7400,7 +7400,7 @@ render.usdt = () => {
 const DEV = { chain: DEVICE_CHAINS.find((c) => c.chainId === store.get('tacit-lite-device-chain')) || DEVICE_CHAINS[1], tok: null, mode: 'deposit', dest: 'addr', W: null, bal: null, key: null, quote: null, gq: {}, err: null, self: false };
 const getDeviceMods = lazy(async () => {
   const [zkm, wm, pm, pos] = await Promise.all([
-    import('/evm-pool-zk.js'), import('/evm-pool-wallet.js?cb=40fb5202'), import('/evm-pool-zk-prover.js?cb=00ff69c2'), import('/vendor/tacit-poseidon.min.js'),
+    import('/evm-pool-zk.js'), import('/evm-pool-wallet.js?cb=815abda7'), import('/evm-pool-zk-prover.js?cb=00ff69c2'), import('/vendor/tacit-poseidon.min.js'),
   ]);
   const PO = { 2: pos.poseidon2, 3: pos.poseidon3, 4: pos.poseidon4, 5: pos.poseidon5, 7: pos.poseidon7 };
   return { zk: zkm.makeEvmPoolZk({ poseidon: (xs) => PO[xs.length](xs) }), ...wm, vkHash: pm.vkHash };
@@ -7470,7 +7470,7 @@ const PSW = { w: null, n: 0, wait: new Map(), q: Promise.resolve() };
 function pswWorker() {
   try {
     if (PSW.w) return PSW.w;
-    const w = PSW.w = new Worker('/evm-pool-sync-worker.js?cb=27e09841', { type: 'module' });
+    const w = PSW.w = new Worker('/evm-pool-sync-worker.js?cb=e7335dea', { type: 'module' });
     w.onmessage = (e) => { const f = PSW.wait.get(e.data?.id); if (f) { if (!e.data.write && e.data.part == null) PSW.wait.delete(e.data.id); f(e.data); } };
     w.onerror = () => { for (const f of PSW.wait.values()) f({ ok: false }); PSW.wait.clear(); PSW.w = null; };
     return w;
@@ -18862,7 +18862,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=3cb707a3').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=a82c0bff').catch((e) => { SWC.p = null; throw e; }));
 // the card held to the tab's flow; back on the Swap tab it opens on the swap it showed there
 function swcFlow() {
   hxPathPaint();

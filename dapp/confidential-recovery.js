@@ -67,6 +67,8 @@ export function makeConfidentialRecovery({ pool, memo, keccak256, secp, hmac, sh
   const N = BigInt(curveOrder);
   const cat = (arrs) => { const t = arrs.reduce((s, a) => s + a.length, 0); const o = new Uint8Array(t); let p = 0; for (const a of arrs) { o.set(a, p); p += a.length; } return o; };
   const affineHex = (P) => { const a = P.toAffine(); return { cx: w32(a.x), cy: w32(a.y) }; };
+  // A message to oneself yields like a timer but is not slowed to a second a turn in a background tab.
+  const handBack = () => new Promise((r) => { if (typeof MessageChannel === 'undefined') return setTimeout(r, 0); const c = new MessageChannel(); c.port1.onmessage = () => { c.port1.close(); r(); }; c.port2.postMessage(0); });
 
   function txIndex(events) {
     const txOfLeaf = new Map(), leavesOfTx = new Map(), txOfNullifier = new Map(), nullifiersOfTx = new Map(), order = new Map();
@@ -81,7 +83,8 @@ export function makeConfidentialRecovery({ pool, memo, keccak256, secp, hmac, sh
     return { txOfLeaf, leavesOfTx, txOfNullifier, nullifiersOfTx, order };
   }
 
-  function walkWraps({ priv, events, assets, gap = 24, maxIndex = 4096, minIndex = 0 }) {
+  // The walk is written as steps (one per index tried) so it can run to the end at once, `walkWraps`, or in slices that hand the thread back, `walkWrapsSliced`.
+  function* walkWrapsSteps({ priv, events, assets, gap = 24, maxIndex = 4096, minIndex = 0 }) {
     const floorFor = (assetId) => {
       const n = Number(typeof minIndex === 'function' ? minIndex(assetId) : minIndex);
       return Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), maxIndex) : 0;
@@ -116,6 +119,7 @@ export function makeConfidentialRecovery({ pool, memo, keccak256, secp, hmac, sh
           found.push({ index: i, value: v, blinding: w32(dn.blinding), secret: dn.secret, asset: a.assetId, owner, cx, cy, leaf: pool.leaf(a.assetId, cx, cy, owner), depositId });
         }
         miss = hit ? 0 : miss + 1;
+        yield;
       }
       const scannedThrough = tried - 1;
       scanned.push({
@@ -125,6 +129,18 @@ export function makeConfidentialRecovery({ pool, memo, keccak256, secp, hmac, sh
       });
     }
     return { found, scanned };
+  }
+  function walkWraps(args) {
+    const g = walkWrapsSteps(args);
+    for (let r = g.next(); ; r = g.next()) if (r.done) return r.value;
+  }
+  async function walkWrapsSliced(args, { sliceMs = 12 } = {}) {
+    const g = walkWrapsSteps(args);
+    let t0 = Date.now();
+    for (let r = g.next(); ; r = g.next()) {
+      if (r.done) return r.value;
+      if (Date.now() - t0 > sliceMs) { await handBack(); t0 = Date.now(); }
+    }
   }
 
   const hexWord = (data, byteOff) => (data.slice(byteOff * 2, byteOff * 2 + 64) || '').padEnd(64, '0');
@@ -226,13 +242,18 @@ function _toAffineBatch(ps) {
     }
     if (!nulls.length && oversize) { for (const n of oversize.ns) nulls.push({ n, want: oversize.want }); searched.add(oversize.txHash); }
     if (!nulls.length || !(assets || []).length) return { found: [], tried: 0, searched };
+    // the thread is handed back every few milliseconds, also while the value points are made (about 1,900 point additions) and added to each
+    // blinding below, so no stretch of this search holds it for a third of a second
+    let t0 = Date.now();
+    const breathe = async () => { if (Date.now() - t0 > 12) { await handBack(); t0 = Date.now(); } };
     const points = new Map();
     for (const v of values) { const b = BigInt(v); if (b > 0n && !points.has(b)) points.set(b, H.multiply(b)); }
     if (roundValues) {
       for (let k = 0; k <= maxExp; k++) {
+        await breathe();
         const base = H.multiply(10n ** BigInt(k));
         let acc = base;
-        for (let m = 1; m < 100; m++) { const v = BigInt(m) * 10n ** BigInt(k); if (!points.has(v)) points.set(v, acc); acc = acc.add(base); }
+        for (let m = 1; m < 100; m++) { const v = BigInt(m) * 10n ** BigInt(k); if (!points.has(v)) points.set(v, acc); acc = acc.add(base); if (m % 16 === 0) await breathe(); }
       }
     }
     const found = [];
@@ -244,15 +265,14 @@ function _toAffineBatch(ps) {
     }) }));
     const pts = [...points];
     const same = (d, w) => { for (let j = 0; j < 32; j++) if (d[j] !== w[j]) return false; return true; };
-    const handBack = () => new Promise((r) => { if (typeof MessageChannel === 'undefined') return setTimeout(r, 0); const c = new MessageChannel(); c.port1.onmessage = () => { c.port1.close(); r(); }; c.port2.postMessage(0); });
-    let t0 = Date.now();
-    const breathe = async () => { if (Date.now() - t0 > 12) { await handBack(); t0 = Date.now(); } };
     for (const { n, want } of nulls) {
       await breathe();
       const b = deriveBridgeMintBlinding(p, n);
       const Gb = G.multiply(b);
       const wanted = [...want].map((w) => hexToBytes(w));
-      const cands = _toAffineBatch(pts.map(([, Pv]) => Pv.add(Gb))).map((a, k) => {
+      const sums = [];
+      for (const [, Pv] of pts) { sums.push(Pv.add(Gb)); if (sums.length % 32 === 0) await breathe(); }
+      const cands = _toAffineBatch(sums).map((a, k) => {
         const xy = new Uint8Array(64);
         _be32(a.x, xy, 0); _be32(a.y, xy, 32);
         return { v: pts[k][0], x: a.x, y: a.y, xy };
@@ -659,5 +679,5 @@ function _toAffineBatch(ps) {
     return out;
   }
 
-  return { txIndex, walkWraps, decodeExitFields, decodeOutputFields, walkChange, walkBridgeMints, deriveBridgeMintBlinding, scanCbtcNotes, deriveFarmPositions, decodeCdpFields, walkCdpPositions, openSentLocks, tryDerived, netCandidates, walkDerivedOutputs, walkDirectOutputs, locateDepositTx };
+  return { txIndex, walkWraps, walkWrapsSliced, decodeExitFields, decodeOutputFields, walkChange, walkBridgeMints, deriveBridgeMintBlinding, scanCbtcNotes, deriveFarmPositions, decodeCdpFields, walkCdpPositions, openSentLocks, tryDerived, netCandidates, walkDerivedOutputs, walkDirectOutputs, locateDepositTx };
 }

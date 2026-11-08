@@ -38,6 +38,43 @@ export const ETH_ARCHIVE_NODES = [
   'https://eth-mainnet.public.blastapi.io',
 ];
 
+// What a node is known to turn away (measured 2026-11-08 from a browser on tacit.finance), so a read it would refuse is asked of the others first: the browser
+// lists every refused request in the console, and each costs a round trip. A node is not dropped, only asked last, so one whose limits change is still reached.
+//   logs   the most blocks one eth_getLogs may span (0: none at all)
+//   back   how far behind the newest block its logs reach (publicnode keeps recent blocks, and older ones need a token)
+//   state  set for a node that serves state only at the newest blocks: a read at a numbered block goes elsewhere
+const LIMITS = {
+  'ethereum-rpc.publicnode.com': { logs: 9999, back: 9999, state: true },
+  'rpc.mevblocker.io': { logs: 45000 },
+  'eth-mainnet.nodereal.io': { logs: 49999 },
+  'eth.drpc.org': { logs: 0 },
+  '1.rpc.thirdweb.com': { logs: 2000 },
+  'ethereum-json-rpc.stakely.io': { logs: 25 },
+  '1rpc.io/eth': { logs: 50 },
+};
+const limitsOf = (url) => {
+  const id = String(url).replace(/^https?:\/\//, '');
+  for (const k of Object.keys(LIMITS)) if (id === k || id.startsWith(k + '/')) return LIMITS[k];
+  return null;
+};
+// The widest eth_getLogs span to start a node at (Infinity where it has no known limit): a range wider is cut to this before it is sent.
+export const logSpan = (url) => limitsOf(url)?.logs || Infinity;
+const blockNo = (t) => (typeof t === 'string' && /^0x[0-9a-f]+$/i.test(t) ? parseInt(t, 16) : null);
+const STATE_BLOCK = { eth_call: 1, eth_getBalance: 1, eth_getCode: 1, eth_getStorageAt: 2, eth_getTransactionCount: 1 };
+// Whether `url` is known to refuse this read. `head` is the newest block the caller is reading toward, when it knows it (the end of a scan).
+export function refuses(url, method, params, head = null) {
+  const lim = limitsOf(url);
+  if (!lim) return false;
+  if (method === 'eth_getLogs') {
+    if (lim.logs === 0) return true;
+    const f = (Array.isArray(params) && params[0]) || {}, from = blockNo(f.fromBlock), to = blockNo(f.toBlock);
+    if (from != null && to != null && lim.logs != null && to - from + 1 > lim.logs) return true;
+    const end = head ?? to;
+    return lim.back != null && from != null && end != null && end - from > lim.back;
+  }
+  return !!lim.state && method in STATE_BLOCK && blockNo(params?.[STATE_BLOCK[method]]) != null;
+}
+
 // The connected wallet's node, for trade/rpc.js hedgedRpc: a read the public nodes all failed. `get()` gives the page's EIP-1193 provider while it is on
 // Ethereum mainnet, or null (connectedInjected below is one such getter).
 const WALLET_READS = new Set(['eth_call', 'eth_getBalance', 'eth_gasPrice', 'eth_blockNumber', 'eth_getCode', 'eth_getStorageAt', 'eth_getLogs',

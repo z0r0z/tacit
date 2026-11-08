@@ -2,7 +2,7 @@
 import { getConfidentialDeployment, activeNetwork, syncProtectedOutpoints, shownTicker } from './confidential-deployments.js';
 import { bodyType } from './rpc-body.js';
 import { hedgedRpc, nodeHealth } from './trade/rpc.js';
-import { walletNode, connectedInjected } from './eth-nodes.js';
+import { walletNode, connectedInjected, logSpan, refuses } from './eth-nodes.js';
 import { makeEvmAccount } from './evm-account.js';
 import { makeConfidentialIndexer } from './confidential-indexer.js';
 import { makeConfidentialEvmLog } from './confidential-evm-log.js';
@@ -141,7 +141,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   const _wallet = walletNode(() => (_walletGet ? _walletGet() : Number(cfg.chainId) === 1 ? connectedInjected() : null));
   const SPANS = `tacit-pool-rpc-span-v1:${cfg.chainId}`;
   const _spans = (() => { try { return JSON.parse(_store?.getItem(SPANS) || 'null') || {}; } catch { return {}; } })();
-  const _eps = (cfg.logRpcs || cfg.rpcs).map((url) => ({ url, span: Number(_spans[url]) > 0 ? Number(_spans[url]) : Infinity }));
+  // each node starts at the widest range it is known to serve (eth-nodes.js), or narrower where this browser has learned it
+  const _eps = (cfg.logRpcs || cfg.rpcs).map((url) => ({ url, span: Math.min(Number(_spans[url]) > 0 ? Number(_spans[url]) : Infinity, logSpan(url)) }));
   const _keepSpan = (ep) => { _spans[ep.url] = ep.span; try { _store?.setItem(SPANS, JSON.stringify(_spans)); } catch { } };
   async function _post(ep, method, params, ms = 10000) {
     let r;
@@ -192,7 +193,10 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
         // the widest range first, those resting after a failure last
         const wide = _eps.map((e, i) => [e, i]).sort(([a, i], [b, j]) => (a.span < b.span) - (a.span > b.span) || i - j).map(([e]) => e);
         const byUrl = new Map(wide.map((e) => [e.url, e]));
-        const eps = _logHealth.order(wide.map((e) => e.url)).map((u) => byUrl.get(u));
+        const ordered = _logHealth.order(wide.map((e) => e.url)).map((u) => byUrl.get(u));
+        // a node known to refuse this range (eth-nodes.js: one without logs, one that keeps recent blocks only) is asked after those that do not
+        const refused = (ep) => refuses(ep.url, 'eth_getLogs', [{ fromBlock: '0x' + start.toString(16), toBlock: '0x' + Math.min(to, start + Math.min(ep.span, to - start + 1) - 1).toString(16) }], to);
+        const eps = [...ordered.filter((ep) => !refused(ep)), ...ordered.filter(refused)];
         for (const ep of eps) {
           let span = Math.min(to - start + 1, ep.span);
           for (let tries = 0; tries < 16 && !got; tries++) {
@@ -438,7 +442,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     promise.catch(() => { entry.at = Date.now() - BTC_HISTORY_TTL_MS + 60000; });
     return promise;
   }
-  const forget = () => { _ownKeys.clear(); _btcHistoryCache.clear(); _bridgeFound.clear(); _wrapWalks.clear(); };
+  let _forgets = 0;           // how many times the keys were forgotten: a wrap walk that finishes after one is not kept
+  const forget = () => { _forgets++; _ownKeys.clear(); _btcHistoryCache.clear(); _bridgeFound.clear(); _wrapWalks.clear(); _walking.clear(); };
   _keyForgetters.add(forget);
   const _lockVBtcCache = new Map();
   // The pool's record for many outputs at once, a multicall per 200: a wallet whose history holds many outputs shaped like a
@@ -621,7 +626,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // walks afresh. What the walk tried per asset (the indexes it found used, through the last one tried, against the deposits it saw) serves
   // nextWrapIndex. Cleared with the keys (forget).
   const _wrapWalks = new Map();
-  function _walkWrapsOf(id, events) {
+  const _walking = new Map();
+  async function _walkWrapsOf(id, events) {
     const assets = [...new Map(_poolAssets.map((a) => [lc(a.assetId), a])).values()];
     const ids = new Map();
     let s = assets.map((a) => `${lc(a.assetId)}=${_wrapIndexHint(id.pubHex, a.assetId)}`).join(',') + '#';
@@ -635,9 +641,12 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const wk = lc(id.pubHex), kept = _wrapWalks.get(wk);
     let w = kept && kept.key === key ? kept.w : null;
     if (!w) {
-      w = recovery().walkWraps({ priv: id.priv, events, assets, minIndex: (assetId) => _wrapIndexHint(id.pubHex, assetId) });
+      // in slices that hand the thread back; a second read of the same deposits waits for this one rather than walking again
+      const run = _walking.get(wk + key) || (() => { const r = recovery().walkWrapsSliced({ priv: id.priv, events, assets, minIndex: (assetId) => _wrapIndexHint(id.pubHex, assetId) }); _walking.set(wk + key, r); r.then(() => _walking.delete(wk + key), () => _walking.delete(wk + key)); return r; })();
+      const forgets = _forgets;
+      w = await run;
       const byAsset = new Map(w.scanned.map((sc) => [lc(sc.assetId), { ids: ids.get(lc(sc.assetId)) || new Set(), through: sc.scannedThrough, used: new Set(w.found.filter((n) => lc(n.asset) === lc(sc.assetId)).map((n) => n.index)) }]));
-      _wrapWalks.set(wk, { key, w, byAsset });
+      if (forgets === _forgets) _wrapWalks.set(wk, { key, w, byAsset });
     }
     return { found: w.found.map((n) => ({ ...n })), scanned: w.scanned.map((sc) => ({ ...sc })) };
   }
@@ -698,7 +707,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
 
     diag.wrap = { found: 0, pending: [], unsettled: [], scanned: [], truncated: [] };
     try {
-      const w = _walkWrapsOf(id, events);
+      const w = await _walkWrapsOf(id, events);
       diag.wrap.scanned = w.scanned;
       diag.wrap.truncated = w.scanned.filter((s) => s.stoppedAtMaxIndex).map((s) => s.assetId);
       const wrapTx = new Map((events || []).filter((e) => e && e.type === 'Wrap' && e.txHash).map((e) => [lc(e.depositId), e.txHash]));

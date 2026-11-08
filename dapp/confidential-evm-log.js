@@ -11,8 +11,19 @@
 
 export function makeConfidentialEvmLog({ keccak256 }) {
   const enc = new TextEncoder();
-  const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
-  const toBytes = (h) => Uint8Array.from((String(h).replace(/^0x/, '').match(/../g) || []).map((x) => parseInt(x, 16)));
+  // A pool's history is thousands of logs of kilobytes each, so these work per byte without a string or an array made for each.
+  const HEX = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, '0'));
+  const hex = (b) => { let s = ''; for (let i = 0; i < b.length; i++) s += HEX[b[i]]; return s; };
+  const NIB = (c) => (c >= 48 && c <= 57 ? c - 48 : c >= 97 && c <= 102 ? c - 87 : c >= 65 && c <= 70 ? c - 55 : -1);
+  const toBytes = (h) => {
+    const t = String(h).replace(/^0x/, ''), n = t.length >> 1, out = new Uint8Array(n);
+    for (let i = 0; i < n; i++) {
+      const hi = NIB(t.charCodeAt(2 * i)), lo = NIB(t.charCodeAt(2 * i + 1));
+      if (hi < 0 || lo < 0) return Uint8Array.from((t.match(/../g) || []).map((x) => parseInt(x, 16)));   // not plain hex: read as it always was
+      out[i] = (hi << 4) | lo;
+    }
+    return out;
+  };
   const hx = (b) => '0x' + hex(b);
   const topic = (sig) => '0x' + hex(keccak256(enc.encode(sig)));
 

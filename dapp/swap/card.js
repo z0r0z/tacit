@@ -773,7 +773,7 @@ const POOL_TK = { eth: 'cETH', tac: 'cTAC', cbtc: 'cBTC', cusd: 'cUSD' };
 // The pool module, one copy for the quotes and the private swap (private.js is handed it).
 let uxP = null;
 const getUx = () => (H.getUx ? H.getUx() : uxP ||= (async () => {
-  const [{ makeConfidentialPoolUx }, dep, d] = await Promise.all([import('/confidential-pool-ux.js?cb=57c4a7e5'), import('/confidential-deployments.js'), import('/vendor/tacit-deps.min.js')]);
+  const [{ makeConfidentialPoolUx }, dep, d] = await Promise.all([import('/confidential-pool-ux.js?cb=da7fe73b'), import('/confidential-deployments.js'), import('/vendor/tacit-deps.min.js')]);
   dep.setActiveNetwork('mainnet');
   return makeConfidentialPoolUx({ secp: d.secp, keccak256: d.keccak_256, sha256: d.sha256, network: 'mainnet' });
 })().catch((e) => { uxP = null; throw e; }));
@@ -1626,7 +1626,7 @@ function depositSoon(q) {
   clearTimeout(depTimer);
   depTimer = setTimeout(ask, 0);
 }
-const ltLoad = () => (LTP ||= import('/swap/later.js?cb=fd42e1e2').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o), now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
+const ltLoad = () => (LTP ||= import('/swap/later.js?cb=778ccb7e').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o), now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
 // what Swap privately starts from: the wallet's ETH, or a token the zap sells for the deposit's ETH (any listed token zQuoter routes, or TAC through
 // the Precision pool; WETH, tacUSD and tacBTC have their own ways in)
 const laterPay = (k) => isEth(k) || k === lc(R.TAC) || (isListed(k) && !tacitKey(k) && k !== lc(R.WETH));
@@ -2404,7 +2404,7 @@ async function exitGo() {
 // ── a private swap, made on this card: the Tacit key is opened here (private.js), and the relay proves and sends each step ──
 let PVP = null, PV = null;
 const pickWallet = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : list[0]?.uuid; };
-const pvLoad = () => (PVP ||= import('/swap/private.js?cb=8aa7f623').then((m) => {
+const pvLoad = () => (PVP ||= import('/swap/private.js?cb=24961e7c').then((m) => {
   PV = m.makePrivate({ getUx, pick: pickWallet, ...H.key, now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()), onKey: (why) => { if (why) say(esc(why), 'err', true); else { PV.read().then(paint, () => {}); if (plans().some((x) => x.state === 'waiting')) ltLoad().then(readBlend, () => {}); } paint(); } });
   PV.mod = m;
   return PV;
