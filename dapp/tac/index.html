@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-3G2DFdTPFHsTCx9An3SUisAxH1PNm46Jp4sxeCV83W8=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-r6WkuXBL5CkbHnVZf0iMhS83065jrb635+VhSBsbb0g=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -1135,14 +1135,15 @@ a.btn { text-decoration: none; white-space: nowrap; }
 .tp-out { width: 100%; margin-top: 8px; font: 400 12px/1.4 var(--mono); color: var(--ink); background: var(--field); border: 1px solid var(--hair); padding: 10px; }
 /* ── TAC's page (/tac/): this page drawn as TAC's own, the landing's sections out of the way while it shows ── */
 html[data-page="tac"] :is(.hero, #dash, #how, #tac, .pg, .sx.pi), html:not([data-page="tac"]) #sheet-tac { display: none; }
-.tpg { max-width: 720px; margin: 0 auto; padding: 40px 0 8px; }
-.tpg-hero h1 { font: 400 clamp(52px, 9vw, 84px)/.96 var(--serif); letter-spacing: -.02em; margin: 0 0 18px; }
+.tpg { max-width: 600px; margin: 0 auto; padding: 36px 0 8px; }
+.tpg-hero h1 { font: 400 clamp(44px, 7vw, 64px)/.96 var(--serif); letter-spacing: -.02em; margin: 0 0 14px; }
 .tpg-hero h1:focus { outline: none; }
 .tpg-hero p { margin: 0; max-width: 58ch; color: var(--mute); text-wrap: pretty; }
 .tpg-hero .lead { margin-bottom: 6px; font-size: 15px; color: var(--ink); }
 .tpg .tpx { margin: 26px 0 0; }
 .tpg .tac-claim { margin: 14px 0 0; padding: 18px 20px; background: var(--card); border: 1px solid var(--hair); border-left: 2px solid var(--orange); }
-.tpg-panel { margin-top: 14px; padding: 24px; background: var(--card); border: 1px solid var(--hair); }
+.tpg-panel { margin-top: 32px; padding: 22px 0 0; border-top: 1px solid var(--hair); }
+.tpg-panel.tpg-act { margin-top: 14px; padding: 22px 24px; background: var(--card); border: 1px solid var(--hair); }
 .tpg-panel > .tpg-h:first-child { margin-top: 0; }
 .tpg-hd { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .tpg-hd .link { font-size: 12.5px; }
@@ -1178,19 +1179,23 @@ html[data-page="tac"] :is(.hero, #dash, #how, #tac, .pg, .sx.pi), html:not([data
 .tpg-next { margin: 16px 0 0; font-size: 13px; }
 .tpg-next small { color: var(--mute); }
 /* the card: where the TAC is, the asset, its four tabs, one form and what the chain sees */
-.tcd { margin-top: 14px; padding: 22px 24px 20px; background: var(--card); border: 1px solid color-mix(in srgb, var(--ink) 60%, var(--hair)); }
-.tcd-seg { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--hair-2); }
+.tcd { margin-top: 24px; padding: 18px 22px 20px; background: var(--card); border: 1px solid var(--hair-2); }
+.tcd-seg { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; padding: 3px; background: var(--field); border: 1px solid var(--hair); }
 .tcd-seg button, .tcd-dest button { min-height: 44px; padding: 8px 10px; font: inherit; font-size: 13px; color: var(--mute); background: none; border: 0; cursor: pointer; }
-.tcd-seg button + button, .tcd-dest button + button { border-left: 1px solid var(--hair-2); }
-.tcd-seg button[aria-pressed="true"], .tcd-dest button[aria-checked="true"] { color: var(--card); background: var(--ink); }
-.tcd-asset { display: grid; grid-template-columns: 40px minmax(0, 1fr); gap: 14px; align-items: center; margin: 18px 0 0; padding: 16px 0; border-top: 1px solid var(--hair); border-bottom: 1px solid var(--hair); }
-.tcd-asset .tk { width: 40px; height: 40px; }
-.tcd-name { margin: 0; font: 400 28px/1.05 var(--serif); letter-spacing: -.01em; }
-.tcd-asset small { display: block; margin-top: 4px; font-size: 12.5px; color: var(--mute); }
-.tcd-asset small.mine { color: var(--ink); font-family: var(--mono); }
-.tcd-tabs, .tcd .tp > .seg.sub:first-child { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; margin: 16px 0 0; border: 1px solid var(--hair); }
+.tcd-seg button { min-height: 36px; }
+.tcd-dest button + button { border-left: 1px solid var(--hair-2); }
+.tcd-seg button[aria-pressed="true"] { color: var(--ink); background: var(--card); box-shadow: 0 0 0 1px var(--hair-2); font-weight: 500; }
+.tcd-dest button[aria-checked="true"] { color: var(--card); background: var(--ink); }
+.tcd-bal { margin: 20px 0 0; }
+.tcd-k { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 0; font-size: 12.5px; font-weight: 400; color: var(--mute); }
+.tcd-k .tk { width: 18px; height: 18px; }
+.tcd-k b { font-weight: 500; color: var(--ink); }
+.tcd-v { display: flex; align-items: baseline; gap: 8px; margin: 8px 0 0; font: 500 36px/1.1 var(--mono); letter-spacing: -.02em; }
+.tcd-v small { font: 400 14px/1 var(--mono); letter-spacing: 0; color: var(--mute); }
+.tcd-sub { min-height: 18px; margin: 4px 0 0; font-size: 12.5px; color: var(--mute); }
+.tcd-nudge { margin: 14px 0 0; padding: 10px 12px; font-size: 13px; background: var(--field); border-left: 2px solid var(--orange); text-wrap: pretty; }
+.tcd-tabs, .tcd .tp > .seg.sub:first-child { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; margin: 18px 0 0; border-bottom: 1px solid var(--hair); }
 .tcd-tabs button, .tcd .tp > .seg.sub:first-child button { min-height: 44px; padding: 8px 4px; font: inherit; font-size: 13px; color: var(--mute); background: none; border: 0; border-bottom: 2px solid transparent; cursor: pointer; }
-.tcd-tabs button + button, .tcd .tp > .seg.sub:first-child button + button { border-left: 1px solid var(--hair); }
 .tcd-tabs button[aria-selected="true"], .tcd .tp > .seg.sub:first-child button[aria-selected="true"] { color: var(--ink); background: none; border-bottom-color: var(--ink); font-weight: 500; }
 .tcd .tp { padding: 0; }
 .tcd .tp > .seg.sub:first-child { margin-bottom: 14px; }
@@ -1204,13 +1209,22 @@ html[data-page="tac"] :is(.hero, #dash, #how, #tac, .pg, .sx.pi), html:not([data
 .tcd .keyrow { margin-top: 14px; }
 .tcd-foot { margin: 16px 0 0; padding-top: 14px; border-top: 1px solid var(--hair); font-size: 12.5px; color: var(--mute); text-wrap: pretty; }
 .tcd-foot:empty { display: none; }
-.tpg-fold { margin-top: 14px; background: var(--card); border: 1px solid var(--hair); }
-.tpg-fold > summary { display: flex; align-items: center; gap: 10px; min-height: var(--tap); padding: 12px 24px; cursor: pointer; list-style: none; font-size: 13px; }
+.tpg-fold { border-top: 1px solid var(--hair); }
+#tpg-where { margin-top: 32px; }
+.tpg-fold:last-of-type { border-bottom: 1px solid var(--hair); }
+.tpg-fold > summary { display: flex; align-items: center; gap: 10px; min-height: var(--tap); padding: 12px 0; cursor: pointer; list-style: none; font-size: 13px; }
 .tpg-fold > summary::-webkit-details-marker { display: none; }
 .tpg-fold > summary::after { content: '+'; margin-left: auto; color: var(--mute); font-size: 16px; line-height: 1; }
 .tpg-fold[open] > summary::after { content: '−'; }
 .tpg-fold > summary small { color: var(--mute); font-size: 12px; }
-.tpg-fold > div { padding: 4px 24px 24px; }
+.tpg-fold > div { padding: 4px 0 24px; }
+.tpg-px .up { display: block; margin-top: 6px; font: 400 12.5px/1.2 var(--mono); color: var(--green, var(--mute)); }
+.tpg-feeline { margin: 18px 0 0; font-size: 12.5px; color: var(--mute); text-wrap: pretty; }
+.tpg-feeline b { font-weight: 500; color: var(--ink); }
+.tpg-more { margin: 10px 0 0; }
+.tpg-more > summary { cursor: pointer; font-size: 12.5px; color: var(--mute); text-decoration: underline; text-underline-offset: 3px; list-style: none; }
+.tpg-more > summary::-webkit-details-marker { display: none; }
+.tpg-more[open] > summary { margin-bottom: 12px; }
 .tpg-h { margin: 22px 0 10px; font-size: 11px; font-weight: 400; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
 .tpg-h:first-child { margin-top: 6px; }
 .tpg-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 1px; margin: 0; background: var(--hair); border: 1px solid var(--hair); }
@@ -1253,7 +1267,7 @@ html[data-page="tac"] :is(.hero, #dash, #how, #tac, .pg, .sx.pi), html:not([data
   .tpg-get, .tpg-fees { grid-template-columns: 1fr; }
   .tpg-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .tcd { padding: 18px 14px 16px; }
-  .tcd-name { font-size: 25px; }
+  .tcd-v { font-size: 30px; }
   .tcd-tabs button, .tcd .tp > .seg.sub:first-child button { padding: 8px 2px; font-size: 12.5px; }
   .tcd-dest button { padding: 6px 2px; font-size: 12px; }
 }
@@ -1650,20 +1664,20 @@ footer.sf svg.fill { width: 16px; height: 16px; }
     <div class="tpg-hero">
       <h1 id="tac-h" tabindex="-1">TAC</h1>
       <p class="lead">One private currency on Bitcoin and Ethereum.</p>
-      <p>Amounts are hidden on Bitcoin. Private payments cost about a cent on Ethereum. On the Tacit chain, the fees it keeps raise what every share is worth.</p>
+      <p>On Bitcoin the amounts are hidden. On Ethereum the Tacit chain makes payments private, with fees paid in TAC.</p>
     </div>
     <details class="tpx" id="tac-px" hidden></details>
     <div class="tac-claim" id="tac-claim" role="region" aria-label="A claim link" hidden></div>
-    <section class="tpg-panel" id="tpg-top" aria-labelledby="tpg-top-h"><h2 class="tpg-h" id="tpg-top-h">Your TAC</h2></section>
     <section class="tcd" id="tpg-card" aria-labelledby="tcd-name">
       <div id="tcd-seg"></div>
-      <div class="tcd-asset" id="tcd-head"><svg class="tk md" aria-hidden="true"><use href="#tk-tac"/></svg><div><h2 class="tcd-name" id="tcd-name">Private TAC</h2><small>on the Tacit chain</small><small class="mine">&nbsp;</small></div></div>
+      <div class="tcd-bal" id="tcd-head"><h2 class="tcd-k" id="tcd-name"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg><b>Private TAC</b><span>on the Tacit chain</span></h2><p class="tcd-v num">&nbsp;</p><p class="tcd-sub">&nbsp;</p></div>
       <div id="tcd-tabs"></div>
       <div id="tpg-p" role="tabpanel" aria-label="Private TAC"></div>
       <div id="tcd-pool" hidden></div>
       <p class="tcd-foot" id="tcd-foot"></p>
     </section>
     <section class="tpg-panel tpg-act" id="tpg-act" aria-label="TAC" hidden><div class="tpg-act-h"><button class="link" type="button" id="tpg-back">← Back</button><span id="tpg-act-t"></span></div><div id="tpg-act-b"></div></section>
+    <section class="tpg-panel" id="tpg-top" aria-labelledby="tpg-top-h" hidden><h2 class="tpg-h" id="tpg-top-h">All your TAC</h2></section>
     <section class="tpg-panel" id="tpg-why" aria-labelledby="tpg-why-h" hidden></section>
     <details class="tpg-fold" id="tpg-where"><summary>Where your TAC is</summary><div><div id="tac-bal"></div><h3 class="tpg-h">Between Bitcoin and Ethereum</h3><div id="bridge-body"></div></div></details>
     <details class="tpg-fold" id="tpg-how"><summary>The networks</summary><div id="tpg-nets"></div></details>
@@ -10496,26 +10510,19 @@ const TPG_ROWS = [['chain', 'Tacit chain', 'var(--c-chain)'], ['pool', 'Bitcoin 
 // Your TAC: one total across every place, the places as one bar by amount, a row for each place holding some, and the one step that matters next
 function tpgTop(el) {
   const who = tacWho(), k = S.key?.pubHex;
-  if (!k && !who) {
-    mount(el, html`<h2 class="tpg-h" id="tpg-top-h">Your TAC</h2><p class="note">Sign in to see your TAC on Bitcoin and Ethereum, all in one place.</p>
-      <button class="btn tpg-top-go" type="button" data-signin>Sign in</button>`);
-    return;
-  }
+  if (chainOn() && !CHAIN_SWEEP.at && !CHAIN_SWEEP.p) chainSweepFee().then(() => rerender('tac'), () => {});
+  el.hidden = !k && !who;
+  if (el.hidden) return;
   const places = k ? tacPlaces(k, who) : tacPlaces(null, who).filter((p) => p.key === 'wallet'), by = Object.fromEntries(places.map((p) => [p.key, p]));
   const total = places.reduce((s, p) => s + (p.v || 0n), 0n), known = places.filter((p) => p.core).every((p) => p.v != null), failed = places.some((p) => p.bad);
   const pub = (by.wallet?.v || 0n) + (by.btc?.v || 0n), usd = hxUsd('tac', Number(total) / 1e18);
-  // what one press makes private: the wallet's TAC (up to the chain's cap on one shield), or else the TAC at the Bitcoin address
-  const capWei = chainOn() && CHAIN_SWEEP.cap != null ? CHAIN_SWEEP.cap * E10 : null, wal = by.wallet?.v || 0n;
-  const overCap = wal > 0n && capWei != null && wal > capWei, privNow = wal > 0n ? (overCap ? capWei : wal) : (by.btc?.v || 0n);
-  if (chainOn() && !CHAIN_SWEEP.at && !CHAIN_SWEEP.p) chainSweepFee().then(() => rerender('tac'), () => {});
-  const shares = k && TACP.sh?.pub === k ? TACP.sh.v : null;
-  const note = { chain: `payments${shares > 0n ? ` · ${fmt(shares, 8, 4)} shares` : ''}`, pool: 'private on Bitcoin', defi: 'trade · farm · borrow', pay: 'from before the Tacit chain', wallet: 'public on Ethereum', btc: 'amounts hidden, address seen' };
+  const note = { chain: 'private, for payments', pool: 'private on Bitcoin', defi: 'trade · farm · borrow', pay: 'from before the Tacit chain', wallet: 'public on Ethereum', btc: 'amounts hidden, address seen' };
   const rows = TPG_ROWS.filter(([key]) => by[key] && ((by[key].v || 0n) > 0n || (key === 'chain' && chainOn())));
   const seg = rows.filter(([key]) => (by[key].v || 0n) > 0n);
   const nudge = chainOn() && (by.defi?.v || 0n) > 0n && hxWays('tac').includes('chain');
   const kept = k && chainOn() && CH.pub === k ? [...CH.kept, ...CH.hops.filter((x) => Date.now() - x.at > CHAIN_HOP_WAIT).map((x) => ({ kind: 'hop', ...x }))] : [];
   mount(el, html`
-    <div class="tpg-hd"><h2 class="tpg-h" id="tpg-top-h">Your TAC</h2>${k ? html`<button class="link" type="button" data-tpg="receive">Receive</button>` : html`<button class="link" type="button" data-signin>Sign in to see it all</button>`}</div>
+    <h2 class="tpg-h" id="tpg-top-h">All your TAC</h2>
     <p class="tpg-tot num">${known || total || failed ? fmt(total, 18, 2) : html`<span class="sk" style="--w:8ch"></span>`}<small>TAC${known ? '' : failed ? ', some places unread' : ''}</small></p>
     <p class="tpg-usd num">${usd ? `≈ ${usd}` : ''}</p>
     ${seg.length ? html`<div class="tpg-bar" role="img" aria-label="${seg.map(([key, t]) => `${t} ${fmt(by[key].v, 18, 2)} TAC`).join(', ')}">${seg.map(([key, , c]) => html`<i style="flex:${Math.max(0.01, Number(by[key].v / 10n ** 14n) / 1e4)};background:${c}"></i>`)}</div>` : ''}
@@ -10524,11 +10531,8 @@ function tpgTop(el) {
     ${k ? shLookingNote(k) : ''}
     ${k ? depositCallout('tac', 'tac-finish') : ''}
     ${kept.length ? html`<p class="note">${kept.length === 1 ? 'One of your Tacit chain moves has' : `${kept.length} of your Tacit chain moves have`} not landed yet. <button class="link" type="button" data-hx="${tpgKeptWay(kept[0])}">See ${kept.length === 1 ? 'it' : 'them'}</button></p>` : ''}
-    ${pub > 0n ? html`<p class="tpg-next"><button class="link" type="button" id="tpg-priv">Make ${fmt(privNow, 18, 2)} TAC private</button>${overCap ? html` <small>One shield takes up to ${fmt(capWei, 18, 0)} TAC for now; the rest goes in the next.</small>` : ''}</p>` : ''}
     <div class="status" role="status" id="tpg-top-st"></div>`);
   if (k) wireFinish(el, 'tac', 'tac-finish', 'tpg-top-st');
-  const go = $('#tpg-priv', el);
-  if (go) go.onclick = () => tpgPrivGo(by.wallet?.v > 0n ? 'wallet' : 'btc');
   TACP.tot = { k, total, known, pub };
   if (k && chainOn() && CH.bal != null) chainClient().then((c) => { const v = c.balance(); if (S.key?.pubHex === k && TACP.sh?.v !== v) { TACP.sh = { pub: k, v }; rerender('tac'); } }).catch(() => {});
 }
@@ -10558,12 +10562,7 @@ function tpgMount(el, view, wire) {
 // chainPayRun, chainOutRun, chainHopRun); on Bitcoin the Bitcoin pool's panel (/tac/pool.js). Under each, one line on what the chain sees. ──
 const TCD_TABS = [['shield', 'Shield'], ['send', 'Send'], ['withdraw', 'Withdraw'], ['receive', 'Receive']];
 const TCD_DEST = [['wallet', 'Your wallet'], ['pool', 'Private pool'], ['btc', 'Bitcoin']];
-const TCD_LINE = {
-  shield: 'Moves TAC from your wallet onto the Tacit chain, where it is private.',
-  send: 'Pays a Tacit address or a name privately on the Tacit chain, or an 0x address as public TAC.',
-  withdraw: 'Takes TAC off the Tacit chain.',
-  receive: 'One address for payments on the Tacit chain and in the Bitcoin pool.',
-};
+const TCD_LINE = { receive: 'One address for payments on the Tacit chain and in the Bitcoin pool.' };
 const TCD_FOOT = {
   chain: {
     shield: 'Your wallet and the amount show on Ethereum; whose shares they buy does not.',
@@ -10601,20 +10600,20 @@ function tcardGo(side, tab = null) {
   return true;
 }
 function tcardHead(side) {
-  const k = S.key?.pubHex, t4 = (v) => fmt(v, 8, 4), sk = html`<span class="sk" style="--w:12ch"></span>`, ic = html`<svg class="tk md" aria-hidden="true"><use href="#tk-tac"/></svg>`;
-  if (side === 'btc') {
-    const v = k ? tpgHave().pool : null;
-    return html`${ic}<div><h2 class="tcd-name" id="tcd-name">Private TAC</h2><small>on Bitcoin, in the shielded pool</small>
-      <small class="mine">${!k ? 'yours shows once you sign in' : v == null ? sk : `You hold ${t4(v)} TAC`}</small></div>`;
-  }
-  const cs = TPGW.cs, px = cs ? tpgPx(cs.pool, cs.shares) : null, worth = k && CH.pub === k ? CH.bal : null, shares = k && TACP.sh?.pub === k ? TACP.sh.v : null;
-  return html`${ic}<div><h2 class="tcd-name" id="tcd-name">Private TAC</h2><small>on the Tacit chain${px != null ? ` · 1 share = ${px} TAC` : ''}</small>
-    <small class="mine">${!k ? 'yours shows once you sign in' : worth == null ? (CH.err ? '—' : sk) : `You hold ${t4(worth)} TAC${shares != null && shares > 0n ? ` · ${t4(shares)} shares` : ''}`}</small></div>`;
+  const k = S.key?.pubHex, chain = side !== 'btc', h = k ? tpgHave() : null, sk = html`<span class="sk" style="--w:10ch"></span>`;
+  const v = !k ? null : chain ? (CH.pub === k ? CH.bal : null) : h.pool, usd = v != null && v > 0n ? hxUsd('tac', Number(v) / 1e8) : '';
+  const shares = chain && k && TACP.sh?.pub === k ? TACP.sh.v : null;
+  // the key's public TAC on this side (the wallet's on Ethereum, the Bitcoin address's on Bitcoin), and the press that makes it private
+  const pubU = !k ? null : chain ? h.wallet : h.btc, capU = chain && CHAIN_SWEEP.cap != null ? CHAIN_SWEEP.cap : null, over = pubU != null && capU != null && pubU > capU;
+  return html`<h2 class="tcd-k" id="tcd-name"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg><b>Private TAC</b><span>${chain ? 'on the Tacit chain' : 'on Bitcoin, in the shielded pool'}</span></h2>
+    <p class="tcd-v num">${!k ? '—' : v == null ? (chain && CH.err ? '—' : sk) : fmt(v, 8, 4)}<small>TAC</small></p>
+    <p class="tcd-sub">${!k ? 'Yours shows once you sign in.' : [usd && `≈ ${usd}`, shares != null && shares > 0n && `${fmt(shares, 8, 4)} shares`].filter(Boolean).join(' · ')}</p>
+    ${pubU != null && pubU > 0n ? html`<p class="tcd-nudge">${fmt(pubU, 8, 2)} TAC is public ${chain ? 'in your wallet' : 'at your Bitcoin address'}. <button class="link" type="button" id="tpg-priv">${over ? `Shield ${fmt(capU, 8, 0)} of it` : 'Shield it'}</button></p>` : ''}`;
 }
 const tcdAmt = () => html`<div class="lbl"><label for="tcd-amt">Amount</label><button type="button" id="tcd-max">Max</button></div>
   <div class="amt"><input id="tcd-amt" inputmode="decimal" placeholder="0.00" autocomplete="off"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div>`;
 function tcardForm() {
-  const tab = TCARD.tab, key = !!S.key, line = html`<p class="tcd-line">${TCD_LINE[tab]}</p>`;
+  const tab = TCARD.tab, key = !!S.key, line = TCD_LINE[tab] ? html`<p class="tcd-line">${TCD_LINE[tab]}</p>` : '';
   if (tab === 'receive') {
     if (!key) return html`${line}<button class="btn tcd-go" type="button" data-signin>Sign in to see your address</button>`;
     return html`${line}${keyRow('Your Tacit address', S.key.tacit || '', 'Tacit address', '', { fold: 44, qr: true })}
@@ -10655,7 +10654,7 @@ function tcard() {
   if (!$('#tpg-card') || !TACP.on) return;
   const side = tcardSide(), chain = side === 'chain';
   tpgMount($('#tcd-seg'), chainOn() ? html`<div class="tcd-seg" role="group" aria-label="Where the private TAC is">${[['chain', 'Tacit chain'], ['btc', 'Bitcoin']].map(([k, t]) => html`<button type="button" aria-pressed="${String(side === k)}" data-tcd-side="${k}">${t}</button>`)}</div>` : html``);
-  tpgMount($('#tcd-head'), tcardHead(side));
+  tpgMount($('#tcd-head'), tcardHead(side), (el) => { const go = $('#tpg-priv', el); if (go) go.onclick = () => tpgPrivGo(chain ? 'wallet' : 'btc'); });
   const tabs = $('#tcd-tabs'), p = $('#tpg-p'), pool = $('#tcd-pool');
   tabs.hidden = p.hidden = !chain; pool.hidden = chain;
   if (chain) {
@@ -10703,7 +10702,7 @@ async function tcardQuote() {
     tcardFoot();
   };
   if (tab === 'shield') tcardWayPaint();
-  if (!S.key) return put([html`<button class="link" type="button" data-signin>Sign in</button> to ${tab === 'send' ? 'pay from' : tab === 'shield' ? 'shield to' : 'withdraw from'} the Tacit chain.`, true]);
+  if (!S.key) return put([html``, true]);
   if (a && !units) return put([tcdErr('Enter an amount above zero, up to 8 decimals.'), false]);
   try { put(await (tab === 'shield' ? tcardShieldSay(units) : tab === 'send' ? tcardSendSay(units, my) : tcardOutSay(units))); }
   catch { put([html``, true]); }
@@ -10744,6 +10743,8 @@ async function tcardSendSay(units, my) {
   const raw = ($('#tcd-to')?.value || '').trim(), held = chainHeld(), t4 = (v) => fmt(v, 8, 4);
   TCARD.eth = /^0x[0-9a-fA-F]{40}$/.test(raw);
   if (!raw) return [html`${held != null ? `You hold ${t4(held)} TAC on the Tacit chain.` : ''}`, true];
+  // a Tacit address still being typed or pasted: nothing said until it is as long as one
+  if (/^tac(it|tt|rt)1/i.test(raw) && raw.length < 100 && !tacitLanes(raw)) return [html``, false];
   if (/\.(eth|wei|gwei)$/i.test(raw)) {
     if (TCARD.rc?.raw !== raw) {
       if (my === TCARD.seq) mount($('#tcd-q'), html`Looking up ${raw}…`);
@@ -10915,12 +10916,12 @@ const tpgPx = (pool, shares) => (TPGW.ui ? TPGW.ui.sharePrice(pool, shares, 5) :
 function tpgChart(roll) {
   const pts = [...roll].sort((a, b) => a.height - b.height).map((b) => [b.height, tpgPrice(b.pool, b.shares)]);
   if (pts.length < 3) return '';
-  const W = 600, H = 120, x0 = pts[0][0], x1 = pts.at(-1)[0], ys = pts.map((p) => p[1]), lo = Math.min(...ys), hi = Math.max(...ys), span = hi - lo || hi * 1e-6 || 1e-9;
+  const W = 600, H = 120, x0 = pts[0][0], x1 = pts.at(-1)[0], ys = pts.map((p) => p[1]), lo = Math.min(1, ...ys), hi = Math.max(...ys), span = hi - lo || hi * 1e-6 || 1e-9;
   const X = (x) => ((x - x0) / (x1 - x0 || 1)) * W, Y = (y) => H - 8 - ((y - lo) / span) * (H - 16);
   const d = pts.map(([x, y], i) => `${i ? 'L' : 'M'}${X(x).toFixed(1)} ${Y(y).toFixed(1)}`).join(' ');
   return html`<figure class="tpg-chart"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="${`A share's worth over the last ${pts.length} blocks, from ${lo.toFixed(5)} to ${hi.toFixed(5)} TAC`}">
     <line class="gd" x1="0" y1="${H - 0.5}" x2="${W}" y2="${H - 0.5}"/><path class="ar" d="${d} L${W} ${H} L0 ${H} Z"/><path class="ln" d="${d}"/></svg>
-    <figcaption><span>block ${x0.toLocaleString('en-US')}</span><span>${hi.toFixed(5)} TAC</span><span>block ${x1.toLocaleString('en-US')}</span></figcaption></figure>`;
+    <figcaption><span>block ${x0.toLocaleString('en-US')} · ${pts[0][1].toFixed(5)}</span><span>block ${x1.toLocaleString('en-US')} · ${pts.at(-1)[1].toFixed(5)} TAC</span></figcaption></figure>`;
 }
 function tpgWhy(el) {
   el.hidden = !chainOn();
@@ -10931,26 +10932,29 @@ function tpgWhy(el) {
   const mb = cs && TPGW.w ? TPGW.w.shieldMargin({ pool: cs.pool, shares: cs.shares }) : null, margin = mb == null ? 'a small margin' : `${(Number(mb) / 100).toFixed(2).replace(/0$/, '')}%`;
   const k = S.key?.pubHex, shares = k && TACP.sh?.pub === k ? TACP.sh.v : null, worth = k && CH.pub === k ? CH.bal : null;
   const lf = tpgLeader(), sweep = cs?.leader?.sweepFee ?? null, t4 = (v) => fmt(v, 8, 4), blocks = cs?.height ?? roll.length;
+  const pn = cs ? tpgPrice(cs.pool, cs.shares) : last ? tpgPrice(last.pool, last.shares) : null, up = pn != null && pn > 1 ? `+${((pn - 1) * 100).toFixed(2)}% since it started` : '';
+  const usd = (u) => { const d = hxUsd('tac', Number(u) / 1e8); return d ? ` (≈ ${d})` : ''; };
   mount(el, html`<h2 class="tpg-h" id="tpg-why-h">Why hold it on the Tacit chain</h2>
-    <p class="tpg-px num">${price != null ? html`1 share = ${price} <small>TAC</small>` : html`<span class="sk" style="--w:12ch"></span>`}</p>
+    <p class="tpg-px num">${price != null ? html`1 share = ${price} <small>TAC</small>${up ? html`<small class="up">${up}</small>` : ''}` : html`<span class="sk" style="--w:12ch"></span>`}</p>
     ${tpgChart(roll)}
     ${blocks && roll.length < 3 ? html`<p class="note">After ${blocks.toLocaleString('en-US')} block${blocks === 1 ? '' : 's'}. It started at 1.</p>` : ''}
     ${shares != null && shares > 0n && worth != null ? html`<p class="tpg-mine">Your ${fmt(shares, 8, 4)} shares are worth ${fmt(worth, 8, 4)} TAC.</p>` : ''}
     <ul class="tpg-rules">
-      <li>Every payment leaves 0.002 TAC in the pool.</li>
-      <li>Every withdrawal leaves 0.1% (at least 0.002 TAC).</li>
-      <li>Those fees stay with holders: each share is worth a little more after each one.</li>
+      <li>Private TAC on the Tacit chain is held as shares of one pool.</li>
+      <li>Every payment leaves 0.002 TAC in the pool, every withdrawal 0.1% (at least 0.002 TAC).</li>
+      <li>That stays with holders, so each share is worth a little more after each one.</li>
     </ul>
-    <h3 class="tpg-h">Where the fees go</h3>
+    <p class="tpg-feeline">Fees, paid in TAC, follow Ethereum's gas: ${lf != null ? html`a payment <b>${t4(lf + TPG_FLOOR)} TAC</b>${usd(lf + TPG_FLOOR)} now, a shield ${margin} and ${t4(lf + (sweep ? sweep / E10 : 0n))} TAC, a withdrawal 0.1% and ${t4(lf)} TAC.` : 'read from the leader as you open this.'}</p>
+    <details class="tpg-more"><summary>Where the fees go</summary>
     <ul class="tpg-fees">
-      <li><b>Pay</b><div class="cost">${lf != null ? `about ${t4(lf + TPG_FLOOR)} TAC` : 'a small fee'}</div>
+      <li><b>Send</b><div class="cost">${lf != null ? `about ${t4(lf + TPG_FLOOR)} TAC` : 'a small fee'}</div>
         <p class="h"><span>0.002 TAC<small>to holders</small></span></p><p><span>${lf != null ? `${t4(lf)} TAC` : 'the rest'}<small>to the leader, for Ethereum gas</small></span></p></li>
-      <li><b>Make private</b><div class="cost">${margin} and ${lf != null ? `about ${t4(lf + (sweep ? sweep / E10 : 0n))} TAC` : 'a small fee'}</div>
+      <li><b>Shield</b><div class="cost">${margin} and ${lf != null ? `about ${t4(lf + (sweep ? sweep / E10 : 0n))} TAC` : 'a small fee'}</div>
         <p class="h"><span>${margin} of it<small>to holders</small></span></p><p><span>${lf != null ? `${t4(lf)} TAC${sweep ? ` + ${fmt(sweep, 18, 4)} TAC` : ''}` : 'the rest'}<small>to the leader, for Ethereum gas${sweep ? ', and for sending it in when you sign once' : ''}</small></span></p></li>
-      <li><b>Cash out</b><div class="cost">${lf != null ? `0.1% and ${t4(lf)} TAC` : '0.1% and a small fee'}</div>
+      <li><b>Withdraw</b><div class="cost">${lf != null ? `0.1% and ${t4(lf)} TAC` : '0.1% and a small fee'}</div>
         <p class="h"><span>0.1%, at least 0.002 TAC<small>to holders</small></span></p><p><span>${lf != null ? `${t4(lf)} TAC` : 'the rest'}<small>to the leader, for Ethereum gas</small></span></p></li>
     </ul>
-    <p class="tpg-foot">Provers are paid in points.</p>`);
+    <p class="tpg-foot">Provers are paid in points.</p></details>`);
 }
 // The networks (folded): the Bitcoin pool's figures and the Tacit chain's, read once the fold is opened
 const TPGN = { pool: null, at: 0 };
