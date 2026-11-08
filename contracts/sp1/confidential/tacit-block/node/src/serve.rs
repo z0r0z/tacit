@@ -28,6 +28,8 @@
 //!                                of the spends named (what the leader opens to find its fee)
 //!   POST /drop                   { ids, reason? } → spends given up on; with a reason they are refused for good, the receipt saying why
 //!   POST /fee                    { address, fee, at, … } → what GET /fee serves
+//!   POST /restore                → { restored, refused }: what waited when the node last stopped (TACIT_NODE_MEMPOOL, written after every
+//!                                change), admitted again as if just submitted; the leader asks once its first sync has replayed the chain
 //!
 //! Every waiting spend and settle stays one a block could take on its own: each is checked alone against the chain at admission, when a
 //! block is built and after each block lands, and one that no longer passes leaves the mempool with its reason on its receipt (a shield
@@ -95,6 +97,8 @@ struct Entry {
     back: Vec<String>,
     /// A holder's permit for the shield's inbox (`TacitBlocks.sweepWithPermit`): { owner, fee, deadline, v, r, s, back }.
     permit: Option<Value>,
+    /// What was submitted (POST /spend's body), kept so a restart can admit it again.
+    raw: Value,
 }
 
 impl Entry {
@@ -109,6 +113,7 @@ struct SettleEntry {
     settle: Settle,
     memo: Vec<u8>,
     key: [u8; 32],
+    raw: Value,
 }
 
 /// A block built and waiting for its proof and its landing.
@@ -132,6 +137,9 @@ pub struct Leader {
     writes: BTreeMap<std::net::IpAddr, (u64, u32)>,
     /// What GET /fee serves: the leader's chain address and its fee, set by the leader (POST /fee).
     fee: Value,
+    /// Where what waits is written after every change (TACIT_NODE_MEMPOOL), and what was there at start, admitted again on POST /restore.
+    mempool_file: Option<String>,
+    saved: Vec<Value>,
 }
 
 /// Chain addresses by SHA-256("tacit-chain-address-v1" ‖ address), kept in memory and appended to TACIT_NODE_DIRECTORY (one hex
@@ -231,7 +239,43 @@ impl Leader {
             refused: BTreeMap::new(),
             writes: BTreeMap::new(),
             fee: json!({ "fee": "0" }),
+            mempool_file: std::env::var("TACIT_NODE_MEMPOOL").ok().filter(|f| !f.is_empty()),
+            saved: std::env::var("TACIT_NODE_MEMPOOL")
+                .ok()
+                .filter(|f| !f.is_empty())
+                .and_then(|f| std::fs::read(f).ok())
+                .and_then(|b| serde_json::from_slice::<Vec<Value>>(&b).ok())
+                .unwrap_or_default(),
         }
+    }
+
+    /// Writes what waits (each spend's and settle's submission) to TACIT_NODE_MEMPOOL, whole and atomically; a write that fails is said and
+    /// the node goes on (what waits is then only as safe as the wallets' own copies).
+    fn persist(&self) {
+        let Some(f) = &self.mempool_file else { return };
+        let all: Vec<Value> = self
+            .pending
+            .iter()
+            .map(|e| json!({ "kind": "spend", "body": e.raw }))
+            .chain(self.settles.iter().map(|s| json!({ "kind": "settle", "body": s.raw })))
+            .collect();
+        let tmp = format!("{f}.tmp");
+        if let Err(e) = std::fs::write(&tmp, serde_json::to_vec(&all).unwrap_or_default()).and_then(|_| std::fs::rename(&tmp, f)) {
+            eprintln!("tacit-block-node: could not write {f}: {e}");
+        }
+    }
+
+    /// What waited when the node last stopped, admitted again now that the chain is replayed: each checked as a new submission is.
+    fn restore(&mut self, now: u64) -> Value {
+        let (mut restored, mut refused) = (0u32, vec![]);
+        for e in std::mem::take(&mut self.saved) {
+            let r = if e["kind"] == "settle" { self.settle(&e["body"], now) } else { self.spend(&e["body"], now) };
+            match r {
+                Ok(_) => restored += 1,
+                Err(why) => refused.push(why),
+            }
+        }
+        json!({ "restored": restored, "refused": refused })
     }
 
     fn state(&self) -> Value {
@@ -341,7 +385,7 @@ impl Leader {
         };
         let keys: Vec<[u8; 32]> = blk::Spend::from_publics(&tacit_block_agg_publics(&publics)?).spent_keys().iter().map(blk::fr_be).collect();
         let permit = b.get("permit").filter(|p| p.is_object() && p.to_string().len() < 1024).cloned();
-        let entry = Entry { id: id.clone(), spend: SpendIn { publics, proof, hints, data }, memos, op_memos, keys, back: backs, permit };
+        let entry = Entry { id: id.clone(), spend: SpendIn { publics, proof, hints, data }, memos, op_memos, keys, back: backs, permit, raw: b.clone() };
         if entry.shield() && self.pending.iter().filter(|e| e.shield()).count() >= MAX_SHIELDS {
             return Err("too many shields wait on their deposits".into());
         }
@@ -416,7 +460,7 @@ impl Leader {
             return Err("only TAC moves on this chain".into());
         }
         let key = blk::fr_be(&blk::lock::lock_nullifier(&settle.leaf(), settle.index));
-        let entry = SettleEntry { id: id.clone(), settle, memo, key };
+        let entry = SettleEntry { id: id.clone(), settle, memo, key, raw: b.clone() };
         if self.settles.iter().any(|s| s.key == key) {
             return Err("that lock is being settled by a settle already waiting".into());
         }
@@ -591,7 +635,7 @@ impl Leader {
 
     fn route(&mut self, method: &str, url: &str, body: &Value, now: u64, admin: bool, ip: Option<std::net::IpAddr>) -> Result<Value, (u16, String)> {
         let (path, query) = url.split_once('?').unwrap_or((url, ""));
-        if method == "POST" && matches!(path, "/build" | "/landed" | "/drop" | "/pending" | "/fee") && !admin {
+        if method == "POST" && matches!(path, "/build" | "/landed" | "/drop" | "/pending" | "/fee" | "/restore") && !admin {
             return Err((403, "the leader's own".into()));
         }
         let q = |k: &str| query.split('&').find_map(|kv| kv.split_once('=').filter(|(a, _)| *a == k).map(|(_, v)| v.to_string()));
@@ -679,8 +723,19 @@ impl Leader {
             ("POST", "/forced") => self.forced(body).map_err(bad),
             ("POST", "/build") => self.build(body).map_err(bad),
             ("POST", "/landed") => self.landed(body, now).map_err(bad),
+            ("POST", "/restore") => Ok(self.restore(now)),
             _ => Err((404, "not found".into())),
         }
+    }
+
+    /// `route`, with what waits written down after anything that can change it.
+    fn handle(&mut self, method: &str, url: &str, body: &Value, now: u64, admin: bool, ip: Option<std::net::IpAddr>) -> Result<Value, (u16, String)> {
+        let r = self.route(method, url, body, now, admin, ip);
+        let path = url.split_once('?').map_or(url, |(p, _)| p);
+        if method == "POST" && matches!(path, "/spend" | "/settle" | "/landed" | "/drop" | "/build" | "/restore") {
+            self.persist();
+        }
+        r
     }
 }
 
@@ -741,7 +796,7 @@ pub fn serve(addr: &str, mut leader: Leader) -> Result<(), String> {
                 Some(t) => bearer.as_deref() == Some(&format!("Bearer {t}")),
                 None => req.remote_addr().is_some_and(|a| a.ip().is_loopback()),
             };
-            match leader.route(&method, &url, &body, now, admin, ip) {
+            match leader.handle(&method, &url, &body, now, admin, ip) {
                 Ok(v) => (200, v),
                 Err((c, e)) => (c, json!({ "error": e })),
             }

@@ -271,8 +271,11 @@ const paying = new Set();
 const unfundedSince = new Map();
 const DROP_UNFUNDED = Number(env.DROP_UNFUNDED_SECS || 3600) * 1000;
 
+// what waited when the node last stopped (its TACIT_NODE_MEMPOOL file) is admitted again once, after the first sync has replayed the chain
+let restored = false;
 async function step() {
   await sync();
+  if (!restored) { restored = true; log({ restored: await node('POST', '/restore', {}).catch((e) => ({ error: String(e.message || e) })) }); }
   const [done, queued, lastLanded, window_, forceDelay] = await Promise.all([
     view('queueDone()', ['uint256']), view('queued()', ['uint256']), view('lastLanded()', ['uint256']), view('WINDOW()', ['uint256']), view('FORCE_DELAY()', ['uint256']),
   ]).then((r) => r.map((x) => Number(x[0])));

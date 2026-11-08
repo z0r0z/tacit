@@ -41,6 +41,7 @@ if (cmd === 'create') {
     PROVER: arg('prover', 'board'),
     ARCHIVE_DIR: '/data/archive',
     TACIT_NODE_DIRECTORY: '/data/directory.txt',
+    TACIT_NODE_MEMPOOL: '/data/mempool.json',
     TACIT_NODE_TRUST_PROXY: '1',
   };
   const r = await api('POST', '/services', {
