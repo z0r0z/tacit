@@ -57,6 +57,7 @@ async function session(tag) {
   await new Promise((r) => setTimeout(r, 250));                  // the seen-transfer record is flushed to storage a moment after it is written
   const d = await import(`../dapp/tacit.js?${tag}`);
   d.wallet.priv = priv; d.wallet.pub = pub;
+  d.setTxReadSpacingMs(0);          // the page's pacing of transfer reads is tested in stealth-scan-window; here the reads go at the speed of the stub
   return d;
 }
 const lastRun = () => `tacit-stealth-discover-last-v1:signet:${bytesToHex(pub)}`;

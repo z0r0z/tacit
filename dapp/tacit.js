@@ -1912,6 +1912,20 @@ const extWallet = {
 
 const _API_MAX_INFLIGHT = 12;
 let _apiInflight = 0;
+// How many requests have been sent to an explorer (not answered from a cache): a scan that reads in windows looks at it to know whether a window used the network.
+let _apiFetchStarts = 0;
+let _txReadTurn = 0;
+// A transaction read from an explorer waits its turn: this page starts at most one every TX_READ_SPACING_MS, whoever asks (a scan, the scan that runs in the background, a walk
+// of a history), so readers at once do not add up to a rate an explorer refuses. A transaction already held (the caches answer before this) is not made to wait.
+let TX_READ_SPACING_MS = 150;
+let _txReadNextAt = 0;
+function setTxReadSpacingMs(ms) { TX_READ_SPACING_MS = Math.max(0, Number(ms) || 0); _txReadNextAt = 0; }
+async function _txReadWait() {
+  if (!TX_READ_SPACING_MS) return;
+  const now = Date.now(), at = Math.max(now, _txReadNextAt);
+  _txReadNextAt = at + TX_READ_SPACING_MS;
+  if (at > now) await new Promise((r) => setTimeout(r, at - now));
+}
 const _apiQueue = [];
 
 const _PER_BASE_MAX_INFLIGHT = 6;
@@ -2230,7 +2244,13 @@ async function _apiFetchUncached(path, opts = {}) {
     if (!bases.length) throw new Error('no chain API configured');
 
     const healthy = bases.filter(b => !_isCooling(b));
-    const healthyWithSlots = healthy.filter(b => _baseSlotsFree(b) > 0);
+    let healthyWithSlots = healthy.filter(b => _baseSlotsFree(b) > 0);
+    // A transaction is read from whichever explorer is up, and the first of them takes every read while it has a free place; the reads are taken in turns instead, so one visitor's
+    // requests count against each explorer's limit for an address a share at a time (every explorer limits by address, and one scan is hundreds of reads).
+    if (healthyWithSlots.length > 1 && /^\/tx\/[0-9a-f]{64}$/.test(path) && String(opts.method || 'GET').toUpperCase() === 'GET') {
+      const k = _txReadTurn++ % healthyWithSlots.length;
+      healthyWithSlots = [...healthyWithSlots.slice(k), ...healthyWithSlots.slice(0, k)];
+    }
     const healthySaturated  = healthy.filter(b => _baseSlotsFree(b) === 0);
     const cooling = bases.filter(_isCooling)
       .sort((a, b) => _coolingMsLeft(a) - _coolingMsLeft(b));
@@ -2263,6 +2283,7 @@ async function _apiFetchUncached(path, opts = {}) {
           if (WORKER_BASE && base === `${WORKER_BASE}/chain` && NET?.name) {
             fetchUrl += (path.includes('?') ? '&' : '?') + `network=${encodeURIComponent(NET.name)}`;
           }
+          _apiFetchStarts++;
           r = await fetch(fetchUrl, _attemptTimeoutOK
             ? { ...opts, signal: AbortSignal.timeout(API_ATTEMPT_TIMEOUT_MS) }
             : opts);
@@ -3279,6 +3300,7 @@ async function _getTxSingle(id) {
   if (inflight) return inflight;
   const p = (async () => {
     let tx = null;
+    await _txReadWait();
     try { tx = await apiJson(`/tx/${id}`); }
     catch (e) {
       if (/^API 404/.test(e?.message || '')) _txMarkNotFound(id);
@@ -3335,7 +3357,7 @@ const getTx = async (rawId) => {
 let _txArchiveNet = null;
 function _txArchive() {
   const name = NET?.name || 'mainnet';
-  if (!_txArchiveNet || _txArchiveNet.name !== name) _txArchiveNet = { name, a: makeTxArchive({ base: WORKER_BASE, network: name, sha256 }) };
+  if (!_txArchiveNet || _txArchiveNet.name !== name) _txArchiveNet = { name, a: makeTxArchive({ base: WORKER_BASE, network: name, sha256, ...(Number.isFinite(globalThis.__TACIT_TX_ARCHIVE_BURST__) ? { burst: globalThis.__TACIT_TX_ARCHIVE_BURST__ } : {}) }) };
   return _txArchiveNet.a;
 }
 
@@ -15785,6 +15807,8 @@ function _triggerStealthAutoScanInBackground(holdings) {
             const allowed = new Set(discoverCandidates.map(a => a.toLowerCase()));
             const filtered = entries.filter(e => e && typeof e.txid === 'string' && allowed.has(String(e.aid || '').toLowerCase())
               && !isStealthTxidSeen(String(e.aid).toLowerCase(), e.txid));
+            // the archive gives these 64 to a request, and what it proves holds nothing for this key is then not read from an explorer
+            if (filtered.length) { try { await _txArchive().prefetch(filtered.map((e) => e.txid), { depth: 1 }); } catch { } }
             showPill(`scanning shielded · discover 0/${filtered.length}`);
             let i = 0, streak = 0;
             for (let w = 0; w < filtered.length && !gaveUp; w += _STEALTH_AUTO_SCAN_DISCOVER_CONCURRENCY) {
@@ -23383,42 +23407,79 @@ async function buildAndBroadcastPmint({ etchTxidHex, onProgress = null }) {
   };
 }
 
-async function discoverStealthFromTxid(txidHex, { merge = true } = {}) {
-  await ensurePrivkey();
-  const owner = _holdingsOwner();
-  const tx = await getTx(txidHex);
-  if (!tx || !tx.vin) throw new Error(`tx ${txidHex.slice(0,16)}… missing or malformed`);
-  if (tx.vin.length < 2) throw Object.assign(new Error(`tx ${txidHex.slice(0,16)}… missing or malformed`), { notShielded: true });
+// What a transaction must be before it can pay anyone through a stealth transfer, read from the transaction alone (its inputs' witnesses): `notShielded` (under two inputs),
+// `none` (no envelope of a transfer kind that carries stealth outputs), or the envelope and its payload. Nothing here needs an input's previous output.
+function _stealthShape(tx) {
+  if (tx.vin.length < 2) return { notShielded: true };
   const wit0 = tx.vin[0]?.witness;
-  if (!wit0 || wit0.length < 3) return [];
+  if (!wit0 || wit0.length < 3) return { none: true };
   let envBytes;
-  try { envBytes = hexToBytes(wit0[1]); } catch { return []; }
+  try { envBytes = hexToBytes(wit0[1]); } catch { return { none: true }; }
   const env = decodeEnvelopeScript(envBytes);
-  if (!env) return [];
-  if (!STEALTH_DOMAIN_BY_OPCODE.has(env.opcode)) return [];
-
+  if (!env) return { none: true };
+  if (!STEALTH_DOMAIN_BY_OPCODE.has(env.opcode)) return { none: true };
   const dec = env.opcode === T_CXFER       ? decodeCXferPayload(env.payload)
             : env.opcode === T_CXFER_BPP   ? decodeCXferBppPayload(env.payload)
             : null;
-  if (!dec) return [];
-  // The sender's key is told by each input's previous output, so a transaction read without them (an archived one carries none) is a
-  // failed read, looked at again next scan, and not a transfer found to hold nothing for this key.
-  if (tx.vin.some((vin) => !vin.prevout)) throw new Error(`tx ${txidHex.slice(0,16)}… was read without its inputs' outputs`);
-
+  if (!dec) return { none: true };
+  return { env, dec };
+}
+// The inputs whose previous output decides what they are. An input counts toward the shared secret only as a witness of one item (a taproot key spend) or of two (a native segwit key
+// spend) that spends the kind of output it names (classifyStealthInput), so an input with any other witness (the reveal's has three or more, a legacy one has none) is told apart by its
+// witness alone and is never counted, whatever it spends: its previous output is not needed.
+const _stealthNeedsPrevout = (vin) => { const n = (vin.witness || []).length; return n === 1 || n === 2; };
+// The credits a stealth transfer holds for this key (none when it pays someone else): its inputs classified, and every output tried against the shared secret they make.
+function _stealthCreditsOf(tx, shape) {
   const classifiedInputs = tx.vin.map((vin) => {
     const witness = (vin.witness || []).map(h => { try { return hexToBytes(h); } catch { return new Uint8Array(0); } });
     const prevoutScript = vin.prevout?.scriptpubkey
       ? hexToBytes(vin.prevout.scriptpubkey) : null;
     return classifyStealthInput({ witness, prevoutScript });
   });
-  const credits = recipientScanTxForStealth({
+  return recipientScanTxForStealth({
     classifiedInputs,
     outputs: tx.vout.map(o => ({ script: hexToBytes(o.scriptpubkey || '') })),
     walletPriv: wallet.priv, walletPub: wallet.pub,
     networkTag: currentNetworkName(),
-    domain: STEALTH_DOMAIN_BY_OPCODE.get(env.opcode),
+    domain: STEALTH_DOMAIN_BY_OPCODE.get(shape.env.opcode),
     txAnchorHead: stealthTxAnchorHead(tx.vin[1].txid, tx.vin[1].vout),
   });
+}
+// Whether the API's archive proves that a transfer holds nothing for this key, so that no explorer is asked for it. The transfer is held, and so is each transaction it spends from for
+// the inputs whose previous output matters (_stealthNeedsPrevout), every one of them checked against its txid when the archive handed it over; the credits are then worked out by the
+// same code discoverStealthFromTxid uses, on the previous outputs those transactions hold, and there are none. Everything else (a transfer or a parent the archive lacks, a credit found,
+// a shape it cannot read) is not told here, and is read from an explorer as always, a credit found going through the whole of discoverStealthFromTxid.
+function _stealthNothingFromArchive(txidHex) {
+  const A = _txArchive(), tx = A.get(txidHex);
+  if (!tx || !Array.isArray(tx.vin) || !Array.isArray(tx.vout)) return false;
+  const shape = _stealthShape(tx);
+  if (shape.notShielded || shape.none) return true;
+  const vin = [];
+  for (const v of tx.vin) {
+    if (!_stealthNeedsPrevout(v)) { vin.push(v); continue; }
+    const out = A.get(v.txid)?.vout?.[v.vout];
+    if (!out) return false;
+    vin.push({ ...v, prevout: out });
+  }
+  try { return _stealthCreditsOf({ ...tx, vin }, shape).length === 0; } catch { return false; }
+}
+
+async function discoverStealthFromTxid(txidHex, { merge = true } = {}) {
+  await ensurePrivkey();
+  const owner = _holdingsOwner();
+  // a transfer the API's archive proves holds nothing for this key is not read from an explorer (a scan that prefetched it has it; see _stealthNothingFromArchive)
+  if (_stealthNothingFromArchive(txidHex)) return [];
+  const tx = await getTx(txidHex);
+  if (!tx || !tx.vin) throw new Error(`tx ${txidHex.slice(0,16)}… missing or malformed`);
+  const shape = _stealthShape(tx);
+  if (shape.notShielded) throw Object.assign(new Error(`tx ${txidHex.slice(0,16)}… missing or malformed`), { notShielded: true });
+  if (shape.none) return [];
+  const { env, dec } = shape;
+  // The sender's key is told by the previous output of each input that can count (_stealthNeedsPrevout), so a transaction read without them is a
+  // failed read, looked at again next scan, and not a transfer found to hold nothing for this key.
+  if (tx.vin.some((vin) => _stealthNeedsPrevout(vin) && !vin.prevout)) throw new Error(`tx ${txidHex.slice(0,16)}… was read without its inputs' outputs`);
+
+  const credits = _stealthCreditsOf(tx, shape);
   if (credits.length === 0) return [];
 
   const senderPubHex = tx.vin[1]?.witness?.[1];
@@ -23549,8 +23610,13 @@ async function discoverStealthFromTxid(txidHex, { merge = true } = {}) {
   return counted;
 }
 
-const STEALTH_SCAN_WINDOW = 8;
-async function scanAssetForStealthReceipts(assetIdHex, { onProgress = null, maxPages = 4, pageLimit = 50, useSeenCache = true } = {}) {
+// The scan reads transfers a few at a time (the rate they are started at is the page's, see TX_READ_SPACING_MS). After a window in which a read failed (an explorer saying it is being
+// asked too much) it rests as well, twice as long after each failed window up to the most, and less after each clean one; it does not rest while all goes well.
+const STEALTH_SCAN_WINDOW = 4;
+const STEALTH_SCAN_GAP_MS = 0;
+const STEALTH_SCAN_FAIL_GAP_MS = 500;
+const STEALTH_SCAN_GAP_MAX_MS = 8000;
+async function scanAssetForStealthReceipts(assetIdHex, { onProgress = null, maxPages = 4, pageLimit = 50, useSeenCache = true, window: win = STEALTH_SCAN_WINDOW, gapMs = STEALTH_SCAN_GAP_MS, failGapMs = STEALTH_SCAN_FAIL_GAP_MS } = {}) {
   if (!WORKER_BASE) throw new Error('worker base URL not configured');
   if (!/^[0-9a-f]{64}$/.test(String(assetIdHex || ''))) throw new Error('invalid assetIdHex');
   await ensurePrivkey();
@@ -23560,8 +23626,10 @@ async function scanAssetForStealthReceipts(assetIdHex, { onProgress = null, maxP
   let txsScanned = 0;
   let txsSkipped = 0;
   let txsFailed = 0;
+  let txsFromArchive = 0;
   let complete = false;
   const walked = new Set();
+  let gap = gapMs;
   for (let page = 0; page < maxPages; page++) {
     const url = `${WORKER_BASE}/assets/${assetIdHex}/recent-xfer-txids?network=${encodeURIComponent(NET.name)}&limit=${pageLimit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
     let resp;
@@ -23577,26 +23645,36 @@ async function scanAssetForStealthReceipts(assetIdHex, { onProgress = null, maxP
       if (useSeenCache && isStealthTxidSeen(assetIdHex, t)) { txsSkipped++; continue; }
       todo.push(t);
     }
-    for (let i = 0; i < todo.length; i += STEALTH_SCAN_WINDOW) {
-      await Promise.all(todo.slice(i, i + STEALTH_SCAN_WINDOW).map(async (t) => {
+    // The API's archive holds most of these transfers and the transactions they spend from, and gives them 64 roots to a request with each transaction checked against its txid.
+    // A transfer it proves holds nothing for this key (_stealthNothingFromArchive) is not read from an explorer; every other transfer, and every one the archive lacks or fails to give, is read as always.
+    if (todo.length) { try { await _txArchive().prefetch(todo, { depth: 1 }); } catch { } }
+    for (let i = 0; i < todo.length; i += win) {
+      const startedBefore = _apiFetchStarts, failedBefore = txsFailed;
+      await Promise.all(todo.slice(i, i + win).map(async (t) => {
         txsScanned++;
         let cleanScan = false;
         try {
-          const credits = await discoverStealthFromTxid(t, { merge: true });
-          for (const c of credits) discovered.push(c);
-          cleanScan = true;
+          if (_stealthNothingFromArchive(t)) { txsFromArchive++; cleanScan = true; }
+          else {
+            const credits = await discoverStealthFromTxid(t, { merge: true });
+            for (const c of credits) discovered.push(c);
+            cleanScan = true;
+          }
         } catch (e) {
           if (e?.notShielded) cleanScan = true; else txsFailed++;
         }
         if (cleanScan) markStealthTxidSeen(assetIdHex, t);
         if (onProgress) { try { onProgress({ pagesScanned, txsScanned, txsSkipped, txsFailed, found: discovered.length }); } catch {} }
       }));
+      // rest before the next window if this one used the network: the first rest after a window in which a read failed, twice as long after each such window, back toward the usual after a clean one
+      gap = txsFailed > failedBefore ? Math.min(STEALTH_SCAN_GAP_MAX_MS, gap > 0 ? gap * 2 : failGapMs) : (gap > gapMs ? Math.max(gapMs, gap >> 1) : gapMs);
+      if (gap > 0 && _apiFetchStarts > startedBefore && (i + win < todo.length || (!j.done && j.next_cursor))) await new Promise((r) => setTimeout(r, gap));
     }
     if (j.done) { complete = true; break; }
     if (!j.next_cursor) { complete = true; break; }
     cursor = j.next_cursor;
   }
-  return { discovered, pagesScanned, txsScanned, txsSkipped, txsFailed, complete };
+  return { discovered, pagesScanned, txsScanned, txsSkipped, txsFailed, txsFromArchive, complete };
 }
 
 let _tacTrackedCache = null;
@@ -61849,7 +61927,7 @@ export {
   _burndepUxSingleton as bridgeUx, _crossoutUxSingleton as crossoutUx, _crossoutNotesSingleton as crossoutNotes, pickSafeCommitSats,
   discoverStealthFromTxid, scanAssetForStealthReceipts,
   recordStealthCredit, getStealthCredit, loadStealthCredits, removeStealthCredit,
-  markStealthTxidSeen, isStealthTxidSeen, _triggerStealthAutoScanInBackground,
+  markStealthTxidSeen, isStealthTxidSeen, _triggerStealthAutoScanInBackground, setTxReadSpacingMs, _stealthNothingFromArchive, _txArchive as _txArchiveForTests,
   markStealthActivityLogged, isStealthActivityLogged,
   classifyStealthInput, aggregateStealthEligibleInputPubkeys,
   deriveStealthEcdhSharedSecret, deriveStealthBlindingFromShared,
