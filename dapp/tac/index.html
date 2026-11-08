@@ -685,7 +685,7 @@ a.di { color: inherit; text-decoration: none; }
 /* TAC: one calm coin above its title; it turns to show Bitcoin on its back, then Ethereum. */
 .tc { display: flex; flex-direction: column; align-items: center; text-align: center; }
 .tc .sx-h { margin-bottom: 26px; }
-.tc-stage { position: relative; width: 100%; height: 168px; display: grid; place-items: center; perspective: 900px; }
+.tc-stage { position: relative; width: 100%; height: 168px; margin-bottom: 14px; display: grid; place-items: center; perspective: 900px; }
 .tc-tilt { scale: .62; transform-style: preserve-3d; animation: tc-bob 7s ease-in-out infinite; }
 @keyframes tc-bob { 0%, 100% { transform: rotateX(8deg) rotateZ(-4deg) translateY(-3px); } 50% { transform: rotateX(8deg) rotateZ(-4deg) translateY(3px); } }
 .tc-coin { --t: 14px; --cyc: 14s; position: relative; width: 200px; height: 200px; transform-style: preserve-3d; animation: tc-spin var(--cyc) infinite; }
@@ -722,17 +722,23 @@ a.di { color: inherit; text-decoration: none; }
 .tc-facts dt { font-size: 12px; color: var(--mute); }
 .tc-facts dd { margin: 0; font: 400 40px/1.1 var(--serif); letter-spacing: -.01em; white-space: nowrap; }
 .tc-facts dd small { margin-right: 6px; font: 400 12px var(--mono); letter-spacing: 0; color: var(--mute); }
-/* What each asset does, in one line under its facts. */
-.tc-pay { width: 100%; max-width: 720px; margin: 64px 0 0; }
-.tc-pay h3 { margin: 0; font: 400 34px/1.15 var(--serif); letter-spacing: -.01em; text-wrap: balance; }
-/* What holding it does: four short lines under a rule. */
+/* What each asset does, in one quiet line under its facts, close to the action it leads to. */
+.tc-pay { width: 100%; max-width: 720px; margin: 40px 0 0; }
+.tc-pay h3 { margin: 0; font: italic 400 24px/1.25 var(--serif); letter-spacing: -.01em; color: color-mix(in srgb, var(--ink) 82%, var(--mute)); text-wrap: balance; }
+/* The line under the coin. */
 .tc-idea { margin: 0 0 18px; max-width: 52ch; text-align: center; font-size: 14px; line-height: 1.5; color: var(--mute); text-wrap: balance; }
-.tc-links { display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 12px 26px; margin-top: 56px; }
+.tc-idea a { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
+/* The panel's actions: the main one with the page that shows its market, then the quieter links under them. */
+.tc-links { display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 12px 26px; margin-top: 26px; }
 .tc-links .tl { font-size: 14px; }
 .tc-links .btn { width: auto; min-height: 48px; margin: 0; padding: 0 24px; color: var(--card); background: var(--ink); border-color: var(--ink); border-radius: 16px; }
 @media (hover: hover) { .tc-links .btn:hover:not(:disabled) { color: var(--ink); background: transparent; } }
 .tc-links button.tl { padding: 0; background: none; border: 0; font-size: 14px; cursor: pointer; }
 .tc-links a.btn { text-decoration: none; }
+.tc-more { display: flex; flex-wrap: wrap; justify-content: center; gap: 2px 22px; margin: 14px 0 0; font-size: 12px; }
+.tc-more a, .tc-more button { display: inline-flex; align-items: center; min-height: 28px; padding: 0; font: inherit; color: var(--mute); background: none; border: 0; text-decoration: none; cursor: pointer; transition: color .15s; }
+@media (hover: hover) { .tc-more a:hover, .tc-more button:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; } }
+.tc-more a:focus-visible, .tc-more button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; border-radius: 4px; }
 /* The other assets: a switch under the coin. The coin turns to the one picked, leans toward a pointer and turns over when pressed;
    each asset's story sits in the same grid cell, so a switch never moves what is below. */
 .tc-hand { transform-style: preserve-3d; transform: rotateX(var(--tx, 0deg)) rotateY(var(--ty, 0deg)); transition: transform .6s var(--ease); cursor: pointer; }
@@ -1128,7 +1134,7 @@ a.btn { text-decoration: none; white-space: nowrap; }
 .tp-pin.wide { width: 100%; padding: 12px; font-size: 14px; }
 .tp-out { width: 100%; margin-top: 8px; font: 400 12px/1.4 var(--mono); color: var(--ink); background: var(--field); border: 1px solid var(--hair); padding: 10px; }
 /* ── TAC's page (/tac/): this page drawn as TAC's own, the landing's sections out of the way while it shows ── */
-html[data-page="tac"] :is(.hero, #dash, #how, #tac, .sx.pi), html:not([data-page="tac"]) #sheet-tac { display: none; }
+html[data-page="tac"] :is(.hero, #dash, #how, #tac, .pg, .sx.pi), html:not([data-page="tac"]) #sheet-tac { display: none; }
 .tpg { max-width: 720px; margin: 0 auto; padding: 40px 0 8px; }
 .tpg-hero h1 { font: 400 clamp(52px, 9vw, 84px)/.96 var(--serif); letter-spacing: -.02em; margin: 0 0 18px; }
 .tpg-hero h1:focus { outline: none; }
@@ -1380,7 +1386,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   .wd-wl { left: 6px; right: 6px; }
   .hx-mode button { flex: 1; }
   .kept { padding: 12px 12px 10px; }
-  .tc-stage { height: 150px; }
+  .tc-stage { height: 150px; margin-bottom: 24px; }
   .tc-tilt { scale: .54; }
   .tc-shadow { width: 112px; bottom: 12px; }
   .tc-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; width: 100%; }
@@ -1389,7 +1395,8 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   .tc-as { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; width: 100%; max-width: 360px; margin-bottom: 26px; }
   .tc-as button { flex-direction: column; gap: 5px; padding: 4px 0 5px; font-size: clamp(14px, 4.4vw, 16px); }
   .tc-as .tk { width: 24px; height: 24px; }
-  .tc-pay { margin-top: 48px; }
+  .tc-pay { margin-top: 28px; }
+  .tc-pay h3 { font-size: 22px; }
 }
 /* six tabs on the narrowest phones: a little smaller, so Withdraw keeps clear of its neighbours */
 @media (max-width: 370px) { .hx-h button { font-size: 14.5px; letter-spacing: -.02em; } }
@@ -1705,7 +1712,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       </div></div></div>
       <div class="tc-shadow"></div>
     </div>
-    <p class="tc-idea">Assets born on Bitcoin or backed by it, private on Ethereum. Anyone can etch their own.</p>
+    <p class="tc-idea">Assets born on Bitcoin or backed by it, private on Ethereum. Anyone can <a href="/etch/">etch their own</a>.</p>
     <div class="tc-as" role="tablist" aria-label="Tacit’s assets">
       <button type="button" role="tab" id="tc-t-tac" aria-controls="tc-tac" aria-selected="true" data-tc="tac"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</button>
       <button type="button" role="tab" id="tc-t-teth" aria-controls="tc-teth" aria-selected="false" tabindex="-1" data-tc="teth"><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg>tETH</button>
@@ -1723,19 +1730,21 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       <div class="tc-pay" role="group" aria-labelledby="tp-h">
         <h3 id="tp-h">Buy it, farm it, borrow against it.</h3>
       </div>
-      <div class="tc-links"><button class="btn" type="button" data-hx="swap:ether:tac">Buy TAC</button><a class="tl" href="/trade/tac/">Price and chart →</a><a class="tl" href="/verify.html">Verify TAC →</a><a class="tl" href="https://github.com/src-company/tacit/blob/main/docs/TAC.md" rel="noopener">About TAC →</a><a class="tl" href="https://github.com/src-company/tacit/blob/main/SPEC.md" rel="noopener" title="Tacit’s spec for confidential tokens and peer-to-peer swaps on Bitcoin">The spec →</a></div>
+      <div class="tc-links"><button class="btn" type="button" data-hx="swap:ether:tac">Buy TAC</button><a class="tl" href="/trade/tac/">Price and chart →</a></div>
+      <p class="tc-more"><a href="/verify.html">Verify TAC</a><a href="https://github.com/src-company/tacit/blob/main/docs/TAC.md" rel="noopener">About TAC</a><a href="https://github.com/src-company/tacit/blob/main/SPEC.md" rel="noopener" title="Tacit’s spec for confidential tokens and peer-to-peer swaps on Bitcoin">The spec</a></p>
     </div>
     <div class="tc-set" id="tc-teth" role="tabpanel" aria-labelledby="tc-t-teth">
       <div class="sx-h"><h2 id="tc-h-teth">tETH is ETH that <em>earns privately, on either chain</em>.</h2></div>
       <dl class="tc-facts">
-        <div data-nums><dt>ETH private now</dt><dd class="num"><span data-num="tnow"><span class="sk" style="--w:3ch"></span></span></dd></div>
         <div><dt>with ETH, in and out</dt><dd>1 : 1</dd></div>
         <div><dt>chains it earns on</dt><dd>2</dd></div>
+        <div data-nums><dt>ETH private now</dt><dd class="num"><span data-num="tnow"><span class="sk" style="--w:3ch"></span></span></dd></div>
       </dl>
       <div class="tc-pay" role="group" aria-labelledby="tp-h-teth">
         <h3 id="tp-h-teth">Private yield, on Bitcoin and Ethereum.</h3>
       </div>
-      <div class="tc-links"><button class="btn" type="button" data-hx="shield:ether:defi">Shield ETH</button><a class="tl" href="/teth/">Price and pools →</a><a class="tl" href="/bridge/">Bridge →</a><button class="tl" type="button" data-asset="teth">About tETH →</button></div>
+      <div class="tc-links"><button class="btn" type="button" data-hx="shield:ether:defi">Shield ETH</button><a class="tl" href="/teth/">Price and pools →</a></div>
+      <p class="tc-more"><a href="/bridge/">Bridge</a><button type="button" data-asset="teth">About tETH</button></p>
     </div>
     <div class="tc-set" id="tc-cbtc" role="tabpanel" aria-labelledby="tc-t-cbtc">
       <div class="sx-h"><h2 id="tc-h-cbtc">cBTC is your bitcoin, <em>private on Ethereum</em>.</h2></div>
@@ -1747,7 +1756,8 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       <div class="tc-pay" role="group" aria-labelledby="tp-h-cbtc">
         <h3 id="tp-h-cbtc">Use bitcoin on Ethereum, without sending it.</h3>
       </div>
-      <div class="tc-links"><button class="btn" type="button" data-hx="borrow:cbtc">Lock BTC</button><a class="tl" href="/cbtc/">Price and backing →</a><a class="tl" href="/vault/#btc">Borrow page →</a><button class="tl" type="button" data-asset="cbtc">About cBTC →</button></div>
+      <div class="tc-links"><button class="btn" type="button" data-hx="borrow:cbtc">Lock BTC</button><a class="tl" href="/cbtc/">Price and backing →</a></div>
+      <p class="tc-more"><a href="/vault/#btc">Borrow page</a><button type="button" data-asset="cbtc">About cBTC</button></p>
     </div>
     <div class="tc-set" id="tc-cusd" role="tabpanel" aria-labelledby="tc-t-cusd">
       <div class="sx-h"><h2 id="tc-h-cusd">cUSD is a dollar, <em>backed by bitcoin</em>.</h2></div>
@@ -1759,7 +1769,8 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       <div class="tc-pay" role="group" aria-labelledby="tp-h-cusd">
         <h3 id="tp-h-cusd">Dollars from your bitcoin, privately.</h3>
       </div>
-      <div class="tc-links"><button class="btn" type="button" data-hx="borrow:cusd">Borrow cUSD</button><a class="tl" href="/vault/#btc">Borrow page →</a><a class="tl" href="/cbtc/">Loans and backing →</a><button class="tl" type="button" data-asset="cusd">About cUSD →</button></div>
+      <div class="tc-links"><button class="btn" type="button" data-hx="borrow:cusd">Borrow cUSD</button><a class="tl" href="/vault/#btc">Borrow page →</a></div>
+      <p class="tc-more"><a href="/cbtc/">Backing</a><button type="button" data-asset="cusd">About cUSD</button></p>
     </div>
     </div>
   </section>
