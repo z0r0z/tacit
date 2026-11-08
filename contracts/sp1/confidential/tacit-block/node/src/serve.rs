@@ -5,6 +5,8 @@
 //!
 //!   GET  /state                  height, state digest, note root, counts, queue position, chain binding
 //!   GET  /notes?from=N&limit=M   leaves and their memos from leaf N on (what a wallet scans)
+//!   GET  /pending-notes          the new notes of the payments this leader holds, before their block lands: { leaves, memos }, sorted by leaf
+//!                                (a wallet opens them with its key, as it does /notes, to show what is coming to it)
 //!   GET  /path/N                 the note root and the path of leaf N
 //!   GET  /spent/0x…              whether a nullifier has entered the tree
 //!   GET  /leaf/0x…               where a leaf is in the note tree (a spend landed once its notes are there)
@@ -705,6 +707,21 @@ impl Leader {
                     "leaves": self.node.leaves[from..to].iter().map(|l| hx(&blk::fr_be(l))).collect::<Vec<_>>(),
                     "memos": self.node.memos[from..to].iter().map(|m| hx(m)).collect::<Vec<_>>(),
                 }))
+            }
+            ("GET", "/pending-notes") => {
+                // the new notes of the payments held (shields, which wait on their deposits, are their shielder's own): one list sorted by
+                // leaf, as a block lists them, so it says no more of which spend made which than the block will
+                let mut out: Vec<([u8; 32], Vec<u8>)> = vec![];
+                for e in self.pending.iter().filter(|e| !e.shield()) {
+                    let Ok(p) = tacit_block_agg_publics(&e.spend.publics) else { continue };
+                    let sp = blk::Spend::from_publics(&p);
+                    let slots: Vec<usize> = (0..3).filter(|i| !bool::from(sp.out[*i].is_zero())).collect();
+                    for (i, m) in slots.iter().zip(&e.memos) {
+                        out.push((blk::fr_be(&sp.out[*i]), m.clone()));
+                    }
+                }
+                out.sort_by(|a, b| a.0.cmp(&b.0));
+                Ok(json!({ "leaves": out.iter().map(|(l, _)| hx(l)).collect::<Vec<_>>(), "memos": out.iter().map(|(_, m)| hx(m)).collect::<Vec<_>>() }))
             }
             ("GET", p) if p.starts_with("/path/") => {
                 let i: u64 = p[6..].parse().map_err(|_| bad("an index".into()))?;

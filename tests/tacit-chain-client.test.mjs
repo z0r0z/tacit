@@ -95,9 +95,13 @@ try {
   const payShares = sharesWorth(300n * T, r0);
   assert.equal(alice.balance(), sh.deposit.shares - payShares - poolShare(r0), 'a payment the leader holds reads as landed');
   assert.ok(alice.settling(), 'and it is settling');
+  const coming = await bob.incoming();
+  assert.ok(coming >= 300n * T - 2n && coming <= 300n * T + T / 1000n, `Bob sees the 300 TAC coming before the block lands (${coming})`);
+  assert.equal(await alice.incoming(), 0n, 'Alice\'s own change is not "incoming" to her');
   await assert.rejects(alice.pay(to, 1n * T), /settling/, 'a payment straight after it waits for its change');
   await Promise.all([p1, landBlock()]);
   assert.ok(!alice.settling(), 'landed: nothing settles');
+  assert.equal(await bob.incoming(), 0n, 'landed: nothing is incoming, it is Bob\'s');
   assert.equal(await alice.scan(), sh.deposit.shares - payShares - poolShare(r0));
   assert.equal(await bob.scan(), payShares);
   assert.ok(await bob.worth() >= 300n * T, 'bob holds at least what alice paid');

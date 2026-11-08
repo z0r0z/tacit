@@ -348,6 +348,19 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
     worth: async () => worthOf(balance(), await rate()),
     /// Whether a spend the leader holds is still to land (its change not spendable yet).
     settling: () => settling() > 0n || held().length > 0,
+    /// What is coming to this wallet in payments the leader holds, before their blocks land (spendable once they do), in units: the notes
+    /// GET /pending-notes lists that open with this wallet's key, at the chain's rate. Its own change is not among them (balance counts it);
+    /// 0 when nothing comes, or the leader lists none.
+    async incoming() {
+      await ready();
+      const r = await api('GET', '/pending-notes').catch(() => null);
+      if (!r?.ok || !Array.isArray(r.leaves) || !r.leaves.length || r.memos?.length !== r.leaves.length) return 0n;
+      const skip = new Set([...held().flatMap((e) => e.own || []).map((x) => leafKey(x.leaf)), ...st.notes.map((x) => leafKey(x.leaf))]);
+      const page = { leaves: r.leaves, memos: r.memos, next: r.leaves.length, total: r.leaves.length };
+      const got = await w.scan(me, { notes: async () => page, spent: async () => false }, { from: 0, known: [] });
+      const sh = got.notes.filter((x) => !skip.has(leafKey(x.leaf))).reduce((t, x) => t + BigInt(x.value), 0n);
+      return sh > 0n ? worthOf(sh, await rate()) : 0n;
+    },
     /// The spends handed over and not landed, oldest first (those that landed or whose notes went another way are dropped here).
     async pending() {
       await ready();
