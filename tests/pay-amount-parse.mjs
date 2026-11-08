@@ -1,4 +1,4 @@
-// The amount parsers of /pay, /pay/eth and /tac read a decimal comma as a decimal point, a thousands comma as nothing, and
+// The amount parsers of /pay, /pay/eth and TAC's Bitcoin pool (tac/pool.js, in TAC's home on the front page) read a decimal comma as a decimal point, a thousands comma as nothing, and
 // refuse a lone comma before three digits (1,500) rather than guess. The pages must agree.
 import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
@@ -12,7 +12,7 @@ const pull = (page, name) => {
 };
 const hub = eval(`(${pull('pay/index.html', 'parseAmount')})`);
 const eth = eval(`(${pull('pay/eth/index.html', 'parseUnits')})`);
-const tac = eval(`(${pull('tac/app.js', 'parseAmount')})`);
+const tac = eval(`(${pull('tac/pool.js', 'parseAmount')})`);
 
 // [text, decimals, wanted (null: not an amount)]
 const CASES = [
@@ -30,4 +30,4 @@ for (const [text, dec, want] of CASES) {
 // Eighteen decimals, as the ETH page uses them.
 assert.equal(hub('0,001', 18), 10n ** 15n);
 assert.equal(eth('0,001', 18), 10n ** 15n);
-console.log(`ok: ${CASES.length + 2} amounts parse the same on /pay, /pay/eth and /tac`);
+console.log(`ok: ${CASES.length + 2} amounts parse the same on /pay, /pay/eth and in TAC’s Bitcoin pool`);

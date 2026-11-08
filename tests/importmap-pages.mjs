@@ -8,12 +8,15 @@
 import { createRequire } from 'node:module';
 import http from 'node:http';
 import { createHash } from 'node:crypto';
-import { readFileSync, existsSync, statSync } from 'node:fs';
+import { readFileSync, existsSync, statSync, readdirSync } from 'node:fs';
 import { join, extname } from 'node:path';
 
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT || '/Users/z/zFi/node_modules/playwright-core');
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
-const PAGES = ['tac/index.html'];
+// every page that carries the block (the shielded-TAC page did until its pool moved to the front page, which is CSP-pinned and takes none)
+const PAGES = ['index.html', ...readdirSync(DAPP, { withFileTypes: true }).filter((d) => d.isDirectory()).flatMap((d) => [`${d.name}/index.html`, ...readdirSync(join(DAPP, d.name), { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => `${d.name}/${e.name}/index.html`)])]
+  .filter((rel) => existsSync(join(DAPP, rel)) && readFileSync(join(DAPP, rel), 'utf8').includes('<!-- importmap:begin -->'));
+if (!PAGES.length) { console.log('no page carries an import map'); process.exit(0); }
 const PORT = 29000 + Math.floor(Math.random() * 900);
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2', '.wasm': 'application/wasm' };
 let hits = new Map();

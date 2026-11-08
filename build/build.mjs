@@ -43,7 +43,8 @@ const PAY_HTML = join(DAPP_DIR, 'pay', 'index.html');         // tacit pay: BTC 
 const PAY_ETH_HTML = join(DAPP_DIR, 'pay', 'eth', 'index.html');   // tacit pay's private ETH, likewise (served at /pay/eth/ and /pay/wei/)
 const CEREMONY_HTML = join(DAPP_DIR, 'ceremony', 'index.html');     // the EVM pool's trusted-setup page: one classic inline script, CSP-hash-pinned
 const SECRET_SATS_HTML = join(DAPP_DIR, 'secret-sats', 'index.html'); // the lite paper's viewer, likewise
-const TACIT_V1_HTML = join(DAPP_DIR, 'tacit-v1', 'index.html');     // the whitepaper's viewer, likewise
+const TACIT_V1_HTML = join(DAPP_DIR, 'tacit-v1', 'index.html');
+const TAC_HTML = join(DAPP_DIR, 'tac', 'index.html');            // /tac/, which sends a link made for it on to TAC's home on the front page     // the whitepaper's viewer, likewise
 const OUT_DIR    = join(HERE, 'out');                        // build artifacts (gitignored)
 const BR_OUT     = join(OUT_DIR, 'tacit.js.br');             // brotli-q11 copy for the edge route
 
@@ -174,9 +175,9 @@ const SATS_CB_FILES = ['sats/join-worker.js', 'sats/mix.js', 'sats/secret.js', '
 const WELD_CB_FILES = ['btc-borrow.js', 'btcswap-page.js', 'walletconnect.js', 'evm-pool-sync-worker.js', 'holding-prove-worker.js', 'tac/sats.js', 'tac/claim.js', 'tac/pool.js', 'index.html', 'weld/stats/index.html'];
 // dapp/pay/ and dapp/pay/eth/ are built the same way as weld: one page each, every import in its inline module.
 const PAY_CB_FILES = ['private-route.js', 'pay/index.html', 'pay/eth/index.html'];
-// dapp/tac/ is TAC's Bitcoin pool: pool.js lazy-imports sats.js and claim.js, so those are hashed first, then pool.js, then app.js and the
-// page that loads it, same importer-last order as the sats page above.
-const TAC_CB_FILES = ['tac/sats.js', 'tac/claim.js', 'tac/pool.js', 'tac/app.js', 'tac/index.html'];
+// dapp/tac/ holds TAC's Bitcoin pool, which the front page draws in TAC's home: pool.js lazy-imports sats.js and claim.js, so those are
+// hashed first, then pool.js (and the front page, in the weld walk above). /tac/ itself only sends a link on to the front page.
+const TAC_CB_FILES = ['tac/sats.js', 'tac/claim.js', 'tac/pool.js'];
 // dapp/trade/ is the TAC trade page: its modules are hashed first (the venues module and the order book it imports are the shared ones the
 // front page uses, so their tokens come out the same), then app.js, then the page that loads it.
 const TRADE_CB_FILES = ['trade/tape.js', 'trade/chart.js', 'trade/book.js', 'trade/depth.js', 'trade/wallet.js', 'trade/sheet.js', 'trade/btc-session.js', 'trade/btc.js', 'trade/farm.js', 'trade/app.js', 'trade/index.html',
@@ -306,7 +307,7 @@ function pageCacheBust(files, write) {
 // A page whose script is a file (a CSP without inline script) has a `<!-- warm:begin --><!-- warm:end -->` block instead: the same links inside an inert
 // <template>, which the script clones into the head. The root of this group may be named by the page's own modules rather than by the page.
 // Generated here so it cannot go stale; --verify-only reports a block that no longer matches.
-const PRELOAD_PAGES = ['index.html', 'pay/index.html', 'pay/eth/index.html', 'trade/index.html', 'teth/index.html', 'cbtc/index.html', 'vault/index.html', 'tasks/index.html', 'splitter/index.html', 'relay/index.html', 'etch/index.html', 'assets/index.html', 'rewards/index.html', 'tac/index.html', 'bridge/index.html', 'discord/index.html', 'fast/index.html', 'prove/index.html', 'chain/index.html'];
+const PRELOAD_PAGES = ['index.html', 'pay/index.html', 'pay/eth/index.html', 'trade/index.html', 'teth/index.html', 'cbtc/index.html', 'vault/index.html', 'tasks/index.html', 'splitter/index.html', 'relay/index.html', 'etch/index.html', 'assets/index.html', 'rewards/index.html', 'bridge/index.html', 'discord/index.html', 'fast/index.html', 'prove/index.html', 'chain/index.html'];
 const STATIC_IMPORT = /(?:^|[\n;}])\s*(?:import|export)\s*(?:[^'"();]*?\sfrom\s*)?(['"])([^'"]+)\1/g;
 const WARM_BLOCK = /<!-- warm:begin -->[\s\S]*?<!-- warm:end -->/;
 const HEAD_BLOCK = /<!-- preload:begin -->[\s\S]*?<!-- preload:end -->/, LATER_BLOCK = /\/\/ preload-later:begin\n[\s\S]*?\/\/ preload-later:end/, INTENT_BLOCK = /\/\/ preload-intent:begin\n[\s\S]*?\/\/ preload-intent:end/;
@@ -478,6 +479,7 @@ const PINNED_PAGES = [
   { name: 'ceremony/index.html', file: CEREMONY_HTML, script: INLINE_CLASSIC, ...HASH_ONLY },
   { name: 'secret-sats/index.html', file: SECRET_SATS_HTML, script: INLINE_CLASSIC, ...HASH_ONLY },
   { name: 'tacit-v1/index.html', file: TACIT_V1_HTML, script: INLINE_CLASSIC, ...HASH_ONLY },
+  { name: 'tac/index.html', file: TAC_HTML, script: INLINE_CLASSIC, ...HASH_ONLY },
   // the token pools' admin page: one classic inline script, which sends what the owner presses from their wallet
   { name: 'admin/token-pools/index.html', file: join(DAPP_DIR, 'admin', 'token-pools', 'index.html'), script: INLINE_CLASSIC, ...HASH_ONLY },
   // the proof market's deploy page: one classic inline script, which sends the CreateX deployment the owner presses from their wallet
