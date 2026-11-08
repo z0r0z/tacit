@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-lJH2dMC8znuui80sGCl9f4JBBWaV+AZXQStKD4UWc60=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-2LBQtUZJfR74tILADF7EE3+L/DZNt3EWP3dVO8kv9+w=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -15805,7 +15805,7 @@ async function hxChainQuote(m, units) {
   if (hop) return { out: amt, go: 'Move to the private pool', warn: over, line,
     rc: over ? [] : [['Arrives', n('TAC, private'), '', 'In the private pool, to swap, farm and borrow with'], chainFeeRow(units ? q : null, 'the exit fee, 0.1% and at least 0.002 TAC'), ['Proof', 'on this device, about half a minute'], ['Chain sees', 'an amount going into the private pool, not whose']] };
   return { out: amt, go: 'Withdraw TAC', warn: over, line,
-    rc: over ? [] : [['Arrives', n(`TAC in ${your()}`)], chainFeeRow(units ? q : null, 'the exit fee, 0.1% and at least 0.002 TAC'), ['Proof', 'on this device, about half a minute'], ['Network fee', `paid by ${your()}, to send it out`], ['Chain sees', 'the address and the amount']] };
+    rc: over ? [] : [['Arrives', n(`TAC in ${your()}`)], chainFeeRow(units ? q : null, 'the exit fee, 0.1% and at least 0.002 TAC'), ['Proof', 'on this device, about half a minute'], ['Sent out', `by the leader once its block lands, no ETH from ${your()}`], ['Chain sees', 'the address and the amount']] };
 }
 // Private TAC onto the chain: the relay's unwrap fee comes out of what leaves the pool (a note of the amount, else one cut to it first), and the rest
 // is what the shield deposits, less the chain's fees
@@ -15864,11 +15864,14 @@ async function hxSendQuote(units) {
     rc: over || small ? [] : [['They get', `about ${show(units - claim)}`], ['Claim fee', show(claim), '', 'They claim the payment with their key; the relay that sends their claim takes this from what they get'],
       split ? [notes.some((n) => BigInt(n.value) >= units + split) ? 'Splits a note' : 'Combines notes', `${show(split)} first`] : null, ...hxSendSees()] };
 }
-// TAC paid on the tacit chain, proved on this device: the holders' pool share and the leader's fee on top
+// TAC paid on the tacit chain, proved on this device: the holders' pool share and the leader's fee on top. To an Ethereum address (or a name with no
+// Tacit address) it leaves the chain there: a withdrawal, its exit fee on top, which the leader pays out once its block lands.
 async function hxSendChainQuote(units) {
-  const held = chainHeld(), q = await chainQuote('pay', units).catch(() => null), most = q?.most ?? held, over = most != null && units > most;
+  const out = hxRcptKind() === 'eth', held = chainHeld(), q = await chainQuote(out ? 'withdraw' : 'pay', units).catch(() => null), most = q?.most ?? held, over = most != null && units > most;
   return { warn: over, line: over ? (held != null && units <= held && most > 0n ? `With its fees, up to ${fmt(most, 8, 4)} TAC.` : `You hold ${fmt(held ?? 0n, 8, 4)} TAC on the Tacit chain.`) : '',
-    rc: over ? [] : [['They get', `${fmt(units, 8, 4)} TAC on the Tacit chain`], chainFeeRow(q, 'a pool share, at least 0.002 TAC') || ['Fees', 'a pool share and the leader’s fee'], ['Proof', 'on this device, about half a minute'], ...hxSendSees()] };
+    rc: over ? [] : [['They get', `${fmt(units, 8, 4)} TAC ${out ? 'at that address, public' : 'on the Tacit chain'}`],
+      chainFeeRow(q, out ? 'the exit fee, 0.1% and at least 0.002 TAC' : 'a pool share, at least 0.002 TAC') || ['Fees', out ? 'the exit fee and the leader’s fee' : 'a pool share and the leader’s fee'],
+      ['Proof', 'on this device, about half a minute'], out ? ['Sent out', 'by the leader once its block lands, no ETH from you'] : null, ...hxSendSees()] };
 }
 // A private send of a note's exact amount to a Tacit address or a name, its lock proved while it stands (lockAhead), as the send forms do: to the recipient the check below read
 const hxLockAhead = (k = HX.send, units = hxUnits()) => {
@@ -16663,8 +16666,9 @@ const hxMoveChain = (key) => (key === 'ether>pay' ? hxChain().chainId : 1);
 // The most a move's Max puts in under the Tacit chain leader's cap on a shield, in the source's own decimals: the wallet's TAC (18), or private TAC
 // (8), whose relay fee comes out before the shield deposits; null when there is none
 async function hxCapOf(key) {
-  if ((key !== 'wtac>chain' && key !== 'tac>chain') || !chainOn() || !S.key) return null;
-  const cap = await chainCap();
+  if ((key !== 'wtac>chain' && key !== 'tac>chain') || !chainOn()) return null;
+  if (!CHAIN_SWEEP.at) await chainSweepFee().catch(() => {});
+  const cap = CHAIN_SWEEP.at ? CHAIN_SWEEP.cap : S.key ? await chainCap() : null;
   if (cap == null) return null;
   if (key === 'wtac>chain') return cap * E10;
   const t = await getUx(), fee = (u) => t.quoteOpFee('cTAC', 'sendunwrap').then((m) => t.quoteUnwrapFee(u, 'cTAC', { minFee: BigInt(m) }).fee);
@@ -18062,7 +18066,8 @@ async function chainShieldInbox(run, c, s, units, held, st, way = hxChainWay(), 
       hash = runTx(run, await sendTx({ to: ADDR.tac, data: 'a9059cbb' + addrWord(inbox) + word(units * E10), via, label: `Shield ${fmt(units, 8, 4)} TAC to the Tacit chain` }), 'Shield', 'Shielding');
       moved = true;
       say(st, html`Sent ${txLink(hash)}. Waiting for it to land…`);
-      await waitTx(hash);
+      try { await waitTx(hash); }
+      catch (e) { if (/reverted/i.test(errText(e))) { moved = false; throw chainSaid('Your transfer reverted on Ethereum, so nothing moved.'); } throw e; }
     }
     try { run.to?.clear?.(); } catch { }
     chainWaiting(st, html`${permit ? 'Signed' : html`Sent ${txLink(hash)}`}.`);
@@ -18119,6 +18124,16 @@ async function chainOutRun(run, st, units, { clear = null, after = hxMoveAfter }
       bar(); run.check();
       try { run.to?.clear?.(); } catch { }
       owed = await c.owed(who);
+      // already paid out (the leader can send it before this page reads it): read again a moment later, so a node behind is not taken for it
+      if (owed === 0n) { await new Promise((r) => setTimeout(r, 4000)); owed = await c.owed(who); }
+      if (owed === 0n) {
+        say(st, html`<span class="ok">Done.</span> ${fmt(units, 8, 4)} TAC is in ${your(via)}.`);
+        toast('Withdrawn from the Tacit chain');
+        hxWalletBals(true);
+        chainSettle((b) => held == null || b < held).catch(() => {});
+        after?.();
+        return;
+      }
       // the leader pays out what its blocks credit: wait for it (three minutes at most) before asking the wallet to send it
       if (owed > 0n) {
         say(st, 'Landed. The leader is sending it to your wallet…');
@@ -18128,6 +18143,7 @@ async function chainOutRun(run, st, units, { clear = null, after = hxMoveAfter }
           toast('Withdrawn from the Tacit chain');
           hxWalletBals(true);
           chainSettle((b) => held == null || b < held).catch(() => {});
+          after?.();
           return;
         }
       }
