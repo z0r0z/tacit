@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-ij7QexO8N2znha4VH2kGZkcc2IT2rLFrxqQcpjTJBvk=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-cjhz526EF1OTWz3EX5h++LgeBzAzVji7+rpv3iPFPEQ=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -9004,6 +9004,12 @@ function brMintedText(rec) {
   const tk = brTk(rec), plan = tk === 'TAC' ? brPlanOf(rec) : null;
   if (tk !== 'TAC') return html`Arrived in your private ${tk}.`;
   if (plan?.publicTo && plan.publicDone && !plan.publicNote) return html`Arrived, and made public TAC in ${short(plan.publicTo, 6)}.`;
+  if (plan?.chain && plan.chainDone) return html`Arrived, and moved to the Tacit chain.`;
+  if (plan?.chain && chainOn()) {
+    return (plan.chainTries || 0) >= 3
+      ? html`Arrived in your private TAC. Moving it to the Tacit chain did not go${plan.chainErr ? `: ${plan.chainErr}` : ''}. Move it from the tile.`
+      : html`Arrived in your private TAC. It is being moved to the Tacit chain for you, while this page is open with your wallet.`;
+  }
   if (plan?.publicNote === 'small') return html`Arrived in your private TAC. It is worth less than the relay’s fee to make public, so it stays private.`;
   if (plan?.publicNote === 'gone' && !brPrivateNote(rec)) return html`Arrived. Its private note is no longer in your balance: it was made public or sent on.`;
   if (plan?.publicTo && !plan.publicDone) {
@@ -9312,6 +9318,7 @@ async function brAutoBridge(pub, p) {
     if (cost.fee > Number(p.plan.auto.maxFee || 0)) return hold('fee');
     const rec = await brBegin(pub, { note: n, pf, cost });
     if (p.plan.publicTo) brPlanSet(pub, rec.id, { at: Date.now(), publicTo: p.plan.publicTo });
+    else if (p.plan.chain) brPlanSet(pub, rec.id, { at: Date.now(), chain: true });
     p.autoDone = true; p.autoHold = null;
     toast(`Bridging ${fmt(BigInt(n.amount), 8, 4)} TAC to Ethereum`);
     return true;
@@ -9566,9 +9573,14 @@ const brPublicTo = () => (S.key && S.address ? String(S.address) : null);
 function brOptsHtml(kinds, many = false) {
   const o = BR.opts, to = brPublicTo(), it = many ? 'them' : 'it', they = many ? 'they' : 'it', are = many ? 'are' : 'is', arrive = many ? 'arrive' : 'arrives';
   const box = (id, on, body) => html`<label class="pick"><input type="checkbox" id="${id}" data-bropt="${id.slice(3)}" ${on ? 'checked' : ''}><span>${body}</span></label>`;
-  return html`${kinds.includes('prepauto') ? box('br-prepauto', o.prepauto, html`Then bridge ${it} for me once ${they} ${are} ready. This page must be open with my wallet. <span id="br-prepcost"></span>`) : ''}${kinds.includes('selfburn') ? box('br-selfburn', o.selfburn, html`Send the burn for me once the move is ready. This page must be open with my wallet; if the miner’s rate more than doubles it waits for me.`) : ''}${kinds.includes('public') && to ? box('br-public', o.public && !BR.noPublic, html`Make ${it} public TAC when ${they} ${arrive}, in ${your()} (${short(to, 6)}). <span id="br-pubfee"></span>The ${many ? 'amounts' : 'amount'} and the address are then public on Ethereum.`) : ''}`;
+  return html`${kinds.includes('prepauto') ? box('br-prepauto', o.prepauto, html`Then bridge ${it} for me once ${they} ${are} ready. This page must be open with my wallet. <span id="br-prepcost"></span>`) : ''}${kinds.includes('selfburn') ? box('br-selfburn', o.selfburn, html`Send the burn for me once the move is ready. This page must be open with my wallet; if the miner’s rate more than doubles it waits for me.`) : ''}${kinds.includes('public') && to ? box('br-public', o.public && !BR.noPublic, html`Make ${it} public TAC when ${they} ${arrive}, in ${your()} (${short(to, 6)}). <span id="br-pubfee"></span>The ${many ? 'amounts' : 'amount'} and the address are then public on Ethereum.`) : ''}${kinds.includes('public') && chainOn() ? box('br-chain', o.chain, html`Move ${it} to the Tacit chain when ${they} ${arrive}, for fast private TAC payments. This page must be open with my wallet.`) : ''}`;
 }
-const brOptsWire = (root) => $$('[data-bropt]', root).forEach((x) => { x.onchange = () => { BR.opts[x.dataset.bropt] = x.checked; }; });
+// (public TAC and the Tacit chain are two ends for what arrives: one at a time)
+const brOptsWire = (root) => $$('[data-bropt]', root).forEach((x) => { x.onchange = () => {
+  BR.opts[x.dataset.bropt] = x.checked;
+  const other = { public: 'chain', chain: 'public' }[x.dataset.bropt], o = other && $(`#br-${other}`, root);
+  if (x.checked && o?.checked) { o.checked = false; BR.opts[other] = false; }
+}; });
 async function brPublicFee(amount) {
   try {
     const t = await getUx(), minFee = BigInt(await t.quoteOpFee('cTAC', 'sendunwrap')), fee = t.quoteUnwrapFee(BigInt(amount), 'cTAC', { minFee }).fee;
@@ -9584,11 +9596,11 @@ async function brPublicFee(amount) {
 async function brBridgeNow({ run, pub, r, recipient = null, plan = {}, amt = `${fmt(BigInt(r.note.amount), 8, 4)} TAC`, status, where, after }) {
   run.say(status, r.pf.path === 'reflected' ? 'Signing the burn and sending it to Bitcoin…' : 'Signing the move to its burn address and sending it to Bitcoin…');
   const rec = await brBegin(pub, r, recipient);
-  if (plan.burn || plan.publicTo) brPlanSet(pub, rec.id, plan);
+  if (plan.burn || plan.publicTo || plan.chain) brPlanSet(pub, rec.id, plan);
   BR.pick = null; BR.rv = null; BR.acked = null;
   const tx = rec.burn?.txid || rec.migrate?.revealTxid, sent = !/-signed$/.test(rec.stage);
   toast(sent ? `Bridging ${amt} to Ethereum` : `${amt}: signed, not yet sent`, !sent);
-  say(status, sent ? html`<span class="ok">✓ ${r.pf.path === 'reflected' ? 'Burn' : 'Move'} sent</span> ${tx ? html`<a href="${MEMPOOL}/tx/${tx}" target="_blank" rel="noopener">${short(tx, 6)} ↗</a>` : ''}. It shows ${where}${r.pf.path === 'reflected' ? `, and finishes on its own whenever this page is open with your wallet${plan.publicTo ? ', and ends as public TAC' : ''}`
+  say(status, sent ? html`<span class="ok">✓ ${r.pf.path === 'reflected' ? 'Burn' : 'Move'} sent</span> ${tx ? html`<a href="${MEMPOOL}/tx/${tx}" target="_blank" rel="noopener">${short(tx, 6)} ↗</a>` : ''}. It shows ${where}${r.pf.path === 'reflected' ? `, and finishes on its own whenever this page is open with your wallet${plan.publicTo ? ', and ends as public TAC' : plan.chain ? ', and ends on the Tacit chain' : ''}`
       : plan.burn ? `. This page sends the burn once the move is ready, usually in a few hours: keep it open, or open it again with your wallet${plan.publicTo ? '. It ends as public TAC' : ''}`
       : '. Its burn waits for your press once the move is ready, usually in a few hours: open this page with your wallet then'}.`
     : html`<span class="err">Signed, but Bitcoin did not take it yet. Try again from its row ${where}.</span>`);
@@ -9600,7 +9612,8 @@ function brPlanFrom(root, { burnMaxRate = null, autoMaxFee = null } = {}) {
   const plan = { at: Date.now() };
   if (burnMaxRate != null && on('#br-selfburn')) plan.burn = { maxRate: burnMaxRate };
   if (autoMaxFee != null && on('#br-prepauto')) plan.auto = { maxFee: autoMaxFee };
-  if (on('#br-public') && brPublicTo()) plan.publicTo = brPublicTo();
+  if (on('#br-chain') && chainOn()) plan.chain = true;
+  else if (on('#br-public') && brPublicTo()) plan.publicTo = brPublicTo();
   return plan;
 }
 const brBegin = (pub, r, recipient = null) => withKey((t) => beginBridge(t, { review: r, priv: walletPriv(), recipient }), pub);
@@ -9611,7 +9624,7 @@ async function brSend(run, n, amount, verb, plan = null) {
     run.say(status, split ? `Splitting ${amt} off…` : 'Sending it to your own address…');
     const { txid } = await toSelf(pub, TAC_BTC_ID, [n], amount);
     actBtc(txid, `${verb} ${amt}${split ? '' : ' to your own address'}`);
-    brPrepAdd(pub, { txid, amount: String(amount), at: Date.now(), ...(plan && (plan.auto || plan.publicTo) ? { plan } : {}) });
+    brPrepAdd(pub, { txid, amount: String(amount), at: Date.now(), ...(plan && (plan.auto || plan.publicTo || plan.chain) ? { plan } : {}) });
     BR.pick = null; BR.rv = null; BR.at = 0;
     say(status, html`<span class="ok">✓ ${split ? `${amt} split off to your own address` : `${amt} sent to your own address`}</span> <a href="${MEMPOOL}/tx/${txid}" target="_blank" rel="noopener">${short(txid, 6)} ↗</a>. ${plan?.auto ? 'It is bridged for you' : 'It can be bridged from here'} once it confirms and Bitcoin’s proof on Ethereum has seen it, usually within a few hours${plan?.auto ? ', while this page is open with your wallet' : ''}. It is listed under Getting ready, which says when it can go.`);
     dashSoon();
@@ -9885,6 +9898,11 @@ function brNews(pub, recs) {
 async function brPublishDue(pub) {
   const ux = await brUx();
   for (const [id, plan] of Object.entries(brPlans(pub))) {
+    if (plan.chain && S.key?.pubHex === pub) {
+      const rec = ux.list(pub).find((r) => r.id === id && r.stage === 'minted');
+      if (rec && await brChainDue(pub, rec, plan)) { BR.at = 0; rerender('tac'); dashSoon(); return; }
+      continue;
+    }
     if (!plan.publicTo || S.key?.pubHex !== pub) continue;
     const rec = ux.list(pub).find((r) => r.id === id && r.stage === 'minted');
     // A plan set aside because its note was not in the balance goes on once a scan has the note again.
@@ -9912,7 +9930,7 @@ async function brDiscover(pub, tab = false) {
     }
   } catch { } finally { brFinding = false; if (brLooking) { brLooking = null; rerender('tac'); } }
 }
-const brPublicPending = (pub) => Object.values(brPlans(pub)).some((p) => p.publicTo && !p.publicDone && (p.publicTries || 0) < 3);
+const brPublicPending = (pub) => Object.values(brPlans(pub)).some((p) => (p.publicTo && !p.publicDone && (p.publicTries || 0) < 3) || (p.chain && !p.chainDone && (p.chainTries || 0) < 3));
 // plans set aside as 'gone' in the last month, which brPublishDue takes up again if a scan has their note (it reads the last scan only)
 const brPublicRevivable = (pub) => Object.values(brPlans(pub)).some((p) => p.publicTo && p.publicNote === 'gone' && Date.now() - Number(p.publicDone || 0) < 30 * 86400e3);
 async function brPublish(pub, rec, plan) {
@@ -9943,6 +9961,37 @@ async function brPublish(pub, rec, plan) {
     return true;
   } catch (e) {
     save({ publicTries: (plan.publicTries || 0) + 1, publicErr: String(e?.message || e).slice(0, 200), publicRefused: relayRefused(e) });
+    return false;
+  } finally { endRun(run); BR.publishing = false; }
+}
+// A bridge from Bitcoin that is to arrive on the Tacit chain: once minted, its private note is moved onto the chain whole (chainInRun), while
+// this page is open with the wallet. A move that does not go is tried again ten minutes on, three times at most; the TAC stays private meanwhile.
+async function brChainDue(pub, rec, plan) {
+  if (!chainOn() || BR.publishing || S.key?.pubHex !== pub || plan.chainDone || (plan.chainTries || 0) >= 3 || Date.now() - Number(plan.chainAt || 0) < 10 * 60e3) return false;
+  BR.publishing = true;
+  const save = (patch) => { Object.assign(plan, patch); brPlanSet(pub, rec.id, plan); };
+  const run = newRun('tac');
+  let failed = null;
+  try {
+    const ux = await brUx(), leaf = ux.destLeaf(rec);
+    if (!leaf) { save({ chainTries: 3, chainErr: 'its private note is not in your balance' }); return false; }
+    const tried = !!plan.chainAt;
+    save({ chainAt: Date.now() });
+    const scan = await scanPrivate(true);
+    const note = freeNotes(scan?.tac?.notes).find((n) => String(n.leaf || '').toLowerCase() === leaf);
+    // gone after a move began: it left the private pool for its inbox, and its shield (kept here, held by the leader) goes on by itself
+    if (!note) { if (tried) save({ chainDone: Date.now(), chainErr: null }); return false; }
+    const amt = `${fmt(BigInt(note.value), 8, 2)} TAC`;
+    run.take(kNote(note));
+    run.go({ label: `Moving ${amt} from Bitcoin to the Tacit chain`, one: false, status: () => $('#tac-bal-status') });
+    run.fail = (_, e) => { failed = e; };
+    await chainInRun(run, $('#tac-bal-status') || document.createElement('p'), BigInt(note.value), null, note);
+    if (failed) throw failed;
+    save({ chainDone: Date.now(), chainErr: null });
+    toast(`${amt} from Bitcoin is on the Tacit chain`);
+    return true;
+  } catch (e) {
+    save({ chainTries: (plan.chainTries || 0) + 1, chainErr: errText(e).slice(0, 200) });
     return false;
   } finally { endRun(run); BR.publishing = false; }
 }
@@ -15271,7 +15320,7 @@ function hxRcptCheck() {
   // a name sent Bitcoin is read here too, so where it points is shown before the press; the other Bitcoin forms say what they are
   const btcName = hxSendBtc() && /\.(eth|wei|gwei)$/i.test(raw), pool = hxSendWallet() || !!hxPayP();
   // an Ethereum address, its two ends under the field to check against the one meant (a phone's field cuts it)
-  if (/^0x[0-9a-fA-F]{40}$/.test(raw) && !HX.ask && !hxSendBtc()) return show(false, html`<span class="mono">${short(raw, 8)}</span>`);
+  if (/^0x[0-9a-fA-F]{40}$/.test(raw) && !HX.ask && !hxSendBtc()) return show(false, HX.send === 'ctac' ? html`<span class="mono">${short(raw, 8)}</span> · leaves the Tacit chain there as public TAC: the address and amount are seen, not who sent it` : html`<span class="mono">${short(raw, 8)}</span>`);
   if (!raw || HX.ask || (hxSendBtc() && !btcName) || hxRcptKind()) return;
   if (HX.send === 'ctac') return hxRcptChain(raw, full, show);
   hxRcT = setTimeout(() => {
@@ -17349,6 +17398,18 @@ async function hxChainOutGo(units) {
         bar(); run.check();
         try { run.to?.clear?.(); } catch { }
         owed = await c.owed(who);
+        // the leader pays out what its blocks credit: wait for it (three minutes at most) before asking the wallet to send it
+        if (owed > 0n) {
+          say(st, 'Landed. The leader is sending it to your wallet…');
+          for (let i = 0; i < 36 && owed > 0n; i++) { await new Promise((r) => setTimeout(r, 5000)); owed = await c.owed(who); }
+          if (owed === 0n) {
+            say(st, html`<span class="ok">Done.</span> ${fmt(units, 8, 4)} TAC is in ${your(via)}.`);
+            toast('Withdrawn from the Tacit chain');
+            hxWalletBals(true);
+            await chainSettle((b) => held == null || b < held);
+            return;
+          }
+        }
       }
       say(st, `${fmt(owed, 18, 4)} TAC is ready to send to ${your(via)}. Confirm it there…`);
       const hash = runTx(run, await sendTx({ to: CH.cfg.blocks, data: c.withdrawCalldata(who), via, label: `Withdraw ${fmt(owed, 18, 4)} TAC from the Tacit chain` }), 'Withdraw', 'Withdrawing');
@@ -17373,6 +17434,22 @@ async function hxChainPayGo(units, raw) {
     run.go({ label: `Send ${fmt(units, 8, 4)} TAC on the Tacit chain`, status: () => HX.ss, clear: hxSendClear });
     let bar = () => {};
     try {
+      // an Ethereum address: the TAC leaves the chain for it, and the leader pays it out there once its block lands (no transaction of the payer's)
+      if (/^0x[0-9a-fA-F]{40}$/.test(raw)) {
+        const c = await chainClient(), held = await chainScan(true), most = (await c.quote('withdraw', units).catch(() => null))?.most;
+        if (held != null && units > held) throw chainSaid(`You hold ${fmt(held, 8, 4)} TAC on the Tacit chain.`);
+        if (most != null && units > most) throw chainSaid(`With its fees, you can send up to ${fmt(most, 8, 4)} TAC now.`);
+        say(st, 'Proving it on this device…'); bar = proveBar(st, CHAIN_PROVE_S);
+        const slow = chainSlow(st);
+        await c.withdraw(raw, units, { onStatus: (x) => { if (x.status === 'queued') { bar(); say(st, 'Proved. Waiting for the Tacit chain to take it in…'); } slow(x); } });
+        bar();
+        say(st, html`<span class="ok">Sent.</span> ${fmt(units, 8, 4)} TAC left the Tacit chain for <span class="mono">${short(raw, 8)}</span>; the leader pays it out there.`);
+        toast('Sent from the Tacit chain');
+        hxSendClear();
+        await chainSettle((b) => held == null || b < held);
+        hxSendAfter();
+        return;
+      }
       const lane = chainLaneIn(raw);
       if (!lane) throw chainSaid('This Tacit address has no Tacit chain lane, so it cannot be paid there yet.');
       const c = await chainClient(), held = await chainScan(true), most = (await c.quote('pay', units).catch(() => null))?.most;
@@ -17406,81 +17483,86 @@ async function hxChainInGo(units) {
   SWC.card?.working?.(true);
   return busy(go, async (run) => {
     run.go({ label: `Move ${fmt(units, 8, 4)} TAC to the Tacit chain`, status: () => st, clear: () => SWC.card?.clear?.() });
-    let bar = () => {}, c = null, t = null, priv = null, s = null, kept = null, index = null, inbox = null, back = null, amount = 0n, paid = false, unwrapping = false;
-    // whether the inbox holds the deposit (or was taken in already)
-    const isPaid = async () => { const x = inbox ? await c.inboxState(inbox).catch(() => null) : null; return !!x && (x.swept || x.held >= amount * E10); };
-    try {
-      [c, t] = await Promise.all([chainClient(), getUx()]);
-      priv = walletPriv();
-      // over the leader's cap, refused before a note is cut or anything is proved (what the shield deposits is the amount less the relay's fee)
-      const cap = await chainCap().catch(() => null), feeOf = async (whole) => t.quoteUnwrapFee(units, 'cTAC', { minFee: BigInt(await t.quoteOpFee('cTAC', whole ? 'unwrap' : 'sendunwrap')) }).fee;
-      if (cap != null && units - await feeOf(freeNotes(P.scan?.tac?.notes).some((x) => BigInt(x.value) === units)) > cap) throw chainSaid(chainCapLine(cap));
-      const note = await noteFor(run, t, priv, units, (n) => BigInt(n.value) >= units, st, 'tac');
-      const whole = BigInt(note.value) === units;
-      for (let tries = 0; ; tries++) {
-        const fee = await feeOf(whole);
-        if (cap != null && units - fee > cap) throw chainSaid(chainCapLine(cap));
-        if (!tries && shown != null && fee > shown) throw Object.assign(chainSaid(`The relay fee is now ${fmt(fee, 8, 4)} TAC, up from ${fmt(shown, 8, 4)}. Check it and press again.`), { feeMoved: true });
-        if (units <= fee) throw chainSaid(`Move more than ${fmt(fee, 8, 4)} TAC: the relay fee comes out of it.`);
-        amount = units - fee;
-        say(st, 'Proving it on this device…'); bar = proveBar(st, CHAIN_PROVE_S);
-        s = await c.shield(amount);
-        bar(); run.check();
-        index ??= await t.nextWrapIndex({ walletPriv: priv, ticker: 'TAC' });
-        back = t.buildWrap({ walletPriv: priv, amountWei: (amount * E10).toString(), ticker: 'TAC', index }).commit;
-        inbox = await s.inbox(back);
-        say(st, 'Handing it to the Tacit chain…');
-        kept = (await s.offer({ back, meta: { inbox, pay: { units: String(units), fee: String(fee), note: kNote(note), index, until: Date.now() + 80 * 60e3 } } })).kept;
-        run.check();
-        say(st, 'The relay is moving it out of the private pool…');
-        // the fee pinned (no percentage on top, no raise): what it pays out is units less exactly `fee`
-        const feeOpts = { feeBps: 0, minFee: fee }, waitOpts = { timeoutMs: 20 * 60e3 };
-        unwrapping = true;
-        try {
-          await (whole ? t.unwrap({ note, walletPriv: priv, recipient: inbox, feeOpts, wait: true, waitOpts }) : t.sendUnwrap({ note, walletPriv: priv, recipient: inbox, amount: units, feeOpts, waitOpts }));
-          break;
-        } catch (e) {
-          if (await isPaid()) break;
-          if (!/fee below the current floor/i.test(String(e?.message || '')) || tries >= 2) throw e;
-          unwrapping = false;
-          await c.forget(kept.id); kept = null;
-          say(st, 'The relay’s fee moved. Reading it again…');
-        }
-      }
-      // the relay's word is in: the inbox is read until it shows the deposit (a node can be a block behind)
-      for (let i = 0; i < 20 && !(paid = await isPaid()); i++) await sleep(3000);
-      if (!paid) throw chainSaid('The relay says it moved, but it does not show yet.');
-      try { run.to?.clear?.(); } catch { }
-      say(st, 'Out of the private pool. Waiting for the Tacit chain to take it in…');
-      const was = CH.bal ?? 0n;
-      await s.submit({ back, onStatus: chainSlow(st) });
-      t.releaseWrapIndex?.({ walletPriv: priv, ticker: 'TAC', index });           // (in, it has no way back to keep)
-      say(st, html`<span class="ok">Moved.</span> About ${fmt(amount - (s.fee ?? 0n), 8, 4)} TAC is on the Tacit chain.`);
-      toast('Moved to the Tacit chain');
-      Promise.allSettled([scanPrivate(true), loadTacHoldings(true)]).then(() => hxMoveAfter());
-      chainClient().then(chainKeptRead).catch(() => {});
-      await chainSettle((b) => b > was);
-      hxMoveAfter();
-    } catch (e) {
-      bar();
-      if (e?.feeMoved) { HX.q = null; hxQuote(); }
-      if (paid || (unwrapping && await isPaid())) {
-        // out of the pool already: the spend is kept here and held by the leader, and handed over again now
-        if (kept) c.resubmit(kept).then(() => { chainKeptRead(c); chainScan(true); }, () => chainKeptRead(c));
-        run.fail(st, chainSaid(`Out of the private pool, not on the Tacit chain yet (${errText(e).replace(/\.$/, '')}). It is kept here and goes on by itself.`));
-      } else if (unwrapping && !relayRefused(e) && !jobSaid(e)) {
-        // with the relay still: its unwrap may yet pay the inbox (until its deadline), and the leader holds the shield for it
-        run.fail(st, chainSaid(`Still with the relay (${errText(e).replace(/\.$/, '')}). If it goes through, it goes on to the Tacit chain by itself.`));
-      } else {
-        // nothing left the pool: what was kept for it goes (one the leader refused is kept as it is refused), and so does its way back
-        const k = kept || e?.kept;
-        if (k) await c?.forget(k.id).catch(() => {});
-        if (index != null) t?.releaseWrapIndex?.({ walletPriv: priv, ticker: 'TAC', index });
-        run.fail(st, e?.kept && !unwrapping ? chainSaid(`${errText(e).replace(/\.$/, '')}. Nothing was moved.`) : e);
-      }
-      chainClient().then(chainKeptRead).catch(() => {});
-    }
+    await chainInRun(run, st, units, shown);
   }).finally(() => SWC.card?.working?.(false));
+}
+// The move itself, for the tile's press or for a bridge from Bitcoin that arrives on the Tacit chain (brChainDue): `given`, a private note moved
+// whole, or else one cut here for `units`. Its say()s go to `st`, and its failure to `run.fail`.
+async function chainInRun(run, st, units, shown = null, given = null) {
+  let bar = () => {}, c = null, t = null, priv = null, s = null, kept = null, index = null, inbox = null, back = null, amount = 0n, paid = false, unwrapping = false;
+  // whether the inbox holds the deposit (or was taken in already)
+  const isPaid = async () => { const x = inbox ? await c.inboxState(inbox).catch(() => null) : null; return !!x && (x.swept || x.held >= amount * E10); };
+  try {
+    [c, t] = await Promise.all([chainClient(), getUx()]);
+    priv = walletPriv();
+    // over the leader's cap, refused before a note is cut or anything is proved (what the shield deposits is the amount less the relay's fee)
+    const cap = await chainCap().catch(() => null), feeOf = async (whole) => t.quoteUnwrapFee(units, 'cTAC', { minFee: BigInt(await t.quoteOpFee('cTAC', whole ? 'unwrap' : 'sendunwrap')) }).fee;
+    if (cap != null && units - await feeOf(freeNotes(P.scan?.tac?.notes).some((x) => BigInt(x.value) === units)) > cap) throw chainSaid(chainCapLine(cap));
+    const note = given || await noteFor(run, t, priv, units, (n) => BigInt(n.value) >= units, st, 'tac');
+    const whole = BigInt(note.value) === units;
+    for (let tries = 0; ; tries++) {
+      const fee = await feeOf(whole);
+      if (cap != null && units - fee > cap) throw chainSaid(chainCapLine(cap));
+      if (!tries && shown != null && fee > shown) throw Object.assign(chainSaid(`The relay fee is now ${fmt(fee, 8, 4)} TAC, up from ${fmt(shown, 8, 4)}. Check it and press again.`), { feeMoved: true });
+      if (units <= fee) throw chainSaid(`Move more than ${fmt(fee, 8, 4)} TAC: the relay fee comes out of it.`);
+      amount = units - fee;
+      say(st, 'Proving it on this device…'); bar = proveBar(st, CHAIN_PROVE_S);
+      s = await c.shield(amount);
+      bar(); run.check();
+      index ??= await t.nextWrapIndex({ walletPriv: priv, ticker: 'TAC' });
+      back = t.buildWrap({ walletPriv: priv, amountWei: (amount * E10).toString(), ticker: 'TAC', index }).commit;
+      inbox = await s.inbox(back);
+      say(st, 'Handing it to the Tacit chain…');
+      kept = (await s.offer({ back, meta: { inbox, pay: { units: String(units), fee: String(fee), note: kNote(note), index, until: Date.now() + 80 * 60e3 } } })).kept;
+      run.check();
+      say(st, 'The relay is moving it out of the private pool…');
+      // the fee pinned (no percentage on top, no raise): what it pays out is units less exactly `fee`
+      const feeOpts = { feeBps: 0, minFee: fee }, waitOpts = { timeoutMs: 20 * 60e3 };
+      unwrapping = true;
+      try {
+        await (whole ? t.unwrap({ note, walletPriv: priv, recipient: inbox, feeOpts, wait: true, waitOpts }) : t.sendUnwrap({ note, walletPriv: priv, recipient: inbox, amount: units, feeOpts, waitOpts }));
+        break;
+      } catch (e) {
+        if (await isPaid()) break;
+        if (!/fee below the current floor/i.test(String(e?.message || '')) || tries >= 2) throw e;
+        unwrapping = false;
+        await c.forget(kept.id); kept = null;
+        say(st, 'The relay’s fee moved. Reading it again…');
+      }
+    }
+    // the relay's word is in: the inbox is read until it shows the deposit (a node can be a block behind)
+    for (let i = 0; i < 20 && !(paid = await isPaid()); i++) await sleep(3000);
+    if (!paid) throw chainSaid('The relay says it moved, but it does not show yet.');
+    try { run.to?.clear?.(); } catch { }
+    say(st, 'Out of the private pool. Waiting for the Tacit chain to take it in…');
+    const was = CH.bal ?? 0n;
+    await s.submit({ back, onStatus: chainSlow(st) });
+    t.releaseWrapIndex?.({ walletPriv: priv, ticker: 'TAC', index });           // (in, it has no way back to keep)
+    say(st, html`<span class="ok">Moved.</span> About ${fmt(amount - (s.fee ?? 0n), 8, 4)} TAC is on the Tacit chain.`);
+    toast('Moved to the Tacit chain');
+    Promise.allSettled([scanPrivate(true), loadTacHoldings(true)]).then(() => hxMoveAfter());
+    chainClient().then(chainKeptRead).catch(() => {});
+    await chainSettle((b) => b > was);
+    hxMoveAfter();
+  } catch (e) {
+    bar();
+    if (e?.feeMoved) { HX.q = null; hxQuote(); }
+    if (paid || (unwrapping && await isPaid())) {
+      // out of the pool already: the spend is kept here and held by the leader, and handed over again now
+      if (kept) c.resubmit(kept).then(() => { chainKeptRead(c); chainScan(true); }, () => chainKeptRead(c));
+      run.fail(st, chainSaid(`Out of the private pool, not on the Tacit chain yet (${errText(e).replace(/\.$/, '')}). It is kept here and goes on by itself.`));
+    } else if (unwrapping && !relayRefused(e) && !jobSaid(e)) {
+      // with the relay still: its unwrap may yet pay the inbox (until its deadline), and the leader holds the shield for it
+      run.fail(st, chainSaid(`Still with the relay (${errText(e).replace(/\.$/, '')}). If it goes through, it goes on to the Tacit chain by itself.`));
+    } else {
+      // nothing left the pool: what was kept for it goes (one the leader refused is kept as it is refused), and so does its way back
+      const k = kept || e?.kept;
+      if (k) await c?.forget(k.id).catch(() => {});
+      if (index != null) t?.releaseWrapIndex?.({ walletPriv: priv, ticker: 'TAC', index });
+      run.fail(st, e?.kept && !unwrapping ? chainSaid(`${errText(e).replace(/\.$/, '')}. Nothing was moved.`) : e);
+    }
+    chainClient().then(chainKeptRead).catch(() => {});
+  }
 }
 // Chain TAC into the private pool: a hop of exactly the amount to a fresh wrap commitment of this key's (made as a wrap's: the pool takes a deposit
 // for a commitment once, keyed by its amount, and its own scan finds this one as it finds a wrap's), proved here. Once it lands the leader sends it on
@@ -17527,7 +17609,8 @@ async function hxChainHopGo(units) {
       await proveOr({ run, types: ['wrap'], offer: false, quiet: true, label, sheet: 'tac', status: () => st,
         go: (y) => t.submitWrapSettle({ built: w, waitOpts: y.waitOpts, selfSettle: y.selfSettle }),
         relayed: () => t.submitWrapSettle({ built: w, waitOpts: run.wait(null, 15 * 60e3, { deps: [kDep(w)] }), depositTx: p?.txHash || null }) });
-      say(st, html`<span class="ok">Moved.</span> ${fmt(units, 8, 4)} TAC is private.`);
+      // on to Bitcoin from here: the Bridge tab's To Bitcoin with this amount (its own review, then the burn)
+      say(st, html`<span class="ok">Moved.</span> ${fmt(units, 8, 4)} TAC is private. <a href="#" data-hx="bridge:tac" data-amt="${plain(units, 8)}">Send it on to Bitcoin</a>`);
       toast('Moved to the private pool');
       await Promise.allSettled([scanPrivate(true), loadTacHoldings(true)]);
       chainClient().then(chainKeptRead).catch(() => {});
@@ -18719,7 +18802,7 @@ loadTacPrice().catch(() => {});
 if ('IntersectionObserver' in window) { const io = new IntersectionObserver((es) => { for (const e of es) e.target.classList.toggle('rest', !e.isIntersecting); }); for (const el of $$('.tape, .wd, .tc-stage')) io.observe(el); }
 document.addEventListener('click', (e) => {
   const h = e.target.closest?.('[data-hx]');
-  if (h) { e.preventDefault(); hxPreset(h.dataset.hx); return; }
+  if (h) { e.preventDefault(); hxPreset(h.dataset.hx, h.dataset.amt || ''); return; }
   const ht = e.target.closest?.('[data-hint]');
   if (ht) { e.preventDefault(); hintGo(ht.dataset.hint); return; }
   const sc = e.target.closest?.('[data-scroll]');

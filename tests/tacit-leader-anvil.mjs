@@ -67,7 +67,8 @@ async function main() {
   send(TAC, 'approve(address,uint256)', [blocks, '100000000000000000000000']);
   const deposit = (d) => send(blocks, 'deposit(uint256,uint256,bytes32,bytes32,bytes32)', [String(d.shares), String(d.amount), d.cx, d.cy, d.body]);
 
-  const leaderEnv = { ...process.env, RPC_URL: RPC, BLOCKS: blocks, FROM_BLOCK: String(fromBlock), LEADER_KEY: LEADER.key, NODE_ADDR: NODE, PROVER: 'stub', MIN_SPENDS: '1', MAX_WAIT_SECS: '1', POLL_SECS: '1', ARCHIVE_DIR: join(dir, 'archive'), TACIT_NODE_ADMIN: 'test-admin-token' };
+  // a block's spends all arrive before the leader builds (it builds 4 s after the first, or at once for a forced entry), so each block is the fixture's
+  const leaderEnv = { ...process.env, RPC_URL: RPC, BLOCKS: blocks, FROM_BLOCK: String(fromBlock), LEADER_KEY: LEADER.key, NODE_ADDR: NODE, PROVER: 'stub', MIN_SPENDS: '99', MAX_WAIT_SECS: '4', POLL_SECS: '1', ARCHIVE_DIR: join(dir, 'archive'), TACIT_NODE_ADMIN: 'test-admin-token' };
   const leader = spawn('node', [join(ROOT, 'tacit-leader/leader.mjs')], { env: leaderEnv, stdio: ['ignore', 'pipe', 'inherit'] });
   procs.push(leader);
   const leaderLog = [];

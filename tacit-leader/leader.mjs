@@ -139,11 +139,23 @@ async function logs(address, topics, from, to) {
 
 /// Reads the blocks that landed since the last look and replays them into the node, and the forced queue's entries.
 async function sync() {
-  // two blocks behind the head: a public RPC answers from several nodes, and one a block behind refuses logs up to another's head
-  const head = num(await rpc.call('eth_blockNumber')) - 2;
+  let head = num(await rpc.call('eth_blockNumber'));
   if (head <= syncedTo) return;
-  for (const lg of await logs(BLOCKS, [T_FORCED], syncedTo + 1, head)) forced.set(num(lg.topics[1]), decode(['bytes'], bytesOf(lg.data))[0]);
-  for (const lg of await logs(BLOCKS, [T_LANDED], syncedTo + 1, head)) {
+  // up to the head; a public RPC answers from several nodes, and one a block behind refuses logs up to another's head, so the read steps back a
+  // block at a time (three at most) and what was read is what counts as synced
+  let forcedLogs, landedLogs;
+  for (let back = 0; ; back++) {
+    try {
+      forcedLogs = await logs(BLOCKS, [T_FORCED], syncedTo + 1, head);
+      landedLogs = await logs(BLOCKS, [T_LANDED], syncedTo + 1, head);
+      break;
+    } catch (e) {
+      if (back >= 3 || head - 1 <= syncedTo || !/beyond current head|block range/i.test(String(e?.message || e))) throw e;
+      head -= 1;
+    }
+  }
+  for (const lg of forcedLogs) forced.set(num(lg.topics[1]), decode(['bytes'], bytesOf(lg.data))[0]);
+  for (const lg of landedLogs) {
     const height = num(lg.topics[1]);
     if (height <= nodeHeight) continue;
     const tx = await rpc.call('eth_getTransactionByHash', [lg.transactionHash]);
@@ -365,6 +377,19 @@ async function step() {
       const r = await send(rpc, KEY, BLOCKS, new Uint8Array([...selector('sendHops(uint256[],bytes32[])'), ...encode(['uint256[]', 'bytes32[]'], [values, commits])]), { chainId });
       log({ hopsSent: values.length, tx: r.transactionHash });
     } catch (e) { log({ hopsFailed: String(e.message || e) }); }
+  }
+  // exits landed are paid out to their addresses (TacitBlocks.withdraw, which anyone may send): a holder needs no ETH to withdraw, and a payment to
+  // an address is not tied to any wallet of the payer's by a transaction of its own. Each item is asset ‖ amount ‖ address, 96 bytes.
+  // (PAY_OUT_EXITS=0 leaves them for the holders to send)
+  const exitBytes = env.PAY_OUT_EXITS === '0' ? new Uint8Array() : bytesOf(l.exits), tos = new Set();
+  for (let i = 0; i + 96 <= exitBytes.length; i += 96) tos.add(hexOf(exitBytes.subarray(i + 76, i + 96)));
+  for (const to of tos) {
+    try {
+      const [owedTo] = await view('owed(address)', ['uint256'], [to]);
+      if (!(BigInt(owedTo) > 0n)) continue;                               // already paid out (anyone may)
+      const r = await send(rpc, KEY, BLOCKS, new Uint8Array([...selector('withdraw(address)'), ...encode(['address'], [to])]), { chainId });
+      log({ paidOut: to, tx: r.transactionHash });
+    } catch (e) { log({ payOutFailed: to, error: String(e.message || e) }); }
   }
 }
 
