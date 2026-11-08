@@ -170,12 +170,13 @@ function updateCacheBust(htmlBytes, appJsBytes, prebootBytes) {
 const SATS_CB_FILES = ['sats/join-worker.js', 'sats/mix.js', 'sats/secret.js', 'sats/eth.js', 'sats/app.js', 'sats/index.html'];
 // The front page (dapp/index.html) and weld's stats and keeper pages each keep their imports in their inline module, so their tokens are rewritten before
 // those modules' CSP hashes are taken (updatePinnedCsp below).
-const WELD_CB_FILES = ['btc-borrow.js', 'btcswap-page.js', 'walletconnect.js', 'evm-pool-sync-worker.js', 'holding-prove-worker.js', 'index.html', 'weld/stats/index.html'];
+// (TAC's Bitcoin pool, tac/pool.js and what it loads, is hashed before the front page that loads it)
+const WELD_CB_FILES = ['btc-borrow.js', 'btcswap-page.js', 'walletconnect.js', 'evm-pool-sync-worker.js', 'holding-prove-worker.js', 'tac/sats.js', 'tac/claim.js', 'tac/pool.js', 'index.html', 'weld/stats/index.html'];
 // dapp/pay/ and dapp/pay/eth/ are built the same way as weld: one page each, every import in its inline module.
 const PAY_CB_FILES = ['private-route.js', 'pay/index.html', 'pay/eth/index.html'];
-// dapp/tac/ is the shielded-TAC page: app.js lazy-imports sats.js, so sats.js is hashed first and the page
-// that loads app.js last, same importer-last order as the sats page above.
-const TAC_CB_FILES = ['tac/sats.js', 'tac/claim.js', 'tac/app.js', 'tac/index.html'];
+// dapp/tac/ is TAC's Bitcoin pool: pool.js lazy-imports sats.js and claim.js, so those are hashed first, then pool.js, then app.js and the
+// page that loads it, same importer-last order as the sats page above.
+const TAC_CB_FILES = ['tac/sats.js', 'tac/claim.js', 'tac/pool.js', 'tac/app.js', 'tac/index.html'];
 // dapp/trade/ is the TAC trade page: its modules are hashed first (the venues module and the order book it imports are the shared ones the
 // front page uses, so their tokens come out the same), then app.js, then the page that loads it.
 const TRADE_CB_FILES = ['trade/tape.js', 'trade/chart.js', 'trade/book.js', 'trade/depth.js', 'trade/wallet.js', 'trade/sheet.js', 'trade/btc-session.js', 'trade/btc.js', 'trade/farm.js', 'trade/app.js', 'trade/index.html',

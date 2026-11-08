@@ -58,7 +58,7 @@ const svg = (k) => `<svg viewBox="0 0 24 24"${FILLED.has(k) ? ' class="fill"' : 
 // the network's own pages
 const MAIN = [['assets', '/assets/', 'Assets'], ['rewards', '/rewards/', 'Rewards'], ['prove', '/prove/', 'Prove']];
 const MORE = [
-  [['pay', '/pay/', 'Pay'], ['borrow', '/vault/', 'Borrow'], ['bridge', '/bridge/', 'Bridges'], ['tac', '/tac/', 'Shielded TAC'], ['chain', '/chain/', 'Tacit chain'], ['etch', '/etch/', 'Etch'], ['tasks', '/tasks/', 'Tasks']],
+  [['pay', '/pay/', 'Pay'], ['borrow', '/vault/', 'Borrow'], ['bridge', '/bridge/', 'Bridges'], ['tac', '/#tac', 'TAC'], ['chain', '/chain/', 'Tacit chain'], ['etch', '/etch/', 'Etch'], ['tasks', '/tasks/', 'Tasks']],
   [['stats', '/weld/stats/', 'Stats'], ['build', '/build/', 'Build'], ['classic', '/classic.html', 'Classic app']],
 ];
 

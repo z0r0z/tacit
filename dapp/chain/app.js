@@ -7,8 +7,8 @@ import { mountChain } from '/chain/ui.js?cb=94364e10';
 const cfg = tacitChain();
 const $ = (id) => document.getElementById(id);
 const S = { on: !!cfg, status: null, key: null, note: '' };
-// the wallet is the front page's: one sign-in, there
-const signIn = () => { location.href = '/#wallet'; };
+// the wallet is the front page's: one sign-in, in TAC's home there, which shows the chain's TAC beside every other place TAC can be
+const signIn = () => { location.href = '/#tac'; };
 const ui = mountChain({ root: $('chain'), actions: { signIn } });
 const draw = () => ui.render({ ...S, now: Date.now() });
 draw();
