@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-JO2g9RbMOxSA8uJUGGCwodp3tDwXIRLXociTFot7A5c=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-mA0WYyzeAVET6xlM+Oo5mZWw34nFT3FGegNuuX8qWoM=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -66,7 +66,7 @@
 <link rel="modulepreload" href="/bridge-tick.js?cb=4e721860">
 <link rel="modulepreload" href="/tacit-session.js?cb=a2d34bb2">
 <link rel="modulepreload" href="/activity.js?cb=8ccbc552">
-<link rel="modulepreload" href="/swap/card.js?cb=a26758c1">
+<link rel="modulepreload" href="/swap/card.js?cb=3cb707a3">
 <link rel="modulepreload" href="/trade/wallet.js?cb=88b623b8">
 <link rel="modulepreload" href="/trade/util.js?cb=ba5a02b1">
 <link rel="modulepreload" href="/trade/rpc.js">
@@ -17478,6 +17478,18 @@ function chainKeptPaint() {
 // The offer under a chain move the leader refused, did not answer or has not landed yet
 const chainOffer = (st, kept, lead) => say(st, html`${lead ? html`<span class="err">${lead}</span> ` : ''}<button class="link" type="button" data-chainforce="${kept.id}">Post it to Ethereum yourself</button>. The chain must take it within ${CH.delay || 'an hour'}.`);
 const chainSlow = (st) => ({ status, kept }) => { if (status === 'slow' && kept) chainOffer(st, kept, 'Not landed yet.'); };
+// What a chain move waits on once handed over, with how long it has waited: the next block takes it in, usually within about a minute (proved on a
+// GPU in about 35 s, then landed). The count stops as soon as the line says anything else.
+function chainWaiting(st, lead) {
+  if (!st) return;
+  const t0 = Date.now(), mark = String(t0);
+  const paint = () => {
+    const sec = Math.floor((Date.now() - t0) / 1000);
+    say(st, html`<span data-cw="${mark}">${lead} <span class="ok">✓</span> In the next Tacit chain block, usually within about a minute · <span class="num">${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}</span></span>`);
+  };
+  paint();
+  const iv = setInterval(() => { if (!st.isConnected || !st.querySelector?.(`[data-cw="${mark}"]`)) return clearInterval(iv); paint(); }, 1000);
+}
 const chainFailed = (st, e) => { if (!e?.kept) return false; chainOffer(st, e.kept, `${errText(e).replace(/\.$/, '')}.`); e.offered = true; chainScan(true).then(() => chainClient()).then(chainKeptRead).catch(() => {}); return true; };
 // A kept spend posted to TacitBlocks' forced queue from the user's account (a shield's from the account that made its deposit)
 async function chainForce(b) {
@@ -17702,7 +17714,7 @@ async function hxChainShieldGo(units) {
         await waitTx(hash);
         CH.held = { units, s, hash, who };
       }
-      say(st, html`Deposited${hash ? html` ${txLink(hash)}` : ''}. Waiting for the Tacit chain to take it in…`);
+      chainWaiting(st, html`Deposited${hash ? html` ${txLink(hash)}` : ''}.`);
       const was = CH.bal ?? 0n, fee = s.fee ?? 0n;
       await s.submit({ from: who, tx: hash || undefined, onStatus: chainSlow(st) });
       CH.held = null;
@@ -17712,7 +17724,7 @@ async function hxChainShieldGo(units) {
       dashSoon();
       chainClient().then(chainKeptRead).catch(() => {});
       // the shares bought are worth the deposit less the leader's fee and the little margin a shield leaves for the rate to rise (it stays with the holders)
-      await chainSettle((b) => b >= was + (units - fee) * 9990n / 10000n);
+      chainSettle((b) => b > was).catch(() => {});
       hxMoveAfter();
     } catch (e) {
       bar();
@@ -17781,7 +17793,7 @@ async function chainShieldInbox(run, c, s, units, held, st) {
       await waitTx(hash);
     }
     try { run.to?.clear?.(); } catch { }
-    say(st, html`${permit ? 'Signed' : html`Sent ${txLink(hash)}`}. Waiting for the Tacit chain to take it in…`);
+    chainWaiting(st, html`${permit ? 'Signed' : html`Sent ${txLink(hash)}`}.`);
     const was = CH.bal ?? 0n, fee = s.fee ?? 0n;
     await s.submit({ back, ...(permit ? { permit } : {}), tx: hash || undefined, onStatus: chainSlow(st) });
     t.releaseWrapIndex?.({ walletPriv: priv, ticker: 'TAC', index });           // (in, it has no way back to keep)
@@ -17790,8 +17802,7 @@ async function chainShieldInbox(run, c, s, units, held, st) {
     hxWalletBals(true);
     dashSoon();
     chainClient().then(chainKeptRead).catch(() => {});
-    await chainSettle((b) => b >= was + (units - fee) * 9990n / 10000n);
-    hxMoveAfter();
+    chainSettle((b) => b > was).then(() => hxMoveAfter(), () => {});
     return true;
   } catch (e) {
     if (moved) {
@@ -17829,7 +17840,7 @@ async function hxChainOutGo(units) {
         if (most != null && units > most) throw chainSaid(`With its fees, you can withdraw up to ${fmt(most, 8, 4)} TAC now.`);
         say(st, 'Proving it on this device…'); bar = proveBar(st, CHAIN_PROVE_S);
         const slow = chainSlow(st);
-        await c.withdraw(who, units, { onStatus: (x) => { if (x.status === 'queued') { bar(); say(st, 'Proved. Waiting for the Tacit chain to take it in…'); } slow(x); } });
+        await c.withdraw(who, units, { onStatus: (x) => { if (x.status === 'queued') { bar(); chainWaiting(st, 'Proved.'); } slow(x); } });
         bar(); run.check();
         try { run.to?.clear?.(); } catch { }
         owed = await c.owed(who);
@@ -17841,7 +17852,7 @@ async function hxChainOutGo(units) {
             say(st, html`<span class="ok">Done.</span> ${fmt(units, 8, 4)} TAC is in ${your(via)}.`);
             toast('Withdrawn from the Tacit chain');
             hxWalletBals(true);
-            await chainSettle((b) => held == null || b < held);
+            chainSettle((b) => held == null || b < held).catch(() => {});
             return;
           }
         }
@@ -17853,7 +17864,7 @@ async function hxChainOutGo(units) {
       say(st, html`<span class="ok">Done.</span> ${fmt(owed, 18, 4)} TAC is in ${your(via)}. ${txLink(hash)}`);
       toast('Withdrawn from the Tacit chain');
       hxWalletBals(true);
-      await chainSettle((b) => held == null || b < held);
+      chainSettle((b) => held == null || b < held).catch(() => {});
       hxMoveAfter();
     } catch (e) {
       bar();
@@ -17876,12 +17887,12 @@ async function hxChainPayGo(units, raw) {
         if (most != null && units > most) throw chainSaid(`With its fees, you can send up to ${fmt(most, 8, 4)} TAC now.`);
         say(st, 'Proving it on this device…'); bar = proveBar(st, CHAIN_PROVE_S);
         const slow = chainSlow(st);
-        await c.withdraw(raw, units, { onStatus: (x) => { if (x.status === 'queued') { bar(); say(st, 'Proved. Waiting for the Tacit chain to take it in…'); } slow(x); } });
+        await c.withdraw(raw, units, { onStatus: (x) => { if (x.status === 'queued') { bar(); chainWaiting(st, 'Proved.'); } slow(x); } });
         bar();
         say(st, html`<span class="ok">Sent.</span> ${fmt(units, 8, 4)} TAC left the Tacit chain for <span class="mono">${short(raw, 8)}</span>; the leader pays it out there.`);
         toast('Sent from the Tacit chain');
         hxSendClear();
-        await chainSettle((b) => held == null || b < held);
+        chainSettle((b) => held == null || b < held).catch(() => {});
         hxSendAfter();
         return;
       }
@@ -17894,12 +17905,12 @@ async function hxChainPayGo(units, raw) {
       const to = await c.resolve(lane).catch(() => { throw chainSaid('The Tacit chain does not know this address yet. They open their Tacit wallet once, then it can be paid.'); });
       say(st, 'Proving it on this device…'); bar = proveBar(st, CHAIN_PROVE_S);
       const slow = chainSlow(st);
-      await c.pay(to, units, { onStatus: (x) => { if (x.status === 'queued') { bar(); say(st, 'Proved. Waiting for the Tacit chain to take it in…'); } slow(x); } });
+      await c.pay(to, units, { onStatus: (x) => { if (x.status === 'queued') { bar(); chainWaiting(st, 'Proved.'); } slow(x); } });
       bar();
       say(st, html`<span class="ok">Sent.</span> ${fmt(units, 8, 4)} TAC on the Tacit chain.`);
       toast('Sent on the Tacit chain');
       hxSendClear();
-      await chainSettle((b) => held == null || b < held);
+      chainSettle((b) => held == null || b < held).catch(() => {});
       hxSendAfter();
     } catch (e) { bar(); chainFailed(st, e); run.fail(st, e); }
   });
@@ -17969,7 +17980,7 @@ async function chainInRun(run, st, units, shown = null, given = null) {
     for (let i = 0; i < 20 && !(paid = await isPaid()); i++) await sleep(3000);
     if (!paid) throw chainSaid('The relay says it moved, but it does not show yet.');
     try { run.to?.clear?.(); } catch { }
-    say(st, 'Out of the private pool. Waiting for the Tacit chain to take it in…');
+    chainWaiting(st, 'Out of the private pool.');
     const was = CH.bal ?? 0n;
     await s.submit({ back, onStatus: chainSlow(st) });
     t.releaseWrapIndex?.({ walletPriv: priv, ticker: 'TAC', index });           // (in, it has no way back to keep)
@@ -17977,8 +17988,7 @@ async function chainInRun(run, st, units, shown = null, given = null) {
     toast('Moved to the Tacit chain');
     Promise.allSettled([scanPrivate(true), loadTacHoldings(true)]).then(() => hxMoveAfter());
     chainClient().then(chainKeptRead).catch(() => {});
-    await chainSettle((b) => b > was);
-    hxMoveAfter();
+    chainSettle((b) => b > was).then(() => hxMoveAfter(), () => {});
   } catch (e) {
     bar();
     if (e?.feeMoved) { HX.q = null; hxQuote(); }
@@ -18024,7 +18034,7 @@ async function hxChainHopGo(units) {
       say(st, 'Proving it on this device…'); bar = proveBar(st, CHAIN_PROVE_S);
       const slow = chainSlow(st);
       try {
-        await c.hop(w.commit, units, { onStatus: (x) => { if (x.status === 'queued') { bar(); say(st, 'Proved. Waiting for the Tacit chain to take it in…'); } slow(x); } });
+        await c.hop(w.commit, units, { onStatus: (x) => { if (x.status === 'queued') { bar(); chainWaiting(st, 'Proved.'); } slow(x); } });
       } catch (e) { if (!e?.kept) t.releaseWrapIndex?.({ walletPriv: priv, ticker: 'TAC', index }); throw e; }
       bar(); hopped = true; run.check();
       try { run.to?.clear?.(); } catch { }
@@ -18611,7 +18621,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=a26758c1').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=3cb707a3').catch((e) => { SWC.p = null; throw e; }));
 // the card held to the tab's flow; back on the Swap tab it opens on the swap it showed there
 function swcFlow() {
   hxPathPaint();

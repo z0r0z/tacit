@@ -2847,7 +2847,7 @@ let pkSide = null;
 let PKAT = null;                      // the place a picker was opened at (a corner's mark): its coins are scrolled to, again if the list is drawn again
 function rowBal(side, key) {
   const m = ATK.exec(key), a = m ? m[1] : 'wallet', k = m ? m[2] : key, t = shownAt(k, a);
-  const bal = side === 'pay' && moving() ? H.moves?.held?.(k, a) ?? (a === 'wallet' ? S.bal[k] : null) : a === 'wallet' ? S.bal[k] : a === 'defi' ? privBal(k) : null;
+  const bal = side === 'pay' && moving() ? H.moves?.held?.(k, a) ?? (a === 'wallet' ? S.bal[k] : null) : a === 'wallet' ? S.bal[k] : a === 'defi' ? privBal(k) : a === 'chain' ? H.moves?.held?.(k, a) ?? null : null;
   return bal ? esc(amtFmt(bal, t?.dec ?? 18)) : side === 'pay' && moving() && H.moves?.loading?.(k, a) ? '<span class="pk-rd" aria-label="reading">…</span>' : '';
 }
 // the open picker's balances drawn again (the page read them while it was open)
