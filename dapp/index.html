@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-vbIEXoMk/CHyyLIyofvjJgrX4LUuBXZzMFam+rnB+1k=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-QoZROxfs1aE61pvjeN3ag06GRga1l0Es4h+EmzdLMgk=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -65,7 +65,7 @@
 <link rel="modulepreload" href="/bridge-tick.js?cb=4e721860">
 <link rel="modulepreload" href="/tacit-session.js?cb=a2d34bb2">
 <link rel="modulepreload" href="/activity.js?cb=8ccbc552">
-<link rel="modulepreload" href="/swap/card.js?cb=75253b2f">
+<link rel="modulepreload" href="/swap/card.js?cb=34d53e44">
 <link rel="modulepreload" href="/trade/wallet.js?cb=88b623b8">
 <link rel="modulepreload" href="/trade/util.js?cb=ba5a02b1">
 <link rel="modulepreload" href="/trade/rpc.js">
@@ -14572,7 +14572,9 @@ const HX_WAY = {
   'btc>eth': { t: 'On Ethereum', p: 'swap · farm · send', ic: 'tac', u: 'TAC', mode: 'btc', dir: 'in', pr: 'on Ethereum', rev: 'tac>btc' },
   'btc>pool': { t: 'On Bitcoin', p: 'shielded · sells for sats', ic: 'tac', u: 'TAC', mode: 'btcpool', pr: 'on Bitcoin' },
   'wtac>defi': { t: 'Private TAC', p: 'send · swap · farm', ic: 'tac', u: 'TAC', mode: 'tacwrap', pr: 'private', same: true, rev: 'tac>wallet' },
-  'wtac>pay': { t: 'For payments', p: 'pay anyone · proved on device', ic: 'tac', u: 'TAC', mode: 'paytac', pr: 'on Ethereum', same: true },
+  // (TAC's private payments are the Tacit chain's while it is on, so its holders are one anonymity set: no new TAC goes into the Pay pool then;
+  // TAC already there still goes out)
+  'wtac>pay': { t: 'For payments', p: 'pay anyone · proved on device', ic: 'tac', u: 'TAC', mode: 'paytac', pr: 'on Ethereum', same: true, offChain: true },
   'wusdc>pay': { t: 'For payments', p: 'pay anyone · proved on device', ic: 'usdc', u: 'USDC', mode: 'paytok', pr: 'on Ethereum', same: true },
   'wusdt>pay': { t: 'For payments', p: 'pay anyone · proved on device', ic: 'usdt', u: 'USDT', mode: 'paytok', pr: 'on Ethereum', same: true },
   'eth>wallet': { t: 'Back to ETH', p: 'to your wallet, one for one', ic: 'eth', u: 'ETH', mode: 'unwrap', pr: 'in your wallet', rev: 'ether>defi' },
@@ -14600,7 +14602,7 @@ const HX_WAY = {
   'ctac>defi': { t: 'Private pool', p: 'swap · farm · borrow', ic: 'tac', u: 'TAC', mode: 'chainhop', pr: 'private', chain: true, rev: 'tac>chain' },
 };
 function hxWays(sf) {
-  return HX_SH[sf].ways.filter((w) => { const x = HX_WAY[`${sf}>${w}`]; return (!x.gate || xoOn(XA[x.gate])) && !(x.eth && HX.chain !== 1) && !(x.chain && !chainOn()); });
+  return HX_SH[sf].ways.filter((w) => { const x = HX_WAY[`${sf}>${w}`]; return (!x.gate || xoOn(XA[x.gate])) && !(x.eth && HX.chain !== 1) && !(x.chain && !chainOn()) && !(x.offChain && chainOn()); });
 }
 const hxSources = () => Object.keys(HX_SH).filter((k) => hxWays(k).length);
 // The Bridge tab: what crosses between Bitcoin and Ethereum, named by where it starts. Each source has one way over (the Shield way that
@@ -15914,6 +15916,8 @@ const hxMoves = {
   setChain: (id) => { if (DEVICE_CHAINS.some((c) => c.chainId === id)) { HX.chain = id; hxRemember(); } },
   // the tacit chain's place on the card, while the chain is on and a key is open
   onChain: () => chainOn() && !!S.key,
+  // the chain is live (with a key or not): TAC's payments are its, not the Pay pool's
+  chainLive: () => chainOn(),
 };
 // A first visit with nothing in the wallet and tETH held privately opens on taking it back out: Shield turns to Withdraw, until the card is
 // touched. (The Swap tab keeps the pair it showed.)
@@ -18024,7 +18028,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=75253b2f').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=34d53e44').catch((e) => { SWC.p = null; throw e; }));
 // the card held to the tab's flow; back on the Swap tab it opens on the swap it showed there
 function swcFlow() {
   hxPathPaint();

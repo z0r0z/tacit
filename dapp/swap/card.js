@@ -345,7 +345,9 @@ function coinAt(k, at) {
   return isEth(k) || k === 'teth' ? 'teth' : lc(R.TAC);
 }
 // what a place offers a side: the Pay pool takes ETH and TAC and pays ETH out; Bitcoin holds TAC and tETH
-const placeCoins = (side, at) => (at === 'chain' ? (onChain() ? [lc(R.TAC)] : []) : at === 'pay' ? PAY_COINS : at === 'btc' ? [lc(R.TAC), 'teth'] : at === 'defi' ? POOL_COINS : [lc(R.ZERO), lc(R.TAC)]);
+// (TAC goes into the Pay pool no more while the Tacit chain is live: its private payments are the chain's; TAC already there still comes out)
+const chainLive = () => !!H.moves?.chainLive?.();
+const placeCoins = (side, at) => (at === 'chain' ? (onChain() ? [lc(R.TAC)] : []) : at === 'pay' ? (side === 'get' && chainLive() ? PAY_COINS.filter((k) => k !== lc(R.TAC)) : PAY_COINS) : at === 'btc' ? [lc(R.TAC), 'teth'] : at === 'defi' ? POOL_COINS : [lc(R.ZERO), lc(R.TAC)]);
 function setAt(side, at) {
   S.at[side] = at === 'pay' || at === 'btc' || at === 'chain' ? at : null;
   if (side === 'pay') S.inP = at === 'defi';
@@ -386,8 +388,10 @@ function homesHtml() {
   const pa = atOf('pay'), eth = isEth(S.get) || S.get === 'teth', tac = S.get === lc(R.TAC);
   if (!eth && !tac) return '';
   const dk = eth ? 'teth' : lc(R.TAC), pk = eth ? lc(R.ZERO) : lc(R.TAC);
-  if (!pairOk(S.pay, pa, dk, 'defi') || !pairOk(S.pay, pa, pk, 'pay')) return '';
   const ch = tac && pairOk(S.pay, pa, lc(R.TAC), 'chain');
+  // TAC's places while the chain is live: the DeFi pool and the chain (its payments are the chain's, not the Pay pool's)
+  const noPay = tac && chainLive();
+  if (!pairOk(S.pay, pa, dk, 'defi') || (!noPay && !pairOk(S.pay, pa, pk, 'pay')) || (noPay && !ch)) return '';
   // the Pay pool row names where it pays (ETH's on each chain it has, TAC's on Ethereum); the chain itself is picked under the rows
   const at = atOf('get'), cs = eth ? H.moves.chains?.() || [] : [], where = cs.length > 1 ? chainMarks(cs) : 'Ethereum';
   // what each home earns in TAC points for ETH from the wallet (a wrap into the DeFi pool, a deposit into the Pay pool): for the amount typed,
@@ -398,9 +402,9 @@ function homesHtml() {
   const open = HOMES_OPEN || ch;
   const row = (home, t, sub, icon, act) => `<button type="button" role="radio" class="c${open ? '' : ' one'}" data-home="${home}" aria-checked="${String(at === home)}" tabindex="${at === home ? 0 : -1}"><svg class="tk" aria-hidden="true"><use href="#tk-${icon}"/></svg><span class="rt"><b>${t}</b><small>${sub}</small></span>${cue(act)}${open ? '<span class="rd" aria-hidden="true"></span>' : ''}</button>`;
   // the chosen home alone, with a way to change it, until the choice is opened
-  const defi = row('defi', 'Swap, farm, borrow', 'DeFi pool', eth ? 'teth' : 'tac', 'wrap'), pay = row('pay', 'Pay anyone', `Pay pool · ${where}`, eth ? 'peth' : 'tac', 'dev');
+  const defi = row('defi', 'Swap, farm, borrow', 'DeFi pool', eth ? 'teth' : 'tac', 'wrap'), pay = noPay ? '' : row('pay', 'Pay anyone', `Pay pool · ${where}`, eth ? 'peth' : 'tac', 'dev');
   const chain = ch ? row('chain', 'Fast private TAC', 'Tacit chain · quick sends, about a cent each', 'tac', null) : '';
-  if (!open) return `<div class="rows-h"><span>Use it to</span><span class="chg" aria-hidden="true">Change</span></div>${at === 'pay' ? pay : at === 'chain' ? chain : defi}`;
+  if (!open) return `<div class="rows-h"><span>Use it to</span><span class="chg" aria-hidden="true">Change</span></div>${at === 'pay' && pay ? pay : at === 'chain' ? chain : defi}`;
   return `<div class="rows-h"${HOMES_OPEN ? '' : ' data-open="1"'}><span>Use it to</span></div>${defi}${chain}${pay}`;
 }
 // Withdraw from the Tacit chain: to the wallet, or into the private pool, chosen as a home is
