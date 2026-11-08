@@ -977,6 +977,17 @@ async function recordCrossBlock(env, { jobId, attestedTo, txHash, eth }) {
 const TACIT_BLOCKS = '0x00000000000a9147ffd8d41d152d730ca5f84e6c', TACIT_BLOCKS_FROM = 26366005;
 const T_TACIT_LANDED = '0x' + bytesToHex(keccak_256(new TextEncoder().encode('Landed(uint256,bytes32,bytes32,address)')));
 const ROLLUP_KEEP = 60;
+// The pool and shares a landed block left (public word 18 of its land call: pool ‖ shares, 64 bits each, in units of 1e-8 TAC), from its
+// transaction's input: what the share price, (pool + 1e8) / (shares + 1e8), was after it. Null for a call that is not a land.
+const TACIT_LAND_SEL = '0x' + bytesToHex(keccak_256(new TextEncoder().encode('land(bytes,bytes,(bytes,bytes,bytes32[],bytes32[],bytes,bytes,bytes,bytes,bytes,bytes,bytes))'))).slice(0, 8);
+function tacitPoolSharesOf(input) {
+  const h = String(input || '').replace(/^0x/, '');
+  if ('0x' + h.slice(0, 8) !== TACIT_LAND_SEL) return null;
+  const args = h.slice(8), off = Number(BigInt('0x' + args.slice(0, 64))) * 2, len = Number(BigInt('0x' + args.slice(off, off + 64)));
+  if (len < 19 * 32) return null;
+  const w = BigInt('0x' + args.slice(off + 64 + 18 * 64, off + 64 + 19 * 64)), m = (1n << 64n) - 1n;
+  return { pool: String((w >> 64n) & m), shares: String(w & m) };
+}
 let _rollupAt = 0;
 async function rollupBlocks(env) {
   const kv = env.REGISTRY_KV;
@@ -1001,6 +1012,16 @@ async function rollupBlocks(env) {
         await kv.put('tc:recent', JSON.stringify(st));
         break;
       } catch { /* the next node */ }
+    }
+    // each block's pool and shares, read once from its land call (eight a pass at most, so a long gap fills over several)
+    const missing = st.list.filter((x) => x.pool == null).slice(0, 8);
+    if (missing.length) {
+      for (const x of missing) {
+        for (const rpc of ETH_LOG_NODES.slice(0, 3)) {
+          try { const ps = tacitPoolSharesOf((await _ethRpcOrThrow(rpc, 'eth_getTransactionByHash', [x.tx]))?.input); if (ps) Object.assign(x, ps); break; } catch { /* the next node */ }
+        }
+      }
+      if (missing.some((x) => x.pool != null)) await kv.put('tc:recent', JSON.stringify(st));
     }
   }
   return st.list.slice(-20).reverse();
