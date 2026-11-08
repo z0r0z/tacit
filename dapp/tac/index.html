@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-BlAomd7ij/fk/v2Kl1r0iyYBbQEmh+bJ9SFbTN9QVhI=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-VgDkpMu6qJ/aKpSdZE7xlmCTchIIJLd1cf+ncHMt5zM=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -34,12 +34,13 @@
 <meta name="theme-color" content="#E8E0CC" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#15130E" media="(prefers-color-scheme: dark)">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-<!-- preload-roots: /storage-fallback.js /vendor/tacit-deps.min.js /prf-wallet.js /tacit-wallet-known.js /tacit-address.js /bip352.js /evm-wallet.js /walletconnect.js /evm-account.js /evm-tx.js /tac-airdrop.js /evm-trade-venues.js /confidential-payout.js /address-id.js /wallet-balances.js /trade/farm-read.js /bridge-all.js /lp-zap.js /farm-ops.js /relay-outcome.js /btc-borrow.js /bridge-out.js /bridge/track.js /bridge-in.js /bridge-tick.js /tacit-session.js /activity.js /swap/card.js | | /confidential-pool-ux.js /confidential-deployments.js -->
+<!-- preload-roots: /storage-fallback.js /vendor/tacit-deps.min.js /prf-wallet.js /tacit-wallet-known.js /tab-key.js /tacit-address.js /bip352.js /evm-wallet.js /walletconnect.js /evm-account.js /evm-tx.js /tac-airdrop.js /evm-trade-venues.js /confidential-payout.js /address-id.js /wallet-balances.js /trade/farm-read.js /bridge-all.js /lp-zap.js /farm-ops.js /relay-outcome.js /btc-borrow.js /bridge-out.js /bridge/track.js /bridge-in.js /bridge-tick.js /tacit-session.js /activity.js /swap/card.js | | /confidential-pool-ux.js /confidential-deployments.js -->
 <!-- preload:begin -->
 <link rel="modulepreload" href="/storage-fallback.js">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="/prf-wallet.js">
 <link rel="modulepreload" href="/tacit-wallet-known.js?cb=ed4c75b7">
+<link rel="modulepreload" href="/tab-key.js?cb=a4c25d0e">
 <link rel="modulepreload" href="/tacit-address.js">
 <link rel="modulepreload" href="/bip352.js">
 <link rel="modulepreload" href="/evm-wallet.js?cb=c487004a">
@@ -345,6 +346,15 @@ a.di { color: inherit; text-decoration: none; }
 .newsl { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 6px 18px; margin: 0 0 20px; }
 .newsl .news { margin: 0; }
 .newsl.below { margin: 26px 0 0; }
+.chl { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 4px 18px; min-height: 22px; margin: 22px 0 0; font-size: 13px; color: var(--mute); text-align: center; }
+.chl[hidden] { display: none; }
+.chl a { color: inherit; text-decoration: none; }
+.chl-s { display: inline-flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 2px 10px; }
+.chl-s b { font-weight: 500; color: var(--ink); }
+.chl .dot { width: 6px; height: 6px; }
+.chl a.chl-go { font-weight: 500; color: var(--ink); }
+.chl-s:hover b, .chl a.chl-go:hover { text-decoration: underline; text-underline-offset: 3px; }
+@media (max-width: 560px) { .chl { min-height: 44px; align-content: flex-start; } .chl .w { display: none; } }
 /* the line goes when its one chip does: once the airdrop closes, or signed in, where the Airdrop card in Your Tacit already shows it */
 .newsl.below:not(:has(> .news:not([hidden]))), .hero:has(~ #dash:not([hidden]) [data-dash-open="airdrop"]) .newsl.below { display: none; }
 /* The farms under the rewards line: a pair and its APR a chip, best first, each opening the tile's Earn tab on that pool's ETH zap. One quiet line, centred where it fits and
@@ -1642,6 +1652,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
             <a href="/vault/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9.5L12 4l9 5.5"/><path d="M5.5 10v8M10 10v8M14 10v8M18.5 10v8"/><path d="M3 20.5h18"/></svg>Borrow</a>
             <a href="/bridge/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17h18"/><path d="M5 17v-3a7 7 0 0 1 14 0v3"/><path d="M9 17v-4.5M15 17v-4.5M12 17v-6"/></svg>Bridges</a>
             <a href="/tac/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7.5 3v5.5c0 4.6-3.2 8-7.5 9.5-4.3-1.5-7.5-4.9-7.5-9.5V6z"/><path d="M9 12l2.2 2.2L15.5 10"/></svg>TAC</a>
+            <a href="/chain/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3.1-3.1a4 4 0 0 0-5.7-5.7l-1.2 1.2"/><path d="M14 10a4 4 0 0 0-5.7 0l-3.1 3.1a4 4 0 0 0 5.7 5.7l1.2-1.2"/></svg>Tacit chain</a>
             <a href="/etch/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l4.2-1 10.6-10.6a2.1 2.1 0 0 0-3-3L5.2 16z"/><path d="M13.6 7.4l3 3"/></svg>Etch</a>
             <a href="/tasks/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>Tasks</a>
             <hr>
@@ -1695,6 +1706,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
     </div>
     <section class="hx" id="hx" aria-label="Shield, swap, send, earn, withdraw, bridge or borrow"><div id="hx-body"><div class="hx-sk" aria-hidden="true"><i class="t"></i><i class="f"></i><i class="f"></i><i class="p"></i><i class="g"></i></div></div></section>
     <div class="hints" id="hints" role="group" aria-label="Quick starts: each fills the card above"></div>
+    <div class="chl" id="chl"><a class="chl-s" href="/chain/" title="The Tacit chain, live"><span class="dot" id="chl-dot"></span><b>Tacit chain</b><span id="chl-v"><span class="sk" style="--w:26ch"></span></span></a><a class="chl-go" href="/tac/">Make TAC private →</a></div>
     <div class="proof-row">
       <a class="proof" href="/weld/stats/" title="All stats">
         <span data-nums><b class="num"><span data-num="tx"><span class="sk" style="--w:4ch"></span></span></b>private transactions</span>
@@ -10435,7 +10447,7 @@ function tacPageSet(on) {
   if (on) document.documentElement.dataset.page = 'tac'; else delete document.documentElement.dataset.page;
   document.title = on ? 'tacit TAC' : 'tacit defi';
   for (const a of $$('a[href="/tac/"]')) { if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); }
-  if (!on) { TPOOL.open = false; tpgAct(null); tacClaimStop(); return; }
+  if (!on) { TPOOL.open = false; tpgAct(null); tacClaimStop(); chlRead(); return; }
   keep($('#sheet-tac'), render.tac);
   load.tac().then(() => rerender('tac')).catch(() => {});
 }
@@ -10989,7 +11001,8 @@ function tpgNets(el) {
     ${chainOn() ? html`<h3 class="tpg-h">Tacit chain</h3>
     <div class="tpg-strip">${cell(cs ? n(cs.height) : '…', 'Blocks')}${cell(cs && ui ? (cs.height > 0 && cs.lastLanded > 0 ? ui.ago(Date.now() / 1000 - cs.lastLanded) : 'none yet') : '…', 'Last block')}
       ${cell(cs ? tpgPx(cs.pool, cs.shares) : '…', 'Share price')}${cell(cs && ui ? ui.fmtTac(cs.pool, 2) : '…', 'Pool, TAC')}
-      ${cell(L ? (L.fee > 0n ? ui.fmtTac(L.fee) : 'none') : cs ? '—' : '…', 'Leader fee, TAC')}${cell(L ? (L.shieldCap != null ? ui.fmtTac(L.shieldCap, 0) : 'none') : cs ? '—' : '…', 'Shield cap, TAC')}</div>` : ''}`);
+      ${cell(L ? (L.fee > 0n ? ui.fmtTac(L.fee) : 'none') : cs ? '—' : '…', 'Leader fee, TAC')}${cell(L ? (L.shieldCap != null ? ui.fmtTac(L.shieldCap, 0) : 'none') : cs ? '—' : '…', 'Shield cap, TAC')}</div>
+    <p class="note"><a href="/chain/">The chain, live: its health and every block →</a></p>` : ''}`);
 }
 $('#tpg-how').addEventListener('toggle', () => { if ($('#tpg-how').open) { TPGN.at = 0; tpgNets($('#tpg-nets')); } });
 // Wraps proved ahead (/wrap-vouchers.js): the sizes picked in the prove sheet, kept ready on this computer while its prover is idle,
@@ -19627,6 +19640,32 @@ evm.onElsewhere(restoreWallet);
 let lastTick = Date.now();
 const tick = () => { lastTick = Date.now(); paintEarn(); refreshTape(); loadTacPrice().catch(() => {}); brTick(); brPrepTick().catch(() => {}); bswTick().catch(() => {}); fastTick().catch(() => {}); xoTick(); if (lastTick - numsAt > NUMS_MS) refreshNums(); for (const n of SHEETS) if (shown(n) && !running(n)) load[n]?.().then(() => rerender(n)).catch(() => {}); };
 setInterval(() => { if (!document.hidden) tick(); }, 60e3);
+// The Tacit chain, live, under the card (the front page only): whether it works, its last block, a share's worth and the TAC private on it.
+// The leader's /state for what waits, the landing contract for the rest (height() lastLanded() pool() shares()); /chain/ has everything else.
+const CHL = { p: null };
+const chlAgo = (s) => (s < 90 ? 'just now' : s < 5400 ? `${Math.round(s / 60)} min ago` : s < 129600 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} d ago`);
+function chlRead() {
+  const el = $('#chl');
+  if (!el || TACP.on || CHL.p || document.hidden) return;
+  CHL.p = import('/tacit-chain-config.js?cb=803c3298').then(async (cf) => {
+    const cfg = cf.tacitChain();
+    if (!cfg) { el.hidden = true; return; }
+    const word = (sel) => rpc('eth_call', [{ to: cfg.blocks, data: '0x' + sel }, 'latest']).then((h) => BigInt(h));
+    const [st, height, last, pool, shares] = await Promise.all([
+      fetch(cfg.leader + '/state', { signal: within(10e3) }).then((r) => (r.ok ? r.json() : null)).catch(() => null),
+      ...['0ef26743', '2fb9bbfd', '16f0115b', '03314efa'].map((sel) => word(sel).catch(() => null)),
+    ]);
+    if (height == null || pool == null || shares == null) return;
+    // green: the leader answers and nothing has waited long; orange: payments wait with no block for 3 minutes; grey: the leader does not answer
+    const pending = Number(st?.pending || 0), quiet = last ? Date.now() / 1000 - Number(last) : null;
+    $('#chl-dot').className = `dot ${!st ? '' : pending && quiet > 180 ? 'live' : 'on'}`;
+    // (on a phone: the block and a share's worth, so the line under the card stays two lines)
+    const sep = ' · ', age = quiet != null && last > 0n ? sep + chlAgo(quiet) : '';
+    mount($('#chl-v'), html`block ${Number(height).toLocaleString('en-US')}<span class="w">${age}</span>${sep}1 share = ${tpgPrice(pool, shares).toFixed(4)} TAC<span class="w">${sep}${fmt(pool, 8, 2)} TAC private</span>${pending ? `${sep}${pending} in the next block` : ''}`);
+  }).catch(() => {}).finally(() => { CHL.p = null; });
+}
+(window.requestIdleCallback || setTimeout)(() => chlRead());
+setInterval(() => { if (!document.hidden) chlRead(); }, 60e3);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && Date.now() - lastTick > 60e3) tick(); });
 const route = () => {
   HX.routed = true;

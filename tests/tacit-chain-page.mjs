@@ -169,8 +169,7 @@ async function visit({ viewport = { width: 1280, height: 900 }, colorScheme = 'l
   page.on('request', (r) => asked.push(r.url()));
   page.on('pageerror', (e) => bad.push(`page error: ${e.message}`));
   page.on('console', (m) => { if (/Content Security Policy/i.test(m.text())) bad.push(`console: ${m.text()} ${m.location()?.url || ''}`); });
-  await page.goto(`${WEB}/chain/`, { waitUntil: 'domcontentloaded' });
-  await page.waitForURL(/\/tac\/$/, { timeout: 15000 });
+  await page.goto(`${WEB}/tac/`, { waitUntil: 'domcontentloaded' });
   const tag = `${viewport.width}-${colorScheme}`;
   return { page, ctx, asked, bad, shot: async (name) => { if (SHOTS) await page.screenshot({ path: join(SHOTS, `chain-${name}-${tag}.png`), fullPage: true }); } };
 }
@@ -191,7 +190,7 @@ try {
   // pointed at a deployment: /chain/ goes on to TAC's page, which reads the chain's figures, then a key's side
   {
     const { page, ctx, bad, shot } = await visit();
-    ok((await page.title()) === 'tacit TAC', '/chain/ goes on to TAC\'s page');
+    ok((await page.title()) === 'tacit TAC', 'TAC\'s page opens');
     await page.click('#tpg-how > summary');
     await page.waitForFunction(() => /1,234/.test(document.querySelector('#tpg-nets')?.textContent || ''), null, { timeout: 30000 }).catch(() => {});
     const r = await cells(page);
