@@ -550,6 +550,49 @@ test('the page shows the best quote whose provider takes the TAC to be locked, a
   assert.equal(st.calls.starts[0].quotes[0].provider.name, 'Open', 'the lock is begun with the provider that takes it');
 });
 
+test('while a history is read for the first time the press waits and the page says how far it is; the quote is there meanwhile', async () => {
+  const st = sessionStub();
+  let release = null, progress = null;
+  st.session.cost = async ({ onProgress }) => { progress = onProgress; await new Promise((r) => { release = r; }); return { fee: 3100, take: 8046, total: 11146, have: 50000, short: false }; };
+  const m = mount({ session: st, discover: async () => [provider('Tacit')] });
+  await signIn(m);
+  typeIn(m, '100'); await until(() => release, 'the check under way');
+  assert.equal(m.$('fx-go').disabled, true, 'nothing is pressed while it is looked at');
+  assert.equal(m.$('fx-go').textContent, 'Checking…');
+  assert.equal(m.$('fx-recv').hidden, false, 'the quote is shown meanwhile');
+  progress(120); progress(240);
+  assert.match(m.$('fx-st').textContent, /Checking your TAC… 240 transfers read so far/);
+  m.$('fx-go').click(); await tick(10);
+  assert.equal(m.st.calls.starts.length, 0); assert.doesNotMatch(m.$('fx-st').textContent, /Press again/, 'a press while it is looked at does nothing');
+  release(); release = null;
+  await until(() => !m.$('fx-go').disabled, 'the press after the check');
+  assert.equal(m.$('fx-go').textContent, 'Bridge'); assert.doesNotMatch(m.$('fx-st').textContent, /Checking/);
+  // typing again ends the wait of the amount before it
+  typeIn(m, '101'); await until(() => release, 'the second check'); typeIn(m, '102'); assert.equal(m.$('fx-go').disabled, true);
+  release(); release = null; await until(() => release, 'the third check'); release(); await until(() => !m.$('fx-go').disabled, 'the last check ends it');
+});
+
+test('a holder whose lock must spend TAC the bridge\'s proof does not follow waits for a provider that takes any TAC, and is told only when one can', async () => {
+  const kept = new Map(), told = [];
+  const wants = { ask: async () => {}, kept: (pub) => kept.get(pub) || null, start: async (pub, amount) => { kept.set(pub, { amount, at: 1, until: 2 }); return kept.get(pub); }, stop: async (pub) => { kept.delete(pub); } };
+  const st = sessionStub();
+  st.session.cost = async () => { throw Object.assign(new Error('fastbridge: lineage'), { code: 'lineage', refused: [{ amount: 500n * TAC, through: 'shielded' }], left: 0n }); };
+  st.session.reach = async () => 'any';
+  let online = [provider('Screens')];
+  const m = mount({ session: st, wants, notify: (t) => told.push(t), refreshMs: 20, discover: async () => online });
+  await signIn(m);
+  typeIn(m, '100');
+  await until(() => m.$('fx-go').textContent === 'Wait for a provider', 'the wait is offered, the provider that screens is no taker');
+  assert.match(m.$('fx-st').textContent, /no provider online takes it right now/);
+  m.$('fx-go').click(); await until(() => kept.has(m.key.key.pubHex), 'the want kept');
+  await tick(120);
+  assert.equal(told.length, 0, 'a provider that screens is online and takes the amount, but not this TAC: nothing is told');
+  online = [provider('Screens'), provider('Open', { anyTac: true })];
+  await until(() => told.length === 1, 'told once a provider that takes any TAC is online');
+  assert.match(told[0], /A provider can take your 100 TAC now/);
+  m.ui.destroy();
+});
+
 test('a lock refused at the press (the check passed before, and not now) is said in the same words, and nothing starts', async () => {
   const st = sessionStub({ startError: Object.assign(new Error('fastbridge: lineage'), { code: 'lineage', refused: [{ amount: 3n * TAC, through: 'pool' }], left: 0n }) });
   const m = mount({ session: st, discover: async () => [provider('Tacit')] });

@@ -132,8 +132,12 @@ a { color: inherit; text-underline-offset: 3px; text-decoration-thickness: 1px; 
 #bt[data-dir="out"] { --from: var(--blue); --to: var(--orange); }
 .bt-l { margin-top: -8px; }
 /* the fast bridge: TAC from Bitcoin only, paid out from a provider's private TAC */
-.bt-fast { margin: 12px 0 0; font-size: 12px; color: var(--mute); text-align: center; }
-.bt-fast a { color: var(--ink); }
+.bt-fast { margin: 10px 0 0; }
+.fastrow { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 52px; padding: 10px 18px; border: 1px solid var(--hair-2); border-radius: 12px; color: var(--ink); text-decoration: none; font: 500 15px var(--mono); transition: border-color .2s; }
+.fastrow small { display: block; margin-top: 2px; font: 400 12px var(--mono); color: var(--mute); }
+.fastrow:hover { border-color: var(--ink); }
+.fastrow span:last-child { transition: transform .2s; }
+@media (hover: hover) { .fastrow:hover span:last-child { transform: translateX(4px); } }
 #bt:not([data-asset="tac"][data-dir="in"]) .bt-fast { display: none; }
 .bt-w { margin: 10px 0 14px; font-size: 12px; color: var(--mute); }
 .go { display: flex; align-items: center; justify-content: center; gap: 10px; min-height: 52px; padding: 12px 18px; border-radius: 12px; background: var(--ink); color: var(--paper); font: 500 15px var(--mono); text-decoration: none; transition: transform .15s; }
@@ -599,7 +603,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
         <p class="bt-w bt-l" id="bt-limit">Up to 1,000 TAC a bridge while it is new</p>
         <p class="bt-w bt-l" id="bt-cost" hidden></p>
         <a class="go" id="bt-go" href="/#bridge"><span>Bridge TAC</span><span class="cc" id="bt-way" role="img" aria-label="Bitcoin to Ethereum"><svg class="tk sm" aria-hidden="true"><use href="#c-btc"/></svg><span aria-hidden="true">→</span><svg class="tk sm" aria-hidden="true"><use href="#c-eth"/></svg></span></a>
-        <p class="bt-fast" id="bt-fast">In a hurry? <a href="/fast/">Fast bridge</a>: about 15 minutes, paid out by a provider</p>
+        <div class="bt-fast" id="bt-fast"><a class="fastrow" href="/fast/"><span>Fast bridge<small>About 15 minutes, paid out by a provider</small></span><span aria-hidden="true">→</span></a></div>
       </div>
 
       <div class="pf" aria-live="polite">

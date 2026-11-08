@@ -141,6 +141,14 @@ test('why the fast bridge is not offered is one row of the regular receipt, and 
   for (const o of [null, { ok: true }, { ok: false, why: 'none' }, { ok: false, why: 'error' }]) assert.equal(whyRow(o), null);
 });
 
+test('reach: which providers could take a lock for an amount of the key\'s TAC is asked of the session, and is "all" when the session cannot say', async () => {
+  const asked = [];
+  const sess = { ...session(), reach: async (u) => { asked.push(u); return 'any'; } };
+  assert.equal(await routeOf([provider('A')], sess).reach(100n * TAC), 'any');
+  assert.deepEqual(asked, [100n * TAC]);
+  assert.equal(await routeOf([provider('A')], session()).reach(1), 'all', 'an older session gives no word of it');
+});
+
 test('a failure is said in the page\'s words: the sats the builder lacks, a note in a bridge, a provider that cannot take it', () => {
   assert.match(failMessage(new Error('adaptor-btc-tx: not enough sats to fund the commit (need 9000, have 250)')), /holds 250 sats for fees, short of the 9,000 sats this needs/);
   assert.equal(failMessage(new Error('fastbridge: this note is already part of a swap')), 'This note is already in a bridge.');

@@ -29,7 +29,7 @@ const range = (a, b) => `${fmtTac(a, 2)} to ${fmtTac(b, 2)} TAC`;
 
 export function mountFast({ root, keyS, signIn, open, discover, wants = null, notify = () => {}, pinned = () => null, quoteDelayMs = 350, refreshMs = 30000, retryMs = 15000, say = () => {} }) {
   const doc = root.ownerDocument;
-  const S = { providers: [], empties: 0, loaded: false, termsAt: 0, sess: null, pub: null, bal: null, amt: '', quotes: [], quote: null, best: null, seq: 0, busy: false, note: '', bad: false, recs: [], stop: null, timer: 0, opening: null, want: null, told: false, watch: 0, cost: null, sure: null };
+  const S = { providers: [], empties: 0, loaded: false, termsAt: 0, sess: null, pub: null, bal: null, amt: '', quotes: [], quote: null, best: null, seq: 0, busy: false, note: '', bad: false, recs: [], stop: null, timer: 0, opening: null, want: null, told: false, watch: 0, cost: null, sure: null, checking: false, anyOnly: null };
 
   root.innerHTML = `
     <p class="fx-sum" id="fx-lp" aria-live="polite"></p>
@@ -95,7 +95,9 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
   }
 
   // the providers that take an amount now
-  const takersOf = (units) => others().filter((p) => units >= p.terms.minAmount && units <= capOf(p));
+  const byAmount = (units) => others().filter((p) => units >= p.terms.minAmount && units <= capOf(p));
+  // for an amount whose lock must spend TAC the bridge's proof does not follow (`anyOnly`), only a provider that takes any TAC
+  const takersOf = (units) => (S.anyOnly === units ? byAmount(units).filter((p) => p.terms.anyTac) : byAmount(units));
   // an amount the key holds that no provider online takes now: one to wait with
   const waitable = (units) => !!wants && !!S.sess && !S.want && units != null && units > 0n && (S.bal == null || units <= S.bal) && !takersOf(units).length;
   const plain = (units) => (units / ONE).toString() + (units % ONE ? '.' + (units % ONE).toString().padStart(DEC, '0').replace(/0+$/, '') : '');
@@ -122,8 +124,8 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
         <div class="kv"><span>Time</span><b class="num">about ${minutesFor(q.minConfs)} minutes<small>${Math.max(1, Number(q.minConfs) || 1)} Bitcoin confirmation${(Number(q.minConfs) || 1) > 1 ? 's' : ''}, then a pool settle</small></b></div>${highFee(q) ? `
         <p class="status err" role="alert" id="fx-high">High fee: this provider keeps ${esc(fmtTac(q.fee))} TAC (${esc(pct(q.fee, q.btcValue))}) of your ${esc(fmtTac(q.btcValue))} TAC, and you receive ${esc(fmtTac(q.evmAmount))}. A smaller bridge costs more in proportion, a larger one less, and the regular bridge may cost less.</p>` : ''}`;
     }
-    go.textContent = S.busy ? 'Working…' : S.sure ? 'Press again to bridge' : 'Bridge';
-    go.disabled = S.busy || !!bad || !q || units == null || short;
+    go.textContent = S.busy ? 'Working…' : S.checking ? 'Checking…' : S.sure ? 'Press again to bridge' : 'Bridge';
+    go.disabled = S.busy || S.checking || !!bad || !q || units == null || short;
     paintNote();
   }
 
@@ -182,7 +184,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
   function reset(text) {
     if (S.stop) { S.stop(); S.stop = null; }
     clearTimeout(S.timer); clearInterval(S.watch); S.seq++;
-    Object.assign(S, { sess: null, pub: null, bal: null, quotes: [], quote: null, best: null, amt: '', recs: [], busy: false, opening: null, want: null, told: false, cost: null, sure: null });
+    Object.assign(S, { sess: null, pub: null, bal: null, quotes: [], quote: null, best: null, amt: '', recs: [], busy: false, opening: null, want: null, told: false, cost: null, sure: null, checking: false, anyOnly: null });
     $('fx-amt').value = '';
     note(text || '');
     paint();
@@ -227,7 +229,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
   const pinFirst = (quotes) => { const pin = pinned(); return pin ? quotes.slice().sort((a, b) => (pairId(b.provider.id) === pin) - (pairId(a.provider.id) === pin)) : quotes; };
   function typed() {
     readProviders();
-    S.amt = $('fx-amt').value; S.quotes = []; S.quote = null; S.best = null; S.note = ''; S.cost = null; S.sure = null;
+    S.amt = $('fx-amt').value; S.quotes = []; S.quote = null; S.best = null; S.note = ''; S.cost = null; S.sure = null; S.checking = false; S.anyOnly = null;
     clearTimeout(S.timer); const seq = ++S.seq;
     const units = parseTac(S.amt);
     paintForm();
@@ -245,11 +247,13 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
         // only when none does
         if (S.sess.cost) {
           const sess = S.sess, checking = 'Checking your TAC…';
-          note(checking);
+          // a history the first time it is looked at is read from Bitcoin in parts, which can take a minute: the press waits for it, and says how far it is
+          S.checking = true; note(checking); paintForm();
+          const onProgress = (read) => { if (seq === S.seq && S.checking) { S.note = `${checking} ${Number(read).toLocaleString('en-US')} transfers read so far.`; paintNote(); } };
           let c = null, at = -1, refused = null, unread = null;
           for (let i = 0; i < S.quotes.length && at < 0; i++) {
             const x = S.quotes[i];
-            try { c = await sess.cost({ quote: x.quote, provider: x.provider }); at = i; }
+            try { c = await sess.cost({ quote: x.quote, provider: x.provider, onProgress }); at = i; }
             catch (e) {
               if (e && e.code === 'lineage') { refused ||= e; continue; }
               if (e && e.code === 'lineage_unread') unread = e;
@@ -257,14 +261,16 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
             }
           }
           if (seq !== S.seq || S.sess !== sess) return;
-          if (S.note === checking) note('');
-          if (at < 0) { S.quotes = []; S.quote = null; S.best = null; note(wording(refused), true); paintForm(); return; }
+          S.checking = false;
+          if (S.note.startsWith(checking)) note('');
+          // no provider online takes what must be locked: the holder can wait for one that does
+          if (at < 0) { S.quotes = []; S.quote = null; S.best = null; S.anyOnly = units; note(wording(refused), true); paintForm(); return; }
           if (at > 0) { S.quotes = [S.quotes[at], ...S.quotes.filter((_, k) => k !== at)]; S.quote = S.quotes[0].quote; S.best = S.quotes[0].provider; }
           if (unread) note(wording(unread), true);
           if (c) { S.cost = c; if (c.short) note(shortText(c), true); }
           paintForm();
         }
-      } catch (e) { if (seq === S.seq) note(wording(e), true); }
+      } catch (e) { if (seq === S.seq) { S.checking = false; note(wording(e), true); paintForm(); } }
     }, quoteDelayMs);
   }
   $('fx-amt').addEventListener('input', typed);
@@ -284,7 +290,14 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
     const look = async () => {
       if (!S.want || S.told) return;
       await readProviders(true);
-      if (!S.want || S.told || !takersOf(S.want.amount).length) return;
+      if (!S.want || S.told) return;
+      // a holder whose lock must spend TAC the bridge's proof does not follow is told when a provider that takes any TAC can take it
+      let ps = byAmount(S.want.amount);
+      if (ps.length && S.sess && S.sess.reach) {
+        const kind = await S.sess.reach(S.want.amount).catch(() => 'all');
+        if (kind === 'any') ps = ps.filter((p) => p.terms.anyTac);
+      }
+      if (!S.want || S.told || !ps.length) return;
       S.told = true;
       const text = `A provider can take your ${fmtTac(S.want.amount)} TAC now.`;
       note(text); notify(text);
@@ -313,7 +326,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
 
   // ── the press ──
   async function go() {
-    if (S.busy) return;
+    if (S.busy || S.checking) return;
     if (!keyS.unlocked) {
       try { await signIn(); } catch (e) { if (!e?.unlockCancelled) note(wording(e), true); return; }
       // the key opening has started reading it (keyS.onChange): that read is waited for, not begun again over what it says (a read that

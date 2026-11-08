@@ -241,6 +241,28 @@ test('the lock goes to the best provider that takes what it must spend: a provid
   T._testSetScanHoldingsOverride(null);
 });
 
+test('reach: whether a lock for an amount can be built from notes the bridge\'s proof follows, needs a provider that takes any TAC, or cannot be covered; and the look at a history reports how far it is', async () => {
+  const priv = key(9), pubHex = bytesToHex(secp.getPublicKey(priv, true));
+  openWallet(priv);
+  T._testSetScanHoldingsOverride(() => holdings([[TAC_ASSET, { utxos: [{ utxo: utxo(1), amount: 5000n, blinding: 7n }, { utxo: utxo(3), amount: 900n, blinding: 9n }] }]]));
+  const seen = [];
+  const vet = async (ns, o) => { seen.push(o); return verdicts({ 1: { state: 'unprovable', through: 'shielded' }, 3: { state: 'tracked' } })(ns); };
+  const tt = { ...T, bridgeUx: () => ({ noteTracking: async () => new Map() }) };
+  const open = (v) => openFast({ T: tt, withKey: (fn) => fn(tt), ux: { cfg: { pool: POOL } }, priv, pubHex, hrp: 'tb', counterFor: () => ({}), vet: v });
+  const s = await open(vet);
+  assert.equal(await s.reach(800n), 'all', 'the followed note covers it: any provider will do');
+  assert.equal(await s.reach(4000n), 'any', 'it must spend the exit: only a provider that takes any TAC will do');
+  assert.equal(await s.reach(10000n), 'none', 'the notes do not cover it');
+  assert.equal((await open(verdicts({})).then((x) => x.reach(800n)).catch((e) => e)).code, 'lineage_unread', 'a history that could not be read is not guessed at');
+  // the progress hook is handed to the look at the history
+  const onProgress = () => {};
+  seen.length = 0;
+  const prov = { name: 'Cheap', ref: { kind: 'http', claimPub: '02' + 'cc'.repeat(32) }, terms: { anyTac: false } };
+  const e = await s.cost({ quote: { btcValue: 4000n }, provider: prov, onProgress }).catch((x) => x);
+  assert.equal(e.code, 'lineage'); assert.ok(seen.length && seen.every((o) => o && o.onProgress === onProgress), 'each look reports to the page');
+  T._testSetScanHoldingsOverride(null);
+});
+
 test('a provider that says nothing of it screens: only an ad or info that says `anyTac: true` is read as taking any TAC', () => {
   const base = { claimPub: '02' + 'ab'.repeat(32), minAmount: '1', maxAmount: '2', feeBps: 1, flatFee: '0' };
   assert.equal(termsOf(base).anyTac, false);

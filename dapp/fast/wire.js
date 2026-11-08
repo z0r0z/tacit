@@ -158,8 +158,9 @@ function sides({ T, ux, priv, hrp, bases, fetchImpl, asset, seedTag, forNotes, w
   return { prims, btc, seed, evm };
 }
 
-// `vet(notes)` says whether each note's history can be followed (see `followed`); the default asks the bridge's own trace.
-export async function openFast({ T, withKey, ux, priv, pubHex, pins = {}, wallet = null, ask, fetchImpl = (...a) => fetch(...a), bases = EXPLORERS, hrp = 'bc', now, call = {}, counterFor: counterOf = (ref) => counterFor(ref, { fetchImpl, call }), vet = (ns) => withKey((t) => t.bridgeUx().lineage(ns)) }) {
+// `vet(notes, { onProgress })` says whether each note's history can be followed (see `followed`); the default asks the bridge's own trace,
+// which reads a long history in parts and says how many transfers it has read so far.
+export async function openFast({ T, withKey, ux, priv, pubHex, pins = {}, wallet = null, ask, fetchImpl = (...a) => fetch(...a), bases = EXPLORERS, hrp = 'bc', now, call = {}, counterFor: counterOf = (ref) => counterFor(ref, { fetchImpl, call }), vet = (ns, o) => withKey((t) => t.bridgeUx().lineage(ns, o)) }) {
   const asset = { btcAsset: TAC_ASSET, evmAsset: TAC_ASSET, ...pins };
   const { prims, btc, seed, evm } = sides({ T, ux, priv, hrp, bases, fetchImpl, asset, seedTag: 'tacit-fastbridge-user-seed', wallet, ask });
   const store = makeLocalStore(`tacit-fastbridge-v1:mainnet:${pubHex}:`);
@@ -186,7 +187,7 @@ export async function openFast({ T, withKey, ux, priv, pubHex, pins = {}, wallet
   // TAC (`terms.anyTac`) is given whatever covers the amount, with no look at all. So a holder never picks a kind of TAC: the lock goes
   // to the best provider that takes what it must spend.
   const takesAny = (x) => !!(x.provider && x.provider.terms && x.provider.terms.anyTac);
-  const pool = async (quotes, only, any = false) => {
+  const pool = async (quotes, only, any = false, onProgress = null) => {
     const all = await notes();
     let tiers;
     if (only) {
@@ -199,13 +200,13 @@ export async function openFast({ T, withKey, ux, priv, pubHex, pins = {}, wallet
     if (!quotes.length || (!vet && !any)) return tiers[0];
     const client = market.clientFor(quotes[0].provider.ref), amount = quotes[0].quote.btcValue;
     const pick = async (set) => { const p = client.pickNotes(await client.freeNotes(set), amount); return p && p.notes; };
-    return followed(tiers, pick, any ? async (ns) => new Map(ns.map((n) => [noteId(n), { state: 'tracked' }])) : vet);
+    return followed(tiers, pick, any ? async (ns) => new Map(ns.map((n) => [noteId(n), { state: 'tracked' }])) : (ns) => vet(ns, { onProgress }));
   };
   // The quotes are tried best first, each with the notes its provider takes; one whose notes the bridge's proof cannot follow is passed
   // over for a provider that takes any TAC, and when there is none the holder is told (code 'lineage') and nothing is locked.
-  async function begin(quotes, only) {
+  async function begin(quotes, only, onProgress) {
     const plans = new Map();
-    const planFor = (any) => { if (!plans.has(any)) plans.set(any, pool(quotes, only, any).then((notes) => ({ notes }), (error) => ({ error }))); return plans.get(any); };
+    const planFor = (any) => { if (!plans.has(any)) plans.set(any, pool(quotes, only, any, onProgress).then((notes) => ({ notes }), (error) => ({ error }))); return plans.get(any); };
     let refused = null, last = null;
     for (const x of quotes) {
       const plan = await planFor(takesAny(x));
@@ -221,11 +222,20 @@ export async function openFast({ T, withKey, ux, priv, pubHex, pins = {}, wallet
     address: prims.wallet.address(), notes, balance, market,
     quoteAll: (providers, units, o) => market.quoteAll(providers, units, o),
     // what the lock would cost on Bitcoin for a quote and whether the address can pay it (nothing is stored or sent)
-    cost: async ({ quote, provider, only }) => {
+    cost: async ({ quote, provider, only, onProgress }) => {
       const ref = provider ? provider.ref : null, p = provider || { ref };
-      return market.clientFor(ref).cost({ quote, notes: await pool([{ provider: p, quote }], only, takesAny({ provider: p })) });
+      return market.clientFor(ref).cost({ quote, notes: await pool([{ provider: p, quote }], only, takesAny({ provider: p }), onProgress) });
     },
-    start: async ({ quotes, only }) => begin(quotes, only),
+    start: async ({ quotes, only, onProgress }) => begin(quotes, only, onProgress),
+    // Which providers could take a lock for `units` of this key's TAC: 'all' (it can be built from notes the bridge's proof follows, so any
+    // provider takes it), 'any' (it must spend some the proof does not follow, so only a provider that takes any TAC does), or 'none' (the
+    // notes do not cover it). A history that could not be read throws (code 'lineage_unread').
+    reach: async (units) => {
+      const client = market.clientFor(null), all = await notes();
+      const pick = async (set) => { const p = client.pickNotes(await client.freeNotes(set), units); return p && p.notes; };
+      if (!vet || !(await pick(all))) return vet ? 'none' : 'all';
+      try { await followed([all], pick, (ns) => vet(ns)); return 'all'; } catch (e) { if (e && e.code === 'lineage') return 'any'; throw e; }
+    },
     records: market.records, run, recover: market.recover,
   };
 }

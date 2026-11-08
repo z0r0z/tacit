@@ -6,7 +6,7 @@
 //   w.kept(pub)             the want this browser keeps for a key, or null: { amount, at, until }
 //   w.start(pub, amount)    keeps one for `amount` (base units) and posts it -> the want kept
 //   w.stop(pub)             takes it down and forgets it
-//   w.takers(amount)        the providers online that take `amount` now: [{ id, name }]
+//   w.takers(amount)        the providers online that take `amount` now: [{ id, name, anyTac }]
 //   w.waiting()             what is waiting on the boards: { count, total, items: [{ pub, amount }] smallest first }
 
 import { signWant, checkWant, checkAd } from '/fastbridge-board.js';
@@ -52,7 +52,7 @@ export function makeWants({ boards = [], providers = [], storage = globalThis.lo
         const r = await fetchImpl(String(p.base).replace(/\/$/, '') + '/info', { signal: AbortSignal.timeout(8000) });
         const i = r.ok ? await r.json() : null, id = String(i?.claimPub || '').toLowerCase();
         if (!id || (p.claimPub && p.claimPub.toLowerCase() !== id)) return;
-        out.set(id, { id, name: p.name || 'Provider', min: BigInt(i.minAmount), max: BigInt(i.maxAmount), available: i.available == null ? null : BigInt(i.available) });
+        out.set(id, { id, name: p.name || 'Provider', min: BigInt(i.minAmount), max: BigInt(i.maxAmount), available: i.available == null ? null : BigInt(i.available), anyTac: i.anyTac === true });
       } catch { /* a provider that does not answer is not online */ }
     }));
     await Promise.all(clients.map(async (c) => {
@@ -60,7 +60,7 @@ export function makeWants({ boards = [], providers = [], storage = globalThis.lo
         for (const ad of await c.ads()) {
           try { checkAd(ad, t); } catch { continue; }
           if (String(ad.btcAsset).replace(/^0x/, '').toLowerCase() !== asset || out.has(ad.claimPub)) continue;
-          out.set(ad.claimPub, { id: ad.claimPub, name: ad.name || 'Provider', min: BigInt(ad.minAmount), max: BigInt(ad.maxAmount), available: ad.available == null ? null : BigInt(ad.available) });
+          out.set(ad.claimPub, { id: ad.claimPub, name: ad.name || 'Provider', min: BigInt(ad.minAmount), max: BigInt(ad.maxAmount), available: ad.available == null ? null : BigInt(ad.available), anyTac: ad.anyTac === true });
         }
       } catch { /* a board that does not answer has no providers here */ }
     }));
@@ -68,7 +68,7 @@ export function makeWants({ boards = [], providers = [], storage = globalThis.lo
   }
   async function takers(amount) {
     const a = BigInt(amount);
-    return (await online()).filter((p) => a >= p.min && a <= (p.available != null && p.available < p.max ? p.available : p.max)).map(({ id, name }) => ({ id, name }));
+    return (await online()).filter((p) => a >= p.min && a <= (p.available != null && p.available < p.max ? p.available : p.max)).map(({ id, name, anyTac }) => ({ id, name, anyTac }));
   }
 
   async function waiting() {

@@ -67,6 +67,8 @@ export function makeFastRoute({ discover, open, ownId = () => null, refreshMs = 
     const s = await open();
     return s.start({ quotes: o.quotes, only: [{ txid: note.txid, vout: note.vout }] });
   }
+  // which providers could take a lock for this much of the key's TAC: 'all', 'any' (only one that takes any TAC) or 'none' (fast/wire.js reach)
+  async function reach(units) { const s = await open(); return typeof s.reach === 'function' ? s.reach(BigInt(units)) : 'all'; }
   async function records() { return (await open()).records(); }
   function run(onChange) {
     let stop = () => {}, gone = false;
@@ -74,7 +76,7 @@ export function makeFastRoute({ discover, open, ownId = () => null, refreshMs = 
     return () => { gone = true; stop(); };
   }
 
-  return { offer, cost, start, records, run, providers };
+  return { offer, cost, start, records, run, providers, reach };
 }
 
 // ── what a form says of an offer: plain text and rows, for the Bridge tab (which draws them) ──
