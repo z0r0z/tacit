@@ -402,7 +402,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
   <details class="how">
     <summary>How the figures are counted</summary>
     <dl>
-      <dt>Transacted</dt><dd>ETH deposited into the Tacit pool (its Wrap events) and into the device pools on <svg class="tk xs inl" role="img" aria-label="Ethereum"><title>Ethereum</title><use href="#c-ethereum"/></svg><svg class="tk xs inl" role="img" aria-label="Base"><title>Base</title><use href="#c-base"/></svg><svg class="tk xs inl" role="img" aria-label="Robinhood Chain"><title>Robinhood Chain</title><use href="#c-rh"/></svg> (their Transact events).</dd>
+      <dt>Transacted</dt><dd>ETH deposited into the Tacit pool (its Wrap events) and into the device pools on <svg class="tk xs inl" role="img" aria-label="Ethereum"><title>Ethereum</title><use href="#c-ethereum"/></svg><svg class="tk xs inl" role="img" aria-label="Base"><title>Base</title><use href="#c-base"/></svg><svg class="tk xs inl" role="img" aria-label="Robinhood Chain"><title>Robinhood Chain</title><use href="#c-rh"/></svg> (their Transact events). Every deposit counts, so ETH that goes in and comes out again is counted each time it goes in; Private now is what the pools hold.</dd>
       <dt>Private now</dt><dd>The ETH balance of the Tacit pool and of each device pool.</dd>
       <dt>Withdrawn</dt><dd>What those pools paid out: withdrawals and relay fees.</dd>
       <dt>Wallets</dt><dd>Distinct senders of the Tacit pool’s wraps. Device pools also take deposits through routers and keepers, so their senders are not counted.</dd>

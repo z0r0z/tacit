@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-cjhz526EF1OTWz3EX5h++LgeBzAzVji7+rpv3iPFPEQ=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-JwIJmjh2vwiIQ75uNgPb+8778QctSGAPtk81RIq84+4=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -210,7 +210,6 @@ main:focus { outline: none; }
 .hint { flex: none; display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 11px 0 4px; font: inherit; font-size: 12px; letter-spacing: 0; color: var(--ink); background: transparent; border: 1px solid color-mix(in srgb, var(--hair) 70%, transparent); border-radius: 15px; cursor: pointer; white-space: nowrap; transition: background .15s, color .15s, border-color .15s, transform .1s; animation: hint-in .5s cubic-bezier(.2, .8, .2, 1) both; animation-delay: calc(var(--i, 0) * 70ms); }
 .hint .pair { display: inline-flex; } .hint .pair .tk { width: 16px; height: 16px; } .hint .pair .tk + .tk { margin-left: -5px; box-shadow: 0 0 0 1.5px var(--paper); }
 .hint b { font-weight: 500; color: var(--ink); }
-.hint small { padding: 0 0 0 2px; font: 500 11px var(--mono); letter-spacing: .06em; color: var(--mute); }
 .hint .go { font-style: normal; color: var(--mute); opacity: 0; transform: translateX(-4px); transition: opacity .15s, transform .15s; margin-left: -2px; }
 @media (hover: hover) { .hint:hover { color: var(--ink); background: color-mix(in srgb, var(--ink) 4%, transparent); border-color: color-mix(in srgb, var(--hair) 70%, transparent); } .hint:hover b { color: var(--ink); } .hint:hover .pair .tk { opacity: 1; filter: none; } .hint:hover .go { opacity: 1; transform: none; } }
 @media (hover: none) { .hint { border-color: color-mix(in srgb, var(--hair) 40%, transparent); } .hint .go { display: none; } }
@@ -344,8 +343,8 @@ a.di { color: inherit; text-decoration: none; }
 .newsl { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 6px 18px; margin: 0 0 20px; }
 .newsl .news { margin: 0; }
 .newsl.below { margin: 26px 0 0; }
-/* signed in, the Airdrop card in Your Tacit already shows it */
-.hero:has(~ #dash:not([hidden]) [data-dash-open="airdrop"]) #air-news { display: none; }
+/* the line goes when its one chip does: once the airdrop closes, or signed in, where the Airdrop card in Your Tacit already shows it */
+.newsl.below:not(:has(> .news:not([hidden]))), .hero:has(~ #dash:not([hidden]) [data-dash-open="airdrop"]) .newsl.below { display: none; }
 /* The farms under the rewards line: a pair and its APR a chip, best first, each opening the tile's Earn tab on that pool's ETH zap. One quiet line, centred where it fits and
    scrolling sideways on a phone (fading at the edge it runs off); its height is kept while empty, so nothing moves when the farms are read. */
 .fms { display: flex; gap: 18px; height: 26px; margin: 14px 0 0; padding: 1px 0; overflow-x: auto; scrollbar-width: none; opacity: 0; transition: opacity .35s; }
@@ -565,17 +564,18 @@ a.di { color: inherit; text-decoration: none; }
    (the tape can then be scrolled by hand). ── */
 .tape { display: flex; align-items: center; gap: 14px; margin-top: 32px; padding: 8px 0; font-size: 12px; color: var(--mute); }
 .tape-l { flex: none; display: inline-flex; align-items: center; gap: 7px; font: 500 11px var(--mono); text-transform: uppercase; letter-spacing: .12em; color: var(--ink); }
-.tape-l .dot { animation: pulse 1.6s ease-in-out infinite; }
-.tape-v { flex: 1; min-width: 0; overflow: hidden; -webkit-mask-image: linear-gradient(90deg, transparent, #000 24px, #000 calc(100% - 48px), transparent);
-  mask-image: linear-gradient(90deg, transparent, #000 24px, #000 calc(100% - 48px), transparent); }
-.tape-run { display: flex; width: max-content; margin: 0; padding: 0; list-style: none; animation: tape var(--tape-s, 80s) linear infinite; }
+.tape-l .dot { animation: tape-pulse 3.2s ease-in-out infinite; }
+.tape-v { flex: 1; min-width: 0; overflow: hidden; -webkit-mask-image: linear-gradient(90deg, transparent, #000 72px, #000 calc(100% - 120px), transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 72px, #000 calc(100% - 120px), transparent); }
+.tape-run { display: flex; width: max-content; margin: 0; padding: 0; list-style: none; will-change: transform; animation: tape var(--tape-s, 120s) linear infinite; }
 .tape-v:hover .tape-run, .tape-v:focus-within .tape-run { animation-play-state: paused; }
 .tape-run li { display: inline-flex; align-items: center; gap: 8px; padding-right: 32px; white-space: nowrap; }
 .tape-run .tk { flex: none; width: 16px; height: 16px; }
 .tape-run .pair .tk + .tk { margin-left: -6px; box-shadow: 0 0 0 1.5px var(--paper); }
-.tape-run b { font-weight: 500; color: var(--ink); }
+.tape-run b { font-weight: 500; color: color-mix(in srgb, var(--ink) 80%, var(--mute)); }
 .tape-run time::before { content: '· '; }
 @keyframes tape { to { transform: translateX(-50%); } }
+@keyframes tape-pulse { 50% { opacity: .45; } }
 @media (max-width: 640px) { .tape-run { animation: none; } .tape-v { -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 48px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 48px), transparent); } }
 @media (prefers-reduced-motion: reduce) { .tape-v { overflow-x: auto; } }
 #pts-lb { scroll-margin-top: 18px; }
@@ -1502,7 +1502,6 @@ footer.sf svg.fill { width: 16px; height: 16px; }
     <div class="hints" id="hints" role="group" aria-label="Quick starts: each fills the card above"></div>
     <div class="proof-row">
       <a class="proof" href="/weld/stats/" title="All stats">
-        <span data-nums><b class="num"><span data-num="in"><span class="sk" style="--w:5ch"></span></span></b>ETH transacted</span>
         <span data-nums><b class="num"><span data-num="tx"><span class="sk" style="--w:4ch"></span></span></b>private transactions</span>
       </a>
       <div class="proof-f">
@@ -1511,8 +1510,6 @@ footer.sf svg.fill { width: 16px; height: 16px; }
     </div>
       <div class="newsl below">
       <a class="news" id="air-news" href="/rewards/"><span class="dot" data-dot="tac"></span><b>TAC airdrop</b><span data-foot="tac">Is your wallet in it?</span><span class="go"><span class="w">Check yours </span>→</span></a>
-      <a class="news" id="task-news" href="/tasks/" hidden><span class="dot" aria-hidden="true"></span><b>Task</b><span data-task-t>Earn TAC</span><span class="go">→</span></a>
-      <a class="news" id="pts-news" href="#points" data-link="points"><span class="dot" data-dot="pts"></span><b class="num" id="ern-pts-v"><span class="sk" style="--w:4ch"></span></b><span id="ern-pts">TAC in today’s points pot</span><span class="go">→</span></a>
       </div>
     <div class="fms" id="fms" role="group" aria-label="Farms and their APR now; each opens its ETH zap"></div>
     <div class="tape" id="tape" role="region" aria-label="Recent activity on Tacit" hidden>
@@ -1596,7 +1593,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
     <div class="tc-set" id="tc-teth" role="tabpanel" aria-labelledby="tc-t-teth">
       <div class="sx-h"><h2 id="tc-h-teth">tETH is ETH that <em>earns privately, on either chain</em>.</h2></div>
       <dl class="tc-facts">
-        <div data-nums><dt>ETH transacted</dt><dd class="num"><span data-num="tin"><span class="sk" style="--w:5ch"></span></span></dd></div>
+        <div data-nums><dt>ETH private now</dt><dd class="num"><span data-num="tnow"><span class="sk" style="--w:3ch"></span></span></dd></div>
         <div><dt>with ETH, in and out</dt><dd>1 : 1</dd></div>
         <div><dt>chains it earns on</dt><dd>2</dd></div>
       </dl>
@@ -1707,7 +1704,6 @@ footer.sf svg.fill { width: 16px; height: 16px; }
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/tasks/open.js?cb=a83053f2"></script>
 
 <!-- ── wallet ── -->
 <dialog class="sheet" id="sheet-wallet" aria-labelledby="wallet-h">
@@ -10869,10 +10865,6 @@ function paintEarn() {
     else if (LP.done && !LP.c?.weights[k]?.length) el.closest('div').hidden = true;
   }
   paintFarmChips(pools);
-  const on = now() < ptsEnd();
-  mount($('#ern-pts-v'), on ? html`<span data-pgm="pot">${potTac()}</span>` : html`—`);
-  mount($('#ern-pts'), on ? html`TAC in today’s points pot · <span class="num" data-left>${potLeft()}</span> left` : html`points ended ${dayShort(PGM.startDay + PGM.days - 1)}; claims stay open`);
-  if (on) countUp($('#ern-pts-v'));
 }
 // ── Quick starts above the card ──
 // Three one-press starts at 0.01 ETH (a size kept proved ahead for a signed-in key, so by the press the proof is ready): swap it to USDC privately (the ETH goes into the private
@@ -10882,7 +10874,7 @@ let HINT_POOL = null, HINT_WARM = '';
 const HINT_ETH = '0.01';
 // The private farm the Earn card starts on for this amount of ETH from a wallet, by the card's own rule (hxQuote): the pool that leaves the most after a week (its TAC a day for
 // 7 days, less the TAC worth of what its zap swap gives up once) among those whose swap moves the price under 5%, the least moved when none does. A pool with a bigger APR but a thin
-// pool (a 20% price impact at this size) is not the one: the chip says what the card will do, with its own APR.
+// pool (a 20% price impact at this size) is not the one: the chip says what the card will do.
 function hintFarm(pools) {
   const amt = Number(HINT_ETH), tacEth = FARM.precision?.tacEth || 0, rows = [];
   for (const { p, apr } of pools || []) {
@@ -10919,9 +10911,9 @@ function paintHints() {
     { id: 'shield', ic: ['tk-eth', 'tk-teth'], lead: 'Shield ', amt: `${HINT_ETH} ETH`, rest: '', tip: 'Put ETH in the pool, then swap, farm and send from there. Earns points' },
     { id: 'pswap', ic: ['tk-eth', 'tk-usdc'], lead: 'Swap ', amt: `${HINT_ETH} ETH`, rest: ' to USDC privately', tip: 'ETH goes into the private pool and the relay swaps and sends USDC out: nothing on chain links them' },
     { id: 'send', ic: ['tk-usdc', 'tk-teth'], lead: 'Pay ', amt: '25 USDC', rest: ' privately', tip: 'Paid from your wallet into their private balance: the deposit shows, not whose it is' },
-    HINT_POOL && { id: 'zap', ic: ['tk-teth', ...HINT_POOL.icons.slice(1)], lead: 'Farm ', amt: `${HINT_ETH} ETH`, rest: ` in ${HINT_POOL.name}`, tag: `${Math.round(HINT_POOL.apr)}% APR`, tip: `The best farm for this amount now (${HINT_POOL.name}): one transaction puts ETH in and your share is farmed` },
+    HINT_POOL && { id: 'zap', ic: ['tk-teth', ...HINT_POOL.icons.slice(1)], lead: 'Farm ', amt: `${HINT_ETH} ETH`, rest: ` in ${HINT_POOL.name}`, tip: `The best farm for this amount now (${HINT_POOL.name}): one transaction puts ETH in and your share is farmed` },
   ].filter(Boolean);
-  const view = html`<span class="hints-k" aria-hidden="true">Try</span>${hs.map((h, i) => html`<button type="button" class="hint" data-hint="${h.id}" title="${h.tip}" style="--i:${i}">${pair(h.ic)}<span>${h.lead}<b>${h.amt}</b>${h.rest}</span>${h.tag ? html`<small>${h.tag}</small>` : ''}<i class="pf" role="img" aria-hidden="true"></i><i class="go" aria-hidden="true">→</i></button>`)}`;
+  const view = html`<span class="hints-k" aria-hidden="true">Try</span>${hs.map((h, i) => html`<button type="button" class="hint" data-hint="${h.id}" title="${h.tip}" style="--i:${i}">${pair(h.ic)}<span>${h.lead}<b>${h.amt}</b>${h.rest}</span><i class="pf" role="img" aria-hidden="true"></i><i class="go" aria-hidden="true">→</i></button>`)}`;
   if (el.__h !== view.s) { el.__h = view.s; mount(el, view); }
   hintsWarm();
   hintsReady().catch(() => {});
@@ -14574,11 +14566,10 @@ function paintNums(p) {
 }
 async function loadNums() {
   numsAt = Date.now();
-  const [{ privateEth }, r] = await Promise.all([import('/weld/stats/read.js?cb=a2a5b035'), readStats()]);
+  const r = await readStats();
   if (!r?.at) throw new Error('no reading');
   const v = { ...store.get(NUMS_KEY)?.v };
-  if (r.eth && r.dev) { const t = privateEth(r.eth, r.dev); v.in = fmt(t.inWei, 18, 0); v.held = fmt(t.held, 18, 2); }
-  if (r.eth) v.tin = fmt(BigInt(r.eth.inWei), 18, 0);                       // tETH's own: the DeFi pool alone, without the Pay pools in the hero's total
+  if (r.eth) v.tnow = fmt(BigInt(r.eth.held), 18, 1);                       // tETH's own: what the DeFi pool holds now
   if (r.link) v.tx = Number(r.link.settles).toLocaleString('en-US');
   if (r.btc) v.cusd = fmt(r.btc.borrowed, 8, 0);
   if (r.pts) v.pts = Number(r.pts.participants).toLocaleString('en-US') + (r.pts.full ? '+' : '');
@@ -14637,7 +14628,7 @@ function paintTape(d, rec) {
   fill(1);
   const half = run.scrollWidth / 2, strip = run.parentElement.clientWidth;
   if (half > 0 && half < strip) fill(Math.ceil(strip / half));
-  run.style.setProperty('--tape-s', `${Math.max(30, Math.round(run.scrollWidth / 2 / 40))}s`);
+  run.style.setProperty('--tape-s', `${Math.max(60, Math.round(run.scrollWidth / 2 / 24))}s`);
 }
 const refreshTape = () => Promise.all([readStats().catch(() => null), readRecent()]).then(([d, rec]) => paintTape(d, rec)).catch(() => {});
 

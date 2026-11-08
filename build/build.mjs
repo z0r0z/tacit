@@ -185,8 +185,8 @@ const TRADE_CB_FILES = ['trade/tape.js', 'trade/chart.js', 'trade/book.js', 'tra
   'cbtc/read.js', 'cbtc/app.js', 'cbtc/index.html'];
 // dapp/vault/ is the borrow page: the same walk, leaves first (its arithmetic, its chain reads and its addresses), then app.js, then the page.
 const VAULT_CB_FILES = ['vault/math.js', 'vault/deployments.js', 'vault/chain.js', 'vault/feed.js', 'vault/batch.js', 'vault/router.js', 'vault/engine.js', 'vault/reopen.js', 'vault/pools.js', 'vault/quote.js', 'vault/mine.js', 'vault/app.js', 'vault/index.html'];
-// dapp/tasks/ is the page of jobs paid in TAC: the check of a job's transactions first, then app.js, then the page (open.js is the front page's line about them).
-const TASKS_CB_FILES = ['tasks/open.js', 'tasks/verify.js', 'tasks/app.js', 'tasks/index.html'];
+// dapp/tasks/ is the page of jobs paid in TAC: the check of a job's transactions first, then app.js, then the page.
+const TASKS_CB_FILES = ['tasks/verify.js', 'tasks/app.js', 'tasks/index.html'];
 // dapp/discord/ is where the verification panel sends a holder: shared message/holdings helpers, then app.js, then the page.
 const DISCORD_CB_FILES = ['discord/message.js', 'discord/holdings.js', 'discord/app.js', 'discord/index.html'];
 // dapp/fast/ is where TAC on Bitcoin goes to the private balance through a provider: its wiring and its page logic first, then app.js, then the page.
