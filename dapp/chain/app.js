@@ -1,7 +1,7 @@
 // /chain/: the Tacit chain, live, for anyone (no key): whether it is working, what it holds and what a share is worth, its blocks, and what it
 // rests on. Read from Ethereum (TacitBlocks), the leader's API and tacit-api's prover board as the page opens, then every 30 s while it shows.
-import { ETH_NODES } from '/eth-nodes.js?cb=cd9eb89d';
-import { hedgedRpc } from '/trade/rpc.js?cb=2c85ddac';
+import { ETH_NODES } from '/eth-nodes.js?cb=1769d5d4';
+import { hedgedRpc } from '/trade/rpc.js?cb=e47e943a';
 import { tacitChain } from '/tacit-chain-config.js?cb=803c3298';
 
 // a link made for the chain's page before it was this one (a move, #card=…) goes on to TAC's page, where every move is

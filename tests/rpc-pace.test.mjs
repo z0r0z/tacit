@@ -3,7 +3,7 @@
 //   node tests/rpc-pace.test.mjs
 
 import assert from 'node:assert/strict';
-import { pace, busy } from '../dapp/rpc-pace.js';
+import { pace, busy, once } from '../dapp/rpc-pace.js';
 import { hedgedRpc } from '../dapp/trade/rpc.js';
 import { jsonRpc } from '../dapp/evm-pool-wallet.js';
 
@@ -122,6 +122,37 @@ await test('a hedge that is beaten while it waits for a place is dropped unsent'
   assert.equal(r, fast);
   await Promise.all(fill);
   assert.equal(seen.filter((u) => u === NODEREAL).length, 3, 'the hedge that never got a place was not sent');
+});
+
+await test('once: the same key asked together, or soon after, is run once and everyone gets the answer; a failure is not kept', async () => {
+  const scope = () => {}; let runs = 0;
+  const slow = (v, ms = 15) => () => { runs++; return tick(ms).then(() => v); };
+  const rs = await Promise.all([once(scope, 'k', 1000, slow('a')), once(scope, 'k', 1000, slow('b')), once(scope, 'k', 1000, slow('c'))]);
+  assert.deepEqual(rs, ['a', 'a', 'a']);
+  assert.equal(runs, 1, 'one run for three askers');
+  assert.equal(await once(scope, 'k', 1000, slow('d')), 'a', 'asked again soon after: the answer it has');
+  assert.equal(runs, 1);
+  assert.equal(await once(scope, 'other', 1000, slow('x')), 'x', 'another key is its own');
+  assert.equal(runs, 2);
+  await tick(30);
+  assert.equal(await once(scope, 'k', 20, slow('e')), 'e', 'after its time, asked afresh');
+  assert.equal(runs, 3);
+  let fails = 0;
+  const bad = () => { fails++; return Promise.reject(new Error('down')); };
+  const both = await Promise.allSettled([once(scope, 'f', 1000, bad), once(scope, 'f', 1000, bad)]);
+  assert.deepEqual(both.map((r) => r.status), ['rejected', 'rejected']);
+  assert.equal(fails, 1, 'the two askers shared the one failure');
+  assert.equal(await once(scope, 'f', 1000, slow('ok')), 'ok', 'a failure is not kept');
+});
+
+await test('once: readers on a different footing (another fetch) do not share, and what is kept is bounded', async () => {
+  const f1 = () => {}, f2 = () => {};
+  let n = 0; const run = () => Promise.resolve(++n);
+  assert.equal(await once(f1, 'k', 1000, run), 1);
+  assert.equal(await once(f2, 'k', 1000, run), 2, 'a separate scope asks for itself');
+  assert.equal(await once(f1, 'k', 1000, run), 1);
+  for (let i = 0; i < 600; i++) await once(f1, 'key' + i, 0, run);
+  assert.equal(await once(f1, 'key599', 1000, run), n, 'still answers after many keys');
 });
 
 if (failed) { console.log(`\n${failed} failed`); process.exit(1); }

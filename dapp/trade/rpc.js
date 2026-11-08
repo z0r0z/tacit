@@ -38,6 +38,8 @@ export function nodeHealth({ now = () => Date.now(), store = null, key = 'tacit-
     order(hosts) { const t = now(), tired = (h) => (until.get(idOf(h)) || 0) > t; return [...hosts.filter((h) => !tired(h)), ...hosts.filter(tired)]; },
     fail(h, kind = 'down') { const id = idOf(h), n = Math.min((strikes.get(id) || 0) + 1, 4); strikes.set(id, n); if (kind === 'quota') quota.add(id); else quota.delete(id); until.set(id, now() + Math.min(REST[kind] * 2 ** (n - 1), kind === 'quota' ? QUOTA_LONGEST : LONGEST)); save(); },
     ok(h) { const id = idOf(h); strikes.delete(id); quota.delete(id); if (until.delete(id)) save(); },
+    // whether the node is resting because its key's quota is used up: it will refuse until the rest ends, so a caller that has other ways to go does not ask it
+    quotaRest(h) { const id = idOf(h); return quota.has(id) && (until.get(id) || 0) > now(); },
   };
   records?.set(key, health);
   return health;
@@ -53,10 +55,10 @@ export function hedgedRpc(hosts, method, params, { hedgeMs = hedgeDelay(), timeo
     const usable = hosts.filter((h) => typeof h === 'string' || !h.usable || h.usable(method, params));
     if (!usable.length) return reject(new Error('no RPC answered'));
     const ordered = health ? health.order(usable) : usable;
-    // a node known to refuse this read (eth-nodes.js) is asked after those that do not, in the places the URLs held; a node that is not a URL keeps its own
-    const urls = ordered.filter((h) => typeof h === 'string'), sorted = [...urls.filter((h) => !refuses(h, method, params)), ...urls.filter((h) => refuses(h, method, params))];
-    let at = 0;
-    const list = ordered.map((h) => (typeof h === 'string' ? sorted[at++] : h));
+    // A node known to refuse this read (eth-nodes.js) is not asked while there is another to ask: the browser lists every refused request, and the answer is known. When it is all
+    // there is, it is asked. A node that is not a URL (the wallet's) keeps its place.
+    const urls = ordered.filter((h) => typeof h === 'string'), fine = urls.filter((h) => !refuses(h, method, params));
+    const list = fine.length ? ordered.filter((h) => typeof h !== 'string' || fine.includes(h)) : ordered;
     const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), ctrls = new Set();
     let next = 0, live = 0, over = false, last = null, hedge = 0, hedged = false;
     const finish = (f, v) => { if (over) return; over = true; clearTimeout(hedge); for (const c of ctrls) c.abort(); f(v); };

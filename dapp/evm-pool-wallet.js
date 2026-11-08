@@ -226,9 +226,9 @@ export function jsonRpc(urls, fetchImpl = globalThis.fetch.bind(globalThis), { t
   // not have it (one that keeps recent history only does), so the next is asked, and null comes back only when none has it.
   const single = async (method, params = [], { found = false } = {}) => {
     const all = [], start = first; let none = false;
-    // a node known to refuse this read (eth-nodes.js) is asked after those that do not
-    const turn = list.map((_, k) => (start + k) % list.length), refused = (i) => refuses(list[i], method, params);
-    for (const at of [...turn.filter((i) => !refused(i)), ...turn.filter(refused)]) {
+    // a node known to refuse this read (eth-nodes.js) is not asked while there is another to ask, and is when it is all there is
+    const turn = list.map((_, k) => (start + k) % list.length), refused = (i) => refuses(list[i], method, params), fine = turn.filter((i) => !refused(i));
+    for (const at of fine.length ? fine : turn) {
       const url = list[at];
       try {
         const signal = AbortSignal.timeout?.(timeoutMs);

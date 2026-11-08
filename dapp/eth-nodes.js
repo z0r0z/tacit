@@ -14,17 +14,18 @@
 export const ETH_NODES = [
   'https://ethereum-rpc.publicnode.com',
   'https://rpc.mevblocker.io',
-  'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7',
   'https://eth.drpc.org',
   'https://1.rpc.thirdweb.com',
   'https://eth-mainnet.public.blastapi.io',
   'https://ethereum-json-rpc.stakely.io',
   'https://1rpc.io/eth',
+  'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7',                                // a key every visitor shares: one quota for all of them, so last
 ];
 export const ETH_LOG_NODES = [
-  'https://rpc.mevblocker.io',                                            // 50,000 blocks
-  'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7',  // under 50,000
+  'https://rpc.mevblocker.io',                                            // 45,000 blocks
+  'https://rpc.mevblocker.io/fast',                                       // the same service by another route
   'https://ethereum-rpc.publicnode.com',                                  // 10,000, recent blocks only
+  'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7',  // under 50,000, but a key every visitor shares: last
   'https://ethereum-json-rpc.stakely.io',                                 // about 1,000
   'https://1rpc.io/eth',                                                  // 50
 ];
@@ -32,10 +33,10 @@ export const ETH_LOG_NODES = [
 // of a log query at once and answers a wide one by response size; as a fallback each only adds a refused request to the console.
 export const ETH_ARCHIVE_NODES = [
   'https://rpc.mevblocker.io',
-  'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7',
   'https://eth.drpc.org',
-  'https://1.rpc.thirdweb.com',
   'https://eth-mainnet.public.blastapi.io',
+  'https://1.rpc.thirdweb.com',
+  'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7',
 ];
 
 // The same for the other chains the pages read, kept here once so that every page lists the same nodes in the same order (measured 2026-11-08: each pair
@@ -51,6 +52,7 @@ export const BASE_NODES = [
 ];
 export const ROBINHOOD_NODES = [
   'https://rpc.mainnet.chain.robinhood.com',
+  'https://robinhood-rpc.publicnode.com',
   'https://robinhood.drpc.org',
 ];
 
@@ -59,10 +61,16 @@ export const ROBINHOOD_NODES = [
 //   logs   the most blocks one eth_getLogs may span (0: none at all)
 //   back   how far behind the newest block its logs reach (publicnode keeps recent blocks, and older ones need a token)
 //   state  set for a node that serves state only at the newest blocks: a read at a numbered block goes elsewhere
+//   shared a key every visitor uses together (see isShared)
+// Checked 2026-11-09 against nodereal and mevblocker over 600,000 blocks of one contract's logs (86 of them): rpc.flashbots.net returned 21 and its /fast route 51 (so it is
+// never asked for logs, only for sends). Left out after the same check: xrpc.cl, which returned every log but answers some reads with a 503 (the console lists each) and an
+// old balance with 0x0 where the others agree on the real one.
 const LIMITS = {
   'ethereum-rpc.publicnode.com': { logs: 9999, back: 9999, state: true },
   'rpc.mevblocker.io': { logs: 45000 },
-  'eth-mainnet.nodereal.io': { logs: 49999 },
+  'eth-mainnet.nodereal.io': { logs: 49999, shared: true },
+  'rpc.flashbots.net': { logs: 0 },
+  'robinhood-rpc.publicnode.com': { logs: 0, state: true },
   'eth.drpc.org': { logs: 0 },
   '1.rpc.thirdweb.com': { logs: 2000 },
   'ethereum-json-rpc.stakely.io': { logs: 25 },
@@ -78,6 +86,8 @@ const limitsOf = (url) => {
 };
 // The widest eth_getLogs span to start a node at (Infinity where it has no known limit): a range wider is cut to this before it is sent.
 export const logSpan = (url) => limitsOf(url)?.logs || Infinity;
+// A node read through a key every visitor shares has one quota for all of them, where a keyless node limits each visitor's address on its own: the shared ones are asked after the rest.
+export const isShared = (url) => !!limitsOf(url)?.shared;
 const blockNo = (t) => (typeof t === 'string' && /^0x[0-9a-f]+$/i.test(t) ? parseInt(t, 16) : null);
 const STATE_BLOCK = { eth_call: 1, eth_getBalance: 1, eth_getCode: 1, eth_getStorageAt: 2, eth_getTransactionCount: 1 };
 // Whether `url` is known to refuse this read. `head` is the newest block the caller is reading toward, when it knows it (the end of a scan).

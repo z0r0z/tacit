@@ -76,6 +76,16 @@ await test('the rest is kept for the next page, up to five minutes for a quota',
   w.ok(A); assert.deepEqual(Object.keys(JSON.parse(wrote.getItem('k-w'))), ['b.example']);
 });
 
+await test('quotaRest says a node is resting because its quota is used up, and only that', () => {
+  let t = 0; const now = () => t; const h = nodeHealth({ now });
+  h.fail(A, 'quota'); h.fail(B, 'down');
+  assert.equal(h.quotaRest(A), true);
+  assert.equal(h.quotaRest(B), false, 'a node that is merely down may be tried again');
+  assert.equal(h.quotaRest('https://c.example'), false);
+  t = 61e3; assert.equal(h.quotaRest(A), false, 'the rest is over');
+  h.fail(A, 'quota'); h.ok(A); assert.equal(h.quotaRest(A), false, 'forgiven once it answers');
+});
+
 await test('hedgedRpc rests a node that says its usage limit is reached, so the next calls ask the others first', async () => {
   let t = 0; const now = () => t; const health = nodeHealth({ now });
   const asked = [];

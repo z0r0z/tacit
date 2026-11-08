@@ -2,8 +2,8 @@
 import { getConfidentialDeployment, activeNetwork, syncProtectedOutpoints, shownTicker } from './confidential-deployments.js';
 import { bodyType } from './rpc-body.js';
 import { hedgedRpc, nodeHealth, QUOTA } from './trade/rpc.js';
-import { walletNode, connectedInjected, logSpan, refuses } from './eth-nodes.js';
-import { pace } from './rpc-pace.js';
+import { walletNode, connectedInjected, logSpan, refuses, isShared } from './eth-nodes.js';
+import { pace, once } from './rpc-pace.js';
 import { makeEvmAccount } from './evm-account.js';
 import { makeConfidentialIndexer } from './confidential-indexer.js';
 import { makeConfidentialEvmLog } from './confidential-evm-log.js';
@@ -145,7 +145,13 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // each node starts at the widest range it is known to serve (eth-nodes.js), or narrower where this browser has learned it
   const _eps = (cfg.logRpcs || cfg.rpcs).map((url) => ({ url, span: Math.min(Number(_spans[url]) > 0 ? Number(_spans[url]) : Infinity, logSpan(url)) }));
   const _keepSpan = (ep) => { _spans[ep.url] = ep.span; try { _store?.setItem(SPANS, JSON.stringify(_spans)); } catch { } };
-  async function _post(ep, method, params, ms = 10000) {
+  // a log read of a fixed range of blocks is asked of the node once, however many readers in the page ask it (see `once`)
+  const _fixed = (method, params) => method === 'eth_getLogs' && /^0x[0-9a-f]+$/i.test(String(params?.[0]?.fromBlock)) && /^0x[0-9a-f]+$/i.test(String(params?.[0]?.toBlock));
+  const _post = (ep, method, params, ms = 10000) => (_fixed(method, params) ? once(_fetch, `${ep.url}|${JSON.stringify(params)}`, 20000, () => _postNow(ep, method, params, ms)) : _postNow(ep, method, params, ms));
+  async function _postNow(ep, method, params, ms = 10000) {
+    if (ep.wallet) {
+      try { return await _wallet.send(method, params); } catch (e) { throw Object.assign(new Error((e && e.message) || 'the wallet did not answer'), { kind: 'rpc' }); }
+    }
     let r;
     try {
       const signal = AbortSignal.timeout(ms);
@@ -186,19 +192,26 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     if (cap) { const n = Number(cap[1].replace(/,/g, '')); return n < span ? { span: n, cap: n } : null; }
     return /too (large|wide|big|many)|exceed|more than|response size/i.test(e.message) && span > 1 ? { span: Math.floor(span / 2) } : null;
   }
+  // The connected wallet's own node is a last resort for a log read that names no one: the pool's events by their kind say nothing of the key reading them, but a filter on
+  // an address (an account derived from the Tacit key) would tell the wallet's provider which account is whose, so those never go there.
+  const _walletEp = { url: 'wallet', wallet: true, span: 5000 };
+  const _namesNoOne = (params) => (params.topics || []).slice(1).every((t) => t == null);
   async function _logsIn(params, from, to) {
     const out = [];
     for (let start = from, lastErr = null; start <= to;) {
       let got = null;
       for (let pass = 0; pass < 2 && !got; pass++) {
         if (pass > 0) await new Promise((res) => setTimeout(res, 400));
-        // the widest range first, those resting after a failure last
-        const wide = _eps.map((e, i) => [e, i]).sort(([a, i], [b, j]) => (a.span < b.span) - (a.span > b.span) || i - j).map(([e]) => e);
+        // the nodes that take a wide range first (of those, the ones with a quota of their own before the key every visitor shares), the widest first, those resting after a failure last
+        const narrow = (e) => e.span < 5000;
+        const wide = _eps.map((e, i) => [e, i]).sort(([a, i], [b, j]) => (narrow(a) - narrow(b)) || (isShared(a.url) - isShared(b.url)) || (a.span < b.span) - (a.span > b.span) || i - j).map(([e]) => e);
         const byUrl = new Map(wide.map((e) => [e.url, e]));
         const ordered = _logHealth.order(wide.map((e) => e.url)).map((u) => byUrl.get(u));
         // a node known to refuse this range (eth-nodes.js: one without logs, one that keeps recent blocks only) is asked after those that do not
         const refused = (ep) => refuses(ep.url, 'eth_getLogs', [{ fromBlock: '0x' + start.toString(16), toBlock: '0x' + Math.min(to, start + Math.min(ep.span, to - start + 1) - 1).toString(16) }], to);
-        const eps = [...ordered.filter((ep) => !refused(ep)), ...ordered.filter(refused)];
+        // A node that is certain to refuse this range (eth-nodes.js: publicnode's old blocks, a node without logs) or whose quota is used up is not asked: the browser lists every
+        // refused request, and the answer is known. A read with nowhere left to go waits for its next try.
+        const eps = [...ordered.filter((ep) => !refused(ep) && !_logHealth.quotaRest(ep.url)), ...(_namesNoOne(params) && _wallet.usable('eth_getLogs', [params]) ? [_walletEp] : [])];
         for (const ep of eps) {
           let span = Math.min(to - start + 1, ep.span);
           for (let tries = 0; tries < 16 && !got; tries++) {

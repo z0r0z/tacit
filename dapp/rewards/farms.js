@@ -4,7 +4,7 @@
 // ratio). Joining with one side (a swap first) and what only an unwrap sent yourself can do are the front page's: they link there.
 // Nothing here is loaded until the holder asks: this module, the key and the pool all come in on that press.
 import { makeKeySession, signInSheet } from '/trade/key.js?cb=a634e226';
-import { getUx, forgetUx } from '/trade/poolux.js?cb=d2ed63eb';
+import { getUx, forgetUx } from '/trade/poolux.js?cb=efc87cea';
 import { makeRunner } from '/activity.js?cb=8ccbc552';
 import { canHarvest, canUnbond, unharvested, locked, harvest, unbond, rewardNotes, relayable, redeem, wtacWithdrawCall, wtacBalanceCall, worthHarvesting, lpNotes, takeOut, HARVEST_WORTH, UNBOND_DUST, bFor, joinTerms, notesOf, exactOf, cutPick, cutSized, bond } from '/farm-ops.js?cb=0933a4c8';
 import { relayWords } from '/relay-outcome.js?cb=9db7155a';

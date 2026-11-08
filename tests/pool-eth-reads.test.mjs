@@ -73,6 +73,89 @@ test('the connected wallet is asked once every public node has failed, for reads
   await assert.rejects(() => ux.rpc('eth_blockNumber', []), (e) => e.unreachable === true, 'nor a read through WalletConnect');
 });
 
+test('two readers in a page (the same module loaded twice) ask the nodes for a range of logs once', async () => {
+  mem.clear();
+  const head = 30_000_000;
+  const w = world({ [ETH_NODES[0]]: () => 'reset', ...Object.fromEntries(ETH_LOG_NODES.map((u) => [u, (method, params) => {
+    if (method === 'eth_blockNumber') return '0x' + head.toString(16);
+    if (method === 'eth_getLogs') return [];
+    return '0x0';
+  }])) });
+  const a = w.ux(), b = w.ux();
+  const ask = (ux) => ux.fetchEvents({ fromBlock: head - 120_000, toBlock: head });
+  await Promise.all([ask(a), ask(b)]);
+  const logCalls = w.asked.filter(([, m]) => m === 'eth_getLogs');
+  assert.equal(logCalls.length, 3, 'a hundred and twenty thousand blocks in three ranges, each asked once though two readers wanted it');
+  // asked again soon after: each reader re-reads only the last blocks, which are not final yet, and the two share that one read
+  await Promise.all([ask(a), ask(b)]);
+  assert.equal(w.asked.filter(([, m]) => m === 'eth_getLogs').length, 4, 'one more read, for both');
+});
+
+test('a node with a quota of its own is asked for logs before the key every visitor shares', async () => {
+  mem.clear();
+  const head = 30_000_000;
+  const w = world(Object.fromEntries(ETH_LOG_NODES.map((u) => [u, (method) => (method === 'eth_blockNumber' ? '0x' + head.toString(16) : method === 'eth_getLogs' ? [] : '0x0')])));
+  await w.ux().fetchEvents({ fromBlock: head - 30_000, toBlock: head });
+  const first = w.asked.find(([, m]) => m === 'eth_getLogs')[0];
+  assert.ok(!first.includes('nodereal'), 'the shared key was not the first asked: ' + first);
+  assert.ok(w.asked.filter(([u, m]) => m === 'eth_getLogs' && u.includes('nodereal')).length === 0, 'and not asked at all while another served it');
+});
+
+test('log nodes are tried wide first, and among the wide ones the shared key after the rest; the nodes of a few blocks come last of all', async () => {
+  mem.clear();
+  const head = 30_000_000, order = [];
+  const w = world(Object.fromEntries(ETH_LOG_NODES.map((u) => [u, (method) => {
+    if (method === 'eth_blockNumber') return '0x' + head.toString(16);
+    if (method === 'eth_getLogs') { order.push(u); return { error: { code: -32000, message: 'service temporarily unavailable' } }; }
+    return '0x0';
+  }])));
+  await w.ux().fetchEvents({ fromBlock: head - 3_000, toBlock: head }).catch(() => {});
+  const seen = [...new Set(order)];
+  const at = (frag) => seen.findIndex((u) => u.includes(frag));
+  assert.ok(at('rpc.mevblocker.io') >= 0 && at('nodereal') >= 0 && at('stakely') >= 0, 'every node was tried: ' + seen.join(' '));
+  assert.ok(at('rpc.mevblocker.io') < at('nodereal'), 'a node with a quota of its own before the shared key');
+  assert.ok(at('nodereal') < at('stakely') && at('nodereal') < at('1rpc.io'), 'the shared key (wide) before the nodes of 25 and 50 blocks');
+});
+
+test('a node that is certain to refuse a range is not asked, and one whose quota is used up is not asked again during its rest', async () => {
+  mem.clear();
+  const head = 30_000_000, asked = {};
+  const w = world(Object.fromEntries(ETH_LOG_NODES.map((u) => [u, (method) => {
+    if (method === 'eth_blockNumber') return '0x' + head.toString(16);
+    if (method !== 'eth_getLogs') return '0x0';
+    asked[u] = (asked[u] || 0) + 1;
+    return u.includes('nodereal') ? { error: { code: -32005, message: 'You have reached the maximum API usage limit of public. If you need more, upgrade' } } : { error: { code: -32000, message: 'service temporarily unavailable' } };
+  }])));
+  const ux = w.ux();
+  // a range far behind the head: publicnode keeps recent blocks only and says so with a 403, which is known
+  await ux.fetchEvents({ fromBlock: head - 400_000, toBlock: head - 380_000 }).catch(() => {});
+  assert.equal(asked['https://ethereum-rpc.publicnode.com'], undefined, 'publicnode was not asked for blocks it does not serve');
+  const nodereal = Object.keys(asked).find((u) => u.includes('nodereal'));
+  assert.equal(asked[nodereal], 1, 'nodereal was asked once, said its quota was used up, and was not asked again');
+  await ux.fetchEvents({ fromBlock: head - 370_000, toBlock: head - 360_000 }).catch(() => {});
+  assert.equal(asked[nodereal], 1, 'nor for the next range, while it rests');
+});
+
+test('the connected wallet serves a log read of the pool\'s own events when every public node has failed, and never one that names an address', async () => {
+  mem.clear();
+  const head = 30_000_000, bad = Object.fromEntries(ETH_LOG_NODES.map((u) => [u, (method) => (method === 'eth_blockNumber' ? '0x' + head.toString(16) : 'reset')]));
+  // the pool's events by kind: nothing in the filter says whose key is reading
+  const w = world(bad), ux = w.ux(), seen = [];
+  ux.useWallet(() => ({ request: async ({ method, params }) => { seen.push([method, JSON.stringify(params[0].topics || [])]); return []; } }));
+  const events = await ux.fetchEvents({ fromBlock: head - 8_000, toBlock: head });
+  assert.ok(Array.isArray(events));
+  assert.ok(seen.length > 0 && seen.every(([m]) => m === 'eth_getLogs'), 'the wallet was asked, for logs only: ' + JSON.stringify(seen));
+  assert.ok(w.asked.filter(([, m]) => m === 'eth_getLogs').length >= ETH_LOG_NODES.length - 1, 'every public node was tried first');
+  // a filter on an address (an account derived from the Tacit key) is never sent to the wallet's provider, which would learn whose account it is:
+  // cbtcBonds reads the engine's postings for the key's own accounts
+  const nodes3 = { ...bad };
+  const w2 = world(nodes3), ux2 = w2.ux(), seen2 = [];
+  ux2.useWallet(() => ({ request: async ({ method, params }) => { seen2.push([method, JSON.stringify(params[0].topics || null)]); return method === 'eth_blockNumber' ? '0x' + head.toString(16) : []; } }));
+  await assert.rejects(() => ux2.cbtcBonds('0x' + '07'.repeat(32), { btcHistory: { lockOutputs: [] } }), /./, 'with every public node down the read fails rather than going to the wallet');
+  assert.deepEqual(seen2.filter(([m]) => m === 'eth_getLogs'), [], 'the wallet was never asked for logs that name an account');
+  assert.ok(w2.asked.some(([, m]) => m === 'eth_getLogs'), 'the public nodes were tried');
+});
+
 test('a node\'s widest range of logs is learned from its refusal and kept for the next page', async () => {
   mem.clear();
   const head = 30_000_000;
