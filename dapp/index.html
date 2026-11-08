@@ -4104,7 +4104,8 @@ async function chainStart() {
       CH.lane = lane;
       if (UNI) { key.tacit = addressFor(key.priv); rememberKey(key); paintWallet(); }
     }
-    const k = `tacit-chain-published:${CH.cfg.blocks.toLowerCase()}:${key.pubHex}`;
+    // published with the Tacit key's signature too (v2), so a Tacit address from before the chain can be paid on it
+    const k = `tacit-chain-published-v2:${CH.cfg.blocks.toLowerCase()}:${key.pubHex}`;
     let done = false;
     try { done = sessionStorage.getItem(k) === '1'; } catch { }
     if (!done && !CH.pubd) { await c.publish(); CH.pubd = true; try { sessionStorage.setItem(k, '1'); } catch { } }

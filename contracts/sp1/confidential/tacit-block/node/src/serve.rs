@@ -12,7 +12,11 @@
 //!   GET  /mempool                the ids of what is waiting
 //!   GET  /fee                    the leader's terms, as its leader posted them: { address (its chain address), fee (units of 1e-8 TAC a
 //!                                spend), sweepFee (TAC wei a permitted shield adds), shieldCap (units), at, window }, fee "0" when it asks none
-//!   POST /address                { address } → { hash }      GET /address/<hash> → { address }   (the chain lane's directory)
+//!   POST /address                { address, key?, sig? } → { hash }      GET /address/<hash> → { address }   (the chain lane's directory)
+//!                                With `key` (a Tacit key's compressed secp256k1 public key, 33 bytes) and `sig` (its 64-byte signature over
+//!                                SHA-256("tacit-chain-key-v1" ‖ key ‖ address)), the address is also kept under the key, checked here:
+//!   GET  /address/key/<key>      → { address, sig }: the chain address a Tacit address from before the chain (which carries the key, not the
+//!                                chain lane) is paid at. A payer checks the signature again.
 //!   POST /spend                  { publics, proof, data, memos[], opMemos[], back?, permit? } → { id }   (back: a shield paid to its inbox;
 //!                                permit: { owner, fee, deadline, v, r, s, back } a holder's permit for it, TacitBlocks.sweepWithPermit)
 //!   POST /settle                 { settle, memo } → { id }
@@ -147,13 +151,16 @@ pub struct Leader {
 pub struct Directory {
     map: BTreeMap<[u8; 32], Vec<u8>>,
     file: Option<String>,
+    /// Chain addresses by the Tacit key that signed for them (key → (signature, the address's hash)): how a Tacit address from before the
+    /// chain is paid on it. Only a signature by the key itself puts an entry here, so no one else can name another address for a key.
+    keys: BTreeMap<[u8; 33], ([u8; 64], [u8; 32])>,
 }
 const ADDRESS_LEN: usize = 128 + 33 + 1184;
 const DIRECTORY_MAX: usize = 250_000;
 
 impl Directory {
     pub fn open(file: Option<String>) -> Directory {
-        let mut d = Directory { map: BTreeMap::new(), file: None };
+        let mut d = Directory { map: BTreeMap::new(), file: None, keys: BTreeMap::new() };
         if let Some(f) = &file {
             if let Ok(text) = std::fs::read_to_string(f) {
                 for line in text.lines() {
@@ -162,9 +169,56 @@ impl Directory {
                     }
                 }
             }
+            // the keyed entries, each checked again as it is read
+            if let Ok(text) = std::fs::read_to_string(format!("{f}.keys")) {
+                for line in text.lines() {
+                    let p: Vec<&str> = line.split_whitespace().collect();
+                    if p.len() != 3 {
+                        continue;
+                    }
+                    let (Ok(k), Ok(s), Ok(h)) = (hex::decode(p[0]), hex::decode(p[1]), hex::decode(p[2])) else { continue };
+                    let Ok(h) = <[u8; 32]>::try_from(h.as_slice()) else { continue };
+                    if let Some(addr) = d.map.get(&h).cloned() {
+                        let _ = d.add_key(&k, &s, &addr);
+                    }
+                }
+            }
         }
         d.file = file;
         d
+    }
+    /// What a key signs to name its chain address: SHA-256("tacit-chain-key-v1" ‖ key ‖ address).
+    pub fn key_message(key: &[u8], address: &[u8]) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        Sha256::new().chain_update(b"tacit-chain-key-v1").chain_update(key).chain_update(address).finalize().into()
+    }
+    /// Keeps `address` (already in the directory) under `key`, if `sig` is the key's signature for it; the entry a key signed last stands.
+    pub fn add_key(&mut self, key: &[u8], sig: &[u8], address: &[u8]) -> Result<(), String> {
+        use k256::ecdsa::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey};
+        let k: [u8; 33] = key.try_into().map_err(|_| "a key is a 33-byte compressed public key".to_string())?;
+        let s: [u8; 64] = sig.try_into().map_err(|_| "a signature is 64 bytes".to_string())?;
+        let vk = VerifyingKey::from_sec1_bytes(&k).map_err(|_| "not a secp256k1 public key".to_string())?;
+        let sg = Signature::from_slice(&s).map_err(|_| "not a signature".to_string())?;
+        vk.verify_prehash(&Self::key_message(&k, address), &sg).map_err(|_| "the signature is not the key's for this address".to_string())?;
+        let h = Self::hash(address);
+        if !self.map.contains_key(&h) {
+            return Err("that address is not in the directory".into());
+        }
+        if self.keys.get(&k) == Some(&(s, h)) {
+            return Ok(());
+        }
+        if let Some(f) = &self.file {
+            use std::io::Write;
+            let mut out = std::fs::OpenOptions::new().create(true).append(true).open(format!("{f}.keys")).map_err(|e| e.to_string())?;
+            writeln!(out, "{} {} {}", hex::encode(k), hex::encode(s), hex::encode(h)).map_err(|e| e.to_string())?;
+        }
+        self.keys.insert(k, (s, h));
+        Ok(())
+    }
+    /// The chain address a key signed for, with its signature.
+    pub fn by_key(&self, key: &[u8; 33]) -> Option<(Vec<u8>, [u8; 64])> {
+        let (s, h) = self.keys.get(key)?;
+        Some((self.map.get(h)?.clone(), *s))
     }
     pub fn hash(address: &[u8]) -> [u8; 32] {
         use sha2::{Digest, Sha256};
@@ -706,8 +760,16 @@ impl Leader {
                     }
                 }
                 let a = hexv(&body["address"]).map_err(bad)?;
-                let h = self.directory.add(a).map_err(bad)?;
+                let h = self.directory.add(a.clone()).map_err(bad)?;
+                if body.get("key").is_some_and(|k| !k.is_null()) {
+                    let (k, s) = (hexv(&body["key"]).map_err(bad)?, hexv(&body["sig"]).map_err(bad)?);
+                    self.directory.add_key(&k, &s, &a).map_err(bad)?;
+                }
                 Ok(json!({ "hash": hx(&h) }))
+            }
+            ("GET", p) if p.starts_with("/address/key/") => {
+                let k: [u8; 33] = hex::decode(p[13..].trim_start_matches("0x")).ok().and_then(|b| b.try_into().ok()).ok_or(bad("a 33-byte key".into()))?;
+                self.directory.by_key(&k).map(|(a, s)| json!({ "address": hx(&a), "sig": hx(&s) })).ok_or((404, "no chain address for that key".to_string()))
             }
             ("GET", p) if p.starts_with("/address/") => {
                 let h: [u8; 32] = hex::decode(p[9..].trim_start_matches("0x")).ok().and_then(|b| b.try_into().ok()).ok_or(bad("a 32-byte hash".into()))?;

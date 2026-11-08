@@ -167,6 +167,9 @@ What a wallet uses is public, served by the leader's node (`tacit-block-node`; t
   leader for now, the launch cap. A quote is honoured for `window` seconds.
 * `POST /spend` (a spend, with `back` for a shield paid to its inbox and `permit` for one paid by permit), `POST /settle`, `POST /address`
   and `GET /address/<hash>` (the chain lane's directory), and `POST /forced`: the bytes `TacitBlocks.force` takes for a spend no leader takes.
+* `POST /address` with `key` and `sig` also keeps the address under a Tacit key: `sig` is the key's signature over
+  SHA-256("tacit-chain-key-v1" ‖ key ‖ address), checked by the leader. `GET /address/key/<key>` returns `{ address, sig }`, so a Tacit address
+  from before the chain (it carries the key, not the chain lane) is paid on the chain; the payer checks the signature again.
 
 What waits lives in the leader's memory: a restart drops it, and wallets hand their kept spends over again the next time they open. Nothing
 is lost, as a deposit or a paid inbox waits on Ethereum; a leader replays every landed block from the contract's events when it starts.

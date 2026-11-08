@@ -10,7 +10,8 @@ import { keccak_256 } from '@noble/hashes/sha3';
 import { makeHalo2System } from '../dapp/btc-pool-halo2-prover.js';
 import { assetField, poolShare, sharesFor, sharesToPay, worthOf } from '../dapp/tacit-chain-wallet.js';
 const T = 100_000_000n; // 1 TAC in units
-import { makeChainClient, sharesWorth } from '../dapp/tacit-chain-client.js';
+import { makeChainClient, sharesWorth, keyMessage } from '../dapp/tacit-chain-client.js';
+import { secp } from '../dapp/vendor/tacit-deps.min.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BIN = join(HERE, '../contracts/sp1/confidential/tacit-block/node/target/release/tacit-block-node');
@@ -76,6 +77,16 @@ try {
   // Bob publishes his chain address; Alice pays him from the 32-byte hash alone
   await bob.publish();
   const to = await alice.resolve(await bob.lane());
+
+  // a Tacit address from before the chain carries Bob's key but no chain lane: Alice finds his chain address under the key, signed by it
+  const bobKey = secp.getPublicKey(new Uint8Array(32).fill(0x22), true);
+  assert.deepStrictEqual(await alice.recipientOf({ btc: { spendPub: bobKey } }), to);
+  assert.deepStrictEqual(await alice.recipientOf({ btc: { spendPub: bobKey }, chain: { hash: await bob.lane() } }), to);
+  // no one else can name an address for his key, and a key that never signed has none
+  const bobAddr = (await api('GET', `/address/${hx(await bob.lane())}`)).address;
+  const forged = (await secp.signAsync(keyMessage(bobKey, bytes(bobAddr)), new Uint8Array(32).fill(0x33))).toCompactRawBytes();
+  assert.ok(!(await api('POST', '/address', { address: bobAddr, key: hx(bobKey), sig: hx(forged) })).ok, 'a signature by another key is refused');
+  await assert.rejects(alice.recipientOf({ btc: { spendPub: secp.getPublicKey(new Uint8Array(32).fill(0x33), true) } }), /not opened the Tacit chain/);
   await Promise.all([alice.pay(to, 300n * T), landBlock()]);
   const payShares = sharesWorth(300n * T, r0);
   assert.equal(await alice.scan(), sh.deposit.shares - payShares - poolShare(r0));

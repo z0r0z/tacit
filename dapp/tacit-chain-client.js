@@ -24,7 +24,7 @@
 // Amounts are TAC in units of 1e-8 (1e10 of the token's smallest units). Notes count shares of the chain's pool, worth more as the
 // chain's fees stay with its holders: `balance()` is in shares, `worth()` in units at the rate the landing contract holds (read from
 // Ethereum, not the leader). A spend takes at most two notes: more is refused with a message to move fewer at once.
-import { sha256, keccak_256, hmac, concatBytes } from './vendor/tacit-deps.min.js';
+import { sha256, keccak_256, hmac, concatBytes, secp } from './vendor/tacit-deps.min.js';
 import { poseidon2, poseidon3, poseidon4, poseidon5 } from './vendor/tacit-poseidon.min.js';
 import { makeChainWallet, hopOp, poolOp, worthOf, sharesFor, sharesToPay, poolShare } from './tacit-chain-wallet.js';
 
@@ -43,6 +43,10 @@ const ZERO_LEAF = '0x' + '0'.repeat(64);
 const PUBLICS_LEN = 12 * 32, PROOF_LEN = 2080, HINTS_LEN = 20 * 64, MEMO_LEN = 1152;
 /// How long a spend kept here is offered again before it is given up on (a deposit goes back after 7 days).
 const KEEP_MS = 30 * 864e5;
+
+/// What a Tacit key signs to name its chain address at a leader's directory: SHA-256("tacit-chain-key-v1" ‖ key ‖ address). A Tacit address
+/// from before the chain carries the key but not the chain lane, so a payer finds the chain address under the key and checks this signature.
+export const keyMessage = (key, address) => sha256(concatBytes(te.encode('tacit-chain-key-v1'), key, address));
 
 /// The chain seed of a Tacit private key: one-way and domain-separated, like the Ethereum account and the Bitcoin pool seed.
 export const chainSeed = (priv) => hmac(sha256, priv, te.encode('tacit-chain-seed-v1'));
@@ -106,8 +110,27 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
     notes: (from, limit) => api('GET', `/notes?from=${from}&limit=${limit}`),
     spent: async (nf) => (await api('GET', `/spent/${nf}`)).spent,
     address: async (h) => (await api('GET', `/address/${h}`)).address,
-    publish: async (a) => (await api('POST', '/address', { address: a })).hash,
+    // the full address, and the same address signed for under this wallet's Tacit key
+    publish: async (a) => {
+      const key = secp.getPublicKey(priv, true), sig = (await secp.signAsync(keyMessage(key, hexBytes(a)), priv)).toCompactRawBytes();
+      return (await api('POST', '/address', { address: a, key: hx(key), sig: hx(sig) })).hash;
+    },
   };
+  /// Where a decoded Tacit address (its `lanes`) is paid on the chain: its chain lane, else the chain address its key signed for (an address
+  /// from before the chain), the signature checked here as well as at the leader.
+  async function recipientOf(lanes) {
+    await ready();
+    if (lanes?.chain?.hash) return w.resolve(lanes.chain.hash, leader);
+    const keys = [lanes?.evm?.ownerPub, lanes?.btc?.spendPub].filter(Boolean).map(hx);
+    for (const k of [...new Set(keys)]) {
+      const r = await api('GET', `/address/key/${k.slice(2)}`).catch(() => null);
+      if (!r?.ok || !r.address || !r.sig) continue;
+      const ab = hexBytes(r.address);
+      if (!secp.verify(hexBytes(r.sig), keyMessage(hexBytes(k), ab), hexBytes(k))) continue;
+      return w.decodeAddress('tc1' + strip(r.address));
+    }
+    throw new Error('tacit chain: this Tacit address has not opened the Tacit chain yet');
+  }
   let w = null, me = null, prover = null, assetHex = null;
   const st = { next: 0, notes: [] };   // notes: { index, value, s (hex), leaf, nullifier }
   const lane = () => hx(w.chainAddressHash(w.address(me))).slice(2, 18);
@@ -286,6 +309,7 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
     lane: async () => { await ready(); return w.chainAddressHash(w.address(me)); },
     publish: async () => { await ready(); return w.publish(me, leader); },
     resolve: async (hash) => { await ready(); return w.resolve(hash, leader); },
+    recipientOf,
     /// Hands a kept spend (from `pending()`) to the leader again, and waits for it to land.
     resubmit: (e, o = {}) => submit({ submission: e.submission, nullifiers: e.nullifiers }, e.extra || {}, { kind: e.kind, units: e.units, ...o }),
     /// What this wallet's notes are worth now, in units.
