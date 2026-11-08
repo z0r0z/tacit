@@ -92,7 +92,10 @@ test('the API’s board and the Nostr posts as one, each proof once', () => {
 
 test('the pages that read the board let the browser reach every relay', () => {
   for (const page of ['dapp/prove/index.html', 'dapp/index.html']) {
-    const csp = readFileSync(new URL('../' + page, import.meta.url), 'utf8').match(/connect-src([^;"]*)/)?.[1].split(/\s+/) || [];
+    // the policy's own meta tag: a comment that names connect-src (the front page has one) is not the policy
+    const policy = readFileSync(new URL('../' + page, import.meta.url), 'utf8').match(/http-equiv="Content-Security-Policy"[^>]*content="([^"]*)"/)?.[1] || '';
+    const csp = policy.match(/connect-src([^;]*)/)?.[1].trim().split(/\s+/) || [];
+    assert.ok(csp.length > 1, `${page} has a connect-src`);
     for (const r of NOSTR_RELAYS) assert.ok(csp.includes(r), `${page} lets the page reach ${r}`);
   }
 });
