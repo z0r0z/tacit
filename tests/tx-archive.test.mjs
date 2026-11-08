@@ -103,7 +103,7 @@ for (const [id, r] of Object.entries(FIX)) {
     ok(starts.length === 8 && starts.slice(0, 4).every((x) => x === 0), `eight batches from two scans at once: the first four (the burst) go out at once (${JSON.stringify(starts)})`);
     ok(starts.slice(4).every((x, i, a) => i === 0 || x - a[i - 1] >= 14000), `and the rest are a refill (15 s) apart, never closer (${JSON.stringify(starts.slice(4))})`);
   }
-  ok(TX_ARCHIVE_BURST < 20 && TX_ARCHIVE_REFILL_MS === 15000, 'by default the bucket is under the API\'s own (a burst of 20, one more every 15 s)');
+  ok(TX_ARCHIVE_BURST <= 40 && TX_ARCHIVE_BURST >= 25 && TX_ARCHIVE_REFILL_MS >= 5000, 'by default the bucket is under the API\'s own (a burst of 60, one more every 5 s) and holds a whole rescan (about 25 requests)');
   // what is left of the bucket is kept in the browser, so a page loaded a moment after another does not take the burst again
   {
     let t = 1000; const kept = {}; const store2 = { getItem: (k) => kept[k] ?? null, setItem: (k, v) => { kept[k] = v; } };

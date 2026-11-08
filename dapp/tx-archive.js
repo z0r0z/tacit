@@ -5,10 +5,11 @@
 // localStorage 'tacit-tx-archive' = 'off'.
 
 const MAX_ROOTS = 64;
-// The API lets one address make a burst of 20 requests to the archive and then one more every 15 s (worker/src/index.js TAC_ANCESTRY_RL_BURST and _REFILL_MS); a request over that is
-// refused, and a refused request is one the browser lists in its console. The page keeps to a little under it, so it waits for its turn and is not refused.
-export const TX_ARCHIVE_BURST = 18;
-export const TX_ARCHIVE_REFILL_MS = 15_000;
+// The API lets one address make a burst of 60 requests to the archive and then one more every 5 s (worker/src/index.js TAC_ANCESTRY_RL_BURST and _REFILL_MS); a request over that is
+// refused, and a refused request is one the browser lists in its console. The page keeps well under it (a burst of 40, one more every 6 s), so it waits for its turn and is not refused,
+// and a second tab or device on the same address still has room.
+export const TX_ARCHIVE_BURST = 40;
+export const TX_ARCHIVE_REFILL_MS = 6_000;
 const BUCKET_KEY = 'tacit-tx-archive-bucket-v1';
 const REST_MS = 10 * 60e3;
 const HEX = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, '0'));
