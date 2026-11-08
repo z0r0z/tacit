@@ -563,7 +563,7 @@ async function copy() {
 // The Relay and Bitcoin tabs' code (the wallet, the header relay, the board's settles) is most of the page's weight and most visitors never
 // open those tabs, so it loads when one opens, when the wallet chip is pressed, or once the page has settled.
 let opsLoad = null;
-const loadOps = () => (opsLoad ||= import('/prove/ops.js?cb=b3303505'));
+const loadOps = () => (opsLoad ||= import('/prove/ops.js?cb=a5dceaf9'));
 $('#wallet').addEventListener('click', async (e) => {
   if (opsLoad) return;                                             // loaded: ops.js has its own handler on the chip
   e.preventDefault();

@@ -250,4 +250,40 @@ ok('and it is not heard after', heard.length === 0);
 storage('some-other-key', null);
 ok('another record changing in storage is nothing to it', restored === 1);
 
+// A sign-in is not held up before the wallet is asked to sign
+const C = wallet('C', '33'.repeat(32));
+const pickC = async (l) => l.find((w) => w.name === 'C').uuid;
+const steps = [];
+const first = makeEvmWallet({ secp, sha256, keccak256: keccak_256, bytesToHex, hexToBytes, prfBytesToScalar, netName: 'mainnet' });
+const baseC = C.calls.length;
+const stuck = new Promise(() => {});
+const getCode = C.provider.request;
+C.provider.request = (r) => (r.method === 'eth_getCode' ? (C.calls.push('eth_getCode'), stuck) : getCode(r));
+C.allowed = true;
+const t3 = Date.now();
+const idC = await first.deriveIdentity({ pick: pickC, onStep: (s) => steps.push(s) });
+const callsC = C.calls.slice(baseC);
+ok('the account the site may already read is taken with no request that could prompt', callsC[0] === 'eth_accounts' && !callsC.includes('eth_requestAccounts'));
+ok('the first sign-in signs twice, and says so at each step', callsC.filter((m) => m === 'personal_sign').length === 2 && steps.join() === 'account,sign,confirm');
+ok('a wallet whose node never answers the code read is waited for only a moment, then asked to sign', callsC.includes('eth_getCode') && Date.now() - t3 < 4000 && idC.address === strip(C.addr));
+
+C.provider.request = getCode;
+steps.length = 0;
+const baseC2 = C.calls.length;
+const again2 = makeEvmWallet({ secp, sha256, keccak256: keccak_256, bytesToHex, hexToBytes, prfBytesToScalar, netName: 'mainnet' });
+const idC2 = await again2.deriveIdentity({ pick: pickC, onStep: (s) => steps.push(s) });
+const callsC2 = C.calls.slice(baseC2);
+ok('an account that opened its key here is signed for at once: its code is not read, and it signs once', callsC2.join() === 'eth_accounts,personal_sign' && steps.join() === 'account,sign');
+ok('and it opens the same key', idC2.priv === idC.priv && idC2.pubHex === idC.pubHex);
+
+C.allowed = false;
+const baseC3 = C.calls.length;
+await makeEvmWallet({ secp, sha256, keccak256: keccak_256, bytesToHex, hexToBytes, prfBytesToScalar, netName: 'mainnet' }).deriveIdentity({ pick: pickC });
+ok('a wallet that has not allowed the site is asked, as ever', C.calls.slice(baseC3).slice(0, 2).join() === 'eth_accounts,eth_requestAccounts');
+
+const throwing = wallet('D', '44'.repeat(32));
+throwing.provider.request = async () => { throw new Error('wallet is not ready'); };
+await assert.rejects(makeEvmWallet({ secp, sha256, keccak256: keccak_256, bytesToHex, hexToBytes, prfBytesToScalar, netName: 'mainnet' }).deriveIdentity({ pick: async (l) => l.find((w) => w.name === 'D').uuid, onStep: () => { throw new Error('a listener must not break it'); } }), /wallet is not ready/);
+ok('a wallet that errs gives its own error, even with a step listener that throws', true);
+
 console.log(`\n${pass} passed, 0 failed`);

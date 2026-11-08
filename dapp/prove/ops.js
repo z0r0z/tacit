@@ -2,7 +2,7 @@
 // published proof, send a waiting settle from the open board, each from the visitor's own wallet, which pays the network fee and keeps any
 // fee the settle pays. Every call is permissionless on chain; no Tacit key touches this page. Moved here from the community ops page
 // (/weld/keeper/ now sends its visitors to these tabs), with the same modules doing the planning and building.
-import { makeEvmWallet } from '/evm-wallet.js?cb=b400cbe7';
+import { makeEvmWallet } from '/evm-wallet.js?cb=c487004a';
 import { announceWalletConnect, wcSheets, dialogHost, WC_PROJECT_ID } from '/walletconnect.js?cb=e0b29a34';
 import { makeHeaderRelayAdvance } from '/header-relay-advance.js?cb=1c3a7226';
 import { POOL, SEL_ANCESTRY, ATTEST_GAS, SETTLE_GAS, readProof, attestRefusal, encodeAttest, needsAncestry, ancestryCalls, ethText, ethFeeWei, feeWeiOf, readPrices, boardSummary, sendable, pickSettle, readBoard, reportLanded, settleCalldata } from '/community-ops.js';

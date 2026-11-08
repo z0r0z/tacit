@@ -51,9 +51,17 @@ export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes,
     return code.length > 2 && !/^0x0+$/i.test(code);
   }
 
-  async function reach({ pick } = {}) {
+  // A wallet's answer, or `fallback` if it errs or takes longer than `ms` (a request the wallet's own node can stall must not hold the sign-in up)
+  const capped = (p, ms, fallback) => new Promise((done) => {
+    const t = setTimeout(() => done(fallback), ms);
+    Promise.resolve(p).then(done, () => done(fallback)).finally(() => clearTimeout(t));
+  });
+
+  // `silent`: an account the site already may read is taken as it stands, with no request that could open a prompt
+  async function reach({ pick, silent = false } = {}) {
     if (typeof window !== 'undefined') { try { window.dispatchEvent(new Event('eip6963:requestProvider')); } catch { } }
-    await new Promise((r) => setTimeout(r, 120));
+    // (a wallet already chosen or announced is not waited for: the wait is for ones still announcing themselves, as on a page just opened)
+    if (!selected && !providers.length) await new Promise((r) => setTimeout(r, 120));
     let provider = selected, chosen = null;
     if (!provider) {
       if (providers.length >= 2 && typeof pick === 'function') {
@@ -66,7 +74,8 @@ export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes,
       provider = chosen || injected();
     }
     if (!provider || typeof provider.request !== 'function') throw new Error('no Ethereum wallet detected — install MetaMask, Rabby, Rainbow, or Coinbase Wallet');
-    const accounts = await provider.request({ method: 'eth_requestAccounts' });
+    let accounts = silent ? await capped(provider.request({ method: 'eth_accounts' }), 1500, []) : [];
+    if (!Array.isArray(accounts) || !accounts.length) accounts = await provider.request({ method: 'eth_requestAccounts' });
     if (!Array.isArray(accounts) || !accounts.length) throw new Error('no accounts returned');
     const addr = String(accounts[0]).toLowerCase().replace(/^0x/, '');
     if (!/^[0-9a-f]{40}$/.test(addr)) throw new Error('wallet returned malformed address');
@@ -166,13 +175,22 @@ export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes,
     try { localStorage.setItem(ANCHOR_KEY + String(address).toLowerCase(), pubHex); } catch { }
   }
 
-  async function deriveIdentity({ pick, expect } = {}) {
-    const c = await reach({ pick }), { provider, address } = c;
+  // `onStep(name)` hears where the sign-in is: 'account' (reading the wallet), 'sign' (the wallet is asked), 'confirm' (asked again, the first time)
+  async function deriveIdentity({ pick, expect, onStep } = {}) {
+    const step = (s) => { try { onStep?.(s); } catch { } };
+    step('account');
+    const c = await reach({ pick, silent: true }), { provider, address } = c;
     const want = expect && String(expect).toLowerCase().replace(/^0x/, '');
     if (want && address !== want) throw new Error(`Switch your wallet to 0x${want.slice(0, 4)}…${want.slice(-4)}, the account this Tacit wallet was opened with.`);
-    let code = '0x'; try { code = await provider.request({ method: 'eth_getCode', params: ['0x' + address, 'latest'] }); } catch { }
-    if (isContractCode(code)) throw new Error('Smart-contract wallets produce non-deterministic signatures and cannot derive a stable tacit identity — use a passkey, seed, or an EOA wallet.');
+    // An account that opened its key here was no contract then, and an address does not become one: its code is not read again. The first time it is
+    // read through the wallet's own node, which can stall with nothing yet in front of the person, so it is given a moment and no more.
+    const anchored = !!readAnchor(address);
+    if (!anchored) {
+      const code = await capped(provider.request({ method: 'eth_getCode', params: ['0x' + address, 'latest'] }), 1500, '0x');
+      if (isContractCode(code)) throw new Error('Smart-contract wallets produce non-deterministic signatures and cannot derive a stable tacit identity — use a passkey, seed, or an EOA wallet.');
+    }
     const msg = derivationMsg();
+    step('sign');
     const sig = await provider.request({ method: 'personal_sign', params: ['0x' + bytesToHex(enc(msg)), '0x' + address] });
     if (typeof sig !== 'string' || !sig.startsWith('0x')) throw new Error('wallet returned invalid signature');
     const sigBytes = hexToBytes(sig.slice(2));
@@ -192,7 +210,8 @@ export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes,
         + 'from it. Every compliant signer produces the canonical form, so this usually means the signature '
         + 'was altered in transit. Reconnect with a wallet you trust and retry; nothing was derived or spent.');
     }
-    if (!readAnchor(address)) {
+    if (!anchored) {
+      step('confirm');
       const again = await provider.request({ method: 'personal_sign', params: ['0x' + bytesToHex(enc(msg)), '0x' + address] });
       const b = typeof again === 'string' && again.startsWith('0x') ? hexToBytes(again.slice(2)) : null;
       if (b && b.length === 65 && (b[64] === 0 || b[64] === 1)) b[64] += 27;

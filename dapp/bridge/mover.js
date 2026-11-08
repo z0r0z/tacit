@@ -2,7 +2,7 @@
 // and the two presses that need only the relay (the burn of a moved bridge, the mint of a recorded one). Nothing is loaded until the holder asks:
 // this module, the key sheet and tacit.js (four megabytes) all come in on that press. Starting a bridge is the front page's Bridge tab. Merging, bridging all, minting to another address,
 // paying the mint from a wallet and proving it oneself stay on the front page, which these rows link to.
-import { makeKeySession, signInSheet } from '/trade/key.js?cb=d110df5e';
+import { makeKeySession, signInSheet } from '/trade/key.js?cb=0d248d95';
 import { makeTacitSession } from '/tacit-session.js?cb=a2d34bb2';
 import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverEvery } from '/bridge-tick.js?cb=4e721860';
 import { ROUTES } from '/bridge/track.js?cb=c4ce3ac0';
