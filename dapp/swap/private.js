@@ -5,8 +5,8 @@
 // smallest note that covers it, the rest coming back as change in the same proof (notes too small singly are combined first). A swap
 // out of the pool (to ETH or a token, at an address) routes the note to tETH and then exits that note, through an exit recipe for a token. The
 // relay proves and sends each step. Nothing here is loaded until the first private swap, or the first ask for a private balance; the key is
-// held in this visit's memory only.
-import { makeKeySession, signInSheet, Cancelled } from '/trade/key.js?cb=0d248d95';
+// held in memory and kept for this tab (tab-key.js).
+import { makeKeySession, signInSheet, Cancelled } from '/trade/key.js?cb=a634e226';
 import { forgetUx } from '/trade/poolux.js?cb=a1e221be';
 import { wrapEth, wrapFirst, wrapCalldata, settle, relayState, relayStopped, relayWords } from '/teth/wrap.js?cb=39bfba0e';
 import { wrapQuote, WRAP_TIP } from '/teth/read.js?cb=5313656c';
@@ -60,7 +60,7 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
   function reset() { held = null; heldP = null; busy.clear(); }
   function lock() { if (!session) key.lock(); forgetUx(); reset(); }
   // one sheet at a time: a second press while it is open waits for the same one
-  function open(why = 'Open your Tacit wallet to swap privately. This page never stores the key.') {
+  function open(why = 'Open your Tacit wallet to swap privately. It stays open in this tab only, until you close it, lock it, or leave the site idle for 30 minutes.') {
     if (key.unlocked) return Promise.resolve();
     return (opening ||= (openKey ? openKey(why) : signInSheet(key, { pick, why })).then(() => { held = null; onKey(''); }).finally(() => { opening = null; }));
   }

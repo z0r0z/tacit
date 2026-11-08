@@ -1,4 +1,4 @@
-// The Tacit key for the tETH page: opened from an Ethereum wallet's signature or a passkey, held in this visit's memory and never stored. What
+// The Tacit key for the tETH page: opened from an Ethereum wallet's signature or a passkey, held in memory and kept for this tab (tab-key.js). What
 // is stored is the public record of how it was opened, which every page that opens a Tacit key reads (tacit-wallet-known.js), so a visitor is
 // offered the wallet they already use. This is /trade's own session (btc-session.js) without tacit.js, which a private deposit has no use for
 // and which is four megabytes: the ways in that need it (a Bitcoin wallet, a saved key) are left to tacit.finance.
@@ -8,6 +8,7 @@ import { knownWallets } from '/tacit-wallet-known.js?cb=ed4c75b7';
 import { makeEvmWallet } from '/evm-wallet.js?cb=c487004a';
 import { overlay, esc } from '/trade/sheet.js?cb=84cda8f2';
 import { short } from '/trade/util.js?cb=ba5a02b1';
+import { tabKeyRead, tabKeyWrite, tabKeyClear, tabKeyWatch } from '/tab-key.js?cb=a4c25d0e';
 
 const RECORD = 'tacit-trade-id-v1';                                           // how /trade last opened a key: public data only (the Bitcoin market writes it too)
 const KNOWN_IDS = [RECORD, 'tacit-tac-id-v1', 'tacit-pay-hub-id-v1', 'tacit-lite-id-v1', 'tacit-pay-id-v1'];
@@ -33,6 +34,7 @@ export function makeKeySession({ moved = null, ways = {} } = {}) {
     const { priv: p, ...rest } = k;
     priv = p; key = { ...rest, pubHex };
     writeJson(RECORD, key);
+    tabKeyWrite({ ...k, pubHex });
     emit();
   }
   const open = {
@@ -51,7 +53,7 @@ export function makeKeySession({ moved = null, ways = {} } = {}) {
       const p = bytesToHex(r.priv); r.priv.fill(0);
       set({ mode: 'passkey', priv: p, pubHex, label, credentialId: r.credentialId });
     },
-    // A key pasted in: 64 hex characters, held for this visit like any other.
+    // A key pasted in: 64 hex characters, held like any other.
     async key(hex) {
       const h = lc(String(hex || '').trim()).replace(/^0x/, '');
       if (!/^[0-9a-f]{64}$/.test(h)) throw new Error('A Tacit key is 64 hex characters.');
@@ -81,8 +83,20 @@ export function makeKeySession({ moved = null, ways = {} } = {}) {
     const a = lc((e.detail?.accounts || [])[0]);
     if (a && a === lc(key.address)) return;
     const why = `Your wallet ${a ? 'switched accounts' : 'locked'}, so the Tacit key opened with it was locked. Open it again to continue.`;
+    tabKeyClear();
     if (moved) moved(why); else { priv = null; key = null; emit(); }
   });
+  // The key this tab opened on another page of the site (tab-key.js), opened again with no sign-in: one that needs no wallet at once, an
+  // Ethereum wallet's once that wallet answers, without a prompt, as the account that opened it (any other answer, or none, locks it).
+  tabKeyWatch();
+  const kept = tabKeyRead();
+  if (kept && kept.mode !== 'eth') { try { set(kept); } catch { tabKeyClear(); } }
+  else if (kept?.mode === 'eth') {
+    evm.restore().then((c) => {
+      if (key) return;
+      if (c && '0x' + lc(c.address) === lc(kept.address)) { try { set(kept); } catch { tabKeyClear(); } } else tabKeyClear();
+    }, () => tabKeyClear());
+  }
   return {
     open,
     get unlocked() { return !!(key && priv); }, get key() { return key; },
@@ -94,7 +108,7 @@ export function makeKeySession({ moved = null, ways = {} } = {}) {
     passkeyAvailable: () => isPasskeyAvailable(), ethAvailable: () => evm.available(), btcOffered: () => !!ways.btc,
     // the Ethereum wallet the key was opened with (null for a passkey, a pasted key or a Bitcoin wallet): a page's last-resort node for reads
     walletProvider: () => (key && key.mode === 'eth' ? evm.provider() : null),
-    lock() { priv = null; key = null; emit(); },
+    lock() { priv = null; key = null; tabKeyClear(); emit(); },
     onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); },
   };
 }
@@ -112,7 +126,7 @@ export function pickWalletSheet(list) {
 // The ways in, in a sheet. Resolves once a key is open; rejects with Cancelled when the sheet is closed without one.
 // `pick(list)` chooses among several Ethereum wallets (by default the visitor chooses, in a sheet); `why` says what the key is for; `icons` puts
 // the front page's mark on each way in.
-export function signInSheet(session, { pick = pickWalletSheet, icons = false, why = 'Open your Tacit wallet to make ETH private. This page never stores the key.' } = {}) {
+export function signInSheet(session, { pick = pickWalletSheet, icons = false, why = 'Open your Tacit wallet to make ETH private. It stays open in this tab only, until you close it, lock it, or leave the site idle for 30 minutes.' } = {}) {
   return new Promise((resolve, reject) => {
     const known = session.known(), other = session.other(), away = session.elsewhere();
     const via = (k) => ({ eth: `Ethereum ${short(k.address || '')}`, btc: `Bitcoin ${short(k.address || '')}`, passkey: `passkey “${k.label || 'Tacit'}”` })[k?.mode] || 'your wallet';

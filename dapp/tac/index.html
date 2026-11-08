@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-CvOE1J860uYLw22hpFjw2PSkCrKdFuGtB3M9Y1OrhiA=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-8dqZPyj4IxdTSvNtckGZrNti7uT2dmAd11/v4kfCw2Y=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -66,7 +66,7 @@
 <link rel="modulepreload" href="/bridge-tick.js?cb=4e721860">
 <link rel="modulepreload" href="/tacit-session.js?cb=a2d34bb2">
 <link rel="modulepreload" href="/activity.js?cb=8ccbc552">
-<link rel="modulepreload" href="/swap/card.js?cb=a82c0bff">
+<link rel="modulepreload" href="/swap/card.js?cb=4c2b35b7">
 <link rel="modulepreload" href="/trade/wallet.js?cb=88b623b8">
 <link rel="modulepreload" href="/trade/util.js?cb=ba5a02b1">
 <link rel="modulepreload" href="/trade/rpc.js">
@@ -2040,6 +2040,7 @@ import { ETH_NODES, ETH_LOG_NODES, walletNode } from '/eth-nodes.js';
 import { hedgedRpc, nodeHealth } from '/trade/rpc.js';
 import { prfBytesToScalar, prfLogin, prfRegister, loadPrfMap, savePrfMap, isPasskeyAvailable } from '/prf-wallet.js';
 import { knownWallets } from '/tacit-wallet-known.js?cb=ed4c75b7';
+import { tabKeyRead, tabKeyWrite, tabKeyClear, tabKeyWatch } from '/tab-key.js?cb=a4c25d0e';
 import { makeTacitAddress, poolKeysOf } from '/tacit-address.js';
 import { bip352TaggedHash } from '/bip352.js';
 import { makeEvmWallet } from '/evm-wallet.js?cb=c487004a';
@@ -2077,8 +2078,8 @@ if (!secp.etc.hmacSha256Sync) secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256
 
 const RPCS = ETH_NODES;
 const API = 'https://api.tacit.finance';
-// TAC's page (/tac/) is this page drawn as TAC's own: the same document and module, so a Tacit key opened on either is open on both (it is held
-// in memory only, never stored). /tac/index.html is this file made for that address by build/build.mjs, and moving between / and /tac/ goes
+// TAC's page (/tac/) is this page drawn as TAC's own: the same document and module, so a Tacit key opened on either is open on both (held in
+// memory, and kept for the tab by tab-key.js for the site's other pages). /tac/index.html is this file made for that address by build/build.mjs, and moving between / and /tac/ goes
 // through the history, with no reload. `on`: the page shows; `tab`: its action open; `act`: what its action slot holds ('tile', 'pool' or null).
 var TACP = { on: /^\/tac\/?$/.test(location.pathname), tab: 'pay', act: null, actT: '', home: null, boot: true, why: null, pay: null };
 // TAC's page's card: the side picked (null: the Tacit chain, or Bitcoin for a key whose TAC is only there), the chain's tab, where Withdraw sends it,
@@ -4037,11 +4038,12 @@ const rememberKey = (key) => {
 // even where the record that offers it holds only the pubkey (a key saved in this browser, opened on tacit.finance)
 const ADDR_SEEN = 'tacit-lite-addr-v1';
 const seenAddr = (w) => w?.tacit || store.get(ADDR_SEEN)?.[String(w?.pubHex || '').toLowerCase()] || null;
-function setKey(k) {
+function setKey(k, { quiet = false } = {}) {
   const pubHex = String(k.pubHex || pubOf(k.priv)).replace(/^0x/, '').toLowerCase();
   if (pubOf(k.priv) !== pubHex) throw new Error('That wallet opened a different key than expected. Nothing was changed.');
   const key = S.key = { ...k, pubHex, tacit: UNI ? addressFor(k.priv) : null };
   rememberKey(key);
+  tabKeyWrite({ ...k, pubHex });
   S.pay = store.get(PAY)?.[pubHex] || null;
   syncAccount(); resetPrivate(); paintWallet(); refreshAll();
   SWC.card?.walletChanged();
@@ -4056,7 +4058,7 @@ function setKey(k) {
   if (shUnsearched(pubHex)) setTimeout(() => shDiscover(pubHex), 14000);
   setTimeout(() => xbDiscover(pubHex).catch(() => {}), 18000);
   setTimeout(() => chainStart(), 0);
-  const opened = () => { if (S.key === key) toast(`Opened ${short(key.tacit, 8)}`); };
+  const opened = () => { if (S.key === key && !quiet) toast(`Opened ${short(key.tacit, 8)}`); };
   if (UNI) return opened();
   loadUnified().catch(() => {}).then(() => {
     if (S.key !== key) return;
@@ -5430,7 +5432,7 @@ const noteLanded = (wei) => {
 function resetPrivate() { fastForget(); for (const k of Object.keys(FLASH)) delete FLASH[k]; P.scan = null; P.scanning = null; P.full = null; P.err = null; P.coming = 0n; DEV.W = null; DEV.bal = null; DEV.key = null; DEV.quote = null; DEV.gq = {}; DEV.err = null; DEV.self = false; Object.assign(TK, { W: null, key: null, bal: null, at: 0, err: null, syncing: null, keys: null, quote: null, qFail: 0, self: false }); Object.assign(LOCK, { rec: null, state: null, lm: null, bonds: [], list: [], pick: null, found: null, repayOver: null, q: null }); Object.assign(LK, { at: 0, pub: null, mine: [], back: [], scanning: null }); Object.assign(BTC, { pub: null, at: 0, err: null, share: null, sp: null, held: [], got: 0, part: false });
   try { for (const x of Object.values(HOLD.byKey)) x.w = {}; FARM.positions = null; FARM.wtac = null; FARM.left = null; FARM.jm = null; FARM.auto = {}; FARM.paid = null; for (const k of Object.keys(JOIN)) delete JOIN[k]; } catch { }
   dropTacitKey();
-  if (!S.key) try { sessionStorage.removeItem('tacit-tac-seen-v1'); } catch { }      // locked: what the key held is not kept
+  if (!S.key) { tabKeyClear(); try { sessionStorage.removeItem('tacit-tac-seen-v1'); } catch { } }      // locked: neither the key nor what it held is kept
   chainReset();
   TPOOL?.api?.keyChanged();
   SWC.card?.keyChanged(); }
@@ -18885,7 +18887,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=a82c0bff').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=4c2b35b7').catch((e) => { SWC.p = null; throw e; }));
 // the card held to the tab's flow; back on the Swap tab it opens on the swap it showed there
 function swcFlow() {
   hxPathPaint();
@@ -19604,7 +19606,23 @@ fetch(`${API}/leaderboard?day=today&limit=1`, { signal: within(20e3) }).then((r)
 resumeActivity();
 setTimeout(() => xoTick(), 8000);                       // saved bridges go on with no key open too
 // one refresh at the start: the one a remembered wallet's restore runs (walletMoved), or this one when there is none or it is slow to answer
-Promise.race([restoreWallet(), new Promise((r) => setTimeout(() => r(false), 1500))]).then((restored) => { if (!restored) refreshAll(); });
+// The key this tab opened on another page of the site (tab-key.js), opened again with no sign-in: one that needs no wallet at once, an Ethereum
+// wallet's once that wallet answers, without a prompt, as the account that opened it (any other answer, or none, locks it as it would here).
+function tabKeyOpen(walletRead) {
+  if (S.key) return;
+  const k = tabKeyRead();
+  if (!k) return;
+  if (k.mode === 'eth') {
+    if (!walletRead) return;
+    if (!S.wallet || S.wallet !== String(k.address || '').toLowerCase()) { tabKeyClear(); return; }
+  }
+  try { setKey(k, { quiet: true }); } catch { tabKeyClear(); }
+}
+tabKeyWatch();
+tabKeyOpen(false);
+const restoring = restoreWallet();
+restoring.then(() => tabKeyOpen(true), () => tabKeyOpen(true));
+Promise.race([restoring, new Promise((r) => setTimeout(() => r(false), 1500))]).then((restored) => { if (!restored && !S.key) refreshAll(); });
 evm.onElsewhere(restoreWallet);
 let lastTick = Date.now();
 const tick = () => { lastTick = Date.now(); paintEarn(); refreshTape(); loadTacPrice().catch(() => {}); brTick(); brPrepTick().catch(() => {}); bswTick().catch(() => {}); fastTick().catch(() => {}); xoTick(); if (lastTick - numsAt > NUMS_MS) refreshNums(); for (const n of SHEETS) if (shown(n) && !running(n)) load[n]?.().then(() => rerender(n)).catch(() => {}); };

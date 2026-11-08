@@ -2,7 +2,7 @@
 // and the two presses that need only the relay (the burn of a moved bridge, the mint of a recorded one). Nothing is loaded until the holder asks:
 // this module, the key sheet and tacit.js (four megabytes) all come in on that press. Starting a bridge is the front page's Bridge tab. Merging, bridging all, minting to another address,
 // paying the mint from a wallet and proving it oneself stay on the front page, which these rows link to.
-import { makeKeySession, signInSheet } from '/trade/key.js?cb=0d248d95';
+import { makeKeySession, signInSheet } from '/trade/key.js?cb=a634e226';
 import { makeTacitSession } from '/tacit-session.js?cb=a2d34bb2';
 import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverEvery } from '/bridge-tick.js?cb=4e721860';
 import { ROUTES } from '/bridge/track.js?cb=c4ce3ac0';
@@ -103,7 +103,7 @@ export function mountMover({ pick, repaint = () => {}, say = () => {}, onState =
   // The key opened here, then the pass running while the page is open. A second press locks the key again.
   async function toggle() {
     if (key.unlocked) { lockNow(); say(''); return false; }
-    try { await signInSheet(key, { pick, why: 'Open your Tacit wallet to move your bridges on from this page. This page never stores the key.' }); }
+    try { await signInSheet(key, { pick, why: 'Open your Tacit wallet to move your bridges on from this page. It stays open in this tab only, until you close it, lock it, or leave the site idle for 30 minutes.' }); }
     catch (e) { if (e?.unlockCancelled) return false; say(String(e?.message || e)); return false; }
     start();
     return true;

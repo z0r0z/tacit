@@ -1,9 +1,11 @@
 // Bitcoin for the trade page: tacit.js loaded for this visit, and the key a visitor opens to sign with. The key lives in tacit.js's wallet
-// object until it is locked and is never stored. What is stored is the public record of how it was opened, which every page that opens a
+// object until it is locked, and kept for this tab (tab-key.js). What else is stored is the public record of how it was opened, which every page that opens a
 // Tacit key reads (tacit-wallet-known.js), so a visitor is offered the wallet they already use.
 //
 // These are the ways in /tac has (dapp/tac/app.js) that need nothing but the wallet or the passkey itself. A key pasted in, one saved in
 // the browser and one an extension funds each ask for a passphrase in tacit.js's own dialogs, which belong to the classic app.
+
+import { tabKeyRead, tabKeyWrite, tabKeyClear, tabKeyWatch } from '/tab-key.js?cb=a4c25d0e';
 
 const TACIT_URL = '/tacit.js?cb=add7bef4', KNOWN_URL = '/tacit-wallet-known.js?cb=ed4c75b7', EVM_URL = '/evm-wallet.js?cb=c487004a';
 const DEPS_URL = '/vendor/tacit-deps.min.js', PRF_URL = '/prf-wallet.js';
@@ -108,6 +110,7 @@ export function makeBtcSession({ moved = null } = {}) {
     });
     key = { ...rest, pubHex };
     writeJson(RECORD, key);
+    tabKeyWrite({ ...k, pubHex });
     emit();
   }
   function forget() {
@@ -161,8 +164,17 @@ export function makeBtcSession({ moved = null } = {}) {
     const a = lc((e.detail?.accounts || [])[0]);
     if (a && a === lc(key.address)) return;
     const why = `Your wallet ${a ? 'switched accounts' : 'locked'}, so the Tacit key opened with it was locked. Open it again to continue.`;
+    tabKeyClear();
     if (moved) moved(why); else { forget(); emit(); }
   });
+  // The key this tab opened on another page of the site (tab-key.js), opened again with no sign-in: one that needs no wallet at once, an
+  // Ethereum wallet's once that wallet answers, without a prompt, as the account that opened it (any other answer, or none, locks it).
+  tabKeyWatch();
+  const kept = tabKeyRead();
+  if (kept && kept.mode !== 'eth') load().then(() => key || setKey(kept)).catch(() => tabKeyClear());
+  else if (kept?.mode === 'eth') {
+    load().then(() => evm.restore()).then((c) => { if (key) return; if (c && '0x' + lc(c.address) === lc(kept.address)) return setKey(kept); tabKeyClear(); }).catch(() => tabKeyClear());
+  }
   return {
     load, turn, open, setKey,
     get T() { return T; }, get D() { return D; }, get key() { return key; }, get unlocked() { return !!(key && T && T.wallet.priv); },
@@ -170,7 +182,7 @@ export function makeBtcSession({ moved = null } = {}) {
     known: () => usable(knownIds().primary), other: () => usable(knownIds().other),
     passkeyAvailable: () => !!prf?.isPasskeyAvailable?.(), ethAvailable: () => !!evm?.available?.(),
     btcSeen: () => !!(window.btc_providers?.length || window.XverseProviders?.BitcoinProvider || window.LeatherProvider || window.unisat),
-    lock() { forget(); emit(); },
+    lock() { forget(); tabKeyClear(); emit(); },
     onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); },
   };
 }

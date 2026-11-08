@@ -2,7 +2,7 @@
 // executors and the book's data from tacit.js, mounted in a sheet. The module plans and tacit.js settles; this file supplies what the classic
 // app supplies around them and a page like this one does not have: signing in, a confirmation, a notice, the sats and TAC the key holds,
 // and where a purchase that stopped halfway is recovered. Nothing here builds or signs a transaction.
-import { makeBtcSession, short, Cancelled } from '/trade/btc-session.js?cb=5466edf7';
+import { makeBtcSession, short, Cancelled } from '/trade/btc-session.js?cb=acbeef35';
 import { overlay, esc } from '/trade/sheet.js?cb=84cda8f2';
 
 const MARKET_URL = '/btc-market.js?cb=62f95e6b', CSS_URL = '/trade/btc-market.css?cb=359753e6';
@@ -41,7 +41,7 @@ export function makeBitcoin({ notify = () => {}, onTraded = () => {}, onChange =
       const btcFirst = prefer === 'btc' && hasBtc && !known && !(here && !hereIsKnown);
       const eth = opt('eth', 'Ethereum wallet', hasEth ? 'MetaMask, Rabby, Rainbow or any browser wallet, or a wallet app through WalletConnect. One free signature, two the first time.' : 'MetaMask, Rabby, Rainbow or any browser wallet, or a wallet app through WalletConnect.');
       const btc = opt('btc', 'Bitcoin wallet', hasBtc ? 'Xverse, Leather or UniSat. One free signature, two the first time.' : 'Xverse, Leather or UniSat. None found in this browser.', btcFirst ? 'main' : '');
-      o.body.innerHTML = `<p class="note" style="margin-top:0">Open your Tacit wallet to ${esc(purpose)}. It comes from a signature or a passkey, so there is nothing to back up, and this page never stores the key.</p><div class="ways">
+      o.body.innerHTML = `<p class="note" style="margin-top:0">Open your Tacit wallet to ${esc(purpose)}. It comes from a signature or a passkey, so there is nothing to back up, and it stays open in this tab only, until you close it, lock it, or leave the site idle for 30 minutes.</p><div class="ways">
         ${here && !hereIsKnown ? opt('page', 'Use the wallet connected here', `Ethereum ${esc(short(here.address))}. One free signature, two the first time.`, known ? '' : 'main') : ''}
         ${known ? opt('known', 'Continue with your Tacit wallet', `Opens with ${esc(via(known))}, the same wallet as everywhere on tacit.finance.`, 'main') : ''}
         ${other ? opt('other', 'Your other Tacit wallet', `A different wallet, opened here before with ${esc(via(other))}.`) : ''}
