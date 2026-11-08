@@ -150,7 +150,9 @@ async function sync() {
       landedLogs = await logs(BLOCKS, [T_LANDED], syncedTo + 1, head);
       break;
     } catch (e) {
-      if (back >= 3 || head - 1 <= syncedTo || !/beyond current head|block range/i.test(String(e?.message || e))) throw e;
+      if (!/beyond current head|block range/i.test(String(e?.message || e))) throw e;
+      // the node answering is behind: nothing older to step back to (or stepped back enough) is read on the next pass, with no error
+      if (back >= 3 || head - 1 <= syncedTo) return;
       head -= 1;
     }
   }
