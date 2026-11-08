@@ -26,7 +26,7 @@
 // the one channel that always exists, since Render marks the cron run failed without any configuration.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { formatEther, formatUnits } from 'viem';
+import { formatEther, formatUnits, parseAbi } from 'viem';
 import { CFG, OP_GAS } from './lib/config.js';
 import { burnGasPerDay, runwayDays } from './lib/runway.js';
 import { queueVerdict } from './lib/queue-health.js';
@@ -43,6 +43,7 @@ import { scanLagVerdict } from './lib/scan-lag.js';
 import { boardVerdict, runpodVerdict } from './lib/board-health.js';
 import { publicClient, relayWallet, watchedWallets, ERC20_ABI, PROVE, readPool, readReflectionDigest, HEADER_RELAY, RELAY_ABI, POOL } from './lib/chain.js';
 import { safeErr } from './lib/safe-err.js';
+import { tacitChainVerdict } from './lib/tacit-chain-health.js';
 
 const log = (...a) => console.log(`[monitor ${new Date().toISOString()}]`, ...a);
 
@@ -217,6 +218,16 @@ const TACIT_CHAIN_LEADER = process.env.TACIT_CHAIN_LEADER_URL || 'https://tacit-
 const TACIT_CHAIN_WALLET = process.env.TACIT_CHAIN_LEADER_WALLET || '0x841d93ae315E3D9AF5Fd98C09299CA62148Ff65d';
 const TACIT_LAND_GAS = 600_000n, TACIT_TIP = 10_000_000n;      // a block with a few spends lands under 450k gas; the leader tips 0.01 gwei
 const TACIT_WAIT_MS = 3 * 60_000;
+const TACIT_BLOCKS = process.env.TACIT_BLOCKS || '0x00000000000a9147ffd8d41d152d730ca5f84e6c';
+const TACIT_ABI = parseAbi(['function height() view returns (uint64)', 'function queued() view returns (uint64)', 'function queueDone() view returns (uint64)',
+  'function queuedAt(uint256) view returns (uint256)', 'function FORCE_DELAY() view returns (uint256)', 'function WINDOW() view returns (uint256)']);
+// the landing contract's height and forced queue (null when unread)
+async function tacitChainRead() {
+  const r = (functionName, args = []) => publicClient.readContract({ address: TACIT_BLOCKS, abi: TACIT_ABI, functionName, args });
+  const [height, queued, queueDone, forceDelay, window] = await Promise.all([r('height'), r('queued'), r('queueDone'), r('FORCE_DELAY'), r('WINDOW')]);
+  const oldestQueuedAt = queued > queueDone ? Number(await r('queuedAt', [queueDone])) : null;
+  return { height: Number(height), queued: Number(queued), queueDone: Number(queueDone), oldestQueuedAt, forceDelay: Number(forceDelay), window: Number(window) };
+}
 async function checkTacitChain() {
   const state = async () => {
     const r = await fetch(`${TACIT_CHAIN_LEADER}/state`, { signal: AbortSignal.timeout(15000) });
@@ -233,6 +244,14 @@ async function checkTacitChain() {
   else if (blocks != null && blocks < 20) await alert('warning', `tacit chain leader ${TACIT_CHAIN_WALLET} holds ${formatEther(bal)} ETH, about ${blocks} blocks: top it up`, extra);
   let a;
   try { a = await state(); } catch (e) { await alert('critical', `tacit chain leader not answering (${TACIT_CHAIN_LEADER}): ${safeErr(e)}`); return; }
+  // the contract's height and forced queue, and the board's provers for blocks
+  const [chain, board] = await Promise.all([
+    tacitChainRead().catch((e) => { log(`tacit chain contract unread: ${safeErr(e)}`); return null; }),
+    fetch(`${CFG.workerBase}/prover/board`, { signal: AbortSignal.timeout(15000) }).then((r) => (r.ok ? r.json() : null)).catch(() => null),
+  ]);
+  if (chain && Number(a.height) < chain.height) { await new Promise((r) => setTimeout(r, 60_000)); a = await state().catch(() => a); }   // a block landed a moment ago is read on the leader's next step
+  for (const v of tacitChainVerdict({ leader: a, chain, board, now: Math.floor(Date.now() / 1000) })) await alert(v.level, v.msg, v.extra);
+  if (chain) log(`tacit chain contract height ${chain.height}, forced queue ${chain.queueDone}/${chain.queued}`);
   if (!(Number(a.pending) > 0)) { log(`tacit chain height ${a.height}, nothing waiting`); return; }
   await new Promise((r) => setTimeout(r, TACIT_WAIT_MS));
   let b;
