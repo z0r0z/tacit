@@ -21,12 +21,10 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { CFG, ADDR, OP_GAS, DEFAULT_OP_GAS, OP_PROVE } from './lib/config.js';
-import { confidentialJob, confidentialWake, confidentialBatch, confidentialAck, confidentialRefresh, confidentialActivateAck, confidentialOpenList, confidentialOpenJob, marketOrders, marketClear, marketProofPost, gasOrders, gasClear, confidentialQueue, heartbeat, heartbeatIdle, setHeartbeatLedger, relayBooks, quoteAsset } from './lib/worker-client.js';
+import { confidentialJob, confidentialWake, confidentialBatch, confidentialAck, confidentialRefresh, confidentialActivateAck, confidentialOpenList, confidentialOpenJob, gasOrders, gasClear, confidentialQueue, heartbeat, heartbeatIdle, setHeartbeatLedger, relayBooks, quoteAsset } from './lib/worker-client.js';
 import { makeBatchWindow } from './lib/batch-window.js';
 import { proveSettle, proveMixed, proveSealed, proveStdin, boardAlive } from './lib/prover.js';
-import { makeMarketSolver, marketHasRoom } from './lib/market-solver.js';
 import { quoteTacForEth, deepest } from './lib/tac-quote.js';
-import { abi as MARKET_ABI, claimCall, fulfillCall } from './lib/market-calls.js';
 import { makeGasSolver } from './lib/gas-solver.js';
 import { abi as GAS_ABI, executeCall } from './lib/gas-calls.js';
 import { notExecuted } from './lib/stdin-prover.js';
@@ -892,59 +890,6 @@ async function beating(detail, fn) {
 // is read at most every OPEN_BOARD_POLL_SECS (straight away again after a send, there may be more), and the claim makes
 // sure two relays never send the same job.
 let openReadAt = 0;
-// The proof market (lib/market-solver.js): an open order is claimed and proved at the same time, then fulfilled; the TAC price is pulled
-// from the holder's permit in the fulfil, to this settle wallet. The relay is first in line for what it takes; a holder who wants
-// another prover to win raises what they sign, and a prover that claims first has the order.
-let marketReadAt = 0;
-let lastWorkedAt = 0;
-// A claim and a fulfil cost this much gas (measured on mainnet: 128k and 676k). The least price in TAC wei the relay takes an order at is that gas at
-// the current price, plus its proving share, plus a margin, valued in TAC at what ETH buys now (read from the chain at most every minute).
-const MARKET_GAS = 128_000n + 700_000n;
-let tacRate = { at: 0, out: 0n };
-let marketLowAt = 0;
-async function marketMinPrice() {
-  const gasPrice = await publicClient.getGasPrice();
-  if (Date.now() - tacRate.at > 60_000) {
-    const q = deepest(await quoteTacForEth(publicClient, 10n ** 16n));
-    if (!q) throw new Error('no TAC quote');
-    tacRate = { at: Date.now(), out: q.amountOut };
-  }
-  const costWei = (MARKET_GAS * gasPrice * 13n) / 10n + CFG.marketProveCostWei;           // gas at the price plus 30% for the base fee moving, plus proving
-  // No order is taken (and no proof spent on one) unless the wallet holds what the relay's own settles need at today's gas (its floor: below it relayed jobs are held, which the
-  // market must never cause) AND the gas to claim and fulfil on top of that.
-  const [held, blk] = await Promise.all([publicClient.getBalance({ address: settleWallet.account.address }), publicClient.getBlock({ blockTag: 'latest' })]);
-  const { need } = await settleFundsNeed(publicClient, { block: blk });
-  if (!marketHasRoom({ held, need, orderGas: MARKET_GAS, gasPrice })) {
-    if (Date.now() - marketLowAt > 10 * 60_000) { marketLowAt = Date.now(); log(`market: the settle wallet holds ${(Number(held) / 1e18).toFixed(5)} ETH; the relay's own settles need ${(Number(need) / 1e18).toFixed(5)} at ${(Number(gasPrice) / 1e9).toFixed(2)} gwei and an order about ${(Number((MARKET_GAS * gasPrice * 15n) / 10n) / 1e18).toFixed(5)} more: market orders are left until it is topped up`); }
-    return 2n ** 255n;
-  }
-  const tac = (costWei * tacRate.out) / 10n ** 16n;
-  const withMargin = (tac * (10_000n + CFG.marketMarginBps)) / 10_000n;
-  return withMargin > CFG.marketMinTacWei ? withMargin : CFG.marketMinTacWei;
-}
-const marketSolver = makeMarketSolver({
-  me: settleWallet.account.address, minPrice: marketMinPrice,
-  // The relay's own queue (users' ops, the pool's settles) comes first: no new market proof is begun within 15 s of a job it worked on, so a market order never queues the board ahead of one.
-  canStart: () => Date.now() - lastWorkedAt > 15_000,
-  listOrders: () => marketOrders(),
-  depositStatus: async (id) => BigInt((await publicClient.call({ to: POOL, data: `0x7da9874f${id.slice(2)}` })).data || 0),
-  done: (id) => publicClient.readContract({ address: CFG.marketAddr, abi: MARKET_ABI, functionName: 'done', args: [id] }),
-  claimOf: async (id) => { const [solver, until] = await publicClient.readContract({ address: CFG.marketAddr, abi: MARKET_ABI, functionName: 'claims', args: [id] }); return solver === '0x0000000000000000000000000000000000000000' ? null : { solver, until: Number(until) }; },
-  claim: async (o) => submitCall({ address: CFG.marketAddr, abi: MARKET_ABI, ...claimCall(o), value: await publicClient.readContract({ address: CFG.marketAddr, abi: MARKET_ABI, functionName: 'claimBond' }) }, `market claim ${o.intent.opId.slice(0, 10)}`, { gasLimit: 170_000n }),
-  prove: (o) => proveStdin({ stdin: Uint8Array.from(Buffer.from(o.stdin.slice(2), 'hex')), type: 'wrap', memos: o.memos || [], timeoutMs: 150_000, expectPublicValues: o.publicValues }),
-  fulfil: (o, p) => submitCall({ address: CFG.marketAddr, abi: MARKET_ABI, ...fulfillCall(o, p.proof) }, `market fulfil ${o.intent.opId.slice(0, 10)}`, { gasLimit: 800_000n }),
-  deliver: (o, p) => marketProofPost(o.intent.opId, p.publicValues, p.proof),
-  clear: (id) => marketClear(id),
-  log,
-});
-async function marketCycle() {
-  if (!CFG.marketSolve || Date.now() - marketReadAt < CFG.marketPollSecs * 1000) return false;
-  marketReadAt = Date.now();
-  const worked = await marketSolver.pass();
-  if (worked) { marketReadAt = 0; await beat('market order'); }
-  return worked;
-}
-
 // TacitGasRelay (lib/gas-solver.js): an order is simulated, and sent only when its fee (TAC or the token spent, valued by a KyberSwap quote into
 // ETH) covers the gas with the margin; the contract pays the fee only if the whole swap lands.
 let gasReadAt = 0;
@@ -1281,9 +1226,8 @@ async function main() {
   for (;;) {
     if (stopping) { log('stopped cleanly'); process.exit(0); }
     try {
-      // a market order is paid in TAC by a holder who asked to jump the queue, so it is taken before the free queue (one job each pass)
-      let worked = await marketCycle();
-      if (!worked) { worked = await cycle(); if (worked) lastWorkedAt = Date.now(); }
+      let worked = await cycle();
+      if (worked) lastWorkedAt = Date.now();
       if (!worked) worked = await gasCycle();
       // An empty queue is the common case, not an error — but it must still beat, or /prover-health
       // goes stale (and "down") after 10 quiet minutes on a perfectly healthy relay. heartbeat() itself
@@ -1294,7 +1238,7 @@ async function main() {
       // has to be able to run then (it is awaited here, so it still never overlaps a settle on the same nonce).
       await maybeReplenish();
       await maybeDepositArrived();
-      if (!worked) { if (CFG.marketSolve && marketSolver.hasOpen()) await sleep(2); else await idleWait(); }
+      if (!worked) await idleWait();
     } catch (e) {
       log('cycle error (continuing):', e.message);
       await heartbeat('settle', `error ${safeErr(e)}`);

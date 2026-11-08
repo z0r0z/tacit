@@ -12479,7 +12479,7 @@ await step('zapway', async () => {
     await p.click('#hx-go');
     await p.waitForSelector('[data-zapway="relay"]', { timeout: 300000 });
     await p.click('[data-zapway="relay"]');
-    await until(p, () => (window.__farmCalls || []).some((c) => c.startsWith('wrap:')) || (/class="err"/.test(document.querySelector('#hx-zs')?.innerHTML || '') && !/taking longer than usual|not available right now/.test(document.querySelector('#hx-zs')?.textContent || '')), null, 300000).catch(() => {});
+    await until(p, () => (window.__farmCalls || []).some((c) => c.startsWith('wrap:')) || (/class="err"/.test(document.querySelector('#hx-zs')?.innerHTML || '') && !/taking (a little )?longer|not available right now/.test(document.querySelector('#hx-zs')?.textContent || '')), null, 300000).catch(() => {});
     const sent = await mine(b0), z = sent.find((x) => String(x.to).toLowerCase() === '0x000000005da3e3b73726af3c774deeb9472d4992');
     ok(!!z && (await p.evaluate(() => window.__farmCalls)).some((c) => c.startsWith('wrap:')), `zapway: "Send the zap and let the relay finish it" sends the zap, and the relay settles its share (${sent.map((x) => String(x.input).slice(0, 10))}; ${((await p.evaluate(() => window.__farmCalls)) || []).join(', ')}; ${(await text(p, '#hx-zs')).replace(/\s+/g, ' ').slice(0, 220)})`);
     if (r.errors.length) { fails++; console.log('FAIL zapway page errors: ' + r.errors.slice(0, 3).join(' | ')); }

@@ -181,14 +181,6 @@ export async function confidentialWake(secs) {
 }
 // The open board as anyone reads it: [{ jobId, type, status, posted, publicValues, proof, memos, openSince, expiresAt,
 // feeUsd, feeAsset }], oldest first. An older API without the board answers nothing.
-// The proof market's order board (worker/src/proof-market-queue.js): the open orders, and clearing one the market reports settled.
-export async function marketOrders(limit = 20) {
-  const r = await getJson(`/market/orders?limit=${limit}`);
-  return Array.isArray(r.orders) ? r.orders : [];
-}
-export const marketClear = (opId) => postJson('/market/done', { opId });
-// A finished proof, kept for the order's holder to pick up (a holder who never sent the deposit keeps it as a voucher).
-export const marketProofPost = (opId, publicValues, proof) => postJson('/market/proof', { opId, publicValues, proof });
 // TacitGasRelay's order board (worker/src/gas-relay-queue.js): the open orders, and clearing one the contract reports used.
 export async function gasOrders(limit = 20) {
   const r = await getJson(`/gas/orders?limit=${limit}`);

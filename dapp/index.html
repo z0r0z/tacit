@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-JwIJmjh2vwiIQ75uNgPb+8778QctSGAPtk81RIq84+4=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-3pc4sO+vCGbctzFYkWJuD8HA7UqKIW3eVtHCYlHLwEQ=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -10316,7 +10316,7 @@ const lpKeep = (poolId) => { if (S.key && poolId && !lpStored().includes(poolId)
 const scanOwned = async () => { const s = await scanDone(); return [...(s?.notes || []), ...(s?.spentNotes || [])]; };
 // A share note of `shares` in pool `poolId`, at an index no note, zap or voucher of this key holds.
 async function lpBuild(t, priv, poolId, shares, at = null) {
-  const pub = S.key.pubHex, used = [...zapsKept().filter((x) => x.pub === pub && x.poolId === poolId), ...(await vouchers()).list(pub, lpTicker(poolId))].map((x) => x.index).concat(marketPendingIdx(pub, poolId));
+  const pub = S.key.pubHex, used = [...zapsKept().filter((x) => x.pub === pub && x.poolId === poolId), ...(await vouchers()).list(pub, lpTicker(poolId))].map((x) => x.index);
   const index = at ?? t.nextShareIndex({ walletPriv: priv, poolId, owned: await scanOwned(), used });
   return t.buildShareWrap({ walletPriv: priv, poolId, shares, index });
 }
@@ -10399,7 +10399,8 @@ async function wrapRoom() {
 }
 async function keepReadyOnce() {
   if (!S.key) return;
-  await marketPickup().catch(() => {});
+  // the proving market is gone: a tank's session key and a pending order kept by an earlier visit are forgotten here
+  try { for (const k of Object.keys(localStorage)) if (k.startsWith('tacit-market-tank-v1:') || k === 'tacit-market-pending-v1') localStorage.removeItem(k); } catch { /* a convenience */ }
   const v = await vouchers(), pub = S.key.pubHex, device = devOn();
   await sweepSpent(pub, v).catch(() => {});
   // The community pool's GPU is shared with every user's proof: a key that holds no ETH to wrap yet is asked for its starter size only (wrap-vouchers.js stockSizes).
@@ -12347,7 +12348,7 @@ async function ownCreditCovers(type = 'wrap') {
 // A proof that does not come back gives the index back and returns null, and the holder is asked as ever.
 async function proveWithCredit({ run, t, p, plan, prover, tell, pub, priv }) {
   const index = t.nextShareIndex({ walletPriv: priv, poolId: p.poolId, owned: await scanOwned(),
-    used: [...zapsKept().filter((x) => x.pub === pub && x.poolId === p.poolId), ...(await vouchers()).list(pub, lpTicker(p.poolId))].map((x) => x.index).concat(marketPendingIdx(pub, p.poolId)) });
+    used: [...zapsKept().filter((x) => x.pub === pub && x.poolId === p.poolId), ...(await vouchers()).list(pub, lpTicker(p.poolId))].map((x) => x.index) });
   const built = t.buildShareWrap({ walletPriv: priv, poolId: p.poolId, shares: plan.shares, index });
   tell('Tacit’s prover is taking longer than usual, so your own Succinct credit proves it, about a minute. Nothing has left your wallet yet…');
   try {
@@ -12359,116 +12360,17 @@ async function proveWithCredit({ run, t, p, plan, prover, tell, pub, priv }) {
 // The share could not be proved by Tacit's prover in time (or it cannot prove now): which way on is the holder's. Their own prover (a Succinct credit, or this
 // computer's) proves it and the zap goes in one transaction from the wallet; or the zap goes first and the relay finishes its share after (its settle and
 // gas, which is what was being avoided). The proof Tacit's prover is still making goes at once if it lands while this waits. → 'ready' | 'own' | 'relay'
-// The proof market (contracts/src/ProofMarket.sol, deployed): the holder signs a fee in TAC for a proof, up to a most, and a permit that only
-// that most can be pulled under; provers (Tacit's relay first, then anyone) race to prove the share and settle it, and are paid in the same
-// transaction the pool accepts it, so no TAC moves unless the share goes in. Offered where Tacit's prover is slow, when the wallet holds the TAC.
-const MARKET = { mod: null, usd: { floor: 0.3, max: 1 } };
-const marketMod = async () => (MARKET.mod ||= await import('/proof-market.js?cb=72d5e4f5'));
-async function marketOffer() {
-  try {
-    const px = (fpx().ethUsd || 0) * (FARM.precision?.tacEth || 0);
-    if (!(px > 0) || !S.key) return null;
-    const owner = await payingAccount(), have = wordAt(await ethCall(ADDR.tac, '70a08231' + addrWord(owner)), 0);
-    // What the order costs a prover: a claim and a fulfil (about 830k gas) at the gas price now, plus its proving, in dollars; the fee starts a little above
-    // that and rises to three times it over the minute, never under the dollar floors. A price under the relay's own floor would not be taken.
-    const gp = Number(await rpc('eth_gasPrice', []).then(BigInt).catch(() => 0n)) / 1e18, costUsd = ((830000 * gp * 1.3) + 0.00003) * (fpx().ethUsd || 0);
-    const tac = (usd) => BigInt(Math.round((usd / px) * 1e6)) * 10n ** 12n;
-    const q = { floor: tac(Math.max(MARKET.usd.floor, costUsd * 1.3)), max: tac(Math.max(MARKET.usd.max, costUsd * 3)), owner, tank: (() => { const r = tankRec(owner); return !!r && BigInt(r.tank.perOpMax) >= tac(Math.max(MARKET.usd.max, costUsd * 3)); })() };
-    return have >= q.max ? q : null;
-  } catch { return null; }
-}
-// A proof tank: the holder signs ONE package (a session key kept in this browser, a most per proof, a total of five, seven days) and one TAC
-// permit for the total, and the session key then signs each proving fee with no prompt. The market counts what the tank has paid and never
-// passes the total; the holder's TAC moves only when the pool accepts a proof. Turning it off here forgets the key, so nothing more can be signed.
-const tankKey = (owner) => 'tacit-market-tank-v1:' + String(owner).toLowerCase();
-function tankRec(owner) {
-  try { const r = JSON.parse(localStorage.getItem(tankKey(owner)) || 'null'); return r && Number(r.tank.expiry) > chainNow() + 1800 ? r : null; } catch { return null; }   // an order lives 25 minutes: the tank must outlive it
-}
-const tankSave = (owner, r) => { try { localStorage.setItem(tankKey(owner), JSON.stringify(r)); } catch { /* a convenience: the next proof asks again */ } };
-function marketTankOff(owner) { try { localStorage.removeItem(tankKey(owner)); } catch { /* */ } }
-async function marketTank({ q, status }) {
-  const pm = await marketMod(), market = pm.MARKET[1];
-  let rec = tankRec(q.owner);
-  if (rec && BigInt(rec.tank.perOpMax) >= q.max) {
-    const spent = wordAt(await ethCall(market, 'ae20bed3' + strip(pm.tankDigest(rec.tank))), 0);
-    if (BigInt(rec.tank.cap) - spent >= q.max) {
-      // the allowance the market spends is set by the permit on first use; if it has been used up, or another TAC permit moved the nonce first, sign it again
-      const allow = wordAt(await ethCall(ADDR.tac, 'dd62ed3e' + addrWord(q.owner) + addrWord(market)), 0), nonce = wordAt(await ethCall(ADDR.tac, '7ecebe00' + addrWord(q.owner)), 0);
-      if (allow >= q.max || nonce === BigInt(rec.permitNonce)) return rec;
-      rec.permit = await permitSig({ token: ADDR.tac, name: 'Tacit Token', spender: market, value: BigInt(rec.tank.cap), deadline: BigInt(rec.tank.expiry), status, what: 'TAC proving tank' });
-      rec.permitNonce = String(nonce);
-      tankSave(q.owner, rec);
-      return rec;
-    }
-  }
-  const priv = secp.utils.randomPrivateKey(), delegate = '0x' + bytesToHex(keccak_256(secp.getPublicKey(priv, false).slice(1)).slice(-20));
-  const perOp = (q.max * 3n) / 2n, tank = pm.buildTank({ payer: q.owner, delegate, cap: perOp * 5n, perOpMax: perOp, ttlSecs: 7 * 86400, now: chainNow() });
-  let tankSignature;
-  if (payer() === 'tacit') {
-    const sig = secp.sign(hexToBytes(strip(pm.tankDigest(tank))), hexToBytes(strip(S.acct.priv)));
-    tankSignature = '0x' + sig.r.toString(16).padStart(64, '0') + sig.s.toString(16).padStart(64, '0') + (27 + sig.recovery).toString(16);
-  } else { say(status, 'Sign the proving tank in your wallet: up to ' + fmt(BigInt(tank.cap), 18, 2) + ' TAC over a week, only ever taken when a share goes in…'); await ensureChain(1); tankSignature = await pm.signTank(S.provider, q.owner, tank); }
-  const nonce = wordAt(await ethCall(ADDR.tac, '7ecebe00' + addrWord(q.owner)), 0);
-  const permit = await permitSig({ token: ADDR.tac, name: 'Tacit Token', spender: market, value: BigInt(tank.cap), deadline: BigInt(tank.expiry), status, what: 'TAC proving tank' });
-  rec = { tank, tankSignature, permit, permitNonce: String(nonce), delegatePriv: bytesToHex(priv) };
-  tankSave(q.owner, rec);
-  return rec;
-}
-// Posts the order for the wrap `built` (its proof is the share's) to the board; the zap is then sent without a proof and whoever proves first settles
-// it. The first time asks for two signatures (the tank and its permit); after that the session key signs and nothing is asked.
-async function postMarketOrder({ built, q, status }) {
-  const pm = await marketMod(), inputs = pm.wrapOrderInputs(built), rec = await marketTank({ q, status });
-  const intent = pm.buildIntent({ payer: q.owner, publicValues: inputs.publicValues, floor: q.floor, max: q.max > BigInt(rec.tank.perOpMax) ? BigInt(rec.tank.perOpMax) : q.max, rampSecs: 90, ttlSecs: 1500, now: chainNow() + 30, tank: pm.tankDigest(rec.tank) });   // the price holds at its floor for 30 s (the deposit and the proof take about that), then rises over 90 s
-  const sig = secp.sign(hexToBytes(strip(pm.intentDigest(intent))), hexToBytes(rec.delegatePriv));
-  const signature = '0x' + sig.r.toString(16).padStart(64, '0') + sig.s.toString(16).padStart(64, '0') + (27 + sig.recovery).toString(16);
-  const order = { ...pm.buildOrder({ intent, signature, permit: rec.permit, publicValues: inputs.publicValues, memos: inputs.memos, tank: rec.tank, tankSignature: rec.tankSignature }), stdin: inputs.stdin };
-  const r = await fetch(`${API}/market/order`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ order }) });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok || !j.ok) throw new Error(j.error || `the proof market answered ${r.status}`);
-  return order;
-}
-// An order posted for a share wrap that is never sent (a changed mind, a zap that failed) still gets its proof made: the relay hands it back, and it is kept here as
-// a ready voucher for the same share next time. A pending order holds its wrap's index (a rebuilt wrap would draw new memos, so the order's own are kept with it).
-const PENDING_KEY = 'tacit-market-pending-v1';
-function marketPendingList() { try { return JSON.parse(localStorage.getItem(PENDING_KEY) || '[]') || []; } catch { return []; } }
-const marketPendingSave = (l) => { try { localStorage.setItem(PENDING_KEY, JSON.stringify(l.slice(-20))); } catch { /* a convenience */ } };
-const marketPendingAdd = (rec) => marketPendingSave([...marketPendingList().filter((x) => x.opId !== rec.opId), rec]);
-const marketPendingIdx = (pub, poolId) => marketPendingList().filter((x) => x.pub === pub && x.poolId === poolId).map((x) => x.index);
-async function marketPickup() {
-  if (!S.key) return;
-  const pub = S.key.pubHex, all = marketPendingList();
-  if (!all.some((x) => x.pub === pub)) return;
-  const pm = await marketMod(), t = await getUx(), priv = walletPriv(), v = await vouchers(), keep = [];
-  for (const p of all) {
-    if (p.pub !== pub) { keep.push(p); continue; }
-    if (Date.now() - p.at > 24 * 3600e3) continue;
-    try {
-      const built = t.buildShareWrap({ walletPriv: priv, poolId: p.poolId, shares: BigInt(p.shares), index: p.index });
-      if (wordAt(await ethCall(ADDR.pool, '7da9874f' + strip(built.depositId).padStart(64, '0')), 0) !== 0n) continue;   // the zap went in: nothing to keep
-      const r = await fetch(`${API}/market/proof?id=${p.opId}`);
-      if (!r.ok) { keep.push(p); continue; }
-      const back = await r.json();
-      if (!pm.handBackFits(built, p, back)) continue;                                                                      // not this wrap's proof: dropped
-      v.put(pub, { ...lpRec(p.poolId, built, { size: null, by: 'market' }), memos: p.memos, status: 'ready', publicValues: back.publicValues, proof: back.proof });
-    } catch { keep.push(p); }
-  }
-  // an order added while this waited on the network is kept too
-  const seen = new Set(all.map((x) => x.opId));
-  marketPendingSave([...keep, ...marketPendingList().filter((x) => !seen.has(x.opId))]);
-}
 const ZAPWAY = { cb: null, then: null, id: 0 };
-function zapWay({ tell, inflight = null, down = false, then = null, market = null }) {
+function zapWay({ tell, inflight = null, down = false, then = null }) {
   return new Promise((resolve) => {
     if (ZAPWAY.cb) ZAPWAY.cb('again');
     const id = ++ZAPWAY.id, fin = (v) => { if (ZAPWAY.cb === fin) ZAPWAY.cb = null; resolve(v); };
     ZAPWAY.cb = fin; ZAPWAY.then = then;
-    tell(html`<span class="err">${down ? 'The proof can’t be made here right now.' : 'The proof is taking a little longer.'}</span> Nothing has left your wallet.<div class="actr-f" data-zapid="${id}"><button class="link" type="button" data-zapway="own">Prove it yourself</button>, on this computer or with your credit · ${market ? html`<button class="link" type="button" data-zapway="market">Pay up to ${fmt(market.max, 18, 1)} TAC for a fast proof${market.tank ? '' : ' (two signatures, then none for a week)'}</button> · ${market.tank ? html`<button class="link" type="button" data-tankoff="${market.owner}">Turn fast proofs off here</button> · ` : ''}` : ''}<button class="link" type="button" data-zapway="relay">Send the zap and let the relay finish it</button></div>`);
+    tell(html`<span class="err">${down ? 'The proof can’t be made here right now.' : 'The proof is taking a little longer.'}</span> Nothing has left your wallet.<div class="actr-f" data-zapid="${id}"><button class="link" type="button" data-zapway="own">Prove it yourself</button>, on this computer or with your credit · <button class="link" type="button" data-zapway="relay">Send the zap and let the relay finish it</button></div>`);
     if (inflight) inflight.then(() => fin('ready'), () => fin('ready'));
   });
 }
 document.addEventListener('click', (e) => {
-  const off = e.target.closest?.('[data-tankoff]');
-  if (off) { marketTankOff(off.dataset.tankoff); document.querySelector('[data-zapway="market"]')?.remove(); off.replaceWith(document.createTextNode('Fast proofs are off on this device. ')); return; }
   const b = e.target.closest?.('[data-zapway]');
   if (!b) return;
   const f = b.closest('.actr-f'); f?.remove();                       // a choice is made once: its buttons go
@@ -12483,7 +12385,7 @@ document.addEventListener('click', (e) => {
 async function zapNow({ run, p, z, status, bond = true, clear = () => {}, moved = () => {}, again = null }) {
   const pid = p.pid, tkB = zapTkB(p), tokenB = ZAP_TOKEN[tkB], label = pairName(p.pair);
   const tell = (m) => say(status, m);
-  let t = null, priv = null, built = null, hash = null, landed = false, guarded = false, rec = null, marketQ = null;
+  let t = null, priv = null, built = null, hash = null, landed = false, guarded = false, rec = null;
   const pub = S.key?.pubHex;
   try {
     t = await getUx(); priv = walletPriv();
@@ -12529,13 +12431,11 @@ async function zapNow({ run, p, z, status, bond = true, clear = () => {}, moved 
       }
       // not made in time, or the relay cannot prove it now, and no prover of their own set: the way on is the holder's, and a proof that lands meanwhile goes at once
       let flying = VOUCH.ahead?.poolId === p.poolId ? VOUCH.ahead.p : null;
-      const offer = await marketOffer();
       for (let asked = 0; !ownUsable && !(await lpReady(p.poolId, z.wei, res)) && asked < 2; asked++) {
-        const way = await zapWay({ tell, inflight: flying, market: offer, down: !(await relayProving()), then: again && { label: `Zap ${fmt(z.wei, 18, 6)} ETH into ${label}`, resume: again } });
+        const way = await zapWay({ tell, inflight: flying, down: !(await relayProving()), then: again && { label: `Zap ${fmt(z.wei, 18, 6)} ETH into ${label}`, resume: again } });
         flying = null;
         if (way === 'again') throw Object.assign(new Error('Another zap was started, so this one stopped. Nothing was sent.'), { said: true });
         if (way === 'own') throw Object.assign(new Error('Choose how to prove it and press Go on in the Prove sheet, or press the zap again. Nothing was sent.'), { said: true });
-        if (way === 'market') { marketQ = offer; break; }
         if (way === 'relay') break;
       }
       const ready = await lpReady(p.poolId, z.wei, res), v = await vouchers();
@@ -12557,16 +12457,8 @@ async function zapNow({ run, p, z, status, bond = true, clear = () => {}, moved 
     }
     // an index no note of this key has used: not one it holds, has spent (bonded), has a zap waiting on or a voucher keeps
     const index = t.nextShareIndex({ walletPriv: priv, poolId: p.poolId, owned: await scanOwned(),
-      used: [...zapsKept().filter((x) => x.pub === pub && x.poolId === p.poolId), ...(await vouchers()).list(pub, lpTicker(p.poolId))].map((x) => x.index).concat(marketPendingIdx(pub, p.poolId)) });
+      used: [...zapsKept().filter((x) => x.pub === pub && x.poolId === p.poolId), ...(await vouchers()).list(pub, lpTicker(p.poolId))].map((x) => x.index) });
     built = t.buildShareWrap({ walletPriv: priv, poolId: p.poolId, shares: plan.shares, index });
-    if (marketQ) {
-      try { const posted = await postMarketOrder({ built, q: marketQ, status }); marketPendingAdd({ opId: posted.intent.opId, pub, poolId: p.poolId, shares: String(plan.shares), index: built.index, memos: posted.memos, at: Date.now() }); tell('Posted to the proving market. Sending the zap; a prover settles your share as soon as it is made…'); }
-      catch (e) {
-        // a signature declined is the holder saying no, not a market that failed: nothing is sent (a network or board failure carries on with the relay)
-        if (walletDeclined(e)) { t.releaseShareIndex({ walletPriv: priv, poolId: p.poolId, index: built.index }); throw Object.assign(new Error('Cancelled in your wallet. Nothing was sent.'), { said: true }); }
-        tell(`The proving market was not used (${errText(e)}). Sending the zap; the relay finishes it.`);
-      }
-    }
     // Proved here or with your own credit (a single-pool zap): the share note first, then the zap and its settle together.
     if (!sp && ownNow(['wrap']) && (await proveOwn(['wrap']))) {
       await ownReady('wrap');

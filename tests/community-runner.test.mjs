@@ -23,9 +23,8 @@ test('configuration: modes, defaults, and what is refused', () => {
   assert.equal(c.rpcUrl, 'https://ethereum-rpc.publicnode.com');
   assert.equal(c.sendRpcUrl, 'https://rpc.flashbots.net/fast?hint=hash');
   assert.equal(c.api, 'https://api.tacit.finance');
-  assert.deepEqual(c.secs, { headers: 300, attest: 60, settles: 15, prove: 10, board: 5, mirror: 60 });
-  assert.deepEqual(readConfig({ DRY_RUN: '1' }, ['prove']).modes, ['prove'], 'proving for the market is opt-in: a mode of its own');
-  assert.ok(!c.modes.includes('prove'), 'and not part of all');
+  assert.deepEqual(c.secs, { headers: 300, attest: 60, settles: 15, board: 5, mirror: 60 });
+  assert.throws(() => readConfig({ DRY_RUN: '1' }, ['prove']), /unknown mode/, 'the proof market is gone: prove is no mode');
   assert.equal(c.marginBps, 2000n);
   assert.equal(c.maxGasWei, 5n * 10n ** 9n);
   assert.equal(c.priorityWei, 10n ** 8n);

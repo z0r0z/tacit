@@ -8,7 +8,17 @@
 // Storage (KV): gr:order:<digest> (the order, expiring with its deadline) and gr:index (a list of { id, at, until } newest last, capped).
 import { keccak_256 } from '@noble/hashes/sha3';
 import { bytesToHex, hexToBytes, concatBytes } from '@noble/hashes/utils';
-import { recoverSigner } from './proof-market-queue.js';
+import * as secp from '@noble/secp256k1';
+
+// The address that signed `digest`: a 65-byte r, s, v signature, v as 0/1 or 27/28.
+function recoverSigner(digest, sigHex) {
+  const sig = sigHex.replace(/^0x/, '');
+  let v = parseInt(sig.slice(128, 130), 16);
+  if (v >= 27) v -= 27;
+  if (v !== 0 && v !== 1) throw new Error('bad recovery id');
+  const pub = secp.Signature.fromCompact(sig.slice(0, 128)).addRecoveryBit(v).recoverPublicKey(digest).toRawBytes(false).slice(1);
+  return '0x' + bytesToHex(keccak_256(pub).slice(12));
+}
 
 export const GAS_RELAY = { maxOrders: 200, maxData: 16384, minTtlSecs: 60, maxTtlSecs: 3600, perClientPerHour: 30 };
 export const GAS_RELAY_ADDR = '0x000000197E8f0B64463B2010e568fF42090Af88d';
