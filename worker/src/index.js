@@ -13069,7 +13069,9 @@ async function handleChainOutspendsBatch(req, env, network, cors) {
 // POST /chain/tac/ancestry { roots: [txid…], depth? } → { txs: { txid: { hex, h, b? } }, truncated }: every archived transaction reached
 // from the roots through their inputs, from this service's own store only (it never asks upstream for it). A page reads a
 // note's history in one answer this way, checks each txid against its bytes, and asks a public explorer only for what is absent.
-const TAC_ANCESTRY_RL_BURST = 20, TAC_ANCESTRY_RL_REFILL_MS = 15_000;
+// One address may make a burst of 60 requests and then one more every 5 s (12 a minute). A page that rescans a wallet's whole shielded history (8 pages of 200 transfers, a request for
+// each 64 roots) asks about 25 times, and a second visit or a second device on the same address comes with it; the page keeps its own count under this one (dapp/tx-archive.js).
+const TAC_ANCESTRY_RL_BURST = 60, TAC_ANCESTRY_RL_REFILL_MS = 5_000;
 async function jsonMaybeGzip(req, body, headers) {
   const h = new Headers(headers);
   h.set('Content-Type', 'application/json');

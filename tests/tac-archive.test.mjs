@@ -64,8 +64,9 @@ try {
   ok((await post('/chain/tac/ancestry?network=mainnet', { roots: ['nope'] })).status === 400, 'a root that is not a txid is refused');
   ok((await post('/chain/tac/ancestry?network=mainnet', { roots: Array.from({ length: 65 }, () => PURCHASE) })).status === 400, 'and more than 64 roots');
   const statuses = [];
-  for (let i = 0; i < 20; i++) statuses.push((await post('/chain/tac/ancestry?network=mainnet', { roots: [SPLIT] })).status);
-  ok(statuses.includes(429), `one caller asking without pause is metered (${statuses.filter((s) => s === 429).length} of 20 refused)`);
+  for (let i = 0; i < 70; i++) statuses.push((await post('/chain/tac/ancestry?network=mainnet', { roots: [SPLIT] })).status);
+  ok(statuses.slice(0, 40).every((s) => s === 200), 'a caller gets a burst large enough for a whole rescan (a page asks about 25 times) before any is refused');
+  ok(statuses.includes(429), `and one asking without pause is metered all the same (${statuses.filter((s) => s === 429).length} of 70 refused)`);
 
   // ── the forward scan keeps the Tacit transactions of a block it reads, by the block's own bytes ──
   {
