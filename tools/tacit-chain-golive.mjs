@@ -19,8 +19,8 @@ const DRY = argv.includes('--dry-run');
 const ROOT = arg('--root') || join(dirname(fileURLToPath(import.meta.url)), '..');
 const DAPP = join(ROOT, 'dapp');
 const CONFIG = join(DAPP, 'tacit-chain-config.js');
-// the pages that talk to the leader: the front page (the tile's chain moves) and /chain/
-const LEADER_PAGES = ['index.html', 'chain/index.html'];
+// the pages that talk to the leader: the front page (the tile's chain moves, and TAC's page, /tac/, which the build makes from it)
+const LEADER_PAGES = ['index.html'];
 
 const die = (m) => { console.error(`tacit-chain-golive: ${m}`); process.exit(1); };
 const blocks = arg('--blocks'), leaderIn = arg('--leader');

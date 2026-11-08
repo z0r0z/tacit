@@ -1,8 +1,8 @@
-// The tacit chain's page (dapp/chain/) in a real browser, under its own content-security policy. With no chain deployed it says so in one
-// line and fetches nothing of the chain. Pointed at a deployment (localStorage 'tacit-chain-dev', the leader reached through the page's own
-// origin so the CSP holds as shipped), over a stand-in Ethereum (every public node the page reads routed to a fake that answers the landing
-// contract's views) and a stand-in leader on the page's server: the status rows, then a key pasted in the sheet, its balance found from a
-// note sealed to it, its address with the chain lane, Publish, and the spends this browser kept for it, each with its links into the tile.
+// The tacit chain on TAC's page (/tac/; /chain/ goes on there) in a real browser, under the page's own content-security policy. Pointed at a
+// deployment (localStorage 'tacit-chain-dev', the leader reached through the page's own origin so the CSP holds as shipped), over a stand-in
+// Ethereum (every public node the page reads routed to a fake that answers the landing contract's views) and a stand-in leader on the page's
+// server: the chain's figures, what a share is worth and the fee cards, then a key pasted in the wallet sheet, its TAC on the chain found from a
+// note sealed to it, the spends this browser kept for it, and its address with the chain lane, published as it opens.
 // At 390 and 1280 px, light and dark, with no sideways scroll.
 //   PLAYWRIGHT=<path to playwright-core> node tests/tacit-chain-page.mjs        (SHOTS=<dir> saves screenshots)
 
@@ -16,7 +16,7 @@ import { makeChainClient } from '../dapp/tacit-chain-client.js';
 import { makeChainWallet, assetField, worthOf } from '../dapp/tacit-chain-wallet.js';
 import { makeTacitAddress } from '../dapp/tacit-address.js';
 import { ETH_NODES } from '../dapp/eth-nodes.js';
-import { fmtTac, sharePrice, CARD } from '../dapp/chain/ui.js';
+import { fmtTac, sharePrice } from '../dapp/chain/ui.js';
 
 const require = createRequire(import.meta.url);
 let chromium;
@@ -85,6 +85,8 @@ const lane = await node.lane(), laneHex = hx(lane).slice(2, 18);
 const w = makeChainWallet({ poseidon, prover: null, chain: CHAIN, asset });
 const NOTE_SHARES = 2_490_000_000n, note = w.makeNote(await node.address(), NOTE_SHARES);
 const WANT_BAL = fmtTac(worthOf(NOTE_SHARES, RATE));
+// (the page's row for it, to the cent, as fmt rounds)
+const WANT_ROW = (() => { const c = (worthOf(NOTE_SHARES, RATE) + 500_000n) / 1_000_000n, f = String(c % 100n).padStart(2, '0').replace(/0+$/, ''); return `${(c / 100n).toLocaleString('en-US')}${f ? '.' + f : ''}`; })();
 const pendingKey = `tacit-chain-pending-v1:${BLOCKS.toLowerCase()}:${laneHex}`, hopsKey = `tacit-chain-hops-v1:${BLOCKS.toLowerCase()}:${laneHex}`;
 const kept = (now) => [
   { id: 'aa'.repeat(32), kind: 'shield', units: '2500000000', submission: { publics: '0x', data: '0x' }, extra: {}, nullifiers: [], leaves: [], deposit: depA, from: '0x' + '0d'.repeat(20), at: now - 60e3 },
@@ -142,96 +144,77 @@ const text = (page, sel) => page.$eval(sel, (e) => e.textContent.replace(/\s+/g,
 const rowsOf = (page, sel) => page.$$eval(`${sel} .kv`, (rs) => Object.fromEntries(rs.map((r) => [r.firstElementChild.textContent.trim(), r.lastElementChild.textContent.replace(/\s+/g, ' ').trim()])));
 const NODE_HOSTS = new Set(ETH_NODES.map((u) => new URL(u).host));
 
-async function visit({ live, viewport = { width: 1280, height: 900 }, colorScheme = 'light' }) {
+async function visit({ viewport = { width: 1280, height: 900 }, colorScheme = 'light' } = {}) {
   const ctx = await browser.newContext({ viewport, colorScheme });
   const asked = [], bad = [];
-  if (live) {
-    await ctx.addInitScript(({ dev, pk, kept, hk, hops }) => {
-      localStorage.setItem('tacit-chain-dev', JSON.stringify(dev));
-      const now = Date.now();
-      localStorage.setItem(pk, JSON.stringify(kept.map((e) => ({ ...e, at: now - e.at, ...(e.pay ? { pay: { until: now + e.pay.until } } : {}), ...(e.forced ? { forced: { ...e.forced, at: now - e.forced.at } } : {}) }))));
-      localStorage.setItem(hk, JSON.stringify(hops.map((h) => ({ ...h, at: now - h.at }))));
-    }, { dev: { blocks: BLOCKS, leader: `${WEB}/tacit-chain-leader` }, pk: pendingKey, hk: hopsKey,
-      // (times as offsets from the page's now, which the script adds)
-      kept: kept(0).map((e) => ({ ...e, at: -e.at, ...(e.pay ? { pay: { until: e.pay.until } } : {}), ...(e.forced ? { forced: { ...e.forced, at: -e.forced.at } } : {}) })),
-      hops: hopsWaiting(0).map((h) => ({ ...h, at: -h.at })) });
-  }
+  await ctx.addInitScript(({ dev, pk, kept, hk, hops }) => {
+    localStorage.setItem('tacit-chain-dev', JSON.stringify(dev));
+    const now = Date.now();
+    localStorage.setItem(pk, JSON.stringify(kept.map((e) => ({ ...e, at: now - e.at, ...(e.pay ? { pay: { until: now + e.pay.until } } : {}), ...(e.forced ? { forced: { ...e.forced, at: now - e.forced.at } } : {}) }))));
+    localStorage.setItem(hk, JSON.stringify(hops.map((h) => ({ ...h, at: now - h.at }))));
+  }, { dev: { blocks: BLOCKS, leader: `${WEB}/tacit-chain-leader` }, pk: pendingKey, hk: hopsKey,
+    // (times as offsets from the page's now, which the script adds)
+    kept: kept(0).map((e) => ({ ...e, at: -e.at, ...(e.pay ? { pay: { until: e.pay.until } } : {}), ...(e.forced ? { forced: { ...e.forced, at: -e.forced.at } } : {}) })),
+    hops: hopsWaiting(0).map((h) => ({ ...h, at: -h.at })) });
+  // Ethereum is the stand-in; every other service the front page reads is out of reach, as it may be on a bad day
   await ctx.route(/^https:\/\//, async (route) => {
     const q = route.request(), host = new URL(q.url()).host;
     const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': 'POST, OPTIONS' };
     if (NODE_HOSTS.has(host) && q.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
     if (!NODE_HOSTS.has(host) || q.method() !== 'POST') return route.abort();
-    const { id, method, params } = JSON.parse(q.postData() || '{}');
-    try { await route.fulfill({ status: 200, contentType: 'application/json', headers: cors, body: JSON.stringify({ jsonrpc: '2.0', id, result: ethAnswer(method, params) }) }); }
-    catch (e) { bad.push(`rpc: ${e.message}`); await route.fulfill({ status: 200, contentType: 'application/json', headers: cors, body: JSON.stringify({ jsonrpc: '2.0', id, error: { code: -32000, message: e.message } }) }); }
+    const body = JSON.parse(q.postData() || '{}'), one = (x) => { try { return { jsonrpc: '2.0', id: x.id, result: ethAnswer(x.method, x.params) }; } catch (e) { return { jsonrpc: '2.0', id: x.id, error: { code: -32000, message: e.message } }; } };
+    await route.fulfill({ status: 200, contentType: 'application/json', headers: cors, body: JSON.stringify(Array.isArray(body) ? body.map(one) : one(body)) });
   });
   const page = await ctx.newPage();
   page.on('request', (r) => asked.push(r.url()));
   page.on('pageerror', (e) => bad.push(`page error: ${e.message}`));
-  // (an address the leader does not know yet answers 404, which the browser logs: that one is expected)
-  const expected = (m) => /Failed to load resource/.test(m.text()) && /\/tacit-chain-leader\/(address|leaf)\//.test(m.location()?.url || '');
-  page.on('console', (m) => { if ((m.type() === 'error' && !expected(m)) || /Content Security Policy/i.test(m.text())) bad.push(`console: ${m.text()} ${m.location()?.url || ''}`); });
-  page.on('response', (r) => { if (r.status() >= 400 && !/\/tacit-chain-leader\/(address|leaf)\//.test(r.url())) bad.push(`${r.status()} ${r.url()}`); });
-  await page.goto(`${WEB}/chain/`, { waitUntil: 'networkidle' });
+  page.on('console', (m) => { if (/Content Security Policy/i.test(m.text())) bad.push(`console: ${m.text()} ${m.location()?.url || ''}`); });
+  await page.goto(`${WEB}/chain/`, { waitUntil: 'domcontentloaded' });
+  await page.waitForURL(/\/tac\/$/, { timeout: 15000 });
   const tag = `${viewport.width}-${colorScheme}`;
   return { page, ctx, asked, bad, shot: async (name) => { if (SHOTS) await page.screenshot({ path: join(SHOTS, `chain-${name}-${tag}.png`), fullPage: true }); } };
 }
 const noSideways = (page) => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
+// the key pasted in the front page's wallet sheet, which TAC's page shares
 async function signIn(page) {
-  await page.click('#mine [data-act="signin"]');
-  await page.waitForSelector('.bsheet [data-show="paste"]', { timeout: 10000 });
-  await page.click('.bsheet [data-show="paste"]');
-  await page.fill('.bsheet .paste-key input', KEY);
-  await page.click('.bsheet .paste-key [data-in="key"]');
-  await page.waitForSelector('.bsheet', { state: 'detached', timeout: 10000 });
-  await page.waitForFunction((want) => (document.querySelector('#mine')?.textContent || '').includes(`${want} TAC`) && document.querySelectorAll('#mine .kept li').length >= 3, WANT_BAL, { timeout: 30000 });
+  await page.click('#tpg-top [data-signin]');
+  await page.waitForSelector('#sheet-wallet[open] [data-in="paste"]', { timeout: 10000 });
+  await page.click('#sheet-wallet [data-in="paste"]');
+  await page.fill('#ws-hex', KEY);
+  await page.click('#sheet-wallet [data-in="key"]');
+  await page.waitForFunction(() => /tacit1/.test(document.querySelector('#wallet-label')?.textContent || ''), null, { timeout: 30000 });
+  await page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
 }
+const cells = (page) => page.$$eval('#tpg-nets .tpg-strip:last-of-type > div', (cs) => Object.fromEntries(cs.map((c) => [c.querySelector('.k').textContent.trim(), c.querySelector('.v').textContent.trim()])));
 
 try {
-  // no chain deployed: one quiet line, and nothing of the chain fetched
+  // pointed at a deployment: /chain/ goes on to TAC's page, which reads the chain's figures, then a key's side
   {
-    const { page, ctx, asked, bad, shot } = await visit({ live: false });
-    await page.waitForFunction(() => /Not live yet/.test(document.getElementById('chain')?.textContent || ''), null, { timeout: 10000 });
-    ok((await page.title()) === 'tacit chain', 'the page is "tacit chain"');
-    ok((await text(page, '#chain')) === 'Not live yet' && !(await page.$('#chain section, #chain a, #chain button')), 'with no chain deployed it says "Not live yet" and nothing else');
-    ok(await page.$eval('#wallet-chip', (e) => e.hidden), 'and offers no sign-in');
-    const chainAsked = asked.filter((u) => /tacit-chain-client|tacit-chain-leader|trade\/key\.js|tacit-unified/.test(u) || NODE_HOSTS.has(new URL(u).host));
-    ok(!chainAsked.length, `nothing of the chain is fetched (${chainAsked.slice(0, 3).join(' ') || 'none'})`);
-    await shot('off');
-    ok(bad.length === 0, `no errors (${bad.join(' | ')})`);
-    await ctx.close();
-  }
-  // pointed at a deployment: its status, then a key's side
-  {
-    const { page, ctx, bad, shot } = await visit({ live: true });
-    await page.waitForFunction(() => document.querySelectorAll('#status .kv').length === 7, null, { timeout: 20000 });
-    const r = await rowsOf(page, '#status');
-    ok(r.Status === 'Live' && r.Blocks === '1,234' && /^4\d s ago$/.test(r['Last block']) && r['Share price'] === sharePrice(RATE.pool, RATE.shares) && r.Pool === '12,345.067 TAC'
-      && r['Leader fee'] === '0.015 TAC a move' && r['Shield cap'] === 'up to 1,000 TAC', `the status rows (${JSON.stringify(r)})`);
-    ok(/Sign in/.test(await text(page, '#mine')) && /Sign in/.test(await text(page, '#wallet-chip')), 'Sign in, in the panel and the header');
-    ok(JSON.stringify(await page.$$eval('#acts a', (as) => as.map((a) => [a.textContent, a.getAttribute('href')]))) === JSON.stringify([['Shield', CARD.shield], ['Send', CARD.send], ['Withdraw', CARD.out]]), 'Shield, Send and Withdraw link into the tile');
+    const { page, ctx, bad, shot } = await visit();
+    ok((await page.title()) === 'tacit TAC', '/chain/ goes on to TAC\'s page');
+    await page.click('#tpg-how > summary');
+    await page.waitForFunction(() => /1,234/.test(document.querySelector('#tpg-nets')?.textContent || ''), null, { timeout: 30000 }).catch(() => {});
+    const r = await cells(page);
+    ok(r.Blocks === '1,234' && /^4\d s ago$/.test(r['Last block']) && r['Share price'] === sharePrice(RATE.pool, RATE.shares, 5) && r['Pool, TAC'] === fmtTac(RATE.pool, 2)
+      && r['Leader fee, TAC'] === '0.015' && r['Shield cap, TAC'] === '1,000', `the chain's figures (${JSON.stringify(r)})`);
+    ok(new RegExp(`1 share = ${sharePrice(RATE.pool, RATE.shares, 5).replace('.', '\\.')}`).test(await text(page, '#tpg-why')), `what a share is worth (${(await text(page, '#tpg-why .tpg-px'))})`);
+    ok(/about 0\.017 TAC/.test(await text(page, '.tpg-fees')) && /0\.015 TAC/.test(await text(page, '.tpg-fees')), `the fee cards take the leader's terms (${(await text(page, '.tpg-fees')).slice(0, 120)})`);
     await shot('status');
     await signIn(page);
-    const m = await rowsOf(page, '#mine');
-    ok(m.Balance === `${WANT_BAL} TAC`, `the key's balance, found from the note sealed to it (${m.Balance})`);
-    const addr = await page.$eval('#mine .mono', (e) => e.getAttribute('title'));
+    await page.waitForFunction((want) => [...document.querySelectorAll('.tpg-leg li')].some((li) => /Tacit chain/.test(li.textContent) && li.querySelector('b')?.textContent.trim() === want), WANT_ROW, { timeout: 30000 })
+      .then(() => ok(true, `the key's TAC on the Tacit chain, found from the note sealed to it (${WANT_BAL})`), async () => ok(false, `chain row: ${await text(page, '.tpg-leg')}`));
+    await page.waitForFunction(() => /moves have not landed yet/.test(document.querySelector('#tpg-top')?.textContent || ''), null, { timeout: 30000 })
+      .then(async () => ok(true, `what waits is said, with the tile's move that shows it (${await text(page, '#tpg-top .note')})`), async () => ok(false, `kept: ${await text(page, '#tpg-top')}`));
+    await page.click('#tpg-top [data-tpg="receive"]');
+    await page.waitForFunction(() => /^tacit1/.test(document.querySelector('#tpg-p .keyrow .full code')?.textContent || ''), null, { timeout: 30000 }).catch(() => {});
+    const addr = await page.$eval('#tpg-p .keyrow .full code', (e) => e.textContent.trim()).catch(() => '');
     let laneOk = false;
     try { laneOk = Buffer.from(makeTacitAddress({ secp }).decodeTacitAddress(addr).lanes.chain.hash).equals(Buffer.from(lane)); } catch { /* not an address */ }
     ok(laneOk, `its Tacit address carries its chain lane (${addr.slice(0, 18)}…)`);
-    ok(/tacit1/.test(await text(page, '#wallet-chip')), `the header chip names it (${await text(page, '#wallet-chip')})`);
-    await page.waitForSelector('#mine [data-act="publish"]', { timeout: 10000 });
-    ok(true, 'an address the leader does not know yet can be published');
-    const items = await page.$$eval('#mine .kept li', (ls) => ls.map((l) => ({ t: l.textContent.replace(/\s+/g, ' ').trim(), a: [...l.querySelectorAll('a')].map((a) => [a.textContent, a.getAttribute('href')]) })));
-    const find = (re) => items.find((i) => re.test(i.t));
-    const sh = find(/^A shield of 25 TAC has not landed\./), mv = find(/^A move of 48 TAC from the private pool is on its way/), pay = find(/^A payment of 10 TAC has not landed\. Posted to Ethereum\./), hop = find(/^A move of 7 TAC to the private pool has not been sent on\./);
-    ok(items.length === 4 && sh && mv && pay && hop, `what waits is listed (${items.map((i) => i.t).join(' | ')})`);
-    ok(JSON.stringify(sh?.a) === JSON.stringify([['Post it to Ethereum', CARD.shield], ['Take it back', CARD.shield]]), 'a shield not landed: post it, or take it back once due');
-    ok(JSON.stringify(mv?.a) === JSON.stringify([['Send it in', CARD.inbox]]) && pay?.a.length === 0 && JSON.stringify(hop?.a) === JSON.stringify([['Send it on', CARD.hop]]), 'a paid inbox: send it in; a posted payment: nothing to do; a hop: send it on');
-    await shot('signed-in');
-    await page.click('#mine [data-act="publish"]');
-    await page.waitForFunction(() => /Published/.test(document.querySelector('#mine')?.textContent || '') && !document.querySelector('#mine [data-act="publish"]'), null, { timeout: 10000 });
-    ok(directory.size === 1 && [...directory.values()][0].length > 2000, 'Publish puts the full address in the leader\'s directory, and the page says Published');
+    for (let i = 0; i < 40 && directory.size === 0; i++) await new Promise((r) => setTimeout(r, 500));
+    ok(directory.size === 1, 'the address is in the leader\'s directory, published as the key opened');
     ok(leaderAsked.includes('GET /fee') && leaderAsked.some((x) => x.startsWith('GET /notes')), 'the leader was asked for its terms and its notes');
+    await shot('signed-in');
     ok(bad.length === 0, `no errors or CSP violations (${bad.join(' | ')})`);
     await ctx.close();
   }
@@ -239,14 +222,12 @@ try {
   for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 900 }]) {
     for (const colorScheme of ['light', 'dark']) {
       directory.clear();
-      const { page, ctx, bad, shot } = await visit({ live: true, viewport, colorScheme });
-      await page.waitForFunction(() => document.querySelectorAll('#status .kv').length === 7, null, { timeout: 20000 });
+      const { page, ctx, bad, shot } = await visit({ viewport, colorScheme });
+      await page.waitForFunction(() => /1 share = \d/.test(document.querySelector('#tpg-why')?.textContent || ''), null, { timeout: 20000 }).catch(() => {});
       const before = await noSideways(page);
       await signIn(page);
-      await page.waitForSelector('#mine [data-act="publish"]', { timeout: 10000 });
       await shot('page');
-      const bg = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
-      ok(before && (await noSideways(page)), `${viewport.width} px ${colorScheme}: no sideways scroll, signed out or in (${bg})`);
+      ok(before && (await noSideways(page)), `${viewport.width} px ${colorScheme}: no sideways scroll, signed out or in`);
       ok(bad.length === 0, `${viewport.width} px ${colorScheme}: no errors (${bad.join(' | ')})`);
       await ctx.close();
     }

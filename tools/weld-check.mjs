@@ -666,14 +666,14 @@ await step('links', async () => {
   await page.goto(url + '#buy');
   ok(await cardIs(page, 'ETH>TAC'), 'links: and #buy ETH for TAC');
   await page.goto(url + '#bridge');
-  await page.waitForSelector('#sheet-tac[open] .tac-ways a[data-link="buy"]', { timeout: 60000 });
-  ok((await page.getAttribute('#sheet-tac .tac-ways a[data-link="buy"]', 'href')) === '#buy' && (await page.getAttribute('#sheet-tac .tac-ways a[href="/rewards/"]', 'href')) === '/rewards/', 'links: the TAC sheet links to the card here and to the rewards page');
+  await page.waitForSelector('html[data-page="tac"] #tpg-where[open] #bridge-body', { timeout: 60000 });
+  ok(new URL(page.url()).pathname === '/tac/' && (await page.getAttribute('.tpg-get a[href="/rewards/"]', 'href')) === '/rewards/', 'links: #bridge opens TAC\'s page (/tac/) on its bridge, and its Get TAC links to the rewards page');
   await page.goto(url + '#sell');
   await cardIs(page, 'TAC>ETH');
   await page.goto(url + '#bridge');
-  await page.waitForSelector('#sheet-tac[open] .tac-ways a[data-link="buy"]', { timeout: 60000 });
-  await page.click('#sheet-tac .tac-ways a[data-link="buy"]');
-  ok((await cardIs(page, 'ETH>TAC')) && !(await page.$('#sheet-tac[open]')), 'links: its Buy or sell TAC closes the sheet and puts ETH for TAC in the card');
+  await page.waitForSelector('html[data-page="tac"] #tpg-buy', { timeout: 60000 });
+  await page.click('#tpg-buy');
+  ok((await cardIs(page, 'ETH>TAC')) && !!(await page.$('#tpg-act:not([hidden]) #hx')), 'links: its Buy with ETH draws the tile on TAC\'s page with ETH for TAC');
   await page.goto(url + '#points');
   await page.waitForSelector('#sheet-pts[open]', { timeout: 60000 });
   await page.goto(url + '#earn');
@@ -872,9 +872,9 @@ await step('ux', async () => {
   await page.fill('#pf-amt', '1');
   ok(!(await page.$('[data-amt-hint]')), 'ux: a readable amount shows no hint');
   await page.evaluate(() => { location.hash = '#bridge'; });
-  await page.waitForSelector('#sheet-tac[open]', { timeout: 60000 });
+  await page.waitForSelector('html[data-page="tac"] #sheet-tac', { timeout: 60000 });
   await sleep(600);
-  ok((await page.evaluate(() => location.hash)) === '#bridge', 'ux: one sheet replacing another keeps the new sheet\'s link in the address bar');
+  ok((await page.evaluate(() => location.pathname)) === '/tac/', 'ux: a sheet replaced by TAC\'s page leaves its address at /tac/');
   await page.goto(url + '#constructor');
   await page.waitForSelector('#hx-body .hx-h');
   await page.evaluate(() => { location.hash = '#points'; });
@@ -2283,7 +2283,7 @@ await step('shield', async () => {
     await r.page.fill('#ws-hex', hex);
     await r.page.click('#wallet-body [data-in="key"]');
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
-    await r.page.evaluate(() => { location.hash = ''; location.hash = '#tac'; });
+    await r.page.evaluate(() => { location.hash = ''; location.hash = '#tac'; document.querySelector('#tpg-where').open = true; });
     await r.page.waitForSelector('#tac-shield #tsh-go', { timeout: 240000 }).catch(async (e) => {
       throw new Error(`${e.message.split('\n')[0]} | bal: ${(await r.page.evaluate(() => (document.querySelector('#tac-bal')?.textContent || '').replace(/\s+/g, ' ').slice(0, 300)))} | errors: ${r.errors.slice(0, 2).join(' | ')}`);
     });
@@ -2330,8 +2330,8 @@ await step('shieldwallet', async () => {
     await r.page.waitForSelector('[data-pay="wallet"]', { timeout: 60000 });
     await r.page.click('[data-pay="wallet"]');                                              // connects the stub wallet, which pays
     await until(r.page, () => document.querySelector('[data-pay="wallet"]')?.classList.contains('main'));
-    await r.page.evaluate(() => { location.hash = ''; location.hash = '#tac'; });
-    await r.page.waitForSelector('#sheet-tac[open] #tac-bal', { timeout: 120000 });
+    await r.page.evaluate(() => { location.hash = ''; location.hash = '#tac'; document.querySelector('#tpg-where').open = true; });
+    await r.page.waitForSelector('html[data-page="tac"] #tac-bal', { timeout: 120000 });
   };
   const maxIs = (p, re) => until(p, (x) => new RegExp(x).test((document.querySelector('#tsh-max')?.textContent || '').trim()), re, 120000)
     .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | max: ${await text(p, '#tsh-max')} | shield: ${(await text(p, '#tac-shield')).replace(/\s+/g, ' ').slice(0, 200)}`); });
@@ -2488,7 +2488,7 @@ await step('tacsend', async () => {
     await r.page.fill('#ws-hex', hex);
     await r.page.click('#wallet-body [data-in="key"]');
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
-    await r.page.evaluate(() => { location.hash = ''; location.hash = '#tac'; });
+    await r.page.evaluate(() => { location.hash = ''; location.hash = '#tac'; document.querySelector('#tpg-where').open = true; });
     await r.page.waitForSelector('#tac-send:not([hidden]) #ts-to', { timeout: 240000 }).catch(async (e) => {
       throw new Error(`${e.message.split('\n')[0]} | sheet: ${(await r.page.evaluate(() => (document.querySelector('#tac-bal')?.textContent || '').replace(/\s+/g, ' ').slice(-300)))} | errors: ${r.errors.slice(0, 2).join(' | ')}`);
     });
@@ -2544,7 +2544,7 @@ await step('selfexit', async () => {
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
     await acctPays(r.page);
     await rpc('anvil_setBalance', [want, '0x0']);
-    await r.page.evaluate(() => { location.hash = ''; location.hash = '#tac'; });
+    await r.page.evaluate(() => { location.hash = ''; location.hash = '#tac'; document.querySelector('#tpg-where').open = true; });
     await r.page.waitForSelector('#tac-pub', { timeout: 240000 }).catch(async (e) => {
       throw new Error(`${e.message.split('\n')[0]} | sheet: ${(await r.page.evaluate(() => (document.querySelector('#tac-bal')?.textContent || '').replace(/\s+/g, ' ').slice(0, 300)))} | errors: ${r.errors.slice(0, 2).join(' | ')}`);
     });
@@ -2609,7 +2609,7 @@ await step('selfmore', async () => {
     await r.page.click('#wallet-body [data-in="key"]');
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
     if (eth != null) await rpc('anvil_setBalance', [want, eth]);
-    await r.page.evaluate(() => { location.hash = ''; location.hash = '#tac'; });
+    await r.page.evaluate(() => { location.hash = ''; location.hash = '#tac'; document.querySelector('#tpg-where').open = true; });
     await r.page.waitForSelector('#ts-to', { timeout: QUOTE_WAIT });
     await sleep(3000);
     return r;
@@ -2785,7 +2785,7 @@ await step('selfsplit', async () => {
     await r.page.click('#wallet-body [data-in="key"]');
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
     await rpc('anvil_setBalance', [want, '0x' + (10n ** 17n).toString(16)]);
-    await r.page.evaluate(() => { location.hash = ''; location.hash = '#tac'; });
+    await r.page.evaluate(() => { location.hash = ''; location.hash = '#tac'; document.querySelector('#tpg-where').open = true; });
     await r.page.waitForSelector('#ts-to', { timeout: 240000 });
     await sleep(3000);
     await r.page.fill('#ts-to', tacit1('abd'.padEnd(64, '6')));
@@ -2837,7 +2837,7 @@ await step('makepub', async () => {
     await r.page.fill('#ws-hex', hex);
     await r.page.click('#wallet-body [data-in="key"]');
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
-    await r.page.evaluate(() => { location.hash = ''; location.hash = '#tac'; });
+    await r.page.evaluate(() => { location.hash = ''; location.hash = '#tac'; document.querySelector('#tpg-where').open = true; });
     await r.page.waitForSelector('#tac-pub', { timeout: 240000 });
     ok(await until(r.page, () => /relay fee of about \d+ TAC comes out of it/.test(document.querySelector('#tac-bal')?.textContent || ''), null, QUOTE_WAIT).then(() => true, () => false),
       `makepub: the sheet names the relay fee before it is pressed (${(await text(r.page, '#tac-bal')).replace(/\s+/g, ' ').match(/A relay fee[^.]*\./)?.[0] || 'none'})`);
@@ -3032,8 +3032,8 @@ await step('acct', async () => {
   await fundTac(want, 100n * 10n ** 18n);                                                // and some TAC (bought on the swap page, which is tested on its own)
 
   await go(r.page, '#tac');                                                               // another sheet first, so the farm's link is followed again and its balances read again
-  await r.page.waitForSelector('#sheet-tac[open]', { timeout: 60000 });
-  await sleep(500);                                                                       // the TAC sheet writes its own link (#bridge) as it opens: the farm's link is set after that, not under it
+  await r.page.waitForSelector('html[data-page="tac"] #sheet-tac', { timeout: 60000 });
+  await sleep(500);                                                                       // TAC's page writes its own address as it opens: the farm's link is set after that, not under it
   await go(r.page, '#farm');
   await r.page.waitForSelector('#sheet-farm[open]', { timeout: 60000 });
   await r.page.waitForSelector('[data-pfm="pair"]', { timeout: 60000 });
@@ -3362,8 +3362,8 @@ await step('bridge', async () => {
   await go(r.page, '#bitcoin');
   await until(r.page, () => !!document.querySelector('#btc-body a[data-link="bridge"]'), null, 120000);
   await r.page.click('#btc-body a[data-link="bridge"]');
-  await until(r.page, () => location.hash === '#bridge' && !!document.querySelector('#sheet-tac[open] #bridge-body'));
-  ok(true, 'bridge: the Bitcoin sheet’s TAC line opens the TAC sheet’s Bridge tab, and the link reads #bridge');
+  await until(r.page, () => location.pathname === '/tac/' && !!document.querySelector('html[data-page="tac"] #tpg-where[open] #bridge-body'));
+  ok(true, 'bridge: the Bitcoin sheet’s TAC line opens TAC’s page on its bridge, at /tac/');
   await until(r.page, () => document.querySelectorAll('#bridge-body .brn').length === 4, null, 120000);
   const notes = (await text(r.page, '#bridge-body .brns')).replace(/\s+/g, ' ').trim();
   ok(/^250(\.0+)? TAC.*40(\.0+)? TAC.*30(\.0+)? TAC.*1,500(\.0+)? TAC\s*Over 1,000 TAC/.test(notes) && !(await r.page.$(`#bridge-body input[value="${N2}:0"]`)) && (await r.page.inputValue('#bridge-body .brsp input')) === '1000' && !!(await r.page.$('#bridge-body [data-brsplit]')),
@@ -3473,7 +3473,7 @@ await step('bridge', async () => {
   ok(/too few sats free for the fee/.test(heldRow) && /Your turn/.test(heldRow) && /Bridge it/.test(heldRow), `bridge: a note that asked to be bridged when ready, with no sats free, is held, says why, and is the holder's turn (${heldRow.slice(0, 260)})`);
   await r.page.setViewportSize({ width: 360, height: 760 });
   await sleep(300);
-  const wide = await r.page.evaluate(() => { const d = document.querySelector('#sheet-tac .sheet-in'); return [d.scrollWidth, d.clientWidth, document.documentElement.scrollWidth, innerWidth]; });
+  const wide = await r.page.evaluate(() => { const d = document.querySelector('#sheet-tac'); return [d.scrollWidth, d.clientWidth, document.documentElement.scrollWidth, innerWidth]; });
   if (process.env.SHOT) await r.page.screenshot({ path: process.env.SHOT + '-phone.png', fullPage: true });
   ok(wide[0] <= wide[1] + 1 && wide[2] <= wide[3] + 1, `bridge: no sideways scroll at phone width (${wide})`);
   if (r.errors.length) { fails++; console.log('FAIL bridge page errors: ' + r.errors.slice(0, 3).join(' | ')); }
@@ -3922,7 +3922,7 @@ await step('bridgepub', async () => {
     await r.page.fill('#ws-hex', hex);
     await r.page.click('#wallet-body [data-in="key"]');
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
-    await r.page.evaluate(() => { location.hash = ''; location.hash = '#tac'; });
+    await r.page.evaluate(() => { location.hash = ''; location.hash = '#tac'; document.querySelector('#tpg-where').open = true; });
     await until(r.page, () => (globalThis.__pubLeaves || []).length === 3, null, QUOTE_WAIT);
     const [leafA, leafB, leafC] = await r.page.evaluate(() => globalThis.__pubLeaves);
     // Two arrived bridges: the first asked for public TAC at DEAD, the second asked for nothing.
@@ -4614,7 +4614,7 @@ await step('xtbridge', async () => {
   await r.page.evaluate(() => localStorage.setItem('tacit-tac-btc', 'true'));
   await toSide();
   await until(r.page, () => !!document.querySelector('#bridge-body [data-brm="out"][aria-selected="true"]'), null, 120000)
-    .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | hash: ${await r.page.evaluate(() => location.hash)} | tab: ${await r.page.evaluate(() => document.querySelector('#sheet-tac')?.open)} | body: ${(await text(r.page, '#bridge-body')).replace(/\s+/g, ' ').slice(0, 200)} | flag: ${await r.page.evaluate(() => localStorage.getItem('tacit-tac-btc'))} | errors: ${r.errors.slice(0, 3).join(' | ')}`); });
+    .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | hash: ${await r.page.evaluate(() => location.hash)} | tab: ${await r.page.evaluate(() => document.documentElement.dataset.page === 'tac')} | body: ${(await text(r.page, '#bridge-body')).replace(/\s+/g, ' ').slice(0, 200)} | flag: ${await r.page.evaluate(() => localStorage.getItem('tacit-tac-btc'))} | errors: ${r.errors.slice(0, 3).join(' | ')}`); });
   ok((await r.page.evaluate(() => location.hash)) === '#bridge/out' && !!(await r.page.$('#bridge-body [data-brm="in"]')), 'xtbridge: enabled, the side is there, the link selects it and the address reads #bridge/out');
   await r.page.click('#bridge-body [data-brm="in"]');
   await until(r.page, () => !!document.querySelector('#bridge-body [data-brm="in"][aria-selected="true"]') && !!document.querySelector('#bridge-body #br-go'), null, 120000);
@@ -4821,7 +4821,7 @@ await step('xtbridge', async () => {
   await r.page.setViewportSize({ width: 360, height: 760 });
   await sleep(400);
   await r.page.evaluate(() => document.querySelector('#bridge-body #xt-find')?.closest('details')?.setAttribute('open', ''));
-  const wideXt = await r.page.evaluate(() => { const d = document.querySelector('#sheet-tac .sheet-in'); return [d.scrollWidth, d.clientWidth, document.documentElement.scrollWidth, innerWidth]; });
+  const wideXt = await r.page.evaluate(() => { const d = document.querySelector('#sheet-tac'); return [d.scrollWidth, d.clientWidth, document.documentElement.scrollWidth, innerWidth]; });
   ok(wideXt[0] <= wideXt[1] + 1 && wideXt[2] <= wideXt[3] + 1, `xtbridge: no sideways scroll at phone width (${wideXt})`);
   if (r.errors.length) { fails++; console.log('FAIL xtbridge page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   await r.browser.close();
@@ -5021,11 +5021,11 @@ await step('xtring', async () => {
   await r.page.evaluate(() => localStorage.setItem('tacit-tac-btc', 'false'));
   await r.page.evaluate(([k]) => localStorage.removeItem(k), [`tacit-crossout-bridge-v1:mainnet:${pub}`]);
   await toSide();
-  await until(r.page, () => document.querySelector('#sheet-tac')?.open && !document.querySelector('#bridge-body')?.hidden && !!document.querySelector('#bridge-body [data-brm="out"][aria-selected="true"]') && document.querySelectorAll('#bridge-body .brr').length === 1, null, 120000);
+  await until(r.page, () => document.documentElement.dataset.page === 'tac' && !document.querySelector('#bridge-body')?.hidden && !!document.querySelector('#bridge-body [data-brm="out"][aria-selected="true"]') && document.querySelectorAll('#bridge-body .brr').length === 1, null, 120000);
   ok(true, 'xtring: with the setting off and no cross-out under way, a return in flight keeps the side and its Coming back row');
   // The From Bitcoin side lists the same bridge, as it lists every TAC bridge.
   await r.page.click('#bridge-body [data-brm="in"]');
-  await until(r.page, () => document.querySelector('#sheet-tac')?.open && !document.querySelector('#bridge-body')?.hidden && !!document.querySelector('#bridge-body #br-go') && document.querySelectorAll('#bridge-body .brr').length >= 1, null, 120000);
+  await until(r.page, () => document.documentElement.dataset.page === 'tac' && !document.querySelector('#bridge-body')?.hidden && !!document.querySelector('#bridge-body #br-go') && document.querySelectorAll('#bridge-body .brr').length >= 1, null, 120000);
   ok(true, 'xtring: the From Bitcoin side lists it too, among the TAC bridges');
   // An ordinary TAC bridge from Bitcoin (no Taproot output) does not keep the To Bitcoin side.
   const plain = { ...rec, id: 'f2'.repeat(32) + ':0', source: { ...rec.source, txid: 'f2'.repeat(32), p2tr: undefined } };
@@ -5033,7 +5033,7 @@ await step('xtring', async () => {
   // and the tETH tab lists neither.
   await r.page.evaluate(([k, v]) => localStorage.setItem(k, v), [`tacit-burndep-bridge-v1:mainnet:${pub}`, JSON.stringify([rec, plain])]);
   await toSide();
-  await until(r.page, () => document.querySelector('#sheet-tac')?.open && !!document.querySelector('#bridge-body [data-brm="out"][aria-selected="true"]') && document.querySelectorAll('#bridge-body .brr').length === 1, null, 120000)
+  await until(r.page, () => document.documentElement.dataset.page === 'tac' && !!document.querySelector('#bridge-body [data-brm="out"][aria-selected="true"]') && document.querySelectorAll('#bridge-body .brr').length === 1, null, 120000)
     .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | rows: ${(await r.page.$$('#bridge-body .brr')).length} | body: ${(await text(r.page, '#bridge-body')).replace(/\s+/g, ' ').slice(0, 240)}`); });
   ok(/40 TAC/.test(await text(r.page, '#bridge-body .brr')), 'xtring: with a return and an ordinary bridge in together, the To Bitcoin side lists the return alone');
   await r.page.click('#bridge-body [data-brm="in"]');
@@ -5047,16 +5047,16 @@ await step('xtring', async () => {
   await r.page.evaluate(() => localStorage.setItem('tacit-teth-btc', 'false'));
   await r.page.evaluate(([k, v]) => localStorage.setItem(k, v), [`tacit-burndep-bridge-v1:mainnet:${pub}`, JSON.stringify([plain])]);
   await toSide('#bridge');
-  await until(r.page, () => document.querySelector('#sheet-tac')?.open && !document.querySelector('#bridge-body')?.hidden && !!document.querySelector('#bridge-body #br-go'), null, 120000);
+  await until(r.page, () => document.documentElement.dataset.page === 'tac' && !document.querySelector('#bridge-body')?.hidden && !!document.querySelector('#bridge-body #br-go'), null, 120000);
   ok(!(await r.page.$('#bridge-body [data-brm]')), 'xtring: a TAC bridge from Bitcoin alone does not bring the To Bitcoin side');
   // The sections at phone width, with no sideways scroll.
   await r.page.evaluate(([k, v]) => localStorage.setItem(k, v), [`tacit-burndep-bridge-v1:mainnet:${pub}`, JSON.stringify([rec])]);
   await toSide();
-  await until(r.page, () => document.querySelector('#sheet-tac')?.open && !document.querySelector('#bridge-body')?.hidden && document.querySelectorAll('#bridge-body .brr').length === 1 && !!document.querySelector('#bridge-body #xc-find'), null, 120000);
+  await until(r.page, () => document.documentElement.dataset.page === 'tac' && !document.querySelector('#bridge-body')?.hidden && document.querySelectorAll('#bridge-body .brr').length === 1 && !!document.querySelector('#bridge-body #xc-find'), null, 120000);
   await r.page.setViewportSize({ width: 360, height: 760 });
   await sleep(400);
   await r.page.evaluate(() => document.querySelector('#bridge-body #xc-find')?.closest('details')?.setAttribute('open', ''));
-  const wide = await r.page.evaluate(() => { const d = document.querySelector('#sheet-tac .sheet-in'); return [d.scrollWidth, d.clientWidth, document.documentElement.scrollWidth, innerWidth]; });
+  const wide = await r.page.evaluate(() => { const d = document.querySelector('#sheet-tac'); return [d.scrollWidth, d.clientWidth, document.documentElement.scrollWidth, innerWidth]; });
   ok(wide[0] <= wide[1] + 1 && wide[2] <= wide[3] + 1, `xtring: no sideways scroll at phone width (${wide})`);
   if (r.errors.length) { fails++; console.log('FAIL xtring page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   await r.browser.close();
@@ -6581,7 +6581,7 @@ await step('receipts', async () => {
     await pasteKey(r.page, 'e1'.padEnd(64, '5'));                             // a pasted key does not outlive a reload
     await acctPays(r.page);
     await r.page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
-    await r.page.evaluate(() => { location.hash = ''; location.hash = '#tac'; });
+    await r.page.evaluate(() => { location.hash = ''; location.hash = '#tac'; document.querySelector('#tpg-where').open = true; });
     await r.page.waitForSelector('#tac-pub', { timeout: 240000 });
     ok(/8(\.0+)? TAC is in private notes/.test(await text(r.page, '#tac-bal')), `receipts: 8 private TAC is offered to make public (${(await text(r.page, '#tac-bal')).replace(/\s+/g, ' ').slice(-120)})`);
     const before = (await rx()).calls.length;
@@ -6599,7 +6599,7 @@ await step('receipts', async () => {
     await open(second.jobId);
     // The failed note is offered again once a scan shows it unspent; sent again, it is the same job, a new attempt.
     await r.page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
-    await r.page.evaluate(() => { location.hash = ''; location.hash = '#tac'; });
+    await r.page.evaluate(() => { location.hash = ''; location.hash = '#tac'; document.querySelector('#tpg-where').open = true; });
     await until(r.page, () => /5(\.0+)? TAC is in private notes/.test(document.querySelector('#tac-bal')?.textContent || ''), null, 60000).catch(() => {});
     ok(/5(\.0+)? TAC is in private notes/.test(await text(r.page, '#tac-bal')), `receipts: the note whose unwrap failed is offered again (${(await text(r.page, '#tac-bal')).replace(/\s+/g, ' ').slice(-110)})`);
     await r.page.click('#tac-pub');
@@ -8606,8 +8606,8 @@ await step('farmsteps', async () => {
     await p.waitForSelector('#farm-pid0 [data-join-get="tac"]', { timeout: 30000 });
     ok(/You hold no private TAC/.test(await text(p, '#farm-pid0 .how')) && !(await p.$('#sj-go-0')) && /farm with tETH alone/.test(await text(p, '#farm-pid0 [data-join-one="a"]')), 'farmsteps: both sides with no TAC says where to get it, or to farm with tETH alone');
     await p.click('#farm-pid0 [data-join-get="tac"]');
-    await p.waitForSelector('#sheet-tac[open] .farm-back a', { timeout: 30000 });
-    ok(!(await p.$('#sheet-farm[open]')) && (await p.getAttribute('.farm-back a', 'href')) === '#farm/private-0' && /tETH \/ TAC/.test(await text(p, '.farm-back')), 'farmsteps: it opens the TAC sheet with a way back to this farm');
+    await p.waitForSelector('html[data-page="tac"] .farm-back a', { timeout: 30000 });
+    ok(!(await p.$('#sheet-farm[open]')) && (await p.getAttribute('.farm-back a', 'href')) === '#farm/private-0' && /tETH \/ TAC/.test(await text(p, '.farm-back')), 'farmsteps: it opens TAC\'s page with a way back to this farm');
     await p.click('.farm-back a');
     await p.waitForSelector('#sheet-farm[open] .farm.open[data-farm="pid0"] [data-join-one="a"]', { timeout: 60000 });
     await p.waitForTimeout(500);
@@ -9834,7 +9834,7 @@ await step('hxlink', async () => {
     await until(p, () => document.querySelector('#hx-go')?.textContent === 'Bridge TAC to Bitcoin' && document.querySelector('#hx-out')?.textContent === '21', null, 120000);
     await p.click(BRG.go);
     await until(p, () => !!document.querySelector('#sheet-wallet[open]'), null, 60000);
-    ok(!(await p.$('#sheet-tac[open]')), 'hxlink: with no key open the button asks for one, in the wallet sheet, and opens no bridge sheet');
+    ok(!(await p.$('html[data-page="tac"]')), 'hxlink: with no key open the button asks for one, in the wallet sheet, and opens no TAC page');
     if (r.errors.length) { fails++; console.log('FAIL hxlink page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }
 });
@@ -10648,7 +10648,7 @@ await step('tour', async () => {
     for (const m of ['send', 'out', 'receive']) { await p.click(`[data-dev="${m}"]`); await snap(`device-${m}`); }
     await go(p, '#btc'); await shown(p, '#bt-to', 120000); await loaded(p, '#btc-body .bal'); await p.fill('#bt-to', other).catch(() => {}); await p.fill('#bt-amt', '0.001').catch(() => {}); await shown(p, '#bt-rcpt:not([hidden])'); await snap('btc-send');
     await p.click('[data-btcm="receive"]'); await snap('btc-receive');
-    await go(p, '#bridge'); await shown(p, '#sheet-tac .tac-ways'); await snap('tac-bridge');
+    await go(p, '#bridge'); await shown(p, '#tpg-where[open] #bridge-body'); await snap('tac-bridge');
     await go(p, '#pts'); await shown(p, '#wei-name'); await shown(p, '#pts-body .pt', 120000); await p.fill('#wei-name', 'tacitlite'); await shown(p, '#wei-rcpt:not([hidden])'); await snap('points');
     await go(p, '#farm'); await shown(p, '#pf-amt', 120000); await p.fill('#pf-amt', '0.05'); await shown(p, '#pf-rcpt:not([hidden])'); await snap('farm-precision');
     const pid = await p.$('[data-farm^="pid"] > button');
@@ -13257,7 +13257,7 @@ await step('tacvoucher', async () => {
     await until(r.page, (p) => JSON.parse(localStorage.getItem('tacit-wrap-vouchers-v1:' + p) || '[]').some((v) => v.ticker === 'TAC' && v.status === 'ready'), pub, 150000).catch(() => {});
     ok((await kept()).some((v) => v.ticker === 'TAC' && v.status === 'ready' && v.amount === String(HUNDRED)), `tacvoucher: the pool's proof is kept as a ready TAC voucher (${(await kept()).map((v) => `${v.ticker}/${v.status}`)})`);
     await r.page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
-    await r.page.evaluate(() => { location.hash = ''; location.hash = '#tac'; });
+    await r.page.evaluate(() => { location.hash = ''; location.hash = '#tac'; document.querySelector('#tpg-where').open = true; });
     await r.page.waitForSelector('#tac-shield #tsh-go', { timeout: 240000 });
     await r.page.fill('#tsh-amt', '100');
     await until(r.page, () => /ready now/.test(document.querySelector('#tsh-rcpt')?.textContent || '') && !document.querySelector('#tsh-go').disabled, null, 60000).catch(() => {});

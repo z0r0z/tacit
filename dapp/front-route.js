@@ -30,6 +30,7 @@
     if (seg === 'vault/btc') return away('/vault/' + q + (h && h !== '#' ? h : '#btc'));
     if (PAGES.indexOf(seg) !== -1 && !/\/$/.test(path)) return away('/' + seg + '/' + q + h);
     if (seg === 'classic') return away(CLASSIC + q + h);
+    if (seg === 'tac') return;                                              // TAC's page: this page at its own address (tac/index.html, made from this one)
     if (TABS.indexOf(seg) !== -1) {
       if (h) return away(CLASSIC + q + h);
       // The tab rides in the fragment, as preboot.js would put it, so the classic page opens on it.
