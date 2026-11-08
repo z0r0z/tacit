@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-mA0WYyzeAVET6xlM+Oo5mZWw34nFT3FGegNuuX8qWoM=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-Azc9gn8fQmh/9T6kThT764Uyghagst4PfAZk4tbKasc=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -15629,7 +15629,8 @@ const hxTo = () => (hxNamed() ? HX.rcName.address : HX.rcpt);
 const hxRcptKind = (r = HX.rcpt) => (/^0x[0-9a-fA-F]{40}$/.test(r) || hxNamed(r) ? 'eth' : /^(bc1[a-z0-9]{20,}|sp1[a-z0-9]{40,})$/i.test(r) || /^[13][a-km-zA-HJ-NP-Z1-9]{25,34}$/.test(r) ? 'btc' : '');
 function hxSendFit() {
   const r = hxRcptKind();
-  if (r && HX.send === 'ctac') return 'TAC on the Tacit chain goes to a tacit1 address. To take it to your wallet, use Withdraw.';
+  // (an Ethereum address or a name is paid out there: it leaves the chain as public TAC, the leader sending it on)
+  if (r === 'btc' && HX.send === 'ctac') return 'TAC on the Tacit chain goes to a tacit1 or an 0x address. For a Bitcoin address, pay from the TAC page.';
   if (r === 'eth' && hxSendBtc()) return 'That is an Ethereum address. To pay it, choose tETH, TAC, cUSD or cBTC.';
   if (r === 'eth') { try { recipientOf(hxTo()); } catch (e) { return e.message; } }
   if (r === 'btc' && HX.send === 'tacb') return 'TAC on Bitcoin goes to a tacit1 address or a name. A Bitcoin address takes BTC.';
@@ -15737,7 +15738,8 @@ function hxRcptCheck() {
   if (HX.rcBtc && HX.rcBtc.raw !== raw) HX.rcBtc = null;
   const show = (warn, view) => { if (my !== hxRcSeq || !el.isConnected) return; mount(el, view); el.classList.toggle('warn', warn); el.hidden = false; if (warn !== !!HX.rcBad) { HX.rcBad = warn; hxHave(); } };
   const outTo = (a) => show(false, html`${a.name} has no Tacit address, so it is paid at <span class="mono">${short(a.address, 10)}</span>, out of the pool`);
-  if (hxNamed(raw) && !HX.ask && !hxSendBtc()) return hxSendWallet() ? show(false, html`${HX.rcName.name} has no Tacit address, so it is sent to <span class="mono">${short(HX.rcName.address, 10)}</span>, publicly`) : outTo(HX.rcName);
+  if (hxNamed(raw) && !HX.ask && !hxSendBtc()) return HX.send === 'ctac' ? show(false, html`${HX.rcName.name} → <span class="mono">${short(HX.rcName.address, 8)}</span> · leaves the Tacit chain there as public TAC`)
+    : hxSendWallet() ? show(false, html`${HX.rcName.name} has no Tacit address, so it is sent to <span class="mono">${short(HX.rcName.address, 10)}</span>, publicly`) : outTo(HX.rcName);
   // a name sent Bitcoin is read here too, so where it points is shown before the press; the other Bitcoin forms say what they are
   const btcName = hxSendBtc() && /\.(eth|wei|gwei)$/i.test(raw), pool = hxSendWallet() || !!hxPayP();
   // an Ethereum address, its two ends under the field to check against the one meant (a phone's field cuts it)
@@ -15781,7 +15783,21 @@ function hxRcptCheck() {
 }
 // A recipient for TAC on the tacit chain: a Tacit address with a chain lane, resolved to its full chain address from the leader's directory
 function hxRcptChain(raw, full, show) {
-  if (!/^tacit1/i.test(raw)) { if (full) show(true, html`TAC on the Tacit chain goes to a tacit1 address. Paste theirs.`); return; }
+  if (/\.(eth|wei|gwei)$/i.test(raw)) {
+    hxRcT = setTimeout(async () => {
+      const my = hxRcSeq, r = await resolveToM(raw).catch(() => null), lane = r?.address ? chainLaneIn(r.address) : null;
+      if (my !== hxRcSeq) return;
+      if (lane && await chainClient().then((c) => c.resolve(lane)).then(() => true, () => false)) return my === hxRcSeq && show(false, html`${raw} → <span class="mono">${short(r.address, 10)}</span> · on the Tacit chain`);
+      const a = await nameAddrM(raw).catch(() => null);
+      if (my !== hxRcSeq) return;
+      if (!a) return show(true, html`${raw} has no Tacit address on the Tacit chain and no Ethereum address.`);
+      HX.rcName = { raw, name: a.name, address: a.address };
+      show(false, html`${a.name} → <span class="mono">${short(a.address, 8)}</span> · leaves the Tacit chain there as public TAC`);
+      hxRcptChanged(); hxQuote();
+    }, 450);
+    return;
+  }
+  if (!/^tacit1/i.test(raw)) { if (full) show(true, html`TAC on the Tacit chain goes to a tacit1 or an 0x address, or a name. Paste theirs.`); return; }
   const lane = chainLaneIn(raw);
   if (!lane) { if (full) show(true, html`This Tacit address has no Tacit chain lane, so it cannot be paid there yet.`); return; }
   if (CH.lane && bytesToHex(lane) === bytesToHex(CH.lane)) return show(true, html`That is your own Tacit address.`);
@@ -15861,7 +15877,7 @@ function hxSendGo() {
     const slug = hxDevSlug(HX_WPAY[k]);
     hxDraft({ mode: 'dep', amt, slug, to: dto }); return openLink(`device/${slug}/deposit`);
   }
-  if (k === 'ctac') return S.key && u ? hxChainPayGo(u, HX.rcpt) : undefined;
+  if (k === 'ctac') return S.key && u ? hxChainPayGo(u, hxRcptKind() === 'eth' ? hxTo() : HX.rcpt) : undefined;
   if (S.key && P.scan && spendable(k) === 0n) return;
   // tETH, TAC, cUSD, cBTC and wTAC go from the card itself: a payment to a Tacit address or a name, or out of the pool to an Ethereum address
   if (S.key && u) return hxSendPoolGo(k, u, to, hxRcptKind() === 'eth');
@@ -17896,6 +17912,7 @@ async function hxChainPayGo(units, raw) {
         hxSendAfter();
         return;
       }
+      if (/\.(eth|wei|gwei)$/i.test(raw)) { const r = await resolveToM(raw, null, true).catch(() => null); if (r?.address) raw = r.address; }
       const lane = chainLaneIn(raw);
       if (!lane) throw chainSaid('This Tacit address has no Tacit chain lane, so it cannot be paid there yet.');
       const c = await chainClient(), held = await chainScan(true), most = (await c.quote('pay', units).catch(() => null))?.most;
