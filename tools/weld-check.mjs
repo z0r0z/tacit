@@ -7747,6 +7747,9 @@ await step('hxteth', async () => {
     await until(p, () => /^Withdraw/.test(document.querySelector('#hx-swap #go')?.textContent.trim() || ''), null, 30000).catch(() => {});
     const turned = await p.evaluate(() => [document.querySelector('#hx-swap #pay-coin')?.textContent.trim(), document.querySelector('#hx-swap #go')?.textContent.trim(), document.activeElement?.id || document.activeElement?.tagName]);
     ok(/^t?ETH/.test(turned[0]) && /^Withdraw/.test(turned[1]) && turned[2] === 'amt', `hxteth: Back to ETH turns the Swap card to taking tETH out, with the keyboard in the amount (${turned.join(' → ')})`);
+    // under Withdraw's button, before any amount: the way to an address other than the wallet's, which is Send's
+    await until(p, () => !!document.querySelector('#hx-swap .hx-way a[data-hx="send:eth"]'), null, 30000).catch(() => {});
+    ok(/^Another address\? Send it there$/.test(await text(p, '#hx-swap .hx-way')), `hxteth: Withdraw offers another address through Send before an amount is typed (${await text(p, '#hx-swap .hx-way')})`);
     await p.fill('#hx-swap #amt', '0.1');
     await until(p, () => /Arrives: in your wallet \| Relay fee: [\d.]+ ETH, out of it$/.test(window.__said()), null, 240000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await line()}`); });
@@ -7766,9 +7769,22 @@ await step('hxteth', async () => {
     await until(p, () => (window.__mz || []).length > 0, null, 240000);
     // the stub's notes cannot make a real exit proof, so the run ends in the error it says: what is checked is that it went from the card, step by step
     ok((await p.evaluate(() => window.__sheetSeen)) === '' && /The relay is proving your withdrawal/.test((await p.evaluate(() => window.__mz)).join(' | ')), `hxteth: Turn tETH into ETH goes from the card: the Withdraw sheet stays shut and its steps are said under the button (${(await p.evaluate(() => window.__mz)).join(' | ').slice(0, 160)})`);
+    // that way opens Send on tETH with the amount kept, and an address there is quoted as the withdrawal it is (the relay's fee out of it, at that address)
+    await p.click('#hx-swap .hx-way a');
+    await until(p, () => document.querySelector('#hx-sa')?.value === 'eth' && document.querySelector('#hx-amt')?.value === '0.1', null, 30000).catch(() => {});
+    ok(await p.evaluate(() => [document.querySelector('#hx-sa')?.value, document.querySelector('#hx-amt')?.value].join()) === 'eth,0.1', `hxteth: Another address opens Send on tETH with the 0.1 kept (${await p.evaluate(() => [document.querySelector('#hx-sa')?.value, document.querySelector('#hx-amt')?.value].join())})`);
+    await p.fill('#hx-rcpt', '0x2222222222222222222222222222222222222222');
+    await until(p, () => /^They get: [\d.]+ ETH at that address \| Relay fee: [\d.]+ tETH, out of it/.test(window.__said()), null, 240000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await line()}`); });
+    ok(true, `hxteth: Send to an 0x address is quoted as ETH at that address, the relay's fee out of it (${(await line()).slice(0, 120)})`);
+    // and the way is Withdraw's alone: on a plain swap pair the card has none
+    await tabClick(p, 'swap');
+    await until(p, () => !document.querySelector('#hx-swap .hx-way'), null, 30000).catch(() => {});
+    ok(!(await p.$('#hx-swap .hx-way')), 'hxteth: the way to another address goes with Withdraw (a swap pair has none)');
     await lander();
     await p.click('[data-hxm="send"]');
     await p.fill('#hx-amt', '0.1');
+    await p.fill('#hx-rcpt', '');
     await until(p, () => /^They get: about [\d.]+ tETH \| Claim fee: [\d.]+ tETH \| Chain sees: nothing: not how much, not to whom$/.test(window.__said()), null, 240000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await line()}`); });
     ok(/Balance 0\.25 · Max/.test(await text(p, '#hx-bal')), `hxteth: Send says what the recipient gets (a 0.1 note is held, so nothing is cut), with the balance and Max (${await line()})`);

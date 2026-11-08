@@ -579,6 +579,7 @@ function syncMove() {
   const mk = moveOf();
   if (moving() && mk !== S.mk) {
     S.mk = mk; S.mq = null;
+    clearTimeout(qTimer);                                            // (a quote still waiting is for the move the card has left: it would reach the page as that move again)
     for (const el of ROOT.querySelectorAll('#hx-pts, #hx-have')) { el.hidden = true; el.__h = ''; el.textContent = ''; }
     if (mk) clearTo(); else H.moves.idle?.();
   }
