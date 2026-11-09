@@ -3,12 +3,13 @@
 # 2.7 GB Qwen3.5-4B model file. Both are checked against pinned SHA-256 sums before anything is used; a mismatch stops here.
 #   sh helpdesk-fetch.sh                 fetch what is missing (resumable: run it again if it is interrupted)
 #   sh helpdesk-fetch.sh --no-model      only llama-server
+#   sh helpdesk-fetch.sh --model-only    only the model
 #   sh helpdesk-fetch.sh --status | --uninstall
 # Then switch the job on: curl -s -X POST 127.0.0.1:47815/helpdesk -d '{"on":true,"api":"https://<the help desk API>"}'
 set -u
 BASE=https://github.com/ggml-org/llama.cpp/releases/download/b12211
-MODEL_URL=https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf
-MODEL_SHA=00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4; MODEL_SIZE=2740937888
+MODEL_URL=${HELPDESK_MODEL_URL:-https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf}
+MODEL_SHA=${HELPDESK_MODEL_SHA:-00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4}; MODEL_SIZE=${HELPDESK_MODEL_SIZE:-2740937888}   # the three overrides are for tests
 D=${TACIT_PROVER_DIR:-$HOME/.tacit-prover}/helpdesk; mkdir -p "$D"
 say() { printf '%s\n' "$*"; }; die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 sha() { if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
@@ -39,16 +40,22 @@ install_llama() {
 install_model() {
   M="$D/model.gguf"; [ -f "$M" ] && [ "$(fsize "$M")" = "$MODEL_SIZE" ] && [ "$(sha "$M")" = "$MODEL_SHA" ] && return 0
   say "downloading the model (2.7 GB, resumable)"
-  final=$(curl -sL -r 0-0 -o /dev/null -w '%{url_effective}' "$MODEL_URL"); parts="$D/.model-parts"; mkdir -p "$parts"; n=8; ch=$(( (MODEL_SIZE + n - 1) / n ))
+  STALL=${HELPDESK_FETCH_STALL:-20}   # seconds under 20 KB/s before an attempt is given up (and so how long a silent connection can hold one)
+  parts="$D/.model-parts"; mkdir -p "$parts"; n=8; ch=$(( (MODEL_SIZE + n - 1) / n ))
   for i in 0 1 2 3 4 5 6 7; do
     s=$(( i * ch )); e=$(( s + ch - 1 )); [ $e -ge $MODEL_SIZE ] && e=$(( MODEL_SIZE - 1 )); want=$(( e - s + 1 )); p="$parts/p$i"
-    ( for t in $(seq 1 40); do have=0; [ -f "$p" ] && have=$(fsize "$p"); [ "$have" -ge "$want" ] && break
-        curl -sL --speed-limit 20000 --speed-time 20 -r $(( s + have ))-$e "$final" >> "$p" || true; done ) &
+    # Each chunk keeps asking until it is whole. The CDN's link expires after about an hour, so it is looked up again every time; -f means an error
+    # page is never written into the chunk; a stall, a silent or dropped connection, or a sleeping computer just costs the next attempt.
+    ( for t in $(seq 1 "${HELPDESK_FETCH_TRIES:-1000}"); do have=0; [ -f "$p" ] && have=$(fsize "$p"); [ "$have" -ge "$want" ] && break
+        final=$(curl -sL --connect-timeout 15 --max-time $(( STALL + 15 )) -r 0-0 -o /dev/null -w '%{url_effective}' "$MODEL_URL") || { sleep 5; continue; }
+        curl -sfL --connect-timeout 15 --speed-limit 20000 --speed-time "$STALL" -r $(( s + have ))-$e "$final" >> "$p" || sleep 3; done ) &
   done; wait
+  got=0; for i in 0 1 2 3 4 5 6 7; do got=$(( got + $(fsize "$parts/p$i") )); done
+  [ "$got" = "$MODEL_SIZE" ] || die "the download is incomplete ($(( got / 1048576 )) of $(( MODEL_SIZE / 1048576 )) MB): run this again, it carries on from here"
   : > "$M.part"; for i in 0 1 2 3 4 5 6 7; do cat "$parts/p$i" >> "$M.part"; done
-  [ "$(sha "$M.part")" = "$MODEL_SHA" ] || { rm -f "$M.part"; die "model checksum mismatch (the partial download is kept in $parts: run this again)"; }
+  [ "$(sha "$M.part")" = "$MODEL_SHA" ] || { rm -rf "$M.part" "$parts"; die "the model's checksum does not match, so the download was thrown away: run this again to start over"; }
   mv "$M.part" "$M"; rm -rf "$parts"
 }
 [ "$(df -k "$D" | awk 'NR==2 {print int($4/1024)}')" -ge 4000 ] || die "needs about 4 GB free in $D"
-install_llama; [ "${1:-}" = --no-model ] || install_model
+[ "${1:-}" = --model-only ] || install_llama; [ "${1:-}" = --no-model ] || install_model
 say "done. Switch the job on with: curl -s -X POST 127.0.0.1:47815/helpdesk -d '{\"on\":true,\"api\":\"https://tacit-helpdesk.onrender.com\"}'"
