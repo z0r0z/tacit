@@ -4516,7 +4516,8 @@ await step('xbring', async () => {
   await sleep(1500);
   ok((await r.page.$$('#bridge-body .brr')).length === 0, 'xbring: the TAC Bridge tab does not list the tETH bridge');
   // The new sections at phone width: a note with its reason, a row with its steps, the receipt, and the find box, with no sideways scroll.
-  await go(r.page, '#private/bitcoin/back');
+  // (the Bridge tab above is on TAC's page, where #private is that page's own tab and the rest of the link is dropped: the sheet's link is the front page's, followed from there as a link, with the key and what was read kept)
+  await r.page.evaluate(() => { const a = Object.assign(document.createElement('a'), { href: '/#private/bitcoin/back' }); document.body.append(a); a.click(); a.remove(); });
   await until(r.page, () => document.querySelectorAll('#eth-v1 .brr').length === 1 && !!document.querySelector('#eth-v1 #xb-find'), null, 60000);
   await r.page.setViewportSize({ width: 360, height: 760 });
   await sleep(400);
