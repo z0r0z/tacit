@@ -6,7 +6,8 @@
 // is a step the service has read from the chain), so that a visit does not download the code of every contract a job deployed.
 //
 // Open jobs are shown in full; a job that is done is a tile with its result, and opens to what it did when it is clicked.
-import { makeConnect, UserStopped } from '/trade/connect.js?cb=63a175d5';
+import { makeConnect, UserStopped } from '/trade/connect.js?cb=92e87ca4';
+import { declinedWords } from '/wallet-prompts.js';
 import { esc } from '/trade/sheet.js?cb=84cda8f2';
 import { rpc, RPCS, $, short, fmtUnits } from '/trade/util.js?cb=ba5a02b1';
 import { bodyType } from '/trade/rpc.js';
@@ -636,7 +637,7 @@ async function go(job, only = null) {
     renderAll();
     say(only ? 'Sent. The rewards service reads the step after twelve confirmations.' : 'Everything is sent. The rewards service reads each step after twelve confirmations.');
   } catch (e) {
-    say(esc(e instanceof UserStopped ? 'Cancelled in your wallet. Send again to continue where it left off.' : (e.message || 'The wallet did not send it.')), !(e instanceof UserStopped));
+    say(esc(e instanceof UserStopped ? declinedWords(e, 'Send again to continue where it left off.') : (e.message || 'The wallet did not send it.')), !(e instanceof UserStopped));
   } finally { const id = S.running; S.running = null; S.done[id] = await readDone(job, { chain: true }).catch(() => S.done[id]); renderAll(); settle(); }
 }
 
@@ -651,7 +652,7 @@ async function sendReview(form) {
     say('Confirm in your wallet…', false, job.id);
     const hash = await conn.wallet.sendTx({ to: W.account, data: `0x${txid}`, value: 0n, from: W.account, chain: null });
     say(`Sent: ${link(`${ETHERSCAN}/tx/${hash}`, esc(short(hash, 6)))}. Post this link in ${link(DISCORD, 'Discord')} for review.`, false, job.id);
-  } catch (e) { say(esc(e instanceof UserStopped ? 'Cancelled in your wallet.' : (e.message || 'The wallet did not send it.')), !(e instanceof UserStopped), job.id); }
+  } catch (e) { say(esc(e instanceof UserStopped ? declinedWords(e) : (e.message || 'The wallet did not send it.')), !(e instanceof UserStopped), job.id); }
   finally { S.running = null; renderAll(); }
 }
 

@@ -1,6 +1,8 @@
 import { identityMessage } from './identity-message.js';
 import { guardProvider } from './wallet-prompts.js';
 
+export { declinedWords, stillWaiting } from './wallet-prompts.js';
+
 const ETH_SIGNED_PREFIX = '\x19Ethereum Signed Message:\n';
 
 const REMEMBERED = 'tacit-trade-wallet';

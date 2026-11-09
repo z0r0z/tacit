@@ -12,6 +12,7 @@ import { vkHash } from '/evm-pool-zk-prover.js?cb=00ff69c2';
 import { poolRecipient } from '/pool-recipient.js?cb=a9311fc4';
 import { L2_BRIDGES } from '/evm-pool-gateway.js';
 import { poseidon2, poseidon3, poseidon4, poseidon5, poseidon7 } from '../vendor/tacit-poseidon.min.js';
+import { guardProvider } from '../wallet-prompts.js';
 
 const WORKER_URL = '/evm-pool-prove-worker.js?cb=7f41e5e0';
 const O = globalThis.__TACIT_EVM_POOL__ || {};
@@ -278,7 +279,7 @@ export async function mount(root, ctx) {
 
   // A browser wallet (EIP-1193) on this chain, as the pool wallet's signer.
   async function browserSigner() {
-    const eth = ctx.ethProvider?.() || globalThis.ethereum;
+    const eth = guardProvider(ctx.ethProvider?.() || globalThis.ethereum);
     if (!eth?.request) throw new Error('No browser wallet found.');
     const [from] = await eth.request({ method: 'eth_requestAccounts' });
     const want = '0x' + chain.chainId.toString(16);

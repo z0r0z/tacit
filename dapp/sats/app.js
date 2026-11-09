@@ -1,8 +1,9 @@
+import { declinedWords } from '../wallet-prompts.js';
 
 const TACIT_URL = '/tacit.js?cb=85f45a38';
 const SECRET_URL = '/sats/secret.js?cb=d10eac01';
 const MIX_URL = '/sats/mix.js?cb=757a8922';
-const ETH_URL = '/sats/eth.js?cb=bf63bee3';
+const ETH_URL = '/sats/eth.js?cb=03a8430f';
 const POOL_STATUS = 'https://tacit-btc-pool-mainnet.onrender.com/btc-pool/status';
 
 const NET_PREF = 'tacit-sats-net-v1';
@@ -83,7 +84,7 @@ function errMsg(e) {
   if (isCancel(e) || e?.name === 'NotAllowedError') return 'Cancelled.';
   if (e?.user) return String(e.message);
   const m = String(e?.shortMessage || e?.message || e || 'Something went wrong');
-  if (e?.code === 4001 || /user (rejected|denied|cancel)|rejected by user|rejected the request|request rejected|denied transaction|no wallet selected/i.test(m)) return 'Cancelled in your wallet.';
+  if (e?.code === 4001 || /user (rejected|denied|cancel)|rejected by user|rejected the request|request rejected|denied transaction|no wallet selected/i.test(m)) return declinedWords(e);
   if (/insufficient sats|no plain-sats|not enough (?:signet )?sats/i.test(m)) return 'Not enough sats for this and its Bitcoin fee.';
   if (/does not match the ceremony|verification key does not match/i.test(m)) return 'The proving key did not match its published hash, so it was not used. Reload and try again.';
   if (/short of gas|can.t take this one/i.test(m)) return 'The relay can’t take this one right now. Try again shortly.';
