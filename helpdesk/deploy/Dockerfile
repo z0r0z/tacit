@@ -17,9 +17,9 @@ COPY server.mjs backend.mjs lease.mjs scanfeed.mjs retrieval.mjs guard.mjs build
 COPY codecheck/scan.mjs ./codecheck/scan.mjs
 COPY deploy/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
-# Defaults for a public deployment behind Render's proxy (the client is True-Client-IP, else the third entry from the right of X-Forwarded-For).
+# Defaults for a public deployment behind Render's proxy (the client is True-Client-IP, which the edge sets itself; else the second entry from the right of X-Forwarded-For, the one before the edge's own).
 # A visitor waits up to LEASE_WAIT_MS (40 s, under the page's 45 s) for a node to answer: a laptop is slower than a GPU.
 # Anything here can be overridden in the service's environment.
-ENV HOST=0.0.0.0 DATA_DIR=/data LLM_URLS= TRUST_PROXY=1 TRUST_PROXY_HOPS=3 LEASE_WAIT_MS=40000 SCAN_FETCH=1 SCAN_REF=origin/main LD_LIBRARY_PATH=/opt/llama/llama-b12211
+ENV HOST=0.0.0.0 DATA_DIR=/data LLM_URLS= TRUST_PROXY=1 TRUST_PROXY_HOPS=2 LEASE_WAIT_MS=40000 SCAN_FETCH=1 SCAN_REF=origin/main LD_LIBRARY_PATH=/opt/llama/llama-b12211
 EXPOSE 10000
 ENTRYPOINT ["/entrypoint.sh"]
