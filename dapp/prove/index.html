@@ -21,7 +21,7 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /prove/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/prove/app.js?cb=cbb9e0a9">
+<link rel="modulepreload" href="/prove/app.js?cb=bb4b2a9a">
 <link rel="modulepreload" href="/community-prove.js?cb=30714a9f">
 <link rel="modulepreload" href="/prove/view.js?cb=80de18a0">
 <link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
@@ -204,6 +204,8 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 
 .cols { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 18px; align-items: stretch; margin: 26px 0 0; }
 @media (max-width: 820px) { .cols { grid-template-columns: minmax(0, 1fr); } }
+/* the node and the activity beside it each take their own height: the node's card is short, and stretching it left an empty box */
+#t-prove > .cols:not(.pair) { align-items: start; }
 
 /* your rig */
 #desk { display: flex; flex-direction: column; }
@@ -337,16 +339,21 @@ pre.cmd { margin: 16px 0 0; padding: 12px 14px; background: var(--field); border
 .side h3.ic .tk { width: 30px; height: 30px; }
 .side .pay { margin: 8px 0 0; font: 400 clamp(17px, 2.8vw, 20px)/1.25 var(--serif); color: var(--orange); }
 .side .pay:empty { display: none; }
-.side .more { margin-top: 12px; border-top: 1px solid var(--hair); }
-.side .more summary { display: flex; align-items: center; gap: 6px; min-height: 36px; font-size: 12.5px; color: var(--mute); cursor: pointer; list-style: none; }
-.side .more summary::-webkit-details-marker { display: none; }
-.side .more summary::before { content: '›'; display: inline-block; width: 10px; font-size: 15px; line-height: 1; transition: transform .2s; }
-.side .more[open] summary::before { transform: rotate(90deg); }
-@media (hover: hover) { .side .more summary:hover { color: var(--ink); } }
-.side .more summary:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
-.side .more .hint { margin-top: 2px; }
 .side > .hint { text-wrap: balance; }
-@media (prefers-reduced-motion: reduce) { .side .more summary::before { transition: none; } }
+/* The detail kept behind a summary (a card's other GPUs, the node's other numbers, the checkpoint). With nothing in it to show, no summary shows. */
+.more { margin-top: 12px; border-top: 1px solid var(--hair); }
+.more:not(:has(> :not(summary):not([hidden]))) { display: none; }
+.more summary { display: flex; align-items: center; gap: 6px; min-height: 36px; font-size: 12.5px; color: var(--mute); cursor: pointer; list-style: none; }
+.more summary::-webkit-details-marker { display: none; }
+.more summary::before { content: '›'; display: inline-block; width: 10px; font-size: 15px; line-height: 1; transition: transform .2s; }
+.more[open] summary::before { transform: rotate(90deg); }
+@media (hover: hover) { .more summary:hover { color: var(--ink); } }
+.more summary:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
+.more .hint { margin-top: 2px; }
+.rows .more { margin-top: 4px; border-top: 0; }
+.more.cp { margin-top: 6px; border-top: 0; }
+.more.cp summary { min-height: 32px; }
+@media (prefers-reduced-motion: reduce) { .more summary::before { transition: none; } }
 /* each card's own link (/prove/#gpu): app.js puts a Link in its eyebrow or heading, which copies it */
 [data-card] { scroll-margin-top: 16px; }
 [data-card].lit { animation: lit 2.6s ease-out; }
@@ -624,7 +631,10 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       <div class="crowd" id="crowd"><span class="lbl" id="crowd-n">Proving now</span><div class="crowd-row" id="crowd-row"></div></div>
       <div class="pool" id="pool" aria-hidden="true"></div>
       <ol class="chain" id="chain" aria-label="Newest blocks"></ol>
-      <p class="hint checkpoint" id="checkpoint" hidden></p>
+      <details class="more cp">
+        <summary>Checkpoint</summary>
+        <p class="hint checkpoint" id="checkpoint" hidden></p>
+      </details>
       <div class="detail" id="detail" hidden></div>
     </section>
 
@@ -665,15 +675,18 @@ footer.sf svg.fill { width: 16px; height: 16px; }
         <p class="status" id="say"></p>
         <div class="rows num">
           <div class="kv"><span>Each proof</span><b id="pays">—</b></div>
-          <div class="kv" id="typ-row" hidden><span>Typical proof</span><b id="typ">—</b></div>
-          <div class="kv" id="saltpot-row" hidden><span>Salts, a day</span><b id="saltpot">—</b></div>
-          <div class="kv" id="pot-row" hidden><span>Prover pot</span><b id="pot">—</b></div>
           <div class="kv" id="today-row" hidden><span>Today</span><b id="today">—</b></div>
-          <div class="kv" id="pace-row" hidden><span>At this pace</span><b id="pace">—</b></div>
-          <div class="kv" id="salt-row" hidden><span>Salts today</span><b id="salt">—</b></div>
-          <div class="kv" id="payout-row" hidden><span>Paid out</span><b id="payout">—</b></div>
-          <div class="kv" id="run-row" hidden><span>Since the node started</span><b id="run">0</b></div>
           <div class="kv" id="paid-row" hidden><span>Paid so far</span><b id="paid">—</b></div>
+          <details class="more">
+            <summary>More numbers</summary>
+            <div class="kv" id="typ-row" hidden><span>Typical proof</span><b id="typ">—</b></div>
+            <div class="kv" id="pace-row" hidden><span>At this pace</span><b id="pace">—</b></div>
+            <div class="kv" id="saltpot-row" hidden><span>Salts, a day</span><b id="saltpot">—</b></div>
+            <div class="kv" id="pot-row" hidden><span>Prover pot</span><b id="pot">—</b></div>
+            <div class="kv" id="salt-row" hidden><span>Salts today</span><b id="salt">—</b></div>
+            <div class="kv" id="payout-row" hidden><span>Paid out</span><b id="payout">—</b></div>
+            <div class="kv" id="run-row" hidden><span>Since the node started</span><b id="run">0</b></div>
+          </details>
         </div>
         <p class="hint">When the app's relay is busy, it can prove your own deposits on this node, free, and nothing about them leaves this computer. <a href="/">Make a private deposit</a></p>
       </section>
@@ -810,6 +823,6 @@ node tools/community-runner.mjs mirror   # no key: keeps the board public on Nos
 
 <div id="toast-container" class="toasts" popover="manual"></div>
 
-<script type="module" src="/prove/app.js?cb=cbb9e0a9"></script>
+<script type="module" src="/prove/app.js?cb=bb4b2a9a"></script>
 </body>
 </html>

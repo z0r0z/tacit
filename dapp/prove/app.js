@@ -480,7 +480,7 @@ function paintSalt() {
   $('#salt-pay').textContent = potWei ? ` · up to ${tac(potWei)} TAC today` : '';
   // A node from before salt mining (its /mine has no `salt`) is told how to start: the setup line installs the newest.
   if (mine && !('salt' in mine)) $('#salt-day').textContent = 'Run the setup line again to update tacit-prover: it then mines salts between proofs.';
-  else if (salts) $('#salt-day').textContent = `Split by work between ${salts.miners || 0} ${salts.miners === 1 ? 'node' : 'nodes'} today (${(salts.shares || 0).toLocaleString('en-US')} shares). A proof always comes first.`;
+  else if (salts) $('#salt-day').textContent = `Shared by work across ${salts.miners || 0} ${salts.miners === 1 ? 'node' : 'nodes'}. Proofs come first.`;
   // The day's best find, on its own line (the bank's own stars below it): from the nodes' bests today and any find the pool lists as made today.
   const t0 = utcStart();
   const best = [...(salts?.top || []).filter((m) => m.best).map((m) => ({ ...m.best, miner: m.miner })), ...(salts?.bank || []).filter((b) => b.at >= t0), ...(salts?.recent || []).filter((b) => b.at >= t0)]
@@ -664,7 +664,7 @@ async function readCheckpoint() {
   const height = count(c?.tacit?.height), btc = count(c?.bitcoin?.reflection?.height) ?? count(c?.bitcoin?.relayTip);
   const slot = count(c?.ethereum?.finalizedSlot);
   if (!CID.test(String(s?.cid)) || height == null || !HEX32.test(String(c?.tacit?.hash))) { el.hidden = true; return; }
-  el.innerHTML = `Checkpoint: block #${height.toLocaleString('en-US')} <code>${esc(c.tacit.hash.slice(0, 10))}…</code>${btc != null ? ` · Bitcoin ${btc.toLocaleString('en-US')}` : ''}${slot != null ? ` · Ethereum slot ${slot.toLocaleString('en-US')}` : ''} · <a href="https://ipfs.filebase.io/ipfs/${esc(s.cid)}" target="_blank" rel="noopener noreferrer">snapshot.tacit.wei</a>`;
+  el.innerHTML = `Block #${height.toLocaleString('en-US')} <code>${esc(c.tacit.hash.slice(0, 10))}…</code>${btc != null ? ` · Bitcoin ${btc.toLocaleString('en-US')}` : ''}${slot != null ? ` · Ethereum slot ${slot.toLocaleString('en-US')}` : ''} · <a href="https://ipfs.filebase.io/ipfs/${esc(s.cid)}" target="_blank" rel="noopener noreferrer">snapshot.tacit.wei</a>`;
   el.hidden = false;
 }
 loop(readCheckpoint, 300000, 900000);

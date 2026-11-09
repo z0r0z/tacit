@@ -45,7 +45,8 @@ const SALT_BANK = () => [{ address: DEPLOYED, bits: 44, miner: OTHER, at: BANK_A
   ...[1, 2, 3, 4, 5, 6].map((i) => ({ address: '0x00000000' + i + i + '12cd34ef56ab78cd90ef12ab34cd56', bits: 38 - i, miner: OTHER, at: BANK_AT }))];
 // The stand-in prover: `local` is what it answers (null: nothing listens), and each POST /mine it was sent.
 const WINDOWS_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
-async function open(browser, local, { phone = false, idle = false, ua = null, hash = '', init = null, noBank = false } = {}) {
+// `more`: the node's other numbers and the checkpoint sit behind summaries, so the scenarios that read them open those first.
+async function open(browser, local, { phone = false, idle = false, ua = null, hash = '', init = null, noBank = false, more = true } = {}) {
   const ctx = await browser.newContext(phone ? { viewport: { width: 390, height: 800 }, userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148' } : { viewport: { width: 1100, height: 900 }, ...(ua ? { userAgent: ua } : {}) });
   const page = await ctx.newPage();
   // The public Nostr relays are the outside world: a page under test must never post its stand-in jobs to them or read other people's, so
@@ -98,6 +99,7 @@ async function open(browser, local, { phone = false, idle = false, ua = null, ha
   });
   await page.route('https://tacit-points.onrender.com/**', (route) => json(route, { enabled: true, endSec: Math.floor(Date.now() / 1000) + 86400 * 10, terms: { capWeiPerPoint: '10000000000000000' }, account: { creditedWei: '6000000000000000000' }, pocket: { totalWei: '7500000000000000000000', creditedWei: '291270000000000000000', remainingWei: '7208730000000000000000' } }));
   await page.goto(`${ORIGIN}/prove/${hash}`);
+  if (more) await page.evaluate(() => document.querySelectorAll('#desk .more, .more.cp').forEach((d) => { d.open = true; }));
   return { page, ctx, errors, posts, codeReads };
 }
 const text = (page, s) => page.locator(s).innerText();
@@ -364,9 +366,17 @@ try {
   }
   // each card's own link (/prove/#<card>), and the Link on each card that copies it
   {
-    const { page, ctx, errors } = await open(browser, { v: null }, { hash: '#gpu' });
+    const { page, ctx, errors } = await open(browser, { v: null }, { hash: '#gpu', more: false });
     await ctx.grantPermissions(['clipboard-read', 'clipboard-write']);
     await page.waitForTimeout(300);
+    // The node card shows three numbers and keeps the rest behind a summary; the checkpoint is a summary of its own. Both start closed.
+    await page.waitForFunction(() => !document.querySelector('#typ-row').hidden && !document.querySelector('#checkpoint').hidden, null, { timeout: 8000 }).catch(() => {});
+    check((await text(page, '#desk .more summary')) === 'More numbers' && !(await page.locator('#desk .more').evaluate((d) => d.open)) && !(await page.locator('#typ-row').isVisible()), 'the node keeps its other numbers behind More numbers, closed');
+    await page.locator('#desk .more summary').click();
+    check((await page.locator('#typ-row').isVisible()) && (await text(page, '#typ-row')).includes('Typical proof'), 'and a press shows them');
+    check((await text(page, '.more.cp summary')) === 'Checkpoint' && !(await page.locator('#checkpoint').isVisible()), 'the checkpoint is a summary, closed');
+    await page.locator('.more.cp summary').click();
+    check((await page.locator('#checkpoint').isVisible()) && (await text(page, '#checkpoint')).startsWith('Block #'), 'and a press shows the block, Bitcoin and the snapshot');
     const gpu = page.locator('[data-card="gpu"]');
     check(await page.locator('#t-prove').isVisible() && await gpu.evaluate((el) => el.classList.contains('lit')), '#gpu opens the Prove tab and marks the GPU card');
     await page.waitForTimeout(1200);
