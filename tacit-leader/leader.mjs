@@ -34,7 +34,30 @@ import { makeBoardProver } from '../worker-relay/src/lib/board-prover.js';
 
 // one transaction at a time from the leader's key, so the seed's, a sweep's, a landing's and the hops' never take the same nonce
 let txLock = Promise.resolve();
-const send = (...a) => { const r = txLock.then(() => sendTx(...a)); txLock = r.catch(() => {}); return r; };
+// A sweep is sent without waiting for it to be mined (OVERLAP_SWEEP, on unless 0): the block that takes its deposit is built and proved meanwhile (the
+// proof is what takes the time), and nothing else is sent, and no proof is accepted, before it is mined, so a nonce is never shared and a block never
+// lands on a deposit that is not there. One that reverted leaves the block unlandable (the landing is estimated first and not sent): the next step builds
+// again without it.
+const unmined = new Map();                                // tx hash → the inbox it sweeps
+const OVERLAP = process.env.OVERLAP_SWEEP !== '0';
+async function minedAll() {
+  for (const [h, box] of [...unmined]) {
+    try {
+      for (let i = 0; i < 360; i++) {
+        const r = await rpc.call('eth_getTransactionReceipt', [h]);
+        if (r) { if (r.status !== '0x1') { log({ sweepReverted: h }); swept.delete(box); } break; }
+        await new Promise((ok) => setTimeout(ok, 1000));
+      }
+    } catch (e) { log({ sweepUnread: h, error: String(e?.message || e).slice(0, 160) }); }
+    unmined.delete(h);
+  }
+}
+const send = (...a) => { const r = txLock.then(async () => { await minedAll(); return sendTx(...a); }); txLock = r.catch(() => {}); return r; };
+const sendNoWait = (rpcc, key, to, data, o, box) => {
+  const r = txLock.then(async () => { await minedAll(); const { hash } = await sendTx(rpcc, key, to, data, { ...o, wait: false }); unmined.set(hash, box); return hash; });
+  txLock = r.catch(() => {});
+  return r;
+};
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const env = process.env;
@@ -109,6 +132,11 @@ async function sweepInbox(record, back, permit = null) {
   } else return false;
   swept.add(box);
   try {
+    if (OVERLAP) {
+      const hash = await sendNoWait(rpc, KEY, BLOCKS, data, { chainId: num(await rpc.call('eth_chainId')) }, box);
+      log({ swept: box, shares: String(shareCount), amount: String(amount), permit: !!permit, tx: hash, sent: true });
+      return true;
+    }
     const receipt = await send(rpc, KEY, BLOCKS, data, { chainId: num(await rpc.call('eth_chainId')) });
     log({ swept: box, shares: String(shareCount), amount: String(amount), permit: !!permit, tx: receipt.transactionHash });
     return true;
@@ -228,6 +256,7 @@ async function proveOnBoard(built) {
   // a proof is this block's only if the contract would land it now: the same public values, and a simulated land from this leader
   const check = async ({ publicValues, proof }) => {
     if (String(publicValues).toLowerCase() !== String(built.publicValues).toLowerCase()) return false;
+    await minedAll();                                           // (a sweep still being mined is what the block's deposit waits for)
     try { await rpc.call('eth_call', [{ from: me, to: BLOCKS, data: hexOf(landCalldata(bytesOf(publicValues), bytesOf(proof), lists)) }, 'latest']); return true; } catch (e) { return /NotYourTurn|BadTime|BadQueue|NotOnTop/i.test(String(e.message)) ? 'stale' : false; }
   };
   const r = await board.prove({ stdin: sp1Stdin(built.stdin), cls: 'public', program: 'tacit-block', cycleLimit: 2_000_000_000, gasLimit: 1e12, label: 'tacit-block', check });
@@ -347,7 +376,7 @@ async function step() {
       // (a permit with bad fields, or a failing read, leaves this one unfunded, to be dropped in time: it must not stop the block for the rest)
       let ok = false;
       try { ok = await sweepInbox(d.deposit, back, d.permit); } catch (e) { log({ sweepError: d.id, error: String(e?.message || e).slice(0, 200) }); }
-      if (ok) { [from] = await pendingOf(d); break; }
+      if (ok) { [from] = await pendingOf(d); if (BigInt(from) === 0n && OVERLAP) from = 1n; break; }          // (sent, not yet mined: its block is proved meanwhile and lands after it)
     }
     if (BigInt(from) === 0n) {
       exclude.push(d.id);
