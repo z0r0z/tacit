@@ -16,7 +16,7 @@ globalThis.__TACIT_TX_ARCHIVE_BURST__ = 1e9;      // the API's pace for the arch
 
 // ── a chain served two ways: as esplora serves a transaction (an explorer read) and as raw bytes (the archive) ──
 const explorer = new Map();            // txid -> esplora-shaped transaction
-const archive = { txs: new Map(), asked: [], lacks: new Set(), bad: new Set() };
+const archive = { txs: new Map(), asked: [], lacks: new Set(), bad: new Set(), plain: new Map(), noFund: false };   // plain: the ordinary funding transactions the API keeps apart
 const reads = [];                      // txids asked of an explorer
 const INDEX = {};
 const json = (b) => new Response(JSON.stringify(b), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -28,7 +28,16 @@ globalThis.fetch = async (input, init) => {
     const out = {};
     const give = (id) => { const r = archive.txs.get(id); if (r && !archive.lacks.has(id)) out[id] = { hex: archive.bad.has(id) ? r.hex.slice(0, 100) + (r.hex[100] === '0' ? '1' : '0') + r.hex.slice(101) : r.hex, h: 900000 }; };
     for (const root of body.roots) { give(root); if (body.depth >= 1) for (const v of (explorer.get(root)?.vin || [])) give(v.txid); }
-    return json({ txs: out, truncated: false });
+    // `fund: true` also brings the ordinary transactions that fund the roots' key-spend inputs (a witness of one or two items) from the API's second store, as the real API does
+    let fund = null;
+    if (body.fund === true && !archive.noFund) {
+      fund = {};
+      for (const root of body.roots) for (const v of (explorer.get(root)?.vin || [])) {
+        const items = (v.witness || []).length, r = archive.plain.get(v.txid);
+        if ((items === 1 || items === 2) && !out[v.txid] && r && !archive.lacks.has(v.txid)) fund[v.txid] = { hex: archive.bad.has(v.txid) ? r.hex.slice(0, 100) + (r.hex[100] === '0' ? '1' : '0') + r.hex.slice(101) : r.hex, h: 2 };
+      }
+    }
+    return json({ txs: out, truncated: false, ...(fund ? { fund } : {}) });
   }
   const listed = /\/assets\/([0-9a-f]{64})\/recent-xfer-txids$/.exec(url.pathname);
   if (listed && INDEX[listed[1]]) return json({ asset_id: listed[1], txids: INDEX[listed[1]], next_cursor: null, done: true });
@@ -71,8 +80,16 @@ function land(tx) {
   return txid;
 }
 
+// An ordinary transaction (no envelope) the API keeps in its second store, not among the Tacit ones.
+function landPlain(tx) {
+  const { hex: raw, txid } = serialise(tx);
+  tx.txid = txid; tx.version = 2; tx.locktime = 0;
+  explorer.set(txid, tx); archive.plain.set(txid, { hex: raw });
+  return txid;
+}
+
 // A funding transaction paying `senderPub`, and a stealth CXFER that spends it and pays `amount` to `recipientPub` at vout 0, both on the chain with their real txids.
-function transfer(tag, { senderPriv, recipientPub, amount = 400n, supply = 1000n }) {
+function transfer(tag, { senderPriv, recipientPub, amount = 400n, supply = 1000n, plainParent = false }) {
   const senderPub = secp.getPublicKey(senderPriv, true);
   const rE = rnd();
   const pe = BP.bpRangeAggProve([supply], [rE]);
@@ -80,24 +97,26 @@ function transfer(tag, { senderPriv, recipientPub, amount = 400n, supply = 1000n
   const funding = { vin: [{ txid: tag + '03'.repeat(31), vout: 0, witness: ['00'.repeat(64), hex(T.encodeEnvelopeScript(T.wallet.xonly(), etchPayload)), 'c0' + '11'.repeat(32)] }],
     vout: [{ scriptpubkey: hex(T.p2wpkhScript(senderPub)), scriptpubkey_type: 'v0_p2wpkh', value: 546 }], status: { confirmed: true, block_height: 1, block_time: old } };
   const E = land(funding);
+  // the sender's key-spend input spends E (a Tacit transaction), or with `plainParent` an ordinary transaction F that only the second store holds
+  const F = plainParent ? landPlain({ vin: [{ txid: tag + '0a'.repeat(31), vout: 0, witness: ['30'.repeat(71), '02' + '55'.repeat(32)] }], vout: [{ scriptpubkey: hex(T.p2wpkhScript(senderPub)), scriptpubkey_type: 'v0_p2wpkh', value: 546 }], status: { confirmed: true, block_height: 2, block_time: old } }) : E;
   const aid = T.assetIdFor(E, 0);
-  const anchor = new Uint8Array([...u8(E).reverse(), 0, 0, 0, 0]);
+  const anchor = new Uint8Array([...u8(F).reverse(), 0, 0, 0, 0]);       // the amount's keystream is anchored to the sender's key-spend input, as the scan derives it
   const r0 = T.deriveBlinding(senderPriv, recipientPub, anchor, 0), r1 = rnd();
   const ks = T.deriveAmountKeystreamECDH(senderPriv, recipientPub, anchor, 0);
   const pp = BP.bpRangeAggProve([amount, supply - amount], [r0, r1]);
   const C0 = T.pointToBytes(pp.commitments[0]), C1 = T.pointToBytes(pp.commitments[1]);
   const kernelSig = T.signSchnorr(T.computeKernelMsg(aid, [{ txid: E, vout: 0 }], [C0, C1], 0n), b32(T.modN(r0 + r1 - rE)));
   const payload = T.encodeCXferPayload({ assetId: aid, kernelSig, rangeproof: pp.proof, outputs: [{ commitment: C0, encryptedAmount: T.encryptAmount(amount, ks) }, { commitment: C1, encryptedAmount: new Uint8Array(8) }] });
-  const b = T.deriveStealthEcdhBlinding({ ourPriv: senderPriv, theirPub: recipientPub, networkTag: 'mainnet', domain: T.STEALTH_DOMAIN_BY_OPCODE.get(0x23), txAnchor: new Uint8Array([...T.stealthTxAnchorHead(E, 0), 0, 0, 0, 0]) });
+  const b = T.deriveStealthEcdhBlinding({ ourPriv: senderPriv, theirPub: recipientPub, networkTag: 'mainnet', domain: T.STEALTH_DOMAIN_BY_OPCODE.get(0x23), txAnchor: new Uint8Array([...T.stealthTxAnchorHead(F, 0), 0, 0, 0, 0]) });
   const commit = T.computeStealthCommit({ underlyingPub: recipientPub, blinding: b });
   const tx = { vin: [
       { txid: tag + '33'.repeat(31), vout: 0, witness: ['00'.repeat(64), hex(T.encodeEnvelopeScript(T.wallet.xonly(), payload)), 'c0' + '11'.repeat(32)], prevout: { scriptpubkey: '5120' + '44'.repeat(32), scriptpubkey_type: 'v1_p2tr', value: 3000 } },
-      { txid: E, vout: 0, witness: ['30'.repeat(71), hex(senderPub)], prevout: { scriptpubkey: hex(T.p2wpkhScript(senderPub)), scriptpubkey_type: 'v0_p2wpkh', value: 546 } },
+      { txid: F, vout: 0, witness: ['30'.repeat(71), hex(senderPub)], prevout: { scriptpubkey: hex(T.p2wpkhScript(senderPub)), scriptpubkey_type: 'v0_p2wpkh', value: 546 } },
     ],
     vout: [{ scriptpubkey: hex(T.p2wpkhScript(commit)), scriptpubkey_type: 'v0_p2wpkh', value: 777 }, { scriptpubkey: hex(T.p2wpkhScript(senderPub)), scriptpubkey_type: 'v0_p2wpkh', value: 546 }],
     status: { confirmed: true, block_height: 900000, block_time: old } };
   const X = land(tx);
-  return { X, E, aid: hex(aid), amount };
+  return { X, E, F, aid: hex(aid), amount };
 }
 
 const V = new Uint8Array(randomBytes(32)), Vpub = secp.getPublicKey(V, true);      // the wallet that scans
@@ -112,7 +131,7 @@ async function test(name, fn) {
 }
 // an explorer read of a transfer: with the archive turned off nothing is cleared from it
 const viaExplorer = async (fn) => { localStorage.setItem('tacit-tx-archive', 'off'); try { return await fn(); } finally { localStorage.removeItem('tacit-tx-archive'); } };
-const prefetch = async (...ids) => { archive.asked.length = 0; await T._txArchiveForTests().prefetch(ids, { depth: 1 }); };
+const prefetch = async (...ids) => { archive.asked.length = 0; await T._txArchiveForTests().prefetch(ids, { depth: 1, fund: true }); };      // as the scan asks
 
 const toV = transfer('a1', { senderPriv: A, recipientPub: Vpub });       // pays the scanning wallet
 const toW = transfer('b2', { senderPriv: A, recipientPub: Wpub });       // pays someone else
@@ -200,6 +219,48 @@ await test('a scan reads from an explorer only the transfers the archive does no
   assert.equal(viaExplorer.txsFromArchive, 0);
   assert.deepEqual(viaExplorer.discovered.map((d) => [d.txid === mine.X, d.amount]), viaArchive.discovered.map((d) => [d.txid === mine.X, d.amount]), 'and finds exactly what the other scan found');
   localStorage.removeItem('tacit-tx-archive');
+});
+
+
+await test('a transfer funded by an ordinary transaction only the API\'s second store holds is cleared from the archive, with no explorer read, and never when it pays this key', async () => {
+  asWallet(V, Vpub);
+  const toOther = transfer('31', { senderPriv: A, recipientPub: Wpub, plainParent: true }), toMe = transfer('32', { senderPriv: A, recipientPub: Vpub, plainParent: true });
+  assert.ok(archive.plain.has(toOther.F) && !archive.txs.has(toOther.F), 'the funding transaction is ordinary: the Tacit store lacks it');
+  await prefetch(toOther.X, toMe.X);
+  assert.ok(archive.asked.every((b) => b.fund === true && b.depth === 1), 'the scan asks for the funding transactions');
+  assert.equal(T._txArchiveForTests().get(toOther.F), null, 'a general read never finds it (get() holds only the Tacit transactions)');
+  assert.ok(T._txArchiveForTests().getFunding(toOther.F), 'the scan\'s own lookup does');
+  assert.equal(T._stealthNothingFromArchive(toOther.X), true, 'cleared: the previous output of its key-spend input came from the second store');
+  assert.deepEqual(await viaExplorer(() => T.discoverStealthFromTxid(toOther.X)), [], 'and an explorer read agrees it holds nothing for this key');
+  assert.equal(T._stealthNothingFromArchive(toMe.X), false, 'a transfer that pays this key is not cleared (its credit is found from the second store\'s previous output, so it goes on to be read and validated as always)');
+  reads.length = 0;
+  assert.deepEqual(await T.discoverStealthFromTxid(toOther.X), []);
+  assert.deepEqual(reads, [], 'discoverStealthFromTxid asked no explorer for the cleared one');
+});
+
+await test('when the second store lacks the funding transaction, or its bytes are wrong, or the API predates it, the transfer is read from an explorer as always', async () => {
+  asWallet(V, Vpub);
+  const lacks = transfer('41', { senderPriv: A, recipientPub: Wpub, plainParent: true }), bad = transfer('42', { senderPriv: A, recipientPub: Wpub, plainParent: true }), old = transfer('43', { senderPriv: A, recipientPub: Wpub, plainParent: true });
+  archive.lacks.add(lacks.F); archive.bad.add(bad.F);
+  await prefetch(lacks.X, bad.X);
+  assert.equal(T._stealthNothingFromArchive(lacks.X), false, 'the second store lacks it');
+  assert.equal(T._stealthNothingFromArchive(bad.X), false, 'its bytes do not hash to its txid');
+  archive.lacks.clear(); archive.bad.clear();
+  archive.noFund = true;
+  await prefetch(old.X);
+  assert.equal(T._stealthNothingFromArchive(old.X), false, 'an API that does not know `fund` gives none');
+  archive.noFund = false;
+});
+
+await test('a scan over transfers with ordinary funding parents reads from an explorer only the one that pays this key', async () => {
+  asWallet(V, Vpub);
+  const ASSET = 'cd'.repeat(32);
+  const mine = transfer('51', { senderPriv: A, recipientPub: Vpub, plainParent: true }), others = [transfer('52', { senderPriv: A, recipientPub: Wpub, plainParent: true }), transfer('53', { senderPriv: A, recipientPub: Wpub, plainParent: true })];
+  INDEX[ASSET] = [mine.X, others[0].X, others[1].X];
+  reads.length = 0;
+  const viaArchive = await T.scanAssetForStealthReceipts(ASSET, { pageLimit: 50, maxPages: 1, gapMs: 0 });
+  assert.deepEqual(reads.filter((id) => INDEX[ASSET].includes(id)), [mine.X], 'only the transfer that pays this key was read from an explorer');
+  assert.equal(viaArchive.txsFromArchive, 2, 'the two that pay someone else were cleared from the archive');
 });
 
 console.log(`\n${n - failed} passed, ${failed} failed`);

@@ -15808,7 +15808,7 @@ function _triggerStealthAutoScanInBackground(holdings) {
             const filtered = entries.filter(e => e && typeof e.txid === 'string' && allowed.has(String(e.aid || '').toLowerCase())
               && !isStealthTxidSeen(String(e.aid).toLowerCase(), e.txid));
             // the archive gives these 64 to a request, and what it proves holds nothing for this key is then not read from an explorer
-            if (filtered.length) { try { await _txArchive().prefetch(filtered.map((e) => e.txid), { depth: 1 }); } catch { } }
+            if (filtered.length) { try { await _txArchive().prefetch(filtered.map((e) => e.txid), { depth: 1, fund: true }); } catch { } }
             showPill(`scanning shielded · discover 0/${filtered.length}`);
             let i = 0, streak = 0;
             for (let w = 0; w < filtered.length && !gaveUp; w += _STEALTH_AUTO_SCAN_DISCOVER_CONCURRENCY) {
@@ -23457,7 +23457,7 @@ function _stealthNothingFromArchive(txidHex) {
   const vin = [];
   for (const v of tx.vin) {
     if (!_stealthNeedsPrevout(v)) { vin.push(v); continue; }
-    const out = A.get(v.txid)?.vout?.[v.vout];
+    const out = (A.get(v.txid) || A.getFunding(v.txid))?.vout?.[v.vout];       // a funding transaction is an ordinary one the API keeps apart (tx-archive.js getFunding)
     if (!out) return false;
     vin.push({ ...v, prevout: out });
   }
@@ -23647,7 +23647,7 @@ async function scanAssetForStealthReceipts(assetIdHex, { onProgress = null, maxP
     }
     // The API's archive holds most of these transfers and the transactions they spend from, and gives them 64 roots to a request with each transaction checked against its txid.
     // A transfer it proves holds nothing for this key (_stealthNothingFromArchive) is not read from an explorer; every other transfer, and every one the archive lacks or fails to give, is read as always.
-    if (todo.length) { try { await _txArchive().prefetch(todo, { depth: 1 }); } catch { } }
+    if (todo.length) { try { await _txArchive().prefetch(todo, { depth: 1, fund: true }); } catch { } }
     for (let i = 0; i < todo.length; i += win) {
       const startedBefore = _apiFetchStarts, failedBefore = txsFailed;
       await Promise.all(todo.slice(i, i + win).map(async (t) => {

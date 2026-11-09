@@ -124,4 +124,36 @@ for (const [id, r] of Object.entries(FIX)) {
   await arch3.prefetch(['cd'.repeat(32)]); const first = k; await arch3.prefetch(['ce'.repeat(32)]);
   ok(first === 4 && k === 4, `a 429 that does not lift is asked four times in all, and the archive then rests (${first}, then ${k})`);
 }
+
+// the funding store: ordinary transactions the API keeps apart, for the shielded scan; held apart here too
+{
+  const ids = Object.keys(FIX), [root, f1, f2] = ids;
+  const bodies = []; let withFund = true;
+  const tamper = FIX[f2].hex.slice(0, 120) + (FIX[f2].hex[120] === 'f' ? 'e' : 'f') + FIX[f2].hex.slice(121);
+  const fetchImpl = async (url, o) => {
+    const b = JSON.parse(o.body); bodies.push(b);
+    return { ok: true, status: 200, json: async () => ({ txs: { [root]: { hex: FIX[root].hex, h: 970125 } }, truncated: false, ...(b.fund && withFund ? { fund: { [f1]: { hex: FIX[f1].hex, h: 951880 }, [f2]: { hex: tamper, h: 951880 } } } : {}) }) };
+  };
+  const store = { v: null, getItem: () => store.v };
+  const arch = makeTxArchive({ burst: 1e9, base: 'https://api.test', network: 'mainnet', sha256, fetchImpl, storage: store });
+  await arch.prefetch([root], { depth: 1 });
+  ok(bodies.length === 1 && !('fund' in bodies[0]), 'a prefetch that does not ask for funding transactions does not say so');
+  ok(arch.getFunding(f1) === null, 'and holds none');
+  await arch.prefetch([root], { depth: 1, fund: true });
+  ok(bodies.length === 2 && bodies[1].fund === true && bodies[1].depth === 1, 'a root already held is asked about again, once, when funding transactions are wanted');
+  ok(arch.getFunding(f1) && arch.getFunding(f1)._archived === true && arch.getFunding(f1).status.block_height === 951880, 'the funding transaction is kept, checked against its txid');
+  ok(arch.getFunding(f2) === null, 'one whose bytes do not hash to its txid is dropped');
+  ok(arch.get(f1) === null && arch.size() === 1, 'and get() never returns it: a reader of a history finds only the Tacit transactions it always did');
+  await arch.prefetch([root], { depth: 1, fund: true });
+  ok(bodies.length === 2, 'asking again for the same roots does not ask the API again');
+  store.v = 'off';
+  ok(arch.getFunding(f1) === null, "a browser with 'tacit-tx-archive' set to off is given no funding transactions either");
+  store.v = null;
+  ok(!!arch.getFunding(f1), 'and has them back once it is turned on again');
+  // an API that does not know `fund` (the old one) answers without it: nothing held, nothing broken
+  withFund = false;
+  const old = makeTxArchive({ burst: 1e9, base: 'https://api.test', network: 'mainnet', sha256, fetchImpl, storage: { getItem: () => null } });
+  await old.prefetch([root], { depth: 1, fund: true });
+  ok(old.get(root) && old.getFunding(f1) === null, 'an API that does not know about funding transactions leaves the page as it was');
+}
 console.log(`${n} tx-archive checks passed${process.exitCode ? ' (with failures above)' : ''}`);

@@ -13095,8 +13095,11 @@ async function handleTacAncestry(req, env, network, cors) {
     return jsonResponse({ error: `roots: 1 to ${ARCHIVE_MAX_ROOTS} txids` }, 400, h);
   }
   const depth = Number.isInteger(body.depth) && body.depth >= 0 ? body.depth : Infinity;
-  const { txs, truncated } = await tacArchive(env, network).ancestry(roots, { depth });
-  return jsonMaybeGzip(req, JSON.stringify({ txs: Object.fromEntries(txs), truncated }), h);
+  const archive = tacArchive(env, network);
+  const { txs, truncated } = await archive.ancestry(roots, { depth });
+  // `fund: true` also returns the ordinary transactions that fund the roots' key-spend inputs (the second store), for a page that must know what such an input spends
+  const fund = body.fund === true ? await archive.fundingOf(txs, roots) : null;
+  return jsonMaybeGzip(req, JSON.stringify({ txs: Object.fromEntries(txs), truncated, ...(fund ? { fund: Object.fromEntries(fund) } : {}) }), h);
 }
 // POST /chain/tac/import { txs: [{ hex, h, b? }…] } (operator token): confirmed Tacit transactions from a list, each kept only if it
 // is one whole transaction with a Tacit envelope; its txid is the hash of the bytes given.
@@ -24118,6 +24121,37 @@ function archiveTacitTx(env, network, tx, height, blockHash) {
   } catch { /* the archive is a convenience; the scan goes on */ }
 }
 
+// The archive keeps itself complete (tac-archive.js catchUp). Each tick takes a page of the transfers the index lists (its xferseen keys),
+// reads from upstream at most TAC_ARCHIVE_CATCHUP_READS (40) transactions the archive lacks (a transfer the scan did not keep, or the ordinary
+// transaction funding one of a transfer's key-spend inputs), and moves on a page when the one it is on is whole. A page of marked transfers
+// costs one store read each, so a complete archive costs almost nothing. TAC_ARCHIVE_CATCHUP=0 turns it off.
+const _tacCatchUp = { running: false };
+export async function tacArchiveCatchUp(env, network, { budget, keys, deadlineMs = 45_000 } = {}) {
+  if (!env.REGISTRY_KV || String(env.TAC_ARCHIVE_CATCHUP) === '0' || _tacCatchUp.running) return null;
+  _tacCatchUp.running = true;
+  try {
+    const kv = env.REGISTRY_KV, archive = tacArchive(env, network), t0 = Date.now();
+    const reads = budget ?? Math.max(0, Math.min(200, parseInt(env.TAC_ARCHIVE_CATCHUP_READS || '40', 10) || 40));
+    const pageKeys = keys ?? Math.max(10, Math.min(1000, parseInt(env.TAC_ARCHIVE_CATCHUP_KEYS || '300', 10) || 300));
+    const cursorKey = `tacfund:cursor:${network}`;
+    const cursor = (await kv.get(cursorKey)) || undefined;
+    const list = await kv.list({ prefix: network === 'signet' ? 'xferseen:' : `xferseen:${network}:`, limit: pageKeys, ...(cursor ? { cursor } : {}) });
+    const re = network === 'signet' ? /^xferseen:[0-9a-f]{64}:([0-9a-f]{64})$/i : new RegExp(`^xferseen:${network}:[0-9a-f]{64}:([0-9a-f]{64})$`, 'i');
+    const ids = [...new Set((list.keys || []).map((k) => (re.exec(k.name) || [])[1]).filter(Boolean).map((t) => t.toLowerCase()))];
+    const dsha = (b) => sha256(sha256(b));
+    const readTx = async (id) => {
+      const j = await apiJson(env, `/tx/${id}`, { timeoutMs: 10_000 }, network);
+      if (!j?.status?.confirmed || !Number.isInteger(j.status.block_height)) return { unconfirmed: true };
+      const hex = rebuiltRawTx(j, id, dsha) || (await apiText(env, `/tx/${id}/hex`, { timeoutMs: 10_000 }, network)).trim();
+      return { bytes: hexToBytes(hex), h: j.status.block_height, b: j.status.block_hash };
+    };
+    const res = await archive.catchUp({ ids, readTx, budget: reads, shouldStop: () => Date.now() - t0 > deadlineMs });
+    if (!res.stopped) { if (list.list_complete || !list.cursor) await kv.delete(cursorKey); else await kv.put(cursorKey, list.cursor); }
+    if (res.kept || res.funding) console.log(`[tac-archive] catch-up ${network}: kept ${res.kept} transfers and ${res.funding} funding transactions (${res.failed} reads failed${res.stopped ? ', stopped for its budget' : ''})`);
+    return res;
+  } finally { _tacCatchUp.running = false; }
+}
+
 const _SCAN_PAGE_RETRY_DELAYS_MS = [2_000, 5_000, 10_000, 20_000];
 const _ESPLORA_PAGE = 25;
 // An index past the final page is not a fault, it is how Esplora says "that is
@@ -31560,6 +31594,8 @@ export default {
       for (const net of cronNetworks(env)) await autoSweepStrandedBurns(env, net, { tickIdx: idx }).catch((e) => _logCronError(env, 'burnAutoSweep', net, e));
     })());
     ctx.waitUntil(poolSnapshotTick(env).catch((e) => _logCronError(env, 'poolSnapshot', 'mainnet', e)));
+    // The Tacit transaction archive catches itself up (tacArchiveCatchUp), on a waitUntil of its own so it never delays a stage below and never throws into the tick.
+    ctx.waitUntil((async () => { for (const net of cronNetworks(env)) await tacArchiveCatchUp(env, net).catch((e) => _logCronError(env, 'tacArchiveCatchUp', net, e)); })());
     ctx.waitUntil((async () => {
       const _tickIdx = Math.floor(Date.now() / (5 * 60 * 1000));
       // Run `fn` over `items` with at most `limit` in flight. Rejections are
