@@ -2,7 +2,7 @@
 # Runs a help desk node on this machine: llama.cpp's llama-server with the Qwen3.5-4B model, and worker.mjs, which takes questions from the
 # help desk, has the model answer them and sends the answers back. Answers are credited to MINER.
 #   MINER=0x… bash run.sh          the first run downloads about 2.7 GB (checked against pinned SHA-256 sums); stop it with Ctrl-C
-# Settings: HELPDESK_API (default https://help.tacit.finance), HELPDESK_NODE_DIR (default ~/.tacit-helpdesk-node), PORT (the model's local port, default 8095),
+# Settings: HELPDESK_API (default https://tacit-helpdesk.onrender.com), HELPDESK_NODE_DIR (default ~/.tacit-helpdesk-node), PORT (the model's local port, default 8095),
 # CTX (the model's context, default 4096). Needs Node 18 or newer and about 4 GB of memory to spare.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
