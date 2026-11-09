@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-rMVXB3ZyJZNGUgWWaj9nDzxRZU8/b+pu1EktNpv60Wg=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-XH7zx1g1gk+3reomGXrWCCdjzQvydKyaV9i99AOZFbQ=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -15,7 +15,7 @@
 <link rel="preconnect" href="https://tacit-evm-pool-keepers.onrender.com" crossorigin>
 <script async src="/front-guard.js?cb=5b164dc9"></script>
 <script type="module" src="/px-strip.js?cb=fe8eebc5" async fetchpriority="high"></script>
-<link rel="preload" href="/swap/card.css?cb=db0c347a" as="style">
+<link rel="preload" href="/swap/card.css?cb=83134ec0" as="style">
 <link rel="preload" href="/fonts/instrument-serif-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/instrument-serif-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
@@ -67,7 +67,7 @@
 <link rel="modulepreload" href="/bridge-tick.js?cb=4e721860">
 <link rel="modulepreload" href="/tacit-session.js?cb=a2d34bb2">
 <link rel="modulepreload" href="/activity.js?cb=8ccbc552">
-<link rel="modulepreload" href="/swap/card.js?cb=9411c247">
+<link rel="modulepreload" href="/swap/card.js?cb=dd8b7065">
 <link rel="modulepreload" href="/trade/wallet.js?cb=88b623b8">
 <link rel="modulepreload" href="/trade/util.js?cb=ba5a02b1">
 <link rel="modulepreload" href="/trade/rpc.js">
@@ -426,9 +426,9 @@ a.di { color: inherit; text-decoration: none; }
 .hx-say { display: flex; align-items: center; justify-content: center; gap: 10px; margin: 0 16px 16px; font: 500 13px var(--mono); color: var(--mute); }
 .hx-say button { font: inherit; color: var(--ink); background: none; border: 0; padding: 0; text-decoration: underline; cursor: pointer; }
 #hx-ss { scroll-margin-bottom: 56px; }
-.hx-h { --i: 0; --n: 6; position: relative; display: grid; grid-template-columns: repeat(var(--n), 1fr); padding: 4px 8px 0; border-bottom: 1px solid var(--hair); }
-.hx-h::after { content: ''; position: absolute; bottom: -1px; height: 2px; border-radius: 2px; background: var(--ink); width: calc((100% - 16px) / var(--n) * .5);
-  left: calc(8px + (100% - 16px) / var(--n) * (var(--i) + .25)); transition: left .4s var(--spring); }
+.hx-h { --i: 0; --n: 6; --hp: 8px; position: relative; display: grid; grid-template-columns: var(--cols, repeat(var(--n), 1fr)); padding: 4px var(--hp) 0; border-bottom: 1px solid var(--hair); }
+.hx-h::after { content: ''; position: absolute; bottom: -1px; height: 2px; border-radius: 2px; background: var(--ink); width: calc((100% - 2 * var(--hp)) * var(--bw, calc(.5 / var(--n))));
+  left: calc(var(--hp) + (100% - 2 * var(--hp)) * var(--bl, calc((var(--i) + .25) / var(--n)))); transition: left .4s var(--spring), width .4s var(--spring); }
 .hx-h button { display: grid; justify-items: center; padding: 14px 0 12px; background: none; border: 0; cursor: pointer; font: italic 400 20px/1 var(--serif); letter-spacing: -.01em; color: var(--mute); transition: color .15s; }
 .hx-h button[aria-selected="true"] { color: var(--ink); }
 @media (hover: hover) { .hx-h button:hover { color: var(--ink); } }
@@ -690,7 +690,9 @@ a.di { color: inherit; text-decoration: none; }
 .hx-way { margin: 10px 0 0; text-align: center; font: 12px var(--mono); color: var(--mute); }
 @media (max-width: 440px) { .hx-path { gap: 6px 10px; font-size: 11px; } .hx-path li { gap: 5px; } }
 .hx-fin { margin: 0 0 10px; } .hx-fin .callout { margin: 0; }
-.hx-next { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; margin: 12px 0 0; font: 12px var(--mono); color: var(--mute); }
+.hx-next { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 8px; margin: 10px 2px 0; font: 12px var(--mono); color: var(--mute); }
+/* the row above the button that says what is held and where it can go says it once: after a shield the buttons below are the next steps */
+#hx:has(.hx-next) .hx-have .hx-do { display: none; }
 .hx-next button { min-height: 30px; padding: 0 14px; font: 500 12px var(--mono); color: var(--ink); background: var(--card); border: 1px solid var(--hair-2); border-radius: 999px; cursor: pointer; }
 @media (hover: hover) { .hx-next button:hover { background: var(--field); } }
 .hx-qr { display: flex; justify-content: center; margin: 12px 0 0; } .hx-qr[hidden] { display: none; } .hx-qr svg { width: 168px; height: 168px; border-radius: 12px; }
@@ -1432,7 +1434,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   .hero-t { margin-bottom: 20px; }
   .proof { gap: 12px 26px; }
   .proof b { font-size: 34px; }
-  .hx-h { padding: 2px 2px 0; }
+  .hx-h { --hp: 2px; }
   .hx-h button { font-size: 16px; }
   .hx-b { padding: 12px; }
   .hx-b.swc .act, .hx-b .swc .act { margin-left: -12px; margin-right: -12px; padding-left: 12px; padding-right: 12px; }
@@ -1479,7 +1481,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
 }
 </style>
 <!-- the hero tile is drawn with the swap card's parts (swap/card.js, which the Swap tab mounts): its styles, after the page's own -->
-<link rel="stylesheet" href="/swap/card.css?cb=db0c347a" media="print">
+<link rel="stylesheet" href="/swap/card.css?cb=83134ec0" media="print">
 <!-- chrome:head:begin inline -->
 <style>
 /* The header's page links and the footer, as every page that wears them draws them. The markup is made by build/chrome.mjs and stamped
@@ -15440,6 +15442,13 @@ const HX_TABS = [['swap', 'Swap'], ['bridge', 'Bridge'], ['send', 'Send'], ['ear
 // The tabs as they are shown: in, use, out. Shield and Withdraw are the Swap card held to one coin (HX.flow), the wallet's to private and back;
 // Bridge and Borrow sit under More, behind a switch of their own.
 const HX_HEAD = [['shield', 'Shield'], ['swap', 'Swap'], ['send', 'Send'], ['earn', 'Earn'], ['withdraw', 'Withdraw'], ['more', 'More']];
+// each tab's share of the strip: its word's width plus one even gap, so the space between the words is the same all along (equal columns left
+// 'Withdraw' close to 'More'); the bar under the picked word is placed from the same shares
+const HX_HEAD_W = [78, 72, 69, 69, 104, 69];
+const hxHeadVars = (i) => {
+  const all = HX_HEAD_W.reduce((a, b) => a + b, 0), w = HX_HEAD_W[i] ?? 0, before = HX_HEAD_W.slice(0, Math.max(i, 0)).reduce((a, b) => a + b, 0);
+  return [['--i', i], ['--bl', i < 0 ? -.2 : ((before + w / 4) / all).toFixed(4)], ['--bw', i < 0 ? .08 : (w / 2 / all).toFixed(4)]];
+};
 const HX_MORE = [['bridge', 'Bridge'], ['borrow', 'Borrow']];
 // (the Bridge tab opened from Shield's or Withdraw's Bitcoin switch stays under that tab: Shield while it comes into Ethereum, Withdraw while it goes out)
 const hxHeadKey = () => (HX.tab === 'swap' ? HX.flow || 'swap' : HX.tab === 'bridge' && HX.via ? (hxBrTo(HX.br) === 'bitcoin' ? 'withdraw' : 'shield') : HX.tab === 'bridge' || HX.tab === 'borrow' ? 'more' : HX.tab);
@@ -17830,7 +17839,7 @@ function hxNextPaint(done = false) {
   // (a Pay pool coin is paid out to anyone from Send, which picks it; the DeFi pool's ETH and TAC swap, farm and send)
   const ways = sd === 'chain' ? [['send:ctac', 'Send']] : sd === 'pay' ? [['send', 'Pay someone']]
     : [[`swap:${c === 'tac' ? 'tac:eth:private' : 'eth:tac'}`, 'Swap'], [`earn:${c}`, 'Earn'], [`send:${c}`, 'Send']];   // (from the TAC just made private, not the wallet's)
-  const el = html`<div class="hx-next" role="group" aria-label="What next"><span>Private now. Next:</span>${ways.map(([spec, t]) => html`<button type="button" data-next="${spec}">${t}</button>`)}</div>`;
+  const el = html`<div class="hx-next" role="group" aria-label="What next"><span>Next:</span>${ways.map(([spec, t]) => html`<button type="button" data-next="${spec}">${t}</button>`)}</div>`;
   act.insertAdjacentHTML('beforeend', el.s);
   for (const b of act.querySelectorAll('[data-next]')) b.onclick = () => { act.querySelector('.hx-next')?.remove(); hxPreset(b.dataset.next, undefined, true); };
 }
@@ -19137,7 +19146,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=9411c247').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=dd8b7065').catch((e) => { SWC.p = null; throw e; }));
 // the card held to the tab's flow; back on the Swap tab it opens on the swap it showed there
 function swcFlow() {
   hxPathPaint();
@@ -19179,7 +19188,7 @@ function hxWhereSync() {
 function hxHeadSync() {
   const h = $('#hx-body .hx-h'), k = hxHeadKey();
   if (!h) return;
-  h.style.setProperty('--i', HX_HEAD.findIndex(([x]) => x === k));
+  for (const [p, v] of hxHeadVars(HX_HEAD.findIndex(([x]) => x === k))) h.style.setProperty(p, v);
   for (const b of $$('[data-hxm]', h)) { const on = b.dataset.hxm === k; b.setAttribute('aria-selected', String(on)); b.tabIndex = on ? 0 : -1; }
   $('#hx-panel')?.setAttribute('aria-labelledby', `hx-tab-${k}`);
   hxWhereSync(); hxLeadPaint();
@@ -19257,7 +19266,7 @@ function paintHx() {
   const dot = (k) => ((k === 'borrow' || k === 'more') && due ? html` data-due aria-description="A step of your lock waits for you"` : (k === 'bridge' || k === 'more') && brDue ? html` data-due aria-description="A bridge waits for you"` : '');
   const hk = hxHeadKey();
   const tab = ([k, label]) => html`<button type="button" role="tab" id="hx-tab-${k}" aria-controls="hx-panel" data-hxm="${k}" aria-selected="${hk === k}" tabindex="${hk === k ? 0 : -1}"${dot(k)}>${label}</button>`;
-  const head = html`<div class="hx-h" role="tablist" aria-label="What to do" style="--i: ${HX_HEAD.findIndex(([k]) => k === hk)}; --n: ${HX_HEAD.length}">${HX_HEAD.map(tab)}</div>`;
+  const head = html`<div class="hx-h" role="tablist" aria-label="What to do" style="${hxHeadVars(HX_HEAD.findIndex(([k]) => k === hk)).map(([p, v]) => `${p}: ${v}`).join('; ')}; --n: ${HX_HEAD.length}; --cols: ${HX_HEAD_W.map((w) => `${w}fr`).join(' ')}">${HX_HEAD.map(tab)}</div>`;
   // under More, Bridge and Borrow: one switch, the same as Send's and Request's
   const more = hk === 'more' ? html`<div class="hx-mode hx-more" role="tablist" aria-label="Bridge or borrow">${HX_MORE.map(([k, t]) => html`<button type="button" role="tab" id="hx-tab-${k}" aria-controls="hx-panel" data-hxm="${k}" aria-selected="${String(HX.tab === k)}" tabindex="${HX.tab === k ? 0 : -1}"${dot(k)}>${t}</button>`)}</div>` : '';
   // Every tab is drawn with the swap card's parts (swap/card.css): a field for what goes in, with where it is held and its coin; the rows to

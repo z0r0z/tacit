@@ -480,6 +480,11 @@ function amtFmt(v, dec) {
   return fmtUnits(v, dec, Math.min(dp, dec));
 }
 const tidy = (s) => s.replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
+// a balance as the label under the amount shows it: under one, four figures that count (0.006115, not 0.00611595); Max still puts all of it in
+function balFmt(v, dec) {
+  const n = Number(v) / 10 ** dec;
+  return n > 0 && n < 1 ? tidy(fmtUnits(v, dec, Math.min(Math.max(4, Math.ceil(-Math.log10(n)) + 3), 8, dec))) : amtFmt(v, dec);
+}
 // What goes into the pool is counted in 8 decimals, its unit (a private balance, or ETH made private): a longer amount (Max on a wallet balance,
 // a pasted figure) is cut there, never refused.
 const poolUnits = () => S.inP || (S.outP && isEth(S.pay));
@@ -915,16 +920,16 @@ function paintSides() {
   if (payPriv && bal == null && !S.at.pay && !moveOf()) side.innerHTML = PV?.unlocked ? `<span>Reading your private balance…${PV.readFailed ? ' <button type="button" id="pv-read">Read again</button>' : ''}</span>` : '<button type="button" id="pv-open">Sign in to see your private balance</button>';
   // a private side the page moves (Withdraw, a Pay pool coin) with no key open: what it holds is a sign-in away
   else if (moving() && isPrivAt(atOf('pay')) && bal == null && !fixed && !H.key?.session?.unlocked) side.innerHTML = '<button type="button" id="pv-sign">Sign in to see your private balance</button>';
-  else if (bal != null) side.innerHTML = fixed ? `<span>Balance ${esc(amtFmt(bal, pay.dec))}</span>` : `<button type="button" id="max" class="${wei && wei > bal ? 'over' : ''}">Balance ${esc(amtFmt(bal, pay.dec))}${bal > 0n ? ' · Max' : ''}</button>`;
+  else if (bal != null) side.innerHTML = fixed ? `<span>Balance ${esc(balFmt(bal, pay.dec))}</span>` : `<button type="button" id="max" class="${wei && wei > bal ? 'over' : ''}">Balance ${esc(balFmt(bal, pay.dec))}${bal > 0n ? ' <span class="mx">Max</span>' : ''}</button>`;
   else if (!S.amt && !fixed && !sizes) side.innerHTML = `<span class="quick">${((poolUnits() ? QUICK_PRIV : QUICK)[pay.sym] || []).map((v) => `<button type="button" data-quick="${v}">${v}</button>`).join('')}</span>`;
   else side.textContent = '';
   // a side sitting in the Pay pool has its balances read (the page keeps them a minute), so a link to it shows what it holds
   if (moving() && atOf('pay') === 'pay' && Date.now() - PAYWARM > 30e3) { PAYWARM = Date.now(); H.moves.warm?.(); }
   const getBal = !S.outP && !S.at.get && !S.to && W.account ? S.bal[S.get] : null;
-  $('#get-side').textContent = getBal ? `Balance ${amtFmt(getBal, get.dec)}` : '';
+  $('#get-side').textContent = getBal ? `Balance ${balFmt(getBal, get.dec)}` : '';
   // a move's own quick amounts (the page's sizes kept ready, marked once proved) stand where the dollar value goes until one is typed
   const v = wei && !fixed ? usdOf(S.pay, wei) : null, pu = $('#pay-usd');
-  const h = sizes ? `<span class="quick">${sizes.map((x) => x.act ? `<button type="button" data-stage${x.off ? ' disabled' : ''}>${esc(x.v)}</button>` : `<button type="button" data-quick="${esc(x.v)}"${x.rd ? ` class="rd" title="${esc(x.t || 'Proved already: one transaction')}" aria-label="${esc(x.v)}, ready now: one transaction"` : ''}>${x.rd ? '<svg aria-hidden="true"><use href="#i-bolt"/></svg>' : ''}${esc(x.v)}</button>`).join('')}${sizes.some((x) => x.rd) ? '<span class="rdn" aria-hidden="true"><svg><use href="#i-bolt"/></svg>ready now</span>' : ''}</span>` : '';
+  const h = sizes ? `<span class="quick">${sizes.map((x) => x.act ? `<button type="button" data-stage${x.off ? ' disabled' : ''}>${esc(x.v)}</button>` : `<button type="button" data-quick="${esc(x.v)}"${x.rd ? ` class="rd" title="${esc(x.t || 'Proved already: one transaction')}" aria-label="${esc(x.v)}, ready now: one transaction"` : ''}>${esc(x.v)}</button>`).join('')}${sizes.some((x) => x.rd) ? '<span class="rdn" aria-hidden="true"><svg><use href="#i-bolt"/></svg>ready now</span>' : ''}</span>` : '';
   if (h) { if (pu.dataset.h !== h) { pu.innerHTML = h; pu.dataset.h = h; } }
   else { pu.dataset.h = ''; pu.textContent = v != null ? `≈ ${usd(v)}` : ''; }
 }

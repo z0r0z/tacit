@@ -87,6 +87,12 @@
 .swc .coin:active { transform: scale(.97); }
 .swc .ff button { display: inline-flex; align-items: center; min-height: 24px; padding: 0; font: 12px var(--mono); color: var(--mute); background: none; border: 0; text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor 35%, transparent); text-underline-offset: 3px; cursor: pointer; transition: color .15s; }
 .swc .ff button.over { color: var(--warn); }
+/* Max is a small control of its own, not the end of an underlined line */
+.swc .ff #pay-side { margin-left: auto; }   /* the balance stays at the right when it wraps under the amounts, clear of the flip button in the middle */
+.swc .ff #max { gap: 8px; text-decoration: none; }
+.swc .ff #max .mx { padding: 0 8px; font-size: 11px; line-height: 18px; color: var(--ink); border: 1px solid color-mix(in srgb, currentColor 22%, transparent); border-radius: 999px; transition: border-color .15s; }
+.swc .ff #max.over .mx { color: inherit; }
+@media (hover: hover) { .swc .ff #max:hover .mx { border-color: color-mix(in srgb, currentColor 55%, transparent); } }
 @media (hover: hover) { .swc .ff button:hover { color: var(--ink); text-decoration-color: currentColor; } }
 .swc .quick { display: inline-flex; flex-wrap: wrap; gap: 6px; }
 .swc .quick button { min-height: 26px; padding: 3px 10px; font: 12px var(--mono); color: var(--mute); text-decoration: none; background: none; border: 1px solid color-mix(in srgb, var(--ink) 12%, transparent); border-radius: 999px; cursor: pointer; transition: border-color .15s, color .15s; }
@@ -346,7 +352,19 @@
 .swc #homes > .one.c .rt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .swc #homes > .one.c .rt b { font: inherit; font-size: 12px; letter-spacing: 0; color: var(--ink); }
 .swc #homes > .one.c .ra { display: inline-flex; align-items: baseline; gap: 4px; font-size: 12px; font-weight: 400; }
-@media (max-width: 400px) { .swc #homes > .one.c .ra small { display: none; } }
+/* on a phone the line has to fit: the unit goes, the gaps close, the name's ellipsis can apply (.rt was a grid, which it never does), and on the narrowest the label goes too */
+@media (max-width: 480px) {
+  .swc #homes:has(> .one) { gap: 0 6px; }
+  .swc #homes > .one.c { gap: 6px; }
+  .swc #homes > .one.c .ra small { display: none; }
+  .swc #homes > .one.c .rt { display: block; }
+}
+@media (max-width: 385px) {
+  .swc #homes:has(> .one) { grid-template-columns: minmax(0, 1fr) auto; }
+  .swc #homes:has(> .one) > .rows-h > :first-child { display: none; }
+  .swc #homes > .one.c { grid-area: 1 / 1; }
+  .swc #homes:has(> .one) > .rows-h > .chg { grid-area: 1 / 2; }
+}
 /* under the Deposit / Wait / Swap steps of a private swap: what is swapped and where the rest of the deposit goes */
 .swc .later-note { margin: 8px 2px 0; font-size: 12px; line-height: 1.45; color: var(--mute); }
 .swc .later-note:empty { display: none; }
@@ -369,7 +387,6 @@
 .swc .q.warn { color: var(--warn); }
 /* a size whose proof is made goes at once: its chip is not the rows' radio (.rd), and the row says what the bolt means */
 .swc .quick button.rd { width: auto; height: auto; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--ok) 45%, transparent); color: var(--ink); box-shadow: none; }
-.swc .quick button.rd svg { width: 8px; height: 10px; margin: 0 4px -1px -2px; fill: var(--ok); }
 .swc .quick .rdn { display: inline-flex; align-items: center; gap: 4px; font: 11px var(--mono); color: var(--ok); }
 .swc .quick .rdn svg { width: 8px; height: 10px; fill: var(--ok); }
 
