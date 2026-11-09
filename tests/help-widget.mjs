@@ -10,23 +10,28 @@
 //   PLAYWRIGHT=/Users/z/zFi/node_modules/playwright-core node tests/help-widget.mjs        (SHOTS=<dir> saves screenshots)
 import { createRequire } from 'node:module';
 import http from 'node:http';
-import { readFileSync, existsSync, statSync, mkdirSync } from 'node:fs';
+import { readFileSync, existsSync, statSync, mkdirSync, readdirSync } from 'node:fs';
 import { join, extname } from 'node:path';
-import { CHROME_PAGES } from '../build/chrome.mjs';
 
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT || 'playwright-core');
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
 const SHOTS = process.env.SHOTS || '';
 if (SHOTS) mkdirSync(SHOTS, { recursive: true });
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2' };
+let helpCoep = true;   // the Render header rule on /help/*
 const dapp = http.createServer((req, res) => {
   const p = decodeURIComponent(new URL(req.url, 'http://x').pathname);
   let f = join(DAPP, p);
   if (existsSync(f) && statSync(f).isDirectory()) f = p.endsWith('/') ? join(f, 'index.html') : join(DAPP, 'index.html');
   if (!existsSync(f) && !extname(p)) f = join(DAPP, 'index.html');
   if (!existsSync(f)) { res.writeHead(404); return res.end('not found'); }
-  // what Render says for the site: a page may be framed by its own origin and nobody else's
-  res.writeHead(200, { 'content-type': TYPES[extname(f)] || 'application/octet-stream', 'x-frame-options': 'SAMEORIGIN', 'content-security-policy': "frame-ancestors 'self'" });
+  // what Render says for the site: a page may be framed by its own origin and nobody else's; and the front page, /tac/ and /btc-pool/ are cross-origin isolated,
+  // which lets them frame only a document that is isolated too (so /help/* carries the header too, as dapp's Render rule makes it, unless a test takes it away)
+  const isolated = p === '/' || p === '/index.html' || p.startsWith('/tac/') || p.startsWith('/btc-pool/');
+  const h = { 'content-type': TYPES[extname(f)] || 'application/octet-stream', 'x-frame-options': 'SAMEORIGIN', 'content-security-policy': "frame-ancestors 'self'" };
+  if (isolated || (p.startsWith('/help/') && helpCoep)) h['cross-origin-embedder-policy'] = 'credentialless';
+  if (p === '/' || p === '/index.html' || p.startsWith('/tac/')) h['cross-origin-opener-policy'] = 'same-origin';
+  res.writeHead(200, h);
   res.end(readFileSync(f));
 }).listen(0);
 await new Promise((r) => dapp.on('listening', r));
@@ -69,7 +74,9 @@ for (const rel of ['index.html', 'pay/index.html', 'prove/index.html']) {
 }
 
 // ── every page that wears the site's header ──
-const PAGES = Object.keys(CHROME_PAGES).filter((p) => p !== 'help/index.html');
+// every page that carries the site's header, found in the files (a generated page such as /tac/ is not in build/chrome.mjs's list)
+const PAGES = readdirSync(DAPP, { recursive: true }).filter((f) => f.endsWith('index.html') && f !== 'help/index.html' && readFileSync(join(DAPP, f), 'utf8').includes('chrome:head:begin')).sort();
+ok(PAGES.length >= 22 && PAGES.includes('tac/index.html') && PAGES.includes('index.html'), `${PAGES.length} pages carry the site's header, the front page and /tac/ among them`);
 for (const rel of PAGES) {
   const { page, ctx, refused, helpCalls } = await open(rel);
   const btn = page.locator('.hw-b');
@@ -119,6 +126,21 @@ for (const rel of PAGES) {
   ok(refused.length === 0, 'no frame or CSP refusal');
   ok(helpCalls.filter((c) => c === 'POST /ask').length === 1, 'the help desk was asked exactly once');
   await ctx.close();
+}
+
+// ── a frame that is refused leaves a way out, not a dead box ──
+{
+  helpCoep = false;   // as the front page is until the header rule is on /help/*: an isolated page cannot frame a document that is not
+  const { page, ctx } = await open('index.html');
+  await page.locator('.hw-b').waitFor({ state: 'visible' });
+  await page.click('.hw-b');
+  await page.waitForSelector('#hw-p .hw-f', { timeout: 15000 });
+  const link = await page.locator('#hw-p .hw-f a').getAttribute('href');
+  ok(link === '/help/' && (await page.locator('#hw-p iframe').count()) === 0 && (await page.locator('#hw-p').isVisible()), 'a frame the page refuses is replaced by a link to the help page, in the panel');
+  await page.click('.hw-x'); await page.click('.hw-b');
+  ok((await page.locator('#hw-p .hw-f').count()) === 1 && (await page.locator('#hw-p iframe').count()) === 0, 'opened again it says the same, without trying the frame again');
+  await ctx.close();
+  helpCoep = true;
 }
 
 // ── not on the help page itself ──
