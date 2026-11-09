@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-fSUfXi9IzfHsc7S+PyrL7UGZ7DczEHedg5fbMSa7t2s=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-OVsfm2NYZRdHRciJv9+cB8Vs2ldoUo6VD0V8/apJCPA=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -1334,6 +1334,98 @@ html[data-page="tac"] :is(.hero, #dash, #how, #tac, .pg, .sx.pi), html:not([data
 .tpg-more > summary { cursor: pointer; font-size: 12.5px; color: var(--mute); text-decoration: underline; text-underline-offset: 3px; list-style: none; }
 .tpg-more > summary::-webkit-details-marker { display: none; }
 .tpg-more[open] > summary { margin-bottom: 12px; }
+/* The Tacit chain, live, on TAC's page (dapp/chain/live.js): the path a payment takes and the chain's figures over the card; its chart, blocks and facts under it */
+.cl-top { margin: 22px 0 18px; }
+.cl-h { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 0 0 14px; }
+.cl-name { margin: 0; font: 400 28px/1 var(--serif); letter-spacing: -.01em; }
+.cl-name em { font-style: italic; }
+.cl-v { display: inline-flex; align-items: center; gap: 8px; padding: 4px 12px 4px 10px; border: 1px solid var(--hair-2); border-radius: 999px; font-size: 12px; font-weight: 500; transition: border-color .2s, color .2s; }
+.cl-v[data-s="ok"] { border-color: color-mix(in srgb, var(--ok) 55%, transparent); }
+.cl-v[data-s="busy"] { border-color: var(--orange); }
+.cl-v[data-s="bad"] { border-color: var(--err); color: var(--err); }
+.cl-sub { margin-left: auto; font-size: 12px; color: var(--mute); }
+.cl-sub.stale::after { content: ' · not updating'; color: var(--warn); }
+.cl-top .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--hair-2); flex: none; }
+.cl-top .dot.ok { background: var(--ok); } .cl-top .dot.busy { background: var(--orange); } .cl-top .dot.bad { background: var(--err); }
+.cl-v .dot.ok { animation: cl-beat 2.8s ease-out infinite; }
+@keyframes cl-beat { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 50%, transparent); } 70%, 100% { box-shadow: 0 0 0 6px transparent; } }
+.cl-flow { display: grid; grid-template-columns: minmax(0, 1fr) 24px minmax(0, 1fr) 24px minmax(0, 1fr) 24px minmax(0, 1fr); align-items: stretch; }
+.cl-n { position: relative; display: flex; flex-direction: column; gap: 7px; min-width: 0; padding: 12px 12px 13px; background: var(--card); border: 1px solid var(--hair); }
+.cl-n::before { content: ''; position: absolute; left: -1px; right: -1px; top: -1px; height: 2px; }
+.cl-n.ok::before { background: color-mix(in srgb, var(--ok) 70%, transparent); } .cl-n.busy::before { background: var(--orange); } .cl-n.bad::before { background: var(--err); }
+.cl-n.busy { background: color-mix(in srgb, var(--orange) 8%, var(--card)); } .cl-n.bad { background: color-mix(in srgb, var(--err) 8%, var(--card)); }
+.cl-ic { display: flex; } .cl-ic .tk, .cl-ic .ic { width: 16px; height: 16px; }
+.cl-ic .ic { fill: none; stroke: var(--mute); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.cl-k { font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
+.cl-n b { display: flex; align-items: flex-start; gap: 6px; font: 500 12px/1.3 var(--mono); min-width: 0; }
+.cl-n b .dot { margin-top: 4px; }
+.cl-n b > span:last-child { min-width: 0; overflow-wrap: anywhere; }
+.cl-n.landed { animation: cl-landed 1.6s ease-out; }
+@keyframes cl-landed { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 55%, transparent); } 100% { box-shadow: 0 0 0 14px transparent; } }
+/* a wire: a hairline and its arrowhead; its dot sits at one end of a strip as long as the line and moves by the strip's width (the bridge's way): slow when
+   all is quiet, quick with a payment on its way, none and dashed where the path is broken */
+.cl-w { position: relative; align-self: center; height: 1px; background: color-mix(in srgb, var(--ink) 35%, transparent); }
+.cl-w::after { content: ''; position: absolute; right: 0; top: -3px; width: 6px; height: 6px; border: solid color-mix(in srgb, var(--ink) 35%, transparent); border-width: 1.5px 1.5px 0 0; transform: rotate(45deg); }
+.cl-w::before { content: ''; position: absolute; left: 0; right: 6px; top: -3px; height: 7px; opacity: 0; background: radial-gradient(circle 3px at 3px 50%, var(--orange) 1.8px, transparent 2.4px); }
+.cl-w.on::before { animation: cl-wire 4.4s ease-in-out infinite; }
+.cl-w.live::before { animation: cl-wire 1.5s ease-in-out infinite; }
+.cl-w.off { background: repeating-linear-gradient(90deg, var(--hair-2) 0 3px, transparent 3px 6px); }
+.cl-w.off::after { border-color: var(--hair-2); }
+@keyframes cl-wire { 0% { transform: translateX(0); opacity: 0; } 15%, 80% { opacity: .9; } 100% { transform: translateX(100%); opacity: 0; } }
+.cl-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 18px; margin: 18px 0 0; }
+.cl-stats .v { display: block; font: 400 30px/1 var(--serif); letter-spacing: -.01em; overflow-wrap: anywhere; }
+.cl-stats .v small { margin-left: 3px; font: 400 11px var(--mono); letter-spacing: 0; color: var(--mute); }
+.cl-stats .k { display: block; margin-top: 6px; font-size: 11px; color: var(--mute); }
+.cl-stats .ok { color: var(--ok); }
+.cl-off { margin: 0; font-size: 12.5px; color: var(--mute); }
+.cl-hh { display: flex; justify-content: space-between; gap: 12px; }
+.cl-hh span:last-child { letter-spacing: 0; text-transform: none; }
+.cl-chart figure { margin: 0; }
+.cl-plot { position: relative; height: 140px; margin-top: 18px; touch-action: pan-y; cursor: crosshair; }
+.cl-skp { background: var(--hair); opacity: .5; cursor: default; }
+.cl-plot svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.cl-plot .ln { fill: none; stroke: var(--ink); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.cl-plot .ar { fill: color-mix(in srgb, var(--ink) 7%, transparent); stroke: none; }
+.cl-plot .gd { stroke: var(--hair-2); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.cl-plot .pt { position: absolute; width: 7px; height: 7px; margin: -3.5px 0 0 -3.5px; border-radius: 50%; background: var(--paper); border: 1.5px solid var(--ink); pointer-events: none; }
+.cl-plot .pt.on { background: var(--ink); transform: scale(1.3); }
+.cl-plot .xh { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px dashed var(--hair-2); pointer-events: none; }
+.cl-plot .tip { position: absolute; top: -8px; transform: translate(-50%, -100%); padding: 3px 9px; background: var(--ink); color: var(--paper); font-size: 11.5px; white-space: nowrap; pointer-events: none; }
+.cl-plot .yl { position: absolute; right: 0; bottom: 5px; font-size: 10.5px; color: var(--mute); pointer-events: none; }
+.cl-plot.in svg { animation: cl-reveal .9s cubic-bezier(.3, .7, .2, 1) both; }
+@keyframes cl-reveal { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0 0 0); } }
+.cl-plot.in .pt { animation: cl-pop .35s ease-out both; animation-delay: calc(var(--i, 0) * 40ms + 300ms); }
+@keyframes cl-pop { from { opacity: 0; transform: scale(.3); } }
+.cl-chart figcaption { display: flex; justify-content: space-between; gap: 12px; margin-top: 8px; font-size: 11.5px; color: var(--mute); }
+.cl-blocks { list-style: none; margin: 0; padding: 0; }
+.cl-blocks li { display: grid; grid-template-columns: 3.6em minmax(0, 1fr) auto; grid-template-areas: "n a x" ". s p"; gap: 3px 12px; align-items: baseline; padding: 10px 0; border-bottom: 1px solid var(--hair); font-size: 12.5px; }
+.cl-blocks li:last-child { border-bottom: 0; }
+.cl-blocks li.sl, .cl-blocks li.none { display: block; color: var(--mute); }
+.cl-blocks .n { grid-area: n; font-weight: 500; } .cl-blocks .a { grid-area: a; color: var(--mute); } .cl-blocks .x { grid-area: x; white-space: nowrap; }
+.cl-blocks .s { grid-area: s; } .cl-blocks .s i { font-style: normal; color: var(--mute); }
+.cl-blocks .p { grid-area: p; text-align: right; } .cl-blocks .p small { font-size: 11px; color: var(--mute); }
+.cl-blocks a { color: var(--ink); }
+.cl-n, .cl-n.ok, .cl-n.busy, .cl-n.bad { color: var(--ink); }
+.cl-blocks li .x, .cl-blocks li .x a { font: 400 12px/1.3 var(--mono); width: auto; height: auto; }
+.cl-blocks li.fresh { animation: cl-fresh 2.8s ease-out; }
+@keyframes cl-fresh { 0% { background: color-mix(in srgb, var(--ok) 16%, transparent); } 100% { background: transparent; } }
+.cl-more:not(:empty) { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 20px; margin-top: 10px; padding-top: 12px; border-top: 1px solid var(--hair); font-size: 12.5px; color: var(--mute); }
+.cl-more a { color: var(--ink); }
+.cl-facts { list-style: none; margin: 0; padding: 0; font-size: 12.5px; }
+.cl-facts li { padding: 10px 0; border-bottom: 1px solid var(--hair); }
+.cl-facts li:last-child { border-bottom: 0; }
+.cl-facts li > span:first-child { display: block; margin-bottom: 3px; font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
+.cl-facts a { color: var(--ink); } .cl-facts code { font: inherit; overflow-wrap: anywhere; }
+@media (max-width: 520px) {
+  .cl-flow { grid-template-columns: minmax(0, 1fr) 12px minmax(0, 1fr) 12px minmax(0, 1fr) 12px minmax(0, 1fr); }
+  .cl-n { padding: 10px 8px 11px; gap: 6px; }
+  .cl-k { font-size: 9.5px; letter-spacing: .06em; }
+  .cl-n b { font-size: 11px; }
+  .cl-w::after { display: none; }
+  .cl-stats .v { font-size: 24px; }
+  .cl-sub { margin-left: 0; }
+}
+@media (prefers-reduced-motion: reduce) { .cl-w::before, .cl-v .dot, .cl-n.landed, .cl-plot.in svg, .cl-plot.in .pt, .cl-blocks li.fresh { animation: none !important; } }
 .tpg-h { margin: 22px 0 10px; font-size: 11px; font-weight: 400; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
 .tpg-h:first-child { margin-top: 6px; }
 .tpg-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 1px; margin: 0; background: var(--hair); border: 1px solid var(--hair); }
@@ -1776,6 +1868,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       <p>On Bitcoin the amounts are hidden. On Ethereum the Tacit chain makes payments private, with fees paid in TAC.</p>
     </div>
     <details class="tpx" id="tac-px" hidden></details>
+    <div class="cl-top" id="tpg-live" aria-label="The Tacit chain, live"></div>
     <div class="tac-claim" id="tac-claim" role="region" aria-label="A claim link" hidden></div>
     <section class="tco" id="tpg-co" aria-labelledby="tco-h" hidden>
       <div id="tco-pay"><div id="tco-top"></div><div id="tco-in"></div><dl class="tco-rows" id="tco-rows"></dl>
@@ -1795,6 +1888,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
     </section>
     <section class="tpg-panel tpg-act" id="tpg-act" aria-label="TAC" hidden><div class="tpg-act-h"><button class="link" type="button" id="tpg-back">← Back</button><span id="tpg-act-t"></span></div><div id="tpg-act-b"></div></section>
     <section class="tpg-panel" id="tpg-top" aria-labelledby="tpg-top-h" hidden><h2 class="tpg-h" id="tpg-top-h">All your TAC</h2></section>
+    <div class="cl" id="tpg-chain"></div>
     <section class="tpg-panel" id="tpg-why" aria-labelledby="tpg-why-h" hidden></section>
     <details class="tpg-fold" id="tpg-where"><summary>Where your TAC is</summary><div><div id="tac-bal"></div><h3 class="tpg-h">Between Bitcoin and Ethereum</h3><div id="bridge-body"></div></div></details>
     <details class="tpg-fold" id="tpg-how"><summary>The networks</summary><div id="tpg-nets"></div></details>
@@ -10575,16 +10669,24 @@ const tacWho = () => [...new Set([S.wallet, S.acct?.address].filter(Boolean).map
 const calmMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 // ── TAC's page: its address, its parts, and moving between it and the front page with no reload (so the key opened stays open) ──
-// (/chain/ is its own page, the chain's status: its links load it)
-const TPG_PATH = /^\/tac\/?$/;
+// (/chain/ is TAC's page too: the chain, live, over the card)
+const TPG_PATH = /^\/(tac|chain)\/?$/;
 function tacPageSet(on) {
   TACP.on = on;
   if (on) document.documentElement.dataset.page = 'tac'; else delete document.documentElement.dataset.page;
   document.title = on ? 'tacit TAC' : 'tacit defi';
   for (const a of $$('a[href="/tac/"]')) { if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); }
-  if (!on) { TPOOL.open = false; tpgAct(null); tacClaimStop(); chlRead(); return; }
+  if (!on) { TPOOL.open = false; tpgAct(null); tacClaimStop(); chainLive(false); chlRead(); return; }
   keep($('#sheet-tac'), render.tac);
+  chainLive(true);
   load.tac().then(() => rerender('tac')).catch(() => {});
+}
+// The Tacit chain, live, over TAC's card and under it (dapp/chain/live.js, loaded the first time the page shows): read only while it shows
+const CLV = { p: null };
+function chainLive(on) {
+  if (!on) { CLV.p?.then((l) => l.stop(), () => {}); return; }
+  CLV.p ||= import('/chain/live.js?cb=b535bd6d').then((m) => m.mountChainLive({ top: $('#tpg-live'), rest: $('#tpg-chain') }));
+  CLV.p.then((l) => { if (TACP.on) l.start(); }, () => { CLV.p = null; });
 }
 // to TAC's page (openSheet('tac') and every link to TAC's home), `part` its bridge between the chains
 function tacPageOpen(part = null) {
@@ -11567,7 +11669,7 @@ function tpgRoute(raw, units) {
   return { side, eth: isEth, unknown, h, need };
 }
 // The leader's terms, the chain's figures and its blocks, read at most once a minute while TAC's page shows
-const TPGW = { at: 0, p: null, cs: null, roll: null, all: new Map(), older: 0, ui: null, w: null };
+const TPGW = { at: 0, p: null, cs: null, roll: null, ui: null, w: null };
 const TPG_FLOOR = 200000n;                                    // what a payment leaves in the chain's pool, and the least an exit leaves (0.002 TAC)
 const tpgLeader = () => TPGW.cs?.leader?.fee ?? null;
 const tpgExit = (units) => { const f = (BigInt(units) * 10n + 9999n) / 10000n; return f > TPG_FLOOR ? f : TPG_FLOOR; };
@@ -11578,36 +11680,12 @@ function tpgWhyRead(force = false) {
   return (TPGW.p = Promise.all([
     Promise.all([import('/tacit-chain-config.js?cb=803c3298'), import('/tacit-chain-client.js?cb=d71654bb'), import('/chain/ui.js?cb=94364e10'), import('/tacit-chain-wallet.js')])
       .then(([cf, cm, ui, w]) => { TPGW.ui = ui; TPGW.w = w; return cm.chainStatus({ cfg: cf.tacitChain(), rpcCall: (m, ps) => rpc(m, ps) }); }).then((s) => { TPGW.cs = s; }, () => {}),
-    fetch(`${API}/prover/blocks`, { signal: within(15e3) }).then((r) => (r.ok ? r.json() : null))
-      .then((j) => { if (Array.isArray(j?.rollup)) tpgTake(j.rollup, true); }, () => {}),
   ]).finally(() => { TPGW.p = null; tpgActionsSoft(); rerender('tac'); }));
-}
-// The blocks the chart draws, one per height: the newest twenty each read gives, and, once the twenty are not the whole chain, the older ones /prover/rollup keeps
-// (asked once; an API without the route says 404 and is not asked again, any other failure is asked again at the next read)
-function tpgTake(list, fresh) {
-  const ok = list.filter((b) => /^\d+$/.test(String(b.pool ?? '')) && /^\d+$/.test(String(b.shares ?? '')) && Number.isInteger(b.height));
-  for (const b of ok) TPGW.all.set(b.height, b);
-  TPGW.roll = [...TPGW.all.values()];
-  const low = ok.length ? Math.min(...ok.map((b) => b.height)) : null;
-  if (!fresh || TPGW.older || ok.length < 20 || low == null || low <= 1) return;
-  TPGW.older = 1;
-  fetch(`${API}/prover/rollup?before=${low}&limit=100`, { signal: within(15e3) }).then((r) => (r.status === 404 ? 'none' : r.ok ? r.json() : null))
-    .then((j) => { if (j === 'none') return; if (Array.isArray(j?.rollup)) { TPGW.older = 2; tpgTake(j.rollup, false); rerender('tac'); } else TPGW.older = 0; }, () => { TPGW.older = 0; });
 }
 const tpgActionsSoft = () => { if (TACP.on) tcardQuoteSoon(); };
 // a share's worth, in TAC, from the chain's pool and shares (units of 1e-8): (pool + 1e8) / (shares + 1e8)
 const tpgPrice = (pool, shares) => Number((BigInt(pool) + 100000000n) * 10n ** 9n / (BigInt(shares) + 100000000n)) / 1e9;
 const tpgPx = (pool, shares) => (TPGW.ui ? TPGW.ui.sharePrice(pool, shares, 5) : tpgPrice(pool, shares).toFixed(5));
-function tpgChart(roll) {
-  const pts = [...roll].sort((a, b) => a.height - b.height).map((b) => [b.height, tpgPrice(b.pool, b.shares)]);
-  if (pts.length < 3) return '';
-  const W = 600, H = 120, x0 = pts[0][0], x1 = pts.at(-1)[0], ys = pts.map((p) => p[1]), lo = Math.min(1, ...ys), hi = Math.max(...ys), span = hi - lo || hi * 1e-6 || 1e-9;
-  const X = (x) => ((x - x0) / (x1 - x0 || 1)) * W, Y = (y) => H - 8 - ((y - lo) / span) * (H - 16);
-  const d = pts.map(([x, y], i) => `${i ? 'L' : 'M'}${X(x).toFixed(1)} ${Y(y).toFixed(1)}`).join(' ');
-  return html`<figure class="tpg-chart"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="${`A share's worth over the last ${pts.length} blocks, from ${lo.toFixed(5)} to ${hi.toFixed(5)} TAC`}">
-    <line class="gd" x1="0" y1="${H - 0.5}" x2="${W}" y2="${H - 0.5}"/><path class="ar" d="${d} L${W} ${H} L0 ${H} Z"/><path class="ln" d="${d}"/></svg>
-    <figcaption><span>block ${x0.toLocaleString('en-US')} · ${pts[0][1].toFixed(5)}</span><span>block ${x1.toLocaleString('en-US')} · ${pts.at(-1)[1].toFixed(5)} TAC</span></figcaption></figure>`;
-}
 function tpgWhy(el) {
   el.hidden = !chainOn();
   if (!chainOn()) return;
@@ -11620,9 +11698,6 @@ function tpgWhy(el) {
   const pn = cs ? tpgPrice(cs.pool, cs.shares) : last ? tpgPrice(last.pool, last.shares) : null, up = pn != null && pn > 1 ? `+${((pn - 1) * 100).toFixed(2)}% since it started` : '';
   const usd = (u) => { const d = hxUsd('tac', Number(u) / 1e8); return d ? ` (≈ ${d})` : ''; };
   mount(el, html`<h2 class="tpg-h" id="tpg-why-h">Why hold it on the Tacit chain</h2>
-    <p class="tpg-px num">${price != null ? html`1 share = ${price} <small>TAC</small>${up ? html`<small class="up">${up}</small>` : ''}` : html`<span class="sk" style="--w:12ch"></span>`}</p>
-    ${tpgChart(roll)}
-    ${blocks && roll.length < 3 ? html`<p class="note">After ${blocks.toLocaleString('en-US')} block${blocks === 1 ? '' : 's'}. It started at 1.</p>` : ''}
     ${shares != null && shares > 0n && worth != null ? html`<p class="tpg-mine">Your ${fmt(shares, 8, 4)} shares are worth ${fmt(worth, 8, 4)} TAC.</p>` : ''}
     <ul class="tpg-rules">
       <li>Private TAC on the Tacit chain is held as shares of one pool.</li>
@@ -11653,8 +11728,7 @@ function tpgNets(el) {
     ${chainOn() ? html`<h3 class="tpg-h">Tacit chain</h3>
     <div class="tpg-strip">${cell(cs ? n(cs.height) : '…', 'Blocks')}${cell(cs && ui ? (cs.height > 0 && cs.lastLanded > 0 ? ui.ago(Date.now() / 1000 - cs.lastLanded) : 'none yet') : '…', 'Last block')}
       ${cell(cs ? tpgPx(cs.pool, cs.shares) : '…', 'Share price')}${cell(cs && ui ? ui.fmtTac(cs.pool, 2) : '…', 'Pool, TAC')}
-      ${cell(L ? (L.fee > 0n ? ui.fmtTac(L.fee) : 'none') : cs ? '—' : '…', 'Leader fee, TAC')}${cell(L ? (L.shieldCap != null ? ui.fmtTac(L.shieldCap, 0) : 'none') : cs ? '—' : '…', 'Shield cap, TAC')}</div>
-    <p class="note"><a href="/chain/">The chain, live: its health and every block →</a></p>` : ''}`);
+      ${cell(L ? (L.fee > 0n ? ui.fmtTac(L.fee) : 'none') : cs ? '—' : '…', 'Leader fee, TAC')}${cell(L ? (L.shieldCap != null ? ui.fmtTac(L.shieldCap, 0) : 'none') : cs ? '—' : '…', 'Shield cap, TAC')}</div>` : ''}`);
 }
 $('#tpg-how').addEventListener('toggle', () => { if ($('#tpg-how').open) { TPGN.at = 0; tpgNets($('#tpg-nets')); } });
 // Wraps proved ahead (/wrap-vouchers.js): the sizes picked in the prove sheet, kept ready on this computer while its prover is idle,
