@@ -2,7 +2,7 @@
 // reward sent again giving it up only when that reward is dust.
 //   node tests/farm-ops.test.mjs
 import assert from 'node:assert/strict';
-import { canHarvest, canUnbond, unharvested, locked, harvest, unbond, UNBOND_DUST, HARVEST_WORTH, WTAC, wtacWithdrawCall, wtacBalanceCall, rewardNotes, relayable, worthHarvesting, redeem, lpNotes, takeOut, bFor, aFor, joinTerms, notesOf, exactOf, cutPick, cut, cutSized, ladder, feeShort, farmManager, bond } from '../dapp/farm-ops.js';
+import { exitSaid, canHarvest, canUnbond, unharvested, locked, harvest, unbond, UNBOND_DUST, HARVEST_WORTH, WTAC, wtacWithdrawCall, wtacBalanceCall, rewardNotes, relayable, worthHarvesting, redeem, lpNotes, takeOut, bFor, aFor, joinTerms, notesOf, exactOf, cutPick, cut, cutSized, ladder, feeShort, farmManager, bond } from '../dapp/farm-ops.js';
 
 const now = 1_800_000_000;
 assert.equal(canHarvest({ pendingUnits: '1' }), true); assert.equal(canHarvest({ pendingUnits: '0' }), false, 'nothing pending: nothing to harvest');
@@ -89,4 +89,18 @@ assert.equal(feeShort(new Error('relay: fee below the current floor')), true); a
   await assert.rejects(unbond(t, 'PRIV', { id: 8 }, 'W'), /1041667 reward units/, 'a plain unbond over a reward worth having is still refused');
   assert.deepEqual(calls, [[8, false]]);
 }
+// How a position ends, as the Earn card's receipt says it: the pool's own lock decides when, and both coins come back private.
+assert.equal(exitSaid(0, 'tETH / TAC'), 'any time, as private tETH and TAC', 'the launch pools have no lock (read from the farm contract: 0 seconds)');
+assert.equal(exitSaid('0', 'tETH / cBTC'), 'any time, as private tETH and cBTC', 'a lock read as the text "0" is none too');
+assert.equal(exitSaid(3 * 86400, 'tETH / cUSD'), 'after 3 days, as private tETH and cUSD', 'a lock of days says days');
+assert.equal(exitSaid(36 * 3600, 'tETH / TAC'), 'after 2 days, as private tETH and TAC', 'a day and a half rounds to the nearest day');
+assert.equal(exitSaid(7200, 'tETH / TAC'), 'after 2 h, as private tETH and TAC', 'a lock of hours says hours');
+assert.equal(exitSaid(60, 'tETH / TAC'), 'after 1 h, as private tETH and TAC', 'a short lock is never "0 h"');
+assert.equal(exitSaid(undefined, 'tETH / TAC'), null, 'a lock that is not known promises nothing');
+assert.equal(exitSaid(null, 'tETH / TAC'), null, 'null is not none');
+assert.equal(exitSaid('junk', 'tETH / TAC'), null, 'an unreadable lock promises nothing');
+assert.equal(exitSaid(-5, 'tETH / TAC'), null, 'a negative lock is not a lock');
+assert.equal(exitSaid(undefined, 'tETH / TAC', { lpOnly: true }), 'any time, as private tETH and TAC', 'LP only has no bond, so no lock, known or not');
+assert.equal(exitSaid(9 * 86400, 'tETH / TAC', { lpOnly: true }), 'any time, as private tETH and TAC', 'and a pool lock does not apply to it');
+assert.equal(exitSaid(0, 'TAC'), 'any time, as private TAC', 'a name that is not a pair is said as it is');
 console.log('farm-ops: all checks passed');

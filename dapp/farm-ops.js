@@ -14,6 +14,16 @@ export const locked = (pos, now = Date.now() / 1000) => Number(pos?.unlockAt || 
 export const canHarvest = (pos) => units(pos) > 0n;
 export const canUnbond = (pos, now) => !locked(pos, now) && !unharvested(pos);
 
+// How a private pool's position ends, in a receipt's words: when (the pool's own lock, in seconds, read from the farm contract: none for the launch pools)
+// and as what (both of its coins, private). A lock that is not known promises nothing (null); LP only has no bond, so no lock to wait for.
+export function exitSaid(lockSeconds, name, { lpOnly = false } = {}) {
+  const lock = lockSeconds == null ? NaN : Number(lockSeconds);
+  if (!lpOnly && !(lock >= 0 && Number.isFinite(lock))) return null;
+  const when = lpOnly || lock === 0 ? 'any time' : `after ${lock >= 86400 ? `${Math.round(lock / 86400)} days` : `${Math.max(1, Math.round(lock / 3600))} h`}`;
+  const coins = String(name || '').split(' / ');
+  return `${when}, as private ${coins.length === 2 ? `${coins[0]} and ${coins[1]}` : name}`;
+}
+
 // the reward a harvest pays, as a wTAC note (one for one with TAC; turning it into TAC is a step of its own)
 export const harvest = (t, priv, pos, waitOpts) => t.farmHarvest({ walletPriv: priv, position: pos, waitOpts });
 

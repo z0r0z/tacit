@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-YlyImrbi5WllvjTFAM15pmDLm3vjW7RN7jiqhaXu/00=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-4dGCzfgclX5aMNW3QWSQMk2NsqX/6a20/25jZJtvQek=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -58,7 +58,7 @@
 <link rel="modulepreload" href="/trade/farm-read.js?cb=112a01b9">
 <link rel="modulepreload" href="/bridge-all.js?cb=4b6de3ff">
 <link rel="modulepreload" href="/lp-zap.js?cb=4823580d">
-<link rel="modulepreload" href="/farm-ops.js?cb=0933a4c8">
+<link rel="modulepreload" href="/farm-ops.js?cb=b1775d76">
 <link rel="modulepreload" href="/relay-outcome.js?cb=9db7155a">
 <link rel="modulepreload" href="/btc-borrow.js?cb=c3dcce7a">
 <link rel="modulepreload" href="/bridge-out.js?cb=ecf49203">
@@ -2154,7 +2154,7 @@ import { zapPlan, zapPlanFor, zapCalldata, zapSettleCalldata, zapSplitSearch, za
 import { rewardPop } from '/reward-pop.js?cb=1b53f6d4';
 import * as GR from '/gas-relay.js?cb=9dd2aa42';
 import { netPicker } from '/net-pick.js?cb=8f57c360';
-import { UNBOND_DUST, HARVEST_WORTH, unharvested, bFor, aFor, farmManager, ladder as xoLadder, feeShort as xoFeeShort } from '/farm-ops.js?cb=0933a4c8';
+import { UNBOND_DUST, HARVEST_WORTH, unharvested, exitSaid, bFor, aFor, farmManager, ladder as xoLadder, feeShort as xoFeeShort } from '/farm-ops.js?cb=b1775d76';
 import { relayCode, proveCapped, proved, relayRefused, jobSaid, calmText } from '/relay-outcome.js?cb=9db7155a';
 import { makeLoans, bondGap, lockPad as lockPadOf } from '/btc-borrow.js?cb=c3dcce7a';
 import { makeOutFee, limitText, proofWarn, fundingText, onTheWay } from '/bridge-out.js?cb=ecf49203';
@@ -17385,11 +17385,16 @@ async function hxQuote() {
       const way = (w) => () => { HX.earnWay = w; HX.goNext = false; HX.q = null; hxQuote(); };
       // LP only: the same zap, its share kept as a private LP note that earns the pool's fees (no bond, so nothing after the one transaction)
       const lpOnly = HX.lp && HX.from === 'ether' && !pub, lpFee = lpOnly ? (HX.zq?.res?.feeBps ?? FARM.program?.pools?.find((x) => String(x.pid) === pick.k)?.reserves?.feeBps ?? 30) / 100 : 0;
+      // what a private pool's position is and how it ends: a farm position (or, LP only, a private LP note), which leaves as both coins, private, when the pool's own
+      // lock allows (farm-ops exitSaid: none for the launch pools; a lock not known promises nothing)
+      const exitSay = pub ? null : exitSaid(FARM.program?.pools?.find((x) => String(x.pid) === pick.k)?.lockSeconds, pick.name, { lpOnly });
       return done({ out: units && !lpOnly ? sig(ex?.day ?? pick.day) : null, rows, pick: pick.k, unit: 'TAC a day', pk: two && !zap ? 'wrap' : null,
         go: ex?.go || (pub ? (tacSrc ? 'Farm with TAC' : 'Farm with ETH') : zap ? (lpOnly ? 'Add as private LP' : 'Zap into the farm') : two ? 'Shield ETH' : 'Farm privately'),
         // (the wallet's ETH picked and the private tETH held covering it: the tETH is what goes in, and the receipt says so)
         rc: [['How', `${js && HX.from === 'ether' ? `your private tETH${HX.jq?.mode === 'pair' ? ' and TAC' : ''}, ` : ''}${js?.how || (pub ? `half swapped to ${tacSrc ? 'ETH' : 'TAC'}, both staked` : zap ? 'one transaction' : 'half swapped inside the pool')}`],
-          lpOnly ? ['You earn', `the pool’s ${lpFee}% fee on every swap${pick.apr != null ? `, about ${pctFmt(pick.apr)} a year (last week)` : ''}`] : null,
+          pub ? null : ['You hold', lpOnly ? `private ${pick.name} liquidity` : `a private ${pick.name} position`, '', 'Your Tacit lists it once you sign in, with what it has earned so far.'],
+          exitSay ? ['Exit', exitSay, '', lpOnly ? 'Take the liquidity out from Your Tacit: both coins come back to your private balance. The relay’s fee comes out of it.' : 'Exit harvests what the position earned, ends it and returns both coins to your private balance, in a few steps from Your Tacit. The relay’s fee comes out of it.'] : null,
+          lpOnly ? ['You earn',`the pool’s ${lpFee}% fee on every swap${pick.apr != null ? `, about ${pctFmt(pick.apr)} a year (last week)` : ''}`] : null,
           pub || js ? null : ['Chain sees', zap ? 'ETH in, private after' : 'a deposit, not whose'], two && !zap ? ['Steps', 'make the ETH private, then farm it'] : null,
           HX.zq?.sp ? ['Where', `${Math.round(Number(HX.zq.plan.ammIn) * 100 / Number(HX.zq.plan.swapIn))}% in this pool, the rest in the Precision pool`] : null,
           HX.zq ? proofRow(HX.zq.ready) : null,
