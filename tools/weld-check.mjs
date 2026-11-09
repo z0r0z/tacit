@@ -566,6 +566,14 @@ const acctPays = async (p) => {
   await until(p, () => document.querySelector('[data-pay="tacit"]')?.classList.contains('main'));
   await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
 };
+// The page opens signed out (a Tacit key lives for one tab, and the wallet is not reconnected on load): sign in the way a person does, with the Ethereum wallet the
+// page found (the stub answers eth_requestAccounts and signs with the page's `key`), for the checks written for a signed-in page whose wallet pays
+const ethIn = async (p) => {
+  await p.evaluate(() => { location.hash = ''; location.hash = '#wallet'; });
+  await p.click('#wallet-body [data-in="eth"]');
+  await until(p, () => !!document.querySelector('#wallet-dot.on'), null, 180000);
+  await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
+};
 const tabClick = async (page, k) => { if (!(await page.$(`[data-hxm="${k}"]`))) await page.click('[data-hxm="more"]'); await page.click(`[data-hxm="${k}"]`); };
 // The card folds away a way beside the one in use behind a line that opens them: a test opens it before it presses one.
 const reveal = async (page, sel, timeout = 120000) => { await page.waitForSelector(sel, { state: 'attached', timeout }); if (!(await page.isVisible(sel))) await page.locator('[data-hxmore]:visible').first().click(); };
@@ -10203,6 +10211,7 @@ await step('hxnudge', async () => {
   try {
     await p.goto(r.url);
     await p.waitForSelector('[data-hxm="swap"]', { timeout: 120000 });
+    await ethIn(p);
     for (const tab of ['earn', 'send']) {
       await tabClick(p, tab); await p.fill('#hx-amt', ''); await p.click('#hx-go');
       ok((await open()) === '' && (await p.evaluate(() => document.activeElement?.id)) === 'hx-amt' && /^Enter an amount first\.$/.test((await text(p, '#hx-q')).trim()), `hxnudge: ${tab} with no amount asks for one in the card, and opens nothing`);
@@ -10240,6 +10249,7 @@ await step('hxfold', async () => {
   try {
     await p.goto(r.url);
     await p.waitForSelector(MV.go, { timeout: 120000 });
+    await ethIn(p);
     const homes = () => p.$$eval('#hx-swap [data-home]', (b) => b.map((x) => `${x.dataset.home}${x.getAttribute('aria-checked') === 'true' ? '*' : ''}`).join());
     // the card shows the chosen home alone, and opens both rows when it is pressed (its Change link)
     ok((await homes()) === 'defi*', `hxfold: the Swap card opens on making ETH private, its chosen private home alone (${await homes()})`);
