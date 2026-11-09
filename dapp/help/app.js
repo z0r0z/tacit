@@ -23,3 +23,6 @@ async function health() {
 }
 
 mountHelp({ root: document.querySelector('main'), ask, health });
+
+// framed by the help panel, which cannot see a key pressed in here: Escape asks it to close
+if (window.top !== window.self) addEventListener('keydown', (e) => { if (e.key === 'Escape') parent.postMessage('tacit-help-close', location.origin); });

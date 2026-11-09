@@ -97,6 +97,16 @@
   }).catch(() => {});
 })();
 
+// The help desk's launcher (bottom right) is loaded where it is switched on: for everyone once LIVE is true, and before that for a browser that has set
+// localStorage "tacit.help" to "on" (a preview); "off" hides it for that browser. Not on the help page itself, nor inside a frame (the panel is that page, framed).
+(() => {
+  const LIVE = false;
+  let on = LIVE;
+  try { const v = localStorage.getItem('tacit.help'); on = v === 'on' || (LIVE && v !== 'off'); } catch { /* storage refused: the default stands */ }
+  if (!on || window.top !== window.self || location.pathname.startsWith('/help')) return;
+  import('/help/widget.js').catch(() => {});
+})();
+
 // The pages share one service worker (dapp/sw.js). It keeps a versioned file (a ?cb= URL whose token matches its bytes) and answers for it from disk, so a
 // repeat visit asks the network for the page and little else. It is registered once the page has loaded, and a page works the same without it.
 (() => {
