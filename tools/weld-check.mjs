@@ -775,7 +775,7 @@ await step('hints', async () => {
   } finally { await r.browser.close(); }
 });
 
-// The tile's Bridge tab: six tabs (Shield, Swap, Send, Earn, Withdraw, More), Bridge and Borrow under More; a #card=bridge:<source> link, and the page's own bridge buttons, open it on that way;
+// The tile's Bridge tab: five tabs (Shield, which reads Withdraw when turned round, Swap, Send, Earn, More), Bridge and Borrow under More, and the Bridge panel also under Shield and Withdraw while its coin fits them (their Bitcoin switch); a #card=bridge:<source> link, and the page's own bridge buttons, open it on that way;
 // its From picker lists what crosses (each saying where it goes), its steps run from one chain to the other, the flip turns the way around, and
 // the line under it leads to the bridge page. The Swap card keeps TAC on Bitcoin's shielding, with a line over to the Bridge tab, and two coins
 // both on Bitcoin open the Bitcoin lane, whose Ethereum leaves it.
@@ -786,7 +786,7 @@ await step('hxbridge', async () => {
   try {
     await p.goto(r.url);
     await p.waitForSelector('#hx-body .hx-h');
-    ok((await tabs()) === 'shield swap send earn withdraw more', `hxbridge: the tile's tabs are Shield, Swap, Send, Earn, Withdraw and More (${await tabs()})`);
+    ok((await tabs()) === 'shield swap send earn more', `hxbridge: the tile's tabs are Shield, Swap, Send, Earn and More (${await tabs()})`);
     await bridgeTo(p, 'btc');
     ok((await text(p, BRG.go)).trim() === 'Bridge TAC from Bitcoin' && (await heldAt(p)) === 'bitcoin' && /^Burned on Bitcoin > Confirmed > Proven on Ethereum > Minted privately$/.test(await steps()) && !(await p.$('#hx-amt')),
       `hxbridge: #card=bridge:btc opens TAC from Bitcoin, its notes picked next, with the way in's steps (${await steps()})`);
@@ -4537,7 +4537,7 @@ await step('xbring', async () => {
   await until(r.page, () => !!document.querySelector('#hx-routes [data-hxr="all"]'), null, 240000)
     .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | q: ${await text(r.page, '#hx-q')} | go: ${await text(r.page, '#hx-go')} | routes: ${(await text(r.page, '#hx-routes')).replace(/\s+/g, ' ').slice(0, 200)} | hash: ${await r.page.evaluate(() => location.hash)} | errors: ${r.errors.slice(0, 2).join(' | ')}`); });
   await rowClick(r.page, '#hx-routes [data-hxr="all"]');
-  await until(r.page, () => /Bring 2 notes back/.test(document.querySelector('#hx-go')?.textContent || '') && /Bitcoin fee/.test(document.querySelector('#hx-receipt')?.textContent || ''), null, 240000)
+  await until(r.page, () => document.querySelector('#hx-go')?.textContent === 'Bridge tETH from Bitcoin' && /in 2 notes/.test(document.querySelector('#hx-receipt')?.textContent || '') && /Bitcoin fee/.test(document.querySelector('#hx-receipt')?.textContent || ''), null, 240000)
     .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | go: ${await text(r.page, '#hx-go')} | q: ${await text(r.page, '#hx-q')} | rc: ${(await text(r.page, '#hx-receipt')).replace(/\s+/g, ' ')}`); });
   const rcCard = (await text(r.page, '#hx-receipt')).replace(/\s+/g, ' ');
   ok(/0\.0035 private tETH on Ethereum, in 2 notes/.test(rcCard) && /Bitcoin fee\s*about [\d,]+ sats in all/.test(rcCard) && /Relay fee\s*none/.test(rcCard), `xbring: the card lists the notes and its receipt adds the two together (${rcCard.slice(0, 200)})`);
@@ -8052,7 +8052,7 @@ await step('hxplace', async () => {
   try {
     const q = r2.page;
     await lander(q);
-    await until(q, () => document.querySelector('[data-hxm="withdraw"]')?.getAttribute('aria-selected') === 'true' && /^ETH/.test((document.querySelector('#hx-swap #pay-coin')?.textContent || '').trim()) && /Balance 0\.25 · Max/.test(document.querySelector('#hx-swap #pay-side')?.textContent || ''), null, 300000)
+    await until(q, () => document.querySelector('[data-hxm="shield"]')?.getAttribute('aria-selected') === 'true' && document.querySelector('[data-hxm="shield"]')?.textContent.trim() === 'Withdraw' && /^ETH/.test((document.querySelector('#hx-swap #pay-coin')?.textContent || '').trim()) && /Balance 0\.25 · Max/.test(document.querySelector('#hx-swap #pay-side')?.textContent || ''), null, 300000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | from: ${await text(q, '#hx-swap #pay-coin')} | bal: ${await text(q, '#hx-swap #pay-side')} | place: ${await mvPicked(q)} | marks: ${await mvMarks(q)} | go: ${await goText(q)}`); });
     ok(await mvPicked(q) === 'private' && await mvMarks(q) === 'private' && /^ETH/.test((await text(q, '#hx-swap #get-coin')).trim()), `hxplace: with nothing in the wallet the card opens on Withdraw, taking the private ETH out (${await goText(q)})`);
     ok(await q.evaluate(() => JSON.parse(localStorage.getItem('tacit-hx-card-v1') || '{}').swq) === 'to=USDC&private=to', 'hxplace: the Swap tab keeps the pair it had');
@@ -9780,7 +9780,7 @@ await step('hxout', async () => {
     // Outside what a bridge takes: no figure is promised, and the limits are said.
     await lander();
     const limits = 'A bridge takes 20 to 1,000 TAC while this is new.';
-    for (const [v, says] of [['5', limits], ['5000', `You hold 62 private TAC, less than this: shield TAC first. ${limits}`]]) {
+    for (const [v, says] of [['5', limits], ['5000', `You hold 62 private TAC, less than this: the first press makes TAC private, the next bridges it. ${limits}`]]) {
       await p.fill(BRG.amt, v);
       await until(p, (x) => document.querySelector('#hx-out')?.textContent === '—' && (document.querySelector('#hx-q')?.textContent || '').trim() === x, says, 240000)
         .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | at ${v}: ${await body()}`); });
@@ -9792,7 +9792,7 @@ await step('hxout', async () => {
     ok(true, 'hxout: 61 of 62 TAC held is not quoted, and the most that can be used is said');
     await lander();
     await p.fill(BRG.amt, '70');
-    await until(p, () => document.querySelector('#hx-go')?.textContent === 'Shield TAC' && /You hold 62 private TAC, less than this: shield TAC first\./.test(document.querySelector('#hx-q')?.textContent || ''), null, 240000)
+    await until(p, () => document.querySelector('#hx-go')?.textContent === 'Bridge TAC to Bitcoin' && /You hold 62 private TAC, less than this: the first press makes TAC private, the next bridges it\./.test(document.querySelector('#hx-q')?.textContent || ''), null, 240000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | card: ${await body()}`); });
     ok(true, 'hxout: more than the private TAC held says what is held and offers to make TAC private');
     // its press makes TAC private from the tile (what the TAC sheet's Make private does): this key holds none in its wallet, which is said under the button, and no sheet opens
@@ -9878,7 +9878,7 @@ await step('hxbridgec', async () => {
     ok((await p.evaluate(() => window.__sheetSeen)) === '' && !(await p.$('#xu-amt')), `hxbridgec: the press bridges from the tile (it reads Bitcoin first, and says what it finds), with no Borrow sheet opened (${(await text(p, '#hx-ss')).slice(0, 110)})`);
     await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
     await bridgeTo(p, 'kb');
-    ok((await text(p, BRG.go)).trim() === 'Bring cBTC back' && (await heldAt(p)) === 'bitcoin', 'hxbridgec: cBTC on Bitcoin comes back from the same tab');
+    ok((await text(p, BRG.go)).trim() === 'Bridge cBTC from Bitcoin' && (await heldAt(p)) === 'bitcoin', 'hxbridgec: cBTC on Bitcoin comes back from the same tab');
     // its press brings the notes back from the tile: this key holds none on Bitcoin, which is said under the button, and no sheet opens
     await sheetsSeen(p);
     await p.click(BRG.go);
@@ -9903,7 +9903,7 @@ await step('hxbridgeu', async () => {
     await p.fill(BRG.amt, '20');
     await until(p, () => /^19\.5$/.test(document.querySelector('#hx-out')?.textContent || '') && /Relay fee: 0\.5 cUSDT/.test(window.__said()) && /Limits: 2 to 100 cUSDT a bridge/.test(window.__said()), null, 240000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)} | out ${await text(p, BRG.out)}`); });
-    ok((await text(p, BRG.go)).trim() === 'Bridge cUSDT to Bitcoin' && (await heldAt(p)) === 'private', `hxbridgeu: 20 USDT to Bitcoin is quoted with its relay fee and its limits in six decimals (${await said(p)})`);
+    ok((await text(p, BRG.go)).trim() === 'Bridge USDT to Bitcoin' && (await heldAt(p)) === 'private', `hxbridgeu: 20 USDT to Bitcoin is quoted with its relay fee and its limits in six decimals (${await said(p)})`);
     await until(p, () => /Back on Ethereum: 19\.5 private USDT, no fee to bring it back/.test(window.__said()) && /Then to take it out: 2\.3 to the relay, 17\.2 out/.test(window.__said()), null, 120000).catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)}`); });
     ok(true, 'hxbridgeu: and says what coming back leads to: 19.5 private USDT, free to bring back, 2.3 to take out, 17.2 out');
     await p.fill(BRG.amt, '1');
@@ -9927,9 +9927,9 @@ await step('hxbridgeu', async () => {
     ok((await p.evaluate(() => window.__sheetSeen)) === '' && !(await p.$('#xd-amt')), `hxbridgeu: the press bridges from the tile, with no USDT sheet opened (${(await text(p, '#hx-ss')).slice(0, 110)})`);
     await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
     await bridgeTo(p, 'ut');
-    ok((await text(p, BRG.go)).trim() === 'Bring cUSDT back' && (await heldAt(p)) === 'bitcoin', 'hxbridgeu: USDT on Bitcoin comes back from the same tab');
+    ok((await text(p, BRG.go)).trim() === 'Bridge USDT from Bitcoin' && (await heldAt(p)) === 'bitcoin', 'hxbridgeu: USDT on Bitcoin comes back from the same tab');
     await bridgeTo(p, 'wusdt', '5');
-    await until(p, () => /^Bridge cUSDT to Bitcoin$/.test(document.querySelector('#hx-go')?.textContent || ''), null, 240000).catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)} | go ${await text(p, BRG.go)}`); });
+    await until(p, () => /^Bridge USDT to Bitcoin$/.test(document.querySelector('#hx-go')?.textContent || ''), null, 240000).catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)} | go ${await text(p, BRG.go)}`); });
     ok((await heldAt(p)) === 'wallet', 'hxbridgeu: USDT in the wallet is a source, and with the private USDT held covering it the press is the bridge itself');
     await p.fill(BRG.amt, '80');
     await until(p, () => /^Shield USDT$/.test(document.querySelector('#hx-go')?.textContent || ''), null, 240000).catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)} | go ${await text(p, BRG.go)}`); });
@@ -9966,7 +9966,7 @@ await step('usdtwrap', async () => {
   try {
     await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
     await bridgeTo(p, 'wusdt', '5');
-    await until(p, () => /^Shield USDT$/.test(document.querySelector('#hx-go')?.textContent || '') && !document.querySelector('#hx-go').disabled, null, 420000)
+    await until(p, () => /^Bridge USDT to Bitcoin$/.test(document.querySelector('#hx-go')?.textContent || '') && /make the USDT private, then bridge it/.test(document.querySelector('#hx-receipt')?.textContent || '') && !document.querySelector('#hx-go').disabled, null, 420000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)} | go ${await text(p, BRG.go)}`); });
     ok(/make the USDT private, then bridge it/.test(await said(p)), `usdtwrap: with no private USDT the card says it makes the USDT private first (${await said(p)})`);
     const u0 = await usdtOf(acct), pool0 = await usdtOf(POOLA);
@@ -10458,7 +10458,7 @@ await step('hxways', async () => {
     for (const s of ['ether:defi', 'ether:pay', 'btc:pool', 'eth:wallet', 'tac:wallet', 'pp:addr', 'pp:defi']) says[s] = await wayGo(`shield:${s}`);
     for (const s of ['btc:eth', 'tb:back']) says[s] = await brGo(s.split(':')[0]);
     ok(says['ether:defi'] === 'Shield ETH' && says['ether:pay'] === 'Shield ETH' && says['btc:eth'] === 'Bridge TAC from Bitcoin' && says['btc:pool'] === 'Shield TAC on Bitcoin' && says['eth:wallet'] === 'Withdraw ETH'
-      && says['tac:wallet'] === 'Withdraw TAC' && says['pp:addr'] === 'Withdraw ETH' && says['pp:defi'] === 'Move ETH into tETH' && says['tb:back'] === 'Bring tETH back',
+      && says['tac:wallet'] === 'Withdraw TAC' && says['pp:addr'] === 'Withdraw ETH' && says['pp:defi'] === 'Move ETH into tETH' && says['tb:back'] === 'Bridge tETH from Bitcoin',
       `hxways: each way is one move on the Swap card, or across the chains on the Bridge tab, named on its button (${JSON.stringify(says)})`);
     await move(p, 'shield:ether:pay');
     ok(await p.$eval('#hx-swap #chain', (e) => e.hidden) === false, 'hxways: the Pay pool asks for its chain');

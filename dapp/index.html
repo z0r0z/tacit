@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-4dGCzfgclX5aMNW3QWSQMk2NsqX/6a20/25jZJtvQek=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-NTKdei4Fu7TFn8HSoOiDu/BPNRsgaGTOwLgxM38UMQM=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -425,9 +425,9 @@ a.di { color: inherit; text-decoration: none; }
 .hx-say { display: flex; align-items: center; justify-content: center; gap: 10px; margin: 0 16px 16px; font: 500 13px var(--mono); color: var(--mute); }
 .hx-say button { font: inherit; color: var(--ink); background: none; border: 0; padding: 0; text-decoration: underline; cursor: pointer; }
 #hx-ss { scroll-margin-bottom: 56px; }
-.hx-h { --i: 0; --n: 6; --hp: 8px; position: relative; display: grid; grid-template-columns: var(--cols, repeat(var(--n), 1fr)); padding: 4px var(--hp) 0; border-bottom: 1px solid var(--hair); }
-.hx-h::after { content: ''; position: absolute; bottom: -1px; height: 2px; border-radius: 2px; background: var(--ink); width: calc((100% - 2 * var(--hp)) * var(--bw, calc(.5 / var(--n))));
-  left: calc(var(--hp) + (100% - 2 * var(--hp)) * var(--bl, calc((var(--i) + .25) / var(--n)))); transition: left .4s var(--spring), width .4s var(--spring); }
+.hx-h { --i: 0; --n: 5; --hp: 8px; position: relative; display: grid; grid-template-columns: var(--cols, repeat(var(--n), 1fr)); padding: 4px var(--hp) 0; border-bottom: 1px solid var(--hair); }
+.hx-h::after { content: ''; position: absolute; bottom: -1px; height: 2px; border-radius: 2px; background: var(--ink); width: calc((100% - 2 * var(--hp)) * var(--bw, calc(.4 / var(--n))));
+  left: calc(var(--hp) + (100% - 2 * var(--hp)) * var(--bl, calc((var(--i) + .3) / var(--n)))); transition: left .4s var(--spring), width .4s var(--spring); }
 .hx-h button { display: grid; justify-items: center; padding: 14px 0 12px; background: none; border: 0; cursor: pointer; font: italic 400 20px/1 var(--serif); letter-spacing: -.01em; color: var(--mute); transition: color .15s; }
 .hx-h button[aria-selected="true"] { color: var(--ink); }
 @media (hover: hover) { .hx-h button:hover { color: var(--ink); } }
@@ -496,8 +496,8 @@ a.di { color: inherit; text-decoration: none; }
 .hx-bw-p .err, .hx-bw-n.err { color: var(--err); } .hx-bw-p .warn { color: var(--warn); }
 .hx-bw-w { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; font-size: 12px; color: var(--ink); }
 .hx-bw-w a { color: var(--mute); }
-.hx-h button { position: relative; }
-.hx-h button[data-due]::after { content: ''; position: absolute; top: 12px; left: calc(50% + 24px); width: 7px; height: 7px; border-radius: 50%; background: var(--orange); box-shadow: 0 0 0 2px var(--card); }
+.hx-h .w { position: relative; }
+.hx-h button[data-due] .w::after { content: ''; position: absolute; top: -2px; right: -13px; width: 7px; height: 7px; border-radius: 50%; background: var(--orange); box-shadow: 0 0 0 2px var(--card); }
 .hx-do .link { position: relative; padding: 0; font-size: 12px; }
 .hx-do .link::after { content: ''; position: absolute; inset: -8px -6px; }
 .hx-pt { color: var(--mute); }
@@ -15786,19 +15786,25 @@ const HX_SWQ0 = HX.swq;
 // the move the Swap card is showing, when it is one of the Shield ways (hxMoves, by HX_SWAP), and where its prices go
 const HXM = { key: null, cb: null, amt: '', all: '' };
 const HX_TABS = [['swap', 'Swap'], ['bridge', 'Bridge'], ['send', 'Send'], ['earn', 'Earn'], ['borrow', 'Borrow']];
-// The tabs as they are shown: in, use, out. Shield and Withdraw are the Swap card held to one coin (HX.flow), the wallet's to private and back;
-// Bridge and Borrow sit under More, behind a switch of their own.
-const HX_HEAD = [['shield', 'Shield'], ['swap', 'Swap'], ['send', 'Send'], ['earn', 'Earn'], ['withdraw', 'Withdraw'], ['more', 'More']];
-// each tab's share of the strip: its word's width plus one even gap, so the space between the words is the same all along (equal columns left
-// 'Withdraw' close to 'More'); the bar under the picked word is placed from the same shares
-const HX_HEAD_W = [78, 72, 69, 69, 104, 69];
+// The tabs as they are shown: in, use, more. Shield and Withdraw are one tab: the Swap card held to one coin (HX.flow), the wallet's to private, and the
+// arrow in the card turns it round (the tab then says Withdraw). Bridge and Borrow sit under More, behind a switch of their own.
+const HX_HEAD = [['shield', 'Shield'], ['swap', 'Swap'], ['send', 'Send'], ['earn', 'Earn'], ['more', 'More']];
+// each tab's share of the strip: its word's width plus one even gap, so the space between the words is the same all along (the first is wide
+// enough for Withdraw too); the bar under the picked word is placed from the same shares
+const HX_HEAD_W = [110, 91, 87, 88, 88];
 const hxHeadVars = (i) => {
   const all = HX_HEAD_W.reduce((a, b) => a + b, 0), w = HX_HEAD_W[i] ?? 0, before = HX_HEAD_W.slice(0, Math.max(i, 0)).reduce((a, b) => a + b, 0);
-  return [['--i', i], ['--bl', i < 0 ? -.2 : ((before + w / 4) / all).toFixed(4)], ['--bw', i < 0 ? .08 : (w / 2 / all).toFixed(4)]];
+  return [['--i', i], ['--bl', i < 0 ? -.2 : ((before + w * .3) / all).toFixed(4)], ['--bw', i < 0 ? .08 : (w * .4 / all).toFixed(4)]];
 };
 const HX_MORE = [['bridge', 'Bridge'], ['borrow', 'Borrow']];
-// (the Bridge tab opened from Shield's or Withdraw's Bitcoin switch stays under that tab: Shield while it comes into Ethereum, Withdraw while it goes out)
-const hxHeadKey = () => (HX.tab === 'swap' ? HX.flow || 'swap' : HX.tab === 'bridge' && HX.via ? (hxBrTo(HX.br) === 'bitcoin' ? 'withdraw' : 'shield') : HX.tab === 'bridge' || HX.tab === 'borrow' ? 'more' : HX.tab);
+// The Bridge tab opened from Shield's or Withdraw's Bitcoin switch (HX.via) stays under that tab while its coin fits it: Shield while a coin comes
+// into Ethereum from Bitcoin, Withdraw while a private coin goes out to it. A coin still in the wallet (ETH, USDT) is only crossing, whichever tab
+// the picker was opened from: that is the Bridge tab's, under More.
+const hxViaKey = () => (hxBrTo(HX.br) === 'private' ? 'shield' : HX_SH[HX.br]?.priv ? 'withdraw' : null);
+const hxHeadKey = () => (HX.tab === 'swap' ? HX.flow || 'swap' : HX.tab === 'bridge' && HX.via && hxViaKey() ? hxViaKey() : HX.tab === 'bridge' || HX.tab === 'borrow' ? 'more' : HX.tab);
+// the tab that is lit (Withdraw is Shield turned round) and the word it carries
+const hxTabKey = () => (hxHeadKey() === 'withdraw' ? 'shield' : hxHeadKey());
+const hxTabWord = (k, word) => (k === 'shield' && hxHeadKey() === 'withdraw' ? 'Withdraw' : word);
 function hxSetTab(k) {
   HX.via = false;
   if (k === 'shield' || k === 'withdraw' || k === 'swap') { HX.tab = 'swap'; HX.flow = k === 'swap' ? null : k; }
@@ -15871,6 +15877,8 @@ const HX_BR_REV = { btc: 'tac', tac: 'btc', tb: 'eth', eth: 'tb', ether: 'tb', c
 const hxBrSources = () => Object.keys(HX_BR).filter((k) => hxWays(k).includes(HX_BR[k]));
 // where a bridge arrives: its coin and place, and which way it crosses (its steps are the bridge page's for that asset and way)
 const hxBrTo = (sf) => (HX_BR[sf] === 'btc' ? 'bitcoin' : 'private');
+// The bridge's button, one pattern for every way: the coin as the card names it (the wallet's ETH and USDT too), and which way it crosses
+const hxBrGo = (sf = HX.sf) => `Bridge ${HX_SH[sf]?.u ?? ''} ${HX_BR[sf] === 'btc' ? 'to' : 'from'} Bitcoin`;
 const HX_BR_ASSET = { tb: 'teth', eth: 'teth', ether: 'teth', cbtc: 'cbtc', kb: 'cbtc', cusd: 'cusd', ub: 'cusd', wusdt: 'cusdt', cusdt: 'cusdt', ut: 'cusdt' };
 const hxBrSteps = (sf) => BR_WAYS[HX_BR_ASSET[sf] || 'tac'][HX_BR[sf] === 'btc' ? 'out' : 'in'].steps;
 // What one bridge to Bitcoin takes while the bridge is new, from the bridge page's table (tests/bridge-track.test.mjs holds it to crossout-ux's),
@@ -16229,7 +16237,7 @@ function hxHandoff(m, units) {
   if (m === 'tacpub') return { out: 'All', go: 'Withdraw TAC', rc: [['Arrives', 'all your private TAC, as ERC-20 TAC'], ['Relay fee', 'shown next']] };
   if (m === 'ppout') return { out: amt, go: 'Withdraw ETH', rc: [['Arrives', n('ETH in your wallet')], ['Fee', 'a relay fee, or the network fee from your wallet'], ['Chain sees', 'the address and the amount']] };
   if (m === 'ppv1') return { out: amt, go: 'Move ETH into tETH', rc: [['Arrives', n('tETH')], ['Chain sees', 'no public stop on the way'], ['Relay fee', 'shown next']] };
-  if (m === 'tbback') return { out: 'All', go: 'Bring tETH back', rc: [['Arrives', 'private tETH on Ethereum'], ['How', 'by proof of Bitcoin'], ['Notes', 'listed next']] };
+  if (m === 'tbback') return { out: 'All', go: hxBrGo('tb'), rc: [['Arrives', 'private tETH on Ethereum'], ['How', 'by proof of Bitcoin'], ['Notes', 'listed next']] };
   return null;
 }
 // What a chain move costs now (the client's quote: the leader's fee, what the chain's holders keep, the most that can move), kept 30 s
@@ -17255,7 +17263,7 @@ function hxPreset(spec, amt, inCard = false, route = null, lp = false) {
   // TAC for sats is the Bitcoin market's: its book is on TAC's page
   if (tab === 'swap' && (a === 'sats' || b === 'sats')) { location.href = a === 'sats' ? '/trade/tac/#btc=buy' : TAC_BOOK; return; }
   // a tab named alone opens as it was left; a Shield way that crosses between the chains is the Bridge tab's
-  const bare = !a && [...HX_TABS, ...HX_HEAD].some(([k]) => k === tab), cross = tab === 'bridge' || (tab === 'shield' && HX_BR[a] === b);
+  const bare = !a && [...HX_TABS, ...HX_HEAD, ['withdraw']].some(([k]) => k === tab), cross = tab === 'bridge' || (tab === 'shield' && HX_BR[a] === b);
   if (!bare && !(cross ? Object.hasOwn(HX_BR, a) : tab === 'shield' ? !!HX_SH[a] : tab === 'pay' ? !!HX_PAYC[a] && (!b || !!HX_PAYC[b]) : tab === 'swap' ? !!HX_SWAP[a] && !!HX_SWAP[b] && a !== b && !(a === 'eth' && b === 'ether') : tab === 'send' ? hxSendList().some(([k]) => k === a) : tab === 'earn' || tab === 'borrow')) return;
   if (!inCard) for (const o of $$('dialog.sheet[open]')) o.close();
   if (TACP.on && !inCard) { tpgAct('tile', TACP.title); TACP.title = ''; }
@@ -17413,11 +17421,11 @@ async function hxQuote() {
       const inRange = units > fee && (!lim || (units >= min && units <= lim.capRaw));
       const cut = units && held != null && !needPrivate && !freeNotes(P.scan[a.k].notes).some((n) => BigInt(n.value) === units) ? BigInt(await t.quoteOpFee(a.pool, 'transfer')) : 0n;
       const over = cut > 0n && units + cut > held, range = lim ? `${fmt(min, 8, 4)} to ${fmt(lim.capRaw, 8, 4)} TAC` : 'a small amount', fine = !!units && inRange && !over && !needPrivate;
-      return done({ out: units ? (inRange && !over ? fmt(units - fee, 8, 4) : '—') : null, go: needPrivate ? 'Shield TAC' : 'Bridge TAC to Bitcoin', needPrivate,
+      return done({ out: units ? (inRange && !over ? fmt(units - fee, 8, 4) : '—') : null, go: hxBrGo('tac'), needPrivate,
         rc: units && !inRange ? [] : [fine ? ['Arrives', `${fmt(units - fee, 8, 4)} TAC on Bitcoin`] : null, ['Relay fee', `${fmt(fee, 8, 4)} TAC`, '', `${fmt(xoLadder(fee * 2n), 8, 4)} TAC if its floor has moved`],
-          cut ? ['Cuts a note', `${fmt(cut, 8, 4)} TAC first`] : null, ...bridge('TAC', lim, min, 4)],
+          cut ? ['Cuts a note', `${fmt(cut, 8, 4)} TAC first`] : null, ...bridge('TAC', lim, min, 4), needPrivate ? ['Steps', 'make the TAC private, then bridge it'] : null],
         warn: needPrivate || (!!units && !inRange) || over,
-        line: [needPrivate ? `You hold ${fmt(held, 8, 4)} private TAC${units ? ', less than this' : ''}: shield TAC first.` : '',
+        line: [needPrivate ? `You hold ${fmt(held, 8, 4)} private TAC${units ? ', less than this' : ''}: the first press makes TAC private, the next bridges it.` : '',
           units && !inRange ? (units <= fee ? `Send more than the relay fee, ${fmt(fee, 8, 4)} TAC.` : `A bridge takes ${range} while this is new.`) : over ? `The most you can use is ${fmt((held - cut) / 10000n * 10000n, 8, 4)} TAC: the relay fee to cut a note of this size comes out of it.` : ''].filter(Boolean).join(' ') });
     }
     if (m === 'xo') {
@@ -17431,7 +17439,7 @@ async function hxQuote() {
       const over = wallet ? needPrivate && wal != null && units > wal : held != null && !!units && units > held;
       const inRange = units > fee && (!lim || (units >= min && units <= lim.capRaw)), range = lim ? `${fmt(min, dec, a.dp)} to ${fmt(lim.capRaw, dec, a.dp)} ${a.ticker}` : 'a small amount';
       const cut = !needPrivate && units && held != null && !over && !freeNotes(P.scan[a.k].notes).some((n) => BigInt(n.value) === units) ? BigInt(await t.quoteOpFee(a.pool, 'transfer')) : 0n;
-      return done({ out: units ? (inRange && !over ? fmt(units - fee, dec, a.dp) : '—') : null, go: needPrivate ? 'Shield USDT' : `Bridge ${a.ticker} to Bitcoin`, needPrivate,
+      return done({ out: units ? (inRange && !over ? fmt(units - fee, dec, a.dp) : '—') : null, go: hxBrGo(), needPrivate,
         rc: units && (!inRange || over) ? [] : [units ? ['Arrives', `${fmt(units - fee, dec, a.dp)} ${a.ticker} on Bitcoin`] : null, ['Relay fee', `${fmt(fee, dec, Math.max(a.dp, 4))} ${a.ticker}`],
           cut ? ['Cuts a note', `${fmt(cut, dec, Math.max(a.dp, 4))} ${a.ticker} first`] : null, ...bridge(a.ticker, lim, min, a.dp, dec), needPrivate ? ['Steps', 'make the USDT private, then bridge it'] : null,
           ...(a.key === 'cusdt' && units && inRange && !over ? await usdtBackRows(t, units - fee) : [])],
@@ -17441,7 +17449,7 @@ async function hxQuote() {
       const two = hxTwo(units), t = await getUx();
       const lim = xoLim(XA.teth), fee = BigInt(await t.quoteOpFee('cETH', 'bridgeburn'));
       const min = lim?.minRaw || 0n, range = lim ? `${fmt(min, 8, 6)} to ${fmt(lim.capRaw, 8, 6)} tETH` : 'a small amount', inRange = units > fee && (!lim || (units >= min && units <= lim.capRaw));
-      return done({ out: units ? (inRange ? fmt(units - fee, 8, 6) : '—') : null, go: two ? 'Shield ETH' : 'Bridge tETH to Bitcoin', pk: two ? 'wrap' : null,
+      return done({ out: units ? (inRange ? fmt(units - fee, 8, 6) : '—') : null, go: hxBrGo(two ? 'ether' : 'eth'), pk: two ? 'wrap' : null,
         rc: units && !inRange ? [] : [units ? ['Arrives', `${fmt(units - fee, 8, 6)} tETH on Bitcoin`] : null, ['Relay fee', `${fmt(fee, 8, 6)} tETH`], ...bridge('tETH', lim, min, 6), two ? ['Steps', 'make the ETH private, then bridge it'] : null],
         warn: !!units && !inRange, line: units && !inRange ? (units <= fee ? `Send more than the relay fee, ${fmt(fee, 8, 6)} tETH.` : `A bridge takes ${range} while this is new.`) : '' });
     }
@@ -19133,7 +19141,7 @@ async function hxBridgeOutGo(a, units) {
 const hxBackA = () => (HX.mode === 'tbback' ? XA.teth : XA[HX.xa]);
 async function hxBackQuote(my, done) {
   const a = hxBackA(), name = `Your ${a.ticker} on Bitcoin`, cap = BR_LIMITS[a.key]?.in.max, [btcFee, time] = brxRows('in');
-  const base = { out: 'All', go: `Bring ${a.ticker} back`, rc: [['Arrives', `private ${a.ticker} on Ethereum`], cap ? ['Limit', `${fmt(cap, xdec(a), a.dp)} ${a.ticker} a bridge`, '', 'While the bridge is new'] : null, btcFee, time] };
+  const base = { out: 'All', go: hxBrGo(), rc: [['Arrives', `private ${a.ticker} on Ethereum`], cap ? ['Limit', `${fmt(cap, xdec(a), a.dp)} ${a.ticker} a bridge`, '', 'While the bridge is new'] : null, btcFee, time] };
   if (!S.key) return done(base);
   const XB = xbOf(a), pub = S.key.pubHex;
   await loadBridged(false, a);
@@ -19153,7 +19161,7 @@ async function hxBackQuote(my, done) {
   const R = await xbReview(a, pub).catch((e) => ({ stop: errText(brFail(e)) }));
   if (my !== HX.seq) return;
   if (!R.r) return done({ ...shown, pick: XB.pick, warn: true, line: R.stop || '' });
-  return done({ ...shown, pick: XB.pick, out: fmt(R.total, xdec(a), a.dp), go: R.count > 1 ? `Bring ${R.count} notes back` : `Bring ${a.ticker} back`,
+  return done({ ...shown, pick: XB.pick, out: fmt(R.total, xdec(a), a.dp), go: hxBrGo(),
     rc: [['Arrives', `${fmt(R.total, xdec(a), a.dp)} private ${a.ticker} on Ethereum${R.count > 1 ? `, in ${R.count} notes` : ''}`], ['Bitcoin fee', `about ${R.fee.toLocaleString('en-US')} sats${R.count > 1 ? ' in all' : ''}`], ['Relay fee', 'none'], time],
     warn: R.short || (R.count > 1 && R.reach < R.count), line: R.short || (R.count > 1 && R.reach < R.count) ? xbShortText(R, pub) : '' });
 }
@@ -19550,10 +19558,12 @@ function hxWhereSync() {
 }
 // the tab strip shows the tab picked, without drawing the panel again (the Swap card's three tabs share one card)
 function hxHeadSync() {
-  const h = $('#hx-body .hx-h'), k = hxHeadKey();
+  const h = $('#hx-body .hx-h'), k = hxTabKey();
   if (!h) return;
   for (const [p, v] of hxHeadVars(HX_HEAD.findIndex(([x]) => x === k))) h.style.setProperty(p, v);
   for (const b of $$('[data-hxm]', h)) { const on = b.dataset.hxm === k; b.setAttribute('aria-selected', String(on)); b.tabIndex = on ? 0 : -1; }
+  const first = $('[data-hxm="shield"] .w', h), word = hxTabWord('shield', 'Shield');
+  if (first && first.textContent !== word) first.textContent = word;
   $('#hx-panel')?.setAttribute('aria-labelledby', `hx-tab-${k}`);
   hxWhereSync(); hxLeadPaint();
 }
@@ -19628,9 +19638,9 @@ function paintHx() {
   const act = document.activeElement, focus = el.contains(act) ? { id: act.id, hxd: act.dataset.hxd, hxm: act.dataset.hxm, pk: act.dataset.pk } : null;
   const due = hxBwDue(), brDue = (window.tacitBridges?.().needs || 0) > 0;
   const dot = (k) => ((k === 'borrow' || k === 'more') && due ? html` data-due aria-description="A step of your lock waits for you"` : (k === 'bridge' || k === 'more') && brDue ? html` data-due aria-description="A bridge waits for you"` : '');
-  const hk = hxHeadKey();
-  const tab = ([k, label]) => html`<button type="button" role="tab" id="hx-tab-${k}" aria-controls="hx-panel" data-hxm="${k}" aria-selected="${hk === k}" tabindex="${hk === k ? 0 : -1}"${dot(k)}>${label}</button>`;
-  const head = html`<div class="hx-h" role="tablist" aria-label="What to do" style="${hxHeadVars(HX_HEAD.findIndex(([k]) => k === hk)).map(([p, v]) => `${p}: ${v}`).join('; ')}; --n: ${HX_HEAD.length}; --cols: ${HX_HEAD_W.map((w) => `${w}fr`).join(' ')}">${HX_HEAD.map(tab)}</div>`;
+  const hk = hxHeadKey(), tk = hxTabKey();
+  const tab = ([k, label]) => html`<button type="button" role="tab" id="hx-tab-${k}" aria-controls="hx-panel" data-hxm="${k}" aria-selected="${tk === k}" tabindex="${tk === k ? 0 : -1}"${dot(k)}><span class="w">${hxTabWord(k, label)}</span></button>`;
+  const head = html`<div class="hx-h" role="tablist" aria-label="What to do" style="${hxHeadVars(HX_HEAD.findIndex(([k]) => k === tk)).map(([p, v]) => `${p}: ${v}`).join('; ')}; --n: ${HX_HEAD.length}; --cols: ${HX_HEAD_W.map((w) => `${w}fr`).join(' ')}">${HX_HEAD.map(tab)}</div>`;
   // under More, Bridge and Borrow: one switch, the same as Send's and Request's
   const more = hk === 'more' ? html`<div class="hx-mode hx-more" role="tablist" aria-label="Bridge or borrow">${HX_MORE.map(([k, t]) => html`<button type="button" role="tab" id="hx-tab-${k}" aria-controls="hx-panel" data-hxm="${k}" aria-selected="${String(HX.tab === k)}" tabindex="${HX.tab === k ? 0 : -1}"${dot(k)}>${t}</button>`)}</div>` : '';
   // Every tab is drawn with the swap card's parts (swap/card.css): a field for what goes in, with where it is held and its coin; the rows to
@@ -19654,8 +19664,8 @@ function paintHx() {
   const m = HX.tab, md = HX.mode;
   const go0 = hxHandoff(md, null)?.go || {
     private: 'Shield ETH', earn: 'Farm with ETH', borrow: HX.bsrc === 'tac' ? `Borrow ${HX.bm === 'tace' ? 'TACE' : 'TACD'}` : HX.bsrc === 'cbtc' ? (S.key ? 'Borrow cUSD' : 'Open your Tacit wallet to borrow') : HX.bm === 'cbtc' ? 'Lock BTC for cBTC' : 'Lock BTC and borrow',
-    btc: HX.dir === 'in' ? 'Bridge TAC from Bitcoin' : HX.from === 'tac' ? 'Bridge TAC to Bitcoin' : 'Bridge tETH to Bitcoin',
-    xo: HX.xa ? `Bridge ${XA[HX.xa].ticker} to Bitcoin` : '', xb: HX.xa ? `Bring ${XA[HX.xa].ticker} back` : '',
+    btc: hxBrGo(),
+    xo: HX.xa ? hxBrGo() : '', xb: HX.xa ? hxBrGo() : '',
   }[md];
   const chainRow = html`<label class="hx-chain" id="hx-chain"${hxChainPick() ? '' : ' hidden'}>On <select id="hx-chain-sel" aria-label="Chain">${DEVICE_CHAINS.map((c) => html`<option value="${c.chainId}" data-mark="${CHAIN_MARK[c.chainId] || 'c-eth'}"${c.chainId === HX.chain ? ' selected' : ''}>${chainFull(c.chainId)}</option>`)}</select></label>`;
   const tail = html`${chainRow}
@@ -19738,7 +19748,7 @@ function paintHx() {
       <p class="q" id="hx-ss-at" hidden></p>
       `;
   }
-  mount(el, html`${head}<div class="hx-b swc" id="hx-panel" role="tabpanel" aria-labelledby="hx-tab-${hk === 'more' ? HX.tab : hk}">${more}<p class="hx-lead" id="hx-lead"></p>${body}</div>`);
+  mount(el, html`${head}<div class="hx-b swc" id="hx-panel" role="tabpanel" aria-labelledby="hx-tab-${hk === 'more' ? HX.tab : tk}">${more}<p class="hx-lead" id="hx-lead"></p>${body}</div>`);
   hxWhereSync(); hxLeadPaint();
   if (m === 'borrow' && HX.bsrc === 'btc') hxBwHold();
   for (const c of $$('.coin[data-pk]:not(.one)', el)) {
@@ -19746,18 +19756,18 @@ function paintHx() {
     c.onkeydown = (e) => { if (['Enter', ' ', 'ArrowDown'].includes(e.key)) { e.preventDefault(); hxPick($('#' + c.dataset.pk), c); } };
   }
   const pickTab = (k, focusIt) => {
-    if (HX.via && hxHeadKey() === k) { hxSetTab(k); paintHx(); return; }
-    if (hxHeadKey() === k || ((k === 'bridge' || k === 'borrow') && HX.tab === k)) return;
+    if (HX.via && hxTabKey() === k) { hxSetTab(hxHeadKey()); paintHx(); return; }
+    if (hxTabKey() === k || ((k === 'bridge' || k === 'borrow') && HX.tab === k)) return;
     if (HX.tab === 'swap' && ['shield', 'swap', 'withdraw'].includes(k) && SWC.card?.busy) return; hxKeepAmt(() => { hxSetTab(k); HX.q = null; }); paintHx(); if (focusIt) $(`[data-hxm="${k}"]`)?.focus(); };
   for (const b of $$('[data-hxm]', el)) b.onclick = () => pickTab(b.dataset.hxm);
   for (const b of $$('[data-hxm="send"]', el)) for (const ev of ['pointerenter', 'pointerdown', 'focus']) b.addEventListener(ev, hxWarm, { once: true });
-  for (const b of $$('[data-hxm="swap"], [data-hxm="shield"], [data-hxm="withdraw"]', el)) for (const ev of ['pointerenter', 'pointerdown', 'focus']) b.addEventListener(ev, () => { swcLoad().catch(() => {}); }, { once: true });
+  for (const b of $$('[data-hxm="swap"], [data-hxm="shield"]', el)) for (const ev of ['pointerenter', 'pointerdown', 'focus']) b.addEventListener(ev, () => { swcLoad().catch(() => {}); }, { once: true });
   for (const b of $$('[data-hxm="more"]', el)) for (const ev of ['pointerenter', 'pointerdown', 'focus']) b.addEventListener(ev, () => hxBwLoad(), { once: true });
-  // Bridge | Borrow under More, and Shield's or Withdraw's Wallet | Bitcoin: the arrow keys move between the two
+  // Bridge | Borrow under More: the arrow keys move between the two
   const mt = $('.hx-more', el);
   if (mt) mt.onkeydown = (e) => { const d = { ArrowRight: 1, ArrowLeft: -1 }[e.key]; if (!d) return; e.preventDefault(); const i = HX_MORE.findIndex(([x]) => x === HX.tab); pickTab(HX_MORE[(i + d + HX_MORE.length) % HX_MORE.length][0], true); };
   $('.hx-h', el).onkeydown = (e) => {
-    const i = HX_HEAD.findIndex(([k]) => k === hxHeadKey()), j = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: HX_HEAD.length - 1 }[e.key];
+    const i = HX_HEAD.findIndex(([k]) => k === hxTabKey()), j = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: HX_HEAD.length - 1 }[e.key];
     if (j == null) return;
     e.preventDefault(); pickTab(HX_HEAD[(j + HX_HEAD.length) % HX_HEAD.length][0], true);
   };
