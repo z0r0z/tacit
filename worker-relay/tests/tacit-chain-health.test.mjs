@@ -14,7 +14,7 @@ assert.deepEqual(tacitChainVerdict({ leader: null, chain: null, board: null, now
 
 // the leader's node behind the contract
 const behind = tacitChainVerdict({ leader: { height: 3, pending: 0 }, chain: chain(), board: { workers: [gpu] }, now });
-assert.deepEqual(levels(behind), ['warning']);
+assert.deepEqual(levels(behind), ['critical']);
 assert.match(behind[0].msg, /at block 3, the contract at 4/);
 
 // a forced entry: quiet for 10 minutes, a warning after, critical at 3/4 of FORCE_DELAY, critical with "anyone may land" past FORCE_DELAY + WINDOW

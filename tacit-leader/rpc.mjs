@@ -3,21 +3,40 @@ import { secp, keccak_256, hmac, sha256, concatBytes } from '../dapp/vendor/taci
 import { makeEvmTx } from '../dapp/evm-tx.js';
 import { hexOf, bytesOf } from './abi.mjs';
 
-export function makeRpc(url, { retries = 4 } = {}) {
-  let id = 0;
-  async function call(method, params = []) {
+// One endpoint, or several (a list: the first that answers is used until it fails, then the next): a free endpoint can rate-limit, drop old logs
+// or go down, and the leader must not stop with it. What is the call's own answer (a revert, a nonce, a fee) is thrown as it is, not tried elsewhere.
+const OWN = /execution reverted|nonce too low|already known|replacement transaction|insufficient funds|intrinsic gas|max fee per gas|invalid argument|invalid params/i;
+export function makeRpc(urls, { retries = 2, fetchImpl = (...a) => fetch(...a) } = {}) {
+  const list = (Array.isArray(urls) ? urls : String(urls).split(',')).map((u) => u.trim()).filter(Boolean);
+  if (!list.length) throw new Error('an RPC endpoint is required');
+  let id = 0, at = 0;
+  async function one(url, method, params) {
     let last;
     for (let i = 0; i <= retries; i++) {
       try {
-        const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params }) });
+        const r = await fetchImpl(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params }), signal: AbortSignal.timeout(45_000) });
         const j = await r.json();
-        if (j.error) { const e = new Error(`${method}: ${j.error.message}`); e.rpc = j.error; if (j.error.code !== -32005 && j.error.code !== 429) throw e; last = e; } else return j.result;
-      } catch (e) { if (e.rpc && ![-32005, 429].includes(e.rpc.code)) throw e; last = e; }
+        if (j.error) {
+          const e = new Error(`${method}: ${j.error.message}`); e.rpc = j.error;
+          if (j.error.code === 3 || OWN.test(j.error.message || '')) { e.own = true; throw e; }
+          if (![-32005, 429].includes(j.error.code)) throw e;             // (not busy: another endpoint may know better; this one is not asked again)
+          last = e;
+        } else return j.result;
+      } catch (e) { if (e.own || (e.rpc && ![-32005, 429].includes(e.rpc.code))) throw e; last = e; }
       await new Promise((r) => setTimeout(r, 400 * 2 ** i));
     }
     throw last;
   }
-  return { call };
+  async function call(method, params = []) {
+    let last;
+    for (let k = 0; k < list.length; k++) {
+      const i = (at + k) % list.length;
+      try { const r = await one(list[i], method, params); at = i; return r; }
+      catch (e) { if (e.own) throw e; last = e; }
+    }
+    throw last;
+  }
+  return { call, urls: list };
 }
 
 export const num = (h) => Number(BigInt(h));

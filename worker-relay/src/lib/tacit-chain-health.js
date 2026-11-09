@@ -11,9 +11,10 @@ export function tacitChainVerdict({ leader, chain, board, now }) {
   const out = [];
   const min = (s) => Math.max(0, Math.round(s / 60));
 
-  // the leader's node behind the contract: it lands nothing until it has read every block (a block landed moments ago is read on its next step)
+  // the leader's node behind the contract: it lands nothing and wallets get no note paths until it has read every block (a block landed moments ago is read on
+  // its next step, and the monitor looks again after a minute before it says this)
   if (leader && chain && Number(leader.height) < Number(chain.height)) {
-    out.push({ level: 'warning', msg: `tacit chain: the leader's node is at block ${leader.height}, the contract at ${chain.height}: it is not following the chain (read the tacit-chain-leader log)`, extra: { leader: leader.height, chain: chain.height } });
+    out.push({ level: 'critical', msg: `tacit chain: the leader's node is at block ${leader.height}, the contract at ${chain.height}: it is not following the chain, so no payment or withdrawal goes through (read the tacit-chain-leader log)`, extra: { leader: leader.height, chain: chain.height } });
   }
 
   // a forced entry (TacitBlocks.force) every block must take in within FORCE_DELAY of posting; past FORCE_DELAY + WINDOW anyone may land, so a

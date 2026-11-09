@@ -22,13 +22,14 @@
 // switched on once the sender of blob transactions is.
 
 import { spawn } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, renameSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { keccak_256 } from '../dapp/vendor/tacit-deps.min.js';
 import { decode, decodeLand, landCalldata, selector, encode, hexOf, bytesOf } from './abi.mjs';
 import { makeRpc, send as sendTx, addressOf, num, suggestedTip } from './rpc.mjs';
 import { feeTerms, readPrice, makeFeeDesk, admitPaying, blockReady } from './fees.mjs';
+import { archiveEntry, loadArchive } from './archive.mjs';
 import { makeBoardProver } from '../worker-relay/src/lib/board-prover.js';
 
 // one transaction at a time from the leader's key, so the seed's, a sweep's, a landing's and the hops' never take the same nonce
@@ -38,6 +39,7 @@ const send = (...a) => { const r = txLock.then(() => sendTx(...a)); txLock = r.c
 const HERE = dirname(fileURLToPath(import.meta.url));
 const env = process.env;
 const need = (k) => { if (!env[k]) throw new Error(`${k} is required`); return env[k]; };
+// RPC_URL: one endpoint or several, comma apart (the first that answers is used; one that refuses, rate-limits or drops old logs is passed over)
 const RPC_URL = need('RPC_URL');
 const BLOCKS = need('BLOCKS').toLowerCase();
 const FROM_BLOCK = Number(env.FROM_BLOCK || 0);
@@ -178,6 +180,11 @@ async function sync() {
     await node('POST', '/landed', landedBody(call.publicValues, lists));
     nodeHeight = height;
     log({ synced: height, by: lg.topics[2] && '0x' + lg.topics[2].slice(26) });
+    // kept on disk, so a restart can rebuild from the disk (the leader's own blocks are kept when it builds them)
+    try {
+      const f = join(ARCHIVE, `${height}.json`);
+      if (!existsSync(f)) { mkdirSync(ARCHIVE, { recursive: true }); writeFileSync(`${f}.tmp`, JSON.stringify(archiveEntry(call.publicValues, lists, num(lg.blockNumber)))); renameSync(`${f}.tmp`, f); }
+    } catch (e) { log({ archiveNotKept: height, error: String(e.message || e) }); }
   }
   syncedTo = head;
 }
@@ -289,6 +296,24 @@ const paying = new Set();
 
 const unfundedSince = new Map();
 const DROP_UNFUNDED = Number(env.DROP_UNFUNDED_SECS || 3600) * 1000;
+
+// A restart rebuilds the node from the blocks on this disk when they are the whole chain: every block from 1 to the contract's height is there, each
+// starts where the one before ended, the first from the empty chain's state and the last at the contract's own state, and no forced entry waits (its
+// text is in the logs). Anything less and the logs are read from FROM_BLOCK as before. Blocks the disk gives are checked by the node as any are.
+async function replayArchive() {
+  const [[height], [queued], [done]] = await Promise.all([view('height()', ['uint256']), view('queued()', ['uint256']), view('queueDone()', ['uint256'])]);
+  if (!(height > 0n) || queued !== done) return log({ archiveSkipped: height > 0n ? 'a forced entry waits' : 'the chain is empty' });
+  const seq = loadArchive(Number(height), (h) => { try { return readFileSync(join(ARCHIVE, `${h}.json`), 'utf8'); } catch { return null; } });
+  if (!seq.ok) return log({ archiveSkipped: seq.why });
+  const [onchain] = await view('state()', ['bytes32']), start = (await node('GET', '/state')).state;
+  if (seq.first !== start || seq.last !== onchain) return log({ archiveSkipped: 'its blocks do not lead from the empty chain to the contract\'s state' });
+  for (const b of seq.blocks) {
+    await node('POST', '/landed', landedBody(b.pv, b.lists));
+    nodeHeight = b.height;
+  }
+  syncedTo = num(await rpc.call('eth_blockNumber'));
+  log({ replayedFromArchive: seq.blocks.length, syncedTo });
+}
 
 // what waited when the node last stopped (its TACIT_NODE_MEMPOOL file) is admitted again once, after the first sync has replayed the chain
 let restored = false;
@@ -420,6 +445,7 @@ async function main() {
     log({ fee: await quoteFee().then((q) => q.fee) });
     setInterval(() => quoteFee().catch((e) => log({ feeNotQuoted: String(e.message || e) })), FEE_REFRESH);
   } else await node('POST', '/fee', { fee: '0', shieldCap: String(SHIELD_CAP) });
+  await replayArchive().catch((e) => log({ archiveReplayFailed: String(e.message || e) }));        // (never fatal: the logs are read for what it did not give)
   // the epoch's seed has a window of a few blocks: watched on its own, not between a block's proving and landing
   setInterval(() => keepSeed().catch((e) => log({ seedNotKept: String(e.message || e) })), 4000);
   for (;;) {
