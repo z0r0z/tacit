@@ -49,7 +49,7 @@ const wireOf = (a, b) => (a === 'off' || b === 'off' ? 'off' : a === 'live' || b
 export function mountChainLive({ top, rest }) {
   const cfg = tacitChain();
   top.innerHTML = `<div class="cl-h"><h2 class="cl-name">tacit <em>chain</em></h2><span class="cl-v" data-r="verdict" data-s=""><span class="dot"></span><span>Reading…</span></span><span class="cl-sub" data-r="sub"></span></div>
-    <ol class="cl-chain" data-r="chain" aria-label="Latest blocks"></ol><div class="cl-cm"><span data-r="bn"></span><span class="cl-more" data-r="more"></span></div><div class="cl-flow" data-r="flow" aria-live="polite"></div><div class="cl-stats" data-r="stats"></div><div class="sr" data-r="live" role="status" aria-live="polite"></div>`;
+    <ol class="cl-chain" data-r="chain" aria-label="Latest blocks"></ol><div class="cl-cm"><span data-r="bn"></span><span class="cl-more" data-r="more"></span></div><div class="cl-flow" data-r="flow" aria-live="polite"></div><p class="cl-note" data-r="note"></p><div class="cl-stats" data-r="stats"></div><div class="sr" data-r="live" role="status" aria-live="polite"></div>`;
   rest.innerHTML = `<section class="tpg-panel"><h2 class="tpg-h">A share's worth, block by block</h2><div class="cl-chart" data-r="chart"></div></section>
     <section class="tpg-panel"><h2 class="tpg-h">What it rests on</h2><ul class="cl-facts" data-r="facts"></ul>
       ${cfg && !cfg.dev ? '<details class="tpg-fold cl-tech"><summary>Chain facts</summary><div><ul class="cl-facts" data-r="tech"></ul></div></details>' : ''}</section>`;
@@ -116,7 +116,7 @@ export function mountChainLive({ top, rest }) {
     // what waits for the next block
     if (state === undefined) out.push(SK('Payments'));
     else if (!state) out.push(cell('Payments', '', 'Payments unread', 'Read again shortly', 'unread'));
-    else if (!pending) out.push(cell('Payments', 'ok', 'Nothing waiting', 'A payment lands in the next block, usually within a minute', 'none'));
+    else if (!pending) out.push(cell('Payments', 'ok', 'Open for payments', 'Nothing waiting. The next one goes into the next block, usually within a minute', 'open'));
     else {
       const age = P.since ? (Date.now() - P.since) / 1000 : 0, n = `${pending} payment${pending === 1 ? '' : 's'}`;
       out.push(cell('Payments', age > STALL_S ? 'bad' : 'busy', `${n} waiting`, age > STALL_S ? `waiting ${mins(age)}, no block yet` : 'in the next block', age > STALL_S ? `${pending} waiting ${mins(age)}` : `${pending} waiting`));
@@ -125,7 +125,7 @@ export function mountChainLive({ top, rest }) {
     if (state === undefined) out.push(SK('Leader'));
     else if (!state) out.push(cell('Leader', 'bad', 'Leader not answering', chain ? `Anyone may land once ${mins(chain.window)} pass with no block` : 'Read again shortly', 'not answering'));
     else if (chain && Number(state.height) < chain.height) out.push(cell('Leader', 'busy', 'Leader catching up', `at block ${int(state.height)} of ${int(chain.height)}`, 'catching up'));
-    else out.push(cell('Leader', 'ok', 'Leader answering', `block ${int(state.height)}`, `block ${int(state.height)}`));
+    else out.push(cell('Leader', 'ok', 'Leader answering', `block ${int(state.height)}`, 'online'));
     // a GPU that proves blocks
     if (board === undefined) out.push(SK('Provers'));
     else if (!board) out.push(cell('Provers', '', 'Provers unread', 'Read again shortly', 'unread'));
@@ -139,7 +139,7 @@ export function mountChainLive({ top, rest }) {
     else if (!chain) out.push(cell('Ethereum', '', 'Ethereum unread', 'Read again shortly', 'unread'));
     else if (!forced) {
       const last = chain.height > 0 && chain.last > 0 ? ago(now - chain.last).replace(' ago', '') : 'no block yet';
-      out.push(cell('Ethereum', 'ok', 'Forced queue empty', `Anything posted is taken in within ${mins(chain.forceDelay)}`, last));
+      out.push(cell('Ethereum', 'ok', 'Forced queue empty', `${chain.height > 0 && chain.last > 0 ? `Last block ${last} ago. ` : ''}Anything posted is taken in within ${mins(chain.forceDelay)}`, 'verified'));
     } else {
       const age = chain.oldest != null ? now - chain.oldest : null, by = `taken in within ${mins(chain.forceDelay)}`;
       out.push(cell('Ethereum', age != null && age > chain.forceDelay * 0.75 ? 'bad' : 'busy', `${forced} forced entr${forced === 1 ? 'y' : 'ies'}`, age != null ? `oldest ${mins(age)}, ${by}` : by, `${forced} forced`));
@@ -164,6 +164,13 @@ export function mountChainLive({ top, rest }) {
       return (i ? `<span class="cl-w ${wireOf(f[i - 1], f[i])}" aria-hidden="true"></span>` : '') + node;
     }).join('');
   }
+  // what the path says in a line: the first thing that is not well, else that it is ready
+  function note(cells) {
+    if (cells.some((c) => c.cls === 'sk' || !c.cls)) return '';
+    const c = cells.find((x) => x.cls === 'bad') || cells.find((x) => x.cls === 'busy');
+    if (c) return `${esc(c.title)} · ${c.small}`;
+    return 'Ready for the next payment. It goes into the next block, usually within a minute.';
+  }
   function stats({ fee, chain }) {
     const rd = (x, f, w) => { if (x === undefined) return sk(w); try { return x === null ? '—' : f(x); } catch { return '—'; } };
     const p = chain ? price(chain.pool, chain.shares) : null;
@@ -171,9 +178,9 @@ export function mountChainLive({ top, rest }) {
     const cu = (key, v, dp, text) => `<span data-k="${key}" data-v="${v}" data-dp="${dp}">${text}</span>`;
     const c = (v, k) => `<div><span class="v num">${v}</span><span class="k">${k}</span></div>`;
     return [
-      c(rd(chain, (x) => `${cu('pool', Number(x.pool) / 1e8, 2, tac(x.pool))}<small>TAC</small>`, '6ch'), 'private on the chain'),
+      c(rd(chain, (x) => `${cu('pool', Number(x.pool) / 1e8, 2, tac(x.pool))}<small>TAC</small>`, '6ch'), 'held privately'),
       c(rd(chain, () => `${cu('px', p, 5, p.toFixed(5))}<small>TAC</small>`, '6ch'), `1 share · ${up}`),
-      c(rd(fee, (x) => (x.fee != null ? `${cu('fee', Number(BigInt(x.fee) + FLOOR) / 1e8, 4, tac(BigInt(x.fee) + FLOOR, 4))}<small>TAC</small>` : '—'), '5ch'), 'a payment now'),
+      c(rd(fee, (x) => (x.fee != null ? `${cu('fee', Number(BigInt(x.fee) + FLOOR) / 1e8, 4, tac(BigInt(x.fee) + FLOOR, 4))}<small>TAC</small>` : '—'), '5ch'), 'fee per payment'),
     ].join('');
   }
   // the figures count up to what they are, once a read changes them (from nothing, the first time)
@@ -292,10 +299,11 @@ export function mountChainLive({ top, rest }) {
       if (said !== v.t) { said = v.t; if (v.t !== 'Reading…') say(v.t); }
     });
     part(() => put('sub', R.chain ? `block ${int(R.chain.height)}` : ''));
+    part(() => put('note', note(health(R, now))));
     part(() => { put('stats', stats(R)); countUp(); });
     const hist = history();
     part(() => put('chart', chart(R.blocks === undefined && !hist.length ? undefined : hist)));
-    part(() => { put('more', more(hist)); put('bn', R.chain?.height ? `${int(R.chain.height)} landed` : ''); });
+    part(() => { put('more', more(hist)); put('bn', R.chain?.height ? `${int(R.chain.height)} blocks, each proven` : ''); });
     part(() => put('facts', facts(R.chain)));
     part(() => { if (el('tech')) put('tech', tech(R.chain)); });
     part(() => put('chain', links(R, hist)));
