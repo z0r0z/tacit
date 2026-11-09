@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-KAl74Ir22lxDQIpM0IU1tqNLsZ5jUjkcNaoK8TaqhGM=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-iHTgbAKAM+2EhWfFdEMSGSFdY6i4UUQG+plHJ8Dx8J0=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -1350,6 +1350,24 @@ html[data-page="tac"] :is(.hero, #dash, #how, #tac, .pg, .sx.pi), html:not([data
 .tcd .tcd-dest button[aria-checked="true"] { color: var(--ink); background: none; border-bottom-color: var(--ink); }
 @media (hover: hover) { .tcd .tcd-dest button:hover { color: var(--ink); } }
 .tcd-foot { margin-top: 24px; padding-top: 0; border-top: 0; font-size: 12px; }
+/* the blocks' count and Show older beside the row; the next block, dashed while it forms */
+.cl-cm { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 16px; margin: -16px 0 24px; font-size: 12px; color: var(--mute); }
+.cl-cm .cl-more:not(:empty) { margin: 0; padding: 0; border: 0; font-size: 12px; }
+.cl-chain li.nx b { border-style: dashed; border-color: var(--orange); color: var(--mute); animation: cl-form 2.4s ease-in-out infinite; }
+.cl-chain li.nx small { position: absolute; top: calc(100% + 6px); right: 0; }
+@keyframes cl-form { 50% { border-color: var(--hair-2); } }
+/* the TAC page's own headings below the card: small serif, sentence case, like the chain's name */
+#sheet-tac .tpg-panel > .tpg-h, #tpg-chain .tpg-h { margin: 40px 0 16px; font: 400 20px/1.2 var(--serif); letter-spacing: 0; text-transform: none; color: var(--ink); }
+/* the price, one quiet line under TAC */
+#sheet-tac .tpx { margin: 0 0 8px; background: none; border: 0; }
+#sheet-tac .tpx summary { padding: 0; }
+#sheet-tac .tpx[open] summary { padding-bottom: 8px; }
+#sheet-tac .tpx th, #sheet-tac .tpx td { padding-left: 0; padding-right: 0; }
+#sheet-tac .tpx .note { padding-left: 0; padding-right: 0; }
+.tcd-in { margin-top: 8px; }
+.tcd-up { white-space: nowrap; }
+@media (prefers-reduced-motion: reduce) { .cl-chain li.nx b { animation: none !important; } }
+
 .tpg-fold { border-top: 1px solid var(--hair); }
 #tpg-where { margin-top: 32px; }
 .tpg-ways { margin: 8px 0 0; font-size: 12px; }
@@ -10807,7 +10825,7 @@ function tacPageSet(on) {
 const CLV = { p: null };
 function chainLive(on) {
   if (!on) { CLV.p?.then((l) => l.stop(), () => {}); return; }
-  CLV.p ||= import('/chain/live.js?cb=f0ff83df').then((m) => m.mountChainLive({ top: $('#tpg-live'), rest: $('#tpg-chain') }));
+  CLV.p ||= import('/chain/live.js?cb=a6857e9f').then((m) => m.mountChainLive({ top: $('#tpg-live'), rest: $('#tpg-chain') }));
   CLV.p.then((l) => { if (TACP.on) l.start(); }, () => { CLV.p = null; });
 }
 // to TAC's page (openSheet('tac') and every link to TAC's home), `part` its bridge between the chains
@@ -11450,11 +11468,13 @@ function tcardHead(side) {
   const seenV = (p) => { const w = k ? tacSeen(k)?.[p] : null; return w == null ? null : BigInt(w) / E10; };
   const v = !k ? null : chain ? (CH.pub === k && CH.bal != null ? CH.bal : seenV('chain')) : h.pool ?? seenV('pool'), usd = v != null && v > 0n ? hxUsd('tac', Number(v) / 1e8) : '';
   const shares = chain && k && TACP.sh?.pub === k ? TACP.sh.v : null;
+  // what each share has gained: the chain's own rate, (pool + 1e8) / (shares + 1e8), against the 1 it started at (no cost basis is kept, so not a per-holder gain)
+  const cs = TPGW.cs, up = cs ? (tpgPrice(cs.pool, cs.shares) - 1) * 100 : null;
   // the key's public TAC on this side (the wallet's on Ethereum, the Bitcoin address's on Bitcoin), and the press that makes it private
   const pubU = !k ? null : chain ? h.wallet : h.btc, capU = chain && CHAIN_SWEEP.cap != null ? CHAIN_SWEEP.cap : null, over = pubU != null && capU != null && pubU > capU;
   return html`<h2 class="tcd-k" id="tcd-name"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg><b>Private TAC</b><span>${chain ? 'on the Tacit chain' : 'on Bitcoin, in the shielded pool'}</span></h2>
-    <p class="tcd-v num">${!k ? '—' : v == null ? (chain && CH.err ? '—' : sk) : fmt(v, 8, 4)}<small>TAC</small></p>
-    <p class="tcd-sub">${!k ? 'Yours shows once you sign in.' : [usd && `≈ ${usd}`, shares != null && shares > 0n && `${fmt(shares, 8, 4)} shares`, chain && CH.pub === k && (CH.incoming ?? 0n) > 0n && `+${fmt(CH.incoming, 8, 4)} TAC incoming`].filter(Boolean).join(' · ')}</p>
+    ${!k ? html`<p class="tcd-sub tcd-in"><button class="link" type="button" data-signin>Sign in to see yours</button></p>` : html`<p class="tcd-v num">${v == null ? (chain && CH.err ? '—' : sk) : fmt(v, 8, 4)}<small>TAC</small></p>
+    <p class="tcd-sub">${[usd && `≈ ${usd}`, shares != null && shares > 0n && `${fmt(shares, 8, 4)} shares`, shares != null && shares > 0n && up != null && up > 0 && html`<span class="tcd-up">each +${up.toFixed(2)}% since the chain began</span>`, chain && CH.pub === k && (CH.incoming ?? 0n) > 0n && `+${fmt(CH.incoming, 8, 4)} TAC incoming`].filter(Boolean).flatMap((x, i) => (i ? [' · ', x] : [x]))}</p>`}
     ${tcardAll(k, side)}
     ${pubU != null && pubU > 0n ? html`<p class="tcd-nudge">${fmt(pubU, 8, 2)} TAC is public ${chain ? 'in your wallet' : 'at your Bitcoin address'}. <button class="link" type="button" id="tpg-priv">${over ? `Shield ${fmt(capU, 8, 0)} of it` : 'Shield it'}</button></p>` : ''}`;
 }

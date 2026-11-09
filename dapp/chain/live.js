@@ -15,7 +15,7 @@ const SEATS = '0x00000000001f703eae70de3b528213e4802790fb';
 const VERIFIER = '0xb69f2584cbcff99a58c4e7002e8b89af54a6f4e2', LEADER = '0x841d93ae315e3d9af5fd98c09299ca62148ff65d';
 const BLOCK_VKEY = '0x00610fb0fa1b5d800e548c3cdcdf98ceb4288828be1cec1fb81e39004bad6ed6', SPEND_VK = '0xc85febd5ed7a2b00819d90960a17bf686b15d28183c7a207499204bd369bdfe4';
 const GH = 'https://github.com/src-company/tacit/';
-const PROVER_SEEN_S = 600, STALL_S = 180, EVERY_MS = 30e3, BEAT_MS = 5e3, SHOWN = 3, MORE = 25, UNIT = 100000000n, FLOOR = 200000n;
+const PROVER_SEEN_S = 600, STALL_S = 180, EVERY_MS = 30e3, BEAT_MS = 5e3, SHOWN = 10, MORE = 20, UNIT = 100000000n, FLOOR = 200000n;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const rpc = (method, params) => hedgedRpc(ETH_NODES, method, params, { hedgeMs: 1500, timeoutMs: 15e3 });
 const word = (n) => BigInt(n).toString(16).padStart(64, '0');
@@ -49,9 +49,8 @@ const wireOf = (a, b) => (a === 'off' || b === 'off' ? 'off' : a === 'live' || b
 export function mountChainLive({ top, rest }) {
   const cfg = tacitChain();
   top.innerHTML = `<div class="cl-h"><h2 class="cl-name">tacit <em>chain</em></h2><span class="cl-v" data-r="verdict" data-s=""><span class="dot"></span><span>Reading…</span></span><span class="cl-sub" data-r="sub"></span></div>
-    <ol class="cl-chain" data-r="chain" aria-label="Latest blocks"></ol><div class="cl-flow" data-r="flow" aria-live="polite"></div><div class="cl-stats" data-r="stats"></div><div class="sr" data-r="live" role="status" aria-live="polite"></div>`;
+    <ol class="cl-chain" data-r="chain" aria-label="Latest blocks"></ol><div class="cl-cm"><span data-r="bn"></span><span class="cl-more" data-r="more"></span></div><div class="cl-flow" data-r="flow" aria-live="polite"></div><div class="cl-stats" data-r="stats"></div><div class="sr" data-r="live" role="status" aria-live="polite"></div>`;
   rest.innerHTML = `<section class="tpg-panel"><h2 class="tpg-h">A share's worth, block by block</h2><div class="cl-chart" data-r="chart"></div></section>
-    <section class="tpg-panel"><h2 class="tpg-h cl-hh"><span>Blocks</span><span data-r="bn"></span></h2><ul class="cl-blocks" data-r="blocks"></ul><div class="cl-more" data-r="more"></div></section>
     <section class="tpg-panel"><h2 class="tpg-h">What it rests on</h2><ul class="cl-facts" data-r="facts"></ul>
       ${cfg && !cfg.dev ? '<details class="tpg-fold cl-tech"><summary>Chain facts</summary><div><ul class="cl-facts" data-r="tech"></ul></div></details>' : ''}</section>`;
   const el = (k) => top.querySelector(`[data-r="${k}"]`) || rest.querySelector(`[data-r="${k}"]`);
@@ -228,24 +227,16 @@ export function mountChainLive({ top, rest }) {
     pl.querySelectorAll('.pt.on').forEach((p) => p.classList.remove('on'));
   }
 
-  function blocks({ blocks: b, chain }, rollup) {
-    if (b === undefined && !rollup.length) return [1, 2, 3].map(() => `<li class="sl">${sk('100%')}</li>`).join('');
-    if (b === null && !rollup.length) return '<li class="none">Could not read the blocks. Trying again shortly.</li>';
-    if (!rollup.length) return '<li class="none">No blocks yet.</li>';
-    if (FRESH.h != null && !FRESH.at && rollup[0].height >= FRESH.h) { FRESH.at = Date.now(); setTimeout(mark, 2900); }
-    // an Ethereum block's time from the head's, at 12 s a block (the head the contract was read at, else the API's, at this clock)
-    const head = chain ? { n: chain.n, t: chain.t + (Date.now() - chain.at) / 1000 } : Number.isInteger(b?.head?.ethHead) ? { n: b.head.ethHead, t: Date.now() / 1000 } : null;
-    return rollup.slice(0, shown).map((x) => {
-      const at = head ? head.t - Math.max(0, head.n - x.ethBlock) * 12 : null, lit = FRESH.at && Date.now() - FRESH.at < 2800 && x.height === FRESH.h;
-      return `<li${lit ? ' class="fresh"' : ''}><b class="n">#${int(x.height)}</b><span class="a">${at != null ? `<span data-at="${Math.round(at)}">${ago(nowS() - at)}</span>` : '—'}</span><span class="x">${tx(x.tx)}</span>`
-        + `<span class="s num"><i>1 share</i> ${price(x.pool, x.shares).toFixed(5)}</span><span class="p num">${tac(x.pool)} <small>TAC private</small></span></li>`;
-    }).join('');
-  }
+
   // the newest blocks as a chain, newest first in the markup and drawn right to left, so a narrow screen keeps the newest in view; a block that just landed slides in
-  function links({ chain }, hist) {
+  function links({ chain, state }, hist) {
+    if (FRESH.h != null && !FRESH.at && hist.length && hist[0].height >= FRESH.h) { FRESH.at = Date.now(); setTimeout(mark, 2900); }
     if (!hist.length) return [1, 2, 3, 4, 5, 6].map(() => '<li class="sl"><span></span></li>').join('');
     const head = chain ? { n: chain.n, t: chain.t + (Date.now() - chain.at) / 1000 } : null, lit = FRESH.h != null && LAND.at && Date.now() - LAND.at < 2600;
-    return hist.slice(0, 10).map((x, i) => {
+    // payments waiting: the next block, forming, dashed at the right until it lands
+    const top = Math.max(hist[0].height, chain?.height || 0), next = Number(state?.pending || 0) > 0 && Number(state?.height) <= top
+      ? `<li class="nx" title="Block ${int(top + 1)}, forming"><span><b class="num">#${int(top + 1)}</b><small>forming</small></span></li>` : '';
+    return next + hist.slice(0, shown).map((x, i) => {
       const at = head ? head.t - Math.max(0, head.n - x.ethBlock) * 12 : null, cls = (i ? '' : 'hd') + (!i && lit && x.height === FRESH.h ? ' in' : '');
       const age = at != null ? `<small data-at="${Math.round(at)}">${ago(nowS() - at)}</small>` : '';
       const ok = /^0x[0-9a-fA-F]{64}$/.test(String(x.tx));
@@ -253,7 +244,7 @@ export function mountChainLive({ top, rest }) {
       return `<li${cls ? ` class="${cls.trim()}"` : ''}>${ok ? `<a href="https://etherscan.io/tx/${x.tx}" target="_blank" rel="noopener noreferrer" title="Block ${int(x.height)} on Etherscan">${body}</a>` : `<span>${body}</span>`}</li>`;
     }).join('');
   }
-  // under the table: more of what the page has, or a page of older blocks; and, when the API keeps no older, where the rest is
+  // beside the block row: more of what the page has, or a page of older blocks; and, when the API keeps no older, where the rest is
   function more(hist) {
     const low = hist.length ? hist.at(-1).height : null, can = mayHaveOlder(), out = [];
     if (hist.length > shown || can) out.push(`<button class="link" type="button" data-more${olderBusy ? ' disabled' : ''}>${olderBusy ? 'Loading…' : 'Show older blocks'}</button>`);
@@ -304,7 +295,7 @@ export function mountChainLive({ top, rest }) {
     part(() => { put('stats', stats(R)); countUp(); });
     const hist = history();
     part(() => put('chart', chart(R.blocks === undefined && !hist.length ? undefined : hist)));
-    part(() => { put('blocks', blocks(R, hist)); put('more', more(hist)); put('bn', R.chain?.height ? `${int(R.chain.height)} landed` : ''); });
+    part(() => { put('more', more(hist)); put('bn', R.chain?.height ? `${int(R.chain.height)} landed` : ''); });
     part(() => put('facts', facts(R.chain)));
     part(() => { if (el('tech')) put('tech', tech(R.chain)); });
     part(() => put('chain', links(R, hist)));
@@ -348,7 +339,7 @@ export function mountChainLive({ top, rest }) {
   rest.addEventListener('pointermove', (e) => { if (e.target.closest?.('.cl-plot')) scrub(e); });
   rest.addEventListener('pointerleave', unscrub);
   rest.addEventListener('pointerout', (e) => { if (e.target.closest?.('.cl-plot') && !e.relatedTarget?.closest?.('.cl-plot')) unscrub(); });
-  rest.addEventListener('click', async (e) => { if (!e.target.closest?.('[data-more]')) return; shown += MORE; mark(); if (HAVE.size < shown) await older(); });
+  top.addEventListener('click', async (e) => { if (!e.target.closest?.('[data-more]')) return; shown += MORE; mark(); if (HAVE.size < shown) await older(); });
   draw();
   return {
     start() {
