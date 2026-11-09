@@ -4,6 +4,7 @@
 //
 //   tacit-prover [serve]          GET /health, POST /prove {stdin}, GET /job?id= (its stage and an ETA while it proves),
 //                                 GET /mine, POST /mine {miner?, on} (tacit.finance/prove/ starts and pauses mining)
+//                                 GET /helpdesk, POST /helpdesk {on, api?} (lend idle time to the community help desk, helpdesk.rs)
 //   tacit-prover prove <stdin>    one proof to <stdin>.proof.json
 //   tacit-prover check            every faster path against the code it replaces, then exit
 //   tacit-prover install          start at login and stay ready (launchd on macOS, a systemd user unit on Linux)
@@ -11,12 +12,15 @@
 //   tacit-prover mine 0xADDR      prove wraps people asked to have ready (the API's proof pool) for TAC points to 0xADDR
 //
 // While mining, the cores a proof is not using grind deploy salts for TAC points too (salt.rs): a proof always comes first.
+// With the help desk switched on (helpdesk.rs), an idle, plugged-in computer also answers the community help desk's questions
+// with a small local model; the model is stopped the moment a proof starts or waits.
 //
 // Env: TACIT_PROVER_PORT (47815), TACIT_PROVER_ORIGINS (comma list, default tacit.finance and www.tacit.finance; a local page
 // under development adds its own),
 // TACIT_PROVER_DIR (~/.tacit-prover: finished proofs), TACIT_METAL=0 (CPU leaf hashing), TACIT_MINE=0xADDR (serve mines the
 // proof pool while it has nothing of its own to prove), TACIT_POOL_API (https://api.tacit.finance), and the SDK's
 // SP1_WORKER_NUM_*_WORKERS (one per stage by default below 16 GB of RAM), TACIT_SALT_THREADS (cores that grind salts; half by default, 0 is off).
+mod helpdesk;
 mod salt;
 use sha2::{Digest, Sha256};
 use sp1_sdk::{blocking::{ProveRequest, Prover, ProverClient}, Elf, HashableKey, ProvingKey, SP1Stdin};
@@ -465,6 +469,15 @@ fn serve(client: sp1_sdk::blocking::CpuProver, pk: sp1_sdk::SP1ProvingKey, vkey:
     }
     let state = Arc::new((Mutex::new(State { jobs, queue: VecDeque::new(), kick: false }), Condvar::new()));
     salt::start();
+    // The help desk lends idle time only while no proof is running or waiting, and gives the memory back the moment one is.
+    {
+        let st = state.clone();
+        helpdesk::start(helpdesk::Ctx {
+            dir: store_dir(),
+            miner: Box::new(pool::miner),
+            busy: Arc::new(move || salt::PROVING.load(std::sync::atomic::Ordering::Relaxed) || !st.0.lock().unwrap().queue.is_empty()),
+        });
+    }
 
     // One proof at a time: a second would double the memory and halve each one's speed.
     {
@@ -649,6 +662,19 @@ fn handle(mut conn: TcpStream, state: &Arc<(Mutex<State>, Condvar)>, origins: &[
                 cv.notify_one();
             }
             reply(&mut conn, "200 OK", mine_json().to_string())
+        }
+        // The community help desk: on or off, where its API is, whether the model is installed and running, how many answers this
+        // run has given. POST {on, api?} switches it, kept across restarts.
+        ("GET", "/helpdesk") => reply(&mut conn, "200 OK", helpdesk::status(&store_dir(), pool::miner()).to_string()),
+        ("POST", "/helpdesk") => {
+            let v: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+            let Some(on) = v["on"].as_bool() else {
+                return reply(&mut conn, "400 Bad Request", r#"{"error":"on must be true or false"}"#.into());
+            };
+            if let Err(e) = helpdesk::set(&store_dir(), on, v["api"].as_str()) {
+                return reply(&mut conn, "400 Bad Request", serde_json::json!({ "error": e }).to_string());
+            }
+            reply(&mut conn, "200 OK", helpdesk::status(&store_dir(), pool::miner()).to_string())
         }
         _ => reply(&mut conn, "404 Not Found", r#"{"error":"not found"}"#.into()),
     }
