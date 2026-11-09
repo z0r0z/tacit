@@ -319,7 +319,10 @@ async function step() {
     // back it was sent with
     const backs = [...new Set([...(d.backs || []), ...(d.permit?.back ? [d.permit.back] : [])])];
     for (const back of BigInt(from) === 0n ? backs : []) {
-      if (await sweepInbox(d.deposit, back, d.permit)) { [from] = await pendingOf(d); break; }
+      // (a permit with bad fields, or a failing read, leaves this one unfunded, to be dropped in time: it must not stop the block for the rest)
+      let ok = false;
+      try { ok = await sweepInbox(d.deposit, back, d.permit); } catch (e) { log({ sweepError: d.id, error: String(e?.message || e).slice(0, 200) }); }
+      if (ok) { [from] = await pendingOf(d); break; }
     }
     if (BigInt(from) === 0n) {
       exclude.push(d.id);

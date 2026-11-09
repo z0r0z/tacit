@@ -25,8 +25,8 @@
     // cross-origin isolated (the threaded prover) only when loaded at its own address. A bad amount is dropped.
     var pay = /^\/to\/([^/]+)(?:\/([^/]+))?\/?$/i.exec(path);
     if (pay) {
-      var pq = new URLSearchParams(q), amt = pay[2] || pq.get('amt') || '', note = (pq.get('for') || '').slice(0, 80);
-      return away('/tac/#to=' + encodeURIComponent(decodeURIComponent(pay[1]).toLowerCase()) + (/^\d{1,12}(\.\d{1,8})?$/.test(amt) ? '&amt=' + amt : '')
+      var pq = new URLSearchParams(q), amt = pay[2] || pq.get('amt') || '', note = Array.from((pq.get('for') || '').replace(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, '')).slice(0, 80).join('');
+      return away('/tac/#to=' + encodeURIComponent(decodeURIComponent(pay[1]).replace(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, '').toLowerCase()) + (/^\d{1,12}(\.\d{1,8})?$/.test(amt) ? '&amt=' + amt : '')
         + (note ? '&for=' + encodeURIComponent(note) : ''));
     }
     var seg = ((path.match(/^\/([a-z0-9-]+(?:\/[a-z0-9-]+)?)\/?$/i) || [])[1] || '').toLowerCase();

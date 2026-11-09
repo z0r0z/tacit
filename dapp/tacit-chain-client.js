@@ -113,7 +113,9 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
     // the full address, and the same address signed for under this wallet's Tacit key
     publish: async (a) => {
       const key = secp.getPublicKey(priv, true), sig = (await secp.signAsync(keyMessage(key, hexBytes(a)), priv)).toCompactRawBytes();
-      return (await api('POST', '/address', { address: a, key: hx(key), sig: hx(sig) })).hash;
+      const r = await api('POST', '/address', { address: a, key: hx(key), sig: hx(sig) });
+      if (!r.ok) throw new Error(r.error || `the leader did not take the address (${r.status})`);
+      return r.hash;
     },
   };
   /// Where a decoded Tacit address (its `lanes`) is paid on the chain: its chain lane, else the chain address its key signed for (an address
@@ -126,7 +128,9 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
       const r = await api('GET', `/address/key/${k.slice(2)}`).catch(() => null);
       if (!r?.ok || !r.address || !r.sig) continue;
       const ab = hexBytes(r.address);
-      if (!secp.verify(hexBytes(r.sig), keyMessage(hexBytes(k), ab), hexBytes(k))) continue;
+      let good = false;
+      try { good = secp.verify(hexBytes(r.sig), keyMessage(hexBytes(k), ab), hexBytes(k)); } catch { }
+      if (!good) continue;
       return w.decodeAddress('tc1' + strip(r.address));
     }
     throw new Error('tacit chain: this Tacit address has not opened the Tacit chain yet');
@@ -139,7 +143,7 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
   const load = () => {
     try {
       const j = JSON.parse(storage?.getItem(key()) || 'null');
-      if (j) { st.next = j.next; st.notes = j.notes.map((n) => ({ ...n, value: BigInt(n.value), leaf: BigInt(n.leaf) })); }
+      if (j) { const notes = j.notes.map((n) => ({ ...n, value: BigInt(n.value), leaf: BigInt(n.leaf) })); st.notes = notes; st.next = j.next; }
     } catch {}
   };
   const proverP = () => (prover ||= Promise.resolve(system()).then((s) => ({ prove: (input, o) => s.prove(input, o) })));
@@ -157,7 +161,7 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
   async function scan() {
     await ready();
     const r = await w.scan(me, leader, { from: st.next, known: st.notes.map((n) => ({ ...n, s: hexBytes(n.s) })) });
-    st.next = r.next;
+    st.next = Math.max(st.next, r.next);                // (a leader replaying after a restart reports a smaller total: never go back)
     st.notes = r.notes.map((n) => ({ index: n.index, value: n.value, s: hx(n.s), leaf: n.leaf, nullifier: n.nullifier }));
     save();
     return balance();
@@ -257,7 +261,11 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
     const e = remember(spent, { kind, units: units == null ? null : String(units), extra, ...meta });
     let r;
     try { r = await api('POST', '/spend', { ...spent.submission, ...extra }); } catch { throw keptErr(new Error('the Tacit chain’s leader did not answer'), e); }
-    if (!r.ok) throw keptErr(new Error(r.error || `the leader refused the spend (${r.status})`), e);
+    if (!r.ok) {
+      // a refusal (not a busy or failing leader) frees the notes: a spend kept as queued and refused on being handed over again would hold them
+      if (r.status >= 400 && r.status < 500 && r.status !== 429 && r.status !== 408) mark(e.id, { refused: true });
+      throw keptErr(new Error(r.error || `the leader refused the spend (${r.status})`), e);
+    }
     mark(e.id, { queued: true, refused: false });
     onStatus?.({ id: r.id, status: 'queued', kept: e });
     const t0 = Date.now();
@@ -277,6 +285,7 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
       await new Promise((ok) => setTimeout(ok, 4000));
     }
     await scan().catch(() => {});                                   // (its change is read before the spend that makes it is let go)
+    if (e.kind === 'hop' && e.commit && e.units) hopsKeep([...hopsKept().filter((h) => strip(h.commit) !== strip(e.commit)), { units: String(e.units), commit: '0x' + strip(e.commit), at: Date.now() }]);
     forget(e.id);
     const gone = new Set((spent.nullifiers || []).map(strip));
     st.notes = st.notes.filter((n) => !gone.has(strip(n.nullifier)));
@@ -374,13 +383,14 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
     /// The spends handed over and not landed, oldest first (those that landed or whose notes went another way are dropped here).
     async pending() {
       await ready();
-      const left = [];
+      const gone = new Set();
       for (const e of kept()) {
-        if (Date.now() - e.at > KEEP_MS) continue;
-        if (await settled(e).catch(() => null)) continue;
-        left.push(e);
+        if (!e.deposit && Date.now() - e.at > KEEP_MS) { gone.add(e.id); continue; }
+        if (await settled(e).catch(() => null)) gone.add(e.id);
       }
-      keepAll(left);
+      // (read again: a spend kept, or a mark made, while this was asking is not overwritten)
+      const left = kept().filter((e) => !gone.has(e.id));
+      if (gone.size) keepAll(left);
       return left;
     },
     forget: async (id) => { await ready(); forget(id); },
@@ -495,13 +505,13 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
     /// The hops that landed and the landing contract still holds (not yet sent on into the confidential pool), oldest first; those sent are dropped.
     async hopsWaiting() {
       await ready();
-      const left = [];
+      const gone = new Set();
       for (const h of hopsKept()) {
         const n = await hopsHeld(h.units, h.commit).catch(() => null);
-        if (n === 0n) continue;
-        left.push(h);
+        if (n === 0n) gone.add(strip(h.commit) + ':' + h.units);
       }
-      hopsKeep(left);
+      const left = hopsKept().filter((h) => !gone.has(strip(h.commit) + ':' + h.units));
+      if (gone.size) hopsKeep(left);
       return left;
     },
     /// TacitBlocks.sendHop: a landed hop sent on into the confidential pool (anyone may send it).

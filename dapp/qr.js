@@ -121,7 +121,7 @@ export function qrSvg(text, width = 0, label = 'QR code of the payment link', { 
   for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) if (m[y][x]) d += `M${x + Q} ${y + Q}h1v1h-1z`;
   const size = px >= 3 ? `width:${W * px}px;height:${W * px}px` : 'width:100%;height:auto';
   let coin = '';
-  if (mark === 'tac' && n >= 25) {
+  if (mark === 'tac' && n >= 37) {                       // (a smaller code has too few correctable codewords to spare the middle of it)
     const k = Math.round(n * 0.17), o = (W - k) / 2;
     coin = `<rect x="${o - 1}" y="${o - 1}" width="${k + 2}" height="${k + 2}" rx="${(k + 2) / 2}" fill="#fff"/><g transform="translate(${o} ${o}) scale(${k / 32})" shape-rendering="geometricPrecision">`
       + '<circle cx="16" cy="16" r="16" fill="#0a0a0a"/><circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2.5"/>'

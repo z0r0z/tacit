@@ -242,7 +242,7 @@ export function makeChainWallet({ poseidon, prover, chain, asset, network = 'mai
         const own = Z.ownedKeys(k.zk, opened.s);
         const mineLeaf = Z.leafOf(assetF, opened.value, own.npk, own.rho);
         if (mineLeaf !== BigInt(leaf) || opened.value === 0n) return;
-        mine.push({ index: next + i, value: opened.value, s: opened.s, leaf: mineLeaf });
+        if (!mine.some((n) => n.index === next + i)) mine.push({ index: next + i, value: opened.value, s: opened.s, leaf: mineLeaf });
       });
       if (page.next >= page.total || page.leaves.length === 0) { next = page.total; break; }
       next = page.next;
