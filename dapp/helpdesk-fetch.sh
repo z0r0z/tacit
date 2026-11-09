@@ -22,11 +22,23 @@ fetch_verified() {   # url file sha
   curl -fL -C - --retry 5 --retry-delay 3 -o "$2" "$1" || die "could not download $1"
   [ "$(sha "$2")" = "$3" ] || { rm -f "$2"; die "checksum mismatch for $1, refusing to use it"; }
 }
+# The CUDA runtime is a second tarball and unpacks beside llama-server's folder, not into it. The server's GPU backend finds libcublas only next to itself, so
+# without these links it sees no GPU and quietly runs on the CPU. Safe to repeat (it also repairs an install made before this).
+link_cuda_libs() {
+  bin=$(find "$D/llama" -name llama-server -type f 2>/dev/null | head -1); [ -n "$bin" ] || return 0
+  libdir=$(dirname "$bin")
+  for c in "$D"/llama/cudart-*; do [ -d "$c" ] || continue; for f in "$c"/*.so*; do [ -e "$f" ] && ln -sf "$f" "$libdir/$(basename "$f")"; done; done
+  return 0
+}
 install_llama() {
-  [ -x "$D/llama-server" ] && return 0
+  [ -x "$D/llama-server" ] && { link_cuda_libs; return 0; }
   case "$(uname -s)-$(uname -m)" in
     Darwin-arm64) ASSETS="llama-b12211-bin-macos-arm64.tar.gz:4da4edb437358d31d55938ad849d262ca31b0e0ffb35e9caedb727a0cd5a8f0f";;
     Linux-x86_64)
+      # the prebuilt llama-server is built on Ubuntu 24.04: say so up front rather than let it fail at start
+      g=$(ldd --version 2>&1 | head -1 | grep -o '[0-9][0-9]*\.[0-9][0-9]*$')
+      [ -n "$g" ] && [ "$(printf '%s\n2.38\n' "$g" | sort -V | head -1)" = "2.38" ] || die "this llama.cpp build needs glibc 2.38 or newer (Ubuntu 24.04, Debian 13, Fedora 39); this system has ${g:-an unknown version}"
+      ldconfig -p 2>/dev/null | grep -q 'libgomp\.so\.1' || die "libgomp is missing: install it first (apt install libgomp1)"
       vram=0; command -v nvidia-smi >/dev/null && vram=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -dc 0-9)
       if [ "${vram:-0}" -ge 6000 ]; then ASSETS="llama-b12211-bin-ubuntu-cuda-12.8-x64.tar.gz:103fac975e807da6cdb5717e87ca594e25bb7703dd8a7f10c22269c124e1a552 cudart-llama-b12211-bin-ubuntu-cuda-12.8-x64.tar.gz:d66dba34f0e45c66ce7d4484116c681aa71ff257ee1e47b02d9775aa59b5ef77"
       else ASSETS="llama-b12211-bin-ubuntu-x64.tar.gz:962924b5431bc1237a9e5d26ba072d37b6fe05f79b495206e7ff6134887624c5"; fi;;
@@ -35,7 +47,7 @@ install_llama() {
   mkdir -p "$D/llama"
   for a in $ASSETS; do f=${a%%:*}; s=${a##*:}; say "downloading $f"; fetch_verified "$BASE/$f" "$D/$f" "$s"; tar -xzf "$D/$f" -C "$D/llama" && rm -f "$D/$f"; done
   bin=$(find "$D/llama" -name llama-server -type f | head -1); [ -n "$bin" ] || die "llama-server not found in the download"
-  chmod +x "$bin"; ln -sf "$bin" "$D/llama-server"
+  chmod +x "$bin"; ln -sf "$bin" "$D/llama-server"; link_cuda_libs
 }
 install_model() {
   M="$D/model.gguf"; [ -f "$M" ] && [ "$(fsize "$M")" = "$MODEL_SIZE" ] && [ "$(sha "$M")" = "$MODEL_SHA" ] && return 0
