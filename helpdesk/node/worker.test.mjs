@@ -61,7 +61,8 @@ try {
 
   mode = 'empty';
   const pending = ask('What do I get for holding TAC?');
-  await sleep(2500); mode = 'ok';
+  for (let i = 0; i < 500 && !lines.some((l) => /gave up/.test(l)); i++) await sleep(20);   // the first try has failed: the model works from here
+  mode = 'ok';
   const b = await pending;
   check('an empty model answer is handed back, and the question is answered on the next try', typeof b.answer === 'string' && b.answer.startsWith('FAKE ANSWER'), `"${String(b.answer).slice(0, 60)}"`);
   check('the node said it gave up', lines.some((l) => /gave up .*no answer/.test(l)), lines.join(' | ').slice(0, 200));
