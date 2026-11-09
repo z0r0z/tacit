@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-PhqQI2ky6EH+faN3u5w2KnpussmbroFr5ynmS7+0h5A=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-Am+JPcLiTDvpPFmsv60Jd8FaO3U7jP+pUMOaKgkxNh8=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -1242,6 +1242,8 @@ html[data-page="tac"] :is(.hero, #dash, #how, #tac, .pg, .sx.pi), html:not([data
 .tco-rows dd { margin: 0; text-align: right; }
 .tco-go { margin-top: 18px; }
 .tco-flow { margin-top: 18px; padding-top: 0; border-top: 0; }
+.tcd-all { margin: 8px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--mute); }
+.tcd-all b { color: var(--ink); font-weight: 500; }
 .tco-x { max-width: 460px; margin: 12px auto 0; text-align: center; font-size: 12.5px; }
 .tco-paid { display: grid; justify-items: center; text-align: center; }
 .tco-paid .tco-k { margin: 14px 0 0; }
@@ -10848,7 +10850,11 @@ function tcoPaint() {
   const enough = units != null && most != null && (units <= most || waits);
   const gap = units != null && most != null && !enough ? units - most + 1_000_000n : null;
   TCO.gap = gap != null ? plain(gap, 8) : '';
+  // what a move from the DeFi pool must bring over: the payment and its fees, less what is on the chain (the relay's fee comes out of the move, which the tile says)
+  const moveNeed = gap != null && units != null ? units + (q?.fee ?? TCL_FEE) - (held ?? 0n) + 1_000_000n : null;
+  TCO.move = moveNeed != null ? plain(moveNeed, 8) : '';
   // short on the chain: the wallet's TAC made private with one signature and the payment made after it, in one press (`sh`: the shield that does it)
+  const priv = k ? tcardPrivate(S.key.pubHex) : null;
   const sh = !enough && TCO.sh?.key === `${rc?.eth ? 'w' : 'p'}|${units}` ? TCO.sh : null, fits = !!sh && wal != null && wal >= sh.wei;
   let go = ['Pay', null];
   if (!k) go = ['Sign in to pay', 'signin'];
@@ -10858,6 +10864,8 @@ function tcoPaint() {
   else if (!units) go = ['Enter an amount', null];
   else if (held == null) go = ['Reading your TAC…', null];
   else if (enough) go = [`Pay ${fmt(units, 8, 8)} TAC`, 'pay'];
+  else if (moveNeed != null && (priv?.defi ?? 0n) >= moveNeed && chainOn()) go = [`Move ${t4(moveNeed)} TAC to the Tacit chain first`, 'movechain'];
+  else if (gap != null && (priv?.pool ?? 0n) >= units && !rc?.eth) go = ['Pay from your Bitcoin pool', 'pool'];
   else if (needWallet) go = ['Connect your wallet to pay from it', 'connect'];
   else if (wal == null || (wal > 0n && !sh && !TCO.shErr)) go = ['Reading your TAC…', null];
   else if (fits) go = [`Pay ${fmt(units, 8, 8)} TAC from ${via === 'tacit' ? 'your key’s address' : 'your wallet'}`, 'walletpay'];
@@ -10866,11 +10874,14 @@ function tcoPaint() {
   const b = $('#tco-go');
   if (b && b.getAttribute('aria-busy') !== 'true') { if (b.textContent !== go[0]) b.textContent = go[0]; b.dataset.act = go[1] || ''; b.disabled = !go[1]; b.classList.toggle('ghost', go[1] === 'get'); }
   const row = (t, v) => html`<div><dt>${t}</dt><dd>${v}</dd></div>`;
+  const elsewhere = !enough && priv ? [['defi', 'in the DeFi pool'], ['pool', 'in the Bitcoin pool']].filter(([key]) => priv[key] > 0n) : [];
   tcoPut($('#tco-rows'), html`${row('Fee', q?.fee != null ? html`<span class="num">${t4(q.fee)}</span> TAC` : units && sure && k ? html`<span class="sk" style="--w:7ch"></span>` : 'shown once you sign in')}
     ${row('Arrives', rc?.eth ? 'in their wallet, about a minute' : html`in seconds, <b>private</b>`)}
-    ${row('You hold', !k ? 'sign in to see' : held == null ? html`<span class="sk" style="--w:9ch"></span>` : html`<span class="num">${t4(held)}</span> TAC on the Tacit chain${!enough && wal != null && wal > 0n ? html`<br><span class="num">${fmt(wal, 18, 4)}</span> in ${your(via)}, public` : ''}`)}`);
+    ${row('You hold', !k ? 'sign in to see' : held == null ? html`<span class="sk" style="--w:9ch"></span>` : html`<span class="num">${t4(held)}</span> TAC on the Tacit chain${!enough && wal != null && wal > 0n ? html`<br><span class="num">${fmt(wal, 18, 4)}</span> in ${your(via)}, public` : ''}${elsewhere.map(([key, w]) => html`<br><span class="num">${fmt(priv[key], 8, 4)}</span> ${w}, private`)}`)}`);
   // a line under the button for a link that can't be paid or a balance short of it (not over a running payment's own words)
   const st = $('#tco-st'), line = rc?.bad ? tcdErr(rc.bad) : TCO.flow || !k || enough || !units || held == null ? null
+    : moveNeed != null && (priv?.defi ?? 0n) >= moveNeed && chainOn() ? html`<span class="mute">Your private TAC is in the DeFi pool: move it to the Tacit chain, then pay. It takes a few minutes and the relay takes a fee.</span>`
+    : gap != null && (priv?.pool ?? 0n) >= units && !rc?.eth ? html`<span class="mute">Your private TAC is in the Bitcoin pool: pay from there. It takes about 10 minutes.</span>`
     : needWallet ? html`<span class="mute">Connect the wallet that holds your TAC: one signature makes it private, then the payment goes.</span>`
     : wal == null ? null
     : fits ? html`<span class="mute">One signature makes <b class="num">${fmt(sh.units, 8, 4)}</b> TAC from ${your(via)} private${sh.sf ? `, ${fmt(sh.sf, 18, 4)} TAC of it to the leader that sends it in (no ETH)` : ''}; the payment goes once it lands, in about a minute.</span>`
@@ -10950,6 +10961,8 @@ async function tcoPress(go) {
   }
   if (act === 'get') { TCO.full = true; tcoShow(); tpgTile('swap:ether:tac', '', 'Get TAC'); return; }
   if (act === 'walletpay') return tcoWalletPay(go);
+  if (act === 'movechain') { const amt = TCO.move; TCO.full = true; tcoShow(); tpgTile('shield:tac:chain', amt, 'Move to the Tacit chain'); return; }
+  if (act === 'pool') { TCO.full = true; tcoShow(); tcardGo('btc', 'send'); return; }
   if (act === 'connect') return connect().then(() => rerender('tac'), () => {});
   const l = TCARD.link, units = tcoUnits(), rc = TCO.rc;
   if (act !== 'pay' || !l || !units || !rc || rc.bad || rc.pre) return;
@@ -11154,7 +11167,27 @@ function tcardHead(side) {
   return html`<h2 class="tcd-k" id="tcd-name"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg><b>Private TAC</b><span>${chain ? 'on the Tacit chain' : 'on Bitcoin, in the shielded pool'}</span></h2>
     <p class="tcd-v num">${!k ? '—' : v == null ? (chain && CH.err ? '—' : sk) : fmt(v, 8, 4)}<small>TAC</small></p>
     <p class="tcd-sub">${!k ? 'Yours shows once you sign in.' : [usd && `≈ ${usd}`, shares != null && shares > 0n && `${fmt(shares, 8, 4)} shares`, chain && CH.pub === k && (CH.incoming ?? 0n) > 0n && `+${fmt(CH.incoming, 8, 4)} TAC incoming`].filter(Boolean).join(' · ')}</p>
+    ${tcardAll(k, side)}
     ${pubU != null && pubU > 0n ? html`<p class="tcd-nudge">${fmt(pubU, 8, 2)} TAC is public ${chain ? 'in your wallet' : 'at your Bitcoin address'}. <button class="link" type="button" id="tpg-priv">${over ? `Shield ${fmt(capU, 8, 0)} of it` : 'Shield it'}</button></p>` : ''}`;
+}
+// Private TAC is one balance in a few places: under the side shown, the rest of it (the Tacit chain, the Bitcoin pool, the DeFi pool, the pay pool),
+// each with its way over, and the whole of it. Nothing shows while the other places hold none.
+function tcardPrivate(k) {
+  if (!k) return null;
+  const pl = Object.fromEntries(tacSeenOn(k, tacPlaces(k, tacWho())).map((p) => [p.key, p.v == null ? null : p.v / E10]));
+  return { chain: pl.chain ?? 0n, pool: pl.pool ?? 0n, defi: pl.defi ?? 0n, pay: pl.pay ?? 0n };
+}
+function tcardAll(k, side) {
+  const p = tcardPrivate(k);
+  if (!p) return '';
+  const here = side === 'btc' ? 'pool' : 'chain', t = (v) => fmt(v, 8, 2);
+  const rest = [['chain', 'on the Tacit chain', html`<button class="link" type="button" data-tcd-side="chain">Show</button>`],
+    ['pool', 'in the Bitcoin pool', html`<button class="link" type="button" data-tcd-side="btc">Show</button>`],
+    ['defi', 'in the DeFi pool', chainOn() ? html`<button class="link" type="button" data-hx="shield:tac:chain" data-amt="${plain(p.defi, 8)}">Move to the Tacit chain</button>` : ''],
+    ['pay', 'in the pay pool', '']].filter(([key]) => key !== here && p[key] > 0n);
+  if (!rest.length) return '';
+  const all = p.chain + p.pool + p.defi + p.pay;
+  return html`<p class="tcd-all"><b class="num">${t(all)}</b> private in all: ${rest.map(([key, what, go], i) => html`${i ? ' · ' : ''}<span class="num">${t(p[key])}</span> ${what}${go ? html` ${go}` : ''}`)}</p>`;
 }
 const tcdAmt = () => html`<div class="lbl"><label for="tcd-amt">Amount</label><button type="button" id="tcd-max">Max</button></div>
   <div class="amt"><input id="tcd-amt" inputmode="decimal" placeholder="0.00" autocomplete="off"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div>`;
