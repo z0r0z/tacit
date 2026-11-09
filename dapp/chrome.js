@@ -100,7 +100,7 @@
 // The help desk's launcher (bottom right) is loaded where it is switched on: for everyone once LIVE is true, and before that for a browser that has set
 // localStorage "tacit.help" to "on" (a preview); "off" hides it for that browser. Not on the help page itself, nor inside a frame (the panel is that page, framed).
 (() => {
-  const LIVE = false;
+  const LIVE = true;
   let on = LIVE;
   try { const v = localStorage.getItem('tacit.help'); on = v === 'on' || (LIVE && v !== 'off'); } catch { /* storage refused: the default stands */ }
   if (!on || window.top !== window.self || location.pathname.startsWith('/help')) return;

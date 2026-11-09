@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// The help launcher (dapp/help/widget.js, loaded by dapp/chrome.js) in a real browser, under each page's own CSP. The launcher is off until it is switched on
-// (the constant in chrome.js, or localStorage "tacit.help" = "on" for a preview); with it on, every page that wears the site's header carries it, bottom right, and
+// The help launcher (dapp/help/widget.js, loaded by dapp/chrome.js) in a real browser, under each page's own CSP. The launcher is shown by default
+// (the LIVE constant in chrome.js; a browser can choose localStorage "tacit.help" = "off"); every page that wears the site's header carries it, bottom right, and
 // opens the help page in a panel: fetched only when first opened, framed by the page's own origin, closed by Escape (also from inside), and the same
 // conversation when it is opened again. The help desk behind it is a stand-in.
-//   checks: off by default; on every chrome page: the launcher is bottom right, nothing is fetched before it is pressed, the panel opens with the framed layout and no
+//   checks: shown by default and hidden by a browser's "off"; on every chrome page: the launcher is bottom right, nothing is fetched before it is pressed, the panel opens with the framed layout and no
 //   frame or CSP refusal, it closes and the launcher has the focus again; the behaviour once (a question, Escape from the page and from the frame, a second opening,
 //   tacitHelp.open()); not on the help page itself nor inside the frame; a phone sheet in both colour schemes.
 //
@@ -43,12 +43,13 @@ const b = await chromium.launch({ channel: 'chromium-headless-shell' });
 const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*' };
 const HELP_HOST = /^https:\/\/tacit-helpdesk\.onrender\.com\//;
 
-async function open(rel, { on = true, viewport = { width: 1100, height: 800 }, scheme = 'light' } = {}) {
+async function open(rel, { on = true, off = false, viewport = { width: 1100, height: 800 }, scheme = 'light' } = {}) {
   const ctx = await b.newContext({ viewport, colorScheme: scheme });
   const page = await ctx.newPage();
   const refused = [], helpCalls = [], asks = [];
   page.on('console', (m) => { const t = m.text(); if (/frame-src|frame-ancestors|framing|x-frame/i.test(t) && /Refused|violates|blocked/i.test(t)) refused.push(t.slice(0, 200)); });
   if (on) await page.addInitScript(() => { try { localStorage.setItem('tacit.help', 'on'); } catch {} });
+  if (off) await page.addInitScript(() => { try { localStorage.setItem('tacit.help', 'off'); } catch {} });
   await page.route(/^https?:\/\/(?!127\.0\.0\.1)/, (route) => route.abort());
   await page.route(HELP_HOST, (route) => {
     const q = route.request(), u = new URL(q.url()); helpCalls.push(`${q.method()} ${u.pathname}`);
@@ -65,12 +66,16 @@ const shot = async (p, name) => { if (SHOTS) await p.screenshot({ path: join(SHO
 const gap = (page) => page.evaluate(() => { const r = document.querySelector('.hw-b').getBoundingClientRect(); return { right: Math.round(innerWidth - r.right), bottom: Math.round(innerHeight - r.bottom), w: Math.round(r.width) }; });
 
 try {
-// ── off until it is switched on ──
+// ── shown by default (LIVE in chrome.js), hidden for a browser that chose "off" ──
 for (const rel of ['index.html', 'pay/index.html', 'prove/index.html']) {
-  const { page, ctx, helpCalls } = await open(rel, { on: false });
-  await page.waitForTimeout(700);
-  ok((await page.locator('.hw').count()) === 0 && (await page.evaluate(() => window.tacitHelp)) === undefined && helpCalls.length === 0, `${rel}: no launcher, and no word to the help desk, until it is switched on`);
-  await ctx.close();
+  const a = await open(rel, { on: false });   // no preference stored
+  await a.page.locator('.hw-b').waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
+  ok((await a.page.locator('.hw-b').count()) === 1 && a.helpCalls.length === 0, `${rel}: the launcher is there by default, and has said nothing to the help desk`);
+  await a.ctx.close();
+  const b2 = await open(rel, { on: false, off: true });
+  await b2.page.waitForTimeout(700);
+  ok((await b2.page.locator('.hw').count()) === 0 && (await b2.page.evaluate(() => window.tacitHelp)) === undefined && b2.helpCalls.length === 0, `${rel}: a browser that chose "off" gets no launcher and no word to the help desk`);
+  await b2.ctx.close();
 }
 
 // ── every page that wears the site's header ──
@@ -141,6 +146,27 @@ for (const rel of PAGES) {
   ok((await page.locator('#hw-p .hw-f').count()) === 1 && (await page.locator('#hw-p iframe').count()) === 0, 'opened again it says the same, without trying the frame again');
   await ctx.close();
   helpCoep = true;
+}
+
+// ── the "page updated" notice's Reload button never sits under the launcher, on a range of phone widths ──
+for (const width of [320, 360, 390]) {
+  const ctx = await b.newContext({ viewport: { width, height: 700 } });
+  const page = await ctx.newPage();
+  await page.addInitScript(() => { window.__tacitUpd = true; });
+  let etag = 'W/"one"';
+  await page.route(/^https?:\/\/(?!127\.0\.0\.1)/, (route) => route.abort());
+  await page.route(`${BASE}/pay/`, (route) => (route.request().method() === 'HEAD' ? route.fulfill({ status: 200, headers: { etag, 'content-type': 'text/html' }, body: '' }) : route.continue()));
+  await page.clock.install();
+  await page.goto(`${BASE}/pay/`, { waitUntil: 'load' });
+  await page.locator('.hw-b').waitFor({ state: 'visible', timeout: 15000 });
+  etag = 'W/"two"';
+  await page.clock.runFor(11 * 60e3);
+  await page.evaluate(() => { Object.defineProperty(document, 'hidden', { value: false, configurable: true }); document.dispatchEvent(new Event('visibilitychange')); });
+  await page.waitForSelector('[role=status] button', { timeout: 15000 });
+  const m = await page.evaluate(() => { const r = (e) => e.getBoundingClientRect(); const a = r(document.querySelector('[role=status] button')), l = r(document.querySelector('.hw-b'));
+    const e = document.elementFromPoint(a.x + a.width / 2, a.y + a.height / 2); return { apart: a.right <= l.left || a.left >= l.right || a.bottom <= l.top || a.top >= l.bottom, reached: !!e && !!e.closest('[role=status]') }; });
+  ok(m.apart && m.reached, `${width} px: the notice's Reload button is clear of the launcher and is what a tap reaches`);
+  await ctx.close();
 }
 
 // ── not on the help page itself ──
