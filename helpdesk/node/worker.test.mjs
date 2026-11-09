@@ -1,0 +1,81 @@
+// node node/worker.test.mjs -- the standalone node against the REAL gateway (server.mjs as a process, community-nodes-only) and a stand-in for the model.
+// A visitor's question reaches the node, the node's answer reaches the visitor and is credited, an empty model answer is handed back and the question
+// is answered on the next try, a job the node will not run is refused, and the program wants an address.
+import { spawn, spawnSync } from 'node:child_process';
+import http from 'node:http';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { clampJob, run, MAX_JOB } from './worker.mjs';
+
+const HERE = path.dirname(new URL(import.meta.url).pathname), ROOT = path.dirname(HERE);
+const PORT = 8795, API = `http://127.0.0.1:${PORT}`, data = mkdtempSync(path.join(tmpdir(), 'wk-'));
+let fails = 0; const check = (n, c, x = '') => { console.log((c ? 'ok   ' : 'FAIL ') + n + (x ? '  ' + x : '')); if (!c) fails++; };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ── clampJob ──
+const msgs = [{ role: 'system', content: 's' }, { role: 'user', content: 'u' }];
+check('a job is cut down to its id, its messages, a token budget of 16-500 and a temperature of 0-1',
+  JSON.stringify(clampJob({ id: 'a', messages: msgs, max_tokens: 5000, temperature: 7 })) === JSON.stringify({ id: 'a', messages: msgs, max_tokens: 500, temperature: 1 })
+  && clampJob({ id: 'a', messages: msgs, max_tokens: 1, temperature: -1 }).max_tokens === 16 && clampJob({ id: 'a', messages: msgs }).max_tokens === 300 && clampJob({ id: 'a', messages: msgs }).temperature === 0.2);
+check('jobs this node will not run: no id, a long id, no messages, five messages, a message without text, too many bytes',
+  [{ messages: msgs }, { id: 'x'.repeat(65), messages: msgs }, { id: 'a', messages: [] }, { id: 'a', messages: Array(5).fill(msgs[0]) }, { id: 'a', messages: [{ role: 'user' }] },
+    { id: 'a', messages: [{ role: 'user', content: 'x'.repeat(MAX_JOB) }] }, null, {}].every((j) => clampJob(j) === null));
+
+// ── the gateway and the model ──
+let mode = 'ok'; const seen = [];
+const STOP = new Set('the and for are you can how what who which with from that this have will does about into your them there'.split(' '));
+const model = http.createServer((req, res) => {
+  let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => {
+    const body = JSON.parse(b || '{}'); seen.push(body);
+    const user = (body.messages || []).find((m) => m.role === 'user')?.content || '';
+    const q = (user.split('QUESTION:').pop() || '').toLowerCase(), ex = user.split('QUESTION:')[0];
+    const words = (q.match(/[a-z0-9]{4,}/g) || []).filter((w) => !STOP.has(w));
+    const sents = ex.split(/(?<=[.!?])\s+|\n+/).map((s) => s.trim()).filter((s) => s.length > 20 && s.length < 400);
+    const top = sents.map((s) => [words.filter((w) => s.toLowerCase().includes(w)).length, s]).sort((a, c) => c[0] - a[0]).slice(0, 6).map((x) => x[1]);
+    const content = mode === 'empty' ? '' : ('FAKE ANSWER. ' + (ex.split('\n').find((l) => l.startsWith('A: '))?.slice(3) ?? top.join(' '))).slice(0, 1200);
+    res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content } }] }));
+  });
+}).listen(0, '127.0.0.1');
+await new Promise((r) => model.on('listening', r));
+const LLM = `http://127.0.0.1:${model.address().port}`;
+
+const gw = spawn(process.execPath, ['server.mjs', 'serve'], { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'],
+  env: { ...process.env, EMB: 'off', LLM_URLS: '', DATA_DIR: data, PORT: String(PORT), TRUST_PROXY: '1', RATE_PER_MIN: '1000', LEASE_WAIT_MS: '15000', POINTS_MAX_DAY: '100', SCAN_REPO: '' } });
+let log = ''; gw.stderr.on('data', (d) => (log += d)); gw.stdout.on('data', (d) => (log += d));
+const ac = new AbortController();
+let loop;
+try {
+  for (let i = 0; i < 80; i++) { try { if ((await fetch(`${API}/health`)).ok) break; } catch {} await sleep(250); }
+  const miner = '0x' + 'ab'.repeat(20);
+  const lines = [];
+  loop = run({ api: API, llm: LLM, miner, say: (t) => lines.push(t), signal: ac.signal, idleMs: 200 });
+  const ask = async (q) => (await fetch(`${API}/ask`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': '7.7.7.7' }, body: JSON.stringify({ q }) })).json();
+
+  const a = await ask('How many TAC exist, and can more be minted?');
+  check("a visitor's question is answered by the node", typeof a.answer === 'string' && a.answer.startsWith('FAKE ANSWER') && !a.unavailable, `"${String(a.answer).slice(0, 60)}"`);
+  const call = seen.find((c) => c.model === 'local');
+  check('the model is asked with thinking off, the job\'s messages and a bounded budget', call?.chat_template_kwargs?.enable_thinking === false && Array.isArray(call.messages) && call.max_tokens >= 16 && call.max_tokens <= 500);
+  const st = await (await fetch(`${API}/helpdesk/stats`)).json();
+  check('the answer is credited to the node\'s address', st.miners.some((m) => m.miner === miner.slice(0, 8) + '…' + miner.slice(-4) && m.answered >= 1 && m.points >= 1), JSON.stringify(st.miners));
+
+  mode = 'empty';
+  const pending = ask('What do I get for holding TAC?');
+  await sleep(2500); mode = 'ok';
+  const b = await pending;
+  check('an empty model answer is handed back, and the question is answered on the next try', typeof b.answer === 'string' && b.answer.startsWith('FAKE ANSWER'), `"${String(b.answer).slice(0, 60)}"`);
+  check('the node said it gave up', lines.some((l) => /gave up .*no answer/.test(l)), lines.join(' | ').slice(0, 200));
+  const st2 = await (await fetch(`${API}/helpdesk/stats`)).json();
+  check('and the help desk counted the error against it', st2.miners[0].errors >= 1);
+
+  ac.abort();
+  const t0 = Date.now(); await loop;
+  check('the node stops when told to', Date.now() - t0 < 3000);
+
+  const bare = spawnSync(process.execPath, [path.join(HERE, 'worker.mjs')], { env: { ...process.env, MINER: '' }, encoding: 'utf8' });
+  check('started without an address it says so and exits', bare.status === 2 && /MINER/.test(bare.stderr));
+} finally {
+  ac.abort(); gw.kill('SIGTERM'); model.close(); await sleep(100); rmSync(data, { recursive: true, force: true });
+}
+console.log(fails ? `${fails} FAILED` : 'worker: all tests passed'); if (fails) console.log(log.slice(-600));
+process.exit(fails ? 1 : 0);
