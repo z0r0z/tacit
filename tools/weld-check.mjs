@@ -14103,6 +14103,31 @@ await step('chaintile', async () => {
         ok(await chainUntil(async () => !!(await (await fetch(`http://${NODE}/address/${h}`)).json().catch(() => ({}))).address, 60000), 'chaintile: and the page published it to the leader\'s directory');
         if (r.errors.length) { fails++; console.log('FAIL chaintile (bob) page errors: ' + r.errors.slice(0, 3).join(' | ')); }
       } finally { await r.browser.close(); } }
+    // CHAINTILE_ERIN=1: only this. Erin holds private TAC in the pool and none on the chain; Bob's link is paid from the pool in one press: the relay's
+    // move onto the chain (stubbed, its fee pinned), then the payment, with the steps shown and the receipt saying how.
+    if (process.env.CHAINTILE_ERIN) {
+      const ERIN = 'e41a'.padEnd(64, '4');
+      const re = await chainPage(ERIN, { width: 390, height: 900 }, 'light', async (x) => {
+        await x.ctx.exposeFunction('__payOut', async (to, wei) => { await fundTac(to, BigInt(wei)); return true; });
+        await stubFarmUxRoute(x.page, { notes: [['@TAC', 50n * 10n ** 8n]], pool: true });
+      }), pe = re.page;
+      try {
+        await pe.goto(`${re.url}tac/#to=${bobAddr}&amt=1.5`);
+        await until(pe, () => /from your DeFi pool/.test(document.querySelector('#tco-go')?.textContent || '') && !document.querySelector('#tco-go').disabled, null, 600000).catch(() => {});
+        ok(/^Pay 1\.5 TAC from your DeFi pool$/.test(await text(pe, '#tco-go')) && /DeFi pool, private/.test(await text(pe, '#tco-rows')), `chaintile: Erin, private TAC only in the pool: Pay from your DeFi pool (${await text(pe, '#tco-go')} | ${await text(pe, '#tco-rows')} | ${await text(pe, '#tco-st')})`);
+        await pe.evaluate(() => { window.__fl = []; const t0 = performance.now(), el = document.querySelector('#tco-flow');
+          new MutationObserver(() => { const now = el.querySelector('li.now')?.textContent || (el.hidden ? 'hidden' : ''); if (window.__fl.at(-1)?.t !== now) window.__fl.push({ s: ((performance.now() - t0) / 1000).toFixed(1), t: now.slice(0, 50) }); }).observe(el, { childList: true, subtree: true, attributes: true }); });
+        const t1 = Date.now();
+        await pe.click('#tco-go');
+        await until(pe, () => !document.querySelector('#tco-done')?.hidden && /Paid/.test(document.querySelector('#tco-done')?.textContent || '') || /class="err"/.test(document.querySelector('#tco-st')?.innerHTML || ''), null, 900000).catch(() => {});
+        const po = await pe.evaluate(() => window.__poolOut || null);
+        ok(/Paid/.test(await text(pe, '#tco-done')) && /Moved from the DeFi pool/.test(await text(pe, '#tco-done')) && /unwrap/.test(po?.kind || ''),
+          `chaintile: one press from the DeFi pool: the relay's move, then paid, ${Math.round((Date.now() - t1) / 1000)} s (steps: ${JSON.stringify(await pe.evaluate(() => window.__fl))} | ${(await text(pe, '#tco-done')).slice(0, 120)} | ${await text(pe, '#tco-st')} | out: ${JSON.stringify(po)})`);
+        if (SHOTS) await pe.screenshot({ path: join(SHOTS, 'weld-chaintile-erin.png') });
+        if (re.errors.length) { fails++; console.log('FAIL chaintile (erin) page errors: ' + re.errors.slice(0, 3).join(' | ')); }
+      } finally { await re.browser.close(); }
+      return;
+    }
     // Alice shields 25 TAC from her paying account onto the chain from the Swap card, sends Bob 10 from the Send tab, and withdraws 5
     const r = await chainPage(ALICE, { width: 1280, height: 1500 }), p = r.page;
     try {
