@@ -1,4 +1,4 @@
-import { openBtcWallet } from '/trade/btc-session.js?cb=fdb26381';
+import { openBtcWallet } from '/trade/btc-session.js?cb=fccef3b3';
 import { isPasskeyAvailable } from '/prf-wallet.js';
 import { makeKeySession, signInSheet } from '/trade/key.js?cb=e7b6ebe6';
 import { makeTacitSession } from '/tacit-session.js?cb=a2d34bb2';
@@ -15,7 +15,7 @@ import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 // (docs/FAST-BRIDGE.md). The providers are the ones /fast/lp.json names, each with the key it signs for, and the ones that post
 // their ads on the boards it names. A provider run on this machine can be named in the address
 // (?lp=<url>&claimPub=<hex>&board=<url>) when the page is open from localhost.
-const TACIT_URL = '/tacit.js?cb=85f45a38';
+const TACIT_URL = '/tacit.js?cb=da6e0cfc';
 
 async function lists() {
   const q = new URLSearchParams(location.search);
