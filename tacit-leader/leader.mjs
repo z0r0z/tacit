@@ -419,7 +419,14 @@ async function main() {
   setInterval(() => keepSeed().catch((e) => log({ seedNotKept: String(e.message || e) })), 4000);
   for (;;) {
     try { await step(); } catch (e) { log({ error: String(e.message || e) }); }
-    await new Promise((r) => setTimeout(r, POLL));
+    // between steps the node's mempool is looked at each second (a local read): a spend that arrives starts the next step at once, so a payment
+    // is built into a block within a second of the leader taking it, not up to POLL later
+    const since = Date.now(), had = await node('GET', '/mempool').then((m) => (m.spends || []).length + (m.settles || []).length, () => 0);
+    while (Date.now() - since < POLL) {
+      await new Promise((r) => setTimeout(r, 1000));
+      const now = await node('GET', '/mempool').then((m) => (m.spends || []).length + (m.settles || []).length, () => 0);
+      if (now > had) break;
+    }
   }
 }
 

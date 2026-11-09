@@ -52,10 +52,11 @@ export async function send(rpc, priv, to, data, { chainId, gasPad = 1.25, tip = 
   const { raw, hash } = evmTx.signEip1559({ chainId, nonce: BigInt(nonce), maxPriorityFeePerGas: tip, maxFeePerGas: maxFee, gasLimit: BigInt(Math.ceil(num(est) * gasPad)), to, value: 0n, data: hexOf(data) }, hexOf(bytesOf(priv)).slice(2));
   const txHash = await rpc.call('eth_sendRawTransaction', [raw]);
   if (!wait) return { hash: txHash };
-  for (let i = 0; i < 180; i++) {
+  // looked for each second: a block lands (and its payouts follow) as soon as Ethereum includes it
+  for (let i = 0; i < 360; i++) {
     const r = await rpc.call('eth_getTransactionReceipt', [txHash]);
     if (r) { if (r.status !== '0x1') throw new Error(`tx ${txHash} reverted`); return r; }
-    await new Promise((r2) => setTimeout(r2, 2000));
+    await new Promise((r2) => setTimeout(r2, 1000));
   }
   throw new Error(`tx ${txHash} not mined in time`);
 }
