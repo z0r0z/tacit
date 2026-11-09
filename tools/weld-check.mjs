@@ -211,8 +211,8 @@ const DAPP = new URL('../dapp/', import.meta.url).pathname;
 // Borrow reports under each step's own line (#bw-s1…#bw-s4) as well as the sheet's: read them all.
 const bwText = (page) => page.evaluate((s) => [...document.querySelectorAll(s)].map((e) => e.textContent).join(' '), '#bw-status, #bw-s1, #bw-s2, #bw-s3, #bw-s4');
 // `ui`: the front page's tile and landing, the steps a look-and-copy pass needs (tools/weld-ui.sh runs them on a pinned, cached fork)
-const UI_STEPS = 'links,swapurl,swapfield,hints,hxbridge,hxfold,hxnudge,tradelinks';
-const ONLY = new Set((process.argv[2] === 'ui' ? UI_STEPS : process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,hxbridgeu,usdtwrap,usdtwrapw,usdtout,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,swaphere,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,shieldsrc,shieldwc,provebar,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,nohost,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,tileahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,anyone,relayfail,selfwallet,slowline,fastroute,chainoff,chaintile').split(','));
+const UI_STEPS = 'links,tacbuy,swapurl,swapfield,hints,hxbridge,hxfold,hxnudge,tradelinks';
+const ONLY = new Set((process.argv[2] === 'ui' ? UI_STEPS : process.argv[2] || 'airdrop,links,tacbuy,swapurl,swapfield,hints,hxbridge,hxbridgec,hxbridgeu,usdtwrap,usdtwrapw,usdtout,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,swaphere,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,shieldsrc,shieldwc,provebar,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,nohost,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,tileahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,anyone,relayfail,selfwallet,slowline,fastroute,chainoff,chaintile').split(','));
 const FORK = process.argv[3] || 'https://mainnet.gateway.tenderly.co';
 const SHOTS = process.env.SHOTS || null;
 const PORT = 20000 + Math.floor(Math.random() * 2000), WEB = PORT + 1;
@@ -573,6 +573,13 @@ const ethIn = async (p) => {
   await p.click('#wallet-body [data-in="eth"]');
   await until(p, () => !!document.querySelector('#wallet-dot.on'), null, 180000);
   await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
+};
+// A zap whose share Tacit's prover has not proved in time stops at a choice ("The proof is taking a little longer": prove it yourself, or send the zap and let the relay
+// finish it) and waits for the holder: a check about the relay's way takes it, once the card has either gone on by itself or offered it
+const takeRelayWay = async (p, sel) => {
+  await until(p, (s) => window.__farmCalls.some((c) => c.startsWith('bond:')) || !!document.querySelector(`${s} [data-zapway="relay"]`), sel, 300000).catch(() => {});
+  const way = await p.$(`${sel} [data-zapway="relay"]`);
+  if (way) await way.click();
 };
 const tabClick = async (page, k) => { if (!(await page.$(`[data-hxm="${k}"]`))) await page.click('[data-hxm="more"]'); await page.click(`[data-hxm="${k}"]`); };
 // The card folds away a way beside the one in use behind a line that opens them: a test opens it before it presses one.
@@ -9087,6 +9094,7 @@ await step('farmzapeth', async () => {
     await p.setViewportSize({ width: 1280, height: 900 });
     const t0 = await total();
     await p.click('#sz-go-0');
+    await takeRelayWay(p, '#sf-status-0');
     await until(p, () => window.__farmCalls.some((c) => c.startsWith('bond:')) || (/err/.test(document.querySelector('#sf-status-0')?.innerHTML || '') && !/taking longer than usual|not available right now/.test(document.querySelector('#sf-status-0')?.textContent || '')), null, 300000);
     const calls = await p.evaluate(() => window.__farmCalls), w = await p.evaluate(() => window.__zapWrap);
     if (!w) throw new Error(`no zap: ${await text(p, '#sf-status-0')} ${JSON.stringify(calls)}`);
@@ -10206,6 +10214,24 @@ await step('hxdry', async () => {
 
 // With no amount typed the card's button asks for one where it is typed (the field takes the keyboard and the line says so) rather than open a sheet that
 // asks again; with one it goes on as before, and a way that takes whole notes, with no amount to type, still opens its sheet.
+// TAC's page, signed in with a wallet that holds no TAC: the card's Shield tab says so and leads to the ways to get some (Buy with ETH draws the tile in the page
+// with ETH for TAC, Buy with sats goes to TAC's trade page, Claim your airdrop to Rewards)
+await step('tacbuy', async () => {
+  const r = await openPage({ account: A0, key: K0 });
+  const p = r.page;
+  try {
+    await p.goto(r.url + '#bridge');
+    await p.waitForSelector('html[data-page="tac"] #tpg-card', { timeout: 120000 });
+    await ethIn(p);
+    await until(p, () => /No TAC in your wallet/.test(document.querySelector('#tpg-card')?.innerText || ''), null, 180000);
+    const hint = await p.$eval('#tpg-card', (c) => ({ buy: !!c.querySelector('button[data-hx="swap:ether:tac"]'), sats: c.querySelector('a[href="/trade/tac/#btc=buy"]')?.getAttribute('href'), claim: c.querySelector('a[href="/rewards/"]')?.getAttribute('href') }));
+    ok(hint.buy && hint.sats === '/trade/tac/#btc=buy' && hint.claim === '/rewards/', `tacbuy: with no TAC in the wallet the Shield tab says so, with Buy with ETH, Buy with sats and Claim your airdrop (${JSON.stringify(hint)})`);
+    await p.click('#tpg-card button[data-hx="swap:ether:tac"]');
+    ok((await cardIs(p, 'ETH>TAC')) && !!(await p.$('#tpg-act:not([hidden]) #hx')), 'tacbuy: its Buy with ETH draws the tile on TAC\'s page with ETH for TAC');
+    if (r.errors.length) { fails++; console.log('FAIL tacbuy page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { await r.browser.close(); }
+});
+
 await step('hxnudge', async () => {
   const r = await openPage({ account: A0, key: K0 });
   const p = r.page, open = () => p.evaluate(() => [...document.querySelectorAll('dialog')].filter((d) => d.open).map((d) => d.id).join());
