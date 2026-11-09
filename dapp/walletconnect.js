@@ -1,6 +1,6 @@
 
 export const WC_PROJECT_ID = '1e8390ef1c1d8a185e035912a1409749';
-const BUNDLE = '/vendor/tacit-walletconnect.min.js?cb=e850e423';
+const BUNDLE = '/vendor/tacit-walletconnect.min.js?cb=29a8864b';
 const ICON = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#3B99FC"/>'
   + '<path transform="translate(10 18.5) scale(.147)" fill="#fff" d="M61.4 36.3c48.9-47.9 128.3-47.9 177.2 0l5.9 5.8c2.4 2.4 2.4 6.3 0 8.7l-20.1 19.7c-1.2 1.2-3.2 1.2-4.4 0l-8.1-7.9c-34.1-33.4-89.4-33.4-123.5 0l-8.7 8.5c-1.2 1.2-3.2 1.2-4.4 0L55.2 51.4c-2.4-2.4-2.4-6.3 0-8.7l6.2-6.4zm218.9 40.8l17.9 17.5c2.4 2.4 2.4 6.3 0 8.7l-80.7 79c-2.4 2.4-6.4 2.4-8.9 0l-57.3-56.1c-.6-.6-1.6-.6-2.2 0L91.8 182.3c-2.4 2.4-6.4 2.4-8.9 0L1.8 103.3c-2.4-2.4-2.4-6.3 0-8.7l17.9-17.5c2.4-2.4 6.4-2.4 8.9 0l57.3 56.1c.6.6 1.6.6 2.2 0l57.3-56.1c2.4-2.4 6.4-2.4 8.9 0l57.3 56.1c.6.6 1.6.6 2.2 0l57.3-56.1c2.4-2.4 6.4-2.4 8.9 0z"/></svg>');
 const ASKS = new Set(['personal_sign', 'eth_sign', 'eth_signTypedData', 'eth_signTypedData_v4', 'eth_sendTransaction', 'wallet_switchEthereumChain', 'wallet_addEthereumChain', 'wallet_watchAsset']);

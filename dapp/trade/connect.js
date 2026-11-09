@@ -1,4 +1,4 @@
-import { announceWalletConnect, wcSheets, WC_PROJECT_ID } from '/walletconnect.js?cb=e0b29a34';
+import { announceWalletConnect, wcSheets, WC_PROJECT_ID } from '/walletconnect.js?cb=843803d6';
 import { makeWallet, UserStopped } from '/trade/wallet.js?cb=88b623b8';
 import { overlay, esc } from '/trade/sheet.js?cb=84cda8f2';
 import { rpc, RPCS, short, $ } from '/trade/util.js?cb=ba5a02b1';

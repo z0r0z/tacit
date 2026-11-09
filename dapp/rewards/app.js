@@ -2,7 +2,7 @@ import { secp, keccak_256 } from '/vendor/tacit-deps.min.js';
 import { makeConfidentialNames, makeMainnetCall, MAINNET_RPCS, NameError } from '/confidential-names.js?cb=d41cb8bd';
 import { bodyType } from '/rpc-body.js';
 import { makeTacAirdrop } from '/tac-airdrop.js';
-import { makeConnect, UserStopped } from '/trade/connect.js?cb=39145e86';
+import { makeConnect, UserStopped } from '/trade/connect.js?cb=25c70027';
 import { rpc as readRpc } from '/trade/util.js?cb=ba5a02b1';
 import { nodeHealth } from '/trade/rpc.js';
 import { batchReads } from '/trade/batch.js';
