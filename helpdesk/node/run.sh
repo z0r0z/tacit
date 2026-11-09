@@ -11,7 +11,8 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 [[ "${MINER:-}" =~ ^0x[0-9a-fA-F]{40}$ ]] || die "set MINER to an Ethereum address (0x and 40 hex digits): the help desk credits your answers to it"
 command -v node >/dev/null || die "Node 18 or newer is needed (https://nodejs.org)"
 node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 18 ? 0 : 1)' || die "Node 18 or newer is needed, this is $(node --version)"
-bash "$HERE/fetch.sh" || exit 1
+# the download takes a while: an idle laptop is kept awake for it (a sleeping computer stalls it)
+if command -v caffeinate >/dev/null 2>&1; then caffeinate -i bash "$HERE/fetch.sh" || exit 1; else bash "$HERE/fetch.sh" || exit 1; fi
 
 LPID=
 stop() { [ -n "$LPID" ] && kill "$LPID" 2>/dev/null; }
