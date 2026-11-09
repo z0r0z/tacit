@@ -1318,6 +1318,26 @@ html[data-page="tac"] :is(.hero, #dash, #how, #tac, .pg, .sx.pi), html:not([data
 .tcd .keyrow { margin-top: 14px; }
 .tcd-foot { margin: 16px 0 0; padding-top: 14px; border-top: 1px solid var(--hair); font-size: 12.5px; color: var(--mute); text-wrap: pretty; }
 .tcd-foot:empty { display: none; }
+/* the card, plain like the chain over it: no frame (a hairline above), a text switch, the balance in the serif, fields on one hairline */
+.tcd { padding: 24px 0 0; background: none; border: 0; border-top: 1px solid var(--hair); }
+.tcd-seg { display: flex; gap: 24px; padding: 0; background: none; border: 0; }
+.tcd-seg button { min-height: 32px; padding: 0 0 4px; font-size: 12px; border-bottom: 1px solid transparent; }
+.tcd-seg button[aria-pressed="true"] { background: none; box-shadow: none; border-bottom-color: var(--ink); }
+.tcd-bal { margin-top: 24px; }
+.tcd-k { font-size: 12px; }
+.tcd-v { margin-top: 8px; font: 400 44px/1 var(--serif); letter-spacing: -.01em; }
+.tcd-v small { font-size: 12px; }
+.tcd-sub { font-size: 12px; }
+.tcd-tabs { margin-top: 24px; }
+.tcd-tabs button { font-size: 12px; }
+.tcd .lbl { margin: 16px 0 8px; }
+.tcd .amt { background: none; border: 0; border-bottom: 1px solid var(--hair-2); }
+.tcd .amt:focus-within { border-bottom-color: var(--ink); }
+.tcd .amt:has(input[aria-invalid="true"]) { border-bottom-color: var(--err); }
+.tcd .amt input, .tcd .amt.out output { padding-left: 0; }
+.tcd .amt .u { padding-right: 0; }
+.tcd-line, .tcd-dest, .tcd .keyrow { margin-top: 16px; }
+.tcd-foot { margin-top: 24px; padding-top: 0; border-top: 0; font-size: 12px; }
 .tpg-fold { border-top: 1px solid var(--hair); }
 #tpg-where { margin-top: 32px; }
 .tpg-ways { margin: 8px 0 0; font-size: 12px; }
@@ -1546,7 +1566,7 @@ html[data-page="tac"] :is(.hero, #dash, #how, #tac, .pg, .sx.pi), html:not([data
   .tpg-tot { font-size: 28px; }
   .tpg-get, .tpg-fees { grid-template-columns: 1fr; }
   .tpg-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .tcd { padding: 18px 14px 16px; }
+  .tcd { padding: 24px 0 0; }
   .tcd-v { font-size: 30px; }
   .tcd-tabs button, .tcd .tp > .seg.sub:first-child button { padding: 8px 2px; font-size: 12.5px; }
   .tcd-dest button { padding: 6px 2px; font-size: 12px; }
