@@ -43,6 +43,7 @@ const ZERO_LEAF = '0x' + '0'.repeat(64);
 const PUBLICS_LEN = 12 * 32, PROOF_LEN = 2080, HINTS_LEN = 20 * 64, MEMO_LEN = 1152;
 /// How long a spend kept here is offered again before it is given up on (a deposit goes back after 7 days).
 const KEEP_MS = 30 * 864e5;
+const SHIELD_AHEAD_MS = 3 * 60e3;                                 // a shield proved ahead is used within three minutes, at the rate it was proved at
 
 /// What a Tacit key signs to name its chain address at a leader's directory: SHA-256("tacit-chain-key-v1" ‖ key ‖ address). A Tacit address
 /// from before the chain carries the key but not the chain lane, so a payer finds the chain address under the key and checks this signature.
@@ -378,6 +379,12 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
     /// The same, each payment on its own: [{ key, units }], `key` the note's leaf (the same key `has` takes once its block landed and it was
     /// scanned), oldest first. [] when nothing comes, or the leader lists none.
     incomingNotes,
+    /// The notes of the wallet's last scan: [{ key (as `incomingNotes` keys them), units (each one's worth at the chain's rate now) }].
+    async noteList() {
+      await ready();
+      const r = await rate();
+      return st.notes.map((n) => ({ key: leafKey(n.leaf), units: worthOf(BigInt(n.value), r) }));
+    },
     /// Whether the wallet's last scan holds the note of this key (an `incomingNotes` key): its block landed.
     has: (key) => st.notes.some((x) => leafKey(x.leaf) === key),
     /// The spends handed over and not landed, oldest first (those that landed or whose notes went another way are dropped here).
@@ -454,6 +461,8 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
       return {
         deposit: d,
         fee: f.units,
+        // what it was proved at: the pool's rate and when, for `shieldFresh` (a shield proved while its form is filled, handed over later)
+        rate: r, at: Date.now(), units: BigInt(amount),
         // what the leader takes to send a holder's permit for the inbox in (TAC wei, on top of the deposit): the permit's value is
         // `permitValue`, its `fee` this
         sweepFee: f.sweepFee,
@@ -470,6 +479,15 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
         // kept with the spend, so a reload hands it over again.
         offer: (o = {}) => offer(s, { ...(o.back ? { back: o.back } : {}), ...(o.permit ? { permit: o.permit } : {}) }, { kind: 'shield', units: amount, meta: { back: o.back || o.permit?.back, ...(o.meta || {}) } }),
       };
+    },
+    /// Whether a shield proved ahead can still go for `amount`: the pool's rate is the one it was proved at (a block landing moves it, and a shield
+    /// is proved for a share count the deposit must still buy) and it is young; the leader's sweep fee is read again and kept on it.
+    async shieldFresh(sh, amount) {
+      await ready();
+      const [r, f] = await Promise.all([rate(), feeNow()]);
+      if (!sh?.rate || sh.units !== BigInt(amount) || r.pool !== sh.rate.pool || r.shares !== sh.rate.shares || Date.now() - sh.at > SHIELD_AHEAD_MS) return false;
+      sh.sweepFee = f.sweepFee;
+      return true;
     },
     /// An inbox's TAC (in the token's smallest units) and whether it was swept (its sweep leaves code at the address).
     async inboxState(addr) {
