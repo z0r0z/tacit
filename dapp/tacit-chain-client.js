@@ -408,8 +408,9 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
     giveBackCalldata: (d, back) => '0x' + sel('giveBack(uint256,uint256,bytes32,bytes32,bytes32,bytes32)') + depWords(d) + strip(back),
     /// What a move of `units` costs now and whether the notes cover it: { fee (the leader's, units), holders (units the chain's holders
     /// keep: a payment's pool share, an exit's fee, a shield's margin), arrives (a shield's: what its shares are worth), most (the most
-    /// that can move now, in units), cap (a shield's: the leader's launch cap on its deposit, null for none), sweepFee (a shield's: the
-    /// leader's for sending a permit in, TAC wei) }.
+    /// that can move now, in units), first (a payment's or exit's: what the largest note is worth, so what a shield must add for one that
+    /// does not fit: a spend takes up to two notes, and a new note pairs with the largest), cap (a shield's: the leader's launch cap on its
+    /// deposit, null for none), sweepFee (a shield's: the leader's for sending a permit in, TAC wei) }.
     async quote(kind, units = 0n) {
       await ready();
       const [r, f] = await Promise.all([rate(), feeNow()]);
@@ -420,11 +421,11 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
         const arrives = sh > feeSh ? worthOf(sh - feeSh, r) : 0n;
         return { fee: f.units, holders: u > arrives + f.units ? u - arrives - f.units : 0n, arrives, most: null, cap: f.shieldCap, sweepFee: f.sweepFee };
       }
-      const avail = topTwo() - feeSh - (kind === 'pay' ? poolShare(r) : 0n);
-      if (kind === 'pay') return { fee: f.units, holders: worthOf(poolShare(r), r), most: avail > 0n ? worthOf(avail, r) : 0n };
+      const avail = topTwo() - feeSh - (kind === 'pay' ? poolShare(r) : 0n), first = worthOf(owned().reduce((m, n) => (BigInt(n.value) > m ? BigInt(n.value) : m), 0n), r);
+      if (kind === 'pay') return { fee: f.units, holders: worthOf(poolShare(r), r), most: avail > 0n ? worthOf(avail, r) : 0n, first };
       let lo = 0n, hi = avail > 0n ? worthOf(avail, r) : 0n;
       while (lo < hi) { const mid = (lo + hi + 1n) / 2n; if (sharesToPay(mid, r) <= avail) lo = mid; else hi = mid - 1n; }
-      return { fee: f.units, holders: u > 0n ? worthOf(sharesToPay(u, r), r) - u : 0n, most: lo };
+      return { fee: f.units, holders: u > 0n ? worthOf(sharesToPay(u, r), r) - u : 0n, most: lo, first };
     },
     /// A shield of `amount` units: the shares it buys at the chain's rate (with a little margin, which stays with the holders), less the
     /// leader's fee, proven; then pay its deposit (`depositCalldata` after approving TAC, TAC to `inbox(back)`, or a holder's permit for

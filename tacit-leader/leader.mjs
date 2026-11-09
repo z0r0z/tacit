@@ -79,7 +79,7 @@ async function view(sig, types, args = [], to = BLOCKS) {
 // TacitBlocks.sweep for a deposit record (asset ‖ shares ‖ cx ‖ cy ‖ body ‖ amount) whose inbox holds its TAC, or, with a holder's
 // permit for the inbox, TacitBlocks.sweepWithPermit, which pulls it (the leader pays the gas and takes the permit's fee); false if
 // neither can be done yet.
-const swept = new Set();
+const swept = new Set(), permitRefused = new Set();
 async function sweepInbox(record, back, permit = null) {
   const r = bytesOf(record);
   const w = (i) => hexOf(r.subarray(32 * i, 32 * i + 32));
@@ -101,7 +101,9 @@ async function sweepInbox(record, back, permit = null) {
     data = new Uint8Array([...selector('sweepWithPermit(uint256,uint256,bytes32,bytes32,bytes32,bytes32,address,uint256,uint256,uint8,bytes32,bytes32)'),
       ...encode(pTypes, [...args, permit.owner, BigInt(permit.fee), BigInt(permit.deadline), BigInt(permit.v), permit.r, permit.s])]);
     // the permit's pull must succeed now: a simulation that reverts (a moved balance, a used permit with no allowance left) sends nothing
-    try { await rpc.call('eth_call', [{ from: me, to: BLOCKS, data: hexOf(data) }, 'latest']); } catch { return false; }
+    // (the first refusal of each inbox is logged, with why: the same one is tried again each round, quietly)
+    try { await rpc.call('eth_call', [{ from: me, to: BLOCKS, data: hexOf(data) }, 'latest']); }
+    catch (e) { if (!permitRefused.has(box)) { permitRefused.add(box); log({ permitRefused: box, owner: permit.owner, error: String(e?.message || e).slice(0, 240) }); } return false; }
   } else return false;
   swept.add(box);
   try {

@@ -111,6 +111,9 @@ try {
   assert.equal(await bob.scan(), payShares);
   assert.ok(bob.has(each[0].key), 'landed and scanned: the payment that was coming is his');
   assert.ok(await bob.worth() >= 300n * T, 'bob holds at least what alice paid');
+  { const q = await bob.quote('pay', 1000n * T), one = await bob.worth();
+    assert.ok(q.first > 0n && q.first <= one && q.first + 2n >= one, `a quote names what the largest note is worth (one note: all of it; ${q.first} of ${one})`);
+    assert.ok(q.most < 1000n * T && q.first + 0n >= q.most, 'and a payment over what fits is over its most'); }
 
   // a payment proved ahead (while a form is filled) is handed over later as it was proved; one proved from the same note goes stale once that
   // note is spent, and is not sent (Alice pays herself here: her wallet loses exactly the holders' pool share)

@@ -14284,6 +14284,60 @@ await step('chaintile', async () => {
         await pa.click('[data-tco-done]');
         await until(pa, () => !document.documentElement.querySelector('#sheet-tac.co') && !!document.querySelector('#tcd-to'), null, 10000).catch(() => {});
         ok(await pa.evaluate(() => !document.querySelector('#sheet-tac.co') && !document.querySelector('#tcd-to')?.value && !/^#to=/.test(location.hash)), 'chaintile: Done: the whole page again, the link gone and nothing left in Send to pay twice');
+        // From the wallet, one press: Carol holds TAC only in her account. Bob asks again (New request, 1.5 TAC); her checkout offers to pay it
+        // from her wallet (one signature makes enough private, then it pays), and it does: her receipt says so, and Bob's screen turns to Paid.
+        // (Carol's key address is used, ETH in it, so it is what pays; Dave's holds TAC only, so a wallet would pay, and none is connected)
+        const CAROL = 'ca10'.padEnd(64, '4'), cAcct = acctOf(CAROL), DAVE = 'da7e'.padEnd(64, '4'), dAcct = acctOf(DAVE);
+        await rpc('anvil_setBalance', [cAcct, '0x' + (10n ** 17n).toString(16)]);
+        await fundTac(dAcct, 10n * unit);
+        // a press that says what stood in its way, if anything did
+        const press = async (pg, sel, name) => {
+          try { await pg.click(sel, { timeout: 15000 }); }
+          catch (e) {
+            if (await pg.evaluate((q) => document.querySelector(q)?.getAttribute('aria-busy') === 'true', sel)) return;     // (it went: the press is under way)
+            if (SHOTS) await pg.screenshot({ path: join(SHOTS, `weld-chaintile-stuck-${name}.png`) }).catch(() => {});
+            const why = await pg.evaluate((q) => { const b = document.querySelector(q); if (!b) return 'not there'; const r = b.getBoundingClientRect(), top = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+              return `there (${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.width)}×${Math.round(r.height)}), on top: ${top ? top.tagName + '#' + top.id + '.' + top.className : 'none'}, dialog open: ${!!document.querySelector('#tac-req')?.open}`; }, sel);
+            throw new Error(`${name}: ${sel} could not be pressed (${why})`);
+          }
+        };
+        await fundTac(cAcct, 10n * unit);
+        await press(pb, '[data-treq-new]', 'bob-new');
+        await pb.fill('#tcd-link-amt', '1.5'); await pb.fill('#tcd-link-for', '');
+        await until(pb, () => /\/1\.5$/.test(document.querySelector('#tcd-linkrow [data-qr]')?.dataset.qr || ''), null, 10000).catch(() => {});
+        const link2 = await pb.evaluate(() => document.querySelector('#tcd-linkrow [data-qr]')?.dataset.qr || '');
+        await press(pb, '#tcd-req-go', 'bob-show');
+        await until(pb, () => /Waiting for the payment/.test(document.querySelector('#treq-b')?.textContent || '') && /1\.5\s*TAC/.test(document.querySelector('#treq-b')?.textContent || ''), null, 30000).catch(() => {});
+        const m2 = /\/to\/(tacit1[a-z0-9]+)\/1\.5$/.exec(link2);
+        { const rd = await chainPage(DAVE, { width: 390, height: 900 }), pd = rd.page;
+          try {
+            await pd.goto(`${rd.url}tac/#to=${m2?.[1] || ''}&amt=1.5`);
+            await until(pd, () => /Connect your wallet|from your|Get TAC/.test(document.querySelector('#tco-go')?.textContent || ''), null, 240000).catch(() => {});
+            ok(/^Connect your wallet to pay from it$/.test(await text(pd, '#tco-go')), `chaintile: Dave, TAC only at an unused key address and no wallet connected: asked to connect one, not offered TAC a wallet would not pull (${await text(pd, '#tco-go')} | ${await text(pd, '#tco-rows')})`);
+          } finally { await rd.browser.close(); } }
+        const rcar = await chainPage(CAROL, { width: 390, height: 900 }), pc = rcar.page;
+        try {
+          await pc.goto(`${rcar.url}tac/#to=${m2?.[1] || ''}&amt=1.5`);
+          await until(pc, () => /from your/.test(document.querySelector('#tco-go')?.textContent || '') && !document.querySelector('#tco-go').disabled, null, 240000).catch(() => {});
+          ok(/^Pay 1\.5 TAC from your key’s address$/.test(await text(pc, '#tco-go')) && /One signature makes/.test(await text(pc, '#tco-st')) && /10 in this key’s address, public/.test(await text(pc, '#tco-rows')),
+            `chaintile: Carol, TAC only in her wallet: Pay from your wallet (${await text(pc, '#tco-go')} | ${await text(pc, '#tco-st')} | ${await text(pc, '#tco-rows')})`);
+          if (SHOTS) await pc.screenshot({ path: join(SHOTS, 'weld-chaintile-walletpay.png') });
+          await pc.evaluate(() => { window.__fl = []; const t0 = performance.now(), el = document.querySelector('#tco-flow');
+            new MutationObserver(() => { const now = el.querySelector('li.now')?.textContent || (el.hidden ? 'hidden' : ''); if (window.__fl.at(-1)?.t !== now) window.__fl.push({ s: ((performance.now() - t0) / 1000).toFixed(1), t: now.slice(0, 50) }); }).observe(el, { childList: true, subtree: true, attributes: true }); });
+          const t1 = Date.now();
+          await press(pc, '#tco-go', 'carol-pay');
+          await until(pc, () => !document.querySelector('#tco-flow')?.hidden, null, 20000).catch(() => {});
+          const flowShown = await pc.evaluate(() => !document.querySelector('#tco-flow').hidden && document.querySelectorAll('#tco-flow li').length === 3);
+          if (SHOTS) await pc.screenshot({ path: join(SHOTS, 'weld-chaintile-walletpay-flow.png') });
+          await until(pc, () => !document.querySelector('#tco-done')?.hidden && /Paid/.test(document.querySelector('#tco-done')?.textContent || '') || /class="err"/.test(document.querySelector('#tco-st')?.innerHTML || ''), null, 480000).catch(() => {});
+          const took = Math.round((Date.now() - t1) / 1000);
+          ok(flowShown && /Paid/.test(await text(pc, '#tco-done')) && /Made private with one signature/.test(await text(pc, '#tco-done')) && (await tacHeld(cAcct)) < 10n * unit,
+            `chaintile: one press: made private from her wallet, then paid, ${took} s (steps: ${JSON.stringify(await pc.evaluate(() => window.__fl))} | ${(await text(pc, '#tco-done')).replace(/\s+/g, ' ').slice(0, 120)} | ${await text(pc, '#tco-st')})`);
+          await until(pb, () => /Paid\s*1\.5\s*TAC/.test(document.querySelector('#treq-b')?.textContent || ''), null, 120000).catch(() => {});
+          ok(/Paid\s*1\.5\s*TAC/.test(await text(pb, '#treq-b')), `chaintile: and Bob's screen turns to Paid 1.5 TAC (${(await text(pb, '#treq-b')).replace(/\s+/g, ' ').slice(0, 80)})`);
+          if (SHOTS) await pc.screenshot({ path: join(SHOTS, 'weld-chaintile-walletpay-receipt.png') });
+          if (rcar.errors.length) { fails++; console.log('FAIL chaintile (pay link, carol) page errors: ' + rcar.errors.slice(0, 3).join(' | ')); }
+        } finally { await rcar.browser.close(); }
         for (const [who, x] of [['bob', rb], ['alice', ra]]) if (x.errors.length) { fails++; console.log(`FAIL chaintile (pay link, ${who}) page errors: ` + x.errors.slice(0, 3).join(' | ')); }
       } finally { await rb.browser.close(); await ra.browser.close(); }
     }
