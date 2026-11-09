@@ -11,7 +11,7 @@ import { tacitChain } from '/tacit-chain-config.js?cb=803c3298';
 
 const API = 'https://api.tacit.finance';
 const SEATS = '0x00000000001f703eae70de3b528213e4802790fb';
-const PROVER_SEEN_S = 600, STALL_S = 180, EVERY_MS = 30e3, BEAT_MS = 5e3, SHOWN = 5, MORE = 25, UNIT = 100000000n, FLOOR = 200000n;
+const PROVER_SEEN_S = 600, STALL_S = 180, EVERY_MS = 30e3, BEAT_MS = 5e3, SHOWN = 3, MORE = 25, UNIT = 100000000n, FLOOR = 200000n;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const rpc = (method, params) => hedgedRpc(ETH_NODES, method, params, { hedgeMs: 1500, timeoutMs: 15e3 });
 const word = (n) => BigInt(n).toString(16).padStart(64, '0');
@@ -45,7 +45,7 @@ const wireOf = (a, b) => (a === 'off' || b === 'off' ? 'off' : a === 'live' || b
 export function mountChainLive({ top, rest }) {
   const cfg = tacitChain();
   top.innerHTML = `<div class="cl-h"><h2 class="cl-name">tacit <em>chain</em></h2><span class="cl-v" data-r="verdict" data-s=""><span class="dot"></span><span>Reading…</span></span><span class="cl-sub" data-r="sub"></span></div>
-    <div class="cl-flow" data-r="flow" aria-live="polite"></div><div class="cl-stats" data-r="stats"></div><div class="sr" data-r="live" role="status" aria-live="polite"></div>`;
+    <ol class="cl-chain" data-r="chain" aria-label="Latest blocks"></ol><div class="cl-flow" data-r="flow" aria-live="polite"></div><div class="cl-stats" data-r="stats"></div><div class="sr" data-r="live" role="status" aria-live="polite"></div>`;
   rest.innerHTML = `<section class="tpg-panel"><h2 class="tpg-h">A share's worth, block by block</h2><div class="cl-chart" data-r="chart"></div></section>
     <section class="tpg-panel"><h2 class="tpg-h cl-hh"><span>Blocks</span><span data-r="bn"></span></h2><ul class="cl-blocks" data-r="blocks"></ul><div class="cl-more" data-r="more"></div></section>
     <section class="tpg-panel"><h2 class="tpg-h">What it rests on</h2><ul class="cl-facts" data-r="facts"></ul></section>`;
@@ -112,7 +112,7 @@ export function mountChainLive({ top, rest }) {
     // what waits for the next block
     if (state === undefined) out.push(SK('Payments'));
     else if (!state) out.push(cell('Payments', '', 'Payments unread', 'Read again shortly', 'unread'));
-    else if (!pending) out.push(cell('Payments', 'ok', 'Nothing waiting', 'A payment lands in the next block, usually within a minute', 'none waiting'));
+    else if (!pending) out.push(cell('Payments', 'ok', 'Nothing waiting', 'A payment lands in the next block, usually within a minute', 'none'));
     else {
       const age = P.since ? (Date.now() - P.since) / 1000 : 0, n = `${pending} payment${pending === 1 ? '' : 's'}`;
       out.push(cell('Payments', age > STALL_S ? 'bad' : 'busy', `${n} waiting`, age > STALL_S ? `waiting ${mins(age)}, no block yet` : 'in the next block', age > STALL_S ? `${pending} waiting ${mins(age)}` : `${pending} waiting`));
@@ -127,15 +127,15 @@ export function mountChainLive({ top, rest }) {
     else if (!board) out.push(cell('Provers', '', 'Provers unread', 'Read again shortly', 'unread'));
     else {
       const n = (board.workers || []).filter((w) => (w.programs || []).includes('tacit-block') && Number(w.lastSeenSeconds) < PROVER_SEEN_S).length;
-      out.push(n ? cell('Provers', 'ok', 'Provers ready', `${n} GPU${n === 1 ? '' : 's'} proving blocks, about 35 s a block`, `${n} GPU${n === 1 ? '' : 's'} ready`)
+      out.push(n ? cell('Provers', 'ok', 'Provers ready', `${n} GPU${n === 1 ? '' : 's'} proving blocks, about 35 s a block`, `${n} GPU${n === 1 ? '' : 's'}`)
         : cell('Provers', pending || forced ? 'bad' : 'busy', 'No prover online', '<a href="/prove/">Prove blocks on your GPU</a>', 'none online'));
     }
     // Ethereum: the last block it took, and anything posted to the contract itself, which every block must take in
     if (chain === undefined) out.push(SK('Ethereum'));
     else if (!chain) out.push(cell('Ethereum', '', 'Ethereum unread', 'Read again shortly', 'unread'));
     else if (!forced) {
-      const last = chain.height > 0 && chain.last > 0 ? `<span data-at="${chain.last}">${ago(now - chain.last)}</span>` : 'no block yet';
-      out.push(cell('Ethereum', 'ok', 'Forced queue empty', `Anything posted is taken in within ${mins(chain.forceDelay)}`, chain.height > 0 ? `landed ${last}` : last));
+      const last = chain.height > 0 && chain.last > 0 ? ago(now - chain.last).replace(' ago', '') : 'no block yet';
+      out.push(cell('Ethereum', 'ok', 'Forced queue empty', `Anything posted is taken in within ${mins(chain.forceDelay)}`, last));
     } else {
       const age = chain.oldest != null ? now - chain.oldest : null, by = `taken in within ${mins(chain.forceDelay)}`;
       out.push(cell('Ethereum', age != null && age > chain.forceDelay * 0.75 ? 'bad' : 'busy', `${forced} forced entr${forced === 1 ? 'y' : 'ies'}`, age != null ? `oldest ${mins(age)}, ${by}` : by, `${forced} forced`));
@@ -163,7 +163,7 @@ export function mountChainLive({ top, rest }) {
   function stats({ fee, chain }) {
     const rd = (x, f, w) => { if (x === undefined) return sk(w); try { return x === null ? '—' : f(x); } catch { return '—'; } };
     const p = chain ? price(chain.pool, chain.shares) : null;
-    const up = p != null && p > 1 ? `<span class="ok">+${((p - 1) * 100).toFixed(2)}%</span> since it started` : 'since it started';
+    const up = p != null && p > 1 ? `<span class="ok">+${((p - 1) * 100).toFixed(2)}%</span>` : 'since block 1';
     const cu = (key, v, dp, text) => `<span data-k="${key}" data-v="${v}" data-dp="${dp}">${text}</span>`;
     const c = (v, k) => `<div><span class="v num">${v}</span><span class="k">${k}</span></div>`;
     return [
@@ -236,6 +236,18 @@ export function mountChainLive({ top, rest }) {
         + `<span class="s num"><i>1 share</i> ${price(x.pool, x.shares).toFixed(5)}</span><span class="p num">${tac(x.pool)} <small>TAC private</small></span></li>`;
     }).join('');
   }
+  // the newest blocks as a chain, newest first in the markup and drawn right to left, so a narrow screen keeps the newest in view; a block that just landed slides in
+  function links({ chain }, hist) {
+    if (!hist.length) return [1, 2, 3, 4, 5, 6].map(() => '<li class="sl"><span></span></li>').join('');
+    const head = chain ? { n: chain.n, t: chain.t + (Date.now() - chain.at) / 1000 } : null, lit = FRESH.h != null && LAND.at && Date.now() - LAND.at < 2600;
+    return hist.slice(0, 10).map((x, i) => {
+      const at = head ? head.t - Math.max(0, head.n - x.ethBlock) * 12 : null, cls = (i ? '' : 'hd') + (!i && lit && x.height === FRESH.h ? ' in' : '');
+      const age = at != null ? `<small data-at="${Math.round(at)}">${ago(nowS() - at)}</small>` : '';
+      const ok = /^0x[0-9a-fA-F]{64}$/.test(String(x.tx));
+      const body = `<b class="num">#${int(x.height)}</b>${i ? '' : age}`;
+      return `<li${cls ? ` class="${cls.trim()}"` : ''}>${ok ? `<a href="https://etherscan.io/tx/${x.tx}" target="_blank" rel="noopener noreferrer" title="Block ${int(x.height)} on Etherscan">${body}</a>` : `<span>${body}</span>`}</li>`;
+    }).join('');
+  }
   // under the table: more of what the page has, or a page of older blocks; and, when the API keeps no older, where the rest is
   function more(hist) {
     const low = hist.length ? hist.at(-1).height : null, can = mayHaveOlder(), out = [];
@@ -248,12 +260,12 @@ export function mountChainLive({ top, rest }) {
     const w = chain ? mins(chain.window) : '10 min', f = chain ? mins(chain.forceDelay) : '60 min';
     const li = (k, v) => `<li><span>${k}</span><span>${v}</span></li>`;
     return [
-      li('Contract', `${addr(cfg.blocks)} verified · no owner, no upgrade key`),
+      li('Contract', `${addr(cfg.blocks)} · verified, no owner, no upgrade key`),
       li('Leader seats', `${addr(SEATS)} · no owner`),
-      li('Proofs', 'Ethereum checks each block\'s proof before it lands, so a landed block is final'),
-      li('Data', 'Every block\'s data is on Ethereum: anyone can rebuild the chain'),
-      li('If the leader stops', `With no block for ${w}, anyone may land the next one`),
-      li('If it leaves you out', `Post your payment to the contract: every block must take it in within ${f}`),
+      li('Proofs', 'Every block proven on Ethereum'),
+      li('Data', 'On Ethereum: anyone can rebuild'),
+      li('Leader stops', `${w} → anyone may land`),
+      li('If you\'re left out', `Forced inclusion within ${f}`),
     ].join('');
   }
 
@@ -274,6 +286,7 @@ export function mountChainLive({ top, rest }) {
     part(() => put('chart', chart(R.blocks === undefined && !hist.length ? undefined : hist)));
     part(() => { put('blocks', blocks(R, hist)); put('more', more(hist)); put('bn', R.chain?.height ? `${int(R.chain.height)} landed` : ''); });
     part(() => put('facts', facts(R.chain)));
+    part(() => put('chain', links(R, hist)));
     tick();
   }
   // the times move on without another read; a page whose reads have stopped says so
