@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-SKkyyXZ9O29CdMP3sb1ARGCryDuISQ9yR5oERxHx1DQ=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-+epcWq52fXx3oKR9Z6bru9/7GCubomlI6ZyRQI+XbW0=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -1337,6 +1337,17 @@ html[data-page="tac"] :is(.hero, #dash, #how, #tac, .pg, .sx.pi), html:not([data
 .tcd .amt input, .tcd .amt.out output { padding-left: 0; }
 .tcd .amt .u { padding-right: 0; }
 .tcd-line, .tcd-dest, .tcd .keyrow { margin-top: 16px; }
+/* where a withdrawal goes: plain text options like the switch above, the chosen one underlined (no box, no fill) */
+.tcd .tcd-dest { display: flex; flex-wrap: wrap; gap: 4px 24px; border: 0; }
+.tcd .tcd-dest button { min-height: 32px; padding: 4px 0; font-size: 12px; color: var(--mute); background: none; border: 0; border-bottom: 1px solid transparent; }
+.tcd .tcd-dest button + button { border-left: 0; }
+/* the Bitcoin side's own tab rows (tac/pool.js .seg.sub) read like the card's tabs: no box, the chosen one underlined */
+.tcd .seg.sub { border: 0; border-bottom: 1px solid var(--hair); }
+.tcd .seg.sub button { font-size: 12px; border-bottom: 2px solid transparent; }
+.tcd .seg.sub button + button { border-left: 0; }
+.tcd .seg.sub button[aria-selected="true"], .tcd .seg.sub button[aria-checked="true"] { background: none; color: var(--ink); border-bottom-color: var(--ink); }
+.tcd .tcd-dest button[aria-checked="true"] { color: var(--ink); background: none; border-bottom-color: var(--ink); }
+@media (hover: hover) { .tcd .tcd-dest button:hover { color: var(--ink); } }
 .tcd-foot { margin-top: 24px; padding-top: 0; border-top: 0; font-size: 12px; }
 .tpg-fold { border-top: 1px solid var(--hair); }
 #tpg-where { margin-top: 32px; }
@@ -10947,14 +10958,14 @@ const TCD_FOOT = {
     send: 'Who and how much stay hidden.',
     sendEth: 'Arrives as public TAC; the sender stays hidden.',
     wallet: 'Your wallet and the amount show; whose shares stays hidden.',
-    pool: 'The amount shows; whose, not.',
-    btc: 'The amount shows, not whose; then bridged to your Bitcoin address.',
+    pool: 'The amount shows; whose stays hidden.',
+    btc: 'The amount shows; whose stays hidden. Then bridged to your Bitcoin address.',
     receive: 'Payments are found with your key; the recipient stays hidden.',
   },
   btc: {
-    shield: 'Your Bitcoin address shows; the amount, not.',
+    shield: 'Your Bitcoin address shows; the amount stays hidden.',
     send: 'Who and how much stay hidden.',
-    withdraw: 'Your Bitcoin address shows; the amount, not.',
+    withdraw: 'Your Bitcoin address shows; the amount stays hidden.',
     receive: 'Payments are found with your key; the recipient stays hidden.',
   },
 };
