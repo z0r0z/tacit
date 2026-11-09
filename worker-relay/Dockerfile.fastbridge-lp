@@ -1,0 +1,38 @@
+# tacit-fastbridge-lp: the fast bridge liquidity provider (fastbridge-lp/server.mjs). It sells TAC in the pool for TAC on Bitcoin, one swap at
+# a time, and holds nobody's funds; its key is FB_LP_KEY, set in the dashboard and nowhere else. See fastbridge-lp/README.md.
+# Build context is the repo root: the provider runs the dapp's own modules (dapp/fastbridge-*.js, the pool wallet, the note validator), so the
+# runtime image keeps that layout. Its swap records are its safety state: mount a persistent disk at FB_LP_DATA_DIR.
+#   docker build -f worker-relay/Dockerfile.fastbridge-lp .
+#   docker run -p 10000:10000 -e FB_LP_KEY=<64 hex> -e FB_LP_CONFIG=/app/fastbridge-lp/config.render.json <image> --dry-run
+
+FROM node:22-bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+
+# worker/src/btc-shielded-pool.js (the note validator's pool code) has the packages of worker/ beside it, as in the Bitcoin pool indexer's image;
+# the dapp's own modules take theirs from the vendored bundle.
+COPY worker/package.json worker/package-lock.json /app/worker/
+RUN cd /app/worker && npm ci --omit=dev --ignore-scripts && npm cache clean --force
+COPY worker/src/btc-shielded-pool.js /app/worker/src/btc-shielded-pool.js
+
+COPY dapp/package.json /app/dapp/package.json
+COPY dapp/*.js /app/dapp/
+COPY dapp/vendor/*.js /app/dapp/vendor/
+COPY dapp/trade/rpc.js /app/dapp/trade/rpc.js
+COPY dapp/evm-pool/token-pool-code.json /app/dapp/evm-pool/token-pool-code.json
+
+WORKDIR /app/worker-relay
+COPY worker-relay/package.json worker-relay/package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
+COPY worker-relay/src ./src
+
+WORKDIR /app
+COPY fastbridge-lp ./fastbridge-lp
+
+ENV NODE_ENV=production \
+    FB_LP_CONFIG=/app/fastbridge-lp/config.render.json \
+    FB_LP_DATA_DIR=/var/lib/tacit-fastbridge-lp \
+    PORT=10000
+EXPOSE 10000
+ENTRYPOINT ["node", "fastbridge-lp/server.mjs"]

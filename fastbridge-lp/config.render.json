@@ -1,0 +1,65 @@
+{
+  "network": "mainnet",
+  "dataDir": "/var/lib/tacit-fastbridge-lp",
+  "port": 10000,
+  "name": "Tacit",
+  "boards": [
+    "https://tacit-fast-board.onrender.com"
+  ],
+  "origins": [
+    "https://tacit.finance"
+  ],
+  "trustProxy": true,
+  "tickSecs": 15,
+  "alertSecs": 3600,
+  "btcBases": [
+    "https://mempool.space/api",
+    "https://blockstream.info/api"
+  ],
+  "poolAddress": "0x000000000Ed1eabD231Be41d93b719056F7febFC",
+  "btcAsset": "f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b",
+  "evmAsset": "0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b",
+  "csvBlocks": 144,
+  "reserve": {
+    "reserveSecs": 300,
+    "extendSecs": 7200,
+    "maxUnbackedShare": 0.5
+  },
+  "inventory": {
+    "refreshSecs": 60
+  },
+  "quote": {
+    "minAmount": "1000000000",
+    "maxAmount": "100000000000",
+    "feeBps": 30,
+    "flatFee": "10000000",
+    "validSecs": 600,
+    "rate": {
+      "num": 1,
+      "den": 1
+    }
+  },
+  "policy": {
+    "minCsv": 72,
+    "evmWindowSecs": 14400,
+    "minClaimSecs": 3600,
+    "claimSlackSecs": 7200,
+    "roundSecs": 600,
+    "refundMarginSecs": 600,
+    "maxOfferAgeSecs": 3600,
+    "confs": [
+      [
+        "0",
+        1
+      ],
+      [
+        "50000000000",
+        2
+      ],
+      [
+        "100000000000",
+        3
+      ]
+    ]
+  }
+}

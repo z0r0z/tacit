@@ -6,6 +6,7 @@
 //   FB_LP_KEY=<64 hex>        the LP's key: its Bitcoin wallet, its pool identity, the root of its swap seed. Env only.
 //   FB_LP_CONFIG=<path>       the config file (README.md). Default ./fastbridge-lp/config.json
 //   FB_LP_ALERT_WEBHOOK=<url> optional: alerts are POSTed there as JSON as well as logged
+//   PORT, FB_LP_DATA_DIR, FB_LP_NAME, FB_LP_BOARDS, FB_LP_MIN_AMOUNT, FB_LP_MAX_AMOUNT, FB_LP_FEE_BPS, FB_LP_FLAT_FEE   optional: set over the config (lib/env-config.mjs)
 //   node fastbridge-lp/server.mjs [--dry-run]     (Node 22; run from the repository root)
 //
 // --dry-run answers /info and /quote and checks offers against the chain, but sends nothing and advances no swap.
@@ -16,7 +17,9 @@ process.on('unhandledRejection', (e) => console.log(JSON.stringify({ ts: new Dat
 
 const DRY = process.argv.includes('--dry-run');
 const cfgPath = resolve(process.env.FB_LP_CONFIG || 'fastbridge-lp/config.json');
-const C = JSON.parse(readFileSync(cfgPath, 'utf8'));
+const { applyEnv } = await import('./lib/env-config.mjs');
+let C;
+try { C = applyEnv(JSON.parse(readFileSync(cfgPath, 'utf8'))); } catch (e) { console.error(String((e && e.message) || e)); process.exit(1); }
 const keyHex = String(process.env.FB_LP_KEY || '').trim().replace(/^0x/, '');
 if (!/^[0-9a-f]{64}$/i.test(keyHex)) { console.error('FB_LP_KEY must be 64 hex characters (set it in the environment)'); process.exit(1); }
 const log = (o) => console.log(JSON.stringify({ ts: new Date().toISOString(), ...o }));

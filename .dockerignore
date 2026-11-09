@@ -1,5 +1,5 @@
 # Repo-root build context is used by worker-relay/Dockerfile.btc-pool, worker-relay/Dockerfile.sats-faucet,
-# worker-relay/Dockerfile.evm-pool-keeper and tools/tac-vault-keeper-render/Dockerfile; everything else is excluded.
+# worker-relay/Dockerfile.evm-pool-keeper, worker-relay/Dockerfile.fastbridge-lp and tools/tac-vault-keeper-render/Dockerfile; everything else is excluded.
 # A file a Dockerfile COPYs or a service imports has to be named here (worker-relay/tests/dockerfile-imports.test.mjs checks that it is).
 *
 !worker-relay/package.json
@@ -22,6 +22,8 @@
 !tools/tac-vault-keeper-render/start.sh
 # tacit-leader/Dockerfile: the tacit chain's leader and its block node
 !tacit-leader
+# worker-relay/Dockerfile.fastbridge-lp: the fast bridge liquidity provider
+!fastbridge-lp
 !contracts/sp1/confidential/btc-pool-halo2/Cargo.toml
 !contracts/sp1/confidential/btc-pool-halo2/Cargo.lock
 !contracts/sp1/confidential/btc-pool-halo2/src

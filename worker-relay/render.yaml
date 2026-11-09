@@ -967,3 +967,40 @@ services:
   #       sync: false
   #     - key: PORT
   #       value: "10000"
+
+  # The fast bridge liquidity provider (fastbridge-lp/server.mjs, README there): NOT CREATED. One process per key, always on: two on one key would
+  # lock the same swap twice, so never scale it past one instance. Its key is the provider's Bitcoin wallet, pool identity and swap-seed root; it is
+  # set in the Render dashboard (FB_LP_KEY, `openssl rand -hex 32`) and nowhere else, and it is NOT in `tacit-relay-shared`. The swap records on the
+  # disk are its safety state: keep the disk, and take snapshots. Tune it with the variables below (a change restarts it; open swaps are read back
+  # and finished). To stop taking new swaps set FB_LP_MAX_AMOUNT to 0: it quotes nothing and finishes what is open. On the first start it logs the
+  # Bitcoin address, the claim key and the pool account to fund (shield TAC to that account): the pool TAC is what it can lend.
+  # The first read of the pool takes about two minutes on an empty disk and the ad appears after it; the scan is kept on the disk, so a restart is quick.
+  # - type: web
+  #   name: tacit-fastbridge-lp
+  #   runtime: docker
+  #   rootDir: .
+  #   dockerfilePath: ./worker-relay/Dockerfile.fastbridge-lp
+  #   dockerContext: .
+  #   plan: starter
+  #   region: oregon
+  #   healthCheckPath: /health
+  #   autoDeploy: false
+  #   disk:
+  #     name: fastbridge-lp-data
+  #     mountPath: /var/lib/tacit-fastbridge-lp
+  #     sizeGB: 1
+  #   envVars:
+  #     - key: FB_LP_KEY
+  #       sync: false
+  #     - key: FB_LP_ALERT_WEBHOOK        # optional: alerts are POSTed here as JSON as well as logged
+  #       sync: false
+  #     - key: FB_LP_NAME
+  #       value: Tacit
+  #     - key: FB_LP_MIN_AMOUNT           # base units, 8 places: 1000000000 is 10 TAC
+  #       value: "1000000000"
+  #     - key: FB_LP_MAX_AMOUNT           # the most a bridge takes; 0 stops new swaps
+  #       value: "100000000000"
+  #     - key: FB_LP_FEE_BPS              # 30 is 0.30%
+  #       value: "30"
+  #     - key: FB_LP_FLAT_FEE             # 10000000 is 0.1 TAC
+  #       value: "10000000"

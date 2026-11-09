@@ -53,6 +53,20 @@ run on the same machine can be tried at `http://localhost:<port>/fast/?lp=<url>&
 | `name`, `boards` | the name shown in the LP's ad, and the boards it is on (URLs of `fastbridge-lp/board.mjs`): it posts its ad there every minute and answers the requests left for it, so a user finds it without its own URL |
 | `alertSecs`, `tickSecs`, `port`, `origins`, `trustProxy` | alert interval, tick length, the HTTP face; `trustProxy` reads the client from `X-Forwarded-For`, only behind a proxy you control |
 
+## Running it on Render
+
+`worker-relay/Dockerfile.fastbridge-lp` builds the image and `worker-relay/render.yaml` has the service as a template (not created). The image runs
+`fastbridge-lp/config.render.json`, and the knobs an operator turns are environment variables (`fastbridge-lp/lib/env-config.mjs`), so a change is a
+restart, not a new image.
+
+1. **The key.** `openssl rand -hex 32`, set as `FB_LP_KEY` in the dashboard. It is the provider's Bitcoin wallet and pool identity; keep an offline copy, and never put it in a repository, a chat or a log.
+2. **First start.** Run the image once with `--dry-run` as the start command (or `node fastbridge-lp/server.mjs --dry-run` on a machine): it answers `/info` and `/quote`, joins no board and advances no swap, and prints the Bitcoin address, the claim key and the pool account. On an empty disk the first read of the pool takes about two minutes (110 to 147 s measured), and the provider answers `/info` and posts its ad only after it; the scan is kept in `dataDir`, so a restart with the same disk reads in a few seconds (4 s measured). `/health` answers throughout.
+3. **Fund it.** Shield TAC to the pool account it printed. What it holds there is what it can lend, so start small. It needs no Bitcoin: each user's lock pays the fee of its take.
+4. **Go live.** Remove `--dry-run`. It posts its ad on the boards in `config.render.json`, so `/fast/` finds it, and it takes any TAC the validator accepts, TAC out of the Bitcoin shielded pool included (see the last section).
+5. **Watch it.** `/health` is the health check; set `FB_LP_ALERT_WEBHOOK` to be told of a swap that waits long, a failed tick or a lost claim (the alerts are listed under "Watching it").
+6. **Tune it.** `FB_LP_MIN_AMOUNT`, `FB_LP_MAX_AMOUNT`, `FB_LP_FEE_BPS`, `FB_LP_FLAT_FEE`, `FB_LP_NAME`, `FB_LP_BOARDS` (base units; 8 places for TAC). `FB_LP_MAX_AMOUNT=0` stops new swaps and finishes the open ones.
+7. **Rebalance by hand.** Bitcoin TAC builds up as the pool TAC drains; move it back from the Bridge tab, signed in with the same key, when the pool balance runs low. Until then the provider shows "full right now" and the page falls back to another provider.
+
 ## API
 
 | | |

@@ -39,6 +39,7 @@ const IMAGES = {
   'Dockerfile.sp-index': ['worker-relay/src/sp-tweak-index.js'],
   'Dockerfile.join-board': ['worker-relay/src/join-board.js'],
   'Dockerfile.evm-pool-keeper': ['worker-relay/src/evm-pool-keeper.js', 'worker-relay/src/evm-pool-keepers.js'],
+  'Dockerfile.fastbridge-lp': ['fastbridge-lp/server.mjs'],
 };
 const FILES = contextFiles();
 
