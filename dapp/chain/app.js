@@ -56,12 +56,31 @@ async function onchain() {
   const oldest = queued > done ? await call('9ac498de', word(done)).then(Number, () => null) : null;
   return { height: Number(height), last: Number(last), pool, shares, queued: Number(queued), done: Number(done), forceDelay: Number(forceDelay), window: Number(win), oldest, n: Number(n), t: Number(t), at: Date.now() };
 }
-// the rollup's blocks, newest first, one per height, each with what the page draws from it
-const rollupOf = (b) => {
-  const m = new Map();
-  for (const x of Array.isArray(b?.rollup) ? b.rollup : []) if (Number.isInteger(x?.height) && Number.isInteger(x.ethBlock) && /^\d+$/.test(String(x.pool ?? '')) && /^\d+$/.test(String(x.shares ?? ''))) m.set(x.height, x);
-  return [...m.values()].sort((a, b) => b.height - a.height);
-};
+// The chain's blocks the page has, one per height: the newest twenty /prover/blocks gives on every read, and older ones /prover/rollup gives when asked
+// (once in the background when the twenty are not the whole chain, so the chart reaches back, then a page at a time from "Show older blocks").
+const HAVE = new Map();
+const okBlock = (x) => Number.isInteger(x?.height) && Number.isInteger(x.ethBlock) && /^\d+$/.test(String(x.pool ?? '')) && /^\d+$/.test(String(x.shares ?? ''));
+const take = (list) => { for (const x of Array.isArray(list) ? list : []) if (okBlock(x)) HAVE.set(x.height, x); };
+const history = () => [...HAVE.values()].sort((a, b) => b.height - a.height);                   // newest first
+const lowest = () => { let m = null; for (const h of HAVE.keys()) if (m == null || h < m) m = h; return m; };
+// the lowest height the API keeps (null until it has said); older blocks may be asked for while the page's lowest is above it, and above block 1
+let floor = null, olderBusy = false, olderErr = false, filled = false;
+const mayHaveOlder = () => { const low = lowest(); return low != null && low > 1 && (floor == null || low > floor); };
+async function older(n = 100) {
+  if (olderBusy || !mayHaveOlder()) return;
+  olderBusy = true; olderErr = false; mark();
+  const low = lowest();
+  try {
+    const r = await fetch(`${API}/prover/rollup?before=${low}&limit=${n}`, { signal: AbortSignal.timeout(10e3) });
+    if (r.status === 404) floor = low;                                                           // an API without the route: these are the blocks it can show
+    else {
+      const j = r.ok ? await r.json() : null;
+      if (!Array.isArray(j?.rollup) || !Number.isInteger(j.first)) olderErr = true;               // (first null: its store could not be read, which says nothing of what is older)
+      else { take(j.rollup); floor = j.rollup.length ? j.first : low; }
+    }
+  } catch { olderErr = true; }
+  olderBusy = false; mark();
+}
 
 // what each source last answered: absent while it is unread, null when it could not be read
 const R = {}, P = { h: null, since: 0 };
@@ -173,10 +192,9 @@ function unscrub() {
   pl.querySelectorAll('.pt.on').forEach((p) => p.classList.remove('on'));
 }
 
-function blocks({ blocks: b, chain }) {
-  if (b === undefined) return [1, 2, 3].map(() => `<li class="sl">${sk('100%')}</li>`).join('');
-  if (b === null) return '<li class="none"><span class="m">Could not read the blocks. Trying again shortly.</span></li>';
-  const rollup = rollupOf(b);
+function blocks({ blocks: b, chain }, rollup) {
+  if (b === undefined && !rollup.length) return [1, 2, 3].map(() => `<li class="sl">${sk('100%')}</li>`).join('');
+  if (b === null && !rollup.length) return '<li class="none"><span class="m">Could not read the blocks. Trying again shortly.</span></li>';
   if (!rollup.length) return '<li class="none"><span class="m">No blocks yet.</span></li>';
   // an Ethereum block's time from the head's, at 12 s a block (the head the contract was read at, else the API's, at this clock)
   const head = chain ? { n: chain.n, t: chain.t + (Date.now() - chain.at) / 1000 } : Number.isInteger(b?.head?.ethHead) ? { n: b.head.ethHead, t: Date.now() / 1000 } : null;
@@ -201,6 +219,15 @@ function facts(chain) {
   ].join('');
 }
 
+// under the table: more of what the page has, or a page of older blocks; and, when the API keeps no older, where the rest is
+function more(hist) {
+  const low = hist.length ? hist.at(-1).height : null, can = mayHaveOlder(), out = [];
+  if (hist.length > shown || can) out.push(`<button class="linkbtn" type="button" data-more${olderBusy ? ' disabled' : ''}>${olderBusy ? 'Loading…' : 'Show older blocks'}</button>`);
+  if (olderErr) out.push('<span class="err">Could not load older blocks. Try again.</span>');
+  if (!can && floor != null && low != null && low > 1) out.push(`<span class="m">Before #${int(low)}: <a href="https://etherscan.io/address/${esc(cfg.blocks)}#events" target="_blank" rel="noopener noreferrer">the contract's events ↗</a></span>`);
+  return out.join('');
+}
+
 // each part is drawn on its own, so one that cannot be (a figure the leader sent wrongly) leaves the rest as they are
 const part = (f) => { try { f(); } catch (e) { console.warn('chain page:', e?.message); } };
 function draw() {
@@ -214,11 +241,11 @@ function draw() {
     if (said !== v.t) { said = v.t; if (v.t !== 'Reading…') $('#live').textContent = v.t; }
   });
   part(() => put('#strip', strip(R, now)));
-  part(() => put('#chart', chart(R.blocks === undefined ? undefined : rollupOf(R.blocks))));
+  const hist = history();
+  part(() => put('#chart', chart(R.blocks === undefined && !hist.length ? undefined : hist)));
   part(() => {
-    put('#blocks', blocks(R));
-    const n = R.blocks ? rollupOf(R.blocks).length : 0;
-    put('#more', n > shown ? `<button class="linkbtn" type="button" data-all>Show all ${int(n)} blocks</button>` : '');
+    put('#blocks', blocks(R, hist));
+    put('#more', more(hist));
     put('#bn', R.chain?.height ? `${int(R.chain.height)} landed` : '');
   });
   part(() => put('#facts', facts(R.chain)));
@@ -248,6 +275,7 @@ async function refresh() {
     await Promise.all(Object.entries(src).map(async ([k, f]) => {
       R[k] = await f().catch(() => null);
       if (k === 'state') waiting(R.state);
+      if (k === 'blocks') { take(R.blocks?.rollup); if (!filled && HAVE.size >= 20 && mayHaveOlder()) { filled = true; older(); } }   // (twenty is all /prover/blocks gives: a full feed may have more behind it)
       mark();
     }));
     R.at = Date.now();
@@ -265,5 +293,10 @@ if (!cfg) {
   document.addEventListener('visibilitychange', () => { if (!document.hidden && Date.now() - (R.at || 0) > 20e3) refresh(); });
   $('#chart').addEventListener('pointermove', scrub);
   $('#chart').addEventListener('pointerleave', unscrub);
-  $('#more').addEventListener('click', (e) => { if (e.target.closest('[data-all]')) { shown = Infinity; mark(); } });
+  $('#more').addEventListener('click', async (e) => {
+    if (!e.target.closest('[data-more]')) return;
+    shown += SHOWN;
+    mark();
+    if (HAVE.size < shown) await older();
+  });
 }

@@ -655,7 +655,7 @@ const reverseBytes = b => { const r = new Uint8Array(b); r.reverse(); return r; 
 // caller (curl, another server) could already do. This is what lets a third-party page with no fixed
 // origin (an IPFS/web3-gateway-hosted frontend, e.g.) use the relay directly from a browser instead of
 // needing its own backend proxy or a per-deploy entry in ALLOWED_ORIGINS.
-const OPEN_ORIGIN_PATHS = new Set(['/stats', '/flow', '/relay/economics', '/bridge/recover', '/reflection/proof', '/confidential/submit', '/confidential/status', '/confidential/open', '/confidential/landed', '/confidential/quote', '/confidential/index', '/confidential/relay', '/reflection/dump', '/reflection/live', '/reflection/status', '/reflection/note-witness', '/reflection/burndep', '/reflection/eth-state/covers', '/reflection/eth-state/proof', '/reflection/open', '/reflection/open/job', '/reflection/landed', '/reflection/burndep-list', '/crossout/minted', '/farm/program', '/farm/health', '/prover/upload', '/prover/download', '/prover/board', '/prover/board/credits', '/prover/community/claim', '/prover/community/result', '/prover/pool', '/prover/pool/request', '/prover/pool/lease', '/prover/pool/hold', '/prover/pool/submit', '/prover/pool/result', '/prover/pool/credits', '/prover/pool/recent', '/prover/blocks', '/pool/snapshot', '/prover/salt', '/prover/salt/share', '/prover/salt/credits', '/prover/salt/bank', '/gas/order', '/gas/orders', '/gas/done', '/outpoints/classify']);
+const OPEN_ORIGIN_PATHS = new Set(['/stats', '/flow', '/relay/economics', '/bridge/recover', '/reflection/proof', '/confidential/submit', '/confidential/status', '/confidential/open', '/confidential/landed', '/confidential/quote', '/confidential/index', '/confidential/relay', '/reflection/dump', '/reflection/live', '/reflection/status', '/reflection/note-witness', '/reflection/burndep', '/reflection/eth-state/covers', '/reflection/eth-state/proof', '/reflection/open', '/reflection/open/job', '/reflection/landed', '/reflection/burndep-list', '/crossout/minted', '/farm/program', '/farm/health', '/prover/upload', '/prover/download', '/prover/board', '/prover/board/credits', '/prover/community/claim', '/prover/community/result', '/prover/pool', '/prover/pool/request', '/prover/pool/lease', '/prover/pool/hold', '/prover/pool/submit', '/prover/pool/result', '/prover/pool/credits', '/prover/pool/recent', '/prover/blocks', '/prover/rollup', '/pool/snapshot', '/prover/salt', '/prover/salt/share', '/prover/salt/credits', '/prover/salt/bank', '/gas/order', '/gas/orders', '/gas/done', '/outpoints/classify']);
 function corsHeaders(env, reqOrigin, openOrigin) {
   const list = (env.ALLOWED_ORIGINS || '*').split(',').map(s => s.trim());
   const allow = openOrigin || list.includes('*') ? '*' : (list.includes(reqOrigin) ? reqOrigin : list[0]);
@@ -975,7 +975,7 @@ async function recordCrossBlock(env, { jobId, attestedTo, txHash, eth }) {
 // refuses logs up to another's head), and kept newest last in tc:recent ({ to, list }).
 const TACIT_BLOCKS = '0x00000000000a9147ffd8d41d152d730ca5f84e6c', TACIT_BLOCKS_FROM = 26366005;
 const T_TACIT_LANDED = '0x' + bytesToHex(keccak_256(new TextEncoder().encode('Landed(uint256,bytes32,bytes32,address)')));
-const ROLLUP_KEEP = 60;
+const ROLLUP_KEEP = 300;
 // The pool and shares a landed block left (public word 18 of its land call: pool ‖ shares, 64 bits each, in units of 1e-8 TAC), from its
 // transaction's input: what the share price, (pool + 1e8) / (shares + 1e8), was after it. Null for a call that is not a land.
 const TACIT_LAND_SEL = '0x' + bytesToHex(keccak_256(new TextEncoder().encode('land(bytes,bytes,(bytes,bytes,bytes32[],bytes32[],bytes,bytes,bytes,bytes,bytes,bytes,bytes))'))).slice(0, 8);
@@ -988,7 +988,7 @@ function tacitPoolSharesOf(input) {
   return { pool: String((w >> 64n) & m), shares: String(w & m) };
 }
 let _rollupAt = 0;
-async function rollupBlocks(env) {
+async function rollupList(env) {
   const kv = env.REGISTRY_KV;
   if (!kv) return [];
   let st = null;
@@ -1023,7 +1023,22 @@ async function rollupBlocks(env) {
       if (missing.some((x) => x.pool != null)) await kv.put('tc:recent', JSON.stringify(st));
     }
   }
-  return st.list.slice(-20).reverse();
+  return st.list;
+}
+const rollupBlocks = async (env) => (await rollupList(env)).slice(-20).reverse();
+// GET /prover/rollup?before=<height>&limit=<n>: the blocks this API keeps (ROLLUP_KEEP, `list` oldest first), newest first, only those below `before` when
+// it is a height, `limit` of them (25 unless asked, at most 100). `first` is the lowest height kept: a page that reaches it has nothing older here.
+export function rollupPage(list, before, limit) {
+  const b = Number.parseInt(before, 10), n = Math.min(Math.max(Number.parseInt(limit, 10) || 25, 1), 100);
+  const below = Number.isFinite(b) ? list.filter((x) => x.height < b) : list;
+  return { rollup: below.slice(-n).reverse(), first: list.length ? list[0].height : null, kept: list.length };
+}
+export async function handleRollup(req, env, url, cors) {
+  try {
+    return jsonResponse(rollupPage(await rollupList(env), url.searchParams.get('before'), url.searchParams.get('limit')), 200, { ...cors, 'Cache-Control': 'public, max-age=5' });
+  } catch (e) {
+    return jsonResponse({ error: String((e && e.message) || e).slice(0, 200) }, 503, { ...cors, 'Cache-Control': 'no-store' });
+  }
 }
 
 // Advance the cursor to a stashed candidate and settle everything that hangs off a landed batch: drop the stash,
@@ -28211,6 +28226,7 @@ async function _routeFetch(req, env, ctx) {
     // Salt mining (worker/src/salt-pool.js), also open: provers send the CREATE3 salts they ground between proofs.
     if (url.pathname === '/prover/salt' || url.pathname.startsWith('/prover/salt/')) return handleSaltPool(req, env, url, cors);
     if (url.pathname === '/prover/blocks' && req.method === 'GET') return handleChainBlocks(req, env, url, cors);
+    if (url.pathname === '/prover/rollup' && req.method === 'GET') return handleRollup(req, env, url, cors);
     if (url.pathname === '/pool/snapshot' && req.method === 'GET') return handlePoolSnapshot(req, env, url, cors);
     if (url.pathname === '/gas/order' || url.pathname === '/gas/orders' || url.pathname === '/gas/done') return handleGasRelay(req, env, url, cors);
     // A page proving with its holder's own prover account passes its program input and the finished proof through here
