@@ -1,11 +1,12 @@
 #!/usr/bin/env node
-// The Tacit chain's own traffic: two wallets (A and B) from one seed paying each other small amounts on the live chain, one action every
-// 20 to 40 minutes, with its Ethereum account (A's key) shielding TAC in by a signed permit the leader sends in, and taking some out now
-// and then (the leader pays exits out), so the chain lands blocks, every path a user takes is run end to end, and the notes join the set.
+// The Tacit chain's own traffic: a dozen wallets from one seed (A, B and more, BOT_IDENTITIES) paying each other small amounts on the live
+// chain, one action every 20 to 40 minutes. TAC comes in by a signed permit the leader sends in, from whichever of the bot's Ethereum
+// accounts holds it (one permit per account), and goes out now and then to a fresh account each time (the leader pays exits out), so the
+// chain lands blocks, every path a user takes is run end to end, and the notes join the set.
 // It never sends an Ethereum transaction itself: no ETH is needed.
 //
 //   node tacit-bot/bot.mjs keygen --out <file>     a new seed written to <file> (mode 600); prints only the public addresses
-//   BOT_SEED=… node tacit-bot/bot.mjs addresses    the account and the two chain wallets' lanes
+//   BOT_SEED=… node tacit-bot/bot.mjs addresses    the accounts (exits) and every identity's lane
 //   BOT_SEED=… node tacit-bot/bot.mjs status       balances, the leader's terms and whether the bot would act (sends nothing)
 //   BOT_SEED=… node tacit-bot/bot.mjs run          the loop, with GET /health on $PORT
 //
@@ -20,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { keccak_256, secp } from '../dapp/vendor/tacit-deps.min.js';
 import { makeChainClient, chainStatus, UNIT } from '../dapp/tacit-chain-client.js';
 import { TACIT_CHAIN } from '../dapp/tacit-chain-config.js';
-import { settings, identities, makeBudget, makeFailures, health, decide, nextWait, fmt, T } from './lib.mjs';
+import { settings, identities, idName, makeBudget, makeFailures, health, decide, watchOwed, nextWait, fmt, T } from './lib.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const strip = (h) => String(h).replace(/^0x/, '').toLowerCase();
@@ -75,29 +76,37 @@ export async function signPermit({ priv, domainSeparator, owner, spender, value,
 /// The bot: { tick, view, snapshot, resume }. Everything it reaches is passed in, so the tests run it against a local node.
 export async function makeBot({ seed, cfg, rpcCall, system, stateDir, env = process.env, fetchImpl = (...a) => globalThis.fetch(...a), log = (o) => console.log(JSON.stringify(o)), rand = Math.random, now = () => Date.now(), chainId = 1n, wrapCommit }) {
   const s = settings(env);
-  const ids = identities(seed);
+  const ids = identities(seed, s.identities);
   mkdirSync(stateDir, { recursive: true });
-  const clients = {
-    a: makeChainClient({ cfg, rpcCall, priv: ids.a, system, storage: fileStorage(join(stateDir, 'wallet-a.json')), fetchImpl }),
-    b: makeChainClient({ cfg, rpcCall, priv: ids.b, system, storage: fileStorage(join(stateDir, 'wallet-b.json')), fetchImpl }),
-  };
+  // identity i's wallet file: A and B keep the files they had
+  const walletFile = (i) => join(stateDir, i < 2 ? `wallet-${idName(i)}.json` : `wallet-${i}.json`);
+  const clients = ids.keys.map((priv, i) => makeChainClient({ cfg, rpcCall, priv, system, storage: fileStorage(walletFile(i)), fetchImpl }));
+  // the old names, for the tests and the console
+  clients.a = clients[0]; clients.b = clients[1];
   const botFile = join(stateDir, 'bot.json');
   let saved = {};
   try { saved = JSON.parse(readFileSync(botFile, 'utf8')); } catch { }
   const budget = makeBudget(s.dailyFeeBudget, now);
   budget.restore(saved.budget);
   const fails = makeFailures(s.maxFailures);
-  const hs = { started: new Date(now()).toISOString(), lastAction: null, lastSuccess: null, lastError: null, actions: saved.actions || 0, landed: saved.landed || 0, paused: null, balances: null };
+  const hs = { started: new Date(now()).toISOString(), lastAction: null, lastSuccess: null, lastError: null, actions: saved.actions || 0, landed: saved.landed || 0, paused: null, balances: null, unpaid: [] };
   let wrapIndex = saved.wrapIndex || 0;
-  const persist = () => { const tmp = botFile + '.tmp'; writeFileSync(tmp, JSON.stringify({ budget: budget.toJSON(), wrapIndex, actions: hs.actions, landed: hs.landed })); renameSync(tmp, botFile); };
+  // exit accounts: the highest index used, the ones still read (account 0 always is), and withdrawals the leader has not paid out yet
+  let exitIndex = saved.exitIndex || 0;
+  let exits = Array.isArray(saved.exits) ? saved.exits : [];
+  let pending = Array.isArray(saved.pending) ? saved.pending : [];
+  const persist = () => { const tmp = botFile + '.tmp'; writeFileSync(tmp, JSON.stringify({ budget: budget.toJSON(), wrapIndex, actions: hs.actions, landed: hs.landed, exitIndex, exits, pending })); renameSync(tmp, botFile); };
+  const exitAt = (i) => ids.exit(i);
+  const activeExits = () => [0, ...new Set([...exits.map((e) => e.index), ...pending.map((e) => e.index)])].filter((i, k, xs) => xs.indexOf(i) === k).sort((x, y) => x - y);
 
   const ethCall = async (to, data) => strip(await rpcCall('eth_call', [{ to, data: '0x' + data }, 'latest']));
   const blocksCall = (sig, args = '') => ethCall(cfg.blocks, sel(sig) + args);
   let tacAddr = null;
   const tacToken = async () => (tacAddr ||= '0x' + (await blocksCall('TAC()')).slice(24));
-  const eoaTac = async () => big(await ethCall(await tacToken(), '70a08231' + strip(ids.eoa.address).padStart(64, '0'))) / UNIT;
+  const tacOf = async (addr) => big(await ethCall(await tacToken(), '70a08231' + strip(addr).padStart(64, '0'))) / UNIT;
+  const owedOf = async (addr) => big(await blocksCall('owed(address)', strip(addr).padStart(64, '0')));
   // the confidential pool commitment a shield's inbox fixes as its way back (TacitBlocks.giveBack, if no block takes the deposit in):
-  // a wrap note of A's key at the bot's own counter, so A's key alone recovers it
+  // a wrap note of A's key at the bot's own counter, so A's key alone recovers it, whichever account the permit is from
   let ux = null;
   const backFor = wrapCommit || (async (units) => {
     if (!ux) {
@@ -111,41 +120,67 @@ export async function makeBot({ seed, cfg, rpcCall, system, stateDir, env = proc
 
   const leaderGet = async (path) => { try { const r = await fetchImpl(cfg.leader + path, { signal: AbortSignal.timeout(10e3) }); return r.ok ? await r.json() : null; } catch { return null; } };
 
-  /// What the bot holds and what the chain asks, read fresh (both wallets scanned first, so payments received are picked up).
+  /// What the bot holds and what the chain asks, read fresh (every wallet scanned first, so payments received are picked up).
   async function view() {
-    await Promise.all([clients.a.scan(), clients.b.scan()]);
+    await Promise.all(clients.map((c) => c.scan()));
     const side = async (c) => {
       const [worth, qp, qw] = await Promise.all([c.worth(), c.quote('pay'), c.quote('withdraw')]);
       return { worth, most: qp.most, outMost: qw.most, settling: c.settling(), fee: qp.fee, holders: qp.holders };
     };
-    const [a, b, eoa, f] = await Promise.all([side(clients.a), side(clients.b), eoaTac(), clients.a.fee()]);
-    return { a, b, eoa, fee: f.units, shieldCap: f.shieldCap, sweepFee: f.sweepFee };
+    const eoaList = activeExits().map((i) => ({ index: i, address: exitAt(i).address }));
+    const [sides, units, f] = await Promise.all([Promise.all(clients.map(side)), Promise.all(eoaList.map((e) => tacOf(e.address))), clients[0].fee()]);
+    const eoas = eoaList.map((e, k) => ({ ...e, units: units[k] }));
+    return { ids: sides, eoas, eoa: eoas.reduce((t, e) => t + e.units, 0n), fee: f.units, shieldCap: f.shieldCap, sweepFee: f.sweepFee };
+  }
+  const balances = (v) => ({
+    onChain: fmt(v.ids.reduce((t, x) => t + x.worth, 0n)),
+    ids: Object.fromEntries(v.ids.map((x, i) => [idName(i), fmt(x.worth)])),
+    eoas: Object.fromEntries(v.eoas.map((e) => [e.address, fmt(e.units)])),
+  });
+
+  /// Withdrawals the leader has not paid out: each still owed past BOT_OWED_TIMEOUT_MIN is logged once (and shown in /health); nothing
+  /// is retried, since anyone may send it out (TacitBlocks.withdraw). Exit accounts that hold only dust stop being read after a day.
+  async function checkExits(v) {
+    if (pending.length) {
+      const owed = {};
+      await Promise.all(pending.map(async (e) => { try { owed[e.address.toLowerCase()] = await owedOf(e.address); } catch { } }));
+      const w = watchOwed(pending, owed, now(), s.owedTimeoutMin);
+      pending = w.pending;
+      for (const e of w.paid) if (!exits.some((x) => x.index === e.index)) exits.push({ index: e.index, address: e.address, at: now() });
+      for (const e of w.alerts) log({ action: 'unpaid', account: e.address, exit: e.index, units: e.units, owed: fmt(e.owed / UNIT), minutes: Math.round((now() - e.since) / 60e3) });
+    }
+    hs.unpaid = pending.filter((e) => e.alerted).map((e) => ({ account: e.address, units: e.units, since: new Date(e.since).toISOString() }));
+    if (v) {
+      const held = new Map(v.eoas.map((e) => [e.index, e.units]));
+      exits = exits.filter((e) => !(held.has(e.index) && held.get(e.index) < s.exitDustTac && now() - (e.at || 0) > 24 * 3600e3));
+    }
+    persist();
   }
 
-  async function shield(units, v) {
-    const c = clients.a, t0 = now();
+  async function shield(units, from, to) {
+    const c = clients[to], acct = exitAt(from), t0 = now();
     const sh = await c.shield(units);
     const proveMs = now() - t0;
     const { back, index } = await backFor(units);
     const inbox = await sh.inbox(back);
     const value = sh.permitValue();
     const token = await tacToken();
-    const [dom, nonce] = await Promise.all([ethCall(token, '3644e515'), ethCall(token, '7ecebe00' + strip(ids.eoa.address).padStart(64, '0'))]);
+    const [dom, nonce] = await Promise.all([ethCall(token, '3644e515'), ethCall(token, '7ecebe00' + strip(acct.address).padStart(64, '0'))]);
     const deadline = BigInt(Math.floor(now() / 1000) + 3600);
-    const sig = await signPermit({ priv: ids.eoa.priv, domainSeparator: dom.slice(0, 64), owner: ids.eoa.address, spender: inbox, value, nonce: big(nonce), deadline });
-    const permit = { owner: ids.eoa.address.toLowerCase(), fee: String(sh.sweepFee), deadline: String(deadline), v: sig.v, r: sig.r, s: sig.s, back };
+    const sig = await signPermit({ priv: acct.priv, domainSeparator: dom.slice(0, 64), owner: acct.address, spender: inbox, value, nonce: big(nonce), deadline });
+    const permit = { owner: acct.address.toLowerCase(), fee: String(sh.sweepFee), deadline: String(deadline), v: sig.v, r: sig.r, s: sig.s, back };
     await sh.offer({ back, permit, meta: { inbox, src: 'bot', wrapIndex: index, pay: { until: Number(deadline) * 1000 } } });
     const r = await sh.submit({ back, permit, timeoutMs: s.landTimeoutMin * 60e3 });
-    return { ...r, proveMs, inbox, cost: sh.fee + BigInt(sh.sweepFee) / UNIT + (units - (await c.quote('shield', units)).arrives - sh.fee) };
+    return { ...r, proveMs, inbox, account: acct.address, cost: sh.fee + BigInt(sh.sweepFee) / UNIT + (units - (await c.quote('shield', units)).arrives - sh.fee) };
   }
   async function pay(from, to, units) {
     const recv = clients[to];
-    // through the leader's directory, as a payer finds an address (the receiver's published there the first time)
+    // through the leader's directory, as a payer finds an address (the receiver publishes there the first time)
     const lane = await recv.lane();
     const toAddr = await clients[from].resolve(lane).catch(async (e) => {
       if (!/no leader knows/.test(e.message || '')) throw e;
       await recv.publish();
-      log({ action: 'publish', wallet: to });
+      log({ action: 'publish', wallet: idName(to) });
       return clients[from].resolve(lane);
     });
     const t0 = now();
@@ -157,6 +192,17 @@ export async function makeBot({ seed, cfg, rpcCall, system, stateDir, env = proc
       onStatus: (x) => { if (x.status === 'queued') recv.incoming().then((u) => { seen = u; }, () => {}); },
     });
     return { ...r, proveMs, incomingSeen: seen == null ? null : fmt(seen) };
+  }
+  async function withdraw(from, units) {
+    // a fresh exit account each time, its index kept before the spend goes out (a crash never reuses one)
+    exitIndex += 1;
+    const acct = exitAt(exitIndex);
+    pending.push({ index: acct.index, address: acct.address, units: fmt(units), since: now() });
+    persist();
+    const r = await clients[from].withdraw(acct.address, units, { timeoutMs: s.landTimeoutMin * 60e3 });
+    const e = pending.find((x) => x.index === acct.index);
+    if (e) { e.since = now(); persist(); }                 // the leader's wait starts once it landed
+    return { ...r, account: acct.address };
   }
 
   /// One action, chosen from a fresh view. → the log line.
@@ -171,26 +217,28 @@ export async function makeBot({ seed, cfg, rpcCall, system, stateDir, env = proc
     hs.paused = null;
     let v, act;
     try {
+      await checkExits(null);
       v = await view();
-      hs.balances = { a: fmt(v.a.worth), b: fmt(v.b.worth), eoa: fmt(v.eoa) };
+      await checkExits(v);
+      hs.balances = balances(v);
       act = decide(s, v, rand);
     } catch (e) { return failed({ action: 'view' }, e, t0); }
-    if (act.kind === 'idle') { const line = { action: 'idle', why: act.why, ...hs.balances }; log(line); return line; }
+    if (act.kind === 'idle') { const line = { action: 'idle', why: act.why, onChain: hs.balances.onChain }; log(line); return line; }
     // what it costs, before it is spent: over the day's budget waits for tomorrow
-    const est = act.kind === 'shield' ? v.fee + v.sweepFee / UNIT + 1n + act.units / 500n : act.kind === 'withdraw' ? v.fee + act.units / 1000n + 1n : v.fee + v[act.from].holders;
+    const est = act.kind === 'shield' ? v.fee + v.sweepFee / UNIT + 1n + act.units / 500n : act.kind === 'withdraw' ? v.fee + act.units / 1000n + 1n : v.fee + v.ids[act.from].holders;
     if (!budget.fits(est)) { hs.paused = 'daily fee budget spent'; const line = { action: 'pause', why: hs.paused, spent: fmt(budget.spent()) }; log(line); return line; }
-    const line = { action: act.kind, from: act.from, to: act.to, units: act.units != null ? fmt(act.units) : undefined };
+    const line = { action: act.kind, from: act.kind === 'shield' ? exitAt(act.eoa).address : idName(act.from), to: act.to != null ? idName(act.to) : undefined, units: act.units != null ? fmt(act.units) : undefined };
     hs.lastAction = { ...line, at: new Date(now()).toISOString() };
     try {
       let r;
-      if (act.kind === 'shield') r = await shield(act.units, v);
+      if (act.kind === 'shield') r = await shield(act.units, act.eoa, act.to);
       else if (act.kind === 'pay') r = await pay(act.from, act.to, act.units);
-      else if (act.kind === 'merge') r = await pay(act.from, act.from, v[act.from].most);
-      else r = await clients[act.from].withdraw(ids.eoa.address, act.units, { timeoutMs: s.landTimeoutMin * 60e3 });
+      else if (act.kind === 'merge') r = await pay(act.from, act.from, v.ids[act.from].most);
+      else r = await withdraw(act.from, act.units);
       // the receiver must hold it once it landed: a payment that landed and is not found is a bug worth stopping for
       if (act.kind === 'pay') {
-        const before = v[act.to].worth, after = await clients[act.to].scan().then(() => clients[act.to].worth());
-        if (after < before + act.units - 1n) throw new Error(`landed, but ${act.to} holds ${fmt(after)} (was ${fmt(before)}, +${fmt(act.units)} expected)`);
+        const before = v.ids[act.to].worth, after = await clients[act.to].scan().then(() => clients[act.to].worth());
+        if (after < before + act.units - 1n) throw new Error(`landed, but ${idName(act.to)} holds ${fmt(after)} (was ${fmt(before)}, +${fmt(act.units)} expected)`);
       }
       const cost = r.cost ?? est;
       budget.add(cost);
@@ -198,7 +246,7 @@ export async function makeBot({ seed, cfg, rpcCall, system, stateDir, env = proc
       hs.actions += 1; hs.landed += 1;
       hs.lastSuccess = new Date(now()).toISOString();
       persist();
-      const done = { ...line, ok: true, height: r.height, id: r.id, proveMs: r.proveMs, ms: now() - t0, fee: fmt(cost), feesToday: fmt(budget.spent()), incomingSeen: r.incomingSeen };
+      const done = { ...line, ok: true, account: act.kind === 'withdraw' ? r.account : undefined, height: r.height, id: r.id, proveMs: r.proveMs, ms: now() - t0, fee: fmt(cost), feesToday: fmt(budget.spent()), incomingSeen: r.incomingSeen };
       log(done);
       return done;
     } catch (e) { return failed(line, e, t0); }
@@ -214,7 +262,8 @@ export async function makeBot({ seed, cfg, rpcCall, system, stateDir, env = proc
   }
   /// Spends kept from before a restart, handed to the leader again (each waits up to `timeoutMs` to land).
   async function resume(timeoutMs = 5 * 60e3) {
-    for (const [name, c] of Object.entries(clients)) {
+    for (const [i, c] of clients.entries()) {
+      const name = idName(i);
       let list = [];
       try { list = await c.pending(); } catch (e) { log({ action: 'resume', wallet: name, ok: false, error: String(e.message || e) }); continue; }
       for (const e of list.filter((x) => !x.refused)) {
@@ -223,20 +272,29 @@ export async function makeBot({ seed, cfg, rpcCall, system, stateDir, env = proc
       }
     }
   }
-  const snapshot = () => ({ ok: !fails.stopped() && !hs.paused, stopped: fails.stopped(), failures: fails.count(), ...hs, feesToday: fmt(budget.spent()), feeBudget: fmt(s.dailyFeeBudget), account: ids.eoa.address });
-  return { tick, view, resume, snapshot, settings: s, clients, ids, decide: (v) => decide(s, v, rand) };
+  const snapshot = () => ({ ok: !fails.stopped() && !hs.paused && !hs.unpaid.length, stopped: fails.stopped(), failures: fails.count(), ...hs, feesToday: fmt(budget.spent()), feeBudget: fmt(s.dailyFeeBudget), account: ids.eoa.address, identities: clients.length, exitIndex, waitingPayout: pending.map((e) => ({ account: e.address, units: e.units, since: new Date(e.since).toISOString() })) });
+  return { tick, view, resume, snapshot, balances, checkExits, withdraw, settings: s, clients, ids, exitIndex: () => exitIndex, exitAccounts: () => activeExits().map((i) => exitAt(i).address), decide: (v) => decide(s, v, rand) };
 }
 
 // ── the commands
 const arg = (k) => { const i = process.argv.indexOf(`--${k}`); return i > 0 ? process.argv[i + 1] : undefined; };
 async function publicLines(seed) {
-  const ids = identities(seed);
+  const s = settings(process.env);
+  const ids = identities(seed, s.identities);
   const cfg = { blocks: process.env.TACIT_BLOCKS || TACIT_CHAIN.blocks, leader: process.env.TACIT_LEADER || TACIT_CHAIN.leader };
+  // the exit accounts used so far, from the state on disk when it is here (--exits <n> lists up to n)
+  let used = 0;
+  try { used = JSON.parse(readFileSync(join(process.env.BOT_STATE_DIR || join(process.cwd(), 'tacit-bot-state'), 'bot.json'), 'utf8')).exitIndex || 0; } catch { }
+  if (arg('exits')) used = Math.max(used, Number(arg('exits')));
   const out = { account: ids.eoa.address };
+  const lanes = [];
   try {
     const rpcCall = makeRpc((process.env.RPC_URL || DEFAULT_RPCS.join(',')).split(','));
-    for (const [n, priv] of [['a', ids.a], ['b', ids.b]]) out[`lane_${n}`] = '0x' + Buffer.from(await makeChainClient({ cfg, rpcCall, priv, system: () => null, storage: null }).lane()).toString('hex');
+    for (const [i, priv] of ids.keys.entries()) lanes.push('0x' + Buffer.from(await makeChainClient({ cfg, rpcCall, priv, system: () => null, storage: null }).lane()).toString('hex'));
+    out.lane_a = lanes[0]; out.lane_b = lanes[1];
   } catch { }
+  out.identities = ids.keys.map((x, i) => ({ id: idName(i), lane: lanes[i] }));
+  out.exits = Array.from({ length: used + 1 }, (_, i) => ({ index: i, address: ids.exit(i).address }));
   return out;
 }
 async function main() {
@@ -263,7 +321,8 @@ async function main() {
   if (cmd === 'status') {
     const v = await bot.view();
     const f = (x) => ({ worth: fmt(x.worth), canPay: fmt(x.most), canWithdraw: fmt(x.outMost), settling: x.settling });
-    console.log(JSON.stringify({ account: bot.ids.eoa.address, accountTac: fmt(v.eoa), a: f(v.a), b: f(v.b), leaderFee: fmt(v.fee), sweepFee: fmt(v.sweepFee / UNIT), shieldCap: v.shieldCap == null ? null : fmt(v.shieldCap), next: (({ units, ...x }) => ({ ...x, units: units == null ? undefined : fmt(units) }))(bot.decide(v)) }, null, 1));
+    const snap = bot.snapshot();
+    console.log(JSON.stringify({ account: bot.ids.eoa.address, publicTac: fmt(v.eoa), eoas: Object.fromEntries(v.eoas.map((e) => [e.address, fmt(e.units)])), identities: Object.fromEntries(v.ids.map((x, i) => [idName(i), f(x)])), waitingPayout: snap.waitingPayout, leaderFee: fmt(v.fee), sweepFee: fmt(v.sweepFee / UNIT), shieldCap: v.shieldCap == null ? null : fmt(v.shieldCap), next: (({ units, ...x }) => ({ ...x, units: units == null ? undefined : fmt(units) }))(bot.decide(v)) }, null, 1));
     return;
   }
   if (cmd !== 'run') { console.error('keygen | addresses | status | run (see the header)'); process.exit(1); }
