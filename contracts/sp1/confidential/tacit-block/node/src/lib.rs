@@ -170,6 +170,11 @@ impl Node {
         Ok(())
     }
 
+    /// The note tree of every leaf so far.
+    pub fn tree(&self) -> Tree {
+        Tree::new(&self.leaves)
+    }
+
     /// The note tree's root and the path from leaf `index`, as a wallet's spend or a lock's settle names them.
     pub fn path(&self, index: u64) -> Option<(Fr, [Fr; 32])> {
         ((index as usize) < self.leaves.len()).then(|| {

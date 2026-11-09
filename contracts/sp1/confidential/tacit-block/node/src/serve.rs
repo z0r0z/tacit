@@ -67,6 +67,38 @@ const FORCED_MAX: usize = FORCED_MIN + 2 * (8 + 32 + 8) + 1 + 265 + MEMO_LEN;
 /// What GET /fee holds at most (a chain address and a few numbers).
 const MAX_FEE_QUOTE: usize = 8 << 10;
 
+/// A holder's permit as a spend carries it, read and written out in one form: the leader hands each field to the chain's ABI as it is, so
+/// one that does not read (a word that is not hex, a number that is not digits) is refused here, where it can do no more than refuse its own spend.
+fn clean_permit(p: &Value) -> Result<Value, String> {
+    let bad = || "the permit does not read".to_string();
+    let o = p.as_object().ok_or_else(bad)?;
+    let word = |k: &str, n: usize| -> Result<String, String> {
+        let s = o.get(k).and_then(|v| v.as_str()).ok_or_else(bad)?;
+        let b = hex::decode(s.trim_start_matches("0x")).map_err(|_| bad())?;
+        if b.len() != n {
+            return Err(bad());
+        }
+        Ok(hx(&b))
+    };
+    let digits = |k: &str, max: usize| -> Result<String, String> {
+        let s = match o.get(k).ok_or_else(bad)? {
+            Value::String(s) => s.clone(),
+            Value::Number(n) => n.to_string(),
+            _ => return Err(bad()),
+        };
+        if s.is_empty() || s.len() > max || !s.bytes().all(|c| c.is_ascii_digit()) {
+            return Err(bad());
+        }
+        let t = s.trim_start_matches('0');
+        Ok(if t.is_empty() { "0".into() } else { t.into() })
+    };
+    let v: u64 = digits("v", 3)?.parse().map_err(|_| bad())?;
+    if v > 255 {
+        return Err(bad());
+    }
+    Ok(json!({ "owner": word("owner", 20)?, "fee": digits("fee", 30)?, "deadline": digits("deadline", 20)?, "v": v, "r": word("r", 32)?, "s": word("s", 32)?, "back": word("back", 32)? }))
+}
+
 fn hexv(v: &Value) -> Result<Vec<u8>, String> {
     let s = v.as_str().ok_or("a hex string")?;
     hex::decode(s.trim_start_matches("0x")).map_err(|_| "bad hex".to_string())
@@ -137,6 +169,10 @@ pub struct Leader {
     settles: Vec<SettleEntry>,
     receipts: BTreeMap<String, Value>,
     built: Option<Built>,
+    /// The note tree of the leaves so far, with how many that was (GET /path/N reads paths from it).
+    tree: Option<(usize, btc_pool_halo2::model::Tree)>,
+    /// The ids of what was last written to the mempool file (a write is made only when they change).
+    written: Vec<String>,
     /// Full chain addresses by the hash a Tacit address's chain lane carries (content-addressed: a payer checks what it gets).
     directory: Directory,
     refused: BTreeMap<String, String>,
@@ -158,7 +194,7 @@ pub struct Directory {
     keys: BTreeMap<[u8; 33], ([u8; 64], [u8; 32])>,
 }
 const ADDRESS_LEN: usize = 128 + 33 + 1184;
-const DIRECTORY_MAX: usize = 250_000;
+const DIRECTORY_MAX: usize = 50_000;
 
 impl Directory {
     pub fn open(file: Option<String>) -> Directory {
@@ -208,6 +244,9 @@ impl Directory {
         }
         if self.keys.get(&k) == Some(&(s, h)) {
             return Ok(());
+        }
+        if !self.keys.contains_key(&k) && self.keys.len() >= DIRECTORY_MAX {
+            return Err("the directory is full".into());
         }
         if let Some(f) = &self.file {
             use std::io::Write;
@@ -291,11 +330,13 @@ impl Leader {
             settles: vec![],
             receipts: BTreeMap::new(),
             built: None,
+            tree: None,
             directory: Directory::open(std::env::var("TACIT_NODE_DIRECTORY").ok().filter(|f| !f.is_empty())),
             refused: BTreeMap::new(),
             writes: BTreeMap::new(),
             fee: json!({ "fee": "0" }),
             mempool_file: std::env::var("TACIT_NODE_MEMPOOL").ok().filter(|f| !f.is_empty()),
+            written: vec![],
             saved: std::env::var("TACIT_NODE_MEMPOOL")
                 .ok()
                 .filter(|f| !f.is_empty())
@@ -307,8 +348,16 @@ impl Leader {
 
     /// Writes what waits (each spend's and settle's submission) to TACIT_NODE_MEMPOOL, whole and atomically; a write that fails is said and
     /// the node goes on (what waits is then only as safe as the wallets' own copies).
-    fn persist(&self) {
-        let Some(f) = &self.mempool_file else { return };
+    fn persist(&mut self) {
+        let Some(f) = self.mempool_file.clone() else { return };
+        // what was read at start is not yet admitted again (POST /restore does that once the chain is replayed): writing now would erase it
+        if !self.saved.is_empty() {
+            return;
+        }
+        let ids: Vec<String> = self.pending.iter().map(|e| e.id.clone()).chain(self.settles.iter().map(|s| s.id.clone())).collect();
+        if ids == self.written {
+            return;
+        }
         let all: Vec<Value> = self
             .pending
             .iter()
@@ -316,8 +365,9 @@ impl Leader {
             .chain(self.settles.iter().map(|s| json!({ "kind": "settle", "body": s.raw })))
             .collect();
         let tmp = format!("{f}.tmp");
-        if let Err(e) = std::fs::write(&tmp, serde_json::to_vec(&all).unwrap_or_default()).and_then(|_| std::fs::rename(&tmp, f)) {
-            eprintln!("tacit-block-node: could not write {f}: {e}");
+        match std::fs::write(&tmp, serde_json::to_vec(&all).unwrap_or_default()).and_then(|_| std::fs::rename(&tmp, &f)) {
+            Ok(()) => self.written = ids,
+            Err(e) => eprintln!("tacit-block-node: could not write {f}: {e}"),
         }
     }
 
@@ -429,6 +479,11 @@ impl Leader {
         if self.receipts.contains_key(&id) {
             return Ok(self.receipts[&id].clone());
         }
+        // (before the proof is checked: a permit that does not read costs nothing to refuse)
+        let permit = match b.get("permit") {
+            Some(p) if !p.is_null() => Some(clean_permit(p)?),
+            _ => None,
+        };
         let (hints, memos, op_memos) = match self.check_spend(&publics, &proof, &data, b) {
             Ok(x) => x,
             Err(e) => {
@@ -440,8 +495,9 @@ impl Leader {
             }
         };
         let keys: Vec<[u8; 32]> = blk::Spend::from_publics(&tacit_block_agg_publics(&publics)?).spent_keys().iter().map(blk::fr_be).collect();
-        let permit = b.get("permit").filter(|p| p.is_object() && p.to_string().len() < 1024).cloned();
-        let entry = Entry { id: id.clone(), spend: SpendIn { publics, proof, hints, data }, memos, op_memos, keys, back: backs, permit, raw: b.clone() };
+        // what is kept to admit it again is the submission's own fields and no more (a body can carry up to MAX_BODY of anything else)
+        let raw = json!({ "publics": b["publics"], "proof": b["proof"], "data": b["data"], "memos": b["memos"], "opMemos": b["opMemos"], "back": b["back"], "permit": permit });
+        let entry = Entry { id: id.clone(), spend: SpendIn { publics, proof, hints, data }, memos, op_memos, keys, back: backs, permit, raw };
         if entry.shield() && self.pending.iter().filter(|e| e.shield()).count() >= MAX_SHIELDS {
             return Err("too many shields wait on their deposits".into());
         }
@@ -516,7 +572,7 @@ impl Leader {
             return Err("only TAC moves on this chain".into());
         }
         let key = blk::fr_be(&blk::lock::lock_nullifier(&settle.leaf(), settle.index));
-        let entry = SettleEntry { id: id.clone(), settle, memo, key, raw: b.clone() };
+        let entry = SettleEntry { id: id.clone(), settle, memo, key, raw: json!({ "settle": b["settle"], "memo": b["memo"] }) };
         if self.settles.iter().any(|s| s.key == key) {
             return Err("that lock is being settled by a settle already waiting".into());
         }
@@ -656,9 +712,16 @@ impl Leader {
         let memos: Vec<Vec<u8>> = b["memos"].as_array().ok_or("memos")?.iter().map(hexv).collect::<Result<_, _>>()?;
         let nullifiers: Vec<[u8; 32]> = b["nullifiers"].as_array().ok_or("nullifiers")?.iter().map(word32).collect::<Result<_, _>>()?;
         let published: BTreeSet<[u8; 32]> = leaves.iter().copied().collect();
+        let (leaves_cat, nullifiers_land) = (leaves.concat(), nullifiers.clone());
         self.node.land(&Published { words, leaves, memos, nullifiers })?;
         let height = self.node.height;
-        let included = self.built.take().map(|b| ids_of(&b.out["includes"])).unwrap_or_default();
+        // (the block built here, if that is the one that landed: another's landing must not mark this one's spends landed)
+        let ours = self.built.as_ref().is_some_and(|bt| {
+            let bl = bt.out["lists"]["leaves"].as_str().and_then(|s| hex::decode(s.trim_start_matches("0x")).ok());
+            let bn: Option<Vec<[u8; 32]>> = bt.out["lists"]["nullifiers"].as_array().map(|a| a.iter().filter_map(|x| word32(x).ok()).collect());
+            bl.as_deref() == Some(leaves_cat.as_slice()) && bn.as_deref() == Some(nullifiers_land.as_slice())
+        });
+        let included = if ours { self.built.take().map(|b| ids_of(&b.out["includes"])).unwrap_or_default() } else { self.built = None; vec![] };
         for id in &included {
             self.receipts.insert(id.clone(), json!({ "id": id, "status": "landed", "height": height }));
         }
@@ -712,7 +775,7 @@ impl Leader {
                 // the new notes of the payments held (shields, which wait on their deposits, are their shielder's own): one list sorted by
                 // leaf, as a block lists them, so it says no more of which spend made which than the block will
                 let mut out: Vec<([u8; 32], Vec<u8>)> = vec![];
-                for e in self.pending.iter().filter(|e| !e.shield()) {
+                for e in self.pending.iter().filter(|e| e.spend.data.dep.is_none()) {
                     let Ok(p) = tacit_block_agg_publics(&e.spend.publics) else { continue };
                     let sp = blk::Spend::from_publics(&p);
                     let slots: Vec<usize> = (0..3).filter(|i| !bool::from(sp.out[*i].is_zero())).collect();
@@ -725,7 +788,16 @@ impl Leader {
             }
             ("GET", p) if p.starts_with("/path/") => {
                 let i: u64 = p[6..].parse().map_err(|_| bad("an index".into()))?;
-                let (root, path) = self.node.path(i).ok_or((404, "no such leaf".to_string()))?;
+                let n = self.node.leaves.len();
+                if (i as usize) >= n {
+                    return Err((404, "no such leaf".to_string()));
+                }
+                // (built once for these leaves: it is a hash for every leaf, and a wallet asks twice for each spend)
+                if self.tree.as_ref().map(|(k, _)| *k) != Some(n) {
+                    self.tree = Some((n, self.node.tree()));
+                }
+                let (_, t) = self.tree.as_ref().unwrap();
+                let (root, path) = (t.root, t.path(i as usize));
                 Ok(json!({ "index": i, "root": hx(&blk::fr_be(&root)), "path": path.iter().map(|x| hx(&blk::fr_be(x))).collect::<Vec<_>>() }))
             }
             ("GET", p) if p.starts_with("/spent/") => {

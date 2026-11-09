@@ -60,11 +60,23 @@ export function landCalldata(publicValues, proof, l) {
   return concatBytes(selector(LAND), encode(['bytes', 'bytes', LISTS], [publicValues, proof, lists]));
 }
 
-/// The arguments of a land call from its calldata.
+/// The arguments of a land call from its calldata: a direct call, or one made through a contract (anyone may land a block, from any contract:
+/// the land call is then inside the calldata, as the bytes the wrapper passes on, and is found by its selector).
 export function decodeLand(input) {
-  const b = bytesOf(input);
-  if (hexOf(b.subarray(0, 4)) !== hexOf(selector(LAND))) return null;
-  const [publicValues, proof, lists] = decode(['bytes', 'bytes', LISTS], b.subarray(4));
-  const [leaves, memos, nullifiers, anchors, deposits, exits, hops, claims, blobs, migrations, migrationTotals] = lists;
-  return { publicValues, proof, lists: { leaves, memos, nullifiers, anchors, deposits, exits, hops, claims, blobs, migrations, migrationTotals } };
+  const b = bytesOf(input), sel = hexOf(selector(LAND));
+  const at = (i) => {
+    try {
+      const [publicValues, proof, lists] = decode(['bytes', 'bytes', LISTS], b.subarray(i + 4));
+      if (publicValues.length % 32 !== 0 || publicValues.length < 32 * 19) return null;
+      const [leaves, memos, nullifiers, anchors, deposits, exits, hops, claims, blobs, migrations, migrationTotals] = lists;
+      return { publicValues, proof, lists: { leaves, memos, nullifiers, anchors, deposits, exits, hops, claims, blobs, migrations, migrationTotals } };
+    } catch { return null; }
+  };
+  if (hexOf(b.subarray(0, 4)) === sel) return at(0);
+  for (let i = 4; i + 4 <= b.length; i++) {
+    if (hexOf(b.subarray(i, i + 4)) !== sel) continue;
+    const call = at(i);
+    if (call) return call;
+  }
+  return null;
 }
