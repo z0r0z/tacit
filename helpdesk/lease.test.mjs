@@ -13,6 +13,16 @@ const mk = (extra = {}) => makeLeases({ waitMs: 300, sweepMs: 50, leaseMs: 400, 
   const p = L.enqueue('answer', msgs, { timeoutMs: 2000 }); const job = await pl; check('a node that was already waiting gets the next question at once', job && job.id);
   await L.submit({ id: job.id, lease: job.lease, miner: A, ip: '2.2.2.2', text: 'ok' }); await p; L.close(); }
 
+{ const L = mk({ waitMs: 5000 }); const sl = (ms) => new Promise((r) => setTimeout(r, ms)); const ac = new AbortController();
+  const gone = L.lease({ miner: A, ip: '8.8.8.8', closed: ac.signal }); await sl(50);
+  check('a node waiting for work is counted as waiting', L.stats().waiting === 1);
+  ac.abort(); const out = await gone;
+  check('a node that disconnects while it waits is taken out of the line at once', out === null && L.stats().waiting === 0);
+  const p = L.enqueue('answer', msgs, { timeoutMs: 400 }).catch(() => 'timed out'); await sl(50);
+  check('and the next question is kept for a node that is there, not handed to the one that left', L.stats().queued === 1 && L.stats().leased === 0);
+  check('a connection that is already closed gets nothing and does not wait', (await L.lease({ miner: A, ip: '8.8.8.8', closed: AbortSignal.abort() })) === null && L.stats().waiting === 0);
+  await p; L.close(); }
+
 { const L = mk(); let threw = false; try { await L.enqueue('answer', msgs, { timeoutMs: 150 }); } catch { threw = true; } check('a question nobody takes times out (the gateway then falls back)', threw && L.stats().queued === 0); L.close(); }
 
 { const L = mk({ canaryEvery: 2, strikeLimit: 3, canary: async () => ({ messages: msgs, check: (t) => /21,000,000/.test(t) }) });

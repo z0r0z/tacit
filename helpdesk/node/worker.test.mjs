@@ -72,6 +72,16 @@ try {
   const t0 = Date.now(); await loop;
   check('the node stops when told to', Date.now() - t0 < 3000);
 
+  // a node that takes code reviews only (a slow laptop) leaves a visitor's question in the queue, untouched
+  const ac2 = new AbortController();
+  const loop2 = run({ api: API, llm: LLM, miner, kinds: ['scan'], say: () => {}, signal: ac2.signal, idleMs: 200 });
+  const callsBefore = seen.length;
+  const waiting = ask('What backs cBTC?').catch(() => null);   // answered only if some node takes it: none will
+  await sleep(3000);
+  const st3 = await (await fetch(`${API}/helpdesk/stats`)).json();
+  check('a node that takes scan only leaves a visitor question waiting in the queue', st3.queued >= 1 && !seen.slice(callsBefore).some((c) => JSON.stringify(c.messages).includes('cBTC')), `queued ${st3.queued}, model calls since: ${seen.length - callsBefore}`);
+  ac2.abort(); await loop2; void waiting;
+
   const bare = spawnSync(process.execPath, [path.join(HERE, 'worker.mjs')], { env: { ...process.env, MINER: '' }, encoding: 'utf8' });
   check('started without an address it says so and exits', bare.status === 2 && /MINER/.test(bare.stderr));
 } finally {

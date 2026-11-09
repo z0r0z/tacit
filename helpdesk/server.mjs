@@ -194,7 +194,9 @@ async function nodeApi(req, res) {
   if (req.url === '/helpdesk/lease') {
     if ((holding.get(ip) || 0) >= 2) return send(res, 429, { error: 'this client already has requests waiting' });
     holding.set(ip, (holding.get(ip) || 0) + 1);
-    try { const out = await leases.lease({ miner: body.miner, ip, kinds: Array.isArray(body.kinds) ? body.kinds : ['answer'] });
+    // when the node's connection closes before it was answered, it leaves the line (lease.mjs): a job is never handed to a node that is gone
+    const gone = new AbortController(); res.on('close', () => { if (!res.writableFinished) gone.abort(); });
+    try { const out = await leases.lease({ miner: body.miner, ip, kinds: Array.isArray(body.kinds) ? body.kinds : ['answer'], closed: gone.signal });
       if (out === null) return send(res, 204); if (out.banned) return send(res, 429, { error: 'paused: this client failed too many checks, try again in an hour' }); if (out.error) return send(res, 400, out); return send(res, 200, out); }
     finally { holding.set(ip, Math.max(0, (holding.get(ip) || 1) - 1)); }
   }
