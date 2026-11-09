@@ -11,6 +11,10 @@ import { tacitChain } from '/tacit-chain-config.js?cb=803c3298';
 
 const API = 'https://api.tacit.finance';
 const SEATS = '0x00000000001f703eae70de3b528213e4802790fb';
+// what the deployed contract was made with (immutable there), for the facts a reader checks it against
+const VERIFIER = '0xb69f2584cbcff99a58c4e7002e8b89af54a6f4e2', LEADER = '0x841d93ae315e3d9af5fd98c09299ca62148ff65d';
+const BLOCK_VKEY = '0x00610fb0fa1b5d800e548c3cdcdf98ceb4288828be1cec1fb81e39004bad6ed6', SPEND_VK = '0xc85febd5ed7a2b00819d90960a17bf686b15d28183c7a207499204bd369bdfe4';
+const GH = 'https://github.com/src-company/tacit/';
 const PROVER_SEEN_S = 600, STALL_S = 180, EVERY_MS = 30e3, BEAT_MS = 5e3, SHOWN = 3, MORE = 25, UNIT = 100000000n, FLOOR = 200000n;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const rpc = (method, params) => hedgedRpc(ETH_NODES, method, params, { hedgeMs: 1500, timeoutMs: 15e3 });
@@ -48,7 +52,8 @@ export function mountChainLive({ top, rest }) {
     <ol class="cl-chain" data-r="chain" aria-label="Latest blocks"></ol><div class="cl-flow" data-r="flow" aria-live="polite"></div><div class="cl-stats" data-r="stats"></div><div class="sr" data-r="live" role="status" aria-live="polite"></div>`;
   rest.innerHTML = `<section class="tpg-panel"><h2 class="tpg-h">A share's worth, block by block</h2><div class="cl-chart" data-r="chart"></div></section>
     <section class="tpg-panel"><h2 class="tpg-h cl-hh"><span>Blocks</span><span data-r="bn"></span></h2><ul class="cl-blocks" data-r="blocks"></ul><div class="cl-more" data-r="more"></div></section>
-    <section class="tpg-panel"><h2 class="tpg-h">What it rests on</h2><ul class="cl-facts" data-r="facts"></ul></section>`;
+    <section class="tpg-panel"><h2 class="tpg-h">What it rests on</h2><ul class="cl-facts" data-r="facts"></ul>
+      ${cfg && !cfg.dev ? '<details class="tpg-fold cl-tech"><summary>Chain facts</summary><div><ul class="cl-facts" data-r="tech"></ul></div></details>' : ''}</section>`;
   const el = (k) => top.querySelector(`[data-r="${k}"]`) || rest.querySelector(`[data-r="${k}"]`);
   const put = (k, html) => { const e = el(k); if (e && e.__h !== html) { e.__h = html; e.innerHTML = html; } };   // drawn again only when it changed
   if (!cfg) { put('flow', '<p class="cl-off">The Tacit chain is not deployed here.</p>'); return { start() {}, stop() {} }; }
@@ -269,6 +274,21 @@ export function mountChainLive({ top, rest }) {
     ].join('');
   }
 
+  // what a reader checks the chain against: its verifier and keys, where its data is, how to rebuild it, who may land and prove, how to leave
+  function tech(chain) {
+    const a = (path, t) => `<a href="${GH}${path}" target="_blank" rel="noopener noreferrer">${t} ↗</a>`;
+    const li = (k, v) => `<li><span>${k}</span><span>${v}</span></li>`;
+    return [
+      li('Verifier', `${addr(VERIFIER)} · fixed, checks each block's proof`),
+      li('Keys', `<code>${BLOCK_VKEY}</code> block program<br><code>${SPEND_VK}</code> spend`),
+      li('Published', 'Each block\'s notes, memos and nullifiers are in its call data, checked against hashes its proof commits'),
+      li('Rebuild', `${a('blob/main/docs/TACIT-BLOCKS.md', 'The spec')} · ${a('tree/main/contracts/sp1/confidential/tacit-block/node', 'The node')} · ${a('tree/main/tacit-leader', 'The leader')}`),
+      li('Landing', `${addr(LEADER)} leads while no seat is held. Seats are open to anyone who locks TAC`),
+      li('Provers', 'Open to any machine: the verifier checks the proof, not who made it. The Tacit board runs one today'),
+      li('Exits', 'A withdrawal is paid out by the contract, and anyone may send the payout. A deposit no block takes in returns after 7 days'),
+    ].join('');
+  }
+
   // each part is drawn on its own, so one that cannot be (a figure the leader sent wrongly) leaves the rest as they are
   const part = (f) => { try { f(); } catch (e) { console.warn('chain live:', e?.message); } };
   function draw() {
@@ -286,6 +306,7 @@ export function mountChainLive({ top, rest }) {
     part(() => put('chart', chart(R.blocks === undefined && !hist.length ? undefined : hist)));
     part(() => { put('blocks', blocks(R, hist)); put('more', more(hist)); put('bn', R.chain?.height ? `${int(R.chain.height)} landed` : ''); });
     part(() => put('facts', facts(R.chain)));
+    part(() => { if (el('tech')) put('tech', tech(R.chain)); });
     part(() => put('chain', links(R, hist)));
     tick();
   }
