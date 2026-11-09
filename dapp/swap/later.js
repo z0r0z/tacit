@@ -330,10 +330,11 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
       if (vkHash(vk) !== lc(p.vk_hash).replace(/^0x/, '')) throw new Error('The verification key does not match the ceremony pin.');
       const worker = new Worker('/evm-pool-prove-worker.js?cb=7f41e5e0', { type: 'module' });
       let id = 0; const waiting = new Map();
-      worker.onmessage = ({ data }) => { const w = waiting.get(data.id); if (!w) return; waiting.delete(data.id); data.ok ? w.resolve(data) : w.reject(new Error(data.error)); };
+      let up = false;   // an error before the worker has answered once is its script not loading, not a proof running out of memory
+      worker.onmessage = ({ data }) => { up = true; const w = waiting.get(data.id); if (!w) return; waiting.delete(data.id); data.ok ? w.resolve(data) : w.reject(new Error(data.error)); };
       // A worker that stopped is ended and the next try starts a new one: the page's memory is not held by a second worker beside a dead one.
       const stop = (why) => { worker.terminate?.(); for (const w of waiting.values()) w.reject(new Error(why)); waiting.clear(); proverP = null; prover.ready = false; };
-      worker.onerror = (ev) => { ev.preventDefault?.(); stop('Proving stopped on this device, likely short of memory. Close other tabs and try again.'); };
+      worker.onerror = (ev) => { ev.preventDefault?.(); stop(up ? 'Proving stopped on this device, likely short of memory. Close other tabs and try again.' : 'The prover could not start in this browser. Try again.'); };
       // A load or a proof that has not answered in this long is not coming (a worker the system ended raises no event), and every proof waits in line behind it.
       const call = (msg, transfer = [], ms = 0) => new Promise((resolve, reject) => {
         const i = ++id, t = ms ? setTimeout(() => stop('Proving took too long on this device. Close other tabs and try again.'), ms) : 0;

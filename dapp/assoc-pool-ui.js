@@ -79,8 +79,9 @@ export function makeAssocPanel(ctx) {
   const wcall = (msg, ms, transfer = []) => new Promise((resolve, reject) => {
     if (!worker) {
       worker = ctx.makeWorker();
-      worker.onmessage = ({ data }) => { const w = waiting.get(data.id); if (!w) return; waiting.delete(data.id); data.ok ? w.resolve(data) : w.reject(new Error(data.error)); };
-      worker.onerror = (e) => { e.preventDefault?.(); for (const w of waiting.values()) w.reject(new Error('Proving stopped on this device, likely short of memory. Close other tabs and try again.')); waiting.clear(); worker?.terminate(); worker = null; ready.clear(); };
+      let up = false;   // an error before the worker has answered once is its script not loading, not a proof running out of memory
+      worker.onmessage = ({ data }) => { up = true; const w = waiting.get(data.id); if (!w) return; waiting.delete(data.id); data.ok ? w.resolve(data) : w.reject(new Error(data.error)); };
+      worker.onerror = (e) => { e.preventDefault?.(); for (const w of waiting.values()) w.reject(new Error(up ? 'Proving stopped on this device, likely short of memory. Close other tabs and try again.' : 'The prover could not start in this browser. Try again.')); waiting.clear(); worker?.terminate(); worker = null; ready.clear(); };
     }
     const id = ++wid, t = setTimeout(() => { waiting.delete(id); reject(new Error('Proving is taking too long on this device. Try again.')); }, ms);
     waiting.set(id, { resolve: (v) => { clearTimeout(t); resolve(v); }, reject: (e) => { clearTimeout(t); reject(e); } });

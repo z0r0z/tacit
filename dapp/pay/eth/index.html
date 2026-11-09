@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-BXAJdpgO1nh6S76A8BLgOJOtP7f+TY8/VoTquCqyAIA=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-VUmRiMlzwqrzBWS69OZ7F8Ab0cvQv25Ek5oKf6VS1Ds=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay · ETH</title>
 <meta name="description" content="Private ETH payments on Ethereum, Base and Robinhood Chain, proved on your device and recovered from your key.">
@@ -1013,8 +1013,9 @@ function prover() {
     const worker = new Worker('/evm-pool-prove-worker.js?cb=7f41e5e0', { type: 'module' });
     let id = 0; const waiting = new Map();
     const fail = (e) => { for (const w of waiting.values()) w.reject(e); waiting.clear(); if (proverP === made) proverP = null; worker.terminate(); PROVER.state = 'idle'; paintDevice(); };
-    worker.onmessage = ({ data }) => { const w = waiting.get(data.id); if (!w) return; waiting.delete(data.id); data.ok ? w.resolve(data) : w.reject(new Error(data.error)); };
-    worker.onerror = (ev) => { ev.preventDefault?.(); fail(new Error('Proving stopped on this device, likely short of memory. Close other tabs and try again, or use a laptop.')); };
+    let up = false;   // an error before the worker has answered once is its script not loading, not a proof running out of memory
+    worker.onmessage = ({ data }) => { up = true; const w = waiting.get(data.id); if (!w) return; waiting.delete(data.id); data.ok ? w.resolve(data) : w.reject(new Error(data.error)); };
+    worker.onerror = (ev) => { ev.preventDefault?.(); fail(new Error(up ? 'Proving stopped on this device, likely short of memory. Close other tabs and try again, or use a laptop.' : 'The prover could not start in this browser. Try again.')); };
     const call = (msg, ms, transfer = []) => new Promise((resolve, reject) => {
       const i = ++id, timer = setTimeout(() => fail(new Error('Proving is taking too long on this device. Try again.')), ms);
       waiting.set(i, { resolve: (v) => { clearTimeout(timer); resolve(v); }, reject: (e) => { clearTimeout(timer); reject(e); } });
@@ -2677,7 +2678,7 @@ let poolP = null, poolFor = null;
 function poolPanel() {
   if (poolFor !== S.key.pubHex) { poolP = null; poolFor = S.key.pubHex; }
   return (poolP ||= (async () => {
-    const ui = await import('/assoc-pool-ui.js?cb=ebfa6ed9'), c = CHAINS[0], call = await rpcOn(c);
+    const ui = await import('/assoc-pool-ui.js?cb=d5caf7b0'), c = CHAINS[0], call = await rpcOn(c);
     return ui.makeAssocPanel({
       html, mount, copy, toast, fmt, parseUnits, short, amountField,
       tacitPriv: hexToBytes(S.key.priv),
