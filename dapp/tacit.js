@@ -23408,20 +23408,21 @@ async function buildAndBroadcastPmint({ etchTxidHex, onProgress = null }) {
 }
 
 // What a transaction must be before it can pay anyone through a stealth transfer, read from the transaction alone (its inputs' witnesses): `notShielded` (under two inputs),
-// `none` (no envelope of a transfer kind that carries stealth outputs), or the envelope and its payload. Nothing here needs an input's previous output.
+// `none` (no envelope of a transfer kind that carries stealth outputs; `unread` too when the first input holds no envelope that can be read at all), or the envelope and its payload.
+// Nothing here needs an input's previous output.
 function _stealthShape(tx) {
   if (tx.vin.length < 2) return { notShielded: true };
   const wit0 = tx.vin[0]?.witness;
-  if (!wit0 || wit0.length < 3) return { none: true };
+  if (!wit0 || wit0.length < 3) return { none: true, unread: true };
   let envBytes;
-  try { envBytes = hexToBytes(wit0[1]); } catch { return { none: true }; }
+  try { envBytes = hexToBytes(wit0[1]); } catch { return { none: true, unread: true }; }
   const env = decodeEnvelopeScript(envBytes);
-  if (!env) return { none: true };
+  if (!env) return { none: true, unread: true };
   if (!STEALTH_DOMAIN_BY_OPCODE.has(env.opcode)) return { none: true };
   const dec = env.opcode === T_CXFER       ? decodeCXferPayload(env.payload)
             : env.opcode === T_CXFER_BPP   ? decodeCXferBppPayload(env.payload)
             : null;
-  if (!dec) return { none: true };
+  if (!dec) return { none: true, unread: true };
   return { env, dec };
 }
 // The inputs whose previous output decides what they are. An input counts toward the shared secret only as a witness of one item (a taproot key spend) or of two (a native segwit key
@@ -23447,18 +23448,25 @@ function _stealthCreditsOf(tx, shape) {
 }
 // Whether the API's archive proves that a transfer holds nothing for this key, so that no explorer is asked for it. The transfer is held, and so is each transaction it spends from for
 // the inputs whose previous output matters (_stealthNeedsPrevout), every one of them checked against its txid when the archive handed it over; the credits are then worked out by the
-// same code discoverStealthFromTxid uses, on the previous outputs those transactions hold, and there are none. Everything else (a transfer or a parent the archive lacks, a credit found,
-// a shape it cannot read) is not told here, and is read from an explorer as always, a credit found going through the whole of discoverStealthFromTxid.
+// same code discoverStealthFromTxid uses, on the previous outputs those transactions hold, and there are none. A txid does not cover witnesses, and the verdict reads them, so the
+// transfer is cleared only when its witnesses are there and agree with what the archive holds: the first input's envelope reads, every input carries a witness or a scriptSig, and the key
+// a native segwit input names in its witness is the one its previous output commits to. Everything else (a transfer or a parent the archive lacks, a credit found, a shape it cannot
+// read, a witness that is missing or does not agree) is not told here, and is read from an explorer as always, a credit found going through the whole of discoverStealthFromTxid.
 function _stealthNothingFromArchive(txidHex) {
   const A = _txArchive(), tx = A.get(txidHex);
   if (!tx || !Array.isArray(tx.vin) || !Array.isArray(tx.vout)) return false;
   const shape = _stealthShape(tx);
-  if (shape.notShielded || shape.none) return true;
+  if (shape.notShielded) return true;
+  if (shape.unread || tx.vin.some((v) => !(v.witness?.length) && !v.scriptsig)) return false;
+  if (shape.none) return true;
   const vin = [];
   for (const v of tx.vin) {
     if (!_stealthNeedsPrevout(v)) { vin.push(v); continue; }
     const out = (A.get(v.txid) || A.getFunding(v.txid))?.vout?.[v.vout];       // a funding transaction is an ordinary one the API keeps apart (tx-archive.js getFunding)
     if (!out) return false;
+    if (/^0014[0-9a-f]{40}$/.test(out.scriptpubkey || '') && v.witness.length === 2) {
+      try { if (bytesToHex(hash160(hexToBytes(v.witness[1]))) !== out.scriptpubkey.slice(4)) return false; } catch { return false; }
+    }
     vin.push({ ...v, prevout: out });
   }
   try { return _stealthCreditsOf({ ...tx, vin }, shape).length === 0; } catch { return false; }
