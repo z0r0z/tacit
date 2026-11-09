@@ -16,7 +16,7 @@ addEventListener('hashchange', forward);
 
 const API = 'https://api.tacit.finance';
 const SEATS = '0x00000000001f703eae70de3b528213e4802790fb';
-const PROVER_SEEN_S = 600, STALL_S = 180, EVERY_MS = 30e3, SHOWN = 25, UNIT = 100000000n, FLOOR = 200000n;
+const PROVER_SEEN_S = 600, STALL_S = 180, EVERY_MS = 30e3, BEAT_MS = 5e3, SHOWN = 25, UNIT = 100000000n, FLOOR = 200000n;
 const cfg = tacitChain();
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -84,7 +84,7 @@ async function older(n = 100) {
 
 // what each source last answered: absent while it is unread, null when it could not be read
 const R = {}, P = { h: null, since: 0 };
-let shown = SHOWN, dirty = false, busy = false, said = null;
+let shown = SHOWN, dirty = false, busy = false, said = null, stale = false;
 const mark = () => { if (!dirty) { dirty = true; queueMicrotask(draw); } };
 // the chain's own clock: the head's time, moved on by the time since it was read
 const nowS = () => (R.chain ? R.chain.t + (Date.now() - R.chain.at) / 1000 : Date.now() / 1000);
@@ -145,18 +145,20 @@ function strip({ fee, chain }, now) {
   const p = chain ? price(chain.pool, chain.shares) : null;
   const up = p != null && p > 1 ? `+${((p - 1) * 100).toFixed(2)}% since it started` : 'since it started';
   const c = (v, k) => `<div><span class="v num">${v}</span><span class="k">${k}</span></div>`;
+  const cu = (key, v, dp, text) => `<span data-k="${key}" data-v="${v}" data-dp="${dp}">${text}</span>`;
   return [
-    c(rd(chain, (x) => int(x.height), '3ch'), 'blocks'),
+    c(rd(chain, (x) => cu('h', x.height, 0, int(x.height)), '3ch'), 'blocks'),
     c(rd(chain, (x) => (x.height > 0 && x.last > 0 ? `<span data-at="${x.last}">${ago(now - x.last)}</span>` : '—'), '5ch'), 'last block'),
-    c(rd(chain, (x) => `${tac(x.pool)}<small>TAC</small>`, '6ch'), 'private on the chain'),
-    c(rd(chain, () => `${p.toFixed(5)}<small>TAC</small>`, '6ch'), `1 share · <span class="${p > 1 ? 'ok' : ''}">${up}</span>`),
-    c(rd(fee, (x) => (x.fee != null ? `${tac(BigInt(x.fee) + FLOOR, 4)}<small>TAC</small>` : '—'), '5ch'), 'a payment now, fees in TAC'),
+    c(rd(chain, (x) => `${cu('pool', Number(x.pool) / 1e8, 2, tac(x.pool))}<small>TAC</small>`, '6ch'), 'private on the chain'),
+    c(rd(chain, () => `${cu('px', p, 5, p.toFixed(5))}<small>TAC</small>`, '6ch'), `1 share · <span class="${p > 1 ? 'ok' : ''}">${up}</span>`),
+    c(rd(fee, (x) => (x.fee != null ? `${cu('fee', Number(BigInt(x.fee) + FLOOR) / 1e8, 4, tac(BigInt(x.fee) + FLOOR, 4))}<small>TAC</small>` : '—'), '5ch'), 'a payment now, fees in TAC'),
   ].join('');
 }
 
 // what a share was worth after each block, its floor at 1, where every share started; the dots are the blocks, the line is read by pointer
-let CH = null;
+let CH = null, introAt = 0;
 const W = 600, H = 150, PAD = 10;
+const intro = () => { if (!introAt) introAt = Date.now(); return Date.now() - introAt < 1500 ? ' in' : ''; };   // (the class stays through the animation, so a redraw does not cut it)
 function chart(rollup) {
   CH = null;
   if (rollup === undefined) return '<div class="plot sk-plot"></div>';
@@ -166,8 +168,8 @@ function chart(rollup) {
   const X = (x) => ((x - x0) / (x1 - x0 || 1)) * W, Y = (y) => H - PAD - ((y - lo) / span) * (H - 2 * PAD);
   const d = pts.map(([x, y], i) => `${i ? 'L' : 'M'}${X(x).toFixed(1)} ${Y(y).toFixed(1)}`).join(' ');
   CH = { pts, xs: pts.map(([x]) => X(x) / W), ys: pts.map(([, y]) => Y(y) / H) };
-  const dots = pts.length <= 40 ? pts.map((q, i) => `<i class="pt" style="left:${(CH.xs[i] * 100).toFixed(2)}%;top:${(CH.ys[i] * 100).toFixed(2)}%"></i>`).join('') : '';
-  return `<figure class="chart"><div class="plot"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="A share's worth from block ${x0} to block ${x1}, ${pts[0][1].toFixed(5)} to ${pts.at(-1)[1].toFixed(5)} TAC">
+  const dots = pts.length <= 40 ? pts.map((q, i) => `<i class="pt" style="--i:${i};left:${(CH.xs[i] * 100).toFixed(2)}%;top:${(CH.ys[i] * 100).toFixed(2)}%"></i>`).join('') : '';
+  return `<figure class="chart"><div class="plot${intro()}"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="A share's worth from block ${x0} to block ${x1}, ${pts[0][1].toFixed(5)} to ${pts.at(-1)[1].toFixed(5)} TAC">
     <line class="gd" x1="0" y1="${H - 0.5}" x2="${W}" y2="${H - 0.5}"/><path class="ar" d="${d} L${W} ${H} L0 ${H} Z"/><path class="ln" d="${d}"/></svg>${dots}
     <span class="yl num">${lo.toFixed(5)}</span><i class="xh" hidden></i><span class="tip num" hidden></span></div>
     <figcaption><span>block ${int(x0)} · ${pts[0][1].toFixed(5)}</span><span>block ${int(x1)} · ${pts.at(-1)[1].toFixed(5)} TAC</span></figcaption></figure>`;
@@ -198,10 +200,11 @@ function blocks({ blocks: b, chain }, rollup) {
   if (!rollup.length) return '<li class="none"><span class="m">No blocks yet.</span></li>';
   // an Ethereum block's time from the head's, at 12 s a block (the head the contract was read at, else the API's, at this clock)
   const head = chain ? { n: chain.n, t: chain.t + (Date.now() - chain.at) / 1000 } : Number.isInteger(b?.head?.ethHead) ? { n: b.head.ethHead, t: Date.now() / 1000 } : null;
+  if (FRESH.h != null && !FRESH.at && rollup[0].height >= FRESH.h) { FRESH.at = Date.now(); setTimeout(mark, 2900); }
   const hd = '<li class="hd" aria-hidden="true"><span>Block</span><span>Landed</span><span class="r">1 share</span><span class="r">Private TAC</span><span></span></li>';
   const rows = rollup.slice(0, shown).map((x) => {
     const at = head ? head.t - Math.max(0, head.n - x.ethBlock) * 12 : null;
-    return `<li><b class="n">#${int(x.height)}</b><span class="a">${at != null ? `<span data-at="${Math.round(at)}">${ago(nowS() - at)}</span>` : '—'}</span><span class="s num" data-l="1 share">${price(x.pool, x.shares).toFixed(5)}</span><span class="p num">${tac(x.pool)} <small>TAC</small></span><span class="x">${tx(x.tx)}</span></li>`;
+    return `<li${fresh(x.height)}><b class="n">#${int(x.height)}</b><span class="a">${at != null ? `<span data-at="${Math.round(at)}">${ago(nowS() - at)}</span>` : '—'}</span><span class="s num" data-l="1 share">${price(x.pool, x.shares).toFixed(5)}</span><span class="p num">${tac(x.pool)} <small>TAC</small></span><span class="x">${tx(x.tx)}</span></li>`;
   });
   return hd + rows.join('');
 }
@@ -228,6 +231,51 @@ function more(hist) {
   return out.join('');
 }
 
+// The four cells as the path a payment takes: it waits, the leader batches it, a GPU proves the block, Ethereum checks the proof and lands it. A wire between
+// two stages carries dots while that hop is moving (quick with a payment on its way, slow when all is quiet) and is dashed while it cannot.
+const STAGES = [['Payments', 2], ['Leader', 0], ['Provers', 1], ['Ethereum', 3]];            // [its name, its place in health()'s answer]
+const ICON = {
+  Payments: '<svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg>',
+  Leader: '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>',
+  Provers: '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/></svg>',
+  Ethereum: '<svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg>',
+};
+// 'off': cannot move (down, not read, no prover); 'live': work is in it; 'on': well and quiet
+const flowOf = (name, c, pending) => (c.cls === 'sk' || !c.cls || c.cls === 'bad' ? 'off'
+  : name === 'Provers' ? (c.cls === 'ok' ? (pending ? 'live' : 'on') : 'off')
+  : c.cls === 'busy' ? 'live' : 'on');
+const wireOf = (a, b) => (a === 'off' || b === 'off' ? 'off' : a === 'live' || b === 'live' ? 'live' : 'on');
+function pipeline(cells, pending) {
+  const st = STAGES.map(([name, i]) => ({ name, c: cells[i], f: flowOf(name, cells[i], pending) }));
+  return st.map((x, i) => {
+    const eb = `<i class="eb">${ICON[x.name]}${x.name}</i>`;
+    const card = x.c.cls === 'sk' ? `<div class="st">${eb}<b><span class="sk" style="--w:12ch"></span></b><small><span class="sk" style="--w:16ch"></span></small></div>`
+      : `<div class="st ${x.c.cls}${x.name === 'Ethereum' && landedNow() ? ' landed' : ''}">${eb}<b><span class="dot ${x.c.cls}"></span>${x.c.title}</b><small>${x.c.small}</small></div>`;
+    return (i ? `<span class="wire ${wireOf(st[i - 1].f, x.f)}" aria-hidden="true"></span>` : '') + card;
+  }).join('');
+}
+// a block has landed: the Ethereum stage glows once, the block's row is lit once, and the page says so
+const LAND = { h: null, at: 0 }, FRESH = { h: null, at: 0 };
+const landedNow = () => Date.now() - LAND.at < 2600;
+const fresh = (h) => (FRESH.at && Date.now() - FRESH.at < 2800 && h === FRESH.h ? ' class="fresh"' : '');
+function landing(h) {
+  if (LAND.h != null && h > LAND.h) { LAND.at = Date.now(); FRESH.h = h; FRESH.at = 0; setTimeout(mark, 2700); $('#live').textContent = `Block ${int(h)} landed`; }
+  LAND.h = h;
+}
+// the figures count up to what they are, once a read changes them (from nothing, the first time)
+const SEEN_N = new Map();
+function countUp() {
+  const calm = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  document.querySelectorAll('#strip [data-k]').forEach((e) => {
+    const k = e.dataset.k, to = Number(e.dataset.v), from = SEEN_N.has(k) ? SEEN_N.get(k) : 0, dp = Number(e.dataset.dp);
+    SEEN_N.set(k, to);
+    if (calm || from === to || !Number.isFinite(to)) return;
+    const t0 = performance.now(), f = (v) => v.toLocaleString('en-US', { minimumFractionDigits: dp, maximumFractionDigits: dp });
+    const step = (t) => { const p = Math.min(1, (t - t0) / 700); e.textContent = f(from + (to - from) * (1 - (1 - p) ** 3)); if (p < 1) requestAnimationFrame(step); };
+    requestAnimationFrame(step);
+  });
+}
+
 // each part is drawn on its own, so one that cannot be (a figure the leader sent wrongly) leaves the rest as they are
 const part = (f) => { try { f(); } catch (e) { console.warn('chain page:', e?.message); } };
 function draw() {
@@ -235,12 +283,11 @@ function draw() {
   const now = nowS();
   part(() => {
     const cells = health(R, now), v = verdict(cells), el = $('#verdict');
-    put('#health', cells.map((c) => (c.cls === 'sk' ? '<div><b><span class="sk" style="--w:12ch"></span></b><small><span class="sk" style="--w:16ch"></span></small></div>'
-      : `<div class="${c.cls}"><b><span class="dot ${c.cls}"></span>${c.title}</b><small>${c.small}</small></div>`)).join(''));
+    put('#health', pipeline(cells, Number(R.state?.pending || 0) > 0));
     el.dataset.s = v.s; el.lastElementChild.textContent = v.t; el.firstElementChild.className = `dot ${v.s}`;
     if (said !== v.t) { said = v.t; if (v.t !== 'Reading…') $('#live').textContent = v.t; }
   });
-  part(() => put('#strip', strip(R, now)));
+  part(() => { put('#strip', strip(R, now)); countUp(); });
   const hist = history();
   part(() => put('#chart', chart(R.blocks === undefined && !hist.length ? undefined : hist)));
   part(() => {
@@ -264,6 +311,16 @@ function tick() {
   }
 }
 
+// The leader's /state is a few hundred bytes: read every few seconds, so a payment arriving, and the block that takes it, show as they happen; a new block
+// brings the full read at once (after the one under way, if there is one).
+async function beat() {
+  if (document.hidden) return;
+  const s = await once(cfg.leader + '/state');
+  if (!s) return;                                   // (only a good answer moves anything: the full read is what says the leader is down)
+  const was = Number(R.state?.height);
+  R.state = s; waiting(s); mark();
+  if (Number(s.height) > was) { if (busy) stale = true; else refresh(); }
+}
 async function refresh() {
   if (busy || document.hidden) return;
   busy = true;
@@ -275,20 +332,22 @@ async function refresh() {
     await Promise.all(Object.entries(src).map(async ([k, f]) => {
       R[k] = await f().catch(() => null);
       if (k === 'state') waiting(R.state);
+      if (k === 'chain' && R.chain) landing(R.chain.height);
       if (k === 'blocks') { take(R.blocks?.rollup); if (!filled && HAVE.size >= 20 && mayHaveOlder()) { filled = true; older(); } }   // (twenty is all /prover/blocks gives: a full feed may have more behind it)
       mark();
     }));
     R.at = Date.now();
-  } finally { busy = false; mark(); }
+  } finally { busy = false; mark(); if (stale) { stale = false; refresh(); } }
 }
 
 if (!cfg) {
-  $('#health').innerHTML = '<div><b><span class="dot"></span>Not live yet</b><small>The Tacit chain is not deployed here.</small></div>';
+  $('#health').innerHTML = '<div class="st" style="grid-column:1/-1"><b><span class="dot"></span>Not live yet</b><small>The Tacit chain is not deployed here.</small></div>';
   document.querySelectorAll('.grid > section:not(:first-child), #verdict, #upd').forEach((e) => { e.hidden = true; });
 } else {
   draw();
   refresh();
   setInterval(refresh, EVERY_MS);
+  setInterval(beat, BEAT_MS);
   setInterval(tick, 5e3);
   document.addEventListener('visibilitychange', () => { if (!document.hidden && Date.now() - (R.at || 0) > 20e3) refresh(); });
   $('#chart').addEventListener('pointermove', scrub);
