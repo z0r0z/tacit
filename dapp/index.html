@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-+PC3BbQ0oQhqu/2MgXjlcOiJ6ZFo+Bkhdsy7XpnWpCY=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-rMVXB3ZyJZNGUgWWaj9nDzxRZU8/b+pu1EktNpv60Wg=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -14,7 +14,7 @@
 <link rel="preconnect" href="https://tacit-evm-pool-keepers.onrender.com" crossorigin>
 <script async src="/front-guard.js?cb=5b164dc9"></script>
 <script type="module" src="/px-strip.js?cb=fe8eebc5" async fetchpriority="high"></script>
-<link rel="preload" href="/swap/card.css?cb=41de2289" as="style">
+<link rel="preload" href="/swap/card.css?cb=db0c347a" as="style">
 <link rel="preload" href="/fonts/instrument-serif-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/instrument-serif-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
@@ -66,7 +66,7 @@
 <link rel="modulepreload" href="/bridge-tick.js?cb=4e721860">
 <link rel="modulepreload" href="/tacit-session.js?cb=a2d34bb2">
 <link rel="modulepreload" href="/activity.js?cb=8ccbc552">
-<link rel="modulepreload" href="/swap/card.js?cb=1ee7576a">
+<link rel="modulepreload" href="/swap/card.js?cb=9411c247">
 <link rel="modulepreload" href="/trade/wallet.js?cb=88b623b8">
 <link rel="modulepreload" href="/trade/util.js?cb=ba5a02b1">
 <link rel="modulepreload" href="/trade/rpc.js">
@@ -369,6 +369,7 @@ a.di { color: inherit; text-decoration: none; }
 .fms .pair .tk + .tk { margin-left: -5px; box-shadow: 0 0 0 1.5px var(--paper); }
 .fms b { font-weight: 400; color: var(--ink); }
 .fms small { font: 500 11px var(--mono); letter-spacing: .06em; }
+.fms .fms-thin { font-style: normal; font-weight: 400; letter-spacing: 0; opacity: .8; }
 @media (hover: hover) { .fms a:hover small { color: var(--ink); } }
 .fms a:active { transform: scale(.98); }
 .fms a:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; border-radius: 4px; }
@@ -386,6 +387,8 @@ a.di { color: inherit; text-decoration: none; }
 .hero h1 .hero-pair .tk { width: .74em; height: .74em; }
 .hero .sub { font-size: 14px; line-height: 1.55; max-width: 64ch; margin: 0 auto; color: var(--mute); text-wrap: balance; }
 .hero .sub b { font-weight: 500; color: var(--ink); }
+/* wide screens: the card's button should come up the page, not sit under the fold of a laptop */
+@media (min-width: 641px) { .hero { padding-top: 20px; } .hero-t { margin-bottom: 24px; } .hero h1 { margin-bottom: 12px; } }
 /* A plain text link, as the quiet kind of call to action. */
 .tl { font-weight: 500; text-decoration: underline; text-underline-offset: 4px; }
 
@@ -405,10 +408,11 @@ a.di { color: inherit; text-decoration: none; }
 .hx { position: relative; width: 100%; max-width: 480px; min-width: 0; margin: 0 auto; background: var(--card); border: 1px solid color-mix(in srgb, var(--ink) 9%, transparent); border-radius: 22px; box-shadow: var(--float), inset 0 1px 0 color-mix(in srgb, var(--ink) 4%, transparent); }
 /* The card is filled by script, so until it is, it holds the height its Swap tab settles at (measured at each width, with the way the card opens: ETH to private tETH, which
    has the "Private in" block): what is below it does not move when it appears. tests/front-tile-height.mjs measures it again. */
-.hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 621px; }
-@media (max-width: 640px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 612px; } }
-@media (max-width: 356px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 636px; } }
-@media (max-width: 334px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 654px; } }
+.hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 571px; }
+@media (max-width: 640px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 562px; } }
+@media (max-width: 370px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 560px; } }
+@media (max-width: 356px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 585px; } }
+@media (max-width: 334px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 604px; } }
 /* Until the script draws it the card is the places of its tabs, its two fields, the block under them and its button, in quiet blocks of its own colours (the script's first draw
    replaces them), so the card is there from the first paint and nothing in it moves when its parts arrive. */
 .hx-sk { display: grid; gap: 8px; padding: 12px 16px 16px; }
@@ -1474,7 +1478,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
 }
 </style>
 <!-- the hero tile is drawn with the swap card's parts (swap/card.js, which the Swap tab mounts): its styles, after the page's own -->
-<link rel="stylesheet" href="/swap/card.css?cb=41de2289" media="print">
+<link rel="stylesheet" href="/swap/card.css?cb=db0c347a" media="print">
 <!-- chrome:head:begin inline -->
 <style>
 /* The header's page links and the footer, as every page that wears them draws them. The markup is made by build/chrome.mjs and stamped
@@ -11853,6 +11857,8 @@ function hintGo(id) {
 function paintFarmChips(pools) {
   const el = $('#fms'), chips = pools.filter(({ p }) => !p.idle && String(p.reserves?.assetA).toLowerCase() === CETH_ID && Number(p.reserves?.lpTotalShares)).map(({ p, apr }) => ({
     spec: `p${p.pid}`, poolId: p.poolId, href: `#farm/private-${p.pid}`, name: pairName(p.pair), apr, kind: 'private farm',
+    // a pool that a first deposit (HINT_ETH) moves 5% or more is small: its APR is for the few it can take, so the chip says so
+    impact: zapImpact(p, Number(HINT_ETH), { split: true }),
     icons: ['tk-teth', LOGO[String(p.pair).split('/').find((t) => t !== 'cETH')] || 'tk-tac'] }));
   const pub = FARM.top?.apr;
   if (pub != null) chips.push({ spec: 'public', href: '#farm/public', name: 'TAC / ETH', apr: pub, kind: 'public farm', icons: ['tk-tac', 'tk-eth'] });
@@ -11862,7 +11868,7 @@ function paintFarmChips(pools) {
   HINT_POOL = hintFarm(pools) || (best ? { spec: best.spec, poolId: best.poolId, apr: best.apr, icons: best.icons, name: best.name } : null);
   paintHints();
   if (!el) return;
-  const view = html`<span class="fms-k" aria-hidden="true">Farms</span>${chips.map((c) => html`<a href="${c.href}" data-hx="earn:ether:${c.spec}" title="${c.name}, ${c.kind}: put ETH in with one transaction"><span class="pair">${c.icons.map((i) => html`<svg class="tk" aria-hidden="true"><use href="#${i}"/></svg>`)}</span><b class="num">${c.apr >= 10000 ? '10,000+' : Math.round(c.apr).toLocaleString('en-US')}%</b><small>APR</small></a>`)}`;
+  const view = html`<span class="fms-k" aria-hidden="true">Farms</span>${chips.map((c) => html`<a href="${c.href}" data-hx="earn:ether:${c.spec}" title="${c.name}, ${c.kind}: put ETH in with one transaction${c.impact >= 0.05 ? `. A small pool: a ${HINT_ETH} ETH deposit moves its price ${pctFmt(c.impact * 100)}` : ''}"><span class="pair">${c.icons.map((i) => html`<svg class="tk" aria-hidden="true"><use href="#${i}"/></svg>`)}</span><b class="num">${c.apr >= 10000 ? '10,000+' : Math.round(c.apr).toLocaleString('en-US')}%</b><small>APR${c.impact >= 0.05 ? html` · <i class="fms-thin">small pool</i>` : ''}</small></a>`)}`;
   if (el.__h !== view.s) { el.__h = view.s; mount(el, view); }        // written only when it changed, so a pressed chip is never replaced under a pointer
   el.classList.toggle('on', chips.length > 0);
 }
@@ -16982,12 +16988,18 @@ async function hxQuote() {
       if (my !== HX.seq) return;
       if (!rows.length) return done({ out: '—', go: 'Farm', warn: true, line: 'The farms could not be read.' });
       // the card starts on the pool picked, else the private pool that leaves this amount the most after a week (its TAC a day for 7 days,
-      // less the TAC worth of what its swap gives up once; the APR with no amount typed) among those whose swap moves the price under 5%
-      // (the least moved when none does), else the public one
+      // less the TAC worth of what its swap gives up once) among those whose swap moves the price under 5% (the least moved when none does),
+      // else the public one. With no amount typed the pools are ranked for the size the first-deposit chip uses (HINT_ETH), so the card starts
+      // where that chip does and not on a bigger APR in a pool too thin to take a deposit; LP only and TAC put in have no such ETH size and keep the APR
       const tacSrc = HX.from === 'wtac' || HX.from === 'tac', amtN = units ? Number(units) / 1e8 : 0, tacEth = FARM.precision?.tacEth || 0;
-      const net = (r) => (!amtN ? r.apr : r.day * 7 - (tacSrc ? r.impact * amtN / 2 : tacEth ? r.impact * amtN / 2 / tacEth : 0));
-      const priv = rows.filter((r) => r.k !== 'precision' && r.apr != null), calm = priv.filter((r) => r.impact < 0.05);
-      const top = calm.reduce((a, r) => (!a || net(r) > net(a) ? r : a), null) || priv.reduce((a, r) => (!a || r.impact < a.impact ? r : a), null);
+      const ref = !amtN && !tacSrc && !(HX.lp && HX.from === 'ether') ? Number(HINT_ETH) : 0, rank = ref ? await hxFarms(ref) : rows, n = ref || amtN;
+      if (my !== HX.seq) return;
+      const net = (r) => (!n ? r.apr : r.day * 7 - (tacSrc ? r.impact * n / 2 : tacEth ? r.impact * n / 2 / tacEth : 0));
+      const priv = rank.filter((r) => r.k !== 'precision' && r.apr != null), calm = priv.filter((r) => r.impact < 0.05);
+      const topRank = calm.reduce((a, r) => (!a || net(r) > net(a) ? r : a), null) || priv.reduce((a, r) => (!a || r.impact < a.impact ? r : a), null);
+      const top = topRank && rows.find((r) => r.k === topRank.k);
+      // a pool that moves its price 5% or more for a first deposit says so before an amount is typed
+      if (ref) for (const r of rows) if (priv.some((f) => f.k === r.k && f.impact >= 0.05)) r.small = true;
       if (top && priv.length > 1) top.best = true;
       const pick = rows.find((r) => r.k === HX.earnPick) || top || rows[0], how = pick.k !== 'precision' ? hxEarnHow(units) : null, two = !!how, zap = how === 'zap';
       HX.pool = pick.k;
@@ -17005,7 +17017,7 @@ async function hxQuote() {
       const jq = jp ? await hxJoinQuote(jp, units).catch((e) => ({ err: e })) : null, pq = pa ? await hxPubQuote(units).catch((e) => ({ err: e })) : null;
       if (my !== HX.seq) return;
       Object.assign(HX, { jq, jqFor: jp ? `${jp.pid}:${units}:${hxJoinMode()}` : null, pq, pqFor: pa ? `${HX.from === 'wtac' ? 'tac' : 'eth'}:${units}:${S.address}` : null });
-      for (const r of rows) { r.show = r.apr == null ? '—' : r.apr >= 10 ? Math.round(r.apr).toLocaleString('en-US') + '%' : pctFmt(r.apr); if (r.k !== 'precision') r.note = `private${r.dry ? ' · between reward periods' : ''}${hxEarnHow(units) === 'wrap' ? ' · 2 steps' : ''}${r.impact >= 0.01 ? ` · ${pctFmt(r.impact * 100)} impact` : ''}`; }
+      for (const r of rows) { r.show = r.apr == null ? '—' : r.apr >= 10 ? Math.round(r.apr).toLocaleString('en-US') + '%' : pctFmt(r.apr); if (r.k !== 'precision') r.note = `private${r.dry ? ' · between reward periods' : ''}${hxEarnHow(units) === 'wrap' ? ' · 2 steps' : ''}${r.impact >= 0.01 ? ` · ${pctFmt(r.impact * 100)} impact` : r.small ? ' · small pool' : ''}`; }
       const js = jq ? hxJoinSay(jp, jq) : null, ps = pq ? hxPubSay(pq) : null, ex = js || ps;
       const zline = pp && !zq ? 'The zap could not be priced. Try again in a moment.' : zq && !zq.plan ? 'Enter a larger amount: this one is too small to make a share of the pool.'
         : HX.zq?.over ? `More ETH than ${your()} holds, with the network fee. Try Max.` : '';
@@ -19124,7 +19136,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=1ee7576a').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=9411c247').catch((e) => { SWC.p = null; throw e; }));
 // the card held to the tab's flow; back on the Swap tab it opens on the swap it showed there
 function swcFlow() {
   hxPathPaint();

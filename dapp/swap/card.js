@@ -1064,6 +1064,7 @@ function quotePaint() {
       const text = fee == null ? (LATER.err && !r.hop ? 'could not be read' : '…') : `${r.hop ? `${tidy(amtFmt(fee, pay.dec))} ${pay.sym}` : `${eth2(fee)} ETH`}${fu != null ? ` · about ${fu < 1 ? `$${fu.toFixed(2)}` : usd(fu)}` : ''}`;
       lines.push(depGasLine());
       lines.push(['Relay fee', text, '', 'What the relay charges to send the swap out of the pool, paid from the deposit (set aside twice, for a fee that rises while it waits). The deposit itself pays the wallet’s network fee.']);
+      lines.push(['Time', 'within minutes', '', 'Your deposit lands first, then the relay completes the swap out of the pool.']);
     }
     else if (!r.priv && S.gasPrice && S.px.ethUsd && relayNoEth(kind)) {
       const f = Number(GR.GAS_UNITS * S.gasPrice) / 1e18 * S.px.ethUsd * 1.5, sym = lc(S.pay) === lc(R.TAC) ? 'TAC' : tokenOf(S.pay)?.sym;
@@ -1802,7 +1803,7 @@ function paintLater(q, r, kind) {
     el.innerHTML = `<button type="button" class="tgl" id="later-on" role="switch" aria-checked="${LATER.on}" title="${esc(LATER_TIP)}"><svg class="tk sm" aria-hidden="true"><use href="#tk-peth"/></svg><span class="tg-t"><b>Swap privately</b><small>${LATER.on ? 'your wallet and the address are not linked' : 'hides where it goes'}</small></span><span class="pill" aria-hidden="true"></span></button>`
       + (LATER.on ? (viaRow ? viaHtml(th) : '') + (gasRow ? gasHtml(dw) : '')
         + `<div class="buf" title="Deposit more than you swap, so the deposit and the swap do not match. What is not swapped stays yours, private in the pool."><span>Blur the amount<small> · the extra stays yours</small></span><input type="range" id="later-x" min="5" max="100" step="5" value="${LATER.pct}" aria-label="How much more to deposit than you swap, so the two do not match; the extra stays yours, private"><b id="later-xv"></b></div>`
-        + `<ol class="st pre" aria-label="How it goes"><li><i class="mk" aria-hidden="true">1</i><span>Deposit <b id="later-dep"></b></span></li><li><i class="mk" aria-hidden="true">2</i><span>Wait</span></li><li><i class="mk" aria-hidden="true">3</i><span>Swap</span></li>${laterPool() && laterDest().kind !== 'address' ? '<li><i class="mk" aria-hidden="true">4</i><span>Private</span></li>' : ''}</ol>` : '');
+        + `<ol class="st pre" aria-label="How it goes"><li><i class="mk" aria-hidden="true">1</i><span>Deposit <b id="later-dep"></b></span></li><li><i class="mk" aria-hidden="true">2</i><span>Wait</span></li><li><i class="mk" aria-hidden="true">3</i><span>Swap</span></li>${laterPool() && laterDest().kind !== 'address' ? '<li><i class="mk" aria-hidden="true">4</i><span>Private</span></li>' : ''}</ol><p class="later-note" id="later-note"></p>` : '');
   }
   if (!LATER.on) return;
   if (viaRow) viaPaint(th, hopOn);
@@ -1818,6 +1819,8 @@ function paintLater(q, r, kind) {
   $('#later-dep').title = dep == null ? '' : hopQ
     ? `${inTok(dep)} into the private ${pay.sym} pool as it is: the swap (${inTok(laterSwapWei(q))}), the relay’s fee for the swap out set aside twice (${inTok(2n * laterFee(q))}) and the buffer (${inTok(laterExtra(q))}), rounded up. What is not swapped stays private in that pool.`
     : `${tin != null ? (depPayer() !== 'eth' ? `${inTok(tin)} sold by the relay for ${eth2(dep + (LATER.boxFee ?? 0n))} ETH, the deposit and the keeper’s fee for completing it: ` : `${inTok(tin)} sold for ${eth2(dep)} ETH in the same transaction: `) : ''}The swap (${eth2(laterSwapWei(q))} ETH), the relay’s fee for the swap out set aside twice (${eth2(2n * LATER.fee)} ETH) and the buffer (${eth2(laterExtra(q))} ETH), rounded up. What is not swapped stays in your private balance.`;
+  // the deposit is more than the amount typed (the relay's fee set aside, and the blur): say what is swapped and where the rest goes, not only in the tip
+  $('#later-note').textContent = dep != null && isEth(S.pay) ? `${eth2(laterSwapWei(q))} ETH is swapped; the rest stays yours, private.` : hopQ && dep != null ? `${inTok(laterSwapWei(q))} is swapped; the rest stays yours, private.` : '';
 }
 // The row that says which pool the swap goes through, from a wallet token: its own (with the notes each holds), or the offer to open it.
 function viaHtml(th) {
