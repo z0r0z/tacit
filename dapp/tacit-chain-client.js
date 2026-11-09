@@ -175,6 +175,18 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
     const [pool, shares] = await Promise.all([call('pool()'), call('shares()')]);
     return { pool: big(pool), shares: big(shares) };
   }
+  // the payments the leader holds that open with this wallet's key, each with its worth (its own change is not among them)
+  async function incomingNotes() {
+    await ready();
+    const r = await api('GET', '/pending-notes').catch(() => null);
+    if (!r?.ok || !Array.isArray(r.leaves) || !r.leaves.length || r.memos?.length !== r.leaves.length) return [];
+    const skip = new Set([...held().flatMap((e) => e.own || []).map((x) => leafKey(x.leaf)), ...st.notes.map((x) => leafKey(x.leaf))]);
+    const page = { leaves: r.leaves, memos: r.memos, next: r.leaves.length, total: r.leaves.length };
+    const got = (await w.scan(me, { notes: async () => page, spent: async () => false }, { from: 0, known: [] })).notes.filter((x) => !skip.has(leafKey(x.leaf)));
+    if (!got.length) return [];
+    const at = await rate();
+    return got.map((x) => ({ key: leafKey(x.leaf), units: worthOf(BigInt(x.value), at) }));
+  }
   const owned = () => { const t = taken(); return st.notes.filter((n) => !t.has(strip(n.nullifier))).map((n) => ({ ...n, s: hexBytes(n.s) })); };
 
   /// The leader's fee: { units, to (its chain address), shieldCap, sweepFee }, units 0 when it asks none. `shieldCap`: the most units one
@@ -249,10 +261,10 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
     mark(e.id, { queued: true, refused: false });
     onStatus?.({ id: r.id, status: 'queued', kept: e });
     const t0 = Date.now();
-    let slow = false, looked = t0;
+    let slow = false, looked = t0, height = null;
     for (;;) {
       const rc = await api('GET', `/receipt/${r.id}`).catch(() => null);
-      if (rc?.ok && rc.status === 'landed') break;
+      if (rc?.ok && rc.status === 'landed') { height = Number.isSafeInteger(rc.height) ? rc.height : null; break; }
       if (rc?.ok && rc.status === 'refused') { mark(e.id, { refused: true }); throw keptErr(new Error(rc.error || 'the leader refused the spend'), e); }
       if (rc && !rc.ok && rc.status === 404) {
         if (await settled(e).catch(() => null)) break;
@@ -269,8 +281,8 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
     const gone = new Set((spent.nullifiers || []).map(strip));
     st.notes = st.notes.filter((n) => !gone.has(strip(n.nullifier)));
     save();
-    onStatus?.({ id: r.id, status: 'landed' });
-    return { id: r.id };
+    onStatus?.({ id: r.id, status: 'landed', height });
+    return { id: r.id, height };
   }
 
   /// Hands a spend to the leader without waiting for it to land, kept here first: a shield whose deposit is not paid yet is held by the
@@ -352,15 +364,13 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
     /// GET /pending-notes lists that open with this wallet's key, at the chain's rate. Its own change is not among them (balance counts it);
     /// 0 when nothing comes, or the leader lists none.
     async incoming() {
-      await ready();
-      const r = await api('GET', '/pending-notes').catch(() => null);
-      if (!r?.ok || !Array.isArray(r.leaves) || !r.leaves.length || r.memos?.length !== r.leaves.length) return 0n;
-      const skip = new Set([...held().flatMap((e) => e.own || []).map((x) => leafKey(x.leaf)), ...st.notes.map((x) => leafKey(x.leaf))]);
-      const page = { leaves: r.leaves, memos: r.memos, next: r.leaves.length, total: r.leaves.length };
-      const got = await w.scan(me, { notes: async () => page, spent: async () => false }, { from: 0, known: [] });
-      const sh = got.notes.filter((x) => !skip.has(leafKey(x.leaf))).reduce((t, x) => t + BigInt(x.value), 0n);
-      return sh > 0n ? worthOf(sh, await rate()) : 0n;
+      return (await incomingNotes()).reduce((t, x) => t + x.units, 0n);
     },
+    /// The same, each payment on its own: [{ key, units }], `key` the note's leaf (the same key `has` takes once its block landed and it was
+    /// scanned), oldest first. [] when nothing comes, or the leader lists none.
+    incomingNotes,
+    /// Whether the wallet's last scan holds the note of this key (an `incomingNotes` key): its block landed.
+    has: (key) => st.notes.some((x) => leafKey(x.leaf) === key),
     /// The spends handed over and not landed, oldest first (those that landed or whose notes went another way are dropped here).
     async pending() {
       await ready();

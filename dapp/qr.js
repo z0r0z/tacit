@@ -1,5 +1,7 @@
-// QR codes for the pay pages (/pay/ and /pay/eth/): a payment link or an address, drawn as an SVG. Byte mode, error
-// correction level M (versions 1–40), after Project Nayuki's reference construction.
+// QR codes for the pay pages (/pay/ and /pay/eth/) and TAC's page: a payment link or an address, drawn as an SVG. Error correction
+// level M (versions 1–40), after Project Nayuki's reference construction. Byte mode, or alphanumeric mode for a text that is all in its
+// set (digits, capitals, space and $%*+-./:): 5.5 bits a character instead of 8, so an upper-case link is a smaller code that a camera
+// reads from further away (a tacit1… address and a URL's scheme and host read the same in capitals).
 
 // qrModules(text) → rows of booleans (true = dark), without the quiet zone.
 function qrModules(text) {
@@ -7,12 +9,19 @@ function qrModules(text) {
   const BLOCKS = [-1, 1, 1, 1, 2, 2, 4, 4, 4, 5, 5, 5, 8, 9, 9, 10, 10, 11, 13, 14, 16, 17, 17, 18, 20, 21, 23, 25, 26, 28, 29, 31, 33, 35, 37, 38, 40, 43, 45, 47, 49];
   const raw = (v) => { let r = (16 * v + 128) * v + 64; if (v >= 2) { const n = Math.floor(v / 7) + 2; r -= (25 * n - 10) * n - 55; if (v >= 7) r -= 36; } return r; };
   const dataCw = (v) => Math.floor(raw(v) / 8) - ECC[v] * BLOCKS[v];
-  const bytes = [...new TextEncoder().encode(text)];
+  const AN = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:', an = text.length > 0 && [...text].every((c) => AN.includes(c));
+  const bytes = an ? null : [...new TextEncoder().encode(text)], len = an ? text.length : bytes.length;
+  const cc = (v) => (an ? (v <= 9 ? 9 : v <= 26 ? 11 : 13) : v <= 9 ? 8 : 16);          // the character count's bits, by mode and version
+  const body = an ? 11 * Math.floor(len / 2) + 6 * (len % 2) : 8 * len;
   let ver = 1;
-  while (4 + (ver <= 9 ? 8 : 16) + 8 * bytes.length > dataCw(ver) * 8) if (++ver > 40) throw new Error('too long for a QR code');
+  while (4 + cc(ver) + body > dataCw(ver) * 8) if (++ver > 40) throw new Error('too long for a QR code');
   const bits = [];
   const put = (v, n) => { for (let i = n - 1; i >= 0; i--) bits.push((v >>> i) & 1); };
-  put(4, 4); put(bytes.length, ver <= 9 ? 8 : 16); for (const b of bytes) put(b, 8);
+  put(an ? 2 : 4, 4); put(len, cc(ver));
+  if (an) {
+    for (let i = 0; i + 1 < len; i += 2) put(AN.indexOf(text[i]) * 45 + AN.indexOf(text[i + 1]), 11);
+    if (len % 2) put(AN.indexOf(text[len - 1]), 6);
+  } else for (const b of bytes) put(b, 8);
   const cap = dataCw(ver) * 8;
   put(0, Math.min(4, cap - bits.length)); put(0, (8 - (bits.length % 8)) % 8);
   for (let p = 0xec; bits.length < cap; p ^= 0xec ^ 0x11) put(p, 8);
@@ -104,11 +113,21 @@ function qrModules(text) {
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 // The code at a whole number of pixels per module, so every module is the same size on screen and a camera or a
 // desktop decoder reads it; drawn at the width it is given, or at the box's width when that leaves under 3 px a module.
+// `mark`: 'tac' puts TAC's coin in the middle, over about 4% of the code (level M restores up to 15%, spread across its blocks).
 // → the SVG's markup.
-export function qrSvg(text, width = 0, label = 'QR code of the payment link') {
+export function qrSvg(text, width = 0, label = 'QR code of the payment link', { mark = '' } = {}) {
   const m = qrModules(text), n = m.length, Q = 4, W = n + 2 * Q, px = Math.floor(Math.min(width, 360) / W);
   let d = '';
   for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) if (m[y][x]) d += `M${x + Q} ${y + Q}h1v1h-1z`;
   const size = px >= 3 ? `width:${W * px}px;height:${W * px}px` : 'width:100%;height:auto';
-  return `<svg class="qr" style="${size}" viewBox="0 0 ${W} ${W}" role="img" aria-label="${esc(label)}" shape-rendering="crispEdges"><rect width="${W}" height="${W}" fill="#fff"/><path d="${d}" fill="#111"/></svg>`;
+  let coin = '';
+  if (mark === 'tac' && n >= 25) {
+    const k = Math.round(n * 0.17), o = (W - k) / 2;
+    coin = `<rect x="${o - 1}" y="${o - 1}" width="${k + 2}" height="${k + 2}" rx="${(k + 2) / 2}" fill="#fff"/><g transform="translate(${o} ${o}) scale(${k / 32})" shape-rendering="geometricPrecision">`
+      + '<circle cx="16" cy="16" r="16" fill="#0a0a0a"/><circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2.5"/>'
+      + '<path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="#f7931a" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11L21 11" stroke="#f7931a" stroke-width="2.4" stroke-linecap="round"/></g>';
+  }
+  return `<svg class="qr" style="${size}" viewBox="0 0 ${W} ${W}" role="img" aria-label="${esc(label)}" shape-rendering="crispEdges"><rect width="${W}" height="${W}" fill="#fff"/><path d="${d}" fill="#111"/>${coin}</svg>`;
 }
+// The code's size in modules, for a text (whether a page's box holds it at 3 px a module)
+export const qrSize = (text) => qrModules(text).length;

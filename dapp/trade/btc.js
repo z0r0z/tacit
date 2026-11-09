@@ -135,7 +135,7 @@ export function makeBitcoin({ notify = () => {}, onTraded = () => {}, onChange =
       <div class="bsheet-actions"><button class="btn ghost" type="button" data-copy>Copy address</button><a class="btn ghost" href="${esc(uri)}" data-open>Open in a wallet app</a></div>
       <p class="note" data-st role="status" style="margin:12px 0 0">Waiting for the sats to arrive…</p>`;
     const st = o.body.querySelector('[data-st]'), say = (t) => { st.textContent = t; };
-    import('/qr.js?cb=926d16be').then(({ qrSvg }) => { const q = o.body.querySelector('[data-qr]'); if (q && !o.closed) q.innerHTML = qrSvg(uri, 148, 'QR code of your Tacit wallet’s Bitcoin address'); }).catch(() => {});
+    import('/qr.js?cb=d0616487').then(({ qrSvg }) => { const q = o.body.querySelector('[data-qr]'); if (q && !o.closed) q.innerHTML = qrSvg(uri, 148, 'QR code of your Tacit wallet’s Bitcoin address'); }).catch(() => {});
     const c = o.body.querySelector('[data-copy]');
     c.onclick = () => navigator.clipboard?.writeText(addr).then(() => { c.textContent = 'Copied'; }, () => { c.textContent = 'Could not copy'; });
     const b = o.body.querySelector('[data-send]');

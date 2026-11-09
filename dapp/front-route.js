@@ -20,12 +20,14 @@
   var away = function (to) { window.__tacitAway = true; window.location.replace(to); };
   try {
     var loc = window.location, path = loc.pathname, q = loc.search, h = loc.hash;
-    // A pay link, /to/<who>?amt=<TAC> (who: a name, a Tacit address or an 0x address): TAC's page with Send filled in (#to=…&amt=…), as a load
-    // of its own, since TAC's page is cross-origin isolated (the threaded prover) only when loaded at its own address. A bad amount is dropped.
-    var pay = /^\/to\/([^/]+)\/?$/.exec(path);
+    // A pay link, /to/<who>[/<TAC>][?amt=<TAC>&for=<note>] (who: a name, a Tacit address or an 0x address, any case: the QR code of one is in
+    // capitals, which it packs tighter): TAC's page with the payment open (#to=…&amt=…&for=…), as a load of its own, since TAC's page is
+    // cross-origin isolated (the threaded prover) only when loaded at its own address. A bad amount is dropped.
+    var pay = /^\/to\/([^/]+)(?:\/([^/]+))?\/?$/i.exec(path);
     if (pay) {
-      var amt = new URLSearchParams(q).get('amt') || '';
-      return away('/tac/#to=' + encodeURIComponent(decodeURIComponent(pay[1])) + (/^\d{1,12}(\.\d{1,8})?$/.test(amt) ? '&amt=' + amt : ''));
+      var pq = new URLSearchParams(q), amt = pay[2] || pq.get('amt') || '', note = (pq.get('for') || '').slice(0, 80);
+      return away('/tac/#to=' + encodeURIComponent(decodeURIComponent(pay[1]).toLowerCase()) + (/^\d{1,12}(\.\d{1,8})?$/.test(amt) ? '&amt=' + amt : '')
+        + (note ? '&for=' + encodeURIComponent(note) : ''));
     }
     var seg = ((path.match(/^\/([a-z0-9-]+(?:\/[a-z0-9-]+)?)\/?$/i) || [])[1] || '').toLowerCase();
     if (seg === 'airdrop' && !h) return away('/rewards/' + q);                // the airdrop and points have one page; #airdrop still opens this page's own claim

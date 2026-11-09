@@ -14081,6 +14081,7 @@ await step('chaintile', async () => {
       await move(p, 'shield:ctac:wallet');
       await until(p, balNear, 25, 120000).catch(() => {});
       ok(await p.evaluate(balNear, 25), `chaintile: Withdraw shows 25 TAC on the Tacit chain, less the shield's margin (${await text(p, '#hx-swap #pay-side')} · from ${await text(p, '#hx-swap #pay-at')} · ${await goText(p)} · ${(await said(p)).slice(0, 80)})`);
+      if (process.env.CHAINTILE_PAYLINK) throw Object.assign(new Error('to the pay link'), { skip: true });
       // to Bob, from the Send tab
       await p.evaluate(() => { location.hash = 'card=send:ctac'; });
       await until(p, () => document.querySelector('#hx-sa')?.value === 'ctac', null, 60000);
@@ -14118,11 +14119,11 @@ await step('chaintile', async () => {
       await until(p, balNear, 10, 120000).catch(() => {});
       ok(await p.evaluate(balNear, 10), `chaintile: Alice has about 10 TAC left on the chain (${await text(p, '#hx-swap #pay-side')})`);
       if (r.errors.length) { fails++; console.log('FAIL chaintile (alice) page errors: ' + r.errors.slice(0, 3).join(' | ')); }
-    } finally { await r.browser.close(); }
+    } catch (e) { if (!e.skip) throw e; } finally { await r.browser.close(); }
     // With the private pool: Alice moves 3 of her chain TAC into it (a hop to a wrap commitment of her key's, which the leader sends on into the live
     // pool on the fork, where the pool's own scan finds the deposit and the relay's settle, stubbed, makes it a note), then 50 private TAC onto the chain
     // (the relay's unwrap, stubbed, pays the shield's inbox on the fork what the pinned fee leaves; the leader sweeps it and takes it in)
-    {
+    if (!process.env.CHAINTILE_PAYLINK) {
       const r2 = await chainPage(ALICE, { width: 1280, height: 1500 }, 'light', async (x) => {
         await x.ctx.exposeFunction('__payOut', async (to, wei) => { await fundTac(to, BigInt(wei)); return true; });
         await stubFarmUxRoute(x.page, { notes: [['@TAC', 50n * 10n ** 8n]], pool: true });
@@ -14182,7 +14183,7 @@ await step('chaintile', async () => {
       } finally { await r2.browser.close(); }
     }
     // Bob finds the 10, at a phone's width and a desktop's, light and dark, with nothing wider than the page
-    for (const [w, scheme] of [[390, 'light'], [390, 'dark'], [1280, 'light'], [1280, 'dark']]) {
+    for (const [w, scheme] of process.env.CHAINTILE_PAYLINK ? [] : [[390, 'light'], [390, 'dark'], [1280, 'light'], [1280, 'dark']]) {
       const b = await chainPage(BOB, { width: w, height: 1100 }, scheme), q = b.page;
       try {
         await q.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
@@ -14194,6 +14195,60 @@ await step('chaintile', async () => {
         if (SHOTS) await q.screenshot({ path: join(SHOTS, `weld-chaintile-${w}-${scheme}.png`), fullPage: false });
         ok(/Balance 10\b/.test(bal) && wide <= 0 && !b.errors.length, `chaintile: ${w} px ${scheme}: Bob holds 10 TAC on the chain, no sideways scroll, no page errors (${bal}; ${wide}; ${b.errors.slice(0, 1).join('')})`);
       } finally { await b.browser.close(); }
+    }
+    // A pay link, end to end. Bob asks for 2.5 TAC on TAC's page (Receive): his request screen shows the code, the amount, the note and his ID and
+    // mark, waiting. Alice opens his link: the checkout shows only the payment (the same ID and mark, the note, the fee), proved while it shows;
+    // she pays, her receipt shows, and Bob's screen turns to Paid before the block lands, then to Settled on both.
+    {
+      const rb = await chainPage(BOB, { width: 390, height: 900 }), pb = rb.page;
+      const ra = await chainPage(ALICE, { width: 390, height: 900 }), pa = ra.page;
+      try {
+        await pb.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
+        await pb.evaluate(() => document.querySelector('a.chl-go[href="/tac/"], a[href="/tac/"]')?.click());
+        await until(pb, () => location.pathname === '/tac/' && !!document.querySelector('#tcd-t-receive'), null, 60000);
+        await pb.click('#tcd-t-receive');
+        await pb.waitForSelector('#tcd-req-go', { timeout: 60000 });
+        await pb.fill('#tcd-link-amt', '2.5'); await pb.fill('#tcd-link-for', 'Coffee and cake');
+        const link = await pb.evaluate(() => document.querySelector('#tcd-linkrow [data-qr]')?.dataset.qr || '');
+        await pb.click('#tcd-req-go');
+        await until(pb, () => !!document.querySelector('#tac-req[open] #treq-qr svg') && /Waiting for the payment/.test(document.querySelector('#treq-b')?.textContent || ''), null, 60000).catch(() => {});
+        const bobMark = await pb.$eval('#treq-b .idm path', (e) => e.getAttribute('d')).catch(() => ''), bobId = (/ID\s*([0-9a-f·]+)/.exec(await text(pb, '#treq-b .treq-id')) || [])[1];
+        ok(/Waiting for the payment/.test(await text(pb, '#treq-b')) && /2\.5\s*TAC/.test(await text(pb, '#treq-b')) && /Coffee and cake/.test(await text(pb, '#treq-b')) && !!bobId && !!bobMark,
+          `chaintile: Bob's request screen: the code, 2.5 TAC, the note, his ID and mark, waiting (${(await text(pb, '#treq-b')).slice(0, 160)})`);
+        if (SHOTS) await pb.screenshot({ path: join(SHOTS, 'weld-chaintile-request.png') });
+        const m = /^https:\/\/tacit\.finance\/to\/(tacit1[a-z0-9]+)\/2\.5\?for=(.+)$/.exec(link);
+        ok(!!m, `chaintile: Bob's pay link (${link.slice(0, 60)}…${link.slice(-24)})`);
+        // Alice opens it (this server has no catch-all, so at the address /to/ sends it on to: /tac/#to=…)
+        await pa.goto(`${ra.url}tac/#to=${m?.[1] || ''}&amt=2.5&for=${m?.[2] || ''}`);
+        await until(pa, () => !!document.querySelector('#tpg-co:not([hidden]) #tco-go'), null, 60000).catch(() => {});
+        if (await pa.$eval('#tco-go', (b) => b.textContent === 'Sign in to pay').catch(() => false)) await pasteKey(pa, ALICE);
+        await until(pa, () => /^Pay 2\.5 TAC$/.test(document.querySelector('#tco-go')?.textContent || '') && !document.querySelector('#tco-go').disabled && /\d/.test(document.querySelector('#tco-rows')?.textContent || ''), null, 180000)
+          .catch(async () => {});
+        const top = await text(pa, '#tco-top'), aliceMark = await pa.$eval('#tco-top .idm path', (e) => e.getAttribute('d')).catch(() => '');
+        ok(/^Pay 2\.5 TAC$/.test(await text(pa, '#tco-go')) && /Payment request/.test(top) && /Coffee and cake/.test(top) && top.includes(bobId || '-') && aliceMark === bobMark && await pa.evaluate(() => getComputedStyle(document.querySelector('#tpg-card')).display === 'none'),
+          `chaintile: Alice's checkout: only the payment, Bob's ID and the same mark as his screen, the note, the fee (${top.slice(0, 160)} | ${await text(pa, '#tco-rows')} | ${await text(pa, '#tco-go')} | ${await text(pa, '#tco-st')})`);
+        if (SHOTS) await pa.screenshot({ path: join(SHOTS, 'weld-chaintile-checkout.png') });
+        const ready = await pa.evaluate(() => performance.now());
+        await pa.evaluate(() => { window.__st = []; const t0 = performance.now(), el = document.querySelector('#tco-st');
+          new MutationObserver(() => { const t = el.textContent.trim().slice(0, 70); if (t && window.__st.at(-1)?.t !== t) window.__st.push({ s: ((performance.now() - t0) / 1000).toFixed(1), t }); }).observe(el, { childList: true, subtree: true, characterData: true }); });
+        const t0 = Date.now();
+        await pa.click('#tco-go');
+        await until(pa, () => !document.querySelector('#tco-done')?.hidden && /Paid/.test(document.querySelector('#tco-done')?.textContent || '') || /class="err"/.test(document.querySelector('#tco-st')?.innerHTML || ''), null, 300000).catch(() => {});
+        const handed = Date.now() - t0;
+        ok(/Paid/.test(await text(pa, '#tco-done')) && /2\.5\s*TAC/.test(await text(pa, '#tco-done')), `chaintile: Alice's receipt: Paid 2.5 TAC, ${Math.round(handed / 100) / 10} s after the press (${(await text(pa, '#tco-done')).replace(/\s+/g, ' ').slice(0, 160)} | her words: ${JSON.stringify(await pa.evaluate(() => window.__st))})`);
+        await until(pb, () => /Paid/.test(document.querySelector('#treq-b')?.textContent || ''), null, 120000).catch(() => {});
+        const seen = Date.now() - t0;
+        ok(/Paid\s*2\.5\s*TAC/.test(await text(pb, '#treq-b')), `chaintile: Bob's screen turns to Paid 2.5 TAC, ${Math.round(seen / 100) / 10} s after Alice's press (${(await text(pb, '#treq-b')).slice(0, 120)})`);
+        if (SHOTS) await pb.screenshot({ path: join(SHOTS, 'weld-chaintile-request-paid.png') });
+        await until(pa, () => /Settled on Ethereum/.test(document.querySelector('#tco-done')?.textContent || ''), null, 300000).catch(() => {});
+        await until(pb, () => /Settled on Ethereum/.test(document.querySelector('#treq-b')?.textContent || ''), null, 300000).catch(() => {});
+        ok(/Settled on Ethereum, in block \d+/.test(await text(pa, '#tco-done')) && /Settled on Ethereum/.test(await text(pb, '#treq-b')), `chaintile: then Settled on both (${await text(pa, '#tco-land')} | ${await text(pb, '#treq-land')})`);
+        if (SHOTS) await pa.screenshot({ path: join(SHOTS, 'weld-chaintile-receipt.png') });
+        await pa.click('[data-tco-done]');
+        await until(pa, () => !document.documentElement.querySelector('#sheet-tac.co') && !!document.querySelector('#tcd-to'), null, 10000).catch(() => {});
+        ok(await pa.evaluate(() => !document.querySelector('#sheet-tac.co') && !document.querySelector('#tcd-to')?.value && !/^#to=/.test(location.hash)), 'chaintile: Done: the whole page again, the link gone and nothing left in Send to pay twice');
+        for (const [who, x] of [['bob', rb], ['alice', ra]]) if (x.errors.length) { fails++; console.log(`FAIL chaintile (pay link, ${who}) page errors: ` + x.errors.slice(0, 3).join(' | ')); }
+      } finally { await rb.browser.close(); await ra.browser.close(); }
     }
   } finally { leader.kill(); if (fails && !process.env.VERBOSE) console.log('     leader said: ' + log.slice(-6).join('\n     ')); }
 });
