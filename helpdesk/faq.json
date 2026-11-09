@@ -1,0 +1,235 @@
+[
+ {
+  "q": "How many TAC exist, and can more be minted?",
+  "src": "TAC.md",
+  "a": "TAC has a fixed supply of 21,000,000, issued once on Bitcoin with no mint authority. On Ethereum it is an ERC-20 that only the confidential pool can mint, and only from TAC proven to have left Bitcoin. You can verify the supply yourself at tacit.finance/verify.html.",
+  "facts": [
+   "fixed supply of 21,000,000",
+   "no mint authority",
+   "only the confidential pool can mint",
+   "tacit.finance/verify.html"
+  ]
+ },
+ {
+  "q": "What do I get for holding TAC?",
+  "src": "TAC.md",
+  "a": "Points are boosted 1.25×, 1.5× or 2× when the sending address holds 100, 1,000 or 10,000 public TAC (the lowest balance over the previous 24 hours counts). The dapp's relayed exit fee drops from 0.30% to 0.25%, 0.20% or 0.15% at the same tiers. Holders also vote in governance.",
+  "facts": [
+   "1.25×",
+   "10,000 public TAC",
+   "0.30%",
+   "0.15%",
+   "Holders vote"
+  ]
+ },
+ {
+  "q": "Does TAC I hold privately count for the points boost?",
+  "src": "TAC.md",
+  "a": "No. Only the public ERC-20 counts for the points boost. The cheaper exit fee is different: it also counts private TAC notes.",
+  "facts": [
+   "Only the public ERC-20 counts",
+   "counting private TAC notes"
+  ]
+ },
+ {
+  "q": "What is TacBuyback, and can anyone take its ETH?",
+  "src": "TAC.md",
+  "a": "TacBuyback holds ETH and buys TAC on the public TAC/ETH market, then sends the TAC straight to the reserve. The contract is immutable and has no owner, so its ETH can only become TAC for the reserve or be returned to the reserve. Each buy is at most 0.25 ETH and at most one every 6 hours.",
+  "facts": [
+   "immutable and has no owner",
+   "at most 0.25 ETH",
+   "at most one every 6 hours"
+  ]
+ },
+ {
+  "q": "How do governance proposals and votes work?",
+  "src": "TAC.md",
+  "a": "Proposing takes proof of at least 100 TAC. Bitcoin TAC holders vote by proving a balance tier without revealing the exact balance; holders of the public ERC-20 vote by signing with their Ethereum wallet. Results are advisory: the ops multisig carries out passed proposals.",
+  "facts": [
+   "at least 100 TAC",
+   "without revealing the exact balance",
+   "Results are advisory"
+  ]
+ },
+ {
+  "q": "Is there a bug bounty, and how do I report a vulnerability?",
+  "src": "SECURITY.md",
+  "a": "Yes. Tacit pays up to 250,000 TAC for information that helps secure the protocol and its dapps. Email security@tacit.finance with what you found, where it is, and the steps to reproduce it, and keep it private until it is fixed.",
+  "facts": [
+   "up to 250,000 TAC",
+   "security@tacit.finance",
+   "keep it private until it is fixed"
+  ]
+ },
+ {
+  "q": "Has Tacit been audited? Which audits?",
+  "src": "SECURITY.md",
+  "a": "Tacit's v1 release was reviewed in three audits: the Fable 5.1 lock checkpoint, an external automated review, and a Pashov solidity-auditor v4 round run after deployment. The full review history is in audit/AUDITS.md. Reviews reduce risk but don't remove it.",
+  "facts": [
+   "three audits",
+   "Fable 5.1 lock checkpoint",
+   "External automated review",
+   "solidity-auditor"
+  ]
+ },
+ {
+  "q": "Is the Bitcoin to Ethereum bridge run by a multisig or a federation?",
+  "src": "README.md",
+  "a": "No. No multisig, federation or attestor set signs a bridge message; SP1 zero-knowledge proofs carry state between the chains. Separately, the periphery contracts (CollateralEngine, FarmManager) are governed by a 2-of-4 ops multisig with a built-in one-hour delay.",
+  "facts": [
+   "No multisig, federation",
+   "SP1 zero-knowledge proofs",
+   "2-of-4 ops multisig",
+   "one-hour delay"
+  ]
+ },
+ {
+  "q": "What does the confidential pool hide, and what stays public?",
+  "src": "README.md",
+  "a": "Hidden: amounts, which owned note a pool spend consumes, and stealth recipients. Public: Bitcoin addresses and the transaction graph, asset ids on Bitcoin, the pool's deposit and withdrawal boundary, AMM reserves and their changes, and CDP position amounts.",
+  "facts": [
+   "amounts, which owned note a pool spend consumes",
+   "stealth recipients",
+   "AMM reserves",
+   "CDP position amounts"
+  ]
+ },
+ {
+  "q": "Which networks does private ETH work on, and what does a private transfer cost in gas?",
+  "src": "README.md",
+  "a": "Private ETH is live on Ethereum, Base and Robinhood Chain at the same addresses. A private transfer costs about 340k gas.",
+  "facts": [
+   "Ethereum, Base and Robinhood Chain",
+   "about 340k gas"
+  ]
+ },
+ {
+  "q": "What backs cBTC?",
+  "src": "README.md",
+  "a": "A self-custody lock on Bitcoin backs cBTC in the pool, and it is secured economically by the locker's wstETH escrow, at least the engine's escrow ratio (1.5× today).",
+  "facts": [
+   "locker's wstETH escrow",
+   "1.5× today"
+  ]
+ },
+ {
+  "q": "What do I need to run the community runner?",
+  "src": "COMMUNITY-OPS.md",
+  "a": "Node 22 or later (Node 20 works except for the Nostr board unless started with --experimental-websocket). Use a fresh key that holds only ETH for gas, because the board pays its fees to the sending account. A dry run needs no key: DRY_RUN=1 ONCE=1 node tools/community-runner.mjs.",
+  "facts": [
+   "Node 22 or later",
+   "experimental-websocket",
+   "fresh key that holds only ETH for gas",
+   "DRY_RUN=1"
+  ]
+ },
+ {
+  "q": "Can a relay steal my funds or change my transaction? Who can run one?",
+  "src": "RUN-A-RELAY.md",
+  "a": "No. A relay never holds user funds or spending keys. It can decline a job, but it cannot change or redirect one, because the proof fixes what happens. Anyone can run one.",
+  "facts": [
+   "never holds user funds or spending keys",
+   "cannot change or redirect",
+   "Anyone can run one"
+  ]
+ },
+ {
+  "q": "Which computers can prove, and what GPU do I need?",
+  "src": "index.html",
+  "a": "Proving runs on a Mac with Apple silicon, Linux, or Windows (through WSL 2, in beta). A GPU with 24 GB or more (RTX 3090, 4090, 5090, A5000 or bigger) proves Bitcoin batches, and a 16 to 23 GB card proves deposits. The GPU command needs no key and no ETH.",
+  "facts": [
+   "a Mac with Apple silicon, Linux, or Windows",
+   "24 GB or more",
+   "16 to 23 GB",
+   "No key, no ETH",
+   "Windows beta"
+  ]
+ },
+ {
+  "q": "What does my node do between proofs?",
+  "src": "index.html",
+  "a": "It searches for the addresses Tacit's next contracts deploy to, the ones starting with the most zeros. A proof always comes first.",
+  "facts": [
+   "next contracts deploy to",
+   "A proof always comes first"
+  ]
+ },
+ {
+  "q": "How does the fast bridge keep either side from stealing the other's funds, and what if the liquidity provider disappears?",
+  "src": "FAST-BRIDGE.md",
+  "a": "It is an adaptor-signature atomic swap. Neither party holds the other's funds at any point: each leg is enforced by its own chain (a Taproot script on Bitcoin, the pool's lock set on Ethereum), linked only by a secret. If a party stops, each side refunds on its own: the LP's lock after the Ethereum deadline, the user's lock after the Bitcoin timelock.",
+  "facts": [
+   "adaptor-signature atomic swap",
+   "Neither party holds the other's funds",
+   "each side refunds on its own",
+   "after the Bitcoin timelock"
+  ]
+ },
+ {
+  "q": "What counts as a block on the pool's chain?",
+  "src": "POOL-BLOCKS.md",
+  "a": "A block is one Ethereum transaction that changed the pool's notes: a settle, alone or with the deposit it consumes. A deposit alone changes no note and is not a block.",
+  "facts": [
+   "one Ethereum transaction that changed the pool's notes",
+   "A deposit alone"
+  ]
+ },
+ {
+  "q": "Can the team change the airdrop's merkle root or upgrade the airdrop contract?",
+  "src": "AIRDROP.md",
+  "a": "No. The token, merkle root, claim deadline, guardian, pool and pool asset id are fixed at deployment. There is no owner, no proxy and no upgrade path.",
+  "facts": [
+   "cannot be changed",
+   "no owner, no proxy and no upgrade path"
+  ]
+ },
+ {
+  "q": "Can I get my notes back with just my key?",
+  "src": "RECOVERY.md",
+  "a": "Mostly yes. The wallet rescans the pool's public events and re-derives your notes from your key. Most note types need nothing else; a few also need public chain data such as a settle's calldata or your Bitcoin history. Recovery only reads public data and signs nothing.",
+  "facts": [
+   "What comes back from the key alone",
+   "Everything here reads public chain data",
+   "nothing is signed or sent"
+  ]
+ },
+ {
+  "q": "What is the official Tacit site?",
+  "src": "README.md",
+  "a": "tacit.finance. If a link points to a different domain, don't connect a wallet there until you've checked it against tacit.finance.",
+  "facts": [
+   "tacit.finance"
+  ]
+ },
+ {
+  "q": "What does a relayed private exit cost, and can holding TAC lower it?",
+  "src": "TAC.md",
+  "a": "The dapp's relayed exit fee is 0.30%, and it drops to 0.25%, 0.20% or 0.15% for holders of 100, 1,000 or 10,000 TAC (private TAC notes count for this). The relay's cost floor still applies, so small exits pay the floor either way.",
+  "facts": [
+   "0.30%",
+   "0.15%",
+   "counting private TAC notes",
+   "cost floor still applies"
+  ]
+ },
+ {
+  "q": "What do payments and withdrawals cost on the Tacit chain?",
+  "src": "TAC.md",
+  "a": "On the Tacit chain a payment to anyone costs about a cent of TAC and lands in about a minute. Every payment leaves 0.002 TAC in the pool, and every withdrawal costs 0.1% (at least 0.002 TAC). This is separate from the pool's relayed exit fee.",
+  "facts": [
+   "about a cent of TAC",
+   "leaves 0.002 TAC in the pool",
+   "0.1% (at least 0.002 TAC)"
+  ]
+ },
+ {
+  "q": "If I pay a normal address from my private balance, can the payment be linked to my deposit?",
+  "src": "PRIVATE-PAYOUT.md",
+  "a": "What is hidden is the link between the deposit and the payout, inside the pool. The payout address and amount are public, like the deposit's address, amount and time, and the two can be matched by timing while the pool is small.",
+  "facts": [
+   "the link between the deposit and the payout",
+   "The payout address and amount are public",
+   "matched by timing while the pool is small"
+  ]
+ }
+]
