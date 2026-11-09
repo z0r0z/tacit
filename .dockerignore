@@ -22,6 +22,8 @@
 !tools/tac-vault-keeper-render/start.sh
 # tacit-leader/Dockerfile: the tacit chain's leader and its block node
 !tacit-leader
+# tacit-bot/Dockerfile: the chain's own traffic
+!tacit-bot
 # worker-relay/Dockerfile.fastbridge-lp: the fast bridge liquidity provider
 !fastbridge-lp
 !contracts/sp1/confidential/btc-pool-halo2/Cargo.toml
