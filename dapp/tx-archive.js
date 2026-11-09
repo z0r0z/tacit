@@ -1,8 +1,9 @@
 // A note's history read in one answer from the API's archive of confirmed Tacit transactions (worker/src/tac-archive.js), so a
 // browser walking a deep history for the first time does not ask a public explorer for every transaction in it. Each transaction
 // is checked here against the txid its bytes hash to before the walk sees it, and the walk verifies what it credits exactly as
-// before. What the archive lacks, and every failure, goes to the explorers as it always did. A browser turns it off with
-// localStorage 'tacit-tx-archive' = 'off'.
+// before. A txid does not cover a transaction's witnesses, so a reader that rests a verdict on them checks them itself (the shielded
+// scan: dapp/tacit.js _stealthNothingFromArchive). What the archive lacks, and every failure, goes to the explorers as it always did.
+// A browser turns it off with localStorage 'tacit-tx-archive' = 'off'.
 //
 // The API also keeps the ordinary transactions that fund a transfer's key-spend inputs (the inputs whose previous output the shielded scan
 // must know), in a store of their own, and gives them to a caller that asks (`fund: true`). They are held apart here too: get() never returns

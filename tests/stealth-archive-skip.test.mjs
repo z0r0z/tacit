@@ -2,7 +2,7 @@
 // against its txid, with no inputs' previous outputs; the sender's funding input's previous output is read from the archive's own copy of the transaction it spends from (also checked), and
 // the credits are worked out by the code discoverStealthFromTxid uses. So the check must never disagree with an explorer read: a transfer it clears holds nothing for this key when read
 // from an explorer too, a transfer that pays this key is never cleared, and anything the archive cannot show (a transfer or a parent it lacks, bytes that do not hash to the txid) is read
-// from an explorer as always. Mocked chain and archive; no network.
+// from an explorer as always. A txid does not cover witnesses, so bytes that hash to the txid but lost or changed a witness are not cleared either. Mocked chain and archive; no network.
 //   node --no-experimental-global-navigator tests/stealth-archive-skip.test.mjs      (Node 22)
 import assert from 'node:assert/strict';
 import { JSDOM } from './_jsdom.mjs';
@@ -65,7 +65,7 @@ const le32 = (n) => { const b = Buffer.alloc(4); b.writeUInt32LE(n >>> 0); retur
 const le64 = (n) => { const b = Buffer.alloc(8); b.writeBigUInt64LE(BigInt(n)); return b; };
 const vi = (n) => (n < 0xfd ? Buffer.from([n]) : Buffer.from([0xfd, n & 255, n >> 8]));
 function serialise(tx) {
-  const ins = tx.vin.map((v) => Buffer.concat([Buffer.from(v.txid, 'hex').reverse(), le32(v.vout), vi(0), le32(0xffffffff)]));
+  const ins = tx.vin.map((v) => { const ss = Buffer.from(v.scriptsig || '', 'hex'); return Buffer.concat([Buffer.from(v.txid, 'hex').reverse(), le32(v.vout), vi(ss.length), ss, le32(0xffffffff)]); });
   const outs = tx.vout.map((o) => { const s = Buffer.from(o.scriptpubkey, 'hex'); return Buffer.concat([le64(o.value), vi(s.length), s]); });
   const noWit = Buffer.concat([le32(2), vi(tx.vin.length), ...ins, vi(tx.vout.length), ...outs, le32(0)]);
   const wit = tx.vin.map((v) => { const items = (v.witness || []).map((h) => Buffer.from(h, 'hex')); return Buffer.concat([vi(items.length), ...items.map((i) => Buffer.concat([vi(i.length), i]))]); });
@@ -87,6 +87,18 @@ function landPlain(tx) {
   explorer.set(txid, tx); archive.plain.set(txid, { hex: raw });
   return txid;
 }
+
+// The bytes of an esplora-shaped transaction with the witness of some inputs removed (and no segwit marker when every input is) or replaced: they hash to the same txid.
+function tampered(tx, { strip = new Set(), swap = {} } = {}) {
+  const ins = tx.vin.map((v) => { const ss = Buffer.from(v.scriptsig || '', 'hex'); return Buffer.concat([Buffer.from(v.txid, 'hex').reverse(), le32(v.vout), vi(ss.length), ss, le32(0xffffffff)]); });
+  const outs = tx.vout.map((o) => { const s = Buffer.from(o.scriptpubkey, 'hex'); return Buffer.concat([le64(o.value), vi(s.length), s]); });
+  const noWit = Buffer.concat([le32(2), vi(tx.vin.length), ...ins, vi(tx.vout.length), ...outs, le32(0)]);
+  const txid = sha(sha(noWit)).reverse().toString('hex');
+  if (tx.vin.every((_, i) => strip.has(i))) return { hex: noWit.toString('hex'), txid };
+  const wit = tx.vin.map((v, i) => { const items = (strip.has(i) ? [] : (swap[i] || v.witness || [])).map((h) => Buffer.from(h, 'hex')); return Buffer.concat([vi(items.length), ...items.map((it) => Buffer.concat([vi(it.length), it]))]); });
+  return { hex: Buffer.concat([le32(2), Buffer.from([0, 1]), vi(tx.vin.length), ...ins, vi(tx.vout.length), ...outs, ...wit, le32(0)]).toString('hex'), txid };
+}
+const tamper = (X, opts) => { const t = tampered(explorer.get(X), opts); assert.equal(t.txid, X, 'the changed bytes still hash to the txid'); archive.txs.set(X, { hex: t.hex }); };
 
 // A funding transaction paying `senderPub`, and a stealth CXFER that spends it and pays `amount` to `recipientPub` at vout 0, both on the chain with their real txids.
 function transfer(tag, { senderPriv, recipientPub, amount = 400n, supply = 1000n, plainParent = false }) {
@@ -166,10 +178,11 @@ await test('a transfer that pays someone else is cleared, and an explorer read o
   asWallet(V, Vpub);
 });
 
-await test('a transaction with one input, and one with no envelope, are cleared without any previous output', async () => {
+await test('a transaction with one input is cleared without any previous output, and one whose first input holds no envelope is read from an explorer', async () => {
   await prefetch(single, plain);
   assert.equal(T._stealthNothingFromArchive(single), true);
-  assert.equal(T._stealthNothingFromArchive(plain), true);
+  assert.equal(T._stealthNothingFromArchive(plain), false, 'the archive holds Tacit transactions, so a first input without an envelope is bytes that lost its witness');
+  assert.deepEqual(await viaExplorer(() => T.discoverStealthFromTxid(plain)), [], 'and an explorer read finds nothing in it');
 });
 
 await test('what the archive cannot show is not cleared: a transfer it lacks, a parent it lacks, bytes that do not hash to the txid', async () => {
@@ -205,8 +218,8 @@ await test('a scan reads from an explorer only the transfers the archive does no
   INDEX[ASSET] = [mine.X, others[0].X, single, others[1].X, plain];
   reads.length = 0; archive.asked.length = 0;
   const viaArchive = await T.scanAssetForStealthReceipts(ASSET, { pageLimit: 50, maxPages: 1, gapMs: 0 });
-  assert.deepEqual(reads.filter((id) => INDEX[ASSET].includes(id)), [mine.X], 'only the transfer that pays this key was read from an explorer');
-  assert.equal(viaArchive.txsFromArchive, 4, 'the four others were cleared from the archive');
+  assert.deepEqual(reads.filter((id) => INDEX[ASSET].includes(id) && id !== plain), [mine.X], 'bar the transfer without an envelope (not cleared, and an earlier read of it is kept by the page), only the transfer that pays this key was read from an explorer');
+  assert.equal(viaArchive.txsFromArchive, 3, 'the three others were cleared from the archive, the transfer without an envelope was not');
   assert.equal(viaArchive.txsScanned, 5);
   assert.deepEqual(viaArchive.discovered.map((d) => [d.txid === mine.X, d.amount]), [[true, 400n]]);
   assert.ok(archive.asked.length >= 1 && archive.asked.every((b) => b.depth === 1), 'the archive was asked for the transfers with the transactions they spend from');
@@ -215,7 +228,7 @@ await test('a scan reads from an explorer only the transfers the archive does no
   reads.length = 0;
   const viaExplorer = await T.scanAssetForStealthReceipts(ASSET, { pageLimit: 50, maxPages: 1, gapMs: 0, useSeenCache: false });
   const readNow = reads.filter((id) => INDEX[ASSET].includes(id));
-  assert.deepEqual([...readNow].sort(), [others[0].X, single, others[1].X, plain].sort(), 'with the archive off every transfer is read from an explorer, bar the one the page already held from the first scan');
+  assert.deepEqual([...readNow].filter((id) => id !== plain).sort(), [others[0].X, single, others[1].X].sort(), 'with the archive off every transfer is read from an explorer, bar the one the page already held from the first scan (and the one an earlier test read, which the page keeps)');
   assert.equal(viaExplorer.txsFromArchive, 0);
   assert.deepEqual(viaExplorer.discovered.map((d) => [d.txid === mine.X, d.amount]), viaArchive.discovered.map((d) => [d.txid === mine.X, d.amount]), 'and finds exactly what the other scan found');
   localStorage.removeItem('tacit-tx-archive');
@@ -261,6 +274,58 @@ await test('a scan over transfers with ordinary funding parents reads from an ex
   const viaArchive = await T.scanAssetForStealthReceipts(ASSET, { pageLimit: 50, maxPages: 1, gapMs: 0 });
   assert.deepEqual(reads.filter((id) => INDEX[ASSET].includes(id)), [mine.X], 'only the transfer that pays this key was read from an explorer');
   assert.equal(viaArchive.txsFromArchive, 2, 'the two that pay someone else were cleared from the archive');
+});
+
+await test('bytes that hash to the txid but lost or changed a witness are never cleared: the transfer is read from an explorer, where its credit is found', async () => {
+  asWallet(V, Vpub);
+  const cases = [
+    ['every witness removed (no segwit marker)', () => ({ strip: new Set([0, 1]) })],
+    ['the first input\'s witness removed', () => ({ strip: new Set([0]) })],
+    ['the sender\'s key-spend witness removed, the envelope kept', () => ({ strip: new Set([1]) })],
+    ['the sender\'s key in its witness replaced by another key', () => ({ swap: { 1: ['30'.repeat(71), hex(Wpub)] } })],
+  ];
+  let k = 0;
+  for (const [name, mk] of cases) {
+    const t = transfer((0x70 + k++).toString(16), { senderPriv: A, recipientPub: Vpub });
+    tamper(t.X, mk());
+    await prefetch(t.X);
+    assert.equal(T._stealthNothingFromArchive(t.X), false, name);
+    reads.length = 0;
+    const found = await T.discoverStealthFromTxid(t.X);
+    assert.deepEqual(found.map((d) => d.amount), [400n], `${name}: the explorer read finds the credit`);
+    assert.ok(reads.includes(t.X), `${name}: it was read from an explorer`);
+    // a transfer that pays someone else is not cleared from such bytes either (an explorer read says what it holds)
+    const o = transfer((0x80 + k).toString(16), { senderPriv: A, recipientPub: Wpub });
+    tamper(o.X, mk());
+    await prefetch(o.X);
+    assert.equal(T._stealthNothingFromArchive(o.X), false, `${name}: not cleared when it pays someone else`);
+  }
+});
+
+await test('a scan over such bytes reads the transfer from an explorer and marks it seen only once it has', async () => {
+  asWallet(V, Vpub);
+  const ASSET = 'ef'.repeat(32);
+  const mine = transfer('91', { senderPriv: A, recipientPub: Vpub }), other = transfer('92', { senderPriv: A, recipientPub: Wpub });
+  tamper(mine.X, { strip: new Set([0, 1]) });
+  INDEX[ASSET] = [mine.X, other.X];
+  reads.length = 0;
+  const r = await T.scanAssetForStealthReceipts(ASSET, { pageLimit: 50, maxPages: 1, gapMs: 0 });
+  assert.equal(r.txsFromArchive, 1, 'only the untouched transfer was cleared from the archive');
+  assert.deepEqual(r.discovered.map((d) => [d.txid === mine.X, d.amount]), [[true, 400n]], 'the credit in the changed bytes was found through an explorer');
+  assert.ok(reads.includes(mine.X) && !reads.includes(other.X));
+});
+
+await test('witnesses that are present and agree do not send a transfer to an explorer: a native segwit key matches its previous output, a scriptSig input counts as a spend', async () => {
+  asWallet(V, Vpub);
+  const t = transfer('a9', { senderPriv: A, recipientPub: Wpub, plainParent: true });
+  await prefetch(t.X);
+  assert.equal(T._stealthNothingFromArchive(t.X), true, 'a transfer paying someone else, whose witnesses agree with its previous outputs, is cleared');
+  // an input with no witness but a scriptSig is a legacy spend: it is not mistaken for a stripped one
+  const base = explorer.get(t.X);
+  const legacy = land({ vin: [...base.vin, { txid: 'ee'.repeat(32), vout: 0, scriptsig: '4830' + '11'.repeat(70) }], vout: base.vout, status: base.status });
+  await prefetch(legacy);
+  assert.equal(T._stealthNothingFromArchive(legacy), true, 'a transfer with a legacy input is cleared');
+  assert.deepEqual(await viaExplorer(() => T.discoverStealthFromTxid(legacy)), [], 'and an explorer read agrees');
 });
 
 console.log(`\n${n - failed} passed, ${failed} failed`);
