@@ -2,7 +2,7 @@
 // published proof, send a waiting settle from the open board, each from the visitor's own wallet, which pays the network fee and keeps any
 // fee the settle pays. Every call is permissionless on chain; no Tacit key touches this page. Moved here from the community ops page
 // (/weld/keeper/ now sends its visitors to these tabs), with the same modules doing the planning and building.
-import { makeEvmWallet } from '/evm-wallet.js?cb=35f79d3f';
+import { makeEvmWallet, declinedWords } from '/evm-wallet.js?cb=0d6d47f7';
 import { announceWalletConnect, wcSheets, dialogHost, WC_PROJECT_ID } from '/walletconnect.js?cb=843803d6';
 import { makeHeaderRelayAdvance } from '/header-relay-advance.js?cb=1c3a7226';
 import { POOL, SEL_ANCESTRY, ATTEST_GAS, SETTLE_GAS, readProof, attestRefusal, encodeAttest, needsAncestry, ancestryCalls, ethText, ethFeeWei, feeWeiOf, readPrices, boardSummary, sendable, pickSettle, readBoard, reportLanded, settleCalldata } from '/community-ops.js';
@@ -44,7 +44,7 @@ function toast(msg, bad = false, ms = bad ? 7000 : 4200) {
 }
 const errText = (e) => {
   const m = String(e?.message || e || 'Something went wrong');
-  if (e?.code === 4001 || /user (rejected|denied)/i.test(m)) return 'Cancelled in your wallet.';
+  if (e?.code === 4001 || /user (rejected|denied)/i.test(m)) return declinedWords(e);
   if (e?.code === -32002 || /already (pending|processing)|request of type .* pending/i.test(m)) return 'Your wallet already has a request open. Answer it there, then try again.';
   if (/chain.*not approved|does not support 'wallet_switchEthereumChain'/i.test(m)) return 'Your wallet app did not allow Ethereum. Disconnect, then connect again.';
   if (/insufficient funds/i.test(m)) return 'Not enough ETH in that wallet for the network fee.';

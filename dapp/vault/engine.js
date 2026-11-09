@@ -468,7 +468,7 @@ export function makeVaultEngine({ S, VS, ROUTER, rpc, feed, wallet, W, who, canA
     } finally { PREP.busy = false; }
   }
   const NO_BATCH = new Set([4200, 5700, 5710, 5740, 5750, 5760, -32601]);
-  const stopped = (e) => (e?.code === 4001 || /user (rejected|denied)|rejected the request|request rejected|denied (transaction|message)/i.test(e?.message || '') ? new UserStopped() : e);
+  const stopped = (e) => (e?.code === 4001 || /user (rejected|denied)|rejected the request|request rejected|denied (transaction|message)/i.test(e?.message || '') ? new UserStopped(!!e?.quick) : e);
   async function signTyped(from, typed) {
     if (String(W.account || '').toLowerCase() !== from.toLowerCase()) throw new Error('The wallet’s account changed. Nothing was sent; review it again.');
     await wallet.ensureMainnet();
@@ -483,7 +483,7 @@ export function makeVaultEngine({ S, VS, ROUTER, rpc, feed, wallet, W, who, canA
     if (String(W.account || '').toLowerCase() !== from.toLowerCase()) throw new Error('The wallet’s account changed. Nothing was sent; review it again.');
     await wallet.ensureMainnet();
     try { return await sendBundle(W.prov, from, calls); } catch (e) {
-      if (stopped(e) instanceof UserStopped) throw new UserStopped();
+      if (stopped(e) instanceof UserStopped) throw stopped(e);
       if (NO_BATCH.has(e?.code)) { S.batchOk = false; for (const v of VS) v.post = null; throw new Error('Your wallet could not send these together. Nothing was sent: record the prices first, then try again.'); }
       throw e;
     }

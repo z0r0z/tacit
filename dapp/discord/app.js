@@ -1,4 +1,5 @@
-import { makeConnect } from '/trade/connect.js?cb=63a175d5';
+import { makeConnect } from '/trade/connect.js?cb=92e87ca4';
+import { declinedWords } from '/wallet-prompts.js';
 import { esc } from '/trade/sheet.js?cb=84cda8f2';
 import { API, $, short, fmtUnits, rpc } from '/trade/util.js?cb=ba5a02b1';
 import { discordGateMessage, DISCORD_MIN_TAC_BASE_UNITS, DISCORD_MIN_TAC_ERC20 } from '/discord/message.js?cb=0232a98d';
@@ -118,7 +119,7 @@ async function go() {
     forgetNonce(); S.nonce = null; S.done = true;
   } catch (e) {
     if (e.status === 404) { forgetNonce(); S.nonce = null; }
-    say(e.userStopped ? 'Cancelled in your wallet. Nothing was sent.' : failure(e), !e.userStopped);
+    say(e.userStopped ? declinedWords(e, 'Nothing was sent.') : failure(e), !e.userStopped);
   } finally { S.busy = false; render(); }
 }
 // The API's words for what went wrong, said plainly. 404: the link has lapsed; 409: it has been used.

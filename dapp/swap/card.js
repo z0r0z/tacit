@@ -3,7 +3,8 @@
 // pool module and its Activity journal). One card to a page: its state is this module's.
 import { keccak_256 } from '/vendor/tacit-deps.min.js';
 import { makeEvmTradeVenues, _internal as V, MULTICALL3 } from '/evm-trade-venues.js?cb=1f321cc2';
-import { UserStopped } from '/trade/wallet.js?cb=185d9d9f';
+import { UserStopped } from '/trade/wallet.js?cb=3595ad83';
+import { declinedWords } from '/wallet-prompts.js';
 import { rpc, API, api, esc, fmtUnits, parseUnits, plain, usd, sig, E10, E18, ago } from '/trade/util.js?cb=ba5a02b1';
 import { nodeHealth, hedgeDelay } from '/trade/rpc.js';
 import * as R from '/swap/route.js?cb=45fd31f8';
@@ -571,7 +572,7 @@ async function signTyped(typed, from) {
   if (lc(W.account || '') !== lc(from)) throw new Error('The wallet’s account changed. Nothing was signed; review it again.');
   await wallet.ensureMainnet();
   try { return await W.prov.request({ method: 'eth_signTypedData_v4', params: [from, JSON.stringify(typed)] }); } catch (e) {
-    if (e?.code === 4001 || /user (rejected|denied)|rejected the request|denied/i.test(e?.message || '')) throw new UserStopped();
+    if (e?.code === 4001 || /user (rejected|denied)|rejected the request|denied/i.test(e?.message || '')) throw new UserStopped(!!e?.quick);
     throw e;
   }
 }
@@ -1281,7 +1282,7 @@ async function go() {
     readPrices().catch(() => {});
   } catch (e) {
     S.busy = false; paintQuote();
-    say(e instanceof UserStopped || e?.userStopped ? `Cancelled in your wallet. ${unsent()}` : `<span class="err">${e?.html ? e.message : esc(e?.message || String(e)).slice(0, 300)}</span>`, '', true);
+    say(e instanceof UserStopped || e?.userStopped ? declinedWords(e, unsent()) : `<span class="err">${e?.html ? e.message : esc(e?.message || String(e)).slice(0, 300)}</span>`, '', true);
   } finally { S.busy = false; }
 }
 // ── the gas relay: a swap with no ETH in the wallet ──
@@ -1381,7 +1382,7 @@ async function relayGo(P, from, plan) {
     readPrices().catch(() => {});
   } catch (e) {
     S.busy = false; paintQuote();
-    say(e instanceof UserStopped || e?.userStopped ? 'Cancelled in your wallet. Nothing was sent.' : `<span class="err">${e?.html ? e.message : esc(e?.message || String(e)).slice(0, 300)}</span>`, '', true);
+    say(e instanceof UserStopped || e?.userStopped ? declinedWords(e, 'Nothing was sent.') : `<span class="err">${e?.html ? e.message : esc(e?.message || String(e)).slice(0, 300)}</span>`, '', true);
   } finally { S.busy = false; }
 }
 const balanceNow = async (k, who) => (isEth(k) ? BigInt(await rpc('eth_getBalance', [who, 'latest'])) : wordAt(await ethCall(k, '0x70a08231' + addrWord(who)), 0));
@@ -2090,7 +2091,7 @@ async function intoReclaim(box) {
     keepIntoBox({ ...rec, reclaimTx: r.hash, reclaimHeld: r.held, reclaimedAt: Date.now() });
     remember(r.hash, `${tidy(amtFmt(r.held, t.dec))} ${t.sym} sent back from a deposit box`);
     say(`<span class="ok">Sent back.</span> ${esc(tidy(amtFmt(r.held, t.dec)))} ${esc(t.sym)} went to ${esc(shortAddr(r.to))}, this key’s address. ${txLink(r.hash)}`, 'ok', true);
-  } catch (e) { say(e instanceof UserStopped || e?.userStopped ? 'Cancelled in your wallet. Nothing was sent.' : esc(e?.message || String(e)), e instanceof UserStopped || e?.userStopped ? '' : 'err', true); }
+  } catch (e) { say(e instanceof UserStopped || e?.userStopped ? declinedWords(e, 'Nothing was sent.') : esc(e?.message || String(e)), e instanceof UserStopped || e?.userStopped ? '' : 'err', true); }
   finally { S.busy = false; pageSigner.pin = null; delete INTOB[lc(box)]; paint(); paintSteps(); H.onDone?.(); }
 }
 const BOXW = { t: 0 };
@@ -2197,7 +2198,7 @@ async function laterReclaim(id) {
     const r = await (await ltLoad()).reclaimBox(p, { onStep: (t) => say(steps[t] || esc(t)) });
     remember(r.hash, `${tidy(amtFmt(r.wei, 18))} ETH sent back from a deposit box`);
     say(`<span class="ok">Sent back.</span> ${esc(tidy(amtFmt(r.wei, 18)))} ETH went to ${esc(shortAddr(r.to))}, an address only your key controls, where the pool’s keeper turns it into private ETH. ${txLink(r.hash)}`, 'ok', true);
-  } catch (e) { say(e instanceof UserStopped || e?.userStopped ? 'Cancelled in your wallet. Nothing was sent.' : esc(e?.message || String(e)), e instanceof UserStopped || e?.userStopped ? '' : 'err', true); }
+  } catch (e) { say(e instanceof UserStopped || e?.userStopped ? declinedWords(e, 'Nothing was sent.') : esc(e?.message || String(e)), e instanceof UserStopped || e?.userStopped ? '' : 'err', true); }
   finally { S.busy = false; pageSigner.pin = null; delete BOXES[id]; paint(); paintSteps(); H.onDone?.(); }
 }
 // Make private (or send on) a swap whose TAC sits in the Tacit account: after a closed tab, or a stop
@@ -2413,7 +2414,7 @@ async function exitGo() {
 // ── a private swap, made on this card: the Tacit key is opened here (private.js), and the relay proves and sends each step ──
 let PVP = null, PV = null;
 const pickWallet = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : list[0]?.uuid; };
-const pvLoad = () => (PVP ||= import('/swap/private.js?cb=c4e08b73').then((m) => {
+const pvLoad = () => (PVP ||= import('/swap/private.js?cb=487974e8').then((m) => {
   PV = m.makePrivate({ getUx, pick: pickWallet, ...H.key, now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()), onKey: (why) => { if (why) say(esc(why), 'err', true); else { PV.read().then(paint, () => {}); if (plans().some((x) => x.state === 'waiting')) ltLoad().then(readBlend, () => {}); } paint(); } });
   PV.mod = m;
   return PV;
@@ -3016,7 +3017,7 @@ const pageWallet = () => (W.account && W.prov && !W.prov.isWalletConnect ? { uui
 async function openLane() {
   try {
     // made once on this host, however fast the switch is turned: the first call's promise is what the rest wait on
-    laneP ||= import('/swap/bitcoin.js?cb=ddade92b').then((mod) => (lane = mod.makeBitcoinLane({ host: $('#btc'), notify: (m) => live(m), wallet: pageWallet, onBridged: paintNudge, from: moving() && S.pay === lc(R.TAC) ? 'tac' : 'teth' })));
+    laneP ||= import('/swap/bitcoin.js?cb=346b3f72').then((mod) => (lane = mod.makeBitcoinLane({ host: $('#btc'), notify: (m) => live(m), wallet: pageWallet, onBridged: paintNudge, from: moving() && S.pay === lc(R.TAC) ? 'tac' : 'teth' })));
     await laneP;
     if (S.btc) await lane.show();
   } catch (e) { $('#btc').innerHTML = `<p class="q err">Could not load the Bitcoin lane: ${esc(e?.message || e)}</p>`; lane = laneP = null; }

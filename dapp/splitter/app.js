@@ -8,7 +8,7 @@ import {
 } from '/splitter/abi.js?cb=44661448';
 import { SPLITTER_INITCODE } from '/splitter/bytecode.js?cb=6e21588e';
 import { bodyType } from '../rpc-body.js';
-import { guardProvider } from '../wallet-prompts.js';
+import { guardProvider, declinedWords } from '../wallet-prompts.js';
 import { ETH_NODES, ETH_LOG_NODES } from '/eth-nodes.js';
 
 const API = 'https://api.tacit.finance';
@@ -99,7 +99,7 @@ async function sendTx(tx) {
   await ensureChain();
   return provider().request({ method: 'eth_sendTransaction', params: [{ from: S.account, ...tx }] });
 }
-const walletWords = (e) => (e?.code === 4001 || /user (rejected|denied)/i.test(e?.message || '') ? 'Cancelled in your wallet.' : String(e?.message || e).slice(0, 240));
+const walletWords = (e) => (e?.code === 4001 || /user (rejected|denied)/i.test(e?.message || '') ? declinedWords(e) : String(e?.message || e).slice(0, 240));
 
 // ── state ──
 const S = { addr: null, account: null, owner: null, shares: null, balance: 0n, block: 0, recip: [], quote: null, logs: [], err: null, rows: null, dirty: false, sending: false, deploy: { owner: OPS_MULTISIG, rows: START_ROWS.map((r) => [...r]), ownerOk: false }, gas: null };

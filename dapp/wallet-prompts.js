@@ -9,17 +9,24 @@ const PROMPTS = new Set([
 ]);
 export const QUIET_MS = 1200;
 export const QUICK_MS = 2000;
+export const SLOW_MS = 45e3;
 // An answer faster than this was made with no window to close (a site the wallet already allows), so it starts no quiet.
 const SHOWN_MS = 300;
 
-const guarded = new WeakSet();
+// Marked on the provider itself, under a key shared by every copy of this module, so a provider is wrapped once however it is reached.
+const MARK = Symbol.for('tacit.promptGuard');
 const refused = (e) => e?.code === 4001 || /user (rejected|denied)|rejected the request|request rejected|denied (transaction|message)/i.test(String(e?.shortMessage || e?.message || e || ''));
 
 // What a second refusal that came as fast as the first says: the wallet's answer with the same code, marked `quick`.
 const instantly = (e) => Object.assign(new Error(e?.message || 'User rejected the request.'), { code: e?.code ?? 4001, quick: true, cause: e });
 
+// What a refusal is called to the person: their own no, or a wallet that declined before anyone could answer. `tail` follows the first sentence.
+export const declinedWords = (e, tail = '') => (e?.quick
+  ? `Your wallet declined it straight away.${tail ? ` ${tail}` : ''} If that was not you, close any request still open in your wallet, then press again.`
+  : `Cancelled in your wallet.${tail ? ` ${tail}` : ''}`);
+
 export function guardProvider(provider, { quiet = QUIET_MS, quick = QUICK_MS, now = Date.now, sleep = (ms) => new Promise((done) => setTimeout(done, ms)) } = {}) {
-  if (!provider || typeof provider.request !== 'function' || guarded.has(provider)) return provider;
+  if (!provider || typeof provider.request !== 'function' || provider[MARK]) return provider;
   const ask = provider.request;
   let answered = 0;
   const prompted = async (args) => {
@@ -46,7 +53,15 @@ export function guardProvider(provider, { quiet = QUIET_MS, quick = QUICK_MS, no
   const request = (args) => (PROMPTS.has(args?.method) ? prompted(args) : ask.call(provider, args));
   try {
     Object.defineProperty(provider, 'request', { value: request, writable: true, configurable: true });
-    guarded.add(provider);
+    Object.defineProperty(provider, MARK, { value: true });
   } catch { }
   return provider;
+}
+
+// For a prompt the page is waiting on: `tell()` runs once it has gone `after` ms unanswered (it may return a function that takes what it said
+// away), and the returned function, called when the wallet answers, ends the wait and takes that back.
+export function stillWaiting(tell, { after = SLOW_MS, setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
+  let off = null;
+  const timer = setTimer(() => { off = tell(); }, after);
+  return () => { clearTimer(timer); if (typeof off === 'function') off(); off = null; };
 }

@@ -2,16 +2,17 @@
 // and used for the three things the ticket needs: sending a transaction, signing TAC's EIP-2612 permit, and waiting for a receipt.
 // Nothing is kept: no key is ever seen here, and the page reads balances through its own RPCs.
 
-import { guardProvider } from '../wallet-prompts.js';
+import { guardProvider, declinedWords } from '../wallet-prompts.js';
 
 export const MAINNET = '0x1';
-export class UserStopped extends Error { constructor() { super('Cancelled in your wallet. Nothing was sent.'); this.userStopped = true; } }
+// `quick`: the wallet declined before anyone could have answered (see wallet-prompts.js), which the person is told in so many words.
+export class UserStopped extends Error { constructor(quick = false) { super(declinedWords({ quick }, 'Nothing was sent.')); this.userStopped = true; this.quick = quick; } }
 // A chain id as 0x hex whatever way the wallet gave it (a number, a decimal string, hex with leading zeros).
 export const hexChain = (c) => { try { return `0x${BigInt(c).toString(16)}`; } catch { return null; } };
 // What a wallet's refusal means to the person. A wallet that says no is the person, not a fault.
 function plain(e) {
   const m = e?.message || '';
-  if (e?.code === 4001 || /user (rejected|denied)|rejected the request|request rejected|denied (transaction|message)/i.test(m)) return new UserStopped();
+  if (e?.code === 4001 || /user (rejected|denied)|rejected the request|request rejected|denied (transaction|message)/i.test(m)) return new UserStopped(!!e?.quick);
   if (e?.code === -32002 || /already (pending|processing)|request of type .* pending/i.test(m)) return new Error('Your wallet already has a request open. Answer it there, then try again.');
   if (e?.code === 4100 && !/WalletConnect/.test(m)) return new Error('Your wallet is locked or has not allowed this site. Unlock it and connect again.');
   if (/chain.*not approved|does not support 'wallet_switchEthereumChain'/i.test(m)) return new Error('Your wallet app did not allow Ethereum. Disconnect, then connect again.');

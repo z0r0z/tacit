@@ -18,8 +18,12 @@ if (!globalThis.crypto) globalThis.crypto = dom.window.crypto;
 
 import { secp, sha256, keccak_256, bytesToHex, hexToBytes } from '../dapp/vendor/tacit-deps.min.js';
 import { prfBytesToScalar } from '../dapp/prf-wallet.js';
-import { guardProvider, QUIET_MS, QUICK_MS } from '../dapp/wallet-prompts.js';
+import { guardProvider, declinedWords, stillWaiting, QUIET_MS, QUICK_MS, SLOW_MS } from '../dapp/wallet-prompts.js';
 import { makeEvmWallet } from '../dapp/evm-wallet.js';
+import { UserStopped } from '../dapp/trade/wallet.js';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 let pass = 0, fail = 0;
 const ok = (label, cond) => { if (cond === true) { console.log(`  PASS  ${label}`); pass++; } else { console.log(`  FAIL  ${label}`); fail++; } };
@@ -175,6 +179,69 @@ console.log('\n— guarding more than once, and a provider that cannot be change
   try { back = guardProvider(frozen); } catch { threw = true; }
   ok('a frozen provider is left as it is, with no error', !threw && back === frozen);
   ok('no provider, no request function: handed back', guardProvider(null) === null && guardProvider({}) !== undefined);
+}
+
+console.log('\n— what a refusal is called');
+{
+  ok('a person\'s no', declinedWords(rejected()) === 'Cancelled in your wallet.');
+  ok('with a tail', declinedWords(rejected(), 'Nothing was sent.') === 'Cancelled in your wallet. Nothing was sent.');
+  ok('no error at all reads as a cancel', declinedWords(null) === 'Cancelled in your wallet.');
+  ok('a wallet that declined at once says so, keeps the tail, and says what to do',
+    declinedWords({ quick: true }, 'Nothing was sent.') === 'Your wallet declined it straight away. Nothing was sent. If that was not you, close any request still open in your wallet, then press again.');
+  ok('the swap wallet\'s UserStopped is as it was for a person\'s no', new UserStopped().message === 'Cancelled in your wallet. Nothing was sent.' && new UserStopped().quick === false);
+  ok('and carries the flag and the words for one declined at once', new UserStopped(true).quick === true && /^Your wallet declined it straight away\. Nothing was sent\./.test(new UserStopped(true).message));
+}
+
+console.log('\n— a prompt still waiting');
+{
+  const clock = makeClock(), told = []; let taken = 0;
+  const timers = { setTimer: (fn, ms) => { const t = { off: false }; clock.after(ms, () => { if (!t.off) fn(); }); return t; }, clearTimer: (t) => { t.off = true; } };
+  const tell = () => { told.push(clock.now()); return () => { taken++; }; };
+  let end = stillWaiting(tell, timers);
+  await clock.run(clock.sleep(10_000)); end();
+  await clock.run(clock.sleep(2 * SLOW_MS));
+  ok('answered in time: nothing was said', told.length === 0 && taken === 0);
+  const t0 = clock.now();
+  end = stillWaiting(tell, timers);
+  await clock.run(clock.sleep(SLOW_MS + 5000));
+  ok(`unanswered for ${SLOW_MS / 1000} s: said once, at that time`, told.length === 1 && told[0] - t0 === SLOW_MS);
+  end();
+  ok('and taken back when the wallet answers', taken === 1);
+  end();
+  ok('ending twice takes nothing back twice', taken === 1);
+}
+
+console.log('\n— the same provider reached through two copies of the module');
+{
+  const copy = await import('../dapp/wallet-prompts.js?second');
+  const clock = makeClock(), raw = { request: async () => '0x1' };
+  guardProvider(raw, { now: clock.now, sleep: clock.sleep });
+  const once = raw.request;
+  copy.guardProvider(raw, { now: clock.now, sleep: clock.sleep });
+  ok('the second copy leaves it as the first made it', raw.request === once);
+}
+
+console.log('\n— no page decides that a person cancelled from the words alone');
+{
+  const root = join(fileURLToPath(new URL('..', import.meta.url)), 'dapp');
+  // the classic app (tacit.js, classic.html and what only they load), the Bitcoin pool's own page, and a page made from index.html
+  const skip = /^(vendor|admin|weld|node_modules)\/|^(tacit\.js|classic\.html|tac\/index\.html|tac\/pool\.js|confidential-send-tab\.js|evm-trade-tile\.js)$/;
+  const files = readdirSync(root, { recursive: true }).filter((f) => /\.(js|html)$/.test(f) && !skip.test(f.split('\\').join('/')));
+  const byWords = [], unrouted = [];
+  for (const f of files) {
+    readFileSync(join(root, f), 'utf8').split('\n').forEach((line, i) => {
+      if (/[!=]==?\s*'Cancelled in your wallet\.?'/.test(line) && !/4001|quick/.test(line)) byWords.push(`${f}:${i + 1}`);
+      if (/4001/.test(line) && /return 'Cancelled in your wallet\.'/.test(line)) unrouted.push(`${f}:${i + 1}`);
+    });
+  }
+  ok(`no comparison with the cancel text stands without the code or the flag (${files.length} files)${byWords.length ? ': ' + byWords.join(', ') : ''}`, byWords.length === 0);
+  ok(`no refusal is printed as a fixed cancel text${unrouted.length ? ': ' + unrouted.join(', ') : ''}`, unrouted.length === 0);
+  // the front page's transaction prompt says it is still waiting (its code runs in the page's own module, so it is read here, not run)
+  const page = readFileSync(join(root, 'index.html'), 'utf8');
+  const send = page.slice(page.indexOf('async function sendTx('), page.indexOf('async function payingAccount('));
+  ok('sendTx asks to be told when the wallet has not answered, and ends that when it does',
+    /const waiting = stillWaiting\(/.test(send) && /eth_sendTransaction/.test(send) && /finally \{ waiting\(\); \}/.test(send));
+  ok('and a toast can stay until it is taken away', /Number\.isFinite\(ms\)/.test(page) && /return \(\) => el\.remove\(\);/.test(page));
 }
 
 console.log('\n— the page\'s wallet module (dapp/evm-wallet.js), real time: a permit, then the deposit');
