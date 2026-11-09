@@ -82,14 +82,15 @@ export async function leaseOne({ api, llm, miner, model = DEFAULT_MODEL, kinds =
   return 'failed';
 }
 
-// ask, answer, ask again: a short pause when nothing is waiting, a longer one (up to a minute) while the help desk or the model is not answering
+// ask, answer, ask again: a short pause when nothing is waiting, a longer one (1, 2, 4, 8 and then 15 s) while the help desk or the model is not answering: a help desk
+// that was restarted has its nodes back within seconds
 export async function run({ api, llm, miner, model, kinds, say = () => {}, signal, idleMs = 1500, once = false }) {
   let bad = 0;
   while (!signal?.aborted) {
     const out = await leaseOne({ api, llm, miner, model, kinds, say, signal });
     if (once) return out;
     if (out === 'failed') bad++; else bad = 0;
-    await sleep(out === 'worked' ? 0 : out === 'empty' ? idleMs : Math.min(60000, 2000 * 2 ** Math.min(bad, 5)), signal);
+    await sleep(out === 'worked' ? 0 : out === 'empty' ? idleMs : Math.min(15000, 1000 * 2 ** Math.min(bad, 4)), signal);
   }
 }
 
