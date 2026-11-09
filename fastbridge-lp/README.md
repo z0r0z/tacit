@@ -50,6 +50,7 @@ run on the same machine can be tried at `http://localhost:<port>/fast/?lp=<url>&
 | `policy.minClaimSecs`, `policy.claimSlackSecs` | the least time a claim may be built with (1 h), and the gap between the pool deadline and the opening of the user's refund (2 h) |
 | `policy.confs` | `[amountFrom, confirmations]` pairs: how many Bitcoin confirmations the LP waits for, by amount |
 | `policy.maxOfferAgeSecs` | an offer for a lock confirmed longer ago than this is not answered |
+| `mailboxPollSecs` | how often the board is read for requests left for this provider (3 s unless set; `config.render.json` sets 1): a request waits for the next read |
 | `name`, `boards` | the name shown in the LP's ad, and the boards it is on (URLs of `fastbridge-lp/board.mjs`): it posts its ad there every minute and answers the requests left for it, so a user finds it without its own URL |
 | `alertSecs`, `tickSecs`, `port`, `origins`, `trustProxy` | alert interval, tick length, the HTTP face; `trustProxy` reads the client from `X-Forwarded-For`, only behind a proxy you control |
 
@@ -64,7 +65,7 @@ restart, not a new image.
 3. **Fund it.** Send TAC (the ERC-20, on Ethereum) and a little ETH for gas to the pool account it printed, then put the TAC into the pool as private notes of the same key with `FB_LP_KEY=<key> node tools/fastbridge-lp-shield.mjs <TAC> --index 0 --send` (without `--send` it only checks, and `EXPECT_ADDRESS=<pool account>` stops a wrong key). Start with a small amount to see the notes arrive, then the rest with the next index (`--index 1`, and so on: a key's deposits are numbered from 0). What the provider holds in the pool is what it can lend. It needs no Bitcoin: each user's lock pays the fee of its take.
 4. **Go live.** Remove `--dry-run`. It posts its ad on the boards in `config.render.json`, so `/fast/` finds it, and it takes any TAC the validator accepts, TAC out of the Bitcoin shielded pool included (see the last section).
 5. **Watch it.** `/health` is the health check; set `FB_LP_ALERT_WEBHOOK` to be told of a swap that waits long, a failed tick or a lost claim (the alerts are listed under "Watching it").
-6. **Tune it.** `FB_LP_MIN_AMOUNT`, `FB_LP_MAX_AMOUNT`, `FB_LP_FEE_BPS`, `FB_LP_FLAT_FEE`, `FB_LP_NAME`, `FB_LP_BOARDS` (base units; 8 places for TAC). `FB_LP_MAX_AMOUNT=0` stops new swaps and finishes the open ones.
+6. **Tune it.** `FB_LP_MIN_AMOUNT`, `FB_LP_MAX_AMOUNT`, `FB_LP_FEE_BPS`, `FB_LP_FLAT_FEE`, `FB_LP_NAME`, `FB_LP_BOARDS` (base units; 8 places for TAC), and `FB_LP_MAILBOX_POLL_SECS` (how often it reads the board for requests left for it; a user's quote waits for the next read, so 1 s answers sooner than the default 3 s; not under 1, the board takes 120 reads a minute from one address). `FB_LP_MAX_AMOUNT=0` stops new swaps and finishes the open ones.
 7. **Rebalance by hand.** Bitcoin TAC builds up as the pool TAC drains; move it back from the Bridge tab, signed in with the same key, when the pool balance runs low. Until then the provider shows "full right now" and the page falls back to another provider.
 
 ## API

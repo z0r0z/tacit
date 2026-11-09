@@ -22,6 +22,8 @@ test('each knob sets its own field and no other', () => {
   assert.deepEqual([c.port, c.dataDir, c.name, c.boards], [10000, '/var/lib/lp', 'House', ['https://b.example', 'https://c.example']]);
   assert.deepEqual(c.quote, { minAmount: '2000000000', maxAmount: '50000000000', feeBps: 25, flatFee: '5000000', validSecs: 600 });
   assert.deepEqual(applyEnv(BASE, { FB_LP_BOARDS: '' }).boards, [], 'an empty list takes the boards off');
+  assert.equal(applyEnv(BASE, { FB_LP_MAILBOX_POLL_SECS: '1' }).mailboxPollSecs, 1); assert.equal(applyEnv(BASE, { FB_LP_MAILBOX_POLL_SECS: '2.5' }).mailboxPollSecs, 2.5);
+  assert.equal('mailboxPollSecs' in applyEnv(BASE, {}), false, 'unset leaves the daemon\'s own default (3 s)');
   assert.equal(applyEnv(BASE, { FB_LP_NAME: 'x'.repeat(80) }).name.length, 40, 'a name is kept to what the ad takes');
 });
 
@@ -31,7 +33,7 @@ test('the switch: a most below the least is taken as it is (the provider then qu
 });
 
 test('a value that is set and is not valid stops the start, naming it', () => {
-  for (const [env, name] of [[{ PORT: 'abc' }, 'PORT'], [{ PORT: '70000' }, 'PORT'], [{ FB_LP_MAX_AMOUNT: '1000.5' }, 'FB_LP_MAX_AMOUNT'], [{ FB_LP_MAX_AMOUNT: '-1' }, 'FB_LP_MAX_AMOUNT'], [{ FB_LP_MIN_AMOUNT: '10 TAC' }, 'FB_LP_MIN_AMOUNT'], [{ FB_LP_FEE_BPS: '600' }, 'FB_LP_FEE_BPS'], [{ FB_LP_FEE_BPS: '0.3' }, 'FB_LP_FEE_BPS'], [{ FB_LP_FLAT_FEE: 'x' }, 'FLAT_FEE']]) {
+  for (const [env, name] of [[{ PORT: 'abc' }, 'PORT'], [{ PORT: '70000' }, 'PORT'], [{ FB_LP_MAX_AMOUNT: '1000.5' }, 'FB_LP_MAX_AMOUNT'], [{ FB_LP_MAX_AMOUNT: '-1' }, 'FB_LP_MAX_AMOUNT'], [{ FB_LP_MIN_AMOUNT: '10 TAC' }, 'FB_LP_MIN_AMOUNT'], [{ FB_LP_FEE_BPS: '600' }, 'FB_LP_FEE_BPS'], [{ FB_LP_FEE_BPS: '0.3' }, 'FB_LP_FEE_BPS'], [{ FB_LP_FLAT_FEE: 'x' }, 'FLAT_FEE'], [{ FB_LP_MAILBOX_POLL_SECS: '0' }, 'MAILBOX_POLL'], [{ FB_LP_MAILBOX_POLL_SECS: '0.5' }, 'MAILBOX_POLL'], [{ FB_LP_MAILBOX_POLL_SECS: '60' }, 'MAILBOX_POLL'], [{ FB_LP_MAILBOX_POLL_SECS: 'fast' }, 'MAILBOX_POLL']]) {
     assert.throws(() => applyEnv(BASE, env), (e) => e.message.includes(name), JSON.stringify(env));
   }
 });

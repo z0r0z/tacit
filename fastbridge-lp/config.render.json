@@ -61,5 +61,6 @@
         3
       ]
     ]
-  }
+  },
+  "mailboxPollSecs": 1
 }
