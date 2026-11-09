@@ -9937,7 +9937,8 @@ await step('hxbridgeu', async () => {
     await until(p, () => /^Bridge USDT to Bitcoin$/.test(document.querySelector('#hx-go')?.textContent || ''), null, 240000).catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)} | go ${await text(p, BRG.go)}`); });
     ok((await heldAt(p)) === 'wallet', 'hxbridgeu: USDT in the wallet is a source, and with the private USDT held covering it the press is the bridge itself');
     await p.fill(BRG.amt, '80');
-    await until(p, () => /^Shield USDT$/.test(document.querySelector('#hx-go')?.textContent || ''), null, 240000).catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)} | go ${await text(p, BRG.go)}`); });
+    await until(p, () => /^Bridge USDT to Bitcoin$/.test(document.querySelector('#hx-go')?.textContent || '') && (/make the USDT private, then bridge it/.test(document.querySelector('#hx-receipt')?.textContent || '') || /You hold [\d.]+ USDT in/.test(document.querySelector('#hx-q')?.textContent || '')), null, 240000).catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)} | go ${await text(p, BRG.go)}`); });
+    // (the button reads the same either way now; what tells is the receipt's Steps row, or, once the wallet's balance is read and is less than this, the line that says what the wallet holds)
     ok(true, `hxbridgeu: more than the private USDT held makes the USDT private first (${await said(p)})`);
     // the sheet and its links
     for (const [hash, tab] of [['usdt', 'wrap'], ['usdt/withdraw', 'out'], ['usdt/bitcoin', 'btc'], ['usdt/bitcoin/back', 'btc'], ['usdt/bitcoin/out', 'btc']]) {
