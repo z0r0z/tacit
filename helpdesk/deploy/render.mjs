@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // The help desk on Render: one Docker web service built from this folder (rootDir helpdesk, deploy/Dockerfile) with a 1 GB disk at /data, and the
-// /help redirect on the tacit.finance static site. Shows what it would send unless --send is given. The Render key is read from the macOS keychain
+// /help redirect and the COEP header rule for /help/* on the tacit.finance static site. Shows what it would send unless --send is given. The Render key is read from the macOS keychain
 // (tacit-render-api-key) when needed and never printed.
 //
-//   node helpdesk/deploy/render.mjs setup [--plan starter] [--send]   create the service if it is missing, add the /help redirect if it is missing
+//   node helpdesk/deploy/render.mjs setup [--plan starter] [--send]   create the service, the /help redirect and the /help/* header if they are missing
 //   node helpdesk/deploy/render.mjs deploy [--send]                   build and deploy the latest commit of main
 //   node helpdesk/deploy/render.mjs status                            the service, its latest deploys, and what /health says (reads only)
 //
@@ -55,6 +55,14 @@ if (cmd === 'setup') {
     const priority = Math.max(0, ...routes.map((r) => r.priority)) + 1;
     const r = await api('POST', `/services/${SITE}/routes`, { type: 'redirect', source: '/help', destination: '/help/', priority });
     if (r) console.log(`added the /help redirect (priority ${priority})`);
+  }
+  // The front page and /tac/ are cross-origin isolated (COEP credentialless, for the threaded prover), and such a page can only frame a document that carries
+  // the same header: the help panel frames /help/. The header changes nothing for /help/ itself (its one cross-origin request is a CORS fetch).
+  const rules = ((await api('GET', `/services/${SITE}/headers`)) || []).map((x) => x.header ?? x.headerRule ?? x);
+  if (rules.some((h) => h.path === '/help/*' && String(h.name).toLowerCase() === 'cross-origin-embedder-policy')) console.log('/help/* already has its COEP header');
+  else {
+    const r = await api('POST', `/services/${SITE}/headers`, { path: '/help/*', name: 'Cross-Origin-Embedder-Policy', value: 'credentialless' });
+    if (r) console.log('added the COEP header to /help/*');
   }
   if (!send) console.log('\nNothing was sent. Add --send to do it.');
 } else if (cmd === 'deploy') {

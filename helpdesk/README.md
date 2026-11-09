@@ -48,7 +48,7 @@ Settings (environment):
 
 ## Deploy
 
-`deploy/Dockerfile` builds the gateway and a 37 MB embedding server into one image (no chat model). `node deploy/render.mjs setup --send` creates the Render service from this repository and adds the `/help` redirect on the static site (without `--send` it shows what it would send); `deploy` builds the latest `main`, `status` shows the service and its `/health`. The image rebuilds the docs from the repository's current `main` at start, and serves without its FAQ if a FAQ fact no longer matches them.
+`deploy/Dockerfile` builds the gateway and a 37 MB embedding server into one image (no chat model). `node deploy/render.mjs setup --send` creates the Render service from this repository, adds the `/help` redirect to the static site, and adds a `Cross-Origin-Embedder-Policy` rule for `/help/*` (the front page is cross-origin isolated, and such a page can only frame a document that is too, which the help panel does); without `--send` it shows what it would send; `deploy` builds the latest `main`, `status` shows the service and its `/health`. The image rebuilds the docs from the repository's current `main` at start, and serves without its FAQ if a FAQ fact no longer matches them.
 
 Review the code-review inbox with `INBOX=/data/suggestions.jsonl node inbox.mjs`, then `mark N accepted|rejected|applied`.
 

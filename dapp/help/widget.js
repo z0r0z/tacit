@@ -24,6 +24,8 @@ const CSS = `
 .hw-t em { font-style: italic; }
 .hw-x { display: grid; place-items: center; width: 40px; height: 40px; padding: 0; cursor: pointer; font: 400 26px/1 var(--mono, monospace); color: var(--mute, #625c4f); background: none; border: 0; }
 .hw-x:hover { color: var(--ink, #1a1a1a); }
+.hw-f { margin: 0; padding: 18px 16px; font-size: 12.5px; color: var(--mute, #625c4f); }
+.hw-f a { color: var(--ink, #1a1a1a); }
 .hw-p iframe { flex: 1; width: 100%; min-height: 0; border: 0; background: transparent; color-scheme: normal; }
 @media (max-width: 560px) {
   .hw-p { position: fixed; left: 0; right: 0; bottom: 0; width: auto; height: min(84vh, 680px); border-width: 1px 0 0; }
@@ -48,14 +50,25 @@ if (!doc.getElementById('hw')) {
   const btn = el('button', 'hw-b', { type: 'button', 'aria-label': 'Help', 'aria-expanded': 'false', 'aria-controls': 'hw-p' }); btn.innerHTML = BUBBLE;
   root.append(panel, btn);
 
-  let frame = null;
+  let frame = null, broken = false;
   const input = () => { try { return frame?.contentDocument?.getElementById('q') || null; } catch { return null; } };   // the frame is this origin
   const isOpen = () => !panel.hidden;
+  // A page that cannot be framed (a header or a security policy refuses it) leaves a dead box: say so, and offer the page on its own.
+  function fallback() {
+    if (broken) return;
+    broken = true; frame?.remove(); frame = null;
+    const a = el('a', '', { href: '/help/', target: '_blank', rel: 'noopener' }); a.textContent = 'Open the help page';
+    const p = el('p', 'hw-f'); p.append('The help desk could not be shown here. ', a, '.'); panel.append(p);
+  }
   function open() {
     if (isOpen()) return;
-    if (!frame) {
+    if (!frame && !broken) {
       frame = el('iframe', '', { title: 'Help desk', src: '/help/' });
-      frame.addEventListener('load', () => { if (isOpen()) input()?.focus(); });
+      const mine = frame;
+      // the frame is ours to read only if it loaded the help page: a refused frame shows an error page we cannot see into
+      const check = () => { if (frame === mine && !input()) fallback(); };
+      frame.addEventListener('load', () => { if (frame !== mine) return; if (!input()) return fallback(); if (isOpen()) input()?.focus(); });
+      setTimeout(check, 8000);
       panel.append(frame);
     }
     panel.hidden = false; btn.setAttribute('aria-expanded', 'true');
