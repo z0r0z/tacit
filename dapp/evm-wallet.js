@@ -1,4 +1,5 @@
 import { identityMessage } from './identity-message.js';
+import { guardProvider } from './wallet-prompts.js';
 
 const ETH_SIGNED_PREFIX = '\x19Ethereum Signed Message:\n';
 
@@ -24,7 +25,7 @@ export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes,
     try { window.dispatchEvent(new Event('eip6963:requestProvider')); } catch { }
   }
   const injected = () => (typeof window !== 'undefined' ? window.ethereum : null);
-  const currentProvider = () => selected || injected();
+  const currentProvider = () => guardProvider(selected || injected());
   const available = () => !!currentProvider() || providers.length > 0;
   const hasBrowserWallet = () => !!injected() || providers.some((p) => !p.provider.isWalletConnect);
   const ordered = () => [...providers].sort((a, b) => !!a.provider.isWalletConnect - !!b.provider.isWalletConnect);
@@ -74,6 +75,7 @@ export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes,
       provider = chosen || injected();
     }
     if (!provider || typeof provider.request !== 'function') throw new Error('no Ethereum wallet detected — install MetaMask, Rabby, Rainbow, or Coinbase Wallet');
+    guardProvider(provider);
     let accounts = silent ? await capped(provider.request({ method: 'eth_accounts' }), 1500, []) : [];
     if (!Array.isArray(accounts) || !accounts.length) accounts = await provider.request({ method: 'eth_requestAccounts' });
     if (!Array.isArray(accounts) || !accounts.length) throw new Error('no accounts returned');
@@ -125,6 +127,7 @@ export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes,
       provider = find();
     }
     if (typeof provider?.request !== 'function') return null;
+    guardProvider(provider);
     let accounts;
     try { accounts = await provider.request({ method: 'eth_accounts' }); } catch { return null; }
     const address = String(accounts?.[0] || '').toLowerCase().replace(/^0x/, '');
@@ -155,6 +158,7 @@ export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes,
   async function changeAccount({ pick } = {}) {
     const provider = active || selected || injected();
     if (!provider || typeof provider.request !== 'function') throw new Error('no Ethereum wallet connected');
+    guardProvider(provider);
     if (provider.isWalletConnect) { await disconnect(); return connect({ pick }); }
     try { await provider.request({ method: 'wallet_requestPermissions', params: [{ eth_accounts: {} }] }); }
     catch (e) {

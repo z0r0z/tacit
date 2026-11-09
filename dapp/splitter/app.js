@@ -8,6 +8,7 @@ import {
 } from '/splitter/abi.js?cb=44661448';
 import { SPLITTER_INITCODE } from '/splitter/bytecode.js?cb=6e21588e';
 import { bodyType } from '../rpc-body.js';
+import { guardProvider } from '../wallet-prompts.js';
 import { ETH_NODES, ETH_LOG_NODES } from '/eth-nodes.js';
 
 const API = 'https://api.tacit.finance';
@@ -79,7 +80,7 @@ async function waitReceipt(hash, ms = 20 * 60e3) {
 }
 
 // ── wallet ──
-const provider = () => window.ethereum || null;
+const provider = () => guardProvider(window.ethereum || null);
 async function ensureChain() {
   const id = await provider().request({ method: 'eth_chainId' });
   if (parseInt(id, 16) === 1) return;

@@ -6,7 +6,7 @@
 // out of the pool (to ETH or a token, at an address) routes the note to tETH and then exits that note, through an exit recipe for a token. The
 // relay proves and sends each step. Nothing here is loaded until the first private swap, or the first ask for a private balance; the key is
 // held in memory and kept for this tab (tab-key.js).
-import { makeKeySession, signInSheet, Cancelled } from '/trade/key.js?cb=a634e226';
+import { makeKeySession, signInSheet, Cancelled } from '/trade/key.js?cb=1f298939';
 import { forgetUx } from '/trade/poolux.js?cb=efc87cea';
 import { wrapEth, wrapFirst, wrapCalldata, settle, relayState, relayStopped, relayWords } from '/teth/wrap.js?cb=61a79b48';
 import { wrapQuote, WRAP_TIP } from '/teth/read.js?cb=5313656c';
