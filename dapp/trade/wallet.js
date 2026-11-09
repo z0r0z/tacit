@@ -2,6 +2,8 @@
 // and used for the three things the ticket needs: sending a transaction, signing TAC's EIP-2612 permit, and waiting for a receipt.
 // Nothing is kept: no key is ever seen here, and the page reads balances through its own RPCs.
 
+import { guardProvider } from '../wallet-prompts.js';
+
 export const MAINNET = '0x1';
 export class UserStopped extends Error { constructor() { super('Cancelled in your wallet. Nothing was sent.'); this.userStopped = true; } }
 // A chain id as 0x hex whatever way the wallet gave it (a number, a decimal string, hex with leading zeros).
@@ -53,7 +55,7 @@ export function makeWallet({ rpc, leave = null, busy = () => false }) {
   // `silent`: asks only for the accounts the wallet already allows this site (eth_accounts opens no prompt); none → not connected. A wallet that
   // refuses, or fails to answer, changes nothing here: the wallet in use stays in use.
   async function connect(w, { silent = false } = {}) {
-    const prov = w.provider, ask = (method, params) => wrap(prov.request({ method, params }));
+    const prov = guardProvider(w.provider), ask = (method, params) => wrap(prov.request({ method, params }));
     const accounts = await ask(silent ? 'eth_accounts' : 'eth_requestAccounts');
     if (silent && !accounts?.[0]) return false;
     const chain = hexChain(await ask('eth_chainId'));
