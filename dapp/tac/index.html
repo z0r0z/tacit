@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-jb2nvzXiCRK6eYQSfuWNYqxmL2O+oeQ0vXJdjAOMIy8=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-+PC3BbQ0oQhqu/2MgXjlcOiJ6ZFo+Bkhdsy7XpnWpCY=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -20,7 +20,7 @@
 <link rel="preload" href="/fonts/instrument-serif-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/ibm-plex-mono-500-latin.woff2" as="font" type="font/woff2" crossorigin>
-<script defer src="/front-route.js?cb=77ca7ef7"></script>
+<script defer src="/front-route.js?cb=b8e98733"></script>
 <title>tacit TAC</title>
 <link rel="canonical" href="https://tacit.finance/tac/">
 <meta name="description" content="TAC: one private currency on Bitcoin and Ethereum.">
@@ -1200,6 +1200,19 @@ html[data-page="tac"] :is(.hero, #dash, #how, #tac, .pg, .sx.pi), html:not([data
 .tcd-v { display: flex; align-items: baseline; gap: 8px; margin: 8px 0 0; font: 500 36px/1.1 var(--mono); letter-spacing: -.02em; }
 .tcd-v small { font: 400 14px/1 var(--mono); letter-spacing: 0; color: var(--mute); }
 .tcd-sub { min-height: 18px; margin: 4px 0 0; font-size: 12.5px; color: var(--mute); }
+.tcd-steps { margin: 0 0 16px; padding: 12px 14px; background: var(--field); border: 1px solid var(--hair); border-left: 2px solid var(--orange); }
+.tcd-steps[hidden] { display: none; }
+.tcd-steps-h { margin: 0 0 8px; font-size: 13px; overflow-wrap: anywhere; }
+.tcd-steps-h b { font-weight: 500; }
+.tcd-steps ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 7px; font-size: 12.5px; }
+.tcd-steps li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.tcd-steps .n { display: inline-grid; place-items: center; flex: none; width: 18px; height: 18px; border: 1px solid var(--hair-2); border-radius: 50%; font-size: 11px; }
+.tcd-steps li.done .n { background: var(--ok); border-color: var(--ok); color: var(--card); }
+.tcd-steps li.done > span:nth-child(2) { color: var(--mute); }
+.tcd-steps .act { margin-left: auto; }
+.tcd-linkin { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 10px 0 0; }
+.tcd-linkin input { min-width: 0; padding: 9px 10px; font: inherit; font-size: 16px; color: var(--ink); background: var(--field); border: 1px solid var(--hair-2); }
+@media (max-width: 480px) { .tcd-linkin { grid-template-columns: 1fr; } }
 .tcd-nudge { margin: 14px 0 0; padding: 10px 12px; font-size: 13px; background: var(--field); border-left: 2px solid var(--orange); text-wrap: pretty; }
 .tcd-tabs, .tcd .tp > .seg.sub:first-child { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; margin: 18px 0 0; border-bottom: 1px solid var(--hair); }
 .tcd-tabs button, .tcd .tp > .seg.sub:first-child button { min-height: 44px; padding: 8px 4px; font: inherit; font-size: 13px; color: var(--mute); background: none; border: 0; border-bottom: 2px solid transparent; cursor: pointer; }
@@ -1676,6 +1689,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
     <details class="tpx" id="tac-px" hidden></details>
     <div class="tac-claim" id="tac-claim" role="region" aria-label="A claim link" hidden></div>
     <section class="tcd" id="tpg-card" aria-labelledby="tcd-name">
+      <div class="tcd-steps" id="tcd-steps" hidden></div>
       <div id="tcd-seg"></div>
       <div class="tcd-bal" id="tcd-head"><h2 class="tcd-k" id="tcd-name"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg><b>Private TAC</b><span>on the Tacit chain</span></h2><p class="tcd-v num">&nbsp;</p><p class="tcd-sub">&nbsp;</p></div>
       <div id="tcd-tabs"></div>
@@ -5287,7 +5301,10 @@ function linkNow() {
   if (d) return '#' + linkOf(d.id.replace('sheet-', ''));
   return TACP.on ? tpgLink() : '';
 }
+// (not before the link the page arrived with is read: a key reopened from the tab as the page loads redraws it first)
+var LINK_READ = false;
 function syncLink() {
+  if (!LINK_READ) return;
   const h = linkNow();
   if (location.hash !== h) history.replaceState(null, '', location.pathname + location.search + h);
 }
@@ -10486,12 +10503,14 @@ function tacPageLeave(hash = '') {
 function tpgLink() {
   if (TPOOL.claim) return '#tacclaim=' + TPOOL.claim;
   if (TACP.act) return '';
+  if (TCARD?.link) return `#to=${encodeURIComponent(TCARD.link.to)}${TCARD.link.amt ? `&amt=${TCARD.link.amt}` : ''}`;     // a pay link's, till it is paid
   if (TCARD?.side === 'btc' && TPOOL.api) return '#pool/' + TPOOL.api.view().join('/');
   return TCARD?.side === 'chain' ? { shield: '#private', send: '#pay', withdraw: '#cash-out', receive: '#receive' }[TCARD.tab] ?? '' : '';
 }
 // A fragment on TAC's page: its own actions, the Bitcoin pool's tabs (the old /tac/ page's links: #shield, #send, #withdraw[/sats], #receive) and the
 // bridge (#bridge, #out); the rest (#tacclaim=, #card=, a sheet's name) is the front page's route. → whether it was the page's.
 function tpgHash(h) {
+  if (/^to=/.test(h)) { tpgPayLink(new URLSearchParams(h)); return true; }
   const [head, ...rest] = h.split('/');
   if (head === 'private' || head === 'cash-out' || head === 'pay' || head === 'receive') { tpgTab({ private: 'priv', 'cash-out': 'out' }[head] || head); return true; }
   if (head === 'pool') { tacPoolOpen(rest[0] || 'shield', rest[1] || null); return true; }
@@ -10622,6 +10641,64 @@ const TCD_FOOT = {
   },
 };
 const tcdErr = (m) => html`<span class="err">${m}</span>`;
+// ── Pay links. Arriving by one (#to=…&amt=…): Send opened with who and how much, and above the card the steps still left before it can go
+// (signed in; enough TAC on the Tacit chain, with the shield that makes up the rest; send). The steps go once it is sent. ──
+function tpgPayLink(p) {
+  const to = (p.get('to') || '').trim().slice(0, 400), amt = (p.get('amt') || '').trim();
+  if (!to) return;
+  TCARD.link = { to, amt: /^\d{1,12}(\.\d{1,8})?$/.test(amt) ? amt : '' };
+  tcardGo('chain', 'send');
+  requestAnimationFrame(() => { tcardFillLink(); $('#tpg-card')?.scrollIntoView({ block: 'nearest' }); });
+}
+// (only what is empty: a field typed in stays as it was)
+function tcardFillLink() {
+  const l = TCARD.link, t = $('#tcd-to'), a = $('#tcd-amt');
+  if (!l || TCARD.tab !== 'send') return;
+  if (t && !t.value) t.value = l.to;
+  if (a && !a.value && l.amt) a.value = l.amt;
+  tcardQuoteSoon();
+}
+const TCL_FEE = 30_000_000n;                                  // room for a payment's fees (0.3 TAC, more than they come to): the quote says them exactly
+function tcardSteps() {
+  const el = $('#tcd-steps'), l = TCARD.link;
+  if (!el) return;
+  el.hidden = !l;
+  if (!l) { if (el.__h) { el.__h = null; mount(el, html``); } return; }
+  const k = !!S.key, units = l.amt ? parseUnits(l.amt, 8) : null, held = k ? chainHeld() : null;
+  const need = units != null ? units + TCL_FEE : 1n, enough = held != null && held >= need, gap = held != null && units != null && !enough ? need - held : null;
+  const wal = k ? (hxWalletBal('wtac') ?? (TACB.who === tacWho() ? TACB.erc : null)) : null;
+  TCARD.linkGap = gap != null ? plain(gap, 8) : '';
+  const step = (n, done, title, act = null) => html`<li class="${done ? 'done' : ''}"><span class="n">${done ? '✓' : n}</span><span>${title}</span>${!done && act ? html`<span class="act">${act}</span>` : ''}</li>`;
+  const two = !k ? 'TAC on the Tacit chain to pay with' : held == null ? 'TAC on the Tacit chain: reading yours…' : html`TAC on the Tacit chain: you hold <span class="num">${fmt(held, 8, 4)}</span>`;
+  const make = wal != null && wal > 0n ? html`<button class="link" type="button" data-tcd-step="shield">${gap != null ? `Make ${fmt(gap, 8, 4)} TAC private` : 'Make TAC private'}</button>`
+    : html`<button class="link" type="button" data-hx="swap:ether:tac">Get TAC</button>`;
+  const v = html`<p class="tcd-steps-h">Pay <b class="mono">${/^tacit1|^0x/i.test(l.to) ? short(l.to, 10) : l.to}</b>${l.amt ? html` <b class="num">${l.amt} TAC</b>` : ''}</p><ol>
+    ${step(1, k, k ? 'Signed in' : html`<button class="link" type="button" data-signin>Sign in</button> or make a Tacit ID`)}
+    ${step(2, k && enough, two, k && held != null ? make : null)}
+    ${step(3, false, TCARD.tab === 'send' ? 'Send it, below' : 'Send it', TCARD.tab === 'send' ? null : html`<button class="link" type="button" data-tcd-tab="send">Back to the payment</button>`)}
+  </ol>`;
+  if (el.__h !== v.s) { el.__h = v.s; mount(el, v); }
+}
+// Receive: the key's pay link (its Tacit address, or a name of its that points to it), with an amount to ask for if one is given
+const TCL = { amt: '', name: '', ok: false, err: '', seq: 0 };
+const tcardLinkUrl = () => `https://tacit.finance/to/${encodeURIComponent(TCL.ok ? TCL.name : S.key?.tacit || '')}${TCL.amt ? `?amt=${TCL.amt}` : ''}`;
+function tcardLinkPaint() {
+  const el = $('#tcd-linkrow');
+  if (!el || !S.key?.tacit) return;
+  const v = html`${keyRow('Your pay link', tcardLinkUrl(), 'Pay link', TCL.err ? html`<span class="err">${TCL.err}</span>` : TCL.ok ? `${TCL.name} points to your Tacit address.` : 'Anyone who opens it can pay you on the Tacit chain; someone new is walked through it.', { fold: 44, qr: true })}`;
+  if (el.__h !== v.s) { el.__h = v.s; mount(el, v); }
+}
+async function tcardLinkName(raw) {
+  const my = ++TCL.seq, name = raw.trim().toLowerCase();
+  TCL.name = name; TCL.ok = false; TCL.err = '';
+  if (!name) return tcardLinkPaint();
+  if (!/\.(wei|eth|gwei)$/.test(name)) { TCL.err = 'A name ends in .wei or .eth.'; return tcardLinkPaint(); }
+  const r = await resolveToM(name, null, true).catch(() => null);
+  if (my !== TCL.seq) return;
+  if (r?.address && tacitIsMine(tacitLanes(r.address))) TCL.ok = true;
+  else TCL.err = r?.address ? `${name} points to another address.` : `${name} has no Tacit address.`;
+  tcardLinkPaint();
+}
 // the side shown: the one picked, else the Tacit chain, unless every bit of the key's TAC is on Bitcoin
 function tcardSide() {
   if (!chainOn()) return 'btc';
@@ -10658,7 +10735,10 @@ function tcardForm() {
   const tab = TCARD.tab, key = !!S.key, line = TCD_LINE[tab] ? html`<p class="tcd-line">${TCD_LINE[tab]}</p>` : '';
   if (tab === 'receive') {
     if (!key) return html`${line}<button class="btn tcd-go" type="button" data-signin>Sign in to see your address</button>`;
-    return html`${line}${keyRow('Your Tacit address', S.key.tacit || '', 'Tacit address', '', { fold: 44, qr: true })}
+    return html`${line}<div id="tcd-linkrow"></div>
+      <div class="tcd-linkin"><input id="tcd-link-amt" inputmode="decimal" placeholder="Amount to ask for" aria-label="Amount to ask for, in TAC, optional" autocomplete="off"><input id="tcd-link-name" placeholder="your name (.wei), optional" aria-label="A name of yours for the link, optional" autocomplete="off" spellcheck="false" autocapitalize="off"></div>
+      ${navigator.share ? html`<button class="btn ghost tcd-go" type="button" id="tcd-share">Share your pay link</button>` : ''}
+      ${keyRow('Your Tacit address', S.key.tacit || '', 'Tacit address', '', { fold: 44, qr: true })}
       <button class="btn ghost tcd-go" type="button" id="tcd-scan">Scan for payments</button><div class="status" role="status" id="tcd-st"></div>`;
   }
   const go = !key ? 'Sign in' : { shield: 'Shield TAC', send: 'Send privately', withdraw: { wallet: 'Withdraw to your wallet', pool: 'Move to the private pool', btc: 'Move toward Bitcoin' }[TCARD.dest] }[tab];
@@ -10684,6 +10764,11 @@ function tcardWire(el) {
   if (go) go.onclick = () => tcardPress(go);
   const claim = $('#tcd-claim', el);
   if (claim) claim.onclick = () => tacPoolOpen('send').then(() => requestAnimationFrame(() => $('#tp-claim-amt')?.scrollIntoView({ block: 'center' })));
+  const la = $('#tcd-link-amt', el), ln = $('#tcd-link-name', el), share = $('#tcd-share', el);
+  if (la) { la.value = TCL.amt; la.oninput = () => { const v = la.value.trim(); TCL.amt = /^\d{1,12}(\.\d{1,8})?$/.test(v) && Number(v) > 0 ? v : ''; tcardLinkPaint(); }; }
+  if (ln) { ln.value = TCL.name; let t = 0; ln.oninput = () => { clearTimeout(t); t = setTimeout(() => tcardLinkName(ln.value), 500); }; }
+  if (share) share.onclick = () => navigator.share({ title: 'Pay me in TAC', url: tcardLinkUrl() }).catch(() => {});
+  if ($('#tcd-linkrow', el)) { $('#tcd-linkrow', el).__h = null; tcardLinkPaint(); }
   const scan = $('#tcd-scan', el);
   if (scan) scan.onclick = () => busy(scan, async () => {
     const st = $('#tcd-st'), api = await tacPool();
@@ -10705,10 +10790,12 @@ function tcard() {
     p.setAttribute('aria-labelledby', `tcd-t-${TCARD.tab}`);
     const was = $('#tcd-amt')?.value || '';
     if (tpgMount(p, tcardForm(), tcardWire) && was && $('#tcd-amt')) $('#tcd-amt').value = was;
+    if (TCARD.link) tcardFillLink();
     tcardQuoteSoon();
   } else if (TPOOL.host) { if (TPOOL.host.parentElement !== pool) { pool.__h = null; pool.replaceChildren(TPOOL.host); } }
   else { tpgMount(pool, html`<p class="note">Opening the Bitcoin pool…</p>`); tacPool().then(() => tcard(), (e) => toast(errText(e), true)); }
   tcardFoot();
+  tcardSteps();
 }
 function tcardFoot() {
   const el = $('#tcd-foot');
@@ -10854,7 +10941,10 @@ async function tcardMax() {
   if (v > 0n) { a.value = plain(v, 8); tcardQuote(); }
 }
 const tcardClear = () => { const a = $('#tcd-amt'); if (a) clearField(a); };
-const tcardAfter = () => { rerender('tac'); tcardQuoteSoon(); };
+const tcardAfter = () => {
+  if (TCARD.link && TCARD.tab === 'send') { TCARD.link = null; if (/^#to=/.test(location.hash)) history.replaceState(null, '', location.pathname + location.search); }
+  rerender('tac'); tcardQuoteSoon();
+};
 // The press: each through the chain's own move, as the tile presses it, its words under the button
 async function tcardPress(go) {
   if (!S.key) return openSheet('wallet');
@@ -10892,11 +10982,12 @@ async function tcardPress(go) {
   tpgTile('send:tacb', a, 'Send on Bitcoin');
 }
 document.addEventListener('click', (e) => {
-  const b = e.target.closest?.('[data-tpg], [data-tcd-side], [data-tcd-tab], [data-tcd-dest], [data-tcd-way], [data-tcd-fill]');
+  const b = e.target.closest?.('[data-tpg], [data-tcd-side], [data-tcd-tab], [data-tcd-dest], [data-tcd-way], [data-tcd-fill], [data-tcd-step]');
   if (!b || !TACP.on) return;
   e.preventDefault();
   const d = b.dataset;
   if (d.tcdFill != null) { const a = $('#tcd-amt'); if (a) { a.value = d.tcdFill; tcardQuote(); a.focus(); } return; }
+  if (d.tcdStep === 'shield') { const gap = TCARD.linkGap; tcardGo('chain', 'shield'); requestAnimationFrame(() => { const a = $('#tcd-amt'); if (a && gap) { a.value = gap; tcardQuote(); } }); return; }
   if (d.tpg) { tpgTab(d.tpg); if (d.tpg === 'pay') requestAnimationFrame(() => $('#tcd-to')?.focus()); return; }
   if (d.tcdSide) { tcardGo(d.tcdSide); return; }
   if (d.tcdTab) { tcardGo('chain', d.tcdTab); return; }
@@ -19802,7 +19893,7 @@ function chlRead() {
 setInterval(() => { if (!document.hidden) chlRead(); }, 60e3);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && Date.now() - lastTick > 60e3) tick(); });
 const route = () => {
-  HX.routed = true;
+  HX.routed = true; LINK_READ = true;
   const h = location.hash.slice(1), pay = h.match(/^(sp|st)=([0-9a-fA-F]{64})/);
   if (TACP.on && h && tpgHash(h)) return;
   const snd = h.match(/^card=send(?::([a-z]+))?((?:&(?:to|amt)=[^&]*){0,2})$/);
