@@ -7,19 +7,33 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { createRequire } from 'node:module';
 import { readFileSync, existsSync, statSync } from 'node:fs';
-import { join, extname } from 'node:path';
+import { join, extname, dirname, resolve, relative } from 'node:path';
 import { ISOLATION_RULES, isolationHeaders } from '../tools/site-isolation-rules.mjs';
 
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT || 'playwright-core');
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json', '.wasm': 'application/wasm', '.css': 'text/css' };
 
-// every worker script the page names by a path of its own (the threaded prover's worker is found next to its module, under /btc-pool/)
-const started = [...new Set([...readFileSync(DAPP + 'index.html', 'utf8').matchAll(/new Worker\('(\/[^'?]+)/g)].map((m) => m[1]))];
-const WORKERS = [...started, '/btc-pool/halo2-worker.js'];
+// Every worker script the page can start: those it names itself and those named by the modules it loads (followed through their quoted '/x.js' and './x.js' paths;
+// the vendor bundles are not read), the threaded prover's found next to its module.
+function workersFrom(entry) {
+  const seen = new Set(), found = new Set(), todo = [entry];
+  while (todo.length) {
+    const file = todo.pop();
+    if (seen.has(file) || !existsSync(file) || statSync(file).isDirectory() || file.startsWith(DAPP + 'vendor/')) continue;
+    seen.add(file);
+    const text = readFileSync(file, 'utf8');
+    for (const m of text.matchAll(/new Worker\('(\/[^'?]+)|WORKER_URL = '(\/[^'?]+)/g)) found.add(m[1] || m[2]);
+    for (const m of text.matchAll(/new URL\('(\.\/[^'?]+-worker\.js)', import\.meta\.url\)/g)) found.add('/' + relative(DAPP, resolve(dirname(file), m[1])));
+    for (const m of text.matchAll(/['"]((?:\.{1,2})?\/[A-Za-z0-9_./-]+\.js)(?:\?[^'"]*)?['"]/g)) todo.push(m[1].startsWith('/') ? join(DAPP, m[1]) : resolve(dirname(file), m[1]));
+  }
+  return { workers: [...found].sort(), files: seen };
+}
+const { workers: WORKERS, files: reached } = workersFrom(DAPP + 'index.html');
 
 test('the page starts the workers this test is about', () => {
-  for (const w of ['/evm-pool-prove-worker.js', '/evm-pool-sync-worker.js', '/holding-prove-worker.js']) assert.ok(started.includes(w), `${w} is no longer started by index.html: update this test`);
+  for (const w of ['/evm-pool-prove-worker.js', '/evm-pool-sync-worker.js', '/holding-prove-worker.js', '/btc-pool/halo2-worker.js']) assert.ok(WORKERS.includes(w), `${w} is no longer started by the page: update this test`);
+  for (const f of ['swap/later.js', 'btc-pool-halo2-prover.js']) assert.ok(reached.has(DAPP + f), `${f} is no longer reached from index.html: the scan for workers does not follow the page's modules`);
 });
 
 test('every worker script an isolated page starts has the embedder policy rule', () => {
