@@ -28,6 +28,8 @@ try {
       const req = route.request(), url = new URL(req.url());
       if (url.pathname === '/chrome.js') return route.fulfill({ status: 200, contentType: 'text/javascript', body: read('chrome.js') });
       if (req.method() === 'HEAD') { heads++; return route.fulfill({ status: 200, headers: { etag, 'content-type': 'text/html' }, body: '' }); }
+      // only the page itself is a page load: its other files (the help launcher's module, for one) are not
+      if (url.pathname !== '/bridge/') return route.fulfill({ status: 404, body: '' });
       gets++;
       return route.fulfill({ status: 200, headers: { etag, 'content-type': 'text/html' }, body: html });
     });
