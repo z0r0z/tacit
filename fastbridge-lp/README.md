@@ -126,3 +126,9 @@ node tests/fastbridge-sim.test.mjs      # both machines against a simulated Bitc
 node tests/fastbridge-lp.test.mjs       # this service: API, quotes, store, explorer adapter, and swaps through all of it
 node tests/fastbridge-fork.mjs          # the Ethereum side against the live pool on a mainnet fork (needs anvil, FORK, EXEC)
 ```
+
+## TAC out of the Bitcoin shielded pool
+
+The daemon takes any TAC the note validator accepts, a note made by an exit from the Bitcoin shielded pool included, and says so in its terms
+and ad (`anyTac: true`), so bridgers send it such notes. That TAC cannot be bridged home afterwards, only traded on Bitcoin. The daemon has no
+option to refuse it; a provider run from the page's "Provide liquidity" panel has one.

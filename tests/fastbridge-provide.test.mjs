@@ -121,8 +121,8 @@ test('Start providing: the fee and the size go to the provider as they were type
   m.$('pv-fee').value = '0.25'; m.$('pv-most').value = '500';
   m.$('pv-go').click();
   await until(() => m.stub.calls.starts.length === 1, 'the start');
-  assert.deepEqual(m.stub.calls.starts[0], { settings: { feeBps: 25, maxAmount: 500n * TAC }, accept: true });
-  assert.deepEqual(m.saved, [{ feeBps: 25, maxAmount: String(500n * TAC) }]);
+  assert.deepEqual(m.stub.calls.starts[0], { settings: { feeBps: 25, maxAmount: 500n * TAC, anyTac: true }, accept: true });
+  assert.deepEqual(m.saved, [{ feeBps: 25, maxAmount: String(500n * TAC), anyTac: true }]);
   await until(() => m.$('pv-go').textContent === 'Stop providing', 'the switch');
   assert.equal(m.$('pv-set').hidden, true, 'the fee is not changed while it provides');
   assert.match(text(m.$('pv-run')), /Providing on/); assert.match(text(m.$('pv-run')), /Open bridges 0/);
@@ -132,6 +132,27 @@ test('Start providing: the fee and the size go to the provider as they were type
   m.stub.session.status = async () => ({ ...m.stub.st });
   await until(() => /Done 7/.test(text(m.$('pv-run'))), 'the poll');
   assert.match(text(m.$('pv-run')), /Open bridges 2/); assert.match(text(m.$('pv-run')), /Earned 3\.5 TAC/);
+});
+
+test('taking TAC that came out of the shielded pool is on unless it is switched off: the panel says what it means, keeps the choice for the key and sends it with the start', async () => {
+  const m = mount({ refreshMs: 20 });
+  await m.load();
+  assert.equal(m.$('pv-any').checked, true, 'the provider takes any TAC unless it is told not to');
+  assert.match(text(m.$('pv-set')), /Take TAC that came out of the shielded pool/);
+  assert.match(text(m.$('pv-set')), /cannot be bridged home afterwards, only traded on Bitcoin/);
+  m.$('pv-any').checked = false;
+  m.$('pv-go').click();
+  await until(() => m.stub.calls.starts.length === 1, 'the start');
+  assert.equal(m.stub.calls.starts[0].settings.anyTac, false);
+  assert.equal(m.saved.at(-1).anyTac, false, 'kept for the key');
+  // a key that chose so before shows the choice when it opens again
+  const again = mount({ refreshMs: 20, kept: [['03' + 'cd'.repeat(32), { feeBps: 30, maxAmount: String(100n * TAC), anyTac: false }]] });
+  await again.load();
+  assert.equal(again.$('pv-any').checked, false);
+  // and one that kept settings from before the choice existed takes any TAC, as it always did
+  const old = mount({ refreshMs: 20, kept: [['03' + 'cd'.repeat(32), { feeBps: 30, maxAmount: String(100n * TAC) }]] });
+  await old.load();
+  assert.equal(old.$('pv-any').checked, true);
 });
 
 test('Stop providing: no new bridges, the open ones still seen to their end; with none open it simply stops', async () => {

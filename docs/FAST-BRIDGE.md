@@ -68,8 +68,11 @@ note made by an exit from the Bitcoin shielded pool (`T_BTC_SPEND`, opcode 0x6d)
 it: the burn's proof follows transfers back to the etch and does not follow a history through the pool. TAC a provider takes this
 way stays on Bitcoin, where it can be traded. A provider that rebalances by bridging home screens locks with the regular
 bridge's own trace (`POST /reflection/burndep/trace` answers a note like this with "opcode 0x6d") and refuses such a lock after it is
-on Bitcoin, when its fees are spent and its TAC waits out the timelock. The reference provider applies no such screen, and says so:
-its `/info` and its signed ad carry `anyTac: true`. A provider that says nothing of it is taken to screen.
+on Bitcoin, when its fees are spent and its TAC waits out the timelock. The reference provider takes any TAC the validator accepts, and says so:
+its `/info` and its signed ad carry `anyTac: true`. A provider that says nothing of it is taken to screen. A provider run from the
+`/fast/` page has a switch for it ("Take TAC that came out of the shielded pool", on by default): switched off, it leaves `anyTac` out
+of its terms and refuses a lock that spends a note the bridge's proof cannot follow, before it takes the lock (`policy.screen` in
+`dapp/fastbridge-el.js`, built from the same check the page uses). The LP daemon has no such switch: it takes any TAC and says so.
 
 The holder never picks a kind of TAC. The page sends each lock to the best provider that takes what it must spend (`begin` in
 `dapp/fast/wire.js`). Notes the proof follows go to any provider; a provider that screens is given only such notes, looked at before

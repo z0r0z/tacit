@@ -17,7 +17,7 @@ import { makeBoard } from '../dapp/fastbridge-board.js';
 import { termsOf } from '../dapp/fastbridge-client.js';
 import { makeBoardHandler } from '../fastbridge-lp/lib/board-http.mjs';
 
-const { openFast, openProvider, discoverProviders, counterFor, notesOf, untrackedFirst, followed, TAC_ASSET, EXPLORERS } = await import('../dapp/fast/wire.js');
+const { openFast, openProvider, discoverProviders, counterFor, notesOf, untrackedFirst, followed, lineageScreen, TAC_ASSET, EXPLORERS } = await import('../dapp/fast/wire.js');
 
 const tests = [];
 const test = (name, fn) => tests.push([name, fn]);
@@ -261,6 +261,36 @@ test('reach: whether a lock for an amount can be built from notes the bridge\'s 
   const e = await s.cost({ quote: { btcValue: 4000n }, provider: prov, onProgress }).catch((x) => x);
   assert.equal(e.code, 'lineage'); assert.ok(seen.length && seen.every((o) => o && o.onProgress === onProgress), 'each look reports to the page');
   T._testSetScanHoldingsOverride(null);
+});
+
+test('a provider switched not to take TAC out of the shielded pool does not say it takes any: its ad leaves `anyTac` out, and the user\'s side reads it as screening', async () => {
+  const pPriv = key(11), pPub = bytesToHex(secp.getPublicKey(pPriv, true));
+  let providerAddress = null;
+  const { fetchImpl, posts } = world({ coinsFor: (addr) => (addr === providerAddress ? [{ txid: 'c'.repeat(64), vout: 0, value: 200000, status: { confirmed: true, block_height: 1 } }] : []) });
+  const uxP = { cfg: { pool: POOL }, chainBindingHex: () => '0x' + '11'.repeat(32), rpc: async () => '0x0', balance: async () => ({ byAsset: { ['0x' + TAC_ASSET]: { notes: [{ value: 5000n * TAC, leaf: '0x' + 'ab'.repeat(32) }] } } }) };
+  openWallet(pPriv);
+  const provider = await openProvider({ T, ux: uxP, priv: pPriv, pubHex: pPub, boards: ['https://board.example'], fetchImpl, hrp: 'tb', pollMs: 15, tickSecs: 1 });
+  providerAddress = provider.address;
+  await provider.start({ settings: { feeBps: 30, flatFee: TAC, minAmount: 10n * TAC, maxAmount: 1000n * TAC, anyTac: false }, accept: true });
+  try {
+    await new Promise((r) => setTimeout(r, 80));
+    const ad = posts.at(-1);
+    assert.ok(ad && !('anyTac' in ad), 'the ad says nothing of it');
+    const found = await discoverProviders({ providers: [], boards: ['https://board.example'], fetchImpl });
+    assert.equal(found.length, 1); assert.equal(found[0].terms.anyTac, false);
+  } finally { provider.stop(); }
+  T._testSetScanHoldingsOverride(null);
+});
+
+test('the provider\'s screen: a note the bridge\'s proof cannot follow refuses the lock, one that could not be read asks again, notes that are followed go on', async () => {
+  const n = (c) => ({ txid: c.repeat(64), vout: 0 });
+  const screen = (table) => lineageScreen(verdicts(table));
+  assert.equal(await screen({ 1: { state: 'tracked' }, 2: { state: 'traced', hops: 3 }, 3: { state: 'long', hops: 300, max: 255 } })([n('1'), n('2'), n('3')]), null, 'followed notes, and a history too long for the proof, go on');
+  const refused = await screen({ 1: { state: 'tracked' }, 2: { state: 'unprovable', through: 'shielded' } })([n('1'), n('2')]);
+  assert.match(refused.why, /history the bridge's proof does not follow/); assert.ok(!refused.retry);
+  const unread = await screen({ 1: { state: 'tracked' } })([n('1'), n('2')]);
+  assert.equal(unread.retry, true, 'a note with no verdict is asked about again');
+  assert.ok(!(await screen({ 1: { state: 'unprovable' }, 2: { state: 'unread' } })([n('1'), n('2')])).retry, 'a note that cannot be followed ends it whatever else is unread');
 });
 
 test('a provider that says nothing of it screens: only an ad or info that says `anyTac: true` is read as taking any TAC', () => {

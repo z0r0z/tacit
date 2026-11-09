@@ -22,7 +22,7 @@
 //
 // ctx = { seed, now(), policy, store, quotes, btc, evm, counter }
 //   quotes   { get(id) -> { btcAsset, btcValue, evmAsset, evmAmount, validUntil } | null }
-//   policy   { minCsv, minConfsFor(value) -> n, evmWindowSecs, minClaimSecs, claimSlackSecs, maxAmount, minAmount, roundSecs,
+//   policy   { screen?(notes) -> { why, retry } | null, minCsv, minConfsFor(value) -> n, evmWindowSecs, minClaimSecs, claimSlackSecs, maxAmount, minAmount, roundSecs,
 //              refundMarginSecs (600), maxOfferAgeSecs (3600), maxLockFailures (3), maxConfirmWaitSecs (43200) }
 //   btc      { prims, wallet:{ pub, priv, xonly }, tx (makeAdaptorBtcTx), satsUtxos(), feeRate(), broadcast(pair),
 //              fetchTx(txid), status(txid) -> { confirmations, height }, tip(), blockTime(height), outspend(txid, vout),
@@ -106,6 +106,13 @@ export function makeEthereumLocker(ctx) {
     if (!(st.confirmations > 0)) return reject('the lock has no confirmation yet', true);
     const note = await btc.resolveNote(offer.btc.txid, offer.btc.vout);
     if (st.confirmations > 0 && ctx.now() - (await btc.blockTime(st.height)) > maxOfferAge) return reject('the offer arrived too late to be answered');
+    // a provider that does not take TAC whose history the bridge's proof cannot follow (`policy.screen`) looks at the notes the lock spends
+    // before it takes the lock: { why, retry } to refuse it, null to go on; a look that fails is asked again
+    if (policy.screen) {
+      let s;
+      try { s = await policy.screen(tx.vin.slice(1).map((i) => ({ txid: i.txid, vout: i.vout }))); } catch { return reject('the history of the notes could not be read just now', true); }
+      if (s) return reject(s.why, s.retry === true);
+    }
     const chain = {
       spk: out.scriptpubkey, commitment: note ? hx(note.commitment) : '', validNote: !!note && strip(note.assetIdHex) === strip(offer.btc.asset),
       confirmations: st.confirmations, noteInputs: tx.vin.slice(1).map((i) => ({ txid: i.txid, vout: i.vout })),

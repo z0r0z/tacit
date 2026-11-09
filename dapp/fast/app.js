@@ -5,9 +5,9 @@ import { makeTacitSession } from '/tacit-session.js?cb=a2d34bb2';
 import { getUx as loadUx, forgetUx } from '/trade/poolux.js?cb=efc87cea';
 import { onMainnet, connectedInjected } from '/eth-nodes.js';
 import { mountFast } from '/fast/ui.js?cb=6b45072e';
-import { mountProvide } from '/fast/provide.js?cb=f8ab06fd';
+import { mountProvide } from '/fast/provide.js?cb=5c09a82b';
 import { mountBound } from '/fast/bound.js?cb=862c8d6e';
-import { openFast, openProvider, openBound, discoverProviders, PROVIDER_DEFAULTS } from '/fast/wire.js?cb=63f6a4e4';
+import { openFast, openProvider, openBound, discoverProviders, PROVIDER_DEFAULTS } from '/fast/wire.js?cb=bb5dc40b';
 import { makeWants } from '/fast/want.js?cb=1ab031d1';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 

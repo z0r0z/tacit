@@ -904,6 +904,66 @@ test('an explorer that shows a spent note makes the LP refuse the lock before it
   assert.deepEqual(await w.lpStore.list(), []);
 });
 
+// ── a provider that does not take TAC the bridge's proof cannot follow ──
+
+test('a provider with a screen looks at the notes a lock spends: one it refuses ends the swap before anything is locked in the pool, one it passes goes through', async () => {
+  // refused: the user's lock waits out its timelock and nothing is stored or locked by the provider
+  {
+    const { w, ref } = httpWorld();
+    w.lEvm.fund(VALUE, 'same-size');
+    const seen = [];
+    const screen = async (notes) => { seen.push(notes); return { why: 'a note this lock spends has a history the bridge\'s proof does not follow, which this provider does not take' }; };
+    const s = await serve(w, { config: configFor(w, { policy: { screen } }) });
+    ref.base = s.base;
+    const q = await makeHttpCounter({ base: s.base, fetchImpl: realFetch }).quote(VALUE);
+    await startSwap(w, q);
+    await w.run(async () => (await w.user())?.phase === 'refund-wait');
+    assert.match((await w.user()).why, /history the bridge's proof does not follow/);
+    assert.equal(w.evm.locks.leaves.length, 0, 'no lock in the pool');
+    assert.deepEqual(await w.lpStore.list(), [], 'and the provider kept nothing');
+    assert.ok(seen.length && seen[0].length >= 1 && seen[0].every((n) => /^[0-9a-f]{64}$/.test(n.txid) && Number.isInteger(n.vout)), 'it was handed the notes the lock spends (not the commit)');
+  }
+  // passed: the swap goes through as it does with no screen
+  {
+    const { w, ref } = httpWorld();
+    w.lEvm.fund(VALUE, 'same-size-2');
+    let asked = 0;
+    const s = await serve(w, { config: configFor(w, { policy: { screen: async () => { asked++; return null; } } }) });
+    ref.base = s.base;
+    const q = await makeHttpCounter({ base: s.base, fetchImpl: realFetch }).quote(VALUE);
+    await startSwap(w, q);
+    await w.run(bothDone(w));
+    assert.ok(asked >= 1);
+    assert.equal(w.evm.locks.leaves.length, 1);
+    assert.ok((await w.lp()).take, 'the provider took the Bitcoin lock');
+  }
+});
+
+test('a screen that cannot look (the service is down) is asked again and does not end the swap: the lock goes on once it can', async () => {
+  const { w, ref } = httpWorld();
+  w.lEvm.fund(VALUE, 'same-size-3');
+  let up = false, asked = 0;
+  const screen = async () => { asked++; if (!up) throw new Error('down'); return null; };
+  const s = await serve(w, { config: configFor(w, { policy: { screen } }) });
+  ref.base = s.base;
+  const q = await makeHttpCounter({ base: s.base, fetchImpl: realFetch }).quote(VALUE);
+  await startSwap(w, q);
+  await w.run(async () => asked >= 2);
+  assert.notEqual((await w.user()).phase, 'refund-wait', 'not given up on');
+  assert.equal(w.evm.locks.leaves.length, 0, 'nothing locked while the notes cannot be looked at');
+  up = true;
+  await w.run(bothDone(w));
+  assert.equal(w.evm.locks.leaves.length, 1);
+});
+
+test('a provider says in its terms whether it takes any TAC: it does unless it is set not to', async () => {
+  const { w } = httpWorld();
+  const a = await serve(w, { config: configFor(w) });
+  assert.equal((await makeHttpCounter({ base: a.base, fetchImpl: realFetch }).info()).anyTac, true);
+  const b = await serve(w, { config: { ...configFor(w), anyTac: false } });
+  assert.equal((await makeHttpCounter({ base: b.base, fetchImpl: realFetch }).info()).anyTac, false);
+});
+
 // ── run ──
 
 let passed = 0, ran = 0;

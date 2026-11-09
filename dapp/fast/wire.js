@@ -83,6 +83,19 @@ export async function followed(tiers, pick, vet) {
   return tiers[tiers.length - 1];
 }
 
+// A provider that does not take TAC the bridge's proof cannot follow (a pool or farm trade, an exit from the shielded pool, TAC that came over
+// from Ethereum) refuses a lock that spends such a note, as the bridge's own check does; one that takes any says so in its terms.
+// `vet(notes)` is as for `followed`; the screen is the provider machine's `policy.screen`: { why, retry } to refuse a lock, null to go on.
+export function lineageScreen(vet) {
+  return async (inputs) => {
+    const verdicts = await vet(inputs);
+    const at = (n) => verdicts.get(noteId(n));
+    if (inputs.some((n) => at(n)?.state === 'unprovable')) return { why: 'a note this lock spends has a history the bridge\'s proof does not follow, which this provider does not take' };
+    if (inputs.some((n) => !at(n) || at(n).state === 'unread')) return { why: 'the history of a note could not be read just now', retry: true };
+    return null;
+  };
+}
+
 // The counter of a provider from the reference kept with its swaps: one that serves HTTP, or one reached through a board.
 export function counterFor(ref, { fetchImpl = (...a) => fetch(...a), call = {} } = {}) {
   if (ref && ref.kind === 'http') return makeHttpCounter({ base: ref.base, fetchImpl });
@@ -379,7 +392,7 @@ function presence(doc = typeof document !== 'undefined' ? document : null) {
   return () => hiddenAt == null || Date.now() - hiddenAt < AWAY_AFTER_MS;
 }
 
-export async function openProvider({ T, ux, priv, pubHex, boards = [], name = null, wallet = null, ask, fetchImpl = (...a) => fetch(...a), bases = EXPLORERS, hrp = 'bc', now = () => Math.floor(Date.now() / 1000), tickSecs = 15, pollMs = 3000, present = presence() }) {
+export async function openProvider({ T, ux, priv, pubHex, boards = [], name = null, wallet = null, ask, fetchImpl = (...a) => fetch(...a), bases = EXPLORERS, hrp = 'bc', now = () => Math.floor(Date.now() / 1000), tickSecs = 15, pollMs = 3000, present = presence(), vet = (ns) => withKey((t) => t.bridgeUx().lineage(ns)) }) {
   const asset = { btcAsset: TAC_ASSET, evmAsset: TAC_ASSET };
   let evmLog = () => {};
   const { prims, btc, seed, evm } = sides({ T, ux, priv, hrp, bases, fetchImpl, asset, seedTag: 'tacit-fastbridge-lp-seed', forNotes: true, wallet, ask, log: (o) => evmLog(o) });
@@ -404,16 +417,17 @@ export async function openProvider({ T, ux, priv, pubHex, boards = [], name = nu
   async function inventory() {
     return { pool: await evm.available(), address: btc.address, claimPub };
   }
+  const screen = lineageScreen(vet);
   const configOf = (s) => ({
-    claimPub, csvBlocks: 144, alertSecs: 3600,
+    claimPub, csvBlocks: 144, alertSecs: 3600, anyTac: s.anyTac !== false,
     quote: { btcAsset: asset.btcAsset, evmAsset: asset.evmAsset, minAmount: s.minAmount, maxAmount: s.maxAmount, feeBps: s.feeBps, flatFee: s.flatFee, validSecs: 600 },
     policy: {
       minCsv: 72, evmWindowSecs: 4 * 3600, minClaimSecs: 3600, claimSlackSecs: 7200, roundSecs: 600, refundMarginSecs: 600, maxOfferAgeSecs: 3600,
-      minAmount: s.minAmount, maxAmount: s.maxAmount, minConfsFor: confs,
+      minAmount: s.minAmount, maxAmount: s.maxAmount, minConfsFor: confs, ...(s.anyTac === false ? { screen } : {}),
     },
   });
   // Starts the swaps that are open on their way (the takes and the refunds are not to be left), and, when `accept` is set, answers
-  // requests and posts the ad on every board. Settings: { feeBps, flatFee, minAmount, maxAmount } in base units.
+  // requests and posts the ad on every board. Settings: { feeBps, flatFee, minAmount, maxAmount } in base units, and `anyTac` (taken unless false: see `screen`).
   async function start({ settings = {}, accept = true } = {}) {
     // a start is not running until it has read the holds it keeps and the Bitcoin lock of each; a second start in that time would step the
     // same swaps twice, so there is one at a time

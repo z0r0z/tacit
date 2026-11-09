@@ -38,6 +38,7 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
       <div id="pv-set" hidden>
         <label class="pv-f"><span>Fee, %</span><input id="pv-fee" inputmode="decimal" autocomplete="off" aria-label="Fee in percent"></label>
         <label class="pv-f"><span>Most per bridge, TAC</span><input id="pv-most" inputmode="decimal" autocomplete="off" aria-label="Most TAC per bridge"></label>
+        <label class="pv-chk"><input id="pv-any" type="checkbox" checked><span>Take TAC that came out of the shielded pool<small>It cannot be bridged home afterwards, only traded on Bitcoin.</small></span></label>
       </div>
       <div class="rows" id="pv-run" hidden></div>
       <button class="btn" id="pv-go" type="button" hidden>Start providing</button>
@@ -135,6 +136,7 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
       S.inv = await sess.inventory(); S.invAt = Date.now();
       const kept = settings.get(pub) || {};
       $('pv-fee').value = ((kept.feeBps ?? 30) / 100).toFixed(2);
+      $('pv-any').checked = kept.anyTac !== false;
       // the default is what is held, down to four places, so it reads whole in the field and is never more than is held
       // a kept most that is more than is held now (bridges paid out since) is brought down to what is held
       const held = S.inv.pool - (S.inv.pool % 10_000n), was = kept.maxAmount != null ? BigInt(kept.maxAmount) : null;
@@ -183,10 +185,11 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
       const r = read();
       if (r.why) { note(r.why, true); return; }
       if (S.inv.pool < MIN_AMOUNT) { note('Make some TAC private on the front page first.', true); return; }
-      settings.set(S.pub, { feeBps: r.feeBps, maxAmount: r.maxAmount.toString() });
+      const anyTac = $('pv-any').checked;
+      settings.set(S.pub, { feeBps: r.feeBps, maxAmount: r.maxAmount.toString(), anyTac });
       try {
         if (running()) S.sess.stop();
-        await S.sess.start({ settings: { feeBps: r.feeBps, maxAmount: r.maxAmount }, accept: true });
+        await S.sess.start({ settings: { feeBps: r.feeBps, maxAmount: r.maxAmount, anyTac }, accept: true });
         S.st = await S.sess.status();
         note('Providing. Keep this page open until your bridges are done.');
       } catch (e) { note(String((e && e.message) || e).slice(0, 160), true); }
