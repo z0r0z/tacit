@@ -152,14 +152,16 @@ try {
     check((await page.locator('#chain .blk:not(.next):not(.xc) .t').first().innerText()) === '5 min ago', 'each block says how long ago it was');
     check((await page.locator('#chain .blk.won').count()) === 2, 'blocks a community prover proved are marked');
     check((await page.locator('#chain .blk.mine').count()) === 1, 'the address\'s own block is picked out');
-    check((await page.locator('#pool i').count()) === 5 && (await page.locator('#pool i.on').count()) === 2, 'the waiting proofs are drawn, the leased ones lit');
+    await page.waitForFunction(() => document.querySelectorAll('#chain .cube.ghost i.on').length === 2, null, { timeout: 3000 }).catch(() => {});
+    check((await page.locator('#chain .cube.ghost i').count()) === 5 && (await page.locator('#chain .cube.ghost i.on').count()) === 2, 'the waiting proofs are drawn in the next block, the leased ones lit');
+    check((await page.locator('#pool').count()) === 0, 'and not on a row of their own');
     check((await text(page, '#feed')).includes('+0.2 TAC') && (await text(page, '#feed')).includes('a deposit, proved in 9 min'), 'the feed says who proved what, how fast and what it won', await text(page, '#feed'));
     const mineRank = (await page.locator('#board li.me').innerText()).replace(/\s+/g, ' ');
     check(mineRank.includes('4 proofs 0.8 TAC 9 min each'), 'today\'s provers with their TAC and their speed', mineRank);
     const cols = await page.evaluate(() => [...document.querySelectorAll('#feed li:not(.empty)')].map((li) => Math.round(li.children[1].getBoundingClientRect().right)));
     check(cols.length > 1 && new Set(cols).size === 1, 'the feed\'s TAC column lines up', JSON.stringify(cols));
     check(await page.evaluate(() => [...document.querySelectorAll('.who.gpu')].every((e) => getComputedStyle(e).marginTop === '0px')), 'the Tacit GPU name sits in line (no card style on it)');
-    await page.waitForFunction(() => document.querySelector('#crowd-n').textContent === '3 online now');
+    await page.waitForFunction(() => document.querySelector('#crowd-n').textContent === '3 nodes online');
     check((await page.locator('#crowd .pod').count()) === 3, 'the crowd: everyone who proved lately and every node grinding salts, Tacit GPU among them');
     check(await page.locator('#crowd .pod.me').count() === 1, 'with this address picked out');
     check((await page.locator('#chain .blk.xc').count()) === 1 && (await text(page, '#chain .blk.xc')).includes('974,721') && (await page.getAttribute('#chain .blk.xc a', 'href')).includes('etherscan.io/tx/0xabab') && (await page.locator('#chain .blk.xc .who').count()) === 1, 'a cross-chain block stands among the settles, with Bitcoin\'s height, its landing and who mined it');
@@ -175,9 +177,17 @@ try {
     else check(await page.locator('#pace-row').isHidden(), 'no pace in the day\'s first two hours');
     check((await page.locator('#chain .blk.gpu').count()) === 1 && (await page.locator('#chain .blk.gpu').innerText()).includes('Tacit GPU'), 'a block Tacit\'s GPU proved says so');
     const feedText = await text(page, '#feed');
-    check((feedText.match(/good salt, 5 leading zero bytes/g) || []).length === 2 && (feedText.match(/good salt, 4 leading zero bytes/g) || []).length === 1, 'the feed shows the good salts the nodes mined, in leading zero bytes', feedText);
-    check(!feedText.includes('7 leading zero bytes') && !feedText.includes(' bits'), 'a send shows its best find once (its 33-bit one is not a second row), a day-old find is not shown, and no bits', feedText);
+    check((feedText.match(/good salt, 5 zero bytes/g) || []).length === 2 && (feedText.match(/good salt, 4 zero bytes/g) || []).length === 1, 'the feed shows the good salts the nodes mined, in zero bytes', feedText);
+    check(!feedText.includes('7 zero bytes') && !feedText.includes(' bits'), 'a send shows its best find once (its 33-bit one is not a second row), a day-old find is not shown, and no bits', feedText);
     check((await page.locator('#feed li').count()) === 5 && (await page.locator('#feed li.salt').count()) === 3, 'proofs and salts share the feed, newest first');
+    {
+      // the page is two stacks: the node over the salts, the activity over the GPU card; no card sits beside a gap, and a feed row is one line
+      const r = await page.evaluate(() => { const b = (s) => { const e = document.querySelector(s).getBoundingClientRect(); return { l: Math.round(e.left), t: Math.round(e.top), b: Math.round(e.bottom), r: Math.round(e.right) }; };
+        return { node: b('[data-card="node"]'), salts: b('[data-card="salts"]'), feed: b('[data-card="activity"]'), gpu: b('[data-card="gpu"]'), rows: [...document.querySelectorAll('#feed li:not(.empty)')].map((li) => Math.round(li.getBoundingClientRect().height)) }; });
+      check(r.node.l === r.salts.l && r.salts.t - r.node.b === 18, 'the salts card sits right under the node card', JSON.stringify([r.node, r.salts]));
+      check(r.feed.l === r.gpu.l && r.gpu.t - r.feed.b === 18 && r.feed.l > r.node.r, 'the GPU card sits right under the activity, which is beside the node', JSON.stringify([r.feed, r.gpu, r.node]));
+      check(Math.max(...r.rows) < 40, 'a feed row is one line', JSON.stringify(r.rows));
+    }
     const saltRows = await page.locator('#feed li.salt').allInnerTexts();
     check(saltRows.filter((x) => x.includes('≈ +9.83 TAC')).length === 1 && saltRows.filter((x) => x.includes('< 0.01 TAC')).length === 1, 'a salt shows its part of the day\'s salt pot so far: a 44-bit find 9.83 TAC, a 32-bit one under a cent', saltRows.join(' / '));
     check(saltRows.filter((x) => x.includes('TAC')).length === 2, 'and Tacit\'s own find shows none');
@@ -194,7 +204,7 @@ try {
     check(!(await text(page, '#board')).includes('Tacit GPU'), 'Tacit\'s GPU is never on the leaderboard');
     check((await text(page, '#me')) === '0x66f5…3db5', 'the rig shows the address beside its invader, no NFT number', await text(page, '#me'));
     check(!(await page.content()).includes('zorgz #'), 'no page text names an NFT number');
-    check((await text(page, '#next-o')) === '5 waiting', 'the next block says how many proofs wait', await text(page, '#next-o'));
+    check((await text(page, '#next-o')) === '5 pending', 'the next block says how many proofs are waiting or being proved', await text(page, '#next-o'));
     check((await page.locator('#chain .blk .badge img.inv').count()) === 3, 'each proved block wears its prover\'s invader');
     const loaded = await page.locator('img.inv').evaluateAll((xs) => xs.every((x) => x.complete && x.naturalWidth > 0));
     check(loaded, 'every invader image draws');

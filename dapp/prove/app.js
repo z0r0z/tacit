@@ -136,7 +136,7 @@ function paintChain(landing) {
   const extra = [...cross.filter((x) => x.ethBlock >= oldest).map((x) => ({ eb: x.ethBlock, tile: () => crossTile(x) })),
     ...rollup.filter((x) => x.ethBlock >= oldest).map((x) => ({ eb: x.ethBlock, tile: () => rollupTile(x) }))].sort((a, b) => b.eb - a.eb);
   const at = (eb) => extra.filter((e) => e.eb >= eb && !e.done);
-  ol.innerHTML = `<li class="blk next" aria-label="The next block"><span class="cube ghost"><i></i><i></i><i></i></span><span class="h">next</span><span class="o" id="next-o">${esc(waitingText())}</span></li>` + blocks.map((b) => {
+  ol.innerHTML = `<li class="blk next" aria-label="The next block"><span class="cube ghost">${nextShown = nextCells()}</span><span class="h">next</span><span class="o" id="next-o">${esc(waitingText())}</span></li>` + blocks.map((b) => {
     const before = at(b.ethBlock).map((e) => { e.done = true; return e.tile(); }).join('');
     return before + settleTile(b, landing);
   }).join('');
@@ -221,7 +221,7 @@ function paintFeed() {
     const mine = !p.house && p.miner && String(p.miner).toLowerCase() === me();
     const top = p.kind === 'salt' ? saltTop : feedTop, fresh = top > 0 && p.at > top;
     const award = p.kind === 'salt' ? saltAward(p) : null;
-    if (p.kind === 'salt') return `<li class="${['salt', fresh ? 'new' : '', mine ? 'me' : ''].filter(Boolean).join(' ')}"${mine ? ' title="Your node"' : ''}><span class="by">${byOf(p, false)}<small>good salt, ${zeroBytes(p.bits)}</small></span><b${award ? ' title="Its part of today\'s salt pot so far, paid after the day ends"' : ''}>${esc(awardText(award))}</b><small>${esc(ago(p.at))}</small></li>`;
+    if (p.kind === 'salt') return `<li class="${['salt', fresh ? 'new' : '', mine ? 'me' : ''].filter(Boolean).join(' ')}"${mine ? ' title="Your node"' : ''}><span class="by">${byOf(p, false)}<small>good salt, ${Math.floor(p.bits / 8)} zero bytes</small></span><b${award ? ' title="Its part of today\'s salt pot so far, paid after the day ends"' : ''}>${esc(awardText(award))}</b><small>${esc(ago(p.at))}</small></li>`;
     const r = rewardWei(p.points, cap());
     return `<li class="${[fresh ? 'new' : '', mine ? 'me' : ''].filter(Boolean).join(' ')}"${mine ? ' title="Your node"' : ''}><span class="by">${byOf(p, false)}<small>a deposit, proved in ${esc(took(p.secs))}</small></span><b>${r ? `+${tac(r)} TAC` : ''}</b><small>${esc(ago(p.at))}</small></li>`;
   }).join('');
@@ -234,19 +234,24 @@ function paintCrowd() {
   const t = Date.now(), seen = new Map();
   for (const p of feed) if (t - p.at < ONLINE_MS) { const k = p.house ? 'gpu' : p.miner; if (k && !seen.has(k)) seen.set(k, p); }
   for (const m of salts?.live || []) { const k = m.house ? 'gpu' : m.miner; if (k && !seen.has(k)) seen.set(k, m); }
-  if (!seen.size) { $('#crowd-n').textContent = 'Online now'; $('#crowd-row').innerHTML = ''; return; }
+  if (!seen.size) { $('#crowd-n').textContent = 'Nodes online'; $('#crowd-row').innerHTML = ''; return; }
   const faces = [...seen.keys()].slice(0, 24).map((k, i) => `<span class="pod${k === me() ? ' me' : ''}" style="--i:${i}" title="${k === 'gpu' ? 'Tacit GPU' : esc(short(k))}">${face(k === 'gpu' ? null : k, 28)}</span>`).join('');
-  $('#crowd-n').textContent = `${seen.size} online now`;
+  $('#crowd-n').textContent = `${seen.size} ${seen.size === 1 ? 'node' : 'nodes'} online`;
   $('#crowd-row').innerHTML = faces;
 }
 
 // With proofs waiting, what waits; with none, the nodes grinding salts meanwhile.
 function waitingText() {
   const n = (pool?.queued || 0) + (pool?.leased || 0);
-  return pool ? (n ? `${n} waiting` : salts?.live?.length ? 'mining salts' : 'waiting for work') : '';
+  return pool ? (n ? `${n} pending` : salts?.live?.length ? 'mining salts' : 'waiting for work') : '';
 }
 
-let poolShown = null;
+// The next block's tile: a square for each proof waiting in it (up to nine), the ones being proved lit; three slow ones while nothing waits.
+function nextCells() {
+  const q = pool?.queued || 0, l = pool?.leased || 0, n = Math.min(9, q + l);
+  return n ? Array.from({ length: n }, (_, k) => `<i class="${k < l ? 'on' : 'q'}"></i>`).join('') : '<i></i><i></i><i></i>';
+}
+let nextShown = null;
 function paintNet() {
   const q = pool?.queued ?? null, l = pool?.leased ?? null;
   const nx = document.getElementById('next-o');
@@ -260,11 +265,9 @@ function paintNet() {
   const provers = pool?.miners24h ?? pool?.minersToday, done = pool?.done24h ?? pool?.doneToday;
   $('#n-provers').textContent = provers == null ? '—' : String(provers);
   $('#n-done').textContent = done == null ? '—' : String(done);
-  const n = Math.min(60, (q || 0) + (l || 0));
-  const dots = Array.from({ length: n }, (_, k) => `<i class="${k < (l || 0) ? 'on' : ''}" style="--k:${k}"></i>`).join('')
-    + ((q || 0) + (l || 0) > n ? `<span>+${(q || 0) + (l || 0) - n}</span>` : '');
   paintIdle();
-  if (dots !== poolShown) { poolShown = dots; $('#pool').innerHTML = dots; }   // drawn again only when the counts change, so the lit squares keep their beat
+  const cells = nextCells(), ghost = $('#chain .cube.ghost');
+  if (cells !== nextShown && ghost) { nextShown = cells; ghost.innerHTML = cells; }   // drawn again only when the counts change, so the lit squares keep their beat
   paintBoard();
 }
 
@@ -323,6 +326,7 @@ function paint() {
   go.hidden = !h.button;
   go.textContent = other() ? 'Pay to this address' : h.button || '';
   go.disabled = busy;
+  go.classList.toggle('ghost', h.button === 'Pause' && !other());
   paintMe();
   // the setup line also updates a node from before salt mining (its /mine has no `salt`)
   const setup = $('#setup'), words = setupText(os);
