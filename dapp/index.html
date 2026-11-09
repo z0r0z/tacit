@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-8mb1OhQSDQ3D69u4io9vLCAyjQe1bMrVSHcKZIxAlTo=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-wDZdvCUszc3h8slyQc3VgHl2s+5ovNlAbcGBQVP4+GM=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -11555,7 +11555,7 @@ function tpgRoute(raw, units) {
   return { side, eth: isEth, unknown, h, need };
 }
 // The leader's terms, the chain's figures and its blocks, read at most once a minute while TAC's page shows
-const TPGW = { at: 0, p: null, cs: null, roll: null, ui: null, w: null };
+const TPGW = { at: 0, p: null, cs: null, roll: null, all: new Map(), older: 0, ui: null, w: null };
 const TPG_FLOOR = 200000n;                                    // what a payment leaves in the chain's pool, and the least an exit leaves (0.002 TAC)
 const tpgLeader = () => TPGW.cs?.leader?.fee ?? null;
 const tpgExit = (units) => { const f = (BigInt(units) * 10n + 9999n) / 10000n; return f > TPG_FLOOR ? f : TPG_FLOOR; };
@@ -11567,8 +11567,20 @@ function tpgWhyRead(force = false) {
     Promise.all([import('/tacit-chain-config.js?cb=803c3298'), import('/tacit-chain-client.js?cb=d71654bb'), import('/chain/ui.js?cb=94364e10'), import('/tacit-chain-wallet.js')])
       .then(([cf, cm, ui, w]) => { TPGW.ui = ui; TPGW.w = w; return cm.chainStatus({ cfg: cf.tacitChain(), rpcCall: (m, ps) => rpc(m, ps) }); }).then((s) => { TPGW.cs = s; }, () => {}),
     fetch(`${API}/prover/blocks`, { signal: within(15e3) }).then((r) => (r.ok ? r.json() : null))
-      .then((j) => { if (Array.isArray(j?.rollup)) TPGW.roll = j.rollup.filter((b) => /^\d+$/.test(String(b.pool ?? '')) && /^\d+$/.test(String(b.shares ?? '')) && Number.isInteger(b.height)); }, () => {}),
+      .then((j) => { if (Array.isArray(j?.rollup)) tpgTake(j.rollup, true); }, () => {}),
   ]).finally(() => { TPGW.p = null; tpgActionsSoft(); rerender('tac'); }));
+}
+// The blocks the chart draws, one per height: the newest twenty each read gives, and, once the twenty are not the whole chain, the older ones /prover/rollup keeps
+// (asked once; an API without the route says 404 and is not asked again, any other failure is asked again at the next read)
+function tpgTake(list, fresh) {
+  const ok = list.filter((b) => /^\d+$/.test(String(b.pool ?? '')) && /^\d+$/.test(String(b.shares ?? '')) && Number.isInteger(b.height));
+  for (const b of ok) TPGW.all.set(b.height, b);
+  TPGW.roll = [...TPGW.all.values()];
+  const low = ok.length ? Math.min(...ok.map((b) => b.height)) : null;
+  if (!fresh || TPGW.older || ok.length < 20 || low == null || low <= 1) return;
+  TPGW.older = 1;
+  fetch(`${API}/prover/rollup?before=${low}&limit=100`, { signal: within(15e3) }).then((r) => (r.status === 404 ? 'none' : r.ok ? r.json() : null))
+    .then((j) => { if (j === 'none') return; if (Array.isArray(j?.rollup)) { TPGW.older = 2; tpgTake(j.rollup, false); rerender('tac'); } else TPGW.older = 0; }, () => { TPGW.older = 0; });
 }
 const tpgActionsSoft = () => { if (TACP.on) tcardQuoteSoon(); };
 // a share's worth, in TAC, from the chain's pool and shares (units of 1e-8): (pool + 1e8) / (shares + 1e8)
