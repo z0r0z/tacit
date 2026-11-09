@@ -154,7 +154,7 @@ $('go').onclick=go;$('q').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preve
 const leaseHits = new Map(), holding = new Map();
 // Behind a proxy (TRUST_PROXY=1) the client is, in order: the True-Client-IP header (on Render, its Cloudflare sets it to the address it accepted the
 // connection from), else the entry TRUST_PROXY_HOPS from the RIGHT of X-Forwarded-For (each proxy adds one; everything to the left is whatever the client
-// chose to send; on Render the client is the third from the right). Check it on the deployed service with GET /whoami (it only tells a caller their own address, as seen here).
+// chose to send; on Render the client is the second from the right, before the edge's own entry; count too few rather than too many: a miss lands on a shared edge address, a hit too far left on one the caller chose). Check it on the deployed service with GET /whoami (it only tells a caller their own address, as seen here).
 // An IPv6 client is counted by its /64, the block one subscriber is given, so a ban or a cap cannot be dodged by changing the address within it.
 const HOPS = Number(process.env.TRUST_PROXY_HOPS || 1);
 const IPCHARS = /^[0-9a-f:.]+$/i;
