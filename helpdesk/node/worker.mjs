@@ -4,7 +4,7 @@
 //
 //   MINER=0x… node worker.mjs                       (HELPDESK_API, LLM_URL and MODEL_ID have defaults, see below)
 //   MINER      an Ethereum address; the help desk credits the answers it takes to it
-//   HELPDESK_API  the help desk (default https://help.tacit.finance)
+//   HELPDESK_API  the help desk (default https://tacit-helpdesk.onrender.com)
 //   LLM_URL    an OpenAI-compatible chat server, e.g. llama.cpp's llama-server (default http://127.0.0.1:8095)
 //   MODEL_ID   what this node says it runs; the help desk hands out jobs a model like this can do (default qwen3.5-4b-q4_k_m)
 //
@@ -92,7 +92,7 @@ export async function run({ api, llm, miner, model, say = () => {}, signal, idle
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const api = (process.env.HELPDESK_API || 'https://help.tacit.finance').replace(/\/$/, '');
+  const api = (process.env.HELPDESK_API || 'https://tacit-helpdesk.onrender.com').replace(/\/$/, '');
   const llm = (process.env.LLM_URL || 'http://127.0.0.1:8095').replace(/\/$/, '');
   const miner = process.env.MINER || '';
   if (!/^0x[0-9a-fA-F]{40}$/.test(miner)) { console.error('Set MINER to an Ethereum address (0x… and 40 hex digits): the help desk credits your answers to it.'); process.exit(2); }
