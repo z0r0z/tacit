@@ -11,7 +11,7 @@ import { tacitChain } from '/tacit-chain-config.js?cb=803c3298';
 
 const API = 'https://api.tacit.finance';
 const SEATS = '0x00000000001f703eae70de3b528213e4802790fb';
-const PROVER_SEEN_S = 600, STALL_S = 180, EVERY_MS = 30e3, BEAT_MS = 5e3, SHOWN = 10, MORE = 25, UNIT = 100000000n, FLOOR = 200000n;
+const PROVER_SEEN_S = 600, STALL_S = 180, EVERY_MS = 30e3, BEAT_MS = 5e3, SHOWN = 5, MORE = 25, UNIT = 100000000n, FLOOR = 200000n;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const rpc = (method, params) => hedgedRpc(ETH_NODES, method, params, { hedgeMs: 1500, timeoutMs: 15e3 });
 const word = (n) => BigInt(n).toString(16).padStart(64, '0');
@@ -197,7 +197,7 @@ export function mountChainLive({ top, rest }) {
     const X = (x) => ((x - x0) / (x1 - x0 || 1)) * W, Y = (y) => H - PAD - ((y - lo) / span) * (H - 2 * PAD);
     const d = pts.map(([x, y], i) => `${i ? 'L' : 'M'}${X(x).toFixed(1)} ${Y(y).toFixed(1)}`).join(' ');
     CH = { pts, xs: pts.map(([x]) => X(x) / W), ys: pts.map(([, y]) => Y(y) / H) };
-    const dots = pts.length <= 40 ? pts.map((q, i) => `<i class="pt" style="--i:${i};left:${(CH.xs[i] * 100).toFixed(2)}%;top:${(CH.ys[i] * 100).toFixed(2)}%"></i>`).join('') : '';
+    const dots = pts.length <= 40 ? pts.map((q, i) => `<i class="pt${i === pts.length - 1 ? ' last' : ''}" style="--i:${i};left:${(CH.xs[i] * 100).toFixed(2)}%;top:${(CH.ys[i] * 100).toFixed(2)}%"></i>`).join('') : '';
     return `<figure><div class="cl-plot${intro()}"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="A share's worth from block ${x0} to block ${x1}, ${pts[0][1].toFixed(5)} to ${pts.at(-1)[1].toFixed(5)} TAC">
       <line class="gd" x1="0" y1="${H - 0.5}" x2="${W}" y2="${H - 0.5}"/><path class="ar" d="${d} L${W} ${H} L0 ${H} Z"/><path class="ln" d="${d}"/></svg>${dots}
       <span class="yl num">${lo.toFixed(5)}</span><i class="xh" hidden></i><span class="tip num" hidden></span></div>
