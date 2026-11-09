@@ -469,6 +469,8 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
     // A payment or withdrawal proved ahead (while its form is filled) and handed over later: `preparePay` / `prepareWithdraw` take what pay and
     // withdraw take and prove it; `fresh(p)` says it can still go; `send(p, o)` hands it over as pay or withdraw would.
     preparePay, prepareWithdraw, fresh, send,
+    /// Loads the prover (its wasm and keys, in its worker) ahead of the first proof, so that one waits for nothing but itself.
+    warm: async () => { await ready(); const s = await Promise.resolve(system()); await s.ready?.(); },
     /// Exactly `amount` units into the confidential pool as its deposit for `commit` (a fresh one, which the pool's wrap then takes in).
     /// Once it lands it is kept until it is sent on (`hopsWaiting`).
     async hop(commit, amount, o = {}) {
