@@ -49,8 +49,11 @@ export function makeLeases(opts = {}) {
   const finish = (w, v) => { const i = waiters.indexOf(w); if (i >= 0) waiters.splice(i, 1); clearTimeout(w.timer); w.resolve(v); };
 
   // A node asks for work. -> a job, null (nothing right now: the request was held open), or { banned: true }.
-  async function lease({ miner: addr, ip, kinds = ['answer'] }) {
+  // `closed` (an AbortSignal) is the node's connection: a node that goes away while it waits (a laptop that sleeps) is taken out of the line at once, so it is
+  // never handed a question it cannot answer.
+  async function lease({ miner: addr, ip, kinds = ['answer'], closed }) {
     if (!isAddr(addr)) return { error: 'miner must be an address' };
+    if (closed?.aborted) return null;   // the node is already gone: it takes nothing
     const ck = hash(ip), c = client(ck), t = o.now(); c.seen = t; miner(addr).last = t;
     if (c.bannedUntil > t) return { banned: true };
     kinds = kinds.filter((k) => k === 'answer' || k === 'scan'); if (!kinds.length) return null;
@@ -67,7 +70,7 @@ export function makeLeases(opts = {}) {
       c.scans = c.scans.filter((x) => t - x < 3600000);
       if (c.scans.length < o.scanPerHour) { const sj = await o.scan.next(); if (sj) { c.scans.push(t); return give(sj.id, { ...sj, scan: true }, who); } }
     }
-    return new Promise((resolve) => { const w = { resolve, who, kinds }; w.timer = setTimeout(() => finish(w, null), o.waitMs); waiters.push(w); });
+    return new Promise((resolve) => { const w = { resolve, who, kinds }; w.timer = setTimeout(() => finish(w, null), o.waitMs); waiters.push(w); closed?.addEventListener('abort', () => finish(w, null), { once: true }); });
   }
 
   // A node hands in its work. -> { ok, points } or { error }.

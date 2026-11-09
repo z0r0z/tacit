@@ -7,6 +7,8 @@
 //   HELPDESK_API  the help desk (default https://tacit-helpdesk.onrender.com)
 //   LLM_URL    an OpenAI-compatible chat server, e.g. llama.cpp's llama-server (default http://127.0.0.1:8095)
 //   MODEL_ID   what this node says it runs; the help desk hands out jobs a model like this can do (default qwen3.5-4b-q4_k_m)
+//   KINDS      the work this node takes: answer (a visitor's question), scan (a code review window), or both (default answer,scan). A slow machine
+//              (a laptop) should take scan only: a visitor waits for an answer, and the help desk gives it to whichever node is free.
 //
 // Nothing a job contains is run: it is a list of chat messages, passed to the model as text, and the reply goes back as text.
 // The help desk checks what comes back; a node that answers wrongly or repeatedly fails its checks is paused for an hour.
@@ -41,7 +43,7 @@ const sleep = (ms, signal) => new Promise((r) => {
 });
 
 // one round: lease a job, run it, submit. Resolves to 'worked', 'empty' (nothing waiting) or 'failed'.
-export async function leaseOne({ api, llm, miner, model = DEFAULT_MODEL, say = () => {}, signal }) {
+export async function leaseOne({ api, llm, miner, model = DEFAULT_MODEL, kinds = ['answer', 'scan'], say = () => {}, signal }) {
   const post = async (path, body, ms = 45000) => {
     try {
       const r = await fetch(`${api}/helpdesk/${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: within(ms, signal) });
@@ -49,7 +51,7 @@ export async function leaseOne({ api, llm, miner, model = DEFAULT_MODEL, say = (
       return { code: r.status, body: j };
     } catch { return null; }
   };
-  const got = await post('lease', { miner, model, kinds: ['answer', 'scan'] });
+  const got = await post('lease', { miner, model, kinds });
   if (!got) return 'failed';
   if (got.code === 204) return 'empty';
   if (got.code === 429) { say(`help desk: ${got.body?.error || 'paused'}`); return 'failed'; }
@@ -81,10 +83,10 @@ export async function leaseOne({ api, llm, miner, model = DEFAULT_MODEL, say = (
 }
 
 // ask, answer, ask again: a short pause when nothing is waiting, a longer one (up to a minute) while the help desk or the model is not answering
-export async function run({ api, llm, miner, model, say = () => {}, signal, idleMs = 1500, once = false }) {
+export async function run({ api, llm, miner, model, kinds, say = () => {}, signal, idleMs = 1500, once = false }) {
   let bad = 0;
   while (!signal?.aborted) {
-    const out = await leaseOne({ api, llm, miner, model, say, signal });
+    const out = await leaseOne({ api, llm, miner, model, kinds, say, signal });
     if (once) return out;
     if (out === 'failed') bad++; else bad = 0;
     await sleep(out === 'worked' ? 0 : out === 'empty' ? idleMs : Math.min(60000, 2000 * 2 ** Math.min(bad, 5)), signal);
@@ -100,5 +102,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   for (const s of ['SIGINT', 'SIGTERM']) process.on(s, () => ac.abort());
   const say = (t) => console.error(`${new Date().toISOString().slice(11, 19)} ${t}`);
   say(`help desk node for ${miner}: ${api}, model at ${llm}`);
-  await run({ api, llm, miner, model: process.env.MODEL_ID || undefined, say, signal: ac.signal });
+  const kinds = (process.env.KINDS || 'answer,scan').split(',').map((k) => k.trim()).filter((k) => k === 'answer' || k === 'scan');
+  if (!kinds.length) { console.error('KINDS must name answer, scan, or both.'); process.exit(2); }
+  say(`taking: ${kinds.join(' and ')}`);
+  await run({ api, llm, miner, model: process.env.MODEL_ID || undefined, kinds, say, signal: ac.signal });
 }
