@@ -157,3 +157,22 @@ limbs, with the KoalaBear packing done in the kernel. Page-aligned memory is han
 The round constants (`src/rc.rs`) are the Horizen Labs set SP1 uses.
 
 All six crates keep their upstream licences (MIT OR Apache-2.0).
+
+## Lending idle time to the community help desk
+With the help desk switched on, an idle computer that is plugged in, with its owner away and no proof running or waiting, also
+answers the community help desk's questions (and code-check windows) with a small local model (llama.cpp's `llama-server` and a 2.7 GB
+Qwen3.5-4B file). It follows the proof pool's pattern, in `src/helpdesk.rs`: lease a job from the help desk API, run it, submit the
+answer. The API knows who answered, so it can check nodes with questions whose answers it knows and credit the mining address with points.
+
+A proof always comes first. The model starts only when there is work and is stopped the moment a proof starts or waits, when the owner
+comes back, or after 15 minutes without work. The jobs are public documentation text and a visitor's question; the model sees nothing else.
+
+    curl -s -X POST 127.0.0.1:47815/helpdesk -d '{"on":true,"api":"https://tacit-helpdesk.onrender.com"}'   # on, kept across restarts (GET /helpdesk shows it)
+    TACIT_HELPDESK=1 TACIT_HELPDESK_API=https://tacit-helpdesk.onrender.com tacit-prover serve              # or by environment
+
+The address must be the help desk's own (`tacit-helpdesk.onrender.com` or `help.tacit.finance`; `TACIT_HELPDESK_APIS` adds hosts for a help desk of your own, and
+`http://127.0.0.1` is allowed for testing), so a page cannot point this machine's idle time at another server.
+
+It needs the mining address (the points go there) and `~/.tacit-prover/helpdesk/llama-server` plus `model.gguf` (`dapp/helpdesk-fetch.sh`
+puts both there after checking their SHA-256). Off by default. Env: `TACIT_HELPDESK_IDLE_SECS` (300), `TACIT_HELPDESK_ALWAYS=1` (skip the
+idle and power checks), `TACIT_HELPDESK_CTX` (4096), `TACIT_HELPDESK_UNLOAD_SECS` (900), `TACIT_HELPDESK_LLAMA`, `TACIT_HELPDESK_MODEL`.
