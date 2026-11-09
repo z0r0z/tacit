@@ -568,6 +568,12 @@ const acctPays = async (p) => {
 };
 // The page opens signed out (a Tacit key lives for one tab, and the wallet is not reconnected on load): sign in the way a person does, with the Ethereum wallet the
 // page found (the stub answers eth_requestAccounts and signs with the page's `key`), for the checks written for a signed-in page whose wallet pays
+// Where your TAC is shows the balances only: its forms open behind More ways, and Withdraw all on the DeFi pool's row; a check that uses one opens it first
+const tacWays = async (p, which) => {
+  const sel = `#tac-bal [data-th="${which}"]`;
+  await p.waitForSelector(sel, { timeout: 240000 });
+  if (which === 'forms' ? !!(await p.$('#tac-forms[hidden]')) : !(await p.$('#tac-pub'))) await p.click(sel);
+};
 const ethIn = async (p) => {
   await p.evaluate(() => { location.hash = ''; location.hash = '#wallet'; });
   await p.click('#wallet-body [data-in="eth"]');
@@ -2296,6 +2302,7 @@ await step('shield', async () => {
     await r.page.click('#wallet-body [data-in="key"]');
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
     await r.page.evaluate(() => { location.hash = ''; location.hash = '#tac'; document.querySelector('#tpg-where').open = true; });
+    await tacWays(r.page, 'forms');
     await r.page.waitForSelector('#tac-shield #tsh-go', { timeout: 240000 }).catch(async (e) => {
       throw new Error(`${e.message.split('\n')[0]} | bal: ${(await r.page.evaluate(() => (document.querySelector('#tac-bal')?.textContent || '').replace(/\s+/g, ' ').slice(0, 300)))} | errors: ${r.errors.slice(0, 2).join(' | ')}`);
     });
@@ -2353,6 +2360,7 @@ await step('shieldwallet', async () => {
   const r = await openPage({ account: W, key: kw });
   try {
     await open(r, hex);
+    await tacWays(r.page, 'forms');
     await r.page.waitForSelector('#tac-shield #tsh-go', { timeout: 240000 }).catch(async (e) => {
       throw new Error(`${e.message.split('\n')[0]} | shield: ${(await text(r.page, '#tac-shield')).replace(/\s+/g, ' ')} | hash: ${await r.page.evaluate(() => location.hash)} | errors: ${r.errors.slice(0, 2).join(' | ')}`);
     });
@@ -2384,6 +2392,7 @@ await step('shieldwallet', async () => {
   const r2 = await openPage({ account: W2, key: kw2 });
   try {
     await open(r2, hex2);
+    await tacWays(r2.page, 'forms');
     await r2.page.waitForSelector('#tac-shield #tsh-go', { timeout: 240000 });
     await maxIs(r2.page, 'this key’s address 10(\\.00)?$');
     ok(!/also in/.test(await text(r2.page, '#tac-shield')) && !(await r2.page.$('#tsh-switch')), `shieldwallet: with no TAC in the wallet, the Tacit account's is offered as before (${await text(r2.page, '#tsh-max')})`);
@@ -2501,6 +2510,7 @@ await step('tacsend', async () => {
     await r.page.click('#wallet-body [data-in="key"]');
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
     await r.page.evaluate(() => { location.hash = ''; location.hash = '#tac'; document.querySelector('#tpg-where').open = true; });
+    await tacWays(r.page, 'forms');
     await r.page.waitForSelector('#tac-send:not([hidden]) #ts-to', { timeout: 240000 }).catch(async (e) => {
       throw new Error(`${e.message.split('\n')[0]} | sheet: ${(await r.page.evaluate(() => (document.querySelector('#tac-bal')?.textContent || '').replace(/\s+/g, ' ').slice(-300)))} | errors: ${r.errors.slice(0, 2).join(' | ')}`);
     });
@@ -2557,6 +2567,7 @@ await step('selfexit', async () => {
     await acctPays(r.page);
     await rpc('anvil_setBalance', [want, '0x0']);
     await r.page.evaluate(() => { location.hash = ''; location.hash = '#tac'; document.querySelector('#tpg-where').open = true; });
+    await tacWays(r.page, 'pub');
     await r.page.waitForSelector('#tac-pub', { timeout: 240000 }).catch(async (e) => {
       throw new Error(`${e.message.split('\n')[0]} | sheet: ${(await r.page.evaluate(() => (document.querySelector('#tac-bal')?.textContent || '').replace(/\s+/g, ' ').slice(0, 300)))} | errors: ${r.errors.slice(0, 2).join(' | ')}`);
     });
@@ -2850,6 +2861,7 @@ await step('makepub', async () => {
     await r.page.click('#wallet-body [data-in="key"]');
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
     await r.page.evaluate(() => { location.hash = ''; location.hash = '#tac'; document.querySelector('#tpg-where').open = true; });
+    await tacWays(r.page, 'pub');
     await r.page.waitForSelector('#tac-pub', { timeout: 240000 });
     ok(await until(r.page, () => /relay fee of about \d+ TAC comes out of it/.test(document.querySelector('#tac-bal')?.textContent || ''), null, QUOTE_WAIT).then(() => true, () => false),
       `makepub: the sheet names the relay fee before it is pressed (${(await text(r.page, '#tac-bal')).replace(/\s+/g, ' ').match(/A relay fee[^.]*\./)?.[0] || 'none'})`);
@@ -6595,8 +6607,9 @@ await step('receipts', async () => {
     await acctPays(r.page);
     await r.page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
     await r.page.evaluate(() => { location.hash = ''; location.hash = '#tac'; document.querySelector('#tpg-where').open = true; });
+    await tacWays(r.page, 'pub');
     await r.page.waitForSelector('#tac-pub', { timeout: 240000 });
-    ok(/8(\.0+)? TAC is in private notes/.test(await text(r.page, '#tac-bal')), `receipts: 8 private TAC is offered to make public (${(await text(r.page, '#tac-bal')).replace(/\s+/g, ' ').slice(-120)})`);
+    ok(/8(\.0+)? TAC to /.test(await text(r.page, '#tac-bal')), `receipts: 8 private TAC is offered to make public (${(await text(r.page, '#tac-bal')).replace(/\s+/g, ' ').slice(-120)})`);
     const before = (await rx()).calls.length;
     await r.page.click('#tac-pub');
     await until(r.page, () => /Sent to the relay/.test(document.querySelector('#tac-bal-status')?.textContent || ''), null, 60000)
@@ -6613,8 +6626,9 @@ await step('receipts', async () => {
     // The failed note is offered again once a scan shows it unspent; sent again, it is the same job, a new attempt.
     await r.page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
     await r.page.evaluate(() => { location.hash = ''; location.hash = '#tac'; document.querySelector('#tpg-where').open = true; });
-    await until(r.page, () => /5(\.0+)? TAC is in private notes/.test(document.querySelector('#tac-bal')?.textContent || ''), null, 60000).catch(() => {});
-    ok(/5(\.0+)? TAC is in private notes/.test(await text(r.page, '#tac-bal')), `receipts: the note whose unwrap failed is offered again (${(await text(r.page, '#tac-bal')).replace(/\s+/g, ' ').slice(-110)})`);
+    await tacWays(r.page, 'pub');
+    await until(r.page, () => /5(\.0+)? TAC to /.test(document.querySelector('#tac-bal')?.textContent || ''), null, 60000).catch(() => {});
+    ok(/5(\.0+)? TAC to /.test(await text(r.page, '#tac-bal')), `receipts: the note whose unwrap failed is offered again (${(await text(r.page, '#tac-bal')).replace(/\s+/g, ' ').slice(-110)})`);
     await r.page.click('#tac-pub');
     await until(r.page, (n) => (window.__rx?.calls || []).length === n, before + 3, 60000).catch(() => {});
     const e2 = await rx(), again = e2.calls.at(-1);
@@ -13312,6 +13326,7 @@ await step('tacvoucher', async () => {
     ok((await kept()).some((v) => v.ticker === 'TAC' && v.status === 'ready' && v.amount === String(HUNDRED)), `tacvoucher: the pool's proof is kept as a ready TAC voucher (${(await kept()).map((v) => `${v.ticker}/${v.status}`)})`);
     await r.page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
     await r.page.evaluate(() => { location.hash = ''; location.hash = '#tac'; document.querySelector('#tpg-where').open = true; });
+    await tacWays(r.page, 'forms');
     await r.page.waitForSelector('#tac-shield #tsh-go', { timeout: 240000 });
     await r.page.fill('#tsh-amt', '100');
     await until(r.page, () => /ready now/.test(document.querySelector('#tsh-rcpt')?.textContent || '') && !document.querySelector('#tsh-go').disabled, null, 60000).catch(() => {});
