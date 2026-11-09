@@ -17,7 +17,7 @@ const E = 'e1'.repeat(32), F = 'f2'.repeat(32), G = 'a3'.repeat(32);     // not 
 const res = (status, body, headers = {}) => ({ ok: status >= 200 && status < 300, status, headers: { get: (k) => headers[String(k).toLowerCase()] ?? null }, json: async () => body, text: async () => (typeof body === 'string' ? body : JSON.stringify(body)) });
 
 // The API as the tool sees it: an index in two pages (one txid on both), an archive holding A and B, an explorer proxy, and an import that keeps what it is given.
-function makeApi({ throttleOnce = false, importRefuses = [] } = {}) {
+function makeApi({ throttleOnce = false, importRefuses = [], rejectToken = false } = {}) {
   const st = { held: new Set([A.id, B.id]), calls: [], imports: [], throttled: false, auth: [] };
   const fetchImpl = async (url, init = {}) => {
     const u = new URL(url), p = u.pathname; st.calls.push(`${init.method || 'GET'} ${p}`);
@@ -43,6 +43,7 @@ function makeApi({ throttleOnce = false, importRefuses = [] } = {}) {
     }
     if (p === '/chain/tac/import') {
       st.auth.push(init.headers?.authorization || null);
+      if (rejectToken) return res(404, { error: 'not found' });
       const { txs } = JSON.parse(init.body); st.imports.push(txs);
       const refused = []; txs.forEach((t, i) => { const id = real.find((x) => x.hex === t.hex)?.id; if (importRefuses.includes(id)) refused.push(i); else st.held.add(id); });
       return res(200, { ok: true, kept: txs.length - refused.length, refused });
@@ -96,6 +97,14 @@ const noSleep = async () => {};
   const { st, fetchImpl } = makeApi({ importRefuses: [D.id] }); const out = [];
   const code = await main(['--send', '--gap-ms', '0'], { TACIT_BOX_TOKEN: 'secret-token-for-the-test' }, { fetchImpl, sleep: noSleep, log: (s) => out.push(s), write: () => {} });
   ok(out.some((s) => s.includes(`refused ${D.id}`)) && out.some((s) => /1 kept, 1 refused/.test(s)) && out.some((s) => /1 of the ones sent still missing/.test(s)) && code === 1, 'a transaction the API refuses is named, and the re-check counts it as still missing');
+}
+// a token the API does not accept is answered 404: the run says so plainly and nothing is counted as imported
+{
+  const { st, fetchImpl } = makeApi({ rejectToken: true }); const out = [];
+  let err = null;
+  try { await main(['--send', '--gap-ms', '0'], { TACIT_BOX_TOKEN: 'a-wrong-token-for-the-test' }, { fetchImpl, sleep: noSleep, log: (s) => out.push(s), write: () => {} }); } catch (e) { err = e; }
+  ok(err && /does not accept this token/.test(err.message) && st.imports.length === 0, 'a token the API does not accept (404) stops the run with a plain message');
+  ok(!out.some((s) => /imported:/.test(s)) && !out.join('\n').includes('a-wrong-token-for-the-test'), 'without reporting an import, and without printing the token');
 }
 // batches
 {

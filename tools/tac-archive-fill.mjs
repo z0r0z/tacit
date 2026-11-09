@@ -20,14 +20,14 @@ const sha256 = (b) => createHash('sha256').update(b).digest();
 const realSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // One request with its answer parsed: a 429 waits what it asks (Retry-After, else 5 s) and a failure of the service backs off 1, 2, 4 s, up to `tries` asks in all.
-async function call(fetchImpl, sleep, url, init, { text = false, tries = 4 } = {}) {
+async function call(fetchImpl, sleep, url, init, { text = false, tries = 4, on404 = null } = {}) {
   let last = null;
   for (let i = 0; i < tries; i++) {
     let res;
     try { res = await fetchImpl(url, init); } catch (e) { last = e; await sleep(1000 * 2 ** i); continue; }
     if (res.status === 429) { const s = Number(res.headers?.get?.('retry-after')); last = new Error('429'); await sleep((s > 0 ? Math.min(s, 30) : 5) * 1000 + 300); continue; }
     if (res.status >= 500) { last = new Error(`HTTP ${res.status}`); await sleep(1000 * 2 ** i); continue; }
-    if (res.status === 404) return null;
+    if (res.status === 404) { if (on404) throw new Error(on404); return null; }
     if (!res.ok) throw new Error(`HTTP ${res.status} for ${url.replace(/\?.*/, '')}`);
     return text ? (await res.text()).trim() : res.json();
   }
@@ -85,7 +85,7 @@ export async function sendFound({ api, network, token, found, batch = IMPORT_BAT
     const res = await call(fetchImpl, sleep, `${api}/chain/tac/import?network=${encodeURIComponent(network)}`, {
       method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
       body: JSON.stringify({ txs: part.map(({ hex, h, b }) => ({ hex, h, ...(b ? { b } : {}) })) }),
-    });
+    }, { on404: 'the API answered 404 to the import: it does not accept this token (a wrong one is answered as if the route did not exist), so nothing was imported' });
     kept += (res && res.kept) || 0;
     for (const j of (res && res.refused) || []) if (part[j]) refused.push(part[j].txid);
   }
