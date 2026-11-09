@@ -15,13 +15,17 @@ import { mulB8, L_BJJ, P_FR } from '../../btc-pool-zk.js';
 import { spentSet } from '../../holding-claim.js';
 import { verifyHoldingClaim } from '../../../worker-relay/src/lib/holding-claims.js';
 import { claimHashOf, DEFAULT_BUCKETS_WEI } from '../../../worker-relay/src/lib/holding-epoch.js';
+import { isolationHeaders } from '../../../tools/site-isolation-rules.mjs';
 
 import { createRequire } from 'node:module';
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT || '/Users/z/zFi/node_modules/playwright-core');   // as tools/weld-check.mjs finds it
 const DAPP = fileURLToPath(new URL('../../', import.meta.url));
 const MIME = { '.js': 'text/javascript', '.mjs': 'text/javascript', '.json': 'application/json', '.wasm': 'application/wasm', '.html': 'text/html' };
+// served with the headers the site sends: /tac/ is cross-origin isolated and the worker's script carries the embedder policy too
 const server = http.createServer((req, res) => {
-  const f = path.join(DAPP, decodeURIComponent(new URL(req.url, 'http://x').pathname));
+  const p = decodeURIComponent(new URL(req.url, 'http://x').pathname), f = path.join(DAPP, p);
+  for (const [name, value] of Object.entries(isolationHeaders(p))) res.setHeader(name, value);
+  if (p === '/tac/blank.html') { res.setHeader('content-type', 'text/html'); return res.end('<!doctype html><title>blank</title>'); }
   if (!f.startsWith(DAPP) || !fs.existsSync(f) || fs.statSync(f).isDirectory()) { res.statusCode = 404; return res.end(); }
   res.setHeader('content-type', MIME[path.extname(f)] || 'application/octet-stream'); res.end(fs.readFileSync(f));
 });
@@ -45,8 +49,9 @@ try {
   const page = await browser.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e))); page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
-  await page.goto(`${base}/evm-pool/holding-pin.json`);                       // any same-origin page will do
+  await page.goto(`${base}/tac/blank.html`);                                  // an isolated page, as the front page and /tac/ are
   const out = await page.evaluate(async ({ args, pinPath }) => {
+    if (!crossOriginIsolated) throw new Error('the page is not cross-origin isolated');
     const w = new Worker('/holding-prove-worker.js', { type: 'module' });
     let id = 0; const wait = new Map();
     w.onmessage = ({ data }) => { const f = wait.get(data.id); wait.delete(data.id); data.ok ? f.res(data) : f.rej(new Error(data.error)); };
