@@ -667,13 +667,10 @@ await step('links', async () => {
   ok(await cardIs(page, 'ETH>TAC'), 'links: and #buy ETH for TAC');
   await page.goto(url + '#bridge');
   await page.waitForSelector('html[data-page="tac"] #tpg-where[open] #bridge-body', { timeout: 60000 });
-  ok(new URL(page.url()).pathname === '/tac/' && (await page.getAttribute('.tpg-get a[href="/rewards/"]', 'href')) === '/rewards/', 'links: #bridge opens TAC\'s page (/tac/) on its bridge, and its Get TAC links to the rewards page');
-  await page.goto(url + '#sell');
-  await cardIs(page, 'TAC>ETH');
-  await page.goto(url + '#bridge');
-  await page.waitForSelector('html[data-page="tac"] #tpg-buy', { timeout: 60000 });
-  await page.click('#tpg-buy');
-  ok((await cardIs(page, 'ETH>TAC')) && !!(await page.$('#tpg-act:not([hidden]) #hx')), 'links: its Buy with ETH draws the tile on TAC\'s page with ETH for TAC');
+  // TAC's page is one card now (Private TAC, with its tabs), signed out until a key opens. The old Get TAC block and its Buy with ETH button are gone from it:
+  // "No TAC in your wallet. Buy with ETH · Buy with sats · Claim your airdrop" shows in the card's Shield tab once a wallet is connected, which this check does not do.
+  ok(new URL(page.url()).pathname === '/tac/' && !!(await page.$('#tpg-card')) && (await page.$$eval('#tcd-tabs button, #tcd-seg button', (b) => b.map((x) => x.textContent.trim()))).includes('Shield'),
+    'links: #bridge opens TAC\'s page (/tac/) on its bridge, with its card and its Shield tab');
   await page.goto(url + '#points');
   await page.waitForSelector('#sheet-pts[open]', { timeout: 60000 });
   await page.goto(url + '#earn');
@@ -10383,7 +10380,7 @@ await step('tradelinks', async () => {
       ok(seen.menu, `tradelinks (${name}): the header has its menu in view`);
       if (name === 'desktop') ok(seen.assets && seen.order === 'Assets:/assets/ Rewards:/rewards/ Prove:/prove/', `tradelinks (${name}): and Assets, Rewards and Prove beside it (${seen.order})`);
       else ok(!seen.assets && seen.all.startsWith('Assets:/assets/ Rewards:/rewards/ Prove:/prove/ '), `tradelinks (${name}): the menu holds them all, Assets first (${seen.all})`);
-      ok(seen.more === 'Pay:/pay/ Borrow:/vault/ Bridges:/bridge/ Shielded TAC:/tac/ Etch:/etch/ Tasks:/tasks/ Stats:/weld/stats/ Build:/build/ Classic app:/classic.html', `tradelinks (${name}): and, under the menu, the rest of the pages (${seen.more})`);
+      ok(seen.more === 'Pay:/pay/ Borrow:/vault/ Bridges:/bridge/ TAC:/tac/ Tacit chain:/chain/ Etch:/etch/ Tasks:/tasks/ Stats:/weld/stats/ Build:/build/ Classic app:/classic.html', `tradelinks (${name}): and, under the menu, the rest of the pages (${seen.more})`);
       await p.click('.sn .sm > summary');
       ok(await p.evaluate(() => [...document.querySelectorAll('.sm-p a[href="/assets/"]')].some((a) => a.getBoundingClientRect().width > 0)) === (name === 'phone'), `tradelinks (${name}): the menu lists Assets only where the header has not`);
       await p.keyboard.press('Escape');
@@ -12517,7 +12514,10 @@ await step('lponly', async () => {
     await rowClick(p, '#hx-routes [data-hxr="0"]');
     await p.fill('#hx-amt', '0.01');
     await p.click('[data-hxlp="1"]');
-    await until(p, () => /Add as private LP/.test(document.querySelector('#hx-go')?.textContent || '') && /Fee APR/.test(document.querySelector('#hx-routes')?.textContent || '') && /6\.2%/.test(document.querySelector('#hx-routes')?.textContent || ''), null, 240000).catch(() => {});
+    await until(p, () => /Add as private LP/.test(document.querySelector('#hx-go')?.textContent || '') && /6\.2%/.test(document.querySelector('#hx-routes')?.textContent || ''), null, 240000).catch(() => {});
+    // the card shows the pool it picked alone, with a Change that opens the others: the "Fee APR" column label is there once they are open
+    { const chg = await p.$('#hx-routes .chg'); if (chg) await chg.click(); }
+    await until(p, () => /Fee APR/.test(document.querySelector('#hx-routes')?.textContent || ''), null, 20000).catch(() => {});
     const routes = (await text(p, '#hx-routes')).replace(/\s+/g, ' ');
     ok(/Where it earns/.test(routes) && /Fee APR/.test(routes) && !/Precision/.test(routes) && /6\.2%/.test(routes) && !(await p.$('#hx-out')) && /Add as private LP/.test(await text(p, '#hx-go')),
       `lponly: the card shows each private pool's fee rate in place of the farm's TAC, no public pool, and Add as private LP (${routes.slice(0, 150)})`);
