@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-saZWFm77T/2p/lSPBmaynrWnW81MN+crRwytsAINFvo=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-oZ4ioRberEKNNLsrIwQJ3XpSICLp3eHkfv6OEIlJ4Vw=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -732,14 +732,11 @@ a.di { color: inherit; text-decoration: none; }
 .tc-facts dt { font-size: 12px; color: var(--mute); }
 .tc-facts dd { margin: 0; font: 400 40px/1.1 var(--serif); letter-spacing: -.01em; white-space: nowrap; }
 .tc-facts dd small { margin-right: 6px; font: 400 12px var(--mono); letter-spacing: 0; color: var(--mute); }
-/* What each asset does, in one quiet line under its facts, close to the action it leads to. */
-.tc-pay { width: 100%; max-width: 720px; margin: 40px 0 0; }
-.tc-pay h3 { margin: 0; font: italic 400 24px/1.25 var(--serif); letter-spacing: -.01em; color: color-mix(in srgb, var(--ink) 82%, var(--mute)); text-wrap: balance; }
 /* The line under the coin. */
 .tc-idea { margin: 0 0 18px; max-width: 52ch; text-align: center; font-size: 14px; line-height: 1.5; color: var(--mute); text-wrap: balance; }
 .tc-idea a { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
 /* The panel's actions: the main one with the page that shows its market, then the quieter links under them. */
-.tc-links { display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 12px 26px; margin-top: 26px; }
+.tc-links { display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 12px 26px; margin-top: 40px; }
 .tc-links .tl { font-size: 14px; }
 .tc-links .btn { width: auto; min-height: 48px; margin: 0; padding: 0 24px; color: var(--card); background: var(--ink); border-color: var(--ink); border-radius: 16px; }
 @media (hover: hover) { .tc-links .btn:hover:not(:disabled) { color: var(--ink); background: transparent; } }
@@ -773,9 +770,8 @@ a.di { color: inherit; text-decoration: none; }
 .pw-t { display: grid; gap: 8px; min-width: 0; justify-items: start; }
 .pw-m { font: 400 12px/1.4 var(--mono); color: var(--mute); }
 .pw-n { font: 400 28px/1.1 var(--serif); letter-spacing: -.01em; text-wrap: balance; }
-.pw-go { font-size: 13px; font-weight: 500; }
-.pw-go i { display: inline-block; font-style: normal; color: var(--mute); transition: transform .3s var(--spring), color .15s; }
-@media (hover: hover) { .pw-a:hover .pw-go i { transform: translate(2px, -2px); color: var(--ink); } .pw-a:hover .pw-i { transform: translateY(-2px); } }
+.pw-m i { display: inline-block; margin-left: 4px; font-style: normal; transition: transform .3s var(--spring), color .15s; }
+@media (hover: hover) { .pw-a:hover .pw-m i { transform: translate(2px, -2px); color: var(--ink); } .pw-a:hover .pw-i { transform: translateY(-2px); } }
 .pw-a:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
 @media (max-width: 640px) {
   .pw { padding-top: 88px; }
@@ -1451,8 +1447,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   .tc-as { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; width: 100%; max-width: 360px; margin-bottom: 26px; }
   .tc-as button { flex-direction: column; gap: 5px; padding: 4px 0 5px; font-size: clamp(14px, 4.4vw, 16px); }
   .tc-as .tk { width: 24px; height: 24px; }
-  .tc-pay { margin-top: 28px; }
-  .tc-pay h3 { font-size: 22px; }
+  .tc-links { margin-top: 28px; }
 }
 /* six tabs on the narrowest phones: a little smaller, so Withdraw keeps clear of its neighbours */
 @media (max-width: 370px) { .hx-h button { font-size: 14.5px; letter-spacing: -.02em; } }
@@ -1774,7 +1769,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       </div></div></div>
       <div class="tc-shadow"></div>
     </div>
-    <p class="tc-idea">Assets born on Bitcoin or backed by it, private on Ethereum. Anyone can <a href="/etch/">etch their own</a>.</p>
+    <p class="tc-idea">Anyone can <a href="/etch/">etch their own</a>.</p>
     <div class="tc-as" role="tablist" aria-label="Tacit’s assets">
       <button type="button" role="tab" id="tc-t-tac" aria-controls="tc-tac" aria-selected="true" data-tc="tac"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</button>
       <button type="button" role="tab" id="tc-t-teth" aria-controls="tc-teth" aria-selected="false" tabindex="-1" data-tc="teth"><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg>tETH</button>
@@ -1783,17 +1778,14 @@ footer.sf svg.fill { width: 16px; height: 16px; }
     </div>
     <div class="tc-sets">
     <div class="tc-set on" id="tc-tac" role="tabpanel" aria-labelledby="tc-t-tac">
-      <div class="sx-h"><h2 id="tc-h">TAC is private money, <em>born on Bitcoin</em>.</h2><p>Confidential balances and stealth receives by default, a shielded pool for full privacy. Ethereum adds markets and programmability.</p></div>
+      <div class="sx-h"><h2 id="tc-h">TAC is private money, <em>born on Bitcoin</em>.</h2><p>Private by default, fully shielded in the pool, with markets on Ethereum.</p></div>
       <dl class="tc-facts">
         <div><dt>fixed supply</dt><dd class="num">21,000,000</dd></div>
         <div><dt>wallets airdropped, both chains</dt><dd class="num">14,000+</dd></div>
         <div><dt>sale or VC</dt><dd>None</dd></div>
       </dl>
-      <div class="tc-pay" role="group" aria-labelledby="tp-h">
-        <h3 id="tp-h">Buy it, farm it, borrow against it.</h3>
-      </div>
       <div class="tc-links"><button class="btn" type="button" data-hx="swap:ether:tac">Buy TAC</button><a class="tl" href="/trade/tac/">Price and chart →</a></div>
-      <p class="tc-more"><a href="/verify.html">Verify TAC</a><a href="https://github.com/src-company/tacit/blob/main/docs/TAC.md" rel="noopener">About TAC</a><a href="https://github.com/src-company/tacit/blob/main/SPEC.md" rel="noopener" title="Tacit’s spec for confidential tokens and peer-to-peer swaps on Bitcoin">The spec</a></p>
+      <p class="tc-more"><button type="button" data-asset="tac">About TAC</button></p>
     </div>
     <div class="tc-set" id="tc-teth" role="tabpanel" aria-labelledby="tc-t-teth">
       <div class="sx-h"><h2 id="tc-h-teth">tETH is ETH that <em>earns privately, on either chain</em>.</h2></div>
@@ -1802,11 +1794,8 @@ footer.sf svg.fill { width: 16px; height: 16px; }
         <div><dt>chains it earns on</dt><dd>2</dd></div>
         <div data-nums><dt>ETH private now</dt><dd class="num"><span data-num="tnow"><span class="sk" style="--w:3ch"></span></span></dd></div>
       </dl>
-      <div class="tc-pay" role="group" aria-labelledby="tp-h-teth">
-        <h3 id="tp-h-teth">Private yield, on Bitcoin and Ethereum.</h3>
-      </div>
       <div class="tc-links"><button class="btn" type="button" data-hx="shield:ether:defi">Shield ETH</button><a class="tl" href="/teth/">Price and pools →</a></div>
-      <p class="tc-more"><a href="/bridge/">Bridge</a><button type="button" data-asset="teth">About tETH</button></p>
+      <p class="tc-more"><button type="button" data-asset="teth">About tETH</button></p>
     </div>
     <div class="tc-set" id="tc-cbtc" role="tabpanel" aria-labelledby="tc-t-cbtc">
       <div class="sx-h"><h2 id="tc-h-cbtc">cBTC is your bitcoin, <em>private on Ethereum</em>.</h2></div>
@@ -1815,11 +1804,8 @@ footer.sf svg.fill { width: 16px; height: 16px; }
         <div><dt>the only key to that bitcoin</dt><dd>Yours</dd></div>
         <div><dt>custodian holding it</dt><dd>None</dd></div>
       </dl>
-      <div class="tc-pay" role="group" aria-labelledby="tp-h-cbtc">
-        <h3 id="tp-h-cbtc">Use bitcoin on Ethereum, without sending it.</h3>
-      </div>
       <div class="tc-links"><button class="btn" type="button" data-hx="borrow:cbtc">Lock BTC</button><a class="tl" href="/cbtc/">Price and backing →</a></div>
-      <p class="tc-more"><a href="/vault/#btc">Borrow page</a><button type="button" data-asset="cbtc">About cBTC</button></p>
+      <p class="tc-more"><button type="button" data-asset="cbtc">About cBTC</button></p>
     </div>
     <div class="tc-set" id="tc-cusd" role="tabpanel" aria-labelledby="tc-t-cusd">
       <div class="sx-h"><h2 id="tc-h-cusd">cUSD is a dollar, <em>backed by bitcoin</em>.</h2></div>
@@ -1828,11 +1814,8 @@ footer.sf svg.fill { width: 16px; height: 16px; }
         <div><dt>can tie the loan to you</dt><dd>Nobody</dd></div>
         <div><dt>to repay and take it back</dt><dd>Any time</dd></div>
       </dl>
-      <div class="tc-pay" role="group" aria-labelledby="tp-h-cusd">
-        <h3 id="tp-h-cusd">Dollars from your bitcoin, privately.</h3>
-      </div>
       <div class="tc-links"><button class="btn" type="button" data-hx="borrow:cusd">Borrow cUSD</button><a class="tl" href="/vault/#btc">Borrow page →</a></div>
-      <p class="tc-more"><a href="/cbtc/">Backing</a><button type="button" data-asset="cusd">About cUSD</button></p>
+      <p class="tc-more"><button type="button" data-asset="cusd">About cUSD</button></p>
     </div>
     </div>
   </section>
@@ -1854,9 +1837,8 @@ footer.sf svg.fill { width: 16px; height: 16px; }
     <a class="pw-a" href="https://www.bankless.com/read/tacit-a-new-take-on-confidential-bitcoin-defi" rel="noopener noreferrer">
       <img class="pw-i" src="/press/bankless.webp" width="840" height="420" alt="" loading="lazy" decoding="async">
       <span class="pw-t">
-        <span class="pw-m">Bankless · William M. Peaster · 1 Jun 2026</span>
+        <span class="pw-m">Bankless · 1 Jun 2026 <i aria-hidden="true">↗</i></span>
         <b class="pw-n">Tacit: A New Take on Confidential Bitcoin DeFi</b>
-        <span class="pw-go">Read on Bankless <i aria-hidden="true">↗</i></span>
       </span>
     </a>
   </section>
@@ -5180,7 +5162,7 @@ const ASSETS = {
     links: [['Verify TAC on Bitcoin and Ethereum', '/verify.html'], ['Its genesis on Bitcoin', MEMPOOL + '/tx/e2d10be19c2b73b86e14be99dc237a3d999ba3dfbe6f3e3714590acee2ca481e'],
       ['Its supply record on IPFS', 'https://ipfs.filebase.io/ipfs/bafkreig7m5j66zlaewjvo6bipk723udgdhnyl7ve5k2suofuvhi2mmb3ai'],
       ['Bridged: a burn on Bitcoin', MEMPOOL + '/tx/d5d5bb73c7214acee52032fadf169a8cfb5714764e11b720db75e9ed328c5008'], ['…and its mint in the Tacit pool', ETHERSCAN('0xe49e6ccaaf8969f1951321b128b047d1517bf40555e297de5b9161bc56daca0a', 'tx')],
-      ['The ERC-20 on Etherscan', ETHERSCAN(ADDR.tac, 'token')], ['Integrating the ERC-20', GH + 'docs/TAC.md#integrating-the-erc-20'], ['What holding TAC does', GH + 'docs/TAC.md#what-tac-does'], ['The buyback contract', ETHERSCAN('0x6919cbEf0e70AFFA02Ae02c86c532A137154f250')]] },
+      ['The ERC-20 on Etherscan', ETHERSCAN(ADDR.tac, 'token')], ['Integrating the ERC-20', GH + 'docs/TAC.md#integrating-the-erc-20'], ['What holding TAC does', GH + 'docs/TAC.md#what-tac-does'], ['Assets and units in the spec', GH + 'SPEC.md#42-assets-and-units'], ['The buyback contract', ETHERSCAN('0x6919cbEf0e70AFFA02Ae02c86c532A137154f250')]] },
   cbtc: { name: 'cBTC', icon: 'cbtc',
     lede: ['Private bitcoin, one for one with BTC locked at your own address.',
       'Minted once as a note in the Tacit pool, from an output only your key can spend. A wstETH bond worth at least 1.5× the lock makes spending that bitcoin unprofitable: spend it without redeeming and the bond is forfeited.'],
