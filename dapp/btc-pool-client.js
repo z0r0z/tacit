@@ -124,6 +124,9 @@ export function makePoolClient({ api = POOL_API, relayApi = null, base = '/btc-p
     return makeHalo2System({
       pinnedVkHash: p.vk_hash,
       wasm: () => artifact(p.wasm, p.wasm_sha256, p.wasm_bytes, onProgress),
+      // the threaded prover (rayon over Web Workers, about 3.5x faster on 8 cores): only where the page is cross-origin isolated, which its
+      // shared memory needs; the single one otherwise, and if it fails to start
+      wasmThreads: p.wasm_threads && globalThis.crossOriginIsolated ? () => artifact(p.wasm_threads, p.wasm_threads_sha256, p.wasm_threads_bytes, onProgress) : null,
       params: () => artifact(p.params, p.params_sha256, p.params_bytes, onProgress),
       vk: () => artifact(p.vk, p.vk_sha256, p.vk_bytes, onProgress),
     });

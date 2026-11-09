@@ -15,5 +15,8 @@
   "params_bytes": 524420,
   "wasm": "btc_pool_halo2_bg.wasm",
   "wasm_sha256": "9eb5c0402da84378b4b55d8c797ece0aefc4265aeb93725d7942c178b9df65b3",
+  "wasm_threads": "threads/btc_pool_halo2_bg.wasm",
+  "wasm_threads_sha256": "7a0944506a7a9c61b6f88c702d3f8f748bde87b2a467eca381fde2addcd46702",
+  "wasm_threads_bytes": 1391312,
   "wasm_bytes": 1537745
 }

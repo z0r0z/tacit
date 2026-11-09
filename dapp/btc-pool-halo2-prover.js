@@ -67,7 +67,8 @@ function localBackend(get) {
 }
 
 // Worker backend: the wasm, params and vk are handed to the worker once; proving and its self-check run there.
-function workerBackend(get, makeWorker) {
+const INIT_MS = 60e3;
+function workerBackend(get, makeWorker, hasThreads = false) {
   let w = null, seq = 0, ready = null;
   const waiting = new Map();
   const call = (msg, transfer = []) => new Promise((resolve, reject) => {
@@ -75,7 +76,8 @@ function workerBackend(get, makeWorker) {
     waiting.set(id, { resolve, reject });
     w.postMessage({ ...msg, id }, transfer);
   });
-  const start = () => (ready ||= (async () => {
+  const spawn = () => {
+    try { w?.terminate?.(); } catch { /* gone */ }
     w = makeWorker();
     w.onmessage = ({ data }) => {
       const p = waiting.get(data.id);
@@ -90,11 +92,26 @@ function workerBackend(get, makeWorker) {
       ready = null;
       w?.terminate?.();
     };
-    // Copies: the caller's cached bytes stay usable.
-    const [wasm, params, vk] = [(await get('wasm')).slice(), (await get('params')).slice(), (await get('vk')).slice()];
-    const r = await call({ op: 'init', wasm, params, vk }, [wasm.buffer, params.buffer, vk.buffer]);
+  };
+  // a worker that does not answer its init (one a page's headers keep from loading, say) is given up on, not waited on for ever
+  const init = (msg, transfer) => Promise.race([call(msg, transfer), new Promise((_, no) => setTimeout(() => no(new Error('btc-pool-halo2: the prover did not start')), INIT_MS))]);
+  const start = () => (ready ||= (async () => {
+    // Copies: the caller's cached bytes stay usable. The threaded prover first where there is one (its shared memory needs a cross-origin
+    // isolated page), and the single one in a fresh worker if there is none or it does not start.
+    const keys = async () => [(await get('params')).slice(), (await get('vk')).slice()];
+    if (hasThreads) {
+      try {
+        spawn();
+        const [wasm, [params, vk]] = [(await get('wasmThreads')).slice(), await keys()];
+        const n = Math.max(1, Math.min(globalThis.navigator?.hardwareConcurrency || 4, 16));
+        return (await init({ op: 'init', wasm, params, vk, threads: n }, [wasm.buffer, params.buffer, vk.buffer])).vkDigest;
+      } catch { /* the single prover below */ }
+    }
+    spawn();
+    const [wasm, [params, vk]] = [(await get('wasm')).slice(), await keys()];
+    const r = await init({ op: 'init', wasm, params, vk }, [wasm.buffer, params.buffer, vk.buffer]);
     return r.vkDigest;
-  })().catch((e) => { ready = null; throw e; }));
+  })().catch((e) => { ready = null; try { w?.terminate?.(); } catch { /* gone */ } w = null; throw e; }));
   return {
     digest: () => start(),
     async verify(doc) { await start(); return (await call({ op: 'verify', doc })).valid === true; },
@@ -116,10 +133,10 @@ const defaultWorker = () => (typeof Worker === 'function' && typeof window !== '
 
 // { wasm, params, vk }: bytes or async loaders. worker: a () => Worker factory, null for in process; the default
 // is a module worker in browsers and in process elsewhere.
-export function makeHalo2System({ wasm, params, vk, pinnedVkHash, worker = defaultWorker() } = {}) {
+export function makeHalo2System({ wasm, params, vk, wasmThreads = null, pinnedVkHash, worker = defaultWorker() } = {}) {
   const pin = strip(pinnedVkHash);
   if (!/^[0-9a-f]{128}$/.test(pin)) throw new Error('btc-pool-halo2: pinnedVkHash must be the BLAKE2b-512 of vk.bin');
-  const src = { wasm, params, vk };
+  const src = { wasm, params, vk, wasmThreads };
   const loaded = new Map();
   const get = async (name) => {
     if (!loaded.has(name)) {
@@ -133,7 +150,7 @@ export function makeHalo2System({ wasm, params, vk, pinnedVkHash, worker = defau
     }
     return loaded.get(name);
   };
-  const backend = worker ? workerBackend(get, worker) : localBackend(get);
+  const backend = worker ? workerBackend(get, worker, !!wasmThreads) : localBackend(get);
   let checked = null;
   const checkKey = () => (checked ||= backend.digest().then((d) => {
     if (d !== pin) throw new Error(`btc-pool-halo2: verification key ${d.slice(0, 16)}… is not the pinned ${pin.slice(0, 16)}…`);
