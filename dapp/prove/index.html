@@ -21,7 +21,7 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /prove/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/prove/app.js?cb=2248e6ab">
+<link rel="modulepreload" href="/prove/app.js?cb=2b7d1930">
 <link rel="modulepreload" href="/community-prove.js?cb=30714a9f">
 <link rel="modulepreload" href="/prove/view.js?cb=80de18a0">
 <link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
@@ -332,6 +332,21 @@ pre.cmd { margin: 16px 0 0; padding: 12px 14px; background: var(--field); border
 .side .pair .btn { margin-top: 0; }
 .side .rows { margin-top: 14px; }
 .side .kv b a, .side .hint a { color: var(--ink); }
+/* The Bitcoin card: the coin and a short name, what a batch pays on its own line, the command, and the detail behind a summary. */
+.side h3.ic { display: flex; align-items: center; gap: 12px; }
+.side h3.ic .tk { width: 30px; height: 30px; }
+.side .pay { margin: 8px 0 0; font: 400 clamp(17px, 2.8vw, 20px)/1.25 var(--serif); color: var(--orange); }
+.side .pay:empty { display: none; }
+.side .more { margin-top: 12px; border-top: 1px solid var(--hair); }
+.side .more summary { display: flex; align-items: center; gap: 6px; min-height: 36px; font-size: 12.5px; color: var(--mute); cursor: pointer; list-style: none; }
+.side .more summary::-webkit-details-marker { display: none; }
+.side .more summary::before { content: '›'; display: inline-block; width: 10px; font-size: 15px; line-height: 1; transition: transform .2s; }
+.side .more[open] summary::before { transform: rotate(90deg); }
+@media (hover: hover) { .side .more summary:hover { color: var(--ink); } }
+.side .more summary:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
+.side .more .hint { margin-top: 2px; }
+.side > .hint { text-wrap: balance; }
+@media (prefers-reduced-motion: reduce) { .side .more summary::before { transition: none; } }
 /* each card's own link (/prove/#gpu): app.js puts a Link in its eyebrow or heading, which copies it */
 [data-card] { scroll-margin-top: 16px; }
 [data-card].lit { animation: lit 2.6s ease-out; }
@@ -674,15 +689,19 @@ footer.sf svg.fill { width: 16px; height: 16px; }
     <div class="cols pair">
       <section class="panel side" aria-labelledby="h-gpu" data-card="gpu">
         <p class="eyebrow"><span>NVIDIA GPU</span></p>
-        <h3 id="h-gpu">Prove Bitcoin batches<span id="btc-pay"></span></h3>
-        <p class="hint">GPUs take turns proving the batches that carry Bitcoin's state into the pool, and prove deposits and mine salts between turns. No key, no ETH.</p>
+        <h3 id="h-gpu" class="ic"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg>Prove Bitcoin</h3>
+        <p class="pay" id="btc-pay"></p>
         <div class="pair"><pre class="cmd"><code id="gpu-cmd">curl -fsSL https://tacit.finance/prove-gpu.sh | sh -s -- 0xYourAddress</code></pre><button class="btn ghost" id="gpu-copy" type="button">Copy</button></div>
+        <p class="hint">Linux, CUDA 12, 24 GB or more. No key, no ETH.</p>
         <div class="rows num">
           <div class="kv"><span>GPUs online</span><b id="gpu-n">—</b></div>
           <div class="kv" id="gpu-me-row" hidden><span>Your GPU</span><b id="gpu-me">—</b></div>
           <div class="kv"><span>Paid</span><b>each UTC day · <a href="/rewards/">Rewards</a></b></div>
         </div>
-        <p class="hint">x86-64 Linux, CUDA 12, a card of 16 GB or more. Bitcoin batches need 24 GB: an RTX 3090, 4090, 5090, A5000 or bigger. A 16 to 23 GB card, such as an RTX A4000, 4060 Ti 16 GB, 4080 or 5080, proves deposits. A smaller card gets the regular node, proving on the CPU. Windows (WSL 2) is untested. <code>--status</code> in place of the address checks on it.</p>
+        <details class="more">
+          <summary>Other cards, and Windows</summary>
+          <p class="hint">24 GB or more is an RTX 3090, 4090, 5090, A5000 or bigger, and proves Bitcoin batches. A 16 to 23 GB card, such as an RTX A4000, 4060 Ti 16 GB, 4080 or 5080, proves deposits. A smaller card gets the regular node, proving on the CPU. Windows (WSL 2) is untested. <code>--status</code> in place of the address checks on it.</p>
+        </details>
       </section>
       <section class="panel side" aria-labelledby="h-salt" data-card="salts">
         <p class="eyebrow"><span>Between proofs</span></p>
@@ -791,6 +810,6 @@ node tools/community-runner.mjs mirror   # no key: keeps the board public on Nos
 
 <div id="toast-container" class="toasts" popover="manual"></div>
 
-<script type="module" src="/prove/app.js?cb=2248e6ab"></script>
+<script type="module" src="/prove/app.js?cb=2b7d1930"></script>
 </body>
 </html>

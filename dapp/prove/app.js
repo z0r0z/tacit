@@ -427,7 +427,7 @@ function paintGpu() {
   $('#gpu-copy').textContent = gpuCopied ? 'Copied' : addr() || $('#desk').hidden ? 'Copy' : 'Add address';
   const pts = Number(boardPay?.pointsByProgram?.[BTC]), r = Number.isSafeInteger(pts) ? rewardWei(pts, cap()) : null;
   const bpts = Number(boardPay?.pointsByProgram?.[BLOCK]), br = Number.isSafeInteger(bpts) ? rewardWei(bpts, cap()) : null;
-  $('#btc-pay').textContent = r && br ? ` · ${tac(r)} TAC a batch, ${tac(br)} a chain block` : r ? ` · ${tac(r)} TAC each` : '';
+  $('#btc-pay').textContent = r && br ? `${tac(r)} TAC a batch, ${tac(br)} a chain block` : r ? `${tac(r)} TAC each` : '';
   $('#gpu-n').textContent = gpus ? (houseGpu ? `${gpus.filter(gpuOn).length + 1} · Tacit's ${gpus.filter(gpuOn).length ? 'included' : 'own'}` : String(gpus.filter(gpuOn).length)) : '—';
   const g = gpus && me() ? gpus.find((x) => x.miner === me()) : null;
   $('#gpu-me-row').hidden = !g;

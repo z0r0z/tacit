@@ -126,11 +126,17 @@ try {
     check(await page.locator('#blocked').isHidden(), 'a prover that is just not installed is not called blocked');
     check((await text(page, '#cmd')).endsWith(ADDR), 'the setup line carries the address', await text(page, '#cmd'));
     await page.waitForFunction(() => document.querySelector('#btc-pay').textContent.includes('TAC'), null, { timeout: 8000 }).catch(() => {});
-    check((await page.textContent('#btc-pay')) === ' · 10 TAC each', 'the GPU card says what a Bitcoin batch pays', await page.textContent('#btc-pay'));
+    check((await page.textContent('#btc-pay')) === '10 TAC each','the GPU card says what a Bitcoin batch pays', await page.textContent('#btc-pay'));
     check((await text(page, '#gpu-cmd')) === `curl -fsSL https://tacit.finance/prove-gpu.sh | sh -s -- ${ADDR}`, 'with the GPU command for the address', await text(page, '#gpu-cmd'));
     await page.waitForFunction(() => document.querySelector('#gpu-n').textContent !== '—', null, { timeout: 8000 }).catch(() => {});
     check((await text(page, '#gpu-n')) === '3 · Tacit\'s included', 'GPUs online: one asked for work just now, one is proving a batch, and Tacit\'s own; one gone a day and a settle-only machine are not', await text(page, '#gpu-n'));
     check((await text(page, '#gpu-me')) === 'waiting for its turn · 3 batches', "the address's own GPU, from its board name", await text(page, '#gpu-me'));
+    // The Bitcoin card is the coin, a short name, the pay, the command and one line of needs; the cards and Windows notes sit behind a summary.
+    check((await page.locator('[data-card="gpu"] h3 use[href="#tk-btc"]').count()) === 1 && (await text(page, '#h-gpu')) === 'Prove Bitcoin', 'the Bitcoin card has the coin and a short name', await text(page, '#h-gpu'));
+    check(!(await page.locator('[data-card="gpu"] .more').evaluate((d) => d.open)) && !(await page.locator('[data-card="gpu"] .more .hint').isVisible()), 'the other cards and Windows are behind a summary, closed');
+    await page.locator('[data-card="gpu"] .more summary').click();
+    check((await page.locator('[data-card="gpu"] .more .hint').isVisible()) && (await text(page, '[data-card="gpu"] .more .hint')).includes('WSL 2') && (await text(page, '[data-card="gpu"] .more .hint')).includes('--status'), 'and a press opens them, with the Windows note and --status');
+    await page.locator('[data-card="gpu"] .more summary').click();
     await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
     await page.click('#copy');
     await page.waitForFunction(() => document.querySelector('#title').textContent === 'Waiting for tacit-prover…', null, { timeout: 5000 }).catch(() => {});
