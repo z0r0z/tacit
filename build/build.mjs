@@ -196,7 +196,7 @@ const CHAIN_CB_FILES = ['chain/ui.js', 'chain/live.js', 'chain/app.js', 'chain/i
 // dapp/prove/ starts and pauses proving on this computer: its words, then app.js (which also takes community-prove.js), then the page.
 const PROVE_CB_FILES = ['community-prove.js', 'prove/view.js', 'prove/chain.js', 'prove/invader.js', 'prove/ops.js', 'prove/app.js', 'prove/index.html'];
 // dapp/help/ asks the community help desk: its page logic first, then app.js, then the page.
-const HELP_CB_FILES = ['help/ui.js', 'help/app.js', 'help/index.html'];
+const HELP_CB_FILES = ['help/ui.js', 'help/embed.js', 'help/app.js', 'help/index.html'];
 // dapp/build/ is the page for builders: its one script, then the page.
 const BUILD_CB_FILES = ['build/app.js', 'build/index.html'];
 // dapp/assets/ lists Tacit's own assets and the farms under them: the farms' reading first, then app.js, then the page.

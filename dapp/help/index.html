@@ -21,9 +21,10 @@
 <link rel="preconnect" href="https://tacit-helpdesk.onrender.com" crossorigin>
 <!-- preload-roots: /help/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/help/app.js?cb=25a6389a">
+<link rel="modulepreload" href="/help/app.js?cb=f6450073">
 <link rel="modulepreload" href="/help/ui.js?cb=7603d020">
 <!-- preload:end -->
+<script src="/help/embed.js?cb=f9751208"></script>
 <style>
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 500; font-display: swap; src: url('/fonts/ibm-plex-mono-500-latin.woff2') format('woff2'); }
@@ -107,6 +108,16 @@ button, select, input, textarea { font: inherit; color: inherit; letter-spacing:
 #out .a { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 #out .src, #out .fine { margin: 12px 0 0; font-size: 12px; color: var(--mute); overflow-wrap: anywhere; }
 #out .fine { margin-top: 4px; }
+
+/* framed by the help panel: the site's header, the page heading and the footer are left out, and the panel's own surface shows */
+html.embed .top, html.embed .hero h1, html.embed footer.sf { display: none; }
+html.embed, html.embed body { background: var(--card); background-image: none; }
+html.embed body { padding: 0; }
+html.embed .shell { max-width: none; padding: 0; }
+html.embed .hero { padding: 14px 16px 0; }
+html.embed .hero .sub { margin: 0; font-size: 12px; }
+html.embed .panel { max-width: none; border: 0; background: transparent; padding: 14px 16px 18px; }
+html.embed #q { min-height: 84px; }
 
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 </style>
@@ -233,7 +244,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
 @font-face { font-family: 'Instrument Serif Fallback N'; src: local('Noto Serif'), local('NotoSerif'); size-adjust: 70.5%; ascent-override: 140.4%; descent-override: 44%; line-gap-override: 0%; }
 @font-face { font-family: 'Instrument Serif Fallback N'; font-style: italic; src: local('Noto Serif Italic'), local('NotoSerif-Italic'); size-adjust: 76.3%; ascent-override: 129.7%; descent-override: 40.6%; line-gap-override: 0%; }
 </style>
-<script src="/chrome.js?cb=4b1414c7" defer></script>
+<script src="/chrome.js?cb=a5663b16" defer></script>
 <!-- chrome:head:end -->
 </head>
 <body>
@@ -311,6 +322,6 @@ footer.sf svg.fill { width: 16px; height: 16px; }
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/help/app.js?cb=25a6389a"></script>
+<script type="module" src="/help/app.js?cb=f6450073"></script>
 </body>
 </html>
