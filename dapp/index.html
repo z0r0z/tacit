@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-AcJKIR4/th79sCyzvEQwSga3erI0XUe1vI5sUf9EWyE=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-SKkyyXZ9O29CdMP3sb1ARGCryDuISQ9yR5oERxHx1DQ=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -1320,6 +1320,11 @@ html[data-page="tac"] :is(.hero, #dash, #how, #tac, .pg, .sx.pi), html:not([data
 .tcd-foot:empty { display: none; }
 .tpg-fold { border-top: 1px solid var(--hair); }
 #tpg-where { margin-top: 32px; }
+.tpg-ways { margin: 8px 0 0; font-size: 12px; }
+.tpg-br { margin-top: 16px; }
+.tpg-br > summary { cursor: pointer; font-size: 12.5px; list-style: none; text-decoration: underline; text-underline-offset: 3px; }
+.tpg-br > summary::-webkit-details-marker { display: none; }
+.tpg-br[open] > summary { margin-bottom: 16px; }
 .tpg-fold:last-of-type { border-bottom: 1px solid var(--hair); }
 .tpg-fold > summary { display: flex; align-items: center; gap: 10px; min-height: var(--tap); padding: 12px 0; cursor: pointer; list-style: none; font-size: 13px; }
 .tpg-fold > summary::-webkit-details-marker { display: none; }
@@ -1963,7 +1968,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
     <section class="tpg-panel" id="tpg-top" aria-labelledby="tpg-top-h" hidden><h2 class="tpg-h" id="tpg-top-h">All your TAC</h2></section>
     <div class="cl" id="tpg-chain"></div>
     <section class="tpg-panel" id="tpg-why" aria-labelledby="tpg-why-h" hidden></section>
-    <details class="tpg-fold" id="tpg-where"><summary>Where your TAC is</summary><div><div id="tac-bal"></div><h3 class="tpg-h">Between Bitcoin and Ethereum</h3><div id="bridge-body"></div></div></details>
+    <details class="tpg-fold" id="tpg-where"><summary>Where your TAC is</summary><div><div id="tac-bal"></div><details class="tpg-br" id="tpg-br"><summary>Move between Bitcoin and Ethereum →</summary><div id="bridge-body"></div></details></div></details>
     <details class="tpg-fold" id="tpg-how"><summary>The networks</summary><div id="tpg-nets"></div></details>
     <details class="tpg-fold"><summary>What is public</summary><div><ul class="tpg-facts">
       <li><b>Public</b><span>That a payment happened, and when. Public TAC in a wallet, like any token.</span></li>
@@ -10519,6 +10524,8 @@ async function brChainDue(pub, rec, plan) {
   } finally { endRun(run); BR.publishing = false; }
 }
 const TACB = { who: null, erc: null, acct: null, err: null, fee: undefined, signIn: false };
+// Where your TAC is: the balances only, until a row asks for its form (Withdraw all) or the forms are opened (More ways)
+const TACW = { pub: false, forms: false };
 async function loadTacFee() {
   const notes = freeNotes(P.scan?.tac?.notes).sort(byValue).reverse();
   if (!S.key || !notes.length) { TACB.fee = null; return; }
@@ -10619,7 +10626,7 @@ function tacPlaces(k, who) {
     ...(ch ? [{ key: 'chain', t: 'Tacit chain', s: 'private payments', m: 1, v: chainV == null ? null : chainV * E10, bad: chainV == null && !!CH.err,
       acts: (v) => (v > 0n ? [hx('Send', 'send:ctac'), hx('To wallet', 'shield:ctac:wallet'), hx('DeFi pool', 'shield:ctac:defi')] : []) }] : []),
     { key: 'defi', t: 'DeFi pool', s: 'private', m: 1, core: true, v: P.scan?.tac ? P.scan.tac.value * E10 : null, bad: !P.scan && !!P.err,
-      acts: (v) => (v > 0n ? [hx('Swap', 'swap:tac:ether:private'), hx('Farm', 'earn:tac'), hx('Send', 'send:tac'), hx('To wallet', 'shield:tac:wallet'), ch && way('tac', 'chain') && hx('Tacit chain', 'shield:tac:chain'), xoShown(k, XA.tac) && { t: 'To Bitcoin', th: 'bridge:out' }] : []) },
+      acts: (v) => (v > 0n ? [hx('Swap', 'swap:tac:ether:private'), hx('Farm', 'earn:tac'), hx('Send', 'send:tac'), hx('To wallet', 'shield:tac:wallet'), ch && way('tac', 'chain') && hx('Tacit chain', 'shield:tac:chain'), xoShown(k, XA.tac) && { t: 'To Bitcoin', th: 'bridge:out' }, spendable('tac') && { t: 'Withdraw all', th: 'pub' }] : []) },
     { key: 'btc', t: 'On Bitcoin', s: 'public', m: 'btc', core: true, v: BTC.pub === k && BTC.got >= 2 ? (btcTac ? btcTac.balance * 10n ** BigInt(18 - btcTac.decimals) : 0n) : null, bad: !!BTC.err && (BTC.pub !== k || BTC.got < 2),
       acts: (v) => (v > 0n ? [{ t: 'Shield', th: 'pool:shield' }, { t: 'To Ethereum', th: 'bridge:in' }, hx('Send', 'send:tacb')] : []) },
     { key: 'pool', t: 'Bitcoin pool', s: 'shielded', m: 'btc', v: pool == null ? null : pool * E10,
@@ -10641,6 +10648,7 @@ function tacPlacesView(places) {
 function tacPlaceGo(what) {
   const [kind, arg] = what.split(':');
   if (kind === 'pool') return arg === 'hide' ? tacPoolHide() : tacPoolOpen(arg);
+  if (kind === 'pub' || kind === 'forms') { TACW[kind] = !TACW[kind]; return rerender('tac'); }
   if (kind !== 'bridge') return;
   BRM.mode = arg === 'out' ? 'out' : 'in';
   tacPageOpen('bridge');
@@ -10718,17 +10726,18 @@ async function tacKeyNow() {
 // Where your TAC is (folded on TAC's page): each place with its moves, and the forms that move TAC between the wallet and the DeFi pool
 function renderTacBal(el) {
   const who = tacWho();
-  if (!S.key) { mount(el, html`<p class="note">Sign in to see each place your TAC is, and move it between them. <button class="link" type="button" data-signin>Sign in</button></p>`); return; }
+  if (!S.key) { mount(el, html`<p class="note">Sign in to see where your TAC is. <button class="link" type="button" data-signin>Sign in</button></p>`); return; }
   if (!who) { mount(el, html``); return; }
   const k = S.key?.pubHex, places = tacPlaces(k, who);
   mount(el, html`
     ${tacPlacesView(places)}
-    <div id="tac-shield"></div>
-    ${spendable('tac') ? html`<div class="callout"><span>${fmt(spendable('tac') * E10, 18, 2)} TAC is in private notes. Withdraw it to ${your()} as TAC to sell or farm it here, all at once.${tacFeeNote()}</span><button class="btn ghost" type="button" id="tac-pub">Withdraw all</button></div>
+    ${spendable('tac') && TACW.pub ? html`<div class="callout"><span>${fmt(spendable('tac') * E10, 18, 2)} TAC to ${your()}.${tacFeeNote()}</span><button class="btn ghost" type="button" id="tac-pub">Withdraw all</button></div>
       <div class="lbl"><span>Send it to</span><span>${your()} unless you enter an address</span></div>
       <div class="amt text"><input id="tac-pub-to" placeholder="0x… (optional)" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Where the public TAC goes"></div>` : ''}
-    <div id="tac-send"></div>
+    <p class="tpg-ways"><button class="link" type="button" data-th="forms" aria-expanded="${String(TACW.forms)}">${TACW.forms ? 'Fewer ways' : 'More ways'}</button></p>
+    <div id="tac-forms"><div id="tac-shield"></div><div id="tac-send"></div></div>
     <div class="status" role="status" id="tac-bal-status"></div>`);
+  $('#tac-forms', el).hidden = !TACW.forms;
   $$('[data-tac-retry]', el).forEach((re) => re.onclick = () => busy(re, async () => {
     TACB.err = null;
     const [h, sc, bt] = await Promise.allSettled([loadTacHoldings(true), S.key ? scanPrivate(true) : null, S.key && T ? loadBtc(true) : null]);
@@ -10775,7 +10784,7 @@ function tacPageOpen(part = null) {
   } else rerender('tac');
   paintBack('tac');
   if (part === 'bridge') {
-    $('#tpg-where').open = true;
+    $('#tpg-where').open = true; $('#tpg-br').open = true;
     requestAnimationFrame(() => $('#bridge-body')?.scrollIntoView({ block: 'start', behavior: calmMotion() ? 'auto' : 'smooth' }));
   }
   syncLink();
