@@ -983,6 +983,7 @@ services:
   #   dockerContext: .
   #   plan: starter
   #   region: oregon
+  #   dockerCommand: node fastbridge-lp/server.mjs     # first start: node fastbridge-lp/server.mjs --dry-run
   #   healthCheckPath: /health
   #   autoDeploy: false
   #   disk:
