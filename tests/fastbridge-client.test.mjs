@@ -9,7 +9,7 @@ import { bigintToBytes32 } from '../dapp/bulletproofs.js';
 import { bytesToHex, hexToBytes } from '../dapp/vendor/tacit-deps.min.js';
 import * as X from '../dapp/adaptor-xswap.js';
 import { makeHttpCounter } from '../dapp/fastbridge-http.js';
-import { makeFastBridgeClient, makeFastBridgeMarket, makeLocalStore, describe, termsOf } from '../dapp/fastbridge-client.js';
+import { makeFastBridgeClient, makeFastBridgeMarket, makeLocalStore, describe, termsOf, QUOTE_WAIT_MS } from '../dapp/fastbridge-client.js';
 import { fetched } from './lib/btc-sim.mjs';
 import { pool, ASSET } from './lib/chain-sim.mjs';
 import { VALUE, memStore } from './lib/fastbridge-world.mjs';
@@ -70,6 +70,18 @@ test('a quote the page will not show: unreadable, for another amount, a payout a
   const edge = await clientFor(w, fakeLp(w, { evmAmount: String(VALUE - (VALUE * 5n) / 100n) })).quote(VALUE);
   assert.equal(edge.highFee, false, 'exactly 5% is not high');
   await assert.rejects(() => clientFor(w, fakeLp(w, { evmAmount: String(VALUE / 10n - 1n) })).quote(VALUE), /fee is above the limit/);
+});
+
+test('a provider has 12 seconds to quote when the page does not say otherwise: room over the slowest quotes seen through a board, and one that never answers is given up on then', async () => {
+  assert.equal(QUOTE_WAIT_MS, 12000);
+  const waits = [], realSet = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, ms, ...a) => { if (ms >= 1000) waits.push(ms); return realSet(fn, ms, ...a); };
+  try {
+    const market = makeFastBridgeMarket({ btc: {}, evm: {}, store: memStore(), seed: new Uint8Array(32), counterFor: () => null, makeClient: () => ({ quote: async () => ({ id: 'q', btcValue: 1000n, evmAmount: 990n, fee: 10n, validUntil: 9e9 }) }) });
+    await market.quoteAll([{ id: 'a', name: 'a', ref: { kind: 'http', claimPub: 'a' } }], 1000n);
+  } finally { globalThis.setTimeout = realSet; }
+  assert.ok(waits.includes(12000), `the wait asked of the timer is 12 s (${waits})`);
+  assert.ok(!waits.includes(8000), 'and not the 8 s it was');
 });
 
 test('notes to lock: the smallest one that covers the amount, else the largest first, and none when they do not cover it', async () => {

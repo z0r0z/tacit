@@ -14,7 +14,7 @@ import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js';
 import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=94a5530b';
 import { makeFastBridgeEvm } from '/fastbridge-evm.js?cb=22471d6a';
 import { makeHttpCounter, makeCounter } from '/fastbridge-http.js';
-import { makeFastBridgeMarket, makeLocalStore, termsOf } from '/fastbridge-client.js?cb=96037c13';
+import { makeFastBridgeMarket, makeLocalStore, termsOf } from '/fastbridge-client.js?cb=f56665a8';
 import { makeLpService } from '/fastbridge-provider.js?cb=f1c77b91';
 import { makeMailboxCounter, makeMailboxServer, makeAdPublisher, readProviders, gatewayOf } from '/fastbridge-mailbox.js?cb=f7d5bbe7';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=850e1c5e';

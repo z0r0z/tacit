@@ -182,6 +182,9 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
 //   market.quoteAll(providers, amount)   -> { quotes: [{ provider, quote }] best payout first, failed: [{ provider, error }] }
 //   market.start({ quotes, notes })      the best quote a provider will hold, each asked in turn -> { rec, provider }
 //   market.tick() / run() / records() / recover()     as the client's, over the swaps of every provider
+// How long a provider has to quote. One reached through a board answers on its polling rhythm (about 3.7 s measured, a cycle or two more now and
+// then), so the wait leaves room over the slowest quotes seen (9 s); a provider that is gone costs the page this long before the others show.
+export const QUOTE_WAIT_MS = 12000;
 export function makeFastBridgeMarket({ btc, evm, store, seed, pins = {}, policy, now, counterFor, makeClient = makeFastBridgeClient }) {
   const clients = new Map();
   const keyOf = (ref) => (ref ? JSON.stringify([ref.kind, ref.claimPub || '', ref.gateway || ref.base || '']) : 'none');
@@ -192,7 +195,7 @@ export function makeFastBridgeMarket({ btc, evm, store, seed, pins = {}, policy,
   }
   const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('the provider did not answer in time')), ms))]);
 
-  async function quoteAll(providers, amount, { timeoutMs = 8000 } = {}) {
+  async function quoteAll(providers, amount, { timeoutMs = QUOTE_WAIT_MS } = {}) {
     const got = await Promise.all(providers.map(async (provider) => {
       try { return { provider, quote: await withTimeout(clientFor(provider.ref).quote(amount), timeoutMs) }; } catch (error) { return { provider, error }; }
     }));
