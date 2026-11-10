@@ -82,6 +82,27 @@ export function leaderTerms(f) {
   return { fee: n(f?.fee), shieldCap: cap > 0n ? cap : null, sweepFee: n(f?.sweepFee) };
 }
 
+/// The most a leader other than the house may ask for a spend (units): a quote over it is not taken, and the spend goes the house's way.
+export const FEE_CEILING = 2n * 10n ** 8n;
+
+/// Which leader a spend made now is for, with what it quoted (GET /fee, as it answered), read with no key. The leader of the slot the spend will land
+/// in (`route.target()`: a seat holder's announced endpoint) when it answers with a fee no more than FEE_CEILING that `valid` takes; else the house
+/// leader (`cfg.leader`). An announced endpoint is asked at most every few seconds (`memo`: a form that quotes as it is typed does not become its
+/// traffic). → { base, until (ms: a proof made for this leader is good until then), f (the quote, null when none answered) }.
+export async function chooseLeader({ cfg, route = null, fetchImpl = (...a) => globalThis.fetch(...a), memo = new Map(), valid = () => true }) {
+  let t = { base: cfg.leader, until: Infinity };
+  try { if (route) t = (await route.target()) || t; } catch { /* the house */ }
+  const ask = async (base) => {
+    try { const r = await fetchImpl(base + '/fee', { signal: AbortSignal.timeout(10e3) }); return r.ok ? await r.json() : null; } catch { return null; }
+  };
+  if (t.base !== cfg.leader) {
+    let hit = memo.get(t.base);
+    if (!hit || Date.now() - hit.at > 5e3) { hit = { at: Date.now(), f: await ask(t.base) }; memo.set(t.base, hit); }
+    if (hit.f && leaderTerms(hit.f).fee <= FEE_CEILING && valid(hit.f)) return { base: t.base, until: t.until, f: hit.f };
+  }
+  return { base: cfg.leader, until: Infinity, f: await ask(cfg.leader) };
+}
+
 /// The chain as anyone sees it, with no key: what the landing contract holds on Ethereum (blocks landed, when the last did, the pool and its
 /// shares) and the leader's terms (null when it does not answer).
 ///   → { height, lastLanded (seconds), pool, shares, leader: { fee, shieldCap, sweepFee } | null }
@@ -98,7 +119,9 @@ export async function chainStatus({ cfg, rpcCall, fetchImpl = (...a) => globalTh
   return { height: Number(height), lastLanded: Number(lastLanded), pool, shares, leader };
 }
 
-export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalThis.localStorage, fetchImpl = (...a) => globalThis.fetch(...a) }) {
+/// `route` (tacit-chain-route.js): `target()` → { base, until } names the leader a spend made now is for (a seat holder's announced endpoint when it
+/// leads the slot); without one every spend is for `cfg.leader`.
+export function makeChainClient({ cfg, rpcCall, priv, system, route = null, storage = globalThis.localStorage, fetchImpl = (...a) => globalThis.fetch(...a) }) {
   if (!cfg) throw new Error('tacit chain: not deployed');
   const call = async (sig, args = '') => strip(await rpcCall('eth_call', [{ to: cfg.blocks, data: '0x' + sel(sig) + args }, 'latest']));
   const api = async (method, path, body, base = cfg.leader) => {
@@ -183,8 +206,13 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
   // the payments the leader holds that open with this wallet's key, each with its worth (its own change is not among them)
   async function incomingNotes() {
     await ready();
-    const r = await api('GET', '/pending-notes').catch(() => null);
-    if (!r?.ok || !Array.isArray(r.leaves) || !r.leaves.length || r.memos?.length !== r.leaves.length) return [];
+    // what the house and the slot's leader each hold (a payment waits at the leader it was made for)
+    const bases = [...new Set([cfg.leader, (await pick().catch(() => null))?.base].filter(Boolean))];
+    const rs = (await Promise.all(bases.map((b) => api('GET', '/pending-notes', undefined, b).catch(() => null))))
+      .filter((x) => x?.ok && Array.isArray(x.leaves) && x.leaves.length && x.memos?.length === x.leaves.length);
+    const seen = new Set(), r = { ok: true, leaves: [], memos: [] };
+    for (const x of rs) x.leaves.forEach((l, i) => { const k = leafKey(l); if (!seen.has(k)) { seen.add(k); r.leaves.push(l); r.memos.push(x.memos[i]); } });
+    if (!r.leaves.length) return [];
     const skip = new Set([...held().flatMap((e) => e.own || []).map((x) => leafKey(x.leaf)), ...st.notes.map((x) => leafKey(x.leaf))]);
     const page = { leaves: r.leaves, memos: r.memos, next: r.leaves.length, total: r.leaves.length };
     const got = (await w.scan(me, { notes: async () => page, spent: async () => false }, { from: 0, known: [] })).notes.filter((x) => !skip.has(leafKey(x.leaf)));
@@ -197,17 +225,29 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
   /// The leader's fee: { units, to (its chain address), shieldCap, sweepFee }, units 0 when it asks none. `shieldCap`: the most units one
   /// shield may deposit through this leader for now (its launch cap; a shield over it is dropped), null when it names none. `sweepFee`: what
   /// it takes, in TAC's own wei (18 decimals), to send a holder's permitted shield in (TacitBlocks.sweepWithPermit), 0 when it names none.
-  async function fee() {
+  async function feeAt(base = cfg.leader) {
     await ready();
-    const f = await api('GET', '/fee');
+    const f = await api('GET', '/fee', undefined, base);
     if (!f.ok) throw new Error('the Tacit chain’s leader did not answer');
+    return termsOf(f);
+  }
+  /// Whose spend this is to be (`chooseLeader`), with its terms as numbers: { units, to, shieldCap, sweepFee, base, until }. None is asked when the
+  /// house cannot be reached either (such a spend can be posted to Ethereum instead).
+  const quoted = new Map();
+  const termsOf = (f) => {
     const t = leaderTerms(f);
     if (t.fee === 0n) return { units: 0n, to: null, shieldCap: t.shieldCap, sweepFee: t.sweepFee };
     if (typeof f.address !== 'string') throw new Error('the leader asks a fee but names no address for it');
     return { units: t.fee, to: w.decodeAddress(f.address), shieldCap: t.shieldCap, sweepFee: t.sweepFee };
+  };
+  async function pick() {
+    await ready();
+    const c = await chooseLeader({ cfg, route, fetchImpl, memo: quoted, valid: (f) => { try { termsOf(f); return true; } catch { return false; } } });
+    let t = null;
+    try { t = c.f ? termsOf(c.f) : null; } catch { /* the house asks a fee it names no address for */ }
+    return { ...(t || { units: 0n, to: null, shieldCap: null, sweepFee: 0n }), base: c.base, until: c.until };
   }
-  /// The fee for a spend about to be proved: none when the leader cannot be reached (such a spend can be posted to Ethereum instead).
-  const feeNow = () => fee().catch(() => ({ units: 0n, to: null, shieldCap: null, sweepFee: 0n }));
+  const feeNow = pick;
   /// The plain line for a shield over the leader's cap.
   const overCap = (cap) => {
     const whole = (cap / 10n ** 8n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ','), frac = (cap % 10n ** 8n).toString().padStart(8, '0').replace(/0+$/, '');
@@ -258,10 +298,10 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
   /// Hands a spend to the leader and waits for it to land; drops the notes it spends from the wallet's list. The spend is kept until it
   /// lands. onStatus: { status: 'queued' | 'slow' (not landed after `slowMs`: it can be posted to Ethereum) | 'landed', id, kept }. A
   /// refusal, a leader that does not answer or no longer has it, or the timeout throws with `err.kept`.
-  async function submit(spent, extra = {}, { onStatus, timeoutMs = 30 * 60e3, slowMs = 10 * 60e3, kind = 'spend', units = null, meta = {} } = {}) {
-    const e = remember(spent, { kind, units: units == null ? null : String(units), extra, ...meta });
+  async function submit(spent, extra = {}, { onStatus, timeoutMs = 30 * 60e3, slowMs = 10 * 60e3, kind = 'spend', units = null, meta = {}, base = cfg.leader } = {}) {
+    const e = remember(spent, { kind, units: units == null ? null : String(units), extra, ...(base !== cfg.leader ? { lead: base } : { lead: null }), ...meta });
     let r;
-    try { r = await api('POST', '/spend', { ...spent.submission, ...extra }); } catch { throw keptErr(new Error('the Tacit chain’s leader did not answer'), e); }
+    try { r = await api('POST', '/spend', { ...spent.submission, ...extra }, base); } catch { throw keptErr(new Error('the Tacit chain’s leader did not answer'), e); }
     if (!r.ok) {
       // a refusal (not a busy or failing leader) frees the notes: a spend kept as queued and refused on being handed over again would hold them
       if (r.status >= 400 && r.status < 500 && r.status !== 429 && r.status !== 408) mark(e.id, { refused: true });
@@ -272,7 +312,7 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
     const t0 = Date.now();
     let slow = false, looked = t0, height = null;
     for (;;) {
-      const rc = await api('GET', `/receipt/${r.id}`).catch(() => null);
+      const rc = await api('GET', `/receipt/${r.id}`, undefined, base).catch(() => null);
       if (rc?.ok && rc.status === 'landed') { height = Number.isSafeInteger(rc.height) ? rc.height : null; break; }
       if (rc?.ok && rc.status === 'refused') { mark(e.id, { refused: true }); throw keptErr(new Error(rc.error || 'the leader refused the spend'), e); }
       if (rc && !rc.ok && rc.status === 404) {
@@ -297,10 +337,10 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
 
   /// Hands a spend to the leader without waiting for it to land, kept here first: a shield whose deposit is not paid yet is held by the
   /// leader until it is (an inbox it sweeps once paid, with the way back named in `extra.back`). → { id, kept }; a refusal throws with `err.kept`.
-  async function offer(spent, extra = {}, { kind = 'spend', units = null, meta = {} } = {}) {
-    const e = remember(spent, { kind, units: units == null ? null : String(units), extra, ...meta });
+  async function offer(spent, extra = {}, { kind = 'spend', units = null, meta = {}, base = cfg.leader } = {}) {
+    const e = remember(spent, { kind, units: units == null ? null : String(units), extra, ...(base !== cfg.leader ? { lead: base } : { lead: null }), ...meta });
     let r;
-    try { r = await api('POST', '/spend', { ...spent.submission, ...extra }); } catch { throw keptErr(new Error('the Tacit chain’s leader did not answer'), e); }
+    try { r = await api('POST', '/spend', { ...spent.submission, ...extra }, base); } catch { throw keptErr(new Error('the Tacit chain’s leader did not answer'), e); }
     if (!r.ok) throw keptErr(new Error(r.error || `the leader refused the spend (${r.status})`), e);
     return { id: r.id, kept: e };
   }
@@ -325,17 +365,17 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
     const [r, f] = await Promise.all([rate(), feeNow()]);
     const shares = sharesWorth(amount, r), pool = poolShare(r), out = feeOut(f, r);
     const ins = inputs(shares + pool + (out[0]?.value ?? 0n));
-    return { kind: 'pay', units: amount, at: Date.now(), spent: await spend({ inputs: ins, outputs: [{ to, value: shares }, ...out], exit: { v: pool, amount: 0n, op: poolOp() }, onProgress: o.onProgress }) };
+    return { kind: 'pay', units: amount, at: Date.now(), base: f.base, until: f.until, spent: await spend({ inputs: ins, outputs: [{ to, value: shares }, ...out], exit: { v: pool, amount: 0n, op: poolOp() }, onProgress: o.onProgress }) };
   }
   async function prepareWithdraw(to, amount, o = {}) {
     if (!/^0x[0-9a-fA-F]{40}$/.test(to)) throw new Error('an Ethereum address');
     await ready();
     const [r, f] = await Promise.all([rate(), feeNow()]);
     const shares = sharesToPay(amount, r), out = feeOut(f, r);
-    return { kind: 'withdraw', units: amount, meta: { to }, at: Date.now(), spent: await spend({ inputs: inputs(shares + (out[0]?.value ?? 0n)), outputs: out, exit: { v: shares, amount: BigInt(amount), to }, onProgress: o.onProgress }) };
+    return { kind: 'withdraw', units: amount, meta: { to }, at: Date.now(), base: f.base, until: f.until, spent: await spend({ inputs: inputs(shares + (out[0]?.value ?? 0n)), outputs: out, exit: { v: shares, amount: BigInt(amount), to }, onProgress: o.onProgress }) };
   }
-  const fresh = (p) => !!p?.spent && Date.now() - p.at < AHEAD_MS && (p.spent.nullifiers || []).every((nf) => owned().some((n) => strip(n.nullifier) === strip(nf)));
-  const send = (p, o = {}) => submit(p.spent, {}, { ...o, kind: p.kind, units: p.units, ...(p.meta ? { meta: p.meta } : {}) });
+  const fresh = (p) => !!p?.spent && Date.now() - p.at < AHEAD_MS && Date.now() < (p.until ?? Infinity) && (p.spent.nullifiers || []).every((nf) => owned().some((n) => strip(n.nullifier) === strip(nf)));
+  const send = (p, o = {}) => submit(p.spent, {}, { ...o, kind: p.kind, units: p.units, base: p.base || cfg.leader, ...(p.meta ? { meta: p.meta } : {}) });
 
   /// The bytes TacitBlocks.force takes for a kept spend's submission, from the leader or another node (`cfg.nodes`): every byte but the
   /// hints is checked to be this spend's (hints a node got wrong only make a block pass the entry over).
@@ -355,9 +395,11 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
   const depWords = (d) => word(d.shares) + word(d.amount) + strip(d.cx) + strip(d.cy) + strip(d.body);
 
   return {
-    ready, scan, balance, rate, fee,
+    ready, scan, balance, rate, fee: feeAt,
     /// The leader's launch cap on one shield's deposit, in units (null: none, or the leader could not be reached).
     shieldCap: async () => (await feeNow()).shieldCap,
+    /// Which leader the next spend is for: { base (its URL), routed (not the house) }.
+    leaderNow: async () => { const f = await pick(); return { base: f.base, routed: f.base !== cfg.leader }; },
     address: async () => { await ready(); return w.address(me); },
     /// The 32-byte hash a Tacit address's chain lane carries.
     lane: async () => { await ready(); return w.chainAddressHash(w.address(me)); },
@@ -365,7 +407,7 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
     resolve: async (hash) => { await ready(); return w.resolve(hash, leader); },
     recipientOf,
     /// Hands a kept spend (from `pending()`) to the leader again, and waits for it to land.
-    resubmit: (e, o = {}) => submit({ submission: e.submission, nullifiers: e.nullifiers }, e.extra || {}, { kind: e.kind, units: e.units, ...o }),
+    resubmit: (e, o = {}) => submit({ submission: e.submission, nullifiers: e.nullifiers }, e.extra || {}, { kind: e.kind, units: e.units, base: e.lead || cfg.leader, ...o }),
     /// What this wallet's notes are worth now, in units: as it will be once the spends the leader holds land.
     worth: async () => worthOf(balance(), await rate()),
     /// Whether a spend the leader holds is still to land (its change not spendable yet).
@@ -461,8 +503,9 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
       return {
         deposit: d,
         fee: f.units,
-        // what it was proved at: the pool's rate and when, for `shieldFresh` (a shield proved while its form is filled, handed over later)
-        rate: r, at: Date.now(), units: BigInt(amount),
+        // what it was proved at: the pool's rate and when, for `shieldFresh` (a shield proved while its form is filled, handed over later), and
+        // the leader it was proved for (`base`) and until when
+        rate: r, at: Date.now(), units: BigInt(amount), base: f.base, until: f.until,
         // what the leader takes to send a holder's permit for the inbox in (TAC wei, on top of the deposit): the permit's value is
         // `permitValue`, its `fee` this
         sweepFee: f.sweepFee,
@@ -472,12 +515,12 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
         depositCalldata: '0x' + sel('deposit(uint256,uint256,bytes32,bytes32,bytes32)') + args,
         inbox: async (back) => '0x' + (await call('inbox(uint256,uint256,bytes32,bytes32,bytes32,bytes32)', args + strip(back))).slice(24),
         // o.back: a shield paid to its inbox; o.permit: { owner, fee, deadline, v, r, s, back }, a holder's permit for that inbox
-        submit: (o = {}) => submit(s, { ...(o.back ? { back: o.back } : {}), ...(o.permit ? { permit: o.permit } : {}) }, { ...o, kind: 'shield', units: amount, meta: { from: o.from, tx: o.tx, back: o.back || o.permit?.back } }),
+        submit: (o = {}) => submit(s, { ...(o.back ? { back: o.back } : {}), ...(o.permit ? { permit: o.permit } : {}) }, { ...o, kind: 'shield', units: amount, base: f.base, meta: { from: o.from, tx: o.tx, back: o.back || o.permit?.back } }),
         // a shield its inbox is to be paid for: kept and handed to the leader before anything is paid, so whatever pays the inbox, the
         // leader can sweep it in and a reload can finish it (o.meta: what goes with it, such as the inbox and what pays it). o.permit: a
         // holder's permit for the inbox ({ owner, fee, deadline, v, r, s, back }), which the leader sends in with sweepWithPermit; it is
         // kept with the spend, so a reload hands it over again.
-        offer: (o = {}) => offer(s, { ...(o.back ? { back: o.back } : {}), ...(o.permit ? { permit: o.permit } : {}) }, { kind: 'shield', units: amount, meta: { back: o.back || o.permit?.back, ...(o.meta || {}) } }),
+        offer: (o = {}) => offer(s, { ...(o.back ? { back: o.back } : {}), ...(o.permit ? { permit: o.permit } : {}) }, { kind: 'shield', units: amount, base: f.base, meta: { back: o.back || o.permit?.back, ...(o.meta || {}) } }),
       };
     },
     /// Whether a shield proved ahead can still go for `amount`: the pool's rate is the one it was proved at (a block landing moves it, and a shield
@@ -486,6 +529,8 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
       await ready();
       const [r, f] = await Promise.all([rate(), feeNow()]);
       if (!sh?.rate || sh.units !== BigInt(amount) || r.pool !== sh.rate.pool || r.shares !== sh.rate.shares || Date.now() - sh.at > SHIELD_AHEAD_MS) return false;
+      // (it was proved for a leader: the slot's now, and not past its end)
+      if (f.base !== (sh.base || cfg.leader) || Date.now() >= (sh.until ?? Infinity)) return false;
       sh.sweepFee = f.sweepFee;
       return true;
     },
@@ -516,7 +561,7 @@ export function makeChainClient({ cfg, rpcCall, priv, system, storage = globalTh
       await ready();
       const [r, f] = await Promise.all([rate(), feeNow()]);
       const shares = sharesToPay(amount, r), out = feeOut(f, r);
-      const done = await submit(await spend({ inputs: inputs(shares + (out[0]?.value ?? 0n)), outputs: out, exit: { v: shares, amount: BigInt(amount), op: hopOp(commit) }, onProgress: o.onProgress }), {}, { ...o, kind: 'hop', units: amount, meta: { commit } });
+      const done = await submit(await spend({ inputs: inputs(shares + (out[0]?.value ?? 0n)), outputs: out, exit: { v: shares, amount: BigInt(amount), op: hopOp(commit) }, onProgress: o.onProgress }), {}, { ...o, kind: 'hop', units: amount, base: f.base, meta: { commit } });
       hopsKeep([...hopsKept().filter((h) => strip(h.commit) !== strip(commit)), { units: String(amount), commit: '0x' + strip(commit), at: Date.now() }]);
       return done;
     },

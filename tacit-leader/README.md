@@ -38,7 +38,14 @@ it when `LEADER_CHAIN_SEED` is set) and a prover (`PROVER`: the board, or its ow
 slot a leader builds and lands what is waiting; the landing contract lets anyone land once `WINDOW` has passed since the last landing, and takes a posted spend within
 `FORCE_DELAY` whoever leads. `leader()` says who leads now, and `seatAt(i, next)` and `seats()` who holds what.
 
-Not built yet: wallets finding the slot's leader from its announced endpoint (they use one leader's address today), sending blocks whose data is in blobs (the program, contract and node do it; the sender must use the post-Fusaka blob transaction
+**Spends reach the slot's leader.** Every spend pays its fee to one leader's chain address, so a wallet makes each spend for the leader whose turn it will land in: it reads `leaderAt`
+for the current slot, and for the next one within two minutes of the slot's end (`dapp/tacit-chain-route.js`), finds that leader's latest `announce(url)`, asks its `GET /fee`, and proves,
+hands over and follows the spend there. A proof made for a leader is dropped when its slot is over. A leader with no endpoint, one that does not answer, or one asking more than 2 TAC a spend
+is skipped: the spend goes to the house leader as before, and waits for its turn or for `WINDOW`. The page names the hosts it talks to, so an endpoint is reachable from it once its origin is in
+the front page's `connect-src`: `node tools/tacit-chain-seat-host.mjs https://your-leader.example.com` checks it is a seat holder's latest announcement, adds it and rebuilds; the change is
+committed and pushed with the dapp. The endpoint must be `https` on a DNS name and answer cross-origin reads and posts as the house leader does.
+
+Not built yet: sending blocks whose data is in blobs (the program, contract and node do it; the sender must use the post-Fusaka blob transaction
 format), replaying blob blocks another leader landed (needs a beacon node's blob sidecars), the prover board job, and a status page.
 
 **Restarts.** A restart rebuilds the node, from the blocks kept in `ARCHIVE_DIR` when they are the whole chain (every block from 1 to the contract's height is there, each starts where the one before ended, the last ends at the contract's `state`, and no forced entry waits), else from the logs of `BLOCKS` from `FROM_BLOCK`. Every block this leader builds or reads is kept there. `RPC_URL` may list several endpoints, comma apart (`https://a,https://b`): the first that answers is used, and one that refuses, rate-limits or has dropped old logs is passed over. Keep `ARCHIVE_DIR` on the persistent disk.
