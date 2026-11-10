@@ -89,9 +89,11 @@ export const FEE_CEILING = 2n * 10n ** 8n;
 /// in (`route.target()`: a seat holder's announced endpoint) when it answers with a fee no more than FEE_CEILING that `valid` takes; else the house
 /// leader (`cfg.leader`). An announced endpoint is asked at most every few seconds (`memo`: a form that quotes as it is typed does not become its
 /// traffic). → { base, until (ms: a proof made for this leader is good until then), f (the quote, null when none answered) }.
-export async function chooseLeader({ cfg, route = null, fetchImpl = (...a) => globalThis.fetch(...a), memo = new Map(), valid = () => true }) {
+export async function chooseLeader({ cfg, route = null, fetchImpl = (...a) => globalThis.fetch(...a), memo = new Map(), valid = () => true, routeMs = 4000 }) {
   let t = { base: cfg.leader, until: Infinity };
-  try { if (route) t = (await route.target()) || t; } catch { /* the house */ }
+  // (the route reads Ethereum: a node that hangs does not hold a payment up for its own timeout, the house is asked after `routeMs`)
+  let timer;
+  try { if (route) t = (await Promise.race([route.target(), new Promise((ok) => { timer = setTimeout(() => ok(null), routeMs); })])) || t; } catch { /* the house */ } finally { clearTimeout(timer); }
   const ask = async (base) => {
     try { const r = await fetchImpl(base + '/fee', { signal: AbortSignal.timeout(10e3) }); return r.ok ? await r.json() : null; } catch { return null; }
   };
@@ -121,7 +123,7 @@ export async function chainStatus({ cfg, rpcCall, fetchImpl = (...a) => globalTh
 
 /// `route` (tacit-chain-route.js): `target()` → { base, until } names the leader a spend made now is for (a seat holder's announced endpoint when it
 /// leads the slot); without one every spend is for `cfg.leader`.
-export function makeChainClient({ cfg, rpcCall, priv, system, route = null, storage = globalThis.localStorage, fetchImpl = (...a) => globalThis.fetch(...a) }) {
+export function makeChainClient({ cfg, rpcCall, priv, system, route = null, routeMs = 4000, storage = globalThis.localStorage, fetchImpl = (...a) => globalThis.fetch(...a) }) {
   if (!cfg) throw new Error('tacit chain: not deployed');
   const call = async (sig, args = '') => strip(await rpcCall('eth_call', [{ to: cfg.blocks, data: '0x' + sel(sig) + args }, 'latest']));
   const api = async (method, path, body, base = cfg.leader) => {
@@ -242,7 +244,7 @@ export function makeChainClient({ cfg, rpcCall, priv, system, route = null, stor
   };
   async function pick() {
     await ready();
-    const c = await chooseLeader({ cfg, route, fetchImpl, memo: quoted, valid: (f) => { try { termsOf(f); return true; } catch { return false; } } });
+    const c = await chooseLeader({ cfg, route, routeMs, fetchImpl, memo: quoted, valid: (f) => { try { termsOf(f); return true; } catch { return false; } } });
     let t = null;
     try { t = c.f ? termsOf(c.f) : null; } catch { /* the house asks a fee it names no address for */ }
     return { ...(t || { units: 0n, to: null, shieldCap: null, sweepFee: 0n }), base: c.base, until: c.until };
