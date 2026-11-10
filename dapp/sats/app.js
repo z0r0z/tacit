@@ -54,6 +54,7 @@ function short(s, n = 10) { return s && s.length > 2 * n + 1 ? `${s.slice(0, n)}
 
 function fmtSats(n) { return `${Number(n).toLocaleString('en-US')} sats`; }
 
+const TAC_ASSET_ID = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
 function fmtUnits(units, decimals = 8) {
   const neg = units < 0n; const s = (neg ? -units : units).toString().padStart(decimals + 1, '0');
   const out = decimals ? `${s.slice(0, -decimals)}.${s.slice(-decimals)}`.replace(/\.?0+$/, '') : s;
@@ -760,7 +761,9 @@ async function refreshAssets() {
     for (const [id, x] of (h instanceof Map ? h.entries() : [])) {
       const bal = typeof x.balance === 'bigint' ? x.balance : 0n;
       if (bal <= 0n) continue;
-      const a = { id: x.assetIdHex || id, ticker: x.ticker && x.ticker !== '???' ? x.ticker : short(x.assetIdHex || id, 4), decimals: Number.isInteger(x.decimals) ? x.decimals : 0, balance: bal };
+      // (TAC's places are fixed; a scan that has not read an asset's etch yet holds it at 0 places, which is not its count)
+      const aid = String(x.assetIdHex || id).toLowerCase();
+      const a = { id: x.assetIdHex || id, ticker: aid === TAC_ASSET_ID ? 'TAC' : x.ticker && x.ticker !== '???' ? x.ticker : short(x.assetIdHex || id, 4), decimals: aid === TAC_ASSET_ID ? 8 : !x.unknownAsset && Number.isInteger(x.decimals) ? x.decimals : 0, balance: bal };
       held.push(a);
       rows.push(`${fmtUnits(bal, a.decimals)} ${a.ticker}`);
     }
