@@ -60,15 +60,15 @@ const show = (s) => `${s.pay} ${s.payAt} → ${s.get} ${s.getAt}${s.amt ? ' · '
 // what each link should open on: [link, pay, where, get, where, amount]
 const CASES = [
   // the private names carry their side
-  ['/?from=tETH&to=cBTC&amt=0.01', 'tETH', 'Private', 'cBTC', 'Private', '0.01'],
-  ['/?from=tETH&to=cUSD&amt=0.5', 'tETH', 'Private', 'cUSD', 'Private', '0.5'],
-  ['/?from=cETH&to=cTAC&amt=1', 'tETH', 'Private', 'TAC', 'Private', '1'],
-  ['/?from=tETH&to=USDC&amt=0.01', 'tETH', 'Private', 'USDC', 'Wallet', '0.01'],
+  ['/?from=tETH&to=cBTC&amt=0.01', 'tETH', 'DeFi pool', 'cBTC', 'DeFi pool', '0.01'],
+  ['/?from=tETH&to=cUSD&amt=0.5', 'tETH', 'DeFi pool', 'cUSD', 'DeFi pool', '0.5'],
+  ['/?from=cETH&to=cTAC&amt=1', 'tETH', 'DeFi pool', 'TAC', 'DeFi pool', '1'],
+  ['/?from=tETH&to=USDC&amt=0.01', 'tETH', 'DeFi pool', 'USDC', 'Wallet', '0.01'],
   // the private flag, as it always was
-  ['/?from=ETH&to=cBTC&amt=0.01&private', 'ETH', 'Wallet', 'cBTC', 'Private', '0.01'],
-  ['/?from=ETH&to=cBTC&amt=0.01&private=to', 'ETH', 'Wallet', 'cBTC', 'Private', '0.01'],
-  ['/?from=tETH&to=cBTC&amt=0.01&private=both', 'tETH', 'Private', 'cBTC', 'Private', '0.01'],
-  ['/?from=TAC&to=cBTC&amt=5&private', 'TAC', 'Private', 'cBTC', 'Private', '5'],
+  ['/?from=ETH&to=cBTC&amt=0.01&private', 'ETH', 'Wallet', 'cBTC', 'DeFi pool', '0.01'],
+  ['/?from=ETH&to=cBTC&amt=0.01&private=to', 'ETH', 'Wallet', 'cBTC', 'DeFi pool', '0.01'],
+  ['/?from=tETH&to=cBTC&amt=0.01&private=both', 'tETH', 'DeFi pool', 'cBTC', 'DeFi pool', '0.01'],
+  ['/?from=TAC&to=cBTC&amt=5&private', 'TAC', 'DeFi pool', 'cBTC', 'DeFi pool', '5'],
   // old links keep their meaning: cusd / cBTC alone are the public tokens
   ['/?to=cusd', 'ETH', 'Wallet', 'tacUSD', 'Wallet', ''],
   ['/?from=ETH&to=cBTC&amt=0.01', 'ETH', 'Wallet', 'tacBTC', 'Wallet', '0.01'],
@@ -86,7 +86,7 @@ for (const [link, pay, payAt, get, getAt, amt] of CASES) {
 // sharing: the card's copy link carries the pair, the private sides and the amount, and opening it brings the same form back
 {
   const page = await ctx.newPage();
-  const first = await open(page, '/?from=tETH&to=cBTC&amt=0.01', { pay: 'tETH', payAt: 'Private', get: 'cBTC', getAt: 'Private', amt: '0.01' });
+  const first = await open(page, '/?from=tETH&to=cBTC&amt=0.01', { pay: 'tETH', payAt: 'DeFi pool', get: 'cBTC', getAt: 'DeFi pool', amt: '0.01' });
   ok(first.pay === 'tETH' && first.get === 'cBTC', 'share: the link opens tETH → cBTC');
   ok(!/amt=/.test(first.search), `share: the amount stays out of the address bar of a private swap (${first.search})`);
   await page.waitForFunction(() => !document.querySelector('#hx-swap #copy')?.hidden, null, { timeout: 30000 }).catch(() => {});
@@ -96,7 +96,7 @@ for (const [link, pay, payAt, get, getAt, amt] of CASES) {
   ok(q.get('from') === 'tETH' && q.get('to') === 'cBTC' && q.get('amt') === '0.01' && q.get('private') === 'both', `share: the copy link names both coins, both sides private and the amount (${link.search})`);
   await page.close();
   const again = await ctx.newPage();
-  const s = await open(again, link.pathname + link.search, { pay: 'tETH', payAt: 'Private', get: 'cBTC', getAt: 'Private', amt: '0.01' });
+  const s = await open(again, link.pathname + link.search, { pay: 'tETH', payAt: 'DeFi pool', get: 'cBTC', getAt: 'DeFi pool', amt: '0.01' });
   ok(show(s) === show(first), `share: opening the copy link brings the same form back (${show(s)})`);
   await again.close();
 }

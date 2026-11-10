@@ -8212,13 +8212,13 @@ await step('hxexit', async () => {
     // the holdings panel lists what the pool holds, and a link opens the card on that USDC going out to ETH
     await until(p, () => !!document.querySelector('#dash [data-dash-open="device/usdc"]'), null, 120000);
     await p.evaluate(() => { location.hash = '#card=pay:usdc:eth'; });
-    await until(p, () => /^USDC/.test(document.querySelector('#hx-swap #pay-coin')?.textContent || '') && document.querySelector('#hx-swap #pay-at')?.textContent === 'Private' && /^ETH/.test(document.querySelector('#hx-swap #get-coin')?.textContent || ''), null, 120000);
+    await until(p, () => /^USDC/.test(document.querySelector('#hx-swap #pay-coin')?.textContent || '') && document.querySelector('#hx-swap #pay-at')?.textContent === 'Pay pool' && /^ETH/.test(document.querySelector('#hx-swap #get-coin')?.textContent || ''), null, 120000);
     ok(true, 'hxexit: the holdings panel lists the USDC the pool holds, and a link opens the card on it going out to ETH');
     await lander();
     // the card opened on that pool's USDC, going out as USDC (a swap's route is zQuoter's, whose scans are too slow on a fork: tests/swap-held-exit-fork.mjs prices those)
     await p.goto(r.url + '#card=pay:usdc:usdc');
     await p.waitForSelector('#hx-swap #amt', { timeout: 120000 });
-    ok(/^USDC/.test(await q('#pay-coin')) && await q('#pay-at') === 'Private' && /^USDC/.test(await q('#get-coin')) && await q('#get-at') === 'Wallet', `hxexit: the link opens USDC held privately going out as USDC to the wallet (${await q('#pay-coin')} ${await q('#pay-at')} → ${await q('#get-coin')} ${await q('#get-at')})`);
+    ok(/^USDC/.test(await q('#pay-coin')) && await q('#pay-at') === 'Pay pool' && /^USDC/.test(await q('#get-coin')) && await q('#get-at') === 'Wallet', `hxexit: the link opens USDC held privately going out as USDC to the wallet (${await q('#pay-coin')} ${await q('#pay-at')} → ${await q('#get-coin')} ${await q('#get-at')})`);
     await until(p, (h) => (document.querySelector('#hx-swap #pay-side')?.textContent || '').replace(/,/g, '').startsWith(`Balance ${h} · Max`), held, 240000);
     ok(true, `hxexit: the From side reads what the pool holds, in USDC's own six decimals (${await q('#pay-side')})`);
     // the picker: four Pay pool coins among the private ones, each marked, with what they hold, and the switch between where coins are held
@@ -12257,7 +12257,7 @@ await step('routeahead', async () => {
     await tabClick(p, 'shield');
     await until(p, () => /You hold 0\.25 tETH privately/.test(document.querySelector('#hx-have')?.textContent || ''), null, 300000);
     await p.click('[data-hxin="swap:eth:tac"]');                                    // "Swap it": private tETH for TAC
-    await until(p, () => /^TAC/.test((document.querySelector('#hx-swap #get-coin')?.textContent || '').trim()) && /private/i.test(document.querySelector('#hx-swap #get-at')?.textContent || '') && /Balance 0\.25/.test(document.querySelector('#hx-swap #pay-side')?.textContent || ''), null, 90000)
+    await until(p, () => /^TAC/.test((document.querySelector('#hx-swap #get-coin')?.textContent || '').trim()) && /DeFi pool/i.test(document.querySelector('#hx-swap #get-at')?.textContent || '') && /Balance 0\.25/.test(document.querySelector('#hx-swap #pay-side')?.textContent || ''), null, 90000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | pay ${await text(p, '#hx-swap #pay-coin')} / ${await text(p, '#hx-swap #pay-side')} | get ${await text(p, '#hx-swap #get-coin')} / ${await text(p, '#hx-swap #get-at')}`); });
     await p.fill('#hx-swap #amt', '0.05');
     await until(p, () => /Proof\s*made: the relay only sends it/.test(document.querySelector('#hx-swap #rcpt')?.textContent || ''), null, 300000).catch(() => {});
@@ -14222,7 +14222,7 @@ await step('chaintile', async () => {
         await until(p2, () => document.querySelector('#hx-swap #go')?.textContent === 'Move to the private pool' && !document.querySelector('#hx-swap #go').disabled, null, 240000)
           .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | go: ${await goText(p2)} | ${await said(p2)}`); });
         const homesOut = await text(p2, '#hx-swap #homes'), flowOut = await p2.evaluate(() => document.querySelector('[data-flow]')?.dataset.flow);
-        ok(flowOut === 'withdraw' && /Take it to/.test(homesOut) && /private pool/.test(homesOut) && /TAC, private/.test(await said(p2)), `chaintile: Withdraw from the chain offers the private pool, quoted (${flowOut}; ${homesOut.trim()}; ${(await said(p2)).slice(0, 120)})`);
+        ok(flowOut === 'withdraw' && /Take it to/.test(homesOut) && /DeFi pool/.test(homesOut) && /TAC, private/.test(await said(p2)), `chaintile: Withdraw from the chain offers the private pool, quoted (${flowOut}; ${homesOut.trim()}; ${(await said(p2)).slice(0, 120)})`);
         await shot(p2, 'chaintile-hop');
         const hop0 = Number(await rpc('eth_blockNumber')), t1 = Date.now();
         await p2.click(MV.go);
