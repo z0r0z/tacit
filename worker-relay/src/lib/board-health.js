@@ -48,3 +48,29 @@ export function runpodVerdict(m, { hoursWarn, hoursCritical }) {
   if (hours < hoursWarn) return { alerts: [{ level: 'warning', msg: `${what} — top it up soon`, extra: {} }], log: null };
   return { alerts: [], log: what };
 }
+
+// The vast.ai account's credit: the account is prepaid with no autobill, and at zero credit vast stops EVERY instance on it (the board's GPU box and
+// the help desk node together). Hours left = credit over the running instances' hourly rent (dph_total); a warning under VAST_HOURS_WARN, critical
+// under VAST_HOURS_CRITICAL and at no credit. Bandwidth is billed per GB on top of dph_total, so a big download spends faster than this says.
+// An instance asked to run that is not running warns: after a top-up vast may queue the start while its GPU is rented to someone else.
+// One stopped on purpose is only logged.
+export function vastVerdict(user, instances, { hoursWarn, hoursCritical }) {
+  if (!user || user.credit == null || !Array.isArray(instances)) return { alerts: [], log: 'vast: credit unreadable' };
+  const credit = Number(user.credit);
+  const name = (i) => i.label || String(i.id);
+  // the rent of every instance meant to run, including one whose start vast has queued (it costs as soon as it starts)
+  const running = instances.filter((i) => i.actual_status === 'running' || i.intended_status === 'running');
+  const waiting = instances.filter((i) => i.actual_status !== 'running' && i.intended_status === 'running');
+  const perHour = running.reduce((a, i) => a + Number(i.dph_total || 0), 0);
+  const alerts = waiting.map((i) => ({ level: 'warning', msg: `vast instance ${name(i)} (${i.id}) was asked to run but is ${i.actual_status || 'not running'}: vast queues a start while its GPU is rented to someone else`, extra: {} }));
+  if (credit <= 0 && instances.length) {
+    alerts.unshift({ level: 'critical', msg: `vast credit is $${credit.toFixed(2)}: vast stops every instance (${instances.map(name).join(', ')}) — top up at console.vast.ai, then start them again`, extra: {} });
+    return { alerts, log: null };
+  }
+  if (!running.length || perHour <= 0) return { alerts, log: `vast: credit $${credit.toFixed(2)}, ${running.length ? 'cost unknown' : 'no instance running'}` };
+  const hours = credit / perHour;
+  const what = `vast credit $${credit.toFixed(2)} lasts about ${hours.toFixed(0)} h for ${running.map(name).join(', ')} at $${perHour.toFixed(2)}/h`;
+  if (hours < hoursCritical) alerts.unshift({ level: 'critical', msg: `${what} — top it up at console.vast.ai or they all stop`, extra: {} });
+  else if (hours < hoursWarn) alerts.unshift({ level: 'warning', msg: `${what} — top it up at console.vast.ai soon`, extra: {} });
+  return { alerts, log: hours < hoursWarn ? null : what };
+}

@@ -236,6 +236,11 @@ export const CFG = {
   runpodApiKey: opt('RUNPOD_API_KEY', ''),
   runpodHoursWarn: num('RUNPOD_HOURS_WARN', 48),
   runpodHoursCritical: num('RUNPOD_HOURS_CRITICAL', 12),
+  // The vast.ai account the board's GPU box and the help desk node rent from: with a key (a read-only one is enough), the monitor reads its prepaid
+  // credit and says how many hours of rent are left, since vast stops every instance at zero.
+  vastApiKey: opt('VAST_API_KEY', ''),
+  vastHoursWarn: num('VAST_HOURS_WARN', 48),
+  vastHoursCritical: num('VAST_HOURS_CRITICAL', 12),
   proveFailuresCritical: num('PROVE_FAILURES_CRITICAL', 4),
   proverBoardQuietSecs: num('PROVER_BOARD_QUIET_SECS', 600),
   // The monitor warns on a proof the pool refused from a board worker within this many seconds (two 5-minute runs), not on the lifetime count.

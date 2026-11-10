@@ -18,6 +18,8 @@
 //   * TAC on Ethereum against its backing (mainnet): the ERC-20 over the 21M etched or wTAC under one TAC per wTAC
 //     (critical); a second pool registration over a canonical token, or a retired TAC token changing supply
 //     (warning) — lib/tac-supply.js; TAC_SUPPLY_CHECK=off skips it
+//   * the vast.ai credit the GPU box and the help desk node rent on: under VAST_HOURS_WARN / VAST_HOURS_CRITICAL hours of rent, or zero (vast
+//     then stops every instance), and an instance asked to run that vast has not started — lib/board-health.js; needs VAST_API_KEY
 //
 // The lag alert is the "reflection is falling behind" signal that catches a stalled
 // reflection worker before the backlog grows into a batch too large to prove.
@@ -40,7 +42,7 @@ import { settleFundsNeed, treasuryFloors } from './lib/settle-fees.js';
 import { poolBooks } from './lib/evm-pool-solvency.js';
 import { readTacSupply } from './lib/tac-supply.js';
 import { scanLagVerdict } from './lib/scan-lag.js';
-import { boardVerdict, runpodVerdict } from './lib/board-health.js';
+import { boardVerdict, runpodVerdict, vastVerdict } from './lib/board-health.js';
 import { publicClient, relayWallet, watchedWallets, ERC20_ABI, PROVE, readPool, readReflectionDigest, HEADER_RELAY, RELAY_ABI, POOL } from './lib/chain.js';
 import { safeErr } from './lib/safe-err.js';
 import { tacitChainVerdict } from './lib/tacit-chain-health.js';
@@ -686,9 +688,23 @@ async function checkRunPod() {
   if (v.log) log(v.log);
 }
 
+// The vast.ai account's prepaid credit, read only with VAST_API_KEY: at zero vast stops the board's GPU box and the help desk node together.
+async function checkVast() {
+  if (!CFG.vastApiKey) return;
+  const get = async (path) => {
+    const res = await fetch(`https://console.vast.ai/api/v0/${path}`, { headers: { authorization: `Bearer ${CFG.vastApiKey}` }, signal: AbortSignal.timeout(15000) });
+    return res.ok ? res.json() : null;
+  };
+  let user = null, instances = null;
+  try { [user, instances] = await Promise.all([get('users/current/'), get('instances/').then((j) => j?.instances ?? null)]); } catch { user = null; }
+  const v = vastVerdict(user, instances, { hoursWarn: CFG.vastHoursWarn, hoursCritical: CFG.vastHoursCritical });
+  for (const a of v.alerts) await alert(a.level, a.msg, a.extra);
+  if (v.log) log(v.log);
+}
+
 async function main() {
   log(`monitor run — worker=${CFG.workerBase} relay=${relayWallet ? relayWallet.account.address : '(no key on this service — watching by address)'}`);
-  const results = await Promise.allSettled([checkProve(), checkEth(), checkReflectionLag(), checkProverKinds(), checkRunPod(), checkSnapshotCapacity(), checkFarmHealth(), checkPointsFunding(), checkReflectionStall(), checkBurnsAwaitingBundle(), checkQueue(), checkEthStatePending(), checkCrossOutFold(), checkEvmPoolKeepers(), checkTacSupply(), checkBitcoinScan(), checkProverBoard(), checkTacitChain()]);
+  const results = await Promise.allSettled([checkProve(), checkEth(), checkReflectionLag(), checkProverKinds(), checkRunPod(), checkVast(), checkSnapshotCapacity(), checkFarmHealth(), checkPointsFunding(), checkReflectionStall(), checkBurnsAwaitingBundle(), checkQueue(), checkEthStatePending(), checkCrossOutFold(), checkEvmPoolKeepers(), checkTacSupply(), checkBitcoinScan(), checkProverBoard(), checkTacitChain()]);
   for (const r of results) if (r.status === 'rejected') log('check threw:', r.reason?.message || r.reason);
   log(`monitor done — ${criticals} critical${criticals === 1 ? '' : 's'}`);
   // Exit non-zero so the cron run is marked failed even with no webhook configured. A check that THREW is

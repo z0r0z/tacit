@@ -3,7 +3,7 @@
 // Run: node --test tests/board-health.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { boardVerdict, runpodVerdict } from '../src/lib/board-health.js';
+import { boardVerdict, runpodVerdict, vastVerdict } from '../src/lib/board-health.js';
 
 const cfg = { quietSecs: 600, badWindowSecs: 600, waitWarnSecs: 60 };
 const box = (o = {}) => ({ name: 'tacit-a5000', proved: 7761, failed: 0, bad: 90, lastBadSeconds: 86_400, lastSeenSeconds: 0, ...o });
@@ -53,4 +53,33 @@ test('runpod: no pod running is a log line, low rent on a running pod warns or p
   assert.equal(pod(5).alerts[0].level, 'critical');
   assert.equal(pod(20).alerts[0].level, 'warning');
   assert.deepEqual(pod(100).alerts, []);
+});
+
+test('vast: hours of rent left warn or page, zero credit pages naming every instance, a queued start warns', () => {
+  const lim = { hoursWarn: 48, hoursCritical: 12 };
+  const box = (o = {}) => ({ id: 58679966, label: 'tacit-prover', actual_status: 'running', intended_status: 'running', dph_total: 0.25, ...o });
+  const node = (o = {}) => ({ id: 59942676, label: 'tacit-helpdesk-node-2', actual_status: 'running', intended_status: 'running', dph_total: 0.0622, ...o });
+  // $0.3122/h: $50 lasts 160 h, $10 about 32 h, $2 about 6 h
+  const fine = vastVerdict({ credit: 50 }, [box(), node()], lim);
+  assert.deepEqual(fine.alerts, []);
+  assert.match(fine.log, /vast credit \$50\.00 lasts about 160 h for tacit-prover, tacit-helpdesk-node-2 at \$0\.31\/h/);
+  const soon = vastVerdict({ credit: 10 }, [box(), node()], lim);
+  assert.equal(soon.alerts.length, 1);
+  assert.equal(soon.alerts[0].level, 'warning');
+  assert.match(soon.alerts[0].msg, /lasts about 32 h .* top it up at console\.vast\.ai soon/);
+  assert.equal(vastVerdict({ credit: 2 }, [box(), node()], lim).alerts[0].level, 'critical');
+  const zero = vastVerdict({ credit: 0 }, [box({ actual_status: 'exited', intended_status: 'stopped' }), node({ actual_status: 'exited', intended_status: 'stopped' })], lim);
+  assert.equal(zero.alerts.length, 1);
+  assert.equal(zero.alerts[0].level, 'critical');
+  assert.match(zero.alerts[0].msg, /vast credit is \$0\.00: vast stops every instance \(tacit-prover, tacit-helpdesk-node-2\)/);
+  // after a top-up the start was queued: the GPU had been rented to someone else
+  const queued = vastVerdict({ credit: 4.9 }, [box({ actual_status: 'exited' }), node()], lim);
+  assert.deepEqual(queued.alerts.map((a) => a.level), ['warning', 'warning']);
+  assert.match(queued.alerts[0].msg, /lasts about 16 h for tacit-prover, tacit-helpdesk-node-2/, 'the queued box counts: the node alone would show 79 h');
+  assert.match(queued.alerts[1].msg, /tacit-prover \(58679966\) was asked to run but is exited/);
+  const parked = vastVerdict({ credit: 5 }, [box({ actual_status: 'exited', intended_status: 'stopped' })], lim);
+  assert.deepEqual(parked.alerts, [], 'stopped on purpose is only logged');
+  assert.match(parked.log, /no instance running/);
+  assert.equal(vastVerdict(null, [], lim).log, 'vast: credit unreadable');
+  assert.equal(vastVerdict({ credit: 3 }, null, lim).alerts.length, 0);
 });

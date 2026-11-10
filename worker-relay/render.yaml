@@ -320,6 +320,9 @@ services:
         value: "1"
       - key: RUNPOD_API_KEY
         sync: false
+      # The vast.ai account the GPU box and the help desk node rent on (a read-only key): warns at 48 h of credit, pages at 12 h and at zero.
+      - key: VAST_API_KEY
+        sync: false
       - key: ZROUTER_ADDR
         value: "0x000000000000FB114709235f1ccBFfb925F600e4"
       - key: REFLECTION_GENESIS_HEIGHT
