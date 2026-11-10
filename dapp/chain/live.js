@@ -7,7 +7,7 @@
 import { ETH_NODES } from '/eth-nodes.js';
 import { hedgedRpc } from '/trade/rpc.js';
 import { MULTICALL3, encodeBatch, decodeBatch } from '/trade/batch.js';
-import { tacitChain } from '/tacit-chain-config.js?cb=803c3298';
+import { tacitChain } from '/tacit-chain-config.js?cb=ef0714cd';
 
 const API = 'https://api.tacit.finance';
 const SEATS = '0x00000000001f703eae70de3b528213e4802790fb';
