@@ -4,7 +4,7 @@ import * as M from '/vault/math.js?cb=ac1ed53e';
 import { makeRpc, RPCS, ARCHIVE, HISTORY, makeReader, QUEUE_EXPIRY } from '/vault/chain.js?cb=ebe79b37';
 import { makeFeed } from '/vault/feed.js?cb=00271e4a';
 import { makePools } from '/vault/pools.js?cb=af05311d';
-import { makeVaultEngine, KIND, BATCH_MAX, StopWaiting } from '/vault/engine.js?cb=835c9ab2';
+import { makeVaultEngine, KIND, BATCH_MAX, StopWaiting } from '/vault/engine.js?cb=39e1e9a9';
 import { makeConnect, UserStopped } from '/trade/connect.js?cb=92e87ca4';
 
 const $ = (s, r = document) => r.querySelector(s);

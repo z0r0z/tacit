@@ -376,8 +376,8 @@ export function makeVaultEngine({ S, VS, ROUTER, rpc, feed, wallet, W, who, canA
     const stopped = new Promise((_, no) => { hold.stop = () => no(new StopWaiting()); });
     return Promise.race([send(), stopped]).finally(() => { clearTimeout(hint); hold.stop = null; });
   }
-  const askWallet = (send, round) => waitWallet(send, () => setFeed(`Waiting for your wallet to confirm batch ${round}. Open it to answer, or <button class="linkbtn" type="button" data-feed-stop>stop waiting</button>.`), F);
-  const askTicket = (send) => waitWallet(send, () => say(`Waiting for your wallet. Open it to answer, or ${ui.stop}.`), S);
+  const askWallet = (send, round) => waitWallet(send, () => setFeed(`Waiting for your wallet to confirm batch ${round}. Open it to answer. No popup? Reconnect your wallet, or <button class="linkbtn" type="button" data-feed-stop>stop waiting</button>.`), F);
+  const askTicket = (send) => waitWallet(send, () => say(`Waiting for your wallet. Open it to answer. No popup? Reconnect your wallet, or ${ui.stop}.`), S);
   async function verifiedRecords(part, recs, note) {
     const pack = () => encBatch(recs.map((r) => ({ to: r.to, data: r.data })));
     let data = pack(), sim = await simulate(MULTICALL3, data, W.account);
