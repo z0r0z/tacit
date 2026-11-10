@@ -141,7 +141,7 @@ export function mountChainLive({ top, rest }) {
     else if (!chain) out.push(cell('Ethereum', '', 'Ethereum unread', 'Read again shortly', 'unread'));
     else if (!forced) {
       const last = chain.height > 0 && chain.last > 0 ? ago(now - chain.last).replace(' ago', '') : 'no block yet';
-      out.push(cell('Ethereum', 'ok', 'Forced queue empty', `${chain.height > 0 && chain.last > 0 ? `Last block ${last} ago. ` : ''}Anything posted is taken in within ${mins(chain.forceDelay)}`, 'verified'));
+      out.push(cell('Ethereum', 'ok', 'Forced queue empty', `${chain.height > 0 && chain.last > 0 ? (last === 'just now' ? 'Last block just now. ' : `Last block ${last} ago. `) : ''}Anything posted is taken in within ${mins(chain.forceDelay)}`, 'verified'));
     } else {
       const age = chain.oldest != null ? now - chain.oldest : null, by = `taken in within ${mins(chain.forceDelay)}`;
       out.push(cell('Ethereum', age != null && age > chain.forceDelay * 0.75 ? 'bad' : 'busy', `${forced} forced entr${forced === 1 ? 'y' : 'ies'}`, age != null ? `oldest ${mins(age)}, ${by}` : by, `${forced} forced`));

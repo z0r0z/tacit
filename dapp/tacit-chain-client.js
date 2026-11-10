@@ -284,6 +284,7 @@ export function makeChainClient({ cfg, rpcCall, priv, system, route = null, rout
     const list = kept().filter((e) => e.id !== id);
     const old = kept().find((e) => e.id === id);
     const leaves = [5, 6, 7].map((i) => '0x' + strip(spent.submission.publics).slice(64 * i, 64 * i + 64)).filter((l) => l !== ZERO_LEAF);
+    for (const l of leaves) madeKeys.add(leafKey(l));
     const own = (spent.created || []).filter((c) => c.self && BigInt(c.value) > 0n).map((c) => ({ leaf: '0x' + BigInt(c.leaf).toString(16).padStart(64, '0'), value: String(c.value) }));
     const e = { ...old, ...meta, id, submission: spent.submission, nullifiers: spent.nullifiers || [], leaves, ...(own.length || !old?.own ? { own } : {}), at: old?.at ?? Date.now() };
     if (spent.deposit) e.deposit = { shares: String(spent.deposit.shares), amount: String(spent.deposit.amount), cx: spent.deposit.cx, cy: spent.deposit.cy, body: spent.deposit.body };
@@ -291,7 +292,7 @@ export function makeChainClient({ cfg, rpcCall, priv, system, route = null, rout
     keepAll(list);
     return e;
   }
-  const forget = (id) => keepAll(kept().filter((e) => e.id !== id));
+  const forget = (id) => { const e = kept().find((x) => x.id === id); if (e) noteMade(e); keepAll(kept().filter((x) => x.id !== id)); };
   const mark = (id, meta) => keepAll(kept().map((e) => (e.id === id ? { ...e, ...meta } : e)));
   /// Whether a kept spend is done with: its notes are in the tree (it landed), or a note it spends was spent another way.
   async function settled(e) {
@@ -299,6 +300,10 @@ export function makeChainClient({ cfg, rpcCall, priv, system, route = null, rout
     for (const nf of e.nullifiers || []) if (await leader.spent(nf)) return 'spent';
     return null;
   }
+  // The notes this wallet's own spends made (a payment's change, a shield's note, a hop's change), kept for the visit: a note that lands for the wallet and is one of
+  // these is the wallet's own move arriving, not a payment to it (`ownLeaf`).
+  const madeKeys = new Set();
+  const noteMade = (e) => { for (const l of e.leaves || []) madeKeys.add(leafKey(l)); };
   const keptErr = (err, e) => Object.assign(err, { kept: e });
 
   /// Hands a spend to the leader and waits for it to land; drops the notes it spends from the wallet's list. The spend is kept until it
@@ -332,7 +337,7 @@ export function makeChainClient({ cfg, rpcCall, priv, system, route = null, rout
       await new Promise((ok) => setTimeout(ok, 4000));
     }
     await scan().catch(() => {});                                   // (its change is read before the spend that makes it is let go)
-    if (e.kind === 'hop' && e.commit && e.units) hopsKeep([...hopsKept().filter((h) => strip(h.commit) !== strip(e.commit)), { units: String(e.units), commit: '0x' + strip(e.commit), at: Date.now() }]);
+    hopNote(e);
     forget(e.id);
     const gone = new Set((spent.nullifiers || []).map(strip));
     st.notes = st.notes.filter((n) => !gone.has(strip(n.nullifier)));
@@ -355,6 +360,8 @@ export function makeChainClient({ cfg, rpcCall, priv, system, route = null, rout
   const hkey = () => `tacit-chain-hops-v1:${cfg.blocks.toLowerCase()}:${lane()}`;
   const hopsKept = () => { try { return JSON.parse(storage?.getItem(hkey()) || '[]'); } catch { return []; } };
   const hopsKeep = (list) => { try { list.length ? storage?.setItem(hkey(), JSON.stringify(list)) : storage?.removeItem?.(hkey()); } catch {} };
+  /// A hop that landed is kept until it is sent on, whichever way its landing was learnt (a reload finds it landed with no one waiting: `pending`).
+  const hopNote = (e) => { if (e.kind === 'hop' && e.commit && e.units) hopsKeep([...hopsKept().filter((h) => strip(h.commit) !== strip(e.commit)), { units: String(e.units), commit: '0x' + strip(e.commit), at: Date.now() }]); };
   /// How many landed hops of `units` for `commit` the landing contract holds unsent (TacitBlocks.hops).
   const hopsHeld = async (units, commit) => big(await call('hops(bytes32)', strip(hx(keccak_256(hexBytes(word(units) + strip(commit)))))));
 
@@ -435,13 +442,16 @@ export function makeChainClient({ cfg, rpcCall, priv, system, route = null, rout
     },
     /// Whether the wallet's last scan holds the note of this key (an `incomingNotes` key): its block landed.
     has: (key) => st.notes.some((x) => leafKey(x.leaf) === key),
+    /// Whether a note (a `noteList` / `incomingNotes` key) was made by one of this wallet's own spends, handed over this visit or still kept: the wallet's move
+    /// arriving, which is not a payment from anyone.
+    ownLeaf: (key) => madeKeys.has(key) || kept().some((e) => (e.leaves || []).some((l) => leafKey(l) === key)),
     /// The spends handed over and not landed, oldest first (those that landed or whose notes went another way are dropped here).
     async pending() {
       await ready();
       const gone = new Set();
       for (const e of kept()) {
-        if (!e.deposit && Date.now() - e.at > KEEP_MS) { gone.add(e.id); continue; }
-        if (await settled(e).catch(() => null)) gone.add(e.id);
+        if (!e.deposit && Date.now() - e.at > KEEP_MS) { gone.add(e.id); noteMade(e); continue; }
+        if (await settled(e).catch(() => null)) { gone.add(e.id); noteMade(e); hopNote(e); }       // (a hop is kept as one that landed: the leader sends it on, and if it does not, it is offered)
       }
       // (read again: a spend kept, or a mark made, while this was asking is not overwritten)
       const left = kept().filter((e) => !gone.has(e.id));

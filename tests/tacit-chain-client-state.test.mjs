@@ -73,6 +73,49 @@ const note = { index: 3, value: '1000', s: '11'.repeat(32), leaf: '5', nullifier
   await c.resubmit(JSON.parse(st.getItem(pk))[0]);
   assert.ok(st.getItem(hk) && JSON.parse(st.getItem(hk))[0].units === '100', 'the landed hop is kept to be sent on');
 }
+// 2b. a hop that landed while no one was waiting (the page was closed after it was handed over) is recorded when the next visit finds it landed,
+// so a leader that does not send it on leaves the button to send it
+{
+  const f = async (url) => (url.includes('/leaf/') ? res(200, { index: 7 }) : url.includes('/notes') ? res(200, { leaves: [], memos: [], next: 0, total: 0 }) : res(404, { error: 'x' }));
+  const { c, st, hk, pk } = await mk(f);
+  st.setItem(pk, JSON.stringify([mkEntry({ kind: 'hop', units: '250', commit: '0x' + '6b'.repeat(32), own: [] })]));
+  assert.equal(st.getItem(hk), null, 'nothing is kept for sending on yet');
+  const left = await c.pending();
+  assert.equal(left.length, 0, 'the landed hop is no longer a pending spend');
+  const hops = JSON.parse(st.getItem(hk) || '[]');
+  assert.equal(hops.length, 1, 'but it is kept to be sent on');
+  assert.equal(hops[0].units, '250');
+  assert.equal(hops[0].commit, '0x' + '6b'.repeat(32));
+  // a payment that landed is not a hop
+  const g = await mk(f);
+  g.st.setItem(g.pk, JSON.stringify([mkEntry({ kind: 'pay' })]));
+  await g.c.pending();
+  assert.equal(g.st.getItem(g.hk), null, 'a plain payment leaves no hop behind');
+}
+// 2c. a note the wallet's own spend made is told from a payment to it (the request screen calls a landed note that is not its own a payment)
+{
+  const f = async (url, o) => {
+    if (o?.method === 'POST') return res(200, { id: 'rid', status: 'queued' });
+    if (url.includes('/receipt/')) return res(200, { id: 'rid', status: 'landed', height: 5 });
+    if (url.includes('/notes')) return res(200, { leaves: [], memos: [], next: 0, total: 0 });
+    return res(404, { error: 'x' });
+  };
+  const { c, st, pk } = await mk(f);
+  const key = '01'.repeat(32), other = '02'.repeat(32);
+  assert.equal(c.ownLeaf(key), false, 'nothing of its own yet');
+  st.setItem(pk, JSON.stringify([mkEntry({ leaves: ['0x' + key] })]));
+  assert.equal(c.ownLeaf(key), true, 'a leaf of a spend still kept is its own');
+  assert.equal(c.ownLeaf(other), false, 'another note is not');
+  await c.resubmit(JSON.parse(st.getItem(pk))[0]);
+  assert.equal(JSON.parse(st.getItem(pk) || '[]').length, 0, 'the spend landed and is no longer kept');
+  assert.equal(c.ownLeaf(key), true, 'its note is still told as its own once the spend is let go');
+  assert.equal(c.ownLeaf(other), false);
+  // one a later visit finds landed (dropped by `pending`) is its own too
+  const g = await mk(async (url) => (url.includes('/leaf/') ? res(200, { index: 1 }) : res(404, { error: 'x' })));
+  g.st.setItem(g.pk, JSON.stringify([mkEntry({ leaves: ['0x' + other] })]));
+  await g.c.pending();
+  assert.equal(g.c.ownLeaf(other), true, 'a landed spend found by a reload is its own');
+}
 // 3. a shield's deposit entry does not expire (it is what a reclaim needs); a plain spend does
 {
   const f = async () => res(404, { error: 'x' });
