@@ -23,9 +23,9 @@ export function configFor(w, { quote = {}, policy = {}, alertSecs, reserve, inve
 
 // The service on a socket of its own, driven by the world's clock: `w.lpTick` becomes its tick.
 // The provider's service over a world, without a front: for a test that reaches it some other way than HTTP.
-export async function service(w, { config = configFor(w), quoteStore = memStore(), swaps = w.lpStore, btc = w.lBtc } = {}) {
+export async function service(w, { config = configFor(w), quoteStore = memStore(), swaps = w.lpStore, btc = w.lBtc, evm = w.lEvmCtx } = {}) {
   const alerts = [], logs = [];
-  const svc = makeLpService({ seed: w.lKeys.seed, btc, evm: w.lEvmCtx, swaps, quoteStore, config, now: w.clock.now, log: (o) => logs.push(o), alert: (o) => alerts.push(o) });
+  const svc = makeLpService({ seed: w.lKeys.seed, btc, evm, swaps, quoteStore, config, now: w.clock.now, log: (o) => logs.push(o), alert: (o) => alerts.push(o) });
   await svc.start();
   w.lpStore = swaps;
   w.lpTick = () => svc.tick();

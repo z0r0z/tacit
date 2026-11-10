@@ -22,6 +22,7 @@
 // for the dust its note keeps.
 export const TAKE_VB = 750;
 export const takeSatsAt = (feeRate) => 546 + Math.ceil(TAKE_VB * feeRate * 2);
+const FEE_WARM_MS = 30000;
 
 import { makeEthereumLocker } from './fastbridge-el.js';
 
@@ -96,9 +97,10 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
 
   // ── what can be taken ──
   const inv = { at: -Infinity, held: null, p: null };
-  function readInventory() {
+  // A read newer than maxAge is used even while another is under way; the tick starts the next at half the age a quote accepts.
+  function readInventory(maxAge = refreshSecs) {
+    if (now() - inv.at < maxAge) return Promise.resolve(inv);
     if (inv.p) return inv.p;
-    if (now() - inv.at < refreshSecs) return Promise.resolve(inv);
     inv.p = (async () => {
       try {
         if (evm.available) inv.held = await evm.available();
@@ -200,14 +202,16 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
     for (const q of await quoteStore.list()) if (q.validUntil + 2 * DAY < now() && !used.has(q.id) && !reservations.has(q.id)) await quoteStore.del(q.id);
   }
 
-  // keeps the fee estimate fresh between quotes, so a quote does not wait on the explorers; not waited for, a slow explorer holds up no swap
+  // Keeps what a quote needs fresh between quotes, the fee estimate and the pool's inventory, each read again at half the age a quote accepts,
+  // so a quote does not wait on the explorers or the Ethereum nodes. Not waited for: a slow read holds up no swap.
   let feeWarned = false;
-  const warmFee = () => {
-    if (btc.feeRate) btc.feeRate().then(() => { feeWarned = false; }, (e) => { if (!feeWarned) log({ level: 'warn', msg: 'no fee estimate', error: String((e && e.message) || e).slice(0, 300) }); feeWarned = true; });
+  const warmUp = () => {
+    if (btc.feeRate) btc.feeRate(FEE_WARM_MS).then(() => { feeWarned = false; }, (e) => { if (!feeWarned) log({ level: 'warn', msg: 'no fee estimate', error: String((e && e.message) || e).slice(0, 300) }); feeWarned = true; });
+    readInventory(refreshSecs / 2).catch(() => {});
   };
 
   async function tick() {
-    warmFee();
+    warmUp();
     try {
       await dropDeadHolds().catch(() => {});
       const recs = await swaps.list();

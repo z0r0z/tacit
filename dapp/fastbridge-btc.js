@@ -88,9 +88,9 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
     if (!seen.length) throw new Error(`no explorer answered a fee estimate (${why.join(', ')})`);
     return Math.max(1, Math.ceil(seen.length % 2 ? seen[(seen.length - 1) / 2] : (seen[seen.length / 2 - 1] + seen[seen.length / 2]) / 2));
   }
-  async function feeRate() {
+  async function feeRate(maxAgeMs = feeFreshMs) {          // a caller that wants it newer than a quote needs it (the LP's tick) says so
     const t = nowMs();
-    if (fee && t - fee.at < feeFreshMs) return fee.v;
+    if (fee && t - fee.at < maxAgeMs) return fee.v;
     try {
       if (feeLost && t - feeLost.at < feeRetryMs) throw feeLost.error;          // a read that just failed is not repeated for every caller
       feeRead ||= readFee().then((v) => { fee = { v, at: nowMs() }; feeLost = null; return v; }, (e) => { feeLost = { at: nowMs(), error: e }; throw e; }).finally(() => { feeRead = null; });

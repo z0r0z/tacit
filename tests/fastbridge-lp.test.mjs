@@ -925,6 +925,52 @@ test('a tick keeps the fee estimate warm without waiting for it, and a failure t
   assert.equal(s.logs.filter((l) => l.msg === 'no fee estimate').length, 2, 'and again when it fails after having worked');
 });
 
+test('a caller that wants the fee estimate newer than a quote needs it can have a read started early', async () => {
+  const { w } = httpWorld();
+  const est = { 3: 4 };
+  const a = await startEsploraMock({ sim: w.btc, feeEstimates: est });
+  closers.push(a.close);
+  const clock = { t: 2_000_000 };
+  const chain = esploraChain(w, [a.base], { nowMs: () => clock.t });
+  const reads = () => a.state.gets.filter((p) => p === '/fee-estimates').length;
+  assert.equal(await chain.feeRate(), 4);
+  clock.t += 35_000;
+  est[3] = 6;
+  assert.equal(await chain.feeRate(), 4);
+  assert.equal(reads(), 1, 'a quote is content with an estimate of 35 seconds ago');
+  assert.equal(await chain.feeRate(30_000), 6, 'a caller that wants it under 30 seconds old reads again');
+  assert.equal(reads(), 2);
+  assert.equal(await chain.feeRate(), 6);
+  assert.equal(reads(), 2);
+});
+
+test('a tick reads the pool inventory again before it is too old, and a quote meanwhile goes on the one it has', async () => {
+  const { w } = httpWorld();
+  w.lEvm.fund(100_000n, 'inv');
+  let calls = 0, gate = null;
+  const evm = { ...w.lEvmCtx, available: async () => { calls++; if (gate) await gate; return w.lEvmCtx.available(); } };
+  const s = await serve(w, { evm });
+  const ask = () => Promise.race([call(s.base, 'POST', '/quote', { amount: '5000' }), new Promise((_, no) => setTimeout(() => no(new Error('the quote waited for the inventory read')), 3000))]);
+  assert.equal((await ask()).status, 200);
+  const first = calls;
+  assert.ok(first >= 1);
+  w.clock.advance(20);
+  await s.svc.tick();
+  assert.equal(calls, first, 'twenty seconds old is young enough: no new read');
+  w.clock.advance(20);
+  let release;
+  gate = new Promise((r) => { release = r; });
+  await s.svc.tick();
+  assert.equal(calls, first + 1, 'forty seconds is past half of the minute a quote accepts: the tick starts a read');
+  assert.equal((await ask()).status, 200, 'a quote does not wait for that read');
+  assert.equal(calls, first + 1, 'and starts none of its own');
+  release(); gate = null;
+  await new Promise((r) => setTimeout(r, 30));
+  w.clock.advance(25);
+  assert.equal((await ask()).status, 200);
+  assert.equal(calls, first + 1, 'the read made in the background is the one a quote finds, 25 seconds on');
+});
+
 test('the adapter broadcasts the commit and then the reveal, asks again while the commit spreads, and reports a refusal', async () => {
   const { w } = httpWorld();
   await startSwap(w, fakeQuote(w));
