@@ -158,8 +158,8 @@ const words = (pv) => Array.from({ length: pv.length / 32 }, (_, i) => hexOf(pv.
 const chunks = (b, n) => Array.from({ length: b.length / n }, (_, i) => hexOf(b.subarray(n * i, n * i + n)));
 
 /// What /landed takes for a block, from the lists it published.
-function landedBody(pv, l) {
-  return { words: words(pv), leaves: chunks(bytesOf(l.leaves), 32), memos: chunks(bytesOf(l.memos), MEMO_LEN), nullifiers: l.nullifiers };
+function landedBody(pv, l, spends = 0) {
+  return { words: words(pv), leaves: chunks(bytesOf(l.leaves), 32), memos: chunks(bytesOf(l.memos), MEMO_LEN), nullifiers: l.nullifiers, ...(spends ? { spends } : {}) };
 }
 
 let syncedTo = FROM_BLOCK - 1;
@@ -337,7 +337,7 @@ async function replayArchive() {
   const [onchain] = await view('state()', ['bytes32']), start = (await node('GET', '/state')).state;
   if (seq.first !== start || seq.last !== onchain) return log({ archiveSkipped: 'its blocks do not lead from the empty chain to the contract\'s state' });
   for (const b of seq.blocks) {
-    await node('POST', '/landed', landedBody(b.pv, b.lists));
+    await node('POST', '/landed', landedBody(b.pv, b.lists, b.spends));
     nodeHeight = b.height;
   }
   syncedTo = num(await rpc.call('eth_blockNumber'));

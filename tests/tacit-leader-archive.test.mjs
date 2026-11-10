@@ -29,7 +29,9 @@ const junk = new Map(files); junk.set(3, '{"publicValues":"0x00"}');
 assert.match(loadArchive(3, (h) => junk.get(h) ?? null).why, /block 3's file does not read/);
 const trunc = new Map(files); trunc.set(1, '{"publicValues":');
 assert.match(loadArchive(3, (h) => trunc.get(h) ?? null).why, /block 1's file does not read/);
-// a file written as the leader writes it when it builds a block (lists as the node gives them) reads too
-const built = JSON.stringify({ publicValues: hexOf(pv(7, 8)), lists: { leaves: '0x' + '01'.repeat(32), memos: '0x', nullifiers: [], anchors: [], deposits: '0x' }, includes: ['abc'] });
-assert.ok(loadArchive(1, () => built).ok);
+// a file written as the leader writes it when it builds a block (lists as the node gives them) reads too, and says how many spends the block held
+const built = JSON.stringify({ publicValues: hexOf(pv(7, 8)), lists: { leaves: '0x' + '01'.repeat(32), memos: '0x', nullifiers: [], anchors: [], deposits: '0x' }, includes: ['abc', 'def'] });
+const got = loadArchive(1, () => built);
+assert.ok(got.ok && got.blocks[0].spends === 2, 'a block the leader built: its two spends');
+assert.equal(loadArchive(3, read).blocks.map((x) => x.spends).join(), '0,0,0', 'one it only read has no count');
 console.log('leader archive: all passed');

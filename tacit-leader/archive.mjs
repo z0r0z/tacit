@@ -11,7 +11,8 @@ export function archiveEntry(pv, lists, ethBlock = null) {
   return { publicValues: hexOf(bytesOf(pv)), lists: { leaves: hexOf(bytesOf(lists.leaves)), memos: hexOf(bytesOf(lists.memos)), nullifiers: [...lists.nullifiers].map((n) => hexOf(bytesOf(n))) }, includes: [], ...(ethBlock != null ? { ethBlock } : {}) };
 }
 
-/// Blocks 1..`upTo` from the archive, each read and checked to start where the one before ended. → { ok: true, blocks: [{ height, pv, lists }], first (the state
+/// Blocks 1..`upTo` from the archive, each read and checked to start where the one before ended. → { ok: true, blocks: [{ height, pv, lists, spends (how many
+/// spends it held, from the leader's record of it) }], first (the state
 /// block 1 starts from), last (the state the last ends at) } or { ok: false, why }. `read(height)` gives a block's file as text, or null when there is none.
 export function loadArchive(upTo, read) {
   const blocks = [];
@@ -29,7 +30,7 @@ export function loadArchive(upTo, read) {
     if (prev !== null && word(pv, 0) !== prev) return { ok: false, why: `block ${h} does not start where block ${h - 1} ended` };
     if (first === null) first = word(pv, 0);
     prev = word(pv, 1);
-    blocks.push({ height: h, pv, lists: a.lists });
+    blocks.push({ height: h, pv, lists: a.lists, spends: Array.isArray(a.includes) ? a.includes.length : 0 });
   }
   return { ok: true, blocks, first, last: prev };
 }
