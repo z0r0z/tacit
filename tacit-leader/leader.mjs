@@ -28,7 +28,7 @@ import { fileURLToPath } from 'node:url';
 import { keccak_256 } from '../dapp/vendor/tacit-deps.min.js';
 import { decode, decodeLand, landCalldata, selector, encode, hexOf, bytesOf } from './abi.mjs';
 import { makeRpc, send as sendTx, addressOf, num, suggestedTip } from './rpc.mjs';
-import { feeTerms, readPrice, makeFeeDesk, admitPaying, blockReady } from './fees.mjs';
+import { feeTerms, readPrice, makeFeeDesk, admitPaying, blockReady, landCover } from './fees.mjs';
 import { archiveEntry, loadArchive } from './archive.mjs';
 import { makeBoardProver } from '../worker-relay/src/lib/board-prover.js';
 
@@ -345,7 +345,7 @@ async function replayArchive() {
 }
 
 // what waited when the node last stopped (its TACIT_NODE_MEMPOOL file) is admitted again once, after the first sync has replayed the chain
-let restored = false;
+let restored = false, lowGasAt = 0;
 async function step() {
   await sync();
   if (!restored) { restored = true; log({ restored: await node('POST', '/restore', {}).catch((e) => ({ error: String(e.message || e) })) }); }
@@ -406,6 +406,13 @@ async function step() {
   if (now < lastLanded + window_) {
     const [lead] = await view('turn()', ['address'], [], (await view('TURNS()', ['address']))[0]);
     if (BigInt(lead) !== 0n && lead.toLowerCase() !== me.toLowerCase()) { log({ waiting: 'not this leader\'s turn', lead }); return; }
+  }
+  // a block is proved only if its landing can be paid for: a wallet that cannot would have it proved (the board's provers work for it) and refused at the send,
+  // again each round. Waiting spends and forced entries stay as they are; the next step builds as soon as the wallet holds enough.
+  const short = landCover({ have: await rpc.call('eth_getBalance', [me, 'latest']), base: BigInt(blk.baseFeePerGas || 0), tip: await suggestedTip(rpc), gas: BigInt(env.LAND_GAS || 500_000) });
+  if (short) {
+    if (Date.now() - lowGasAt > 60_000) { lowGasAt = Date.now(); log({ lowGas: me, have: String(short.have), need: String(short.need), waiting: 'the leader wallet cannot pay for a landing' }); }
+    return;
   }
   const built = await node('POST', '/build', { time: now, queue: entries.map((e) => hexOf(e)), max: MAX_SPENDS, exclude, ...fees });
   log({ built: nodeHeight + 1, spends: built.includes.length, queueTaken: built.queueTaken });
