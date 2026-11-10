@@ -143,6 +143,9 @@ try {
   assert.ok(!bob.settling(), 'nothing of Bob\'s settles once his spends landed');
   const r3 = await bob.rate();
   assert.equal(r3.pool, 1000n * T - 220n * T, 'the pool lost exactly what left');
+  // the node counts the spends its landed blocks held (the front page adds them to its private transactions)
+  const counted = (await api('GET', '/state')).spends;
+  assert.ok(Number.isInteger(counted) && counted >= 5, `the node counts what landed (${counted})`);
   console.log(JSON.stringify({ ok: true, aliceTac: String(worthOf(again.balance(), r3)), bobTac: String(worthOf(bob.balance(), r3)), rate: String(r3.pool * 10n ** 8n / r3.shares) }));
 } finally {
   server.kill();

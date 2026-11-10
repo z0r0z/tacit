@@ -169,6 +169,9 @@ pub struct Leader {
     settles: Vec<SettleEntry>,
     receipts: BTreeMap<String, Value>,
     built: Option<Built>,
+    /// How many spends and settles the landed blocks held (GET /state `spends`): counted from the block this node built, or from what the leader says of a
+    /// block it replays (its own record of the block), so a restart that replays them counts the same.
+    spends: u64,
     /// The note tree of the leaves so far, with how many that was (GET /path/N reads paths from it).
     tree: Option<(usize, btc_pool_halo2::model::Tree)>,
     /// The ids of what was last written to the mempool file (a write is made only when they change).
@@ -330,6 +333,7 @@ impl Leader {
             settles: vec![],
             receipts: BTreeMap::new(),
             built: None,
+            spends: 0,
             tree: None,
             directory: Directory::open(std::env::var("TACIT_NODE_DIRECTORY").ok().filter(|f| !f.is_empty())),
             refused: BTreeMap::new(),
@@ -389,7 +393,7 @@ impl Leader {
         json!({
             "height": self.node.height, "state": hx(&s.digest()), "noteRoot": hx(&blk::fr_be(&s.notes.root)), "leaves": self.node.leaves.len(),
             "nullifiers": self.node.nf.records.len() - 1, "queue": { "len": s.queue_len, "hash": hx(&s.queue_hash) }, "chain": hx(&s.chain),
-            "pending": self.pending.len(), "settles": self.settles.len(),
+            "pending": self.pending.len(), "settles": self.settles.len(), "spends": self.spends,
             // a share is worth pool / shares units of 1e-8 TAC (each counted with the program's virtual units)
             "pool": s.pool.to_string(), "shares": s.shares.to_string(),
         })
@@ -722,6 +726,7 @@ impl Leader {
             bl.as_deref() == Some(leaves_cat.as_slice()) && bn.as_deref() == Some(nullifiers_land.as_slice())
         });
         let included = if ours { self.built.take().map(|b| ids_of(&b.out["includes"])).unwrap_or_default() } else { self.built = None; vec![] };
+        self.spends += if ours { included.len() as u64 } else { b["spends"].as_u64().unwrap_or(0) };
         for id in &included {
             self.receipts.insert(id.clone(), json!({ "id": id, "status": "landed", "height": height }));
         }
