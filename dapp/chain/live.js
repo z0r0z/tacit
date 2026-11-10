@@ -15,6 +15,7 @@ const SEATS = '0x00000000001f703eae70de3b528213e4802790fb';
 const VERIFIER = '0xb69f2584cbcff99a58c4e7002e8b89af54a6f4e2', LEADER = '0x841d93ae315e3d9af5fd98c09299ca62148ff65d';
 const BLOCK_VKEY = '0x00610fb0fa1b5d800e548c3cdcdf98ceb4288828be1cec1fb81e39004bad6ed6', SPEND_VK = '0xc85febd5ed7a2b00819d90960a17bf686b15d28183c7a207499204bd369bdfe4';
 const GH = 'https://github.com/src-company/tacit/';
+const TAC_TOKEN = '0xa1313eb9f3a445606d9583bcac3ebeb56a858279';
 const PROVER_SEEN_S = 600, STALL_S = 180, EVERY_MS = 30e3, BEAT_MS = 5e3, SHOWN = 10, MORE = 20, UNIT = 100000000n, FLOOR = 200000n;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const rpc = (method, params) => hedgedRpc(ETH_NODES, method, params, { hedgeMs: 1500, timeoutMs: 15e3 });
@@ -52,7 +53,7 @@ export function mountChainLive({ top, rest }) {
     <ol class="cl-chain" data-r="chain" aria-label="Latest blocks"></ol><div class="cl-cm"><span data-r="bn"></span><span class="cl-more" data-r="more"></span></div><div class="cl-flow" data-r="flow" aria-live="polite"></div><p class="cl-note" data-r="note"></p><div class="cl-stats" data-r="stats"></div><div class="sr" data-r="live" role="status" aria-live="polite"></div>`;
   rest.innerHTML = `<section class="tpg-panel"><h2 class="tpg-h">A share's worth, block by block</h2><div class="cl-chart" data-r="chart"></div></section>
     <section class="tpg-panel"><h2 class="tpg-h">What it rests on</h2><ul class="cl-facts" data-r="facts"></ul>
-      ${cfg && !cfg.dev ? '<details class="tpg-fold cl-tech"><summary>Chain facts</summary><div><ul class="cl-facts" data-r="tech"></ul></div></details>' : ''}</section>`;
+      ${cfg && !cfg.dev ? '<details class="tpg-fold cl-tech"><summary>Chain facts</summary><div><ul class="cl-facts" data-r="tech"></ul></div></details><details class="tpg-fold cl-tech"><summary>Lead blocks</summary><div><ul class="cl-facts" data-r="lead"></ul></div></details>' : ''}</section>`;
   const el = (k) => top.querySelector(`[data-r="${k}"]`) || rest.querySelector(`[data-r="${k}"]`);
   const put = (k, html) => { const e = el(k); if (e && e.__h !== html) { e.__h = html; e.innerHTML = html; } };   // drawn again only when it changed
   if (!cfg) { put('flow', '<p class="cl-off">The Tacit chain is not deployed here.</p>'); return { start() {}, stop() {} }; }
@@ -272,6 +273,27 @@ export function mountChainLive({ top, rest }) {
     ].join('');
   }
 
+  // who may lead and what it takes: the seat's price, the seats held, who leads now, the steps (the seats contract's own calls, on Etherscan)
+  async function leadRead() {
+    const at = (sel) => rpc('eth_call', [{ to: SEATS, data: '0x' + sel }, 'latest']);
+    const [seat, slot, held, lead] = await Promise.all([at('d1b17078'), at('d4005c4a'), at('9c5655d6'), at('40eedabb')]);
+    return { seat: BigInt(seat), slot: Number(BigInt(slot)), held: Number(BigInt(held)), leader: '0x' + String(lead).slice(26) };
+  }
+  function lead(d) {
+    if (!d) return '';
+    const li = (k, v) => `<li><span>${k}</span><span>${v}</span></li>`;
+    const w = (a, t) => `<a href="https://etherscan.io/address/${a}#writeContract" target="_blank" rel="noopener noreferrer">${t} ↗</a>`;
+    const seat = `${(Number(d.seat / 10n ** 15n) / 1000).toLocaleString('en-US', { maximumFractionDigits: 3 })} TAC`;
+    return [
+      li('Seat', `${seat} locked, back 7 days after you leave`),
+      li('Held', d.held ? `${int(d.held)} seat${d.held === 1 ? '' : 's'}` : 'None yet: open'),
+      li('Leads now', `${addr(d.leader)}${d.held ? '' : ' · leads while no seat is held'}`),
+      li('Slots', `${int(d.slot)} blocks (about ${Math.max(1, Math.round(d.slot * 12 / 60))} min), 16 to an epoch. Each seat leads its share`),
+      li('Take one', `${w(TAC_TOKEN, 'Approve TAC')} to the seats contract, then ${w(SEATS, 'join()')}. ${w(SEATS, 'leave(i)')} and claim() give it back`),
+      li('Then', `Run the node and leader (<a href="${GH}tree/main/tacit-leader" target="_blank" rel="noopener noreferrer">the guide ↗</a>) and call announce(url) with where your node takes spends`),
+    ].join('');
+  }
+
   // what a reader checks the chain against: its verifier and keys, where its data is, how to rebuild it, who may land and prove, how to leave
   function tech(chain) {
     const a = (path, t) => `<a href="${GH}${path}" target="_blank" rel="noopener noreferrer">${t} ↗</a>`;
@@ -306,6 +328,7 @@ export function mountChainLive({ top, rest }) {
     part(() => { put('more', more(hist)); put('bn', R.chain?.height ? `${int(R.chain.height)} blocks, each proven` : ''); });
     part(() => put('facts', facts(R.chain)));
     part(() => { if (el('tech')) put('tech', tech(R.chain)); });
+    part(() => { if (el('lead')) put('lead', lead(R.lead)); });
     part(() => put('chain', links(R, hist)));
     tick();
   }
@@ -331,6 +354,7 @@ export function mountChainLive({ top, rest }) {
     const src = {
       state: () => getJson(cfg.leader + '/state'), fee: () => getJson(cfg.leader + '/fee'),
       blocks: () => getJson(API + '/prover/blocks'), board: () => getJson(API + '/prover/board'), chain: () => onchain(),
+      ...(cfg.dev ? {} : { lead: () => leadRead() }),
     };
     try {
       await Promise.all(Object.entries(src).map(async ([k, f]) => {
