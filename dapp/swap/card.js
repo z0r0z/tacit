@@ -323,6 +323,9 @@ const placed = () => moving() && !!(S.at.pay || S.at.get || moveOf());
 // The front page's Shield and Withdraw tabs are this card held to one coin: Shield takes a wallet coin to the same coin held privately (in the
 // home the To side has, else the other), Withdraw a private coin back to the wallet. Only the From coin is picked; the To side follows it.
 // The Tacit chain is a private place a coin is shielded to from the DeFi pool too (its TAC, moved onto the chain), and withdrawn from back into it.
+// One ladder says which tab a move is: wallet, then the private pools, then the Tacit chain. Up is Shield, down is Withdraw, and the tab is the one the To side
+// sits on (a From coin opens the tab's own way, and the To side's rows offer the others).
+const LADDER = { wallet: 0, btc: 0, pay: 1, defi: 1, chain: 2 };
 let FLOW = null;
 function flowGet(k, at) {
   if (FLOW === 'withdraw') {
@@ -365,12 +368,15 @@ function mend(changed) {
   }
   return false;
 }
-// the To side's private home, chosen: the DeFi pool or the Pay pool, the same coin in either
+// the To side's home, chosen: the DeFi pool or the Pay pool (the same coin in either), or, taking private TAC out, the wallet or the Tacit chain
 function setHome(home) {
   if (S.busy || atOf('get') === home) return;
-  const was = S.get;
+  const was = S.get, wasAt = atOf('get');
   setAt('get', home); S.get = coinAt(was, home);
-  if (!pairOk(S.pay, atOf('pay'), S.get, home)) { setAt('get', home === 'pay' ? 'defi' : 'pay'); S.get = coinAt(was, atOf('get')); }
+  if (!pairOk(S.pay, atOf('pay'), S.get, home)) { setAt('get', home === 'pay' ? 'defi' : home === 'defi' ? 'pay' : wasAt); S.get = coinAt(was, atOf('get')); }
+  // the tab is the way the coin went on the ladder: up toward the chain is Shield, back down toward the wallet is Withdraw
+  const way = FLOW && (LADDER[atOf('get')] > LADDER[atOf('pay')] ? 'shield' : 'withdraw');
+  if (way && way !== FLOW) { setFlowNow(way); H.onFlow?.(way); }
   S.amt = fitAmt(S.amt);
   S.q = null; S.mq = null; changed(); paint(); requote(true);
 }
@@ -384,7 +390,7 @@ function chainMarks(cs) {
 // Private on the To side, when the coin can rest in either home: the two of them, side by side
 let HOMES_OPEN = false;
 function homesHtml() {
-  if (moving() && FLOW === 'withdraw' && atOf('pay') === 'chain' && pairOk(S.pay, 'chain', S.pay, 'defi')) return chainOutHtml();
+  if (takesOut()) return outHtml(atOf('pay'));
   if (!moving() || !isPrivAt(atOf('get'))) return '';
   const pa = atOf('pay'), eth = isEth(S.get) || S.get === 'teth', tac = S.get === lc(R.TAC);
   if (!eth && !tac) return '';
@@ -408,13 +414,21 @@ function homesHtml() {
   if (!open) return `<div class="rows-h"><span>Use it to</span><span class="chg" aria-hidden="true">Change</span></div>${at === 'pay' && pay ? pay : at === 'chain' ? chain : defi}`;
   return `<div class="rows-h"${HOMES_OPEN ? '' : ' data-open="1"'}><span>Use it to</span></div>${defi}${chain}${pay}`;
 }
-// Withdraw from the Tacit chain: to the wallet, or into the private pool, chosen as a home is
-function chainOutHtml() {
+// Private TAC taken out of the Tacit chain (to the wallet, or into the private pool) or out of the private pool (to the wallet, or onto the chain):
+// each place it can go is a row, whichever tab the card is on, and the row chosen sets the tab (setHome)
+const takesOut = () => {
+  if (!moving() || !FLOW) return false;
+  const at = atOf('pay'), k = S.pay;
+  if (at === 'chain') return FLOW === 'withdraw' && pairOk(k, 'chain', k, 'defi');
+  return at === 'defi' && k === lc(R.TAC) && pairOk(k, 'defi', k, 'chain') && pairOk(k, 'defi', k, 'wallet');
+};
+function outHtml(from) {
   const at = atOf('get');
-  const row = (home, t, sub) => `<button type="button" role="radio" class="c${HOMES_OPEN ? '' : ' one'}" data-home="${home}" aria-checked="${String(at === home)}" tabindex="${at === home ? 0 : -1}"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span class="rt"><b>${t}</b><small>${sub}</small></span><span class="ra"></span>${HOMES_OPEN ? '<span class="rd" aria-hidden="true"></span>' : ''}</button>`;
-  const wallet = row('wallet', 'To your wallet', 'public TAC on Ethereum'), defi = row('defi', 'Swap, farm, borrow', 'private pool');
-  if (!HOMES_OPEN) return `<div class="rows-h"><span>Take it to</span><span class="chg" aria-hidden="true">Change</span></div>${at === 'defi' ? defi : wallet}`;
-  return `<div class="rows-h"><span>Take it to</span></div>${wallet}${defi}`;
+  // (both places are shown at once, so what is on offer is seen and not kept behind Change)
+  const row = (home, t, sub) => `<button type="button" role="radio" class="c" data-home="${home}" aria-checked="${String(at === home)}" tabindex="${at === home ? 0 : -1}"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span class="rt"><b>${t}</b><small>${sub}</small></span><span class="ra"></span><span class="rd" aria-hidden="true"></span></button>`;
+  const wallet = row('wallet', 'To your wallet', 'public TAC on Ethereum');
+  const other = from === 'chain' ? row('defi', 'Swap, farm, borrow', 'DeFi pool') : row('chain', 'Fast private TAC', 'Tacit chain · quick sends, about a cent each');
+  return `<div class="rows-h" data-open="1"><span>Take it to</span></div>${wallet}${other}`;
 }
 // the Pay pool's chain, while ETH is in it on either side
 function chainHtml() {
