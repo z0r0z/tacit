@@ -1,8 +1,10 @@
 // The Bitcoin side of a fast bridge party on esplora explorers (a list of bases, asked in order, with the same bytes sent to
 // every base on a broadcast): the `btc` context of both role machines. Runs in a page and in the LP process.
 //
-//   makeEsploraBtcChain({ bases, prims, builder, fetchImpl, timeoutMs, feeTarget, retryMs, tacit, pool, ethGetStorageAt, poolAddress, binding, keccak256, secp })
+//   makeEsploraBtcChain({ bases, prims, builder, fetchImpl, timeoutMs, feeTarget, retryMs, feeFreshMs, feeStaleMs, feeRetryMs, nowMs, tacit, pool, ethGetStorageAt, poolAddress, binding, keccak256, secp })
 //     bases     ['https://mempool.space/api', 'https://blockstream.info/api', ...]
+//     feeFreshMs / feeStaleMs / feeRetryMs   how long a fee estimate is reused, how old one may be when no explorer answers, and how
+//                                            long after a failed read the explorers are left alone (a minute, two hours, 15 seconds)
 //     prims     makeBtcWallet({ priv, hrp }).prims        builder  makeAdaptorBtcTx({ prims, kit })
 //   The Ethereum locker also reads notes and whether they are spent on Ethereum, which takes the rest:
 //     tacit     the dapp's tacit.js namespace                 pool    the pool wallet's .pool
@@ -16,7 +18,7 @@ const DUST = 546;
 const ZERO_AUTH = '0x' + '00'.repeat(32);
 const KNOWN = /already (in|known)|txn-already|already in block|already exists|duplicate/i;
 
-export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGetStorageAt, poolAddress, binding, keccak256, secp, fetchImpl = fetch, timeoutMs = 20000, feeTarget = '3', retryMs = 1500 }) {
+export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGetStorageAt, poolAddress, binding, keccak256, secp, fetchImpl = fetch, timeoutMs = 20000, feeTarget = '3', retryMs = 1500, feeFreshMs = 60000, feeStaleMs = 2 * 3600000, feeRetryMs = 15000, nowMs = Date.now }) {
   const list = bases.map((b) => b.replace(/\/$/, ''));
   const wallet = { pub: prims.wallet.pub, priv: prims.wallet.priv, xonly: prims.wallet.pub.slice(1) };
   const address = prims.wallet.address();
@@ -67,12 +69,33 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
     const o = await getJson(`/tx/${need(txid)}/outspend/${Number(vout) >>> 0}`);
     return o && o.spent ? o.txid : null;
   }
-  async function feeRate() {
+  // The median of what the explorers estimate. An estimate moves slowly and every quote asks for one, so the last answer is kept
+  // for feeFreshMs and callers at the same moment share one read. A shared address can be rate limited by every explorer for
+  // hours: an answer up to feeStaleMs old then stands in, and without one the error names what each explorer said.
+  let fee = null, feeRead = null, feeLost = null;
+  async function readFee() {
+    const why = [];
     const seen = (await Promise.all(list.map(async (b) => {
-      try { const r = await fetchImpl(b + '/fee-estimates', { signal: AbortSignal.timeout(timeoutMs) }); if (!r.ok) return null; const f = await r.json(); const v = Number(f[feeTarget] ?? f['6']); return Number.isFinite(v) && v > 0 ? v : null; } catch { return null; }
+      const host = (() => { try { return new URL(b).host; } catch { return b; } })();
+      try {
+        const r = await fetchImpl(b + '/fee-estimates', { signal: AbortSignal.timeout(timeoutMs) });
+        if (!r.ok) { why.push(`${host} ${r.status}`); return null; }
+        const f = await r.json(), v = Number(f[feeTarget] ?? f['6']);
+        if (Number.isFinite(v) && v > 0) return v;
+        why.push(`${host} gave no estimate`); return null;
+      } catch (e) { why.push(`${host} ${e && e.name === 'TimeoutError' ? 'timed out' : 'was unreachable'}`); return null; }
     }))).filter((v) => v != null).sort((a, b) => a - b);
-    if (!seen.length) throw new Error('no explorer answered a fee estimate');
+    if (!seen.length) throw new Error(`no explorer answered a fee estimate (${why.join(', ')})`);
     return Math.max(1, Math.ceil(seen.length % 2 ? seen[(seen.length - 1) / 2] : (seen[seen.length / 2 - 1] + seen[seen.length / 2]) / 2));
+  }
+  async function feeRate() {
+    const t = nowMs();
+    if (fee && t - fee.at < feeFreshMs) return fee.v;
+    try {
+      if (feeLost && t - feeLost.at < feeRetryMs) throw feeLost.error;          // a read that just failed is not repeated for every caller
+      feeRead ||= readFee().then((v) => { fee = { v, at: nowMs() }; feeLost = null; return v; }, (e) => { feeLost = { at: nowMs(), error: e }; throw e; }).finally(() => { feeRead = null; });
+      return await feeRead;
+    } catch (e) { if (fee && t - fee.at < feeStaleMs) return fee.v; throw e; }
   }
   // the address's transactions, newest first, a page at a time (esplora gives the unconfirmed ones and 25 confirmed, then 25 after the last seen)
   async function history(addr = address, pages = 4) {

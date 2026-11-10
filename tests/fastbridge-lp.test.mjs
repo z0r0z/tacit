@@ -20,7 +20,8 @@ import { fetched, tacit } from './lib/btc-sim.mjs';
 import { pool, ASSET } from './lib/chain-sim.mjs';
 import { startEsploraMock, decodeRawTx } from './lib/esplora-mock.mjs';
 import { VALUE, world } from './lib/fastbridge-world.mjs';
-import { closers, configFor, serve, call, httpWorld, startSwap, bothDone } from './lib/lp-harness.mjs';
+import { closers, configFor, serve, service, call, httpWorld, startSwap, bothDone } from './lib/lp-harness.mjs';
+import { takeSatsAt } from '../dapp/fastbridge-provider.js';
 import { makeFileStore, makeFileLogStore } from '../fastbridge-lp/lib/store.mjs';
 import { makeFileStorage } from '../fastbridge-lp/lib/storage.mjs';
 import { makeNodeBtcChain } from '../fastbridge-lp/lib/btc-chain.mjs';
@@ -824,6 +825,104 @@ test('the explorer adapter goes on to the next explorer when one is down, errors
   const none = esploraChain(w, [dead.base, sick.base]);
   await assert.rejects(() => none.fetchTx(w.etch.txid));
   await assert.rejects(() => none.feeRate(), /no explorer answered a fee estimate/);
+});
+
+test('a fee estimate is reused for a minute, read once for callers together, and an older one stands in while no explorer answers', async () => {
+  const { w } = httpWorld();
+  const est = { 3: 4 };
+  let broken = false;
+  const a = await startEsploraMock({ sim: w.btc, feeEstimates: est, fail: (p) => broken && p === '/fee-estimates' });
+  closers.push(a.close);
+  const clock = { t: 1_000_000 };
+  const chain = esploraChain(w, [a.base], { nowMs: () => clock.t });
+  const reads = () => a.state.gets.filter((p) => p === '/fee-estimates').length;
+  assert.deepEqual(await Promise.all([1, 2, 3, 4, 5].map(() => chain.feeRate())), [4, 4, 4, 4, 4]);
+  assert.equal(reads(), 1, 'callers at the same moment share one read');
+  clock.t += 30_000;
+  assert.equal(await chain.feeRate(), 4);
+  assert.equal(reads(), 1, 'a minute has not passed');
+  est[3] = 9;
+  clock.t += 40_000;
+  broken = true;
+  assert.equal(await chain.feeRate(), 4, 'the explorers fail: the last estimate stands in');
+  assert.equal(reads(), 2);
+  assert.equal(await chain.feeRate(), 4);
+  assert.equal(reads(), 2, 'a read that just failed is not repeated for every caller');
+  clock.t += 20_000;
+  assert.equal(await chain.feeRate(), 4);
+  assert.equal(reads(), 3, 'it is tried again after 15 seconds');
+  broken = false;
+  clock.t += 20_000;
+  assert.equal(await chain.feeRate(), 9, 'an explorer that answers again is believed at once');
+  broken = true;
+  clock.t += 3 * 3600_000;
+  await assert.rejects(() => chain.feeRate(), /no explorer answered a fee estimate \(127\.0\.0\.1:\d+ 500\)/, 'an estimate more than two hours old is not used, and the error says what the explorer said');
+  broken = false;
+  clock.t += 20_000;
+  assert.equal(await chain.feeRate(), 9);
+});
+
+test('the error for a missing fee estimate says what each explorer answered', async () => {
+  const { w } = httpWorld();
+  const dead = await startEsploraMock({ sim: w.btc });
+  dead.state.down = true;
+  closers.push(dead.close);
+  const limited = await startEsploraMock({ sim: w.btc, fail: () => true });
+  closers.push(limited.close);
+  const bare = await startEsploraMock({ sim: w.btc, feeEstimates: {} });
+  closers.push(bare.close);
+  const chain = esploraChain(w, [dead.base, limited.base, bare.base]);
+  await assert.rejects(() => chain.feeRate(), (e) => /no explorer answered a fee estimate/.test(e.message) && /was unreachable/.test(e.message) && / 500/.test(e.message) && /gave no estimate/.test(e.message));
+});
+
+test('a quote rides out an explorer outage on the last fee estimate and says so when there is none', async () => {
+  const { w } = httpWorld();
+  w.lEvm.fund(100_000n, 'inv');
+  let broken = false;
+  const ex = await startEsploraMock({ sim: w.btc, feeEstimates: { 3: 4 }, fail: (p) => broken && p === '/fee-estimates' });
+  closers.push(ex.close);
+  const clock = { t: 5_000_000 };
+  const chain = esploraChain(w, [ex.base], { nowMs: () => clock.t });
+  const s = await serve(w, { btc: { ...w.lBtc, feeRate: chain.feeRate } });
+  const ask = async () => call(s.base, 'POST', '/quote', { amount: '5000' });
+  const first = await ask();
+  assert.equal(first.status, 200);
+  assert.equal(first.body.takeSats, takeSatsAt(4));
+  broken = true;
+  clock.t += 10 * 60_000;
+  const during = await ask();
+  assert.equal(during.status, 200, 'the explorers are down: the quote is made on the estimate of ten minutes ago');
+  assert.equal(during.body.takeSats, takeSatsAt(4));
+  clock.t += 3 * 3600_000;
+  assert.equal((await ask()).status, 500, 'with nothing recent to go on there is no quote');
+  assert.ok(s.logs.some((l) => l.msg === 'a request failed' && /no explorer answered a fee estimate \(.* 500\)/.test(l.error)), 'and the log names the cause');
+  broken = false;
+  clock.t += 20_000;
+  assert.equal((await ask()).status, 200);
+});
+
+test('a tick keeps the fee estimate warm without waiting for it, and a failure to read one is logged once', async () => {
+  const { w } = httpWorld();
+  const calls = [];
+  let mode = 'hang';
+  const feeRate = () => { calls.push(mode); return mode === 'hang' ? new Promise(() => {}) : mode === 'fail' ? Promise.reject(new Error('no explorer answered a fee estimate (x 429)')) : Promise.resolve(3); };
+  const s = await service(w, { btc: { ...w.lBtc, feeRate } });
+  const t0 = Date.now();
+  await s.svc.tick();
+  assert.ok(Date.now() - t0 < 2000, 'a tick does not wait for the explorers');
+  assert.deepEqual(calls, ['hang']);
+  mode = 'fail';
+  await s.svc.tick(); await s.svc.tick();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(s.logs.filter((l) => l.msg === 'no fee estimate').length, 1, 'one line however many ticks fail');
+  assert.match(s.logs.find((l) => l.msg === 'no fee estimate').error, /x 429/);
+  mode = 'ok';
+  await s.svc.tick();
+  await new Promise((r) => setTimeout(r, 20));
+  mode = 'fail';
+  await s.svc.tick();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(s.logs.filter((l) => l.msg === 'no fee estimate').length, 2, 'and again when it fails after having worked');
 });
 
 test('the adapter broadcasts the commit and then the reveal, asks again while the commit spreads, and reports a refusal', async () => {

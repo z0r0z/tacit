@@ -200,7 +200,14 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
     for (const q of await quoteStore.list()) if (q.validUntil + 2 * DAY < now() && !used.has(q.id) && !reservations.has(q.id)) await quoteStore.del(q.id);
   }
 
+  // keeps the fee estimate fresh between quotes, so a quote does not wait on the explorers; not waited for, a slow explorer holds up no swap
+  let feeWarned = false;
+  const warmFee = () => {
+    if (btc.feeRate) btc.feeRate().then(() => { feeWarned = false; }, (e) => { if (!feeWarned) log({ level: 'warn', msg: 'no fee estimate', error: String((e && e.message) || e).slice(0, 300) }); feeWarned = true; });
+  };
+
   async function tick() {
+    warmFee();
     try {
       await dropDeadHolds().catch(() => {});
       const recs = await swaps.list();
