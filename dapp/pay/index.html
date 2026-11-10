@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-0EiqO3wN1QKhWDVL31pXZUAgCct9Sd761cz90DjRvNI=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://tacit-api.onrender.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-OsuWpoCtot94h0c1buBaOa8GotYHcrlZ0YnkUj6GIGU=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://tacit-api.onrender.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay</title>
 <meta name="description" content="Pay BTC, TAC and ETH privately from one key and one tacit1 address. Every payment is made on your device.">
@@ -20,7 +20,7 @@
 <meta name="theme-color" content="#15130E" media="(prefers-color-scheme: dark)">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <!-- Every module the page loads, one round trip instead of five: build/build.mjs expands these roots to their static imports.; those after the bar are asked for by the module itself, once the first group has arrived. -->
-<!-- preload-roots: /vendor/tacit-deps.min.js /prf-wallet.js /tacit-wallet-known.js /evm-wallet.js /walletconnect.js /tacit-address.js /bip352.js /address-id.js | /tacit-unified.js /qr.js -->
+<!-- preload-roots: /vendor/tacit-deps.min.js /prf-wallet.js /tacit-wallet-known.js /evm-wallet.js /walletconnect.js /tacit-address.js /bip352.js /address-id.js /address-view.js | /tacit-unified.js /qr.js -->
 <!-- preload:begin -->
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="/prf-wallet.js">
@@ -32,6 +32,7 @@
 <link rel="modulepreload" href="/tacit-address.js">
 <link rel="modulepreload" href="/bip352.js">
 <link rel="modulepreload" href="/address-id.js?cb=c4fa5a58">
+<link rel="modulepreload" href="/address-view.js?cb=6cebac8b">
 <!-- preload:end -->
 <style>
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
@@ -690,6 +691,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
 <div class="toasts" id="toast-container" popover="manual"></div>
 
 <script type="module">
+import { addrView } from '/address-view.js?cb=6cebac8b';
 const forwardOld = (h) => {
   if (/^#(btc|tac)([&/]|$)/.test(h)) return false;
   const eth = /^#eth(?:\/(.*))?$/.exec(h);
@@ -737,6 +739,8 @@ const escMap = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#
 class Raw { constructor(s) { this.s = s; } }
 const part = (v) => v instanceof Raw ? v.s : Array.isArray(v) ? v.map(part).join('') : v == null || v === false ? '' : String(v).replace(/[&<>"']/g, (c) => escMap[c]);
 const html = (strs, ...vals) => new Raw(strs.reduce((a, s, i) => a + part(vals[i - 1]) + s));
+// an address in a row the reader checks: short, with every character still in the page (find, copy) and a tap to open it
+const viewAddr = (a, n = 4) => new Raw(addrView(a, n, /^tacit1/.test(a) ? 10 + n : n + 2));
 const mount = (el, view) => { if (el) el.innerHTML = view.s; };
 const mountOnce = (el, view) => { if (el && el._drawn !== view.s) { el._drawn = view.s; el.innerHTML = view.s; } };
 const sayOnce = (el, view) => mountOnce(el, view instanceof Raw ? view : html`${view}`);
@@ -1269,7 +1273,7 @@ const nameRecord = memoRoute(async (n) => (await getNames()).resolveName(n));
 const btcRoute = memoRoute(async (raw) => {
   let s = String(raw || '').trim().replace(/\s/g, ''), name = null;
   if (isName(s)) { const r = await (await getNames()).resolveName(lc(s)); name = r.name; s = r.address; if (!s) throw new Error(`${r.name} has no Tacit address with Bitcoin keys.`); }
-  const lo = lc(s), t = await loadTacit(), shown = short(lo, 10), id = addressId(lo);
+  const lo = lc(s), t = await loadTacit(), shown = viewAddr(lo, 10), id = addressId(lo);
   if (/^0x[0-9a-f]{40}$/.test(lo)) throw new Error('That is an Ethereum address. Pay it in ETH.');
   if (/^tacit1/.test(lo)) {
     let d;
@@ -1887,11 +1891,11 @@ const tacRoute = memoRoute(async (raw) => {
   if (isName(s)) {
     const r = await (await getNames()).resolveName(lc(s));
     name = r.name;
-    if (r.pool) { await checkPool(r.pool, `${r.name}’s record carries an invalid pool key.`); return { kind: 'pool', to: r.pool, name, shown: short(r.pool, 10), addressId: addressId(r.address) }; }
+    if (r.pool) { await checkPool(r.pool, `${r.name}’s record carries an invalid pool key.`); return { kind: 'pool', to: r.pool, name, shown: viewAddr(r.pool, 10), addressId: addressId(r.address) }; }
     if (!r.address) throw new Error(`${r.name} has no Tacit address.`);
     s = r.address;
   }
-  const lo = lc(s), shown = short(lo, 10), id = addressId(lo);
+  const lo = lc(s), shown = viewAddr(lo, 10), id = addressId(lo);
   if (/^0x[0-9a-f]{40}$/.test(lo)) throw new Error('That is an Ethereum address. TAC here goes to a Tacit or pool address.');
   if (/^bp1/.test(lo)) {
     const X = await getSecret();
@@ -2425,7 +2429,7 @@ function paintReq() {
   el.hidden = !r;
   if (!r) return sayOnce($('#hreq-status'), '');
   const unit = r.mode === 'tac' ? 'TAC' : 'BTC';
-  const to = r.route ? html`${r.route.name ? html`<b class="nw">${r.route.name}</b> → ` : ''}<b class="nw">${r.route.shown}</b>` : r.err ? html`<span class="err">${r.err}</span>` : html`<b class="nw">${short(r.to, 10)}</b> · looking it up…`;
+  const to = r.route ? html`${r.route.name ? html`<b class="nw">${r.route.name}</b> → ` : ''}<b class="nw">${r.route.shown}</b>` : r.err ? html`<span class="err">${r.err}</span>` : html`<b class="nw">${viewAddr(r.to, 10)}</b> · looking it up…`;
   keepFocus(el, () => {
     mountOnce($('#hreq-body'), html`<div class="lbl"><span>Payment request</span><button class="link" type="button" id="rq-x">dismiss</button></div>
       <div class="req-a num">${r.amount ? `${fmt(r.amount, 8, 8)} ${unit}` : html`<small>Any amount of ${unit}</small>`}</div>

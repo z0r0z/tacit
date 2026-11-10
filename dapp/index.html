@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-UUirmqkF3MYZgQM/sL6KBjodPPXo/8bpMfaeoLT/fDo=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-64v3CvZZB0j9ffYUgPVADQLfFhnqSlotQTnv/4a47bI=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -33,7 +33,7 @@
 <meta name="theme-color" content="#E8E0CC" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#15130E" media="(prefers-color-scheme: dark)">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-<!-- preload-roots: /storage-fallback.js /vendor/tacit-deps.min.js /prf-wallet.js /tacit-wallet-known.js /tab-key.js /tacit-address.js /bip352.js /evm-wallet.js /walletconnect.js /evm-account.js /evm-tx.js /tac-airdrop.js /evm-trade-venues.js /confidential-payout.js /address-id.js /wallet-balances.js /trade/farm-read.js /bridge-all.js /lp-zap.js /farm-ops.js /relay-outcome.js /btc-borrow.js /bridge-out.js /bridge/track.js /bridge-in.js /bridge-tick.js /tacit-session.js /activity.js /swap/card.js | | /confidential-pool-ux.js /confidential-deployments.js -->
+<!-- preload-roots: /storage-fallback.js /vendor/tacit-deps.min.js /prf-wallet.js /tacit-wallet-known.js /tab-key.js /tacit-address.js /bip352.js /evm-wallet.js /walletconnect.js /evm-account.js /evm-tx.js /tac-airdrop.js /evm-trade-venues.js /confidential-payout.js /address-id.js /address-view.js /wallet-balances.js /trade/farm-read.js /bridge-all.js /lp-zap.js /farm-ops.js /relay-outcome.js /btc-borrow.js /bridge-out.js /bridge/track.js /bridge-in.js /bridge-tick.js /tacit-session.js /activity.js /swap/card.js | | /confidential-pool-ux.js /confidential-deployments.js -->
 <!-- preload:begin -->
 <link rel="modulepreload" href="/storage-fallback.js">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
@@ -54,6 +54,7 @@
 <link rel="modulepreload" href="/zrouter-guard.js">
 <link rel="modulepreload" href="/confidential-payout.js?cb=c27b4853">
 <link rel="modulepreload" href="/address-id.js?cb=c4fa5a58">
+<link rel="modulepreload" href="/address-view.js?cb=6cebac8b">
 <link rel="modulepreload" href="/wallet-balances.js?cb=b768cab5">
 <link rel="modulepreload" href="/trade/farm-read.js?cb=112a01b9">
 <link rel="modulepreload" href="/bridge-all.js?cb=4b6de3ff">
@@ -2388,6 +2389,7 @@ import { parseRecipient } from '/confidential-payout.js?cb=c27b4853';
 import { planMerge, planAll, countAll, opsCompared } from '/bridge-all.js?cb=4b6de3ff';
 import { aprFrom, shieldedApr as shieldedAprOf, poolWorthEth } from '/trade/farm-read.js?cb=112a01b9';
 import { addressId } from '/address-id.js?cb=c4fa5a58';
+import { addrView } from '/address-view.js?cb=6cebac8b';
 import { balanceRows } from '/wallet-balances.js?cb=b768cab5';
 import { PXS_KEY, PX_CALLS, pxFigures, paintPx, pxState } from '/px-strip.js?cb=fe8eebc5';
 import { zapPlan, zapPlanFor, zapCalldata, zapSettleCalldata, zapSplitSearch, zapWorth } from '/lp-zap.js?cb=4823580d';
@@ -2532,6 +2534,8 @@ class Raw { constructor(s) { this.s = s; } }
 const part = (v) => v instanceof Raw ? v.s : Array.isArray(v) ? v.map(part).join('') : v == null || v === false ? '' : String(v).replace(/[&<>"']/g, (c) => escMap[c]);
 const html = (strs, ...vals) => new Raw(strs.reduce((a, s, i) => a + part(vals[i - 1]) + s));
 const mount = (el, view) => { el.innerHTML = view?.s ?? ''; };
+// an address in a row the reader checks: short, with every character still in the page (find, copy) and a tap to open it
+const viewAddr = (a, n = 4) => new Raw(addrView(a, n));
 const COUNTED = new WeakSet();
 const countIO = 'IntersectionObserver' in window && !matchMedia('(prefers-reduced-motion: reduce)').matches
   ? new IntersectionObserver((es) => { for (const e of es) if (e.isIntersecting) { countIO.unobserve(e.target); runCount(e.target); } }, { threshold: 0.6 })
@@ -3697,7 +3701,7 @@ async function selfDo(run, spec) {
     if (have != null && have < need) {
       if (on) throw Object.assign(new Error(`Sending it yourself pays the network fee, about ${gasEth(need)} ETH, from ${your()} (${short(S.address, 6)}). It holds ${gasEth(have)}. Add a little ETH there, then press the button again.`), { said: true });
       say(status(), html`<span class="err">Sending it yourself pays the network fee, about ${gasEth(need)} ETH, from ${your()}. It holds ${gasEth(have)}. Send a little ETH to it, then press the button again.</span>
-        <div class="kv"><span>Address</span><b class="mono">${short(S.address, 10)}</b><button class="link" type="button" data-selfcopy="${S.address}">copy</button></div>${selfOffer(spec, false)}`);
+        <div class="kv"><span>Address</span><b class="mono">${viewAddr(S.address, 10)}</b><button class="link" type="button" data-selfcopy="${S.address}">copy</button></div>${selfOffer(spec, false)}`);
       return;
     }
     const t = await getUx(), priv = walletPriv();
@@ -5102,7 +5106,7 @@ render.wallet = () => {
     <div class="amt"><input id="ac-mv" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="ETH"><span class="u">${eth}ETH</span></div>`;
   if (WAL.mode === 'add') {
     mount(f, html`
-      <div class="kv"><span>Address</span><b class="mono">${short(a.address, 10)}</b><button class="link" type="button" data-copy="${a.address}">copy</button></div>
+      <div class="kv"><span>Address</span><b class="mono">${viewAddr(a.address, 10)}</b><button class="link" type="button" data-copy="${a.address}">copy</button></div>
       <p class="note">Send ETH to it from any wallet or exchange. On Ethereum it pays for everything here; on <span class="nw">${chainMarks([8453, 4663])},</span> for the private pool there.${S.wallet ? ' Or add some from your wallet here; that links the two on chain.' : html` Or <button class="link" type="button" id="ac-connect">connect a wallet</button> to add from it.`}</p>
       ${S.wallet ? html`${amountField()}<button class="btn" type="button" id="ac-go">Add from wallet</button>` : ''}`);
     const cn = $('#ac-connect');
@@ -5246,7 +5250,7 @@ function renderProve() {
     </div>`
     : way === 'credit' ? html`<ol class="steps">
       <li class="step done"><span class="n">1</span><div><h3>Your prover account</h3>
-        <div class="kv"><span>Key address</span><b class="mono">${short(a.address, 8)}</b><button class="link" type="button" data-copy="${a.address}">copy</button></div>
+        <div class="kv"><span>Key address</span><b class="mono">${viewAddr(a.address, 8)}</b><button class="link" type="button" data-copy="${a.address}">copy</button></div>
         <div class="kv"><span>Prover credit</span><b class="num" id="sp-credit"><span class="sk" style="--w:7ch"></span></b></div>
         <div class="kv"><span>Enough for</span><b id="sp-proofs"><span class="sk" style="--w:9ch"></span></b></div>
         <div class="kv"><span>ETH for network fees</span><b class="num" id="sp-eth"><span class="sk" style="--w:6ch"></span></b><button class="link" type="button" data-fund>Add ETH</button></div>
@@ -6556,7 +6560,7 @@ function v1Send(el, status) {
       if (split && units + split <= held) cutAhead('eth', units, split);
       else if (!split && units) lockAhead('eth', units, r);
       mount(rc, html`
-        ${r.name ? html`<div class="kv"><span>${r.name}</span><b>${short(r.address || '', 10)}</b></div>` : html`<div class="kv"><span>Recipient</span><b>${short(raw, 10)}</b></div>`}${idRow(r.address || raw)}
+        ${r.name ? html`<div class="kv"><span>${r.name}</span><b>${viewAddr(r.address || '', 10)}</b></div>` : html`<div class="kv"><span>Recipient</span><b>${viewAddr(raw, 10)}</b></div>`}${idRow(r.address || raw)}
         ${split && units + split <= held ? html`<div class="kv"><span>Relay fee to ${freeNotes(P.scan?.eth.notes).some((n) => BigInt(n.value) >= units + split) ? 'split a note' : 'combine notes'}</span><b>${fmt(split, 8, 8)} tETH</b></div>` : ''}
         ${units ? html`<div class="kv"><span>They get about</span><b>${fmt(units > claim ? units - claim : 0n, 8, 8)} tETH</b></div>` : ''}`);
       rc.hidden = false;
@@ -8416,7 +8420,7 @@ function renderDevice(el) {
       const over = wb != null && amount > wb;
       go.disabled = over;
       if (over) warn(rc, 'More than your wallet balance.');
-      else { mount(rc, html`${raw ? html`<div class="kv"><span>To</span><b>${dsv.r.label ? `${dsv.r.label} → ` : ''}${short(dsv.r.bp, 8)}</b></div>${idRow(dsv.r.id || dsv.r.bp)}` : ''}${pointsRow(amount, 'dev', c)}`); rc.hidden = false; }
+      else { mount(rc, html`${raw ? html`<div class="kv"><span>To</span><b>${dsv.r.label ? `${dsv.r.label} → ` : ''}${viewAddr(dsv.r.bp, 8)}</b></div>${idRow(dsv.r.id || dsv.r.bp)}` : ''}${pointsRow(amount, 'dev', c)}`); rc.hidden = false; }
     };
     toEl.addEventListener('input', check);
     $('#d-max').onclick = () => { if (wb != null) { const keep_ = c.chainId === 1 ? 3n * 10n ** 15n : 2n * 10n ** 14n, v = wb > keep_ ? wb - keep_ : 0n; amt.value = v ? plain(v, 18) : ''; amt.dispatchEvent(new Event('input')); } };
@@ -8537,10 +8541,10 @@ function renderDevice(el) {
       ${uni ? html`<div class="blk"><div class="kv"><span>Your Tacit address</span><b class="mono">${tacitShort(S.key.tacit)}</b><button class="link" type="button" data-copy="${S.key.tacit}">copy</button></div>
         ${idRow(S.key.tacit)}
         <p class="note">Paid at your tacit1 address, it lands in your private balance on any chain. Anyone using Tacit can pay you privately with it, in any pool, and it never appears on chain.</p></div>` : ''}
-      <div class="blk"><div class="kv"><span>Pool address</span><b class="mono">${short(W.address, 10)}</b><button class="link" type="button" data-copy="${W.address}">copy</button></div>
+      <div class="blk"><div class="kv"><span>Pool address</span><b class="mono">${viewAddr(W.address, 10)}</b><button class="link" type="button" data-copy="${W.address}">copy</button></div>
         ${idRow(W.address)}
         <p class="note">For private sends within this pool, from another Tacit user’s device. Nothing on chain links a payment to it.</p></div>
-      <div class="blk"><div class="kv"><span>Deposit address</span><b class="mono">${short(W.receiveBox, 8)}</b><button class="link" type="button" data-copy="${W.receiveBox}">copy</button></div>
+      <div class="blk"><div class="kv"><span>Deposit address</span><b class="mono">${viewAddr(W.receiveBox, 8)}</b><button class="link" type="button" data-copy="${W.receiveBox}">copy</button></div>
         <p class="note">Send ETH here from any wallet or exchange, choosing ${chainTag(c.chainId)} as the network. It moves into your private balance within minutes, less at most 0.25%.${min ? html` The relay takes it in from ${fmt(min, 18, 4)} ETH, a floor that moves with network fees${c.chainId === 1 ? '; for less, pick Base' : ''}. Less waits there for more, or you sweep it in yourself.` : ''}</p>
         <p class="note">Send only ETH, and only on ${chainMarks([1, 8453, 4663])}: anything else can’t be collected.</p></div>
       <div id="d-wait"></div>
@@ -8847,7 +8851,7 @@ function renderTokenPool(el) {
       const over = wb != null && amount > wb;
       go.disabled = over;
       if (over) warn(rc, `More than ${your()} holds.`);
-      else if (raw && dsv.r.bp) { mount(rc, html`<div class="kv"><span>To</span><b>${dsv.r.label ? `${dsv.r.label} → ` : ''}${short(dsv.r.bp, 8)}</b></div>${idRow(dsv.r.id || dsv.r.bp)}`); rc.hidden = false; }
+      else if (raw && dsv.r.bp) { mount(rc, html`<div class="kv"><span>To</span><b>${dsv.r.label ? `${dsv.r.label} → ` : ''}${viewAddr(dsv.r.bp, 8)}</b></div>${idRow(dsv.r.id || dsv.r.bp)}`); rc.hidden = false; }
     };
     toEl.addEventListener('input', check);
     if (S.address) ethCall(t.token, SEL.balanceOf + addrWord(S.address)).then((b) => {
@@ -8908,7 +8912,7 @@ function renderTokenPool(el) {
       const m = TK.bal == null ? 0 : merges(amount), tooMuch = m == null;
       go.disabled = tooMuch;
       if (tooMuch) over(rc, amount);
-      else { mount(rc, html`<div class="kv"><span>To</span><b>${dsv.r.label ? `${dsv.r.label} → ` : ''}${short(dsv.r.bp, 8)}</b></div>${idRow(dsv.r.id || dsv.r.bp)}${feeRow()}${combine(m)}`); rc.hidden = false; }
+      else { mount(rc, html`<div class="kv"><span>To</span><b>${dsv.r.label ? `${dsv.r.label} → ` : ''}${viewAddr(dsv.r.bp, 8)}</b></div>${idRow(dsv.r.id || dsv.r.bp)}${feeRow()}${combine(m)}`); rc.hidden = false; }
     };
     toEl.addEventListener('input', check); amt.addEventListener('input', check); check();
     { const dr = hxLive('tsend'); if (dr?.slug === t.slug) { toEl.value = dr.to || ''; amt.value = dr.amt || ''; HX.draft = null; if (toEl.value || amt.value) check(); } }   // what the tile gathered
@@ -8972,7 +8976,7 @@ function renderTokenPool(el) {
       ${uni ? html`<div class="blk"><div class="kv"><span>Your Tacit address</span><b class="mono">${tacitShort(S.key.tacit)}</b><button class="link" type="button" data-copy="${S.key.tacit}">copy</button></div>
         ${idRow(S.key.tacit)}
         <p class="note">A private ${t.sym} send from another person’s ${t.sym} pool to this address lands in your balance here once this page reads the pool. ${t.sym} sent from the Tacit pool arrives in the Tacit pool instead.</p></div>` : ''}
-      <div class="blk"><div class="kv"><span>Pool address</span><b class="mono">${short(W.address, 10)}</b><button class="link" type="button" data-copy="${W.address}">copy</button></div>
+      <div class="blk"><div class="kv"><span>Pool address</span><b class="mono">${viewAddr(W.address, 10)}</b><button class="link" type="button" data-copy="${W.address}">copy</button></div>
         ${idRow(W.address)}
         <p class="note">For private sends within this pool, from another Tacit user’s device.</p></div>` : html`<p class="note">Reading your addresses…</p>`);
     $$('[data-copy]', f).forEach((b) => b.onclick = () => copy(b.dataset.copy));
@@ -15723,7 +15727,7 @@ function assetSendForm(el, status0, { prefix, sheet, statusId, sources, pick, af
         if (split) cutAhead(k, units, split);
         else lockAhead(k, units, r);
         mount(rc, html`
-          ${r.name ? html`<div class="kv"><span>${r.name}</span><b>${short(r.address || '', 10)}</b></div>` : html`<div class="kv"><span>Recipient</span><b>${short(raw, 10)}</b></div>`}${idRow(r.address || raw)}
+          ${r.name ? html`<div class="kv"><span>${r.name}</span><b>${viewAddr(r.address || '', 10)}</b></div>` : html`<div class="kv"><span>Recipient</span><b>${viewAddr(raw, 10)}</b></div>`}${idRow(r.address || raw)}
           ${split ? html`<div class="kv"><span>Relay fee to ${freeNotes(P.scan[k].notes).some((n) => BigInt(n.value) >= units + split) ? 'split a note' : 'combine notes'}</span><b>${show(split)} ${dtk}</b></div>` : ''}
           <div class="kv"><span>They get about</span><b>${show(units > claim ? units - claim : 0n)} ${dtk}</b></div>`);
         rc.hidden = false;

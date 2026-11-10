@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-VUmRiMlzwqrzBWS69OZ7F8Ab0cvQv25Ek5oKf6VS1Ds=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-0aKOviJwpdAN0BdfYOHxnHtocMtU9/feoPulhY2HqSU=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay · ETH</title>
 <meta name="description" content="Private ETH payments on Ethereum, Base and Robinhood Chain, proved on your device and recovered from your key.">
@@ -20,7 +20,7 @@
 <meta name="theme-color" content="#15130E" media="(prefers-color-scheme: dark)">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <!-- Every module the page loads, one round trip instead of five: build/build.mjs expands these roots to their static imports.; those after the bar are asked for by the module itself, once the first group has arrived. -->
-<!-- preload-roots: /vendor/tacit-deps.min.js /prf-wallet.js /tacit-wallet-known.js /evm-wallet.js /walletconnect.js /tacit-address.js /bip352.js /address-id.js /qr.js | /evm-pool-zk.js /evm-pool-wallet.js /evm-pool-gateway.js /evm-pool-zk-prover.js /vendor/tacit-poseidon.min.js -->
+<!-- preload-roots: /vendor/tacit-deps.min.js /prf-wallet.js /tacit-wallet-known.js /evm-wallet.js /walletconnect.js /tacit-address.js /bip352.js /address-id.js /address-view.js /qr.js | /evm-pool-zk.js /evm-pool-wallet.js /evm-pool-gateway.js /evm-pool-zk-prover.js /vendor/tacit-poseidon.min.js -->
 <!-- preload:begin -->
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="/prf-wallet.js">
@@ -32,6 +32,7 @@
 <link rel="modulepreload" href="/tacit-address.js">
 <link rel="modulepreload" href="/bip352.js">
 <link rel="modulepreload" href="/address-id.js?cb=c4fa5a58">
+<link rel="modulepreload" href="/address-view.js?cb=6cebac8b">
 <link rel="modulepreload" href="/qr.js?cb=7ca24213">
 <!-- preload:end -->
 <!-- The first reads go to these four: their connections open while the modules load. -->
@@ -719,6 +720,7 @@ import { announceWalletConnect, wcSheets, dialogHost, WC_PROJECT_ID } from '/wal
 import { makeTacitAddress, poolKeysOf } from '/tacit-address.js';
 import { bip352TaggedHash } from '/bip352.js';
 import { addressId } from '/address-id.js?cb=c4fa5a58';
+import { addrView } from '/address-view.js?cb=6cebac8b';
 import { qrSvg as qrMarkup } from '/qr.js?cb=7ca24213';
 import { keeperIdOf, KEEPERS as POOL_KEEPERS } from '/evm-pool-tokens.js?cb=a3c182f7';
 import { keeperFetch, available as routeAvailable, enabled as routeOn, turn as routeTurn } from '/private-route.js?cb=da84ce7e';
@@ -2516,6 +2518,8 @@ const dropAmounts = () => { delete DRAFT['f-amt']; delete DRAFT['f-ramt']; const
 const amountField = (id, label, extra = '') => html`
   <div class="lbl"><span>${label}</span>${extra}</div>
   <div class="amt"><input id="${id}" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="${label}"><span class="u">${ethIcon}ETH</span></div>`;
+// an address in a row the reader checks: short, with every character still in the page (find, copy) and a tap to open it
+const viewAddr = (a, n = 4) => new Raw(addrView(a, n, /^tacit1/.test(a) ? 10 + n : n + 2));
 const kvRow = (k, v, cls = '') => html`<div class="kv"><span>${k}</span><b class="num ${cls}">${v}</b></div>`;
 function receipt(rc) {
   let next = null;
@@ -2791,7 +2795,7 @@ function formDeposit(f) {
       if (raw && !dto) { go.disabled = true; return /\.(g?wei|eth)$/i.test(raw) ? say_(html`<p class="note">Looking up ${raw.toLowerCase()}…</p>`) : undefined; }
       if (raw && dto.error) { go.disabled = true; return say_(html`<p class="note err" role="alert">${dto.error}</p>`); }
       if (a && wb != null && a > wb) { say_(html`<p class="note err" role="alert">More than your wallet holds on ${c.full}.</p>`); go.disabled = true; }
-      else if (a && dto?.bp) say_(html`${kvRow('To', `${dto.label ? `${dto.label} → ` : ''}${short(dto.bp, 8)}`)}${dto.id ? kvRow('ID', dto.id) : ''}${kvRow('Into their private balance', html`${fmt(a, 18, 6)} ETH on ${cname(c)}`)}${kvRow('Relay fee', 'none · your wallet pays the network fee')}${pointsRow(a)}`);
+      else if (a && dto?.bp) say_(html`${kvRow('To', html`${dto.label ? `${dto.label} → ` : ''}${viewAddr(dto.bp, 8)}`)}${dto.id ? kvRow('ID', dto.id) : ''}${kvRow('Into their private balance', html`${fmt(a, 18, 6)} ETH on ${cname(c)}`)}${kvRow('Relay fee', 'none · your wallet pays the network fee')}${pointsRow(a)}`);
       else if (a) say_(html`${kvRow('Into your private balance', `${fmt(a, 18, 6)} ETH`)}${kvRow('Relay fee', 'none · your wallet pays the network fee')}${pointsRow(a)}`);
       go.textContent = !S.wallet ? 'Connect wallet' : dto?.bp ? 'Deposit to them privately' : 'Deposit privately';
     };
@@ -3000,7 +3004,7 @@ function formSend(f) {
     if (bal != null && !plan) return bad('More than your private balance covers with the fee.');
     shownFee = fee;
     const whole = !self && fee > 0n && !(REQ.v && !REQ.v.paid) && maxed(amt);
-    R.set(html`${who ? kvRow('To', `${who} → ${short(okTo.bp || okTo.addr, 8)}`) : ''}
+    R.set(html`${who ? kvRow('To', html`${who} → ${viewAddr(okTo.bp || okTo.addr, 8)}`) : ''}
       ${okTo.id ? kvRow('ID', okTo.id) : ''}
       ${kvRow(okTo.addr ? 'Arrives' : 'They receive', html`${whole ? 'at least ' : ''}${fmt(a, 18, 6)} ETH on ${cname(c)}`)}
       ${feeRow(fee, self)}
@@ -3262,7 +3266,7 @@ function paintDue() {
       const thin = !covers && st.bal != null && fee != null && tooSpread(a, cap, st);
       const p = privacyCheck(c, a, d.to, null), ready = covers && p && !p.wait && !bad;
       if (d.sent) return html`<div class="due-i"><div class="h"><b>Pay ${who}</b><span class="num">${exact(a)} ETH</span></div>
-        <div class="req-m">on ${cname(c)} · to <span class="nw">${short(d.to)}</span></div>
+        <div class="req-m">on ${cname(c)} · to <span class="nw">${viewAddr(d.to)}</span></div>
         <p class="note">Sent. It leaves this list once Activity shows it; if it never does, dismiss it and pay again from Send.</p>
         <div class="foot-a"><span></span><button class="link" type="button" id="undue-${d.id}" data-undue="${d.id}">dismiss</button></div></div>`;
       const line = bad ? SUM_MSG
@@ -3273,7 +3277,7 @@ function paintDue() {
         : p.wait ? `${p.wait.since >= 5 ? `${p.wait.since} deposits by others since yours` : `${p.wait.since} of 5 deposits by others since yours`}${p.wait.hours > 0 ? `, and ≈ ${Math.ceil(p.wait.hours)} h to go` : ''}. Waiting longer makes it harder to link to you.`
         : 'Ready: enough others have deposited since yours.';
       return html`<div class="due-i"><div class="h"><b>Pay ${who}</b><span class="num">${exact(a)} ETH</span></div>
-        <div class="req-m">on ${cname(c)} · to <span class="nw">${short(d.to)}</span></div>
+        <div class="req-m">on ${cname(c)} · to <span class="nw">${viewAddr(d.to)}</span></div>
         <p class="note">${line}</p>
         ${fee != null && !bad ? html`${feeRow(fee, self)}${mergeRow(fee, plan?.merges, self)}` : ''}
         <div class="foot-a"><button class="btn ${ready ? '' : 'ghost'} sm" type="button" id="due-${d.id}" data-due="${d.id}" ${covers && !bad && !S.busy ? '' : 'disabled'}>${ready ? `Pay ${who} now` : 'Pay now anyway'}</button><button class="link" type="button" id="undue-${d.id}" data-undue="${d.id}">cancel</button></div></div>`;
@@ -3642,7 +3646,7 @@ function drawReq() {
   mount($('#req-body'), html`
     <div class="lbl"><span>Payment request</span><button class="link" type="button" id="req-x">dismiss</button></div>
     <div class="req-a num">${r.amount ? html`${exact(r.amount)} <small>ETH</small>` : 'Any amount'}</div>
-    <div class="req-m">to <b class="nw">${short(r.bp, 8)}</b>${isNameReq(r) ? html` → ${r.rbp ? html`<b class="nw">${short(r.rbp, 8)}</b>` : 'looking it up…'}` : ''} on ${cname(r.paid?.c || c)}${r.note ? html` · “${r.note}”` : ''}</div>
+    <div class="req-m">to <b class="nw">${viewAddr(r.bp, 8)}</b>${isNameReq(r) ? html` → ${r.rbp ? html`<b class="nw">${viewAddr(r.rbp, 8)}</b>` : 'looking it up…'}` : ''} on ${cname(r.paid?.c || c)}${r.note ? html` · “${r.note}”` : ''}</div>
     ${isNameReq(r) && !r.rid ? '' : html`<div class="req-m">ID <b class="num nw">${r.rid || addressId(r.bp)}</b> · they see the same ID under their Tacit address</div>`}
     ${own ? html`<p class="note">This is your own request. Share its link or QR code from Receive.</p>` : r.paid ? '' : html`
       ${!r.amount ? html`<div class="amt act"><input id="req-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="Amount"><span class="u">${ethIcon}ETH</span></div>` : ''}
@@ -4462,7 +4466,7 @@ function tokSend(f, t) {
     if (raw && S.key && lc(seen.r.bp) === lc(S.key.bp)) { mount(rc, html`<p class="note err" role="alert">That is your own address.</p>`); rc.hidden = false; return; }
     if (!raw || !a) return;
     const s = tokSpendRows(t, a);
-    mount(rc, html`${kvRow('To', `${seen.r.label ? `${seen.r.label} → ` : ''}${short(seen.r.bp, 8)}`)}${s.view}`); rc.hidden = false;
+    mount(rc, html`${kvRow('To', html`${seen.r.label ? `${seen.r.label} → ` : ''}${viewAddr(seen.r.bp, 8)}`)}${s.view}`); rc.hidden = false;
     go.disabled = !s.ok;
   };
   $('#f-max')?.addEventListener('click', () => { const v = tokMax(t); amt.value = v ? plainOf(v, t.dec) : ''; amt.dispatchEvent(new Event('input')); });
@@ -4520,7 +4524,7 @@ function tokWithdraw(f, t) {
 }
 function tokReceive(f, t) {
   const addr = UNIFIED_LIVE ? unifiedAddress() : S.key.bp;
-  mount(f, html`<div class="blk"><div class="kv"><span>Your Tacit address</span><b class="mono">${short(addr, 10)}</b><button class="link" type="button" id="f-acopy">copy</button></div>
+  mount(f, html`<div class="blk"><div class="kv"><span>Your Tacit address</span><b class="mono">${viewAddr(addr, 10)}</b><button class="link" type="button" id="f-acopy">copy</button></div>
       <p class="note">Anyone with private ${t.sym} pays it here privately, and it lands in your private ${t.sym}. The same address takes ETH and every token pool.</p></div>
     ${tokAmountField('f-ramt', 'Ask for (optional)', t)}
     <div class="row2"><button class="btn" type="button" id="f-rcopy">Copy payment link</button><button class="btn ghost" type="button" id="f-rshare">Share</button></div>
@@ -4554,7 +4558,7 @@ function drawTokReq(r) {
   mount($('#req-body'), html`
     <div class="lbl"><span>Payment request</span><button class="link" type="button" id="req-x">dismiss</button></div>
     <div class="req-a num">${r.amount ? amt(r.amount) : html`Any amount <small>${t.sym}</small>`}</div>
-    <div class="req-m">to <b class="nw">${short(r.bp, 8)}</b>${isNameReq(r) ? html` → ${r.rbp ? html`<b class="nw">${short(r.rbp, 8)}</b>` : 'looking it up…'}` : ''} in ${t.sym} on ${cname(t.chain)}${r.note ? html` · “${r.note}”` : ''}</div>
+    <div class="req-m">to <b class="nw">${viewAddr(r.bp, 8)}</b>${isNameReq(r) ? html` → ${r.rbp ? html`<b class="nw">${viewAddr(r.rbp, 8)}</b>` : 'looking it up…'}` : ''} in ${t.sym} on ${cname(t.chain)}${r.note ? html` · “${r.note}”` : ''}</div>
     ${isNameReq(r) && !r.rid ? '' : html`<div class="req-m">ID <b class="num nw">${r.rid || addressId(r.bp)}</b> · they see the same ID under their Tacit address</div>`}
     ${own ? html`<p class="note">This is your own request. Share its link or QR code from Receive.</p>` : r.paid ? '' : html`
       ${!r.amount ? html`<div class="amt act"><input id="req-amt" inputmode="decimal" data-dec="${t.dec ?? 18}" placeholder="0.00" autocomplete="off" aria-label="Amount"><span class="u">${tokIcon(t)}${t.sym}</span></div>` : ''}
