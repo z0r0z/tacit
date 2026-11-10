@@ -291,8 +291,10 @@ const PAY_COINS = [lc(R.ZERO), USDC_K, USDT_K, lc(R.TAC)];
 // Where a coin is held, as a small mark: the wallet's glyph, each pool's own mark (the DeFi pool's tETH ring, the Pay pool's dashed ETH ring) and
 // Bitcoin's. The corner of each field, the picker's group headers and its anchors all wear them, so the place reads at a glance.
 const WALLET_MARK = '<svg class="pl" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4.2h9.6a1.4 1.4 0 0 1 1.4 1.4v6.6a1.4 1.4 0 0 1-1.4 1.4H3.9a1.4 1.4 0 0 1-1.4-1.4V3.6a1.4 1.4 0 0 1 1.4-1.4h7.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><circle cx="10.6" cy="9" r=".95" fill="currentColor"/></svg>';
-const MARK_USE = { pay: 'tk-peth', defi: 'tk-teth', btc: 'c-btc', chain: 'tk-tac' };
-const placeMark = (at) => (at === 'wallet' ? WALLET_MARK : MARK_USE[at] ? `<svg class="tk xs" aria-hidden="true"><use href="#${MARK_USE[at]}"/></svg>` : '');
+// (the DeFi pool wears a mark of its own, a stack, not tETH's ring: a coin held there is TAC as often as tETH, and a place's mark says where, not what)
+const POOL_MARK = '<svg class="pl" viewBox="0 0 16 16" aria-hidden="true"><ellipse cx="8" cy="4.4" rx="5" ry="2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M3 4.4v3.6c0 1.1 2.2 2 5 2s5-.9 5-2V4.4M3 8v3.6c0 1.1 2.2 2 5 2s5-.9 5-2V8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
+const MARK_USE = { pay: 'tk-peth', btc: 'c-btc', chain: 'tk-tac' };
+const placeMark = (at) => (at === 'wallet' ? WALLET_MARK : at === 'defi' ? POOL_MARK : MARK_USE[at] ? `<svg class="tk xs" aria-hidden="true"><use href="#${MARK_USE[at]}"/></svg>` : '');
 // what each place is for, said once under its group in the picker: the same coin (TAC most of all) is held in several, and this is what tells them apart
 // The picker asks where a coin is held as three kinds, and nothing finer: the wallet's (public), private (the DeFi pool's and the Pay pool's, which a row tells apart by
 // what it is for, not by the pool's name: the tips still name them) and Bitcoin's. A row's key still names its place (@defi:, @pay:, @btc:).
@@ -440,7 +442,7 @@ function chainHtml() {
 function paintMove() {
   const q = S.mq || {}, out = $('#out'), rc = $('#rcpt'), go = $('#go');
   // a move that takes no amount (its own form chooses what goes): nothing to type, and what was typed waits for the next move that takes one
-  if (!q.busy && !!q.fixed !== $('#amt').readOnly) paintSides();
+  if (!q.busy && (!!q.fixed !== $('#amt').readOnly || (q.fixed && $('#amt').placeholder !== (q.all ? 'All' : '—')))) paintSides();
   out.classList.toggle('busy', !!q.busy);
   if (!q.busy) { const v = q.out == null ? null : String(q.out); out.textContent = v ?? '0'; out.classList.toggle('ph', v == null || v === '—'); out.classList.toggle('word', v != null && v !== '—' && !/^[\d.,]+$/.test(v)); }
   fitSize(out);
@@ -906,7 +908,8 @@ function paintSides() {
     const a = atOf(s), el = $(`#${s}-at`), mk = moving() ? placeMark(a) : '';
     if (!el) continue;
     el.className = `where${isPrivAt(a) ? ' priv' : ''}${mk && a !== 'wallet' ? ' pool' : ''}${moving() ? ' go-pick' : ''}`;
-    const text = a === 'btc' ? 'Bitcoin' : a === 'chain' ? 'Tacit chain' : isPrivAt(a) ? 'Private' : 'Wallet';
+    // (on the front page each place is named: the DeFi pool, the Pay pool and the Tacit chain are three private places, and TAC is held in more than one of them)
+    const text = a === 'btc' ? 'Bitcoin' : a === 'chain' ? 'Tacit chain' : a === 'defi' && moving() ? 'DeFi pool' : a === 'pay' && moving() ? 'Pay pool' : isPrivAt(a) ? 'Private' : 'Wallet';
     if (el.dataset.k !== `${a}`) { el.dataset.k = `${a}`; el.innerHTML = `${mk}${text}`; }
     if (moving()) { el.title = `${PLACE_TIP[a] || ''}. Press to choose another`; el.setAttribute('role', 'button'); el.tabIndex = 0; }
   }
@@ -923,7 +926,9 @@ function paintSides() {
     $('#to-note').textContent = S.toBad || (S.toBusy ? 'Looking it up…' : to && $('#to-in').value.trim() !== checksum(to) ? checksum(to) : ''); $('#to-note').className = S.toBad ? 'err' : '';
   }
   const a = $('#amt'), fixed = !!(moveOf() && S.mq?.fixed), shown = fixed ? '' : S.amt; if (a.value !== shown) a.value = shown;
-  if (a.readOnly !== fixed) { a.readOnly = fixed; a.placeholder = fixed ? '—' : '0'; }
+  // (a move that takes everything, private TAC to the wallet, says so in the field and takes no amount)
+  const ph = fixed ? (S.mq?.all ? 'All' : '—') : '0';
+  if (a.readOnly !== fixed || a.placeholder !== ph) { a.readOnly = fixed; a.placeholder = ph; }
   fitSize(a);
   $('#flip').disabled = placed() ? !pairOk(S.get, atOf('get'), S.pay, atOf('pay')) : !kindOf(S.get, S.pay);
   const bal = moveOf() || S.at.pay ? H.moves?.held?.(S.pay, atOf('pay'), moveOf()) ?? null : payPriv ? privBal(S.pay) : W.account ? S.bal[S.pay] : null, wei = parseUnits(S.amt, pay.dec);
@@ -2766,7 +2771,7 @@ function openPicker(side, again = false) {
   PKKIND = kind;
   const keys = groups.flatMap(([, ks]) => ks), cs = H.moves?.chains?.() || [], chains = cs.length;
   const SUB = { teth: 'ETH, made private', [lc(R.TAC)]: 'Tacit’s token', [lc(R.CUSD)]: 'a dollar borrowed against cBTC', [lc(R.CBTC)]: 'bitcoin, 1:1 with BTC' };
-  const PLACE_TAG = { wallet: 'Public', defi: 'Private', pay: 'Private', chain: 'Private', btc: 'Bitcoin' };
+  const PLACE_TAG = { wallet: 'Public', defi: moving() ? 'DeFi pool' : 'Private', pay: moving() ? 'Pay pool' : 'Private', chain: 'Tacit chain', btc: 'Bitcoin' };
   const row = (key) => {
     const m = ATK.exec(key), a = m ? m[1] : 'wallet', k = m ? m[2] : key, t = shownAt(k, a);
     if (!t) return null;
