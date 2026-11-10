@@ -782,7 +782,7 @@ try {
     // 5. more than one batch can carry (20 missing): the ticket's button records the older ones in its own transaction, then the last ones go with the borrow
     await rpcA('anvil_mine', ['0x15e']);                                                                 // seven more intervals of each venue
     n = await arm();
-    ok(n > 12, `more records are missing than one batch carries: ${n}`);
+    ok(n > 10, `more records are missing than one batch carries: ${n}`);
     mintTac(ACC.owner.a, 50_000n * E18);
     r = await openPage({ who: 'owner', batch: true, hash: hashC(`&router=${RT}`) });
     const oo = r.page, OL = r.walletLog;
@@ -790,16 +790,16 @@ try {
     await untilText(oo, '#go', new RegExp(`^Record ${n} prices to open borrowing$`), 60000);
     await sleep(1500);
     ok((await text(oo, '#info')) === '' && new RegExp(`Borrowing is not open yet`).test(await text(oo, '#board')) && new RegExp(`waits for ${n} prices`).test(await text(oo, '#board')), 'with that many missing nothing is prepared in the background, and the board says borrowing waits for them');
-    // 16 records to a confirmation (the per-transaction gas cap allows about 17); the ticket counts only the ones before the borrow, which carries the last 12
-    const confsTicket = Math.ceil((n - 12) / 16), confsFeed = Math.ceil(n / 16);
+    // 10 records to a confirmation (a transaction carries at most 128 KB, a record 9-11 KB); the ticket counts only the ones before the borrow, which carries the last 10
+    const confsTicket = Math.ceil((n - 10) / 10), confsFeed = Math.ceil(n / 10);
     const hint = await text(oo, '#hint'), feedTxt = await text(oo, '#feed');
-    ok(new RegExp(`Takes ${confsTicket} wallet confirmations?`).test(hint) && /The last 12 then go with your borrow/.test(hint) && new RegExp(`Takes ${confsFeed} wallet confirmations?`).test(feedTxt) && (await oo.$$('#feed .mt b')).length === 2,
-      `the button says how many confirmations come before the borrow (${confsTicket}) and that the last 12 go with it, the price feed how many all ${n} take (${confsFeed}), and each venue has its meter (${hint})`);
+    ok(new RegExp(`Takes ${confsTicket} wallet confirmations?`).test(hint) && /The last 10 then go with your borrow/.test(hint) && new RegExp(`Takes ${confsFeed} wallet confirmations?`).test(feedTxt) && (await oo.$$('#feed .mt b')).length === 2,
+      `the button says how many confirmations come before the borrow (${confsTicket}) and that the last 10 go with it, the price feed how many all ${n} take (${confsFeed}), and each venue has its meter (${hint})`);
     OL.sends.length = 0;
     await oo.click('#go');
     await untilText(oo, '#go', /^Deposit [\d,.]+ TAC and borrow$/, 240000);
     const left = await pending(), shown = Number(/Price records\s*(\d+) included/.exec(await text(oo, '#info'))?.[1]);
-    ok(OL.sends.length === 1 && shown === left && left > 0 && left <= 12, `the button recorded the older ones in one transaction and left ${left} for the borrow`);
+    ok(OL.sends.length === 1 && shown === left && left > 0 && left <= 10, `the button recorded the older ones in one transaction and left ${left} for the borrow`);
     ok(new RegExp(`The older prices are recorded\\. The last ${left} go with your borrow`).test(await text(oo, '#status')) && (await oo.evaluate(() => document.activeElement?.id)) === 'amt', `the ticket said what it did and handed back to the amount (${(await text(oo, '#status')).slice(0, 120)})`);
     await oo.click('#go');
     await untilText(oo, '#status', new RegExp(`Recorded ${left} prices with it`), 120000);

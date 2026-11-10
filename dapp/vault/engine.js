@@ -6,12 +6,12 @@
 import * as M from '/vault/math.js?cb=ac1ed53e';
 import { makeReader, staticCalls, parseStatic, dynamicCalls, parseDynamic, timestampCall, refusal, decString, SEL, wordAt, addrWord,
   encDeposit, encWithdraw, encBorrow, encRepay, encCancel, encApprove, encPermit, encMulticall } from '/vault/chain.js?cb=ebe79b37';
-import { RECORD_GAS, PER_TX, GAS_ROOM, encBatch, MULTICALL3 } from '/vault/feed.js?cb=00271e4a';
+import { RECORD_GAS, PER_TX, GAS_ROOM, encBatch, MULTICALL3 } from '/vault/feed.js?cb=1c14d243';
 import { simulateBundle, sendBundle, batchSupport, readMixed } from '/vault/batch.js?cb=156cb856';
 import { ROUTER_SEL, encRouterRecords, encRouterBorrow, encRouterWithdraw, encRouterDeposit, encRouterRepay, encRouterPermitSynth, borrowTyped, withdrawTyped } from '/vault/router.js?cb=21df6509';
 
 export const KIND = { usd: { name: 'TAC Dollar', sym: 'TACD', dp: 2, price: (t) => `$${t}` }, eth: { name: 'TAC Ether', sym: 'TACE', dp: 4, price: (t) => `${t} ETH` } };
-export const BATCH_MAX = 12;
+export const BATCH_MAX = 10;  // records riding with an action, under the 128 KB a transaction may carry
 export class StopWaiting extends Error { constructor() { super('Stopped waiting. If your wallet still shows the request, reject it there, then try again.'); } }
 
 // S: the host's state (busy, the batch and router facts, the chain's clock); VS: the vaults ({ key, addr, hint }); ROUTER: the vault router or null;

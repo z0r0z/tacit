@@ -20,9 +20,9 @@ export const GRACE = 10;             // blocks after an interval ends before it 
 export const BLOCK_SECONDS = 12;
 export const RECORD_GAS = 945_000;    // measured on mainnet: a batch of 10 records used 9.45M gas
 // A transaction may use at most 2^24 gas since Fusaka (EIP-7825), and a wallet's own batch of calls (EIP-5792) is one transaction too, so no single confirmation
-// carries more than about 17 records. A batch is 16 (about 15.1M gas), and `GAS_ROOM` is what a batch is let use: one estimated over it is cut down before it is sent.
+// carries more than about 17 records. A batch is 10 (about 9.5M gas, and under the 128 KB a transaction may carry), and `GAS_ROOM` is what a batch is let use: one estimated over it is cut down before it is sent.
 export const TX_GAS_CAP = 16_777_216;
-export const PER_TX = 16;
+export const PER_TX = 10;   // a record is 9-11 KB of proofs and a transaction may carry at most 128 KB: 16 would not fit
 export const GAS_ROOM = 16_000_000;
 
 // ── RLP, for a block header ──
