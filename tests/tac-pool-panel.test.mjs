@@ -69,6 +69,9 @@ assert.deepEqual([...host.querySelectorAll('[data-tp]')].map((b) => b.textConten
 assert.match(st('tp-bal'), /50 TAC shielded, in 2 notes/, 'the shielded balance is read for the key');
 assert.deepEqual(tp.totals(), { shielded: 50n * TAC, public: 7n * TAC });
 assert.match($('tp-shield-pick').textContent, /^7 TAC/, 'the key’s TAC on Bitcoin is offered to shield');
+assert.equal($('tp-shield-go').textContent, 'Shield', 'with a key the button shields');
+assert.equal($('tp-shield-pick').closest('.amt').hidden, false, 'with a key the list of notes to shield shows');
+assert.equal(host.querySelector('.tp-bal').hidden, false, 'with a key the balance line shows');
 
 // Send: above the balance with the relay's fee, nothing is asked of the relay
 await click('tp-t-send');
@@ -154,4 +157,21 @@ await click('tp-send-go');
 assert.equal(st('tp-st-send'), 'Open your Tacit wallet first.');
 assert.equal(calls.pay.length, 1, 'nothing paid without a key');
 assert.match(st('tp-bal'), /Open your Tacit wallet/);
+// with no key the card's head already says to sign in: the balance line and the empty list of notes wait, and the button opens the wallet
+assert.equal(host.querySelector('.tp-bal').hidden, true, 'no balance line without a key');
+assert.equal($('tp-shield-pick').closest('.amt').hidden, true, 'no list of notes without a key');
+assert.equal($('tp-shield-pick').closest('.amt').previousElementSibling.hidden, true, 'nor its label');
+assert.equal($('tp-shield-go').textContent, 'Sign in', 'the button says what the press does');
+
+// the pool as anyone sees it, for TAC: another asset's notes are not its set, the last note's block is the latest one's, and a pool that stopped says so
+{
+  let stat = { leafCount: 5, height: 100, tip: 103, proofSystem: 'halo2-kzg-bn254', verifierEnabled: true, halted: null, lastError: null };
+  const feed = [{ txid: 'a1', height: 90, asset: '0x' + ASSET }, { txid: 'a1', height: 90, asset: '0x' + ASSET }, { txid: 'b2', height: 95, asset: '0x' + ASSET }, { txid: 'c3', height: 99, asset: '0x' + '11'.repeat(32) }];
+  const S2 = { ...S, poolClientFor: () => ({ status: async () => stat, allNotes: async () => feed }) };
+  const t2 = makeTacPool({ key: () => null, priv: () => null, ensureKey: async () => {}, withKey: async (fn) => fn(T), tacitAddress: () => null, toast: () => {}, changed: () => {},
+    viewChanged: () => {}, usd: () => '', mods: { secret: S2, claim: C, sats: { mount: () => {} } } });
+  assert.deepEqual(await t2.stats(), { set: 3, height: 100, tip: 103, well: true, last: 95, proof: 'Halo2·KZG', txs: 2 });
+  stat = { ...stat, halted: 'a block was not available' };
+  assert.equal((await t2.stats()).well, false, 'a halted pool is not reading well');
+}
 console.log('ok tac pool panel');

@@ -304,6 +304,7 @@ export function makeTacPool(ctx) {
       el.append(' · ', b);
     }
     q('tp-refresh').hidden = !unlocked();
+    el.closest('.tp-bal').hidden = !unlocked();    // with no key the card's head already says to sign in
     paintSendComb();
   }
   const combineBox = (id, lead, each = false) => html`<div class="callout"><span>${lead}<small>${combineFee() != null ? `Relay fee ≈ ${fmt(combineFee())} TAC${each ? ' each' : ''}` : 'Posted from your Bitcoin address, which pays its Bitcoin fee and shows as the sender'}.</small></span><button class="btn ghost" type="button" id="${id}">Combine</button></div>`;
@@ -335,7 +336,9 @@ export function makeTacPool(ctx) {
   function paintShieldPicker() {
     const sel = q('tp-shield-pick');
     if (!sel) return;
-    const was = sel.value, note = q('tp-shield-note');
+    const was = sel.value, note = q('tp-shield-note'), go = q('tp-shield-go'), grp = sel.closest('.amt');
+    if (go) go.textContent = unlocked() ? 'Shield' : 'Sign in';    // with no key, the press opens the wallet
+    for (const e of [grp, grp?.previousElementSibling]) if (e) e.hidden = !unlocked();    // and there is nothing to pick: its label and the list wait for a key
     sel.replaceChildren();
     const one = (text) => { const o = document.createElement('option'); o.textContent = text; sel.append(o); sel.disabled = true; };
     note.textContent = '';
@@ -827,12 +830,17 @@ export function makeTacPool(ctx) {
     poolAddress: () => loadSecret().then(() => (unlocked() ? wallet()?.addressString || null : null)),
     // Scan for payments, its words said through `report`
     scan: (report) => scanEverything(report),
-    // the pool as anyone sees it: its notes (the anonymity set), its transactions, the Bitcoin block it has read and its proof system
+    // the pool as anyone sees it, for TAC: its notes (every asset has its own, the asset being public), the transactions that made them, the Bitcoin block the
+    // last one came in, the block the pool has read against Bitcoin's tip, whether it is reading well, and its proof system. Amounts stay hidden, even where TAC
+    // goes in and out, so there is no total to show
     stats: async () => {
       await loadSecret();
       const st = await S.poolClientFor('mainnet').status(), feed = await poolFeed().catch(() => null);
-      return { set: Number(st.leafCount || 0), height: Number(st.height || 0), proof: st.proofSystem === 'halo2-kzg-bn254' ? 'Halo2·KZG' : (st.proofSystem || '—'),
-        txs: feed ? new Set(feed.filter((n) => n.txid).map((n) => n.txid)).size : null };
+      const bare = (a) => String(a).replace(/^0x/i, '').toLowerCase(), tac = bare(S.TAC_ASSET_MAINNET);
+      const mine = feed ? feed.filter((n) => bare(n.asset) === tac) : null, last = mine?.length ? Math.max(...mine.map((n) => Number(n.height) || 0)) : 0;
+      return { set: mine ? mine.length : null, height: Number(st.height || 0), tip: Number(st.tip || 0) || null, well: st.verifierEnabled !== false && !st.halted && !st.lastError,
+        last: last || null, proof: st.proofSystem === 'halo2-kzg-bn254' ? 'Halo2·KZG' : (st.proofSystem || '—'),
+        txs: mine ? new Set(mine.filter((n) => n.txid).map((n) => n.txid)).size : null };
     },
   };
 }

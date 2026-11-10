@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-XzZkm6+xDS8HiUQ26KkJ+4T9ndwnk20mcoJW723Vmmc=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-K5SdL4hHz2oSdIgLwwaheREILAq+T417o2HobQwbdu0=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -1324,6 +1324,12 @@ html[data-page="tac"] :is(.hero, #dash, #how, #tac, .pg, .sx.pi), html:not([data
 .tcd-seg { display: flex; gap: 24px; padding: 0; background: none; border: 0; }
 .tcd-seg button { min-height: 32px; padding: 0 0 4px; font-size: 12px; border-bottom: 1px solid transparent; }
 .tcd-seg button[aria-pressed="true"] { background: none; box-shadow: none; border-bottom-color: var(--ink); }
+/* the Bitcoin pool under the switch while Bitcoin shows: the chain's own header and figures, kept to what anyone can read of the pool */
+.tcd-net.cl-top { margin: 28px 0 0; }
+.tcd-net .cl-h { margin: 0 0 20px; }
+.tcd-net .cl-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 0; padding-top: 0; border-top: 0; }
+.tcd-net .cl-note { min-height: 0; margin-top: 16px; }
+@media (max-width: 560px) { .tcd-net.cl-top { margin-top: 24px; } .tcd-net .cl-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .tcd-bal { margin-top: 24px; }
 .tcd-k { font-size: 12px; }
 .tcd-v { margin-top: 8px; font: 400 44px/1 var(--serif); letter-spacing: -.01em; }
@@ -2013,6 +2019,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
     <section class="tcd" id="tpg-card" aria-labelledby="tcd-name">
       <div class="tcd-steps" id="tcd-steps" hidden></div>
       <div id="tcd-seg"></div>
+      <div class="cl-top tcd-net" id="tcd-net" aria-label="The Bitcoin pool, live" hidden></div>
       <div class="tcd-bal" id="tcd-head"><h2 class="tcd-k" id="tcd-name"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg><b>Private TAC</b><span>on the Tacit chain</span></h2><p class="tcd-v num">&nbsp;</p><p class="tcd-sub">&nbsp;</p></div>
       <div id="tcd-tabs"></div>
       <div id="tpg-p" role="tabpanel" aria-label="Private TAC"></div>
@@ -9781,7 +9788,7 @@ const FAST_OFF = 'tacit-fast-route-off-v1';
 try { const q = new URLSearchParams(location.search).get('fast'); if (q === '0') store.set(FAST_OFF, 1); else if (q === '1') store.set(FAST_OFF, null); } catch {}
 const fastOn = () => !store.get(FAST_OFF);
 const FASTR = { route: null, pub: null, fr: null, frP: null, offers: new Map(), slow: null, stop: null, recs: [], open: new Set() };
-const fastMods = lazy(() => Promise.all([import('/fast/route.js?cb=8fe01389'), import('/fast/wire.js?cb=7e3c8924'), fetch('/fast/lp.json', { cache: 'no-cache' }).then((r) => r.json()).catch(() => ({}))]));
+const fastMods = lazy(() => Promise.all([import('/fast/route.js?cb=8fe01389'), import('/fast/wire.js?cb=2289369f'), fetch('/fast/lp.json', { cache: 'no-cache' }).then((r) => r.json()).catch(() => ({}))]));
 function fastForget() { FASTR.stop?.(); Object.assign(FASTR, { pub: null, fr: null, frP: null, stop: null, recs: [], slow: null }); FASTR.offers.clear(); FASTR.open.clear(); }
 function fastRoute() {
   const pub = S.key?.pubHex;
@@ -10731,7 +10738,7 @@ function tacPlaceGo(what) {
 }
 // The pool's panel: made once, under the page's key (the key never leaves this page), and drawn in the page's action slot while it is open
 function tacPool() {
-  return (TPOOL.p ||= import('/tac/pool.js?cb=edd2d508').then((m) => {
+  return (TPOOL.p ||= import('/tac/pool.js?cb=27c7ce92').then((m) => {
     const api = m.makeTacPool({
       key: () => (S.key ? { pubHex: S.key.pubHex } : null),
       priv: () => walletPriv(),
@@ -11619,6 +11626,7 @@ function tcard() {
   if (!$('#tpg-card') || !TACP.on) return;
   const side = tcardSide(), chain = side === 'chain';
   tpgMount($('#tcd-seg'), chainOn() ? html`<div class="tcd-seg" role="group" aria-label="Where the private TAC is">${[['chain', 'Tacit chain'], ['btc', 'Bitcoin']].map(([k, t]) => html`<button type="button" aria-pressed="${String(side === k)}" data-tcd-side="${k}">${t}</button>`)}</div>` : html``);
+  tcardNet(side);
   tpgMount($('#tcd-head'), tcardHead(side), (el) => { const go = $('#tpg-priv', el); if (go) go.onclick = () => tpgPrivGo(chain ? 'wallet' : 'btc'); });
   const tabs = $('#tcd-tabs'), p = $('#tpg-p'), pool = $('#tcd-pool');
   tabs.hidden = p.hidden = !chain; pool.hidden = chain;
@@ -11927,15 +11935,45 @@ function tpgWhy(el) {
     </ul>
     <p class="tpg-foot">Provers are paid in points.</p></details>`);
 }
+// The Bitcoin pool's figures, read from its indexer through the pool's panel: at most once a minute, and again a minute after each read while Bitcoin shows on the
+// card or the networks fold is open
+const TPGN = { pool: null, at: 0, t: 0 };
+function tpgPoolRead() {
+  if (Date.now() - TPGN.at < 60e3) return;
+  TPGN.at = Date.now();
+  tacPool().then((api) => api.stats()).then((s) => { TPGN.pool = s; }, () => { if (!TPGN.pool || TPGN.pool.err) TPGN.pool = { err: true }; }).then(() => {
+    rerender('tac');
+    clearTimeout(TPGN.t);
+    TPGN.t = setTimeout(() => { if (TACP.on && !document.hidden && (tcardSide() === 'btc' || $('#tpg-how').open)) rerender('tac'); }, 61e3);
+  });
+}
+// The Bitcoin pool, live, under the card's switch while Bitcoin shows, in the chain's own form: whether it is reading Bitcoin, its notes and transactions, and when it last
+// moved. Amounts stay hidden, even where TAC goes in and out, so there is no total to show: these are the figures anyone can read.
+const tpgAgo = (d) => (d <= 0 ? 'just now' : d < 9 ? `about ${d * 10} min ago` : d < 216 ? `about ${Math.max(1, Math.round(d / 6))} h ago` : `about ${Math.round(d / 144)} d ago`);    // in Bitcoin blocks, ten minutes each
+function tcardNet(side) {
+  const el = $('#tcd-net');
+  if (!el) return;
+  el.hidden = side !== 'btc';
+  if (el.hidden) return;
+  tpgPoolRead();
+  const p = TPGN.pool, n = (v) => (v == null ? (p?.err ? '—' : '…') : Number(v).toLocaleString('en-US'));
+  const lag = p?.tip && p.height ? Math.max(0, p.tip - p.height) : 0;
+  const v = !p ? { s: '', t: 'Reading…' } : p.err || !p.height ? { s: 'bad', t: 'Not reachable' } : !p.well ? { s: 'bad', t: 'Stopped' } : lag > 6 ? { s: 'busy', t: 'Catching up' } : { s: 'ok', t: 'Working' };
+  const last = !p ? '…' : p.err ? '—' : p.last && p.tip ? tpgAgo(p.tip - p.last) : p.last ? `block ${n(p.last)}` : 'none yet';
+  const cell = (val, k) => html`<div><span class="v">${val}</span><span class="k">${k}</span></div>`;
+  tpgMount(el, html`<div class="cl-h"><h2 class="cl-name">bitcoin <em>pool</em></h2><span class="cl-v" data-s="${v.s}"><span class="dot ${v.s}"></span><span>${v.t}</span></span><span class="cl-sub">${p?.height ? `block ${n(p.height)}` : ''}</span></div>
+    <div class="cl-stats">${cell(n(p?.set), 'notes')}${cell(n(p?.txs), 'transactions')}${cell(last, 'last activity')}${cell(p?.proof || (p?.err ? '—' : '…'), 'proof system')}</div>
+    <p class="cl-note">Amounts stay hidden, so the pool shows activity, not a total.</p>`);
+}
 // The networks (folded): the Bitcoin pool's figures and the Tacit chain's, read once the fold is opened
-const TPGN = { pool: null, at: 0 };
 function tpgNets(el) {
   if (!$('#tpg-how').open) return;
-  if (Date.now() - TPGN.at > 60e3) { TPGN.at = Date.now(); tacPool().then((api) => api.stats()).then((s) => { TPGN.pool = s; rerender('tac'); }, () => { TPGN.pool ||= {}; rerender('tac'); }); tpgWhyRead(); }
-  const p = TPGN.pool, cs = TPGW.cs, ui = TPGW.ui, n = (v) => (v == null ? '…' : Number(v).toLocaleString('en-US')), L = cs?.leader;
+  if (Date.now() - TPGN.at >= 60e3) tpgWhyRead();
+  tpgPoolRead();
+  const p = TPGN.pool, cs = TPGW.cs, ui = TPGW.ui, n = (v) => (v == null ? (p?.err ? '—' : '…') : Number(v).toLocaleString('en-US')), L = cs?.leader;
   const cell = (v, k) => html`<div><span class="v num">${v}</span><span class="k">${k}</span></div>`;
   mount(el, html`<h3 class="tpg-h">Bitcoin pool</h3>
-    <div class="tpg-strip">${cell(n(p?.set), 'Anonymity set')}${cell(n(p?.txs), 'Pool transactions')}${cell(n(p?.height), 'Indexed block')}${cell(p?.proof || '…', 'Proof system')}</div>
+    <div class="tpg-strip">${cell(n(p?.set), 'Notes')}${cell(n(p?.txs), 'Transactions')}${cell(n(p?.height), 'Indexed block')}${cell(p?.proof || (p?.err ? '—' : '…'), 'Proof system')}</div>
     ${chainOn() ? html`<h3 class="tpg-h">Tacit chain</h3>
     <div class="tpg-strip">${cell(cs ? n(cs.height) : '…', 'Blocks')}${cell(cs && ui ? (cs.height > 0 && cs.lastLanded > 0 ? ui.ago(Date.now() / 1000 - cs.lastLanded) : 'none yet') : '…', 'Last block')}
       ${cell(cs ? tpgPx(cs.pool, cs.shares) : '…', 'Share price')}${cell(cs && ui ? ui.fmtTac(cs.pool, 2) : '…', 'Pool, TAC')}
