@@ -1,4 +1,5 @@
 import { DEPLOYMENTS } from '/vault/deployments.js?cb=4af96594';
+import { addrView } from '/address-view.js?cb=57bc64d3';
 import * as M from '/vault/math.js?cb=ac1ed53e';
 import { makeRpc, RPCS, ARCHIVE, HISTORY, makeReader, QUEUE_EXPIRY } from '/vault/chain.js?cb=ebe79b37';
 import { makeFeed } from '/vault/feed.js?cb=00271e4a';
@@ -253,7 +254,7 @@ function auctionBox(x) {
 }
 function renderPos() {
   const V = cur(), x = V && derive(V), el = $('#pos');
-  const viewing = S.view ? `<span class="who">${esc(short(S.view))}</span>` : '';
+  const viewing = S.view ? `<span class="who">${addrView(S.view, 4)}</span>` : '';
   const head = `<p class="eyebrow" id="pos-h"><span>Your vault</span>${viewing}</p>`;
   if (!x) { setHtml(el, `${head}<p class="empty">${S.failed ? 'Not read yet.' : 'Reading the vault…'}</p>`); return; }
   if (!who()) { setHtml(el, `${head}<p class="empty"><button class="linkbtn" type="button" data-connect>Connect a wallet</button> to see your vault.</p>`); return; }

@@ -6,6 +6,7 @@
 import { sha256 } from '/vendor/tacit-deps.min.js';
 import { mountChart, fmtLocalStamp, fmtLocalTime } from '/trade/chart.js?cb=04207026';
 import { makeConnect } from '/trade/connect.js?cb=92e87ca4';
+import { addrFlat } from '/address-view.js?cb=57bc64d3';
 import { makeKeySession, signInSheet } from '/trade/key.js?cb=e7b6ebe6';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=efc87cea';
 import { readRates, readProgram, heldBars, rangesFor, barSize } from '/teth/read.js?cb=5313656c';
@@ -248,7 +249,7 @@ function renderFarm() {
 
 // ── about ──
 function renderAbout() {
-  const link = (a, t) => `<a href="${SCAN}address/${a}" target="_blank" rel="noopener noreferrer">${t || `${a.slice(0, 8)}…${a.slice(-6)}`}</a>`;
+  const link = (a, t) => `<a href="${SCAN}address/${a}" target="_blank" rel="noopener noreferrer">${t || addrFlat(a, 6, 8)}</a>`;
   $('#about').innerHTML = '<p><b>cBTC</b> is bitcoin you keep, usable privately on Ethereum: the BTC stays locked at your own address, and who holds the cBTC is private.</p>';
   const main = [
     [`${chainMark('btc')}Bitcoin`, 'Each lock is spendable only by its owner.'],

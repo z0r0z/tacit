@@ -9,6 +9,7 @@ import { batchReads } from '/trade/batch.js';
 import { TAC, POOL, FARM, aprText, readPrecision, readSpot, readStake, privateFarms } from '/trade/farm-read.js?cb=112a01b9';
 import { rememberOwed } from '/trade/rewards-dot.js?cb=a0612927';
 import { readTasks } from '/rewards/earn.js?cb=74689244';
+import { addrView, addrFlat } from '/address-view.js?cb=57bc64d3';
 import { readCampaign, bestApr, notTrading } from '/trade/lp-campaign.js?cb=e1b8a224';
 import { DEPLOYMENTS } from '/vault/deployments.js?cb=4af96594';
 
@@ -218,7 +219,7 @@ function paintNext(nothing = $('#c-next')?.dataset.on === '1') {
   const h = nothing ? `<div class="rw next"><h3>Start here</h3><p class="st mute">Farm TAC with ETH${farmNow?.live && farmNow.apr != null ? ` · ${aprText(farmNow.apr)} APR now` : ''}</p><button class="act" type="button" data-open-farm>Farm</button></div>` : '';
   if (el.__h !== h) { el.__h = h; el.innerHTML = h; }
 }
-const whoLine = (who, q) => `<p class="who"><b>${esc(who.name || short(who.address))}</b>${who.name ? `<span>${short(who.address)}</span>` : ''}</p>
+const whoLine = (who, q) => `<p class="who"><b>${who.name ? esc(who.name) : addrView(who.address, 4, 6)}</b>${who.name ? `<span>${addrView(who.address, 4, 6)}</span>` : ''}</p>
   <p class="acts"><button type="button" data-copy="${who.address}">Copy address</button><a href="https://etherscan.io/address/${who.address}" target="_blank" rel="noopener noreferrer">Etherscan ↗</a><button type="button" data-copy="${esc(`${location.origin}/rewards/?q=${encodeURIComponent(q)}`)}" data-said="Link copied">Copy link</button></p>
   <p class="wl" id="wl"></p>
   <div id="done" aria-live="polite"></div>`;
@@ -359,7 +360,7 @@ async function claim(kind, address, btn, to = '') {
     if (rc.status !== '0x1') throw new Error(`The transaction failed (${hash.slice(0, 10)}…). Nothing was claimed.`);
     $('#done')?.querySelector('.note-claim')?.remove();
     // claimed TAC is public: the next step offered is making it private (the TAC page: one signature onto the Tacit chain)
-    $('#done')?.insertAdjacentHTML('beforeend', `<p class="done"><b>Claimed ${esc(amt)} TAC${dest ? ` to ${short(dest)}` : ''}</b>${txLink(hash)}${dest ? '' : '<button class="linkbtn" type="button" data-watch>Add TAC to wallet</button>'}<a class="linkbtn" href="/tac/#private">Make it private</a></p>`);
+    $('#done')?.insertAdjacentHTML('beforeend', `<p class="done"><b>Claimed ${esc(amt)} TAC${dest ? ` to ${addrView(dest, 4, 6)}` : ''}</b>${txLink(hash)}${dest ? '' : '<button class="linkbtn" type="button" data-watch>Add TAC to wallet</button>'}<a class="linkbtn" href="/tac/#private">Make it private</a></p>`);
     said(`Claimed ${amt} TAC`); react('up', 4200); confetti();
     if (!dest) farmClaimed(BigInt(btn.dataset.wei || 0));
     const was = BigInt(btn.dataset.wei || 0);
@@ -564,7 +565,7 @@ async function paintBoard() {
   if (!el.isConnected) return;
   if (!b) { el.innerHTML = '<p class="st warn">Could not load this. Close it and open it again.</p>'; return; }
   const i = b.findIndex((e) => String(e.address).toLowerCase() === who);
-  const row = (e, k) => `<li${String(e.address).toLowerCase() === who ? ' class="me"' : ''}><button type="button" data-q="${esc(e.address)}"><span class="k">#${k}</span><span class="a">${short(e.address)}</span><b class="num">${Math.round(e.points).toLocaleString('en-US')}</b></button></li>`;
+  const row = (e, k) => `<li${String(e.address).toLowerCase() === who ? ' class="me"' : ''}><button type="button" data-q="${esc(e.address)}"><span class="k">#${k}</span><span class="a">${addrFlat(e.address, 4, 6)}</span><b class="num">${Math.round(e.points).toLocaleString('en-US')}</b></button></li>`;
   el.innerHTML = `<ol class="board">${b.slice(0, 10).map((e, k) => row(e, k + 1)).join('')}${i >= 10 ? `<li class="gap" aria-hidden="true">⋯</li>${row(b[i], i + 1)}` : ''}</ol>`;
   el.dataset.done = '1';
 }
@@ -621,7 +622,7 @@ function paintWallet() {
   const el = $('#wl'); if (!el) return;
   const mine = W.account ? W.account.toLowerCase() : null, asked = out.dataset.address;
   el.innerHTML = !mine || !asked ? '' : mine === asked ? '<span class="ok">Your wallet is on this account</span>'
-    : `Your wallet is on ${short(mine)}.<button type="button" data-mine>Look up mine</button><button type="button" data-switch>Switch account</button>`;
+    : `Your wallet is on ${addrView(mine, 4, 6)}.<button type="button" data-mine>Look up mine</button><button type="button" data-switch>Switch account</button>`;
   if (asked) paintFarmRow(asked);
 }
 function lookMine() {
@@ -655,7 +656,7 @@ const recents = () => { try { const l = JSON.parse(store.get(RECENT) || '[]'); r
 const remember = (q) => store.set(RECENT, JSON.stringify([q, ...recents().filter((x) => x.toLowerCase() !== q.toLowerCase())].slice(0, 6)));
 function showRecent() {
   const l = recents(), empty = !out.innerHTML && !input.value.trim(), own = empty && !W.account ? '<button type="button" class="chip own" data-own>Connect wallet</button>' : '';
-  recent.innerHTML = empty && (l.length || own) ? `${own}${l.map((q) => `<button type="button" class="chip" data-q="${esc(q)}">${esc(q.length > 22 ? short(q) : q)}</button>`).join('')}${l.length ? '<button type="button" class="chip x" data-clear aria-label="Clear recent lookups">×</button>' : ''}` : '';
+  recent.innerHTML = empty && (l.length || own) ? `${own}${l.map((q) => `<button type="button" class="chip" data-q="${esc(q)}">${q.length > 22 ? addrFlat(q, 4, 6) : esc(q)}</button>`).join('')}${l.length ? '<button type="button" class="chip x" data-clear aria-label="Clear recent lookups">×</button>' : ''}` : '';
   recent.dataset.ready = '1';
 }
 function showHints(v) {

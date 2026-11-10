@@ -20,6 +20,7 @@ import { makePointsNote } from '/points-note.js?cb=dc44d257';
 import { aprText, readPrecision, readSpot, privateFarms } from '/trade/farm-read.js?cb=112a01b9';
 import { SERVED } from '/evm-pool-tokens.js?cb=a3c182f7';
 import { netPicker } from '/net-pick.js?cb=8f57c360';
+import { addrView, addrFlat } from '/address-view.js?cb=57bc64d3';
 
 const CHAINLINK = { eth: '0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419', btc: '0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c' };
 const PRECISION_POOL = '0x0155358241411dB868BA714aE7c83A27087e3D6E';
@@ -216,6 +217,12 @@ function recipientOf(text) {
 const shortAddr = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
 // an address shown by the name it was typed as (alice.eth), else short
 const who = (a) => (a && S.toName && S.toName.addr === lc(a) ? S.toName.name : shortAddr(a));
+// the same drawn into the page: an address keeps all its characters (find, copy) and opens on a tap; a name is text
+const shortAddrH = (a) => addrView(a, 4, 6);
+const whoH = (a) => (a && S.toName && S.toName.addr === lc(a) ? esc(S.toName.name) : shortAddrH(a));
+// a receipt row's value that is markup, not text
+const htmlVal = (html) => ({ html });
+const cell = (v) => (v && v.html != null ? v.html : esc(v));
 // alice.eth, alice.wei or alice.gwei where an address goes: looked up as the rest of the app looks a name up (two nodes must agree)
 const isName = (t) => /^[^\s/@]+\.(eth|wei|gwei)$/i.test(t);
 let namesP = null;
@@ -451,7 +458,7 @@ function paintMove() {
   $('#rows').hidden = true; $('#later').hidden = true; $('#ackbox').innerHTML = ''; $('#ackbox').dataset.k = '';
   const lines = (q.rc || []).filter(Boolean);
   rc.hidden = !lines.length || (!S.amt && !q.fixed); rc.classList.toggle('stale', !!q.busy);   // the receipt waits for an amount
-  rc.innerHTML = lines.map(([k, v, c, t]) => `<div${t ? ` title="${esc(t)}"` : ''}><dt>${k === 'TAC points' ? TAC_MARK : ''}${esc(k)}</dt><dd class="${c || ''}">${esc(v)}</dd></div>`).join('');
+  rc.innerHTML = lines.map(([k, v, c, t]) => `<div${t ? ` title="${esc(t)}"` : ''}><dt>${k === 'TAC points' ? TAC_MARK : ''}${esc(k)}</dt><dd class="${c || ''}">${cell(v)}</dd></div>`).join('');
   // the page counts a move's amount in 8 decimals, fewer for a coin that has fewer (USDC, USDT)
   const need = !q.free && !parseUnits(S.amt, Math.min(8, tokenOf(S.pay)?.dec ?? 8));
   go.textContent = S.busy ? 'Working…' : need ? 'Enter an amount' : q.busy && !q.go ? 'Reading…' : q.go || 'Continue';
@@ -1079,7 +1086,7 @@ function quotePaint() {
     { const a = r.priv && aheadArgs(q), ra = r.priv && !a && routeAheadArgs(q), st = a ? PV?.aheadOf?.(a) : ra ? PV?.routeAheadOf?.(ra) : null;
       if (st) lines.push(['Proof', st === 'ready' ? (a ? 'made: one transaction' : 'made: the relay only sends it') : 'being made, about a minute', st === 'ready' ? 'ok' : '']); }
     { const nudge = r.priv && privRow(q, r); if (nudge) lines.push(nudge); }
-    if (r.pout) lines.push(['Chain sees', `${get.sym} to ${S.to ? who(S.to) : W.account ? 'your wallet' : 'the address'}, not from whom`]);
+    if (r.pout) lines.push(['Chain sees', htmlVal(`${esc(get.sym)} to ${S.to ? whoH(S.to) : W.account ? 'your wallet' : 'the address'}, not from whom`)]);
     else if (r.pin) lines.push(['Chain sees', `your ${tidy(amtFmt(q.wei, pay.dec))} ${pay.sym} for ETH, then a deposit`]);
     else if (r.priv) lines.push(['Chain sees', isEth(S.pay) ? `your ${tidy(amtFmt(q.wei, 18))} ETH deposited` : 'a swap, not whose']);
     else if (laterOn(kind)) { const dep = isEth(S.pay) ? laterDeposit(q) : laterIn(q); lines.push(['Chain sees', `your ${dep != null ? `${tidy(amtFmt(dep, pay.dec))} ` : ''}${pay.sym} going in, not where it goes`]); }   // the deposit, not the swap
@@ -1102,7 +1109,7 @@ function quotePaint() {
     { const p = !rows.hidden ? null : laterOn(kind) ? laterPts(q, r) : rowPts(r, q); if (p) lines.push(['TAC points', ptsSaid(p, false), 'ok', p.why ? `${p.why}. An estimate: the program counts it from its own records.` : 'An estimate: the program counts it from its own records.']); }
   }
   rc.hidden = !lines.length;
-  rc.innerHTML = lines.map(([k, v, c, t, href, act]) => `<div${t ? ` title="${esc(t)}"` : ''}><dt>${k === 'TAC points' ? TAC_MARK : ''}${esc(k)}</dt><dd class="${c || ''}">${href ? `<a href="${esc(href)}">${esc(v)}</a>` : act ? `<button type="button" class="flip-px" data-${act} aria-label="${esc(v)}. Turn it around">${esc(v)}</button>` : esc(v)}</dd></div>`).join('');
+  rc.innerHTML = lines.map(([k, v, c, t, href, act]) => `<div${t ? ` title="${esc(t)}"` : ''}><dt>${k === 'TAC points' ? TAC_MARK : ''}${esc(k)}</dt><dd class="${c || ''}">${href ? `<a href="${esc(href)}">${esc(v)}</a>` : act ? `<button type="button" class="flip-px" data-${act} aria-label="${esc(v)}. Turn it around">${esc(v)}</button>` : cell(v)}</dd></div>`).join('');
   paintLater(q, r, kind);
   const gate = r && !q.busy && m != null && m <= GATE;
   if (gate) { S.gapNow = Math.abs(m); if (S.ack && S.gapNow > (S.ackGap ?? 0) + 0.02) S.ack = false; }      // ticked for the gap that was shown: a price that fell further asks again
@@ -1281,7 +1288,7 @@ async function go() {
     const tx = await prepare(P, from);
     if (!tx) return;
     before = await beforeP;
-    say(P.to ? `Confirm the swap in your wallet. It sends the ${esc(tokenOf(P.get).sym)} to ${esc(who(P.to))}.` : 'Confirm the swap in your wallet.');
+    say(P.to ? `Confirm the swap in your wallet. It sends the ${esc(tokenOf(P.get).sym)} to ${whoH(P.to)}.` : 'Confirm the swap in your wallet.');
     const h = await wallet.sendTx({ to: tx.to, data: tx.data, value: tx.value || 0n, from, label: 'Swap' });
     say(`Sent ${txLink(h)}. Waiting for it to land…`);
     live('Swap sent');
@@ -1289,7 +1296,7 @@ async function go() {
     if (rc.status !== '0x1') throw Object.assign(new Error(`The transaction failed (${txLink(h)}). Nothing was swapped.`), { html: true });
     reward(rowPts(P.r, P.q));                       // the points pop once the swap has landed, not when it is sent
     const after = P.to ? null : await balanceNow(P.get, from).catch(() => null), got = before != null && after != null ? after - before : null;
-    const g = tokenOf(P.get), where = P.to ? esc(who(P.to)) : 'your wallet';
+    const g = tokenOf(P.get), where = P.to ? whoH(P.to) : 'your wallet';
     S.lastBuy = P.get === lc(R.TAC) && got > 0n ? got : null;
     if (P.to) { S.to = null; S.toOpen = false; S.toBad = ''; $('#to-in').value = ''; }
     S.amt = ''; S.q = null; S.seq++; S.busy = false; changed(); paint();
@@ -1394,7 +1401,7 @@ async function relayGo(P, from, plan) {
     const after = P.to ? null : await balanceNow(P.get, from).catch(() => null), got = before != null && after != null ? after - before : null;
     if (P.to) { S.to = null; S.toOpen = false; S.toBad = ''; $('#to-in').value = ''; }
     S.amt = ''; S.q = null; S.seq++; S.busy = false; changed(); paint();
-    say(`Done: ${got != null && got > 0n ? `${tidy(amtFmt(got, gt.dec))} ${esc(gt.sym)} in your wallet` : `about ${tidy(amtFmt(P.r.out, gt.dec))} ${esc(gt.sym)} to ${esc(who(dest))}`}. The network fee was ${feeTxt}.${ran ? ` ${txLink(ran)}` : ''}`, 'ok', true);
+    say(`Done: ${got != null && got > 0n ? `${tidy(amtFmt(got, gt.dec))} ${esc(gt.sym)} in your wallet` : `about ${tidy(amtFmt(P.r.out, gt.dec))} ${esc(gt.sym)} to ${whoH(dest)}`}. The network fee was ${feeTxt}.${ran ? ` ${txLink(ran)}` : ''}`, 'ok', true);
     if (ran) { remember(ran, `${tidy(amtFmt(P.wei, pt.dec))} ${pt.sym} → ${tidy(amtFmt(got != null && got > 0n ? got : P.r.out, gt.dec))} ${gt.sym}${P.to ? ` · to ${who(P.to)}` : ''}`); paintRecent(); }
     live('Swap done'); H.onDone?.();
     readBalances().then(() => paintSides());
@@ -2053,11 +2060,11 @@ function paintSteps() {
     const selfOk = p.refused && waiting && W.account && lc(W.account) !== p.from;
     // the relay's sale paid the deposit box and the keeper never completed it: once the box's deadline has passed the router returns it to the address the box was made with, sent from the wallet
     const bx = BOXES[p.id], back = stopped && p.boxed && p.boxIntent && !p.reclaimedAt && bx?.wei > 0n && chainNow() > Number(p.boxIntent.deadline)
-      ? `<div class="cta"><button type="button" class="btn" data-later-reclaim="${id}">Send ${esc(tidy(amtFmt(bx.wei, 18)))} ETH back</button><small>It goes to ${esc(shortAddr(String(p.boxIntent.refund)))}, an address only your key controls, where the pool’s keeper turns it into private ETH. Your wallet pays the gas.</small></div>` : '';
+      ? `<div class="cta"><button type="button" class="btn" data-later-reclaim="${id}">Send ${esc(tidy(amtFmt(bx.wei, 18)))} ETH back</button><small>It goes to ${shortAddrH(String(p.boxIntent.refund))}, an address only your key controls, where the pool’s keeper turns it into private ETH. Your wallet pays the gas.</small></div>` : '';
     const note = p.err && !done ? `<p class="note ${stopped || depDoubt || swapDoubt ? 'err' : 'warn'}" role="status">${esc(p.err)}${selfOk ? ` <button type="button" class="link" data-later-self="${id}">Send it from this wallet</button>` : ''}</p>` : '';
     const x = done ? `<button type="button" class="x" data-later-forget="${id}" aria-label="Hide">×</button>` : stopped || held ? `<button type="button" class="x" data-later-forget="${id}"${stopped && p.boxed && p.boxIntent && !p.reclaimedAt ? ' data-ask="1"' : ''} aria-label="Remove">×</button>`
       : waiting ? `<button type="button" class="x" data-later-forget="${id}" data-ask="1" aria-label="Remove this swap">×</button>` : '';
-    const where = p.into ? `into your private ${p.sym}` : !pool ? `to ${p.toName || shortAddr(p.to)}` : p.dest.kind === 'tacit' ? `to ${p.dest.name || `tacit1…${String(p.dest.pubHex).slice(-6)}`}, privately` : 'to your private balance';
+    const where = p.into ? `into your private ${esc(p.sym)}` : !pool ? `to ${p.toName ? esc(p.toName) : shortAddrH(p.to)}` : p.dest.kind === 'tacit' ? `to ${esc(p.dest.name || `tacit1…${String(p.dest.pubHex).slice(-6)}`)}, privately` : 'to your private balance';
     const held_ = BigInt(p.depositWei || 0);
     // a swap through a token's own pool counts in that token, and what is left of it is on the front page's private balances
     const poolName = p.hop ? `the private ${esc(p.hop.sym)} pool` : 'the private ETH pool', seeIt = p.hop ? `/#device/${esc(String(p.hop.id).replace(/^1-/, ''))}` : '/pay/eth/';
@@ -2068,7 +2075,7 @@ function paintSteps() {
       : done ? `Done. The rest of the deposit stays private in the pool. <a href="${seeIt}">See it →</a>` : '';
     // from a token the header names what the person asked to swap, in their coin (the pool holds ETH), not the pool's figure
     const head = p.pay?.typed ? `${tidy(amtFmt(BigInt(p.pay.typed), Number(p.pay.dec)))} ${esc(p.pay.sym)}` : `${esc(amt)} ${esc(unit)}`;
-    return `<section class="plan" aria-label="Private swap of ${head} to ${esc(p.sym)}"><header><svg class="tk sm" aria-hidden="true"><use href="#tk-peth"/></svg><b>${head} → ${esc(p.sym)}</b><small>${esc(where)}</small>${chip ? `<em class="chip ${chip[1]}">${chip[0]}</em>` : ''}${x}</header>${now ? `<p class="now">${now}</p>` : ''}<ol class="st">${s1}${s2}${s3}${s4}</ol>${offer}${cta}${note}${back}</section>`;
+    return `<section class="plan" aria-label="Private swap of ${head} to ${esc(p.sym)}"><header><svg class="tk sm" aria-hidden="true"><use href="#tk-peth"/></svg><b>${head} → ${esc(p.sym)}</b><small>${where}</small>${chip ? `<em class="chip ${chip[1]}">${chip[0]}</em>` : ''}${x}</header>${now ? `<p class="now">${now}</p>` : ''}<ol class="st">${s1}${s2}${s3}${s4}</ol>${offer}${cta}${note}${back}</section>`;
   }).join('') + into;
   if (html !== STEPS_HTML || el.innerHTML === '') { el.innerHTML = html; STEPS_HTML = html; }
 }
@@ -2085,7 +2092,7 @@ function intoRows() {
   return due.filter((x) => intoWorth(x, INTOB[lc(x.box)]?.held)).map((x) => {
     const t = tokenOf(lc(x.token)) || { sym: 'tokens', dec: 18 }, v = INTOB[lc(x.box)].held, b = esc(x.box), sent = !!x.reclaimTx && Date.now() - (x.reclaimAt || 0) < 30 * 60e3;
     return `<section class="plan" aria-label="A deposit box to send back"><header><svg class="tk sm" aria-hidden="true"><use href="#tk-peth"/></svg><b>${esc(tidy(amtFmt(v, t.dec)))} ${esc(t.sym)} left in a deposit box</b><small>from a swap into your private ${esc(t.sym)}</small></header>`
-      + `<div class="cta"><button type="button" class="btn" data-into-reclaim="${b}"${sent ? ' disabled' : ''}>${sent ? 'Being sent back…' : 'Send it back'}</button><small>It goes to ${esc(shortAddr(String(x.intent.refund)))}, this key’s own address: only your key controls it.</small></div></section>`;
+      + `<div class="cta"><button type="button" class="btn" data-into-reclaim="${b}"${sent ? ' disabled' : ''}>${sent ? 'Being sent back…' : 'Send it back'}</button><small>It goes to ${shortAddrH(String(x.intent.refund))}, this key’s own address: only your key controls it.</small></div></section>`;
   }).join('');
 }
 function intoRead(x) {
@@ -2109,7 +2116,7 @@ async function intoReclaim(box) {
     const r = await (await ltLoad()).reclaimIntoBox(rec, { onStep: (s) => say(steps[s] || esc(s)), onSent: (h, held) => keepIntoBox({ ...rec, reclaimTx: h, reclaimAt: Date.now(), reclaimHeld: held }) });
     keepIntoBox({ ...rec, reclaimTx: r.hash, reclaimHeld: r.held, reclaimedAt: Date.now() });
     remember(r.hash, `${tidy(amtFmt(r.held, t.dec))} ${t.sym} sent back from a deposit box`);
-    say(`<span class="ok">Sent back.</span> ${esc(tidy(amtFmt(r.held, t.dec)))} ${esc(t.sym)} went to ${esc(shortAddr(r.to))}, this key’s address. ${txLink(r.hash)}`, 'ok', true);
+    say(`<span class="ok">Sent back.</span> ${esc(tidy(amtFmt(r.held, t.dec)))} ${esc(t.sym)} went to ${shortAddrH(r.to)}, this key’s address. ${txLink(r.hash)}`, 'ok', true);
   } catch (e) { say(e instanceof UserStopped || e?.userStopped ? declinedWords(e, 'Nothing was sent.') : esc(e?.message || String(e)), e instanceof UserStopped || e?.userStopped ? '' : 'err', true); }
   finally { S.busy = false; pageSigner.pin = null; delete INTOB[lc(box)]; paint(); paintSteps(); H.onDone?.(); }
 }
@@ -2193,7 +2200,7 @@ async function laterSwap(id, via = 'relay') {
     const done = await lt.swapOut(p, { shown, slippageBps: slip, via, onStep: (s) => { LATER.step[id] = laterStep(s); say(esc(laterStep(s))); paintSteps(); } });
     delete LATER.offers[id];
     if (done.state === 'shielding') { paintSteps(); await lt.shield(done, { onStep: (s) => say(esc(laterStep(s))) }); }
-    const where = done.into ? `is on its way into your private ${esc(p.sym)} pool: its relay completes it within minutes` : done.dest?.kind === 'tacit' ? `was sent privately to ${esc(done.dest.name || 'the Tacit address')}` : done.dest?.kind === 'me' ? 'is in your private balance' : `went to ${esc(shortAddr(p.to))}`;
+    const where = done.into ? `is on its way into your private ${esc(p.sym)} pool: its relay completes it within minutes` : done.dest?.kind === 'tacit' ? `was sent privately to ${esc(done.dest.name || 'the Tacit address')}` : done.dest?.kind === 'me' ? 'is in your private balance' : `went to ${shortAddrH(p.to)}`;
     remember(done.swapTx, `${tidy(amtFmt(BigInt(p.swapWei), p.hop ? p.hop.dec : 18))} ${p.hop ? p.hop.sym : 'ETH'} → ${p.sym}, privately${done.into ? ', into your pool' : done.dest?.kind === 'address' || !done.dest ? `, to ${shortAddr(p.to)}` : ''}`);
     if (p.held) H.moves?.stale?.(p.hop ? lc(p.hop.token) : lc(R.ZERO), 'pay');
     say(`<span class="ok">Swapped.</span> ${esc(p.sym)} ${where}. <a href="https://etherscan.io/tx/${esc(done.swapTx)}" target="_blank" rel="noopener noreferrer">What the chain sees ↗</a>`, 'ok', true);
@@ -2216,7 +2223,7 @@ async function laterReclaim(id) {
   try {
     const r = await (await ltLoad()).reclaimBox(p, { onStep: (t) => say(steps[t] || esc(t)) });
     remember(r.hash, `${tidy(amtFmt(r.wei, 18))} ETH sent back from a deposit box`);
-    say(`<span class="ok">Sent back.</span> ${esc(tidy(amtFmt(r.wei, 18)))} ETH went to ${esc(shortAddr(r.to))}, an address only your key controls, where the pool’s keeper turns it into private ETH. ${txLink(r.hash)}`, 'ok', true);
+    say(`<span class="ok">Sent back.</span> ${esc(tidy(amtFmt(r.wei, 18)))} ETH went to ${shortAddrH(r.to)}, an address only your key controls, where the pool’s keeper turns it into private ETH. ${txLink(r.hash)}`, 'ok', true);
   } catch (e) { say(e instanceof UserStopped || e?.userStopped ? declinedWords(e, 'Nothing was sent.') : esc(e?.message || String(e)), e instanceof UserStopped || e?.userStopped ? '' : 'err', true); }
   finally { S.busy = false; pageSigner.pin = null; delete BOXES[id]; paint(); paintSteps(); H.onDone?.(); }
 }
@@ -2337,13 +2344,13 @@ function paintExit() {
     const inAmt = Number(q.wei) / 10 ** pay.dec, outAmt = Number(r.out) / 10 ** get.dec, dest = exitDest();
     if (S.pay !== S.get && inAmt > 0 && outAmt > 0) lines.push(['Price', (outAmt >= inAmt) !== !!S.pxFlip ? `1 ${pay.sym} = ${sig(outAmt / inAmt)} ${get.sym}` : `1 ${get.sym} = ${sig(inAmt / outAmt)} ${pay.sym}`, '', '', null, 'px-flip']);
     if (S.pay !== S.get) { lines.push(['At least', `${tidy(amtFmt(r.min, get.dec))} ${get.sym}`]); lines.push(['Route', r.name]); }
-    lines.push(['Chain sees', exitOf()?.wallet ? `your ${tidy(amtFmt(q.wei, pay.dec))} ${pay.sym} swapped into a pool deposit, not whose it is` : intoPool() ? `a swap into a pool deposit, not whose it is` : `${get.sym} to ${dest ? who(dest) : 'the address'}, not from whom`]);
+    lines.push(['Chain sees', exitOf()?.wallet ? `your ${tidy(amtFmt(q.wei, pay.dec))} ${pay.sym} swapped into a pool deposit, not whose it is` : intoPool() ? `a swap into a pool deposit, not whose it is` : htmlVal(`${esc(get.sym)} to ${dest ? whoH(dest) : 'the address'}, not from whom`)]);
     if (q.arrives != null && q.arrives > 0n) lines.push(['Arrives', `about ${tidy(amtFmt(q.arrives, get.dec))} ${get.sym}, private`, '', 'A little under the least above, less the relay’s fee of that pool for completing the deposit']);
     const fu = q.fee != null ? usdOf(S.pay, q.fee) : null;
     if (q.fee != null) lines.push(['Relay fee', `${tidy(amtFmt(q.fee, pay.dec))} ${pay.sym}${fu != null ? ` · about ${fu < 1 ? `$${fu.toFixed(2)}` : usd(fu)}` : ''}`, '', 'What the relay charges to send it out of the pool, from your private balance (kept back twice, for a fee that rises before it goes).']);
   }
   rc.hidden = !lines.length;
-  rc.innerHTML = lines.map(([k, v, c, t, href, act]) => `<div${t ? ` title="${esc(t)}"` : ''}><dt>${k === 'TAC points' ? TAC_MARK : ''}${esc(k)}</dt><dd class="${c || ''}">${act ? `<button type="button" class="flip-px" data-${act} aria-label="${esc(v)}. Turn it around">${esc(v)}</button>` : esc(v)}</dd></div>`).join('');
+  rc.innerHTML = lines.map(([k, v, c, t, href, act]) => `<div${t ? ` title="${esc(t)}"` : ''}><dt>${k === 'TAC points' ? TAC_MARK : ''}${esc(k)}</dt><dd class="${c || ''}">${act ? `<button type="button" class="flip-px" data-${act} aria-label="${esc(v)}. Turn it around">${esc(v)}</button>` : cell(v)}</dd></div>`).join('');
   const [label, can, cls] = exitButton(q, r);
   go.textContent = label; go.disabled = !can; go.className = `go${cls ? ` ${cls}` : ''}`;
   if (!S.busy) {
@@ -2551,7 +2558,7 @@ function exitLine(x) {
     + (late ? `<button type="button" class="link" data-exit-back="${esc(x.escrow)}">Send it to ${esc(to)} as ETH</button>.`
       : `<button type="button" class="link" data-exit-run="${esc(x.escrow)}">Run the swap from your wallet</button> (anyone may: the wallet that does is seen doing it), or after ${esc(when)} send it to ${esc(to)} as ETH.`);
 }
-const addrLink = (a) => `<a href="https://etherscan.io/address/${esc(a)}" target="_blank" rel="noopener noreferrer">${esc(shortAddr(a))}↗</a>`;
+const addrLink = (a) => `<a href="https://etherscan.io/address/${esc(a)}" target="_blank" rel="noopener noreferrer">${addrFlat(a, 4, 6)}↗</a>`;
 async function exitAct(escrow, back) {
   const x = readExits().find((y) => y.escrow === escrow);
   if (!x || S.busy) return;
@@ -2570,7 +2577,7 @@ async function exitAct(escrow, back) {
     if ((await wallet.receipt(h)).status !== '0x1') throw new Error('It did not go through. Nothing was lost but its network fee.');
     keepExits(readExits().filter((y) => y.escrow !== escrow));
     remember(h, back ? `Sent ${x.what || 'the ETH'} to ${shortAddr(x.recipe.finalRecipient)} as ETH` : `Swapped ${x.what || 'the ETH'} for ${x.sym || 'the token'} to ${shortAddr(x.recipe.finalRecipient)}`);
-    say(`<span class="ok">Done.</span> ${back ? 'The ETH went' : 'The swap ran and paid'} to ${esc(shortAddr(x.recipe.finalRecipient))}. ${txLink(h)}`, 'ok', true);
+    say(`<span class="ok">Done.</span> ${back ? 'The ETH went' : 'The swap ran and paid'} to ${shortAddrH(x.recipe.finalRecipient)}. ${txLink(h)}`, 'ok', true);
   } catch (e) { say(esc(e instanceof UserStopped || e?.userStopped ? 'Nothing was sent.' : e?.message || String(e)), 'err', true); }
   finally { S.busy = false; paint(); }
 }
@@ -2639,7 +2646,7 @@ async function privateGo(r, kind = 'private', here = false) {
       if (res.txHash) remember(res.txHash, `Swapped ${what} for ${got} to ${who(to)}`);
       if (S.pay === payKey) { S.amt = ''; S.q = null; }
       if (S.to === to) { S.to = null; S.toBad = ''; $('#to-in').value = ''; }
-      say(`<span class="ok">Done.</span> About ${esc(got)} went to ${esc(who(to))}.${res.txHash ? ` <a href="https://etherscan.io/tx/${esc(res.txHash)}" target="_blank" rel="noopener noreferrer">What the chain sees ↗</a>` : ''}`, 'ok', true);
+      say(`<span class="ok">Done.</span> About ${esc(got)} went to ${whoH(to)}.${res.txHash ? ` <a href="https://etherscan.io/tx/${esc(res.txHash)}" target="_blank" rel="noopener noreferrer">What the chain sees ↗</a>` : ''}`, 'ok', true);
       return;
     }
     const k0 = fromWallet ? 'eth' : PK[S.pay];

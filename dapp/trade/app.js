@@ -15,6 +15,7 @@ import { takeEarly, hedgedRpc, nodeHealth, shareReads } from '/trade/rpc.js';
 import { mountFarm } from '/trade/farm.js?cb=5f577f5c';
 import { grp, sig, group, satsFmt, day as dayFmt, warm as warmFormatters } from '/trade/fmt.js?cb=32b1744b';
 import { makePointsNote } from '/points-note.js?cb=dc44d257';
+import { addrFlat } from '/address-view.js?cb=57bc64d3';
 
 const API = 'https://api.tacit.finance';
 const TAC_BTC_ID = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
@@ -954,7 +955,7 @@ function pinOrder(key) {
 }
 function renderAbout() {
   setHtml($('#about'), `<p><b>TAC</b> is Tacit’s private money: 21,000,000, issued once on Bitcoin, confidential by default. On Ethereum it is an ERC-20 minted only against TAC that left Bitcoin. <a href="/verify.html">Check the supply →</a></p>`);
-  const link = (a, t) => `<a href="${SCAN}${a}" target="_blank" rel="noopener noreferrer">${t || `${a.slice(0, 8)}…${a.slice(-6)}`}</a>`;
+  const link = (a, t) => `<a href="${SCAN}${a}" target="_blank" rel="noopener noreferrer">${t || addrFlat(a, 6, 8)}</a>`;
   const pool = getConfidentialDeployment('mainnet')?.pool, vol24Usd = D.btc?.vol24 && D.btcUsd ? (D.btc.vol24 * D.btcUsd) / 1e8 : null;
   const main = [
     ['Ethereum', `ERC-20 ${link(TAC_ERC20)}${D.ethSupply != null ? ` · ${grp(Number(D.ethSupply) / 1e18, 0)} TAC minted there so far` : ''}`, CM_ETH],

@@ -5,6 +5,7 @@ import { readPool, heldHistory, heldBars, rangesFor, barSize, recentMoves, moved
 import { wrapEth, wrapFirst, settle, readHeld, finish, wrapIssue, relayWords, selfable, selfFinish, settleCost, proveOwn, ownWords, ownable, deviceWords, relayState, relayStopped, forgetUx, getUx } from '/teth/wrap.js?cb=61a79b48';
 import { ownPref, setOwnPref, devicePref, setDevicePref, deviceProver, proverFor, readCredit, proofsFor, fundFromWallet, quoteEth, quoteEthFor, fundWithEth, loadSelfProver, tokenBalance } from '/teth/prover.js?cb=b065e0b4';
 import { overlay } from '/trade/sheet.js?cb=84cda8f2';
+import { addrFlat } from '/address-view.js?cb=57bc64d3';
 import { mountDepth } from '/trade/depth.js?cb=438b534c';
 import { candlesFromTrades, closeAt } from '/trade/tape.js?cb=714b0344';
 import { readMarket, isActive, bookState, refSats, premium, vsEth, satsTxt, ladders, bookPrime, summary, fillBars, BTC_ID } from '/teth/market.js?cb=8e6bd162';
@@ -1099,7 +1100,7 @@ function renderMoves() {
 }
 
 function renderAbout() {
-  const P = D.pool, link = (a, t) => `<a href="${SCAN}address/${a}" target="_blank" rel="noopener noreferrer">${t || `${a.slice(0, 8)}…${a.slice(-6)}`}</a>`;
+  const P = D.pool, link = (a, t) => `<a href="${SCAN}address/${a}" target="_blank" rel="noopener noreferrer">${t || addrFlat(a, 6, 8)}</a>`;
   $('#about').innerHTML = '<p><b>tETH</b> is ETH that earns privately, on either chain: one for one with ETH in the Tacit pool, and ETH again whenever you take it out. The chain shows neither what you hold nor who you pay.</p>';
   const fee = D.floor ? fmtUnits(D.floor, 18, 5) : null;
   const main = [

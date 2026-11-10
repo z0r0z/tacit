@@ -5304,7 +5304,7 @@ await step('rewards', async () => {
     await until(n.page, () => /^z0r0z\.wei/.test((document.querySelector('#out')?.textContent || '').trim()) && !document.querySelector('#out .sk'), null, 60000);
     await settled();
     let t = await out();
-    ok(/^z0r0z\.wei\s*0x1c0a…5a20/.test(t) && /Airdrop[\d.,]+\s*TAC/.test(t) && /(Claimed|Claim by [^·]+· \d+ days? left|Closed)/.test(t), `rewards: a .wei name answers by itself, with its address and the airdrop (${t.slice(0, 200)})`);
+    ok(/^z0r0z\.wei\s*0x1c0a[0-9a-fA-F]{32}5a20/.test(t) && /Airdrop[\d.,]+\s*TAC/.test(t) && /(Claimed|Claim by [^·]+· \d+ days? left|Closed)/.test(t), `rewards: a .wei name answers by itself, with its address and the airdrop (${t.slice(0, 200)})`);
     await until(n.page, () => /Rank #3/.test(document.querySelector('#out')?.textContent || ''), null, 30000);
     t = await out();
     ok(/12,346\s*points/.test(t) && /Earned from finished days\s*8 TAC/.test(t) && /Claimed\s*0 TAC/.test(t) && /To claim\s*8 TAC/.test(t), `rewards: its points and rank, what it has earned, what the distributor says it has claimed, and what it can claim (${t.slice(t.indexOf('Points'), t.indexOf('Points') + 200)})`);
@@ -5324,7 +5324,7 @@ await step('rewards', async () => {
     ok(chips.join() === 'alice.eth,alice.wei,alice.gwei' && (await n.page.$$('#recent .chip')).length === 0, `rewards: a bare name is offered as .eth, .wei and .gwei, and what was looked up before steps aside (${chips})`);
     await n.page.click('#hints [data-q="alice.gwei"]');
     await until(n.page, () => /^alice\.gwei/.test((document.querySelector('#out')?.textContent || '').trim()) && !document.querySelector('#out .sk'), null, 120000);
-    ok(/^alice\.gwei\s*0xdc10…f86a/.test(await out()), 'rewards: choosing one answers (a .gwei name is read through GNS)');
+    ok(/^alice\.gwei\s*0xdc10[0-9a-fA-F]{32}f86a/.test(await out()), 'rewards: choosing one answers (a .gwei name is read through GNS)');
     await n.page.press('#q', 'Escape');
     ok((await n.page.inputValue('#q')) === '' && (await out()) === '' && (await n.page.evaluate(() => location.search)) === '', 'rewards: Esc empties the bar and the answer');
     const rec = await n.page.$$eval('#recent .chip[data-q]', (c) => c.map((x) => x.dataset.q));
@@ -5341,7 +5341,7 @@ await step('rewards', async () => {
     ok((await out()) === '', 'rewards: a name typed key by key waits a moment after the last key, in case there is more of it');
     await until(n.page, () => /^vitalik\.eth/.test((document.querySelector('#out')?.textContent || '').trim()) && !document.querySelector('#out .sk'), null, 120000);
     t = await out();
-    ok(/^vitalik\.eth\s*0xd8da…6045/.test(t), `rewards: an .eth name is read through ENS (${t.slice(0, 80)})`);
+    ok(/^vitalik\.eth\s*0xd8da[0-9a-fA-F]{32}6045/.test(t), `rewards: an .eth name is read through ENS (${t.slice(0, 80)})`);
     await n.page.fill('#q', 'alice.wei');
     await until(n.page, () => /has no address set/.test(document.querySelector('#out')?.textContent || ''), null, 120000);
     ok(/^alice\.wei has no address set/.test(await out()), 'rewards: a name with no address says so');
@@ -5389,7 +5389,7 @@ await step('rewardsclaim', async () => {
       const t = (await text(n.page, '#done')).replace(/\s+/g, ' ');
       ok(/Your wallet is on 0xf39f…2266\. Switch it to 0x1c0a…5a20 to claim\./.test(t) && walletTxs.length === sent && (await tacOf(LISTED)) === before, `rewardsclaim: a wallet on another account is told which to switch to, and nothing is sent (${t.trim()})`);
       ok((await n.page.getAttribute('#ninja', 'data-mood')) === 'shake', 'rewardsclaim: and the ninja shakes its head');
-      ok(/Your wallet is on 0xf39f…2266\./.test(await text(n.page, '#wl')) && !!(await n.page.$('#wl [data-mine]')) && !!(await n.page.$('#wl [data-switch]')), 'rewardsclaim: and the line under the result offers to look up the wallet\'s own account or to switch');
+      ok(/Your wallet is on 0xf39f[0-9a-fA-F]{32}2266\./.test(await text(n.page, '#wl')) && !!(await n.page.$('#wl [data-mine]')) && !!(await n.page.$('#wl [data-switch]')), 'rewardsclaim: and the line under the result offers to look up the wallet\'s own account or to switch');
     } finally { await n.browser.close(); }
   }
   // No browser wallet at all (a phone): WalletConnect is offered by itself, so a claim is still a button, and pressing it pairs a wallet app.
@@ -5482,7 +5482,7 @@ await step('rewardswallet', async () => {
     await until(n.page, () => document.querySelector('#q').value === '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266' && /Your wallet is on this account/.test(document.querySelector('#wl')?.textContent || ''), null, 60000);
     ok(/2266/.test(await text(n.page, '#wallet-label')), `rewardswallet: connecting with nothing asked looks the wallet's own account up, and the chip shows it (${(await text(n.page, '#wallet-label')).trim()})`);
     await n.page.fill('#q', LISTED);
-    await until(n.page, () => /Your wallet is on 0xf39f…2266\./.test(document.querySelector('#wl')?.textContent || ''), null, 60000);
+    await until(n.page, () => /Your wallet is on 0xf39f[0-9a-fA-F]{32}2266\./.test(document.querySelector('#wl')?.textContent || ''), null, 60000);
     ok(!!(await n.page.$('#wl [data-mine]')) && !!(await n.page.$('#wl [data-switch]')), `rewardswallet: a result for another account says where the wallet is, with "Look up mine" and "Switch account" (${await line()})`);
     await n.page.click('#wl [data-switch]');
     await until(n.page, () => /Switch accounts in your wallet/.test(document.querySelector('#wmsg')?.textContent || ''), null, 15000);
@@ -5838,7 +5838,7 @@ await step('rewardsto', async () => {
       const tx = walletTxs[walletTxs.length - 1], got = (await tacOf(DEST)) - before, done = (await text(n.page, '#done')).replace(/\s+/g, ' ');
       ok(walletTxs.length === sent + 1 && String(tx.to).toLowerCase() === '0x4b4cb98d0c836c2783ac46f0078b904dab533ae8' && String(tx.data).startsWith('0x4f54d47c') && got > 216000n * E18, `rewardsto: the allocation goes to the recipient by claimTo (${Number(got / 10n ** 16n) / 100} TAC; ${done.slice(0, 70)})`);
       await sleep(2500);
-      ok(/to 0x7099…79c8/.test(done) && !(await n.page.$('[data-watch]')) && !(await n.page.evaluate(() => document.querySelector('#farm').open)), 'rewardsto: the page says where it went, and neither opens the farm nor offers add-to-wallet for TAC that is not the wallet\'s');
+      ok(/to 0x7099[0-9a-fA-F]{32}79c8/.test(done) && !(await n.page.$('[data-watch]')) && !(await n.page.evaluate(() => document.querySelector('#farm').open)), 'rewardsto: the page says where it went, and neither opens the farm nor offers add-to-wallet for TAC that is not the wallet\'s');
       if (n.errors.length) { fails++; console.log('FAIL rewardsto page errors: ' + n.errors.slice(0, 3).join(' | ')); }
     } finally { await n.browser.close(); }
     await rpc('evm_revert', [snap]);
@@ -5919,9 +5919,9 @@ await step('rewardsfolds', async () => {
     await n.page.click('#lb > summary');
     await n.page.waitForSelector('#lb-b .board li', { timeout: 20000 });
     const rows = await n.page.$$eval('#lb-b .board li', (a) => a.map((x) => `${x.className}:${x.innerText.replace(/\s+/g, ' ').trim()}`));
-    ok(rows.length === 12 && /^:#1 0x1111…1111 100,000$/.test(rows[0]) && rows[10] === 'gap:⋯' && /^me:#12 0x1c0a…5a20 89,000$/.test(rows[11]), `rewardsfolds: the leaderboard's top ten, then this account's own place marked (${rows.slice(9).join(' | ')})`);
+    ok(rows.length === 12 && /^:#1 0x1{40} 100,000$/.test(rows[0]) && rows[10] === 'gap:⋯' && /^me:#12 0x1c0a[0-9a-fA-F]{32}5a20 89,000$/.test(rows[11]), `rewardsfolds: the leaderboard's top ten, then this account's own place marked (${rows.slice(9).join(' | ')})`);
     await n.page.click('#lb-b .board li:first-child button');
-    await until(n.page, () => document.querySelector('#q').value === '0x1111111111111111111111111111111111111111' && /0x1111…1111/.test(document.querySelector('.who')?.textContent || ''), null, 30000);
+    await until(n.page, () => document.querySelector('#q').value === '0x1111111111111111111111111111111111111111' && /0x1{40}/.test(document.querySelector('.who')?.textContent || ''), null, 30000);
     ok(true, 'rewardsfolds: a row on the board looks that address up');
     await n.page.setViewportSize({ width: 390, height: 900 });
     ok(!(await n.page.evaluate(() => document.documentElement.scrollWidth > innerWidth)), 'rewardsfolds: no sideways scroll at phone width');
@@ -6073,12 +6073,12 @@ await step('ptsview', async () => {
   const bars = await r.page.$$eval('.ptd-b', (b) => b.map((x) => x.dataset.ptd));
   ok(bars.some((x) => /^\w{3} \d+ \w+ · 40 points$/.test(x)) && bars.some((x) => /^Yesterday · 100 points · 2 TAC$/.test(x)), `ptsview: a day the service cannot show as paid carries points only (${bars.slice(-6).join(' | ')})`);
   const board = await r.page.$$eval('#pts-body ol.lb:not(details ol) li', (l) => l.map((li) => li.textContent.replace(/\s+/g, ' ').trim()));
-  ok(board.length === 2 && /^1\s*0x1111…1111/.test(board[0]) && /^2\s*0xf39f…2266 · you/.test(board[1]) && /2 taking part/.test(v.body), `ptsview: the leaderboard marks this address (${board.join(' | ')})`);
+  ok(board.length === 2 && /^1\s*0x1{40}/.test(board[0]) && /^2\s*0xf39f[0-9a-fA-F]{32}2266 · you/.test(board[1]) && /2 taking part/.test(v.body), `ptsview: the leaderboard marks this address (${board.join(' | ')})`);
   await r.page.click('[data-plv="day"]');
   const day = await r.page.$$eval('#pts-body ol.lb:not(details ol) li', (l) => l.map((li) => li.textContent.replace(/\s+/g, ' ').trim()));
   await r.page.evaluate(() => document.querySelector('#pts-body .seg.sub').scrollIntoView({ block: 'start' }));
   await shot(r.page, 'ptsview-board');
-  ok(day.length === 2 && /^1\s*0xf39f…2266 · you\s*100\s*111\.11 TAC/.test(day[0]) && /^2\s*0x2222…2222\s*50\s*55\.56 TAC/.test(day[1]), `ptsview: today's board ranks the day's points with each share of the pot (${day.join(' | ')})`);
+  ok(day.length === 2 && /^1\s*0xf39f[0-9a-fA-F]{32}2266 · you\s*100\s*111\.11 TAC/.test(day[0]) && /^2\s*0x2{40}\s*50\s*55\.56 TAC/.test(day[1]), `ptsview: today's board ranks the day's points with each share of the pot (${day.join(' | ')})`);
   ok(v.links.some((h) => h.startsWith('https://basescan.org/tx/0x' + 'b'.repeat(64))) && v.links.some((h) => h.startsWith('https://etherscan.io/tx/0x' + 'a'.repeat(64))), 'ptsview: each activity links to its own chain\'s explorer');
   ok(!(await r.page.evaluate(() => document.documentElement.scrollWidth > innerWidth)), 'ptsview: no sideways scroll');
   if (r.errors.length) { fails++; console.log('FAIL ptsview page errors: ' + r.errors.slice(0, 3).join(' | ')); }
@@ -8812,7 +8812,7 @@ await step('tileahead', async () => {
     await until(p, () => /^Balance 0\.9/.test(document.querySelector('#hx-bal')?.textContent || ''), null, 420000);
     const s0 = submits.length;
     await p.fill('#hx-rcpt', DEAD);
-    ok((await text(p, '#hx-rc')).trim() === '0x00000000…0000dEaD' && !(await p.$eval('#hx-rc', (e) => e.hidden)), `tileahead: an Ethereum address is shown short under the field (${await text(p, '#hx-rc')})`);
+    ok((await text(p, '#hx-rc')).trim() === '0x000000000000000000000000000000000000dEaD' && !(await p.$eval('#hx-rc', (e) => e.hidden)), `tileahead: an Ethereum address is shown short under the field (${await text(p, '#hx-rc')})`);
     await p.fill('#hx-amt', '0.3');
     await until(p, () => /They get/.test(document.querySelector('#hx-receipt')?.textContent || '') && !document.querySelector('#hx-go').disabled, null, QUOTE_WAIT);
     await chainUntil(async () => submits.slice(s0).some((x) => x.mode === 'prove'), 60000);

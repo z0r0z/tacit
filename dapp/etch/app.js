@@ -4,6 +4,7 @@
 import { $, esc, fmtUnits, parseUnits, short } from '/trade/util.js?cb=ba5a02b1';
 import { ETH_LOG_NODES } from '/eth-nodes.js';
 import { day } from '/trade/fmt.js?cb=32b1744b';
+import { addrView } from '/address-view.js?cb=57bc64d3';
 import { loadAssets, readNames, search, ipfs } from '/etch/find.js?cb=c6d1da75';
 
 const BTC_MODULE = '/trade/btc.js?cb=286574cd', ETH_MODULE = '/etch/eth.js?cb=96e842d9', WALLET_MODULE = '/trade/wallet.js?cb=3595ad83', SHEET_MODULE = '/trade/sheet.js?cb=84cda8f2', UTIL_MODULE = '/trade/util.js?cb=ba5a02b1';
@@ -246,7 +247,7 @@ function showDone() {
   done.innerHTML = `<span class="tk letter" id="d-mark"></span>
     <h2>${esc(d.ticker)} <em>is etched</em></h2>
     <div class="kvs">
-      <div class="kv"><span>Asset ID</span><b><code>${esc(short(d.assetIdHex, 6))}</code> <button class="link" type="button" data-copy="${esc(d.assetIdHex)}">Copy</button></b></div>
+      <div class="kv"><span>Asset ID</span><b><code>${addrView(d.assetIdHex, 6)}</code> <button class="link" type="button" data-copy="${esc(d.assetIdHex)}">Copy</button></b></div>
       <div class="kv"><span>Link</span><b><button class="link" type="button" data-copy="${esc(`${location.origin}/etch/#discover=${d.assetIdHex}`)}">Copy link</button></b></div>
       <div class="kv"><span>Supply</span><b>${esc(fmtUnits(d.base, d.dec, d.dec))} ${esc(d.ticker)}${d.supplyPublished ? '' : ' · private'}</b></div>
       <div class="kv"><span>Transactions</span><b><a href="${MEMPOOL}/tx/${esc(d.commitTxid)}" target="_blank" rel="noopener noreferrer">commit</a> · <a href="${MEMPOOL}/tx/${esc(d.revealTxid)}" target="_blank" rel="noopener noreferrer">reveal</a></b></div>
@@ -424,7 +425,7 @@ function showDoneEth() {
   done.innerHTML = `<span class="tk letter" id="d-mark"></span>
     <h2>${esc(d.ticker)} <em>is etched</em></h2>
     <div class="kvs">
-      <div class="kv"><span>Token</span><b><code>${esc(short(t, 6))}</code> <button class="link" type="button" data-copy="${esc(t)}">Copy</button></b></div>
+      <div class="kv"><span>Token</span><b><code>${addrView(t, 6)}</code> <button class="link" type="button" data-copy="${esc(t)}">Copy</button></b></div>
       <div class="kv"><span>Link</span><b><button class="link" type="button" data-copy="${esc(`${location.origin}/etch/#discover=${t}`)}">Copy link</button></b></div>
       <div class="kv"><span>Supply</span><b>${esc(fmtUnits(d.base, d.dec, d.dec))} ${esc(d.ticker)}, all in your wallet</b></div>
       <div class="kv"><span>${d.hashes.length > 1 ? 'Transactions' : 'Transaction'}</span><b>${d.hashes.map((h, i) => `<a href="${scan}/tx/${esc(h)}" target="_blank" rel="noopener noreferrer">${d.hashes.length > 1 ? (i ? 'register' : 'create') : 'view'}</a>`).join(' · ')}</b></div>

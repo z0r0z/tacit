@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-OsuWpoCtot94h0c1buBaOa8GotYHcrlZ0YnkUj6GIGU=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://tacit-api.onrender.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-xhxDLZAZ7CqqXNhqCzMAZa9YrIzg1dPA7BuAWmqdnTI=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://tacit-api.onrender.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay</title>
 <meta name="description" content="Pay BTC, TAC and ETH privately from one key and one tacit1 address. Every payment is made on your device.">
@@ -32,7 +32,7 @@
 <link rel="modulepreload" href="/tacit-address.js">
 <link rel="modulepreload" href="/bip352.js">
 <link rel="modulepreload" href="/address-id.js?cb=c4fa5a58">
-<link rel="modulepreload" href="/address-view.js?cb=6cebac8b">
+<link rel="modulepreload" href="/address-view.js?cb=57bc64d3">
 <!-- preload:end -->
 <style>
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
@@ -691,7 +691,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
 <div class="toasts" id="toast-container" popover="manual"></div>
 
 <script type="module">
-import { addrView } from '/address-view.js?cb=6cebac8b';
+import { addrView } from '/address-view.js?cb=57bc64d3';
 const forwardOld = (h) => {
   if (/^#(btc|tac)([&/]|$)/.test(h)) return false;
   const eth = /^#eth(?:\/(.*))?$/.exec(h);
@@ -1472,7 +1472,7 @@ function poolJobsView() {
   if (!jobs.length) return '';
   const when = (s) => new Date(s * 1000).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' });
   return html`<div class="pooljobs" style="margin-top:18px"><div class="lbl"><span>Through the pool</span></div>${jobs.map((j) => html`
-    <div class="kv"><span class="num">${fmt(BigInt(j.sats), 8, 8)} BTC to ${short(j.to, 6)}</span><b>${j.state === 'gone' ? j.why || 'Stopped' : POOL_SAY[j.state] || j.state}</b></div>
+    <div class="kv"><span class="num">${fmt(BigInt(j.sats), 8, 8)} BTC to ${viewAddr(j.to, 6)}</span><b>${j.state === 'gone' ? j.why || 'Stopped' : POOL_SAY[j.state] || j.state}</b></div>
     <p class="note">${j.txid ? html`Taken out ${btcTx(j.txid)}` : ''}${j.state === 'listed' && j.until ? ` · until ${when(j.until)}` : ''}${j.paidTx ? html` · ${j.state === 'paid' ? 'paid' : 'spent'} ${btcTx(j.paidTx)}` : ''}${j.err ? html` <span class="err">${j.err}</span>` : ''}
       ${j.state === 'unsold' ? html`<button class="link" type="button" data-pool-again="${j.id}">List it again</button>` : ''}${['paid', 'gone'].includes(j.state) ? html`<button class="link" type="button" data-pool-done="${j.id}">Done</button>` : ''}</p>`)}</div>`;
 }
@@ -1652,7 +1652,7 @@ const addrQrIn = (mode) => {
   const a = qrAddr(mode), bc = !!a && QRV.btc;
   return html`${a ? html`<div class="qrsw" role="group" aria-label="What the QR code holds"><button type="button" data-qrv="tacit" aria-pressed="${bc ? 'false' : 'true'}">Tacit address</button><button type="button" data-qrv="btc" aria-pressed="${bc ? 'true' : 'false'}">Bitcoin address</button></div>` : ''}
     <div class="qrbox" id="f-aqr"></div>
-    ${bc ? html`<p class="qrcap">bitcoin:${short(a, 8)} · your Bitcoin address is public: what arrives there shows on chain as yours.</p>` : ''}`;
+    ${bc ? html`<p class="qrcap">bitcoin:${viewAddr(a, 8)} · your Bitcoin address is public: what arrives there shows on chain as yours.</p>` : ''}`;
 };
 const addrQr = (mode) => html`<div id="f-aqrw">${addrQrIn(mode)}</div>`;
 function wireAddrQr(f, mode) {
@@ -1832,7 +1832,7 @@ async function hintsLook(t, pub, r) {
   hintsKeep(pub, r);
 }
 const hintsKeep = (pub, r) => { if (S.key?.pubHex === pub) writeJson(r.k, { after: r.after, retry: r.keep.filter((x) => !x.done) }); };
-const getSecret = lazy(() => import('/sats/secret.js?cb=d10eac01'));
+const getSecret = lazy(() => import('/sats/secret.js?cb=0aca0abf'));
 function loadTac(force = false) {
   if (!S.key) return Promise.resolve();
   if (TAC.loading) return force ? (TAC.next ||= TAC.loading.finally(() => { TAC.next = null; }).then(() => loadTac(true))) : TAC.loading;
@@ -2785,7 +2785,7 @@ function actFoot(r) {
   const sats = (n) => `Bitcoin fee ${Number(n).toLocaleString('en-US')} sats`, bits = [];
   bits.push(r.pending ? (r.unit === 'TAC' && r.just && r.kind !== 'tstealth' ? 'the pool counts it after three confirmations' : 'waiting for a block')
     : r.at ? `${r.approx ? '≈ ' : ''}${ago(r.at)}` : r.height ? `block ${r.height.toLocaleString('en-US')}` : null);
-  if (r.to) bits.push(html`to <span class="nw">${short(r.to, 6)}</span>`);
+  if (r.to) bits.push(html`to <span class="nw">${viewAddr(r.to, 6)}</span>`);
   if (r.kind === 'tpool') bits.push(`${fmt(r.sats, 8, 8)} BTC for them, plus the relay’s fee`);
   if (r.kind === 'tbuy' && r.sats) bits.push(`paid ${Number(r.sats).toLocaleString('en-US')} sats to the seller`);
   if (r.kind === 'tstealth') bits.push('from your Bitcoin address, which shows as the sender');
@@ -2954,7 +2954,7 @@ function renderWalletSheet() {
   $('#w-lock').onclick = () => { if (S.paying) return toast('Finish the payment in progress first.', true); lock(); renderWalletSheet(); };
   wireDisconnect(el);
 }
-const ethLine = () => (S.wallet && S.provider ? html`<div class="kv"><span>${S.provider.isWalletConnect ? 'WalletConnect' : 'Ethereum'}</span><b>${short(S.wallet, 6)} <button class="link" type="button" id="w-wc-off">Disconnect</button></b></div>` : '');
+const ethLine = () => (S.wallet && S.provider ? html`<div class="kv"><span>${S.provider.isWalletConnect ? 'WalletConnect' : 'Ethereum'}</span><b>${viewAddr(S.wallet, 6)} <button class="link" type="button" id="w-wc-off">Disconnect</button></b></div>` : '');
 function wireDisconnect(el) {
   el.querySelector('#w-wc-off')?.addEventListener('click', () => {
     if (S.paying) return toast('Finish the payment in progress first.', true);

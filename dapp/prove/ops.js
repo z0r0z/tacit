@@ -5,6 +5,7 @@
 import { makeEvmWallet, declinedWords } from '/evm-wallet.js?cb=0d6d47f7';
 import { announceWalletConnect, wcSheets, dialogHost, WC_PROJECT_ID } from '/walletconnect.js?cb=843803d6';
 import { makeHeaderRelayAdvance } from '/header-relay-advance.js?cb=1c3a7226';
+import { addrView } from '/address-view.js?cb=57bc64d3';
 import { POOL, SEL_ANCESTRY, ATTEST_GAS, SETTLE_GAS, readProof, attestRefusal, encodeAttest, needsAncestry, ancestryCalls, ethText, ethFeeWei, feeWeiOf, readPrices, boardSummary, sendable, pickSettle, readBoard, reportLanded, settleCalldata } from '/community-ops.js';
 import { bodyType } from '/rpc-body.js';
 import { secp, keccak_256, sha256 } from '/vendor/tacit-deps.min.js';
@@ -539,7 +540,7 @@ async function paintAuto(read = true) {
   const a = relayAcct();
   if (a && read) A.bal = await rpc('eth_getBalance', [a.address, 'latest']).then(BigInt, () => A.bal);
   const t = a ? autoRelay().today() : null;
-  box.innerHTML = a ? `<p>Relay account <b title="${esc(a.address)}">${esc(short(a.address))}</b> <button class="link" type="button" data-auto-copy>copy</button> · ${A.bal == null ? '—' : `${esc(ethText(A.bal))} ETH`}`
+  box.innerHTML = a ? `<p>Relay account <b>${addrView(a.address, 4)}</b> <button class="link" type="button" data-auto-copy>copy</button> · ${A.bal == null ? '—' : `${esc(ethText(A.bal))} ETH`}`
       + ` · <button class="link" type="button" data-auto-add${A.adding ? ' disabled' : ''}>Add 0.01 ETH</button>${A.bal > 0n ? ` · <button class="link" type="button" data-auto-out${A.taking ? ' disabled' : ''}>Take out</button>` : ''}</p>`
       + `<p>Today: ${esc(plural(t.sent, 'settle'))} sent · earned ${esc(ethText(BigInt(t.earnedWei)))} ETH · gas ${esc(ethText(BigInt(t.gasWei)))} ETH</p>`
     : '<p>Start makes a relay account in this browser. Add a little ETH to it for gas; keep only that much there.</p>';

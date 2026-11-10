@@ -10,6 +10,7 @@ import { makeConnect, UserStopped } from '/trade/connect.js?cb=92e87ca4';
 import { declinedWords } from '/wallet-prompts.js';
 import { esc } from '/trade/sheet.js?cb=84cda8f2';
 import { rpc, RPCS, $, short, fmtUnits } from '/trade/util.js?cb=ba5a02b1';
+import { addrView, addrFlat } from '/address-view.js?cb=57bc64d3';
 import { bodyType } from '/trade/rpc.js';
 import { BASE_NODES, ROBINHOOD_NODES } from '/eth-nodes.js';
 import { checkPayload, checkStep } from '/tasks/verify.js?cb=b8174dad';
@@ -147,7 +148,7 @@ function ensureTrips(job) {
 }
 // What a held role says in the list: whose it is and where its round trip stands.
 const tripLine = (s) => {
-  const r = S.trips[s.id], who = `Held for ${esc(short(s.held.address))}`;
+  const r = S.trips[s.id], who = `Held for ${addrView(s.held.address, 4)}`;
   if (!r || r.state === 'loading') return `${who} · reading where it stands…`;
   return `${who} · ${esc(guide(r)[0])}${r.eta ? `, the pool mints it back around ${hhmm(r.eta)} UTC` : ''}`;
 };
@@ -370,7 +371,7 @@ function doneRow(job, s, i) {
 }
 
 function doneBody(job, res) {
-  const by = res.senders.length ? res.senders.map((a) => link(`${ETHERSCAN}/address/${a}`, esc(short(a, 6)))).join(', ') : '—';
+  const by = res.senders.length ? res.senders.map((a) => link(`${ETHERSCAN}/address/${a}`, addrFlat(a, 6))).join(', ') : '—';
   const span = res.first ? (day(res.first) === day(res.last) ? `${day(res.first)}, ${hhmm(res.first)} to ${hhmm(res.last)} UTC` : `${day(res.first)} to ${day(res.last)}`) : '—';
   return `
     <div class="status" role="status" data-for="${esc(job.id)}"></div>
@@ -405,7 +406,7 @@ function stepRow(job, s, i) {
     <span class="what"><b>${esc(s.label)}</b><small>${atChain(job, s)}${addr}${bad ? ` <span class="err">· ${esc(bad.bad.join('; '))}</span>` : ''}</small></span>
     <span class="chip-s ${cls}">${label}${est}</span>
     ${!done && !c && isOpen(job) && S.api && S.running !== job.id ? `<button class="linkbtn one" type="button" data-job="${esc(job.id)}" data-one="${esc(s.id)}">Send this step</button>` : ''}
-    ${c ? `<span class="by">${c.state === 'credited' ? 'Credited' : 'Claimed'} to ${link(`${ETHERSCAN}/address/${c.address}`, esc(short(c.address)))} · ${tac(c.wei)} TAC</span>` : ''}
+    ${c ? `<span class="by">${c.state === 'credited' ? 'Credited' : 'Claimed'} to ${link(`${ETHERSCAN}/address/${c.address}`, addrFlat(c.address, 4))} · ${tac(c.wei)} TAC</span>` : ''}
   </li>`;
 }
 
@@ -441,7 +442,7 @@ function reviewRow(job, s, i) {
     <span class="n num">${i + 1}</span>
     <span class="what"><b>${esc(s.label)}</b><small>${esc(s.detail)}</small></span>
     <span class="chip-s ${c ? (c.state === 'credited' ? 'credited' : 'claimed') : 'open'}">${c ? (c.state === 'credited' ? 'Credited' : 'Claimed') : `${tac(s.minWei, 0)} TAC`}</span>
-    ${c ? `<span class="by">${c.state === 'credited' ? 'Credited' : 'Claimed'} to ${link(`${ETHERSCAN}/address/${c.address}`, esc(short(c.address)))} · ${tac(c.wei)} TAC</span>` : ''}
+    ${c ? `<span class="by">${c.state === 'credited' ? 'Credited' : 'Claimed'} to ${link(`${ETHERSCAN}/address/${c.address}`, addrFlat(c.address, 4))} · ${tac(c.wei)} TAC</span>` : ''}
   </li>`;
 }
 // The claim forms of the steps a reviewed job has left: each names the Bitcoin transaction of a bridge and is paid to the wallet that claims.

@@ -7,6 +7,7 @@
 import { makeConnect } from '/trade/connect.js?cb=92e87ca4';
 import { mountOpen } from '/relay/open.js?cb=d33e4d9e';
 import { mountProve } from '/relay/prove.js?cb=0dff1847';
+import { addrView, addrFlat } from '/address-view.js?cb=57bc64d3';
 
 const API = 'https://api.tacit.finance';
 const SPLITTER_LABELS = new Map([
@@ -15,7 +16,9 @@ const SPLITTER_LABELS = new Map([
   ['0x6919cbef0e70affa02ae02c86c532a137154f250', 'TAC buyback'],
   ['0x006cd14f36f65ecbb29b2519ccbe63a0dc8549f2', 'Ops multisig'],
 ]);
-const nameOf = (a) => SPLITTER_LABELS.get(String(a).toLowerCase()) || `${String(a).slice(0, 8)}…${String(a).slice(-4)}`;
+// an address drawn as a node: all its characters stay in the page (find, copy), and a tap opens it (inside a link it stays short)
+const addrNode = (a, n = 4, head = n + 2, flat = false) => { const t = document.createElement('template'); t.innerHTML = (flat ? addrFlat : addrView)(a, n, head); return t.content; };
+const nameOf = (a) => SPLITTER_LABELS.get(String(a).toLowerCase()) || addrNode(a, 4, 8);
 
 const $ = (s) => document.querySelector(s);
 function h(tag, attrs = {}, ...kids) {
@@ -37,7 +40,7 @@ function paintBuyback(j) {
   if (!b) { mount($('#p-buyback'), h('p', { class: 'eyebrow' }, 'TAC buyback'), h('p', { class: 'mute' }, 'Could not read the chain. Try again in a moment.')); return; }
   const pct = cfg.buybackBps ? `${num(cfg.buybackBps / 100, 1)}%` : null;
   mount($('#p-buyback'),
-    h('p', { class: 'eyebrow' }, h('span', {}, 'TAC buyback'), scan(`address/${b.address}`, `${b.address.slice(0, 8)}…${b.address.slice(-4)}`)),
+    h('p', { class: 'eyebrow' }, h('span', {}, 'TAC buyback'), scan(`address/${b.address}`, addrNode(b.address, 4, 8, true))),
     h('p', { class: 'big num' }, num(b.tacBought, b.tacBought < 100 ? 2 : b.tacBought < 1000 ? 1 : 0), h('small', {}, 'TAC bought')),
     h('p', { class: 'note' }, `${b.buys} ${b.buys === 1 ? 'buy' : 'buys'} for ${eth(b.ethSpent)} ETH${b.lastBuyBlock && j.chain.head ? `, the last ${ago(j.chain.head - b.lastBuyBlock)}` : ''}.`),
     b.complete ? null : h('p', { class: 'stale' }, 'Still reading the contract’s full history; the figures above can only grow.'),
@@ -103,7 +106,7 @@ function paintTips(j) {
     !t ? h('p', { class: 'mute' }, 'Loading…')
       : h('div', {},
         h('p', { class: 'big num' }, num(t.wraps, 0), h('small', {}, `wraps tipped, ${eth(t.eth)} ETH`)),
-        paid.length ? h('div', { class: 'rows' }, paid.map((r) => kv(`To ${nameOf(r.to)}`, `${eth(r.eth)} ETH`))) : null,
+        paid.length ? h('div', { class: 'rows' }, paid.map((r) => kv(['To ', nameOf(r.to)], `${eth(r.eth)} ETH`))) : null,
         t.complete ? null : h('p', { class: 'stale' }, 'Read in part: the figures can only grow.')),
     sp && sp.shares ? h('div', {},
       h('p', { class: 'note' }, 'A splitter sends what tips it receives on to:'),

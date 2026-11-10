@@ -3,7 +3,7 @@ import { JSDOM } from './_jsdom.mjs';
 
 const dom = new JSDOM('<!doctype html><head></head><body></body>');
 globalThis.document = dom.window.document;
-const { addrView } = await import('../dapp/address-view.js');
+const { addrView, addrFlat } = await import('../dapp/address-view.js');
 
 const A = '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045';
 const text = (s) => { const d = document.createElement('div'); d.innerHTML = s; return d; };
@@ -38,4 +38,24 @@ const t = text(addrView(T, 12, 18)).firstChild;
 assert.equal(t.children[0].textContent, T.slice(0, 18));
 assert.equal(t.children[2].textContent, T.slice(-12));
 assert.equal(text(addrView(T, 12, 18)).textContent, T);
+// inside a link: the same text, short, with the whole value as its title and no focus of its own
+const f = text(addrFlat(A, 4)).firstChild;
+assert.equal(text(addrFlat(A, 4)).textContent, A);
+assert.equal(f.getAttribute('tabindex'), null, 'a link cannot hold a second focus stop');
+assert.equal(f.getAttribute('title'), A);
+assert.ok(f.classList.contains('tv') && f.classList.contains('tv-f'));
+assert.equal(f.children[0].textContent, A.slice(0, 6));
+assert.equal(f.children[2].textContent, A.slice(-4));
+assert.equal(addrFlat('0x1234', 4), '0x1234');
+const fe = text(addrFlat(evil, 4));
+assert.equal(fe.querySelector('img'), null);
+assert.equal(fe.firstChild.getAttribute('title'), evil, 'the title is escaped, not trusted');
+assert.equal(fe.textContent, evil);
 console.log('address view checks passed');
+// a view with no tail (only the start is shown) does not repeat the whole value as its tail
+const s0 = text(addrView(A, 0, 18)).firstChild;
+assert.equal(s0.children[0].textContent, A.slice(0, 18));
+assert.equal(s0.children[2].textContent, '');
+assert.equal(text(addrView(A, 0, 18)).textContent, A);
+assert.equal(text(addrFlat(A, 0, 18)).textContent, A);
+console.log('address view no-tail checks passed');

@@ -13,6 +13,7 @@ import { poolRecipient } from '/pool-recipient.js?cb=a9311fc4';
 import { L2_BRIDGES } from '/evm-pool-gateway.js';
 import { poseidon2, poseidon3, poseidon4, poseidon5, poseidon7 } from '../vendor/tacit-poseidon.min.js';
 import { guardProvider } from '../wallet-prompts.js';
+import { addrView } from '../address-view.js';
 
 const WORKER_URL = '/evm-pool-prove-worker.js?cb=7f41e5e0';
 const O = globalThis.__TACIT_EVM_POOL__ || {};
@@ -36,6 +37,8 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, v); } catch {} },
 };
 
+// an address drawn as a node: all its characters stay in the page (find, copy), and a tap opens it
+const addrNode = (a, n, head) => { const t = document.createElement('template'); t.innerHTML = addrView(a, n, head); return t.content; };
 function el(tag, attrs = {}, ...kids) {
   const n = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
@@ -228,7 +231,7 @@ export async function mount(root, ctx) {
   }
 
   function copyRow(label, value, hint) {
-    const b = el('b', { title: value }, short(value, 12));
+    const b = el('b', {}, addrNode(value, 12, 12));
     const a = el('button', { type: 'button', class: 'link-btn', onclick: async () => {
       if (await copy(value)) { ctx.toast ? ctx.toast('Copied') : null; a.textContent = 'copied'; setTimeout(() => { a.textContent = 'copy'; }, 1500); }
       else if (ctx.toast) ctx.toast(`Could not copy: ${value}`, true);

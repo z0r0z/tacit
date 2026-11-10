@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-64v3CvZZB0j9ffYUgPVADQLfFhnqSlotQTnv/4a47bI=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-F3cSpZAn/3vEmz2UoSndIkJ/4Y9AQARCCPgxKkI0O9w=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -55,7 +55,7 @@
 <link rel="modulepreload" href="/zrouter-guard.js">
 <link rel="modulepreload" href="/confidential-payout.js?cb=c27b4853">
 <link rel="modulepreload" href="/address-id.js?cb=c4fa5a58">
-<link rel="modulepreload" href="/address-view.js?cb=6cebac8b">
+<link rel="modulepreload" href="/address-view.js?cb=57bc64d3">
 <link rel="modulepreload" href="/wallet-balances.js?cb=b768cab5">
 <link rel="modulepreload" href="/trade/farm-read.js?cb=112a01b9">
 <link rel="modulepreload" href="/bridge-all.js?cb=4b6de3ff">
@@ -69,7 +69,7 @@
 <link rel="modulepreload" href="/bridge-tick.js?cb=4e721860">
 <link rel="modulepreload" href="/tacit-session.js?cb=a2d34bb2">
 <link rel="modulepreload" href="/activity.js?cb=5f14a43f">
-<link rel="modulepreload" href="/swap/card.js?cb=2b054fdf">
+<link rel="modulepreload" href="/swap/card.js?cb=4f39bb87">
 <link rel="modulepreload" href="/trade/wallet.js?cb=3595ad83">
 <link rel="modulepreload" href="/trade/util.js?cb=ba5a02b1">
 <link rel="modulepreload" href="/trade/rpc.js">
@@ -2390,7 +2390,7 @@ import { parseRecipient } from '/confidential-payout.js?cb=c27b4853';
 import { planMerge, planAll, countAll, opsCompared } from '/bridge-all.js?cb=4b6de3ff';
 import { aprFrom, shieldedApr as shieldedAprOf, poolWorthEth } from '/trade/farm-read.js?cb=112a01b9';
 import { addressId } from '/address-id.js?cb=c4fa5a58';
-import { addrView } from '/address-view.js?cb=6cebac8b';
+import { addrView, addrFlat } from '/address-view.js?cb=57bc64d3';
 import { balanceRows } from '/wallet-balances.js?cb=b768cab5';
 import { PXS_KEY, PX_CALLS, pxFigures, paintPx, pxState } from '/px-strip.js?cb=fe8eebc5';
 import { zapPlan, zapPlanFor, zapCalldata, zapSettleCalldata, zapSplitSearch, zapWorth } from '/lp-zap.js?cb=4823580d';
@@ -2537,6 +2537,8 @@ const html = (strs, ...vals) => new Raw(strs.reduce((a, s, i) => a + part(vals[i
 const mount = (el, view) => { el.innerHTML = view?.s ?? ''; };
 // an address in a row the reader checks: short, with every character still in the page (find, copy) and a tap to open it
 const viewAddr = (a, n = 4) => new Raw(addrView(a, n));
+// the same inside a link, which cannot hold a focus stop of its own
+const flatAddr = (a, n = 4) => new Raw(addrFlat(a, n));
 const COUNTED = new WeakSet();
 const countIO = 'IntersectionObserver' in window && !matchMedia('(prefers-reduced-motion: reduce)').matches
   ? new IntersectionObserver((es) => { for (const e of es) if (e.isIntersecting) { countIO.unobserve(e.target); runCount(e.target); } }, { threshold: 0.6 })
@@ -4306,7 +4308,7 @@ document.addEventListener('click', (e) => {
   S.provider = null; rerender('wallet');
 });
 // The Ethereum wallet connected now, to change or disconnect; `named` when a row above already shows it, connected
-const ethLine = (named = false) => (S.wallet && S.provider ? html`<div class="kv eth-line"><span>${S.provider.isWalletConnect ? 'WalletConnect' : chainTag(1)}</span><b>${named ? '' : html`<span class="num">${short(S.wallet, 4)}</span>`}<button class="link" type="button" data-wc-change>Change account</button><button class="link" type="button" data-wc-off>Disconnect</button></b></div>` : '');
+const ethLine = (named = false) => (S.wallet && S.provider ? html`<div class="kv eth-line"><span>${S.provider.isWalletConnect ? 'WalletConnect' : chainTag(1)}</span><b>${named ? '' : html`<span class="num">${viewAddr(S.wallet, 4)}</span>`}<button class="link" type="button" data-wc-change>Change account</button><button class="link" type="button" data-wc-off>Disconnect</button></b></div>` : '');
 const S = { address: null, wallet: null, provider: null, key: null, acct: null, pay: null };
 // The Swap tab's card (swap/card.js), once drawn, and the private swaps in it that wait for a key to be opened (the hero's Swap tab, below)
 const SWC = { el: null, card: null, p: null, ask: null, url: false, keyw: new Set() };
@@ -5078,7 +5080,7 @@ render.wallet = () => {
     <div id="ac-form"></div>
     <div class="status" role="status" id="ac-status"></div>
     ${btcOther || (S.wallet && S.provider) ? html`<div class="lbl sep"><span>Connected</span></div>` : ''}
-    ${btcOther ? html`<div class="kv"><span>${chainTag('btc')}</span><b>${short(btcAddr, 8)}</b></div>` : ''}
+    ${btcOther ? html`<div class="kv"><span>${chainTag('btc')}</span><b>${viewAddr(btcAddr, 8)}</b></div>` : ''}
     ${ethLine()}
     <div class="lbl sep"><span>Your key</span>${kept ? html`<button type="button" id="w-backup">Copy key to back up</button>` : ''}</div>
     <p class="note">${kept ? 'Kept in this browser only: clearing its data loses it.' : k.mode === 'key' ? 'Pasted and not saved: closing the tab forgets it.' : 'Your wallet or passkey opens it again: keep that safe.'} Anyone who has the key holds these funds and the address that goes with it.</p>`);
@@ -5487,7 +5489,7 @@ function wcNoApp(cancel) {
   const box = document.createElement('div');
   box.className = 'note';
   box.style.marginTop = '14px';
-  mount(box, html`No wallet app? Send ETH to this key’s own address from any exchange, and pay from it instead: <code class="addr">${short(a, 8)}</code>
+  mount(box, html`No wallet app? Send ETH to this key’s own address from any exchange, and pay from it instead: <code class="addr">${viewAddr(a, 8)}</code>
     <button class="link" type="button" data-wc-copyacct>Copy</button> <button class="link" type="button" data-wc-useacct>Pay from it</button>`);
   body.append(box);
   box.querySelector('[data-wc-copyacct]').onclick = () => copy(a, 'Address copied');
@@ -5511,7 +5513,7 @@ const lowEth = () => (payer() === 'tacit' ? html`More than this key’s address 
 function noEthYet(el, wei, chain, then) {
   if (!el?.isConnected || wei !== 0n || payer() !== 'tacit') return;
   const has = evm.available();
-  mount(el, html`<div class="callout"><span>${has ? 'This key’s address' : 'Your Ethereum address for Tacit'}, <code class="addr">${short(S.acct?.address || '', 6)}</code>, has no ETH${chain ? ` on ${chain}` : ''} yet. ${has ? html`Pay from your wallet instead, or send ETH to it, then ${then} here.` : `Send some to it from any wallet or exchange, then ${then} here.`}</span>${has ? html`<button class="btn" type="button" data-paywallet>Pay from wallet</button>` : html`<button class="btn ghost" type="button" data-fund>Add ETH</button>`}</div>`);
+  mount(el, html`<div class="callout"><span>${has ? 'This key’s address' : 'Your Ethereum address for Tacit'}, <code class="addr">${viewAddr(S.acct?.address || '', 6)}</code>, has no ETH${chain ? ` on ${chain}` : ''} yet. ${has ? html`Pay from your wallet instead, or send ETH to it, then ${then} here.` : `Send some to it from any wallet or exchange, then ${then} here.`}</span>${has ? html`<button class="btn" type="button" data-paywallet>Pay from wallet</button>` : html`<button class="btn ghost" type="button" data-fund>Add ETH</button>`}</div>`);
 }
 const mine = () => (payer() === 'tacit' ? 'This key’s address' : 'My wallet');
 const ownAccount = (a) => !!a && [S.address, S.wallet, S.acct?.address].some((x) => x && String(x).toLowerCase() === String(a).toLowerCase());
@@ -7543,7 +7545,7 @@ function xoOut(el, status, a) {
         ${back.map(([k, v]) => html`<div class="kv"><span>${k}</span><b>${v}</b></div>`)}
         <div class="kv"><span>Relay fee</span><b>${fmt(fee, xdec(a), xdec(a))} ${a.ticker}${a.key === 'teth' ? xoUsd({ teth: fee }) : ''}</b></div>
         ${size && units + size <= held ? html`<div class="kv"><span>Relay fee to ${freeNotes(P.scan?.[a.k].notes).some((n) => BigInt(n.value) >= units + size) ? 'split a note' : 'combine notes'}</span><b>${fmt(size, xdec(a), xdec(a))} ${a.ticker}</b></div>` : ''}
-        <div class="kv"><span>Bitcoin fee, when it is sent</span><b>≈ ${pf.estSats.toLocaleString('en-US')} sats${xoUsd({ sats: pf.estSats })} from ${short(pf.address, 6)}</b></div>
+        <div class="kv"><span>Bitcoin fee, when it is sent</span><b>≈ ${pf.estSats.toLocaleString('en-US')} sats${xoUsd({ sats: pf.estSats })} from ${viewAddr(pf.address, 6)}</b></div>
         <div class="kv"><span>Arrives</span><b>usually a few hours, sometimes up to a day</b></div>
         ${a.floor && xoLadder(fee * 2n) * 2n < units ? html`<p class="note">If the relay’s floor has moved by the time it takes the burn, its fee is ${fmt(xoLadder(fee * 2n), xdec(a), xdec(a))} ${a.ticker} and ${fmt(xoLadder(fee * 2n) - fee, xdec(a), xdec(a))} ${a.ticker} less arrives.</p>` : ''}`);
       const problem = pf.problems[0], noCoin = pf.warnings.some((w) => w.name === 'funding');
@@ -8167,7 +8169,7 @@ function loadHeld(force = false) {
     for (const c of order) { if (S.key?.pubHex !== pub) return; await idle(); await one(c).catch(() => {}); }
   })()];
   const sats = (async () => {
-    const X = await import('/sats/secret.js?cb=d10eac01');
+    const X = await import('/sats/secret.js?cb=0aca0abf');
     const notes = (await X.poolNotes(X.poolWalletFor(priv, 'mainnet'))).filter((n) => !n.spent);
     const held = X.livePoolAssets().map((a) => ({ ...a, value: notes.filter((n) => strip(n.asset).toLowerCase() === a.id).reduce((t, n) => t + BigInt(n.value), 0n) }));
     if (S.key?.pubHex === pub) { HELD.sats = held; dashSoon(); }
@@ -8180,7 +8182,7 @@ async function devResolve(raw) {
     let d;
     try { d = decodeTacitAddress(lo); } catch { return { error: 'Not a valid Tacit address.' }; }
     if (d.network !== 'mainnet') return { error: 'That Tacit address is for a test network.' };
-    return d.lanes.pool ? { bp: d.lanes.pool.poolAddress, label: short(lo, 8), id: lo } : { error: 'This Tacit address is from before pool payments, so it cannot receive in this pool yet. Pay it from the Tacit pool tab instead.' };
+    return d.lanes.pool ? { bp: d.lanes.pool.poolAddress, label: viewAddr(lo, 8), id: lo } : { error: 'This Tacit address is from before pool payments, so it cannot receive in this pool yet. Pay it from the Tacit pool tab instead.' };
   }
   let r;
   try { r = await (await getNames()).resolveName(lo); } catch (e) { return { error: e.message }; }
@@ -8421,7 +8423,7 @@ function renderDevice(el) {
       const over = wb != null && amount > wb;
       go.disabled = over;
       if (over) warn(rc, 'More than your wallet balance.');
-      else { mount(rc, html`${raw ? html`<div class="kv"><span>To</span><b>${dsv.r.label ? `${dsv.r.label} → ` : ''}${viewAddr(dsv.r.bp, 8)}</b></div>${idRow(dsv.r.id || dsv.r.bp)}` : ''}${pointsRow(amount, 'dev', c)}`); rc.hidden = false; }
+      else { mount(rc, html`${raw ? html`<div class="kv"><span>To</span><b>${dsv.r.label ? html`${dsv.r.label} → ` : ''}${viewAddr(dsv.r.bp, 8)}</b></div>${idRow(dsv.r.id || dsv.r.bp)}` : ''}${pointsRow(amount, 'dev', c)}`); rc.hidden = false; }
     };
     toEl.addEventListener('input', check);
     $('#d-max').onclick = () => { if (wb != null) { const keep_ = c.chainId === 1 ? 3n * 10n ** 15n : 2n * 10n ** 14n, v = wb > keep_ ? wb - keep_ : 0n; amt.value = v ? plain(v, 18) : ''; amt.dispatchEvent(new Event('input')); } };
@@ -8852,7 +8854,7 @@ function renderTokenPool(el) {
       const over = wb != null && amount > wb;
       go.disabled = over;
       if (over) warn(rc, `More than ${your()} holds.`);
-      else if (raw && dsv.r.bp) { mount(rc, html`<div class="kv"><span>To</span><b>${dsv.r.label ? `${dsv.r.label} → ` : ''}${viewAddr(dsv.r.bp, 8)}</b></div>${idRow(dsv.r.id || dsv.r.bp)}`); rc.hidden = false; }
+      else if (raw && dsv.r.bp) { mount(rc, html`<div class="kv"><span>To</span><b>${dsv.r.label ? html`${dsv.r.label} → ` : ''}${viewAddr(dsv.r.bp, 8)}</b></div>${idRow(dsv.r.id || dsv.r.bp)}`); rc.hidden = false; }
     };
     toEl.addEventListener('input', check);
     if (S.address) ethCall(t.token, SEL.balanceOf + addrWord(S.address)).then((b) => {
@@ -8913,7 +8915,7 @@ function renderTokenPool(el) {
       const m = TK.bal == null ? 0 : merges(amount), tooMuch = m == null;
       go.disabled = tooMuch;
       if (tooMuch) over(rc, amount);
-      else { mount(rc, html`<div class="kv"><span>To</span><b>${dsv.r.label ? `${dsv.r.label} → ` : ''}${viewAddr(dsv.r.bp, 8)}</b></div>${idRow(dsv.r.id || dsv.r.bp)}${feeRow()}${combine(m)}`); rc.hidden = false; }
+      else { mount(rc, html`<div class="kv"><span>To</span><b>${dsv.r.label ? html`${dsv.r.label} → ` : ''}${viewAddr(dsv.r.bp, 8)}</b></div>${idRow(dsv.r.id || dsv.r.bp)}${feeRow()}${combine(m)}`); rc.hidden = false; }
     };
     toEl.addEventListener('input', check); amt.addEventListener('input', check); check();
     { const dr = hxLive('tsend'); if (dr?.slug === t.slug) { toEl.value = dr.to || ''; amt.value = dr.amt || ''; HX.draft = null; if (toEl.value || amt.value) check(); } }   // what the tile gathered
@@ -9594,7 +9596,7 @@ function brMintedText(rec) {
   if (rec.stealth) return html`Sent to ${brPaid(rec)}. It is theirs to claim as a private payment. If they have not claimed it by ${new Date(Number(rec.stealth.deadline) * 1000).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}, you can take it back.`;
   const tk = brTk(rec), plan = tk === 'TAC' ? brPlanOf(rec) : null;
   if (tk !== 'TAC') return html`Arrived in your private ${tk}.`;
-  if (plan?.publicTo && plan.publicDone && !plan.publicNote) return html`Arrived, and made public TAC in ${short(plan.publicTo, 6)}.`;
+  if (plan?.publicTo && plan.publicDone && !plan.publicNote) return html`Arrived, and made public TAC in ${viewAddr(plan.publicTo, 6)}.`;
   if (plan?.chain && plan.chainDone) return html`Arrived, and moved to the Tacit chain.`;
   if (plan?.chain && chainOn()) {
     return (plan.chainTries || 0) >= 3
@@ -10366,7 +10368,7 @@ async function brAct(run, kind, id) {
         throw e;
       }
       brPlanSet(pub, rec.id, { ...(plan || {}), at: plan?.at || Date.now(), publicTo: to, publicDone: Date.now(), publicNote: null, publicErr: null });
-      if (!run.away) { toast('Private TAC made public'); run.say(status(), html`<span class="ok">✓ ${fmt(BigInt(note.value), 8, 2)} TAC is public in ${short(to, 6)}.</span>`); }
+      if (!run.away) { toast('Private TAC made public'); run.say(status(), html`<span class="ok">✓ ${fmt(BigInt(note.value), 8, 2)} TAC is public in ${viewAddr(to, 6)}.</span>`); }
       await Promise.allSettled([scanPrivate(true), loadTacHoldings(true)]);
       return;
     }
@@ -10727,7 +10729,7 @@ function tacPlaceGo(what) {
 }
 // The pool's panel: made once, under the page's key (the key never leaves this page), and drawn in the page's action slot while it is open
 function tacPool() {
-  return (TPOOL.p ||= import('/tac/pool.js?cb=11ded1af').then((m) => {
+  return (TPOOL.p ||= import('/tac/pool.js?cb=826bc352').then((m) => {
     const api = m.makeTacPool({
       key: () => (S.key ? { pubHex: S.key.pubHex } : null),
       priv: () => walletPriv(),
@@ -10842,7 +10844,7 @@ function tacPageSet(on) {
 const CLV = { p: null };
 function chainLive(on) {
   if (!on) { CLV.p?.then((l) => l.stop(), () => {}); return; }
-  CLV.p ||= import('/chain/live.js?cb=b319122d').then((m) => m.mountChainLive({ top: $('#tpg-live'), rest: $('#tpg-chain') }));
+  CLV.p ||= import('/chain/live.js?cb=4b80413d').then((m) => m.mountChainLive({ top: $('#tpg-live'), rest: $('#tpg-chain') }));
   CLV.p.then((l) => { if (TACP.on) l.start(); }, () => { CLV.p = null; });
 }
 // to TAC's page (openSheet('tac') and every link to TAC's home), `part` its bridge between the chains
@@ -11044,7 +11046,7 @@ function tcardSteps() {
   const two = !k ? 'TAC on the Tacit chain to pay with' : held == null ? 'TAC on the Tacit chain: reading yours…' : html`TAC on the Tacit chain: you hold <span class="num">${fmt(held, 8, 4)}</span>`;
   const make = wal != null && wal > 0n ? html`<button class="link" type="button" data-tcd-step="shield">${gap != null ? `Make ${fmt(gap, 8, 4)} TAC private` : 'Make TAC private'}</button>`
     : html`<button class="link" type="button" data-hx="swap:ether:tac">Get TAC</button>`;
-  const v = html`<p class="tcd-steps-h">Pay <b class="mono">${/^tacit1|^0x/i.test(l.to) ? short(l.to, 10) : l.to}</b>${l.amt ? html` <b class="num">${l.amt} TAC</b>` : ''}</p><ol>
+  const v = html`<p class="tcd-steps-h">Pay <b class="mono">${/^tacit1|^0x/i.test(l.to) ? viewAddr(l.to, 10) : l.to}</b>${l.amt ? html` <b class="num">${l.amt} TAC</b>` : ''}</p><ol>
     ${step(1, k, k ? 'Signed in' : html`<button class="link" type="button" data-signin>Sign in</button> or make a Tacit ID`)}
     ${step(2, k && enough, two, k && held != null ? make : null)}
     ${step(3, false, 'Pay', html`<button class="link" type="button" data-tco-back>Back to the payment</button>`)}
@@ -11105,8 +11107,8 @@ function tcoPaint() {
   const addr = rc?.to || (/^(tac(it|tt|rt)1|0x)/i.test(l.to) ? l.to : null), sure = !!rc && !rc.bad && !rc.pre, units = tcoUnits(), usd = units ? hxUsd('tac', Number(units) / 1e8) : '';
   tcoPut($('#tco-top'), html`<p class="tco-k" id="tco-h">${l.amt ? 'Payment request' : 'Pay'}</p>
     <div class="tco-who">${addr ? idMark(addr, 44) : html`<span class="idm sk"></span>`}<div class="tco-who-t">
-      <b class="${name ? '' : 'mono'}">${name || short(addr || l.to, 10)}</b>
-      <span>${name && addr ? html`<span class="mono">${short(addr, 8)}</span>${/^0x/i.test(addr) ? '' : ' · '}` : ''}${addr && !/^0x/i.test(addr) ? html`ID <b class="num">${addressId(addr)}</b>` : addr && !name ? 'an Ethereum address' : ''}</span>
+      <b class="${name ? '' : 'mono'}">${name || viewAddr(addr || l.to, 10)}</b>
+      <span>${name && addr ? html`<span class="mono">${viewAddr(addr, 8)}</span>${/^0x/i.test(addr) ? '' : ' · '}` : ''}${addr && !/^0x/i.test(addr) ? html`ID <b class="num">${addressId(addr)}</b>` : addr && !name ? 'an Ethereum address' : ''}</span>
       ${sure ? html`<span class="tco-ok">${rc.eth ? 'Paid there as public TAC, out of the Tacit chain' : 'Can be paid privately on the Tacit chain'}</span>` : ''}</div></div>
     ${l.note ? html`<p class="tco-note"><span>Their note</span>“${l.note}”</p>` : ''}
     ${l.amt ? html`<p class="tco-amt num">${fmt(units, 8, 8)}<small>TAC</small></p><p class="tco-usd">${usd ? `≈ ${usd}` : html`&nbsp;`}</p>` : ''}`);
@@ -11698,8 +11700,8 @@ async function tcardSendSay(units, my) {
     if (!r) return [html``, false];
     if (r.bad) return [tcdErr(r.bad), false];
     TCARD.eth = r.eth;
-    return tcardChainCost(units, r.eth, r.eth ? html`${r.name} → <span class="mono">${short(r.to, 8)}</span> · leaves the Tacit chain there as public TAC; the leader pays it out`
-      : html`${raw} → <span class="mono">${short(r.to, 10)}</span> · <b>private, on the Tacit chain</b>`, r.to);
+    return tcardChainCost(units, r.eth, r.eth ? html`${r.name} → <span class="mono">${viewAddr(r.to, 8)}</span> · leaves the Tacit chain there as public TAC; the leader pays it out`
+      : html`${raw} → <span class="mono">${viewAddr(r.to, 10)}</span> · <b>private, on the Tacit chain</b>`, r.to);
   }
   const r = tpgRoute(raw, units);
   if (r.bad) return [tcdErr(r.bad), false];
@@ -11708,7 +11710,7 @@ async function tcardSendSay(units, my) {
     const lanes = tacitLanes(raw);
     if (tacitIsMine(lanes)) return [tcdErr('That is your own Tacit address.'), false];
     if (tpgKnown(lanes) === false) return [tcdErr('This Tacit address has not opened the Tacit chain yet. They open their Tacit wallet once, then it can be paid.'), false];
-    return tcardChainCost(units, false, html`<span class="mono">${short(raw, 10)}</span> · ID <b class="num">${addressId(raw)}</b> · <b>private, on the Tacit chain</b>`, raw);
+    return tcardChainCost(units, false, html`<span class="mono">${viewAddr(raw, 10)}</span> · ID <b class="num">${addressId(raw)}</b> · <b>private, on the Tacit chain</b>`, raw);
   }
   if (r.side === 'pool') {
     const rf = TACP.relay?.relay;
@@ -11853,7 +11855,7 @@ function tpgWhyRead(force = false) {
   if (!chainOn() || (!force && (TPGW.p || Date.now() - TPGW.at < 60e3))) return TPGW.p || Promise.resolve();
   TPGW.at = Date.now();
   return (TPGW.p = Promise.all([
-    Promise.all([import('/tacit-chain-config.js?cb=ef0714cd'), import('/tacit-chain-client.js?cb=da9133d9'), import('/chain/ui.js?cb=94364e10'), import('/tacit-chain-wallet.js')])
+    Promise.all([import('/tacit-chain-config.js?cb=ef0714cd'), import('/tacit-chain-client.js?cb=da9133d9'), import('/chain/ui.js?cb=345c9adc'), import('/tacit-chain-wallet.js')])
       .then(([cf, cm, ui, w]) => { TPGW.ui = ui; TPGW.w = w; return cm.chainStatus({ cfg: cf.tacitChain(), rpcCall: (m, ps) => rpc(m, ps) }); }).then((s) => { TPGW.cs = s; }, () => {}),
   ]).finally(() => { TPGW.p = null; tpgActionsSoft(); rerender('tac'); }));
 }
@@ -12738,7 +12740,7 @@ function leaderboard(connected) {
   const line = (e, i) => {
     const a = String(e.address).toLowerCase(), me = mine.has(a);
     const sub = day ? `${fmt(e.tacWei != null && /^\d+$/.test(String(e.tacWei)) ? BigInt(e.tacWei) : tacOf(PTS.pulse?.pot || 0n, e.points, day.totalPoints), 18, 2)} TAC` : whole ? sharePct(e.points / whole) : '';
-    return html`<li class="${me ? 'me' : ''}" data-a="${a}"><span class="ptl-w"><span class="rk num">${i + 1}</span><a href="${ETHERSCAN(a)}" target="_blank" rel="noopener">${short(a)}</a>${me ? ' · you' : ''}</span><span class="ptl-r"><b class="num">${ptsFmt(e.points)}</b>${sub ? html`<small class="mute">${sub}</small>` : ''}</span></li>`;
+    return html`<li class="${me ? 'me' : ''}" data-a="${a}"><span class="ptl-w"><span class="rk num">${i + 1}</span><a href="${ETHERSCAN(a)}" target="_blank" rel="noopener">${flatAddr(a)}</a>${me ? ' · you' : ''}</span><span class="ptl-r"><b class="num">${ptsFmt(e.points)}</b>${sub ? html`<small class="mute">${sub}</small>` : ''}</span></li>`;
   };
   const at = new Set([0, 1, 2, 3, 4].filter((i) => i < lb.length));
   lb.forEach((e, i) => { if (mine.has(String(e.address).toLowerCase())) for (const j of [i - 1, i, i + 1]) if (j >= 0 && j < lb.length) at.add(j); });
@@ -12809,7 +12811,7 @@ function retention() {
     if (!st?.enabled || !to) return '';
     const rows = HOLD.logRows, on = holdConsented(), size = (b) => fmt(b, 18, 2);
     return html`<div class="lbl"><span>Retention</span></div>
-    <p class="note">ETH you leave in the private pools earns ${st.rate ? `${st.rate.toLocaleString('en-US')} points per ETH` : 'points'} for each day: at a random moment of the day, the size of each note you hold is proven on this device, and the points go to ${short(to)}.${st.buckets.length ? ` Sizes: ${listOr(st.buckets.map(size))} ETH.` : ''}</p>
+    <p class="note">ETH you leave in the private pools earns ${st.rate ? `${st.rate.toLocaleString('en-US')} points per ETH` : 'points'} for each day: at a random moment of the day, the size of each note you hold is proven on this device, and the points go to ${viewAddr(to)}.${st.buckets.length ? ` Sizes: ${listOr(st.buckets.map(size))} ETH.` : ''}</p>
     <p class="note">The points service learns which of your accounts holds how many private notes of which sizes each day, and when that stops; it does not learn which notes. The first time, about 31 MB of proving files are downloaded.</p>
     ${rows?.length ? html`<ul class="ptl">${rows.map((x) => html`<li><span class="ptl-w">${x.credited ? `${size(BigInt(x.bucketWei))} ETH held` : x.error ? `Not counted: ${x.error}` : `${size(BigInt(x.bucketWei))} ETH held, already counted`}<span class="ptl-m">${ptChain(x.chainId) ? chainTag(x.chainId || 1) : 'chain'} · ${dayShort(Number(x.epoch) || 0)}</span></span><b class="num">${x.credited || x.points ? `+${ptsFmt(Number(x.points) || 0)}` : ''}</b></li>`)}</ul>` : rows && on ? html`<p class="note">Nothing proven yet. The page does this once a day while your pool balance is read, or press below.</p>` : ''}
     ${S.key ? html`<button class="btn" type="button" id="hold-now" ${HOLD.running ? 'disabled' : ''}>${HOLD.running ? 'Proving…' : on ? 'Prove what I hold now' : 'Count my private ETH'}</button>
@@ -12850,7 +12852,7 @@ render.pts = () => {
   };
   const card = (r, i, watch = false) => html`
       <div class="pt">
-        <div class="bal"><div><div class="v num">${ptsFmt(r.points)}</div><div class="u">points · ${r.label} ${short(r.addr)}</div></div>
+        <div class="bal"><div><div class="v num">${ptsFmt(r.points)}</div><div class="u">points · ${r.label} ${viewAddr(r.addr)}</div></div>
           <div class="side">${!r.read ? html`<span class="err">unavailable</span><br><button class="link" type="button" data-retry="points">Try again</button>`
             : r.rank ? html`rank<br><b class="num">#${r.rank.toLocaleString('en-US')}</b>${r.dayRank ? html`<br>#${r.dayRank} today` : ''}` : r.rank === 0 && r.points > 0 ? html`outside the<br>top ${PTS_BOARD}` : r.points ? '' : 'none yet'}</div></div>
         ${r.owed > 0n ? (watch ? html`<div class="kv"><span>To claim</span><b>${tacShort(r.owed)} TAC</b></div><p class="note">Connect this address to claim it.</p>`
@@ -12869,7 +12871,7 @@ render.pts = () => {
     const L = PTS.look;
     return html`<div class="lbl"><span>Look up an address</span></div>
       <form class="amt text" id="pl-look-f"><input id="pl-look" placeholder="0x…" value="${PTS.draft ?? L?.addr ?? ''}" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="An address to look up" aria-invalid="${L?.err ? 'true' : 'false'}"><span class="u"><button class="link" type="submit" ${L?.busy ? 'disabled' : ''}>${L?.busy ? 'Reading…' : 'Look up'}</button></span></form>
-      ${L?.err ? html`<p class="note err" role="alert">${L.err}</p>` : L?.busy ? html`<div class="pt"><div class="bal"><div><div class="v"><span class="sk" style="--w:5ch"></span></div><div class="u">points · ${short(L.addr)}</div></div></div></div>` : L?.row ? card(L.row, -1, true) : ''}`;
+      ${L?.err ? html`<p class="note err" role="alert">${L.err}</p>` : L?.busy ? html`<div class="pt"><div class="bal"><div><div class="v"><span class="sk" style="--w:5ch"></span></div><div class="u">points · ${viewAddr(L.addr)}</div></div></div></div>` : L?.row ? card(L.row, -1, true) : ''}`;
   };
   mount(el, html`
     <p class="lede-s">Every day through ${dayShort(PGM.startDay + PGM.days - 1)} (UTC), up to ${potTac()} TAC is split by that day’s points${capText(utcDay(now())) ? `, at most ${capText(utcDay(now()))}` : ''}.${on ? ` Today’s split closes in ${dayLeft()}; its TAC is yours to claim once the day is finished.` : ' Claim any time.'}</p>
@@ -13412,7 +13414,7 @@ function lpSendForm(box, x) {
       if (String(r.pubHex).replace(/^0x/, '').toLowerCase() === S.key.pubHex) throw new Error('That is your own Tacit address.');
       who = r;
       mount(rc, html`<div class="kv"><span>Sends</span><b>${lpSays(p, n)}</b></div>
-        ${r.name ? html`<div class="kv"><span>${r.name}</span><b>${short(r.address || '', 10)}</b></div>` : html`<div class="kv"><span>To</span><b>${short(raw, 10)}</b></div>`}
+        ${r.name ? html`<div class="kv"><span>${r.name}</span><b>${viewAddr(r.address || '', 10)}</b></div>` : html`<div class="kv"><span>To</span><b>${viewAddr(raw, 10)}</b></div>`}
         <div class="kv"><span>Relay fee</span><b>none</b></div>
         <div class="kv"><span>They see</span><b>a private payment to claim</b></div>`);
       go.disabled = !(n > 0n);
@@ -14894,7 +14896,7 @@ function redeemPanel() {
     : r.step === 'arriving' ? html`<p class="note">cBTC is on its way to Bitcoin. When it has arrived and Bitcoin’s proof holds it, this reads Redeem.</p><div id="bw-xo"></div>`
     : html`<div class="kv"><span>Burns</span><b>${c(l.vBtc)} on your Bitcoin address</b></div>
       <div class="kv"><span>Unlocks</span><b>${N} BTC, back to your Bitcoin address</b></div>
-      ${b ? html`<div class="kv"><span>Bitcoin fees</span><b>${(b.commitFee + b.revealFee).toLocaleString('en-US')} sats, from ${short(b.address, 6)}</b></div>
+      ${b ? html`<div class="kv"><span>Bitcoin fees</span><b>${(b.commitFee + b.revealFee).toLocaleString('en-US')} sats, from ${viewAddr(b.address, 6)}</b></div>
         <label class="pick"><input type="checkbox" id="bw-redeem-ack" ${REDEEM.acked ? 'checked' : ''}><span>I understand the cBTC is burned and the lock is spent, and neither can be undone.</span></label>
         <button class="btn" type="button" id="bw-redeem-send" ${REDEEM.acked ? '' : 'disabled'}>Redeem</button>`
       : html`<button class="btn" type="button" id="bw-redeem-go">Review</button>`}`;
@@ -15412,7 +15414,7 @@ render.borrow = () => {
   const need = bf ? st.payEth + bf.gas : 0n, shortEth = !!bf && bf.bal != null && bf.bal < need;
   const form = html`
             <div class="d">Send BTC to your Bitcoin address, then lock it. Your Tacit key signs the lock here.</div>
-            <div class="kv"><span>Address</span><b class="mono">${short(st.addr, 8)}</b><button class="link" type="button" data-copy="${st.addr}">copy</button></div>
+            <div class="kv"><span>Address</span><b class="mono">${viewAddr(st.addr, 8)}</b><button class="link" type="button" data-copy="${st.addr}">copy</button></div>
             <div class="kv"><span>Balance</span><b>${st.sats == null ? '—' : html`${fmt(st.sats, 8, 8)} BTC${st.pendingSats ? html` <span class="mute">(${fmt(st.pendingSats, 8, 8)} unconfirmed)</span>` : ''}`}</b></div>
             <div class="amt act"><input id="bw-amt" inputmode="decimal" placeholder="0.001" autocomplete="off" aria-label="BTC to lock"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-btc"/></svg>BTC</span></div>
             <div class="row2"><button class="btn ghost" type="button" id="bw-fund">Send from Bitcoin wallet</button><button class="btn" type="button" id="bw-lock">Lock BTC</button></div>
@@ -15472,7 +15474,7 @@ render.borrow = () => {
           <h3>Post the wstETH bond</h3>
           <div class="d">${s2 ? 'Posted as wstETH, earning while it bonds the lock. Spending the BTC without redeeming forfeits it.' : s1 && st.payEth ? html`${fmt(st.payEth, 18, 5)} ETH${st.have ? ' more, as the price moved since the bond was posted' : ''}, staked as wstETH and earning while it bonds the lock. Spending the BTC without redeeming forfeits it.` : 'A bond of wstETH worth at least 1.5× the BTC, staked from your ETH in one transaction. Refundable, as wstETH.'}</div>
           ${s1 && !s2 ? (st.payEth ? html`
-            <div class="kv"><span>Paid from ${your()}${payer() === 'tacit' && S.acct ? html` · <span class="mono">${short(S.acct.address, 6)}</span> <button class="link" type="button" data-copy="${S.acct.address}">copy</button>` : ''}</span><b>${bf?.bal == null ? '…' : html`${fmt(bf.bal, 18, 5)} ETH`}</b></div>
+            <div class="kv"><span>Paid from ${your()}${payer() === 'tacit' && S.acct ? html` · <span class="mono">${viewAddr(S.acct.address, 6)}</span> <button class="link" type="button" data-copy="${S.acct.address}">copy</button>` : ''}</span><b>${bf?.bal == null ? '…' : html`${fmt(bf.bal, 18, 5)} ETH`}</b></div>
             ${shortEth && !bwCanWst(st) ? html`<p class="note err">The bond and its network fee come to about ${fmt(need, 18, 5)} ETH. ${payer() === 'tacit' ? html`Top up this key’s address from a connected wallet and the bond posts in the same go, or <button class="link" type="button" data-fund>add ETH another way</button> and post it once that arrives.` : 'Add ETH to your wallet, and Post bond opens once it arrives.'}</p>` : ''}
             ${bwCanWst(st) ? html`<p class="note">${your().replace(/^./, (c) => c.toUpperCase())} holds ${fmt(st.wst, 18, 5)} wstETH: the bond can be ${fmt(st.gapWst, 18, 5)} of it, approved by a signature and posted in the same transaction.</p>
               <button class="btn" type="button" id="bw-bond" data-bw-bond="wst">${st.have ? 'Top up bond' : 'Post bond'} with wstETH</button><button class="btn ghost" type="button" data-bw-bond="eth" ${shortEth ? 'disabled' : ''}>Or with ${fmt(st.payEth, 18, 5)} ETH</button>`
@@ -15698,7 +15700,7 @@ function assetSendForm(el, status0, { prefix, sheet, statusId, sources, pick, af
       if (src.pub || named || /^0x[0-9a-fA-F]{0,40}$/.test(raw)) {
         let recipient = null, bad = null;
         try { recipient = recipientOf(named ? named.address : raw); } catch (x) { bad = x; }
-        const at = named ? html`<div class="kv"><span>${named.name}</span><b>${src.pub ? '' : 'no Tacit address, so '}paid at ${short(named.address, 10)}</b></div>` : '';
+        const at = named ? html`<div class="kv"><span>${named.name}</span><b>${src.pub ? '' : 'no Tacit address, so '}paid at ${viewAddr(named.address, 10)}</b></div>` : '';
         if (src.pub) {
           q = recipient && { units, recipient, named };
           mount(rc, html`${at}<div class="kv"><span>Arrives</span><b>${show(units)} ${a.out}</b></div>`);
@@ -16919,13 +16921,13 @@ function hxRcptCheck() {
   if (HX.rcName && HX.rcName.raw !== raw) HX.rcName = null;
   if (HX.rcBtc && HX.rcBtc.raw !== raw) HX.rcBtc = null;
   const show = (warn, view) => { if (my !== hxRcSeq || !el.isConnected) return; mount(el, view); el.classList.toggle('warn', warn); el.hidden = false; if (warn !== !!HX.rcBad) { HX.rcBad = warn; hxHave(); } };
-  const outTo = (a) => show(false, html`${a.name} has no Tacit address, so it is paid at <span class="mono">${short(a.address, 10)}</span>, out of the pool`);
-  if (hxNamed(raw) && !HX.ask && !hxSendBtc()) return HX.send === 'ctac' ? show(false, html`${HX.rcName.name} → <span class="mono">${short(HX.rcName.address, 8)}</span> · leaves the Tacit chain there as public TAC`)
-    : hxSendWallet() ? show(false, html`${HX.rcName.name} has no Tacit address, so it is sent to <span class="mono">${short(HX.rcName.address, 10)}</span>, publicly`) : outTo(HX.rcName);
+  const outTo = (a) => show(false, html`${a.name} has no Tacit address, so it is paid at <span class="mono">${viewAddr(a.address, 10)}</span>, out of the pool`);
+  if (hxNamed(raw) && !HX.ask && !hxSendBtc()) return HX.send === 'ctac' ? show(false, html`${HX.rcName.name} → <span class="mono">${viewAddr(HX.rcName.address, 8)}</span> · leaves the Tacit chain there as public TAC`)
+    : hxSendWallet() ? show(false, html`${HX.rcName.name} has no Tacit address, so it is sent to <span class="mono">${viewAddr(HX.rcName.address, 10)}</span>, publicly`) : outTo(HX.rcName);
   // a name sent Bitcoin is read here too, so where it points is shown before the press; the other Bitcoin forms say what they are
   const btcName = hxSendBtc() && /\.(eth|wei|gwei)$/i.test(raw), pool = hxSendWallet() || !!hxPayP();
   // an Ethereum address, its two ends under the field to check against the one meant (a phone's field cuts it)
-  if (/^0x[0-9a-fA-F]{40}$/.test(raw) && !HX.ask && !hxSendBtc()) return show(false, HX.send === 'ctac' ? html`<span class="mono">${short(raw, 8)}</span> · leaves the Tacit chain there as public TAC: the address and amount are seen, not who sent it` : html`<span class="mono">${short(raw, 8)}</span>`);
+  if (/^0x[0-9a-fA-F]{40}$/.test(raw) && !HX.ask && !hxSendBtc()) return show(false, HX.send === 'ctac' ? html`<span class="mono">${viewAddr(raw, 8)}</span> · leaves the Tacit chain there as public TAC: the address and amount are seen, not who sent it` : html`<span class="mono">${viewAddr(raw, 8)}</span>`);
   if (!raw || HX.ask || (hxSendBtc() && !btcName) || hxRcptKind()) return;
   if (HX.send === 'ctac') return hxRcptChain(raw, full, show);
   hxRcT = setTimeout(() => {
@@ -16943,7 +16945,7 @@ function hxRcptCheck() {
       const to = r.address || (/^(tacit1|bp1)/i.test(raw) ? raw : '');
       if (!to && !r.name) return;
       HX.rcRes = { raw, r };
-      show(false, html`${r.name ? html`${r.name} → ` : ''}<span class="mono">${short(to, 10)}</span>${to ? html` · ID <b class="num">${addressId(to)}</b>` : ''}`);
+      show(false, html`${r.name ? html`${r.name} → ` : ''}<span class="mono">${viewAddr(to, 10)}</span>${to ? html` · ID <b class="num">${addressId(to)}</b>` : ''}`);
       // the amount was typed first: its quote stands, so the send it makes can be proved now
       if (!pool && HX.q && !HX.q.busy && !HX.q.warn && HX.q.eth === Number(hxUnits()) / 1e8) hxLockAhead();
     }, (e) => {
@@ -16955,7 +16957,7 @@ function hxRcptCheck() {
           if (my !== hxRcSeq) return;
           if (!a) return show(true, html`${errText(e)}`);
           HX.rcName = { raw, name: a.name, address: a.address };
-          if (hxSendWallet()) show(false, html`${a.name} has no Tacit address, so it is sent to <span class="mono">${short(a.address, 10)}</span>, publicly`); else outTo(HX.rcName);
+          if (hxSendWallet()) show(false, html`${a.name} has no Tacit address, so it is sent to <span class="mono">${viewAddr(a.address, 10)}</span>, publicly`); else outTo(HX.rcName);
           hxRcptChanged(); hxQuote();
         }, () => show(true, html`${errText(e)}`));
       }
@@ -16969,12 +16971,12 @@ function hxRcptChain(raw, full, show) {
     hxRcT = setTimeout(async () => {
       const my = hxRcSeq, r = await resolveToM(raw).catch(() => null), lanes = r?.address ? tacitLanes(r.address) : null;
       if (my !== hxRcSeq) return;
-      if (lanes && await chainRecipient(lanes).then(() => true, () => false) && (HX.rcChain = { raw, to: r.address })) return my === hxRcSeq && show(false, html`${raw} → <span class="mono">${short(r.address, 10)}</span> · on the Tacit chain`);
+      if (lanes && await chainRecipient(lanes).then(() => true, () => false) && (HX.rcChain = { raw, to: r.address })) return my === hxRcSeq && show(false, html`${raw} → <span class="mono">${viewAddr(r.address, 10)}</span> · on the Tacit chain`);
       const a = await nameAddrM(raw).catch(() => null);
       if (my !== hxRcSeq) return;
       if (!a) return show(true, html`${raw} has no Tacit address on the Tacit chain and no Ethereum address.`);
       HX.rcName = { raw, name: a.name, address: a.address };
-      show(false, html`${a.name} → <span class="mono">${short(a.address, 8)}</span> · leaves the Tacit chain there as public TAC`);
+      show(false, html`${a.name} → <span class="mono">${viewAddr(a.address, 8)}</span> · leaves the Tacit chain there as public TAC`);
       hxRcptChanged(); hxQuote();
     }, 450);
     return;
@@ -16984,7 +16986,7 @@ function hxRcptChain(raw, full, show) {
   if (!lanes) { if (full) show(true, html`That Tacit address does not read. Copy it again, whole.`); return; }
   if (tacitIsMine(lanes)) return show(true, html`That is your own Tacit address.`);
   hxRcT = setTimeout(() => {
-    chainRecipient(lanes).then(() => show(false, html`<span class="mono">${short(raw, 10)}</span> · ID <b class="num">${addressId(raw)}</b> · on the Tacit chain`),
+    chainRecipient(lanes).then(() => show(false, html`<span class="mono">${viewAddr(raw, 10)}</span> · ID <b class="num">${addressId(raw)}</b> · on the Tacit chain`),
       () => show(true, html`This Tacit address has not opened the Tacit chain yet. They open their Tacit wallet once, then it can be paid.`));
   }, 450);
 }
@@ -17981,7 +17983,7 @@ function hxHaveAddr(el, addr) {
   const icon = html`<svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg>`;
   const view = !addr ? (HX.bwErr && !HX.bwLoading ? html`<span class="hx-pl">${icon}<span>Your Bitcoin address and locks could not be read.</span><button class="link" type="button" data-bw-retry>Try again</button></span>`
       : html`<span class="hx-pl">${icon}<span>Reading your Bitcoin address and locks…</span></span>`)
-    : html`<span class="hx-pl"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg><span>Your Bitcoin address <b class="mono">${short(addr, 8)}</b></span><button class="link" type="button" data-copy="${addr}">copy</button></span>
+    : html`<span class="hx-pl"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg><span>Your Bitcoin address <b class="mono">${viewAddr(addr, 8)}</b></span><button class="link" type="button" data-copy="${addr}">copy</button></span>
     <span class="hx-hv">The BTC goes here first, from any wallet or with the button, and is locked once confirmed. Only your key spends it.</span>`;
   el.hidden = false;
   if (el.__h !== view.s) { el.__h = view.s; mount(el, view); const c = $('[data-copy]', el); if (c) c.onclick = () => copy(addr); const r = $('[data-bw-retry]', el); if (r) r.onclick = () => { HX.bwErr = null; hxBwLoad(true); hxHave(); hxStay(el); }; }
@@ -18737,7 +18739,7 @@ async function chainBack(b) {
       say(st, html`Sent ${txLink(hash)}. Waiting for it to land…`);
       await waitTx(hash);
       await c.forget(id);
-      say(st, html`<span class="ok">Done.</span> ${fmt(BigInt(e.deposit.amount), 8, 4)} TAC went back ${back ? 'into the private pool' : `to ${short(e.from || '', 6)}`}. ${txLink(hash)}`);
+      say(st, html`<span class="ok">Done.</span> ${fmt(BigInt(e.deposit.amount), 8, 4)} TAC went back ${back ? 'into the private pool' : html`to ${viewAddr(e.from || '', 6)}`}. ${txLink(hash)}`);
       toast('Deposit taken back');
       hxWalletBals(true);
       chainKeptRead(c);
@@ -19289,7 +19291,7 @@ async function chainPayRun(run, st, units, raw, { status = () => st, clear = nul
       }
       const { landing } = await chainAheadOr(c, ahead, st, () => bar(), (o) => c.withdraw(raw, units, o), () => { bar(); say(st, 'Proving it on this device…'); bar = proveBar(st, CHAIN_PROVE_S); }, run.to?.label);
       bar();
-      sent(st, html`<span class="ok">Sent.</span> ${fmt(units, 8, 4)} TAC to <span class="mono">${short(raw, 8)}</span>, paid out there by the leader.`, landing);
+      sent(st, html`<span class="ok">Sent.</span> ${fmt(units, 8, 4)} TAC to <span class="mono">${viewAddr(raw, 8)}</span>, paid out there by the leader.`, landing);
       toast('Sent from the Tacit chain');
       clear?.();
       chainScan(true);
@@ -19637,7 +19639,7 @@ async function hxBridgeOutGo(a, units) {
       if (!sure) {
         HX.xoSure = { key, at: Date.now() };
         const warns = pf.warnings.filter((w) => w.name !== 'funding').map((w) => xoWarn(w, pf.reflection?.lagBlocks || 0)).filter(Boolean);
-        say(st, html`The Bitcoin step is sent hours from now and costs about ${pf.estSats.toLocaleString('en-US')} sats from ${short(pf.address, 6)}.${pf.warnings.some((w) => w.name === 'funding') ? html` ${xoFundingText(pf)} Send bitcoin to it from any wallet or exchange: ${addrLine(pf.address)}` : html` Keep about ${pf.needSats.toLocaleString('en-US')} sats on it until then.`}${warns.map((w) => html` ${w}`)} A bridge can’t be undone once it is burned on Ethereum. Press again to bridge ${amtText}.`);
+        say(st, html`The Bitcoin step is sent hours from now and costs about ${pf.estSats.toLocaleString('en-US')} sats from ${viewAddr(pf.address, 6)}.${pf.warnings.some((w) => w.name === 'funding') ? html` ${xoFundingText(pf)} Send bitcoin to it from any wallet or exchange: ${addrLine(pf.address)}` : html` Keep about ${pf.needSats.toLocaleString('en-US')} sats on it until then.`}${warns.map((w) => html` ${w}`)} A bridge can’t be undone once it is burned on Ethereum. Press again to bridge ${amtText}.`);
         return;
       }
       HX.xoSure = null;
@@ -20028,7 +20030,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=2b054fdf').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=4f39bb87').catch((e) => { SWC.p = null; throw e; }));
 // the card held to the tab's flow; back on the Swap tab it opens on the swap it showed there
 function swcFlow() {
   hxPathPaint();
@@ -20244,7 +20246,7 @@ function paintHx() {
     const sw = hxSendWallet() && !HX.ask ? '' : html`<div class="hx-mode hx-sr" role="radiogroup" aria-label="Send or request">${[['hx-pay', 'Send', !HX.ask], ['hx-ask', 'Request', !!HX.ask]].map(([i, t, on]) => html`<button type="button" role="radio" id="${i}" aria-checked="${String(on)}">${t}</button>`)}</div>`;
     body = HX.ask ? html`${sw}${what('You ask for', 'Asset to ask for')}
       ${mid()}
-      ${field('Paid to', html`<span class="where">your tacit1 address</span>`, html`<span class="say">${HX.askFor ? short(HX.askFor, 12) : 'tacit1…'}</span>`, '', false)}
+      ${field('Paid to', html`<span class="where">your tacit1 address</span>`, html`<span class="say">${HX.askFor ? viewAddr(HX.askFor, 12) : 'tacit1…'}</span>`, '', false)}
       ${chainRow}<dl class="rcpt" id="hx-receipt">${hxAskSays().map(([k, v]) => html`<div><dt>${k}</dt><dd>${v}</dd></div>`)}</dl>
       <div class="hx-qr" id="hx-qr" hidden></div>
       <div class="hx-have" id="hx-have" hidden></div>

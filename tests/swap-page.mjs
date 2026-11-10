@@ -481,7 +481,7 @@ if (!process.env.SKIP_GASRELAY) {
   { const rc = (await page.textContent('#rcpt')).replace(/\s+/g, ' ');
     const tips = await rowTips(page);
     ok(/At least[\d.,]+ USDC/.test(rc) && /Fees\s*about/.test(rc) && tips.some((t) => /Relay fee [\d.]+ cBTC/.test(t) && /Exit fee [\d.]+ tETH/.test(t)), `out of the pool: the least it pays, and the route's and the exit's fee as one row (${rc})`);
-    ok(/Chain seesUSDC to 0x5a5a…5a5a, not from whom/.test(rc), 'out of the pool: the chain sees USDC arriving, not from whom');
+    ok(/Chain seesUSDC to 0x5a{20}, not from whom/.test(rc), 'out of the pool: the chain sees USDC arriving, not from whom');
     ok(tips.some((t) => /Pool depth: [\d.,]+ cBTC · [\d.,]+ tETH/.test(t)), 'out of the pool: routed through the cBTC pool to tETH first'); }
   ok(!/0x5a5a/.test(page.url()), 'the address is not put in the address bar');
   // its nudge is a row of the receipt, not a line under the button
@@ -625,7 +625,7 @@ if (!process.env.SKIP_GASRELAY) {
   await page.reload();
   await until(page, () => !document.querySelector('#steps').hidden);
   const t = (await page.textContent('#steps')).replace(/\s+/g, ' ');
-  ok(/0\.02 ETH → USDC\s*to 0x2222…2222/.test(t) && /Deposit/.test(t) && /Hidden in the pool\s*30 min so far/.test(t) && /Swap now/.test(t), `a kept swap shows its deposit, how long it has been in the pool and a way to swap it out (${t.slice(0, 160)})`);
+  ok(/0\.02 ETH → USDC\s*to 0x2{40}/.test(t) && /Deposit/.test(t) && /Hidden in the pool\s*30 min so far/.test(t) && /Swap now/.test(t), `a kept swap shows its deposit, how long it has been in the pool and a way to swap it out (${t.slice(0, 160)})`);
   ok(/0\.026 ETH is in the private ETH pool, yours and hidden\. Swap it out when you like\./.test(t), 'and one line says where the ETH is now');
   ok((await page.$$eval('#steps .st li', (l) => l.map((x) => x.className))).join(',') === 'done,now,todo' && (await page.getAttribute('#steps .st li.now', 'aria-current')) === 'step', 'its steps read done, now, to do, the current one marked for a screen reader');
   ok(!!(await page.$('#steps use[href="#tk-peth"]')), 'drawn with the private ETH mark');

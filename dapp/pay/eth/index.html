@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-0aKOviJwpdAN0BdfYOHxnHtocMtU9/feoPulhY2HqSU=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-iP0MGon89or8R2mesamajFYqkH3G1QbrjT1ez7d6wOU=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay · ETH</title>
 <meta name="description" content="Private ETH payments on Ethereum, Base and Robinhood Chain, proved on your device and recovered from your key.">
@@ -32,7 +32,7 @@
 <link rel="modulepreload" href="/tacit-address.js">
 <link rel="modulepreload" href="/bip352.js">
 <link rel="modulepreload" href="/address-id.js?cb=c4fa5a58">
-<link rel="modulepreload" href="/address-view.js?cb=6cebac8b">
+<link rel="modulepreload" href="/address-view.js?cb=57bc64d3">
 <link rel="modulepreload" href="/qr.js?cb=7ca24213">
 <!-- preload:end -->
 <!-- The first reads go to these four: their connections open while the modules load. -->
@@ -720,7 +720,7 @@ import { announceWalletConnect, wcSheets, dialogHost, WC_PROJECT_ID } from '/wal
 import { makeTacitAddress, poolKeysOf } from '/tacit-address.js';
 import { bip352TaggedHash } from '/bip352.js';
 import { addressId } from '/address-id.js?cb=c4fa5a58';
-import { addrView } from '/address-view.js?cb=6cebac8b';
+import { addrView } from '/address-view.js?cb=57bc64d3';
 import { qrSvg as qrMarkup } from '/qr.js?cb=7ca24213';
 import { keeperIdOf, KEEPERS as POOL_KEEPERS } from '/evm-pool-tokens.js?cb=a3c182f7';
 import { keeperFetch, available as routeAvailable, enabled as routeOn, turn as routeTurn } from '/private-route.js?cb=da84ce7e';
@@ -2527,7 +2527,7 @@ function receipt(rc) {
 }
 const txLink = (c, h) => html`<a href="${c.explorer}/tx/${h}" target="_blank" rel="noopener">${short(h, 6)} ↗</a>`;
 const routeSeg = (tab, fee) => html`<p class="route">${routeOf(tab) === 'wallet'
-  ? html`Sent from your wallet${S.wallet ? html` <span class="nw">${short(S.wallet)}</span>` : ''}: you pay the network fee, no relay fee${chainKeeper(S.chain) ? html` · <button class="link" type="button" data-route="relay">use the relay</button>` : ''}`
+  ? html`Sent from your wallet${S.wallet ? html` <span class="nw">${viewAddr(S.wallet)}</span>` : ''}: you pay the network fee, no relay fee${chainKeeper(S.chain) ? html` · <button class="link" type="button" data-route="relay">use the relay</button>` : ''}`
   : relayUp()
     ? html`Sent by the relay, no network fee to pay${fee == null ? '' : fee ? html` · relay fee at most <b class="num">${upTo(capOf(fee))} ETH</b>` : ' · no relay fee'} · <button class="link" type="button" data-route="wallet">send from my wallet instead</button>`
     : html`<span class="warn">The relay can’t take this one right now.</span> <button class="link" type="button" data-route="wallet">Send from my wallet instead</button>`}</p>`;
@@ -3924,7 +3924,7 @@ function paintRecover() {
       const dest = r.kind === 'bridge' && CHAINS.find((x) => x.full === r.dest);
       const bits = [r.time ? ago(r.time) : null, r.fee ? `fee ${fmt(r.fee, 18, 6)}` : null, (r.kind === 'sent' || r.kind === 'out' || r.kind === 'bridge' || r.kind === 'gift') && r.kept ? `kept ${eth(r.kept)}` : null,
         r.kind === 'gift' ? (r.taken === 'taken' ? 'taken' : r.taken === 'back' ? 'taken back' : 'not taken yet') : null].filter(Boolean).join(' · ');
-      return html`<li><div class="h"><b>${label}${r.kind === 'out' ? html` to <span class="nw">${short(r.to)}</span>` : r.kind === 'bridge' ? html` to ${dest ? cname(dest, true) : r.dest}` : ''}</b><span class="${isIn ? 'in' : ''}">${isIn ? '+' : r.kind === 'self' ? '' : '−'}${fmt(r.v, 18, 6)} ETH</span></div>
+      return html`<li><div class="h"><b>${label}${r.kind === 'out' ? html` to <span class="nw">${viewAddr(r.to)}</span>` : r.kind === 'bridge' ? html` to ${dest ? cname(dest, true) : r.dest}` : ''}</b><span class="${isIn ? 'in' : ''}">${isIn ? '+' : r.kind === 'self' ? '' : '−'}${fmt(r.v, 18, 6)} ETH</span></div>
         <div class="f">${cmark(r.chain)}${bits ? ` · ${bits}` : ''} · ${txLink(r.chain, r.tx)}${r.proof ? html` · <button class="link" type="button" id="prove-${r.chain.chainId}-${r.tx}-${r.proof.k}" data-proof="${r.chain.key}:${r.tx}:${r.proof.k}:${r.proof.e.toString(16).padStart(64, '0')}">copy proof</button>` : ''}</div></li>`;
     })}</ul>
     <p class="note">Only you and the recipient know who a private payment went to: the chain holds the amount sealed to their key.</p>` : CHAINS.every((c) => CH[c.chainId].hist) ? html`<p class="note">No payments yet. Deposit to start.</p>` : ''}`));
@@ -3956,7 +3956,7 @@ function renderWalletSheet() {
   const el = $('#wallet-body');
   if (!S.key) {
     mount(el, html`<p class="lede-s">Open your Tacit wallet. It is the same key, with the same balances, as everywhere on tacit.finance.</p>${signIn('ws')}
-      ${S.wallet ? html`<div class="kv"><span>${S.provider?.isWalletConnect ? 'WalletConnect' : 'Ethereum'}</span><b>${short(S.wallet, 6)} <button class="link" type="button" id="w-wc-change">Change account</button> <button class="link" type="button" id="w-wc-off">Disconnect</button></b></div>` : ''}`);
+      ${S.wallet ? html`<div class="kv"><span>${S.provider?.isWalletConnect ? 'WalletConnect' : 'Ethereum'}</span><b>${viewAddr(S.wallet, 6)} <button class="link" type="button" id="w-wc-change">Change account</button> <button class="link" type="button" id="w-wc-off">Disconnect</button></b></div>` : ''}`);
     wireDisconnect(el);
     return wireSignIn(el, 'ws', () => $('#sheet-wallet').close());
   }
@@ -3965,7 +3965,7 @@ function renderWalletSheet() {
     <div class="who"><div class="a num">${short(UNIFIED_LIVE ? unifiedAddress() : k.bp, 14)}</div><div class="u">${UNIFIED_LIVE ? 'Your Tacit address' : 'Your pool address'} · opened with ${viaText(k)}</div>
       <div class="u">ID <b class="num nw">${addressId(UNIFIED_LIVE ? unifiedAddress() : k.bp)}</b> · a payer sees the same ID</div>
       <div class="row2"><button class="btn ghost" type="button" id="w-copy">Copy address</button><button class="btn ghost" type="button" id="w-lock">Lock</button></div></div>
-    <div class="kv"><span>Pays the network fee when you send it yourself</span>${S.wallet ? html`<b>${short(S.wallet, 6)} <button class="link" type="button" id="w-wc-change">Change account</button> <button class="link" type="button" id="w-wc-off">Disconnect</button></b>` : html`<button class="link" type="button" id="w-conn">Connect wallet</button>`}</div>
+    <div class="kv"><span>Pays the network fee when you send it yourself</span>${S.wallet ? html`<b>${viewAddr(S.wallet, 6)} <button class="link" type="button" id="w-wc-change">Change account</button> <button class="link" type="button" id="w-wc-off">Disconnect</button></b>` : html`<button class="link" type="button" id="w-conn">Connect wallet</button>`}</div>
     ${routeAvailable() ? html`<label class="kv chk"><span>Hide my address from the relay</span><input type="checkbox" id="w-route" ${routeOn() ? 'checked' : ''}></label>${routeOn() ? html`<p class="more">The nodes you read the chain through still see it.</p>` : ''}` : ''}
     <div id="w-up"></div>
     ${kept ? html`<p class="more"><button class="link" type="button" id="w-backup">Copy key to back up</button></p>` : ''}
@@ -4043,7 +4043,7 @@ function drawGift() {
     <div class="lbl"><span>Sent to you by link</span><button class="link" type="button" id="gift-x">dismiss</button></div>
     <div class="req-a num">${d ? html`${fmt(d.a, 18, 6)} <small>ETH</small>` : b == null ? (GIFT.err ? '—' : html`<span class="sk" style="--w:6ch"></span>`) : b === 0n ? 'Empty' : html`${fmt(left ?? b, 18, 6, true)} <small>ETH</small>`}</div>
     <div class="req-m">on ${cname(c)}${g.note ? html` · “${g.note}”` : ''}</div>
-    ${d ? html`<p class="status">${d.inBlock ? html`<span class="ok">${d.to ? `Sent to ${short(d.to)}.` : 'In your private balance.'}</span>` : html`<span class="warn">${d.to ? `Sent to ${short(d.to)}, not confirmed yet.` : 'Sent to your private balance, not confirmed yet.'} Check it on the explorer before taking it again.</span>`} ${txLink(c, d.h)}</p>`
+    ${d ? html`<p class="status">${d.inBlock ? html`<span class="ok">${d.to ? html`Sent to ${viewAddr(d.to)}.` : 'In your private balance.'}</span>` : html`<span class="warn">${d.to ? html`Sent to ${viewAddr(d.to)}, not confirmed yet.` : 'Sent to your private balance, not confirmed yet.'} Check it on the explorer before taking it again.</span>`} ${txLink(c, d.h)}</p>`
     : b == null ? (GIFT.err ? html`<p class="note err">${errText(GIFT.err)} <button class="link" type="button" id="gift-re">retry</button></p>` : html`<p class="note">Reading the link’s balance…</p>`)
     : b === 0n ? html`<p class="note">Nothing is in this link: it was already taken, or the payment into it has not landed yet. <button class="link" type="button" id="gift-re">check again</button></p>`
     : fee != null && b <= fee ? html`<p class="note err">This link holds ${exact(b)} ETH, less than the relay’s fee of ${fmt(fee, 18, 6)} ETH, so it cannot be taken. Its sender can take it back.</p>`
@@ -4384,7 +4384,7 @@ const tokRelay = (t) => !TK[t.id].self && !!t.keeper;
 const tokFee = (t) => { const q = TK[t.id].quote; return !tokRelay(t) ? 0n : q?.fee != null && q.fee !== '' ? BigInt(q.fee) : null; };
 const tokRoute = (t) => html`<p class="route">${tokRelay(t)
   ? html`Sent by the relay, no network fee to pay${tokFee(t) != null ? html` · relay fee at most <b class="num">${tokUp(capOf(tokFee(t)), t.dec)} ${t.sym}</b>, from your private balance` : ''} · <button class="link" type="button" data-troute="wallet">send from my wallet instead</button>`
-  : html`Sent from your wallet${S.wallet ? html` <span class="nw">${short(S.wallet)}</span>` : ''}: you pay the network fee, no relay fee${t.keeper ? html` · <button class="link" type="button" data-troute="relay">use the relay</button>` : ''}`}</p>`;
+  : html`Sent from your wallet${S.wallet ? html` <span class="nw">${viewAddr(S.wallet)}</span>` : ''}: you pay the network fee, no relay fee${t.keeper ? html` · <button class="link" type="button" data-troute="relay">use the relay</button>` : ''}`}</p>`;
 const wireTokRoute = (f, t) => $$('[data-troute]', f).forEach((b) => b.onclick = () => { TK[t.id].self = b.dataset.troute === 'wallet'; renderForm(); });
 const tokSpendRows = (t, amount) => {
   const st = TK[t.id], fee = tokFee(t), plan = fee == null ? null : spendPlan(amount, capOf(fee) ?? 0n, st);

@@ -1,5 +1,6 @@
 import { makeConnect } from '/trade/connect.js?cb=92e87ca4';
 import { declinedWords } from '/wallet-prompts.js';
+import { addrView } from '/address-view.js?cb=57bc64d3';
 import { esc } from '/trade/sheet.js?cb=84cda8f2';
 import { API, $, short, fmtUnits, rpc } from '/trade/util.js?cb=ba5a02b1';
 import { discordGateMessage, DISCORD_MIN_TAC_BASE_UNITS, DISCORD_MIN_TAC_ERC20 } from '/discord/message.js?cb=0232a98d';
@@ -87,7 +88,7 @@ function render() {
   root.innerHTML = `<p class="eyebrow">Holder role</p>
     <h2>Show you hold TAC.</h2>
     <div class="rows flat">
-      <div class="kv"><span>Account</span><b>${on ? `<svg class="tk xs" role="img" aria-label="Ethereum"><title>Ethereum</title><use href="#c-eth"/></svg>${esc(short(W.account, 6))}` : 'Not connected'}${on ? ' <button class="linkbtn" type="button" id="swap-acct">change</button>' : ''}</b></div>
+      <div class="kv"><span>Account</span><b>${on ? `<svg class="tk xs" role="img" aria-label="Ethereum"><title>Ethereum</title><use href="#c-eth"/></svg>${addrView(W.account, 6)}` : 'Not connected'}${on ? ' <button class="linkbtn" type="button" id="swap-acct">change</button>' : ''}</b></div>
       <div class="kv"><span>TAC in wallet</span><b class="num"><svg class="tk xs" aria-hidden="true"><use href="#tk-tac"/></svg>${esc(balance(S.bal))}</b></div>
       <div class="kv"><span>Needed</span><b><svg class="tk xs" aria-hidden="true"><use href="#tk-tac"/></svg>${esc(NEED)}</b></div>
       <div class="kv"><span>TAC in Precision farm</span><b class="num">${esc(balance(S.farmBal))}</b></div>

@@ -4,6 +4,7 @@ import { makeBtcShieldedPool } from '../btc-shielded-pool.js';
 import { makeBtcPoolZap } from '../btc-pool-zap.js';
 import { makePoolClient } from '../btc-pool-client.js';
 import { poolRecipient } from '../pool-recipient.js';
+import { addrView } from '../address-view.js';
 
 export const FAUCET_URL = (globalThis.__SATS_FAUCET_URL__ || 'https://tacit-sats-faucet.onrender.com').replace(/\/$/, '');
 export const WORKER_BASE = (globalThis.__TACIT_WORKER_BASE__ || 'https://api.tacit.finance').replace(/\/$/, '');
@@ -910,6 +911,8 @@ const STAGE = {
 
 const FEE_ALLOWANCE = 2500;
 
+// an address drawn as a node: all its characters stay in the page (find, copy), and a tap opens it
+const addrNode = (a, n, head) => { const t = document.createElement('template'); t.innerHTML = addrView(a, n, head); return t.content; };
 function el(tag, attrs = {}, ...kids) {
   const n = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) { if (k === 'class') n.className = v; else if (k.startsWith('on')) n.addEventListener(k.slice(2), v); else n.setAttribute(k, v); }
@@ -1218,7 +1221,7 @@ export function mount(root, ctx) {
     if (ph === 'locked') { put(S.body, el('div', {}, ABOUT.receive)); return; }
     if (running === 'receive') return;
     const pw = poolWallet();
-    const addr = pw ? el('div', { class: 'small' }, 'Your pool address: ', el('code', {}, pw.addressString.slice(0, 20) + '…' + pw.addressString.slice(-8)), ' ',
+    const addr = pw ? el('div', { class: 'small' }, 'Your pool address: ', el('code', {}, addrNode(pw.addressString, 8, 20)), ' ',
       el('a', { href: '#', onclick: (e) => { e.preventDefault(); navigator.clipboard?.writeText(pw.addressString); log('Pool address copied.'); } }, 'copy')) : null;
     const got = (state.received || []).slice(-5).reverse().map((x) => el('div', {}, `${fmt(x.value)} ${ticker()} received in `, txLink(x.txid), ` (block ${x.height}).`));
     put(S.body, addr, ...got, balanceLine(),
@@ -1568,7 +1571,7 @@ export function mountMainnet(root, ctx) {
 
     items.push(el('p', { class: 'eyebrow sub-h' }, 'Receive'));
     const pw = poolWallet();
-    if (pw) items.push(el('div', { class: 'small' }, 'Your pool address: ', el('code', {}, pw.addressString.slice(0, 20) + '…' + pw.addressString.slice(-8)), ' ',
+    if (pw) items.push(el('div', { class: 'small' }, 'Your pool address: ', el('code', {}, addrNode(pw.addressString, 8, 20)), ' ',
       el('a', { href: '#', onclick: (e) => { e.preventDefault(); navigator.clipboard?.writeText(pw.addressString); log('Pool address copied.'); } }, 'copy')));
     items.push(el('div', { class: 'row' }, button('Scan the pool', () => run('receive', loadShielded))));
     items.push(errLine('receive'));

@@ -11,6 +11,8 @@
 //             read), kept (the client's pending(), each with unswept, paid and backAt as the page reads them), hops (hopsWaiting()) }
 //     note    a line under the key's panel (a copy, a refusal)
 
+import { addrView } from '../address-view.js';
+
 export const UNIT = 10n ** 8n;                 // the chain counts TAC in units of 1e-8
 const VIRTUAL = 100_000_000n;                  // the pool and shares the rate counts that no note holds (tacit-chain-wallet.js VIRTUAL)
 const HOP_WAIT = 5 * 60e3;                     // a landed hop the leader has not sent on after this long is offered here
@@ -108,7 +110,7 @@ function keyHtml(k, now, note) {
     <button class="btn" type="button" data-act="signin">Open your wallet</button>${note ? `<p class="status">${esc(note)}</p>` : ''}`;
   const pub = k.published === false ? `<button class="linkbtn" type="button" data-act="publish"${k.publishing ? ' disabled' : ''}>${k.publishing ? 'Publishing…' : 'Publish'}</button>`
     : k.published === true ? '<span class="mute">Published</span>' : '';
-  const addr = k.address ? `<span class="mono" title="${esc(k.address)}">${esc(shortAddr(k.address))}</span>` : '<span class="mute">Reading…</span>';
+  const addr = k.address ? `<span class="mono">${addrView(k.address, 10, 14)}</span>` : '<span class="mute">Reading…</span>';
   const kept = (k.kept || []).map((e) => keptView(e, now)), hops = hopsDue(k.hops, now).map(hopView), all = [...kept, ...hops];
   return `<p class="eyebrow"><span>Yours</span><button class="linkbtn who" type="button" data-act="lock">Lock</button></p><div class="rows flat">
     ${row('Balance', k.balance == null ? '<span class="mute">Reading…</span>' : `<span class="num">${esc(fmtTac(k.balance))}</span> TAC`)}

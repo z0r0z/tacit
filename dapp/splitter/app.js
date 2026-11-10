@@ -8,6 +8,7 @@ import {
 } from '/splitter/abi.js?cb=44661448';
 import { SPLITTER_INITCODE } from '/splitter/bytecode.js?cb=6e21588e';
 import { bodyType } from '../rpc-body.js';
+import { addrView, addrFlat } from '../address-view.js';
 import { guardProvider, declinedWords } from '../wallet-prompts.js';
 import { ETH_NODES, ETH_LOG_NODES } from '/eth-nodes.js';
 
@@ -30,6 +31,8 @@ const KEY = 'tacit-splitter-v1';
 const $ = (s, el = document) => el.querySelector(s);
 const lc = (a) => String(a || '').toLowerCase();
 const short = (a, k = 6) => `${a.slice(0, 2 + k)}…${a.slice(-4)}`;
+// an address drawn as a node: all its characters stay in the page (find, copy), and a tap opens it (inside a link it stays short)
+const addrNode = (a, k = 6, flat = false) => { const t = document.createElement('template'); t.innerHTML = (flat ? addrFlat : addrView)(a, 4, 2 + k); return t.content; };
 const nameOf = (a) => KNOWN.get(lc(a))?.[0] || null;
 const roleOf = (a) => KNOWN.get(lc(a))?.[1] || '';
 const store = {
@@ -239,19 +242,19 @@ function paintState() {
   }));
   const tipsHere = S.quote && lc(S.quote) === lc(S.addr);
   mount(el,
-    h('p', { class: 'eyebrow' }, h('span', {}, 'Splitter'), scan(`address/${S.addr}`, short(S.addr, 8))),
+    h('p', { class: 'eyebrow' }, h('span', {}, 'Splitter'), scan(`address/${S.addr}`, addrNode(S.addr, 8, true))),
     h('p', { class: 'room num' }, mark('tk-eth'), fmtEth(S.balance), h('small', {}, 'ETH waiting')),
-    S.balance > 0n ? h('div', { class: 'rows' }, to.map((a, i) => h('div', { class: 'kv' }, h('span', {}, `→ ${nameOf(a) || short(a)}`), h('b', { class: 'num' }, `${fmtEth(pay[i])} ETH`)))) : null,
+    S.balance > 0n ? h('div', { class: 'rows' }, to.map((a, i) => h('div', { class: 'kv' }, h('span', {}, '→ ', nameOf(a) || addrNode(a)), h('b', { class: 'num' }, `${fmtEth(pay[i])} ETH`)))) : null,
     go, out,
     S.quote == null ? null : h('div', { class: `callout ${tipsHere ? 'good' : ''}` }, tipsHere
       ? h('span', {}, h('b', {}, 'Tacit’s own pages tip this splitter.'), ' The relay’s quote names it. A page that pinned the ops multisig keeps paying the multisig, and the relay counts both.')
-      : h('span', {}, h('b', {}, 'Tacit’s pages do not tip this splitter yet.'), ` The relay’s quote names ${nameOf(S.quote) || short(S.quote, 8)}. Set RELAY_TIP_SPLITTER_ADDR on the API to ${S.addr} to change that.`)),
+      : h('span', {}, h('b', {}, 'Tacit’s pages do not tip this splitter yet.'), ' The relay’s quote names ', nameOf(S.quote) || addrNode(S.quote, 8), `. Set RELAY_TIP_SPLITTER_ADDR on the API to ${S.addr} to change that.`)),
     h('div', { class: 'rows' }, to.map((a, i) => h('div', { class: 'who' },
-      h('div', { class: 'nm' }, h('b', {}, nameOf(a) || 'Wallet'), h('small', {}, roleOf(a) || a, roleOf(a) ? ` · ${short(a, 6)}` : '')),
+      h('div', { class: 'nm' }, h('b', {}, nameOf(a) || 'Wallet'), h('small', {}, roleOf(a) || a, roleOf(a) ? [' · ', addrNode(a, 6)] : '')),
       h('div', { class: 'pc num' }, `${percent(weight, i)}%`),
       h('div', { class: 'bal num' }, S.recip[i] == null ? '' : `${fmtEth(S.recip[i], 4)} ETH held`)))),
     h('div', { class: 'rows' },
-      h('div', { class: 'kv' }, h('span', {}, 'Owner'), h('b', {}, nameOf(S.owner) ? `${nameOf(S.owner)} · ${short(S.owner, 6)}` : S.owner)),
+      h('div', { class: 'kv' }, h('span', {}, 'Owner'), h('b', {}, nameOf(S.owner) ? [nameOf(S.owner), ' · ', addrNode(S.owner, 6)] : S.owner)),
       S.logs?.length ? S.logs.map((l) => h('div', { class: 'log' }, h('span', {}, `Sent on ${ago(S.block - l.block)}`), h('b', { class: 'num' }, scan(`tx/${l.tx}`, `${fmtEth(l.amount)} ETH`)))) : h('div', { class: 'kv' }, h('span', {}, 'Sent on'), h('b', {}, S.logs ? 'nothing in the last two weeks' : 'could not be read just now'))));
 }
 
@@ -306,7 +309,7 @@ function safeBox(rows, out) {
     if (rowsProblem(rows, S.addr)) { area.value = ''; mount(calls); return; }
     const { to, weight } = rowsArgs(rows), list = [...(S.balance > 0n ? [encDistribute()] : []), encSetShares(to, weight)];
     area.value = JSON.stringify(safeBatch({ to: S.addr, name: 'Set the tip splitter list', calls: list }), null, 2);
-    mount(calls, list.map((d, i) => h('p', { class: 'note mono-wrap' }, h('b', {}, `${i + 1}. to ${short(S.addr, 8)}, value 0`), h('br'), d.length > 200 ? `${d.slice(0, 190)}…` : d)));
+    mount(calls, list.map((d, i) => h('p', { class: 'note mono-wrap' }, h('b', {}, `${i + 1}. to `, addrNode(S.addr, 8), ', value 0'), h('br'), d.length > 200 ? `${d.slice(0, 190)}…` : d)));
   };
   return box;
 }

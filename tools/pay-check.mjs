@@ -901,7 +901,7 @@ try {
       .catch(async (e) => { console.log('    ' + (await p.textContent('#recover-body')).replace(/\s+/g, ' ')); throw e; });
     const rows = await p.$$eval('.rows li', (x) => x.map((e) => e.textContent.replace(/\s+/g, ' ').trim()));
     console.log('    ' + rows.join('\n    '));
-    ok(rows.some((r) => /^Deposited ?\+0\.01 ETH/.test(r)) && rows.some((r) => /^Sent privately ?−0\.004 ETH.*kept 0\.006/.test(r)) && rows.some((r) => /^Withdrew to 0x3333…3333 ?−0\.002 ETH.*kept 0\.004/.test(r)), 'rebuilt history names the deposit, the private payment and the withdrawal');
+    ok(rows.some((r) => /^Deposited ?\+0\.01 ETH/.test(r)) && rows.some((r) => /^Sent privately ?−0\.004 ETH.*kept 0\.006/.test(r)) && rows.some((r) => /^Withdrew to 0x3{40} ?−0\.002 ETH.*kept 0\.004/.test(r)), 'rebuilt history names the deposit, the private payment and the withdrawal');
     // The balance is read again beside the history; the two agree once both are in.
     await p.waitForFunction((n) => /matches/.test(document.querySelector(`.chainsum li:nth-child(${n})`)?.textContent || ''), F.row, { timeout: 180e3 }).catch(() => {});
     ok(/matches/.test(await p.$eval(`.chainsum li:nth-child(${F.row})`, (e) => e.textContent)), 'rebuilt balance matches');
@@ -1424,7 +1424,7 @@ try {
       await r.p.fill('#gift-to', CAROL);
       await r.p.click('#gift-take');
       await r.p.waitForFunction(() => /Sent to 0x/.test(document.querySelector('#gift').textContent) || document.querySelector('#gift-status .err'), null, { timeout: 900e3 });
-      ok(/Sent to 0x6666…6666/.test(await r.p.textContent('#gift')), `taken by a keyless recipient, relayed: ${await text(r.p, '#gift-status') || (await text(r.p, '#gift')).slice(0, 100)}`);
+      ok(/Sent to 0x6{40}/.test(await r.p.textContent('#gift')), `taken by a keyless recipient, relayed: ${await text(r.p, '#gift-status') || (await text(r.p, '#gift')).slice(0, 100)}`);
       { const got = await balOf(CAROL) - carol0; ok(got > 29n * 10n ** 14n && got <= 31n * 10n ** 14n, `they got what was sent, the relay’s fee having ridden in the link: ${Number(got) / 1e18} ETH`); }
       await r.p.goto(link1.replace(/^https?:\/\/[^/]+/, new URL(URL_).origin));
       await r.p.waitForFunction(() => /Empty/.test(document.querySelector('#gift').textContent), null, { timeout: 300e3 });

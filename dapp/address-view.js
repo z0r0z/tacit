@@ -5,8 +5,9 @@
 // light-DOM structure, so a page's own rules reach it, and it comes back as a string for the pages' html`` templates.
 //
 //   addrView(a, n, head)  the first `head` (n + 2) and the last n characters, as short(a, n) shows them
+//   addrFlat(a, n, head)  the same for inside a link, which cannot take focus: it stays short (the title and the page's find and copy have all of it)
 //
-// Not for inside a link or a button (it takes focus), nor for a plain-text label (it is markup).
+// Not for inside a button, nor for a plain-text label (it is markup).
 const MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => MAP[c]);
 
@@ -14,6 +15,7 @@ const CSS = `
 .tv { --tv: 1; cursor: zoom-in; overflow-wrap: anywhere; }
 .tv:is(:focus, :focus-within, :active) { --tv: 0; cursor: text; white-space: normal; }
 .tv:focus-visible { outline: 2px solid var(--orange, currentColor); outline-offset: 2px; border-radius: 3px; }
+.tv.tv-f { cursor: inherit; }
 .tv > .tv-m > .tv-t { font-size: calc((1 - var(--tv)) * 1em); }
 .tv > .tv-m > .tv-e { font-size: calc(var(--tv) * 1em); }
 .tv > .tv-m > .tv-e::after { content: "…"; }
@@ -31,11 +33,13 @@ function style() {
   } catch { /* a page that forbids it shows the whole value, never less of it */ }
 }
 
-export function addrView(value, n = 4, head = n + 2) {
+function view(value, n, head, flat) {
   const v = String(value ?? '');
   if (!v) return '';
   if (head + n + 1 >= v.length) return esc(v);       // nothing to hide: the ellipsis would stand for one character or none
   style();
   const mid = v.slice(head, v.length - n), cut = mid.length >> 1;
-  return `<span class="tv" tabindex="0"><span>${esc(v.slice(0, head))}</span><span class="tv-m"><span class="tv-t">${esc(mid.slice(0, cut))}</span><span class="tv-e" aria-hidden="true"></span><span class="tv-t">${esc(mid.slice(cut))}</span></span><span>${esc(v.slice(-n))}</span></span>`;
+  return `<span class="${flat ? 'tv tv-f" title="' + esc(v) : 'tv" tabindex="0'}"><span>${esc(v.slice(0, head))}</span><span class="tv-m"><span class="tv-t">${esc(mid.slice(0, cut))}</span><span class="tv-e" aria-hidden="true"></span><span class="tv-t">${esc(mid.slice(cut))}</span></span><span>${esc(v.slice(v.length - n))}</span></span>`;
 }
+export const addrView = (value, n = 4, head = n + 2) => view(value, n, head, false);
+export const addrFlat = (value, n = 4, head = n + 2) => view(value, n, head, true);

@@ -8,6 +8,7 @@ import { ETH_NODES } from '/eth-nodes.js';
 import { hedgedRpc } from '/trade/rpc.js';
 import { MULTICALL3, encodeBatch, decodeBatch } from '/trade/batch.js';
 import { tacitChain } from '/tacit-chain-config.js?cb=ef0714cd';
+import { addrFlat } from '/address-view.js?cb=57bc64d3';
 
 const API = 'https://api.tacit.finance';
 const SEATS = '0x00000000001f703eae70de3b528213e4802790fb';
@@ -30,7 +31,7 @@ const ago = (s) => (s < 10 ? 'just now' : s < 90 ? `${Math.round(s)} s ago` : s 
 const mins = (s) => `${Math.max(1, Math.round(s / 60))} min`;
 const short = (a) => `${a.slice(0, 18)}…`;                       // the contracts' addresses are mined: their start is what tells them apart
 const tx = (h) => (/^0x[0-9a-fA-F]{64}$/.test(String(h)) ? `<a href="https://etherscan.io/tx/${h}" target="_blank" rel="noopener noreferrer">tx ↗</a>` : '');
-const addr = (a) => `<a href="https://etherscan.io/address/${esc(a)}#code" target="_blank" rel="noopener noreferrer"><code>${esc(short(a))}</code> ↗</a>`;
+const addr = (a) => `<a href="https://etherscan.io/address/${esc(a)}#code" target="_blank" rel="noopener noreferrer"><code>${addrFlat(a, 0, 18)}</code> ↗</a>`;
 const plain = (h) => String(h).replace(/<[^>]*>/g, '');
 // a share's worth in TAC: (pool + 1e8) / (shares + 1e8), the chain's own rate
 const price = (pool, shares) => Number((BigInt(pool) + UNIT) * 10n ** 9n / (BigInt(shares) + UNIT)) / 1e9;
