@@ -15,8 +15,8 @@ export const JOB_LABEL = {
   bridgeburn: 'Bridge out', fastlane: 'Cross-chain move', adaptorlock: 'Atomic swap', adaptorclaim: 'Atomic swap claim', adaptorrefund: 'Atomic swap refund',
 };
 
-// the statuses each kind of entry ends in
-export const ENDS = { job: ['settled', 'proven', 'failed', 'unknown'], tx: ['confirmed', 'failed', 'stale'], btc: ['confirmed', 'stale'], op: ['settled', 'failed', 'unknown'] };
+// the statuses each kind of entry ends in ('chain': a payment, shield, withdrawal or move on the Tacit chain, handed to the leader and followed to its block)
+export const ENDS = { job: ['settled', 'proven', 'failed', 'unknown'], tx: ['confirmed', 'failed', 'stale'], btc: ['confirmed', 'stale'], op: ['settled', 'failed', 'unknown'], chain: ['settled', 'failed', 'unknown'] };
 export const ended = (it) => ENDS[it.kind]?.includes(it.status) ?? true;
 
 export function readActivity() {

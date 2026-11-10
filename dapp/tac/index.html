@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-Cldq1u4B9BDisCZ2dMCL0wrRf4RFIsUgjOuhCdsVcqk=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-2scPTjwTKCFkNoPAcmj8ZKImVqr7Ifff9MUTn36Qmpc=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -67,8 +67,8 @@
 <link rel="modulepreload" href="/bridge-in.js?cb=61f55b61">
 <link rel="modulepreload" href="/bridge-tick.js?cb=4e721860">
 <link rel="modulepreload" href="/tacit-session.js?cb=a2d34bb2">
-<link rel="modulepreload" href="/activity.js?cb=8ccbc552">
-<link rel="modulepreload" href="/swap/card.js?cb=371be6c0">
+<link rel="modulepreload" href="/activity.js?cb=5f14a43f">
+<link rel="modulepreload" href="/swap/card.js?cb=bebb544c">
 <link rel="modulepreload" href="/trade/wallet.js?cb=3595ad83">
 <link rel="modulepreload" href="/trade/util.js?cb=ba5a02b1">
 <link rel="modulepreload" href="/trade/rpc.js">
@@ -2404,7 +2404,7 @@ import { SERVED as SERVED_POOLS, keeperIdOf, makeTokenPools, KEEPERS as POOL_KEE
 import { bridgeError, checkText, listNotes as listBridgeNotes, begin as beginBridge, toSelf as noteToSelf, through as brThrough, transfers as brTransfers, longCount as brLongCount, longReason as brLongReason, needsSend as brNeedsSend, firstStep as brFirst, overCap as brOver, haltText as bridgeHaltText, halts as brHalts, mergeSend, startNote, tryAgain, bulkFee, prepsAfterPass, runMerge as bridgeRunMerge, runAll as bridgeRunAll } from '/bridge-in.js?cb=61f55b61';
 import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverEvery, IN_DONE, IN_HELD, IN_BURN_SENT, waitRanOut } from '/bridge-tick.js?cb=4e721860';
 import { makeTacitSession } from '/tacit-session.js?cb=a2d34bb2';
-import { ACT_KEY, ACT_MAX, JOB_LABEL, ENDS, ended, listed as listedOf, actBridge, actOpen, actDone, makeJournal, makeFollow, makeRelayState, makePace, WAIT_WHY, OPENISH, ahead } from '/activity.js?cb=8ccbc552';
+import { ACT_KEY, ACT_MAX, JOB_LABEL, ENDS, ended, listed as listedOf, actBridge, actOpen, actDone, makeJournal, makeFollow, makeRelayState, makePace, WAIT_WHY, OPENISH, ahead } from '/activity.js?cb=5f14a43f';
 if (window.__tacitAway) await new Promise(() => {});
 // The swap card's stylesheet is linked in the head as media="print", so the first paint does not wait for it (the host sends it after the document, and nothing visible yet is drawn
 // with it): it applies from here, in its place in the cascade, before the tile is drawn.
@@ -3260,6 +3260,8 @@ const txSite = (it) => (it.kind === 'btc' ? 'mempool.space' : { 8453: 'Basescan'
 const linked = (text) => html`${String(text).split(/(0x[0-9a-fA-F]{64})/).map((p, i) => (i % 2 ? html`<a href="${SCAN}/tx/${p}" target="_blank" rel="noopener">${short(p, 6)} ↗</a>` : p))}`;
 
 function actSaid(it, prev) {
+  // a move on the Tacit chain says itself where it runs (its line, its toast): Activity keeps the row, and a notice if the tab is in the background
+  if (it.kind === 'chain') { if (it.status === 'settled' || it.status === 'failed') notifyOS(it, it.status === 'settled'); return; }
   const run = it.kind === 'job' ? JOBS.get(it.id.slice(4))?.run : it.kind === 'op' ? RUN_OF.get(it.id) : null;
   const own = run ? run.sheet : OWN.get(it.id);
   const mine = run ? run.live && !run.away : SESS.has(it.id) && own != null && running(own);
@@ -3337,6 +3339,7 @@ function actSteps(it) {
     if (badStatus(s)) return parts.some((x) => !x.it || badStatus(x.it.status)) ? pre : [...pre, st('Stopped', 'bad')];
     return [...pre, st('Queued', parts.every((x) => okStatus(x.it?.status)) ? 'now' : ''), st('Proving'), st('Done')];
   }
+  if (it.kind === 'chain') return [st('Sent', 'done'), st('Landed', s === 'settled' ? 'done' : s === 'failed' ? 'bad' : s === 'unknown' ? '' : 'now')];
   const first = it.kind === 'btc' ? 'Broadcast' : it.via === 'keeper' ? 'Relayed' : 'Sent';
   if (s === 'failed') return [st(first, 'done'), st('Reverted', 'bad')];
   if (s === 'stale') return [st(first, 'done'), st('Not confirmed yet')];
@@ -3366,6 +3369,11 @@ function opWhere(it) {
   return `${cur.doing || cur.step}. ${jobWhere(cur.it)}`;
 }
 function actFoot(it) {
+  if (it.kind === 'chain') {
+    return it.status === 'settled' ? html`<div class="actr-f">Landed on Ethereum${it.end ? html` in ${clock(it.end - it.at)}` : ''}${it.height ? html`, block <span class="num">${it.height}</span>` : ''}</div>`
+      : it.status === 'pending' ? html`<div class="actr-f">The leader has it. It lands in the next block, usually within a minute.</div>`
+      : html`<div class="actr-f${it.status === 'failed' && !actStale(it) ? ' err' : ''}">${it.err || 'This page was closed before it landed. If it did not, it is kept and goes on by itself.'}</div>`;
+  }
   const link = it.hash ? html`<a href="${txUrl(it)}" target="_blank" rel="noopener">${txMark(it)}${txSite(it)} ↗</a>` : '';
   if (it.status === 'failed' || it.status === 'unknown') return html`<div class="actr-f${actStale(it) ? '' : ' err'}">${linked(failText(it))}</div>${selfDoLine(it)}${proofHelp(it)}${SELF.has(it.id) || actStale(it) ? '' : againLine(it)}`;
   const took = it.end ? clock(it.end - it.at) : '';
@@ -4268,6 +4276,7 @@ function resumeActivity() {
     if (it.kind === 'job') { if (!ended(it)) followJob(it.id); else if (['failed', 'unknown'].includes(it.status) && Date.now() - (it.end || it.at) < 6 * 3600e3) recheckJob(it.id); }
     else if (it.kind === 'tx') { if (!ended(it)) followTx(it.id); else if (it.status === 'stale' && Date.now() - it.at < 86400e3) followTx(it.id, true); }
     else if (it.kind === 'btc') { if (!ended(it)) followBtc(it.id); }
+    else if (it.kind === 'chain' && !ended(it) && Date.now() - it.at > 20 * 60e3) actPut(it.id, { status: 'unknown', err: 'This page was closed before it landed. If it did not, it is kept and goes on by itself.' });
   }
   for (const it of ACT.items) if (it.kind === 'op' && !ended(it)) opSync(it.id);
   paintAct();
@@ -18921,7 +18930,7 @@ async function chainShieldRun(run, st, units, { held = null, way = hxChainWay(),
     chainWaiting(st, html`Deposited${hash ? html` ${txLink(hash)}` : ''}.`);
     phase?.('handed');
     const was = CH.bal ?? 0n, fee = s.fee ?? 0n;
-    const { landing } = await chainHanded((o) => s.submit({ from: who, tx: hash || undefined, ...o }), st, () => {});
+    const { landing } = await chainHanded((o) => s.submit({ from: who, tx: hash || undefined, ...o }), st, () => {}, run.to?.label);
     CH.held = null;
     // (the shares bought are worth the deposit less the leader's fee and the little margin a shield leaves for the rate to rise: it stays with the holders)
     chainShieldTail(st, 'Sent.', units, fee, hash, landing, was, after);
@@ -19006,7 +19015,7 @@ async function chainShieldInbox(run, c, s, units, held, st, way = hxChainWay(), 
     chainWaiting(st, html`${permit ? 'Signed' : html`Sent ${txLink(hash)}`}.`);
     phase?.('handed');
     const was = CH.bal ?? 0n, fee = s.fee ?? 0n;
-    const { landing } = await chainHanded((o) => s.submit({ back, ...(permit ? { permit } : {}), tx: hash || undefined, ...o }), st, () => {});
+    const { landing } = await chainHanded((o) => s.submit({ back, ...(permit ? { permit } : {}), tx: hash || undefined, ...o }), st, () => {}, run.to?.label);
     // handed over: the card is free. Its way back is let go once it is in (then it has none to keep)
     chainShieldTail(st, permit ? 'Signed.' : 'Sent.', units, fee, hash, landing, was, after, () => t.releaseWrapIndex?.({ walletPriv: priv, ticker: 'TAC', index }));
     return true;
@@ -19052,7 +19061,7 @@ async function chainOutRun(run, st, units, { clear = null, after = hxMoveAfter }
       const ahead = CHA.key === chainAheadKey(who, units) ? (bar = chainAheadBar(st), await chainAheadTake(who, units, c)) : null;
       const again = () => { bar(); say(st, 'Proving it on this device…'); bar = proveBar(st, CHAIN_PROVE_S); };
       if (!ahead) again();
-      const { landing } = await chainAheadOr(c, ahead, st, () => { bar(); chainWaiting(st, 'Proved.'); }, (o) => c.withdraw(who, units, o), again);
+      const { landing } = await chainAheadOr(c, ahead, st, () => { bar(); chainWaiting(st, 'Proved.'); }, (o) => c.withdraw(who, units, o), again, run.to?.label);
       bar(); run.check();
       try { run.to?.clear?.(); } catch { }
       // handed over: the card is free, and the line follows it (the block, then the leader's payout to the wallet)
@@ -19097,12 +19106,19 @@ async function chainOutRun(run, st, units, { clear = null, after = hxMoveAfter }
 // A payment is sent once the leader holds it: it checked the proof and that the notes are unspent, and keeps it through a restart. `start(o)`
 // is the client's pay or withdraw; this resolves once the leader holds it, with { landing }: the promise of its landing (the block that lands
 // it, about a minute later; in an object, since an async function's promise would wait for it). A press that finds its TAC still in a payment settling waits for that one to land, then goes (about a minute at most).
-async function chainHanded(start, st, bar) {
+// A move on the Tacit chain as an Activity row, from the moment the leader holds it to its block (`label`: what the move is called)
+function chainTrack(label, landing) {
+  const id = `chain:${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  actPut(id, { kind: 'chain', label, status: 'pending' });
+  landing.then((r) => actPut(id, { status: 'settled', height: Number.isSafeInteger(r?.height) ? r.height : undefined }),
+    (e) => actPut(id, { status: 'failed', err: `Not landed yet: ${errText(e).replace(/\.$/, '')}. It is kept here and goes on by itself.` }));
+}
+async function chainHanded(start, st, bar, label = null) {
   for (let i = 0; ; i++) {
     let held;
     const got = new Promise((r) => { held = r; }), slow = chainSlow(st);
     const landing = start({ onStatus: (x) => { if (x.status === 'queued') { CH.handed = (CH.handed || 0) + 1; bar(); held(); } slow(x); } });
-    try { await Promise.race([got, landing]); return { landing }; }
+    try { await Promise.race([got, landing]); if (label) chainTrack(label, landing); return { landing }; }
     catch (e) {
       if (!e?.settling || i >= 45) throw e;
       bar();
@@ -19198,13 +19214,13 @@ async function chainAheadMake(raw, units) {
 }
 // Hands over the payment proved ahead, or proves it now (`start`, after `again()` says so): one proved ahead that the leader refuses (its notes
 // went another way meanwhile, as from another tab) is let go and the payment proved again, so the press still goes
-async function chainAheadOr(c, ahead, st, bar, start, again) {
+async function chainAheadOr(c, ahead, st, bar, start, again, label = null) {
   if (ahead) {
-    try { return await chainHanded((o) => c.send(ahead, o), st, bar); }
+    try { return await chainHanded((o) => c.send(ahead, o), st, bar, label); }
     catch (e) { if (e?.kept) await c.forget(e.kept.id).catch(() => {}); if (e?.settling) throw e; }
   }
   if (ahead) again();
-  return chainHanded(start, st, bar);
+  return chainHanded(start, st, bar, label);
 }
 // what is left of a proof made ahead, as the press's bar (none once it is made)
 function chainAheadBar(st) {
@@ -19254,7 +19270,7 @@ async function chainPayRun(run, st, units, raw, { status = () => st, clear = nul
         if (most != null && units > most && !CH.settling) throw chainSaid(`With its fees, you can send up to ${fmt(most, 8, 4)} TAC now.`);
         bar(); say(st, 'Proving it on this device…'); bar = proveBar(st, CHAIN_PROVE_S);
       }
-      const { landing } = await chainAheadOr(c, ahead, st, () => bar(), (o) => c.withdraw(raw, units, o), () => { bar(); say(st, 'Proving it on this device…'); bar = proveBar(st, CHAIN_PROVE_S); });
+      const { landing } = await chainAheadOr(c, ahead, st, () => bar(), (o) => c.withdraw(raw, units, o), () => { bar(); say(st, 'Proving it on this device…'); bar = proveBar(st, CHAIN_PROVE_S); }, run.to?.label);
       bar();
       sent(st, html`<span class="ok">Sent.</span> ${fmt(units, 8, 4)} TAC to <span class="mono">${short(raw, 8)}</span>, paid out there by the leader.`, landing);
       toast('Sent from the Tacit chain');
@@ -19278,7 +19294,7 @@ async function chainPayRun(run, st, units, raw, { status = () => st, clear = nul
       to = await c.recipientOf(lanes).catch(() => { throw chainSaid('This Tacit address has not opened the Tacit chain yet. They open their Tacit wallet once, then it can be paid.'); });
       bar(); say(st, 'Proving it on this device…'); bar = proveBar(st, CHAIN_PROVE_S);
     }
-    const { landing } = await chainAheadOr(c, ahead, st, () => bar(), async (o) => c.pay(to ||= await c.recipientOf(lanes), units, o), () => { bar(); say(st, 'Proving it on this device…'); bar = proveBar(st, CHAIN_PROVE_S); });
+    const { landing } = await chainAheadOr(c, ahead, st, () => bar(), async (o) => c.pay(to ||= await c.recipientOf(lanes), units, o), () => { bar(); say(st, 'Proving it on this device…'); bar = proveBar(st, CHAIN_PROVE_S); }, run.to?.label);
     bar();
     sent(st, html`<span class="ok">Sent.</span> ${fmt(units, 8, 4)} TAC on the Tacit chain.`, landing);
     toast('Sent on the Tacit chain');
@@ -19409,7 +19425,7 @@ async function chainHopRun(run, st, units, { clear = null, after = hxMoveAfter }
     run.take(kDep(w));
     say(st, 'Proving it on this device…'); bar = proveBar(st, CHAIN_PROVE_S);
     try {
-      await (await chainHanded((o) => c.hop(w.commit, units, o), st, () => { bar(); chainWaiting(st, 'Proved.'); })).landing;
+      await (await chainHanded((o) => c.hop(w.commit, units, o), st, () => { bar(); chainWaiting(st, 'Proved.'); }, label)).landing;
     } catch (e) { if (!e?.kept) t.releaseWrapIndex?.({ walletPriv: priv, ticker: 'TAC', index }); throw e; }
     bar(); hopped = true; run.check();
     try { run.to?.clear?.(); } catch { }
@@ -19995,7 +20011,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=371be6c0').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=bebb544c').catch((e) => { SWC.p = null; throw e; }));
 // the card held to the tab's flow; back on the Swap tab it opens on the swap it showed there
 function swcFlow() {
   hxPathPaint();
