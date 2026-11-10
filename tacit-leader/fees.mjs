@@ -163,3 +163,11 @@ export function blockReady({ waiting, forced = 0, firstSeen, now, baseFee, minSp
   if (Number(baseFee) <= batchGwei * 1e9) return true;
   return waiting >= target || waited >= waitMs;
 }
+
+/// Whether a wallet can pay for a landing at the price the leader offers (twice the base fee and the tip, over `gas`, the most a landing is sent with):
+/// null when it can, else { have, need }. A block is proved only when it can land.
+export function landCover({ have, base, tip, gas = 500_000n }) {
+  const need = BigInt(gas) * (2n * BigInt(base) + BigInt(tip));
+  return BigInt(have) >= need ? null : { have: BigInt(have), need };
+}
+
