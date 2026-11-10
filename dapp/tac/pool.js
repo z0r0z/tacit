@@ -17,7 +17,7 @@
 // key's TAC on Bitcoin too); viewChanged(), a tab was picked; usd(sats) → '$…' | ''; mods: { secret, claim, sats }, the modules themselves, where they are not to be
 // loaded by their URLs (a test's stubs).
 
-const SECRET_URL = '/sats/secret.js?cb=0aca0abf';
+const SECRET_URL = '/sats/secret.js?cb=5cb3b8eb';
 const SATS_URL = '/tac/sats.js?cb=37cf5ec2';
 const CLAIM_URL = '/tac/claim.js?cb=dc513e91';
 const WORKER = 'https://api.tacit.finance';
@@ -212,7 +212,8 @@ export function makeTacPool(ctx) {
   const liveNotes = () => liveAll().filter((n) => BigInt(n.value) > 0n);
   const liveValues = () => liveNotes().map((n) => BigInt(n.value)).sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
 
-  async function loadPublic() {
+  // `quiet`: a read that follows a press says nothing of its own failing (it would write over what the press said)
+  async function loadPublic(quiet = false) {
     if (!unlocked()) return;
     const k = ctx.key().pubHex;
     pub = { ...pub, loading: true }; paintBalances();
@@ -222,7 +223,7 @@ export function makeTacPool(ctx) {
       if (ctx.key()?.pubHex !== k) return;
       const entry = h instanceof Map ? h.get(S.TAC_ASSET_MAINNET) : null;
       pub = { loading: false, notes: entry?.utxos || [], read: true };
-    } catch (e) { if (ctx.key()?.pubHex !== k) return; pub = { ...pub, loading: false }; errSay('tp-st-shield', e); }
+    } catch (e) { if (ctx.key()?.pubHex !== k) return; pub = { ...pub, loading: false }; if (!quiet) errSay('tp-st-shield', e); }
     paintBalances(); paintShieldPicker();
   }
   function loadShielded() { return (shieldedP = readShielded()); }
@@ -369,10 +370,19 @@ export function makeTacPool(ctx) {
     if (!u) throw new Error('Your notes changed. Pick the note to shield again.');
     const big = typeof u.blinding === 'bigint' ? u.blinding : BigInt(/^0x/i.test(String(u.blinding)) ? u.blinding : '0x' + String(u.blinding));
     const note = { assetId: S.TAC_ASSET_MAINNET, txid: u.utxo.txid, vout: u.utxo.vout, amount: noteVal(u).toString(), blinding: big.toString(16).padStart(64, '0') };
-    const r = await S.shieldNote(T, { note, poolWallet: wallet(), say: (m) => say('tp-st-shield', m) });
+    let r;
+    try { r = await S.shieldNote(T, { note, poolWallet: wallet(), say: (m) => say('tp-st-shield', m) }); }
+    catch (e) {
+      // a note that was spent already is not offered again: the list is read afresh behind the message
+      if (e?.spent) { try { T.invalidateHoldingsCache?.(); } catch {} loadPublic(true).catch(() => {}); }
+      throw e;
+    }
     say('tp-st-shield', `${fmt(r.poolNote.value)} TAC shielded in `, txLink(r.revealTxid), '. It joins the pool after one confirmation.');
     try { T.invalidateHoldingsCache?.(); } catch {}
-    await loadPublic(); await loadShielded();
+    // (the note leaves the list at once: a scan that fails or runs long must not offer it again, nor write over the line above)
+    pub = { ...pub, notes: pub.notes.filter((x) => `${x.utxo.txid}:${x.utxo.vout}` !== picked) };
+    paintBalances(); paintShieldPicker();
+    await loadPublic(true); await loadShielded();
     ctx.changed?.('bitcoin');
   }
   async function doSend(anchor = null) {

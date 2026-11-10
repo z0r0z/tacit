@@ -84,10 +84,13 @@ export function leaderTerms(f) {
 
 /// The most a leader other than the house may ask for a spend (units): a quote over it is not taken, and the spend goes the house's way.
 export const FEE_CEILING = 2n * 10n ** 8n;
+/// The most a leader other than the house may ask for sending a holder's permitted shield in (TAC wei). The permit a shield signs is for its amount and
+/// this fee, which whoever sends it in keeps, so a quote over it is not taken either (its gas is nearly twice a spend's: twice the spend ceiling).
+export const SWEEP_FEE_CEILING = 2n * FEE_CEILING * 10n ** 10n;
 
 /// Which leader a spend made now is for, with what it quoted (GET /fee, as it answered), read with no key. The leader of the slot the spend will land
-/// in (`route.target()`: a seat holder's announced endpoint) when it answers with a fee no more than FEE_CEILING that `valid` takes; else the house
-/// leader (`cfg.leader`). An announced endpoint is asked at most every few seconds (`memo`: a form that quotes as it is typed does not become its
+/// in (`route.target()`: a seat holder's announced endpoint) when it answers with a fee no more than FEE_CEILING (and a sweep fee no more than
+/// SWEEP_FEE_CEILING) that `valid` takes; else the house leader (`cfg.leader`). An announced endpoint is asked at most every few seconds (`memo`: a form that quotes as it is typed does not become its
 /// traffic). → { base, until (ms: a proof made for this leader is good until then), f (the quote, null when none answered) }.
 export async function chooseLeader({ cfg, route = null, fetchImpl = (...a) => globalThis.fetch(...a), memo = new Map(), valid = () => true, routeMs = 4000 }) {
   let t = { base: cfg.leader, until: Infinity };
@@ -100,7 +103,8 @@ export async function chooseLeader({ cfg, route = null, fetchImpl = (...a) => gl
   if (t.base !== cfg.leader) {
     let hit = memo.get(t.base);
     if (!hit || Date.now() - hit.at > 5e3) { hit = { at: Date.now(), f: await ask(t.base) }; memo.set(t.base, hit); }
-    if (hit.f && leaderTerms(hit.f).fee <= FEE_CEILING && valid(hit.f)) return { base: t.base, until: t.until, f: hit.f };
+    const terms = hit.f ? leaderTerms(hit.f) : null;
+    if (terms && terms.fee <= FEE_CEILING && terms.sweepFee <= SWEEP_FEE_CEILING && valid(hit.f)) return { base: t.base, until: t.until, f: hit.f };
   }
   return { base: cfg.leader, until: Infinity, f: await ask(cfg.leader) };
 }

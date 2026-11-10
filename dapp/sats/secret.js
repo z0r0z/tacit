@@ -175,15 +175,25 @@ function forgetCommit(tacit, commitTxid) {
   } catch {}
 }
 
+// The note is looked for unspent where it is being spent (the explorer counts a spend still waiting for a block): a list read minutes ago, or a spend from another
+// tab or device, can name a note a payment took, and the reveal that spends it would be refused after the commit transaction went, leaving its sats set aside.
+// A note the explorer cannot say anything about goes on, as buyAndShield's lot does.
+export async function requireUnspent(tacit, note) {
+  const sp = await esplora(tacit, `/tx/${note.txid}/outspend/${note.vout}`).catch(() => null);
+  if (sp?.spent) throw Object.assign(new Error('That note was spent already, so nothing was sent. The list is read again: pick the note to shield.'), { said: true, spent: true });
+}
+
 export async function shieldNote(tacit, { note, poolWallet, say = () => {} }) {
   const amount = BigInt(note.amount), blinding = BigInt('0x' + note.blinding);
   const c = await onChainNote(tacit, note.assetId, note.txid, note.vout, amount, blinding);
+  await requireUnspent(tacit, note);                            // (before a proof is made for it)
   const sh = pool.buildShieldEnvelope({
     asset: '0x' + note.assetId,
     inputs: [{ txid: note.txid, vout: note.vout, Cx: c.Cx, Cy: c.Cy, value: amount, blinding }],
     recipientAddress: poolWallet.addressString, network: poolWallet.network,
   });
   const { payload } = await proveHere(sh, say);
+  await requireUnspent(tacit, note);                            // (and again before anything goes out: the proof takes a while)
   say('sending…');
   const r = await broadcastCarrier(tacit, {
     payload,

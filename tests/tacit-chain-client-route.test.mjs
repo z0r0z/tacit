@@ -3,7 +3,7 @@
 //   node tests/tacit-chain-client-route.test.mjs
 import assert from 'node:assert';
 import { keccak_256 } from '@noble/hashes/sha3';
-import { makeChainClient, chainSeed, FEE_CEILING } from '../dapp/tacit-chain-client.js';
+import { makeChainClient, chainSeed, FEE_CEILING, SWEEP_FEE_CEILING } from '../dapp/tacit-chain-client.js';
 import { makeChainWallet } from '../dapp/tacit-chain-wallet.js';
 import { poseidon2, poseidon3, poseidon4, poseidon5 } from '../dapp/vendor/tacit-poseidon.min.js';
 
@@ -88,6 +88,8 @@ const toSeat = { target: async () => ({ base: SEAT, until: Date.now() + 60e3 }) 
   for (const [label, n, route] of [
     ['down', net({ seatDown: true }), toSeat],
     ['over the ceiling', net({ seatFee: { fee: String(FEE_CEILING + 1n), address: leaderAddr } }), toSeat],
+    // (a holder's permit for a shield is for its amount and this fee, which the leader that sends it in keeps: a fair spend fee does not excuse it)
+    ['a sweep fee over the ceiling', net({ seatFee: { fee: '5000', address: leaderAddr, sweepFee: String(SWEEP_FEE_CEILING + 1n) } }), toSeat],
     ['no address for a fee', net({ seatFee: { fee: '5000' } }), toSeat],
     ['no route', net(), null],
     ['a route that throws', net(), { target: async () => { throw new Error('rpc'); } }],
@@ -101,6 +103,11 @@ const toSeat = { target: async () => ({ base: SEAT, until: Date.now() + 60e3 }) 
   // a fee exactly at the ceiling is taken
   const n = net({ seatFee: { fee: String(FEE_CEILING), address: leaderAddr } });
   assert.equal((await (await mk(n.f, toSeat)).c.leaderNow()).routed, true);
+  // so is a sweep fee exactly at its ceiling, and the shield's quote carries the one the seat holder named
+  const n2 = net({ seatFee: { fee: '5000', address: leaderAddr, sweepFee: String(SWEEP_FEE_CEILING) } });
+  const c2 = (await mk(n2.f, toSeat)).c;
+  assert.equal((await c2.leaderNow()).routed, true);
+  assert.equal((await c2.quote('shield', 10n ** 8n)).sweepFee, SWEEP_FEE_CEILING);
 }
 // 5. a proof made for a leader is good until the end it was given, and not after
 {
