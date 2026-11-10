@@ -42,8 +42,8 @@ function net({ seatFee = { fee: '5000', address: leaderAddr }, seatDown = false 
   };
   return { f, asked };
 }
-const mk = async (f, route, st = store()) => {
-  const c = makeChainClient({ cfg: { blocks: BLOCKS, leader: HOUSE }, rpcCall, priv, system: () => null, route, storage: st, fetchImpl: f });
+const mk = async (f, route, st = store(), routeMs = 4000) => {
+  const c = makeChainClient({ cfg: { blocks: BLOCKS, leader: HOUSE }, rpcCall, priv, system: () => null, route, routeMs, storage: st, fetchImpl: f });
   await c.ready();
   return { c, st };
 };
@@ -123,5 +123,13 @@ const toSeat = { target: async () => ({ base: SEAT, until: Date.now() + 60e3 }) 
   const { c } = await mk(f, toSeat);
   await c.quote('shield', 10n ** 8n); await c.quote('shield', 2n * 10n ** 8n); await c.leaderNow();
   assert.equal(asked.filter((a) => a === `GET ${SEAT}/fee`).length, 1);
+}
+// 8. a route whose Ethereum nodes hang does not hold the quote up: the house answers after the route's allowance
+{
+  const n = net();
+  const { c } = await mk(n.f, { target: () => new Promise(() => {}) }, store(), 150);
+  const t0 = Date.now();
+  assert.deepEqual(await c.leaderNow(), { base: HOUSE, routed: false });
+  assert.ok(Date.now() - t0 < 2000, 'answered without waiting on the route');
 }
 console.log('chain client route: all passed');
