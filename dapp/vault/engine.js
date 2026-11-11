@@ -132,6 +132,7 @@ export function makeVaultEngine({ S, VS, ROUTER, rpc, feed, wallet, W, who, canA
     if (t === 'deposit') {
       const bal = d.tacBal ?? 0n; P.max = bal; P.maxText = who() ? `Balance ${tac(bal)} · Max` : '';
       if (who() && d.tacBal === 0n) P.hint = `This wallet holds no TAC. ${ui.buy}`;
+      else if (who() && m.debt === 0n && x.room != null && x.room < x.s.minDebt) P.hint = `Nothing can be borrowed against a deposit yet: ${syn(x, x.room)} ${sym} is left, under the smallest debt (${syn(x, x.s.minDebt)} ${sym}).`;
       if (none) { P.cta = 'Enter an amount'; return P; }
       if (amt > bal) { P.cta = 'Not enough TAC'; return P; }
       P.ok = true; P.cta = 'Deposit TAC'; P.amount = amt;
@@ -148,7 +149,7 @@ export function makeVaultEngine({ S, VS, ROUTER, rpc, feed, wallet, W, who, canA
         if (!x.stale && f && !f.ready && f.missing) { P.record = f.missing; P.cta = `Record ${f.missing} price${f.missing === 1 ? '' : 's'} to open borrowing`; P.hint = recordHint(f.missing, viaOf(x.V) ? BATCH_MAX : 0, 'your borrow'); return P; }
         P.cta = 'Borrowing is paused'; P.hint = 'Borrowing waits until prices are recorded.'; return P;
       }
-      if (none) { P.cta = 'Enter an amount'; return P; }
+      if (none) { P.cta = 'Enter an amount'; P.hint = 'The TAC it needs is added from your wallet in the same step.'; return P; }
       const held = d.tacBal ?? 0n, check = (collateral) => M.checkBorrow({ amount: amt, collateral, debt: m.debt, pB: d.pB, mint: x.s.mint, feeBps: d.feeBps, room: x.room, minDebt: x.s.minDebt });
       let c = check(m.collateral), add = 0n;
       P.cta = `Borrow ${sym}`;
@@ -179,13 +180,14 @@ export function makeVaultEngine({ S, VS, ROUTER, rpc, feed, wallet, W, who, canA
     if (t === 'repay') {
       const bal = d.synBal ?? 0n; P.max = x.rep.max; P.maxText = who() ? `You hold ${syn(x, bal)} · Max` : '';
       if (m.debt === 0n) { P.cta = 'Nothing to repay'; return P; }
-      if (bal < m.debt) P.hint = `You hold ${syn(x, bal)} of the ${syn(x, m.debt)} ${sym} you owe.`;
+      const shortOf = `Your debt includes the borrow fee.${ui.market ? ` ${ui.market(x.V.key, sym)}` : ''}`;
+      if (bal < m.debt) P.hint = `You hold ${syn(x, bal)} of the ${syn(x, m.debt)} ${sym} you owe. ${shortOf}`;
       if (none) { P.cta = 'Enter an amount'; return P; }
       const c = M.checkRepay({ amount: amt, debt: m.debt, balance: bal, minDebt: x.s.minDebt });
       P.cta = c.all ? `Repay all ${sym}` : `Repay ${sym}`;
       if (!c.ok) {
         P.err = true;
-        if (c.why === 'balance') P.hint = bal < m.debt ? `You hold ${syn(x, bal)} of the ${syn(x, m.debt)} ${sym} you owe.${x.rep.max > 0n ? ` You can repay up to ${syn(x, x.rep.max)}.` : ''}` : `You hold ${syn(x, bal)} ${sym}.`;
+        if (c.why === 'balance') P.hint = bal < m.debt ? `You hold ${syn(x, bal)} of the ${syn(x, m.debt)} ${sym} you owe.${x.rep.max > 0n ? ` You can repay up to ${syn(x, x.rep.max)}.` : ''} ${shortOf}` : `You hold ${syn(x, bal)} ${sym}.`;
         else P.hint = `Debt left must be zero or at least ${syn(x, x.s.minDebt)} ${sym}. Repay ${m.debt > x.s.minDebt ? `up to ${syn(x, M.floorTo(m.debt - x.s.minDebt, x.k.dp))}, or ` : ''}all ${syn(x, m.debt)}.`;
         if (c.why === 'balance') P.cta = 'Not enough ' + sym;
         return P;
@@ -429,7 +431,7 @@ export function makeVaultEngine({ S, VS, ROUTER, rpc, feed, wallet, W, who, canA
     if (!V || !canAct() || S.busy || F.busy || PREP.busy || now() - PREP.failedAt < 60) return;
     const x = derive(V), st = feedOf(V);
     if (!x || !st || st.ready || x.stale || !st.missing || st.missing > BATCH_MAX) return;
-    if (!(viaOf(V) && needs(x, t)) && !lapsed(x)) return;
+    if (!(viaOf(V) && (needs(x, t) || (t === 'deposit' && x.me.debt === 0n))) && !lapsed(x)) return;
     const have = postOf(V), key = missingKey(st);
     if (have && have.key === key) return;
     if (PREP.last && PREP.last.key === key && now() - PREP.last.at < 60) return;

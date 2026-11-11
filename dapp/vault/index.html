@@ -22,7 +22,7 @@
 <link rel="preconnect" href="https://tacit-points.onrender.com" crossorigin>
 <!-- preload-roots: /vault/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/vault/app.js?cb=45a20e48">
+<link rel="modulepreload" href="/vault/app.js?cb=6acc8afd">
 <link rel="modulepreload" href="/vault/deployments.js?cb=4af96594">
 <link rel="modulepreload" href="/address-view.js?cb=57bc64d3">
 <link rel="modulepreload" href="/vault/math.js?cb=ac1ed53e">
@@ -32,10 +32,10 @@
 <link rel="modulepreload" href="/rpc-body.js">
 <link rel="modulepreload" href="/vault/feed.js?cb=1c14d243">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
-<link rel="modulepreload" href="/vault/pools.js?cb=af05311d">
+<link rel="modulepreload" href="/vault/pools.js?cb=8968d0db">
 <link rel="modulepreload" href="/vault/batch.js?cb=156cb856">
 <link rel="modulepreload" href="/vault/reopen.js?cb=40aab9d5">
-<link rel="modulepreload" href="/vault/engine.js?cb=7f85cdc2">
+<link rel="modulepreload" href="/vault/engine.js?cb=dfbb53f0">
 <link rel="modulepreload" href="/vault/router.js?cb=21df6509">
 <link rel="modulepreload" href="/trade/connect.js?cb=f0e47fd0">
 <link rel="modulepreload" href="/walletconnect.js?cb=843803d6">
@@ -169,6 +169,9 @@ h1 .s-tac { display: contents; }
 .pick { max-width: none; }
 .grid { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 14px 16px; align-items: start; }
 .col { display: grid; gap: 14px; min-width: 0; }
+/* The right column reads in the order of use: the vault, the ticket, then what is in the vault; a vault in an auction or under its liquidation line comes first. */
+#pick-w { order: 1; } #ticket { order: 2; } #pos { order: 3; } .btc-l { order: 4; }
+@media (min-width: 901px) { #pos.first { order: 0; } }
 @media (max-width: 900px) {
   .grid { grid-template-columns: minmax(0, 1fr); }
   /* On a phone the page reads in the order of use: the vault, what is in it, the ticket, then the figures behind them and the markets. */
@@ -621,6 +624,6 @@ footer.sf svg.fill { width: 16px; height: 16px; }
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/vault/app.js?cb=45a20e48"></script>
+<script type="module" src="/vault/app.js?cb=6acc8afd"></script>
 </body>
 </html>

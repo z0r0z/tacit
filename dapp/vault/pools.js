@@ -4,7 +4,7 @@ import { MULTICALL3, batchSupport, simulateBundle, sendBundle } from '/vault/bat
 import { planReopen } from '/vault/reopen.js?cb=40aab9d5';
 
 const WAD = 10n ** 18n, ZERO = '0x0000000000000000000000000000000000000000';
-const MIN_LIQUIDITY = 1000n;
+const MIN_LIQUIDITY = 1000n, EMPTY_LP = 1000000n;
 const SLACK_BPS = 50n;
 const GAS_KEEP = 2n * 10n ** 15n;
 const FOUND_MAX = 32;
@@ -120,6 +120,8 @@ export function makePools({ el, cfg, esc, rpc, ethCall, batch, wallet, W, synthO
   const list = (key) => V(key)?.markets || [];
   const selected = (key) => { const l = list(key), id = P.sel[key]; return l.find((x) => x.pool === id) || l[0] || null; };
   const seeded = (x) => !!x && x.exists && x.supply > 0n;
+  // a pool holding only its locked minimum (what a pool keeps when everyone has taken their liquidity out) has nothing to trade against
+  const drained = (x) => seeded(x) && x.supply <= EMPTY_LP;
   const inRange = (x) => !!x && x.sqrtNow != null && x.sqrtNow >= x.m.t.sqrtPLow && x.sqrtNow <= x.m.t.sqrtPHigh;   // the pool's _priceInRange: its band ends trade
   const px = (x) => priceOf(x.m, x.sqrtNow);
   function view(key) {
@@ -272,7 +274,7 @@ export function makePools({ el, cfg, esc, rpc, ethCall, batch, wallet, W, synthO
     if (!v || !st) { shapeSet(P.failed ? 'failed' : 'loading', `${head}<p class="empty">${P.failed ? 'Could not read the markets. Try again in a moment.' : 'Reading the markets…'}</p>${statusBox()}`); return; }
     const m = st.m, qs = m.quote.sym, open = seeded(st), l = list(key);
     const pick = l.length > 1 ? `<div class="seg pick2" id="pl-pick" role="group" aria-label="Which market">${l.map((x) => `<button type="button" data-m="${x.pool}" aria-pressed="${x.pool === st.pool}"${P.busy ? ' disabled' : ''}>${pair(key, x.m.quote.sym)}<span class="mk"><b>${esc(symOf(key))} / ${esc(x.m.quote.sym)}</b><small>${esc(`${tierText(x.m)}${tierText(x.m) ? ' · ' : ''}${feeText(x.m)}`)}</small></span></button>`).join('')}</div>` : '';
-    const showAdd = P.add ?? (!open || st.mine > 0n || !!(P.text.s || P.text.q) || outside(st));
+    const showAdd = P.add ?? (!open || drained(st) || st.mine > 0n || !!(P.text.s || P.text.q) || outside(st));
     const shape = [key, st.pool, open, st.exists, !!st.acc, !!m.quote.addr, st.mine > 0n, l.map((x) => x.pool).join(), showAdd].join();
     if (P.shape !== shape) {
       shapeSet(shape, `${head}${pick}
@@ -298,8 +300,9 @@ export function makePools({ el, cfg, esc, rpc, ethCall, batch, wallet, W, synthO
     setText('#pl-fee', `${esc(tierText(m))}${tierText(m) ? ' · ' : ''}${esc(feeText(m))} fee`);
     const r = m.synthIs1 ? { s: st.r1, q: st.r0 } : { s: st.r0, q: st.r1 }, now = px(st);
     if (open) {
-      setText('#pl-px', now ? `${esc(pxText(m, sym, now))}${inRange(st) ? '' : ' · out of range'}` : '—');
-      setText('#pl-depth', `${esc(qFmt(m, r.q, 2))} ${esc(qs)} · ${esc(sFmt(r.s, 2))} ${esc(sym)}`);
+      const dry = drained(st);
+      setText('#pl-px', dry ? 'No liquidity yet' : now ? `${esc(pxText(m, sym, now))}${inRange(st) ? '' : ' · out of range'}` : '—');
+      setText('#pl-depth', dry ? 'None' : `${esc(qFmt(m, r.q, 2))} ${esc(qs)} · ${esc(sFmt(r.s, 2))} ${esc(sym)}`);
       if (st.mine > 0n) setText('#pl-mine', `${esc((Number((st.mine * 10000n + st.supply / 2n) / st.supply) / 100).toLocaleString('en-US', { maximumFractionDigits: 2 }))}% · ${esc(qFmt(m, st.mine * r.q / st.supply, 4))} ${esc(qs)} + ${esc(sFmt(st.mine * r.s / st.supply, 4))} ${esc(sym)}`);
     } else setText('#pl-px', m.open ? esc(pxText(m, sym, m.refQps)) : '—');
     setText('#pl-range', esc(rangeText(m, sym)));
@@ -493,15 +496,19 @@ export function makePools({ el, cfg, esc, rpc, ethCall, batch, wallet, W, synthO
   function cell(key) {
     if (!keys.includes(key) || !synthOf(key)) return null;
     if (!V(key)) return '<span class="mute">…</span>';
-    const x = list(key).find((m) => seeded(m) && inRange(m)) || list(key).find(seeded);   // the seeded market that trades, before one whose price has left its band
+    const l = list(key), x = l.find((m) => seeded(m) && !drained(m) && inRange(m)) || l.find((m) => seeded(m) && !drained(m)) || l.find(seeded);   // the market that trades and holds liquidity, before one whose price has left its band, before an empty one
     if (!x) {
       const n = termsNow(), unopened = n && n.create > 0n && list(key).some((m) => P.camp?.pools?.some((p) => p.pool === m.pool.toLowerCase() && !p.openPaid));
       return unopened ? `Not open yet<small>opening earns ${esc(tacText(n.create))} TAC</small>` : 'Not open yet';
     }
+    if (drained(x)) return 'No liquidity yet';
     const q = x.m.synthIs1 ? x.r0 : x.r1, now = px(x), depth = `${esc(qFmt(x.m, q, 2))} ${esc(x.m.quote.sym)} in the pool`;
     if (x.sqrtNow == null) return `<b>—</b><small>the price could not be read · ${depth}</small>`;
     if (!inRange(x)) return `<b>Not trading</b><small>price outside the market’s range · ${depth}</small>`;   // a price outside the range is not one anything trades at
     return now && !small(now) ? `<b>${esc(near(now, 18, 4))}</b> ${esc(x.m.quote.sym)}<small>${depth}</small>` : now ? `<b>${esc(pxText(x.m, symOf(key), now))}</b><small>${depth}</small>` : `<b>${esc(qFmt(x.m, q, 2))}</b> ${esc(x.m.quote.sym)}<small>in the pool</small>`;
   }
-  return { show, read: () => Promise.all([...keys.map((k) => read(k)), readCampaign()]), draw, cell, promo };
+  // whether some market of `key` holds liquidity at a price it trades at
+  // (null until the markets of `key` have been read)
+  const live = (key) => (!keys.includes(key) || !V(key) ? null : list(key).some((m) => seeded(m) && !drained(m) && inRange(m)));
+  return { show, read: () => Promise.all([...keys.map((k) => read(k)), readCampaign()]), draw, cell, promo, live };
 }

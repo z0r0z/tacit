@@ -335,7 +335,7 @@ try {
   const rows = await text(u, '#info');
   ok(/Fee \(1%\)\s*30 TACD/.test(rows) && /You receive\s*3,000 TACD/.test(rows) && /You owe after\s*3,030 TACD/.test(rows) && /Ratio after\s*825%/.test(rows), `the fee is shown before: ${rows}`);
   ok(await u.$$eval('#info svg use', (a) => a.map((x) => x.getAttribute('href'))).then((h) => h.length >= 3 && h.every((x) => x === '#tk-tacd' || x === '#tk-tac')), 'each amount in the receipt carries its token’s mark');
-  ok(/825%/.test(await text(u, '#after .hb-val')) && /Open/.test(await text(u, '#tk-h')) && await u.$eval('#after .hb', (e) => e.getAttribute('aria-hidden') === 'true' && !e.hasAttribute('role')), 'the ticket says the vault is open, and draws the health bar for where the borrow would leave it (825%, the same as its row), once, for the eye');
+  ok(/825%/.test(await text(u, '#after .hb-val')) && /open/i.test(await text(u, '#tk-h')) && await u.$eval('#after .hb', (e) => e.getAttribute('aria-hidden') === 'true' && !e.hasAttribute('role')), 'the ticket says the vault is open, and draws the health bar for where the borrow would leave it (825%, the same as its row), once, for the eye');
   await typed(u, '8000');
   ok(/^Deposit [\d,.]+ TAC and borrow$/.test(await text(u, '#go')) && /You receive\s*8,000 TACD/.test(await text(u, '#info')) && /Ratio after\s*[4-9]\d\d%/.test(await text(u, '#info')), `over what the vault's own TAC allows it offers the deposit that makes it work, enough to stay at 400% (${(await text(u, '#info')).slice(0, 120)})`);
   await typed(u, '50');
@@ -404,7 +404,7 @@ try {
   // ── repay: short of the fee, then all ──
   await tab(u, 'repay');
   const dueNow = vaultOf(USD, 'user').d;                                                                // 3,030
-  ok(/You hold 3,000 of the 3,030 TACD you owe\./.test(await text(u, '#hint')), 'the fee came out of what was lent, so the page says "You hold 3,000 of the 3,030 you owe" and nothing more');
+  ok(/You hold 3,000 of the 3,030 TACD you owe\. Your debt includes the borrow fee\./.test(await text(u, '#hint')) && !!(await u.$('#hint [data-to-pools]')), 'the fee came out of what was lent, so the page says "You hold 3,000 of the 3,030 you owe", that the debt includes the fee, and where the rest is sold');
   await typed(u, '3030');
   ok(/Not enough TACD/.test(await text(u, '#go')) && await u.$eval('#go', (b) => b.disabled), 'repaying all of it needs the fee: the button says so');
   await typed(u, '1000');

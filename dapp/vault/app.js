@@ -3,8 +3,8 @@ import { addrView } from '/address-view.js?cb=57bc64d3';
 import * as M from '/vault/math.js?cb=ac1ed53e';
 import { makeRpc, RPCS, ARCHIVE, HISTORY, makeReader, QUEUE_EXPIRY } from '/vault/chain.js?cb=ebe79b37';
 import { makeFeed } from '/vault/feed.js?cb=1c14d243';
-import { makePools } from '/vault/pools.js?cb=af05311d';
-import { makeVaultEngine, KIND, BATCH_MAX, StopWaiting } from '/vault/engine.js?cb=7f85cdc2';
+import { makePools } from '/vault/pools.js?cb=8968d0db';
+import { makeVaultEngine, KIND, BATCH_MAX, StopWaiting } from '/vault/engine.js?cb=dfbb53f0';
 import { makeConnect, UserStopped } from '/trade/connect.js?cb=f0e47fd0';
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -70,7 +70,7 @@ const POOLS = (() => {
   return ADDR.test(usdc || '') ? { ...c, quotes: { ...c.quotes, USDC: { ...c.quotes.USDC, addr: usdc } } } : c;
 })();
 const pools = makePools({
-  el: $('#pools'), cfg: POOLS, esc, rpc, ethCall, batch, wallet, W, connect: connectWallet, txLink, onChange: () => { renderBoard(); renderPromo(); toPools(); },
+  el: $('#pools'), cfg: POOLS, esc, rpc, ethCall, batch, wallet, W, connect: connectWallet, txLink, onChange: () => { renderBoard(); renderPromo(); toPools(); if (side === 'tac' && !S.busy) renderTicket(); },
   synthOf: (key) => VS.find((v) => v.key === key)?.synth || null, symOf: (key) => KIND[key].sym,
 });
 
@@ -132,7 +132,7 @@ function boardRows(xs) {
     ['Borrowing', (x) => { const st = x.status; return `<span class="st s-${st.state}"><i class="sd"></i>${st.state === 'open' ? 'Open' : st.state === 'wait' ? 'Checking' : 'Not open'}</span>${st.short && !x.hideShort ? `<small>${esc(st.short)}</small>` : ''}`; }],
     ['Room to borrow', (x) => {
       if (x.room != null) return `<b>${esc(syn(x, x.room))}</b> ${esc(x.sym)}`;
-      const p = x.status?.carry ? postOf(x.V)?.d : null;
+      const p = postOf(x.V)?.d;
       return p && p.debtCeiling != null && p.depthCeiling != null && p.totalDebt != null ? `<b>${esc(syn(x, M.sharedRoom({ debtCeiling: p.debtCeiling, depthCeiling: p.depthCeiling, totalDebt: p.totalDebt })))}</b> ${esc(x.sym)}` : dash;
     }],
     ['Smallest debt', (x) => `${esc(syn(x, x.s.minDebt))} ${esc(x.sym)}`],
@@ -189,7 +189,7 @@ function renderHow() {
     <li><b>Prices move slowly.</b> They come from the TAC pools over hours, so a brief dip does not liquidate you.</li>
     <li><b>Under ${pctOf(x.s.liq)}, a vault can be auctioned.</b> Bids repay its debt for its TAC at a bonus that grows over ${esc(M.span(x.s.auctionDuration))}; only the vault’s owner can bid for the first ${esc(M.span(x.s.ownerWindow))}. Repaying or adding TAC ends it.</li>
     <li><b>${pctOf(x.s.liq)} to ${pctOf(x.safe)}, it can be redeemed against.</b> A ${sym} holder swaps it for the vault’s TAC at its price (${redeem} fee), which lowers the debt.</li>
-    <li><b>Repay any time.</b> The debt left must be zero or at least ${esc(syn(x, x.s.minDebt))} ${sym}.</li>
+    <li><b>Repay any time.</b> Your debt includes the fee, so closing it takes a little more ${sym} than you borrowed: the market below sells it. The debt left must be zero or at least ${esc(syn(x, x.s.minDebt))} ${sym}.</li>
   </ol>
   <p>The owner can lower the cap, set fees (up to 5% to borrow, 2.5% to redeem) and pause auctions for up to 12 hours. Other changes are announced here 2 to 3 days ahead.</p>`);
 }
@@ -259,6 +259,7 @@ function renderPos() {
   if (!x) { setHtml(el, `${head}<p class="empty">${S.failed ? 'Not read yet.' : 'Reading the vault…'}</p>`); return; }
   if (!who()) { setHtml(el, `${head}<p class="empty"><button class="linkbtn" type="button" data-connect>Connect a wallet</button> to see your vault.</p>`); return; }
   const m = x.me;
+  el.classList.toggle('first', !!x.auction || x.zone === 'liquidation');
   if (m.collateral === 0n && m.debt === 0n) {
     setHtml(el, `${head}<p class="empty">${S.view ? 'This account has nothing in the vault.' : `Nothing deposited yet. Deposit TAC to borrow ${esc(x.sym)} against it.`}</p>${S.view ? '<p class="note"><a href="#" data-mine>Use my wallet</a></p>' : ''}`);
     return;
@@ -298,7 +299,7 @@ function renderTicket() {
   const sym = x?.sym || KIND[S.v]?.sym || '', isTac = t === 'deposit' || t === 'withdraw';
   setHtml($('#acts'), ACTS.map(([k, l]) => `<button type="button" data-t="${k}" aria-pressed="${k === t}"${S.busy ? ' disabled' : ''}>${l}</button>`).join(''));
   const st = V && derive(V) ? statusOf(derive(V)) : null;
-  setHtml($('#tk-h'), `<span>${esc(x ? `${x.k.name} vault` : 'Vault')}</span>${st ? `<span class="st s-${st.state}"><i class="sd"></i>${st.state === 'open' ? 'Open' : st.state === 'wait' ? 'Checking' : 'Not open'}</span>` : ''}`);
+  setHtml($('#tk-h'), `<span>${esc(x ? `${x.k.name} vault` : 'Vault')}</span>${st ? `<span class="st s-${st.state}"><i class="sd"></i>${st.state === 'open' ? 'Borrowing open' : st.state === 'wait' ? 'Checking' : 'Borrowing not open'}</span>` : ''}`);
   $('#amt-lbl').textContent = isTac ? `TAC to ${t}` : `${sym} to ${t}`;
   $('#unit').innerHTML = `${isTac ? '<svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg>' : icon(S.v)}${esc(isTac ? 'TAC' : sym)}`;
   $('#amt').setAttribute('aria-label', isTac ? `TAC to ${t}` : `${sym} to ${t}`);
@@ -355,7 +356,7 @@ const feed = makeFeed({
 const E = makeVaultEngine({
   S, VS, ROUTER, rpc, feed, wallet, W, who, canAct, UserStopped,
   ui: { esc, mk, synMk, txLink, zone: (z, t) => `<span class="z-${z}">${t}</span>`, fill: (amt, text) => `<button class="linkbtn" type="button" data-fill="${amt}">${esc(text)}</button>`,
-    buy: BUY, stop: '<button class="linkbtn" type="button" data-stop>stop waiting</button>' },
+    buy: BUY, market: (key, sym) => { const live = pools.live(key); return `${live === false ? `No market has ${esc(sym)} yet. ` : ''}<button class="linkbtn" type="button" data-to-pools>${live === false ? 'See the market' : 'Get the rest in the market'} ↓</button>`; }, stop: '<button class="linkbtn" type="button" data-stop>stop waiting</button>' },
   hooks: {
     say, feed: () => { renderFeed(); renderBoard(); }, all: () => renderAll(), ticket: () => renderTicket(), refresh: () => refresh(), connect: () => connectWallet(),
     busy: (on) => { if (on) S.pre = false; lockAll(); if (on) renderTicket(); else renderAll(); },
