@@ -23,7 +23,7 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /face/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/face/app.js?cb=c0d02d66">
+<link rel="modulepreload" href="/face/app.js?cb=f687178a">
 <link rel="modulepreload" href="/trade/connect.js?cb=f0e47fd0">
 <link rel="modulepreload" href="/walletconnect.js?cb=843803d6">
 <link rel="modulepreload" href="/trade/wallet.js?cb=c12e83a8">
@@ -209,6 +209,22 @@ body { background: #000; background-image: radial-gradient(rgba(255,255,255,.07)
 #board .rk { display: inline-grid; place-items: center; width: 26px; height: 26px; border: 2px solid currentColor; font-weight: 600; }
 #board .amt { font-weight: 500; } #board .tc { color: var(--mute); } #board em { color: var(--orange); font-style: normal; font-size: 11px; }
 .wide { grid-column: 1 / -1; }
+.win { position: relative; overflow: hidden; display: grid; grid-template-columns: 1fr auto; gap: 24px; align-items: center; margin: 8px 6px 22px 0; padding: 26px; border: 2px solid var(--orange); background: #0b0b0b; box-shadow: 6px 6px 0 #fff; }
+.win[hidden] { display: none; }
+.win .confetti { position: absolute; inset: 0; pointer-events: none; opacity: .55; }
+.win .confetti i { position: absolute; display: block; }
+.win-l { position: relative; min-width: 0; }
+.win-l .px { margin-bottom: 14px; height: 40px; width: auto; }
+.win-addr { display: inline-block; color: #fff; font-size: 15px; font-weight: 600; word-break: break-all; text-decoration: none; border-bottom: 2px solid var(--orange); }
+.win-l p { color: var(--mute); margin: 10px 0 0; font-size: 13px; } .win-l p b { color: #fff; font-weight: 500; word-break: break-all; } .win-l .o { color: var(--orange); }
+.win-stats { display: grid; grid-template-columns: repeat(4, auto); gap: 22px; justify-content: start; margin-top: 16px; }
+.win-stats b { display: block; font-size: 20px; font-weight: 500; color: #fff; } .win-stats span { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--mute); }
+.win-links { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 16px; }
+.win-links a, .box a { color: var(--orange); text-decoration: none; font-size: 13px; border-bottom: 1px solid rgba(247,147,26,.4); }
+.win-card { position: relative; width: 220px; border: 2px solid #fff; image-rendering: pixelated; }
+#board em.won { background: var(--orange); color: #000; padding: 0 5px; font-weight: 600; }
+@media (max-width: 760px) { .win { grid-template-columns: 1fr; padding: 18px; } .win-card { width: 100%; max-width: 260px; } .win-stats { grid-template-columns: repeat(2, auto); } }
+
 .deal { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 8px 6px 18px 0; }
 .deal div { border: 2px solid var(--hair-2); padding: 12px; }
 .deal .px { height: 15px; width: auto; margin-bottom: 8px; }
@@ -397,6 +413,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       <noscript><p class="small">This page needs JavaScript.</p></noscript>
     </section>
 
+    <section class="win" id="win" aria-label="Winner" hidden></section>
     <section class="deal" id="deal" aria-label="The deal"></section>
 
     <div class="grid">
@@ -428,6 +445,6 @@ footer.sf svg.fill { width: 16px; height: 16px; }
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/face/app.js?cb=c0d02d66"></script>
+<script type="module" src="/face/app.js?cb=f687178a"></script>
 </body>
 </html>

@@ -14,9 +14,13 @@ const SEL = {
   tokenURI: '0xc87b56dd', finalized: '0xb3f05b97', cancelled: '0x9a82a09a', MIN_BUY: '0x3af96b90', contributors: '0x6e7e3b2b',
 };
 const BOUGHT = '0xa9a40dec7a304e5915d11358b968c1e8d365992abf20f82285d1df1b30c8e24c';
+const FINALIZED = '0x616c9469db50815ae0f1d0a020d9fc9060da7c57f03559afb0d4ebdaa0a3a05e';
+const MARKET = '0x000000000000b361194cfe6312EE3210d53C15AA';
+const FACE_ID = '20147499493997875391309541615370766948495478027631380348026672393818494854045';
+const SCAN = 'https://etherscan.io';
 const PAUSES = { '0x4e7e2916': 'BELOW FLOOR', '0x9fcbf9db': 'PRICES SETTLING', '0xa889a81f': 'PRICE FEED CATCHING UP' };
 
-const S = { st: null, me: null, board: [], busy: false, note: '', bad: false, eth: '' };
+const S = { st: null, me: null, board: [], buys: 0, busy: false, note: '', bad: false, eth: '', win: null };
 const conn = makeConnect({
   describe: 'FACE RACE: buy TAC, race for 0x…FACE', name: 'tacit face', rewards: false,
   say: (t, b) => say(t, b), busy: () => S.busy, onChange: () => { S.me = null; render(); readMe(); },
@@ -45,6 +49,31 @@ async function readState() {
 }
 const pauseWord = (e) => { const m = String(e?.data ?? e?.message ?? e).match(/0x[0-9a-f]{8}/i); return (m && PAUSES[m[0].toLowerCase()]) || 'PAUSED'; };
 
+async function cardOf(id) {
+  const raw = strip(await call(SEL.tokenURI, word(id)));
+  const len = Number(BigInt('0x' + raw.slice(64, 128)));
+  const uri = new TextDecoder().decode(Uint8Array.from(raw.slice(128, 128 + len * 2).match(/../g).map((b) => parseInt(b, 16))));
+  return JSON.parse(atob(uri.split(',')[1])).image;
+}
+
+// Once the race is finished: the finishing transaction, when it landed, and the winner's own card.
+async function readWin() {
+  if (!SALE || S.win || !S.st?.fin) return;
+  try {
+    const head = Number(await rpc('eth_blockNumber', []));
+    let fin = null;
+    for (let from = FROM_BLOCK; from <= head && !fin; from += 10_000) {
+      const logs = await rpc('eth_getLogs', [{ address: SALE, topics: [FINALIZED], fromBlock: '0x' + from.toString(16), toBlock: '0x' + Math.min(head, from + 9_999).toString(16) }]);
+      if (logs.length) fin = logs[0];
+    }
+    const at = fin ? Number((await rpc('eth_getBlockByNumber', [fin.blockNumber, false])).timestamp) : null;
+    const winner = S.st.leader;
+    const id = u(await call(SEL.tokenOf, addr(winner)));
+    S.win = { winner, tx: fin?.transactionHash || null, at, card: id ? await cardOf(id) : null };
+    render();
+  } catch { /* tried again on the next refresh */ }
+}
+
 async function readMe() {
   const who = W.account;
   if (!SALE || !who) return;
@@ -52,13 +81,7 @@ async function readMe() {
     const a = addr(who);
     const [spent, bought, claimable, zClaimable, id] = await Promise.all(
       [SEL.spent, SEL.bought, SEL.claimable, SEL.sharesClaimable, SEL.tokenOf].map((s) => call(s, a).then(u)));
-    let card = null;
-    if (id) {
-      const raw = strip(await call(SEL.tokenURI, word(id)));
-      const len = Number(BigInt('0x' + raw.slice(64, 128)));
-      const uri = new TextDecoder().decode(Uint8Array.from(raw.slice(128, 128 + len * 2).match(/../g).map((b) => parseInt(b, 16))));
-      card = JSON.parse(atob(uri.split(',')[1])).image;
-    }
+    const card = id ? await cardOf(id) : null;
     if (who === W.account) { S.me = { spent, bought, claimable, zClaimable, id, card }; render(); }
   } catch { /* shown as not yet bought */ }
 }
@@ -70,8 +93,10 @@ async function readBoard() {
   try {
     const head = Number(await rpc('eth_blockNumber', []));
     const by = new Map();
+    let buys = 0;
     for (let from = FROM_BLOCK; from <= head; from += 10_000) {
       const logs = await rpc('eth_getLogs', [{ address: SALE, topics: [BOUGHT], fromBlock: '0x' + from.toString(16), toBlock: '0x' + Math.min(head, from + 9_999).toString(16) }]);
+      buys += logs.length;
       for (const l of logs) {
         const who = '0x' + l.topics[1].slice(26), d = strip(l.data);
         const r = by.get(who) || { who, eth: 0n, tac: 0n, first: Number(l.blockNumber) * 1e4 + Number(l.logIndex) };
@@ -80,6 +105,7 @@ async function readBoard() {
       }
     }
     S.board = [...by.values()].sort((x, y) => (y.eth > x.eth ? 1 : y.eth < x.eth ? -1 : x.first - y.first));
+    S.buys = buys;
     render();
   } catch { /* the board waits for the next refresh */ }
 }
@@ -126,6 +152,36 @@ function buy() {
 }
 
 // ── page ──
+// Pixel confetti for the winner's banner: the same spots every time.
+const CONFETTI = Array.from({ length: 34 }, (_, i) => {
+  const x = (i * 37 + 11) % 100, y = (i * 53 + 7) % 100, big = i % 5 === 0;
+  return `<i style="left:${x}%;top:${y}%;width:${big ? 8 : 5}px;height:${big ? 8 : 5}px;background:${i % 3 ? 'var(--orange)' : '#fff'}"></i>`;
+}).join('');
+
+function winBanner(st, raised) {
+  const w = S.win, winner = st.leader;
+  const took = w?.at ? (() => { const s = w.at - Number(st.start), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60); return h ? `${h}h ${m}m` : `${m}m`; })() : null;
+  return `<div class="confetti" aria-hidden="true">${CONFETTI}</div>
+    <div class="win-l">
+      ${pixelText('WINNER', 8, 'hot')}
+      <a class="win-addr" href="${SCAN}/address/${winner}" target="_blank" rel="noopener">${esc(winner)}</a>
+      <p>now holds the right to deploy <b>0x000000000000<span class="o">FACE</span>4aa7d047C56a2981edA19432</b>, won with ${eth(st.leaderSpent, 3)} ETH.</p>
+      <div class="win-stats">
+        <div><b>${eth(raised, 3)} ETH</b><span>raised</span></div>
+        <div><b>${S.buys || '—'}</b><span>buys</span></div>
+        <div><b>100%</b><span>sold</span></div>
+        <div><b>${took || '—'}</b><span>to sell out</span></div>
+      </div>
+      <div class="win-links">
+        <a href="${SCAN}/nft/${MARKET}/${FACE_ID}" target="_blank" rel="noopener">FACE token ↗</a>
+        ${w?.tx ? `<a href="${SCAN}/tx/${w.tx}" target="_blank" rel="noopener">Finish transaction ↗</a>` : ''}
+        <a href="${SCAN}/address/${FACE}" target="_blank" rel="noopener">0x…FACE ↗</a>
+        <a href="${SCAN}/address/${SALE}#code" target="_blank" rel="noopener">Contract ↗</a>
+      </div>
+    </div>
+    ${w?.card ? `<img class="win-card" src="${w.card}" alt="The winner's FACE card">` : ''}`;
+}
+
 const left = (t) => {
   const s = Math.max(0, t - Math.floor(Date.now() / 1000));
   const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
@@ -136,7 +192,7 @@ function phase(st) {
   if (st.soon) return { word: 'OPENS SOON', live: false };
   const now = Math.floor(Date.now() / 1000);
   if (st.can) return { word: 'CLOSED', live: false };
-  if (st.fin) return { word: 'FINISHED', live: false };
+  if (st.fin) return { word: 'FINISHED', live: false, done: true };
   if (now < Number(st.start)) return { word: `OPENS IN ${left(Number(st.start))}`, live: false };
   if (st.sold >= TOTAL || now >= Number(st.end)) return { word: st.sold >= TOTAL ? 'SOLD OUT' : 'TIME', live: false, final: true };
   if (st.pause) return { word: st.pause, live: false, paused: true };
@@ -151,11 +207,16 @@ function render() {
   const me = (W.account || '').toLowerCase();
   const rank = S.board.findIndex((r) => r.who === me);
 
-  $('#status').innerHTML = pixelText(ph.word, 3, ph.live ? 'hot' : '');
+  $('#status').innerHTML = pixelText(ph.word, 3, ph.live || ph.done ? 'hot' : '');
+  const raised = S.board.reduce((a, r) => a + r.eth, 0n);
+  $('#deal').hidden = !!ph.done;
+  $('#win').hidden = !ph.done;
+  if (ph.done) $('#win').innerHTML = winBanner(st, raised);
   $('#stats').innerHTML = `
-    <div class="stat"><span>Price</span><b>${st.price ? (Number(st.price) / 1e18).toPrecision(3) : '—'}</b><em>ETH per TAC</em></div>
+    ${ph.done ? `<div class="stat"><span>Buys</span><b>${S.buys || '—'}</b><em>in all</em></div>`
+      : `<div class="stat"><span>Price</span><b>${st.price ? (Number(st.price) / 1e18).toPrecision(3) : '—'}</b><em>ETH per TAC</em></div>`}
     <div class="stat"><span>Sold</span><b>${tac(sold)}</b><em>of ${tac(TOTAL)} TAC</em></div>
-    <div class="stat"><span>Raised</span><b>${st.price !== undefined ? eth(S.board.reduce((a, r) => a + r.eth, 0n), 3) : '0'} ETH</b><em>${st.n ?? 0} racers</em></div>
+    <div class="stat"><span>Raised</span><b>${st.price !== undefined || ph.done ? eth(raised, 3) : '0'} ETH</b><em>${st.n ?? 0} racers</em></div>
     <div class="bar">${blocks(lit)}</div>`;
 
   const lead = st.leader && !/^0x0+$/.test(st.leader) ? st.leader : null;
@@ -163,7 +224,11 @@ function render() {
     <b>${lead ? esc(short(lead, 5)) : '—'}</b><em>${lead ? `${eth(st.leaderSpent, 3)} ETH` : 'no one yet'}</em>`;
 
   const quote = st.price && S.eth ? (() => { try { return (parseUnits(S.eth, 18) * 10n ** 18n) / st.price; } catch { return null; } })() : null;
- $('#buy').innerHTML = ph.paused && st.pause !== 'BELOW FLOOR'
+ $('#buy').innerHTML = ph.done
+    ? `${pixelText('SOLD OUT', 5, 'hot')}
+       <p class="small">Every TAC sold. Each buyer's TAC and Z unlock over ${LOCK_DAYS} days from their buy: claim them under YOU.</p>
+       <p class="small"><a href="${SCAN}/address/${SALE}#code" target="_blank" rel="noopener">Contract, verified ↗</a></p>`
+    : ph.paused && st.pause !== 'BELOW FLOOR'
     ? `<p class="small">Buys wait for the price feed. Anyone can catch it up.</p>
        <button class="go" id="catch" ${S.busy ? 'disabled' : ''}>${pixelText('CATCH UP PRICES', 3)}</button>
        <p class="small">A few transactions from your wallet, gas only.</p>`
@@ -188,7 +253,7 @@ function render() {
 
   $('#board').innerHTML = S.board.length
     ? `<ol>${S.board.slice(0, 50).map((r, i) => `<li class="${i === 0 ? 'top' : ''}${r.who === me ? ' you' : ''}">
-        <span class="rk">${i + 1}</span><span class="who">${esc(short(r.who, 5))}${r.who === me ? ' <em>you</em>' : ''}</span>
+        <span class="rk">${i + 1}</span><span class="who">${esc(short(r.who, 5))}${i === 0 && st.fin ? ' <em class="won">winner</em>' : ''}${r.who === me ? ' <em>you</em>' : ''}</span>
         <span class="amt">${eth(r.eth, 3)} ETH</span><span class="tc">${tac(r.tac)} TAC</span></li>`).join('')}</ol>`
     : `<p class="small">No racers yet.</p>`;
 
@@ -220,7 +285,7 @@ if (location.hash === '#demo') {
   render();
 } else {
   render();
-  readState(); readBoard();
+  readState().then(readWin); readBoard();
 }
-if (location.hash !== '#demo') { setInterval(() => { readState(); readMe(); }, 20_000); setInterval(readBoard, 60_000); }
+if (location.hash !== '#demo') { setInterval(() => { readState(); readMe(); readWin(); }, 20_000); setInterval(readBoard, 60_000); }
 setInterval(() => { if (S.st && !S.busy && document.activeElement?.id !== 'eth') render(); }, 1000);
