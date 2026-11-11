@@ -94,10 +94,10 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
 @media (hover: hover) { .sm-p a:hover { background: var(--hair); } }
 @media (prefers-reduced-motion: reduce) { .sm-p { animation: none; } .sn > a, .sn summary, header.top .chip { transition: none; } }
 
-/* the footer: where it is said to be, then the places outside the app, as icons that say their name on hover and to a screen reader */
+/* the footer: where it is said to be, then the places outside the app, as icons that say their name on hover and to a screen reader (they narrow a little on a small phone before they would run off the page) */
 footer.sf { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0 20px; margin-top: 56px; padding: 10px 0 22px; border-top: 1px solid var(--hair); color: var(--mute); font: 400 12px/1.4 var(--mono); }
-footer.sf nav { display: flex; align-items: center; margin: 0 -10px 0 auto; }
-footer.sf nav a { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; width: 40px; height: 40px; border-radius: 12px; color: var(--mute); transition: color .15s, background-color .15s, transform .25s var(--spring, ease); }
+footer.sf nav { display: flex; align-items: center; max-width: 100%; margin: 0 -10px 0 auto; }
+footer.sf nav a { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; flex: 0 1 40px; min-width: 28px; height: 40px; border-radius: 12px; color: var(--mute); transition: color .15s, background-color .15s, transform .25s var(--spring, ease); }
 footer.sf nav a:active { transform: scale(.92); }
 footer.sf svg { width: 18px; height: 18px; }
 footer.sf svg.fill { width: 16px; height: 16px; }
