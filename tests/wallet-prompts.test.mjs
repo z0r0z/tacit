@@ -18,7 +18,7 @@ if (!globalThis.crypto) globalThis.crypto = dom.window.crypto;
 
 import { secp, sha256, keccak_256, bytesToHex, hexToBytes } from '../dapp/vendor/tacit-deps.min.js';
 import { prfBytesToScalar } from '../dapp/prf-wallet.js';
-import { guardProvider, declinedWords, stillWaiting, QUIET_MS, QUICK_MS, SLOW_MS } from '../dapp/wallet-prompts.js';
+import { guardProvider, declinedWords, stillWaiting, QUIET_MS, RETRY_QUIET_MS, QUICK_MS, SLOW_MS } from '../dapp/wallet-prompts.js';
 import { makeEvmWallet } from '../dapp/evm-wallet.js';
 import { UserStopped } from '../dapp/trade/wallet.js';
 import { readdirSync, readFileSync } from 'node:fs';
@@ -132,7 +132,25 @@ console.log('\n— a wallet that refuses at once, twice');
   const err = await clock.run(p.request(SEND)).then(() => null, (e) => e);
   ok('asked twice and no more', p.seen.length === 2);
   ok('the error keeps code 4001 and says it was at once', err?.code === 4001 && err.quick === true);
-  ok(`the second ask waited out the quiet (${QUIET_MS} ms)`, p.seen[1].at - p.seen[0].at >= QUIET_MS);
+  ok(`the second ask waited out the longer quiet (${RETRY_QUIET_MS} ms)`, p.seen[1].at - p.seen[0].at >= RETRY_QUIET_MS);
+}
+
+console.log('\n— how long a window takes to close decides whether the short quiet is enough');
+for (const closeAfter of [300, 500]) {
+  const clock = makeClock(), p = guardProvider(rainbowLike(clock, { think: 3000, closeAfter }), { now: clock.now, sleep: clock.sleep });
+  await clock.run(p.request(SIGN));
+  const answered = clock.now();
+  const hash = await clock.run(p.request(SEND)).then((h) => h, (e) => e);
+  const sent = p.seen.filter((x) => x.method === 'eth_sendTransaction');
+  ok(`a window that takes ${closeAfter} ms to close: the next prompt goes ${QUIET_MS} ms after the answer, once, and is sent`, typeof hash === 'string' && sent.length === 1 && sent[0].at - answered === QUIET_MS);
+}
+for (const closeAfter of [900, 1400]) {
+  const clock = makeClock(), p = guardProvider(rainbowLike(clock, { think: 3000, closeAfter }), { now: clock.now, sleep: clock.sleep });
+  await clock.run(p.request(SIGN));
+  const answered = clock.now();
+  const hash = await clock.run(p.request(SEND)).then((h) => h, (e) => e);
+  const sent = p.seen.filter((x) => x.method === 'eth_sendTransaction');
+  ok(`a window that takes ${closeAfter} ms to close: the refusal is not the person's, so it is asked again after ${RETRY_QUIET_MS} ms and sent`, typeof hash === 'string' && sent.length === 2 && sent[1].at - (answered + closeAfter) >= RETRY_QUIET_MS);
 }
 
 console.log('\n— what is not a prompt, and what is not a refusal');
