@@ -5,6 +5,7 @@
 //   to Bitcoin       the pool's attested cross-out count, with the reflection's folded count beside it
 //   spent on Ethereum the pool's count of Bitcoin notes spent on Ethereum directly
 //   bridged in       the burns the reflection has recorded (a status that lacks the field leaves it out)
+//   activity chart   drawn from a shared reading whose device-pool deposits number in the hundreds of thousands
 //   PLAYWRIGHT=<path to playwright-core> node tools/stats-check.mjs
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
@@ -53,6 +54,12 @@ async function card(status) {
     });
   }
   const send = (route, b, status = 200) => route.fulfill({ status, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(b) });
+  await ctx.route((u) => u.hostname !== '127.0.0.1', async (route) => {      // lowest priority: the routes below are tried first
+    const body = JSON.parse(route.request().postData() || 'null');
+    if (!body || typeof body !== 'object') return send(route, {}, 404);
+    const one = (b) => ({ jsonrpc: '2.0', id: b.id, result: answer(b.method, b.params || []) });
+    return send(route, Array.isArray(body) ? body.map(one) : one(body));
+  });
   await ctx.route('https://api.tacit.finance/**', (route) => {
     const u = new URL(route.request().url());
     if (u.pathname === '/reflection/status') return send(route, status);
@@ -71,6 +78,54 @@ async function card(status) {
   return { text, gloss };
 }
 
+// The shared reading the API gives the page (/stats?view=page), as small as the page will draw. A device pool's deposits come in buckets
+// [time, amount, how many], so one row can stand for a great many: the page lists each deposit's time for the activity chart.
+async function activity(buckets) {
+  const browser = await chromium.launch();
+  const ctx = await browser.newContext({ viewport: { width: 1100, height: 1000 } });
+  const now = Math.floor(Date.now() / 1000), day = 86400, n = (v) => ({ $n: String(v) });
+  const wei = (v) => n(BigInt(v) * 10n ** 15n);
+  const at = (d) => now - d * day;
+  const reading = {
+    at: Date.now(), block: 26390305, partial: false, stale: [], staleAt: null, errors: {},
+    pts: { participants: 3, full: true, points: 1000, allocated: n(1000), claimed: n(500) },
+    link: {
+      tip: 975405, btcTip: 975408, attestedHeight: 975381, anchorHeight: 964163, attests: 3, lastAttest: { hash: '0x' + 'ab'.repeat(32), timeStamp: at(1) },
+      settles: 5, notes: 4, spent: 3, crossOuts: 21, consumed: 2,
+      status: { network: 'mainnet', attestedHeight: 975381, tipHeight: 975381, lagBlocks: 0, confirmations: 24, foldedCrossoutCount: 19, bridgeBurns: 38, bridgeMinted: 27, consumedCount: 2, liveNotes: 3746 },
+      times: { settles: [at(20), at(12), at(9), at(4), at(1)], attests: [at(18), at(10), at(2)] },
+    },
+    btc: { locked: n(11946354), nLocked: 24, redeemed: 1, unlocked: 1, waiting: 0, mint: n(12028354), nMint: 26, bonds: wei(5000), nBonds: 25, borrowed: n(479831815650), repaid: n(37046000000), liq: n(0), out: n(442785815650), open: 12, tacbtc: wei(294), tacusd: wei(18916) },
+    tac: { supply: n(2766665201012540000000000n), tacIn: { n: 104, v: n(131941613676550000000000n) }, tacOut: { n: 1002, v: n(749599902932630000000000n), who: 165 }, times: { out: [at(15), at(3)], in: [at(16)] }, claims: 1072, claimed: n(652684023255810000000000n), claimers: 1072, others: [] },
+    eth: { inWei: wei(3000), held: wei(20), outWei: wei(2980), deposits: 2, lastAt: at(5), wallets: 2, unread: 0, series: { ins: [[at(25), wei(2)], [at(5), wei(1)]], flows: [[at(25), wei(2)], [at(5), wei(-1)]] } },
+    dev: [{ chain: 8453, bal: wei(100), dep: wei(5000), wd: wei(4900), nd: buckets, nw: 10, moves: buckets + 10, lastAt: at(1), series: { ins: [[at(14), wei(1), buckets]], flows: [[at(14), wei(1)]] } }],
+  };
+  const send = (route, b, status = 200) => route.fulfill({ status, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(b) });
+  await ctx.route((u) => u.hostname !== '127.0.0.1', (route) => send(route, {}, 404));
+  await ctx.route('https://api.tacit.finance/**', (route) => (new URL(route.request().url()).pathname === '/stats' ? send(route, JSON.parse(JSON.stringify(reading, (_, x) => (typeof x === 'bigint' ? { $n: x.toString() } : x)))) : send(route, {}, 404)));
+  const page = await ctx.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await page.goto(`http://127.0.0.1:${WEB}/weld/stats/`);
+  await page.waitForFunction(() => !/Reading the chains/.test(document.querySelector('#asof')?.textContent || ''), null, { timeout: 30000 }).catch(() => {});
+  const out = await page.evaluate(() => ({
+    asof: document.querySelector('#asof')?.textContent.trim() || '',
+    drawn: !!document.querySelector('#c-act svg'), shown: document.querySelector('#f-act')?.hidden === false,
+    rows: [...document.querySelectorAll('#c-act .rl')].map((r) => r.textContent.replace(/\s+/g, ' ').trim()),
+  }));
+  await browser.close();
+  return { ...out, errors };
+}
+
+console.log('== an activity chart over deposits far past a hundred thousand');
+for (const buckets of [1000, 300000]) {
+  const a = await activity(buckets);
+  const dep = (a.rows.find((t) => /^ETH deposits/.test(t)) || '').replace(/[^\d]/g, '');
+  ok(a.errors.length === 0, `${buckets.toLocaleString('en')} deposits in one bucket: the page raises no error`, a.errors[0] || '');
+  ok(a.drawn && a.shown, 'and the chart is drawn', a.rows.join(' · '));
+  ok(Number(dep) === buckets + 2, 'with every deposit counted: the bucket and the pool\'s own two', dep);
+  ok(/^As of /.test(a.asof), 'and the page says when the reading is from', a.asof.slice(0, 60));
+}
 console.log('== a status that carries the reflection\'s recorded bridges');
 let r = await card({ attestedHeight: 970090, tipHeight: 970100, foldedCrossoutCount: 7, consumedCount: 2, bridgeBurns: 27, liveNotes: 3860 });
 ok(/9 to Bitcoin \(7 folded\)/.test(r.text) && /2 spent on Ethereum/.test(r.text) && /27 bridged in/.test(r.text), 'each kind of move is named', r.text);
