@@ -118,7 +118,9 @@ function buy() {
   let v;
   try { v = parseUnits(S.eth || '0', 18); } catch { return say('Enter an amount of ETH.', true); }
   if (v < st.minBuy) return say(`At least ${eth(st.minBuy)} ETH.`, true);
-  const quote = (v * 10n ** 18n) / st.price;
+  // the contract fills at most what is left, so the least accepted is a share of that, not of the full quote
+  const left = TOTAL > st.sold ? TOTAL - st.sold : 0n;
+  const quote = (v * 10n ** 18n) / st.price < left ? (v * 10n ** 18n) / st.price : left;
   // a first buy mints a card and forwards the ETH, up to about 660k gas: wallets have estimated under it
   send(SEL.buy + word((quote * 99n) / 100n), v, 'Bought. Your TAC and Z unlock over 90 days.', 900_000n);
 }
