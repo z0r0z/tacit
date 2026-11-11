@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-iP0MGon89or8R2mesamajFYqkH3G1QbrjT1ez7d6wOU=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-e7LJh8Zfu4BvsPYJ2OU3T0rNg9IhSTzzYi/F90W29Zk=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay · ETH</title>
 <meta name="description" content="Private ETH payments on Ethereum, Base and Robinhood Chain, proved on your device and recovered from your key.">
@@ -277,15 +277,39 @@ input::placeholder { color: var(--mute); opacity: 1; }
   font-size: 12.5px; background: var(--field); border-left: 2px solid var(--orange); }
 
 .opts { display: grid; gap: 8px; margin-top: 4px; }
-.opt { display: grid; gap: 3px; width: 100%; padding: 12px 14px; text-align: left; cursor: pointer; background: var(--field); border: 1px solid var(--hair-2); transition: border-color .15s; }
+.opts > .lbl { margin: 10px 0 -2px; }
+.opts > .lbl:first-child { margin-top: 0; }
+.opts .lbl + .note { margin: 0 0 10px; }
+.opt { display: grid; gap: 3px; width: 100%; padding: 12px 14px; text-align: left; cursor: pointer; background: var(--field); border: 1px solid var(--hair-2); border-radius: 16px; transition: border-color .15s, opacity .2s; }
 @media (hover: hover) { .opt:hover:not(:disabled) { border-color: var(--ink); } }
 .opt:disabled { opacity: .5; cursor: progress; }
 .opt.main { border-color: var(--ink); background: var(--card); }
 .opt-t { display: flex; align-items: center; gap: 10px; font-weight: 500; }
+.opt-t > .tk.sm { width: 22px; height: 22px; }
 .opt-t b { font-weight: 500; }
-.opt-m { font-size: 12px; color: var(--mute); padding-left: 30px; }
-.opt[aria-busy="true"] .opt-t::after { content: ''; width: 11px; height: 11px; margin-left: auto; border: 1.5px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
-.more { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 18px; margin: 8px 0 0; }
+.opt-m { font-size: 12px; color: var(--mute); padding-left: 32px; }
+.opt[aria-busy="true"] { opacity: 1; border-color: var(--ink); }
+/* a row waiting on the wallet: a round ring in the slot a remembered wallet's arrow holds */
+.opt[aria-busy="true"] .opt-t::after, .opt.mine[aria-busy="true"] .opt-t::after { content: ''; box-sizing: border-box; flex: none; width: 14px; height: 14px; margin-left: auto; padding: 0; border: 1.5px solid var(--hair-2); border-top-color: var(--ink); border-radius: 50%; transform: none; transition: none; animation: spin .7s linear infinite; }
+/* Sign-in for a returning visitor: the Tacit wallets this browser has opened, each by how it opens; the other ways in as tiles */
+.opt.mine .opt-t .num { font: 500 14px var(--mono); font-variant-numeric: tabular-nums; letter-spacing: -.01em; overflow-wrap: anywhere; }
+.opt.mine .opt-t::after { content: '→'; margin-left: auto; padding-left: 8px; color: var(--mute); transition: transform .15s cubic-bezier(.2, .8, .2, 1); }
+@media (hover: hover) { .opt.mine:hover:not(:disabled) .opt-t::after { color: var(--ink); transform: translateX(3px); } }
+.opt.mine .opt-m { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; }
+.opt.mine .opt-m .tk { width: 14px; height: 14px; }
+.wl-on { display: inline-flex; align-items: center; gap: 5px; color: var(--ok); }
+.wl-on::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.ways { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 8px; }
+.way { display: flex; flex-direction: column; align-items: center; gap: 7px; min-height: 76px; padding: 13px 6px 11px; font: inherit; font-size: 13px; color: var(--ink);
+  background: var(--field); border: 1px solid var(--hair-2); border-radius: 14px; cursor: pointer; transition: border-color .15s, opacity .2s; }
+.way .tk { width: 24px; height: 24px; }
+@media (hover: hover) { .way:hover:not(:disabled) { border-color: var(--ink); } }
+.way:disabled { opacity: .5; cursor: progress; }
+.way[aria-busy="true"] { opacity: 1; border-color: var(--ink); }
+.way[aria-busy="true"] .tk { animation: pulse 1.1s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) { .opt[aria-busy="true"] .opt-t::after { animation-duration: 1.8s; } .way[aria-busy="true"] .tk { animation: none; } }
+.more { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 18px; margin: 6px 0 0; }
 .opts-err { margin: 2px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--err); }
 
 /* ── device and recovery ── */
@@ -375,14 +399,19 @@ input::placeholder { color: var(--mute); opacity: 1; }
 
 
 /* ── sheets ── */
-dialog.sheet { width: min(480px, calc(100vw - 32px)); max-height: min(90vh, 900px); padding: 0; overflow: auto;
-  color: var(--ink); background: var(--card); border: 1px solid var(--ink); box-shadow: var(--sheet-shadow); }
+dialog.sheet { width: min(560px, calc(100vw - 32px)); max-height: min(90vh, 900px); max-height: min(90dvh, 900px); padding: 0; overflow: auto; overscroll-behavior: contain;
+  color: var(--ink); background: var(--card); border: 1px solid var(--hair-2); border-radius: 18px; box-shadow: var(--float, var(--sheet-shadow)); }
 dialog.sheet[open] { animation: rise .22s cubic-bezier(.2,.8,.2,1); }
 dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
 @keyframes rise { from { opacity: 0; transform: translateY(14px); } }
-.sheet-in { padding: 24px 24px 28px; }
-.sheet-head { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
-.sheet-head h2 { font: 400 30px/1 var(--serif); letter-spacing: -.01em; margin: 0; }
+.sheet-in { padding: 24px 24px 28px; --sx: 24px; --st: 24px; }
+/* The head stays at the top of a long sheet, so its title and close are there at any scroll; a hairline shows under it once the sheet has moved */
+.sheet-head { display: flex; align-items: center; gap: 14px; position: sticky; top: 0; z-index: 4; margin: calc(-1 * var(--st)) calc(-1 * var(--sx)) 8px; padding: var(--st) var(--sx) 14px; background: var(--card); }
+@supports (animation-timeline: scroll()) {
+  .sheet-head { animation: head-line linear both; animation-timeline: scroll(nearest); animation-range: 0 16px; }
+  @keyframes head-line { to { box-shadow: 0 1px 0 var(--hair); } }
+}
+.sheet-head h2 { font: 400 32px/1 var(--serif); letter-spacing: -.01em; margin: 0; }
 .sheet-head h2:focus { outline: none; }
 .x { margin-left: auto; width: var(--tap); height: var(--tap); display: grid; place-items: center; font-size: 22px; line-height: 1;
   background: none; border: 1px solid transparent; cursor: pointer; color: var(--mute); }
@@ -413,8 +442,8 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   .card { padding: 18px 16px; }
   .seg button { padding: 8px 6px; }
   .bal .v { font-size: 26px; }
-  dialog.sheet { width: 100vw; max-width: 100vw; margin: auto 0 0; max-height: 92vh; border-width: 1px 0 0; }
-  .sheet-in { padding: 20px 16px calc(24px + env(safe-area-inset-bottom)); }
+  dialog.sheet { width: 100vw; max-width: 100vw; margin: auto 0 0; max-height: 92vh; border-width: 1px 0 0; border-radius: 18px 18px 0 0; }
+  .sheet-in { padding: 20px 16px calc(24px + env(safe-area-inset-bottom)); --sx: 16px; --st: 20px; }
 }
 @media (max-width: 400px) {
   .brand .tk { width: 26px; height: 26px; }
@@ -1207,23 +1236,49 @@ const open = {
   },
 };
 
-const btcWalletSeen = () => !!(window.btc_providers?.length || window.XverseProviders?.BitcoinProvider || window.LeatherProvider || window.unisat);
 const signInErr = (box, id, e) => { const p = box.querySelector(`#${id}-err`); p.textContent = errText(e); p.hidden = false; };
-function signIn(id) {
+// How a remembered wallet opens, as a mark: the wallet it signs with, or a key
+const viaMark = (k) => html`<svg class="tk" aria-hidden="true"><use href="#${k.mode === 'eth' ? 'tk-eth' : k.mode === 'btc' || k.mode === 'ext' ? 'tk-btc' : 'i-key'}"/></svg>`;
+// A remembered wallet opened with the Ethereum wallet connected now: that wallet's signature opens it with no other popup
+const openerOn = (k) => !!(k?.mode === 'eth' && S.wallet && S.provider && String(k.address || '').toLowerCase() === S.wallet.toLowerCase());
+// The Tacit address of each key the front page opened, by its public key (public data), so a remembered wallet is named by it
+const seenAddr = (w) => w?.tacit || readJson('tacit-lite-addr-v1')?.[String(w?.pubHex || '').toLowerCase()] || null;
+const tacitShort = (a) => `${a.slice(0, 16)}…${a.slice(-6)}`;
+// The ways into a Tacit wallet, as the front page draws them (signIn() in index.html)
+function signIn(id, first = 'eth') {
   const known = knownWallet(), other = otherWallet(), pk = isPasskeyAvailable();
-  const hasBtc = btcWalletSeen(), hasEth = evm.hasBrowserWallet(), bare = pk && !known && !other && !hasBtc && !hasEth;
+  const saved = known?.mode !== 'local' && other?.mode !== 'local' && isPub(readJson('tacit-wallet-v1:mainnet')?.pub);
   const opt = (k, title, sub, cls = '') => html`<button class="opt ${cls}" type="button" data-in="${k}"><span class="opt-t">${title}</span><span class="opt-m">${sub}</span></button>`;
+  const links = html`<p class="opts-err" id="${id}-err" role="alert" hidden></p>
+    <p class="more">${saved ? html`<button class="link" type="button" data-in="local">Saved in this browser</button>` : ''}<button class="link" type="button" data-in="paste">Paste a key</button>${pk && known ? html`<button class="link" type="button" data-in="new">New passkey wallet</button>` : ''}</p>
+    <div class="amt text" id="${id}-paste" hidden><input id="${id}-hex" type="password" placeholder="64-character Tacit key" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Tacit key"><button class="link" type="button" data-in="key">Open</button></div>`;
+  if (known || other) {
+    // A returning visitor: each Tacit wallet this browser opened, by its address and what opens it (they are different keys, each with its own balances), then the other ways in, smaller
+    const mine = (k, w, main) => {
+      const t = seenAddr(w);
+      return opt(k, html`<svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>${t ? html`<span class="num">${tacitShort(t)}</span>` : html`<b>Tacit wallet</b>`}`,
+        html`${viaMark(w)}<span>Opens with ${viaText(w)}</span>${openerOn(w) ? html`<span class="wl-on">connected</span>` : ''}`, `mine${main ? ' main' : ''}`);
+    };
+    const way = (k, icon, name, title) => html`<button class="way" type="button" data-in="${k}" title="${title}"><svg class="tk" aria-hidden="true"><use href="#${icon}"/></svg><span>${name}</span></button>`;
+    const eth = way('eth', 'tk-eth', 'Ethereum', 'MetaMask, Rabby, Rainbow, any browser wallet, or WalletConnect'), btc = way('btc', 'tk-btc', 'Bitcoin', 'Xverse, Leather or UniSat');
+    // the Ethereum wallet connected now is already offered above, as what opens one of the wallets
+    const ways = (first === 'btc' ? [btc, eth] : [eth, btc]).filter((x) => !(x === eth && (openerOn(known) || openerOn(other))));
+    return html`<div class="opts" id="${id}-in">
+      <div class="lbl"><span>${known && other ? 'Open a wallet' : 'Open your wallet'}</span></div>
+      ${known && other ? html`<p class="note">Two separate wallets, each with its own address and balances.</p>` : ''}
+      ${known ? mine('known', known, true) : ''}${other ? mine('other', other, !known) : ''}
+      <div class="lbl"><span>Other ways in</span></div>
+      <div class="ways">${ways}${pk ? way('passkey', 'i-key', 'Passkey', 'Touch ID, Windows Hello or a security key') : ''}</div>
+      ${links}
+    </div>`;
+  }
+  const walletEth = opt('eth', html`<svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>Ethereum wallet`, 'MetaMask, Rabby, Rainbow, any browser wallet, or WalletConnect. One free signature, two the first time.');
+  const walletBtc = opt('btc', html`<svg class="tk sm" aria-hidden="true"><use href="#tk-btc"/></svg>Bitcoin wallet`, 'Xverse, Leather or UniSat. One free signature, two the first time.');
   return html`<div class="opts" id="${id}-in">
-    ${known ? opt('known', html`<svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>Continue with your Tacit wallet`, `Opens with ${viaText(known)}, the same wallet as everywhere on tacit.finance.`, 'main') : ''}
-    ${other ? opt('other', html`<svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>${other.tacit ? html`Continue as <b>${short(other.tacit, 7)}</b>` : 'Your other Tacit wallet'}`, html`A different wallet, opened here before with ${viaText(other)}.`) : ''}
-    ${bare ? opt('new', html`<svg class="tk sm" aria-hidden="true"><use href="#i-key"/></svg>Create a wallet`, 'Touch ID, Face ID or Windows Hello. Nothing to install.', 'main') : ''}
-    ${bare ? opt('passkey', html`<svg class="tk sm" aria-hidden="true"><use href="#i-key"/></svg>Open a passkey wallet`, 'One you made before, with a passkey on this device or in your password manager.') : ''}
-    ${opt('eth', html`<svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>Ethereum wallet`, hasEth || !bare ? 'MetaMask, Rabby, Rainbow or any browser wallet, or a wallet app through WalletConnect. One free signature, two the first time.' : 'MetaMask, Rabby, Rainbow or any browser wallet, or a wallet app through WalletConnect.')}
-    ${opt('btc', html`<svg class="tk sm" aria-hidden="true"><use href="#tk-btc"/></svg>Bitcoin wallet`, hasBtc || !bare ? 'Xverse, Leather or UniSat. One free signature, two the first time.' : 'Xverse, Leather or UniSat. None found in this browser.')}
-    ${pk && !bare ? opt('passkey', html`<svg class="tk sm" aria-hidden="true"><use href="#i-key"/></svg>Passkey`, 'Touch ID, Windows Hello or a security key.') : ''}
-    <p class="opts-err" id="${id}-err" role="alert" hidden></p>
-    <p class="more">${pk && !bare ? html`<button class="link" type="button" data-in="new">New passkey wallet</button>` : ''}${known?.mode !== 'local' && isPub(readJson('tacit-wallet-v1:mainnet')?.pub) ? html`<button class="link" type="button" data-in="local">Saved in this browser</button>` : ''}<button class="link" type="button" data-in="paste">Paste a key</button></p>
-    <div class="amt text" id="${id}-paste" hidden><input id="${id}-hex" type="password" placeholder="64-character Tacit key" autocomplete="off" spellcheck="false" aria-label="Tacit key"><button class="link" type="button" data-in="key">Open</button></div>
+    ${(first === 'btc' ? [walletBtc, walletEth] : [walletEth, walletBtc])}
+    ${pk ? opt('passkey', html`<svg class="tk sm" aria-hidden="true"><use href="#i-key"/></svg>Passkey`, 'Already made one? Touch ID, Windows Hello or a security key.') : ''}
+    ${pk ? opt('new', html`<svg class="tk sm" aria-hidden="true"><use href="#i-key"/></svg>No wallet yet? Create one`, 'Touch ID, Face ID or Windows Hello. Nothing to install.') : ''}
+    ${links}
   </div>`;
 }
 const SIGNING = { on: false };

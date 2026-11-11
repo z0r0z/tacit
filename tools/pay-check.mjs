@@ -22,10 +22,10 @@
 //          by its recipient
 //   lookfor LOCAL=1 POOL_STUB=1, transfer index and Bitcoin explorers stubbed: the shielded TAC balance's refresh also looks through the
 //          asset's transfer index for payments to the key, says what came of it, and counts the transfers it could not read
-//   firstrun no network: a first visit with no wallet leads with a new passkey wallet, a failed way in is said beside the options, and
+//   firstrun no network: a first visit sees the front page's ways in in its order, a failed way in is said beside the options, and
 //          every module a page preloads is fetched once
-//   wc     no network: WalletConnect on /pay, /pay/eth and /tac over a stand-in for its bundle (tests/wc-fake.mjs): with no wallet in the browser a new wallet still
-//          leads and the Ethereum wallet option names WalletConnect, a wallet app opens the key with two signatures (the page says "Approve in your wallet" while each waits),
+//   wc     no network: WalletConnect on /pay, /pay/eth and /tac over a stand-in for its bundle (tests/wc-fake.mjs): with no wallet in the browser the ways in are the front page's and
+//          the Ethereum wallet option names WalletConnect, a wallet app opens the key with two signatures (the page says "Approve in your wallet" while each waits),
 //          a reload opens it again through the kept session, Disconnect ends the session and locks the key
 //   saved  no network: the key saved in this browser, behind a passphrase, opens on /pay/ and /pay/eth/ through the passphrase
 //          dialog (Escape closes it quietly, a wrong passphrase asks again)
@@ -48,6 +48,8 @@ const ONLY = new Set((process.argv[2] || 'live,hub,firstrun,wc,saved,fork,anyone
 const SHOTS = process.env.SHOTS || null;
 const WEB = 21000 + Math.floor(Math.random() * 2000);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// the ways into a Tacit wallet on a first visit, in the front page's order (signIn() in index.html)
+const WAYS_IN = 'Ethereum wallet · Bitcoin wallet · Passkey · No wallet yet? Create one';
 let failed = 0;
 const ok = (c, m) => { console.log(`${c ? '  ✓' : '  ✗'} ${m}`); if (!c) failed++; };
 
@@ -518,12 +520,12 @@ try {
         await p.click('#wallet'); await p.waitForSelector('#sheet-wallet[open] .opt');
         const order = await p.$$eval('#sheet-wallet .opt .opt-t', (x) => x.map((e) => e.textContent.trim()));
         if (!wallet) {
-          ok(order[0] === 'Create a wallet' && order.includes('Open a passkey wallet'), `${path}: with no wallet in the browser, a new wallet leads: ${order.join(' · ')}`);
+          ok(order.join(' · ') === WAYS_IN, `${path}: with no wallet in the browser the ways in are the front page's, in its order: ${order.join(' · ')}`);
           await p.click('#sheet-wallet [data-in="btc"]');
           await p.waitForSelector('#sheet-wallet .opts-err:not([hidden])');
           ok(/No Bitcoin wallet found/.test(await p.textContent('#sheet-wallet .opts-err')) && !(await p.$('.toast')), `${path}: the missing wallet is said beside the options, not in a toast`);
         } else {
-          ok(!order.includes('Create a wallet'), `${path}: with a wallet in the browser the order is the usual one: ${order.join(' · ')}`);
+          ok(order.join(' · ') === WAYS_IN, `${path}: with a wallet in the browser the order is the same: ${order.join(' · ')}`);
           await p.click('#sheet-wallet [data-in="eth"]');
           await p.waitForSelector('#sheet-wallet .opts-err:not([hidden])');
           ok(/Cancelled in your wallet/.test(await p.textContent('#sheet-wallet .opts-err')), `${path}: a refused signature is said beside the options`);
@@ -557,7 +559,7 @@ try {
       await p.click(chip); await p.waitForSelector(`${sheet}[open] .opt`);
       const order = await p.$$eval(`${sheet} .opt .opt-t`, (x) => x.map((e) => e.textContent.trim()));
       const eth = await p.$eval(`${sheet} [data-in="eth"] .opt-m`, (e) => e.textContent);
-      ok(order[0] === 'Create a wallet' && /WalletConnect/.test(eth), `${path}: with no wallet in the browser a new wallet still leads, and the Ethereum wallet option names WalletConnect (${order.join(' · ')})`);
+      ok(order.join(' · ') === WAYS_IN && /WalletConnect/.test(eth), `${path}: with no wallet in the browser the ways in are the front page's, and the Ethereum wallet option names WalletConnect (${order.join(' · ')})`);
       await p.click(`${sheet} [data-in="eth"]`);
       await p.waitForSelector('#sheet-wc[open] .wc-qr svg');
       ok(/Connect a wallet app/.test(await p.textContent('#wc-h')) && /Copy link/.test(await p.textContent('#wc-body')), `${path}: the pairing sheet shows a code and a link to copy`);
