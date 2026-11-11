@@ -52,9 +52,10 @@ for (const [vname, viewport] of Object.entries(VIEWS)) {
     const errs = [];
     page.on('pageerror', (e) => errs.push(e.message.split('\n')[0]));
     page.on('console', (m) => { if (m.type() === 'error' && /Content Security Policy|Refused to/.test(m.text())) errs.push(m.text().slice(0, 140)); });
-    await page.goto(`http://127.0.0.1:${WEB}${path}`, { waitUntil: 'domcontentloaded' });
+    await page.goto(`http://127.0.0.1:${WEB}${path}`, { waitUntil: 'domcontentloaded' }).catch(() => {});      // /chain/ goes on at once
+    if (path === '/chain/') await page.waitForURL(/\/tac\/$/);
     await page.waitForSelector('.sn .sm > summary');
-    await page.waitForTimeout(path === '/chain/' ? 1000 : 600);
+    await page.waitForTimeout(600);
     const seen = await page.evaluate(() => {
       const list = (s) => [...document.querySelectorAll(s)].map((a) => `${a.textContent.trim()}:${a.getAttribute('href')}`).join(' ');
       const foot = [...document.querySelectorAll('footer.sf nav a')], fr = document.querySelector('footer.sf nav')?.getBoundingClientRect();
@@ -86,6 +87,24 @@ for (const [vname, viewport] of Object.entries(VIEWS)) {
     }
     await page.close();
   }
+}
+// The old /chain/ address is a stub: a link made for it keeps its search and hash on the way to TAC's page, and a browser without scripts is sent there too.
+console.log('== the old /chain/ address');
+{
+  const page = await ctx.newPage();
+  const seenUrls = [];
+  page.on('framenavigated', (f) => { if (f === page.mainFrame()) seenUrls.push(new URL(f.url()).pathname + new URL(f.url()).search + new URL(f.url()).hash); });
+  await page.goto(`http://127.0.0.1:${WEB}/chain/?ref=a#card=swap:eth:tac`, { waitUntil: 'domcontentloaded' }).catch(() => {});
+  await page.waitForURL(/\/tac\//);
+  ok(seenUrls.includes('/tac/?ref=a#card=swap:eth:tac'), 'a link with a search and a hash arrives on /tac/ with both', seenUrls.join(' → '));
+  await page.close();
+  const quiet = await browser.newContext({ javaScriptEnabled: false });
+  const bare = await quiet.newPage();
+  await bare.goto(`http://127.0.0.1:${WEB}/chain/`, { waitUntil: 'domcontentloaded' }).catch(() => {});
+  await bare.waitForURL(/\/tac\/$/, { timeout: 15000 }).then(() => ok(true, 'and a browser without scripts is sent to /tac/'), () => ok(false, 'and a browser without scripts is sent to /tac/', bare.url()));
+  await quiet.close();
+  const size = readFileSync(join(DAPP, 'chain', 'index.html')).length;
+  ok(size < 2048, 'and the stub stays a stub', `${size} bytes`);
 }
 await browser.close();
 server.close();

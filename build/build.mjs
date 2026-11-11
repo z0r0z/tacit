@@ -193,7 +193,7 @@ const DISCORD_CB_FILES = ['discord/message.js', 'discord/holdings.js', 'discord/
 const FACE_CB_FILES = ['face/config.js', 'face/pixel.js', 'face/catchup.js', 'face/app.js', 'face/index.html'];
 // dapp/fast/ is where TAC on Bitcoin goes to the private balance through a provider: its wiring and its page logic first, then app.js, then the page.
 const FAST_CB_FILES = ['fast/want.js', 'fast/wire.js', 'fast/ui.js', 'fast/provide.js', 'fast/app.js', 'fast/index.html'];
-// dapp/chain/: the tacit chain's live status page (app.js), and ui.js, whose helpers TAC's page reads.
+// dapp/chain/: the old /chain/ address, which app.js sends on to TAC's page, and live.js and ui.js, which TAC's page reads.
 const CHAIN_CB_FILES = ['chain/ui.js', 'chain/live.js', 'chain/app.js', 'chain/index.html'];
 // dapp/prove/ starts and pauses proving on this computer: its words, then app.js (which also takes community-prove.js), then the page.
 const PROVE_CB_FILES = ['community-prove.js', 'prove/view.js', 'prove/chain.js', 'prove/invader.js', 'prove/ops.js', 'prove/app.js', 'prove/index.html'];
@@ -339,7 +339,7 @@ function pageCacheBust(files, write) {
 // A page whose script is a file (a CSP without inline script) has a `<!-- warm:begin --><!-- warm:end -->` block instead: the same links inside an inert
 // <template>, which the script clones into the head. The root of this group may be named by the page's own modules rather than by the page.
 // Generated here so it cannot go stale; --verify-only reports a block that no longer matches.
-const PRELOAD_PAGES = ['face/index.html', 'index.html', 'pay/index.html', 'pay/eth/index.html', 'trade/index.html', 'teth/index.html', 'cbtc/index.html', 'vault/index.html', 'tasks/index.html', 'splitter/index.html', 'relay/index.html', 'etch/index.html', 'assets/index.html', 'rewards/index.html', 'bridge/index.html', 'discord/index.html', 'fast/index.html', 'prove/index.html', 'chain/index.html', 'help/index.html'];
+const PRELOAD_PAGES = ['face/index.html', 'index.html', 'pay/index.html', 'pay/eth/index.html', 'trade/index.html', 'teth/index.html', 'cbtc/index.html', 'vault/index.html', 'tasks/index.html', 'splitter/index.html', 'relay/index.html', 'etch/index.html', 'assets/index.html', 'rewards/index.html', 'bridge/index.html', 'discord/index.html', 'fast/index.html', 'prove/index.html', 'help/index.html'];
 const STATIC_IMPORT = /(?:^|[\n;}])\s*(?:import|export)\s*(?:[^'"();]*?\sfrom\s*)?(['"])([^'"]+)\1/g;
 const WARM_BLOCK = /<!-- warm:begin -->[\s\S]*?<!-- warm:end -->/;
 const HEAD_BLOCK = /<!-- preload:begin -->[\s\S]*?<!-- preload:end -->/, LATER_BLOCK = /\/\/ preload-later:begin\n[\s\S]*?\/\/ preload-later:end/, INTENT_BLOCK = /\/\/ preload-intent:begin\n[\s\S]*?\/\/ preload-intent:end/;

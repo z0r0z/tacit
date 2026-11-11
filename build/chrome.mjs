@@ -20,7 +20,7 @@ export const CHROME_PAGES = {
   'vault/index.html': 'borrow', 'pay/index.html': 'pay', 'pay/eth/index.html': 'pay', 'tasks/index.html': 'tasks',
   'build/index.html': '', 'etch/index.html': 'etch', 'weld/stats/index.html': '', 'relay/index.html': '',
   'splitter/index.html': '', 'sats/index.html': '', 'bridge/index.html': 'bridge',
-  'discord/index.html': '', 'face/index.html': 'face', 'fast/index.html': 'bridge', 'prove/index.html': 'prove', 'chain/index.html': 'tac', 'help/index.html': '',
+  'discord/index.html': '', 'face/index.html': 'face', 'fast/index.html': 'bridge', 'prove/index.html': 'prove', 'help/index.html': '',
 };
 
 // 24×24 line drawings, the lander's tabs' hand; drawn by chrome.css (stroke, round caps) unless a glyph is .fill. The assets glyph is the TAC logo's t in its ring, at the logo's proportions (slanted stem, wide high bar, foot sweeping right). The llama is DefiLlama's mark in one colour
@@ -39,7 +39,6 @@ const G = {
   build: '<path d="M8 7l-5 5 5 5"/><path d="M16 7l5 5-5 5"/><path d="M14 4l-4 16"/>',
   stats: '<path d="M5 20v-6"/><path d="M12 20V5"/><path d="M19 20v-10"/>',
   prove: '<rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/>',
-  community: '<circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M16.5 5.3a3 3 0 0 1 0 5.6"/><path d="M18 14.2c1.8.7 3 2.6 3 5.8"/>',
   paper: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h4"/>',
   lock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
   contract: '<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5"/><path d="M12 12v9"/>',
