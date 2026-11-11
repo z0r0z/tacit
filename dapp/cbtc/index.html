@@ -26,26 +26,27 @@
 <link rel="preload" as="fetch" href="https://api.tacit.finance/farm/program?network=mainnet" crossorigin fetchpriority="low">
 <!-- preload-roots: /cbtc/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/cbtc/app.js?cb=751d53b6">
+<link rel="modulepreload" href="/cbtc/app.js?cb=0a97838c">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="/trade/chart.js?cb=04207026">
 <link rel="modulepreload" href="/trade/fmt.js?cb=32b1744b">
-<link rel="modulepreload" href="/trade/connect.js?cb=f0e47fd0">
+<link rel="modulepreload" href="/trade/connect.js?cb=4eebf192">
 <link rel="modulepreload" href="/walletconnect.js?cb=843803d6">
 <link rel="modulepreload" href="/trade/wallet.js?cb=c12e83a8">
 <link rel="modulepreload" href="/wallet-prompts.js">
-<link rel="modulepreload" href="/trade/sheet.js?cb=84cda8f2">
+<link rel="modulepreload" href="/trade/sheet.js?cb=1161dd4e">
 <link rel="modulepreload" href="/trade/util.js?cb=ba5a02b1">
 <link rel="modulepreload" href="/trade/rpc.js">
 <link rel="modulepreload" href="/rpc-body.js">
 <link rel="modulepreload" href="/eth-nodes.js">
 <link rel="modulepreload" href="/rpc-pace.js">
 <link rel="modulepreload" href="/address-view.js?cb=57bc64d3">
-<link rel="modulepreload" href="/trade/key.js?cb=e7b6ebe6">
+<link rel="modulepreload" href="/trade/key.js?cb=b56a185e">
 <link rel="modulepreload" href="/prf-wallet.js">
 <link rel="modulepreload" href="/tacit-wallet-known.js?cb=ed4c75b7">
 <link rel="modulepreload" href="/evm-wallet.js?cb=0d6d47f7">
 <link rel="modulepreload" href="/identity-message.js">
+<link rel="modulepreload" href="/trade/sign-in.js?cb=0af6f09d">
 <link rel="modulepreload" href="/tab-key.js?cb=a4c25d0e">
 <link rel="modulepreload" href="/trade/poolux.js?cb=efc87cea">
 <link rel="modulepreload" href="/teth/read.js?cb=5313656c">
@@ -389,20 +390,11 @@ button.ob-row:focus-visible { outline: 2px solid var(--ink); outline-offset: -2p
 .btc-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 0; }
 .fillbtn.primary { background: var(--ink); color: var(--card); border-color: var(--ink); }
 .fillbtn.primary:hover { background: transparent; color: var(--ink); }
-.bsheet { position: fixed; inset: 0; z-index: 900; display: grid; grid-template-columns: minmax(0, 1fr); place-items: start center; padding: 16px; overflow: auto; overflow-x: hidden; overscroll-behavior: contain; background: var(--scrim); backdrop-filter: blur(2px); }
-.bsheet.top { z-index: 1100; place-items: center; }
-.bsheet-in { min-width: 0; width: min(520px, 100%); padding: 22px 22px 24px; color: var(--ink); background: var(--card); border: 1px solid var(--ink); box-shadow: var(--sheet-shadow); }
 .bsheet.wide .bsheet-in { width: min(1100px, 100%); padding: 16px 0 0; }
 .bsheet.wide .bsheet-head { position: sticky; top: -16px; z-index: 3; margin: -16px 0 6px; padding: 12px 16px; background: var(--card); border-bottom: 1px solid var(--hair); }
 .bsheet .bm-back { display: none; }
-.bsheet-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 14px; }
-.bsheet-head h2 { font: 400 28px/1 var(--serif); letter-spacing: -.01em; margin: 0; }
-.bsheet-head h2:focus { outline: none; }
-.bsheet-head h2 { margin-right: auto; }
 .bsheet .who { display: inline-flex; align-items: center; gap: 10px; font-size: 12px; }
 .bsheet .bm-after { margin: 0; padding: 4px 16px 18px; }
-.bsheet .x { padding: 4px 8px; font-size: 26px; line-height: 1; cursor: pointer; color: var(--mute); background: none; border: 0; }
-.bsheet .x:hover { color: var(--ink); }
 .chips { display: flex; gap: 6px; margin: 8px 0 0; min-height: 30px; }
 .flipline { display: flex; justify-content: center; margin: 8px 0 -10px; }
 .flip { width: 32px; height: 32px; border: 1px solid var(--hair-2); background: var(--card); color: var(--mute); cursor: pointer; font-size: 15px; line-height: 1; }
@@ -413,24 +405,11 @@ button.ob-row:focus-visible { outline: 2px solid var(--ink); outline-offset: -2p
 @media (hover: hover) { .chips button:not([aria-pressed="true"]):hover { color: var(--ink); border-color: var(--ink); } }
 @media (pointer: coarse) { .chips { min-height: 38px; } .chips button { min-height: 38px; } }
 .legend:empty { display: none; }
-.wc-qr { margin: 0 auto 14px; width: 224px; padding: 10px; background: #fff; } .wc-qr svg { display: block; width: 100%; height: auto; }
-.addr-s { font-size: 11.5px; overflow-wrap: anywhere; }
 /* On a phone, a bar at the foot leads to the ticket while the ticket is out of view. */
 .stick { display: none; }
 @media (max-width: 980px) { .stick:not([hidden]) { display: block; position: fixed; left: 0; right: 0; bottom: 0; z-index: 50; padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); background: var(--paper); border-top: 1px solid var(--hair-2); } .stick .btn { margin-top: 0; } footer { margin-bottom: 72px; } }
-.bsheet-actions { display: grid; grid-auto-flow: column; gap: 10px; } .bsheet-actions .btn { margin-top: 0; }
 .bsheet .addr { margin: 0 0 14px; padding: 10px 12px; overflow-wrap: anywhere; background: var(--field); border: 1px solid var(--hair); }
-@media (max-width: 560px) { .bsheet { padding: 0; place-items: end center; } .bsheet.wide { place-items: stretch; } .bsheet-in { width: 100%; } }
-.ways { display: grid; gap: 8px; margin-top: 4px; }
-.way { display: grid; gap: 3px; width: 100%; padding: 12px 14px; text-align: left; cursor: pointer; background: var(--field); border: 1px solid var(--hair-2); transition: border-color .15s; }
-@media (hover: hover) { .way:hover:not(:disabled) { border-color: var(--ink); } }
-.way:disabled { opacity: .5; cursor: progress; }
-.way.main { border-color: var(--ink); background: var(--card); }
-.way-t { display: flex; align-items: center; gap: 10px; font-weight: 500; }
-.way-m { font-size: 12px; color: var(--mute); }
-.picker { display: grid; gap: 8px; }
-.ways-err { margin: 2px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--err); }
-.ways .more { margin: 6px 0 0; }
+@media (max-width: 640px) { .bsheet.wide { place-items: stretch; } }
 .btoast { position: fixed; left: 50%; bottom: 20px; z-index: 1200; max-width: min(520px, calc(100vw - 32px)); padding: 11px 14px; font-size: 12.5px; transform: translateX(-50%); color: var(--card); background: var(--ink); box-shadow: var(--lift); }
 .btoast.error { color: var(--paper); background: var(--err); }
 .pin { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 12px; margin: -6px 0 6px; padding: 9px 12px; font-size: 12.5px; background: var(--field); border-left: 2px solid var(--orange); }
@@ -810,6 +789,6 @@ footer.sf svg.fill { width: 16px; height: 16px; }
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/cbtc/app.js?cb=751d53b6"></script>
+<script type="module" src="/cbtc/app.js?cb=0a97838c"></script>
 </body>
 </html>

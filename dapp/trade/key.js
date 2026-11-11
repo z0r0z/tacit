@@ -6,8 +6,7 @@ import { secp, sha256, keccak_256, bytesToHex, hexToBytes } from '/vendor/tacit-
 import { prfBytesToScalar, prfLogin, prfRegister, loadPrfMap, savePrfMap, isPasskeyAvailable } from '/prf-wallet.js';
 import { knownWallets } from '/tacit-wallet-known.js?cb=ed4c75b7';
 import { makeEvmWallet } from '/evm-wallet.js?cb=0d6d47f7';
-import { overlay, esc } from '/trade/sheet.js?cb=84cda8f2';
-import { short } from '/trade/util.js?cb=ba5a02b1';
+import { signInSheet, pickWalletSheet, Cancelled } from '/trade/sign-in.js?cb=0af6f09d';
 import { tabKeyRead, tabKeyWrite, tabKeyClear, tabKeyWatch } from '/tab-key.js?cb=a4c25d0e';
 
 const RECORD = 'tacit-trade-id-v1';                                           // how /trade last opened a key: public data only (the Bitcoin market writes it too)
@@ -16,7 +15,6 @@ const DERIVED = new Set(['eth', 'passkey']);                                  //
 
 const lc = (s) => String(s || '').toLowerCase();
 const writeJson = (k, v) => { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, JSON.stringify(v)); } catch { /* storage is a convenience */ } };
-export class Cancelled extends Error { constructor(m = 'Cancelled.') { super(m); this.unlockCancelled = true; } }
 
 // `moved(text)`: the wallet that opened the key has moved to another account or locked, and `text` says so. The page locks the key in full (what it
 // holds besides the session goes with it) and says it; a page that gives no `moved` has the session lock.
@@ -105,7 +103,7 @@ export function makeKeySession({ moved = null, ways = {} } = {}) {
     known: () => usable(ids().primary), other: () => usable(ids().other),
     // The wallet tacit.finance has open, when this page cannot open it (a Bitcoin wallet, a key saved in the browser).
     elsewhere: () => { const p = ids().primary; return p && !opens.has(p.mode) ? p : null; },
-    passkeyAvailable: () => isPasskeyAvailable(), ethAvailable: () => evm.available(), btcOffered: () => !!ways.btc,
+    passkeyAvailable: () => isPasskeyAvailable(), ethAvailable: () => evm.available(),
     // the Ethereum wallet the key was opened with (null for a passkey, a pasted key or a Bitcoin wallet): a page's last-resort node for reads
     walletProvider: () => (key && key.mode === 'eth' ? evm.provider() : null),
     lock() { priv = null; key = null; tabKeyClear(); emit(); },
@@ -113,58 +111,5 @@ export function makeKeySession({ moved = null, ways = {} } = {}) {
   };
 }
 
-// Which of several Ethereum wallets signs, chosen in a sheet over the sign-in sheet: resolves to its uuid, or null when closed.
-export function pickWalletSheet(list) {
-  return new Promise((resolve) => {
-    let chosen = null;
-    const o = overlay({ title: 'Choose a wallet', top: true, onClose: () => resolve(chosen) });
-    o.body.innerHTML = `<div class="ways">${list.map((w) => `<button class="way" type="button" data-uuid="${esc(w.uuid)}"><span class="way-t">${/^data:image\//.test(w.icon || '') ? `<img class="way-ic" src="${esc(w.icon)}" width="22" height="22" alt="">` : ''}${esc(w.name)}</span></button>`).join('')}</div>`;
-    o.body.querySelectorAll('[data-uuid]').forEach((b) => { b.onclick = () => { chosen = b.dataset.uuid; o.close(); }; });
-  });
-}
-
-// The ways in, in a sheet. Resolves once a key is open; rejects with Cancelled when the sheet is closed without one.
-// `pick(list)` chooses among several Ethereum wallets (by default the visitor chooses, in a sheet); `why` says what the key is for; `icons` puts
-// the front page's mark on each way in.
-export function signInSheet(session, { pick = pickWalletSheet, icons = false, why = 'Open your Tacit wallet to make ETH private. It stays open in this tab only, until you close it, lock it, or leave the site idle for 30 minutes.' } = {}) {
-  return new Promise((resolve, reject) => {
-    const known = session.known(), other = session.other(), away = session.elsewhere();
-    const via = (k) => ({ eth: `Ethereum ${short(k.address || '')}`, btc: `Bitcoin ${short(k.address || '')}`, passkey: `passkey “${k.label || 'Tacit'}”` })[k?.mode] || 'your wallet';
-    const o = overlay({ title: 'Open your Tacit wallet', top: true, onClose: () => { if (!session.unlocked) reject(new Cancelled()); } });
-    // the front page's mark for each way in, on a page that draws the sheet as the front page does and has the marks
-    const ic = (id) => (icons && id && document.getElementById(id) ? `<svg class="way-ic" width="22" height="22" aria-hidden="true"><use href="#${id}"/></svg>` : '');
-    const opt = (k, t, m, cls = '', icon = null) => `<button class="way ${cls}" type="button" data-in="${k}"><span class="way-t">${ic(icon)}${t}</span><span class="way-m">${m}</span></button>`;
-    const pk = session.passkeyAvailable(), hasEth = session.ethAvailable(), btc = !!session.btcOffered?.();
-    o.body.innerHTML = `<p class="note" style="margin-top:0">${esc(why)}</p><div class="ways">
-      ${known ? opt('known', 'Continue with your Tacit wallet', `Opens with ${esc(via(known))}, the same wallet as everywhere on tacit.finance.`, 'main', 'tk-tac') : ''}
-      ${other ? opt('other', 'Your other Tacit wallet', `A different wallet, opened here before with ${esc(via(other))}.`, '', 'tk-tac') : ''}
-      ${opt('eth', 'Ethereum wallet', hasEth ? 'MetaMask, Rabby, Rainbow or any browser wallet, or a wallet app through WalletConnect. One free signature, two the first time.' : 'MetaMask, Rabby, Rainbow or any browser wallet, or a wallet app through WalletConnect.', '', 'tk-eth')}
-      ${btc ? opt('btc', 'Bitcoin wallet', 'Xverse, Leather or UniSat. One free signature, two the first time.', '', 'tk-btc') : ''}
-      ${pk ? opt('passkey', 'Passkey', 'Touch ID, Windows Hello or a security key.', '', 'i-key') : ''}
-      <p class="ways-err" role="alert" hidden></p>
-      ${away ? `<p class="note">The wallet open on tacit.finance was opened another way (${btc ? 'a key saved in the browser' : 'a Bitcoin wallet or a key saved in the browser'}). That one opens on <a href="/">tacit.finance</a>, or paste its key here.</p>` : ''}
-      <p class="more" style="display:flex;flex-wrap:wrap;gap:4px 18px"><button class="linkbtn" type="button" data-show="paste">Paste a key</button>${pk ? '<button class="linkbtn" type="button" data-in="new">New passkey wallet</button>' : ''}</p>
-      <form class="paste-key" style="display:grid;gap:8px" hidden><input type="password" placeholder="64-character Tacit key" autocomplete="off" spellcheck="false" autocapitalize="off" aria-label="Tacit key" style="width:100%;box-sizing:border-box;padding:10px 12px;font:inherit;color:var(--ink);background:var(--field);border:1px solid var(--hair-2)"><button class="btn" type="submit" data-in="key" style="margin-top:0">Open</button></form>
-    </div>`;
-    const paste = o.body.querySelector('.paste-key');
-    o.body.querySelector('[data-show="paste"]').onclick = () => { paste.hidden = !paste.hidden; if (!paste.hidden) paste.querySelector('input').focus(); };
-    paste.onsubmit = (e) => e.preventDefault();
-    const err = o.body.querySelector('.ways-err');
-    let busy = false;
-    o.body.querySelectorAll('[data-in]').forEach((b) => { b.onclick = async () => {
-      if (busy) return;
-      busy = true; err.hidden = true; b.setAttribute('aria-busy', 'true'); o.body.querySelectorAll('[data-in]').forEach((x) => { x.disabled = true; });
-      try {
-        const k = b.dataset.in;
-        if (k === 'known') await session.open[known.mode](known, pick);
-        else if (k === 'other') await session.open[other.mode](other, pick);
-        else if (k === 'new') await session.open.newPasskey();
-        else if (k === 'key') { const input = paste.querySelector('input'); await session.open.key(input.value); input.value = ''; }
-        else await session.open[k](undefined, pick);
-        o.close(); resolve();
-      } catch (e) {
-        if (!/cancel/i.test(e?.message || '') && e?.name !== 'NotAllowedError' && !e?.unlockCancelled && e?.code !== 4001) { err.textContent = e?.message || 'Could not open your Tacit wallet. Try again.'; err.hidden = false; }
-      } finally { busy = false; b.removeAttribute('aria-busy'); o.body.querySelectorAll('[data-in]').forEach((x) => { x.disabled = false; }); }
-    }; });
-  });
-}
+// The sheets that open the key, from sign-in.js: the same on every page, and the front page's.
+export { signInSheet, pickWalletSheet, Cancelled };

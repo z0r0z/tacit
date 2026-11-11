@@ -143,8 +143,8 @@ try {
 
   // signing in with the Ethereum wallet
   await p.click('.bsheet .bm [data-act="unlock"]');
-  await p.waitForSelector('.bsheet.top .ways');
-  const opts = (await text(p, '.bsheet.top .ways')).replace(/\s+/g, ' ');
+  await p.waitForSelector('.bsheet.top .opts');
+  const opts = (await text(p, '.bsheet.top .opts')).replace(/\s+/g, ' ');
   ok(/Ethereum wallet/.test(opts) && /Bitcoin wallet.*None found in this browser/.test(opts) && !/Paste a key|Saved in this browser/.test(opts), 'the sign-in offers the Ethereum wallet, a Bitcoin wallet (none here) and no way that needs a passphrase');
   await p.click('.bsheet.top [data-in="eth"]');
   await until(p, () => !document.querySelector('.bsheet.top') && /Balance/.test(document.querySelector('.bsheet .bm')?.textContent || ''), null, 120000);
@@ -178,7 +178,7 @@ try {
   await until(p, () => document.querySelectorAll('#ladders [data-btc]').length > 0, null, 120000);
   await p.click('#ladders [data-btc="open"]');
   await until(p, () => document.querySelector('.bsheet.wide .bm [data-act="unlock"]'), null, 180000);
-  await p.click('.bsheet .bm [data-act="unlock"]'); await p.waitForSelector('.bsheet.top .ways'); await p.click('.bsheet.top [data-in="eth"]');
+  await p.click('.bsheet .bm [data-act="unlock"]'); await p.waitForSelector('.bsheet.top .opts'); await p.click('.bsheet.top [data-in="eth"]');
   await until(p, () => document.querySelector('.bsheet .who [data-lock]'), null, 120000);
   await p.click('.bsheet .who [data-lock]');
   await until(p, () => document.querySelector('.bsheet.wide .bm [data-act="unlock"]') && !document.querySelector('.bsheet .who [data-lock]'), null, 60000);
@@ -204,7 +204,7 @@ try {
   await until(p, () => document.querySelectorAll('#ladders [data-btc]').length > 0, null, 120000);
   await p.click('#ladders [data-btc="open"]');
   await until(p, () => document.querySelector('.bsheet.wide .bm [data-act="unlock"]'), null, 180000);
-  await p.click('.bsheet .bm [data-act="unlock"]'); await p.waitForSelector('.bsheet.top .ways');
+  await p.click('.bsheet .bm [data-act="unlock"]'); await p.waitForSelector('.bsheet.top .opts');
   const t0 = Date.now();
   await p.click('.bsheet.top [data-in="eth"]');
   await until(p, () => /3,000,000/.test(document.querySelector('.bsheet .bm')?.textContent || ''), null, 60000);
@@ -218,7 +218,7 @@ try {
   await until(p, () => document.querySelectorAll('#ladders [data-btc]').length > 0, null, 120000);
   await p.click('#ladders [data-btc="open"]');
   await until(p, () => document.querySelector('.bsheet.wide .bm [data-act="unlock"]'), null, 180000);
-  await p.click('.bsheet .bm [data-act="unlock"]'); await p.waitForSelector('.bsheet.top .ways');
+  await p.click('.bsheet .bm [data-act="unlock"]'); await p.waitForSelector('.bsheet.top .opts');
   await p.click('.bsheet.top [data-in="eth"]');
   const checking = await until(p, () => /Balance: checking/.test(document.querySelector('.bsheet .bm')?.textContent || ''), null, 6000).then(() => true, () => false);
   const held = (await text(p, '.bsheet .bm')).replace(/\s+/g, ' ');
@@ -234,7 +234,7 @@ try {
     await until(p, () => document.querySelectorAll('#ladders [data-btc]').length > 0, null, 120000);
     await p.click('#ladders [data-btc="open"]');
     await until(p, () => document.querySelector('.bsheet.wide .bm [data-act="unlock"]'), null, 180000);
-    await p.click('.bsheet .bm [data-act="unlock"]'); await p.waitForSelector('.bsheet.top .ways');
+    await p.click('.bsheet .bm [data-act="unlock"]'); await p.waitForSelector('.bsheet.top .opts');
     await p.click('.bsheet.top [data-in="eth"]');
     await until(p, () => /3,000,000/.test(document.querySelector('.bsheet .bm')?.textContent || ''), null, 60000);
     await p.click('.bsheet .bm [data-act="side"][data-v="sell"]'); await p.waitForTimeout(2500);

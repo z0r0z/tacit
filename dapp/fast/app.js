@@ -1,6 +1,6 @@
 import { openBtcWallet } from '/trade/btc-session.js?cb=fccef3b3';
 import { isPasskeyAvailable } from '/prf-wallet.js';
-import { makeKeySession, signInSheet } from '/trade/key.js?cb=e7b6ebe6';
+import { makeKeySession, signInSheet } from '/trade/key.js?cb=b56a185e';
 import { makeTacitSession } from '/tacit-session.js?cb=a2d34bb2';
 import { getUx as loadUx, forgetUx } from '/trade/poolux.js?cb=efc87cea';
 import { onMainnet, connectedInjected } from '/eth-nodes.js';
@@ -84,7 +84,7 @@ const notify = (text) => {
 
 // /fast/#with=<id>: a provider's pairing link (fast/fmt.js pairId), kept for this visit
 const PIN = (/^#with=([0-9a-f]{16})$/i.exec(location.hash) || [])[1]?.toLowerCase() || null;
-const signIn = () => signInSheet(keyS, { icons: true, why: 'Open your Tacit wallet to bridge or provide TAC.' });
+const signIn = () => signInSheet(keyS, { why: 'Open your Tacit wallet to bridge or provide TAC.' });
 ui = mountFast({
   root: document.getElementById('gate'), keyS, wants, notify, pinned: () => PIN, signIn,
   discover: async () => discoverProviders(await LISTS),

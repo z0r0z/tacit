@@ -32,18 +32,18 @@
 <link rel="preconnect" href="https://tacit-points.onrender.com" crossorigin>
 <!-- preload-roots: /rewards/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/rewards/app.js?cb=7e06326d">
+<link rel="modulepreload" href="/rewards/app.js?cb=c247aa80">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="/confidential-names.js?cb=d41cb8bd">
 <link rel="modulepreload" href="/tacit-address.js">
 <link rel="modulepreload" href="/rpc-body.js">
 <link rel="modulepreload" href="/eth-nodes.js">
 <link rel="modulepreload" href="/tac-airdrop.js">
-<link rel="modulepreload" href="/trade/connect.js?cb=f0e47fd0">
+<link rel="modulepreload" href="/trade/connect.js?cb=4eebf192">
 <link rel="modulepreload" href="/walletconnect.js?cb=843803d6">
 <link rel="modulepreload" href="/trade/wallet.js?cb=c12e83a8">
 <link rel="modulepreload" href="/wallet-prompts.js">
-<link rel="modulepreload" href="/trade/sheet.js?cb=84cda8f2">
+<link rel="modulepreload" href="/trade/sheet.js?cb=1161dd4e">
 <link rel="modulepreload" href="/trade/util.js?cb=ba5a02b1">
 <link rel="modulepreload" href="/trade/rpc.js">
 <link rel="modulepreload" href="/rpc-pace.js">
@@ -162,37 +162,10 @@ button.act:disabled { opacity: .6; cursor: default; transform: none; }
 .wl:empty { display: none; }
 .wl .ok { color: var(--ok); }
 .wl button { font: inherit; color: var(--ink); background: none; border: 0; padding: 4px 0; margin-left: 12px; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px; }
-/* the connect module's sheets */
-.bsheet { position: fixed; inset: 0; z-index: 900; display: grid; grid-template-columns: minmax(0, 1fr); place-items: start center; padding: 16px; overflow: auto; overscroll-behavior: contain; background: var(--scrim); backdrop-filter: blur(2px); }
-.bsheet.top { z-index: 1100; place-items: center; }
-.bsheet-in { min-width: 0; width: min(480px, 100%); padding: 22px 22px 24px; color: var(--ink); background: var(--card); border: 1px solid var(--hair-2); border-radius: 16px; box-shadow: var(--sheet-shadow); text-align: left; }
-.bsheet-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 14px; }
-.bsheet-head h2 { font: italic 400 28px/1 var(--serif); letter-spacing: -.01em; margin: 0 auto 0 0; text-transform: none; color: var(--ink); } .bsheet-head h2:focus { outline: none; }
-.bsheet .x { padding: 4px 8px; font-size: 26px; line-height: 1; cursor: pointer; color: var(--mute); background: none; border: 0; }
-.bsheet .kv { display: flex; grid-template-columns: none; justify-content: space-between; gap: 12px; margin: 0; font-size: 12.5px; color: var(--mute); padding: 5px 0; }
-.bsheet .kv b { font-weight: 400; color: var(--ink); text-align: right; overflow-wrap: anywhere; }
 .bsheet .btn { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 50px; margin-top: 14px; padding: 10px 16px; font: 500 14px var(--mono); text-decoration: none; color: var(--card); background: var(--ink); border: 1px solid var(--ink); border-radius: 12px; cursor: pointer; }
 .bsheet .btn:hover:not(:disabled) { background: transparent; color: var(--ink); }
 .bsheet .btn:disabled { opacity: .4; cursor: not-allowed; }
 .bsheet .btn.ghost { color: var(--ink); background: transparent; border-color: var(--hair-2); }
-.bsheet .note, .bsheet .lede-s { font-size: 12.5px; color: var(--mute); margin: 0 0 12px; }
-.picker { display: grid; gap: 8px; }
-.way { display: grid; gap: 3px; width: 100%; padding: 12px 14px; font: inherit; color: var(--ink); text-align: left; cursor: pointer; background: var(--field); border: 1px solid var(--hair-2); border-radius: 12px; }
-@media (hover: hover) { .way:hover { border-color: var(--ink); } }
-.way-t { display: flex; align-items: center; gap: 10px; font-weight: 500; }
-.ways { display: grid; gap: 8px; margin-top: 4px; }
-.way { font-size: 13px; transition: border-color .15s; }
-.way:disabled { opacity: .5; cursor: progress; }
-.way.main { border-color: var(--ink); background: var(--card); }
-.way-m { font-size: 12px; line-height: 1.5; color: var(--mute); }
-.ways-err { margin: 2px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--err); }
-.ways .note { margin: 6px 0 0; }
-.ways .more { margin: 6px 0 0; }
-.bsheet .linkbtn { padding: 0; font: 12px var(--mono); color: var(--mute); background: none; border: 0; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
-.bsheet .linkbtn:hover { color: var(--ink); }
-.wc-qr { margin: 0 auto 14px; width: 224px; padding: 10px; background: #fff; border-radius: 8px; } .wc-qr svg { display: block; width: 100%; height: auto; }
-.addr-s { font-size: 11.5px; overflow-wrap: anywhere; }
-@media (max-width: 560px) { .bsheet { padding: 0; place-items: end center; } .bsheet-in { width: 100%; border-radius: 16px 16px 0 0; } }
 /* putting TAC to work: the Precision farm (trade/farm.js) in one card that opens once there is TAC to farm */
 .tk.sm { width: 18px; height: 18px; } .tk.xs { width: 14px; height: 14px; } .tk.inl { display: inline-block; vertical-align: -3px; margin-right: 5px; }
 .pairtk { display: inline-flex; flex: none; } .pairtk .tk + .tk { margin-left: -6px; box-shadow: 0 0 0 2px var(--card); }
@@ -617,6 +590,6 @@ footer.sf svg.fill { width: 16px; height: 16px; }
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/rewards/app.js?cb=7e06326d"></script>
+<script type="module" src="/rewards/app.js?cb=c247aa80"></script>
 </body>
 </html>

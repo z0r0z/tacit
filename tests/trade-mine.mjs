@@ -201,9 +201,9 @@ try {
   await p.click('#ladders [data-mine="manage"]');
   await until(p, () => document.querySelector('.bsheet.wide .bm [data-k]') && document.querySelector('.bsheet.wide .bm input'), null, 180000);
   await p.click('.bsheet .bm >> text=Connect a wallet');
-  await p.waitForSelector('.bsheet.top .way', { timeout: 30000 });
-  const first = await p.$eval('.bsheet.top .way', (b) => b.textContent.replace(/\s+/g, ' '));
-  ok(/^Continue with your Tacit wallet ?Opens with Ethereum 0x/.test(first) && (await p.$$('.bsheet.top [data-in="page"]')).length === 0, `a wallet that opened its key before is offered it, and not a second way in with the same wallet (${first.slice(0, 90)})`);
+  await p.waitForSelector('.bsheet.top .opt', { timeout: 30000 });
+  const first = await p.$eval('.bsheet.top .opt', (b) => b.textContent.replace(/\s+/g, ' '));
+  ok(/^Tacit wallet ?Opens with Ethereum 0x/.test(first) && (await p.$$('.bsheet.top .ways [data-in="eth"]')).length === 0, `a wallet that opened its key before is offered it, and not a second way in with the same wallet (${first.slice(0, 90)})`);
   await p.click('.bsheet.top [data-in="known"]');
   await until(p, () => !document.querySelector('.bsheet.top'), null, 60000);
   await until(p, () => /Your orders\s*3/.test(document.querySelector('.bsheet .bm')?.textContent || ''), null, 60000);
@@ -241,10 +241,10 @@ try {
   await p.click('#ladders [data-btc="open"]');
   await until(p, () => document.querySelector('.bsheet.wide .bm [data-k]') && document.querySelector('.bsheet.wide .bm input'), null, 180000);
   await p.click('.bsheet .bm >> text=Connect a wallet');
-  await p.waitForSelector('.bsheet.top .way', { timeout: 30000 });
-  const lead = await p.$eval('.bsheet.top .way', (b) => ({ t: b.textContent.replace(/\s+/g, ' '), k: b.dataset.in, main: b.classList.contains('main') }));
-  ok(lead.k === 'page' && lead.main && /^Use the wallet connected here ?Ethereum 0x[0-9a-fA-F]{4}…[0-9a-fA-F]{4}\. One free signature/.test(lead.t), `with no key opened before, the sheet's sign-in leads with the wallet connected on the page (${lead.t.slice(0, 80)})`);
-  await p.click('.bsheet.top [data-in="page"]');
+  await p.waitForSelector('.bsheet.top .opt', { timeout: 30000 });
+  const lead = await p.$eval('.bsheet.top .opt', (b) => ({ t: b.textContent.replace(/\s+/g, ' '), k: b.dataset.in, main: b.classList.contains('main') }));
+  ok(lead.k === 'eth' && lead.main && /^Ethereum wallet ?0x[0-9a-fA-F]{4}…[0-9a-fA-F]{4} is connected here\. One free signature/.test(lead.t), `with no key opened before, the sheet's sign-in leads with the wallet connected on the page (${lead.t.slice(0, 80)})`);
+  await p.click('.bsheet.top [data-in="eth"]');
   await until(p, () => !document.querySelector('.bsheet.top'), null, 60000);
   await until(p, () => /Balance:\s*3,000,000 sats/.test(document.querySelector('.bsheet .bm')?.textContent || ''), null, 60000);
   ok(r.walletLog.signs === 2 && !(await p.$('.bsheet.top')), `it opened with no chooser: ${r.walletLog.signs} signatures, and the market shows the balance`);

@@ -23,17 +23,18 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /fast/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/fast/app.js?cb=fc343868">
+<link rel="modulepreload" href="/fast/app.js?cb=acd465c2">
 <link rel="modulepreload" href="/trade/btc-session.js?cb=fccef3b3">
 <link rel="modulepreload" href="/tab-key.js?cb=a4c25d0e">
 <link rel="modulepreload" href="/prf-wallet.js">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
-<link rel="modulepreload" href="/trade/key.js?cb=e7b6ebe6">
+<link rel="modulepreload" href="/trade/key.js?cb=b56a185e">
 <link rel="modulepreload" href="/tacit-wallet-known.js?cb=ed4c75b7">
 <link rel="modulepreload" href="/evm-wallet.js?cb=0d6d47f7">
 <link rel="modulepreload" href="/identity-message.js">
 <link rel="modulepreload" href="/wallet-prompts.js">
-<link rel="modulepreload" href="/trade/sheet.js?cb=84cda8f2">
+<link rel="modulepreload" href="/trade/sign-in.js?cb=0af6f09d">
+<link rel="modulepreload" href="/trade/sheet.js?cb=1161dd4e">
 <link rel="modulepreload" href="/trade/util.js?cb=ba5a02b1">
 <link rel="modulepreload" href="/trade/rpc.js">
 <link rel="modulepreload" href="/rpc-body.js">
@@ -178,45 +179,7 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .status:empty { margin-top: 0; }
 .status a { color: var(--ink); }
 
-/* sheets: the wallet picker, the pairing code, the wallet */
-.bsheet { position: fixed; inset: 0; z-index: 900; display: grid; grid-template-columns: minmax(0, 1fr); place-items: start center; padding: 16px; overflow: auto; overflow-x: hidden; overscroll-behavior: contain; background: var(--scrim); backdrop-filter: blur(2px); }
-.bsheet.top { z-index: 1100; place-items: center; }
-.bsheet-in { min-width: 0; width: min(520px, 100%); padding: 22px 22px 24px; color: var(--ink); background: var(--card); border: 1px solid var(--ink); box-shadow: var(--sheet-shadow); }
-.bsheet-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 14px; }
-.bsheet-head h2 { font: 400 28px/1 var(--serif); letter-spacing: -.01em; margin: 0 auto 0 0; }
-.bsheet-head h2:focus { outline: none; }
-.bsheet .x { padding: 4px 8px; font-size: 26px; line-height: 1; cursor: pointer; color: var(--mute); background: none; border: 0; }
-.bsheet .x:hover { color: var(--ink); }
-.bsheet-actions { display: grid; grid-auto-flow: column; gap: 10px; } .bsheet-actions .btn { margin-top: 0; }
-.wc-qr { margin: 0 auto 14px; width: 224px; padding: 10px; background: #fff; } .wc-qr svg { display: block; width: 100%; height: auto; }
-.addr-s { font-size: 11.5px; overflow-wrap: anywhere; }
-@media (max-width: 560px) { .bsheet { padding: 0; place-items: end center; } .bsheet-in { width: 100%; } }
-.picker { display: grid; gap: 8px; }
-.way { display: grid; gap: 3px; width: 100%; padding: 12px 14px; text-align: left; cursor: pointer; background: var(--field); border: 1px solid var(--hair-2); transition: border-color .15s; }
-@media (hover: hover) { .way:hover:not(:disabled) { border-color: var(--ink); } }
-.way:disabled { opacity: .5; cursor: progress; }
-.way.main { border-color: var(--ink); background: var(--card); }
-.way-t { display: flex; align-items: center; gap: 10px; font-weight: 500; }
-.way-m { font-size: 12px; color: var(--mute); }
-.ways { display: grid; gap: 8px; margin-top: 4px; }
-.ways-err { margin: 2px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--err); }
-.ways .more { margin: 6px 0 0; }
-.ways .linkbtn { font-size: 13px; color: var(--mute); }
-.ways .linkbtn:hover { color: var(--ink); }
-/* the wallet sheet as the front page draws it: rounded, a quiet border, a mark on each way in */
-.bsheet { backdrop-filter: blur(2px); }
-.bsheet-in { padding: 24px 24px 28px; border: 1px solid var(--hair-2); border-radius: 18px; }
-.bsheet-head { margin-bottom: 22px; }
-.bsheet-head h2 { font-size: 32px; }
-.bsheet .x { display: grid; place-items: center; width: var(--tap); height: var(--tap); padding: 0; font-size: 22px; border: 1px solid transparent; }
-@media (hover: hover) { .bsheet .x:hover { border-color: var(--hair-2); } }
-.way { border-radius: 16px; }
-.way-ic { flex: none; border-radius: 50%; }
-.way:has(.way-ic) .way-m { padding-left: 32px; }
-.ways .more { justify-content: center; }
-.paste-key input { border-radius: 12px; }
-.paste-key input:focus { outline: none; border-color: var(--ink); }
-@media (max-width: 560px) { .bsheet-in { padding: 20px 16px calc(24px + env(safe-area-inset-bottom)); border-width: 1px 0 0; border-radius: 18px 18px 0 0; } }
+/* sheets: the wallet picker, the pairing code, the wallet (their look is trade/sheet.js's) */
 .bsheet .addr { margin: 0 0 14px; padding: 10px 12px; overflow-wrap: anywhere; background: var(--field); border: 1px solid var(--hair); }
 
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
@@ -479,6 +442,6 @@ footer.sf svg.fill { width: 16px; height: 16px; }
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/fast/app.js?cb=fc343868"></script>
+<script type="module" src="/fast/app.js?cb=acd465c2"></script>
 </body>
 </html>

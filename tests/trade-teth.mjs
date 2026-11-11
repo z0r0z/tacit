@@ -556,7 +556,7 @@ try {
   await shot(p, 'quote');
   await cfg(p, { indexMs: 300, settleMs: 1500, held: 10000000 });
   await p.click('#go');
-  await p.waitForSelector('.bsheet.top .ways');
+  await p.waitForSelector('.bsheet.top .opts');
   const ways = await text(p, '.bsheet.top');
   ok(/Ethereum wallet/.test(ways) && /Open your Tacit wallet/.test(ways) && !/Bitcoin wallet/.test(ways), 'the key is offered from an Ethereum wallet or a passkey (no Bitcoin wallet: that is tacit.finance\'s)');
   await p.click('.bsheet.top [data-in="eth"]');

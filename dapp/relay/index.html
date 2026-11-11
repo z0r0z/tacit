@@ -14,12 +14,12 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /relay/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/relay/app.js?cb=0a13d91c">
-<link rel="modulepreload" href="/trade/connect.js?cb=f0e47fd0">
+<link rel="modulepreload" href="/relay/app.js?cb=c0902221">
+<link rel="modulepreload" href="/trade/connect.js?cb=4eebf192">
 <link rel="modulepreload" href="/walletconnect.js?cb=843803d6">
 <link rel="modulepreload" href="/trade/wallet.js?cb=c12e83a8">
 <link rel="modulepreload" href="/wallet-prompts.js">
-<link rel="modulepreload" href="/trade/sheet.js?cb=84cda8f2">
+<link rel="modulepreload" href="/trade/sheet.js?cb=1161dd4e">
 <link rel="modulepreload" href="/trade/util.js?cb=ba5a02b1">
 <link rel="modulepreload" href="/trade/rpc.js">
 <link rel="modulepreload" href="/rpc-body.js">
@@ -201,22 +201,6 @@ th:first-child, td:first-child { text-align: left; padding-left: 0; }
 #pv-quote:empty { display: none; }
 
 /* sheets: the wallet picker, the pairing code, the wallet */
-.bsheet { position: fixed; inset: 0; z-index: 900; display: grid; grid-template-columns: minmax(0, 1fr); place-items: start center; padding: 16px; overflow: auto; overflow-x: hidden; overscroll-behavior: contain; background: var(--scrim); backdrop-filter: blur(2px); }
-.bsheet.top { z-index: 1100; place-items: center; }
-.bsheet-in { min-width: 0; width: min(520px, 100%); padding: 22px 22px 24px; color: var(--ink); background: var(--card); border: 1px solid var(--ink); box-shadow: var(--sheet-shadow); }
-.bsheet-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 14px; }
-.bsheet-head h2 { font: 400 28px/1 var(--serif); letter-spacing: -.01em; margin: 0 auto 0 0; }
-.bsheet-head h2:focus { outline: none; }
-.bsheet .x { padding: 4px 8px; font-size: 26px; line-height: 1; cursor: pointer; color: var(--mute); background: none; border: 0; }
-.bsheet .x:hover { color: var(--ink); }
-.bsheet-actions { display: grid; grid-auto-flow: column; gap: 10px; } .bsheet-actions .btn { margin-top: 0; }
-.wc-qr { margin: 0 auto 14px; width: 224px; padding: 10px; background: #fff; } .wc-qr svg { display: block; width: 100%; height: auto; }
-.addr-s { font-size: 11.5px; overflow-wrap: anywhere; }
-@media (max-width: 560px) { .bsheet { padding: 0; place-items: end center; } .bsheet-in { width: 100%; } }
-.picker { display: grid; gap: 8px; }
-.way { display: grid; gap: 3px; width: 100%; padding: 12px 14px; text-align: left; cursor: pointer; background: var(--field); border: 1px solid var(--hair-2); transition: border-color .15s; }
-@media (hover: hover) { .way:hover:not(:disabled) { border-color: var(--ink); } }
-.way-t { display: flex; align-items: center; gap: 10px; font-weight: 500; }
 </style>
 <!-- chrome:head:begin inline -->
 <style>
@@ -451,6 +435,6 @@ footer.sf svg.fill { width: 16px; height: 16px; }
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/relay/app.js?cb=0a13d91c"></script>
+<script type="module" src="/relay/app.js?cb=c0902221"></script>
 </body>
 </html>

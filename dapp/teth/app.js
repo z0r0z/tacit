@@ -1,10 +1,10 @@
 import { mountChart, fmtLocalStamp, fmtLocalTime } from '/trade/chart.js?cb=04207026';
-import { makeConnect, UserStopped } from '/trade/connect.js?cb=f0e47fd0';
-import { makeKeySession, signInSheet, Cancelled } from '/trade/key.js?cb=e7b6ebe6';
+import { makeConnect, UserStopped } from '/trade/connect.js?cb=4eebf192';
+import { makeKeySession, signInSheet, Cancelled } from '/trade/key.js?cb=b56a185e';
 import { readPool, heldHistory, heldBars, rangesFor, barSize, recentMoves, movedSince, readRates, readProgram, poolRows, positionsIn, programEnds, wrapQuote, shown, POOL, WRAP_TIP } from '/teth/read.js?cb=5313656c';
 import { wrapEth, wrapFirst, settle, readHeld, finish, wrapIssue, relayWords, selfable, selfFinish, settleCost, proveOwn, ownWords, ownable, deviceWords, relayState, relayStopped, forgetUx, getUx } from '/teth/wrap.js?cb=61a79b48';
 import { ownPref, setOwnPref, devicePref, setDevicePref, deviceProver, proverFor, readCredit, proofsFor, fundFromWallet, quoteEth, quoteEthFor, fundWithEth, loadSelfProver, tokenBalance } from '/teth/prover.js?cb=b065e0b4';
-import { overlay } from '/trade/sheet.js?cb=84cda8f2';
+import { overlay } from '/trade/sheet.js?cb=1161dd4e';
 import { addrFlat } from '/address-view.js?cb=57bc64d3';
 import { mountDepth } from '/trade/depth.js?cb=438b534c';
 import { candlesFromTrades, closeAt } from '/trade/tape.js?cb=714b0344';
@@ -182,7 +182,7 @@ function notify(msg, kind = '', ms = 5000) {
 }
 async function openBitcoin(prime = null) {
   try {
-    bitcoin ||= (await import('/trade/btc.js?cb=286574cd')).makeBitcoin({ notify, onTraded: () => loadMarket().then(paintAll).catch(() => {}),
+    bitcoin ||= (await import('/trade/btc.js?cb=706e9346')).makeBitcoin({ notify, onTraded: () => loadMarket().then(paintAll).catch(() => {}),
       asset: { id: BTC_ID, title: 'tETH on Bitcoin', after: 'tETH reaches Bitcoin through the bridge: <a href="/#private/bitcoin/out">Bridge →</a>' } });
     await bitcoin.open(prime);
   } catch (e) { notify(`Could not open the Bitcoin market: ${e?.message || e}`, 'error', 9000); }

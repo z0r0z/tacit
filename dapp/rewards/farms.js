@@ -3,7 +3,7 @@
 // wallet, which turns the wTAC into TAC), and a join with both sides (each cut to size by the relay if no note fits, then bonded at the pool's
 // ratio). Joining with one side (a swap first) and what only an unwrap sent yourself can do are the front page's: they link there.
 // Nothing here is loaded until the holder asks: this module, the key and the pool all come in on that press.
-import { makeKeySession, signInSheet } from '/trade/key.js?cb=e7b6ebe6';
+import { makeKeySession, signInSheet } from '/trade/key.js?cb=b56a185e';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=efc87cea';
 import { makeRunner } from '/activity.js?cb=5f14a43f';
 import { canHarvest, canUnbond, unharvested, locked, harvest, unbond, rewardNotes, relayable, redeem, wtacWithdrawCall, wtacBalanceCall, worthHarvesting, lpNotes, takeOut, HARVEST_WORTH, UNBOND_DUST, bFor, joinTerms, notesOf, exactOf, cutPick, cutSized, bond } from '/farm-ops.js?cb=b1775d76';

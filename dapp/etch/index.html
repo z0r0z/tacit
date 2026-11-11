@@ -25,7 +25,7 @@
 <link rel="preload" href="/fonts/ibm-plex-mono-500-latin.woff2" as="font" type="font/woff2" crossorigin>
 <!-- preload-roots: /etch/app.js | | /trade/btc.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/etch/app.js?cb=bd78cfdb">
+<link rel="modulepreload" href="/etch/app.js?cb=dbd68f59">
 <link rel="modulepreload" href="/trade/util.js?cb=ba5a02b1">
 <link rel="modulepreload" href="/trade/rpc.js">
 <link rel="modulepreload" href="/rpc-body.js">
@@ -225,24 +225,7 @@ img.tk { object-fit: cover; background: var(--field); }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 
 /* the wallet's sheets (trade/connect.js) */
-.bsheet { position: fixed; inset: 0; z-index: 900; display: grid; grid-template-columns: minmax(0, 1fr); place-items: start center; padding: 16px; overflow: auto; overscroll-behavior: contain; background: var(--scrim); backdrop-filter: blur(2px); }
-.bsheet.top { z-index: 1100; place-items: center; }
-.bsheet-in { min-width: 0; width: min(480px, 100%); padding: 22px 22px 24px; color: var(--ink); background: var(--card); border: 1px solid var(--hair-2); border-radius: 16px; box-shadow: var(--sheet-shadow); }
-.bsheet-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 14px; }
-.bsheet-head h2 { font: italic 400 28px/1 var(--serif); letter-spacing: -.01em; margin: 0 auto 0 0; } .bsheet-head h2:focus { outline: none; }
-.bsheet .x { padding: 4px 8px; font-size: 26px; line-height: 1; cursor: pointer; color: var(--mute); background: none; border: 0; }
-.bsheet-actions { display: grid; grid-auto-flow: column; gap: 10px; } .bsheet-actions .btn { margin-top: 0; }
-.bsheet .note { font-size: 12.5px; color: var(--mute); }
 .bsheet .addr code { overflow-wrap: anywhere; font-size: 12.5px; }
-@media (max-width: 560px) { .bsheet { padding: 0; place-items: end center; } .bsheet-in { width: 100%; border-radius: 16px 16px 0 0; } }
-.picker, .ways { display: grid; gap: 8px; }
-.way { display: grid; gap: 3px; width: 100%; padding: 12px 14px; text-align: left; cursor: pointer; background: var(--field); border: 1px solid var(--hair-2); border-radius: 12px; }
-@media (hover: hover) { .way:hover { border-color: var(--ink); } }
-.way.main { border-color: var(--ink); }
-.way-t { display: flex; align-items: center; gap: 10px; font-weight: 500; }
-.way-m { font-size: 12px; color: var(--mute); }
-.ways-err { margin: 4px 0 0; font-size: 12.5px; color: var(--err); }
-.ways .more { margin: 4px 0 0; }
 .linkbtn { background: none; border: 0; padding: 0; cursor: pointer; color: var(--mute); text-decoration: underline; text-underline-offset: 3px; font-size: 12px; }
 .linkbtn:hover { color: var(--ink); }
 .bsheet-head .who { display: inline-flex; align-items: center; gap: 10px; font-size: 12px; }
@@ -513,13 +496,14 @@ footer.sf svg.fill { width: 16px; height: 16px; }
 </div>
 <!-- warm:begin -->
 <template id="warm">
-<link rel="modulepreload" href="/trade/btc.js?cb=286574cd">
+<link rel="modulepreload" href="/trade/btc.js?cb=706e9346">
 <link rel="modulepreload" href="/trade/btc-session.js?cb=fccef3b3">
 <link rel="modulepreload" href="/tab-key.js?cb=a4c25d0e">
-<link rel="modulepreload" href="/trade/sheet.js?cb=84cda8f2">
+<link rel="modulepreload" href="/trade/sheet.js?cb=1161dd4e">
+<link rel="modulepreload" href="/trade/sign-in.js?cb=0af6f09d">
 </template>
 <!-- warm:end -->
 <div class="sr" id="live" role="status" aria-live="polite"></div>
-<script type="module" src="/etch/app.js?cb=bd78cfdb"></script>
+<script type="module" src="/etch/app.js?cb=dbd68f59"></script>
 </body>
 </html>
