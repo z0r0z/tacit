@@ -5,7 +5,7 @@ import { makeRpc, RPCS, ARCHIVE, HISTORY, makeReader, QUEUE_EXPIRY } from '/vaul
 import { makeFeed } from '/vault/feed.js?cb=1c14d243';
 import { makePools } from '/vault/pools.js?cb=af05311d';
 import { makeVaultEngine, KIND, BATCH_MAX, StopWaiting } from '/vault/engine.js?cb=7f85cdc2';
-import { makeConnect, UserStopped } from '/trade/connect.js?cb=92e87ca4';
+import { makeConnect, UserStopped } from '/trade/connect.js?cb=f0e47fd0';
 
 const $ = (s, r = document) => r.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));

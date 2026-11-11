@@ -1,4 +1,4 @@
-import { makeConnect } from '/trade/connect.js?cb=92e87ca4';
+import { makeConnect } from '/trade/connect.js?cb=f0e47fd0';
 import { $, esc, short, word, strip, fmtUnits, parseUnits, rpc, ethCall } from '/trade/util.js?cb=ba5a02b1';
 import { SALE, FROM_BLOCK, TOTAL, FACE, LOCK_DAYS } from '/face/config.js?cb=aa6672a5';
 import { pixelText, ghost, blocks } from '/face/pixel.js?cb=2a763b38';
@@ -85,11 +85,11 @@ async function readBoard() {
 }
 
 // ── actions ──
-async function send(data, value = 0n, done = 'Done.') {
+async function send(data, value = 0n, done = 'Done.', gas = null) {
   if (!W.account) { await conn.connect(); return; }
   S.busy = true; render(); say('Confirm in your wallet. No popup? Reconnect your wallet.');
   try {
-    const hash = await conn.wallet.sendTx({ to: SALE, data, value });
+    const hash = await conn.wallet.sendTx({ to: SALE, data, value, gas });
     say('Sent. Waiting for it to land…');
     const r = await conn.wallet.receipt(hash);
     say(r.status === '0x1' ? done : 'It did not go through. Nothing was spent but gas.', r.status !== '0x1');
@@ -119,7 +119,8 @@ function buy() {
   try { v = parseUnits(S.eth || '0', 18); } catch { return say('Enter an amount of ETH.', true); }
   if (v < st.minBuy) return say(`At least ${eth(st.minBuy)} ETH.`, true);
   const quote = (v * 10n ** 18n) / st.price;
-  send(SEL.buy + word((quote * 99n) / 100n), v, 'Bought. Your TAC and Z unlock over 90 days.');
+  // a first buy mints a card and forwards the ETH, up to about 660k gas: wallets have estimated under it
+  send(SEL.buy + word((quote * 99n) / 100n), v, 'Bought. Your TAC and Z unlock over 90 days.', 900_000n);
 }
 
 // ── page ──

@@ -138,11 +138,12 @@ export function makeWallet({ rpc, leave = null, busy = () => false }) {
     if (W.chain !== want) throw new Error(`Switch your wallet to ${chain.name}, then try again.`);
   }
   // `chain` (see ensureChain) sends it on that chain; without it, on Ethereum.
-  async function sendTx({ to, data, value = 0n, from = null, chain = null }) {
+  async function sendTx({ to, data, value = 0n, from = null, chain = null, gas = null }) {
     same(from);
     if (chain && hexChain(chain.id) !== MAINNET) await ensureChain(chain); else await ensureMainnet();
     same(from);
-    return req('eth_sendTransaction', [{ from: from || W.account, to, data, ...(value ? { value: '0x' + BigInt(value).toString(16) } : {}) }]);
+    // `gas` sets the limit for a call whose cost a wallet's estimate can fall short of; without it the wallet estimates
+    return req('eth_sendTransaction', [{ from: from || W.account, to, data, ...(value ? { value: '0x' + BigInt(value).toString(16) } : {}), ...(gas ? { gas: '0x' + BigInt(gas).toString(16) } : {}) }]);
   }
   // Atomic batches (EIP-5792): calls the wallet sends together in one confirmation (an approval and the call that uses it), where it takes them.
   // A wallet that turns out not to take batches throws { noBatch }, so the caller can send them one by one; one that took a batch and does not

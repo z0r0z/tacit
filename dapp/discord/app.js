@@ -1,4 +1,4 @@
-import { makeConnect } from '/trade/connect.js?cb=92e87ca4';
+import { makeConnect } from '/trade/connect.js?cb=f0e47fd0';
 import { declinedWords } from '/wallet-prompts.js';
 import { addrView } from '/address-view.js?cb=57bc64d3';
 import { esc } from '/trade/sheet.js?cb=84cda8f2';

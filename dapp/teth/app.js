@@ -1,5 +1,5 @@
 import { mountChart, fmtLocalStamp, fmtLocalTime } from '/trade/chart.js?cb=04207026';
-import { makeConnect, UserStopped } from '/trade/connect.js?cb=92e87ca4';
+import { makeConnect, UserStopped } from '/trade/connect.js?cb=f0e47fd0';
 import { makeKeySession, signInSheet, Cancelled } from '/trade/key.js?cb=e7b6ebe6';
 import { readPool, heldHistory, heldBars, rangesFor, barSize, recentMoves, movedSince, readRates, readProgram, poolRows, positionsIn, programEnds, wrapQuote, shown, POOL, WRAP_TIP } from '/teth/read.js?cb=5313656c';
 import { wrapEth, wrapFirst, settle, readHeld, finish, wrapIssue, relayWords, selfable, selfFinish, settleCost, proveOwn, ownWords, ownable, deviceWords, relayState, relayStopped, forgetUx, getUx } from '/teth/wrap.js?cb=61a79b48';

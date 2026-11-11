@@ -3,7 +3,7 @@
 // pool module and its Activity journal). One card to a page: its state is this module's.
 import { keccak_256 } from '/vendor/tacit-deps.min.js';
 import { makeEvmTradeVenues, _internal as V, MULTICALL3 } from '/evm-trade-venues.js?cb=1f321cc2';
-import { UserStopped } from '/trade/wallet.js?cb=3595ad83';
+import { UserStopped } from '/trade/wallet.js?cb=c12e83a8';
 import { declinedWords } from '/wallet-prompts.js';
 import { rpc, API, api, esc, fmtUnits, parseUnits, plain, usd, sig, E10, E18, ago } from '/trade/util.js?cb=ba5a02b1';
 import { nodeHealth, hedgeDelay } from '/trade/rpc.js';
