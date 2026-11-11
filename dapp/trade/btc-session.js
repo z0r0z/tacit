@@ -7,7 +7,7 @@
 
 import { tabKeyRead, tabKeyWrite, tabKeyClear, tabKeyWatch } from '/tab-key.js?cb=a4c25d0e';
 
-const TACIT_URL = '/tacit.js?cb=da6e0cfc', KNOWN_URL = '/tacit-wallet-known.js?cb=ed4c75b7', EVM_URL = '/evm-wallet.js?cb=0d6d47f7';
+const TACIT_URL = '/tacit.js?cb=da6e0cfc', KNOWN_URL = '/tacit-wallet-known.js?cb=ed4c75b7', EVM_URL = '/evm-wallet.js?cb=14e5326a';
 const DEPS_URL = '/vendor/tacit-deps.min.js', PRF_URL = '/prf-wallet.js';
 const RECORD = 'tacit-trade-id-v1';                                           // how this page last opened a key: public data only
 const KNOWN_IDS = [RECORD, 'tacit-tac-id-v1', 'tacit-pay-hub-id-v1', 'tacit-lite-id-v1', 'tacit-pay-id-v1'];
@@ -180,7 +180,7 @@ export function makeBtcSession({ moved = null } = {}) {
     get T() { return T; }, get D() { return D; }, get key() { return key; }, get unlocked() { return !!(key && T && T.wallet.priv); },
     get address() { return key && T ? T.wallet.address() : null; },
     known: () => usable(knownIds().primary), other: () => usable(knownIds().other),
-    passkeyAvailable: () => !!prf?.isPasskeyAvailable?.(), ethAvailable: () => !!evm?.available?.(),
+    passkeyAvailable: () => !!prf?.isPasskeyAvailable?.(), ethAvailable: () => !!evm?.available?.(), warm: () => evm?.warm?.(),
     btcSeen: () => !!(window.btc_providers?.length || window.XverseProviders?.BitcoinProvider || window.LeatherProvider || window.unisat),
     lock() { forget(); tabKeyClear(); emit(); },
     onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); },

@@ -5,8 +5,8 @@
 import { secp, sha256, keccak_256, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 import { prfBytesToScalar, prfLogin, prfRegister, loadPrfMap, savePrfMap, isPasskeyAvailable } from '/prf-wallet.js';
 import { knownWallets } from '/tacit-wallet-known.js?cb=ed4c75b7';
-import { makeEvmWallet } from '/evm-wallet.js?cb=0d6d47f7';
-import { signInSheet, pickWalletSheet, Cancelled } from '/trade/sign-in.js?cb=0af6f09d';
+import { makeEvmWallet } from '/evm-wallet.js?cb=14e5326a';
+import { signInSheet, pickWalletSheet, Cancelled } from '/trade/sign-in.js?cb=4b1a6137';
 import { tabKeyRead, tabKeyWrite, tabKeyClear, tabKeyWatch } from '/tab-key.js?cb=a4c25d0e';
 
 const RECORD = 'tacit-trade-id-v1';                                           // how /trade last opened a key: public data only (the Bitcoin market writes it too)
@@ -103,7 +103,7 @@ export function makeKeySession({ moved = null, ways = {} } = {}) {
     known: () => usable(ids().primary), other: () => usable(ids().other),
     // The wallet tacit.finance has open, when this page cannot open it (a Bitcoin wallet, a key saved in the browser).
     elsewhere: () => { const p = ids().primary; return p && !opens.has(p.mode) ? p : null; },
-    passkeyAvailable: () => isPasskeyAvailable(), ethAvailable: () => evm.available(),
+    passkeyAvailable: () => isPasskeyAvailable(), ethAvailable: () => evm.available(), warm: () => evm.warm(),
     // the Ethereum wallet the key was opened with (null for a passkey, a pasted key or a Bitcoin wallet): a page's last-resort node for reads
     walletProvider: () => (key && key.mode === 'eth' ? evm.provider() : null),
     lock() { priv = null; key = null; tabKeyClear(); emit(); },

@@ -37,6 +37,7 @@ export function pickWalletSheet(list) {
 // it signs with no choice to make, and the wallet it opens is marked connected.
 export function signInSheet(session, { pick = pickWalletSheet, why = WHY, first = 'eth', here = null } = {}) {
   return new Promise((resolve, reject) => {
+    session.warm?.();
     const known = session.known(), other = session.other(), away = session.elsewhere?.() || null;
     const pk = session.passkeyAvailable(), canBtc = typeof session.open.btc === 'function', canPaste = typeof session.open.key === 'function';
     const connected = (k) => !!(here && k?.mode === 'eth' && lc(k.address) === lc(here.address));

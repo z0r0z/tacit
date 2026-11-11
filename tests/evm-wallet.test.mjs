@@ -281,6 +281,47 @@ const baseC3 = C.calls.length;
 await makeEvmWallet({ secp, sha256, keccak256: keccak_256, bytesToHex, hexToBytes, prfBytesToScalar, netName: 'mainnet' }).deriveIdentity({ pick: pickC });
 ok('a wallet that has not allowed the site is asked, as ever', C.calls.slice(baseC3).slice(0, 2).join() === 'eth_accounts,eth_requestAccounts');
 
+// The code read is not in front of the prompt: a slow node costs the sign-in a moment at most, and a contract is still refused
+const slowCode = (w, ms, code = '0x') => { const base = w.provider.request; w.provider.request = async (r) => { if (r.method !== 'eth_getCode') return base(r); w.calls.push('eth_getCode'); w.codeAskedAt = Date.now(); await new Promise((d) => setTimeout(d, ms)); return code; }; return () => { w.provider.request = base; }; };
+const E = wallet('E', '55'.repeat(32));
+const pickE = async (l) => l.find((w) => w.name === 'E').uuid;
+E.allowed = true;
+const undoE = slowCode(E, 900);
+const baseE = E.calls.length, tE = Date.now();
+let signedAt = 0;
+const askE = E.provider.request;
+E.provider.request = (r) => { if (r.method === 'personal_sign' && !signedAt) signedAt = Date.now(); return askE(r); };
+const idE = await makeEvmWallet({ secp, sha256, keccak256: keccak_256, bytesToHex, hexToBytes, prfBytesToScalar, netName: 'mainnet' }).deriveIdentity({ pick: pickE });
+ok('a code read that takes most of a second does not hold the first prompt back', signedAt - tE < 600 && idE.address === strip(E.addr));
+ok('and it was still read (before the sign-in finished), once', E.calls.slice(baseE).filter((m) => m === 'eth_getCode').length === 1);
+E.provider.request = askE; undoE();
+
+const F = wallet('F', '66'.repeat(32));
+const pickF = async (l) => l.find((w) => w.name === 'F').uuid;
+F.allowed = true;
+slowCode(F, 700, '0x6080604052');
+const baseF = F.calls.length;
+await assert.rejects(makeEvmWallet({ secp, sha256, keccak256: keccak_256, bytesToHex, hexToBytes, prfBytesToScalar, netName: 'mainnet' }).deriveIdentity({ pick: pickF }), /Smart-contract wallets/);
+ok('a contract wallet whose node was slow is still refused, after one signature and before a second is asked', F.calls.slice(baseF).filter((m) => m === 'personal_sign').length === 1);
+
+// warm: the code read is started while the sheet is read, and the sign-in takes it from there
+const G = wallet('G', '77'.repeat(32));
+const pickG = async (l) => l.find((w) => w.name === 'G').uuid;
+const warmed = makeEvmWallet({ secp, sha256, keccak256: keccak_256, bytesToHex, hexToBytes, prfBytesToScalar, netName: 'mainnet' });
+await warmed.warm();
+ok('warming a wallet that is not in use asks nothing', G.calls.length === 0);
+await warmed.connect({ pick: pickG });
+const baseG = G.calls.length;
+await warmed.warm();
+await new Promise((d) => setTimeout(d, 20));
+ok('warming reads the accounts (which cannot prompt) and starts the code read, nothing that could prompt', G.calls.slice(baseG).join() === 'eth_accounts,eth_getCode');
+const baseG2 = G.calls.length;
+await warmed.warm();
+ok('warming again reads the code no more', G.calls.slice(baseG2).join() === 'eth_accounts');
+const stepsG = [];
+await warmed.deriveIdentity({ pick: pickG, onStep: (s) => stepsG.push(s) });
+ok('the sign-in after it does not read the code again, and signs twice as the first sign-in does', G.calls.slice(baseG2).filter((m) => m === 'eth_getCode').length === 0 && G.calls.filter((m) => m === 'personal_sign').length === 2 && stepsG.join() === 'account,sign,confirm');
+
 const throwing = wallet('D', '44'.repeat(32));
 throwing.provider.request = async () => { throw new Error('wallet is not ready'); };
 await assert.rejects(makeEvmWallet({ secp, sha256, keccak256: keccak_256, bytesToHex, hexToBytes, prfBytesToScalar, netName: 'mainnet' }).deriveIdentity({ pick: async (l) => l.find((w) => w.name === 'D').uuid, onStep: () => { throw new Error('a listener must not break it'); } }), /wallet is not ready/);

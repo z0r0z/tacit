@@ -173,6 +173,32 @@ export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes,
     return { provider, address };
   }
 
+  // An account's code, read once and shared: `warm` starts it, and a first sign-in takes it from there. A read the wallet's node did not answer in time
+  // (or erred) is not kept, so the next sign-in reads it again.
+  const NO_ANSWER = Symbol('no answer'), STILL_READING = Symbol('still reading');
+  const CODE_WAIT_MS = 250;
+  const CONTRACT_WALLET = 'Smart-contract wallets produce non-deterministic signatures and cannot derive a stable tacit identity — use a passkey, seed, or an EOA wallet.';
+  const codes = new Map();
+  function codeOf(provider, address) {
+    let read = codes.get(address);
+    if (!read) {
+      read = capped(provider.request({ method: 'eth_getCode', params: ['0x' + address, 'latest'] }), 1500, NO_ANSWER).then((code) => { if (code === NO_ANSWER) codes.delete(address); return code; });
+      codes.set(address, read);
+    }
+    return read;
+  }
+  // What a sign-in will ask of the wallet, started while the sheet that offers it is being read: the wallet is woken (an extension's worker sleeps when
+  // idle) by a read that cannot prompt, and a first sign-in's code read is under way. Only for the wallet already in use: which wallet signs is never chosen here.
+  async function warm() {
+    const provider = active || selected;
+    if (!provider || typeof provider.request !== 'function') return;
+    try {
+      const accounts = await capped(provider.request({ method: 'eth_accounts' }), 1500, []);
+      const address = String(accounts?.[0] || '').toLowerCase().replace(/^0x/, '');
+      if (/^[0-9a-f]{40}$/.test(address) && !readAnchor(address)) codeOf(provider, address);
+    } catch { }
+  }
+
   const ANCHOR_KEY = 'tacit-eth-identity-anchor:';
   function readAnchor(address) {
     try { return localStorage.getItem(ANCHOR_KEY + String(address).toLowerCase()) || null; } catch { return null; }
@@ -191,13 +217,15 @@ export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes,
     // An account that opened its key here was no contract then, and an address does not become one: its code is not read again. The first time it is
     // read through the wallet's own node, which can stall with nothing yet in front of the person, so it is given a moment and no more.
     const anchored = !!readAnchor(address);
-    if (!anchored) {
-      const code = await capped(provider.request({ method: 'eth_getCode', params: ['0x' + address, 'latest'] }), 1500, '0x');
-      if (isContractCode(code)) throw new Error('Smart-contract wallets produce non-deterministic signatures and cannot derive a stable tacit identity — use a passkey, seed, or an EOA wallet.');
-    }
+    // The read is under way as the wallet is asked (it began when the sheet opened, when `warm` ran), and only a moment is spent on it before then; one
+    // still out when the first signature comes back is waited for there, before a second is asked.
+    const reading = anchored ? null : codeOf(provider, address);
+    const early = reading ? await capped(reading, CODE_WAIT_MS, STILL_READING) : '0x';
+    if (isContractCode(early)) throw new Error(CONTRACT_WALLET);
     const msg = derivationMsg();
     step('sign');
     const sig = await provider.request({ method: 'personal_sign', params: ['0x' + bytesToHex(enc(msg)), '0x' + address] });
+    if (early === STILL_READING && isContractCode(await reading)) throw new Error(CONTRACT_WALLET);
     if (typeof sig !== 'string' || !sig.startsWith('0x')) throw new Error('wallet returned invalid signature');
     const sigBytes = hexToBytes(sig.slice(2));
     if (sigBytes.length !== 65) throw new Error('signature must be 65 bytes');
@@ -286,5 +314,5 @@ export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes,
 
   // the wallet in use now (the one picked, else the injected one), for a page that reads Ethereum through it as a last resort
   const provider = () => currentProvider() || null;
-  return { provider, available, hasBrowserWallet, listProviders, selectProvider, deselectProvider, providerLabel, connect, changeAccount, restore, onElsewhere, forget, disconnect, deriveIdentity, signErc2612, fundTx, chainId, derivationMsg };
+  return { provider, available, hasBrowserWallet, listProviders, selectProvider, deselectProvider, providerLabel, connect, changeAccount, restore, onElsewhere, forget, disconnect, deriveIdentity, warm, signErc2612, fundTx, chainId, derivationMsg };
 }
