@@ -20,7 +20,7 @@ export const CHROME_PAGES = {
   'vault/index.html': 'borrow', 'pay/index.html': 'pay', 'pay/eth/index.html': 'pay', 'tasks/index.html': 'tasks',
   'build/index.html': 'build', 'etch/index.html': 'etch', 'weld/stats/index.html': 'stats', 'relay/index.html': '',
   'splitter/index.html': '', 'sats/index.html': '', 'bridge/index.html': 'bridge',
-  'discord/index.html': '', 'face/index.html': '', 'fast/index.html': 'bridge', 'prove/index.html': 'prove', 'chain/index.html': 'chain', 'help/index.html': '',
+  'discord/index.html': '', 'face/index.html': 'face', 'fast/index.html': 'bridge', 'prove/index.html': 'prove', 'chain/index.html': 'chain', 'help/index.html': '',
 };
 
 // 24×24 line drawings, the lander's tabs' hand; drawn by chrome.css (stroke, round caps) unless a glyph is .fill. The assets glyph is the TAC logo's t in its ring, at the logo's proportions (slanted stem, wide high bar, foot sweeping right). The llama is DefiLlama's mark in one colour
@@ -35,6 +35,7 @@ const G = {
   rewards: '<rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13"/><path d="M5 12v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-8"/><path d="M7.5 8a2.5 2.5 0 1 1 0-5C10 3 12 8 12 8s2-5 4.5-5a2.5 2.5 0 1 1 0 5"/>',
   chain: '<path d="M10 14a4 4 0 0 0 5.7 0l3.1-3.1a4 4 0 0 0-5.7-5.7l-1.2 1.2"/><path d="M14 10a4 4 0 0 0-5.7 0l-3.1 3.1a4 4 0 0 0 5.7 5.7l1.2-1.2"/>',
   etch: '<path d="M4 20l4.2-1 10.6-10.6a2.1 2.1 0 0 0-3-3L5.2 16z"/><path d="M13.6 7.4l3 3"/>',
+  face: '<path d="M6 20V10a6 6 0 0 1 12 0v10l-2-2-2 2-2-2-2 2-2-2z"/><path d="M9.5 11.5h1M13.5 11.5h1"/>',
   tasks: '<path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/>',
   build: '<path d="M8 7l-5 5 5 5"/><path d="M16 7l5 5-5 5"/><path d="M14 4l-4 16"/>',
   stats: '<path d="M5 20v-6"/><path d="M12 20V5"/><path d="M19 20v-10"/>',
@@ -58,7 +59,7 @@ const svg = (k) => `<svg viewBox="0 0 24 24"${FILLED.has(k) ? ' class="fill"' : 
 // the network's own pages
 const MAIN = [['assets', '/assets/', 'Assets'], ['rewards', '/rewards/', 'Rewards'], ['prove', '/prove/', 'Prove']];
 const MORE = [
-  [['pay', '/pay/', 'Pay'], ['borrow', '/vault/', 'Borrow'], ['bridge', '/bridge/', 'Bridges'], ['tac', '/tac/', 'TAC'], ['chain', '/chain/', 'Tacit chain'], ['etch', '/etch/', 'Etch'], ['tasks', '/tasks/', 'Tasks']],
+  [['face', '/face/', 'FACE race'], ['pay', '/pay/', 'Pay'], ['borrow', '/vault/', 'Borrow'], ['bridge', '/bridge/', 'Bridges'], ['tac', '/tac/', 'TAC'], ['chain', '/chain/', 'Tacit chain'], ['etch', '/etch/', 'Etch'], ['tasks', '/tasks/', 'Tasks']],
   [['stats', '/weld/stats/', 'Stats'], ['build', '/build/', 'Build'], ['classic', '/classic.html', 'Classic app']],
 ];
 
