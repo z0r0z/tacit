@@ -11,6 +11,7 @@ import { randomBytes } from 'node:crypto';
 import { snippet } from './codecheck/lenses.mjs';
 import { plant } from './codecheck/mutate.mjs';
 import { skepticMessages, voteOf, examClaim, findingId, fits } from './codecheck/roles.mjs';
+import { plain } from './codecheck/scan.mjs';
 
 const cached = new Map();   // file -> { sig, rows }: a file is read again only when it has changed
 export function readRows(file) {
@@ -98,21 +99,27 @@ export function makeCheckFeed({ source, sample, inbox, checks, exam, panel = 3, 
     }
     append(checks, { ...base, id: job.meta.fid, verdict: v.verdict, vote: v.vote, grounded: v.ok });
   }
+  // a reply that was not a verdict: kept beside the exam results as invalid (not graded), with the start of what came back
+  function onInvalid(job, text, miner, who = {}) {
+    append(exam, { t: now(), role: 'skeptic', lens: job.meta.exam?.lens, exam: !!job.meta.exam, miner, node: who.node, tier: who.tier, model: who.model, outcome: 'invalid', sample: plain(text).slice(0, 160) });
+  }
   // how the findings stand, for /stats: counts by state, and the exam results by role, lens and size of machine
   function summary() {
     const votes = votesFor(), sk = skill(), states = { confirmed: 0, refuted: 0, unclear: 0, pending: 0 };
     for (const r of findings()) if (r.status === 'syntax-ok') states[decide(votes.get(r.id) || [], sk, { panel, quorum }).state]++;
     return { findings: states, exam: examSummary(readRows(exam)) };
   }
-  return { next, onResult, decision, summary };
+  return { next, onResult, onInvalid, decision, summary };
 }
 
-// The exam results as counts: scouts by outcome (restored, near, miss, and findings elsewhere), skeptics by outcome (right, wrong, unsure), each overall, by lens and by tier.
+// The exam results as counts: scouts by outcome (restored, near, miss, and findings elsewhere), skeptics by outcome (right, wrong, unsure), each overall, by lens and by
+// tier. `invalid` counts replies that were not the JSON asked for, in any job (they are not graded, so they are not in n).
 export function examSummary(rows) {
-  const out = { scout: { n: 0, restored: 0, near: 0, miss: 0, fp: 0, byLens: {}, byTier: {} }, skeptic: { n: 0, right: 0, wrong: 0, unsure: 0, byLens: {}, byTier: {} } };
-  const bump = (bucket, key, field) => { const b = bucket[key] ||= { n: 0 }; b.n++; b[field] = (b[field] || 0) + 1; };
+  const out = { scout: { n: 0, invalid: 0, restored: 0, near: 0, miss: 0, fp: 0, byLens: {}, byTier: {} }, skeptic: { n: 0, invalid: 0, right: 0, wrong: 0, unsure: 0, byLens: {}, byTier: {} } };
+  const bump = (bucket, key, field) => { const b = bucket[key] ||= { n: 0 }; if (field !== 'invalid') b.n++; b[field] = (b[field] || 0) + 1; };
   for (const r of rows) {
     const role = out[r.role]; if (!role) continue;
+    if (r.outcome === 'invalid') { role.invalid++; bump(role.byLens, r.lens || '?', 'invalid'); bump(role.byTier, r.tier || 'unknown', 'invalid'); continue; }
     role.n++; role[r.outcome] = (role[r.outcome] || 0) + 1; if (r.role === 'scout') role.fp += r.fp || 0;
     bump(role.byLens, r.lens || '?', r.outcome); bump(role.byTier, r.tier || 'unknown', r.outcome);
   }

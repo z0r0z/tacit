@@ -140,10 +140,12 @@ const fid = readRows(P.inbox)[0].id;
     jobs.push({ claimNew, code });
     await L2.submit({ id: j.id, lease: j.lease, miner: B, ip: M.B.ip, text: JSON.stringify({ verdict: code.includes(claimNew) ? 'false' : 'real', line: 1, quote: line.trim(), why: 'x' }) });
   }
-  const rows = readRows(P.exam).filter((r) => r.role === 'skeptic');
+  const invalid = readRows(P.exam).filter((r) => r.role === 'skeptic' && r.outcome === 'invalid');
+  check('the skeptic reply that was not a verdict was kept as invalid, with the start of what it said', invalid.length === 1 && invalid[0].exam === false && invalid[0].sample === 'Looks right to me!' && invalid[0].tier === 'big' && invalid[0].model === 'qwen3.5-35b' && invalid[0].miner === B);
+  const rows = readRows(P.exam).filter((r) => r.role === 'skeptic' && r.outcome !== 'invalid');
   check('skeptic exams are graded, with the lens, the kind, whether the claim was true, and the machine', rows.length >= 4 && rows.every((r) => r.lens && r.kind && typeof r.truth === 'boolean' && r.tier === 'big' && r.outcome && r.node));
   const sum = exFeed.summary();
-  check('the summary counts them by lens and by tier', sum.exam.skeptic.n === rows.length && sum.exam.skeptic.byTier.big.n === rows.length);
+  check('the summary counts them by lens and by tier, and the invalid reply apart from them', sum.exam.skeptic.n === rows.length && sum.exam.skeptic.byTier.big.n === rows.length && sum.exam.skeptic.invalid === 1);
   check('both a true and a false claim were made', rows.some((r) => r.truth === true) && rows.some((r) => r.truth === false));
   check('a skeptic that reads the code (says real when the claim is true, false when it is not) is right on both', rows.filter((r) => r.outcome === 'right').length >= rows.length - 2);
 }

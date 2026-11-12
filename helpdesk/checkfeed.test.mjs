@@ -152,6 +152,17 @@ const mkFeed = (o = {}) => makeCheckFeed({ source: () => SRC, sample: () => ({ f
   check('and by lens and by tier', s.scout.byLens.units.n === 2 && s.scout.byLens.units.restored === 1 && s.scout.byLens.bounds.near === 1 && s.scout.byTier.small.n === 2 && s.scout.byTier.big.near === 1);
   check('skeptics likewise, a row with no lens or tier under ? and unknown, and an unknown role ignored', s.skeptic.n === 3 && s.skeptic.right === 2 && s.skeptic.wrong === 1 && s.skeptic.byLens['?'].right === 1 && s.skeptic.byTier.unknown.right === 1 && s.skeptic.byTier.big.right === 1);
 }
+// --- replies that were not a verdict
+{
+  writeFileSync(F.exam, '');
+  const feed = mkFeed({ now: () => 7000 });
+  await feed.onInvalid({ meta: { check: true, exam: { truth: true, lens: 'bounds', kind: 'ge-to-gt' }, codeText: 'x' } }, 'Sure!\u001b[2J here is my answer ' + 'z'.repeat(400), '0xaa', { node: 'nQ', tier: 'small', model: 'm1' });
+  await feed.onInvalid({ meta: { check: true, fid: 'f1', codeText: 'x' } }, 'nope', '0xbb', { node: 'nR' });
+  const rows = readRows(F.exam);
+  check('an invalid reply is kept with its role, lens, whether it was an exam, the machine and the start of what came back', rows.length === 2 && rows[0].role === 'skeptic' && rows[0].lens === 'bounds' && rows[0].exam === true && rows[0].outcome === 'invalid' && rows[0].node === 'nQ' && rows[0].tier === 'small' && rows[0].model === 'm1' && rows[0].t === 7000 && rows[0].sample.startsWith('Sure!') && rows[0].sample.length === 160 && !rows[0].sample.includes('\u001b') && rows[1].exam === false && rows[1].sample === 'nope');
+  check('invalid replies are not graded: they do not count in n, in a lens or tier total, or toward a machine\'s skill', (() => { const s = examSummary([...rows, examRow('nQ', 'right')]); return s.skeptic.invalid === 2 && s.skeptic.n === 1 && s.skeptic.right === 1 && s.skeptic.byTier.small.invalid === 1 && s.skeptic.byTier.small.n === 1 && s.skeptic.byLens.bounds.invalid === 1 && s.skeptic.byLens['?'].invalid === 1 && s.skeptic.byLens['?'].n === 0; })());
+  check('and they carry no weight', skillTable(Array.from({ length: 20 }, () => ({ role: 'skeptic', node: 'k', outcome: 'invalid' }))).size === 0);
+}
 // --- reading
 {
   writeFileSync(F.checks, '{"a":1}\nnot json\n{"torn":'); check('a torn or foreign line is skipped', readRows(F.checks).length === 1);

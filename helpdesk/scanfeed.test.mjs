@@ -81,5 +81,18 @@ f = mk(); const j3 = await f.next(); check('after a restart, files changed while
   check('a planted bug is handed out only in a snippet a node can take', planted.length >= 3 && planted.every((j) => j.meta.file === 'dapp/ok.js' && JSON.stringify(j.messages).length <= 20000));
   rmSync(d3, { recursive: true, force: true });
 }
+// an invalid reply is kept, as invalid, beside the exam results
+{
+  const d4 = mkdtempSync(path.join(tmpdir(), 'sft4-')); const exam = path.join(d4, 'exam.jsonl');
+  const f4 = makeScanFeed({ repo, ref: 'main', inbox: path.join(d4, 'i.jsonl'), cursorFile: path.join(d4, 'c.json'), refreshMs: 0, lenses: true, examFile: exam });
+  f4.onInvalid({ meta: { lens: 'units', exam: { line: 3 } } }, 'I think the code is fine.\u001b[2J', '0xaa', { node: 'n1', tier: 'small', model: 'm1' });
+  f4.onInvalid({ meta: { file: 'dapp/a.js' } }, 'prose', '0xbb', {});
+  const rows = readFileSync(exam, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  check('an invalid scout reply is kept with its lens (or window), whether it was an exam, who sent it and the start of it', rows.length === 2 && rows[0].role === 'scout' && rows[0].lens === 'units' && rows[0].exam === true && rows[0].outcome === 'invalid' && rows[0].tier === 'small' && rows[0].model === 'm1' && rows[0].miner === '0xaa' && rows[0].sample === 'I think the code is fine.[2J' && !rows[0].sample.includes('\u001b') && rows[1].lens === 'window' && rows[1].exam === false);
+  const plainFeed = makeScanFeed({ repo, ref: 'main', inbox: path.join(d4, 'i2.jsonl'), cursorFile: path.join(d4, 'c2.json'), refreshMs: 0 });
+  plainFeed.onInvalid({ meta: {} }, 'x', '0xaa', {});
+  check('a feed with no exam file keeps nothing and does not fail', readFileSync(exam, 'utf8').trim().split('\n').length === 2);
+  rmSync(d4, { recursive: true, force: true });
+}
 rmSync(d, { recursive: true, force: true });
 console.log(fails ? `${fails} scanfeed test(s) failed` : 'scanfeed: all tests passed'); process.exit(fails ? 1 : 0);

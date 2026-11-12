@@ -11,7 +11,7 @@ import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdtempSync, r
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { SYSTEM, windows, parseFindings, applyPatch } from './codecheck/scan.mjs';
+import { SYSTEM, windows, parseFindings, applyPatch, plain } from './codecheck/scan.mjs';
 import { sites, snippet } from './codecheck/lenses.mjs';
 import { plant } from './codecheck/mutate.mjs';
 import { scoutMessages, findingId, fits } from './codecheck/roles.mjs';
@@ -136,7 +136,13 @@ export function makeScanFeed({ repo, ref = 'origin/main', inbox, results = null,
         ...(lens ? { lens } : {}), ...(who.node ? { node: who.node, tier: who.tier, model: who.model } : {}), ...(fresh ? { fresh: true } : {}) }) + '\n');
     }
   }
+  // A reply that was not the JSON asked for: kept (role, lens, whether it was an exam, the machine, and the start of what came back) beside the exam results,
+  // where it is counted as invalid and not graded.
+  function onInvalid(job, text, miner, who = {}) {
+    if (!examFile) return;
+    try { appendFileSync(examFile, JSON.stringify({ t: Date.now(), role: 'scout', lens: job.meta.lens || 'window', exam: !!job.meta.exam, miner, ...who, outcome: 'invalid', sample: plain(text).slice(0, 160) }) + '\n'); } catch {}
+  }
   // what the check feed needs: the code at a commit, and a snippet to plant a bug in
   const sample = () => { if (!units) load(); const all = getSites(); if (!all.length) return null; const u = all[Math.floor(rand() * all.length)]; return { ...u, commit }; };
-  return { next, onResult, source: show, sample, size: () => { if (!units) load(); return units.length; } };
+  return { next, onResult, onInvalid, source: show, sample, size: () => { if (!units) load(); return units.length; } };
 }

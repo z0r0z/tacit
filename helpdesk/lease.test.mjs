@@ -197,6 +197,23 @@ check('isAddr', isAddr(A) && !isAddr('0x12') && !isAddr(null));
   const st = L.stats(); check('/stats counts every miner and names the ones with most points, up to the limit', st.minerCount === 3 && st.miners.length === 2 && st.miners[0].points >= st.miners[1].points && st.miners[0].points === 3);
   L.close(); }
 
+// a reply that is not the shape asked for is handed to the feed that made the job, with who sent it
+{ const bad = []; let k = 0;
+  const feed = (kind) => ({ next: async () => ({ id: kind + (++k), kind, messages: [{ role: 'user', content: 'x' }], meta: { lens: 'units' } }), onResult: async () => {}, onInvalid: async (job, text, miner, ctx) => { bad.push({ kind: job.kind, text, miner, ctx }); } });
+  const L = mk({ waitMs: 20, scanPerHour: 100, check: feed('check'), scan: feed('scan'), points: { answer: 1, canary: 1, scan: 1, check: 1 } });
+  const ask = async (kinds) => L.lease({ miner: A, ip: '88.0.0.1', kinds, hw: { ram: 16, vram: 6, cores: 4, os: 'linux', arch: 'x64' }, model: 'm1' });
+  const j1 = await ask(['scan']); const r1 = await L.submit({ id: j1.id, lease: j1.lease, miner: A, ip: '88.0.0.1', text: 'Looks fine to me.' });
+  check('a reply that is not a verdict is handed to the check feed, with the machine that sent it', r1.points === 0 && bad.length === 1 && bad[0].kind === 'check' && bad[0].text === 'Looks fine to me.' && bad[0].miner === A && bad[0].ctx.model === 'm1' && bad[0].ctx.tier === 'small' && typeof bad[0].ctx.node === 'string');
+  const feeds2 = mk({ waitMs: 20, scanPerHour: 100, scan: feed('scan'), points: { answer: 1, canary: 1, scan: 1, check: 1 } });
+  const j2 = await feeds2.lease({ miner: A, ip: '88.0.0.2', kinds: ['scan'] }); await feeds2.submit({ id: j2.id, lease: j2.lease, miner: A, ip: '88.0.0.2', text: 'no json here' });
+  check('and one that is not a review is handed to the scan feed', bad.length === 2 && bad[1].kind === 'scan');
+  const j3 = await feeds2.lease({ miner: A, ip: '88.0.0.2', kinds: ['scan'] }); await feeds2.submit({ id: j3.id, lease: j3.lease, miner: A, ip: '88.0.0.2', text: '{"findings":[]}' });
+  check('a good reply is not', bad.length === 2);
+  const old = mk({ waitMs: 20, scanPerHour: 100, scan: { next: async () => ({ id: 'o1', kind: 'scan', messages: [{ role: 'user', content: 'x' }], meta: {} }), onResult: async () => {} } });
+  const j4 = await old.lease({ miner: A, ip: '88.0.0.3', kinds: ['scan'] }); const r4 = await old.submit({ id: j4.id, lease: j4.lease, miner: A, ip: '88.0.0.3', text: 'prose' });
+  check('a feed with no way to keep it is fine', r4.points === 0 && r4.ok === true);
+  L.close(); feeds2.close(); old.close(); }
+
 // the model a node says it runs: a short plain name, or nothing
 check('a model name is kept when it is short and plain', cleanModel('qwen3.5-4b-q4_k_m') === 'qwen3.5-4b-q4_k_m' && cleanModel('gemma-3:4b') === 'gemma-3:4b' && cleanModel('x'.repeat(40)) === 'x'.repeat(40));
 check('and dropped when it is long, has spaces, markup or control characters, or is not text', [cleanModel('x'.repeat(41)), cleanModel('two words'), cleanModel('<script>'), cleanModel('a\u001b[2Jb'), cleanModel(''), cleanModel(7), cleanModel(null), cleanModel({})].every((v) => v === null));

@@ -128,7 +128,11 @@ export function makeLeases(opts = {}) {
     if (job.scan) {
       // a review is the JSON the prompt asks for (a findings list, empty when there is nothing to report; for a skeptic, a verdict); a reply that is not that is not one, and earns nothing
       const checking = job.kind === 'check';
-      if (!(checking ? verdictShape(text) : reviewed(text))) { m.errors++; log({ ev: checking ? 'check' : 'scan', miner: addr, job: job.id, points: 0, why: 'not the shape asked for' }); return { ok: true, points: 0 }; }
+      if (!(checking ? verdictShape(text) : reviewed(text))) {
+        m.errors++; log({ ev: checking ? 'check' : 'scan', miner: addr, job: job.id, points: 0, why: 'not the shape asked for' });
+        try { await (job.feed || o.scan).onInvalid?.(job, text, addr, job.ctx); } catch {}   // the feed keeps what came back, to see which prompts a model cannot follow
+        return { ok: true, points: 0 };
+      }
       try { await (job.feed || o.scan).onResult(job, text, addr, job.ctx); } catch {} const pts = credit(ck, addr, checking ? 'check' : 'scan', job); log({ ev: checking ? 'check' : 'scan', miner: addr, job: job.id, points: pts }); return { ok: true, points: pts };
     }
     const bad = o.vet(text, job.ctxText);
