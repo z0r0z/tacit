@@ -21,8 +21,8 @@ const CSS = `
 }
 .bsheet-head h2 { font: 400 32px/1 var(--serif); letter-spacing: -.01em; margin: 0; text-transform: none; color: var(--ink); }
 .bsheet-head h2:focus { outline: none; }
-.bsheet .x { margin-left: auto; width: var(--tap, 44px); height: var(--tap, 44px); display: grid; place-items: center; padding: 0; font: inherit; font-size: 22px; line-height: 1; background: none; border: 1px solid transparent; cursor: pointer; color: var(--mute); }
-@media (hover: hover) { .bsheet .x:hover { color: var(--ink); border-color: var(--hair-2); } }
+.bsheet .x { margin-left: auto; width: var(--tap, 44px); height: var(--tap, 44px); display: grid; place-items: center; padding: 0; font: inherit; font-size: 22px; line-height: 1; background: none; border: 0; border-radius: 12px; cursor: pointer; color: var(--mute); transition: color .15s, background-color .15s; }
+@media (hover: hover) { .bsheet .x:hover { color: var(--ink); background: var(--hair); } }
 .bsheet.wide .bsheet-head h2 { font-size: 28px; }
 @media (max-width: 640px) {
   .bsheet { padding: 0; place-items: end center; }
@@ -38,13 +38,14 @@ const CSS = `
 .bsheet .linkbtn:hover { color: var(--ink); }
 .bsheet-actions { display: grid; grid-auto-flow: column; gap: 10px; }
 .bsheet-actions .btn { margin-top: 0; }
+.bsheet .btn { border-radius: 14px; }
 .wc-qr { margin: 0 auto 14px; width: 224px; padding: 10px; background: #fff; border-radius: 8px; }
 .wc-qr svg { display: block; width: 100%; height: auto; }
 .addr-s { font-size: 11.5px; overflow-wrap: anywhere; }
 
 /* Which wallet signs: the front page's list, an icon and a name on each row */
 .bsheet .picker { display: grid; gap: 8px; }
-.bsheet .picker .way { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 52px; padding: 8px 14px; font: inherit; color: var(--ink); text-align: left; background: var(--field); border: 1px solid var(--hair-2); cursor: pointer; }
+.bsheet .picker .way { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 52px; padding: 8px 14px; font: inherit; color: var(--ink); text-align: left; background: var(--field); border: 1px solid var(--hair-2); border-radius: 14px; cursor: pointer; transition: border-color .15s; }
 @media (hover: hover) { .bsheet .picker .way:hover { border-color: var(--ink); } }
 .bsheet .picker .way-t { display: flex; align-items: center; gap: 12px; }
 .bsheet .picker img { width: 28px; height: 28px; }
@@ -87,7 +88,7 @@ const CSS = `
 @keyframes bsheet-pulse { 50% { opacity: .3; } }
 @media (prefers-reduced-motion: reduce) { .bsheet .opt[aria-busy="true"] .opt-t::after { animation-duration: 1.8s; } .bsheet .ways .way[aria-busy="true"] .tk { animation: none; } }
 .bsheet .more { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 18px; margin: 6px 0 0; }
-.bsheet .amt { display: flex; align-items: center; margin-top: 8px; background: var(--field); border: 1px solid var(--hair); border-bottom-color: var(--ink); }
+.bsheet .amt { display: flex; align-items: center; margin-top: 8px; background: var(--field); border: 1px solid var(--hair); border-radius: 14px; transition: border-color .15s; }
 .bsheet .amt:focus-within { border-color: var(--ink); }
 .bsheet .amt input { flex: 1; min-width: 0; font: 400 14px/1.4 var(--mono); letter-spacing: -.02em; color: var(--ink); background: none; border: 0; padding: 14px; outline: none; }
 .bsheet .amt .link { flex: none; padding: 0 14px; align-self: stretch; }

@@ -1,7 +1,7 @@
-import { makeConnect } from '/trade/connect.js?cb=f6c8f123';
+import { makeConnect } from '/trade/connect.js?cb=f59469b9';
 import { declinedWords } from '/wallet-prompts.js';
 import { addrView } from '/address-view.js?cb=58dd4914';
-import { esc } from '/trade/sheet.js?cb=1161dd4e';
+import { esc } from '/trade/sheet.js?cb=30c6e9a1';
 import { API, $, short, fmtUnits, rpc } from '/trade/util.js?cb=1d2cd8d3';
 import { discordGateMessage, DISCORD_MIN_TAC_BASE_UNITS, DISCORD_MIN_TAC_ERC20 } from '/discord/message.js?cb=0232a98d';
 import { TAC as TAC_ERC20, FARM, POOL } from '/trade/farm-read.js?cb=efe1d81e';

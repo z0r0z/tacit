@@ -3,8 +3,8 @@
 // app supplies around them and a page like this one does not have: signing in, a confirmation, a notice, the sats and TAC the key holds,
 // and where a purchase that stopped halfway is recovered. Nothing here builds or signs a transaction.
 import { makeBtcSession, short } from '/trade/btc-session.js?cb=a2b723db';
-import { overlay, esc } from '/trade/sheet.js?cb=1161dd4e';
-import { signInSheet, pickWalletSheet } from '/trade/sign-in.js?cb=921b5084';
+import { overlay, esc } from '/trade/sheet.js?cb=30c6e9a1';
+import { signInSheet, pickWalletSheet } from '/trade/sign-in.js?cb=2d47d55b';
 
 const MARKET_URL = '/btc-market.js?cb=95813848', CSS_URL = '/trade/btc-market.css?cb=0f3f9ed2';
 const TAC = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';

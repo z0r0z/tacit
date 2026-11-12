@@ -1725,7 +1725,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
 #pass-modal .pass-hint.error { color: var(--err); }
 #pass-modal .pass-hint.ok { color: var(--ok); }
 .picker { display: grid; gap: 8px; }
-.picker button { display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 8px 14px; background: var(--field); border: 1px solid var(--hair-2); cursor: pointer; text-align: left; }
+.picker button { display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 8px 14px; background: var(--field); border: 1px solid var(--hair-2); border-radius: 14px; cursor: pointer; text-align: left; transition: border-color .15s; }
 @media (hover: hover) { .picker button:hover { border-color: var(--ink); } }
 .picker img { width: 28px; height: 28px; }
 .wc-qr { width: min(264px, 100%); margin: 6px auto 18px; padding: 14px; background: #fff; border: 1px solid var(--hair); }
