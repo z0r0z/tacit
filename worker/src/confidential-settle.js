@@ -722,6 +722,9 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
 const kvLocks = new WeakMap();
 // A job record lives thirty days from its last write: far past the day an open job can wait and the hours a settle takes, and it is gone after.
 const JOB_TTL_SECS = 30 * 86400;
+// A job that ended failed is looked at for a day or two (its holder reads why, the operator may put it back on the queue, a late ack may promote it), and keeps its op
+// for that time only.
+const FAILED_JOB_TTL_SECS = 3 * 86400;
 export function buildConfidentialSettler(env, { hash, feeGate, priceFee, verifyPosted, expiryOf, refund }) {
   const KV = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
   if (KV && !kvLocks.has(KV)) kvLocks.set(KV, makeLock());
@@ -729,7 +732,7 @@ export function buildConfidentialSettler(env, { hash, feeGate, priceFee, verifyP
     getPending: async () => { const s = await KV.get('cps:pending'); return s ? JSON.parse(s) : []; },
     putPending: async (ids) => KV.put('cps:pending', JSON.stringify(ids)),
     getJob: async (id) => { const s = await KV.get('cps:job:' + id); return s ? JSON.parse(s) : null; },
-    putJob: async (id, job) => KV.put('cps:job:' + id, JSON.stringify(job), { expirationTtl: JOB_TTL_SECS }),
+    putJob: async (id, job) => KV.put('cps:job:' + id, JSON.stringify(job), { expirationTtl: job && job.status === 'failed' ? FAILED_JOB_TTL_SECS : JOB_TTL_SECS }),
     getOpen: async () => { const s = await KV.get('cps:open'); return s ? JSON.parse(s) : []; },
     putOpen: async (ids) => KV.put('cps:open', JSON.stringify(ids)),
   };
