@@ -118,7 +118,7 @@ pub fn parse_hid_idle(line: &str) -> Option<u64> {
     }
     line.rsplit('=').next()?.trim().parse::<u64>().ok().map(|ns| ns / 1_000_000_000)
 }
-fn on_ac() -> bool {
+pub fn on_ac() -> bool {
     if cfg!(target_os = "macos") {
         cmd_out("pmset", &["-g", "batt"]).map(|s| s.lines().next().unwrap_or("").contains("AC Power")).unwrap_or(true)
     } else {

@@ -11,7 +11,8 @@
 //   tacit-prover uninstall        stop that
 //   tacit-prover mine 0xADDR      prove wraps people asked to have ready (the API's proof pool) for TAC points to 0xADDR
 //
-// While mining, the cores a proof is not using grind deploy salts for TAC points too (salt.rs): a proof always comes first.
+// While mining, a few cores that a proof is not using grind deploy salts for TAC points too (salt.rs, gentle.rs): a proof always comes first, and the grinding runs at
+// the lowest priority and only on the charger.
 // With the help desk switched on (helpdesk.rs), an idle, plugged-in computer also answers the community help desk's questions
 // with a small local model; the model is stopped the moment a proof starts or waits.
 //
@@ -19,7 +20,8 @@
 // under development adds its own),
 // TACIT_PROVER_DIR (~/.tacit-prover: finished proofs), TACIT_METAL=0 (CPU leaf hashing), TACIT_MINE=0xADDR (serve mines the
 // proof pool while it has nothing of its own to prove), TACIT_POOL_API (https://api.tacit.finance), and the SDK's
-// SP1_WORKER_NUM_*_WORKERS (one per stage by default below 16 GB of RAM), TACIT_SALT_THREADS (cores that grind salts; half by default, 0 is off).
+// SP1_WORKER_NUM_*_WORKERS (one per stage by default below 16 GB of RAM), TACIT_SALT_THREADS (cores that grind salts; a quarter by default, 0 is off), TACIT_SALT_BATTERY=1 (grind on battery too: by default it waits for the charger), TACIT_SALT_PRIORITY=normal (grind at normal priority: by default the lowest, so the person's own work comes first).
+mod gentle;
 mod helpdesk;
 mod hw;
 mod salt;
