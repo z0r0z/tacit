@@ -28504,7 +28504,8 @@ async function _routeFetch(req, env, ctx) {
         // Cache key includes limit so different limit values get their
         // own cache entry (a request for limit=20 doesn't replay a
         // limit=100 cached body, which would be wrong).
-        const limit = url.searchParams.get('limit') || '100';
+        // keyed by the limit the handler applies (a whole number from 1 to 800), never by the text of the parameter
+        const limit = String(Math.max(1, Math.min(safeInt(url.searchParams.get('limit'), 100, { min: 1, max: 800 }), 800)));
         return ceremonyCacheGet(ctx, cors, 30, `https://_ceremony-cache_/attestations/${hash}/${limit}`,
           () => handleCeremonyAttestations(req, env, url, hash, cors));
       }
