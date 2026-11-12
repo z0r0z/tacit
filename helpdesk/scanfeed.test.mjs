@@ -10,7 +10,8 @@ const git = (...a) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c'
 const body = (tag, n) => Array.from({ length: n }, (_, i) => `const ${tag}${i} = ${i} + 1;`).join('\n') + '\n';
 git('init', '-q', '-b', 'main'); writeFileSync(path.join(repo, 'dapp/a.js'), body('a', 120)); writeFileSync(path.join(repo, 'dapp/b.js'), body('b', 30)); writeFileSync(path.join(repo, 'dapp/big.js'), body('z', 400));
 git('add', '.'); git('commit', '-qm', 'one');
-const mk = () => makeScanFeed({ repo, ref: 'main', inbox: path.join(d, 'inbox.jsonl'), cursorFile: path.join(d, 'cur.json'), refreshMs: 0, maxLines: 300 });
+const resultsFile = path.join(d, 'results.jsonl');
+const mk = () => makeScanFeed({ repo, ref: 'main', inbox: path.join(d, 'inbox.jsonl'), results: resultsFile, cursorFile: path.join(d, 'cur.json'), refreshMs: 0, maxLines: 300 });
 let f = mk();
 const first = []; for (let i = 0; i < 4; i++) first.push((await f.next()).meta.file + ':' + (await Promise.resolve(0)));
 check('files over the line cap are left out (and the cap is configurable)', !first.some((x) => x.startsWith('dapp/big.js')));
@@ -18,11 +19,17 @@ check('windows rotate through the eligible files', new Set(first.map((x) => x.sp
 // new commit: b.js changes, a.js does not -> b's window comes first
 writeFileSync(path.join(repo, 'dapp/b.js'), body('b', 30).replace('b3 = 3', 'b3 = 99')); git('commit', '-qam', 'two');
 const j = await f.next(); check('a new commit is picked up while running, and the changed file is reviewed first', j.meta.file === 'dapp/b.js' && j.meta.commit === git('rev-parse', 'HEAD').trim());
+check('a window of changed code is marked fresh, one from the rotation is not', j.meta.fresh === true && first.length === 4 && (await f.next()).meta.fresh === false);
 // dedupe: the same finding filed twice -> one line, even after a restart and after a reviewer marked it
 const find = JSON.stringify({ findings: [{ line: 4, why: 'x', old: 'const b3 = 99;', new: 'const b3 = 100;' }] });
 await f.onResult(j, find, '0xaa'); await f.onResult(j, find, '0xbb');
 const lines = () => readFileSync(path.join(d, 'inbox.jsonl'), 'utf8').trim().split('\n');
 check('the same suggestion is filed once, not once per pass', lines().length === 1);
+check('a fresh window files its suggestion as fresh', JSON.parse(lines()[0]).fresh === true);
+const stats = () => readFileSync(resultsFile, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+check('every window looked at is counted once, with who looked and how many findings', stats().length === 2 && stats()[0].miner === '0xaa' && stats()[0].n === 1 && stats()[1].miner === '0xbb' && typeof stats()[0].t === 'number');
+await f.onResult(j, JSON.stringify({ findings: [] }), '0xdd');
+check('a window with nothing to suggest is still counted', stats().length === 3 && stats()[2].n === 0);
 writeFileSync(path.join(d, 'inbox.jsonl'), lines().map((l) => JSON.stringify({ ...JSON.parse(l), review: 'rejected' })).join('\n') + '\n');
 f = mk(); await f.next(); await f.onResult({ meta: { file: 'dapp/b.js', commit: j.meta.commit, start: 1, end: 30 } }, find, '0xcc');   // the same file, the same finding, a new process
 check('a restart does not re-file it, and a rejection sticks', lines().length === 1 && JSON.parse(lines()[0]).review === 'rejected');

@@ -10,14 +10,15 @@ export const NUDGE_LABELS = Object.freeze({ useful: 'Useful', noise: 'Noise', kn
 
 const MAX_FINDINGS = 8, MAX_BODY = 40_000, KEEP_SECONDS = 120 * 86400, MAX_REPORT_DAYS = 120;
 const SEVERITY = ['low', 'med', 'high'];
-const STATUS_TEXT = { real: 'verified', outside: 'needs a fact from outside the code' };
+const STATUS_TEXT = { real: 'verified', outside: 'needs a fact from outside the code', candidate: 'community reviewer' };
+const UNITS = ['commit', 'window'];
 const ID = /^n\d{6}-\d{1,2}$/;
 
 // One line of plain text: a link or an invite code becomes "[link]" (a finding describes code and never needs one), control characters and runs of
 // whitespace become one space, backticks become quotes (the renderer wraps some fields in backticks), and an @ is followed by a zero-width space so no
 // pasted text can name a role or everyone.
 export function clean(s, max) {
-  return String(s ?? '').replace(/\b(?:https?:\/\/|discord(?:app)?\.(?:gg|com\/invite)\/)\S*/gi, '[link]').replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/`/g, "'").replace(/@/g, '@​').replace(/\s+/g, ' ').trim().slice(0, max);
+  return String(s ?? '').replace(/\b(?:https?:\/\/|discord(?:app)?\.(?:gg|com\/invite)\/)\S*/gi, '[link]').replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/`/g, "'").replace(/@/g, '@​').replace(/\s+/g, ' ').trim().slice(0, max).trim();
 }
 
 export const idPrefix = (day) => `n${day.slice(2, 4)}${day.slice(5, 7)}${day.slice(8, 10)}-`;
@@ -45,18 +46,20 @@ export function parseDigest(b) {
       claim: clean(f.claim, 600),
       evidence: clean(f.evidence, 500),
       severity: SEVERITY.includes(f.severity) ? f.severity : 'low',
-      status: f.status === 'outside' ? 'outside' : 'real',
+      // anything that is not said to be verified is the least trusted kind
+      status: f.status === 'real' || f.status === 'outside' ? f.status : 'candidate',
+      by: clean(f.by, 20),
     });
     if (!findings[findings.length - 1].claim) return { error: 'a finding has no claim' };
   }
-  const reviewed = Number.isInteger(b.reviewed) && b.reviewed >= 0 && b.reviewed <= 1000 ? b.reviewed : 0;
-  return { digest: { day, reviewed, findings } };
+  const reviewed = Number.isInteger(b.reviewed) && b.reviewed >= 0 && b.reviewed <= 100_000 ? b.reviewed : 0;
+  return { digest: { day, reviewed, unit: UNITS.includes(b.unit) ? b.unit : 'commit', findings } };
 }
 
 export function renderFinding(f) {
   const where = f.file ? `\`${f.file}${f.line ? `:${f.line}` : ''}\`` : '';
   const lines = [
-    `**${f.severity} · ${STATUS_TEXT[f.status]}** ${where}${f.commit ? ` · \`${f.commit.slice(0, 7)}\`` : ''}${f.subject ? ` ${f.subject}` : ''}`,
+    `**${f.severity} · ${STATUS_TEXT[f.status]}**${f.by ? ` · by ${f.by}` : ''} ${where}${f.commit ? ` · \`${f.commit.slice(0, 7)}\`` : ''}${f.subject ? ` ${f.subject}` : ''}`,
     f.claim,
     f.evidence ? `> ${f.evidence}` : '',
     `\`${f.id}\``,
@@ -69,8 +72,8 @@ export function renderFinding(f) {
   };
 }
 
-export const renderQuiet = (day, reviewed) => ({
-  content: `Nothing worth a look today: ${reviewed} commit${reviewed === 1 ? '' : 's'} reviewed (${day}).`,
+export const renderQuiet = (day, reviewed, unit = 'commit') => ({
+  content: `Nothing worth a look today: ${reviewed} ${unit}${reviewed === 1 ? '' : 's'} reviewed (${day}).`,
   allowed_mentions: { parse: [] },
   flags: 4,
 });
@@ -115,7 +118,7 @@ export async function postDigest(env, digest, fetchImpl = fetch) {
   const posted = [];
   const save = (done) => env.REGISTRY_KV.put(dayKey, JSON.stringify({ ids: posted, done }), { expirationTtl: KEEP_SECONDS });
   if (!digest.findings.length) {
-    const r = await sendMessage(env, renderQuiet(digest.day, digest.reviewed), fetchImpl);
+    const r = await sendMessage(env, renderQuiet(digest.day, digest.reviewed, digest.unit), fetchImpl);
     if (!r.ok) return { status: 502, body: { ok: false, error: r.error } };
   }
   for (const f of digest.findings) {
@@ -161,7 +164,7 @@ export async function labelsReport(env, since, now = new Date()) {
     if (!raw) continue;
     for (const id of JSON.parse(raw).ids) {
       const f = await env.REGISTRY_KV.get(`nudge:f:${id}`);
-      if (f) { const r = JSON.parse(f); rows.push({ id, day, file: r.file, line: r.line, commit: r.commit, severity: r.severity, status: r.status, label: r.label || null, by_name: r.by_name || null }); }
+      if (f) { const r = JSON.parse(f); rows.push({ id, day, file: r.file, line: r.line, commit: r.commit, severity: r.severity, status: r.status, by: r.by || null, label: r.label || null, by_name: r.by_name || null }); }
     }
   }
   const count = (k) => rows.filter((r) => r.label === k).length;

@@ -13,10 +13,12 @@ import { looksLikeSecret } from './guard.mjs';
 import { makeBackend, BusyError } from './backend.mjs';
 import { makeLeases, makeVet, isAddr, creditsFor } from './lease.mjs';
 import { makeScanFeed } from './scanfeed.mjs';
+import { makeDigestPoster } from './reviewdigest.mjs';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 // DATA_DIR: where this process keeps what must outlive a restart (the points ledger, the review inbox, the scan cursor, lease state, embeddings). On a host with a
 // persistent disk, point it there.
 const DATA = process.env.DATA_DIR || HERE; mkdirSync(DATA, { recursive: true });
+const INBOX = path.join(DATA, 'suggestions.jsonl'), SCAN_RESULTS = path.join(DATA, 'scan-results.jsonl');
 // LLM_URLS: comma-separated OpenAI-compatible backends, tried in order with timeout, retry and a circuit breaker. Typical:
 //   LLM_URLS=http://127.0.0.1:8089,http://127.0.0.1:8090   (OpenAI-compatible servers, tried in order)
 //   LLM_URLS=                                                (empty: no steady backend, community nodes only; a visitor gets the "nodes offline" reply when none is up)
@@ -113,7 +115,7 @@ const leases = makeLeases({
   ledger: path.join(DATA, 'ledger.jsonl'), persist: path.join(DATA, 'leases-state.json'),
   points: { answer: Number(process.env.POINTS_ANSWER ?? 1), canary: Number(process.env.POINTS_CANARY ?? 1), scan: Number(process.env.POINTS_SCAN ?? 1) }, clientMaxPerDay: Number(process.env.POINTS_MAX_DAY ?? 100), vet: makeVet(corpus.chunks.map((c) => c.text).join('\n')),
   canaryEvery: Number(process.env.CANARY_EVERY || 6), waitMs: Number(process.env.LEASE_HOLD_MS || 20000),
-  scan: process.env.SCAN_REPO ? makeScanFeed({ repo: process.env.SCAN_REPO, ref: process.env.SCAN_REF || 'origin/main', inbox: path.join(DATA, 'suggestions.jsonl'), cursorFile: path.join(DATA, 'scan-cursor.json') }) : null,
+  scan: process.env.SCAN_REPO ? makeScanFeed({ repo: process.env.SCAN_REPO, ref: process.env.SCAN_REF || 'origin/main', inbox: INBOX, results: SCAN_RESULTS, cursorFile: path.join(DATA, 'scan-cursor.json') }) : null,
   canary: async () => { const c = CANARIES[canaryI++ % CANARIES.length]; const { chunks } = await retrieve(c.q); return { messages: promptFor(c.q, chunks), check: c.check, ctxText: chunks.map((x) => x.text).join('\n') }; },
 });
 
@@ -234,6 +236,13 @@ if (process.argv[2] === 'serve') {
     }
     res.writeHead(404); res.end();
   }).listen(Number(process.env.PORT || 8787), process.env.HOST || '127.0.0.1', () => console.log(`help desk PoC on http://${process.env.HOST || '127.0.0.1'}:${process.env.PORT || 8787}`));
+  // NUDGER_SECRET (the same value the API holds) turns on the daily digest of what the community reviewers filed, to the team's review channel through the API.
+  if (process.env.SCAN_REPO && process.env.NUDGER_SECRET) {
+    const poster = makeDigestPoster({ api: (process.env.NUDGER_API || 'https://api.tacit.finance').replace(/\/+$/, ''), secret: process.env.NUDGER_SECRET, inbox: INBOX, results: SCAN_RESULTS, stateFile: path.join(DATA, 'digest-state.json'), hourUtc: Number(process.env.NUDGER_HOUR_UTC ?? 6), max: Number(process.env.NUDGER_MAX ?? 8) });
+    const run = () => poster.tick().then((r) => { if (r) console.log(r.error ? `review digest: ${r.error}` : `review digest: ${r.posted} posted, ${r.reviewed} windows looked at`); }, (e) => console.log(`review digest: ${e.message}`));
+    const every = Number(process.env.NUDGER_TICK_MS || 10 * 60_000);
+    setTimeout(run, Math.min(60_000, every)).unref(); setInterval(run, every).unref();
+  }
 } else if (process.argv[2] === 'eval') {
   const qp = path.resolve(process.argv[4] || path.join(HERE, 'questions.mjs')); const QUESTIONS = qp.endsWith('.json') ? JSON.parse(readFileSync(qp, 'utf8')) : ((m) => m.QUESTIONS || m.HELD)(await import(qp));
   const out = {};

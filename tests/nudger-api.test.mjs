@@ -57,8 +57,12 @@ ok('a digest is refused for a bad day, a bad id, a repeated id, too many finding
   parseDigest(digest(Array.from({ length: 9 }, (_, i) => finding(i + 1)))), parseDigest(digest([finding(1, { claim: '  ' })])), parseDigest(digest([finding(1, { id: 'n261111-1' })])),
 ].every((r) => r.error));
 const p = parseDigest(digest([finding(1, { severity: 'huge', status: 'maybe', line: -3, commit: 'nothex' })]));
-ok('odd severity, status, line and commit fall back to safe values', p.digest?.findings[0].severity === 'low' && p.digest.findings[0].status === 'real' && p.digest.findings[0].line === 0 && p.digest.findings[0].commit === '');
+ok('odd severity, status, line and commit fall back to safe values', p.digest?.findings[0].severity === 'low' && p.digest.findings[0].status === 'candidate' && p.digest.findings[0].line === 0 && p.digest.findings[0].commit === '');
 const m = renderFinding(parseDigest(digest([finding(1, { claim: 'x'.repeat(900), evidence: 'y'.repeat(900) })])).digest.findings[0]);
+const cand = renderFinding(parseDigest(digest([finding(1, { status: 'candidate', by: '0x1c0a\u20268d28', subject: 'window 120-230' })])).digest.findings[0]);
+ok('a community reviewer\'s finding says so and who made it, and is not called verified', cand.content.includes('community reviewer') && cand.content.includes('by 0x1c0a\u20268d28') && !cand.content.includes('verified'));
+ok('a status that is neither verified nor outside is a community one: the least trusted', ['maybe', undefined, '', 'REAL', 7].every((st) => parseDigest(digest([finding(1, { status: st })])).digest.findings[0].status === 'candidate') && parseDigest(digest([finding(1, { status: 'real' })])).digest.findings[0].status === 'real');
+ok('what a reviewer names itself by is one clean line of at most 20 characters, never a link or a ping', parseDigest(digest([finding(1, { by: 'x @everyone https://evil.example y' })])).digest.findings[0].by === 'x @\u200beveryone [link]');
 ok('a message stays under Discord\'s limit, pings nobody, shows no previews, and has three buttons with the finding in each id', m.content.length <= 1900 && m.allowed_mentions.parse.length === 0 && m.flags === 4
   && m.components[0].components.length === 3 && m.components[0].components.every((b) => b.custom_id.endsWith(':n261112-1') && b.custom_id.length < 100));
 
@@ -90,6 +94,11 @@ ok('and what was posted already shows in the report, before any retry', (await (
 const before = sent.length;
 const retry = await (await post('/nudger/digest', { day: '2026-11-11', reviewed: 2, findings: [finding(1, { id: 'n261111-1' }), finding(2, { id: 'n261111-2' })] })).json();
 ok('a retry posts only the finding that was missing', retry.ok === true && sent.length === before + 1 && sent[sent.length - 1].body.content.includes('n261111-2'), retry);
+
+// a day's quiet line counts what was reviewed in the unit the producer says: windows of code, not only commits
+const quietW = await post('/nudger/digest', { day: '2026-11-08', reviewed: 288, unit: 'window', findings: [] });
+ok('a quiet day of window reviews says how many windows', quietW.status === 200 && sent[sent.length - 1].body.content.includes('Nothing worth a look today: 288 windows reviewed'));
+ok('and an unknown unit is read as commits', (await post('/nudger/digest', { day: '2026-11-07', reviewed: 1, unit: 'banana', findings: [] })).status === 200 && sent[sent.length - 1].body.content.includes('1 commit reviewed'));
 
 // the connection check
 const before2 = sent.length;
