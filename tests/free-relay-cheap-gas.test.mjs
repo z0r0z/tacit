@@ -139,3 +139,13 @@ test('an op the relay declines to prove gives its settle back', async () => {
 });
 
 test.after(() => { globalThis.fetch = realFetch; });
+
+test('a fast-bridge lock and claim are a class of their own: what else uses up the allowance of "other" does not stop them, and their own allowance holds', async () => {
+  gasWei = gwei(0.2);
+  const { env } = fresh({ FREE_RELAY_CAP_OTHER: '2', FREE_RELAY_CAP_FAST: '3' });
+  assert.deepEqual(await many(env, 'transfer', 3), [200, 200, 429], 'the rest are taken up to their allowance of two');
+  assert.deepEqual(await many(env, 'adaptorlock', 2), [200, 200], 'a lock still goes, whatever the rest used');
+  assert.deepEqual(await many(env, 'adaptorclaim', 2), [200, 429], 'a claim shares the allowance of three with the locks, which then holds');
+  const open = fresh({ FREE_RELAY_CAP_OTHER: '1' });
+  assert.deepEqual(await many(open.env, 'adaptorlock', 4), [200, 200, 200, 200], 'with no allowance set for them only the day\'s total applies');
+});

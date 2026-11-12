@@ -14,19 +14,23 @@ const walletSettle = new Function(`${body.replace('export function', 'function')
 
 const ASSET = 'ab'.repeat(32);
 const OPEN = { status: 'open', publicValues: '0xaa', proof: '0xbb', memos: ['0xcc'] };
-function adapter({ status = OPEN, selfSettle = null, notes = [], transfer = null, held = false, prove = null } = {}) {
+function adapter({ status = OPEN, selfSettle = null, notes = [], transfer = null, held = false, relayState = null, prove = null, submitOp = null, ownAccount = null, balance = 10n ** 18n, gasPrice = 10n ** 9n } = {}) {
   let t = 0;
-  const landed = [];
+  const landed = [], reads = [];
   const ux = {
-    pool: { leaf: (a, x) => x, nullifier: (l) => l }, rpc: async () => null, identity: () => ({ pubHex: '03' }), chainBindingHex: () => '0x00',
+    pool: { leaf: (a, x) => x, nullifier: (l) => l },
+    rpc: async (m) => { reads.push(m); if (m === 'eth_getBalance') { if (balance instanceof Error) throw balance; return '0x' + balance.toString(16); } if (m === 'eth_gasPrice') return '0x' + gasPrice.toString(16); return null; },
+    identity: () => ({ pubHex: '03' }), chainBindingHex: () => '0x00',
     balance: async () => ({ byAsset: { ['0x' + ASSET]: { notes } } }),
-    relay: { status: async (id) => ({ jobId: id, ...(typeof status === 'function' ? status() : status) }), landed: async (id, h) => { landed.push([id, h]); }, state: async () => ({ state: held ? 'held' : 'ok' }), prove: prove || (async () => { throw new Error('not asked'); }) },
+    relay: { status: async (id) => ({ jobId: id, ...(typeof status === 'function' ? status() : status) }), landed: async (id, h) => { landed.push([id, h]); }, state: async () => ({ state: relayState || (held ? 'held' : 'ok') }), prove: prove || (async () => { throw new Error('not asked'); }), submitOp: submitOp || (async () => ({ jobId: 'relay-job' })) },
     transfer: transfer || (async () => ({})),
   };
   const logs = [];
-  const evm = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256: (k, m) => hmac(sha256, k, m), walletPriv: new Uint8Array(32).fill(1), seed: new Uint8Array(32), asset: ASSET, poolAddress: '0x' + '11'.repeat(20), selfSettle, openGraceMs: 1000, selfRetryMs: 5000, clock: () => t, log: (o) => logs.push(o) });
-  return { evm, landed, logs, at: (ms) => { t = ms; } };
+  const evm = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256: (k, m) => hmac(sha256, k, m), walletPriv: new Uint8Array(32).fill(1), seed: new Uint8Array(32), asset: ASSET, poolAddress: '0x' + '11'.repeat(20), selfSettle, ownAccount, openGraceMs: 1000, selfRetryMs: 5000, clock: () => t, log: (o) => logs.push(o) });
+  return { evm, landed, logs, reads, at: (ms) => { t = ms; } };
 }
+const refuse = (message, extra = {}) => Object.assign(new Error(message), { httpStatus: 429, ...extra });
+const BUNDLE = { op: { kind: 'lock' }, leaves: [], outputs: null, lockMemos: ['0x'] };
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
 const tests = [];
@@ -98,6 +102,112 @@ test('the cut of a note that the relay holds is sent from the wallet with the me
   assert.deepEqual(sent, [{ jobId: 'c1', publicValues: '0x1', proof: '0x2', memos: ['0x3'] }]);
   const b = adapter({ notes: [{ leaf: '0x' + '0'.repeat(63) + '1', value: '5000' }], transfer: async () => { throw held; } });
   await assert.rejects(b.evm.prepare({ rec: { offer: { evm: { amount: '1000' } } } }), /settle held/, 'without a wallet the hold is said, as before');
+});
+
+// ── a provider with an account of its own: what the relay refuses at the door is proved prove-only and sent from the account ──
+
+test('a lock the relay refuses at the door (its free settles for the day are used up) is proved prove-only and sent from the own account at once; the relay is not asked again while its wait runs', async () => {
+  const asked = [], proved = [], sent = [];
+  const a = adapter({
+    ownAccount: { address: '0xabc' },
+    submitOp: async (spec) => { asked.push(spec.type); throw refuse('relay 429: free relayed settles for today are used up (48/48) — attach a fee above the floor, or prove-mode and settle it yourself', { code: 'free_budget' }); },
+    prove: async (spec) => { proved.push(spec); return { jobId: 'p1', status: 'proven', publicValues: '0x5', proof: '0x6', memos: ['0x7'] }; },
+    selfSettle: async (x) => { sent.push(x); return { txHash: '0xfeed' }; },
+  });
+  const { jobId } = await a.evm.submit('adaptorlock', BUNDLE);
+  assert.match(jobId, /^own-adaptorlock-/, 'a job of its own, not one the relay knows');
+  assert.equal(asked.length, 1);
+  assert.equal(await a.evm.jobStatus(jobId, { type: 'adaptorlock', bundle: BUNDLE }), 'pending'); await tick(); await tick();
+  assert.deepEqual(proved.map((x) => [x.type, x.op.kind]), [['adaptorlock', 'lock']], 'the same op, proved prove-only: not one of the free settles');
+  assert.deepEqual(sent, [{ jobId: 'p1', publicValues: '0x5', proof: '0x6', memos: ['0x7'] }], 'sent at once, with no while given to the relay');
+  assert.equal(await a.evm.jobStatus(jobId, { type: 'adaptorlock', bundle: BUNDLE }), 'settled');
+  assert.equal(sent.length, 1, 'sent once');
+  a.at(5000); const second = await a.evm.submit('adaptorlock', BUNDLE);
+  assert.match(second.jobId, /^own-/); assert.equal(asked.length, 1, 'the relay is not asked again within its wait');
+  a.at(59999); await a.evm.submit('adaptorlock', BUNDLE); assert.equal(asked.length, 1, 'the wait is a minute when the relay names none');
+  a.at(60000); await a.evm.submit('adaptorlock', BUNDLE); assert.equal(asked.length, 2, 'asked again once the wait is over');
+});
+
+test('an own job that is not yet sent is proved and sent again after a restart (the record has the op), and a try that fails waits before the next', async () => {
+  let n = 0;
+  const a = adapter({
+    ownAccount: { address: '0xabc' }, submitOp: async () => { throw refuse('relay 429: the relay can’t take this one just now: it is catching up on settles. Send it from your own account instead', { code: 'relay_held', retryAfter: 300 }); },
+    prove: async () => ({ jobId: 'p', status: 'proven', publicValues: '0x1', proof: '0x2', memos: [] }),
+    selfSettle: async () => { n++; if (n === 1) throw new Error('insufficient funds'); return { txHash: '0x1' }; },
+  });
+  const { jobId } = await a.evm.submit('adaptorlock', BUNDLE);
+  await a.evm.jobStatus(jobId, { type: 'adaptorlock', bundle: BUNDLE }); await tick(); await tick();
+  assert.equal(n, 1); assert.match(a.logs.find((l) => l.level === 'warn' && l.error).error, /insufficient funds/);
+  a.at(4999); await a.evm.jobStatus(jobId, { type: 'adaptorlock', bundle: BUNDLE }); assert.equal(n, 1, 'waits after a failure');
+  a.at(5000); await a.evm.jobStatus(jobId, { type: 'adaptorlock', bundle: BUNDLE }); await tick(); await tick(); assert.equal(n, 2);
+  assert.equal(await a.evm.jobStatus(jobId, { type: 'adaptorlock', bundle: BUNDLE }), 'settled');
+  // a process that started after: the id is all it has, with the op from the record
+  let m = 0;
+  const b = adapter({ ownAccount: { address: '0xabc' }, prove: async () => ({ jobId: 'q', publicValues: '0x1', proof: '0x2', memos: [] }), selfSettle: async () => { m++; return { txHash: '0x2' }; } });
+  assert.equal(await b.evm.jobStatus('own-adaptorlock-zz-1', { type: 'adaptorlock', bundle: BUNDLE }), 'pending'); await tick(); await tick();
+  assert.equal(m, 1); assert.equal(await b.evm.jobStatus('own-adaptorlock-zz-1', { type: 'adaptorlock', bundle: BUNDLE }), 'settled');
+  assert.equal(await b.evm.jobStatus('own-adaptorlock-yy-2'), 'pending', 'with no op to prove it waits, and is not called failed by asking the relay');
+});
+
+test('a refusal is kept per type of op: with the free settles used up for a lock, a refund that carries a fee still goes to the relay, and a refusal of a refund does not stop the provider quoting', async () => {
+  const asked = [];
+  const a = adapter({
+    ownAccount: { address: '0xabc' }, selfSettle: async () => ({}),
+    submitOp: async (spec) => { asked.push(spec.type); if (spec.type === 'adaptorlock') throw refuse('relay 429: free relayed settles for today are used up (48/48)', { code: 'free_budget' }); return { jobId: 'relay-refund' }; },
+  });
+  assert.match((await a.evm.submit('adaptorlock', BUNDLE)).jobId, /^own-/);
+  assert.deepEqual(await a.evm.submit('adaptorrefund', BUNDLE), { jobId: 'relay-refund' }, 'the relay is asked about the refund, which pays its way');
+  assert.deepEqual(asked, ['adaptorlock', 'adaptorrefund']);
+  const b = adapter({ ownAccount: { address: '0xabc' }, selfSettle: async () => ({}), balance: 0n, submitOp: async () => { throw refuse('relay 429: the settle bound fee is below the marginal cost of $0.30', {}); } });
+  await b.evm.submit('adaptorrefund', BUNDLE);
+  assert.equal((await b.evm.ready()).ok, true, 'only a refused lock says the provider cannot lock');
+});
+
+test('a fault is not a refusal: it is thrown and not remembered; a refusal of a provider with no account of its own is thrown, and said again without asking the relay', async () => {
+  let asked = 0;
+  const fault = adapter({ ownAccount: { address: '0xabc' }, selfSettle: async () => ({}), submitOp: async () => { asked++; throw new Error('relay 500: boom'); } });
+  await assert.rejects(fault.evm.submit('adaptorlock', BUNDLE), /boom/); await assert.rejects(fault.evm.submit('adaptorlock', BUNDLE), /boom/);
+  assert.equal(asked, 2, 'a fault is asked again at once');
+  asked = 0;
+  const page = adapter({ selfSettle: async () => ({}), submitOp: async () => { asked++; throw refuse('relay 429: too many submit requests — retry in ~40s', { retryAfter: 40 }); } });
+  await assert.rejects(page.evm.submit('adaptorclaim', BUNDLE), /too many submit requests/);
+  page.at(1000); await assert.rejects(page.evm.submit('adaptorclaim', BUNDLE), /too many submit requests/);
+  assert.equal(asked, 1, 'within the relay’s own wait the refusal is said again, the relay is not asked');
+  page.at(41000); await assert.rejects(page.evm.submit('adaptorclaim', BUNDLE), /too many/); assert.equal(asked, 2);
+  const ok = adapter({ ownAccount: { address: '0xabc' }, selfSettle: async () => ({}) });
+  assert.deepEqual(await ok.evm.submit('adaptorlock', BUNDLE), { jobId: 'relay-job' }, 'a relay that takes it is used as before');
+});
+
+test('ready: the relay is a way while it proves and sends; otherwise only an own account with the gas of a settle, read at most every 20 s', async () => {
+  const noop = async () => ({ txHash: '0x' });
+  assert.deepEqual(await adapter().evm.ready(), { ok: true });
+  assert.match((await adapter({ relayState: 'paused' }).evm.ready()).why, /not proving/);
+  assert.match((await adapter({ relayState: 'down', ownAccount: { address: '0xabc' }, selfSettle: noop }).evm.ready()).why, /not proving/, 'a relay that does not prove cannot prove it for the account either');
+  const held = await adapter({ held: true }).evm.ready();
+  assert.deepEqual([held.ok, /not sending settles/.test(held.why)], [false, true], 'held, and no way of its own');
+  assert.deepEqual(await adapter({ held: true, selfSettle: noop }).evm.ready(), { ok: true }, 'a wallet the page asks is the way, as it always was');
+  const rich = adapter({ held: true, ownAccount: { address: '0xabc' }, selfSettle: noop, balance: 10n ** 16n });
+  assert.deepEqual(await rich.evm.ready(), { ok: true });
+  assert.ok(rich.reads.includes('eth_getBalance'));
+  const poor = await adapter({ held: true, ownAccount: { address: '0xabc' }, selfSettle: noop, balance: 10n ** 12n }).evm.ready();
+  assert.deepEqual([poor.ok, /low on ETH/.test(poor.why)], [false, true]);
+  const cheap = await adapter({ held: true, ownAccount: { address: '0xabc' }, selfSettle: noop, balance: 489059220684905n, gasPrice: 61820471n }).evm.ready();
+  assert.equal(cheap.ok, true, 'the balance the house provider holds today covers a settle at today’s gas');
+  const dear = await adapter({ held: true, ownAccount: { address: '0xabc' }, selfSettle: noop, balance: 489059220684905n, gasPrice: 5n * 10n ** 9n }).evm.ready();
+  assert.equal(dear.ok, false, 'and not at 5 gwei');
+  const blind = await adapter({ held: true, ownAccount: { address: '0xabc' }, selfSettle: noop, balance: new Error('node down') }).evm.ready();
+  assert.deepEqual([blind.ok, /cannot be read/.test(blind.why)], [false, true]);
+  // a refusal at the door makes the relay not a way for its wait, whatever its state says
+  const r = adapter({ ownAccount: { address: '0xabc' }, selfSettle: noop, balance: 0n, submitOp: async () => { throw refuse('relay 429: free relayed settles for today are used up (48/48)', { code: 'free_budget' }); } });
+  assert.equal((await r.evm.ready()).ok, true);
+  r.at(1); await r.evm.submit('adaptorlock', BUNDLE);
+  const after = await r.evm.ready();
+  assert.deepEqual([after.ok, /free settles for today are used up, and the provider’s own account is low on ETH/.test(after.why)], [false, true], 'the refusal is seen at once, not after the cache runs out');
+  r.at(700000); assert.equal((await r.evm.ready()).ok, true, 'and forgotten once its wait is over');
+  const c = adapter({ held: true, ownAccount: { address: '0xabc' }, selfSettle: noop });
+  const balanceReads = () => c.reads.filter((m) => m === 'eth_getBalance').length;
+  await c.evm.ready(); c.at(19999); await c.evm.ready(); assert.equal(balanceReads(), 1, 'read once within 20 s');
+  c.at(20000); await c.evm.ready(); assert.equal(balanceReads(), 2, 'and again after');
 });
 
 function walletStub({ chain = '0x1', switchTo = '0x1', receipt = { status: '0x1' }, call = null } = {}) {

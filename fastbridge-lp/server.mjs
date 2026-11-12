@@ -56,7 +56,15 @@ const { prims } = makeBtcWallet({ priv: key, hrp: network === 'mainnet' ? 'bc' :
 const builder = makeAdaptorBtcTx({ prims, kit: tacitKit(tacit) });
 const ux = makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256, fetchImpl: (u, o) => fetch(u, o), network, logStore: makeFileLogStore(resolve(C.dataDir || 'fastbridge-lp/data', 'logs')) });
 if (savedLocation) Object.defineProperty(globalThis, 'location', savedLocation);
-const evm = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: key, seed, asset: C.evmAsset, poolAddress: C.poolAddress, policy: { minClaimSecs: C.policy.minClaimSecs } });
+// What the relay will not send (its free settles for the day are used up, it is held, it is busy) this process sends from its own account, the
+// Ethereum address of the key, which holds the ETH for it. The settle is tried first, so one the pool would refuse costs nothing.
+const acct = ux.account(key);
+const selfSettle = async (x) => {
+  if (!x || !x.publicValues || !x.proof) throw new Error('there is no proof to send');
+  await ux.rpc('eth_call', [{ from: acct.address, to: ux.cfg.pool, data: ux.settleCalldata(x) }, 'latest']);
+  return ux.settleFromAccount({ settlerPriv: key, publicValues: x.publicValues, proof: x.proof, memos: x.memos || [] });
+};
+const evm = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: key, seed, asset: C.evmAsset, poolAddress: C.poolAddress, policy: { minClaimSecs: C.policy.minClaimSecs }, selfSettle, ownAccount: { address: acct.address }, selfRetryMs: 60000, log });
 const btc = makeNodeBtcChain({
   bases: C.btcBases, tacit, prims, builder, pool: ux.pool, ethGetStorageAt: (to, slot, tag) => ux.rpc('eth_getStorageAt', [to, slot, tag]),
   poolAddress: C.poolAddress, binding: ux.chainBindingHex(), keccak256: keccak_256, secp,
@@ -78,7 +86,6 @@ const alert = (o) => { log(o); if (process.env.FB_LP_ALERT_WEBHOOK) fetch(proces
 // a dry run keeps its swaps and quotes in memory, so a later live run starts from nothing it did not choose
 const service = makeLpService({ seed, btc, evm, swaps: DRY ? makeMemoryStore() : makeFileStore(resolve(data, 'swaps')), quoteStore: DRY ? makeMemoryStore() : makeFileStore(resolve(data, 'quotes')), config, log, alert });
 
-const acct = ux.account(key);
 log({ level: 'info', msg: 'fast bridge LP', network, dryRun: DRY, bitcoinAddress: btc.address, claimPub: config.claimPub, poolAccount: acct.address, config: cfgPath, data });
 await service.start();
 let busy = false;

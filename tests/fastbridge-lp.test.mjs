@@ -316,6 +316,44 @@ test('what can be taken: /info says it, a quote beyond it is refused, and a quot
   assert.equal((await post(blind, '/quote', { amount: '999999' })).status, 200);
 });
 
+test('a provider that cannot get a lock into the pool says so: nothing to take in /info, a quote, a reservation and a new offer are turned away with the reason, the one who runs it is told once, a swap it holds goes on, and it takes bridges again when it can', async () => {
+  const { w } = httpWorld();
+  w.lEvm.fund(6000n, 'inv'); manyCoins(w);
+  let state = { ok: true };
+  w.lEvmCtx.ready = async () => state;
+  const s = await serve(w);
+  assert.equal((await infoOf(s)).available, '6000');
+  const q = (await post(s, '/quote', { amount: '5000' })).body;
+  state = { ok: false, why: 'the relay is not sending settles' };
+  assert.equal((await infoOf(s)).available, '0', 'the ad shows nothing to take, so a page goes to the regular bridge');
+  const no = await post(s, '/quote', { amount: '1000' });
+  assert.equal(no.status, 503);
+  assert.match(no.body.error, /cannot lock right now \(the relay is not sending settles\)/);
+  const res = await post(s, '/reserve', { quoteId: q.id });
+  assert.deepEqual([res.body.ok, /cannot lock right now/.test(res.body.why)], [false, true]);
+  const offer = await post(s, '/offer', { quoteId: q.id, offer: { swapId: 'a'.repeat(72) } });
+  assert.deepEqual([offer.body.ok, offer.body.retry], [false, true], 'a new offer is declined, and may be tried again: the relay may be back');
+  assert.match(offer.body.why, /cannot lock right now/);
+  const tell = () => new Promise((r) => setTimeout(r, 5));
+  await s.svc.tick(); await tell(); await s.svc.tick(); await tell();
+  assert.deepEqual(s.alerts.map((a) => [a.level, a.msg, a.why]), [['alert', 'the provider is not taking bridges', 'the relay is not sending settles']], 'told once, not on every tick');
+  state = { ok: true };
+  assert.equal((await infoOf(s)).available, '6000');
+  assert.equal((await post(s, '/quote', { amount: '1000' })).status, 200);
+  await s.svc.tick(); await tell();
+  assert.deepEqual(s.alerts.map((a) => a.msg), ['the provider is not taking bridges', 'the provider can lock again']);
+
+  // a swap that is already held is not stopped by it
+  const h = httpWorld(); h.w.lEvm.fund(VALUE, 'same-size');
+  let ok = true; h.w.lEvmCtx.ready = async () => (ok ? { ok: true } : { ok: false, why: 'the relay is not sending settles' });
+  const t = await serve(h.w); h.ref.base = t.base;
+  await startSwap(h.w, await makeHttpCounter({ base: t.base, fetchImpl: realFetch }).quote(VALUE));
+  await h.w.run(async () => !!(await h.w.lp()));
+  ok = false;
+  await h.w.run(bothDone(h.w));
+  assert.equal((await h.w.lp()).phase, 'done');
+});
+
 test('a reservation holds the payout: the next quote and reservation see less, and it lets go when it runs out', async () => {
   const { w } = httpWorld();
   w.lEvm.fund(6000n, 'inv'); manyCoins(w);

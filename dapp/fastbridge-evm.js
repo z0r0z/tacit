@@ -28,7 +28,10 @@ const MAINNET_RELAYER = '0x000000009C28617AC88B52Eae5EFaAcdD4aC34c3';
 // `selfSettle(x)` -> { txHash }: sends a settle the relay does not send (it is 'held': its sender is under its gas floor) from an
 // account of the page's own, x = { jobId, publicValues, proof, memos }; it is used only after `openGraceMs` of the relay not sending,
 // and a try that fails waits `selfRetryMs` before the next. Without it a held settle waits for the relay. See jobStatus.
-export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv, seed, asset, poolAddress, relayerAddress = MAINNET_RELAYER, policy = {}, adaptor = null, selfSettle = null, openGraceMs = 45000, selfRetryMs = 120000, clock = () => Date.now(), log = () => {} }) {
+// `ownAccount` = { address }: the account `selfSettle` sends from belongs to this process (a provider that runs on its own, with no wallet to
+// ask). The relay may refuse a settle at the door (the day's free settles are used up, it is held, it has had too many requests): with an
+// own account such an op is proved prove-only and sent from the account at once, and `ready()` says whether the account can pay for it.
+export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv, seed, asset, poolAddress, relayerAddress = MAINNET_RELAYER, policy = {}, adaptor = null, selfSettle = null, ownAccount = null, openGraceMs = 45000, selfRetryMs = 120000, clock = () => Date.now(), log = () => {} }) {
   const te = new TextEncoder();
   const hex = (b) => [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
   const bytes = (h) => Uint8Array.from(strip(h).match(/../g).map((x) => parseInt(x, 16)));
@@ -130,9 +133,10 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
   // proved again prove-only, which a held relay still does, and that proof is sent. One send at a time per job; one that lands counts as
   // settled whatever the relay says of the job after. Sending it shows the account's address on Ethereum, which the wallet asks about.
   const own = new Map();
-  function sendOwn(id, proven) {
+  // `immediate`: a job the relay never took (see submit) has no relay to give a while to
+  function sendOwn(id, proven, immediate = false) {
     let o = own.get(id);
-    if (!o) own.set(id, (o = { seen: clock(), retryAt: 0, sending: null, done: false }));
+    if (!o) own.set(id, (o = { seen: immediate ? -Infinity : clock(), retryAt: 0, sending: null, done: false }));
     if (o.done) return 'settled';
     if (o.sending || clock() - o.seen < openGraceMs || clock() < o.retryAt) return 'pending';
     log({ level: 'info', msg: 'the relay holds a settle: sending it from your wallet', jobId: id });
@@ -149,6 +153,12 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
   const relayHeld = async () => { try { const r = ux.relay.state ? await ux.relay.state() : null; return !!(r && r.state === 'held'); } catch { return false; } };
   // `again` = { type, bundle }: the op the job was submitted with, so a job a held relay leaves waiting can be proved prove-only
   async function jobStatus(id, again = null) {
+    // a job of this process's own (see submit): the relay does not know it, so it is proved and sent from the record's op alone
+    if (isOwnJob(id)) {
+      if (own.get(id) && own.get(id).done) return 'settled';
+      if (!selfSettle || !again || !again.bundle) return 'pending';
+      return sendOwn(id, () => ux.relay.prove(specOf(again.type, again.bundle)), true);
+    }
     const st = await ux.relay.status(id);
     const s = st && st.status;
     if (s === 'settled' || (own.get(id) && own.get(id).done)) return 'settled';
@@ -162,10 +172,67 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     type, op: bundle.op, leaves: bundle.leaves || [], outputs: bundle.outputs || null,
     ephRand: bundle.ephSeed ? seeded(bundle.ephSeed) : undefined, lockMemos: bundle.lockMemos || null,
   });
+  // What the relay says at the door when it will not take a settle: the day's free settles are used up, it is held (its sender is under its gas
+  // floor), this address has asked too often, or the fee it would need is not there. Anything else is not a refusal but a fault.
+  const refusalOf = (e) => {
+    const m = String((e && e.message) || e), code = e && e.code;
+    if (code === 'free_budget' || /free relayed settles for today/i.test(m)) return 'the free settles for today are used up';
+    if (code === 'relay_held' || /can.t take this one|catching up on settles/i.test(m)) return 'the relay is not sending settles';
+    if (/too many submit requests/i.test(m)) return 'the relay is busy with this address';
+    if (/fee below|feegate|marginal cost/i.test(m)) return 'the settle is below the relay’s fee floor';
+    return null;
+  };
+  // A refusal is not asked again at once: the relay's own wait (at least 30 s, at most 10 min) is kept, and while it runs an op of that type
+  // goes to the account at once, or the same refusal is said again. It is kept per type of op: the day's free settles are used up for a lock
+  // and a claim, which carry no fee, while a refund that carries one is still taken.
+  const refusals = new Map();
+  const refusal = (type) => { const r = refusals.get(type); return r && clock() < r.until ? r : null; };
+  let readyAt = -Infinity, readyLast = { ok: true }, ownSeq = 0;
+  const isOwnJob = (id) => String(id).startsWith('own-');
   async function submit(type, bundle) {
-    const r = await ux.relay.submitOp(specOf(type, bundle));
-    if (!r || !r.jobId) throw new Error('the relay did not take the job');
-    return { jobId: r.jobId };
+    const proveHere = (r) => { log({ level: 'warn', msg: 'the relay will not send this settle: it is proved and sent from the provider’s own account', type, why: r.why }); return { jobId: `own-${type}-${clock().toString(36)}-${++ownSeq}` }; };
+    const held = refusal(type);
+    if (held) { if (ownAccount && selfSettle) return proveHere(held); throw held.error; }
+    try {
+      const r = await ux.relay.submitOp(specOf(type, bundle));
+      if (!r || !r.jobId) throw new Error('the relay did not take the job');
+      refusals.delete(type); readyAt = -Infinity;
+      return { jobId: r.jobId };
+    } catch (e) {
+      const why = refusalOf(e);
+      if (!why) throw e;
+      const r = { why, error: e, until: clock() + Math.min(600, Math.max(30, Number(e.retryAfter) || 60)) * 1000 };
+      refusals.set(type, r); readyAt = -Infinity;
+      if (ownAccount && selfSettle) return proveHere(r);
+      throw e;
+    }
+  }
+
+  // Whether a lock can be sent now. The relay is a way when it is proving and sending and has not just refused; otherwise only an account of
+  // this process's own is, and only while it holds the gas of a settle (it is read at most every 20 s). A relay that is not proving at all
+  // cannot prove it for the account either. With a wallet the page asks (no `ownAccount`) the wallet is the way, as it has always been.
+  async function ready() {
+    if (clock() - readyAt < 20000) return readyLast;
+    let st = null;
+    try { st = ux.relay.state ? await ux.relay.state() : null; } catch { st = null; }
+    const state = st && st.state, lock = refusal('adaptorlock');
+    let r;
+    if (state === 'paused' || state === 'down') r = { ok: false, why: 'the relay is not proving right now' };
+    else if (state !== 'held' && !lock) r = { ok: true };
+    else {
+      const why = state === 'held' ? 'the relay is not sending settles' : lock.why;
+      if (!selfSettle) r = { ok: false, why };
+      else if (!ownAccount) r = { ok: true };
+      else {
+        try {
+          const bal = BigInt(await ux.rpc('eth_getBalance', [ownAccount.address, 'latest']));
+          const gas = BigInt(await ux.rpc('eth_gasPrice', []));
+          r = bal >= 800000n * (2n * gas + 100000000n) ? { ok: true } : { ok: false, why: `${why}, and the provider’s own account is low on ETH` };
+        } catch { r = { ok: false, why: `${why}, and the provider’s own account cannot be read` }; }
+      }
+    }
+    readyAt = clock(); readyLast = r;
+    return r;
   }
 
   async function heldNotes() {
@@ -286,5 +353,5 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     return { op, leaves: [op.outLeaf], outputs: [output], ephSeed: scalarHex(derive('claim-eph', id)) };
   }
 
-  return { now, lockNullifier, lockPosition, findClaim, jobStatus, claimStatus: jobStatus, submit, prepare, lockOp, refundOp, refundKey, reserve, release, available, cutReserve, recipient, claimOp };
+  return { now, lockNullifier, lockPosition, findClaim, jobStatus, claimStatus: jobStatus, submit, ready, prepare, lockOp, refundOp, refundKey, reserve, release, available, cutReserve, recipient, claimOp };
 }

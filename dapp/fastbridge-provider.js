@@ -131,7 +131,15 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
     }
     return { sum, count };
   }
+  // A lock the pool cannot be given is not promised: when the relay will not send it and no account of this provider's own can, a quote,
+  // a reservation or an offer is turned away with the reason (an offer may be tried again, the relay may be back), and the ad shows nothing to take.
+  async function lockable() {
+    if (!evm.ready) return;
+    const r = await evm.ready().catch(() => ({ ok: true }));
+    if (!r.ok) throw Object.assign(new Error(`the provider cannot lock right now (${r.why})`), { status: 503, retry: true });
+  }
   async function capacity(payout) {
+    await lockable();
     const i = await readInventory(), p = await promised();
     if (i.held != null && payout > i.held - p.sum) throw cannotTake();
   }
@@ -146,6 +154,7 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
   }
   async function availableAmount() {
     try {
+      if (evm.ready && !(await evm.ready()).ok) return 0n;
       const i = await readInventory(), p = await promised();
       if (i.held == null) return null;
       return quoter.maxAmountFor(i.held > p.sum ? i.held - p.sum : 0n);
@@ -210,8 +219,17 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
     readInventory(refreshSecs / 2).catch(() => {});
   };
 
+  // said once when the provider stops being able to lock, and once when it can again, so the one who runs it hears of it before a user does
+  let lockableSaid = true;
+  async function sayLockable() {
+    if (!evm.ready) return;
+    const r = await evm.ready().catch(() => ({ ok: true }));
+    if (r.ok !== lockableSaid) { lockableSaid = r.ok; alert({ level: r.ok ? 'info' : 'alert', msg: r.ok ? 'the provider can lock again' : 'the provider is not taking bridges', why: r.ok ? null : r.why }); }
+  }
+
   async function tick() {
     warmUp();
+    sayLockable().catch(() => {});
     try {
       await dropDeadHolds().catch(() => {});
       const recs = await swaps.list();
@@ -261,7 +279,7 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
         const have = reservations.get(q.id);
         if (have && have.until > now() && (!have.swapId || have.swapId === sid)) have.swapId = sid;
         else {
-          try { await exclusive(async () => { await capacity(BigInt(q.evmAmount)); pending.set(sid, { amount: BigInt(q.evmAmount), until: now() + hold.reserveSecs }); held = true; }); } catch (e) { if (e.status) return { ok: false, retry: false, why: e.message }; throw e; }
+          try { await exclusive(async () => { await capacity(BigInt(q.evmAmount)); pending.set(sid, { amount: BigInt(q.evmAmount), until: now() + hold.reserveSecs }); held = true; }); } catch (e) { if (e.status) return { ok: false, retry: !!e.retry, why: e.message }; throw e; }
         }
       }
       const r = await el.receive({ quoteId: body.quoteId, offer: body.offer });
