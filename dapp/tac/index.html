@@ -31,8 +31,8 @@
 <meta property="og:description" content="TAC: one private currency on Bitcoin and Ethereum.">
 <meta property="og:image" content="https://tacit.finance/tacit-card.png">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="theme-color" content="#E8E0CC" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#15130E" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#F4F5F7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#07080B" media="(prefers-color-scheme: dark)">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <!-- preload-roots: /storage-fallback.js /vendor/tacit-deps.min.js /prf-wallet.js /tacit-wallet-known.js /tab-key.js /tacit-address.js /bip352.js /evm-wallet.js /walletconnect.js /evm-account.js /evm-tx.js /tac-airdrop.js /evm-trade-venues.js /confidential-payout.js /address-id.js /address-view.js /wallet-balances.js /trade/farm-read.js /bridge-all.js /lp-zap.js /farm-ops.js /relay-outcome.js /btc-borrow.js /bridge-out.js /bridge/track.js /bridge-in.js /bridge-tick.js /tacit-session.js /activity.js /swap/card.js | /weld/stats/read.js /trade/lp-campaign.js /tacit-chain-config.js | /confidential-pool-ux.js /confidential-deployments.js -->
 <!-- preload:begin -->
@@ -94,29 +94,30 @@
 @font-face { font-family: 'Instrument Serif'; font-weight: 400; font-style: italic; font-display: swap; src: url('/fonts/instrument-serif-400i-latin.woff2') format('woff2'); }
 
 :root {
-  --paper: #E8E0CC;
-  --card: #F2EBD4;
-  --field: #FAF6EA;
-  --soft: color-mix(in srgb, #fff 40%, var(--card));
-  --ink: #1A1A1A;
-  --mute: #625C4F;
-  --faint: #807A68;
-  --hair: rgba(26,26,26,.12);
-  --hair-2: rgba(26,26,26,.28);
-  --orange: #f7931a;
-  --ok: #0a7234;
-  --warn: #9a4a00;
-  --err: #b8341d;
-  --scrim: rgba(26,26,26,.36);
-  --lift: 0 22px 44px -28px rgba(26,26,26,.45);
-  --sheet-shadow: 0 40px 90px -40px rgba(0,0,0,.6);
-  --skel: rgba(26,26,26,.08);
-  --skel-hi: rgba(26,26,26,.02);
-  --bar: #8F8979;
+  --paper: #F4F5F7;
+  --card: #FFFFFF;
+  --field: #F4F5F8;
+  --soft: color-mix(in srgb, var(--ink) 3.5%, var(--card));
+  --ink: #0A0B0D;
+  --mute: #5B616E;
+  --faint: #878D96;
+  --hair: rgba(10,11,13,.09);
+  --hair-2: rgba(10,11,13,.22);
+  --orange: #5741D8;
+  --ok: #067647;
+  --warn: #B54708;
+  --err: #CF202F;
+  --scrim: rgba(10,11,13,.44);
+  --lift: 0 22px 44px -28px rgba(16,24,40,.28);
+  --sheet-shadow: 0 40px 90px -40px rgba(10,11,13,.5);
+  --skel: rgba(10,11,13,.07);
+  --skel-hi: rgba(10,11,13,.03);
+  --bar: #98A2B3;
   --route-o: .55;
   --blue: #627eea;
   --green: #16a34a;
-  --float: 0 1px 2px rgba(26,26,26,.05), 0 26px 50px -34px rgba(26,26,26,.38);
+  --float: 0 1px 2px rgba(16,24,40,.05), 0 24px 48px -24px rgba(16,24,40,.16);
+  --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   --serif: 'Instrument Serif', 'Instrument Serif Fallback', 'Instrument Serif Fallback T', 'Instrument Serif Fallback N', Georgia, serif;
   --tap: 44px;
@@ -127,25 +128,26 @@
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --paper: #15130E;
-    --card: #1F1C15;
-    --field: #191711;
+    --paper: #07080B;
+    --card: #101116;
+    --field: #0B0C10;
     --soft: color-mix(in srgb, var(--ink) 4.5%, var(--card));
-    --ink: #EDE5CF;
-    --mute: #A39B85;
-    --faint: #8A8470;
-    --hair: rgba(237,229,207,.12);
-    --hair-2: rgba(237,229,207,.28);
-    --ok: #8fcf9a;
-    --warn: #f7931a;
-    --err: #f08a6c;
-    --scrim: rgba(0,0,0,.6);
+    --ink: #F4F5F7;
+    --mute: #A3A8B3;
+    --faint: #7D838E;
+    --hair: rgba(244,245,247,.10);
+    --hair-2: rgba(244,245,247,.24);
+    --orange: #A29BFF;
+    --ok: #4CB782;
+    --warn: #F5A524;
+    --err: #F28B74;
+    --scrim: rgba(0,0,0,.66);
     --lift: 0 22px 44px -28px rgba(0,0,0,.9);
-    --skel: rgba(237,229,207,.07);
-    --skel-hi: rgba(237,229,207,.15);
-    --bar: #6F6958;
+    --skel: rgba(244,245,247,.07);
+    --skel-hi: rgba(244,245,247,.15);
+    --bar: #5C6069;
     --route-o: .8;
-    --float: 0 0 0 1px rgba(237,229,207,.04), 0 34px 70px -30px rgba(0,0,0,.95);
+    --float: 0 0 0 1px rgba(244,245,247,.05), 0 34px 70px -30px rgba(0,0,0,.9);
     color-scheme: dark;
   }
 }
@@ -154,14 +156,14 @@
 html { -webkit-text-size-adjust: 100%; }
 html, body { margin: 0; background: var(--paper); color: var(--ink); }
 body {
-  font: 14px/1.6 var(--mono); letter-spacing: -.01em; overflow-x: hidden;
+  font: 14px/1.55 var(--sans); letter-spacing: -.006em; overflow-x: hidden;
   background-image: radial-gradient(ellipse 54rem 30rem at 50% 26rem, color-mix(in srgb, var(--card) 70%, transparent), transparent 72%); background-repeat: no-repeat;
   padding: 0 max(16px, env(safe-area-inset-right)) env(safe-area-inset-bottom) max(16px, env(safe-area-inset-left));
 }
 a { color: inherit; text-underline-offset: 3px; text-decoration-thickness: 1px; }
 @media (hover: hover) { a:hover { text-decoration-thickness: 2px; } }
 button { font: inherit; color: inherit; letter-spacing: inherit; }
-:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
 [hidden] { display: none !important; }
 .num { font-variant-numeric: tabular-nums; }
 .skip { position: absolute; left: 16px; top: -64px; z-index: 100; padding: 10px 16px; background: var(--ink); color: var(--paper); border-radius: 8px; text-decoration: none; font-size: 13px; transition: top .15s; }
