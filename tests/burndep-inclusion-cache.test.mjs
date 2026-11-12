@@ -47,7 +47,7 @@ function admissionOver(kv) {
   });
   return { admission, reads };
 }
-const memKv = () => { const m = new Map(); return { _m: m, get: async (k, t) => (m.has(k) ? (t === 'json' ? JSON.parse(m.get(k)) : m.get(k)) : null), put: async (k, v) => { m.set(k, v); } }; };
+const memKv = () => { const m = new Map(), ttl = new Map(); return { _m: m, get: async (k, t) => (m.has(k) ? (t === 'json' ? JSON.parse(m.get(k)) : m.get(k)) : null), put: async (k, v, o) => { m.set(k, v); ttl.set(k, o?.expirationTtl); }, _ttl: ttl }; };
 const blobOf = (b) => hex(kit.assembler.serializeProvenanceBlob(kit.assembler.buildBurnDepositStatic({ etch: b.etch, provHeaders: [], cxfers: b.cxfers, cmints: [] })));
 
 test('blocks are read once: a second check over the same store reads none, and both build the same blob', async () => {
@@ -60,6 +60,13 @@ test('blocks are read once: a second check over the same store reads none, and b
   const blobB = blobOf(await b.admission.enrichBurnDeposit(bundleOf()));
   assert.equal(b.reads.length, 0, 'read a block again');
   assert.equal(blobB, blobA);
+});
+
+test('the proofs kept expire, since the block they came from can be read again', async () => {
+  const kv = memKv();
+  await admissionOver(kv).admission.enrichBurnDeposit(bundleOf());
+  const ttls = [...kv._ttl.values()];
+  assert.ok(ttls.length > 0 && ttls.every((t) => t >= 30 * 86400 && t <= 400 * 86400), `every kept proof has a lifetime (${ttls.join(',')})`);
 });
 
 test('the blob from kept proofs is the blob from the whole blocks, byte for byte', async () => {

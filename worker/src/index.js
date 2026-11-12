@@ -2352,6 +2352,18 @@ async function handleReflectionBurndep(req, env, url, cors) {
       }, 409, { ...cors, 'Cache-Control': 'no-store' });
     }
   }
+  // what a client stores in a day is bounded: a registration that adds bytes takes them from the client's day, an identical one takes none
+  if (existing !== serialized && ip !== 'anon') {
+    const cap = Number(env.BURNDEP_DAILY_BYTES) > 0 ? Number(env.BURNDEP_DAILY_BYTES) : 32 * 1024 * 1024;
+    const dayKey = `burndep:bytes:${new Date().toISOString().slice(0, 10)}:${ip}`;
+    const room = await withKvKeyLock(dayKey, async () => {
+      const used = Number(await env.REGISTRY_KV.get(dayKey)) || 0;
+      if (used + serialized.length > cap) return false;
+      await env.REGISTRY_KV.put(dayKey, String(used + serialized.length), { expirationTtl: 90000 });
+      return true;
+    });
+    if (!room) return jsonResponse({ ok: false, error: 'this client has registered as much as it may today; try again tomorrow' }, 429, { ...cors, 'Cache-Control': 'no-store' });
+  }
   await env.REGISTRY_KV.put(key, serialized, { expirationTtl: 90 * 86400 });
   return jsonResponse({ ok: true, stored: key }, 200, { ...cors, 'Cache-Control': 'no-store' });
 }
@@ -3643,6 +3655,14 @@ async function proveRateLimit(env, ip, bucket = 'prove', burst = PROVE_RL_BURST,
     await kv.put(key, JSON.stringify(b), { expirationTtl: 3600 });
     return { ok: true };
   });
+}
+// The first thing a handler does that checks a signature or reads the explorer for an anonymous caller: the caller's allowance for that work is
+// taken before the work is done. Callers that carry the box token are not metered. → a 429 response, or null when the caller may go on.
+async function meterWork(req, env, cors, bucket = 'verify', burst = 60, refillMs = 1000) {
+  if (checkConfidentialAuth(req, env)) return null;
+  const rl = await proveRateLimit(env, req.headers.get('CF-Connecting-IP') || 'anon', bucket, burst, refillMs);
+  if (rl.ok) return null;
+  return jsonResponse({ ok: false, error: `too many requests, retry in ~${rl.retryAfter}s`, retryAfter: rl.retryAfter }, 429, { ...cors, 'Cache-Control': 'no-store', 'Retry-After': String(rl.retryAfter) });
 }
 // What settling one wrap costs this relay now, with its margin, in wei: settle gas at `gasPriceHex` plus the SP1
 // network prove (nothing for the prove when PROVE or ETH has no price). The quote recommends it as a wrap tip (capped
@@ -16274,6 +16294,7 @@ async function commitmentFromRevealTx(env, revealTxid, vout, network) {
 }
 
 async function handleAttest(assetIdHex, req, env, network, cors) {
+  { const metered = await meterWork(req, env, cors, 'verify'); if (metered) return metered; }
   if (!/^[0-9a-f]{64}$/.test(assetIdHex)) {
     return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
   }
@@ -18195,6 +18216,7 @@ async function handlePmintList(assetIdHex, env, network, cors, opts = {}) {
 // and verifies it against the mint's on-chain commitment (either from the KV
 // registry or, if not yet indexed, fetched from the reveal tx directly).
 async function handleMintAttest(assetIdHex, mintTxidHex, req, env, network, cors) {
+  { const metered = await meterWork(req, env, cors, 'verify'); if (metered) return metered; }
   if (!/^[0-9a-f]{64}$/.test(assetIdHex))     return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
   if (!/^[0-9a-f]{64}$/.test(mintTxidHex))    return jsonResponse({ error: 'invalid mint_txid' }, 400, cors);
   let body;
@@ -18520,6 +18542,7 @@ function openingMsg(assetIdHex, txidHex, vout, amount, blindingHex, ownerPubHex)
 }
 
 async function handleUtxoOpeningPost(txidHex, voutStr, req, env, network, cors) {
+  { const metered = await meterWork(req, env, cors, 'verify'); if (metered) return metered; }
   if (!/^[0-9a-f]{64}$/.test(txidHex)) return jsonResponse({ error: 'invalid txid' }, 400, cors);
   const vout = parseInt(voutStr, 10);
   if (!Number.isInteger(vout) || vout < 0 || vout > 0xffff) {
@@ -18947,6 +18970,7 @@ function cancelMsg(assetIdHex, txidHex, vout) {
 }
 
 async function handleListingPost(assetIdHex, req, env, network, cors) {
+  { const metered = await meterWork(req, env, cors, 'verify'); if (metered) return metered; }
   if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
   let body;
   try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
@@ -19270,6 +19294,7 @@ function claimMsg(assetIdHex, txidHex, vout, takerPubHex) {
 }
 
 async function handleListingClaim(assetIdHex, txidHex, voutStr, req, env, network, cors) {
+  { const metered = await meterWork(req, env, cors, 'verify'); if (metered) return metered; }
   if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
   if (!/^[0-9a-f]{64}$/.test(txidHex))    return jsonResponse({ error: 'invalid txid' }, 400, cors);
   const vout = parseInt(voutStr, 10);
@@ -19406,6 +19431,7 @@ function rangeListingClaimMsg(assetIdHex, makerPubHex, takerPubHex) {
 }
 
 async function handleRangeListingPost(assetIdHex, req, env, network, cors) {
+  { const metered = await meterWork(req, env, cors, 'verify'); if (metered) return metered; }
   if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
   let body;
   try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
@@ -19581,6 +19607,7 @@ async function handleRangeListingDelete(assetIdHex, ownerPubHex, req, env, netwo
 }
 
 async function handleRangeListingClaim(assetIdHex, makerPubHex, req, env, network, cors) {
+  { const metered = await meterWork(req, env, cors, 'verify'); if (metered) return metered; }
   if (!/^[0-9a-f]{64}$/.test(assetIdHex))             return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
   if (!/^0[23][0-9a-f]{64}$/.test(makerPubHex.toLowerCase()))
     return jsonResponse({ error: 'maker_pubkey must be 33-byte compressed hex' }, 400, cors);
@@ -20747,6 +20774,7 @@ async function _handleAtomicIntentFulfilVar(assetIdHex, intentIdHex, intent, cla
 }
 
 async function handleAtomicIntentPost(assetIdHex, req, env, network, cors) {
+  { const metered = await meterWork(req, env, cors, 'verify'); if (metered) return metered; }
   if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
   let body;
   try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
@@ -21170,6 +21198,7 @@ async function handleAtomicIntentClaimCancel(assetIdHex, intentIdHex, req, env, 
 }
 
 async function handleAtomicIntentClaim(assetIdHex, intentIdHex, req, env, network, cors) {
+  { const metered = await meterWork(req, env, cors, 'verify'); if (metered) return metered; }
   if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
   if (!/^[0-9a-f]{32}$/.test(intentIdHex)) return jsonResponse({ error: 'invalid intent_id' }, 400, cors);
   let body;
@@ -29135,6 +29164,8 @@ async function _routeFetch(req, env, ctx) {
     // returns one combined response. Cuts cold-scan wallclock by ~10×
     // for typical wallets.
     if (url.pathname === '/chain/txs/batch' && req.method === 'POST') {
+      // one request asks the explorer for up to 64 transactions, so a client's allowance is counted per request
+      { const metered = await meterWork(req, env, cors, 'chainbatch', 40, 1000); if (metered) return metered; }
       return handleChainTxBatch(req, env, network, cors);
     }
     // Batch outspend fetcher. Market views check N listings for "is the
@@ -29142,6 +29173,7 @@ async function _routeFetch(req, env, ctx) {
     // is its own round-trip. Batching them collapses N → 1 round-trip.
     // Body: { "outpoints": ["txid:vout", ...] }
     if (url.pathname === '/chain/outspends/batch' && req.method === 'POST') {
+      { const metered = await meterWork(req, env, cors, 'chainbatch', 40, 1000); if (metered) return metered; }
       return handleChainOutspendsBatch(req, env, network, cors);
     }
     // A note's history from the Tacit transaction archive (this service's own store, never upstream), and its operator import.
@@ -29622,6 +29654,8 @@ async function _routeFetch(req, env, ctx) {
       return handleOutpointsClassify(req, env, network, (obj, status) => jsonResponse(obj, status, cors));
     }
     if (url.pathname === '/holdings' && req.method === 'POST') {
+      // one request reads up to three records for each of up to 200 assets: a client's allowance is counted per request
+      { const metered = await meterWork(req, env, cors, 'holdings', 30, 2000); if (metered) return metered; }
       // SWR edge cache. Body-derived key (sha256 of owner + sorted asset_ids).
       // Read the body once here; on cache MISS we reuse the same parsed body
       // for the actual compute. Validation errors fall through to the wrapped

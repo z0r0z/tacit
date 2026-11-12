@@ -136,7 +136,7 @@ export function makeBurndepAdmission({ env, api, apiRawBytes, network, kit, deps
         const proof = kit.assembler.inclusionOf({ blockTxids, blockWtxids, coinbase: parsed[0].rawHex, index }, 'provenance');
         const { record, field } = records[m.i];
         out[m.i] = { ...record, [field]: parsed[index].rawHex, proof };
-        if (env.REGISTRY_KV) await env.REGISTRY_KV.put(inclusionKey(m.txid), JSON.stringify({ proof, tx: parsed[index].rawHex })).catch(() => {});
+        if (env.REGISTRY_KV) await env.REGISTRY_KV.put(inclusionKey(m.txid), JSON.stringify({ proof, tx: parsed[index].rawHex }), { expirationTtl: 180 * 86400 }).catch(() => {});   // read again from the block if it is gone
         done++;
       }
       tell();
