@@ -1227,7 +1227,6 @@ async function main() {
     if (stopping) { log('stopped cleanly'); process.exit(0); }
     try {
       let worked = await cycle();
-      if (worked) lastWorkedAt = Date.now();
       if (!worked) worked = await gasCycle();
       // An empty queue is the common case, not an error — but it must still beat, or /prover-health
       // goes stale (and "down") after 10 quiet minutes on a perfectly healthy relay. heartbeat() itself
