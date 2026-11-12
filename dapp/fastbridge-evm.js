@@ -111,6 +111,8 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     if (claims.has(key)) return claims.get(key);
     const events = await ux.fetchEvents({ fromBlock: sinceSecs ? await blockAtOrAfter(Math.max(0, sinceSecs - 3600)) : undefined, toBlock: 'latest' });
     const seen = new Set();
+    // every call that names the lock is read, in every transaction that touched the pool, and the values are gathered: the caller tests each against its own T.
+    const found = []; let named = false;
     for (const e of events) {
       if (!e.txHash || seen.has(e.txHash) || (e.type !== 'LeavesInserted' && e.type !== 'NullifiersSpent')) continue;
       seen.add(e.txHash);
@@ -121,9 +123,10 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
       if (!decoded || !decoded.direct || !trustedTo.has(tx.to)) continue;
       for (const call of decoded.calls) {
         let f; try { f = ux.lockScan.decodePublicValuesAdaptorFields(call.publicValues); } catch { continue; }
-        if (f.lockNullifiers.map(lc).includes(key)) { claims.set(key, f.adaptorClaimS); return f.adaptorClaimS; }
+        if (f.lockNullifiers.map(lc).includes(key)) { named = true; found.push(...f.adaptorClaimS); }
       }
     }
+    if (named) { claims.set(key, found); return found; }
     throw new Error('the lock is spent, and the settle that spent it is not found yet');
   }
 
