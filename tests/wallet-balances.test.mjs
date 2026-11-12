@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { balanceRows } from '../dapp/wallet-balances.js';
 
-const tokens = { icon: (id) => ({ tac: 'tk-tac', teth: 'tk-teth' })[id] || null, dp: (id) => ({ tac: 2, teth: 6 })[id] };
+const tokens = { icon: (id) => ({ tac: 'tk-tac', teth: 'tk-teth' })[id] || null, dp: (id) => ({ tac: 2, teth: 6 })[id], kind: (id) => ({ tac: 'tac', teth: 'eth' })[id] };
 const row = (key, v, more = {}) => ({ key, label: key.toUpperCase(), v, dec: 8, max: 4, ...more });
 const keys = (rs) => rs.map((r) => r.key);
 
@@ -50,6 +50,7 @@ assert.equal(balanceRows(items, { ready: false, err: new Error('x') }, tokens).b
   assert.equal(own.pending, 7000n);
   assert.deepEqual([tac.label, tac.v, tac.dec, tac.max, tac.icon, tac.meta], ['TAC', 1200n * 10n ** 8n, 8, 2, 'tk-tac', 'on Bitcoin']);
   assert.equal(teth.icon, 'tk-teth');
+  assert.deepEqual([own.kind, tac.kind, teth.kind, xyz.kind], [undefined, 'tac', 'eth', undefined], 'an asset the page can price carries its price kind, so a row shows its worth and the total counts it');
   assert.deepEqual([xyz.icon, xyz.mark, xyz.markId, xyz.max], [undefined, 'XYZ', 'ab'.repeat(32), 4], 'an asset with no mark of its own is a lettered one');
   // each row on Bitcoin goes to the Bitcoin sheet (an asset's to its send form)
   assert.deepEqual([own.open, own.btcAsset], ['btc', undefined]);

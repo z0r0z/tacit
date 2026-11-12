@@ -16,7 +16,8 @@ export function balanceRows(items, btc, tokens = {}) {
   for (const a of ready ? btc.held || [] : []) {
     if (!a.known || !(a.balance > 0n)) continue;
     const icon = tokens.icon?.(a.id) || null;
-    own.push({ key: `held-${a.id}`, label: a.ticker, dec: a.decimals, max: tokens.dp?.(a.id) ?? 4, v: a.balance, meta: 'on Bitcoin', open: 'btc', btcAsset: a.id, ...(icon ? { icon } : { mark: a.ticker, markId: a.id }) });
+    const kind = tokens.kind?.(a.id) || null;
+    own.push({ key: `held-${a.id}`, label: a.ticker, dec: a.decimals, max: tokens.dp?.(a.id) ?? 4, v: a.balance, meta: 'on Bitcoin', open: 'btc', btcAsset: a.id, ...(kind ? { kind } : {}), ...(icon ? { icon } : { mark: a.ticker, markId: a.id }) });
   }
   return { bitcoin: [...own, ...bitcoin], ethereum };
 }

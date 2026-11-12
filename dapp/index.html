@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-oo0oIALqRCYFvFGeUcSdwmZ+8lQsyb845wRKgeM+m4c=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-ENn2OHaG+blVWafKz9961MNwmiE9qt7oObPmEmEsScE=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -55,7 +55,7 @@
 <link rel="modulepreload" href="/confidential-payout.js?cb=6360255f">
 <link rel="modulepreload" href="/address-id.js?cb=01f14d36">
 <link rel="modulepreload" href="/address-view.js?cb=58dd4914">
-<link rel="modulepreload" href="/wallet-balances.js?cb=126e9ecc">
+<link rel="modulepreload" href="/wallet-balances.js?cb=505f8c53">
 <link rel="modulepreload" href="/trade/farm-read.js?cb=efe1d81e">
 <link rel="modulepreload" href="/bridge-all.js?cb=d4d71d34">
 <link rel="modulepreload" href="/lp-zap.js?cb=a43160fd">
@@ -2415,7 +2415,7 @@ import { planMerge, planAll, countAll, opsCompared } from '/bridge-all.js?cb=d4d
 import { aprFrom, shieldedApr as shieldedAprOf, poolWorthEth } from '/trade/farm-read.js?cb=efe1d81e';
 import { addressId } from '/address-id.js?cb=01f14d36';
 import { addrView, addrFlat } from '/address-view.js?cb=58dd4914';
-import { balanceRows } from '/wallet-balances.js?cb=126e9ecc';
+import { balanceRows } from '/wallet-balances.js?cb=505f8c53';
 import { PXS_KEY, PX_CALLS, pxFigures, paintPx, pxState } from '/px-strip.js?cb=046a6701';
 import { zapPlan, zapPlanFor, zapCalldata, zapSettleCalldata, zapSplitSearch, zapWorth } from '/lp-zap.js?cb=a43160fd';
 import { rewardPop } from '/reward-pop.js?cb=88973dac';
@@ -4854,7 +4854,7 @@ let wbReading = false;
 function walletBalances() {
   const b = BTC.pub === S.key.pubHex ? BTC : null;
   const { bitcoin, ethereum } = balanceRows(DASH.items || [], b ? { ready: b.got >= 2, err: BTC.err, sats: b.sats, silent: b.silent, pending: b.pending, held: b.held } : { ready: false, err: BTC.err },
-    { icon: (id) => { const a = assetById(id); return a ? WB_MARK[a.ticker] : null; }, dp: (id) => assetById(id)?.dp });
+    { icon: (id) => { const a = assetById(id); return a ? WB_MARK[a.ticker] : null; }, dp: (id) => assetById(id)?.dp, kind: (id) => DASH_BTC_KIND[assetById(id)?.ticker] });
   const w = DASH.worth, total = w?.all > 0 ? html`<div class="wb-tot"><small>≈</small><b class="num">${usdFmt(w.all)}</b>${w.priv >= w.all * 0.999 ? html`<span>all private</span>` : w.priv > 0 ? html`<span>${usdFmt(w.priv)} private</span>` : ''}</div>` : '';
   const group = (name, rows, empty) => html`<div class="lbl"><span>${name}</span></div>${rows.length ? html`<ul class="wbal">${rows.map(wbRow)}</ul>` : html`<p class="note">${empty}</p>`}`;
   const withNotes = ethereum.filter((r) => r.noteVals?.length), count = withNotes.reduce((a, r) => a + r.noteVals.length, 0), kept = !!$('#wbal-box .w-notes')?.open;
@@ -15200,10 +15200,15 @@ function dashItems() {
   out.push({ key: 'tac', icon: 'tk-tac', label: 'TAC', dec: 18, max: 2, v: pubTac != null && privTac != null ? pubTac + privTac : null, priv: privTac, err: scanErr || (!!who && TACB.who !== who && !!TACB.err), open: 'tac', core: true, noteVals: noteVals(s?.tac, E10),
     meta: !k ? 'on Ethereum' : pubTac != null && privTac != null ? `${fmt(privTac, 18, 2)} private · ${fmt(pubTac, 18, 2)} public` : '' });
   if (k) {
-    const b = BTC.pub === k ? BTC : null, onBtc = BTC_NOTE_ASSETS.map((x) => [x, b?.held.find((a) => a.id === x.id)]).filter(([, h]) => h), lk = LOCKNOTE.pub === k ? LOCKNOTE : null;
-    out.push({ key: 'btc', icon: 'tk-btc', label: 'BTC', dec: 8, max: 6, v: b?.got === 3 ? b.sats + b.silent : null, lazy: true, open: 'btc', show: !!b && (b.sats + b.silent > 0n || onBtc.length > 0),
-      meta: onBtc.length ? `and ${onBtc.map(([x, h]) => `${fmt(h.balance, h.decimals, x === CHAIN_ASSETS.tac ? 2 : x.dp)} ${x.ticker}`).join(' and ')} on Bitcoin` : b ? 'at your Bitcoin address' : 'open to read' });
-    for (const a of b?.held || []) if (a.known && a.balance > 0n && !assetById(a.id)) out.push({ key: `btc-${a.id.slice(0, 16)}`, mark: a.ticker, markId: a.id, label: a.ticker, dec: a.decimals, max: Math.min(a.decimals, 4), v: a.balance, meta: 'on Bitcoin', open: 'btc', btcAsset: a.id, show: true });
+    const b = BTC.pub === k ? BTC : null, lk = LOCKNOTE.pub === k ? LOCKNOTE : null;
+    out.push({ key: 'btc', icon: 'tk-btc', label: 'BTC', dec: 8, max: 6, v: b?.got === 3 ? b.sats + b.silent : null, lazy: true, open: 'btc', show: !!b && b.sats + b.silent > 0n,
+      meta: b ? 'at your Bitcoin address' : 'open to read' });
+    // (every asset the Bitcoin read finds has a tile of its own, TAC and the bridged ones as much as a token the app has not met)
+    for (const a of b?.held || []) if (a.known && a.balance > 0n) {
+      const x = assetById(a.id), kind = x && DASH_BTC_KIND[x.ticker];
+      out.push({ key: `btc-${a.id.slice(0, 16)}`, ...(x && WB_MARK[x.ticker] ? { icon: WB_MARK[x.ticker], kind } : { mark: a.ticker, markId: a.id }), label: a.ticker, dec: a.decimals,
+        max: x ? (a.id === TAC_BTC_ID ? 2 : x.dp ?? 4) : Math.min(a.decimals, 4), v: a.balance, meta: 'on Bitcoin', open: 'btc', btcAsset: a.id, show: true });
+    }
     const sats = HELD.pub === k ? HELD.sats : null;
     for (const a of sats || []) out.push({ key: `sats-${a.ticker.toLowerCase()}`, icon: a.ticker === 'TAC' ? 'tk-tac' : 'tk-cbtc', label: a.ticker, dec: a.decimals, max: a.ticker === 'TAC' ? 2 : 6,
       v: a.value, meta: 'Secret Sats, private on Bitcoin', href: a.ticker === 'TAC' ? '#tac/pool' : '/sats/', show: a.value > 0n });
@@ -15273,7 +15278,8 @@ function dashPx() {
   const v = TPX.v;
   return v?.usdBtc && v.ethBtc ? { eth: v.usdBtc / v.ethBtc, btc: v.usdBtc, usd: 1, tac: v.mid ? v.mid * v.usdBtc / v.ethBtc : null } : null;
 }
-const dashKind = (it) => it.key.startsWith('sats-') ? (it.label === 'TAC' ? 'tac' : 'btc') : /^lpf?-/.test(it.key) || it.key === 'pubf' ? 'eth' : /^devtok-(usdc|usdt|dai)$/.test(it.key) ? 'usd' : DASH_PX[it.key];
+const DASH_BTC_KIND = { TAC: 'tac', tETH: 'eth', cBTC: 'btc', cUSD: 'usd', cUSDT: 'usd' };
+const dashKind = (it) => it.kind || (it.key.startsWith('sats-') ? (it.label === 'TAC' ? 'tac' : 'btc') : /^lpf?-/.test(it.key) || it.key === 'pubf' ? 'eth' : /^devtok-(usdc|usdt|dai)$/.test(it.key) ? 'usd' : DASH_PX[it.key]);
 function dashRowUsd(it) {
   const px = dashPx(), kind = dashKind(it);
   return px && kind && px[kind] != null && it.v != null ? Number(it.v) / 10 ** it.dec * px[kind] : null;
