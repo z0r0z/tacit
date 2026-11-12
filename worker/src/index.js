@@ -28117,6 +28117,7 @@ async function handleDiscordNonce(req, env, cors) {
   await env.REGISTRY_KV.put(`dgate:${nonce}`, JSON.stringify({
     discord_user_id: discordUserId,
     guild_id: guildId,
+    username: discordNameOf(body),
     status: 'pending',
     ts: Date.now(),
   }), { expirationTtl: DISCORD_GATE_NONCE_TTL });
@@ -28186,6 +28187,19 @@ async function handleDiscordVerify(req, env, cors) {
   return jsonResponse({ ok: true }, 200, cors);
 }
 
+// The name a Discord account shows, as far as it can be read from what Discord or the bot sent (display name, else user name); kept short, as text.
+function discordNameOf(u) {
+  const name = u && (u.global_name || u.username || u.name);
+  return typeof name === 'string' ? name.replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 64) : '';
+}
+// GET /discord/gate/<nonce> — whose account a link is for, so the holder who is asked to sign can see it first. The nonce is the link's own secret.
+async function handleDiscordGate(req, env, nonce, cors) {
+  { const metered = await meterWork(req, env, cors, 'discordgate', 30, 2000); if (metered) return metered; }
+  if (!/^[0-9a-f]{32}$/.test(nonce)) return jsonResponse({ error: 'invalid nonce' }, 400, cors);
+  const record = await env.REGISTRY_KV.get(`dgate:${nonce}`, 'json');
+  if (!record) return jsonResponse({ error: 'nonce not found or expired' }, 404, { ...cors, 'Cache-Control': 'no-store' });
+  return jsonResponse({ status: record.status, username: record.username || null }, 200, { ...cors, 'Cache-Control': 'no-store' });
+}
 async function handleDiscordStatus(req, env, nonce, cors) {
   const secret = env.DISCORD_BOT_SECRET;
   if (!secret || secret === 'CHANGEME') return jsonResponse({ error: 'DISCORD_BOT_SECRET not configured' }, 500, cors);
@@ -28242,6 +28256,7 @@ async function handleDiscordInteraction(req, env, cors) {
     await env.REGISTRY_KV.put(`dgate:${nonce}`, JSON.stringify({
       discord_user_id: userId,
       guild_id: guildId,
+      username: discordNameOf(interaction.member?.user || interaction.user),
       status: 'pending',
       ts: Date.now(),
     }), { expirationTtl: DISCORD_GATE_NONCE_TTL });
@@ -28573,6 +28588,7 @@ async function _routeFetch(req, env, ctx) {
     if (url.pathname === '/discord/interaction' && req.method === 'POST') return handleDiscordInteraction(req, env, cors);
     if (url.pathname === '/discord/nonce' && req.method === 'POST')  return handleDiscordNonce(req, env, cors);
     if (url.pathname === '/discord/verify' && req.method === 'POST') return handleDiscordVerify(req, env, cors);
+    { const g = url.pathname.match(/^\/discord\/gate\/([0-9a-f]{32})$/); if (g && req.method === 'GET') return handleDiscordGate(req, env, g[1], cors); }
     {
       const m = url.pathname.match(/^\/discord\/status\/([0-9a-f]{32})$/i);
       if (m && req.method === 'GET') return handleDiscordStatus(req, env, m[1].toLowerCase(), cors);

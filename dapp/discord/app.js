@@ -26,7 +26,7 @@ function takeNonce() {
 }
 const forgetNonce = () => { try { sessionStorage.removeItem(NONCE_KEY); } catch { /* nothing kept */ } };
 
-const S = { nonce: takeNonce(), bal: null, farmBal: null, reading: false, readSeq: 0, busy: false, done: false, note: '', bad: false };
+const S = { nonce: takeNonce(), bal: null, farmBal: null, reading: false, readSeq: 0, busy: false, done: false, note: '', bad: false, who: undefined };
 const say = (text, bad = false) => { S.note = text; S.bad = bad; paintNote(); };
 const conn = makeConnect({
   describe: 'Discord holder role: show you hold TAC', name: 'tacit discord', rewards: false,
@@ -87,6 +87,7 @@ function render() {
   const label = S.busy ? 'Waiting for your wallet…' : !on ? 'Connect wallet' : S.reading ? 'Reading your TAC…' : enough ? 'Verify' : `Needs at least ${NEED}`;
   root.innerHTML = `<p class="eyebrow">Holder role</p>
     <h2>Show you hold TAC.</h2>
+    <p class="note" id="who">The role goes to the Discord account ${S.who === undefined ? '…' : S.who ? `<b>${esc(S.who)}</b>` : 'this link was made for'}. If that is not your account, close this page: it goes to that account whoever signs.</p>
     <div class="rows flat">
       <div class="kv"><span>Account</span><b>${on ? `<svg class="tk xs" role="img" aria-label="Ethereum"><title>Ethereum</title><use href="#c-eth"/></svg>${addrView(W.account, 6)}` : 'Not connected'}${on ? ' <button class="linkbtn" type="button" id="swap-acct">change</button>' : ''}</b></div>
       <div class="kv"><span>TAC in wallet</span><b class="num"><svg class="tk xs" aria-hidden="true"><use href="#tk-tac"/></svg>${esc(balance(S.bal))}</b></div>
@@ -130,4 +131,10 @@ function failure(e) {
   return String(e.message || 'Something went wrong.').replace(/^discord_gate:\s*/, '');
 }
 
+// whose account the link is for, read from the API with the link's own token, shown before anything is signed
+if (S.nonce) {
+  fetch(`${API}/discord/gate/${S.nonce}`, { signal: AbortSignal.timeout(15e3) })
+    .then((r) => (r.ok ? r.json() : null)).then((j) => { S.who = j && typeof j.username === 'string' ? j.username : ''; render(); })
+    .catch(() => { S.who = ''; render(); });
+}
 render();

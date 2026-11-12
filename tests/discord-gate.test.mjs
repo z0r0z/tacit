@@ -76,6 +76,22 @@ const otherReply = await (await post(button(otherUser))).json();
 const otherNonce = /#gate=([0-9a-f]{32})/.exec(otherReply.data.content)[1];
 const otherRecord = await env.REGISTRY_KV.get(`dgate:${otherNonce}`, 'json');
 ok('a second member gets a separate private link bound to their own account', otherReply.data.flags === 64 && otherNonce !== m[1] && otherRecord.discord_user_id === otherUser);
+// whose account a link is for can be read with the link's own token, so the holder asked to sign sees it first
+{
+  const named = '723456789012345678';
+  const reply = await (await post({ ...button(named), member: { user: { id: named, username: 'plain_name', global_name: 'Holder \u0007Name' } } })).json();
+  const nonce = /#gate=([0-9a-f]{32})/.exec(reply.data.content)[1];
+  const stored = await env.REGISTRY_KV.get(`dgate:${nonce}`, 'json');
+  ok('the link keeps the name the member shows, as text', stored.username === 'Holder Name', stored);
+  const read = await fetch(`${base}/discord/gate/${nonce}`);
+  const got = await read.json();
+  ok('the gate read gives the account\'s name and the link\'s state', read.status === 200 && got.username === 'Holder Name' && got.status === 'pending', got);
+  const nameless = await (await post({ ...button(U), member: { user: { id: '823456789012345678' } } })).json();
+  const nn = /#gate=([0-9a-f]{32})/.exec(nameless.data.content)[1];
+  ok('a member with no name gives none', (await (await fetch(`${base}/discord/gate/${nn}`)).json()).username === null);
+  ok('an unknown link is not found', (await fetch(`${base}/discord/gate/${'0'.repeat(32)}`)).status === 404);
+  ok('a link that is not a link is refused', (await fetch(`${base}/discord/gate/not-a-nonce`)).status !== 200);
+}
 const legacy = await (await post({ type: 2, data: { name: 'verify' }, guild_id: G, channel_id: C, member: { user: { id: U } } })).json();
 ok('/verify remains available as a fallback', legacy.type === 4 && legacy.data.flags === 64 && /#gate=/.test(legacy.data.content));
 env.DISCORD_VERIFY_CHANNEL_ID = C;

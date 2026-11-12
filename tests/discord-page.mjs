@@ -173,6 +173,8 @@ const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: jo
   const { page, errs, csp, signed } = await open(rich, `#gate=${nonce}`);
   ok(await page.evaluate(() => location.hash) === '', 'the link is taken out of the address bar');
   ok(await text(page, '#go') === 'Connect wallet', 'a connected wallet is the first step');
+  await page.waitForFunction(() => !/…/.test(document.querySelector('#who')?.textContent || '…'));
+  ok(/The role goes to the Discord account this link was made for\./.test(await text(page, '#who')), 'it says whose account the role goes to, before anything is signed');
   ok((await page.getAttribute('#gate a[href^="/classic.html"]', 'href')) === `/classic.html#gate=${nonce}`, 'Bitcoin holders are pointed at the Classic app with the same link');
   await shot(page, 'discord-connect');
   await connect(page);
