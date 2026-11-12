@@ -44,6 +44,7 @@ import Database from 'better-sqlite3';
 import { openStore } from './lib/points-store.js';
 import { parseBoostTiers, openTacBoost, scanTacTransfers } from './lib/tac-holder-boost.js';
 import { build as buildMerkleTree, formatTac, rewardEntries } from './lib/points-merkle.js';
+import { factoryListsPool } from './lib/pool-registry.js';
 import { parseUrl, badRequest } from './lib/safe-url.js';
 import {
   openEvmPoolPointsState, scanEvmPoolChain, resolvePendingBoxes, explorerGet, isV1WrapViaEvmRouter, WRAP_BOX_COMPLETED_EVENT, rpcRefusal,
@@ -735,8 +736,8 @@ const WETH_DEPOSIT_EVENT = {
 
 // Real pool factories per chain, for verifying a WETH transfer's destination is an actual DEX pool rather
 // than an attacker-controlled contract — zRouter's SafeExecutor (the snwap target) will call any contract the
-// caller names, which could otherwise emit fake Swap-shaped logs claiming huge amounts for free. A pool's own
-// factory() is a real, unspoofable on-chain read; only pools whose factory matches one of these are trusted.
+// caller names, which could otherwise emit fake Swap-shaped logs claiming huge amounts for free. A pool is trusted
+// only when its factory is one of these and that factory lists the pool for the pool's own token pair.
 // Uniswap V2/Sushi, Uniswap V3, Aerodrome V2, Aerodrome Slipstream (CL) — addresses from zfi, checked against
 // zFi source and live chain data.
 const ZROUTER_POOL_FACTORIES = {
@@ -747,6 +748,10 @@ const ZROUTER_POOL_FACTORIES = {
 // zfi's own Precision AMM factory (same address on all 3 chains) — isPool() is that factory's own answer for
 // whether an address is a real pool it deployed, equally unspoofable.
 const PRECISION_POOL_FACTORY = '0x000000eb27b557ab426d9e99cfd54ec455799e81';
+// POINTS_POOL_REGISTRY_CHECK=0 goes back to trusting a pool's own word for its factory.
+const POOL_REGISTRY_CHECK = process.env.POINTS_POOL_REGISTRY_CHECK !== '0';
+const unlistedLogged = new Set();
+const poolReadUnanswered = (e) => { for (let x = e; x; x = x.cause) if (x.name === 'HttpRequestError' || x.name === 'TimeoutError') return true; return false; };
 const FACTORY_FN_ABI = [{ type: 'function', name: 'factory', stateMutability: 'view', inputs: [], outputs: [{ type: 'address' }] }];
 const IS_POOL_FN_ABI = [{ type: 'function', name: 'isPool', stateMutability: 'view', inputs: [{ type: 'address' }], outputs: [{ type: 'bool' }] }];
 const ERC20_TRANSFER_EVENT = {
@@ -810,7 +815,15 @@ async function zRouterVerifiedSwapAmount(client, chainId, wethAddr, txHash, zRou
     try {
       const factory = await client.readContract({ address, abi: FACTORY_FN_ABI, functionName: 'factory' });
       ok = ZROUTER_POOL_FACTORIES[chainId]?.has(factory.toLowerCase()) ?? false;
-    } catch { /* not a V2/V3-shaped pool at all */ }
+      // its word for its factory only says which one to ask: that factory has to list this pool
+      if (ok && POOL_REGISTRY_CHECK) {
+        ok = await factoryListsPool(client, factory, address);
+        if (!ok && !unlistedLogged.has(addr)) { unlistedLogged.add(addr); log(`pool ${address} names factory ${factory} but that factory does not list it: not counted`); }
+      }
+    } catch (err) {
+      if (poolReadUnanswered(err)) throw err;   // the node did not answer: the cycle tries again
+      /* not a V2/V3-shaped pool at all */
+    }
     factoryCache.set(addr, ok);
     return ok;
   }
