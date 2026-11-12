@@ -86,8 +86,17 @@ if (!receipt || receipt.status !== '0x1') die(`the deposit did not succeed (${re
 console.log(`deposit mined in block ${Number(receipt.blockNumber)}; the address now holds ${show(await tacOf(acct.address))}`);
 if (FORK) { console.log('fork: the relay is not asked, so the notes are not settled here'); process.exit(0); }
 
-console.log('asking the relay to settle it into private notes…');
-const settled = await ux.submitWrapSettle({ built: sent, depositTx: sent.txHash });
+// A relay that is not sending settles (its sender is under its gas floor) only proves: this address then sends the settle itself, as
+// the provider does for its own locks, after a call that shows the pool would take it. The deposit is on the chain either way.
+const relayState = await ux.relay.state().then((s) => (s && s.state) || null).catch(() => null);
+const own = relayState != null && relayState !== 'ok';
+const selfSettle = own ? async (x) => {
+  if (!x || !x.publicValues || !x.proof) throw new Error('there is no proof to send');
+  await ux.rpc('eth_call', [{ from: acct.address, to: ux.cfg.pool, data: ux.settleCalldata(x) }, 'latest']);
+  return ux.settleFromAccount({ settlerPriv: key, publicValues: x.publicValues, proof: x.proof, memos: x.memos || [] });
+} : null;
+console.log(own ? `the relay is ${relayState}: it proves, and this address sends the settle…` : 'asking the relay to settle it into private notes…');
+const settled = await ux.submitWrapSettle({ built: sent, depositTx: sent.txHash, ...(selfSettle ? { selfSettle } : {}) }).catch((e) => die(`the deposit is on the chain (${sent.txHash}, index ${String(sent.index ?? index ?? '')}) but its settle did not go through: ${String((e && e.message) || e).slice(0, 300)}`));
 console.log('settle:', settled.status, settled.txHash || settled.jobId || '');
 const bal = await ux.balance(key);
 const tacNotes = Object.entries(bal.byAsset || {}).find(([k]) => k.toLowerCase().endsWith('f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b'));
