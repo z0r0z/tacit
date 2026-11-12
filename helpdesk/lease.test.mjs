@@ -93,8 +93,8 @@ const mk = (extra = {}) => makeLeases({ waitMs: 300, sweepMs: 50, leaseMs: 400, 
   const hw = (o) => cleanHw({ ram: 16, vram: 0, cores: 8, os: 'linux', arch: 'x64', unified: false, ...o });
   check('tier: no report is unknown', tierOf(null) === 'unknown');
   check('tier: a 24 GB GPU holds the 35B whole, a 23 GB one does not', tierOf(hw({ vram: 24, ram: 16 })) === 'big' && tierOf(hw({ vram: 23, ram: 16 })) === 'small');
-  check('tier: a mid GPU with 32 GB of RAM runs it with the experts in RAM; with less RAM it cannot', tierOf(hw({ vram: 12, ram: 32 })) === 'big' && tierOf(hw({ vram: 6, ram: 32 })) === 'big' && tierOf(hw({ vram: 12, ram: 31 })) === 'small' && tierOf(hw({ vram: 4, ram: 64 })) === 'small');
-  check('tier: Apple silicon shares memory, so 32 GB holds it and 16 GB does not', tierOf(hw({ unified: true, os: 'darwin', arch: 'arm64', ram: 32 })) === 'big' && tierOf(hw({ unified: true, os: 'darwin', arch: 'arm64', ram: 16 })) === 'small' && tierOf(hw({ unified: true, ram: 8 })) === 'small');
+  check('tier: a mid GPU with 32 GB of RAM runs it with the experts in RAM, and a machine sold as 32 GB reports 31, so 30 is the line (29 is not enough)', tierOf(hw({ vram: 12, ram: 32 })) === 'big' && tierOf(hw({ vram: 12, ram: 31 })) === 'big' && tierOf(hw({ vram: 6, ram: 30 })) === 'big' && tierOf(hw({ vram: 12, ram: 29 })) === 'small' && tierOf(hw({ vram: 4, ram: 64 })) === 'small');
+  check('tier: Apple silicon shares memory, so 32 GB (and 30) holds it and 24 or 16 GB does not', tierOf(hw({ unified: true, os: 'darwin', arch: 'arm64', ram: 32 })) === 'big' && tierOf(hw({ unified: true, os: 'darwin', arch: 'arm64', ram: 24 })) === 'small' && tierOf(hw({ unified: true, os: 'darwin', arch: 'arm64', ram: 16 })) === 'small' && tierOf(hw({ unified: true, ram: 8 })) === 'small');
   check('tier: a big CPU box with no GPU stays small (11 tokens/s is no better than the 4B)', tierOf(hw({ vram: 0, ram: 128 })) === 'small');
 
   let T = 1_000_000; const L = mk({ now: () => T, onlineMs: 60000, canaryEvery: 1000, waitMs: 20 });
