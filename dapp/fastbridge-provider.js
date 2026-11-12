@@ -203,6 +203,8 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
   }
   // what is held against the pool balance now, for the one who provides to see
   const held = async () => (await promised()).sum;
+  // the private TAC not promised: the pool balance less what is reserved or owed to swaps whose lock is not made (null while the balance cannot be read)
+  const free = async () => { const i = await readInventory(), p = await promised(); return i.held == null ? null : i.held > p.sum ? i.held - p.sum : 0n; };
 
   // quotes that were never used are forgotten after two days
   let lastPrune = 0;
@@ -402,5 +404,5 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
     }
   }
 
-  return { el, quoter, start, tick, handle, health, offerOf, reservations, availableAmount, held, dropDeadHolds };
+  return { el, quoter, start, tick, handle, health, offerOf, reservations, availableAmount, held, free, dropDeadHolds };
 }

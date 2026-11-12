@@ -356,6 +356,21 @@ test('what the pool holds and what stands against it is said in the log, not onl
   assert.equal(s.logs.filter((l) => l.msg === 'capacity').length, 2);
 });
 
+test('free() is the private TAC not promised: the pool balance less what a reservation holds, never below nothing, and null while the balance cannot be read', async () => {
+  const { w } = httpWorld();
+  w.lEvm.fund(6000n, 'inv'); manyCoins(w);
+  const s = await serve(w);
+  assert.equal(await s.svc.free(), 6000n, 'nothing is promised yet');
+  const q = (await post(s, '/quote', { amount: '1000' })).body;
+  assert.equal((await post(s, '/reserve', { quoteId: q.id })).body.ok, true);
+  assert.equal(await s.svc.free(), 5000n, 'a reservation stands against it');
+  const w2 = httpWorld().w;
+  const bare = await serve(w2, { evm: { ...w2.lEvmCtx, available: undefined } });
+  assert.equal(await bare.svc.free(), null, 'an adapter that cannot read the balance gives nothing to refill from');
+  await bare.close();
+  await s.close();
+});
+
 test('a provider that cannot get a lock into the pool says so: nothing to take in /info, a quote, a reservation and a new offer are turned away with the reason, the one who runs it is told once, a swap it holds goes on, and it takes bridges again when it can', async () => {
   const { w } = httpWorld();
   w.lEvm.fund(6000n, 'inv'); manyCoins(w);

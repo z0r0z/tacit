@@ -102,6 +102,27 @@ once. A quote checks that and holds nothing, so a user comparing providers holds
 payout when the user commits, before it locks any Bitcoin, so a provider that cannot is found out while the TAC is still in hand.
 Keep several coins at the Bitcoin address, or one swap at a time is all it takes.
 
+## Keeping it filled
+
+Each bridge a provider takes moves TAC out of its private pool balance, so it runs out. Left alone it says so (the `capacity` line in the log, and a
+bridge too big for it waits on the board); with `refill` in the config it brings in more itself:
+
+```json
+"refill": { "treasury": "0x…", "lowWaterTac": 3000, "chunkTac": 5000, "maxPerDayTac": 20000 }
+```
+
+When the TAC it holds free (its pool balance less what is promised) falls under `lowWaterTac`:
+
+1. TAC that has reached its own address, from anyone, is shielded (at most a chunk at a time, and not less than `minShieldTac`, default 100).
+2. Otherwise a chunk is pulled from `treasury` with `transferFrom` and shielded. The treasury has to have approved the provider's address
+   (`poolAccount`, printed at start) for an amount of TAC first; the provider can pull nothing beyond it, beyond what the treasury holds, beyond
+   `chunkTac`, or beyond `maxPerDayTac` in a day. The treasury takes the permission back at any time with an approval of 0.
+
+It needs ETH at its address for the pull, the deposit and a settle sent from it when the relay is not sending them (`minEth`, default 0.004), and it
+waits while a swap is locking or refunding, which send from the same address. Attempts are `minIntervalSecs` apart (default 1800). It does nothing
+until the config names a treasury, and nothing in a dry run. A deposit whose settle fails stops it for good, with the deposit named in an alert: the TAC is
+in the pool's hands until it is settled. Try it first with a small `chunkTac` (100) and a small approval.
+
 ## Watching it
 
 `/health` for liveness. Alerts go to the log and, if `FB_LP_ALERT_WEBHOOK` is set, are POSTed there as JSON.

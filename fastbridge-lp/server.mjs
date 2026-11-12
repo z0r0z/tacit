@@ -86,12 +86,62 @@ const config = {
 const data = resolve(C.dataDir || 'fastbridge-lp/data');
 const alert = (o) => { log(o); if (process.env.FB_LP_ALERT_WEBHOOK) fetch(process.env.FB_LP_ALERT_WEBHOOK, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(o) }).catch(() => {}); };
 // a dry run keeps its swaps and quotes in memory, so a later live run starts from nothing it did not choose
-const service = makeLpService({ seed, btc, evm, swaps: DRY ? makeMemoryStore() : makeFileStore(resolve(data, 'swaps')), quoteStore: DRY ? makeMemoryStore() : makeFileStore(resolve(data, 'quotes')), config, log, alert });
+const swapStore = DRY ? makeMemoryStore() : makeFileStore(resolve(data, 'swaps'));
+const service = makeLpService({ seed, btc, evm, swaps: swapStore, quoteStore: DRY ? makeMemoryStore() : makeFileStore(resolve(data, 'quotes')), config, log, alert });
 
 log({ level: 'info', msg: 'fast bridge LP', network, dryRun: DRY, bitcoinAddress: btc.address, claimPub: config.claimPub, poolAccount: acct.address, config: cfgPath, data });
 await service.start();
 let busy = false;
 if (!DRY) setInterval(async () => { if (busy) return; busy = true; try { await service.tick(); } finally { busy = false; } }, (C.tickSecs ?? 15) * 1000);
+
+// Keeping the private TAC filled (lib/refill.mjs, README "Keeping it filled"): off unless the config names a treasury. When what the provider holds free
+// falls under `lowWaterTac`, TAC at its own address is shielded, or a chunk is pulled from the treasury (which has approved this key for a limited
+// amount, and can take that back with an approval of 0) and shielded. The key can pull nothing the treasury has not approved.
+if (C.refill && !DRY) {
+  const { makeRefill } = await import('./lib/refill.mjs');
+  const rc = C.refill;
+  const treasury = String(rc.treasury || '').toLowerCase();
+  if (!/^0x[0-9a-f]{40}$/.test(treasury)) { console.error('refill.treasury must be an Ethereum address'); process.exit(1); }
+  const tacMeta = ux.assetByTicker.TAC;
+  if (!tacMeta || !tacMeta.underlying) { console.error('this build of the pool module has no TAC token to refill with'); process.exit(1); }
+  const token = tacMeta.underlying;
+  const wei = (t) => { const [whole, frac = ''] = String(t).split('.'); return (BigInt(whole) * 10n ** 8n + BigInt(frac.padEnd(8, '0').slice(0, 8))) * 10n ** 10n; };
+  const word = (a) => BigInt(a).toString(16).padStart(64, '0');
+  const readNum = async (data) => BigInt(await ux.rpc('eth_call', [{ to: token, data }, 'latest']));
+  const stateFile = resolve(data, 'refill.json');
+  const { readFileSync: readF, writeFileSync: writeF } = await import('node:fs');
+  const minEth = wei(rc.minEth ?? '0.004');                         // an ETH amount in the same 18 places
+  const refill = makeRefill({
+    free: () => service.free(),
+    publicTac: () => readNum('0x70a08231' + word(acct.address)),
+    allowance: () => readNum('0xdd62ed3e' + word(treasury) + word(acct.address)),
+    treasuryTac: () => readNum('0x70a08231' + word(treasury)),
+    ethOk: async () => BigInt(await ux.rpc('eth_getBalance', [acct.address, 'latest'])) >= minEth,
+    // a swap that is locking or refunding sends from this address: a refill waits for them, so two sends do not take one nonce
+    quiet: async () => !(await swapStore.list()).some((r) => r.phase === 'locking' || r.phase === 'refunding'),
+    pull: async (amount) => {
+      const sent = await ux.sendPreparedTx({ walletPriv: key, to: token, calldata: '0x23b872dd' + word(treasury) + word(acct.address) + word(amount), gasLimit: 120000n });
+      await ux.waitReceipt(sent.txHash);
+    },
+    shield: async (amount) => {
+      const sent = await ux.routerWrap({ walletPriv: key, amountWei: amount, ticker: 'TAC' });
+      let deposited = false;
+      try {
+        await ux.waitReceipt(sent.txHash);
+        deposited = true;
+        // when the relay is not sending settles it only proves, and this address sends the settle
+        const state = await ux.relay.state().then((s) => (s && s.state) || null).catch(() => null);
+        await ux.submitWrapSettle({ built: sent, depositTx: sent.txHash, ...(state != null && state !== 'ok' ? { selfSettle } : {}) });
+      } catch (e) { if (deposited) e.deposited = sent.txHash; throw e; }
+    },
+    load: async () => { try { return JSON.parse(readF(stateFile, 'utf8')); } catch { return {}; } },
+    save: async (s) => writeF(stateFile, JSON.stringify(s)),
+    config: { lowWater: wei(rc.lowWaterTac ?? 3000), chunk: wei(rc.chunkTac ?? 5000), minShield: wei(rc.minShieldTac ?? 100), maxPerDay: wei(rc.maxPerDayTac ?? 20000), minIntervalSecs: rc.minIntervalSecs ?? 1800 },
+    log, alert,
+  });
+  log({ level: 'info', msg: 'refill is on', treasury, lowWaterTac: rc.lowWaterTac ?? 3000, chunkTac: rc.chunkTac ?? 5000, maxPerDayTac: rc.maxPerDayTac ?? 20000 });
+  setInterval(() => { refill.step().catch(() => {}); }, (rc.everySecs ?? 60) * 1000).unref();
+}
 const server = makeHttpServer({ handle: service.handle, origins: C.origins || [], trustProxy: !!C.trustProxy });
 server.listen(C.port ?? 8787, () => log({ level: 'info', msg: 'listening', port: C.port ?? 8787 }));
 
