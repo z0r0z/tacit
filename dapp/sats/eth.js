@@ -280,14 +280,20 @@ export async function mount(root, ctx) {
     }
   }
 
-  // A browser wallet (EIP-1193) on this chain, as the pool wallet's signer.
+  // The wallet on this chain: read, switched if it is not, and read again (a wallet can answer the switch without making it).
+  async function onThisChain(eth) {
+    const on = async () => Number(await eth.request({ method: 'eth_chainId' })) === chain.chainId;
+    if (await on()) return;
+    await eth.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: '0x' + chain.chainId.toString(16) }] });
+    if (!(await on())) throw new Error(`Switch your wallet to ${chain.name}, then try again.`);
+  }
+  // A browser wallet (EIP-1193) on this chain, as the pool wallet's signer. Its send comes after proving, so it checks the chain again then.
   async function browserSigner() {
     const eth = guardProvider(ctx.ethProvider?.() || globalThis.ethereum);
     if (!eth?.request) throw new Error('No browser wallet found.');
     const [from] = await eth.request({ method: 'eth_requestAccounts' });
-    const want = '0x' + chain.chainId.toString(16);
-    if ((await eth.request({ method: 'eth_chainId' })) !== want) await eth.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: want }] });
-    return { address: from, send: ({ to, data, value }) => eth.request({ method: 'eth_sendTransaction', params: [{ from, to, data, value: '0x' + BigInt(value).toString(16) }] }) };
+    await onThisChain(eth);
+    return { address: from, send: async ({ to, data, value }) => { await onThisChain(eth); return eth.request({ method: 'eth_sendTransaction', params: [{ from, to, data, value: '0x' + BigInt(value).toString(16) }] }); } };
   }
 
   // ETH at the private ETH address, the smallest amount the relay collects at today's gas price, and what a relayed

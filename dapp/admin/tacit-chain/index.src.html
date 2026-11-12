@@ -59,6 +59,7 @@ button { font: inherit; color: inherit; letter-spacing: inherit; }
 .st::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--hair-2); }
 .st.open::before { background: var(--ok); } .st.open { color: var(--ok); }
 .st.none::before { background: var(--warn); } .st.none { color: var(--warn); }
+.st.unknown::before { background: var(--err); } .st.unknown { color: var(--err); }
 dl { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 6px 18px; }
 dt { color: var(--mute); }
 dd { margin: 0; word-break: break-all; min-width: 0; }
@@ -94,7 +95,39 @@ const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.crea
 const reason = (e) => String(e?.data?.message || e?.message || e).replace(/^.*?execution reverted:?\s*/i, 'reverted ').slice(0, 160);
 const W = { found: new Map(), prov: null, name: '', account: null, chain: null };
 let KIT = null;
-const S = [];   // per step: { state: 'none' | 'open', log: [[cls, text, href]], verified }
+// per step: { state: null while the first read is out, then 'none' | 'open', or 'unknown' when no node answered (that is not 'not deployed'),
+// log: [[cls, text, href]], verified, busy, readErr, kitErr }
+const S = [];
+
+// keccak-256 (the EVM's hash, not NIST SHA-3) of a byte array: the page hashes the init code it is about to send rather than show a hash it was handed
+function keccak256(msg) {
+  const M = (1n << 64n) - 1n, rotl = (v, n) => (n ? ((v << BigInt(n)) | (v >> BigInt(64 - n))) & M : v);
+  const RC = [], ROT = new Array(25).fill(0);
+  for (let i = 0, L = 1; i < 24; i++) {
+    let c = 0n;
+    for (let j = 0; j < 7; j++) { if (L & 1) c |= 1n << BigInt((1 << j) - 1); L = ((L << 1) ^ (L & 0x80 ? 0x71 : 0)) & 0xff; }
+    RC.push(c);
+  }
+  for (let t = 0, x = 1, y = 0; t < 24; t++) { ROT[x + 5 * y] = ((t + 1) * (t + 2) / 2) % 64; [x, y] = [y, (2 * x + 3 * y) % 5]; }
+  const rate = 136, buf = new Uint8Array(Math.ceil((msg.length + 1) / rate) * rate);
+  buf.set(msg); buf[msg.length] ^= 0x01; buf[buf.length - 1] ^= 0x80;
+  const A = new Array(25).fill(0n);
+  for (let off = 0; off < buf.length; off += rate) {
+    for (let i = 0; i < rate / 8; i++) { let v = 0n; for (let b = 7; b >= 0; b--) v = (v << 8n) | BigInt(buf[off + 8 * i + b]); A[i] ^= v; }
+    for (let r = 0; r < 24; r++) {
+      const C = [0, 1, 2, 3, 4].map((x) => A[x] ^ A[x + 5] ^ A[x + 10] ^ A[x + 15] ^ A[x + 20]);
+      for (let x = 0; x < 5; x++) { const D = C[(x + 4) % 5] ^ rotl(C[(x + 1) % 5], 1); for (let y = 0; y < 25; y += 5) A[x + y] ^= D; }
+      const B = new Array(25);
+      for (let x = 0; x < 5; x++) for (let y = 0; y < 5; y++) B[y + 5 * ((2 * x + 3 * y) % 5)] = rotl(A[x + 5 * y], ROT[x + 5 * y]);
+      for (let y = 0; y < 25; y += 5) for (let x = 0; x < 5; x++) A[x + y] = B[x + y] ^ (~B[(x + 1) % 5 + y] & M & B[(x + 2) % 5 + y]);
+      A[0] ^= RC[r];
+    }
+  }
+  let out = '';
+  for (let i = 0; i < 4; i++) for (let b = 0; b < 8; b++) out += Number((A[i] >> BigInt(8 * b)) & 0xffn).toString(16).padStart(2, '0');
+  return out;
+}
+const hashOfCode = (code) => '0x' + keccak256(Uint8Array.from(strip(code).match(/../g) || [], (b) => parseInt(b, 16)));
 
 async function rpc(method, params = []) {
   let last;
@@ -172,15 +205,18 @@ function draw() {
   KIT.steps.forEach((step, i) => {
     const s = S[i], card = el('section', { className: 'card', ariaLive: 'polite' });
     const before = i > 0 && S[i - 1].state !== 'open';
-    const ready = !!W.prov && W.chain === KIT.chainId && isDeployer() && !before && s.state !== 'open';
+    const ready = !!W.prov && W.chain === KIT.chainId && isDeployer() && !before && s.state === 'none' && !s.busy && !s.kitErr;
     const dl = el('dl');
     const row = (t, v) => dl.append(el('dt', { textContent: t }), el('dd', { textContent: v }));
-    row('Salt', step.salt); row('Init code hash', step.initHash); row('Init code', `${(strip(step.initCode).length / 2).toLocaleString('en-US')} bytes`);
-    const go = el('button', { className: 'btn go', type: 'button', textContent: `Deploy ${step.name}`, disabled: !ready, onclick: () => deploy(i) });
+    row('Salt', step.salt); row('Init code hash', step.codeHash); row('Init code', `${(strip(step.initCode).length / 2).toLocaleString('en-US')} bytes`);
+    const go = el('button', { className: 'btn go', type: 'button', textContent: s.busy ? `Deploying ${step.name}…` : `Deploy ${step.name}`, disabled: !ready, onclick: () => deploy(i) });
+    const label = s.state === 'open' ? (s.verified ? 'deployed, reads back as built' : 'deployed') : s.state === 'none' ? 'not deployed' : s.state === 'unknown' ? 'not read' : 'reading…';
     card.append(
-      el('div', { className: 'row' }, el('b', { textContent: `${i + 1}. ${step.name}` }), el('span', { className: `st ${s.state}`, textContent: s.state === 'open' ? (s.verified ? 'deployed, reads back as built' : 'deployed') : 'not deployed' })),
-      addrView(step.expected), dl, el('div', { className: 'row' }, go),
-      s.state === 'open' ? '' : !W.prov ? el('span', { className: 'note', textContent: 'Connect the deployer on Ethereum to deploy.' })
+      el('div', { className: 'row' }, el('b', { textContent: `${i + 1}. ${step.name}` }), el('span', { className: `st ${s.state || ''}`, textContent: label })),
+      addrView(step.expected), dl, el('div', { className: 'row' }, go, s.state === 'unknown' ? el('button', { className: 'btn', type: 'button', textContent: 'Read again', disabled: s.busy, onclick: refresh }) : ''),
+      s.state === 'open' ? '' : s.kitErr ? el('span', { className: 'note err', textContent: s.kitErr })
+        : s.state === 'unknown' ? el('span', { className: 'note err', textContent: `No node answered (${s.readErr}), so it is not known whether this is deployed. Deploy stays off until a read answers.` })
+        : !W.prov ? el('span', { className: 'note', textContent: 'Connect the deployer on Ethereum to deploy.' })
         : W.chain !== KIT.chainId ? el('span', { className: 'note err', textContent: 'Switch your wallet to Ethereum.' })
         : !isDeployer() ? el('span', { className: 'note err', textContent: `Connect ${short(KIT.deployer)}: these salts deploy only from it.` })
         : before ? el('span', { className: 'note', textContent: `${KIT.steps[i - 1].name} first.` }) : '',
@@ -196,9 +232,11 @@ function draw() {
 const say = (i, cls, text, href) => { S[i].log.push([cls, text, href]); draw(); };
 
 async function deploy(i) {
-  const step = KIT.steps[i], data = deployData(step);
-  S[i].log = [];
+  const step = KIT.steps[i], s = S[i];
+  if (s.busy || s.kitErr || s.state !== 'none') return;
+  s.busy = true; s.log = []; draw();
   try {
+    const data = deployData(step);
     if (await hasCode(step.expected)) { await refresh(); say(i, 'ok', 'It is deployed already.'); return; }
     let made;
     try { made = addrOf(await rpc('eth_call', [{ from: W.account, to: KIT.factory, data }, 'latest'])); }
@@ -207,6 +245,9 @@ async function deploy(i) {
     say(i, 'ok', 'Run from your address, it creates exactly the planned address.');
     const gas = BigInt(await rpc('eth_estimateGas', [{ from: W.account, to: KIT.factory, data }]));
     say(i, 'ok', `Gas ${(Number(gas) / 1e6).toFixed(2)}M. Sending from ${short(W.account)}…`);
+    // the wallet's chain, read again as the last step before it signs: W.chain is only what the wallet last announced, and the reads above took time
+    W.chain = Number(await ask('eth_chainId'));
+    if (W.chain !== KIT.chainId) { drawWho(); say(i, 'err', 'Your wallet is no longer on Ethereum. Switch back and deploy again. Nothing was sent.'); return; }
     const hash = await ask('eth_sendTransaction', [{ from: W.account, to: KIT.factory, data, gas: '0x' + (gas * 12n / 10n).toString(16) }]);
     say(i, 'ok', 'Sent. Waiting for it to land…', `https://etherscan.io/tx/${hash}`);
     let rc = null;
@@ -215,6 +256,7 @@ async function deploy(i) {
     if (rc.status !== '0x1') { say(i, 'err', 'The transaction reverted.', `https://etherscan.io/tx/${hash}`); return; }
     await refresh();
   } catch (e) { say(i, 'err', e?.code === 4001 ? 'Cancelled in your wallet. Nothing was sent.' : reason(e)); }
+  finally { s.busy = false; draw(); }
 }
 
 // what is at each address must be its contract, built with these arguments
@@ -227,8 +269,11 @@ async function verify(i) {
 }
 async function refresh() {
   for (let i = 0; i < KIT.steps.length; i++) {
-    S[i].state = (await hasCode(KIT.steps[i].expected).catch(() => false)) ? 'open' : 'none';
-    if (S[i].state === 'open') await verify(i);
+    let has;
+    try { has = await hasCode(KIT.steps[i].expected); S[i].readErr = ''; }
+    catch (e) { S[i].state = 'unknown'; S[i].readErr = reason(e); continue; }
+    S[i].state = has ? 'open' : 'none';
+    if (has) await verify(i);
   }
   draw();
 }
@@ -236,7 +281,12 @@ async function refresh() {
 (async () => {
   try {
     KIT = await (await fetch('kit.json', { cache: 'no-store' })).json();
-    KIT.steps.forEach(() => S.push({ state: 'none', log: [], verified: false }));
+    // the hash shown is the init code's own, and the kit's is checked against it: a step whose code was changed after its hash was written is not sent
+    KIT.steps.forEach((step) => {
+      step.codeHash = hashOfCode(step.initCode);
+      const ok = lc(step.codeHash) === lc(step.initHash);
+      S.push({ state: null, log: [], verified: false, busy: false, readErr: '', kitErr: ok ? '' : `kit.json lists init code hash ${short(step.initHash)} for ${step.name}, but its init code hashes to ${short(step.codeHash)}. Deploy is off: fetch the kit again.` });
+    });
     drawParams();
     await refresh();
   } catch (e) { $('params').replaceChildren(el('span', { className: 'note err', textContent: `The kit could not be read (${reason(e)}).` })); }

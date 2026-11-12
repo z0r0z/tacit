@@ -1,10 +1,13 @@
 # Static-host header config (Cloudflare Pages / Netlify format).
 #
-# NOT LIVE ON THE CURRENT HOST: tacit.finance serves from Render, and Render's
-# static-site product does not read a _headers file — custom headers there are
-# set via the Render Dashboard only (https://render.com/docs/static-site-headers).
-# Keep this file as the canonical header set to copy into that dashboard, and
-# update it there when this file changes, until Render ships file-based config.
+# NOT READ BY THE CURRENT HOST: tacit.finance serves from Render, and Render's
+# static-site product does not read a _headers file. The `/*` headers below are
+# served all the same, because they are set on the site itself (Settings →
+# Headers, or its API; https://render.com/docs/static-site-headers). Keep this
+# file as the canonical set to copy there, and update the site when it changes.
+# The cross-origin isolation headers of the front page and /tac/ are not here:
+# they are in tools/site-isolation-rules.mjs, set by tools/site-isolation-headers.mjs.
+# (`server: cloudflare` and `cf-*` on a response are Render's own CDN, not a zone of ours.)
 #
 # CSP frame-ancestors is the one directive browsers IGNORE when delivered via
 # <meta> tag — it must come from an HTTP header. The dapp's <meta http-equiv>

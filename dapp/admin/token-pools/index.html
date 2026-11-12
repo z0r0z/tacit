@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-DEY6uMOCw8UKa5Fe/omF/PZgToN16QJVn1S6IIVN3Do='; style-src 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self' https://mainnet.gateway.tenderly.co https://ethereum-rpc.publicnode.com https://mainnet.base.org https://base.gateway.tenderly.co https://base-rpc.publicnode.com https://rpc.mainnet.chain.robinhood.com https://rpc.mevblocker.io https://eth-mainnet.nodereal.io https://eth.drpc.org https://1.rpc.thirdweb.com https://rpc.flashbots.net https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io https://1rpc.io; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-62woyG4JQlNb4FodEz1w3B4HKm+UyTdIBxos+T1dLJM='; style-src 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self' https://mainnet.gateway.tenderly.co https://ethereum-rpc.publicnode.com https://mainnet.base.org https://base.gateway.tenderly.co https://base-rpc.publicnode.com https://rpc.mainnet.chain.robinhood.com https://rpc.mevblocker.io https://eth-mainnet.nodereal.io https://eth.drpc.org https://1.rpc.thirdweb.com https://rpc.flashbots.net https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io https://1rpc.io; base-uri 'none'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <meta name="robots" content="noindex">
 <title>tacit admin · token pools</title>
@@ -154,6 +154,8 @@ function madeBy(tx, ret) {
   const r = strip(ret), at = (b) => Number(BigInt('0x' + (r.slice(b * 2, b * 2 + 64) || '0')));
   if (lc(tx.to) !== MULTICALL3) return ['0x' + r.slice(24, 64)];
   const base = at(0), n = at(base), out = [];
+  // the count is the node's own word: the answer must be long enough to hold that many results, and a kit makes only a few contracts
+  if (!(n <= 32 && r.length >= (base + 32 * (n + 1)) * 2)) throw new Error('the node answered with data that CreateX does not return');
   for (let i = 0; i < n; i++) {
     const e = base + 32 + at(base + 32 + 32 * i), ok = at(e) === 1, d = e + at(e + 32);
     out.push(ok && at(d) === 32 ? '0x' + r.slice((d + 32) * 2 + 24, (d + 32) * 2 + 64) : null);
@@ -242,6 +244,9 @@ async function send(kit) {
     // the state again, just before it goes: what is there decides what is sent
     if ((await stateOf(kit)) !== r.state) throw new Error('its state changed: check it again');
     const { tx, gas } = r.checked;
+    // the wallet's chain, read again as the last step before it signs: W.chain is only what the wallet last announced, and the state read above took time
+    W.chain = Number(await ask('eth_chainId'));
+    if (W.chain !== kit.chainId) { drawWho(); throw new Error(`the wallet moved to chain ${W.chain}, not ${kit.chainId}: nothing was sent`); }
     const hash = await ask('eth_sendTransaction', [{ from: W.account, to: tx.to, data: tx.data, value: '0x0', gas: hx(gas) }]);
     r.hash = hash; r.note = { text: 'Sent, waiting for the block…' }; draw();
     let rc = null;

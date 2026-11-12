@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-o1nOJ5xINRHTmiWs3FJ4/gkdOPHRLbHjgpZhBwtdS8k='; style-src 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self' https://mainnet.gateway.tenderly.co https://ethereum-rpc.publicnode.com https://rpc.mevblocker.io https://eth-mainnet.nodereal.io https://eth.drpc.org https://1.rpc.thirdweb.com https://rpc.flashbots.net https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io https://1rpc.io; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-t3jIOGAPhnsf5yM0Fof9r+clgvWUM0RVznH64SPdUiw='; style-src 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self' https://mainnet.gateway.tenderly.co https://ethereum-rpc.publicnode.com https://rpc.mevblocker.io https://eth-mainnet.nodereal.io https://eth.drpc.org https://1.rpc.thirdweb.com https://rpc.flashbots.net https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io https://1rpc.io; base-uri 'none'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <meta name="robots" content="noindex">
 <title>tacit admin · gas relay</title>
@@ -60,6 +60,7 @@ button { font: inherit; color: inherit; letter-spacing: inherit; }
 .st::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--hair-2); }
 .st.open::before { background: var(--ok); } .st.open { color: var(--ok); }
 .st.none::before { background: var(--warn); } .st.none { color: var(--warn); }
+.st.unknown::before { background: var(--err); } .st.unknown { color: var(--err); }
 dl { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 6px 18px; }
 dt { color: var(--mute); }
 dd { margin: 0; word-break: break-all; min-width: 0; }
@@ -93,7 +94,38 @@ const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.crea
 const reason = (e) => String(e?.data?.message || e?.message || e).replace(/^.*?execution reverted:?\s*/i, 'reverted ').slice(0, 160);
 const SEL = { TYPEHASH: '0xf973a209', ALLOWED: '0x5f39f892', DEPLOY: '0x9c36a286' };   // ORDER_TYPEHASH(), allowedTarget(address), CreateX deployCreate3(bytes32,bytes)
 const W = { found: new Map(), prov: null, name: '', account: null, chain: null };
-let KIT = null, state = 'none', log = [];
+// state: null while the first read is out, then 'none' | 'open', or 'unknown' when no node answered (that is not 'not deployed')
+let KIT = null, state = null, log = [], busy = false, readErr = '', kitErr = '';
+
+// keccak-256 (the EVM's hash, not NIST SHA-3) of a byte array: the page hashes the init code it is about to send rather than show a hash it was handed
+function keccak256(msg) {
+  const M = (1n << 64n) - 1n, rotl = (v, n) => (n ? ((v << BigInt(n)) | (v >> BigInt(64 - n))) & M : v);
+  const RC = [], ROT = new Array(25).fill(0);
+  for (let i = 0, L = 1; i < 24; i++) {
+    let c = 0n;
+    for (let j = 0; j < 7; j++) { if (L & 1) c |= 1n << BigInt((1 << j) - 1); L = ((L << 1) ^ (L & 0x80 ? 0x71 : 0)) & 0xff; }
+    RC.push(c);
+  }
+  for (let t = 0, x = 1, y = 0; t < 24; t++) { ROT[x + 5 * y] = ((t + 1) * (t + 2) / 2) % 64; [x, y] = [y, (2 * x + 3 * y) % 5]; }
+  const rate = 136, buf = new Uint8Array(Math.ceil((msg.length + 1) / rate) * rate);
+  buf.set(msg); buf[msg.length] ^= 0x01; buf[buf.length - 1] ^= 0x80;
+  const A = new Array(25).fill(0n);
+  for (let off = 0; off < buf.length; off += rate) {
+    for (let i = 0; i < rate / 8; i++) { let v = 0n; for (let b = 7; b >= 0; b--) v = (v << 8n) | BigInt(buf[off + 8 * i + b]); A[i] ^= v; }
+    for (let r = 0; r < 24; r++) {
+      const C = [0, 1, 2, 3, 4].map((x) => A[x] ^ A[x + 5] ^ A[x + 10] ^ A[x + 15] ^ A[x + 20]);
+      for (let x = 0; x < 5; x++) { const D = C[(x + 4) % 5] ^ rotl(C[(x + 1) % 5], 1); for (let y = 0; y < 25; y += 5) A[x + y] ^= D; }
+      const B = new Array(25);
+      for (let x = 0; x < 5; x++) for (let y = 0; y < 5; y++) B[y + 5 * ((2 * x + 3 * y) % 5)] = rotl(A[x + 5 * y], ROT[x + 5 * y]);
+      for (let y = 0; y < 25; y += 5) for (let x = 0; x < 5; x++) A[x + y] = B[x + y] ^ (~B[(x + 1) % 5 + y] & M & B[(x + 2) % 5 + y]);
+      A[0] ^= RC[r];
+    }
+  }
+  let out = '';
+  for (let i = 0; i < 4; i++) for (let b = 0; b < 8; b++) out += Number((A[i] >> BigInt(8 * b)) & 0xffn).toString(16).padStart(2, '0');
+  return out;
+}
+const hashOfCode = (code) => '0x' + keccak256(Uint8Array.from(strip(code).match(/../g) || [], (b) => parseInt(b, 16)));
 
 async function rpc(method, params = []) {
   let last;
@@ -157,20 +189,23 @@ function addrView(a) {
 function draw() {
   const k = KIT, card = $('card');
   card.replaceChildren();
-  const ready = !!W.prov && W.chain === k.chainId && lc(W.account) === lc(k.deployer);
+  const ready = !!W.prov && W.chain === k.chainId && lc(W.account) === lc(k.deployer) && state === 'none' && !busy && !kitErr;
   const dl = el('dl');
   const row = (t, v) => { dl.append(el('dt', { textContent: t }), el('dd', {}, v)); };
   row('Factory', `CreateX ${k.factory} (CREATE3)`); row('Deployer', k.deployer);
   row('Owner', 'none: ownerless and immutable, it holds no funds and has no settings'); row('Fee token', 'TAC, or the token being spent'); row('Calls may go only to', k.args.targets.join(' · '));
-  row('Salt', k.salt); row('Init code hash', k.initHash); row('Init code', `${(strip(k.initCode).length / 2).toLocaleString('en-US')} bytes`);
+  row('Salt', k.salt); row('Init code hash', k.codeHash); row('Init code', `${(strip(k.initCode).length / 2).toLocaleString('en-US')} bytes`);
   row('Build', `solc ${k.build.solc}, via IR, optimizer runs ${k.build.optimizerRuns}; source sha256 ${k.build.sourceSha256.slice(0, 16)}…`);
-  const go = el('button', { className: 'btn go', type: 'button', textContent: 'Deploy TacitGasRelay', disabled: !ready || state === 'open', onclick: deploy });
+  const go = el('button', { className: 'btn go', type: 'button', textContent: busy ? 'Deploying…' : 'Deploy TacitGasRelay', disabled: !ready, onclick: deploy });
   const copy = (txt, label) => el('button', { className: 'btn', type: 'button', textContent: label, onclick: (e) => { navigator.clipboard.writeText(txt).then(() => { e.target.textContent = 'Copied'; setTimeout(() => { e.target.textContent = label; }, 1400); }, () => {}); } });
+  const label = state === 'open' ? 'deployed' : state === 'none' ? 'not deployed' : state === 'unknown' ? 'not read' : 'reading…';
   card.append(
-    el('div', { className: 'row' }, el('b', { textContent: 'TacitGasRelay' }), el('span', { className: `st ${state}`, textContent: state === 'open' ? 'deployed' : 'not deployed' })),
+    el('div', { className: 'row' }, el('b', { textContent: 'TacitGasRelay' }), el('span', { className: `st ${state || ''}`, textContent: label })),
     addrView(k.expected), dl,
-    el('div', { className: 'row' }, go, copy(k.salt, 'Copy salt'), copy(k.initCode, 'Copy init code')),
-    !W.prov ? el('span', { className: 'note', textContent: 'Connect a wallet on Ethereum to deploy.' }) : W.chain !== k.chainId ? el('span', { className: 'note err', textContent: 'Switch your wallet to Ethereum.' }) : lc(W.account) !== lc(k.deployer) ? el('span', { className: 'note err', textContent: `This salt can only be used by ${k.deployer}. Switch to that account.` }) : '',
+    el('div', { className: 'row' }, go, copy(k.salt, 'Copy salt'), copy(k.initCode, 'Copy init code'), state === 'unknown' ? el('button', { className: 'btn', type: 'button', textContent: 'Read again', disabled: busy, onclick: refresh }) : ''),
+    kitErr ? el('span', { className: 'note err', textContent: kitErr })
+    : state === 'unknown' ? el('span', { className: 'note err', textContent: `No node answered (${readErr}), so it is not known whether this is deployed. Deploy stays off until a read answers.` })
+    : !W.prov ? el('span', { className: 'note', textContent: 'Connect a wallet on Ethereum to deploy.' }) : W.chain !== k.chainId ? el('span', { className: 'note err', textContent: 'Switch your wallet to Ethereum.' }) : lc(W.account) !== lc(k.deployer) ? el('span', { className: 'note err', textContent: `This salt can only be used by ${k.deployer}. Switch to that account.` }) : '',
   );
   const ul = el('ul', { className: 'steps' });
   for (const [cls, text, href] of log) ul.append(el('li', { className: cls }, href ? el('a', { href, target: '_blank', rel: 'noopener noreferrer', textContent: text }) : text));
@@ -179,14 +214,17 @@ function draw() {
 const say = (cls, text, href) => { log.push([cls, text, href]); draw(); };
 
 async function refresh() {
-  state = (await hasCode(KIT.expected).catch(() => false)) ? 'open' : 'none';
+  try { state = (await hasCode(KIT.expected)) ? 'open' : 'none'; readErr = ''; }
+  catch (e) { state = 'unknown'; readErr = reason(e); }
   draw();
 }
 
 async function deploy() {
-  log = [];
-  const k = KIT, data = deployData(k);
+  if (busy || kitErr || state !== 'none') return;
+  busy = true; log = []; draw();
+  const k = KIT;
   try {
+    const data = deployData(k);
     if (await hasCode(k.expected)) { await refresh(); say('ok', 'It is deployed already.'); return; }
     if (W.chain !== k.chainId) { say('err', 'Switch your wallet to Ethereum first.'); return; }
     if (lc(W.account) !== lc(k.deployer)) { say('err', `Only ${k.deployer} can deploy with this salt.`); return; }
@@ -198,6 +236,9 @@ async function deploy() {
     say('ok', 'Run from your address, it creates exactly the planned address.');
     const gas = BigInt(await rpc('eth_estimateGas', [{ from: W.account, to: k.factory, data }]));
     say('ok', `Gas ${(Number(gas) / 1e6).toFixed(2)}M. Sending from ${short(W.account)}…`);
+    // the wallet's chain, read again as the last step before it signs: W.chain is only what the wallet last announced, and the reads above took time
+    W.chain = Number(await ask('eth_chainId'));
+    if (W.chain !== k.chainId) { drawWho(); say('err', 'Your wallet is no longer on Ethereum. Switch back and deploy again. Nothing was sent.'); return; }
     const hash = await ask('eth_sendTransaction', [{ from: W.account, to: k.factory, data, gas: '0x' + (gas * 12n / 10n).toString(16) }]);
     say('ok', 'Sent. Waiting for it to land…', `https://etherscan.io/tx/${hash}`);
     let rc = null;
@@ -206,6 +247,7 @@ async function deploy() {
     if (rc.status !== '0x1') { say('err', 'The transaction reverted.', `https://etherscan.io/tx/${hash}`); return; }
     await verify();
   } catch (e) { say('err', e?.code === 4001 ? 'Cancelled in your wallet. Nothing was sent.' : reason(e)); }
+  finally { busy = false; draw(); }
 }
 
 // what is at the address must be this contract, built with these arguments
@@ -221,6 +263,9 @@ async function verify() {
 (async () => {
   try {
     KIT = await (await fetch('kit.json', { cache: 'no-store' })).json();
+    // the hash shown is the init code's own, and the kit's is checked against it: a kit whose code was changed after its hash was written is not sent
+    KIT.codeHash = hashOfCode(KIT.initCode);
+    if (lc(KIT.codeHash) !== lc(KIT.initHash)) kitErr = `kit.json lists init code hash ${short(KIT.initHash)}, but its init code hashes to ${short(KIT.codeHash)}. Deploy is off: fetch the kit again.`;
     await refresh();
     if (state === 'open') await verify();
   } catch (e) { $('card').replaceChildren(el('span', { className: 'note err', textContent: `The kit could not be read (${reason(e)}).` })); }
