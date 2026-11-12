@@ -9904,7 +9904,25 @@ function isWebP(b) {
     && b[8]===0x57 && b[9]===0x45 && b[10]===0x42 && b[11]===0x50;
 }
 // An SVG is pinned as an image only: markup that scripts, embeds another document or runs on an event is refused.
-const SVG_ACTIVE = /<\s*(?:script|foreignObject|iframe|embed|object)\b|\son[a-z]+\s*=|javascript\s*:|data\s*:\s*text\/html/i;
+const SVG_ACTIVE = /<\s*(?:[a-z0-9_.-]+:)?(?:script|foreignObject|iframe|embed|object|handler|listener)\b|\son[a-z]+\s*=|<\?xml-stylesheet|<!\s*(?:DOCTYPE|ENTITY)|attributeName\s*=\s*["']?\s*(?:[a-z0-9_.-]+:)?href/i;
+// A scheme that runs code or loads a page can be written around a filter: with entities in it (&#106;avascript:), with a tab or a line break in it.
+// So each attribute value and each stylesheet is read as a browser reads it, entities decoded and whitespace and control characters dropped, before
+// it is looked at (text between elements is not an address, and is left alone).
+const SVG_SCHEME = /(?:javascript|vbscript|livescript):|data:text\/html|data:image\/svg/;
+function svgReads(raw) {
+  return raw
+    .replace(/&#x([0-9a-f]{1,6});?/gi, (_, h) => { try { return String.fromCodePoint(parseInt(h, 16)); } catch { return ''; } })
+    .replace(/&#(\d{1,7});?/g, (_, d) => { try { return String.fromCodePoint(Number(d)); } catch { return ''; } })
+    .replace(/&(?:colon|Tab|NewLine);?/gi, (m) => (/colon/i.test(m) ? ':' : ''))
+    .replace(/[\u0000-\u0020\u007f-\u009f\u00ad\u200b-\u200f\u2028\u2029\ufeff]/g, '')
+    .toLowerCase();
+}
+function svgPassive(text) {
+  if (SVG_ACTIVE.test(text)) return false;
+  for (const m of text.matchAll(/=\s*(?:"([^"]*)"|'([^']*)')/g)) if (SVG_SCHEME.test(svgReads(m[1] ?? m[2] ?? ''))) return false;
+  for (const m of text.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)) if (SVG_SCHEME.test(svgReads(m[1]))) return false;
+  return true;
+}
 function magicMatches(bytes, mime) {
   if (mime === 'image/png')  return startsWith(bytes, PNG_MAGIC);
   if (mime === 'image/jpeg') return startsWith(bytes, JPEG_MAGIC);
@@ -9912,7 +9930,7 @@ function magicMatches(bytes, mime) {
   if (mime === 'image/svg+xml') {
     const text = new TextDecoder().decode(bytes);
     const head = text.slice(0, 256).trim();
-    return (head.startsWith('<svg') || head.startsWith('<?xml')) && !SVG_ACTIVE.test(text);
+    return (head.startsWith('<svg') || head.startsWith('<?xml')) && svgPassive(text);
   }
   return false;
 }
@@ -27819,7 +27837,7 @@ async function scanForEtches(env, network) {
 // Workers ignores extra named exports — only the default object's fetch /
 // scheduled handlers are invoked at runtime — so this has no production effect.
 export {
-  _ethGasPrice, fetchIpfsJson, _deriveTradeFromChain,
+  _ethGasPrice, fetchIpfsJson, _deriveTradeFromChain, magicMatches,
   assembleReflectionJobBody,
   openingMsg, disclosureMsg, listingMsg, cancelMsg, claimMsg,
   atomicIntentMsg, atomicIntentClaimMsg, atomicIntentFulfilmentMsg, atomicIntentCancelMsg,
