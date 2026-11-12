@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-9XWfXRNjM+fwkj2+dWpLeQ4B0ONu/ANdpIebGVo2b98=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-9usTbhwNi7WAfegNYqy7NGm9alhapQGCn7moicmgDeg=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -347,22 +347,19 @@ a.di { color: inherit; text-decoration: none; }
 .newsl { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 6px 18px; margin: 0 0 20px; }
 .newsl .news { margin: 0; }
 .newsl.below { margin: 26px 0 0; }
-.chl { display: flex; flex-direction: column; align-items: center; gap: 12px; margin: 22px 0 0; font-size: 13px; color: var(--mute); text-align: center; }
+.chl { display: flex; justify-content: center; margin: 22px 0 0; font-size: 13px; color: var(--mute); text-align: center; }
 .chl[hidden] { display: none; }
 .chl a { color: inherit; text-decoration: none; }
-/* the banner: what the chain is, one quiet pill that opens its page; under it the chain live */
+/* the banner: what the chain is, one quiet pill that opens its page; its dot says whether the chain is answering (the numbers are the hover) */
 .chb { display: inline-flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 4px 10px; min-height: 32px; padding: 5px 15px; border: 1px solid var(--hair-2); border-radius: 999px; font-size: 12.5px; line-height: 1.4; transition: border-color .15s; }
 .chb .tk { width: 14px; height: 14px; }
 .chb b { font-weight: 500; color: var(--ink); }
 .chb i { font-style: normal; color: var(--ink); transition: transform .2s; }
+.chb .dot { width: 6px; height: 6px; margin-left: -4px; }
 @media (hover: hover) { .chb:hover { border-color: var(--ink); } .chb:hover i { transform: translateX(3px); } }
 @media (prefers-reduced-motion: reduce) { .chb, .chb i { transition: none; } }
-.chl-l { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 4px 18px; min-height: 22px; }
-.chl-s { display: inline-flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 2px 10px; }
-.chl .dot { width: 6px; height: 6px; }
-.chl a.chl-go { font-weight: 500; color: var(--ink); }
-.chl-s:hover #chl-v, .chl a.chl-go:hover { text-decoration: underline; text-underline-offset: 3px; }
-@media (max-width: 560px) { .chl-l { min-height: 44px; align-content: flex-start; } .chl .w { display: none; } }
+@media (max-width: 560px) { .chl .w { display: none; } .chb { gap: 4px 8px; padding: 5px 12px; } }
+@media (max-width: 380px) { .chl .w3 { display: none; } }
 /* the line goes when its one chip does: once the airdrop closes, or signed in, where the Airdrop card in Your Tacit already shows it */
 .newsl.below:not(:has(> .news:not([hidden]))), .hero:has(~ #dash:not([hidden]) [data-dash-open="airdrop"]) .newsl.below { display: none; }
 /* The farms under the rewards line: a pair and its APR a chip, best first, each opening the tile's Earn tab on that pool's ETH zap. One quiet line, centred where it fits and
@@ -376,7 +373,7 @@ a.di { color: inherit; text-decoration: none; }
 .fms .pair { display: inline-flex; }
 .fms .pair .tk { width: 16px; height: 16px; }
 .fms .pair .tk + .tk { margin-left: -5px; box-shadow: 0 0 0 1.5px var(--paper); }
-.fms b { font-weight: 400; color: var(--ink); }
+.fms b { font-weight: 500; color: var(--green); }
 .fms small { font: 500 11px var(--mono); letter-spacing: .06em; }
 .fms .fms-thin { font-style: normal; font-weight: 400; letter-spacing: 0; opacity: .8; }
 @media (hover: hover) { .fms a:hover small { color: var(--ink); } }
@@ -2043,8 +2040,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
     <section class="hx" id="hx" aria-label="Shield, swap, send, earn, withdraw, bridge or borrow"><div id="hx-body"><div class="hx-sk" aria-hidden="true"><i class="t"></i><i class="f"></i><i class="f"></i><i class="p"></i><i class="g"></i></div></div></section>
     <div class="hints" id="hints" role="group" aria-label="Quick starts: each fills the card above"></div>
     <div class="chl" id="chl">
-      <a class="chb" href="/chain/"><svg class="tk w" aria-hidden="true"><use href="#tk-tac"/></svg><b>Tacit chain</b><span>a zk-rollup for <span class="w">private </span>TAC payments<span class="w">, settled on Ethereum</span></span><i aria-hidden="true">→</i></a>
-      <div class="chl-l"><a class="chl-s" href="/chain/" title="The Tacit chain, live"><span class="dot" id="chl-dot"></span><span id="chl-v"><span class="sk" style="--w:26ch"></span></span></a><a class="chl-go" href="/tac/">Make TAC private →</a></div>
+      <a class="chb" id="chl-a" href="/chain/" title="The Tacit chain, live"><svg class="tk w" aria-hidden="true"><use href="#tk-tac"/></svg><b>Tacit chain</b><span class="dot" id="chl-dot" aria-hidden="true"></span><span><span class="w3">a zk-rollup for </span><span class="w">private </span>TAC payments<span class="w">, settled on Ethereum</span></span><i aria-hidden="true">→</i></a>
     </div>
     <div class="proof-row">
       <a class="proof" href="/weld/stats/" title="All stats">
@@ -20852,8 +20848,8 @@ evm.onElsewhere(restoreWallet);
 let lastTick = Date.now();
 const tick = () => { lastTick = Date.now(); paintEarn(); refreshTape(); loadTacPrice().catch(() => {}); brTick(); brPrepTick().catch(() => {}); bswTick().catch(() => {}); fastTick().catch(() => {}); xoTick(); if (lastTick - numsAt > NUMS_MS) refreshNums(); for (const n of SHEETS) if (shown(n) && !running(n)) load[n]?.().then(() => rerender(n)).catch(() => {}); };
 setInterval(() => { if (!document.hidden) tick(); }, 60e3);
-// The Tacit chain, live, under the card (the front page only): whether it works, its last block, a share's worth and the TAC private on it.
-// The leader's /state for what waits, the landing contract for the rest (height() lastLanded() pool() shares()); /chain/ has everything else.
+// The Tacit chain, live, under the card (the front page only): the pill's dot says whether it works, its hover the last block, a share's worth and the
+// TAC private on it. The leader's /state for what waits, the landing contract for the rest (height() lastLanded() pool() shares()); /chain/ has everything else.
 const CHL = { p: null };
 const chlAgo = (s) => (s < 90 ? 'just now' : s < 5400 ? `${Math.round(s / 60)} min ago` : s < 129600 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} d ago`);
 function chlRead() {
@@ -20871,9 +20867,8 @@ function chlRead() {
     // green: the leader answers and nothing has waited long; orange: payments wait with no block for 3 minutes; grey: the leader does not answer
     const pending = Number(st?.pending || 0), quiet = last ? Date.now() / 1000 - Number(last) : null;
     $('#chl-dot').className = `dot ${!st ? '' : pending && quiet > 180 ? 'live' : 'on'}`;
-    // (on a phone: the block and a share's worth, so the line under the card stays two lines)
-    const sep = ' · ', age = quiet != null && last > 0n ? sep + chlAgo(quiet) : '';
-    mount($('#chl-v'), html`block ${Number(height).toLocaleString('en-US')}<span class="w">${age}</span>${sep}1 share = ${tpgPrice(pool, shares).toFixed(4)} TAC<span class="w">${sep}${fmt(pool, 8, 2)} TAC private</span>${pending ? `${sep}${pending} in the next block` : ''}`);
+    const bits = [`block ${Number(height).toLocaleString('en-US')}`, quiet != null && last > 0n && chlAgo(quiet), `1 share = ${tpgPrice(pool, shares).toFixed(4)} TAC`, `${fmt(pool, 8, 2)} TAC private`, pending && `${pending} in the next block`];
+    $('#chl-a').title = `The Tacit chain, live: ${bits.filter(Boolean).join(' · ')}`;
   }).catch(() => {}).finally(() => { CHL.p = null; });
 }
 (window.requestIdleCallback || setTimeout)(() => chlRead());

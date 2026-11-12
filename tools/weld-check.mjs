@@ -14282,7 +14282,7 @@ await step('chaintile', async () => {
       const ra = await chainPage(ALICE, { width: 390, height: 900 }), pa = ra.page;
       try {
         await pb.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
-        await pb.evaluate(() => document.querySelector('a.chl-go[href="/tac/"], a[href="/tac/"]')?.click());
+        await pb.evaluate(() => document.querySelector('a[href="/tac/"]')?.click());
         await until(pb, () => location.pathname === '/tac/' && !!document.querySelector('#tcd-t-receive'), null, 60000);
         await pb.click('#tcd-t-receive');
         await pb.waitForSelector('#tcd-req-go', { timeout: 60000 });
