@@ -49,7 +49,9 @@ run on the same machine can be tried at `http://localhost:<port>/fast/?lp=<url>&
 | `policy.evmWindowSecs` | the time the user has to claim in the pool, from the Bitcoin block that confirmed its lock (4 h) |
 | `policy.minClaimSecs`, `policy.claimSlackSecs` | the least time a claim may be built with (1 h), and the gap between the pool deadline and the opening of the user's refund (2 h) |
 | `policy.confs` | `[amountFrom, confirmations]` pairs: how many Bitcoin confirmations the LP waits for, by amount |
-| `policy.maxOfferAgeSecs` | an offer for a lock confirmed longer ago than this is not answered |
+| `policy.maxOfferAgeSecs` | an offer for a lock whose first confirmation is older than this is not answered (2 h in `config.render.json`; 1 h when unset). It is counted from the first confirmation, and a bridge of 1,000 TAC waits for three: with the blocks coming slowly the third can come after an hour, and an offer turned away then costs the user a day of locked Bitcoin. The pool deadline is four hours from the block that reached the confirmations, so an offer inside two hours leaves the user at least an hour and a half to claim |
+| `policy.holdAgeSecs` | a hold for a lock older than this is let go to free the room (`maxOfferAgeSecs` when unset; 1 h in `config.render.json`). A later offer is still answered if the room is there when it comes |
+| `lowFreeTac` | the provider tells its operator (an alert, below) when the TAC it holds free is under this, again each `alertSecs` while it stays low; unset for no alert |
 | `mailboxPollSecs` | how often the board is read for requests left for this provider (3 s unless set; `config.render.json` sets 1): a request waits for the next read |
 | `name`, `boards` | the name shown in the LP's ad, and the boards it is on (URLs of `fastbridge-lp/board.mjs`): it posts its ad there every minute and answers the requests left for it, so a user finds it without its own URL |
 | `alertSecs`, `tickSecs`, `port`, `origins`, `trustProxy` | alert interval, tick length, the HTTP face; `trustProxy` reads the client from `X-Forwarded-For`, only behind a proxy you control |
@@ -118,14 +120,15 @@ When the TAC it holds free (its pool balance less what is promised) falls under 
    (`poolAccount`, printed at start) for an amount of TAC first; the provider can pull nothing beyond it, beyond what the treasury holds, beyond
    `chunkTac`, or beyond `maxPerDayTac` in a day. The treasury takes the permission back at any time with an approval of 0.
 
-It needs ETH at its address for the pull, the deposit and a settle sent from it when the relay is not sending them (`minEth`, default 0.004), and it
+It needs ETH at its address for the pull, the deposit and a settle sent from it when the relay is not sending them (enough for about 1.5 million gas at twice the gas price of the moment; `minEth` sets a floor under that), and it
 waits while a swap is locking or refunding, which send from the same address. Attempts are `minIntervalSecs` apart (default 1800). It does nothing
 until the config names a treasury, and nothing in a dry run. A deposit whose settle fails stops it for good, with the deposit named in an alert: the TAC is
 in the pool's hands until it is settled. Try it first with a small `chunkTac` (100) and a small approval.
 
 ## Watching it
 
-`/health` for liveness. Alerts go to the log and, if `FB_LP_ALERT_WEBHOOK` is set, are POSTed there as JSON.
+`/health` for liveness. Alerts go to the log and, if `FB_LP_ALERT_WEBHOOK` is set, are POSTed there as JSON: the alert's own fields, and `text` and `content`, one readable
+line for Slack and Discord incoming webhooks, so one of those can be the webhook as it is.
 
 | alert | what it means | what to do |
 |---|---|---|
@@ -134,6 +137,7 @@ in the pool's hands until it is settled. Try it first with a small `chunkTac` (1
 | `a lock was claimed without revealing t` | a claim spent a lock without the signature that opens the Bitcoin | should not happen; stop quoting and look at the claim's settle before anything else |
 | `a swap record cannot be read` | a file in `swaps/` is torn or corrupt and has no readable backup | restore it from the backup; the other swaps go on |
 | `tick failed` in the log, `/health` 503 | a read of the store failed | the disk; the process retries on the next tick |
+| `the provider is running out of private TAC to lend` | the TAC held free is under `lowFreeTac` | shield more TAC to the pool account, or set up `refill` (above) |
 | `bridges are waiting for a provider` | a want on a board this process is on, for its asset, that it has not seen before (read every five minutes) | raise `quote.maxAmount` or the TAC in the pool if it is more than this process can take |
 
 The same swap in the log: `swap` lines show each phase change (`accepted`, `locking`, `locked`, `offered`, `taking`,

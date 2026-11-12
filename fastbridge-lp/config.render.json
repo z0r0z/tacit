@@ -12,6 +12,7 @@
   "trustProxy": true,
   "tickSecs": 15,
   "alertSecs": 3600,
+  "lowFreeTac": 2000,
   "btcBases": [
     "https://mempool.space/api",
     "https://blockstream.info/api",
@@ -49,7 +50,8 @@
     "claimSlackSecs": 7200,
     "roundSecs": 600,
     "refundMarginSecs": 600,
-    "maxOfferAgeSecs": 3600,
+    "maxOfferAgeSecs": 7200,
+    "holdAgeSecs": 3600,
     "confs": [
       [
         "0",

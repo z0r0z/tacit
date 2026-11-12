@@ -301,11 +301,17 @@ export function makeEthereumLocker(ctx) {
     }
   }
 
-  // One step; a failing adapter call is recorded and the phase kept, so the next tick tries again.
+  // One step; a failing adapter call is recorded and the phase kept, so the next tick tries again. A swap that moves on has no error left to show: an
+  // alert for a swap that waited long in `taking` quoted the lock's "insufficient ETH" from hours before, when the wait was only slow Bitcoin blocks.
+  // One that ends without a lock keeps its last error: it says why.
+  const KEEPS_ERROR = new Set(['aborted', 'rejected', 'lost']);
   function step(rec) {
     return serial(rec.id, async () => {
       const cur = (await store.get(rec.id)) || rec;
-      try { return await advance(cur); } catch (e) { return save(cur, { lastError: String((e && e.message) || e).slice(0, 300) }); }
+      try {
+        const before = cur.phase, out = await advance(cur);
+        return out && out.lastError && out.phase !== before && !KEEPS_ERROR.has(out.phase) ? await save(out, { lastError: null }) : out;
+      } catch (e) { return save(cur, { lastError: String((e && e.message) || e).slice(0, 300) }); }
     });
   }
 

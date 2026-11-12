@@ -15,7 +15,7 @@ const NOW = 1_700_000_100;
 
 // A pool that holds `free` notes of the swaps' size; `prepare` models the adapter: it cuts one only when none is free.
 function lp() {
-  const pool = { free: 0, cuts: 0, locks: 0 }, calls = [];
+  const pool = { free: 0, cuts: 0, locks: 0 }, calls = [], clk = { t: NOW };
   let expected = null;
   const evm = {
     now: async () => NOW,
@@ -27,13 +27,13 @@ function lp() {
   };
   const recs = new Map();
   const store = { get: async (id) => recs.get(id) || null, put: async (r) => { recs.set(r.id, r); } };
-  const el = makeEthereumLocker({ seed: new Uint8Array(32), store, policy: { minCsv: 72, minClaimSecs: 3600, buildRetrySecs: 30, buildRetryMaxSecs: 600 }, quotes: { get: async () => null }, btc: {}, evm, counter: {}, now: () => NOW });
+  const el = makeEthereumLocker({ seed: new Uint8Array(32), store, policy: { minCsv: 72, minClaimSecs: 3600, buildRetrySecs: 30, buildRetryMaxSecs: 600 }, quotes: { get: async () => null }, btc: {}, evm, counter: {}, now: () => clk.t });
   const swap = (n) => {
     const rec = { id: String(n).repeat(72).slice(0, 72), role: 'el', phase: 'locking', created: NOW - 600, deadline: NOW + 4 * 3600, prepared: true, csvBlocks: 144,
       offer: { T: hex(T.toRawBytes(true)), btc: {}, evm: { asset: '0x' + 'f0'.repeat(32), amount: '99690000000', recipient: '0x' + '07'.repeat(32), rOut: '0x' + '09'.repeat(32) } } };
     recs.set(rec.id, rec); return rec;
   };
-  return { el, pool, calls, swap, recs };
+  return { el, pool, calls, swap, recs, evm, advance: (s) => { clk.t += s; } };
 }
 
 const tests = [];
@@ -81,6 +81,38 @@ test('a swap whose note is not there and cannot be made yet waits and is tried a
   f.at(31);
   await f.el.step(f.rec);
   assert.equal(f.calls.filter((c) => c === 'prepare').length, 2, 'again once the backoff has passed');
+});
+
+test('a swap that failed and then moves on has no error left to show: the last error stands only while the phase does not change', async () => {
+  const w = lp();
+  w.pool.free = 1;
+  const a = w.swap(1), built = w.evm.lockOp;
+  w.evm.lockOp = async () => { throw new Error('insufficient ETH for gas'); };
+  const r1 = await w.el.step(a);
+  assert.match(r1.lastError, /insufficient ETH/);
+  w.evm.lockOp = built;
+  w.advance(31);
+  const r2 = await w.el.step(a);
+  assert.equal(r2.phase, 'locking', 'the lock is built, and the swap is still locking');
+  assert.match(r2.lastError, /insufficient ETH/, 'its last error stands until it moves on');
+  w.evm.lockPosition = async () => ({ at: 1 });                 // the lock is in the pool
+  const r3 = await w.el.step(a);
+  assert.equal(r3.phase, 'locked');
+  assert.equal(r3.lastError, null, 'moved on: an alert for it no longer quotes the old failure');
+  assert.equal((await w.recs.get(a.id)).lastError, null, 'and the stored record says so too');
+});
+
+test('a swap that ends without a lock keeps its last error: it says why', async () => {
+  const w = lp();
+  const a = w.swap(2);
+  w.evm.lockOp = async () => { throw new Error('no single note covers the amount'); };
+  const r1 = await w.el.step(a);
+  assert.match(r1.lastError, /no single note covers/);
+  a.deadline = NOW + 100;                                        // less than minClaimSecs left: too late to lock
+  w.advance(31);
+  const r2 = await w.el.step(a);
+  assert.equal(r2.phase, 'aborted');
+  assert.match(r2.lastError, /no single note covers/, 'the reason it could not lock stays on the record');
 });
 
 let passed = 0;

@@ -184,10 +184,12 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
   }
 
   // A hold for a lock already on Bitcoin is worth keeping only while that lock's offer can still be answered: once the lock confirmed longer
-  // ago than this side answers offers for (maxOfferAgeSecs), no offer for it will be taken, and the hold only keeps others from bridging.
+  // ago than this side answers offers for (maxOfferAgeSecs), no offer for it will be taken, and the hold only keeps others from bridging. A provider
+  // that answers offers for longer than it is worth keeping the room (`holdAgeSecs`) lets the hold go sooner: a late offer is then answered only if
+  // the room is there when it comes, and held at that moment.
   const lockTimes = new Map();
   async function dropDeadHolds() {
-    const maxAge = config.policy.maxOfferAgeSecs ?? 3600;
+    const maxAge = config.policy.holdAgeSecs ?? config.policy.maxOfferAgeSecs ?? 3600;
     const gone = [];
     for (const [id, r] of reservations) {
       if (!r.txid || !btc.status || !btc.blockTime) continue;
@@ -234,12 +236,21 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
 
   // What can be lent and what stands against it, said in the log every five minutes: the ad shows only the most one bridge can take, which hides
   // whether the rest of the pool is free, promised to open swaps and holds, or not there.
-  let capacitySaid = -Infinity;
+  let capacitySaid = -Infinity, lowSaid = -Infinity;
   async function sayCapacity() {
     if (now() - capacitySaid < 300) return;
     capacitySaid = now();
     const i = await readInventory(), p = await promised();
     log({ level: 'info', msg: 'capacity', held: i.held == null ? null : String(i.held), promised: String(p.sum), open: p.count, holds: reservations.size });
+    // a provider nearly out of TAC to lend tells the one who runs it (`lowFree`, in pool units), again each alertSecs while it stays low: bridges too big for it
+    // otherwise wait on the board with nobody told
+    if (config.lowFree != null && i.held != null) {
+      const free = i.held > p.sum ? i.held - p.sum : 0n;
+      if (free < BigInt(config.lowFree) && now() - lowSaid >= (config.alertSecs ?? 3600)) {
+        lowSaid = now();
+        alert({ level: 'warn', msg: 'the provider is running out of private TAC to lend', free: String(free), held: String(i.held), promised: String(p.sum) });
+      }
+    }
   }
 
   async function tick() {

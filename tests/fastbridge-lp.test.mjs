@@ -697,6 +697,53 @@ test('holds kept for a lock too old to answer, or several for one lock, are let 
   assert.equal(third.svc.reservations.size, 0, 'nothing comes back on the next restart');
 });
 
+test('a provider that answers offers for longer than it keeps the room for them lets a hold go at the shorter age, and with no such setting keeps it as long as it answers', async () => {
+  const holdAfterAnHour = async (policy) => {
+    const { w, ref } = httpWorld();
+    w.lEvm.fund(VALUE, 'inv'); manyCoins(w);
+    const s = await serve(w, { config: configFor(w, { policy }) });
+    ref.base = s.base;
+    const counter = makeHttpCounter({ base: s.base, fetchImpl: realFetch });
+    const q = await counter.quote(VALUE);
+    await counter.reserve({ quoteId: q.id });
+    const rec = await startSwap(w, q);
+    await w.userBl.step(rec); await w.userBl.step(rec);
+    w.btc.mine(1, { advance: false });
+    assert.equal(s.svc.reservations.get(q.id).txid, rec.lock.txid);
+    w.clock.advance(3601);
+    await s.svc.tick();
+    return { held: s.svc.reservations.size, available: (await call(s.base, 'GET', '/info')).body.available };
+  };
+  assert.deepEqual(await holdAfterAnHour({ maxOfferAgeSecs: 7200, holdAgeSecs: 3600 }), { held: 0, available: String(VALUE) }, 'the hold goes at the hold age and the room is back');
+  assert.deepEqual(await holdAfterAnHour({ maxOfferAgeSecs: 7200 }), { held: 1, available: '0' }, 'without a hold age it stands while offers are answered');
+});
+
+test('a provider nearly out of TAC to lend tells its operator, again each alertSecs while it stays low, and says nothing when it has enough', async () => {
+  const lows = (s) => s.alerts.filter((a) => /running out of private TAC/.test(a.msg));
+  const settle = () => new Promise((r) => setTimeout(r, 20));
+  const { w } = httpWorld();
+  w.lEvm.fund(6000n, 'inv'); manyCoins(w);
+  const s = await serve(w, { config: { ...configFor(w, { alertSecs: 3600 }), lowFree: 7000n } });
+  await s.svc.tick(); await settle();
+  assert.equal(lows(s).length, 1);
+  assert.deepEqual([lows(s)[0].level, lows(s)[0].free, lows(s)[0].held, lows(s)[0].promised], ['warn', '6000', '6000', '0']);
+  w.clock.advance(301); await s.svc.tick(); await settle();
+  assert.equal(lows(s).length, 1, 'not again within alertSecs');
+  w.clock.advance(3601); await s.svc.tick(); await settle();
+  assert.equal(lows(s).length, 2, 'again after it, while it stays low');
+  const enough = httpWorld().w;
+  enough.lEvm.fund(6000n, 'inv'); manyCoins(enough);
+  const t = await serve(enough, { config: { ...configFor(enough), lowFree: 5000n } });
+  await t.svc.tick(); await settle();
+  assert.equal(lows(t).length, 0, 'with more free than the mark, nothing is said');
+  const unset = httpWorld().w;
+  unset.lEvm.fund(10n, 'inv'); manyCoins(unset);
+  const u = await serve(unset);
+  await u.svc.tick(); await settle();
+  assert.equal(lows(u).length, 0, 'and with no mark set, nothing either');
+  await s.close(); await t.close(); await u.close();
+});
+
 test('a provider with no Bitcoin of its own: each quote names the fee of the take, the lock pays it to the provider, and the take spends it', async () => {
   const { w, ref } = httpWorld();
   w.lEvm.fund(100_000n, 'inv');

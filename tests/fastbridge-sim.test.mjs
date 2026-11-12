@@ -306,6 +306,20 @@ test('an offer that reaches the LP long after the lock confirmed is not answered
   assert.match(got.why, /too late/);
 });
 
+test('an LP that answers offers for two hours answers one that came after an hour, and still not one that comes after two: slow blocks leave a lock waiting for its third confirmation', async () => {
+  const late = await confirmedLock({ lp: { maxOfferAgeSecs: 7200 } });
+  late.w.quote.validUntil += 100_000;
+  late.w.clock.advance(4000);
+  const got = await late.w.lp_.receive({ quoteId: 'q1', offer: await late.offer() });
+  assert.equal(got.ok, true, got.why);
+  const later = await confirmedLock({ lp: { maxOfferAgeSecs: 7200 } });
+  later.w.quote.validUntil += 100_000;
+  later.w.clock.advance(7300);
+  const no = await later.w.lp_.receive({ quoteId: 'q1', offer: await later.offer() });
+  assert.equal(no.ok, false);
+  assert.match(no.why, /too late/);
+});
+
 test('an LP with no note of the exact size has one made, once, and does not look for it on every tick', async () => {
   const w = world({ funds: 0 });
   w.lEvm.fund(VALUE * 2n, 'big');                                   // one note, twice the size

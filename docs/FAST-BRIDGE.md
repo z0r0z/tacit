@@ -142,6 +142,7 @@ lock), and a bridge that ends is said once. `?fast=0` turns the preference off i
 | Bitcoin refund timelock | 144 blocks |
 | Ethereum lock window | 4 h from the block that confirmed the Bitcoin lock, rounded up to 10 min |
 | Minimum time left to claim | 1 h |
+| Offers answered | up to 2 h after the lock's first confirmation (`maxOfferAgeSecs`): a lock needing three confirmations can have its third after an hour when blocks are slow |
 | Slack between the Ethereum deadline and the opening of the Bitcoin refund | 2 h |
 | Confirmations before the LP locks | policy by amount (1 for small, more for large) |
 

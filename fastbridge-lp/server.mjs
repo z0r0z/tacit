@@ -37,6 +37,7 @@ const { makeFileStore, makeFileLogStore, makeMemoryStore } = await import('./lib
 const { makeNodeBtcChain } = await import('./lib/btc-chain.mjs');
 const { makeLpService } = await import('./lib/service.mjs');
 const { makeHttpServer } = await import('./lib/http.mjs');
+const { makeAlert } = await import('./lib/alert.mjs');
 
 const network = C.network || 'mainnet';
 setActiveNetwork(network);
@@ -73,18 +74,21 @@ const btc = makeNodeBtcChain({
 });
 
 const confs = (C.policy.confs || [['0', 1]]).map(([from, n]) => [BigInt(from), n]).sort((a, b) => (a[0] < b[0] ? -1 : 1));
+// TAC with up to 8 places, as the pool's units (8 places) and as the token's wei (18)
+const tacUnits = (t) => { const [whole, frac = ''] = String(t).split('.'); return BigInt(whole) * 10n ** 8n + BigInt(frac.padEnd(8, '0').slice(0, 8)); };
 const config = {
   claimPub: Buffer.from(prims.wallet.pub).toString('hex'), csvBlocks: C.csvBlocks ?? 144, alertSecs: C.alertSecs ?? 3600, reserve: C.reserve, inventory: C.inventory,
+  lowFree: C.lowFreeTac != null ? tacUnits(C.lowFreeTac) : null,
   quote: { ...C.quote, btcAsset: C.btcAsset, evmAsset: C.evmAsset },
   policy: {
     minCsv: C.policy.minCsv ?? 72, evmWindowSecs: C.policy.evmWindowSecs ?? 4 * 3600, minClaimSecs: C.policy.minClaimSecs ?? 3600, claimSlackSecs: C.policy.claimSlackSecs ?? 7200,
-    roundSecs: C.policy.roundSecs ?? 600, refundMarginSecs: C.policy.refundMarginSecs ?? 600, maxOfferAgeSecs: C.policy.maxOfferAgeSecs ?? 3600,
+    roundSecs: C.policy.roundSecs ?? 600, refundMarginSecs: C.policy.refundMarginSecs ?? 600, maxOfferAgeSecs: C.policy.maxOfferAgeSecs ?? 3600, holdAgeSecs: C.policy.holdAgeSecs,
     minAmount: C.quote.minAmount, maxAmount: C.quote.maxAmount,
     minConfsFor: (v) => confs.reduce((n, [from, c]) => (BigInt(v) >= from ? c : n), confs[0][1]),
   },
 };
 const data = resolve(C.dataDir || 'fastbridge-lp/data');
-const alert = (o) => { log(o); if (process.env.FB_LP_ALERT_WEBHOOK) fetch(process.env.FB_LP_ALERT_WEBHOOK, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(o) }).catch(() => {}); };
+const alert = makeAlert({ log, webhook: process.env.FB_LP_ALERT_WEBHOOK || null, name: C.name || undefined });
 // a dry run keeps its swaps and quotes in memory, so a later live run starts from nothing it did not choose
 const swapStore = DRY ? makeMemoryStore() : makeFileStore(resolve(data, 'swaps'));
 const service = makeLpService({ seed, btc, evm, swaps: swapStore, quoteStore: DRY ? makeMemoryStore() : makeFileStore(resolve(data, 'quotes')), config, log, alert });
@@ -105,18 +109,23 @@ if (C.refill && !DRY) {
   const tacMeta = ux.assetByTicker.TAC;
   if (!tacMeta || !tacMeta.underlying) { console.error('this build of the pool module has no TAC token to refill with'); process.exit(1); }
   const token = tacMeta.underlying;
-  const wei = (t) => { const [whole, frac = ''] = String(t).split('.'); return (BigInt(whole) * 10n ** 8n + BigInt(frac.padEnd(8, '0').slice(0, 8))) * 10n ** 10n; };
+  const wei = (t) => tacUnits(t) * 10n ** 10n;                      // also an ETH amount in its 18 places
   const word = (a) => BigInt(a).toString(16).padStart(64, '0');
   const readNum = async (data) => BigInt(await ux.rpc('eth_call', [{ to: token, data }, 'latest']));
   const stateFile = resolve(data, 'refill.json');
   const { readFileSync: readF, writeFileSync: writeF } = await import('node:fs');
-  const minEth = wei(rc.minEth ?? '0.004');                         // an ETH amount in the same 18 places
+  const minEth = wei(rc.minEth ?? '0');                             // a floor for the ETH it keeps; what it needs follows the gas price (below)
+  const REFILL_GAS = 1_500_000n;                                    // a pull, a deposit and a settle sent from this address, with room
   const refill = makeRefill({
     free: () => service.free(),
     publicTac: () => readNum('0x70a08231' + word(acct.address)),
     allowance: () => readNum('0xdd62ed3e' + word(treasury) + word(acct.address)),
     treasuryTac: () => readNum('0x70a08231' + word(treasury)),
-    ethOk: async () => BigInt(await ux.rpc('eth_getBalance', [acct.address, 'latest'])) >= minEth,
+    ethOk: async () => {
+      const [bal, price] = [BigInt(await ux.rpc('eth_getBalance', [acct.address, 'latest'])), BigInt(await ux.rpc('eth_gasPrice', []))];
+      const need = REFILL_GAS * (2n * price + 100000000n);         // at twice the gas price of the moment and a 0.1 gwei tip, as a send reserves
+      return bal >= (need > minEth ? need : minEth);
+    },
     // a swap that is locking or refunding sends from this address: a refill waits for them, so two sends do not take one nonce
     quiet: async () => !(await swapStore.list()).some((r) => r.phase === 'locking' || r.phase === 'refunding'),
     pull: async (amount) => {
