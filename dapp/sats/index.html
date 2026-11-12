@@ -69,7 +69,9 @@
 html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
 html, body { margin: 0; background: var(--bg); color: var(--ink); }
 body { font: var(--t-md)/1.65 var(--mono); padding: 0 max(var(--s4), env(safe-area-inset-right)) env(safe-area-inset-bottom) max(var(--s4), env(safe-area-inset-left)); overflow-wrap: break-word; }
-.shell { max-width: 600px; margin: 0 auto; padding-bottom: var(--s7); }
+/* the header and footer are as wide as on every page; the page itself keeps its one column */
+.shell { max-width: 1120px; margin: 0 auto; padding-bottom: var(--s7); }
+.shell > main { max-width: 600px; margin-left: auto; margin-right: auto; }
 main { padding: var(--s6) 0 0; }
 p { margin: 0 0 var(--s3); }
 a { color: var(--ink); text-underline-offset: 3px; text-decoration-thickness: 1px; }
