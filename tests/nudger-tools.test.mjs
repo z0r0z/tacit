@@ -90,6 +90,9 @@ await new Promise((r) => api.listen(0, r));
 // asynchronous: the stand-in API answers on this process's event loop, which a synchronous spawn would block
 const post = await new Promise((r) => { let stdout = '', stderr = ''; const c = spawn('node', ['tools/nudger/digest.mjs', '--out', work, '--day', '2026-11-12', '--post'], { env: { ...process.env, NUDGER_SECRET: 'k'.repeat(40), NUDGER_API: `http://127.0.0.1:${api.address().port}` } }); c.stdout.on('data', (d) => (stdout += d)); c.stderr.on('data', (d) => (stderr += d)); c.on('close', (status) => r({ status, stdout, stderr })); });
 ok('--post sends the digest to /nudger/digest with the secret as a bearer token', post.status === 0 && got?.url === '/nudger/digest' && got.auth === `Bearer ${'k'.repeat(40)}` && got.body.findings[0].id === 'n261112-1' && got.body.findings[0].subject === 'a big change', got);
+got = null;
+const ping = await new Promise((r) => { let stdout = ''; const c = spawn('node', ['tools/nudger/digest.mjs', '--ping'], { env: { ...process.env, NUDGER_SECRET: 'k'.repeat(40), NUDGER_API: `http://127.0.0.1:${api.address().port}` } }); c.stdout.on('data', (d) => (stdout += d)); c.on('close', (status) => r({ status, stdout })); });
+ok('--ping sends {"ping":true} with the secret and needs no commits file', ping.status === 0 && got?.url === '/nudger/digest' && got.auth === `Bearer ${'k'.repeat(40)}` && got.body.ping === true && /HTTP 200/.test(ping.stdout), got);
 ok('and never prints the secret', !post.stdout.includes('k'.repeat(40)) && !post.stderr.includes('k'.repeat(40)));
 ok('--post without a secret refuses', node('tools/nudger/digest.mjs', ['--out', work, '--day', '2026-11-12', '--post'], { NUDGER_SECRET: '' }).status === 2);
 writeFileSync(`${work}/verdicts.json`, '[]');

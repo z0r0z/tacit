@@ -89,6 +89,12 @@ const before = sent.length;
 const retry = await (await post('/nudger/digest', { day: '2026-11-11', reviewed: 2, findings: [finding(1, { id: 'n261111-1' }), finding(2, { id: 'n261111-2' })] })).json();
 ok('a retry posts only the finding that was missing', retry.ok === true && sent.length === before + 1 && sent[sent.length - 1].body.content.includes('n261111-2'), retry);
 
+// the connection check
+const before2 = sent.length;
+const ping = await post('/nudger/digest', { ping: true });
+ok('a ping posts one plain line, with no buttons, and records nothing', ping.status === 200 && sent.length === before2 + 1 && sent[sent.length - 1].body.content === 'The review channel is connected.' && !sent[sent.length - 1].body.components && (await (await get('/nudger/labels?since=2026-11-12')).json()).totals.posted === 2);
+ok('a ping needs the secret too', (await post('/nudger/digest', { ping: true }, null)).status === 401 && sent.length === before2 + 1);
+
 // a rate limit is waited out once
 script = [{ status: 429, body: { retry_after: 0 } }];
 const limited = await post('/nudger/digest', { day: '2026-11-10', reviewed: 1, findings: [finding(1, { id: 'n261110-1' })] });

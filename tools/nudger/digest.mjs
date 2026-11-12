@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // node tools/nudger/digest.mjs --out DIR [--day YYYY-MM-DD] [--post]
+// node tools/nudger/digest.mjs --ping            posts one "connected" line to the review channel (it records nothing)
 //
 // Reads DIR/commits.json (from select.mjs) and DIR/verdicts.json (the verifier's findings, one object each:
 //   { commit, file, line, claim, severity: low|med|high, verdict: REAL|UNCERTAIN|REFUTED, evidence })
@@ -10,6 +11,13 @@ import { buildDigest } from './lib.mjs';
 import { renderFinding, renderQuiet } from '../../worker/src/nudger.js';
 
 const arg = (name, dflt) => { const i = process.argv.indexOf(`--${name}`); return i < 0 ? dflt : process.argv[i + 1]; };
+const host = process.env.NUDGER_API || 'https://api.tacit.finance';
+if (process.argv.includes('--ping')) {
+  if (!process.env.NUDGER_SECRET) { console.error('NUDGER_SECRET is not set'); process.exit(2); }
+  const res = await fetch(`${host}/nudger/digest`, { method: 'POST', headers: { Authorization: `Bearer ${process.env.NUDGER_SECRET}`, 'Content-Type': 'application/json' }, body: '{"ping":true}', signal: AbortSignal.timeout(60_000) });
+  console.log(`ping: HTTP ${res.status} ${(await res.text()).slice(0, 200)}`);
+  process.exit(res.ok ? 0 : 1);
+}
 const out = arg('out');
 if (!out) { console.error('usage: digest.mjs --out DIR [--day YYYY-MM-DD] [--post]'); process.exit(2); }
 const day = arg('day', new Date().toISOString().slice(0, 10));
@@ -26,7 +34,7 @@ if (!process.argv.includes('--post')) {
 } else {
   const secret = process.env.NUDGER_SECRET;
   if (!secret) { console.error('NUDGER_SECRET is not set'); process.exit(2); }
-  const res = await fetch(`${process.env.NUDGER_API || 'https://api.tacit.finance'}/nudger/digest`, { method: 'POST', headers: { Authorization: `Bearer ${secret}`, 'Content-Type': 'application/json' }, body: JSON.stringify(digest), signal: AbortSignal.timeout(60_000) });
+  const res = await fetch(`${host}/nudger/digest`, { method: 'POST', headers: { Authorization: `Bearer ${secret}`, 'Content-Type': 'application/json' }, body: JSON.stringify(digest), signal: AbortSignal.timeout(60_000) });
   const text = await res.text();
   console.log(`posted: HTTP ${res.status} ${text.slice(0, 300)}`);
   process.exit(res.ok ? 0 : 1);

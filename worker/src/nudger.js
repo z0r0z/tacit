@@ -73,6 +73,8 @@ export const renderQuiet = (day, reviewed) => ({
   flags: 4,
 });
 
+export const renderPing = () => ({ content: 'The review channel is connected.', allowed_mentions: { parse: [] }, flags: 4 });
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // POST one message as the bot; a rate-limited reply is waited out once.
@@ -92,6 +94,13 @@ async function sendMessage(env, message, fetchImpl) {
     return { ok: true, id: String(data?.id || '') };
   }
   return { ok: false, status: 429, error: 'rate limited' };
+}
+
+// One line to show the channel is wired up end to end; it records nothing, so it never takes a day's place.
+export async function postPing(env, fetchImpl = fetch) {
+  if (!/^\d{17,20}$/.test(String(env.NUDGER_CHANNEL_ID || '')) || !env.DISCORD_BOT_TOKEN) return { status: 500, body: { ok: false, error: 'review channel not configured' } };
+  const r = await sendMessage(env, renderPing(), fetchImpl);
+  return r.ok ? { status: 200, body: { ok: true, ping: true } } : { status: 502, body: { ok: false, error: r.error } };
 }
 
 // Posts a digest: each finding once (one already stored is skipped, so a retry after a partial failure completes the day), or one short line when there

@@ -102,7 +102,7 @@ import { buildCrossoutConsumer, crossoutMintLeaf } from './crossout-consumer.js'
 import { buildGovernance } from './governance.js';
 import { discordGateMessage, DISCORD_MIN_TAC_BASE_UNITS } from '../../dapp/discord/message.js';
 import { DISCORD_VERIFY_BUTTON_ID } from '../../discord/panel.js';
-import { NUDGE_PREFIX, MAX_NUDGER_BODY, parseDigest, postDigest, nudgeButton, labelsReport, findingById } from './nudger.js';
+import { NUDGE_PREFIX, MAX_NUDGER_BODY, parseDigest, postDigest, postPing, nudgeButton, labelsReport, findingById } from './nudger.js';
 import { makeTacAncestry } from './tac-ancestry.js';
 import { makeOutpointClassifier } from './outpoint-classify.js';
 import { makeTacArchive, ARCHIVE_MAX_ROOTS, ARCHIVE_MAX_IMPORT } from './tac-archive.js';
@@ -28293,6 +28293,7 @@ async function handleNudgerDigest(req, env, cors) {
   const text = await req.text();
   if (text.length > MAX_NUDGER_BODY) return jsonResponse({ ok: false, error: 'body too large' }, 413, cors);
   let b; try { b = JSON.parse(text); } catch { b = null; }
+  if (b && b.ping === true) { const r = await postPing(env); return jsonResponse(r.body, r.status, { ...cors, 'Cache-Control': 'no-store' }); }
   const { digest, error } = parseDigest(b);
   if (error) return jsonResponse({ ok: false, error }, 400, cors);
   const r = await postDigest(env, digest);
