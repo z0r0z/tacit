@@ -183,8 +183,8 @@ test('a provider that goes away: the lock returns on its timelock, said as such,
   await s.close(); w.lpOnline = false;
   await w.run(async () => (await w.user())?.phase === 'refund-wait');
   const wait = (await fb.records())[0];
-  assert.deepEqual([wait.title, wait.returned, wait.ended], ['Returning to Bitcoin', true, false]);
-  assert.match(wait.detail, /could not be reached/);
+  assert.deepEqual([wait.title, wait.returned, wait.ended], ['Did not go through', true, false]);
+  assert.match(wait.detail, /The provider did not answer\. Your Bitcoin is safe\./);
   w.btc.mine(143);
   await w.run(async () => (await w.user())?.phase === 'refunded');
   const done = (await fb.records())[0];
@@ -310,8 +310,43 @@ test('the words for each phase, and for one the page does not know', () => {
   assert.deepEqual(d.map((x) => x.ended), [false, false, false, false, false, true, false, true, true]);
   assert.ok(d.every((x) => x.title && x.detail && x.steps.length === 4));
   assert.equal(describe({ id: 'x', phase: 'mystery', created: 1 }).title, 'mystery');
-  assert.match(describe({ id: 'x', phase: 'refund-wait', why: 'the counterparty declined: quote expired', created: 1 }).detail, /quote expired/);
+  assert.match(describe({ id: 'x', phase: 'refund-wait', why: 'the counterparty declined: quote expired', created: 1 }).detail, /quote ran out before your lock was confirmed/);
   assert.equal(describe({ id: 'x', phase: 'refund-wait', created: 1, lastError: 'explorer down' }).error, 'explorer down');
+});
+
+test('a bridge that did not go through says what went wrong, that the Bitcoin is safe and when it is due back, in sentences and not the log\'s words', () => {
+  const HOUR = 3600, T0 = 1_000_000, rec = { id: 'x', phase: 'refund-wait', amount: '100000000000', evmAmount: '99690000000', created: T0, confirmedAt: T0, csvBlocks: 144, lock: { txid: 'cc'.repeat(32) } };
+  const at = (secs, over = {}) => describe({ ...rec, ...over }, () => T0 + secs);
+  const d = at(2 * HOUR, { why: 'the counterparty declined: quote expired' });
+  assert.equal(d.title, 'Did not go through');
+  assert.equal(d.detail, 'The provider’s quote ran out before your lock was confirmed. Your Bitcoin is safe. The lock comes back to your address in about 22 hours: open the app then and it is sent back.');
+  assert.ok(!/counterparty|timelock|\(/.test(d.detail), 'no log words, no parenthesis of the raw reason');
+  assert.equal(d.receive, '0', 'what it would have paid is not shown for a bridge that did not happen');
+  assert.deepEqual([d.returned, d.ended], [true, false]);
+  assert.match(at(23 * HOUR - 1800).detail, /within the hour|in about an hour/);
+  assert.match(at(143 * 600 + 5).detail, /due back now, and is sent to your address from here while the app is open/, 'once the timelock has run it says so');
+  assert.match(describe({ ...rec, confirmedAt: undefined }, () => T0).detail, /when its timelock ends, about a day after it confirmed/, 'with no confirmation time it still says it is safe and roughly when');
+  for (const [why, re] of [
+    ['the counterparty could not be reached', /^The provider did not answer\./], ['the provider did not answer', /^The provider did not answer\./],
+    ['the counterparty declined: the provider cannot lock right now (the relay is not sending settles)', /^The provider is not taking bridges at the moment\./],
+    ['the counterparty declined: the provider cannot take that amount right now', /^The provider no longer had room/],
+    ['the counterparty declined: the lock could not be checked now: boom', /^The provider could not check your lock in time\./],
+    ['the offered lock never showed in the pool', /^The provider did not put the TAC in the pool in time\./], ['no Ethereum lock arrived', /^The provider did not put the TAC in the pool/],
+    ['too little time left to claim safely', /^There was too little time left/], ['the claim did not land before the deadline', /^The claim did not go through before its deadline\./],
+    ['offer: the deadline is further out than this side accepts', /^The provider’s offer did not pass your safety checks/], ['the timelock has run', /^It was not finished before the lock’s time ran out\./],
+    ['the counterparty declined: something new', /^The provider declined it: something new\. Your Bitcoin is safe/], ['an odd reason', /^An odd reason\. Your Bitcoin is safe/],
+  ]) assert.match(at(HOUR, { why }).detail, re, why);
+  assert.ok(at(HOUR, { why: '' }).detail.startsWith('Your Bitcoin is safe.'), 'no reason recorded: nothing invented');
+  // a lock this page lost and found again from the key did not fail: it is on its way back
+  const found = at(HOUR, { why: 'found from the key', recovered: true });
+  assert.equal(found.title, 'Returning to Bitcoin'); assert.ok(!/provider/.test(found.detail.split('Your Bitcoin is safe')[0]));
+  // the last failed read of the provider is not shown while the lock waits for its timelock, and is once it is due, when the app is sending it
+  assert.equal(at(HOUR, { lastError: 'the provider did not answer' }).error, null);
+  assert.equal(at(24 * HOUR, { lastError: 'broadcast refused' }).error, 'broadcast refused');
+  assert.equal(describe({ ...rec, phase: 'broadcast', lastError: 'explorer down' }, () => T0).error, 'explorer down', 'a bridge still under way keeps its error');
+  // describe handed to a map is given an index, which is not a clock
+  assert.doesNotThrow(() => [rec].map(describe));
+  assert.equal(describe({ ...rec, phase: 'refunded' }).receive, '0');
 });
 
 test('swaps kept in localStorage: one entry each, other keys left alone, an entry that is not a swap skipped', async () => {

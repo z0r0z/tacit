@@ -131,7 +131,7 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
   async function tick() {
     const out = [];
     for (const rec of await store.list()) out.push(TERMINAL.has(rec.phase) ? rec : await bl.step(rec));
-    return out.map(describe);
+    return out.map((r) => describe(r, now));
   }
 
   // Calls tick() on a timer while the page is open; one pass at a time. Returns stop().
@@ -147,7 +147,7 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
     return () => { stopped = true; clearInterval(timer); };
   }
 
-  const records = async () => (await store.list()).sort((a, b) => b.created - a.created).map(describe);
+  const records = async () => (await store.list()).sort((a, b) => b.created - a.created).map((r) => describe(r, now));
 
   // The Bitcoin locks this key made that the store does not hold (a new browser, cleared data): found from the lock
   // transactions in the address's history and kept as swaps that take the note back on the timelock.
@@ -170,7 +170,7 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
       await store.put(rec);
       known.add(id); found.push(rec);
     }
-    return found.map(describe);
+    return found.map((r) => describe(r, now));
   }
 
   return { terms, quote, pickNotes, freeNotes, cost, start, tick, run, records, recover, describe, step: (rec) => bl.step(rec) };
@@ -217,7 +217,7 @@ export function makeFastBridgeMarket({ btc, evm, store, seed, pins = {}, policy,
   async function tick() {
     const out = [];
     for (const rec of await store.list()) out.push(TERMINAL.has(rec.phase) ? rec : await clientFor(rec.provider || null).step(rec));
-    return out.map(describe);
+    return out.map((r) => describe(r, now));
   }
   function run({ everyMs = 15000, onChange = () => {} } = {}) {
     let busy = false, stopped = false;
@@ -230,7 +230,7 @@ export function makeFastBridgeMarket({ btc, evm, store, seed, pins = {}, policy,
     const timer = setInterval(pass, everyMs);
     return () => { stopped = true; clearInterval(timer); };
   }
-  const records = async () => (await store.list()).sort((a, b) => b.created - a.created).map(describe);
+  const records = async () => (await store.list()).sort((a, b) => b.created - a.created).map((r) => describe(r, now));
   const recover = (opts) => clientFor(null).recover(opts);
   return { quoteAll, start, cost, tick, run, records, recover, clientFor };
 }
@@ -248,7 +248,44 @@ const SAYS = {
   refunded: [3, 'Returned', 'The lock came back to your Bitcoin address.'],
   'counter-took': [3, 'Done', 'The TAC is in your private balance. The provider took the Bitcoin lock.'],
 };
-export function describe(rec) {
+// Why a bridge did not go through, in a person's words: the reasons the two sides record (fastbridge-bl.js, and what the provider answers an offer
+// with) are written for the log. A reason that is not known is said as it is, as a sentence, not dropped.
+const REASONS = [
+  [/quote expired/i, 'The provider’s quote ran out before your lock was confirmed.'],
+  [/unknown quote/i, 'The provider no longer had your quote.'],
+  [/cannot lock right now|not taking bridges/i, 'The provider is not taking bridges at the moment.'],
+  [/cannot take that amount|no room|nothing left/i, 'The provider no longer had room for this amount.'],
+  [/could not be reached|did not answer/i, 'The provider did not answer.'],
+  [/could not be checked now|still being checked/i, 'The provider could not check your lock in time.'],
+  [/never showed in the pool|no ethereum lock arrived/i, 'The provider did not put the TAC in the pool in time.'],
+  [/too little time left/i, 'There was too little time left to claim safely, so it was stopped.'],
+  [/did not land before the deadline/i, 'The claim did not go through before its deadline.'],
+  [/^offer:/i, 'The provider’s offer did not pass your safety checks, so nothing was claimed.'],
+  [/timelock has run/i, 'It was not finished before the lock’s time ran out.'],
+];
+export function plainWhy(why) {
+  const raw = String(why || '').trim();
+  if (!raw) return '';
+  for (const [re, said] of REASONS) if (re.test(raw)) return said;
+  const declined = raw.match(/^the counterparty declined:\s*(.+)$/i);
+  const said = declined ? `The provider declined it: ${declined[1]}` : raw;
+  return said.charAt(0).toUpperCase() + said.slice(1).replace(/[.\s]*$/, '.');
+}
+// Where the lock stands once a bridge has not gone through: safe, and when it is due back (the timelock runs about a day from the confirmation).
+// The app itself sends it back, so it says to open the app. `opens` is when the timelock runs, or null when that is not known.
+const BTC_BLOCK_SECS = 600;
+const opensAt = (rec) => (rec.confirmedAt && rec.csvBlocks ? rec.confirmedAt + (rec.csvBlocks - 1) * BTC_BLOCK_SECS : null);
+function returnLine(opens, now) {
+  if (opens == null) return 'Your Bitcoin is safe. The lock comes back to your address when its timelock ends, about a day after it confirmed.';
+  const left = opens - now;
+  if (left <= 0) return 'Your Bitcoin is safe. Its lock is due back now, and is sent to your address from here while the app is open.';
+  const h = left / 3600;
+  const when = h >= 1.5 ? `in about ${Math.round(h)} hours` : h >= 0.75 ? 'in about an hour' : 'within the hour';
+  return `Your Bitcoin is safe. The lock comes back to your address ${when}: open the app then and it is sent back.`;
+}
+// `clock()`: the time in seconds the caller keeps (a client's own); anything else, as when `describe` is handed to a map, is the page's clock.
+export function describe(rec, clock = null) {
+  const now = typeof clock === 'function' ? clock() : Date.now() / 1000;
   let [at, title, detail] = SAYS[rec.phase] || [0, rec.phase, ''];
   // the lock has confirmed and the provider has been asked: it is reading the lock from Bitcoin, which can take a minute, and says so
   if (rec.phase === 'broadcast' && rec.confirmedAt) {
@@ -256,10 +293,20 @@ export function describe(rec) {
     detail = rec.offerWhy ? `The lock is confirmed. The provider says: ${String(rec.offerWhy).replace(/\.$/, '')}.` : 'The lock is confirmed. The provider reads it from Bitcoin before it locks TAC for you.';
   }
   const ended = TERMINAL.has(rec.phase), back = rec.phase === 'refund-wait' || rec.phase === 'refunded';
+  // A bridge that did not go through says so, what went wrong, that the Bitcoin is safe, and when it is due back. A lock found again from the key
+  // (a bridge this page lost) has no failure to tell: it is only on its way back.
+  let waitingOnTimelock = false;
+  if (rec.phase === 'refund-wait') {
+    const found = /found from the key/.test(rec.why || '') || !!rec.recovered, opens = opensAt(rec);
+    waitingOnTimelock = opens != null && opens - now > 0;
+    title = found ? 'Returning to Bitcoin' : 'Did not go through';
+    detail = [found ? '' : plainWhy(rec.why), returnLine(opens, now)].filter(Boolean).join(' ');
+  }
   return {
-    id: rec.id, phase: rec.phase, title, detail: rec.phase === 'refund-wait' && rec.why && !/found from the key/.test(rec.why) ? `${detail} (${rec.why})` : detail,
-    at, steps: STEPS, ended, returned: back, amount: rec.amount, receive: rec.evmAmount, created: rec.created,
-    lockTxid: rec.lock?.txid || null, error: rec.lastError || null, recovered: !!rec.recovered,
+    id: rec.id, phase: rec.phase, title, detail,
+    // the last failed read of the provider is not news while the lock waits for its timelock: it only said the provider is not answering
+    at, steps: STEPS, ended, returned: back, amount: rec.amount, receive: back ? '0' : rec.evmAmount, created: rec.created,
+    lockTxid: rec.lock?.txid || null, error: waitingOnTimelock ? null : (rec.lastError || null), recovered: !!rec.recovered,
   };
 }
 
