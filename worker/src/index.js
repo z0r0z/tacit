@@ -9363,6 +9363,66 @@ async function _deriveTradeFromChain(env, network, tx, opcode, assetIdHex, dx = 
     : _deriveAxferTradeFromChain(env, network, tx, opcode, assetIdHex, { strict: true });
 }
 
+// The records a settled trade consumed (a preauth sale, an atomic intent, a preauth bid) leave the book with it, and the lists that served them
+// are read again. Running it twice for one trade changes nothing the second time.
+async function _settleFillRecords(env, network, assetIdHex, fills) {
+  let sales = false, intents = false;
+  for (const f of fills || []) {
+    const op = f && f.outpoint;
+    if (!op || !/^[0-9a-f]{64}$/.test(String(op.txid || '')) || !Number.isInteger(op.vout)) continue;
+    try {
+      if (f.kind === 'preauth' && f.sale_id) {
+        const had = await env.REGISTRY_KV.get(preauthSaleKey(network, assetIdHex, f.sale_id));
+        await env.REGISTRY_KV.delete(preauthSaleKey(network, assetIdHex, f.sale_id));
+        if (had) { _bumpCount(env, preauthSaleCountKey(network, assetIdHex), -1).catch(() => {}); sales = true; }
+        await env.REGISTRY_KV.delete(preauthOutpointIndexKey(network, assetIdHex, op.txid, op.vout));
+      } else if ((f.kind === 'intent' || f.kind === 'intent-var') && f.intent_id) {
+        // If this settled atomic-intent was a chunk of a variable-fill
+        // variable-fill bid, durably record the consumed capacity on
+        // the parent bid so it can't "spring back" when the bidpclaim
+        // TTLs out (over-fill past the signed amount). Mark the
+        // bidpclaim settled BEFORE incrementing so a failed follow-up
+        // put can only miss the decrement (status-quo behavior),
+        // never double-count it (which would wrongly shrink the bid).
+        try {
+          const _bx = await env.REGISTRY_KV.get(bidClaimAxintentIndexKey(network, f.intent_id), 'json');
+          if (_bx && _bx.bid_id && _bx.asset_id) {
+            const _bpcKey = bidPartialClaimKey(network, _bx.asset_id, _bx.bid_id, f.intent_id);
+            const _bpc = await env.REGISTRY_KV.get(_bpcKey, 'json');
+            if (_bpc && _bpc.fill_amount && !_bpc.settled_recorded) {
+              _bpc.settled_recorded = true;
+              await env.REGISTRY_KV.put(_bpcKey, JSON.stringify(_bpc), { expirationTtl: BID_CLAIM_TTL_SECONDS + 60 });
+              const _pbid = await env.REGISTRY_KV.get(bidIntentKey(network, _bx.asset_id, _bx.bid_id), 'json');
+              if (_pbid) {
+                _pbid.settled_amount = (BigInt(_pbid.settled_amount || '0') + BigInt(_bpc.fill_amount)).toString();
+                await env.REGISTRY_KV.put(bidIntentKey(network, _bx.asset_id, _bx.bid_id), JSON.stringify(_pbid), { expirationTtl: _ttlFromExpiry(_pbid.expiry) });
+              }
+            }
+            await env.REGISTRY_KV.delete(_bpcKey);
+            await env.REGISTRY_KV.delete(bidClaimAxintentIndexKey(network, f.intent_id));
+          }
+        } catch { /* best-effort; the bidpclaim TTL is the backstop */ }
+        const had = await env.REGISTRY_KV.get(atomicIntentKey(network, assetIdHex, f.intent_id));
+        await env.REGISTRY_KV.delete(atomicIntentKey(network, assetIdHex, f.intent_id));
+        if (had) { _bumpCount(env, atomicIntentCountKey(network, assetIdHex), -1).catch(() => {}); intents = true; }
+        await env.REGISTRY_KV.delete(atomicClaimKey(network, assetIdHex, f.intent_id));
+        await env.REGISTRY_KV.delete(atomicFulfilmentKey(network, assetIdHex, f.intent_id));
+        await env.REGISTRY_KV.delete(atomicIntentOutpointIndexKey(network, assetIdHex, op.txid, op.vout));
+      } else if (f.kind === 'preauth-bid' && f.bid_id) {
+        await env.REGISTRY_KV.delete(preauthBidKey(network, assetIdHex, f.bid_id));
+        await env.REGISTRY_KV.delete(preauthBidFundingIndexKey(network, op.txid, op.vout));
+      } else if (f.kind === 'preauth-bid-var' && f.bid_id) {
+        await env.REGISTRY_KV.delete(preauthBidVarKey(network, assetIdHex, f.bid_id));
+        await env.REGISTRY_KV.delete(preauthBidVarFundingIndexKey(network, op.txid, op.vout));
+      }
+    } catch { /* a failed delete is retried by the next scan or the phantom sweep */ }
+  }
+  const busts = [];
+  if (sales) busts.push(_bustPreauthSalesCache(network, assetIdHex), _bustPreauthSalesLoaderCache(network, assetIdHex));
+  if (intents) busts.push(_bustAtomicIntentsCache(network, assetIdHex), _bustAtomicIntentsLoaderCache(network, assetIdHex));
+  if (busts.length) await Promise.allSettled(busts);
+}
+
 // Single source of truth for "a trade settled — bump the three KV
 // aggregates": last_trade pointer, daily bucket, lifetime cumulative,
 // and the recent-trades ring. Called from both the /hint endpoint
@@ -16549,6 +16609,11 @@ async function handleAssetHint(req, env, network, cors, ctx) {
           await _recordSettledTradeVolume(env, network, dx.asset_id, lastTrade);
         }
       }
+    }
+    // The listings and bids this trade spent leave the book now, whether or not the scan counted it first.
+    if (derived && derived.price_sats > 0) {
+      const settled = _settleFillRecords(env, network, dx.asset_id, derived.fills).catch(() => {});
+      if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(settled); else await settled;
     }
     await env.REGISTRY_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
     return jsonResponse({
@@ -24739,59 +24804,7 @@ async function scanForEtches(env, network) {
                 source: 'cron-chain-backfill',
               };
               await _recordSettledTradeVolume(env, network, dx.asset_id, lastTrade);
-              // Settlement cleanup: each fill consumed a live preauth-sale,
-              // atomic-intent, or preauth-bid(-var) record. Without this,
-              // the stale record sits in KV until its 30-day expiry,
-              // showing up in /listings GETs and blocking a fresh listing
-              // on the same outpoint. Idempotent on re-scan.
-              for (const f of derived.fills) {
-                const op = f.outpoint;
-                if (!op || !/^[0-9a-f]{64}$/.test(String(op.txid || '')) || !Number.isInteger(op.vout)) continue;
-                try {
-                  if (f.kind === 'preauth' && f.sale_id) {
-                    await env.REGISTRY_KV.delete(preauthSaleKey(network, dx.asset_id, f.sale_id));
-                    _bumpCount(env, preauthSaleCountKey(network, dx.asset_id), -1).catch(() => {});
-                    await env.REGISTRY_KV.delete(preauthOutpointIndexKey(network, dx.asset_id, op.txid, op.vout));
-                  } else if ((f.kind === 'intent' || f.kind === 'intent-var') && f.intent_id) {
-                    // If this settled atomic-intent was a chunk of a variable-fill
-                    // variable-fill bid, durably record the consumed capacity on
-                    // the parent bid so it can't "spring back" when the bidpclaim
-                    // TTLs out (over-fill past the signed amount). Mark the
-                    // bidpclaim settled BEFORE incrementing so a failed follow-up
-                    // put can only miss the decrement (status-quo behavior),
-                    // never double-count it (which would wrongly shrink the bid).
-                    try {
-                      const _bx = await env.REGISTRY_KV.get(bidClaimAxintentIndexKey(network, f.intent_id), 'json');
-                      if (_bx && _bx.bid_id && _bx.asset_id) {
-                        const _bpcKey = bidPartialClaimKey(network, _bx.asset_id, _bx.bid_id, f.intent_id);
-                        const _bpc = await env.REGISTRY_KV.get(_bpcKey, 'json');
-                        if (_bpc && _bpc.fill_amount && !_bpc.settled_recorded) {
-                          _bpc.settled_recorded = true;
-                          await env.REGISTRY_KV.put(_bpcKey, JSON.stringify(_bpc), { expirationTtl: BID_CLAIM_TTL_SECONDS + 60 });
-                          const _pbid = await env.REGISTRY_KV.get(bidIntentKey(network, _bx.asset_id, _bx.bid_id), 'json');
-                          if (_pbid) {
-                            _pbid.settled_amount = (BigInt(_pbid.settled_amount || '0') + BigInt(_bpc.fill_amount)).toString();
-                            await env.REGISTRY_KV.put(bidIntentKey(network, _bx.asset_id, _bx.bid_id), JSON.stringify(_pbid), { expirationTtl: _ttlFromExpiry(_pbid.expiry) });
-                          }
-                        }
-                        await env.REGISTRY_KV.delete(_bpcKey);
-                        await env.REGISTRY_KV.delete(bidClaimAxintentIndexKey(network, f.intent_id));
-                      }
-                    } catch { /* best-effort; the bidpclaim TTL is the backstop */ }
-                    await env.REGISTRY_KV.delete(atomicIntentKey(network, dx.asset_id, f.intent_id));
-                    _bumpCount(env, atomicIntentCountKey(network, dx.asset_id), -1).catch(() => {});
-                    await env.REGISTRY_KV.delete(atomicClaimKey(network, dx.asset_id, f.intent_id));
-                    await env.REGISTRY_KV.delete(atomicFulfilmentKey(network, dx.asset_id, f.intent_id));
-                    await env.REGISTRY_KV.delete(atomicIntentOutpointIndexKey(network, dx.asset_id, op.txid, op.vout));
-                  } else if (f.kind === 'preauth-bid' && f.bid_id) {
-                    await env.REGISTRY_KV.delete(preauthBidKey(network, dx.asset_id, f.bid_id));
-                    await env.REGISTRY_KV.delete(preauthBidFundingIndexKey(network, op.txid, op.vout));
-                  } else if (f.kind === 'preauth-bid-var' && f.bid_id) {
-                    await env.REGISTRY_KV.delete(preauthBidVarKey(network, dx.asset_id, f.bid_id));
-                    await env.REGISTRY_KV.delete(preauthBidVarFundingIndexKey(network, op.txid, op.vout));
-                  }
-                } catch { /* KV blip — next scan retries via the disagree path's get fall-through */ }
-              }
+              await _settleFillRecords(env, network, dx.asset_id, derived.fills);
             }
           } catch { /* derivation is best-effort — the transfer count still landed */ }
         } else if (!counted && (decoded.opcode === T_AXFER || decoded.opcode === T_AXFER_VAR || decoded.opcode === T_PREAUTH_BID || decoded.opcode === T_PREAUTH_BID_VAR)) {
@@ -24810,6 +24823,7 @@ async function scanForEtches(env, network) {
               ? await _derivePreauthBidVarTradeFromChain(env, network, tx, dx.asset_id, dx)
               : await _deriveAxferTradeFromChain(env, network, tx, decoded.opcode, dx.asset_id);
             if (derived && derived.price_sats > 0) {
+              await _settleFillRecords(env, network, dx.asset_id, derived.fills);
               const journalKey = tradeEventKey(network, dx.asset_id, tx.txid);
               const hinted = await env.REGISTRY_KV.get(journalKey, 'json');
               const hintedPx = Number(hinted?.price_sats || 0);
@@ -27837,7 +27851,7 @@ async function scanForEtches(env, network) {
 // Workers ignores extra named exports — only the default object's fetch /
 // scheduled handlers are invoked at runtime — so this has no production effect.
 export {
-  _ethGasPrice, fetchIpfsJson, _deriveTradeFromChain, magicMatches,
+  _ethGasPrice, fetchIpfsJson, _deriveTradeFromChain, _settleFillRecords, magicMatches,
   assembleReflectionJobBody,
   openingMsg, disclosureMsg, listingMsg, cancelMsg, claimMsg,
   atomicIntentMsg, atomicIntentClaimMsg, atomicIntentFulfilmentMsg, atomicIntentCancelMsg,
