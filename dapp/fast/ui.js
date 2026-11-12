@@ -13,7 +13,7 @@
 //   pinned()    the pairing id of a provider the bridger came by a link of (fast/fmt.js pairId), quoted first when it quotes, or null
 //   -> { lock(text), destroy() }
 
-import { DEC, ONE, esc, fmtTac, parseTac, slowNet, pairId, highFee, lineageText } from './fmt.js';
+import { DEC, ONE, esc, fmtTac, parseTac, slowNet, pairId, highFee, highTake, keyTag, lineageText } from './fmt.js';
 import { minutesFor } from './route.js';
 export { fmtTac, parseTac, slowNet, lineageText };
 const pct = (fee, of) => (of > 0n ? `${(Number((fee * 1000000n) / of) / 10000).toFixed(2)}%` : '');
@@ -120,8 +120,9 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
       $('fx-big').textContent = fmtTac(q.evmAmount);
       const btc = c && c.total ? `<div class="kv"><span>Bitcoin fee</span><b class="num">≈ ${esc(c.total.toLocaleString('en-US'))} sats${c.take ? `<small>${esc(c.take.toLocaleString('en-US'))} of it is the provider's take</small>` : ''}</b></div>`
         : q.takeSats ? `<div class="kv"><span>Bitcoin fee</span><b class="num">${esc(q.takeSats.toLocaleString('en-US'))} sats<small>for the provider's take, and your own transaction's fee</small></b></div>` : '';
-      recv.innerHTML = `${sm && sm.count > 1 && S.best ? `<div class="kv"><span>Provider</span><b>${esc(S.best.name || 'Provider')}</b></div>` : ''}<div class="kv"><span>Fee</span><b class="num">${esc(fmtTac(q.fee))} TAC<small>${esc(pct(q.fee, q.btcValue))}</small></b></div>${btc}
-        <div class="kv"><span>Time</span><b class="num">about ${minutesFor(q.minConfs)} minutes<small>${Math.max(1, Number(q.minConfs) || 1)} Bitcoin confirmation${(Number(q.minConfs) || 1) > 1 ? 's' : ''}, then a pool settle</small></b></div>${highFee(q) ? `
+      recv.innerHTML = `${sm && sm.count > 1 && S.best ? `<div class="kv"><span>Provider</span><b>${esc(S.best.name || 'Provider')}<small class="num">${esc(keyTag(S.best.id))}</small></b></div>` : ''}<div class="kv"><span>Fee</span><b class="num">${esc(fmtTac(q.fee))} TAC<small>${esc(pct(q.fee, q.btcValue))}</small></b></div>${btc}
+        <div class="kv"><span>Time</span><b class="num">about ${minutesFor(q.minConfs)} minutes<small>${Math.max(1, Number(q.minConfs) || 1)} Bitcoin confirmation${(Number(q.minConfs) || 1) > 1 ? 's' : ''}, then a pool settle</small></b></div>${highTake(q) ? `
+        <p class="status err" role="alert" id="fx-high-take">High Bitcoin fee: this provider asks ${esc(Number(q.takeSats).toLocaleString('en-US'))} sats for its take, well above what it costs at the current rate. Other providers may ask less.</p>` : ''}${highFee(q) ? `
         <p class="status err" role="alert" id="fx-high">High fee: this provider keeps ${esc(fmtTac(q.fee))} TAC (${esc(pct(q.fee, q.btcValue))}) of your ${esc(fmtTac(q.btcValue))} TAC, and you receive ${esc(fmtTac(q.evmAmount))}. A smaller bridge costs more in proportion, a larger one less, and the regular bridge may cost less.</p>` : ''}`;
     }
     go.textContent = S.busy ? 'Working…' : S.checking ? 'Checking…' : S.sure ? 'Press again to bridge' : 'Bridge';
@@ -156,7 +157,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
     e.hidden = !show;
     e.innerHTML = show ? `<p class="eyebrow"><span>Providers online</span><span class="who num">${ps.length}</span></p>
       <div class="lp-grid">${ps.map((p) => `<div class="lp-tile${p.id === me ? ' mine' : ''}">
-        <div class="lp-top"><b>${esc(p.name || 'Provider')}</b>${p.id === me ? '<span class="lp-tag">You</span>' : ''}</div>
+        <div class="lp-top"><b>${esc(p.name || 'Provider')}</b><small class="num lp-key">${esc(keyTag(p.id))}</small>${p.id === me ? '<span class="lp-tag">You</span>' : ''}</div>
         <div class="kv"><span>Fee</span><b class="num">${esc(feeLine(p.terms))}</b></div>
         <div class="kv"><span>Takes</span><b class="num">${hasRoom(p) ? esc(range(p.terms.minAmount, capOf(p))) : 'full right now'}</b></div>
       </div>`).join('')}</div>` : '';
@@ -340,9 +341,9 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
     if (S.cost && S.cost.short) { note(shortText(S.cost), true); return; }
     // a lock on Bitcoin is not taken back for about a day if the provider stops: the first press says so, the same press again goes
     const sure = () => {
-      const who = S.best && S.best.name ? S.best.name : 'the provider';
+      const who = S.best && S.best.name ? `${S.best.name} (${keyTag(S.best.id)})` : 'the provider';
       S.sure = { key: `${S.quote.id}|${S.quote.btcValue}`, at: Date.now() };
-      note(`${highFee(S.quote) ? `High fee: ${who} keeps ${fmtTac(S.quote.fee)} TAC (${pct(S.quote.fee, S.quote.btcValue)}). ` : ''}This locks ${fmtTac(S.quote.btcValue)} TAC on Bitcoin until ${who} has paid you ${fmtTac(S.quote.evmAmount)} private TAC in the pool, in about ${minutesFor(S.quote.minConfs)} minutes. If it does not, the lock returns to your address after about a day. Press again to bridge.`);
+      note(`${highTake(S.quote) ? `High Bitcoin fee: ${who} asks ${Number(S.quote.takeSats).toLocaleString('en-US')} sats for its take, well above what it costs at the current rate. ` : ''}${highFee(S.quote) ? `High fee: ${who} keeps ${fmtTac(S.quote.fee)} TAC (${pct(S.quote.fee, S.quote.btcValue)}). ` : ''}This locks ${fmtTac(S.quote.btcValue)} TAC on Bitcoin until ${who} has paid you ${fmtTac(S.quote.evmAmount)} private TAC in the pool, in about ${minutesFor(S.quote.minConfs)} minutes. If it does not, the lock returns to your address after about a day. Press again to bridge.`);
     };
     if (!(S.sure && S.sure.key === `${S.quote.id}|${S.quote.btcValue}` && Date.now() - S.sure.at < 180e3)) { sure(); paintForm(); return; }
     S.sure = null;
@@ -361,7 +362,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
       const floor = BigInt(S.quote.evmAmount);
       if (!quotes.length) throw new Error('the quote expired');
       if (BigInt(quotes[0].quote.evmAmount) < floor) { S.quotes = quotes; S.quote = quotes[0].quote; S.best = quotes[0].provider; again = true; return; }
-      fits = quotes.filter((x) => BigInt(x.quote.evmAmount) >= floor || !highFee(x.quote));
+      fits = quotes.filter((x) => BigInt(x.quote.evmAmount) >= floor || (!highFee(x.quote) && !highTake(x.quote)));
       await S.sess.start({ quotes: fits });
       if (S.want) { const pub = S.pub; S.want = null; S.told = false; clearInterval(S.watch); wants.stop(pub).catch(() => {}); }
       S.recs = await S.sess.records(); S.quotes = []; S.quote = null; S.best = null; S.amt = ''; $('fx-amt').value = '';

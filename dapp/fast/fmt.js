@@ -26,6 +26,10 @@ export const pairId = (claimPub) => String(claimPub || '').replace(/^0x/, '').to
 
 // a fee over 5% of the amount is a high one: the fast page says so plainly, and the front page's Bridge tab does not prefer such a quote
 export const FEE_WARN_BPS = 500n;
+// a take on Bitcoin far above what it costs at the current rate (fastbridge-client.js); the quote stands, and a page says so
+export const highTake = (q) => !!q.highTake;
+// the end of a provider's key, shown beside the name it chose for itself
+export const keyTag = (id) => { const h = String(id || '').replace(/^0x/, '').toLowerCase(); return h.length >= 12 ? `${h.slice(2, 8)}…${h.slice(-4)}` : h; };
 export const highFee = (q) => (q.highFee != null ? !!q.highFee : BigInt(q.fee) * 10000n > BigInt(q.btcValue) * FEE_WARN_BPS);
 
 // Why a lock was not built: no provider online takes TAC whose history passes through something the bridge's proof does not follow.

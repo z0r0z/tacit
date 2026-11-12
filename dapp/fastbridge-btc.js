@@ -72,6 +72,8 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
   // The median of what the explorers estimate. An estimate moves slowly and every quote asks for one, so the last answer is kept
   // for feeFreshMs and callers at the same moment share one read. A shared address can be rate limited by every explorer for
   // hours: an answer up to feeStaleMs old then stands in, and without one the error names what each explorer said.
+  // An estimate above the ceiling (sat/vB) is a mistake or a lie; no fee market has been near it.
+  const FEE_RATE_CEILING = 5000, FEE_RATE_SPREAD = 8;
   let fee = null, feeRead = null, feeLost = null;
   async function readFee() {
     const why = [];
@@ -81,6 +83,7 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
         const r = await fetchImpl(b + '/fee-estimates', { signal: AbortSignal.timeout(timeoutMs) });
         if (!r.ok) { why.push(`${host} ${r.status}`); return null; }
         const f = await r.json(), v = Number(f[feeTarget] ?? f['6']);
+        if (Number.isFinite(v) && v > FEE_RATE_CEILING) { why.push(`${host} gave an implausible estimate`); return null; }
         if (Number.isFinite(v) && v > 0) return v;
         why.push(`${host} gave no estimate`); return null;
       } catch (e) { why.push(`${host} ${e && e.name === 'TimeoutError' ? 'timed out' : 'was unreachable'}`); return null; }
@@ -88,6 +91,8 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
     if (!seen.length) throw new Error(`no explorer answered a fee estimate (${why.join(', ')})`);
     // (`minFeeRate`: a lock that a bridge waits on is not sent at the least the network relays when the explorers' estimates run under it, as they
     // do when the pool is busy with transactions above that line: one sent at 1.06 sat/vB sat unconfirmed for over an hour)
+    // explorers that disagree by more than this are not both right: the lower stands, since too low a rate only confirms slowly
+    if (seen.length > 1 && seen[seen.length - 1] > seen[0] * FEE_RATE_SPREAD) return Math.max(1, minFeeRate, Math.ceil(seen[0]));
     return Math.max(1, minFeeRate, Math.ceil(seen.length % 2 ? seen[(seen.length - 1) / 2] : (seen[seen.length / 2 - 1] + seen[seen.length / 2]) / 2));
   }
   async function feeRate(maxAgeMs = feeFreshMs) {          // a caller that wants it newer than a quote needs it (the LP's tick) says so

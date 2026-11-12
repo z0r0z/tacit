@@ -9,7 +9,8 @@ import { bigintToBytes32 } from '../dapp/bulletproofs.js';
 import { bytesToHex, hexToBytes } from '../dapp/vendor/tacit-deps.min.js';
 import * as X from '../dapp/adaptor-xswap.js';
 import { makeHttpCounter } from '../dapp/fastbridge-http.js';
-import { makeFastBridgeClient, makeFastBridgeMarket, makeLocalStore, describe, termsOf, QUOTE_WAIT_MS } from '../dapp/fastbridge-client.js';
+import { makeFastBridgeClient, makeFastBridgeMarket, makeLocalStore, describe, termsOf, QUOTE_WAIT_MS, fairTakeAt, TAKE_FLAG } from '../dapp/fastbridge-client.js';
+import { takeSatsAt } from '../dapp/fastbridge-provider.js';
 import { fetched } from './lib/btc-sim.mjs';
 import { pool, ASSET } from './lib/chain-sim.mjs';
 import { VALUE, memStore } from './lib/fastbridge-world.mjs';
@@ -70,6 +71,31 @@ test('a quote the page will not show: unreadable, for another amount, a payout a
   const edge = await clientFor(w, fakeLp(w, { evmAmount: String(VALUE - (VALUE * 5n) / 100n) })).quote(VALUE);
   assert.equal(edge.highFee, false, 'exactly 5% is not high');
   await assert.rejects(() => clientFor(w, fakeLp(w, { evmAmount: String(VALUE / 10n - 1n) })).quote(VALUE), /fee is above the limit/);
+});
+
+test('a take far above its cost at the page\'s own fee rate is flagged and sorts last, and the page\'s formula is the providers\'', async () => {
+  for (const r of [1, 2, 5, 13, 60, 400]) assert.equal(fairTakeAt(r), takeSatsAt(r), `the same take at ${r} sat/vB`);
+  const { w } = httpWorld();
+  const rate = await w.uBtc.feeRate(), fair = fairTakeAt(rate);
+  const at = async (take) => (await clientFor(w, fakeLp(w, { takeSats: take }), { policy: { maxTakeSats: 10_000_000 } }).quote(VALUE)).highTake;
+  assert.equal(await at(fair), false, 'a take at its cost is not flagged');
+  assert.equal(await at(fair * TAKE_FLAG), false, 'twice its cost is not');
+  assert.equal(await at(fair * TAKE_FLAG + 1), true, 'more than twice its cost is');
+  assert.equal(await at(0), false, 'no take is not');
+  assert.equal(await at(30_000), 30_000 > fair * TAKE_FLAG, 'the most a page pays by default is judged by the same rule');
+  // with no fee rate to compare with nothing is flagged
+  const blind = await clientFor(w, fakeLp(w, { takeSats: 30_000 }), { btc: { ...w.uBtc, feeRate: async () => { throw new Error('no rate'); } } }).quote(VALUE);
+  assert.equal(blind.highTake, false, 'with no rate to compare with, nothing is flagged');
+  // an open market: every provider is quoted; the one asking a take far above its cost is last whatever it pays
+  const fakes = {
+    greedy: { quote: async (a) => ({ id: 'q-greedy', evmAmount: BigInt(a) - 1n, highTake: true }) },
+    fair: { quote: async (a) => ({ id: 'q-fair', evmAmount: BigInt(a) - 80n, highTake: false }) },
+    fairer: { quote: async (a) => ({ id: 'q-fairer', evmAmount: BigInt(a) - 50n }) },
+  };
+  const market = makeFastBridgeMarket({ btc: {}, evm: {}, store: memStore(), seed: new Uint8Array(32), counterFor: () => null, makeClient: ({ provider }) => fakes[provider.id] });
+  const providers = Object.keys(fakes).map((id) => ({ id, name: id, ref: { kind: 'http', id, claimPub: id } }));
+  const got = await market.quoteAll(providers, 1000n, { timeoutMs: 30 });
+  assert.deepEqual(got.quotes.map((x) => x.provider.id), ['fairer', 'fair', 'greedy'], 'none is dropped, and the flagged one is last although it pays most');
 });
 
 test('a provider has 12 seconds to quote when the page does not say otherwise: room over the slowest quotes seen through a board, and one that never answers is given up on then', async () => {

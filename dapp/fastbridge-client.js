@@ -25,6 +25,11 @@ export const DEFAULT_POLICY = {
   warnFeeBps: 500, maxFeeBps: 9000, quoteMarginSecs: 120,
 };
 
+// What the take of a provider costs at a fee rate: the formula the providers quote with (fastbridge-provider.js takeSatsAt), so a page can tell a take
+// that is far above it. A quote asking more than TAKE_FLAG times that is flagged `highTake`: it is still quoted, and it sorts below those that are not.
+export const TAKE_VB = 750, TAKE_DUST = 546, TAKE_FLAG = 2;
+export const fairTakeAt = (feeRate) => TAKE_DUST + Math.ceil(TAKE_VB * feeRate * 2);
+
 export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, policy: policyIn = {}, provider = null, now = () => Math.floor(Date.now() / 1000) }) {
   const policy = { ...DEFAULT_POLICY, ...policyIn };
   const counter = typeof lp === 'string' ? makeHttpCounter({ base: lp }) : lp;
@@ -62,7 +67,12 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
     // the provider's take fee, which the lock pays it on Bitcoin: none, or from dust to the most this page pays
     const takeSats = Number(q.takeSats ?? 0);
     if (!Number.isInteger(takeSats) || (takeSats !== 0 && (takeSats < 546 || takeSats > policy.maxTakeSats))) throw new Error('the quote\'s Bitcoin fee is out of range');
-    return { ...q, claimPub: strip(q.claimPub), btcAsset: strip(q.btcAsset), evmAsset: strip(q.evmAsset), btcValue, evmAmount, fee, csvBlocks, takeSats, highFee };
+    // the take against what it costs at this page's own fee rate (not flagged when there is no rate to compare with)
+    let highTake = false;
+    if (takeSats > 0 && btc && typeof btc.feeRate === 'function') {
+      try { highTake = takeSats > TAKE_FLAG * fairTakeAt(await btc.feeRate()); } catch { /* no rate: nothing to compare with */ }
+    }
+    return { ...q, claimPub: strip(q.claimPub), btcAsset: strip(q.btcAsset), evmAsset: strip(q.evmAsset), btcValue, evmAmount, fee, csvBlocks, takeSats, highFee, highTake };
   }
 
   // Notes to lock for `amount`: the smallest single note that covers it, else the largest first until covered.
@@ -199,7 +209,8 @@ export function makeFastBridgeMarket({ btc, evm, store, seed, pins = {}, policy,
     const got = await Promise.all(providers.map(async (provider) => {
       try { return { provider, quote: await withTimeout(clientFor(provider.ref).quote(amount), timeoutMs) }; } catch (error) { return { provider, error }; }
     }));
-    const quotes = got.filter((r) => r.quote).sort((a, b) => (a.quote.evmAmount > b.quote.evmAmount ? -1 : a.quote.evmAmount < b.quote.evmAmount ? 1 : 0));
+    // best payout first, those that ask a take far above its cost after the rest
+    const quotes = got.filter((r) => r.quote).sort((a, b) => (a.quote.highTake ? 1 : 0) - (b.quote.highTake ? 1 : 0) || (a.quote.evmAmount > b.quote.evmAmount ? -1 : a.quote.evmAmount < b.quote.evmAmount ? 1 : 0));
     return { quotes, failed: got.filter((r) => r.error) };
   }
   async function start({ quotes, notes }) {

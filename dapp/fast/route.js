@@ -15,7 +15,7 @@
 //   fr.records()            -> the bridges, newest first, in words (fastbridge-client.js describe)
 //   fr.run(onChange)        -> stop(): the steps taken while the page is open
 
-import { fmtTac, highFee, lineageText } from './fmt.js';
+import { fmtTac, highFee, highTake, lineageText } from './fmt.js';
 
 // What a provider takes now: its most, or less when it says so.
 export const capOf = (t) => (t.available != null && t.available < t.maxAmount ? t.available : t.maxAmount);
@@ -52,7 +52,7 @@ export function makeFastRoute({ discover, open, ownId = () => null, refreshMs = 
       return { ok: false, why: dear ? 'dear' : r.failed.length ? 'busy' : 'size', min, max, error: r.failed[0] && r.failed[0].error };
     }
     // a quote with a high fee is not a reason to leave the regular bridge: the fast page quotes it, with a warning, for whoever wants it
-    const fair = r.quotes.filter((x) => !highFee(x.quote));
+    const fair = r.quotes.filter((x) => !highFee(x.quote) && !highTake(x.quote));
     if (!fair.length) return { ok: false, why: 'dear', min, max };
     const best = fair[0];
     return { ok: true, quotes: fair, quote: best.quote, provider: best.provider, minutes: minutesFor(best.quote.minConfs), min, max };
