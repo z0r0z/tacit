@@ -62,8 +62,12 @@ export function landCalldata(publicValues, proof, l) {
 
 /// The arguments of a land call from its calldata: a direct call, or one made through a contract (anyone may land a block, from any contract:
 /// the land call is then inside the calldata, as the bytes the wrapper passes on, and is found by its selector).
-export function decodeLand(input) {
+// `expect` ({ state, noteRoot }, the words the contract put in its Landed event): the call that landed is the one whose public values carry them as
+// words 1 and 3 (what land() stores and emits), so another land-shaped call in the same calldata is passed over. With none, the first is taken.
+export function decodeLand(input, expect = null) {
   const b = bytesOf(input), sel = hexOf(selector(LAND));
+  const want = expect && [hexOf(bytesOf(expect.state)), hexOf(bytesOf(expect.noteRoot))];
+  const landed = (c) => !want || (hexOf(c.publicValues.subarray(32, 64)) === want[0] && hexOf(c.publicValues.subarray(96, 128)) === want[1]);
   const at = (i) => {
     try {
       const [publicValues, proof, lists] = decode(['bytes', 'bytes', LISTS], b.subarray(i + 4));
@@ -72,11 +76,11 @@ export function decodeLand(input) {
       return { publicValues, proof, lists: { leaves, memos, nullifiers, anchors, deposits, exits, hops, claims, blobs, migrations, migrationTotals } };
     } catch { return null; }
   };
-  if (hexOf(b.subarray(0, 4)) === sel) return at(0);
+  if (hexOf(b.subarray(0, 4)) === sel) { const c = at(0); return c && landed(c) ? c : null; }
   for (let i = 4; i + 4 <= b.length; i++) {
     if (hexOf(b.subarray(i, i + 4)) !== sel) continue;
     const call = at(i);
-    if (call) return call;
+    if (call && landed(call)) return call;
   }
   return null;
 }

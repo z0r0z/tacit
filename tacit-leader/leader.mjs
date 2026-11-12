@@ -196,7 +196,9 @@ async function sync() {
     const height = num(lg.topics[1]);
     if (height <= nodeHeight) continue;
     const tx = await rpc.call('eth_getTransactionByHash', [lg.transactionHash]);
-    const call = decodeLand(tx.input);
+    // the call that landed is the one the contract's own Landed event describes (state, then note root)
+    const data = String(lg.data || '');
+    const call = decodeLand(tx.input, data.length >= 130 ? { state: '0x' + data.slice(2, 66), noteRoot: '0x' + data.slice(66, 130) } : null);
     if (!call) throw new Error(`block ${height} was landed by a call this leader cannot read (${lg.transactionHash})`);
     let lists = call.lists;
     if (lists.blobs.length) {
