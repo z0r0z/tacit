@@ -30,7 +30,7 @@ const ok = (c, m, extra = '') => { console.log(`${c ? 'ok  ' : 'FAIL'} ${m}${ext
 
 const HEADER = 'Assets:/assets/ Rewards:/rewards/ Prove:/prove/';
 const MENU = 'Pay:/pay/ Borrow:/vault/ Bridges:/bridge/ TAC:/tac/ Etch:/etch/ Tasks:/tasks/ FACE:/face/';
-const FOOTER = 'Whitepaper | Build | Security | Source | Pool contract | Stats | DefiLlama | @tacitfi on X | Tacit Discord community';
+const FOOTER = 'Whitepaper | Build | Security | Source | Pool contract | Stats | DefiLlama | Listed on ETHBeat | @tacitfi on X | Tacit Discord community';
 // page → the menu entry marked as the page you are on (none for a page the menu does not list)
 const PAGES = { '/': null, '/tac/': 'TAC', '/chain/': 'TAC', '/vault/': 'Borrow', '/bridge/': 'Bridges', '/pay/': 'Pay', '/build/': null, '/weld/stats/': null };
 const VIEWS = { desktop: { width: 1280, height: 800 }, 'phone 390': { width: 390, height: 800 }, 'phone 360': { width: 360, height: 800 }, 'phone 320': { width: 320, height: 700 } };

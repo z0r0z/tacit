@@ -10439,7 +10439,7 @@ await step('tradelinks', async () => {
       ok(!(await p.$eval('.sm', (d) => d.open)), `tradelinks (${name}): and Escape shuts it`);
       ok(seen.chip, `tradelinks (${name}): and the account chip still shows its whole label`);
       ok(seen.tile, `tradelinks (${name}): the TAC section links to TAC's own trade page`);
-      ok(seen.foot === 'Whitepaper, Build, Security, Source, Pool contract, Stats, DefiLlama, @tacitfi on X, Tacit Discord community', `tradelinks (${name}): and the footer is icons for the places outside the app (${seen.foot})`);
+      ok(seen.foot === 'Whitepaper, Build, Security, Source, Pool contract, Stats, DefiLlama, Listed on ETHBeat, @tacitfi on X, Tacit Discord community', `tradelinks (${name}): and the footer is icons for the places outside the app (${seen.foot})`);
       ok(!seen.scroll, `tradelinks (${name}): and the page does not scroll sideways`);
       if (r.errors.length) { fails++; console.log('FAIL tradelinks page errors: ' + r.errors.slice(0, 3).join(' | ')); }
     } finally { await r.browser.close(); }
