@@ -96,6 +96,18 @@ f = mk(); const j3 = await f.next(); check('after a restart, files changed while
   const fenced = one('Here you go:\n```json\n{"findings":[{"line":3,"why":"w \\"quoted\\" word","old":"x = "y";","new":"x = "z";"}]}\n```');
   check('inside a code fence and prose', fenced && fenced.why === 'w "quoted" word' && fenced.old === 'x = "y";');
   check('a loosely read finding is cleaned and filtered like any other (control characters out, a no-op change dropped, line numbers off the old text)', (() => { const f = parseFindings('{"findings":[{"line":3,"why":"w\u001b[2J","old":"7: a = "q";","new":"a = "r";"},{"line":4,"why":"w","old":"b = 1;","new":"b = 1;"}]}'); return f.length === 1 && !f[0].why.includes('\u001b') && f[0].old === 'a = "q";'; })());
+  const reordered = one('{"findings":[{"line":7,"old":"x = "a";","new":"x = "b";","why":"the order of fields is not the one asked for"}]}');
+  check('the fields may come in any order', reordered && reordered.line === 7 && reordered.old === 'x = "a";' && reordered.new === 'x = "b";' && reordered.why === 'the order of fields is not the one asked for');
+  const extra = one('{"findings":[{"line":8,"why":"w","severity":"high","old":"y = "a";","new":"y = "b";","confidence":"0.9"}]}');
+  check('a field nobody asked for ends the one before it and is ignored', extra && extra.why === 'w' && extra.old === 'y = "a";' && extra.new === 'y = "b";');
+  const brace = one('{"findings":[{"line":9,"why":"w","old":"send({ to: "a" });","new":"send({ to: "b" });"}]}');
+  check('code with a quote and a brace in it ("}) is read whole', brace && brace.old === 'send({ to: "a" });' && brace.new === 'send({ to: "b" });');
+  const two = parseFindings('{"findings":[{"line":1,"why":"w","old":"p = "a";","new":"p = "b";"}, {"line":2,"why":"v","old":"q = "a";","new":"q = "b";"}]}');
+  check('two findings in one reply are both read', two.length === 2 && two[0].new === 'p = "b";' && two[1].old === 'q = "a";' && two[1].line === 2);
+  check('a finding whose last field never ends (the reply ran out) is left out, and the ones before it are kept', parseFindings('{"findings":[{"line":1,"why":"w","old":"p = "a";","new":"p = "b";"},{"line":2,"why":"v","old":"q = "a";","new":"q = "b').length === 1);
+  check('with the reason last, a reply that ran out in it is no finding either, though its code was complete', parseFindings('{"findings":[{"line":3,"old":"a = "x";","new":"a = "y";","why":"Is there a bug? Let').length === 0);
+  check('a reply that ran out in its reason is no finding', parseFindings('{"findings":[{"line":76,"why":"The BYTES function converts a hex string, but W32 calls BigInt. However, the code itself is correct for').length === 0);
+  check('a line number given as text is read, in a reply read field by field', one('{"findings":[{"line":"12","why":"w","old":"r = "a";","new":"r = "b";"}]}')?.line === 12);
   check('a reply that ran out before it closed is no finding, and neither is prose or an empty list', parseFindings('{"findings":[{"line":57,"why":"The check allows values up to 10000, but the comment imp').length === 0 && parseFindings('Looks fine.').length === 0 && parseFindings('{"findings":[]}').length === 0 && looseFindings('{"findings":[]}').length === 0);
   check('valid JSON is read as before, and a findings field that is not a list is none', parseFindings('{"findings":[{"line":2,"why":"w","old":"a","new":"b"}]}').length === 1 && parseFindings('{"findings":"none"}').length === 0 && parseFindings('{"findings":{"line":1}}').length === 0);
   check('at most three findings are read, loosely too', parseFindings('{"findings":[' + Array.from({ length: 5 }, (_, i) => `{"line":${i},"why":"w","old":"a${i} = "x";","new":"b${i} = "x";"}`).join(',') + ']}').length === 3);
@@ -112,7 +124,7 @@ f = mk(); const j3 = await f.next(); check('after a restart, files changed while
   check('an invalid scout reply is kept with its lens (or window), whether it was an exam, who sent it and the start of it', rows.length === 2 && rows[0].role === 'scout' && rows[0].lens === 'units' && rows[0].exam === true && rows[0].outcome === 'invalid' && rows[0].tier === 'small' && rows[0].model === 'm1' && rows[0].miner === '0xaa' && rows[0].sample === 'I think the code is fine.[2J' && !rows[0].sample.includes('\u001b') && rows[1].lens === 'window' && rows[1].exam === false);
   const said = []; const f5 = makeScanFeed({ repo, ref: 'main', inbox: path.join(d4, 'i3.jsonl'), cursorFile: path.join(d4, 'c3.json'), refreshMs: 0, lenses: true, examFile: exam, say: (m) => said.push(m) });
   f5.onInvalid({ meta: { lens: 'bounds' } }, 'Sure ' + 'x'.repeat(300), '0xaa', { tier: 'small', model: 'qwen-4b' });
-  check('an invalid scout reply is said, with the size, the model and the start of it', said.length === 1 && said[0].startsWith('invalid scout reply (small, qwen-4b): "Sure x') && said[0].length < 260);
+  check('an invalid scout reply is said, with the size, the model and the start of it', said.length === 1 && said[0].startsWith('invalid scout reply (small, qwen-4b): "Sure x') && said[0].includes('x'.repeat(300)) && !said[0].includes(' … ') && said[0].length < 700);
   const plainFeed = makeScanFeed({ repo, ref: 'main', inbox: path.join(d4, 'i2.jsonl'), cursorFile: path.join(d4, 'c2.json'), refreshMs: 0 });
   plainFeed.onInvalid({ meta: {} }, 'x', '0xaa', {});
   check('a feed with no exam file keeps nothing and does not fail', readFileSync(exam, 'utf8').trim().split('\n').length === 3);

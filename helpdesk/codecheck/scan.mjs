@@ -1,7 +1,8 @@
 // Scan one source file with a small model: windows of ~110 lines, findings as exact-text replacement patches.
 export const SYSTEM = `You are a careful reviewer of browser JavaScript for a crypto dapp. Look for REAL bugs in the code window: wrong variable, off-by-one, missing await, wrong comparison, unhandled edge case (empty, zero, null), wrong units, swapped arguments. Ignore style, naming and missing comments.
 Reply with JSON only, no prose: {"findings":[{"line":<line number>,"why":"<one sentence>","old":"<exact text copied from the code, 1 to 4 lines>","new":"<the corrected text>"}]}
-At most 3 findings. If you see no real bug reply {"findings":[]}. "old" must be copied exactly so it can be found by string search.`;
+At most 3 findings. If you see no real bug reply {"findings":[]}. "old" must be copied exactly so it can be found by string search.
+Decide before you write: if you are not sure a line is wrong, reply {"findings":[]}. "why" is one short sentence (at most 25 words), not your reasoning.`;
 
 export function windows(src, size = 110, overlap = 15) {
   const lines = src.split('\n'); const out = [];
@@ -22,13 +23,25 @@ export async function scanWindow(base, win, file, { timeoutMs = 60000 } = {}) {
 // Control and direction-changing characters (all but tab and newline) are taken out of a finding's text after it is decoded: a reply may spell an escape
 // as \u001b, and the reviewer's terminal would act on it.
 export const plain = (v) => String(v ?? '').replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '');
-// A small model puts code into "old" and "new" with its own double quotes, or a raw newline, unescaped, and that is not JSON. The fields of each finding are then read
-// one by one, each running to the `","next field"` that follows it.
+// A small model puts code into "old" and "new" with its own double quotes, or a raw newline, unescaped, and that is not JSON. The findings are then read one object at a
+// time: each starts at a `{` followed by a field name, and a text field runs from its opening quote to the first quote that is followed by another field
+// (`, "name":`) or by the end of the object (`}`, then a comma or not, then `{`, `]` or the end). The order of the fields does not matter, and a field that never ends (a reply that ran
+// out) leaves no finding.
 const unq = (s) => s.replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+function looseObject(seg) {
+  const line = seg.match(/"line"\s*:\s*"?(\d+)/);
+  const text = (key) => {
+    const m = new RegExp(`"${key}"\\s*:\\s*"`).exec(seg); if (!m) return null;
+    const from = m.index + m[0].length, end = /"\s*(?:,\s*"[A-Za-z_]{1,20}"\s*:|\}\s*(?:,\s*)?(?:\{|\]|$))/g; end.lastIndex = from;
+    const e = end.exec(seg); return e ? unq(seg.slice(from, e.index)) : null;
+  };
+  const f = { line: line ? Number(line[1]) : null, why: text('why'), old: text('old'), new: text('new') };
+  return f.why !== null && f.old !== null && f.new !== null ? f : null;
+}
 export function looseFindings(txt) {
-  const out = [], re = /"line"\s*:\s*(\d+)\s*,\s*"why"\s*:\s*"([\s\S]*?)"\s*,\s*"old"\s*:\s*"([\s\S]*?)"\s*,\s*"new"\s*:\s*"([\s\S]*?)"\s*\}/g;
-  for (const m of String(txt).matchAll(re)) out.push({ line: Number(m[1]), why: unq(m[2]), old: unq(m[3]), new: unq(m[4]) });
-  return out;
+  const t = String(txt), starts = [], re = /\{\s*"(?:line|why|old|new)"\s*:/g;
+  for (let m; (m = re.exec(t));) starts.push(m.index);
+  return starts.map((s, i) => looseObject(t.slice(s, starts[i + 1] ?? t.length))).filter(Boolean);
 }
 export function parseFindings(txt) {
   let list = null; const m = String(txt).match(/\{[\s\S]*\}/);

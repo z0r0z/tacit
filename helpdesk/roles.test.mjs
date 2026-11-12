@@ -1,5 +1,5 @@
 // node roles.test.mjs -- the scout and skeptic prompts, what counts as a grounded verdict, and the claims built from planted bugs
-import { scoutSystem, scoutMessages, skepticMessages, proposedSide, SKEPTIC_SYSTEM, choiceOf, shape, grounded, voteOf, examClaim, findingId, fits } from './codecheck/roles.mjs';
+import { scoutSystem, scoutMessages, skepticMessages, proposedSide, SKEPTIC_SYSTEM, choiceOf, shape, grounded, voteOf, examClaim, findingId, fits, blindView, MARK } from './codecheck/roles.mjs';
 import { LENSES, PRIMER } from './codecheck/lenses.mjs';
 let fails = 0; const check = (n, c) => { console.log((c ? 'ok   ' : 'FAIL ') + n); if (!c) fails++; };
 
@@ -17,7 +17,7 @@ const CODE = '10: function f(a, b) {\n11:   if (a >= b) return 1;\n12:   return 
 {
   const f = { file: 'dapp/a.js', line: 11, why: 'off by one', old: 'if (a >= b)', new: 'if (a > b)' };
   const m = skepticMessages(f, CODE), n = skepticMessages(f, CODE, true);
-  check('a skeptic job is the two versions and the code around them, the code as it stands as the first when not flipped', m[0].content === SKEPTIC_SYSTEM && m[1].content === `File: dapp/a.js\nLines around 11\n\nVersion A:\nif (a >= b)\n\nVersion B:\nif (a > b)\n\nSurrounding code:\n${CODE}`);
+  check('a skeptic job is the two versions and the code around them, the code as it stands as A when not flipped', m[0].content === SKEPTIC_SYSTEM && m[1].content === `File: dapp/a.js\nLines around 11\n\nVersion A:\nif (a >= b)\n\nVersion B:\nif (a > b)\n\nSurrounding code (the marked line is where version A or version B goes):\n${CODE}`);
   check('flipped, the proposed text is A and the code as it stands is B', n[1].content.includes('Version A:\nif (a > b)\n\nVersion B:\nif (a >= b)'));
   check('the proposed text is B when not flipped and A when flipped', proposedSide(false) === 'B' && proposedSide(true) === 'A');
   check('the skeptic is NOT told what the reviewer thought: no claim, no reason, no word of a bug found', !m[1].content.includes('off by one') && !/Claim|reviewer/i.test(m[1].content) && !/REFUTE|refute|skeptic/i.test(SKEPTIC_SYSTEM));
@@ -25,6 +25,21 @@ const CODE = '10: function f(a, b) {\n11:   if (a >= b) return 1;\n12:   return 
   const multi = skepticMessages({ file: 'f', line: 1, why: 'w', old: 'a\nb', new: 'c\nd' }, CODE)[1].content;
   check('a change over several lines is shown as it is', multi.includes('Version A:\na\nb\n\nVersion B:\nc\nd'));
   check('a finding with no line number still reads', skepticMessages({ file: 'f', line: null, why: 'w', old: 'a', new: 'b' }, CODE)[1].content.includes('Lines around ?'));
+}
+
+// --- what a judge is shown: whole lines, and the code around them with those lines taken out
+{
+  const SRC = ['function f(a, b) {', '  if (a >= b) return 1;', '  return 0;', '}', 'function g(a, b) {', '  if (a >= b) return 2;', '  return 0;', '}'].join('\n');
+  const v = blindView(SRC, { old: 'a >= b', new: 'a > b', line: 2 }, 2);
+  check('the versions are the whole lines, as they stand and with the change made, without their indent', v.old === 'if (a >= b) return 1;' && v.new === 'if (a > b) return 1;' && v.line === 2 && v.count === 1);
+  check('the code around them has those lines replaced by one marked line, numbered from the file', v.codeText === `1: function f(a, b) {\n2: ${MARK}\n3:   return 0;\n4: }` && !v.codeText.includes('a >= b'));
+  const w = blindView(SRC, { old: 'a >= b', new: 'a > b', line: 6 }, 1);
+  check('of several places the old text occurs, the one nearest the line named is used', w.line === 6 && w.old === 'if (a >= b) return 2;' && w.codeText === `5: function g(a, b) {\n6: ${MARK}\n7:   return 0;`);
+  const multi = blindView(SRC, { old: 'return 1;\n  return 0;', new: 'return 1;\n  return 9;', line: 2 }, 1);
+  check('a change over several lines takes all of them out, keeping the numbers of the lines after', multi.count === 2 && multi.old === 'if (a >= b) return 1;\nreturn 0;' && multi.new === 'if (a >= b) return 1;\nreturn 9;' && multi.codeText === `1: function f(a, b) {\n2: ${MARK}\n4: }`);
+  check('a finding whose old text is not there, or empty, has no view', blindView(SRC, { old: 'nope', new: 'x', line: 1 }) === null && blindView(SRC, { old: '', new: 'x', line: 1 }) === null);
+  check('with no line named, the first place is used', blindView(SRC, { old: 'a >= b', new: 'a > b' }, 0).line === 2);
+  check('the judge is told what the marked line is', SKEPTIC_SYSTEM.includes('the marked line is where version A or version B goes') && skepticMessages({ file: 'f', line: 1, old: 'a', new: 'b' }, 'x')[1].content.includes('Surrounding code (the marked line is where version A or version B goes):'));
 }
 
 // --- choices

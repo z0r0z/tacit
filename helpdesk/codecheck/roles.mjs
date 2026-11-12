@@ -18,7 +18,8 @@ ${PRIMER}
 The question: ${lens.ask}
 Report a problem only if you can point at the line and it is a real bug, not a style point and not a guess about code you cannot see. If the snippet is fine, reply {"findings":[]}.
 Reply with JSON only, no prose: {"findings":[{"line":<line number>,"why":"<one sentence>","old":"<exact text copied from the code, 1 to 3 lines, without the line numbers>","new":"<the corrected text>"}]}
-At most 1 finding. "old" must be copied exactly so it can be found by string search.`;
+At most 1 finding. "old" must be copied exactly so it can be found by string search.
+Decide before you write: if you are not sure the line is wrong, reply {"findings":[]}. "why" is one short sentence (at most 25 words), not your reasoning.`;
 }
 export const scoutMessages = (lensId, file, start, end, text) => [
   { role: 'system', content: scoutSystem(lensId) },
@@ -28,7 +29,7 @@ export const scoutMessages = (lensId, file, start, end, text) => [
 // The skeptic is not told what the reviewer thought. It is given two versions of the lines, in an order the gateway chose at random, and picks the correct one from
 // the code around them. A question that can be answered yes or no is answered the same way every time by a small model; a choice between two things that are
 // shuffled is only answered right by reading, and a machine that always says A scores a half.
-export const SKEPTIC_SYSTEM = `You are the JUDGE in a code review of Tacit's browser JavaScript. Two versions of a few lines are given. At most one has a bug; they may also behave the same. Decide, from the surrounding code, which version is correct.
+export const SKEPTIC_SYSTEM = `You are the JUDGE in a code review of Tacit's browser JavaScript. Two versions of a few lines are given. At most one has a bug; they may also behave the same. The surrounding code is shown with those lines taken out: the marked line is where version A or version B goes. Decide, from the surrounding code, which version is correct.
 ${PRIMER}
 Choices:
 - "A": version A is the correct one.
@@ -42,8 +43,25 @@ export function skepticMessages(f, text, flip = false) {
   const a = flip ? f.new : f.old, b = flip ? f.old : f.new;
   return [
     { role: 'system', content: SKEPTIC_SYSTEM },
-    { role: 'user', content: `File: ${f.file}\nLines around ${f.line ?? '?'}\n\nVersion A:\n${a}\n\nVersion B:\n${b}\n\nSurrounding code:\n${text}` },
+    { role: 'user', content: `File: ${f.file}\nLines around ${f.line ?? '?'}\n\nVersion A:\n${a}\n\nVersion B:\n${b}\n\nSurrounding code (the marked line is where version A or version B goes):\n${text}` },
   ];
+}
+
+// What a judge is shown for a finding: the lines it is about, whole, as they stand (old) and with the change made (new), and the code around them with those lines
+// replaced by one marked line. A judge shown the code as it stands sees the old version fit and picks it; with the lines taken out, neither version is the one already
+// there. Of several places the old text occurs, the one nearest the line the finding names. -> { codeText, old, new, line, count } or null if the old text is not there.
+export const MARK = '>>> version A or version B goes here <<<';
+const dedent = (s) => { const ls = s.split('\n'), pads = ls.filter((l) => l.trim()).map((l) => l.match(/^\s*/)[0].length), pad = pads.length ? Math.min(...pads) : 0; return ls.map((l) => l.slice(pad)).join('\n'); };
+export function blindView(src, f, context = 15) {
+  if (!f.old) return null;
+  let at = -1, dist = Infinity;
+  for (let i = src.indexOf(f.old); i >= 0; i = src.indexOf(f.old, i + 1)) { const ln = src.slice(0, i).split('\n').length, d = Math.abs(ln - (Number.isInteger(f.line) ? f.line : ln)); if (d < dist) { at = i; dist = d; } }
+  if (at < 0) return null;
+  const ls = src.lastIndexOf('\n', at - 1) + 1, le0 = src.indexOf('\n', at + f.old.length), le = le0 < 0 ? src.length : le0;
+  const first = src.slice(0, ls).split('\n').length, count = src.slice(ls, le).split('\n').length, lines = src.split('\n');
+  const from = Math.max(1, first - context), to = Math.min(lines.length, first + count - 1 + context), out = [];
+  for (let n = from; n <= to; n++) { if (n === first) out.push(`${n}: ${MARK}`); else if (n < first || n >= first + count) out.push(`${n}: ${lines[n - 1]}`); }
+  return { codeText: out.join('\n'), old: dedent(src.slice(ls, le)), new: dedent(src.slice(ls, at) + f.new + src.slice(at + f.old.length, le)), line: first, count };
 }
 
 const letter = (v) => { const s = String(v ?? '').trim(); if (/^(?:version\s*)?a$/i.test(s)) return 'A'; if (/^(?:version\s*)?b$/i.test(s)) return 'B'; if (/^same/i.test(s)) return 'same'; if (/^unsure/i.test(s)) return 'unsure'; return null; };

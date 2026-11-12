@@ -10,7 +10,7 @@ import { readFileSync, appendFileSync, existsSync, statSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { snippet } from './codecheck/lenses.mjs';
 import { plant } from './codecheck/mutate.mjs';
-import { skepticMessages, proposedSide, voteOf, examClaim, findingId, fits } from './codecheck/roles.mjs';
+import { skepticMessages, proposedSide, voteOf, examClaim, findingId, fits, blindView } from './codecheck/roles.mjs';
 import { sampleOf } from './codecheck/scan.mjs';
 
 const cached = new Map();   // file -> { sig, rows }: a file is read again only when it has changed
@@ -73,10 +73,9 @@ export function makeCheckFeed({ source, sample, inbox, checks, exam, panel = 3, 
     open.sort((a, b) => (a.seen - b.seen) || ((b.r.fresh ? 1 : 0) - (a.r.fresh ? 1 : 0)) || (b.vs.length - a.vs.length) || (a.r.t - b.r.t));
     for (const { r } of open) {
       let src; try { src = source(r.commit, r.file); } catch { continue; }
-      const [ws, we] = String(r.window || '').split('-').map(Number), at = Number.isInteger(r.line) ? r.line : ws;
-      const codeText = snippet(src, Math.min(at - context, ws || at), Math.max(at + context, we || at));
-      const flip = rand() < 0.5, messages = skepticMessages(r, codeText, flip); if (!fits(messages)) continue;
-      return { id: randomBytes(8).toString('hex'), kind: 'check', max_tokens: 300, temperature: 0, meta: { check: true, fid: r.id, codeText, shown: `${codeText}\n${r.old}\n${r.new}`, side: proposedSide(flip) }, messages };
+      const [ws] = String(r.window || '').split('-').map(Number), view = blindView(src, { ...r, line: Number.isInteger(r.line) ? r.line : ws }, context); if (!view) continue;
+      const flip = rand() < 0.5, messages = skepticMessages({ ...r, line: view.line, old: view.old, new: view.new }, view.codeText, flip); if (!fits(messages)) continue;
+      return { id: randomBytes(8).toString('hex'), kind: 'check', max_tokens: 300, temperature: 0, meta: { check: true, fid: r.id, codeText: view.codeText, shown: `${view.codeText}\n${view.old}\n${view.new}`, side: proposedSide(flip) }, messages };
     }
     return null;
   }
@@ -85,9 +84,9 @@ export function makeCheckFeed({ source, sample, inbox, checks, exam, panel = 3, 
       const s = sample(); if (!s) return null; let src; try { src = source(s.commit, s.file); } catch { continue; }
       const p = plant(src, { start: s.start, end: s.end, lens: s.lens, strict: true, rand }); if (!p) continue;
       const truth = rand() < 0.5, ex = examClaim({ ...p, file: s.file }, truth, src);
-      const codeText = snippet(ex.code, p.line - context, p.line + context);
-      const flip = rand() < 0.5, messages = skepticMessages(ex.claim, codeText, flip); if (!fits(messages)) continue;
-      return { id: randomBytes(8).toString('hex'), kind: 'check', max_tokens: 300, temperature: 0, meta: { check: true, exam: { truth, lens: s.lens, kind: p.kind }, codeText, shown: `${codeText}\n${ex.claim.old}\n${ex.claim.new}`, side: proposedSide(flip) }, messages };
+      const view = blindView(ex.code, ex.claim, context); if (!view) continue;
+      const flip = rand() < 0.5, messages = skepticMessages({ ...ex.claim, line: view.line, old: view.old, new: view.new }, view.codeText, flip); if (!fits(messages)) continue;
+      return { id: randomBytes(8).toString('hex'), kind: 'check', max_tokens: 300, temperature: 0, meta: { check: true, exam: { truth, lens: s.lens, kind: p.kind }, codeText: view.codeText, shown: `${view.codeText}\n${view.old}\n${view.new}`, side: proposedSide(flip) }, messages };
     }
     return null;
   }
@@ -110,7 +109,7 @@ export function makeCheckFeed({ source, sample, inbox, checks, exam, panel = 3, 
   function onInvalid(job, text, miner, who = {}) {
     const sample = sampleOf(text);
     append(exam, { t: now(), role: 'skeptic', lens: job.meta.exam?.lens, exam: !!job.meta.exam, miner, node: who.node, tier: who.tier, model: who.model, outcome: 'invalid', sample });
-    say(`invalid skeptic reply (${who.tier || '?'}, ${who.model || '?'}): ${JSON.stringify(sample)}`);
+    say(`invalid skeptic reply (${who.tier || '?'}, ${who.model || '?'}): ${JSON.stringify(sampleOf(text, 600))}`);
   }
   // how the findings stand, for /stats: counts by state, and the exam results by role, lens and size of machine
   function summary() {

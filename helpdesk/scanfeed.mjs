@@ -142,7 +142,7 @@ export function makeScanFeed({ repo, ref = 'origin/main', inbox, results = null,
     if (!examFile) return;
     const sample = sampleOf(text);
     try { appendFileSync(examFile, JSON.stringify({ t: Date.now(), role: 'scout', lens: job.meta.lens || 'window', exam: !!job.meta.exam, miner, ...who, outcome: 'invalid', sample }) + '\n'); } catch {}
-    say(`invalid scout reply (${who.tier || '?'}, ${who.model || '?'}): ${JSON.stringify(sample)}`);
+    say(`invalid scout reply (${who.tier || '?'}, ${who.model || '?'}): ${JSON.stringify(sampleOf(text, 600))}`);
   }
   // what the check feed needs: the code at a commit, and a snippet to plant a bug in
   const sample = () => { if (!units) load(); const all = getSites(); if (!all.length) return null; const u = all[Math.floor(rand() * all.length)]; return { ...u, commit }; };
