@@ -21,7 +21,7 @@ import { makeBoardProver } from './board-prover.js';
 import { makeEthBoard, boardProves, finishVerdict } from './eth-board.js';
 import { makeBtcBoard } from './btc-board.js';
 import { depositsOf, depositIdOf } from './spent-precheck.js';
-import { consumesJobDeposits } from './board-check.js';
+import { consumesJobDeposits, judgeNodeposit, wrapExpectation } from './board-check.js';
 import { boardPost, boardStatus, boardCancel, boardSummary, boardRace } from './worker-client.js';
 import { stdinFor, SELF_PROVE_TYPES, LIMITS } from './spn/sp1-stdin.js';
 import { assertMemosMatchProof } from './memo-root.js';
@@ -472,10 +472,10 @@ export async function boardAlive() {
 // that cannot pay for the gas it finds ('gas required exceeds allowance (47755)', which marked two good farm-harvest proofs bad on 2026-10-29/30
 // and sent their jobs to the network); the send that follows estimates for itself.
 // A proof made before its deposit ('nodeposit': a wrap, wrap-swap or wrap-and-send proved first, sent with its deposit through the router) cannot
-// pass a settle simulation, however sound: from one of Tacit's own workers, which proved exactly the input it was given, it is judged by the SP1
-// verifier instead (the page also checks the proof is its op's before it uses it); from a community machine (`community`) it is left unchecked,
-// since a sound proof of some other input would pass the verifier too, and Tacit's worker's proof is the one taken.
-async function verifySettle({ publicValues, proof, memos, community = false }) {
+// pass a settle simulation, however sound: it is judged by the SP1 verifier instead (judgeNodeposit), from Tacit's own worker and from a community
+// machine (`community`) alike, the community proof having first to be the job's own (its deposits `want` and, for a plain wrap, `expect`); the page
+// also checks the proof is its op's before it uses it. So the race for such a job is a real one: the first sound proof is taken.
+async function verifySettle({ publicValues, proof, memos, community = false, want = null, expect = null }) {
   try {
     assertMemosMatchProof(publicValues, memos);
     await publicClient.simulateContract({ address: POOL, abi: POOL_ABI, functionName: 'settle', args: [publicValues, proof, memos], account: settleWallet.account });
@@ -483,9 +483,8 @@ async function verifySettle({ publicValues, proof, memos, community = false }) {
   } catch (e) {
     const { verdict, said } = readSettleCheck(e, STALE_PROOF_SELECTORS);
     if (verdict === 'nodeposit') {
-      if (community) return 'unchecked';
-      const v = await proofOnly(null)({ publicValues, proof });
-      boardLog(`a board proof whose deposit is not in the pool yet (proved first): ${v === true ? 'the verifier takes it' : v === 'unchecked' ? 'the verifier could not be asked' : 'the verifier refuses it'}`);
+      const v = await judgeNodeposit({ community, publicValues, proof, want, expect, verify: proofOnly(null) });
+      boardLog(`a ${community ? 'community ' : ''}board proof whose deposit is not in the pool yet (proved first): ${v === true ? 'the verifier takes it' : v === 'unchecked' ? 'the verifier could not be asked' : 'it is not this job\'s or the verifier refuses it'}`);
       return v;
     }
     const note = verdict === 'stale' ? ' (stale roots: the op is behind the pool, the proof itself is fine)' : verdict === 'unchecked' ? ' (the settle wallet cannot pay for the call: the proof is not judged)' : '';
@@ -596,7 +595,8 @@ export async function proveSettle({ type, op, memos = [], timeoutMs }) {
     if (stdin) {
       const pub = PUBLIC_BOARD_TYPES.includes(type);
       const want = pub ? (() => { try { return depositsOf(type, op).map((d) => String(depositIdOf(d)).toLowerCase()); } catch { return []; } })() : [];
-      const check = pub ? (c) => (c.community && !consumesJobDeposits(c.publicValues, want) ? false : verifySettle(c)) : null;
+      const expect = pub ? wrapExpectation(type, stdin) : null;
+      const check = pub ? (c) => (c.community && !consumesJobDeposits(c.publicValues, want) ? false : verifySettle({ ...c, want, expect })) : null;
       const first = await viaBoard({ stdin, ...LIMITS[type], label: type, memos: memos || [], timeoutMs, cls: pub ? 'public' : 'private', check });
       if (first.proof) return first.proof;
       timeoutMs = Math.max(60_000, timeoutMs - first.spentMs);

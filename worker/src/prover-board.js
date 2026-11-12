@@ -44,8 +44,10 @@ export const PROVER_BOARD = Object.freeze({
   maxOpenPerWorker: 2,
   // Community provers (no token): anyone may race Tacit's own workers for 'public' jobs, whose input holds nothing secret. A community
   // claim takes the job from no one, and a community proof does not close it: it waits beside the job as a candidate, the relay checks it
-  // (a simulated settle, as for any board proof) and takes the first that passes, while Tacit's own worker goes on with the job. A slow
-  // machine never holds a user's op up, and a bad proof costs the relay one check and its maker a mark, nothing more.
+  // (a simulated settle, as for any board proof; a wrap proved before its deposit is in the pool is judged by the SP1 verifier instead, and a
+  // community proof for it must consume exactly the job's deposits and, for a plain wrap, carry its leaf, chain binding and memo root) and takes
+  // the first that passes, while Tacit's own worker goes on with the job. So the race is open: the first sound proof wins, and a slow machine never
+  // holds a user's op up. A bad proof costs the relay one check and its maker a mark, nothing more.
   // A Bitcoin batch is not raced: it is tens of minutes on a large GPU, so the machines that prove it take turns, one to a batch. A batch
   // goes to the machine longest since its last turn of those waiting for one (asked for work in the last turnSeenMs, proving nothing), and
   // a machine whose last turn was refused, dropped or not answered goes after the others for turnTroubleMs. A turn not answered leaves

@@ -152,3 +152,45 @@ test('a community candidate is judged as such (community: true), Tacit\'s own wo
   assert.deepEqual(seen, [true, false]);
   assert.deepEqual(verdicts, [['c-0x01', null]], 'nor marked');
 });
+
+// A wrap proved before its deposit: the pool's settle simulation can only refuse it, so each proof is judged as board-check.js judgeNodeposit judges it.
+import { judgeNodeposit, consumesJobDeposits } from '../src/lib/board-check.js';
+const DEP = '0x' + 'aa'.repeat(32);
+const word32 = (x) => BigInt(x).toString(16).padStart(64, '0');
+const pvOf = (deposit) => {
+  const head = Array.from({ length: 32 }, () => word32(0)); head[0] = word32(32); head[6] = word32(31 * 32);
+  return '0x' + head.join('') + word32(1) + deposit.slice(2);
+};
+// the check proveSettle builds for a public job, with the verifier answering for a sound proof
+const nodepositCheck = (verdicts) => (c) => (c.community && !consumesJobDeposits(c.publicValues, [DEP]) ? false : judgeNodeposit({ community: c.community, publicValues: c.publicValues, proof: c.proof, want: [DEP], expect: null, verify: async () => verdicts(c) }));
+
+test('prove-first wrap: a community proof of the job\'s own deposit that arrives first is the job\'s proof, and Tacit\'s worker is not waited for', async () => {
+  const { api } = fakeBoard({ script: [
+    { status: 'claimed', worker: 'tacit-a5000', race: [{ worker: 'c-0x01', publicValues: pvOf(DEP), proof: PROOF }] },
+    { status: 'proved', worker: 'tacit-a5000', publicValues: pvOf(DEP), proof: PROOF },
+  ] });
+  const verdicts = [];
+  api.race = async (jobId, worker, ok) => { verdicts.push([worker, ok]); };
+  const r = await makeBoardProver(api).prove({ stdin, cycleLimit: 1n, gasLimit: 1n, cls: 'public', memos: [], check: nodepositCheck(() => true) });
+  assert.equal(r.worker, 'c-0x01');
+  assert.deepEqual(verdicts, [['c-0x01', true]]);
+});
+
+test('prove-first wrap: a community proof of someone else\'s deposit is marked bad and Tacit\'s worker\'s proof is taken', async () => {
+  const { api } = fakeBoard({ script: [
+    { status: 'claimed', worker: 'tacit-a5000', race: [{ worker: 'c-0x01', publicValues: pvOf('0x' + 'bb'.repeat(32)), proof: PROOF }] },
+    { status: 'proved', worker: 'tacit-a5000', publicValues: pvOf(DEP), proof: PROOF },
+  ] });
+  const verdicts = [];
+  api.race = async (jobId, worker, ok) => { verdicts.push([worker, ok]); };
+  const r = await makeBoardProver(api).prove({ stdin, cycleLimit: 1n, gasLimit: 1n, cls: 'public', memos: [], check: nodepositCheck(() => true) });
+  assert.equal(r.worker, 'tacit-a5000');
+  assert.deepEqual(verdicts, [['c-0x01', false]]);
+});
+
+test('prove-first wrap: when Tacit\'s worker is first, its proof is taken after the verifier, and a later community proof is never needed', async () => {
+  const { api } = fakeBoard({ script: [{ status: 'proved', worker: 'tacit-a5000', publicValues: pvOf(DEP), proof: PROOF }] });
+  api.race = async () => { throw new Error('no candidate was offered'); };
+  const r = await makeBoardProver(api).prove({ stdin, cycleLimit: 1n, gasLimit: 1n, cls: 'public', memos: [], check: nodepositCheck(() => true) });
+  assert.equal(r.worker, 'tacit-a5000');
+});
