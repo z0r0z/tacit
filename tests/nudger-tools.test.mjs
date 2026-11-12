@@ -1,0 +1,99 @@
+// The daily review's tools: which files and commits are reviewed, the numbered diff, the ranking and caps of the digest, and the selector and digest
+// commands run for real against a throwaway git repository and a stand-in for the API.
+//
+// Run: `node tests/nudger-tools.test.mjs`
+
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { inScope, numberedDiff, parseSpan, buildDigest } from '../tools/nudger/lib.mjs';
+
+let pass = 0, fail = 0;
+function ok(name, cond, detail) {
+  if (cond) { pass++; console.log(`  ok  ${name}`); }
+  else { fail++; console.error(`FAIL  ${name}${detail !== undefined ? ` — ${JSON.stringify(detail)}` : ''}`); }
+}
+
+// ---- scope
+ok('code under dapp, worker/src, server and helpdesk is in scope', ['dapp/tacit.js', 'dapp/pay/app.js', 'worker/src/index.js', 'server/harness.mjs', 'helpdesk/lease.mjs'].every(inScope));
+ok('tests, docs, data directories, vendored and minified files are not', ['tests/x.mjs', 'docs/a.md', 'dapp/index.html', 'dapp/vendor/noble.js', 'dapp/evm-pool/data.js', 'dapp/btc-pool/x.js', 'dapp/airdrop/a.js', 'dapp/tacit.min.js', 'contracts/a.js', 'worker/src/x.json'].every((f) => !inScope(f)));
+
+// ---- spans
+ok('spans parse as minutes, hours and days, and anything else is an error', parseSpan('90m') === 5_400_000 && parseSpan('24h') === 86_400_000 && parseSpan('7d') === 604_800_000
+  && ['24', 'h', '1w', '-1h', ''].every((s) => { try { parseSpan(s); return false; } catch { return true; } }));
+
+// ---- the numbered diff
+const diff = `diff --git a/x.js b/x.js\nindex 1..2 100644\n--- a/x.js\n+++ b/x.js\n@@ -10,3 +10,4 @@ function f() {\n   const a = 1;\n-  return a;\n+  const b = 2;\n+  return a + b;\n   }\n`;
+const nd = numberedDiff(diff);
+ok('lines carry their new-file number, removed lines carry none, and the header lines are gone', nd.text.split('\n')[0] === '@@ line 10 @@ function f() {' && nd.text.includes('   11 +  const b = 2;') && nd.text.includes('      -  return a;') && !/diff --git|index /.test(nd.text));
+ok('a change counts its added and removed lines', nd.changed === 3, nd.changed);
+const stamp = numberedDiff('@@ -1,2 +1,2 @@\n-import a from "/a.js?cb=aaaaaaaa";\n+import a from "/a.js?cb=bbbbbbbb";\n x\n');
+ok('a line whose only change is a cache-bust stamp is not a change', stamp.changed === 0, stamp.changed);
+const moved = numberedDiff('@@ -1,2 +1,2 @@\n-one\n-two\n+two\n+one\n');
+ok('lines that only moved are not a change', moved.changed === 0, moved.changed);
+
+// ---- the digest
+const commits = [{ sha: 'a'.repeat(40), subject: 'one' }, { sha: 'b'.repeat(40), subject: 'two' }];
+const F = (commit, verdict, severity, i) => ({ commit, file: 'dapp/x.js', line: i, claim: `claim ${commit[0]}${verdict[0]}${severity[0]}${i}`, severity, verdict, evidence: 'e' });
+const d = buildDigest([
+  F('a'.repeat(40), 'REFUTED', 'high', 1), F('a'.repeat(40), 'REAL', 'low', 2), F('a'.repeat(40), 'REAL', 'high', 3), F('a'.repeat(40), 'REAL', 'med', 4),
+  F('b'.repeat(40), 'REAL', 'med', 5), F('b'.repeat(40), 'UNCERTAIN', 'high', 6), F('b'.repeat(40), 'UNCERTAIN', 'low', 7), F('a'.repeat(40), 'UNCERTAIN', 'med', 8),
+], commits, { day: '2026-11-12' });
+ok('refuted findings never reach the digest', !d.findings.some((f) => f.claim.includes('arh')));
+ok('verified findings come first, each by severity, then those that hinge on an outside fact', d.findings.map((f) => `${f.status}:${f.severity}`).join() === 'real:high,real:med,real:med,outside:high', d.findings.map((f) => `${f.status}:${f.severity}`).join());
+ok('no commit supplies more than two, and the real ones stop at three', d.findings.filter((f) => f.commit === 'a'.repeat(40)).length === 2 && d.findings.filter((f) => f.status === 'real').length === 3);
+ok('ids run n<YYMMDD>-<k> in digest order, and each carries its commit\'s subject', d.findings.map((f) => f.id).join() === 'n261112-1,n261112-2,n261112-3,n261112-4' && d.findings[0].subject === 'one' && d.reviewed === 2);
+ok('with nothing raised the digest is empty and still says how many commits were reviewed', buildDigest([], commits, { day: '2026-11-12' }).findings.length === 0 && buildDigest([], commits, { day: '2026-11-12' }).reviewed === 2);
+
+// ---- the commands, on a throwaway repository
+const root = mkdtempSync(join(tmpdir(), 'nudger-test-'));
+const repo = join(root, 'repo'), work = join(root, 'work');
+mkdirSync(repo);
+const git = (...a) => execFileSync('git', ['-C', repo, ...a], { encoding: 'utf8', env: { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' } });
+const write = (f, s) => { mkdirSync(join(repo, f, '..'), { recursive: true }); writeFileSync(join(repo, f), s); };
+const lines = (n, tag) => Array.from({ length: n }, (_, i) => `export const ${tag}${i} = ${i};`).join('\n') + '\n';
+git('init', '-q', '-b', 'main');
+write('dapp/old.js', lines(40, 'o')); git('add', '-A'); execFileSync('git', ['-C', repo, 'commit', '-q', '-m', 'old work'], { env: { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t', GIT_AUTHOR_DATE: '2020-01-01T00:00:00Z', GIT_COMMITTER_DATE: '2020-01-01T00:00:00Z' } });
+const commit = (msg) => { git('add', '-A'); git('commit', '-q', '-m', msg); return git('rev-parse', 'HEAD').trim(); };
+write('dapp/big.js', lines(60, 'b')); const big = commit('a big change');
+write('dapp/small.js', lines(5, 's')); commit('a small change');
+write('tests/only.mjs', lines(80, 't')); commit('tests only');
+write('dapp/stamped.js', 'import a from "/a.js?cb=aaaaaaaa";\n' + lines(50, 'q')); const stamped = commit('a new page');
+write('dapp/stamped.js', 'import a from "/a.js?cb=bbbbbbbb";\n' + lines(50, 'q')); commit('build: refreshed page stamps');   // only the cache-bust stamp changes
+write('worker/src/mid.js', lines(35, 'm')); const mid = commit('a middle change');
+
+const node = (script, args, env = {}) => spawnSync('node', [script, ...args], { encoding: 'utf8', env: { ...process.env, ...env } });
+const sel = node('tools/nudger/select.mjs', ['--repo', repo, '--ref', 'main', '--out', work, '--snapshots']);
+ok('the selector runs', sel.status === 0, sel.stderr.slice(0, 200));
+const idx = JSON.parse(readFileSync(`${work}/commits.json`, 'utf8'));
+ok('it takes the commits with enough real change in scope, largest first', idx.commits.map((c) => c.subject).join() === 'a big change,a new page,a middle change', idx.commits.map((c) => c.subject));
+ok('and leaves out the old, the small, the tests-only and the stamp-only', !idx.commits.some((c) => /old work|small|tests only|build: refreshed/.test(c.subject)));
+ok('each commit has its review file: the message and the numbered diff', /^Commit message:\na big change/.test(readFileSync(`${work}/review-1.txt`, 'utf8')) && readFileSync(`${work}/review-1.txt`, 'utf8').includes('    1 +export const b0 = 0;'));
+ok('each commit has a snapshot of the code as it stood, with no history, and a later file is absent from an earlier snapshot', existsSync(`${work}/snap/1/dapp/big.js`) && !existsSync(`${work}/snap/1/.git`) && existsSync(`${work}/snap/3/worker/src/mid.js`) && !existsSync(`${work}/snap/1/worker/src/mid.js`));
+ok('the index names the commit and its files', idx.commits[0].sha === big && idx.commits[0].files.join() === 'dapp/big.js' && idx.commits[1].sha === stamped && idx.commits[2].sha === mid);
+rmSync(work, { recursive: true });
+node('tools/nudger/select.mjs', ['--repo', repo, '--ref', 'main', '--out', work, '--max', '1']);
+const capped = JSON.parse(readFileSync(`${work}/commits.json`, 'utf8'));
+ok('--max caps the commits and says what it skipped', capped.commits.length === 1 && capped.skipped.some((s) => /over the cap/.test(s.reason)));
+ok('--snapshots is opt-in', !existsSync(`${work}/snap`));
+ok('a bad span is refused with a message', node('tools/nudger/select.mjs', ['--repo', repo, '--out', work, '--since', 'forever']).status !== 0);
+
+// the digest command, dry then posted to a stand-in API
+writeFileSync(`${work}/verdicts.json`, JSON.stringify([{ commit: big, file: 'dapp/big.js', line: 7, claim: 'a finding about the big change', severity: 'med', verdict: 'REAL', evidence: 'big.js:7' }]));
+const dry = node('tools/nudger/digest.mjs', ['--out', work, '--day', '2026-11-12']);
+ok('without --post the digest is shown and nothing is sent', dry.status === 0 && dry.stdout.includes('a finding about the big change') && dry.stdout.includes('[ Useful ] [ Noise ] [ Already known ]') && /not posted/.test(dry.stdout), dry.stdout.slice(0, 300));
+let got = null;
+const api = createServer((req, res) => { let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => { got = { auth: req.headers.authorization, url: req.url, body: JSON.parse(b) }; res.writeHead(200); res.end('{"ok":true}'); }); });
+await new Promise((r) => api.listen(0, r));
+// asynchronous: the stand-in API answers on this process's event loop, which a synchronous spawn would block
+const post = await new Promise((r) => { let stdout = '', stderr = ''; const c = spawn('node', ['tools/nudger/digest.mjs', '--out', work, '--day', '2026-11-12', '--post'], { env: { ...process.env, NUDGER_SECRET: 'k'.repeat(40), NUDGER_API: `http://127.0.0.1:${api.address().port}` } }); c.stdout.on('data', (d) => (stdout += d)); c.stderr.on('data', (d) => (stderr += d)); c.on('close', (status) => r({ status, stdout, stderr })); });
+ok('--post sends the digest to /nudger/digest with the secret as a bearer token', post.status === 0 && got?.url === '/nudger/digest' && got.auth === `Bearer ${'k'.repeat(40)}` && got.body.findings[0].id === 'n261112-1' && got.body.findings[0].subject === 'a big change', got);
+ok('and never prints the secret', !post.stdout.includes('k'.repeat(40)) && !post.stderr.includes('k'.repeat(40)));
+ok('--post without a secret refuses', node('tools/nudger/digest.mjs', ['--out', work, '--day', '2026-11-12', '--post'], { NUDGER_SECRET: '' }).status === 2);
+writeFileSync(`${work}/verdicts.json`, '[]');
+ok('a quiet day shows the one-line message', /Nothing worth a look today: 1 commit /.test(node('tools/nudger/digest.mjs', ['--out', work, '--day', '2026-11-12']).stdout));
+api.close(); rmSync(root, { recursive: true });
+console.log(`\n${pass} passed, ${fail} failed`);
+process.exit(fail ? 1 : 0);

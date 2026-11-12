@@ -102,6 +102,7 @@ import { buildCrossoutConsumer, crossoutMintLeaf } from './crossout-consumer.js'
 import { buildGovernance } from './governance.js';
 import { discordGateMessage, DISCORD_MIN_TAC_BASE_UNITS } from '../../dapp/discord/message.js';
 import { DISCORD_VERIFY_BUTTON_ID } from '../../discord/panel.js';
+import { NUDGE_PREFIX, MAX_NUDGER_BODY, parseDigest, postDigest, nudgeButton, labelsReport, findingById } from './nudger.js';
 import { makeTacAncestry } from './tac-ancestry.js';
 import { makeOutpointClassifier } from './outpoint-classify.js';
 import { makeTacArchive, ARCHIVE_MAX_ROOTS, ARCHIVE_MAX_IMPORT } from './tac-archive.js';
@@ -28235,6 +28236,10 @@ async function handleDiscordInteraction(req, env, cors) {
     return new Response(JSON.stringify({ type: 1 }), { headers: { 'Content-Type': 'application/json' } });
   }
 
+  if (interaction.type === 3 && String(interaction.data?.custom_id || '').startsWith(NUDGE_PREFIX)) {
+    return jsonResponse(await nudgeButton(env, interaction), 200, cors);
+  }
+
   const verifyCommand = interaction.type === 2 && interaction.data?.name === 'verify';
   const verifyButton = interaction.type === 3 && interaction.data?.component_type === 2 && interaction.data?.custom_id === DISCORD_VERIFY_BUTTON_ID;
   if (verifyCommand || verifyButton) {
@@ -28272,6 +28277,33 @@ async function handleDiscordInteraction(req, env, cors) {
   }
 
   return jsonResponse({ type: 4, data: { content: 'Unknown verification action. Please use the Verify button.', flags: 64 } }, 200, cors);
+}
+
+// ============== REVIEW CHANNEL (nudger.js) ==============
+// The reviewer's digest in, its labels out. Both routes take the one NUDGER_SECRET as a bearer token.
+function nudgerAuth(req, env, cors) {
+  const secret = env.NUDGER_SECRET;
+  if (!secret || secret.length < 32) return jsonResponse({ ok: false, error: 'NUDGER_SECRET not configured' }, 500, cors);
+  if (!checkBearerConstantTime(req, secret)) return jsonResponse({ ok: false, error: 'unauthorized' }, 401, { ...cors, 'Cache-Control': 'no-store' });
+  return null;
+}
+
+async function handleNudgerDigest(req, env, cors) {
+  const denied = nudgerAuth(req, env, cors); if (denied) return denied;
+  const text = await req.text();
+  if (text.length > MAX_NUDGER_BODY) return jsonResponse({ ok: false, error: 'body too large' }, 413, cors);
+  let b; try { b = JSON.parse(text); } catch { b = null; }
+  const { digest, error } = parseDigest(b);
+  if (error) return jsonResponse({ ok: false, error }, 400, cors);
+  const r = await postDigest(env, digest);
+  return jsonResponse(r.body, r.status, { ...cors, 'Cache-Control': 'no-store' });
+}
+
+async function handleNudgerReport(req, env, url, cors) {
+  const denied = nudgerAuth(req, env, cors); if (denied) return denied;
+  const one = url.pathname.match(/^\/nudger\/finding\/(n\d{6}-\d{1,2})$/);
+  if (one) { const f = await findingById(env, one[1]); return f ? jsonResponse(f, 200, { ...cors, 'Cache-Control': 'no-store' }) : jsonResponse({ ok: false, error: 'not found' }, 404, cors); }
+  return jsonResponse(await labelsReport(env, url.searchParams.get('since')), 200, { ...cors, 'Cache-Control': 'no-store' });
 }
 
 // ============== ROUTER ==============
@@ -28588,6 +28620,8 @@ async function _routeFetch(req, env, ctx) {
     if (url.pathname === '/discord/interaction' && req.method === 'POST') return handleDiscordInteraction(req, env, cors);
     if (url.pathname === '/discord/nonce' && req.method === 'POST')  return handleDiscordNonce(req, env, cors);
     if (url.pathname === '/discord/verify' && req.method === 'POST') return handleDiscordVerify(req, env, cors);
+    if (url.pathname === '/nudger/digest' && req.method === 'POST') return handleNudgerDigest(req, env, cors);
+    if ((url.pathname === '/nudger/labels' || /^\/nudger\/finding\/n\d{6}-\d{1,2}$/.test(url.pathname)) && req.method === 'GET') return handleNudgerReport(req, env, url, cors);
     { const g = url.pathname.match(/^\/discord\/gate\/([0-9a-f]{32})$/); if (g && req.method === 'GET') return handleDiscordGate(req, env, g[1], cors); }
     {
       const m = url.pathname.match(/^\/discord\/status\/([0-9a-f]{32})$/i);
