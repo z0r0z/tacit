@@ -35,6 +35,8 @@ const ringed = (page, v) => page.$eval(`#hx .pk .pk-r[data-v="${v}"] svg.tk`, (s
 const where = (page) => page.$eval('#hx-panel .f .fh .where', (e) => e.textContent.trim());
 const pillRing = (page) => page.$eval('#hx-panel .coin[data-pk="hx-sa"] svg.tk', (s) => s.classList.contains('pvt'));
 const way = (page) => page.$eval('#hx-way', (e) => (e.hidden ? '' : e.textContent.trim()));
+// with no recipient typed, what each address does is the tab's lead line (hxLeadPaint, since the 11-06 hero pass); #hx-way speaks once there is one
+const lead = (page) => page.$eval('#hx-lead', (e) => e.textContent.trim());
 
 const browser = await chromium.launch();
 try {
@@ -87,7 +89,7 @@ try {
     await page.click('#hx .pk .pk-r[data-v="usdc"]');
     await page.waitForFunction(() => document.querySelector('#hx-sa')?.value === 'usdc');
     ok(await where(page) === 'Private' && await pillRing(page), `${tag}: private USDC reads Private and wears the ring in the field`);
-    ok(/^To tacit1… or a name: stays private\. To 0x…: taken out of the pool to that address\.$/.test(await way(page)), `${tag}: its line says what each address does (${await way(page)})`);
+    ok(/^tacit1 stays private\. An 0x address leaves the pool\.$/.test(await lead(page)), `${tag}: its line says what each address does (${await lead(page)})`);
     await open(page);
     ok(await visible(page) === 'eth,tac,cusd,cbtc,pp,ptac,usdc,usdt', `${tag}: it opens on Private again`);
     await page.keyboard.press('Escape');
@@ -98,7 +100,7 @@ try {
     await page.click('#hx .pk .pk-r[data-v="wusdc"]');
     await page.waitForFunction(() => document.querySelector('#hx-sa')?.value === 'wusdc');
     ok(await where(page) === 'Wallet' && !(await pillRing(page)), `${tag}: the wallet's USDC reads Wallet and has no ring`);
-    ok(/^To 0x… or a name: a public transfer\. To tacit1…: paid into their private USDC\.$/.test(await way(page)) && await page.$eval('#hx-go', (b) => b.textContent) === 'Send USDC', `${tag}: with no recipient the button does not promise privacy (${await way(page)})`);
+    ok(/^tacit1 is paid privately, 0x in the open\.$/.test(await lead(page)) && await page.$eval('#hx-go', (b) => b.textContent) === 'Send USDC', `${tag}: with no recipient the button does not promise privacy (${await lead(page)})`);
 
     // an amount with no one to send it to asks for the recipient, in place, and opens nothing
     await page.fill('#hx-amt', '5');

@@ -345,6 +345,8 @@ function flowGet(k, at) {
   if (at !== 'wallet') return null;
   const cur = isPrivAt(atOf('get')) ? atOf('get') : 'defi';
   for (const h of [cur, ...['defi', 'pay', 'chain'].filter((x) => x !== cur)]) { const g = coinAt(k, h); if (sameMoney(k, g) && pairOk(k, 'wallet', g, h)) return [g, h]; }
+  // any other token the card knows has no private form of its own: it is sold for ETH and deposited in the one go ('pin'), and the pool holds ETH
+  if (FLOW === 'shield' && !tacitKey(k) && isListed(k) && pairOk(k, 'wallet', 'teth', 'defi')) return ['teth', 'defi'];
   return null;
 }
 function flowFit() { const g = flowGet(S.pay, atOf('pay')); if (!g) return false; setAt('get', g[1]); S.get = g[0]; return true; }
@@ -897,8 +899,9 @@ const shownAt = (k, at) => { const t = tokenOf(k, at === 'defi'); return at === 
 let PAYWARM = 0;
 function paintSides() {
   let pay = shownAt(S.pay, atOf('pay')), get = shownAt(S.get, atOf('get'));
-  // in Shield and Withdraw the private side is the same coin, named as the wallet names it (its mark still says it is private)
-  if (FLOW === 'shield' && get && pay) get = { ...get, sym: pay.sym };
+  // in Shield and Withdraw the private side is the same coin, named as the wallet names it (its mark still says it is private); a token sold into the
+  // pool is ETH there
+  if (FLOW === 'shield' && get && pay) get = { ...get, sym: S.get === 'teth' ? 'ETH' : pay.sym };
   if (FLOW === 'withdraw' && get && pay) pay = { ...pay, sym: get.sym };
   $('#pay-coin').innerHTML = `${coin(pay)}${esc(pay.sym)}<span class="car" aria-hidden="true">▾</span>`;
   $('#pay-coin').setAttribute('aria-label', `Pay with ${pay.sym}. Choose another`);
@@ -1027,7 +1030,7 @@ function quotePaint() {
   shareSync();
   if (moveOf()) { paintMove(); return; }
   if (exiting()) { paintExit(); return; }
-  const q = S.q, out = $('#out'), get = tokenOf(S.get), pay = tokenOf(S.pay), rows = $('#rows'), rc = $('#rcpt'), go = $('#go'), ackbox = $('#ackbox');
+  const q = S.q, out = $('#out'), get = FLOW === 'shield' && S.get === 'teth' ? { ...tokenOf(S.get), sym: 'ETH' } : tokenOf(S.get), pay = tokenOf(S.pay), rows = $('#rows'), rc = $('#rcpt'), go = $('#go'), ackbox = $('#ackbox');
   const r = picked(q), kind = kindOf(S.pay, S.get);
   // Swap privately from a token is priced as two swaps through the pool, any other swap as one: a quote of the other shape is asked again
   const shape = laterOn(kind) && !isEth(S.pay) ? (viaToken() ? 'hop' : 'zap') : false;
@@ -1154,7 +1157,7 @@ function button(q, r, kind, gate) {
     if (bal != null && q.wei > bal) return [`Not enough ${pay.sym}`, false];
     if (eth != null && tip + 2n * gasKeep() > eth) return ['Leave some ETH for the network fee', false];
     if (gate && !S.ack) return gateButton();
-    return [`Swap privately${tLabel}`, true, 'priv'];
+    return [FLOW === 'shield' && !S.toTacit ? `Shield ${pay.sym}` : `Swap privately${tLabel}`, true, 'priv'];
   }
   if (kind === 'pout') {
     const pb = privBal(S.pay);
@@ -2770,8 +2773,8 @@ function openPicker(side, again = false) {
   // [heading, keys, kind, id]: the wallet's coins with a pool or a balance lead, then the private ones (both pools), Bitcoin's, then the rest of the list (the wallet's too)
   const groups = [['Wallet', top, 'wallet', 'wallet'], ['Private', [...POOL_COINS.map((k) => `@defi:${k}`), ...(moving() ? placeCoins(side, 'pay').map((k) => `@pay:${k}`) : []), ...placeCoins(side, 'chain').map((k) => `@chain:${k}`)], 'private', 'defi'],
     ...(moving() ? [['Bitcoin', placeCoins(side, 'btc').map((k) => `@btc:${k}`), 'bitcoin', 'btc']] : []),
-    // (in Shield and Withdraw, the coins the flow takes from each place: Shield's are the wallet's, and private TAC while the Tacit chain is on)
-    ['More tokens', rest, 'wallet', 'more']].map((g) => (FLOW ? [g[0], g[3] === 'more' ? [] : g[1].filter((key) => { const m = ATK.exec(key); return !!flowGet(m ? m[2] : key, m ? m[1] : 'wallet'); }), g[2], g[3]] : g)).filter(([, ks]) => ks.length);
+    // (in Shield and Withdraw, the coins the flow takes from each place: Shield's are the wallet's, any token the card knows among them, and private TAC while the Tacit chain is on)
+    ['More tokens', rest, 'wallet', 'more']].map((g) => (FLOW ? [g[0], g[1].filter((key) => { const m = ATK.exec(key); return !!flowGet(m ? m[2] : key, m ? m[1] : 'wallet'); }), g[2], g[3]] : g)).filter(([, ks]) => ks.length);
   const kinds = ['wallet', 'private', 'bitcoin'].filter((kd) => groups.some((g) => g[2] === kd));
   const first = KIND[PKAT || at];
   let kind = again && kinds.includes(PKKIND) ? PKKIND : kinds.includes(first) ? first : kinds[0];
@@ -2804,7 +2807,7 @@ function openPicker(side, again = false) {
     return `<p class="pk-g${id === 'more' ? '' : ' kh'}" data-g="${id}" data-kind="${kd}"${hide}>${esc(g)}</p>${noted.has(kd) ? '' : (noted.add(kd), `<p class="pk-d" data-kind="${kd}"${hide}>${esc(note)}</p>`)}${rows}`;
   }).join('');
   const kindBtn = (kd) => `<button type="button" role="radio" data-kind="${kd}" aria-checked="${kd === kind}" tabindex="${kd === kind ? 0 : -1}" title="${esc(KIND_TIP[kd])}">${kd === 'wallet' ? WALLET_MARK : kd === 'bitcoin' ? placeMark('btc') : '<span class="lock" aria-hidden="true"></span>'}${KIND_NAME[kd]}</button>`;
-  pk.innerHTML = `<div class="pk-s" role="dialog" aria-modal="true" aria-label="${title}"><div class="pk-h"><b>${title}</b><button type="button" class="pk-x" aria-label="Close">×</button></div>${!FLOW && keys.some((k) => !inPool(k) && !/^@/.test(k)) ? '<input class="pk-q" id="pk-q" placeholder="Search tokens, or paste an address" autocomplete="off" spellcheck="false" aria-label="Search tokens or paste an address">' : ''}${kinds.length > 1 ? `<div class="pk-kind" id="pk-kind" role="radiogroup" aria-label="Where it is held">${kinds.map(kindBtn).join('')}</div>` : ''}<div class="pk-l" id="pk-l">${list}<p class="pk-n" id="pk-n"></p></div></div>`;
+  pk.innerHTML = `<div class="pk-s" role="dialog" aria-modal="true" aria-label="${title}"><div class="pk-h"><b>${title}</b><button type="button" class="pk-x" aria-label="Close">×</button></div>${FLOW !== 'withdraw' && keys.some((k) => !inPool(k) && !/^@/.test(k)) ? '<input class="pk-q" id="pk-q" placeholder="Search tokens, or paste an address" autocomplete="off" spellcheck="false" aria-label="Search tokens or paste an address">' : ''}${kinds.length > 1 ? `<div class="pk-kind" id="pk-kind" role="radiogroup" aria-label="Where it is held">${kinds.map(kindBtn).join('')}</div>` : ''}<div class="pk-l" id="pk-l">${list}<p class="pk-n" id="pk-n"></p></div></div>`;
   pk.hidden = false;
   if ($('#pk-kind')) arrows($('#pk-kind'), 'data-kind');
   // the logos of the rows in the list's view (and a little past it), fetched as they come into it
