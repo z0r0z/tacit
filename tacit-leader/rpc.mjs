@@ -6,6 +6,8 @@ import { hexOf, bytesOf } from './abi.mjs';
 // One endpoint, or several (a list: the first that answers is used until it fails, then the next): a free endpoint can rate-limit, drop old logs
 // or go down, and the leader must not stop with it. What is the call's own answer (a revert, a nonce, a fee) is thrown as it is, not tried elsewhere.
 const OWN = /execution reverted|nonce too low|already known|replacement transaction|insufficient funds|intrinsic gas|max fee per gas|invalid argument|invalid params/i;
+// An endpoint named by its domain alone: its path and query are where a key lives, and never go to a log.
+const hostOf = (u) => { try { return new URL(u).hostname.split('.').slice(-2).join('.'); } catch { return 'endpoint'; } };
 export function makeRpc(urls, { retries = 2, fetchImpl = (...a) => fetch(...a) } = {}) {
   const list = (Array.isArray(urls) ? urls : String(urls).split(',')).map((u) => u.trim()).filter(Boolean);
   if (!list.length) throw new Error('an RPC endpoint is required');
@@ -15,7 +17,8 @@ export function makeRpc(urls, { retries = 2, fetchImpl = (...a) => fetch(...a) }
     for (let i = 0; i <= retries; i++) {
       try {
         const r = await fetchImpl(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params }), signal: AbortSignal.timeout(45_000) });
-        const j = await r.json();
+        // a gateway or rate limiter in front of a node can answer with a web page: said as that, with the status, not as a parse error
+        const j = await r.json().catch(() => { throw new Error(`answered ${method} with a web page, not JSON (HTTP ${r.status ?? '?'})`); });
         if (j.error) {
           const e = new Error(`${method}: ${j.error.message}`); e.rpc = j.error;
           if (j.error.code === 3 || OWN.test(j.error.message || '')) { e.own = true; throw e; }
@@ -29,11 +32,14 @@ export function makeRpc(urls, { retries = 2, fetchImpl = (...a) => fetch(...a) }
   }
   async function call(method, params = []) {
     let last;
+    const tried = [];
     for (let k = 0; k < list.length; k++) {
       const i = (at + k) % list.length;
       try { const r = await one(list[i], method, params); at = i; return r; }
-      catch (e) { if (e.own) throw e; last = e; }
+      catch (e) { if (e.own) throw e; last = e; tried.push(`${hostOf(list[i])}: ${String((e && e.message) || e).slice(0, 100)}`); }
     }
+    // the last endpoint's own error is what is thrown; what each one said goes with it, for a log to name them
+    if (last && typeof last === 'object') last.attempts = tried;
     throw last;
   }
   return { call, urls: list };

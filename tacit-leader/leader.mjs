@@ -487,7 +487,7 @@ async function main() {
   // the epoch's seed has a window of a few blocks: watched on its own, not between a block's proving and landing
   setInterval(() => keepSeed().catch((e) => log({ seedNotKept: String(e.message || e) })), 4000);
   for (;;) {
-    try { await step(); } catch (e) { log({ error: String(e.message || e) }); }
+    try { await step(); } catch (e) { log({ error: String(e.message || e), ...(e && e.attempts && e.attempts.length > 1 ? { endpoints: e.attempts } : {}) }); }
     // between steps the node's mempool is looked at each second (a local read): a spend that arrives starts the next step at once, so a payment
     // is built into a block within a second of the leader taking it, not up to POLL later
     const since = Date.now(), had = await node('GET', '/mempool').then((m) => (m.spends || []).length + (m.settles || []).length, () => 0);
