@@ -304,6 +304,37 @@ test('what the board or a stranger can do to a call: nothing readable, nothing t
   assert.equal(board.reply(bid), null);
 });
 
+test('a provider answers several requests at once: a slow one holds up none of the others, one that fails is only itself lost, and the cursor moves past them all', async () => {
+  // One at a time, a slow request held every one behind it, the board's queue for the provider reached its limit of 64 and the board answered new
+  // requests with a 503 ("the provider has all the requests it takes") while a dozen pages polled the house provider (2026-11-12).
+  const c = clock(), board = makeBoard({ now: c.now });
+  let inFlight = 0, maxInFlight = 0;
+  const P = providerOf(1, async (req) => {
+    inFlight++; maxInFlight = Math.max(maxInFlight, inFlight);
+    await new Promise((r) => setTimeout(r, 120));
+    inFlight--;
+    if (req.path === '/boom') throw new Error('boom');
+    return { status: 200, body: { echo: req.path } };
+  }, c);
+  board.putAd(adOf(1, T0));
+  const logs = [];
+  const server = makeMailboxServer({ board, keys: P.keys, handle: P.handle, signReply: P.signReply, now: c.now, log: (o) => logs.push(o) });
+  let ready; const allIn = new Promise((r) => { ready = r; });
+  (async () => { for (let i = 0; i < 400 && board.inbox(P.gateway, 0).items.length < 9; i++) await new Promise((r) => setTimeout(r, 2)); ready(); })();
+  // (a caller's wait is a real pause: one that only awaited promises would spin the event loop and starve the handler's own timers)
+  const call = makeMailboxCall({ board, gateway: P.gateway, now: c.now, pollMs: 1, timeoutMs: 3000, sleep: async () => { await allIn; await new Promise((r) => setTimeout(r, 5)); await server.pump(); } });
+  const t0 = Date.now();
+  let answeredAt = t0;                                  // when the last answered request came back (the one that fails waits out its timeout)
+  const calls = Array.from({ length: 9 }, (_, i) => call('GET', i === 4 ? '/boom' : '/r' + i).then((r) => { answeredAt = Date.now(); return r.body.echo; }, () => 'lost'));
+  const out = await Promise.all(calls);
+  const took = answeredAt - t0;
+  assert.deepEqual(out, ['/r0', '/r1', '/r2', '/r3', 'lost', '/r5', '/r6', '/r7', '/r8'], 'every request that could be answered was, and the one that failed was only itself lost');
+  assert.ok(maxInFlight >= 4 && maxInFlight <= 6, `several at once, within the limit (${maxInFlight})`);
+  assert.ok(took < 2000, `nine requests of 120 ms did not take one after another (${took} ms)`);
+  assert.ok(logs.some((l) => l.msg === 'a request was not answered' && /boom/.test(l.error)), 'the failure is logged');
+  assert.equal(await server.pump(), 0, 'the cursor moved past all of them: none is read again');
+});
+
 test('the ads: a provider posts its terms and what it can take now; a user reads only the ones that check out', async () => {
   const c = clock(), board = makeBoard({ now: c.now });
   let info = { btcAsset: 'ab'.repeat(32), evmAsset: '0x' + 'cd'.repeat(32), minAmount: '1000', maxAmount: '50000', available: '7000', feeBps: 25, flatFee: '100', csvBlocks: 144, evmWindowSecs: 14400 };

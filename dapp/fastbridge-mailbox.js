@@ -60,7 +60,10 @@ export async function readProviders({ board, now = () => Math.floor(Date.now() /
 
 // ── the provider's side ──
 
-export function makeMailboxServer({ board, keys, handle, signReply, now = () => Math.floor(Date.now() / 1000), pollMs = 2000, log = () => {} }) {
+// `concurrency`: how many requests are answered at once. One at a time, a slow request (a lock judged against explorers, a status read) held every
+// request behind it, the board's queue for the provider filled to its limit of 64, and the board turned new requests away with a 503
+// ("the provider has all the requests it takes") on 2026-11-12 while a dozen pages polled.
+export function makeMailboxServer({ board, keys, handle, signReply, now = () => Math.floor(Date.now() / 1000), pollMs = 2000, concurrency = 6, log = () => {} }) {
   const gw = bytesToHex(keys.pub);
   const seen = new Map();
   let after = 0, boot = null, busy = false, timer = null;
@@ -81,16 +84,21 @@ export function makeMailboxServer({ board, keys, handle, signReply, now = () => 
       // a board that has restarted numbers its messages from the start: a cursor from before it would skip every new one, so a changed run is read from 0 (a request already answered is dropped by `fresh`)
       if (r.boot && r.boot !== boot) { if (boot) { after = 0; r = await board.inbox(gw, 0); } boot = r.boot; }
       const { next, items } = r;
-      for (const m of items) {
-        n++;
-        try {
-          const req = await openRequest(keys, m.bytes, { now, seen: fresh });
-          const out = await handle({ method: req.method, path: req.path, body: req.body });
-          const bytes = await req.reply(out.status, {}, te.encode(JSON.stringify(out.body)));
-          await board.putReply(m.id, bytes, bytesToHex(signReply(replyDigest(m.id, bytes))));
-        } catch (e) { log({ level: 'warn', msg: 'a request was not answered', error: String((e && e.message) || e).slice(0, 120) }); }
-        after = m.seq;
-      }
+      // up to `concurrency` at once, each answered or logged on its own: one that fails, or is slow, holds up none of the others
+      let i = 0;
+      const lane = async () => {
+        for (let m = items[i++]; m; m = items[i++]) {
+          n++;
+          try {
+            const req = await openRequest(keys, m.bytes, { now, seen: fresh });
+            const out = await handle({ method: req.method, path: req.path, body: req.body });
+            const bytes = await req.reply(out.status, {}, te.encode(JSON.stringify(out.body)));
+            await board.putReply(m.id, bytes, bytesToHex(signReply(replyDigest(m.id, bytes))));
+          } catch (e) { log({ level: 'warn', msg: 'a request was not answered', error: String((e && e.message) || e).slice(0, 120) }); }
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(Math.max(1, concurrency), items.length) }, lane));
+      for (const m of items) after = Math.max(after, m.seq);
       if (!items.length) after = Math.max(after, next);
     } finally { busy = false; }
     return n;
