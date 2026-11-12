@@ -25,45 +25,60 @@ export const scoutMessages = (lensId, file, start, end, text) => [
   { role: 'user', content: `File: ${file}\nLines ${start}-${end}\n\n${text}` },
 ];
 
-export const SKEPTIC_SYSTEM = `You are the SKEPTIC in a code review of Tacit's browser JavaScript. A reviewer claims there is a bug in the snippet and proposes a change. Your job is to try to REFUTE the claim by reading the code.
+// The skeptic is not told what the reviewer thought. It is given two versions of the lines, in an order the gateway chose at random, and picks the correct one from
+// the code around them. A question that can be answered yes or no is answered the same way every time by a small model; a choice between two things that are
+// shuffled is only answered right by reading, and a machine that always says A scores a half.
+export const SKEPTIC_SYSTEM = `You are the JUDGE in a code review of Tacit's browser JavaScript. Two versions of a few lines are given. At most one has a bug; they may also behave the same. Decide, from the surrounding code, which version is correct.
 ${PRIMER}
-Verdicts:
-- "real": you checked, the problem exists as described on the line you quote, and the proposed change fixes it without breaking anything.
-- "false": the code is fine, the claim misreads it, the change does the same thing as the old code, or the change would break the code.
-- "unsure": it depends on something that is not in the snippet.
-Reply with JSON only, no prose: {"verdict":"real|false|unsure","line":<line number>,"quote":"<the exact text of the line you relied on, copied from the code>","why":"<one sentence>"}`;
-export const skepticMessages = (f, text) => [
-  { role: 'system', content: SKEPTIC_SYSTEM },
-  { role: 'user', content: `File: ${f.file}\nClaim (line ${f.line ?? '?'}): ${oneLine(f.why, 300)}\nProposed change:\n- ${String(f.old).split('\n').join('\n- ')}\n+ ${String(f.new).split('\n').join('\n+ ')}\n\nCode:\n${text}` },
-];
-
-// A small model quoting a line of code often leaves its own double quotes unescaped, which is not JSON. The fields are then read one by one: the verdict word, the
-// line number, and the quote up to the "why" that follows it.
-function looseVerdict(t) {
-  const v = t.match(/"verdict"\s*:\s*"(real|false|unsure)"/i); if (!v) return null;
-  const line = t.match(/"line"\s*:\s*(\d+)/), q = t.match(/"quote"\s*:\s*"([\s\S]*?)"\s*(?:,\s*"why"|\}|$)/), w = t.match(/"why"\s*:\s*"([\s\S]*?)"\s*\}?\s*$/);
-  return { verdict: v[1], line: line ? Number(line[1]) : null, quote: q ? q[1].replace(/\\"/g, '"') : '', why: w ? w[1] : '' };
+Choices:
+- "A": version A is the correct one.
+- "B": version B is the correct one.
+- "same": the two versions behave the same.
+- "unsure": it depends on something that is not in the code shown.
+Reply with JSON only, no prose: {"choice":"A|B|same|unsure","line":<line number>,"quote":"<the exact text of a line of the surrounding code that shows which one is right, copied from it>","why":"<one sentence>"}`;
+// `flip` puts the proposed text in A and the code as it stands in B; the proposed text is B otherwise. The surrounding code shows the lines as they stand now.
+export const proposedSide = (flip) => (flip ? 'A' : 'B');
+export function skepticMessages(f, text, flip = false) {
+  const a = flip ? f.new : f.old, b = flip ? f.old : f.new;
+  return [
+    { role: 'system', content: SKEPTIC_SYSTEM },
+    { role: 'user', content: `File: ${f.file}\nLines around ${f.line ?? '?'}\n\nVersion A:\n${a}\n\nVersion B:\n${b}\n\nSurrounding code:\n${text}` },
+  ];
 }
-// A skeptic's reply -> { verdict, line, quote, why }, or null when it is not the shape asked for (such a reply earns nothing).
-export function verdictOf(text) {
+
+const letter = (v) => { const s = String(v ?? '').trim(); if (/^(?:version\s*)?a$/i.test(s)) return 'A'; if (/^(?:version\s*)?b$/i.test(s)) return 'B'; if (/^same/i.test(s)) return 'same'; if (/^unsure/i.test(s)) return 'unsure'; return null; };
+// A small model quoting a line of code often leaves its own double quotes unescaped, which is not JSON. The fields are then read one by one: the choice, the line
+// number, and the quote up to the "why" that follows it.
+function looseChoice(t) {
+  const c = t.match(/"choice"\s*:\s*"([^"]*)"/i); if (!c) return null;
+  const line = t.match(/"line"\s*:\s*(\d+)/), q = t.match(/"quote"\s*:\s*"([\s\S]*?)"\s*(?:,\s*"why"|\}|$)/), w = t.match(/"why"\s*:\s*"([\s\S]*?)"\s*\}?\s*$/);
+  return { choice: c[1], line: line ? Number(line[1]) : null, quote: q ? q[1].replace(/\\"/g, '"') : '', why: w ? w[1] : '' };
+}
+// A skeptic's reply -> { choice: 'A' | 'B' | 'same' | 'unsure', line, quote, why }, or null when it is not the shape asked for (such a reply earns nothing).
+export function choiceOf(text) {
   const t = String(text), m = t.match(/\{[\s\S]*\}/); let j = null;
   if (m) { try { j = JSON.parse(m[0]); } catch { j = null; } }
-  if (!j) j = looseVerdict(t);
-  const verdict = String(j?.verdict ?? '').toLowerCase();
-  if (!['real', 'false', 'unsure'].includes(verdict)) return null;
-  return { verdict, line: Number.isInteger(j.line) ? j.line : null, quote: plain(j.quote).slice(0, 300), why: plain(j.why).slice(0, 300) };
+  if (!j) j = looseChoice(t);
+  const choice = letter(j?.choice);
+  if (!choice) return null;
+  return { choice, line: Number.isInteger(j.line) ? j.line : null, quote: plain(j.quote).slice(0, 300), why: plain(j.why).slice(0, 300) };
 }
-export const shape = (text) => verdictOf(text) !== null;
+export const shape = (text) => choiceOf(text) !== null;
 
 // the code a snippet shows, without its line numbers and with whitespace collapsed
 const bare = (text) => String(text).split('\n').map((l) => l.replace(/^\d+:\s?/, '')).join('\n').replace(/\s+/g, ' ');
-// A quote counts when it is at least 6 characters (once its own line number and spaces are dropped) and appears in the code that was shown.
+// A quote counts when it is at least 6 characters (once its own line number and spaces are dropped) and appears in what the skeptic was shown.
 export function grounded(quote, codeText) {
   const q = String(quote ?? '').replace(/^\s*\d+:\s?/, '').replace(/\s+/g, ' ').trim();
   return q.length >= 6 && bare(codeText).includes(q);
 }
-// What the vote is: a verdict whose quote is not in the code was not read from it, and counts as unsure.
-export const voteOf = (text, codeText) => { const v = verdictOf(text); if (!v) return null; return { ...v, ok: grounded(v.quote, codeText), vote: v.verdict !== 'unsure' && grounded(v.quote, codeText) ? v.verdict : 'unsure' }; };
+// What the vote is, given the side the proposed text was shown on: the proposed text chosen is REAL; the other chosen, or "same" (the change does nothing), is FALSE;
+// "unsure" is unsure; and a choice whose quote is not in what was shown was not read from it, and counts as unsure.
+export function voteOf(text, shown, proposed) {
+  const v = choiceOf(text); if (!v) return null;
+  const ok = grounded(v.quote, shown), raw = v.choice === 'unsure' ? 'unsure' : v.choice === proposed ? 'real' : 'false';
+  return { ...v, ok, vote: raw !== 'unsure' && ok ? raw : 'unsure' };
+}
 
 // A claim built from a planted bug, for measuring skeptics. TRUE: the code shown has the bug and the claim proposes the original line back. FALSE: the code
 // shown is the original and the claim proposes the bug. The reason is the same kind of sentence a scout would write.

@@ -106,13 +106,13 @@ const fid = readRows(P.inbox)[0].id;
 {
   check('the machine that proposed it is not asked to check it', await (async () => { for (let i = 0; i < 6; i++) { const j = await ask('A'); if (!j) continue; const h = last(); if (h.feed === 'check') return false; await reply('A', j, JSON.stringify({ findings: [] })); } return true; })());
   const jb = await ask('B'); const hb = last();
-  check('another machine is given a skeptic job for it, which it sees as a scan', jb && jb.kind === 'scan' && hb.feed === 'check' && hb.job.meta.fid === fid && /SKEPTIC/.test(jb.messages[0].content) && jb.messages[1].content.includes('Claim (line 2)') && jb.messages[1].content.includes('- if (a >= b) return 1;') && jb.messages[1].content.includes('+ if (a > b) return 1;'));
+  check('another machine is given a skeptic job for it, which it sees as a scan', jb && jb.kind === 'scan' && hb.feed === 'check' && hb.job.meta.fid === fid && /JUDGE/.test(jb.messages[0].content) && jb.messages[1].content.includes('Version A:') && jb.messages[1].content.includes('if (a >= b) return 1;') && jb.messages[1].content.includes('if (a > b) return 1;') && !jb.messages[1].content.includes('boundary is off by one'));
   const bad = await reply('B', jb, 'Looks right to me!');
   check('a reply that is not a verdict earns nothing and records no vote', bad.points === 0 && readRows(P.checks).length === 0);
   const jb2 = await ask('B'); const hb2 = last();
   check('the machine is asked again, having not voted', hb2.feed === 'check' && hb2.job.meta.fid === fid);
   const quote = 'if (a >= b) return 1;';
-  const ok = await reply('B', jb2, JSON.stringify({ verdict: 'real', line: 2, quote, why: 'the boundary value is rejected' }));
+  const ok = await reply('B', jb2, JSON.stringify({ choice: hb2.job.meta.side, line: 2, quote, why: 'the boundary value is rejected' }));
   check('a verdict is paid at the check rate and recorded with the machine, its size and model', ok.points === 2 && (() => { const v = readRows(P.checks); return v.length === 1 && v[0].id === fid && v[0].tier === 'big' && v[0].model === 'qwen3.5-35b' && v[0].vote === 'real' && v[0].grounded; })());
   check('one real vote from a big machine is not yet a confirmation', checkFeed.decision(fid).state === 'confirmed' ? false : checkFeed.decision(fid).state === 'pending' || checkFeed.decision(fid).yes === 1.5);
   const again = await ask('B'); const ha = again && last();
@@ -120,7 +120,7 @@ const fid = readRows(P.inbox)[0].id;
   if (again) await reply('B', again, JSON.stringify({ findings: [] }));
   const jc = await ask('C'); const hc = last();
   check('a second machine, a different model, is asked next', hc.feed === 'check' && hc.job.meta.fid === fid && hc.ctx.model === 'gemma-3-4b');
-  await reply('C', jc, JSON.stringify({ verdict: 'real', line: 2, quote: 'if (a >= b) return 1;', why: 'agree' }));
+  await reply('C', jc, JSON.stringify({ choice: hc.job.meta.side, line: 2, quote: 'if (a >= b) return 1;', why: 'agree' }));
   const dec = checkFeed.decision(fid);
   check('a big and a small machine saying real confirm it (1.5 + 1 against a quorum of 2)', dec.state === 'confirmed' && dec.yes === 2.5 && dec.no === 0 && dec.counts.real === 2);
   const n0 = handed.length; const jd = await L.lease({ miner: '0x' + 'd4'.repeat(20), ip: '4.4.4.4', hw: small, model: 'qwen3.5-4b', kinds: ['scan'] });
@@ -132,13 +132,14 @@ const fid = readRows(P.inbox)[0].id;
 {
   const exFeed = makeCheckFeed({ source: scan.source, sample: scan.sample, inbox: P.inbox, checks: P.checks, exam: P.exam, examEvery: 1, rand: mulberry(3) });
   const L2 = makeLeases({ check: exFeed, scanPerHour: 1000, waitMs: 30, points: { answer: 1, canary: 1, scan: 1, check: 1 }, clientMaxPerDay: 1000 });
-  const jobs = [];
+  const made = []; const exSpy = { ...exFeed, next: async (ctx) => { const j = await exFeed.next(ctx); if (j) made.push(j); return j; } };
+  const L2b = makeLeases({ check: exSpy, scanPerHour: 1000, waitMs: 30, points: { answer: 1, canary: 1, scan: 1, check: 1 }, clientMaxPerDay: 1000 });
   for (let i = 0; i < 6; i++) {
-    const j = await L2.lease({ ...M.B, kinds: ['scan'] }); if (!j) continue;
-    const code = j.messages[1].content.split('\n\nCode:\n')[1]; const line = code.split('\n').map((l) => l.replace(/^\d+:\s?/, '')).find((l) => l.trim().length > 12);
-    const claimNew = (j.messages[1].content.match(/\n\+ (.+)/) || [])[1];
-    jobs.push({ claimNew, code });
-    await L2.submit({ id: j.id, lease: j.lease, miner: B, ip: M.B.ip, text: JSON.stringify({ verdict: code.includes(claimNew) ? 'false' : 'real', line: 1, quote: line.trim(), why: 'x' }) });
+    const j = await L2b.lease({ ...M.B, kinds: ['scan'] }); if (!j) continue;
+    const m = made[made.length - 1].meta, other = m.side === 'A' ? 'B' : 'A';
+    const line = m.codeText.split('\n').map((l) => l.replace(/^\d+:\s?/, '')).find((l) => l.trim().length > 12);
+    // a judge that reads: the proposed version when the claim was true, the other when it was not, whichever letter each was shown as
+    await L2b.submit({ id: j.id, lease: j.lease, miner: B, ip: M.B.ip, text: JSON.stringify({ choice: m.exam.truth ? m.side : other, line: 1, quote: line.trim(), why: 'x' }) });
   }
   const invalid = readRows(P.exam).filter((r) => r.role === 'skeptic' && r.outcome === 'invalid');
   check('the skeptic reply that was not a verdict was kept as invalid, with the start of what it said', invalid.length === 1 && invalid[0].exam === false && invalid[0].sample === 'Looks right to me!' && invalid[0].tier === 'big' && invalid[0].model === 'qwen3.5-35b' && invalid[0].miner === B);
@@ -147,7 +148,7 @@ const fid = readRows(P.inbox)[0].id;
   const sum = exFeed.summary();
   check('the summary counts them by lens and by tier, and the invalid reply apart from them', sum.exam.skeptic.n === rows.length && sum.exam.skeptic.byTier.big.n === rows.length && sum.exam.skeptic.invalid === 1);
   check('both a true and a false claim were made', rows.some((r) => r.truth === true) && rows.some((r) => r.truth === false));
-  check('a skeptic that reads the code (says real when the claim is true, false when it is not) is right on both', rows.filter((r) => r.outcome === 'right').length >= rows.length - 2);
+  check('a judge that reads the code is right on true claims and on false ones, whatever the order', rows.length >= 4 && rows.every((r) => r.outcome === 'right') && sum.exam.skeptic.byTruth.true.right >= 1 && sum.exam.skeptic.byTruth.false.right >= 1);
 }
 
 // --- the digest carries only what the skeptics confirmed
@@ -156,7 +157,7 @@ const fid = readRows(P.inbox)[0].id;
   const poster = makeDigestPoster({ api: 'https://x', secret: 's', inbox: P.inbox, results: P.results, stateFile: path.join(d, 'digest.json'), hourUtc: 0, decide: (r) => checkFeed.decision(r.id), now: () => Date.parse('2026-11-13T08:00:00Z'),
     fetchImpl: async (u, i) => { posts.push(JSON.parse(i.body)); return { ok: true, status: 200, text: async () => '{}' }; } });
   const r = await poster.tick();
-  check('the digest holds the one confirmed finding, credited to its scout, and says how the skeptics voted', r.posted === 1 && posts[0].findings.length === 1 && posts[0].findings[0].by === '0xa1a1…a1a1' && /^boundaries and thresholds, lines \d+-\d+ · 2 of 2 checkers say real$/.test(posts[0].findings[0].subject) && posts[0].findings[0].line === 2 && posts[0].reviewed >= 1);
+  check('the digest holds the one confirmed finding, credited to its scout, and says how the skeptics voted', r.posted === 1 && posts[0].findings.length === 1 && posts[0].findings[0].by === '0xa1a1…a1a1' && /^boundaries and thresholds, lines \d+-\d+ · 2 of 2 checkers agree$/.test(posts[0].findings[0].subject) && posts[0].findings[0].line === 2 && posts[0].reviewed >= 1);
 }
 rmSync(d, { recursive: true, force: true });
 console.log(fails ? `${fails} swarm test(s) failed` : 'swarm: all tests passed'); process.exit(fails ? 1 : 0);

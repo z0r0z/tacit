@@ -1,5 +1,5 @@
 // node roles.test.mjs -- the scout and skeptic prompts, what counts as a grounded verdict, and the claims built from planted bugs
-import { scoutSystem, scoutMessages, skepticMessages, SKEPTIC_SYSTEM, verdictOf, shape, grounded, voteOf, examClaim, findingId, fits } from './codecheck/roles.mjs';
+import { scoutSystem, scoutMessages, skepticMessages, proposedSide, SKEPTIC_SYSTEM, choiceOf, shape, grounded, voteOf, examClaim, findingId, fits } from './codecheck/roles.mjs';
 import { LENSES, PRIMER } from './codecheck/lenses.mjs';
 let fails = 0; const check = (n, c) => { console.log((c ? 'ok   ' : 'FAIL ') + n); if (!c) fails++; };
 
@@ -12,45 +12,53 @@ check('an unknown lens is refused', (() => { try { scoutSystem('nope'); return f
   check('a scout job is a system and a user message naming the file and the lines', m.length === 2 && m[0].role === 'system' && m[1].role === 'user' && m[1].content === 'File: dapp/a.js\nLines 10-20\n\n10: x' && JSON.stringify(m).length < 24000);
 }
 
-// --- skeptic
+// --- skeptic: a blind choice between two versions, in an order the gateway chose
 const CODE = '10: function f(a, b) {\n11:   if (a >= b) return 1;\n12:   return 0;\n13: }';
 {
-  const m = skepticMessages({ file: 'dapp/a.js', line: 11, why: 'off by one', old: 'if (a >= b)', new: 'if (a > b)' }, CODE);
-  check('a skeptic job holds the claim, the change and the numbered code', m[0].content === SKEPTIC_SYSTEM && m[1].content.includes('Claim (line 11): off by one') && m[1].content.includes('- if (a >= b)') && m[1].content.includes('+ if (a > b)') && m[1].content.endsWith(CODE));
-  check('the skeptic is told to try to refute, and what the three verdicts mean', /REFUTE/.test(SKEPTIC_SYSTEM) && /"real"/.test(SKEPTIC_SYSTEM) && /"false"/.test(SKEPTIC_SYSTEM) && /"unsure"/.test(SKEPTIC_SYSTEM) && SKEPTIC_SYSTEM.includes(PRIMER));
+  const f = { file: 'dapp/a.js', line: 11, why: 'off by one', old: 'if (a >= b)', new: 'if (a > b)' };
+  const m = skepticMessages(f, CODE), n = skepticMessages(f, CODE, true);
+  check('a skeptic job is the two versions and the code around them, the code as it stands as the first when not flipped', m[0].content === SKEPTIC_SYSTEM && m[1].content === `File: dapp/a.js\nLines around 11\n\nVersion A:\nif (a >= b)\n\nVersion B:\nif (a > b)\n\nSurrounding code:\n${CODE}`);
+  check('flipped, the proposed text is A and the code as it stands is B', n[1].content.includes('Version A:\nif (a > b)\n\nVersion B:\nif (a >= b)'));
+  check('the proposed text is B when not flipped and A when flipped', proposedSide(false) === 'B' && proposedSide(true) === 'A');
+  check('the skeptic is NOT told what the reviewer thought: no claim, no reason, no word of a bug found', !m[1].content.includes('off by one') && !/Claim|reviewer/i.test(m[1].content) && !/REFUTE|refute|skeptic/i.test(SKEPTIC_SYSTEM));
+  check('the choices are A, B, same and unsure, with the primer and the answer shape', ['"A"', '"B"', '"same"', '"unsure"'].every((c) => SKEPTIC_SYSTEM.includes(c)) && SKEPTIC_SYSTEM.includes(PRIMER) && SKEPTIC_SYSTEM.includes('"choice":"A|B|same|unsure"'));
   const multi = skepticMessages({ file: 'f', line: 1, why: 'w', old: 'a\nb', new: 'c\nd' }, CODE)[1].content;
-  check('a change over several lines is shown line by line', multi.includes('- a\n- b') && multi.includes('+ c\n+ d'));
-  check('a claim with no line number still reads', skepticMessages({ file: 'f', line: null, why: 'w', old: 'a', new: 'b' }, CODE)[1].content.includes('(line ?)'));
+  check('a change over several lines is shown as it is', multi.includes('Version A:\na\nb\n\nVersion B:\nc\nd'));
+  check('a finding with no line number still reads', skepticMessages({ file: 'f', line: null, why: 'w', old: 'a', new: 'b' }, CODE)[1].content.includes('Lines around ?'));
 }
 
-// --- verdicts
-check('a verdict is read from the JSON, among any prose around it', verdictOf('Sure.\n{"verdict":"false","line":11,"quote":"if (a >= b) return 1;","why":"fine"}\nDone')?.verdict === 'false');
-check('a verdict word in capitals is a verdict', verdictOf('{"verdict":"REAL","line":3,"quote":"const a = 1;","why":"x"}')?.verdict === 'real' && verdictOf('{"verdict":"False"}')?.verdict === 'false');
+// --- choices
+check('a choice is read from the JSON, among any prose around it', choiceOf('Sure.\n{"choice":"B","line":11,"quote":"if (a >= b) return 1;","why":"fine"}\nDone')?.choice === 'B');
+check('a, b, "Version A", "SAME" and "unsure" are read as the letters or words they mean', ['a', 'A', 'Version A', 'version a', ' A '].every((v) => choiceOf(JSON.stringify({ choice: v }))?.choice === 'A') && choiceOf('{"choice":"b"}')?.choice === 'B' && choiceOf('{"choice":"SAME"}')?.choice === 'same' && choiceOf('{"choice":"Unsure"}')?.choice === 'unsure');
+check('anything that is not a choice is not one', [null, '', 'hello', '{"choice":"C"}', '{"choice":"AB"}', '{"choice":1}', '{"choice":""}', '{"verdict":"real"}', '{"findings":[]}', '{bad json}', '[]'].every((t) => choiceOf(t) === null && !shape(t)));
+check('the line is a number or nothing, and the text is cleaned and cut', (() => { const v = choiceOf(JSON.stringify({ choice: 'A', line: '11', quote: 'x\u001b[2J' + 'q'.repeat(500), why: 'w\u202e' + 'y'.repeat(500) })); return v.line === null && !/[\u001b\u202e]/.test(v.quote + v.why) && v.quote.length === 300 && v.why.length === 300; })());
 {
   // a small model leaves the quotes inside a quoted line of code unescaped, which is not JSON
-  const v = verdictOf('{"verdict":"real","line":11,"quote":"const a = "x";","why":"the string is wrong"}');
-  check('a reply whose quoted code has unescaped double quotes is still read: verdict, line, quote and why', v && v.verdict === 'real' && v.line === 11 && v.quote === 'const a = "x";' && v.why === 'the string is wrong');
-  check('with a code fence and prose around it', verdictOf('Here is my answer:\n```json\n{"verdict": "false", "line": 4, "quote": "if (a >= b) return "yes";", "why": "fine"}\n```')?.quote === 'if (a >= b) return "yes";');
-  check('a loosely read reply is checked like any other: its quote must be in the code', voteOf('{"verdict":"real","line":2,"quote":"let s = "q";","why":"w"}', '2: let s = "q";').vote === 'real' && voteOf('{"verdict":"real","line":2,"quote":"let t = "q";","why":"w"}', '2: let s = "q";').vote === 'unsure');
-  check('a reply that mixes escaped and unescaped quotes is read, the escaped ones coming out as quotes', verdictOf('{"verdict":"real","line":1,"quote":"x = \\"a\\"; y = "b";","why":"w"}')?.quote === 'x = "a"; y = "b";');
-  check('escaped quotes in valid JSON still come out as quotes', verdictOf('{"verdict":"real","quote":"x = \\"a\\";","why":"w"}')?.quote === 'x = "a";');
-  check('a reply with no verdict word is still not a verdict, loose or not', verdictOf('"quote": "x", "why": "y"') === null && verdictOf('verdict: real') === null && verdictOf('{"verdict":"maybe","quote":"x"}') === null);
+  const v = choiceOf('{"choice":"A","line":11,"quote":"const a = "x";","why":"the string is wrong"}');
+  check('a reply whose quoted code has unescaped double quotes is still read: choice, line, quote and why', v && v.choice === 'A' && v.line === 11 && v.quote === 'const a = "x";' && v.why === 'the string is wrong');
+  check('with a code fence and prose around it', choiceOf('Here is my answer:\n```json\n{"choice": "B", "line": 4, "quote": "if (a >= b) return "yes";", "why": "fine"}\n```')?.quote === 'if (a >= b) return "yes";');
+  check('a reply that mixes escaped and unescaped quotes is read, the escaped ones coming out as quotes', choiceOf('{"choice":"A","line":1,"quote":"x = \\"a\\"; y = "b";","why":"w"}')?.quote === 'x = "a"; y = "b";');
+  check('escaped quotes in valid JSON still come out as quotes', choiceOf('{"choice":"A","quote":"x = \\"a\\";","why":"w"}')?.quote === 'x = "a";');
+  check('a reply with no choice word is still not a choice, loose or not', choiceOf('"quote": "x", "why": "y"') === null && choiceOf('choice: A') === null && choiceOf('{"choice":"maybe","quote":"x"}') === null);
 }
-check('anything that is not a verdict is not one', [null, '', 'hello', '{"verdict":"maybe"}', '{"verdict":1}', '{"findings":[]}', '{bad json}', '[]'].every((t) => verdictOf(t) === null && !shape(t)));
-check('the line is a number or nothing, and the text is cleaned and cut', (() => { const v = verdictOf(JSON.stringify({ verdict: 'real', line: '11', quote: 'x\u001b[2J' + 'q'.repeat(500), why: 'w‮' + 'y'.repeat(500) })); return v.line === null && !/[\u001b‮]/.test(v.quote + v.why) && v.quote.length === 300 && v.why.length === 300; })());
 
 // --- grounding
 check('a quote that is in the code is grounded, line number or not', grounded('if (a >= b) return 1;', CODE) && grounded('11:   if (a >= b) return 1;', CODE) && grounded('if  (a >=  b)   return 1;', CODE));
 check('a quote that is not in the code is not grounded', !grounded('if (a > b) return 1;', CODE) && !grounded('const total = 5;', CODE));
 check('a quote that is too short to mean anything is not grounded', !grounded('a', CODE) && !grounded('if (', CODE) && !grounded('', CODE) && !grounded(null, CODE));
 check('a line number alone is not a quote, and one in front of a real fragment is dropped', !grounded('10: ', CODE) && !grounded('11:', CODE) && grounded('10: function f(a, b)', CODE));
+
+// --- the vote: which side the proposed text was on decides what a choice means
 {
-  const reply = (v, q) => JSON.stringify({ verdict: v, line: 11, quote: q, why: 'w' });
-  check('a real verdict with a quote from the code is a real vote', voteOf(reply('real', 'if (a >= b) return 1;'), CODE).vote === 'real');
-  check('a false verdict with a quote from the code is a false vote', voteOf(reply('false', 'return 0;'), CODE).vote === 'false');
-  check('a verdict whose quote is not in the code counts as unsure, either way', voteOf(reply('real', 'made up text here'), CODE).vote === 'unsure' && voteOf(reply('false', 'made up text here'), CODE).vote === 'unsure');
-  check('unsure stays unsure', voteOf(reply('unsure', 'return 0;'), CODE).vote === 'unsure');
-  check('a reply that is not a verdict is no vote at all', voteOf('nope', CODE) === null);
+  const reply = (c, q = 'if (a >= b) return 1;') => JSON.stringify({ choice: c, line: 11, quote: q, why: 'w' });
+  check('choosing the proposed text is a real vote, on whichever side it was shown', voteOf(reply('B'), CODE, 'B').vote === 'real' && voteOf(reply('A'), CODE, 'A').vote === 'real');
+  check('choosing the other one is a false vote', voteOf(reply('A'), CODE, 'B').vote === 'false' && voteOf(reply('B'), CODE, 'A').vote === 'false');
+  check('"same" is a false vote: a change that does nothing is not a finding', voteOf(reply('same'), CODE, 'B').vote === 'false' && voteOf(reply('same'), CODE, 'A').vote === 'false');
+  check('unsure stays unsure', voteOf(reply('unsure'), CODE, 'B').vote === 'unsure');
+  check('a choice whose quote is not in what was shown counts as unsure, whichever it is', voteOf(reply('B', 'made up text here'), CODE, 'B').vote === 'unsure' && voteOf(reply('A', 'made up text here'), CODE, 'B').vote === 'unsure' && voteOf(reply('same', 'made up text here'), CODE, 'B').vote === 'unsure');
+  check('the vote says whether the quote was grounded and what the choice was', (() => { const v = voteOf(reply('A'), CODE, 'B'); return v.ok === true && v.choice === 'A' && v.line === 11; })());
+  check('a quote may be taken from the two versions as well as the code, when what was shown includes them', voteOf(reply('A', 'if (a > b) return 1;'), CODE + '\nif (a > b) return 1;', 'B').vote === 'false');
+  check('a reply that is not a choice is no vote at all', voteOf('nope', CODE, 'B') === null);
 }
 
 // --- what a node will take

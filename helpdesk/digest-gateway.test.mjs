@@ -22,7 +22,7 @@ function boot(name, env, { votes = [] } = {}) {
   const data = path.join(root, name); mkdirSync(data, { recursive: true });
   writeFileSync(path.join(data, 'suggestions.jsonl'), JSON.stringify({ t: Date.now() - 1000, id: ID, miner: MINER, file: 'dapp/a.js', commit: 'abcdef0123', window: '1-1', line: 1, why: 'the constant should be 2', old: 'const a = 1;', new: 'const a = 2;', status: 'syntax-ok', review: 'new' }) + '\n');
   writeFileSync(path.join(data, 'scan-results.jsonl'), JSON.stringify({ t: Date.now() - 2000, miner: MINER, n: 1 }) + '\n');
-  if (votes.length) writeFileSync(path.join(data, 'scan-checks.jsonl'), votes.map((v) => JSON.stringify({ t: Date.now() - 500, id: ID, miner: '0x' + 'b'.repeat(40), tier: 'small', verdict: 'real', vote: 'real', grounded: true, ...v })).join('\n') + '\n');
+  if (votes.length) writeFileSync(path.join(data, 'scan-checks.jsonl'), votes.map((v) => JSON.stringify({ t: Date.now() - 500, id: ID, miner: '0x' + 'b'.repeat(40), tier: 'small', choice: 'B', vote: 'real', grounded: true, ...v })).join('\n') + '\n');
   const gw = spawn('node', ['server.mjs', 'serve'], { cwd: here, stdio: 'ignore', env: { ...process.env, EMB: 'off', LLM_URLS: '', DATA_DIR: data, PORT: env.PORT, SCAN_REPO: repo, SCAN_REF: 'main', NUDGER_API: 'http://127.0.0.1:8795', NUDGER_HOUR_UTC: '0', NUDGER_TICK_MS: '300', ...env } });
   return { data, port: env.PORT, stop: () => gw.kill('SIGTERM') };
 }
@@ -42,7 +42,7 @@ const stats = async (g) => { for (let i = 0; i < 20; i++) { try { return await (
 posts.length = 0;
 {
   const g = boot('confirmed', { PORT: '8797', NUDGER_SECRET: 's3cret' }, { votes: [{ node: 'n1' }, { node: 'n2' }] }); await waitPost();
-  check('with the swarm on, a finding two skeptics confirmed is posted, with how they voted', posts.length === 1 && posts[0].body.findings.length === 1 && posts[0].body.findings[0].subject === 'window 1-1 · 2 of 2 checkers say real');
+  check('with the swarm on, a finding two skeptics confirmed is posted, with how they voted', posts.length === 1 && posts[0].body.findings.length === 1 && posts[0].body.findings[0].subject === 'window 1-1 · 2 of 2 checkers agree');
   const st = await stats(g);
   check('/stats shows the findings by state and the exam results', st.swarm && st.swarm.findings.confirmed === 1 && st.swarm.findings.pending === 0 && st.swarm.exam.scout.n === 0 && st.swarm.exam.skeptic.n === 0);
   g.stop();

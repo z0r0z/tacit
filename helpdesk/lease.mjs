@@ -5,6 +5,7 @@
 import { randomBytes, createHash } from 'node:crypto';
 import { appendFileSync, existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { shape as verdictShape } from './codecheck/roles.mjs';
+import { looseFindings } from './codecheck/scan.mjs';
 export const isAddr = (a) => typeof a === 'string' && /^0x[0-9a-fA-F]{40}$/.test(a);
 const hash = (s) => createHash('sha256').update(String(s)).digest('hex').slice(0, 16);
 export const ipKey = hash;   // the client key: a hash of the IP, what strikes, bans and caps hang on
@@ -161,7 +162,7 @@ export function makeLeases(opts = {}) {
 }
 
 // Whether a scan reply has the shape asked for: an object holding a `findings` list (found as the scan feed finds it, among any prose around it).
-const reviewed = (t) => { try { const m = String(t).match(/\{[\s\S]*\}/); return !!m && Array.isArray(JSON.parse(m[0]).findings); } catch { return false; } };
+const reviewed = (t) => { try { const m = String(t).match(/\{[\s\S]*\}/); if (m && Array.isArray(JSON.parse(m[0]).findings)) return true; } catch { /* not JSON: read the fields one by one */ } return looseFindings(t).length > 0; };
 
 // What a visitor may be shown. A node can return anything, so an answer is checked against the documentation it was given:
 // an address or a link that is not in those docs is how a bad node would try to send someone's funds or visit to a look-alike.

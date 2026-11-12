@@ -10,8 +10,8 @@ import { readFileSync, appendFileSync, existsSync, statSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { snippet } from './codecheck/lenses.mjs';
 import { plant } from './codecheck/mutate.mjs';
-import { skepticMessages, voteOf, examClaim, findingId, fits } from './codecheck/roles.mjs';
-import { plain } from './codecheck/scan.mjs';
+import { skepticMessages, proposedSide, voteOf, examClaim, findingId, fits } from './codecheck/roles.mjs';
+import { sampleOf } from './codecheck/scan.mjs';
 
 const cached = new Map();   // file -> { sig, rows }: a file is read again only when it has changed
 export function readRows(file) {
@@ -75,8 +75,8 @@ export function makeCheckFeed({ source, sample, inbox, checks, exam, panel = 3, 
       let src; try { src = source(r.commit, r.file); } catch { continue; }
       const [ws, we] = String(r.window || '').split('-').map(Number), at = Number.isInteger(r.line) ? r.line : ws;
       const codeText = snippet(src, Math.min(at - context, ws || at), Math.max(at + context, we || at));
-      const messages = skepticMessages(r, codeText); if (!fits(messages)) continue;
-      return { id: randomBytes(8).toString('hex'), kind: 'check', max_tokens: 300, temperature: 0, meta: { check: true, fid: r.id, codeText }, messages };
+      const flip = rand() < 0.5, messages = skepticMessages(r, codeText, flip); if (!fits(messages)) continue;
+      return { id: randomBytes(8).toString('hex'), kind: 'check', max_tokens: 300, temperature: 0, meta: { check: true, fid: r.id, codeText, shown: `${codeText}\n${r.old}\n${r.new}`, side: proposedSide(flip) }, messages };
     }
     return null;
   }
@@ -86,8 +86,8 @@ export function makeCheckFeed({ source, sample, inbox, checks, exam, panel = 3, 
       const p = plant(src, { start: s.start, end: s.end, lens: s.lens, strict: true, rand }); if (!p) continue;
       const truth = rand() < 0.5, ex = examClaim({ ...p, file: s.file }, truth, src);
       const codeText = snippet(ex.code, p.line - context, p.line + context);
-      const messages = skepticMessages(ex.claim, codeText); if (!fits(messages)) continue;
-      return { id: randomBytes(8).toString('hex'), kind: 'check', max_tokens: 300, temperature: 0, meta: { check: true, exam: { truth, lens: s.lens, kind: p.kind }, codeText }, messages };
+      const flip = rand() < 0.5, messages = skepticMessages(ex.claim, codeText, flip); if (!fits(messages)) continue;
+      return { id: randomBytes(8).toString('hex'), kind: 'check', max_tokens: 300, temperature: 0, meta: { check: true, exam: { truth, lens: s.lens, kind: p.kind }, codeText, shown: `${codeText}\n${ex.claim.old}\n${ex.claim.new}`, side: proposedSide(flip) }, messages };
     }
     return null;
   }
@@ -98,17 +98,17 @@ export function makeCheckFeed({ source, sample, inbox, checks, exam, panel = 3, 
     return realJob(who);
   }
   async function onResult(job, text, miner, who = {}) {
-    const v = voteOf(text, job.meta.codeText); if (!v) return;
+    const v = voteOf(text, job.meta.shown, job.meta.side); if (!v) return;
     const base = { t: now(), miner, node: who.node, tier: who.tier, model: who.model };
     if (job.meta.exam) {
       const ex = job.meta.exam, outcome = v.vote === 'unsure' ? 'unsure' : (v.vote === 'real') === ex.truth ? 'right' : 'wrong';
-      append(exam, { ...base, role: 'skeptic', lens: ex.lens, kind: ex.kind, truth: ex.truth, outcome, grounded: v.ok }); return;
+      append(exam, { ...base, role: 'skeptic', lens: ex.lens, kind: ex.kind, truth: ex.truth, outcome, choice: v.choice, side: job.meta.side, grounded: v.ok }); return;
     }
-    append(checks, { ...base, id: job.meta.fid, verdict: v.verdict, vote: v.vote, grounded: v.ok });
+    append(checks, { ...base, id: job.meta.fid, choice: v.choice, side: job.meta.side, vote: v.vote, grounded: v.ok });
   }
   // a reply that was not a verdict: kept beside the exam results as invalid (not graded), with the start of what came back
   function onInvalid(job, text, miner, who = {}) {
-    const sample = plain(text).slice(0, 160);
+    const sample = sampleOf(text);
     append(exam, { t: now(), role: 'skeptic', lens: job.meta.exam?.lens, exam: !!job.meta.exam, miner, node: who.node, tier: who.tier, model: who.model, outcome: 'invalid', sample });
     say(`invalid skeptic reply (${who.tier || '?'}, ${who.model || '?'}): ${JSON.stringify(sample)}`);
   }
@@ -124,13 +124,14 @@ export function makeCheckFeed({ source, sample, inbox, checks, exam, panel = 3, 
 // The exam results as counts: scouts by outcome (restored, near, miss, and findings elsewhere), skeptics by outcome (right, wrong, unsure), each overall, by lens and by
 // tier. `invalid` counts replies that were not the JSON asked for, in any job (they are not graded, so they are not in n).
 export function examSummary(rows) {
-  const out = { scout: { n: 0, invalid: 0, restored: 0, near: 0, miss: 0, fp: 0, byLens: {}, byTier: {}, byKind: {} }, skeptic: { n: 0, invalid: 0, right: 0, wrong: 0, unsure: 0, byLens: {}, byTier: {}, byKind: {}, byTruth: {} } };
+  const out = { scout: { n: 0, invalid: 0, restored: 0, near: 0, miss: 0, fp: 0, byLens: {}, byTier: {}, byKind: {} }, skeptic: { n: 0, invalid: 0, right: 0, wrong: 0, unsure: 0, byLens: {}, byTier: {}, byKind: {}, byTruth: {}, choices: {} } };
   const bump = (bucket, key, field) => { const b = bucket[key] ||= { n: 0 }; if (field !== 'invalid') b.n++; b[field] = (b[field] || 0) + 1; };
   for (const r of rows) {
     const role = out[r.role]; if (!role) continue;
     if (r.outcome === 'invalid') { role.invalid++; bump(role.byLens, r.lens || '?', 'invalid'); bump(role.byTier, r.tier || 'unknown', 'invalid'); continue; }
     role.n++; role[r.outcome] = (role[r.outcome] || 0) + 1; if (r.role === 'scout') role.fp += r.fp || 0;
     bump(role.byLens, r.lens || '?', r.outcome); bump(role.byTier, r.tier || 'unknown', r.outcome); bump(role.byKind, r.kind || '?', r.outcome);
+    if (r.role === 'skeptic' && r.choice) role.choices[r.choice] = (role.choices[r.choice] || 0) + 1;   // which letter it picked: always A or always B is a machine that does not read
     if (r.role === 'skeptic' && typeof r.truth === 'boolean') bump(role.byTruth, String(r.truth), r.outcome);   // right on true claims and on false ones: a machine that says yes to everything shows here
   }
   return out;

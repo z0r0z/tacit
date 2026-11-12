@@ -11,9 +11,11 @@ const F = { inbox: path.join(dir, 'inbox.jsonl'), checks: path.join(dir, 'checks
 const put = (file, rows) => writeFileSync(file, rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
 const SRC = ['// header', 'function f(a, b) {', '  if (a >= b) return 1;', '  const t = a + b;', '  return t > 10 ? 2 : 0;', '}'].join('\n');
 const find = (o = {}) => { const base = { t: 1000, id: 'f1', miner: '0xaa', node: 'nodeP', tier: 'small', model: 'm1', file: 'dapp/a.js', commit: 'abc', window: '1-6', line: 3, why: 'boundary is off by one', old: 'if (a >= b)', new: 'if (a > b)', status: 'syntax-ok', review: 'new' }; return { ...base, ...o }; };
-const vote = (id, node, v, o = {}) => ({ t: 1, id, node, miner: '0x' + node, tier: 'small', model: 'm1', verdict: v, vote: v, grounded: true, ...o });
+const vote = (id, node, v, o = {}) => ({ t: 1, id, node, miner: '0x' + node, tier: 'small', model: 'm1', choice: v === 'real' ? 'B' : v === 'false' ? 'A' : 'unsure', side: 'B', vote: v, grounded: true, ...o });
 const examRow = (node, outcome, o = {}) => ({ t: 1, role: 'skeptic', node, tier: 'small', outcome, lens: 'bounds', ...o });
 const rep = (n, outcome, node) => Array.from({ length: n }, () => examRow(node, outcome));
+// the two versions a skeptic job shows, by letter
+const versions = (j) => { const m = j.messages[1].content.match(/Version A:\n([\s\S]*?)\n\nVersion B:\n([\s\S]*?)\n\nSurrounding code:/); return m ? { A: m[1], B: m[2] } : null; };
 const mkFeed = (o = {}) => makeCheckFeed({ source: () => SRC, sample: () => ({ file: 'dapp/a.js', commit: 'abc', start: 1, end: 6, lens: 'bounds' }), ...F, rand: () => 0.99, ...o });
 
 // --- skill and weight
@@ -51,7 +53,10 @@ const mkFeed = (o = {}) => makeCheckFeed({ source: () => SRC, sample: () => ({ f
   const feed = mkFeed();
   const j = await feed.next({ node: 'nodeQ', tier: 'small', model: 'm2' });
   check('a filed finding becomes a skeptic job for another machine', j && j.kind === 'check' && j.meta.check === true && j.meta.fid === 'f1' && j.max_tokens === 300 && j.temperature === 0 && !j.meta.exam);
-  check('the job holds the claim, the change and the numbered code around the line', j.messages[1].content.includes('Claim (line 3): boundary is off by one') && j.messages[1].content.includes('- if (a >= b)') && j.messages[1].content.includes('+ if (a > b)') && j.messages[1].content.includes('3:   if (a >= b) return 1;') && j.meta.codeText.includes('3:   if (a >= b) return 1;'));
+  const vs = versions(j);
+  check('the job holds the two versions, the proposed one on the side the job says, and the numbered code around the line, and not what the scout thought', vs.A === 'if (a >= b)' && vs.B === 'if (a > b)' && j.meta.side === 'B' && j.messages[1].content.includes('3:   if (a >= b) return 1;') && j.meta.codeText.includes('3:   if (a >= b) return 1;') && !j.messages[1].content.includes('boundary is off by one') && j.meta.shown.includes('if (a > b)') && j.meta.shown.includes('3:   if (a >= b) return 1;'));
+  const flipped = await mkFeed({ rand: () => 0, examEvery: 0 }).next({ node: 'nodeQ', tier: 'small', model: 'm2' });
+  check('the order is chosen by the gateway: with a low draw the proposed version is A', flipped.meta.side === 'A' && versions(flipped).A === 'if (a > b)' && versions(flipped).B === 'if (a >= b)');
   check('the proposer is never asked to check its own finding', (await feed.next({ node: 'nodeP', tier: 'small', model: 'm1' })) === null);
   put(F.checks, [vote('f1', 'nodeQ', 'unsure')]);
   check('a machine that has voted is not asked again', (await feed.next({ node: 'nodeQ', tier: 'small' })) === null && (await feed.next({ node: 'nodeR', tier: 'small' })) !== null);
@@ -96,11 +101,11 @@ const mkFeed = (o = {}) => makeCheckFeed({ source: () => SRC, sample: () => ({ f
   const mk = (r) => mkFeed({ rand: r, examEvery: 1 });
   const t = await mk(() => 0).next({ node: 'n' });   // rand 0: exam, claim true
   check('with examEvery 1 every ask is an exam, and it looks like any other skeptic job', t && t.kind === 'check' && t.meta.exam && t.meta.check === true && t.max_tokens === 300 && t.messages.length === 2 && t.messages[0].role === 'system');
-  check('a true claim shows the code with the planted bug and proposes the original line', t.meta.exam.truth === true && /Claim \(line 3\):/.test(t.messages[1].content) && t.meta.codeText.includes('3:   if (a > b) return 1;') && t.messages[1].content.includes('+ if (a >= b) return 1;'));
+  check('a true claim shows the code with the planted bug and offers the original line as the proposed version', t.meta.exam.truth === true && /Lines around 3/.test(t.messages[1].content) && t.meta.codeText.includes('3:   if (a > b) return 1;') && versions(t)[t.meta.side] === 'if (a >= b) return 1;' && versions(t)[t.meta.side === 'A' ? 'B' : 'A'] === 'if (a > b) return 1;');
   let seq = [0.99, 0.99, 0.99, 0.99, 0.99, 0.99, 0.99, 0.99]; let k = 0;
   const f = await mkFeed({ rand: () => (k++ === 0 ? 0 : 0.99), examEvery: 1 }).next({ node: 'n' });
   const g = await makeCheckFeed({ source: () => SRC, sample: () => ({ file: 'dapp/a.js', commit: 'abc', start: 1, end: 6, lens: 'bounds' }), ...F, examEvery: 1, rand: (() => { const v = [0.5, 0, 0.9, 0.9, 0.9]; let i = 0; return () => v[i++ % v.length]; })() }).next({ node: 'n' });
-  check('a false claim shows the original code and proposes the bug as the fix', [f, g].some((j) => j && j.meta.exam && j.meta.exam.truth === false && j.meta.codeText.includes('3:   if (a >= b) return 1;') && !/\n\+ if \(a >= b\)/.test(j.messages[1].content)));
+  check('a false claim shows the original code and proposes the bug as the fix', [f, g].some((j) => j && j.meta.exam && j.meta.exam.truth === false && j.meta.codeText.includes('3:   if (a >= b) return 1;') && versions(j)[j.meta.side] === 'if (a > b) return 1;'));
   check('exam jobs carry which lens and kind they were planted as', t.meta.exam.lens === 'bounds' && typeof t.meta.exam.kind === 'string');
   const none = makeCheckFeed({ source: () => SRC, sample: () => null, ...F, examEvery: 1, rand: () => 0 });
   check('with nothing to plant in, an exam falls back to real work or nothing', (await none.next({ node: 'n' })) === null);
@@ -111,21 +116,46 @@ const mkFeed = (o = {}) => makeCheckFeed({ source: () => SRC, sample: () => ({ f
   check('most asks are real work when there is some', real && !real.meta.exam && real.meta.fid === 'real1');
 }
 
+// --- the order is shuffled, so a constant answer is at chance and a reader is not
+{
+  const mulberry = (a) => () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  writeFileSync(F.inbox, ''); writeFileSync(F.checks, '');
+  const quoteOf = (j) => j.meta.codeText.split('\n').map((l) => l.replace(/^\d+:\s?/, '').trim()).find((l) => l.length >= 8);
+  const run = async (name, choose, n = 80) => {
+    writeFileSync(F.exam, ''); const feed = mkFeed({ rand: mulberry(42), examEvery: 1 }); const sides = { A: 0, B: 0 };
+    for (let i = 0; i < n; i++) { const j = await feed.next({ node: name, tier: 'small' }); if (!j) continue; sides[j.meta.side]++; await feed.onResult(j, JSON.stringify({ choice: choose(j), line: 3, quote: quoteOf(j), why: 'x' }), '0x' + name, { node: name, tier: 'small' }); }
+    const rows = readRows(F.exam), right = rows.filter((r) => r.outcome === 'right').length;
+    return { rows, acc: right / rows.length, skill: skillTable(rows).get(name), sides, truths: rows.filter((r) => r.truth).length };
+  };
+  const other = (s) => (s === 'A' ? 'B' : 'A');
+  const reader = await run('reader', (j) => (j.meta.exam.truth ? j.meta.side : other(j.meta.side)));
+  const alwaysA = await run('alwaysA', () => 'A'), alwaysB = await run('alwaysB', () => 'B'), alwaysProposed = await run('yes', (j) => j.meta.side), neverProposed = await run('no', (j) => other(j.meta.side)), same = await run('same', () => 'same');
+  check('the proposed version is shown as A about half the time, and the claims are true about half the time', reader.sides.A > 25 && reader.sides.B > 25 && reader.truths > 25 && reader.truths < 55);
+  check('a judge that reads, choosing the right version in either order, is right every time and carries the most weight', reader.acc === 1 && reader.skill === 1.5);
+  check('a machine that always says A, or always B, is at chance and counts for little or nothing', alwaysA.acc > 0.3 && alwaysA.acc < 0.7 && alwaysB.acc > 0.3 && alwaysB.acc < 0.7 && (alwaysA.skill ?? 1) <= 0.5 && (alwaysB.skill ?? 1) <= 0.5);
+  check('so is a machine that always takes the proposed version (a yes-man) or always the other (a no-man)', alwaysProposed.acc > 0.3 && alwaysProposed.acc < 0.7 && neverProposed.acc > 0.3 && neverProposed.acc < 0.7 && (alwaysProposed.skill ?? 1) <= 0.5 && (neverProposed.skill ?? 1) <= 0.5);
+  check('and one that always says the versions are the same is wrong half the time as well: "same" is a vote against the change', same.acc > 0.3 && same.acc < 0.7);
+  check('the summary shows which letter each machine picked', (() => { const s = examSummary(alwaysA.rows); return s.skeptic.choices.A === alwaysA.rows.length && !s.skeptic.choices.B; })());
+  check('and every exam row keeps the choice and the side the proposed text was shown on', alwaysA.rows.every((r) => r.choice === 'A' && (r.side === 'A' || r.side === 'B')));
+}
 // --- recording
 {
   writeFileSync(F.inbox, ''); writeFileSync(F.checks, ''); writeFileSync(F.exam, '');
   let clock = 5000; const feed = mkFeed({ now: () => clock });
   const who = { node: 'nQ', tier: 'big', model: 'qwen-35b' };
   const code = '3:   if (a >= b) return 1;\n4:   const t = a + b;';
-  const job = { meta: { check: true, fid: 'f1', codeText: code } };
-  const reply = (v, q) => JSON.stringify({ verdict: v, line: 3, quote: q, why: 'w' });
+  const job = { meta: { check: true, fid: 'f1', codeText: code, shown: code, side: 'B' } };   // the proposed text was shown as B
+  const reply = (v, q) => JSON.stringify({ choice: v === 'real' ? 'B' : v === 'false' ? 'A' : v, line: 3, quote: q, why: 'w' });
   await feed.onResult(job, reply('real', 'if (a >= b) return 1;'), '0xaa', who);
   await feed.onResult(job, reply('real', 'something that is not there'), '0xbb', { node: 'nR', tier: 'small' });
+  const withVersions = { meta: { check: true, fid: 'f2', codeText: code, shown: code + '\nif (a > b) return 1;', side: 'B' } };
+  await feed.onResult(withVersions, JSON.stringify({ choice: 'A', line: 3, quote: 'if (a > b) return 1;', why: 'w' }), '0xdd', { node: 'nT' });
   await feed.onResult(job, 'not a verdict', '0xcc', { node: 'nS' });
-  const rows = readRows(F.checks);
+  const rows = readRows(F.checks).filter((r) => r.id === 'f1');
+  check('a quote taken from one of the two versions counts, as it is in what the skeptic was shown (A, with the proposed text as B, is a false vote)', (() => { const r = readRows(F.checks).find((x) => x.id === 'f2'); return r && r.vote === 'false' && r.grounded === true && r.choice === 'A'; })());
   check('a verdict is recorded with who gave it, its tier and model, and whether its quote was in the code', rows.length === 2 && rows[0].id === 'f1' && rows[0].node === 'nQ' && rows[0].tier === 'big' && rows[0].model === 'qwen-35b' && rows[0].vote === 'real' && rows[0].grounded === true && rows[0].t === 5000);
-  check('an ungrounded verdict is recorded as unsure; a reply that is no verdict is not recorded', rows[1].verdict === 'real' && rows[1].vote === 'unsure' && rows[1].grounded === false);
-  const ex = (truth) => ({ meta: { check: true, exam: { truth, lens: 'bounds', kind: 'ge-to-gt' }, codeText: code } });
+  check('an ungrounded verdict is recorded as unsure; a reply that is no verdict is not recorded', rows[1].choice === 'B' && rows[1].vote === 'unsure' && rows[1].grounded === false);
+  const ex = (truth) => ({ meta: { check: true, exam: { truth, lens: 'bounds', kind: 'ge-to-gt' }, codeText: code, shown: code, side: 'B' } });
   await feed.onResult(ex(true), reply('real', 'if (a >= b) return 1;'), '0xaa', who);
   await feed.onResult(ex(true), reply('false', 'if (a >= b) return 1;'), '0xaa', who);
   await feed.onResult(ex(false), reply('false', 'const t = a + b;'), '0xaa', who);
@@ -136,7 +166,7 @@ const mkFeed = (o = {}) => makeCheckFeed({ source: () => SRC, sample: () => ({ f
   check('an exam answer is right when it matches what was planted, wrong when it does not', er.map((r) => r.outcome).slice(0, 4).join() === 'right,wrong,right,wrong');
   check('unsure, and a verdict with an invented quote, are unsure', er[4].outcome === 'unsure' && er[5].outcome === 'unsure' && er[5].grounded === false);
   check('an exam row names the role, lens, kind, truth and the machine', er[0].role === 'skeptic' && er[0].lens === 'bounds' && er[0].kind === 'ge-to-gt' && er[0].truth === true && er[0].node === 'nQ' && er[0].tier === 'big' && er[0].miner === '0xaa');
-  check('exam answers never count as votes on a finding', readRows(F.checks).length === 2);
+  check('exam answers never count as votes on a finding', readRows(F.checks).length === 3 && readRows(F.checks).every((r) => ['f1', 'f2'].includes(r.id)));
   check('the decision reads the recorded votes', feed.decision('f1').n === 2 && feed.decision('f1').yes === 1.5 && feed.decision('nope').state === 'pending');
   put(F.inbox, [find({ id: 'a' }), find({ id: 'b' }), find({ id: 'c', status: 'no-apply' })]);
   put(F.checks, [vote('a', 'x', 'real'), vote('a', 'y', 'real'), vote('b', 'x', 'false'), vote('b', 'y', 'false')]);

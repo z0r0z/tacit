@@ -11,7 +11,7 @@ import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdtempSync, r
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { SYSTEM, windows, parseFindings, applyPatch, plain } from './codecheck/scan.mjs';
+import { SYSTEM, windows, parseFindings, applyPatch, sampleOf } from './codecheck/scan.mjs';
 import { sites, snippet } from './codecheck/lenses.mjs';
 import { plant } from './codecheck/mutate.mjs';
 import { scoutMessages, findingId, fits } from './codecheck/roles.mjs';
@@ -79,7 +79,7 @@ export function makeScanFeed({ repo, ref = 'origin/main', inbox, results = null,
       if (fits(m)) { u = c; fresh = f; messages = m; }
     }
     keep({ ...st, si }); if (!u) return null;
-    return job({ file: u.file, commit, start: u.start, end: u.end, lens: u.lens, site: true, fresh }, messages, 400);
+    return job({ file: u.file, commit, start: u.start, end: u.end, lens: u.lens, site: true, fresh }, messages, 500);
   }
   // A snippet with a planted bug of its lens's own kind, picked at random. null if none of a few tries finds a line it can change.
   function examJob() {
@@ -89,7 +89,7 @@ export function makeScanFeed({ repo, ref = 'origin/main', inbox, results = null,
       const p = plant(src, { start: u.start, end: u.end, lens: u.lens, strict: true, rand }); if (!p) continue;
       const exam = { line: p.line, orig: p.orig, mut: p.mut, kind: p.kind, lens: u.lens }, messages = scoutMessages(u.lens, u.file, u.start, u.end, snippet(p.src, u.start, u.end));
       if (!fits(messages)) continue;
-      return job({ file: u.file, commit, start: u.start, end: u.end, lens: u.lens, site: true, exam }, messages, 400);
+      return job({ file: u.file, commit, start: u.start, end: u.end, lens: u.lens, site: true, exam }, messages, 500);
     }
     return null;
   }
@@ -140,7 +140,7 @@ export function makeScanFeed({ repo, ref = 'origin/main', inbox, results = null,
   // where it is counted as invalid and not graded.
   function onInvalid(job, text, miner, who = {}) {
     if (!examFile) return;
-    const sample = plain(text).slice(0, 160);
+    const sample = sampleOf(text);
     try { appendFileSync(examFile, JSON.stringify({ t: Date.now(), role: 'scout', lens: job.meta.lens || 'window', exam: !!job.meta.exam, miner, ...who, outcome: 'invalid', sample }) + '\n'); } catch {}
     say(`invalid scout reply (${who.tier || '?'}, ${who.model || '?'}): ${JSON.stringify(sample)}`);
   }

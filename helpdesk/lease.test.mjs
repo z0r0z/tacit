@@ -169,8 +169,9 @@ const mk = (extra = {}) => makeLeases({ waitMs: 300, sweepMs: 50, leaseMs: 400, 
   check('scan: a reply that is not valid JSON is not a review', (await review('{"findings":[}')) === 0);
   check('scan: nothing was filed from those', filed.length === 0);
   check('scan: an empty findings list, the answer for no bug, is a review', (await review('{"findings":[]}')) === 1);
+  check('scan: a finding whose code has unescaped double quotes is a review too', (await review('{"findings":[{"line":3,"why":"x","old":"a = "q";","new":"a = "r";"}]}')) === 1);
   check('scan: so is a list with a finding, found among prose', (await review('Here you go: {"findings":[{"line":3,"why":"x","old":"a","new":"b"}]}')) === 1);
-  check('scan: and those were handed to the feed', filed.length === 2);
+  check('scan: and those were handed to the feed', filed.length === 3);
   S.close(); }
 
 check('isAddr', isAddr(A) && !isAddr('0x12') && !isAddr(null));

@@ -81,6 +81,27 @@ f = mk(); const j3 = await f.next(); check('after a restart, files changed while
   check('a planted bug is handed out only in a snippet a node can take', planted.length >= 3 && planted.every((j) => j.meta.file === 'dapp/ok.js' && JSON.stringify(j.messages).length <= 20000));
   rmSync(d3, { recursive: true, force: true });
 }
+// scout replies that are not strict JSON: code with its own double quotes, raw newlines, escapes of both kinds
+{
+  const { parseFindings, looseFindings, sampleOf } = await import('./codecheck/scan.mjs');
+  const one = (txt) => parseFindings(txt)[0];
+  const quoted = one('{"findings":[{"line":79,"why":"needs 2 chars","old":"if (!/^[A-Z0-9]{2,11}$/.test(s)) return "bad";","new":"if (!/^[A-Z0-9]{1,11}$/.test(s)) return "bad";"}]}');
+  check('a finding whose code has unescaped double quotes is read, field by field', quoted && quoted.line === 79 && quoted.why === 'needs 2 chars' && quoted.old === 'if (!/^[A-Z0-9]{2,11}$/.test(s)) return "bad";' && quoted.new === 'if (!/^[A-Z0-9]{1,11}$/.test(s)) return "bad";');
+  const nl = one('{"findings":[{"line":5,"why":"x","old":"const a = 1;\nconst b = 2;","new":"const a = 1;\nconst b = 3;"}]}');
+  check('so is one with raw newlines in the code', nl && nl.old === 'const a = 1;\nconst b = 2;' && nl.new === 'const a = 1;\nconst b = 3;');
+  const esc = one('{"findings":[{"line":5,"why":"x","old":"a = "q";\\nb = 1;","new":"a = "q";\\nb = 2;"}]}');
+  check('a two-character \\n escape in a reply that is not valid JSON comes out as a newline', esc && esc.old === 'a = "q";\nb = 1;' && esc.new === 'a = "q";\nb = 2;');
+  const mixed = one('{"findings":[{"line":5,"why":"x","old":"s = \\"a\\"; t = "b";","new":"s = \\"a\\"; t = \\"c\\";"}]}');
+  check('escaped quotes among unescaped ones come out as quotes', mixed && mixed.old === 's = "a"; t = "b";' && mixed.new === 's = "a"; t = "c";');
+  const fenced = one('Here you go:\n```json\n{"findings":[{"line":3,"why":"w \\"quoted\\" word","old":"x = "y";","new":"x = "z";"}]}\n```');
+  check('inside a code fence and prose', fenced && fenced.why === 'w "quoted" word' && fenced.old === 'x = "y";');
+  check('a loosely read finding is cleaned and filtered like any other (control characters out, a no-op change dropped, line numbers off the old text)', (() => { const f = parseFindings('{"findings":[{"line":3,"why":"w\u001b[2J","old":"7: a = "q";","new":"a = "r";"},{"line":4,"why":"w","old":"b = 1;","new":"b = 1;"}]}'); return f.length === 1 && !f[0].why.includes('\u001b') && f[0].old === 'a = "q";'; })());
+  check('a reply that ran out before it closed is no finding, and neither is prose or an empty list', parseFindings('{"findings":[{"line":57,"why":"The check allows values up to 10000, but the comment imp').length === 0 && parseFindings('Looks fine.').length === 0 && parseFindings('{"findings":[]}').length === 0 && looseFindings('{"findings":[]}').length === 0);
+  check('valid JSON is read as before, and a findings field that is not a list is none', parseFindings('{"findings":[{"line":2,"why":"w","old":"a","new":"b"}]}').length === 1 && parseFindings('{"findings":"none"}').length === 0 && parseFindings('{"findings":{"line":1}}').length === 0);
+  check('at most three findings are read, loosely too', parseFindings('{"findings":[' + Array.from({ length: 5 }, (_, i) => `{"line":${i},"why":"w","old":"a${i} = "x";","new":"b${i} = "x";"}`).join(',') + ']}').length === 3);
+  check('a sample is the whole reply when it is short, and its start and its end when it is not', sampleOf('short') === 'short' && (() => { const t = 'S'.repeat(200) + 'END-OF-REPLY-' + 'E'.repeat(30); const s = sampleOf(t); return s.length === 160 && s.startsWith('SSSS') && s.endsWith('E'.repeat(30)) && s.includes(' … '); })());
+  check('a sample has its control characters taken out', !sampleOf('a\u001b[2Jb\u202ec').includes('\u001b') && !sampleOf('a\u202ec').includes('\u202e'));
+}
 // an invalid reply is kept, as invalid, beside the exam results
 {
   const d4 = mkdtempSync(path.join(tmpdir(), 'sft4-')); const exam = path.join(d4, 'exam.jsonl');

@@ -142,7 +142,7 @@ try {
   check('the weight of the votes ranks them, not the age or the number of scouts', got[0].r.id === 'd' && got[1].r.id === 'a');
   const d = toDigest(got, { day: '2026-11-13', reviewed: 9 });
   const fd = d.findings.find((f) => f.line === 160), fa = d.findings.find((f) => f.line === 10);
-  check('a lens finding says its lens and the vote; a window finding says its window and the vote', fd.subject === 'units and decimals, lines 150-170 · 3 of 3 checkers say real' && fa.subject === 'window 1-90 · 2 of 2 checkers say real');
+  check('a lens finding says its lens and the vote; a window finding says its window and the vote', fd.subject === 'units and decimals, lines 150-170 · 3 of 3 checkers agree' && fa.subject === 'window 1-90 · 2 of 2 checkers agree');
   check('without skeptics the subject is the window alone', toDigest(pick([rec({})]), { day: '2026-11-13', reviewed: 1 }).findings[0].subject === 'window 1-90');
   check('a subject stays inside what the API keeps', toDigest([{ r: rec({ lens: 'units', window: '1'.repeat(300) }), n: 1, d: state('x') }], { day: '2026-11-13', reviewed: 1 }).findings[0].subject.length <= 140);
 }

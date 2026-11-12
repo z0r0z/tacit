@@ -41,7 +41,7 @@ export function toDigest(picked, { day, reviewed }) {
   return {
     day, reviewed, unit: 'window',
     findings: picked.map(({ r, n, d }, i) => ({
-      id: `${stamp}${i + 1}`, file: r.file, line: Number(r.line), commit: r.commit, subject: oneLine(`${r.lens && LENS[r.lens] ? `${LENS[r.lens].title}, lines ${r.window}` : `window ${r.window}`}${d ? ` · ${d.counts.real} of ${d.n} checkers say real` : ''}`, 140),
+      id: `${stamp}${i + 1}`, file: r.file, line: Number(r.line), commit: r.commit, subject: oneLine(`${r.lens && LENS[r.lens] ? `${LENS[r.lens].title}, lines ${r.window}` : `window ${r.window}`}${d ? ` · ${d.counts.real} of ${d.n} checkers agree` : ''}`, 140),
       claim: oneLine(r.why, 300), evidence: `suggested change: ${oneLine(r.old, 180)} -> ${oneLine(r.new, 180)}`,
       severity: 'low', status: 'candidate', by: `${shortAddr(r.miner)}${n > 1 ? ` +${n - 1} more` : ''}`.trim(),
     })),
