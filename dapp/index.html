@@ -1823,7 +1823,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
 }
 </style>
 <!-- the hero tile is drawn with the swap card's parts (swap/card.js, which the Swap tab mounts): its styles, after the page's own -->
-<link rel="stylesheet" href="/swap/card.css?cb=dac30040" media="print">
+<link rel="stylesheet" href="/swap/card.css?cb=e490adf5" media="print">
 <!-- chrome:head:begin inline -->
 <style>
 /* The header's page links and the footer, as every page that wears them draws them. The markup is made by build/chrome.mjs and stamped
@@ -1908,7 +1908,7 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
   position: absolute; z-index: 5; top: calc(100% + 8px); right: 0; display: grid; gap: 1px; box-sizing: border-box;
   width: max-content; min-width: 220px; max-width: calc(100vw - 32px); padding: 6px;
   background: var(--card); border: 1px solid var(--hair-2, var(--hair)); border-radius: 14px;
-  box-shadow: 0 24px 48px -26px rgba(0,0,0,.5), 0 2px 8px rgba(0,0,0,.06);
+  box-shadow: var(--float, 0 24px 48px -26px rgba(0,0,0,.5), 0 2px 8px rgba(0,0,0,.06));
   transform-origin: 100% 0; animation: sm-in .16s ease-out;
 }
 @keyframes sm-in { from { opacity: 0; transform: translateY(-4px) scale(.98); } }

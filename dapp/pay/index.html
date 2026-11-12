@@ -544,7 +544,7 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
   position: absolute; z-index: 5; top: calc(100% + 8px); right: 0; display: grid; gap: 1px; box-sizing: border-box;
   width: max-content; min-width: 220px; max-width: calc(100vw - 32px); padding: 6px;
   background: var(--card); border: 1px solid var(--hair-2, var(--hair)); border-radius: 14px;
-  box-shadow: 0 24px 48px -26px rgba(0,0,0,.5), 0 2px 8px rgba(0,0,0,.06);
+  box-shadow: var(--float, 0 24px 48px -26px rgba(0,0,0,.5), 0 2px 8px rgba(0,0,0,.06));
   transform-origin: 100% 0; animation: sm-in .16s ease-out;
 }
 @keyframes sm-in { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
