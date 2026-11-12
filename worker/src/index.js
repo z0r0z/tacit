@@ -11059,11 +11059,18 @@ async function handleCeremonyUploadToken(req, env, circuitHash, cors) {
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const day = new Date().toISOString().slice(0, 10);
   const rlKey = `ceremony:${day}:${ip}`;
-  const prior = safeInt(await env.UPLOAD_KV.get(rlKey), 0, { min: 0 });
-  if (prior >= 500) return jsonResponse({ error: 'rate limited (500/day per IP)' }, 429, cors);
   const state = await env.REGISTRY_KV.get(ceremonyKey(circuitHash), 'json');
   if (!state) return jsonResponse({ error: 'ceremony chain not initialized' }, 404, cors);
   if (state.finalized) return jsonResponse({ error: 'ceremony has been finalized; chain is locked' }, 409, cors);
+  // a contribution needs one token: a client address is given so many a day, counted before the token is asked for
+  const perDay = safeInt(env.CEREMONY_TOKENS_PER_DAY, 20, { min: 1 });
+  const room = await withKvKeyLock(rlKey, async () => {
+    const prior = safeInt(await env.UPLOAD_KV.get(rlKey), 0, { min: 0 });
+    if (prior >= perDay) return false;
+    await env.UPLOAD_KV.put(rlKey, String(prior + 1), { expirationTtl: 90000 });
+    return true;
+  });
+  if (!room) return jsonResponse({ error: `rate limited (${perDay}/day per IP)` }, 429, cors);
 
   const filename = `ceremony-${circuitHash.slice(0, 8)}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.zkey`;
   const expiresInSec = 600;
