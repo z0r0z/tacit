@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-NTWmLwXajcxDMsmGouQ6izW9qq12QqaPXdGtgEnJxio=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-tHh1vVssLB2yCVEGK0ZH9Gm2QPi8sHwAZic6dBYsCi4=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -1564,6 +1564,27 @@ html[data-page="tac"] :is(.hero, #dash, #how, #tac, .pg, .sx.pi), html:not([data
   .cl-facts { grid-template-columns: minmax(0, 1fr); }
 }
 @media (prefers-reduced-motion: reduce) { .cl-w::before, .cl-v .dot, .cl-n.landed .cl-ic, .cl-plot.in svg, .cl-plot.in .pt, .cl-plot .pt.last::after, .cl-chain li.hd b, .cl-chain li.in, .cl-blocks li.fresh { animation: none !important; } }
+/* the path as a diagram: a ring for each step on one line, the wires run ring to ring, the ring takes the colour of a step that is working or stuck; the words sit under it (the first and last keep to the page's edges) */
+.cl-flow { grid-template-columns: 40px minmax(16px, 1fr) 40px minmax(16px, 1fr) 40px minmax(16px, 1fr) 40px; }
+.cl-n, .cl-n.ok, .cl-n.busy, .cl-n.bad { align-items: center; gap: 4px; text-align: center; }
+.cl-n:first-child { align-items: flex-start; text-align: left; } .cl-n:last-child { align-items: flex-end; text-align: right; }
+.cl-ic { display: grid; place-items: center; box-sizing: border-box; width: 40px; height: 40px; margin-bottom: 6px; border: 1px solid var(--hair-2); border-radius: 50%; background: var(--card); transition: border-color .3s; }
+.cl-n.busy .cl-ic { border-color: var(--orange); } .cl-n.bad .cl-ic { border-color: var(--err); }
+.cl-k, .cl-n b { width: max-content; max-width: 84px; }
+.cl-n b { justify-content: center; } .cl-n:first-child b { justify-content: flex-start; } .cl-n:last-child b { justify-content: flex-end; }
+.cl-w, .cl-w.on, .cl-w.live, .cl-w.off { align-self: start; margin: 20px 6px 0; }
+.cl-chain { -webkit-mask-image: linear-gradient(to right, transparent, #000 28px); mask-image: linear-gradient(to right, transparent, #000 28px); }
+.cl-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.cl-plot { height: 120px; }
+.cl-plot .ar { fill: color-mix(in srgb, var(--ink) 5%, transparent); }
+@media (max-width: 560px) { .cl-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 520px) {
+  .cl-flow { grid-template-columns: 36px minmax(12px, 1fr) 36px minmax(12px, 1fr) 36px minmax(12px, 1fr) 36px; }
+  .cl-ic { width: 36px; height: 36px; margin-bottom: 4px; }
+  .cl-w, .cl-w.on, .cl-w.live, .cl-w.off { margin: 18px 4px 0; }
+  .cl-k, .cl-n b { max-width: 76px; }
+  .cl-plot { height: 104px; }
+}
 .tpg-h { margin: 22px 0 10px; font-size: 11px; font-weight: 400; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
 .tpg-h:first-child { margin-top: 6px; }
 .tpg-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 1px; margin: 0; background: var(--hair); border: 1px solid var(--hair); }
@@ -10380,7 +10401,7 @@ function tacPageSet(on) {
 const CLV = { p: null };
 function chainLive(on) {
   if (!on) { CLV.p?.then((l) => l.stop(), () => {}); return; }
-  CLV.p ||= import('/chain/live.js?cb=3c0f920a').then((m) => m.mountChainLive({ top: $('#tpg-live'), rest: $('#tpg-chain') }));
+  CLV.p ||= import('/chain/live.js?cb=5dd1cb1f').then((m) => m.mountChainLive({ top: $('#tpg-live'), rest: $('#tpg-chain') }));
   CLV.p.then((l) => { if (TACP.on) l.start(); }, () => { CLV.p = null; });
 }
 function tacPageOpen(part = null) {
@@ -10512,12 +10533,12 @@ const TCD_DEST = [['wallet', 'Your wallet'], ['pool', 'Private pool'], ['btc', '
 const TCD_LINE = { receive: 'One address for payments on the Tacit chain and in the Bitcoin pool.' };
 const TCD_FOOT = {
   chain: {
-    shield: 'Your wallet and the amount show; whose shares stays hidden.',
+    shield: 'Your wallet and the amount show; who holds the shares stays hidden.',
     send: 'Who and how much stay hidden.',
     sendEth: 'Arrives as public TAC; the sender stays hidden.',
-    wallet: 'Your wallet and the amount show; whose shares stays hidden.',
-    pool: 'The amount shows; whose stays hidden.',
-    btc: 'The amount shows; whose stays hidden. Then bridged to your Bitcoin address.',
+    wallet: 'Your wallet and the amount show; who holds the shares stays hidden.',
+    pool: 'The amount shows; who holds it stays hidden.',
+    btc: 'The amount shows; who holds it stays hidden. Then bridged to your Bitcoin address.',
     receive: 'Payments are found with your key; the recipient stays hidden.',
   },
   btc: {

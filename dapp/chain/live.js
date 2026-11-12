@@ -104,6 +104,8 @@ export function mountChainLive({ top, rest }) {
     } catch { olderErr = true; }
     olderBusy = false; mark();
   }
+  // the chart wants the chain from its first block: older pages (the API gives a hundred at a time), a few of them, until none is left
+  async function fill() { for (let k = 0; k < 3 && mayHaveOlder(); k++) { const had = HAVE.size; await older(); if (olderErr || HAVE.size === had) break; } }
   // a block has landed: Ethereum's step glows once, its row lights once, and the page says so
   const landedNow = () => Date.now() - LAND.at < 2600;
   function landing(h) {
@@ -173,14 +175,17 @@ export function mountChainLive({ top, rest }) {
     if (c) return `${esc(c.title)} · ${c.small}`;
     return 'Ready for the next payment. It goes into the next block, usually within a minute.';
   }
-  function stats({ fee, chain }) {
+  function stats({ fee, chain, state }) {
     const rd = (x, f, w) => { if (x === undefined) return sk(w); try { return x === null ? '—' : f(x); } catch { return '—'; } };
     const p = chain ? price(chain.pool, chain.shares) : null;
     const up = p != null && p > 1 ? `<span class="ok">+${((p - 1) * 100).toFixed(2)}%</span>` : 'since block 1';
     const cu = (key, v, dp, text) => `<span data-k="${key}" data-v="${v}" data-dp="${dp}">${text}</span>`;
-    const c = (v, k) => `<div><span class="v num">${v}</span><span class="k">${k}</span></div>`;
+    const c = (v, k, t = '') => `<div${t ? ` title="${esc(t)}"` : ''}><span class="v num">${v}</span><span class="k">${k}</span></div>`;
+    // the notes the pool has made (the leader's own count; amounts and owners are not in it)
+    const notes = (x) => (Number.isSafeInteger(x.leaves) && x.leaves >= 0 ? cu('notes', x.leaves, 0, int(x.leaves)) : '—');
     return [
       c(rd(chain, (x) => `${cu('pool', Number(x.pool) / 1e8, 2, tac(x.pool))}<small>TAC</small>`, '6ch'), 'held privately'),
+      c(rd(state, notes, '4ch'), 'notes in the pool', 'Notes the pool has made. What each holds, and who, is not shown'),
       c(rd(chain, () => `${cu('px', p, 5, p.toFixed(5))}<small>TAC</small>`, '6ch'), `1 share · ${up}`),
       c(rd(fee, (x) => (x.fee != null ? `${cu('fee', Number(BigInt(x.fee) + FLOOR) / 1e8, 4, tac(BigInt(x.fee) + FLOOR, 4))}<small>TAC</small>` : '—'), '5ch'), 'fee per payment'),
     ].join('');
@@ -208,9 +213,10 @@ export function mountChainLive({ top, rest }) {
     if (pts.length < 2) return pts.length ? `<p class="cl-off">After block ${int(pts[0][0])}, 1 share = ${pts[0][1].toFixed(5)} TAC. It started at 1.</p>` : '';
     const x0 = pts[0][0], x1 = pts.at(-1)[0], ys = pts.map((q) => q[1]), lo = Math.min(1, ...ys), hi = Math.max(...ys), span = hi - lo || 1e-9;
     const X = (x) => ((x - x0) / (x1 - x0 || 1)) * W, Y = (y) => H - PAD - ((y - lo) / span) * (H - 2 * PAD);
-    const d = pts.map(([x, y], i) => `${i ? 'L' : 'M'}${X(x).toFixed(1)} ${Y(y).toFixed(1)}`).join(' ');
+    const d = pts.map(([x, y], i) => (i ? `H${X(x).toFixed(1)} V${Y(y).toFixed(1)}` : `M${X(x).toFixed(1)} ${Y(y).toFixed(1)}`)).join(' ');   // a share's worth holds until the next block moves it
     CH = { pts, xs: pts.map(([x]) => X(x) / W), ys: pts.map(([, y]) => Y(y) / H) };
-    const dots = pts.length <= 40 ? pts.map((q, i) => `<i class="pt${i === pts.length - 1 ? ' last' : ''}" style="--i:${i};left:${(CH.xs[i] * 100).toFixed(2)}%;top:${(CH.ys[i] * 100).toFixed(2)}%"></i>`).join('') : '';
+    const few = pts.length <= 40, from = few ? 0 : pts.length - 1;       // a dot for every block while they are few, else only the newest
+    const dots = pts.slice(from).map((q, k) => { const i = from + k; return `<i class="pt${i === pts.length - 1 ? ' last' : ''}" data-i="${i}" style="--i:${few ? i : 0};left:${(CH.xs[i] * 100).toFixed(2)}%;top:${(CH.ys[i] * 100).toFixed(2)}%"></i>`; }).join('');
     return `<figure><div class="cl-plot${intro()}"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="A share's worth from block ${x0} to block ${x1}, ${pts[0][1].toFixed(5)} to ${pts.at(-1)[1].toFixed(5)} TAC">
       <line class="gd" x1="0" y1="${H - 0.5}" x2="${W}" y2="${H - 0.5}"/><path class="ar" d="${d} L${W} ${H} L0 ${H} Z"/><path class="ln" d="${d}"/></svg>${dots}
       <span class="yl num">${lo.toFixed(5)}</span><i class="xh" hidden></i><span class="tip num" hidden></span></div>
@@ -227,7 +233,7 @@ export function mountChainLive({ top, rest }) {
     xh.style.left = `${(CH.xs[i] * 100).toFixed(2)}%`;
     tip.style.left = `clamp(14%, ${(CH.xs[i] * 100).toFixed(2)}%, 86%)`;
     tip.textContent = `#${int(CH.pts[i][0])} · ${CH.pts[i][1].toFixed(5)}`;
-    pl.querySelectorAll('.pt').forEach((p, j) => p.classList.toggle('on', j === i));
+    pl.querySelectorAll('.pt').forEach((p) => p.classList.toggle('on', Number(p.dataset.i) === i));
   }
   function unscrub() {
     const pl = rest.querySelector('.cl-plot');
@@ -362,7 +368,7 @@ export function mountChainLive({ top, rest }) {
         R[k] = await f().catch(() => null);
         if (k === 'state') waiting(R.state);
         if (k === 'chain' && R.chain) landing(R.chain.height);
-        if (k === 'blocks') { take(R.blocks?.rollup); if (!filled && HAVE.size >= 20 && mayHaveOlder()) { filled = true; older(); } }   // (twenty is all /prover/blocks gives)
+        if (k === 'blocks') { take(R.blocks?.rollup); if (!filled && HAVE.size >= 20 && mayHaveOlder()) { filled = true; fill(); } }   // (twenty is all /prover/blocks gives)
         mark();
       }));
       R.at = Date.now();
