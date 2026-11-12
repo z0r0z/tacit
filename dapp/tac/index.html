@@ -417,11 +417,11 @@ a.di { color: inherit; text-decoration: none; }
 .hx { position: relative; width: 100%; max-width: 480px; min-width: 0; margin: 0 auto; background: var(--card); border: 1px solid color-mix(in srgb, var(--ink) 9%, transparent); border-radius: 20px; box-shadow: var(--float), inset 0 1px 0 color-mix(in srgb, var(--ink) 4%, transparent); }
 /* The card is filled by script, so until it is, it holds the height its Swap tab settles at (measured at each width, with the way the card opens: ETH to private tETH, which
    has the "Private in" block): what is below it does not move when it appears. tests/front-tile-height.mjs measures it again. */
-.hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 571px; }
-@media (max-width: 640px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 562px; } }
-@media (max-width: 370px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 560px; } }
-@media (max-width: 356px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 585px; } }
-@media (max-width: 334px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 604px; } }
+.hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 566px; }
+@media (max-width: 640px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 564px; } }
+@media (max-width: 371px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 589px; } }
+@media (max-width: 356px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 587px; } }
+@media (max-width: 334px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 587px; } }
 /* Until the script draws it the card is the places of its tabs, its two fields, the block under them and its button, in quiet blocks of its own colours (the script's first draw
    replaces them), so the card is there from the first paint and nothing in it moves when its parts arrive. */
 .hx-sk { display: grid; gap: 8px; padding: 12px 16px 16px; }
