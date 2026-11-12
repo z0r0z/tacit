@@ -60,6 +60,38 @@ test('a note the pool service says is not an exit is invalid (a verdict), and on
   globalThis.fetch = prev;
 });
 
+test('a long note history gives the event loop a real turn between its reads, and what was proved valid is not walked again', async () => {
+  // Render's health check asks every few seconds and restarts a process that does not answer: a history walked in one go held the house provider
+  // for minutes (170 s on a real lock). Awaits on reads already in hand give microtasks a turn, not the I/O the health check waits on.
+  let turns = 0, going = true;
+  const tick = () => { if (!going) return; turns++; setImmediate(tick); };
+  tick();
+  const marker = { stop: () => { going = false; } };
+  const seen = [];
+  const fake = {
+    validateOutpoint: async (txid, vout, set, fetchTx) => {
+      seen.push([...set.keys()]);
+      const before = turns;
+      for (let i = 0; i < 12; i++) await fetchTx(`${i.toString(16).repeat(64).slice(0, 64)}`);
+      seen.at(-1).turns = turns - before;
+      set.set('ee'.repeat(32) + ':0', true); set.set(`${txid}:${vout}`, true);
+      return true;
+    },
+    txOutputEnvelope: () => ({ opcode: 0x22 }),
+    getParentEnvelopeData: async () => ({ assetIdHex: 'ab'.repeat(32), commitment: new Uint8Array(33) }),
+  };
+  const prev = globalThis.fetch;
+  globalThis.fetch = async () => json(TX);
+  const chain = makeEsploraBtcChain({ bases: ['http://esplora.test'], prims, builder: null, fetchImpl: (...a) => globalThis.fetch(...a), tacit: fake });
+  try {
+    assert.ok(await chain.resolveNote('11'.repeat(32), 0));
+    assert.ok(seen[0].turns >= 10, `the loop had a turn between reads (${seen[0].turns} turns in 12 reads)`);
+    assert.equal(seen[0].length, 0, 'the first walk starts from nothing');
+    assert.ok(await chain.resolveNote('22'.repeat(32), 1));
+    assert.ok(seen[1].includes('ee'.repeat(32) + ':0') && seen[1].includes('11'.repeat(32) + ':0'), 'what the first walk proved valid is there at the start of the next');
+  } finally { marker.stop(); globalThis.fetch = prev; }
+});
+
 let passed = 0;
 for (const [name, fn] of tests) {
   try { await fn(); passed++; console.log(`  ok - ${name}`); } catch (e) { console.log(`  FAIL - ${name}\n${e.stack}`); process.exitCode = 1; }

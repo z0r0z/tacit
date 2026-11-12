@@ -140,9 +140,21 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
   // A note that cannot be told is not a note that is not valid. The validator marks each outpoint it rejects as 'invalid' or as 'fetch-failed' (an
   // explorer, or the pool service, that did not answer), and a rejection of the second kind is thrown: whoever asks (a provider judging a lock)
   // asks again, and a read that failed is never taken for a note that is not valid.
+  //
+  // The validator walks a note's whole history, and its awaits on reads it already has give the event loop back to microtasks only: a long history
+  // held the process for minutes (measured on a real lock: 170 s) while Render's health check, which asks every few seconds, went unanswered and
+  // restarted it, so the offer that was being judged started over. So each read gives the loop a real turn, and what is proved valid is kept for the
+  // life of the process (a confirmed transaction's note does not change), so a history shared with an earlier lock is not walked again.
+  const turn = () => new Promise((r) => (typeof setImmediate === 'function' ? setImmediate(r) : setTimeout(r, 0)));
+  const proved = new Map();
   const validate = async (a, b, c, f) => {
+    // (not the note being asked about: its own reads, the pool service's answer on an exit among them, are made again, so that a service that has
+    // gone away is seen as one to ask again and not taken for a note that is not valid)
+    for (const k of proved.keys()) if (k !== `${a}:${b}`) c.set(k, true);
     const reasons = new Map();
-    const ok = await tacit.validateOutpoint(a, b, c, f, 0, null, null, null, reasons);
+    const ok = await tacit.validateOutpoint(a, b, c, async (t) => { const r = await f(t); await turn(); return r; }, 0, null, null, null, reasons);
+    for (const [k, v] of c) if (v === true) proved.set(k, true);
+    while (proved.size > 4000) proved.delete(proved.keys().next().value);
     if (ok !== true && reasons.get(`${a}:${b}`) === 'fetch-failed') throw Object.assign(new Error(`the note ${String(a).slice(0, 8)}…:${b} could not be read just now`), { transient: true });
     return ok;
   };
