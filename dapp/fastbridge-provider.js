@@ -350,7 +350,9 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
         if (!body || typeof body.quoteId !== 'string' || !body.offer || typeof body.offer !== 'object') return reply({ error: 'quoteId and offer are required' }, 400);
         const q = isId(body.quoteId) ? await quoter.get(body.quoteId) : null;
         const sid = String(body.offer.swapId || '').toLowerCase().replace(/^0x/, '');
-        if (!/^[0-9a-f]{72}$/.test(sid)) return reply(await judgeOffer(body, q, sid));
+        // every answer to an offer is said once, with its reason: a lock turned away is the one failure that costs a user a day of locked Bitcoin
+        const said = (r) => { log({ level: r.ok ? 'info' : 'warn', msg: r.ok ? 'offer accepted' : 'offer declined', id: sid, ...(r.ok ? {} : { retry: !!r.retry, why: String(r.why || '').slice(0, 200) }) }); return r; };
+        if (!/^[0-9a-f]{72}$/.test(sid)) return reply(said(await judgeOffer(body, q, sid)));
         // The checks of an offer read the lock and its notes from explorers, which takes as long as they take. The request waits a few
         // seconds for them and is then answered "ask again" while they go on; the same offer asked again joins the checks under way, so a
         // slow check is one check and not one for every try, and a user's client is not left to time out on a provider that is working.
@@ -358,7 +360,7 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
         let c = checking.get(sid);
         if (!c) {
           c = { done: false, at: now() };
-          c.p = judgeOffer(body, q, sid).then((r) => { c.done = true; c.at = now(); return r; });
+          c.p = judgeOffer(body, q, sid).then((r) => { c.done = true; c.at = now(); return said(r); });
           checking.set(sid, c);
         }
         const r = await Promise.race([c.p, sleepMs(offerBudgetMs).then(() => null)]);

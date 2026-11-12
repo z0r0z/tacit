@@ -542,6 +542,28 @@ test('two offers that arrive together are not both given what is left for one', 
   assert.equal(s.svc.reservations.size, 0);
 });
 
+test('every offer is said once in the log with its reason, so a lock turned away is never silent: a decline for good, one to ask again, and an acceptance', async () => {
+  const { w } = httpWorld();
+  w.lEvm.fund(6000n, 'inv'); manyCoins(w);
+  const s = await serve(w);
+  const q = (await post(s, '/quote', { amount: '1000' })).body;
+  const A = 'a'.repeat(72), B = 'b'.repeat(72), C = 'c'.repeat(72);
+  s.svc.el.receive = async () => ({ ok: false, retry: false, why: 'the opening does not match the note' });
+  await post(s, '/offer', { quoteId: q.id, offer: { swapId: A } });
+  const declined = s.logs.filter((l) => l.msg === 'offer declined');
+  assert.equal(declined.length, 1);
+  assert.deepEqual([declined[0].level, declined[0].id, declined[0].retry, declined[0].why], ['warn', A, false, 'the opening does not match the note']);
+  s.svc.el.receive = async () => { throw Object.assign(new Error('the note could not be read just now'), { transient: true }); };
+  await post(s, '/offer', { quoteId: q.id, offer: { swapId: B } });
+  const again = s.logs.filter((l) => l.msg === 'offer declined').at(-1);
+  assert.deepEqual([again.id, again.retry], [B, true]);
+  assert.match(again.why, /could not be checked now: the note could not be read just now/, 'a read that failed is logged as one to try again, with why');
+  s.svc.el.receive = async ({ offer }) => { await s.swaps.put({ id: offer.swapId, role: 'el', phase: 'accepted', quoteId: q.id, offer: { evm: { amount: '1000' } }, created: w.clock.now() }); return { ok: true, rec: { phase: 'accepted' } }; };
+  await post(s, '/offer', { quoteId: q.id, offer: { swapId: C } });
+  assert.equal(s.logs.filter((l) => l.msg === 'offer accepted' && l.id === C).length, 1, 'an acceptance is said as well');
+  assert.equal(s.logs.filter((l) => l.msg === 'offer declined').length, 2, 'and nothing else is said as a decline');
+});
+
 test('a reservation belongs to the swap that first uses it: a second swap on the same quote asks for room of its own', async () => {
   const { w } = httpWorld();
   w.lEvm.fund(1500n, 'inv'); manyCoins(w);
