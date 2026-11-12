@@ -36,12 +36,14 @@ export function parseSpan(s) {
 export const SEVERITY_RANK = { high: 3, med: 2, low: 1 };
 
 // The verifier's findings -> the digest: refuted ones are dropped, verified ones come first, then those that hinge on a fact outside the code, each by
-// severity; at most `maxReal` of the first kind, `maxOutside` of the second and `perCommit` from any one commit. Ids run n<YYMMDD>-<k> in that order.
-export function buildDigest(findings, commits, { day, maxReal = 3, maxOutside = 2, perCommit = 2 } = {}) {
+// severity, and among equals each commit's first finding before any commit's second, the larger commit first; at most `maxReal` of the first kind, `maxOutside` of the
+// second and `perCommit` from any one commit. Ids run n<YYMMDD>-<k> in that order.
+export function buildDigest(findings, commits, { day, maxReal = 6, maxOutside = 2, perCommit = 3 } = {}) {
   const bySha = new Map(commits.map((c) => [c.sha, c]));
   const rank = (f) => SEVERITY_RANK[f.severity] || 1;
   const live = findings.filter((f) => f.verdict === 'REAL' || f.verdict === 'UNCERTAIN');
-  const pick = (verdict, max, taken) => live.filter((f) => f.verdict === verdict).sort((a, b) => rank(b) - rank(a)).filter((f) => {
+  const size = (f) => bySha.get(f.commit)?.changed || 0;
+  const pick = (verdict, max, taken) => live.filter((f) => f.verdict === verdict).sort((a, b) => rank(b) - rank(a) || (a.pos || 0) - (b.pos || 0) || size(b) - size(a)).filter((f) => {
     const c = taken.get(f.commit) || 0;
     if (c >= perCommit) return false;
     taken.set(f.commit, c + 1);
@@ -64,13 +66,14 @@ export function buildDigest(findings, commits, { day, maxReal = 3, maxOutside = 
 }
 
 // One commit's reviewer findings ({ file, line, why }) paired by position with the verifier's verdicts ({ n, verdict, severity, evidence }, n counting from 1) into
-// the records buildDigest takes. A finding with no verdict, or a verdict that is not one of the three, was not verified and is left out.
+// the records buildDigest takes. The verifier's own sentence (`claim`) is used when it gave one, since it states the problem as verified; `pos` is the finding's place
+// in the reviewer's list. A finding with no verdict, or a verdict that is not one of the three, was not verified and is left out.
 export function mergeFindings(commit, findings, verdicts) {
   const out = [];
   (Array.isArray(findings) ? findings : []).forEach((f, i) => {
     const v = (Array.isArray(verdicts) ? verdicts : []).find((x) => x && x.n === i + 1);
     if (!v || !['REAL', 'UNCERTAIN', 'REFUTED'].includes(v.verdict) || !f || typeof f.why !== 'string') return;
-    out.push({ commit, file: String(f.file || ''), line: Number.isInteger(f.line) ? f.line : 0, claim: f.why, severity: v.severity, verdict: v.verdict, evidence: String(v.evidence || '') });
+    out.push({ commit, pos: i, file: String(f.file || ''), line: Number.isInteger(f.line) ? f.line : 0, claim: typeof v.claim === 'string' && v.claim.trim() ? v.claim : f.why, severity: v.severity, verdict: v.verdict, evidence: String(v.evidence || '') });
   });
   return out;
 }

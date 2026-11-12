@@ -42,9 +42,14 @@ const d = buildDigest([
   F('b'.repeat(40), 'REAL', 'med', 5), F('b'.repeat(40), 'UNCERTAIN', 'high', 6), F('b'.repeat(40), 'UNCERTAIN', 'low', 7), F('a'.repeat(40), 'UNCERTAIN', 'med', 8),
 ], commits, { day: '2026-11-12' });
 ok('refuted findings never reach the digest', !d.findings.some((f) => f.claim.includes('arh')));
-ok('verified findings come first, each by severity, then those that hinge on an outside fact', d.findings.map((f) => `${f.status}:${f.severity}`).join() === 'real:high,real:med,real:med,outside:high', d.findings.map((f) => `${f.status}:${f.severity}`).join());
-ok('no commit supplies more than two, and the real ones stop at three', d.findings.filter((f) => f.commit === 'a'.repeat(40)).length === 2 && d.findings.filter((f) => f.status === 'real').length === 3);
-ok('ids run n<YYMMDD>-<k> in digest order, and each carries its commit\'s subject', d.findings.map((f) => f.id).join() === 'n261112-1,n261112-2,n261112-3,n261112-4' && d.findings[0].subject === 'one' && d.reviewed === 2);
+ok('verified findings come first, each by severity, then those that hinge on an outside fact', d.findings.map((f) => `${f.status}:${f.severity}`).join() === 'real:high,real:med,real:med,real:low,outside:high,outside:low', d.findings.map((f) => `${f.status}:${f.severity}`).join());
+const many = buildDigest(Array.from({ length: 10 }, (_, i) => F((i < 6 ? 'a' : 'b').repeat(40), 'REAL', 'med', i)), commits, { day: '2026-11-12' });
+ok('no commit supplies more than three, and the verified ones stop at six', many.findings.filter((f) => f.commit === 'a'.repeat(40)).length === 3 && many.findings.length === 6 && many.findings.filter((f) => f.commit === 'b'.repeat(40)).length === 3);
+const sized = [{ sha: 'x'.repeat(40), subject: 'big', changed: 100 }, { sha: 'y'.repeat(40), subject: 'small', changed: 50 }];
+const G = (commit, pos, claim) => ({ commit, pos, file: 'dapp/x.js', line: pos, claim, severity: 'low', verdict: 'REAL', evidence: 'e' });
+const tie = buildDigest([G('x'.repeat(40), 1, 'big second'), G('y'.repeat(40), 0, 'small first'), G('x'.repeat(40), 0, 'big first'), G('y'.repeat(40), 1, 'small second')], sized, { day: '2026-11-12', maxReal: 3 });
+ok('among equal severities each commit\'s first finding comes before any second one, the larger commit first', tie.findings.map((f) => f.claim).join() === 'big first,small first,big second', tie.findings.map((f) => f.claim).join());
+ok('ids run n<YYMMDD>-<k> in digest order, and each carries its commit\'s subject', d.findings.map((f) => f.id).join() === 'n261112-1,n261112-2,n261112-3,n261112-4,n261112-5,n261112-6' && d.findings[0].subject === 'one' && d.reviewed === 2);
 ok('with nothing raised the digest is empty and still says how many commits were reviewed', buildDigest([], commits, { day: '2026-11-12' }).findings.length === 0 && buildDigest([], commits, { day: '2026-11-12' }).reviewed === 2);
 
 // ---- pairing a reviewer's findings with a verifier's verdicts
@@ -52,6 +57,8 @@ const fs3 = [{ file: 'dapp/a.js', line: 4, why: 'first' }, { file: 'dapp/a.js', 
 const vs3 = [{ n: 1, verdict: 'REAL', severity: 'med', evidence: 'a.js:4' }, { n: 2, verdict: 'REFUTED', severity: 'low', evidence: 'guarded' }, { n: 3, verdict: 'MAYBE', severity: 'low', evidence: '' }, { n: 4, verdict: 'REAL', severity: 'low', evidence: 'x' }];
 const merged = mergeFindings('c'.repeat(40), fs3, vs3);
 ok('findings are paired with verdicts by position; the reviewer\'s sentence becomes the claim', merged.length === 2 && merged[0].claim === 'first' && merged[0].verdict === 'REAL' && merged[0].severity === 'med' && merged[0].file === 'dapp/a.js' && merged[0].line === 4 && merged[1].verdict === 'REFUTED');
+const worded = mergeFindings('c', [{ file: 'a.js', line: 1, why: 'reviewer wording, partly wrong' }, { file: 'a.js', line: 2, why: 'kept' }], [{ n: 1, verdict: 'REAL', severity: 'med', claim: 'what is really wrong', evidence: 'e' }, { n: 2, verdict: 'REAL', severity: 'low', claim: '   ', evidence: 'e' }]);
+ok('the verifier\'s own sentence replaces the reviewer\'s when it gave one, and a blank one does not', worded[0].claim === 'what is really wrong' && worded[1].claim === 'kept' && worded[0].pos === 0 && worded[1].pos === 1);
 ok('a verdict that is not one of the three, a finding with no sentence, and missing input are left out, not guessed', merged.every((m) => m.claim !== 'third') && mergeFindings('c', fs3, []).length === 0 && mergeFindings('c', null, vs3).length === 0 && mergeFindings('c', fs3, 'nope').length === 0);
 
 // ---- the commands, on a throwaway repository

@@ -21,7 +21,7 @@ Work in a scratch directory, `W=/tmp/nudger-$(date -u +%F)`.
 3. **Verify.** For each commit that has findings, `node tools/nudger/verify-input.mjs --out $W --n <n>` writes `$W/verify-<n>.txt` (and exits 3 when there is nothing to verify). A verifier
    with a fresh context follows `tools/nudger/prompts/verify.md` on it, searching and reading only inside `$W/snap/<n>/`, and returns its array; save the reply as `$W/verdicts-<n>.json`.
 4. **Digest.** `node tools/nudger/digest.mjs --out $W` pairs each commit's findings with its verdicts and prints what the channel would show. With `--post` it sends it
-   (set `NUDGER_SECRET`; `NUDGER_API` defaults to https://api.tacit.finance). At most 3 verified findings, 2 that hinge on a fact outside the code, and 2 from any one commit; a quiet day posts one line.
+   (set `NUDGER_SECRET`; `NUDGER_API` defaults to https://api.tacit.finance). At most 6 verified findings, 2 that hinge on a fact outside the code, and 3 from any one commit (by severity, each commit's first finding before any second one); a quiet day posts one line.
    `node tools/nudger/digest.mjs --ping` posts one "connected" line and records nothing.
 
 ## Rules
