@@ -34,7 +34,7 @@ jobs:
       # (Rust, the C and Go code it links), and refused if the binary asks for a newer macOS.
       - name: Build
         working-directory: contracts/sp1/confidential/device-prover
-        env: { MACOSX_DEPLOYMENT_TARGET: '12.0' }
+        env: { MACOSX_DEPLOYMENT_TARGET: '12.0', TACIT_RELEASE: '${{ inputs.tag }}' }   # the miner tells the salt pool which release it is
         run: cargo build --release --locked
       - name: Runs on macOS 12 and up
         if: runner.os == 'macOS'

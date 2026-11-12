@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { makeSaltPool, saltAddress, SALT_POOL, saltPoolConfig } from '../worker/src/salt-pool.js';
+import { makeSaltPool, saltAddress, SALT_POOL, saltPoolConfig, softwareLabel } from '../worker/src/salt-pool.js';
 
 const DAY = 86_400_000;
 function kvStore() {
@@ -180,4 +180,30 @@ test('config: SALT_GOOD_BITS sets the feed\'s bar; nonsense keeps the default', 
   assert.equal(saltPoolConfig({ SALT_GOOD_BITS: '36' }).goodBits, 36);
   assert.equal(saltPoolConfig({ SALT_GOOD_BITS: '3' }).goodBits, SALT_POOL.goodBits);
   assert.equal(saltPoolConfig({ SALT_GOOD_BITS: 'x' }).goodBits, SALT_POOL.goodBits);
+});
+
+test('a miner can say what software it is: the label is cleaned, shown next to it while it sends, and counted', async () => {
+  assert.equal(softwareLabel('tacit-prover/v0.6.4'), 'tacit-prover/v0.6.4');
+  assert.equal(softwareLabel('  my miner 2.0 '), 'my miner 2.0');
+  assert.equal(softwareLabel('<script>alert(1)</script>x'), 'scriptalert1/scriptx', 'angle brackets, quotes and the rest are dropped');
+  assert.equal(softwareLabel('x'.repeat(100)).length, 40, 'cut to 40');
+  assert.deepEqual(['', null, undefined, 7, {}, ['a']].map(softwareLabel), ['', '', '', '', '', ''], 'only a string is a label');
+  let t = 400 * DAY + 1000;
+  const kv = kvStore(), pool = makeSaltPool({ kv, cfg: { ...SALT_POOL, minBits: 8, sendEveryMs: 0, house: [SALT_POOL.deployer] }, now: () => t });
+  const C = '0x' + 'c3'.repeat(20), D = '0x' + 'd4'.repeat(20), E = '0x' + 'e5'.repeat(20);
+  await pool.submit({ miner: A, salts: [grind(400, 8).salt], client: 'c1', software: 'tacit-prover/v0.6.4', ua: 'ignored' });
+  await pool.submit({ miner: B, salts: [grind(400, 8).salt], client: 'c2', ua: 'ureq/2.12.1' });
+  await pool.submit({ miner: C, salts: [grind(400, 8).salt], client: 'c3' });
+  await pool.submit({ miner: D, salts: [grind(400, 8).salt], client: 'c4', software: 'tacit-prover/v0.6.3' });
+  await pool.submit({ miner: E, salts: [grind(400, 8).salt], client: 'c5', software: 'tacit-prover/v0.6.4' });
+  await pool.submit({ miner: SALT_POOL.deployer, salts: [grind(400, 8).salt], client: 'house', software: 'tacit-house' });
+  const s = (await pool.summary()).body, sw = Object.fromEntries(s.live.map((l) => [l.miner, l.sw]));
+  assert.equal(sw[A], 'tacit-prover/v0.6.4', 'the label the miner sent wins over its User-Agent');
+  assert.equal(sw[B], 'ureq/2.12.1', 'with none sent, the User-Agent is the label');
+  assert.equal(C in sw && sw[C] === undefined, true, 'with neither, no label is kept');
+  assert.deepEqual(s.software, { 'tacit-prover/v0.6.4': 2, 'tacit-prover/v0.6.3': 1, 'ureq/2.12.1': 1, unknown: 1 }, 'counted by software, most first; Tacit\'s own machine is not counted');
+  assert.deepEqual(Object.keys(s.software)[0], 'tacit-prover/v0.6.4');
+  // a miner that changes software is shown with the newest label
+  await pool.submit({ miner: C, salts: [grind(400, 8).salt], client: 'c3', software: 'tacit-metal-salt/1' });
+  assert.equal(Object.fromEntries((await pool.summary()).body.live.map((l) => [l.miner, l.sw]))[C], 'tacit-metal-salt/1');
 });

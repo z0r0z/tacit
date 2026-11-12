@@ -43,6 +43,13 @@ const PROXY_INIT_HASH = keccak_256(Uint8Array.from([0x67, 0x36, 0x3d, 0x3d, 0x37
 const ADDR = /^0x[0-9a-f]{40}$/;
 const SALT = /^0x[0-9a-f]{64}$/;
 
+// What a miner calls its software, from the share it sends (`client`) or else its HTTP User-Agent: a short label of letters, digits and . _ / + - and spaces, nothing
+// else. It is only what the sender says it is: it tells which programs are mining, it proves nothing.
+export function softwareLabel(x) {
+  if (typeof x !== 'string') return '';
+  return x.replace(/[^A-Za-z0-9._\/+ -]/g, '').trim().slice(0, 40).trim();
+}
+
 export function saltPoolConfig(env = {}) {
   const n = (v, dflt, lo, hi) => { const x = Number(v); return v != null && v !== '' && Number.isInteger(x) && x >= lo && x <= hi ? x : dflt; };
   return Object.freeze({
@@ -86,7 +93,7 @@ export function makeSaltPool({ kv, cfg = SALT_POOL, now = () => Date.now(), lock
   const reply = (status, body) => ({ status, body });
 
   // A send: { miner, salts: [0x…], client } → { accepted, weight, rejected: [{ salt, why }] }.
-  async function submit({ miner, salts, client }) {
+  async function submit({ miner, salts, client, software, ua }) {
     miner = String(miner || '').toLowerCase();
     if (!ADDR.test(miner)) return reply(400, { ok: false, error: 'miner must be the 0x address the points go to' });
     if (!Array.isArray(salts) || !salts.length || salts.length > cfg.perCall) return reply(400, { ok: false, error: `salts must be 1 to ${cfg.perCall} salts` });
@@ -131,7 +138,8 @@ export function makeSaltPool({ kv, cfg = SALT_POOL, now = () => Date.now(), lock
         // The newest good finds, newest first, for the page's activity feed: written only when a send brings one.
         if (good.length) await write('sl:recent', [...good.sort((a, b) => b.bits - a.bits), ...await read('sl:recent', [])].slice(0, cfg.recentKeep));
         const live = Object.fromEntries(Object.entries(await read('sl:live', {})).filter(([, v]) => t - v.at < cfg.liveMs));
-        live[miner] = { at: t, ...(house ? { house: true } : {}) };
+        const sw = softwareLabel(software) || softwareLabel(ua);
+        live[miner] = { at: t, ...(sw ? { sw } : {}), ...(house ? { house: true } : {}) };
         await write('sl:live', live);
         const h = Math.floor(t / HOUR_MS);
         await write(`sl:hour:${h}`, (Number(await kv.get(`sl:hour:${h}`)) || 0) + accepted, 3 * 3600);
@@ -163,10 +171,13 @@ export function makeSaltPool({ kv, cfg = SALT_POOL, now = () => Date.now(), lock
     const span = HOUR_MS + (t - h * HOUR_MS);
     const rate = Math.round((((Number(prev) || 0) + (Number(cur) || 0)) * 2 ** cfg.minBits) / (span / 1000));
     const live = Object.entries(await read('sl:live', {})).filter(([, v]) => t - v.at < cfg.liveMs)
-      .sort((a, b) => b[1].at - a[1].at).map(([miner, v]) => ({ miner, at: v.at, ...(v.house ? { house: true } : {}) }));
+      .sort((a, b) => b[1].at - a[1].at).map(([miner, v]) => ({ miner, at: v.at, ...(v.sw ? { sw: v.sw } : {}), ...(v.house ? { house: true } : {}) }));
+    // the miners sending now, by what their software calls itself ('unknown': it said nothing); Tacit's own machines are not counted
+    const software = {};
+    for (const m of live) if (!m.house) software[m.sw || 'unknown'] = (software[m.sw || 'unknown'] || 0) + 1;
     return reply(200, {
       // today's pot so far: it shrinks as the day's proofs come in
-      deployer: cfg.deployer, createx: cfg.createx, minBits: cfg.minBits, maxWeightBits: cfg.maxWeightBits, bankBits: cfg.bankBits, pointsPerDay: await saltPot(day), day, rate, live,
+      deployer: cfg.deployer, createx: cfg.createx, minBits: cfg.minBits, maxWeightBits: cfg.maxWeightBits, bankBits: cfg.bankBits, pointsPerDay: await saltPot(day), day, rate, live, software: Object.fromEntries(Object.entries(software).sort((a, b) => b[1] - a[1])),
       today: { miners: recs.length, shares: recs.reduce((s, r) => s + r.shares, 0), weight: recs.reduce((s, r) => s + r.weight, 0) },
       top: recs.sort((a, b) => b.weight - a.weight).slice(0, 20).map((r) => ({ miner: r.miner, shares: r.shares, weight: r.weight, best: r.best })),
       bank: bank.slice(0, 10).map(({ address, bits, miner, at, house }) => ({ address, bits, miner, at, ...(house ? { house: true } : {}) })),
