@@ -212,9 +212,12 @@ export function makeEthereumLocker(ctx) {
           let built;
           try {
             built = await evm.lockOp(args);
-            // no note of the exact size yet: one is made from a larger note (once), and the lock is tried again; not when an earlier try
-            // named its note, which is waited for: another note would let both tries land
-            if (!built && !rec.lockNote && evm.prepare && !rec.prepared) { await evm.prepare({ rec }); await save(rec, { prepared: true }); built = await evm.lockOp(args); }
+            // No note of the exact size yet: one is made from a larger note, and the lock is tried again; not when an earlier try named its note,
+            // which is waited for: another note would let both tries land. This is asked on each try and not once per swap: bridges of one size that
+            // arrive together all find the first one's note when they are made ready and skip their own cut, and only one of them gets it (five
+            // bridges of 996.9 TAC within two minutes left four waiting for a note that never came). The adapter cuts only when no note of the size
+            // is free, and the tries are spaced by the backoff below.
+            if (!built && !rec.lockNote && evm.prepare) { await evm.prepare({ rec }); await save(rec, { prepared: true }); built = await evm.lockOp(args); }
           } catch (e) { await save(rec, next); throw e; }
           if (!built) return save(rec, { ...next, why: 'waiting for a pool note of the exact size' });
           if (strip(built.lockLeaf) !== strip(expected)) return save(rec, { phase: 'aborted', why: 'the lock built is not the lock this swap names' });
