@@ -87,7 +87,9 @@ function rawClientIp(nodeReq, env) {
     return String(h['x-tacit-forwarded-ip']).trim();
   }
   if (trustProxy(env)) {
-    if (h['true-client-ip']) return String(h['true-client-ip']).trim();
+    // what the edge sets, if it is an address; anything else is not taken for one
+    const tc = String(h['true-client-ip'] || '').trim();
+    if (tc && tc.length <= 45 && /^[0-9a-f:.]+$/i.test(tc)) return tc;
     const hops = h['x-forwarded-for'] ? String(h['x-forwarded-for']).split(',').map((x) => x.trim()).filter(Boolean) : [];
     if (hops.length >= 3) return hops[hops.length - 3];
   }

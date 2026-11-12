@@ -93,6 +93,8 @@ ok('POST body reaches worker (auth-gated, not 5xx)', hb.status >= 400 && hb.stat
   // An IPv6 client is counted by its /64: every address in it is one client, and an IPv4 one is kept as it is.
   const v6 = (ip) => ({ ...fakeReq, headers: { ...fakeReq.headers, 'true-client-ip': ip } });
   const trust = { ...env, TRUST_PROXY: '1' };
+  ok('a True-Client-IP that is not an address is not taken for one', clientIpFrom(v6('anon'), trust) === '127.0.0.1' && clientIpFrom(v6('<script>'), trust) === '127.0.0.1' && clientIpFrom(v6('1'.repeat(60)), trust) === '127.0.0.1');
+  ok('the forwarded list is used when True-Client-IP is not an address', clientIpFrom({ ...fakeReq, headers: { ...fakeReq.headers, 'true-client-ip': 'x', 'x-forwarded-for': 'a, b, 7.7.7.7, 8.8.8.8, 9.9.9.9' } }, trust) === '7.7.7.7');
   ok('an IPv6 client is keyed by its /64', clientIpFrom(v6('2001:db8:1234:5678:aaaa:bbbb:cccc:dddd'), trust) === '2001:db8:1234:5678::/64');
   ok('every address of a /64 is one client', clientIpFrom(v6('2001:db8:1234:5678:1::2'), trust) === clientIpFrom(v6('2001:DB8:1234:5678:ffff:ffff:ffff:ffff'), trust));
   ok('another /64 is another client', clientIpFrom(v6('2001:db8:1234:5679::1'), trust) !== clientIpFrom(v6('2001:db8:1234:5678::1'), trust));
