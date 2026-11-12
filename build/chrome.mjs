@@ -55,7 +55,7 @@ const svg = (k) => `<svg viewBox="0 0 24 24"${FILLED.has(k) ? ' class="fill"' : 
 // The menu holds the rest: the pages of their own for a holder (pay, borrow, the bridge page that follows bridges under way). The footer has the
 // network's own (build, stats)
 const MAIN = [['assets', '/assets/', 'Assets'], ['rewards', '/rewards/', 'Rewards'], ['prove', '/prove/', 'Prove']];
-const MORE = [['face', '/face/', 'FACE race'], ['pay', '/pay/', 'Pay'], ['borrow', '/vault/', 'Borrow'], ['bridge', '/bridge/', 'Bridges'], ['tac', '/tac/', 'TAC'], ['etch', '/etch/', 'Etch'], ['tasks', '/tasks/', 'Tasks']];
+const MORE = [['pay', '/pay/', 'Pay'], ['borrow', '/vault/', 'Borrow'], ['bridge', '/bridge/', 'Bridges'], ['tac', '/tac/', 'TAC'], ['etch', '/etch/', 'Etch'], ['tasks', '/tasks/', 'Tasks'], ['face', '/face/', 'FACE']];
 
 const here = (key, k) => (key === k ? ' aria-current="page"' : '');
 

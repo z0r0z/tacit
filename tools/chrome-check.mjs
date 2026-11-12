@@ -29,7 +29,7 @@ let failed = 0;
 const ok = (c, m, extra = '') => { console.log(`${c ? 'ok  ' : 'FAIL'} ${m}${extra ? ` (${extra})` : ''}`); if (!c) failed++; };
 
 const HEADER = 'Assets:/assets/ Rewards:/rewards/ Prove:/prove/';
-const MENU = 'FACE race:/face/ Pay:/pay/ Borrow:/vault/ Bridges:/bridge/ TAC:/tac/ Etch:/etch/ Tasks:/tasks/';
+const MENU = 'Pay:/pay/ Borrow:/vault/ Bridges:/bridge/ TAC:/tac/ Etch:/etch/ Tasks:/tasks/ FACE:/face/';
 const FOOTER = 'Whitepaper | Build | Security | Source | Pool contract | Stats | DefiLlama | @tacitfi on X | Tacit Discord community';
 // page → the menu entry marked as the page you are on (none for a page the menu does not list)
 const PAGES = { '/': null, '/tac/': 'TAC', '/chain/': 'TAC', '/vault/': 'Borrow', '/bridge/': 'Bridges', '/pay/': 'Pay', '/build/': null, '/weld/stats/': null };
