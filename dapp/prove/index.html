@@ -167,12 +167,12 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .blk .h { font: 500 12px/1 var(--mono); }
 .blk .o { font-size: 11px; line-height: 1.35; color: var(--mute); }
 .blk .o .who { flex-wrap: wrap; row-gap: 2px; }
-.blk .t { font-size: 11px; color: var(--mute); opacity: .75; }
+.blk .t { font-size: 11px; color: var(--mute); }
 .blk .o .k { display: block; color: var(--ink); }
 .blk .o .k-deposit { color: var(--ok); }
-.blk .o .k-batch { color: var(--orange); }
+.blk .o .k-batch { color: var(--warn); }
 /* a cross-chain block: Bitcoin's state taken into the pool (and the pool's carried to Bitcoin) */
-.blk .o .k-xc { color: var(--orange); }
+.blk .o .k-xc { color: var(--warn); }
 .blk.xc a { display: grid; gap: 6px; justify-items: start; color: var(--ink); text-decoration: none; }
 .blk.xc .cube { display: grid; grid-template-columns: 1fr; grid-auto-rows: 1fr; place-items: center; align-content: stretch; border-color: var(--orange); box-shadow: 4px 4px 0 color-mix(in srgb, var(--orange) 35%, transparent); }
 .blk.xc .glyph { font: 600 28px/1 var(--serif); color: var(--orange); }
@@ -198,7 +198,7 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .cube.ghost i.on { opacity: 1; animation: glow 1.2s ease-in-out infinite; }
 @keyframes fill { 50% { opacity: .9; } }
 .blk.next { cursor: default; display: grid; gap: 6px; justify-items: start; align-content: start; }
-.blk.next .h { color: var(--orange); }
+.blk.next .h { color: var(--warn); }
 .state.copied .dot { background: var(--orange); animation: pulse 1.2s ease-in-out infinite; }
 .cube .badge { position: absolute; right: -10px; top: -10px; }
 .cube .badge .inv { border-radius: 4px; box-shadow: 0 0 0 2px var(--paper); }
@@ -238,7 +238,7 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .state[data-s="proving"] .dot { background: var(--orange); animation: pulse 1.2s ease-in-out infinite; }
 .state h2 { font: 400 clamp(26px, 4.5vw, 34px)/1.05 var(--serif); letter-spacing: -.015em; margin: 0; }
 @keyframes pulse { 50% { opacity: .3; } }
-.win { margin-left: auto; font: 500 15px/1 var(--mono); color: var(--orange); opacity: 0; }
+.win { margin-left: auto; font: 500 15px/1 var(--mono); color: var(--warn); opacity: 0; }
 .win.go { animation: win 2.6s ease-out; }
 @keyframes win { 10% { opacity: 1; transform: translateY(-6px) scale(1.15); } 70% { opacity: 1; transform: none; } }
 .forge { margin: 16px 0 0; }
@@ -254,7 +254,7 @@ pre.cmd { margin: 16px 0 0; padding: 12px 14px; background: var(--field); border
 .os { display: inline-flex; margin: 16px 0 0; border: 1px solid var(--hair-2); }
 .os button { min-height: 36px; padding: 6px 14px; background: none; border: 0; cursor: pointer; color: var(--mute); font: 500 12.5px/1 var(--mono); }
 .os button[aria-pressed="true"] { background: var(--ink); color: var(--card); }
-.os .beta { margin-left: 4px; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--orange); }
+.os .beta { margin-left: 4px; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--warn); }
 #setup .wsl { display: none; }
 #setup[data-os="win"][data-first] .wsl { display: block; }
 .step { display: flex; align-items: baseline; gap: 10px; margin: 16px 0 0; font-size: 13px; }
@@ -341,7 +341,7 @@ pre.cmd { margin: 16px 0 0; padding: 12px 14px; background: var(--field); border
 #salt-bank-h { margin: 16px 0 0; }
 /* the cards under the node and the feed: GPU, salts */
 .side h3 { font: 400 clamp(22px, 3.6vw, 28px)/1.1 var(--serif); margin: 4px 0 0; }
-.side h3 span { color: var(--orange); }
+.side h3 span { color: var(--warn); }
 .side .btn { margin-top: 12px; }
 .side .hint code { font: inherit; color: var(--ink); }
 .side .pair .btn { margin-top: 0; }
@@ -350,7 +350,7 @@ pre.cmd { margin: 16px 0 0; padding: 12px 14px; background: var(--field); border
 /* The Bitcoin card: the coin and a short name, what a batch pays on its own line, the command, and the detail behind a summary. */
 .side h3.ic { display: flex; align-items: center; gap: 12px; }
 .side h3.ic .tk { width: 30px; height: 30px; }
-.side .pay { margin: 8px 0 0; font: 400 clamp(17px, 2.8vw, 20px)/1.25 var(--serif); color: var(--orange); }
+.side .pay { margin: 8px 0 0; font: 400 clamp(17px, 2.8vw, 20px)/1.25 var(--serif); color: var(--warn); }
 .side .pay:empty { display: none; }
 .side > .hint { text-wrap: balance; }
 /* The detail kept behind a summary (a card's other GPUs, the node's other numbers, the checkpoint). With nothing in it to show, no summary shows. */
@@ -383,7 +383,7 @@ pre.cmd { margin: 16px 0 0; padding: 12px 14px; background: var(--field); border
 .bank { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 6px; }
 .bank li { display: flex; justify-content: space-between; gap: 12px; font: 13px/1.4 var(--mono); }
 .bank li code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bank li code b { color: var(--orange); font-weight: 600; }
+.bank li code b { color: var(--warn); font-weight: 600; }
 .bank li.new { animation: fresh 1.6s ease-out; }
 .bank li { align-items: center; }
 .bank li small { display: flex; align-items: center; white-space: nowrap; }
@@ -445,7 +445,7 @@ dialog.sheet::backdrop { background: rgba(0,0,0,.45); backdrop-filter: blur(2px)
 .feed li.new { animation: fresh 1.6s ease-out; }
 .feed li.me { box-shadow: inset 2px 0 0 var(--orange); padding-left: 10px; }
 @keyframes fresh { from { background: color-mix(in srgb, var(--orange) 18%, transparent); } }
-.feed li b { font-weight: 500; color: var(--orange); white-space: nowrap; }
+.feed li b { font-weight: 500; color: var(--warn); white-space: nowrap; }
 #board li b { font-weight: 400; color: var(--ink); }
 .feed li small { color: var(--mute); white-space: nowrap; }
 .feed li { align-items: center; }

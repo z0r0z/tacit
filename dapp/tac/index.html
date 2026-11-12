@@ -19642,7 +19642,7 @@ document.addEventListener('click', (e) => {
     stage.addEventListener('pointerleave', () => { cancelAnimationFrame(f); f = 0; hand.style.removeProperty('--tx'); hand.style.removeProperty('--ty'); });
   }
 }
-{ const k = $('#kept'); if (k && 'IntersectionObserver' in window) { const io = new IntersectionObserver((es) => { if (!es.some((e) => e.isIntersecting)) return; io.disconnect(); import('/weld/flow/viz.js?cb=385547bd').then((m) => m.mountFlow($('#kept-v'), { compact: true, quiet: true })).catch(() => { k.hidden = true; }); }, { rootMargin: '400px' }); io.observe(k); } else if (k) k.hidden = true; }
+{ const k = $('#kept'); if (k && 'IntersectionObserver' in window) { const io = new IntersectionObserver((es) => { if (!es.some((e) => e.isIntersecting)) return; io.disconnect(); import('/weld/flow/viz.js?cb=8a44ba00').then((m) => m.mountFlow($('#kept-v'), { compact: true, quiet: true })).catch(() => { k.hidden = true; }); }, { rootMargin: '400px' }); io.observe(k); } else if (k) k.hidden = true; }
 setInterval(() => { if (!document.hidden) for (const e of $$('[data-left]')) e.textContent = potLeft(); }, 15e3);
 
 function refreshAll() {
