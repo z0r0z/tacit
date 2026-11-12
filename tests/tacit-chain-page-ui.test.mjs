@@ -102,8 +102,8 @@ test('a key: its balance and its address, copy and lock', () => {
   ui.render({ on: true, status: STATUS, now: NOW, key: KEY });
   r = rows('#mine');
   assert.equal(r.Balance, '25.1234 TAC');
-  assert.equal(root.querySelector('#mine .mono').getAttribute('title'), KEY.address);
-  assert.ok(root.querySelector('#mine .mono').textContent.length < 40, 'the address is shortened in its row');
+  assert.equal(root.querySelector('#mine .mono').textContent, KEY.address, 'the whole address stays in its row; the page shortens it to its ends');
+  assert.equal(root.querySelector('#mine .mono .tv')?.getAttribute('tabindex'), '0', 'a tap or a focus opens the whole address');
   assert.match(r.Address, /Published/);
   assert.equal(root.querySelector('[data-act="publish"]'), null, 'no Publish once it is published');
   root.querySelector('[data-act="copy"]').click();

@@ -57,6 +57,9 @@ const views = {
   [sel('shares()')]: () => '0x' + word(RATE.shares),
   [sel('RECLAIM_AFTER()')]: () => '0x' + word(7 * 86400),
   [sel('FORCE_DELAY()')]: () => '0x' + word(3600),
+  [sel('WINDOW()')]: () => '0x' + word(600),                     // (the chain panel's own reads: nothing queued, no Multicall3 on this stand-in)
+  [sel('queued()')]: () => '0x' + word(0),
+  [sel('queueDone()')]: () => '0x' + word(0),
   [sel('TAC()')]: () => '0x' + word(TAC),
   [sel('hops(bytes32)')]: () => '0x' + word(1),
   [sel('balanceOf(address)')]: () => '0x' + word(10n ** 21n),
@@ -71,6 +74,7 @@ function ethAnswer(method, params) {
     if (!f) throw new Error(`unexpected call ${data.slice(0, 10)}`);
     return f(data);
   }
+  if (method === 'eth_getBlockByNumber') return { number: '0x10', timestamp: '0x' + NOW_S.toString(16) };
   if (method === 'eth_getCode') return '0x';
   if (method === 'eth_blockNumber') return '0x10';
   if (method === 'eth_chainId') return '0x1';
@@ -97,7 +101,9 @@ const hopsWaiting = (now) => [{ units: '700000000', commit: '0x' + '88'.repeat(3
 
 // the leader, on the page's own server under /tacit-chain-leader
 const directory = new Map();
+const LEAVES = 365;
 const LEADER = {
+  'GET /state': () => [200, { height: 1234, pending: 0, leaves: LEAVES, nullifiers: 151, pool: String(RATE.pool), shares: String(RATE.shares) }],
   'GET /fee': () => [200, { fee: '1500000', shieldCap: '100000000000', sweepFee: '40000000000000000', at: NOW_S }],
   'GET /notes': (q) => (Number(q.get('from')) === 0 ? [200, { leaves: [hx(Buffer.from(note.leaf.toString(16).padStart(64, '0'), 'hex'))], memos: [hx(note.memo)], next: 1, total: 1 }] : [200, { leaves: [], memos: [], next: 1, total: 1 }]),
 };
@@ -112,6 +118,18 @@ function leaderAnswer(method, path, q, body) {
     return [200, { hash: h }];
   }
   return [404, { error: 'not here' }];
+}
+// the block API: a history of SPAN blocks, a hundred to a page as the real one gives, a share's worth rising with each
+const SPAN = 250, apiAsked = [];
+const blockAt = (h) => ({ height: h, ethBlock: 20_000_000 + h * 7, tx: '0x' + h.toString(16).padStart(64, '0'), by: '0x' + '84'.repeat(20), pool: String(12_000n * UNIT + BigInt(h) * 3_000_000n), shares: String(12_000n * UNIT) });
+function apiAnswer(path, q) {
+  if (path === '/prover/blocks') return { head: SPAN, blocks: SPAN, cross: null, rollup: Array.from({ length: 20 }, (_, i) => blockAt(SPAN - i)) };
+  if (path === '/prover/rollup') {
+    const before = Number(q.get('before')), rows = [];
+    for (let h = before - 1; h >= 1 && rows.length < Math.min(100, Number(q.get('limit')) || 100); h--) rows.push(blockAt(h));
+    return { rollup: rows, first: 1, kept: SPAN };
+  }
+  return null;
 }
 const leaderAsked = [];
 const web = createServer((req, res) => {
@@ -160,6 +178,10 @@ async function visit({ viewport = { width: 1280, height: 900 }, colorScheme = 'l
   await ctx.route(/^https:\/\//, async (route) => {
     const q = route.request(), host = new URL(q.url()).host;
     const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': 'POST, OPTIONS' };
+    if (host === 'api.tacit.finance' && q.method() === 'GET') {
+      const u = new URL(q.url()), a = apiAnswer(u.pathname, u.searchParams);
+      if (a) { apiAsked.push(u.pathname + u.search); return route.fulfill({ status: 200, contentType: 'application/json', headers: cors, body: JSON.stringify(a) }); }
+    }
     if (NODE_HOSTS.has(host) && q.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
     if (!NODE_HOSTS.has(host) || q.method() !== 'POST') return route.abort();
     const body = JSON.parse(q.postData() || '{}'), one = (x) => { try { return { jsonrpc: '2.0', id: x.id, result: ethAnswer(x.method, x.params) }; } catch (e) { return { jsonrpc: '2.0', id: x.id, error: { code: -32000, message: e.message } }; } };
@@ -184,6 +206,8 @@ async function signIn(page) {
   await page.waitForFunction(() => /tacit1/.test(document.querySelector('#wallet-label')?.textContent || ''), null, { timeout: 30000 });
   await page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
 }
+// the Receive tab's own address, by its row's label (the pay link above it is folded too)
+const TACIT_ROW = `(() => [...document.querySelectorAll('#tpg-p .keyrow')].find((r) => r.querySelector('.kv > span')?.textContent.trim() === 'Your Tacit address')?.querySelector('.full code')?.textContent.trim() || '')()`;
 const cells = (page) => page.$$eval('#tpg-nets .tpg-strip:last-of-type > div', (cs) => Object.fromEntries(cs.map((c) => [c.querySelector('.k').textContent.trim(), c.querySelector('.v').textContent.trim()])));
 
 try {
@@ -194,9 +218,23 @@ try {
     await page.click('#tpg-how > summary');
     await page.waitForFunction(() => /1,234/.test(document.querySelector('#tpg-nets')?.textContent || ''), null, { timeout: 30000 }).catch(() => {});
     const r = await cells(page);
-    ok(r.Blocks === '1,234' && /^4\d s ago$/.test(r['Last block']) && r['Share price'] === sharePrice(RATE.pool, RATE.shares, 5) && r['Pool, TAC'] === fmtTac(RATE.pool, 2)
+    ok(r.Blocks === '1,234' && /^[4-8]\d s ago$/.test(r['Last block']) && r['Share price'] === sharePrice(RATE.pool, RATE.shares, 5) && r['Pool, TAC'] === fmtTac(RATE.pool, 2)
       && r['Leader fee, TAC'] === '0.015' && r['Shield cap, TAC'] === '1,000', `the chain's figures (${JSON.stringify(r)})`);
-    ok(new RegExp(`1 share = ${sharePrice(RATE.pool, RATE.shares, 5).replace('.', '\\.')}`).test(await text(page, '#tpg-why')), `what a share is worth (${(await text(page, '#tpg-why .tpg-px'))})`);
+    // a share's worth, and the pool's notes, are figures in the chain panel over the card
+    await page.waitForFunction((want) => [...document.querySelectorAll('#tpg-live .cl-stats [data-k="px"]')].some((e) => e.textContent === want), sharePrice(RATE.pool, RATE.shares, 5), { timeout: 20000 }).catch(() => {});
+    const figs = await page.$$eval('#tpg-live .cl-stats > div', (ds) => Object.fromEntries(ds.map((d) => [d.querySelector('.k').textContent.replace(/\s+/g, ' ').trim(), d.querySelector('.v').textContent.replace(/\s+/g, ' ').trim()])));
+    ok(figs[Object.keys(figs).find((k) => /^1 share/.test(k))] === `${sharePrice(RATE.pool, RATE.shares, 5)}TAC`, `what a share is worth (${JSON.stringify(figs)})`);
+    ok(figs['notes in the pool'] === String(LEAVES), `the pool's notes are the leader's count (${figs['notes in the pool']})`);
+    // the path is a ring for each step; the chart is a staircase over the whole history, which the API gives a hundred blocks at a time
+    // (one step in the page: a redraw between finding the ring and reading it would leave a node with no style)
+    const ring = await page.evaluate(() => { const e = document.querySelector('#tpg-live .cl-ic'), c = e && getComputedStyle(e); return c ? `${c.width} ${c.borderRadius}` : ''; });
+    ok(ring === '40px 50%', `each step of the path is a ring (${ring})`);
+    await page.waitForFunction(() => /^block 1 ·/.test(document.querySelector('#tpg-chain .cl-chart figcaption')?.textContent.trim() || ''), null, { timeout: 20000 }).catch(() => {});
+    const line = await page.$eval('#tpg-chain .cl-plot .ln', (e) => e.getAttribute('d')).catch(() => '');
+    ok(/^M[\d. ]+( H[\d.]+ V[\d.]+){10,}$/.test(line), `the share chart is a staircase: a share's worth holds until a block moves it (${line.slice(0, 60)})`);
+    const pages = apiAsked.filter((x) => x.startsWith('/prover/rollup')).length;
+    ok(/^block 1 ·/.test(await text(page, '#tpg-chain .cl-chart figcaption')) && pages === 3, `the chart runs from the first block, the API's pages taken until none is left (${pages} asked)`);
+    ok((await page.$$('#tpg-chain .cl-plot .pt')).length === 1 && await page.$eval('#tpg-chain .cl-plot .pt', (e, last) => e.classList.contains('last') && e.dataset.i === last, String(SPAN - 1)), 'past forty blocks the chart marks only the newest');
     ok(/about 0\.017 TAC/.test(await text(page, '.tpg-fees')) && /0\.015 TAC/.test(await text(page, '.tpg-fees')), `the fee cards take the leader's terms (${(await text(page, '.tpg-fees')).slice(0, 120)})`);
     await shot('status');
     await signIn(page);
@@ -205,8 +243,8 @@ try {
     await page.waitForFunction(() => /moves have not landed yet/.test(document.querySelector('#tpg-top')?.textContent || ''), null, { timeout: 30000 })
       .then(async () => ok(true, `what waits is said, with the tile's move that shows it (${await text(page, '#tpg-top .note')})`), async () => ok(false, `kept: ${await text(page, '#tpg-top')}`));
     await page.click('#tcd-t-receive');
-    await page.waitForFunction(() => /^tacit1/.test(document.querySelector('#tpg-p .keyrow .full code')?.textContent || ''), null, { timeout: 30000 }).catch(() => {});
-    const addr = await page.$eval('#tpg-p .keyrow .full code', (e) => e.textContent.trim()).catch(() => '');
+    await page.waitForFunction(`/^tacit1/.test(${TACIT_ROW})`, null, { timeout: 30000 }).catch(() => {});
+    const addr = await page.evaluate(TACIT_ROW).catch(() => '');
     let laneOk = false;
     try { laneOk = Buffer.from(makeTacitAddress({ secp }).decodeTacitAddress(addr).lanes.chain.hash).equals(Buffer.from(lane)); } catch { /* not an address */ }
     ok(laneOk, `its Tacit address carries its chain lane (${addr.slice(0, 18)}…)`);
@@ -222,7 +260,7 @@ try {
     for (const colorScheme of ['light', 'dark']) {
       directory.clear();
       const { page, ctx, bad, shot } = await visit({ viewport, colorScheme });
-      await page.waitForFunction(() => /1 share = \d/.test(document.querySelector('#tpg-why')?.textContent || ''), null, { timeout: 20000 }).catch(() => {});
+      await page.waitForFunction(() => /^\d\.\d{5}$/.test(document.querySelector('#tpg-live [data-k="px"]')?.textContent || ''), null, { timeout: 20000 }).catch(() => {});
       const before = await noSideways(page);
       await signIn(page);
       await shot('page');
