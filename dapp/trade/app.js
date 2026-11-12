@@ -672,7 +672,7 @@ function notify(msg, kind = '', ms = 5000) {
 const pageWallet = () => (W.account && W.prov && !W.prov.isWalletConnect ? { uuid: W.uuid, address: W.account } : null);
 let bitcoinP = null;
 function getBitcoin() {
-  return (bitcoinP ||= import('/trade/btc.js?cb=c92d8d37').then((m) => (bitcoin = m.makeBitcoin({
+  return (bitcoinP ||= import('/trade/btc.js?cb=3c0dadda').then((m) => (bitcoin = m.makeBitcoin({
     notify, wallet: pageWallet, onChange: () => syncMe(),
     onTraded: (t) => { noteBitcoinTrade(t); loadBitcoin().then(paintAll).catch(() => {}); },
   }))).catch((e) => { bitcoinP = null; throw e; }));
@@ -863,10 +863,10 @@ function stackBook({ asks, bids, totalHead, mid, levels = false }) {
     + (hidden > 0 || S.bookAll ? `<button type="button" class="ob-more" data-more="1">${S.bookAll ? 'Show less' : `Full book · ${count(asks.length, levels ? 'ask price' : 'ask')}, ${count(bids.length, levels ? 'bid price' : 'bid')}`}</button>` : '') + '</div>';
 }
 const count = (n, noun) => `${n} ${noun}${n === 1 ? '' : 's'}`;
-const spreadTxt = (ask, bid, why = '') => {
+const spreadTxt = (ask, bid, why = '', waits = false) => {
   if (!ask || !bid) return '';
-  const over = (bid - ask) / ask;
-  return over > 0.0005 ? `<span title="The best bid is above the cheapest ask.${esc(why)}">bids ${over < 0.095 ? (over * 100).toFixed(1) : Math.round(over * 100)}% over asks</span>` : `<span title="Between the cheapest ask and the best bid">spread ${Math.abs(over * 100).toFixed(1)}%</span>`;
+  const over = (bid - ask) / ask, pct = over < 0.095 ? (over * 100).toFixed(1) : Math.round(over * 100);
+  return over > 0.0005 ? `<span title="The best bid is ${pct}% above the cheapest ask.${esc(why)}">${waits ? 'online-only top bid' : `bids ${pct}% over asks`}</span>` : `<span title="Between the cheapest ask and the best bid">spread ${Math.abs(over * 100).toFixed(1)}%</span>`;
 };
 function ethStack(z) {
   const taking = new Set(S.quote?.board?.ok && routeOf(S.quote) === 'boards' ? S.quote.board.keys : []);
@@ -890,7 +890,7 @@ function btcStack(b, live) {
       label: `${ask ? 'Buy' : 'Sell'} ${tacFmt(upTo)} TAC in all, ${ask ? 'up' : 'down'} to ${px} each` };
   }); };
   return stackBook({ asks: lvs(b.asks, true), bids: lvs(b.bids, false), totalHead: 'Sats', levels: true,
-    mid: `${D.btc?.mark ? `<span class="ob-last"><b>${esc(btcPxFmt(btcPx(D.btc.mark)))}</b><em>last trade</em></span>` : '<span></span>'}${spreadTxt(b.bestAsk, b.bestBid, ' A bid settles when its bidder is online, and a listing is taken whole.')}` });
+    mid: `${D.btc?.mark ? `<span class="ob-last"><b>${esc(btcPxFmt(btcPx(D.btc.mark)))}</b><em>last trade</em></span>` : '<span></span>'}${spreadTxt(b.bestAsk, b.bestBid, ' A bid settles when its bidder is online, and a listing is taken whole.', ladderLevels(b.bids, 'bid')[0]?.flag === 'manual')}` });
 }
 const setHtml = (el, h) => { if (el.__h !== h) { el.__h = h; el.innerHTML = h; } };
 function renderBook() {

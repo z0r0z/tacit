@@ -5,7 +5,7 @@
 // math the tacit.js executors use (floor(fill × price_sats / amount)).
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { isRerouteable } from '../dapp/btc-market.js';
+import { isRerouteable, isSpentOffer } from '../dapp/btc-market.js';
 import {
   DUST, BID_CLAIM_WINDOW_SEC, buildBook, planBuy, planSell, withinBounds, ladderLevels, listingShape,
   parseAmount, parseNumber, fmtAmount, fmtUnit, amountForSats, satsForAmount, scaledSats, unitPrice,
@@ -211,6 +211,15 @@ t('re-route only on errors that mean the offer moved and nothing was committed',
   assert.equal(isRerouteable('insufficient sats for commit (need ~14090 sats)'), false);
   assert.equal(isRerouteable('reveal rejected · Commit tx broadcast — 900 sats locked at ab:0'), false);
   assert.equal(isRerouteable(Object.assign(new Error('bid already claimed'), { noReroute: true })), false);
+});
+
+t('an offer whose coin is spent is left out of later quotes; one claimed for a while is not', () => {
+  assert.equal(isSpentOffer('asset outpoint already spent'), true);
+  assert.equal(isSpentOffer(new Error('preauth sale is stale')), true);
+  assert.equal(isSpentOffer('preauth sale not found — refresh listings'), true);
+  assert.equal(isSpentOffer('bid already claimed'), false);
+  assert.equal(isSpentOffer('claim expired'), false);
+  assert.equal(isSpentOffer(Object.assign(new Error('asset outpoint already spent'), { noReroute: true })), false);
 });
 
 t('a limit buy of N tokens never fills more than N from cheaper whole lots', () => {

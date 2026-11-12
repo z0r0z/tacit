@@ -60,6 +60,12 @@ export function isRerouteable(err) {
   return /already spent|expired|stale|changed since|refresh listings|preauth sale not found|just got taken|intent not found|no such (intent|bid|sale)|claim.*expired|did ?n.t fulfil|already claimed|already pledged|exceeds bid\.remaining|bid expired|\b409\b/i.test(s);
 }
 
+// A failure that says the offer's coin is gone for good (as opposed to claimed for a while): the offer is left out of every quote from then on.
+export function isSpentOffer(err) {
+  if (!isRerouteable(err)) return false;
+  return /already spent|preauth sale is stale|preauth sale not found|just got taken|no such sale/i.test(String((err && typeof err === 'object' ? err.message : err) || ''));
+}
+
 const LS = {
   get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
@@ -211,15 +217,17 @@ function createMarket(host, ctx) {
 
   const me = () => ctx.me() || null;
 
+  const spentOffers = new Set();
   function rebuildBook() {
     const m = me();
+    const taken = ctx.takenIds ? ctx.takenIds() : null;
     S.book = buildBook({
       assetId: aid, decimals: dec,
       listings: ctx.listings(),
       bids: S.bids,
       myPubHex: m?.pubHex || null, myH160: m?.h160 || null,
       varIntents: !!ctx.flags?.varIntents,
-      takenIds: ctx.takenIds ? ctx.takenIds() : null,
+      takenIds: spentOffers.size ? new Set([...(taken || []), ...spentOffers]) : taken,
     });
   }
 
@@ -910,10 +918,10 @@ function createMarket(host, ctx) {
         + (outliers ? `<em class="bm-chart-out" title="Trades priced far outside the typical range (e.g. dust or mistyped fills) aren't drawn">${outliers} outlier${outliers === 1 ? '' : 's'} hidden</em>` : '');
     }
     if (el.chartSum.innerHTML !== sum) el.chartSum.innerHTML = sum;
-    const sg = shownTf + '|' + (el.chart.clientWidth || 0) + '|' + win.map((p) => p.ts + ':' + p.u).join(',') + '|' + (S.book?.bestBid ?? '') + '|' + (S.book?.bestAsk ?? '');
+    const sg = shownTf + '|' + (el.chart.clientWidth || 0) + '|' + (S.lastOk ? 1 : 0) + '|' + win.map((p) => p.ts + ':' + p.u).join(',') + '|' + (S.book?.bestBid ?? '') + '|' + (S.book?.bestAsk ?? '');
     if (el.chart.__sig === sg) return;
     el.chart.__sig = sg;
-    if (win.length < 2) { el.chart.innerHTML = `<div class="bm-empty">Not enough trades to chart yet.</div>`; return; }
+    if (win.length < 2) { el.chart.innerHTML = `<div class="bm-empty">${S.lastOk ? 'Not enough trades to chart yet.' : 'Loading the chart…'}</div>`; return; }
     el.chart.innerHTML = chartSvg(win, shownTf);
     wireChartHover();
   }
@@ -1304,7 +1312,7 @@ function createMarket(host, ctx) {
             onClaimed: () => { s.status = 'waiting'; s.note = 'waiting for the seller to confirm'; paint('Buying…'); },
           });
         } catch (e) {
-          if (isRerouteable(e)) { s.status = 'failed'; s.note = 'taken by someone else'; stale.push(s); }
+          if (isRerouteable(e)) { s.status = 'failed'; s.note = 'taken by someone else'; if (isSpentOffer(e)) spentOffers.add(f.ask.id); stale.push(s); }
           else { s.status = 'failed'; s.note = ctx.friendlyError(e); err = e; }
         }
         if (r) {

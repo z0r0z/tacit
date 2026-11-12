@@ -194,6 +194,20 @@ await test('a taken listing re-routes to the next one inside the confirmed price
   assert.deepEqual(takes, ['p1', 'p2']);
 });
 
+await test('an offer found spent stays out of later quotes while the feed still lists it', async (page) => {
+  await page.evaluate(() => { const W = window.__w; W.listings = [W.preauth('p1', 100, 20000), W.preauth('p2', 100, 20200)]; W.fail.takeAsk = (id) => (id === 'p1' ? 'asset outpoint already spent' : null); });
+  await mount(page); await settle(page, 300);
+  await page.fill('[data-k=amount]', '20500'); await settle(page);
+  await clickGo(page); await modalPrimary(page);
+  assert.match(await waitModal(page, /Bought|Nothing/), /Bought 100 TAC/);
+  assert.deepEqual((await calls(page, 'takeAsk')).map((c) => c.args.id), ['p1', 'p2']);
+  await page.waitForTimeout(650); await page.click('.bm-modal .bm-mfoot .bm-go');
+  await page.evaluate(() => { const W = window.__w; W.listings = [W.preauth('p1', 100, 20000), W.preauth('p4', 100, 20800)]; return window.__ctl.refresh({ force: true }); });
+  await page.fill('[data-k=amount]', '21000'); await settle(page, 400);
+  const quote = await page.evaluate(() => document.querySelector('[data-k=quote]')?.textContent.replace(/\s+/g, ' ') || '');
+  assert.match(quote, /20,800/); assert.doesNotMatch(quote, /20,000/);
+});
+
 await test('a re-route that would break the price limit stops instead', async (page) => {
   await page.evaluate(() => { const W = window.__w; W.listings = [W.preauth('p1', 100, 20000), W.preauth('p9', 100, 30000)]; W.fail.takeAsk = (id) => (id === 'p1' ? 'already spent' : null); });
   await mount(page); await settle(page, 300);

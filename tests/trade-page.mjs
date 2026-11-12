@@ -346,7 +346,7 @@ try {
   ok((await p.getAttribute('[data-book="btc"]', 'aria-pressed')) === 'true', 'with zSwap holding no TAC order the order book opens on Bitcoin\'s listings');
   const dep = await p.$$eval('#ladders .ob-asks .ob-row', (d) => d.map((x) => x.textContent.replace(/\s+/g, ' ').trim()).reverse()), bidRows = await p.$$eval('#ladders .ob-bids .ob-row', (d) => d.length);
   const mid = (await text(p, '#ladders .ob-spread')).replace(/\s+/g, ' ');
-  ok(dep.length >= 3 && dep.length <= 8 && bidRows >= 1 && /^\$0\.\d+[\d,.]+ sats/.test(dep[0]) && /last trade/.test(mid) && /(spread [\d.]+%|bids [\d.]+% over asks)/.test(mid), `the book stacks the listings over the last price and the bids under it, one line per price (${dep.length} + ${bidRows}: ${dep[0]} | ${mid})`);
+  ok(dep.length >= 3 && dep.length <= 8 && bidRows >= 1 && /^\$0\.\d+[\d,.]+ sats/.test(dep[0]) && /last trade/.test(mid) && /(spread [\d.]+%|bids [\d.]+% over asks|online-only top bid)/.test(mid), `the book stacks the listings over the last price and the bids under it, one line per price (${dep.length} + ${bidRows}: ${dep[0]} | ${mid})`);
   ok(await p.$eval('#ladders .ob-asks .ob-row:last-child', (e) => parseFloat(getComputedStyle(e, '::before').width) > 0), 'each row is shaded by the depth from the middle out');
   ok((await p.$$eval('#depthchart path.dep-ask:not(.take)', (x) => x.length)) === 1 && (await p.$$eval('#depthchart path.dep-bid:not(.take)', (x) => x.length)) === 1, 'drawn as a depth chart of listings and bids');
   ok((await p.$$eval('#depthchart path.dep-bid:not(.take), #depthchart path.dep-ask:not(.take)', (x) => x.every((e) => e.getBBox().height > 8))), 'both sides of the depth chart are tall enough to see');
