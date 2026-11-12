@@ -2774,7 +2774,7 @@ function openPicker(side, again = false) {
   const groups = [['Wallet', top, 'wallet', 'wallet'], ['Private', [...POOL_COINS.map((k) => `@defi:${k}`), ...(moving() ? placeCoins(side, 'pay').map((k) => `@pay:${k}`) : []), ...placeCoins(side, 'chain').map((k) => `@chain:${k}`)], 'private', 'defi'],
     ...(moving() ? [['Bitcoin', placeCoins(side, 'btc').map((k) => `@btc:${k}`), 'bitcoin', 'btc']] : []),
     // (in Shield and Withdraw, the coins the flow takes from each place: Shield's are the wallet's, any token the card knows among them, and private TAC while the Tacit chain is on)
-    ['More tokens', rest, 'wallet', 'more']].map((g) => (FLOW ? [g[0], g[1].filter((key) => { const m = ATK.exec(key); return !!flowGet(m ? m[2] : key, m ? m[1] : 'wallet'); }), g[2], g[3]] : g)).filter(([, ks]) => ks.length);
+    [FLOW === 'shield' ? 'More tokens, sold for ETH on the way in' : 'More tokens', rest, 'wallet', 'more']].map((g) => (FLOW ? [g[0], g[1].filter((key) => { const m = ATK.exec(key); return !!flowGet(m ? m[2] : key, m ? m[1] : 'wallet'); }), g[2], g[3]] : g)).filter(([, ks]) => ks.length);
   const kinds = ['wallet', 'private', 'bitcoin'].filter((kd) => groups.some((g) => g[2] === kd));
   const first = KIND[PKAT || at];
   let kind = again && kinds.includes(PKKIND) ? PKKIND : kinds.includes(first) ? first : kinds[0];
@@ -2858,6 +2858,7 @@ function openPicker(side, again = false) {
       }
       l.querySelectorAll('.pk-g, .pk-d, .pk-sub').forEach((g) => { g.hidden = on; });
       l.classList.toggle('srch', on);                 // with the headings gone, every row names its kind (CSS: .pk-t)
+      l.classList.toggle('one', new Set([...l.querySelectorAll('.pk-r[data-kind]')].filter((b) => !b.hidden).map((b) => b.dataset.kind)).size < 2);   // (Shield's results are all the wallet's: nothing to tell apart)
       const kc = $('#pk-kind'); if (kc) kc.hidden = on;
       if (!on) applyKind(kind);                       // the kind's rows again, once the search is cleared
       l.querySelector('[data-add]')?.remove();

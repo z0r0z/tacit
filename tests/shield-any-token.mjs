@@ -50,7 +50,7 @@ for (const [tag, viewport] of [['desktop', { width: 1280, height: 900 }], ['phon
   await open();
   ok(await page.$('#pk-q') !== null, `${tag}: Shield's From list has the token search`);
   const gs = await groups();
-  ok(gs.includes('Wallet') && gs.includes('More tokens'), `${tag}: the wallet's coins lead and the rest of the list follows (${gs.join(' | ')})`);
+  ok(gs.includes('Wallet') && gs.includes('More tokens, sold for ETH on the way in'), `${tag}: the wallet's coins lead and the rest of the list says what happens to it (${gs.join(' | ')})`);
   const all = await rows();
   const syms = all.map((r) => r.sym);
   ok(['ETH', 'TAC', 'USDC', 'USDT'].every((s) => syms.slice(0, 4).includes(s)), `${tag}: ETH, TAC, USDC and USDT still come first (${syms.slice(0, 6).join(', ')})`);
@@ -60,6 +60,7 @@ for (const [tag, viewport] of [['desktop', { width: 1280, height: 900 }], ['phon
   // a token is picked by searching for it
   await page.fill('#pk-q', 'wbtc');
   ok(JSON.stringify((await rows()).map((r) => r.sym)) === '["WBTC"]', `${tag}: a search finds it`);
+  ok(await page.$eval('#pk-l .pk-r:not([hidden]) b .pk-t', (e) => getComputedStyle(e).display) === 'none', `${tag}: and the result does not carry a Public tag (all of them are the wallet's)`);
   await page.click('#pk .pk-r:not([hidden])');
   await page.waitForFunction(() => !document.querySelector('#pk .pk-r'));
   ok(await side('#pay-coin') === 'WBTC', `${tag}: the From coin is WBTC (${await side('#pay-coin')})`);
