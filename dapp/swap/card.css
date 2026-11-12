@@ -52,9 +52,10 @@
 .swc .fh button.where { padding: 0; font: inherit; color: inherit; background: none; border: 0; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
 .swc .fh button.where:disabled { text-decoration: none; cursor: default; }
 .swc .to { margin: 6px 0 4px; }
-.swc .to input { width: 100%; min-height: 38px; padding: 8px 10px; font: 400 13px var(--mono); color: var(--ink); background: transparent; border: 1px solid var(--hair-2); border-radius: 8px; outline: none; }
+.swc .to input { width: 100%; min-height: 38px; padding: 8px 10px; font: 400 13px var(--mono); color: var(--ink); background: transparent; border: 1px solid var(--hair-2); border-radius: 8px; outline: none; transition: border-color .15s; }
 .swc .to input::placeholder { color: var(--mute); opacity: 1; }
 .swc .to input:focus { border-color: var(--ink); } .swc .to input[aria-invalid="true"] { border-color: var(--err); }
+@media (prefers-reduced-motion: reduce) { .swc.to input { transition: none; } }
 .swc .to small { display: block; min-height: 0; margin-top: 6px; font-size: 11.5px; line-height: 1.4; color: var(--mute); overflow-wrap: anywhere; } .swc .to small:empty { display: none; } .swc .to small.err { color: var(--err); }
 .swc .sides { display: inline-flex; gap: 2px; padding: 2px; border-radius: 999px; background: color-mix(in srgb, var(--ink) 6%, transparent); }
 .swc .sides button { display: inline-flex; align-items: center; gap: 6px; min-height: 20px; padding: 1px 10px; font: 12px var(--mono); color: var(--mute); background: none; border: 0; border-radius: 999px; cursor: pointer; transition: background .15s, color .15s, box-shadow .15s; }
@@ -68,7 +69,7 @@
 .swc .ff .where.priv::before { content: ''; width: 8px; height: 9px; border: 1.5px dashed currentColor; border-radius: 2px; }
 .swc .fh .where.priv::before { content: ''; width: 8px; height: 9px; border: 1.5px dashed currentColor; border-radius: 2px; }
 .swc .fm { display: flex; align-items: center; gap: 12px; min-height: 52px; margin: 2px 0; }
-.swc .fm .amt, .swc .fm .big { flex: 1; min-width: 0; padding: 0; font: 400 44px/1.1 var(--serif); letter-spacing: -.01em; color: var(--ink); background: none; border: 0; outline: none; font-variant-numeric: tabular-nums; }
+.swc .fm .amt, .swc .fm .big { flex: 1; min-width: 0; padding: 0; font: 500 42px/1.1 var(--sans, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif); letter-spacing: -.02em; color: var(--ink); background: none; border: 0; outline: none; font-variant-numeric: tabular-nums; }
 .swc .fm .big { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* a move that says where rather than how much (Private, All): a word, not a figure */
 .swc .fm .big.word { font-size: 30px; color: var(--mute); }
@@ -112,7 +113,7 @@
 @media (hover: hover) { .swc .rows button:hover { background: color-mix(in srgb, var(--hair) 40%, transparent); } }
 .swc .rows button:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
 .swc .rows .rt { display: grid; min-width: 0; line-height: 1.3; }
-.swc .rows .rt b { font: 400 19px/1.1 var(--serif); letter-spacing: -.01em; color: var(--mute); transition: color .15s; }
+.swc .rows .rt b { font: 600 18px/1.1 var(--sans, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif); letter-spacing: -.01em; color: var(--mute); transition: color .15s; }
 .swc .rows .rt small { font-size: 12px; color: var(--mute); text-wrap: pretty; }
 .swc .rows .ra { display: grid; justify-items: end; line-height: 1.3; font-size: 15px; font-weight: 500; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--mute); }
 .swc .rows .ra small { font: 11px var(--mono); color: var(--mute); } .swc .rows .ra em { font: 11px var(--mono); font-style: normal; color: var(--ok); }
@@ -141,12 +142,12 @@
 /* A button that cannot be pressed yet has no reason to follow the screen: pinned, it covers the rows under it (most of them on a small phone). */
 .swc .act:has(.go:disabled) { position: static; background: none; }
 .swc .act .ack { margin: 0 2px 8px; }
-.swc .go { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 54px; margin-top: 14px; padding: 10px 16px; font-size: 15px; font-weight: 500; color: var(--card); background: var(--ink); border: 1px solid var(--ink); border-radius: 16px; cursor: pointer; transition: background .15s, color .15s, opacity .15s, box-shadow .15s, transform .1s; text-decoration: none; }
-/* hover keeps the fill (a cleared one sank into the tile in dark mode, where the button has no border) and rings it */
-.swc .go:hover:not(:disabled) { background: var(--ink); color: var(--card); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ink) 22%, transparent); }
+.swc .go { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 54px; margin-top: 14px; padding: 10px 16px; font-size: 15px; font-weight: 600; color: var(--paper); background: var(--orange); border: 1px solid var(--orange); border-radius: 12px; cursor: pointer; transition: background .15s, color .15s, opacity .15s, box-shadow .15s, transform .1s; text-decoration: none; }
+/* hover keeps the fill (a cleared one sank into the tile in dark mode, where the button has no border) and deepens it */
+.swc .go:hover:not(:disabled) { background: color-mix(in srgb, var(--orange) 88%, var(--ink)); color: var(--paper); box-shadow: 0 14px 28px -14px color-mix(in srgb, var(--orange) 60%, transparent); }
 .swc .go:active:not(:disabled) { transform: scale(.99); }
 .swc .go:disabled { cursor: not-allowed; }
-@media (prefers-color-scheme: dark) { .swc .go { background: color-mix(in srgb, var(--ink) 82%, var(--card)); border-color: transparent; } }
+@media (prefers-color-scheme: dark) { .swc .go { background: var(--orange); border-color: transparent; } }
 /* what cannot be pressed yet rests as a soft block of the tile's own tone, not the button faded */
 .swc .go:disabled { color: color-mix(in srgb, var(--ink) 70%, var(--card)); background: color-mix(in srgb, var(--ink) 6%, transparent); border-color: var(--hair-2, color-mix(in srgb, var(--ink) 18%, transparent)); }
 .swc .q { min-height: 20px; margin: 10px 2px 0; font-size: 12px; line-height: 1.55; color: var(--mute); overflow-wrap: anywhere; }

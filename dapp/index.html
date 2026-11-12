@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-UZYrPpyDKHuS7mlIVflANL7nGAVpJ0RQ9qdXaNi0SEc=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-PICfyhOLJ4wp+v6QFSTmxkwAZB/pkoplBAeUDZJtHTs=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -14,7 +14,7 @@
 <link rel="preconnect" href="https://tacit-evm-pool-keepers.onrender.com" crossorigin>
 <script async src="/front-guard.js?cb=51f5d28b"></script>
 <script type="module" src="/px-strip.js?cb=046a6701" async fetchpriority="high"></script>
-<link rel="preload" href="/swap/card.css?cb=ee86a552" as="style">
+<link rel="preload" href="/swap/card.css?cb=e490adf5" as="style">
 <link rel="preload" href="/fonts/instrument-serif-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/instrument-serif-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
@@ -30,8 +30,8 @@
 <meta property="og:description" content="Private DeFi on Bitcoin and Ethereum: private ETH, Bitcoin payments, TAC, points, farms and dollars borrowed against Bitcoin.">
 <meta property="og:image" content="https://tacit.finance/tacit-card.png">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="theme-color" content="#E8E0CC" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#15130E" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#F4F5F7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#07080B" media="(prefers-color-scheme: dark)">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <!-- preload-roots: /storage-fallback.js /vendor/tacit-deps.min.js /prf-wallet.js /tacit-wallet-known.js /tab-key.js /tacit-address.js /bip352.js /evm-wallet.js /walletconnect.js /evm-account.js /evm-tx.js /tac-airdrop.js /evm-trade-venues.js /confidential-payout.js /address-id.js /address-view.js /wallet-balances.js /trade/farm-read.js /bridge-all.js /lp-zap.js /farm-ops.js /relay-outcome.js /btc-borrow.js /bridge-out.js /bridge/track.js /bridge-in.js /bridge-tick.js /tacit-session.js /activity.js /swap/card.js | /weld/stats/read.js /trade/lp-campaign.js /tacit-chain-config.js | /confidential-pool-ux.js /confidential-deployments.js -->
 <!-- preload:begin -->
@@ -68,7 +68,7 @@
 <link rel="modulepreload" href="/bridge-tick.js?cb=42d78071">
 <link rel="modulepreload" href="/tacit-session.js?cb=4636e436">
 <link rel="modulepreload" href="/activity.js?cb=a0384066">
-<link rel="modulepreload" href="/swap/card.js?cb=df6648e5">
+<link rel="modulepreload" href="/swap/card.js?cb=17019aab">
 <link rel="modulepreload" href="/trade/wallet.js?cb=5d19a733">
 <link rel="modulepreload" href="/trade/util.js?cb=1d2cd8d3">
 <link rel="modulepreload" href="/trade/rpc.js">
@@ -93,29 +93,30 @@
 @font-face { font-family: 'Instrument Serif'; font-weight: 400; font-style: italic; font-display: swap; src: url('/fonts/instrument-serif-400i-latin.woff2') format('woff2'); }
 
 :root {
-  --paper: #E8E0CC;
-  --card: #F2EBD4;
-  --field: #FAF6EA;
-  --soft: color-mix(in srgb, #fff 40%, var(--card));
-  --ink: #1A1A1A;
-  --mute: #625C4F;
-  --faint: #807A68;
-  --hair: rgba(26,26,26,.12);
-  --hair-2: rgba(26,26,26,.28);
-  --orange: #f7931a;
-  --ok: #0a7234;
-  --warn: #9a4a00;
-  --err: #b8341d;
-  --scrim: rgba(26,26,26,.36);
-  --lift: 0 22px 44px -28px rgba(26,26,26,.45);
-  --sheet-shadow: 0 40px 90px -40px rgba(0,0,0,.6);
-  --skel: rgba(26,26,26,.08);
-  --skel-hi: rgba(26,26,26,.02);
-  --bar: #8F8979;
+  --paper: #F4F5F7;
+  --card: #FFFFFF;
+  --field: #F4F5F8;
+  --soft: color-mix(in srgb, var(--ink) 3.5%, var(--card));
+  --ink: #0A0B0D;
+  --mute: #5B616E;
+  --faint: #878D96;
+  --hair: rgba(10,11,13,.09);
+  --hair-2: rgba(10,11,13,.22);
+  --orange: #5741D8;
+  --ok: #067647;
+  --warn: #B54708;
+  --err: #CF202F;
+  --scrim: rgba(10,11,13,.44);
+  --lift: 0 22px 44px -28px rgba(16,24,40,.28);
+  --sheet-shadow: 0 40px 90px -40px rgba(10,11,13,.5);
+  --skel: rgba(10,11,13,.07);
+  --skel-hi: rgba(10,11,13,.03);
+  --bar: #98A2B3;
   --route-o: .55;
   --blue: #627eea;
   --green: #16a34a;
-  --float: 0 1px 2px rgba(26,26,26,.05), 0 26px 50px -34px rgba(26,26,26,.38);
+  --float: 0 1px 2px rgba(16,24,40,.05), 0 24px 48px -24px rgba(16,24,40,.16);
+  --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   --serif: 'Instrument Serif', 'Instrument Serif Fallback', 'Instrument Serif Fallback T', 'Instrument Serif Fallback N', Georgia, serif;
   --tap: 44px;
@@ -126,25 +127,26 @@
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --paper: #15130E;
-    --card: #1F1C15;
-    --field: #191711;
+    --paper: #07080B;
+    --card: #101116;
+    --field: #0B0C10;
     --soft: color-mix(in srgb, var(--ink) 4.5%, var(--card));
-    --ink: #EDE5CF;
-    --mute: #A39B85;
-    --faint: #8A8470;
-    --hair: rgba(237,229,207,.12);
-    --hair-2: rgba(237,229,207,.28);
-    --ok: #8fcf9a;
-    --warn: #f7931a;
-    --err: #f08a6c;
-    --scrim: rgba(0,0,0,.6);
+    --ink: #F4F5F7;
+    --mute: #A3A8B3;
+    --faint: #7D838E;
+    --hair: rgba(244,245,247,.10);
+    --hair-2: rgba(244,245,247,.24);
+    --orange: #A29BFF;
+    --ok: #4CB782;
+    --warn: #F5A524;
+    --err: #F28B74;
+    --scrim: rgba(0,0,0,.66);
     --lift: 0 22px 44px -28px rgba(0,0,0,.9);
-    --skel: rgba(237,229,207,.07);
-    --skel-hi: rgba(237,229,207,.15);
-    --bar: #6F6958;
+    --skel: rgba(244,245,247,.07);
+    --skel-hi: rgba(244,245,247,.15);
+    --bar: #5C6069;
     --route-o: .8;
-    --float: 0 0 0 1px rgba(237,229,207,.04), 0 34px 70px -30px rgba(0,0,0,.95);
+    --float: 0 0 0 1px rgba(244,245,247,.05), 0 34px 70px -30px rgba(0,0,0,.9);
     color-scheme: dark;
   }
 }
@@ -153,14 +155,14 @@
 html { -webkit-text-size-adjust: 100%; }
 html, body { margin: 0; background: var(--paper); color: var(--ink); }
 body {
-  font: 14px/1.6 var(--mono); letter-spacing: -.01em; overflow-x: hidden;
+  font: 14px/1.55 var(--sans); letter-spacing: -.006em; overflow-x: hidden;
   background-image: radial-gradient(ellipse 54rem 30rem at 50% 26rem, color-mix(in srgb, var(--card) 70%, transparent), transparent 72%); background-repeat: no-repeat;
   padding: 0 max(16px, env(safe-area-inset-right)) env(safe-area-inset-bottom) max(16px, env(safe-area-inset-left));
 }
 a { color: inherit; text-underline-offset: 3px; text-decoration-thickness: 1px; }
 @media (hover: hover) { a:hover { text-decoration-thickness: 2px; } }
 button { font: inherit; color: inherit; letter-spacing: inherit; }
-:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
 [hidden] { display: none !important; }
 .num { font-variant-numeric: tabular-nums; }
 .skip { position: absolute; left: 16px; top: -64px; z-index: 100; padding: 10px 16px; background: var(--ink); color: var(--paper); border-radius: 8px; text-decoration: none; font-size: 13px; transition: top .15s; }
@@ -197,7 +199,7 @@ main:focus { outline: none; }
 .top { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 22px 0; }
 .brand { display: inline-flex; align-items: center; gap: 10px; text-decoration: none; }
 .brand .tk { width: 30px; height: 30px; }
-.brand b { font: italic 400 30px/1 var(--serif); letter-spacing: -.01em; }
+.brand b { font: 700 25px/1 var(--sans); letter-spacing: -.02em; }
 .brand i { font-style: normal; font-size: 12px; color: var(--mute); text-transform: uppercase; letter-spacing: .12em; }
 .chip .narrow { display: none; }
 @media (max-width: 430px) { .chip .wide { display: none; } .chip .narrow { display: inline; } }
@@ -215,7 +217,7 @@ main:focus { outline: none; }
 .hint .pair { display: inline-flex; } .hint .pair .tk { width: 16px; height: 16px; } .hint .pair .tk + .tk { margin-left: -5px; box-shadow: 0 0 0 1.5px var(--paper); }
 .hint b { font-weight: 500; color: var(--ink); }
 .hint .go { font-style: normal; color: var(--mute); opacity: 0; transform: translateX(-4px); transition: opacity .15s, transform .15s; margin-left: -2px; }
-@media (hover: hover) { .hint:hover { color: var(--ink); background: color-mix(in srgb, var(--ink) 4%, transparent); border-color: color-mix(in srgb, var(--hair) 70%, transparent); } .hint:hover b { color: var(--ink); } .hint:hover .pair .tk { opacity: 1; filter: none; } .hint:hover .go { opacity: 1; transform: none; } }
+@media (hover: hover) { .hint:hover { color: var(--ink); background: color-mix(in srgb, var(--ink) 4%, transparent); border-color: var(--hair-2); } .hint:hover b { color: var(--ink); } .hint:hover .pair .tk { opacity: 1; filter: none; } .hint:hover .go { opacity: 1; transform: none; } }
 @media (hover: none) { .hint { border-color: color-mix(in srgb, var(--hair) 40%, transparent); } .hint .go { display: none; } }
 .hint:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; color: var(--ink); }
 .hint:focus-visible .go { opacity: 1; transform: none; }
@@ -249,7 +251,7 @@ main:focus { outline: none; }
 .dash { margin: 36px 0 0; }
 /* Your Tacit: a centred title like the sections', what it is all worth and since when on one line under it. */
 .dash-h { display: flex; flex-wrap: wrap; justify-content: center; align-items: baseline; gap: 4px 14px; margin: 0 0 16px; text-align: center; }
-.dash-h h2 { flex-basis: 100%; font: 400 clamp(26px, 3vw, 32px)/1.1 var(--serif); letter-spacing: -.02em; margin: 0 0 2px; }
+.dash-h h2 { flex-basis: 100%; font: 600 clamp(24px, 3vw, 30px)/1.15 var(--sans); letter-spacing: -.02em; margin: 0 0 2px; }
 .dash-h span { font-size: 12px; color: var(--mute); }
 .dash-h .dash-worth { font-size: 13px; color: var(--mute); }
 .dash-h .dash-worth b { font: 400 22px/1 var(--serif); color: var(--ink); }
@@ -386,12 +388,17 @@ a.di { color: inherit; text-decoration: none; }
 .news .dot:not(.on):not(.live) { display: none; }
 .news .go { font-weight: 500; color: var(--ink); transition: transform .3s var(--spring); }
 @media (hover: hover) { .news:hover .go { color: var(--ink); transform: translateX(4px); } }
-.hero h1 { font: 400 clamp(40px, 6.2vw, 76px)/1.02 var(--serif); letter-spacing: -.03em; margin: 0 auto 18px; text-wrap: balance; }
+.hero h1 { font: 700 clamp(38px, 6vw, 68px)/1.04 var(--sans); letter-spacing: -.032em; margin: 0 auto 18px; text-wrap: balance; }
 .hero h1 em { font-style: italic; }
 /* The two coins the headline names, round and side by side. */
 .hero h1 .hero-pair { display: inline-flex; gap: .1em; vertical-align: -.025em; margin-left: .2em; }
 .hero h1 .hero-pair .tk { width: .74em; height: .74em; }
 .hero .sub { font-size: 14px; line-height: 1.55; max-width: 64ch; margin: 0 auto; color: var(--mute); text-wrap: balance; }
+/* First paint: the title and the card rise once, a few px on --ease. Transform and opacity only — nothing here moves a layout
+   box, and the skeleton the boot checks measure keeps its heights. The reduced-motion block below switches this off. */
+@keyframes page-in { from { opacity: 0; transform: translateY(10px); } }
+.hero-t { animation: page-in .55s var(--ease) both; }
+.hx { animation: page-in .55s var(--ease) .09s both; }
 .hero .sub b { font-weight: 500; color: var(--ink); }
 /* wide screens: the card's button should come up the page, not sit under the fold of a laptop */
 @media (min-width: 641px) { .hero { padding-top: 20px; } .hero-t { margin-bottom: 24px; } .hero h1 { margin-bottom: 12px; } }
@@ -411,14 +418,14 @@ a.di { color: inherit; text-decoration: none; }
 .trust::before { content: '✓'; margin-right: 6px; color: var(--green); }
 
 /* ── the hero's console: a card that takes a verb, an amount and a way, and hands the rest to the sheet that does it ── */
-.hx { position: relative; width: 100%; max-width: 480px; min-width: 0; margin: 0 auto; background: var(--card); border: 1px solid color-mix(in srgb, var(--ink) 9%, transparent); border-radius: 22px; box-shadow: var(--float), inset 0 1px 0 color-mix(in srgb, var(--ink) 4%, transparent); }
+.hx { position: relative; width: 100%; max-width: 480px; min-width: 0; margin: 0 auto; background: var(--card); border: 1px solid color-mix(in srgb, var(--ink) 9%, transparent); border-radius: 20px; box-shadow: var(--float), inset 0 1px 0 color-mix(in srgb, var(--ink) 4%, transparent); }
 /* The card is filled by script, so until it is, it holds the height its Swap tab settles at (measured at each width, with the way the card opens: ETH to private tETH, which
    has the "Private in" block): what is below it does not move when it appears. tests/front-tile-height.mjs measures it again. */
-.hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 571px; }
-@media (max-width: 640px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 562px; } }
-@media (max-width: 370px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 560px; } }
-@media (max-width: 356px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 585px; } }
-@media (max-width: 334px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 604px; } }
+.hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 566px; }
+@media (max-width: 640px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 564px; } }
+@media (max-width: 371px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 589px; } }
+@media (max-width: 356px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 587px; } }
+@media (max-width: 334px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 587px; } }
 /* Until the script draws it the card is the places of its tabs, its two fields, the block under them and its button, in quiet blocks of its own colours (the script's first draw
    replaces them), so the card is there from the first paint and nothing in it moves when its parts arrive. */
 .hx-sk { display: grid; gap: 8px; padding: 12px 16px 16px; }
@@ -427,19 +434,27 @@ a.di { color: inherit; text-decoration: none; }
 .hx-sk .f { height: 130px; }
 .hx-sk .p { height: 81px; }
 .hx-sk .g { height: 54px; margin-top: 8px; background: color-mix(in srgb, var(--ink) 7%, transparent); }
+/* The blocks share the inline skeleton's shimmer: a soft band of the ink colour sweeps over each block's own tint (the .t/.g
+   shorthands reset background-image, so the sheen is named again at their specificity). Off under reduced motion, below. */
+.hx-sk i, .hx-sk .t, .hx-sk .g { background-image: linear-gradient(90deg, transparent 0 38%, color-mix(in srgb, var(--ink) 6%, transparent) 50%, transparent 62%); background-size: 300% 100%; animation: shimmer 1.6s linear infinite; }
 /* What /front-guard.js says under the skeleton when the script has not drawn the card (a file of it never arrived, or is slow): one line and the reload. */
 .hx-say { display: flex; align-items: center; justify-content: center; gap: 10px; margin: 0 16px 16px; font: 500 13px var(--mono); color: var(--mute); }
 .hx-say button { font: inherit; color: var(--ink); background: none; border: 0; padding: 0; text-decoration: underline; cursor: pointer; }
 #hx-ss { scroll-margin-bottom: 56px; }
 .hx-h { --i: 0; --n: 5; --hp: 8px; position: relative; display: grid; grid-template-columns: var(--cols, repeat(var(--n), 1fr)); padding: 4px var(--hp) 0; border-bottom: 1px solid var(--hair); }
-.hx-h::after { content: ''; position: absolute; bottom: -1px; height: 2px; border-radius: 2px; background: var(--ink); width: calc((100% - 2 * var(--hp)) * var(--bw, calc(.4 / var(--n))));
-  left: calc(var(--hp) + (100% - 2 * var(--hp)) * var(--bl, calc((var(--i) + .3) / var(--n)))); transition: left .4s var(--spring), width .4s var(--spring); }
-.hx-h button { display: grid; justify-items: center; padding: 14px 0 12px; background: none; border: 0; cursor: pointer; font: italic 400 20px/1 var(--serif); letter-spacing: -.01em; color: var(--mute); transition: color .15s; }
+.hx-h::after { content: ''; position: absolute; bottom: -1px; height: 2px; border-radius: 2px; background: var(--orange); width: calc((100% - 2 * var(--hp)) * var(--bw, calc(.4 / var(--n))));
+  left: calc(var(--hp) + (100% - 2 * var(--hp)) * var(--bl, calc((var(--i) + .3) / var(--n)))); transition: left .4s var(--spring), width .4s var(--spring); transform-origin: left center; animation: hx-ind .35s var(--spring); }
+@keyframes hx-ind { from { opacity: 0; transform: scaleX(.35); } }
+.hx-h button { display: grid; justify-items: center; padding: 14px 0 12px; background: none; border: 0; cursor: pointer; font: 600 15px/1 var(--sans); letter-spacing: -.01em; color: var(--mute); transition: color .15s; }
 .hx-h button[aria-selected="true"] { color: var(--ink); }
 @media (hover: hover) { .hx-h button:hover { color: var(--ink); } }
 .hx-b { padding: 14px 16px 16px; }
+/* A repainted panel settles in with the hint chips' own idiom (5px on --ease) at panel scale. The panel is a fresh element on
+   every paint, so this restarts with each tab; step updates in flight use targeted painters and never repaint the panel. */
+#hx-panel { animation: hx-in .22s var(--ease); }
+@keyframes hx-in { from { opacity: 0; transform: translateY(5px); } }
 .hx-lbl { font: 13px var(--mono); letter-spacing: 0; text-transform: none; color: var(--mute); }
-.hx-amt { flex: 1; min-width: 0; padding: 0; font: 400 44px/1.1 var(--serif); letter-spacing: -.01em; color: var(--ink); background: none; border: 0; border-radius: 0; outline: none; font-variant-numeric: tabular-nums; }
+.hx-amt { flex: 1; min-width: 0; padding: 0; font: 500 42px/1.1 var(--sans); letter-spacing: -.02em; color: var(--ink); background: none; border: 0; border-radius: 0; outline: none; font-variant-numeric: tabular-nums; }
 /* A long amount steps down a size or two rather than scroll out of its field (the field's height stays). */
 .hx-amt.long { font-size: 34px; }
 .hx-amt.longer { font-size: 27px; }
@@ -502,8 +517,9 @@ a.di { color: inherit; text-decoration: none; }
 .hx-bw-p .err, .hx-bw-n.err { color: var(--err); } .hx-bw-p .warn { color: var(--warn); }
 .hx-bw-w { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; font-size: 12px; color: var(--ink); }
 .hx-bw-w a { color: var(--mute); }
-.hx-h .w { position: relative; }
-.hx-h button[data-due] .w::after { content: ''; position: absolute; top: -2px; right: -13px; width: 7px; height: 7px; border-radius: 50%; background: var(--orange); box-shadow: 0 0 0 2px var(--card); }
+.hx-h .w { position: relative; padding: 5px 10px; margin: -5px -10px; border-radius: 999px; transition: background .15s; }
+@media (hover: hover) { .hx-h button:hover .w { background: color-mix(in srgb, var(--ink) 5%, transparent); } }
+.hx-h button[data-due] .w::after { content: ''; position: absolute; top: 3px; right: -3px; width: 7px; height: 7px; border-radius: 50%; background: var(--orange); box-shadow: 0 0 0 2px var(--card); }
 .hx-do .link { position: relative; padding: 0; font-size: 12px; }
 .hx-do .link::after { content: ''; position: absolute; inset: -8px -6px; }
 .hx-pt { color: var(--mute); }
@@ -530,8 +546,8 @@ a.di { color: inherit; text-decoration: none; }
 @keyframes np-in { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
 @media (prefers-reduced-motion: reduce) { .np-m { animation: none; } .np-c { transition: none; } }
 @media (pointer: coarse) { .np-b { min-height: 38px; } .np-o { padding-block: 10px; } }
-.hx .btn { width: 100%; min-height: 56px; margin: 16px 0 0; border-radius: 16px; font-size: 15px; transition: transform .2s var(--spring), box-shadow .2s, background .15s, color .15s; }
-@media (hover: hover) { .hx .btn:hover:not(:disabled) { color: var(--card); background: var(--ink); transform: translate(-2px, -2px); box-shadow: 3px 3px 0 var(--orange); } }
+.hx .btn { width: 100%; min-height: 56px; margin: 16px 0 0; border-radius: 12px; font-size: 15px; font-weight: 600; color: var(--paper); background: var(--orange); border-color: var(--orange); transition: transform .2s var(--spring), box-shadow .2s, background .15s, color .15s; }
+@media (hover: hover) { .hx .btn:hover:not(:disabled) { color: var(--paper); background: color-mix(in srgb, var(--orange) 88%, var(--ink)); transform: translateY(-1px); box-shadow: 0 14px 28px -14px color-mix(in srgb, var(--orange) 60%, transparent); } }
 .hx .btn:active:not(:disabled) { transform: none; box-shadow: none; }
 .hero .hx-q, .hx-q { min-height: 18px; max-width: none; margin: 10px 2px 0; font-size: 12px; line-height: 1.55; color: var(--mute); }
 /* the Swap tab: the swap page's card (swap/card.js, swap/card.css), its height kept while it loads */
@@ -605,7 +621,7 @@ a.di { color: inherit; text-decoration: none; }
 .sx { padding: 128px 0 0; }
 @media (max-width: 720px) { .sx { padding-top: 88px; } .sx.fm { padding-top: 28px; } }
 .sx-h { display: grid; justify-items: center; gap: 12px; margin: 0 0 48px; text-align: center; }
-.sx-h h2 { font: 400 clamp(32px, 4.4vw, 50px)/1.06 var(--serif); letter-spacing: -.025em; margin: 0; text-wrap: balance; }
+.sx-h h2 { font: 700 clamp(30px, 4.2vw, 46px)/1.08 var(--sans); letter-spacing: -.028em; margin: 0; text-wrap: balance; }
 .sx-h h2 em { font-style: italic; }
 .sx-h p { margin: 0; max-width: 52ch; font-size: 14px; line-height: 1.5; color: var(--mute); text-wrap: balance; }
 #how .sx-h p { max-width: none; }
@@ -880,9 +896,23 @@ a.di { color: inherit; text-decoration: none; }
 
 /* ── sheets ── */
 dialog.sheet { width: min(560px, calc(100vw - 32px)); max-height: min(90vh, 900px); max-height: min(90dvh, 900px); padding: 0; overflow: auto; overscroll-behavior: contain;
-  color: var(--ink); background: var(--card); border: 1px solid var(--hair-2); border-radius: 18px; box-shadow: var(--float); }
-dialog.sheet[open] { animation: rise .22s cubic-bezier(.2,.8,.2,1); }
-dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
+  color: var(--ink); background: var(--card); border: 1px solid var(--hair-2); border-radius: 20px; box-shadow: var(--float); }
+/* A sheet presents and dismisses both ways: the panel rises on --ease while the scrim fades, and closing runs the same travel
+   backwards instead of cutting. Entry is a transition from the @starting-style frame (not a keyframe) so the exit can reuse it;
+   a browser without @starting-style/allow-discrete simply shows and hides the sheet as before. */
+dialog.sheet { transition: opacity .2s var(--ease), transform .26s var(--ease), overlay .26s allow-discrete, display .26s allow-discrete; }
+dialog.sheet:not([open]) { opacity: 0; transform: translateY(12px); }
+dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); transition: opacity .26s var(--ease), overlay .26s allow-discrete, display .26s allow-discrete; }
+dialog.sheet:not([open])::backdrop { opacity: 0; }
+@starting-style { dialog.sheet[open] { opacity: 0; transform: translateY(14px); } dialog.sheet[open]::backdrop { opacity: 0; } }
+/* This round's motion, off in one place when the reader asks for calm: entrances, the panel settle, the indicator's arrival,
+   the skeleton sheen and the sheet's travel. State changes themselves still happen — instantly, without the travel. */
+@media (prefers-reduced-motion: reduce) {
+  .hero-t, .hx, #hx-panel, .hx-h::after { animation: none; }
+  .hx-sk i, .hx-sk .t, .hx-sk .g, .sk { animation: none; }
+  dialog.sheet, dialog.sheet::backdrop { transition: none; }
+  .seg button, .hx-h .w { transition: none; }
+}
 @keyframes rise { from { opacity: 0; transform: translateY(14px); } }
 .sheet-in { padding: 24px 24px 28px; --sx: 24px; --st: 24px; }
 /* The head stays at the top of a long sheet, so its title and close are there at any scroll; a hairline shows under it once the sheet has moved */
@@ -891,7 +921,7 @@ dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
   .sheet-head { animation: head-line linear both; animation-timeline: scroll(nearest); animation-range: 0 16px; }
   @keyframes head-line { to { box-shadow: 0 1px 0 var(--hair); } }
 }
-.sheet-head h2 { font: 400 32px/1 var(--serif); letter-spacing: -.01em; margin: 0; }
+.sheet-head h2 { font: 600 24px/1.15 var(--sans); letter-spacing: -.015em; margin: 0; }
 .sheet-head h2:focus { outline: none; }
 .x { margin-left: auto; width: var(--tap); height: var(--tap); display: grid; place-items: center; font-size: 22px; line-height: 1;
   background: none; border: 1px solid transparent; cursor: pointer; color: var(--mute); }
@@ -913,7 +943,7 @@ dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
 .sp-cmd { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; align-items: center; padding: 10px 12px; background: var(--field); border: 1px solid var(--hair); border-radius: 10px; }
 .sp-cmd span { grid-column: 1 / -1; font-size: 12px; color: var(--mute); }
 .sp-cmd code { font: 12px/1.45 var(--mono); overflow-wrap: anywhere; }
-.seg button { min-height: var(--tap); padding: 8px 10px; background: none; border: 0; cursor: pointer; color: var(--mute); line-height: 1.25; }
+.seg button { min-height: var(--tap); padding: 8px 10px; background: none; border: 0; cursor: pointer; color: var(--mute); line-height: 1.25; transition: background-color .18s var(--ease), color .18s var(--ease); }
 .seg button + button { border-left: 1px solid var(--hair-2); }
 .seg button small { display: block; font-size: 11px; }
 .seg button[aria-selected="true"] { background: var(--ink); color: var(--card); }
@@ -964,7 +994,7 @@ input::placeholder { color: var(--mute); opacity: .7; }
 .rcpt { margin-top: 14px; padding-top: 8px; border-top: 1px solid var(--hair); }
 
 .btn { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 52px; margin-top: 18px; padding: 10px 16px;
-  font-weight: 500; color: var(--card); background: var(--ink); border: 1px solid var(--ink); cursor: pointer; transition: background .15s, color .15s; }
+  font-weight: 500; color: var(--card); background: var(--ink); border: 1px solid var(--ink); border-radius: 12px; cursor: pointer; transition: background .15s, color .15s, transform .18s var(--spring); }
 @media (hover: hover) { .btn:hover:not(:disabled) { background: transparent; color: var(--ink); } }
 .btn:disabled { opacity: .4; cursor: not-allowed; }
 .stick { position: sticky; bottom: 0; z-index: 2; margin-top: 6px; padding: 12px 0 14px; background: var(--card); }
@@ -1715,7 +1745,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
 @media (max-width: 640px) {
   .top { gap: 12px; }
   .brand { gap: 8px; }
-  dialog.sheet { width: 100vw; max-width: 100vw; margin: auto 0 0; max-height: 92vh; max-height: 92dvh; border-width: 1px 0 0; border-radius: 18px 18px 0 0; }
+  dialog.sheet { width: 100vw; max-width: 100vw; margin: auto 0 0; max-height: 92vh; max-height: 92dvh; border-width: 1px 0 0; border-radius: 20px 20px 0 0; }
   .sheet-in { padding: 20px 16px calc(24px + env(safe-area-inset-bottom)); --sx: 16px; --st: 20px; }
   .big { font-size: 46px; }
   .dash { margin: 28px 0 0; }
@@ -1793,7 +1823,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
 }
 </style>
 <!-- the hero tile is drawn with the swap card's parts (swap/card.js, which the Swap tab mounts): its styles, after the page's own -->
-<link rel="stylesheet" href="/swap/card.css?cb=ee86a552" media="print">
+<link rel="stylesheet" href="/swap/card.css?cb=e490adf5" media="print">
 <!-- chrome:head:begin inline -->
 <style>
 /* The header's page links and the footer, as every page that wears them draws them. The markup is made by build/chrome.mjs and stamped
@@ -1807,8 +1837,8 @@ header.top .top-r { position: relative; display: flex; align-items: center; gap:
 .sn { display: flex; align-items: center; gap: 2px; }
 .sn > a, .sn summary {
   position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 8px; box-sizing: border-box; flex: none;
-  height: 40px; min-width: 40px; padding: 0 9px; border-radius: 12px; color: var(--mute);
-  font: 500 12.5px/1 var(--mono); text-decoration: none; list-style: none; cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent;
+  height: 40px; min-width: 40px; padding: 0 9px; border-radius: 10px; color: var(--mute);
+  font: 500 13px/1 var(--sans, var(--mono)); text-decoration: none; list-style: none; cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent;
   transition: color .15s, background-color .15s, transform .25s var(--spring, ease);
 }
 .sn summary::-webkit-details-marker { display: none; }
@@ -1848,7 +1878,7 @@ header.top .sm > summary::before, header.top .sm > summary::after { content: non
 header.top .chip {
   display: inline-flex; align-items: center; justify-content: center; gap: 8px; box-sizing: border-box; flex: 0 1 auto; min-width: 0; height: 40px; margin: 0; padding: 0 16px 0 13px;
   color: var(--ink); background: transparent; border: 1px solid var(--hair-2, var(--hair-strong, var(--hair))); border-radius: 999px;
-  font: 500 12.5px/1 var(--mono); white-space: nowrap; cursor: pointer; -webkit-tap-highlight-color: transparent;
+  font: 500 13px/1 var(--sans, var(--mono)); white-space: nowrap; cursor: pointer; -webkit-tap-highlight-color: transparent;
   transition: border-color .15s, background-color .15s, transform .25s var(--spring, ease);
 }
 header.top .chip > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
@@ -1877,12 +1907,12 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
 .sm-p {
   position: absolute; z-index: 5; top: calc(100% + 8px); right: 0; display: grid; gap: 1px; box-sizing: border-box;
   width: max-content; min-width: 220px; max-width: calc(100vw - 32px); padding: 6px;
-  background: var(--card); border: 1px solid var(--hair-2, var(--hair)); border-radius: 16px;
-  box-shadow: 0 24px 48px -26px rgba(0,0,0,.5), 0 2px 8px rgba(0,0,0,.06);
+  background: var(--card); border: 1px solid var(--hair-2, var(--hair)); border-radius: 14px;
+  box-shadow: var(--float, 0 24px 48px -26px rgba(0,0,0,.5), 0 2px 8px rgba(0,0,0,.06));
   transform-origin: 100% 0; animation: sm-in .16s ease-out;
 }
 @keyframes sm-in { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
-.sm-p a { display: flex; align-items: center; gap: 12px; box-sizing: border-box; min-height: 42px; padding: 0 12px; border-radius: 10px; color: var(--ink); font: 400 13px/1 var(--mono); text-decoration: none; }
+.sm-p a { display: flex; align-items: center; gap: 12px; box-sizing: border-box; min-height: 42px; padding: 0 12px; border-radius: 10px; color: var(--ink); font: 400 13.5px/1 var(--sans, var(--mono)); text-decoration: none; }
 .sm-p a svg { width: 18px; height: 18px; color: var(--mute); }
 .sm-p a[aria-current="page"] { background: var(--hair); }
 .sm-p a:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
@@ -18869,7 +18899,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=df6648e5').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=17019aab').catch((e) => { SWC.p = null; throw e; }));
 function swcFlow() {
   hxPathPaint();
   if (!SWC.card || SWC.card.flow === HX.flow) return;

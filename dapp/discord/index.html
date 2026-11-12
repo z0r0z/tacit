@@ -23,12 +23,12 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /discord/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/discord/app.js?cb=33bc4326">
-<link rel="modulepreload" href="/trade/connect.js?cb=f6c8f123">
+<link rel="modulepreload" href="/discord/app.js?cb=12ad9c7f">
+<link rel="modulepreload" href="/trade/connect.js?cb=cbf21295">
 <link rel="modulepreload" href="/walletconnect.js?cb=843803d6">
 <link rel="modulepreload" href="/trade/wallet.js?cb=5d19a733">
 <link rel="modulepreload" href="/wallet-prompts.js">
-<link rel="modulepreload" href="/trade/sheet.js?cb=1161dd4e">
+<link rel="modulepreload" href="/trade/sheet.js?cb=c8f387a5">
 <link rel="modulepreload" href="/trade/util.js?cb=1d2cd8d3">
 <link rel="modulepreload" href="/trade/rpc.js">
 <link rel="modulepreload" href="/rpc-body.js">
@@ -159,8 +159,8 @@ header.top .top-r { position: relative; display: flex; align-items: center; gap:
 .sn { display: flex; align-items: center; gap: 2px; }
 .sn > a, .sn summary {
   position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 8px; box-sizing: border-box; flex: none;
-  height: 40px; min-width: 40px; padding: 0 9px; border-radius: 12px; color: var(--mute);
-  font: 500 12.5px/1 var(--mono); text-decoration: none; list-style: none; cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent;
+  height: 40px; min-width: 40px; padding: 0 9px; border-radius: 10px; color: var(--mute);
+  font: 500 13px/1 var(--sans, var(--mono)); text-decoration: none; list-style: none; cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent;
   transition: color .15s, background-color .15s, transform .25s var(--spring, ease);
 }
 .sn summary::-webkit-details-marker { display: none; }
@@ -200,7 +200,7 @@ header.top .sm > summary::before, header.top .sm > summary::after { content: non
 header.top .chip {
   display: inline-flex; align-items: center; justify-content: center; gap: 8px; box-sizing: border-box; flex: 0 1 auto; min-width: 0; height: 40px; margin: 0; padding: 0 16px 0 13px;
   color: var(--ink); background: transparent; border: 1px solid var(--hair-2, var(--hair-strong, var(--hair))); border-radius: 999px;
-  font: 500 12.5px/1 var(--mono); white-space: nowrap; cursor: pointer; -webkit-tap-highlight-color: transparent;
+  font: 500 13px/1 var(--sans, var(--mono)); white-space: nowrap; cursor: pointer; -webkit-tap-highlight-color: transparent;
   transition: border-color .15s, background-color .15s, transform .25s var(--spring, ease);
 }
 header.top .chip > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
@@ -229,12 +229,12 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
 .sm-p {
   position: absolute; z-index: 5; top: calc(100% + 8px); right: 0; display: grid; gap: 1px; box-sizing: border-box;
   width: max-content; min-width: 220px; max-width: calc(100vw - 32px); padding: 6px;
-  background: var(--card); border: 1px solid var(--hair-2, var(--hair)); border-radius: 16px;
-  box-shadow: 0 24px 48px -26px rgba(0,0,0,.5), 0 2px 8px rgba(0,0,0,.06);
+  background: var(--card); border: 1px solid var(--hair-2, var(--hair)); border-radius: 14px;
+  box-shadow: var(--float, 0 24px 48px -26px rgba(0,0,0,.5), 0 2px 8px rgba(0,0,0,.06));
   transform-origin: 100% 0; animation: sm-in .16s ease-out;
 }
 @keyframes sm-in { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
-.sm-p a { display: flex; align-items: center; gap: 12px; box-sizing: border-box; min-height: 42px; padding: 0 12px; border-radius: 10px; color: var(--ink); font: 400 13px/1 var(--mono); text-decoration: none; }
+.sm-p a { display: flex; align-items: center; gap: 12px; box-sizing: border-box; min-height: 42px; padding: 0 12px; border-radius: 10px; color: var(--ink); font: 400 13.5px/1 var(--sans, var(--mono)); text-decoration: none; }
 .sm-p a svg { width: 18px; height: 18px; color: var(--mute); }
 .sm-p a[aria-current="page"] { background: var(--hair); }
 .sm-p a:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
@@ -339,6 +339,6 @@ footer.sf svg.fill { width: 16px; height: 16px; }
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/discord/app.js?cb=33bc4326"></script>
+<script type="module" src="/discord/app.js?cb=12ad9c7f"></script>
 </body>
 </html>
