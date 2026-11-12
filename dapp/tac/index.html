@@ -272,7 +272,6 @@ a.di { color: inherit; text-decoration: none; }
 .coin .pair .tk + .tk, .pk-r .pair .tk + .tk { margin-left: -9px; border-radius: 50%; box-shadow: 0 0 0 1.5px var(--field); }
 .lps { display: grid; gap: 8px; margin: 8px 0 4px; }
 .lps .seg { margin: 0; }
-.lps .seg button[aria-checked="true"] { background: var(--ink); color: var(--card); }
 .tk.letter { display: grid; place-items: center; color: #fff; background: var(--c, #8F8979); font: 500 10px/1 var(--mono); letter-spacing: 0; }
 .di-k .tk.letter { font-size: 8px; }
 .di-k .dot { margin-left: auto; }
@@ -757,7 +756,6 @@ a.di { color: inherit; text-decoration: none; }
 .tc-links { display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 12px 26px; margin-top: 40px; }
 .tc-links .tl { font-size: 14px; }
 .tc-links .btn { width: auto; min-height: 48px; margin: 0; padding: 0 24px; color: var(--card); background: var(--ink); border-color: var(--ink); border-radius: 16px; }
-@media (hover: hover) { .tc-links .btn:hover:not(:disabled) { color: var(--ink); background: transparent; } }
 .tc-links button.tl { padding: 0; background: none; border: 0; font-size: 14px; cursor: pointer; }
 .tc-links a.btn { text-decoration: none; }
 .tc-more { display: flex; flex-wrap: wrap; justify-content: center; gap: 2px 22px; margin: 14px 0 0; font-size: 12px; }
@@ -900,12 +898,13 @@ dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
 .sheet-head h2 { font: 400 32px/1 var(--serif); letter-spacing: -.01em; margin: 0; }
 .sheet-head h2:focus { outline: none; }
 .x { margin-left: auto; width: var(--tap); height: var(--tap); display: grid; place-items: center; font-size: 22px; line-height: 1;
-  background: none; border: 1px solid transparent; cursor: pointer; color: var(--mute); }
-@media (hover: hover) { .x:hover { color: var(--ink); border-color: var(--hair-2); } }
+  background: none; border: 0; border-radius: 12px; cursor: pointer; color: var(--mute); transition: color .15s, background-color .15s; }
+@media (hover: hover) { .x:hover { color: var(--ink); background: var(--hair); } }
 .x.share + .x { margin-left: 0; }
 .x.share svg { width: 18px; height: 18px; }
 
-.seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; border: 1px solid var(--hair-2); margin: 0 0 18px; }
+/* A sheet's switch is the card's: a soft track with the choice a raised pill on it, so a sheet and the card it opens over are drawn by one hand. */
+.seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 2px; margin: 0 0 18px; padding: 3px; border-radius: 15px; background: color-mix(in srgb, var(--ink) 6%, transparent); }
 /* The Prove sheet: who proves (one choice), then only what that way needs */
 .spw { display: grid; gap: 6px; margin: 6px 0 16px; }
 .spw-o { display: flex; align-items: flex-start; gap: 10px; padding: 11px 14px; border: 1px solid var(--hair-2); border-radius: 12px; cursor: pointer; transition: border-color .15s; }
@@ -919,13 +918,12 @@ dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
 .sp-cmd { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; align-items: center; padding: 10px 12px; background: var(--field); border: 1px solid var(--hair); border-radius: 10px; }
 .sp-cmd span { grid-column: 1 / -1; font-size: 12px; color: var(--mute); }
 .sp-cmd code { font: 12px/1.45 var(--mono); overflow-wrap: anywhere; }
-.seg button { min-height: var(--tap); padding: 8px 10px; background: none; border: 0; cursor: pointer; color: var(--mute); line-height: 1.25; }
-.seg button + button { border-left: 1px solid var(--hair-2); }
+.seg button { min-height: calc(var(--tap) - 6px); padding: 6px 10px; background: none; border: 0; border-radius: 12px; cursor: pointer; color: var(--mute); line-height: 1.25; transition: background .15s, color .15s; }
+@media (hover: hover) { .seg button:hover { color: var(--ink); } }
 .seg button small { display: block; font-size: 11px; }
-.seg button[aria-selected="true"] { background: var(--ink); color: var(--card); }
-.seg.sub { border-color: var(--hair); margin-bottom: 16px; }
-.seg.sub button { min-height: 36px; font-size: 13px; }
-.seg.sub button + button { border-color: var(--hair); }
+.seg button:is([aria-selected="true"], [aria-checked="true"]) { color: var(--ink); background: var(--card); box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 14%, transparent); }
+.seg.sub { margin-bottom: 16px; border-radius: 13px; }
+.seg.sub button { min-height: 32px; border-radius: 10px; font-size: 13px; }
 .seg.sub .cmk { display: flex; justify-content: center; margin: 0 0 2px; }
 @media (max-width: 560px) { .seg.sub button[data-chain]:not([aria-selected="true"]) .cn { display: none; } .seg.sub button[data-chain]:not([aria-selected="true"]) .cmk { margin: 0; } }
 
@@ -937,7 +935,7 @@ dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
 .lbl { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--mute); margin: 14px 0 6px; }
 .lbl button { background: none; border: 0; padding: 7px 0; margin: -7px 0; cursor: pointer; color: var(--mute); text-decoration: underline; text-underline-offset: 3px; }
 @media (hover: hover) { .lbl button:hover { color: var(--ink); } }
-.amt { display: flex; align-items: center; background: var(--field); border: 1px solid var(--hair); border-bottom-color: var(--ink); }
+.amt { display: flex; align-items: center; background: var(--field); border: 1px solid var(--hair); border-radius: 14px; transition: border-color .15s; }
 .amt:focus-within { border-color: var(--ink); }
 .amt:has(input[aria-invalid="true"]) { border-color: var(--err); }
 .amt input { flex: 1; min-width: 0; font: 500 24px/1.2 var(--mono); letter-spacing: -.02em; color: var(--ink); background: none; border: 0; padding: 12px 14px; outline: none; }
@@ -951,7 +949,6 @@ dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
   border: 1px solid var(--hair-2); border-radius: 50%; background: var(--card); color: var(--ink); cursor: pointer; }
 .swp .flip svg, .hx .flip svg { width: 16px; height: 16px; }
 @media (hover: hover) { .swp .flip:hover, .hx .flip:hover { border-color: var(--ink); } }
-.amt.out { border-bottom-color: var(--hair-2); }
 .amt.out output { flex: 1; min-width: 0; font: 500 24px/1.2 var(--mono); letter-spacing: -.02em; color: var(--ink); padding: 12px 14px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .amt.out output.ph { color: var(--mute); }
@@ -970,13 +967,14 @@ input::placeholder { color: var(--mute); opacity: .7; }
 .rcpt { margin-top: 14px; padding-top: 8px; border-top: 1px solid var(--hair); }
 
 .btn { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 52px; margin-top: 18px; padding: 10px 16px;
-  font-weight: 500; color: var(--card); background: var(--ink); border: 1px solid var(--ink); cursor: pointer; transition: background .15s, color .15s; }
-@media (hover: hover) { .btn:hover:not(:disabled) { background: transparent; color: var(--ink); } }
-.btn:disabled { opacity: .4; cursor: not-allowed; }
+  font-weight: 500; color: var(--card); background: var(--ink); border: 1px solid var(--ink); border-radius: 14px; cursor: pointer; transition: background .15s, color .15s, box-shadow .15s, transform .1s; }
+@media (hover: hover) { .btn:hover:not(:disabled) { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ink) 22%, transparent); } }
+/* a button that cannot be pressed yet stays readable: the card's quiet bar, not a faded one */
+.btn:disabled { color: color-mix(in srgb, var(--ink) 70%, var(--card)); background: color-mix(in srgb, var(--ink) 6%, transparent); border-color: var(--hair-2); cursor: not-allowed; }
 .stick { position: sticky; bottom: 0; z-index: 2; margin-top: 6px; padding: 12px 0 14px; background: var(--card); }
 .stick .btn { margin-top: 0; }
 .btn.ghost { color: var(--ink); background: transparent; border-color: var(--hair-2); }
-@media (hover: hover) { .btn.ghost:hover:not(:disabled) { border-color: var(--ink); } }
+@media (hover: hover) { .btn.ghost:hover:not(:disabled) { border-color: var(--ink); box-shadow: none; } }
 a.btn { text-decoration: none; white-space: nowrap; }
 .row2 a.btn { white-space: normal; }
 .btn[aria-busy="true"] { cursor: progress; }
@@ -1129,7 +1127,7 @@ a.btn { text-decoration: none; white-space: nowrap; }
 .opt-t b { font-weight: 500; }
 .opt-m { font-size: 12px; color: var(--mute); padding-left: 32px; }
 .opt-t .w-bal { margin-left: auto; font-weight: 400; font-size: 13px; color: var(--mute); }
-.opts + .seg { margin-top: 14px; }
+.opts + .seg, .note + .seg { margin-top: 14px; }
 #tac-bal > .opts { margin: 0 0 16px; }
 .note.tb-ask { margin: 0 0 14px; }
 /* TAC's home: each place TAC can be, what it holds there and what can be done with it there */
@@ -1307,9 +1305,9 @@ html[data-page="tac"] :is(.hero, #dash, #how, #tac, .pg, .sx.pi), html:not([data
 .tcd-linkin input { min-width: 0; padding: 9px 10px; font: inherit; font-size: 16px; color: var(--ink); background: var(--field); border: 1px solid var(--hair-2); }
 @media (max-width: 480px) { .tcd-linkin { grid-template-columns: 1fr; } }
 .tcd-nudge { margin: 14px 0 0; padding: 10px 12px; font-size: 13px; background: var(--field); border-left: 2px solid var(--orange); text-wrap: pretty; }
-.tcd-tabs, .tcd .tp > .seg.sub:first-child { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; margin: 18px 0 0; border-bottom: 1px solid var(--hair); }
-.tcd-tabs button, .tcd .tp > .seg.sub:first-child button { min-height: 44px; padding: 8px 4px; font: inherit; font-size: 13px; color: var(--mute); background: none; border: 0; border-bottom: 2px solid transparent; cursor: pointer; }
-.tcd-tabs button[aria-selected="true"], .tcd .tp > .seg.sub:first-child button[aria-selected="true"] { color: var(--ink); background: none; border-bottom-color: var(--ink); font-weight: 500; }
+.tcd-tabs, .tcd .tp > .seg.sub:first-child { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 0; margin: 18px 0 0; padding: 0; border-bottom: 1px solid var(--hair); border-radius: 0; background: none; }
+.tcd-tabs button, .tcd .tp > .seg.sub:first-child button { min-height: 44px; padding: 8px 4px; font: inherit; font-size: 13px; color: var(--mute); background: none; border: 0; border-bottom: 2px solid transparent; border-radius: 0; cursor: pointer; }
+.tcd-tabs button[aria-selected="true"], .tcd .tp > .seg.sub:first-child button[aria-selected="true"] { color: var(--ink); background: none; border-bottom-color: var(--ink); box-shadow: none; font-weight: 500; }
 .tcd .tp { padding: 0; }
 .tcd .tp > .seg.sub:first-child { margin-bottom: 14px; }
 .tcd-line { margin: 14px 0 0; font-size: 13px; color: var(--mute); text-wrap: pretty; }
@@ -1341,7 +1339,7 @@ html[data-page="tac"] :is(.hero, #dash, #how, #tac, .pg, .sx.pi), html:not([data
 .tcd-tabs { margin-top: 24px; }
 .tcd-tabs button { font-size: 12px; }
 .tcd .lbl { margin: 16px 0 8px; }
-.tcd .amt { background: none; border: 0; border-bottom: 1px solid var(--hair-2); }
+.tcd .amt { background: none; border: 0; border-bottom: 1px solid var(--hair-2); border-radius: 0; }
 .tcd .amt:focus-within { border-bottom-color: var(--ink); }
 .tcd .amt:has(input[aria-invalid="true"]) { border-bottom-color: var(--err); }
 .tcd .amt input, .tcd .amt.out output { padding-left: 0; }
@@ -1352,10 +1350,9 @@ html[data-page="tac"] :is(.hero, #dash, #how, #tac, .pg, .sx.pi), html:not([data
 .tcd .tcd-dest button { min-height: 32px; padding: 4px 0; font-size: 12px; color: var(--mute); background: none; border: 0; border-bottom: 1px solid transparent; }
 .tcd .tcd-dest button + button { border-left: 0; }
 /* the Bitcoin side's own tab rows (tac/pool.js .seg.sub) read like the card's tabs: no box, the chosen one underlined */
-.tcd .seg.sub { border: 0; border-bottom: 1px solid var(--hair); }
-.tcd .seg.sub button { font-size: 12px; border-bottom: 2px solid transparent; }
-.tcd .seg.sub button + button { border-left: 0; }
-.tcd .seg.sub button[aria-selected="true"], .tcd .seg.sub button[aria-checked="true"] { background: none; color: var(--ink); border-bottom-color: var(--ink); }
+.tcd .seg.sub { gap: 0; padding: 0; border-bottom: 1px solid var(--hair); border-radius: 0; background: none; }
+.tcd .seg.sub button { font-size: 12px; border-bottom: 2px solid transparent; border-radius: 0; }
+.tcd .seg.sub button[aria-selected="true"], .tcd .seg.sub button[aria-checked="true"] { background: none; color: var(--ink); border-bottom-color: var(--ink); box-shadow: none; }
 .tcd .tcd-dest button[aria-checked="true"] { color: var(--ink); background: none; border-bottom-color: var(--ink); }
 @media (hover: hover) { .tcd .tcd-dest button:hover { color: var(--ink); } }
 .tcd-foot { margin-top: 24px; padding-top: 0; border-top: 0; font-size: 12px; }
@@ -1815,6 +1812,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
 /* A finger needs the full tap size; a mouse keeps the tighter controls. */
 @media (pointer: coarse) {
   .seg.sub button, .callout .btn, .hl-h .btn { min-height: var(--tap); }
+  .seg:not(.sub) button { min-height: var(--tap); }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
