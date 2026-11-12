@@ -62,3 +62,15 @@ export function buildDigest(findings, commits, { day, maxReal = 3, maxOutside = 
     })),
   };
 }
+
+// One commit's reviewer findings ({ file, line, why }) paired by position with the verifier's verdicts ({ n, verdict, severity, evidence }, n counting from 1) into
+// the records buildDigest takes. A finding with no verdict, or a verdict that is not one of the three, was not verified and is left out.
+export function mergeFindings(commit, findings, verdicts) {
+  const out = [];
+  (Array.isArray(findings) ? findings : []).forEach((f, i) => {
+    const v = (Array.isArray(verdicts) ? verdicts : []).find((x) => x && x.n === i + 1);
+    if (!v || !['REAL', 'UNCERTAIN', 'REFUTED'].includes(v.verdict) || !f || typeof f.why !== 'string') return;
+    out.push({ commit, file: String(f.file || ''), line: Number.isInteger(f.line) ? f.line : 0, claim: f.why, severity: v.severity, verdict: v.verdict, evidence: String(v.evidence || '') });
+  });
+  return out;
+}

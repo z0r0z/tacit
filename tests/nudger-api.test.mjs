@@ -70,6 +70,7 @@ ok('the labels route is refused without the token too', (await get('/nudger/labe
 ok('a digest with the secret but no channel configured is refused and posts nothing', (await post('/nudger/digest', digest([finding(1)]))).status === 500 && sent.length === 0);
 env.NUDGER_CHANNEL_ID = CH; env.DISCORD_BOT_TOKEN = 'bot-token';
 ok('a bad body is a 400 and posts nothing', (await post('/nudger/digest', '{nope')).status === 400 && (await post('/nudger/digest', digest([finding(1, { id: 'bad' })]))).status === 400 && sent.length === 0);
+ok('a body with no list of findings is refused, not read as a quiet day, and does not use up the day', (await Promise.all([{ day: '2026-11-12', reviewed: 2 }, { day: '2026-11-12', findings: null }, { day: '2026-11-12', findings: 'none' }, { day: '2026-11-12', finding: [] }].map((b) => post('/nudger/digest', b)))).every((r) => r.status === 400) && sent.length === 0);
 ok('an oversized body is refused', (await post('/nudger/digest', 'x'.repeat(50_000))).status === 413);
 
 const first = await post('/nudger/digest', digest([finding(1), finding(2, { status: 'outside', claim: 'It @everyone depends on `server` behaviour.' })]));
@@ -85,6 +86,7 @@ script = [{ status: 200, body: { id: '900000000000000091' } }, { status: 500, bo
 const partial = await post('/nudger/digest', { day: '2026-11-11', reviewed: 2, findings: [finding(1, { id: 'n261111-1' }), finding(2, { id: 'n261111-2' })] });
 const pj = await partial.json();
 ok('when Discord fails midway the route says so and names what was posted', partial.status === 502 && pj.posted.join() === 'n261111-1', pj);
+ok('and what was posted already shows in the report, before any retry', (await (await get('/nudger/labels?since=2026-11-11')).json()).findings.some((x) => x.id === 'n261111-1'));
 const before = sent.length;
 const retry = await (await post('/nudger/digest', { day: '2026-11-11', reviewed: 2, findings: [finding(1, { id: 'n261111-1' }), finding(2, { id: 'n261111-2' })] })).json();
 ok('a retry posts only the finding that was missing', retry.ok === true && sent.length === before + 1 && sent[sent.length - 1].body.content.includes('n261111-2'), retry);
@@ -122,6 +124,8 @@ ok('the verification button still reaches its own handler', (await click('tacit:
 // ---- reading it back
 const rep = await (await get('/nudger/labels?since=2026-11-09')).json();
 ok('the labels route lists what was posted with each label, and the totals', rep.totals.posted === 5 && rep.totals.labelled === 2 && rep.totals.noise === 1 && rep.totals.known === 1 && rep.totals.useful === 0, rep.totals);
+ok('a since older than anything kept still reaches the recent days', (await (await get('/nudger/labels?since=2001-01-01')).json()).totals.posted === 5);
+ok('and a nonsense since falls back to the last 30 days', (await get('/nudger/labels?since=yesterday')).status === 200 && (await get('/nudger/labels?since=2026-13-45')).status === 200);
 ok('a finding reads back whole', (await (await get('/nudger/finding/n261112-1')).json()).label === 'noise' && (await get('/nudger/finding/n261112-77')).status === 404);
 
 globalThis.fetch = realFetch;

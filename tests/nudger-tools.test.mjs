@@ -8,7 +8,7 @@ import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync, rmSync
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { inScope, numberedDiff, parseSpan, buildDigest } from '../tools/nudger/lib.mjs';
+import { inScope, numberedDiff, parseSpan, buildDigest, mergeFindings } from '../tools/nudger/lib.mjs';
 
 let pass = 0, fail = 0;
 function ok(name, cond, detail) {
@@ -47,6 +47,13 @@ ok('no commit supplies more than two, and the real ones stop at three', d.findin
 ok('ids run n<YYMMDD>-<k> in digest order, and each carries its commit\'s subject', d.findings.map((f) => f.id).join() === 'n261112-1,n261112-2,n261112-3,n261112-4' && d.findings[0].subject === 'one' && d.reviewed === 2);
 ok('with nothing raised the digest is empty and still says how many commits were reviewed', buildDigest([], commits, { day: '2026-11-12' }).findings.length === 0 && buildDigest([], commits, { day: '2026-11-12' }).reviewed === 2);
 
+// ---- pairing a reviewer's findings with a verifier's verdicts
+const fs3 = [{ file: 'dapp/a.js', line: 4, why: 'first' }, { file: 'dapp/a.js', line: 9, why: 'second' }, { file: 'dapp/b.js', line: 1, why: 'third' }, { why: 7 }];
+const vs3 = [{ n: 1, verdict: 'REAL', severity: 'med', evidence: 'a.js:4' }, { n: 2, verdict: 'REFUTED', severity: 'low', evidence: 'guarded' }, { n: 3, verdict: 'MAYBE', severity: 'low', evidence: '' }, { n: 4, verdict: 'REAL', severity: 'low', evidence: 'x' }];
+const merged = mergeFindings('c'.repeat(40), fs3, vs3);
+ok('findings are paired with verdicts by position; the reviewer\'s sentence becomes the claim', merged.length === 2 && merged[0].claim === 'first' && merged[0].verdict === 'REAL' && merged[0].severity === 'med' && merged[0].file === 'dapp/a.js' && merged[0].line === 4 && merged[1].verdict === 'REFUTED');
+ok('a verdict that is not one of the three, a finding with no sentence, and missing input are left out, not guessed', merged.every((m) => m.claim !== 'third') && mergeFindings('c', fs3, []).length === 0 && mergeFindings('c', null, vs3).length === 0 && mergeFindings('c', fs3, 'nope').length === 0);
+
 // ---- the commands, on a throwaway repository
 const root = mkdtempSync(join(tmpdir(), 'nudger-test-'));
 const repo = join(root, 'repo'), work = join(root, 'work');
@@ -79,6 +86,16 @@ const capped = JSON.parse(readFileSync(`${work}/commits.json`, 'utf8'));
 ok('--max caps the commits and says what it skipped', capped.commits.length === 1 && capped.skipped.some((s) => /over the cap/.test(s.reason)));
 ok('--snapshots is opt-in', !existsSync(`${work}/snap`));
 ok('a bad span is refused with a message', node('tools/nudger/select.mjs', ['--repo', repo, '--out', work, '--since', 'forever']).status !== 0);
+
+// the verifier's input and the digest's own pairing of findings with verdicts, per commit
+writeFileSync(`${work}/findings-1.json`, JSON.stringify({ findings: [{ file: 'dapp/big.js', line: 3, why: 'the first finding' }, { file: 'dapp/big.js', line: 8, why: 'the  second\nfinding' }] }));
+const vi = node('tools/nudger/verify-input.mjs', ['--out', work, '--n', '1']);
+const vtxt = existsSync(`${work}/verify-1.txt`) ? readFileSync(`${work}/verify-1.txt`, 'utf8') : '';
+ok('the verifier\'s input names the snapshot, carries the commit as the reviewer saw it, and numbers the findings', vi.status === 0 && vtxt.startsWith(`Snapshot root: ${work}/snap/1\n`) && vtxt.includes('Commit message:\na big change') && vtxt.includes('F1 (dapp/big.js:3): the first finding') && vtxt.includes('F2 (dapp/big.js:8): the second finding'), vtxt.slice(0, 200));
+ok('with no findings it writes nothing and exits 3', node('tools/nudger/verify-input.mjs', ['--out', work, '--n', '2']).status === 3 && !existsSync(`${work}/verify-2.txt`));
+writeFileSync(`${work}/verdicts-1.json`, JSON.stringify([{ n: 1, verdict: 'REAL', severity: 'high', evidence: 'big.js:3 shows it' }, { n: 2, verdict: 'REFUTED', severity: 'low', evidence: 'guarded at big.js:5' }]));
+const paired = node('tools/nudger/digest.mjs', ['--out', work, '--day', '2026-11-12']);
+ok('the digest pairs findings-<n> with verdicts-<n> itself, and keeps only what survived', paired.status === 0 && paired.stdout.includes('the first finding') && !paired.stdout.includes('second finding') && JSON.parse(readFileSync(`${work}/digest.json`, 'utf8')).findings[0].severity === 'high', paired.stdout.slice(0, 300));
 
 // the digest command, dry then posted to a stand-in API
 writeFileSync(`${work}/verdicts.json`, JSON.stringify([{ commit: big, file: 'dapp/big.js', line: 7, claim: 'a finding about the big change', severity: 'med', verdict: 'REAL', evidence: 'big.js:7' }]));

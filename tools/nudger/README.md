@@ -16,14 +16,13 @@ Work in a scratch directory, `W=/tmp/nudger-$(date -u +%F)`.
 
 1. **Select.** `node tools/nudger/select.mjs --out $W --snapshots` writes `$W/commits.json`, `$W/review-<n>.txt` and `$W/snap/<n>/`. It takes the commits of the last 24 hours on
    `origin/main` that change at least 30 real lines of in-scope code (`dapp/`, `worker/src/`, `server/`, `helpdesk/`; no tests, data or vendored files), the largest 6.
-2. **Review.** For each commit, a reviewer with a fresh context follows `tools/nudger/prompts/review.md` on `$W/review-<n>.txt` and returns its findings. It needs no tool beyond reading that one file.
-3. **Verify.** For each commit that has findings, a verifier with a fresh context follows `tools/nudger/prompts/verify.md`, given the message, the diff, the numbered findings and the
-   snapshot `$W/snap/<n>/`. It may search and read only inside that directory.
-4. **Collect.** Write `$W/verdicts.json`, an array with one object per finding:
-   `{ "commit": "<full sha>", "file": "...", "line": 0, "claim": "<the finding>", "severity": "low|med|high", "verdict": "REAL|UNCERTAIN|REFUTED", "evidence": "..." }`.
-   An empty array when nothing was raised.
-5. **Digest.** `node tools/nudger/digest.mjs --out $W` prints what the channel would show. With `--post` it sends it (set `NUDGER_SECRET`; `NUDGER_API` defaults to https://api.tacit.finance).
-   At most 3 verified findings, 2 that hinge on a fact outside the code, and 2 from any one commit; a quiet day posts one line.
+2. **Review.** For each commit `n`, a reviewer with a fresh context follows `tools/nudger/prompts/review.md` on `$W/review-<n>.txt` and returns its findings; save the reply as
+   `$W/findings-<n>.json`. It needs no tool beyond reading that one file.
+3. **Verify.** For each commit that has findings, `node tools/nudger/verify-input.mjs --out $W --n <n>` writes `$W/verify-<n>.txt` (and exits 3 when there is nothing to verify). A verifier
+   with a fresh context follows `tools/nudger/prompts/verify.md` on it, searching and reading only inside `$W/snap/<n>/`, and returns its array; save the reply as `$W/verdicts-<n>.json`.
+4. **Digest.** `node tools/nudger/digest.mjs --out $W` pairs each commit's findings with its verdicts and prints what the channel would show. With `--post` it sends it
+   (set `NUDGER_SECRET`; `NUDGER_API` defaults to https://api.tacit.finance). At most 3 verified findings, 2 that hinge on a fact outside the code, and 2 from any one commit; a quiet day posts one line.
+   `node tools/nudger/digest.mjs --ping` posts one "connected" line and records nothing.
 
 ## Rules
 

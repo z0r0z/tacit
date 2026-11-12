@@ -2,7 +2,8 @@
 // the channel with a row of buttons, and every click is stored as a label on that finding. The bot token stays on this server: the reviewer holds only
 // NUDGER_SECRET, which can post a digest and read labels and nothing else.
 //
-// KV keys: nudge:f:<id> (the finding, its message id and its label), nudge:day:<YYYY-MM-DD> (the ids posted that day, so a retried digest posts nothing twice).
+// KV keys: nudge:f:<id> (the finding, its message id and its label), nudge:day:<YYYY-MM-DD> ({ ids, done }: the ids posted that day so far, and whether the whole
+// digest went out, so a retried digest posts nothing twice and a half-posted one still shows in the report).
 
 export const NUDGE_PREFIX = 'nudge:';
 export const NUDGE_LABELS = Object.freeze({ useful: 'Useful', noise: 'Noise', known: 'Already known' });
@@ -26,7 +27,8 @@ export function parseDigest(b) {
   if (!b || typeof b !== 'object' || Array.isArray(b)) return { error: 'bad body' };
   const day = String(b.day || '');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || Number.isNaN(Date.parse(day))) return { error: 'bad day' };
-  const list = Array.isArray(b.findings) ? b.findings : [];
+  if (!Array.isArray(b.findings)) return { error: 'findings must be a list' };
+  const list = b.findings;
   if (list.length > MAX_FINDINGS) return { error: 'too many findings' };
   const seen = new Set(), findings = [];
   for (const f of list) {
@@ -108,9 +110,10 @@ export async function postPing(env, fetchImpl = fetch) {
 export async function postDigest(env, digest, fetchImpl = fetch) {
   if (!/^\d{17,20}$/.test(String(env.NUDGER_CHANNEL_ID || '')) || !env.DISCORD_BOT_TOKEN) return { status: 500, body: { ok: false, error: 'review channel not configured' } };
   const dayKey = `nudge:day:${digest.day}`;
-  const done = await env.REGISTRY_KV.get(dayKey);
-  if (done) return { status: 200, body: { ok: true, duplicate: true, ids: JSON.parse(done) } };
+  const prior = await env.REGISTRY_KV.get(dayKey);
+  if (prior && JSON.parse(prior).done) return { status: 200, body: { ok: true, duplicate: true, ids: JSON.parse(prior).ids } };
   const posted = [];
+  const save = (done) => env.REGISTRY_KV.put(dayKey, JSON.stringify({ ids: posted, done }), { expirationTtl: KEEP_SECONDS });
   if (!digest.findings.length) {
     const r = await sendMessage(env, renderQuiet(digest.day, digest.reviewed), fetchImpl);
     if (!r.ok) return { status: 502, body: { ok: false, error: r.error } };
@@ -122,8 +125,9 @@ export async function postDigest(env, digest, fetchImpl = fetch) {
     if (!r.ok) return { status: 502, body: { ok: false, error: r.error, posted } };
     await env.REGISTRY_KV.put(key, JSON.stringify({ ...f, day: digest.day, message: r.id, posted_at: Date.now(), label: null }), { expirationTtl: KEEP_SECONDS });
     posted.push(f.id);
+    await save(false);
   }
-  await env.REGISTRY_KV.put(dayKey, JSON.stringify(posted), { expirationTtl: KEEP_SECONDS });
+  await save(true);
   return { status: 200, body: { ok: true, posted } };
 }
 
@@ -148,12 +152,14 @@ export async function nudgeButton(env, interaction) {
 
 // Findings posted from `since` (YYYY-MM-DD, default 30 days back) through today (a day ahead of this clock is allowed for), with their labels and the totals.
 export async function labelsReport(env, since, now = new Date()) {
-  const start = /^\d{4}-\d{2}-\d{2}$/.test(String(since || '')) ? new Date(`${since}T00:00:00Z`) : new Date(now.getTime() - 30 * 86400_000);
+  const oldest = now.getTime() - MAX_REPORT_DAYS * 86400_000;   // nothing older is kept
+  const asked = /^\d{4}-\d{2}-\d{2}$/.test(String(since || '')) ? new Date(`${since}T00:00:00Z`) : new Date(now.getTime() - 30 * 86400_000);
+  const start = Number.isNaN(asked.getTime()) ? new Date(now.getTime() - 30 * 86400_000) : new Date(Math.max(asked.getTime(), oldest));
   const rows = [];
-  for (let d = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate())), n = 0; d.getTime() <= now.getTime() + 86400_000 && n < MAX_REPORT_DAYS; d = new Date(d.getTime() + 86400_000), n++) {
+  for (let d = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate())), n = 0; d.getTime() <= now.getTime() + 86400_000 && n <= MAX_REPORT_DAYS; d = new Date(d.getTime() + 86400_000), n++) {
     const day = d.toISOString().slice(0, 10), raw = await env.REGISTRY_KV.get(`nudge:day:${day}`);
     if (!raw) continue;
-    for (const id of JSON.parse(raw)) {
+    for (const id of JSON.parse(raw).ids) {
       const f = await env.REGISTRY_KV.get(`nudge:f:${id}`);
       if (f) { const r = JSON.parse(f); rows.push({ id, day, file: r.file, line: r.line, commit: r.commit, severity: r.severity, status: r.status, label: r.label || null, by_name: r.by_name || null }); }
     }
