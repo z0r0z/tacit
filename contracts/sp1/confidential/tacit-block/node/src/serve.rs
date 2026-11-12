@@ -829,6 +829,18 @@ impl Leader {
                 let (root, path) = (t.root, t.path(i as usize));
                 Ok(json!({ "index": i, "root": hx(&blk::fr_be(&root)), "path": path.iter().map(|x| hx(&blk::fr_be(x))).collect::<Vec<_>>() }))
             }
+            // The nullifiers the chain has spent, in the order it took them (the record at 0 is the tree's own sentinel, not a spend): a wallet keeps
+            // the list and checks its notes against it, so no one is asked about a particular note.
+            ("GET", "/nullifiers") => {
+                let total = self.node.nf.records.len().saturating_sub(1);
+                let from = q("from").and_then(|v| v.parse::<usize>().ok()).unwrap_or(0).min(total);
+                let limit = q("limit").and_then(|v| v.parse::<usize>().ok()).unwrap_or(1000).min(2000);
+                let to = (from + limit).min(total);
+                Ok(json!({
+                    "from": from, "next": to, "total": total,
+                    "nullifiers": self.node.nf.records[1 + from..1 + to].iter().map(|(v, _)| hx(v)).collect::<Vec<_>>(),
+                }))
+            }
             ("GET", p) if p.starts_with("/spent/") => {
                 let nf: [u8; 32] = hex::decode(p[7..].trim_start_matches("0x")).ok().and_then(|b| b.try_into().ok()).ok_or(bad("a 32-byte nullifier".into()))?;
                 Ok(json!({ "spent": self.node.spent(&nf) }))
