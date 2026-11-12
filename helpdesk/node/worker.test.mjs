@@ -6,7 +6,7 @@ import http from 'node:http';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { clampJob, run, MAX_JOB } from './worker.mjs';
+import { clampJob, run, MAX_JOB, hardware } from './worker.mjs';
 
 const HERE = path.dirname(new URL(import.meta.url).pathname), ROOT = path.dirname(HERE);
 const PORT = 8795, API = `http://127.0.0.1:${PORT}`, data = mkdtempSync(path.join(tmpdir(), 'wk-'));
@@ -21,6 +21,16 @@ check('a job is cut down to its id, its messages, a token budget of 16-500 and a
 check('jobs this node will not run: no id, a long id, no messages, five messages, a message without text, too many bytes',
   [{ messages: msgs }, { id: 'x'.repeat(65), messages: msgs }, { id: 'a', messages: [] }, { id: 'a', messages: Array(5).fill(msgs[0]) }, { id: 'a', messages: [{ role: 'user' }] },
     { id: 'a', messages: [{ role: 'user', content: 'x'.repeat(MAX_JOB) }] }, null, {}].every((j) => clampJob(j) === null));
+
+// ── hardware: what the node says of its machine ──
+{ const nv = (text) => () => text; const fake = (o) => hardware({ platform: 'linux', arch: 'x64', totalmem: 64 * 2 ** 30, cores: 16, ...o });
+  const a = fake({ run: nv('24564\n24564\n') });
+  check('hardware: memory in GB, GPU memory summed over the GPUs, cores, system and chip', a.ram === 64 && a.vram === 48 && a.cores === 16 && a.os === 'linux' && a.arch === 'x64' && a.unified === false, JSON.stringify(a));
+  check('hardware: no nvidia-smi (it throws) means no GPU memory, and a blank or odd reply adds none', fake({ run: () => { throw new Error('not found'); } }).vram === 0 && fake({ run: nv('') }).vram === 0 && fake({ run: nv('N/A\n[Not Supported]\n') }).vram === 0);
+  const m = fake({ platform: 'darwin', arch: 'arm64', totalmem: 16 * 2 ** 30, cores: 8, run: () => { throw new Error('x'); } });
+  check('hardware: Apple silicon shares its memory; an Intel Mac or a Linux box on arm does not', m.os === 'darwin' && m.unified === true && m.vram === 0 && fake({ platform: 'darwin', arch: 'x64', run: nv('') }).unified === false && fake({ platform: 'linux', arch: 'arm64', run: nv('') }).unified === false);
+  check('hardware: a system or chip it does not know is left blank, never passed through', (() => { const h = fake({ platform: 'plan9', arch: 'mips', run: nv('') }); return h.os === '' && h.arch === ''; })());
+  check('hardware: the real machine answers with sane numbers and nothing that names it', (() => { const h = hardware(); return h.ram > 0 && h.cores > 0 && Object.keys(h).sort().join() === 'arch,cores,os,ram,unified,vram'; })()); }
 
 // ── the gateway and the model ──
 let mode = 'ok'; const seen = [];
@@ -56,6 +66,8 @@ try {
   check("a visitor's question is answered by the node", typeof a.answer === 'string' && a.answer.startsWith('FAKE ANSWER') && !a.unavailable, `"${String(a.answer).slice(0, 60)}"`);
   const call = seen.find((c) => c.model === 'local');
   check('the model is asked with thinking off, the job\'s messages and a bounded budget', call?.chat_template_kwargs?.enable_thinking === false && Array.isArray(call.messages) && call.max_tokens >= 16 && call.max_tokens <= 500);
+  const cap = (await (await fetch(`${API}/health`)).json()).capacity;
+  check('the help desk counts the node by the size of model it can hold, from what the node reported', cap && cap.tiers.big + cap.tiers.small === 1 && cap.tiers.unknown === 0 && cap.ramGb > 0, JSON.stringify(cap));
   const st = await (await fetch(`${API}/helpdesk/stats`)).json();
   check('the answer is credited to the node\'s address', st.miners.some((m) => m.miner === miner.slice(0, 8) + '…' + miner.slice(-4) && m.answered >= 1 && m.points >= 1), JSON.stringify(st.miners));
 

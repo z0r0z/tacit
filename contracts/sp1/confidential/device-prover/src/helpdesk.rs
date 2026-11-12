@@ -272,7 +272,7 @@ fn run(ctx: Ctx) {
 fn lease_one(ctx: &Ctx, api: &str, miner: &str, llm: &mut Option<Llm>) -> Outcome {
     let Ok(http) = reqwest::blocking::Client::builder().timeout(Duration::from_secs(45)).build() else { return Outcome::Failed };
     let post = |path: &str, body: &Value| http.post(format!("{api}/helpdesk/{path}")).json(body).send().ok().map(|r| (r.status().as_u16(), r.json::<Value>().unwrap_or(Value::Null)));
-    let Some((code, job)) = post("lease", &json!({ "miner": miner, "model": MODEL_ID, "kinds": ["answer", "scan"] })) else { return Outcome::Failed };
+    let Some((code, job)) = post("lease", &json!({ "miner": miner, "model": MODEL_ID, "kinds": ["answer", "scan"], "hw": crate::hw::cached() })) else { return Outcome::Failed };
     if code == 204 {
         return Outcome::Empty;
     }

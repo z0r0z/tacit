@@ -196,7 +196,7 @@ async function nodeApi(req, res) {
     holding.set(ip, (holding.get(ip) || 0) + 1);
     // when the node's connection closes before it was answered, it leaves the line (lease.mjs): a job is never handed to a node that is gone
     const gone = new AbortController(); res.on('close', () => { if (!res.writableFinished) gone.abort(); });
-    try { const out = await leases.lease({ miner: body.miner, ip, kinds: Array.isArray(body.kinds) ? body.kinds : ['answer'], closed: gone.signal });
+    try { const out = await leases.lease({ miner: body.miner, ip, kinds: Array.isArray(body.kinds) ? body.kinds : ['answer'], closed: gone.signal, hw: body.hw });
       if (out === null) return send(res, 204); if (out.banned) return send(res, 429, { error: 'paused: this client failed too many checks, try again in an hour' }); if (out.error) return send(res, 400, out); return send(res, 200, out); }
     finally { holding.set(ip, Math.max(0, (holding.get(ip) || 1) - 1)); }
   }
@@ -215,7 +215,7 @@ if (process.argv[2] === 'serve') {
       if (!(day <= utcDay())) return send(res, 400, { ok: false, error: 'day must be a UTC day number, today or before' });
       return send(res, 200, creditsFor(path.join(DATA, 'ledger.jsonl'), day, { maxPerDay: Number(process.env.POINTS_MAX_DAY ?? 100) })); }
     if (req.method === 'GET' && (req.url === '/' || req.url === '/index.html')) { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'x-content-type-options': 'nosniff' }); return res.end(PAGE); }
-    if (req.method === 'GET' && (req.url === '/health' || req.url === '/stats')) { const st = llm.stats(); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(req.url === '/health' ? { ok: st.backends.some((b) => b.up) || leases.nodesOnline() > 0, nodes: leases.nodesOnline(), dense: denseState, backends: st.backends.map((b) => ({ url: b.url, up: b.up })) } : { ...st, nodes: leases.stats() })); }
+    if (req.method === 'GET' && (req.url === '/health' || req.url === '/stats')) { const st = llm.stats(); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(req.url === '/health' ? { ok: st.backends.some((b) => b.up) || leases.nodesOnline() > 0, nodes: leases.nodesOnline(), capacity: leases.capacity(), dense: denseState, backends: st.backends.map((b) => ({ url: b.url, up: b.up })) } : { ...st, nodes: leases.stats() })); }
     if (req.url.startsWith('/helpdesk/')) return nodeApi(req, res);
     if (req.method === 'POST' && req.url === '/ask') {
       if (!ok(ip)) { res.writeHead(429, { 'content-type': 'application/json' }); return res.end('{"error":"Too many questions, try again in a minute."}'); }

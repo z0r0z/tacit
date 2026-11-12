@@ -13,9 +13,22 @@
 // Nothing a job contains is run: it is a list of chat messages, passed to the model as text, and the reply goes back as text.
 // The help desk checks what comes back; a node that answers wrongly or repeatedly fails its checks is paused for an hour.
 
+import os from 'node:os';
+import { execFileSync } from 'node:child_process';
+
 export const MAX_JOB = 24_000;     // bytes of messages accepted
 export const MAX_REPLY = 16_000;   // characters of answer sent back
 const DEFAULT_MODEL = 'qwen3.5-4b-q4_k_m';
+
+// What this machine has, for the help desk to size its jobs by: memory, GPU memory, cores, system and chip family, as numbers and two words (nothing that names
+// the machine). The GPU's memory comes from nvidia-smi when there is one; Apple silicon shares its memory between CPU and GPU, which `unified` says.
+export function hardware({ run = (cmd, args) => execFileSync(cmd, args, { encoding: 'utf8', timeout: 4000, stdio: ['ignore', 'pipe', 'ignore'] }), platform = os.platform(), arch = os.arch(), totalmem = os.totalmem(), cores = os.cpus().length } = {}) {
+  const system = { darwin: 'darwin', linux: 'linux', win32: 'windows' }[platform] || '', chip = { arm64: 'arm64', x64: 'x64' }[arch] || '';
+  let vram = 0;
+  try { vram = Math.round(String(run('nvidia-smi', ['--query-gpu=memory.total', '--format=csv,noheader,nounits'])).split('\n').map((l) => l.trim()).filter(Boolean).map(Number).filter(Number.isFinite).reduce((a, b) => a + b, 0) / 1024); } catch { /* no NVIDIA GPU, or no driver */ }
+  return { ram: Math.round(totalmem / 2 ** 30), vram, cores, os: system, arch: chip, unified: system === 'darwin' && chip === 'arm64' };
+}
+let HW = null;   // asked once: it does not change while the node runs
 
 // a job as the help desk sends it, cut down to what this node will run: null for one it will not
 export function clampJob(job) {
@@ -51,7 +64,8 @@ export async function leaseOne({ api, llm, miner, model = DEFAULT_MODEL, kinds =
       return { code: r.status, body: j };
     } catch { return null; }
   };
-  const got = await post('lease', { miner, model, kinds });
+  HW ??= hardware();
+  const got = await post('lease', { miner, model, kinds, hw: HW });
   if (!got) return 'failed';
   if (got.code === 204) return 'empty';
   if (got.code === 429) { say(`help desk: ${got.body?.error || 'paused'}`); return 'failed'; }

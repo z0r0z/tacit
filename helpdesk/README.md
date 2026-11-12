@@ -44,7 +44,9 @@ Settings (environment):
 | `SCAN_REPO`, `SCAN_REF`, `SCAN_FETCH` | the checkout the code reviews read through git, its ref, and whether to `git fetch` it hourly |
 | `EMB` | `off` skips the embedding server (lexical retrieval only) |
 
-`GET /health` says how many nodes are online. `GET /helpdesk/credits?day=<UTC day>` lists what each address earned that day, in the proof pool's feed format.
+`GET /health` says how many nodes are online, and `capacity`: those nodes by the size of model each can hold whole (`big`: a 24 GB GPU, a mid GPU with 32 GB of RAM, or an Apple-silicon Mac with 32 GB; `small`: the 4B; `unknown`: it has not said), with the memory they have in all.
+
+A node tells the gateway what it has in each lease request, as `hw`: `{ ram, vram, cores, os, arch, unified }` (GB of memory, GB of GPU memory, cores, `darwin`/`linux`/`windows`, `arm64`/`x64`, whether CPU and GPU share memory). The gateway keeps numbers and those words only (`cleanHw` in lease.mjs: anything else is dropped), names no node when it reports, and times each answer itself, handed over to handed in, smoothed (`ewmaMs` in the local `/helpdesk/stats`). The tier rule (`tierOf`) comes from measurements of Qwen3.5-35B-A3B at 4 bits; a node that sends nothing is still served. `GET /helpdesk/credits?day=<UTC day>` lists what each address earned that day, in the proof pool's feed format.
 
 ## Deploy
 

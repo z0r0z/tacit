@@ -8,6 +8,24 @@ export const isAddr = (a) => typeof a === 'string' && /^0x[0-9a-fA-F]{40}$/.test
 const hash = (s) => createHash('sha256').update(String(s)).digest('hex').slice(0, 16);
 export const ipKey = hash;   // the client key: a hash of the IP, what strikes, bans and caps hang on
 
+// What a node says about its machine, cut down to numbers and two words (no names, no free text): memory in GB, GPU memory in GB (0 with none),
+// cores, system, chip family, and whether the memory is shared by CPU and GPU (Apple silicon). Anything else, or anything out of range, is dropped.
+export function cleanHw(h) {
+  if (!h || typeof h !== 'object' || Array.isArray(h)) return null;
+  const n = (v, max) => { v = Math.round(Number(v)); return Number.isFinite(v) && v >= 0 && v <= max ? v : 0; };
+  return { ram: n(h.ram, 4096), vram: n(h.vram, 1024), cores: n(h.cores, 1024), os: ['darwin', 'linux', 'windows'].includes(h.os) ? h.os : '', arch: ['arm64', 'x64'].includes(h.arch) ? h.arch : '', unified: h.unified === true };
+}
+// The size of model a node can hold WHOLE, from measurements of Qwen3.5-35B-A3B at 4 bits (22 GB, 3B active per token): on a 24 GB GPU it runs from VRAM (150 tokens/s);
+// on a 12 GB GPU with the experts in system RAM it needs about 32 GB of RAM (60 tokens/s); with everything but 4 GB of VRAM in RAM, 45 tokens/s; on the CPU alone 11.
+// 'big' holds that model, 'small' holds the 4B (2.7 GB), 'unknown' has not said what it has.
+export function tierOf(hw) {
+  if (!hw) return 'unknown';
+  if (hw.unified) return hw.ram >= 32 ? 'big' : 'small';
+  if (hw.vram >= 24) return 'big';
+  if (hw.vram >= 6 && hw.ram >= 32) return 'big';
+  return 'small';
+}
+
 export function makeLeases(opts = {}) {
   const o = { leaseMs: 120000, waitMs: 20000, canaryEvery: 6, canaryMaxAgeMs: 86400000, strikeLimit: 3, strikeWindowMs: 3600000, banMs: 3600000, onlineMs: 60000, maxTries: 2,
     now: () => Date.now(), ledger: null, canary: null, vet: () => null, scan: null, scanPerHour: 12, sweepMs: 5000,
@@ -22,7 +40,7 @@ export function makeLeases(opts = {}) {
   const dayNo = () => Math.floor(o.now() / 86400000);
   if (o.persist && existsSync(o.persist)) { try { const st = JSON.parse(readFileSync(o.persist, 'utf8')); for (const [k, v] of st.clients || []) clients.set(k, v); for (const [k, v] of st.miners || []) miners.set(k, v); } catch { /* a damaged state file is started over, the ledger is the record */ } }
   const save = () => { if (!o.persist) return; try { writeFileSync(o.persist + '.tmp', JSON.stringify({ clients: [...clients], miners: [...miners] })); renameSync(o.persist + '.tmp', o.persist); } catch {} };
-  const client = (ck) => { if (!clients.has(ck)) clients.set(ck, { seen: 0, leases: 0, sinceCanary: 0, lastCanary: o.now(), strikes: [], bannedUntil: 0, scans: [], day: 0, dayPoints: 0 }); return clients.get(ck); };
+  const client = (ck) => { if (!clients.has(ck)) clients.set(ck, { seen: 0, leases: 0, sinceCanary: 0, lastCanary: o.now(), strikes: [], bannedUntil: 0, scans: [], day: 0, dayPoints: 0, hw: null, ewmaMs: 0, timed: 0 }); return clients.get(ck); };
   const miner = (a) => { a = a.toLowerCase(); if (!miners.has(a)) miners.set(a, { answered: 0, canaryPass: 0, canaryFail: 0, errors: 0, points: 0, last: 0 }); return miners.get(a); };
   const log = (rec) => { if (o.ledger) try { appendFileSync(o.ledger, JSON.stringify({ t: o.now(), ...rec }) + '\n'); } catch {} };
 
@@ -34,7 +52,7 @@ export function makeLeases(opts = {}) {
     c.dayPoints += pts; const m = miner(addr); m.points += pts; return pts;
   };
   const strike = (ck, why) => { const c = client(ck), t = o.now(); c.strikes = c.strikes.filter((x) => t - x < o.strikeWindowMs); c.strikes.push(t); if (c.strikes.length >= o.strikeLimit) { c.bannedUntil = t + o.banMs; log({ ev: 'ban', client: ck, why }); } };
-  const give = (id, job, who) => { if (!job.canary) client(who.ck).sinceCanary++; const token = randomBytes(16).toString('hex'); leased.set(id, { job, token, addr: who.addr.toLowerCase(), ck: who.ck, expires: o.now() + o.leaseMs }); job.tries = (job.tries || 0) + 1;
+  const give = (id, job, who) => { if (!job.canary) client(who.ck).sinceCanary++; const token = randomBytes(16).toString('hex'); leased.set(id, { job, token, addr: who.addr.toLowerCase(), ck: who.ck, expires: o.now() + o.leaseMs, at: o.now() }); job.tries = (job.tries || 0) + 1;
     return { id, lease: token, kind: job.kind, messages: job.messages, max_tokens: job.max_tokens, temperature: job.temperature }; };
 
   function enqueue(kind, messages, { max_tokens = 300, temperature = 0.2, timeoutMs = 12000, ctxText = '', askerIp = null } = {}) {
@@ -51,10 +69,11 @@ export function makeLeases(opts = {}) {
   // A node asks for work. -> a job, null (nothing right now: the request was held open), or { banned: true }.
   // `closed` (an AbortSignal) is the node's connection: a node that goes away while it waits (a laptop that sleeps) is taken out of the line at once, so it is
   // never handed a question it cannot answer.
-  async function lease({ miner: addr, ip, kinds = ['answer'], closed }) {
+  async function lease({ miner: addr, ip, kinds = ['answer'], closed, hw }) {
     if (!isAddr(addr)) return { error: 'miner must be an address' };
     if (closed?.aborted) return null;   // the node is already gone: it takes nothing
     const ck = hash(ip), c = client(ck), t = o.now(); c.seen = t; miner(addr).last = t;
+    if (hw !== undefined) c.hw = cleanHw(hw);   // a node that says nothing keeps what it said before
     if (c.bannedUntil > t) return { banned: true };
     kinds = kinds.filter((k) => k === 'answer' || k === 'scan'); if (!kinds.length) return null;
     const who = { addr, ck }; c.leases++;
@@ -73,6 +92,10 @@ export function makeLeases(opts = {}) {
     return new Promise((resolve) => { const w = { resolve, who, kinds }; w.timer = setTimeout(() => finish(w, null), o.waitMs); waiters.push(w); closed?.addEventListener('abort', () => finish(w, null), { once: true }); });
   }
 
+  // How long this client takes from being handed a question to handing in the answer, smoothed (the gateway's own clock, not what a node says of itself):
+  // what routing a question to the quickest node, or keeping a slow one off visitors' questions, will use.
+  const timed = (ck, L) => { const c = client(ck), d = Math.max(1, o.now() - (L.at || o.now())); c.ewmaMs = (c.timed || 0) > 0 ? Math.round(0.8 * c.ewmaMs + 0.2 * d) : d; c.timed = (c.timed || 0) + 1; };
+
   // A node hands in its work. -> { ok, points } or { error }.
   async function submit({ id, lease: token, miner: addr, ip, text, error }) {
     const L = leased.get(id); const ck = hash(ip);
@@ -85,22 +108,26 @@ export function makeLeases(opts = {}) {
       const pass = (() => { try { return !!job.check(text); } catch { return false; } })();
       const vetted = pass ? o.vet(text, job.ctxText) : null;
       if (!pass || vetted) { m.canaryFail++; strike(ck, 'canary'); log({ ev: 'canary', miner: addr, pass: false, why: pass ? 'vet: ' + vetted : 'known answer missing', sample: text.slice(0, 160) }); return { ok: true, points: 0 }; }
-      m.canaryPass++; const pts = credit(ck, addr, 'canary', job); log({ ev: 'canary', miner: addr, pass: true, points: pts }); return { ok: true, points: pts };
+      m.canaryPass++; timed(ck, L); const pts = credit(ck, addr, 'canary', job); log({ ev: 'canary', miner: addr, pass: true, points: pts }); return { ok: true, points: pts };
     }
     if (job.scan) { try { await o.scan.onResult(job, text, addr); } catch {} const pts = credit(ck, addr, 'scan', job); log({ ev: 'scan', miner: addr, job: job.id, points: pts }); return { ok: true, points: pts }; }
     const bad = o.vet(text, job.ctxText);
     if (bad) { m.errors++; strike(ck, bad); log({ ev: 'rejected', miner: addr, why: bad }); requeue(); return { ok: true, points: 0 }; }
-    clearTimeout(job.timer); m.answered++; const pts = credit(ck, addr, 'answer', job); log({ ev: 'answer', miner: addr, job: job.id, points: pts });
+    clearTimeout(job.timer); m.answered++; timed(ck, L); const pts = credit(ck, addr, 'answer', job); log({ ev: 'answer', miner: addr, job: job.id, points: pts });
     job.resolve({ text, miner: addr }); return { ok: true, points: pts };
   }
 
   const sweep = setInterval(() => { const t = o.now(); for (const [id, L] of leased) if (L.expires < t) { leased.delete(id); const job = L.job; miner(L.addr).errors++; if (!job.canary && !job.scan) { if (job.tries < o.maxTries && queue.indexOf(job) < 0) { queue.unshift(job); wake(); } else { clearTimeout(job.timer); job.reject?.(new Error('lease expired')); } } } }, o.sweepMs); sweep.unref?.();
 
   const saver = setInterval(save, 20000); saver.unref?.();
-  const nodesOnline = () => [...clients.values()].filter((c) => o.now() - c.seen < o.onlineMs && c.bannedUntil <= o.now()).length;
+  const online = () => [...clients.values()].filter((c) => o.now() - c.seen < o.onlineMs && c.bannedUntil <= o.now());
+  const nodesOnline = () => online().length;
+  // The nodes online by the size of model each can hold whole, and the memory they have in all: what the visitor-facing page and a plan for bigger models start from.
+  const capacity = () => { const tiers = { big: 0, small: 0, unknown: 0 }; let ramGb = 0, vramGb = 0; for (const c of online()) { tiers[tierOf(c.hw)]++; if (c.hw) { ramGb += c.hw.ram; vramGb += c.hw.vram; } } return { tiers, ramGb, vramGb }; };
   const stats = () => ({ online: nodesOnline(), queued: queue.length, leased: leased.size, waiting: waiters.length,
-    miners: [...miners.entries()].map(([a, m]) => ({ miner: a.slice(0, 8) + '…' + a.slice(-4), ...m })), banned: [...clients.values()].filter((c) => c.bannedUntil > o.now()).length });
-  return { enqueue, lease, submit, nodesOnline, stats, _queue: queue, _clients: clients, close: () => { clearInterval(sweep); clearInterval(saver); save(); } };
+    miners: [...miners.entries()].map(([a, m]) => ({ miner: a.slice(0, 8) + '…' + a.slice(-4), ...m })), banned: [...clients.values()].filter((c) => c.bannedUntil > o.now()).length,
+    capacity: capacity(), nodes: online().map((c) => ({ tier: tierOf(c.hw), ...(c.hw || {}), ewmaMs: c.ewmaMs || null, timed: c.timed || 0, seenSecs: Math.round((o.now() - c.seen) / 1000) })) });
+  return { enqueue, lease, submit, nodesOnline, capacity, stats, _queue: queue, _clients: clients, close: () => { clearInterval(sweep); clearInterval(saver); save(); } };
 }
 
 // What a visitor may be shown. A node can return anything, so an answer is checked against the documentation it was given:
