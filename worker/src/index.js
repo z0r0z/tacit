@@ -9146,13 +9146,14 @@ function _ringVolumeSumSats(tradesArr) {
 // when nothing matched (e.g., a CXFER, or an AXFER with no live intent/
 // sale records). Caller gates the volume bump on bumpTransferCount's
 // `counted` flag, so a later hint POST (or a re-scan) can't double-count.
-async function _deriveAxferTradeFromChain(env, network, revealTx, opcode, assetIdHex) {
+// `strict`: a commit transaction that cannot be read is an error, not "nothing to derive" (the hint path leaves such a trade to the scan).
+async function _deriveAxferTradeFromChain(env, network, revealTx, opcode, assetIdHex, { strict = false } = {}) {
   if (!revealTx?.vin?.length) return null;
   const vin0Txid = revealTx.vin[0]?.txid;
   if (!/^[0-9a-f]{64}$/.test(String(vin0Txid || ''))) return null;
   let commitTx;
   try { commitTx = await fetchFreshTxJson(env, vin0Txid, network); }
-  catch { return null; }
+  catch (e) { if (strict) throw e; return null; }
   if (!commitTx?.vin?.length) return null;
 
   let totalPriceSats = 0;
@@ -9351,6 +9352,15 @@ async function _derivePreauthBidVarTradeFromChain(env, network, revealTx, assetI
   if (fills.length === 0) return null;
   // amount is reported in base units (matches T_PREAUTH_BID / T_AXFER reporting).
   return { price_sats: priceForThisFill, amount: fillAmountBaseBig, fills };
+}
+// The trade a settled transfer made, as the chain gives it: the derivation that fits the transfer's opcode. → { price_sats, amount, fills } or null when
+// the chain does not say (no listing or bid record backs the spent outpoints). Throws when the chain could not be read.
+async function _deriveTradeFromChain(env, network, tx, opcode, assetIdHex, dx = null) {
+  return opcode === T_PREAUTH_BID
+    ? _derivePreauthBidTradeFromChain(env, network, tx, assetIdHex)
+    : opcode === T_PREAUTH_BID_VAR
+    ? _derivePreauthBidVarTradeFromChain(env, network, tx, assetIdHex, dx)
+    : _deriveAxferTradeFromChain(env, network, tx, opcode, assetIdHex, { strict: true });
 }
 
 // Single source of truth for "a trade settled — bump the three KV
@@ -16419,6 +16429,8 @@ async function handleAssetHint(req, env, network, cors, ctx) {
   if (decoded.opcode === T_CETCH) {
     const ce = decodeCEtchPayload(decoded.payload);
     if (!ce) return jsonResponse({ error: 'invalid CETCH payload' }, 400, cors);
+    // the scan reads an etch at output 0, so a hint names no other
+    if ((vout >>> 0) !== 0) return jsonResponse({ error: 'an etch is read at output 0' }, 400, cors);
     const aid = assetIdFor(txidHex, vout >>> 0);
     const existing = await env.REGISTRY_KV.get(assetKey(network, aid), 'json');
     if (existing && Number.isInteger(existing.etched_at_height)) {
@@ -16491,71 +16503,34 @@ async function handleAssetHint(req, env, network, cors, ctx) {
     if (decoded.opcode === T_PREAUTH_BID_VAR && !_validatePreauthBidVarRefundVout(dx, tx)) {
       return jsonResponse({ error: 'T_PREAUTH_BID_VAR settlement missing or mis-priced refund vout' }, 400, cors);
     }
+    // A trade's price and amount are what the chain gives (the derivation the scan uses), never figures the request carries. When the chain cannot
+    // be read just now nothing is counted here and the scan records the trade; when it does not say, the transfer is counted and sets no price.
+    const isTrade = decoded.opcode === T_AXFER || decoded.opcode === T_AXFER_VAR || decoded.opcode === T_PREAUTH_BID || decoded.opcode === T_PREAUTH_BID_VAR;
+    let derived = null;
+    if (isTrade) {
+      try { derived = await _deriveTradeFromChain(env, network, tx, decoded.opcode, dx.asset_id, dx); }
+      catch { return jsonResponse({ ok: true, source: 'deferred', asset_id: dx.asset_id, network }, 200, cors); }
+    }
     const counted = await bumpTransferCount(env, network, dx.asset_id, txidHex);
-    // Optional last-traded record. AXFER (whole-UTXO atomic OTC) and
-    // AXFER_VAR (variable-amount) both have a well-defined trade
-    // price the dapp can vouch for at broadcast time. For AXFER_VAR the
-    // dapp hints the SCALED price (floor(requested × full_price / amount))
-    // and the actual settled (requested) amount, so last_trade reflects the
-    // unit price of the partial fill — not the full-lot list price. Without
-    // this, every variable-amount trade would stamp the maker's listed
-    // total and the mark_price would jitter on each partial settle.
     let lastTrade = null;
-    // T_PREAUTH_BID joins the volume gate alongside T_AXFER + T_AXFER_VAR.
-    // The dapp's takePreauthBid path posts /hint with
-    // listing_kind:'preauth-bid' and the bid's price_sats + amount, so
-    // the chart + mark price update on a preauth-bid fill exactly like
-    // they do on a regular AXFER fill.
-    if ((decoded.opcode === T_AXFER || decoded.opcode === T_AXFER_VAR || decoded.opcode === T_PREAUTH_BID || decoded.opcode === T_PREAUTH_BID_VAR)
-        && Number.isInteger(body.price_sats) && body.price_sats > 0
-        && typeof body.amount === 'string' && /^[0-9]+$/.test(body.amount)) {
-      try {
-        const amt = BigInt(body.amount);
-        if (amt > 0n && amt < (1n << 64n)) {
-          // fill_count: how many fills the batched reveal settled. Defaults
-          // to 1 (a single-take or a CXFER from an older dapp). >1 means
-          // this trade's price_sats + amount aggregate across N fills
-          // settled in one Bitcoin tx (buy-side batched preauth-take).
-          // The chart + tape can render the
-          // multi-fill annotation off this metadata; volume + mark price
-          // calculations are unaffected (they consume the aggregated
-          // price_sats / amount the same way regardless of fill_count).
-          // Capped at 255 — matches T_AXFER's asset_input_count byte; a
-          // larger value would be a malformed hint anyway.
-          const _fcRaw = Number(body.fill_count);
-          const fillCount = (Number.isInteger(_fcRaw) && _fcRaw >= 1 && _fcRaw <= 255)
-            ? _fcRaw
-            : 1;
-          lastTrade = {
-            txid: txidHex,
-            price_sats: body.price_sats,
-            amount: body.amount,
-            ts: Math.floor(Date.now() / 1000),
-            fill_count: fillCount,
-          };
-          // Gate on bumpTransferCount's idempotency signal — replays / re-
-          // scans / a late hint after the cron's chain-backfill already
-          // ran must NOT double-count. The helper handles last_trade +
-          // daily bucket + lifetime + ring + journal + cache-bust writes
-          // uniformly so the hint endpoint and the cron's chain backfill
-          // produce identical aggregates.
-          //
-          // Defer via ctx.waitUntil: the bookkeeping does ~5 KV ops
-          // (last_trade, day bucket, lifetime, ring, trade-event journal)
-          // plus a cache-bust, which would add ~50-100ms tail latency to
-          // the hint response. The response carries `last_trade` already,
-          // and bumpTransferCount has landed synchronously above, so the
-          // dapp's UI has everything it needs. Falls back to inline await
-          // when ctx is missing (tests, sync callers).
-          if (counted) {
-            if (ctx && typeof ctx.waitUntil === 'function') {
-              ctx.waitUntil(_recordSettledTradeVolume(env, network, dx.asset_id, lastTrade).catch(() => {}));
-            } else {
-              await _recordSettledTradeVolume(env, network, dx.asset_id, lastTrade);
-            }
-          }
+    if (derived && derived.price_sats > 0) {
+      lastTrade = {
+        txid: txidHex,
+        price_sats: derived.price_sats,
+        amount: String(derived.amount),
+        ts: tx.status?.block_time || Math.floor(Date.now() / 1000),
+        fill_count: Math.max(1, Math.min(255, derived.fills.length)),
+        source: 'hint-chain',
+      };
+      // Gate on bumpTransferCount's idempotency signal, so a replay or a hint after the scan's own backfill does not count twice. The recording is
+      // deferred past the response when the runtime allows (several KV writes); the response carries `last_trade` already.
+      if (counted) {
+        if (ctx && typeof ctx.waitUntil === 'function') {
+          ctx.waitUntil(_recordSettledTradeVolume(env, network, dx.asset_id, lastTrade).catch(() => {}));
+        } else {
+          await _recordSettledTradeVolume(env, network, dx.asset_id, lastTrade);
         }
-      } catch { /* BigInt parse failed — ignore, transfer counter bump still landed */ }
+      }
     }
     await env.REGISTRY_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
     return jsonResponse({
@@ -16611,6 +16586,8 @@ async function handleAssetHint(req, env, network, cors, ctx) {
     if (cp.mint_start_height !== 0 && Number.isInteger(blockHeight) && cp.mint_start_height < blockHeight + 1) {
       return jsonResponse({ error: 'mint_start_height < etch_height + 1' }, 400, cors);
     }
+    // the scan reads an etch at output 0, so a hint names no other
+    if ((vout >>> 0) !== 0) return jsonResponse({ error: 'an etch is read at output 0' }, 400, cors);
     const aid = assetIdFor(txidHex, vout >>> 0);
     const existing = await env.REGISTRY_KV.get(petchKey(network, aid), 'json');
     if (existing && Number.isInteger(existing.etched_at_height)) {
@@ -27842,7 +27819,7 @@ async function scanForEtches(env, network) {
 // Workers ignores extra named exports — only the default object's fetch /
 // scheduled handlers are invoked at runtime — so this has no production effect.
 export {
-  _ethGasPrice, fetchIpfsJson,
+  _ethGasPrice, fetchIpfsJson, _deriveTradeFromChain,
   assembleReflectionJobBody,
   openingMsg, disclosureMsg, listingMsg, cancelMsg, claimMsg,
   atomicIntentMsg, atomicIntentClaimMsg, atomicIntentFulfilmentMsg, atomicIntentCancelMsg,
