@@ -106,6 +106,13 @@ const mk = (extra = {}) => makeLeases({ waitMs: 300, sweepMs: 50, leaseMs: 400, 
   T += 61000; await L.lease({ miner: B, ip: '61.0.0.2' });   // only this node is still asking, and it says nothing new
   cap = L.capacity(); check('capacity: nodes that went quiet are not counted, and the one still asking keeps its earlier report', cap.tiers.big === 0 && cap.tiers.small === 1 && cap.tiers.unknown === 0 && cap.ramGb === 8 && cap.vramGb === 0, JSON.stringify(cap));
   check('capacity: stats list each node by tier and speed, and name no client', (() => { const n = L.stats().nodes; return Array.isArray(n) && n.length === 1 && 'tier' in n[0] && !('ck' in n[0]) && !('ip' in n[0]) && !JSON.stringify(n).includes('61.0.0'); })());
+  // two machines behind one address are two nodes, each with its own report; the same machine asking again is still one
+  { let T2 = 7_000_000; const N = mk({ now: () => T2, onlineMs: 60000, canaryEvery: 1000, waitMs: 20 });
+    await N.lease({ miner: A, ip: '63.0.0.1', hw: big }); await N.lease({ miner: B, ip: '63.0.0.1', hw: small }); await N.lease({ miner: A, ip: '63.0.0.1' });
+    const c2 = N.capacity();
+    check('nat: two machines behind one address count as two nodes, each keeping its own report', c2.tiers.big === 1 && c2.tiers.small === 1 && c2.tiers.unknown === 0 && c2.ramGb === 72 && c2.vramGb === 24, c2);
+    check('nat: the same machine asking again stays one node', N.stats().nodes.length === 2);
+    N.close(); }
   L.close();
 
   // speed: the gateway times each answer itself (handed over -> handed in) and smooths it, ignoring scans and refused answers

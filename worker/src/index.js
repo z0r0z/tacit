@@ -8322,10 +8322,21 @@ function atomicIntentCountKey(network, aid) {
 function preauthSaleCountKey(network, aid) {
   return network === 'signet' ? `cnt:presale:${aid}` : `cnt:presale:${network}:${aid}`;
 }
-async function _bumpCount(env, key, delta) {
-  const cur = parseInt(await env.REGISTRY_KV.get(key) || '0', 10);
-  const next = Math.max(0, cur + delta);
-  await env.REGISTRY_KV.put(key, String(next));
+function _bumpCount(env, key, delta) {
+  return withKvKeyLock(`count:${key}`, async () => {
+    const cur = parseInt(await env.REGISTRY_KV.get(key) || '0', 10);
+    const next = Math.max(0, cur + delta);
+    await env.REGISTRY_KV.put(key, String(next));
+  });
+}
+// Removes a record and says whether this call found it, under the record's lock: of two overlapping calls for one record only the first does, so a count the
+// record stands for falls once.
+function _takeRecord(env, key) {
+  return withKvKeyLock(`take:${key}`, async () => {
+    const had = await env.REGISTRY_KV.get(key);
+    await env.REGISTRY_KV.delete(key);
+    return !!had;
+  });
 }
 function openingKey(network, aid, txid, vout) {
   return network === 'signet'
@@ -9364,6 +9375,10 @@ async function _deriveTradeFromChain(env, network, tx, opcode, assetIdHex, dx = 
     : _deriveAxferTradeFromChain(env, network, tx, opcode, assetIdHex, { strict: true });
 }
 
+// A hint takes the records a trade spent out of the book only once the transaction is confirmed: one that is still unconfirmed can be replaced or dropped, and
+// the listing it appeared to spend would be gone for nothing. The scan takes them out when it counts the confirmed trade.
+const _hintMaySettle = (derived, confirmed) => !!(derived && derived.price_sats > 0 && confirmed);
+
 // The records a settled trade consumed (a preauth sale, an atomic intent, a preauth bid) leave the book with it, and the lists that served them
 // are read again. Running it twice for one trade changes nothing the second time.
 async function _settleFillRecords(env, network, assetIdHex, fills) {
@@ -9373,8 +9388,7 @@ async function _settleFillRecords(env, network, assetIdHex, fills) {
     if (!op || !/^[0-9a-f]{64}$/.test(String(op.txid || '')) || !Number.isInteger(op.vout)) continue;
     try {
       if (f.kind === 'preauth' && f.sale_id) {
-        const had = await env.REGISTRY_KV.get(preauthSaleKey(network, assetIdHex, f.sale_id));
-        await env.REGISTRY_KV.delete(preauthSaleKey(network, assetIdHex, f.sale_id));
+        const had = await _takeRecord(env, preauthSaleKey(network, assetIdHex, f.sale_id));
         if (had) { _bumpCount(env, preauthSaleCountKey(network, assetIdHex), -1).catch(() => {}); sales = true; }
         await env.REGISTRY_KV.delete(preauthOutpointIndexKey(network, assetIdHex, op.txid, op.vout));
       } else if ((f.kind === 'intent' || f.kind === 'intent-var') && f.intent_id) {
@@ -9403,8 +9417,7 @@ async function _settleFillRecords(env, network, assetIdHex, fills) {
             await env.REGISTRY_KV.delete(bidClaimAxintentIndexKey(network, f.intent_id));
           }
         } catch { /* best-effort; the bidpclaim TTL is the backstop */ }
-        const had = await env.REGISTRY_KV.get(atomicIntentKey(network, assetIdHex, f.intent_id));
-        await env.REGISTRY_KV.delete(atomicIntentKey(network, assetIdHex, f.intent_id));
+        const had = await _takeRecord(env, atomicIntentKey(network, assetIdHex, f.intent_id));
         if (had) { _bumpCount(env, atomicIntentCountKey(network, assetIdHex), -1).catch(() => {}); intents = true; }
         await env.REGISTRY_KV.delete(atomicClaimKey(network, assetIdHex, f.intent_id));
         await env.REGISTRY_KV.delete(atomicFulfilmentKey(network, assetIdHex, f.intent_id));
@@ -16618,8 +16631,8 @@ async function handleAssetHint(req, env, network, cors, ctx) {
         }
       }
     }
-    // The listings and bids this trade spent leave the book now, whether or not the scan counted it first.
-    if (derived && derived.price_sats > 0) {
+    // The listings and bids a confirmed trade spent leave the book now, whether or not the scan counted it first.
+    if (_hintMaySettle(derived, confirmed)) {
       const settled = _settleFillRecords(env, network, dx.asset_id, derived.fills).catch(() => {});
       if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(settled); else await settled;
     }
@@ -18696,10 +18709,11 @@ async function handleUtxoOpeningPost(txidHex, voutStr, req, env, network, cors) 
 
 // POST /utxos/:txid/:vout/buyer-opening — publish a self-encrypted
 // opening blob the buyer can later decrypt to recover (amount,
-// blinding). No auth: the ciphertext is bound to a declared pubkey;
-// only a wallet holding the matching priv produces a valid AES-GCM
-// open. A garbage overwrite only makes decrypt fail, and the buyer
-// falls through to other recovery paths. 90-day TTL auto-collects stale entries.
+// blinding). The ciphertext is bound to a declared pubkey: only a wallet
+// holding the matching priv produces one that decrypts. The first key to
+// store a blob for an output keeps it: a write naming another key is
+// refused, and the same key may replace its own. The buyer has other
+// recovery paths besides this blob. 90-day TTL auto-collects stale entries.
 async function handleBuyerOpeningPost(txidHex, voutStr, req, env, network, cors) {
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const rl = await proveRateLimit(env, ip, 'buyer-opening', Number(env.BUYER_OPENING_RL_BURST || 30), Number(env.BUYER_OPENING_RL_REFILL_MS || 10000));
@@ -27859,7 +27873,7 @@ async function scanForEtches(env, network) {
 // Workers ignores extra named exports — only the default object's fetch /
 // scheduled handlers are invoked at runtime — so this has no production effect.
 export {
-  _ethGasPrice, fetchIpfsJson, _deriveTradeFromChain, _settleFillRecords, magicMatches,
+  _ethGasPrice, fetchIpfsJson, _deriveTradeFromChain, _settleFillRecords, _hintMaySettle, magicMatches,
   assembleReflectionJobBody,
   openingMsg, disclosureMsg, listingMsg, cancelMsg, claimMsg,
   atomicIntentMsg, atomicIntentClaimMsg, atomicIntentFulfilmentMsg, atomicIntentCancelMsg,

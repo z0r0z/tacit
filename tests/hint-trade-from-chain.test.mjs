@@ -4,7 +4,7 @@
 //   node tests/hint-trade-from-chain.test.mjs
 import assert from 'node:assert';
 import { readFileSync } from 'node:fs';
-import { _deriveTradeFromChain, _settleFillRecords, atomicIntentOutpointIndexKey, atomicIntentKey, preauthOutpointIndexKey, preauthSaleKey, T_AXFER } from '../worker/src/index.js';
+import { _deriveTradeFromChain, _settleFillRecords, _hintMaySettle, atomicIntentOutpointIndexKey, atomicIntentKey, preauthOutpointIndexKey, preauthSaleKey, T_AXFER } from '../worker/src/index.js';
 
 const NETWORK = 'signet', ASSET = 'aa'.repeat(32), SELLER = { txid: '11'.repeat(32), vout: 0 }, COMMIT = '33'.repeat(32), REVEAL = '44'.repeat(32);
 const store = new Map();
@@ -57,6 +57,15 @@ const after1 = store.get(CNT);
 await _settleFillRecords(env, NETWORK, ASSET, fills); await tick();
 const after2 = store.get(CNT);
 ok(after1 === '1' && after2 === after1, `the count falls once (${after1}) and a second run leaves it (${after2})`);
+// two settles of one trade at once (a hint and the scan) take the record out once, so the count falls once; two different listings settled at once both count
+const addSale = async (id, outpoint) => { await kv.put(preauthSaleKey(NETWORK, ASSET, id), { asset_id: ASSET, sale_id: id, asset_outpoint: outpoint, asset_opening: { amount: '500', blinding: '00'.repeat(32) }, min_price_sats: 1 }); await kv.put(preauthOutpointIndexKey(NETWORK, ASSET, outpoint.txid, outpoint.vout), id); };
+store.clear(); await addSale(SALE, SELLER); store.set(CNT, '2');
+await Promise.all([_settleFillRecords(env, NETWORK, ASSET, fills), _settleFillRecords(env, NETWORK, ASSET, fills)]); await tick();
+ok(store.get(CNT) === '1', `two overlapping settles of one trade lower the count once (${store.get(CNT)})`);
+store.clear(); await addSale(SALE, SELLER); await addSale(SALE2, OTHER); store.set(CNT, '2');
+await Promise.all([_settleFillRecords(env, NETWORK, ASSET, fills), _settleFillRecords(env, NETWORK, ASSET, [{ kind: 'preauth', sale_id: SALE2, outpoint: OTHER }])]); await tick();
+ok(store.get(CNT) === '0', `two listings settled at once both leave the count (${store.get(CNT)})`);
+await addSale(SALE2, OTHER);
 await _settleFillRecords(env, NETWORK, ASSET, null); await _settleFillRecords(env, NETWORK, ASSET, [{ kind: 'preauth', sale_id: SALE2 }]);
 ok(store.has(preauthSaleKey(NETWORK, ASSET, SALE2)), 'no fills, or a fill with no outpoint, removes nothing');
 
@@ -66,6 +75,9 @@ const a = src.indexOf('async function handleAssetHint('), b = src.indexOf('\nasy
 ok(!/body\.price_sats|body\.amount|body\.fill_count/.test(handler), 'the hint handler reads no price, amount or fill count from the request');
 ok(/_deriveTradeFromChain\(/.test(handler) && /source: 'hint-chain'/.test(handler), 'it records the trade the chain derives');
 ok(/_settleFillRecords\(env, network, dx\.asset_id, derived\.fills\)/.test(handler), 'and takes the listings it spent out of the book, counted by the scan first or not');
+ok(_hintMaySettle({ price_sats: 5 }, true) === true && _hintMaySettle({ price_sats: 5 }, false) === false && _hintMaySettle({ price_sats: 0 }, true) === false && _hintMaySettle(null, true) === false,
+  'a hint takes listings out of the book only for a trade with a price and a confirmed transaction');
+ok(/_hintMaySettle\(derived, confirmed\)/.test(handler) && !/if \(derived && derived\.price_sats > 0\) \{\s*const settled/.test(handler), 'and the handler asks that, not just whether the trade priced');
 const scan = src.slice(src.indexOf('source: \'cron-chain-backfill\''), src.indexOf('} else if (decoded.opcode === T_PETCH) {'));
 ok((scan.match(/_settleFillRecords\(env, network, dx\.asset_id, derived\.fills\)/g) || []).length === 2, 'the scan does the same for a trade it counts and for one a hint counted first');
 ok((handler.match(/an etch is read at output 0/g) || []).length === 2, 'both kinds of etch are refused at an output other than 0');
