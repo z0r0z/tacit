@@ -394,10 +394,11 @@ a.di { color: inherit; text-decoration: none; }
 /* The two coins the headline names, round and side by side. */
 .hero h1 .hero-pair { display: inline-flex; gap: .1em; vertical-align: -.025em; margin-left: .2em; }
 .hero h1 .hero-pair .tk { width: .74em; height: .74em; }
-.hero .sub { font-size: 14px; line-height: 1.55; max-width: 64ch; margin: 0 auto; color: var(--mute); text-wrap: balance; }
-.hero .sub b { font-weight: 500; color: var(--ink); }
+/* the line under a headline is a statement, so it is set in the headline's serif; a name that is code (tacit1) keeps the mono */
+.hero .sub { font: 400 clamp(19px, 2.4vw, 22px)/1.3 var(--serif); letter-spacing: -.005em; max-width: 34em; margin: 0 auto; color: color-mix(in srgb, var(--ink) 72%, var(--mute)); text-wrap: balance; }
+.hero .sub b { font: 500 .74em var(--mono); letter-spacing: -.02em; color: var(--ink); }
 /* wide screens: the card's button should come up the page, not sit under the fold of a laptop */
-@media (min-width: 641px) { .hero { padding-top: 20px; } .hero-t { margin-bottom: 24px; } .hero h1 { margin-bottom: 12px; } }
+@media (min-width: 641px) { .hero { padding-top: 20px; } .hero-t { margin-bottom: 18px; } .hero h1 { margin-bottom: 12px; } }
 /* A plain text link, as the quiet kind of call to action. */
 .tl { font-weight: 500; text-decoration: underline; text-underline-offset: 4px; }
 
@@ -612,7 +613,7 @@ a.di { color: inherit; text-decoration: none; }
 .sx-h { display: grid; justify-items: center; gap: 12px; margin: 0 0 48px; text-align: center; }
 .sx-h h2 { font: 400 clamp(32px, 4.4vw, 50px)/1.06 var(--serif); letter-spacing: -.025em; margin: 0; text-wrap: balance; }
 .sx-h h2 em { font-style: italic; }
-.sx-h p { margin: 0; max-width: 52ch; font-size: 14px; line-height: 1.5; color: var(--mute); text-wrap: balance; }
+.sx-h p { margin: 0; max-width: 30em; font: 400 clamp(18px, 2.2vw, 22px)/1.3 var(--serif); letter-spacing: -.005em; color: color-mix(in srgb, var(--ink) 72%, var(--mute)); text-wrap: balance; }
 #how .sx-h p { max-width: none; }
 #how .sx-h p span { white-space: nowrap; }
 
@@ -1769,7 +1770,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   .news .dot:is(.on, .live) { display: inline-block; vertical-align: .08em; }
   .says { gap: 8px; margin-top: 32px; }
   .proof-row { margin-top: 48px; }
-  .hero-t { margin-bottom: 20px; }
+  .hero-t { margin-bottom: 18px; }
   .proof { gap: 12px 26px; }
   .proof b { font-size: 34px; }
   .hx-h { --hp: 2px; }
