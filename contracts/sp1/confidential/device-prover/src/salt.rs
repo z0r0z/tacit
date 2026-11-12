@@ -9,7 +9,7 @@
 // least as many zero bits as the pool asks (GET /prover/salt minBits).
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tiny_keccak::{Hasher, Keccak};
 use crate::gentle;
@@ -88,8 +88,20 @@ fn grind(seed: u64) {
     }
 }
 
+// The name this miner goes by in the salt pool: the prover and the release it was built as (the release workflow sets TACIT_RELEASE, a build of anything else says
+// `dev`). Sent with every share and as the User-Agent, so the pool can tell which programs are mining; it is what the program says of itself, nothing more.
+fn client_label(release: Option<&str>) -> String {
+    let r = release.unwrap_or("dev").trim().trim_start_matches("tacit-prover-");
+    let clean: String = r.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+')).take(24).collect();
+    format!("tacit-prover/{}", if clean.is_empty() { "dev" } else { &clean })
+}
+fn client_name() -> &'static str {
+    static NAME: OnceLock<String> = OnceLock::new();
+    NAME.get_or_init(|| client_label(option_env!("TACIT_RELEASE")))
+}
+
 fn http() -> Option<reqwest::blocking::Client> {
-    reqwest::blocking::Client::builder().timeout(Duration::from_secs(20)).build().ok()
+    reqwest::blocking::Client::builder().timeout(Duration::from_secs(20)).user_agent(client_name()).build().ok()
 }
 fn api() -> String { std::env::var("TACIT_API").unwrap_or_else(|_| "https://api.tacit.finance".into()) }
 
@@ -143,7 +155,7 @@ fn send() {
         FOUND.lock().unwrap().extend(rest);
         if found.is_empty() { continue; }
         let salts: Vec<String> = found.iter().map(|(s, _)| format!("0x{}", hex::encode(s))).collect();
-        match http.post(format!("{}/prover/salt/share", api())).json(&json!({ "miner": miner, "salts": salts })).send() {
+        match http.post(format!("{}/prover/salt/share", api())).json(&json!({ "miner": miner, "salts": salts, "client": client_name() })).send() {
             Ok(r) if r.status().as_u16() == 429 => {
                 // the connection sent less than 20 s ago (another prover behind it, say): the shares wait, and the next try is when the pool says
                 let ms = r.json::<Value>().ok().and_then(|v| v["retryMs"].as_u64()).unwrap_or(5000).min(60_000);
@@ -231,6 +243,17 @@ mod tests {
         assert_eq!(wait.len(), KEEP_MAX);
         let (send, _) = next_batch(vec![share(65536, 1, 30), share(65535, 2, 29)], 65536);
         assert_eq!(send.len(), 2, "yesterday across the two-byte wrap");
+    }
+
+    #[test]
+    fn the_miner_names_itself_after_its_release() {
+        assert_eq!(client_label(Some("tacit-prover-v0.6.4")), "tacit-prover/v0.6.4");
+        assert_eq!(client_label(Some("v0.7.0")), "tacit-prover/v0.7.0");
+        assert_eq!(client_label(None), "tacit-prover/dev", "a build that is not a release says dev");
+        assert_eq!(client_label(Some("")), "tacit-prover/dev");
+        assert_eq!(client_label(Some("tacit-prover-")), "tacit-prover/dev");
+        assert_eq!(client_label(Some("v1 <b>x</b>\n")), "tacit-prover/v1bxb", "only letters, digits and . - _ + are kept");
+        assert!(client_label(Some(&"9".repeat(200))).len() <= "tacit-prover/".len() + 24, "and it is cut short");
     }
 
     #[test]

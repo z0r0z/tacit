@@ -4021,7 +4021,7 @@ async function poolCached(key, ms, make) {
 }
 
 // GET /prover/salt (the day so far and the best salts banked), GET /prover/salt/credits?day= (the day's points by weight, for the points
-// service), GET /prover/salt/bank (every banked salt), POST /prover/salt/share { miner, salts } (a prover's shares).
+// service), GET /prover/salt/bank (every banked salt), POST /prover/salt/share { miner, salts, client? } (a prover's shares; client is the software's name).
 // The salts share what the day's proofs leave of the mining campaign's daily points: the campaign's terms from the points service (its
 // daily amount over the most a point earns, kept ten minutes), and the day's proof points from the proof pool's and the board's tallies.
 let _saltPot = { at: 0, points: null };
@@ -4058,7 +4058,7 @@ async function handleSaltPool(req, env, url, cors) {
   let b;
   try { b = await req.json(); } catch { b = null; }
   if (!b || typeof b !== 'object' || Array.isArray(b)) return jsonResponse({ ok: false, error: 'bad json' }, 400, nostore);
-  return send(await pool.submit({ miner: b.miner, salts: b.salts, client: clientOf(req.headers.get('CF-Connecting-IP') || 'anon') }));
+  return send(await pool.submit({ miner: b.miner, salts: b.salts, client: clientOf(req.headers.get('CF-Connecting-IP') || 'anon'), software: b.client, ua: req.headers.get('User-Agent') || '' }));
 }
 
 async function handleProofPool(req, env, url, cors) {
