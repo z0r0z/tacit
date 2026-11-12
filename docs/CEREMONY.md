@@ -1,8 +1,8 @@
 # Ceremony artifacts
 
-Tacit's transparent stack (SP1, Bulletproofs+, Schnorr kernels) needs no trusted setup. Two finalized
-Groth16 ceremonies supply keys for circuits that are expensive to express otherwise
-([SPEC §2.8](../SPEC.md#28-circuits-and-ceremonies)). This page lists every artifact, where it lives, and how
+Tacit's transparent stack (SP1, Bulletproofs+, Schnorr kernels) needs no trusted setup. Three finalized
+Groth16 ceremonies supply keys for circuits that are expensive to express otherwise: the AMM and mixer ceremonies
+([SPEC §2.8](../SPEC.md#28-circuits-and-ceremonies)) and the EVM pool ceremony. This page lists every artifact, where it lives, and how
 to check it. Each value below was re-derived from the fetched bytes.
 
 ## AMM ceremony — used in production
@@ -51,6 +51,55 @@ Other AMM identifiers:
 - Verifying-key wrapper for all three circuits: `bafkreibjpe4xfqtq2ziki4uupydnkeiakqi76m674xtdhmxnfbrn4iomp4`
   (`CANONICAL_AMM_VK_CID` in `dapp/tacit.js`).
 - VK and transcript bundle: `bafybeiheww2ndia2gld4mu7x2h7iwzawv6likpmfpklm6x5kj3btaniuam`.
+
+## EVM pool ceremony (Secret Sats EVM pool) — used in production
+
+`transact.circom` backs the Ethereum, Base and Robinhood Chain pools ([EVM-POOL.md](./EVM-POOL.md)). Its key came from
+one open ceremony on 26 and 27 September 2026: 176 contributions from 120 distinct public keys, sealed with the hash of
+Bitcoin block 968,840 as the final beacon.
+
+- Phase 1: Hermez `powersOfTau28_hez_final_16.ptau` (2^16); its hashes are in [`dapp/evm-pool/pin.json`](../dapp/evm-pool/pin.json).
+- Phase 2: circuit hash `b0a246d1790151c722e42ccfa89450cb96c7f5a9f4b70a2162b7d9fc79b6ddb3`, beacon Bitcoin block 968,840
+  (`000000000000000000019b1eec61f35a8da876de173e61f8a32109986182c033`), 10 iterations.
+
+| Artifact | Identifier |
+|---|---|
+| Bundle (transcript, keys, verifier) | `bafybeia4yvn2zoggvgpjwg5vpwpt6aivjbcm6tgzxoxsukao2nm5yyypfy` |
+| Final zkey | `bafybeia6c36bgww2svm6jfg6nl2pk337prc7t6gcfsvhuo5sufqjpi7z4a`, 28,558,285 bytes, SHA-256 `40758061a0786fb0bdc5e5dec4c354bbf85fc106f7412716e25e781af4e79c4b` |
+| Verifying key | `transact_vk.json`, hash `43d11e6e1607e1ea7f3980c9bca91beed95e2e80d173d0873189e99d402e5757` |
+
+**Records.** `GET https://api.tacit.finance/ceremony/b0a246d1790151c722e42ccfa89450cb96c7f5a9f4b70a2162b7d9fc79b6ddb3/attestations?limit=500`
+lists every contribution: its index, an optional name, the contributor's public key, the contribution hash, the IPFS CID
+of the full key after it, the CID of the key before it, and the time. All 176 keys are on IPFS under those CIDs (each is
+about 400 bytes larger than the one before), and each contribution's previous CID is the one before it, so the chain can be
+fetched and replayed from the genesis key.
+
+**Who could contribute, and what the keys are.**
+- The ceremony was open: no TAC holding or other eligibility proof was needed (the AMM ceremonies required one). Queue joins
+  were rate-limited per address.
+- Names were optional. 171 contributions are "anonymous"; five are Tacit's own test entries (#4, #6, #8, #9, #11).
+- Each contribution records a public key: the contributor's Tacit wallet key, or a key kept in the browser when there is no
+  wallet. The coordinator checks that the contributor holds it: joining the queue takes a BIP-340 Schnorr signature by that
+  key over `sha256("tacit-ceremony-reserve-v1" ‖ circuit_hash ‖ pubkey ‖ queue_token)`, and the upload must come from the key
+  that holds the head of the queue.
+- An open ceremony accepts repeat contributions from a key, since each one mixes in fresh randomness. The browser keeps the
+  key, so a returning contributor reuses it; the 176 contributions come from 120 keys.
+- The success screen shows the contributor their contribution hash and recorded key. Contributors who chose to identify
+  themselves did so by posting those.
+
+**Code that ran it.** At the commit that closed the ceremony
+([`ed2ffbf0a`](https://github.com/src-company/tacit/commit/ed2ffbf0a0947a0d54a5424b03b95134ddaad847)):
+the coordinator is [`worker/src/index.js`](https://github.com/src-company/tacit/blob/ed2ffbf0a0947a0d54a5424b03b95134ddaad847/worker/src/index.js)
+(`handleCeremonyInit`, `handleCeremonyReserve`, `handleCeremonyContribute`, `handleCeremonyAttestations`,
+`handleCeremonyFinalize`); the browser client is [`dapp/tacit.js`](https://github.com/src-company/tacit/blob/ed2ffbf0a0947a0d54a5424b03b95134ddaad847/dapp/tacit.js)
+(`snarkjs.zKey.contribute` runs in the page; `_ceremonyReserveSig` signs the queue join); the status page is
+[`dapp/ceremony/index.html`](../dapp/ceremony/index.html); the tooling is [`dapp/circuits/evm-pool/`](../dapp/circuits/evm-pool)
+(`ceremony-init.sh`, `ceremony-verify.sh`, `finalize.sh`); the test is
+[`tests/ceremony-evm-pool.test.mjs`](../tests/ceremony-evm-pool.test.mjs).
+
+**Verify.** `bash dapp/circuits/evm-pool/ceremony-verify.sh transact_final.zkey` replays every contribution back to the
+genesis key against the pinned ptau (the script's header lists the files it expects). The pool's deploy script refuses
+any verifier other than the ceremony's.
 
 ## Mixer ceremony
 
