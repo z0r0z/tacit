@@ -79,21 +79,22 @@ export function navHtml(key) {
   </nav>`;
 }
 
-// what it is, where it is kept, who is watching it (outward), and the site's own build and stats pages. Icons, each named for a screen reader and a hover.
+// what it is, where it is kept, who is watching it (outward), and the site's own build and stats pages. Each is an icon named for a screen reader and a hover;
+// the protocol's own also carry a word (the fourth entry), which a wide footer shows in the icon's place (chrome.css)
 const OUT = [
-  ['paper', 'Whitepaper', '/tacit-v1.pdf'],
-  ['build', 'Build', '/build/'],
-  ['lock', 'Security', 'https://github.com/src-company/tacit/blob/main/SECURITY.md'],
-  ['github', 'Source', 'https://github.com/src-company/tacit'],
-  ['contract', 'Pool contract', 'https://etherscan.io/address/0x000000000Ed1eabD231Be41d93b719056F7febFC'],
-  ['stats', 'Stats', '/weld/stats/'],
+  ['paper', 'Whitepaper', '/tacit-v1.pdf', 'Whitepaper'],
+  ['build', 'Build', '/build/', 'Build'],
+  ['lock', 'Security', 'https://github.com/src-company/tacit/blob/main/SECURITY.md', 'Security'],
+  ['github', 'Source', 'https://github.com/src-company/tacit', 'Source'],
+  ['contract', 'Pool contract', 'https://etherscan.io/address/0x000000000Ed1eabD231Be41d93b719056F7febFC', 'Contract'],
+  ['stats', 'Stats', '/weld/stats/', 'Stats'],
   ['llama', 'DefiLlama', 'https://defillama.com/protocol/tacit'],
   ['ethbeat', 'Listed on ETHBeat', 'https://ethbeat.org/privacy/projects/tacit-pay'],
   ['x', '@tacitfi on X', 'https://x.com/tacitfi'],
   ['discord', 'Tacit Discord community', 'https://discord.gg/VxYx9XSBrM'],
 ];
 export function footHtml(label = 'tacit.finance · mainnet', id = '') {
-  const links = OUT.map(([k, name, href]) => `<a href="${href}" title="${name}" aria-label="${name}"${href.startsWith('/') ? '' : ' target="_blank" rel="noopener noreferrer"'}>${svg(k)}</a>`).join('\n    ');
+  const links = OUT.map(([k, name, href, word]) => `<a${word ? ' class="fw"' : ''} href="${href}" title="${name}" aria-label="${name}"${href.startsWith('/') ? '' : ' target="_blank" rel="noopener noreferrer"'}>${svg(k)}${word ? `<span>${word}</span>` : ''}</a>`).join('\n    ');
   return `<footer class="sf">
   <span${id ? ` id="${id}"` : ''}>${label}</span>
   <nav aria-label="Elsewhere">

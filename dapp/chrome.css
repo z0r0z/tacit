@@ -94,13 +94,25 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
 @media (hover: hover) { .sm-p a:hover { background: var(--hair); } }
 @media (prefers-reduced-motion: reduce) { .sm-p { animation: none; } .sn > a, .sn summary, header.top .chip { transition: none; } }
 
-/* the footer: where it is said to be, then the places outside the app, as icons that say their name on hover and to a screen reader (they narrow a little on a small phone before they would run off the page) */
-footer.sf { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0 20px; margin-top: 56px; padding: 10px 0 22px; border-top: 1px solid var(--hair); color: var(--mute); font: 400 12px/1.4 var(--mono); }
+/* a page with little on it still reaches the bottom of the window, so its footer is not left floating under a few lines (a page that sets a height for its own <main> keeps it) */
+:where(.shell > main) { min-height: calc(100vh - 300px); min-height: calc(100svh - 300px); }
+
+/* the footer: where it is said to be, then the places outside the app. In a wide footer the protocol's own (paper, build, security, source, contract, stats) are words and the
+   places that have a mark of their own are that mark; in a narrow one every place is an icon that says its name on hover and to a screen reader (they narrow a little on a small
+   phone before they would run off the page) */
+footer.sf { container: foot / inline-size; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0 20px; margin-top: 56px; padding: 10px 0 22px; border-top: 1px solid var(--hair); color: var(--mute); font: 400 12px/1.4 var(--mono); }
 footer.sf nav { display: flex; align-items: center; max-width: 100%; margin: 0 -10px 0 auto; }
-footer.sf nav a { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; flex: 0 1 40px; min-width: 28px; height: 40px; border-radius: 12px; color: var(--mute); transition: color .15s, background-color .15s, transform .25s var(--spring, ease); }
+footer.sf nav a { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; flex: 0 1 40px; min-width: 28px; height: 40px; border-radius: 12px; color: var(--mute); text-decoration: none; transition: color .15s, background-color .15s, transform .25s var(--spring, ease); }
 footer.sf nav a:active { transform: scale(.92); }
 footer.sf svg { width: 18px; height: 18px; }
 footer.sf svg.fill { width: 16px; height: 16px; }
+footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+@container foot (min-width: 840px) {
+  footer.sf nav a.fw { flex: none; padding: 0 10px; }
+  footer.sf nav a.fw svg { display: none; }
+  footer.sf nav a.fw span { position: static; width: auto; height: auto; overflow: visible; clip-path: none; }
+  footer.sf nav a.fw + a:not(.fw) { margin-left: 8px; }
+}
 @media (hover: hover) { footer.sf nav a:hover { color: var(--ink); background: var(--hair); } }
 @media (max-width: 480px) { footer.sf nav { margin: 0 0 0 -11px; } }
 
