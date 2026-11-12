@@ -50,7 +50,7 @@ const mkFeed = (o = {}) => makeCheckFeed({ source: () => SRC, sample: () => ({ f
   put(F.inbox, [find()]); writeFileSync(F.checks, '');
   const feed = mkFeed();
   const j = await feed.next({ node: 'nodeQ', tier: 'small', model: 'm2' });
-  check('a filed finding becomes a skeptic job for another machine', j && j.kind === 'check' && j.meta.check === true && j.meta.fid === 'f1' && j.max_tokens === 200 && j.temperature === 0 && !j.meta.exam);
+  check('a filed finding becomes a skeptic job for another machine', j && j.kind === 'check' && j.meta.check === true && j.meta.fid === 'f1' && j.max_tokens === 300 && j.temperature === 0 && !j.meta.exam);
   check('the job holds the claim, the change and the numbered code around the line', j.messages[1].content.includes('Claim (line 3): boundary is off by one') && j.messages[1].content.includes('- if (a >= b)') && j.messages[1].content.includes('+ if (a > b)') && j.messages[1].content.includes('3:   if (a >= b) return 1;') && j.meta.codeText.includes('3:   if (a >= b) return 1;'));
   check('the proposer is never asked to check its own finding', (await feed.next({ node: 'nodeP', tier: 'small', model: 'm1' })) === null);
   put(F.checks, [vote('f1', 'nodeQ', 'unsure')]);
@@ -95,7 +95,7 @@ const mkFeed = (o = {}) => makeCheckFeed({ source: () => SRC, sample: () => ({ f
   writeFileSync(F.inbox, ''); writeFileSync(F.checks, '');
   const mk = (r) => mkFeed({ rand: r, examEvery: 1 });
   const t = await mk(() => 0).next({ node: 'n' });   // rand 0: exam, claim true
-  check('with examEvery 1 every ask is an exam, and it looks like any other skeptic job', t && t.kind === 'check' && t.meta.exam && t.meta.check === true && t.max_tokens === 200 && t.messages.length === 2 && t.messages[0].role === 'system');
+  check('with examEvery 1 every ask is an exam, and it looks like any other skeptic job', t && t.kind === 'check' && t.meta.exam && t.meta.check === true && t.max_tokens === 300 && t.messages.length === 2 && t.messages[0].role === 'system');
   check('a true claim shows the code with the planted bug and proposes the original line', t.meta.exam.truth === true && /Claim \(line 3\):/.test(t.messages[1].content) && t.meta.codeText.includes('3:   if (a > b) return 1;') && t.messages[1].content.includes('+ if (a >= b) return 1;'));
   let seq = [0.99, 0.99, 0.99, 0.99, 0.99, 0.99, 0.99, 0.99]; let k = 0;
   const f = await mkFeed({ rand: () => (k++ === 0 ? 0 : 0.99), examEvery: 1 }).next({ node: 'n' });
@@ -162,6 +162,39 @@ const mkFeed = (o = {}) => makeCheckFeed({ source: () => SRC, sample: () => ({ f
   check('an invalid reply is kept with its role, lens, whether it was an exam, the machine and the start of what came back', rows.length === 2 && rows[0].role === 'skeptic' && rows[0].lens === 'bounds' && rows[0].exam === true && rows[0].outcome === 'invalid' && rows[0].node === 'nQ' && rows[0].tier === 'small' && rows[0].model === 'm1' && rows[0].t === 7000 && rows[0].sample.startsWith('Sure!') && rows[0].sample.length === 160 && !rows[0].sample.includes('\u001b') && rows[1].exam === false && rows[1].sample === 'nope');
   check('invalid replies are not graded: they do not count in n, in a lens or tier total, or toward a machine\'s skill', (() => { const s = examSummary([...rows, examRow('nQ', 'right')]); return s.skeptic.invalid === 2 && s.skeptic.n === 1 && s.skeptic.right === 1 && s.skeptic.byTier.small.invalid === 1 && s.skeptic.byTier.small.n === 1 && s.skeptic.byLens.bounds.invalid === 1 && s.skeptic.byLens['?'].invalid === 1 && s.skeptic.byLens['?'].n === 0; })());
   check('and they carry no weight', skillTable(Array.from({ length: 20 }, () => ({ role: 'skeptic', node: 'k', outcome: 'invalid' }))).size === 0);
+}
+// --- findings from before machines were recorded: the address stands in for the machine
+{
+  const legacy = { ...find({ id: 'L1', miner: '0xAbCd', node: undefined, tier: undefined, model: undefined }) }; delete legacy.node;
+  put(F.inbox, [legacy]); writeFileSync(F.checks, '');
+  const feed = mkFeed();
+  check('a finding with no machine recorded is not given to its proposer\'s address, in any case', (await feed.next({ node: 'nodeX', miner: '0xabcd' })) === null && (await feed.next({ node: 'nodeY', miner: '0xABCD' })) === null);
+  check('but is given to another address', (await feed.next({ node: 'nodeX', miner: '0x1234' }))?.meta.fid === 'L1');
+  check('a finding with no machine and a machine that names no address is given (nothing says they are the same)', (await feed.next({ node: 'nodeX' }))?.meta.fid === 'L1');
+  put(F.checks, [vote('L1', 'nodeP', 'real', { miner: '0xabcd' }), vote('L1', 'nodeQ', 'real', { miner: '0x1111' })]);
+  check('votes from the proposer\'s own address do not count: one other vote is not a confirmation', feed.decision('L1').state === 'pending' && feed.decision('L1').n === 1 && feed.decision('L1').yes === 1);
+  put(F.checks, [vote('L1', 'nodeP', 'real', { miner: '0xabcd' }), vote('L1', 'nodeQ', 'real', { miner: '0x1111' }), vote('L1', 'nodeR', 'real', { miner: '0x2222' })]);
+  check('two other machines still confirm it', feed.decision('L1').state === 'confirmed' && feed.decision('L1').n === 2);
+  put(F.inbox, [find({ id: 'K1', node: 'nodeP', miner: '0xaa' })]);
+  put(F.checks, [vote('K1', 'nodeP', 'real'), vote('K1', 'nodeQ', 'real')]);
+  check('on a finding whose machine is known, that machine\'s vote is ignored too', feed.decision('K1').n === 1 && feed.decision('K1').state === 'pending');
+  put(F.inbox, [find({ id: 'S1', node: 'nodeP', miner: '0xaa' })]); put(F.checks, [vote('S1', 'nodeX', 'real', { miner: '0xaa' }), vote('S1', 'nodeY', 'real', { miner: '0xbb' })]);
+  check('another machine of the same address is another machine when the proposer is known', feed.decision('S1').state === 'confirmed' && feed.decision('S1').n === 2);
+  const s = feed.summary();
+  check('the summary counts findings the same way', s.findings.confirmed === 1);
+}
+// --- invalid replies are said, and the summary shows accuracy on true and on false claims
+{
+  const lines = []; const feed = mkFeed({ say: (m) => lines.push(m) });
+  await feed.onInvalid({ meta: { check: true, fid: 'f1', codeText: 'x' } }, 'Okay so ' + 'q'.repeat(300), '0xaa', { node: 'n', tier: 'big', model: 'qwen-4b' });
+  check('an invalid skeptic reply is said, with the size, the model and the start of it', lines.length === 1 && lines[0].startsWith('invalid skeptic reply (big, qwen-4b): "Okay so ') && lines[0].length < 260);
+  const s = examSummary([
+    { role: 'skeptic', truth: true, outcome: 'right', kind: 'ge-to-gt', lens: 'bounds' }, { role: 'skeptic', truth: true, outcome: 'right', kind: 'ge-to-gt', lens: 'bounds' },
+    { role: 'skeptic', truth: false, outcome: 'wrong', kind: 'drop-await', lens: 'async' }, { role: 'skeptic', truth: false, outcome: 'wrong', kind: 'drop-await', lens: 'async' }, { role: 'skeptic', truth: false, outcome: 'right', kind: 'drop-await', lens: 'async' },
+    { role: 'scout', outcome: 'restored', kind: 'scale', lens: 'units', fp: 0 }, { role: 'skeptic', outcome: 'invalid', truth: true }]);
+  check('skeptics are broken down by whether the claim was true: a machine that says yes to everything shows as right on true and wrong on false', s.skeptic.byTruth.true.right === 2 && s.skeptic.byTruth.true.n === 2 && s.skeptic.byTruth.false.wrong === 2 && s.skeptic.byTruth.false.right === 1 && s.skeptic.byTruth.false.n === 3);
+  check('and by the kind of bug planted, for scouts and skeptics', s.skeptic.byKind['ge-to-gt'].right === 2 && s.skeptic.byKind['drop-await'].wrong === 2 && s.scout.byKind.scale.restored === 1);
+  check('an invalid reply is in none of those', !('undefined' in s.skeptic.byTruth) && Object.keys(s.skeptic.byTruth).sort().join() === 'false,true' && s.skeptic.invalid === 1 && s.skeptic.n === 5);
 }
 // --- reading
 {

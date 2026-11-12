@@ -20,7 +20,7 @@ import { scoutMessages, findingId, fits } from './codecheck/roles.mjs';
 const PLAN = ['site', 'site', 'window', 'site', 'site', 'window', 'site', 'exam'];
 
 export function makeScanFeed({ repo, ref = 'origin/main', inbox, results = null, cursorFile, maxLines = Number(process.env.SCAN_MAXLINES || 1800), refreshMs = Number(process.env.SCAN_REFRESH_MS || 3600000), fetch = process.env.SCAN_FETCH === '1', paths = /^dapp\/[^/]+\.js$/,
-  lenses = false, examFile = null, rand = Math.random }) {
+  lenses = false, examFile = null, rand = Math.random, say = () => {} }) {
   const git = (...a) => execFileSync('git', ['-C', repo, ...a], { encoding: 'utf8', maxBuffer: 256 << 20, timeout: 120000 });
   const sync = () => { if (fetch) try { git('fetch', '--quiet', '--no-tags', 'origin'); } catch { /* offline or rate-limited: review what is already here */ } };
   let commit = null, units = null, siteUnits = null, lastCheck = 0; const cache = new Map(); const priority = [], sitePriority = []; let seen = null;
@@ -140,7 +140,9 @@ export function makeScanFeed({ repo, ref = 'origin/main', inbox, results = null,
   // where it is counted as invalid and not graded.
   function onInvalid(job, text, miner, who = {}) {
     if (!examFile) return;
-    try { appendFileSync(examFile, JSON.stringify({ t: Date.now(), role: 'scout', lens: job.meta.lens || 'window', exam: !!job.meta.exam, miner, ...who, outcome: 'invalid', sample: plain(text).slice(0, 160) }) + '\n'); } catch {}
+    const sample = plain(text).slice(0, 160);
+    try { appendFileSync(examFile, JSON.stringify({ t: Date.now(), role: 'scout', lens: job.meta.lens || 'window', exam: !!job.meta.exam, miner, ...who, outcome: 'invalid', sample }) + '\n'); } catch {}
+    say(`invalid scout reply (${who.tier || '?'}, ${who.model || '?'}): ${JSON.stringify(sample)}`);
   }
   // what the check feed needs: the code at a commit, and a snippet to plant a bug in
   const sample = () => { if (!units) load(); const all = getSites(); if (!all.length) return null; const u = all[Math.floor(rand() * all.length)]; return { ...u, commit }; };

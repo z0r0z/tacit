@@ -43,9 +43,16 @@ export function decide(voteRows, skill, { panel = 3, quorum = 2 } = {}) {
   return { state, yes, no, n, counts };
 }
 
-export function makeCheckFeed({ source, sample, inbox, checks, exam, panel = 3, quorum = 2, examEvery = 4, minExam = 6, context = 15, rand = Math.random, now = Date.now }) {
+export function makeCheckFeed({ source, sample, inbox, checks, exam, panel = 3, quorum = 2, examEvery = 4, minExam = 6, context = 15, rand = Math.random, now = Date.now, say = () => {} }) {
   const findings = () => readRows(inbox).map((r) => ({ ...r, id: r.id || findingId(r.file, r.old, r.new) }));
-  const votesFor = () => { const by = new Map(); for (const r of readRows(checks)) { if (!by.has(r.id)) by.set(r.id, []); by.get(r.id).push(r); } return by; };
+  // Whether this machine proposed the finding. A finding filed before machines were recorded names only the address, so the address stands in for the machine.
+  const proposedBy = (r, who) => (r.node ? !!who.node && r.node === who.node : !!r.miner && !!who.miner && String(r.miner).toLowerCase() === String(who.miner).toLowerCase());
+  // the votes on each finding, the proposer's own never among them
+  const votesFor = () => {
+    const by = new Map(), owner = new Map(); for (const r of findings()) owner.set(r.id, r);
+    for (const v of readRows(checks)) { const f = owner.get(v.id); if (f && proposedBy(f, { node: v.node, miner: v.miner })) continue; if (!by.has(v.id)) by.set(v.id, []); by.get(v.id).push(v); }
+    return by;
+  };
   const skill = () => skillTable(readRows(exam), minExam);
   const decision = (id) => decide(votesFor().get(id) || [], skill(), { panel, quorum });
   const append = (file, row) => { try { appendFileSync(file, JSON.stringify(row) + '\n'); } catch { /* a full disk loses a vote, not the service */ } };
@@ -57,7 +64,7 @@ export function makeCheckFeed({ source, sample, inbox, checks, exam, panel = 3, 
     for (const r of findings()) {
       if (r.status !== 'syntax-ok' || r.review !== 'new') continue;
       const vs = votes.get(r.id) || [];
-      if (r.node && who.node && r.node === who.node) continue;
+      if (proposedBy(r, who)) continue;
       if (vs.some((v) => v.node === who.node)) continue;
       if (decide(vs, sk, { panel, quorum }).state !== 'pending') continue;
       open.push({ r, vs, seen: who.model ? vs.some((v) => v.model === who.model) : false });
@@ -69,7 +76,7 @@ export function makeCheckFeed({ source, sample, inbox, checks, exam, panel = 3, 
       const [ws, we] = String(r.window || '').split('-').map(Number), at = Number.isInteger(r.line) ? r.line : ws;
       const codeText = snippet(src, Math.min(at - context, ws || at), Math.max(at + context, we || at));
       const messages = skepticMessages(r, codeText); if (!fits(messages)) continue;
-      return { id: randomBytes(8).toString('hex'), kind: 'check', max_tokens: 200, temperature: 0, meta: { check: true, fid: r.id, codeText }, messages };
+      return { id: randomBytes(8).toString('hex'), kind: 'check', max_tokens: 300, temperature: 0, meta: { check: true, fid: r.id, codeText }, messages };
     }
     return null;
   }
@@ -80,7 +87,7 @@ export function makeCheckFeed({ source, sample, inbox, checks, exam, panel = 3, 
       const truth = rand() < 0.5, ex = examClaim({ ...p, file: s.file }, truth, src);
       const codeText = snippet(ex.code, p.line - context, p.line + context);
       const messages = skepticMessages(ex.claim, codeText); if (!fits(messages)) continue;
-      return { id: randomBytes(8).toString('hex'), kind: 'check', max_tokens: 200, temperature: 0, meta: { check: true, exam: { truth, lens: s.lens, kind: p.kind }, codeText }, messages };
+      return { id: randomBytes(8).toString('hex'), kind: 'check', max_tokens: 300, temperature: 0, meta: { check: true, exam: { truth, lens: s.lens, kind: p.kind }, codeText }, messages };
     }
     return null;
   }
@@ -101,7 +108,9 @@ export function makeCheckFeed({ source, sample, inbox, checks, exam, panel = 3, 
   }
   // a reply that was not a verdict: kept beside the exam results as invalid (not graded), with the start of what came back
   function onInvalid(job, text, miner, who = {}) {
-    append(exam, { t: now(), role: 'skeptic', lens: job.meta.exam?.lens, exam: !!job.meta.exam, miner, node: who.node, tier: who.tier, model: who.model, outcome: 'invalid', sample: plain(text).slice(0, 160) });
+    const sample = plain(text).slice(0, 160);
+    append(exam, { t: now(), role: 'skeptic', lens: job.meta.exam?.lens, exam: !!job.meta.exam, miner, node: who.node, tier: who.tier, model: who.model, outcome: 'invalid', sample });
+    say(`invalid skeptic reply (${who.tier || '?'}, ${who.model || '?'}): ${JSON.stringify(sample)}`);
   }
   // how the findings stand, for /stats: counts by state, and the exam results by role, lens and size of machine
   function summary() {
@@ -115,13 +124,14 @@ export function makeCheckFeed({ source, sample, inbox, checks, exam, panel = 3, 
 // The exam results as counts: scouts by outcome (restored, near, miss, and findings elsewhere), skeptics by outcome (right, wrong, unsure), each overall, by lens and by
 // tier. `invalid` counts replies that were not the JSON asked for, in any job (they are not graded, so they are not in n).
 export function examSummary(rows) {
-  const out = { scout: { n: 0, invalid: 0, restored: 0, near: 0, miss: 0, fp: 0, byLens: {}, byTier: {} }, skeptic: { n: 0, invalid: 0, right: 0, wrong: 0, unsure: 0, byLens: {}, byTier: {} } };
+  const out = { scout: { n: 0, invalid: 0, restored: 0, near: 0, miss: 0, fp: 0, byLens: {}, byTier: {}, byKind: {} }, skeptic: { n: 0, invalid: 0, right: 0, wrong: 0, unsure: 0, byLens: {}, byTier: {}, byKind: {}, byTruth: {} } };
   const bump = (bucket, key, field) => { const b = bucket[key] ||= { n: 0 }; if (field !== 'invalid') b.n++; b[field] = (b[field] || 0) + 1; };
   for (const r of rows) {
     const role = out[r.role]; if (!role) continue;
     if (r.outcome === 'invalid') { role.invalid++; bump(role.byLens, r.lens || '?', 'invalid'); bump(role.byTier, r.tier || 'unknown', 'invalid'); continue; }
     role.n++; role[r.outcome] = (role[r.outcome] || 0) + 1; if (r.role === 'scout') role.fp += r.fp || 0;
-    bump(role.byLens, r.lens || '?', r.outcome); bump(role.byTier, r.tier || 'unknown', r.outcome);
+    bump(role.byLens, r.lens || '?', r.outcome); bump(role.byTier, r.tier || 'unknown', r.outcome); bump(role.byKind, r.kind || '?', r.outcome);
+    if (r.role === 'skeptic' && typeof r.truth === 'boolean') bump(role.byTruth, String(r.truth), r.outcome);   // right on true claims and on false ones: a machine that says yes to everything shows here
   }
   return out;
 }

@@ -89,9 +89,12 @@ f = mk(); const j3 = await f.next(); check('after a restart, files changed while
   f4.onInvalid({ meta: { file: 'dapp/a.js' } }, 'prose', '0xbb', {});
   const rows = readFileSync(exam, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
   check('an invalid scout reply is kept with its lens (or window), whether it was an exam, who sent it and the start of it', rows.length === 2 && rows[0].role === 'scout' && rows[0].lens === 'units' && rows[0].exam === true && rows[0].outcome === 'invalid' && rows[0].tier === 'small' && rows[0].model === 'm1' && rows[0].miner === '0xaa' && rows[0].sample === 'I think the code is fine.[2J' && !rows[0].sample.includes('\u001b') && rows[1].lens === 'window' && rows[1].exam === false);
+  const said = []; const f5 = makeScanFeed({ repo, ref: 'main', inbox: path.join(d4, 'i3.jsonl'), cursorFile: path.join(d4, 'c3.json'), refreshMs: 0, lenses: true, examFile: exam, say: (m) => said.push(m) });
+  f5.onInvalid({ meta: { lens: 'bounds' } }, 'Sure ' + 'x'.repeat(300), '0xaa', { tier: 'small', model: 'qwen-4b' });
+  check('an invalid scout reply is said, with the size, the model and the start of it', said.length === 1 && said[0].startsWith('invalid scout reply (small, qwen-4b): "Sure x') && said[0].length < 260);
   const plainFeed = makeScanFeed({ repo, ref: 'main', inbox: path.join(d4, 'i2.jsonl'), cursorFile: path.join(d4, 'c2.json'), refreshMs: 0 });
   plainFeed.onInvalid({ meta: {} }, 'x', '0xaa', {});
-  check('a feed with no exam file keeps nothing and does not fail', readFileSync(exam, 'utf8').trim().split('\n').length === 2);
+  check('a feed with no exam file keeps nothing and does not fail', readFileSync(exam, 'utf8').trim().split('\n').length === 3);
   rmSync(d4, { recursive: true, force: true });
 }
 rmSync(d, { recursive: true, force: true });

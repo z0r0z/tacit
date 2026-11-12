@@ -25,6 +25,17 @@ const CODE = '10: function f(a, b) {\n11:   if (a >= b) return 1;\n12:   return 
 
 // --- verdicts
 check('a verdict is read from the JSON, among any prose around it', verdictOf('Sure.\n{"verdict":"false","line":11,"quote":"if (a >= b) return 1;","why":"fine"}\nDone')?.verdict === 'false');
+check('a verdict word in capitals is a verdict', verdictOf('{"verdict":"REAL","line":3,"quote":"const a = 1;","why":"x"}')?.verdict === 'real' && verdictOf('{"verdict":"False"}')?.verdict === 'false');
+{
+  // a small model leaves the quotes inside a quoted line of code unescaped, which is not JSON
+  const v = verdictOf('{"verdict":"real","line":11,"quote":"const a = "x";","why":"the string is wrong"}');
+  check('a reply whose quoted code has unescaped double quotes is still read: verdict, line, quote and why', v && v.verdict === 'real' && v.line === 11 && v.quote === 'const a = "x";' && v.why === 'the string is wrong');
+  check('with a code fence and prose around it', verdictOf('Here is my answer:\n```json\n{"verdict": "false", "line": 4, "quote": "if (a >= b) return "yes";", "why": "fine"}\n```')?.quote === 'if (a >= b) return "yes";');
+  check('a loosely read reply is checked like any other: its quote must be in the code', voteOf('{"verdict":"real","line":2,"quote":"let s = "q";","why":"w"}', '2: let s = "q";').vote === 'real' && voteOf('{"verdict":"real","line":2,"quote":"let t = "q";","why":"w"}', '2: let s = "q";').vote === 'unsure');
+  check('a reply that mixes escaped and unescaped quotes is read, the escaped ones coming out as quotes', verdictOf('{"verdict":"real","line":1,"quote":"x = \\"a\\"; y = "b";","why":"w"}')?.quote === 'x = "a"; y = "b";');
+  check('escaped quotes in valid JSON still come out as quotes', verdictOf('{"verdict":"real","quote":"x = \\"a\\";","why":"w"}')?.quote === 'x = "a";');
+  check('a reply with no verdict word is still not a verdict, loose or not', verdictOf('"quote": "x", "why": "y"') === null && verdictOf('verdict: real') === null && verdictOf('{"verdict":"maybe","quote":"x"}') === null);
+}
 check('anything that is not a verdict is not one', [null, '', 'hello', '{"verdict":"maybe"}', '{"verdict":1}', '{"findings":[]}', '{bad json}', '[]'].every((t) => verdictOf(t) === null && !shape(t)));
 check('the line is a number or nothing, and the text is cleaned and cut', (() => { const v = verdictOf(JSON.stringify({ verdict: 'real', line: '11', quote: 'x\u001b[2J' + 'q'.repeat(500), why: 'w‮' + 'y'.repeat(500) })); return v.line === null && !/[\u001b‮]/.test(v.quote + v.why) && v.quote.length === 300 && v.why.length === 300; })());
 

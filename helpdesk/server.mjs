@@ -117,8 +117,8 @@ let canaryI = 0;
 // is an exam; SCAN_PER_HOUR is how many review jobs one client may take an hour (they are short).
 const SWARM = !!process.env.SCAN_REPO && process.env.SWARM !== '0';
 const EXAM = path.join(DATA, 'scan-exam.jsonl'), CHECKS = path.join(DATA, 'scan-checks.jsonl');
-const scanFeed = process.env.SCAN_REPO ? makeScanFeed({ repo: process.env.SCAN_REPO, ref: process.env.SCAN_REF || 'origin/main', inbox: INBOX, results: SCAN_RESULTS, cursorFile: path.join(DATA, 'scan-cursor.json'), lenses: SWARM, examFile: SWARM ? EXAM : null }) : null;
-const checkFeed = SWARM ? makeCheckFeed({ source: scanFeed.source, sample: scanFeed.sample, inbox: INBOX, checks: CHECKS, exam: EXAM, panel: Number(process.env.CHECK_PANEL ?? 3), quorum: Number(process.env.CHECK_QUORUM ?? 2), examEvery: Number(process.env.CHECK_EXAM_EVERY ?? 4) }) : null;
+const scanFeed = process.env.SCAN_REPO ? makeScanFeed({ repo: process.env.SCAN_REPO, ref: process.env.SCAN_REF || 'origin/main', inbox: INBOX, results: SCAN_RESULTS, cursorFile: path.join(DATA, 'scan-cursor.json'), lenses: SWARM, examFile: SWARM ? EXAM : null, say: (m) => console.log(m) }) : null;
+const checkFeed = SWARM ? makeCheckFeed({ source: scanFeed.source, sample: scanFeed.sample, inbox: INBOX, checks: CHECKS, exam: EXAM, panel: Number(process.env.CHECK_PANEL ?? 3), quorum: Number(process.env.CHECK_QUORUM ?? 2), examEvery: Number(process.env.CHECK_EXAM_EVERY ?? 4), say: (m) => console.log(m) }) : null;
 const leases = makeLeases({
   ledger: path.join(DATA, 'ledger.jsonl'), persist: path.join(DATA, 'leases-state.json'),
   points: { answer: Number(process.env.POINTS_ANSWER ?? 1), canary: Number(process.env.POINTS_CANARY ?? 1), scan: Number(process.env.POINTS_SCAN ?? 1), check: Number(process.env.POINTS_CHECK ?? 1) }, clientMaxPerDay: Number(process.env.POINTS_MAX_DAY ?? 100), vet: makeVet(corpus.chunks.map((c) => c.text).join('\n')),

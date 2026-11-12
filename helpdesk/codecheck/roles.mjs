@@ -37,12 +37,21 @@ export const skepticMessages = (f, text) => [
   { role: 'user', content: `File: ${f.file}\nClaim (line ${f.line ?? '?'}): ${oneLine(f.why, 300)}\nProposed change:\n- ${String(f.old).split('\n').join('\n- ')}\n+ ${String(f.new).split('\n').join('\n+ ')}\n\nCode:\n${text}` },
 ];
 
+// A small model quoting a line of code often leaves its own double quotes unescaped, which is not JSON. The fields are then read one by one: the verdict word, the
+// line number, and the quote up to the "why" that follows it.
+function looseVerdict(t) {
+  const v = t.match(/"verdict"\s*:\s*"(real|false|unsure)"/i); if (!v) return null;
+  const line = t.match(/"line"\s*:\s*(\d+)/), q = t.match(/"quote"\s*:\s*"([\s\S]*?)"\s*(?:,\s*"why"|\}|$)/), w = t.match(/"why"\s*:\s*"([\s\S]*?)"\s*\}?\s*$/);
+  return { verdict: v[1], line: line ? Number(line[1]) : null, quote: q ? q[1].replace(/\\"/g, '"') : '', why: w ? w[1] : '' };
+}
 // A skeptic's reply -> { verdict, line, quote, why }, or null when it is not the shape asked for (such a reply earns nothing).
 export function verdictOf(text) {
-  const m = String(text).match(/\{[\s\S]*\}/); if (!m) return null;
-  let j; try { j = JSON.parse(m[0]); } catch { return null; }
-  if (!j || !['real', 'false', 'unsure'].includes(j.verdict)) return null;
-  return { verdict: j.verdict, line: Number.isInteger(j.line) ? j.line : null, quote: plain(j.quote).slice(0, 300), why: plain(j.why).slice(0, 300) };
+  const t = String(text), m = t.match(/\{[\s\S]*\}/); let j = null;
+  if (m) { try { j = JSON.parse(m[0]); } catch { j = null; } }
+  if (!j) j = looseVerdict(t);
+  const verdict = String(j?.verdict ?? '').toLowerCase();
+  if (!['real', 'false', 'unsure'].includes(verdict)) return null;
+  return { verdict, line: Number.isInteger(j.line) ? j.line : null, quote: plain(j.quote).slice(0, 300), why: plain(j.why).slice(0, 300) };
 }
 export const shape = (text) => verdictOf(text) !== null;
 
