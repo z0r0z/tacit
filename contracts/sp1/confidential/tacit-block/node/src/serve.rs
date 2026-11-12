@@ -56,6 +56,10 @@ const MAX_SHIELDS: usize = 128;
 const MAX_READERS: usize = 64;
 /// Directory writes allowed per client address per hour.
 const DIRECTORY_PER_HOUR: u32 = 30;
+/// Spends and settles a client address may send in an hour (each one is checked, proof and all, before it can be refused): TACIT_NODE_SUBMITS_PER_HOUR.
+const SUBMITS_PER_HOUR: u32 = 120;
+/// How many bodies one client address may have being read at once, so no one address holds all the readers: TACIT_NODE_READERS_PER_CLIENT.
+const READERS_PER_CLIENT: usize = 4;
 /// Spends refused for good (no valid proof, bad memos, another asset), remembered so a resend costs nothing: at most this many.
 const MAX_REFUSED: usize = 4096;
 /// How many ways back one inbox shield may carry (the first sent could be wrong; every one is tried).
@@ -180,6 +184,8 @@ pub struct Leader {
     directory: Directory,
     refused: BTreeMap<String, String>,
     writes: BTreeMap<std::net::IpAddr, (u64, u32)>,
+    /// Spends and settles sent, by client address: when its hour began and how many.
+    submits: BTreeMap<std::net::IpAddr, (u64, u32)>,
     /// What GET /fee serves: the leader's chain address and its fee, set by the leader (POST /fee).
     fee: Value,
     /// Where what waits is written after every change (TACIT_NODE_MEMPOOL), and what was there at start, admitted again on POST /restore.
@@ -338,6 +344,7 @@ impl Leader {
             directory: Directory::open(std::env::var("TACIT_NODE_DIRECTORY").ok().filter(|f| !f.is_empty())),
             refused: BTreeMap::new(),
             writes: BTreeMap::new(),
+            submits: BTreeMap::new(),
             fee: json!({ "fee": "0" }),
             mempool_file: std::env::var("TACIT_NODE_MEMPOOL").ok().filter(|f| !f.is_empty()),
             written: vec![],
@@ -764,6 +771,23 @@ impl Leader {
         }
         let q = |k: &str| query.split('&').find_map(|kv| kv.split_once('=').filter(|(a, _)| *a == k).map(|(_, v)| v.to_string()));
         let bad = |e: String| (400u16, e);
+        // a spend or a settle is checked in full before it can be refused, so a client address is held to so many an hour, whatever they carry
+        if method == "POST" && matches!(path, "/spend" | "/settle") {
+            if let Some(ip) = ip.filter(|_| !admin) {
+                let cap = std::env::var("TACIT_NODE_SUBMITS_PER_HOUR").ok().and_then(|v| v.parse().ok()).unwrap_or(SUBMITS_PER_HOUR);
+                let w = self.submits.entry(ip).or_insert((now, 0));
+                if now >= w.0 + 3600 {
+                    *w = (now, 0);
+                }
+                if w.1 >= cap {
+                    return Err((429, "too many submissions from here this hour".into()));
+                }
+                w.1 += 1;
+                if self.submits.len() > 100_000 {
+                    self.submits.retain(|_, w| now < w.0 + 3600);
+                }
+            }
+        }
         match (method, path) {
             ("GET", "/state") => Ok(self.state()),
             ("GET", "/notes") => {
@@ -900,6 +924,24 @@ fn tacit_block_agg_publics(b: &[u8]) -> Result<Vec<halo2_proofs::halo2curves::bn
     btc_pool_agg_common::publics_from_be(b).ok_or_else(|| "a spend's publics are twelve canonical field elements".to_string())
 }
 
+/// Who is asking: the socket's address or, behind a proxy whose edge sets it, True-Client-IP; failing that the last X-Forwarded-For entry, the one the
+/// proxy added (the first is whatever the client wrote). An IPv6 client is its /64, the rest of which a network gives to one customer.
+fn client_ip(req: &tiny_http::Request, trust_proxy: bool) -> Option<std::net::IpAddr> {
+    let header = |name: &'static str| req.headers().iter().find(|h| h.field.equiv(name)).map(|h| h.value.as_str().to_string());
+    let seen: Option<std::net::IpAddr> = if trust_proxy {
+        header("True-Client-IP")
+            .and_then(|v| v.trim().parse().ok())
+            .or_else(|| header("X-Forwarded-For").and_then(|v| v.rsplit(',').next()?.trim().parse().ok()))
+    } else {
+        None
+    };
+    let ip = seen.or_else(|| req.remote_addr().map(|a| a.ip()))?;
+    Some(match ip {
+        std::net::IpAddr::V6(v6) if v6.to_ipv4_mapped().is_none() => std::net::IpAddr::V6(std::net::Ipv6Addr::from(u128::from(v6) & !((1u128 << 64) - 1))),
+        other => other,
+    })
+}
+
 /// Serves the leader on `addr` until the process ends.
 pub fn serve(addr: &str, mut leader: Leader) -> Result<(), String> {
     let server = tiny_http::Server::http(addr).map_err(|e| format!("listen on {addr}: {e}"))?;
@@ -912,14 +954,44 @@ pub fn serve(addr: &str, mut leader: Leader) -> Result<(), String> {
     // bodies are read on their own threads and handed here whole: a sender that never finishes its body holds up only its thread
     let (tx, rx) = std::sync::mpsc::channel::<(tiny_http::Request, Vec<u8>)>();
     let readers = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let trust_proxy = std::env::var("TACIT_NODE_TRUST_PROXY").is_ok_and(|v| v == "1");
+    let per_client = std::env::var("TACIT_NODE_READERS_PER_CLIENT").ok().and_then(|v| v.parse().ok()).unwrap_or(READERS_PER_CLIENT);
+    let held = std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::<std::net::IpAddr, usize>::new()));
     std::thread::spawn(move || {
         for mut req in server.incoming_requests() {
             if req.method().as_str() == "OPTIONS" {
                 let _ = req.respond(cors(tiny_http::Response::from_data(vec![]).with_status_code(204)));
                 continue;
             }
+            // one client address may have only a few bodies being read, so a sender that never finishes cannot hold every reader
+            let who = client_ip(&req, trust_proxy);
+            if let Some(ip) = who {
+                let mut m = held.lock().unwrap();
+                let n = m.entry(ip).or_insert(0);
+                if *n >= per_client {
+                    drop(m);
+                    let _ = req.respond(cors(tiny_http::Response::from_data(b"{\"error\":\"too many requests from here at once\"}".to_vec()).with_status_code(429)));
+                    continue;
+                }
+                *n += 1;
+            }
+            let release = {
+                let held = held.clone();
+                move || {
+                    if let Some(ip) = who {
+                        let mut m = held.lock().unwrap();
+                        if let Some(n) = m.get_mut(&ip) {
+                            *n -= 1;
+                            if *n == 0 {
+                                m.remove(&ip);
+                            }
+                        }
+                    }
+                }
+            };
             if readers.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= MAX_READERS {
                 readers.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                release();
                 let _ = req.respond(cors(tiny_http::Response::from_data(b"{\"error\":\"busy\"}".to_vec()).with_status_code(503)));
                 continue;
             }
@@ -928,19 +1000,15 @@ pub fn serve(addr: &str, mut leader: Leader) -> Result<(), String> {
                 let mut raw = vec![];
                 let _ = req.as_reader().take(MAX_BODY as u64 + 1).read_to_end(&mut raw);
                 readers.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                release();
                 let _ = tx.send((req, raw));
             });
         }
     });
-    let trust_proxy = std::env::var("TACIT_NODE_TRUST_PROXY").is_ok_and(|v| v == "1");
     for (req, raw) in rx {
         let method = req.method().as_str().to_string();
         let url = req.url().to_string();
-        // the client's address: the socket's, or behind a proxy that sets it, the first X-Forwarded-For
-        let forwarded = trust_proxy
-            .then(|| req.headers().iter().find(|h| h.field.equiv("X-Forwarded-For")).and_then(|h| h.value.as_str().split(',').next()?.trim().parse().ok()))
-            .flatten();
-        let ip = forwarded.or_else(|| req.remote_addr().map(|a| a.ip()));
+        let ip = client_ip(&req, trust_proxy);
         let (code, payload) = if raw.len() > MAX_BODY {
             (413, json!({ "error": "too large" }))
         } else {
