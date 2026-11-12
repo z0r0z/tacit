@@ -60,6 +60,8 @@ const DIRECTORY_PER_HOUR: u32 = 30;
 const SUBMITS_PER_HOUR: u32 = 120;
 /// How many bodies one client address may have being read at once, so no one address holds all the readers: TACIT_NODE_READERS_PER_CLIENT.
 const READERS_PER_CLIENT: usize = 4;
+/// How many shields one client address may have waiting on their deposits at once, so no one address holds the shield slots: TACIT_NODE_SHIELDS_PER_CLIENT.
+const SHIELDS_PER_CLIENT: usize = 8;
 /// Spends refused for good (no valid proof, bad memos, another asset), remembered so a resend costs nothing: at most this many.
 const MAX_REFUSED: usize = 4096;
 /// How many ways back one inbox shield may carry (the first sent could be wrong; every one is tried).
@@ -141,6 +143,8 @@ struct Entry {
     permit: Option<Value>,
     /// What was submitted (POST /spend's body), kept so a restart can admit it again.
     raw: Value,
+    /// The client address it came from (none for the leader's own, or one admitted again after a restart).
+    from: Option<std::net::IpAddr>,
 }
 
 impl Entry {
@@ -386,7 +390,7 @@ impl Leader {
     fn restore(&mut self, now: u64) -> Value {
         let (mut restored, mut refused) = (0u32, vec![]);
         for e in std::mem::take(&mut self.saved) {
-            let r = if e["kind"] == "settle" { self.settle(&e["body"], now) } else { self.spend(&e["body"], now) };
+            let r = if e["kind"] == "settle" { self.settle(&e["body"], now) } else { self.spend(&e["body"], now, None) };
             match r {
                 Ok(_) => restored += 1,
                 Err(why) => refused.push(why),
@@ -458,7 +462,7 @@ impl Leader {
 
     /// A spend handed in: its proof checked natively, its memos matched to its body, and it checked alone against the chain and against
     /// the notes the waiting spends spend.
-    fn spend(&mut self, b: &Value, now: u64) -> Result<Value, String> {
+    fn spend(&mut self, b: &Value, now: u64, from: Option<std::net::IpAddr>) -> Result<Value, String> {
         if self.pending.len() + self.settles.len() >= MAX_PENDING {
             return Err("the mempool is full".into());
         }
@@ -508,9 +512,15 @@ impl Leader {
         let keys: Vec<[u8; 32]> = blk::Spend::from_publics(&tacit_block_agg_publics(&publics)?).spent_keys().iter().map(blk::fr_be).collect();
         // what is kept to admit it again is the submission's own fields and no more (a body can carry up to MAX_BODY of anything else)
         let raw = json!({ "publics": b["publics"], "proof": b["proof"], "data": b["data"], "memos": b["memos"], "opMemos": b["opMemos"], "back": b["back"], "permit": permit });
-        let entry = Entry { id: id.clone(), spend: SpendIn { publics, proof, hints, data }, memos, op_memos, keys, back: backs, permit, raw };
+        let entry = Entry { id: id.clone(), spend: SpendIn { publics, proof, hints, data }, memos, op_memos, keys, back: backs, permit, raw, from };
         if entry.shield() && self.pending.iter().filter(|e| e.shield()).count() >= MAX_SHIELDS {
             return Err("too many shields wait on their deposits".into());
+        }
+        if let Some(ip) = entry.from.filter(|_| entry.shield()) {
+            let cap = std::env::var("TACIT_NODE_SHIELDS_PER_CLIENT").ok().and_then(|v| v.parse().ok()).unwrap_or(SHIELDS_PER_CLIENT);
+            if self.pending.iter().filter(|e| e.shield() && e.from == Some(ip)).count() >= cap {
+                return Err("this address already has as many shields waiting on their deposits as it may".into());
+            }
         }
         if self.pending.iter().any(|e| e.keys.iter().any(|k| entry.keys.contains(k))) {
             return Err("a note it spends is being spent by a spend already waiting".into());
@@ -910,7 +920,7 @@ impl Leader {
                 "spends": self.pending.iter().map(|e| e.id.clone()).collect::<Vec<_>>(),
                 "settles": self.settles.iter().map(|e| e.id.clone()).collect::<Vec<_>>(),
             })),
-            ("POST", "/spend") => self.spend(body, now).map_err(bad),
+            ("POST", "/spend") => self.spend(body, now, ip.filter(|_| !admin)).map_err(bad),
             ("POST", "/settle") => self.settle(body, now).map_err(bad),
             ("POST", "/forced") => self.forced(body).map_err(bad),
             ("POST", "/build") => self.build(body).map_err(bad),
