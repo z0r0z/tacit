@@ -72,6 +72,8 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
   // only after a few minutes, in case the block it was found in has since been replaced; a lock not found is looked for
   // again only when the set has grown, which its count shows at the cost of one storage read.
   const positions = new Map(), misses = new Map();
+  // what a provider that runs for weeks remembers is bounded: the oldest entry goes first (a pool transaction's calldata is kilobytes each)
+  const cap = (map, max) => { while (map.size > max) map.delete(map.keys().next().value); };
   async function lockPosition(leaf) {
     const key = lc(leaf), hit = positions.get(key);
     if (hit && Date.now() - hit.at < POSITION_TTL_MS) return hit.pos;
@@ -79,6 +81,7 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     if (!hit && misses.get(key) === count) return null;
     const pos = await ux.stealthLockPosition({ lockLeaf: key });
     if (pos) { positions.set(key, { at: Date.now(), pos }); misses.delete(key); } else { positions.delete(key); misses.set(key, count); }
+    cap(positions, 1024); cap(misses, 1024);
     return pos;
   }
 
@@ -88,7 +91,7 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
   }
   const blocks = new Map();
   async function blockTs(n) {
-    if (!blocks.has(n)) blocks.set(n, parseInt((await rpc('eth_getBlockByNumber', ['0x' + n.toString(16), false])).timestamp, 16));
+    if (!blocks.has(n)) { blocks.set(n, parseInt((await rpc('eth_getBlockByNumber', ['0x' + n.toString(16), false])).timestamp, 16)); cap(blocks, 4096); }
     return blocks.get(n);
   }
   // The first block at or after a time, by bisection.
@@ -99,7 +102,7 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
   }
   const inputs = new Map();
   async function txOf(h) {
-    if (!inputs.has(h)) { const t = await rpc('eth_getTransactionByHash', [h]); inputs.set(h, t && t.input ? { input: t.input, to: String(t.to || '').toLowerCase() } : null); }
+    if (!inputs.has(h)) { const t = await rpc('eth_getTransactionByHash', [h]); inputs.set(h, t && t.input ? { input: t.input, to: String(t.to || '').toLowerCase() } : null); cap(inputs, 256); }
     return inputs.get(h);
   }
   const trustedTo = new Set([poolAddress, relayerAddress].map((a) => String(a).toLowerCase()));
@@ -126,7 +129,7 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
         if (f.lockNullifiers.map(lc).includes(key)) { named = true; found.push(...f.adaptorClaimS); }
       }
     }
-    if (named) { claims.set(key, found); return found; }
+    if (named) { claims.set(key, found); cap(claims, 1024); return found; }
     throw new Error('the lock is spent, and the settle that spent it is not found yet');
   }
 
