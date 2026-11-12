@@ -152,5 +152,19 @@ const mk = (extra = {}) => makeLeases({ waitMs: 300, sweepMs: 50, leaseMs: 400, 
   check('while one that offers a link nobody asked about is paused', paused && paused.banned === true);
   L.close(); L2.close(); }
 
+// a scan reply earns a point only when it is the review the prompt asks for
+{ let k = 0; const filed = [];
+  const S = mk({ points: { answer: 1, canary: 1, scan: 1 }, scanPerHour: 100, scan: { next: async () => ({ id: 'scan' + (++k), kind: 'scan', messages: [{ role: 'user', content: 'File: x.js' }], meta: {} }), onResult: async (job, text) => { filed.push(text); } } });
+  const review = async (text) => { const j = await S.lease({ miner: A, ip: '3.3.3.3', kinds: ['scan'] }); const r = await S.submit({ id: j.id, lease: j.lease, miner: A, ip: '3.3.3.3', text }); return r.points; };
+  check('scan: an empty object is not a review and earns nothing', (await review('{}')) === 0);
+  check('scan: prose is not a review', (await review('Looks fine to me, nothing wrong here.')) === 0);
+  check('scan: a findings field that is not a list is not a review', (await review('{"findings":"none"}')) === 0);
+  check('scan: a reply that is not valid JSON is not a review', (await review('{"findings":[}')) === 0);
+  check('scan: nothing was filed from those', filed.length === 0);
+  check('scan: an empty findings list, the answer for no bug, is a review', (await review('{"findings":[]}')) === 1);
+  check('scan: so is a list with a finding, found among prose', (await review('Here you go: {"findings":[{"line":3,"why":"x","old":"a","new":"b"}]}')) === 1);
+  check('scan: and those were handed to the feed', filed.length === 2);
+  S.close(); }
+
 check('isAddr', isAddr(A) && !isAddr('0x12') && !isAddr(null));
 console.log(fails ? `${fails} lease test(s) failed` : 'lease: all tests passed'); process.exit(fails ? 1 : 0);

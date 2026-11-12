@@ -110,7 +110,11 @@ export function makeLeases(opts = {}) {
       if (!pass || vetted) { m.canaryFail++; strike(ck, 'canary'); log({ ev: 'canary', miner: addr, pass: false, why: pass ? 'vet: ' + vetted : 'known answer missing', sample: text.slice(0, 160) }); return { ok: true, points: 0 }; }
       m.canaryPass++; timed(ck, L); const pts = credit(ck, addr, 'canary', job); log({ ev: 'canary', miner: addr, pass: true, points: pts }); return { ok: true, points: pts };
     }
-    if (job.scan) { try { await o.scan.onResult(job, text, addr); } catch {} const pts = credit(ck, addr, 'scan', job); log({ ev: 'scan', miner: addr, job: job.id, points: pts }); return { ok: true, points: pts }; }
+    if (job.scan) {
+      // a review is the JSON the prompt asks for (a findings list, empty when there is nothing to report); a reply that is not that is not one, and earns nothing
+      if (!reviewed(text)) { m.errors++; log({ ev: 'scan', miner: addr, job: job.id, points: 0, why: 'not the shape asked for' }); return { ok: true, points: 0 }; }
+      try { await o.scan.onResult(job, text, addr); } catch {} const pts = credit(ck, addr, 'scan', job); log({ ev: 'scan', miner: addr, job: job.id, points: pts }); return { ok: true, points: pts };
+    }
     const bad = o.vet(text, job.ctxText);
     if (bad) {
       // an answer that repeats what the visitor wrote is not shown, but it is not the node's doing: only what the question does not account for counts against it
@@ -134,6 +138,9 @@ export function makeLeases(opts = {}) {
     capacity: capacity(), nodes: online().map((c) => ({ tier: tierOf(c.hw), ...(c.hw || {}), ewmaMs: c.ewmaMs || null, timed: c.timed || 0, seenSecs: Math.round((o.now() - c.seen) / 1000) })) });
   return { enqueue, lease, submit, nodesOnline, capacity, stats, _queue: queue, _clients: clients, close: () => { clearInterval(sweep); clearInterval(saver); save(); } };
 }
+
+// Whether a scan reply has the shape asked for: an object holding a `findings` list (found as the scan feed finds it, among any prose around it).
+const reviewed = (t) => { try { const m = String(t).match(/\{[\s\S]*\}/); return !!m && Array.isArray(JSON.parse(m[0]).findings); } catch { return false; } };
 
 // What a visitor may be shown. A node can return anything, so an answer is checked against the documentation it was given:
 // an address or a link that is not in those docs is how a bad node would try to send someone's funds or visit to a look-alike.
