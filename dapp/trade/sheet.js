@@ -12,21 +12,21 @@ const CSS = `
 .bsheet { position: fixed; inset: 0; z-index: 900; display: grid; grid-template-columns: minmax(0, 1fr); place-items: start center; padding: 16px; overflow: auto; overflow-x: hidden; overscroll-behavior: contain; background: var(--scrim); backdrop-filter: blur(2px); }
 .bsheet.top { z-index: 1100; place-items: center; }
 .bsheet [hidden] { display: none !important; }
-.bsheet-in { --sx: 24px; --st: 24px; min-width: 0; width: min(560px, 100%); padding: var(--st) var(--sx) 28px; color: var(--ink); background: var(--card); border: 1px solid var(--hair-2); border-radius: 18px; box-shadow: var(--float, var(--sheet-shadow)); text-align: left; animation: bsheet-rise .22s cubic-bezier(.2, .8, .2, 1); }
+.bsheet-in { --sx: 24px; --st: 24px; min-width: 0; width: min(560px, 100%); padding: var(--st) var(--sx) 28px; color: var(--ink); background: var(--card); border: 1px solid var(--hair-2); border-radius: 20px; box-shadow: var(--float, var(--sheet-shadow)); text-align: left; animation: bsheet-rise .22s cubic-bezier(.2, .8, .2, 1); }
 @keyframes bsheet-rise { from { opacity: 0; transform: translateY(14px); } }
 .bsheet-head { display: flex; align-items: center; gap: 14px; position: sticky; top: 0; z-index: 4; margin: calc(-1 * var(--st)) calc(-1 * var(--sx)) 8px; padding: var(--st) var(--sx) 14px; border-radius: 17px 17px 0 0; background: var(--card); }
 @supports (animation-timeline: scroll()) {
   .bsheet-head { animation: bsheet-line linear both; animation-timeline: scroll(nearest); animation-range: 0 16px; }
   @keyframes bsheet-line { to { box-shadow: 0 1px 0 var(--hair); } }
 }
-.bsheet-head h2 { font: 400 32px/1 var(--serif); letter-spacing: -.01em; margin: 0; text-transform: none; color: var(--ink); }
+.bsheet-head h2 { font: 600 24px/1.15 var(--sans, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif); letter-spacing: -.015em; margin: 0; text-transform: none; color: var(--ink); }
 .bsheet-head h2:focus { outline: none; }
 .bsheet .x { margin-left: auto; width: var(--tap, 44px); height: var(--tap, 44px); display: grid; place-items: center; padding: 0; font: inherit; font-size: 22px; line-height: 1; background: none; border: 1px solid transparent; cursor: pointer; color: var(--mute); }
 @media (hover: hover) { .bsheet .x:hover { color: var(--ink); border-color: var(--hair-2); } }
-.bsheet.wide .bsheet-head h2 { font-size: 28px; }
+.bsheet.wide .bsheet-head h2 { font-size: 26px; }
 @media (max-width: 640px) {
   .bsheet { padding: 0; place-items: end center; }
-  .bsheet-in { --sx: 16px; --st: 20px; width: 100%; padding-bottom: calc(24px + env(safe-area-inset-bottom)); border-width: 1px 0 0; border-radius: 18px 18px 0 0; }
+  .bsheet-in { --sx: 16px; --st: 20px; width: 100%; padding-bottom: calc(24px + env(safe-area-inset-bottom)); border-width: 1px 0 0; border-radius: 20px 20px 0 0; }
 }
 @media (prefers-reduced-motion: reduce) { .bsheet-in { animation: none; } .bsheet-head { animation: none; } }
 
