@@ -7,6 +7,7 @@ import { ETH_NODES } from './eth-nodes.js';
 import { hexToBytes, bytesToHex, concatBytes } from './vendor/tacit-deps.min.js';
 import { bech32, base58, base32 } from './vendor/tacit-deps.min.js';
 import { assertFreshRefundKey } from './amm-refund-key.js';
+import { buyerOpeningMsg } from './buyer-opening-msg.js';
 let _satsConnectMod = null;
 let _satsConnectLoadP = null;
 function _satsConnectProviderPresent() {
@@ -12460,16 +12461,25 @@ async function publishBuyerOpening(txidHex, vout, amountBig, blindingBig) {
     const iv = crypto.getRandomValues(new Uint8Array(12));
     const plaintext = concatBytes(bigintToBytes32(amountBig), bigintToBytes32(blindingBig));
     const ctBuf = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, aesKey, plaintext);
-    const blob = concatBytes(iv, new Uint8Array(ctBuf));
-    const r = await fetch(`${WORKER_BASE}/utxos/${txidHex}/${vout}/buyer-opening?network=${encodeURIComponent(NET.name)}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        declared_pubkey: bytesToHex(wallet.pub),
-        ciphertext: bytesToHex(blob),
-      }),
+    const ciphertext = bytesToHex(concatBytes(iv, new Uint8Array(ctBuf)));
+    const declared = bytesToHex(wallet.pub);
+    const body = JSON.stringify({
+      declared_pubkey: declared,
+      ciphertext,
+      sig: bytesToHex(signSchnorr(buyerOpeningMsg(NET.name, txidHex, vout, ciphertext, declared), wallet.priv)),
     });
-    return r.ok;
+    // The API reads the output from the chain, which can take a moment to show a transaction just broadcast: a 503 is tried again a few times.
+    for (const wait of [0, 4000, 12000, 30000, 60000]) {
+      if (wait) await new Promise((res) => setTimeout(res, wait));
+      const r = await fetch(`${WORKER_BASE}/utxos/${txidHex}/${vout}/buyer-opening?network=${encodeURIComponent(NET.name)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      });
+      if (r.ok) return true;
+      if (r.status !== 503) return false;
+    }
+    return false;
   } catch { return false; }
 }
 async function fetchBuyerOpening(txidHex, vout) {

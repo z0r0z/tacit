@@ -102,6 +102,7 @@ import { buildCrossoutConsumer, crossoutMintLeaf } from './crossout-consumer.js'
 import { buildGovernance } from './governance.js';
 import { discordGateMessage, DISCORD_MIN_TAC_BASE_UNITS } from '../../dapp/discord/message.js';
 import { DISCORD_VERIFY_BUTTON_ID } from '../../discord/panel.js';
+import { buyerOpeningMsg } from '../../dapp/buyer-opening-msg.js';
 import { NUDGE_PREFIX, MAX_NUDGER_BODY, parseDigest, postDigest, postPing, nudgeButton, labelsReport, findingById } from './nudger.js';
 import { makeTacAncestry } from './tac-ancestry.js';
 import { makeOutpointClassifier } from './outpoint-classify.js';
@@ -18710,10 +18711,14 @@ async function handleUtxoOpeningPost(txidHex, voutStr, req, env, network, cors) 
 // POST /utxos/:txid/:vout/buyer-opening — publish a self-encrypted
 // opening blob the buyer can later decrypt to recover (amount,
 // blinding). The ciphertext is bound to a declared pubkey: only a wallet
-// holding the matching priv produces one that decrypts. The first key to
-// store a blob for an output keeps it: a write naming another key is
-// refused, and the same key may replace its own. The buyer has other
-// recovery paths besides this blob. 90-day TTL auto-collects stale entries.
+// holding the matching priv produces one that decrypts. The output must pay
+// that key (a P2WPKH to it), read from the chain, so only the key an output
+// pays can keep a blob for it: a write for any other key is refused, and a
+// blob stored earlier under another key gives way to the owner's. A write
+// may carry the owner's Schnorr signature over the blob (buyerOpeningMsg);
+// a signed blob is replaced only by another signed write, and
+// BUYER_OPENING_REQUIRE_SIG=1 refuses unsigned writes outright. The buyer
+// has other recovery paths besides this blob. 90-day TTL auto-collects stale entries.
 async function handleBuyerOpeningPost(txidHex, voutStr, req, env, network, cors) {
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const rl = await proveRateLimit(env, ip, 'buyer-opening', Number(env.BUYER_OPENING_RL_BURST || 30), Number(env.BUYER_OPENING_RL_REFILL_MS || 10000));
@@ -18733,25 +18738,38 @@ async function handleBuyerOpeningPost(txidHex, voutStr, req, env, network, cors)
   // Bound ciphertext size to defend against KV-quota grinding. 12 (IV)
   // + 64 (plaintext: amount+blinding) + 16 (GCM tag) = 92 bytes raw =
   // 184 hex; cap at 512 hex for forward headroom on future schema.
-  if (!/^[0-9a-f]+$/.test(ciphertext) || ciphertext.length === 0 || ciphertext.length > 512) {
+  if (!/^[0-9a-f]+$/.test(ciphertext) || ciphertext.length === 0 || ciphertext.length > 512 || ciphertext.length % 2) {
     return jsonResponse({ error: 'ciphertext must be 1..256 bytes of hex' }, 400, cors);
+  }
+  const sigHex = String(body.sig || '').toLowerCase();
+  if (sigHex && !/^[0-9a-f]{128}$/.test(sigHex)) return jsonResponse({ error: 'sig must be 64-byte hex' }, 400, cors);
+  if (!sigHex && env.BUYER_OPENING_REQUIRE_SIG === '1') return jsonResponse({ error: 'a signature is required' }, 400, cors);
+  if (sigHex && !verifySchnorr(hexToBytes(sigHex), buyerOpeningMsg(network, txidHex, vout, ciphertext, declaredPub), hexToBytes(declaredPub).slice(1))) {
+    return jsonResponse({ error: 'invalid signature' }, 403, cors);
+  }
+  // The output must pay the declared key. A transaction the explorers do not show yet is a reason to try again shortly, not a refusal.
+  let tx;
+  try { tx = await fetchFreshTxJson(env, txidHex, network); }
+  catch { return jsonResponse({ error: 'the transaction cannot be read just now; try again shortly', retryAfter: 10 }, 503, { ...cors, 'Cache-Control': 'no-store', 'Retry-After': '10' }); }
+  const out = Array.isArray(tx?.vout) ? tx.vout[vout] : null;
+  if (!out) return jsonResponse({ error: 'the transaction has no such output' }, 400, cors);
+  if (String(out.scriptpubkey || '').toLowerCase() !== bytesToHex(p2wpkhScript(hexToBytes(declaredPub)))) {
+    return jsonResponse({ error: 'the output does not pay the declared key' }, 403, cors);
   }
   const record = {
     declared_pubkey: declaredPub,
     ciphertext,
+    ...(sigHex ? { sig: sigHex } : {}),
     stored_at: Math.floor(Date.now() / 1000),
   };
-  // a stored blob is replaced only by a write that names the same key
-  try {
-    const have = await env.REGISTRY_KV.get(buyerOpeningKey(network, txidHex, vout), 'json');
-    if (have && have.declared_pubkey !== declaredPub) return jsonResponse({ error: 'an opening for this output is already stored under another key' }, 409, cors);
-  } catch { /* nothing readable there */ }
-  await env.REGISTRY_KV.put(
-    buyerOpeningKey(network, txidHex, vout),
-    JSON.stringify(record),
-    { expirationTtl: 90 * 24 * 3600 },
-  );
-  return jsonResponse({ ok: true, stored_at: record.stored_at }, 200, cors);
+  const key = buyerOpeningKey(network, txidHex, vout);
+  return withKvKeyLock(`buyer-opening:${key}`, async () => {
+    let have = null;
+    try { have = await env.REGISTRY_KV.get(key, 'json'); } catch { /* nothing readable there */ }
+    if (have && have.sig && !sigHex) return jsonResponse({ error: 'a signed opening is already stored for this output' }, 409, cors);
+    await env.REGISTRY_KV.put(key, JSON.stringify(record), { expirationTtl: 90 * 24 * 3600 });
+    return jsonResponse({ ok: true, stored_at: record.stored_at }, 200, cors);
+  });
 }
 
 async function handleBuyerOpeningGet(txidHex, voutStr, env, network, cors) {
@@ -27875,7 +27893,7 @@ async function scanForEtches(env, network) {
 export {
   _ethGasPrice, fetchIpfsJson, _deriveTradeFromChain, _settleFillRecords, _hintMaySettle, magicMatches,
   assembleReflectionJobBody,
-  openingMsg, disclosureMsg, listingMsg, cancelMsg, claimMsg,
+  openingMsg, buyerOpeningMsg, disclosureMsg, listingMsg, cancelMsg, claimMsg,
   atomicIntentMsg, atomicIntentClaimMsg, atomicIntentFulfilmentMsg, atomicIntentCancelMsg,
   atomicIntentClaimReadMsg, _slimAtomicClaim, handleAtomicIntentClaimDetail,
   // T_AXFER_VAR — variable-amount atomic-intent message helpers.
