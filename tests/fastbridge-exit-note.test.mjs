@@ -51,8 +51,12 @@ test('an exit note is a TAC note to the reference provider: the commitment and a
 test('an exit the pool service does not know is no note, and neither is one it cannot be asked about', async () => {
   fresh(); poolSays = () => json({ exists: false, height: 975075 });
   assert.equal(await btc.resolveNote(TXID, 0), null, 'a transaction that looks like an exit and is not one');
+  // not told is not the same as told no: a pool service that does not answer is a read that failed, said as one to try again, and never a
+  // verdict on the user's note (the provider answers an offer it cannot judge with "ask again", and declines only a note it found not valid)
   fresh(); poolSays = () => json({ error: 'down' }, 503);
-  assert.equal(await btc.resolveNote(TXID, 0), null, 'not told, so not taken');
+  await assert.rejects(btc.resolveNote(TXID, 0), (e) => e.transient === true && /could not be read just now/.test(e.message), 'not told: ask again');
+  fresh(); poolSays = () => { throw new Error('connect ETIMEDOUT'); };
+  await assert.rejects(btc.resolveNote(TXID, 0), (e) => e.transient === true, 'the pool service unreachable: ask again');
   fresh(); poolSays = () => json({ ...REC, asset: '0x' + '11'.repeat(32) });
   const other = await btc.resolveNote(TXID, 0);
   assert.ok(!other || other.assetIdHex.replace(/^0x/, '') !== TAC, 'an exit of another asset is not TAC');

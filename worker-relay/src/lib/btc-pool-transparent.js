@@ -28,9 +28,13 @@ let active = null; // { failures, exits } while one resolution runs
 
 // tacit.js is a browser module: it needs a DOM and reads its network from localStorage at import time, so it
 // is loaded once per process for one network.
-export async function loadTacit(network) {
+// `livePool`: the pool-exit consult goes to the pool service itself (tacit.js's own default for the network), as a page's does, and not to a
+// replay's exit set. A process that reads notes as they are now (a provider that checks a user's lock) needs this: the replay's set is empty
+// outside a replay, so every note that came out of the pool reads as invalid.
+export async function loadTacit(network, { livePool = false } = {}) {
   if (loaded) {
     if (loaded.network !== network) throw new Error(`tacit.js already loaded for ${loaded.network}`);
+    if (loaded.livePool !== livePool) throw new Error(`tacit.js already loaded ${loaded.livePool ? 'with' : 'without'} the live pool`);
     return loaded.tacit;
   }
   const { JSDOM } = await import('jsdom');
@@ -43,13 +47,13 @@ export async function loadTacit(network) {
   set('location', dom.window.location);
   if (!g.navigator) set('navigator', dom.window.navigator);
   g.__TACIT_NO_INIT__ = true;
-  g.__TACIT_BTC_POOL_API__ = POOL_ORIGIN;
+  if (livePool) delete g.__TACIT_BTC_POOL_API__; else g.__TACIT_BTC_POOL_API__ = POOL_ORIGIN;
   dom.window.localStorage.setItem('tacit-network-v1', network);
 
   const realFetch = g.fetch;
   g.fetch = async (input, init) => {
     const url = String(input?.url ?? input);
-    if (url.startsWith(POOL_ORIGIN + '/')) return poolExitResponse(url, active);
+    if (!livePool && url.startsWith(POOL_ORIGIN + '/')) return poolExitResponse(url, active);
     // A read that fails or answers non-2xx leaves the verdict unknown. Writes never decide it.
     const ctx = String(init?.method || 'GET').toUpperCase() === 'GET' ? active : null;
     try {
@@ -62,7 +66,7 @@ export async function loadTacit(network) {
     }
   };
   const tacit = await import('../../../dapp/tacit.js');
-  loaded = { network, tacit, realFetch };
+  loaded = { network, tacit, realFetch, livePool };
   return tacit;
 }
 

@@ -137,7 +137,16 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
     throw last;
   }
 
-  const resolveNote = tacit ? makeNoteResolver({ validateOutpoint: (a, b, c, f) => tacit.validateOutpoint(a, b, c, f), txOutputEnvelope: tacit.txOutputEnvelope, getParentEnvelopeData: tacit.getParentEnvelopeData, fetchTx }) : null;
+  // A note that cannot be told is not a note that is not valid. The validator marks each outpoint it rejects as 'invalid' or as 'fetch-failed' (an
+  // explorer, or the pool service, that did not answer), and a rejection of the second kind is thrown: whoever asks (a provider judging a lock)
+  // asks again, and a read that failed is never taken for a note that is not valid.
+  const validate = async (a, b, c, f) => {
+    const reasons = new Map();
+    const ok = await tacit.validateOutpoint(a, b, c, f, 0, null, null, null, reasons);
+    if (ok !== true && reasons.get(`${a}:${b}`) === 'fetch-failed') throw Object.assign(new Error(`the note ${String(a).slice(0, 8)}…:${b} could not be read just now`), { transient: true });
+    return ok;
+  };
+  const resolveNote = tacit ? makeNoteResolver({ validateOutpoint: validate, txOutputEnvelope: tacit.txOutputEnvelope, getParentEnvelopeData: tacit.getParentEnvelopeData, fetchTx }) : null;
 
   // Whether a note the lock spends is already consumed on Ethereum, as the wallet asks before it spends a note. A reason
   // when it is (or cannot be told), null when the pool shows none of the note's identities spent.

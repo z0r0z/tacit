@@ -45,7 +45,9 @@ const key = hexToBytes(keyHex);
 const hmacSha256 = (k, m) => hmac(sha256, k, m);
 const seed = hmacSha256(key, new TextEncoder().encode('tacit-fastbridge-lp-seed'));
 
-const tacit = await loadTacit(network);
+// The live pool: a note that came out of the Bitcoin shielded pool is told from the pool service, as a page tells it. Without this the validator
+// asks a replay's (empty) exit set, and every such note, which the fast bridge exists to move, reads as not valid.
+const tacit = await loadTacit(network, { livePool: true });
 // loading the note validator gives this process a browser-like window with a localStorage of its own and a location at
 // localhost. The wallet module keeps its scan checkpoints in localStorage, so a file stands in for it; and it is built
 // with no location, because a localhost page makes the deployment config point the relay at the page itself.
