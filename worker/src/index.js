@@ -3093,14 +3093,29 @@ async function handleBurnDepositSweep(req, env, url, cors) {
 // from "something is actually stuck" without needing the box token every other ops route here needs. Public:
 // this only reports which height ranges have cached (public, immutable) block headers, nothing about any
 // bundle, account, or key.
+// The reading is kept 15 s and shared by the calls that arrive meanwhile: it reads the tip from an explorer and every cached header chunk.
+const _burndepCacheStatus = new Map(); // network -> { at, p: Promise<{ status, body }> }
+const BURNDEP_CACHE_STATUS_TTL_MS = 15_000;
 async function handleBurndepCacheStatus(req, env, url, cors) {
   if (!env.REGISTRY_KV) return jsonResponse({ error: 'no kv' }, 500, cors);
   const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
+  let hit = _burndepCacheStatus.get(network);
+  const keepMs = Number.isFinite(Number(env.BURNDEP_CACHE_STATUS_TTL_MS)) && env.BURNDEP_CACHE_STATUS_TTL_MS != null ? Number(env.BURNDEP_CACHE_STATUS_TTL_MS) : BURNDEP_CACHE_STATUS_TTL_MS;
+  if (!hit || Date.now() - hit.at >= keepMs) {
+    const mine = hit = { at: Date.now(), p: burndepCacheStatusReading(env, network) };
+    _burndepCacheStatus.set(network, mine);
+    // a reading that failed is not kept
+    mine.p.then((r) => { if (r.status !== 200 && _burndepCacheStatus.get(network) === mine) _burndepCacheStatus.delete(network); }, () => { if (_burndepCacheStatus.get(network) === mine) _burndepCacheStatus.delete(network); });
+  }
+  const { status, body } = await hit.p;
+  return jsonResponse(body, status, status === 200 ? { ...cors, 'Cache-Control': 'no-store' } : cors);
+}
+async function burndepCacheStatusReading(env, network) {
   const floor = burndepChainFloor(env, network);
-  if (!floor) return jsonResponse({ ok: true, network, floor: 0, detail: 'no burn-deposit chain floor configured for this network' }, 200, { ...cors, 'Cache-Control': 'no-store' });
+  if (!floor) return { status: 200, body: { ok: true, network, floor: 0, detail: 'no burn-deposit chain floor configured for this network' } };
   let tip;
   try { tip = parseInt((await apiText(env, '/blocks/tip/height', { timeoutMs: 10_000 }, network)).trim(), 10); }
-  catch (e) { return jsonResponse({ ok: false, error: `tip lookup failed: ${e.message || e}` }, 502, cors); }
+  catch (e) { return { status: 502, body: { ok: false, error: `tip lookup failed: ${e.message || e}` } }; }
   const firstChunk = Math.floor(floor / BURNDEP_HEADER_CHUNK);
   const lastChunk = Math.floor(tip / BURNDEP_HEADER_CHUNK);
   const total = lastChunk - firstChunk + 1;
@@ -3119,11 +3134,11 @@ async function handleBurndepCacheStatus(req, env, url, cors) {
   // floor itself need not land on a chunk boundary (TAC's real etch height doesn't), so the top of contiguous
   // coverage is computed from the chunk grid, not from floor + contiguous*chunkSize.
   const warmThroughHeight = contiguous > 0 ? Math.min((firstChunk + contiguous) * BURNDEP_HEADER_CHUNK - 1, tip) : null;
-  return jsonResponse({
+  return { status: 200, body: {
     ok: true, network, floor, tip, chunkSize: BURNDEP_HEADER_CHUNK,
     chunksWarm: contiguous, chunksWarmTotal: warmTotal, chunksTotal: total,
     warmThroughHeight, complete: contiguous >= total,
-  }, 200, { ...cors, 'Cache-Control': 'no-store' });
+  } };
 }
 
 async function handleReflectionAck(req, env, cors) {
@@ -4150,6 +4165,8 @@ async function handleGasRelay(req, env, url, cors) {
   // /gas/done { id, payer, nonce }: clears an order the contract reports used (its nonce spent, by a send or a cancel).
   const id = String(b.id || '').toLowerCase();
   if (!/^0x[0-9a-f]{64}$/.test(id) || !/^0x[0-9a-fA-F]{40}$/.test(String(b.payer || '')) || !/^\d{1,78}$/.test(String(b.nonce ?? ''))) return jsonResponse({ ok: false, error: 'id, payer and nonce are required' }, 400, nostore);
+  const rl = await proveRateLimit(env, ip, 'gas-done', 30, 2000);
+  if (!rl.ok) return jsonResponse({ ok: false, error: `too many requests, retry in ~${rl.retryAfter}s`, retryAfter: rl.retryAfter }, 429, { ...nostore, 'Retry-After': String(rl.retryAfter) });
   const used = await gasOrderUsed(env, b.payer, b.nonce);
   if (used === null) return jsonResponse({ ok: false, error: 'could not read the relay, try again' }, 502, nostore);
   if (!used) return jsonResponse({ ok: false, error: 'the relay does not report this order used' }, 409, nostore);
@@ -5231,7 +5248,15 @@ async function _ethBlockNumber(network) {
 }
 // eth_gasPrice — feeds the relay's own gas-priced fee floor (see buildRelayFeeGate below). Same
 // fallback-list pattern as _ethCall/_ethGetStorageAt.
+const _gasPriceKept = new Map(); // network -> { at, v }; the price moves far slower than quotes are asked for
 async function _ethGasPrice(network) {
+  const hit = _gasPriceKept.get(network);
+  if (hit && Date.now() - hit.at < 8000) return hit.v;
+  const v = await _ethGasPriceRead(network);
+  if (v !== null) _gasPriceKept.set(network, { at: Date.now(), v });
+  return v;
+}
+async function _ethGasPriceRead(network) {
   const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_gasPrice', params: [] });
   for (const rpc of (_TETH_ETH_RPCS[network] || [])) {
     try {
@@ -9710,22 +9735,39 @@ function extractIpfsCid(imageUri) {
   return m ? m[1] : null;
 }
 
+// The body of a response, read to at most `max` bytes: null when it is longer (the rest is not read).
+async function readCapped(resp, max) {
+  if (!resp.body || typeof resp.body.getReader !== 'function') { const b = await resp.arrayBuffer(); return b.byteLength > max ? null : b; }
+  const reader = resp.body.getReader();
+  const chunks = [];
+  let n = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    n += value.byteLength;
+    if (n > max) { try { await reader.cancel(); } catch { /* closed */ } return null; }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(n);
+  let o = 0;
+  for (const c of chunks) { out.set(c, o); o += c.byteLength; }
+  return out.buffer;
+}
+// Wrapper metadata blobs are typically < 4 KB.
+const WRAPPER_META_MAX_BYTES = 32 * 1024;
 async function fetchIpfsJson(cid, { timeoutMs = 5000 } = {}) {
   for (const gateway of WRAPPER_IPFS_GATEWAYS) {
     const url = `${gateway}/${cid}`;
+    // the time allowed covers the body as well as the headers
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
-      let resp;
-      try {
-        resp = await fetch(url, { signal: controller.signal });
-      } finally {
-        clearTimeout(timer);
-      }
+      const resp = await fetch(url, { signal: controller.signal });
       if (!resp.ok) continue;
-      const buf = await resp.arrayBuffer();
-      // Size sanity cap — wrapper metadata blobs are typically < 4 KB.
-      if (buf.byteLength > 32 * 1024) continue;
+      const declared = Number(resp.headers.get('content-length'));
+      if (Number.isFinite(declared) && declared > WRAPPER_META_MAX_BYTES) continue;
+      const buf = await readCapped(resp, WRAPPER_META_MAX_BYTES);
+      if (!buf) continue;
       if (await _verifyRawCid(cid, buf) === false) continue;
       const body = new TextDecoder().decode(buf);
       try {
@@ -9735,6 +9777,8 @@ async function fetchIpfsJson(cid, { timeoutMs = 5000 } = {}) {
       }
     } catch {
       continue;
+    } finally {
+      clearTimeout(timer);
     }
   }
   return null;
@@ -27769,6 +27813,7 @@ async function scanForEtches(env, network) {
 // Workers ignores extra named exports — only the default object's fetch /
 // scheduled handlers are invoked at runtime — so this has no production effect.
 export {
+  _ethGasPrice, fetchIpfsJson,
   assembleReflectionJobBody,
   openingMsg, disclosureMsg, listingMsg, cancelMsg, claimMsg,
   atomicIntentMsg, atomicIntentClaimMsg, atomicIntentFulfilmentMsg, atomicIntentCancelMsg,

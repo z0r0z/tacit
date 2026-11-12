@@ -16,14 +16,14 @@ let n = 0; const ok = (c, m) => { if (c) { console.log('ok  -', m); n++; } else 
 
 // signet has no configured floor by default -> a clean, explicit "not configured" response, not an error.
 {
-  const res = await handleBurndepCacheStatus(req(), { REGISTRY_KV: makeKv() }, new URL('https://x/reflection/burndep/cache-status?network=signet'), {});
+  const res = await handleBurndepCacheStatus(req(), { BURNDEP_CACHE_STATUS_TTL_MS: 0, REGISTRY_KV: makeKv() }, new URL('https://x/reflection/burndep/cache-status?network=signet'), {});
   const body = await res.json();
   ok(body.ok === true && body.floor === 0, 'signet (no floor configured) reports cleanly rather than erroring');
 }
 
 // mainnet: real tip lookup, empty cache -> 0 chunks warm, complete:false, warmThroughHeight:null.
 {
-  const res = await handleBurndepCacheStatus(req(), { REGISTRY_KV: makeKv() }, new URL('https://x/reflection/burndep/cache-status?network=mainnet'), {});
+  const res = await handleBurndepCacheStatus(req(), { BURNDEP_CACHE_STATUS_TTL_MS: 0, REGISTRY_KV: makeKv() }, new URL('https://x/reflection/burndep/cache-status?network=mainnet'), {});
   const body = await res.json();
   ok(body.ok === true, 'mainnet with an empty cache still responds ok');
   ok(body.floor === 948242, 'reports TAC\'s real mainnet etch height as the floor');
@@ -37,7 +37,7 @@ let n = 0; const ok = (c, m) => { if (c) { console.log('ok  -', m); n++; } else 
   const chunkIndex = Math.floor(948242 / 1000);
   const fullChunk = new Array(1000).fill('0x' + 'ab'.repeat(80));
   const kv = makeKv({ [`reflection:hdrs:mainnet:${chunkIndex}`]: JSON.stringify(fullChunk) });
-  const res = await handleBurndepCacheStatus(req(), { REGISTRY_KV: kv }, new URL('https://x/reflection/burndep/cache-status?network=mainnet'), {});
+  const res = await handleBurndepCacheStatus(req(), { BURNDEP_CACHE_STATUS_TTL_MS: 0, REGISTRY_KV: kv }, new URL('https://x/reflection/burndep/cache-status?network=mainnet'), {});
   const body = await res.json();
   ok(body.chunksWarm === 1, 'a single fully-warm chunk is counted');
   ok(body.warmThroughHeight === (chunkIndex + 1) * 1000 - 1, 'warmThroughHeight reflects exactly the warmed chunk\'s own top height');
@@ -47,7 +47,7 @@ let n = 0; const ok = (c, m) => { if (c) { console.log('ok  -', m); n++; } else 
 {
   const chunkIndex = Math.floor(948242 / 1000);
   const kv = makeKv({ [`reflection:hdrs:mainnet:${chunkIndex}`]: JSON.stringify(new Array(500).fill('0x' + 'ab'.repeat(80))) });
-  const res = await handleBurndepCacheStatus(req(), { REGISTRY_KV: kv }, new URL('https://x/reflection/burndep/cache-status?network=mainnet'), {});
+  const res = await handleBurndepCacheStatus(req(), { BURNDEP_CACHE_STATUS_TTL_MS: 0, REGISTRY_KV: kv }, new URL('https://x/reflection/burndep/cache-status?network=mainnet'), {});
   const body = await res.json();
   ok(body.chunksWarm === 0, 'a partial (500/1000) chunk does not count as warm');
 }
@@ -61,7 +61,7 @@ let n = 0; const ok = (c, m) => { if (c) { console.log('ok  -', m); n++; } else 
     [`reflection:hdrs:mainnet:${first}`]: JSON.stringify(fullChunk()),
     [`reflection:hdrs:mainnet:${first + 2}`]: JSON.stringify(fullChunk()), // first+1 left empty: the gap
   });
-  const res = await handleBurndepCacheStatus(req(), { REGISTRY_KV: kv }, new URL('https://x/reflection/burndep/cache-status?network=mainnet'), {});
+  const res = await handleBurndepCacheStatus(req(), { BURNDEP_CACHE_STATUS_TTL_MS: 0, REGISTRY_KV: kv }, new URL('https://x/reflection/burndep/cache-status?network=mainnet'), {});
   const body = await res.json();
   ok(body.chunksWarm === 1, 'contiguous coverage stops at the gap (does not count the chunk past it)');
   ok(body.chunksWarmTotal === 2, 'the diagnostic total still reports both warm chunks');
