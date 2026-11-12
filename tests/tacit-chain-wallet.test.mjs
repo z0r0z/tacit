@@ -115,6 +115,55 @@ try {
   const aliceScan = await w.scan(alice, leader);
   assert.deepEqual(aliceScan.notes.map((n) => n.value), [700n * T - share]);
   assert.deepEqual(aliceScan.spent.map((n) => n.value), [1000n * T]);
+  {
+    // with the leader's list of spent nullifiers a scan finds the same notes and never asks about one of them
+    const asked = { spent: 0, feed: 0, from: [] };
+    const feedLeader = { ...leader, state: () => api('GET', '/state'),
+      spent: async (nf) => { asked.spent++; return leader.spent(nf); },
+      nullifiers: async (from, limit) => { asked.feed++; asked.from.push(from); return api('GET', `/nullifiers?from=${from}&limit=${limit}`); } };
+    // the node's list: in the order it took them, a page is a slice of it, and no page is longer than 2000
+    const nfs = await api('GET', '/nullifiers?from=0&limit=1000');
+    assert.equal(nfs.total, (await api('GET', '/state')).nullifiers, 'the list is as long as the nullifiers the chain has spent');
+    assert.ok(nfs.total > 0 && nfs.nullifiers.length === nfs.total && nfs.nullifiers.every((h) => /^0x[0-9a-f]{64}$/.test(h)));
+    const past = await api('GET', `/nullifiers?from=${nfs.total + 50}&limit=10`);
+    assert.deepEqual([past.from, past.next, past.nullifiers.length], [nfs.total, nfs.total, 0], 'a start past the end is the end');
+    assert.deepEqual((await api('GET', '/nullifiers?from=1&limit=1')).nullifiers, nfs.nullifiers.slice(1, 2), 'a page is a slice of the list');
+    assert.ok((await api('GET', '/nullifiers?from=0&limit=999999')).nullifiers.length <= 2000, 'a page is at most 2000');
+    const viaFeed = await w.scan(alice, feedLeader);
+    assert.deepEqual(viaFeed.notes.map((n) => n.value), aliceScan.notes.map((n) => n.value), 'the same unspent notes');
+    assert.deepEqual(viaFeed.spent.map((n) => n.value), aliceScan.spent.map((n) => n.value), 'the same spent notes');
+    assert.equal(asked.spent, 0, 'no note is asked about one by one');
+    assert.ok(asked.feed >= 1 && asked.from[0] === 0, 'the list is read from its start');
+    const kept = w.nullifiersKept();
+    assert.equal(kept.length, 64 * (await api('GET', '/state')).nullifiers, 'the list is kept whole');
+    asked.feed = 0; asked.from.length = 0;
+    await w.scan(alice, feedLeader);
+    assert.deepEqual(asked.from, [kept.length / 64], 'a second scan reads only what is new');
+    // a wallet that loads the kept list reads only what is new
+    const fresh = makeChainWallet({ poseidon, prover, chain: st0.chain, asset });
+    assert.ok(fresh.nullifiersKeep(kept) && fresh.nullifiersKept() === kept, 'the kept list loads');
+    assert.ok(!fresh.nullifiersKeep(kept + 'zz') && !fresh.nullifiersKeep('0x' + kept) && !fresh.nullifiersKeep(kept.slice(1)), 'a list that is not 32-byte hex is refused');
+    asked.feed = 0; asked.from.length = 0; asked.spent = 0;
+    const loaded = await fresh.scan(alice, feedLeader);
+    assert.deepEqual(loaded.spent.map((n) => n.value), [1000n * T]);
+    assert.deepEqual(asked.from, [kept.length / 64]);
+    // a leader that holds fewer than are kept: the list starts over from it
+    const shrunk = makeChainWallet({ poseidon, prover, chain: st0.chain, asset });
+    shrunk.nullifiersKeep(kept + 'ab'.repeat(32));
+    const reread = await shrunk.scan(alice, feedLeader);
+    assert.deepEqual(reread.spent.map((n) => n.value), [1000n * T]);
+    assert.equal(shrunk.nullifiersKept(), kept, 'it holds what the leader holds');
+    // a leader with no list (an older one) is asked about each note, as before; one that sends something else is not trusted
+    const old = { ...feedLeader, nullifiers: async () => ({ ok: false, status: 404, error: 'not found' }) };
+    asked.spent = 0;
+    assert.deepEqual((await makeChainWallet({ poseidon, prover, chain: st0.chain, asset }).scan(alice, old)).spent.map((n) => n.value), [1000n * T]);
+    assert.ok(asked.spent > 0, 'an older leader is asked about each note');
+    const odd = { ...feedLeader, nullifiers: async () => ({ ok: true, total: 1, nullifiers: ['not a nullifier'] }) };
+    asked.spent = 0;
+    const wOdd = makeChainWallet({ poseidon, prover, chain: st0.chain, asset });
+    assert.deepEqual((await wOdd.scan(alice, odd)).spent.map((n) => n.value), [1000n * T]);
+    assert.ok(asked.spent > 0 && wOdd.nullifiersKept() === '', 'a list that is not nullifiers is dropped and the notes are asked about');
+  }
   const r1 = await rate();
   assert.deepEqual(r1, { pool: 1000n * T, shares: 1000n * T - share }, 'the pool share ended shares and kept their TAC');
   const nobody = w.keys(new Uint8Array(32).fill(0x77));

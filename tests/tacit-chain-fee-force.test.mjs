@@ -87,7 +87,10 @@ try {
   const leaderReads = { notes: (f, l) => api('GET', `/notes?from=${f}&limit=${l}`), spent: async (nf) => (await api('GET', `/spent/${nf}`)).spent };
 
   const aliceStore = store();
-  const alice = makeChainClient({ cfg, rpcCall, priv: new Uint8Array(32).fill(0x11), system, storage: aliceStore });
+  // what Alice's client asks the leader: a scan reads the list of spent nullifiers, never one note's
+  const asks = { spent: 0, feed: 0 };
+  const counting = (u, o) => { const p = String(u); if (p.includes('/spent/')) asks.spent++; if (p.includes('/nullifiers')) asks.feed++; return fetch(u, o); };
+  const alice = makeChainClient({ cfg, rpcCall, priv: new Uint8Array(32).fill(0x11), system, storage: aliceStore, fetchImpl: counting });
   assert.equal((await alice.fee()).units, FEE, 'the client reads the leader\'s fee');
 
   // 1. Alice shields 1,000 TAC: her note and the leader's fee note; the leader opens it and takes the shield
@@ -100,6 +103,7 @@ try {
   let fees = (await desk.wallet.scan(desk.keys, leaderReads)).notes;
   assert.equal(fees.length, 1);
   assert.ok(worthOf(fees[0].value, r1) >= FEE, 'the leader\'s note is worth its fee');
+  assert.ok(asks.feed >= 1 && asks.spent === 0, `her scan read the list of spent nullifiers and asked about no note (feed ${asks.feed}, spent ${asks.spent})`);
   console.log('1. a shield that pays the leader landed; the leader found its fee note');
 
   // 2. a spend that pays no fee (its wallet read none) is refused, the reason on its receipt; it never reaches a block

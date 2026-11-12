@@ -139,6 +139,7 @@ export function makeChainClient({ cfg, rpcCall, priv, system, route = null, rout
     path: (i) => api('GET', `/path/${i}`),
     state: () => api('GET', '/state'),
     notes: (from, limit) => api('GET', `/notes?from=${from}&limit=${limit}`),
+    nullifiers: (from, limit) => api('GET', `/nullifiers?from=${from}&limit=${limit}`),
     spent: async (nf) => (await api('GET', `/spent/${nf}`)).spent,
     address: async (h) => (await api('GET', `/address/${h}`)).address,
     // the full address, and the same address signed for under this wallet's Tacit key
@@ -173,9 +174,11 @@ export function makeChainClient({ cfg, rpcCall, priv, system, route = null, rout
   // the chain's leaves, which a spend builds its membership paths from, are kept under a key of their own: a store too full for them costs a
   // download of the leaves again, and never the wallet's notes
   const leavesKey = () => `tacit-chain-leaves-v1:${cfg.blocks.toLowerCase()}`;
+  const nullifiersKey = () => `tacit-chain-nullifiers-v1:${cfg.blocks.toLowerCase()}`;
   const save = () => {
     try { storage?.setItem(key(), JSON.stringify({ next: st.next, notes: st.notes.map((n) => ({ ...n, value: String(n.value), leaf: String(n.leaf) })) })); } catch {}
     try { storage?.setItem(leavesKey(), w.leavesKept()); } catch {}
+    try { storage?.setItem(nullifiersKey(), w.nullifiersKept()); } catch {}
   };
   const load = () => {
     try {
@@ -183,6 +186,7 @@ export function makeChainClient({ cfg, rpcCall, priv, system, route = null, rout
       if (j) { const notes = j.notes.map((n) => ({ ...n, value: BigInt(n.value), leaf: BigInt(n.leaf) })); st.notes = notes; st.next = j.next; }
     } catch {}
     try { w.leavesKeep(storage?.getItem(leavesKey()) || ''); } catch {}
+    try { w.nullifiersKeep(storage?.getItem(nullifiersKey()) || ''); } catch {}
   };
   const proverP = () => (prover ||= Promise.resolve(system()).then((s) => ({ prove: (input, o) => s.prove(input, o) })));
 

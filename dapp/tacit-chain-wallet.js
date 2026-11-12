@@ -142,6 +142,35 @@ export function makeChainWallet({ poseidon, prover, chain, asset, network = 'mai
     for (let i = 0; i < str.length; i += 64) treeLeaves.push(BigInt('0x' + str.slice(i, i + 64)));
     return true;
   };
+  // The nullifiers the chain has spent, in the order it took them, kept here: a scan checks the wallet's notes against this list instead of asking the leader
+  // about each, which would tell it how many notes an address holds. A leader with no such route is asked about each note, as before.
+  const nfList = [], nfSet = new Set();
+  let nfRoute = true;                    // false once a leader has said it has no list
+  const nullifiersKept = () => nfList.map((h) => h.slice(2)).join('');
+  const nullifiersKeep = (str) => {
+    if (typeof str !== 'string' || str.length % 64 !== 0 || !/^[0-9a-f]*$/.test(str)) return false;
+    nfList.length = 0; nfSet.clear();
+    for (let i = 0; i < str.length; i += 64) { const h = '0x' + str.slice(i, i + 64); nfList.push(h); nfSet.add(h); }
+    return true;
+  };
+  /// Brings the kept list up to what the leader has spent. → the set of spent nullifiers, or null when the leader cannot give the list just now.
+  async function syncNullifiers(leader) {
+    if (typeof leader.nullifiers !== 'function' || !nfRoute) return null;
+    for (let guard = 0; guard < 1000; guard++) {
+      const r = await leader.nullifiers(nfList.length, 1000);
+      if (!r || r.ok === false) { if (r && r.status === 404) nfRoute = false; return null; }
+      const total = Number(r.total), list = Array.isArray(r.nullifiers) ? r.nullifiers : null;
+      if (!Number.isInteger(total) || total < 0 || !list) return null;
+      if (total < nfList.length) { nfList.length = 0; nfSet.clear(); continue; }       // the leader holds fewer than are kept: start over
+      for (const h of list) {
+        const x = String(h).toLowerCase();
+        if (!/^0x[0-9a-f]{64}$/.test(x)) return null;
+        nfList.push(x); nfSet.add(x);
+      }
+      if (nfList.length >= total || !list.length) return nfSet;
+    }
+    return null;
+  }
   /// The chain's note tree as the leader reports it, built from the leaves kept and those it has added since, and checked against the root
   /// the leader states (which names no note). A tree that does not make that root is rebuilt from every leaf; one that still does not is
   /// refused rather than a path asked of the leader. → { root, path(index) } or null for a leader that cannot say its root (a stand-in).
@@ -301,15 +330,18 @@ export function makeChainWallet({ poseidon, prover, chain, asset, network = 'mai
     }
     const notes = [];
     const spent = [];
+    // checked against the chain's list of spent nullifiers when the leader has it, so it is never asked about a particular note
+    const spentSet = record ? await syncNullifiers(leader).catch(() => null) : null;
     for (const n of mine) {
       const own = Z.ownedKeys(k.zk, n.s);
-      const nf = Z.nullifier(own.nk, n.leaf, n.index);
-      (await leader.spent(hx(be(nf, 32))) ? spent : notes).push({ ...n, nullifier: hx(be(nf, 32)) });
+      const nf = Z.nullifier(own.nk, n.leaf, n.index), nfHex = hx(be(nf, 32));
+      const isSpent = spentSet ? spentSet.has(nfHex.toLowerCase()) : await leader.spent(nfHex);
+      (isSpent ? spent : notes).push({ ...n, nullifier: nfHex });
     }
     return { notes, spent, next };
   }
 
-  return { keys, address, encodeAddress, decodeAddress, chainAddressHash, resolve, publish, spend, scan, makeNote, leavesKept, leavesKeep, Z };
+  return { keys, address, encodeAddress, decodeAddress, chainAddressHash, resolve, publish, spend, scan, makeNote, leavesKept, leavesKeep, nullifiersKept, nullifiersKeep, syncNullifiers, Z };
 }
 
 export { sha256, lockOp };
