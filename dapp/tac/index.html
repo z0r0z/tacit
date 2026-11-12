@@ -206,11 +206,14 @@ main:focus { outline: none; }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--hair-2); flex: none; }
 .dot.on { background: var(--ok); }
 .dot.live { background: var(--orange); }
-/* Quick starts above the card: quiet until looked at. Each is a pair of marks and a sentence with its amount in the ink; no outline until hover or focus (touch has no hover, so it keeps a faint one),
-   the APR a small tag, an arrow that arrives on hover. Pressing one fills the card at 0.01 ETH, a size kept proved ahead. One line that scrolls sideways on a phone, fading at the edge it runs off. */
-.hints { display: flex; align-items: center; gap: 4px; justify-content: flex-start; margin: 20px 0 0; padding: 1px 0; overflow-x: auto; scrollbar-width: none; min-height: 30px; }
-.hints-k { flex: none; margin-right: 4px; font: 500 11px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
-.hints > :first-child { margin-inline-start: auto; } .hints > :last-child { margin-inline-end: auto; }
+/* Under the card, where to start: the quick starts and the farms, one table of chips on a shared left edge (the widest row sets it, and the table sits centred).
+   Each chip is a pair of marks and what it does, quiet until looked at, with an arrow that arrives on hover. Pressing one fills the card: a quick start at 0.01 ETH, a size kept
+   proved ahead; a farm with that pool's ETH zap. On a phone each row scrolls sideways, fading at the edge it runs off. */
+.starts { display: grid; grid-template-columns: minmax(0, max-content); justify-content: center; row-gap: 8px; margin: 22px 0 0; }
+.hints { display: flex; align-items: center; gap: 4px; justify-content: flex-start; margin: 0; padding: 1px 0; overflow-x: auto; scrollbar-width: none; min-height: 30px; }
+.hints-k, .fms-k { flex: none; width: 48px; margin-right: 6px; font: 500 11px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
+/* signed in, the row is the two ways to what is held: they sit centred over the farms */
+.hints:has(> .own) { justify-content: safe center; }
 .hints::-webkit-scrollbar { display: none; }
 .hint { flex: none; display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 11px 0 4px; font: inherit; font-size: 12px; letter-spacing: 0; color: var(--ink); background: transparent; border: 1px solid color-mix(in srgb, var(--hair) 70%, transparent); border-radius: 15px; cursor: pointer; white-space: nowrap; transition: background .15s, color .15s, border-color .15s, transform .1s; animation: hint-in .5s cubic-bezier(.2, .8, .2, 1) both; animation-delay: calc(var(--i, 0) * 70ms); }
 .hint .pair { display: inline-flex; } .hint .pair .tk { width: 16px; height: 16px; } .hint .pair .tk + .tk { margin-left: -5px; box-shadow: 0 0 0 1.5px var(--paper); }
@@ -231,7 +234,6 @@ main:focus { outline: none; }
 .hint.own { gap: 6px; padding: 0 12px 0 10px; } .hint.own svg { width: 14px; height: 14px; }
 @keyframes hint-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .hint { animation: none; transition: none; } }
-@media (max-width: 640px) { .hints { justify-content: flex-start; margin: 0 -16px 14px; padding: 1px 16px; scroll-padding: 0 16px; -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); } }
 .chip.act svg { width: 18px; height: 18px; flex: none; }
 .chip.act.busy { color: var(--warn); }
 .chip.act.busy svg { animation: pulse 1.6s ease-in-out infinite; }
@@ -343,44 +345,45 @@ a.di { color: inherit; text-decoration: none; }
 /* ── hero ── */
 .hero { padding: 48px 0 28px; }
 .hero-t { margin: 0 auto 40px; text-align: center; }
-/* The airdrop, while it is open: one line above the headline that opens the claim. */
-.news { display: inline-flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 2px 10px; margin: 0 0 20px; font-size: 13px; color: var(--mute); text-decoration: none; }
-.newsl { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 6px 18px; margin: 0 0 20px; }
-.newsl .news { margin: 0; }
-.newsl.below { margin: 22px 0 0; }
-.chl { display: flex; justify-content: center; margin: 22px 0 0; font-size: 13px; color: var(--mute); text-align: center; }
+/* What is new, under the count: the chain and, while it is open, the airdrop. Two quiet pills of one make, each opening its page; side by side where they fit. */
+.says { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 10px 12px; margin: 36px 0 0; }
+.news, .chb { display: inline-flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 4px 10px; min-height: 34px; padding: 6px 16px; border: 1px solid var(--hair-2); border-radius: 17px; font-size: 12.5px; line-height: 1.4; color: var(--mute); text-decoration: none; transition: border-color .15s; }
+.newsl { display: flex; justify-content: center; }
+.chl { display: flex; justify-content: center; color: var(--mute); text-align: center; }
 .chl[hidden] { display: none; }
-.chl a { color: inherit; text-decoration: none; }
-/* the banner: what the chain is, one quiet pill that opens its page; its dot says whether the chain is answering (the numbers are the hover) */
-.chb { display: inline-flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 4px 10px; min-height: 32px; padding: 5px 15px; border: 1px solid var(--hair-2); border-radius: 999px; font-size: 12.5px; line-height: 1.4; transition: border-color .15s; }
+/* the chain's pill: what it is; its dot says whether the chain is answering (the numbers are the hover) */
 .chb .tk { width: 14px; height: 14px; }
 .chb b { font-weight: 500; color: var(--ink); }
 .chb i { font-style: normal; color: var(--ink); transition: transform .2s; }
 .chb .dot { width: 6px; height: 6px; margin-left: -4px; }
-@media (hover: hover) { .chb:hover { border-color: var(--ink); } .chb:hover i { transform: translateX(3px); } }
-@media (prefers-reduced-motion: reduce) { .chb, .chb i { transition: none; } }
-@media (max-width: 560px) { .chl .w { display: none; } .chb { gap: 4px 8px; padding: 5px 12px; } }
+@media (hover: hover) { .chb:hover, .news:hover { border-color: var(--ink); } .chb:hover i { transform: translateX(3px); } }
+@media (prefers-reduced-motion: reduce) { .chb, .chb i, .news { transition: none; } }
+@media (max-width: 560px) { .chl .w { display: none; } .chb { gap: 4px 8px; padding: 6px 13px; } }
 @media (max-width: 380px) { .chl .w3 { display: none; } }
-/* the line goes when its one chip does: once the airdrop closes, or signed in, where the Airdrop card in Your Tacit already shows it */
+/* the airdrop's pill goes when its chip does: once the airdrop closes, or signed in, where the Airdrop card in Your Tacit already shows it */
 .newsl.below:not(:has(> .news:not([hidden]))), .hero:has(~ #dash:not([hidden]) [data-dash-open="airdrop"]) .newsl.below { display: none; }
-/* The farms under the rewards line: a pair and its APR a chip, best first, each opening the tile's Earn tab on that pool's ETH zap. One quiet line, centred where it fits and
-   scrolling sideways on a phone (fading at the edge it runs off); its height is kept while empty, so nothing moves when the farms are read. */
-.fms { display: flex; gap: 18px; height: 26px; margin: 22px 0 0; padding: 1px 0; overflow-x: auto; scrollbar-width: none; opacity: 0; transition: opacity .35s; }
+/* The farms, the second row of the table under the card: a pair and its APR a chip, best first, each opening the card's Earn tab on that pool's ETH zap. The row's height is
+   kept while empty, so nothing moves when the farms are read. */
+.fms { display: flex; align-items: center; gap: 4px; height: 30px; margin: 0; padding: 1px 0; overflow-x: auto; scrollbar-width: none; opacity: 0; transition: opacity .35s; }
 .fms::-webkit-scrollbar { display: none; }
-.fms-k { flex: none; margin-right: -6px; font: 500 11px/24px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
-.fms > :first-child { margin-inline-start: auto; } .fms > :last-child { margin-inline-end: auto; }
 .fms.on { opacity: 1; }
-.fms a { flex: none; display: inline-flex; align-items: center; gap: 6px; padding: 0; color: var(--mute); text-decoration: none; white-space: nowrap; font-size: 12px; line-height: 22px; transition: color .15s; }
+.fms a { flex: none; display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 11px 0 4px; color: var(--mute); text-decoration: none; white-space: nowrap; font-size: 12px; border: 1px solid color-mix(in srgb, var(--hair) 70%, transparent); border-radius: 15px; transition: background .15s, color .15s, transform .1s; }
 .fms .pair { display: inline-flex; }
 .fms .pair .tk { width: 16px; height: 16px; }
 .fms .pair .tk + .tk { margin-left: -5px; box-shadow: 0 0 0 1.5px var(--paper); }
-.fms b { font-weight: 500; color: var(--green); }
+.fms b { font-weight: 500; color: var(--ok); }
 .fms small { font: 500 11px var(--mono); letter-spacing: .06em; }
-.fms .fms-thin { font-style: normal; font-weight: 400; letter-spacing: 0; opacity: .8; }
-@media (hover: hover) { .fms a:hover small { color: var(--ink); } }
+.fms .fms-thin { font-style: normal; font-weight: 400; letter-spacing: 0; }
+@media (hover: hover) { .fms a:hover { background: color-mix(in srgb, var(--ink) 4%, transparent); } .fms a:hover small { color: var(--ink); } }
+@media (hover: none) { .fms a { border-color: color-mix(in srgb, var(--hair) 40%, transparent); } }
 .fms a:active { transform: scale(.98); }
-.fms a:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; border-radius: 4px; }
-@media (max-width: 640px) { .fms { margin: 22px -16px 0; padding: 1px 24px 1px 16px; scroll-padding: 0 16px; -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); } }
+.fms a:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+/* where the quick starts can be wider than the page, a row fades at the edge it runs off (the fade lies over the row's own padding while the row still fits) */
+@media (max-width: 1100px) { .hints, .fms { padding-right: 28px; -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); } }
+@media (max-width: 640px) {
+  .starts { grid-template-columns: minmax(0, 1fr); margin: 18px -16px 0; }
+  .hints, .fms { padding: 1px 16px; scroll-padding: 0 16px; }
+}
 .news b { font-weight: 500; color: var(--ink); }
 /* A dot says one thing: grey is nothing for you (and is not drawn), orange is something to claim, green is something you hold. Only the Live tape pulses. */
 .news .dot { width: 6px; height: 6px; }
@@ -400,7 +403,7 @@ a.di { color: inherit; text-decoration: none; }
 .tl { font-weight: 500; text-decoration: underline; text-underline-offset: 4px; }
 
 /* ── in numbers: the pools' own figures, and beside them what no one holds for you ── */
-.proof-row { display: grid; justify-items: center; gap: 18px; margin: 56px auto 0; text-align: center; }
+.proof-row { display: grid; justify-items: center; gap: 18px; margin: 60px auto 0; text-align: center; }
 .proof { display: flex; flex-wrap: wrap; justify-content: center; align-items: flex-end; gap: 12px 64px; color: var(--mute); text-decoration: none; }
 .proof [data-nums] { display: grid; gap: 6px; font-size: 12px; }
 .proof [data-nums][hidden] { display: none; }
@@ -409,7 +412,7 @@ a.di { color: inherit; text-decoration: none; }
 @media (hover: hover) { .proof:hover [data-nums] { color: var(--ink); } }
 .proof-f { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 8px 22px; }
 .trust { font-size: 12px; font-weight: 500; color: var(--ink); }
-.trust::before { content: '✓'; margin-right: 6px; color: var(--green); }
+.trust::before { content: '✓'; margin-right: 6px; color: var(--ok); }
 
 /* ── the hero's console: a card that takes a verb, an amount and a way, and hands the rest to the sheet that does it ── */
 .hx { position: relative; width: 100%; max-width: 480px; min-width: 0; margin: 0 auto; background: var(--card); border: 1px solid color-mix(in srgb, var(--ink) 9%, transparent); border-radius: 22px; box-shadow: var(--float), inset 0 1px 0 color-mix(in srgb, var(--ink) 4%, transparent); }
@@ -586,7 +589,7 @@ a.di { color: inherit; text-decoration: none; }
 
 /* ── live: what happened lately, as a tape under the hero. It stops under the pointer and stands still under reduced motion
    (the tape can then be scrolled by hand). ── */
-.tape { display: flex; align-items: center; gap: 14px; margin-top: 14px; padding: 8px 0; font-size: 12px; color: var(--mute); }
+.tape { display: flex; align-items: center; gap: 14px; margin-top: 20px; padding: 8px 0; font-size: 12px; color: var(--mute); }
 .tape-l { flex: none; display: inline-flex; align-items: center; gap: 7px; font: 500 11px var(--mono); text-transform: uppercase; letter-spacing: .12em; color: var(--ink); }
 .tape-l .dot { animation: tape-pulse 3.2s ease-in-out infinite; }
 .tape-v { flex: 1; min-width: 0; overflow: hidden; -webkit-mask-image: linear-gradient(90deg, transparent, #000 72px, #000 calc(100% - 120px), transparent);
@@ -1767,7 +1770,8 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   .news > * + * { margin-left: 8px; }
   .news .go { margin-left: 6px; }
   .news .dot:is(.on, .live) { display: inline-block; vertical-align: .08em; }
-  .newsl { margin-bottom: 14px; }
+  .says { gap: 8px; margin-top: 32px; }
+  .proof-row { margin-top: 48px; }
   .hero-t { margin-bottom: 20px; }
   .proof { gap: 12px 26px; }
   .proof b { font-size: 34px; }
@@ -1776,7 +1780,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   .hx-b { padding: 12px; }
   .hx-b.swc .act, .hx-b .swc .act { margin-left: -12px; margin-right: -12px; padding-left: 12px; padding-right: 12px; }
   .hx-amt { font-size: 38px; }
-  .tape { margin-top: 14px; }
+  .tape { margin-top: 16px; }
   .sx { padding-top: 88px; }
   .wd { --end: 1fr; }
   .wd-top, .wd-lane { grid-template-columns: minmax(0, 1fr) 56px minmax(0, 1fr); }
@@ -2064,9 +2068,9 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       <p class="sub">One <b>tacit1</b>&nbsp;ID for both chains. Private inside the pool.</p>
     </div>
     <section class="hx" id="hx" aria-label="Shield, swap, send, earn, withdraw, bridge or borrow"><div id="hx-body"><div class="hx-sk" aria-hidden="true"><i class="t"></i><i class="f"></i><i class="f"></i><i class="p"></i><i class="g"></i></div></div></section>
-    <div class="hints" id="hints" role="group" aria-label="Quick starts: each fills the card above"></div>
-    <div class="chl" id="chl">
-      <a class="chb" id="chl-a" href="/chain/" title="The Tacit chain, live"><svg class="tk w" aria-hidden="true"><use href="#tk-tac"/></svg><b>Tacit chain</b><span class="dot" id="chl-dot" aria-hidden="true"></span><span><span class="w3">a zk-rollup for </span><span class="w">private </span>TAC payments<span class="w">, settled on Ethereum</span></span><i aria-hidden="true">→</i></a>
+    <div class="starts">
+      <div class="hints" id="hints" role="group" aria-label="Quick starts: each fills the card above"></div>
+      <div class="fms" id="fms" role="group" aria-label="Farms and their APR now; each opens its ETH zap"></div>
     </div>
     <div class="proof-row">
       <a class="proof" href="/weld/stats/" title="All stats">
@@ -2076,10 +2080,14 @@ footer.sf svg.fill { width: 16px; height: 16px; }
         <span class="trust">No custodian, no multisig, an immutable pool</span>
       </div>
     </div>
-      <div class="newsl below">
-      <a class="news" id="air-news" href="/rewards/"><span class="dot" data-dot="tac"></span><b>TAC airdrop</b><span data-foot="tac">Is your wallet in it?</span><span class="go"><span class="w">Check yours </span>→</span></a>
+    <div class="says">
+      <div class="chl" id="chl">
+        <a class="chb" id="chl-a" href="/chain/" title="The Tacit chain, live"><svg class="tk w" aria-hidden="true"><use href="#tk-tac"/></svg><b>Tacit chain</b><span class="dot" id="chl-dot" aria-hidden="true"></span><span><span class="w3">a zk-rollup for </span><span class="w">private </span>TAC payments<span class="w">, settled on Ethereum</span></span><i aria-hidden="true">→</i></a>
       </div>
-    <div class="fms" id="fms" role="group" aria-label="Farms and their APR now; each opens its ETH zap"></div>
+      <div class="newsl below">
+        <a class="news" id="air-news" href="/rewards/"><span class="dot" data-dot="tac"></span><b>TAC airdrop</b><span data-foot="tac">Is your wallet in it?</span><span class="go"><span class="w">Check yours </span>→</span></a>
+      </div>
+    </div>
     <div class="tape" id="tape" role="region" aria-label="Recent activity on Tacit" hidden>
         <span class="tape-l"><span class="dot live" aria-hidden="true"></span>Live</span>
         <div class="tape-v"><ul class="tape-run" id="tape-run"></ul></div>
