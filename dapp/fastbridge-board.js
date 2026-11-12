@@ -22,7 +22,7 @@ import { signSchnorr, verifySchnorr, bigintToBytes32 } from './bulletproofs.js';
 
 export class BoardError extends Error { constructor(status, message) { super(message); this.status = status; } }
 
-export const LIMITS = { adSecs: 600, skewSecs: 120, msgSecs: 600, replySecs: 600, maxAds: 200, maxQueue: 64, maxMsg: 70000, minMsg: 4000, maxReply: 70000, maxName: 40, wantSecs: 86400, maxWants: 500, maxAd: 2048 };
+export const LIMITS = { adSecs: 600, skewSecs: 120, msgSecs: 600, replySecs: 600, maxAds: 200, maxQueue: 64, maxPosted: 512, maxMsg: 70000, minMsg: 4000, maxReply: 70000, maxName: 40, wantSecs: 86400, maxWants: 500, maxAd: 2048 };
 
 const te = new TextEncoder();
 const hex = (n) => new RegExp(`^[0-9a-f]{${n}}$`);
@@ -136,6 +136,10 @@ export function makeBoard({ now = () => Math.floor(Date.now() / 1000), limits = 
       if (!ad) throw new BoardError(404, 'no provider here has that gateway key');
       const id = messageId(bytes);
       if (byId.has(id)) return { id, seq: byId.get(id).seq, kept: true };
+      // `maxQueue` bounds the requests waiting for the provider; `maxPosted` bounds all of a provider's requests that are still kept, answered or not
+      let posted = 0;
+      for (const x of byId.values()) if (x.gateway === gateway) posted++;
+      if (posted >= L.maxPosted) throw new BoardError(503, 'the provider has all the requests it takes');
       const q = queues.get(gateway) || [];
       if (q.length >= L.maxQueue) throw new BoardError(503, 'the provider has all the requests it takes');
       const m = { seq: ++seq, id, bytes, until: now() + L.msgSecs };
@@ -158,6 +162,11 @@ export function makeBoard({ now = () => Math.floor(Date.now() / 1000), limits = 
       try { ok = verifySchnorr(hexToBytes(String(sig)), replyDigest(id, bytes), xonly(m.claimPub)); } catch { ok = false; }
       if (!ok) throw new BoardError(403, 'the answer is not signed by the provider');
       replies.set(id, { bytes, until: now() + L.replySecs });
+      // an answered request no longer waits for the provider: it left in the queue it counted against `maxQueue` for the full ten minutes, and a
+      // dozen pages polling the house provider filled the queue with requests it had already answered, so the board turned new ones away with a 503
+      // although the provider was keeping up (2026-11-12). The request stays known (`byId`), so the same one posted again is still one request.
+      const q = queues.get(m.gateway);
+      if (q) { const rest = q.filter((x) => x.id !== id); if (rest.length) queues.set(m.gateway, rest); else queues.delete(m.gateway); }
       return { ok: true };
     },
     reply(id) { prune(); const r = replies.get(id); return r ? r.bytes : null; },

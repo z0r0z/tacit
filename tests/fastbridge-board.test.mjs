@@ -194,6 +194,41 @@ test('an answer: only the provider the request was for can make it, once, and it
   assert.equal(board.reply(id), null);
 });
 
+test('answered requests no longer count against the provider\'s queue: only the ones waiting do, and the same request posted again is still one', () => {
+  const c = clock(), board = makeBoard({ now: c.now, limits: { maxQueue: 3 } });
+  const ad = adOf(1, T0), p = priv(1), gw = ad.gateway;
+  board.putAd(ad);
+  const answer = (id, n) => { const b = bytesOf(1200, n); board.putReply(id, b, bytesToHex(signSchnorr(replyDigest(id, b), p))); };
+  // five requests, each answered as it arrives: with the queue's limit of three, the old board turned the fourth away although the provider kept up
+  for (let n = 1; n <= 5; n++) { const { id } = board.post(gw, bytesOf(4100, n)); answer(id, n); }
+  assert.deepEqual(board.inbox(gw, 0).items, [], 'an answered request does not wait for the provider');
+  assert.equal(board.post(gw, bytesOf(4100, 1)).kept, true, 'an answered request posted again is that request, not a new one');
+  assert.deepEqual(board.inbox(gw, 0).items, [], 'and does not come back');
+  // the queue's limit still holds for requests that wait
+  board.post(gw, bytesOf(4100, 6)); board.post(gw, bytesOf(4100, 7)); board.post(gw, bytesOf(4100, 8));
+  assert.equal(thrown(() => board.post(gw, bytesOf(4100, 9))).status, 503, 'three waiting fill it');
+  assert.deepEqual(board.inbox(gw, 0).items.map((m) => m.seq), [6, 7, 8], 'the cursor numbering is not disturbed by the answered ones that left');
+  const { id } = board.post(gw, bytesOf(4100, 6)); answer(id, 6);
+  board.post(gw, bytesOf(4100, 9));
+  assert.deepEqual(board.inbox(gw, 0).items.map((m) => m.seq), [7, 8, 9], 'answering one makes room for the next');
+});
+
+test('all of a provider\'s requests that are still kept are bounded too, answered or not, and run out', () => {
+  const c = clock(), board = makeBoard({ now: c.now, limits: { maxQueue: 3, maxPosted: 4 } });
+  const ad = adOf(1, T0), p = priv(1), gw = ad.gateway;
+  board.putAd(ad);
+  const answer = (id, n) => { const b = bytesOf(1200, n); board.putReply(id, b, bytesToHex(signSchnorr(replyDigest(id, b), p))); };
+  for (let n = 1; n <= 4; n++) { const { id } = board.post(gw, bytesOf(4100, n)); answer(id, n); }
+  assert.equal(thrown(() => board.post(gw, bytesOf(4100, 5))).status, 503, 'four kept, with the queue empty: a fifth is turned away');
+  assert.equal(board.post(gw, bytesOf(4100, 1)).kept, true, 'a kept one posted again is not counted twice');
+  c.advance(601);
+  board.putAd(adOf(1, c.t));
+  assert.equal(board.post(gw, bytesOf(4100, 5)).seq > 4, true, 'once they have run out there is room again');
+  // another provider's requests are not counted against this one
+  const other = adOf(2, c.t); board.putAd(other);
+  assert.equal(board.post(other.gateway, bytesOf(4100, 6)).seq > 5, true);
+});
+
 test('a want that was taken down stays down: the original, which is public, cannot be put back', () => {
   const c = clock(), board = makeBoard({ now: c.now });
   const w = (t, amount, until) => signWant({ pub: pubOf(priv(1)), btcAsset: 'ab'.repeat(32), amount, at: t, until }, priv(1));
@@ -253,7 +288,10 @@ test('a request goes to a provider and its answer comes back, sealed both ways: 
   const seenBy = [];
   const P = providerOf(1, async (req) => { seenBy.push(req); return req.path === '/missing' ? { status: 404, body: { error: 'nothing here' } } : { status: 200, body: { echo: req.path, got: req.body, secret: 'quote-4242' } }; }, c);
   board.putAd(adOf(1, T0));
-  const server = makeMailboxServer({ board, keys: P.keys, handle: P.handle, signReply: P.signReply, now: c.now });
+  // an answered request leaves the provider's queue, so what the board held of each is taken as the provider reads it
+  const heard = [];
+  const reading = { ...board, inbox: (g, after) => { const r = board.inbox(g, after); heard.push(...r.items); return r; } };
+  const server = makeMailboxServer({ board: reading, keys: P.keys, handle: P.handle, signReply: P.signReply, now: c.now });
   const call = pumpedCall(board, server, P.gateway, c.now);
   const r = await call('POST', '/quote', { amount: '5000', note: 'payer-7777' });
   assert.deepEqual(r, { status: 200, body: { echo: '/quote', got: { amount: '5000', note: 'payer-7777' }, secret: 'quote-4242' } });
@@ -261,9 +299,10 @@ test('a request goes to a provider and its answer comes back, sealed both ways: 
   assert.deepEqual(await call('GET', '/missing'), { status: 404, body: { error: 'nothing here' } });
   assert.deepEqual((await call('GET', '/info')).body.got, null);
   // what the board holds is ciphertext
-  const kept = Buffer.from(board.inbox(P.gateway, 0).items[0].bytes).toString('latin1');
+  assert.ok(heard.length >= 3, 'the provider read the three requests from the board');
+  const kept = Buffer.from(heard[0].bytes).toString('latin1');
   for (const word of ['5000', 'payer-7777', '/quote', 'amount']) assert.ok(!kept.includes(word), `the request does not hold "${word}"`);
-  const answer = Buffer.from(board.reply(board.inbox(P.gateway, 0).items[0].id)).toString('latin1');
+  const answer = Buffer.from(board.reply(heard[0].id)).toString('latin1');
   for (const word of ['quote-4242', 'echo', '200']) assert.ok(!answer.includes(word), `the answer does not hold "${word}"`);
 });
 
