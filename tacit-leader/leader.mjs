@@ -30,6 +30,7 @@ import { decode, decodeLand, landCalldata, selector, encode, hexOf, bytesOf } fr
 import { makeRpc, send as sendTx, addressOf, num, suggestedTip } from './rpc.mjs';
 import { feeTerms, readPrice, makeFeeDesk, admitPaying, blockReady, landCover } from './fees.mjs';
 import { archiveEntry, loadArchive } from './archive.mjs';
+import { makeLooks } from './look.mjs';
 import { makeBoardProver } from '../worker-relay/src/lib/board-prover.js';
 
 // one transaction at a time from the leader's key, so the seed's, a sweep's, a landing's and the hops' never take the same nonce
@@ -327,6 +328,10 @@ const paying = new Set();
 
 const unfundedSince = new Map();
 const DROP_UNFUNDED = Number(env.DROP_UNFUNDED_SECS || 3600) * 1000;
+// An unfunded shield is looked at less often the longer it waits (look.mjs), and of the ones that have waited a while only so many have their inboxes swept in a step
+// (each sweep is a few reads of Ethereum, per way back it was sent with).
+const looks = makeLooks();
+const SWEEPS_PER_STEP = Number(env.SWEEPS_PER_STEP || 8);
 
 // A restart rebuilds the node from the blocks on this disk when they are the whole chain: every block from 1 to the contract's height is there, each
 // starts where the one before ended, the first from the empty chain's state and the last at the contract's own state, and no forced entry waits (its
@@ -368,13 +373,20 @@ async function step() {
   // a spend that takes a deposit in lands only if that deposit is waiting on Ethereum (and not queued behind a forced entry the block does not reach)
   const exclude = [];
   const pendingOf = (d) => view('pending(bytes32)', ['address', 'uint256', 'uint256'], [hexOf(keccak_256(bytesOf(d.deposit)))]);
-  const looked = await Promise.all(pool.spends.filter((d) => d.deposit).map(async (d) => [d, await pendingOf(d)]));
+  const t0 = Date.now(), shields = pool.spends.filter((d) => d.deposit);
+  // (one not looked at this step is unfunded as far as this step goes, and stays held out of the block)
+  const toLook = shields.filter((d) => looks.due(d.id, t0));
+  for (const d of shields) if (!toLook.includes(d)) exclude.push(d.id);
+  const looked = await Promise.all(toLook.map(async (d) => [d, await pendingOf(d)]));
+  let sweeps = 0;
   for (const [d, [from0]] of looked) {
     let from = from0;
     // a shield paid to its inbox (the confidential pool's unwrap pays one): sweep it in once it holds the deposit, trying each way
     // back it was sent with
     const backs = [...new Set([...(d.backs || []), ...(d.permit?.back ? [d.permit.back] : [])])];
     for (const back of BigInt(from) === 0n ? backs : []) {
+      if (looks.aged(d.id, t0) && sweeps >= SWEEPS_PER_STEP) break;
+      sweeps++;
       // (a permit with bad fields, or a failing read, leaves this one unfunded, to be dropped in time: it must not stop the block for the rest)
       let ok = false;
       try { ok = await sweepInbox(d.deposit, back, d.permit); } catch (e) { log({ sweepError: d.id, error: String(e?.message || e).slice(0, 200) }); }
@@ -383,8 +395,10 @@ async function step() {
     if (BigInt(from) === 0n) {
       exclude.push(d.id);
       unfundedSince.set(d.id, unfundedSince.get(d.id) ?? Date.now());
-    } else unfundedSince.delete(d.id);
+      looks.saw(d.id, t0, false);
+    } else { unfundedSince.delete(d.id); looks.saw(d.id, t0, true); }
   }
+  looks.prune(new Set(pool.spends.map((s) => s.id)));
   // a shield whose deposit has not come within DROP_UNFUNDED_SECS is dropped, so unfunded ones cannot fill the mempool
   const stale = [...unfundedSince].filter(([, t]) => Date.now() - t > DROP_UNFUNDED).map(([id]) => id);
   if (stale.length) {
