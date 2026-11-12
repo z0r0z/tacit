@@ -10,6 +10,21 @@ export function localState(health, mine) {
   return mine.job ? 'proving' : 'waiting';
 }
 
+// Whether this computer's tacit-prover is older than what the setup line installs. A prover never updates itself and reports no version, so this reads the
+// shape of its GET /mine: no `salt` at all is from before salt mining; a `salt` with no `background` is v0.6.0 to v0.6.2 (which grind on every core at normal
+// priority, on battery too, and v0.6.0 sends faster than the pool takes). null when it is current. A field the next release adds is one more line here.
+export function proverUpdate(mine) {
+  if (!mine || typeof mine !== 'object') return null;
+  if (!('salt' in mine)) return 'salt';
+  if (mine.salt && typeof mine.salt === 'object' && !('background' in mine.salt)) return 'gentle';
+  return null;
+}
+// The line that tells that computer to run the setup line again, and what the update brings.
+export function updateText(kind) {
+  const a = 'Run the setup line again to update tacit-prover: it then';
+  return kind === 'salt' ? `${a} mines salts between proofs.` : kind === 'gentle' ? `${a} mines salts more gently, on a quarter of your cores at the lowest priority and not on battery.` : '';
+}
+
 const STAGE = { core: 'Proving', shrink: 'Compressing', wrap: 'Wrapping', groth16: 'Sealing' };
 
 const mins = (s) => (s < 90 ? 'about a minute' : `about ${Math.round(s / 60)} min`);

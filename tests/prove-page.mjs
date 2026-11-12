@@ -219,12 +219,22 @@ try {
     check((await text(page, '#height')) === '#9,390', 'the tip moves on');
     await shot(page, 'prove-none');
     // the prover appears (the line was pasted): the page sees it on its own
-    local.v = { mine: { miner: null, on: false, job: null, proved: 0, salt: { on: false, rate: 0, minBits: 26 } } };
+    const NOW = { threads: 2, background: true, pausedFor: 'not mining' };   // what a prover from v0.6.3 on adds to /mine's salt
+    local.v = { mine: { miner: null, on: false, job: null, proved: 0, salt: { on: false, rate: 0, minBits: 26, ...NOW } } };
     await page.waitForFunction(() => document.querySelector('#title').textContent === 'Paused', null, { timeout: 8000 });
     check(!(await page.locator('#setup').isVisible()), 'once it answers, the setup line goes');
     local.v = { mine: { miner: null, on: false, job: null, proved: 0 } };
     await page.waitForFunction(() => document.querySelector('#salt-day').textContent.startsWith('Run the setup line again'), null, { timeout: 8000 });
     check(await page.locator('#setup').isVisible(), 'a node from before salt mining is shown the setup line, to update');
+    // v0.6.0 to v0.6.2 mine salts but report no `background`: they are told to update too, with what the update brings
+    local.v = { mine: { miner: null, on: false, job: null, proved: 0, salt: { on: false, rate: 0, minBits: 26 } } };
+    await page.waitForFunction(() => document.querySelector('#salt-day').textContent.includes('more gently'), null, { timeout: 8000 });
+    check(await page.locator('#setup').isVisible() && (await text(page, '#salt-day')).startsWith('Run the setup line again'), 'a node from before gentle mining is shown the setup line, to update', await text(page, '#salt-day'));
+    await shot(page, 'prove-update-gentle');
+    // and a current one is not
+    local.v = { mine: { miner: null, on: false, job: null, proved: 0, salt: { on: false, rate: 0, minBits: 26, ...NOW } } };
+    await page.waitForFunction(() => !document.querySelector('#salt-day').textContent.startsWith('Run the setup line again'), null, { timeout: 8000 });
+    check(!(await page.locator('#setup').isVisible()), 'a current prover is not told to update');
     check(errors.length === 0, 'no page errors', errors.join(' | '));
     await ctx.close();
   }
@@ -288,7 +298,7 @@ try {
     await page.click('#go');
     await page.waitForFunction(() => document.querySelector('#title').textContent === 'Waiting for the next proof');
     check(posts.length === 1 && posts[0].on === true && posts[0].miner.toLowerCase() === ADDR, 'Start sends on with the address', JSON.stringify(posts));
-    local.v.mine = { ...local.v.mine, salt: { on: true, rate: 2_400_000, minBits: 26 } };
+    local.v.mine = { ...local.v.mine, salt: { on: true, rate: 2_400_000, minBits: 26, threads: 2, background: true, pausedFor: null } };
     await page.waitForFunction(() => document.querySelector('#title').textContent === 'Mining salts until the next proof');
     await page.waitForFunction(() => document.querySelector('#salt').textContent.includes('M/s'));
     check((await text(page, '#salt')) === '20 shares · 0.08 TAC so far · 2.4 M/s', 'between proofs the node grinds salts: its shares, its part of the day and its speed', await text(page, '#salt'));

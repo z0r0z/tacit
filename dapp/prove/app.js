@@ -2,7 +2,7 @@
 // and paused from here. The computer's tacit-prover (installed once with the line the page shows) answers on 127.0.0.1; the API's chain
 // (GET /prover/blocks) and proof pool, and the points service, say what the network did and what an address has made and been paid.
 import { cleanAddress, proveCommand, utcDay, mineLines, capOf } from '/community-prove.js?cb=30714a9f';
-import { localState, jobView, headline, isPhone, isWindows, setupText } from '/prove/view.js?cb=80de18a0';
+import { localState, jobView, headline, isPhone, isWindows, setupText, proverUpdate, updateText } from '/prove/view.js?cb=f0f73815';
 import { invaderSvg, gpuSvg } from '/prove/invader.js?cb=e8a5ec59';
 import { short, cells, opsText, tac, rewardWei, ago, took, fresh, blockAgo, kindOf, KINDS, kindText, median, untilDayEnds, cleanBlock, cleanProof, cleanMiner } from '/prove/chain.js?cb=8a988a34';
 
@@ -328,9 +328,9 @@ function paint() {
   go.disabled = busy;
   go.classList.toggle('ghost', h.button === 'Pause' && !other());
   paintMe();
-  // the setup line also updates a node from before salt mining (its /mine has no `salt`)
+  // the setup line also updates a node from before salt mining, or before gentle mining (view.js proverUpdate: a prover never updates itself)
   const setup = $('#setup'), words = setupText(os);
-  setup.hidden = state !== 'none' && state !== 'old' && !(mine && !('salt' in mine));
+  setup.hidden = state !== 'none' && state !== 'old' && !proverUpdate(mine);
   // Windows' first step (installing Ubuntu) is for a computer with no prover yet; one that has it only updates, in Ubuntu
   setup.dataset.os = os;
   setup.toggleAttribute('data-first', state === 'none');
@@ -482,8 +482,8 @@ function paintSalt() {
   const potWei = salts?.pointsPerDay ? rewardWei(salts.pointsPerDay, cap()) : null;
   // What the day's proofs leave of the daily pot so far (worker/src/salt-pool.js): it shrinks as proofs come in, so "up to".
   $('#salt-pay').textContent = potWei ? ` · up to ${tac(potWei)} TAC today` : '';
-  // A node from before salt mining (its /mine has no `salt`) is told how to start: the setup line installs the newest.
-  if (mine && !('salt' in mine)) $('#salt-day').textContent = 'Run the setup line again to update tacit-prover: it then mines salts between proofs.';
+  // A node from before salt mining, or before gentle mining, is told to run the setup line again: it installs the newest.
+  if (proverUpdate(mine)) $('#salt-day').textContent = updateText(proverUpdate(mine));
   else if (salts) $('#salt-day').textContent = `Shared by work across ${salts.miners || 0} ${salts.miners === 1 ? 'node' : 'nodes'}. Proofs come first.`;
   // The day's best find, on its own line (the bank's own stars below it): from the nodes' bests today and any find the pool lists as made today.
   const t0 = utcStart();
