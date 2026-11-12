@@ -23,7 +23,7 @@
 //   activate → delete old cache versions
 //   fetch → route by URL pattern, fall back to network on any error
 
-const CACHE_VERSION = 'v2-confirmed-tx-ipfs-verified-101a14a5';
+const CACHE_VERSION = 'v3-confirmed-tx-1h-ipfs-verified-101a14a5';
 const STATIC_CACHE  = `tacit-static-${CACHE_VERSION}`;
 const IMMUTABLE_CACHE = `tacit-immutable-${CACHE_VERSION}`;
 // Versioned files (see _tokenOf). Its own name, not tied to CACHE_VERSION: an entry is right for as long as its URL exists.
@@ -295,17 +295,29 @@ async function _cacheFirst(req, cacheName) {
 }
 
 // Cache-first for a tx body that says it is confirmed. Anything else (unconfirmed, not JSON, an error status) is returned unstored.
+// A stored body carries the time it was stored and is trusted for TX_FRESH_MS: by then the transaction is many blocks deep, and one that a
+// reorganisation took out of its block is asked about again rather than remembered as confirmed for good.
+const TX_FRESH_MS = 60 * 60 * 1000;
+const TX_STORED_AT = 'x-tacit-stored-at';
 async function _cacheConfirmedTx(req) {
   const cache = await caches.open(IMMUTABLE_CACHE);
   const cached = await cache.match(req);
-  if (cached) return cached;
+  if (cached) {
+    const at = Number(cached.headers.get(TX_STORED_AT));
+    if (at > 0 && Date.now() - at < TX_FRESH_MS) return cached;
+  }
   let resp;
   try { resp = await fetch(req); }
   catch { return Response.error(); }
   if (resp && resp.ok) {
     try {
-      const body = await resp.clone().json();
-      if (body && body.status && body.status.confirmed === true) cache.put(req, resp.clone()).catch(() => {});
+      const text = await resp.clone().text();
+      const body = JSON.parse(text);
+      if (body && body.status && body.status.confirmed === true) {
+        const headers = new Headers(resp.headers);
+        headers.set(TX_STORED_AT, String(Date.now()));
+        cache.put(req, new Response(text, { status: resp.status, statusText: resp.statusText, headers })).catch(() => {});
+      }
     } catch { /* not JSON: nothing is stored */ }
   }
   return resp;

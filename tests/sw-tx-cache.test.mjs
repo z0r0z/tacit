@@ -18,7 +18,7 @@ function boot() {
   };
   const caches = { open: async (name) => cacheNamed(name), keys: async () => [...stores.keys()], delete: async (name) => stores.delete(name) };
   const self = { addEventListener: (t, f) => { listeners[t] = f; }, skipWaiting() {}, clients: { claim: async () => {} }, location: { origin: 'https://tacit.finance' } };
-  const ctx = { self, caches, URL, Request, Response, TextEncoder, crypto, console, fetch: async (req) => { calls.push(req.url); return ctx.answer(req); }, answer: null };
+  const ctx = { self, caches, URL, Request, Response, Headers, TextEncoder, crypto, console, fetch: async (req) => { calls.push(req.url); return ctx.answer(req); }, answer: null };
   vm.createContext(ctx);
   vm.runInContext(code, ctx);
   const send = async (url) => { let p; listeners.fetch({ request: new Request(url), respondWith(x) { p = x; } }); return p ? await p : undefined; };
@@ -45,6 +45,26 @@ const json = (o, status = 200) => new Response(JSON.stringify(o), { status, head
   b.ctx.answer = () => json({ txid: TX, status: { confirmed: true, block_height: 900000 } });
   await b.send(API); await new Promise((r) => setTimeout(r, 5)); await b.send(API);
   ok(b.calls.length === 1, 'a confirmed answer is served from the cache after the first fetch');
+}
+// A stored body is trusted for an hour, then asked about again: a transaction a reorganisation took out of its block is not remembered as confirmed for good.
+{
+  const b = boot();
+  const realNow = Date.now; let skew = 0;
+  b.ctx.Date = class extends Date { static now() { return realNow() + skew; } };
+  b.ctx.answer = () => json({ txid: TX, status: { confirmed: true, block_height: 900000 } });
+  await b.send(API); await new Promise((r) => setTimeout(r, 5));
+  skew = 59 * 60 * 1000; await b.send(API);
+  ok(b.calls.length === 1, 'within the hour a stored body is served without asking');
+  skew = 61 * 60 * 1000; b.ctx.answer = () => json({ txid: TX, status: { confirmed: false } });
+  const r = await b.send(API);
+  ok(b.calls.length === 2 && (await r.json()).status.confirmed === false, 'after the hour it is asked again, and an answer that says the transaction is no longer confirmed is the one given');
+  skew = 61 * 60 * 1000 + 5; await b.send(API);
+  ok(b.calls.length === 3, 'and that answer, not being confirmed, was not stored over it');
+  // the cache a worker from before this kept (no time on its entries) is purged on activate, and an entry without a time is not trusted
+  const old = boot();
+  old.ctx.answer = () => json({ txid: TX, status: { confirmed: true, block_height: 900000 } });
+  const imm = [...old.stores.keys()];
+  ok(typeof old.listeners.activate === 'function', 'the worker purges old cache versions when it activates');
 }
 // Answers that are not a confirmed transaction body are not stored: a missing field, an error status, text.
 {
