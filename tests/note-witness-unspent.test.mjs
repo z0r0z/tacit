@@ -42,4 +42,15 @@ ok((await ask({ leaves: [leaves[0]], nullifiers: ['0x12'] })).status === 400, 'a
 ok((await ask({ leaves: [leaves[0]], nullifiers: Array.from({ length: 9 }, (_, i) => hex('x' + i)) })).status === 400, 'more than eight are refused');
 const plain = await ask({ leaves: [leaves[2]] });
 ok(plain.status === 200 && plain.body.spentRoot === undefined && plain.body.unspent === undefined, 'a request without nullifiers is answered as before');
+
+// the tree is built once per attested state: a repeated ask is answered the same, and a changed state is picked up at once
+const again = await ask({ leaves: [leaves[1]], nullifiers: [fresh, spentNus[2]] });
+ok(again.status === 200 && again.body.root === r.body.root && again.body.spentRoot === r.body.spentRoot, 'a repeated ask is answered the same');
+const extra = hex('leaf/3'), extraNu = hex('spent/6');
+spent.insert(extraNu);
+kv.set('reflection:scan:mainnet', JSON.stringify({ attestedHeight: 900001, snapshot: { noteLeaves: [...leaves, extra], spentLinks: spent.links() } }));
+const moved = await ask({ leaves: [extra], nullifiers: [extraNu] });
+ok(moved.body.root !== r.body.root && moved.body.height === 900001, 'a changed state gives the new root and height');
+ok(moved.body.witnesses[extra]?.leafIndex === 3, 'a leaf added to the state is found');
+ok(moved.body.spentRoot === spent.root() && moved.body.unspent[extraNu]?.spent === true, 'a nullifier added to the state is read as spent');
 console.log(`${n} ok`);

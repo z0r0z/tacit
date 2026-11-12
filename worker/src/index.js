@@ -88,6 +88,7 @@ import { keccak_256 } from '@noble/hashes/sha3';
 import { hexToBytes, bytesToHex, concatBytes } from '@noble/hashes/utils';
 import { bech32, bech32m } from '@scure/base';
 import { buildScanReflectionAttester } from './reflection-attest.js';
+import { buildTreeLevels } from './merkle-levels.js';
 import { burnsAwaitingBundle } from './pending-burns.js';
 import { handleFarm } from './farm-program.js';
 import { buildConfidentialSettler, FREE_POSTED_TYPES } from './confidential-settle.js';
@@ -2207,6 +2208,7 @@ async function handleReflectionLive(req, env, url, cors) {
 // must match on chain (the pool's knownBitcoinSpentRoot), so a caller checks it there before proving.
 const NOTE_WITNESS_MAX_LEAVES = 64;
 const NOTE_WITNESS_MAX_NULLIFIERS = 8;
+const _noteWitnessCache = new Map(); // network -> { raw, pool, levels, index, root, height, links, spent }
 async function handleReflectionNoteWitness(req, env, url, cors) {
   const authed = checkConfidentialAuth(req, env);
   if (!authed) {
@@ -2236,23 +2238,29 @@ async function handleReflectionNoteWitness(req, env, url, cors) {
   }
   const raw = await env.REGISTRY_KV.get(`reflection:scan:${network}`);
   if (!raw) return jsonResponse({ error: 'no persisted state' }, 404, { ...cors, 'Cache-Control': 'no-store' });
-  let s; try { s = JSON.parse(raw); } catch { return jsonResponse({ error: 'corrupt state' }, 500, cors); }
-  const noteLeaves = (s.snapshot && s.snapshot.noteLeaves) || [];
-  const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
-  const tree = new pool.Tree();
-  const index = new Map();
-  noteLeaves.forEach((l) => { const i = tree.insert(l); index.set(String(l).toLowerCase(), i); });
-  const root = tree.root();
+  // the tree is built once per attested state, as /reflection/live is, not once per request
+  let hit = _noteWitnessCache.get(network);
+  if (!hit || hit.raw !== raw) {
+    let s; try { s = JSON.parse(raw); } catch { return jsonResponse({ error: 'corrupt state' }, 500, cors); }
+    const noteLeaves = (s.snapshot && s.snapshot.noteLeaves) || [];
+    const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
+    const index = new Map();
+    noteLeaves.forEach((l, i) => { index.set(String(l).toLowerCase(), i); });
+    const levels = buildTreeLevels(noteLeaves, keccak_256);
+    hit = { raw, pool, levels, index, root: levels.root, height: s.attestedHeight ?? null, links: (s.snapshot && s.snapshot.spentLinks) || [], spent: null };
+    _noteWitnessCache.set(network, hit);
+  }
+  const { levels, index, root } = hit;
   const witnesses = {};
   for (const leaf of leaves) {
     const idx = index.get(String(leaf).toLowerCase());
-    witnesses[leaf] = idx == null ? null : { leafIndex: idx, path: tree.rootAndPath(idx).path };
+    witnesses[leaf] = idx == null ? null : { leafIndex: idx, path: levels.path(idx) };
   }
-  const out = { network, root, height: s.attestedHeight ?? null, witnesses };
+  const out = { network, root, height: hit.height, witnesses };
   if (nullifiers.length) {
-    const spent = pool.makeImtAccumulator();
-    spent.setLinks((s.snapshot && s.snapshot.spentLinks) || []);
-    out.spentRoot = spent.root();
+    if (!hit.spent) { const acc = hit.pool.makeImtAccumulator(); acc.setLinks(hit.links); hit.spent = { acc, root: acc.root() }; }
+    const spent = hit.spent.acc;
+    out.spentRoot = hit.spent.root;
     out.unspent = {};
     for (const nu of nullifiers) {
       if (spent.contains(nu)) { out.unspent[nu] = { spent: true }; continue; }
@@ -4145,7 +4153,8 @@ async function handleGasRelay(req, env, url, cors) {
   const used = await gasOrderUsed(env, b.payer, b.nonce);
   if (used === null) return jsonResponse({ ok: false, error: 'could not read the relay, try again' }, 502, nostore);
   if (!used) return jsonResponse({ ok: false, error: 'the relay does not report this order used' }, 409, nostore);
-  return jsonResponse(await board.remove(id), 200, nostore);
+  const removed = await board.remove(id, { payer: b.payer, nonce: b.nonce });
+  return jsonResponse(removed, removed.ok ? 200 : 409, nostore);
 }
 async function handleConfidentialRelay(env, cors) {
   const st = await relayState(env);
@@ -9841,6 +9850,8 @@ async function handlePin(req, env, cors) {
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const day = new Date().toISOString().slice(0, 10);
   const kvKey = `pin:${day}:${ip}`;
+  // one request at a time per client and day, so parallel requests each see the count the one before them left
+  return withKvKeyLock(kvKey, async () => {
   const dailyLimit = safeInt(env.DAILY_LIMIT, 20, { min: 0 });
   const prior = safeInt(await env.UPLOAD_KV.get(kvKey), 0, { min: 0 });
   if (prior >= dailyLimit) {
@@ -9872,6 +9883,7 @@ async function handlePin(req, env, cors) {
 
   await env.UPLOAD_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
   return jsonResponse({ cid: pinned.cid, size: pinned.size }, 200, cors);
+  });
 }
 
 // ============== Ceremony coordination (Groth16 Phase 2 MPC) ==============
@@ -11005,11 +11017,15 @@ function decodeCeremonyEligibilityEnvelope(bytes) {
     return { ok: false, reason: 'envelope truncated at outpoints' };
   }
   const outpoints = [];
+  const citedOnce = new Set();
   for (let i = 0; i < count; i++) {
     const txid = bytesToHex(bytes.slice(off, off + 32)); off += 32;
     // Same unsigned coercion as expiryHeight — see the comment above.
     const vout = (bytes[off] | (bytes[off + 1] << 8) | (bytes[off + 2] << 16) | (bytes[off + 3] << 24)) >>> 0;
     off += 4;
+    // each outpoint counts once toward the weight
+    if (citedOnce.has(`${txid}:${vout}`)) return { ok: false, reason: `outpoint ${txid}:${vout} is listed more than once` };
+    citedOnce.add(`${txid}:${vout}`);
     outpoints.push({ txid, vout });
   }
   if (bytes.length < off + 2) return { ok: false, reason: 'envelope truncated at attestation_len' };
@@ -12265,6 +12281,8 @@ async function handlePinMixerVk(req, env, cors) {
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const day = new Date().toISOString().slice(0, 10);
   const kvKey = `pin:${day}:${ip}`;
+  // one request at a time per client and day, so parallel requests each see the count the one before them left
+  return withKvKeyLock(kvKey, async () => {
   const dailyLimit = safeInt(env.DAILY_LIMIT, 20, { min: 0 });
   const prior = safeInt(await env.UPLOAD_KV.get(kvKey), 0, { min: 0 });
   if (prior >= dailyLimit) return jsonResponse({ error: 'daily upload limit reached' }, 429, cors);
@@ -12305,6 +12323,7 @@ async function handlePinMixerVk(req, env, cors) {
   await env.UPLOAD_KV.put(kvKey, String(newCount), { expirationTtl: 60 * 60 * 25 });
 
   return jsonResponse({ cid: pinned.cid }, 200, cors);
+  });
 }
 
 // ============== /pin-amm-vk — pin the AMM ceremony's vk wrapper JSON ==============
@@ -12331,6 +12350,8 @@ async function handlePinAmmVk(req, env, cors) {
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const day = new Date().toISOString().slice(0, 10);
   const kvKey = `pin:${day}:${ip}`;
+  // one request at a time per client and day, so parallel requests each see the count the one before them left
+  return withKvKeyLock(kvKey, async () => {
   const dailyLimit = safeInt(env.DAILY_LIMIT, 20, { min: 0 });
   const prior = safeInt(await env.UPLOAD_KV.get(kvKey), 0, { min: 0 });
   if (prior >= dailyLimit) return jsonResponse({ error: 'daily upload limit reached' }, 429, cors);
@@ -12378,6 +12399,7 @@ async function handlePinAmmVk(req, env, cors) {
   await env.UPLOAD_KV.put(kvKey, String(newCount), { expirationTtl: 60 * 60 * 25 });
 
   return jsonResponse({ cid: pinned.cid }, 200, cors);
+  });
 }
 
 // ============== /pin-json — pin a small metadata JSON blob ==============
@@ -12390,6 +12412,8 @@ async function handlePinJson(req, env, cors) {
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const day = new Date().toISOString().slice(0, 10);
   const kvKey = `pin:${day}:${ip}`;
+  // one request at a time per client and day, so parallel requests each see the count the one before them left
+  return withKvKeyLock(kvKey, async () => {
   const dailyLimit = safeInt(env.DAILY_LIMIT, 20, { min: 0 });
   const prior = safeInt(await env.UPLOAD_KV.get(kvKey), 0, { min: 0 });
   if (prior >= dailyLimit) return jsonResponse({ error: 'daily upload limit reached' }, 429, cors);
@@ -12434,6 +12458,7 @@ async function handlePinJson(req, env, cors) {
 
   await env.UPLOAD_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
   return jsonResponse({ cid: pinned.cid }, 200, cors);
+  });
 }
 
 // ============== airdrop merkle helpers ==============
@@ -12490,9 +12515,13 @@ async function handlePinAirdropSnapshot(req, env, cors) {
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const day = new Date().toISOString().slice(0, 10);
   const kvKey = `pin:${day}:${ip}`;
+  // one request at a time per client and day, so parallel requests each see the count the one before them left
+  return withKvKeyLock(kvKey, async () => {
   const dailyLimit = safeInt(env.DAILY_LIMIT, 20, { min: 0 });
   const prior = safeInt(await env.UPLOAD_KV.get(kvKey), 0, { min: 0 });
   if (prior >= dailyLimit) return jsonResponse({ error: 'daily upload limit reached' }, 429, cors);
+  // the attempt is counted before the body is read: parsing it is the cost, whether or not it turns out to be a snapshot
+  await env.UPLOAD_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
 
   let body;
   try { body = await req.json(); } catch { return jsonResponse({ error: 'expected JSON body' }, 400, cors); }
@@ -12676,8 +12705,8 @@ async function handlePinAirdropSnapshot(req, env, cors) {
   try { pinned = await _pinFileToIpfs(env, jsonBytes, 'application/json', `tacit-airdrop-${body.merkle_root.slice(0, 12)}`); }
   catch (e) { return jsonResponse({ error: e.msg || 'pin failed' }, e.status || 502, cors); }
 
-  await env.UPLOAD_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
   return jsonResponse({ cid: pinned.cid, IpfsHash: pinned.cid }, 200, cors);
+  });
 }
 
 // ============== Bitcoin tx primitives (P2WPKH only — what the faucet needs) ==============
@@ -18537,6 +18566,9 @@ async function handleUtxoOpeningPost(txidHex, voutStr, req, env, network, cors) 
 // open. A garbage overwrite only makes decrypt fail, and the buyer
 // falls through to other recovery paths. 90-day TTL auto-collects stale entries.
 async function handleBuyerOpeningPost(txidHex, voutStr, req, env, network, cors) {
+  const ip = req.headers.get('CF-Connecting-IP') || 'anon';
+  const rl = await proveRateLimit(env, ip, 'buyer-opening', Number(env.BUYER_OPENING_RL_BURST || 30), Number(env.BUYER_OPENING_RL_REFILL_MS || 10000));
+  if (!rl.ok) return jsonResponse({ error: `too many requests — retry in ~${rl.retryAfter}s`, retryAfter: rl.retryAfter }, 429, { ...cors, 'Cache-Control': 'no-store', 'Retry-After': String(rl.retryAfter) });
   if (!/^[0-9a-f]{64}$/.test(txidHex)) return jsonResponse({ error: 'invalid txid' }, 400, cors);
   const vout = parseInt(voutStr, 10);
   if (!Number.isInteger(vout) || vout < 0 || vout > 0xffff) {
@@ -18560,6 +18592,11 @@ async function handleBuyerOpeningPost(txidHex, voutStr, req, env, network, cors)
     ciphertext,
     stored_at: Math.floor(Date.now() / 1000),
   };
+  // a stored blob is replaced only by a write that names the same key
+  try {
+    const have = await env.REGISTRY_KV.get(buyerOpeningKey(network, txidHex, vout), 'json');
+    if (have && have.declared_pubkey !== declaredPub) return jsonResponse({ error: 'an opening for this output is already stored under another key' }, 409, cors);
+  } catch { /* nothing readable there */ }
   await env.REGISTRY_KV.put(
     buyerOpeningKey(network, txidHex, vout),
     JSON.stringify(record),
@@ -22911,6 +22948,13 @@ async function handleDropAnnouncePost(req, env, network, cors) {
   // doesn't race a final read at the boundary.
   const nowSec = Math.floor(Date.now() / 1000);
   const ttlSeconds = Math.max(60, expiresAt - nowSec + 60);
+  // a root that is already announced and still live keeps the issuer that announced it
+  try {
+    const have = await env.REGISTRY_KV.get(dropAnnounceKey(network, rootHex), 'json');
+    if (have && have.issuer_pubkey !== issuerPubHex && Number(have.expires_at) > nowSec) {
+      return jsonResponse({ error: 'this drop is already announced by another issuer key' }, 409, cors);
+    }
+  } catch { /* nothing readable there */ }
   await env.REGISTRY_KV.put(
     dropAnnounceKey(network, rootHex),
     JSON.stringify(record),
@@ -29527,6 +29571,9 @@ async function _routeFetch(req, env, ctx) {
       return _withCors(result.body, result.status, cached ? 'EXPIRED-MISS' : 'MISS');
     }
     if (url.pathname === '/outpoints/classify' && req.method === 'POST') {
+      // one request can ask the explorer about up to a hundred coins, so it is metered like the other lookups that fan out
+      const rl = await proveRateLimit(env, req.headers.get('CF-Connecting-IP') || 'anon', 'classify', Number(env.CLASSIFY_RL_BURST || 10), Number(env.CLASSIFY_RL_REFILL_MS || 6000));
+      if (!rl.ok) return jsonResponse({ error: `too many requests — retry in ~${rl.retryAfter}s`, retryAfter: rl.retryAfter }, 429, { ...cors, 'Cache-Control': 'no-store', 'Retry-After': String(rl.retryAfter) });
       return handleOutpointsClassify(req, env, network, (obj, status) => jsonResponse(obj, status, cors));
     }
     if (url.pathname === '/holdings' && req.method === 'POST') {

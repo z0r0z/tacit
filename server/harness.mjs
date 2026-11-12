@@ -110,7 +110,12 @@ const STRIPPED_HEADERS = new Set(['cf-connecting-ip', 'x-tacit-proxy-key', 'x-ta
 // box token, and for the multipart upload routes.
 export const DEFAULT_MAX_REQUEST_BYTES = 32 * 1024 * 1024;
 export const DEFAULT_MAX_ANON_REQUEST_BYTES = 1024 * 1024;
-const UPLOAD_PATH = /^\/(pin|pin-airdrop-snapshot|ceremony\/[0-9a-f]{64}\/contribute|ceremony\/init)(\?|$)/i;
+const UPLOAD_PATH = /^\/(ceremony\/[0-9a-f]{64}\/contribute|ceremony\/init)(\?|$)/i;
+// The pin routes take a file the handler caps itself (MAX_BYTES, 2 MiB) and a drop snapshot a recipient's browser has to be able to store
+// (a few MB), so each gets a ceiling just above what it takes rather than the full upload ceiling.
+const PIN_PATH = /^\/pin(\?|$)/i;
+const PIN_SNAPSHOT_PATH = /^\/pin-airdrop-snapshot(\?|$)/i;
+export const PIN_SNAPSHOT_MAX_BYTES = 8 * 1024 * 1024;
 // A page's program input on its way to the prover network (worker/src/prover-proxy.js caps it at the same 2 MiB).
 const PROVER_UPLOAD_PATH = /^\/prover\/upload(\?|$)/i;
 export const PROVER_UPLOAD_MAX_BYTES = 2 * 1024 * 1024;
@@ -139,6 +144,8 @@ function carriesBoxToken(nodeReq, env) {
 export function maxRequestBytes(env, nodeReq) {
   const full = sizeEnv(env, 'MAX_REQUEST_BYTES', DEFAULT_MAX_REQUEST_BYTES);
   if (!nodeReq || UPLOAD_PATH.test(nodeReq.url || '') || carriesBoxToken(nodeReq, env)) return full;
+  if (PIN_PATH.test(nodeReq.url || '')) return Math.min(full, sizeEnv(env, 'MAX_BYTES', 2 * 1024 * 1024) + 1024 * 1024);
+  if (PIN_SNAPSHOT_PATH.test(nodeReq.url || '')) return Math.min(full, sizeEnv(env, 'MAX_PIN_SNAPSHOT_REQUEST_BYTES', PIN_SNAPSHOT_MAX_BYTES));
   if (PROVER_UPLOAD_PATH.test(nodeReq.url || '')) return Math.min(full, PROVER_UPLOAD_MAX_BYTES);
   if (BURNDEP_PATH.test(nodeReq.url || '')) return Math.min(full, sizeEnv(env, 'MAX_BURNDEP_REQUEST_BYTES', BURNDEP_MAX_BYTES));
   if (PROVER_RESULT_PATH.test(nodeReq.url || '')) return Math.min(full, PROVER_RESULT_MAX_BYTES);

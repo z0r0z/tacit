@@ -431,6 +431,18 @@ test('a proof made for the old 1 TAC bar does not verify as one for 100 TAC', ()
   return bpRangeAggVerify([sumOf(fx).add(PEDERSEN_H.multiply(DISCORD_X).negate())], proof) === false;
 });
 
+test('an outpoint listed twice is refused, so it counts once toward the weight', () => {
+  const fx = makeFixture();
+  const dup = [fx.utxos[0], { ...fx.utxos[0], blinding: fx.utxos[0].blinding }];
+  const { envelope } = buildEnvelope({ utxos: dup, holderPriv: fx.holderPrivBytes, expiryHeight: fx.expiryHeight, scopeId: fx.scopeId, assetIdHex: fx.assetIdHex, thresholdBaseUnits: fx.thresholdBaseUnits });
+  const dec = decodeCeremonyEligibilityEnvelope(envelope);
+  if (dec.ok || !/listed more than once/.test(dec.reason)) throw new Error(`a repeated outpoint was not refused: ${JSON.stringify(dec.reason)}`);
+  // the same coin at another output index is a different outpoint
+  const other = [fx.utxos[0], { ...fx.utxos[0], vout: fx.utxos[0].vout + 1 }];
+  const ok = decodeCeremonyEligibilityEnvelope(buildEnvelope({ utxos: other, holderPriv: fx.holderPrivBytes, expiryHeight: fx.expiryHeight, scopeId: fx.scopeId, assetIdHex: fx.assetIdHex, thresholdBaseUnits: fx.thresholdBaseUnits }).envelope);
+  return ok.ok === true;
+});
+
 console.log(`\n${pass} pass, ${fail} fail`);
 // Exit on the computed verdict rather than only on failure: imported browser modules can leave the
 // event loop alive, and a run that passes every assertion then never exits reads as a hang.

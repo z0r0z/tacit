@@ -78,7 +78,10 @@ export function makeGasBoard({ kv, relay = GAS_RELAY_ADDR, chainId = 1, cfg = GA
       if (await kv.get(`gr:order:${id}`)) return { ok: true, id, existing: true };
       const idx = (await readIndex()).filter((e) => e.until > now());
       if (idx.length >= cfg.maxOrders) return { ok: false, error: 'the board is full, try again shortly' };
-      await kv.put(`gr:order:${id}`, JSON.stringify(x), { expirationTtl: Math.max(60, until - now() + 60) });
+      // what the board keeps is the order's own fields, not whatever else the request carried
+      const stored = JSON.stringify({ order: x.order, signature: x.signature, data: x.data, inPermit: x.inPermit, feePermit: x.feePermit, p2: x.p2 });
+      if (stored.length > 2 * cfg.maxData + 8192) return { ok: false, error: 'the order is too large' };
+      await kv.put(`gr:order:${id}`, stored, { expirationTtl: Math.max(60, until - now() + 60) });
       idx.push({ id, at: now(), until });
       await writeIndex(idx);
       return { ok: true, id };
@@ -88,8 +91,16 @@ export function makeGasBoard({ kv, relay = GAS_RELAY_ADDR, chainId = 1, cfg = GA
       for (const e of idx) { const s = await kv.get(`gr:order:${e.id}`); if (s) { try { out.push({ id: e.id, ...JSON.parse(s) }); } catch { /* skip */ } } }
       return out;
     },
-    async remove(id) {
+    // `by` ({ payer, nonce }), when given, is the order the relay reports used: the stored order has to be that one.
+    async remove(id, by = null) {
       id = lc(id);
+      if (by) {
+        const s = await kv.get(`gr:order:${id}`);
+        if (s) {
+          let o = null; try { o = JSON.parse(s).order; } catch { o = null; }
+          if (!o || lc(o.payer) !== lc(by.payer) || String(o.nonce) !== String(by.nonce)) return { ok: false, error: 'that order is not the one the relay reports used' };
+        }
+      }
       await kv.delete(`gr:order:${id}`);
       await writeIndex((await readIndex()).filter((e) => e.id !== id));
       return { ok: true };

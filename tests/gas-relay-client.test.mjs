@@ -73,3 +73,25 @@ test('the page encodes execute(...) exactly as the relay does (a permit order an
   const y = { ...x, p2: { use: true, batch: { details: [{ token: USDC, amount: '500', expiration: String(NOW + 600), nonce: '3' }, { token: gr.TAC, amount: '9', expiration: '5', nonce: '0' }], spender: gr.GAS_RELAY[1], sigDeadline: String(NOW + 600) }, sig: '0x' + 'ab'.repeat(65) } };
   assert.equal(gr.encodeExecute(y), encodeViem(y));
 });
+
+test('the board keeps an order\'s own fields, and refuses one too large to be an order', async () => {
+  const x = await signed();
+  const kv = kvOf(), board = makeGasBoard({ kv, now: () => NOW });
+  const r = await board.post({ ...x, junk: 'x'.repeat(200_000), extra: { a: 'y'.repeat(1000) } });
+  assert.equal(r.ok, true);
+  const kept = await kv.get(`gr:order:${r.id}`);
+  assert.ok(kept.length < 20_000 && !kept.includes('junk') && !kept.includes('extra'));
+  const big = await signed({ nonce: 8n });
+  assert.deepEqual(await makeGasBoard({ kv: kvOf(), now: () => NOW }).post({ ...big, p2: { ...big.p2, pad: 'z'.repeat(60_000) } }), { ok: false, error: 'the order is too large' });
+});
+
+test('an order is removed only for the payer and nonce the relay reports used', async () => {
+  const x = await signed();
+  const board = makeGasBoard({ kv: kvOf(), now: () => NOW }), r = await board.post(x);
+  const other = '0x' + '22'.repeat(20);
+  assert.equal((await board.remove(r.id, { payer: other, nonce: '7' })).ok, false);
+  assert.equal((await board.remove(r.id, { payer: acct.address, nonce: '9' })).ok, false);
+  assert.equal((await board.list()).length, 1);
+  assert.equal((await board.remove(r.id, { payer: acct.address.toLowerCase(), nonce: '7' })).ok, true);
+  assert.equal((await board.list()).length, 0);
+});
