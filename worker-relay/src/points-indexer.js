@@ -43,7 +43,7 @@ import { parseBudgets, budgetsForDay, nextBudgets, allocateDay, groupResult, set
 import Database from 'better-sqlite3';
 import { openStore } from './lib/points-store.js';
 import { parseBoostTiers, openTacBoost, scanTacTransfers } from './lib/tac-holder-boost.js';
-import { build as buildMerkleTree, formatTac } from './lib/points-merkle.js';
+import { build as buildMerkleTree, formatTac, rewardEntries } from './lib/points-merkle.js';
 import { parseUrl, badRequest } from './lib/safe-url.js';
 import {
   openEvmPoolPointsState, scanEvmPoolChain, resolvePendingBoxes, explorerGet, isV1WrapViaEvmRouter, WRAP_BOX_COMPLETED_EVENT, rpcRefusal,
@@ -1329,7 +1329,7 @@ export function dayBudgetWei(dayIndex) {
 }
 
 export function buildRewardTree(rewards) {
-  return buildMerkleTree(rewards.map((r) => ({ address: r.address, cumulativeAmountWei: BigInt(r.cumulativeWei) })));
+  return buildMerkleTree(rewardEntries(rewards));
 }
 
 // When each Blockscout-paged scanner last completed a cycle, in epoch seconds taken from before the call began. Their

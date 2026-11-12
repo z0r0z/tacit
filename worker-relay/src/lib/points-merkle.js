@@ -86,6 +86,11 @@ export const formatTac = (wei) => {
   return (w / 10n ** 18n).toString() + (frac ? '.' + frac : '');
 };
 
+// The entries a reward ledger gives the tree. An amount credited to the zero address can be claimed by no one, so those rows are left out.
+export const rewardEntries = (rewards) => rewards
+  .filter((r) => !/^0x0{40}$/i.test(String(r.address)))
+  .map((r) => ({ address: r.address, cumulativeAmountWei: BigInt(r.cumulativeWei) }));
+
 // entries: [{ address, cumulativeAmountWei: bigint }], every account's TOTAL earned to date (not a delta).
 // Every entry is checked before a root is produced: well-formed/checksummed address, no zero address, no
 // duplicate, amount > 0 (a zero-amount leaf is just omitted — nothing to claim). Every proof is recomputed
