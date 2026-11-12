@@ -9,7 +9,8 @@
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 const CSS = `
-.bsheet { position: fixed; inset: 0; z-index: 900; display: grid; grid-template-columns: minmax(0, 1fr); place-items: start center; padding: 16px; overflow: auto; overflow-x: hidden; overscroll-behavior: contain; background: var(--scrim); backdrop-filter: blur(2px); }
+.bsheet { position: fixed; inset: 0; z-index: 900; display: grid; grid-template-columns: minmax(0, 1fr); place-items: start center; padding: 16px; overflow: auto; overflow-x: hidden; overscroll-behavior: contain; background: var(--scrim); backdrop-filter: blur(2px); animation: bsheet-fade .22s cubic-bezier(.2, .8, .2, 1); }
+@keyframes bsheet-fade { from { background-color: transparent; } }
 .bsheet.top { z-index: 1100; place-items: center; }
 .bsheet [hidden] { display: none !important; }
 .bsheet-in { --sx: 24px; --st: 24px; min-width: 0; width: min(560px, 100%); padding: var(--st) var(--sx) 28px; color: var(--ink); background: var(--card); border: 1px solid var(--hair-2); border-radius: 20px; box-shadow: var(--float, var(--sheet-shadow)); text-align: left; animation: bsheet-rise .22s cubic-bezier(.2, .8, .2, 1); }
@@ -28,7 +29,7 @@ const CSS = `
   .bsheet { padding: 0; place-items: end center; }
   .bsheet-in { --sx: 16px; --st: 20px; width: 100%; padding-bottom: calc(24px + env(safe-area-inset-bottom)); border-width: 1px 0 0; border-radius: 20px 20px 0 0; }
 }
-@media (prefers-reduced-motion: reduce) { .bsheet-in { animation: none; } .bsheet-head { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .bsheet { animation: none; } .bsheet-in { animation: none; } .bsheet-head { animation: none; } }
 
 .bsheet .kv { display: flex; grid-template-columns: none; justify-content: space-between; gap: 12px; margin: 0; font-size: 12.5px; color: var(--mute); padding: 5px 0; }
 .bsheet .kv b { font-weight: 400; color: var(--ink); text-align: right; overflow-wrap: anywhere; }
