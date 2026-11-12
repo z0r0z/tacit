@@ -1,4 +1,3 @@
-// The header's menu closes on Escape, on a click or a tab outside it, and when a page is chosen. It is a <details>, so it opens and shuts without this.
 (() => {
   const m = document.querySelector('.sm');
   if (!m) return;
@@ -9,8 +8,6 @@
   m.addEventListener('click', (e) => { if (e.target.closest('.sm-p a')) shut(); });
 })();
 
-// A bridge under way shows on every page: a dot on the menu button, and its count on the menu's Bridges entry (the bridge page that follows them). It reads the journals the front page keeps for
-// its bridges in this browser (the stage, any error, the flags that say what it waits on, and the plans that send a burn; nothing else), so it shows with no key open, and it follows another tab through the storage event.
 (() => {
   const m = document.querySelector('.sm');
   if (!m) return;
@@ -24,8 +21,6 @@
   summary.append(dot);
   if (link) link.append(tag);
   const label = summary.getAttribute('aria-label') || 'More pages';
-  // What waits on the holder, as inDue and outDue in /bridge/track.js say it (tests/chrome-bridge-count.mjs holds the two together): a press to make, or a step
-  // that has failed again and again. A burn that the holder's plan has the front page send is not waited on while it goes.
   const MINER_WAIT = 12 * 3600e3, PLANS = 'tacit-lite-bridge-plan-v1', TAC = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
   const tac = (r) => { const a = r.source || {}; return String(a.assetId || '').replace(/^0x/i, '').toLowerCase() === TAC || a.ticker === 'TAC'; };
   const waits = (out, r, plan, now) => {
@@ -74,8 +69,6 @@
   setInterval(paint, 30e3);
 })();
 
-// What this browser has under way shows on every page that does not draw its own Activity chip (the front page does): a link to the front
-// page's Activity, with how many entries are still going. It reads the shared journal (/activity.js) and follows another tab's writes.
 (() => {
   const nav = document.querySelector('.sn');
   if (!nav || document.getElementById('act')) return;
@@ -97,34 +90,26 @@
   }).catch(() => {});
 })();
 
-// The help desk's launcher (bottom right) is loaded where it is switched on: for everyone once LIVE is true, and before that for a browser that has set
-// localStorage "tacit.help" to "on" (a preview); "off" hides it for that browser. Not on the help page itself, nor inside a frame (the panel is that page, framed).
 (() => {
   const LIVE = true;
   let on = LIVE;
-  try { const v = localStorage.getItem('tacit.help'); on = v === 'on' || (LIVE && v !== 'off'); } catch { /* storage refused: the default stands */ }
+  try { const v = localStorage.getItem('tacit.help'); on = v === 'on' || (LIVE && v !== 'off'); } catch { }
   if (!on || window.top !== window.self || location.pathname.startsWith('/help')) return;
   import('/help/widget.js').catch(() => {});
 })();
 
-// The pages share one service worker (dapp/sw.js). It keeps a versioned file (a ?cb= URL whose token matches its bytes) and answers for it from disk, so a
-// repeat visit asks the network for the page and little else. It is registered once the page has loaded, and a page works the same without it.
 (() => {
   if (!('serviceWorker' in navigator) || !/^https?:$/.test(location.protocol)) return;
-  // Under browser automation it is left out unless a test asks for it (window.__tacitSw): a page the worker controls is out of reach of a harness's own request mocks.
   if (navigator.webdriver && !window.__tacitSw) return;
   const register = () => setTimeout(() => navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => {}), 1500);
   if (document.readyState === 'complete') register(); else addEventListener('load', register, { once: true });
 })();
 
-// A tab left open across a deploy keeps running the code it loaded. When the page is shown again (and every ten minutes while it
-// is, no oftener) it asks for its own address with HEAD; another ETag means the page has changed since, and one line offers a reload.
 (() => {
   if (!/^https?:$/.test(location.protocol) || typeof fetch !== 'function') return;
   if (navigator.webdriver && !window.__tacitUpd) return;
   const EVERY = 10 * 60e3;
   let mine = null, at = 0, said = false;
-  // the same bytes carry a weak tag uncompressed and a strong one compressed, so the W/ is not part of the comparison
   const tag = () => fetch(location.pathname, { method: 'HEAD', cache: 'no-store' }).then((r) => (r.ok ? (r.headers.get('etag') || '').replace(/^W\//, '') || null : null), () => null);
   const say = () => {
     said = true;

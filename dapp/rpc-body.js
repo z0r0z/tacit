@@ -1,5 +1,2 @@
-// A JSON-RPC body sent as text/plain is a simple request: the browser sends it at once, where application/json makes it ask the node first (an OPTIONS round
-// trip, about a second on a cold page, repeated for each call in flight, and remembered for a couple of hours at most). These nodes answer a text/plain body; others
-// (1rpc.io refuses it, Robinhood's node wants application/json) are sent JSON. The one place the list is kept: the pages' RPC clients ask `bodyType(url)`.
 const PLAIN = new Set(['ethereum-rpc.publicnode.com', 'eth.drpc.org', 'mainnet.gateway.tenderly.co', 'rpc.mevblocker.io', 'eth-mainnet.public.blastapi.io', 'eth-mainnet.nodereal.io', 'rpc.flashbots.net', '1.rpc.thirdweb.com', 'mainnet.base.org', 'base-rpc.publicnode.com', 'base.drpc.org', 'base-mainnet.public.blastapi.io', 'robinhood.drpc.org', 'robinhood-rpc.publicnode.com']);
 export const bodyType = (url) => { try { return PLAIN.has(new URL(url).host) ? 'text/plain;charset=UTF-8' : 'application/json'; } catch { return 'application/json'; } };

@@ -21,7 +21,7 @@ const POLL_MS = 20_000;
 const KNOWN_ASSETS = { signet: ['17619b4c65ad462481b74a59dbd566730a4376f07fb0e6ff8beca216044466c5'], mainnet: [] };
 const TOKEN_SEND_SATS = 3000;
 const PRF_MAP = 'tacit-prf-v1';
-const KNOWN_URL = '/tacit-wallet-known.js?cb=ed4c75b7';
+const KNOWN_URL = '/tacit-wallet-known.js?cb=ec5b5193';
 const KNOWN_IDS = ['tacit-pay-hub-id-v1', 'tacit-lite-id-v1', 'tacit-pay-id-v1', 'tacit-tac-id-v1'];
 const FETCH_MS = 20_000;
 

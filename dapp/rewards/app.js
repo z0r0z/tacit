@@ -2,15 +2,15 @@ import { secp, keccak_256 } from '/vendor/tacit-deps.min.js';
 import { makeConfidentialNames, makeMainnetCall, MAINNET_RPCS, NameError } from '/confidential-names.js?cb=d41cb8bd';
 import { bodyType } from '/rpc-body.js';
 import { makeTacAirdrop } from '/tac-airdrop.js';
-import { makeConnect, UserStopped } from '/trade/connect.js?cb=4eebf192';
-import { rpc as readRpc } from '/trade/util.js?cb=ba5a02b1';
+import { makeConnect, UserStopped } from '/trade/connect.js?cb=f6c8f123';
+import { rpc as readRpc } from '/trade/util.js?cb=1d2cd8d3';
 import { nodeHealth } from '/trade/rpc.js';
 import { batchReads } from '/trade/batch.js';
-import { TAC, POOL, FARM, aprText, readPrecision, readSpot, readStake, privateFarms } from '/trade/farm-read.js?cb=112a01b9';
-import { rememberOwed } from '/trade/rewards-dot.js?cb=a0612927';
+import { TAC, POOL, FARM, aprText, readPrecision, readSpot, readStake, privateFarms } from '/trade/farm-read.js?cb=efe1d81e';
+import { rememberOwed } from '/trade/rewards-dot.js?cb=6f000e84';
 import { readTasks } from '/rewards/earn.js?cb=74689244';
-import { addrView, addrFlat } from '/address-view.js?cb=57bc64d3';
-import { readCampaign, bestApr, notTrading } from '/trade/lp-campaign.js?cb=e1b8a224';
+import { addrView, addrFlat } from '/address-view.js?cb=58dd4914';
+import { readCampaign, bestApr, notTrading } from '/trade/lp-campaign.js?cb=8da1c942';
 import { DEPLOYMENTS } from '/vault/deployments.js?cb=4af96594';
 
 const NO_SEND = ['0x0000000000000000000000000000000000000000', '0xa1313eb9f3a445606d9583bcac3ebeb56a858279', '0x000000c918e44a3a443937fa7594ea4f7c95d6b9', '0x4b4cb98d0c836c2783ac46f0078b904dab533ae8'];
@@ -389,7 +389,7 @@ const a0 = (s) => (s && s.claimed && s.amountWei ? BigInt(s.amountWei) : 0n);
 const p0 = (v) => (v && !v.error && v.claimed > 0n ? v.claimed : 0n);
 const rpcOf = (method, params) => (method === 'eth_call' ? call(params[0]) : Promise.reject(new Error(`${method} is not read here`)));
 function quoteFor(wei) {
-  return keepFor(bwQuotes, String(wei), () => (bwMod ||= import('/vault/quote.js?cb=5d63394f').catch((e) => { bwMod = null; throw e; })).then((m) => m.quoteBorrow({ tac: wei, rpc: rpcOf })));
+  return keepFor(bwQuotes, String(wei), () => (bwMod ||= import('/vault/quote.js?cb=bb7414d0').catch((e) => { bwMod = null; throw e; })).then((m) => m.quoteBorrow({ tac: wei, rpc: rpcOf })));
 }
 function keepFor(map, key, make) {
   const hit = map.get(key);
@@ -441,7 +441,7 @@ function paintPrivate(list) {
 // The holder's own private positions (rewards/farms.js): loaded on the first press, so the page reads nothing more until then
 const pickProvider = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : list[0]?.uuid; };
 let farmsP = null;
-const openFarms = () => (farmsP ||= import('/rewards/farms.js?cb=dc85e790').then((m) => { const f = m.mountFarms($('#pf-mine'), { pick: pickProvider, names: () => new Map(PRIV.map((x) => [x.pid, x.name])), pair: (pid) => { const icons = PRIV.find((x) => String(x.pid) === String(pid))?.icons || []; return icons.length ? pairIcons(icons) : ''; }, program: () => PROG, wallet, W, connect: () => connect.connect() }); $('#pf-mine [data-pf="open"]')?.click(); return f; })
+const openFarms = () => (farmsP ||= import('/rewards/farms.js?cb=de618a83').then((m) => { const f = m.mountFarms($('#pf-mine'), { pick: pickProvider, names: () => new Map(PRIV.map((x) => [x.pid, x.name])), pair: (pid) => { const icons = PRIV.find((x) => String(x.pid) === String(pid))?.icons || []; return icons.length ? pairIcons(icons) : ''; }, program: () => PROG, wallet, W, connect: () => connect.connect() }); $('#pf-mine [data-pf="open"]')?.click(); return f; })
   .catch((err) => { farmsP = null; console.warn('your positions:', err?.message || err); }));
 $('#pf-mine').addEventListener('click', (e) => {
   if (farmsP || !e.target.closest('[data-pf="open"]')) return;
@@ -502,7 +502,7 @@ let farmUi = null, farmFor = null, farmSeq = 0, ethUsd = 0, hasStake = false;
 const eth4 = (wei) => (Number(wei) / 1e18).toLocaleString('en-US', { maximumSignificantDigits: 3 });
 const wordOf = (a) => a.slice(2).toLowerCase().padStart(64, '0');
 function mountedFarm() {
-  return farmUi ||= Promise.all([import('/trade/farm.js?cb=5f577f5c'), import('/trade/util.js?cb=ba5a02b1'), import('/evm-trade-venues.js?cb=1f321cc2'),
+  return farmUi ||= Promise.all([import('/trade/farm.js?cb=6f0b3ce6'), import('/trade/util.js?cb=1d2cd8d3'), import('/evm-trade-venues.js?cb=c9a3c2e7'),
     call({ to: ETH_USD, data: '0xfeaf968c' }).then((r) => { ethUsd = Number(BigInt(`0x${r.slice(66, 130)}`)) / 1e8; }, () => {})])
     .then(([{ mountFarm }, U, E]) => {
       const ethCall = (to, data, block = 'latest', o = {}) => U.rpc('eth_call', [{ to, data, ...(o.from ? { from: o.from } : {}), ...(o.value ? { value: `0x${BigInt(o.value).toString(16)}` } : {}) }, block]);

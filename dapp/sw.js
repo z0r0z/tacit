@@ -23,7 +23,7 @@
 //   activate → delete old cache versions
 //   fetch → route by URL pattern, fall back to network on any error
 
-const CACHE_VERSION = 'v2-confirmed-tx-ipfs-verified-4acb1c9c';
+const CACHE_VERSION = 'v2-confirmed-tx-ipfs-verified-101a14a5';
 const STATIC_CACHE  = `tacit-static-${CACHE_VERSION}`;
 const IMMUTABLE_CACHE = `tacit-immutable-${CACHE_VERSION}`;
 // Versioned files (see _tokenOf). Its own name, not tied to CACHE_VERSION: an entry is right for as long as its URL exists.

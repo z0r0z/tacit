@@ -1,16 +1,9 @@
-// PRF-based passkey wallet — WebAuthn PRF extension derives a deterministic
-// 32-byte secp256k1 private key from the user's biometric. Same passkey +
-// same RP salt = same key every session. The PRF output is mapped through
-// `prfBytesToScalar` so a (vanishingly rare) raw value of 0 or ≥ N can't
-// wedge the user with an unrecoverable credential.
 
 import { secp, sha256, bytesToHex } from './vendor/tacit-deps.min.js';
 
 const enc = new TextEncoder();
 const PRF_SALT = sha256(enc.encode('tacit-prf-v1'));
 const PRF_MAP_KEY = 'tacit-prf-v1';
-// secp256k1 group order N. Defined locally so this module stays
-// self-contained — the value is a curve constant, not a tacit choice.
 const SECP_N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
 
 function toB64(buf) {
@@ -26,21 +19,12 @@ function fromB64(s) {
   return out;
 }
 
-// Map a 32-byte PRF output deterministically into [1, N-1]. The probability
-// the raw bytes are already valid is ~1 - 2⁻¹²⁸, so this is a no-op in every
-// realistic case. The fallback rehash + recovery domain string keeps the
-// mapping deterministic without ever returning out-of-range scalars — same
-// passkey will always reproduce the same priv. Without this guard a user
-// drawing the pathological output is wedged forever (PRF input is constant).
-//
-// Exported so tests/prf-wallet.test.mjs can pin the boundary branches
-// (0, N-1, N, N+1) — the load-bearing cases for the deterministic guard.
 export function prfBytesToScalar(raw32) {
   let n = 0n;
   for (const b of raw32) n = (n << 8n) | BigInt(b);
   if (n === 0n || n >= SECP_N) {
     const fallback = sha256(new Uint8Array([...raw32, ...enc.encode('tacit-prf-recovery')]));
-    return prfBytesToScalar(fallback); // P[recurse twice] ≈ 2⁻²⁵⁶
+    return prfBytesToScalar(fallback);
   }
   return raw32;
 }
@@ -48,9 +32,6 @@ export function prfBytesToScalar(raw32) {
 export function loadPrfMap() {
   try { return JSON.parse(localStorage.getItem(PRF_MAP_KEY) || '{}'); } catch { return {}; }
 }
-// The map only remembers which passkey signed in last (its label, id and time). A browser with no room left, or one that
-// refuses storage, must not stop a sign-in the passkey has already answered: the key is the same either way, and the
-// next visit asks for the passkey again. True when it was kept.
 export function savePrfMap(m) {
   try { localStorage.setItem(PRF_MAP_KEY, JSON.stringify(m)); return true; } catch { return false; }
 }
@@ -60,10 +41,6 @@ export async function prfRegister(label) {
   const name = (label || '').trim();
   if (!name) throw new Error('label required');
   const rpId = window.location.hostname;
-  // user.id MUST be opaque per WebAuthn — deriving it from the label means
-  // two registrations with the same label collide on user.id and the second
-  // overwrites the first per the spec. Use random bytes; the label is purely a
-  // human-readable display name.
   const userId = crypto.getRandomValues(new Uint8Array(16));
   const publicKey = {
     challenge: crypto.getRandomValues(new Uint8Array(32)),
@@ -79,29 +56,21 @@ export async function prfRegister(label) {
   if (!cred) throw new Error('creation cancelled');
   const credentialId = toB64(cred.rawId);
   const prfOut = cred.getClientExtensionResults()?.prf;
-  // Many authenticators evaluate PRF only at sign-in: registration reports { enabled: true } with no output. The new
-  // passkey then signs in once more for it. Only an authenticator that reports enabled: false, or that gives no
-  // output at that sign-in either, is refused.
   const raw = prfOut?.results?.first || (prfOut?.enabled === false ? null : (await prfEval(credentialId)).raw);
   if (!raw) throw new Error('PRF not supported by this authenticator');
   return keyOf(credentialId, raw);
 }
 
-// The key a passkey's PRF output gives, with the passkey's id.
 function keyOf(credentialId, raw) {
   const priv = prfBytesToScalar(raw instanceof Uint8Array ? raw : new Uint8Array(raw));
   const pub = secp.getPublicKey(priv, true);
   return { credentialId, priv, pub, pubHex: bytesToHex(pub) };
 }
 
-// WebAuthn requires a secure context (HTTPS or localhost).
 export function isPasskeyAvailable() {
   return window.isSecureContext && !!window.PublicKeyCredential;
 }
 
-// Returns the saved passkey entry preferred for auto-login, or null.
-// Prefers the most recently used label (highest `lastUsed`); falls back
-// to insertion order so legacy entries without `lastUsed` still resolve.
 export function prfTryRestore() {
   const map = loadPrfMap();
   const labels = Object.keys(map);
@@ -118,17 +87,9 @@ export async function prfLogin({ credentialId }) {
   return keyOf(gotId, raw);
 }
 
-// A sign-in with the passkey `credentialId` (any passkey of this site when it is not given): the id of the passkey
-// used and its PRF output, null when the authenticator gave none.
 async function prfEval(credentialId) {
   const rpId = window.location.hostname;
   const rawId = credentialId ? fromB64(credentialId) : undefined;
-  // Single-credential branch uses `eval` (not `evalByCredential`): with one
-  // entry in allowCredentials the two are equivalent, but `eval` has wider
-  // browser support — `evalByCredential` is a later spec addition and some
-  // implementations return the result under the wrong key, leaving us unable
-  // to read it. The fallback resultsByCredential lookup below still handles
-  // browsers that decide to return results that way regardless.
   const prfExtension = { prf: { eval: { first: PRF_SALT } } };
   const publicKey = rawId
     ? {
@@ -136,11 +97,6 @@ async function prfEval(credentialId) {
         rpId,
         userVerification: 'required',
         timeout: 60000,
-        // Omit `transports`: it's a hint that filters which authenticators the
-        // browser queries. Hardcoding ['internal'] hides credentials stored in
-        // password managers (Bitwarden, 1Password) and roaming authenticators,
-        // because their providers don't report the 'internal' transport — the
-        // user gets a successful registration but no login prompt ever appears.
         allowCredentials: [{ type: 'public-key', id: rawId }],
         extensions: prfExtension,
       }
@@ -157,11 +113,6 @@ async function prfEval(credentialId) {
   const gotId = toB64(cred.rawId);
   const prfExt = cred.getClientExtensionResults()?.prf || {};
   let results = prfExt.results;
-  // Also try `gotId` (the actually-used credential ID): in discoverable mode
-  // we don't know `credentialId` up front, and even with allowCredentials a
-  // browser may key the result map by the canonical credential ID, which can
-  // differ in encoding from the saved one. Without this we drop a valid PRF
-  // result and throw "PRF result not returned" despite having the bytes.
   if (!results && prfExt.resultsByCredential) {
     results = (credentialId && prfExt.resultsByCredential[credentialId]) || prfExt.resultsByCredential[gotId];
   }

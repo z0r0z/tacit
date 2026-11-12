@@ -1,5 +1,5 @@
-import { makeConnect } from '/trade/connect.js?cb=4eebf192';
-import { $, esc, short, word, strip, fmtUnits, parseUnits, rpc, ethCall } from '/trade/util.js?cb=ba5a02b1';
+import { makeConnect } from '/trade/connect.js?cb=f6c8f123';
+import { $, esc, short, word, strip, fmtUnits, parseUnits, rpc, ethCall } from '/trade/util.js?cb=1d2cd8d3';
 import { SALE, FROM_BLOCK, TOTAL, FACE, LOCK_DAYS } from '/face/config.js?cb=aa6672a5';
 import { pixelText, ghost, blocks } from '/face/pixel.js?cb=2a763b38';
 
@@ -130,7 +130,7 @@ async function catchUp() {
   if (!W.account) { await conn.connect(); return; }
   S.busy = true; render();
   try {
-    const { makeCatchUp } = await import('/face/catchup.js?cb=faefced5');
+    const { makeCatchUp } = await import('/face/catchup.js?cb=89f05203');
     await makeCatchUp({ rpc, sale: SALE, wallet: conn.wallet, account: () => W.account, say }).run();
   } catch (e) {
     say(e?.userStopped ? e.message : String(e?.message || e).slice(0, 140), true);

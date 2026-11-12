@@ -1,8 +1,3 @@
-// Public payout from a shielded balance: pay a plain 0x address an exact amount from the notes the wallet holds
-// (ux.sendUnwrap). The chain then shows the recipient, the amount and the relay's fee, and does not show which
-// deposit funded it. This is the pure half: address validation, the fee arithmetic that makes the recipient's
-// amount exact, note selection, and the confirmation poll against the recipient's public balance. Every read is
-// injected, so it runs unchanged under test; the DOM half is confidential-payout-panel.js.
 
 export class PayoutError extends Error {
   constructor(code, message, extra = {}) {
@@ -16,13 +11,10 @@ export class PayoutError extends Error {
 const lc = (h) => String(h == null ? '' : h).toLowerCase();
 const ADDR_RE = /^0x[0-9a-fA-F]{40}$/;
 
-// ── recipient ──
-
 export function looksLikeAddress(raw) {
   return ADDR_RE.test(String(raw == null ? '' : raw).trim());
 }
 
-// EIP-55: a hex letter is upper-case when the matching nibble of keccak256(lower-case hex address) is 8 or more.
 export function checksumAddress(address, keccak256) {
   const hex = lc(String(address).replace(/^0x/i, ''));
   const h = keccak256(new TextEncoder().encode(hex));
@@ -34,9 +26,6 @@ export function checksumAddress(address, keccak256) {
   return out;
 }
 
-// All-lower and all-upper addresses carry no checksum and are accepted as such; a mixed-case one must match its
-// checksum exactly. `deny` is a list of { address, reason } the payout must never go to (the pool, the token
-// contracts: value sent there cannot be recovered).
 export function parseRecipient(raw, { keccak256, deny = [] } = {}) {
   const s = String(raw == null ? '' : raw).trim();
   if (!ADDR_RE.test(s)) {
@@ -57,10 +46,6 @@ export function parseRecipient(raw, { keccak256, deny = [] } = {}) {
   return { ok: true, address, checksummed, hasChecksum };
 }
 
-// ── amounts ──
-
-// A decimal entry to whole units at `decimals` places. Strict: more places than the asset has is refused rather
-// than rounded, because the recipient must receive exactly what was typed.
 export function parseUnits(raw, decimals) {
   const s = String(raw == null ? '' : raw).trim();
   if (!/^\d*\.?\d*$/.test(s) || !/\d/.test(s)) {
@@ -84,10 +69,8 @@ export function formatUnits(value, decimals) {
   return (neg ? '-' : '') + (frac ? `${int}.${frac}` : int);
 }
 
-// The public token units a payout of `units` in-system units delivers: the pool pays value × unitScale.
 export const underlyingUnits = (units, unitScale) => BigInt(units) * BigInt(unitScale || 1);
 
-// Op fields that are JSON numbers on the wire lose exactness past 2^53.
 export const MAX_PAYOUT_UNITS = BigInt(Number.MAX_SAFE_INTEGER);
 
 export function publicAssetLabel(ticker) {
@@ -95,13 +78,8 @@ export function publicAssetLabel(ticker) {
     || String(ticker || '').replace(/^c/, '') || 'asset';
 }
 
-// ── assets and notes ──
-
 const ORDER = ['cETH', 'cUSDC', 'cUSDT', 'cBTC', 'cUSD', 'cTAC'];
 
-// The pool assets a payout can go out in: the relay takes its fee in the asset (relayFeeEligible) and the asset
-// has a public token to pay out (native ETH, or an ERC20 underlying). An id shared by a bridged asset's token row
-// and its pool row (TAC / cTAC) is one asset, named by the pool row.
 export function payoutAssets({ assets, relayFeeEligible }) {
   const byId = new Map();
   for (const a of assets || []) {
@@ -127,7 +105,6 @@ export function payoutAssets({ assets, relayFeeEligible }) {
 
 export const notesOf = (notes, asset) => (notes || []).filter((n) => lc(n.asset) === lc(asset));
 
-// { total, count, largest } per asset id.
 export function heldByAsset(notes) {
   const held = new Map();
   for (const n of notes || []) {
@@ -140,7 +117,6 @@ export function heldByAsset(notes) {
   return held;
 }
 
-// The smallest single note that covers `need`; older first among equals. A payout spends exactly one note.
 export function pickNote(notes, asset, need) {
   let best = null;
   for (const n of notesOf(notes, asset)) {
@@ -153,14 +129,6 @@ export function pickNote(notes, asset, need) {
   return best;
 }
 
-// ── fee arithmetic ──
-
-// sendUnwrap debits `amount` from one note; the recipient receives amount − fee(amount). To pay an exact `net`,
-// find the gross whose fee leaves exactly net: the least g with g − fee(g) = net. The fee never falls as g rises,
-// but its rounding ladder can jump by several units at once, so g − fee(g) is not monotone. It does rise one unit
-// at a time between jumps, so every net has a solution, and iterating g ← net + fee(g) from a lower bound climbs to
-// the least one. Wherever the fee is not capped at the whole amount it is at least minFee, so net + minFee is a
-// valid start. A fee capped at the amount means net is below the fee's own rounding step: refused.
 export function grossForNet({ net, feeOf, minFee = 0n, maxIter = 64 }) {
   net = BigInt(net);
   if (net <= 0n) throw new PayoutError('zero-amount', 'Enter an amount greater than zero.');
@@ -177,9 +145,6 @@ export function grossForNet({ net, feeOf, minFee = 0n, maxIter = 64 }) {
   throw new PayoutError('fee-unstable', 'The relay fee did not settle for this amount. Try a slightly different amount.');
 }
 
-// The plan for paying `net` in `asset`: the gross to debit, the fee, and the one note that covers it. When no
-// single note does, the code says why: nothing held, not enough in total, or enough in total but spread over
-// several notes (planMerge then sizes the fix).
 export function planPayout({ notes, asset, net, feeOf, minFee }) {
   const held = notesOf(notes, asset);
   const total = held.reduce((s, n) => s + BigInt(n.value), 0n);
@@ -196,8 +161,6 @@ export function planPayout({ notes, asset, net, feeOf, minFee }) {
   return { ok: false, code: 'no-single-note', net: BigInt(net), fee, gross, total, largest };
 }
 
-// Merging notes is a relayed self-transfer of several notes into one, paying a flat relay fee out of the total.
-// Takes the largest notes first, as few as reach `need` after the fee, at most `maxInputs`.
 export function planMerge({ notes, need, mergeFee, maxInputs = 16 }) {
   const sorted = [...notes].sort((a, b) => (BigInt(b.value) > BigInt(a.value) ? 1 : BigInt(b.value) < BigInt(a.value) ? -1 : 0));
   if (sorted.length < 2) return { ok: false, code: 'single-note' };
@@ -215,8 +178,6 @@ export function planMerge({ notes, need, mergeFee, maxInputs = 16 }) {
   return { ok: true, notes: picked, count: picked.length, sum, fee, merged, covers: merged >= need };
 }
 
-// How many notes the pool has gained since `note` was created: a rough measure of the cover it has had. Null when
-// the scan did not carry the numbers.
 export function coverSince({ note, poolStats }) {
   const created = poolStats && poolStats.totalNotesCreated;
   const at = note && note.leafIndex;
@@ -224,15 +185,12 @@ export function coverSince({ note, poolStats }) {
   return Math.max(0, Number(created) - Number(at) - 1);
 }
 
-// ── confirmation ──
-
 const ERC20_BALANCE_OF = '0x70a08231';
 const hexToBig = (h, what) => {
   if (typeof h !== 'string' || !/^0x[0-9a-fA-F]+$/.test(h)) throw new PayoutError('unreadable', `Could not read the recipient's ${what}.`);
   return BigInt(h);
 };
 
-// A function that reads the recipient's public balance: ETH through eth_getBalance, a token through balanceOf.
 export function makeBalanceReader({ rpc, ethCall, token = null, address }) {
   if (!ADDR_RE.test(String(address))) throw new PayoutError('not-address', 'A 0x address is required.');
   if (!token) return async () => hexToBig(await rpc('eth_getBalance', [address, 'latest']), 'balance');
@@ -244,10 +202,6 @@ export function makeBalanceReader({ rpc, ethCall, token = null, address }) {
   };
 }
 
-// Success is only ever the recipient's balance rising by the expected amount. The relay's job status is read for
-// progress and to stop early on a failure, and even then the balance is checked first: a job the relay calls
-// settled proves nothing here. Statuses: 'paid', 'timeout' (still unconfirmed), 'failed' (the relay gave up),
-// 'lost' (the relay no longer has the job).
 export async function waitForPayout({
   readBalance, baseline, expected, readJob = null, now = Date.now, sleep, timeoutMs = 12 * 60 * 1000, intervalMs = 6000, onTick,
 }) {
@@ -263,19 +217,16 @@ export async function waitForPayout({
       if (delta >= expected) return { status: 'paid', delta, balance: bal, job };
     } catch (e) { lastError = e; }
     if (readJob) {
-      try { job = await readJob(); } catch { /* keep polling; the balance is the authority */ }
+      try { job = await readJob(); } catch { }
       if (job && job.status === 'failed') return { status: 'failed', delta, job, error: job.error || null };
-      // A job the relay has only just stored can read as unknown from another edge; it takes two in a row to count as lost.
       if (job && job.status === 'unknown') { if (++unknowns >= 2) return { status: 'lost', delta, job }; } else unknowns = 0;
     }
     const elapsedMs = now() - start;
-    if (onTick) { try { onTick({ elapsedMs, delta, job }); } catch { /* display only */ } }
+    if (onTick) { try { onTick({ elapsedMs, delta, job }); } catch { } }
     if (elapsedMs >= timeoutMs) return { status: 'timeout', delta, job, lastError };
     await wait(intervalMs);
   }
 }
-
-// ── wording ──
 
 export const PRIVACY_POINTS = [
   'This hides who sent the payment from people reading the chain. The recipient’s address and the amount are public on-chain, and the relay that settles it is told which of your notes it spends.',
@@ -305,8 +256,6 @@ export const IRREVERSIBLE_LINE = 'Once the relay settles this it cannot be undon
 export const feeExceedsLine = () => 'The relay fee is larger than the amount being paid.';
 export const contractLine = (label) => `This address is a smart contract. Make sure it can receive ${label}; a contract that cannot handle it can lock the funds.`;
 
-// The outcome of the latest payout as { tone, text } for the activity line. `a.phase` is 'submitted', 'paid',
-// 'timeout', 'failed' or 'lost'; nothing but 'paid' says the payment arrived.
 export function activityView(a) {
   if (!a) return null;
   const what = `${a.amountText} ${a.label} to ${a.address}`;

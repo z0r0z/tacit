@@ -3,13 +3,13 @@
 // a whole cBTC note and its repayment, the mint and the loans relayed. Paying the deposit address from a wallet in the browser, a note cut to
 // size and a relay that will not take it (the front page sends it from the Tacit account) are the front page's: those link there. Nothing here is loaded until the holder asks: this module, the key, the pool and Bitcoin's history come in on that press.
 import { sha256, hmac, secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
-import { makeKeySession, signInSheet } from '/trade/key.js?cb=9786fe7f';
+import { makeKeySession, signInSheet } from '/trade/key.js?cb=b4ef0b7a';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=efc87cea';
-import { readLocks, readLoans, readHeld, readEngine, lockStep, ENGINE, WSTETH } from '/cbtc/read.js?cb=2e71b61b';
-import { makeLoans, exactNotes, bondGap, bondCall, outpointOf, lockPad, loanHealth, borrowAt, SAFE_RATIOS } from '/btc-borrow.js?cb=c3dcce7a';
-import { makeRunner } from '/activity.js?cb=5f14a43f';
-import { relayRefused, relayWords } from '/relay-outcome.js?cb=9db7155a';
-import { esc, short, grp, plain, parseUnits, word, wordAt } from '/trade/util.js?cb=ba5a02b1';
+import { readLocks, readLoans, readHeld, readEngine, lockStep, ENGINE, WSTETH } from '/cbtc/read.js?cb=1b131187';
+import { makeLoans, exactNotes, bondGap, bondCall, outpointOf, lockPad, loanHealth, borrowAt, SAFE_RATIOS } from '/btc-borrow.js?cb=72107be7';
+import { makeRunner } from '/activity.js?cb=a0384066';
+import { relayRefused, relayWords } from '/relay-outcome.js?cb=17e48a9a';
+import { esc, short, grp, plain, parseUnits, word, wordAt } from '/trade/util.js?cb=1d2cd8d3';
 
 const API = 'https://api.tacit.finance';
 // Bitcoin's explorers, in order: a read that fails at one is asked of the next

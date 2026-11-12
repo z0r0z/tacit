@@ -1,7 +1,7 @@
 import { announceWalletConnect, wcSheets, WC_PROJECT_ID } from '/walletconnect.js?cb=843803d6';
-import { makeWallet, UserStopped } from '/trade/wallet.js?cb=c12e83a8';
+import { makeWallet, UserStopped } from '/trade/wallet.js?cb=5d19a733';
 import { overlay, esc } from '/trade/sheet.js?cb=1161dd4e';
-import { rpc, RPCS, short, $ } from '/trade/util.js?cb=ba5a02b1';
+import { rpc, RPCS, short, $ } from '/trade/util.js?cb=1d2cd8d3';
 
 export { UserStopped };
 
@@ -72,7 +72,7 @@ export function makeConnect({ describe, name = 'tacit trade', rpc: read = rpc, r
     const a = W.account ? W.account.toLowerCase() : null;
     if (!rewards || a === owedFor) return;
     owedFor = a; markOwed(false);
-    if (a) (window.requestIdleCallback || ((f) => setTimeout(f, 1500)))(() => import('/trade/rewards-dot.js?cb=a0612927').then((m) => m.owedDot(a, (on) => { if (owedFor === a) markOwed(on); })).catch(() => {}));
+    if (a) (window.requestIdleCallback || ((f) => setTimeout(f, 1500)))(() => import('/trade/rewards-dot.js?cb=6f000e84').then((m) => m.owedDot(a, (on) => { if (owedFor === a) markOwed(on); })).catch(() => {}));
   }
   wallet.onChange(() => { renderChip(); onChange(); checkOwed(); });
   const restoreLast = () => wallet.restore().catch(() => {});

@@ -1,28 +1,15 @@
-// What the relay said about a request, the same on every page: whether it turned the request down or is holding it (nothing was spent, or it will
-// go through on its own), whether a wait ran out (the request may still land: it is not sent again), and the words for each. The front page's
-// definitions, so a page that sends through the relay answers a refusal as the front page does.
-//   if (relayRefused(e)) say(relayWords(e).text)
-// What a relay or keeper said about its own wallet or its day's allowance (gas spent, relaying off, funds, a top-up) is not the user's to read:
-// it is said as a request the relay can't take right now, with the way round it. (Words from the user's own wallet do not name the relay.)
 const WHO = /\b(relay(er|ing)?|keeper|sponsor)\b/i, WHAT = /\b(gas|funds?|balance|spent|top(ped)?[- ]?up|allowance|budget|used today|is off)\b/i;
 const selfTalk = (t) => String(t || '').split(/(?<=[.!?])\s+/).some((x) => WHO.test(x) && WHAT.test(x));
 export const calmText = (t) => (selfTalk(t) ? 'The relay can’t take this one right now. Send it from your own wallet, or try again later.' : String(t || ''));
 export const relayCode = (e) => (typeof e?.code === 'string' ? e.code : '');
-// the relay has made all the proofs it can for today
 export const proveCapped = (e) => relayCode(e) === 'prove_budget' || /\bprove_budget\b|prove capacity for today|as many proofs as it can/i.test(String(e?.message || e || ''));
-// the relay proved the request and holds it for a sender (settle held): it can be sent from any account
 export const proved = (e) => relayCode(e) === 'open' && !!e?.open?.proof && Array.isArray(e.open.memos);
-// turned down or held, not failed: nothing was spent, or it goes through when the relay can
 export const relayRefused = (e) => !proveCapped(e) && relayCode(e) !== 'relay_paused' && relayCode(e) !== 'prove_reserved'
   && (proved(e) || ['relay_held', 'free_budget'].includes(relayCode(e))
     || /fee below the current floor|FEE_MOVED|can.t take this one|free relayed settles|relay (5\d\d|429)\b|temporarily unavailable/i.test(`${relayCode(e)} ${e?.message || e || ''}`));
-// the wait for the relay ran out: the request may still go through, so it is not sent again (the same test is bridge-tick.js's)
 export const waitRanOut = (e) => /settle timed out|status polling for job/i.test(e?.message || '');
-// the relay reported the job failed or lost it
 export const jobSaid = (e) => /^(settle|prove) failed:|relay lost the job/i.test(e?.message || '');
 
-// The words for what the relay said, or null when it said none of these: { text, front }, `front` when the front page can do more (it can send
-// a held request from the Tacit account).
 export function relayWords(e) {
   const m = String(e?.message || e || ''), code = relayCode(e);
   if (proveCapped(e)) return { text: 'Today’s relay proofs are taken. Prove it yourself, or try again after midnight UTC; nothing was spent.', front: false };

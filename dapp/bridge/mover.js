@@ -2,13 +2,13 @@
 // and the two presses that need only the relay (the burn of a moved bridge, the mint of a recorded one). Nothing is loaded until the holder asks:
 // this module, the key sheet and tacit.js (four megabytes) all come in on that press. Starting a bridge is the front page's Bridge tab. Merging, bridging all, minting to another address,
 // paying the mint from a wallet and proving it oneself stay on the front page, which these rows link to.
-import { makeKeySession, signInSheet } from '/trade/key.js?cb=9786fe7f';
-import { makeTacitSession } from '/tacit-session.js?cb=a2d34bb2';
-import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverEvery } from '/bridge-tick.js?cb=4e721860';
-import { ROUTES } from '/bridge/track.js?cb=c4ce3ac0';
-import { parseUnits } from '/trade/util.js?cb=ba5a02b1';
+import { makeKeySession, signInSheet } from '/trade/key.js?cb=b4ef0b7a';
+import { makeTacitSession } from '/tacit-session.js?cb=4636e436';
+import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverEvery } from '/bridge-tick.js?cb=42d78071';
+import { ROUTES } from '/bridge/track.js?cb=29efa548';
+import { parseUnits } from '/trade/util.js?cb=1d2cd8d3';
 import { forgetUx } from '/trade/poolux.js?cb=efc87cea';
-import { relayWords } from '/relay-outcome.js?cb=9db7155a';
+import { relayWords } from '/relay-outcome.js?cb=17e48a9a';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 
 const TACIT_URL = '/tacit.js?cb=da6e0cfc';

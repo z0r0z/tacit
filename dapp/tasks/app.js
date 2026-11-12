@@ -6,11 +6,11 @@
 // is a step the service has read from the chain), so that a visit does not download the code of every contract a job deployed.
 //
 // Open jobs are shown in full; a job that is done is a tile with its result, and opens to what it did when it is clicked.
-import { makeConnect, UserStopped } from '/trade/connect.js?cb=4eebf192';
+import { makeConnect, UserStopped } from '/trade/connect.js?cb=f6c8f123';
 import { declinedWords } from '/wallet-prompts.js';
 import { esc } from '/trade/sheet.js?cb=1161dd4e';
-import { rpc, RPCS, $, short, fmtUnits } from '/trade/util.js?cb=ba5a02b1';
-import { addrView, addrFlat } from '/address-view.js?cb=57bc64d3';
+import { rpc, RPCS, $, short, fmtUnits } from '/trade/util.js?cb=1d2cd8d3';
+import { addrView, addrFlat } from '/address-view.js?cb=58dd4914';
 import { bodyType } from '/trade/rpc.js';
 import { BASE_NODES, ROBINHOOD_NODES } from '/eth-nodes.js';
 import { checkPayload, checkStep } from '/tasks/verify.js?cb=b8174dad';

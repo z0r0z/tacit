@@ -1,4 +1,4 @@
-import { rpc } from '/trade/util.js?cb=ba5a02b1';
+import { rpc } from '/trade/util.js?cb=1d2cd8d3';
 
 const KEY = 'tacit-rewards-owed-v1', TTL = 10 * 60e3, API = 'https://api.tacit.finance', DISTRIBUTOR = '0x000000C918e44A3a443937fA7594eA4f7C95D6b9', DUST = 10n ** 16n;
 const store = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch { } } };

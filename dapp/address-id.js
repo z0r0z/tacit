@@ -1,6 +1,3 @@
-// A short ID of a whole address, the same text for the same address on every page. A tacit1… address is too long to read,
-// and the few characters a page can show of it say little of the rest, so a payer and a payee compare this instead.
-// 64 bits: an address that matches someone else's ID cannot be found by searching.
 import { sha256, concatBytes } from './vendor/tacit-deps.min.js';
 
 const te = new TextEncoder();

@@ -54,16 +54,13 @@ export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes,
     return code.length > 2 && !/^0x0+$/i.test(code);
   }
 
-  // A wallet's answer, or `fallback` if it errs or takes longer than `ms` (a request the wallet's own node can stall must not hold the sign-in up)
   const capped = (p, ms, fallback) => new Promise((done) => {
     const t = setTimeout(() => done(fallback), ms);
     Promise.resolve(p).then(done, () => done(fallback)).finally(() => clearTimeout(t));
   });
 
-  // `silent`: an account the site already may read is taken as it stands, with no request that could open a prompt
   async function reach({ pick, silent = false } = {}) {
     if (typeof window !== 'undefined') { try { window.dispatchEvent(new Event('eip6963:requestProvider')); } catch { } }
-    // (a wallet already chosen or announced is not waited for: the wait is for ones still announcing themselves, as on a page just opened)
     if (!selected && !providers.length) await new Promise((r) => setTimeout(r, 120));
     let provider = selected, chosen = null;
     if (!provider) {
@@ -173,8 +170,6 @@ export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes,
     return { provider, address };
   }
 
-  // An account's code, read once and shared: `warm` starts it, and a first sign-in takes it from there. A read the wallet's node did not answer in time
-  // (or erred) is not kept, so the next sign-in reads it again.
   const NO_ANSWER = Symbol('no answer'), STILL_READING = Symbol('still reading');
   const CODE_WAIT_MS = 250;
   const CONTRACT_WALLET = 'Smart-contract wallets produce non-deterministic signatures and cannot derive a stable tacit identity — use a passkey, seed, or an EOA wallet.';
@@ -187,8 +182,6 @@ export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes,
     }
     return read;
   }
-  // What a sign-in will ask of the wallet, started while the sheet that offers it is being read: the wallet is woken (an extension's worker sleeps when
-  // idle) by a read that cannot prompt, and a first sign-in's code read is under way. Only for the wallet already in use: which wallet signs is never chosen here.
   async function warm() {
     const provider = active || selected;
     if (!provider || typeof provider.request !== 'function') return;
@@ -207,18 +200,13 @@ export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes,
     try { localStorage.setItem(ANCHOR_KEY + String(address).toLowerCase(), pubHex); } catch { }
   }
 
-  // `onStep(name)` hears where the sign-in is: 'account' (reading the wallet), 'sign' (the wallet is asked), 'confirm' (asked again, the first time)
   async function deriveIdentity({ pick, expect, onStep } = {}) {
     const step = (s) => { try { onStep?.(s); } catch { } };
     step('account');
     const c = await reach({ pick, silent: true }), { provider, address } = c;
     const want = expect && String(expect).toLowerCase().replace(/^0x/, '');
     if (want && address !== want) throw new Error(`Switch your wallet to 0x${want.slice(0, 4)}…${want.slice(-4)}, the account this Tacit wallet was opened with.`);
-    // An account that opened its key here was no contract then, and an address does not become one: its code is not read again. The first time it is
-    // read through the wallet's own node, which can stall with nothing yet in front of the person, so it is given a moment and no more.
     const anchored = !!readAnchor(address);
-    // The read is under way as the wallet is asked (it began when the sheet opened, when `warm` ran), and only a moment is spent on it before then; one
-    // still out when the first signature comes back is waited for there, before a second is asked.
     const reading = anchored ? null : codeOf(provider, address);
     const early = reading ? await capped(reading, CODE_WAIT_MS, STILL_READING) : '0x';
     if (isContractCode(early)) throw new Error(CONTRACT_WALLET);
@@ -312,7 +300,6 @@ export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes,
     return { v, r: '0x' + h.slice(0, 64), s: '0x' + h.slice(64, 128) };
   }
 
-  // the wallet in use now (the one picked, else the injected one), for a page that reads Ethereum through it as a last resort
   const provider = () => currentProvider() || null;
   return { provider, available, hasBrowserWallet, listProviders, selectProvider, deselectProvider, providerLabel, connect, changeAccount, restore, onElsewhere, forget, disconnect, deriveIdentity, warm, signErc2612, fundTx, chainId, derivationMsg };
 }

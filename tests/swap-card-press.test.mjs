@@ -20,7 +20,7 @@ const fn = (name) => {
 const USDT = '0xdac17f958d2ee523a2206206994597c13d831ec7', ROUTER = '0x' + '77'.repeat(20), FROM = '0x' + '0a'.repeat(20), ONE = 10n ** 6n;
 class UserStopped extends Error { constructor() { super('Cancelled'); this.userStopped = true; } }
 function approval({ sends }) {
-  const src = card.slice(card.indexOf('let approved = '), card.indexOf('// ── Swap privately: ETH deposited now'));
+  const src = card.slice(card.indexOf('let approved = '), card.indexOf('const LATER = {'));
   const said = [], sent = [];
   const wallet = { sendTx: async (tx) => { sent.push(tx); return sends.shift()(); }, receipt: async () => ({ status: '0x1' }) };
   const make = new Function('wallet', 'R', 'tokenOf', 'lc', 'say', 'esc', 'tidy', 'amtFmt', 'txLink', `${src}; return { approve, unsent, state: () => ({ approved, zeroed }) };`);

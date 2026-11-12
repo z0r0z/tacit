@@ -1,9 +1,9 @@
 // What the tETH page reads, and how each figure on it is worked out: the Tacit pool's totals and its ETH history (the API's stats reading), the
 // private farms and the prices in the pools that pair tETH (the farming program's reading), the dollar rates (Chainlink) and TAC's price (the
 // Precision pool), and the relay's quote for a wrap. The arithmetic is plain functions of what was read, so tests can pin it.
-import { MULTICALL3, PRECISION_POOL, _internal } from '/evm-trade-venues.js?cb=1f321cc2';
-import { api, ethCall, wordAt, now, E10 } from '/trade/util.js?cb=ba5a02b1';
-import { poolWorthEth, shieldedApr } from '/trade/farm-read.js?cb=112a01b9';
+import { MULTICALL3, PRECISION_POOL, _internal } from '/evm-trade-venues.js?cb=c9a3c2e7';
+import { api, ethCall, wordAt, now, E10 } from '/trade/util.js?cb=1d2cd8d3';
+import { poolWorthEth, shieldedApr } from '/trade/farm-read.js?cb=efe1d81e';
 
 export const POOL = '0x000000000Ed1eabD231Be41d93b719056F7febFC';              // the Tacit pool (one contract): it holds the ETH behind every tETH
 export const WRAP_TIP = '0x000000D218B03db5837943b0b05DeA2965AE956e';           // wraps and pays the relay's tip in one transaction

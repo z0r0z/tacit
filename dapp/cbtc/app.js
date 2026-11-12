@@ -4,14 +4,14 @@
 // API with no wallet and holds no key it was not given. Making cBTC (lock, bond, mint, borrow) is a flow of several steps with Bitcoin and Ethereum
 // transactions, and it is done on tacit.finance's Borrow sheet, which each button here opens; this page sizes the bond for an amount before it does.
 import { sha256 } from '/vendor/tacit-deps.min.js';
-import { mountChart, fmtLocalStamp, fmtLocalTime } from '/trade/chart.js?cb=04207026';
-import { makeConnect } from '/trade/connect.js?cb=4eebf192';
-import { addrFlat } from '/address-view.js?cb=57bc64d3';
-import { makeKeySession, signInSheet } from '/trade/key.js?cb=9786fe7f';
+import { mountChart, fmtLocalStamp, fmtLocalTime } from '/trade/chart.js?cb=c0b1d232';
+import { makeConnect } from '/trade/connect.js?cb=f6c8f123';
+import { addrFlat } from '/address-view.js?cb=58dd4914';
+import { makeKeySession, signInSheet } from '/trade/key.js?cb=b4ef0b7a';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=efc87cea';
-import { readRates, readProgram, heldBars, rangesFor, barSize } from '/teth/read.js?cb=5313656c';
-import { totalsOf, readEngine, sizeBond, coverage, readPools, poolRows, farmApr, readLocks, readLoans, readHeld, readHistory, positionsIn, lockStep, CBTC_ID, ENGINE, WSTETH } from '/cbtc/read.js?cb=2e71b61b';
-import { $, esc, api, now, fmtUnits, parseUnits, grp, usd, short, sig } from '/trade/util.js?cb=ba5a02b1';
+import { readRates, readProgram, heldBars, rangesFor, barSize } from '/teth/read.js?cb=7aa845b7';
+import { totalsOf, readEngine, sizeBond, coverage, readPools, poolRows, farmApr, readLocks, readLoans, readHeld, readHistory, positionsIn, lockStep, CBTC_ID, ENGINE, WSTETH } from '/cbtc/read.js?cb=1b131187';
+import { $, esc, api, now, fmtUnits, parseUnits, grp, usd, short, sig } from '/trade/util.js?cb=1d2cd8d3';
 
 const SCAN = 'https://etherscan.io/', MEMPOOL = 'https://mempool.space/';
 const PRESETS = [['0.001 BTC', '0.001'], ['0.01 BTC', '0.01'], ['0.1 BTC', '0.1']];

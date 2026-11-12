@@ -1,6 +1,3 @@
-// A network picker drawn over a <select>: a pill with the network's logo and name, and a menu that lists each network with its logo and a check on
-// the current one. The select stays in the page, out of sight, as what holds the value and fires `change`, so whatever listens to it (and
-// whatever sets it) keeps working as before. Each option names its logo as a sprite symbol in `data-mark`. Styled by the page's `.np` rules.
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const CARET = '<svg class="np-c" viewBox="0 0 10 6" aria-hidden="true"><path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const CHECK = '<svg class="np-k" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6.5l2.6 2.6L10 3.4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -33,7 +30,6 @@ export function netPicker(sel) {
   function open() {
     paint();
     m.hidden = false; b.setAttribute('aria-expanded', 'true');
-    // above the pill when there is no room below it
     m.toggleAttribute('data-up', b.getBoundingClientRect().bottom + m.offsetHeight + 12 > innerHeight && b.getBoundingClientRect().top > m.offsetHeight + 12);
     document.addEventListener('pointerdown', away, true);
     (items().find((x) => x.getAttribute('aria-selected') === 'true') || items()[0])?.focus();
@@ -55,7 +51,6 @@ export function netPicker(sel) {
     else if (e.key === 'Home' || e.key === 'End') { e.preventDefault(); l[e.key === 'Home' ? 0 : l.length - 1]?.focus(); }
     else if (e.key === 'Tab') close(false);
   });
-  // the value set from elsewhere (a link, the page) is shown
   sel.addEventListener('change', paint);
   sel.classList.add('np-sel'); sel.tabIndex = -1; sel.setAttribute('aria-hidden', 'true');
   paint();

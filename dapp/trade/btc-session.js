@@ -5,9 +5,9 @@
 // These are the ways in /tac has (dapp/tac/app.js) that need nothing but the wallet or the passkey itself. A key pasted in, one saved in
 // the browser and one an extension funds each ask for a passphrase in tacit.js's own dialogs, which belong to the classic app.
 
-import { tabKeyRead, tabKeyWrite, tabKeyClear, tabKeyWatch } from '/tab-key.js?cb=a4c25d0e';
+import { tabKeyRead, tabKeyWrite, tabKeyClear, tabKeyWatch } from '/tab-key.js?cb=ec8829ac';
 
-const TACIT_URL = '/tacit.js?cb=da6e0cfc', KNOWN_URL = '/tacit-wallet-known.js?cb=ed4c75b7', EVM_URL = '/evm-wallet.js?cb=14e5326a';
+const TACIT_URL = '/tacit.js?cb=da6e0cfc', KNOWN_URL = '/tacit-wallet-known.js?cb=ec5b5193', EVM_URL = '/evm-wallet.js?cb=ce3b412c';
 const DEPS_URL = '/vendor/tacit-deps.min.js', PRF_URL = '/prf-wallet.js';
 const RECORD = 'tacit-trade-id-v1';                                           // how this page last opened a key: public data only
 const KNOWN_IDS = [RECORD, 'tacit-tac-id-v1', 'tacit-pay-hub-id-v1', 'tacit-lite-id-v1', 'tacit-pay-id-v1'];

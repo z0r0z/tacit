@@ -2,15 +2,15 @@
 // published proof, send a waiting settle from the open board, each from the visitor's own wallet, which pays the network fee and keeps any
 // fee the settle pays. Every call is permissionless on chain; no Tacit key touches this page. Moved here from the community ops page
 // (/weld/keeper/ now sends its visitors to these tabs), with the same modules doing the planning and building.
-import { makeEvmWallet, declinedWords } from '/evm-wallet.js?cb=14e5326a';
+import { makeEvmWallet, declinedWords } from '/evm-wallet.js?cb=ce3b412c';
 import { announceWalletConnect, wcSheets, dialogHost, WC_PROJECT_ID } from '/walletconnect.js?cb=843803d6';
 import { makeHeaderRelayAdvance } from '/header-relay-advance.js?cb=1c3a7226';
-import { addrView } from '/address-view.js?cb=57bc64d3';
+import { addrView } from '/address-view.js?cb=58dd4914';
 import { POOL, SEL_ANCESTRY, ATTEST_GAS, SETTLE_GAS, readProof, attestRefusal, encodeAttest, needsAncestry, ancestryCalls, ethText, ethFeeWei, feeWeiOf, readPrices, boardSummary, sendable, pickSettle, readBoard, reportLanded, settleCalldata } from '/community-ops.js';
 import { bodyType } from '/rpc-body.js';
 import { secp, keccak_256, sha256 } from '/vendor/tacit-deps.min.js';
-import { makeEvmAccount } from '/evm-account.js?cb=e48ce3f6';
-import { makeEvmTx } from '/evm-tx.js?cb=ed0eafb7';
+import { makeEvmAccount } from '/evm-account.js?cb=282a0d33';
+import { makeEvmTx } from '/evm-tx.js?cb=4e36f545';
 import { makeNostrBoard, mergeBoards } from '/nostr-board.js?cb=0feadbff';
 import { makeAutoRelay, AUTO_RESERVE_WEI } from '/prove/autorelay.js?cb=6d43079e';
 

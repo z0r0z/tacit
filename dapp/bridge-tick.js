@@ -1,17 +1,7 @@
-// The bridges this browser has under way, moved on by whichever page has them open: the front page every minute, the bridge page while it is
-// open. Each engine (burndep-ux.js on the way in from Bitcoin, crossout-ux.js on the way out to it) holds a lease on a bridge while it moves
-// it, so two tabs never move one at once. The page brings the engines, its key and what to say when a bridge moves; nothing here draws.
-//   const { moved } = await stepIn({ ux: t.bridgeUx(), pub, withKey, priv, planOf, alive, on: { burnSent, minted, traced } });
-//   const moved = await stepOut({ ux: t.crossoutUx(), pubs, records, keyPub, withKey, priv, rechecked, on: { arrived, fundWait } });
 
-// ── the way in: burndep-ux's stages ──
 export const IN_DONE = ['minted', 'reclaimed'], IN_HELD = ['not-recorded', 'stopped', 'recovered'];
 export const IN_BURN_SENT = ['burn-submitted', 'burn-mined', 'registered', 'folded', 'minted'];
-// a relay wait that ran out (the mint may still land): asked again sooner than a refusal
 export const waitRanOut = (e) => /settle timed out|status polling for job/i.test(e?.message || '');
-// A burn held back by the miner's rate (`feeWait`) or by a coin held for the key's other burns (`checkWait.fund`) is looked at again ten minutes
-// after the last look, or once another of the key's burns is sent (its change frees a coin), since a look reads the chains and builds the burn
-// again. `others` is the key's list of bridges.
 export const WAIT_LOOK_MS = 10 * 60e3;
 export function waitLookDue(rec, others = [], now = Date.now()) {
   const w = rec.checkWait?.fund ? rec.checkWait : rec.feeWait;
@@ -19,8 +9,6 @@ export function waitLookDue(rec, others = [], now = Date.now()) {
   return !!rec.checkWait?.fund && others.some((r) => r.id !== rec.id && IN_BURN_SENT.includes(r.stage) && Number(r.updatedAt || 0) > Number(w.at || 0));
 }
 
-// One pass over a key's bridges in: a mint armed with the relay where it can be, a burn sent where the holder's plan (or a finished history
-// check) says to, a ready mint sent when its retry is due, and every other bridge read again from the chains.
 export async function stepIn({ ux, pub, withKey, priv, planOf = () => null, alive = () => true, on = {} }) {
   let moved = false;
   for (const rec of ux.list(pub).filter((r) => !IN_DONE.includes(r.stage) && !IN_HELD.includes(r.stage))) {
@@ -45,9 +33,6 @@ export async function stepIn({ ux, pub, withKey, priv, planOf = () => null, aliv
   return { moved };
 }
 
-// ── the way out: crossout-ux's stages ──
-// A bridge out moved as far as it goes now: its proof, coverage and credit are read from the chains with no key; only the Bitcoin step
-// (from `covered`) is signed, and only under the bridge's own key.
 export const signsNext = (rec) => rec.stage === 'covered';
 export async function advanceOut(ux, pub, rec, { withKey, priv, keyPub, allowHighFee = false }) {
   let cur = rec;
@@ -61,9 +46,6 @@ export async function advanceOut(ux, pub, rec, { withKey, priv, keyPub, allowHig
   return cur;
 }
 
-// One pass over every journaled key's bridges out (`records(pub)` lists one key's under way). A burn whose claim was not matched to its record
-// is rebuilt from its Ethereum transaction, under the open key, at most every ten minutes; a Bitcoin step that keeps failing rests (two minutes
-// while it waits for bitcoin to pay its fee, ten otherwise, and for good after six tries that are neither). Returns the bridges that moved.
 export async function stepOut({ ux, pubs, records, keyPub, withKey, priv, rechecked = {}, on = {} }) {
   const k = keyPub(), moved = [];
   for (const [pub, listed] of pubs.flatMap((p) => records(p).map((r) => [p, r]))) {
@@ -85,8 +67,6 @@ export async function stepOut({ ux, pubs, records, keyPub, withKey, priv, rechec
       if (e?.fundWait && !rec.lastError?.fundWait) on.fundWait?.(rec, e);
     }
   }
-  // Bridges that arrived ready for Ethereum and are not bound yet: bound under the open key (crossout-ux.js bindNow), resting after a
-  // failure as the Bitcoin step does. `on.readied` hears each one made ready.
   if (ux.bindDue && k) {
     for (const rec of ux.list(k).filter((r) => ux.bindDue(r))) {
       if (keyPub() !== k) break;
@@ -101,17 +81,12 @@ export async function stepOut({ ux, pubs, records, keyPub, withKey, priv, rechec
   return moved;
 }
 
-// the keys this browser holds a bridge out for, by their journals' names
 export function outPubs(storage = localStorage) {
   const own = 'tacit-crossout-bridge-v1:mainnet:', pubs = [];
   try { for (let i = 0; i < storage.length; i++) { const k = storage.key(i) || ''; if (k.startsWith(own) && /^[0-9a-f]{66}$/.test(k.slice(own.length))) pubs.push(k.slice(own.length)); } } catch {}
   return pubs;
 }
 
-// ── bridges this browser has no record of ──
-// A key whose bridges this browser never saw (a new browser, or one whose data was cleared) is searched once through a longer stretch of its Bitcoin
-// history, and the others a little way back each time: a bridge's burn is among the transactions of the key's own Bitcoin address, 25 to a page.
-// `memory` is the page's small store ({ get(key), set(key, value) }, JSON): what was tried, and when the long search was done.
 export const FOUND_KEY = 'tacit-lite-bridge-found-v1', DEEP_KEY = 'tacit-lite-bridge-deep-v1';
 export const unsearched = (pub, listed, memory) => !!pub && !listed.length && !memory.get(DEEP_KEY)?.[pub];
 export async function discoverIn({ pub, listed, esplora, withKey, priv, memory }) {
@@ -130,5 +105,4 @@ export async function discoverIn({ pub, listed, esplora, withKey, priv, memory }
   if (deep && !left) { const m = memory.get(DEEP_KEY) || {}; m[pub] = Date.now(); memory.set(DEEP_KEY, m); }
   return { found, deep };
 }
-// how long before the next look: sooner for a key never searched
 export const discoverEvery = (deep, tab = false) => (deep ? 2 : tab ? 10 : 60) * 60e3;

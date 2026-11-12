@@ -2,9 +2,9 @@
 // and the private pools' farms are read as the rewards page reads them (trade/farm-read.js); TACD's and TACE's pools are the ones the points service's liquidity campaign
 // pays for (trade/lp-campaign.js). A tile, and an asset's farm link, go where that farm is joined: the front page's Earn card, on that pool, for the TAC/ETH farm and the
 // private ones; the vault's markets for TACD and TACE.
-import { ethCall, api, $ } from '/trade/util.js?cb=ba5a02b1';
-import { aprText, readPrecision, privateFarms } from '/trade/farm-read.js?cb=112a01b9';
-import { readCampaign, bestApr, notTrading } from '/trade/lp-campaign.js?cb=e1b8a224';
+import { ethCall, api, $ } from '/trade/util.js?cb=1d2cd8d3';
+import { aprText, readPrecision, privateFarms } from '/trade/farm-read.js?cb=efe1d81e';
+import { readCampaign, bestApr, notTrading } from '/trade/lp-campaign.js?cb=8da1c942';
 import { DEPLOYMENTS } from '/vault/deployments.js?cb=4af96594';
 
 const joinAt = (pid) => `/#card=earn:ether:${pid == null ? 'public' : `p${pid}`}`;

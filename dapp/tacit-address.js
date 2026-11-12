@@ -1,34 +1,3 @@
-// Unified Tacit address (tacit1… / tactt1… / tacrt1…) — one handle, two chains.
-//
-// Bundles the receive material for both lanes so a counterparty can pay the
-// holder on whichever chain they're transacting from:
-//   - BTC spend pubkey  → CXFER pubkey sends + stealth one-time derivation
-//   - BTC scan pubkey   → BIP-352 silent payments + stealth scan
-//   - EVM owner pubkey   → confidential-pool note transfer (== compressed wallet
-//                          pubkey: written out (0x02), or marked as the BTC
-//                          spend key (0x80) beside the pool lane)
-//   - Pool keys          → the shielded pools proved on the device (the EVM pool on
-//                          Ethereum, Base and Robinhood Chain, and the Bitcoin pool):
-//                          view key V (33, secp) ‖ A ‖ N (32 each, BabyJub), the same
-//                          97 bytes a bp1… address carries
-//
-// Payload: [version 0x00][flags][lanes in flag-bit order]. Lanes: 0x01 Bitcoin (spend ‖ scan, 66 bytes, required),
-// 0x02 Ethereum-side key (33), 0x04 pool keys (97). 0x80 carries no bytes: the Ethereum-side key is the Bitcoin spend
-// key, as it is for every key a Tacit app derives, so an address with the pool lane says so instead of repeating
-// 33 bytes (it never sets 0x02 as well). Bits 0x08 to 0x40 are reserved for later lanes, each of a length its own
-// definition fixes; they follow the known lanes, so a reader that does not know one reads the lanes it knows and
-// ignores the rest. With no unknown bit set the length is exact. A reader from before 0x80 sees the Bitcoin and pool
-// lanes and no Ethereum-side key, so it pays the pool and refuses a private send rather than guessing a key.
-//
-// All three derive deterministically from one wallet root — no new key material.
-// Sharing the address links the holder's OWN two lanes to whoever receives it
-// (inherent to a "pay me anywhere" handle); it does not weaken on-chain
-// unlinkability for anyone who lacks the address. Per-lane legacy addresses
-// remain fully supported for users who want lane isolation.
-//
-// Self-contained bech32m (BIP-350) so this module is importable in node tests
-// without the dapp monolith. `secp` is injected (same shape as the other
-// confidential-* factories).
 
 const _ALPHABET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
 const _CONST = 0x2bc830a3;
@@ -99,13 +68,8 @@ function _decode(addr) {
   const payload5 = d5.slice(0, d5.length - 6);
   return { hrp, payloadBytes: new Uint8Array(_convertBits(payload5, 5, 8, false)) };
 }
-// The raw bech32m step (case, separator, alphabet, checksum, 5→8 bit regroup), for callers that apply their
-// own payload rules over the same codec.
 export const decodeBech32m = _decode;
 
-// BIP-352 silent payment address. Same two keys the tacit1 handle already carries on its Bitcoin lane
-// (scan ‖ spend), re-encoded in the standard form so an ordinary Bitcoin wallet can pay it. bech32m with a
-// version ELEMENT (not a version byte) ahead of the 66-byte payload, and no 90-char limit — BIP-352 lifts it.
 export const SP_HRP_BY_NETWORK = { mainnet: 'sp', signet: 'tsp', testnet: 'tsp', regtest: 'sprt' };
 export function encodeSilentPayment({ network = 'mainnet', scanPub, spendPub, version = 0 } = {}) {
   if (!scanPub || scanPub.length !== 33) throw new Error('silent payment: scan pubkey must be 33 compressed bytes');
@@ -128,13 +92,9 @@ export const TACIT_ADDR_VERSION = 0x00;
 export const TACIT_LANE_BTC = 0x01;
 export const TACIT_LANE_EVM = 0x02;
 export const TACIT_LANE_POOL = 0x04;
-// The tacit chain lane: SHA-256 of the owner's full chain address (its spend keys, its secp256k1 scan key and its ML-KEM-768 key,
-// 1,345 bytes, too long to pass around), which a payer fetches from any leader's directory and checks against this hash
-// (tacit-chain-wallet.js chainAddressHash). Written last, so apps that predate it read the rest of the address unchanged.
 export const TACIT_LANE_CHAIN = 0x08;
 export const TACIT_EVM_IS_SPEND = 0x80;
 const TACIT_LANES_KNOWN = TACIT_LANE_BTC | TACIT_LANE_EVM | TACIT_LANE_POOL | TACIT_LANE_CHAIN | TACIT_EVM_IS_SPEND;
-// The pool lane is a bp1… address's payload; its prefix per network (btc-shielded-pool.js ADDRESS_HRP).
 export const POOL_HRP_BY_NETWORK = { mainnet: 'bp', signet: 'tbp' };
 
 function _concat(...arrs) {
@@ -150,9 +110,6 @@ export function makeTacitAddress({ secp }) {
     secp.ProjectivePoint.fromHex(Array.from(u8, (x) => x.toString(16).padStart(2, '0')).join(''));
   };
 
-  // poolKeys: the 97-byte pool payload (V ‖ A ‖ N), as a bp1… address carries it; see poolKeysOf. With it, an
-  // Ethereum-side key equal to the spend key is written as 0x80 rather than repeated; without it the address is the
-  // form every app has published since the start (flags 0x03), byte for byte.
   function encodeTacitAddress({ network, btcSpendPub, btcScanPub, evmOwnerPub, poolKeys, chainHash }) {
     const hrp = TACIT_HRP_BY_NETWORK[network];
     if (!hrp) throw new Error(`unknown network: ${network}`);
@@ -218,7 +175,6 @@ export function makeTacitAddress({ secp }) {
   return { encodeTacitAddress, decodeTacitAddress };
 }
 
-// The bp1… (tbp1… on signet) address for a 97-byte pool payload.
 export function poolAddressOf(keys, network = 'mainnet') {
   const hrp = POOL_HRP_BY_NETWORK[network];
   if (!hrp) throw new Error(`no pool address prefix for ${network}`);
@@ -226,8 +182,6 @@ export function poolAddressOf(keys, network = 'mainnet') {
   return _encode(hrp, keys);
 }
 
-// The 97-byte pool payload of a bp1… (or tbp1…) address, for encodeTacitAddress's poolKeys. Checks the prefix and
-// the length; the keys themselves are checked by whatever pays them (btc-shielded-pool.js decodeAddress).
 export function poolKeysOf(poolAddress) {
   const { hrp, payloadBytes } = _decode(String(poolAddress).trim());
   if (!Object.values(POOL_HRP_BY_NETWORK).includes(hrp)) throw new Error(`HRP ${hrp} is not a pool address HRP`);

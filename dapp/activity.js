@@ -1,7 +1,3 @@
-// The Activity journal: what this browser has set going (relay jobs, Ethereum and Bitcoin transactions, pool ops), kept in localStorage
-// so another tab, or another page of the site, reads the same list. The front page writes it and follows each entry to its end; this
-// module is what any page needs to read it: the key, when an entry has ended, the names of the relay's jobs, and how many are still going.
-// No DOM, no network.
 
 export const ACT_KEY = 'tacit-lite-activity-v1', ACT_MAX = 20;
 
@@ -15,20 +11,16 @@ export const JOB_LABEL = {
   bridgeburn: 'Bridge out', fastlane: 'Cross-chain move', adaptorlock: 'Atomic swap', adaptorclaim: 'Atomic swap claim', adaptorrefund: 'Atomic swap refund',
 };
 
-// the statuses each kind of entry ends in ('chain': a payment, shield, withdrawal or move on the Tacit chain, handed to the leader and followed to its block)
 export const ENDS = { job: ['settled', 'proven', 'failed', 'unknown'], tx: ['confirmed', 'failed', 'stale'], btc: ['confirmed', 'stale'], op: ['settled', 'failed', 'unknown'], chain: ['settled', 'failed', 'unknown'] };
 export const ended = (it) => ENDS[it.kind]?.includes(it.status) ?? true;
 
 export function readActivity() {
   let v = null;
   try { v = JSON.parse(localStorage.getItem(ACT_KEY)); } catch {}
-  // an entry the page cannot show is dropped, and an op without its steps gets none, so one odd entry never stops the list opening
   return { items: [].concat(Array.isArray(v?.items) ? v.items : []).filter((x) => x && typeof x === 'object' && x.id && ENDS[x.kind]).map((x) => (x.kind === 'op' && !Array.isArray(x.steps) ? { ...x, steps: [] } : x)), cleared: Number(v?.cleared) || 0 };
 }
-// the entries shown (a step nested in another is shown inside it)
 export const listed = (items) => items.filter((x) => !x.in);
 
-// A settled op that burned for a bridge to Bitcoin is not done until the Bitcoin step has landed: its row in the bridge journal says where it is.
 const BR = new Map();
 export function actBridge(it) {
   if (it.kind !== 'op' || it.status !== 'settled' || !it.hash || !it.pub) return null;
@@ -43,34 +35,21 @@ export function actBridge(it) {
 export const actOpen = (it) => { const b = actBridge(it); return !!b && b.stage !== 'minted'; };
 export const actDone = (it) => ended(it) && !actOpen(it);
 
-// what the Activity chip shows: how many entries there are, and how many are still going
 export function activityCount(items = readActivity().items) {
   const top = listed(items);
   return { total: top.length, live: top.filter((x) => !actDone(x)).length };
 }
 
-// another tab's write (the journal, or a bridge's): `fn` is called, and the returned function stops it
 export function onActivity(fn) {
   const h = (e) => { if (!e.key || e.key === ACT_KEY || e.key.startsWith('tacit-crossout-bridge-v1:')) fn(); };
   addEventListener('storage', h);
   return () => removeEventListener('storage', h);
 }
 
-// ── writing it: a page that sets things going keeps the journal, and follows each entry to its end ──
-
-// A status only moves forward: a late answer from a slower source does not take an entry back (a settled job is not made pending again).
 const RANK = { pending: 0, proving: 1, stale: 1, open: 1.5, sending: 1.5, proven: 2, failed: 2, unknown: 2, settled: 3, confirmed: 3 };
 export const OPENISH = ['open', 'sending'];
 export const ahead = (next, cur) => next !== cur && (cur == null || cur === 'unknown' || next === 'settled' || next === 'confirmed' || (OPENISH.includes(next) && OPENISH.includes(cur)) || (RANK[next] ?? -1) > (RANK[cur] ?? -1));
 
-// The journal as the page that writes it holds it. `state` is { items, cleared }, read and replaced in place by the page as it likes; `put`
-// adds an entry or moves one on, keeps the newest ACT_MAX, and saves (batched; at once when the page is left). What the page does on top:
-//   pub()               the open key's public key, recorded on a new entry
-//   onTrim()            before old entries are let go
-//   onStatus(it, prev)  an entry's status changed (after `end` and the rest are set)
-//   onChange(it)        after every put
-// `shared`: a page other than the front one, which keeps no list of its own: each read and each put starts from what is stored, and a put is
-// written at once, so it never writes back a list another tab has moved on since (the front page merges what such a page writes).
 export function makeJournal({ pub = () => null, onTrim = () => {}, onStatus = () => {}, onChange = () => {}, shared = false } = {}) {
   const state = readActivity();
   const fresh = () => { if (shared) Object.assign(state, readActivity()); };
@@ -100,7 +79,7 @@ export function makeJournal({ pub = () => null, onTrim = () => {}, onStatus = ()
     }
     if (it.status !== prev) {
       it.up = Date.now();
-      (it.ts ||= {})[it.status] ??= it.up;                // when each state was first seen: what a bar of how far along it is reads
+      (it.ts ||= {})[it.status] ??= it.up;
       if (ended(it) && ['failed', 'stale', 'unknown'].includes(prev) && !it.sent) it.flip = true;
       it.end = ended(it) ? it.end || Date.now() : null;
       if (it.status === 'proving') it.prov = true;
@@ -112,15 +91,6 @@ export function makeJournal({ pub = () => null, onTrim = () => {}, onStatus = ()
   return { state, get, put, trim, save, write };
 }
 
-// Following entries to their end: a relay job by its status, an Ethereum transaction by its receipt, a Bitcoin one until it confirms.
-// One follower per entry at a time. What the page supplies:
-//   jobStatus(jobId)        the relay's answer ({ status, txHash, error })
-//   receipt(hash, chain)    waits for a receipt (null if it never comes); receiptOnce(hash, chain) asks once
-//   btcConfirmed(txid)      true once Bitcoin has it in a block
-//   live(id)                a job this page is still running itself (its own steps report it, so the relay is not asked)
-//   own(id), onOwn(id)      a job proved on this device, which the relay knows nothing of: handed back to the page
-//   onSlow(it)              a job still pending after a minute
-//   finished(id, hash)      what a confirmed transaction finishes (its `finishes`)
 export function makeFollow({ journal, jobStatus, receipt, receiptOnce, btcConfirmed, live = () => false, own = () => false, onOwn = () => {}, onSlow = () => {}, finished = () => {} }) {
   const going = new Map(), sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const hidden = () => typeof document !== 'undefined' && document.hidden;
@@ -170,19 +140,12 @@ export function makeFollow({ journal, jobStatus, receipt, receiptOnce, btcConfir
   return { job, tx, btc, going };
 }
 
-// The relay's own state, for a job in line: busy, held, paused or down (null when it is taking work). Read at most every 15 s.
-//   api             the worker's base URL;   base()  the relay's base URL (the deployment's, else the worker's)
-//   uxState()       the pool module's own reading, if it has one;   onChange()  the state changed
-// How far along a relayed action is, for its bar and its time left: each part's expected seconds (learned in this browser from the actions
-// that went through, seeded with the relay's usual pace) set against the time it has had. A relay job waits its turn (and those ahead of it),
-// is proved (on Tacit's own machine, or the prover network), then sent; a transaction lands in about a block. A part past its expected
-// time is given a little more, never none, so the bar slows near its end rather than stopping, and it is full only once the action ends.
 export const PACE_KEY = 'tacit-pace-v1';
 const PACE0 = { queue: 8, 'prove:board': 60, 'prove:network': 100, prove: 70, send: 18, tx: 15 };
 const laneOf = (lane) => (/^network/.test(String(lane || '')) ? 'network' : lane === 'board' ? 'board' : null);
 export function makePace({ storage = globalThis.localStorage } = {}) {
   let P = { ...PACE0 };
-  try { P = { ...PACE0, ...JSON.parse(storage?.getItem(PACE_KEY) || '{}') }; } catch { /* the seeds */ }
+  try { P = { ...PACE0, ...JSON.parse(storage?.getItem(PACE_KEY) || '{}') }; } catch { }
   const proveOf = (lane) => P[`prove:${laneOf(lane)}`] ?? P.prove;
   const sum = (stages, now) => {
     let spent = 0, left = 0, live = false;
@@ -193,22 +156,19 @@ export function makePace({ storage = globalThis.localStorage } = {}) {
     }
     return { spent, left };
   };
-  // a relay job: { status, at, ts: { [status]: first seen }, lane, ahead }
   function job(it, now = Date.now()) {
     const ts = it.ts || {}, prove = proveOf(it.lane), pAt = ts.proving, sAt = ts.proven || ts.sending || ts.open;
     return sum([[P.queue + (it.ahead > 0 ? it.ahead * prove : 0), it.at, pAt || sAt], [prove, pAt || null, sAt], [P.send, sAt || null, it.end]], now);
   }
   const tx = (it, now = Date.now()) => sum([[P.tx, it.at, it.end]], now);
-  // what one more relay job would take, for an action whose main job is not asked for yet
   const ahead = (lane = null) => P.queue + proveOf(lane) + P.send;
   const of = ({ spent, left }) => ({ spent, left, pct: Math.min(97, Math.max(3, Math.round((spent / Math.max(1, spent + left)) * 100))) });
-  // a job that went through teaches the pace its parts took
   function learn(it) {
     const ts = it.ts || {}, pAt = ts.proving, sAt = ts.proven || ts.sending || ts.open, put = (k, ms) => { const v = ms / 1000; if (v > 0 && v < 1800) P[k] = Math.round((P[k] ?? v) * 0.7 + v * 0.3); };
     if (it.kind !== 'job' || it.status !== 'settled' || !sAt || !it.end) return;
     if (pAt) { put('queue', pAt - it.at); put(`prove:${laneOf(it.lane) || 'board'}`, sAt - pAt); } else put('prove', sAt - it.at);
     put('send', it.end - sAt);
-    try { storage?.setItem(PACE_KEY, JSON.stringify(P)); } catch { /* a convenience */ }
+    try { storage?.setItem(PACE_KEY, JSON.stringify(P)); } catch { }
   }
   return { job, tx, ahead, of, learn, get: () => ({ ...P }) };
 }
@@ -221,7 +181,6 @@ export const WAIT_WHY = {
 };
 const RELAY_WHY = { busy: 'busy', held: 'held', paused: 'paused', down: 'down' };
 const within = (ms) => (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(ms) : undefined);
-// `others()`: the other relays a job may have gone to (confidential-relay.js): one of theirs carries the relay's address after an '@'.
 export function makeRelayState({ api, base = async () => api, others = async () => [], uxState = async () => null, onChange = () => {} }) {
   const state = { at: 0, why: null, reading: null };
   async function jobStatus(jobId) {
@@ -254,7 +213,6 @@ export function makeRelayState({ api, base = async () => api, others = async () 
     }, () => { state.at = Date.now(); return null; }).finally(() => { if (state.reading === p) state.reading = null; });
     return p;
   }
-  // the last reading, and a fresh one asked for in the background when it is old
   function why() {
     if (Date.now() - state.at < 15e3 || state.reading) return state.why;
     now().catch(() => {});
@@ -263,9 +221,6 @@ export function makeRelayState({ api, base = async () => api, others = async () 
   return { state, jobStatus, now, why };
 }
 
-// A page other than the front one that sets relay jobs going (the borrow page): each job goes into the shared journal under the name the page
-// gives it, moves on as the relay client announces it, and is followed to its end while the page is open; the front page follows it from the
-// same journal whenever it is opened. `wait(label)` is what a pool call takes as its waitOpts.
 export function makeRunner({ api, base, pub = () => null, btcConfirmed = async () => false }) {
   const journal = makeJournal({ pub, shared: true });
   const relay = makeRelayState({ api, base });

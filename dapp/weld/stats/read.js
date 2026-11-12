@@ -1,11 +1,3 @@
-// The weld stats reading: what is read, from where, and how each figure is counted. The stats page runs it in the
-// browser and the API runs the same reading for its shared snapshot, so both say the same thing. Public data only.
-//
-// Logs come from the chains' own RPCs, each endpoint asked for as wide a range as it serves. The one thing an RPC can't
-// answer, a contract's transaction list (attestations, ETH moved in and out), comes from keyless explorers that allow
-// each caller only a few requests an hour, so they are taken in turn and asked as little as possible. Everything read
-// that is final is kept (`keep`, returned with each reading and handed back to the next), so a later reading asks only
-// for what is new.
 
 import { ETH_LOG_NODES } from '../../eth-nodes.js';
 import { bodyType } from '../../rpc-body.js';
@@ -23,12 +15,9 @@ export const A = {
 };
 export const ID = { ceth: '0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34', tac: '0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b' };
 export const ZERO32 = '0x' + '00'.repeat(32);
-// The wallets that relay settles for users and so receive each settle's fee mint (the relay key and the settle key).
 const RELAYERS = new Set(['0x68575b073de49a94e3e3acf6f3a0d6e3b66267c7', '0x7a0f0511e1dcf399c2f7bbe8414b6a0d1abc4331']);
-// The protocol's own: the ops multisig (the reserve) and the airdrop contract. The founding bridge of the treasury TAC to Ethereum was
-// minted to them (about 2.4M of the token's 2.5M supply), which is not something an account did, so it is not counted as made public.
 const OWN = new Set(['0x006cd14f36f65ecbb29b2519ccbe63a0dc8549f2', '0x4b4cb98d0c836c2783ac46f0078b904dab533ae8']);
-const TIMES_MAX = 400;   // how many of the newest event times the TAC part carries each way
+const TIMES_MAX = 400;
 const FROM = { main: 25998000, evm: { 8453: 51864014, 4663: 73991661 } };
 export const TOPIC = {
   wrap: '0xf5d1711d21af6f42622ab6237626933cefc42cc9f0663d81b7c4c7bc5ce99e44',
@@ -50,8 +39,6 @@ export const SEL = {
   attest: '0x0b36171c', anchorTip: '0x89fa7909', totalAllocated: '0x45f7f249', totalClaimed: '0xd54ad2a1',
   lockSpent: '0x993ed045', lockRedeemed: '0xb5229671', outstandingCusd: '0xa42542c0',
 };
-// `final`: how deep a block must be before what was read up to it is kept rather than read again (about a quarter of an
-// hour on each chain, so neither a reorg nor an endpoint or explorer running behind leaves anything out for good).
 export const CHAINS = {
   1: { rpc: ETH_LOG_NODES, bs: 'https://eth.blockscout.com', final: 75, slot: 12 },
   8453: { rpc: ['https://base-rpc.publicnode.com', 'https://base.drpc.org', 'https://mainnet.base.org'], bs: 'https://base.blockscout.com', final: 450, slot: 2 },
@@ -59,11 +46,10 @@ export const CHAINS = {
 };
 export const API = 'https://api.tacit.finance';
 const ESPLORA = ['https://mempool.space/api', 'https://blockstream.info/api'];
-const TX_FINAL = 300;       // an explorer's transaction lists run a little behind the chain; an hour back is re-read
-const BOARD_MAX = 500;      // the points API lists at most this many accounts
-const TIMED_MAX = 300;      // logs from more blocks than this are dated by an estimate rather than asking for each block
+const TX_FINAL = 300;
+const BOARD_MAX = 500;
+const TIMED_MAX = 300;
 
-// ── words and numbers ────────────────────────────────────────────────────────────────────────────────────────
 const strip = (h) => String(h || '').replace(/^0x/, '');
 export const W = (hex, i) => BigInt('0x' + (strip(hex).slice(i * 64, i * 64 + 64) || '0'));
 const I256 = (w) => (w >> 255n ? w - (1n << 256n) : w);
@@ -77,10 +63,7 @@ function abiString(data, at) {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// A reading as JSON and back: amounts are bigints, written as { $n: "…" }.
 export const toJson = (v) => JSON.stringify(v, (_, x) => (typeof x === 'bigint' ? { $n: x.toString() } : x));
-// The amounts are put back by one walk over the parsed value: a reviver passed to JSON.parse is called from native code once per value and
-// took 110 ms on the API's 2.9 MB reading, where parse and walk together take 30.
 const revive = (x) => {
   if (Array.isArray(x)) { for (let i = 0; i < x.length; i++) { const v = x[i]; if (v && typeof v === 'object') x[i] = revive(v); } return x; }
   if ('$n' in x) return BigInt(x.$n);
@@ -89,29 +72,20 @@ const revive = (x) => {
 };
 export const fromJson = (s) => { const v = JSON.parse(s); return v && typeof v === 'object' ? revive(v) : v; };
 
-// Only what the figures use is kept of each log and transaction: a log's data where a figure reads it, else the count
-// or amount it is read for.
 function slimLog(l) {
   const t = (l.topics || []).map(lc), t0 = t[0], ts = l.blockTimestamp ?? l.timeStamp;
-  // A node that doesn't know a block's time may leave it out or give 0; either way it is dated later.
   const out = { b: num(l.blockNumber), i: num(l.logIndex || 0), h: lc(l.transactionHash), a: lc(l.address), t, ts: ts == null || ts === '' ? null : num(ts) || null };
   if (t0 === TOPIC.leaves || t0 === TOPIC.spent) out.n = arrayLen(l.data, 0);
   else if (t0 === TOPIC.transact) { out.x = I256(W(l.data, 5)).toString(); out.f = W(l.data, 7).toString(); }
   else if (t0 !== TOPIC.locks) out.d = l.data;
   return out;
 }
-// `c` is an internal transfer's call type (a transaction sent to the contract is always a call).
 const slimTx = (t, internal) => ({
   h: lc(t.hash || t.transactionHash), b: Number(t.blockNumber), ts: Number(t.timeStamp), f: lc(t.from), t: lc(t.to), v: String(t.value || '0'),
   e: String(t.isError ?? '0'), m: lc(t.methodId || String(t.input || '').slice(0, 10)), c: internal ? t.callType || t.type || 'call' : 'call', ix: t.index ?? t.traceId ?? '',
 });
 
-// `getApi(path)` answers the relay's own reads (the points board, the reflection's status); the API passes its own, the
-// page asks api.tacit.finance.
-// `logBudget` is how many times a reading may ask the nodes for one contract's logs: a browser's few, and more for the API's
-// shared reading, so a history too long for one reading is read in a few (each keeps what it read; see logsOf).
 export function makeStatsReader({ fetchImpl = (...a) => fetch(...a), gapMs = 200, getApi = null, logBudget = 12 } = {}) {
-  // ── RPC: an endpoint that doesn't answer goes to the back of its chain's list for a minute ────────────────────
   const COOL = 60e3;
   const eps = Object.fromEntries(Object.entries(CHAINS).map(([c, x]) => [c, x.rpc.map((url) => ({ url, cool: 0, span: Infinity }))]));
   const byHealth = (chain) => { const now = Date.now(), e = eps[chain]; return [...e.filter((x) => x.cool <= now), ...e.filter((x) => x.cool > now)]; };
@@ -123,16 +97,14 @@ export function makeStatsReader({ fetchImpl = (...a) => fetch(...a), gapMs = 200
       throw Object.assign(new Error((e && e.message) || String(e)), { kind: 'transport', timeout: !!e && (e.name === 'TimeoutError' || e.name === 'AbortError') });
     }
     let j = null;
-    try { j = await r.json(); } catch { /* not JSON */ }
+    try { j = await r.json(); } catch { }
     if (j && !Array.isArray(j) && j.error) {
-      // Some nodes say why in `data` (Tenderly: message "invalid params", data "… maximum 1000 blocks …").
       const msg = String(j.error.message || 'rpc error') + (typeof j.error.data === 'string' ? `: ${j.error.data}` : '');
       throw Object.assign(new Error(msg), { kind: r.status === 429 || /rate limit|too many requests|usage limit/i.test(msg) ? 'busy' : 'rpc' });
     }
     if (!r.ok || j == null) throw Object.assign(new Error(`rpc ${r.status}`), { kind: r.status === 429 ? 'busy' : 'http' });
     return j;
   }
-  // The first endpoint's answer, or with `found` the first that isn't empty (a node may not serve older transactions).
   async function rpc(chain, method, params, found = false) {
     let last = null;
     for (const ep of byHealth(chain)) {
@@ -144,7 +116,6 @@ export function makeStatsReader({ fetchImpl = (...a) => fetch(...a), gapMs = 200
     }
     throw last || new Error('no RPC answered');
   }
-  // Many requests in one where a node takes a batch; a request no node answers reads as null.
   async function batch(chain, reqs) {
     for (const ep of byHealth(chain)) {
       try {
@@ -152,31 +123,25 @@ export function makeStatsReader({ fetchImpl = (...a) => fetch(...a), gapMs = 200
         if (!Array.isArray(j)) throw new Error('no batch');
         const by = new Map(j.map((x) => [x.id, x]));
         return reqs.map((_, i) => by.get(i)?.result ?? null);
-      } catch { /* the next node */ }
+      } catch { }
     }
     return reqs.map(() => null);
   }
-  // Many reads in one request where a node takes a batch and answers every one, else one by one.
   async function calls(chain, list) {
     const got = await batch(chain, list.map(([to, data]) => ['eth_call', [{ to, data }, 'latest']]));
     const out = [];
     for (let i = 0; i < list.length; i++) out.push(got[i] ?? (await rpc(chain, 'eth_call', [{ to: list[i][0], data: list[i][1] }, 'latest'])));
     return out;
   }
-  // eth_getLogs over [from, to], each endpoint asked for the whole remaining range first. One that won't serve a range
-  // that wide names its cap ("max range: 800"), kept for the reading, or says the answer is too large, and the range
-  // halves until it fits. Past `budget` requests it gives up, for the caller to ask the explorer instead.
   function narrower(e, span) {
     if (e.kind === 'transport') return e.timeout && span > 2000 ? { span: Math.floor(span / 2) } : null;
     if (e.kind !== 'rpc') return null;
-    const cap = e.message.match(/(?:max(?:imum)?\b\D{0,24}|\bover\s+|\bup to\s+|limited to\s+(?:a\s+)?|\bonly\s+)([\d,]{2,})/i);   // Robinhood: "… but only 10000000 are allowed"
+    const cap = e.message.match(/(?:max(?:imum)?\b\D{0,24}|\bover\s+|\bup to\s+|limited to\s+(?:a\s+)?|\bonly\s+)([\d,]{2,})/i);
     if (cap) { const n = Number(cap[1].replace(/,/g, '')); return n < span ? { span: n, cap: n } : null; }
     return /too (large|wide|big|many)|exceed|more than|response size|narrow the/i.test(e.message) && span > 1 ? { span: Math.floor(span / 2) } : null;
   }
   async function getLogs(chain, address, from, to, budget = 12, topics = null) {
     const out = [];
-    // A node that refuses without naming a span (publicnode wants a token for old blocks) is left out for the rest of this
-    // read: it would refuse every piece of it. It is asked again on the next read, which may want only recent blocks.
     const refused = new Set();
     let asked = 0;
     for (let start = from, last = null; start <= to;) {
@@ -187,7 +152,7 @@ export function makeStatsReader({ fetchImpl = (...a) => fetch(...a), gapMs = 200
         let span = Math.min(to - start + 1, ep.span);
         while (!got) {
           if (++asked > budget) throw Object.assign(new Error('too many requests to read these logs from RPC'), { kind: 'budget', partial: { logs: out, end: start - 1 } });
-          if (asked > 12 && gapMs) await sleep(gapMs);                       // a long read goes a little apart
+          if (asked > 12 && gapMs) await sleep(gapMs);
           const end = start + span - 1;
           try {
             const { result } = await post(ep.url, { jsonrpc: '2.0', id: 1, method: 'eth_getLogs', params: [{ address, ...(topics ? { topics } : {}), fromBlock: '0x' + start.toString(16), toBlock: '0x' + end.toString(16) }] }, 25e3);
@@ -209,9 +174,6 @@ export function makeStatsReader({ fetchImpl = (...a) => fetch(...a), gapMs = 200
     return out;
   }
 
-  // ── explorers: Blockscout and Routescan, both keyless and Etherscan-compatible, taken in turn so neither carries
-  // every request. One that is busy or down is set aside for ten minutes and its request goes to the other. Requests go
-  // one at a time, a little apart. ──
   const EXPLORERS = {
     1: ['https://eth.blockscout.com/api', 'https://api.routescan.io/v2/network/mainnet/evm/1/etherscan/api'],
     8453: ['https://base.blockscout.com/api', 'https://api.routescan.io/v2/network/mainnet/evm/8453/etherscan/api'],
@@ -227,15 +189,13 @@ export function makeStatsReader({ fetchImpl = (...a) => fetch(...a), gapMs = 200
     for (let i = 0; ; i++) {
       const r = await slot(() => fetchImpl(url, { signal: AbortSignal.timeout(30e3) }).then(async (res) => ({ status: res.status, body: await res.text() })));
       let j = null;
-      try { j = JSON.parse(r.body); } catch { /* not JSON */ }
+      try { j = JSON.parse(r.body); } catch { }
       const busy = r.status === 429 || /too many requests|rate limit/i.test(`${j?.message || ''} ${typeof j?.result === 'string' ? j.result : ''}`);
       if (!busy && j && (Array.isArray(j.result) || /no (records|transactions) found/i.test(`${j.message} ${j.result}`))) return Array.isArray(j.result) ? j.result : [];
       if (busy || i >= 1) throw new Error(busy ? 'explorer busy' : `explorer answered ${r.status}`);
       await sleep(1500);
     }
   }
-  // Every item a query lists from `from`, a thousand at a time, all from one explorer: each page resumes at the block the
-  // last one ended in, so no block is split across pages unseen.
   async function listed(chain, query, blockOf, keyOf, from) {
     const bases = EXPLORERS[chain], first = (turn[chain] = ((turn[chain] ?? -1) + 1) % bases.length), now = Date.now();
     const order = bases.map((_, i) => bases[(first + i) % bases.length]).sort((a, b) => ((aside.get(a) || 0) > now) - ((aside.get(b) || 0) > now));
@@ -269,16 +229,11 @@ export function makeStatsReader({ fetchImpl = (...a) => fetch(...a), gapMs = 200
   }
   const api = getApi || ((path) => fetchImpl(API + path, { signal: AbortSignal.timeout(15e3) }).then((r) => (r.ok ? r.json() : Promise.reject(new Error(`API ${r.status}`)))));
 
-  // ── the reading ───────────────────────────────────────────────────────────────────────────────────────────────
-  // `keep` is what an earlier reading kept (or {}); `onPart(name, value)` hears each part as it is read. Returns the
-  // reading (each part, or null with its error in `errors`) and what to keep for the next one.
   async function read(keep = {}, { onPart = () => {} } = {}) {
     const k = { v: 2, logs: { ...(keep.v === 2 ? keep.logs : {}) }, txs: { ...(keep.v === 2 ? keep.txs : {}) }, senders: { ...(keep.v === 2 ? keep.senders : {}) } };
     const heads = {};
     const head = (chain) => (heads[chain] ||= rpc(chain, 'eth_blockNumber', []).then((h) => Number(BigInt(h))));
 
-    // Logs from `from` of the given contracts, new ones read and final ones kept. RPC first; where it would take too many
-    // requests (a first reading on a chain whose nodes serve short ranges), the explorer, one contract at a time.
     async function logsOf(name, chain, addresses, from, topics = null) {
       const to = await head(chain), final = CHAINS[chain].final, kept = k.logs[name], start = kept ? kept.to + 1 : from;
       let fresh = [];
@@ -291,8 +246,6 @@ export function makeStatsReader({ fetchImpl = (...a) => fetch(...a), gapMs = 200
             for (const a of addresses) fresh.push(...(await bsLogs(chain, a, start)).filter((l) => num(l.blockNumber) <= to
               && (!topics || topics.every((t, i) => t == null || String(l.topics[i] || '').toLowerCase() === String(t).toLowerCase()))));
           } catch (e2) {
-            // Neither the nodes nor an explorer gave it all: what the nodes did read, up to a final block, is kept, so the next
-            // reading goes on from there instead of from the start (Base's nodes answer 500 or 1,000 blocks at a time).
             const upto = Math.min(e.partial ? e.partial.end : start - 1, to - final);
             if (upto >= start) k.logs[name] = { to: upto, items: [...(kept ? kept.items : []), ...e.partial.logs.map(slimLog).filter((l) => l.b <= upto).sort((x, y) => x.b - y.b || x.i - y.i)] };
             throw e2;
@@ -304,7 +257,6 @@ export function makeStatsReader({ fetchImpl = (...a) => fetch(...a), gapMs = 200
       if (to - final >= start - 1) k.logs[name] = { to: to - final, items: all.filter((l) => l.b <= to - final) };
       return all;
     }
-    // A contract's transactions (or internal transfers) from the explorer, new ones read and those an hour deep kept.
     async function txsOf(name, action) {
       const to = await head(1), kept = k.txs[name], start = kept ? kept.to + 1 : 0;
       const fresh = (await bsTxs(1, A.pool, action, start)).map((t) => slimTx(t, action === 'txlistinternal'));
@@ -312,9 +264,6 @@ export function makeStatsReader({ fetchImpl = (...a) => fetch(...a), gapMs = 200
       if (to - TX_FINAL >= start - 1) k.txs[name] = { to: to - TX_FINAL, items: all.filter((t) => t.b <= to - TX_FINAL) };
       return all;
     }
-    // A log without its block's time (not every node gives it) is dated by its block, all the blocks asked for together;
-    // one no node answers (or when there are too many to ask for) is placed by its distance from the head, and left
-    // undated if even the head can't be had. Undated logs are dated on a later reading.
     async function timed(items, chain) {
       const missing = [...new Set(items.filter((l) => !l.ts).map((l) => l.b))];
       if (!missing.length) return items;
@@ -333,14 +282,11 @@ export function makeStatsReader({ fetchImpl = (...a) => fetch(...a), gapMs = 200
     }
     const once = (fn) => { let p = null; return () => (p ||= fn()); };
     const main = once(() => logsOf('1', 1, [A.pool, A.engine, A.airdrop, A.evmPool], FROM.main));
-    // TAC leaving the shielded set: the token's mints alone (Transfer from the zero address), asked for with that filter so a
-    // reading never pulls or keeps the token's ordinary transfers.
     const tacMints = once(() => logsOf('tacmint', 1, [A.tac], FROM.main, [TOPIC.transfer, ZERO32]));
     const poolTxs = once(() => txsOf('txlist', 'txlist'));
     const internal = once(() => txsOf('internal', 'txlistinternal'));
     const of = (address, topic) => (ls) => ls.filter((l) => l.a === lc(address) && (!topic || l.t[0] === topic));
 
-    // The sender of each deposit: batches of fifty, then each one they missed asked node by node, a few at a time; a sender never changes.
     async function senders(hashes) {
       const todo = hashes.filter((h) => !k.senders[h]), missed = [];
       for (let i = 0; i < todo.length; i += 50) {
@@ -356,15 +302,10 @@ export function makeStatsReader({ fetchImpl = (...a) => fetch(...a), gapMs = 200
     async function readEth() {
       const [pool, held, direct, int_] = await Promise.all([main().then(of(A.pool, TOPIC.wrap)), rpc(1, 'eth_getBalance', [A.pool, 'latest']).then(BigInt), poolTxs(), internal()]);
       const eth = pool.filter((l) => l.t[2] === ID.ceth);
-      // Every ETH movement in and out, deposits or not (a public swap also brings ETH in). A delegatecall frame repeats its
-      // caller's value without moving any ETH, so only calls count.
       const moved = (t) => t.e === '0' && BigInt(t.v) > 0n && t.c === 'call';
       const ins = [...direct, ...int_].filter((t) => moved(t) && t.t === lc(A.pool));
       const outs = int_.filter((t) => moved(t) && t.f === lc(A.pool));
       const sent = await senders([...new Set(eth.map((l) => l.h))]);
-      // An explorer's list can leave a transaction out. A deposit it left out is still in the Wrap logs, which come from the nodes,
-      // so each deposit whose transaction the lists have no ETH into the pool for is added from its log: what is held over time
-      // then follows the balance.
       const listed = new Set(ins.map((t) => t.h));
       const unlisted = eth.filter((l) => l.ts && !listed.has(l.h));
       return {
@@ -385,8 +326,6 @@ export function makeStatsReader({ fetchImpl = (...a) => fetch(...a), gapMs = 200
       };
       return Promise.all([1, 8453, 4663].map(async (chain) => {
         const [bal, ls] = await Promise.all([rpc(chain, 'eth_getBalance', [A.evmPool, 'latest']).then(BigInt).catch(() => null), src[chain]().catch(() => null)]);
-        // Out is what the pool paid: each withdrawal, and each relayer fee, which it pays on top. What a move does to the
-        // pool's balance is its amount less that fee, deposit or withdrawal.
         let dep = 0n, wd = 0n, nd = 0, nw = 0;
         const ins = [], flows = [];
         for (const l of ls || []) {
@@ -406,8 +345,6 @@ export function makeStatsReader({ fetchImpl = (...a) => fetch(...a), gapMs = 200
     async function readBtc() {
       const [ls, [tacbtc, tacusd, outstanding]] = await Promise.all([main().then(of(A.engine)), calls(1, [[A.tacbtc, SEL.totalSupply], [A.tacusd, SEL.totalSupply], [A.engine, SEL.outstandingCusd]])]);
       const [posted, minted, closed, liquidated] = [TOPIC.posted, TOPIC.cdpMinted, TOPIC.cdpClosed, TOPIC.cdpLiquidated].map((t) => ls.filter((l) => l.t[0] === t));
-      // Each lock, found by its bond: its proven sats, whether cBTC was minted on it, whether it has since been spent on
-      // Bitcoin or redeemed, and the bond it holds now.
       const outpoints = [...new Set(posted.map((l) => l.t[1]))];
       const per = [[A.pool, SEL.lockVBtc], [A.pool, SEL.minted], [A.pool, SEL.lockSpent], [A.pool, SEL.lockRedeemed], [A.engine, SEL.escrowTotal]];
       const reads = outpoints.length ? await calls(1, outpoints.flatMap((o) => per.map(([to, sel]) => [to, sel + word32(o)]))) : [];
@@ -430,20 +367,14 @@ export function makeStatsReader({ fetchImpl = (...a) => fetch(...a), gapMs = 200
       const [ls, claims, [supply]] = await Promise.all([main().then(of(A.pool)), main().then(of(A.airdrop, TOPIC.claimed)), calls(1, [[A.tac, SEL.totalSupply]])]);
       const meta = new Map();
       for (const l of ls.filter((x) => x.t[0] === TOPIC.asset)) {
-        try { meta.set(l.t[1], { symbol: abiString(l.d, 2), decimals: Number(W(l.d, 3)), token: '0x' + strip(l.t[2]).slice(24) }); } catch { /* skip */ }
+        try { meta.set(l.t[1], { symbol: abiString(l.d, 2), decimals: Number(W(l.d, 3)), token: '0x' + strip(l.t[2]).slice(24) }); } catch { }
       }
-      // An asset registered with no symbol is named by its token's own symbol().
       const unnamed = [...meta.values()].filter((m) => !m.symbol && !/^0x0{40}$/.test(m.token));
       const names = unnamed.length ? await batch(1, unnamed.map((m) => ['eth_call', [{ to: m.token, data: '0x95d89b41' }, 'latest']])) : [];
-      unnamed.forEach((m, i) => { try { if (names[i] && names[i] !== '0x') m.symbol = abiString(names[i], 0); } catch { /* keep none */ } });
+      unnamed.forEach((m, i) => { try { if (names[i] && names[i] !== '0x') m.symbol = abiString(names[i], 0); } catch { } });
       const byAsset = new Map();
       for (const l of ls.filter((x) => x.t[0] === TOPIC.wrap)) { const g = byAsset.get(l.t[2]) || { n: 0, v: 0n }; g.n++; g.v += W(l.d, 0); byAsset.set(l.t[2], g); }
       const others = [...byAsset].filter(([id]) => id !== ID.tac && id !== ID.ceth).map(([id, g]) => ({ ...g, m: meta.get(id) || null }));
-      // TAC leaving the pool for the public token: every mint of the ERC-20 (a Transfer from the zero address), since the pool is the
-      // only minter and mints either to pay a withdrawal or to pay out a swap from its own reserve. The relays' own wallets are the
-      // fee recipients of those settles, and the ops multisig and airdrop contract hold the treasury bridged at the start, so none of
-      // them is counted in the accounts or the volume. The stream is read apart from the rest of
-      // this part: while a long history is being read on across readings it is absent (null) and the other figures still stand.
       const mints = await tacMints().catch(() => null);
       let outTimes = [];
       const tacOut = mints && (() => {
@@ -452,8 +383,6 @@ export function makeStatsReader({ fetchImpl = (...a) => fetch(...a), gapMs = 200
         outTimes = out.map((l) => l.ts).filter(Boolean);
         return { n: out.length, v: out.reduce((s, l) => s + W(l.d, 0), 0n), who: new Set(out.map(to)).size };
       })();
-      // When TAC went each way, and nothing else of it: the live picture of Bitcoin and Ethereum draws these as events. The newest
-      // few hundred are enough for it, so the reading does not grow with the token's whole history.
       const newest = (xs) => xs.sort((a, b) => a - b).slice(-TIMES_MAX);
       const times = { out: newest(outTimes), in: newest(ls.filter((l) => l.t[0] === TOPIC.wrap && l.t[2] === ID.tac).map((l) => l.ts).filter(Boolean)) };
       return { supply: BigInt(supply), tacIn: byAsset.get(ID.tac) || { n: 0, v: 0n }, tacOut, times, claims: claims.length, claimed: claims.reduce((s, l) => s + W(l.d, 0), 0n),
@@ -475,7 +404,6 @@ export function makeStatsReader({ fetchImpl = (...a) => fetch(...a), gapMs = 200
       ]);
       const [attestedHeight, anchorHeight] = (await calls(1, [[A.relay, SEL.blockHeight + word32(attestedHash)], [A.relay, SEL.blockHeight + word32(anchorHash)]])).map((h) => Number(BigInt(h)));
       const attests = pt.filter((t) => t.e === '0' && t.m === SEL.attest);
-      // A settle is a transaction that inserted or spent notes, whoever sent it to the pool.
       const settles = new Map();
       for (const l of pl.filter((x) => x.t[0] === TOPIC.leaves || x.t[0] === TOPIC.spent || x.t[0] === TOPIC.locks)) if (!settles.has(l.h)) settles.set(l.h, l.ts);
       const last = attests.at(-1);
@@ -501,11 +429,6 @@ export function makeStatsReader({ fetchImpl = (...a) => fetch(...a), gapMs = 200
   return { read, rpc, calls, getLogs };
 }
 
-// Private ETH as the stats page headlines it: the V1 pool and the device pool on each chain together, what was shielded,
-// is held and was withdrawn, and the same over time. `pools` has each one's own figures; a figure a pool's reading lacks
-// is left out of the sums and the pool is named in `unread` (`held` for the balance, `flow` for deposits and withdrawals).
-// Wallets stay the V1 pool's alone: the device pools take deposits through routers and keepers as well as wallets. Either
-// reading may be missing (`null`); the page gives totals only when the V1 pool's is there.
 export function privateEth(eth, dev) {
   const pools = [
     ...(eth ? [{ id: 'v1', held: eth.held, inWei: eth.inWei, outWei: eth.outWei, deposits: eth.deposits, withdrawals: null, moves: null }] : []),
@@ -524,9 +447,6 @@ export function privateEth(eth, dev) {
   };
 }
 
-// A newer reading over an older one: each part the newer one couldn't read is carried over from the older, which says
-// which parts and how old the oldest of them is. Parts the newer reading itself carries over (the API's shared reading
-// does) stay marked, with their age.
 export function mergeReadings(older, newer) {
   if (!older) return newer;
   const out = { ...newer, errors: { ...newer.errors }, stale: [...(newer.stale || [])], staleAt: newer.stale?.length ? newer.staleAt ?? null : null };

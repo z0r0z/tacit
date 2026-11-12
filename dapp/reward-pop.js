@@ -1,8 +1,3 @@
-// A reward shown as it is earned: the points rising in green out of the control that earned them, a few TAC coins bursting around them, and a
-// short chime. It runs on transform and opacity alone (the compositor's work, no layout), shows nothing while the page is hidden, is a fade in
-// place with no coins for a visitor who asks for reduced motion, and leaves no element behind. The chime is two soft sine notes made with Web
-// Audio (no file to load); `localStorage['tacit-chime'] = 'off'` silences it. Pages call it once a transaction that earns is sent, without
-// waiting for it to land.
 let audio = null, styled = false;
 const CSS = `.rpop{position:fixed;z-index:2147483000;width:0;height:0;pointer-events:none}
 .rpop b{position:absolute;left:0;top:0;display:grid;justify-items:center;transform:translate(-50%,-50%);font:600 26px/1 var(--mono,ui-monospace,monospace);letter-spacing:-.02em;color:var(--ok,#1f8a4c);white-space:nowrap;text-shadow:0 1px 0 color-mix(in srgb,var(--card,#fff) 70%,transparent);will-change:transform,opacity}
@@ -10,23 +5,21 @@ const CSS = `.rpop{position:fixed;z-index:2147483000;width:0;height:0;pointer-ev
 .rpop svg{position:absolute;left:-13px;top:-13px;width:26px;height:26px;border-radius:50%;box-shadow:0 2px 6px rgba(0,0,0,.18);will-change:transform,opacity}`;
 
 export function chime() {
-  try { if (localStorage.getItem('tacit-chime') === 'off') return; } catch { /* storage is a convenience */ }
+  try { if (localStorage.getItem('tacit-chime') === 'off') return; } catch { }
   try {
     audio ||= new (window.AudioContext || window.webkitAudioContext)();
     if (audio.state === 'suspended') audio.resume();
     const t0 = audio.currentTime + 0.01, out = audio.createGain();
     out.gain.value = 0.07; out.connect(audio.destination);
-    // A5 then E6: a fifth up, the second a breath after the first
     for (const [hz, at] of [[880, 0], [1318.5, 0.085]]) {
       const o = audio.createOscillator(), g = audio.createGain();
       o.type = 'sine'; o.frequency.value = hz;
       g.gain.setValueAtTime(0.0001, t0 + at); g.gain.exponentialRampToValueAtTime(1, t0 + at + 0.015); g.gain.exponentialRampToValueAtTime(0.0001, t0 + at + 0.6);
       o.connect(g); g.connect(out); o.start(t0 + at); o.stop(t0 + at + 0.65);
     }
-  } catch { /* no audio here */ }
+  } catch { }
 }
 
-// `anchor`: the control the reward rises from. `pts`: the points it earns (shown rounded; under one shows nothing).
 export function rewardPop(anchor, { pts, sound = true } = {}) {
   const n = Math.round(Number(pts) || 0);
   if (n < 1 || !anchor?.isConnected || document.hidden) return;
@@ -34,7 +27,7 @@ export function rewardPop(anchor, { pts, sound = true } = {}) {
   const r = anchor.getBoundingClientRect(), calm = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const box = document.createElement('div');
   box.className = 'rpop'; box.setAttribute('aria-hidden', 'true');
-  box.style.left = `${r.left + r.width / 2}px`; box.style.top = `${r.top}px`;                  // from the control's top edge, up into the open
+  box.style.left = `${r.left + r.width / 2}px`; box.style.top = `${r.top}px`;
   const coins = calm ? 0 : 7;
   box.innerHTML = `<b>+${n.toLocaleString('en-US')}<small>TAC points</small></b>${'<svg aria-hidden="true"><use href="#tk-tac"/></svg>'.repeat(coins)}`;
   document.body.append(box);
@@ -46,7 +39,6 @@ export function rewardPop(anchor, { pts, sound = true } = {}) {
        { opacity: 1, transform: 'translate(-50%,-190%) scale(1)', offset: 0.32 }, { opacity: 1, transform: 'translate(-50%,-230%) scale(1)', offset: 0.75, easing: easeIn },
        { opacity: 0, transform: 'translate(-50%,-290%) scale(.97)' }],
     { duration: calm ? 1700 : 1800, fill: 'forwards' })];
-  // the coins burst up and out on a short arc, each its own way, and fall away as they fade
   [...box.querySelectorAll('svg')].forEach((c, i) => {
     const a = (-162 + (144 / (coins - 1)) * i + (Math.random() * 14 - 7)) * (Math.PI / 180), d = 78 + Math.random() * 48;
     const x = Math.cos(a) * d, y = Math.sin(a) * d - 12, spin = (Math.random() < 0.5 ? -1 : 1) * (140 + Math.random() * 180);

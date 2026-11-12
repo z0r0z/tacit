@@ -14,7 +14,6 @@ export const PRECISION_POLICY = '0x00000045fc7b570Be4d71F67219508ebD295EC6D';
 export const PRECISION_GUARD = '0x00000057B53fB5feEdedaf7066e1f1C7002b1961';
 export const PRECISION_POOL = '0x0155358241411dB868BA714aE7c83A27087e3D6E';
 export const TACIT_AMM = '0x00000000E36C7EC997CC59DCda9E03673B448119';
-// The confidential pool's router, bound to the same pool and AMM: its swapPublicWithPermit takes a token's EIP-2612 permit and swaps it through the AMM in one call.
 export const CONF_ROUTER = '0x000000005dA3E3B73726af3c774Deeb9472D4992';
 export const TACIT_AMM_TIERS = [30, 5, 100, 1];
 export const TACIT_AMM_UNIT_SCALE = 10n ** 10n;
@@ -186,8 +185,6 @@ function encZRouterMulticall(calls) {
   return '0x' + SEL.zMulticall + word(32) + word(n) + head + tail;
 }
 
-// The lens has named the Precision pool at every size so far, so its fee and its policy are asked in the lens's own call, for the pool a quote is expected to
-// name: a quote is one round trip when it names that pool, and two (the fee and the policy of the pool it did name, asked after) when it names another.
 async function quotePrecision({ ethCall, dir, amountIn, account, block, trust = null, hint = PRECISION_POOL }) {
   if (amountIn <= 0n) return null;
   const tokenIn = dir === 'ETH_TO_TAC' ? ZERO_ADDR : TAC_ERC20;
@@ -208,7 +205,6 @@ async function quotePrecision({ ethCall, dir, amountIn, account, block, trust = 
   return { venue: VENUES.PRECISION, amountIn, amountOut: best.amountOut, feeBps, pool: best.pool, tokenIn, tokenOut };
 }
 
-// The legs of a Precision swap, for a caller that goes on to add legs of its own (the swap page's sell for any token pays this swap's ETH to zRouter).
 function precisionSwapLegs({ quote, account, to = account, minOut, deadline, keccak256, permit }) {
   const { tokenIn, tokenOut, pool, amountIn } = quote;
   const routeData = encPrecisionRoute({ tokenIn, tokenOut, amountIn, minOut, to, pools: [pool] });
@@ -251,13 +247,10 @@ async function quoteTacitAmm({ ethCall, dir, amountIn, block }) {
   return { venue: VENUES.TACIT_AMM, amountIn: aligned, dustIn: amountIn - aligned, amountOut: best.amountOut, feeBps: best.feeBps, assetIn, assetOut };
 }
 
-// swapPublicWithPermit(tokenIn, tokenOut, feeBps, amountIn, minAmountOut, deadline, to, v, r, s): `deadline` is the swap's and the permit's expiry both.
 function encConfRouterSwapPermit({ tokenIn, tokenOut, feeBps, amountIn, minOut, deadline, to, v, r, s }) {
   return '0x' + SEL.confSwapPermit + addrWord(tokenIn) + addrWord(tokenOut) + word(feeBps) + word(amountIn) + word(minOut) + word(deadline) + addrWord(to) + word(v) + bytes32Word(r) + bytes32Word(s);
 }
 
-// ETH in rides zRouter. TAC in cannot (the AMM would pull from zRouter's executor, not the seller), so it goes direct to the AMM behind an approval, or, given the
-// seller's EIP-2612 permit (signed to the confidential router, `approval.permitSpender`, for `amountIn` until `deadline`), through the confidential router in one call.
 function buildTacitAmmSwap({ quote, dir, account, to = account, minOut, deadline, permit = null }) {
   const { assetIn, assetOut, feeBps, amountIn } = quote;
   if (dir === 'ETH_TO_TAC') {
@@ -398,8 +391,6 @@ async function gridOutputs({ ethCall, dir, account, shares, amountIn, feeBps, bl
   });
 }
 
-// The search is a 5% grid and then, around its best, a 1% one. The second round trip buys about a basis point of the output at most (0 to 1.04 on the live pools, from
-// 0.05 ETH to 5 ETH, and under 0.4 below 0.5 ETH), so it is made only for an order of `refineAbove` wei of ETH (what is paid, or what a sale pays) or more.
 async function quoteSplit({ ethCall, dir, amountIn, account, block = 'latest', singles = null, refineAbove = 0n }) {
   if (amountIn <= 0n) return null;
   const coarse = [];
@@ -534,8 +525,6 @@ export function makeEvmTradeVenues({ ethCall, keccak256 } = {}) {
     throw new Error(`build: unknown venue ${quote.venue}`);
   }
 
-  // `gasPrice` is a price, or a promise of one that is waited for only once the quotes are in (it is read beside them, not before them): a price that does not
-  // come leaves the split to the margin it has to clear without one.
   async function route({ dir, amountIn, account, gasPrice = null, block = 'latest', preferPrecision = dir === 'ETH_TO_TAC', refineAbove = SPLIT_REFINE_ABOVE }) {
     const acct = account || undefined;
     const singles = { precision: quotePrecision({ ethCall, dir, amountIn, account: acct, block }).catch(() => null), tacitAmm: quoteTacitAmm({ ethCall, dir, amountIn, block }).catch(() => null) };

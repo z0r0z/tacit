@@ -1,7 +1,3 @@
-// BIP-352 input rules shared by the wallet (tacit.js) and the tweak index
-// (worker-relay/src/sp-tweak-index.js). Pure functions over bytes, no wallet
-// state, so both sides decide eligibility and compute input_hash·A_sum with the
-// same code.
 
 import { secp, sha256, ripemd160, hexToBytes, concatBytes } from './vendor/tacit-deps.min.js';
 
@@ -24,16 +20,12 @@ export function bip352TaggedHash(tag, ...msgs) {
   return sha256(concatBytes(tagHash, tagHash, ...msgs));
 }
 
-// BIP-352 uses big-endian for the per-output k counter; most other 4-byte
-// counters in tacit.js are LE — kept local to avoid confusion.
 export function bip352U32be(n) {
   const b = new Uint8Array(4);
   new DataView(b.buffer).setUint32(0, n >>> 0, false);
   return b;
 }
 
-// Canonical 36-byte outpoint: chain-order txid (display order reversed) ‖
-// little-endian vout uint32. Matches the wire format used in tx serialization.
 export function bip352OutpointBytes(txidHexDisplay, vout) {
   const txidLE = reverseBytes(hexToBytes(txidHexDisplay));
   const voutLE = new Uint8Array(4);
@@ -54,12 +46,6 @@ export function bip352SmallestOutpoint(outpoints) {
   return best;
 }
 
-// The public key one input contributes to the shared secret, per BIP-352
-// "Inputs For Shared Secret Derivation", or null when the input contributes
-// none. Covers P2TR (key path and script path, annex stripped, NUMS-H internal
-// key skipped), P2WPKH, P2SH-P2WPKH and P2PKH (malleated scriptSigs searched
-// from the end); only compressed and x-only keys count. These rules are the
-// BIP's own and differ from classifyStealthInput's.
 export function bip352InputPubkey({ prevoutScript, scriptSig, witness }) {
   const spk = prevoutScript || new Uint8Array(0);
   const ss = scriptSig || new Uint8Array(0);
@@ -103,14 +89,11 @@ export function bip352InputPubkey({ prevoutScript, scriptSig, witness }) {
   return null;
 }
 
-// A prevout of witness version 2..16 makes the whole tx ineligible for v0.
 export function bip352IsUnknownSegwit(spk) {
   if (!spk || spk.length < 4 || spk.length > 42) return false;
   return spk[0] >= 0x52 && spk[0] <= 0x60 && spk[1] >= 2 && spk[1] <= 40 && spk[1] === spk.length - 2;
 }
 
-// Esplora tx → receiver inputs. Returns null when BIP-352 says the tx is not
-// scanned (coinbase, or an input spending witness version > 1).
 export function bip352ReceiverInputsFromEsploraTx(tx) {
   if (!tx || !Array.isArray(tx.vin) || tx.vin.length === 0) return null;
   const classifiedInputs = [];
@@ -126,11 +109,6 @@ export function bip352ReceiverInputsFromEsploraTx(tx) {
   return { classifiedInputs, allOutpoints };
 }
 
-// The public tweak input_hash·A_sum for a set of contributing input keys
-// (33-byte compressed; nulls skipped) and every input's outpoint, as a point,
-// or null when no key contributes, A_sum is the identity, or input_hash is not
-// a valid scalar. The receiver's shared secret is b_scan times this point, so
-// it is what a tweak index publishes per transaction.
 export function bip352PublicTweakPoint(pubs, allOutpoints) {
   let A_sum = ZERO, count = 0;
   for (const p of pubs || []) {
@@ -145,8 +123,6 @@ export function bip352PublicTweakPoint(pubs, allOutpoints) {
   return A_sum.multiply(ih);
 }
 
-// Esplora-shaped tx → 33-byte compressed public tweak, or null when the tx is
-// not scanned or has no contributing input.
 export function bip352PublicTweakFromEsploraTx(tx) {
   const inp = bip352ReceiverInputsFromEsploraTx(tx);
   if (!inp) return null;

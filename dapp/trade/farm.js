@@ -1,5 +1,5 @@
-import { day, group } from '/trade/fmt.js?cb=32b1744b';
-import { shieldedApr, readSpot } from '/trade/farm-read.js?cb=112a01b9';
+import { day, group } from '/trade/fmt.js?cb=172824e5';
+import { shieldedApr, readSpot } from '/trade/farm-read.js?cb=efe1d81e';
 
 const POOL = '0x0155358241411dB868BA714aE7c83A27087e3D6E', FARM = '0x0000003bF4BA0B21f5e0d35119b337F4d4CF82E0', LENS = '0x000000956bf20A41C54BaE4a4b6F5C8A166DAB4E';
 const TAC = '0xA1313eb9f3A445606D9583bcAc3ebeB56a858279', MC3 = '0xcA11bde05977b3631167028862bE2a173976CA11', ZERO = '0x0000000000000000000000000000000000000000';

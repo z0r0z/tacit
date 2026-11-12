@@ -1,10 +1,10 @@
-import { makeConnect } from '/trade/connect.js?cb=4eebf192';
+import { makeConnect } from '/trade/connect.js?cb=f6c8f123';
 import { declinedWords } from '/wallet-prompts.js';
-import { addrView } from '/address-view.js?cb=57bc64d3';
+import { addrView } from '/address-view.js?cb=58dd4914';
 import { esc } from '/trade/sheet.js?cb=1161dd4e';
-import { API, $, short, fmtUnits, rpc } from '/trade/util.js?cb=ba5a02b1';
+import { API, $, short, fmtUnits, rpc } from '/trade/util.js?cb=1d2cd8d3';
 import { discordGateMessage, DISCORD_MIN_TAC_BASE_UNITS, DISCORD_MIN_TAC_ERC20 } from '/discord/message.js?cb=0232a98d';
-import { TAC as TAC_ERC20, FARM, POOL } from '/trade/farm-read.js?cb=112a01b9';
+import { TAC as TAC_ERC20, FARM, POOL } from '/trade/farm-read.js?cb=efe1d81e';
 import { readPrecisionTacStake } from '/discord/holdings.js?cb=48f774e8';
 
 // The Discord verification panel sends a holder here: the link carries a one-time nonce (#gate=<32 hex>, made for one Discord account, good for ten minutes).
