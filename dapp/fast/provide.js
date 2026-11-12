@@ -32,7 +32,7 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
   root.innerHTML = `
     <summary>Provide liquidity<span class="pv-waiting" id="pv-waiting"></span></summary>
     <div class="pv-in">
-      <p class="note">Earn the fee on each bridge. Keep this page open while you provide.</p>
+      <p class="note">Earn the fee on each bridge. Keep this page open while you provide, or <a href="https://github.com/src-company/tacit/blob/main/fastbridge-lp/README.md" target="_blank" rel="noopener noreferrer">run a provider</a> that stays on.</p>
       <div class="kv" id="pv-want" hidden><span>Waiting for a provider</span><b class="num"></b></div>
       <div class="rows flat" id="pv-inv"></div>
       <div id="pv-set" hidden>
@@ -220,8 +220,10 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
     else if (keyS.unlocked && !S.sess && root.open) load();
   });
 
-  // /fast/#provide comes straight to this panel
-  if (doc.defaultView?.location.hash === '#provide') root.open = true;
+  // /fast/#provide comes straight to this panel: on load, and when a link on the page to it is followed
+  const toLink = () => { if (doc.defaultView?.location.hash === '#provide') root.open = true; };
+  toLink();
+  doc.defaultView?.addEventListener('hashchange', toLink);
   // what is waiting for a provider, read now and every minute
   if (waiting) {
     // a bridge that starts waiting and that this key could take is said once (the ones there at the first look are not news)

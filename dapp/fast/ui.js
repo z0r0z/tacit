@@ -45,7 +45,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
     </div>
     <button class="btn" id="fx-go" type="button" hidden>Open wallet</button>
     <p class="status" id="fx-st" role="status" aria-live="polite"></p>
-    <p class="alt" id="fx-alt">No provider fee? The <a href="/#card=bridge">regular bridge</a>, about 4 hours.</p>
+    <p class="alt" id="fx-alt">No provider fee? The <a href="/#card=bridge">regular bridge</a>, about 4 hours. Or <a href="#provide">provide liquidity</a> and earn the fee.</p>
     <div class="rows" id="fx-list" hidden></div>`;
   const $ = (id) => doc.getElementById(id);
 
