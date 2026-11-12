@@ -40,6 +40,14 @@ try {
   const today = await (await fetch(`${B}/helpdesk/credits?day=${day + 1}`)).json(); check('credits: today is not over', today.over === false);
   const fut = await fetch(`${B}/helpdesk/credits?day=${day + 5}`); check('credits: a future day is refused in the pool feed\'s words', fut.status === 400 && (await fut.json()).error === 'day must be a UTC day number, today or before');
   check('credits: no day is refused', (await fetch(`${B}/helpdesk/credits`)).status === 400);
+  // a body that is not an object is refused and the process goes on answering
+  for (const bodyText of ['null', '[]', '7', '"x"']) {
+    for (const route of ['lease', 'submit']) {
+      const r0 = await fetch(`${B}/helpdesk/${route}`, { method: 'POST', body: bodyText });
+      check(`${route}: a body of ${bodyText} is refused`, r0.status === 400, `status ${r0.status}`);
+    }
+  }
+  check('the gateway still answers after those', (await fetch(`${B}/health`)).ok);
   // the node API over HTTP
   const lb = await fetch(`${B}/helpdesk/lease`, { method: 'POST', body: JSON.stringify({ miner: 'nope' }) }); check('lease: a bad address is refused', lb.status === 400);
   const t = Date.now(); const lz = await fetch(`${B}/helpdesk/lease`, { method: 'POST', headers: { 'x-forwarded-for': '5.5.5.5' }, body: JSON.stringify({ miner: A, kinds: ['answer'] }) });

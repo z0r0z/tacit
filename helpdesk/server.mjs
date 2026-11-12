@@ -191,6 +191,7 @@ async function nodeApi(req, res) {
   const now = Date.now(); const a = (leaseHits.get(ip) || []).filter((t) => now - t < 60000); a.push(now); leaseHits.set(ip, a);
   if (a.length > Number(process.env.NODE_RATE_PER_MIN || 120)) return send(res, 429, { error: 'slow down' });
   let body; try { body = await readJson(req); } catch { return send(res, 400, { error: 'bad request' }); }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return send(res, 400, { error: 'bad request' });
   if (req.url === '/helpdesk/lease') {
     if ((holding.get(ip) || 0) >= 2) return send(res, 429, { error: 'this client already has requests waiting' });
     holding.set(ip, (holding.get(ip) || 0) + 1);
@@ -216,7 +217,7 @@ if (process.argv[2] === 'serve') {
       return send(res, 200, creditsFor(path.join(DATA, 'ledger.jsonl'), day, { maxPerDay: Number(process.env.POINTS_MAX_DAY ?? 100) })); }
     if (req.method === 'GET' && (req.url === '/' || req.url === '/index.html')) { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'x-content-type-options': 'nosniff' }); return res.end(PAGE); }
     if (req.method === 'GET' && (req.url === '/health' || req.url === '/stats')) { const st = llm.stats(); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(req.url === '/health' ? { ok: st.backends.some((b) => b.up) || leases.nodesOnline() > 0, nodes: leases.nodesOnline(), capacity: leases.capacity(), dense: denseState, backends: st.backends.map((b) => ({ url: b.url, up: b.up })) } : { ...st, nodes: leases.stats() })); }
-    if (req.url.startsWith('/helpdesk/')) return nodeApi(req, res);
+    if (req.url.startsWith('/helpdesk/')) return nodeApi(req, res).catch(() => { if (!res.headersSent) send(res, 500, { error: 'the help desk could not answer' }); else res.end(); });
     if (req.method === 'POST' && req.url === '/ask') {
       if (!ok(ip)) { res.writeHead(429, { 'content-type': 'application/json' }); return res.end('{"error":"Too many questions, try again in a minute."}'); }
       let body = ''; req.on('data', (c) => { body += c; if (body.length > 4096) req.destroy(); });
