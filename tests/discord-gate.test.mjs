@@ -61,7 +61,9 @@ const unsigned = await fetch(`${base}/discord/interaction`, { method: 'POST', bo
 ok('unsigned request is refused', unsigned.status === 401);
 
 const C = '423456789012345678';
-const button = (user = U) => ({ type: 3, data: { component_type: 2, custom_id: DISCORD_VERIFY_BUTTON_ID }, guild_id: G, channel_id: C, member: { user: { id: user } }, message: { id: '523456789012345678', ...verificationPanel() } });
+const A = '823456789012345678';
+let interactionNumber = 0;
+const button = (user = U) => ({ type: 3, application_id: A, token: `interaction-${user}-${++interactionNumber}`, data: { component_type: 2, custom_id: DISCORD_VERIFY_BUTTON_ID }, guild_id: G, channel_id: C, member: { user: { id: user } }, message: { id: '523456789012345678', ...verificationPanel() } });
 // The same persistent panel, clicked by two different members.
 const cmd = await post(button());
 const cmdBody = await cmd.json();
@@ -71,12 +73,14 @@ ok('link goes to the Discord page', !!m, cmdBody.data?.content);
 const rec = m && await env.REGISTRY_KV.get(`dgate:${m[1]}`, 'json');
 ok('nonce is stored pending for that member and server',
   rec && rec.status === 'pending' && rec.discord_user_id === U && rec.guild_id === G, rec);
+ok('the pending nonce retains the private reply credential without exposing it in the response',
+  rec.interaction_reply?.application_id === A && typeof rec.interaction_reply?.token === 'string' && !JSON.stringify(cmdBody).includes(rec.interaction_reply.token));
 const otherUser = '623456789012345678';
 const otherReply = await (await post(button(otherUser))).json();
 const otherNonce = /#gate=([0-9a-f]{32})/.exec(otherReply.data.content)[1];
 const otherRecord = await env.REGISTRY_KV.get(`dgate:${otherNonce}`, 'json');
 ok('a second member gets a separate private link bound to their own account', otherReply.data.flags === 64 && otherNonce !== m[1] && otherRecord.discord_user_id === otherUser);
-const legacy = await (await post({ type: 2, data: { name: 'verify' }, guild_id: G, channel_id: C, member: { user: { id: U } } })).json();
+const legacy = await (await post({ type: 2, application_id: A, token: 'legacy-command-token', data: { name: 'verify' }, guild_id: G, channel_id: C, member: { user: { id: U } } })).json();
 ok('/verify remains available as a fallback', legacy.type === 4 && legacy.data.flags === 64 && /#gate=/.test(legacy.data.content));
 env.DISCORD_VERIFY_CHANNEL_ID = C;
 const elsewhere = await (await post({ ...button(), channel_id: '723456789012345678' })).json();
@@ -102,6 +106,8 @@ env.DISCORD_BOT_TOKEN = 'bot-token';
 env.TAC_ROLE_ID = '323456789012345678';
 const realFetch = globalThis.fetch;
 let call = null, reply = () => new Response(null, { status: 204 });
+const notifications = [], discordCalls = [];
+let notificationReply = () => new Response(null, { status: 204 });
 // The worker reads balanceOf(address) through these nodes: each holder's TAC (18 decimals) is answered here, an unknown address holds none.
 const TAC = 10n ** 18n;
 const balances = new Map();
@@ -110,7 +116,12 @@ const farmReads = [];
 let reserveTac = 10_000n * TAC, supply = 10_000n * TAC, farmDown = false, farmMalformed = false;
 let rpcDown = false;
 globalThis.fetch = (url, init) => {
-  if (String(url).startsWith('https://discord.com/')) { call = { url: String(url), init }; return Promise.resolve(reply()); }
+  if (String(url).startsWith('https://discord.com/')) {
+    const request = { url: String(url), init };
+    discordCalls.push(request);
+    if (request.url.includes('/webhooks/')) { notifications.push(request); return Promise.resolve(notificationReply()); }
+    call = request; return Promise.resolve(reply());
+  }
   if (/^https:\/\/(ethereum-rpc\.publicnode\.com|rpc\.mevblocker\.io|eth\.merkle\.io)/.test(String(url))) {
     if (rpcDown) return Promise.resolve(new Response('down', { status: 503 }));
     const { method, params } = JSON.parse(init.body);
@@ -137,6 +148,7 @@ const refused = await workerMod.completeDiscordGate(env, m[1], rec, 'eth:0x' + '
 ok('a refused grant is reported with Discord\'s reason', !refused.ok && refused.status === 502
   && /403/.test(refused.reason) && /Missing Permissions/.test(refused.reason), refused);
 ok('a refused grant leaves the nonce pending', (await env.REGISTRY_KV.get(`dgate:${m[1]}`, 'json')).status === 'pending');
+ok('a refused grant sends no success reply and retains the credential for retry', notifications.length === 0 && !!(await env.REGISTRY_KV.get(`dgate:${m[1]}`, 'json')).interaction_reply);
 
 reply = () => { throw new Error('socket hang up'); };
 const down = await workerMod.completeDiscordGate(env, m[1], rec, 'eth:0x' + 'ab'.repeat(20));
@@ -144,6 +156,7 @@ ok('an unreachable Discord is reported, nonce still pending', !down.ok && /socke
   && (await env.REGISTRY_KV.get(`dgate:${m[1]}`, 'json')).status === 'pending', down);
 
 reply = () => new Response(null, { status: 204 });
+discordCalls.length = 0;
 const good = await workerMod.completeDiscordGate(env, m[1], rec, 'eth:0x' + 'ab'.repeat(20));
 ok('an accepted grant succeeds', good.ok === true, good);
 ok('the grant is a PUT of the holder role on that member',
@@ -151,6 +164,14 @@ ok('the grant is a PUT of the holder role on that member',
 ok('the grant authenticates as the bot', call.init.headers.Authorization === 'Bot bot-token');
 const after = await env.REGISTRY_KV.get(`dgate:${m[1]}`, 'json');
 ok('the nonce is consumed only after the grant', after.status === 'verified' && after.holder === 'eth:0x' + 'ab'.repeat(20), after);
+ok('success updates the private original response after granting the role', discordCalls.length === 2 && discordCalls[0].init.method === 'PUT'
+  && discordCalls[1].init.method === 'PATCH' && notifications[0].url === `https://discord.com/api/v10/webhooks/${A}/${rec.interaction_reply.token}/messages/@original`);
+const confirmation = JSON.parse(notifications[0].init.body);
+ok('the confirmation names the granted role and replaces the verification link', /Verification succeeded!/.test(confirmation.content)
+  && confirmation.content.includes(`<@&${env.TAC_ROLE_ID}>`) && !/#gate=/.test(confirmation.content));
+ok('the private reply edit cannot ping the role and uses the interaction credential', confirmation.allowed_mentions.parse.length === 0
+  && notifications[0].init.headers.Authorization === undefined && !notifications[0].url.includes('/channels/'));
+ok('the verified record no longer retains the interaction credential', !('interaction_reply' in after));
 
 // ── an Ethereum holder, through the route the page uses ──
 env.GOV_TAC_ERC20_MAINNET = '0xa1313eb9f3a445606d9583bcac3ebeb56a858279';
@@ -173,6 +194,42 @@ reply = () => new Response(null, { status: 204 });
 
 const rich = holderOf('discord-holder-250tac'), poor = holderOf('discord-holder-99tac'), exact = holderOf('discord-holder-100tac'), nobody = holderOf('discord-holder-none');
 balances.set(rich.addr, 250n * TAC); balances.set(poor.addr, 100n * TAC - 1n); balances.set(exact.addr, 100n * TAC);
+
+const otherSuccess = await verify({ nonce: otherNonce, eth_sig: await personalSign(rich.priv, discordGateMessage(otherNonce)) });
+ok('another member receives confirmation on their own interaction only', otherSuccess.status === 200
+  && notifications.at(-1).url.includes(`/${otherRecord.interaction_reply.token}/messages/@original`)
+  && call.url.includes(`/members/${otherUser}/roles/`));
+const legacyNonce = /#gate=([0-9a-f]{32})/.exec(legacy.data.content)[1];
+const legacySuccess = await verify({ nonce: legacyNonce, eth_sig: await personalSign(rich.priv, discordGateMessage(legacyNonce)) });
+ok('the /verify fallback also receives a private success reply', legacySuccess.status === 200 && notifications.at(-1).url.includes('/legacy-command-token/messages/@original'));
+
+// Existing links remain usable; a failed notification never reverses a role grant.
+const oldNonce = await newNonce();
+const oldRecord = await env.REGISTRY_KV.get(`dgate:${oldNonce}`, 'json');
+delete oldRecord.interaction_reply;
+await env.REGISTRY_KV.put(`dgate:${oldNonce}`, JSON.stringify(oldRecord));
+const beforeOld = notifications.length;
+const oldSuccess = await verify({ nonce: oldNonce, eth_sig: await personalSign(rich.priv, discordGateMessage(oldNonce)) });
+ok('links issued before this update still grant the role without a callback', oldSuccess.status === 200 && await status(oldNonce) === 'verified' && notifications.length === beforeOld);
+
+const warnings = [], originalWarn = console.warn;
+console.warn = (message) => warnings.push(message);
+try {
+  for (const failure of ['expired', 'network']) {
+    const n = await newNonce();
+    const pending = await env.REGISTRY_KV.get(`dgate:${n}`, 'json');
+    notificationReply = failure === 'expired' ? () => Response.json({ message: 'Unknown Webhook' }, { status: 404 })
+      : () => { throw new Error(`unreachable https://discord.com/api/v10/webhooks/${A}/${pending.interaction_reply.token}`); };
+    const result = await verify({ nonce: n, eth_sig: await personalSign(rich.priv, discordGateMessage(n)) });
+    const verified = await env.REGISTRY_KV.get(`dgate:${n}`, 'json');
+    ok(`${failure} notification failures preserve the completed verification and discard the credential`, result.status === 200
+      && (await result.json()).ok === true && verified.status === 'verified' && !('interaction_reply' in verified));
+    ok(`${failure} notification errors do not log the private reply token`, warnings.length > 0 && !warnings.join(' ').includes(pending.interaction_reply.token));
+  }
+} finally {
+  console.warn = originalWarn;
+  notificationReply = () => new Response(null, { status: 204 });
+}
 
 let n1 = await newNonce(); call = null;
 let res = await verify({ nonce: n1, eth_sig: await personalSign(rich.priv, discordGateMessage(n1)) });

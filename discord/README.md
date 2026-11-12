@@ -59,7 +59,15 @@ link expires after ten minutes; clicking the shared panel again makes a fresh
 one. The panel itself never contains an individual member's link. A wallet
 signature proves ownership without a transaction or token approval. The API
 only consumes the link after Discord accepts the role grant, so a failed grant
-can be retried.
+can be retried. After granting the role, the API replaces that member's private
+link reply with “Verification succeeded!” and the role they now have. The shared
+panel stays available for everyone else. Updating this reply is best effort:
+a Discord message error does not reverse or fail the completed verification.
+
+The pending nonce keeps the interaction's short-lived reply credential for the
+ten-minute verification window; the verified record drops it.
+
+Rollout: merge the PR and redeploy the `tacit-api` service.
 
 The existing `/verify` command continues to work as a fallback. Registering it
 is optional (`DISCORD_CLIENT_ID=… npm run register`).
