@@ -16,13 +16,13 @@ export function cleanHw(h) {
   return { ram: n(h.ram, 4096), vram: n(h.vram, 1024), cores: n(h.cores, 1024), os: ['darwin', 'linux', 'windows'].includes(h.os) ? h.os : '', arch: ['arm64', 'x64'].includes(h.arch) ? h.arch : '', unified: h.unified === true };
 }
 // The size of model a node can hold WHOLE, from measurements of Qwen3.5-35B-A3B at 4 bits (22 GB, 3B active per token): on a 24 GB GPU it runs from VRAM (150 tokens/s);
-// on a 12 GB GPU with the experts in system RAM it needs about 32 GB of RAM (60 tokens/s); with everything but 4 GB of VRAM in RAM, 45 tokens/s; on the CPU alone 11.
+// on a 12 GB GPU with the experts in system RAM it needs about 32 GB of RAM (60 tokens/s; a machine sold as 32 GB reports 30.5 to 31.9 GB to the system, so the line is 30); with everything but 4 GB of VRAM in RAM, 45 tokens/s; on the CPU alone 11.
 // 'big' holds that model, 'small' holds the 4B (2.7 GB), 'unknown' has not said what it has.
 export function tierOf(hw) {
   if (!hw) return 'unknown';
-  if (hw.unified) return hw.ram >= 32 ? 'big' : 'small';
+  if (hw.unified) return hw.ram >= 30 ? 'big' : 'small';
   if (hw.vram >= 24) return 'big';
-  if (hw.vram >= 6 && hw.ram >= 32) return 'big';
+  if (hw.vram >= 6 && hw.ram >= 30) return 'big';
   return 'small';
 }
 
