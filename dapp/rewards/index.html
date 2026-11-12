@@ -113,7 +113,7 @@ a { color: inherit; text-underline-offset: 3px; text-decoration-thickness: 1px; 
 .find h1 { font: 400 clamp(42px, 7vw, 64px)/.95 var(--serif); letter-spacing: -.025em; margin: 0 0 52px; }
 .find h1 em { font-style: italic; }
 #f { position: relative; }
-.bar { position: relative; z-index: 1; display: flex; align-items: center; background: var(--field); border: 1px solid var(--hair); border-bottom-color: var(--ink); text-align: left; }
+.bar { position: relative; z-index: 1; display: flex; align-items: center; background: var(--field); border: 1px solid var(--hair-2); border-radius: 16px; text-align: left; transition: border-color .15s; }
 .bar:focus-within { border-color: var(--ink); }
 .bar:has(input[aria-invalid="true"]) { border-color: var(--err); }
 .bar input { flex: 1; min-width: 0; font: 400 16px/1.4 var(--mono); color: var(--ink); background: none; border: 0; padding: 16px 16px; outline: none; }
@@ -144,7 +144,7 @@ a { color: inherit; text-underline-offset: 3px; text-decoration-thickness: 1px; 
 .emo.pop { animation: emo 2.8s cubic-bezier(.2, .9, .2, 1) both; }
 @keyframes emo { 0% { transform: scale(0) rotate(-24deg); opacity: 0; } 10% { transform: scale(1.4) rotate(8deg); opacity: 1; } 22% { transform: scale(1) rotate(0); } 78% { transform: translateY(-4px); opacity: 1; } 100% { transform: translateY(-16px); opacity: 0; } }
 @media (prefers-color-scheme: dark) { .nin .head { filter: drop-shadow(0 0 .7px rgba(237, 229, 207, .75)) drop-shadow(0 0 .7px rgba(237, 229, 207, .75)); } }
-.done { margin: 0 0 14px; padding: 14px 18px; background: var(--card); border: 1px solid var(--ok); color: var(--ink); }
+.done { margin: 0 0 14px; padding: 14px 18px; background: var(--card); border: 1px solid var(--ok); border-radius: 14px; color: var(--ink); }
 .done b { color: var(--ok); font-weight: 500; }
 .done a { margin-left: 10px; }
 .note-claim { margin: 0 0 14px; text-align: center; }
@@ -222,7 +222,7 @@ button.act:disabled { opacity: .6; cursor: default; transform: none; }
 .to { margin: 6px 0 0; } .to .linkbtn, .done .linkbtn { background: none; border: 0; padding: 4px 0; cursor: pointer; color: var(--mute); font: 13px var(--mono); text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px; } .to .linkbtn:hover, .done .linkbtn:hover { color: var(--ink); }
 .done .linkbtn { margin-left: 14px; }
 .toform { display: flex; gap: 8px; margin: 8px 0 0; } .toform[hidden] { display: none; }
-.toform input { flex: 1; min-width: 0; font: 400 14px/1.4 var(--mono); color: var(--ink); background: var(--field); border: 1px solid var(--hair-2); padding: 0 12px; min-height: var(--tap); outline: none; } .toform input:focus { border-color: var(--ink); }
+.toform input { flex: 1; min-width: 0; font: 400 14px/1.4 var(--mono); color: var(--ink); background: var(--field); border: 1px solid var(--hair-2); border-radius: 12px; padding: 0 12px; min-height: var(--tap); outline: none; } .toform input:focus { border-color: var(--ink); }
 .toform .act { margin: 0; white-space: nowrap; }
 .more { margin: 14px 0 0; font-size: 13px; } .more a { color: var(--mute); } .more a:hover { color: var(--ink); }
 /* the TAC token's address, where it is easy to find: the whole of it on a wide screen, copied or opened on Etherscan */
@@ -252,7 +252,7 @@ button.act:disabled { opacity: .6; cursor: default; transform: none; }
 .acts { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 18px; margin: -8px 0 18px; }
 .acts a, .acts button { font: 400 13px/1.4 var(--mono); color: var(--mute); background: none; border: 0; padding: 6px 0; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px; }
 .acts a:hover, .acts button:hover { color: var(--ink); }
-.card { background: var(--card); border: 1px solid var(--hair); padding: 22px 24px 20px; margin: 0 0 14px; animation: rise .38s cubic-bezier(.2, .7, .2, 1) both; }
+.card { background: var(--card); border: 1px solid var(--hair); border-radius: 16px; padding: 22px 24px 20px; margin: 0 0 14px; animation: rise .38s cubic-bezier(.2, .7, .2, 1) both; }
 #c-pts .card { animation-delay: .06s; }
 @keyframes rise { from { opacity: 0; transform: translateY(10px); } }
 .card h2 { margin: 0 0 6px; font: 500 12px/1.4 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--mute); }
@@ -266,7 +266,7 @@ button.act:disabled { opacity: .6; cursor: default; transform: none; }
 .kv div { display: flex; justify-content: space-between; gap: 16px; padding: 6px 0; border-top: 1px solid var(--hair); }
 .kv dt { color: var(--mute); }
 .kv dd { margin: 0; text-align: right; }
-.act { display: inline-flex; align-items: center; min-height: var(--tap); margin-top: 12px; padding: 0 18px; font-weight: 500; color: var(--paper); background: var(--ink); text-decoration: none; transition: transform .15s; }
+.act { display: inline-flex; align-items: center; min-height: var(--tap); margin-top: 12px; padding: 0 18px; font-weight: 500; color: var(--paper); background: var(--ink); border-radius: 12px; text-decoration: none; transition: transform .15s; }
 .act:hover { transform: translateY(-1px); }
 .bw p { margin: 0; } .bw-l { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; color: var(--mute); }
 .bw-go { color: var(--ink); font-weight: 500; text-underline-offset: 3px; text-decoration-thickness: 1px; } .bw-go b { font-weight: 500; }
@@ -277,7 +277,11 @@ button.act:disabled { opacity: .6; cursor: default; transform: none; }
 .earn { margin-top: 40px; text-align: left; }
 .sec { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 0 0 10px; font: 500 12px/1.4 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--mute); }
 .sec span { font-weight: 400; letter-spacing: 0; text-transform: none; }
-.lst { margin: 0 0 30px; background: var(--card); border: 1px solid var(--hair); }
+.lst { margin: 0 0 30px; background: var(--card); border: 1px solid var(--hair); border-radius: 16px; }
+/* a row's hover keeps to the list's corners (the list is not clipped: an open farm's form may reach past it) */
+.lst > .ern:first-child > summary, .lst > a.ern:first-child, .lst > span.ern:first-child { border-radius: 15px 15px 0 0; }
+.lst > .ern:last-child:not([open]) > summary, .lst > a.ern:last-child, .lst > span.ern:last-child { border-radius: 0 0 15px 15px; }
+.lst > .ern:only-child:not([open]) > summary, .lst > a.ern:only-child, .lst > span.ern:only-child { border-radius: 15px; }
 .lst > .ern + .ern { border-top: 1px solid var(--hair); }
 .ern { display: block; color: var(--ink); text-decoration: none; }
 .ern > summary, a.ern, span.ern { display: flex; align-items: center; gap: 14px; min-height: 76px; padding: 12px 20px; cursor: pointer; list-style: none; transition: background-color .15s; }
@@ -345,7 +349,7 @@ a.ern::after { display: none; }
 @media (max-width: 560px) { .yh { display: block; padding: 16px 18px 10px; } .yh .tot { margin-top: 2px; } .rw { padding: 14px 18px 16px; grid-template-columns: minmax(0, 1fr); } .rw .fig { grid-column: 1; grid-row: auto; justify-self: start; text-align: left; margin: 2px 0 4px; } .rw .act { grid-column: 1; grid-row: auto; justify-self: stretch; } .rw .to { grid-row: auto; } .rw.next .act { grid-row: auto; margin-top: 8px; } .rw.none { padding: 12px 18px; } }
 /* the place of an answer that is on its way, so the lists below do not move when it arrives (early.js) */
 html[data-lookup] #out { min-height: 470px; }
-html[data-lookup] #out:empty::before { content: ''; display: block; height: 470px; background: var(--card); border: 1px solid var(--hair); animation: pulse 1.2s ease-in-out infinite; }
+html[data-lookup] #out:empty::before { content: ''; display: block; height: 470px; background: var(--card); border: 1px solid var(--hair); border-radius: 16px; animation: pulse 1.2s ease-in-out infinite; }
 #c-air .rw.ld { min-height: 130px; } #c-pts .rw.ld { min-height: 170px; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 /* A text field under 16px makes iOS zoom the page in when it is focused, and leave it zoomed: on a touch screen they are 16px. */
