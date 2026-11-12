@@ -336,6 +336,44 @@ async function boardServer({ limits } = {}) {
   return { board, base: `http://127.0.0.1:${server.address().port}`, close };
 }
 
+test('the client is the address the proxy\'s edge saw: True-Client-IP when it sets one, else the last forwarded address; the rest of a list is the client\'s own', async () => {
+  const seen = [];
+  const server = makeHttpServer({ handle: async ({ client }) => { seen.push(client); return { status: 200, body: { client } }; }, trustProxy: true, kindOf: () => 'default', limits: { default: [3, 3600] } });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  closers.push(() => new Promise((r) => { server.closeAllConnections?.(); server.close(r); }));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const get = async (headers) => (await realFetch(base + '/x', { headers })).status;
+  const A = { 'true-client-ip': '203.0.113.5', 'x-forwarded-for': '9.9.9.9, 104.23.0.1' }, B = { 'true-client-ip': '203.0.113.6', 'x-forwarded-for': '9.9.9.9, 104.23.0.1' };
+  assert.deepEqual([await get(A), await get(A), await get(A), await get(A)], [200, 200, 200, 429], 'one client\'s fourth request in its window is refused');
+  assert.equal(await get(B), 200, 'another client behind the same edge is not held to it');
+  assert.equal(await get({ 'x-forwarded-for': '1.1.1.1, 2.2.2.2' }), 200);
+  assert.equal(seen.at(-1), '2.2.2.2', 'with no True-Client-IP the last forwarded address is the client, as before');
+  await get({ 'true-client-ip': 'not an ip!', 'x-forwarded-for': '1.1.1.1, 2.2.2.3' });
+  assert.equal(seen.at(-1), '2.2.2.3', 'a True-Client-IP that is not an address is ignored');
+  await get({ 'true-client-ip': '2001:db8:1:2:aaaa:bbbb:cccc:dddd' });
+  const v6a = seen.at(-1);
+  await get({ 'true-client-ip': '2001:0db8:0001:0002:1111::4444' });
+  assert.equal(seen.at(-1), v6a); assert.equal(v6a, '2001:db8:1:2::/64', 'an IPv6 client is one client by its /64');
+  const plain = makeHttpServer({ handle: async ({ client }) => ({ status: 200, body: { client } }), trustProxy: false, kindOf: () => 'default' });
+  await new Promise((r) => plain.listen(0, '127.0.0.1', r));
+  closers.push(() => new Promise((r) => { plain.closeAllConnections?.(); plain.close(r); }));
+  const r = await (await realFetch(`http://127.0.0.1:${plain.address().port}/x`, { headers: { 'true-client-ip': '203.0.113.5' } })).json();
+  assert.notEqual(r.client, '203.0.113.5', 'with no trusted proxy the header is not believed');
+});
+
+test('one client address may have only a few provider keys on the board at once, and gets them back as the ads run out', async () => {
+  const c = clock(), board = makeBoard({ now: c.now }), handle = makeBoardHandler(board, { adKeysPerClient: 3, now: c.now });
+  const put = (n, client) => handle({ method: 'PUT', path: '/ad', body: adOf(n, c.now()), client });
+  assert.deepEqual([(await put(1, 'x')).status, (await put(2, 'x')).status, (await put(3, 'x')).status, (await put(4, 'x')).status], [200, 200, 200, 429], 'a fourth key from one address is refused');
+  assert.equal((await put(1, 'x')).status, 200, 'an ad it already has is refreshed');
+  assert.equal((await put(4, 'y')).status, 200, 'another address is not held to it');
+  assert.equal((await handle({ method: 'PUT', path: '/ad', body: { claimPub: 'zz' }, client: 'z' })).status, 400, 'an ad that is not one is refused as before');
+  assert.deepEqual([(await put(7, 'z')).status, (await put(8, 'z')).status, (await put(9, 'z')).status], [200, 200, 200], 'and it took none of that address\'s places');
+  assert.equal((await put(5, null)).status, 200, 'a caller with no address (a test, a local run) is not held to it');
+  c.advance(LIMITS.adSecs + 5);
+  assert.equal((await put(6, 'x')).status, 200, 'once its ads have run out it may have others');
+});
+
 test('a want, which costs nothing to make up, has its own small allowance per address; other writes are not held to it', async () => {
   assert.deepEqual([boardKindOf('PUT', '/want'), boardKindOf('PUT', '/ad'), boardKindOf('POST', '/m/' + 'a'.repeat(66)), boardKindOf('GET', '/wants')], ['want', 'write', 'write', 'default']);
   const { base } = await boardServer({ limits: { default: [1000, 1], write: [1000, 1], want: [2, 3600] } });

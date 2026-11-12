@@ -15,12 +15,25 @@ const unb64 = (text) => {
 };
 const reply = (body, status = 200) => ({ status, body });
 
-export function makeBoardHandler(board) {
-  return async function handle({ method, path, body }) {
+// `adKeysPerClient`: how many provider keys one client address may have on the board at once, so no one address takes the board's slots.
+export function makeBoardHandler(board, { adKeysPerClient = 3, now = () => Math.floor(Date.now() / 1000) } = {}) {
+  const held = new Map();                  // client -> Map(provider key -> the time its ad runs out)
+  const sweep = () => { const t = now(); for (const [c, m] of held) { for (const [k, u] of m) if (u <= t) m.delete(k); if (!m.size) held.delete(c); } };
+  return async function handle({ method, path, body, client = null }) {
     try {
       if (method === 'GET' && path === '/health') return reply({ ok: true, ...board.stats() });
       if (method === 'GET' && path === '/ads') return reply({ ads: board.ads() });
-      if (method === 'PUT' && path === '/ad') return reply(board.putAd(body));
+      if (method === 'PUT' && path === '/ad') {
+        const key = body && typeof body.claimPub === 'string' ? body.claimPub : null;
+        if (client && key) {
+          sweep();
+          const mine = held.get(client);
+          if (mine && !mine.has(key) && mine.size >= adKeysPerClient) return reply({ error: 'this address has as many providers on the board as it may' }, 429);
+        }
+        const out = board.putAd(body);
+        if (client && key) { const m = held.get(client) || new Map(); m.set(key, Number(body.until) || now() + 600); held.set(client, m); }
+        return reply(out);
+      }
       if (method === 'GET' && path === '/wants') return reply({ wants: board.wants() });
       if (method === 'PUT' && path === '/want') return reply(board.putWant(body));
       let m;

@@ -13,6 +13,26 @@ function readBody(req, max) {
   });
 }
 
+const IPCHARS = /^[0-9a-f:.]+$/i;
+// A client's address as a key: an IPv6 one by its /64, since a network gives all the rest of it to one customer.
+function ipKey(addr) {
+  const a = String(addr).trim().toLowerCase();
+  if (!a.includes(':') || /^(::ffff:)?\d+\.\d+\.\d+\.\d+$/.test(a)) return a;
+  const [h, t = ''] = a.split('::'), head = h ? h.split(':') : [], tail = t ? t.split(':') : [];
+  const full = a.includes('::') ? [...head, ...Array(Math.max(0, 8 - head.length - tail.length)).fill('0'), ...tail] : head;
+  return `${full.slice(0, 4).map((x) => x.replace(/^0+(?=.)/, '')).join(':')}::/64`;
+}
+// Who is asking. Behind a trusted proxy that is the address its edge saw, which the edge puts in True-Client-IP itself (Render's does, over
+// whatever the client sent); without one, the last address in the forwarded list, the one the proxy added: the first is whatever the client wrote.
+function clientOf(req, trustProxy) {
+  const direct = ipKey(req.socket.remoteAddress || 'unknown');
+  if (!trustProxy) return direct;
+  const tc = String(req.headers['true-client-ip'] || '').trim();
+  if (tc && tc.length <= 45 && IPCHARS.test(tc)) return ipKey(tc);
+  const last = String(req.headers['x-forwarded-for'] || '').split(',').pop().trim();
+  return last ? ipKey(last) : direct;
+}
+
 export function makeHttpServer({ handle, origins = [], maxBody = 65536, limits = { default: [60, 60], offer: [6, 60] }, trustProxy = false, kindOf = (method, path) => (path === '/offer' ? 'offer' : 'default') }) {
   const buckets = new Map();
   function allowed(ip, kind) {
@@ -31,8 +51,7 @@ export function makeHttpServer({ handle, origins = [], maxBody = 65536, limits =
     const cors = origin && (origins.includes('*') || origins.includes(origin)) ? { 'access-control-allow-origin': origin, vary: 'origin', 'access-control-allow-methods': 'GET, POST, PUT, OPTIONS', 'access-control-allow-headers': 'content-type', 'access-control-max-age': '600' } : {};
     const send = (status, body) => { res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors }); res.end(JSON.stringify(body)); };
     if (req.method === 'OPTIONS') { res.writeHead(204, cors); return res.end(); }
-    // behind one trusted proxy the client is the last address in the list, the one the proxy added: the first is whatever the client wrote
-    const ip = (trustProxy && String(req.headers['x-forwarded-for'] || '').split(',').pop().trim()) || req.socket.remoteAddress || 'unknown';
+    const ip = clientOf(req, trustProxy);
     let url;
     try { url = new URL(req.url, 'http://x'); } catch { return send(400, { error: 'bad request' }); }
     const kind = kindOf(req.method, url.pathname);
@@ -46,7 +65,7 @@ export function makeHttpServer({ handle, origins = [], maxBody = 65536, limits =
       if (text == null) return tooBig();
       try { body = JSON.parse(text || '{}'); } catch { return send(400, { error: 'body is not JSON' }); }
     }
-    const r = await handle({ method: req.method, path: url.pathname, body });
+    const r = await handle({ method: req.method, path: url.pathname, body, client: ip });
     send(r.status, r.body);
   }
   // whatever a request does, the process stays up: a listener that throws is an unhandled rejection, which ends it
