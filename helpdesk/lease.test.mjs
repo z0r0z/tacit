@@ -1,5 +1,5 @@
 // node lease.test.mjs -- the lease side of the help desk: queueing, long-poll, canaries, vetting, strikes, interruptions, hijack attempts
-import { makeLeases, makeVet, isAddr, creditsFor } from './lease.mjs';
+import { makeLeases, makeVet, isAddr, creditsFor, cleanHw, tierOf } from './lease.mjs';
 let fails = 0; const check = (name, cond) => { console.log((cond ? 'ok   ' : 'FAIL ') + name); if (!cond) fails++; };
 const A = '0x' + 'a1'.repeat(20), B = '0x' + 'b2'.repeat(20), msgs = [{ role: 'user', content: 'q' }];
 const mk = (extra = {}) => makeLeases({ waitMs: 300, sweepMs: 50, leaseMs: 400, canaryEvery: 1000, ...extra });
@@ -84,6 +84,38 @@ const mk = (extra = {}) => makeLeases({ waitMs: 300, sweepMs: 50, leaseMs: 400, 
   const c = creditsFor(f, day, { now: (day + 1) * 86400000 + 5 }); check('credits: the day tally per address, only that UTC day, and over once the day has ended', c.over === true && c.miners.length === 2 && c.miners.find((m) => m.miner === A.toLowerCase()).points === 2 && c.miners.find((m) => m.miner === B.toLowerCase()).points === 1);
   check('credits: the day in progress is not over', creditsFor(f, day, { now: day * 86400000 + 100 }).over === false);
   check('credits: an address is capped per day', creditsFor(f, day, { maxPerDay: 1, now: (day + 1) * 86400000 }).miners.every((m) => m.points === 1)); fs.unlinkSync(f); }
+
+
+// hardware: what a node says it has is cut down to numbers and two words, sorted into the size of model it can hold whole, counted for the page and the plan
+{ check('hw: junk is dropped, numbers are bounded, free text never gets through', (() => { const h = cleanHw({ ram: 99999, vram: -5, cores: 'x', os: 'plan9', arch: '<script>', unified: 'yes', gpu: 'RTX 9090', host: 'zs-mac' }); return h.ram === 0 && h.vram === 0 && h.cores === 0 && h.os === '' && h.arch === '' && h.unified === false && !('gpu' in h) && !('host' in h) && Object.keys(h).length === 6; })());
+  check('hw: a good report is kept, rounded', JSON.stringify(cleanHw({ ram: 31.6, vram: 23.9, cores: 12, os: 'linux', arch: 'x64', unified: false })) === JSON.stringify({ ram: 32, vram: 24, cores: 12, os: 'linux', arch: 'x64', unified: false }));
+  check('hw: not an object is nothing', cleanHw(null) === null && cleanHw('x') === null && cleanHw([1]) === null && cleanHw(7) === null);
+  const hw = (o) => cleanHw({ ram: 16, vram: 0, cores: 8, os: 'linux', arch: 'x64', unified: false, ...o });
+  check('tier: no report is unknown', tierOf(null) === 'unknown');
+  check('tier: a 24 GB GPU holds the 35B whole, a 23 GB one does not', tierOf(hw({ vram: 24, ram: 16 })) === 'big' && tierOf(hw({ vram: 23, ram: 16 })) === 'small');
+  check('tier: a mid GPU with 32 GB of RAM runs it with the experts in RAM; with less RAM it cannot', tierOf(hw({ vram: 12, ram: 32 })) === 'big' && tierOf(hw({ vram: 6, ram: 32 })) === 'big' && tierOf(hw({ vram: 12, ram: 31 })) === 'small' && tierOf(hw({ vram: 4, ram: 64 })) === 'small');
+  check('tier: Apple silicon shares memory, so 32 GB holds it and 16 GB does not', tierOf(hw({ unified: true, os: 'darwin', arch: 'arm64', ram: 32 })) === 'big' && tierOf(hw({ unified: true, os: 'darwin', arch: 'arm64', ram: 16 })) === 'small' && tierOf(hw({ unified: true, ram: 8 })) === 'small');
+  check('tier: a big CPU box with no GPU stays small (11 tokens/s is no better than the 4B)', tierOf(hw({ vram: 0, ram: 128 })) === 'small');
+
+  let T = 1_000_000; const L = mk({ now: () => T, onlineMs: 60000, canaryEvery: 1000, waitMs: 20 });
+  const big = { ram: 64, vram: 24, cores: 16, os: 'linux', arch: 'x64' }, small = { ram: 8, vram: 0, cores: 8, os: 'darwin', arch: 'arm64', unified: true };
+  await L.lease({ miner: A, ip: '61.0.0.1', hw: big }); await L.lease({ miner: B, ip: '61.0.0.2', hw: small }); await L.lease({ miner: A, ip: '61.0.0.3' }); await L.lease({ miner: B, ip: '61.0.0.4', hw: 'garbage' });
+  let cap = L.capacity();
+  check('capacity: online nodes counted by tier, with the memory they have in all (a node that sent nothing, or junk, is unknown and adds none)', cap.tiers.big === 1 && cap.tiers.small === 1 && cap.tiers.unknown === 2 && cap.ramGb === 64 + 8 && cap.vramGb === 24, JSON.stringify(cap));
+  await L.lease({ miner: A, ip: '61.0.0.1' }); check('capacity: a node that stops sending keeps what it said before', L.capacity().tiers.big === 1);
+  T += 61000; await L.lease({ miner: B, ip: '61.0.0.2' });   // only this node is still asking, and it says nothing new
+  cap = L.capacity(); check('capacity: nodes that went quiet are not counted, and the one still asking keeps its earlier report', cap.tiers.big === 0 && cap.tiers.small === 1 && cap.tiers.unknown === 0 && cap.ramGb === 8 && cap.vramGb === 0, JSON.stringify(cap));
+  check('capacity: stats list each node by tier and speed, and name no client', (() => { const n = L.stats().nodes; return Array.isArray(n) && n.length === 1 && 'tier' in n[0] && !('ck' in n[0]) && !('ip' in n[0]) && !JSON.stringify(n).includes('61.0.0'); })());
+  L.close();
+
+  // speed: the gateway times each answer itself (handed over -> handed in) and smooths it, ignoring scans and refused answers
+  T = 5_000_000; const S = mk({ now: () => T, canaryEvery: 1000, waitMs: 20 }); const ip = '62.0.0.1';
+  const ask = async (took, text = 'ok') => { const p = S.enqueue('answer', msgs, { timeoutMs: 100000 }); const j = await S.lease({ miner: A, ip }); T += took; await S.submit({ id: j.id, lease: j.lease, miner: A, ip, text }); await p.catch(() => {}); };
+  await ask(2000); let nd = S.stats().nodes[0]; check('speed: the first answer sets the average', nd.ewmaMs === 2000 && nd.timed === 1, JSON.stringify(nd));
+  await ask(7000); nd = S.stats().nodes[0]; check('speed: later answers move it by a fifth (0.8 x 2000 + 0.2 x 7000 = 3000)', nd.ewmaMs === 3000 && nd.timed === 2, JSON.stringify(nd));
+  const before = S.stats().nodes[0].timed; const pe = S.enqueue('answer', msgs, { timeoutMs: 1000 }).catch(() => {}); const je = await S.lease({ miner: A, ip }); T += 9000; await S.submit({ id: je.id, lease: je.lease, miner: A, ip, text: '' }); await pe;
+  check('speed: an empty (failed) answer is not timed', S.stats().nodes[0].timed === before);
+  S.close(); }
 
 check('isAddr', isAddr(A) && !isAddr('0x12') && !isAddr(null));
 console.log(fails ? `${fails} lease test(s) failed` : 'lease: all tests passed'); process.exit(fails ? 1 : 0);

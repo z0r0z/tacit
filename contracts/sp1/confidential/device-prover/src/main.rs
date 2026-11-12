@@ -21,6 +21,7 @@
 // proof pool while it has nothing of its own to prove), TACIT_POOL_API (https://api.tacit.finance), and the SDK's
 // SP1_WORKER_NUM_*_WORKERS (one per stage by default below 16 GB of RAM), TACIT_SALT_THREADS (cores that grind salts; half by default, 0 is off).
 mod helpdesk;
+mod hw;
 mod salt;
 use sha2::{Digest, Sha256};
 use sp1_sdk::{blocking::{ProveRequest, Prover, ProverClient}, Elf, HashableKey, ProvingKey, SP1Stdin};

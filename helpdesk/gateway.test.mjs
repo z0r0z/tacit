@@ -45,6 +45,11 @@ try {
   const t = Date.now(); const lz = await fetch(`${B}/helpdesk/lease`, { method: 'POST', headers: { 'x-forwarded-for': '5.5.5.5' }, body: JSON.stringify({ miner: A, kinds: ['answer'] }) });
   check('lease: with no work the request is held, then answered 204', lz.status === 204 && Date.now() - t >= 400);
   const st = await (await fetch(`${B}/helpdesk/stats`)).json(); check('stats are available locally and show the node that just asked', st.online >= 1);
+  // hardware reports over HTTP: counted in /health by tier, junk shrugged off, no client named
+  const hwPost = (ip, hw) => fetch(`${B}/helpdesk/lease`, { method: 'POST', headers: { 'x-forwarded-for': ip }, body: JSON.stringify({ miner: A, kinds: ['answer'], hw }) });
+  await Promise.all([hwPost('6.6.6.1', { ram: 64, vram: 24, cores: 16, os: 'linux', arch: 'x64' }), hwPost('6.6.6.2', { ram: 16, vram: 0, cores: 8, os: 'darwin', arch: 'arm64', unified: true }), hwPost('6.6.6.3', { ram: 'lots', os: { x: 1 } })]);
+  const hl = await (await fetch(`${B}/health`)).json();
+  check('health: shows the nodes online by tier and the memory they have, and nothing that names one', hl.capacity && hl.capacity.tiers.big === 1 && hl.capacity.tiers.small === 2 && hl.capacity.ramGb === 80 && hl.capacity.vramGb === 24 && !/6\.6\.6/.test(JSON.stringify(hl)), JSON.stringify(hl.capacity));
 } catch (e) { console.log('FAIL gateway test crashed:', e.message, '\n', log.slice(-400)); fails++; }
 finally { gw.kill(); rmSync(data, { recursive: true, force: true }); }
 console.log(fails ? `${fails} gateway test(s) failed` : 'gateway: all tests passed'); process.exit(fails ? 1 : 0);
