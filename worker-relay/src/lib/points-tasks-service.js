@@ -76,12 +76,18 @@ export function createTasks({ store, cfg, jobs, client, clients = {}, quote, fun
   // ── claims ──
 
   // What a transaction completed, as the reply to its claim: each step with its reward, and what became of it.
-  async function claimOne(hash, chain) {
+  // `heads`: the chain's latest block number, read once for all the hashes of one request
+  async function claimOne(hash, chain, heads = new Map()) {
     const c = byChain[chain];
     if (!c) return { txHash: hash, status: 'unknown chain', steps: [] };
     let tx, receipt, head;
     try {
-      [tx, receipt, head] = await Promise.all([c.getTransaction({ hash }), c.getTransactionReceipt({ hash }), c.getBlockNumber({ cacheTime: 0 })]);
+      if (!heads.has(chain)) {
+        const p = c.getBlockNumber({ cacheTime: 0 });
+        heads.set(chain, p);
+        p.catch(() => { if (heads.get(chain) === p) heads.delete(chain); });         // (a read that failed is made again for the next hash)
+      }
+      [tx, receipt, head] = await Promise.all([c.getTransaction({ hash }), c.getTransactionReceipt({ hash }), heads.get(chain)]);
     } catch { return { txHash: hash, status: 'not found', steps: [] }; }
     if (receipt.status !== 'success') return { txHash: hash, status: 'failed', steps: [] };
     const left = (chainCfg(chain).confirmations ?? confirmations) - Number(head - receipt.blockNumber + 1n);
@@ -121,14 +127,17 @@ export function createTasks({ store, cfg, jobs, client, clients = {}, quote, fun
   // body: { txHashes: [0x…], chainId?: 1 }. Anyone may name any transaction: the account credited is the one that sent it.
   async function claim(body, { client: who = 'anon' } = {}) {
     if (!enabled) return reply(404, { error: 'not enabled' });
-    if (!allow(who)) return reply(429, { error: 'slow down' });
     const hashes = Array.isArray(body?.txHashes) ? body.txHashes : [];
     if (!hashes.length || hashes.length > 25 || !hashes.every((h) => HASH.test(h))) return reply(400, { error: 'txHashes: 1 to 25 transaction hashes' });
-    const results = [];
     const chain = body.chainId == null ? 1 : Number(body.chainId);
     if (!Number.isInteger(chain) || !byChain[chain]) return reply(400, { error: 'chainId: a chain the jobs are on' });
-    for (const h of [...new Set(hashes.map((x) => x.toLowerCase()))]) {
-      try { results.push(await claimOne(h, chain)); } catch (err) { log(`task claim ${h} failed:`, err?.message || err); results.push({ txHash: h, status: 'unavailable', steps: [] }); }
+    // each hash is a read of the chain: a token for every five of them (a page names a few, so it costs one, as before)
+    const distinct = [...new Set(hashes.map((x) => x.toLowerCase()))];
+    if (!allow(who, Math.ceil(distinct.length / 5))) return reply(429, { error: 'slow down' });
+    const results = [];
+    const heads = new Map();
+    for (const h of distinct) {
+      try { results.push(await claimOne(h, chain, heads)); } catch (err) { log(`task claim ${h} failed:`, err?.message || err); results.push({ txHash: h, status: 'unavailable', steps: [] }); }
     }
     return reply(200, { results });
   }

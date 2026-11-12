@@ -5,7 +5,8 @@
 export function makeTokenBucket({ perMin, burst, maxKeys = 10_000, now = () => Date.now() }) {
   const buckets = new Map();
   const fill = (b, t) => { b.tokens = Math.min(burst, b.tokens + ((t - b.at) * perMin) / 60_000); b.at = t; };
-  return (key) => {
+  // `cost`: how many tokens the call takes (default 1): a call that does more work takes more
+  return (key, cost = 1) => {
     const t = now();
     let b = buckets.get(key);
     if (!b) {
@@ -15,8 +16,8 @@ export function makeTokenBucket({ perMin, burst, maxKeys = 10_000, now = () => D
       buckets.set(key, b);
     }
     fill(b, t);
-    if (b.tokens < 1) return false;
-    b.tokens -= 1;
+    if (b.tokens < cost) return false;
+    b.tokens -= cost;
     return true;
   };
 }

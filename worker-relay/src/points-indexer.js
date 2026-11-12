@@ -45,6 +45,7 @@ import { openStore } from './lib/points-store.js';
 import { parseBoostTiers, openTacBoost, scanTacTransfers } from './lib/tac-holder-boost.js';
 import { build as buildMerkleTree, formatTac, rewardEntries } from './lib/points-merkle.js';
 import { factoryListsPool } from './lib/pool-registry.js';
+import { makeTtlCache } from './lib/ttl-cache.js';
 import { parseUrl, badRequest } from './lib/safe-url.js';
 import {
   openEvmPoolPointsState, scanEvmPoolChain, resolvePendingBoxes, explorerGet, isV1WrapViaEvmRouter, WRAP_BOX_COMPLETED_EVENT, rpcRefusal,
@@ -159,6 +160,8 @@ const readBondLock = async (outpoint) => {
 const CLAIMED_ABI = [
   { type: 'function', name: 'claimed', stateMutability: 'view', inputs: [{ name: 'account', type: 'address' }], outputs: [{ type: 'uint256' }] },
 ];
+// What /claim says the distributor shows as claimed is read once per ten seconds per account, whoever asks: each GET is otherwise a call to the RPC the scanners share.
+const claimedCache = makeTtlCache({ ttlMs: 10_000, max: 2000 });
 
 // Built once at startup, reused for every settle cycle. null when publishing isn't configured yet (no
 // POINTS_ROOT_SETTER_KEY) — settleCycle still folds days into the local reward ledger either way; only the
@@ -1866,9 +1869,9 @@ function startHttp(store, evmState) {
         let claimedWei = '0';
         if (ADDR.pointsDistributor) {
           try {
-            const onChain = await publicClient.readContract({
+            const onChain = await claimedCache.get(address.toLowerCase(), () => publicClient.readContract({
               address: ADDR.pointsDistributor, abi: CLAIMED_ABI, functionName: 'claimed', args: [address],
-            });
+            }));
             claimedWei = onChain.toString();
           } catch (err) {
             log(`/claim read failed for ${address}:`, err?.message || err); // report 0 claimed rather than fail the response over a transient RPC hiccup
