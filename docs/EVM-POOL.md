@@ -943,6 +943,22 @@ To publish an edited page as contract code, use the same wrapper pattern (the ch
 the page hash); or serve it as an ordinary static page, since it needs nothing from a server. An agent can do the whole
 adaptation from this guide, the live page and the check tool.
 
+### Who can change what
+
+The pool contracts on every chain are immutable: no owner, no pause, no upgrade. What can change is the app around them, and all of it is now held by one account, the Z DAO (`0x5E58BA0e06ED0F5558f83bE732a4b899a674053E`), a Moloch-style DAO whose votes are Z Shares.
+
+| What | Held by | What it can do |
+|---|---|---|
+| The `anon.wei` name (on the WNS registry) | the Z DAO (`ownerOf`) | point the name at a different page version |
+| The page's lineage steward (ERC-8244; live version `0x0000000d42137547140b0812E1178F025e08bc49`) | the Z DAO (`steward()`) | publish a new page version with `deployNext`; every version stays immutable and serves its own bytes |
+| The node lists the page reads: zRpcList `0x8c7348d039f58c4e9cfa936ef410eec759213b12` and zEndpoints `0x00000051f365d898132f4ebf345cd3968e02f288` | the Z DAO (`owner()`) | add or remove nodes the page tries after its built-in ones, change the relay URL it uses and the mirrors it fetches the proving files from |
+
+None of these can move funds, change a proof or redirect a payment: the pool is immutable, the proof binds the recipient, amount, relay address and fee, and every proving file is checked against its pinned SHA-256. A hostile node or relay entry would see the requests a public node or relay sees (see "Which nodes learn what?" and "What the relay sees"). A hostile page version is the larger risk, which is why changing it needs a DAO proposal, and why you can read, pin or serve a version yourself (`html()` on the version contract, above).
+
+The DAO decides by proposal: a 24-hour voting window, votes from 10% of Z Shares, and a 24-hour wait after the proposal is queued before anyone can execute it (`proposalTTL()`, `quorumBps()` and `timelockDelay()` on the DAO). Z Shares are transferable, so check the holders on a block explorer. No single key can change these on its own. The relay service and its signing key are run by Tacit; the DAO controls only which relay URL the page uses, and the pool never needs a relay (send from your own wallet).
+
+Check it yourself: `owner()` on each of the two node lists, `steward()` on the live version, and `ownerOf` of the namehash of `anon.wei` on the WNS registry should all return the Z DAO's address.
+
 ## MegaETH and building an app on another chain
 
 The pool, router, verifier and PoseidonT5 are live on MegaETH (chain 4326) at the addresses above, deployed on 5 October
