@@ -1,5 +1,5 @@
 // node lease.test.mjs -- the lease side of the help desk: queueing, long-poll, canaries, vetting, strikes, interruptions, hijack attempts
-import { makeLeases, makeVet, isAddr, creditsFor, cleanHw, tierOf } from './lease.mjs';
+import { makeLeases, makeVet, isAddr, creditsFor, cleanHw, tierOf, cleanModel } from './lease.mjs';
 let fails = 0; const check = (name, cond) => { console.log((cond ? 'ok   ' : 'FAIL ') + name); if (!cond) fails++; };
 const A = '0x' + 'a1'.repeat(20), B = '0x' + 'b2'.repeat(20), msgs = [{ role: 'user', content: 'q' }];
 const mk = (extra = {}) => makeLeases({ waitMs: 300, sweepMs: 50, leaseMs: 400, canaryEvery: 1000, ...extra });
@@ -195,6 +195,14 @@ check('isAddr', isAddr(A) && !isAddr('0x12') && !isAddr(null));
   check('a banned client is kept while the ban lasts', L._clients.size === 1);
   for (const [addr, n] of [[A, 3], [B, 1], ['0x' + 'd3'.repeat(20), 2]]) for (let k = 0; k < n; k++) { const p = L.enqueue('answer', msgs, { timeoutMs: 2000 }); const j = await L.lease({ miner: addr, ip: '63.0.0.' + (k + 1) + addr.slice(2, 4) }); await L.submit({ id: j.id, lease: j.lease, miner: addr, ip: '63.0.0.' + (k + 1) + addr.slice(2, 4), text: 'ok' }); await p; }
   const st = L.stats(); check('/stats counts every miner and names the ones with most points, up to the limit', st.minerCount === 3 && st.miners.length === 2 && st.miners[0].points >= st.miners[1].points && st.miners[0].points === 3);
+  L.close(); }
+
+// the model a node says it runs: a short plain name, or nothing
+check('a model name is kept when it is short and plain', cleanModel('qwen3.5-4b-q4_k_m') === 'qwen3.5-4b-q4_k_m' && cleanModel('gemma-3:4b') === 'gemma-3:4b' && cleanModel('x'.repeat(40)) === 'x'.repeat(40));
+check('and dropped when it is long, has spaces, markup or control characters, or is not text', [cleanModel('x'.repeat(41)), cleanModel('two words'), cleanModel('<script>'), cleanModel('a\u001b[2Jb'), cleanModel(''), cleanModel(7), cleanModel(null), cleanModel({})].every((v) => v === null));
+{ const L = mk({ waitMs: 20 }); await L.lease({ miner: A, ip: '77.0.0.1', kinds: ['scan'], model: 'qwen3.5-4b' }); await L.lease({ miner: B, ip: '77.0.0.2', kinds: ['scan'], model: 'evil\u001b[2J name' }); await L.lease({ miner: '0x' + 'd3'.repeat(20), ip: '77.0.0.3', kinds: ['scan'] });
+  const ms = L.stats().nodes.map((n) => n.model).sort((x, y) => String(x).localeCompare(String(y)));
+  check('/stats shows a node\'s model only when it was a plain name', ms.filter((m) => m === 'qwen3.5-4b').length === 1 && ms.filter((m) => m === null).length === 2);
   L.close(); }
 
 console.log(fails ? `${fails} lease test(s) failed` : 'lease: all tests passed'); process.exit(fails ? 1 : 0);

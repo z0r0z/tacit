@@ -54,5 +54,32 @@ f = mk(); const j3 = await f.next(); check('after a restart, files changed while
   const out = execFileSync('node', [path.join(path.dirname(new URL(import.meta.url).pathname), 'inbox.mjs')], { encoding: 'utf8', env: { ...process.env, INBOX: inbox } });
   check('the inbox viewer shows the finding without an escape sequence', out.includes('let a = 2;') && !out.includes('\u001b') && !out.includes('\u0007'));
 }
+// lens snippets: a snippet too big for a node (a very long line) is passed over, the next one is handed out
+{
+  const d2 = mkdtempSync(path.join(tmpdir(), 'sft2-')); const repo2 = path.join(d2, 'r'); mkdirSync(path.join(repo2, 'dapp'), { recursive: true });
+  const git2 = (...a) => execFileSync('git', ['-C', repo2, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { encoding: 'utf8' });
+  git2('init', '-q', '-b', 'main');
+  writeFileSync(path.join(repo2, 'dapp/long.js'), 'const x = Number(' + '1 + '.repeat(8000) + '1);\nconst pad = 1;\n');
+  writeFileSync(path.join(repo2, 'dapp/ok.js'), 'const y = Number(2);\nconst z = 3;\n');
+  git2('add', '.'); git2('commit', '-qm', 'one');
+  const f2 = makeScanFeed({ repo: repo2, ref: 'main', inbox: path.join(d2, 'i.jsonl'), cursorFile: path.join(d2, 'c.json'), refreshMs: 0, lenses: true });
+  const files = []; for (let i = 0; i < 12; i++) { const j = await f2.next(); if (j?.meta.site) files.push(j.meta.file); }
+  check('a snippet with a line too long for a node is passed over for the next, which is handed out', files.length >= 4 && files.every((x) => x === 'dapp/ok.js'));
+  rmSync(d2, { recursive: true, force: true });
+}
+// exams: a planted bug is handed out only where the snippet fits what a node takes
+{
+  const d3 = mkdtempSync(path.join(tmpdir(), 'sft3-')); const repo3 = path.join(d3, 'r'); mkdirSync(path.join(repo3, 'dapp'), { recursive: true });
+  const git3 = (...a) => execFileSync('git', ['-C', repo3, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { encoding: 'utf8' });
+  git3('init', '-q', '-b', 'main');
+  writeFileSync(path.join(repo3, 'dapp/long.js'), 'const x = BigInt(1);\nconst huge = "' + 'q'.repeat(30000) + '";\n');
+  writeFileSync(path.join(repo3, 'dapp/ok.js'), 'const y = BigInt(2);\nconst z = 3;\n');
+  git3('add', '.'); git3('commit', '-qm', 'one');
+  const exam = path.join(d3, 'exam.jsonl'); let seed = 5; const rand = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const f3 = makeScanFeed({ repo: repo3, ref: 'main', inbox: path.join(d3, 'i.jsonl'), cursorFile: path.join(d3, 'c.json'), refreshMs: 0, lenses: true, examFile: exam, rand });
+  const planted = []; for (let i = 0; i < 80; i++) { const j = await f3.next(); if (j?.meta.exam) planted.push(j); }
+  check('a planted bug is handed out only in a snippet a node can take', planted.length >= 3 && planted.every((j) => j.meta.file === 'dapp/ok.js' && JSON.stringify(j.messages).length <= 20000));
+  rmSync(d3, { recursive: true, force: true });
+}
 rmSync(d, { recursive: true, force: true });
 console.log(fails ? `${fails} scanfeed test(s) failed` : 'scanfeed: all tests passed'); process.exit(fails ? 1 : 0);

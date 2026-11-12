@@ -132,4 +132,50 @@ try {
   check('a torn or foreign line in the inbox is skipped', (await mk().tick()).posted === 1);
 } finally { rmSync(dir, { recursive: true, force: true }); }
 
+// --- with the skeptics: only what they confirmed, whenever it was filed
+{
+  const state = (id, o = {}) => ({ state: 'confirmed', yes: 2, no: 0, n: 2, counts: { real: 2, false: 0, unsure: 0 }, ...o });
+  const rows = [rec({ id: 'a', line: 10, t: 50 }), rec({ id: 'b', line: 60, old: 'k = 1;', new: 'k = 2;', t: 60 }), rec({ id: 'c', line: 110, old: 'm = 1;', new: 'm = 2;', t: 70 }), rec({ id: 'd', line: 160, old: 'q = 1;', new: 'q = 2;', lens: 'units', window: '150-170', t: 1 })];   // d, the oldest, has the heaviest votes
+  const verdicts = { a: state('a'), b: state('b', { state: 'refuted', yes: 0, no: 2 }), c: state('c', { state: 'pending', yes: 1, n: 1 }), d: state('d', { yes: 4.5, n: 3, counts: { real: 3, false: 0, unsure: 0 } }) };
+  const got = pick(rows, { decide: (r) => verdicts[r.id] });
+  check('with skeptics, only confirmed findings are picked', got.length === 2 && got.every((x) => x.d.state === 'confirmed'));
+  check('the weight of the votes ranks them, not the age or the number of scouts', got[0].r.id === 'd' && got[1].r.id === 'a');
+  const d = toDigest(got, { day: '2026-11-13', reviewed: 9 });
+  const fd = d.findings.find((f) => f.line === 160), fa = d.findings.find((f) => f.line === 10);
+  check('a lens finding says its lens and the vote; a window finding says its window and the vote', fd.subject === 'units and decimals, lines 150-170 · 3 of 3 checkers say real' && fa.subject === 'window 1-90 · 2 of 2 checkers say real');
+  check('without skeptics the subject is the window alone', toDigest(pick([rec({})]), { day: '2026-11-13', reviewed: 1 }).findings[0].subject === 'window 1-90');
+  check('a subject stays inside what the API keeps', toDigest([{ r: rec({ lens: 'units', window: '1'.repeat(300) }), n: 1, d: state('x') }], { day: '2026-11-13', reviewed: 1 }).findings[0].subject.length <= 140);
+}
+{
+  const dir2 = mkdtempSync(path.join(tmpdir(), 'rd2-'));
+  try {
+    const inbox = path.join(dir2, 'i.jsonl'), results = path.join(dir2, 'r.jsonl'), stateFile = path.join(dir2, 's.json');
+    const put = (rows) => writeFileSync(inbox, rows.map((r) => JSON.stringify(r)).join('\n') + '\n'); writeFileSync(results, '');
+    const calls = []; let clock = Date.parse('2026-11-13T07:00:00Z'); let reply = { ok: true, status: 200, text: async () => '{}' };
+    const fetchImpl = async (u, i) => { calls.push(JSON.parse(i.body)); return reply; };
+    const confirmed = new Set();
+    const decide = (r) => (confirmed.has(r.id) ? { state: 'confirmed', yes: 2, no: 0, n: 2, counts: { real: 2, false: 0, unsure: 0 } } : { state: 'pending', yes: 0, no: 0, n: 0, counts: { real: 0, false: 0, unsure: 0 } });
+    const p = makeDigestPoster({ api: 'https://x', secret: 's', inbox, results, stateFile, decide, now: () => clock, fetchImpl });
+    put([rec({ t: 1, id: 'a' }), rec({ t: 2, id: 'b', line: 80, old: 'k = 1;', new: 'k = 2;' })]);
+    const r1 = await p.tick();
+    check('nothing confirmed yet: a quiet day is posted, so the channel shows the work ran', r1.posted === 0 && calls.length === 1 && calls[0].findings.length === 0);
+    confirmed.add('a'); clock = Date.parse('2026-11-14T07:00:00Z');
+    const r2 = await p.tick();
+    check('a finding filed before the last digest but confirmed after it is posted', r2.posted === 1 && calls[1].findings[0].line === 10);
+    confirmed.add('b'); clock = Date.parse('2026-11-15T07:00:00Z');
+    const r3 = await p.tick();
+    check('and is not posted again the next day, while a newly confirmed one is', r3.posted === 1 && calls[2].findings[0].line === 80);
+    check('the ids posted are kept in the state file', JSON.parse(readFileSync(stateFile, 'utf8')).posted.join() === 'a,b');
+    confirmed.add('c'); put([rec({ t: 3, id: 'c', line: 120, old: 'z = 1;', new: 'z = 2;' })]); clock = Date.parse('2026-11-16T07:00:00Z'); reply = { ok: false, status: 502, text: async () => 'down' };
+    const r4 = await p.tick();
+    check('a refusal posts nothing and keeps the finding for the next try', r4.error && !JSON.parse(readFileSync(stateFile, 'utf8')).posted.includes('c'));
+    reply = { ok: true, status: 200, text: async () => '{}' };
+    check('then it goes out', (await p.tick()).posted === 1);
+    const idless = rec({ t: 4, line: 200, old: 'w = 1;', new: 'w = 2;' }); delete idless.id; put([idless]);
+    const seen = []; const p2 = makeDigestPoster({ api: 'https://x', secret: 's', inbox, results, stateFile: path.join(dir2, 's2.json'), decide: (r) => { seen.push(r.id); return decide(r); }, now: () => clock, fetchImpl });
+    await p2.tick();
+    check('an older finding with no id is judged under the id it would have been given', /^[0-9a-f]{10}$/.test(seen[0]));
+  } finally { rmSync(dir2, { recursive: true, force: true }); }
+}
+
 console.log(fails ? `${fails} reviewdigest test(s) failed` : 'reviewdigest: all tests passed'); process.exit(fails ? 1 : 0);

@@ -4,9 +4,12 @@
 // strikes and bans key on the CLIENT (a hash of its IP), never the address, because anyone can name any address.
 import { randomBytes, createHash } from 'node:crypto';
 import { appendFileSync, existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
+import { shape as verdictShape } from './codecheck/roles.mjs';
 export const isAddr = (a) => typeof a === 'string' && /^0x[0-9a-fA-F]{40}$/.test(a);
 const hash = (s) => createHash('sha256').update(String(s)).digest('hex').slice(0, 16);
 export const ipKey = hash;   // the client key: a hash of the IP, what strikes, bans and caps hang on
+// the model a node says it runs: a short name made of letters, digits and . _ : - only (it is shown, so nothing else is kept)
+export const cleanModel = (m) => (typeof m === 'string' && /^[A-Za-z0-9._:-]{1,40}$/.test(m) ? m : null);
 
 // What a node says about its machine, cut down to numbers and two words (no names, no free text): memory in GB, GPU memory in GB (0 with none),
 // cores, system, chip family, and whether the memory is shared by CPU and GPU (Apple silicon). Anything else, or anything out of range, is dropped.
@@ -28,8 +31,8 @@ export function tierOf(hw) {
 
 export function makeLeases(opts = {}) {
   const o = { leaseMs: 120000, waitMs: 20000, canaryEvery: 6, canaryMaxAgeMs: 86400000, strikeLimit: 3, strikeWindowMs: 3600000, banMs: 3600000, onlineMs: 60000, maxTries: 2,
-    now: () => Date.now(), ledger: null, canary: null, vet: () => null, scan: null, scanPerHour: 12, sweepMs: 5000,
-    points: { answer: 1, canary: 1, scan: 1 },      // credited per unit; the policy is the operator's, set by env in server.mjs
+    now: () => Date.now(), ledger: null, canary: null, vet: () => null, scan: null, check: null, scanPerHour: 12, sweepMs: 5000,
+    points: { answer: 1, canary: 1, scan: 1, check: 1 },      // credited per unit; the policy is the operator's, set by env in server.mjs
     clientMaxPerDay: 100,                           // points one client (IP hash) can earn in a UTC day, however many addresses it names
     clientIdleMs: 3 * 86400000, statsMiners: 50,    // a client unheard of this long (not banned, no recent strikes) is forgotten; /stats names this many miners, the most points first
     persist: null, ...opts };   // persist: a file for bans, strikes and totals, so a restart does not clear them
@@ -43,7 +46,8 @@ export function makeLeases(opts = {}) {
   if (o.persist && existsSync(o.persist)) { try { const st = JSON.parse(readFileSync(o.persist, 'utf8')); for (const [k, v] of st.clients || []) clients.set(k, v); for (const [k, v] of st.miners || []) miners.set(k, v); } catch { /* a damaged state file is started over, the ledger is the record */ } }
   const save = () => { if (!o.persist) return; try { writeFileSync(o.persist + '.tmp', JSON.stringify({ clients: [...clients], miners: [...miners] })); renameSync(o.persist + '.tmp', o.persist); } catch {} };
   const client = (ck) => { if (!clients.has(ck)) clients.set(ck, { seen: 0, leases: 0, sinceCanary: 0, lastCanary: o.now(), strikes: [], bannedUntil: 0, scans: [], day: 0, dayPoints: 0, hw: null, ewmaMs: 0, timed: 0 }); return clients.get(ck); };
-  const node = (ck, a) => { const k = hash(`${ck}|${String(a).toLowerCase()}`); if (!nodes.has(k)) nodes.set(k, { ck, seen: 0, hw: null, ewmaMs: 0, timed: 0 }); return nodes.get(k); };
+  const nodeKey = (ck, a) => hash(`${ck}|${String(a).toLowerCase()}`);
+  const node = (ck, a) => { const k = nodeKey(ck, a); if (!nodes.has(k)) nodes.set(k, { ck, seen: 0, hw: null, ewmaMs: 0, timed: 0 }); return nodes.get(k); };
   const miner = (a) => { a = a.toLowerCase(); if (!miners.has(a)) miners.set(a, { answered: 0, canaryPass: 0, canaryFail: 0, errors: 0, points: 0, last: 0 }); return miners.get(a); };
   const log = (rec) => { if (o.ledger) try { appendFileSync(o.ledger, JSON.stringify({ t: o.now(), ...rec }) + '\n'); } catch {} };
 
@@ -56,7 +60,7 @@ export function makeLeases(opts = {}) {
   };
   const strike = (ck, why) => { const c = client(ck), t = o.now(); c.strikes = c.strikes.filter((x) => t - x < o.strikeWindowMs); c.strikes.push(t); if (c.strikes.length >= o.strikeLimit) { c.bannedUntil = t + o.banMs; log({ ev: 'ban', client: ck, why }); } };
   const give = (id, job, who) => { if (!job.canary) client(who.ck).sinceCanary++; const token = randomBytes(16).toString('hex'); leased.set(id, { job, token, addr: who.addr.toLowerCase(), ck: who.ck, expires: o.now() + o.leaseMs, at: o.now() }); job.tries = (job.tries || 0) + 1;
-    return { id, lease: token, kind: job.kind, messages: job.messages, max_tokens: job.max_tokens, temperature: job.temperature }; };
+    return { id, lease: token, kind: job.scan ? 'scan' : job.kind, messages: job.messages, max_tokens: job.max_tokens, temperature: job.temperature }; };   // a skeptic's job goes out as a scan: a node cannot tell the roles apart
 
   function enqueue(kind, messages, { max_tokens = 300, temperature = 0.2, timeoutMs = 12000, ctxText = '', askerIp = null } = {}) {
     return new Promise((resolve, reject) => {
@@ -73,12 +77,13 @@ export function makeLeases(opts = {}) {
   // A node asks for work. -> a job, null (nothing right now: the request was held open), or { banned: true }.
   // `closed` (an AbortSignal) is the node's connection: a node that goes away while it waits (a laptop that sleeps) is taken out of the line at once, so it is
   // never handed a question it cannot answer.
-  async function lease({ miner: addr, ip, kinds = ['answer'], closed, hw }) {
+  async function lease({ miner: addr, ip, kinds = ['answer'], closed, hw, model }) {
     if (!isAddr(addr)) return { error: 'miner must be an address' };
     if (closed?.aborted) return null;   // the node is already gone: it takes nothing
     const ck = hash(ip), c = client(ck), t = o.now(); c.seen = t; { const mm = miners.get(addr.toLowerCase()); if (mm) mm.last = t; }       // (an address is filed once it has work to its name, not by asking)
     const nd = node(ck, addr); nd.seen = t;
     if (hw !== undefined) nd.hw = cleanHw(hw);   // a node that says nothing keeps what it said before
+    if (model !== undefined) nd.model = cleanModel(model);
     if (c.bannedUntil > t) return { banned: true };
     kinds = kinds.filter((k) => k === 'answer' || k === 'scan'); if (!kinds.length) return null;
     const who = { addr, ck }; c.leases++;
@@ -90,9 +95,14 @@ export function makeLeases(opts = {}) {
       if (cj) { const job = { id: randomBytes(8).toString('hex'), kind: 'answer', messages: cj.messages, max_tokens: 300, temperature: 0.2, canary: true, check: cj.check, ctxText: cj.ctxText || '' }; return give(job.id, job, who); }
     }
     const real = pickReal(kinds); if (real) return give(real.id, real, who);
-    if (o.scan && kinds.includes('scan')) {
+    // Review work: a node that takes `scan` is offered, in turn, a finding to check (another machine's, never its own) and then a snippet to review or an exam. The
+    // feeds are told which machine is asking, how big it is and which model it runs, so the work can be matched to it and a panel kept varied.
+    if ((o.check || o.scan) && kinds.includes('scan')) {
       c.scans = c.scans.filter((x) => t - x < 3600000);
-      if (c.scans.length < o.scanPerHour) { const sj = await o.scan.next(); if (sj) { c.scans.push(t); return give(sj.id, { ...sj, scan: true }, who); } }
+      if (c.scans.length < o.scanPerHour) {
+        const ctx = { node: nodeKey(ck, addr), tier: tierOf(nd.hw), model: nd.model || null };
+        for (const feed of [o.check, o.scan]) { if (!feed) continue; const sj = await feed.next({ miner: addr, ...ctx }); if (sj) { c.scans.push(t); return give(sj.id, { ...sj, scan: true, feed, ctx }, who); } }
+      }
     }
     return new Promise((resolve) => { const w = { resolve, who, kinds }; w.timer = setTimeout(() => finish(w, null), o.waitMs); waiters.push(w); closed?.addEventListener('abort', () => finish(w, null), { once: true }); });
   }
@@ -116,9 +126,10 @@ export function makeLeases(opts = {}) {
       m.canaryPass++; timed(ck, L); const pts = credit(ck, addr, 'canary', job); log({ ev: 'canary', miner: addr, pass: true, points: pts }); return { ok: true, points: pts };
     }
     if (job.scan) {
-      // a review is the JSON the prompt asks for (a findings list, empty when there is nothing to report); a reply that is not that is not one, and earns nothing
-      if (!reviewed(text)) { m.errors++; log({ ev: 'scan', miner: addr, job: job.id, points: 0, why: 'not the shape asked for' }); return { ok: true, points: 0 }; }
-      try { await o.scan.onResult(job, text, addr); } catch {} const pts = credit(ck, addr, 'scan', job); log({ ev: 'scan', miner: addr, job: job.id, points: pts }); return { ok: true, points: pts };
+      // a review is the JSON the prompt asks for (a findings list, empty when there is nothing to report; for a skeptic, a verdict); a reply that is not that is not one, and earns nothing
+      const checking = job.kind === 'check';
+      if (!(checking ? verdictShape(text) : reviewed(text))) { m.errors++; log({ ev: checking ? 'check' : 'scan', miner: addr, job: job.id, points: 0, why: 'not the shape asked for' }); return { ok: true, points: 0 }; }
+      try { await (job.feed || o.scan).onResult(job, text, addr, job.ctx); } catch {} const pts = credit(ck, addr, checking ? 'check' : 'scan', job); log({ ev: checking ? 'check' : 'scan', miner: addr, job: job.id, points: pts }); return { ok: true, points: pts };
     }
     const bad = o.vet(text, job.ctxText);
     if (bad) {
@@ -141,7 +152,7 @@ export function makeLeases(opts = {}) {
   const capacity = () => { const tiers = { big: 0, small: 0, unknown: 0 }; let ramGb = 0, vramGb = 0; for (const c of online()) { tiers[tierOf(c.hw)]++; if (c.hw) { ramGb += c.hw.ram; vramGb += c.hw.vram; } } return { tiers, ramGb, vramGb }; };
   const stats = () => ({ online: nodesOnline(), queued: queue.length, leased: leased.size, waiting: waiters.length,
     minerCount: miners.size, miners: [...miners.entries()].sort((x, y) => y[1].points - x[1].points).slice(0, o.statsMiners).map(([a, m]) => ({ miner: a.slice(0, 8) + '…' + a.slice(-4), ...m })), banned: [...clients.values()].filter((c) => c.bannedUntil > o.now()).length,
-    capacity: capacity(), nodes: online().map((c) => ({ tier: tierOf(c.hw), ...(c.hw || {}), ewmaMs: c.ewmaMs || null, timed: c.timed || 0, seenSecs: Math.round((o.now() - c.seen) / 1000) })) });
+    capacity: capacity(), nodes: online().map((c) => ({ tier: tierOf(c.hw), ...(c.hw || {}), model: c.model || null, ewmaMs: c.ewmaMs || null, timed: c.timed || 0, seenSecs: Math.round((o.now() - c.seen) / 1000) })) });
   return { enqueue, lease, submit, nodesOnline, capacity, stats, _queue: queue, _clients: clients, _prune: prune, close: () => { clearInterval(sweep); clearInterval(saver); save(); } };
 }
 

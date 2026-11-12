@@ -15,6 +15,17 @@ The same nodes can also review the dapp's JavaScript in their idle time. The gat
 
 With `NUDGER_SECRET` set, the gateway also sends the best few of each day's new suggestions to the team's review channel (once a UTC day, through the API's `/nudger/digest`): the ones that apply and parse and change what the code does, ranked by how many reviewers agree and whether the code just changed, each credited to the reviewer's short address. The team marks each Useful, Noise or Already known, and those labels show how good the community's reviewers are.
 
+### The review swarm
+
+Many small machines, each doing a narrow job, check each other's work: what survives is what a person is shown. A node needs nothing new for this; a node that takes `scan` takes all of it, and what it is given looks like any other job. The roles are prompts and an answer shape (`codecheck/roles.mjs`), so any model can hold any role:
+
+- **Scout.** Seventeen lines of the dapp around code that can hold one kind of mistake Tacit has actually made (`codecheck/lenses.mjs`): units (sats, wei, decimals), BigInt against Number, promises and swallowed failures, hex and byte order, boundaries and thresholds, untrusted text in the page, stored state, main network against test network. One question about the snippet, one finding at most, as an exact text replacement. Whole windows of code are still handed out now and then.
+- **Skeptic.** Another machine, never the one that proposed the finding, is given the claim and the code and told to try to refute it. It answers `real`, `false` or `unsure` and must quote the line it relied on; a quote that is not in the code makes the verdict `unsure`.
+- **The gateway.** Each machine's vote is weighed by how it has done on planted bugs (below) and by its size (a machine that holds a bigger model starts at 1.5); a finding is *confirmed* when `CHECK_QUORUM` weight (default 2) says real and more says real than false, and at most `CHECK_PANEL` machines (default 3) vote on one. Models differ, so a finding goes first to a machine whose model has not yet voted on it. Only confirmed findings go to the review channel, with how the skeptics voted.
+- **Planted bugs.** One scout job in eight, and one skeptic job in `CHECK_EXAM_EVERY` (default 4), is an exam: a realistic mistake of the lens's own kind put into real code (`codecheck/mutate.mjs`, and it still parses), or a claim built from one (true: the code has the bug and the claim puts the original line back; false: the code is the original and the claim proposes the bug). The gateway knows the answer, so scouts are graded restored, near or miss, and skeptics right, wrong or unsure, per lens and per size of machine, with nobody reading. A machine that cannot tell true from false carries no weight. `GET /stats` shows `swarm`: findings by state and these results.
+
+`SWARM=0` turns it off (whole windows, no checking, every filed suggestion goes to the digest). `SCAN_PER_HOUR` (default 30) is how many review jobs one client takes an hour. A skeptic job earns `POINTS_CHECK` (default 1).
+
 ## Run a node
 
 ```sh
@@ -44,6 +55,7 @@ Settings (environment):
 | `RATE_PER_MIN` | questions per client per minute (default 20) |
 | `POINTS_ANSWER`, `POINTS_CANARY`, `POINTS_SCAN`, `POINTS_MAX_DAY` | points an answer, a passed check and a reviewed window earn, and the most one address or one client earns in a UTC day |
 | `SCAN_REPO`, `SCAN_REF`, `SCAN_FETCH` | the checkout the code reviews read through git, its ref, and whether to `git fetch` it hourly |
+| `SWARM`, `CHECK_PANEL`, `CHECK_QUORUM`, `CHECK_EXAM_EVERY`, `SCAN_PER_HOUR`, `POINTS_CHECK` | the review swarm (on with `SCAN_REPO`; `SWARM=0` turns it off), the machines that vote on a finding at most, the vote weight that confirms it, how often a skeptic job is an exam, review jobs one client takes an hour, and the points a verdict earns |
 | `NUDGER_SECRET`, `NUDGER_API`, `NUDGER_HOUR_UTC`, `NUDGER_MAX` | the shared secret that turns the daily digest on (with `SCAN_REPO`), the API it goes to (default `https://api.tacit.finance`), the UTC hour it goes out from (default 6) and how many suggestions it carries (default 8); `digest-state.json` in `DATA_DIR` remembers the last day posted |
 | `EMB` | `off` skips the embedding server (lexical retrieval only) |
 
@@ -69,5 +81,6 @@ Review the code-review inbox with `INBOX=/data/suggestions.jsonl node inbox.mjs`
 | `guard.mjs` | refuses a question that holds a seed phrase |
 | `scanfeed.mjs`, `codecheck/scan.mjs`, `inbox.mjs` | the code-review feed and its inbox |
 | `reviewdigest.mjs` | which filed suggestions go to the review channel each day, and the poster |
+| `checkfeed.mjs`, `codecheck/roles.mjs`, `codecheck/lenses.mjs`, `codecheck/mutate.mjs` | the skeptics' side and the weighted vote, the role prompts, Tacit's lenses, and the planted bugs |
 | `node/` | the node: `worker.mjs`, `run.sh`, `fetch.sh` |
 | `*.test.mjs`, `node/worker.test.mjs` | tests (`node <file>`; Node 22) |

@@ -14,6 +14,7 @@ import { makeBackend, BusyError } from './backend.mjs';
 import { makeLeases, makeVet, isAddr, creditsFor } from './lease.mjs';
 import { makeScanFeed } from './scanfeed.mjs';
 import { makeDigestPoster } from './reviewdigest.mjs';
+import { makeCheckFeed } from './checkfeed.mjs';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 // DATA_DIR: where this process keeps what must outlive a restart (the points ledger, the review inbox, the scan cursor, lease state, embeddings). On a host with a
 // persistent disk, point it there.
@@ -111,11 +112,18 @@ const CANARIES = [
   { q: 'Can the airdrop contract be upgraded?', check: (t) => /no (owner|upgrade|proxy)|cannot|can.?t|not|immutable|fixed/i.test(t) },
 ];
 let canaryI = 0;
+// The review swarm (SWARM=0 turns it off): scouts get lens snippets and now and then a planted bug, skeptics check each other's findings, and the exam results and
+// votes are kept beside the inbox. CHECK_PANEL machines at most vote on a finding and CHECK_QUORUM weight of them must say real; one skeptic job in CHECK_EXAM_EVERY
+// is an exam; SCAN_PER_HOUR is how many review jobs one client may take an hour (they are short).
+const SWARM = !!process.env.SCAN_REPO && process.env.SWARM !== '0';
+const EXAM = path.join(DATA, 'scan-exam.jsonl'), CHECKS = path.join(DATA, 'scan-checks.jsonl');
+const scanFeed = process.env.SCAN_REPO ? makeScanFeed({ repo: process.env.SCAN_REPO, ref: process.env.SCAN_REF || 'origin/main', inbox: INBOX, results: SCAN_RESULTS, cursorFile: path.join(DATA, 'scan-cursor.json'), lenses: SWARM, examFile: SWARM ? EXAM : null }) : null;
+const checkFeed = SWARM ? makeCheckFeed({ source: scanFeed.source, sample: scanFeed.sample, inbox: INBOX, checks: CHECKS, exam: EXAM, panel: Number(process.env.CHECK_PANEL ?? 3), quorum: Number(process.env.CHECK_QUORUM ?? 2), examEvery: Number(process.env.CHECK_EXAM_EVERY ?? 4) }) : null;
 const leases = makeLeases({
   ledger: path.join(DATA, 'ledger.jsonl'), persist: path.join(DATA, 'leases-state.json'),
-  points: { answer: Number(process.env.POINTS_ANSWER ?? 1), canary: Number(process.env.POINTS_CANARY ?? 1), scan: Number(process.env.POINTS_SCAN ?? 1) }, clientMaxPerDay: Number(process.env.POINTS_MAX_DAY ?? 100), vet: makeVet(corpus.chunks.map((c) => c.text).join('\n')),
+  points: { answer: Number(process.env.POINTS_ANSWER ?? 1), canary: Number(process.env.POINTS_CANARY ?? 1), scan: Number(process.env.POINTS_SCAN ?? 1), check: Number(process.env.POINTS_CHECK ?? 1) }, clientMaxPerDay: Number(process.env.POINTS_MAX_DAY ?? 100), vet: makeVet(corpus.chunks.map((c) => c.text).join('\n')),
   canaryEvery: Number(process.env.CANARY_EVERY || 6), waitMs: Number(process.env.LEASE_HOLD_MS || 20000),
-  scan: process.env.SCAN_REPO ? makeScanFeed({ repo: process.env.SCAN_REPO, ref: process.env.SCAN_REF || 'origin/main', inbox: INBOX, results: SCAN_RESULTS, cursorFile: path.join(DATA, 'scan-cursor.json') }) : null,
+  scan: scanFeed, check: checkFeed, scanPerHour: Number(process.env.SCAN_PER_HOUR ?? (SWARM ? 30 : 12)),
   canary: async () => { const c = CANARIES[canaryI++ % CANARIES.length]; const { chunks } = await retrieve(c.q); return { messages: promptFor(c.q, chunks), check: c.check, ctxText: chunks.map((x) => x.text).join('\n') }; },
 });
 
@@ -206,7 +214,7 @@ async function nodeApi(req, res) {
     holding.set(ip, (holding.get(ip) || 0) + 1);
     // when the node's connection closes before it was answered, it leaves the line (lease.mjs): a job is never handed to a node that is gone
     const gone = new AbortController(); res.on('close', () => { if (!res.writableFinished) gone.abort(); });
-    try { const out = await leases.lease({ miner: body.miner, ip, kinds: Array.isArray(body.kinds) ? body.kinds : ['answer'], closed: gone.signal, hw: body.hw });
+    try { const out = await leases.lease({ miner: body.miner, ip, kinds: Array.isArray(body.kinds) ? body.kinds : ['answer'], closed: gone.signal, hw: body.hw, model: body.model });
       if (out === null) return send(res, 204); if (out.banned) return send(res, 429, { error: 'paused: this client failed too many checks, try again in an hour' }); if (out.error) return send(res, 400, out); return send(res, 200, out); }
     finally { holding.set(ip, Math.max(0, (holding.get(ip) || 1) - 1)); }
   }
@@ -225,7 +233,7 @@ if (process.argv[2] === 'serve') {
       if (!(day <= utcDay())) return send(res, 400, { ok: false, error: 'day must be a UTC day number, today or before' });
       return send(res, 200, creditsCached(day, () => creditsFor(path.join(DATA, 'ledger.jsonl'), day, { maxPerDay: Number(process.env.POINTS_MAX_DAY ?? 100) }))); }
     if (req.method === 'GET' && (req.url === '/' || req.url === '/index.html')) { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'x-content-type-options': 'nosniff' }); return res.end(PAGE); }
-    if (req.method === 'GET' && (req.url === '/health' || req.url === '/stats')) { const st = llm.stats(); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(req.url === '/health' ? { ok: st.backends.some((b) => b.up) || leases.nodesOnline() > 0, nodes: leases.nodesOnline(), capacity: leases.capacity(), dense: denseState, backends: st.backends.map((b) => ({ url: b.url, up: b.up })) } : { ...st, nodes: leases.stats() })); }
+    if (req.method === 'GET' && (req.url === '/health' || req.url === '/stats')) { const st = llm.stats(); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(req.url === '/health' ? { ok: st.backends.some((b) => b.up) || leases.nodesOnline() > 0, nodes: leases.nodesOnline(), capacity: leases.capacity(), dense: denseState, backends: st.backends.map((b) => ({ url: b.url, up: b.up })) } : { ...st, nodes: leases.stats(), swarm: checkFeed ? checkFeed.summary() : null })); }
     if (req.url.startsWith('/helpdesk/')) return nodeApi(req, res).catch(() => { if (!res.headersSent) send(res, 500, { error: 'the help desk could not answer' }); else res.end(); });
     if (req.method === 'POST' && req.url === '/ask') {
       if (!ok(ip)) { res.writeHead(429, { 'content-type': 'application/json' }); return res.end('{"error":"Too many questions, try again in a minute."}'); }
@@ -238,7 +246,7 @@ if (process.argv[2] === 'serve') {
   }).listen(Number(process.env.PORT || 8787), process.env.HOST || '127.0.0.1', () => console.log(`help desk PoC on http://${process.env.HOST || '127.0.0.1'}:${process.env.PORT || 8787}`));
   // NUDGER_SECRET (the same value the API holds) turns on the daily digest of what the community reviewers filed, to the team's review channel through the API.
   if (process.env.SCAN_REPO && process.env.NUDGER_SECRET) {
-    const poster = makeDigestPoster({ api: (process.env.NUDGER_API || 'https://api.tacit.finance').replace(/\/+$/, ''), secret: process.env.NUDGER_SECRET, inbox: INBOX, results: SCAN_RESULTS, stateFile: path.join(DATA, 'digest-state.json'), hourUtc: Number(process.env.NUDGER_HOUR_UTC ?? 6), max: Number(process.env.NUDGER_MAX ?? 8) });
+    const poster = makeDigestPoster({ api: (process.env.NUDGER_API || 'https://api.tacit.finance').replace(/\/+$/, ''), secret: process.env.NUDGER_SECRET, inbox: INBOX, results: SCAN_RESULTS, stateFile: path.join(DATA, 'digest-state.json'), hourUtc: Number(process.env.NUDGER_HOUR_UTC ?? 6), max: Number(process.env.NUDGER_MAX ?? 8), decide: checkFeed ? (r) => checkFeed.decision(r.id) : null });
     const run = () => poster.tick().then((r) => { if (r) console.log(r.error ? `review digest: ${r.error}` : `review digest: ${r.posted} posted, ${r.reviewed} windows looked at`); }, (e) => console.log(`review digest: ${e.message}`));
     const every = Number(process.env.NUDGER_TICK_MS || 10 * 60_000);
     setTimeout(run, Math.min(60_000, every)).unref(); setInterval(run, every).unref();
