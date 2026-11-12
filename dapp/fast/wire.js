@@ -162,7 +162,8 @@ function sides({ T, ux, priv, hrp, bases, fetchImpl, asset, seedTag, forNotes, w
   if (prims.wallet.address() !== T.wallet.address()) throw new Error('The Bitcoin address of this key is not the one the wallet reads. Nothing was done.');
   const builder = makeAdaptorBtcTx({ prims, kit: tacitKit(T) });
   const btc = makeEsploraBtcChain({
-    bases, prims, builder, fetchImpl,
+    // the lock a bridge waits on goes out for the next block or two and not under 2 sat/vB (see fastbridge-btc.js minFeeRate)
+    bases, prims, builder, fetchImpl, feeTarget: '1', minFeeRate: 2,
     // a provider reads the notes it is locked to and whether they are spent on Ethereum
     ...(forNotes ? { tacit: T, pool: ux.pool, ethGetStorageAt: (to, slot, tag) => ux.rpc('eth_getStorageAt', [to, slot, tag]), poolAddress: ux.cfg.pool, binding: ux.chainBindingHex(), keccak256: keccak_256, secp } : {}),
   });

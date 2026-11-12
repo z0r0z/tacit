@@ -264,6 +264,30 @@ test('an expired quote ends the swap before anything is locked: the user takes i
   assert.deepEqual(await w.lpStore.list(), []);
 });
 
+test('with a grace after the quote, a lock that confirmed late is still taken (the offer of a low-fee lock came hours after its quote), and one past the grace is still declined', async () => {
+  const taken = httpWorld();
+  taken.w.lEvm.fund(VALUE, 'same-size');
+  const s = await serve(taken.w, { config: configFor(taken.w, { quote: { validSecs: 100, graceSecs: 100000 } }) });
+  taken.ref.base = s.base;
+  const q = await makeHttpCounter({ base: s.base, fetchImpl: realFetch }).quote(VALUE);
+  await startSwap(taken.w, q);
+  await taken.w.run(bothDone(taken.w));
+  assert.equal((await taken.w.user()).phase, 'done', 'the offer came after the quote\'s own time and is answered');
+  assert.ok(taken.w.clock.now() > q.created + 100, 'it did come after the quote ran out');
+  assert.ok(!s.logs.some((l) => l.msg === 'offer declined'), 'nothing was turned away');
+  closers.push(s.close);
+  // a grace is a limit: past it the quote is gone, as without one
+  const late = httpWorld();
+  late.w.lEvm.fund(VALUE, 'same-size');
+  const t = await serve(late.w, { config: configFor(late.w, { quote: { validSecs: 100, graceSecs: 1 } }) });
+  late.ref.base = t.base;
+  const q2 = await makeHttpCounter({ base: t.base, fetchImpl: realFetch }).quote(VALUE);
+  await startSwap(late.w, q2);
+  await late.w.run(async () => (await late.w.user())?.phase === 'refund-wait');
+  assert.match((await late.w.user()).why, /quote expired/);
+  assert.ok(t.logs.some((l) => l.msg === 'offer declined' && /quote expired/.test(l.why)), 'and it is said in the log');
+});
+
 test('a swap that stays in the take is reported once an hour, with the reason', async () => {
   const { w, ref } = httpWorld();
   w.lEvm.fund(VALUE, 'same-size');
@@ -314,6 +338,22 @@ test('what can be taken: /info says it, a quote beyond it is refused, and a quot
   delete w.lEvmCtx.available;
   assert.equal((await infoOf(blind)).available, null);
   assert.equal((await post(blind, '/quote', { amount: '999999' })).status, 200);
+});
+
+test('what the pool holds and what stands against it is said in the log, not only the most one bridge can take', async () => {
+  const { w } = httpWorld();
+  w.lEvm.fund(6000n, 'inv'); manyCoins(w);
+  const s = await serve(w);
+  const q = (await post(s, '/quote', { amount: '1000' })).body;
+  assert.equal((await post(s, '/reserve', { quoteId: q.id })).body.ok, true);
+  await s.svc.tick(); await new Promise((r) => setTimeout(r, 20));
+  const said = s.logs.filter((l) => l.msg === 'capacity');
+  assert.equal(said.length, 1);
+  assert.deepEqual([said[0].held, said[0].promised, said[0].holds], ['6000', '1000', 1], 'held, what a hold promises, and the one hold');
+  await s.svc.tick(); await new Promise((r) => setTimeout(r, 20));
+  assert.equal(s.logs.filter((l) => l.msg === 'capacity').length, 1, 'said again only after five minutes');
+  w.clock.advance(301); await s.svc.tick(); await new Promise((r) => setTimeout(r, 20));
+  assert.equal(s.logs.filter((l) => l.msg === 'capacity').length, 2);
 });
 
 test('a provider that cannot get a lock into the pool says so: nothing to take in /info, a quote, a reservation and a new offer are turned away with the reason, the one who runs it is told once, a swap it holds goes on, and it takes bridges again when it can', async () => {

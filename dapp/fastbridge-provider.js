@@ -85,8 +85,11 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
   const offerBudgetMs = config.offerBudgetMs ?? 8000;
   const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
   const counter = { publishEvmOffer: async (id, offer) => { published.set(id, offer); } };
-  // an offer is judged against its quote, which lasts as long as the reservation made for it
-  const quotes = { get: async (id) => { const q = await quoter.get(id); const r = reservations.get(id); return q && r && r.until > q.validUntil ? { ...q, validUntil: r.until } : q; } };
+  // An offer is judged against its quote, which lasts as long as the reservation made for it, and `quote.graceSecs` longer (0 when it is not set).
+  // The offer of a user comes once the Bitcoin lock has a confirmation, which can be hours after the quote when the lock was sent for a low fee;
+  // the quote's terms are a fixed fee against TAC for TAC, so a lock that is confirmed and pays this side's take is no worse for being slow.
+  const graceSecs = Number(config.quote?.graceSecs) || 0;
+  const quotes = { get: async (id) => { const q = await quoter.get(id); if (!q) return q; const r = reservations.get(id); const until = Math.max(q.validUntil + graceSecs, r ? r.until : 0); return until > q.validUntil ? { ...q, validUntil: until } : q; } };
   const el = makeEthereumLocker({ seed, now, store: swaps, quotes, btc, evm, counter, policy: config.policy });
   const health = { ok: true, lastTick: 0, lastError: null };
   const reported = new Set(), lastAlert = new Map();
@@ -227,9 +230,20 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
     if (r.ok !== lockableSaid) { lockableSaid = r.ok; alert({ level: r.ok ? 'info' : 'alert', msg: r.ok ? 'the provider can lock again' : 'the provider is not taking bridges', why: r.ok ? null : r.why }); }
   }
 
+  // What can be lent and what stands against it, said in the log every five minutes: the ad shows only the most one bridge can take, which hides
+  // whether the rest of the pool is free, promised to open swaps and holds, or not there.
+  let capacitySaid = -Infinity;
+  async function sayCapacity() {
+    if (now() - capacitySaid < 300) return;
+    capacitySaid = now();
+    const i = await readInventory(), p = await promised();
+    log({ level: 'info', msg: 'capacity', held: i.held == null ? null : String(i.held), promised: String(p.sum), open: p.count, holds: reservations.size });
+  }
+
   async function tick() {
     warmUp();
     sayLockable().catch(() => {});
+    sayCapacity().catch(() => {});
     try {
       await dropDeadHolds().catch(() => {});
       const recs = await swaps.list();

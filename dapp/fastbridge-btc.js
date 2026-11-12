@@ -18,7 +18,7 @@ const DUST = 546;
 const ZERO_AUTH = '0x' + '00'.repeat(32);
 const KNOWN = /already (in|known)|txn-already|already in block|already exists|duplicate/i;
 
-export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGetStorageAt, poolAddress, binding, keccak256, secp, fetchImpl = fetch, timeoutMs = 20000, feeTarget = '3', retryMs = 1500, feeFreshMs = 60000, feeStaleMs = 2 * 3600000, feeRetryMs = 15000, nowMs = Date.now }) {
+export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGetStorageAt, poolAddress, binding, keccak256, secp, fetchImpl = fetch, timeoutMs = 20000, feeTarget = '3', minFeeRate = 1, retryMs = 1500, feeFreshMs = 60000, feeStaleMs = 2 * 3600000, feeRetryMs = 15000, nowMs = Date.now }) {
   const list = bases.map((b) => b.replace(/\/$/, ''));
   const wallet = { pub: prims.wallet.pub, priv: prims.wallet.priv, xonly: prims.wallet.pub.slice(1) };
   const address = prims.wallet.address();
@@ -86,7 +86,9 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
       } catch (e) { why.push(`${host} ${e && e.name === 'TimeoutError' ? 'timed out' : 'was unreachable'}`); return null; }
     }))).filter((v) => v != null).sort((a, b) => a - b);
     if (!seen.length) throw new Error(`no explorer answered a fee estimate (${why.join(', ')})`);
-    return Math.max(1, Math.ceil(seen.length % 2 ? seen[(seen.length - 1) / 2] : (seen[seen.length / 2 - 1] + seen[seen.length / 2]) / 2));
+    // (`minFeeRate`: a lock that a bridge waits on is not sent at the least the network relays when the explorers' estimates run under it, as they
+    // do when the pool is busy with transactions above that line: one sent at 1.06 sat/vB sat unconfirmed for over an hour)
+    return Math.max(1, minFeeRate, Math.ceil(seen.length % 2 ? seen[(seen.length - 1) / 2] : (seen[seen.length / 2 - 1] + seen[seen.length / 2]) / 2));
   }
   async function feeRate(maxAgeMs = feeFreshMs) {          // a caller that wants it newer than a quote needs it (the LP's tick) says so
     const t = nowMs();

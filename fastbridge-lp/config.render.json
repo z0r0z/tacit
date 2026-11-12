@@ -36,6 +36,7 @@
     "feeBps": 30,
     "flatFee": "10000000",
     "validSecs": 600,
+    "graceSecs": 21600,
     "rate": {
       "num": 1,
       "den": 1
