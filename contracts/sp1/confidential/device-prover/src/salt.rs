@@ -1,4 +1,5 @@
-// Salt mining between proofs. While mining is on (POST /mine) and nothing is being proved, spare cores grind CreateX CREATE3 salts that
+// Salt mining between proofs. While mining is on (POST /mine), nothing is being proved and the computer is on the charger, a few cores (gentle.rs: a quarter by
+// default, at the lowest priority) grind CreateX CREATE3 salts that
 // only Tacit's deployer can use, and the shares go to the API's salt pool (POST /prover/salt/share, worker/src/salt-pool.js), the best first,
 // as often as the pool takes them, for the same address the proofs pay. A proof always comes first: the grinding stops while one runs and starts again after it.
 //
@@ -7,10 +8,11 @@
 // CREATE2(CreateX, guarded salt, the proxy's init code hash), which creates the contract at its nonce 1. A share's address starts with at
 // least as many zero bits as the pool asks (GET /prover/salt minBits).
 use serde_json::{json, Value};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tiny_keccak::{Hasher, Keccak};
+use crate::gentle;
 
 const DEPLOYER: [u8; 20] = hex20("68575b073de49a94e3e3acf6f3a0d6e3b66267c7");
 const CREATEX: [u8; 20] = hex20("ba5ed099633d3b313e4d5f7bdc1305d3c28ba5ed");
@@ -18,6 +20,7 @@ const PROXY_INIT: [u8; 16] = [0x67, 0x36, 0x3d, 0x3d, 0x37, 0x36, 0x3d, 0x34, 0x
 
 pub static PROVING: AtomicBool = AtomicBool::new(false);
 static HASHES: AtomicU64 = AtomicU64::new(0);
+static THREADS: AtomicUsize = AtomicUsize::new(0);
 static MIN_BITS: AtomicU64 = AtomicU64::new(26);
 static FOUND: Mutex<Vec<([u8; 32], u32)>> = Mutex::new(Vec::new());
 // What the pool said of this run's shares: { day, shares, weight, best }, and the rate the cores ground at.
@@ -61,9 +64,10 @@ pub fn address(salt: &[u8; 32], proxy_hash: &[u8; 32]) -> ([u8; 20], u32) {
     (addr, bits)
 }
 
-fn active() -> bool { crate::pool::miner().is_some() && !PROVING.load(Ordering::Relaxed) }
+fn active() -> bool { gentle::grind_allowed(crate::pool::miner().is_some(), PROVING.load(Ordering::Relaxed), gentle::on_battery(), gentle::allow_battery()) }
 
 fn grind(seed: u64) {
+    if gentle::background_wanted() { gentle::lower_priority(); }   // this thread only: proving keeps its priority
     let proxy_hash = keccak(&[&PROXY_INIT]);
     let mut salt = [0u8; 32];
     salt[..20].copy_from_slice(&DEPLOYER);
@@ -120,6 +124,7 @@ fn send() {
         std::thread::sleep(wait);
         wait = jitter(SEND_EVERY);
         round += 1;
+        gentle::set_on_battery(!crate::helpdesk::on_ac());   // the grinding threads read this, so a pmset or /sys read is not on their path
         {
             let mut r = RATE.lock().unwrap();
             let h = HASHES.load(Ordering::Relaxed);
@@ -158,24 +163,29 @@ fn send() {
     }
 }
 
-// Spare cores (TACIT_SALT_THREADS, else half of them; 0 is off) and the sender.
+// A few cores (TACIT_SALT_THREADS, else a quarter of them; 0 is off) and the sender.
 pub fn start() {
     let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2);
-    let threads = std::env::var("TACIT_SALT_THREADS").ok().and_then(|s| s.parse::<usize>().ok()).unwrap_or((cores / 2).max(1));
+    let threads = std::env::var("TACIT_SALT_THREADS").ok().and_then(|s| s.parse::<usize>().ok()).unwrap_or(gentle::default_threads(cores));
+    THREADS.store(threads, Ordering::Relaxed);
     if threads == 0 { return; }
+    gentle::set_on_battery(!crate::helpdesk::on_ac());
     let base: u64 = rand::random();
     for t in 0..threads {
         let seed = (base & 0x00ff_ffff_ffff_ffff) | ((t as u64 & 0xff) << 56);
         std::thread::Builder::new().name(format!("salt-{t}")).spawn(move || grind(seed)).ok();
     }
     std::thread::spawn(send);
-    eprintln!("tacit-prover: grinding salts on {threads} of {cores} cores between proofs");
+    eprintln!("tacit-prover: grinding salts on {threads} of {cores} cores between proofs, {}{}",
+        if gentle::background_wanted() { "at the lowest priority" } else { "at normal priority" }, if gentle::allow_battery() { "" } else { ", only on the charger" });
 }
 
 // For GET /mine: whether the cores are grinding, how fast, and what the pool counted today.
 pub fn status() -> Value {
     let t = TODAY.lock().unwrap().clone().filter(|v| v["day"].as_u64() == Some(day()));
-    json!({ "on": active(), "rate": RATE.lock().unwrap().0.round(), "minBits": MIN_BITS.load(Ordering::Relaxed), "today": t.map(|v| v["today"].clone()) })
+    let paused = gentle::paused_for(crate::pool::miner().is_some(), PROVING.load(Ordering::Relaxed), gentle::on_battery(), gentle::allow_battery());
+    json!({ "on": active(), "rate": RATE.lock().unwrap().0.round(), "minBits": MIN_BITS.load(Ordering::Relaxed), "today": t.map(|v| v["today"].clone()),
+        "threads": THREADS.load(Ordering::Relaxed), "background": gentle::background_wanted(), "pausedFor": paused })
 }
 
 #[cfg(test)]
