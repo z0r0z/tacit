@@ -18,6 +18,11 @@ import { makeChainWallet, assetField, sharesFor, worthOf } from '../dapp/tacit-c
 import { makeChainClient, sharesWorth, forcedBytes } from '../dapp/tacit-chain-client.js';
 import { makeFeeDesk, feeTerms, admitPaying } from '../tacit-leader/fees.mjs';
 
+// what the clients ask the leader: a spend reads the chain's root and leaves, never the path of a particular note
+let pathHits = 0, stateHits = 0;
+const realFetch = globalThis.fetch;
+globalThis.fetch = (u, o) => { const p = String(u); if (/\/path\/\d+/.test(p)) pathHits++; if (/\/state(\?|$)/.test(p)) stateHits++; return realFetch(u, o); };
+
 const T = 100_000_000n; // 1 TAC in units
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BIN = join(HERE, '../contracts/sp1/confidential/tacit-block/node/target/release/tacit-block-node');
@@ -169,6 +174,9 @@ try {
   fees = (await desk.wallet.scan(desk.keys, leaderReads)).notes;
   assert.equal(fees.length, 3, 'the leader holds a fee note from each spend that landed');
   const st = await api('GET', '/state');
+  assert.equal(pathHits, 0, 'no client asked the leader for the path of a note');
+  assert.ok(stateHits > 0, 'the clients read the leader\'s root');
+  console.log(`5. the spends took their paths from the wallets' own tree: the node took every proof, and no path was asked of it (state read ${stateHits} times)`);
   console.log(JSON.stringify({ ok: true, height: st.height, leaderFees: String(worthOf(fees.reduce((t, n) => t + n.value, 0n), await alice.rate())) }));
 } finally {
   server.kill();

@@ -137,6 +137,7 @@ export function makeChainClient({ cfg, rpcCall, priv, system, route = null, rout
   };
   const leader = {
     path: (i) => api('GET', `/path/${i}`),
+    state: () => api('GET', '/state'),
     notes: (from, limit) => api('GET', `/notes?from=${from}&limit=${limit}`),
     spent: async (nf) => (await api('GET', `/spent/${nf}`)).spent,
     address: async (h) => (await api('GET', `/address/${h}`)).address,
@@ -169,12 +170,19 @@ export function makeChainClient({ cfg, rpcCall, priv, system, route = null, rout
   const st = { next: 0, notes: [] };   // notes: { index, value, s (hex), leaf, nullifier }
   const lane = () => hx(w.chainAddressHash(w.address(me))).slice(2, 18);
   const key = () => `tacit-chain-notes-v1:${cfg.blocks.toLowerCase()}:${lane()}`;
-  const save = () => { try { storage?.setItem(key(), JSON.stringify({ next: st.next, notes: st.notes.map((n) => ({ ...n, value: String(n.value), leaf: String(n.leaf) })) })); } catch {} };
+  // the chain's leaves, which a spend builds its membership paths from, are kept under a key of their own: a store too full for them costs a
+  // download of the leaves again, and never the wallet's notes
+  const leavesKey = () => `tacit-chain-leaves-v1:${cfg.blocks.toLowerCase()}`;
+  const save = () => {
+    try { storage?.setItem(key(), JSON.stringify({ next: st.next, notes: st.notes.map((n) => ({ ...n, value: String(n.value), leaf: String(n.leaf) })) })); } catch {}
+    try { storage?.setItem(leavesKey(), w.leavesKept()); } catch {}
+  };
   const load = () => {
     try {
       const j = JSON.parse(storage?.getItem(key()) || 'null');
       if (j) { const notes = j.notes.map((n) => ({ ...n, value: BigInt(n.value), leaf: BigInt(n.leaf) })); st.notes = notes; st.next = j.next; }
     } catch {}
+    try { w.leavesKeep(storage?.getItem(leavesKey()) || ''); } catch {}
   };
   const proverP = () => (prover ||= Promise.resolve(system()).then((s) => ({ prove: (input, o) => s.prove(input, o) })));
 
@@ -221,7 +229,7 @@ export function makeChainClient({ cfg, rpcCall, priv, system, route = null, rout
     if (!r.leaves.length) return [];
     const skip = new Set([...held().flatMap((e) => e.own || []).map((x) => leafKey(x.leaf)), ...st.notes.map((x) => leafKey(x.leaf))]);
     const page = { leaves: r.leaves, memos: r.memos, next: r.leaves.length, total: r.leaves.length };
-    const got = (await w.scan(me, { notes: async () => page, spent: async () => false }, { from: 0, known: [] })).notes.filter((x) => !skip.has(leafKey(x.leaf)));
+    const got = (await w.scan(me, { notes: async () => page, spent: async () => false }, { from: 0, known: [], keep: false })).notes.filter((x) => !skip.has(leafKey(x.leaf)));
     if (!got.length) return [];
     const at = await rate();
     return got.map((x) => ({ key: leafKey(x.leaf), units: worthOf(BigInt(x.value), at) }));
@@ -367,7 +375,9 @@ export function makeChainClient({ cfg, rpcCall, priv, system, route = null, rout
 
   async function spend(opts) {
     await ready();
-    return w.spend(me, { ...opts, leader });
+    const made = await w.spend(me, { ...opts, leader });
+    save();                                  // the leaves a spend read to make its paths are kept for the next
+    return made;
   }
   // ── spends proved and not handed over: { kind, units, meta?, at, spent }. One is good while the notes it spends are this wallet's and free (no other
   // spend took them) and the leader still takes the fee it pays: a leader takes the lowest fee it quoted in its last ten minutes, so eight here.

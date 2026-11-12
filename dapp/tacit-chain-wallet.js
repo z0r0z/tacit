@@ -130,6 +130,48 @@ export function makeChainWallet({ poseidon, prover, chain, asset, network = 'mai
   const assetF = BigInt(asset);
   const chainB = bytes(chain, 32, 'chain');
 
+  // The chain's note tree, kept here: its leaves in order, which a scan adds to as it reads them. A spend takes its membership paths from
+  // this tree, so the leader is never asked for the path of a particular note.
+  const treeLeaves = [];
+  let built = null;                      // { n, tree } for the leaves as they stand
+  /// The leaves kept, as one string of 64 hex digits each, and putting such a string back (a string that is not that is ignored).
+  const leavesKept = () => treeLeaves.map((x) => x.toString(16).padStart(64, '0')).join('');
+  const leavesKeep = (str) => {
+    if (typeof str !== 'string' || str.length % 64 !== 0 || !/^[0-9a-f]*$/.test(str)) return false;
+    treeLeaves.length = 0; built = null;
+    for (let i = 0; i < str.length; i += 64) treeLeaves.push(BigInt('0x' + str.slice(i, i + 64)));
+    return true;
+  };
+  /// The chain's note tree as the leader reports it, built from the leaves kept and those it has added since, and checked against the root
+  /// the leader states (which names no note). A tree that does not make that root is rebuilt from every leaf; one that still does not is
+  /// refused rather than a path asked of the leader. → { root, path(index) } or null for a leader that cannot say its root (a stand-in).
+  async function noteTree(leader) {
+    if (typeof leader.state !== 'function' || typeof leader.notes !== 'function') return null;
+    const st = await leader.state();
+    const total = Number(st?.leaves), want = BigInt(st?.noteRoot ?? -1);
+    if (!Number.isInteger(total) || total < 0) throw new Error('tacit-chain-wallet: the leader did not say how many notes the chain holds');
+    const grow = async () => {
+      while (treeLeaves.length < total) {
+        const page = await leader.notes(treeLeaves.length, 500);
+        if (!page?.leaves?.length) break;
+        for (const l of page.leaves) treeLeaves.push(BigInt(l));
+      }
+      if (treeLeaves.length > total) treeLeaves.length = total;
+      built = null;
+    };
+    const tree = () => (built && built.n === treeLeaves.length ? built.tree : (built = { n: treeLeaves.length, tree: Z.tree(treeLeaves) }).tree);
+    if (treeLeaves.length > total) { treeLeaves.length = 0; built = null; }
+    await grow();
+    let t = treeLeaves.length === total ? tree() : null;
+    if (!t || t.root !== want) {
+      treeLeaves.length = 0; built = null;
+      await grow();
+      t = treeLeaves.length === total ? tree() : null;
+      if (!t || t.root !== want) throw new Error('tacit-chain-wallet: the notes the leader serves do not make the root it reports');
+    }
+    return t;
+  }
+
   /// Spending keys (the pool's BabyJubJub keys) and memo keys (secp256k1 scan key, ML-KEM-768), both from the 32-byte seed.
   function keys(seed) {
     const zk = Z.walletKeys(seed, network);
@@ -204,9 +246,16 @@ export function makeChainWallet({ poseidon, prover, chain, asset, network = 'mai
     // the inputs: membership in the chain's current note tree, and a signature of each note's owner over the body
     let root = 0n;
     const witnessIn = [];
+    const tree = inputs.length ? await noteTree(leader) : null;
     for (const n of inputs) {
-      const { root: r, path } = await leader.path(n.index);
-      root = BigInt(r);
+      let path;
+      if (tree) {
+        if (treeLeaves[n.index] !== BigInt(n.leaf)) throw new Error('tacit-chain-wallet: a note is not where the chain\'s tree holds it');
+        root = tree.root; path = tree.path(n.index);
+      } else {
+        const got = await leader.path(n.index);     // a leader with no state to read (a stand-in) answers the path itself
+        root = BigInt(got.root); path = got.path;
+      }
       const own = Z.ownedKeys(k.zk, n.s);
       if (Z.leafOf(assetF, n.value, own.npk, own.rho) !== BigInt(n.leaf)) throw new Error('tacit-chain-wallet: a note is not this wallet\'s');
       witnessIn.push({ v: BigInt(n.value), rho: own.rho, nk: own.nk, Ak: own.Ak, index: BigInt(n.index), path: path.map(BigInt), sig: Z.sign(own.sk, bh) });
@@ -231,11 +280,14 @@ export function makeChainWallet({ poseidon, prover, chain, asset, network = 'mai
 
   /// Finds this wallet's notes among the chain's published memos, from `from` on: each memo that opens with this wallet's keys and whose
   /// note leaf is the one published at that index. → { notes (unspent), spent, next }
-  async function scan(k, leader, { from = 0, known = [] } = {}) {
+  async function scan(k, leader, { from = 0, known = [], keep = true } = {}) {
     const mine = [...known];
+    // the leaves it reads go to the kept tree when it is the leader's own list and they follow the ones already kept
+    const record = keep && typeof leader.state === 'function';
     let next = from;
     for (;;) {
       const page = await leader.notes(next, 200);
+      if (record && treeLeaves.length === next) { for (const leaf of page.leaves) treeLeaves.push(BigInt(leaf)); built = null; }
       page.leaves.forEach((leaf, i) => {
         const opened = openMemo(bytes(page.memos[i], MEMO_LEN, 'memo'), k.memo.secret);
         if (!opened) return;
@@ -257,7 +309,7 @@ export function makeChainWallet({ poseidon, prover, chain, asset, network = 'mai
     return { notes, spent, next };
   }
 
-  return { keys, address, encodeAddress, decodeAddress, chainAddressHash, resolve, publish, spend, scan, makeNote, Z };
+  return { keys, address, encodeAddress, decodeAddress, chainAddressHash, resolve, publish, spend, scan, makeNote, leavesKept, leavesKeep, Z };
 }
 
 export { sha256, lockOp };
