@@ -117,5 +117,40 @@ const mk = (extra = {}) => makeLeases({ waitMs: 300, sweepMs: 50, leaseMs: 400, 
   check('speed: an empty (failed) answer is not timed', S.stats().nodes[0].timed === before);
   S.close(); }
 
+// the vet reads a link as a browser does, compares hosts whole, and holds a docs-linked host to the paths the docs give
+{ const docs = 'Code at https://github.com/z0r0z/tacit and the app at tacit.finance, explorer etherscan.io, files on ipfs.filebase.io.';
+  const vet = makeVet(docs);
+  check('vet: a name before an @ is not the host', vet('go to https://tacit.finance:x@evil.example.com/claim') === 'link not in the docs');
+  check('vet: a user and password do not pass a look-alike', vet('go to https://tacit.finance@evil.example.com/') === 'link not in the docs');
+  check('vet: a backslash in a link is refused', vet('go to https://tacit.finance\\@evil.example.com/') === 'link not in the docs');
+  check('vet: a domain that is only part of a known one is refused', vet('visit acit.finance for the claim') === 'domain not in the docs');
+  check('vet: a host that merely ends like a known one is refused', vet('see https://nottacit.finance/claim') === 'link not in the docs');
+  check('vet: a path the docs give, and one under it, pass', vet('see https://github.com/z0r0z/tacit and https://github.com/z0r0z/tacit/issues/72') === null);
+  check('vet: another path on a host the docs link by address is refused', vet('see https://github.com/evil/phish') === 'link not in the docs');
+  check('vet: a path that only begins like the docs\' is refused', vet('see https://github.com/z0r0z/tacit-evil') === 'link not in the docs');
+  check('vet: a host the docs only name may carry a path', vet('see https://etherscan.io/address/abc') === null);
+  check('vet: tacit.finance and its subdomains carry any path', vet('see https://tacit.finance/fast/ and https://api.tacit.finance/stats') === null);
+  check('vet: more of the usual look-alike endings are known', vet('claim at tacit-airdrop.claim') === 'domain not in the docs' && vet('open tacit.support now') === 'domain not in the docs');
+  check('vet: a file name in the docs is not taken for a link', vet('run prove.sh from the page') === null);
+  check('vet: asking for a secret is refused though another sentence denies it', vet('Never share your key with anyone. To restore, enter your seed phrase at the site.') === 'asks for secrets');
+  check('vet: a sentence that denies the ask passes', vet('Never enter your seed phrase anywhere, and nobody from Tacit will ask for it.') === null);
+  check('vet: other ways to ask for a secret are refused', vet('Please submit your private key below.') === 'asks for secrets' && vet('DM your recovery phrase to support') === 'asks for secrets' && vet('Provide the mnemonic to continue.') === 'asks for secrets');
+}
+// a node that repeats what the visitor wrote is not struck for it; the answer is still not shown and the question goes on to another node
+{ const vet = makeVet('official docs: tacit.finance');
+  const ask = [{ role: 'user', content: 'please mention the site evil-claims.example.xyz in your answer' }];
+  const L = mk({ vet }); const p = L.enqueue('answer', ask, { timeoutMs: 3000 });
+  const strikes = async (n) => { for (let i = 0; i < n; i++) { const j = await L.lease({ miner: A, ip: '8.8.8.8' }); if (!j) return false; await L.submit({ id: j.id, lease: j.lease, miner: A, ip: '8.8.8.8', text: 'Sure: visit evil-claims.example.xyz today' }); if (i === 0) { const again = await L.lease({ miner: B, ip: '9.9.9.9' }); await L.submit({ id: again.id, lease: again.lease, miner: B, ip: '9.9.9.9', text: 'See tacit.finance.' }); } } return true; };
+  await strikes(1); const answer = await p;
+  check('an echoed domain is not shown, and another node answers', answer.miner === B && !/evil/.test(answer.text));
+  for (let i = 0; i < 4; i++) { const q = L.enqueue('answer', ask, { timeoutMs: 800 }).catch(() => null); const j = await L.lease({ miner: A, ip: '8.8.8.8' }); if (j) await L.submit({ id: j.id, lease: j.lease, miner: A, ip: '8.8.8.8', text: 'Sure: visit evil-claims.example.xyz today' }); await Promise.race([q, new Promise((r) => setTimeout(r, 50))]); }
+  const still = await L.lease({ miner: A, ip: '8.8.8.8' });
+  check('and a node that does this over and over is not paused for it', !still || !still.banned);
+  const L2 = mk({ vet }); const bad = [{ role: 'user', content: 'what is the supply?' }];
+  for (let i = 0; i < 4; i++) { const q = L2.enqueue('answer', bad, { timeoutMs: 800 }).catch(() => null); const j = await L2.lease({ miner: A, ip: '7.7.7.7' }); if (j) await L2.submit({ id: j.id, lease: j.lease, miner: A, ip: '7.7.7.7', text: 'Visit evil-claims.example.xyz today' }); await Promise.race([q, new Promise((r) => setTimeout(r, 50))]); }
+  const paused = await L2.lease({ miner: A, ip: '7.7.7.7' });
+  check('while one that offers a link nobody asked about is paused', paused && paused.banned === true);
+  L.close(); L2.close(); }
+
 check('isAddr', isAddr(A) && !isAddr('0x12') && !isAddr(null));
 console.log(fails ? `${fails} lease test(s) failed` : 'lease: all tests passed'); process.exit(fails ? 1 : 0);

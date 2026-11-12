@@ -112,7 +112,12 @@ export function makeLeases(opts = {}) {
     }
     if (job.scan) { try { await o.scan.onResult(job, text, addr); } catch {} const pts = credit(ck, addr, 'scan', job); log({ ev: 'scan', miner: addr, job: job.id, points: pts }); return { ok: true, points: pts }; }
     const bad = o.vet(text, job.ctxText);
-    if (bad) { m.errors++; strike(ck, bad); log({ ev: 'rejected', miner: addr, why: bad }); requeue(); return { ok: true, points: 0 }; }
+    if (bad) {
+      // an answer that repeats what the visitor wrote is not shown, but it is not the node's doing: only what the question does not account for counts against it
+      const asked = (job.messages || []).filter((x) => x && x.role === 'user').map((x) => String(x.content || '')).join('\n');
+      const echoed = !!bad && !!o.vet.last && asked.toLowerCase().includes(o.vet.last);
+      m.errors++; if (!echoed) strike(ck, bad); log({ ev: 'rejected', miner: addr, why: bad, ...(echoed ? { echoed: true } : {}) }); requeue(); return { ok: true, points: 0 };
+    }
     clearTimeout(job.timer); m.answered++; timed(ck, L); const pts = credit(ck, addr, 'answer', job); log({ ev: 'answer', miner: addr, job: job.id, points: pts });
     job.resolve({ text, miner: addr }); return { ok: true, points: pts };
   }
@@ -132,16 +137,52 @@ export function makeLeases(opts = {}) {
 
 // What a visitor may be shown. A node can return anything, so an answer is checked against the documentation it was given:
 // an address or a link that is not in those docs is how a bad node would try to send someone's funds or visit to a look-alike.
+// A link is read as a browser reads it (a name before an @ is not the host, a backslash is refused), its host has to be exactly one the docs
+// name, and where the docs link a host by full address the path has to lie under one of those; a host the docs only mention by name may carry
+// any path. Hosts are compared whole, so "acit.finance" is not "tacit.finance".
+const TLDS = 'com|net|org|io|xyz|app|finance|fi|co|dev|eth|wei|link|site|online|info|me|cc|ai|top|click|live|pro|cloud|tech|store|shop|vip|icu|gg|network|exchange|money|wallet|swap|trade|market|zone|world|today|digital|systems|capital|ventures|page|pages|space|fun|art|fund|bio|bid|win|loan|work|tools|run|wtf|lol|bot|ink|pw|tk|ml|ga|cf|gq|ru|cn|biz|us|uk|de|club|one|win|team|support|help|claim|airdrop';
+const URL_RE = /https?:\/\/[^\s)>\]"'`]+/g;
+const DOMAIN_RE = new RegExp(`\\b(?:[a-z0-9-]+\\.)+(?:${TLDS})\\b`, 'g');
+const isTacit = (h) => h === 'tacit.finance' || h.endsWith('.tacit.finance');
+const trimUrl = (u) => u.replace(/[.,;:!?]+$/, '');
+const parsed = (raw) => { try { const u = new URL(trimUrl(raw)); return u; } catch { return null; } };
+const norm = (u) => u.origin + u.pathname.replace(/\/+$/, '');
+const ASKS = /\b(send|enter|paste|share|give|type|submit|provide|input|reveal|tell|post|upload|dm|email)\b[^.\n]{0,60}(seed phrase|private key|recovery phrase|mnemonic|secret key|secret recovery|seed words?|keystore|wallet password|spend key|view key|signing key)/i;
+const DENIES = /\b(never|don'?t|do not|not|no one|nobody|should not|must not|won'?t|will not)\b[^.\n]{0,40}\b(send|enter|paste|share|give|type|submit|provide|input|reveal|tell|post|upload)\b/i;
 export function makeVet(corpusText) {
   const hay = corpusText.toLowerCase();
-  return (text, ctxText = '') => {
-    const t = text.toLowerCase(), known = hay + '\n' + ctxText.toLowerCase();
-    for (const a of t.match(/0x[0-9a-f]{40}/g) || []) if (!known.includes(a)) return 'address not in the docs';
-    for (const u of t.match(/https?:\/\/[^\s)>\]"']+/g) || []) { const host = u.replace(/^https?:\/\//, '').split(/[/?#:]/)[0]; if (host !== 'tacit.finance' && !host.endsWith('.tacit.finance') && !known.includes(host)) return 'link not in the docs'; }
-    for (const m of t.match(/\b(?:[a-z0-9-]+\.)+(?:com|net|org|io|xyz|app|finance|fi|co|dev|eth|wei|link|site|online|info|me|cc|ai)\b/g) || []) if (m !== 'tacit.finance' && !m.endsWith('.tacit.finance') && !known.includes(m)) return 'domain not in the docs';
-    if (/(send|enter|paste|share|give)[^.\n]{0,40}(seed phrase|private key|recovery phrase|mnemonic)/i.test(text) && !/(never|don'?t|do not|not)[^.\n]{0,40}(send|enter|paste|share|give)/i.test(text)) return 'asks for secrets';
+  const readKnown = (text) => {
+    const hosts = new Set(), urls = [];
+    for (const raw of text.match(URL_RE) || []) { const u = parsed(raw); if (u && !u.username && !u.password) { hosts.add(u.hostname.replace(/\.$/, '')); urls.push(norm(u)); } }
+    for (const m of text.match(DOMAIN_RE) || []) hosts.add(m);
+    return { hosts, urls };
+  };
+  const base = readKnown(hay);
+  const urlKnown = (u, known) => {
+    const mine = known.urls.filter((k) => k.startsWith(u.origin));
+    if (!mine.length) return true;                          // the docs only name this host: any path
+    const n = norm(u);
+    return mine.some((k) => n === k || n.startsWith(k + '/') || (k === u.origin && n === u.origin));
+  };
+  const vet = (text, ctxText = '') => {
+    vet.last = null;
+    const t = text.toLowerCase(), ctx = ctxText.toLowerCase(), knownText = hay + '\n' + ctx;
+    const known = ctx ? (() => { const c = readKnown(ctx); return { hosts: new Set([...base.hosts, ...c.hosts]), urls: [...base.urls, ...c.urls] }; })() : base;
+    const refuse = (why, token) => { vet.last = String(token || '').toLowerCase(); return why; };
+    for (const a of t.match(/0x[0-9a-f]{40}/g) || []) if (!knownText.includes(a)) return refuse('address not in the docs', a);
+    for (const raw of t.match(URL_RE) || []) {
+      const u = parsed(raw);
+      if (!u || u.username || u.password || raw.includes('\\')) return refuse('link not in the docs', raw);
+      const host = u.hostname.replace(/\.$/, '');
+      if (isTacit(host)) continue;
+      if (!known.hosts.has(host) || !urlKnown(u, known)) return refuse('link not in the docs', host);
+    }
+    for (const m of t.match(DOMAIN_RE) || []) if (!isTacit(m) && !known.hosts.has(m)) return refuse('domain not in the docs', m);
+    for (const sentence of text.split(/(?<=[.!?])\s+|\n+/)) if (ASKS.test(sentence) && !DENIES.test(sentence)) return refuse('asks for secrets', '');
     return null;
   };
+  vet.last = null;
+  return vet;
 }
 
 // The points service's contract (the proof pool's GET /prover/pool/credits): for a UTC day number, { day, over, miners: [{ miner, proofs, points }] }.
