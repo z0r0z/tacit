@@ -34,5 +34,18 @@ f = mk(); const j3 = await f.next(); check('after a restart, files changed while
   const ff = makeScanFeed({ repo: clone, ref: 'origin/main', inbox: path.join(d, 'i2.jsonl'), cursorFile: path.join(d, 'c2.json'), refreshMs: 0, fetch: true, maxLines: 300 }); await ff.next();
   writeFileSync(path.join(repo, 'dapp/b.js'), body('b', 30).replace('b7 = 7', 'b7 = 77')); gitO('commit', '-qam', 'four');
   const jf = await ff.next(); check('with fetch on, a checkout picks up new commits from its origin and reviews the changed file first', jf.meta.commit === gitO('rev-parse', 'HEAD').trim() && jf.meta.file === 'dapp/b.js'); }
+// A reply may spell control characters as \\u001b: they come out of a finding once it is decoded, and the inbox viewer prints none of what a node wrote.
+{
+  const { parseFindings, plain } = await import('./codecheck/scan.mjs');
+  const reply = JSON.stringify({ findings: [{ line: 3, why: 'x \u001b]0;title\u0007\u001b[2J y', old: 'let a = 1;', new: 'let a = 2; // \u001b[8mhidden\u001b[0m \u202eevil\tkept', extra: 'dropped' }] });
+  const [f] = parseFindings(reply);
+  check('a decoded finding has no control or direction characters', f && !/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202a-\u202e]/.test(f.why + f.old + f.new) && f.new.includes('\tkept') && f.line === 3);
+  check('only the fields asked for are kept', !('extra' in f) && Object.keys(f).sort().join() === 'line,new,old,why');
+  check('plain leaves ordinary text, tabs and newlines alone', plain('a\tb\nc 1: ok') === 'a\tb\nc 1: ok');
+  const inbox = path.join(d, 'inbox.jsonl');
+  writeFileSync(inbox, JSON.stringify({ t: 1, miner: '0xabc\u001b[2J', file: 'dapp/a.js', commit: 'abc', window: '1-9', line: 3, why: 'x \u001b]0;title\u0007 y', old: 'let a = 1;', new: 'let a = 2; // \u001b[8mhidden', status: 'syntax-ok', review: 'new' }) + '\n');
+  const out = execFileSync('node', [path.join(path.dirname(new URL(import.meta.url).pathname), 'inbox.mjs')], { encoding: 'utf8', env: { ...process.env, INBOX: inbox } });
+  check('the inbox viewer shows the finding without an escape sequence', out.includes('let a = 2;') && !out.includes('\u001b') && !out.includes('\u0007'));
+}
 rmSync(d, { recursive: true, force: true });
 console.log(fails ? `${fails} scanfeed test(s) failed` : 'scanfeed: all tests passed'); process.exit(fails ? 1 : 0);

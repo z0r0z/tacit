@@ -174,4 +174,27 @@ const mk = (extra = {}) => makeLeases({ waitMs: 300, sweepMs: 50, leaseMs: 400, 
   S.close(); }
 
 check('isAddr', isAddr(A) && !isAddr('0x12') && !isAddr(null));
+// A scan-only node at the head of the line does not hold a question back from the answer node behind it.
+{ const L = mk({ waitMs: 1500 }); const sl = (ms) => new Promise((r) => setTimeout(r, ms));
+  const scanOnly = L.lease({ miner: A, ip: '61.0.0.1', kinds: ['scan'] }); await sl(30);
+  const answerNode = L.lease({ miner: B, ip: '61.0.0.2', kinds: ['answer'] }); await sl(30);
+  const t0 = Date.now(); const q = L.enqueue('answer', msgs, { timeoutMs: 3000 });
+  const got = await Promise.race([answerNode, sl(800).then(() => 'late')]);
+  check('a question goes to the answer node behind a scan-only waiter at once', got && got !== 'late' && got.kind === 'answer' && Date.now() - t0 < 500);
+  check('the scan-only node keeps waiting, undisturbed', L.stats().waiting === 1);
+  await L.submit({ id: got.id, lease: got.lease, miner: B, ip: '61.0.0.2', text: 'ok' }); await q; L.close(); }
+
+// What a node's polls leave behind is bounded: an address is filed once it has work to its name, a client unheard of for days is forgotten, /stats names a few miners.
+{ const L = mk({ waitMs: 20, clientIdleMs: 60, statsMiners: 2 }); const sl = (ms) => new Promise((r) => setTimeout(r, ms));
+  for (let i = 0; i < 20; i++) await L.lease({ miner: '0x' + i.toString(16).padStart(40, 'c'), ip: `62.0.0.${i}` });
+  check('polling with fresh addresses files none of them', L.stats().minerCount === 0 && L.stats().miners.length === 0);
+  check('each poll is a client, for now', L._clients.size === 20);
+  await sl(120); L._prune();
+  check('clients quiet for the idle time are forgotten', L._clients.size === 0);
+  const hold = L.lease({ miner: A, ip: '62.9.9.9' }); await sl(5); const kept = [...L._clients.keys()][0]; L._clients.get(kept).bannedUntil = Date.now() + 1e6; await hold; await sl(120); L._prune();
+  check('a banned client is kept while the ban lasts', L._clients.size === 1);
+  for (const [addr, n] of [[A, 3], [B, 1], ['0x' + 'd3'.repeat(20), 2]]) for (let k = 0; k < n; k++) { const p = L.enqueue('answer', msgs, { timeoutMs: 2000 }); const j = await L.lease({ miner: addr, ip: '63.0.0.' + (k + 1) + addr.slice(2, 4) }); await L.submit({ id: j.id, lease: j.lease, miner: addr, ip: '63.0.0.' + (k + 1) + addr.slice(2, 4), text: 'ok' }); await p; }
+  const st = L.stats(); check('/stats counts every miner and names the ones with most points, up to the limit', st.minerCount === 3 && st.miners.length === 2 && st.miners[0].points >= st.miners[1].points && st.miners[0].points === 3);
+  L.close(); }
+
 console.log(fails ? `${fails} lease test(s) failed` : 'lease: all tests passed'); process.exit(fails ? 1 : 0);

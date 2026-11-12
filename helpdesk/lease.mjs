@@ -31,6 +31,7 @@ export function makeLeases(opts = {}) {
     now: () => Date.now(), ledger: null, canary: null, vet: () => null, scan: null, scanPerHour: 12, sweepMs: 5000,
     points: { answer: 1, canary: 1, scan: 1 },      // credited per unit; the policy is the operator's, set by env in server.mjs
     clientMaxPerDay: 100,                           // points one client (IP hash) can earn in a UTC day, however many addresses it names
+    clientIdleMs: 3 * 86400000, statsMiners: 50,    // a client unheard of this long (not banned, no recent strikes) is forgotten; /stats names this many miners, the most points first
     persist: null, ...opts };   // persist: a file for bans, strikes and totals, so a restart does not clear them
   const queue = [];                 // real jobs waiting for a node
   const leased = new Map();         // id -> { job, token, addr, ck, expires }
@@ -64,7 +65,8 @@ export function makeLeases(opts = {}) {
       queue.push(job); wake();
     });
   }
-  function wake() { while (waiters.length && queue.length) { const w = waiters.shift(); clearTimeout(w.timer); const job = pickReal(w.kinds); if (!job) { waiters.unshift(w); w.timer = setTimeout(() => finish(w, null), 1000); break; } finish(w, give(job.id, job, w.who)); } }
+  // each waiter in turn takes a job its kinds fit; one whose kinds fit nothing queued (a scan-only node) is passed over for the next, not made to wait for
+  function wake() { for (let i = 0; i < waiters.length && queue.length;) { const w = waiters[i], job = pickReal(w.kinds); if (!job) { i++; continue; } finish(w, give(job.id, job, w.who)); } }
   const pickReal = (kinds) => { const i = queue.findIndex((j) => kinds.includes(j.kind)); return i < 0 ? null : queue.splice(i, 1)[0]; };
   const finish = (w, v) => { const i = waiters.indexOf(w); if (i >= 0) waiters.splice(i, 1); clearTimeout(w.timer); w.resolve(v); };
 
@@ -74,7 +76,7 @@ export function makeLeases(opts = {}) {
   async function lease({ miner: addr, ip, kinds = ['answer'], closed, hw }) {
     if (!isAddr(addr)) return { error: 'miner must be an address' };
     if (closed?.aborted) return null;   // the node is already gone: it takes nothing
-    const ck = hash(ip), c = client(ck), t = o.now(); c.seen = t; miner(addr).last = t;
+    const ck = hash(ip), c = client(ck), t = o.now(); c.seen = t; { const mm = miners.get(addr.toLowerCase()); if (mm) mm.last = t; }       // (an address is filed once it has work to its name, not by asking)
     const nd = node(ck, addr); nd.seen = t;
     if (hw !== undefined) nd.hw = cleanHw(hw);   // a node that says nothing keeps what it said before
     if (c.bannedUntil > t) return { banned: true };
@@ -131,15 +133,16 @@ export function makeLeases(opts = {}) {
 
   const sweep = setInterval(() => { const t = o.now(); for (const [id, L] of leased) if (L.expires < t) { leased.delete(id); const job = L.job; miner(L.addr).errors++; if (!job.canary && !job.scan) { if (job.tries < o.maxTries && queue.indexOf(job) < 0) { queue.unshift(job); wake(); } else { clearTimeout(job.timer); job.reject?.(new Error('lease expired')); } } } }, o.sweepMs); sweep.unref?.();
 
-  const saver = setInterval(save, 20000); saver.unref?.();
+  const prune = () => { const t = o.now(); for (const [k, c] of clients) if (t - c.seen > o.clientIdleMs && c.bannedUntil <= t && !c.strikes.some((x) => t - x < o.strikeWindowMs)) clients.delete(k); };
+  const saver = setInterval(() => { prune(); save(); }, 20000); saver.unref?.();
   const online = () => { for (const [k, n] of nodes) if (o.now() - n.seen > 86400000) nodes.delete(k); return [...nodes.values()].filter((n) => o.now() - n.seen < o.onlineMs && (clients.get(n.ck)?.bannedUntil || 0) <= o.now()); };
   const nodesOnline = () => online().length;
   // The nodes online by the size of model each can hold whole, and the memory they have in all: what the visitor-facing page and a plan for bigger models start from.
   const capacity = () => { const tiers = { big: 0, small: 0, unknown: 0 }; let ramGb = 0, vramGb = 0; for (const c of online()) { tiers[tierOf(c.hw)]++; if (c.hw) { ramGb += c.hw.ram; vramGb += c.hw.vram; } } return { tiers, ramGb, vramGb }; };
   const stats = () => ({ online: nodesOnline(), queued: queue.length, leased: leased.size, waiting: waiters.length,
-    miners: [...miners.entries()].map(([a, m]) => ({ miner: a.slice(0, 8) + '…' + a.slice(-4), ...m })), banned: [...clients.values()].filter((c) => c.bannedUntil > o.now()).length,
+    minerCount: miners.size, miners: [...miners.entries()].sort((x, y) => y[1].points - x[1].points).slice(0, o.statsMiners).map(([a, m]) => ({ miner: a.slice(0, 8) + '…' + a.slice(-4), ...m })), banned: [...clients.values()].filter((c) => c.bannedUntil > o.now()).length,
     capacity: capacity(), nodes: online().map((c) => ({ tier: tierOf(c.hw), ...(c.hw || {}), ewmaMs: c.ewmaMs || null, timed: c.timed || 0, seenSecs: Math.round((o.now() - c.seen) / 1000) })) });
-  return { enqueue, lease, submit, nodesOnline, capacity, stats, _queue: queue, _clients: clients, close: () => { clearInterval(sweep); clearInterval(saver); save(); } };
+  return { enqueue, lease, submit, nodesOnline, capacity, stats, _queue: queue, _clients: clients, _prune: prune, close: () => { clearInterval(sweep); clearInterval(saver); save(); } };
 }
 
 // Whether a scan reply has the shape asked for: an object holding a `findings` list (found as the scan feed finds it, among any prose around it).

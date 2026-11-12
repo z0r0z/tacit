@@ -5,6 +5,7 @@
 //   node inbox.mjs mark N accepted|rejected|applied     N is the number shown (a rejection is remembered: it is not filed again)
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
+import { plain } from './codecheck/scan.mjs';
 const F = process.env.INBOX || path.join(path.dirname(new URL(import.meta.url).pathname), 'suggestions.jsonl');
 const rows = existsSync(F) ? readFileSync(F, 'utf8').split('\n').filter(Boolean).map((l, i) => ({ n: i + 1, ...JSON.parse(l) })) : [];
 const [, , cmd = 'list', a, b] = process.argv;
@@ -15,5 +16,6 @@ if (cmd === 'mark') {
   const show = rows.filter((x) => cmd === 'all' || (x.review === 'new' && x.status === 'syntax-ok')).slice(-10).reverse();
   const by = rows.reduce((o, x) => ((o[x.status] = (o[x.status] || 0) + 1), o), {});
   console.log(`${rows.length} filed (${Object.entries(by).map(([k, v]) => `${v} ${k}`).join(', ') || 'none'}); showing ${show.length}\n`);
-  for (const x of show) console.log(`#${x.n}  ${x.file}:${x.line ?? '?'}  (window ${x.window}, commit ${x.commit}, ${x.status}, ${x.review}, node ${String(x.miner).slice(0, 8)})\n   ${x.why}\n   - ${String(x.old).split('\n').join('\n   - ')}\n   + ${String(x.new).split('\n').join('\n   + ')}\n`);
+  // what a node wrote is shown with its control characters taken out, whatever the file holds
+  for (const x of show) console.log(`#${x.n}  ${plain(x.file)}:${plain(x.line ?? '?')}  (window ${plain(x.window)}, commit ${plain(x.commit)}, ${plain(x.status)}, ${plain(x.review)}, node ${plain(x.miner).slice(0, 8)})\n   ${plain(x.why)}\n   - ${plain(x.old).split('\n').join('\n   - ')}\n   + ${plain(x.new).split('\n').join('\n   + ')}\n`);
 }

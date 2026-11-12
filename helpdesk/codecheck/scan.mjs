@@ -19,9 +19,15 @@ export async function scanWindow(base, win, file, { timeoutMs = 60000 } = {}) {
   return parseFindings((await r.json()).choices?.[0]?.message?.content ?? '');
 }
 // the model's reply -> up to 3 usable findings (anything that is not the JSON shape asked for is dropped)
+// Control and direction-changing characters (all but tab and newline) are taken out of a finding's text after it is decoded: a reply may spell an escape
+// as \u001b, and the reviewer's terminal would act on it.
+export const plain = (v) => String(v ?? '').replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '');
 export function parseFindings(txt) {
   const m = String(txt).match(/\{[\s\S]*\}/); if (!m) return [];
-  try { return (JSON.parse(m[0]).findings || []).filter((f) => typeof f.old === 'string' && typeof f.new === 'string' && f.old.trim() && f.old !== f.new).slice(0, 3).map((f) => ({ ...f, old: f.old.replace(/^\d+:\s?/gm, '') })); } catch { return []; }
+  try {
+    return (JSON.parse(m[0]).findings || []).filter((f) => f && typeof f.old === 'string' && typeof f.new === 'string' && f.old.trim() && f.old !== f.new).slice(0, 3)
+      .map((f) => ({ line: Number.isInteger(f.line) ? f.line : null, why: plain(f.why).slice(0, 300), old: plain(f.old).replace(/^\d+:\s?/gm, ''), new: plain(f.new) }));
+  } catch { return []; }
 }
 // apply one finding to a source string: the old text must occur exactly once
 export function applyPatch(src, f) { const i = src.indexOf(f.old); if (i < 0 || src.indexOf(f.old, i + 1) >= 0) return null; return src.slice(0, i) + f.new + src.slice(i + f.old.length); }

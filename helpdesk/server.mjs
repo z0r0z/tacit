@@ -152,6 +152,13 @@ $('go').onclick=go;$('q').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preve
 
 // ---- the nodes' API. A lease request is held open for up to LEASE_HOLD_MS (so an idle node is not a busy loop); each client may hold two.
 const leaseHits = new Map(), holding = new Map();
+// The three tables above hold only what is still counting: an address that has been quiet for a minute (or holds nothing) is dropped, so they follow the
+// clients now and not every address that ever asked.
+setInterval(() => { const now = Date.now(); for (const m of [hits, leaseHits]) for (const [k, a] of m) if (!a.length || now - a[a.length - 1] >= 60000) m.delete(k); for (const [k, v] of holding) if (!v) holding.delete(k); }, 60000).unref();
+// A day's credits are read from the ledger once a half minute (a past day does not change: lines are written with the time they are made); the ledger is
+// read whole each time otherwise, by anyone who asks.
+const creditCache = new Map();
+const creditsCached = (day, load) => { const now = Date.now(), hit = creditCache.get(day); if (hit && (day < utcDay() || now - hit.at < 30000)) return hit.v; const v = load(); if (creditCache.size >= 400) creditCache.clear(); creditCache.set(day, { at: now, v }); return v; };
 // Behind a proxy (TRUST_PROXY=1) the client is, in order: the True-Client-IP header (on Render, its Cloudflare sets it to the address it accepted the
 // connection from), else the entry TRUST_PROXY_HOPS from the RIGHT of X-Forwarded-For (each proxy adds one; everything to the left is whatever the client
 // chose to send; on Render the client is the second from the right, before the edge's own entry; count too few rather than too many: a miss lands on a shared edge address, a hit too far left on one the caller chose). Check it on the deployed service with GET /whoami (it only tells a caller their own address, as seen here).
@@ -214,7 +221,7 @@ if (process.argv[2] === 'serve') {
     if (pathname === '/whoami') return send(res, 200, { ip, trueClientIp: req.headers['true-client-ip'] || null, xff: req.headers['x-forwarded-for'] || null, socket: req.socket.remoteAddress, hops: HOPS, trustProxy: process.env.TRUST_PROXY === '1' });
     if (req.method === 'GET' && pathname === '/helpdesk/credits') { cors(req, res); const q = new URL(req.url, 'http://x').searchParams.get('day'); const day = /^\d{1,6}$/.test(q || '') ? Number(q) : NaN;
       if (!(day <= utcDay())) return send(res, 400, { ok: false, error: 'day must be a UTC day number, today or before' });
-      return send(res, 200, creditsFor(path.join(DATA, 'ledger.jsonl'), day, { maxPerDay: Number(process.env.POINTS_MAX_DAY ?? 100) })); }
+      return send(res, 200, creditsCached(day, () => creditsFor(path.join(DATA, 'ledger.jsonl'), day, { maxPerDay: Number(process.env.POINTS_MAX_DAY ?? 100) }))); }
     if (req.method === 'GET' && (req.url === '/' || req.url === '/index.html')) { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'x-content-type-options': 'nosniff' }); return res.end(PAGE); }
     if (req.method === 'GET' && (req.url === '/health' || req.url === '/stats')) { const st = llm.stats(); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(req.url === '/health' ? { ok: st.backends.some((b) => b.up) || leases.nodesOnline() > 0, nodes: leases.nodesOnline(), capacity: leases.capacity(), dense: denseState, backends: st.backends.map((b) => ({ url: b.url, up: b.up })) } : { ...st, nodes: leases.stats() })); }
     if (req.url.startsWith('/helpdesk/')) return nodeApi(req, res).catch(() => { if (!res.headersSent) send(res, 500, { error: 'the help desk could not answer' }); else res.end(); });
