@@ -1034,11 +1034,11 @@ a.btn { text-decoration: none; white-space: nowrap; }
 .step.now h3, .step.now .d { color: var(--ink); }
 
 .callout { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; margin: 0 0 16px;
-  font-size: 13px; background: var(--field); border-left: 2px solid var(--orange); }
+  font-size: 13px; background: var(--field); border-left: 2px solid var(--orange); border-radius: 0 10px 10px 0; }
 .callout .btn { width: auto; min-height: 36px; margin: 0; padding: 6px 14px; flex: none; }
 .callout.claim { flex-wrap: wrap; }
 .callout .cl-do { display: flex; flex-wrap: wrap; gap: 6px; }
-.hl { padding: 12px 14px; margin: 0 0 16px; background: var(--field); border: 1px solid var(--hair); border-left: 2px solid var(--ok); }
+.hl { padding: 12px 14px; margin: 0 0 16px; background: var(--field); border: 1px solid var(--hair); border-left: 2px solid var(--ok); border-radius: 0 10px 10px 0; }
 .hl-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .hl-h b { font-weight: 500; }
 .hl-h .btn { width: auto; min-height: 34px; margin: 0; padding: 6px 14px; font-size: 13px; }
@@ -1046,7 +1046,7 @@ a.btn { text-decoration: none; white-space: nowrap; }
 .hl li + li { margin-top: 3px; }
 .hl a:not(.btn) { color: var(--ink); }
 .hl .note { margin-top: 8px; }
-.pv { margin-top: 12px; padding: 10px 12px; background: var(--field); border-left: 2px solid var(--bar); }
+.pv { margin-top: 12px; padding: 10px 12px; background: var(--field); border-left: 2px solid var(--bar); border-radius: 0 10px 10px 0; }
 .pv.pv-fair { border-left-color: var(--orange); }
 .pv.pv-weak { border-left-color: var(--err); }
 .pv-h { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500; color: var(--ink); }
@@ -1732,7 +1732,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
 
 .toasts { position: fixed; inset: auto 16px max(16px, env(safe-area-inset-bottom)) 16px; width: auto; height: auto; margin: 0; padding: 0; border: 0; background: transparent; overflow: visible; display: grid; gap: 8px; justify-items: center; pointer-events: none; }
 .toasts:not(:popover-open) { display: none; }
-.toast { max-width: 520px; padding: 10px 16px; font-size: 13px; color: var(--card); background: var(--ink); pointer-events: auto; box-shadow: var(--lift); animation: rise .2s ease-out; }
+.toast { border-radius: 12px; max-width: 520px; padding: 10px 16px; font-size: 13px; color: var(--card); background: var(--ink); pointer-events: auto; box-shadow: var(--lift); animation: rise .2s ease-out; }
 .toast.bad, .toast.error { background: var(--err); color: var(--card); }
 .toast a, .toast .link { color: inherit; font-size: inherit; margin-left: 4px; }
 
