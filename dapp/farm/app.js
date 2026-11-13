@@ -186,7 +186,7 @@ function paintTiles() {
   if (S.prog) for (const a of $$('#dishes a[data-farm]')) if (!ids.has(a.dataset.farm)) a.closest('li').remove();
   for (const f of FARMS) {
     const a = tileFor(f), dry = f.read && !f.live;
-    a.classList.toggle('off', dry); a.classList.toggle('pick', f.id === pick); a.classList.toggle('mine', !!f.yours);
+    a.classList.toggle('off', dry); a.classList.toggle('pick', f.id === pick); a.classList.toggle('held', !!f.yours);
     $('.apr', a).textContent = f.apr == null ? '' : aprText(f.apr);
     $('.kind', a).textContent = dry ? 'Between reward periods' : f.kind === 'public' ? 'Public pool' : 'Private pool';
     $('.sel', a).textContent = f.yours ? 'Manage' : 'Select';

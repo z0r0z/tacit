@@ -377,6 +377,15 @@ try {
 
     const mine = await openPage({ wallet: true, st: { staked: 100n * E18, earned: 3n * E18 } });
     ok(await until(mine.page, () => document.querySelector('#d-tac-eth .sel')?.textContent === 'Manage' && document.querySelector('#d-tac-eth .yours')?.textContent === 'Yours'), 'a wallet with a stake sees its tile marked, with Manage');
+    await mine.page.mouse.move(0, 0);                                                  // no tile under the pointer (a hovered one lifts)
+    await sleep(900);                                                                  // the tiles have risen into place
+    // a marked tile is laid out as an unmarked one: it fills its cell (the positions panel's .mine rule once gave it a margin and padding)
+    const cells =await mine.page.evaluate(() => [...document.querySelectorAll('#dishes .dish')].filter((a) => a.offsetParent).map((a) => {
+      const b = a.getBoundingClientRect(), c = a.parentElement.getBoundingClientRect(), s = getComputedStyle(a);
+      return { id: a.id, top: b.top - c.top, bottom: b.bottom - c.bottom, pad: s.padding, margin: s.marginTop };
+    }));
+    ok(cells.length >= 4 && cells.every((x) => Math.abs(x.top) < 0.5 && Math.abs(x.bottom) < 0.5 && x.margin === '0px' && x.pad === cells[0].pad), 'a marked tile fills its cell like the others, with the same padding');
+    await shot(mine.page, 'menu-held');
     await mine.browser.close();
   }
 
