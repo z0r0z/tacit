@@ -84,13 +84,16 @@ async function tacIn({ venues, amt, account, slippageBps, deadline, gasPrice, bu
   }
   return null;
 }
+// TAC sold for ETH paid to `to`, by a caller (`account`) that gives zRouter an allowance for exactly the amount: the zap, the gas relay.
+export async function sellTac({ venues, amount, account, to, slippageBps = 50, deadline, gasPrice = null }) {
+  if (!venues) throw new Error('TAC swaps need the page\'s venues.');
+  const amt = BigInt(amount);
+  const r = await tacIn({ venues, amt, account, slippageBps, deadline, gasPrice, build: (mk) => [mk(account, to)] });
+  return r && lc(r.txs[0].data).includes(word(to)) ? { callData: r.txs[0].data, out: r.out, min: r.min, name: r.name, ...(r.legs ? { legs: r.legs } : {}), amountIn: amt } : null;
+}
 export async function routeIn({ ethCall, venues, token, amountIn, from, slippageBps = 50, deadline, gasPrice = null }) {
   const amt = BigInt(amountIn);
-  if (lc(token) === TAC) {
-    if (!venues) throw new Error('TAC swaps need the page\'s venues.');
-    const r = await tacIn({ venues, amt, account: from, slippageBps, deadline, gasPrice, build: (mk) => [mk(from, ZAP)] });
-    return r && lc(r.txs[0].data).includes(word(ZAP)) ? { callData: r.txs[0].data, out: r.out, min: r.min, name: r.name, ...(r.legs ? { legs: r.legs } : {}), amountIn: amt } : null;
-  }
+  if (lc(token) === TAC) return sellTac({ venues, amount: amt, account: from, to: ZAP, slippageBps, deadline, gasPrice });
   const q = await bestRoute({ ethCall, to: ZAP, refundTo: from, tokenIn: token, tokenOut: ZERO, amountIn: amt, slippageBps, deadline });
   return q && q.min > 0n ? { callData: q.callData, out: q.out, min: q.min, name: q.name, amountIn: amt } : null;
 }

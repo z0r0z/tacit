@@ -277,7 +277,7 @@ const DL = 2000000000n;
   const buy = { gain: 108n * E18, gainBps: 90, single: { amountOut: 12000n * E18 } };
   assert.equal(splitWorth({ dir: 'ETH_TO_TAC', split: buy, amountIn: E18 }), true, 'no gas price: 0.9% clears the 0.3% margin');
   assert.equal(splitWorth({ dir: 'ETH_TO_TAC', split: { ...buy, gainBps: 20 }, amountIn: E18 }), false, '0.2% does not');
-  // 0.9% of 1 ETH = 0.009 ETH; its extra gas 110k at 20 gwei = 0.0022 ETH; 0.009 > 1.2 * 0.0022
+  // 0.9% of 1 ETH = 0.009 ETH; its extra gas 116k at 20 gwei = 0.0023 ETH; 0.009 > 1.2 * 0.0023
   assert.equal(splitWorth({ dir: 'ETH_TO_TAC', split: buy, amountIn: E18, gasPrice: 20n * 10n ** 9n }), true);
   // at 100 gwei the same gas is 0.011 ETH: more than the gain
   assert.equal(splitWorth({ dir: 'ETH_TO_TAC', split: buy, amountIn: E18, gasPrice: 100n * 10n ** 9n }), false);
@@ -290,8 +290,8 @@ const DL = 2000000000n;
   assert.equal(splitWorth({ dir: 'ETH_TO_TAC', split: mk(need + 1n), amountIn: E18, gasPrice: price }), true, 'one wei more is');
   // selling: the gain is already ETH
   const sell = { gain: 4n * 10n ** 15n, gainBps: 100, single: { amountOut: 3n * 10n ** 17n } };
-  assert.equal(splitWorth({ dir: 'TAC_TO_ETH', split: sell, amountIn: 5000n * E18, gasPrice: 10n * 10n ** 9n }), true, '0.004 ETH gain beats 141k gas at 10 gwei (0.0014 ETH)');
-  assert.equal(splitWorth({ dir: 'TAC_TO_ETH', split: sell, amountIn: 5000n * E18, gasPrice: 30n * 10n ** 9n }), false, 'but not at 30 gwei (0.0042 ETH)');
+  assert.equal(splitWorth({ dir: 'TAC_TO_ETH', split: sell, amountIn: 5000n * E18, gasPrice: 10n * 10n ** 9n }), true, '0.004 ETH gain beats 190k gas at 10 gwei (0.0019 ETH)');
+  assert.equal(splitWorth({ dir: 'TAC_TO_ETH', split: sell, amountIn: 5000n * E18, gasPrice: 30n * 10n ** 9n }), false, 'but not at 30 gwei (0.0057 ETH)');
   assert.equal(splitWorth({ dir: 'TAC_TO_ETH', split: null, amountIn: 1n }), false);
   assert.equal(splitWorth({ dir: 'TAC_TO_ETH', split: { ...sell, gain: 0n }, amountIn: 1n }), false);
   assert.ok(SPLIT_EXTRA_GAS.ETH_TO_TAC > 100000n && SPLIT_EXTRA_GAS.TAC_TO_ETH > SPLIT_EXTRA_GAS.ETH_TO_TAC, 'the measured gas deltas');
@@ -300,8 +300,8 @@ const DL = 2000000000n;
   assert.equal(splitWorth({ dir: 'ETH_TO_TAC', split: both, amountIn: E18, over: { amountOut: 12090n * E18 } }), false, '0.15% over the named route is under the margin');
   assert.equal(splitWorth({ dir: 'ETH_TO_TAC', split: both, amountIn: E18, over: { amountOut: 11900n * E18 } }), true, '1.7% over it clears, whatever the split gains on the better pool');
   assert.equal(splitWorth({ dir: 'ETH_TO_TAC', split: both, amountIn: E18, over: { amountOut: 12108n * E18 } }), false, 'nothing over it');
-  assert.equal(splitWorth({ dir: 'TAC_TO_ETH', split: { ...sell, amountOut: 304n * 10n ** 15n }, amountIn: 5000n * E18, gasPrice: 10n * 10n ** 9n, over: { amountOut: 302n * 10n ** 15n } }), true, '0.002 ETH over it beats 1.2x the gas (0.0017 ETH)');
-  assert.equal(splitWorth({ dir: 'TAC_TO_ETH', split: { ...sell, amountOut: 304n * 10n ** 15n }, amountIn: 5000n * E18, gasPrice: 10n * 10n ** 9n, over: { amountOut: 303n * 10n ** 15n } }), false, '0.001 ETH does not');
+  assert.equal(splitWorth({ dir: 'TAC_TO_ETH', split: { ...sell, amountOut: 304n * 10n ** 15n }, amountIn: 5000n * E18, gasPrice: 10n * 10n ** 9n, over: { amountOut: 301n * 10n ** 15n } }), true, '0.003 ETH over it beats 1.2x the gas (0.0023 ETH)');
+  assert.equal(splitWorth({ dir: 'TAC_TO_ETH', split: { ...sell, amountOut: 304n * 10n ** 15n }, amountIn: 5000n * E18, gasPrice: 10n * 10n ** 9n, over: { amountOut: 302n * 10n ** 15n } }), false, '0.002 ETH does not');
   assert.equal(makeEvmTradeVenues({ ethCall: async () => null }).splitWorth, splitWorth, 'the venues carry the same rule');
   ok('splitWorth: a 0.3% margin without a gas price; with one the gain (in ETH) must exceed 1.2x the extra gas, to the wei, both directions; and against a named route');
 }

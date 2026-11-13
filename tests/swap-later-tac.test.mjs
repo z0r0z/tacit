@@ -8,7 +8,7 @@ import { register } from 'node:module';
 
 register('data:text/javascript,' + encodeURIComponent(`const D = ${JSON.stringify(new URL('../dapp', import.meta.url).href)};
 export async function resolve(spec, ctx, next) { if (spec.startsWith('/') && !spec.startsWith('//')) return next(D + spec.split('?')[0], ctx); return next(spec, ctx); }`));
-const { routeOutTac, routeFrom, routeIn, quoteThrough, ZAP } = await import('../dapp/swap/later.js');
+const { routeOutTac, routeFrom, routeIn, quoteThrough, sellTac, ZAP } = await import('../dapp/swap/later.js');
 const V = await import('../dapp/evm-trade-venues.js');
 const { keccak_256 } = await import('@noble/hashes/sha3');
 
@@ -156,4 +156,15 @@ test('TAC into the ETH pool through the zap: the same choice, paid to the zap', 
   assert.strictEqual(q.r0.name, 'Both pools');
   assert.strictEqual(q.r1.name, 'ETH');
   assert.ok(q.ethWei <= q.r0.out && q.ethWei > (q.r0.out * 99n) / 100n, 'what is swapped on is what the sale pays, rounded down');
+});
+
+test('a sale for a caller that is not the payee (the gas relay paying a deposit box): the same choice, the box named in the call', async () => {
+  const { venues, out } = market(), RELAY = '0x000000197E8f0B64463B2010e568fF42090Af88d', BOX = '0x00000000000000000000000000000000000b0c51', amount = 5000n * E18;
+  const r = await sellTac({ venues, amount, account: RELAY, to: BOX, slippageBps: 50, deadline: DL, gasPrice: GWEI });
+  assert.strictEqual(r.name, 'Both pools');
+  assert.ok(r.callData.includes(word(BOX)) && r.out > out('precision', 'TAC_TO_ETH', amount) && r.amountIn === amount && r.legs.length === 2);
+  const one = await sellTac({ venues, amount, account: RELAY, to: BOX, slippageBps: 50, deadline: DL, gasPrice: 5000n * GWEI });
+  assert.strictEqual(one.name, 'Precision pool');
+  assert.strictEqual(one.legs, undefined);
+  assert.ok(one.callData.includes(word(BOX)));
 });

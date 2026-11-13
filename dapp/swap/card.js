@@ -1,5 +1,5 @@
 import { keccak_256 } from '/vendor/tacit-deps.min.js';
-import { makeEvmTradeVenues, _internal as V, MULTICALL3 } from '/evm-trade-venues.js?cb=42f026e7';
+import { makeEvmTradeVenues, _internal as V, MULTICALL3, SPLIT_EXTRA_GAS } from '/evm-trade-venues.js?cb=196b14fb';
 import { UserStopped } from '/trade/wallet.js?cb=5d19a733';
 import { declinedWords } from '/wallet-prompts.js';
 import { rpc, API, api, esc, fmtUnits, parseUnits, plain, usd, sig, E10, E18, ago } from '/trade/util.js?cb=1d2cd8d3';
@@ -489,7 +489,7 @@ async function signTyped(typed, from) {
 }
 
 const PREVIEW = '0x0000000000000000000000000000000000000001';
-const GAS = { single: 160000n, twohop: 260000n, hybrid: 480000n, tac: 160000n, tacSell: 210000n, split: 270000n, bothSell: 350000n, any: 320000n, amm: 150000n, ammIn: 200000n, out: 340000n, in: 290000n, zap: 700000n, snwap: 380000n };
+const GAS = { single: 160000n, twohop: 260000n, hybrid: 480000n, tac: 160000n, tacSell: 210000n, split: 290000n, bothSell: 400000n, any: 320000n, amm: 150000n, ammIn: 200000n, out: 340000n, in: 290000n, zap: 700000n, snwap: 380000n };
 const picked = (q = S.q) => (q?.rows || []).find((r) => r.k === S.pick) || q?.rows?.find((r) => r.best) || q?.rows?.[0] || null;
 
 function syncMove() {
@@ -687,7 +687,7 @@ const tipFor = (units) => {
   const k = String(units), c = TIPS.get(k);
   if (c && Date.now() - c.at < 30e3) return c.p;
   for (const [x, v] of TIPS) if (Date.now() - v.at >= 30e3) TIPS.delete(x);
-  const p = import('/teth/read.js?cb=2a357daf').then((m) => m.wrapQuote(units * E10)).then((x) => x.tip, () => { if (TIPS.get(k)?.p === p) TIPS.delete(k); return null; });
+  const p = import('/teth/read.js?cb=44f2673f').then((m) => m.wrapQuote(units * E10)).then((x) => x.tip, () => { if (TIPS.get(k)?.p === p) TIPS.delete(k); return null; });
   TIPS.set(k, { p, at: Date.now() });
   return p;
 };
@@ -1428,7 +1428,7 @@ function depositSoon(q) {
   clearTimeout(depTimer);
   depTimer = setTimeout(ask, 0);
 }
-const ltLoad = () => (LTP ||= import('/swap/later.js?cb=25004174').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o), gasPrice, now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
+const ltLoad = () => (LTP ||= import('/swap/later.js?cb=e97d5652').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o), gasPrice, now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
 const laterPay = (k) => isEth(k) || k === lc(R.TAC) || (isListed(k) && !tacitKey(k) && k !== lc(R.WETH));
 const laterPair = (kind, pay = S.pay, get = S.get) => laterPay(pay)
   && (isEth(pay) ? kind === 'agg' || (kind === 'tac' && get === lc(R.TAC)) : (kind === 'agg' && get !== lc(R.WETH)) || kind === 'any' || kind === 'out' || kind === 'tac');
@@ -1475,7 +1475,7 @@ const viaToken = () => LATER.via !== 'eth' && hopOpen() && tokHop().fee != null 
 const tokenWei = (k, wei) => { const t = tokenOf(k), u = usdOf(lc(R.ZERO), wei), one = t ? usdOf(k, 10n ** BigInt(t.dec)) : null; return u != null && one ? BigInt(Math.ceil((u / one) * 10 ** t.dec)) : null; };
 const relayTok = (k) => !!(GR_LIVE && W.account && !isEth(k) && (GR.PERMIT_TOKENS[lc(k)] || LATER.p2[lc(k)] === true) && tokenWei(k, 10n ** 15n) != null);
 const depWei = () => (S.gasPrice ? (isEth(S.pay) ? GR.GAS_UNITS : GAS.zap) * S.gasPrice : null);
-const relayWei = () => (S.gasPrice ? (GR.GAS_UNITS * S.gasPrice * 15n) / 10n : null);
+const relayWei = () => (S.gasPrice ? ((GR.GAS_UNITS + (picked(S.q)?.via?.r0?.legs ? SPLIT_EXTRA_GAS.TAC_TO_ETH : 0n)) * S.gasPrice * 15n) / 10n : null);
 function depWays() {
   if (!LATER.on || isEth(S.pay) || !relayTok(S.pay) || (S.get === lc(R.TAC) && !S.to)) return { token: false, tac: false };
   const tac = lc(R.TAC), held = S.bal[tac], need = relayWei() != null ? tokenWei(tac, relayWei()) : null;
@@ -1667,7 +1667,7 @@ async function priceRelayFee({ payer, tin, pt }) {
   if (fee == null) throw nothing('Could not price the network fee. Nothing was sent.');
   const isTac = lc(feeToken) === tac, fu = usdOf(lc(feeToken), fee), su = usdOf(lc(S.pay), tin), feeTxt = `${tidy(amtFmt(fee, isTac ? 18 : pt.dec))} ${isTac ? 'TAC' : esc(pt.sym)}`;
   if ((fu != null && fu > 25) || (fu != null && su != null && fu * 4 > su)) throw nothing(`The network fee is too high for this swap right now (${feeTxt}). Swap more, add a little ETH, or try when gas is lower. Nothing was sent.`);
-  return { feeToken, fee, feeTxt };
+  return { feeToken, fee, feeTxt, gasPrice };
 }
 async function relayFund(lt, box, ctx) {
   const posted = { at: false };
@@ -1675,19 +1675,12 @@ async function relayFund(lt, box, ctx) {
   catch (e) { if (e && !posted.at && !e.nothingSpent) e.nothingSpent = true; throw e; }
 }
 async function relayFundRun(lt, { box, amount }, { from, q, v, tin, pt, fees, slip }, posted) {
-  const relay = GR.GAS_RELAY[1], tac = lc(R.TAC), { feeToken, fee, feeTxt } = fees, ft = tokenOf(lc(feeToken));
+  const relay = GR.GAS_RELAY[1], tac = lc(R.TAC), { feeToken } = fees, ft = tokenOf(lc(feeToken));
+  let { fee, feeTxt } = fees;
   const nothing = (m, more = {}) => Object.assign(new Error(m), { nothingSpent: true, ...more });
   const note = (h) => { LATER.depStep = h.replace(/<[^>]+>/g, ''); say(h); paintSteps(); };
   const dl = chainDeadline(1200), stand = '0x' + Array.from(crypto.getRandomValues(new Uint8Array(20)), (b) => b.toString(16).padStart(2, '0')).join('');
-  const tacRoute = async (a, who) => {
-    const rt = (await venues.route({ dir: 'TAC_TO_ETH', amountIn: a, account: relay }))?.r?.precision;
-    if (!rt || BigInt(rt.amountIn) !== a) return null;
-    const out = BigInt(rt.amountOut), min = (out * BigInt(10000 - slip)) / 10000n;
-    if (min <= 0n) return null;
-    const tx = venues.build({ quote: rt, dir: 'TAC_TO_ETH', account: relay, to: who, minOut: min, deadline: dl });
-    if (lc(tx.to) !== lc(R.ZROUTER) || BigInt(tx.value || 0) !== 0n || (tx.approval && lc(tx.approval.spender) !== lc(tx.to)) || !lc(tx.data).includes(addrWord(who))) return null;
-    return { out, min, callData: tx.data, name: 'Precision pool' };
-  };
+  const tacRoute = (a, who) => lt.mod.sellTac({ venues, amount: a, account: relay, to: who, slippageBps: slip, deadline: dl, gasPrice: fees.gasPrice });
   const route = (a, who) => (lc(S.pay) === tac ? tacRoute(a, who) : A.bestRoute({ ethCall, to: who, refundTo: relay, tokenIn: S.pay, tokenOut: R.ZERO, amountIn: a, slippageBps: slip, deadline: dl }));
   note('Reading the price again…');
   const sized = await within(lt.mod.sizeBoxed({ route: (a) => route(a, stand), amountIn: q.wei, out: v.r0.out, needWei: amount }), 25e3, 'zQuoter did not answer in time. Nothing was sent; try again.');
@@ -1695,6 +1688,8 @@ async function relayFundRun(lt, { box, amount }, { from, q, v, tin, pt, fees, sl
   if (sized.amountIn > (tin * BigInt(10000 + slip)) / 10000n) throw nothing(`The price moved: the deposit takes more ${pt.sym} than was shown. Nothing was sent; check it and press again.`, { moved: true });
   const rb = await within(route(sized.amountIn, box), 20e3, 'zQuoter did not answer in time. Nothing was sent; try again.');
   if (!rb || rb.out < amount) throw nothing('The price moved while the deposit box was made. Nothing was sent; press again.', { moved: true });
+  // a sale through both pools burns more gas: the relay's fee covers it, or the relay leaves the order
+  if (rb.legs) { fee = (fee * (GR.GAS_UNITS + SPLIT_EXTRA_GAS.TAC_TO_ETH)) / GR.GAS_UNITS; feeTxt = `${tidy(amtFmt(fee, lc(feeToken) === tac ? 18 : pt.dec))} ${lc(feeToken) === tac ? 'TAC' : esc(pt.sym)}`; }
   const held = await balanceNow(S.pay, from), total = lc(feeToken) === lc(S.pay) ? sized.amountIn + fee : sized.amountIn;
   if (held < total) throw nothing(`Not enough ${esc(pt.sym)}: the deposit and the network fee need ${tidy(amtFmt(total, pt.dec))}. Nothing was sent.`);
   if (lc(feeToken) !== lc(S.pay) && (await balanceNow(feeToken, from)) < fee) throw nothing(`Not enough ${esc(ft.sym)} for the network fee. Nothing was sent.`);
@@ -2099,7 +2094,7 @@ async function exitGo() {
 
 let PVP = null, PV = null;
 const pickWallet = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : list[0]?.uuid; };
-const pvLoad = () => (PVP ||= import('/swap/private.js?cb=2bdcd052').then((m) => {
+const pvLoad = () => (PVP ||= import('/swap/private.js?cb=98e01226').then((m) => {
   PV = m.makePrivate({ getUx, pick: pickWallet, ...H.key, now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()), onKey: (why) => { if (why) say(esc(why), 'err', true); else { PV.read().then(paint, () => {}); if (plans().some((x) => x.state === 'waiting')) ltLoad().then(readBlend, () => {}); } paint(); } });
   PV.mod = m;
   return PV;

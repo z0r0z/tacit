@@ -463,7 +463,7 @@ async function simulateTx({ ethCall, tx, from, block = 'latest' }) {
   } catch (error) { return { ok: false, error }; }
 }
 
-export const SPLIT_EXTRA_GAS = Object.freeze({ ETH_TO_TAC: 110000n, TAC_TO_ETH: 141000n });
+export const SPLIT_EXTRA_GAS = Object.freeze({ ETH_TO_TAC: 116000n, TAC_TO_ETH: 190000n });
 export function splitWorth({ dir, split, amountIn, gasPrice = null, minGainBps = 30, over = null }) {
   if (!split) return false;
   const base = BigInt((over || split.single).amountOut), gain = over ? BigInt(split.amountOut) - base : split.gain;
