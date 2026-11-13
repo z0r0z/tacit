@@ -1378,7 +1378,15 @@ function poll(back = false) {
   if (bitcoin?.session.unlocked && !bitcoin.isOpen) bitcoin.refresh().catch(() => {});
 }
 setInterval(poll, 60e3);
-document.addEventListener('click', (e) => { const b = e.target.closest('[data-retry]'); if (b && !D.retrying) { D.retrying = true; b.disabled = true; b.textContent = 'Trying…'; poll(true); } });
+// The press shows on the button at once, by hand, so the markup kept for its panel is forgotten with it: a retry that fails the same way would otherwise be painted as
+// unchanged, and the button left on "Trying…" for good.
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-retry]');
+  if (!b || D.retrying) return;
+  D.retrying = true; b.disabled = true; b.textContent = 'Trying…';
+  for (let n = b.parentElement; n; n = n.parentElement) if (n.__h != null) { n.__h = null; break; }
+  poll(true);
+});
 let sooner = 0;
 function retrySoon() {
   if (sooner >= 3 || !(D.chainFailed || D.tapeFailed || D.btcFailed || D.bookFailed)) return;
