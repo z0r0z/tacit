@@ -1,0 +1,553 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta name="color-scheme" content="light dark">
+<title>tacit docs · chain</title>
+<meta name="description" content="The Tacit chain is a zk-rollup for private TAC payments, settled on Ethereum. How to use it, and how it works.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="tacit">
+<link rel="canonical" href="https://tacit.finance/docs/chain/">
+<meta property="og:url" content="https://tacit.finance/docs/chain/">
+<meta property="og:title" content="tacit docs · chain">
+<meta property="og:description" content="A zk-rollup for private TAC payments, settled on Ethereum. How to use it, and how it works.">
+<meta property="og:image" content="https://tacit.finance/tacit-card.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#E8E0CC" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#15130E" media="(prefers-color-scheme: dark)">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<style>
+@font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
+@font-face { font-family: 'IBM Plex Mono'; font-weight: 500; font-display: swap; src: url('/fonts/ibm-plex-mono-500-latin.woff2') format('woff2'); }
+@font-face { font-family: 'Instrument Serif'; font-weight: 400; font-display: swap; src: url('/fonts/instrument-serif-400-latin.woff2') format('woff2'); }
+@font-face { font-family: 'Instrument Serif'; font-weight: 400; font-style: italic; font-display: swap; src: url('/fonts/instrument-serif-400i-latin.woff2') format('woff2'); }
+
+:root {
+  --paper: #E8E0CC; --card: #F2EBD4; --field: #FAF6EA;
+  --ink: #1A1A1A; --mute: #625C4F;
+  --hair: rgba(26,26,26,.12); --hair-2: rgba(26,26,26,.28);
+  --orange: #f7931a; --ok: #0a7234; --warn: #9a4a00; --err: #b8341d;
+  --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --serif: 'Instrument Serif', 'Instrument Serif Fallback', 'Instrument Serif Fallback T', 'Instrument Serif Fallback N', Georgia, serif;
+  --tap: 44px;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #15130E; --card: #1F1C15; --field: #191711;
+    --ink: #EDE5CF; --mute: #A39B85;
+    --hair: rgba(237,229,207,.12); --hair-2: rgba(237,229,207,.28);
+    --ok: #8fcf9a; --warn: #f7931a; --err: #f08a6c;
+    color-scheme: dark;
+  }
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; scroll-padding-top: 16px; }
+html, body { margin: 0; background: var(--paper); color: var(--ink); }
+body {
+  font: 14px/1.65 var(--mono); letter-spacing: -.01em; overflow-x: hidden;
+  background-image: radial-gradient(var(--hair) 1px, transparent 1px); background-size: 24px 24px;
+  padding: 0 max(16px, env(safe-area-inset-right)) env(safe-area-inset-bottom) max(16px, env(safe-area-inset-left));
+}
+a { color: inherit; text-underline-offset: 3px; text-decoration-thickness: 1px; }
+a:hover { text-decoration-thickness: 2px; }
+button { font: inherit; color: inherit; letter-spacing: inherit; }
+:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+[hidden] { display: none !important; }
+.tk { width: 28px; height: 28px; display: block; flex: none; border-radius: 50%; }
+
+.shell { max-width: 1120px; margin: 0 auto; padding-bottom: 56px; }
+
+/* header */
+.top { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 22px 0 8px; }
+.brand { display: inline-flex; align-items: center; gap: 10px; text-decoration: none; flex: none; }
+.brand b { font: italic 400 30px/1 var(--serif); letter-spacing: -.01em; }
+.brand i { font-style: normal; font-size: 12px; color: var(--mute); text-transform: uppercase; letter-spacing: .12em; }
+
+/* the head */
+.hero { padding: 30px 0 8px; }
+.hero h1 { font: 400 clamp(40px, 7vw, 72px)/.95 var(--serif); letter-spacing: -.025em; margin: 0; text-wrap: balance; }
+.hero h1 em { font-style: italic; }
+.hero .sub { margin: 14px 0 0; color: var(--mute); font-size: 13.5px; max-width: 62ch; }
+
+/* two ways in: using it, and how it works */
+.ways { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 26px 0 0; }
+.way { display: grid; grid-template-rows: auto auto 1fr auto; gap: 10px; padding: 18px 20px; background: var(--card); border: 1px solid var(--hair-2); min-width: 0; }
+.way .k { margin: 0; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
+.way h2 { margin: 0; font: 400 32px/1 var(--serif); letter-spacing: -.015em; }
+.way h2 em { font-style: italic; }
+.way dl { margin: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 14px; font-size: 12.5px; align-content: start; }
+.way dt { color: var(--mute); }
+.way dd { margin: 0; overflow-wrap: anywhere; }
+.way .go { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12.5px; padding-top: 10px; border-top: 1px solid var(--hair); }
+@media (max-width: 760px) { .ways { grid-template-columns: minmax(0, 1fr); } }
+
+/* the page: contents beside one reading column */
+.doc { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 40px; margin-top: 40px; }
+.toc { position: sticky; top: 16px; align-self: start; max-height: calc(100vh - 32px); overflow-y: auto; font-size: 12.5px; padding-bottom: 12px; }
+.toc p { margin: 14px 0 6px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
+.toc p:first-child { margin-top: 0; }
+.toc ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 1px; }
+.toc a { display: block; padding: 3px 0 3px 10px; color: var(--mute); text-decoration: none; border-left: 1px solid var(--hair); }
+.toc a:hover { color: var(--ink); }
+.toc a.on { color: var(--ink); border-left-color: var(--ink); }
+@media (max-width: 900px) {
+  .doc { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .toc { position: static; max-height: none; padding: 12px 14px; margin-bottom: 30px; background: var(--card); border: 1px solid var(--hair); }
+  .toc p { display: none; }
+  .toc { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+  .toc ol { display: contents; }
+  .toc a { border-left: 0; padding: 2px 0; }
+}
+
+article { min-width: 0; }
+.part { padding: 0 0 34px; margin: 0 0 34px; border-bottom: 1px solid var(--hair); scroll-margin-top: 16px; }
+.part:last-child { border-bottom: 0; }
+.kick { margin: 0 0 6px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
+.part h2 { font: 400 clamp(30px, 4.4vw, 40px)/1.02 var(--serif); letter-spacing: -.015em; margin: 0 0 14px; text-wrap: balance; }
+.part h2 em { font-style: italic; }
+.part p { margin: 0 0 12px; max-width: 72ch; }
+.part ul, .part ol.steps { margin: 0 0 14px; padding-left: 18px; max-width: 72ch; display: grid; gap: 8px; }
+.part li::marker { color: var(--mute); }
+.part b, .part strong { font-weight: 500; }
+.part .note { font-size: 12.5px; color: var(--mute); }
+code { font: inherit; font-size: .95em; padding: 0 .3em; background: var(--field); border: 1px solid var(--hair); overflow-wrap: anywhere; }
+
+.code { position: relative; margin: 4px 0 16px; }
+.code pre { margin: 0; padding: 14px 16px; overflow-x: auto; font-size: 12.5px; line-height: 1.6; background: var(--field); border: 1px solid var(--hair-2); }
+.code pre code { padding: 0; background: none; border: 0; overflow-wrap: normal; font-size: inherit; }
+.code pre .c { color: var(--mute); }
+.code .cp { position: absolute; top: 6px; right: 6px; padding: 3px 9px; font-size: 11px; color: var(--mute); background: var(--card); border: 1px solid var(--hair-2); cursor: pointer; }
+.code .cp:hover { color: var(--ink); border-color: var(--ink); }
+
+.tbl { overflow-x: auto; margin: 4px 0 16px; border: 1px solid var(--hair); background: var(--card); }
+.tbl table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.tbl th { text-align: left; font-weight: 400; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--mute); padding: 8px 12px; border-bottom: 1px solid var(--hair-2); }
+.tbl td { padding: 8px 12px; border-top: 1px solid var(--hair); vertical-align: top; }
+.tbl td.h { font-size: 11.5px; word-break: break-all; font-variant-numeric: tabular-nums; }
+.tbl td.t { white-space: nowrap; }
+.tbl code { font-size: .92em; }
+
+/* a payment's path: four stops, left to right (top to bottom on a phone) */
+.path { list-style: none; margin: 6px 0 18px; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24px; counter-reset: stop; }
+.path li { position: relative; display: grid; gap: 4px; align-content: start; padding: 14px 14px 16px; background: var(--card); border: 1px solid var(--hair-2); counter-increment: stop; min-width: 0; }
+.path li::before { content: counter(stop); display: grid; place-items: center; width: 24px; height: 24px; margin-bottom: 4px; border: 1px solid var(--hair-2); border-radius: 50%; font-size: 11px; color: var(--mute); }
+.path li:last-child::before { border-color: var(--ink); color: var(--ink); }
+.path li:not(:last-child)::after { content: '→'; position: absolute; top: 50%; right: -19px; transform: translateY(-50%); color: var(--mute); }
+.path b { font: 400 22px/1.1 var(--serif); }
+.path span { font-size: 12px; color: var(--mute); }
+@media (max-width: 720px) {
+  .path { grid-template-columns: minmax(0, 1fr); gap: 22px; }
+  .path li:not(:last-child)::after { content: '↓'; top: auto; bottom: -20px; right: auto; left: 22px; transform: none; }
+}
+
+.more { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; max-width: 72ch; margin-top: 18px; }
+.more a { display: grid; gap: 2px; padding: 12px 14px; text-decoration: none; background: var(--card); border: 1px solid var(--hair-2); }
+.more a span { font-size: 12px; color: var(--mute); }
+@media (hover: hover) { .more a:hover { border-color: var(--ink); } }
+@media (max-width: 560px) { .more { grid-template-columns: minmax(0, 1fr); } }
+
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+</style>
+<!-- chrome:head:begin inline -->
+<style>
+/* The header's page links and the footer, as every page that wears them draws them. The markup is made by build/chrome.mjs and stamped
+   into the pages (`npm run build`); a page keeps only its own tokens (--ink --mute --card --hair --hair-2 --orange --mono --spring)
+   and its brand, chips and spacing. Nothing here is a size the page has to agree with: the header's width is read from the header. */
+
+header.top { position: relative; z-index: 30; container: top / inline-size; }
+header.top .top-r { position: relative; display: flex; align-items: center; gap: 6px; min-width: 0; }
+
+/* page links: six in the header (icons, then icons and names as the header gets wide), the rest in the menu; on a phone all of them are there */
+.sn { display: flex; align-items: center; gap: 2px; }
+.sn > a, .sn summary {
+  position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 8px; box-sizing: border-box; flex: none;
+  height: 40px; min-width: 40px; padding: 0 9px; border-radius: 12px; color: var(--mute);
+  font: 500 12.5px/1 var(--mono); text-decoration: none; list-style: none; cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent;
+  transition: color .15s, background-color .15s, transform .25s var(--spring, ease);
+}
+.sn summary::-webkit-details-marker { display: none; }
+/* the menu is a <details>: a page's own rules for details and summary (a border, a "+", a margin) are not for it */
+header.top .sm { margin: 0; padding: 0; border: 0; font: inherit; }
+header.top .sm > summary { display: flex; min-height: 0; }
+header.top .sm > summary::before, header.top .sm > summary::after { content: none; }
+.sn svg, .sf svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.sn svg.fill, .sf svg.fill { fill: currentColor; stroke: none; }
+.sn > a { display: none; }
+.sn > a span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.sn > a[aria-current="page"], .sn summary.here, .sm[open] > summary { color: var(--ink); background: var(--hair); }
+@media (hover: hover) { .sn > a:hover, .sn summary:hover { color: var(--ink); background: var(--hair); } }
+.sn > a:active, .sn summary:active { transform: scale(.93); }
+.sn a:focus-visible, .sn summary:focus-visible, .sf a:focus-visible { outline: 2px solid var(--orange); outline-offset: 1px; }
+@container top (min-width: 540px) { .sn > a { display: inline-flex; } }
+.sn > a[href="/rewards/"], .sn .sm > summary { position: relative; }
+.sn[data-owed] > a[href="/rewards/"]::after, .sn[data-owed] .sm > summary::after { content: ''; position: absolute; top: 8px; left: 26px; width: 7px; height: 7px; border-radius: 50%; background: var(--orange); box-shadow: 0 0 0 2px var(--paper, transparent); }
+@container top (min-width: 540px) { .sn[data-owed] .sm > summary::after { display: none; } }
+@container top (max-width: 539px) { .sn[data-owed] > a[href="/rewards/"]::after { display: none; } }
+/* a bridge under way: a dot on the header's Bridge link, or on the menu button where the links are in the menu (chrome.js adds both) */
+.sn .bd { position: absolute; top: 5px; right: 3px; width: 8px; height: 8px; border-radius: 50%; background: var(--orange); box-shadow: 0 0 0 2px var(--paper, transparent); pointer-events: none; }
+.sn > a > .bd { top: 8px; right: auto; left: 26px; width: 7px; height: 7px; }
+@container top (min-width: 540px) { .sn .sm > summary > .bd { display: none; } }
+/* the Activity link chrome.js adds on a page without its own chip: at every width, once there is something in it, with the count still going */
+.sn > a.sa:not([hidden]) { display: inline-flex; }
+.sn > a.sa .n { position: absolute; top: 3px; right: 1px; min-width: 16px; height: 16px; padding: 0 4px; box-sizing: border-box; border-radius: 8px; background: var(--orange); color: #fff; font: 600 10px/16px var(--mono); text-align: center; }
+@container top (min-width: 900px) {
+  .sn > a { padding: 0 13px 0 11px; }
+  .sn > a span { position: static; width: auto; height: auto; overflow: visible; clip-path: none; }
+}
+
+/* a very narrow header keeps the mark and the name; the page's label, and the Activity and total chips' room, go first */
+@container top (max-width: 340px) { header.top .brand i { display: none; } }
+
+/* the account chip (and, on the front page, Activity and the total): a quiet outline on the page's own ground, not a block; the dot says whether a wallet is open */
+header.top .chip {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px; box-sizing: border-box; flex: 0 1 auto; min-width: 0; height: 40px; margin: 0; padding: 0 16px 0 13px;
+  color: var(--ink); background: transparent; border: 1px solid var(--hair-2, var(--hair-strong, var(--hair))); border-radius: 999px;
+  font: 500 12.5px/1 var(--mono); white-space: nowrap; cursor: pointer; -webkit-tap-highlight-color: transparent;
+  transition: border-color .15s, background-color .15s, transform .25s var(--spring, ease);
+}
+header.top .chip > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+header.top .chip .dot { width: 7px; height: 7px; margin: 0; border-radius: 50%; background: var(--hair-2, var(--hair-strong, var(--hair))); flex: none; vertical-align: 0; }
+header.top .chip .dot.on { background: var(--ok); }
+header.top .chip .dot.warn, header.top .chip .dot.live { background: var(--orange); }
+header.top .chip.act { position: relative; width: 40px; padding: 0; color: var(--mute); border-color: transparent; }
+header.top .chip.act[aria-expanded="true"], header.top .chip.act:hover { color: var(--ink); }
+@media (hover: hover) { header.top .chip:hover { border-color: var(--mute); background: var(--hair); } header.top .chip.act:hover { border-color: transparent; } }
+header.top .chip:active { transform: scale(.97); }
+header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
+@container top (max-width: 480px) { header.top .chip { padding: 0 12px 0 11px; } header.top .chip.act { padding: 0; } }
+@media (pointer: coarse) { .sn > a, .sn summary, header.top .chip, footer.sf nav a { height: var(--tap, 44px); } }
+/* Touch, on every page that wears this: a quick double tap on a control does not zoom the page, and a text button takes a press a thumb can land (its box does not
+   change: the target reaches past it). */
+@media (pointer: coarse) {
+  a, button, summary, input, select, textarea, label, [role="button"], [role="tab"] { touch-action: manipulation; }
+  button.link, .linkbtn { position: relative; }
+  button.link::after, .linkbtn::after { content: ''; position: absolute; inset: -8px -6px; }
+  /* the mark and name at the header's left are 26-30px tall: the target reaches to the chips' 44 */
+  header.top a.brand { position: relative; }
+  header.top a.brand::after { content: ''; position: absolute; inset: -8px -6px; }
+}
+
+/* the menu: under the header's right edge, whatever the width */
+.sm-p {
+  position: absolute; z-index: 5; top: calc(100% + 8px); right: 0; display: grid; gap: 1px; box-sizing: border-box;
+  width: max-content; min-width: 220px; max-width: calc(100vw - 32px); padding: 6px;
+  background: var(--card); border: 1px solid var(--hair-2, var(--hair)); border-radius: 16px;
+  box-shadow: 0 24px 48px -26px rgba(0,0,0,.5), 0 2px 8px rgba(0,0,0,.06);
+  transform-origin: 100% 0; animation: sm-in .16s ease-out;
+}
+@keyframes sm-in { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
+.sm-p a { display: flex; align-items: center; gap: 12px; box-sizing: border-box; min-height: 42px; padding: 0 12px; border-radius: 10px; color: var(--ink); font: 400 13px/1 var(--mono); text-decoration: none; }
+.sm-p a svg { width: 18px; height: 18px; color: var(--mute); }
+.sm-p a[aria-current="page"] { background: var(--hair); }
+.sm-p a:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
+.sm-p hr { margin: 4px 8px; border: 0; border-top: 1px solid var(--hair); }
+.sm-p .pr { display: flex; }
+@container top (min-width: 540px) { .sm-p .pr { display: none; } }
+@media (hover: hover) { .sm-p a:hover { background: var(--hair); } }
+@media (prefers-reduced-motion: reduce) { .sm-p { animation: none; } .sn > a, .sn summary, header.top .chip { transition: none; } }
+
+/* the footer: where it is said to be, then the places outside the app, as icons that say their name on hover and to a screen reader (they narrow a little on a small phone before they would run off the page) */
+footer.sf { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0 20px; margin-top: 56px; padding: 10px 0 22px; border-top: 1px solid var(--hair); color: var(--mute); font: 400 12px/1.4 var(--mono); }
+footer.sf nav { display: flex; align-items: center; max-width: 100%; margin: 0 -10px 0 auto; }
+footer.sf nav a { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; flex: 0 1 40px; min-width: 28px; height: 40px; border-radius: 12px; color: var(--mute); transition: color .15s, background-color .15s, transform .25s var(--spring, ease); }
+footer.sf nav a:active { transform: scale(.92); }
+footer.sf svg { width: 18px; height: 18px; }
+footer.sf svg.fill { width: 16px; height: 16px; }
+@media (hover: hover) { footer.sf nav a:hover { color: var(--ink); background: var(--hair); } }
+@media (max-width: 480px) { footer.sf nav { margin: 0 0 0 -11px; } }
+
+/* what only one page has to point at (papers, the pool on each chain): a quiet line above the footer */
+.sf-x { display: flex; flex-wrap: wrap; align-items: center; gap: 0 18px; margin-top: 48px; color: var(--mute); font: 400 12px/1.4 var(--mono); }
+.sf-x + footer.sf { margin-top: 12px; }
+.sf-x span { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; }
+.sf-x a { display: inline-flex; align-items: center; min-height: 32px; color: var(--mute); text-decoration: underline; text-decoration-color: var(--hair-2, var(--hair)); text-underline-offset: 3px; }
+@media (hover: hover) { .sf-x a:hover { color: var(--ink); text-decoration-color: currentColor; } }
+
+/* A serif scaled to Instrument Serif's width and line metrics (Georgia, Times or Noto Serif, whichever the device has) shows until the font arrives, so the swap moves nothing */
+@font-face { font-family: 'Instrument Serif Fallback'; src: local('Georgia'); size-adjust: 75.8%; ascent-override: 130.6%; descent-override: 40.9%; line-gap-override: 0%; }
+@font-face { font-family: 'Instrument Serif Fallback'; font-style: italic; src: local('Georgia Italic'), local('Georgia-Italic'); size-adjust: 78.8%; ascent-override: 125.6%; descent-override: 39.3%; line-gap-override: 0%; }
+@font-face { font-family: 'Instrument Serif Fallback T'; src: local('Times New Roman'), local('TimesNewRomanPSMT'), local('Liberation Serif'), local('Tinos'); size-adjust: 83.1%; ascent-override: 119.1%; descent-override: 37.3%; line-gap-override: 0%; }
+@font-face { font-family: 'Instrument Serif Fallback T'; font-style: italic; src: local('Times New Roman Italic'), local('TimesNewRomanPS-ItalicMT'), local('Liberation Serif Italic'), local('Tinos Italic'); size-adjust: 87.8%; ascent-override: 112.8%; descent-override: 35.3%; line-gap-override: 0%; }
+@font-face { font-family: 'Instrument Serif Fallback N'; src: local('Noto Serif'), local('NotoSerif'); size-adjust: 70.5%; ascent-override: 140.4%; descent-override: 44%; line-gap-override: 0%; }
+@font-face { font-family: 'Instrument Serif Fallback N'; font-style: italic; src: local('Noto Serif Italic'), local('NotoSerif-Italic'); size-adjust: 76.3%; ascent-override: 129.7%; descent-override: 40.6%; line-gap-override: 0%; }
+</style>
+<script src="/chrome.js?cb=3cafe52f" defer></script>
+<!-- chrome:head:end -->
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <defs>
+    <symbol id="tk-tac" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#0a0a0a"/><circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2.5"/><path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="#f7931a" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11L21 11" stroke="#f7931a" stroke-width="2.4" stroke-linecap="round"/></symbol>
+  </defs>
+</svg>
+<div class="shell">
+
+  <header class="top">
+    <a class="brand" href="/" aria-label="tacit docs"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><b>tacit</b><i>docs</i></a>
+    <div class="top-r">
+      <!-- chrome:nav:begin -->
+      <nav class="sn" aria-label="Pages">
+          <a href="/assets/" title="Assets"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M8.1 9.3h7.2"/><path d="M13 6.1L10 16.3Q10 17.9 13.3 17.2"/></svg><span>Assets</span></a>
+          <a href="/rewards/" title="Rewards"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13"/><path d="M5 12v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-8"/><path d="M7.5 8a2.5 2.5 0 1 1 0-5C10 3 12 8 12 8s2-5 4.5-5a2.5 2.5 0 1 1 0 5"/></svg><span>Rewards</span></a>
+          <a href="/prove/" title="Prove"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/></svg><span>Prove</span></a>
+          <details class="sm">
+            <summary aria-label="More pages" title="More"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="6.5" height="6.5" rx="1.7"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.7"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.7"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.7"/></svg></summary>
+            <div class="sm-p">
+            <a class="pr" href="/assets/"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M8.1 9.3h7.2"/><path d="M13 6.1L10 16.3Q10 17.9 13.3 17.2"/></svg>Assets</a>
+            <a class="pr" href="/rewards/"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13"/><path d="M5 12v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-8"/><path d="M7.5 8a2.5 2.5 0 1 1 0-5C10 3 12 8 12 8s2-5 4.5-5a2.5 2.5 0 1 1 0 5"/></svg>Rewards</a>
+            <a class="pr" href="/prove/"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/></svg>Prove</a>
+            <hr class="pr">
+            <a href="/#portfolio"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h15a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h11"/><path d="M16 14h.01"/></svg>Portfolio</a>
+            <a href="/pay/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 3L10.5 13.5"/><path d="M21 3l-6.5 18-4-7.5L3 9.5z"/></svg>Pay</a>
+            <a href="/vault/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9.5L12 4l9 5.5"/><path d="M5.5 10v8M10 10v8M14 10v8M18.5 10v8"/><path d="M3 20.5h18"/></svg>Borrow</a>
+            <a href="/bridge/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17h18"/><path d="M5 17v-3a7 7 0 0 1 14 0v3"/><path d="M9 17v-4.5M15 17v-4.5M12 17v-6"/></svg>Bridges</a>
+            <a href="/tac/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7.5 3v5.5c0 4.6-3.2 8-7.5 9.5-4.3-1.5-7.5-4.9-7.5-9.5V6z"/><path d="M9 12l2.2 2.2L15.5 10"/></svg>TAC</a>
+            <a href="/etch/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l4.2-1 10.6-10.6a2.1 2.1 0 0 0-3-3L5.2 16z"/><path d="M13.6 7.4l3 3"/></svg>Etch</a>
+            <a href="/tasks/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>Tasks</a>
+            <a href="/face/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 20V10a6 6 0 0 1 12 0v10l-2-2-2 2-2-2-2 2-2-2z"/><path d="M9.5 11.5h1M13.5 11.5h1"/></svg>FACE</a>
+            </div>
+          </details>
+        </nav>
+      <!-- chrome:nav:end -->
+    </div>
+  </header>
+
+  <main>
+    <section class="hero" aria-labelledby="h">
+      <h1 id="h">The Tacit <em>chain</em></h1>
+      <p class="sub">A zk-rollup for private TAC payments, settled on Ethereum. Pay anyone in seconds. Who paid whom, and how much, stays hidden.</p>
+
+      <div class="ways">
+        <section class="way" aria-labelledby="w-use">
+          <p class="k">For everyone</p>
+          <h2 id="w-use">Use <em>it</em></h2>
+          <dl>
+            <dt>Does</dt><dd>Hold TAC privately, pay anyone, get paid</dd>
+            <dt>Needs</dt><dd>TAC in an Ethereum wallet. No ETH.</dd>
+            <dt>Costs</dt><dd>A small fee in TAC, shown before you press</dd>
+            <dt>Speed</dt><dd>Sent in seconds, settled on Ethereum in about a minute</dd>
+            <dt>Where</dt><dd><a href="/tac/">tacit.finance/tac</a></dd>
+          </dl>
+          <div class="go"><a href="#start">Get started</a></div>
+        </section>
+        <section class="way" aria-labelledby="w-how">
+          <p class="k">For builders</p>
+          <h2 id="w-how">How it <em>works</em></h2>
+          <dl>
+            <dt>Proofs</dt><dd>One per payment, made on the payer’s device. One per block, checked on Ethereum.</dd>
+            <dt>Data</dt><dd>On Ethereum. Anyone can rebuild the chain from it.</dd>
+            <dt>Control</dt><dd>No owner, no upgrade key, no pause</dd>
+            <dt>Leaders</dt><dd>Anyone who locks a 1,000 TAC seat</dd>
+            <dt>Contract</dt><dd>0x00000000000a9147ffd8d41d152d730ca5f84e6c</dd>
+          </dl>
+          <div class="go"><a href="#path">How it works</a><a href="https://github.com/src-company/tacit/blob/main/docs/TACIT-BLOCKS.md" target="_blank" rel="noopener noreferrer">Full spec ↗</a></div>
+        </section>
+      </div>
+    </section>
+
+    <div class="doc">
+      <nav class="toc" aria-label="On this page">
+        <p>Use it</p>
+        <ol>
+          <li><a href="#start">Get started</a></li>
+          <li><a href="#fees">Fees</a></li>
+          <li><a href="#public">What is public</a></li>
+          <li><a href="#safety">If something goes wrong</a></li>
+        </ol>
+        <p>How it works</p>
+        <ol>
+          <li><a href="#path">A payment’s path</a></li>
+          <li><a href="#notes">Notes and shares</a></li>
+          <li><a href="#blocks">Blocks and leaders</a></li>
+          <li><a href="#trust">What you trust</a></li>
+          <li><a href="#build">Build on it</a></li>
+        </ol>
+      </nav>
+
+      <article>
+
+<!-- ─────────────── Get started ─────────────── -->
+<section class="part" id="start">
+  <p class="kick">Use it</p>
+  <h2>Get <em>started</em></h2>
+  <p>Everything happens on <a href="/tac/">tacit.finance/tac</a>. Sign in with your Ethereum wallet: one signature makes your Tacit key, and the same wallet always makes the same key, on any device.</p>
+  <ol class="steps">
+    <li><b>Shield.</b> Choose how much TAC to make private and press Shield. Sign once and it goes in with no ETH, or send one transaction yourself if you hold ETH. It shows as private TAC on the Tacit chain. For now one shield takes up to a launch limit, which the page shows.</li>
+    <li><b>Send.</b> Enter a <code>tacit1…</code> address, a <code>name.wei</code> or an <code>0x…</code> address, and an amount. It says Sent within seconds and settles on Ethereum in about a minute. To a tacit1 address or a name, the payment stays private. To an 0x address it arrives as public TAC, and the sender stays hidden.</li>
+    <li><b>Get paid.</b> The Receive tab has your tacit1 address, a pay link such as <code>tacit.finance/to/yourname/25</code>, and a code to scan that turns to Paid when the money arrives.</li>
+    <li><b>Withdraw.</b> Take TAC out to your wallet as public TAC, into the DeFi pool to swap, farm or borrow privately, or to Bitcoin.</li>
+  </ol>
+  <p class="note">A tacit1 address can be paid on the chain once its owner has opened their Tacit wallet. Private TAC already in the DeFi pool moves onto the chain from the same page.</p>
+</section>
+
+<!-- ─────────────── Fees ─────────────── -->
+<section class="part" id="fees">
+  <p class="kick">Use it</p>
+  <h2>Fees</h2>
+  <p>Every action pays a small fee in TAC, shown before you press. Most of it pays the leader for Ethereum gas, so it moves with gas prices. A fixed part stays in the chain’s pool.</p>
+  <div class="tbl"><table>
+    <tr><th>Action</th><th>Stays in the pool</th><th>Pays for gas</th></tr>
+    <tr><td class="t">Send</td><td>0.002 TAC</td><td>The leader’s fee</td></tr>
+    <tr><td class="t">Shield</td><td>A small margin, now 0.02%</td><td>The leader’s fee, and the cost of sending it in when you sign once</td></tr>
+    <tr><td class="t">Withdraw</td><td>0.1%, at least 0.002 TAC</td><td>The leader’s fee</td></tr>
+  </table></div>
+  <p>Your private balance is a number of shares of that pool. What stays in it raises the worth of every share, so each payment others make adds a little to what yours is worth. A share’s worth in TAC never goes down.</p>
+</section>
+
+<!-- ─────────────── What is public ─────────────── -->
+<section class="part" id="public">
+  <p class="kick">Use it</p>
+  <h2>What is <em>public</em></h2>
+  <div class="tbl"><table>
+    <tr><th></th><th>Public</th><th>Hidden</th></tr>
+    <tr><td class="t">Shield</td><td>Your Ethereum address and the amount</td><td>Who holds it after</td></tr>
+    <tr><td class="t">Send</td><td>That a block landed, and how many notes it made</td><td>Who paid whom, and how much</td></tr>
+    <tr><td class="t">Withdraw</td><td>The amount and the address it goes to</td><td>Whose notes paid it</td></tr>
+    <tr><td class="t">Balances</td><td>The chain’s total</td><td>What anyone holds</td></tr>
+  </table></div>
+  <p>What goes in and out shows, so a withdrawal of exactly what you shielded can be matched to it. Let time pass between them, and move different amounts.</p>
+</section>
+
+<!-- ─────────────── Safety ─────────────── -->
+<section class="part" id="safety">
+  <p class="kick">Use it</p>
+  <h2>If something <em>goes wrong</em></h2>
+  <ul>
+    <li><b>The leader stops.</b> After 10 minutes with no block, anyone may land the next one.</li>
+    <li><b>Your payment is left out.</b> Press “Post it to Ethereum yourself” in the app. Every block must take it within an hour. A posted payment shows on Ethereum which notes it spends and makes; the amounts stay hidden.</li>
+    <li><b>A shield is never taken in.</b> After 7 days, press Take back in the app. Your TAC returns to your wallet, or as private TAC in the DeFi pool.</li>
+    <li><b>You lose your device.</b> Sign in with the same wallet anywhere. Your key is the same, and your notes are found again from what is on Ethereum.</li>
+  </ul>
+</section>
+
+<!-- ─────────────── Path ─────────────── -->
+<section class="part" id="path">
+  <p class="kick">How it works</p>
+  <h2>A payment’s <em>path</em></h2>
+  <ol class="path" aria-label="From your device to Ethereum">
+    <li><b>Your device</b><span>Proves the payment. Keys and amounts stay on it.</span></li>
+    <li><b>Leader</b><span>Checks the proof, answers in seconds, gathers a block.</span></li>
+    <li><b>Prover</b><span>Any GPU on the prover board. One proof for the whole block.</span></li>
+    <li><b>Ethereum</b><span>Checks that proof, keeps the block’s data, holds the TAC.</span></li>
+  </ol>
+  <p>Your device makes a zero-knowledge proof (Halo2, the circuit of the Bitcoin shielded pool) that you own the notes you spend and that the amounts add up. The leader checks it and puts it in the next block. A prover runs the block program in SP1: it checks every proof in the block in one pairing, applies the block, and wraps the result in one Groth16 proof. <code>TacitBlocks.land</code> checks that proof on Ethereum and records the block.</p>
+  <p>Checking a block’s proof costs Ethereum the same for one payment or thirty, so the payments in a block share it.</p>
+</section>
+
+<!-- ─────────────── Notes ─────────────── -->
+<section class="part" id="notes">
+  <p class="kick">How it works</p>
+  <h2>Notes and <em>shares</em></h2>
+  <ul>
+    <li><b>Notes.</b> A balance is a set of notes. Each is a commitment to an amount and an owner’s key, a leaf of the note tree. The tree holds only commitments: no amount or owner is in it.</li>
+    <li><b>Nullifiers.</b> Spending a note publishes its nullifier, a tag only its owner can compute. It stops a second spend without saying which note was spent.</li>
+    <li><b>Spends.</b> A spend takes up to two notes and makes up to three: what is paid, your change and the leader’s fee.</li>
+    <li><b>Memos.</b> Each new note carries a 1,152-byte encrypted memo. Your wallet finds your notes by opening memos with your key. The encryption pairs ML-KEM-768 with secp256k1, so a recorded memo stays private even against a future quantum computer.</li>
+    <li><b>Shares.</b> Notes count shares of one pool. A share is worth <code>(pool + 1) / (shares + 1)</code> TAC, the 1 being a virtual TAC no note holds. A shield buys shares at that rate, a withdrawal sells them back less its fee, and what fees leave in the pool raises the rate.</li>
+  </ul>
+</section>
+
+<!-- ─────────────── Blocks ─────────────── -->
+<section class="part" id="blocks">
+  <p class="kick">How it works</p>
+  <h2>Blocks and <em>leaders</em></h2>
+  <p>A leader takes payments and lands blocks. Turns come from <code>TacitSeats</code>, which has no owner.</p>
+  <ul>
+    <li><b>Seats.</b> Anyone can take a seat by locking 1,000 TAC. Leaving returns it 7 days later.</li>
+    <li><b>Turns.</b> Time runs in slots of 50 Ethereum blocks (about 10 minutes), 16 slots to an epoch. Each slot one seat leads, drawn with Ethereum’s beacon randomness. While no seat is held, the bootstrap leader leads.</li>
+    <li><b>Pay.</b> Each payment carries a fee note to its leader, which covers the gas of landing. Provers are paid in points.</li>
+    <li><b>No one can stall it.</b> After 10 minutes with no block anyone may land, and whatever is posted to the forced queue must be in a block within an hour.</li>
+  </ul>
+  <p>To lead, run the node and leader from <a href="https://github.com/src-company/tacit/tree/main/tacit-leader" target="_blank" rel="noopener noreferrer">tacit-leader ↗</a> and call <code>announce(url)</code>. To prove blocks on your GPU, see <a href="/prove/">tacit.finance/prove</a>.</p>
+</section>
+
+<!-- ─────────────── Trust ─────────────── -->
+<section class="part" id="trust">
+  <p class="kick">How it works</p>
+  <h2>What you <em>trust</em></h2>
+  <div class="tbl"><table>
+    <tr><th>For</th><th>You rely on</th><th>Not on</th></tr>
+    <tr><td class="t">Your funds</td><td>The proofs and the contract’s code</td><td>The leader or the provers</td></tr>
+    <tr><td class="t">Staying live</td><td>Any leader, or anyone after 10 minutes</td><td>Any one leader</td></tr>
+    <tr><td class="t">The data</td><td>Ethereum, which keeps every block’s notes, memos and nullifiers</td><td>An indexer: anyone can rebuild the state</td></tr>
+    <tr><td class="t">Privacy</td><td>Your device, which makes every proof</td><td>The leader or the provers</td></tr>
+  </table></div>
+  <p>The contract has no owner, no upgrade key and no pause. A new design comes as a new chain, and each user moves their own notes to it, with their privacy.</p>
+  <p>A block’s prover sees which nullifiers and new notes came from the same payment, within that block. It never sees keys, amounts or owners. The proofs use pairings, as most zk-rollups on Ethereum do. The memos are post-quantum already.</p>
+</section>
+
+<!-- ─────────────── Build ─────────────── -->
+<section class="part" id="build">
+  <p class="kick">How it works</p>
+  <h2>Build <em>on it</em></h2>
+  <p>The leader’s API is public and needs no key.</p>
+  <div class="code"><pre><code>curl https://tacit-chain-leader.onrender.com/state   <span class="c"># height, roots, pool and shares</span>
+curl https://tacit-chain-leader.onrender.com/fee     <span class="c"># what a spend pays now</span></code></pre></div>
+  <div class="tbl"><table>
+    <tr><th>Route</th><th>Gives</th></tr>
+    <tr><td class="t"><code>GET /state</code></td><td>Height, note root, counts, the forced queue, pool and shares</td></tr>
+    <tr><td class="t"><code>GET /fee</code></td><td>The fee, the shield’s sweep fee and cap, the leader’s chain address</td></tr>
+    <tr><td class="t"><code>GET /notes?from=N&amp;limit=M</code></td><td>New notes and their memos, to scan</td></tr>
+    <tr><td class="t"><code>GET /path/N</code></td><td>A note’s Merkle path</td></tr>
+    <tr><td class="t"><code>GET /spent/0x…</code></td><td>Whether a nullifier is spent</td></tr>
+    <tr><td class="t"><code>POST /spend</code></td><td>Hands over a proved spend; follow it at <code>/receipt/ID</code></td></tr>
+    <tr><td class="t"><code>POST /forced</code></td><td>The bytes <code>TacitBlocks.force</code> takes</td></tr>
+  </table></div>
+  <p>In JavaScript, <code>dapp/tacit-chain-client.js</code> is the app’s whole chain wallet. Amounts are units of 10<sup>−8</sup> TAC.</p>
+  <div class="code"><pre><code>import { makeChainClient } from './dapp/tacit-chain-client.js';
+import { tacitChain } from './dapp/tacit-chain-config.js';
+import { makeHalo2System } from './dapp/btc-pool-halo2-prover.js';
+
+<span class="c">// rpcCall(method, params): an Ethereum JSON-RPC call. priv: the Tacit key</span>
+const system = makeHalo2System({ wasm, params, vk, pinnedVkHash });
+const c = makeChainClient({ cfg: tacitChain(), rpcCall, priv, system: () =&gt; system });
+await c.ready();
+await c.scan();                     <span class="c">// find your notes</span>
+await c.worth();                    <span class="c">// your balance, in units</span>
+await c.pay(chainAddress, units);   <span class="c">// proved here, handed to the leader</span>
+await c.withdraw('0x…', units);</code></pre></div>
+  <div class="tbl"><table>
+    <tr><th>Contract</th><th>Address</th></tr>
+    <tr><td class="t">TacitBlocks</td><td class="h"><a href="https://etherscan.io/address/0x00000000000a9147ffd8d41d152d730ca5f84e6c#code" target="_blank" rel="noopener noreferrer">0x00000000000a9147ffd8d41d152d730ca5f84e6c</a></td></tr>
+    <tr><td class="t">TacitSeats</td><td class="h"><a href="https://etherscan.io/address/0x00000000001f703eae70de3b528213e4802790fb#code" target="_blank" rel="noopener noreferrer">0x00000000001f703eae70de3b528213e4802790fb</a></td></tr>
+    <tr><td class="t">TAC</td><td class="h"><a href="https://etherscan.io/address/0xA1313eb9f3A445606D9583bcAc3ebeB56a858279" target="_blank" rel="noopener noreferrer">0xA1313eb9f3A445606D9583bcAc3ebeB56a858279</a></td></tr>
+    <tr><td class="t">SP1 verifier</td><td class="h"><a href="https://etherscan.io/address/0xb69f2584CBcFf99a58C4e7002E8b89Af54a6f4e2#code" target="_blank" rel="noopener noreferrer">0xb69f2584CBcFf99a58C4e7002E8b89Af54a6f4e2</a></td></tr>
+    <tr><td class="t">Block program key</td><td class="h">0x00610fb0fa1b5d800e548c3cdcdf98ceb4288828be1cec1fb81e39004bad6ed6</td></tr>
+  </table></div>
+  <div class="more">
+    <a href="https://github.com/src-company/tacit/blob/main/docs/TACIT-BLOCKS.md" target="_blank" rel="noopener noreferrer">The spec<span>Every word a block commits</span></a>
+    <a href="https://github.com/src-company/tacit/tree/main/tacit-leader" target="_blank" rel="noopener noreferrer">Run a leader<span>The node, the leader and seats</span></a>
+    <a href="/tac/">The chain, live<span>Blocks, leader and provers now</span></a>
+    <a href="/build/">Build on tacit<span>The DeFi pool and the Pay pool</span></a>
+  </div>
+</section>
+
+      </article>
+    </div>
+  </main>
+
+  <!-- chrome:foot:begin -->
+  <footer class="sf">
+    <span>tacit.finance · mainnet</span>
+    <nav aria-label="Elsewhere">
+      <a href="/tacit-v1.pdf" title="Whitepaper" aria-label="Whitepaper"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h4"/></svg></a>
+      <a href="/build/" title="Build" aria-label="Build"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7l-5 5 5 5"/><path d="M16 7l5 5-5 5"/><path d="M14 4l-4 16"/></svg></a>
+      <a href="https://github.com/src-company/tacit/blob/main/SECURITY.md" title="Security" aria-label="Security" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg></a>
+      <a href="https://github.com/src-company/tacit" title="Source" aria-label="Source" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" class="fill" aria-hidden="true"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg></a>
+      <a href="https://etherscan.io/address/0x000000000Ed1eabD231Be41d93b719056F7febFC" title="Pool contract" aria-label="Pool contract" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5"/><path d="M12 12v9"/></svg></a>
+      <a href="/weld/stats/" title="Stats" aria-label="Stats"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20v-6"/><path d="M12 20V5"/><path d="M19 20v-10"/></svg></a>
+      <a href="https://defillama.com/protocol/tacit" title="DefiLlama" aria-label="DefiLlama" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" class="fill" aria-hidden="true"><g transform="translate(2.2 1) scale(.34375)"><path d="M17.62 51.872 17.21 64H5.786a5.8 5.8 0 0 1-4.09-1.691A5.77 5.77 0 0 1 0 58.23v-2.58a42.7 42.7 0 0 0 17.62-3.78"/><path d="M14.08 20.449a1.46 1.46 0 0 1-.121 1.149 1.46 1.46 0 0 1-.938.677 1.43 1.43 0 0 1-1.137-.234l-3.618-2.605a.973.973 0 0 1 .976-1.675l4.067 1.821a1.43 1.43 0 0 1 .772.867m0 23.74a1.42 1.42 0 0 1-.776.861l-4.067 1.826a.98.98 0 0 1-1.267-.39.97.97 0 0 1 .29-1.29l3.619-2.6a1.434 1.434 0 0 1 1.997.322c.029.039.053.083.078.122a1.46 1.46 0 0 1 .122 1.149M6.752 33.72 5.2 33.19a1.19 1.19 0 0 1-.804-1.12 1.18 1.18 0 0 1 .804-1.12l1.552-.531a1.75 1.75 0 0 1 1.892.49 1.742 1.742 0 0 1-.769 2.81 1.77 1.77 0 0 1-1.123 0M24.763 0H15.79a15.73 15.73 0 0 1-4.625 11.134A15.82 15.82 0 0 1 0 15.75v39.9a42.7 42.7 0 0 0 17.62-3.779l.698-20.623c-1.235-.609-2.118-2.226-2.118-4.114 0-2.128 1.113-3.896 2.582-4.295.2-1.28.655-2.509 1.338-3.612a2.13 2.13 0 0 1-1.567-1.013c-1.328-1.947-3.12-3.944-4.492-7.172a1.71 1.71 0 0 1 .186-1.728.855.855 0 0 1 1.303-.063c2.124 2.006 4.677 2.604 6.089 4.528q.155-.36.405-.663a2.96 2.96 0 0 1 3.496-.915 3 3 0 0 1 1.089-1.559 3.028 3.028 0 0 1 4.706 1.56 2.8 2.8 0 0 1 2.03-.098A42.2 42.2 0 0 1 39.372 3.5 32 32 0 0 0 24.763 0"/><path d="m51.668 33.185-1.557.53a1.75 1.75 0 0 1-2.197-1.097 1.74 1.74 0 0 1 1.074-2.204 1.77 1.77 0 0 1 1.123 0l1.557.531a1.19 1.19 0 0 1 .804 1.12 1.18 1.18 0 0 1-.804 1.12m-3.286 13.282a.976.976 0 0 1-1.245.404l-4.067-1.826a1.42 1.42 0 0 1-.722-1.87l.073-.14a1.42 1.42 0 0 1 1.425-.704c.186.025.366.087.528.182l.122.078 3.618 2.6a.973.973 0 0 1 .273 1.276m-6.093-26.019a1.43 1.43 0 0 1 .776-.862l4.067-1.82a.98.98 0 0 1 1.247.397.97.97 0 0 1-.27 1.277l-3.618 2.605a1.44 1.44 0 0 1-2.002-.336l-.068-.107a1.43 1.43 0 0 1-.132-1.154m-.161-15.356A32 32 0 0 0 39.37 3.5a42.2 42.2 0 0 0-6.006 8.603 3.05 3.05 0 0 1 1.465 1.013q.244.305.405.662c1.323-1.806 3.652-2.215 5.693-4.153a1.198 1.198 0 0 1 1.816.112 1.17 1.17 0 0 1 .142 1.217l-.059.136c-1.367 3.165-3.149 5.18-4.467 7.123a2.14 2.14 0 0 1-1.592 1.013 9.6 9.6 0 0 1 1.314 3.613c1.323.36 2.353 1.82 2.548 3.66q.036.316.034.634c0 1.777-.78 3.315-1.909 3.992a1.3 1.3 0 0 1-.21.122v.307l.977 28.852A32.05 32.05 0 0 0 52.163 48.62a31.93 31.93 0 0 0 4.666-16.618 31.9 31.9 0 0 0-3.906-15.325 32 32 0 0 0-10.79-11.585"/><path d="M15.79 0a15.73 15.73 0 0 1-4.626 11.134A15.82 15.82 0 0 1 0 15.75V5.77A5.77 5.77 0 0 1 1.696 1.69 5.8 5.8 0 0 1 5.786 0z"/><path d="M34.535 30.187a1.91 1.91 0 0 1-.107 2.03c-1.392 2.025-3.34 3.564-5.82 3.564h-.527c-2.144-.185-4.395-1.582-5.786-3.262a1.945 1.945 0 0 1-.18-2.206 5.83 5.83 0 0 0 .834-3.004c0-.993-.244-1.971-.713-2.848a1.9 1.9 0 0 1 .108-2.01q.16.212.366.384a2.856 2.856 0 0 0 3.462.049c0 1.105 1.118 2 2.49 2q.187.015.376 0c1.2-.146 2.118-.973 2.118-1.976a2.86 2.86 0 0 0 3.51-.073l.138-.122a1.94 1.94 0 0 1-.181 1.631 5.8 5.8 0 0 0-.82 2.985 6 6 0 0 0 .732 2.872m8.197-20.463a1 1 0 0 0-.268-.263 1.2 1.2 0 0 0-1.528.151c-2.041 1.947-4.394 2.347-5.693 4.153a3.2 3.2 0 0 0-.405-.662 3.05 3.05 0 0 0-1.465-1.013 2.8 2.8 0 0 0-2.031.098 3 3 0 0 0-1.09-1.56 3.028 3.028 0 0 0-4.705 1.56 2.966 2.966 0 0 0-3.496.915q-.25.302-.405.662c-1.411-1.923-3.965-2.522-6.089-4.528a.85.85 0 0 0-1.206-.063.7.7 0 0 0-.117.126 1.71 1.71 0 0 0-.185 1.729c1.372 3.228 3.163 5.214 4.492 7.171a2.13 2.13 0 0 0 1.586 1.013 9.7 9.7 0 0 0-1.337 3.613c-1.465.399-2.583 2.166-2.583 4.294 0 1.889.883 3.505 2.119 4.114l-.698 20.624L17.218 64h7.547a32 32 0 0 0 14.608-3.5l.171-.093-.971-28.852v-.307q.11-.051.21-.122c1.127-.677 1.909-2.215 1.909-3.992q0-.318-.035-.633c-.195-1.84-1.225-3.301-2.548-3.661a9.5 9.5 0 0 0-1.338-3.613 2.15 2.15 0 0 0 1.592-1.013c1.318-1.947 3.1-3.958 4.467-7.122l.059-.137a1.17 1.17 0 0 0-.142-1.217" fill-opacity="0.3"/><path d="m31.334 27.854-1.626 1.49c-.14.131-.24.3-.288.486-.107.429-.317 1.271-.488 2.07a.49.49 0 0 1-.488.37.49.49 0 0 1-.489-.37l-.517-2.07a.97.97 0 0 0-.288-.487l-1.626-1.49a.486.486 0 0 1 0-.686.49.49 0 0 1 .415-.15l2.441.33h.132l.19-.024 2.251-.307a.49.49 0 0 1 .488.273.485.485 0 0 1-.112.565m2.441-.546a5.8 5.8 0 0 1 .85-2.965 1.94 1.94 0 0 0 .156-1.611l-.112.102a2.86 2.86 0 0 1-3.486.03c0 .992-.908 1.83-2.12 1.966q-.187.015-.375 0c-1.372 0-2.49-.896-2.49-2.001a2.856 2.856 0 0 1-3.486-.03 2.3 2.3 0 0 1-.366-.384 1.9 1.9 0 0 0-.108 2.011 6 6 0 0 1 .713 2.882 5.8 5.8 0 0 1-.81 2.975 1.94 1.94 0 0 0-.255 1.13c.033.395.137.788.388 1.094 1.4 1.68 3.69 3.059 5.833 3.244h.527c2.48 0 4.428-1.539 5.82-3.564a1.91 1.91 0 0 0 .083-2.001 6 6 0 0 1-.732-2.873" fill-rule="evenodd" fill-opacity="0.3"/><path d="m31.337 27.854-1.626 1.49c-.14.131-.24.3-.288.486a64 64 0 0 0-.488 2.07.486.486 0 0 1-.488.37.49.49 0 0 1-.488-.37l-.518-2.07a.97.97 0 0 0-.288-.486l-1.626-1.49a.486.486 0 0 1 0-.687.49.49 0 0 1 .415-.15l2.441.33h.132l.19-.024 2.251-.307a.49.49 0 0 1 .489.273.485.485 0 0 1-.113.565" fill-rule="evenodd"/></g></svg></a>
+      <a href="https://ethbeat.org/privacy/projects/tacit-pay" title="Listed on ETHBeat" aria-label="Listed on ETHBeat" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" class="fill" aria-hidden="true"><g transform="scale(.03785) translate(0 36.5)"><mask id="eb-cut" maskUnits="userSpaceOnUse" x="0" y="-36.5" width="634" height="634"><path fill="#fff" d="M307.096 560.329C215.105 476.865 24.6334 315.428 2.25121 198.915C-19.4595 86.099 120.653 13.5025 216.336 34.6765C272.292 47.112 272.18 64.9251 307.655 97.5263C315.489 89.572 320.525 79.4892 327.911 71.1988C353.763 42.2947 388.903 18.3199 426.169 7.34079C533.156 -24.0281 640.926 48.2323 633.651 165.081C627.944 255.379 414.183 471.709 414.183 471.709C384.863 499.605 343.019 545.205 307.096 560.329Z"/><path fill="#000" d="M253.41 202.969C236.176 199.72 199.917 216.189 189.062 196.247C180.109 179.667 210.884 175.522 220.061 172.945C256.208 162.75 310.037 143.929 346.184 141.24C381.436 138.439 369.797 166.559 347.415 176.978C337.343 181.683 325.928 183.14 316.192 188.629C310.149 221.342 318.227 266.099 319.905 299.709C321.472 332.086 321 362.08 322.347 394.992C323.866 432.098 335.231 492.294 293.633 492.294C252.034 492.294 259.851 428.828 257.999 399.361C255.984 367.32 257.887 217.757 253.41 202.969Z M148.071 279.359C158.436 280.844 229.014 270.225 224.199 292.285C220.132 310.727 163.131 310.927 148.792 319.134C147.668 335.55 148.759 392.688 154.905 406.118C173.918 410.952 215.29 395.48 229.142 413.866C238.258 425.941 214.156 436.451 205.726 438.475C181.765 444.158 117.892 457.181 96.8035 445.367C79.8402 435.853 81.4586 390.265 80.3631 371.585C77.4223 324.051 64.1845 199.571 77.436 159.116C80.4219 149.913 88.946 141.942 96.9131 136.797C116.893 124.1 177.327 111.89 200.192 117.801C205.963 119.248 215.006 124.039 212.837 131.303C207.438 150.023 161.915 146.042 148.826 157.449C139.314 165.909 142.997 264.765 148.071 279.359Z M502.421 243.903C484.11 247.936 466.595 246.062 449.151 248.415C447.249 215.453 455.642 151.844 448.927 125.516C445.57 112.52 432.812 100.421 418.711 104.118C390.062 111.4 389.055 143.889 386.481 167.752C383.236 197.44 384.131 227.129 383.124 256.705C381.781 291.995 369.023 364.144 382.676 395.4C399.239 433.379 438.296 411.645 442.213 366.048C444.115 342.409 445.796 317.216 447.249 292.443C461.122 288.634 474.258 288.634 502.421 288.634C504.91 317.216 498.859 342.384 502.421 363.359C508.128 396.969 548.536 397.319 557.455 366.048C562.929 351.138 569.231 164.055 566.322 135.823C563.972 112.744 565.762 77.2305 537.673 69.1642C519.095 63.7867 504.883 78.3508 501.078 95.6037C498.341 135.823 507.099 222.797 502.421 243.903Z"/></mask><path mask="url(#eb-cut)" d="M307.096 560.329C215.105 476.865 24.6334 315.428 2.25121 198.915C-19.4595 86.099 120.653 13.5025 216.336 34.6765C272.292 47.112 272.18 64.9251 307.655 97.5263C315.489 89.572 320.525 79.4892 327.911 71.1988C353.763 42.2947 388.903 18.3199 426.169 7.34079C533.156 -24.0281 640.926 48.2323 633.651 165.081C627.944 255.379 414.183 471.709 414.183 471.709C384.863 499.605 343.019 545.205 307.096 560.329Z"/></g></svg></a>
+      <a href="https://x.com/tacitfi" title="@tacitfi on X" aria-label="@tacitfi on X" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" class="fill" aria-hidden="true"><path d="M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.638 7.584H.474l8.6-9.83L0 1.154h7.594l5.243 6.932ZM17.61 20.644h2.039L6.486 3.24H4.298Z"/></svg></a>
+      <a href="https://discord.gg/VxYx9XSBrM" title="Tacit Discord community" aria-label="Tacit Discord community" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" class="fill" aria-hidden="true"><path d="M20.317 4.3698a19.7913 19.7913 0 00-4.8851-1.5152.0741.0741 0 00-.0785.0371c-.211.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 00-.0785-.037 19.7363 19.7363 0 00-4.8852 1.515.0699.0699 0 00-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 00.0312.0561c2.0528 1.5076 4.0413 2.4228 5.9929 3.0294a.0777.0777 0 00.0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 00-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 01-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 01.0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 01.0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 01-.0066.1276 12.2986 12.2986 0 01-1.873.8914.0766.0766 0 00-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 00.0842.0286c1.961-.6067 3.9495-1.5219 6.0023-3.0294a.077.077 0 00.0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 00-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.157-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1569 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.946 2.4189-2.1568 2.4189Z"/></svg></a>
+    </nav>
+  </footer>
+  <!-- chrome:foot:end -->
+</div>
+<script type="module" src="/build/app.js?cb=2a32b670"></script>
+</body>
+</html>

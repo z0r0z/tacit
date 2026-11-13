@@ -277,6 +277,7 @@ export function mountChainLive({ top, rest }) {
       li('Data', 'On Ethereum: anyone can rebuild'),
       li('Leader stops', `${w} → anyone may land`),
       li('If you\'re left out', `Forced inclusion within ${f}`),
+      li('Docs', '<a href="/docs/chain/">How it works</a>'),
     ].join('');
   }
 

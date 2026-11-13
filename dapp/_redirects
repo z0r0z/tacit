@@ -39,6 +39,7 @@
 /mine       /prove/      301
 /mine/      /prove/      301
 /build    /build/    301
+/docs/chain    /docs/chain/    301
 /swap     /     301
 /swap/*   /     301
 /splitter  /splitter/  301

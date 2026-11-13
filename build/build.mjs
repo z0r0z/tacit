@@ -199,8 +199,8 @@ const CHAIN_CB_FILES = ['chain/ui.js', 'chain/live.js', 'chain/app.js', 'chain/i
 const PROVE_CB_FILES = ['community-prove.js', 'prove/view.js', 'prove/chain.js', 'prove/invader.js', 'prove/ops.js', 'prove/app.js', 'prove/index.html'];
 // dapp/help/ asks the community help desk: its page logic first, then app.js, then the page.
 const HELP_CB_FILES = ['help/ui.js', 'help/embed.js', 'help/app.js', 'help/index.html'];
-// dapp/build/ is the page for builders: its one script, then the page.
-const BUILD_CB_FILES = ['build/app.js', 'build/index.html'];
+// dapp/build/ is the page for builders and dapp/docs/ the docs pages, which share its one script: the script, then the pages.
+const BUILD_CB_FILES = ['build/app.js', 'build/index.html', 'docs/chain/index.html'];
 // dapp/assets/ lists Tacit's own assets and the farms under them: the farms' reading first, then app.js, then the page.
 const ASSETS_CB_FILES = ['assets/farms.js', 'assets/app.js', 'assets/index.html'];
 // dapp/etch/ makes an asset on Bitcoin and searches the ones that exist: its search first, then app.js, then the page (it loads /trade/btc.js, hashed with the trade page's).
