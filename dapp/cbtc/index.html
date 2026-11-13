@@ -399,6 +399,32 @@ button.ob-row:focus-visible { outline: 2px solid var(--ink); outline-offset: -2p
 .bsheet .bm-back { display: none; }
 .bsheet .who { display: inline-flex; align-items: center; gap: 10px; font-size: 12px; }
 .bsheet .bm-after { margin: 0; padding: 4px 16px 18px; }
+/* The market brings the classic app's stylesheet (trade/btc-market.css, made by the build and loaded with the module). Here its boxes take this page's corners and
+   hairlines, and its switches the page's raised pill; nothing is moved. Each rule starts at :root so it outranks the module's own, which loads later. */
+:root .bm .bm-head, :root .bm .bm-ticket, :root .bm .bm-book, :root .bm .bm-chart-box, :root .bm .bm-otable, :root .bm .bm-ttable { border-color: var(--hair-2); border-radius: 14px; }
+:root .bm .bm-book, :root .bm .bm-otable, :root .bm .bm-ttable, :root .bm .bm-inputrow { overflow: hidden; }
+:root .bm .bm-spread { border-color: var(--hair-2); }
+:root .bm .bm-seg { gap: 2px; padding: 2px; border: 0; border-radius: 11px; background: color-mix(in srgb, var(--ink) 6%, transparent); }
+:root .bm .bm-seg button { border-left: 0; border-radius: 9px; }
+:root .bm .bm-seg button:hover { background: none; }
+:root .bm .bm-seg button[aria-pressed="true"], :root .bm .bm-seg button[aria-selected="true"] { color: var(--ink); background: var(--card); box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 14%, transparent); }
+:root .bm .bm-sides { gap: 2px; padding: 3px; border: 0; border-radius: 13px; background: color-mix(in srgb, var(--ink) 6%, transparent); }
+:root .bm .bm-sides button { border-radius: 10px; }
+:root .bm .bm-inputrow { border-color: var(--hair-2); border-radius: 12px; }
+:root .bm .bm-inputrow:focus-within { outline: 0; border-color: var(--ink); }
+:root .bm .bm-unit:focus-visible { outline-offset: -2px; }
+:root .bm .bm-go, :root .bm-mfoot .bm-go { border-radius: 12px; }
+:root .bm .bm-btn, :root .bm .bm-orow button { border-radius: 9px; }
+:root .bm .bm-idchip { border-radius: 7px; }
+:root .bm .bm-callout { border-radius: 0 10px 10px 0; }
+:root .bm .bm-tip { border-color: var(--hair-2); border-radius: 10px; box-shadow: var(--lift); }
+:root .bm .bm-warnbadge { border-radius: 6px; }
+:root .bm-modal .bm-card { border-color: var(--hair-2); border-radius: 16px; box-shadow: var(--lift); }
+:root .bm .bm-go:disabled { background: color-mix(in srgb, var(--ink) 6%, transparent) !important; }   /* a bar that can be seen while it waits for an amount */
+/* White on the buy and sell colours cannot be read in the dark, where both are light: the field's colour reads on them in either. */
+:root .bm .bm-sides button[aria-selected="true"], :root .bm .bm-warnbadge { color: var(--field); }
+:root .bm .bm-svg .tag text { fill: var(--field); }
+.bsheet .bm-skin > :is(.note, .err):only-child { margin: 0; padding: 12px 16px 20px; }         /* the line shown while the market loads, or cannot, keeps the sheet's margin */
 .chips { display: flex; gap: 6px; margin: 8px 0 0; min-height: 30px; }
 .flipline { display: flex; justify-content: center; margin: 8px 0 -10px; }
 .flip { width: 32px; height: 32px; border: 1px solid var(--hair-2); border-radius: 50%; background: var(--card); color: var(--mute); cursor: pointer; font-size: 15px; line-height: 1; }
