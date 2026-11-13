@@ -2,7 +2,10 @@
 // The front page's Bridge tab, bridging back from Bitcoin, in a real browser under the page's own CSP, with a pasted key. The Bitcoin read is the page's own
 // (loadBtc -> scanHoldings) with the holdings the scan would return put in its place (tacit.js has a hook for it, and this test appends the line that reaches
 // it); the Bitcoin address's coins are answered here and every other host refused:
-//   · with TAC from Bitcoin picked, the From field says how much TAC the key holds on Bitcoin, as the wallet sheet does, and offers no Max (notes go whole);
+//   · with no Tacit wallet open, the From field asks for it (a button that opens it) and so does the main button;
+//   · with the wallet open and TAC from Bitcoin picked, the From field says how much TAC the key holds on Bitcoin, at TAC's 4 places as the wallet sheet
+//     does, and offers no Max (notes go whole);
+//   · a note over the 1,000 TAC a bridge takes can be picked, and the card offers to split 1,000 TAC off it (asking for a second press first);
 //   · the From picker gives the amount beside "TAC, on Bitcoin", and beside tETH on Bitcoin when that way is offered.
 //
 //   PLAYWRIGHT=/Users/z/tacit/node_modules/playwright-core node tests/bridge-btc-balance.mjs      (DAPP=<dir> to try another build, INDEX=<file> another front page)
@@ -39,7 +42,7 @@ try {
   await ctx.addInitScript(([tac, teth]) => {
     const note = (txid, amount) => ({ utxo: { txid, vout: 0, status: { confirmed: true } }, amount });
     window.__held = () => new Map([
-      [tac, { assetIdHex: tac, ticker: 'TAC', decimals: 8, balance: 638843749000000n, utxos: [note('cc'.repeat(32), 638843749000000n)], unverified: [] }],
+      [tac, { assetIdHex: tac, ticker: 'TAC', decimals: 8, balance: 638843749052500n, utxos: [note('cc'.repeat(32), 638843749052500n)], unverified: [] }],
       [teth, { assetIdHex: teth, ticker: 'tETH', decimals: 8, balance: 150000000n, utxos: [note('dd'.repeat(32), 150000000n)], unverified: [] }],
     ]);
   }, [TAC, TETH]);
@@ -55,10 +58,23 @@ try {
   const page = await ctx.newPage();
   const errors = []; page.on('pageerror', (e) => errors.push(String(e.message || e)));
   const text = (sel) => page.$eval(sel, (e) => e.textContent.replace(/\s+/g, ' ').trim()).catch(() => '');
+  const shot = async (name) => { if (process.env.SHOT) await page.locator('#hx').screenshot({ path: process.env.SHOT.replace(/\.png$/, `-${name}.png`) }); };
   await page.goto(BASE + '/', { waitUntil: 'commit' });
-  await page.waitForSelector('#wallet', { timeout: 30000 });
-  await page.click('#wallet');
+  await page.waitForSelector('#hx [data-hxm="more"]', { timeout: 30000 });
+
+  // no Tacit wallet open yet
+  await page.click('#hx [data-hxm="more"]');
+  await page.click('#hx [data-hxm="bridge"]').catch(() => {});
+  await page.waitForSelector('#hx-tab-bridge[aria-selected="true"]', { timeout: 10000 }).catch(() => {});
+  await page.waitForSelector('#hx-bal [data-signin]', { timeout: 10000 }).catch(() => {});
+  ok(/Open your Tacit wallet to see it/.test(await text('#hx-bal [data-signin]')), `with no wallet open the From field asks for it: "${await text('#hx-bal')}"`);
+  await page.waitForFunction(() => /Open your Tacit wallet/.test(document.querySelector('#hx-go')?.textContent || ''), null, { timeout: 10000 }).catch(() => {});
+  ok(/Open your Tacit wallet to bridge/.test(await text('#hx-go')), `and so does the button: "${await text('#hx-go')}"`);
+  await shot('out');
+  await page.click('#hx-bal [data-signin]');
   await page.waitForSelector('#ws-in', { timeout: 15000 });
+  ok(true, 'that button opens the wallet sheet');
+
   await page.click('#ws-in [data-in="paste"]');
   await page.fill('#ws-hex', KEY);
   await page.click('#ws-in [data-in="key"]');
@@ -71,29 +87,37 @@ try {
   await page.keyboard.press('Escape');
   await page.waitForFunction(() => !document.querySelector('dialog.sheet[open]'), null, { timeout: 10000 }).catch(() => {});
 
-  await page.click('#hx [data-hxm="more"]');
-  await page.click('#hx [data-hxm="bridge"]').catch(() => {});
-  await page.waitForSelector('#hx-tab-bridge[aria-selected="true"]', { timeout: 10000 }).catch(() => {});
+  // the wallet open, TAC from Bitcoin
   const from = await page.$eval('#hx-from', (s) => s.value).catch(() => '');
-  ok(from === 'btc', `the Bridge tab starts on TAC from Bitcoin (${from})`);
+  ok(from === 'btc', `the Bridge tab is on TAC from Bitcoin (${from})`);
   await page.waitForFunction(() => /6,388,437/.test(document.querySelector('#hx-bal')?.textContent || ''), null, { timeout: 30000 }).catch(() => {});
   const bal = await text('#hx-bal');
-  ok(/Balance 6,388,437\.49/.test(bal), `the From field says how much TAC is on Bitcoin: "${bal}"`);
+  ok(/^Balance 6,388,437\.4905$/.test(bal), `the From field says how much TAC is on Bitcoin, to 4 places: "${bal}"`);
   const max = await page.$eval('#hx-max', (b) => ({ off: b.disabled, t: b.textContent })).catch(() => null);
   ok(!!max && max.off && !/Max/.test(max.t), 'and offers no Max, since notes bridge whole');
   ok(!(await page.$('#hx-bal .quick')), 'and no quick amounts');
-  if (process.env.SHOT) await page.locator('#hx').screenshot({ path: process.env.SHOT.replace(/\.png$/, '-card.png') });
+
+  // the one note is over the 1,000 TAC a bridge takes: it is picked and the card offers the split
+  await page.waitForFunction(() => /Split off 1,000 TAC/.test(document.querySelector('#hx-go')?.textContent || ''), null, { timeout: 30000 }).catch(() => {});
+  const row = await page.$eval('#hx-routes [data-hxr]', (b) => ({ off: b.disabled, on: b.getAttribute('aria-checked'), t: b.textContent.replace(/\s+/g, ' ').trim() })).catch(() => null);
+  ok(!!row && !row.off && row.on === 'true' && /split 1,000 TAC off it to bridge/.test(row.t), `the note over the cap can be picked, and is: ${row && row.t}`);
+  ok(/Split off 1,000 TAC/.test(await text('#hx-go')), `the button offers the split: "${await text('#hx-go')}"`);
+  const rc = await text('#hx-receipt');
+  ok(/Splits off\s*1,000 TAC to your own address/.test(rc) && /Keeps\s*6,387,437\.4905 TAC/.test(rc), `the receipt says what goes and what stays: ${rc}`);
+  await shot('split');
+  await page.click('#hx-go');
+  await page.waitForFunction(() => /Press again to split it/.test(document.querySelector('#hx-ss')?.textContent || ''), null, { timeout: 15000 }).catch(() => {});
+  ok(/Press again to split it/.test(await text('#hx-ss')), `a first press asks for a second: "${await text('#hx-ss')}"`);
 
   await page.click('[data-pk="hx-from"]');
   await page.waitForSelector('.pk .pk-r[data-v="btc"]', { timeout: 10000 });
   await page.waitForFunction(() => /6,388,437/.test(document.querySelector('.pk .pk-r[data-v="btc"] em')?.textContent || ''), null, { timeout: 15000 }).catch(() => {});
-  const row = await text('.pk .pk-r[data-v="btc"] em');
-  ok(/6,388,437\.49/.test(row), `the From picker gives the amount beside TAC on Bitcoin: "${row}"`);
+  const pk = await text('.pk .pk-r[data-v="btc"] em');
+  ok(pk === '6,388,437.4905', `the From picker gives the amount beside TAC on Bitcoin: "${pk}"`);
   if (await page.$('.pk .pk-r[data-v="tb"]')) {
     const tb = await text('.pk .pk-r[data-v="tb"] em');
     ok(/^1\.5/.test(tb), `and beside tETH on Bitcoin: "${tb}"`);
   }
-  if (process.env.SHOT) await page.screenshot({ path: process.env.SHOT });
   await page.keyboard.press('Escape');
   ok(errors.length === 0, `no page errors${errors.length ? ': ' + errors.slice(0, 2).join(' | ') : ''}`);
   await ctx.close();
