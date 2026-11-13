@@ -3,8 +3,10 @@ import { keccak_256 } from '/vendor/tacit-deps.min.js';
 import { ETH_LOG_NODES } from '/eth-nodes.js';
 import { ethCall, rpc, wordAt, word, strip } from '/trade/util.js?cb=1d2cd8d3';
 import { POOL, heldHistory } from '/teth/read.js?cb=44f2673f';
+import { ENGINE, SPAN, filterFor, withTimes, eventsOf } from '/cbtc/events.js?cb=c1f0389c';
+import { BASE } from '/cbtc/history-base.js?cb=e10ff809';
 
-export const ENGINE = '0x000000003f608BDdF0ca45934003ffb9DbDF70DB';
+export { ENGINE };
 export const WSTETH = '0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0';
 export const CBTC_ID = '0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8';
 export const CUSD_ID = '0x8f4490dd3728b0ee904d7a67c11b37ffd463a5c7f08b79810006995ee8a9679d';
@@ -82,31 +84,25 @@ export function farmApr(row, program, { ethUsd, tacEth }) {
   return bondedUsd > 0 ? (row.farm.perDay * 365 * tacEth * ethUsd) / bondedUsd * 100 : null;
 }
 
-const TOPIC = { posted: '0x0c008a699968f2a24063b7eb14d9239b2430c502fda280245345c78cbc47b7c1', minted: '0x232c7d098ca44092999087e6ee530a2171f95f9ecb1caa363f6dcf448fb7dd57',
-  closed: '0xc0ede5b75ee32986e50a2a39fa32dbf5e8eff1c91a46cd127591edebd91b4db9', liquidated: '0x28d08a2db16236ca56b1223ba30ba49824b860a3e7eb8c5a1c1224697aa3ebd1' };
-// The engine's events since it was deployed, read in ranges the public nodes serve (the widest of them takes 50,000 blocks).
-const FROM_BLOCK = 25998000, SPAN = 45000;
-// Three ranges at a time, each kept in its place.
-async function engineLogs() {
+// The engine's events are written down up to a settled block (history-base.js); the page reads the blocks after it, in ranges every node that serves old
+// logs takes, three at a time, each kept in its place.
+async function tailEvents(from) {
   const head = Number(BigInt(await rpc('eth_blockNumber', [], ETH_LOG_NODES))), spans = [];
-  for (let from = FROM_BLOCK; from <= head; from += SPAN) spans.push([from, Math.min(from + SPAN - 1, head)]);
+  for (let f = from; f <= head; f += SPAN) spans.push([f, Math.min(f + SPAN - 1, head)]);
   const out = new Array(spans.length);
   let next = 0;
   await Promise.all(Array.from({ length: Math.min(3, spans.length) }, async () => {
-    for (let j = next++; j < spans.length; j = next++) {
-      out[j] = await rpc('eth_getLogs', [{ address: ENGINE, topics: [Object.values(TOPIC)], fromBlock: '0x' + spans[j][0].toString(16), toBlock: '0x' + spans[j][1].toString(16) }], ETH_LOG_NODES);
-    }
+    for (let j = next++; j < spans.length; j = next++) out[j] = await rpc('eth_getLogs', [filterFor(...spans[j])], ETH_LOG_NODES);
   }));
-  return out.flat();
+  return eventsOf(await withTimes(out.flat(), async (b) => Number(BigInt((await rpc('eth_getBlockByNumber', [b, false], ETH_LOG_NODES)).timestamp))));
 }
+// `partial` is set when the newest events could not be read: the history stops where the written-down part does, and `live` (read for the locks it knows) may miss a lock.
 export async function readHistory({ locked, out }) {
-  const logs = await engineLogs();
-  const sorted = logs.map((l) => ({ ...l, b: Number(BigInt(l.blockNumber)), i: Number(BigInt(l.logIndex)), t: l.blockTimestamp ? Number(BigInt(l.blockTimestamp)) : null })).sort((a, b) => a.b - b.b || a.i - b.i);
-  if (sorted.some((l) => !l.t)) throw new Error('the node gave no block times');
-  const amount = (l) => BigInt(l.data.slice(0, 66));
-  const loans = sorted.flatMap((l) => (l.topics[0] === TOPIC.minted ? [[l.t, amount(l)]] : l.topics[0] === TOPIC.closed || l.topics[0] === TOPIC.liquidated ? [[l.t, -amount(l)]] : []));
+  let tail = { posted: [], loans: [] }, partial = false;
+  try { tail = await tailEvents(BASE.block + 1); } catch { partial = true; }
   const first = new Map();
-  for (const l of sorted) if (l.topics[0] === TOPIC.posted && !first.has(l.topics[1])) first.set(l.topics[1], l.t);
+  for (const [t, op] of [...BASE.posted, ...tail.posted]) if (!first.has(op)) first.set(op, t);
+  const loans = [...BASE.loans, ...tail.loans].map(([t, v]) => [t, BigInt(v)]);
   const ops = [...first.keys()], reads = [];
   const per = [{ to: POOL, sel: SEL.cbtcLockVBtc }, { to: POOL, sel: SEL.lockSpent }, { to: POOL, sel: SEL.lockRedeemed }, { to: POOL, sel: SEL.cbtcMinted }, { to: ENGINE, sel: SEL.escrowTotal }];
   for (let i = 0; i < ops.length; i += 20) reads.push(...await batch(ops.slice(i, i + 20).flatMap((o) => per.map((x) => ({ to: x.to, data: x.sel + strip(o) })))));
@@ -120,7 +116,7 @@ export async function readHistory({ locked, out }) {
     const bond = w(5 * i + 4); if (bond > 0n) { live.bond += bond; live.bonds++; }
     return [[first.get(o), v]];
   }).sort((x, y) => x[0] - y[0]);
-  return { locked: heldHistory(locks, locked), out: heldHistory(loans, out), live };
+  return { locked: heldHistory(locks, locked), out: heldHistory(loans, out), live, partial };
 }
 
 export const lockStep = (l) => (l.minted ? 'minted' : !l.bonded ? 'post its bond' : !l.recorded ? 'waiting for its proof' : 'ready to mint');

@@ -13,6 +13,7 @@ import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { keccak_256 } from '../dapp/vendor/tacit-deps.min.js';
 import { RPC_HOSTS } from './eth-hosts.mjs';
+import { eventsOf } from '../dapp/cbtc/events.js';
 
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT || '/Users/z/zFi/node_modules/playwright-core');
 const DAPP = new URL('../dapp/', import.meta.url).pathname, FX = new URL('./fixtures/', import.meta.url).pathname;
@@ -31,6 +32,9 @@ const server = http.createServer((req, res) => {
 const json = (n) => JSON.parse(readFileSync(join(FX, n), 'utf8'));
 const stats = json('cbtc-stats-2026-10-15.json'), program = json('teth-program-2026-10-14.json'), engineLogs = json('cbtc-engine-logs-2026-10-15.json');
 const nowS = () => Math.floor(Date.now() / 1000);
+// the page ships the engine's events up to a settled block (cbtc/history-base.js) and reads the rest: here the base ends five events before the fixture's last
+const blk = (l) => Number(BigInt(l.blockNumber)), BASE_AT = engineLogs.map(blk).sort((a, b) => a - b).at(-6);
+const baseModule = () => `export const BASE = ${JSON.stringify({ block: BASE_AT, ...eventsOf(engineLogs.filter((l) => blk(l) <= BASE_AT)) })};`;
 const BTC_USD = 81500, ETH_USD = 2441, WST = 1.2, PER_ETH = 11000, RATIO = 15000, LIQ = 13000;
 const CBTC = '0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8', CETH = '0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
 const TAC = '0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b', CUSD = '0x8f4490dd3728b0ee904d7a67c11b37ffd463a5c7f08b79810006995ee8a9679d';
@@ -66,7 +70,7 @@ const poolId = (a, b, fee) => { const [lo, hi] = BigInt(a) <= BigInt(b) ? [a, b]
 const POOLS = new Map([[poolId(CBTC, CETH, 30), [CETH, CBTC, 63593972n, 730828n, 6810283n]], [poolId(CBTC, TAC, 30), [CBTC, TAC, 2n, 762494n, 1000n]]]);
 const seenOps = new Map();                                                                     // outpoint → what the pool says of it, in the order they are first asked about: 20 live locks of equal size and one spent on Bitcoin (the pool keeps its sats on record)
 const lockOf = (op) => { if (!seenOps.has(op)) { const k = seenOps.size; seenOps.set(op, { sats: 569540n, spent: k >= 20, minted: k !== 19, bond: k >= 20 ? 800000000000000n : 240000000000000000n }); } return seenOps.get(op); };
-const chain = { lockStates: new Map(), engine: true, logs: true };                                 // lockStates: outpoint word → { recorded, bonded, minted, spent }
+const chain = { lockStates: new Map(), engine: true, logs: true, calls: true, stamps: true, spans: [], blockAsks: 0 };                                 // lockStates: outpoint word → { recorded, bonded, minted, spent }
 const SEL = { latest: '0xfeaf968c', sqrt: '0x2af1f249', ratio: '0x4827ecb3', liq: '0x1432d93f', usd: '0xd5901347', wstForBtc: '0x7dd55c2b', perWst: '0xbb2952fc', req: '0x034448ed', pools: '0xb5217bb4',
   lockV: '0x7cea1c1a', escrowOk: '0x058e18b0', minted: '0xe2c2a40c', spent: '0x993ed045', redeemed: '0xb5229671', escrowTotal: '0xe06e89c9' };
 function answerCall({ to, data }) {
@@ -95,6 +99,7 @@ function answerCall({ to, data }) {
 function rpcAnswer(req) {
   const { id, method, params } = req, res = (result) => ({ jsonrpc: '2.0', id, result }), err = (message, code = -32000) => ({ jsonrpc: '2.0', id, error: { code, message } });
   if (method === 'eth_call') {
+    if (!chain.calls) return err('stub: calls are down');
     if (String(params[0].to).toLowerCase() === '0xca11bde05977b3631167028862be2a173976ca11') return res(aggregate3Result(decodeAggregate3(params[0].data).map(answerCall)));
     return err('stub: eth_call', 3);
   }
@@ -105,7 +110,14 @@ function rpcAnswer(req) {
   if (method === 'eth_getLogs') {
     if (!chain.logs || String(params[0].address).toLowerCase() !== '0x000000003f608bddf0ca45934003ffb9dbdf70db') return err('stub: no logs');
     const from = Number(BigInt(params[0].fromBlock)), to = Number(BigInt(params[0].toBlock));
-    return res(engineLogs.filter((l) => { const b = Number(BigInt(l.blockNumber)); return b >= from && b <= to; }));
+    if (to - from + 1 > 10000) return err('range too large: a public node takes 10,000 blocks', -32602);                  // as the nodes that serve old logs say
+    chain.spans.push([from, to]);
+    return res(engineLogs.filter((l) => blk(l) >= from && blk(l) <= to).map((l) => (chain.stamps ? l : { ...l, blockTimestamp: undefined })));
+  }
+  if (method === 'eth_getBlockByNumber') {                                                       // the time of a block that carries an event, for a node whose logs have none
+    chain.blockAsks++;
+    const l = engineLogs.find((x) => BigInt(x.blockNumber) === BigInt(params[0]));
+    return res(l ? { number: l.blockNumber, timestamp: l.blockTimestamp } : null);
   }
   return err(`stub: ${method}`);
 }
@@ -194,6 +206,8 @@ async function openPage(viewport, { wallet = false, scheme = 'light', hash = '' 
   const browser = await chromium.launch(), ctx = await browser.newContext({ viewport, colorScheme: scheme });
   const log = wallet ? await stubWallet(ctx) : null;
   const ok200 = (body) => ({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(body) });
+  chain.spans = []; chain.blockAsks = 0;
+  await ctx.route(/\/cbtc\/history-base\.js(\?|$)/, (r) => r.fulfill({ status: 200, contentType: 'text/javascript', body: baseModule() }));
   for (const h of RPC_HOSTS) await ctx.route(`https://${h}/**`, (r) => { const q = JSON.parse(r.request().postData() || '{}'); return r.fulfill(ok200(Array.isArray(q) ? q.map(rpcAnswer) : rpcAnswer(q))); });
   await ctx.route(/^https:\/\/api\.tacit\.finance\//, (r) => {
     const u = new URL(r.request().url());
@@ -267,6 +281,7 @@ try {
   const rd = await text(p, '#ch-read');
   ok(rd.startsWith('0.1139 BTC') && /all time|past month/.test(rd), `its right edge is what is locked now, and the events add up to it (${rd.slice(0, 80)})`);
   ok(!/do not add up/.test((await p.$eval('#chart-note', (e) => e.textContent))) && (await p.$$eval('#range-seg button', (b) => b.map((x) => x.textContent))).includes('All'), 'the history says nothing of a mismatch, and offers ranges');
+  ok(chain.spans.length > 0 && chain.spans.every(([f, t]) => f > BASE_AT && t - f + 1 <= 9999) && chain.blockAsks === 0, `the page reads only the blocks after the written-down history, in ranges a public node takes (${chain.spans.length} range${chain.spans.length === 1 ? '' : 's'}, ${chain.blockAsks} block reads)`);
   // the whole history, so the fixture's events are in view whatever today's date is
   await p.evaluate(() => [...document.querySelectorAll('#range-seg button')].find((b) => b.textContent === 'All')?.click());
   await p.waitForTimeout(300);
@@ -468,12 +483,28 @@ try {
   await r.browser.close();
 
   // ── what cannot be read ──
+  // the newest events (no node serves them): the written-down history is drawn, the last point is the total and the chart says so, the backing shows the totals
   chain.logs = false;
   r = await openPage({ width: 1280, height: 900 });
-  await until(r.page, () => /Could not read the history/.test(document.querySelector('#chart').textContent), null, 60000);
-  ok(!(await r.page.$('#chart .line')) && (await r.page.$$eval('#cov .cov-row', (a) => a.length)) === 4, 'a node that does not serve the events leaves the chart saying so, and everything else stands');
+  await until(r.page, () => /do not add up/.test(document.querySelector('#chart-note')?.textContent || ''), null, 60000);
+  ok(!!(await r.page.$('#chart .line')) && !/Could not read/.test(await text(r.page, '#chart')) && (await r.page.$$eval('#cov .cov-row', (a) => a.length)) === 4, 'with the newest events unread the written-down history is still drawn, the chart says its last point is the total, and everything else stands');
   await r.browser.close();
-  chain.logs = true;
+  // a node whose logs carry no block times is asked for the few blocks that hold events
+  chain.logs = true; chain.stamps = false;
+  r = await openPage({ width: 1280, height: 900 });
+  await until(r.page, () => /^0\.1139 BTC/.test(document.querySelector('#ch-read')?.textContent || ''), null, 60000);
+  ok(chain.blockAsks > 0 && !/do not add up/.test(await text(r.page, '#chart-note')), `logs without block times are completed from the blocks (${chain.blockAsks} read) and the history is whole`);
+  await r.browser.close();
+  chain.stamps = true;
+  // nothing readable at all, then the nodes come back: the page asks again in a minute, without a reload
+  chain.logs = false; chain.calls = false;
+  r = await openPage({ width: 1280, height: 900 });
+  await until(r.page, () => /Could not read the history/.test(document.querySelector('#chart').textContent), null, 60000);
+  ok(!(await r.page.$('#chart .line')), 'with no node answering the chart says it could not read the history');
+  chain.logs = true; chain.calls = true;
+  await until(r.page, () => !!document.querySelector('#chart .line') && !/do not add up/.test(document.querySelector('#chart-note')?.textContent || ''), null, 120000);
+  ok(true, 'and when the nodes answer again the chart fills in on the next minute, whole');
+  await r.browser.close();
   chain.engine = false; chain.stats = 'down';
   r = await openPage({ width: 1280, height: 900 });
   p = r.page;

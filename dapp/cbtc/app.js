@@ -11,7 +11,7 @@ import { makeKeySession, signInSheet, pickWalletSheet } from '/trade/key.js?cb=0
 import { btcWay, btcSeen } from '/trade/btc-way.js?cb=9820720a';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=59d125e5';
 import { readRates, readProgram, heldBars, rangesFor, barSize } from '/teth/read.js?cb=44f2673f';
-import { totalsOf, readEngine, sizeBond, coverage, readPools, poolRows, farmApr, readLocks, readLoans, readHeld, readHistory, positionsIn, lockStep, CBTC_ID, ENGINE, WSTETH } from '/cbtc/read.js?cb=340e46f6';
+import { totalsOf, readEngine, sizeBond, coverage, readPools, poolRows, farmApr, readLocks, readLoans, readHeld, readHistory, positionsIn, lockStep, CBTC_ID, ENGINE, WSTETH } from '/cbtc/read.js?cb=bc8c7df1';
 import { $, esc, api, now, fmtUnits, parseUnits, grp, usd, short, sig } from '/trade/util.js?cb=1d2cd8d3';
 
 const SCAN = 'https://etherscan.io/', MEMPOOL = 'https://mempool.space/';
@@ -266,7 +266,14 @@ function renderAbout() {
 }
 
 // ── reading ──
-async function loadHistory() { try { const h = await readHistory({ locked: D.totals?.locked ?? null, out: D.totals?.out ?? null }); D.hist = h; D.live = h.live; D.histFailed = false; } catch { D.histFailed = !D.hist; } }
+// A read that missed the newest events (`partial`) still draws the chart, and the backing falls back to the totals; it does not replace a read that had them.
+async function loadHistory() {
+  try {
+    const h = await readHistory({ locked: D.totals?.locked ?? null, out: D.totals?.out ?? null });
+    if (h.partial && D.hist && !D.hist.partial) return;
+    D.hist = h; D.live = h.partial ? null : h.live; D.histFailed = h.partial;
+  } catch { if (!D.hist) D.histFailed = true; }
+}
 async function loadTotals() { const j = await api('/stats?network=mainnet&view=front'); const t = totalsOf(j); if (t) D.totals = t; }
 async function loadChain() { const [e, r] = await Promise.allSettled([readEngine(), readRates()]); if (e.status === 'fulfilled') D.engine = e.value; if (r.status === 'fulfilled') D.rates = r.value; }
 async function loadPools() { const [pl, pg] = await Promise.allSettled([readPools(), readProgram()]); if (pl.status === 'fulfilled') D.pools = pl.value; if (pg.status === 'fulfilled' && pg.value?.epoch) D.program = pg.value; if (D.pools) D.rows = poolRows(D.pools, D.program, { ethUsd: ethUsd(), usdBtc: usdBtc(), tacEth: D.rates.tacEth }); }
@@ -318,5 +325,5 @@ Promise.allSettled([totals, loadChain().then(() => { renderHead(); renderBacking
   paintAll();
 });
 let tick = 0;
-// the minute's reads (the history every fifth minute), painted once when they are all in
-setInterval(() => { if (!document.hidden) Promise.allSettled([loadTotals(), loadChain().then(() => loadPools()), ++tick % 5 === 0 ? loadHistory() : null]).then(paintAll); }, 60e3);
+// the minute's reads (the history every fifth minute, and every minute while it is missing or short of the newest events), painted once when they are all in
+setInterval(() => { if (!document.hidden) Promise.allSettled([loadTotals(), loadChain().then(() => loadPools()), ++tick % 5 === 0 || D.histFailed ? loadHistory() : null]).then(paintAll); }, 60e3);

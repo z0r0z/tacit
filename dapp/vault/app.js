@@ -459,7 +459,7 @@ let mineP = null;
 function openMine(press, btn = null) {
   if (mineP) return;
   if (btn) { btn.textContent = 'Opening…'; btn.disabled = true; }
-  mineP = import('/vault/mine.js?cb=17db258f').then((m) => { m.mountMine($('#btc-mine'), { ticket: $('#btc-tk'), pick: pickProvider, wallet, W, connect: connectSaying }); if (press) $('#btc-mine [data-mine="open"]')?.click(); })
+  mineP = import('/vault/mine.js?cb=33e6ecc0').then((m) => { m.mountMine($('#btc-mine'), { ticket: $('#btc-tk'), pick: pickProvider, wallet, W, connect: connectSaying }); if (press) $('#btc-mine [data-mine="open"]')?.click(); })
     .catch((err) => { mineP = null; if (btn) { btn.textContent = 'Could not load. Try again'; btn.disabled = false; } console.warn('your position:', err?.message || err); });
 }
 $('#btc').addEventListener('click', (e) => {
