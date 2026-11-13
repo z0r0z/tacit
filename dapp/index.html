@@ -14,7 +14,7 @@
 <link rel="preconnect" href="https://tacit-evm-pool-keepers.onrender.com" crossorigin>
 <script async src="/front-guard.js?cb=51f5d28b"></script>
 <script type="module" src="/px-strip.js?cb=d4520508" async fetchpriority="high"></script>
-<link rel="preload" href="/swap/card.css?cb=92ffd704" as="style">
+<link rel="preload" href="/swap/card.css?cb=821a8a56" as="style">
 <link rel="preload" href="/fonts/instrument-serif-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/instrument-serif-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
@@ -185,6 +185,7 @@ main:focus { outline: none; }
 .swc .rows .c > .pair .tk { width: 28px; height: 28px; }
 .swc .rows .c > .pair .tk + .tk { margin-left: -10px; box-shadow: 0 0 0 2px var(--field); }
 .swc .rows .c[aria-checked="false"] > .pair { opacity: .6; }
+.swc .rows.folded .c:has(> .pair) { grid-template-columns: 46px minmax(0, 1fr) auto; }
 .pair .tk + .tk { margin-left: -16px; box-shadow: 0 0 0 3px var(--card); }
 /* liquidity in a farm: its pair inside a ring (the pair alone is liquidity held, not farming) */
 .pair.farm { padding: 2px; border-radius: 999px; box-shadow: 0 0 0 1.5px var(--orange); }
@@ -390,16 +391,16 @@ main:focus { outline: none; }
 .news .dot:not(.on):not(.live) { display: none; }
 .news .go { font-weight: 500; color: var(--ink); transition: transform .3s var(--spring); }
 @media (hover: hover) { .news:hover .go { color: var(--ink); transform: translateX(4px); } }
-.hero h1 { font: 400 clamp(40px, 6.2vw, 76px)/1.02 var(--serif); letter-spacing: -.03em; margin: 0 auto 18px; text-wrap: balance; }
+.hero h1 { font: 400 clamp(40px, 12.4vw, 54px)/1.02 var(--serif); letter-spacing: -.03em; margin: 0 auto 18px; text-wrap: balance; }
 .hero h1 em { font-style: italic; }
-/* The two coins the headline names, round and side by side. */
-.hero h1 .hero-pair { display: inline-flex; gap: .1em; vertical-align: -.025em; margin-left: .2em; }
-.hero h1 .hero-pair .tk { width: .74em; height: .74em; }
+/* The two coins the headline names, round and side by side: as tall as its capitals and a hair more (a circle reads smaller than a letter of its height), centred on them. */
+.hero h1 .hero-pair { display: inline-flex; gap: .09em; vertical-align: -.02em; margin-left: .19em; }
+.hero h1 .hero-pair .tk { width: .73em; height: .73em; }
 /* the line under a headline is a statement, so it is set in the headline's serif; a name that is code (tacit1) keeps the mono */
 .hero .sub { font: 400 clamp(19px, 2.4vw, 22px)/1.3 var(--serif); letter-spacing: -.005em; max-width: 34em; margin: 0 auto; color: color-mix(in srgb, var(--ink) 72%, var(--mute)); text-wrap: balance; }
-.hero .sub b { font: 500 .74em var(--mono); letter-spacing: -.02em; color: var(--ink); }
+.hero .sub b { font: 400 .72em var(--mono); letter-spacing: -.03em; color: var(--ink); }
 /* wide screens: the card's button should come up the page, not sit under the fold of a laptop */
-@media (min-width: 641px) { .hero { padding-top: 20px; } .hero-t { margin-bottom: 18px; } .hero h1 { margin-bottom: 12px; } }
+@media (min-width: 641px) { .hero { padding-top: 20px; } .hero-t { margin-bottom: 18px; } .hero h1 { font-size: clamp(54px, 6.2vw, 76px); margin-bottom: 12px; } }
 /* A plain text link, as the quiet kind of call to action. */
 .tl { font-weight: 500; text-decoration: underline; text-underline-offset: 4px; }
 
@@ -456,7 +457,7 @@ main:focus { outline: none; }
 /* What the amount typed earns in the points program (a receipt row, the one right under the receipt), and the nudge toward more of it; a held key's TAC on Bitcoin. */
 .hx-pts, .hx-have { display: grid; gap: 3px; margin: 14px 2px 0; padding: 0; border: 0; font-size: 12px; line-height: 1.55; color: var(--mute); }
 .hx-pts[hidden], .hx-have[hidden] { display: none; }
-#hx-receipt:not([hidden]) + .hx-pts, #hx-swap #rcpt:not([hidden]) + .hx-pts { margin-top: 2px; }
+#hx-receipt:not([hidden]) + .hx-pts, #hx-swap #rcpt:not([hidden]) + .hx-pts { margin-top: 4px; line-height: 1.6; }
 .hx-b .hx-pts .rcpt { margin: 0; }
 .hx-pts dt { display: inline-flex; align-items: center; gap: 6px; }
 .hx-pts dt .tk { width: 14px; height: 14px; }
@@ -573,7 +574,7 @@ a.hx-pr:hover .rt b { text-decoration: underline; text-decoration-color: var(--h
 .rows-h a { color: inherit; }
 .hx-pr .err { color: var(--err); } .hx-pr .warn { color: var(--warn); }
 /* the Bridge tab's steps (the bridge page's own): it leaves one chain's colour and arrives in the other's, a light running along the line between */
-.hx-brs { --from: var(--orange); --to: var(--blue); list-style: none; display: grid; grid-template-columns: repeat(4, 1fr); margin: 14px 2px 2px; padding: 0; font-size: 11px; line-height: 1.35; color: var(--mute); }
+.hx-brs { --from: var(--orange); --to: var(--blue); list-style: none; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) max-content; margin: 14px 2px 2px; padding: 0; font-size: 11px; line-height: 1.35; color: var(--mute); }
 .hx-brs.out { --from: var(--blue); --to: var(--orange); }
 .hx-brs li { position: relative; padding: 17px 6px 0 0; text-align: left; }
 .hx-brs li::before, .hx-brs li::after { content: ''; position: absolute; left: 10px; right: 0; top: 5px; height: 1px; }
@@ -581,6 +582,8 @@ a.hx-pr:hover .rt b { text-decoration: underline; text-decoration-color: var(--h
 .hx-brs li::after { background: var(--ink); opacity: 0; animation: hx-glow 2.4s calc(var(--i) * .8s) ease-in-out infinite; }
 @keyframes hx-glow { 0%, 100% { opacity: 0; } 40% { opacity: .8; } }
 .hx-brs li:last-child::before, .hx-brs li:last-child::after { display: none; }
+/* the last step has no line after it: its column is as wide as its words, which stay on one line on a phone */
+.hx-brs li:last-child { padding-right: 0; white-space: nowrap; }
 .hx-brs .tk { display: inline-block; width: 13px; height: 13px; vertical-align: -2px; margin-left: 3px; }
 .hx-brs .dot { position: absolute; left: 0; top: 0; width: 10px; height: 10px; border-radius: 50%; background: var(--ink); }
 .hx-brs li:first-child .dot { background: var(--from); }
@@ -683,8 +686,8 @@ a.hx-pr:hover .rt b { text-decoration: underline; text-decoration-color: var(--h
 
 /* Points: one column like the card above it. */
 /* the card's side links (earn points too, join with both) are secondary, so they stay quiet */
-.hx #hx-alt-go, .hx .q a[data-link="farm"] { font-size: 12px; color: var(--mute); }
-@media (hover: hover) { .hx #hx-alt-go:hover, .hx .q a[data-link="farm"]:hover { color: var(--ink); } }
+.hx #hx-alt-go, .hx .q a[data-link="farm"], .hx #hx-brl a { font-size: 12px; color: var(--mute); text-decoration-color: color-mix(in srgb, currentColor 35%, transparent); transition: color .15s, text-decoration-color .15s; }
+@media (hover: hover) { .hx #hx-alt-go:hover, .hx .q a[data-link="farm"]:hover, .hx #hx-brl a:hover { color: var(--ink); text-decoration-color: currentColor; } }
 .hx-mode { display: inline-flex; gap: 2px; margin: 8px 0 10px; padding: 3px; border-radius: 999px; background: color-mix(in srgb, var(--ink) 6%, transparent); }
 .hx-mode button { min-height: 26px; padding: 2px 14px; color: var(--mute); font: 12px var(--mono); white-space: nowrap; background: none; border: 0; border-radius: 999px; cursor: pointer; transition: background .15s, color .15s; }
 @media (hover: hover) { .hx-mode button:hover { color: var(--ink); } }
@@ -1875,7 +1878,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
 }
 </style>
 <!-- the hero tile is drawn with the swap card's parts (swap/card.js, which the Swap tab mounts): its styles, after the page's own -->
-<link rel="stylesheet" href="/swap/card.css?cb=92ffd704" media="print">
+<link rel="stylesheet" href="/swap/card.css?cb=821a8a56" media="print">
 <!-- chrome:head:begin inline -->
 <style>
 /* The header's page links and the footer, as every page that wears them draws them. The markup is made by build/chrome.mjs and stamped
@@ -14382,7 +14385,7 @@ function hxLeadPaint() {
   else if (hk === 'swap') t = SWC.card?.params?.()?.get('private') ? 'Private: nothing links the two sides.' : 'Best onchain price. Pick Private to hide it.';
   else if (hk === 'send') t = HX.ask ? 'A link anyone can pay you with.' : hxSendBtc() ? 'Sats to any Bitcoin or tacit1 address.' : hxIsLp() ? 'A share of a farm, sent privately.' : hxSendWallet() ? 'tacit1 is paid privately, 0x in the open.' : 'tacit1 stays private. An 0x address leaves the pool.';
   else if (hk === 'earn') t = HX.from === 'ether' ? 'ETH into a farm, privately. TAC every day.' : 'Private tETH into a farm. TAC every day.';
-  else t = HX.tab === 'borrow' ? 'Lock BTC or deposit TAC, and borrow against it.' : 'Between Bitcoin and Ethereum, both ways.';
+  else t = HX.tab === 'borrow' ? 'Lock BTC or deposit TAC, then borrow.' : 'Between Bitcoin and Ethereum, both ways.';
   if (el.textContent !== t) el.textContent = t;
 }
 function swcAsk() { if (SWC.ask && SWC.card?.busy) SWC.ask = null; else if (SWC.ask && SWC.card?.load(SWC.ask)) SWC.ask = null; }
@@ -14441,7 +14444,7 @@ function paintHx() {
     const at = groups.length > 1 ? groups.find(([, l]) => l.some(([x]) => x === cur))?.[0] : null;
     return html`<span class="coin" role="button" tabindex="0" aria-haspopup="dialog" aria-label="${label}: ${u}${at ? `, ${at}` : ''}. Change" data-pk="${id}">${hxIco(ic, hxIcoCls(k0))}${u}<span class="car" aria-hidden="true">▾</span><select id="${id}" tabindex="-1" aria-hidden="true" inert>${groups.map(([g, l, p]) => html`<optgroup label="${g}" data-place="${p}">${l.map(opt)}</optgroup>`)}</select></span>`;
   };
-  const heldAt = (place) => html`<span class="where${place === 'private' ? ' priv' : ''}">${HX_PLACE[place]}</span>`;
+  const heldAt = (place) => html`<span class="where${place === 'private' ? ' priv' : ''}">${place === 'wallet' ? html`<svg class="pl" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4.2h9.6a1.4 1.4 0 0 1 1.4 1.4v6.6a1.4 1.4 0 0 1-1.4 1.4H3.9a1.4 1.4 0 0 1-1.4-1.4V3.6a1.4 1.4 0 0 1 1.4-1.4h7.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><circle cx="10.6" cy="9" r=".95" fill="currentColor"/></svg>` : place === 'bitcoin' ? html`<svg class="tk xs" aria-hidden="true"><use href="#c-btc"/></svg>` : ''}${HX_PLACE[place]}</span>`;
   const field = (lbl, where, main, side = '', ff = true, priv = false, more = '') => html`<div class="f${priv ? ' priv' : ''}"><div class="fh"><span>${lbl}</span>${where}</div><div class="fm">${main}${side}</div>${ff ? html`<div class="ff"><span class="num" id="hx-sub"></span><span id="hx-bal"></span></div>` : ''}${more}</div>`;
   const mid = (flip) => html`<div class="mid">${flip ? html`<button type="button" class="flip" id="hx-flip" aria-label="${flip}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3v17m0 0-4-4m4 4 4-4M16 21V4m0 0-4 4m4-4 4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>`
     : html`<span class="arr" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 4v16m0 0-6-6m6 6 6-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span>`}</div>`;
@@ -14481,7 +14484,8 @@ function paintHx() {
       <p class="q" id="hx-brl"></p>`;
   } else if (m === 'earn') {
     const groups = hxGroups('earn'), place = hxPlaceOf('earn', HX.from);
-    body = html`${field('You put in', heldAt(place), amt(`${hxAsset(HX.from)[1]} to farm`), coin('hx-from', 'You put in', groups, HX.from), true, place === 'private', HX.from === 'ether' ? html`<div class="hx-mode" role="radiogroup" aria-label="Farm it, or keep it as LP">${[[false, 'Farm'], [true, 'LP only']].map(([k, t]) => html`<button type="button" role="radio" aria-checked="${String(HX.lp === k)}" data-hxlp="${k ? '1' : '0'}">${t}</button>`)}</div>` : '')}
+    const lpSw = HX.from === 'ether' ? html`<div class="hx-mode hx-sr" role="radiogroup" aria-label="Farm it, or keep it as LP">${[[false, 'Farm'], [true, 'LP only']].map(([k, t]) => html`<button type="button" role="radio" aria-checked="${String(HX.lp === k)}" data-hxlp="${k ? '1' : '0'}">${t}</button>`)}</div>` : '';
+    body = html`${lpSw}${field('You put in', heldAt(place), amt(`${hxAsset(HX.from)[1]} to farm`), coin('hx-from', 'You put in', groups, HX.from), true, place === 'private')}
       ${HX.lp && HX.from === 'ether' ? '' : html`${mid()}${field('You earn', '', out('a day'), coin('hx-to', 'You earn', [['', [['tac', 'TAC', 'tac']], '']], 'tac'), false, false, html`<div class="ff"><span class="num" id="hx-out-usd"></span></div>`)}`}${tail}
       <p class="q" id="hx-zs-at" hidden></p>
       <div class="hx-pos" id="hx-pos" hidden><div class="rows-h"><span>Yours</span></div><div id="hx-pos-l"></div><p class="q" id="hx-pos-s" aria-live="polite"></p></div>`;
