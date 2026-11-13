@@ -12,6 +12,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { extname, join, normalize } from 'node:path';
+import { RPC_HOSTS } from '../tests/eth-hosts.mjs';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.PLAYWRIGHT || '/Users/z/zFi/node_modules/playwright-core');
@@ -85,6 +86,9 @@ function rpcAnswer({ id, method, params }) {
     const to = String(params[0].to).toLowerCase(), data = String(params[0].data);
     if (to === PROVE.toLowerCase() && data.startsWith('0x70a08231')) return res('0x' + w32(PROVE_BAL));
     if (to === ZQUOTER.toLowerCase()) { quoted.push(data); return res(makeQuote(data)); }
+    // A read the page makes for itself is not a trial of a send: the header's rewards dot asks the points distributor and the airdrop about the account once a
+    // wallet connects. A trial carries the account that will send.
+    if (!params[0].from) return res('0x' + w32(0));
     events.push(['sim', params[0]]);
     return res('0x');
   }
@@ -104,7 +108,8 @@ await ctx.route('https://api.tacit.finance/confidential/landed', (route) => {
   const b = JSON.parse(route.request().postData() || '{}'); landed.push(b);
   route.fulfill({ status: 200, contentType: 'application/json', headers: CORS, body: JSON.stringify({ ok: true, status: 'settled', txHash: b.txHash }) });
 });
-for (const host of ['ethereum-rpc.publicnode.com', 'eth.drpc.org', '1rpc.io', 'mainnet.gateway.tenderly.co']) await ctx.route(`https://${host}/**`, (route) => {
+// every Ethereum node the page may ask, so a read that is slow here is never answered by a real node instead
+for (const host of RPC_HOSTS) await ctx.route(`https://${host}/**`, (route) => {
   const q = JSON.parse(route.request().postData() || '{}');
   route.fulfill({ status: 200, contentType: 'application/json', headers: CORS, body: JSON.stringify(Array.isArray(q) ? q.map(rpcAnswer) : rpcAnswer(q)) });
 });
