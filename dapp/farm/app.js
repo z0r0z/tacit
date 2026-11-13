@@ -349,8 +349,16 @@ function setMode(m) {
   if (Z.mode === 'both' && Z.joinFor !== Z.f.pid) { Z.joinFor = Z.f.pid; session().then(() => mountMine()).then((ui) => ui?.choose(Z.f.pid), () => { Z.joinFor = null; }); }
 }
 $('#pz-mode').addEventListener('click', (e) => { const b = e.target.closest('[data-pm]'); if (b && !b.disabled) setMode(b.dataset.pm); });
-// the join's way in opens the key as a deposit does: the wallet connected here signs, with no sheet on a first visit
-$('#pz-join').addEventListener('click', (e) => { if (!e.target.closest('[data-pf="open"]')) return; e.stopImmediatePropagation(); openKey().catch(() => {}); }, true);
+// The join's way in and the positions' Show mine open the key as a deposit does: the wallet connected here signs, with no sheet on a first
+// visit. Show mine works before the panel has mounted too (it mounts, then reads).
+for (const host of ['#pz-join', '#pf-mine']) $(host).addEventListener('click', (e) => {
+  const b = e.target.closest('[data-pf="open"]');
+  if (!b) return;
+  e.stopImmediatePropagation();
+  if (b.getAttribute('aria-busy') === 'true') return;
+  b.setAttribute('aria-busy', 'true');
+  openKey().then(() => mountMine()).then((ui) => ui?.read(), () => {}).finally(() => b.removeAttribute('aria-busy'));
+}, true);
 function paintPrivate() {
   const f = VIEW;
   Z.f = f;
@@ -479,19 +487,23 @@ function onStep(step, d) {
 let keyP = null, key = null, K = null, mineUi = null, mineP = null, uxP = null, ownP = null, runner = null;
 const getUx = () => (uxP ||= import('/trade/poolux.js?cb=59d125e5').then((m) => m.getUx()).catch((e) => { uxP = null; throw e; }));
 function session() {
-  return keyP ||= import('/trade/key.js?cb=09f263cb').then(async (m) => {
+  return keyP ||= import('/trade/key.js?cb=09f263cb').then((m) => {
     K = m;
     key = m.makeKeySession({ moved: (why) => { mineUi ? mineUi.forget(why) : key.lock(); statusEl.innerHTML = `<span class="err">${esc(why)}</span>`; } });
     key.onChange(onKey);
-    await key.ready();
+    // The key this tab already held is opened again in the background, once its wallet answers: a wallet that never does (locked, or
+    // busy with another request) holds nothing up, and the panel and the presses are there at once.
+    key.ready().then(onKey, () => {});
     onKey();
     return key;
   }).catch((e) => { keyP = null; throw e; });
 }
+const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 const hereWallet = () => { const uuid = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return uuid && W.account ? { uuid, address: W.account } : null; };
 const pickProvider = (list) => { const here = hereWallet(); return here && list.some((x) => x.uuid === here.uuid) ? here.uuid : K.pickWalletSheet(list); };
 async function openKey() {
   const k = await session();
+  if (!k.unlocked) await Promise.race([k.ready(), pause(3000)]);                 // the tab's own key, if its wallet answers soon
   if (k.unlocked) return;
   const here = hereWallet();
   if (here && !k.known() && !k.other()) { cookSay('Sign in your wallet to open your Tacit wallet: free, and two signatures the first time.'); await k.open.eth({ address: here.address }, async () => here.uuid); return; }

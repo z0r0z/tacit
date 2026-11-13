@@ -188,7 +188,7 @@ export function makeKeySession() {
   const open = async () => { if (window.__t.noKey) throw new Cancelled(); window.__keyOpens = (window.__keyOpens || 0) + 1; on = true; emit(); };
   return { open: { eth: open, passkey: open }, get unlocked() { return on; }, get key() { return on ? { mode: 'eth', pubHex: '02' + 'ab'.repeat(32), address: '${ACCT}' } : null; },
     priv: () => new Uint8Array(32).fill(7), known: () => null, other: () => null, elsewhere: () => null, passkeyAvailable: () => false, ethAvailable: () => true, warm() {}, walletProvider: () => null,
-    ready: async () => {}, lock() { on = false; emit(); }, onChange(f) { ls.add(f); return () => ls.delete(f); } };
+    ready: () => (window.__t.readyHang ? new Promise(() => {}) : Promise.resolve()), lock() { on = false; emit(); }, onChange(f) { ls.add(f); return () => ls.delete(f); } };
 }
 export const signInSheet = async (s) => { window.__sheets = (window.__sheets || 0) + 1; await s.open.eth(); };
 export const pickWalletSheet = async (l) => l[0]?.uuid;
@@ -571,6 +571,17 @@ try {
       await page.click('#pz-join [data-pf="open"]');
       ok(await until(page, () => !!document.querySelector('#pz-join #pf-a')), 'and once it is open the join is there');
       ok(await page.evaluate(() => window.__keyOpens === 1 && !window.__sheets), 'opened by the wallet connected here, with no sheet');
+      await r.browser.close();
+    }
+    {
+      // the tab's key waiting on a wallet that never answers: the positions panel mounts at once, and Show mine opens the key with the
+      // wallet connected here
+      const r = await openPage({ hash: '#teth-tac', fake: true, wallet: true, t: { readyHang: true } }), { page } = r;
+      ok(await until(page, () => /Your positions in the private farms/.test(document.querySelector('#pf-mine')?.textContent || '')), 'with the tab’s key still waiting on its wallet, the positions panel is mounted');
+      await page.click('#pf-mine [data-pf="open"]');
+      ok(await until(page, () => /No private farm positions yet/.test(document.querySelector('#pf-mine')?.textContent || ''), null, 10000), `Show mine opens the key and lists the positions (${(await text(page, '#pf-mine')).slice(0, 60)})`);
+      ok(await page.evaluate(() => window.__keyOpens === 1 && !window.__sheets), 'with the wallet connected here, no sheet');
+      clean(r, 'show mine');
       await r.browser.close();
     }
     {
