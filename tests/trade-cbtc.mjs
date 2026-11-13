@@ -85,7 +85,7 @@ function answerCall({ to, data }) {
     return p ? '0x' + [1n, 0n, 0n, p[2], p[3], 30n, p[4]].map(w32).join('') : '0x' + '0'.repeat(64 * 7);
   }
   if (sel === SEL.spent || sel === SEL.redeemed) { const op = data.slice(10, 74), s = chain.lockStates.get(op); return '0x' + w32((s ? s[sel === SEL.spent ? 'spent' : 'redeemed'] : sel === SEL.spent && lockOf(op).spent) ? 1n : 0n); }
-  if (sel === SEL.escrowTotal) return '0x' + w32(lockOf(data.slice(10, 74)).bond);
+  if (sel === SEL.escrowTotal) { const op = data.slice(10, 74), s = chain.lockStates.get(op); return '0x' + w32(s ? (s.bond ?? (s.bonded ? lockOf(op).bond : 0n)) : lockOf(op).bond); }   // a lock given a state holds a bond only when it is bonded
   if ([SEL.lockV, SEL.escrowOk, SEL.minted].includes(sel)) {
     const op = data.slice(10, 74), s = chain.lockStates.get(op) || { recorded: true, bonded: true, minted: lockOf(op).minted, sats: lockOf(op).sats };
     return '0x' + w32(sel === SEL.lockV ? (s.recorded ? s.sats : 0n) : sel === SEL.escrowOk ? (s.bonded ? 1n : 0n) : (s.minted ? 1n : 0n));
