@@ -31,10 +31,10 @@ export function tac(wei, places = 2) {
   return frac ? `${q / scale}.${frac}` : String(q / scale);
 }
 
-// A proof's reward: its points times the most a point is paid today (GET /mine terms.capWeiPerPoint), null when nothing is paid.
-export function rewardWei(points, capWeiPerPoint) {
-  if (!(Number(points) > 0) || !capWeiPerPoint) return null;
-  return BigInt(points) * BigInt(capWeiPerPoint);
+// A proof's reward: its points times what a point is paid (perPoint in community-prove.js), null when nothing is paid.
+export function rewardWei(points, weiPerPoint) {
+  if (!(Number(points) > 0) || !weiPerPoint) return null;
+  return BigInt(points) * BigInt(weiPerPoint);
 }
 
 export function ago(ms, now = Date.now()) {

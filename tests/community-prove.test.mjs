@@ -5,7 +5,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { PROVE_URL, cleanAddress, proveCommand, tacText, utcDay, mineTerms, mineLines } from '../dapp/community-prove.js';
+import { PROVE_URL, cleanAddress, proveCommand, tacText, utcDay, mineTerms, mineLines, perPoint } from '../dapp/community-prove.js';
 
 const ADDR = '0x1234567890abcdef1234567890abcdef12345678';
 const OTHER = '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd';
@@ -71,6 +71,30 @@ test('the card says what pays in a line, what the address made today, and what i
   assert.equal(mineLines(POOL, MINE, { tally: { miners: 'x' }, address: ADDR, nowSec: NOW }).today, null);
   assert.equal(mineLines(POOL, MINE, { address: ADDR, nowSec: NOW }).credited, null, 'no account in the answer, nothing credited is said');
   assert.equal(mineLines(POOL, { ...MINE, account: { address: ADDR, creditedWei: '0' } }, { nowSec: NOW }).credited, '0 TAC credited');
+});
+
+// The points service's rule (worker-relay allocateMineDay): the day's amount shared by the day's points, no point paid more than the cap.
+test('a point earned today is paid the cap while the day\'s points fit the amount, the amount over the points once they do not', () => {
+  const CAP = 10000000000000000n;                                     // MINE: 50 TAC a day at 0.01 a point covers 5,000 points
+  assert.equal(perPoint(MINE, 0, NOW), CAP, 'no points yet: the cap');
+  assert.equal(perPoint(MINE, 4000, NOW), CAP);
+  assert.equal(perPoint(MINE, 5000, NOW), CAP, 'exactly covered: still the cap');
+  assert.equal(perPoint(MINE, 10000, NOW), CAP / 2n, 'twice what the amount covers: half the cap');
+  assert.ok(perPoint(MINE, 5001, NOW) < CAP, 'one point over: under the cap');
+  // the live day of 2026-11-12: 300 TAC a day and 57,900 proof points, so a point was paid about half the cap
+  const live = { ...MINE, terms: { ...MINE.terms, dailyWei: '300000000000000000000' } };
+  assert.equal(perPoint(live, 57900, NOW), 300000000000000000000n / 57900n);
+  assert.equal(tacText(20n * perPoint(live, 57900, NOW)), '0.1', 'a 20-point proof paid 0.1 TAC, not 0.2');
+  for (const pts of [null, undefined, -1, NaN, 1.5]) assert.equal(perPoint(MINE, pts, NOW), null, `the day's points unknown (${pts}): nothing said`);
+  assert.equal(perPoint({ ...MINE, terms: { capWeiPerPoint: MINE.terms.capWeiPerPoint } }, 10000, NOW), CAP, 'a service that does not say its daily amount: the cap');
+  for (const mine of [null, { ...MINE, enabled: false }, { ...MINE, endSec: NOW - 1 }, { ...MINE, terms: { fromDay: 20781, off: true } }]) assert.equal(perPoint(mine, 100, NOW), null, JSON.stringify(mine));
+});
+
+test('once the day\'s points pass what the amount covers, the card says what a proof pays today', () => {
+  assert.equal(mineLines(POOL, MINE, { dayPoints: 10000, nowSec: NOW }).pays, '0.1 TAC a proof today (up to 0.2), up to 30 a day');
+  assert.equal(mineLines({ terms: { pointsPerProof: 20 } }, MINE, { dayPoints: 10000, nowSec: NOW }).pays, '0.1 TAC a proof today (up to 0.2)');
+  assert.equal(mineLines(POOL, MINE, { dayPoints: 4000, nowSec: NOW }).pays, 'Up to 0.2 TAC a proof, up to 30 a day', 'covered: the most a proof pays');
+  assert.equal(mineLines(POOL, MINE, { nowSec: NOW }).pays, 'Up to 0.2 TAC a proof, up to 30 a day', 'the day\'s points not read: the most');
 });
 
 test('the pool tallies by UTC day', () => {

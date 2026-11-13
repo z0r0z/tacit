@@ -49,7 +49,8 @@ const SALT_BANK = () => [{ address: DEPLOYED, bits: 44, miner: OTHER, at: BANK_A
 const CHARGER = () => { const b = new EventTarget(); b.charging = true; window.__battery = b; navigator.getBattery = () => Promise.resolve(b); };
 const WINDOWS_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
 // `more`: the node's other numbers and the checkpoint sit behind summaries, so the scenarios that read them open those first.
-async function open(browser, local, { phone = false, idle = false, ua = null, hash = '', init = null, noBank = false, more = true, minBits = 26 } = {}) {
+// `busy`: a day whose proofs earned more points (50,000 in the pool, 10,000 on the board) than the day's 300 TAC covers at 0.01 TAC a point.
+async function open(browser, local, { phone = false, idle = false, busy = false, ua = null, hash = '', init = null, noBank = false, more = true, minBits = 26 } = {}) {
   const ctx = await browser.newContext(phone ? { viewport: { width: 390, height: 800 }, userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148' } : { viewport: { width: 1100, height: 900 }, ...(ua ? { userAgent: ua } : {}) });
   const page = await ctx.newPage();
   // The public Nostr relays are the outside world: a page under test must never post its stand-in jobs to them or read other people's, so
@@ -87,12 +88,13 @@ async function open(browser, local, { phone = false, idle = false, ua = null, ha
     if (u.pathname === '/prover/pool') return json(route, { ...(idle ? {} : {}), queued: idle ? 0 : 3, leased: idle ? 0 : 2, doneToday: 41, minersToday: 2, done24h: 433, miners24h: 11, top: [{ miner: ADDR, proofs: 4 }, { miner: OTHER, proofs: 1 }], terms: { pointsPerProof: 20, proofsPerMinerDay: 30 } });
     if (u.pathname === '/prover/blocks') return json(route, { head: { height: chain.blocks[0].height, hash: chain.blocks[0].hash, ethHead: chain.blocks[0].ethBlock + 25 }, blocks: chain.blocks, cross: [{ digest: '0x' + '89'.repeat(32), bitcoin: 974721, ethereum: { digest: '0x' + '54'.repeat(32), slot: 15592000 }, tx: '0x' + 'ab'.repeat(32), ethBlock: chain.blocks[0].ethBlock, at: Date.now(), by: { miner: OTHER } }] });
     if (u.pathname === '/prover/board') return json(route, { queued: 0, workers: [{ name: `c-${ADDR}`, community: true, programs: ['btc-state'], proved: 3, lastSeenSeconds: 4, racing: null }, { name: `c-${OTHER}`, community: true, programs: ['btc-state'], proved: 1, lastSeenSeconds: 2400, racing: 'btc-state' }, { name: 'c-0x' + 'cd'.repeat(20), community: true, programs: ['btc-state'], proved: 0, lastSeenSeconds: 90000, racing: null }, { name: 'c-0x' + 'ef'.repeat(20), community: true, programs: ['confidential'], proved: 5, lastSeenSeconds: 2 }, { name: 'tacit-a5000', programs: ['confidential', 'eth-state'], proved: 9, lastSeenSeconds: 0 }], pay: { pointsPerProof: 20, pointsByProgram: { 'btc-state': 1000 } } });
-    if (u.pathname === '/prover/pool/recent') return json(route, { proofs: [{ at: Date.now() - 60_000 - (idle ? 30 * 60_000 : 0), house: true, points: 0, secs: 31 }, { at: Date.now() - 120_000 - (idle ? 30 * 60_000 : 0), miner: ADDR, points: 20, secs: 552 }] });
-    if (u.pathname === '/prover/pool/credits') return json(route, { day, over: false, miners: [{ miner: ADDR, proofs: 4, points: 80 }] });
+    if (u.pathname === '/prover/pool/recent') return json(route, { proofs: [{ at: Date.now() - 60_000 - (idle ? 30 * 60_000 : 0), house: true, points: 0, secs: 31 }, { at: Date.now() - 120_000 - (idle ? 30 * 60_000 : 0), miner: ADDR, points: 20, secs: 552 }, ...(busy ? [{ at: Date.now() - 2 * 86400000, miner: OTHER, points: 20, secs: 300 }] : [])] });
+    if (u.pathname === '/prover/pool/credits') return json(route, { day, over: false, miners: [{ miner: ADDR, proofs: 4, points: 80 }, ...(busy ? [{ miner: OTHER, proofs: 2496, points: 49920 }] : [])] });
+    if (u.pathname === '/prover/board/credits') return json(route, { day, over: false, miners: busy ? [{ miner: OTHER, proofs: 10, points: 10000 }] : [] });
     if (u.pathname === '/pool/snapshot') return json(route, { v: 1, cid: 'bafkreia4g6iad4ec3634pd5lsfcqsmenqcc5oyn3mm2kwezybpwv6iltom', to: 26352486, checkpoint: { eth: { block: 26352486, hash: '0x' + 'e9'.repeat(32) }, tacit: { height: 9441, hash: '0xec803dcef9a1a4c0f64a919b491a226ce22e9d30be225c76a148b0a22b62eb41' }, bitcoin: { relayTip: 974739, reflection: { height: 974721 } }, ethereum: { finalizedSlot: 13450016 } } });
     // the salt pool takes the tab miner's shares: each send is kept, and answered as the pool answers (every salt counted)
     if (u.pathname === '/prover/salt/share' && route.request().method() === 'POST') { const b = JSON.parse(route.request().postData() || '{}'); shares.push(b); const n = (b.salts || []).length, total = shares.reduce((a, x) => a + x.salts.length, 0); return json(route, { ok: true, accepted: n, weight: n, rejected: [], today: { shares: total, weight: total * 4000, best: null } }); }
-    if (u.pathname === '/prover/salt') return json(route, { recent: SALT_FINDS(), pointsPerDay: 1500, minBits, today: { miners: 2, shares: 30, weight: 400000 }, top: [{ miner: ADDR, shares: 20, weight: 2200 }], live: [{ miner: OTHER, at: Date.now() - 60_000 }, { miner: '0x68575b073de49a94e3e3acf6f3a0d6e3b66267c7', at: Date.now() - 30_000, house: true }], rate: 2_400_000, bank: [{ address: '0x0000000000ab12cd34ef56ab78cd90ef12ab34cd', bits: 41, miner: OTHER }, { address: '0x0000000000cd12cd34ef56ab78cd90ef12ab34cd', bits: 40, miner: '0x68575b073de49a94e3e3acf6f3a0d6e3b66267c7', house: true }] });
+    if (u.pathname === '/prover/salt') return json(route, { recent: SALT_FINDS(), pointsPerDay: busy ? 0 : 1500, minBits, today: { miners: 2, shares: 30, weight: 400000 }, top: [{ miner: ADDR, shares: 20, weight: 2200 }], live: [{ miner: OTHER, at: Date.now() - 60_000 }, { miner: '0x68575b073de49a94e3e3acf6f3a0d6e3b66267c7', at: Date.now() - 30_000, house: true }], rate: 2_400_000, bank: [{ address: '0x0000000000ab12cd34ef56ab78cd90ef12ab34cd', bits: 41, miner: OTHER }, { address: '0x0000000000cd12cd34ef56ab78cd90ef12ab34cd', bits: 40, miner: '0x68575b073de49a94e3e3acf6f3a0d6e3b66267c7', house: true }] });
     if (u.pathname === '/prover/salt/bank') return noBank ? json(route, {}, 500) : json(route, { bank: SALT_BANK().map((b) => ({ ...b, salt: '0x' + '00'.repeat(32) })) });
     return json(route, {}, 404);
   });
@@ -111,7 +113,7 @@ async function open(browser, local, { phone = false, idle = false, ua = null, ha
     if (u.pathname === '/stats') return json(route, { nodes: { online: 3, miners: [] }, swarm: { findings: { pending: 4 }, reviewers: [{ miner: ADDR.slice(0, 8) + '…' + ADDR.slice(-4), skeptic: { n: 37, right: 22 }, scout: { n: 17, found: 5 } }] } });
     return json(route, {}, 404);
   });
-  await page.route('https://tacit-points.onrender.com/**', (route) => json(route, { enabled: true, endSec: Math.floor(Date.now() / 1000) + 86400 * 10, terms: { capWeiPerPoint: '10000000000000000' }, account: { creditedWei: '6000000000000000000' }, pocket: { totalWei: '7500000000000000000000', creditedWei: '291270000000000000000', remainingWei: '7208730000000000000000' } }));
+  await page.route('https://tacit-points.onrender.com/**', (route) => json(route, { enabled: true, endSec: Math.floor(Date.now() / 1000) + 86400 * 10, terms: { dailyWei: '300000000000000000000', capWeiPerPoint: '10000000000000000' }, account: { creditedWei: '6000000000000000000' }, pocket: { totalWei: '7500000000000000000000', creditedWei: '291270000000000000000', remainingWei: '7208730000000000000000' } }));
   await page.goto(`${ORIGIN}/prove/${hash}`);
   if (more) await page.evaluate(() => document.querySelectorAll('#desk .more, .more.cp').forEach((d) => { d.open = true; }));
   return { page, ctx, errors, posts, codeReads, deskPosts, shares };
@@ -174,6 +176,7 @@ try {
     check((await text(page, '#feed')).includes('+0.2 TAC') && (await text(page, '#feed')).includes('a deposit, proved in 9 min'), 'the feed says who proved what, how fast and what it won', await text(page, '#feed'));
     const mineRank = (await page.locator('#board li.me').innerText()).replace(/\s+/g, ' ');
     check(mineRank.includes('4 proofs 0.8 TAC 9 min each'), 'today\'s provers with their TAC and their speed', mineRank);
+    check((await text(page, '#board-rate')) === '300 TAC a day, shared by points: 0.01 TAC a point so far', 'under them, how the day\'s TAC is shared and today\'s rate (the cap, the day being covered)', await text(page, '#board-rate'));
     const cols = await page.evaluate(() => [...document.querySelectorAll('#feed li:not(.empty)')].map((li) => Math.round(li.children[1].getBoundingClientRect().right)));
     check(cols.length > 1 && new Set(cols).size === 1, 'the feed\'s TAC column lines up', JSON.stringify(cols));
     check(await page.evaluate(() => [...document.querySelectorAll('.who.gpu')].every((e) => getComputedStyle(e).marginTop === '0px')), 'the Tacit GPU name sits in line (no card style on it)');
@@ -251,6 +254,30 @@ try {
     local.v = { mine: { miner: null, on: false, job: null, proved: 0, salt: { on: false, rate: 0, minBits: 26, ...NOW } } };
     await page.waitForFunction(() => !document.querySelector('#salt-day').textContent.startsWith('Run the setup line again'), null, { timeout: 8000 });
     check(!(await page.locator('#setup').isVisible()), 'a current prover is not told to update');
+    check(errors.length === 0, 'no page errors', errors.join(' | '));
+    await ctx.close();
+  }
+  // a day with more proof points than its amount covers at the cap: 60,000 points share 300 TAC, 0.005 TAC a point so far, and every figure
+  // is at that rate; a proof from an earlier day shows no TAC (its day's rate is not read)
+  {
+    const { page, ctx, errors } = await open(browser, { v: null }, { busy: true });
+    await page.fill('#addr', ADDR);
+    await page.waitForFunction(() => document.querySelector('#board-rate').textContent.includes('a point'), null, { timeout: 8000 }).catch(() => {});
+    check((await text(page, '#board-rate')) === '300 TAC a day, shared by points: 0.005 TAC a point so far', 'a busy day: under the leaderboard, today\'s rate below the cap', await text(page, '#board-rate'));
+    const busyRank = (await page.locator('#board li.me').innerText()).replace(/\s+/g, ' ');
+    check(busyRank.includes('4 proofs 0.4 TAC'), 'the leaderboard at today\'s rate, not the cap', busyRank);
+    check((await text(page, '#today')) === '4 proofs · 0.4 TAC', 'and the address\'s own day', await text(page, '#today'));
+    check((await text(page, '#pays')) === '0.1 TAC a proof today (up to 0.2), up to 30 a day', 'what a proof pays today, and the most', await text(page, '#pays'));
+    await page.waitForFunction(() => document.querySelector('#btc-pay').textContent.includes('TAC'), null, { timeout: 8000 }).catch(() => {});
+    check((await page.textContent('#btc-pay')) === '5 TAC each', 'a Bitcoin batch at today\'s rate', await page.textContent('#btc-pay'));
+    const rows = await page.locator('#feed li:not(.salt)').allInnerTexts();
+    check(rows.some((x) => x.includes('proved in 9 min') && x.includes('+0.1 TAC')), 'a proof of today\'s at today\'s rate', rows.join(' / '));
+    check(rows.some((x) => x.includes('proved in 5 min') && !x.includes('TAC')), 'a proof of an earlier day shows no TAC', rows.join(' / '));
+    await page.waitForFunction(() => document.querySelectorAll('#chain .blk.mine').length === 1, null, { timeout: 8000 }).catch(() => {});
+    await page.click('#chain .blk.mine button');
+    const det = await text(page, '#detail');
+    check(det.includes('Won') && det.includes('0.1 TAC'), 'a block of today\'s won at today\'s rate', det);
+    await shot(page, 'prove-busy-day');
     check(errors.length === 0, 'no page errors', errors.join(' | '));
     await ctx.close();
   }

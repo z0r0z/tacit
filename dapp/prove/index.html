@@ -21,15 +21,15 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /prove/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/prove/app.js?cb=851c6336">
-<link rel="modulepreload" href="/community-prove.js?cb=30714a9f">
+<link rel="modulepreload" href="/prove/app.js?cb=6632620a">
+<link rel="modulepreload" href="/community-prove.js?cb=e2a65259">
 <link rel="modulepreload" href="/prove/view.js?cb=f0f73815">
 <link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="/prove/tabmine.js?cb=761b1a36">
 <link rel="modulepreload" href="/prove/saltcore.js?cb=87770f39">
 <link rel="modulepreload" href="/prove/review.js?cb=a8c503cf">
-<link rel="modulepreload" href="/prove/chain.js?cb=8a988a34">
+<link rel="modulepreload" href="/prove/chain.js?cb=a282e227">
 <!-- preload:end -->
 <style>
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
@@ -765,6 +765,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
         <p class="hint" id="feed-idle" hidden>Quiet right now. <a href="/">A private deposit</a> starts the next proof.</p>
         <p class="eyebrow">Today's provers</p>
         <ol id="board"><li class="empty">Nobody yet. Be first.</li></ol>
+        <p class="hint" id="board-rate" hidden></p>
       </section>
       <section class="panel side" aria-labelledby="h-gpu" data-card="gpu">
         <p class="eyebrow"><span>NVIDIA GPU</span></p>
@@ -884,6 +885,6 @@ node tools/community-runner.mjs mirror   # no key: keeps the board public on Nos
 
 <div id="toast-container" class="toasts" popover="manual"></div>
 
-<script type="module" src="/prove/app.js?cb=851c6336"></script>
+<script type="module" src="/prove/app.js?cb=6632620a"></script>
 </body>
 </html>

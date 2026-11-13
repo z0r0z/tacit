@@ -1,12 +1,12 @@
 // /prove/: the network's blocks as they land, the proofs waiting and the provers making them, and this computer's own prover, started
 // and paused from here. The computer's tacit-prover (installed once with the line the page shows) answers on 127.0.0.1; the API's chain
 // (GET /prover/blocks) and proof pool, and the points service, say what the network did and what an address has made and been paid.
-import { cleanAddress, proveCommand, utcDay, mineLines, capOf } from '/community-prove.js?cb=30714a9f';
+import { cleanAddress, proveCommand, utcDay, mineLines, perPoint } from '/community-prove.js?cb=e2a65259';
 import { localState, jobView, headline, isPhone, isWindows, setupText, proverUpdate, updateText } from '/prove/view.js?cb=f0f73815';
 import { invaderSvg, gpuSvg } from '/prove/invader.js?cb=e8a5ec59';
 import { makeTabMiner, defaultThreads, maxThreads, GPU_LEVELS } from '/prove/tabmine.js?cb=761b1a36';
 import { HELPDESK, FETCH_CMD, cleanDesk, cleanStats, reviewView } from '/prove/review.js?cb=a8c503cf';
-import { short, cells, opsText, tac, rewardWei, ago, took, fresh, blockAgo, kindOf, KINDS, kindText, median, untilDayEnds, cleanBlock, cleanProof, cleanMiner } from '/prove/chain.js?cb=8a988a34';
+import { short, cells, opsText, tac, rewardWei, ago, took, fresh, blockAgo, kindOf, KINDS, kindText, median, untilDayEnds, cleanBlock, cleanProof, cleanMiner } from '/prove/chain.js?cb=a282e227';
 
 const API = 'https://api.tacit.finance', POINTS = 'https://tacit-points.onrender.com', LOCAL = 'http://127.0.0.1:47815';
 const SAVED_ADDR = 'tacit-prove-address';                          // shared with the keeper page's card
@@ -16,7 +16,7 @@ const get = (url, ms = 6000) => fetch(url, { cache: 'no-store', signal: AbortSig
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
 let desk = null, deskStats = null, reviewBusy = false;   // the code-review card: the prover's help desk job, and the help desk's stats
-let health = null, mine = null, pool = null, points = null, tally = null, busy = false, copied = false, salts = null, cross = [], rollup = [], misses = 0;
+let health = null, mine = null, pool = null, points = null, tally = null, boardDay = null, busy = false, copied = false, salts = null, cross = [], rollup = [], misses = 0;
 // The setup line's kind of computer, from the browser; the switch above the line changes it (setting up another computer).
 let os = isWindows(navigator.userAgent) ? 'win' : 'unix';
 const rateText = (r) => (r >= 1e6 ? `${(r / 1e6).toFixed(1)} M/s` : `${Math.round(r / 1e3)} k/s`);
@@ -29,7 +29,11 @@ const cleanPool = (p) => (p ? { queued: count(p.queued), leased: count(p.leased)
   done24h: count(p.done24h), miners24h: count(p.miners24h),
   top: (p.top || []).map(cleanMiner).filter(Boolean), terms: { pointsPerProof: count(p.terms?.pointsPerProof), proofsPerMinerDay: count(p.terms?.proofsPerMinerDay) } } : null);
 const me = () => addr()?.toLowerCase() || null;
-const cap = () => capOf(points);
+// What a point earned today is paid so far (perPoint): the day's amount over today's proof points, the pool's tally and the board's, never
+// more than the cap. Unknown until the pool's tally of today is read; a board tally not read yet counts nothing.
+const sumPoints = (ms) => ms.reduce((s, m) => s + m.points, 0);
+const dayPoints = () => (tally && Number(tally.day) === utcDay() ? sumPoints(tally.miners) + (boardDay?.day === utcDay() ? boardDay.points : 0) : null);
+const pointRate = () => perPoint(points, dayPoints());
 // A node's face: the zOrgz invader its address picks (invader.js), or Tacit's GPU's own. An image, so each picture keeps its own gradient.
 const faces = new Map();
 const face = (a, px = 18) => {
@@ -68,7 +72,9 @@ addEventListener('tacit:prove-wallet', (e) => {
 let pointsFor = null;
 async function readRemote() {
   const a = addr();
-  const [m, t] = await Promise.all([get(`${POINTS}/mine${a ? `?address=${a.toLowerCase()}` : ''}`), get(`${API}/prover/pool/credits?day=${utcDay()}`)]);
+  const d = utcDay();
+  const [m, t, b] = await Promise.all([get(`${POINTS}/mine${a ? `?address=${a.toLowerCase()}` : ''}`), get(`${API}/prover/pool/credits?day=${d}`), get(`${API}/prover/board/credits?day=${d}`)]);
+  if (b && Array.isArray(b.miners)) boardDay = { day: d, points: sumPoints(b.miners.map(cleanMiner).filter(Boolean)) };
   if (a !== addr()) return;
   // A read that fails keeps what the last one said for the same address, so one missed answer does not blank the TAC figures.
   const same = a === pointsFor;
@@ -168,7 +174,8 @@ function paintDetail() {
   const d = $('#detail'), b = blocks.find((x) => x.height === picked);
   d.hidden = !b;
   if (!b) return;
-  const r = b.prover ? rewardWei(b.points, cap()) : null;
+  // A block of today's at today's rate; one from an earlier day by its points (its day's rate is not read here).
+  const r = b.prover && ethHead != null && b.ethBlock && Date.now() - (ethHead - b.ethBlock) * 12_000 >= utcStart() ? rewardWei(b.points, pointRate()) : null;
   d.innerHTML = `<div class="rows flat num">
     <div class="kv"><span>Block</span><b>#${b.height.toLocaleString('en-US')}</b></div>
     <div class="kv"><span>What it did</span><b>${esc(kindText(b))}<small>${esc(opsText(b))}${KINDS[kindOf(b)].href ? ` · <a href="${KINDS[kindOf(b)].href}">${esc(KINDS[kindOf(b)].act)}</a>` : ''}</small></b></div>
@@ -197,7 +204,7 @@ const zeroBytes = (bits) => { const n = Math.floor(bits / 8); return `${n} leadi
 // UTC day is already paid (its day's weight is not known here).
 const utcStart = () => Date.now() - (Date.now() % 86400000);
 function saltAward(f) {
-  const cp = cap(), total = Math.floor(salts?.weight || 0);
+  const cp = pointRate(), total = Math.floor(salts?.weight || 0);
   if (f.house || !cp || !total || !salts?.pointsPerDay || (f.at != null && f.at < utcStart())) return null;
   const w = 2 ** Math.min(f.bits - (salts.minBits ?? 26), salts.maxWeightBits ?? 20);
   return w >= 1 ? (BigInt(salts.pointsPerDay) * BigInt(Math.round(w)) * BigInt(cp)) / BigInt(total) : null;
@@ -226,7 +233,8 @@ function paintFeed() {
     const top = p.kind === 'salt' ? saltTop : feedTop, fresh = top > 0 && p.at > top;
     const award = p.kind === 'salt' ? saltAward(p) : null;
     if (p.kind === 'salt') return `<li class="${['salt', fresh ? 'new' : '', mine ? 'me' : ''].filter(Boolean).join(' ')}"${mine ? ' title="Your node"' : ''}><span class="by">${byOf(p, false)}<small>good salt, ${Math.floor(p.bits / 8)} zero bytes</small></span><b${award ? ' title="Its part of today\'s salt pot so far, paid after the day ends"' : ''}>${esc(awardText(award))}</b><small>${esc(ago(p.at))}</small></li>`;
-    const r = rewardWei(p.points, cap());
+    // A proof of today's at today's rate so far; one from an earlier UTC day is already paid, at its day's rate (not read here).
+    const r = p.at >= utcStart() ? rewardWei(p.points, pointRate()) : null;
     return `<li class="${[fresh ? 'new' : '', mine ? 'me' : ''].filter(Boolean).join(' ')}"${mine ? ' title="Your node"' : ''}><span class="by">${byOf(p, false)}<small>a deposit, proved in ${esc(took(p.secs))}</small></span><b>${r ? `+${tac(r)} TAC` : ''}</b><small>${esc(ago(p.at))}</small></li>`;
   }).join('');
 }
@@ -275,12 +283,16 @@ function paintNet() {
   paintBoard();
 }
 
-// Today's provers: their proofs, the TAC those earn and how fast they usually prove (from the newest proofs).
+// Today's provers: their proofs, the TAC those earn at today's rate so far and how fast they usually prove (from the newest proofs), and
+// under them how the day's TAC is shared.
 function paintBoard() {
   const top = pool?.top || [], pts = new Map((tally?.miners || []).map((m) => [String(m.miner).toLowerCase(), m.points]));
+  const per = pointRate(), daily = points?.terms?.dailyWei, said = per && /^[1-9]\d*$/.test(String(daily ?? ''));
+  $('#board-rate').hidden = !said;
+  if (said) $('#board-rate').textContent = `${Number(tac(daily, 0)).toLocaleString('en-US')} TAC a day, shared by points: ${tac(per, 4)} TAC a point so far`;
   if (!top.length) { if (!$('#board .empty')) $('#board').innerHTML = '<li class="empty">Nobody yet. Be first.</li>'; return; }
   const row = (m, i) => {
-    const r = rewardWei(pts.get(String(m.miner).toLowerCase()), cap()), s = median(feed.filter((p) => p.miner === m.miner).map((p) => p.secs));
+    const r = rewardWei(pts.get(String(m.miner).toLowerCase()), per), s = median(feed.filter((p) => p.miner === m.miner).map((p) => p.secs));
     return `<li${m.miner === me() ? ' class="me"' : ''}><span class="rk num">${i + 1}.</span>${who(m.miner)}<small>${m.proofs} ${m.proofs === 1 ? 'proof' : 'proofs'}</small><b>${r ? `${tac(r)} TAC` : ''}</b><small class="spd">${s ? `${esc(took(s))} each` : '–'}</small></li>`;
   };
   const mine = me() ? top.findIndex((m) => m.miner === me()) : -1;
@@ -290,7 +302,7 @@ function paintBoard() {
 // The prover pot (GET /mine pocket): what the campaign has paid and what is left.
 function paintPot() {
   // What a computer can expect: how long a proof takes the community (the middle of the newest, Tacit's own left out), and the salt pot's day.
-  const secs = median(feed.filter((p) => !p.house && p.secs).map((p) => p.secs)), sp = salts?.pointsPerDay ? rewardWei(salts.pointsPerDay, cap()) : null;
+  const secs = median(feed.filter((p) => !p.house && p.secs).map((p) => p.secs)), sp = salts?.pointsPerDay ? rewardWei(salts.pointsPerDay, pointRate()) : null;
   $('#typ-row').hidden = !secs; if (secs) $('#typ').textContent = took(secs);
   $('#saltpot-row').hidden = !sp; if (sp) $('#saltpot').textContent = `up to ${tac(sp)} TAC, shared by work`;
   const k = points?.pocket, ok = k && /^\d+$/.test(String(k.remainingWei)) && /^\d+$/.test(String(k.creditedWei));
@@ -319,7 +331,7 @@ function paint() {
   // A proof this computer just had taken: the reward it won, for a moment.
   if (mine && typeof mine.proved === 'number') {
     if (lastProved != null && mine.proved > lastProved) {
-      const r = rewardWei(pool?.terms?.pointsPerProof, cap()), w = $('#win');
+      const r = rewardWei(pool?.terms?.pointsPerProof, pointRate()), w = $('#win');
       w.textContent = r ? `+${tac(r)} TAC` : 'Proved';
       w.classList.remove('go'); void w.offsetWidth; w.classList.add('go');
       readRemote(); readFeed();
@@ -342,11 +354,11 @@ function paint() {
   $('#copy').textContent = addr() ? words.button : words.need;
   $('#setup-hint').textContent = words.hint;
   $('#cmd').textContent = proveCommand(addr());
-  const l = mineLines(pool, points, { tally, address: addr() });
+  const l = mineLines(pool, points, { tally, address: addr(), dayPoints: dayPoints() });
   $('#pays').textContent = l.pays || '—';
   paintPot();
   const mineRow = (tally?.miners || []).find((m) => String(m.miner).toLowerCase() === me());
-  const earned = mineRow ? rewardWei(mineRow.points, cap()) : null;
+  const earned = mineRow ? rewardWei(mineRow.points, pointRate()) : null;
   $('#today').textContent = mineRow ? `${mineRow.proofs} ${mineRow.proofs === 1 ? 'proof' : 'proofs'}${earned ? ` · ${tac(earned)} TAC` : ''}` : (l.today || '—');
   $('#today-row').hidden = !mineRow && !l.today;
   $('#payout-row').hidden = !mineRow;
@@ -356,9 +368,9 @@ function paint() {
   const mySecs = median(feed.filter((p) => String(p.miner).toLowerCase() === me()).map((p) => p.secs));
   const into = (Date.now() % 86_400_000) / 86_400_000;
   const rate = mineRow && into >= 1 / 12 ? Math.round(mineRow.proofs / into) : 0;
-  // What a proof has paid this address today on average (fewer points than the most a proof can earn once the day's pot is shared), else that most.
+  // What a proof has paid this address today on average, at today's rate so far, else what one proof pays at that rate.
   const perDay = rate ? Math.min(rate, pool?.terms?.proofsPerMinerDay || Infinity, mySecs ? Math.floor(86400 / mySecs) : Infinity) : null;
-  const per = earned && mineRow.proofs ? earned / BigInt(mineRow.proofs) : rewardWei(pool?.terms?.pointsPerProof, cap());
+  const per = earned && mineRow.proofs ? earned / BigInt(mineRow.proofs) : rewardWei(pool?.terms?.pointsPerProof, pointRate());
   $('#pace-row').hidden = !(perDay && per);
   if (perDay && per) $('#pace').textContent = `about ${tac(per * BigInt(perDay))} TAC a day (${perDay} proofs)`;
   const credited = points?.account?.creditedWei;
@@ -419,7 +431,7 @@ function say(text, bad = false) {
   s.classList.toggle('err', bad);
 }
 
-// The GPU card: the command for this address, what a Bitcoin batch pays (the board's points for it, at the most a point is paid today),
+// The GPU card: the command for this address, what a Bitcoin batch pays (the board's points for it, at what a point is paid today so far),
 // how many GPUs are on the board (asked for work in the last two minutes, or proving a batch: one asks for nothing while it proves), and
 // this address's own GPU (its board name is c-<address>).
 let boardPay = null, gpus = null, houseGpu = null;
@@ -434,8 +446,8 @@ const gpuCommand = () => `curl -fsSL https://tacit.finance/prove-gpu.sh | sh -s 
 function paintGpu() {
   $('#gpu-cmd').textContent = gpuCommand();
   $('#gpu-copy').textContent = gpuCopied ? 'Copied' : addr() || $('#desk').hidden ? 'Copy' : 'Add address';
-  const pts = Number(boardPay?.pointsByProgram?.[BTC]), r = Number.isSafeInteger(pts) ? rewardWei(pts, cap()) : null;
-  const bpts = Number(boardPay?.pointsByProgram?.[BLOCK]), br = Number.isSafeInteger(bpts) ? rewardWei(bpts, cap()) : null;
+  const pts = Number(boardPay?.pointsByProgram?.[BTC]), r = Number.isSafeInteger(pts) ? rewardWei(pts, pointRate()) : null;
+  const bpts = Number(boardPay?.pointsByProgram?.[BLOCK]), br = Number.isSafeInteger(bpts) ? rewardWei(bpts, pointRate()) : null;
   $('#btc-pay').textContent = r && br ? `${tac(r)} TAC a batch, ${tac(br)} a chain block` : r ? `${tac(r)} TAC each` : '';
   $('#gpu-n').textContent = gpus ? (houseGpu ? `${gpus.filter(gpuOn).length + 1} · Tacit's ${gpus.filter(gpuOn).length ? 'included' : 'own'}` : String(gpus.filter(gpuOn).length)) : '—';
   const g = gpus && me() ? gpus.find((x) => x.miner === me()) : null;
@@ -509,7 +521,7 @@ const saltRow = (b, cls = '') => {
   return `<li${c ? ` class="${c}"` : ''}><code title="${esc(b.address)}"><b>${esc(b.address.slice(0, 2 + z))}</b>${esc(b.address.slice(2 + z, 18))}…</code><small>${used ? `<a class="dep" href="https://etherscan.io/address/${esc(b.address)}" target="_blank" rel="noopener noreferrer">Deployed</a>` : ''}${b.house ? `<span class="who">${face(null)}Tacit GPU</span>` : b.miner ? who(b.miner) : ''}</small></li>`;
 };
 function paintSalt() {
-  const potWei = salts?.pointsPerDay ? rewardWei(salts.pointsPerDay, cap()) : null;
+  const potWei = salts?.pointsPerDay ? rewardWei(salts.pointsPerDay, pointRate()) : null;
   // What the day's proofs leave of the daily pot so far (worker/src/salt-pool.js): it shrinks as proofs come in, so "up to".
   $('#salt-pay').textContent = potWei ? ` · up to ${tac(potWei)} TAC today` : '';
   // A node from before salt mining, or before gentle mining, is told to run the setup line again: it installs the newest.
@@ -538,7 +550,7 @@ function paintSalt() {
   if (bank !== bankShown) { bankShown = bank; const at = box.scrollTop; box.innerHTML = bank; box.scrollTop = at; }   // rows with a picture each: drawn again only when they change, where the reader had scrolled to
   moreBelow();
   const rate = Number(mine?.salt?.rate), mineRow = (salts?.top || []).find((m) => m.miner.toLowerCase() === me());
-  const part = mineRow && salts.weight && salts.pointsPerDay ? rewardWei(Math.floor((salts.pointsPerDay * mineRow.weight) / salts.weight), cap()) : null;
+  const part = mineRow && salts.weight && salts.pointsPerDay ? rewardWei(Math.floor((salts.pointsPerDay * mineRow.weight) / salts.weight), pointRate()) : null;
   const on = mine?.salt?.on === true && Number.isFinite(rate) && rate > 0;
   $('#salt-row').hidden = !(on || mineRow);
   $('#salt').textContent = [mineRow ? `${(mineRow.shares || 0).toLocaleString('en-US')} shares` : null, part ? `${tac(part)} TAC so far` : null, on ? rateText(rate) : null].filter(Boolean).join(' · ') || '—';
@@ -586,7 +598,7 @@ function paintTab() {
   $('#tab-gpu-row').hidden = !gpuAble;
   for (const b of document.querySelectorAll('#tab-gpu-row [data-gpu]')) b.setAttribute('aria-pressed', String(b.dataset.gpu === (s.gpu.failed ? 'off' : tabGpu)));
   // what the pool has counted for the address today, and its part of the day's salt points so far; before the first share, about how long one takes
-  const part = s.today && salts?.weight && salts.pointsPerDay ? rewardWei(Math.floor((salts.pointsPerDay * s.today.weight) / Math.max(salts.weight, s.today.weight)), cap()) : null;
+  const part = s.today && salts?.weight && salts.pointsPerDay ? rewardWei(Math.floor((salts.pointsPerDay * s.today.weight) / Math.max(salts.weight, s.today.weight)), pointRate()) : null;
   const eta = s.rate ? Math.max(1, Math.round(2 ** (salts?.minBits || 26) / s.rate / 60)) : null;
   $('#tab-today').textContent = s.today?.shares ? [`${s.today.shares.toLocaleString('en-US')} ${s.today.shares === 1 ? 'share' : 'shares'}`, part ? `${tac(part) === '0' ? '< 0.01' : tac(part)} TAC so far` : null].filter(Boolean).join(' · ')
     : s.waiting ? 'First share found, sending' : s.paused ? '—' : eta ? `First share in about ${eta} min` : '—';
