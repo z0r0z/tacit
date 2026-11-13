@@ -9,6 +9,10 @@
 #   curl -s -X POST 127.0.0.1:47815/helpdesk -d '{"on":true,"api":"https://<the help desk API>"}'
 set -u
 BASE=https://github.com/ggml-org/llama.cpp/releases/download/b12211
+# llama.cpp's own Linux build needs glibc 2.38 (Ubuntu 24.04); the same release built on Ubuntu 22.04 (.github/workflows/build-llama-server.yml) serves
+# glibc 2.35 to 2.37, CPU and CUDA backends in one tarball, from Tacit's releases (HELPDESK_LLAMA_BASE is for tests)
+OWN_BASE=${HELPDESK_LLAMA_BASE:-https://github.com/z0r0z/tacit/releases/download/prover-bins-v22}
+OWN_LLAMA="llama-b12211-bin-ubuntu22-x64.tar.gz:ada10e00d6505e1e82fee4fa2e95b372a0ee0dc37e51cb5362c2b94dc5e8e3ae"
 MODEL_URL=${HELPDESK_MODEL_URL:-https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf}
 MODEL_SHA=${HELPDESK_MODEL_SHA:-00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4}; MODEL_SIZE=${HELPDESK_MODEL_SIZE:-2740937888}   # the three overrides are for tests
 D=${TACIT_PROVER_DIR:-$HOME/.tacit-prover}/helpdesk; mkdir -p "$D"
@@ -44,17 +48,22 @@ install_llama() {
   case "$(uname -s)-$(uname -m)" in
     Darwin-arm64) ASSETS="llama-b12211-bin-macos-arm64.tar.gz:4da4edb437358d31d55938ad849d262ca31b0e0ffb35e9caedb727a0cd5a8f0f";;
     Linux-x86_64)
-      # the prebuilt llama-server is built on Ubuntu 24.04: say so up front rather than let it fail at start
+      # llama.cpp's own build needs glibc 2.38 (Ubuntu 24.04, Debian 13, Fedora 39); 2.35 to 2.37 (Ubuntu 22.04, most rented GPU boxes) gets the
+      # same release built on 22.04; older is said up front rather than left to fail at start
       g=$(ldd --version 2>&1 | head -1 | grep -o '[0-9][0-9]*\.[0-9][0-9]*$')
-      [ -n "$g" ] && [ "$(printf '%s\n2.38\n' "$g" | sort -V | head -1)" = "2.38" ] || die "this llama.cpp build needs glibc 2.38 or newer (Ubuntu 24.04, Debian 13, Fedora 39); this system has ${g:-an unknown version}"
+      atleast() { [ -n "$g" ] && [ "$(printf '%s\n%s\n' "$g" "$1" | sort -V | head -1)" = "$1" ]; }
+      atleast 2.35 || die "llama.cpp needs glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36); this system has ${g:-an unknown version}"
       ldconfig -p 2>/dev/null | grep -q 'libgomp\.so\.1' || die "libgomp is missing: install it first (apt install libgomp1)"
       vram=0; command -v nvidia-smi >/dev/null && vram=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -dc 0-9)
-      if [ "${vram:-0}" -ge 6000 ]; then ASSETS="llama-b12211-bin-ubuntu-cuda-12.8-x64.tar.gz:103fac975e807da6cdb5717e87ca594e25bb7703dd8a7f10c22269c124e1a552 cudart-llama-b12211-bin-ubuntu-cuda-12.8-x64.tar.gz:d66dba34f0e45c66ce7d4484116c681aa71ff257ee1e47b02d9775aa59b5ef77"
+      CUDART="cudart-llama-b12211-bin-ubuntu-cuda-12.8-x64.tar.gz:d66dba34f0e45c66ce7d4484116c681aa71ff257ee1e47b02d9775aa59b5ef77"
+      if ! atleast 2.38; then ASSETS="$OWN_LLAMA"; [ "${vram:-0}" -ge 6000 ] && ASSETS="$ASSETS $CUDART"
+      elif [ "${vram:-0}" -ge 6000 ]; then ASSETS="llama-b12211-bin-ubuntu-cuda-12.8-x64.tar.gz:103fac975e807da6cdb5717e87ca594e25bb7703dd8a7f10c22269c124e1a552 $CUDART"
       else ASSETS="llama-b12211-bin-ubuntu-x64.tar.gz:962924b5431bc1237a9e5d26ba072d37b6fe05f79b495206e7ff6134887624c5"; fi;;
     *) die "this package supports macOS on Apple silicon and Linux x86_64";;
   esac
   mkdir -p "$D/llama"
-  for a in $ASSETS; do f=${a%%:*}; s=${a##*:}; say "downloading $f"; fetch_verified "$BASE/$f" "$D/$f" "$s"; tar -xzf "$D/$f" -C "$D/llama" && rm -f "$D/$f"; done
+  for a in $ASSETS; do f=${a%%:*}; s=${a##*:}; case $f in *-ubuntu22-*) from=$OWN_BASE;; *) from=$BASE;; esac
+    say "downloading $f"; fetch_verified "$from/$f" "$D/$f" "$s"; tar -xzf "$D/$f" -C "$D/llama" && rm -f "$D/$f"; done
   bin=$(find "$D/llama" -name llama-server -type f | head -1); [ -n "$bin" ] || die "llama-server not found in the download"
   chmod +x "$bin"; ln -sf "$bin" "$D/llama-server"; link_cuda_libs
 }

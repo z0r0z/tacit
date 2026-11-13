@@ -35,7 +35,9 @@
 // and each batch the relay takes earns that address the board's points for it (TAC from the points service). BTC_STATE=0 takes no
 // turns: a card under 24 GB, which the installer gives a smaller GPU server, proves the pool's wraps and presses alone. CONFIDENTIAL
 // (default 1) also races the board's public settle jobs, a person's press as it happens (programs gains "confidential"): the board gives
-// a ready community machine first pick of each before Tacit's own worker, and the first sound proof is the one the relay takes. The warm-up pings, which are
+// a ready community machine first pick of each before Tacit's own worker, and the first sound proof is the one the relay takes.
+// HELPDESK (default 1, community mode): between proofs the GPU runs the community help desk's jobs, code review and visitors' questions, on a
+// small local model, for the same address (helpdesk.rs); the model is stopped before every proof and the GPU is the prover's first. The warm-up pings, which are
 // for Tacit's own tokens, are off. Between jobs its spare CPU cores grind deploy salts for the same address (salt.rs; SALT_THREADS, half
 // the cores by default, 0 is off). Tacit's own box grinds too, earning nothing (the pool gives the house no weight), when SALT_MINER
 // names the house address (the deployer).
@@ -47,6 +49,7 @@
 //
 // The prover client and the proving key are built once: the cost of a proof on a warm GPU is the proof, not the start-up.
 
+mod helpdesk;
 mod salt;
 use std::time::{Duration, Instant};
 
@@ -229,6 +232,19 @@ fn main() {
     }
 
     warming.store(false, std::sync::atomic::Ordering::Relaxed);
+    // Between proofs a community machine reviews Tacit's code and answers help desk questions on its GPU (helpdesk.rs; HELPDESK=0 is off).
+    if let Some(miner) = community.as_ref() {
+        let api = env_or("HELPDESK_API", "https://tacit-helpdesk.onrender.com").trim_end_matches('/').to_string();
+        if env_or("HELPDESK", "1") != "1" {
+            println!("[{name}] help desk off (HELPDESK=0)");
+        } else if !helpdesk::api_ok(&api) {
+            println!("[{name}] help desk off: HELPDESK_API must be the help desk's own https:// address");
+        } else {
+            let dir = std::env::var("HELPDESK_DIR").ok().filter(|d| !d.is_empty()).map(std::path::PathBuf::from)
+                .unwrap_or_else(|| std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/root".into())).join(".tacit-gpu"));
+            helpdesk::start(helpdesk::Cfg { miner: miner.clone(), gpu: env_or("GPU_DEVICE", "0"), dir, api });
+        }
+    }
     let reload_flag = env_or("RELOAD_FLAG", "/workspace/worker.reload");
     let reload_due = || std::path::Path::new(&reload_flag).exists();
     let (claim_url, result_url) = if community.is_some() {
@@ -399,10 +415,12 @@ fn main() {
                                 pool_rest_day = Some(today);
                                 println!("[{name}] the pool pays this address nothing more today: proving the wrap in hand, then none until 00:00 UTC");
                             }
+                            let hold = helpdesk::hold();   // the review model gives the GPU back before the proof starts
                             let outcome = pool_prove(&agent, &base, &l, &pool_lease_file, &job_since, |stdin| {
                                 let p = client.prove(&pk, stdin).groth16().cycle_limit(512_000_000).run().map_err(|e| format!("groth16 proof failed: {e}"))?;
                                 Ok((p.public_values.as_slice().to_vec(), p.bytes()))
                             });
+                            drop(hold);
                             quiet = 0;
                             jobs_done += 1;
                             pool_hour.push_back(Instant::now());
@@ -444,6 +462,7 @@ fn main() {
         let is_btc = job.program.as_deref() == Some("btc-state");
         job_limit.store(if is_btc { btc_limit } else { default_limit }, std::sync::atomic::Ordering::Relaxed);
         job_since.store(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(1).max(1), std::sync::atomic::Ordering::Relaxed);
+        let hold = helpdesk::hold();   // the review model gives the GPU back before the proof starts
         // The job: its input decoded, proved within its cycle limit → (public values, the proof as the board takes it: the hex of the
         // bytes settle() takes for the pool's guest, the base64 of the saved compressed proof for the Ethereum-state guest).
         let outcome: Result<(Vec<u8>, String), String> = (|| {
@@ -469,6 +488,7 @@ fn main() {
             Ok((proof.public_values.as_slice().to_vec(), format!("0x{}", hex::encode(proof.bytes()))))
         })();
         job_since.store(0, std::sync::atomic::Ordering::Relaxed);
+        drop(hold);
         board_last = Instant::now();
         let body = match &outcome {
             Ok((pv, proof)) => {
