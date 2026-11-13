@@ -11456,7 +11456,7 @@ await step('heldborrow', async () => {
 // in and forgotten once it is repaid, both go into the shared journal under their names, and a relay that will not take it sends the holder on.
 await step('vaultborrow', async () => {
   const r = await openPage({ account: A0, key: K0 });
-  await r.page.route(/\/confidential-pool-ux\.js\?cb=/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: `
+  await r.page.route(/\/confidential-pool-ux\.js(\?cb=[0-9a-f]+)?$/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: `
     import * as real from '/confidential-pool-ux.js?stub=real';
     export * from '/confidential-pool-ux.js?stub=real';
     export function makeConfidentialPoolUx(o) {
@@ -11556,7 +11556,7 @@ await step('vaultborrow', async () => {
 // answered here.
 await step('rewardspriv', async () => {
   const r = await openPage({ account: A0, key: K0 });
-  await r.page.route(/\/confidential-pool-ux\.js\?cb=/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: `
+  await r.page.route(/\/confidential-pool-ux\.js(\?cb=[0-9a-f]+)?$/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: `
     import * as real from '/confidential-pool-ux.js?stub=real';
     export * from '/confidential-pool-ux.js?stub=real';
     export function makeConfidentialPoolUx(o) {
@@ -11618,7 +11618,7 @@ await step('rewardsout', async () => {
   await rpc('eth_sendTransaction', [{ from: RESERVE, to: WTAC_ADDR, data: '0x6e553f65' + word(wt) + addrWord(A0) }]);
   await rpc('anvil_stopImpersonatingAccount', [RESERVE]);
   const r = await openPage({ account: A0, key: K0 });
-  await r.page.route(/\/confidential-pool-ux\.js\?cb=/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: `
+  await r.page.route(/\/confidential-pool-ux\.js(\?cb=[0-9a-f]+)?$/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: `
     import * as real from '/confidential-pool-ux.js?stub=real';
     export * from '/confidential-pool-ux.js?stub=real';
     export function makeConfidentialPoolUx(o) {
@@ -11682,7 +11682,7 @@ await step('rewardsjoin', async () => {
   const prog = await fetch('https://api.tacit.finance/farm/program?network=mainnet').then((x) => x.json());
   const pool = prog.pools.find((p) => p.reserves?.assetA && Number(p.tacPerDayForPool) > 0), A = String(pool.reserves.assetA).toLowerCase(), B = String(pool.reserves.assetB).toLowerCase();
   const r = await openPage({ account: A0, key: K0 });
-  await r.page.route(/\/confidential-pool-ux\.js\?cb=/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: `
+  await r.page.route(/\/confidential-pool-ux\.js(\?cb=[0-9a-f]+)?$/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: `
     import * as real from '/confidential-pool-ux.js?stub=real';
     export * from '/confidential-pool-ux.js?stub=real';
     export function makeConfidentialPoolUx(o) {

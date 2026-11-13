@@ -14,14 +14,16 @@ import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js';
 import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=882f11ad';
 import { makeFastBridgeEvm } from '/fastbridge-evm.js?cb=51ba5880';
 import { makeHttpCounter, makeCounter } from '/fastbridge-http.js';
-import { makeFastBridgeMarket, makeLocalStore, termsOf } from '/fastbridge-client.js?cb=a59760d0';
+import { makeFastBridgeMarket, makeLocalStore } from '/fastbridge-client.js?cb=a59760d0';
 import { makeLpService } from '/fastbridge-provider.js?cb=20585d3a';
-import { makeMailboxCounter, makeMailboxServer, makeAdPublisher, readProviders, gatewayOf } from '/fastbridge-mailbox.js?cb=e88908a8';
+import { makeMailboxCounter, makeMailboxServer, makeAdPublisher, gatewayOf } from '/fastbridge-mailbox.js?cb=e88908a8';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=850e1c5e';
 import { signSchnorr } from '/bulletproofs.js';
 import { makeBtcBind, openBoundNote, fastLaneNote, makePoolRoots } from '/btc-bind.js?cb=b686d883';
 import { p2trAddress } from '/crossout-notes.js?cb=c8534a8d';
 import { secp, sha256, keccak_256, hmac, hexToBytes } from '/vendor/tacit-deps.min.js';
+import { PROVIDER_DEFAULTS } from '/fast/discover.js?cb=d17ea9e5';
+export { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=d17ea9e5';
 
 export const TAC_ASSET = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
 export const EXPLORERS = ['https://mempool.space/api', 'https://blockstream.info/api'];
@@ -102,29 +104,6 @@ export function counterFor(ref, { fetchImpl = (...a) => fetch(...a), call = {} }
   if (ref && ref.kind === 'http') return makeHttpCounter({ base: ref.base, fetchImpl });
   if (ref && ref.kind === 'mailbox') return makeMailboxCounter({ board: makeBoardClient({ base: ref.boardBase, fetchImpl }), gateway: ref.gateway, ...call });
   return makeCounter(async () => ({ status: 503, body: { error: 'the provider is not reachable from here' } }));
-}
-
-// Every provider there is to bridge with: the ones that serve HTTP (checked against the key the page pins for each) and the ones on the
-// boards (their ads, checked). One entry for each provider key, the one that serves HTTP first.
-export async function discoverProviders({ providers = [], boards = [], fetchImpl = (...a) => fetch(...a), now }) {
-  const out = [];
-  await Promise.all(providers.map(async (p) => {
-    try {
-      const i = await makeHttpCounter({ base: p.base, fetchImpl }).info();
-      const claimPub = String(i.claimPub || '').toLowerCase();
-      if (p.claimPub && p.claimPub.toLowerCase() !== claimPub) return;
-      out.push({ id: claimPub, name: p.name || 'Provider', ref: { kind: 'http', base: p.base, claimPub }, terms: termsOf(i), http: true });
-    } catch { /* a provider that does not answer is not listed */ }
-  }));
-  await Promise.all(boards.map(async (boardBase) => {
-    try {
-      for (const p of await readProviders({ board: makeBoardClient({ base: boardBase, fetchImpl }), ...(now ? { now } : {}) })) {
-        out.push({ id: p.id, name: p.name, ref: { kind: 'mailbox', boardBase, gateway: p.ad.gateway, claimPub: p.ad.claimPub }, terms: termsOf(p.ad) });
-      }
-    } catch { /* a board that does not answer has no providers here */ }
-  }));
-  const seen = new Set();
-  return out.sort((a, b) => (b.http ? 1 : 0) - (a.http ? 1 : 0)).filter((p) => (seen.has(p.id) ? false : (seen.add(p.id), true)));
 }
 
 // A settle the relay proved but holds, sent from the Ethereum wallet the page is connected to: the wallet must be on mainnet (it is asked
@@ -379,10 +358,6 @@ export async function openBound({ T, withKey, ux, priv, pubHex, witnessBase = 'h
 }
 
 // ── the key's own provider ──
-
-// A provider's defaults, in base units of TAC (8 places): 0.30% and 1 TAC, from 10 to 1,000 TAC.
-// a flat fee of 0.1 TAC keeps the smallest bridge (10 TAC) at 1.3% with the default 0.3%, well inside the 5% a bridger's page accepts
-export const PROVIDER_DEFAULTS = { feeBps: 30, flatFee: 10_000_000n, minAmount: 1_000_000_000n, maxAmount: 100_000_000_000n };
 
 // Whether the one who provides is at the page: a tab that has been in the background for a while (a laptop closing, another tab) may not be
 // there to finish what it takes on, so it takes on nothing new until it is back. Swaps already under way are tended and answered all the same.

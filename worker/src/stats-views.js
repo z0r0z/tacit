@@ -1,11 +1,17 @@
 // Slim views of the /stats reading, each built once per reading from its JSON body.
 //
-// `eth`: the pool's ETH reading alone (its totals, its movements and its latest deposits), for the tETH page, which draws the pool's ETH history and
-// reads nothing else of /stats. The whole reading is about 1.6 MB (176 KB compressed), nearly all of it the per-device event series the stats page
-// keeps; this is about 6 KB compressed. It is the same `eth` object the whole reading carries, with the reading's time and block beside it.
+// `eth`: the pool's ETH reading alone (its totals and its movements), for the tETH page, which draws the pool's ETH history and reads nothing else
+// of /stats. It is the `eth` object the whole reading carries, with the reading's time and block beside it, less the per-deposit series (`ins`,
+// which the page does not read; its deposits are among the movements), and with each movement's amount a plain decimal string, not { $n: "…" }.
+const plain = (v) => (v && typeof v === 'object' && '$n' in v ? v.$n : v);
 export function ethStatsBody(body) {
-  const j = JSON.parse(body);
-  return JSON.stringify({ eth: j.eth ?? null, at: j.at ?? null, block: j.block ?? null });
+  const j = JSON.parse(body), e = j.eth;
+  let eth = e ?? null;
+  if (e && typeof e === 'object' && e.series) {
+    const { series, ...rest } = e, { ins, ...kept } = series, f = series.flows;
+    eth = { ...rest, series: { ...kept, flows: Array.isArray(f) ? f.map(([t, v]) => [t, plain(v)]) : f } };
+  }
+  return JSON.stringify({ eth, at: j.at ?? null, block: j.block ?? null });
 }
 
 // `page`: the whole reading for the stats page, with the device pools' per-event series gathered into time buckets. Those series are only drawn (the ETH chart's

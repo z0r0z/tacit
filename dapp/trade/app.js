@@ -5,7 +5,7 @@ import {
   makeEvmTradeVenues, zswapDeepLink, encErc20Approve, PRECISION_POOL, TAC_ERC20, TACIT_AMM, MULTICALL3, CETH_POOL_ASSET_ID, TAC_POOL_ASSET_ID, _internal,
 } from '/evm-trade-venues.js?cb=c9a3c2e7';
 import { DEPLOY_OVERRIDES } from '/confidential-deployments.generated.js';
-import { buildBook, planBuy, planSell as planBtcSell, ladderLevels } from '/btc-book.js?cb=3a43da09';
+import { buildBook, planBuy, planSell as planBtcSell, ladderLevels } from '/btc-book.js';
 import { decodeTape, chartBars, continuous, invert, ethLaneUsd, btcLaneUsd, candlesFromTrades, tradePrices, closeAt, volumeSince, gap, TAPE_FINE, TAPE_COARSE, TAPE_WORDS } from '/trade/tape.js?cb=a0713849';
 import { mountChart, fmtLocalStamp, fmtLocalTime } from '/trade/chart.js?cb=c0b1d232';
 import { mountDepth } from '/trade/depth.js?cb=d4130156';

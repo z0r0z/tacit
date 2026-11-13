@@ -87,7 +87,11 @@ async function readRemote() {
 
 // The chain, read often: a new block lands at the front of the strip. Once the strip is drawn only the newest few are asked for, and the
 // whole window again when every one of those is new (the API's `cross` list comes whole either way).
+let chainAt = 0;
 async function readChain() {
+  // after a long gap (a hidden tab shown again) the blocks that landed meanwhile are drawn in place, not as just landed
+  const late = Date.now() - chainAt > NEW_MS;
+  chainAt = Date.now();
   let c = await get(`${API}/prover/blocks?limit=${shownTop == null ? SHOW : FEW}`);
   if (shownTop != null && c?.blocks?.length >= FEW && fresh(c.blocks.map(cleanBlock).filter(Boolean), shownTop).length >= FEW) c = await get(`${API}/prover/blocks?limit=${SHOW}`);
   // No answer: the strip keeps its place and what it showed (it is not taken away, so nothing under it moves), and the stage says so once it has
@@ -111,7 +115,7 @@ async function readChain() {
   rollup = rb;
   const add = fresh(c.blocks, shownTop);
   if (!add.length && shownTop != null) { if (xcNew || rbNew) paintChain(new Set()); else paintAges(); return; }
-  const first = shownTop == null;
+  const first = shownTop == null || late;
   blocks = [...add, ...blocks].slice(0, SHOW);
   shownTop = blocks[0]?.height ?? shownTop;
   if (!first) landed = { b: blocks[0], at: Date.now() };
@@ -766,10 +770,11 @@ async function readDeployed() {
   }
 }
 async function readSalts() {
+  const bank = readBank();                                          // asked beside the summary, not after it
   const s = await get(`${API}/prover/salt`); if (s) salts = cleanSalts(s);
   saltsTried = true;
   paintCrowd();                                                     // the floor does not wait for the bank's reading below
-  await readBank();
+  await bank;
   paintSalt(); paintNet(); paintCrowd(); paintFeed();
   saltTop = Math.max(saltTop, goodSalts()[0]?.at || 0);
   const had = deployed.size;
@@ -789,17 +794,24 @@ async function copy() {
 }
 
 // The Relay and Bitcoin tabs' code (the wallet, the header relay, the board's settles) is most of the page's weight and most visitors never
-// open those tabs, so it loads when one opens, when the wallet chip is pressed, or once the page has settled.
-let opsLoad = null;
-const loadOps = () => (opsLoad ||= import('/prove/ops.js?cb=a0dbfd2b'));
+// open those tabs, so it loads when one opens, when the wallet chip is pressed, or when either is pointed at. A browser with a wallet to
+// connect again or a relay account (whose settles are sent or seen home from any tab) has it once the page has settled; a wallet connected
+// in another tab loads it here too.
+let opsLoad = null, opsReady = false;
+const loadOps = () => (opsLoad ||= import('/prove/ops.js?cb=a0dbfd2b').then((m) => { opsReady = true; return m; }));
+$('#wallet').title = 'Connect an Ethereum wallet to pay the network fee';
 $('#wallet').addEventListener('click', async (e) => {
-  if (opsLoad) return;                                             // loaded: ops.js has its own handler on the chip
+  if (opsReady) return;                                            // loaded: ops.js has its own handler on the chip
   e.preventDefault();
   await loadOps().catch(() => {});
   $('#wallet').click();
 }, { once: true });
+for (const el of [$('#wallet'), $('#tb-relay'), $('#tb-bitcoin')]) for (const ev of ['pointerenter', 'focus']) el.addEventListener(ev, () => { loadOps().catch(() => {}); }, { once: true });
+const OPS_KEYS = ['tacit-trade-wallet', 'tacit-relay-account-v1'];   // evm-wallet.js's remembered wallet, ops.js's relay account
+const opsWanted = () => { try { return OPS_KEYS.some((k) => localStorage.getItem(k)); } catch { return false; } };
 const whenIdle = (fn) => ('requestIdleCallback' in window ? requestIdleCallback(fn, { timeout: 8000 }) : setTimeout(fn, 4000));
-addEventListener('load', () => setTimeout(() => whenIdle(() => loadOps().catch(() => {})), 2500), { once: true });
+addEventListener('load', () => setTimeout(() => whenIdle(() => { if (opsWanted()) loadOps().catch(() => {}); }), 2500), { once: true });
+addEventListener('storage', (e) => { if (e.storageArea === localStorage && e.key === OPS_KEYS[0] && e.newValue) loadOps().catch(() => {}); });
 
 // The node's jobs as tabs: #tab=relay or #tab=bitcoin opens one (a link from a waiting lock carries need= and why= beside it), and the
 // other jobs' reads start the first time one of their tabs opens. Each card has its own link too, /prove/#<its data-card>: that opens
@@ -894,15 +906,27 @@ $('#chain').addEventListener('click', (e) => {
 
 try { const saved = localStorage.getItem(SAVED_ADDR); if (cleanAddress(saved)) $('#addr').value = saved; } catch {}
 paintMe();
-// One read that throws is let go: the next goes on at its time. `ms` may be a function, asked before each wait.
-const loop = (fn, ms, idle) => { const run = async () => { try { await fn(); } catch {} setTimeout(run, document.hidden ? idle : typeof ms === 'function' ? ms() : ms); }; run(); };
+// One read that throws is let go: the next goes on at its time. `ms` may be a function, asked before each wait. In a hidden tab a read after
+// the first waits, unless `always` says it is needed there too, and every read that waited runs as soon as the tab is shown again.
+const waiting = new Set();
+const loop = (fn, ms, idle, always) => {
+  let timer = 0, ran = false;
+  const run = async () => {
+    clearTimeout(timer); waiting.delete(run);
+    if (ran && document.hidden && !always?.()) waiting.add(run);
+    else { ran = true; try { await fn(); } catch {} }
+    timer = setTimeout(run, document.hidden ? idle : typeof ms === 'function' ? ms() : ms);
+  };
+  run();
+};
+document.addEventListener('visibilitychange', () => { if (!document.hidden) for (const run of [...waiting]) run(); });
 // The chain every six seconds, the pool and the feed every ten, the points service every half minute.
 loop(readChain, 6000, 30000);
 loop(readFeed, 10000, 60000);
 loop(async () => { const p = await get(`${API}/prover/pool`); if (p) pool = cleanPool(p); paintNet(); }, 10000, 60000);
 loop(readRemote, 30000, 120000);
 loop(readBoardPay, 60000, 300000);
-loop(readSalts, 30000, 120000);
+loop(readSalts, 30000, 120000, () => tab.state().on);              // a miner in this tab takes the pool's share threshold from it
 // The help desk is asked for its figures only once the code-review card is in view or about to be: a visit that never reaches the card says nothing to it.
 {
   let started = false;
@@ -945,5 +969,5 @@ if (isPhone(navigator.userAgent)) {
   paint();
   // The computer is read every two seconds: it is on this machine. With nothing answering after a few tries it is read every ten, and every
   // two again once the line is copied or the address changes (a prover may be about to start).
-  loop(async () => { await readLocal(); misses = health ? 0 : misses + 1; paint(); }, () => (misses > 5 ? 10000 : 2000), 10000);
+  loop(async () => { await readLocal(); misses = health ? 0 : misses + 1; paint(); }, () => (misses > 5 ? 10000 : 2000), 10000, () => true);
 }

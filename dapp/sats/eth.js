@@ -7,7 +7,7 @@
 
 import { makeEvmPoolZk } from '/evm-pool-zk.js';
 import { ETH_NODES, BASE_NODES, ROBINHOOD_NODES } from '/eth-nodes.js';
-import { evmPoolKeys, makeEvmPoolWallet, jsonRpc } from '/evm-pool-wallet.js?cb=62522386';
+import { evmPoolKeys, makeEvmPoolWallet, jsonRpc } from '/evm-pool-wallet.js?cb=504da3c7';
 import { vkHash } from '/evm-pool-zk-prover.js?cb=00ff69c2';
 import { poolRecipient } from '/pool-recipient.js';
 import { L2_BRIDGES } from '/evm-pool-gateway.js';

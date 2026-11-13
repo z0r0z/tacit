@@ -22,9 +22,9 @@
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://tacit-fast-board.onrender.com" crossorigin>
-<!-- preload-roots: /fast/app.js -->
+<!-- preload-roots: /fast/app.js | | /fast/wire.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/fast/app.js?cb=6b13ebf6">
+<link rel="modulepreload" href="/fast/app.js?cb=4ef45e20">
 <link rel="modulepreload" href="/trade/btc-session.js?cb=a2b723db">
 <link rel="modulepreload" href="/tab-key.js?cb=ec8829ac">
 <link rel="modulepreload" href="/prf-wallet.js">
@@ -43,42 +43,25 @@
 <link rel="modulepreload" href="/rpc-pace.js">
 <link rel="modulepreload" href="/trade/fmt.js?cb=172824e5">
 <link rel="modulepreload" href="/tacit-session.js?cb=4636e436">
-<link rel="modulepreload" href="/trade/poolux.js?cb=a61d0a42">
+<link rel="modulepreload" href="/trade/poolux.js?cb=59d125e5">
 <link rel="modulepreload" href="/fast/ui.js?cb=0d2021d8">
 <link rel="modulepreload" href="/fast/fmt.js">
 <link rel="modulepreload" href="/fast/route.js">
 <link rel="modulepreload" href="/fast/provide.js?cb=afe91e95">
 <link rel="modulepreload" href="/fast/bound.js?cb=862c8d6e">
-<link rel="modulepreload" href="/fast/wire.js?cb=8b24509f">
-<link rel="modulepreload" href="/bitcoin-taproot-wallet.js">
-<link rel="modulepreload" href="/adaptor-btc-tx.js">
-<link rel="modulepreload" href="/bulletproofs.js">
-<link rel="modulepreload" href="/bulletproofs-plus.js">
-<link rel="modulepreload" href="/fastbridge-btc.js?cb=882f11ad">
-<link rel="modulepreload" href="/btc-pool-zap.js">
-<link rel="modulepreload" href="/confidential-crosslane-guard.js">
-<link rel="modulepreload" href="/fastbridge-evm.js?cb=51ba5880">
-<link rel="modulepreload" href="/confidential-adaptor.js">
-<link rel="modulepreload" href="/adaptor-xswap.js">
-<link rel="modulepreload" href="/adaptor-signature.js">
-<link rel="modulepreload" href="/adaptor-btc-lock.js">
+<link rel="modulepreload" href="/fast/discover.js?cb=d17ea9e5">
 <link rel="modulepreload" href="/fastbridge-http.js">
 <link rel="modulepreload" href="/fastbridge-client.js?cb=a59760d0">
 <link rel="modulepreload" href="/fastbridge-bl.js">
-<link rel="modulepreload" href="/fastbridge-provider.js?cb=20585d3a">
-<link rel="modulepreload" href="/fastbridge-el.js">
+<link rel="modulepreload" href="/adaptor-xswap.js">
+<link rel="modulepreload" href="/bulletproofs.js">
+<link rel="modulepreload" href="/bulletproofs-plus.js">
+<link rel="modulepreload" href="/adaptor-signature.js">
+<link rel="modulepreload" href="/adaptor-btc-lock.js">
 <link rel="modulepreload" href="/fastbridge-mailbox.js?cb=e88908a8">
 <link rel="modulepreload" href="/sealed-request.js">
 <link rel="modulepreload" href="/fastbridge-board.js">
 <link rel="modulepreload" href="/fastbridge-board-client.js?cb=850e1c5e">
-<link rel="modulepreload" href="/btc-bind.js?cb=b686d883">
-<link rel="modulepreload" href="/crossout-notes.js?cb=c8534a8d">
-<link rel="modulepreload" href="/burn-deposit-bitcoin.js">
-<link rel="modulepreload" href="/confidential-pool.js">
-<link rel="modulepreload" href="/evm-confidential.js">
-<link rel="modulepreload" href="/burn-deposit-provenance.js">
-<link rel="modulepreload" href="/burn-deposit-assembler.js">
-<link rel="modulepreload" href="/confidential-crossout-consumer.js">
 <link rel="modulepreload" href="/fast/want.js?cb=1ab031d1">
 <!-- preload:end -->
 <style>
@@ -443,6 +426,28 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
     <details class="panel gate pv" id="ready" hidden></details>
     <details class="panel gate pv" id="provide" hidden></details>
   </main>
+<!-- warm:begin -->
+<template id="warm">
+<link rel="modulepreload" href="/fast/wire.js?cb=d51047c6">
+<link rel="modulepreload" href="/bitcoin-taproot-wallet.js">
+<link rel="modulepreload" href="/adaptor-btc-tx.js">
+<link rel="modulepreload" href="/fastbridge-btc.js?cb=882f11ad">
+<link rel="modulepreload" href="/btc-pool-zap.js">
+<link rel="modulepreload" href="/confidential-crosslane-guard.js">
+<link rel="modulepreload" href="/fastbridge-evm.js?cb=51ba5880">
+<link rel="modulepreload" href="/confidential-adaptor.js">
+<link rel="modulepreload" href="/fastbridge-provider.js?cb=20585d3a">
+<link rel="modulepreload" href="/fastbridge-el.js">
+<link rel="modulepreload" href="/btc-bind.js?cb=b686d883">
+<link rel="modulepreload" href="/crossout-notes.js?cb=c8534a8d">
+<link rel="modulepreload" href="/burn-deposit-bitcoin.js">
+<link rel="modulepreload" href="/confidential-pool.js">
+<link rel="modulepreload" href="/evm-confidential.js">
+<link rel="modulepreload" href="/burn-deposit-provenance.js">
+<link rel="modulepreload" href="/burn-deposit-assembler.js">
+<link rel="modulepreload" href="/confidential-crossout-consumer.js">
+</template>
+<!-- warm:end -->
 
   <!-- chrome:foot:begin -->
   <footer class="sf">
@@ -462,6 +467,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/fast/app.js?cb=6b13ebf6"></script>
+<script type="module" src="/fast/app.js?cb=4ef45e20"></script>
 </body>
 </html>

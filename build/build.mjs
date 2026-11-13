@@ -14,7 +14,7 @@
 // ../dapp/tacit.js (the application module), which imports from
 // ./vendor/tacit-deps.min.js.
 
-import { build } from 'esbuild';
+import { build, transformSync } from 'esbuild';
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { brotliCompressSync, brotliDecompressSync, constants as zlibConst } from 'node:zlib';
@@ -171,8 +171,8 @@ function updateCacheBust(htmlBytes, appJsBytes, prebootBytes) {
 const SATS_CB_FILES = ['sats/join-worker.js', 'sats/mix.js', 'sats/secret.js', 'sats/eth.js', 'sats/app.js', 'sats/index.html'];
 // The front page (dapp/index.html) and weld's stats and keeper pages each keep their imports in their inline module, so their tokens are rewritten before
 // those modules' CSP hashes are taken (updatePinnedCsp below).
-// (TAC's Bitcoin pool, tac/pool.js and what it loads, is hashed before the front page that loads it)
-const WELD_CB_FILES = ['btc-borrow.js', 'btcswap-page.js', 'walletconnect.js', 'evm-pool-sync-worker.js', 'holding-prove-worker.js', 'tac/sats.js', 'tac/claim.js', 'tac/pool.js', 'index.html', 'weld/stats/index.html'];
+// (TAC's Bitcoin pool, tac/pool.js and what it loads, and the sheets, front/sheets.js, are hashed before the front page that loads them)
+const WELD_CB_FILES = ['btc-borrow.js', 'btcswap-page.js', 'walletconnect.js', 'evm-pool-sync-worker.js', 'holding-prove-worker.js', 'tac/sats.js', 'tac/claim.js', 'tac/pool.js', 'front/sheets.js', 'index.html', 'weld/stats/index.html'];
 // dapp/pay/ and dapp/pay/eth/ are built the same way as weld: one page each, every import in its inline module.
 const PAY_CB_FILES = ['private-route.js', 'pay/index.html', 'pay/eth/index.html'];
 // dapp/tac/ holds TAC's Bitcoin pool, which TAC's page draws: pool.js lazy-imports sats.js and claim.js, so those are hashed first, then pool.js
@@ -192,7 +192,7 @@ const DISCORD_CB_FILES = ['discord/message.js', 'discord/holdings.js', 'discord/
 // dapp/face/ is the FACE RACE sale page: its config and drawing helpers, the catch-up recorder, then app.js, then the page.
 const FACE_CB_FILES = ['face/config.js', 'face/pixel.js', 'face/catchup.js', 'face/app.js', 'face/index.html'];
 // dapp/fast/ is where TAC on Bitcoin goes to the private balance through a provider: its wiring and its page logic first, then app.js, then the page.
-const FAST_CB_FILES = ['fast/want.js', 'fast/wire.js', 'fast/ui.js', 'fast/provide.js', 'fast/app.js', 'fast/index.html'];
+const FAST_CB_FILES = ['fast/want.js', 'fast/discover.js', 'fast/wire.js', 'fast/ui.js', 'fast/provide.js', 'fast/app.js', 'fast/index.html'];
 // dapp/chain/: the old /chain/ address, which app.js sends on to TAC's page, and live.js and ui.js, which TAC's page reads.
 const CHAIN_CB_FILES = ['chain/ui.js', 'chain/live.js', 'chain/app.js', 'chain/index.html'];
 // dapp/prove/ starts and pauses proving on this computer: its words, then app.js (which also takes community-prove.js), then the page.
@@ -252,6 +252,50 @@ function tacPageOf(text) {
   if ((text.match(desc) || []).length !== 2) throw new Error('index.html should have one description and one og:description: update tacPageOf in build/build.mjs');
   return text.replace(desc, (m, a, b) => `${a}${TAC_PAGE_DESC}${b}`)
     .replace('<head>', '<head>\n<!-- Made from /index.html by `npm run build` (build/build.mjs): edit that file, not this one. -->');
+}
+// The front page's sheets are front/sheets.js, which the page's module imports when one first opens (build/split-front.mjs made it).
+// Its install(ctx) takes the page's names it reads from ctx: by value on its first line, and as ctx.X for the page's let and var
+// bindings, so it sees them change. The page's sheetsCtx, between `// front-sheets:begin` and `// front-sheets:end`, is made here
+// from those two lists. A name sheets.js reads from the page without ctx, a name ctx carries that the page does not declare, and a
+// let or var taken by value fail the build, so a sheet cannot open into a ReferenceError or a stale value.
+const SHEETS_JS = join(DAPP_DIR, 'front', 'sheets.js'), SHEETS_BLOCK = /\/\/ front-sheets:begin\n[\s\S]*?\/\/ front-sheets:end/;
+const NOT_NAMES = new Set('await break case catch class const continue debugger default delete do else enum export extends false finally for function if implements import in instanceof interface let new null package private protected public return static super switch this throw true try typeof var void while with yield arguments eval undefined NaN Infinity __proto__'.split(' '));
+function frontSheets(write) {
+  if (!existsSync(SHEETS_JS)) return [];
+  const js = readFileSync(SHEETS_JS, 'utf8'), page = readFileSync(WELD_HTML, 'utf8');
+  const main = [...page.matchAll(/<script type="module">\n([\s\S]*?)<\/script>/g)].map((m) => m[1]).filter((t) => SHEETS_BLOCK.test(t));
+  if (main.length !== 1) throw new Error(`index.html: expected one inline module with the front-sheets block, found ${main.length}`);
+  const head = /^const \{ ([^}]*) \} = ctx;$/m.exec(js);
+  if (!head) throw new Error('front/sheets.js: install() does not start with `const { … } = ctx;`');
+  // esbuild's define replaces only the names sheets.js reads and does not declare; its copy also has no comments
+  const words = [...new Set(js.match(/[A-Za-z_$][\w$]*/g))].filter((w) => !NOT_NAMES.has(w));
+  const marked = transformSync(js, { format: 'esm', logLevel: 'silent', define: Object.fromEntries(words.map((w) => [w, `__front_free_${w}`])) }).code;
+  const free = [...new Set([...marked.matchAll(/__front_free_([A-Za-z_$][\w$]*)/g)].map((m) => m[1]))];
+  const byValue = head[1].split(',').map((x) => x.trim()).filter(Boolean);
+  const live = [...new Set([...marked.matchAll(/\bctx\.([A-Za-z_$][\w$]*)/g)].map((m) => m[1]))].sort();
+  const want = `// front-sheets:begin\nconst sheetsCtx = () => ({ ${[...byValue, ...live.map((x) => `get ${x}() { return ${x}; }`)].join(', ')} });\n// front-sheets:end`;
+  // which of those the page's module declares (define replaces only the names it does not), and which it declares with let or var:
+  // a let or var statement starts a line, and esbuild says which of the names in one are constant, imported or lexical
+  const names = [...new Set([...free, ...byValue, ...live])];
+  const probed = transformSync(`${main[0]}\nexport const __front_probe = [${names.join(', ')}];`, { format: 'esm', logLevel: 'silent', define: Object.fromEntries(names.filter((n) => !NOT_NAMES.has(n)).map((n) => [n, `__front_free_${n}`])) }).code;
+  const undeclared = new Set([...probed.slice(probed.lastIndexOf('__front_probe = [')).matchAll(/__front_free_([A-Za-z_$][\w$]*)/g)].map((m) => m[1]));
+  const inLetVar = new Set([...main[0].matchAll(/^(?:let|var)\s[\s\S]*?;$/gm)].flatMap((m) => m[0].match(/[A-Za-z_$][\w$]*/g)));
+  const maybe = byValue.filter((n) => !undeclared.has(n) && inLetVar.has(n));
+  const said = (tail) => { try { return transformSync(`${main[0]}\n${tail}`, { format: 'esm', logLevel: 'silent', logLimit: 0 }).warnings.map((w) => w.text); } catch (e) { if (!e.errors) throw e; return [...e.errors, ...(e.warnings || [])].map((w) => w.text); } };
+  const named = (texts, re) => new Set(texts.map((t) => re.exec(t)?.[1]).filter(Boolean));
+  const fixed = maybe.length ? named(said(`(() => { ${maybe.map((n) => `${n} = 0;`).join(' ')} });`), /^This assignment will throw because "(.+)" is (?:a constant|an import)$/) : new Set();
+  const lexical = maybe.length ? named(said(`var ${maybe.join(', ')};`), /^The symbol "(.+)" has already been declared$/) : new Set();
+  const esc = (n) => n.replace(/\$/g, '\\$');
+  const letOrVar = (n) => maybe.includes(n) && !fixed.has(n) && (lexical.has(n) ? !new RegExp(`^class\\s+${esc(n)}\\b`, 'm').test(main[0]) : !new RegExp(`^(?:async\\s+)?function\\s*\\*?\\s*${esc(n)}\\s*\\(`, 'm').test(main[0]));
+  const problems = [
+    ...free.filter((n) => !undeclared.has(n)).map((n) => `front/sheets.js reads ${n} from the page's module without ctx: add it to install's first line (or read it as ctx.${n} if it is a let or var)`),
+    ...[...byValue, ...live].filter((n) => undeclared.has(n)).map((n) => `front/sheets.js takes ${n} from ctx, but the page's module does not declare it`),
+    ...byValue.filter(letOrVar).map((n) => `front/sheets.js takes the page's let or var ${n} by value: read it as ctx.${n}`),
+  ];
+  if (problems.length) throw new Error(problems.join('\n    '));
+  if (SHEETS_BLOCK.exec(page)[0] === want) return [];
+  if (write) writeFileSync(WELD_HTML, page.replace(SHEETS_BLOCK, () => want));
+  return ['index.html sheetsCtx does not carry what front/sheets.js takes from ctx'];
 }
 function tacPage(write) {
   const want = tacPageOf(readFileSync(WELD_HTML, 'utf8')), got = existsSync(TAC_HTML) ? readFileSync(TAC_HTML, 'utf8') : null;
@@ -589,7 +633,7 @@ async function main() {
     if (gotCb !== wantCb) drift.push(`classic.html tacit.js ?cb=${gotCb} but sha256(dapp/tacit.js)=${wantCb}`);
     if (gotPreboot !== wantPreboot) drift.push(`classic.html preboot.js ?cb=${gotPreboot} but sha256(dapp/preboot.js)=${wantPreboot}`);
     if (gotSw !== wantSw) drift.push(`sw.js CACHE_VERSION suffix ${gotSw} but sha256(vendor‖prf-wallet)=${wantSw}`);
-    drift.push(...siteChrome(false), ...pageCacheBust(SATS_CB_FILES, false), ...pageCacheBust(REWARDS_CB_FILES, false), ...pageCacheBust(BRIDGE_CB_FILES, false), ...pageCacheBust(WELD_CB_FILES, false), ...pageCacheBust(TAC_CB_FILES, false), ...btcMarketCss(false), ...tethPageStyle(false), ...pageCacheBust(TRADE_CB_FILES, false), ...tradeAssetPages(false), ...pageCacheBust(VAULT_CB_FILES, false), ...pageCacheBust(TASKS_CB_FILES, false), ...pageCacheBust(DISCORD_CB_FILES, false), ...pageCacheBust(FACE_CB_FILES, false), ...pageCacheBust(FAST_CB_FILES, false), ...pageCacheBust(CHAIN_CB_FILES, false), ...pageCacheBust(PROVE_CB_FILES, false), ...pageCacheBust(HELP_CB_FILES, false), ...pageCacheBust(BUILD_CB_FILES, false), ...pageCacheBust(SWAP_CB_FILES, false), ...pageCacheBust(ETCH_CB_FILES, false), ...pageCacheBust(ASSETS_CB_FILES, false), ...pageCacheBust(SPLITTER_CB_FILES, false), ...pageCacheBust(RELAY_CB_FILES, false), ...pageCacheBust(PAY_CB_FILES, false));
+    drift.push(...siteChrome(false), ...frontSheets(false), ...pageCacheBust(SATS_CB_FILES, false), ...pageCacheBust(REWARDS_CB_FILES, false), ...pageCacheBust(BRIDGE_CB_FILES, false), ...pageCacheBust(WELD_CB_FILES, false), ...pageCacheBust(TAC_CB_FILES, false), ...btcMarketCss(false), ...tethPageStyle(false), ...pageCacheBust(TRADE_CB_FILES, false), ...tradeAssetPages(false), ...pageCacheBust(VAULT_CB_FILES, false), ...pageCacheBust(TASKS_CB_FILES, false), ...pageCacheBust(DISCORD_CB_FILES, false), ...pageCacheBust(FACE_CB_FILES, false), ...pageCacheBust(FAST_CB_FILES, false), ...pageCacheBust(CHAIN_CB_FILES, false), ...pageCacheBust(PROVE_CB_FILES, false), ...pageCacheBust(HELP_CB_FILES, false), ...pageCacheBust(BUILD_CB_FILES, false), ...pageCacheBust(SWAP_CB_FILES, false), ...pageCacheBust(ETCH_CB_FILES, false), ...pageCacheBust(ASSETS_CB_FILES, false), ...pageCacheBust(SPLITTER_CB_FILES, false), ...pageCacheBust(RELAY_CB_FILES, false), ...pageCacheBust(PAY_CB_FILES, false));
     drift.push(...pageImportMaps(false), ...pagePreloads(false), ...pageCacheBust(HARNESS_CB_FILES, false), ...tacPage(false));
     if (drift.length) {
       console.error('✗ cache-bust tokens or preload links are stale — run `npm run build` and commit the result:');
@@ -618,6 +662,8 @@ async function main() {
     console.log(`• header links and footer: ${chromeDrift.length ? `${chromeDrift.length} page(s) updated` : 'unchanged'}`);
     const satsDrift = pageCacheBust(SATS_CB_FILES, true);
     console.log(`• sats page cache-bust: ${satsDrift.length ? `${satsDrift.length} token(s) updated` : 'unchanged'}`);
+    const sheetsDrift = frontSheets(true);
+    console.log(`• front page sheets' ctx: ${sheetsDrift.length ? 'made again from front/sheets.js' : 'unchanged'}`);
     const weldDrift = pageCacheBust(WELD_CB_FILES, true);
     console.log(`• weld page cache-bust: ${weldDrift.length ? `${weldDrift.length} token(s) updated` : 'unchanged'}`);
     const tacDrift = pageCacheBust(TAC_CB_FILES, true);

@@ -1,13 +1,20 @@
-// worker/src/stats-views.js: the tETH page's slim reading is the whole reading's `eth` object and nothing else of its weight.
+// worker/src/stats-views.js: the tETH page's slim reading is the whole reading's `eth` object, less what the page does not read, and nothing else of its weight.
 import assert from 'node:assert/strict';
 import { ethStatsBody, pageStatsBody, bucketSeries, PAGE_BUCKETS } from '../worker/src/stats-views.js';
 
 let n = 0; const ok = (c, m) => { assert.ok(c, m); n++; console.log('  ok  ', m); };
 
-const whole = { at: 1760000000, block: 23600000, eth: { held: { $n: '10090000000000000000' }, deposits: 238, wallets: 65, series: { flows: [[1, { $n: '5' }], [2, { $n: '-3' }]], ins: [[2, 9]] } },
+const whole = { at: 1760000000, block: 23600000, eth: { inWei: { $n: '20000000000000000000' }, held: { $n: '10090000000000000000' }, outWei: { $n: '9910000000000000000' }, deposits: 238, lastAt: 1759990000, wallets: 65, unread: 0,
+  series: { ins: [[2, { $n: '9' }]], flows: [[1, { $n: '5' }], [2, { $n: '-3' }]] } },
   dev: [{ series: { ins: new Array(500).fill([1, 2, 3]) } }], link: { times: { a: [1] } }, tac: {}, btc: {}, pts: {} };
 const slim = JSON.parse(ethStatsBody(JSON.stringify(whole)));
-ok(JSON.stringify(slim.eth) === JSON.stringify(whole.eth), 'the pool\'s reading is carried whole: totals, flows and latest deposits');
+const { series: _s, ...totals } = whole.eth;
+ok(JSON.stringify({ ...slim.eth, series: undefined }) === JSON.stringify({ ...totals, series: undefined }), 'the pool\'s totals are carried as they are, in the same order');
+ok(Object.keys(slim.eth.series).join() === 'flows' && JSON.stringify(slim.eth.series.flows) === '[[1,"5"],[2,"-3"]]', 'its movements are carried in order, each amount a plain decimal string; the per-deposit series is left out');
+// the tETH page's reading of an amount (dapp/teth/read.js big()) takes either form
+const big = (x) => BigInt(x != null && typeof x === 'object' && '$n' in x ? x.$n : x ?? 0);
+ok(slim.eth.series.flows.every(([t, v], i) => t === whole.eth.series.flows[i][0] && big(v) === big(whole.eth.series.flows[i][1])), 'and each reads back to the same time and amount');
+ok(JSON.stringify(JSON.parse(ethStatsBody(JSON.stringify({ at: 1, eth: { held: { $n: '1' }, deposits: 0 } }))).eth) === '{"held":{"$n":"1"},"deposits":0}', 'a pool reading with no series is carried as it is');
 ok(slim.at === whole.at && slim.block === whole.block, 'with the time and block of the reading');
 ok(Object.keys(slim).sort().join() === 'at,block,eth', 'and nothing else');
 ok(ethStatsBody(JSON.stringify(whole)).length < JSON.stringify(whole).length / 4, 'it is a fraction of the whole reading');

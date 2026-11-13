@@ -10,7 +10,7 @@
 // into the second state (readBack), which the page's own wallet then takes in place of its own (adopt). Without `partial` a state
 // begun at a point (another page's) is completed here, before the balance is sent.
 import { makeEvmPoolZk } from '/evm-pool-zk.js?cb=2f062779';
-import { makeEvmPoolWallet, evmPoolKeys, jsonRpc, batchedRpc } from '/evm-pool-wallet.js?cb=62522386';
+import { makeEvmPoolWallet, evmPoolKeys, jsonRpc, batchedRpc } from '/evm-pool-wallet.js?cb=504da3c7';
 import { poseidon2, poseidon3, poseidon4, poseidon5, poseidon7 } from '/vendor/tacit-poseidon.min.js';
 
 const PO = { 2: poseidon2, 3: poseidon3, 4: poseidon4, 5: poseidon5, 7: poseidon7 };

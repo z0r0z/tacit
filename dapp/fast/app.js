@@ -2,12 +2,12 @@ import { openBtcWallet } from '/trade/btc-session.js?cb=a2b723db';
 import { isPasskeyAvailable } from '/prf-wallet.js';
 import { makeKeySession, signInSheet } from '/trade/key.js?cb=6fa82796';
 import { makeTacitSession } from '/tacit-session.js?cb=4636e436';
-import { getUx as loadUx, forgetUx } from '/trade/poolux.js?cb=a61d0a42';
+import { getUx as loadUx, forgetUx } from '/trade/poolux.js?cb=59d125e5';
 import { onMainnet, connectedInjected } from '/eth-nodes.js';
 import { mountFast } from '/fast/ui.js?cb=0d2021d8';
 import { mountProvide } from '/fast/provide.js?cb=afe91e95';
 import { mountBound } from '/fast/bound.js?cb=862c8d6e';
-import { openFast, openProvider, openBound, discoverProviders, PROVIDER_DEFAULTS } from '/fast/wire.js?cb=8b24509f';
+import { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=d17ea9e5';
 import { makeWants } from '/fast/want.js?cb=1ab031d1';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 
@@ -16,6 +16,11 @@ import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 // their ads on the boards it names. A provider run on this machine can be named in the address
 // (?lp=<url>&claimPub=<hex>&board=<url>) when the page is open from localhost.
 const TACIT_URL = '/tacit.js?cb=b45e21d5';
+// the bridge itself (the lock, the settle, the key's own provider) loads when a key opens; a touch on the page fetches its modules ahead
+let warmed = false;
+const warm = () => { if (warmed) return; warmed = true; const t = document.getElementById('warm'); if (t) document.head.append(t.content.cloneNode(true)); };
+const wire = () => { warm(); return import('/fast/wire.js?cb=d51047c6'); };
+for (const ev of ['pointerdown', 'focusin']) document.querySelector('main')?.addEventListener(ev, warm, { once: true });
 
 async function lists() {
   const q = new URLSearchParams(location.search);
@@ -89,7 +94,7 @@ ui = mountFast({
   root: document.getElementById('gate'), keyS, wants, notify, pinned: () => PIN, signIn,
   discover: async () => discoverProviders(await LISTS),
   open: async () => {
-    const pubHex = keyS.key.pubHex, priv = keyS.priv(), ux = await getUx();
+    const pubHex = keyS.key.pubHex, priv = keyS.priv(), [ux, { openFast }] = await Promise.all([getUx(), wire()]);
     return TS.withKey((T) => openFast({ T, withKey: (fn) => TS.withKey(fn, pubHex), ux, priv, pubHex, wallet: sendWallet, ask }), pubHex);
   },
 });
@@ -97,7 +102,7 @@ ui = mountFast({
 mountBound({
   root: document.getElementById('ready'), keyS,
   open: async () => {
-    const pubHex = keyS.key.pubHex, priv = keyS.priv(), ux = await getUx();
+    const pubHex = keyS.key.pubHex, priv = keyS.priv(), [ux, { openBound }] = await Promise.all([getUx(), wire()]);
     return TS.withKey((T) => openBound({ T, withKey: (fn) => TS.withKey(fn, pubHex), ux, priv, pubHex }), pubHex);
   },
 });
@@ -105,7 +110,7 @@ mountBound({
 const provide = mountProvide({
   base: PROVIDER_DEFAULTS, notify, ask: () => wants.ask(), root: document.getElementById('provide'), keyS, hasOpen, settings, waiting: () => wants.waiting(), signIn,
   open: async () => {
-    const pubHex = keyS.key.pubHex, priv = keyS.priv(), ux = await getUx(), { boards } = await LISTS;
+    const pubHex = keyS.key.pubHex, priv = keyS.priv(), [ux, { openProvider }] = await Promise.all([getUx(), wire()]), { boards } = await LISTS;
     return TS.withKey((T) => openProvider({ T, withKey: (fn) => TS.withKey(fn, pubHex), ux, priv, pubHex, boards, wallet: sendWallet, ask }), pubHex);
   },
 });
