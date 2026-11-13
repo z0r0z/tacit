@@ -39,5 +39,11 @@
     var parts = path.toLowerCase().replace(/^\/+|\/+$/g, '').split('/');
     var view = VIEWS.indexOf(parts[0]) !== -1 && parts.every(function (x) { return /^[a-z0-9-]+$/.test(x); });
     if (path !== '/') window.history.replaceState(null, '', '/' + q + (view && !h ? '#' + parts.join('/') : h));
+    // a link that opens a sheet: the sheets' code is asked for now, beside the page's module, not once the module reaches the link
+    if (window.location.hash.length > 1) {
+      var pre = document.createElement('link');
+      pre.rel = 'modulepreload'; pre.href = '/front/sheets.js?cb=f2e268f5';
+      document.head.appendChild(pre);
+    }
   } catch (e) { }
 })();

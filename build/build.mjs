@@ -172,7 +172,7 @@ const SATS_CB_FILES = ['sats/join-worker.js', 'sats/mix.js', 'sats/secret.js', '
 // The front page (dapp/index.html) and weld's stats and keeper pages each keep their imports in their inline module, so their tokens are rewritten before
 // those modules' CSP hashes are taken (updatePinnedCsp below).
 // (TAC's Bitcoin pool, tac/pool.js and what it loads, and the sheets, front/sheets.js, are hashed before the front page that loads them)
-const WELD_CB_FILES = ['btc-borrow.js', 'btcswap-page.js', 'walletconnect.js', 'evm-pool-sync-worker.js', 'holding-prove-worker.js', 'tac/sats.js', 'tac/claim.js', 'tac/pool.js', 'front/sheets.js', 'index.html', 'weld/stats/index.html'];
+const WELD_CB_FILES = ['btc-borrow.js', 'btcswap-page.js', 'walletconnect.js', 'evm-pool-sync-worker.js', 'holding-prove-worker.js', 'tac/sats.js', 'tac/claim.js', 'tac/pool.js', 'front/sheets.js', 'front-route.js', 'index.html', 'weld/stats/index.html'];
 // dapp/pay/ and dapp/pay/eth/ are built the same way as weld: one page each, every import in its inline module.
 const PAY_CB_FILES = ['private-route.js', 'pay/index.html', 'pay/eth/index.html'];
 // dapp/tac/ holds TAC's Bitcoin pool, which TAC's page draws: pool.js lazy-imports sats.js and claim.js, so those are hashed first, then pool.js
