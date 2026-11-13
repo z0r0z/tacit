@@ -6,6 +6,7 @@ import { makeFeed } from '/vault/feed.js?cb=6d915237';
 import { makePools } from '/vault/pools.js?cb=8c92fc24';
 import { makeVaultEngine, KIND, BATCH_MAX, StopWaiting } from '/vault/engine.js?cb=9e5ed096';
 import { makeConnect, UserStopped } from '/trade/connect.js?cb=f6c8f123';
+import { tabKeyRead } from '/tab-key.js?cb=ec8829ac';
 
 const $ = (s, r = document) => r.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -430,6 +431,7 @@ function showSide() {
   if (s === 'btc') {
     $('#wallet-chip').hidden = false;                                              // the same wallet posts a lock's bond, so its chip stays
     loadBtcSide();
+    if (tabKeyRead()) openMine(false);                                             // a Tacit wallet this tab has open shows its locks and loans at once
     return true;
   }
   renderAll();
@@ -446,14 +448,20 @@ document.addEventListener('click', (e) => {
   location.hash = tacHash;
   if (!tacHash) history.replaceState(null, '', location.pathname + location.search);
 });
-// The Bitcoin side's own position (vault/mine.js): loaded on the holder's first press, so the side reads nothing more until then
+// The Bitcoin side's own position (vault/mine.js): loaded on the holder's first press, or with the side when this tab already has a Tacit
+// wallet open, so the side reads nothing more until then
 const pickProvider = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : list[0]?.uuid; };
 let mineP = null;
+function openMine(press, btn = null) {
+  if (mineP) return;
+  if (btn) { btn.textContent = 'Opening…'; btn.disabled = true; }
+  mineP = import('/vault/mine.js?cb=75b346d1').then((m) => { m.mountMine($('#btc-mine'), { ticket: $('#btc-tk'), pick: pickProvider, wallet, W, connect: connectWallet }); if (press) $('#btc-mine [data-mine="open"]')?.click(); })
+    .catch((err) => { mineP = null; if (btn) { btn.textContent = 'Could not load. Try again'; btn.disabled = false; } console.warn('your position:', err?.message || err); });
+}
 $('#btc').addEventListener('click', (e) => {
   if (mineP || !e.target.closest('[data-mine="open"]')) return;
   e.stopImmediatePropagation();
-  mineP = import('/vault/mine.js?cb=4789a362').then((m) => { m.mountMine($('#btc-mine'), { ticket: $('#btc-tk'), pick: pickProvider, wallet, W, connect: connectWallet }); $('#btc-mine [data-mine="open"]')?.click(); })
-    .catch((err) => { mineP = null; console.warn('your position:', err?.message || err); });
+  openMine(true, e.target.closest('[data-mine="open"]'));
 });
 const refresh = () => load().catch((e) => { console.warn('vault read:', e?.message || e); if (!S.loaded) S.failed = true; }).then(() => { renderAll(); pools.read(); });
 

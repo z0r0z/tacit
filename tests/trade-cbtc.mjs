@@ -341,7 +341,7 @@ try {
   await p.click('.bsheet.top [data-in="known"], .bsheet.top [data-in="eth"]');
   await until(p, () => /Lock /.test(document.querySelector('#btc-mine')?.textContent || ''), null, 30000);
   const vm = (await text(p, '#btc-mine')).replace(/\s+/g, ' ');
-  ok(/cBTC, private0\.042/.test(vm) && /cUSD, private1,234/.test(vm) && /Loan900 cUSD/.test(vm) && /0\.05 BTC/.test(vm) && /0\.01 BTC/.test(vm) && !/0\.002 BTC/.test(vm),
+  ok(/cBTC, private0\.042/.test(vm) && /cUSD, private1,234/.test(vm) && /Loan900\.00 cUSD/.test(vm) && /0\.05 BTC/.test(vm) && /0\.01 BTC/.test(vm) && !/0\.002 BTC/.test(vm),
     `vault: the key's private cBTC and cUSD, its loan and its two live locks (${vm.slice(0, 220)})`);
   ok(!(await p.$('#btc-mine a')) && !!(await p.$('#btc-mine [data-mine="mint"]')) && !!(await p.$('#btc-mine [data-mine="bond"]')) && !!(await p.$('#btc-mine [data-mine="repay"]')) && (await p.getAttribute('#btc-tk [data-mine="tab"][data-t="borrow"]', 'aria-pressed')) === 'true',
     'vault: each lock\'s next step and the loan are done from here, with no link away, and the ticket opens on Borrow once there is cBTC to put up');
@@ -355,12 +355,12 @@ try {
   // a lock waiting for its bond: the bond is sized as the front page sizes it and paid in ETH from the connected wallet
   walletAccepts = false;
   await p.click('#btc-mine [data-mine="bond"]');
-  await until(p, () => /Cancelled in your wallet/.test(document.querySelector('#bm-status')?.textContent || ''), null, 30000)
+  await until(p, () => /Cancelled in your wallet|declined it straight away/.test(document.querySelector('#bm-status')?.textContent || ''), null, 30000)
     .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | status: ${await text(p, '#bm-status').catch(() => '?')} | sheets: ${await p.evaluate(() => [...document.querySelectorAll('.bsheet')].map((x) => x.textContent.replace(/\s+/g, ' ').slice(0, 80)).join(' || '))}`); });
   const asked = r.log.lastSend || {};
   ok(String(asked.to).toLowerCase() === '0x000000008ecd09f922c9fbbdd9aca5ae8f0bebfa' && String(asked.data).toLowerCase() === '0xc0e2d9a1' + '00'.repeat(31) + '04' && BigInt(asked.value) === 1287000000000000n,
     `vault: Post the bond asks the wallet for postEscrowWithETH on the lock, 1.1× the required wstETH in ETH (${JSON.stringify(asked)})`);
-  ok(/Cancelled in your wallet\. Nothing was sent/.test(await text(p, '#bm-status')) && !(await p.evaluate(() => (JSON.parse(localStorage.getItem('tacit-lite-activity-v1') || '{}').items || []).some((x) => /Post the bond/.test(x.label)))), 'vault: declined in the wallet, nothing is posted or journaled');
+  ok(/(Cancelled in your wallet|declined it straight away)\. Nothing was sent/.test(await text(p, '#bm-status')) && !(await p.evaluate(() => (JSON.parse(localStorage.getItem('tacit-lite-activity-v1') || '{}').items || []).some((x) => /Post the bond/.test(x.label)))), 'vault: declined in the wallet, nothing is posted or journaled');
   walletAccepts = true;
   await p.click('#btc-mine [data-mine="bond"]');
   await until(p, () => /Bond posted/.test(document.querySelector('#bm-status')?.textContent || ''), null, 30000);
@@ -371,12 +371,16 @@ try {
   await p.click('#btc-tk [data-mine="tab"][data-t="lock"]');
   await p.waitForSelector('#btc-tk .bm-lock');
   const dep = (await text(p, '#btc-tk .bm-lock')).replace(/\s+/g, ' ');
-  ok(/Your deposit addressCopy bc1qde/.test(dep) && /At the address0\.0006 BTC0\.00005 on its way/.test(dep) && /Kept for feesabout 0\.0000199 BTC/.test(dep), `vault: the deposit address, what it holds and what is on its way, and the fees a lock keeps back (${dep.slice(0, 220)})`);
+  ok(/Your deposit addressQRCopy bc1qde/.test(dep) && /At the address0\.0006 BTC0\.00005 on its way/.test(dep) && /Kept for feesabout 0\.00001851 BTC/.test(dep), `vault: the deposit address, what it holds and what is on its way, and the fees a lock keeps back (${dep.slice(0, 220)})`);
+  await p.click('#btc-tk [data-mine="qr"]');
+  await p.waitForSelector('#btc-tk .bm-qr svg.qr', { timeout: 10000 });
+  ok(/QR code of your deposit address/.test(await p.$eval('#btc-tk .bm-qr svg.qr', (x) => x.getAttribute('aria-label'))) && (await text(p, '#btc-tk [data-mine="qr"]')) === 'Hide QR', 'vault: the address shows as a QR code for a wallet on a phone');
+  await p.click('#btc-tk [data-mine="qr"]');
   const tlinks = await p.$$eval('#btc-tk a', (a) => a.map((x) => `${x.textContent}:${x.getAttribute('href')}`));
   ok(tlinks.join() === 'Send from a wallet in this browser →:/#lock', `vault: paying the address from a wallet in the browser is the front page's (${tlinks.join(' ') || 'no links'})`);
-  // Max is the exact sats the address holds less the fees (60,000 − 1,990 = 58,010), which a lock takes; a rounded figure it would refuse
+  // Max is the exact sats the address holds less the fees for its one confirmed coin (60,000 − 1,851 = 58,149), which a lock takes; a rounded figure it would refuse
   await p.click('#btc-tk [data-mine="lockmax"]');
-  ok(/Up to 0\.0005801 · Max/.test(dep) && (await p.inputValue('#bm-lock')) === '0.0005801', `vault: Max puts the exact sats the address can lock in the field (${await p.inputValue('#bm-lock')})`);
+  ok(/Up to 0\.00058149 · Max/.test(dep) && (await p.inputValue('#bm-lock')) === '0.00058149', `vault: Max puts the exact sats the address can lock in the field (${await p.inputValue('#bm-lock')})`);
   await p.fill('#bm-lock', '0.0006');
   await p.click('#btc-tk [data-mine="lockbtc"]');
   await until(p, () => /Wait for the deposit to confirm/.test(document.querySelector('#bm-status')?.textContent || ''), null, 20000);

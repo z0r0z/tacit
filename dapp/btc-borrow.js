@@ -29,17 +29,22 @@ export function borrowAt({ sats, usdBtc, pct }) {
 export const ESCROW = '0x000000008eCD09f922C9FbbDD9ACA5aE8F0beBfA', POST_ESCROW_WITH_ETH = 'c0e2d9a1';
 export const outpointOf = (t, lock) => t.pool.outpointKey('0x' + lock.lockTxid.match(/../g).reverse().join(''), lock.lockVout);
 export function bondGap(needWst, have) { const want = (BigInt(needWst) * 11n) / 10n, held = BigInt(have || 0); return { want, gap: want > held ? want - held : 0n }; }
-export function lockPad(recommended, estimates) {
-  const rate = Math.max(1, Math.ceil(recommended?.fastestFee || estimates?.['1'] || estimates?.['2'] || 5)), fee = (vb) => Math.max(500, vb * rate);
-  return BigInt(Math.ceil((546 + fee(200) + fee(11 + 2 * 68 + 43 + 31)) * 1.1));
+// What a lock costs on top of its amount: the reveal's dust output and fee, and the commit's fee for `coins` inputs (every coin the
+// address holds may be one), with a tenth to spare. `lockRate` is the fee rate it is sized with, which the lock is then sent at
+// (makeLoans().lock's `rate`), so the lock the page sized is the lock that is built.
+export const lockRate = (recommended, estimates) => Math.max(1, Math.ceil(recommended?.fastestFee || estimates?.['1'] || estimates?.['2'] || 5));
+export function lockPad(recommended, estimates, coins = 2) {
+  const rate = lockRate(recommended, estimates), fee = (vb) => Math.max(500, vb * rate), n = Math.max(1, Math.min(Number(coins) || 2, 20));
+  return BigInt(Math.ceil((546 + fee(LOCK_REVEAL_VB) + fee(11 + n * 68 + 43 + 31)) * 1.1));
 }
+const LOCK_REVEAL_VB = 212;
 export const bondCall = (t, lock) => ({ to: ESCROW, data: '0x' + POST_ESCROW_WITH_ETH + strip(outpointOf(t, lock)) });
 
 const strip = (h) => String(h).replace(/^0x/, '');
 const ZERO = '0x' + '0'.repeat(64);
 
 export function makeLoans({ sha256, hmac, secp, bytesToHex, hexToBytes, pubHex, noteRecovery = () => import('/cbtc-note-recovery.js'),
-  lockModule = () => import('/cbtc-lock-mint.js?cb=b746689c'), deployments = () => import('/confidential-deployments.js') }) {
+  lockModule = () => import('/cbtc-lock-mint.js?cb=6e5d5d31'), deployments = () => import('/confidential-deployments.js') }) {
   async function positions() {
     const { makeCdpPositionStore } = await import('/confidential-secret-store.js');
     return makeCdpPositionStore({ sha256, hmac, secp, curveOrder: secp.CURVE.n });
@@ -108,15 +113,55 @@ export function makeLoans({ sha256, hmac, secp, bytesToHex, hexToBytes, pubHex, 
     const [lm, dep] = await Promise.all([lockModule(), deployments()]);
     return { lm: lm.makeCbtcLockMint({ priv, pool: t.pool, cbtcAsset: t.pool.CBTC_ZK_ASSET_ID, hrp: 'bc', excludeOutpoints: [...dep.listProtectedOutpoints(), ...skip] }), dep };
   }
-  async function lock(t, priv, { sats, unconfirmed = [], say = () => {} }) {
-    say('Checking which of your outputs are already locks…');
-    await t.syncCbtcLockReservations(priv);
-    const { lm, dep } = await lockMaker(t, priv, unconfirmed);
-    say('Signing and broadcasting your lock…');
-    const res = await lm.lock({ amountSats: sats });
-    dep.protectOutpoint(res.lockTxid, res.lockVout, res.vBtc);
-    return { ...res, record: { lockTxid: res.lockTxid, lockVout: res.lockVout, vBtc: String(res.vBtc), anchor: { txid: res.anchor.txid, vout: res.anchor.vout }, at: Date.now() } };
+  // A lock is two Bitcoin transactions, and the first holds the lock's sats until the second spends it. Both are signed before
+  // either is sent and kept in this browser under the key until Bitcoin has the second, so a lock cut short between the two (a closed
+  // tab, a lost connection, a refusal) is sent again on a later visit rather than left where no page finishes it.
+  const signedKey = () => `tacit-cbtc-lock-signed-v1:${pubHex()}`;
+  const signedList = () => { try { const v = JSON.parse(localStorage.getItem(signedKey()) || '[]'); return Array.isArray(v) ? v : []; } catch { return []; } };
+  const signedPut = (list) => { try { if (list.length) localStorage.setItem(signedKey(), JSON.stringify(list)); else localStorage.removeItem(signedKey()); } catch {} };
+  const signedDrop = (lockTxid) => signedPut(signedList().filter((x) => x.lockTxid !== lockTxid));
+  const recordOf = (x) => ({ lockTxid: x.lockTxid, lockVout: x.lockVout, vBtc: String(x.vBtc), anchor: { txid: x.anchor.txid, vout: x.anchor.vout }, at: x.at || Date.now() });
+
+  // The kept locks, each sent again where it is not on Bitcoin yet. → { locked: [record], waiting: n }: the ones Bitcoin now has, and how
+  // many could not be finished or ruled out this time.
+  async function resumeLocks(t, priv) {
+    const list = signedList(), out = { locked: [], waiting: 0 };
+    if (!list.length) return out;
+    const { lm, dep } = await lockMaker(t, priv);
+    for (const x of list) {
+      let state;
+      try { state = await lm.finishLock(x); } catch { out.waiting++; continue; }
+      if (state === 'locked') { dep.protectOutpoint(x.lockTxid, x.lockVout, x.vBtc); out.locked.push(recordOf(x)); }
+      else dep.unprotectOutpoint(x.lockTxid, x.lockVout);
+      signedDrop(x.lockTxid);
+    }
+    return out;
   }
 
-  return { positions, nextKeyNonce, fresh, openArgs, opened, positionLeaf, repayArgs, repaid, mintArgs, lockMaker, lock };
+  // `rate` (sat/vB) is the fee rate the page sized the lock with (lockRate). A lock kept from an earlier press is finished first, and is
+  // what comes back (`resumed`) when it is: a second lock is not made beside it.
+  async function lock(t, priv, { sats, unconfirmed = [], rate = null, say = () => {} }) {
+    say('Checking which of your outputs are already locks…');
+    await t.syncCbtcLockReservations(priv);
+    const earlier = await resumeLocks(t, priv);
+    if (earlier.waiting) throw new Error('An earlier lock from this browser is still being sent to Bitcoin. Try again in a minute.');
+    if (earlier.locked.length) { const r = earlier.locked[earlier.locked.length - 1]; return { ...r, record: r, resumed: true }; }
+    const { lm, dep } = await lockMaker(t, priv, unconfirmed);
+    say('Signing and broadcasting your lock…');
+    let signed = null;
+    const keep = (s) => { signed = { ...s, at: Date.now() }; dep.protectOutpoint(s.lockTxid, s.lockVout, s.vBtc); signedPut([...signedList().filter((x) => x.lockTxid !== s.lockTxid), signed]); };
+    let res;
+    try { res = await lm.lock({ amountSats: sats, feeRate: rate, onSigned: keep }); }
+    catch (e) {
+      if (!signed) throw e;
+      // nothing of it reached Bitcoin: it is not kept, and the press can be made again
+      if ((await lm.txKnown(signed.commitTxid).catch(() => true)) === false) { signedDrop(signed.lockTxid); dep.unprotectOutpoint(signed.lockTxid, signed.lockVout); throw e; }
+      throw Object.assign(new Error('Your lock is signed but Bitcoin does not have all of it yet. It is kept in this browser and sent again on its own: read again in a minute, before locking again.'), { lockKept: true, cause: e });
+    }
+    signedDrop(res.lockTxid);
+    dep.protectOutpoint(res.lockTxid, res.lockVout, res.vBtc);
+    return { ...res, record: recordOf({ ...res, at: Date.now() }) };
+  }
+
+  return { positions, nextKeyNonce, fresh, openArgs, opened, positionLeaf, repayArgs, repaid, mintArgs, lockMaker, lock, resumeLocks };
 }

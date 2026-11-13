@@ -332,7 +332,7 @@ function mineSay(text, front = false) {
   el.hidden = !text;
   el.innerHTML = text ? `${esc(text)}${front ? ` <a href="${esc(typeof front === 'string' ? front : '/#bridge')}">Do it on the front page →</a>` : ''}` : '';
 }
-const loadMover = () => (MVP ||= import('/bridge/mover.js?cb=b9b127a3').then((m) => {
+const loadMover = () => (MVP ||= import('/bridge/mover.js?cb=59fccd5d').then((m) => {
   const b = $('#mine-mv');
   MV = m.mountMover({ repaint: () => { readMine.sig = null; readMine(); }, say: mineSay,
     onState: (on) => { if (b) { b.setAttribute('aria-pressed', String(on)); b.textContent = on ? 'Moving them on here' : 'Move them on here'; } } });

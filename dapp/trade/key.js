@@ -19,7 +19,7 @@ const writeJson = (k, v) => { try { v == null ? localStorage.removeItem(k) : loc
 // `moved(text)`: the wallet that opened the key has moved to another account or locked, and `text` says so. The page locks the key in full (what it
 // holds besides the session goes with it) and says it; a page that gives no `moved` has the session lock.
 // `ways` adds the ways in that need tacit.js, from a page that loads it: `btc(record)` opens a Bitcoin wallet (btc-session.js openBtcWallet) and
-// resolves to { mode: 'btc', priv, pubHex, address, btc }.
+// resolves to { mode: 'btc', priv, pubHex, address, btc }; `btcSeen()` says whether this browser has one, for the sign-in sheet.
 export function makeKeySession({ moved = null, ways = {} } = {}) {
   const evm = makeEvmWallet({ secp, sha256, keccak256: keccak_256, bytesToHex, hexToBytes, prfBytesToScalar, netName: 'mainnet' });
   let priv = null, key = null;
@@ -103,7 +103,7 @@ export function makeKeySession({ moved = null, ways = {} } = {}) {
     known: () => usable(ids().primary), other: () => usable(ids().other),
     // The wallet tacit.finance has open, when this page cannot open it (a Bitcoin wallet, a key saved in the browser).
     elsewhere: () => { const p = ids().primary; return p && !opens.has(p.mode) ? p : null; },
-    passkeyAvailable: () => isPasskeyAvailable(), ethAvailable: () => evm.available(), warm: () => evm.warm(),
+    passkeyAvailable: () => isPasskeyAvailable(), ethAvailable: () => evm.available(), warm: () => evm.warm(), btcSeen: ways.btcSeen,
     // the Ethereum wallet the key was opened with (null for a passkey, a pasted key or a Bitcoin wallet): a page's last-resort node for reads
     walletProvider: () => (key && key.mode === 'eth' ? evm.provider() : null),
     lock() { priv = null; key = null; tabKeyClear(); emit(); },

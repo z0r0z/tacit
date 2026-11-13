@@ -18,15 +18,18 @@ function esplora(pages) {
   };
 }
 
-await test('every lock above the dust band comes back oldest first, with its blinding anchor', async () => {
+await test('every lock above the dust band comes back oldest first, with its blinding anchor, and a payment that is not a reveal\'s is not one', async () => {
   const probe = makeBtcHistoryProvider({ sha256, fetchImpl: async () => ({ ok: false }) });
   const spk = probe.walletScripts(priv).lock, lock = hex(spk), h = hex(sha256(spk));
   const out = (value) => ({ scriptpubkey: lock, value });
   const other = { scriptpubkey: '0014' + '00'.repeat(20), value: 5000 };
+  const commit = { scriptpubkey: '5120' + '11'.repeat(32), scriptpubkey_type: 'v1_p2tr' }, wallet = { scriptpubkey: '0014' + '22'.repeat(20), scriptpubkey_type: 'v0_p2wpkh' };
   const txs = [
-    { txid: 'b2'.repeat(32), vin: [{ txid: 'c2'.repeat(32), vout: 0 }], vout: [other, out(30000)], status: { block_time: 2000 } },
-    { txid: 'd0'.repeat(32), vin: [{ txid: 'c9'.repeat(32), vout: 0 }], vout: [out(330)], status: { block_time: 1500 } },   // a Tacit note, not a lock
-    { txid: 'b1'.repeat(32), vin: [{ txid: 'c1'.repeat(32), vout: 0 }], vout: [other, out(20000)], status: { block_time: 1000 } },
+    { txid: 'e1'.repeat(32), vin: [{ txid: 'c8'.repeat(32), vout: 0, prevout: wallet }], vout: [other, out(40000)], status: { block_time: 2600 } },   // a plain payment to the same script
+    { txid: 'e0'.repeat(32), vin: [{ txid: 'c7'.repeat(32), vout: 0, prevout: commit }], vout: [out(50000), other], status: { block_time: 2500 } },   // at output 0, where a lock never is
+    { txid: 'b2'.repeat(32), vin: [{ txid: 'c2'.repeat(32), vout: 0, prevout: commit }], vout: [other, out(30000)], status: { block_time: 2000 } },
+    { txid: 'd0'.repeat(32), vin: [{ txid: 'c9'.repeat(32), vout: 0, prevout: commit }], vout: [other, out(330)], status: { block_time: 1500 } },   // a Tacit note, not a lock
+    { txid: 'b1'.repeat(32), vin: [{ txid: 'c1'.repeat(32), vout: 0, prevout: commit }], vout: [other, out(20000)], status: { block_time: 1000 } },
   ];
   const p = makeBtcHistoryProvider({
     sha256, bases: ['https://esplora.test/api'],

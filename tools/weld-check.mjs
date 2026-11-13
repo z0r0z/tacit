@@ -1858,7 +1858,8 @@ await step('hxborrowback', async () => {
     const pub = await p.evaluate(() => localStorage.getItem(Object.keys(localStorage).find((k) => k.startsWith('tacit-eth-identity-anchor:'))));
     await p.evaluate((x) => localStorage.setItem(`tacit-lite-cbtc-v1:${x}`, JSON.stringify({ lockTxid: 'cf'.repeat(32), lockVout: 1, vBtc: '20000', anchor: { txid: 'c0'.repeat(32), vout: 0 }, at: Date.now() })), pub);
     await p.evaluate(() => { location.hash = ''; location.hash = '#borrow'; });
-    await p.waitForSelector('#bw-bond, #bw-topup', { timeout: 120000 });
+    await p.waitForSelector('#borrow-body [data-act-open]', { timeout: 120000 });
+    ok(/Your bond is on its way/.test(await text(p, '#borrow-body')) && !(await p.$('#bw-bond, #bw-topup')), 'hxborrowback: the sheet says the bond is on its way too, with no button to post it again');
     await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
     await tabClick(p, 'borrow');
     await until(p, () => /Your bond is on its way/.test(document.querySelector('#hx-bw')?.textContent || ''), null, 300000)

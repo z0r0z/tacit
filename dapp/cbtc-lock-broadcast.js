@@ -25,13 +25,16 @@ export function makeCbtcLockBroadcast(prims) {
 
   const asScript = (s) => (typeof s === 'string' ? hexToBytes(s) : s);
 
-  return async function broadcastCbtcLockTx({ fundingPrevout, vBtc, lockVout, lockSpk, envelopeHex }) {
+  // `feeRate` (sat/vB) is the caller's when it has sized the lock with one; `onSigned({ commitTxid, commitHex, revealHex, lockTxid, lockVout })`
+  // is awaited once both transactions are signed and before either is sent, so a caller can keep them: a commit that is out without its
+  // reveal holds the lock's sats until that exact reveal spends it.
+  return async function broadcastCbtcLockTx({ fundingPrevout, vBtc, lockVout, lockSpk, envelopeHex, feeRate: givenRate = null, onSigned = null }) {
     const vSats = Number(vBtc);
     const lv = Number(lockVout);
     if (!Number.isInteger(lv) || lv < 1) throw new Error('cbtc-lock-broadcast: lockVout must be >= 1');
     if (!(vSats > 0)) throw new Error('cbtc-lock-broadcast: vBtc must be positive');
 
-    const feeRate = await getFeeRate('priority');
+    const feeRate = givenRate > 0 ? givenRate : await getFeeRate('priority');
     const wpkhSpk = p2wpkhScript(wallet.pub);
 
     // Commit output = P2TR(NUMS, envelopeScript) so the reveal can script-path-spend it, revealing the 0x66.
@@ -42,11 +45,12 @@ export function makeCbtcLockBroadcast(prims) {
     const p2trSpk = p2trScript(Q_xonly);
     const cb = controlBlock(TAP_NUMS, parity);
 
-    // Reveal vB: base envelope reveal (matches the bridge-deposit estimate) + one extra output (~43 vB) for
-    // the lock output beyond the vout-0 dust. The commit P2TR must fund the lock sats + vout-0 dust + reveal fee.
-    const revealVb = Math.ceil((envelopeScript.length + 200) / 4) + 31 + 11 + 43;
+    // Reveal vB, as it serializes: one input, `lv` dust outputs to the wallet and the lock output, and a witness of the signature, the
+    // envelope script and the control block. The commit P2TR must fund the lock sats + the dust outputs + the reveal fee.
+    const spk = asScript(lockSpk), sl = envelopeScript.length;
+    const revealVb = 51 + lv * 31 + 9 + spk.length + Math.ceil((102 + (sl < 253 ? 1 : 3) + sl) / 4);
     const revealFee = feeFor(revealVb, feeRate);
-    const commitP2trValue = vSats + DUST + revealFee;
+    const commitP2trValue = vSats + lv * DUST + revealFee;
 
     // Fund the commit — fundingPrevout FIRST (the blinding anchor), then add UTXOs for fees only if needed.
     const allUtxos = await getUtxos(wallet.address());
@@ -54,9 +58,11 @@ export function makeCbtcLockBroadcast(prims) {
     if (!fundUtxo) throw new Error('cbtc-lock-broadcast: funding prevout not found in wallet UTXOs');
     const picked = [fundUtxo]; let total = fundUtxo.value;
     let commitFee = feeFor(estCommitVb(1), feeRate);
-    for (const u of allUtxos) {
+    // Largest first, so the fewest inputs; a coin worth no more than its own input's fee is left where it is.
+    const inputFee = Math.ceil((estCommitVb(2) - estCommitVb(1)) * feeRate);
+    const rest = allUtxos.filter((u) => !(u.txid === fundingPrevout.txid && u.vout === fundingPrevout.vout) && u.value > inputFee).sort((a, b) => b.value - a.value);
+    for (const u of rest) {
       if (total >= commitP2trValue + commitFee + DUST) break;
-      if (u.txid === fundingPrevout.txid && u.vout === fundingPrevout.vout) continue;
       picked.push(u); total += u.value; commitFee = feeFor(estCommitVb(picked.length), feeRate);
     }
     if (total < commitP2trValue + commitFee) {
@@ -69,19 +75,21 @@ export function makeCbtcLockBroadcast(prims) {
       inputs: picked.map((u) => ({ txid: u.txid, vout: u.vout, sequence: 0xfffffffd, witness: [] })),
       outputs: commitOutputs };
     signCommitInputs(commitTx, picked, wpkhSpk);
-    await broadcast(bytesToHex(serializeTx(commitTx)));
     const commitTxid = txid(commitTx);
 
     // Reveal: spend commit vout0 (script-path, 0x66 in the witness). Outputs: vout0..lockVout-1 are dust to the
     // wallet, lockVout carries vBtc to the self-custody lockSpk.
     const outputs = [];
-    for (let i = 0; i <= lv; i++) outputs.push(i === lv ? { value: vSats, script: asScript(lockSpk) } : { value: DUST, script: wpkhSpk });
+    for (let i = 0; i <= lv; i++) outputs.push(i === lv ? { value: vSats, script: spk } : { value: DUST, script: wpkhSpk });
     const revealTx = { version: 2, locktime: 0,
       inputs: [{ txid: commitTxid, vout: 0, sequence: 0xfffffffd, witness: [] }], outputs };
     const prevouts = [{ value: commitP2trValue, script: p2trSpk }];
     revealTx.inputs[0].witness = signTaprootScriptPathInput(revealTx, prevouts, envelopeScript, cb);
-    await broadcastWithRetry(bytesToHex(serializeTx(revealTx)));
+    const commitHex = bytesToHex(serializeTx(commitTx)), revealHex = bytesToHex(serializeTx(revealTx)), lockTxid = txid(revealTx);
+    if (onSigned) await onSigned({ commitTxid, commitHex, revealHex, lockTxid, lockVout: lv });
+    await broadcastWithRetry(commitHex);
+    await broadcastWithRetry(revealHex);
 
-    return { lockTxid: txid(revealTx), lockVout: lv };
+    return { lockTxid, lockVout: lv, commitTxid };
   };
 }

@@ -3,7 +3,7 @@
 // wallet, which turns the wTAC into TAC), and a join with both sides (each cut to size by the relay if no note fits, then bonded at the pool's
 // ratio). Joining with one side (a swap first) and what only an unwrap sent yourself can do are the front page's: they link there.
 // Nothing here is loaded until the holder asks: this module, the key and the pool all come in on that press.
-import { makeKeySession, signInSheet } from '/trade/key.js?cb=b4ef0b7a';
+import { makeKeySession, signInSheet } from '/trade/key.js?cb=44e951ac';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=efc87cea';
 import { makeRunner } from '/activity.js?cb=a0384066';
 import { canHarvest, canUnbond, unharvested, locked, harvest, unbond, rewardNotes, relayable, redeem, wtacWithdrawCall, wtacBalanceCall, worthHarvesting, lpNotes, takeOut, HARVEST_WORTH, UNBOND_DUST, bFor, joinTerms, notesOf, exactOf, cutPick, cutSized, bond } from '/farm-ops.js?cb=28af38e1';
@@ -305,7 +305,7 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
     signInSheet(key, { pick, why: 'Open your Tacit wallet to see your private farm positions. Nothing is stored or sent.' }).then(() => read(), () => {});
   });
   key.onChange(() => { if (key.unlocked && D?.pub !== key.key.pubHex) read(); else paint(); });
-  paint();
+  if (key.unlocked) read(); else paint();
   // a farm picked elsewhere on the page: the join form opened on it, now or once the positions are read
   function choose(pid) {
     wanted = { pool: String(pid), open: true };

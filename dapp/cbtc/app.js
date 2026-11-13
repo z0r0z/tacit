@@ -7,7 +7,8 @@ import { sha256 } from '/vendor/tacit-deps.min.js';
 import { mountChart, fmtLocalStamp, fmtLocalTime } from '/trade/chart.js?cb=c0b1d232';
 import { makeConnect } from '/trade/connect.js?cb=f6c8f123';
 import { addrFlat } from '/address-view.js?cb=58dd4914';
-import { makeKeySession, signInSheet } from '/trade/key.js?cb=b4ef0b7a';
+import { makeKeySession, signInSheet } from '/trade/key.js?cb=44e951ac';
+import { btcWay, btcSeen } from '/trade/btc-way.js?cb=8cd735cf';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=efc87cea';
 import { readRates, readProgram, heldBars, rangesFor, barSize } from '/teth/read.js?cb=7aa845b7';
 import { totalsOf, readEngine, sizeBond, coverage, readPools, poolRows, farmApr, readLocks, readLoans, readHeld, readHistory, positionsIn, lockStep, CBTC_ID, ENGINE, WSTETH } from '/cbtc/read.js?cb=1b131187';
@@ -158,11 +159,11 @@ function renderRoute() {
 }
 
 // ── the key: sign in for the locks, the cBTC, the loans and the farm positions it holds ──
-const key = makeKeySession({ moved: () => lockKey() });
+const key = makeKeySession({ moved: () => lockKey(), ways: { btc: btcWay(), btcSeen } });
 const connect = makeConnect({ describe: 'Track cBTC', rows: () => (key.unlocked ? `<div class="kv"><span>Tacit wallet</span><b class="addr-s">${esc(key.key.address ? short(key.key.address, 6) : key.key.label || short(key.key.pubHex, 6))} <button class="linkbtn" type="button" id="sheet-lock">Lock</button></b></div>` : ''), onChange: () => {} });
 const { wallet, W } = connect;
 function pickProvider(list) { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : list[0]?.uuid; }
-const signIn = () => signInSheet(key, { pick: pickProvider, why: 'Sign in to see your locks, cBTC and loans. Nothing is stored or sent.' });
+const signIn = () => signInSheet(key, { pick: pickProvider, first: btcSeen() ? 'btc' : 'eth', why: 'Sign in to see your locks, cBTC and loans. Nothing is stored or sent.' });
 let mineSeq = 0, histP = null, mineP = null, mineFor = null;
 const btcHistory = () => (histP ||= import('/confidential-recovery-btc.js').then(({ makeBtcHistoryProvider }) => makeBtcHistoryProvider({ sha256, hrp: 'bc', fetchImpl: (u, o) => fetch(u, o) })).catch((e) => { histP = null; throw e; }));
 function loadMine(force = false) {
@@ -306,6 +307,7 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && $('#hint
 }
 
 renderRoute(); renderAbout(); renderLanes(); renderLocks(); renderUse(); renderChart();
+if (key.unlocked) loadMine();                                             // a Tacit wallet this tab already has open is read at once
 const totals = loadTotals().then(() => { renderHead(); renderBacking(); renderLocks(); });
 totals.catch(() => {}).then(() => loadHistory()).then(paintAll);          // the events are checked against the totals, so they follow them; the pools and farms need not come first
 Promise.allSettled([totals, loadChain().then(() => { renderHead(); renderBacking(); return loadPools(); }).then(paintAll)]).then(() => {

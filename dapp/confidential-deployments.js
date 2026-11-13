@@ -393,20 +393,22 @@ export async function copyToClipboard(text, btn) {
 
 
 const _PROTECTED_OUTPOINTS_KEY = 'tacit-protected-outpoints-v1';
-let _protectedOutpoints = null;
+// Read from storage each time: a lock made on another page or in another tab is seen here, and a write adds to what is there.
+// Where storage cannot be read, what this page set is kept in memory.
+let _protectedOutpoints = new Map();
 const _outpointKey = (txid, vout) => `${String(txid).replace(/^0x/, '').toLowerCase()}:${vout | 0}`;
 function _loadProtectedOutpoints() {
-  if (_protectedOutpoints) return _protectedOutpoints;
-  _protectedOutpoints = new Map();
   try {
-    const raw = JSON.parse(localStorage.getItem(_PROTECTED_OUTPOINTS_KEY) || '{}');
-    if (Array.isArray(raw)) for (const k of raw) _protectedOutpoints.set(String(k), '0');
-    else if (raw && typeof raw === 'object') for (const [k, v] of Object.entries(raw)) _protectedOutpoints.set(String(k), String(v ?? '0'));
+    const raw = JSON.parse(localStorage.getItem(_PROTECTED_OUTPOINTS_KEY) || '{}'), m = new Map();
+    if (Array.isArray(raw)) for (const k of raw) m.set(String(k), '0');
+    else if (raw && typeof raw === 'object') for (const [k, v] of Object.entries(raw)) m.set(String(k), String(v ?? '0'));
+    _protectedOutpoints = m;
   } catch { }
   return _protectedOutpoints;
 }
-function _saveProtectedOutpoints() {
-  try { localStorage.setItem(_PROTECTED_OUTPOINTS_KEY, JSON.stringify(Object.fromEntries(_loadProtectedOutpoints()))); } catch {}
+function _saveProtectedOutpoints(m) {
+  _protectedOutpoints = m;
+  try { localStorage.setItem(_PROTECTED_OUTPOINTS_KEY, JSON.stringify(Object.fromEntries(m))); } catch {}
 }
 export function isProtectedOutpoint(txid, vout) {
   return _loadProtectedOutpoints().has(_outpointKey(txid, vout));
@@ -416,11 +418,12 @@ export function protectOutpoint(txid, vout, vBtc = 0) {
   const k = _outpointKey(txid, vout);
   const sats = BigInt(vBtc || 0);
   m.set(k, (sats > 0n ? sats : BigInt(m.get(k) || 0)).toString());
-  _saveProtectedOutpoints();
+  _saveProtectedOutpoints(m);
 }
 export function unprotectOutpoint(txid, vout) {
-  if (!_loadProtectedOutpoints().delete(_outpointKey(txid, vout))) return;
-  _saveProtectedOutpoints();
+  const m = _loadProtectedOutpoints();
+  if (!m.delete(_outpointKey(txid, vout))) return;
+  _saveProtectedOutpoints(m);
 }
 export function listProtectedOutpoints() { return [..._loadProtectedOutpoints().keys()]; }
 export function listReservedLocks() {

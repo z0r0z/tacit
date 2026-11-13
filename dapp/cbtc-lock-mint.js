@@ -54,6 +54,20 @@ function makeEsplora(bases = [
       return txid;
     },
     fetchFeeRate: async (_tier) => { try { const j = await (await req('/fee-estimates')).json(); return Math.max(1, Math.ceil(j['2'] || j['3'] || j['6'] || 5)); } catch { return 5; } },
+    // Whether Bitcoin has a transaction, in a block or a mempool: true from the first mirror that has it, false once a mirror answers
+    // that it does not and none has it; it throws when no mirror answers.
+    txKnown: async (txid) => {
+      let missing = false, err = null;
+      for (const base of bases) {
+        try {
+          const r = await fetch(`${base}/tx/${txid}/status`, { signal: AbortSignal.timeout(8000) });
+          if (r.ok) return true;
+          if (r.status === 404) missing = true; else err = new Error(`${r.status}`);
+        } catch (e) { err = e; }
+      }
+      if (missing) return false;
+      throw err || new Error('esplora unavailable');
+    },
   };
 }
 
@@ -69,8 +83,9 @@ const DUST_FLOOR = 546;
 // whatever the address returned, in list order. That is how a lock can silently consume the user's own
 // note outputs: the sats are just spent as fee, and the commitment they carried is destroyed with them.
 //
-// Two gates, both computable without the classifier. The dust band is asset territory by construction and
-// is never a sensible thing to fund a lock from anyway. `exclude` carries anything the caller knows about —
+// Three gates, all computable without the classifier. The dust band is asset territory by construction and
+// is never a sensible thing to fund a lock from anyway. A coin still unconfirmed can be replaced or dropped,
+// and a lock built on it with it. `exclude` carries anything the caller knows about —
 // the defi tab can pass its holdings-derived set, and protected outpoints (a live cBTC lock, which must
 // never be spent: the fold reads a spend as a rug and slashes the escrow with no cure path) belong here too.
 function guardFundingUtxos(fetchUtxos, exclude) {
@@ -78,7 +93,7 @@ function guardFundingUtxos(fetchUtxos, exclude) {
   return async (address) => {
     const utxos = await fetchUtxos(address);
     if (!Array.isArray(utxos)) return utxos;
-    return utxos.filter((u) => (u.value || 0) > DUST_FLOOR && !skip.has(`${u.txid}:${u.vout}`.toLowerCase()));
+    return utxos.filter((u) => (u.value || 0) > DUST_FLOOR && u.status?.confirmed !== false && !skip.has(`${u.txid}:${u.vout}`.toLowerCase()));
   };
 }
 
@@ -124,11 +139,26 @@ export function makeCbtcLockMint({ priv, pool, cbtcAsset, esploraBases, postHint
     selectLockFunding, ownLockScriptPubKey, broadcastCbtcLockTx, postHint, lockVout,
   });
 
+  // A lock signed earlier and kept (`onSigned`), sent again where Bitcoin does not have it yet.
+  //   → 'locked' once its reveal is out, 'gone' when its commit can no longer be sent (its coins were spent another way, or the
+  //     network refuses it), so nothing of it is on Bitcoin. It throws when the network cannot be asked or the reveal does not go out.
+  async function finishLock({ commitTxid, commitHex, revealHex, lockTxid }) {
+    if (await esplora.txKnown(lockTxid)) return 'locked';
+    if (!(await esplora.txKnown(commitTxid))) {
+      try { await prims.broadcastWithRetry(commitHex); }
+      catch (e) { const m = String(e?.message || ''); if (/^4\d\d\b/.test(m) && !/^429\b/.test(m)) return 'gone'; throw e; }
+    }
+    await prims.broadcastWithRetry(revealHex);
+    return 'locked';
+  }
+
   // ① Lock: broadcast the commit→reveal, return everything ③ mint needs (outpoint = lockTxid‖lockVout).
   //   → { lockTxid, lockVout, vBtc, blinding, anchor }
   return {
     wallet,
     lock: cbtc.buildAndBroadcastCbtcLock,
+    finishLock,
+    txKnown: esplora.txKnown,
     scanCbtc: rec.scanCbtc,           // recover the note from key + chain (the anti-strand check)
     ownLockScriptPubKey,
   };

@@ -151,12 +151,14 @@ export function makeBtcHistoryProvider({ fetchImpl, sha256, bases = ESPLORA_BASE
 
   // The wallet's cBTC locks, oldest first: each output paying its lock script above the dust band (cbtc-lock-mint.js's
   // DUST_FLOOR; the band below carries Tacit notes), with the note's blinding anchor, the first input of the commit
-  // that the lock's reveal spends. Whether a lock is recorded, minted or retired is the pool's to say; the caller reads it.
+  // that the lock's reveal spends. A lock is the output of a reveal: it sits after output 0 and its transaction spends a
+  // taproot output, so a plain payment to the same script is not listed as one. Whether a lock is recorded, minted or
+  // retired is the pool's to say; the caller reads it.
   async function locks(priv) {
     const spk = walletScripts(priv).lock, want = bytesToHex(spk), out = [];
     for (const t of await txsOf(spk)) {
       const vout = (t.vout || []).findIndex((o) => String(o.scriptpubkey || '').toLowerCase() === want && Number(o.value) > LOCK_FLOOR);
-      if (vout < 0 || !t.vin || !t.vin[0]) continue;
+      if (vout < 1 || !t.vin || !t.vin[0] || t.vin[0].prevout?.scriptpubkey_type !== 'v1_p2tr') continue;
       const commit = await getJson(`/tx/${t.vin[0].txid}`);
       if (!commit || !commit.vin || !commit.vin[0]) continue;
       out.push({

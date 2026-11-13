@@ -2,7 +2,11 @@
 // self-contained factory. Byte-faithful: implementations are copied exactly
 // from the monolith; the only changes are parameterization of the network HRP
 // and injection of the network I/O functions (getUtxos / broadcast / feeRate).
-import { secp, sha256, ripemd160, hexToBytes, bytesToHex, concatBytes, bech32 } from './vendor/tacit-deps.min.js';
+import { secp, sha256, hmac, ripemd160, hexToBytes, bytesToHex, concatBytes, bech32 } from './vendor/tacit-deps.min.js';
+
+// secp.sign (the P2WPKH inputs' ECDSA) derives its nonce with HMAC-SHA256, which the curve library is handed here, so the wallet signs on
+// any page that loads it.
+if (!secp.etc.hmacSha256Sync) secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, concatBytes(...m));
 
 export function makeBtcWallet({ priv, hrp = 'bc', fetchUtxos, broadcastTx, fetchFeeRate }) {
   if (!(priv instanceof Uint8Array) || priv.length !== 32) {
