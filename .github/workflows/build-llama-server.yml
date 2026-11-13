@@ -1,0 +1,59 @@
+# Build llama.cpp's llama-server for Linux x86-64 on Ubuntu 22.04 (glibc 2.35), the base most rented GPU boxes and many desktops run: llama.cpp's own
+# Linux release is built on Ubuntu 24.04 and needs glibc 2.38, so the help desk's model (dapp/helpdesk-fetch.sh) could not start there. The source is
+# the same pinned release (b12211, by commit) and the build mirrors that release's CUDA job: the CPU backends for every x86 level and the CUDA backend
+# load at run time beside llama-server ($ORIGIN), so one tarball serves machines with and without an NVIDIA GPU; the CUDA libraries it links
+# (libcudart, libcublas, libcublasLt 12) come from llama.cpp's own cudart tarball, pinned in helpdesk-fetch.sh. The run checks the binary asks for no
+# glibc newer than 2.35 and that it starts on this machine's CPU. Nothing is published: the tarball and its SHA-256 are a workflow artifact, put in a
+# prover-bins release by hand. Trigger manually (workflow_dispatch).
+name: build-llama-server
+permissions:
+  contents: read
+on:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    container: nvidia/cuda:12.8.1-devel-ubuntu22.04@sha256:a99a1860ba8e2916e5c3e73b72ec4c4301653a84586e05bfc9a2aa2d58027e97
+    env:
+      LLAMA_TAG: b12211
+      LLAMA_COMMIT: 7d7f0287530bc8981690f361d8c1627dbae1c99a
+    steps:
+      - name: Dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential cmake git ca-certificates libgomp1 binutils
+      - name: Source (the pinned release, by commit)
+        run: |
+          git clone --depth 1 --branch "$LLAMA_TAG" https://github.com/ggml-org/llama.cpp src
+          [ "$(git -C src rev-parse HEAD)" = "$LLAMA_COMMIT" ] || { echo "tag $LLAMA_TAG is not commit $LLAMA_COMMIT"; exit 1; }
+      - name: Build
+        run: |
+          cmake -S src -B build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_RPATH='$ORIGIN' -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DGGML_BACKEND_DL=ON -DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON \
+            -DGGML_CUDA=ON -DGGML_CUDA_NCCL=OFF -DGGML_CUDA_CCCL_VERSION=v3.4.3 \
+            -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON \
+            -DLLAMA_OPENSSL=OFF -DLLAMA_USE_PREBUILT_UI=OFF -DLLAMA_CONNECT=OFF
+          cmake --build build --config Release -j "$(nproc)"   # all targets: the backends llama-server loads at run time are libraries of their own
+          ls -la build/bin
+      - name: Check it
+        run: |
+          set -eu
+          B=build/bin
+          need=$(for f in "$B"/llama-server "$B"/*.so; do objdump -T "$f" 2>/dev/null; done | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -V | tail -1)
+          echo "newest glibc symbol asked for: $need"
+          [ "$(printf '%s\n2.35\n' "$need" | sort -V | tail -1)" = "2.35" ] || { echo "it asks for glibc $need, newer than 2.35"; exit 1; }
+          ls "$B"/libggml-cuda.so >/dev/null && ls "$B"/libggml-cpu-*.so >/dev/null
+          # it starts and loads a CPU backend here (the runner has no GPU, so the CUDA backend is skipped, as on a machine without one)
+          LD_LIBRARY_PATH="$B" "$B"/llama-server --version
+      - name: Package
+        run: |
+          set -eu
+          mkdir -p pkg/llama dist
+          cp build/bin/llama-server build/bin/*.so pkg/llama/ && cp src/LICENSE pkg/llama/
+          tar -czf dist/llama-b12211-bin-ubuntu22-x64.tar.gz -C pkg llama
+          (cd dist && sha256sum llama-b12211-bin-ubuntu22-x64.tar.gz | tee llama-b12211-bin-ubuntu22-x64.tar.gz.sha256)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: llama-b12211-bin-ubuntu22-x64
+          path: dist/
