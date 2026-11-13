@@ -235,6 +235,9 @@ input::placeholder { color: var(--mute); opacity: 1; }
 .note { font-size: 12.5px; color: var(--mute); margin: 12px 0 0; }
 .note.err { color: var(--err); }
 .note.lead { margin: 0 0 4px; }
+.note.on-chain { display: none; text-align: center; }
+.app:has(#modes [data-mode="tac"][aria-current="page"]) .note.on-chain { display: block; }
+.note.on-chain a { color: var(--ink); text-underline-offset: 3px; }
 .rcpt .note { margin: 6px 0 2px; }
 .gate-p { color: var(--mute); font-size: 13px; text-align: center; max-width: 42ch; margin: 8px auto 14px; }
 
@@ -673,6 +676,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
       <div class="seg sub" role="tablist" aria-label="Action" id="tabs"></div>
       <div id="form"></div>
       <div class="status" role="status" aria-live="polite" id="status"></div>
+      <p class="note on-chain">TAC on Ethereum? <a href="/tac/#pay">Stake and pay on the Tacit chain →</a></p>
     </section>
 
     <section class="card" id="activity" aria-labelledby="act-h">

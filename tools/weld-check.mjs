@@ -5711,7 +5711,7 @@ await step('rewardsuses', async () => {
     await n.page.goto(n.url + 'rewards/');
     await n.page.waitForSelector('.uses');
     const links = await n.page.$$eval('.uses a', (a) => a.map((x) => `${x.firstChild.textContent}:${x.getAttribute('href')}`));
-    ok(links.join(' ') === 'Trade:/trade/tac/ Borrow:/vault/ Shield:/#card=shield:wtac:defi Pay:/pay/#tac Bitcoin:/tac/', `rewardsuses: the line under the lists names what TAC is for (${links.join(' ')})`);
+    ok(links.join(' ') === 'Stake:/tac/ Pay:/tac/#pay Trade:/trade/tac/ Borrow:/vault/ Bitcoin:/#tac/pool/shield', `rewardsuses: the line under the lists names what TAC is for (${links.join(' ')})`);
     await until(n.page, () => /^\d[\d,]*%\+?$/.test(document.querySelector('#farm-apr')?.textContent || ''), null, 60000);
     ok(Number((await text(n.page, '#farm-apr')).replace(/\D/g, '')) > 0, `rewardsuses: the farm's row carries its APR now (${await text(n.page, '#farm-apr')})`);
     ok(await n.page.evaluate(() => { const b = document.querySelector('.bar').getBoundingClientRect(), f = document.querySelector('#farms').getBoundingClientRect(); return f.top >= b.bottom && f.top - b.bottom < 200 && f.top < innerHeight; }), 'rewardsuses: and the farms start right under the bar (below the chips for connecting or going back), on the first screen');
@@ -5728,9 +5728,9 @@ await step('rewardsuses', async () => {
     await land('trade/tac/', () => /trade/i.test(document.title) && !!document.querySelector('#route'), '/trade/tac/ is the trade page');
     await land('swap/#earn', () => location.pathname === '/' && !!document.querySelector('#sheet-farm[open]'), '/swap/#earn forwards to the front page\'s public farm');
     await land('vault/', () => /borrow/i.test(document.title), '/vault/ is the borrow page');
-    await land('#card=shield:wtac:defi', () => { const t = (document.querySelector('#hx')?.innerText || '').replace(/\s+/g, ' '); return /From Wallet TAC/.test(t) && /To Private/.test(t) && /DeFi pool/.test(t); }, '/#card=shield:wtac:defi sets the front page\'s card to make the wallet\'s TAC private on Ethereum');
-    await land('pay/#tac', () => /pay/i.test(document.title) && location.hash === '#tac', '/pay/#tac is the pay page on TAC');
-    await land('tac/', () => /tac/i.test(document.title), '/tac/ is the Bitcoin-native shielded TAC page');
+    await land('tac/', () => /tac/i.test(document.title) && /Stake TAC privately/.test(document.querySelector('.tpg-hero .lead')?.textContent || '') && document.querySelector('#tcd-t-shield')?.getAttribute('aria-selected') === 'true', '/tac/ is the Tacit chain\'s page, where TAC is staked, its card on Shield');
+    await land('tac/#pay', () => /tac/i.test(document.title) && document.querySelector('#tcd-t-send')?.getAttribute('aria-selected') === 'true', '/tac/#pay opens the chain\'s card on Send');
+    await land('#tac/pool/shield', () => location.pathname === '/tac/' && !document.querySelector('#tcd-pool')?.hidden, '/#tac/pool/shield opens the Bitcoin pool on TAC\'s page');
   } finally { await n.browser.close(); }
 });
 
@@ -5766,8 +5766,9 @@ await step('rewardsearn', async () => {
     ok(hrefs.join(' ') === '/#farm/private-0 /#farm/private-1 /#farm/private-2', `rewardsearn: each private farm leads to its own farm (${hrefs.join(' ')})`);
     await until(n.page, () => !!document.querySelector('#pts-f')?.textContent && !!document.querySelector('#tk-f')?.textContent, null, 60000);
     const more = await rows(n.page, '#more > .ern');
-    ok(/^Points Day 25 of 90 · split by points 1,111 TAC a day$/.test(more[0]), `rewardsearn: the points row says the day's pot and where the program is (${more[0]})`);
-    ok(/^Tasks Small jobs paid in TAC 760 TAC left Open$/.test(more[1]) && (await n.page.getAttribute('#tk-row', 'href')) === '/tasks/' && more.length === 2, `rewardsearn: the task budget leads to the tasks (${more[1]})`);
+    ok(/^Stake TAC Private on the Tacit chain · earns from every payment Stake$/.test(more[0]) && (await n.page.getAttribute('#st-row', 'href')) === '/tac/', `rewardsearn: staking TAC leads the other ways to earn, and opens the Tacit chain (${more[0]})`);
+    ok(/^Points Day 25 of 90 · split by points 1,111 TAC a day$/.test(more[1]), `rewardsearn: the points row says the day's pot and where the program is (${more[1]})`);
+    ok(/^Tasks Small jobs paid in TAC 760 TAC left Open$/.test(more[2]) && (await n.page.getAttribute('#tk-row', 'href')) === '/tasks/' && more.length === 3, `rewardsearn: the task budget leads to the tasks (${more[2]})`);
     ok(!(await n.page.$('#out .rw')) && await n.page.evaluate(() => { const f = document.querySelector('#farms').getBoundingClientRect(); return f.top < innerHeight; }), 'rewardsearn: all of it with nothing looked up, no wallet, and the farms on the first screen');
     // The farm opens in place, with its form: ETH alone, and the button connects a wallet.
     await n.page.click('#farm > summary');

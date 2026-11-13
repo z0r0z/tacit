@@ -360,7 +360,7 @@ async function claim(kind, address, btn, to = '') {
     if (rc.status !== '0x1') throw new Error(`The transaction failed (${hash.slice(0, 10)}…). Nothing was claimed.`);
     $('#done')?.querySelector('.note-claim')?.remove();
     // claimed TAC is public: the next step offered is making it private (the TAC page: one signature onto the Tacit chain)
-    $('#done')?.insertAdjacentHTML('beforeend', `<p class="done"><b>Claimed ${esc(amt)} TAC${dest ? ` to ${addrView(dest, 4, 6)}` : ''}</b>${txLink(hash)}${dest ? '' : '<button class="linkbtn" type="button" data-watch>Add TAC to wallet</button>'}<a class="linkbtn" href="/tac/#private">Make it private</a></p>`);
+    $('#done')?.insertAdjacentHTML('beforeend', `<p class="done"><b>Claimed ${esc(amt)} TAC${dest ? ` to ${addrView(dest, 4, 6)}` : ''}</b>${txLink(hash)}${dest ? '' : '<button class="linkbtn" type="button" data-watch>Add TAC to wallet</button>'}<a class="linkbtn" href="/tac/#private">Stake it privately</a></p>`);
     said(`Claimed ${amt} TAC`); react('up', 4200); confetti();
     if (!dest) farmClaimed(BigInt(btn.dataset.wei || 0));
     const was = BigInt(btn.dataset.wei || 0);
