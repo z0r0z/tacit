@@ -252,5 +252,53 @@ assert.match(said['st-sats-1'], /on its way to a new key, posted by the relay in
   assert.match(hu.textContent, /2,500 TAC\s*ready to list/);
 }
 
+// Put back: a note the pool has counted goes back into the pool through shieldFromSaleKey, with the sale key that holds it and this
+// wallet's pool, in the page's turn; then the sale keys are read again. A note still waiting for the pool offers nothing; a listed note
+// says its listing ends with it.
+{
+  const shields = [];
+  let turns = 0, reads = 0, gone = false;
+  const S6 = { ...S,
+    saleKeys: async () => { reads++; return { keys: [{ ...saleKey, notes: gone ? [] : [NOTE] }], free: 0, unread: [] }; },
+    shieldFromSaleKey: async (t, o) => { shields.push({ t, ...o }); gone = true; return { revealTxid: 'fa'.repeat(32) }; },
+  };
+  const h = document.createElement('div'); document.body.append(h);
+  mount(h, { ...ctx, S: S6, turn: (fn) => { turns++; return fn(); } });
+  await settle();
+  const back = [...h.querySelectorAll('button.link')].find((b) => b.textContent === 'Put back');
+  assert.ok(back, 'a counted note offers Put back');
+  back.click(); await settle();
+  assert.equal(shields.length, 1);
+  const o = shields[0];
+  assert.equal(o.t, T);
+  assert.equal(o.key.pub, salePub, 'with the sale key that holds it');
+  assert.deepEqual([o.note.txid, o.note.vout, o.note.value], [NOTE.txid, NOTE.vout, NOTE.value]);
+  assert.equal(o.poolWallet, pw, 'back to this wallet’s pool');
+  assert.equal(o.asset, S.TAC_ASSET_MAINNET);
+  assert.ok(turns >= 1, 'in the page’s turn');
+  assert.match(said['st-sats-2'], /2,500 TAC put back in the pool in fafafafafa/);
+  assert.ok(reads >= 2, 'the sale keys are read again');
+  assert.doesNotMatch(h.textContent, /ready to list/, 'the note has left the list');
+  assert.match(h.textContent, /Found no TAC at this wallet’s sale keys/);
+}
+{
+  const h = document.createElement('div'); document.body.append(h);
+  mount(h, { ...ctx, S: { ...S, poolClientFor: () => ({ relayInfo: async () => ({ address: 'bp1qrelay' }), exit: async () => ({ exists: false }) }) } });
+  await settle();
+  assert.match(h.textContent, /waiting for the pool to count it/);
+  assert.ok(![...h.querySelectorAll('button.link')].some((b) => /put back/i.test(b.textContent)), 'nothing to put back before the pool counts it');
+}
+{
+  const realFetch = globalThis.fetch;
+  const live = { expired: false, asset_outpoint: { txid: NOTE.txid, vout: NOTE.vout }, min_price_sats: 420000, expiry: Math.floor(Date.now() / 1000) + 86400 };
+  globalThis.fetch = async (url) => (String(url).includes('/preauth-sales') ? { ok: true, status: 200, json: async () => ({ count: 1, sales: [live] }) } : realFetch(url));
+  const h = document.createElement('div'); document.body.append(h);
+  mount(h, ctx);
+  await settle();
+  globalThis.fetch = realFetch;
+  assert.match(h.textContent, /listed for 420,000 sats until/);
+  assert.ok([...h.querySelectorAll('button.link')].some((b) => b.textContent === 'Cancel and put back'), 'a listed note says its listing ends with it');
+}
+
 console.log('tac-sats-panel: all checks passed');
 process.exit(0);   // the panel keeps a timer for the page it lives in

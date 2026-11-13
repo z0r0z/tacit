@@ -108,7 +108,7 @@ async function onChainNote(tacit, assetId, txid, vout, amount, blinding) {
   const xy = pool.commitXY(amount, blinding);
   const C = secp.ProjectivePoint.fromHex(bytesToHex(pd.commitment)).toAffine();
   if (BigInt(xy.cx) !== C.x || BigInt(xy.cy) !== C.y) throw new Error(`opening does not match ${txid}:${vout}`);
-  return { Cx: xy.cx, Cy: xy.cy, value: tx.vout[vout].value };
+  return { Cx: xy.cx, Cy: xy.cy, value: tx.vout[vout].value, spk: String(tx.vout[vout].scriptpubkey || '').toLowerCase() };
 }
 
 export async function broadcastCarrier(tacit, { payload, inputs = [], outputs, feeTier = null }) {
@@ -153,7 +153,8 @@ export async function broadcastCarrier(tacit, { payload, inputs = [], outputs, f
     outputs,
   };
   const prevouts = [{ value: commitValue, script: commitSpk }, ...inputs.map((i) => ({ value: i.value, script: i.script }))];
-  inputs.forEach((i, j) => { revealTx.inputs[1 + j].witness = i.witness || tacit.signP2wpkhInput(revealTx, 1 + j, i.value); });
+  // an input brings its witness (a pre-signed sale), its own signer (a key other than the wallet's), or is the wallet's to sign
+  inputs.forEach((i, j) => { revealTx.inputs[1 + j].witness = i.witness || (i.sign ? i.sign(revealTx, 1 + j) : tacit.signP2wpkhInput(revealTx, 1 + j, i.value)); });
   revealTx.inputs[0].witness = tacit.signTaprootScriptPathInput(revealTx, prevouts, envelopeScript, cb);
   const revealTxid = tacit.txid(revealTx);
 
@@ -755,7 +756,7 @@ export async function saleKeys(tacit, poolWallet, notes, asset, { addresses = []
       try { o = pool.recoverExit(poolWallet, env.payload, notes, { addresses }); } catch { unread.push({ txid: u.txid, vout: u.vout }); continue; }
       if (o.exitVout !== u.vout) continue;
       tacit.recordOpening(u.txid, u.vout, assetHex, BigInt(o.value), BigInt(o.blinding));
-      found.push({ txid: u.txid, vout: u.vout, value: BigInt(o.value), confirmed: !!u.status?.confirmed });
+      found.push({ txid: u.txid, vout: u.vout, value: BigInt(o.value), blinding: BigInt(o.blinding), confirmed: !!u.status?.confirmed });
     }
     keys.push({ ...k, notes: found });
   }
@@ -840,6 +841,36 @@ export async function listFromSaleKey(tacit, { key, note, sats, expiry, payoutSc
     tacit.wallet.priv = keep.priv; tacit.wallet.pub = keep.pub;
     try { tacit.invalidateHoldingsCache?.(); } catch {}
   }
+}
+
+// TAC taken out to a sale key and not sold goes back into the pool: a shield of the sale key's note to this wallet's pool address. The
+// sale key signs only its own input (SIGHASH_ALL, its bytes wiped after); the carrier is this wallet's to fund and sign, as for any
+// shield. `note` is a saleKeys note ({ txid, vout, value, blinding }) and `key` the sale key holding it. A key that does not hold the
+// note on chain is refused before anything is proved or sent, so no commit is left waiting on a reveal Bitcoin would refuse.
+export async function shieldFromSaleKey(tacit, { key, note, asset, poolWallet, say = () => {} }) {
+  const assetHex = strip0x(asset), amount = BigInt(note.value), blinding = BigInt(note.blinding);
+  const salePub = hexToBytes(key.pub);
+  const c = await onChainNote(tacit, assetHex, note.txid, note.vout, amount, blinding);
+  if (c.spk !== bytesToHex(tacit.p2wpkhScript(salePub))) throw Object.assign(new Error('That TAC is not at this sale key, so nothing was sent.'), { said: true });
+  await requireUnspent(tacit, note);                            // (before a proof is made for it)
+  const sh = pool.buildShieldEnvelope({
+    asset: '0x' + assetHex,
+    inputs: [{ txid: note.txid, vout: note.vout, Cx: c.Cx, Cy: c.Cy, value: amount, blinding }],
+    recipientAddress: poolWallet.addressString, network: poolWallet.network,
+  });
+  const { payload } = await proveHere(sh, say);
+  await requireUnspent(tacit, note);                            // (and again before anything goes out: the proof takes a while)
+  say('sending…');
+  const sign = (tx, idx) => {
+    const priv = hexToBytes(key.priv);
+    try { return tacit.signP2wpkhInputWithKey(tx, idx, c.value, priv, salePub); } finally { priv.fill(0); }
+  };
+  const r = await broadcastCarrier(tacit, {
+    payload,
+    inputs: [{ txid: note.txid, vout: note.vout, value: c.value, script: tacit.p2wpkhScript(salePub), sign }],
+    outputs: [{ value: tacit.DUST, script: tacit.p2wpkhScript(tacit.wallet.pub) }],
+  });
+  return { ...r, poolNote: poolNoteRecord(sh.note, r.revealTxid) };
 }
 
 export async function saleQuote(sats, { asset = TAC_ASSET_MAINNET, network = 'mainnet', under = 0.02, decimals = 8, fast = false } = {}) {

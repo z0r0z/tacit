@@ -76,7 +76,7 @@ pool.recoverExit = (wallet, payload, notes, opts) => { if (failOpen && payload[0
   const r = await secret.saleKeys(tacitScan, pw, [], ASSET, { addresses: [relayAddr] });
   assert.equal(r.keys.length, 1);
   assert.equal(r.keys[0].counter, 0);
-  assert.deepEqual(r.keys[0].notes, [{ txid: 'ee'.repeat(32), vout: 1, value: 250000000n, confirmed: true }]);
+  assert.deepEqual(r.keys[0].notes, [{ txid: 'ee'.repeat(32), vout: 1, value: 250000000n, blinding: 5n, confirmed: true }]);
   assert.deepEqual(recorded, [['ee'.repeat(32), 1, ASSET, 250000000n, 5n]], 'the opening is recorded for the holdings scan');
   assert.equal(r.free, 2, 'counter 1 is skipped: its P2TR key has history');
   assert.ok(seen.includes(secret.saleKey(pw, 7).address) && !seen.includes(secret.saleKey(pw, 8).address), 'six quiet counters end the walk');
@@ -335,6 +335,77 @@ assert.equal(r.revealTxid, null); assert.equal(log.opened.length, 0);
   assert.deepEqual(await secret.saleSettlement(t, { note, payoutScript: script, sats: 3300n }), { txid: 'aa'.repeat(32), paid: true, confirmed: false });
   assert.equal((await secret.saleSettlement(t, { note, payoutScript: script, sats: 3301n })).paid, false, 'less than the price is not paid');
   assert.equal((await secret.saleSettlement(t, { note, payoutScript: secret.payoutScriptFor(secret.saleKey(pw, 7).address), sats: 1n })).paid, false, 'another script is not paid');
+}
+
+// ── shieldFromSaleKey: a sale key's note back into the pool. The sale key signs only its own input and its bytes are wiped; the carrier
+// is the wallet's (its coins fund the commit, it signs them); the shield is built for the note's opening and the wallet's pool address.
+// A key that does not hold the note, or a note already spent, stops it before anything is proved or sent. ──
+{
+  const k = secret.saleKey(pw, 8), salePub = hexToBytes(k.pub);
+  const p2wpkh = (pub) => Uint8Array.from([0x00, 0x14, ...ripemd160(sha256(pub))]);
+  const AMT = 97207564851n, BL = 5n;
+  const xy = pool.commitXY(AMT, BL);
+  const commitment = secp.ProjectivePoint.fromAffine({ x: BigInt(xy.cx), y: BigInt(xy.cy) }).toRawBytes(true);
+  const note = { txid: 'e1'.repeat(32), vout: 0, value: AMT, blinding: BL, confirmed: true };
+  let holder = bytesToHex(p2wpkh(salePub)), spent = false;
+  globalThis.fetch = async (url) => {
+    const p = String(url).slice(API.length);
+    const ok = (j) => ({ ok: true, status: 200, json: async () => j });
+    if (p === `/tx/${note.txid}`) return ok({ vout: [{ value: 546, scriptpubkey: holder }] });
+    if (p === `/tx/${note.txid}/outspend/0`) return ok({ spent });
+    throw new Error('unexpected fetch ' + url);
+  };
+  const walletPriv = new Uint8Array(32).fill(2), walletPub = secp.getPublicKey(walletPriv, true);
+  const L = { built: [], proofs: 0, bySale: [], byWallet: [], sent: [] };
+  const isCommit = (tx) => tx.outputs.some((o) => o.script.length === 34);
+  pool.buildShieldEnvelope = (a) => { L.built.push(a); return { note: { value: a.inputs[0].value, npk: 1n, rho: 1n, cm: '0xcm' } }; };
+  pool.prove = async () => { L.proofs++; return { payload: new Uint8Array([0x6c]), payloadHex: '6c' }; };
+  secret.poolClient.artifactBytes = async () => 0;
+  secret.poolClient.system = async () => ({});
+  const t = {
+    NET: { api: API }, DUST: 546, TAP_NUMS: new Uint8Array(32),
+    wallet: { priv: walletPriv, pub: walletPub, xonly: () => new Uint8Array(32), address: () => 'bc1qwallet' },
+    txOutputEnvelope: () => ({ opcode: 0x6d, payload: new Uint8Array(0) }),
+    getParentEnvelopeData: async () => ({ assetIdHex: ASSET, commitment }),
+    p2wpkhScript: p2wpkh,
+    encodeEnvelopeScript: () => new Uint8Array(40), tapLeafHash: () => new Uint8Array(32),
+    tweakedOutputKey: () => ({ Q_xonly: new Uint8Array(32), parity: 0 }), p2trScript: () => new Uint8Array(34), controlBlock: () => new Uint8Array(33),
+    getFeeRate: async () => 2, feeFor: (vb, rate) => vb * rate, estCommitVb: (n) => 60 + 68 * n,
+    getUtxos: async (addr) => { assert.equal(addr, 'bc1qwallet', 'the wallet’s coins fund the carrier'); return [{ txid: 'c1'.repeat(32), vout: 1, value: 20000 }]; },
+    selectSatsUtxosSafe: (all) => all, scanHoldings: async () => new Map(),
+    signP2wpkhInput: (tx, i) => { L.byWallet.push([isCommit(tx) ? 'commit' : 'reveal', i]); return [new Uint8Array(71), walletPub]; },
+    signP2wpkhInputWithKey: (tx, i, v, priv, pub) => { L.bySale.push({ tx, i, v, priv, privHex: bytesToHex(priv), pub: bytesToHex(pub) }); return [new Uint8Array(71), pub]; },
+    signTaprootScriptPathInput: () => [new Uint8Array(64)],
+    txid: (tx) => (isCommit(tx) ? 'c0'.repeat(32) : 'd0'.repeat(32)),
+    serializeTx: () => new Uint8Array(1),
+    broadcast: async () => { L.sent.push('commit'); }, broadcastWithRetry: async () => { L.sent.push('reveal'); },
+    recordPreauthTakePending: () => {},
+  };
+  const back = () => secret.shieldFromSaleKey(t, { key: k, note, asset: ASSET, poolWallet: pw });
+  const r = await back();
+  assert.equal(r.revealTxid, 'd0'.repeat(32));
+  assert.deepEqual(L.sent, ['commit', 'reveal']);
+  const sh = L.built[0];
+  assert.equal(sh.recipientAddress, pw.addressString, 'shielded to the wallet’s own pool address');
+  assert.deepEqual([sh.inputs[0].txid, sh.inputs[0].vout, sh.inputs[0].value, sh.inputs[0].blinding], [note.txid, 0, AMT, BL], 'for the note’s opening');
+  assert.equal(L.bySale.length, 1, 'the sale key signs once');
+  const s = L.bySale[0];
+  assert.equal(s.i, 1, 'its own input, after the commit');
+  assert.deepEqual([s.tx.inputs[1].txid, s.tx.inputs[1].vout, s.v], [note.txid, 0, 546]);
+  assert.deepEqual([s.privHex, s.pub], [k.priv, k.pub], 'with the sale key');
+  assert.ok(s.priv.every((x) => x === 0), 'whose bytes are wiped after');
+  assert.deepEqual(L.byWallet, [['commit', 0]], 'the wallet signs its own coin in the commit, nothing else');
+  assert.deepEqual(s.tx.outputs.map((o) => [o.value, bytesToHex(o.script)]), [[546, bytesToHex(p2wpkh(walletPub))]], 'the carrier pays dust back to the wallet');
+  assert.equal(t.wallet.priv, walletPriv, 'the wallet’s key is untouched');
+  assert.equal(r.poolNote.value, AMT.toString());
+
+  L.proofs = 0; L.sent.length = 0;
+  holder = '0014' + '33'.repeat(20);
+  await assert.rejects(back(), /not at this sale key/, 'a key that does not hold the note is refused');
+  assert.deepEqual([L.proofs, L.sent.length], [0, 0], 'before a proof or a send');
+  holder = bytesToHex(p2wpkh(salePub)); spent = true;
+  await assert.rejects(back(), /spent already/, 'a note already spent is refused');
+  assert.deepEqual([L.proofs, L.sent.length], [0, 0], 'before a proof or a send');
 }
 
 console.log('tac-sats-sale-key: all checks passed');

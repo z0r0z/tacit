@@ -231,18 +231,39 @@ export function mount(host, ctx) {
     render();
   }
 
+  // Taken out and not wanted for sale: the sale key signs its note into a shield back to this wallet's pool address (secret.js
+  // shieldFromSaleKey). Like any shield, it is paid from this wallet's Bitcoin address; a listing of the note ends with it.
+  async function doPutBack(n) {
+    await ensureKey();
+    const S = ctx.S, pw = ctx.poolWallet;
+    if (!pw || !S) throw new Error('Open your Tacit wallet first.');
+    say('st-sats-2', 'Putting it back in the pool…');
+    const r = await ctx.turn(async () => {
+      if (!ctx.T.wallet.priv) throw new Error('Open your Tacit wallet first.');
+      return S.shieldFromSaleKey(ctx.T, { key: n.key, note: n, asset: S.TAC_ASSET_MAINNET, poolWallet: pw, say: (m) => say('st-sats-2', m) });
+    });
+    say('st-sats-2', `${fmt(n.value)} TAC put back in the pool in `, txLink(r.revealTxid), '. It joins your shielded balance after one confirmation.');
+    try { ctx.T.invalidateHoldingsCache?.(); } catch {}
+    await loadShielded();
+    await looking?.catch(() => {});   // a read already under way began before this and would still see the note
+    sale = null; pick = null;
+    await look().catch(() => {});
+  }
+
   const until = (s) => new Date(Number(s.expiry) * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   function heldRow(n) {
-    const l = listing(n), on = opKey(n) === opKey(chosen() || {});
+    const l = listing(n), on = opKey(n) === opKey(chosen() || {}), counted = ready.has(opKey(n));
     const state = l ? `listed for ${Number(l.min_price_sats).toLocaleString('en-US')} sats until ${until(l)}`
-      : ready.has(opKey(n)) ? 'ready to list'
+      : counted ? 'ready to list'
         : 'waiting for the pool to count it';
-    const pickable = !l && ready.has(opKey(n)) && listable().length > 1;
+    const pickable = !l && counted && listable().length > 1;
+    // only a note the pool has counted can be shielded again
+    const back = counted ? el('button', { class: 'link', type: 'button', onclick: (e) => busy(e.currentTarget, 'st-sats-2', () => doPutBack(n)) }, l ? 'Cancel and put back' : 'Put back') : null;
     return el('div', { class: 'kv' },
       pickable
         ? el('label', {}, el('input', on ? { type: 'radio', name: 'sats-pick', checked: '' } : { type: 'radio', name: 'sats-pick' }), ` ${fmt(n.value)} TAC`)
         : el('span', {}, `${fmt(n.value)} TAC`),
-      el('b', {}, state));
+      el('b', {}, state, ...(back ? [' · ', back] : [])));
   }
 
   function render() {
