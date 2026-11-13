@@ -103,7 +103,7 @@ h2 .tk { width: 26px; height: 26px; }
 .cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 .cards.five { grid-template-columns: repeat(5, minmax(0, 1fr)); }   /* TAC in, out and the rest on one row, as the other groups are */
 .cards.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.card { background: var(--card); border: 1px solid var(--hair); padding: 14px 16px 13px; min-width: 0; }
+.card { background: var(--card); border: 1px solid var(--hair); border-radius: 16px; padding: 14px 16px 13px; min-width: 0; }
 .card .k { font-size: 12px; color: var(--mute); display: flex; align-items: center; gap: 7px; }
 .card .v { font: 400 30px/1.15 var(--serif); margin: 6px 0 4px; overflow-wrap: anywhere; }
 .card .v small { font: 12px var(--mono); color: var(--mute); margin-left: 4px; }
@@ -123,7 +123,7 @@ h2 .tk { width: 26px; height: 26px; }
 #f-eth { min-height: 265px; } #f-dev { min-height: 246px; }
 @media (max-width: 440px) { #f-eth { min-height: 290px; } }
 
-.figure { background: var(--card); border: 1px solid var(--hair); padding: 14px 16px 12px; margin-top: 10px; }
+.figure { background: var(--card); border: 1px solid var(--hair); border-radius: 16px; padding: 14px 16px 12px; margin-top: 10px; }
 .figure .k { font-size: 12px; color: var(--mute); display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .legend { display: flex; gap: 14px; flex-wrap: wrap; }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
@@ -146,7 +146,7 @@ table.chains th { color: var(--mute); font-size: 12px; }
 @keyframes shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
 @media (prefers-reduced-motion: reduce) { .sk { animation: none; background: var(--skel); } }
 
-details.how { margin-top: 38px; background: var(--card); border: 1px solid var(--hair); padding: 12px 16px; }
+details.how { margin-top: 38px; background: var(--card); border: 1px solid var(--hair); border-radius: 16px; padding: 12px 16px; }
 details.how summary { cursor: pointer; font: italic 400 22px/1.3 var(--serif); }
 details.how dl { margin: 10px 0 4px; display: grid; grid-template-columns: minmax(140px, 220px) 1fr; gap: 8px 16px; font-size: 12.5px; }
 details.how dt { color: var(--ink); }
