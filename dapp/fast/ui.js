@@ -351,7 +351,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
     let again = false, quotes = S.quotes, fits = [];
     try {
       // a quote close to its end is asked for again, from every provider that gave one
-      const soon = Math.floor(Date.now() / 1000) + 90;
+      const soon = Math.floor(Date.now() / 1000) + 150;   // past the client's own margin (quoteMarginSecs, 120 s), which refuses a quote that close to its end
       if (quotes.some((x) => Number(x.quote.validUntil) <= soon)) {
         const r = await S.sess.quoteAll(quotes.map((x) => x.provider), S.quote.btcValue);
         if (!r.quotes.length) throw new Error('the quote expired');

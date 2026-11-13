@@ -86,10 +86,10 @@ export function makeBitcoinLocker(ctx) {
   async function maybeRefund(rec) {
     const st = await btc.status(rec.lock.txid);
     if (!st.confirmations) return null;
-    const tip = await btc.tip();
-    if (tip < st.height + rec.csvBlocks - 1) return null;
     const spent = await btc.outspend(rec.lock.txid, rec.lock.vout);
     if (spent) return spent;
+    const tip = await btc.tip();
+    if (tip < st.height + rec.csvBlocks - 1) return null;
     if (!rec.refund) {
       const lock = lockOf(rec), sec = secrets(rec);
       const pair = btc.tx.refundTransfer({
@@ -135,7 +135,8 @@ export function makeBitcoinLocker(ctx) {
         }
         const st = await btc.status(rec.lock.txid);
         if (!st.confirmations) return rec;
-        if (!rec.confirmedAt) await save(rec, { confirmedAt: ctx.now(), lockHeight: st.height });
+        // confirmedAt is when this side saw it (the offer's wait counts from it); lockAt is the block's time, which the timelock counts from
+        if (!rec.confirmedAt) await save(rec, { confirmedAt: ctx.now(), lockHeight: st.height, lockAt: btc.blockTime ? await btc.blockTime(st.height).catch(() => null) : null });
         const sec = secrets(rec), recipient = await evm.recipient(rec.id);
         const offer = X.makeBtcLockOffer({
           swapId: hexToBytes(rec.id), asset: rec.asset, value: BigInt(rec.amount), rLock: sec.rLock, txid: rec.lock.txid, vout: rec.lock.vout,
@@ -204,7 +205,16 @@ export function makeBitcoinLocker(ctx) {
       }
       case 'refund-wait': {
         const taken = await maybeRefund(rec);
-        if (taken) return save(rec, { phase: taken === rec.refund?.txid ? 'refunded' : 'counter-took', takenBy: taken });
+        if (taken) {
+          // a refund sent from another browser, or a lock found again from the key, is not the one kept here: a refund is the spend that waited out the timelock
+          let home = taken === rec.refund?.txid;
+          if (!home && btc.fetchTx) {
+            const tx = await btc.fetchTx(taken);
+            if (!tx) throw new Error('the spend of the lock could not be read just now');
+            home = (tx.vin || []).some((i) => i.txid === rec.lock.txid && Number(i.vout) === Number(rec.lock.vout) && Number(i.sequence) === Number(rec.csvBlocks));
+          }
+          return save(rec, { phase: home ? 'refunded' : 'counter-took', takenBy: taken });
+        }
         if (rec.refund && (await btc.status(rec.refund.txid)).confirmations) return save(rec, { phase: 'refunded' });
         return rec;
       }
@@ -217,7 +227,11 @@ export function makeBitcoinLocker(ctx) {
   function step(rec) {
     return serial(rec.id, async () => {
       const cur = (await store.get(rec.id)) || rec;
-      try { return await advance(cur); } catch (e) { return save(cur, { lastError: String((e && e.message) || e).slice(0, 300) }); }
+      try {
+        // the reason a swap ends without its trade is in `why`: an error from before a phase moved on is not kept
+        const before = cur.phase, out = await advance(cur);
+        return out && out.lastError && out.phase !== before ? await save(out, { lastError: null }) : out;
+      } catch (e) { return save(cur, { lastError: String((e && e.message) || e).slice(0, 300) }); }
     });
   }
 

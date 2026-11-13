@@ -1411,7 +1411,8 @@ export function mountMainnet(root, ctx) {
       const h = await tacit.scanHoldings();
       if (who?.pubHex !== owner) return;
       const entry = h instanceof Map ? h.get(asset()) : null;
-      pub = { loading: false, utxos: entry?.utxos || [], decimals: Number.isInteger(entry?.decimals) ? entry.decimals : sel.decimals };
+      // a pool asset's places are fixed (sel); a scan that has not read the asset's etch yet holds it at 0
+      pub = { loading: false, utxos: entry?.utxos || [], decimals: sel.decimals };
     } catch (e) { if (who?.pubHex !== owner) return; pub = { ...pub, loading: false }; errs.load = ctx.errMsg ? ctx.errMsg(e) : String(e?.message || e); }
     render();
   }
@@ -1465,7 +1466,10 @@ export function mountMainnet(root, ctx) {
     if (!pub.utxos.length) await loadPublic();
     if (!pub.utxos.length) throw new Error(`No ${sel.ticker} to shield yet.`);
     const val = (u) => (typeof u.amount === 'bigint' ? u.amount : BigInt(u.amount));
-    const biggest = [...pub.utxos].sort((a, b) => (val(b) > val(a) ? 1 : val(b) < val(a) ? -1 : 0))[0];
+    // a note paid to a one-time address is signed by its own key, not this wallet's: it is moved in the classic app first
+    const shieldable = pub.utxos.filter((u) => !u.stealthTweakedSk);
+    if (!shieldable.length) throw new Error(`Your ${sel.ticker} here was paid to a one-time address and needs moving in the classic app first.`);
+    const biggest = [...shieldable].sort((a, b) => (val(b) > val(a) ? 1 : val(b) < val(a) ? -1 : 0))[0];
     const note = {
       assetId: asset(), txid: biggest.utxo.txid, vout: biggest.utxo.vout,
       amount: val(biggest).toString(), blinding: blindingHex(biggest.blinding),

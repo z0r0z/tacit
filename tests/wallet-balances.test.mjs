@@ -34,7 +34,8 @@ const items = [
 // a failed read says so, for the row to say it could not be read
 assert.equal(balanceRows(items, { ready: false, err: new Error('x') }, tokens).bitcoin[0].err, true);
 
-// once read: every asset on the address is a row of its own (TAC no longer a clause of BTC's line), the stand-ins are gone, Secret Sats stay
+// once read: every asset on the address is a row of its own (TAC no longer a clause of BTC's line), the stand-ins are gone; Secret Sats stay, and so does
+// what was bridged to Bitcoin (its notes are at the key's Taproot address, which the address's read does not cover)
 {
   const btc = { ready: true, sats: 150000n, silent: 50000n, pending: 7000n, held: [
     { id: 'tac', ticker: 'TAC', decimals: 8, balance: 1200n * 10n ** 8n, known: true },
@@ -44,7 +45,7 @@ assert.equal(balanceRows(items, { ready: false, err: new Error('x') }, tokens).b
     { id: 'ef'.repeat(32), ticker: 'GONE', decimals: 8, balance: 0n, known: true },
   ] };
   const r = balanceRows(items, btc, tokens);
-  assert.deepEqual(keys(r.bitcoin), ['btc', 'held-tac', 'held-teth', `held-${'ab'.repeat(32)}`, 'sats-tac']);
+  assert.deepEqual(keys(r.bitcoin), ['btc', 'held-tac', 'held-teth', `held-${'ab'.repeat(32)}`, 'sats-tac', 'tethbtc']);
   const [own, tac, teth, xyz] = r.bitcoin;
   assert.equal(own.v, 200000n, 'confirmed and silent sats');
   assert.equal(own.pending, 7000n);

@@ -17,7 +17,7 @@
 // key's TAC on Bitcoin too); viewChanged(), a tab was picked; usd(sats) → '$…' | ''; mods: { secret, claim, sats }, the modules themselves, where they are not to be
 // loaded by their URLs (a test's stubs).
 
-const SECRET_URL = '/sats/secret.js?cb=5cb3b8eb';
+const SECRET_URL = '/sats/secret.js?cb=f45e2684';
 const SATS_URL = '/tac/sats.js?cb=37cf5ec2';
 const CLAIM_URL = '/tac/claim.js?cb=dc513e91';
 const WORKER = 'https://api.tacit.finance';

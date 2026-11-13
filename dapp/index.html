@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-MrMepgHTUxliMHmcfB5rfv2L2ND7GNfBNdkYx8+BvYQ=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-3bZMJU6QMLd0D1Q6RxG240yGnj2sAUopi3iqVXw+UMY=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -55,7 +55,7 @@
 <link rel="modulepreload" href="/confidential-payout.js?cb=6360255f">
 <link rel="modulepreload" href="/address-id.js?cb=01f14d36">
 <link rel="modulepreload" href="/address-view.js?cb=58dd4914">
-<link rel="modulepreload" href="/wallet-balances.js?cb=505f8c53">
+<link rel="modulepreload" href="/wallet-balances.js?cb=329e7a26">
 <link rel="modulepreload" href="/trade/farm-read.js?cb=efe1d81e">
 <link rel="modulepreload" href="/bridge-all.js?cb=d4d71d34">
 <link rel="modulepreload" href="/lp-zap.js?cb=a43160fd">
@@ -68,7 +68,7 @@
 <link rel="modulepreload" href="/bridge-tick.js?cb=42d78071">
 <link rel="modulepreload" href="/tacit-session.js?cb=4636e436">
 <link rel="modulepreload" href="/activity.js?cb=a0384066">
-<link rel="modulepreload" href="/swap/card.js?cb=b2918a8b">
+<link rel="modulepreload" href="/swap/card.js?cb=6dc6f2f7">
 <link rel="modulepreload" href="/trade/wallet.js?cb=5d19a733">
 <link rel="modulepreload" href="/trade/util.js?cb=1d2cd8d3">
 <link rel="modulepreload" href="/trade/rpc.js">
@@ -2441,7 +2441,7 @@ import { planMerge, planAll, countAll, opsCompared } from '/bridge-all.js?cb=d4d
 import { aprFrom, shieldedApr as shieldedAprOf, poolWorthEth } from '/trade/farm-read.js?cb=efe1d81e';
 import { addressId } from '/address-id.js?cb=01f14d36';
 import { addrView, addrFlat } from '/address-view.js?cb=58dd4914';
-import { balanceRows } from '/wallet-balances.js?cb=505f8c53';
+import { balanceRows } from '/wallet-balances.js?cb=329e7a26';
 import { PXS_KEY, PX_CALLS, pxFigures, paintPx, pxState } from '/px-strip.js?cb=046a6701';
 import { zapPlan, zapPlanFor, zapCalldata, zapSettleCalldata, zapSplitSearch, zapWorth } from '/lp-zap.js?cb=a43160fd';
 import { rewardPop } from '/reward-pop.js?cb=88973dac';
@@ -4220,13 +4220,15 @@ addEventListener('storage', (e) => {
   ACT.items = ACT.items.filter((x) => !x.in || actGet(x.in));
   ACT.items.sort((a, b) => b.at - a.at); actTrim(); paintAct();
 });
-const followOpen = (it) => { if (it.kind === 'job') followJob(it.id); else if (it.kind === 'tx') followTx(it.id); else if (it.kind === 'btc') followBtc(it.id); };
+const followOpen = (it) => { if (it.kind === 'job') followJob(it.id); else if (it.kind === 'tx') followTx(it.id); else if (it.kind === 'btc') followBtc(it.id); else if (it.kind === 'chain') chainLapse(it); };
+// a Tacit chain move is settled only by the tab that sent it: one whose tab has gone is said to be unknown 20 minutes after it was sent (a late result still wins)
+const chainLapse = (it) => setTimeout(() => { const x = actGet(it.id); if (x && !ended(x)) actPut(it.id, { status: 'unknown', err: 'This page was closed before it landed. If it did not, it is kept and goes on by itself.' }); }, Math.max(0, it.at + 20 * 60e3 - Date.now()));
 function resumeActivity() {
   for (const it of ACT.items) {
     if (it.kind === 'job') { if (!ended(it)) followJob(it.id); else if (['failed', 'unknown'].includes(it.status) && Date.now() - (it.end || it.at) < 6 * 3600e3) recheckJob(it.id); }
     else if (it.kind === 'tx') { if (!ended(it)) followTx(it.id); else if (it.status === 'stale' && Date.now() - it.at < 86400e3) followTx(it.id, true); }
     else if (it.kind === 'btc') { if (!ended(it)) followBtc(it.id); }
-    else if (it.kind === 'chain' && !ended(it) && Date.now() - it.at > 20 * 60e3) actPut(it.id, { status: 'unknown', err: 'This page was closed before it landed. If it did not, it is kept and goes on by itself.' });
+    else if (it.kind === 'chain' && !ended(it)) chainLapse(it);
   }
   for (const it of ACT.items) if (it.kind === 'op' && !ended(it)) opSync(it.id);
   paintAct();
@@ -5510,7 +5512,9 @@ const scrollDash = () => $('#dash')?.scrollIntoView({ behavior: calmMotion() ? '
 function openPortfolio() {
   history.replaceState(null, '', location.pathname + location.search);      // so the same link works again
   if (!$('#dash')?.hidden) return scrollDash();
-  PF.want = Date.now(); openSheet('wallet');
+  PF.want = Date.now();
+  if (dashId()) return dashSoon();      // a wallet is open: the dash paints and scrolls to it (paintDash0)
+  openSheet('wallet');
   if (!S.key) getUx().catch(() => {});
 }
 function openLink(h) {
@@ -6290,7 +6294,7 @@ async function stealthSendNow({ run, k, label, w, raw, units, field, status, lin
       if (!feeNote) throw Object.assign(new Error(`To send it with no ETH, a second private ${anyoneUnit(k)} note pays its sender’s fee of ${fmt(y.fee, 8, 6)} ${anyoneUnit(k)}, and you hold none besides this one. Add a little ${anyoneUnit(k)}, or try again when the relay is back.`), { said: true });
       y.run?.take(kNote(feeNote));
       const a = await y.t.lockForAnyone({ walletPriv: y.priv, recipientPubHex: w.pubHex, note, feeNote, fee: y.fee, proveBatch: y.proveBatch });
-      await keepLock(y.priv, a.built, {}, w, POOL_TK[k]);
+      await keepLock(y.priv, a.built, w, POOL_TK[k]);
       return a;
     } } : {}),
     relayed: async () => {
@@ -7872,7 +7876,7 @@ function loadHeld(force = false) {
     for (const c of order) { if (S.key?.pubHex !== pub) return; await idle(); await one(c).catch(() => {}); }
   })()];
   const sats = (async () => {
-    const X = await import('/sats/secret.js?cb=5cb3b8eb');
+    const X = await import('/sats/secret.js?cb=f45e2684');
     const notes = (await X.poolNotes(X.poolWalletFor(priv, 'mainnet'))).filter((n) => !n.spent);
     const held = X.livePoolAssets().map((a) => ({ ...a, value: notes.filter((n) => strip(n.asset).toLowerCase() === a.id).reduce((t, n) => t + BigInt(n.value), 0n) }));
     if (S.key?.pubHex === pub) { HELD.sats = held; dashSoon(); }
@@ -9344,7 +9348,7 @@ function brMarkLong(el, n, step) {
   lab.classList.add('off');
   $('span', lab)?.insertAdjacentHTML('beforeend', html`<small>${brLongReason(step)}</small>`.s);
 }
-const bswMod = lazy(() => import('/btcswap-page.js?cb=7830b221'));
+const bswMod = lazy(() => import('/btcswap-page.js?cb=7293c545'));
 const BSW = { pub: null, s: null, say: null, recs: [] };
 const bswHas = (pub) => { try { return Object.keys(localStorage).some((k) => k.startsWith(`tacit-btcswap-v1:mainnet:${pub}:`)); } catch { return false; } };
 async function bswOpen() {
@@ -9428,7 +9432,7 @@ const FAST_OFF = 'tacit-fast-route-off-v1';
 try { const q = new URLSearchParams(location.search).get('fast'); if (q === '0') store.set(FAST_OFF, 1); else if (q === '1') store.set(FAST_OFF, null); } catch {}
 const fastOn = () => !store.get(FAST_OFF);
 const FASTR = { route: null, pub: null, fr: null, frP: null, offers: new Map(), slow: null, stop: null, recs: [], open: new Set() };
-const fastMods = lazy(() => Promise.all([import('/fast/route.js?cb=20c37406'), import('/fast/wire.js?cb=21cba7b5'), fetch('/fast/lp.json', { cache: 'no-cache' }).then((r) => r.json()).catch(() => ({}))]));
+const fastMods = lazy(() => Promise.all([import('/fast/route.js?cb=20c37406'), import('/fast/wire.js?cb=99f252fc'), fetch('/fast/lp.json', { cache: 'no-cache' }).then((r) => r.json()).catch(() => ({}))]));
 function fastForget() { FASTR.stop?.(); Object.assign(FASTR, { pub: null, fr: null, frP: null, stop: null, recs: [], slow: null }); FASTR.offers.clear(); FASTR.open.clear(); }
 function fastRoute() {
   const pub = S.key?.pubHex;
@@ -10332,7 +10336,7 @@ function tacPlaceGo(what) {
   load.tac().then(() => rerender('tac')).catch(() => {});
 }
 function tacPool() {
-  return (TPOOL.p ||= import('/tac/pool.js?cb=27c7ce92').then((m) => {
+  return (TPOOL.p ||= import('/tac/pool.js?cb=83327776').then((m) => {
     const api = m.makeTacPool({
       key: () => (S.key ? { pubHex: S.key.pubHex } : null),
       priv: () => walletPriv(),
@@ -14494,6 +14498,7 @@ async function readBorrow(fresh, current) {
   LOCK.rec = st.rec; LOCK.state = st;
   if (st.rec) Object.assign(LOCKNOTE, { pub, borrowed: st.borrowed || null,
     text: st.borrowed ? 'backs a loan' : st.minted ? 'minted · borrow next' : `${fmt(BigInt(st.rec.vBtc), 8, 6)} BTC locked · ${!st.bonded ? 'post its bond' : !st.reflected ? 'waiting for its proof' : 'ready to mint'}` });
+  else if (LOCKNOTE.pub === pub) { Object.assign(LOCKNOTE, { text: '', borrowed: null }); setFoot('borrow', ''); }
   dashSoon();
   await bondsP;
 }
@@ -16544,7 +16549,7 @@ async function hxWalletSend(k, to, raw) {
     } catch (e) { txFail(run, status, e); }
   });
 }
-const HX_GET = { ctac: ['shield:wtac:chain', 'Shield TAC to it'], eth: ['shield:ether:defi', 'Shield ETH first'], pp: ['shield:ether:pay', 'Add ETH for payments'], tac: ['swap:ether:tac:private', 'Buy TAC'], wtac: ['swap:ether:tac', 'Buy TAC'], cusd: ['borrow:cusd', 'Borrow some'], cbtc: ['borrow:cbtc', 'Mint some'], tacb: ['shield:btc:pool', 'Shield TAC on Bitcoin'] };
+const HX_GET = { ctac: ['shield:wtac:chain', 'Shield TAC to it'], eth: ['shield:ether:defi', 'Shield ETH first'], pp: ['shield:ether:pay', 'Add ETH for payments'], tac: ['swap:ether:tac:private', 'Buy TAC'], wtac: ['swap:ether:tac', 'Buy TAC'], cusd: ['borrow:cusd', 'Borrow some'], cbtc: ['borrow:cbtc', 'Mint some'] };
 const HXTP = { v: null, at: 0, p: null };
 function hxEarns(pool) {
   if (!HXTP.p && Date.now() - HXTP.at > 10 * 60e3) {
@@ -16559,7 +16564,7 @@ function hxHaveSend(el, pub) {
   if (go && go.getAttribute('aria-busy') !== 'true') { go.disabled = (none && !hxSendBtc()) || !!hxSendFit() || !!HX.rcBad || hxSendSentNow(); go.textContent = hxSendLabel(); }
   const way = $('#hx-way'), w = HX.rcBad ? null : hxSendWay();
   if (way) { way.hidden = !w; way.textContent = w?.say || ''; way.dataset.k = w?.k || ''; }
-  const view = none && get ? html`<span class="hx-pl"><svg class="tk" aria-hidden="true"><use href="#tk-${ic}"/></svg><span>No ${k === 'tacb' ? 'TAC shielded on Bitcoin' : k === 'ctac' ? 'TAC on the Tacit chain' : k === 'wtac' ? `TAC in ${your()}` : dp || k === 'pp' ? `${unit} held privately for payments` : `private ${unit}`} yet.</span>${dp ? html`<a class="link" href="#${get[0]}" data-link="${get[0]}">${get[1]}</a>${hxEarns(dp.pool) ? html`<span class="hx-earn"> · ${hxEarns(dp.pool)}</span>` : ''}` : html`<button class="link" type="button" data-hxin="${get[0]}">${get[1]}</button>`}</span>` : null;
+  const view = none && get ? html`<span class="hx-pl"><svg class="tk" aria-hidden="true"><use href="#tk-${ic}"/></svg><span>No ${k === 'tacb' ? 'TAC at your Bitcoin address' : k === 'ctac' ? 'TAC on the Tacit chain' : k === 'wtac' ? `TAC in ${your()}` : dp || k === 'pp' ? `${unit} held privately for payments` : `private ${unit}`} yet.</span>${dp ? html`<a class="link" href="#${get[0]}" data-link="${get[0]}">${get[1]}</a>${hxEarns(dp.pool) ? html`<span class="hx-earn"> · ${hxEarns(dp.pool)}</span>` : ''}` : html`<button class="link" type="button" data-hxin="${get[0]}">${get[1]}</button>`}</span>` : null;
   el.hidden = !view;
   if (view && el.__h !== view.s) { el.__h = view.s; mount(el, view); }
   if (!view) el.__h = '';
@@ -17303,9 +17308,12 @@ function hxHeldOf(k, cid) {
   const dp = hxDev(k) || (HX.tab === 'swap' ? hxDevAny(k) : null);
   if (dp) { const v = devBal(dp.slug, S.key.pubHex); return v == null ? null : [v, HX.tab === 'swap' ? dp.dec ?? 18 : dp.dec, dp.sym]; }
   if (HX.tab === 'send' && hxSendBtc(k)) {
-    const pub = S.key.pubHex, a = k === 'tacb' && HELD.pub === pub ? HELD.sats?.find((x) => x.ticker === 'TAC') : null;
+    const pub = S.key.pubHex;
     if (k === 'btc') return BTC.pub === pub && BTC.got === 3 ? [BTC.sats + BTC.silent, 8, 'BTC'] : null;
-    return a ? [a.decimals > 8 ? a.value / 10n ** BigInt(a.decimals - 8) : a.value * 10n ** BigInt(8 - a.decimals), 8, 'TAC'] : null;
+    // the TAC at the key's Bitcoin address, which is what the send spends (hxSendBtcGo)
+    if (BTC.pub !== pub || !(BTC.got >= 2)) return null;
+    const a = (BTC.held || []).find((x) => x.id === TAC_BTC_ID);
+    return [a?.balance ?? 0n, a?.decimals ?? 8, 'TAC'];
   }
   if (k === 'pp') { const v = devBal(hxChain().chainId, S.key.pubHex); return v == null ? null : [v, 18, 'ETH']; }
   if (k === 'btc' && HX.tab === 'borrow') { const st = LOCK.state; return st?.sats != null ? [st.sats - st.pendingSats, 8, 'BTC'] : BTC.pub === S.key.pubHex && BTC.got === 3 ? [BTC.sats, 8, 'BTC'] : null; }
@@ -17375,7 +17383,7 @@ function hxSubOf(id, k) {
   if (id === 'hx-from' && HX.tab === 'bridge') return k === 'ether' ? 'to Bitcoin, as tETH' : HX_BR[k] === 'btc' ? 'to Bitcoin' : 'to Ethereum, private';
   if (id === 'hx-sa' && hxIsLp(k)) return 'LP shares, a part or all of them';
   if (id === 'hx-sa' && k === 'rtac') return 'farm rewards, one for one TAC';
-  if (id === 'hx-sa') return { ether: 'Ether', wtac: 'Tacit’s token', wusdc: 'a dollar', wusdt: 'a dollar', eth: 'ETH, made private · swap, farm, borrow', tac: 'Tacit’s token · swap, farm, borrow', cusd: 'a dollar borrowed against cBTC', cbtc: 'bitcoin, 1:1 with BTC', pp: 'private ETH · pay anyone on ', ctac: 'private TAC · on the Tacit chain', ptac: 'private TAC · pay anyone on Ethereum', usdc: 'a private dollar · pay anyone on Ethereum', usdt: 'a private dollar · pay anyone on Ethereum', tacb: 'shielded on Bitcoin', btc: 'a silent payment' }[k] || '';
+  if (id === 'hx-sa') return { ether: 'Ether', wtac: 'Tacit’s token', wusdc: 'a dollar', wusdt: 'a dollar', eth: 'ETH, made private · swap, farm, borrow', tac: 'Tacit’s token · swap, farm, borrow', cusd: 'a dollar borrowed against cBTC', cbtc: 'bitcoin, 1:1 with BTC', pp: 'private ETH · pay anyone on ', ctac: 'private TAC · on the Tacit chain', ptac: 'private TAC · pay anyone on Ethereum', usdc: 'a private dollar · pay anyone on Ethereum', usdt: 'a private dollar · pay anyone on Ethereum', tacb: 'at your Bitcoin address', btc: 'a silent payment' }[k] || '';
   if (HX.tab === 'borrow') return k === 'btc' ? 'locked for cUSD or cBTC' : k === 'cbtc' ? 'held, put up for cUSD' : 'in a vault, for TACD or TACE';
   return { ether: 'zapped in, one transaction', wtac: 'public ERC-20', eth: 'ETH, made private', tac: 'Tacit’s token' }[k] || '';
 }
@@ -17403,7 +17411,7 @@ function hxWarmBals(ks) {
   if (S.key && pay.length) payBals(pay);
   if (ks.some((k) => k in HX_WTOK)) hxWalletBals();
   if (S.key && !P.scan && ks.some((k) => hxIsLp(k) || ['eth', 'tac', 'cusd', 'cbtc', 'rtac'].includes(k))) scanPrivate().catch(() => {});
-  if (S.key && ks.includes('tacb')) loadHeld().then(dashSoon, () => {});
+  if (S.key && ks.includes('tacb')) loadBtc().then(dashSoon, () => {});
   if (S.key && ks.includes('btc')) loadBtc().then(dashSoon, () => {});
   if (S.key && ks.includes('ctac')) chainScan();
 }
@@ -17412,7 +17420,7 @@ function hxLoading(k) {
   const pay = hxPayId(k);
   if (pay != null) return payReading(pay);
   if (hxIsLp(k) || ['eth', 'tac', 'cusd', 'cbtc', 'rtac'].includes(k)) return !!S.key && !P.scan && !!P.scanning;
-  if (k === 'tacb') return !!S.key && !!HELD.loading;
+  if (k === 'tacb') return !!S.key && !!BTC.loading;
   if (k === 'btc') return !!S.key && !!BTC.loading;
   if (k === 'ctac') return !!S.key && !!CH.scanP;
   return false;
@@ -19064,7 +19072,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=b2918a8b').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=6dc6f2f7').catch((e) => { SWC.p = null; throw e; }));
 function swcFlow() {
   hxPathPaint();
   if (!SWC.card || SWC.card.flow === HX.flow) return;

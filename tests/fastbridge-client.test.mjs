@@ -134,7 +134,8 @@ test('a whole swap through the client: quote, start, the steps in words, the poo
   w.userTick = () => fb.tick();
   const q = await fb.quote(VALUE);
   const rec = await fb.start({ quote: q, notes: [w.note] });
-  assert.equal((await fb.records())[0].title, 'Locking on Bitcoin');
+  // the lock goes out at the press, while the quote and the provider's hold stand
+  assert.equal((await fb.records())[0].title, 'Waiting for Bitcoin');
   const titles = new Set();
   await w.run(async () => { const r = (await fb.records())[0]; if (r) titles.add(r.title); return r?.phase === 'done' && (await w.lp())?.phase === 'done'; });
   const last = (await fb.records())[0];

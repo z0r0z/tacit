@@ -130,9 +130,10 @@ export async function readLocks({ ux, priv, hist }) {
   const op = (l) => strip(ux.pool.outpointKey('0x' + l.lockTxid.match(/../g).reverse().join(''), l.lockVout));
   // one batch for every lock: what the pool records of it, whether it is spent or redeemed (those are left out), its bond and its mint
   const r = await batch(all.flatMap((l) => [{ to: POOL, data: SEL.cbtcLockVBtc + op(l) }, { to: POOL, data: SEL.lockSpent + op(l) }, { to: POOL, data: SEL.lockRedeemed + op(l) },
-    { to: ENGINE, data: SEL.escrowSufficient + op(l) + word(l.vBtc) }, { to: POOL, data: SEL.cbtcMinted + op(l) }]));
+    { to: ENGINE, data: SEL.escrowSufficient + op(l) + word(l.vBtc) }, { to: POOL, data: SEL.cbtcMinted + op(l) }, { to: ENGINE, data: SEL.escrowTotal + op(l) }]));
   const w = (i) => (r[i] ? wordAt(r[i], 0) : 0n);
-  return all.flatMap((l, i) => (w(5 * i + 1) !== 0n || w(5 * i + 2) !== 0n ? [] : [{ ...l, sats: BigInt(l.vBtc), recorded: w(5 * i) === BigInt(l.vBtc), bonded: w(5 * i + 3) === 1n, minted: w(5 * i + 4) === 1n }]));
+  // `bond` is what is posted (null when it could not be read): a lock short of its bond may still hold one, which is taken back before the lock
+  return all.flatMap((l, i) => (w(6 * i + 1) !== 0n || w(6 * i + 2) !== 0n ? [] : [{ ...l, sats: BigInt(l.vBtc), recorded: w(6 * i) === BigInt(l.vBtc), bonded: w(6 * i + 3) === 1n, minted: w(6 * i + 4) === 1n, bond: r[6 * i + 5] ? wordAt(r[6 * i + 5], 0) : null }]));
 }
 export async function readLoans({ ux, priv }) {
   const cdp = await ux.recoverCdpPositions({ walletPriv: priv });

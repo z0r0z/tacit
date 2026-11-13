@@ -190,6 +190,7 @@ const left = (t) => {
 
 function phase(st) {
   if (st.soon) return { word: 'OPENS SOON', live: false };
+  if (st.end === undefined) return { word: 'READING', live: false };      // the race is not read yet: nothing to buy, no time to count
   const now = Math.floor(Date.now() / 1000);
   if (st.can) return { word: 'CLOSED', live: false };
   if (st.fin) return { word: 'FINISHED', live: false, done: true };
@@ -288,4 +289,11 @@ if (location.hash === '#demo') {
   readState().then(readWin); readBoard();
 }
 if (location.hash !== '#demo') { setInterval(() => { readState(); readMe(); readWin(); }, 20_000); setInterval(readBoard, 60_000); }
-setInterval(() => { if (S.st && !S.busy && document.activeElement?.id !== 'eth') render(); }, 1000);
+// Each second only the countdown moves; the page is drawn again when the phase turns, so a button is not replaced under a press.
+let tickKey = '';
+setInterval(() => {
+  if (!S.st || S.busy || document.activeElement?.id === 'eth') return;
+  const ph = phase(S.st), k = `${ph.live}|${ph.done}|${ph.final}|${ph.paused}`;
+  if (k !== tickKey) { tickKey = k; render(); }
+  else $('#status').innerHTML = pixelText(ph.word, 3, ph.live || ph.done ? 'hot' : '');
+}, 1000);

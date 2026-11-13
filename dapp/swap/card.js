@@ -2207,13 +2207,14 @@ async function exitAct(escrow, back) {
   finally { S.busy = false; paint(); }
 }
 async function checkExits() {
-  const xs = readExits(), left = [];
+  const xs = readExits(), left = [], full = new Set();
   for (const x of xs) {
     const bal = await rpc('eth_getBalance', [x.escrow, 'latest']).then(BigInt, () => null);
     if (bal == null || bal > 0n || now() - (x.at || 0) < 900) left.push(x);
+    if (bal !== 0n) full.add(x);      // an escrow emptied since is a swap that ran: kept a while, not said to be stuck
   }
   keepExits(left);
-  const w = left.find((x) => now() - (x.at || 0) >= 120);
+  const w = left.find((x) => full.has(x) && now() - (x.at || 0) >= 120);
   if (w) await chainTime();
   if (w && !S.busy && !S.note) say(exitLine(w), 'err', true);
 }
@@ -2370,10 +2371,13 @@ function openPicker(side, again = false) {
   pkClose?.({ keep: true });
   if (!again) PKKIND = null;
   if (!TL.at) loadList().then(() => {
-    if ($('#pk').hidden || $('#pk-q')?.value || !TL.rows.length) return;
-    const a = document.activeElement, k = $('#pk').contains(a) ? (a.dataset?.k || (a.classList.contains('pk-x') ? 'x' : '')) : '';
+    if ($('#pk').hidden || !TL.rows.length) return;
+    const a = document.activeElement, v = $('#pk-q')?.value || '', k = $('#pk').contains(a) ? (a.id === 'pk-q' ? 'q' : a.dataset?.k || (a.classList.contains('pk-x') ? 'x' : '')) : '';
     openPicker(side, true);
-    if (k) setTimeout(() => (k === 'x' ? $('#pk .pk-x') : $(`#pk [data-k="${k}"]`))?.focus(), 0);
+    // a search typed before the full list arrived is run again over it
+    const qe = $('#pk-q');
+    if (v && qe) { qe.value = v; qe.oninput?.(); }
+    if (k) setTimeout(() => (k === 'q' ? qe : k === 'x' ? $('#pk .pk-x') : $(`#pk [data-k="${k}"]`))?.focus(), 0);
   });
   const pk = $('#pk'), at = atOf(side), cur = side === 'pay' ? S.pay : S.get;
   const wl = held(listed().map((t) => t.addr)), top = wl.filter((k) => tacitPooled(k) || S.bal[k] > 0n), rest = wl.filter((k) => !top.includes(k));
@@ -2515,7 +2519,7 @@ function choose(side, k) {
     if (!mend(side)) { Object.assign(S, { at: back.at, inP: back.inP, outP: back.outP, pay: back.pay, get: back.get }); LATER.on = back.later; return; }
     if (side === 'get') clearTo();
     if (LATER.on) laterUp();
-    if (side === 'pay' && !sameCoin(was, real)) S.amt = '';
+    if (!sameCoin(back.pay, S.pay)) S.amt = '';        // the amount is in the From coin, which a To pick can change too (mend)
     S.amt = fitAmt(S.amt);
     if (at === 'defi') { warmPrivate(); privUp(); }
     S.note = ''; S.q = null; S.mq = null; S.pick = null; S.hold = false; changed(); paint(); requote(true);
@@ -2537,7 +2541,7 @@ function params() {
   const p = new URLSearchParams(), sym = (k) => { const t = tokenOf(k); return t?.custom || (t?.addr && listed().filter((x) => nameIs(x, lc(t.sym))).length > 1) ? t.addr : t?.sym; };
   if (S.btc && !moving()) return p;
   if (S.pay !== lc(R.ZERO)) p.set('from', sym(S.pay));
-  if (S.get !== lc(R.TAC)) p.set('to', sym(S.get));
+  if (S.get !== lc(R.TAC) || S.inP || getPriv()) p.set('to', sym(S.get));      // read back with no To, a private pair gives tETH
   if (S.amt) p.set('amt', S.amt);
   if (S.inP || getPriv()) p.set('private', S.inP && S.outP ? 'both' : S.inP ? 'from' : 'to');
   if (S.at.pay) p.set('from-at', S.at.pay);

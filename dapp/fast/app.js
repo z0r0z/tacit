@@ -4,10 +4,10 @@ import { makeKeySession, signInSheet } from '/trade/key.js?cb=7149c223';
 import { makeTacitSession } from '/tacit-session.js?cb=4636e436';
 import { getUx as loadUx, forgetUx } from '/trade/poolux.js?cb=efc87cea';
 import { onMainnet, connectedInjected } from '/eth-nodes.js';
-import { mountFast } from '/fast/ui.js?cb=a01c7b55';
+import { mountFast } from '/fast/ui.js?cb=186e3082';
 import { mountProvide } from '/fast/provide.js?cb=6c77ba73';
 import { mountBound } from '/fast/bound.js?cb=862c8d6e';
-import { openFast, openProvider, openBound, discoverProviders, PROVIDER_DEFAULTS } from '/fast/wire.js?cb=21cba7b5';
+import { openFast, openProvider, openBound, discoverProviders, PROVIDER_DEFAULTS } from '/fast/wire.js?cb=99f252fc';
 import { makeWants } from '/fast/want.js?cb=1ab031d1';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 
@@ -106,7 +106,7 @@ const provide = mountProvide({
   base: PROVIDER_DEFAULTS, notify, ask: () => wants.ask(), root: document.getElementById('provide'), keyS, hasOpen, settings, waiting: () => wants.waiting(), signIn,
   open: async () => {
     const pubHex = keyS.key.pubHex, priv = keyS.priv(), ux = await getUx(), { boards } = await LISTS;
-    return TS.withKey((T) => openProvider({ T, ux, priv, pubHex, boards, wallet: sendWallet, ask }), pubHex);
+    return TS.withKey((T) => openProvider({ T, withKey: (fn) => TS.withKey(fn, pubHex), ux, priv, pubHex, boards, wallet: sendWallet, ask }), pubHex);
   },
 });
 // a page closed while it provides, or while a swap it provides is open, leaves that swap untended

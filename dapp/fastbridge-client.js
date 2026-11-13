@@ -116,7 +116,7 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
     }
   }
 
-  // Builds and stores the lock for a checked quote; nothing is sent until the first step.
+  // Builds and stores the lock for a checked quote, and sends it (a failed send is kept, with its error, for the next step).
   async function start({ quote: q, notes: all }) {
     if (!(Number(q.validUntil) > now() + policy.quoteMarginSecs)) throw new Error('the quote expired');
     const notes = await freeNotes(all);
@@ -135,13 +135,14 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
     });
     // the provider is kept with the swap, so it is carried on with the one it began with
     if (provider) { rec.provider = provider; await store.put(rec); }
-    return rec;
+    // sent at the press, while the quote and the provider's hold stand: a lock left for a later pass (the tab closed meanwhile) would go out after both ran out
+    return bl.step(rec);
   }
 
   async function tick() {
     const out = [];
     for (const rec of await store.list()) out.push(TERMINAL.has(rec.phase) ? rec : await bl.step(rec));
-    return out.map((r) => describe(r, now));
+    return out.sort((a, b) => b.created - a.created).map((r) => describe(r, now));
   }
 
   // Calls tick() on a timer while the page is open; one pass at a time. Returns stop().
@@ -228,7 +229,7 @@ export function makeFastBridgeMarket({ btc, evm, store, seed, pins = {}, policy,
   async function tick() {
     const out = [];
     for (const rec of await store.list()) out.push(TERMINAL.has(rec.phase) ? rec : await clientFor(rec.provider || null).step(rec));
-    return out.map((r) => describe(r, now));
+    return out.sort((a, b) => b.created - a.created).map((r) => describe(r, now));
   }
   function run({ everyMs = 15000, onChange = () => {} } = {}) {
     let busy = false, stopped = false;
@@ -285,7 +286,7 @@ export function plainWhy(why) {
 // Where the lock stands once a bridge has not gone through: safe, and when it is due back (the timelock runs about a day from the confirmation).
 // The app itself sends it back, so it says to open the app. `opens` is when the timelock runs, or null when that is not known.
 const BTC_BLOCK_SECS = 600;
-const opensAt = (rec) => (rec.confirmedAt && rec.csvBlocks ? rec.confirmedAt + (rec.csvBlocks - 1) * BTC_BLOCK_SECS : null);
+const opensAt = (rec) => { const t = rec.lockAt || rec.confirmedAt; return t && rec.csvBlocks ? t + (rec.csvBlocks - 1) * BTC_BLOCK_SECS : null; };
 function returnLine(opens, now) {
   if (opens == null) return 'Your Bitcoin is safe. The lock comes back to your address when its timelock ends, about a day after it confirmed.';
   const left = opens - now;

@@ -152,9 +152,9 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
     const lpOf = async () => lpNotes((await t.balance(priv())).notes, pool);
     const had = new Set((await lpOf()).map(noteKey));
     say(`Step ${++k} of ${n} · the relay is proving your unbond…`);
-    const [now] = (await t.farmPositions({ walletPriv: priv() })).filter((p) => p.receiptLeaf === pos.receiptLeaf);
-    const given = BigInt(now?.pendingUnits || 0);
-    settled(await unbond(t, priv(), now || pos, run().wait('Unbond from a farm', 15 * 60e3), undefined, { forfeit: true }));
+    const [cur] = (await t.farmPositions({ walletPriv: priv() })).filter((p) => p.receiptLeaf === pos.receiptLeaf);
+    const given = BigInt(cur?.pendingUnits || 0);
+    settled(await unbond(t, priv(), cur || pos, run().wait('Unbond from a farm', 15 * 60e3), undefined, { forfeit: true }));
     let fresh = [];
     for (let j = 0; !fresh.length && j < 8; j++) { fresh = (await lpOf()).filter((x) => !had.has(noteKey(x))); if (!fresh.length) await sleep(5000); }
     if (!fresh.length) throw new Error('Unbonded. The liquidity note is not showing yet: Read again in a minute and take it out from the front page.');

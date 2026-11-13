@@ -14,7 +14,7 @@ import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js';
 import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=882f11ad';
 import { makeFastBridgeEvm } from '/fastbridge-evm.js?cb=f23bb1cd';
 import { makeHttpCounter, makeCounter } from '/fastbridge-http.js';
-import { makeFastBridgeMarket, makeLocalStore, termsOf } from '/fastbridge-client.js?cb=ee84ee44';
+import { makeFastBridgeMarket, makeLocalStore, termsOf } from '/fastbridge-client.js?cb=af953ee4';
 import { makeLpService } from '/fastbridge-provider.js?cb=844ed65c';
 import { makeMailboxCounter, makeMailboxServer, makeAdPublisher, readProviders, gatewayOf } from '/fastbridge-mailbox.js?cb=e88908a8';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=850e1c5e';
@@ -393,7 +393,7 @@ function presence(doc = typeof document !== 'undefined' ? document : null) {
   return () => hiddenAt == null || Date.now() - hiddenAt < AWAY_AFTER_MS;
 }
 
-export async function openProvider({ T, ux, priv, pubHex, boards = [], name = null, wallet = null, ask, fetchImpl = (...a) => fetch(...a), bases = EXPLORERS, hrp = 'bc', now = () => Math.floor(Date.now() / 1000), tickSecs = 15, pollMs = 3000, present = presence(), vet = (ns) => withKey((t) => t.bridgeUx().lineage(ns)) }) {
+export async function openProvider({ T, withKey, ux, priv, pubHex, boards = [], name = null, wallet = null, ask, fetchImpl = (...a) => fetch(...a), bases = EXPLORERS, hrp = 'bc', now = () => Math.floor(Date.now() / 1000), tickSecs = 15, pollMs = 3000, present = presence(), vet = (ns) => withKey((t) => t.bridgeUx().lineage(ns)) }) {
   const asset = { btcAsset: TAC_ASSET, evmAsset: TAC_ASSET };
   let evmLog = () => {};
   const { prims, btc, seed, evm } = sides({ T, ux, priv, hrp, bases, fetchImpl, asset, seedTag: 'tacit-fastbridge-lp-seed', forNotes: true, wallet, ask, log: (o) => evmLog(o) });

@@ -7,11 +7,11 @@ import { sha256 } from '/vendor/tacit-deps.min.js';
 import { mountChart, fmtLocalStamp, fmtLocalTime } from '/trade/chart.js?cb=c0b1d232';
 import { makeConnect } from '/trade/connect.js?cb=f59469b9';
 import { addrFlat } from '/address-view.js?cb=58dd4914';
-import { makeKeySession, signInSheet } from '/trade/key.js?cb=7149c223';
+import { makeKeySession, signInSheet, pickWalletSheet } from '/trade/key.js?cb=7149c223';
 import { btcWay, btcSeen } from '/trade/btc-way.js?cb=8cd735cf';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=efc87cea';
 import { readRates, readProgram, heldBars, rangesFor, barSize } from '/teth/read.js?cb=7aa845b7';
-import { totalsOf, readEngine, sizeBond, coverage, readPools, poolRows, farmApr, readLocks, readLoans, readHeld, readHistory, positionsIn, lockStep, CBTC_ID, ENGINE, WSTETH } from '/cbtc/read.js?cb=4838906d';
+import { totalsOf, readEngine, sizeBond, coverage, readPools, poolRows, farmApr, readLocks, readLoans, readHeld, readHistory, positionsIn, lockStep, CBTC_ID, ENGINE, WSTETH } from '/cbtc/read.js?cb=2519ca25';
 import { $, esc, api, now, fmtUnits, parseUnits, grp, usd, short, sig } from '/trade/util.js?cb=1d2cd8d3';
 
 const SCAN = 'https://etherscan.io/', MEMPOOL = 'https://mempool.space/';
@@ -162,7 +162,7 @@ function renderRoute() {
 const key = makeKeySession({ moved: () => lockKey(), ways: { btc: btcWay(), btcSeen } });
 const connect = makeConnect({ describe: 'Track cBTC', rows: () => (key.unlocked ? `<div class="kv"><span>Tacit wallet</span><b class="addr-s">${esc(key.key.address ? short(key.key.address, 6) : key.key.label || short(key.key.pubHex, 6))} <button class="linkbtn" type="button" id="sheet-lock">Lock</button></b></div>` : ''), onChange: () => {} });
 const { wallet, W } = connect;
-function pickProvider(list) { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : list[0]?.uuid; }
+function pickProvider(list) { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : pickWalletSheet(list); }
 const signIn = () => signInSheet(key, { pick: pickProvider, first: btcSeen() ? 'btc' : 'eth', why: 'Sign in to see your locks, cBTC and loans. Nothing is stored or sent.' });
 let mineSeq = 0, histP = null, mineP = null, mineFor = null;
 const btcHistory = () => (histP ||= import('/confidential-recovery-btc.js').then(({ makeBtcHistoryProvider }) => makeBtcHistoryProvider({ sha256, hrp: 'bc', fetchImpl: (u, o) => fetch(u, o) })).catch((e) => { histP = null; throw e; }));

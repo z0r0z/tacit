@@ -8,7 +8,8 @@ export function balanceRows(items, btc, tokens = {}) {
     if (NOT_BALANCE.has(it.key)) continue;
     const held = it.core || it.show;
     if (ON_BITCOIN.test(it.key)) {
-      if (held && (it.key.startsWith('sats-') || (!ready && it.key !== 'btc'))) bitcoin.push(it);
+      // btc and btc-* stand in for the address's own holdings until they are read; the rest (the Bitcoin pool, assets bridged to the Taproot address) are not among them
+      if (held && (!it.key.startsWith('btc') || (!ready && it.key !== 'btc'))) bitcoin.push(it);
     } else if (held && it.v !== 0n) ethereum.push(it);
   }
   const sats = ready ? (btc.sats ?? 0n) + (btc.silent ?? 0n) : null;

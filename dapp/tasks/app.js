@@ -681,7 +681,9 @@ async function settle() {
         if (res.status === 'ok' && steps.length && steps.every((x) => ['queued', 'credited'].includes(x.status))) S.hashes[h] = { state: 'done' };
         else if (res.status === 'no step') S.hashes[h] = { state: 'void', note: 'not a step of a listed job' };
         else if (res.status === 'failed') S.hashes[h] = { state: 'void', note: 'the transaction failed' };
-        else if (res.status === 'ok') S.hashes[h].note = steps.map((x) => x.status).filter((x) => !['queued', 'credited'].includes(x))[0] ?? 'waiting';
+        // a step sent after its job's rewards ended, or before the job opened, is never priced: it is not asked about again
+        else if (res.status === 'ok' && res.steps.length && res.steps.every((x) => ['ended', 'not open'].includes(x.status))) S.hashes[h] = { state: 'void', note: res.steps.some((x) => x.status === 'ended') ? 'rewards had ended' : 'sent before its job opened' };
+        else if (res.status === 'ok') S.hashes[h].note = res.steps.map((x) => x.status).filter((x) => !['queued', 'credited'].includes(x))[0] ?? 'waiting';
         else if (res.status === 'unknown chain') S.hashes[h] = { state: 'void', note: 'the rewards service does not know that chain' };
         else {
           S.hashes[h].note = res.status === 'confirming' ? `${res.confirmationsLeft} confirmations to go` : res.status;

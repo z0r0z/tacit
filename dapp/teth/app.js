@@ -1,6 +1,6 @@
 import { mountChart, fmtLocalStamp, fmtLocalTime } from '/trade/chart.js?cb=c0b1d232';
 import { makeConnect, UserStopped } from '/trade/connect.js?cb=f59469b9';
-import { makeKeySession, signInSheet, Cancelled } from '/trade/key.js?cb=7149c223';
+import { makeKeySession, signInSheet, pickWalletSheet, Cancelled } from '/trade/key.js?cb=7149c223';
 import { readPool, heldHistory, heldBars, rangesFor, barSize, recentMoves, movedSince, readRates, readProgram, poolRows, positionsIn, programEnds, wrapQuote, shown, POOL, WRAP_TIP } from '/teth/read.js?cb=7aa845b7';
 import { wrapEth, wrapFirst, settle, readHeld, finish, wrapIssue, relayWords, selfable, selfFinish, settleCost, proveOwn, ownWords, ownable, deviceWords, relayState, relayStopped, forgetUx, getUx } from '/teth/wrap.js?cb=271c4722';
 import { ownPref, setOwnPref, devicePref, setDevicePref, deviceProver, proverFor, readCredit, proofsFor, fundFromWallet, quoteEth, quoteEthFor, fundWithEth, loadSelfProver, tokenBalance } from '/teth/prover.js?cb=d9e1968c';
@@ -302,13 +302,13 @@ const connect = makeConnect({
   rows: () => `${D.bal?.eth != null ? `<div class="kv"><span>ETH</span><b class="num">${esc(fmtUnits(D.bal.eth, 18, 4))}</b></div>` : ''}${key.unlocked ? `<div class="kv"><span>Tacit wallet</span><b class="addr-s">${esc(key.key.address ? short(key.key.address, 6) : key.key.label || short(key.key.pubHex, 6))} <button class="linkbtn" type="button" id="sheet-lock">Lock</button></b></div>` : ''}`,
   busy: () => S.busy,
   say,
-  onChange: () => { renderBalanceAfter(); },
+  onChange: () => { renderBalanceAfter(); if (O.sheet && !O.sheet.closed) { O.f.wprove = null; renderSheet(); readWalletProve(); } },      // the prove sheet's wallet balance is the account's now
 });
 const { wallet, W } = connect;
 document.addEventListener('click', (e) => { if (e.target.id === 'sheet-lock' && !S.busy) { lockKey(); e.target.closest('.bsheet')?.querySelector('.x')?.click(); } });
 function pickProvider(list) {
   const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid;
-  return mine && list.some((x) => x.uuid === mine) ? mine : list[0]?.uuid;
+  return mine && list.some((x) => x.uuid === mine) ? mine : pickWalletSheet(list);     // with no wallet connected here, the visitor chooses
 }
 const signIn = () => signInSheet(key, { pick: pickProvider });
 function lockKey() {

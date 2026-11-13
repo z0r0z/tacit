@@ -6,7 +6,7 @@ import { sha256, hmac, secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.m
 import { makeKeySession, signInSheet } from '/trade/key.js?cb=7149c223';
 import { btcWay, btcSeen } from '/trade/btc-way.js?cb=8cd735cf';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=efc87cea';
-import { readLocks, readLoans, readHeld, readEngine, sizeBond, lockStep, ENGINE, WSTETH } from '/cbtc/read.js?cb=4838906d';
+import { readLocks, readLoans, readHeld, readEngine, sizeBond, lockStep, ENGINE, WSTETH } from '/cbtc/read.js?cb=2519ca25';
 import { makeLoans, exactNotes, bondGap, bondCall, bondShareCall, bondBackCall, outpointOf, lockPad, lockRate, loanHealth, borrowAt, SAFE_RATIOS } from '/btc-borrow.js?cb=d3743265';
 import { makeRunner } from '/activity.js?cb=a0384066';
 import { relayRefused, relayWords } from '/relay-outcome.js?cb=17e48a9a';
@@ -186,8 +186,10 @@ export function mountMine(root, { ticket = null, pick, wallet = null, W = null, 
     catch (e) { if (/insufficient sats/i.test(String(e?.message || ''))) throw new Error('Not enough BTC at the deposit address for this lock and its network fees.'); throw e; }
     try { localStorage.setItem(recKeyOf(priv.pub), JSON.stringify(res.record)); } catch {}
     const J = run().journal, id = 'btc:' + String(res.lockTxid).toLowerCase();
-    J.put(id, { kind: 'btc', label: `Lock ${btcTxt(sats)} BTC`, hash: res.lockTxid, status: 'pending' });
+    const made = res.resumed && res.vBtc != null ? BigInt(res.vBtc) : sats;     // a lock signed earlier in this browser goes out first, in place of a new one
+    J.put(id, { kind: 'btc', label: `Lock ${btcTxt(made)} BTC`, hash: res.lockTxid, status: 'pending' });
     run().follow.btc(id);
+    if (res.resumed) return { text: `A lock of ${btcTxt(made)} BTC signed earlier in this browser was sent instead, and no new lock was made. Post its bond under Your loans, or lock again.`, kind: 'note' };
     if (D?.pub === priv.pub) D.form.lock = '';
     return 'Locked. Post its bond next, under Your loans.';
   }
@@ -257,7 +259,7 @@ export function mountMine(root, { ticket = null, pick, wallet = null, W = null, 
     if (!l) throw new Error('That lock is not listed any more. Read again.');
     const priv = pinned(), t = await getUx(), id = lockIdOf(l), sure = D.form.unlock === id, J = run().journal, op = String(outpointOf(t, l)).replace(/^0x/, '');
     J.get('');
-    if (J.state.items.some((x) => x.kind === 'tx' && x.op === op && x.status === 'pending')) throw new Error('A bond for this lock is still on its way. Wait for it to land first.');
+    if (J.state.items.some((x) => x.kind === 'tx' && x.op === op && x.status === 'pending' && x.hash && Date.now() - x.at < 30 * 60e3)) throw new Error('A bond for this lock is still on its way. Wait for it to land first.');
     let r;
     try { r = await LN.takeBack(t, priv(), l, { rate: D.dep?.rate, quote: !sure, say: (x) => say(x) }); }
     catch (e) { if (/bond is still posted/.test(String(e?.message || '')) && D?.pub === priv.pub) D.form.bondFor = id; throw e; }     // its row then offers the bond's way back
@@ -394,9 +396,10 @@ export function mountMine(root, { ticket = null, pick, wallet = null, W = null, 
       else rows.push(`<p class="hint err">Could not read your loans: ${esc(errs.loans)}</p>`);
       if (locks) locks.forEach((l, i) => {
         const step = lockStep(l), [a, what] = NEXT[step] || [], busy = D.busy === `${what}:${i}`;
-        const back = step === 'post its bond' ? ` · <button class="linkbtn" type="button" data-mine="unlock" data-i="${i}"${off()}>${D.busy === `unlock:${i}` ? 'Taking it back…' : D.form.unlock === lockIdOf(l) ? 'Take it back' : 'Take BTC back'}</button>` : '';
+        // a lock that still holds a bond (one short of it may) offers the bond's way back first, and its BTC once that is done
+        const back = step === 'post its bond' && !(l.bond > 0n) ? ` · <button class="linkbtn" type="button" data-mine="unlock" data-i="${i}"${off()}>${D.busy === `unlock:${i}` ? 'Taking it back…' : D.form.unlock === lockIdOf(l) ? 'Take it back' : 'Take BTC back'}</button>` : '';
         // a bond on a lock nothing is minted on can come back to the wallet that posted it
-        const bondOut = !l.minted && (l.bonded || D.form.bondFor === lockIdOf(l)) ? ` · <button class="linkbtn" type="button" data-mine="bondback" data-i="${i}"${off()}>${D.busy === `bondback:${i}` ? 'Taking the bond back…' : 'Bond back'}</button>` : '';
+        const bondOut = !l.minted && (l.bonded || l.bond > 0n || D.form.bondFor === lockIdOf(l)) ? ` · <button class="linkbtn" type="button" data-mine="bondback" data-i="${i}"${off()}>${D.busy === `bondback:${i}` ? 'Taking the bond back…' : 'Bond back'}</button>` : '';
         rows.push(`<div class="kv"><span>${mk('btc')}Lock ${esc(short(l.lockTxid, 4))}:${l.lockVout}</span><b class="num">${esc(btcTxt(l.sats))} BTC<small class="${l.minted ? 'ok' : ''}">${a ? `<button class="linkbtn" type="button" data-mine="${what}" data-i="${i}"${off()}>${busy ? `${a}…` : a}</button>${back}${bondOut}` : `${esc(step === 'waiting for its proof' ? waitText(l) : step)}${bondOut}`}</small></b></div>`);
       });
       else rows.push(`<p class="hint err">Could not read your locks: ${esc(errs.locks)}</p>`);
