@@ -92,15 +92,49 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .brand b { font: italic 400 30px/1 var(--serif); letter-spacing: -.01em; }
 .brand i { font-style: normal; font-size: 12px; color: var(--mute); text-transform: uppercase; letter-spacing: .12em; }
 
-/* the head */
-.hero { padding: 26px 0 18px; }
-.hero h1 { font: 400 clamp(40px, 7vw, 72px)/.95 var(--serif); letter-spacing: -.025em; margin: 0; display: flex; align-items: center; gap: .2em; }
-.hero h1 .tk { width: .62em; height: .62em; margin-top: .04em; }
-.hero h1 em { font-style: italic; }
-.hero .sub { margin: 12px 0 0; color: var(--mute); font-size: 13px; max-width: 64ch; }
+/* The stage: a dark screen set in the page, the network as it is this minute. Inside it the page's own tokens are the dark set, so everything drawn there
+   (the blocks, the names, the labels) reads on it with the rules it already has; the command boxes below are the same kind of screen. */
+.net, pre.cmd {
+  --paper: #100f0b; --card: #1c1a14; --field: #17150f; --ink: #EDE5CF; --mute: #A39B85;
+  --hair: rgba(237,229,207,.12); --hair-2: rgba(237,229,207,.28);
+  --ok: #8fcf9a; --warn: #f7931a; --err: #f08a6c; --red: #f08a6c; --amber: #f7931a; --green: #8fcf9a;
+  color: var(--ink); color-scheme: dark;
+}
+.net { position: relative; isolation: isolate; overflow: hidden; overflow: clip; margin: 8px 0 0; padding: 30px 30px 14px; border: 1px solid var(--hair); border-radius: 24px;
+  background: var(--paper) radial-gradient(rgba(237,229,207,.055) 1px, transparent 1px) 0 0 / 24px 24px; }
+/* a warm light behind the tip, the one place the orange is not a mark */
+.net::before { content: ''; position: absolute; z-index: -1; left: -12%; top: -45%; width: 62%; height: 110%; background: radial-gradient(closest-side, rgba(247,147,26,.14), transparent); pointer-events: none; }
+.net-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 18px 28px; }
+.net-h { min-width: 0; }
+.net h1 { font: 400 clamp(38px, 5.6vw, 60px)/.95 var(--serif); letter-spacing: -.025em; margin: 0; display: flex; align-items: center; gap: .22em; }
+.net h1 .tk { width: .62em; height: .62em; margin-top: .04em; }
+.net h1 em { font-style: italic; }
+.net .sub { margin: 12px 0 0; max-width: 30em; font: 400 clamp(17px, 2vw, 20px)/1.3 var(--serif); letter-spacing: -.005em; color: color-mix(in srgb, var(--ink) 74%, var(--mute)); text-wrap: balance; }
+/* the one loud thing on the stage: where to begin */
+.net-join { flex: none; display: inline-flex; align-items: center; gap: 10px; min-height: 50px; padding: 0 22px; border: 0; border-radius: 14px; cursor: pointer;
+  font: 500 14px/1.2 var(--mono); color: var(--paper); background: var(--ink); transition: box-shadow .15s, transform .15s; }
+.net-join small { font: 400 12px/1.2 var(--mono); opacity: .72; }
+.net-join small:empty { display: none; }
+.net-join i { font-style: normal; transition: transform .2s; }
+@media (hover: hover) { .net-join:hover { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ink) 26%, transparent); } .net-join:hover i { transform: translateY(2px); } }
+.net-join:active { transform: scale(.98); }
+.net-join:focus-visible { outline: 2px solid var(--orange); outline-offset: 3px; }
+/* what is happening now, in a sentence; its dot beats each time the chain is read */
+.net-say { display: flex; align-items: center; gap: 12px; margin: 26px 0 0; min-height: 30px; font: 400 clamp(19px, 2.4vw, 24px)/1.25 var(--serif); letter-spacing: -.005em; }
+.net-say > span:last-child { min-width: 0; }
+.net-say .who { margin: 0 2px; font: 500 13px/1 var(--mono); letter-spacing: -.01em; vertical-align: .14em; }
+.net-say b { font-weight: 400; color: var(--orange); }
+.net-beat { position: relative; flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--hair-2); transition: background-color .3s; }
+.net-say[data-s="quiet"] .net-beat { background: var(--ok); }
+.net-say[data-s="busy"] .net-beat, .net-say[data-s="landed"] .net-beat { background: var(--orange); }
+.net-beat::after { content: ''; position: absolute; inset: -6px; border-radius: 50%; border: 1px solid currentColor; opacity: 0; }
+.net-say[data-s="quiet"] .net-beat::after { color: var(--ok); } .net-say[data-s="busy"] .net-beat::after, .net-say[data-s="landed"] .net-beat::after { color: var(--orange); }
+.net-beat.ping::after { animation: ping 1.5s ease-out; }
+@keyframes ping { from { opacity: .8; transform: scale(.45); } to { opacity: 0; transform: scale(1.5); } }
 
 /* the page */
-.panel { background: var(--card); border: 1px solid var(--hair); padding: 22px; min-width: 0; }
+.panel { background: var(--card); border: 1px solid var(--hair); border-radius: 18px; padding: 22px; min-width: 0; }
+#desk, #phone { border-color: var(--hair-2); box-shadow: var(--lift); }
 @media (max-width: 480px) { .panel { padding: 18px 14px; } }
 .eyebrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); margin: 0 0 12px; }
 .eyebrow .who { letter-spacing: 0; text-transform: none; font-size: 11.5px; }
@@ -118,11 +152,13 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .checkpoint code { font: inherit; color: var(--ink, inherit); }
 .hint:empty { display: none; }
 .btn { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 52px; margin-top: 16px; padding: 10px 16px; font-weight: 500; text-decoration: none;
-  color: var(--card); background: var(--ink); border: 1px solid var(--ink); cursor: pointer; transition: background .15s, color .15s; }
-.btn:hover:not(:disabled) { background: transparent; color: var(--ink); }
-.btn:disabled { opacity: .4; cursor: not-allowed; }
-.btn.ghost { color: var(--ink); background: transparent; border-color: var(--hair-2); min-height: 44px; margin-top: 0; }
-.btn.ghost:hover:not(:disabled) { border-color: var(--ink); }
+  color: var(--card); background: var(--ink); border: 1px solid var(--ink); border-radius: 14px; cursor: pointer; transition: background .15s, color .15s, box-shadow .15s, transform .1s; }
+@media (hover: hover) { .btn:hover:not(:disabled) { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ink) 22%, transparent); } }
+.btn:active:not(:disabled) { transform: scale(.99); }
+/* a button that cannot be pressed yet stays readable: a quiet bar, not a faded one */
+.btn:disabled { color: color-mix(in srgb, var(--ink) 70%, var(--card)); background: color-mix(in srgb, var(--ink) 6%, transparent); border-color: var(--hair-2); cursor: not-allowed; }
+.btn.ghost { color: var(--ink); background: transparent; border-color: var(--hair-2); border-radius: 12px; min-height: 44px; margin-top: 0; }
+@media (hover: hover) { .btn.ghost:hover:not(:disabled) { border-color: var(--ink); box-shadow: none; } }
 /* the node's button is the page's one loud thing only when it is asking for something (Start); Pause is a quiet one */
 #go.ghost { min-height: 52px; margin-top: 16px; }
 .status { font-size: 12.5px; margin-top: 12px; overflow-wrap: anywhere; }
@@ -133,27 +169,52 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 
 /* the network */
 .lbl { display: block; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
-.net { margin: 10px 0 0; }
-.net-top { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px 34px; }
-.tip b { display: block; font: 400 clamp(40px, 6vw, 60px)/1 var(--serif); letter-spacing: -.02em; }
-.tip b.bump { animation: bump .6s var(--spring, ease-out); }
-@keyframes bump { 30% { transform: translateY(-4px); color: var(--orange); } }
-.stat b { display: block; font: 500 18px/1.3 var(--mono); }
-@media (max-width: 560px) {
-  .net-top { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px 12px; align-items: start; }
+.net-top { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px 38px; margin: 20px 0 0; }
+.tip b { display: block; margin-top: 2px; font: 400 clamp(56px, 8.4vw, 96px)/.88 var(--serif); letter-spacing: -.035em; }
+.tip b.bump { animation: bump .9s cubic-bezier(.2, 1.4, .4, 1); }
+@keyframes bump { 25% { transform: translateY(-7px); color: var(--orange); } }
+.stat { padding-bottom: 6px; }
+.stat b { display: block; font: 500 20px/1.3 var(--mono); transition: color .3s; }
+/* a figure that has just changed says so for a moment */
+.stat b.tick { animation: tick .9s ease-out; }
+@keyframes tick { 0%, 30% { color: var(--orange); } }
+/* proofs being made: the figure is lit while there are any */
+.stat.hot b { color: var(--orange); }
+.stat.hot .lbl::before { content: ''; display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; background: var(--orange); vertical-align: 1px; animation: pulse 1.2s ease-in-out infinite; }
+/* narrower than the tip and the five figures take on one line: the tip over the figures, five across, then three, then two */
+@media (max-width: 900px) {
+  .net-top { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 14px 12px; align-items: start; }
   .net-top .tip { grid-column: 1 / -1; }
+  .stat { padding-bottom: 0; }
 }
-.crowd { margin: 18px 0 0; min-height: 54px; }
-.crowd-row { min-height: 28px; }
-.crowd-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 0; }
-.crowd .pod { display: block; animation: hop 1.8s steps(1) infinite; animation-delay: calc(var(--i) * -.23s); }
+@media (max-width: 760px) { .net-top { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 560px) {
+  .net-top { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 16px; }
+  .stat b { font-size: 18px; }
+}
+.crowd { margin: 20px 0 0; padding: 16px 0 0; border-top: 1px solid var(--hair); }
+/* who is at work, and how fast they grind between proofs */
+.crowd-h { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 16px; margin: 0; min-height: 18px; }
+/* its height is the same with three nodes or ninety: app.js draws them at the size that fits (--px), so nothing under the stage moves as the crowd fills */
+.crowd-row { --rows: 2; --gap: 6px; display: flex; flex-wrap: wrap; align-content: flex-start; gap: var(--gap); margin: 7px -3px -3px; padding: 3px; height: calc(var(--rows) * 28px + (var(--rows) - 1) * var(--gap) + 6px); overflow: hidden; }   /* 3px of room all round, for a face's ring */
+@media (max-width: 900px) { .crowd-row { --rows: 3; } }
+.crowd .pod { position: relative; display: block; animation: hop 1.8s steps(1) infinite; animation-delay: calc(var(--i) * -.23s); }
 .crowd .pod .inv { border-radius: 5px; }
-.crowd .pod.me .inv { outline: 2px solid var(--orange); outline-offset: 2px; }
+.crowd .pod.me .inv { outline: 2px solid var(--orange); outline-offset: 1px; }
+/* a node whose proof landed in the last few minutes: a ring (thin enough that two side by side keep apart), and a quicker step */
+.crowd .pod.hot { animation-duration: .9s; }
+.crowd .pod.hot .inv { box-shadow: 0 0 0 1px var(--paper), 0 0 0 2.5px var(--orange); }
+.sk-pod { width: 28px; height: 28px; border-radius: 5px; background: var(--hair); animation: pulse 1.8s ease-in-out infinite; animation-delay: calc(var(--i) * .09s); }
+.crowd .more-n { display: grid; place-items: center; min-width: var(--px, 28px); height: var(--px, 28px); padding: 0 6px; border: 1px dashed var(--hair-2); border-radius: 5px; font: 500 11px/1 var(--mono); color: var(--mute); }
 @keyframes hop { 50% { transform: translate(2px, -2px); } }
 @keyframes glow { 50% { opacity: .35; transform: scale(.8); } }
-.chain { min-height: 128px; list-style: none; margin: 14px 0 0; padding: 12px 12px 10px 0; display: flex; gap: 14px; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: thin;
+.chain { min-height: 154px; list-style: none; margin: 18px 0 0; padding: 12px 12px 10px 0; display: flex; gap: 14px; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: thin;
   -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 56px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 56px), transparent); }
 .blk { position: relative; flex: none; width: 112px; }
+/* until the blocks are read: the places of a few, drawn faintly */
+.sk-blk { flex: none; width: 112px; }
+.sk-blk::before { content: ''; display: block; width: 70px; height: 70px; border: 1.5px dashed var(--hair-2); opacity: .55; animation: pulse 1.8s ease-in-out infinite; animation-delay: calc(var(--i) * .14s); }
+.sk-blk::after { content: ''; display: block; width: 58px; height: 8px; margin-top: 10px; border-radius: 2px; background: var(--hair); box-shadow: 0 18px 0 var(--hair); }
 .blk + .blk::before { content: ''; position: absolute; left: -14px; top: 34px; width: 14px; border-top: 2px dashed var(--hair-2); }
 .blk button { display: grid; gap: 6px; justify-items: start; padding: 0; background: none; border: 0; cursor: pointer; text-align: left; color: var(--ink); }
 .cube { position: relative; width: 70px; height: 70px; padding: 8px; display: grid; grid-template-columns: repeat(3, 1fr); grid-auto-rows: 14px; gap: 4px; align-content: start;
@@ -201,17 +262,19 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 @keyframes fill { 50% { opacity: .9; } }
 .blk.next { cursor: default; display: grid; gap: 6px; justify-items: start; align-content: start; }
 .blk.next .h { color: var(--warn); }
+/* with proofs being made, the next block's edge is lit */
+.blk.next.busy .cube.ghost { border-color: var(--orange); }
 .state.copied .dot { background: var(--orange); animation: pulse 1.2s ease-in-out infinite; }
 .cube .badge { position: absolute; right: -10px; top: -10px; }
 .cube .badge .inv { border-radius: 4px; box-shadow: 0 0 0 2px var(--paper); }
 .blk.new .badge { animation: abduct 1.1s cubic-bezier(.2, 1.3, .4, 1) both .25s; }
 @keyframes abduct { from { transform: translateY(-40px) scale(.4); opacity: 0; } }
 .blk.gpu .cube { border-color: var(--ink); }
-.detail { margin: 6px 0 0; padding: 14px 16px; background: var(--card); border: 1px solid var(--hair); max-width: 560px; }
+.detail { margin: 6px 0 0; padding: 14px 16px; background: var(--card); border: 1px solid var(--hair); border-radius: 14px; max-width: 560px; }
 .detail .kv b a { color: var(--ink); }
 
-/* Two stacks: the node with the salts it mines between proofs, and the activity with the GPU card. Each card keeps its own height (none is stretched to
-   fill a gap); the salts card is the one that takes what the other stack has over, by showing more of its banked addresses. */
+/* Two stacks: the node with the salts it mines between proofs, and the activity with the GPU card and the code review. Each card keeps its own height
+   (none is stretched to fill a gap); the salts card is the one that takes what the other stack has over, by showing more of its banked addresses. */
 .cols { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 18px; align-items: stretch; margin: 26px 0 0; }
 .col { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
 .col > .salts { display: flex; flex-direction: column; }
@@ -230,7 +293,8 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 #desk > .hint:last-child { margin-top: auto; padding-top: 12px; }
 #desk .rows + .hint { margin-top: auto; }
 .fld { display: grid; gap: 6px; font-size: 12.5px; color: var(--mute); }
-.fld input { width: 100%; min-height: var(--tap); padding: 8px 12px; background: var(--field); border: 1px solid var(--hair-2); color: var(--ink); font-size: 13px; }
+.fld input { width: 100%; min-height: 48px; padding: 8px 14px; background: var(--field); border: 1px solid var(--hair-2); border-radius: 12px; color: var(--ink); font-size: 13px; transition: border-color .15s; }
+.fld input:focus-visible { outline: none; border-color: var(--ink); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ink) 12%, transparent); }
 .fld input[aria-invalid="true"] { border-color: var(--err); }
 .fld .bad { color: var(--err); font-size: 12px; margin: 0; }
 .fld .bad:empty { display: none; }
@@ -245,17 +309,22 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 @keyframes win { 10% { opacity: 1; transform: translateY(-6px) scale(1.15); } 70% { opacity: 1; transform: none; } }
 .forge { margin: 16px 0 0; }
 .forge ol { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
-.forge li { position: relative; height: 8px; background: var(--hair); overflow: hidden; }
+.forge li { position: relative; height: 8px; border-radius: 4px; background: var(--hair); overflow: hidden; }
 .forge li.done { background: var(--orange); }
 .forge li.now::after { content: ''; position: absolute; inset: 0; width: var(--p, 40%); background: var(--orange); transition: width 1.5s linear; }
 .forge li.now.spin::after { width: 40%; animation: slide 1.6s ease-in-out infinite; }
 @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(260%); } }
 .forge p { margin: 8px 0 0; font-size: 12.5px; color: var(--mute); }
-pre.cmd { margin: 16px 0 0; padding: 12px 14px; background: var(--field); border: 1px solid var(--hair-2); font: 12.5px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+/* a line to paste in a terminal is shown as one: the stage's dark screen, with a prompt that is not part of what is copied */
+pre.cmd { margin: 16px 0 0; padding: 13px 16px; background: var(--paper); border: 1px solid var(--hair); border-radius: 12px; font: 12.5px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+pre.cmd code::before { content: '$ '; color: var(--mute); -webkit-user-select: none; user-select: none; }
+.ops pre.cmd code::before { content: none; }
+.wsl pre.cmd code::before { content: '> '; }                       /* that one is typed in PowerShell */
 /* The setup line's kind of computer; Windows adds installing Ubuntu first (#setup[data-os], set by app.js). */
-.os { display: inline-flex; margin: 16px 0 0; border: 1px solid var(--hair-2); }
-.os button { min-height: 36px; padding: 6px 14px; background: none; border: 0; cursor: pointer; color: var(--mute); font: 500 12.5px/1 var(--mono); }
-.os button[aria-pressed="true"] { background: var(--ink); color: var(--card); }
+.os { display: inline-flex; gap: 2px; margin: 16px 0 0; padding: 3px; border-radius: 13px; background: color-mix(in srgb, var(--ink) 6%, transparent); }
+.os button { min-height: 32px; padding: 6px 14px; background: none; border: 0; border-radius: 10px; cursor: pointer; color: var(--mute); font: 500 12.5px/1 var(--mono); transition: background .15s, color .15s; }
+.os button[aria-pressed="true"] { color: var(--ink); background: var(--card); box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 14%, transparent); }
+@media (hover: hover) { .os button:hover { color: var(--ink); } }
 .os .beta { margin-left: 4px; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--warn); }
 #setup .wsl { display: none; }
 #setup[data-os="win"][data-first] .wsl { display: block; }
@@ -264,6 +333,7 @@ pre.cmd { margin: 16px 0 0; padding: 12px 14px; background: var(--field); border
 .pair { display: flex; gap: 8px; margin-top: 12px; }
 .pair pre.cmd { flex: 1; margin: 0; }
 .pair .btn.ghost { flex: none; width: auto; min-width: 88px; min-height: 0; padding: 0 14px; white-space: nowrap; }
+@media (max-width: 420px) { .pair { flex-direction: column; } .pair .btn.ghost { min-height: 44px; } }
 #tab-go, #tab-battery { margin-top: 14px; }
 .steps { display: inline-flex; align-items: center; gap: 8px; }
 .steps button { width: 26px; height: 26px; padding: 0; background: none; border: 1px solid var(--hair-2); color: var(--ink); cursor: pointer; font: 500 13px/1 var(--mono); }
@@ -274,10 +344,13 @@ pre.cmd { margin: 16px 0 0; padding: 12px 14px; background: var(--field); border
 .seg button[aria-pressed="true"] { background: var(--ink); color: var(--card); }
 
 /* the node's jobs: Prove, Relay, Bitcoin */
-.tabs { display: flex; gap: 4px; margin: 28px 0 0; border-bottom: 1px solid var(--hair); }
-.tabs button { padding: 10px 16px; min-height: var(--tap); background: none; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; cursor: pointer; color: var(--mute); font: 500 13px/1 var(--mono); }
-.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--orange); }
-.tabs button .tk { display: inline-block; width: 16px; height: 16px; vertical-align: -3px; margin-right: 8px; }
+.tabs { display: inline-flex; gap: 2px; margin: 26px 0 0; padding: 3px; border-radius: 15px; background: color-mix(in srgb, var(--ink) 6%, transparent); }
+.tabs button { display: inline-flex; align-items: center; justify-content: center; padding: 8px 20px; min-height: 40px; background: none; border: 0; border-radius: 12px; cursor: pointer; color: var(--mute); font: 500 13px/1 var(--mono); transition: background .15s, color .15s; }
+.tabs button[aria-selected="true"] { color: var(--ink); background: var(--card); box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 14%, transparent); }
+.tabs button:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
+@media (pointer: coarse) { .tabs button { min-height: var(--tap); } }
+@media (max-width: 420px) { .tabs { display: flex; } .tabs button { flex: 1; padding: 8px 10px; } }
+.tabs button .tk { width: 16px; height: 16px; margin-right: 8px; }
 @media (hover: hover) { .tabs button:hover { color: var(--ink); } }
 .tab > .cols { margin-top: 18px; }
 .tab.ops > .lede { margin: 18px 0 0; }
@@ -298,7 +371,7 @@ pre.cmd { margin: 16px 0 0; padding: 12px 14px; background: var(--field); border
 .ops h2 .tk { width: 24px; height: 24px; }
 .ops .tk.sm { width: 16px; height: 16px; }
 .ops .cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-.ops .card { background: var(--card); border: 1px solid var(--hair); padding: 14px 16px 13px; min-width: 0; }
+.ops .card { background: var(--card); border: 1px solid var(--hair); border-radius: 14px; padding: 14px 16px 13px; min-width: 0; }
 .ops .card .k { font-size: 12px; color: var(--mute); display: flex; align-items: center; gap: 7px; }
 .ops .card .v { font: 400 26px/1.15 var(--serif); margin: 6px 0 4px; overflow-wrap: anywhere; }
 .ops .card .v small { font: 12px var(--mono); color: var(--mute); margin-left: 4px; }
@@ -334,7 +407,7 @@ pre.cmd { margin: 16px 0 0; padding: 12px 14px; background: var(--field); border
 @media (hover: hover) { .link:hover { color: var(--ink); } }
 .ops .status { min-height: 20px; }
 .ops .status:empty { min-height: 0; margin-top: 0; }
-.ops .callout { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; margin-top: 12px; font-size: 12.5px; background: var(--field); border-left: 2px solid var(--orange); }
+.ops .callout { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; margin-top: 12px; font-size: 12.5px; background: var(--field); border-left: 2px solid var(--orange); border-radius: 0 12px 12px 0; }
 .ops .callout p { margin: 0; color: var(--mute); }
 .ops .callout p b { color: var(--ink); font-weight: 500; }
 .ops .callout a { color: var(--ink); }
@@ -375,21 +448,22 @@ pre.cmd { margin: 16px 0 0; padding: 12px 14px; background: var(--field); border
 .more .hint { margin-top: 2px; }
 .rows .more { margin-top: 4px; border-top: 0; }
 .more.cp { margin-top: 6px; border-top: 0; }
+/* the checkpoint's line keeps its place until it is read (it is drawn then, where it already stood), so the page under the network does not drop */
+.more.cp:not(:has(> :not(summary):not([hidden]))) { display: block; visibility: hidden; }
 .more.cp summary { min-height: 32px; }
 @media (prefers-reduced-motion: reduce) { .more summary::before { transition: none; } }
 /* each card's own link (/prove/#gpu): app.js puts a Link in its eyebrow or heading, which copies it */
 [data-card] { scroll-margin-top: 16px; }
-[data-card].lit { animation: lit 2.6s ease-out; }
+[data-card].lit, .panel.lit { animation: lit 2.6s ease-out; border-radius: 18px; }
 @keyframes lit { 0%, 45% { outline: 2px solid var(--orange); outline-offset: 4px; } 100% { outline: 2px solid transparent; outline-offset: 4px; } }
 .card-link { display: inline-flex; align-items: center; gap: 5px; flex: none; padding: 4px 6px; margin: -4px -6px -4px auto; border-radius: 6px; color: var(--mute); text-decoration: none;
-  font: 500 11px/1 var(--mono); letter-spacing: 0; text-transform: none; opacity: .75; transition: opacity .15s, color .15s, background-color .15s; }
+  font: 500 11px/1 var(--mono); letter-spacing: 0; text-transform: none; transition: color .15s, background-color .15s; }
 .card-link svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-.card-link.done { color: var(--ok); opacity: 1; }
-[data-card]:hover .card-link, .card-link:focus-visible { opacity: 1; }
+.card-link.done { color: var(--ok); }
 .eyebrow .me { margin-left: auto; }
 .eyebrow .me + .card-link { margin-left: 4px; }
-@media (hover: hover) { .card-link:hover { color: var(--ink); background: var(--hair); opacity: 1; } }
-@media (pointer: coarse) { .card-link { opacity: 1; padding: 10px; margin: -10px -10px -10px auto; } .eyebrow .me + .card-link { margin-left: 0; } }
+@media (hover: hover) { .card-link:hover { color: var(--ink); background: var(--hair); } }
+@media (pointer: coarse) { .card-link { padding: 10px; margin: -10px -10px -10px auto; } .eyebrow .me + .card-link { margin-left: 0; } }
 .bank { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 6px; }
 .bank li { display: flex; justify-content: space-between; gap: 12px; font: 13px/1.4 var(--mono); }
 .bank li code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -418,7 +492,7 @@ pre.cmd { margin: 16px 0 0; padding: 12px 14px; background: var(--field); border
 @media (max-width: 430px) { #wallet { width: calc(11ch + 42px); } #wallet-label { min-width: 11ch; } }
 @media (max-width: 430px) { .chip .wide { display: none; } .chip .narrow { display: inline; } }
 .chip[aria-busy="true"] { cursor: progress; }
-dialog.sheet { width: min(480px, calc(100vw - 32px)); max-height: min(90vh, 900px); padding: 0; overflow: auto; color: var(--ink); background: var(--card); border: 1px solid var(--ink); box-shadow: 0 12px 40px rgba(0,0,0,.25); }
+dialog.sheet { width: min(480px, calc(100vw - 32px)); max-height: min(90vh, 900px); padding: 0; overflow: auto; color: var(--ink); background: var(--card); border: 1px solid var(--hair-2); border-radius: 18px; box-shadow: var(--sheet-shadow); }
 dialog.sheet[open] { animation: rise .22s cubic-bezier(.2,.8,.2,1); }
 dialog.sheet::backdrop { background: rgba(0,0,0,.45); backdrop-filter: blur(2px); }
 @keyframes rise { from { opacity: 0; transform: translateY(14px); } }
@@ -426,17 +500,29 @@ dialog.sheet::backdrop { background: rgba(0,0,0,.45); backdrop-filter: blur(2px)
 .sheet-head { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
 .sheet-head h2 { font: 400 30px/1 var(--serif); letter-spacing: -.01em; margin: 0; }
 .sheet-head h2:focus { outline: none; }
-.x { margin-left: auto; width: var(--tap); height: var(--tap); display: grid; place-items: center; font-size: 22px; line-height: 1; background: none; border: 1px solid transparent; cursor: pointer; color: var(--mute); }
+.x { margin-left: auto; width: var(--tap); height: var(--tap); display: grid; place-items: center; font-size: 22px; line-height: 1; background: none; border: 0; border-radius: 12px; cursor: pointer; color: var(--mute); transition: color .15s, background-color .15s; }
+@media (hover: hover) { .x:hover { color: var(--ink); background: var(--hair); } }
 .lede-s { color: var(--mute); font-size: 13px; margin: 0 0 14px; }
-.wc-qr { width: min(264px, 100%); margin: 6px auto 18px; padding: 14px; background: #fff; border: 1px solid var(--hair); }
+.wc-qr { width: min(264px, 100%); margin: 6px auto 18px; padding: 14px; background: #fff; border: 1px solid var(--hair); border-radius: 12px; }
 .wc-qr svg { display: block; width: 100%; height: auto; }
-@media (max-width: 560px) { dialog.sheet { width: 100vw; max-width: 100vw; margin: auto 0 0; max-height: 92vh; border-width: 1px 0 0; } .sheet-in { padding: 20px 16px calc(24px + env(safe-area-inset-bottom)); } }
+@media (max-width: 560px) { dialog.sheet { width: 100vw; max-width: 100vw; margin: auto 0 0; max-height: 92vh; border-width: 1px 0 0; border-radius: 18px 18px 0 0; } .sheet-in { padding: 20px 16px calc(24px + env(safe-area-inset-bottom)); } }
 .toasts { position: fixed; inset: auto 16px max(16px, env(safe-area-inset-bottom)) 16px; width: auto; height: auto; margin: 0; padding: 0; border: 0; background: transparent; overflow: visible; display: grid; gap: 8px; justify-items: center; pointer-events: none; }
 .toasts:not(:popover-open) { display: none; }
-.toast { max-width: 520px; padding: 10px 16px; font-size: 12.5px; color: var(--card); background: var(--ink); pointer-events: auto; box-shadow: var(--lift); animation: rise .2s ease-out; }
+.toast { max-width: 520px; padding: 10px 16px; border-radius: 12px; font-size: 12.5px; color: var(--card); background: var(--ink); pointer-events: auto; box-shadow: var(--lift); animation: rise .2s ease-out; }
 .toast.bad { background: var(--err); color: var(--card); }
 
 /* activity */
+/* the newest proofs as marks along a line of time, the latest at the right (this address's own in the orange); its place is kept while it is read */
+.tape { margin: 0 0 10px; }
+.tape-l { position: relative; height: 22px; border-bottom: 1px solid var(--hair-2); }
+.tape-l i { position: absolute; bottom: 0; width: 2px; height: 13px; margin-left: -1px; border-radius: 1px 1px 0 0; background: var(--ink); opacity: .55; transform-origin: 50% 100%; }
+.tape-l i.gpu { height: 9px; }
+.tape-l i.me { height: 20px; background: var(--orange); opacity: 1; }
+.tape-l i.new { animation: grow .7s cubic-bezier(.2, 1.4, .4, 1) both; }
+@keyframes grow { from { transform: scaleY(0); } }
+.tape-x { display: flex; justify-content: space-between; gap: 10px; margin: 5px 0 0; min-height: 17px; font-size: 11px; color: var(--mute); }
+.feed > .eyebrow { justify-content: flex-start; }
+.feed > .eyebrow:first-child::before { content: ''; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); animation: pulse 2.4s ease-in-out infinite; }
 .feed ol { list-style: none; margin: 0; padding: 0; }
 .feed #feed { min-height: 152px; }
 .feed li { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--hair); font-size: 12.5px; }
@@ -456,11 +542,31 @@ dialog.sheet::backdrop { background: rgba(0,0,0,.45); backdrop-filter: blur(2px)
 .feed li.me { box-shadow: inset 2px 0 0 var(--orange); padding-left: 10px; }
 @keyframes fresh { from { background: color-mix(in srgb, var(--orange) 18%, transparent); } }
 .feed li b { font-weight: 500; color: var(--warn); white-space: nowrap; }
+/* what a row earned, as a chip; it reaches a little into the gap beside it, so the row keeps the room it had for its words and stays one line */
+#feed > li > b { justify-self: end; margin: 0 -6px; padding: 1px 7px; border-radius: 999px; }
+#feed > li > b:not(:empty) { background: color-mix(in srgb, var(--orange) 13%, transparent); }
 #board li b { font-weight: 400; color: var(--ink); }
+/* each prover's proofs as a bar behind its row, as long as they are to the leader's (--w, set by app.js) */
+#board > li { position: relative; padding-left: 8px; padding-right: 8px; }
+#board > li::before { content: ''; position: absolute; z-index: 0; left: 0; top: 4px; bottom: 4px; width: var(--w, 0%); border-radius: 7px; background: color-mix(in srgb, var(--orange) 11%, transparent); pointer-events: none; }
+#board > li > * { position: relative; z-index: 1; }
+#board > li:first-child .rk { color: var(--warn); }
+#board > li.me { box-shadow: none; padding-left: 8px; }
+#board > li.me .rk::after { content: ''; display: inline-block; width: 5px; height: 5px; margin-left: 4px; border-radius: 50%; background: var(--orange); vertical-align: 2px; }
 .feed li small { color: var(--mute); white-space: nowrap; }
 .feed li { align-items: center; }
 .feed li .by { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
-.feed .eyebrow + ol { margin-bottom: 18px; }
+.feed .eyebrow + ol, .feed .tape + ol { margin-bottom: 18px; }
+@media (max-width: 640px) {
+  .net { padding: 22px 16px 8px; border-radius: 20px; }
+  .net-head { align-items: stretch; }
+  .net-join { width: 100%; justify-content: center; flex-wrap: wrap; gap: 2px 10px; padding: 10px 16px; }
+  .net-join span { white-space: nowrap; }
+  /* the sentence may take two lines: its place is kept for both, so the figures under it stay put */
+  .net-say { align-items: flex-start; min-height: 2.5em; margin-top: 20px; }
+  .net-beat { margin-top: .5em; }
+  .net-top { margin-top: 14px; }
+}
 /* A text field under 16px makes iOS zoom the page in when it is focused, and leave it zoomed: on a touch screen they are 16px. */
 @media (pointer: coarse) { .fld input { font-size: 16px; } }
 </style>
@@ -647,28 +753,32 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </header>
 
   <main>
-    <section class="hero" aria-labelledby="h">
-      <h1 id="h"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span>tacit <em>prove</em></span></h1>
-      <p class="sub">Every block is private transactions, proved on someone's computer. Prove one and earn TAC.</p>
-      <noscript><p class="note">This page needs JavaScript.</p></noscript>
-    </section>
-
-    <section class="net" id="net" aria-label="The network">
+    <!-- The stage: the network as it is now. A dark screen in the page: the tip, what is happening this minute, the newest blocks and every node at work. -->
+    <section class="net" id="net" aria-labelledby="h">
+      <div class="net-head">
+        <div class="net-h">
+          <h1 id="h"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span>tacit <em>prove</em></span></h1>
+          <p class="sub">Every block is private transactions, proved on someone's computer. Prove one and earn TAC.</p>
+          <noscript><p class="note">This page needs JavaScript.</p></noscript>
+        </div>
+        <button class="net-join" id="net-join" type="button"><span>Start proving</span><small id="net-join-pay"></small><i aria-hidden="true">↓</i></button>
+      </div>
+      <p class="net-say" id="net-say" data-s=""><span class="net-beat" id="net-beat" aria-hidden="true"></span><span id="net-say-t">Reading the network…</span></p>
       <div class="net-top num">
         <div class="tip"><span class="lbl">Block</span><b id="height">—</b></div>
         <div class="stat"><span class="lbl">Last block</span><b id="last">—</b></div>
         <div class="stat"><span class="lbl" id="l-wait">Waiting</span><b id="n-wait">—</b></div>
-        <div class="stat"><span class="lbl" id="l-lease">Proving now</span><b id="n-lease">—</b></div>
+        <div class="stat" id="s-lease"><span class="lbl" id="l-lease">Proving now</span><b id="n-lease">—</b></div>
         <div class="stat"><span class="lbl">Provers, 24 h</span><b id="n-provers">—</b></div>
         <div class="stat"><span class="lbl">Proofs, 24 h</span><b id="n-done">—</b></div>
       </div>
-      <div class="crowd" id="crowd"><span class="lbl" id="crowd-n">Nodes online</span><div class="crowd-row" id="crowd-row"></div></div>
-      <ol class="chain" id="chain" aria-label="Newest blocks"></ol>
+      <ol class="chain" id="chain" aria-label="Newest blocks"><li class="sk-blk" style="--i:0" aria-hidden="true"></li><li class="sk-blk" style="--i:1" aria-hidden="true"></li><li class="sk-blk" style="--i:2" aria-hidden="true"></li><li class="sk-blk" style="--i:3" aria-hidden="true"></li><li class="sk-blk" style="--i:4" aria-hidden="true"></li><li class="sk-blk" style="--i:5" aria-hidden="true"></li><li class="sk-blk" style="--i:6" aria-hidden="true"></li><li class="sk-blk" style="--i:7" aria-hidden="true"></li></ol>
+      <div class="detail" id="detail" hidden></div>
+      <div class="crowd" id="crowd"><p class="crowd-h"><span class="lbl" id="crowd-n">Nodes online</span><span class="lbl" id="crowd-r"></span></p><div class="crowd-row" id="crowd-row" data-sk><i class="sk-pod" style="--i:0"></i><i class="sk-pod" style="--i:1"></i><i class="sk-pod" style="--i:2"></i><i class="sk-pod" style="--i:3"></i><i class="sk-pod" style="--i:4"></i><i class="sk-pod" style="--i:5"></i><i class="sk-pod" style="--i:6"></i><i class="sk-pod" style="--i:7"></i><i class="sk-pod" style="--i:8"></i><i class="sk-pod" style="--i:9"></i><i class="sk-pod" style="--i:10"></i><i class="sk-pod" style="--i:11"></i><i class="sk-pod" style="--i:12"></i><i class="sk-pod" style="--i:13"></i><i class="sk-pod" style="--i:14"></i><i class="sk-pod" style="--i:15"></i><i class="sk-pod" style="--i:16"></i><i class="sk-pod" style="--i:17"></i></div></div>
       <details class="more cp">
         <summary>Checkpoint</summary>
         <p class="hint checkpoint" id="checkpoint" hidden></p>
       </details>
-      <div class="detail" id="detail" hidden></div>
     </section>
 
     <nav class="tabs" role="tablist" aria-label="What a node does">
@@ -744,23 +854,11 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
         <p class="eyebrow" id="salt-bank-h" hidden></p>
         <ol id="salt-bank" class="bank scroll" tabindex="0" aria-label="Addresses banked for deploys"></ol>
       </section>
-      <section class="panel side" id="review" aria-labelledby="h-review" data-card="review">
-        <p class="eyebrow"><span>While you're away</span></p>
-        <h3 id="h-review">Review Tacit's code</h3>
-        <p class="hint">While this computer is idle and plugged in, a small model on it reviews Tacit's code and checks other nodes' findings. A proof always comes first.</p>
-        <div class="pair" id="review-get" hidden><pre class="cmd"><code id="review-cmd"></code></pre><button class="btn ghost" id="review-copy" type="button">Copy</button></div>
-        <button class="btn" id="review-go" type="button" hidden></button>
-        <p class="hint" id="review-say" aria-live="polite" hidden></p>
-        <div class="rows num">
-          <div class="kv"><span>This computer</span><b id="review-state">—</b></div>
-          <div class="kv" id="review-me-row" hidden><span>Your record</span><b id="review-me">—</b></div>
-          <div class="kv"><span>Nodes online</span><b id="review-n">—</b></div>
-        </div>
-      </section>
       </div>
       <div class="col">
       <section class="panel feed" aria-label="Activity" data-card="activity">
         <p class="eyebrow">Just now</p>
+        <div class="tape" id="tape" role="img" aria-label="The newest proofs along a line of time"><div class="tape-l" id="tape-l"></div><p class="tape-x"><span id="tape-a"></span><span id="tape-n"></span><span>now</span></p></div>
         <ol id="feed"><li class="empty">Nothing yet today.</li></ol>
         <p class="hint" id="feed-idle" hidden>Quiet right now. <a href="/">A private deposit</a> starts the next proof.</p>
         <p class="eyebrow">Today's provers</p>
@@ -782,6 +880,19 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
           <summary>Other cards, and Windows</summary>
           <p class="hint">24 GB or more is an RTX 3090, 4090, 5090, A5000 or bigger, and proves Bitcoin batches. A 16 to 23 GB card, such as an RTX A4000, 4060 Ti 16 GB, 4080 or 5080, proves deposits. A smaller card gets the regular node, proving on the CPU. Windows (WSL 2) is untested. <code>--status</code> in place of the address checks on it.</p>
         </details>
+      </section>
+      <section class="panel side" id="review" aria-labelledby="h-review" data-card="review">
+        <p class="eyebrow"><span>While you're away</span></p>
+        <h3 id="h-review">Review Tacit's code</h3>
+        <p class="hint">While this computer is idle and plugged in, a small model on it reviews Tacit's code and checks other nodes' findings. A proof always comes first.</p>
+        <div class="pair" id="review-get" hidden><pre class="cmd"><code id="review-cmd"></code></pre><button class="btn ghost" id="review-copy" type="button">Copy</button></div>
+        <button class="btn" id="review-go" type="button" hidden></button>
+        <p class="hint" id="review-say" aria-live="polite" hidden></p>
+        <div class="rows num">
+          <div class="kv"><span>This computer</span><b id="review-state">—</b></div>
+          <div class="kv" id="review-me-row" hidden><span>Your record</span><b id="review-me">—</b></div>
+          <div class="kv"><span>Nodes online</span><b id="review-n">—</b></div>
+        </div>
       </section>
       </div>
     </div>

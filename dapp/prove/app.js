@@ -1,7 +1,7 @@
 // /prove/: the network's blocks as they land, the proofs waiting and the provers making them, and this computer's own prover, started
 // and paused from here. The computer's tacit-prover (installed once with the line the page shows) answers on 127.0.0.1; the API's chain
 // (GET /prover/blocks) and proof pool, and the points service, say what the network did and what an address has made and been paid.
-import { cleanAddress, proveCommand, utcDay, mineLines, perPoint } from '/community-prove.js?cb=e2a65259';
+import { cleanAddress, proveCommand, utcDay, mineLines, capOf, perPoint } from '/community-prove.js?cb=e2a65259';
 import { localState, jobView, headline, isPhone, isWindows, setupText, proverUpdate, updateText } from '/prove/view.js?cb=f0f73815';
 import { invaderSvg, gpuSvg } from '/prove/invader.js?cb=e8a5ec59';
 import { makeTabMiner, defaultThreads, maxThreads, GPU_LEVELS } from '/prove/tabmine.js?cb=761b1a36';
@@ -89,10 +89,14 @@ async function readRemote() {
 async function readChain() {
   let c = await get(`${API}/prover/blocks?limit=${shownTop == null ? SHOW : FEW}`);
   if (shownTop != null && c?.blocks?.length >= FEW && fresh(c.blocks.map(cleanBlock).filter(Boolean), shownTop).length >= FEW) c = await get(`${API}/prover/blocks?limit=${SHOW}`);
-  if (!c?.blocks) { $('#chain').hidden = !blocks.length; return; }
+  // No answer: the strip keeps its place and what it showed (it is not taken away, so nothing under it moves), and the stage says so once it has
+  // gone unanswered twice with nothing read yet.
+  if (!c?.blocks) { chainMisses++; paintNow(); return; }
+  chainMisses = 0;
+  beat();
   c.blocks = c.blocks.map(cleanBlock).filter(Boolean);
   // No blocks yet (or none that read as one): the strip stays as it is.
-  if (!c.blocks.length) { $('#chain').hidden = !blocks.length; return; }
+  if (!c.blocks.length) return;
   if (c.head) c.head.ethHead = Number.isSafeInteger(Number(c.head.ethHead)) ? Number(c.head.ethHead) : null;
   if (c.head?.ethHead != null) ethHead = c.head.ethHead;
   // An API from before the tip carried Ethereum's head: the settle index says it, read at most once a minute.
@@ -109,7 +113,9 @@ async function readChain() {
   const first = shownTop == null;
   blocks = [...add, ...blocks].slice(0, SHOW);
   shownTop = blocks[0]?.height ?? shownTop;
+  if (!first) landed = { b: blocks[0], at: Date.now() };
   paintChain(first ? new Set() : new Set(add.map((b) => b.height)));
+  paintNow();
   const h = $('#height');
   h.textContent = `#${shownTop.toLocaleString('en-US')}`;
   if (!first) { h.classList.remove('bump'); void h.offsetWidth; h.classList.add('bump'); }
@@ -146,7 +152,7 @@ function paintChain(landing) {
   const extra = [...cross.filter((x) => x.ethBlock >= oldest).map((x) => ({ eb: x.ethBlock, tile: () => crossTile(x) })),
     ...rollup.filter((x) => x.ethBlock >= oldest).map((x) => ({ eb: x.ethBlock, tile: () => rollupTile(x) }))].sort((a, b) => b.eb - a.eb);
   const at = (eb) => extra.filter((e) => e.eb >= eb && !e.done);
-  ol.innerHTML = `<li class="blk next" aria-label="The next block"><span class="cube ghost">${nextShown = nextCells()}</span><span class="h">next</span><span class="o" id="next-o">${esc(waitingText())}</span></li>` + blocks.map((b) => {
+  ol.innerHTML = `<li class="blk next${pool?.leased ? ' busy' : ''}" aria-label="The next block"><span class="cube ghost">${nextShown = nextCells()}</span><span class="h">next</span><span class="o" id="next-o">${esc(waitingText())}</span></li>` + blocks.map((b) => {
     const before = at(b.ethBlock).map((e) => { e.done = true; return e.tile(); }).join('');
     return before + settleTile(b, landing);
   }).join('');
@@ -189,7 +195,8 @@ function paintDetail() {
 // The waiting proofs as little squares (the leased ones lit), the day's numbers, the newest community proofs and the day's provers.
 async function readFeed() {
   const f = await get(`${API}/prover/pool/recent`);
-  if (f?.proofs) feed = f.proofs.map(cleanProof).filter(Boolean);
+  if (f?.proofs) { feed = f.proofs.map(cleanProof).filter(Boolean); feedOk = true; }
+  feedTried = true;
   paintFeed(); paintBoard(); paintCrowd();
   feedTop = Math.max(feedTop, feed[0]?.at || 0);
 }
@@ -223,8 +230,20 @@ function paintIdle() {
   paintPot();
   $('#feed-idle').hidden = !(pool && !(pool.queued || pool.leased) && !(feed[0]?.at && Date.now() - feed[0].at < IDLE_MS));
 }
+// The newest proofs as marks along a line of time, the latest at the right: how the proving has gone lately, at a glance. The line runs from the
+// oldest of them to now, so the room left at its right end is how long ago the last one was. The API lists the newest few dozen, and the words under
+// the line say how many there are and how far back they go.
+function paintTape() {
+  const now = Date.now(), ps = feed.filter((p) => p.at > 0 && p.at <= now + 60_000);
+  const from = ps.length ? Math.min(...ps.map((p) => p.at)) : now, span = now - from;
+  const on = ps.length >= 2 && span > 0;
+  $('#tape-l').innerHTML = on ? ps.map((p) => `<i class="${[p.house ? 'gpu' : p.miner === me() ? 'me' : '', feedTop > 0 && p.at > feedTop ? 'new' : ''].filter(Boolean).join(' ')}" style="left:${(Math.min(1, Math.max(0, (p.at - from) / span)) * 100).toFixed(2)}%"></i>`).join('') : '';
+  $('#tape-a').textContent = on ? ago(from, now) : '';
+  $('#tape-n').textContent = on ? `newest ${ps.length} proofs` : '';
+  $('#tape').setAttribute('aria-label', on ? `The newest ${ps.length} proofs, from ${ago(from, now)} to now` : 'The newest proofs along a line of time');
+}
 function paintFeed() {
-  paintIdle();
+  paintIdle(); paintTape();
   const rows = [...feed.slice(0, 8).map((p) => ({ ...p, kind: 'proof' })), ...goodSalts().map((f) => ({ ...f, kind: 'salt' }))].sort((a, b) => b.at - a.at).slice(0, 8);
   if (!rows.length) { if (!$('#feed .empty')) $('#feed').innerHTML = '<li class="empty">Nothing yet today.</li>'; return; }
   $('#feed').innerHTML = rows.map((p) => {
@@ -240,16 +259,73 @@ function paintFeed() {
 }
 
 // Who is at work now: everyone with a proof in the last twenty minutes, and every node grinding salts between proofs (the salt pool's
-// `live`), Tacit's GPU among them, as their invaders.
-const ONLINE_MS = 20 * 60_000;
+// `live`), Tacit's GPU among them, as their invaders. All of them are drawn: the row keeps one height, and the faces take the largest size that
+// fits them in it, so a busier floor is a denser one (past the smallest size the rest are counted). This address comes first, then the
+// nodes whose proof landed in the last few minutes, which are ringed.
+const ONLINE_MS = 20 * 60_000, HOT_MS = 3 * 60_000, FACE_PX = [28, 24, 20, 16], FACE_GAP = 6;
+function crowdFit(n, width, height) {
+  const room = (px) => Math.max(1, Math.floor((width + FACE_GAP) / (px + FACE_GAP))) * Math.max(1, Math.floor((height + FACE_GAP) / (px + FACE_GAP)));
+  for (const px of FACE_PX) if (n <= room(px)) return { px, show: n };
+  const px = FACE_PX[FACE_PX.length - 1];
+  return { px, show: Math.max(1, room(px) - 2) };                  // the last places hold the count of the rest
+}
+let crowdShown = null, feedTried = false, saltsTried = false, feedOk = false;   // the floor as drawn; whether each of its two readings has been tried, and whether the proofs' has answered
 function paintCrowd() {
-  const t = Date.now(), seen = new Map();
+  const t = Date.now(), seen = new Map(), row = $('#crowd-row');
   for (const p of feed) if (t - p.at < ONLINE_MS) { const k = p.house ? 'gpu' : p.miner; if (k && !seen.has(k)) seen.set(k, p); }
   for (const m of salts?.live || []) { const k = m.house ? 'gpu' : m.miner; if (k && !seen.has(k)) seen.set(k, m); }
-  if (!seen.size) { $('#crowd-n').textContent = 'Nodes online'; $('#crowd-row').innerHTML = ''; return; }
-  const faces = [...seen.keys()].slice(0, 24).map((k, i) => `<span class="pod${k === me() ? ' me' : ''}" style="--i:${i}" title="${k === 'gpu' ? 'Tacit GPU' : esc(short(k))}">${face(k === 'gpu' ? null : k, 28)}</span>`).join('');
+  // The floor is drawn once both of its readings have been tried (the newest proofs and the salt pool), so its count does not start at a part of
+  // the nodes and jump; until then, and while neither has answered, the stand-ins stay. Answered, and no one at work: an empty floor.
+  if (!(feedTried && saltsTried) || !(feedOk || salts)) return;
+  if (!seen.size) { $('#crowd-n').textContent = 'Nodes online'; $('#crowd-r').textContent = ''; if (crowdShown !== '') { crowdShown = ''; row.innerHTML = ''; row.removeAttribute('data-sk'); } return; }
+  const hot = new Set(feed.filter((p) => t - p.at < HOT_MS).map((p) => (p.house ? 'gpu' : p.miner)));
+  const rank = (k) => (k === me() ? 0 : hot.has(k) ? 1 : 2), keys = [...seen.keys()].sort((a, b) => rank(a) - rank(b));
+  const fit = crowdFit(keys.length, (row.clientWidth || 606) - 6, (row.clientHeight || 68) - 6), rest = keys.length - fit.show;   // less the row's own 3px of room all round
+  const html = keys.slice(0, fit.show).map((k, i) => `<span class="pod${k === me() ? ' me' : ''}${hot.has(k) ? ' hot' : ''}" style="--i:${i}" title="${k === 'gpu' ? 'Tacit GPU' : esc(short(k))}${hot.has(k) ? ' · a proof in the last few minutes' : ''}">${face(k === 'gpu' ? null : k, fit.px)}</span>`).join('')
+    + (rest > 0 ? `<span class="more-n" style="--px:${fit.px}px" title="${rest} more">+${rest}</span>` : '');
   $('#crowd-n').textContent = `${seen.size} ${seen.size === 1 ? 'node' : 'nodes'} online`;
-  $('#crowd-row').innerHTML = faces;
+  // how fast the nodes grind salts between proofs (the pool's estimate from the last hour's shares)
+  $('#crowd-r').textContent = salts?.rate ? `${rateText(salts.rate).replace('/s', '')} salts a second` : '';
+  if (html !== crowdShown) { crowdShown = html; row.innerHTML = html; row.removeAttribute('data-sk'); }   // drawn again only when it changes, so the invaders keep their step
+}
+let crowdTimer = 0;
+addEventListener('resize', () => { clearTimeout(crowdTimer); crowdTimer = setTimeout(paintCrowd, 150); });
+
+// What is happening now, in one sentence on the stage: a block that has just landed (for most of a minute), else the proofs being made or
+// waiting, else the nodes mining salts meanwhile. It says only what the last readings say. Its dot beats each time the chain answers.
+let landed = null, nowShown = null, chainMisses = 0;                 // the newest block seen landing and when; the sentence as drawn; chain reads unanswered in a row
+const NEW_MS = 50_000;
+const many = (n, one, more = `${one}s`) => `${n.toLocaleString('en-US')} ${n === 1 ? one : more}`;
+const KIND_SAID = { deposit: 'a deposit', transfer: 'a private transfer', withdrawal: 'a withdrawal', other: 'a settle' };
+const kindSaid = (b) => (kindOf(b) === 'batch' ? `a batch of ${(b.notes || 0) + (b.spent || 0)} operations` : KIND_SAID[kindOf(b)]);
+function paintNow() {
+  const q = pool?.queued || 0, l = pool?.leased || 0;
+  let state = '', html = 'Reading the network…';
+  if (landed && Date.now() - landed.at < NEW_MS) {
+    const b = landed.b, by = byOf(b, false);
+    state = 'landed'; html = `Block <b>#${b.height.toLocaleString('en-US')}</b> just landed: ${esc(kindSaid(b))}${by ? `, proved by ${by}` : ''}.`;
+  } else if (pool && l) { state = 'busy'; html = `<b>${many(l, 'proof')}</b> ${l === 1 ? 'is' : 'are'} being made right now${q ? `, ${q.toLocaleString('en-US')} more waiting` : ''}.`; }
+  else if (pool && q) { state = 'busy'; html = `<b>${many(q, 'proof')}</b> ${q === 1 ? 'waits' : 'wait'} for a prover.`; }
+  else if (pool && salts?.live?.length) { state = 'quiet'; html = `No proof is waiting. The nodes mine salts meanwhile${salts.rate ? `, ${esc(rateText(salts.rate))}` : ''}.`; }
+  else if (pool) { state = 'quiet'; html = 'Quiet right now. A private deposit starts the next proof.'; }
+  else if (chainMisses >= 2 && !blocks.length) html = 'The network is not answering. Trying again…';
+  if (html !== nowShown) { nowShown = html; $('#net-say-t').innerHTML = html; }
+  $('#net-say').dataset.s = state;
+}
+const beat = () => { const b = $('#net-beat'); b.classList.remove('ping'); void b.offsetWidth; b.classList.add('ping'); };
+// A figure on the stage: written only when it changes, and lit for a moment when it does (not on its first reading).
+function setNum(sel, text) {
+  const el = $(sel);
+  if (el.textContent === text) return;
+  const first = el.textContent === '—';
+  el.textContent = text;
+  if (!first) { el.classList.remove('tick'); void el.offsetWidth; el.classList.add('tick'); }
+}
+// What a proof pays, on the stage's button: its points at what a point is paid today so far, said as today's figure once that is under the most a point
+// may be paid (the day's points have outgrown the day's amount); the most while it is not, or while the day's points are unread.
+function paintOffer() {
+  const pts = pool?.terms?.pointsPerProof, most = rewardWei(pts, capOf(points)), now = rewardWei(pts, pointRate());
+  $('#net-join-pay').textContent = now != null && most != null && now < most ? `${tac(now)} TAC a proof today` : most ? `up to ${tac(most)} TAC a proof` : '';
 }
 
 // With proofs waiting, what waits; with none, the nodes grinding salts meanwhile.
@@ -271,13 +347,15 @@ function paintNet() {
   // Nothing queued: the second cell says how fast the nodes grind salts meanwhile (the crowd below counts them).
   const mining = pool && !(q || l) && salts?.live?.length;
   $('#l-lease').textContent = mining ? 'Salts a second' : 'Proving now';
-  $('#n-wait').textContent = q == null ? '—' : String(q);
-  $('#n-lease').textContent = mining ? (salts.rate ? rateText(salts.rate).replace('/s', '') : '—') : l == null ? '—' : String(l);
+  setNum('#n-wait', q == null ? '—' : String(q));
+  setNum('#n-lease', mining ? (salts.rate ? rateText(salts.rate).replace('/s', '') : '—') : l == null ? '—' : String(l));
+  $('#s-lease').classList.toggle('hot', !mining && l > 0);
+  $('#chain .blk.next')?.classList.toggle('busy', l > 0);
   // The last 24 hours (today's alone would drop to nothing at midnight UTC); today's from an API that does not count them yet.
   const provers = pool?.miners24h ?? pool?.minersToday, done = pool?.done24h ?? pool?.doneToday;
-  $('#n-provers').textContent = provers == null ? '—' : String(provers);
-  $('#n-done').textContent = done == null ? '—' : String(done);
-  paintIdle();
+  setNum('#n-provers', provers == null ? '—' : provers.toLocaleString('en-US'));
+  setNum('#n-done', done == null ? '—' : done.toLocaleString('en-US'));
+  paintIdle(); paintNow(); paintOffer();
   const cells = nextCells(), ghost = $('#chain .cube.ghost');
   if (cells !== nextShown && ghost) { nextShown = cells; ghost.innerHTML = cells; }   // drawn again only when the counts change, so the lit squares keep their beat
   paintBoard();
@@ -290,10 +368,11 @@ function paintBoard() {
   const per = pointRate(), daily = points?.terms?.dailyWei, said = per && /^[1-9]\d*$/.test(String(daily ?? ''));
   $('#board-rate').hidden = !said;
   if (said) $('#board-rate').textContent = `${Number(tac(daily, 0)).toLocaleString('en-US')} TAC a day, shared by points: ${tac(per, 4)} TAC a point so far`;
+  const lead = Math.max(1, ...top.map((m) => m.proofs || 0));
   if (!top.length) { if (!$('#board .empty')) $('#board').innerHTML = '<li class="empty">Nobody yet. Be first.</li>'; return; }
   const row = (m, i) => {
     const r = rewardWei(pts.get(String(m.miner).toLowerCase()), per), s = median(feed.filter((p) => p.miner === m.miner).map((p) => p.secs));
-    return `<li${m.miner === me() ? ' class="me"' : ''}><span class="rk num">${i + 1}.</span>${who(m.miner)}<small>${m.proofs} ${m.proofs === 1 ? 'proof' : 'proofs'}</small><b>${r ? `${tac(r)} TAC` : ''}</b><small class="spd">${s ? `${esc(took(s))} each` : '–'}</small></li>`;
+    return `<li${m.miner === me() ? ' class="me"' : ''} style="--w:${Math.max(3, Math.round((m.proofs / lead) * 100))}%"><span class="rk num">${i + 1}.</span>${who(m.miner)}<small>${m.proofs} ${m.proofs === 1 ? 'proof' : 'proofs'}</small><b>${r ? `${tac(r)} TAC` : ''}</b><small class="spd">${s ? `${esc(took(s))} each` : '–'}</small></li>`;
   };
   const mine = me() ? top.findIndex((m) => m.miner === me()) : -1;
   $('#board').innerHTML = top.slice(0, 8).map(row).join('') + (mine >= 8 ? `<li class="gap" aria-hidden="true"></li>${row(top[mine], mine)}` : '');
@@ -314,6 +393,9 @@ let paidShown = null;
 function paint() {
   const state = localState(health, mine), h = headline(state, mine), job = jobView(mine?.job);
   $('#state').dataset.s = state;
+  // the stage's button says what this computer is doing once its node is on (it still goes to the node's card)
+  const jt = state === 'proving' && mine?.on ? 'Your node is proving' : state === 'waiting' ? 'Your node is on' : 'Start proving', js = $('#net-join span');
+  if (js.textContent !== jt) js.textContent = jt;
   // Once the line is copied, a computer with no prover yet is waiting for it to start.
   $('#title').textContent = state === 'none' && copied ? 'Waiting for tacit-prover…' : h.title;
   $('#state').classList.toggle('copied', state === 'none' && copied);
@@ -506,7 +588,8 @@ const cleanSalts = (s) => (s && typeof s === 'object' ? {
   // The newest good finds (`recent`, from the API that keeps them); an older API has only the bank, whose finds carry a time too.
   recent: (Array.isArray(s.recent) ? s.recent : Array.isArray(s.bank) ? s.bank : []).map(cleanFind)
     .filter((b) => b.address && b.bits && b.at && (b.house || b.miner)),
-  live: (Array.isArray(s.live) ? s.live : []).map((m) => ({ miner: cleanAddress(m?.miner)?.toLowerCase() || null, house: m?.house === true })).filter((m) => m.miner).slice(0, 64),
+  // every node the pool lists as grinding now: the floor counts them all and draws as many as fit its row (the limit is only against an answer of absurd length)
+  live: (Array.isArray(s.live) ? s.live : []).map((m) => ({ miner: cleanAddress(m?.miner)?.toLowerCase() || null, house: m?.house === true })).filter((m) => m.miner).slice(0, 2000),
   rate: Number.isFinite(Number(s.rate)) && Number(s.rate) >= 0 ? Number(s.rate) : 0,
 } : null);
 let bankShown = null, bestShown = null, bestHtmlShown = null;
@@ -651,6 +734,8 @@ async function readDeployed() {
 }
 async function readSalts() {
   const s = await get(`${API}/prover/salt`); if (s) salts = cleanSalts(s);
+  saltsTried = true;
+  paintCrowd();                                                     // the floor does not wait for the bank's reading below
   await readBank();
   paintSalt(); paintNet(); paintCrowd(); paintFeed();
   saltTop = Math.max(saltTop, goodSalts()[0]?.at || 0);
@@ -745,6 +830,18 @@ if (cardOf()) {
   setTimeout(() => { if (!moved && cardOf()) CARDS.get(cardOf()).scrollIntoView({ block: 'start' }); }, 900);
 } else showTab(tabOf(), { write: false });
 
+// The stage's button goes to where proving starts: the node's card and its address field; on a phone, the card that sends the page to a computer.
+$('#net-join').addEventListener('click', () => {
+  if ($('#desk').hidden) {
+    showTab('prove');
+    $('#phone').scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+    mark($('#phone'));
+    return;
+  }
+  showCard('node');
+  if (!addr()) $('#addr').focus({ preventScroll: true });
+});
+
 $('#chain').addEventListener('click', (e) => {
   const li = e.target.closest('.blk');
   if (!li || li.classList.contains('next')) return;
@@ -765,7 +862,15 @@ loop(async () => { const p = await get(`${API}/prover/pool`); if (p) pool = clea
 loop(readRemote, 30000, 120000);
 loop(readBoardPay, 60000, 300000);
 loop(readSalts, 30000, 120000);
-loop(readReview, 60000, 300000);
+// The help desk is asked for its figures only once the code-review card is in view or about to be: a visit that never reaches the card says nothing to it.
+{
+  let started = false;
+  const start = () => { if (started) return; started = true; loop(readReview, 60000, 300000); };
+  if ('IntersectionObserver' in window) {
+    const io = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) { io.disconnect(); start(); } }, { rootMargin: '200px' });
+    io.observe($('#review'));
+  } else start();
+}
 // The day's checkpoint (worker/src/pool-snapshot-job.js): the tacit block, Bitcoin's height as the pool sees it, and the manifest on IPFS
 // that holds them, named on Ethereum by snapshot.tacit.wei. Anyone can rebuild every part of it from Ethereum.
 const HEX32 = /^0x[0-9a-f]{64}$/i, CID = /^b[a-z2-7]{58}$/;

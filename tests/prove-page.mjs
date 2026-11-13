@@ -50,7 +50,7 @@ const CHARGER = () => { const b = new EventTarget(); b.charging = true; window._
 const WINDOWS_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
 // `more`: the node's other numbers and the checkpoint sit behind summaries, so the scenarios that read them open those first.
 // `busy`: a day whose proofs earned more points (50,000 in the pool, 10,000 on the board) than the day's 300 TAC covers at 0.01 TAC a point.
-async function open(browser, local, { phone = false, idle = false, busy = false, ua = null, hash = '', init = null, noBank = false, more = true, minBits = 26 } = {}) {
+async function open(browser, local, { phone = false, idle = false, busy = false, ua = null, hash = '', init = null, noBank = false, more = true, minBits = 26, apiDown = false, crowd = 0 } = {}) {
   const ctx = await browser.newContext(phone ? { viewport: { width: 390, height: 800 }, userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148' } : { viewport: { width: 1100, height: 900 }, ...(ua ? { userAgent: ua } : {}) });
   const page = await ctx.newPage();
   // The public Nostr relays are the outside world: a page under test must never post its stand-in jobs to them or read other people's, so
@@ -61,7 +61,7 @@ async function open(browser, local, { phone = false, idle = false, busy = false,
     else if (d[0] === 'EVENT') ws.send(JSON.stringify(['OK', d[1]?.id, true, '']));
   }));
   if (init) await page.addInitScript(init);
-  const errors = [], posts = [], codeReads = [], deskPosts = [], shares = [];
+  const errors = [], posts = [], codeReads = [], deskPosts = [], shares = [], deskReads = [];
   page.on('pageerror', (e) => errors.push(e.message));
   // a public Nostr relay that is down (the Relay tab reads several) is the outside world, not the page
   page.on('console', (m) => { if (m.type() === 'error' && !/Failed to load resource|ERR_|WebSocket connection to 'wss:\/\//.test(m.text())) errors.push(m.text()); });
@@ -84,6 +84,7 @@ async function open(browser, local, { phone = false, idle = false, busy = false,
     return json(route, { error: 'not found' }, 404);
   });
   await page.route('https://api.tacit.finance/**', (route) => {
+    if (apiDown) return route.abort('connectionrefused');
     const u = new URL(route.request().url());
     if (u.pathname === '/prover/pool') return json(route, { ...(idle ? {} : {}), queued: idle ? 0 : 3, leased: idle ? 0 : 2, doneToday: 41, minersToday: 2, done24h: 433, miners24h: 11, top: [{ miner: ADDR, proofs: 4 }, { miner: OTHER, proofs: 1 }], terms: { pointsPerProof: 20, proofsPerMinerDay: 30 } });
     if (u.pathname === '/prover/blocks') return json(route, { head: { height: chain.blocks[0].height, hash: chain.blocks[0].hash, ethHead: chain.blocks[0].ethBlock + 25 }, blocks: chain.blocks, cross: [{ digest: '0x' + '89'.repeat(32), bitcoin: 974721, ethereum: { digest: '0x' + '54'.repeat(32), slot: 15592000 }, tx: '0x' + 'ab'.repeat(32), ethBlock: chain.blocks[0].ethBlock, at: Date.now(), by: { miner: OTHER } }] });
@@ -94,7 +95,7 @@ async function open(browser, local, { phone = false, idle = false, busy = false,
     if (u.pathname === '/pool/snapshot') return json(route, { v: 1, cid: 'bafkreia4g6iad4ec3634pd5lsfcqsmenqcc5oyn3mm2kwezybpwv6iltom', to: 26352486, checkpoint: { eth: { block: 26352486, hash: '0x' + 'e9'.repeat(32) }, tacit: { height: 9441, hash: '0xec803dcef9a1a4c0f64a919b491a226ce22e9d30be225c76a148b0a22b62eb41' }, bitcoin: { relayTip: 974739, reflection: { height: 974721 } }, ethereum: { finalizedSlot: 13450016 } } });
     // the salt pool takes the tab miner's shares: each send is kept, and answered as the pool answers (every salt counted)
     if (u.pathname === '/prover/salt/share' && route.request().method() === 'POST') { const b = JSON.parse(route.request().postData() || '{}'); shares.push(b); const n = (b.salts || []).length, total = shares.reduce((a, x) => a + x.salts.length, 0); return json(route, { ok: true, accepted: n, weight: n, rejected: [], today: { shares: total, weight: total * 4000, best: null } }); }
-    if (u.pathname === '/prover/salt') return json(route, { recent: SALT_FINDS(), pointsPerDay: busy ? 0 : 1500, minBits, today: { miners: 2, shares: 30, weight: 400000 }, top: [{ miner: ADDR, shares: 20, weight: 2200 }], live: [{ miner: OTHER, at: Date.now() - 60_000 }, { miner: '0x68575b073de49a94e3e3acf6f3a0d6e3b66267c7', at: Date.now() - 30_000, house: true }], rate: 2_400_000, bank: [{ address: '0x0000000000ab12cd34ef56ab78cd90ef12ab34cd', bits: 41, miner: OTHER }, { address: '0x0000000000cd12cd34ef56ab78cd90ef12ab34cd', bits: 40, miner: '0x68575b073de49a94e3e3acf6f3a0d6e3b66267c7', house: true }] });
+    if (u.pathname === '/prover/salt') return json(route, { recent: SALT_FINDS(), pointsPerDay: busy ? 0 : 1500, minBits, today: { miners: 2, shares: 30, weight: 400000 }, top: [{ miner: ADDR, shares: 20, weight: 2200 }], live: [{ miner: OTHER, at: Date.now() - 60_000 }, { miner: '0x68575b073de49a94e3e3acf6f3a0d6e3b66267c7', at: Date.now() - 30_000, house: true }, ...Array.from({ length: crowd }, (_, k) => ({ miner: '0x' + (k + 1).toString(16).padStart(40, '0'), at: Date.now() - 45_000 }))], rate: 2_400_000, bank: [{ address: '0x0000000000ab12cd34ef56ab78cd90ef12ab34cd', bits: 41, miner: OTHER }, { address: '0x0000000000cd12cd34ef56ab78cd90ef12ab34cd', bits: 40, miner: '0x68575b073de49a94e3e3acf6f3a0d6e3b66267c7', house: true }] });
     if (u.pathname === '/prover/salt/bank') return noBank ? json(route, {}, 500) : json(route, { bank: SALT_BANK().map((b) => ({ ...b, salt: '0x' + '00'.repeat(32) })) });
     return json(route, {}, 404);
   });
@@ -110,13 +111,14 @@ async function open(browser, local, { phone = false, idle = false, busy = false,
   // the help desk's public stats: three nodes online and the review record of the page's address
   await page.route('https://tacit-helpdesk.onrender.com/**', (route) => {
     const u = new URL(route.request().url());
+    deskReads.push(u.pathname);
     if (u.pathname === '/stats') return json(route, { nodes: { online: 3, miners: [] }, swarm: { findings: { pending: 4 }, reviewers: [{ miner: ADDR.slice(0, 8) + '…' + ADDR.slice(-4), skeptic: { n: 37, right: 22 }, scout: { n: 17, found: 5 } }] } });
     return json(route, {}, 404);
   });
   await page.route('https://tacit-points.onrender.com/**', (route) => json(route, { enabled: true, endSec: Math.floor(Date.now() / 1000) + 86400 * 10, terms: { dailyWei: '300000000000000000000', capWeiPerPoint: '10000000000000000' }, account: { creditedWei: '6000000000000000000' }, pocket: { totalWei: '7500000000000000000000', creditedWei: '291270000000000000000', remainingWei: '7208730000000000000000' } }));
   await page.goto(`${ORIGIN}/prove/${hash}`);
   if (more) await page.evaluate(() => document.querySelectorAll('#desk .more, .more.cp').forEach((d) => { d.open = true; }));
-  return { page, ctx, errors, posts, codeReads, deskPosts, shares };
+  return { page, ctx, errors, posts, codeReads, deskPosts, shares, deskReads };
 }
 const text = (page, s) => page.locator(s).innerText();
 // the page's grinding threads, once their number is what is expected (the browser reports a thread started or ended a moment after the page asks)
@@ -134,6 +136,12 @@ try {
     check(!(await page.locator('#setup .wsl').isVisible()), 'on a Mac, the line alone');
     check((await text(page, '#copy')) === 'Enter your address first' && (await text(page, '#gpu-copy')) === 'Add address', 'with no address the copy buttons ask for one', `${await text(page, '#copy')} | ${await text(page, '#gpu-copy')}`);
     check(!(await page.locator('#go').isVisible()), 'not set up: no start button');
+    // the stage's button says what a proof pays and goes to where proving starts: the node's card, at the address field
+    await page.waitForFunction(() => document.querySelector('#net-join-pay').textContent.includes('TAC'), null, { timeout: 8000 }).catch(() => {});
+    check((await text(page, '#net-join')).replace(/\s+/g, ' ').startsWith('Start proving up to 0.2 TAC a proof'), 'the stage\'s button says what a proof pays', await text(page, '#net-join'));
+    await page.click('#net-join');
+    await page.waitForFunction(() => document.querySelector('#desk').getBoundingClientRect().top < innerHeight - 200, null, { timeout: 5000 }).catch(() => {});
+    check(await page.evaluate(() => document.activeElement.id === 'addr' && document.querySelector('#desk').getBoundingClientRect().top < innerHeight - 200), 'and takes the reader to the node\'s card, at the address field');
     await page.fill('#addr', '0x12');
     check((await text(page, '#addr-bad')).startsWith('That is not an address') && (await page.getAttribute('#addr', 'aria-invalid')) === 'true', 'a half-typed address is told so', await text(page, '#addr-bad'));
     await page.fill('#addr', 'vitalik.eth');
@@ -183,6 +191,22 @@ try {
     await page.waitForFunction(() => document.querySelector('#crowd-n').textContent === '3 nodes online');
     check((await page.locator('#crowd .pod').count()) === 3, 'the crowd: everyone who proved lately and every node grinding salts, Tacit GPU among them');
     check(await page.locator('#crowd .pod.me').count() === 1, 'with this address picked out');
+    const floor = await page.evaluate(() => { const r = document.querySelector('#crowd-row'), b = r.getBoundingClientRect();
+      return { standIns: r.querySelectorAll('.sk-pod').length, inside: [...r.children].every((c) => { const x = c.getBoundingClientRect(); return x.top >= b.top - 1 && x.bottom <= b.bottom + 1 && x.left >= b.left - 1 && x.right <= b.right + 1; }), hot: r.querySelectorAll('.pod.hot').length }; });
+    check(floor.standIns === 0 && floor.inside, 'the floor draws every node inside its row, with no stand-ins left', JSON.stringify(floor));
+    check(floor.hot === 2, 'and rings the nodes whose proof landed in the last few minutes', String(floor.hot));
+    check((await text(page, '#crowd-r')).toLowerCase() === '2.4 m salts a second', 'beside the count, how fast the nodes grind salts', await text(page, '#crowd-r'));
+    // the stage: what is happening now as a sentence, and the figure for the proofs being made lit with the next block
+    check((await text(page, '#net-say-t')) === '2 proofs are being made right now, 3 more waiting.' && (await page.getAttribute('#net-say', 'data-s')) === 'busy', 'the stage says what is happening now', await text(page, '#net-say-t'));
+    check((await page.locator('#s-lease.hot').count()) === 1 && (await page.locator('#chain .blk.next.busy').count()) === 1, 'with proofs being made, their figure and the next block are lit');
+    check((await page.locator('#chain .sk-blk').count()) === 0, 'and the strip\'s stand-ins are gone once the blocks are read');
+    // the newest proofs along a line of time, over the feed's rows
+    const tape = await page.evaluate(() => ({ marks: document.querySelectorAll('#tape-l i').length, mine: document.querySelectorAll('#tape-l i.me').length, gpu: document.querySelectorAll('#tape-l i.gpu').length,
+      n: document.querySelector('#tape-n').textContent, a: document.querySelector('#tape-a').textContent, label: document.querySelector('#tape').getAttribute('aria-label'),
+      inside: [...document.querySelectorAll('#tape-l i')].every((i) => { const x = i.getBoundingClientRect(), b = document.querySelector('#tape-l').getBoundingClientRect(); return x.left >= b.left - 2 && x.right <= b.right + 2; }) }));
+    check(tape.marks === 2 && tape.mine === 1 && tape.gpu === 1 && tape.inside && tape.n === 'newest 2 proofs' && tape.a === '2 min ago' && tape.label === 'The newest 2 proofs, from 2 min ago to now', 'the newest proofs are marks along a line of time, this address\'s own picked out', JSON.stringify(tape));
+    const bars = await page.evaluate(() => [...document.querySelectorAll('#board > li')].map((li) => li.style.getPropertyValue('--w')));
+    check(bars.join() === '100%,25%', 'each of the day\'s provers has a bar as long as its proofs are to the leader\'s', bars.join());
     check((await page.locator('#chain .blk.xc').count()) === 1 && (await text(page, '#chain .blk.xc')).includes('974,721') && (await page.getAttribute('#chain .blk.xc a', 'href')).includes('etherscan.io/tx/0xabab') && (await page.locator('#chain .blk.xc .who').count()) === 1, 'a cross-chain block stands among the settles, with Bitcoin\'s height, its landing and who mined it');
     await page.waitForFunction(() => !document.querySelector('#checkpoint').hidden);
     check((await text(page, '#checkpoint')).includes('#9,441') && (await text(page, '#checkpoint')).includes('Bitcoin 974,721') && (await text(page, '#checkpoint')).includes('Ethereum slot 13,450,016'), 'the day\'s checkpoint: the block, Bitcoin\'s height and where it is kept', await text(page, '#checkpoint'));
@@ -205,6 +229,8 @@ try {
         return { node: b('[data-card="node"]'), salts: b('[data-card="salts"]'), feed: b('[data-card="activity"]'), gpu: b('[data-card="gpu"]'), rows: [...document.querySelectorAll('#feed li:not(.empty)')].map((li) => Math.round(li.getBoundingClientRect().height)) }; });
       check(r.node.l === r.salts.l && r.salts.t - r.node.b === 18, 'the salts card sits right under the node card', JSON.stringify([r.node, r.salts]));
       check(r.feed.l === r.gpu.l && r.gpu.t - r.feed.b === 18 && r.feed.l > r.node.r, 'the GPU card sits right under the activity, which is beside the node', JSON.stringify([r.feed, r.gpu, r.node]));
+      const rv = await page.evaluate(() => { const e = document.querySelector('#review').getBoundingClientRect(); return { l: Math.round(e.left), t: Math.round(e.top) }; });
+      check(rv.l === r.gpu.l && rv.t - r.gpu.b === 18, 'and the code-review card right under the GPU card', JSON.stringify([rv, r.gpu]));
       check(Math.max(...r.rows) < 40, 'a feed row is one line', JSON.stringify(r.rows));
     }
     const saltRows = await page.locator('#feed li.salt').allInnerTexts();
@@ -236,6 +262,7 @@ try {
     check(await page.locator('#chain .blk.new').count() === 1, 'a new block lands with the landing animation');
     check((await page.locator('#chain .blk').first().getAttribute('class')).includes('next'), 'the next block stays at the front');
     check((await text(page, '#height')) === '#9,390', 'the tip moves on');
+    check((await text(page, '#net-say-t')) === 'Block #9,390 just landed: a withdrawal.' && (await page.getAttribute('#net-say', 'data-s')) === 'landed', 'and the stage says which block landed and what it was', await text(page, '#net-say-t'));
     await shot(page, 'prove-none');
     // the prover appears (the line was pasted): the page sees it on its own
     const NOW = { threads: 2, background: true, pausedFor: 'not mining' };   // what a prover from v0.6.3 on adds to /mine's salt
@@ -268,6 +295,7 @@ try {
     check(busyRank.includes('4 proofs 0.4 TAC'), 'the leaderboard at today\'s rate, not the cap', busyRank);
     check((await text(page, '#today')) === '4 proofs · 0.4 TAC', 'and the address\'s own day', await text(page, '#today'));
     check((await text(page, '#pays')) === '0.1 TAC a proof today (up to 0.2), up to 30 a day', 'what a proof pays today, and the most', await text(page, '#pays'));
+    check((await text(page, '#net-join-pay')) === '0.1 TAC a proof today', 'and the stage\'s button says what a proof pays today, not the most it could', await text(page, '#net-join-pay'));
     await page.waitForFunction(() => document.querySelector('#btc-pay').textContent.includes('TAC'), null, { timeout: 8000 }).catch(() => {});
     check((await page.textContent('#btc-pay')) === '5 TAC each', 'a Bitcoin batch at today\'s rate', await page.textContent('#btc-pay'));
     const rows = await page.locator('#feed li:not(.salt)').allInnerTexts();
@@ -288,8 +316,45 @@ try {
     check((await text(page, '#n-wait')) === '0' && (await text(page, '#n-lease')) === '2.4 M', 'with nothing queued, nothing waits and the nodes grind salts this fast', `${await text(page, '#n-wait')} ${await text(page, '#n-lease')}`);
     await page.waitForFunction(() => document.querySelector('#next-o')?.textContent === 'mining salts');
     check(true, 'the next block says the nodes are mining salts meanwhile');
+    check((await text(page, '#net-say-t')) === 'No proof is waiting. The nodes mine salts meanwhile, 2.4 M/s.' && (await page.getAttribute('#net-say', 'data-s')) === 'quiet' && (await page.locator('#s-lease.hot').count()) === 0, 'and so does the stage, with nothing lit', await text(page, '#net-say-t'));
     await page.waitForFunction(() => !document.querySelector('#feed-idle').hidden);
     check((await text(page, '#feed-idle')).includes('A private deposit starts the next proof') && (await page.getAttribute('#feed-idle a', 'href')) === '/', 'nothing waiting and no proof for ten minutes: the feed says where the next one comes from');
+    await ctx.close();
+  }
+  // a busy floor: every node is counted, and drawn at the size that fits them in the row; on a phone, as many as fit and the rest as a number
+  {
+    const { page, ctx, errors } = await open(browser, { v: null }, { crowd: 60 });
+    await page.waitForFunction(() => document.querySelector('#crowd-n').textContent === '63 nodes online', null, { timeout: 10000 });
+    const f = await page.evaluate(() => { const r = document.querySelector('#crowd-row'), b = r.getBoundingClientRect(), tabs = document.querySelector('.tabs').getBoundingClientRect();
+      return { pods: r.querySelectorAll('.pod').length, more: r.querySelector('.more-n')?.textContent || '', px: r.querySelector('.pod img').width, h: Math.round(b.height),
+        inside: [...r.children].every((c) => { const x = c.getBoundingClientRect(); return x.top >= b.top && x.bottom <= b.bottom && x.left >= b.left && x.right <= b.right; }), tabs: Math.round(tabs.top + scrollY) }; });
+    check(f.pods === 63 && !f.more && f.inside && f.px < 28 && f.px >= 16, 'sixty-three nodes on a wide screen: all drawn, smaller, inside the row', JSON.stringify(f));
+    const quiet = await open(browser, { v: null });
+    await quiet.page.waitForFunction(() => document.querySelector('#crowd-n').textContent === '3 nodes online');
+    const q = await quiet.page.evaluate(() => ({ h: Math.round(document.querySelector('#crowd-row').getBoundingClientRect().height), px: document.querySelector('#crowd-row .pod img').width, tabs: Math.round(document.querySelector('.tabs').getBoundingClientRect().top + scrollY) }));
+    check(q.h === f.h && q.px === 28, 'the row is as tall with three nodes as with sixty-three (their faces full size)', JSON.stringify([q, f.h]));
+    await quiet.ctx.close();
+    check(errors.length === 0, 'a busy floor: no page errors', errors.join(' | '));
+    await ctx.close();
+    const ph = await open(browser, { v: null }, { phone: true, crowd: 90 });
+    await ph.page.waitForFunction(() => document.querySelector('#crowd-n').textContent === '93 nodes online', null, { timeout: 10000 });
+    const g = await ph.page.evaluate(() => { const r = document.querySelector('#crowd-row'), b = r.getBoundingClientRect();
+      return { pods: r.querySelectorAll('.pod').length, more: r.querySelector('.more-n')?.textContent || '', inside: [...r.children].every((c) => { const x = c.getBoundingClientRect(); return x.top >= b.top && x.bottom <= b.bottom && x.left >= b.left && x.right <= b.right; }),
+        over: document.documentElement.scrollWidth > innerWidth }; });
+    check(g.pods < 93 && g.more === `+${93 - g.pods}` && g.inside && !g.over, 'ninety-three nodes on a phone: as many as fit, the rest as a number, nothing outside the row or the page', JSON.stringify(g));
+    await ph.ctx.close();
+  }
+  // the network's API not answering: the stage says so, and keeps the places of what it could not read (nothing is taken away, so nothing moves)
+  {
+    const { page, ctx, errors } = await open(browser, { v: null }, { apiDown: true });
+    const before = await page.evaluate(() => Math.round(document.querySelector('.tabs').getBoundingClientRect().top + scrollY));
+    await page.waitForFunction(() => document.querySelector('#net-say-t').textContent === 'The network is not answering. Trying again…', null, { timeout: 20000 });
+    const s = await page.evaluate(() => ({ strip: !document.querySelector('#chain').hidden && document.querySelectorAll('#chain .sk-blk').length, floor: document.querySelectorAll('#crowd-row .sk-pod').length, tip: document.querySelector('#height').textContent,
+      tabs: Math.round(document.querySelector('.tabs').getBoundingClientRect().top + scrollY), state: document.querySelector('#net-say').dataset.s, over: document.documentElement.scrollWidth > innerWidth }));
+    check(s.strip === 8 && s.floor === 18 && s.tip === '—' && s.state === '', 'an API that does not answer: the stage says so, with the strip\'s and the floor\'s stand-ins still there', JSON.stringify(s));
+    check(s.tabs === before && !s.over, 'and nothing under the stage has moved', `${before} → ${s.tabs}`);
+    check((await text(page, '#title')) === 'Set up this computer' && (await page.locator('#setup').isVisible()), 'the node\'s card still works without it');
+    check(errors.length === 0, 'and the page has no errors', errors.join(' | '));
     await ctx.close();
   }
   // a Windows PC: Ubuntu installed first, then the same line pasted in Ubuntu; the switch goes back to Mac or Linux
@@ -341,6 +406,7 @@ try {
     await page.click('#go');
     await page.waitForFunction(() => document.querySelector('#title').textContent === 'Waiting for the next proof');
     check(posts.length === 1 && posts[0].on === true && posts[0].miner.toLowerCase() === ADDR, 'Start sends on with the address', JSON.stringify(posts));
+    check((await text(page, '#net-join span')) === 'Your node is on', 'and the stage\'s button says the node is on', await text(page, '#net-join span'));
     local.v.mine = { ...local.v.mine, salt: { on: true, rate: 2_400_000, minBits: 26, threads: 2, background: true, pausedFor: null } };
     await page.waitForFunction(() => document.querySelector('#title').textContent === 'Mining salts until the next proof');
     await page.waitForFunction(() => document.querySelector('#salt').textContent.includes('M/s'));
@@ -361,6 +427,9 @@ try {
     check(codeReads.length === 1 && codeReads[0] === 9, 'the chain is asked once, in one batch, for all the banked addresses', JSON.stringify(codeReads));
     local.v.mine = { ...local.v.mine, job: { id: 'j1', secs: 120, stage: 'shrink', eta: 360 }, proved: 2 };
     await page.waitForFunction(() => document.querySelector('#title').textContent === 'Proving');
+    check((await text(page, '#net-join span')) === 'Your node is proving', 'proving: the stage\'s button says so', await text(page, '#net-join span'));
+    const forge = await page.evaluate(() => [...document.querySelectorAll('#forge li')].map((li) => { const r = li.getBoundingClientRect(); return `${Math.round(r.top - document.querySelector('#forge ol').getBoundingClientRect().top)}:${Math.round(r.height)}`; }));
+    check(forge.length === 4 && new Set(forge).size === 1 && forge[0] === '0:8', 'the proof\'s four stages are four bars on one line', forge.join(' '));
     check((await page.title()) === 'Proving · tacit prove', 'a tab left open says it is proving', await page.title());
     const st = await text(page, '#stage'), steps = await page.locator('#forge li').evaluateAll((ls) => ls.map((l) => l.className));
     check(st === 'Compressing · about 6 min left', 'proving: the stage and the time left', st);
@@ -595,7 +664,13 @@ try {
   // the code-review card: no prover, an older prover, the model not yet fetched, and switching it on (the POST it sends, the record shown)
   {
     const none = await open(browser, { v: null }, { more: false });
+    // the help desk is asked for its figures only once the card is in view: a visit that stays at the top of the page says nothing to it
+    await none.page.waitForFunction(() => document.querySelector('#height').textContent !== '—');
+    await none.page.waitForTimeout(600);
+    check(none.deskReads.length === 0 && (await text(none.page, '#review-n')) === '—', 'review card, not yet in view: the help desk has not been asked', JSON.stringify(none.deskReads));
+    await none.page.locator('#review').scrollIntoViewIfNeeded();
     await none.page.waitForFunction(() => document.querySelector('#review-n').textContent === '3');
+    check(none.deskReads.length >= 1 && none.deskReads.every((x) => x === '/stats'), 'and once it is, its public figures are read', JSON.stringify(none.deskReads));
     check((await text(none.page, '#review-state')) === 'Needs tacit-prover, above' && !(await none.page.locator('#review-go').isVisible()) && !(await none.page.locator('#review-get').isVisible()), 'review card, no prover: it says what it needs, no button, no line', await text(none.page, '#review-state'));
     await none.ctx.close();
     const old = await open(browser, { v: { mine: { miner: ADDR, on: true, job: null, proved: 0 } } }, { more: false });
@@ -608,6 +683,7 @@ try {
     await bare.ctx.close();
     const local = { v: { mine: { miner: ADDR, on: true, job: null, proved: 0 }, desk: { on: false, api: null, miner: ADDR, installed: true, model_running: false, served: 0, job: null } } };
     const { page, ctx, errors, deskPosts } = await open(browser, local, { more: false });
+    await page.locator('#review').scrollIntoViewIfNeeded();
     await page.waitForFunction(() => document.querySelector('#review-go').textContent === 'Turn on' && !document.querySelector('#review-me-row').hidden);
     check((await text(page, '#review-state')) === 'Off' && (await text(page, '#review-me')) === '22 of 37 checks right · 5 of 17 planted bugs found' && (await text(page, '#review-n')) === '3', 'review card, installed and off: Turn on, the address\'s record and the nodes online', `${await text(page, '#review-state')} | ${await text(page, '#review-me')}`);
     await page.click('#review-go');
