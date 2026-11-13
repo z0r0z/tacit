@@ -15,7 +15,7 @@
 <link rel="preconnect" href="https://tacit-evm-pool-keepers.onrender.com" crossorigin>
 <script async src="/front-guard.js?cb=51f5d28b"></script>
 <script type="module" src="/px-strip.js?cb=046a6701" async fetchpriority="high"></script>
-<link rel="preload" href="/swap/card.css?cb=ee86a552" as="style">
+<link rel="preload" href="/swap/card.css?cb=01e85a39" as="style">
 <link rel="preload" href="/fonts/instrument-serif-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/instrument-serif-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
@@ -415,11 +415,11 @@ a.di { color: inherit; text-decoration: none; }
 .hx { position: relative; width: 100%; max-width: 480px; min-width: 0; margin: 0 auto; background: var(--card); border: 1px solid color-mix(in srgb, var(--ink) 9%, transparent); border-radius: 22px; box-shadow: var(--float), inset 0 1px 0 color-mix(in srgb, var(--ink) 4%, transparent); }
 /* The card is filled by script, so until it is, it holds the height its Swap tab settles at (measured at each width, with the way the card opens: ETH to private tETH, which
    has the "Private in" block): what is below it does not move when it appears. tests/front-tile-height.mjs measures it again. */
-.hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 571px; }
-@media (max-width: 640px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 562px; } }
-@media (max-width: 370px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 560px; } }
-@media (max-width: 356px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 585px; } }
-@media (max-width: 334px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 604px; } }
+.hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 564px; }
+@media (max-width: 640px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 567px; } }
+@media (max-width: 380px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 592px; } }
+@media (max-width: 370px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 556px; } }
+@media (max-width: 365px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 581px; } }
 /* Until the script draws it the card is the places of its tabs, its two fields, the block under them and its button, in quiet blocks of its own colours (the script's first draw
    replaces them), so the card is there from the first paint and nothing in it moves when its parts arrive. */
 .hx-sk { display: grid; gap: 8px; padding: 12px 16px 16px; }
@@ -1814,9 +1814,247 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   *, *::before, *::after { animation: none !important; transition: none !important; }
   .sk { background: var(--skel); }
 }
+
+/* ═════════════════════════════════════════════════════════════════════════════
+   DESIGN BOUNTY — BLUEPRINT
+   A cool-paper skin: graph rule, ink edges, one working blue. The card is a
+   panel, not a pillow; labels are mono caps; figures are system sans; the
+   primary action is the only saturated block on the page.
+   ═════════════════════════════════════════════════════════════════════════════ */
+:root {
+  --paper: #EDF2F7;
+  --card: #FFFFFF;
+  --field: #F4F8FC;
+  --soft: #E8F0F8;
+  --ink: #0A1322;
+  --mute: #536176;
+  --faint: #7C8A9D;
+  --hair: rgba(10,19,34,.12);
+  --hair-2: rgba(10,19,34,.28);
+  --orange: #0B63CE;
+  --ok: #0B7A4B;
+  --warn: #9A5B00;
+  --err: #C0342B;
+  --scrim: rgba(6,13,24,.46);
+  --lift: 8px 8px 0 rgba(11,99,206,.12);
+  --sheet-shadow: 0 36px 90px -40px rgba(6,13,24,.6);
+  --skel: rgba(10,19,34,.07);
+  --skel-hi: rgba(10,19,34,.13);
+  --bar: #8492A6;
+  --blue: #3B6FE0;
+  --green: #12855A;
+  --float: 0 1px 0 rgba(10,19,34,.05), 8px 8px 0 rgba(11,99,206,.09);
+  --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --accent-2: #FF5A36;
+  --grid: rgba(10,19,34,.055);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #070D16;
+    --card: #0D1725;
+    --field: #101D2E;
+    --soft: #122238;
+    --ink: #E8F0FA;
+    --mute: #9AA9BC;
+    --faint: #718096;
+    --hair: rgba(232,240,250,.12);
+    --hair-2: rgba(232,240,250,.28);
+    --orange: #5CA8FF;
+    --ok: #5BD39A;
+    --warn: #FFB45C;
+    --err: #FF7A6B;
+    --scrim: rgba(0,0,0,.72);
+    --lift: 8px 8px 0 rgba(92,168,255,.12);
+    --sheet-shadow: 0 40px 100px -40px rgba(0,0,0,.9);
+    --skel: rgba(232,240,250,.08);
+    --skel-hi: rgba(232,240,250,.16);
+    --bar: #6F8098;
+    --blue: #7CA9FF;
+    --green: #4FCB8B;
+    --float: 0 1px 0 rgba(255,255,255,.04), 8px 8px 0 rgba(92,168,255,.12);
+    --accent-2: #FF7A59;
+    --grid: rgba(232,240,250,.055);
+  }
+}
+
+body {
+  font-family: var(--sans);
+  background-color: var(--paper);
+  background-image:
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px),
+    radial-gradient(ellipse 58rem 34rem at 50% 18rem, color-mix(in srgb, var(--orange) 10%, transparent), transparent 70%);
+  background-size: 32px 32px, 32px 32px, auto;
+  background-repeat: repeat, repeat, no-repeat;
+  background-position: center top;
+  background-attachment: fixed;
+}
+
+/* the hero: a masthead, not a magazine cover */
+.hero { padding-top: 34px; }
+.hero h1 {
+  font: 500 clamp(34px, 5.8vw, 66px)/0.98 var(--mono);
+  letter-spacing: -.065em;
+  text-transform: uppercase;
+}
+.hero h1 em { font-style: normal; color: var(--orange); }
+.hero .sub { max-width: 62ch; font-size: 13px; letter-spacing: .01em; }
+.hero .sub b { font-weight: 600; border-bottom: 1px solid var(--orange); }
+.hero .hero-pair .tk { box-shadow: 0 0 0 1px var(--ink); }
+
+/* the card: a panel with a signal rule, square corners and a hard offset */
+.hx {
+  max-width: 500px;
+  border: 1px solid var(--ink);
+  border-radius: 6px;
+  background: var(--card);
+  box-shadow: var(--float);
+  overflow: hidden;
+}
+.hx::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto;
+  height: 3px;
+  z-index: 3;
+  background: linear-gradient(90deg, var(--orange), var(--accent-2));
+}
+.hx-h {
+  padding: 7px 10px 0;
+  border-bottom: 1px solid var(--hair);
+  background: color-mix(in srgb, var(--field) 55%, var(--card));
+}
+.hx-h::after {
+  height: 3px;
+  border-radius: 0;
+  background: linear-gradient(90deg, var(--orange), var(--accent-2));
+}
+.hx-h button {
+  padding: 13px 0 12px;
+  font: 500 10px/1 var(--mono);
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--mute);
+}
+.hx-h button[aria-selected="true"] { color: var(--ink); }
+.hx-b { padding: 16px 18px 18px; }
+.hx-lead { margin: 0 2px 12px; font-size: 12px; line-height: 1.5; color: var(--mute); }
+.hx-mode { margin: 4px 0 12px; padding: 2px; border-radius: 4px; background: var(--field); border: 1px solid var(--hair); }
+.hx-mode button { border-radius: 3px; font: 500 9.5px var(--mono); letter-spacing: .09em; text-transform: uppercase; }
+.hx-mode button[aria-checked="true"] { background: var(--card); color: var(--ink); box-shadow: 0 0 0 1px var(--hair-2); }
+.hx-lbl { font: 500 9px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--mute); }
+.hx-amt { font: 600 42px/1 var(--sans); letter-spacing: -.045em; }
+.hx-amt.long { font-size: 32px; }
+.hx-amt.longer { font-size: 25px; }
+.hx-unit { font: 500 9.5px var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+.hx .btn {
+  min-height: 52px;
+  margin-top: 16px;
+  border-radius: 4px;
+  font: 500 11px var(--mono);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--card);
+  background: var(--orange);
+  border-color: var(--orange);
+  box-shadow: 3px 3px 0 color-mix(in srgb, var(--orange) 22%, transparent);
+}
+@media (hover: hover) {
+  .hx .btn:hover:not(:disabled) {
+    color: var(--card);
+    background: var(--ink);
+    border-color: var(--ink);
+    transform: translate(-2px, -2px);
+    box-shadow: 5px 5px 0 var(--orange);
+  }
+}
+.hx .btn:active:not(:disabled) { transform: none; box-shadow: none; }
+.hx-q { font-size: 11.5px; }
+
+/* right angles for the other controls the card uses */
+.swc .f, .swc .rows, .swc .snt > div, .swc .later, .swc .ack { border-radius: 4px; }
+.swc .mode, .swc .sides { border-radius: 4px; }
+.swc .mode button, .swc .sides button { border-radius: 3px; }
+.swc .coin { border-radius: 4px; }
+.swc .flip { border-radius: 4px; }
+.swc .st .mk { border-radius: 3px; }
+.swc .rcpt { font-size: 12px; }
+.swc .rows button { border-radius: 0; }
+.swc .rows .rd { border-radius: 3px; }
+.swc .rows [aria-checked="true"] .rd { box-shadow: inset 0 0 0 3.5px var(--field), inset 0 0 0 9px var(--ink); }
+.swc .go {
+  min-height: 52px;
+  border-radius: 4px;
+  font: 500 11px var(--mono);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--card);
+  background: var(--orange);
+  border-color: var(--orange);
+}
+@media (hover: hover) { .swc .go:hover:not(:disabled) { background: var(--ink); border-color: var(--ink); color: var(--card); box-shadow: 4px 4px 0 var(--orange); } }
+.swc .act .go { margin-top: 0; }
+
+/* sheets: the same panel language, with a sticky title and a ruled header */
+dialog.sheet {
+  border: 1px solid var(--ink);
+  border-radius: 6px;
+  background: var(--card);
+  box-shadow: 8px 8px 0 var(--orange), var(--sheet-shadow);
+}
+dialog.sheet[open] { animation: rise .18s cubic-bezier(.2,.8,.2,1); }
+dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(3px); }
+.sheet-in { padding: 26px 26px 30px; --sx: 26px; --st: 26px; }
+.sheet-head { padding: var(--st) var(--sx) 12px; border-bottom: 1px solid var(--hair); background: var(--card); }
+.sheet-head h2 { font: 600 24px/1 var(--sans); letter-spacing: -.035em; text-transform: uppercase; }
+.x { border-radius: 4px; border-color: var(--hair); }
+@media (hover: hover) { .x:hover { color: var(--orange); border-color: var(--orange); } }
+.lede-s { font-size: 12.5px; line-height: 1.55; }
+.opt { border-radius: 4px; border-color: var(--hair); background: var(--field); }
+.opt:hover:not(:disabled) { border-color: var(--orange); }
+.opt.main { border-color: var(--orange); box-shadow: inset 3px 0 0 var(--orange); }
+.opt-t { font: 600 14px var(--sans); letter-spacing: -.01em; }
+.opt-m { padding-left: 0; margin-top: 3px; }
+.amt { border-radius: 4px; }
+.amt.text input { font-family: var(--mono); }
+.btn {
+  border-radius: 4px;
+  min-height: 50px;
+  font: 500 11px var(--mono);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--card);
+  background: var(--orange);
+  border-color: var(--orange);
+}
+@media (hover: hover) { .btn:hover:not(:disabled) { background: var(--ink); color: var(--card); border-color: var(--ink); } }
+.btn.ghost { color: var(--ink); background: transparent; border-color: var(--hair-2); }
+@media (hover: hover) { .btn.ghost:hover:not(:disabled) { color: var(--orange); border-color: var(--orange); background: transparent; } }
+.seg { border-radius: 4px; }
+.seg button { font-family: var(--mono); font-size: 11px; letter-spacing: .04em; }
+.seg button[aria-selected="true"] { background: var(--orange); color: var(--card); }
+.seg.sub button[aria-selected="true"] { background: none; color: var(--ink); border-bottom-color: var(--orange); }
+.spw-o, .sp-cmd, .hx-bw-p { border-radius: 4px; }
+
+/* section headings keep the editorial serif, but the rules and labels go technical */
+.sx-h h2 { letter-spacing: -.025em; }
+.sx-h h2 em { color: var(--orange); }
+.sx-h p { font-size: 13px; }
+.tc-facts dt, .tc-facts dd { font-family: var(--sans); }
+.tc-facts dt { font: 500 9px var(--mono); letter-spacing: .12em; text-transform: uppercase; }
+.live, .newsl, .kept { border-color: var(--hair); }
+
+/* keep the narrowest tab row legible after the mono switch */
+@media (max-width: 370px) {
+  .hx-h { --hp: 2px; }
+  .hx-h button { font-size: 8.5px; letter-spacing: .06em; }
+  .hx-b { padding: 12px; }
+  .hx-amt { font-size: 36px; }
+}
+
 </style>
 <!-- the hero tile is drawn with the swap card's parts (swap/card.js, which the Swap tab mounts): its styles, after the page's own -->
-<link rel="stylesheet" href="/swap/card.css?cb=ee86a552" media="print">
+<link rel="stylesheet" href="/swap/card.css?cb=01e85a39" media="print">
 <!-- chrome:head:begin inline -->
 <style>
 /* The header's page links and the footer, as every page that wears them draws them. The markup is made by build/chrome.mjs and stamped
@@ -1939,6 +2177,60 @@ footer.sf svg.fill { width: 16px; height: 16px; }
 @font-face { font-family: 'Instrument Serif Fallback T'; font-style: italic; src: local('Times New Roman Italic'), local('TimesNewRomanPS-ItalicMT'), local('Liberation Serif Italic'), local('Tinos Italic'); size-adjust: 87.8%; ascent-override: 112.8%; descent-override: 35.3%; line-gap-override: 0%; }
 @font-face { font-family: 'Instrument Serif Fallback N'; src: local('Noto Serif'), local('NotoSerif'); size-adjust: 70.5%; ascent-override: 140.4%; descent-override: 44%; line-gap-override: 0%; }
 @font-face { font-family: 'Instrument Serif Fallback N'; font-style: italic; src: local('Noto Serif Italic'), local('NotoSerif-Italic'); size-adjust: 76.3%; ascent-override: 129.7%; descent-override: 40.6%; line-gap-override: 0%; }
+
+/* ── design bounty: blueprint ───────────────────────────────────────────────
+   The chrome is part of the same panel system: a ruled header, mono caps,
+   square controls and the one working blue. Every page that wears it gets it. */
+header.top { padding: 18px 0 15px; border-bottom: 1px solid var(--hair); }
+header.top .brand b { font-size: 31px; }
+header.top .brand i { font: 500 9px var(--mono); letter-spacing: .2em; }
+.sn > a, .sn summary {
+  height: 36px;
+  min-width: 36px;
+  padding: 0 9px;
+  border-radius: 4px;
+  font: 500 9.5px/1 var(--mono);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+.sn > a { padding: 0 11px; }
+.sn > a[aria-current="page"], .sn summary.here, .sm[open] > summary { background: var(--field); color: var(--ink); box-shadow: inset 0 -2px 0 var(--orange); }
+@media (hover: hover) { .sn > a:hover, .sn summary:hover { background: var(--field); color: var(--ink); box-shadow: inset 0 -2px 0 var(--orange); } }
+.sn a:focus-visible, .sn summary:focus-visible, .sf a:focus-visible { outline-color: var(--orange); }
+header.top .chip {
+  height: 36px;
+  padding: 0 14px 0 11px;
+  border-radius: 4px;
+  border-color: var(--ink);
+  background: var(--card);
+  font: 500 9.5px/1 var(--mono);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+header.top .chip.act { border-color: var(--hair); background: transparent; }
+@media (hover: hover) {
+  header.top .chip:hover { background: var(--orange); color: var(--card); border-color: var(--orange); }
+  header.top .chip.act:hover { background: var(--field); color: var(--ink); border-color: var(--hair); }
+}
+header.top .chip .dot { border-radius: 2px; }
+.sm-p {
+  border: 1px solid var(--ink);
+  border-radius: 4px;
+  box-shadow: 5px 5px 0 var(--orange), 0 24px 48px -26px rgba(0,0,0,.5);
+  background: var(--card);
+}
+.sm-p a { border-radius: 3px; font: 500 10px var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+footer.sf {
+  border-top: 1px solid var(--ink);
+  padding: 12px 0 22px;
+  font: 500 9px var(--mono);
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+footer.sf nav a { border-radius: 4px; }
+@media (hover: hover) { footer.sf nav a:hover { color: var(--orange); background: var(--field); } }
+.sm-p .pr { letter-spacing: .08em; }
+@container top (max-width: 340px) { header.top .brand i { display: none; } }
 </style>
 <script src="/chrome.js?cb=3cafe52f" defer></script>
 <!-- chrome:head:end -->

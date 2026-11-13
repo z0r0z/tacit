@@ -45,7 +45,7 @@ ok(flip > 0 && flip < first, 'the script lets the card\'s stylesheet in before i
 // 4. the skeleton
 ok(/<div id="hx-body"><div class="hx-sk" aria-hidden="true">/.test(page), 'the tile is a skeleton from the first paint, hidden from a screen reader');
 const held = [...page.matchAll(/(?:@media \(max-width: (\d+)px\) \{ )?\.hx:has\(#hx-body:empty\), \.hx:has\(#hx-body > \.hx-sk\) \{ min-height: (\d+)px; \}/g)].map((m) => `${m[1] || 'any'}:${m[2]}`);
-ok(held.join(' ') === 'any:571 640:562 370:560 356:585 334:604',`and holds the height the card settles at, at each width (${held.join(' ')}; tests/front-tile-height.mjs measures it in a browser)`);
+ok(held.join(' ') === 'any:564 640:567 380:592 370:556 365:581',`and holds the height the card settles at, at each width (${held.join(' ')}; tests/front-tile-height.mjs measures it in a browser)`);
 ok(/<i class="f"><\/i><i class="f"><\/i><i class="p"><\/i><i class="g"><\/i>/.test(page), 'and has a place for each block of the card: two fields, the block under them, the button');
 
 // 5. what the script does before it draws the tile leaves out what it can: the airdrop's closing day is written by hand, since the first toLocaleDateString of a locale

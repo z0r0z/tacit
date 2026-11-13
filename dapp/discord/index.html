@@ -268,6 +268,60 @@ footer.sf svg.fill { width: 16px; height: 16px; }
 @font-face { font-family: 'Instrument Serif Fallback T'; font-style: italic; src: local('Times New Roman Italic'), local('TimesNewRomanPS-ItalicMT'), local('Liberation Serif Italic'), local('Tinos Italic'); size-adjust: 87.8%; ascent-override: 112.8%; descent-override: 35.3%; line-gap-override: 0%; }
 @font-face { font-family: 'Instrument Serif Fallback N'; src: local('Noto Serif'), local('NotoSerif'); size-adjust: 70.5%; ascent-override: 140.4%; descent-override: 44%; line-gap-override: 0%; }
 @font-face { font-family: 'Instrument Serif Fallback N'; font-style: italic; src: local('Noto Serif Italic'), local('NotoSerif-Italic'); size-adjust: 76.3%; ascent-override: 129.7%; descent-override: 40.6%; line-gap-override: 0%; }
+
+/* ── design bounty: blueprint ───────────────────────────────────────────────
+   The chrome is part of the same panel system: a ruled header, mono caps,
+   square controls and the one working blue. Every page that wears it gets it. */
+header.top { padding: 18px 0 15px; border-bottom: 1px solid var(--hair); }
+header.top .brand b { font-size: 31px; }
+header.top .brand i { font: 500 9px var(--mono); letter-spacing: .2em; }
+.sn > a, .sn summary {
+  height: 36px;
+  min-width: 36px;
+  padding: 0 9px;
+  border-radius: 4px;
+  font: 500 9.5px/1 var(--mono);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+.sn > a { padding: 0 11px; }
+.sn > a[aria-current="page"], .sn summary.here, .sm[open] > summary { background: var(--field); color: var(--ink); box-shadow: inset 0 -2px 0 var(--orange); }
+@media (hover: hover) { .sn > a:hover, .sn summary:hover { background: var(--field); color: var(--ink); box-shadow: inset 0 -2px 0 var(--orange); } }
+.sn a:focus-visible, .sn summary:focus-visible, .sf a:focus-visible { outline-color: var(--orange); }
+header.top .chip {
+  height: 36px;
+  padding: 0 14px 0 11px;
+  border-radius: 4px;
+  border-color: var(--ink);
+  background: var(--card);
+  font: 500 9.5px/1 var(--mono);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+header.top .chip.act { border-color: var(--hair); background: transparent; }
+@media (hover: hover) {
+  header.top .chip:hover { background: var(--orange); color: var(--card); border-color: var(--orange); }
+  header.top .chip.act:hover { background: var(--field); color: var(--ink); border-color: var(--hair); }
+}
+header.top .chip .dot { border-radius: 2px; }
+.sm-p {
+  border: 1px solid var(--ink);
+  border-radius: 4px;
+  box-shadow: 5px 5px 0 var(--orange), 0 24px 48px -26px rgba(0,0,0,.5);
+  background: var(--card);
+}
+.sm-p a { border-radius: 3px; font: 500 10px var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+footer.sf {
+  border-top: 1px solid var(--ink);
+  padding: 12px 0 22px;
+  font: 500 9px var(--mono);
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+footer.sf nav a { border-radius: 4px; }
+@media (hover: hover) { footer.sf nav a:hover { color: var(--orange); background: var(--field); } }
+.sm-p .pr { letter-spacing: .08em; }
+@container top (max-width: 340px) { header.top .brand i { display: none; } }
 </style>
 <script src="/chrome.js?cb=3cafe52f" defer></script>
 <!-- chrome:head:end -->
