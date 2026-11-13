@@ -1026,8 +1026,8 @@ await step('farm', async () => {
   await rpc('evm_increaseTime', [60]); await rpc('evm_mine', []);
   await page.evaluate(() => { location.hash = ''; location.hash = '#farm'; });
   await until(page, () => { const b = document.querySelector('#pf-claim'); return b && !b.disabled; });
-  await until(page, () => /to claim/.test(document.querySelector('[data-dash-open="farm"] .di-m')?.textContent || ''), null, 60000).catch(() => {});
-  const dm = (await text(page, '[data-dash-open="farm"] .di-m')).trim();
+  await until(page, () => /to claim/.test(document.querySelector('#dash-g [data-dash-open="farm"] .wb-m')?.textContent || ''), null, 60000).catch(() => {});
+  const dm = (await text(page, '#dash-g [data-dash-open="farm"] .wb-m')).trim();
   ok(/^(≈ [\d.,]+|< 0\.00001) ETH to claim$/.test(dm), `farm: the dashboard's farm rewards say what there is to claim, in ETH (${dm})`);
   // the Earn tab lists the stake too: its pair in a ring, public, with Claim, Add and Withdraw
   await page.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
@@ -1872,8 +1872,9 @@ await step('hxborrowback', async () => {
     ok(!(await p.$('#hx-bw [data-hxbw^="bond"], #hx-bw [data-hxbw="topup"]')) && !!(await p.$('#hx-bw [data-act-open]')), 'hxborrowback: a bond still on its way is said in place of its button, with the way to follow it');
     ok(!(await p.$('[data-hxm="borrow"][data-due]')), `hxborrowback: and the tab does not call for it (${await p.$eval('#hx-bw', (e) => e.textContent.replace(/\s+/g, ' ').slice(0, 160))})`);
     await p.click('[data-hxm="swap"]');
-    await until(p, () => !!document.querySelector('#dash [data-dash-open="borrow"]'), null, 120000);
-    await p.click('#dash [data-dash-open="borrow"]');
+    await until(p, () => !!document.querySelector('#dash-g [data-dash-open="borrow"]'), null, 120000);
+    await port(p);
+    await p.click('#dash-g [data-dash-open="borrow"]');
     await until(p, () => document.querySelector('[data-hxm="borrow"]')?.getAttribute('aria-selected') === 'true' && !!document.querySelector('#hx-bw'), null, 60000);
     ok(!(await p.$('dialog.sheet[open]')), "hxborrowback: the dashboard's cBTC opens the card's Borrow tab, where the lock is followed");
     if (r.errors.length) { fails++; console.log('FAIL hxborrowback page errors: ' + r.errors.slice(0, 3).join(' | ')); }
@@ -3221,6 +3222,8 @@ await step('passkey', async () => {
 
 const balOf = async (a) => BigInt(await rpc('eth_getBalance', [a, 'latest']));
 const go = (p, h) => p.evaluate((x) => { location.hash = ''; location.hash = x; }, h);
+// The Portfolio sheet, open: its rows (#dash-g) are kept current while it is closed, and are pressed with it open.
+const port = async (p) => { if (!(await p.$('#sheet-portfolio[open]'))) await go(p, '#portfolio'); await p.waitForSelector('#sheet-portfolio[open] #dash-g', { timeout: 30000 }); };
 let ACCT = null;
 await step('acct', async () => {
   const r = await openPage({ account: A0, key: K0 });
@@ -3471,6 +3474,7 @@ await step('btc', async () => {
   ok(!(await r.page.$(`#dash-g [data-btc-asset="${TAC}"], #dash-g [data-btc-asset="${TETH}"]`)), 'btc: TAC and tETH keep the rows they have, not a second one');
   const fake = (await text(r.page, `#dash-g [data-btc-asset="${'b9'.repeat(32)}"]`)).replace(/\s+/g, ' ');
   ok(/TAC \(b9b9…\)/.test(fake) && !(await text(r.page, '#dash-g [data-btc-asset="' + ORANGE + '"]')).includes('('), `btc: another asset called TAC is shown with the start of its id, beside the real one (${fake})`);
+  await port(r.page);
   await r.page.click(`#dash-g [data-btc-asset="${ORANGE}"]`);
   await until(r.page, () => /Send ORANGE/.test(document.querySelector('#bt-go')?.textContent || ''), null, 60000);
   ok(true, 'btc: the row opens the Bitcoin sheet on Send, with that asset chosen');
@@ -4677,7 +4681,7 @@ await step('xbring', async () => {
   await shot(r.page, 'xbring-tab-notes');
   // The dashboard and the landing card read the same notes: what is on Bitcoin, and how much of it can come back now.
   await r.page.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
-  await until(r.page, () => /on Bitcoin · 2 notes · 1 ready to bring back/.test(document.querySelector('#dash-g')?.textContent || ''), null, 120000)
+  await until(r.page, () => /2 notes · 1 ready to bring back/.test(document.querySelector('#pf-bitcoin + ul')?.textContent || ''), null, 120000)
     .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | dash: ${(await text(r.page, '#dash-g')).replace(/\s+/g, ' ').slice(0, 300)}`); });
   ok(/0\.007/.test(await r.page.$eval('#dash-g a[href="#private/bitcoin/back"]', (a) => a.textContent)), `xbring: the dashboard counts the tETH on Bitcoin, 0.007 in 2 notes, 1 ready (${(await r.page.$eval('#dash-g a[href="#private/bitcoin/back"]', (a) => a.textContent)).replace(/\s+/g, ' ')})`);
   await shot(r.page, 'xbring-dashboard');
@@ -4685,6 +4689,7 @@ await step('xbring', async () => {
   await until(r.page, () => /0\.007 tETH on Bitcoin, in 2 notes/.test(document.querySelector('#hx-have')?.textContent || ''), null, 60000);
   ok(/1 of them can come back now \(0\.004 tETH\)/.test(await text(r.page, '#hx-have')), `xbring: and the card, with tETH on Bitcoin picked, says the same (${(await text(r.page, '#hx-have')).replace(/\s+/g, ' ')})`);
   await shot(r.page, 'xbring-card');
+  await port(r.page);
   await r.page.click('#dash-g a[href="#private/bitcoin/back"]');
   await until(r.page, () => document.querySelectorAll('#eth-v1 input[name="xb-note"]').length === 2, null, 120000);
   ok(true, 'xbring: the dashboard line opens the To Bitcoin tab with the notes');
@@ -7075,19 +7080,20 @@ await step('dash', async () => {
       if (tag === 'desk') {
         await until(r.page, () => !!document.querySelector('#hints [data-hint="bal"]'), null, 30000);
         await r.page.click('#hints [data-hint="bal"]');
-        await until(r.page, () => Math.abs(document.querySelector('#dash').getBoundingClientRect().top) < 80, null, 15000);
-        ok(true, 'dash: signed in, the chips under the tile are My balances (and Activity once there is some), and My balances goes to Your Tacit');
+        await r.page.waitForSelector('#sheet-portfolio[open] #dash-g', { timeout: 15000 });
+        ok(true, 'dash: signed in, the chips under the tile are My balances (and Activity once there is some), and My balances opens the Portfolio');
       }
       await r.page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
-      const early = await r.page.evaluate(() => document.querySelectorAll('#dash .sk').length);
+      const early = await r.page.evaluate(() => document.querySelectorAll('#dash-g .sk').length);
+      await port(r.page);
       if (tag === 'phone') await shot(r.page, 'dash-loading-phone');
-      await until(r.page, () => /^5( TAC)?$/.test(document.querySelector('[data-dash-open="tac"] .di-v')?.textContent.trim() || ''), null, 60000);
-      await until(r.page, () => !document.querySelector('#dash .sk'), null, 60000).catch(() => {});
-      const tac = await r.page.$eval('[data-dash-open="tac"]', (b) => b.textContent.replace(/\s+/g, ' ').trim()), since = await text(r.page, '#dash-since');
+      await until(r.page, () => /^5( TAC)?$/.test(document.querySelector('#dash-g [data-dash-open="tac"] .wb-v')?.textContent.trim() || ''), null, 60000);
+      await until(r.page, () => !document.querySelector('#dash-g .sk'), null, 60000).catch(() => {});
+      const tac = await r.page.$eval('#dash-g [data-dash-open="tac"]', (b) => b.textContent.replace(/\s+/g, ' ').trim()), since = await text(r.page, '#dash-since');
       if (tag === 'phone') {
-        ok(early > 0, `dash: a connected wallet's dashboard shows placeholders first (${early})`);
-        ok(/\+3 · /.test(tac) && /since/.test(since), `dash: 5 TAC now, against 2 at the last visit, reads +3 (${tac} | ${since})`);
-        ok(!!(await r.page.$('[data-dash-open="pts"]')) && !(await r.page.$('#dash .sk')), 'dash: then every placeholder gives way to a value');
+        ok(early > 0, `dash: a connected wallet's Portfolio shows placeholders first (${early})`);
+        ok(/\+3/.test(tac) && /since/.test(since), `dash: 5 TAC now, against 2 at the last visit, reads +3 (${tac} | ${since})`);
+        ok(!!(await r.page.$('#dash-g [data-dash-open="pts"]')) && !(await r.page.$('#dash-g .sk')), 'dash: then every placeholder gives way to a value');
         const w = await wide(r.page);
         ok(w.sw <= w.iw, `dash: still no sideways scroll at 390px with it showing (${w.sw})`);
       }
@@ -7102,10 +7108,11 @@ await step('dash', async () => {
     await pasteKey(k.page, 'da5b'.padEnd(64, '8'));
     await k.page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
     await until(k.page, () => !document.querySelector('#dash').hidden, null, 30000);
-    const cells = await k.page.$$eval('#dash .di', (b) => b.map((x) => x.dataset.dashOpen));
-    ok(['private', 'tac', 'pts'].every((c) => cells.includes(c)) && !!(await k.page.$('#dash [data-dash-open="private"] .sk')), `dash: an opened key shows tETH, TAC and points, tETH as a placeholder while its notes are read (${cells.join(', ')})`);
+    await port(k.page);
+    const cells = await k.page.$$eval('#dash-g .wb-go', (b) => b.map((x) => x.dataset.dashOpen));
+    ok(['private', 'tac', 'pts'].every((c) => cells.includes(c)) && !!(await k.page.$('#dash-g [data-dash-open="private"] .sk')), `dash: an opened key shows tETH, TAC and points, tETH as a placeholder while its notes are read (${cells.join(', ')})`);
     await shot(k.page, 'dash-key-phone');
-    await k.page.click('#dash [data-dash-open="private"]');
+    await k.page.click('#dash-g [data-dash-open="private"]');
     await k.page.waitForSelector('#sheet-eth[open]', { timeout: 15000 });
     ok(true, 'dash: an item opens its sheet');
     if (k.errors.length) { fails++; console.log('FAIL dash key page errors: ' + k.errors.slice(0, 3).join(' | ')); }
@@ -7474,8 +7481,8 @@ await step('lpsend', async () => {
   const p = r.page, to = tacit1('abe'.padEnd(64, '5'));
   try {
     await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); document.querySelector('#dash')?.scrollIntoView(); });
-    await until(p, () => !!document.querySelector('#dash [data-dash-open="farm/private-0"]'), null, 240000).catch(() => {});
-    ok(!!(await p.$('#dash [data-dash-open="farm/private-0"]')), 'lpsend: the dashboard lists the LP position');
+    await until(p, () => !!document.querySelector('#dash-g [data-dash-open="farm/private-0"]'), null, 240000).catch(() => {});
+    ok(!!(await p.$('#dash-g [data-dash-open="farm/private-0"]')), 'lpsend: the Portfolio lists the LP position');
     await p.evaluate(() => window.scrollTo(0, 0));
     await p.click('[data-hxm="send"]');
     await p.click('#hx [data-pk="hx-sa"]');
@@ -7812,8 +7819,8 @@ await step('rsend', async () => {
   const p = r.page, to = tacit1('abd'.padEnd(64, '5'));
   try {
     await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); document.querySelector('#dash')?.scrollIntoView(); });
-    await until(p, () => /wTAC/.test(document.querySelector('#dash')?.textContent || ''), null, 240000).catch(() => {});
-    ok(/wTAC/.test(await text(p, '#dash').catch(() => '')), 'rsend: the dashboard has a wTAC row, private farm rewards');
+    await until(p, () => /wTAC/.test(document.querySelector('#dash-g')?.textContent || ''), null, 240000).catch(() => {});
+    ok(/wTAC/.test(await text(p, '#dash-g').catch(() => '')), 'rsend: the Portfolio has a wTAC row, private farm rewards');
     await p.evaluate(() => window.scrollTo(0, 0));
     await p.click('[data-hxm="send"]');
     await p.click('#hx [data-pk="hx-sa"]');
@@ -7928,13 +7935,13 @@ await step('farmpos', async () => {
     await p.click('#sf-act-0 [data-fn-go="redeem"]');
     await until(p, () => ['fn-turn', 'fn-redeem'].includes(document.activeElement?.id), null, 10000);
     ok((await p.evaluate(() => window.__farmCalls)).some((c) => c.startsWith('harvest:')), 'farmpos: a harvest says where to turn it into TAC, and the link takes you to that button');
-    // the dashboard: the pool's liquidity farming (its pair in a ring) and not (the pair alone), each with its worth in ETH
+    // the Portfolio: the pool's liquidity is one row (its pair in a ring while some of it farms), saying how much farms and how much does not, with its worth in ETH
     await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); document.querySelector('#dash')?.scrollIntoView(); });
-    await until(p, () => [...document.querySelectorAll('#dash .di')].some((d) => /not farmed/.test(d.textContent)), null, 120000).catch(() => {});
-    const lpRows = await p.evaluate(() => [...document.querySelectorAll('#dash .di')].filter((x) => /tETH \/ TAC/.test(x.textContent)).map((d) => ({ t: d.textContent.replace(/\s+/g, ' '), marks: d.querySelectorAll('.pair .tk').length, ring: !!d.querySelector('.pair.farm'), open: d.dataset.dashOpen })));
-    const lf = lpRows.find((x) => /farming/.test(x.t) && x.ring), ll = lpRows.find((x) => /not farmed/.test(x.t) && !x.ring);
-    ok(lpRows.length === 2 && lf && ll && lf.marks === 2 && /private, farming/.test(lf.t) && /private, not farmed/.test(ll.t) && /[\d.]+ ETH/.test(lf.t) && lf.open === 'farm/private-0',
-      `farmpos: the dashboard shows the pool's farmed liquidity (its pair in a ring) and its loose liquidity (the pair alone), each with its worth (${JSON.stringify(lpRows)})`);
+    await until(p, () => [...document.querySelectorAll('#dash-g .wb-go')].some((d) => /not farmed/.test(d.textContent)), null, 120000).catch(() => {});
+    const lpRows = await p.evaluate(() => [...document.querySelectorAll('#dash-g .wb-go')].filter((x) => /tETH \/ TAC/.test(x.textContent)).map((d) => ({ t: d.textContent.replace(/\s+/g, ' '), marks: d.querySelectorAll('.pair .tk').length, ring: !!d.querySelector('.pair.farm'), open: d.dataset.dashOpen })));
+    const lr = lpRows[0];
+    ok(lpRows.length === 1 && lr.marks === 2 && lr.ring && /[\d.,]+ farming · [\d.,]+ not farmed/.test(lr.t) && /[\d.]+ ETH/.test(lr.t) && lr.open === 'farm/private-0',
+      `farmpos: the Portfolio counts the pool's liquidity once, its pair in a ring while some of it farms, and says how much farms and how much does not (${JSON.stringify(lpRows)})`);
     if (r.errors.length) { fails++; console.log('FAIL farmpos page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }
 });
@@ -7958,8 +7965,8 @@ await step('hxbal', async () => {
     await until(p, () => /≈ \$[\d,.]+/.test(document.querySelector('#dash-worth')?.textContent || ''), null, 300000);
     const worth = (await text(p, '#dash-worth')).replace(/\s+/g, ' ');
     ok(/private/.test(worth) && !(await p.$eval('#hold-tot', (b) => b.hidden)), `hxbal: Your Tacit and the header say what it is all worth, and how much is private (${worth})`);
-    await p.click('#hold-tot'); await sleep(900);
-    ok(await p.evaluate(() => { const b = document.querySelector('#dash').getBoundingClientRect(); return b.top < innerHeight && b.bottom > 0; }), 'hxbal: the header total takes you to Your Tacit');
+    await p.click('#hold-tot');
+    ok(await p.waitForSelector('#sheet-portfolio[open] #dash-g', { timeout: 15000 }).then(() => true, () => false), 'hxbal: the header total opens the Portfolio');
     if (r.errors.length) { fails++; console.log('FAIL hxbal page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }
 });
@@ -8413,7 +8420,7 @@ await step('hxexit', async () => {
     await until(p, (h) => (document.querySelector('.bal .v')?.textContent?.trim() || '').replace(/,/g, '').replace(/\.0+$/, '') === h, held, 120000);
     await lander();
     // the holdings panel lists what the pool holds, and a link opens the card on that USDC going out to ETH
-    await until(p, () => !!document.querySelector('#dash [data-dash-open="device/usdc"]'), null, 120000);
+    await until(p, () => !!document.querySelector('#dash-g [data-dash-open="device/usdc"]'), null, 120000);
     await p.evaluate(() => { location.hash = '#card=pay:usdc:eth'; });
     await until(p, () => /^USDC/.test(document.querySelector('#hx-swap #pay-coin')?.textContent || '') && document.querySelector('#hx-swap #pay-at')?.textContent === 'Pay pool' && /^ETH/.test(document.querySelector('#hx-swap #get-coin')?.textContent || ''), null, 120000);
     ok(true, 'hxexit: the holdings panel lists the USDC the pool holds, and a link opens the card on it going out to ETH');
@@ -12189,10 +12196,11 @@ await step('hxheld', async () => {
     await until(r.page, () => [...document.querySelectorAll('#hx-bwl .hx-pr')].some((x) => /cUSD owed/.test(x.textContent) && /0\.00015 cBTC behind it · \d+%/.test(x.textContent) && !!x.querySelector('[data-brp]')), null, 240000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${(await text(r.page, '#hx-bwl').catch(() => '?')).replace(/\s+/g, ' ')}`); });
     ok(true, `hxheld: Yours lists the loan, what it owes, the cBTC behind it and its ratio (${(await text(r.page, '#hx-bwl-l')).replace(/\s+/g, ' ').trim()})`);
-    await until(r.page, () => [...document.querySelectorAll('#dash .di')].some((d) => /cUSD owed/.test(d.textContent) && /1 loan · \d+%/.test(d.textContent)), null, 240000)
+    await until(r.page, () => [...document.querySelectorAll('#dash-g .wb-go')].some((d) => /cUSD owed/.test(d.textContent) && /1 loan · \d+%/.test(d.textContent)), null, 240000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${(await text(r.page, '#dash-g').catch(() => '?')).replace(/\s+/g, ' ').slice(0, 300)}`); });
-    ok(true, 'hxheld: Your Tacit shows what is owed, the number of loans and the ratio');
-    await r.page.click('#dash [data-dash-open="loans"]');
+    ok(true, 'hxheld: the Portfolio shows what is owed, the number of loans and the ratio');
+    await port(r.page);
+    await r.page.click('#dash-g [data-dash-open="loans"]');
     await until(r.page, () => document.querySelector('[data-hxm="borrow"]')?.getAttribute('aria-selected') === 'true' && !document.querySelector('#hx-bwl')?.hidden, null, 60000);
     ok(true, 'hxheld: and pressed, it opens the Borrow tab on the loans');
     await r.page.click('#hx-bwl [data-brp]');

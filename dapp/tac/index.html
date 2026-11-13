@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-0hjtfI0xvPNDHyf0QMMvpmfQrfeCgGRt31y75/uhMcU=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-ikPGgcWo9eEy7QusGpQhmL2u5d5/zwUKmg464Ny/MPI=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -34,7 +34,7 @@
 <meta name="theme-color" content="#E8E0CC" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#15130E" media="(prefers-color-scheme: dark)">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-<!-- preload-roots: /storage-fallback.js /vendor/tacit-deps.min.js /prf-wallet.js /tacit-wallet-known.js /tab-key.js /tacit-address.js /bip352.js /evm-wallet.js /walletconnect.js /evm-account.js /evm-tx.js /tac-airdrop.js /evm-trade-venues.js /confidential-payout.js /address-id.js /address-view.js /wallet-balances.js /trade/farm-read.js /bridge-all.js /lp-zap.js /farm-ops.js /relay-outcome.js /btc-borrow.js /bridge-out.js /bridge/track.js /bridge-in.js /bridge-tick.js /tacit-session.js /activity.js /swap/card.js | /weld/stats/read.js /trade/lp-campaign.js /tacit-chain-config.js | /confidential-pool-ux.js /confidential-deployments.js -->
+<!-- preload-roots: /storage-fallback.js /vendor/tacit-deps.min.js /prf-wallet.js /tacit-wallet-known.js /tab-key.js /tacit-address.js /bip352.js /evm-wallet.js /walletconnect.js /evm-account.js /evm-tx.js /tac-airdrop.js /evm-trade-venues.js /confidential-payout.js /address-id.js /address-view.js /wallet-balances.js /portfolio.js /trade/farm-read.js /bridge-all.js /lp-zap.js /farm-ops.js /relay-outcome.js /btc-borrow.js /bridge-out.js /bridge/track.js /bridge-in.js /bridge-tick.js /tacit-session.js /activity.js /swap/card.js | /weld/stats/read.js /trade/lp-campaign.js /tacit-chain-config.js | /confidential-pool-ux.js /confidential-deployments.js -->
 <!-- preload:begin -->
 <link rel="modulepreload" href="/storage-fallback.js">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
@@ -57,6 +57,7 @@
 <link rel="modulepreload" href="/address-id.js?cb=01f14d36">
 <link rel="modulepreload" href="/address-view.js?cb=58dd4914">
 <link rel="modulepreload" href="/wallet-balances.js?cb=329e7a26">
+<link rel="modulepreload" href="/portfolio.js?cb=4bd81bcc">
 <link rel="modulepreload" href="/trade/farm-read.js?cb=efe1d81e">
 <link rel="modulepreload" href="/bridge-all.js?cb=d4d71d34">
 <link rel="modulepreload" href="/lp-zap.js?cb=a43160fd">
@@ -179,7 +180,7 @@ main:focus { outline: none; }
 .pair .tk + .tk { margin-left: -16px; box-shadow: 0 0 0 3px var(--card); }
 /* liquidity in a farm: its pair inside a ring (the pair alone is liquidity held, not farming) */
 .pair.farm { padding: 2px; border-radius: 999px; box-shadow: 0 0 0 1.5px var(--orange); }
-.di-k .pair.farm { padding: 1px; }
+.wb-k .pair.farm { padding: 1px; }
 .pair .tk.sm + .tk.sm { margin-left: -7px; box-shadow: 0 0 0 2px var(--card); }
 .pair .tk.md + .tk.md { margin-left: -12px; }
 
@@ -248,27 +249,30 @@ main:focus { outline: none; }
 .chip.tot b { font-weight: 500; }
 @media (max-width: 640px) { .chip.tot { display: none; } }
 .dash .callout { margin: 0 0 10px; }
-.dash-g { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); }
-.di { display: flex; flex-direction: column; gap: 3px; width: 100%; min-height: 86px; padding: 12px 14px; text-align: left; cursor: pointer;
-  background: var(--card); border: 1px solid var(--hair); border-radius: 14px; transition: border-color .15s, box-shadow .15s; }
-@media (hover: hover) { .di:hover { border-color: var(--ink); box-shadow: var(--lift); } }
-a.di { color: inherit; text-decoration: none; }
-.di-k { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--mute); letter-spacing: .02em; }
-.di-k .tk { width: 18px; height: 18px; }
-.di-k .pair { display: inline-flex; }
-.di-k .pair .tk + .tk { margin-left: -6px; border-radius: 50%; box-shadow: 0 0 0 1.5px var(--card); }
+/* Your Tacit on the front page: what each place holds, one press from the Portfolio sheet that lists it. */
+.dash-go { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 0; }
+.dash-go button { display: inline-flex; align-items: baseline; gap: 8px; min-height: 36px; padding: 6px 14px; font: inherit; font-size: 13px; color: var(--mute); background: var(--card); border: 1px solid var(--hair); border-radius: 999px; cursor: pointer; transition: border-color .15s; }
+.dash-go button b { font: 500 13px var(--mono); color: var(--ink); }
+.dash-go button.all { color: var(--ink); border-color: var(--ink); }
+@media (hover: hover) { .dash-go button:hover { border-color: var(--ink); } }
+.dash-go button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+/* The Portfolio sheet: the private share of the total as a bar, then a group for each place, its rows the wallet sheet's (.wbal). */
+.pf-split { display: flex; height: 6px; margin: 14px 0 6px; border-radius: 99px; overflow: hidden; background: var(--hair-2, var(--hair)); }
+.pf-split i { display: block; background: var(--ink); border-radius: 99px; }
+.pf-key { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--mute); }
+.pf-h { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin: 20px 0 0; padding-bottom: 7px; border-bottom: 1px solid var(--hair); font-size: 12px; color: var(--mute); scroll-margin-top: 72px; }
+.pf-h b { font: 500 13px var(--mono); color: var(--ink); }
+#dash-g .wbal .wb-go { padding-top: 10px; padding-bottom: 10px; }
+.wbal .wb-k .pair { display: inline-flex; flex: none; }
+.wbal .wb-k .pair .tk + .tk { margin-left: -7px; border-radius: 50%; box-shadow: 0 0 0 1.5px var(--card); }
+.wbal .wb-k .dot { flex: none; }
+.wbal .wb-v small { font-size: 12px; font-weight: 400; color: var(--mute); }
+.wbal .wb-m .up { color: var(--ok); }
 .coin .pair, .pk-r .pair { display: inline-flex; flex: none; }
 .coin .pair .tk + .tk, .pk-r .pair .tk + .tk { margin-left: -9px; border-radius: 50%; box-shadow: 0 0 0 1.5px var(--field); }
 .lps { display: grid; gap: 8px; margin: 8px 0 4px; }
 .lps .seg { margin: 0; }
 .tk.letter { display: grid; place-items: center; color: #fff; background: var(--c, #8F8979); font: 500 10px/1 var(--mono); letter-spacing: 0; }
-.di-k .tk.letter { font-size: 8px; }
-.di-k .dot { margin-left: auto; }
-.di-v { display: block; font: 500 19px/1.25 var(--mono); letter-spacing: -.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.di-m { display: block; font-size: 12px; color: var(--mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.di-m.wrap { white-space: normal; }
-.di-m .up { color: var(--ok); }
-.di-v small { font-size: 12px; font-weight: 400; color: var(--mute); letter-spacing: 0; }
 
 /* ── activity ── */
 .acts { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--hair); }
@@ -1789,8 +1793,6 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   .sheet-in { padding: 20px 16px calc(24px + env(safe-area-inset-bottom)); --sx: 16px; --st: 20px; }
   .big { font-size: 46px; }
   .dash { margin: 28px 0 0; }
-  .dash-g { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .di-v { font-size: 17px; white-space: normal; overflow-wrap: anywhere; }
 }
 @media (max-width: 400px) {
   .brand .tk { width: 26px; height: 26px; }
@@ -2158,9 +2160,9 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </section>
 
   <section class="dash" id="dash" aria-labelledby="dash-h" hidden>
-    <div class="dash-h"><h2 id="dash-h">Your Tacit</h2><span class="dash-worth" id="dash-worth"></span><span id="dash-since"></span></div>
+    <div class="dash-h"><h2 id="dash-h">Your Tacit</h2><span class="dash-worth" id="dash-worth"></span></div>
     <div id="dash-due"></div>
-    <ul class="dash-g" id="dash-g"></ul>
+    <div class="dash-go" id="dash-go"></div>
   </section>
 
 
@@ -2361,6 +2363,13 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 </dialog>
 
 <!-- ── points ── -->
+<dialog class="sheet" id="sheet-portfolio" aria-labelledby="portfolio-h">
+  <div class="sheet-in">
+    <div class="sheet-head"><h2 id="portfolio-h" tabindex="-1" autofocus>Portfolio</h2><button class="x" type="button" data-close aria-label="Close">×</button></div>
+    <div id="portfolio-body"></div>
+  </div>
+</dialog>
+
 <dialog class="sheet" id="sheet-pts" aria-labelledby="pts-h">
   <div class="sheet-in">
     <div class="sheet-head">
@@ -2491,6 +2500,7 @@ import { aprFrom, shieldedApr as shieldedAprOf, poolWorthEth } from '/trade/farm
 import { addressId } from '/address-id.js?cb=01f14d36';
 import { addrView, addrFlat } from '/address-view.js?cb=58dd4914';
 import { balanceRows } from '/wallet-balances.js?cb=329e7a26';
+import { portfolio } from '/portfolio.js?cb=4bd81bcc';
 import { PXS_KEY, PX_CALLS, pxFigures, paintPx, pxState, pxEarly } from '/px-strip.js?cb=d4520508';
 import { zapPlan, zapPlanFor, zapCalldata, zapSettleCalldata, zapSplitSearch, zapWorth } from '/lp-zap.js?cb=a43160fd';
 import { rewardPop } from '/reward-pop.js?cb=88973dac';
@@ -4765,18 +4775,21 @@ function paintWallet() {
   mount($('#wallet-label'), S.key ? (S.key.tacit ? chipView(S.key.tacit) : html`Opening…`) : html`${knownWallet() || otherWallet() ? 'Open wallet' : S.address ? short(S.address) : 'Sign in'}`);
 }
 $('#wallet').onclick = () => { openSheet('wallet'); if (!S.key) getUx().catch(() => {}); };
-$('#hold-tot').onclick = () => $('#dash')?.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+$('#hold-tot').onclick = () => openPortfolio();
 const WAL = { mode: 'add', asset: 'eth', chain: 1, all: false };
 const L2BAL = { who: null, at: 0, p: null };
 const WB_MARK = { TAC: 'tk-tac', tETH: 'tk-teth', cBTC: 'tk-cbtc', cUSD: 'tk-cusd', cUSDT: 'tk-usdt' };
 const wbRow = (r) => {
-  const mark = r.mark ? html`<span class="tk letter" style="--c:${markColor(r.markId)}" aria-hidden="true">${r.mark.slice(0, 2).toUpperCase()}</span>` : html`<svg class="tk" aria-hidden="true"><use href="#${r.icon}"/></svg>`;
-  const prev = r.v == null && !r.err ? big(DASH.base?.v?.[r.key]?.v) : null;
-  const v = r.v != null ? html`${fmt(r.v, r.dec, r.max)}` : prev != null ? html`<span class="stale">${fmt(prev, r.dec, r.max)}</span>` : r.err ? '—' : html`<span class="sk" style="--w:7ch"></span>`;
-  const nn = r.noteVals?.length || 0;
-  const meta = r.err ? 'could not read right now' : html`${r.meta || ''}${r.pending ? html`${r.meta ? ' · ' : ''}${fmt(r.pending, r.dec, r.max)} arriving` : ''}${nn > 0 ? html`${r.meta || r.pending ? ' · ' : ''}${nn} note${nn === 1 ? '' : 's'}` : ''}`;
+  const tk = (i) => html`<svg class="tk" aria-hidden="true"><use href="#${i}"/></svg>`;
+  const mark = r.icons ? html`<span class="pair${r.ring ? ' farm' : ''}">${r.icons.map(tk)}</span>` : r.mark ? html`<span class="tk letter" style="--c:${markColor(r.markId)}" aria-hidden="true">${r.mark.slice(0, 2).toUpperCase()}</span>` : tk(r.icon);
+  const show = (x) => html`${r.num ? ptsFmt(x) : fmt(x, r.dec, r.max)}${r.unit ? html` <small>${r.unit}</small>` : ''}`;
+  const seen = r.v == null && !r.err ? DASH.base?.v?.[r.key]?.v : null, prev = seen == null ? null : r.num ? (Number.isFinite(Number(seen)) ? Number(seen) : null) : big(seen);
+  const v = r.v != null ? show(r.v) : prev != null ? html`<span class="stale">${show(prev)}</span>` : r.err || r.lazy ? '—' : html`<span class="sk" style="--w:7ch"></span>`;
+  const nn = r.noteVals?.length || 0, said = 'note' in r ? r.note : r.meta;
+  const parts = [r.delta ? html`<span class="${r.delta.up ? 'up' : ''}">${r.delta.up ? '+' : '−'}${r.delta.txt}</span>` : '', said || '', r.pending ? `${fmt(r.pending, r.dec, r.max)} arriving` : '', nn > 0 ? `${nn} note${nn === 1 ? '' : 's'}` : ''].filter(Boolean);
+  const meta = r.err ? 'could not read right now' : html`${parts.map((x, i) => html`${i ? ' · ' : ''}${x}`)}`;
   const usd = r.v != null ? dashRowUsd(r) : null;
-  const body = html`<span class="wb-k">${mark}${r.label}</span><span class="wb-v num">${v}</span><span class="wb-m">${meta}</span><span class="wb-u num">${usd != null ? usdSmall(usd) : ''}</span>`;
+  const body = html`<span class="wb-k">${mark}${r.label}${r.live ? html`<span class="dot live"></span>` : ''}</span><span class="wb-v num">${v}</span><span class="wb-m">${meta}</span><span class="wb-u num">${usd != null ? usdSmall(usd) : ''}</span>`;
   const go = r.href ? html`<a class="wb-go" href="${r.href}">${body}</a>`
     : r.asset ? html`<button class="wb-go" type="button" data-asset="${r.asset}">${body}</button>`
     : r.open ? html`<button class="wb-go" type="button" data-dash-open="${r.open}"${r.btcAsset ? html` data-btc-asset="${r.btcAsset}"` : ''}>${body}</button>`
@@ -4802,9 +4815,38 @@ function paintWalletBal() {
 }
 function refreshWalletBal() {
   if (wbReading || !S.key) return;
-  wbReading = true; paintWalletBal();
-  Promise.allSettled([loadBtc(true), scanPrivate(true)]).finally(() => { wbReading = false; paintWalletBal(); dashSoon(); });
+  wbReading = true; paintWalletBal(); paintPortfolio();
+  Promise.allSettled([loadBtc(true), scanPrivate(true)]).finally(() => { wbReading = false; paintWalletBal(); paintPortfolio(); dashSoon(); });
 }
+// The Portfolio sheet: everything "Your Tacit" counts, grouped by where it is held (portfolio.js), each row one press from its own sheet.
+function portfolioView() {
+  const groups = DASH.groups || [], w = DASH.worth, isTac = (r) => r.key === 'tac' || r.key === 'tacpub', tacRows = groups.reduce((n, g) => n + g.rows.filter(isTac).length, 0);
+  const row = (r) => wbRow({ ...r, delta: isTac(r) ? (tacRows === 1 ? DASH.delta?.tac : null) : DASH.delta?.[r.key] });
+  return html`<div class="wb-top"><div>${w?.all > 0 ? html`<div class="wb-tot"><small>≈</small><b class="num">${usdFmt(w.all)}</b></div>` : html`<div class="wb-tl">${S.key ? 'What your Tacit wallet and its addresses hold' : 'What your wallet holds'}</div>`}</div>${S.key ? html`<button type="button" id="port-re"${wbReading ? ' disabled' : ''}>${wbReading ? 'Reading…' : 'Refresh'}</button>` : ''}</div>
+    ${w?.all > 0 ? html`<div class="pf-split" aria-hidden="true"><i style="width:${Math.min(100, Math.max(0, w.priv / w.all * 100)).toFixed(1)}%"></i></div><div class="pf-key">${w.priv >= w.all * 0.999 ? html`<span>All private</span>` : html`<span>${usdFmt(w.priv)} private</span><span>${usdFmt(Math.max(0, w.all - w.priv))} public</span>`}</div>` : ''}
+    <p class="note" id="dash-since"${DASH.since ? '' : ' hidden'}>${DASH.since || ''}</p>
+    <div id="dash-g">${groups.map((g) => html`<div class="pf-h" id="pf-${g.id}"><span>${g.name}</span>${g.usd != null && g.usd >= 0.005 ? html`<b class="num">${usdFmt(g.usd)}</b>` : ''}</div><ul class="wbal">${g.rows.map(row)}</ul>`)}</div>
+    ${S.key ? '' : html`<p class="note">Open your Tacit wallet to see what you hold privately. <button class="link" type="button" data-signin>Open wallet</button></p>`}`;
+}
+function paintPortfolio() {
+  const d = $('#sheet-portfolio'), el = $('#portfolio-body');
+  if (!dashId()) { if (d.open) d.close(); el.__v = el.innerHTML = ''; return; }
+  const view = portfolioView().s;
+  if (el.__v === view) return;
+  const f = document.activeElement?.closest?.('#portfolio-body [data-dash-open], #portfolio-body [data-asset], #portfolio-body a.wb-go');
+  const was = f && (f.dataset.btcAsset ? `[data-btc-asset="${f.dataset.btcAsset}"]` : f.dataset.dashOpen ? `[data-dash-open="${f.dataset.dashOpen}"]` : f.dataset.asset ? `[data-asset="${f.dataset.asset}"]` : `a.wb-go[href="${f.getAttribute('href')}"]`);
+  el.__v = view; el.innerHTML = view;
+  if (was) $(was, el)?.focus();
+}
+render.portfolio = paintPortfolio;
+$('#portfolio-body').onclick = (e) => {
+  if (e.target.closest('#port-re')) return refreshWalletBal();
+  const b = e.target.closest('[data-dash-open]');
+  if (!b) return;
+  e.preventDefault(); e.stopPropagation();
+  $('#sheet-portfolio').close();
+  dashGo(b);
+};
 function openProve() {
   const d = $('#sheet-prove');
   keep(d, renderProve);
@@ -4968,7 +5010,7 @@ function openAsset(key) {
 }
 document.addEventListener('click', (e) => { const b = e.target.closest?.('[data-asset]'); if (b) { e.preventDefault(); openAsset(b.dataset.asset); } });
 
-const SHEETS = ['eth', 'btc', 'tac', 'pts', 'farm', 'borrow', 'usdt', 'wallet'];
+const SHEETS = ['eth', 'btc', 'tac', 'pts', 'farm', 'borrow', 'usdt', 'wallet', 'portfolio'];
 const CARD = { buy: 'swap:ether:tac', swap: 'swap:ether:tac', sell: 'swap:tac:ether' };
 const AWAY = { airdrop: '/rewards/' };
 const goAway = (name) => { location.href = AWAY[name]; };
@@ -5045,14 +5087,18 @@ function syncLink() {
   const h = linkNow();
   if (location.hash !== h) history.replaceState(null, '', location.pathname + location.search + h);
 }
-// Portfolio: the "Your Tacit" section. With no wallet open it has nothing to show, so the wallet sheet asks for one and the page goes there once it is open.
+// Portfolio: the sheet that lists what "Your Tacit" counts. With no wallet open it has nothing to show, so the wallet sheet asks for one and the
+// Portfolio opens once it is open. `at` names a group to show first.
 const PF = { want: 0 };
-const scrollDash = () => $('#dash')?.scrollIntoView({ behavior: calmMotion() ? 'auto' : 'smooth', block: 'start' });
-function openPortfolio() {
+function openPortfolio(at = null) {
+  if (dashId()) {
+    if (!DASH.groups) paintDash();
+    openSheet('portfolio');
+    if (at) $(`#pf-${at}`)?.scrollIntoView({ block: 'start' });
+    return;
+  }
   history.replaceState(null, '', location.pathname + location.search);      // so the same link works again
-  if (!$('#dash')?.hidden) return scrollDash();
   PF.want = Date.now();
-  if (dashId()) return dashSoon();      // a wallet is open: the dash paints and scrolls to it (paintDash0)
   openSheet('wallet');
   if (!S.key) getUx().catch(() => {});
 }
@@ -8702,7 +8748,7 @@ async function hintsReady() {
   mark('zap', HINT_POOL ? state(v.list(pub, lpTicker(HINT_POOL.poolId)), (x) => x.size === size) : '');
 }
 function hintGo(id) {
-  if (id === 'bal') { $('#dash')?.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' }); return; }
+  if (id === 'bal') { openPortfolio(); return; }
   if (id === 'act') { openAct(); return; }
   if (S.wallet && !S.key && !signing) { signing = true; open.eth({ address: S.wallet }).catch(() => {}).finally(() => { signing = false; if (S.key) { try { hxQuote(); } catch { } } }); }
   if (id === 'zap' && HINT_POOL) return hxPreset(`earn:ether:${HINT_POOL.spec}`, HINT_ETH);
@@ -10467,7 +10513,7 @@ function dashItems() {
     const on = [];
     for (const c of DEVICE_CHAINS) { const v = devBal(c.chainId, k); if (v != null) { dev = (dev || 0n) + v; if (v > 0n) on.push(c.chainId); } }
     const older = DEVICE_CHAINS.some((c) => devBehind(c.chainId, k));
-    out.push({ key: 'dev', icon: 'tk-eth', label: 'ETH', dec: 18, max: 5, v: dev, meta: older ? 'private, reading older history' : on.length ? html`private on ${chainMarks(on)}` : 'private', open: 'device', show: dev > 0n });
+    out.push({ key: 'dev', icon: 'tk-eth', label: 'ETH', dec: 18, max: 5, v: dev, meta: older ? 'private, reading older history' : on.length ? html`private on ${chainMarks(on)}` : 'private', where: older ? 'reading older history' : on.length ? html`on ${chainMarks(on)}` : '', open: 'device', show: dev > 0n });
     const devTac = devBal('tac', k);
     out.push({ key: 'devtac', icon: 'tk-tac', label: 'TAC', dec: 18, max: 2, v: devTac, meta: 'private on this device', open: 'device/tac', show: devTac > 0n });
     if (chainOn()) { const v = chainHeld(); out.push({ key: 'ctac', icon: 'tk-tac', label: 'TAC', dec: 8, max: 2, v, err: v == null && !!CH.err, meta: 'private on the Tacit chain', open: 'chain', show: v > 0n }); }
@@ -10558,6 +10604,7 @@ function dashItems() {
 const DASH_DO = { eth: ['private', 'eth', 'v1-finish'], tac: ['tac', 'tac', 'tac-finish'], borrow: ['borrow', 'borrow', 'bw-finish'], usdt: ['usdt', 'usdt', 'us-finish'], claim: ['private', 'eth', 'v1-claim'], back: ['private', 'eth', 'v1-back'],
   pts: ['points', 'pts', '[data-claim]'], air: ['airdrop', 'tac', 'air-claim'], farm: ['farm/public', 'farm', 'pf-claim'], pfarm: ['farm', 'farm', ''], rtac: ['farm', 'farm', 'fn-redeem'], bonds: ['borrow', 'borrow', 'bw-see-bonds'] };
 const DASH_PX = { ctac: 'tac', teth: 'eth', dev: 'eth', devtac: 'tac', devtacd: 'usd', devtace: 'eth', tethbtc: 'eth', tacbridged: 'tac', usdtbtc: 'usd', cusdt: 'usd', tac: 'tac', btc: 'btc', cbtc: 'btc', cusd: 'usd', tacbtc: 'btc', tacusd: 'usd', tacd: 'usd', tace: 'eth' };
+const DASH_HELD = new Set(['private', 'pay', 'lp', 'public', 'bitcoin']);
 const DASH_PRIV = new Set(['ctac', 'teth', 'dev', 'devtac', 'devtacd', 'devtace', 'tethbtc', 'tacbridged', 'usdtbtc', 'cbtc', 'cusd', 'cusdt']);
 function dashLoans() {
   const k = S.key?.pubHex, cb = P.scan?.cbtc?.id;
@@ -10603,30 +10650,24 @@ function paintDash() {
 }
 function paintDash0() {
   const id = dashId(), sec = $('#dash');
-  if (!id) { sec.hidden = true; DASH.id = null; DASH.view = ''; DASH.items = DASH.worth = null; return; }
+  if (!id) { sec.hidden = true; DASH.id = null; DASH.view = ''; DASH.items = DASH.worth = DASH.groups = null; paintPortfolio(); return; }
   if (DASH.id !== id) { if (!(id in DASH.bases)) DASH.bases[id] = store.get(id); Object.assign(DASH, { id, base: DASH.bases[id], cur: {} }); }
   const base = DASH.base?.v || {}, k = S.key?.pubHex;
-  let changed = false;
-  const cell = (it) => {
+  const items = dashItems().filter((it) => it.core || it.show || Number(base[it.key]?.v || 0) > 0);
+  const worth = k ? dashWorth(items) : null, tot = $('#hold-tot'), delta = {};
+  for (const it of items) {
     const raw = base[it.key]?.v, prev = it.noDelta || raw == null ? null : it.num ? (Number.isFinite(Number(raw)) ? Number(raw) : null) : big(raw);
-    const show = (v) => (it.num ? ptsFmt(v) : fmt(v, it.dec, it.max));
-    let delta = '';
     if (it.v != null && prev != null) {
       const d = it.num ? Math.round(it.v) - Math.round(prev) : it.v - prev, txt = it.num ? ptsFmt(Math.abs(d)) : fmt(d < 0n ? -d : d, it.dec, it.max);
-      if (!/^0(\.0*)?$/.test(txt)) { changed = true; delta = html`<span class="${d > 0 ? 'up' : ''}">${d > 0 ? '+' : '−'}${txt}</span> · `; }
+      if (!/^0(\.0*)?$/.test(txt)) delta[it.key] = { up: d > 0, txt };
     }
     if (it.v != null) DASH.cur[it.key] = it.num ? String(Math.round(it.v)) : String(it.v);
-    const value = it.v != null ? html`${show(it.v)}${it.unit ? html` <small>${it.unit}</small>` : ''}` : prev != null && !it.err ? html`<span class="stale">${show(prev)}</span>`
-      : it.err || it.lazy ? '—' : html`<span class="sk" style="--w:7ch"></span>`;
-    const body = html`<span class="di-k">${it.icons ? html`<span class="pair${it.ring ? ' farm' : ''}">${it.icons.map((i) => html`<svg class="tk" aria-hidden="true"><use href="#${i}"/></svg>`)}</span>` : it.mark ? html`<span class="tk letter" style="--c:${markColor(it.markId)}" aria-hidden="true">${it.mark.slice(0, 2).toUpperCase()}</span>` : html`<svg class="tk" aria-hidden="true"><use href="#${it.icon}"/></svg>`}${it.label}${it.live ? html`<span class="dot live"></span>` : ''}</span>
-      <span class="di-v num">${value}</span><span class="di-m${it.err || it.wrap ? ' wrap' : ''}">${delta}${it.err ? 'could not read · open to retry' : it.meta || (it.v == null ? html`<span class="sk" style="--w:12ch"></span>` : '')}</span>`;
-    return it.href ? html`<li><a class="di" href="${it.href}">${body}</a></li>`
-      : html`<li><button class="di" type="button" ${it.asset ? html`data-asset="${it.asset}"` : html`data-dash-open="${it.open}"${it.btcAsset ? html` data-btc-asset="${it.btcAsset}"` : ''}`}>${body}</button></li>`;
-  };
-  const items = dashItems().filter((it) => it.core || it.show || Number(base[it.key]?.v || 0) > 0);
-  const worth = k ? dashWorth(items) : null, tot = $('#hold-tot');
-  Object.assign(DASH, { items, worth });
+  }
+  const groups = portfolio(items, { usd: (r) => (r.v != null ? dashRowUsd(r) : null), amount: fmt, hasKey: !!k });
+  const since = Object.keys(delta).length && DASH.base?.at ? `Changes since ${new Date(DASH.base.at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}` : '';
+  Object.assign(DASH, { items, worth, groups, delta, since });
   if ($('#sheet-wallet').open) paintWalletBal();
+  paintPortfolio();
   mount($('#dash-worth'), worth && worth.all > 0 ? html`≈ <b>${usdFmt(worth.all)}</b>${worth.priv > 0 ? html` · ${worth.priv >= worth.all * 0.999 ? 'all private' : `${usdFmt(worth.priv)} private`}` : ''}` : html``);
   if (tot) { tot.hidden = !(worth && worth.all > 0); if (worth) tot.querySelector('b').textContent = usdFmt(worth.all); }
   const due = [];
@@ -10695,15 +10736,15 @@ function paintDash0() {
   const dueHtml = html`${due.map(([t, go, label, href]) => html`<div class="callout${Array.isArray(go) ? ' claim' : ''}"><span>${t}</span>${Array.isArray(go) ? html`<span class="cl-do">${go.map(([g, l]) => html`<button class="btn ghost" type="button" data-dash-do="${g}">${l}</button>`)}</span>`
     : href ? html`<a class="btn ghost" href="${href}" target="_blank" rel="noopener">${label}</a>`
     : html`<button class="btn ghost" type="button" data-dash-do="${go}">${label}</button>`}</div>`)}`.s;
-  const gridHtml = html`${items.map(cell)}`.s, view = dueHtml + gridHtml;
+  const held = groups.filter((g) => DASH_HELD.has(g.id) && g.rows.some((r) => r.v == null || r.v > 0n));
+  const goHtml = html`${held.map((g) => html`<button type="button" data-port="${g.id}"><span>${g.name}</span>${g.usd != null && g.usd >= 0.005 ? html`<b class="num">${usdFmt(g.usd)}</b>` : ''}</button>`)}<button type="button" class="all" data-port="">Portfolio</button>`.s, view = dueHtml + goHtml;
   sec.hidden = false;
-  if (PF.want) { const fresh = Date.now() - PF.want < 300e3; PF.want = 0; if (fresh) requestAnimationFrame(scrollDash); }
-  $('#dash-since').textContent = changed && DASH.base?.at ? `Changes since ${new Date(DASH.base.at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}` : '';
+  if (PF.want) { const fresh = Date.now() - PF.want < 300e3; PF.want = 0; if (fresh) openPortfolio(); }
   if (view !== DASH.view) {
     const f = document.activeElement?.closest?.('#dash button');
-    const was = f && (f.dataset.dashOpen ? `[data-dash-open="${f.dataset.dashOpen}"]` : f.dataset.asset ? `[data-asset="${f.dataset.asset}"]` : f.dataset.hx ? `[data-hx="${f.dataset.hx}"]` : `[data-dash-do="${f.dataset.dashDo}"]`);
-    $('#dash-due').innerHTML = dueHtml; $('#dash-g').innerHTML = gridHtml; DASH.view = view;
-    $$('[data-dash-open]', sec).forEach((b) => b.onclick = () => dashGo(b));
+    const was = f && (f.dataset.port != null ? `[data-port="${f.dataset.port}"]` : f.dataset.hx ? `[data-hx="${f.dataset.hx}"]` : `[data-dash-do="${f.dataset.dashDo}"]`);
+    $('#dash-due').innerHTML = dueHtml; $('#dash-go').innerHTML = goHtml; DASH.view = view;
+    $$('[data-port]', sec).forEach((b) => b.onclick = () => openPortfolio(b.dataset.port || null));
     $$('[data-dash-do]', sec).forEach((b) => b.onclick = () => dashDo(b.dataset.dashDo));
     if (was) $(was, sec)?.focus();
   }

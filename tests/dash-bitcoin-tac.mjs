@@ -1,11 +1,12 @@
 #!/usr/bin/env node
-// What the front page's "Your Tacit" tiles (dapp/index.html dashItems) show of what a key holds at its own Bitcoin address, in a real browser under the
-// page's own CSP, with a pasted key. The Bitcoin read is the page's own (loadBtc -> scanHoldings) with the holdings the scan would return put in its place
-// (tacit.js has a hook for it, and this test appends the line that reaches it); the Bitcoin address's coins are answered here and every other host refused:
-//   · TAC held on Bitcoin has a tile of its own, "TAC · on Bitcoin", as FAIR (a token the page has not met) does, and so has tETH: neither is a clause
-//     tucked into the BTC tile's one line, where a long amount was cut off;
-//   · the BTC tile is BTC alone ("at your Bitcoin address"), and is not shown for a key that holds no coin (only TAC);
-//   · the tiles come after BTC, and the Wallet sheet lists the same TAC once.
+// What the front page's Portfolio sheet (dapp/index.html dashItems, grouped by dapp/portfolio.js) shows of what a key holds at its own Bitcoin address, in a
+// real browser under the page's own CSP, with a pasted key. The Bitcoin read is the page's own (loadBtc -> scanHoldings) with the holdings the scan would
+// return put in its place (tacit.js has a hook for it, and this test appends the line that reaches it); the Bitcoin address's coins are answered here and
+// every other host refused:
+//   · TAC held on Bitcoin has a row of its own in the "On Bitcoin" group, as FAIR (a token the page has not met) does, and so has tETH: neither is a
+//     clause tucked into the BTC row's one line, where a long amount was cut off;
+//   · the BTC row is BTC alone ("at your Bitcoin address"), and is not shown for a key that holds no coin (only TAC);
+//   · the rows come after BTC, and the Wallet sheet lists the same TAC once.
 //
 //   PLAYWRIGHT=/Users/z/tacit/node_modules/playwright-core node tests/dash-bitcoin-tac.mjs      (DAPP=<dir> to try another build)
 import { createRequire } from 'node:module';
@@ -71,10 +72,14 @@ async function visit(utxos) {
   await page.click('#wbal-re');
   await page.waitForFunction(() => !document.querySelector('#wbal-re')?.disabled, null, { timeout: 60000 }).catch(() => {});
   await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.querySelector('dialog.sheet[open]'), null, { timeout: 10000 }).catch(() => {});
+  await page.click('#dash-go button.all');
+  await page.waitForSelector('#sheet-portfolio[open] #dash-g', { timeout: 20000 });
   return { ctx, page, errors };
 }
-const tile = (id) => `#dash [data-btc-asset="${id}"]`, btcTile = '#dash [data-dash-open="btc"]:not([data-btc-asset])';
-const tiles = (page) => page.$$eval('#dash .di', (es) => es.map((e) => e.textContent.replace(/\s+/g, ' ').trim()));
+const tile = (id) => `#dash-g [data-btc-asset="${id}"]`, btcTile = '#dash-g [data-dash-open="btc"]:not([data-btc-asset])';
+const tiles = (page) => page.$$eval('#dash-g .wb-go', (es) => es.map((e) => e.textContent.replace(/\s+/g, ' ').trim()));
+const groupOf = (page, sel) => page.$eval(sel, (e) => e.closest('ul')?.previousElementSibling?.querySelector('span')?.textContent.trim() || '').catch(() => '');
 
 try {
   // a key whose Bitcoin address holds some BTC, TAC, tETH and FAIR
@@ -83,21 +88,23 @@ try {
     const text = (sel) => page.$eval(sel, (e) => e.textContent.replace(/\s+/g, ' ').trim());
     await page.waitForSelector(tile(TAC), { timeout: 60000 }).catch(() => {});
     if (process.env.DEBUG) console.log(await tiles(page));
-    ok(!!(await page.$(tile(TAC))), 'TAC held on Bitcoin has a tile of its own');
+    ok(!!(await page.$(tile(TAC))), 'TAC held on Bitcoin has a row of its own');
     if (await page.$(tile(TAC))) {
-      const t = await text(tile(TAC));
-      ok(/TAC/.test(t) && /6,388,437\.49/.test(t) && /on Bitcoin/.test(t), `and it says how much, in full, and where: ${t}`);
+      const t = await text(tile(TAC)), g = await groupOf(page, tile(TAC));
+      ok(/TAC/.test(t) && /6,388,437\.49/.test(t) && g === 'On Bitcoin', `and it says how much, in full, under where it is held: ${g} | ${t}`);
     }
     ok(!!(await page.$(tile(TETH))) && /tETH.*1\.5/.test(await text(tile(TETH)).catch(() => '')), 'tETH held on Bitcoin has one too');
     ok(!!(await page.$(tile(FAIR))) && /FAIR.*300/.test(await text(tile(FAIR)).catch(() => '')), 'FAIR, a token the page has not met, still has its own');
     const b = await text(btcTile).catch(() => '');
-    ok(/BTC/.test(b) && /0\.0025/.test(b) && /at your Bitcoin address/.test(b) && !/TAC|tETH/.test(b), `the BTC tile is BTC alone: ${b}`);
+    ok(/BTC/.test(b) && /0\.0025/.test(b) && /at your Bitcoin address/.test(b) && !/TAC|tETH/.test(b), `the BTC row is BTC alone: ${b}`);
     const order = await page.evaluate(([a, c, d]) => {
       const q = (s) => document.querySelector(s), before = (x, y) => !!(x && y && x.compareDocumentPosition(y) & Node.DOCUMENT_POSITION_FOLLOWING);
       return before(q(c), q(a)) && before(q(c), q(d));
     }, [tile(TAC), btcTile, tile(TETH)]);
-    ok(order, 'the tiles for what is on Bitcoin come after BTC');
+    ok(order, 'the rows for what is on Bitcoin come after BTC');
     // the Wallet sheet lists the same TAC, once
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => !document.querySelector('dialog.sheet[open]'), null, { timeout: 10000 }).catch(() => {});
     await page.click('#wallet');
     await page.waitForSelector('#wbal-box', { timeout: 20000 });
     await page.waitForFunction(() => /6,388,437\.49/.test(document.querySelector('#wbal-box')?.textContent || ''), null, { timeout: 30000 }).catch(() => {});
@@ -111,7 +118,7 @@ try {
     const { ctx, page } = await visit([]);
     await page.waitForSelector(tile(TAC), { timeout: 60000 }).catch(() => {});
     if (process.env.DEBUG) console.log(await tiles(page));
-    ok(!!(await page.$(tile(TAC))) && !(await page.$(btcTile)), 'with no coin on the address the TAC tile shows and a BTC tile of nothing does not');
+    ok(!!(await page.$(tile(TAC))) && !(await page.$(btcTile)), 'with no coin on the address the TAC row shows and a BTC row of nothing does not');
     await ctx.close();
   }
 } finally {
