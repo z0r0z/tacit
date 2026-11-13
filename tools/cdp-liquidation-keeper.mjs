@@ -24,10 +24,20 @@
 //
 // NETWORK defaults to signet — pass NETWORK=mainnet explicitly to run against the live deployment.
 //
+// ALERTS: each tick also says which open loans have come within NEAR_FALL percent of the liquidation line (a line starting ALERT, and, with
+// ALERT_WEBHOOK set, a POST of {"text": "..."} there), once for each approach (a loan that backs off is told again if it returns; ALERT_STATE=<file>
+// keeps what was told across restarts). Loans are named by the first eight digits of their position leaf, which the vault page shows beside each
+// loan. ALERT_ONLY=1 does only this: no key, no cUSD, no liquidation, nothing but reads.
+//
 // Usage: KEEPER_PRIV=0x.. [NETWORK=signet|mainnet] [BTC_USD_FEED=0x..] [MIN_HEALTH_BPS=12500] [ONCE=1]
+//        [ALERT_WEBHOOK=https://...] [ALERT_STATE=<file>]
 //        node tools/cdp-liquidation-keeper.mjs
+//        ALERT_ONLY=1 NETWORK=mainnet BTC_USD_FEED=0x.. [ALERT_WEBHOOK=..] node tools/cdp-liquidation-keeper.mjs
 
+import { readFileSync, writeFileSync } from 'node:fs';
 import { secp, sha256, keccak_256 } from '../dapp/vendor/tacit-deps.min.js';
+import { boardPlan } from './cdp-near-board.mjs';
+import { strip, wordAt, wBig, decodeSettlePositions } from './cdp-positions.mjs';
 import { makeConfidentialPoolUx } from '../dapp/confidential-pool-ux.js';
 import { makeConfidentialCdp } from '../dapp/confidential-cdp.js';
 import { makeConfidentialDefiActions } from '../dapp/confidential-defi-actions.js';
@@ -35,61 +45,13 @@ import { getConfidentialDeployment, setActiveNetwork } from '../dapp/confidentia
 
 const NETWORK = process.env.NETWORK || 'signet';
 setActiveNetwork(NETWORK);
-const KEEPER_PRIV = process.env.KEEPER_PRIV;
-if (!KEEPER_PRIV) { console.error('set KEEPER_PRIV'); process.exit(2); }
+const ALERT_ONLY = process.env.ALERT_ONLY === '1', ALERT_WEBHOOK = process.env.ALERT_WEBHOOK, ALERT_STATE = process.env.ALERT_STATE;
+// alert-only never signs or spends: the identity the shared code asks for is a fixed throwaway
+const KEEPER_PRIV = process.env.KEEPER_PRIV || (ALERT_ONLY ? '0x' + '11'.repeat(32) : '');
+if (!KEEPER_PRIV) { console.error('set KEEPER_PRIV (or ALERT_ONLY=1)'); process.exit(2); }
 const ONCE = process.env.ONCE === '1';
 const POLL_MS = Number(process.env.POLL_MS || 60000);
 
-// ── ABI word helpers (read-only PublicValues decode) ──
-const strip = (h) => String(h).replace(/^0x/, '');
-const wordAt = (hex, i) => hex.slice(i * 64, i * 64 + 64);
-const wBig = (w) => BigInt('0x' + w);
-const wHex = (w) => '0x' + w;
-const wAddr = (w) => '0x' + w.slice(24);
-
-// Decode the cdpMints[] + retired position-nullifiers from one settle's publicValues bytes (hex, no 0x).
-// PublicValues field order (see ConfidentialPool.sol): cdpMints is field 22, cdpCloses 23, cdpLiquidations 24.
-function decodeSettlePositions(pvHex, cdp) {
-  const out = { mints: [], retired: new Set() };
-  const arrAt = (fieldIdx) => wBig(wordAt(pvHex, fieldIdx)) * 2n; // byte offset → word offset (÷32 = ×2 nibblewords/... )
-  // helper: offset (bytes) from a word value → starting WORD index into pvHex
-  const wordIdx = (byteOff) => Number(byteOff) / 32;
-  const readNullifiers = (fieldIdx, nfIndexInStruct, structIsDynamic) => {
-    const off = Number(wBig(wordAt(pvHex, fieldIdx))) / 32;
-    const len = Number(wBig(wordAt(pvHex, off)));
-    for (let e = 0; e < len; e++) {
-      // dynamic struct array → element offsets relative to (off+1)
-      const elemOff = off + 1 + Number(wBig(wordAt(pvHex, off + 1 + e))) / 32;
-      out.retired.add(wHex(wordAt(pvHex, elemOff + nfIndexInStruct)));
-    }
-  };
-  try {
-    // cdpMints (field 22): dynamic array of dynamic struct.
-    const off = Number(wBig(wordAt(pvHex, 22))) / 32;
-    const len = Number(wBig(wordAt(pvHex, off)));
-    for (let e = 0; e < len; e++) {
-      const base = off + 1 + Number(wBig(wordAt(pvHex, off + 1 + e))) / 32; // element start word
-      const controller = wAddr(wordAt(pvHex, base + 0));
-      const debtValue = wBig(wordAt(pvHex, base + 2));
-      const positionLeaf = wHex(wordAt(pvHex, base + 3));
-      const rateSnapshot = wHex(wordAt(pvHex, base + 4));
-      const legsOff = base + Number(wBig(wordAt(pvHex, base + 5))) / 32; // legs offset relative to element start
-      const owner = wHex(wordAt(pvHex, base + 6));
-      const nLegs = Number(wBig(wordAt(pvHex, legsOff)));
-      const legs = [];
-      for (let l = 0; l < nLegs; l++) {
-        const a = legsOff + 1 + l * 2;
-        legs.push({ asset: wHex(wordAt(pvHex, a)), value: wBig(wordAt(pvHex, a + 1)) });
-      }
-      if (BigInt(positionLeaf) > 1n) out.mints.push({ controller, owner, debtValue, rateSnapshot, positionLeaf, legs });
-    }
-    // cdpCloses (23) + cdpLiquidations (24): positionNullifier is struct field index 4.
-    readNullifiers(23, 4);
-    readNullifiers(24, 4);
-  } catch (e) { /* tolerate a partial/odd settle; the position just isn't surfaced this round */ }
-  void arrAt; void wordIdx;
-  return out;
-}
 
 async function main() {
   const cfg = getConfidentialDeployment(NETWORK);
@@ -125,30 +87,89 @@ async function main() {
     return answer;
   }
 
+  // engine.currentDebt(principal, snapshot): what a position owes now (its principal while no fee has accrued). A failed read says the principal.
+  const word = (v) => (typeof v === 'bigint' ? v.toString(16) : strip(v)).padStart(64, '0');
+  async function owedNow(p) {
+    try { return BigInt(await ux.ethCall(cfg.collateralEngine, _sel('currentDebt(uint256,uint256)') + word(p.debtValue) + word(p.rateSnapshot))); } catch { return p.debtValue; }
+  }
+  // eth_getLogs over the whole life of the pool is refused on public nodes (a 50,000-block limit) or comes back empty: the range is asked in chunks, what was
+  // found is kept between ticks, and a chunk that fails ends the tick (it must never read as "no positions").
+  const LOG_CHUNK = Number(process.env.LOG_CHUNK || 40000);
+  const scan = { next: Number(cfg.deployBlock || 0), txs: new Set(), done: new Map(), spent: new Set() };
+  async function newPositionTxs(topic0) {
+    const head = parseInt(await ux.rpc('eth_blockNumber', []), 16);
+    for (let a = scan.next; a <= head; a += LOG_CHUNK) {
+      const b = Math.min(a + LOG_CHUNK - 1, head);
+      const r = await ux.rpc('eth_getLogs', [{ address: cfg.pool, fromBlock: '0x' + a.toString(16), toBlock: '0x' + b.toString(16), topics: [topic0] }]);
+      if (!Array.isArray(r)) throw new Error(`eth_getLogs ${a}-${b} gave no answer`);
+      for (const l of r) scan.txs.add(l.transactionHash);
+      scan.next = b + 1;
+    }
+  }
+  // the pool's cdpPositionSpent mapping (storage slot 163, as the dapp reads it): true once a position is closed or liquidated
+  const bytes32 = (h) => Uint8Array.from(Buffer.from(strip(h).padStart(64, '0'), 'hex'));
+  async function positionSpent(nullifier) {
+    const key = '0x' + Buffer.from(keccak_256(Uint8Array.from([...bytes32(nullifier), ...bytes32('0xa3')]))).toString('hex');
+    return BigInt((await ux.rpc('eth_getStorageAt', [cfg.pool, key, 'latest'])) || '0x0') !== 0n;
+  }
+  let seen = [];
+  try { if (ALERT_STATE) seen = JSON.parse(readFileSync(ALERT_STATE, 'utf8')); } catch { /* first run, or a file that is not there yet */ }
+  async function say(text) {
+    console.error('ALERT ' + text);
+    if (ALERT_WEBHOOK) {
+      try { await fetch(ALERT_WEBHOOK, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }), signal: AbortSignal.timeout(10000) }); }
+      catch (e) { console.error('  alert webhook failed:', e && e.message || e); }
+    }
+  }
+  async function board(open, price, liqBps) {
+    const rows = [];
+    for (const p of open) rows.push({ leaf: p.positionLeaf, debt: await owedNow(p), sats: p.legs.reduce((s, l) => s + l.value, 0n) });
+    const { lines, keep } = boardPlan(rows, { price, liqBps, seen });
+    for (const text of lines) await say(text);
+    seen = keep;
+    try { if (ALERT_STATE) writeFileSync(ALERT_STATE, JSON.stringify(keep)); } catch (e) { console.error('  alert state not saved:', e && e.message || e); }
+  }
+
   async function tick() {
     // 1. enumerate from CdpPositionInserted settle txs.
-    const fb = '0x' + Number(cfg.deployBlock || 0).toString(16);
     const topic0 = '0x' + [...keccak_256(new TextEncoder().encode('CdpPositionInserted(bytes32)'))].map((x) => x.toString(16).padStart(2, '0')).join('');
-    const logs = await ux.rpc('eth_getLogs', [{ address: cfg.pool, fromBlock: fb, toBlock: 'latest', topics: [topic0] }]);
-    const txs = [...new Set((logs || []).map((l) => l.transactionHash))];
+    await newPositionTxs(topic0);
     const mints = [], retired = new Set();
-    for (const tx of txs) {
-      const t = await ux.rpc('eth_getTransactionByHash', [tx]);
-      if (!t || !t.input) continue;
-      // settle(bytes publicValues, bytes proof, bytes[] memos): strip selector, read arg0 (bytes) offset+len.
-      const data = strip(t.input).slice(8);
-      const pvOff = Number(wBig(wordAt(data, 0))) / 32;
-      const pvLen = Number(wBig(wordAt(data, pvOff)));
-      const pvHex = data.slice((pvOff + 1) * 64, (pvOff + 1) * 64 + pvLen * 2);
-      const dec = decodeSettlePositions(pvHex, cdp);
+    for (const tx of scan.txs) {
+      let dec = scan.done.get(tx);
+      if (!dec) {
+        const t = await ux.rpc('eth_getTransactionByHash', [tx]);
+        if (!t || !t.input) continue;
+        // settle(bytes publicValues, bytes proof, bytes[] memos): strip selector, read arg0 (bytes) offset+len.
+        const data = strip(t.input).slice(8);
+        const pvOff = Number(wBig(wordAt(data, 0))) / 32;
+        const pvLen = Number(wBig(wordAt(data, pvOff)));
+        const pvHex = data.slice((pvOff + 1) * 64, (pvOff + 1) * 64 + pvLen * 2);
+        dec = decodeSettlePositions(pvHex, cdp);
+        scan.done.set(tx, dec);
+      }
       mints.push(...dec.mints);
       for (const n of dec.retired) retired.add(n);
     }
-    const open = mints.filter((m) => !retired.has(cdp.positionNullifier(m.positionLeaf)));
-    if (!open.length) { console.error(`[keeper] ${new Date().toISOString()} no open positions`); return; }
+    // a position is open until the pool says its nullifier is spent (a close or a liquidation is a settle that inserts no position, so the settles read
+    // above do not all show it)
+    const open = [];
+    for (const m of mints) {
+      const nf = cdp.positionNullifier(m.positionLeaf);
+      if (retired.has(nf) || scan.spent.has(nf) || await positionSpent(nf)) { scan.spent.add(nf); continue; }
+      open.push(m);
+    }
+    // what the engine owes against what was found: the loans' principal adds up to its outstanding cUSD, or a position is not being seen
+    const principal = open.reduce((s, m) => s + m.debtValue, 0n);
+    let engineOut = null;
+    try { engineOut = BigInt(await ux.ethCall(cfg.collateralEngine, _sel('outstandingCusd()'))); } catch { /* the line below says it could not be read */ }
+    console.error(`[keeper] ${new Date().toISOString()} ${open.length} open positions, principal ${principal} cUSD base units; engine outstanding ${engineOut ?? 'unread'}${engineOut != null && engineOut !== principal ? ' — DIFFERENT: a position is not being seen, or one is not what it was read as' : ''}`);
+    if (!open.length) return;
 
     const price = await btcUsd8();   // BTC/USD, 8-dec
     const liqBps = await liqRatioBps();
+    await board(open, price, liqBps);
+    if (ALERT_ONLY) { console.error(`[keeper] ${new Date().toISOString()} ${open.length} open positions looked at`); return; }
     const posTree = await ux.cdpPositionTree();
     const { notes } = await ux.balance(KEEPER_PRIV);
     const cusd = (notes || []).filter((x) => x.asset.toLowerCase() === debtAsset.toLowerCase());
