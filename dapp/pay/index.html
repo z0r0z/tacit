@@ -216,6 +216,7 @@ input::placeholder { color: var(--mute); opacity: 1; }
 @media (hover: hover) { .btn:hover:not(:disabled) { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ink) 22%, transparent); } }
 .btn:disabled { color: color-mix(in srgb, var(--ink) 70%, var(--card)); background: color-mix(in srgb, var(--ink) 6%, transparent); border-color: var(--hair-2); cursor: not-allowed; }
 .btn.ghost { color: var(--ink); background: transparent; border-color: var(--hair-2); }
+.btn.ghost:disabled { color: color-mix(in srgb, var(--ink) 55%, var(--card)); border-color: var(--hair); }   /* a quiet button that cannot be pressed looks it */
 @media (hover: hover) { .btn.ghost:hover:not(:disabled) { border-color: var(--ink); box-shadow: none; } }
 .btn.sm { width: auto; min-height: 38px; margin: 0; padding: 6px 14px; font-size: 12.5px; border-radius: 11px; }
 .btn[aria-busy="true"] { cursor: progress; }

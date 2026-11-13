@@ -251,6 +251,7 @@ input::placeholder { color: var(--mute); opacity: 1; }
 /* Off while what it started runs, but still holding the focus a keyboard put on it. */
 .btn[aria-disabled="true"] { opacity: .4; cursor: progress; }
 .btn.ghost { color: var(--ink); background: transparent; border-color: var(--hair-2); }
+.btn.ghost:disabled { color: color-mix(in srgb, var(--ink) 55%, var(--card)); border-color: var(--hair); }   /* a quiet button that cannot be pressed looks it */
 @media (hover: hover) { .btn.ghost:hover:not(:disabled) { border-color: var(--ink); box-shadow: none; } }
 .btn.sm { width: auto; min-height: 38px; margin: 0; padding: 6px 14px; font-size: 12.5px; border-radius: 11px; }
 .btn[aria-busy="true"] { cursor: progress; }

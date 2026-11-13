@@ -162,10 +162,11 @@ button.act:disabled { opacity: .6; cursor: default; transform: none; }
 .wl:empty { display: none; }
 .wl .ok { color: var(--ok); }
 .wl button { font: inherit; color: var(--ink); background: none; border: 0; padding: 4px 0; margin-left: 12px; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px; }
-.bsheet .btn { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 50px; margin-top: 14px; padding: 10px 16px; font: 500 14px var(--mono); text-decoration: none; color: var(--card); background: var(--ink); border: 1px solid var(--ink); border-radius: 12px; cursor: pointer; }
-.bsheet .btn:hover:not(:disabled) { background: transparent; color: var(--ink); }
-.bsheet .btn:disabled { opacity: .4; cursor: not-allowed; }
+.bsheet .btn { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 50px; margin-top: 14px; padding: 10px 16px; font: 500 14px var(--mono); text-decoration: none; color: var(--card); background: var(--ink); border: 1px solid var(--ink); border-radius: 12px; cursor: pointer; transition: box-shadow .15s; }
+@media (hover: hover) { .bsheet .btn:hover:not(:disabled) { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ink) 22%, transparent); } }
+.bsheet .btn:disabled { color: color-mix(in srgb, var(--ink) 70%, var(--card)); background: color-mix(in srgb, var(--ink) 6%, transparent); border-color: var(--hair-2); cursor: not-allowed; }
 .bsheet .btn.ghost { color: var(--ink); background: transparent; border-color: var(--hair-2); }
+@media (hover: hover) { .bsheet .btn.ghost:hover:not(:disabled) { border-color: var(--ink); box-shadow: none; } }
 /* putting TAC to work: the Precision farm (trade/farm.js) in one card that opens once there is TAC to farm */
 .tk.sm { width: 18px; height: 18px; } .tk.xs { width: 14px; height: 14px; } .tk.inl { display: inline-block; vertical-align: -3px; margin-right: 5px; }
 .pairtk { display: inline-flex; flex: none; } .pairtk .tk + .tk { margin-left: -6px; box-shadow: 0 0 0 2px var(--card); }
@@ -188,10 +189,12 @@ button.act:disabled { opacity: .6; cursor: default; transform: none; }
 .farm-host .amt .u { display: inline-flex; align-items: center; gap: 8px; padding: 0 14px 0 4px; color: var(--mute); white-space: nowrap; }
 .farm-host .kv { display: flex; justify-content: space-between; gap: 12px; margin: 0; font-size: 12.5px; color: var(--mute); padding: 5px 0; }
 .farm-host .kv b { font-weight: 400; color: var(--ink); text-align: right; overflow-wrap: anywhere; } .farm-host .kv b.err { color: var(--err); }
-.farm-host .btn { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 50px; margin-top: 14px; padding: 10px 16px; font: 500 14px var(--mono); text-decoration: none; color: var(--card); background: var(--ink); border: 1px solid var(--ink); border-radius: 12px; cursor: pointer; }
-.farm-host .btn:hover:not(:disabled) { background: transparent; color: var(--ink); }
-.farm-host .btn:disabled { opacity: .4; cursor: not-allowed; }
+.farm-host .btn { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 50px; margin-top: 14px; padding: 10px 16px; font: 500 14px var(--mono); text-decoration: none; color: var(--card); background: var(--ink); border: 1px solid var(--ink); border-radius: 12px; cursor: pointer; transition: box-shadow .15s; }
+@media (hover: hover) { .farm-host .btn:hover:not(:disabled) { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ink) 22%, transparent); } }
+.farm-host .btn:disabled { color: color-mix(in srgb, var(--ink) 70%, var(--card)); background: color-mix(in srgb, var(--ink) 6%, transparent); border-color: var(--hair-2); cursor: not-allowed; }
 .farm-host .btn.ghost { color: var(--ink); background: transparent; border-color: var(--hair-2); }
+.bsheet .btn.ghost:disabled, .farm-host .btn.ghost:disabled { color: color-mix(in srgb, var(--ink) 55%, var(--card)); border-color: var(--hair); }   /* a quiet button that cannot be pressed looks it */
+@media (hover: hover) { .farm-host .btn.ghost:hover:not(:disabled) { border-color: var(--ink); box-shadow: none; } }
 .farm-host .btn.sm { width: auto; min-height: 28px; padding: 2px 12px; font-size: 12px; margin: 0; border-radius: 8px; }
 .farm-host .linkbtn { background: none; border: 0; padding: 0; cursor: pointer; color: var(--mute); text-decoration: underline; text-underline-offset: 3px; font: 12px var(--mono); }
 .farm-host .linkbtn:hover { color: var(--ink); }

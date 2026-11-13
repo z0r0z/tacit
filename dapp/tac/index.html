@@ -959,6 +959,7 @@ input::placeholder { color: var(--mute); opacity: .7; }
 .stick { position: sticky; bottom: 0; z-index: 2; margin-top: 6px; padding: 12px 0 14px; background: var(--card); }
 .stick .btn { margin-top: 0; }
 .btn.ghost { color: var(--ink); background: transparent; border-color: var(--hair-2); }
+.btn.ghost:disabled { color: color-mix(in srgb, var(--ink) 55%, var(--card)); border-color: var(--hair); }   /* a quiet button that cannot be pressed looks it */
 @media (hover: hover) { .btn.ghost:hover:not(:disabled) { border-color: var(--ink); box-shadow: none; } }
 a.btn { text-decoration: none; white-space: nowrap; }
 .row2 a.btn { white-space: normal; }
