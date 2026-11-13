@@ -11,6 +11,7 @@ import { readFileSync, existsSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { extname, join, normalize } from 'node:path';
 import { encSetShares, encDistribute, SEL, decodeShares, decodeAddress } from '../dapp/splitter/abi.js';
+import { RPC_HOSTS } from '../tests/eth-hosts.mjs';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.PLAYWRIGHT || '/Users/z/zFi/node_modules/playwright-core');
@@ -52,7 +53,8 @@ let quote = MULTISIG, account = A0;
 const browser = await chromium.launch();
 const ctx = await browser.newContext({ viewport: { width: 1100, height: 1000 } });
 const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': 'POST, GET, OPTIONS' };
-await ctx.route(/^https:\/\/(ethereum-rpc\.publicnode\.com|eth\.drpc\.org|1rpc\.io|mainnet\.gateway\.tenderly\.co)\//, async (route) => {
+const NODES = new RegExp(`^https://(${RPC_HOSTS.map((h) => h.replace(/[.]/g, '\\.')).join('|')})/`);   // every node the page may ask is answered by anvil
+await ctx.route(NODES, async (route) => {
   if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, headers: CORS });
   route.fulfill({ status: 200, contentType: 'application/json', headers: CORS, body: await rpcRaw(route.request().postData()) });
 });
@@ -114,6 +116,7 @@ try {
   await chain('eth_sendTransaction', [{ from: A1, to: addr, value: '0x' + (ETH / 2n).toString(16) }]);
   await page.click('#pick button');
   await until(() => /0\.5/.test(document.querySelector('#p-state .room')?.textContent || ''));
+  await until(() => /do not tip this splitter yet/.test(document.querySelector('#p-state')?.textContent || ''));   // the relay's quote is read after the balances
   const prev = await text('#p-state');
   ok(/→ Deployer wallet0\.315 ETH/.test(prev) && /→ Settle wallet0\.135 ETH/.test(prev) && /→ TAC buyback0\.05 ETH/.test(prev), 'state: what waits is shown with what each wallet will get (0.315, 0.135 and 0.05)');
   ok(/do not tip this splitter yet/.test(prev) && /Ops multisig/.test(prev) && /RELAY_TIP_SPLITTER_ADDR/.test(prev), 'state: while the relay quote names no splitter, the page says Tacit\'s pages do not tip it yet, names the multisig, and says which setting to change');
