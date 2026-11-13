@@ -196,7 +196,7 @@ const FAST_CB_FILES = ['fast/want.js', 'fast/wire.js', 'fast/ui.js', 'fast/provi
 // dapp/chain/: the old /chain/ address, which app.js sends on to TAC's page, and live.js and ui.js, which TAC's page reads.
 const CHAIN_CB_FILES = ['chain/ui.js', 'chain/live.js', 'chain/app.js', 'chain/index.html'];
 // dapp/prove/ starts and pauses proving on this computer: its words, then app.js (which also takes community-prove.js), then the page.
-const PROVE_CB_FILES = ['community-prove.js', 'prove/view.js', 'prove/chain.js', 'prove/invader.js', 'prove/ops.js', 'prove/review.js', 'prove/saltcore.js', 'prove/tabmine.js', 'prove/salt-worker.js', 'prove/app.js', 'prove/index.html'];   // an importer after what it imports: a file's token is of its bytes once its own imports are stamped
+const PROVE_CB_FILES = ['community-prove.js', 'prove/view.js', 'prove/chain.js', 'prove/invader.js', 'prove/ops.js', 'prove/review.js', 'prove/saltcore.js', 'prove/saltgpu.js', 'prove/tabmine.js', 'prove/salt-worker.js', 'prove/app.js', 'prove/index.html'];   // an importer after what it imports: a file's token is of its bytes once its own imports are stamped
 // dapp/help/ asks the community help desk: its page logic first, then app.js, then the page.
 const HELP_CB_FILES = ['help/ui.js', 'help/embed.js', 'help/app.js', 'help/index.html'];
 // dapp/build/ is the page for builders and dapp/docs/ the docs pages, which share its one script: the script, then the pages.

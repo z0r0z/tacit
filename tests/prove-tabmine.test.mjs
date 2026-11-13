@@ -13,6 +13,7 @@ import { keccak_256 } from '@noble/hashes/sha3';
 import { saltAddress as poolAddress, makeSaltPool, SALT_POOL } from '../worker/src/salt-pool.js';
 const C = await import('/prove/saltcore.js');
 const T = await import('/prove/tabmine.js');
+const G = await import('/prove/saltgpu.js');
 let fails = 0; const check = (n, c) => { console.log((c ? 'ok   ' : 'FAIL ') + n); if (!c) fails++; };
 const hexOf = (b) => '0x' + C.toHex(b);
 
@@ -195,6 +196,95 @@ function rig({ reply = () => ({ status: 200, body: { ok: true, accepted: 0, reje
   check('it starts again', r.m.start({ miner: ADDR, threads: 1 }) === true && r.live().length === 1 && r.pending().length === 1);
   const keep = rig({ reply: (b) => ({ status: 200, body: { ok: true, accepted: 1, rejected: [], today: null } }) }); keep.m.start({ miner: ADDR }); keep.work(keep.workers[0], 1, [keep.share(26)]); keep.m.stop({ keepalive: true }); await flush();
   check('a stop as the page closes asks the browser to finish the send', keep.calls[0].init.keepalive === true);
+}
+
+// ---- the GPU: the shader's source, a thread on the GPU, and the miner's GPU thread (the shader itself runs in tests/prove-page.mjs, where there is a GPU)
+{
+  const w = G.grinderWgsl();
+  check('the shader is a compute shader of 64 counters a group, with the permutation, the 24 round constants and a counted list of notes', w.includes('@compute @workgroup_size(64)') && w.includes('fn keccakf(') && ((w.split('\n').find((l) => l.startsWith('const RC')) || '').match(/vec2<u32>\(\d+u, \d+u\)/g) || []).length === 24 && w.includes('atomicAdd(&O.count, 1u)') && w.includes('array<u32, 255>') && w.includes('for (var r = 0u; r < 24u; r++)'));
+  check('its round constants are the ones the JavaScript grinder uses (the first and the last)', w.includes('vec2<u32>(1u, 0u)') && w.includes('vec2<u32>(2147516424u, 2147483648u)'));
+  check('the size of the notes is a setting, and the source is the same every time', G.grinderWgsl({ notes: 63 }).includes('array<u32, 63>') && G.grinderWgsl() === w);
+  check('with no WebGPU, or no adapter, there is no GPU grinder', (await G.makeGpuGrinder({ day, prefix, gpu: undefined })) === null && (await G.makeGpuGrinder({ day, prefix, gpu: { requestAdapter: async () => null } })) === null);
+}
+{
+  const posts = [], naps = [], made = []; let clock = 0, today = 200, tick = 20, waiting = null, fail = false, none = false;
+  const gpuGrinderOf = async (o) => { if (none) return null; const g = { day: o.day, gpu: true, maxChunk: 1 << 22, n: 0, closed: false, calls: [], at: () => g.n, async grind(count, minBits) { if (fail) throw new Error('lost'); g.calls.push({ count, minBits }); const rows = Math.max(1, Math.round(count / 100000)); g.n += rows * 100000; clock += tick; return count >= 1 << 19 ? [{ n: 5, bits: minBits }] : []; }, saltOf: (n) => C.saltOf(o.day, o.prefix, n), close() { g.closed = true; } }; made.push(g); return g; };
+  const rest = () => new Promise((r) => { waiting = r; });
+  const step = async () => { const r = waiting; waiting = null; r?.(); await flush(); await flush(); };
+  const cpuMade = []; const mk = () => T.makeGrindLoop({ post: (m) => posts.push(m), random: (n) => new Uint8Array(n).fill(3), now: () => clock, today: () => today, rest, sleep: async (ms) => { naps.push(ms); }, gpuGrinderOf, grinderOf: (o) => { cpuMade.push(o); return C.makeGrinder(o); } });
+  const loop = mk();
+  loop.message({ type: 'start', minBits: 26, gpu: true, duty: 0.5 }); await flush(); await flush();
+  check('started with gpu, the thread grinds on the GPU and not on a core', made.length === 1 && cpuMade.length === 0 && posts.length === 1 && posts[0].gpu === true && posts[0].wasm === false);
+  check('a GPU chunk starts at a quarter of a million salts, and what it reports is what the grinder walked (whole rows), not what was asked', made[0].calls[0].count === 1 << 18 && posts[0].hashes === 300000);
+  check('at half, it rests as long as the chunk took', naps.length === 1 && naps[0] === 20);
+  await step();
+  check('a chunk well under a twentieth of a second doubles the next', made[0].calls[1].count === 1 << 19 && posts[1].shares.length === 1 && posts[1].shares[0].bits === 26);
+  tick = 150; await step(); await step();
+  check('one over a tenth halves it', made[0].calls[3].count === made[0].calls[2].count / 2);
+  loop.message({ duty: 1 }); const napsBefore = naps.length; tick = 40; await step();
+  check('at full it does not rest', naps.length === napsBefore);
+  loop.message({ duty: 0.25 }); loop.message({ duty: 0 }); loop.message({ duty: 3 }); loop.message({ duty: -1 }); loop.message({ duty: 'x' }); await step();
+  check('a quarter rests three times the work, and a share of the time out of range after it is not taken', naps[naps.length - 1] === 120 && naps.length === napsBefore + 1);
+  tick = 20; for (let i = 0; i < 12; i++) await step();
+  check('a GPU chunk stops growing at what the grinder can take in one go', Math.max(...made[0].calls.map((c) => c.count)) <= 1 << 22);
+  today = 201; await step();
+  check('a new day closes the GPU grinder and makes one for that day', made.length === 2 && made[0].closed === true && made[1].day === 201);
+  loop.message({ type: 'stop' }); await step(); await flush();
+  check('a stop lets go of the GPU', made[1].closed === true && loop.running() === false);
+  // a GPU that is lost while grinding
+  const before = posts.length; const loop2 = mk(); loop2.message({ type: 'start', gpu: true }); await flush(); await flush();
+  fail = true; await step();
+  check('a GPU lost while grinding: the thread says so, lets go of it and stops', posts[posts.length - 1].type === 'gpu' && posts[posts.length - 1].ok === false && loop2.running() === false && made[made.length - 1].closed === true && posts.length > before);
+  // no GPU to be had
+  fail = false; none = true; const n0 = posts.length; const loop3 = mk(); loop3.message({ type: 'start', gpu: true }); await flush(); await flush();
+  check('where no GPU can be had the thread says so and grinds nothing', posts.length === n0 + 1 && posts[n0].type === 'gpu' && posts[n0].ok === false && loop3.running() === false && cpuMade.length === 0);
+  const loop4 = T.makeGrindLoop({ post: (m) => posts.push(m), rest, gpuGrinderOf: async () => { throw new Error('no device'); } }); const n1 = posts.length; loop4.message({ type: 'start', gpu: true }); await flush(); await flush();
+  check('so does one whose GPU fails to start', posts.length === n1 + 1 && posts[n1].type === 'gpu' && loop4.running() === false);
+  const loop5 = T.makeGrindLoop({ post: (m) => posts.push(m), rest }); const n2 = posts.length; loop5.message({ type: 'start', gpu: true }); await flush(); await flush();
+  check('and a thread with no GPU grinder at all', posts[n2]?.type === 'gpu' && loop5.running() === false);
+}
+{
+  check('the GPU is off, half or full', T.GPU_LEVELS.join() === 'off,half,full');
+  const r = rig({ reply: (b) => ({ status: 200, body: { ok: true, accepted: b.salts.length, rejected: [], today: { shares: 1, weight: 1, best: null } } }) });
+  r.m.start({ miner: ADDR, threads: 2, minBits: 26, gpu: 'half' });
+  const gw = () => r.live().find((w) => w.sent[0].gpu === true), cw = () => r.live().filter((w) => !w.sent[0].gpu);
+  check('with the GPU asked for, one more thread is started for it, at half', r.live().length === 3 && cw().length === 2 && gw() && gw().sent[0].type === 'start' && gw().sent[0].duty === 0.5 && gw().sent[0].minBits === 26 && r.m.state().gpu.level === 'half' && r.m.state().gpu.on === true && r.m.state().threads === 2);
+  r.work(cw()[0], 100000); r.tick(1000); r.work(cw()[0], 100000);
+  gw().onmessage({ data: { type: 'work', hashes: 4_000_000, shares: [], gpu: true } }); r.tick(1000); gw().onmessage({ data: { type: 'work', hashes: 9_000_000, shares: [r.share(33)], gpu: true } });
+  const st = r.m.state();
+  check('what the GPU walks is counted with what the cores walk, and told apart', Math.round(st.gpu.rate) === 9_000_000 && Math.round(st.rate) === 9_000_000 + 100000 && st.waiting === 1 && st.hashes === 13_200_000);
+  await r.fire();
+  check('while the GPU thread runs, the pool is told so in the miner\'s name', r.calls.length === 1 && r.calls[0].body.client === 'tacit-prove-tab/1+gpu');
+  r.m.setGpu('full');
+  check('full is passed to the GPU thread, which goes on', gw().sent[gw().sent.length - 1].duty === 1 && r.live().length === 3 && r.m.state().gpu.level === 'full');
+  r.m.setMinBits(27);
+  check('a new share size reaches the GPU thread too', gw().sent[gw().sent.length - 1].minBits === 27);
+  r.m.setGpu('sideways');
+  check('a level that is not one changes nothing', r.m.state().gpu.level === 'full' && r.live().length === 3);
+  const g1 = gw(); r.m.setGpu('off');
+  check('off ends the GPU thread and leaves the cores grinding', g1.dead && g1.sent[g1.sent.length - 1].type === 'stop' && r.live().length === 2 && r.m.state().gpu.on === false && r.m.state().gpu.rate === 0);
+  r.work(cw()[0], 10, [r.share(28)]); await r.fire();
+  check('and without it, plainly', r.calls[r.calls.length - 1].body.client === 'tacit-prove-tab/1');
+  r.m.setGpu('half'); const g2 = gw();
+  check('and half starts it again', g2 && g2 !== g1 && r.live().length === 3);
+  g2.onmessage({ data: { type: 'gpu', ok: false } });
+  check('a GPU that cannot be had is noted, its thread ended, and the cores go on', r.m.state().gpu.failed === true && r.m.state().gpu.on === false && g2.dead && cw().length === 2 && r.changes() > 0);
+  r.m.setPaused('battery'); r.m.setPaused(null);
+  check('it is not tried again by itself', r.live().length === 2 && r.live().every((w) => !w.sent[0].gpu));
+  r.m.setGpu('half');
+  check('choosing it again tries it again', r.m.state().gpu.failed === false && r.live().length === 3);
+  g1.onmessage({ data: { type: 'gpu', ok: false } }); g2.onmessage({ data: { type: 'gpu', ok: false } });
+  check('a word from a GPU thread long ended does not end the one running now', r.m.state().gpu.failed === false && r.m.state().gpu.on === true && r.live().length === 3);
+  r.m.setPaused('battery');
+  check('on battery the GPU thread stops with the others', r.live().length === 0 && r.m.state().gpu.on === false);
+  r.m.setPaused(null);
+  check('and starts again with them', r.live().length === 3 && gw().sent[0].duty === 0.5);
+  r.m.stop(); await flush();
+  check('a stop ends it', r.live().length === 0 && r.m.state().gpu.on === false);
+  const plain = rig(); plain.m.start({ miner: ADDR, threads: 1 });
+  check('with nothing said about the GPU it is off', plain.live().length === 1 && plain.m.state().gpu.level === 'off' && !plain.live()[0].sent[0].gpu);
+  const err = rig(); err.m.start({ miner: ADDR, threads: 1, gpu: 'full' }); const ge = err.live().find((w) => w.sent[0].gpu); ge.onerror();
+  check('a GPU thread that fails to load is treated the same', err.m.state().gpu.failed === true && ge.dead && err.live().length === 1);
 }
 
 // ---- the whole way: real grinding threads, the miner, and the pool's own code counting the shares

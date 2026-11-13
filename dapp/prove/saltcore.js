@@ -219,13 +219,19 @@ export function grinderWasm() {
     ...section(10, vec([body([[56, 0x7e], [1, 0x7f]], f), body([[2, 0x7f], [4, 0x7e]], g)])),
   ]);
 }
+// The constant bytes of the first two messages for a day and a grinder's five bytes: the first with the counter (its last four bytes) left zero, the second with
+// the 32 bytes of the first hash left zero and its padding byte in place.
+export function templates(day, prefix) {
+  const m1 = new Uint8Array(64); m1.set(DEP, 12); m1.set(saltOf(day, prefix, 0), 32);
+  const m2 = new Uint8Array(88); m2[0] = 0xff; m2.set(CX, 1); m2.set(PROXY_INIT_HASH, 53); m2[85] = 0x01;
+  return { m1, m2 };
+}
 // A grinder like makeGrinder's, on the module above. Each counter the module notes is checked the plain way before it counts, so nothing is sent that the pool would
 // refuse. minBits under 8 is left to makeGrinder (the module looks at whole zero bytes).
 export function makeWasmGrinder({ day, prefix }) {
   const inst = new WebAssembly.Instance(new WebAssembly.Module(grinderWasm())), mem = new Uint8Array(inst.exports.memory.buffer), words = new Int32Array(inst.exports.memory.buffer);
   words.set(RC, W.RC >> 2);
-  const m1 = new Uint8Array(64); m1.set(DEP, 12); m1.set(saltOf(day, prefix, 0), 32); mem.set(m1, W.T1);
-  const m2 = new Uint8Array(88); m2[0] = 0xff; m2.set(CX, 1); m2.set(PROXY_INIT_HASH, 53); m2[85] = 0x01; mem.set(m2, W.T2);
+  const { m1, m2 } = templates(day, prefix); mem.set(m1, W.T1); mem.set(m2, W.T2);
   let n = 0;
   function grind(count, minBits) {
     if (minBits < 8) throw new Error('minBits under 8: use makeGrinder');

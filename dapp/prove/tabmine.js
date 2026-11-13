@@ -2,61 +2,103 @@
 // to the API's salt pool for the address the page pays, as tacit-prover does between proofs (salt.rs): the best first, at most 64 in a send, a send about every
 // 21 s (the pool takes one every 20 s from a connection), and again when the pool says after a "too soon". Nothing here touches the page: app.js starts and
 // stops it and paints what state() says.
-import { bestGrinder, nextBatch, utcDay, toHex, SEND_EVERY_MS } from '/prove/saltcore.js?cb=845ff17e';
+import { bestGrinder, nextBatch, utcDay, toHex, SEND_EVERY_MS } from '/prove/saltcore.js?cb=87770f39';
 
-export const CLIENT = 'tacit-prove-tab/1';   // what the pool lists this miner as
+export const CLIENT = 'tacit-prove-tab/1';   // what the pool lists this miner as (with +gpu while its GPU thread runs)
 // as gentle as tacit-prover's own grinding by default: a quarter of the cores; the person can raise it to all but one
 export const defaultThreads = (cores) => Math.max(1, Math.floor((Number(cores) || 2) / 4));
 export const maxThreads = (cores) => Math.max(1, (Number(cores) || 2) - 1);
 
-// ---- a grinding thread. post({ type: 'work', hashes, shares: [{ salt, bits }], wasm }) after each chunk; a chunk is sized to take about a fifth of a second, so
-// a stop is heard quickly. A new run of salts (another 5 random bytes) starts with each UTC day and before the 4-byte counter comes round.
-export function makeGrindLoop({ post, random = (n) => crypto.getRandomValues(new Uint8Array(n)), now = () => performance.now(), today = () => utcDay(), rest = () => new Promise((r) => setTimeout(r, 0)), grinderOf = bestGrinder }) {
-  let minBits = 26, running = false, grinder = null, walked = 0, chunk = 1 << 14;
+// ---- a grinding thread. post({ type: 'work', hashes, shares: [{ salt, bits }], wasm, gpu }) after each chunk; a chunk is sized to take about a fifth of a second
+// (a twentieth on the GPU, which the screen shares), so a stop is heard quickly. A new run of salts (another 5 random bytes) starts with each UTC day and before
+// the 4-byte counter comes round. Started with gpu, the thread grinds on the GPU (gpuGrinderOf, saltgpu.js) and nothing else: where that cannot be had, or is lost,
+// it says so (post({ type: 'gpu', ok: false })) and stops. `duty` under 1 rests the thread after each chunk for that share of the time (0.5: as long as it worked).
+export function makeGrindLoop({ post, random = (n) => crypto.getRandomValues(new Uint8Array(n)), now = () => performance.now(), today = () => utcDay(), rest = () => new Promise((r) => setTimeout(r, 0)),
+  sleep = (ms) => new Promise((r) => setTimeout(r, ms)), grinderOf = bestGrinder, gpuGrinderOf = null }) {
+  let minBits = 26, running = false, grinder = null, walked = 0, chunk = 1 << 14, gpu = false, duty = 1;
+  const drop = () => { try { grinder?.close?.(); } catch { /* gone already */ } grinder = null; };
+  const noGpu = () => { drop(); running = false; post({ type: 'gpu', ok: false }); };
   async function run() {
     while (running) {
-      if (!grinder || grinder.day !== today() || walked > 0xf0000000) { grinder = grinderOf({ day: today(), prefix: random(5) }); walked = 0; }
-      const t0 = now(), found = grinder.grind(chunk, minBits), ms = now() - t0;
-      walked += chunk;
-      post({ type: 'work', hashes: chunk, shares: found.map((f) => ({ salt: '0x' + toHex(grinder.saltOf(f.n)), bits: f.bits })), wasm: grinder.wasm === true });
-      if (ms < 120 && chunk < (1 << 20)) chunk *= 2; else if (ms > 400 && chunk > (1 << 10)) chunk >>= 1;
+      if (!grinder || grinder.day !== today() || walked > 0xf0000000) {
+        drop();
+        const o = { day: today(), prefix: random(5) };
+        if (gpu) { let g = null; try { g = gpuGrinderOf ? await gpuGrinderOf(o) : null; } catch { g = null; } if (!g) { noGpu(); return; } grinder = g; chunk = 1 << 18; }
+        else grinder = grinderOf(o);
+        walked = 0;
+      }
+      const from = grinder.at ? grinder.at() : 0, t0 = now();
+      let found; try { found = await grinder.grind(chunk, minBits); } catch (e) { if (gpu) { noGpu(); return; } throw e; }
+      const ms = now() - t0, did = grinder.at ? (grinder.at() - from) >>> 0 : chunk;
+      walked += did;
+      post({ type: 'work', hashes: did, shares: found.map((f) => ({ salt: '0x' + toHex(grinder.saltOf(f.n)), bits: f.bits })), wasm: grinder.wasm === true, gpu: grinder.gpu === true });
+      const target = gpu ? 50 : 200, top = grinder.maxChunk || (1 << 20);
+      if (ms < target * 0.6 && chunk * 2 <= top) chunk *= 2; else if (ms > target * 2 && chunk > (1 << 10)) chunk >>= 1;
+      if (duty < 1 && ms > 0) await sleep(ms * (1 / duty - 1));
       await rest();
     }
+    drop();
   }
   return {
     message(m) {
       if (!m || typeof m !== 'object') return;
       if (Number.isInteger(m.minBits) && m.minBits >= 8 && m.minBits <= 64) minBits = m.minBits;
-      if (m.type === 'start' && !running) { running = true; run(); }
+      if (typeof m.duty === 'number' && m.duty > 0 && m.duty <= 1) duty = m.duty;
+      if (m.type === 'start' && !running) { gpu = m.gpu === true; running = true; run(); }
       if (m.type === 'stop') running = false;
     },
     running: () => running,
   };
 }
 
+// How hard the GPU is worked: half rests it as long as it works (the screen stays smooth), full does not rest.
+export const GPU_LEVELS = ['off', 'half', 'full'];
+const DUTY = { half: 0.5, full: 1 };
+
 // ---- the miner. makeWorker() -> { postMessage, terminate, onmessage= }; fetchImpl, now and timers can be stood in. onChange() after anything state() would show.
+// Beside the threads on the cores it runs one more on the GPU when asked (gpu: 'half' or 'full'); a GPU that cannot be had is noted and the cores go on alone.
 export function makeTabMiner({ api, makeWorker, fetchImpl = (...a) => fetch(...a), now = () => Date.now(), timers = { set: (f, ms) => setTimeout(f, ms), clear: (t) => clearTimeout(t) }, jitter = () => Math.floor(Math.random() * 3000), onChange = () => {} }) {
   let workers = [], threads = 1, miner = null, minBits = 26, on = false, paused = null, wasm = null;
+  let gpuLevel = 'off', gpuWorker = null, gpuFailed = false, gpuMarks = [];
   let found = [], marks = [], hashes = 0, timer = null, sending = false, today = null, accepted = 0, error = null;
   const tell = (w, m) => { try { w.postMessage(m); } catch { /* a thread that died: the next start makes a new one */ } };
   const grinding = () => on && !paused;
-  function sync() {   // as many threads as asked, grinding or not
+  const endGpu = () => { if (!gpuWorker) return; tell(gpuWorker, { type: 'stop' }); gpuWorker.terminate(); gpuWorker = null; gpuMarks = []; };
+  const hear = (w, onGpu) => (e) => {
+    const m = e.data || {};
+    if (m.type === 'gpu' && m.ok === false) { if (w === gpuWorker) { gpuFailed = true; endGpu(); onChange(); } return; }
+    if (m.type !== 'work' || !grinding()) return;
+    hashes += m.hashes || 0; (onGpu ? gpuMarks : marks).push({ t: now(), h: m.hashes || 0 });
+    if (!onGpu && m.wasm != null) wasm = m.wasm;
+    for (const s of m.shares || []) found.push(s);
+    if ((m.shares || []).length) onChange();
+  };
+  function sync() {   // as many threads as asked, grinding or not; and the GPU's
     const want = grinding() ? threads : 0;
     while (workers.length > want) { const w = workers.pop(); tell(w, { type: 'stop' }); w.terminate(); }
     while (workers.length < want) {
       const w = makeWorker();
-      w.onmessage = (e) => { const m = e.data || {}; if (m.type !== 'work' || !grinding()) return; hashes += m.hashes || 0; marks.push({ t: now(), h: m.hashes || 0 }); if (m.wasm != null) wasm = m.wasm; for (const s of m.shares || []) found.push(s); if ((m.shares || []).length) onChange(); };
+      w.onmessage = hear(w, false);
       w.onerror = () => { error = 'a grinding thread stopped'; onChange(); };
       tell(w, { type: 'start', minBits }); workers.push(w);
     }
+    const wantGpu = grinding() && gpuLevel !== 'off' && !gpuFailed;
+    if (gpuWorker && !wantGpu) endGpu();
+    if (!gpuWorker && wantGpu) {
+      const w = makeWorker(); gpuWorker = w;
+      w.onmessage = hear(w, true);
+      w.onerror = () => { if (w === gpuWorker) { gpuFailed = true; endGpu(); onChange(); } };
+      tell(w, { type: 'start', minBits, gpu: true, duty: DUTY[gpuLevel] });
+    }
   }
   // salts a second, over the last 15 seconds or so: each thread reports the salts of the chunk it just finished
-  function rate() {
-    const t = now(); marks = marks.filter((m) => t - m.t < 15_000);
-    if (marks.length < 2) return 0;
-    const span = (marks[marks.length - 1].t - marks[0].t) / 1000;
-    return span >= 0.5 ? marks.slice(1).reduce((a, m) => a + m.h, 0) / span : 0;
+  function rateOf(list) {
+    const t = now(), live = list.filter((m) => t - m.t < 15_000);
+    if (live.length < 2) return { live, rate: 0 };
+    const span = (live[live.length - 1].t - live[0].t) / 1000;
+    return { live, rate: span >= 0.5 ? live.slice(1).reduce((a, m) => a + m.h, 0) / span : 0 };
   }
+  function rate() { const c = rateOf(marks), g = rateOf(gpuMarks); marks = c.live; gpuMarks = g.live; return { cores: c.rate, gpu: g.rate }; }
   const plan = (ms) => { timers.clear(timer); timer = on ? timers.set(send, ms) : null; };
   async function send({ keepalive = false } = {}) {
     if (sending) return;
@@ -66,7 +108,7 @@ export function makeTabMiner({ api, makeWorker, fetchImpl = (...a) => fetch(...a
     if (batch.length && miner) {
       sending = true;
       try {
-        const r = await fetchImpl(`${api}/prover/salt/share`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ miner, salts: batch.map((s) => s.salt), client: CLIENT }), keepalive });
+        const r = await fetchImpl(`${api}/prover/salt/share`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ miner, salts: batch.map((s) => s.salt), client: gpuWorker ? `${CLIENT}+gpu` : CLIENT }), keepalive });
         const j = await r.json().catch(() => null);
         if (r.status === 429) { found.push(...batch); wait = Math.min(60_000, Number(j?.retryMs) || 5000) + jitter(); }     // another miner behind this connection sent first: these wait
         else if (r.ok && j?.ok) { accepted += Number(j.accepted) || 0; if (j.today) today = { day: utcDay(now()), ...j.today }; error = null; }
@@ -79,19 +121,23 @@ export function makeTabMiner({ api, makeWorker, fetchImpl = (...a) => fetch(...a
   }
   return {
     // -> true if it started. An address is needed: it is where the points go.
-    start({ miner: m, threads: n, minBits: b }) {
+    start({ miner: m, threads: n, minBits: b, gpu }) {
       if (!/^0x[0-9a-fA-F]{40}$/.test(String(m))) return false;
       miner = m.toLowerCase(); if (Number.isInteger(n) && n >= 1) threads = n; if (Number.isInteger(b)) minBits = b;
-      if (!on) { on = true; error = null; marks = []; plan(SEND_EVERY_MS + jitter()); }
+      if (GPU_LEVELS.includes(gpu)) { gpuLevel = gpu; gpuFailed = false; }
+      if (!on) { on = true; error = null; marks = []; gpuMarks = []; plan(SEND_EVERY_MS + jitter()); }
       sync(); onChange(); return true;
     },
     // what was found and not yet sent goes in one last send, if the pool will take it
     stop({ keepalive = false } = {}) { if (!on) return; on = false; sync(); timers.clear(timer); timer = null; marks = []; if (found.length) send({ keepalive }); onChange(); },
     setThreads(n) { if (Number.isInteger(n) && n >= 1) { threads = n; sync(); onChange(); } },
-    setMinBits(b) { if (Number.isInteger(b) && b >= 8 && b <= 64 && b !== minBits) { minBits = b; for (const w of workers) tell(w, { minBits }); } },
+    // off, half or full; choosing one again after the GPU could not be had tries it again
+    setGpu(level) { if (!GPU_LEVELS.includes(level)) return; gpuLevel = level; gpuFailed = false; if (gpuWorker && level !== 'off') tell(gpuWorker, { duty: DUTY[level] }); sync(); onChange(); },
+    setMinBits(b) { if (Number.isInteger(b) && b >= 8 && b <= 64 && b !== minBits) { minBits = b; for (const w of [...workers, ...(gpuWorker ? [gpuWorker] : [])]) tell(w, { minBits }); } },
     setMiner(m) { if (/^0x[0-9a-fA-F]{40}$/.test(String(m))) miner = m.toLowerCase(); },
     // a reason it should not grind now (on battery), or null: the threads stop and start with it, the shares already found are still sent
-    setPaused(why) { const p = why || null; if (p !== paused) { paused = p; marks = []; sync(); onChange(); } },
-    state: () => ({ on, paused, threads, grinding: workers.length, rate: grinding() ? rate() : 0, hashes, waiting: found.length, accepted, today: today && today.day === utcDay(now()) ? today : null, wasm, error, miner }),
+    setPaused(why) { const p = why || null; if (p !== paused) { paused = p; marks = []; gpuMarks = []; sync(); onChange(); } },
+    state: () => { const r = grinding() ? rate() : { cores: 0, gpu: 0 }; return { on, paused, threads, grinding: workers.length, rate: r.cores + r.gpu, hashes, waiting: found.length, accepted, today: today && today.day === utcDay(now()) ? today : null, wasm, error, miner,
+      gpu: { level: gpuLevel, on: !!gpuWorker, rate: r.gpu, failed: gpuFailed } }; },
   };
 }

@@ -21,13 +21,13 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /prove/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/prove/app.js?cb=279b09aa">
+<link rel="modulepreload" href="/prove/app.js?cb=851c6336">
 <link rel="modulepreload" href="/community-prove.js?cb=30714a9f">
 <link rel="modulepreload" href="/prove/view.js?cb=f0f73815">
 <link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
-<link rel="modulepreload" href="/prove/tabmine.js?cb=bce3cb31">
-<link rel="modulepreload" href="/prove/saltcore.js?cb=845ff17e">
+<link rel="modulepreload" href="/prove/tabmine.js?cb=761b1a36">
+<link rel="modulepreload" href="/prove/saltcore.js?cb=87770f39">
 <link rel="modulepreload" href="/prove/review.js?cb=a8c503cf">
 <link rel="modulepreload" href="/prove/chain.js?cb=8a988a34">
 <!-- preload:end -->
@@ -269,6 +269,9 @@ pre.cmd { margin: 16px 0 0; padding: 12px 14px; background: var(--field); border
 .steps button { width: 26px; height: 26px; padding: 0; background: none; border: 1px solid var(--hair-2); color: var(--ink); cursor: pointer; font: 500 13px/1 var(--mono); }
 .steps button:hover:not(:disabled) { border-color: var(--ink); }
 .steps button:disabled { opacity: .35; cursor: not-allowed; }
+.seg { display: inline-flex; border: 1px solid var(--hair-2); }
+.seg button { min-height: 26px; padding: 4px 10px; background: none; border: 0; cursor: pointer; color: var(--mute); font: 500 12px/1 var(--mono); }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--card); }
 
 /* the node's jobs: Prove, Relay, Bitcoin */
 .tabs { display: flex; gap: 4px; margin: 28px 0 0; border-bottom: 1px solid var(--hair); }
@@ -732,6 +735,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
         <div class="rows num" id="tab-rows" hidden>
           <div class="kv"><span>This tab</span><b id="tab-rate">—</b></div>
           <div class="kv"><span>Cores</span><b class="steps"><button id="tab-less" type="button" aria-label="Use one core fewer">−</button><span id="tab-n"></span><button id="tab-more" type="button" aria-label="Use one core more">+</button></b></div>
+          <div class="kv" id="tab-gpu-row" hidden><span>GPU</span><b class="seg" role="group" aria-label="How hard the GPU works"><button type="button" data-gpu="off" aria-pressed="false">Off</button><button type="button" data-gpu="half" aria-pressed="false">Half</button><button type="button" data-gpu="full" aria-pressed="false">Full</button></b></div>
           <div class="kv"><span>Counted today</span><b id="tab-today">—</b></div>
         </div>
         <button class="btn ghost" id="tab-battery" type="button" hidden>Mine on battery too</button>
@@ -880,6 +884,6 @@ node tools/community-runner.mjs mirror   # no key: keeps the board public on Nos
 
 <div id="toast-container" class="toasts" popover="manual"></div>
 
-<script type="module" src="/prove/app.js?cb=279b09aa"></script>
+<script type="module" src="/prove/app.js?cb=851c6336"></script>
 </body>
 </html>

@@ -476,11 +476,13 @@ try {
     await page.fill('#addr', ADDR);
     await page.waitForFunction(() => document.querySelector('#tab-go').textContent === 'Mine in this tab');
     check(!(await page.locator('#tab-rows').isVisible()), 'before it starts there are no numbers');
+    const noGpu = await page.evaluate(async () => !(await navigator.gpu?.requestAdapter?.()));
     await page.click('#tab-go');
     await page.waitForFunction(() => document.querySelector('#tab-go').textContent === 'Stop mining in this tab' && !document.querySelector('#tab-rows').hidden);
     const cores = await page.evaluate(() => navigator.hardwareConcurrency || 2), want = Math.max(1, Math.floor(cores / 4));
     await page.waitForFunction((n) => document.querySelector('#tab-n').textContent.startsWith(`${n} of `), want);
     check(await threads(page, (n) => n === want), 'a press starts a quarter of the cores as grinding threads', `${page.workers().length} workers, ${cores} cores`);
+    if (noGpu) check(!(await page.locator('#tab-gpu-row').isVisible()), 'in a browser with no GPU for the page, no GPU is offered');
     await page.waitForFunction(() => /\d (k|M)\/s$/.test(document.querySelector('#tab-rate').textContent), null, { timeout: 30000 });
     check(true, 'the card shows how fast this tab grinds');
     if (cores > 2) {
@@ -594,6 +596,65 @@ try {
     check(!errors.length, 'review card: no page errors', errors.join(' | '));
     await shot(page, 'prove-review');
     await ctx.close();
+  }
+  // the GPU, in a browser started with WebGPU on (skipped on a machine that has none for it): the shader against the WebAssembly grinder, then the page
+  {
+    const gpuBrowser = await chromium.launch({ args: ['--enable-unsafe-webgpu', '--enable-features=WebGPU', '--use-angle=metal'] });
+    try {
+      const { page, ctx, errors, shares } = await open(gpuBrowser, { v: null }, { more: false, minBits: 16, init: CHARGER });
+      await page.waitForFunction(() => document.querySelector('#title').textContent === 'Set up this computer');
+      const has = await page.evaluate(async () => !!(await navigator.gpu?.requestAdapter?.({ powerPreference: 'high-performance' })));
+      if (!has) console.log('skip - no GPU for WebGPU in this browser: the shader is not run here');
+      else {
+        const r = await page.evaluate(async () => {
+          const C = await import('/prove/saltcore.js'), G = await import('/prove/saltgpu.js');
+          const day = C.utcDay(), prefix = crypto.getRandomValues(new Uint8Array(5)), same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+          const g = await G.makeGpuGrinder({ day, prefix }), w = C.makeWasmGrinder({ day, prefix });
+          const a = await g.grind(1 << 20, 16), wa = w.grind(1 << 20, 16);
+          const b = await g.grind(1 << 19, 16), wb = w.grind(1 << 19, 16);
+          const c = await g.grind(1 << 20, 20), wc = w.grind(1 << 20, 20);   // 20 bits: two zero bytes from the shader, the rest checked here
+          const at = g.at() === w.at();
+          // a stretch long enough that one dispatch notes more than it can hold: it is walked again in halves, and nothing is lost
+          const from = g.at(), t0 = performance.now(), big = await g.grind(1 << 25, 16), ms = performance.now() - t0;
+          const head = w.grind(1 << 20, 16), bigHead = big.filter((f) => ((f.n - from) >>> 0) <= (1 << 20));
+          const sorted = big.every((f, i) => i === 0 || (f.n >>> 0) > (big[i - 1].n >>> 0));
+          // the three-zero-byte mask (the pool's own share size uses it) against the two-byte one over the same salts
+          const p2 = crypto.getRandomValues(new Uint8Array(5)), g2 = await G.makeGpuGrinder({ day, prefix: p2 }), g3 = await G.makeGpuGrinder({ day, prefix: p2 });
+          const wide = (await g2.grind(1 << 25, 16)).filter((f) => f.bits >= 24), narrow = await g3.grind(1 << 25, 24), narrowNoted = g3.stats().noted, wideNoted = g2.stats().noted;
+          let low = false; try { await g.grind(1 << 14, 8); } catch { low = true; }
+          g.close(); g2.close(); g3.close();
+          return { first: same(a, wa), n1: a.length, second: same(b, wb), third: same(c, wc), n3: c.length, narrowNoted, wideNoted, at, big: big.length, bigHead: same(bigHead, head), sorted, allBits: big.every((f) => f.bits >= 16), mps: +(((1 << 25) / ms) / 1000).toFixed(1), masks: same(wide, narrow), n24: narrow.length, low };
+        });
+        check(r.first && r.n1 > 4, 'the GPU finds exactly the shares the WebAssembly grinder finds over the same million salts', JSON.stringify(r));
+        check(r.second && r.at, 'and goes on from where it stopped, as far as the other', JSON.stringify(r));
+        check(r.third && r.n3 < r.n1, 'at a share size that is not whole bytes (20 bits) it reports exactly the shares of that size', JSON.stringify(r));
+        check(r.big > 380 && r.big < 660 && r.sorted && r.allBits && r.bigHead, `a stretch that notes more than one dispatch holds is walked again in halves, with nothing lost (${r.big} shares in 33 M salts, ${r.mps} M salts/s here)`, JSON.stringify(r));
+        check(r.masks, `the pool's own share size (three zero bytes and more) finds what the wider search finds (${r.n24} of 24 bits)`, JSON.stringify(r));
+        check(r.narrowNoted < 40 && r.wideNoted > 300, `and the shader passes on only what has those zero bytes (${r.narrowNoted} notes, against ${r.wideNoted} at two bytes)`, JSON.stringify(r));
+        check(r.low, 'a share size under 16 bits is left to the cores');
+        // the page: the GPU is offered and used, its shares are sent, and it can be turned off and up
+        await page.fill('#addr', ADDR);
+        await page.waitForFunction(() => document.querySelector('#tab-go').textContent === 'Mine in this tab');
+        await page.click('#tab-go');
+        await page.waitForFunction(() => !document.querySelector('#tab-gpu-row').hidden && document.querySelector('#tab-gpu-row [data-gpu="half"]').getAttribute('aria-pressed') === 'true');
+        const cores = await page.evaluate(() => navigator.hardwareConcurrency || 2), want = Math.max(1, Math.floor(cores / 4));
+        check(await threads(page, (n) => n === want + 1), 'with a GPU the page offers it, at half, and starts one more thread for it', `${page.workers().length} workers`);
+        await page.waitForFunction(() => / M\/s$/.test(document.querySelector('#tab-rate').textContent), null, { timeout: 40000 });
+        check(true, `the tab then grinds millions of salts a second (${await text(page, '#tab-rate')})`);
+        const t0 = Date.now(); while (!shares.length && Date.now() - t0 < 40000) await page.waitForTimeout(500);
+        const sent = shares[0] || { salts: [] }, bits = sent.salts.map((s) => poolSaltAddress(s).bits);
+        check(sent.salts.length === 64 && bits.every((b) => b >= 16) && bits.every((b, i) => i === 0 || b <= bits[i - 1]) && bits[0] >= 20, 'its shares go to the pool, the best 64 first, each one the pool\'s own check counts', JSON.stringify(bits.slice(0, 6)));
+        await page.click('#tab-gpu-row [data-gpu="off"]');
+        check(await threads(page, (n) => n === want) && (await page.getAttribute('#tab-gpu-row [data-gpu="off"]', 'aria-pressed')) === 'true', 'Off ends the GPU thread and leaves the cores', `${page.workers().length} workers`);
+        await page.click('#tab-gpu-row [data-gpu="full"]');
+        check(await threads(page, (n) => n === want + 1) && (await page.evaluate(() => localStorage.getItem('tacit-prove-tab-gpu'))) === 'full', 'Full starts it again, and the choice is kept', `${page.workers().length} workers`);
+        await shot(page, 'prove-tabmine-gpu');
+        await page.click('#tab-go');
+        check(await threads(page, (n) => n === 0), 'Stop ends every thread, the GPU\'s too', `${page.workers().length} workers`);
+        check(!errors.length, 'GPU mining: no page errors', errors.join(' | '));
+      }
+      await ctx.close();
+    } finally { await gpuBrowser.close(); }
   }
 } finally {
   await browser.close();

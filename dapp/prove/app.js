@@ -4,7 +4,7 @@
 import { cleanAddress, proveCommand, utcDay, mineLines, capOf } from '/community-prove.js?cb=30714a9f';
 import { localState, jobView, headline, isPhone, isWindows, setupText, proverUpdate, updateText } from '/prove/view.js?cb=f0f73815';
 import { invaderSvg, gpuSvg } from '/prove/invader.js?cb=e8a5ec59';
-import { makeTabMiner, defaultThreads, maxThreads } from '/prove/tabmine.js?cb=bce3cb31';
+import { makeTabMiner, defaultThreads, maxThreads, GPU_LEVELS } from '/prove/tabmine.js?cb=761b1a36';
 import { HELPDESK, FETCH_CMD, cleanDesk, cleanStats, reviewView } from '/prove/review.js?cb=a8c503cf';
 import { short, cells, opsText, tac, rewardWei, ago, took, fresh, blockAgo, kindOf, KINDS, kindText, median, untilDayEnds, cleanBlock, cleanProof, cleanMiner } from '/prove/chain.js?cb=8a988a34';
 
@@ -547,11 +547,14 @@ function paintSalt() {
 }
 // Salt mining in this tab (tabmine.js), for a visitor with nothing installed: threads of this page grind the same salts tacit-prover grinds between proofs and
 // send their shares for the address in the field. A quarter of the cores unless the person asks for more; not on battery; not while this computer's tacit-prover
-// is mining (it grinds already, and the pool takes one send every 20 s from a connection); in one tab at a time.
+// is mining (it grinds already, and the pool takes one send every 20 s from a connection); in one tab at a time. Where the browser has WebGPU the GPU grinds too
+// (saltgpu.js), many times what the cores do: at half by default (it rests as long as it works, so the screen stays smooth), full or off as the person picks.
 const CORES = navigator.hardwareConcurrency || 2, SAVED_THREADS = 'tacit-prove-tab-threads';
 const savedThreads = () => { try { const n = Number(localStorage.getItem(SAVED_THREADS)); return Number.isInteger(n) && n >= 1 && n <= maxThreads(CORES) ? n : null; } catch { return null; } };
-let tabThreads = savedThreads() ?? defaultThreads(CORES), tabLock = null, tabNote = '', onBattery = false, batteryOk = false;
-const tab = makeTabMiner({ api: API, makeWorker: () => new Worker('/prove/salt-worker.js?cb=a46fe229', { type: 'module' }), onChange: () => paintTab() });
+const SAVED_GPU = 'tacit-prove-tab-gpu';
+const savedGpu = () => { try { const g = localStorage.getItem(SAVED_GPU); return GPU_LEVELS.includes(g) ? g : null; } catch { return null; } };
+let tabThreads = savedThreads() ?? defaultThreads(CORES), tabLock = null, tabNote = '', onBattery = false, batteryOk = false, gpuAble = false, tabGpu = savedGpu() ?? 'half';
+const tab = makeTabMiner({ api: API, makeWorker: () => new Worker('/prove/salt-worker.js?cb=f97cf872', { type: 'module' }), onChange: () => paintTab() });
 const holdTab = () => (navigator.locks ? new Promise((res) => { navigator.locks.request('tacit-prove-tab-miner', { ifAvailable: true }, (lock) => { if (!lock) { res(false); return undefined; } res(true); return new Promise((r) => { tabLock = r; }); }).catch(() => res(true)); }) : Promise.resolve(true));
 async function tabStart() {
   const a = addr();
@@ -559,7 +562,7 @@ async function tabStart() {
   if (mine?.on || tab.state().on) return;
   if (!(await holdTab())) { tabNote = 'Another tab is mining already.'; paintTab(); return; }
   tabNote = ''; say('');   // an earlier "enter the address" is answered
-  tab.start({ miner: a, threads: tabThreads, minBits: salts?.minBits || 26 });
+  tab.start({ miner: a, threads: tabThreads, minBits: salts?.minBits || 26, gpu: gpuAble ? tabGpu : 'off' });
 }
 function tabStop(o) { tab.stop(o); tabLock?.(); tabLock = null; paintTab(); }
 function tabStep(d) {
@@ -574,12 +577,14 @@ function paintTab() {
   go.textContent = s.on ? 'Stop mining in this tab' : addr() ? 'Mine in this tab' : 'Enter your address first';
   go.classList.toggle('ghost', s.on);
   $('#tab-rows').hidden = !s.on;
-  const note = s.error || tabNote; $('#tab-say').textContent = note; $('#tab-say').hidden = !note; $('#tab-say').classList.toggle('err', !!s.error);
+  const note = s.error || tabNote || (s.on && s.gpu.failed ? 'The GPU could not be used here: mining on the cores.' : ''); $('#tab-say').textContent = note; $('#tab-say').hidden = !note; $('#tab-say').classList.toggle('err', !!s.error);
   $('#tab-battery').hidden = !(s.on && s.paused === 'battery');
   if (!s.on) return;
   $('#tab-rate').textContent = s.paused === 'battery' ? 'Paused on battery' : s.rate ? rateText(s.rate) : 'Starting…';
   $('#tab-n').textContent = `${s.threads} of ${CORES}`;
   $('#tab-less').disabled = s.threads <= 1; $('#tab-more').disabled = s.threads >= maxThreads(CORES);
+  $('#tab-gpu-row').hidden = !gpuAble;
+  for (const b of document.querySelectorAll('#tab-gpu-row [data-gpu]')) b.setAttribute('aria-pressed', String(b.dataset.gpu === (s.gpu.failed ? 'off' : tabGpu)));
   // what the pool has counted for the address today, and its part of the day's salt points so far; before the first share, about how long one takes
   const part = s.today && salts?.weight && salts.pointsPerDay ? rewardWei(Math.floor((salts.pointsPerDay * s.today.weight) / Math.max(salts.weight, s.today.weight)), cap()) : null;
   const eta = s.rate ? Math.max(1, Math.round(2 ** (salts?.minBits || 26) / s.rate / 60)) : null;
@@ -590,6 +595,12 @@ $('#tab-go').addEventListener('click', () => (tab.state().on ? tabStop() : tabSt
 $('#tab-less').addEventListener('click', () => tabStep(-1));
 $('#tab-more').addEventListener('click', () => tabStep(1));
 $('#tab-quick').addEventListener('click', (e) => { e.preventDefault(); showCard('salts'); tabStart(); });
+for (const b of document.querySelectorAll('#tab-gpu-row [data-gpu]')) b.addEventListener('click', () => {
+  tabGpu = b.dataset.gpu; try { localStorage.setItem(SAVED_GPU, tabGpu); } catch {}
+  tab.setGpu(tabGpu); paintTab();
+});
+// whether this browser has a GPU the page may use: asked once, without asking for the fast one (the grinding thread does, when it starts); a miner already running takes it up
+Promise.resolve(navigator.gpu?.requestAdapter?.()).then((a) => { gpuAble = !!a; if (gpuAble && tab.state().on) tab.setGpu(tabGpu); paintTab(); }).catch(() => {});
 // On battery it waits for the charger, as tacit-prover does, unless the person says to go on (for this visit).
 const batteryPause = () => tab.setPaused(onBattery && !batteryOk ? 'battery' : null);
 navigator.getBattery?.().then((b) => { const set = () => { onBattery = !b.charging; batteryPause(); }; b.addEventListener('chargingchange', set); set(); }).catch(() => {});
