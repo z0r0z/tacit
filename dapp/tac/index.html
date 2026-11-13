@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-OnD/LYOh1bnMWpkOcv+apjKnBNPru8vEDmXHPtFoI28=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-+Ij5DAlxPbIOuJXY7Wost24gBc5oboE6CGLu68Fx2bc=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -690,6 +690,10 @@ a.hx-pr:hover .rt b { text-decoration: underline; text-decoration-color: var(--h
 /* The button follows the screen on a phone, where the card is taller than the window; on a wide one it stays where the form ends (pinned there it sat over the last row on the first screen). The padding keeps what a key lands on clear of it. */
 @media (min-width: 641px) { .hx .swc .act { position: static; background: none; } }
 @media (max-width: 640px) { html { scroll-padding-bottom: 96px; } }
+/* Where the card's button and the help launcher would sit on each other (a phone, the button riding the bottom of the screen), the launcher steps aside until they part: one thing floats there at a time. An open help panel stays. */
+.hw { transition: opacity .2s var(--ease), visibility 0s; }
+html.hx-pin .hw:not(:has(#hw-p:not([hidden]))) { opacity: 0; visibility: hidden; transition: opacity .2s var(--ease), visibility 0s .2s; }
+@media (prefers-reduced-motion: reduce) { .hw, html.hx-pin .hw { transition: none; } }
 .hx-more { display: flex; margin: 0 0 12px; } .hx-more button { flex: 1; }
 /* what is under way, over the tabs: one quiet line that opens Activity */
 .hx-live { display: flex; align-items: center; gap: 8px; width: calc(100% - 24px); margin: 10px 12px 0; padding: 8px 12px; font: 12px var(--mono); color: var(--ink); text-align: left; background: var(--field); border: 1px solid var(--hair); border-radius: 12px; cursor: pointer; }
@@ -14929,6 +14933,21 @@ paintHints();
 if (!TACP.on) refreshTape();
 loadTacPrice().catch(() => {});
 if ('IntersectionObserver' in window) { const io = new IntersectionObserver((es) => { for (const e of es) e.target.classList.toggle('rest', !e.isIntersecting); }); for (const el of $$('.tape, .wd, .tc-stage')) io.observe(el); }
+// the card's button and the help launcher: do they sit on each other now? (the styles move the launcher aside while they do)
+{
+  let raf = 0;
+  const pin = () => {
+    raf = 0;
+    const l = $('#hw .hw-b')?.getBoundingClientRect(), go = [...$$('#hx .act .go')].find((e) => e.offsetParent)?.getBoundingClientRect();
+    document.documentElement.classList.toggle('hx-pin', !!l && !!go && l.width > 0 && go.right > l.left - 8 && go.left < l.right + 8 && go.bottom > l.top - 8 && go.top < l.bottom + 8);
+  };
+  const ask = () => { if (!raf) raf = requestAnimationFrame(pin); };
+  addEventListener('scroll', ask, { passive: true }); addEventListener('resize', ask);
+  if ('ResizeObserver' in window && $('#hx')) new ResizeObserver(ask).observe($('#hx'));
+  // a button that becomes pressable is pinned, one that cannot be pressed is not (.act:has(.go:disabled)): that moves it without a scroll or a resize
+  if ($('#hx')) new MutationObserver(ask).observe($('#hx'), { subtree: true, childList: true, attributes: true, attributeFilter: ['disabled'] });
+  if ($('#hw')) ask(); else { const mo = new MutationObserver(() => { if ($('#hw')) { mo.disconnect(); ask(); } }); mo.observe(document.body, { childList: true }); }
+}
 document.addEventListener('click', (e) => {
   const h = e.target.closest?.('[data-hx]');
   if (h) { e.preventDefault(); hxPreset(h.dataset.hx, h.dataset.amt || ''); return; }
