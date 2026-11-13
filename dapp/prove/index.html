@@ -21,14 +21,14 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /prove/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/prove/app.js?cb=36f4a22c">
+<link rel="modulepreload" href="/prove/app.js?cb=860d3db7">
 <link rel="modulepreload" href="/community-prove.js?cb=e2a65259">
 <link rel="modulepreload" href="/prove/view.js?cb=f0f73815">
 <link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="/prove/tabmine.js?cb=a9294239">
 <link rel="modulepreload" href="/prove/saltcore.js?cb=87770f39">
-<link rel="modulepreload" href="/prove/review.js?cb=ad2a8099">
+<link rel="modulepreload" href="/prove/review.js?cb=23bfbd4a">
 <link rel="modulepreload" href="/prove/chain.js?cb=c7608249">
 <!-- preload:end -->
 <style>
@@ -904,6 +904,8 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
         <div class="rows num">
           <div class="kv"><span>This computer</span><b id="review-state">—</b></div>
           <div class="kv" id="review-me-row" hidden><span>Your record</span><b id="review-me">—</b></div>
+          <div class="kv" id="review-pay-row" hidden><span>Pays</span><b id="review-pay">—</b></div>
+          <div class="kv" id="review-day-row" hidden><span>Today</span><b id="review-day">—</b></div>
           <div class="kv"><span>Reviewers online</span><b id="review-n">—</b></div>
         </div>
       </section>
@@ -1009,6 +1011,6 @@ node tools/community-runner.mjs mirror   # no key: keeps the board public on Nos
 
 <div id="toast-container" class="toasts" popover="manual"></div>
 
-<script type="module" src="/prove/app.js?cb=36f4a22c"></script>
+<script type="module" src="/prove/app.js?cb=860d3db7"></script>
 </body>
 </html>

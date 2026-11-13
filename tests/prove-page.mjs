@@ -50,7 +50,7 @@ const CHARGER = () => { const b = new EventTarget(); b.charging = true; window._
 const WINDOWS_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
 // `more`: the node's other numbers and the checkpoint sit behind summaries, so the scenarios that read them open those first.
 // `busy`: a day whose proofs earned more points (50,000 in the pool, 10,000 on the board) than the day's 300 TAC covers at 0.01 TAC a point.
-async function open(browser, local, { phone = false, idle = false, busy = false, ua = null, hash = '', init = null, noBank = false, more = true, minBits = 26, apiDown = false, crowd = 0 } = {}) {
+async function open(browser, local, { phone = false, idle = false, busy = false, ua = null, hash = '', init = null, noBank = false, more = true, minBits = 26, apiDown = false, crowd = 0, reviewPaid = true } = {}) {
   const ctx = await browser.newContext(phone ? { viewport: { width: 390, height: 800 }, userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148' } : { viewport: { width: 1100, height: 900 }, ...(ua ? { userAgent: ua } : {}) });
   const page = await ctx.newPage();
   // The public Nostr relays are the outside world: a page under test must never post its stand-in jobs to them or read other people's, so
@@ -113,7 +113,9 @@ async function open(browser, local, { phone = false, idle = false, busy = false,
   await page.route('https://tacit-helpdesk.onrender.com/**', (route) => {
     const u = new URL(route.request().url());
     deskReads.push(u.pathname);
-    if (u.pathname === '/stats') return json(route, { nodes: { online: 3, miners: [] }, swarm: { findings: { pending: 4 }, reviewers: [{ miner: ADDR.slice(0, 8) + '…' + ADDR.slice(-4), skeptic: { n: 37, right: 22 }, scout: { n: 17, found: 5 } }] } });
+    if (u.pathname === '/stats') return json(route, { nodes: { online: 3, miners: [] }, swarm: { findings: { pending: 4 }, reviewers: [{ miner: ADDR.slice(0, 8) + '…' + ADDR.slice(-4), skeptic: { n: 37, right: 22 }, scout: { n: 17, found: 5 } }] }, pay: { paid: reviewPaid, points: { answer: 1, canary: 1, scan: 1, check: 1 }, maxPerDay: 400 } });
+    // the day's review points, the points service's tally shape (37 for the address, none on the busy day so its figures stay the pool's and the board's)
+    if (u.pathname === '/helpdesk/credits') return json(route, { day: Math.floor(Date.now() / 86400000), over: false, miners: busy ? [] : [{ miner: ADDR.toLowerCase(), proofs: 0, points: 37 }] });
     return json(route, {}, 404);
   });
   await page.route('https://tacit-points.onrender.com/**', (route) => json(route, { enabled: true, endSec: Math.floor(Date.now() / 1000) + 86400 * 10, terms: { dailyWei: '300000000000000000000', capWeiPerPoint: '10000000000000000' }, account: { creditedWei: '6000000000000000000' }, pocket: { totalWei: '7500000000000000000000', creditedWei: '291270000000000000000', remainingWei: '7208730000000000000000' } }));
@@ -695,12 +697,17 @@ try {
     check(none.deskReads.length === 0 && (await text(none.page, '#review-n')) === '—', 'review card, not yet in view: the help desk has not been asked', JSON.stringify(none.deskReads));
     await none.page.locator('#review').scrollIntoViewIfNeeded();
     await none.page.waitForFunction(() => document.querySelector('#review-n').textContent === '3');
-    check(none.deskReads.length >= 1 && none.deskReads.every((x) => x === '/stats'), 'and once it is, its public figures are read', JSON.stringify(none.deskReads));
+    check(none.deskReads.length >= 1 && none.deskReads.every((x) => x === '/stats' || x === '/helpdesk/credits'), 'and once it is, its public figures are read: its stats and the day\'s review points', JSON.stringify(none.deskReads));
+    await none.page.waitForFunction(() => !document.querySelector('#review-pay-row').hidden, null, { timeout: 8000 }).catch(() => {});
+    check((await text(none.page, '#review-pay')) === '0.01 TAC a checked review, up to 4 a day' && await none.page.locator('#review-day-row').isHidden(), 'paid review says what a checked review pays at today\'s rate and the most a day; with no address, no day of its own', await text(none.page, '#review-pay'));
     check((await text(none.page, '#review-state')) === 'Needs tacit-prover, above' && !(await none.page.locator('#review-go').isVisible()) && !(await none.page.locator('#review-get').isVisible()), 'review card, no prover: it says what it needs, no button, no line', await text(none.page, '#review-state'));
     await none.ctx.close();
-    const old = await open(browser, { v: { mine: { miner: ADDR, on: true, job: null, proved: 0 } } }, { more: false });
+    const old = await open(browser, { v: { mine: { miner: ADDR, on: true, job: null, proved: 0 } } }, { more: false, reviewPaid: false });
     await old.page.waitForFunction(() => document.querySelector('#review-state').textContent === 'Update tacit-prover to turn this on');
     check(!(await old.page.locator('#review-go').isVisible()), 'review card, a prover with no help desk: asked to update, no button');
+    await old.page.locator('#review').scrollIntoViewIfNeeded();
+    await old.page.waitForFunction(() => document.querySelector('#review-n').textContent === '3');
+    check(await old.page.locator('#review-pay-row').isHidden() && await old.page.locator('#review-day-row').isHidden(), 'review that the points service does not pay offers no pay and no day\'s TAC');
     await old.ctx.close();
     const bare = await open(browser, { v: { mine: { miner: ADDR, on: true, job: null, proved: 0 }, desk: { on: false, api: null, miner: ADDR, installed: false, model_running: false, served: 0, job: null } } }, { more: false });
     await bare.page.waitForFunction(() => document.querySelector('#review-state').textContent === 'Get the model first');
@@ -710,6 +717,8 @@ try {
     const { page, ctx, errors, deskPosts } = await open(browser, local, { more: false });
     await page.locator('#review').scrollIntoViewIfNeeded();
     await page.waitForFunction(() => document.querySelector('#review-go').textContent === 'Turn on' && !document.querySelector('#review-me-row').hidden);
+    await page.waitForFunction(() => !document.querySelector('#review-day-row').hidden, null, { timeout: 8000 }).catch(() => {});
+    check((await text(page, '#review-day')) === '37 reviews · 0.37 TAC', 'the prover\'s address: its reviews today and what they earn at today\'s rate', await text(page, '#review-day'));
     check((await text(page, '#review-state')) === 'Off' && (await text(page, '#review-me')) === '22 of 37 checks right · 5 of 17 planted bugs found' && (await text(page, '#review-n')) === '3', 'review card, installed and off: Turn on, the address\'s record and the nodes online', `${await text(page, '#review-state')} | ${await text(page, '#review-me')}`);
     await page.click('#review-go');
     await page.waitForFunction(() => document.querySelector('#review-go').textContent === 'Turn off');

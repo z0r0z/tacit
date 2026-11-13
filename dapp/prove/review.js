@@ -25,7 +25,9 @@ export const gb = (bytes) => (bytes / 1e9).toFixed(1);
 export function cleanStats(s) {
   if (!s || typeof s !== 'object') return null;
   const reviewers = Array.isArray(s.swarm?.reviewers) ? s.swarm.reviewers.filter((r) => r && typeof r.miner === 'string').map((r) => ({ miner: r.miner.toLowerCase(), checks: count(r.skeptic?.n) ?? 0, right: count(r.skeptic?.right) ?? 0, scouted: count(r.scout?.n) ?? 0, found: count(r.scout?.found) ?? 0 })) : [];
-  return { online: count(s.nodes?.online), reviewers };
+  // what a unit of review earns and the most an address earns in a day, as points, and whether the points service pays them at all
+  const pay = s.pay && typeof s.pay === 'object' ? { paid: s.pay.paid === true, perUnit: count(s.pay.points?.scan) ?? 0, maxPerDay: count(s.pay.maxPerDay) ?? 0 } : null;
+  return { online: count(s.nodes?.online), reviewers, pay: pay && pay.paid && pay.perUnit > 0 && pay.maxPerDay > 0 ? pay : null };
 }
 
 // What a press of the card's button asks of the prover: off stops a fetch of the model; with no model yet, on (the prover fetches it, then starts);

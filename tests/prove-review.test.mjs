@@ -67,6 +67,15 @@ check('a prover without the help desk route answers nothing usable', cleanDesk(n
   check('once the files are here it is the card as before', reviewView({ proverUp: true, desk: can({ installed: true, on: true }), stats: stats(), me: ADDR }).state === 'On · when this computer is idle and plugged in' && reviewView({ proverUp: true, desk: can({ installed: true }), stats: stats(), me: ADDR }).button === 'Turn on');
   check('every view carries a note, empty when nothing went wrong', [reviewView({ proverUp: false, desk: null, stats: null, me: null }), reviewView({ proverUp: true, desk: null, stats: null, me: null }), reviewView({ proverUp: true, desk: desk({ installed: false }), stats: null, me: null }), reviewView({ proverUp: true, desk: desk({ on: true }), stats: null, me: null })].every((v) => v.note === ''));
 }
+// --- what review pays: only when the points service pays it
+{
+  const withPay = (pay) => cleanStats({ nodes: { online: 2 }, swarm: { reviewers: [] }, pay });
+  const p = withPay({ paid: true, points: { answer: 1, canary: 1, scan: 2, check: 1 }, maxPerDay: 400 }).pay;
+  check('paid review is read as points a checked review and the most a day', p && p.paid === true && p.perUnit === 2 && p.maxPerDay === 400);
+  check('review the points service does not pay offers no pay', withPay({ paid: false, points: { scan: 1 }, maxPerDay: 400 }).pay === null);
+  check('an older help desk that says nothing of pay offers none', withPay(undefined).pay === null && cleanStats({ nodes: { online: 1 } }).pay === null);
+  check('odd figures offer no pay', withPay({ paid: true, points: { scan: -1 }, maxPerDay: 400 }).pay === null && withPay({ paid: true, points: { scan: 1 }, maxPerDay: 'lots' }).pay === null && withPay({ paid: 'yes', points: { scan: 1 }, maxPerDay: 4 }).pay === null);
+}
 // --- the record
 {
   const rec = [{ miner: SHORT, skeptic: { n: 37, right: 22 }, scout: { n: 17, found: 5 } }];

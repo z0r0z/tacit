@@ -5,7 +5,7 @@ import { cleanAddress, proveCommand, utcDay, mineLines, capOf, perPoint } from '
 import { localState, jobView, headline, isPhone, isWindows, setupText, proverUpdate, updateText } from '/prove/view.js?cb=f0f73815';
 import { invaderSvg, gpuSvg } from '/prove/invader.js?cb=e8a5ec59';
 import { makeTabMiner, defaultThreads, maxThreads, GPU_LEVELS, dayShare } from '/prove/tabmine.js?cb=a9294239';
-import { HELPDESK, FETCH_CMD, cleanDesk, cleanStats, reviewView, pressTurnsOn } from '/prove/review.js?cb=ad2a8099';
+import { HELPDESK, FETCH_CMD, cleanDesk, cleanStats, reviewView, pressTurnsOn } from '/prove/review.js?cb=23bfbd4a';
 import { short, cells, opsText, tac, rewardWei, ago, took, fresh, blockAgo, kindOf, KINDS, kindText, median, proofSpan, dayTotals, untilDayEnds, cleanBlock, cleanProof, cleanMiner } from '/prove/chain.js?cb=c7608249';
 
 const API = 'https://api.tacit.finance', POINTS = 'https://tacit-points.onrender.com', LOCAL = 'http://127.0.0.1:47815';
@@ -15,7 +15,7 @@ const $ = (s) => document.querySelector(s);
 const get = (url, ms = 6000) => fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(ms) }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
-let desk = null, deskStats = null, reviewBusy = false, reviewNote = '';   // the code-review card: the prover's help desk job, and the help desk's stats
+let desk = null, deskStats = null, reviewDay = null, reviewBusy = false, reviewNote = '';   // the code-review card: the prover's help desk job, the help desk's stats, and today's review points
 let health = null, mine = null, pool = null, points = null, tally = null, boardDay = null, busy = false, copied = false, salts = null, cross = [], rollup = [], misses = 0;
 // The setup line's kind of computer, from the browser; the switch above the line changes it (setting up another computer).
 let os = isWindows(navigator.userAgent) ? 'win' : 'unix';
@@ -32,7 +32,9 @@ const me = () => addr()?.toLowerCase() || null;
 // What a point earned today is paid so far (perPoint): the day's amount over today's proof points, the pool's tally and the board's, never
 // more than the cap. Unknown until the pool's tally of today is read; a board tally not read yet counts nothing.
 const sumPoints = (ms) => ms.reduce((s, m) => s + m.points, 0);
-const dayPoints = () => (tally && Number(tally.day) === utcDay() ? sumPoints(tally.miners) + (boardDay?.day === utcDay() ? boardDay.points : 0) : null);
+// Paid code review (the help desk's tally, once the points service pays it) shares the same day's amount, so it counts here too.
+const reviewPoints = () => (deskStats?.pay && reviewDay?.day === utcDay() ? reviewDay.points : 0);
+const dayPoints = () => (tally && Number(tally.day) === utcDay() ? sumPoints(tally.miners) + (boardDay?.day === utcDay() ? boardDay.points : 0) + reviewPoints() : null);
 const pointRate = () => perPoint(points, dayPoints());
 // Today's work by address, the pool's and the board's together, as they are paid; empty until the pool's tally of today is read.
 const today = () => (tally && Number(tally.day) === utcDay() ? dayTotals(tally.miners, boardDay?.day === utcDay() ? boardDay.miners : []) : new Map());
@@ -570,6 +572,13 @@ function paintReview() {
   const go = $('#review-go'); go.hidden = !v.button; if (v.button) go.textContent = reviewBusy ? '…' : v.button; go.disabled = reviewBusy;
   $('#review-me-row').hidden = !v.record; if (v.record) $('#review-me').textContent = v.record;
   if (v.note !== reviewNote) { reviewNote = v.note; reviewSay(v.note, true); }   // what stopped a fetch of the model, in the prover's words; cleared when it is tried again
+  // What a checked review pays at today's rate and the most an address earns from it in a day; this address's reviews today. Only once it is paid.
+  const pay = deskStats?.pay, rate = pointRate(), each = pay ? rewardWei(pay.perUnit, rate) : null, most = pay ? rewardWei(pay.maxPerDay, rate) : null;
+  $('#review-pay-row').hidden = !(each && most);
+  if (each && most) $('#review-pay').textContent = `${tac(each, 4)} TAC a checked review, up to ${tac(most)} a day`;
+  const who = desk?.miner || me(), mineDay = pay && who && reviewDay?.day === utcDay() ? reviewDay.miners.find((m) => m.miner === who) : null, got = mineDay ? rewardWei(mineDay.points, rate) : null;
+  $('#review-day-row').hidden = !mineDay;
+  if (mineDay) $('#review-day').textContent = `${mineDay.points.toLocaleString('en-US')} ${mineDay.points === 1 ? 'review' : 'reviews'}${got ? ` · ${tac(got)} TAC` : ''}`;
 }
 function reviewSay(text, bad = false) { const s = $('#review-say'); s.textContent = text; s.hidden = !text; s.classList.toggle('err', bad); }
 async function toggleReview() {
@@ -584,7 +593,12 @@ async function toggleReview() {
   } catch (e) { reviewSay(e.message || 'tacit-prover did not answer.', true); }
   reviewBusy = false; paintReview();
 }
-async function readReview() { deskStats = cleanStats(await get(`${HELPDESK}/stats`, 8000)); paintReview(); }
+async function readReview() {
+  const d = utcDay(), [s, c] = await Promise.all([get(`${HELPDESK}/stats`, 8000), get(`${HELPDESK}/helpdesk/credits?day=${d}`, 8000)]);
+  deskStats = cleanStats(s);
+  if (c && c.day === d && Array.isArray(c.miners)) { const ms = c.miners.map(cleanMiner).filter(Boolean); reviewDay = { day: d, points: sumPoints(ms), miners: ms }; }
+  paintReview();
+}
 $('#review-copy').addEventListener('click', async () => {
   try { await navigator.clipboard.writeText(FETCH_CMD); $('#review-copy').textContent = 'Copied'; setTimeout(() => { $('#review-copy').textContent = 'Copy'; }, 1500); } catch {}
 });

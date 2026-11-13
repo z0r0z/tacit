@@ -126,9 +126,14 @@ let scanFeed = null;
 const pool = SWARM ? makePlantPool({ sample: () => scanFeed.sample(), source: (c, f) => scanFeed.source(c, f), size: Number(process.env.PLANT_POOL ?? 300) }) : null;
 scanFeed = process.env.SCAN_REPO ? makeScanFeed({ repo: process.env.SCAN_REPO, ref: process.env.SCAN_REF || 'origin/main', inbox: INBOX, results: SCAN_RESULTS, resultsEveryMs: 60_000, cursorFile: path.join(DATA, 'scan-cursor.json'), lenses: SWARM, examBook, pool, say: (m) => console.log(m) }) : null;
 const checkFeed = SWARM ? makeCheckFeed({ source: scanFeed.source, sample: scanFeed.sample, inbox: INBOX, checks: voteBook, exam: examBook, pool, panel: Number(process.env.CHECK_PANEL ?? 3), quorum: Number(process.env.CHECK_QUORUM ?? 2), examEvery: Number(process.env.CHECK_EXAM_EVERY ?? 4), say: (m) => console.log(m) }) : null;
+// What a unit of work earns, the most an address or a client earns in a UTC day, and whether the points service pays these points (REVIEW_PAID=1 once
+// GET /helpdesk/credits is one of its mining feeds): /stats says so, and the prove page offers pay only when it is paid.
+const POINTS = { answer: Number(process.env.POINTS_ANSWER ?? 1), canary: Number(process.env.POINTS_CANARY ?? 1), scan: Number(process.env.POINTS_SCAN ?? 1), check: Number(process.env.POINTS_CHECK ?? 1) };
+const MAX_DAY = Number(process.env.POINTS_MAX_DAY ?? 100);
+const PAY = { paid: process.env.REVIEW_PAID === '1', points: POINTS, maxPerDay: MAX_DAY };
 const leases = makeLeases({
   ledger: path.join(DATA, 'ledger.jsonl'), persist: path.join(DATA, 'leases-state.json'),
-  points: { answer: Number(process.env.POINTS_ANSWER ?? 1), canary: Number(process.env.POINTS_CANARY ?? 1), scan: Number(process.env.POINTS_SCAN ?? 1), check: Number(process.env.POINTS_CHECK ?? 1) }, clientMaxPerDay: Number(process.env.POINTS_MAX_DAY ?? 100), vet: makeVet(corpus.chunks.map((c) => c.text).join('\n')),
+  points: POINTS, clientMaxPerDay: MAX_DAY, vet: makeVet(corpus.chunks.map((c) => c.text).join('\n')),
   canaryEvery: Number(process.env.CANARY_EVERY || 6), waitMs: Number(process.env.LEASE_HOLD_MS || 20000),
   scan: scanFeed, check: checkFeed, scanPerHour: Number(process.env.SCAN_PER_HOUR ?? (SWARM ? 30 : 12)), payable: examBook ? (kind, ctx) => examBook.payable(kind, ctx.node) : null, checkShare: Number(process.env.CHECK_SHARE ?? 0.5),
   canary: async () => { const c = CANARIES[canaryI++ % CANARIES.length]; const { chunks } = await retrieve(c.q); return { messages: promptFor(c.q, chunks), check: c.check, ctxText: chunks.map((x) => x.text).join('\n') }; },
@@ -238,9 +243,9 @@ if (process.argv[2] === 'serve') {
     if (pathname === '/whoami') return send(res, 200, { ip, trueClientIp: req.headers['true-client-ip'] || null, xff: req.headers['x-forwarded-for'] || null, socket: req.socket.remoteAddress, hops: HOPS, trustProxy: process.env.TRUST_PROXY === '1' });
     if (req.method === 'GET' && pathname === '/helpdesk/credits') { cors(req, res); const q = new URL(req.url, 'http://x').searchParams.get('day'); const day = /^\d{1,6}$/.test(q || '') ? Number(q) : NaN;
       if (!(day <= utcDay())) return send(res, 400, { ok: false, error: 'day must be a UTC day number, today or before' });
-      return send(res, 200, creditsCached(day, () => creditsFor(path.join(DATA, 'ledger.jsonl'), day, { maxPerDay: Number(process.env.POINTS_MAX_DAY ?? 100) }))); }
+      return send(res, 200, creditsCached(day, () => creditsFor(path.join(DATA, 'ledger.jsonl'), day, { maxPerDay: MAX_DAY }))); }
     if (req.method === 'GET' && (req.url === '/' || req.url === '/index.html')) { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'x-content-type-options': 'nosniff' }); return res.end(PAGE); }
-    if (req.method === 'GET' && (req.url === '/health' || req.url === '/stats')) { const st = llm.stats(); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(req.url === '/health' ? { ok: st.backends.some((b) => b.up) || leases.nodesOnline() > 0, nodes: leases.nodesOnline(), capacity: leases.capacity(), dense: denseState, backends: st.backends.map((b) => ({ url: b.url, up: b.up })) } : { ...st, nodes: leases.stats(), swarm: checkFeed ? checkFeed.summary() : null })); }
+    if (req.method === 'GET' && (req.url === '/health' || req.url === '/stats')) { const st = llm.stats(); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(req.url === '/health' ? { ok: st.backends.some((b) => b.up) || leases.nodesOnline() > 0, nodes: leases.nodesOnline(), capacity: leases.capacity(), dense: denseState, backends: st.backends.map((b) => ({ url: b.url, up: b.up })) } : { ...st, nodes: leases.stats(), swarm: checkFeed ? checkFeed.summary() : null, pay: PAY })); }
     if (req.url.startsWith('/helpdesk/')) return nodeApi(req, res).catch(() => { if (!res.headersSent) send(res, 500, { error: 'the help desk could not answer' }); else res.end(); });
     if (req.method === 'POST' && req.url === '/ask') {
       if (!ok(ip)) { res.writeHead(429, { 'content-type': 'application/json' }); return res.end('{"error":"Too many questions, try again in a minute."}'); }

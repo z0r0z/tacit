@@ -4071,11 +4071,26 @@ async function saltPotPoints() {
   _saltPot = { at: Date.now(), points: Number(daily / cap) };
   return _saltPot.points;
 }
+// The day's points from work the campaign pays besides salts: the proof pool's, the board's, and the help desk's code review once REVIEW_CREDITS_URL names
+// its GET /helpdesk/credits (set when the points service pays review from the same pot); a review tally that cannot be read counts nothing.
+let _reviewPts = new Map();
+async function reviewPointsOf(env, day) {
+  const url = env.REVIEW_CREDITS_URL;
+  if (!url || !/^https:\/\/[^\s?#]+$/.test(url)) return 0;
+  const hit = _reviewPts.get(day);
+  if (hit && Date.now() - hit.at < 60_000) return hit.points;
+  const r = await fetch(`${url}?day=${day}`, { signal: AbortSignal.timeout(5000) });
+  const b = r.ok ? await r.json() : null;
+  const points = Array.isArray(b?.miners) && b.day === day ? b.miners.reduce((s, m) => s + (Number.isSafeInteger(Number(m.points)) && Number(m.points) > 0 ? Number(m.points) : 0), 0) : 0;
+  _reviewPts.set(day, { at: Date.now(), points });
+  if (_reviewPts.size > 8) _reviewPts.delete(_reviewPts.keys().next().value);
+  return points;
+}
 async function proofPointsOf(env, day) {
   const pool = buildProofPool(env, { verify: async () => ({}) }), board = buildProverBoard(env);
-  const [p, b] = await Promise.all([pool ? pool.credits(day) : null, board ? board.credits(day) : null]);
+  const [p, b, review] = await Promise.all([pool ? pool.credits(day) : null, board ? board.credits(day) : null, reviewPointsOf(env, day).catch(() => 0)]);
   const sum = (r) => (r && r.status === 200 && Array.isArray(r.body?.miners) ? r.body.miners.reduce((s, m) => s + (Number(m.points) || 0), 0) : 0);
-  return sum(p) + sum(b);
+  return sum(p) + sum(b) + review;
 }
 async function handleSaltPool(req, env, url, cors) {
   const nostore = { ...cors, 'Cache-Control': 'no-store' };
