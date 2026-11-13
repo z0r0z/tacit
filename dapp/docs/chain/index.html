@@ -131,18 +131,87 @@ code { font: inherit; font-size: .95em; padding: 0 .3em; background: var(--field
 .tbl td.t { white-space: nowrap; }
 .tbl code { font-size: .92em; }
 
-/* a payment's path: four stops, left to right (top to bottom on a phone) */
-.path { list-style: none; margin: 6px 0 18px; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24px; counter-reset: stop; }
-.path li { position: relative; display: grid; gap: 4px; align-content: start; padding: 14px 14px 16px; background: var(--card); border: 1px solid var(--hair-2); counter-increment: stop; min-width: 0; }
-.path li::before { content: counter(stop); display: grid; place-items: center; width: 24px; height: 24px; margin-bottom: 4px; border: 1px solid var(--hair-2); border-radius: 50%; font-size: 11px; color: var(--mute); }
-.path li:last-child::before { border-color: var(--ink); color: var(--ink); }
-.path li:not(:last-child)::after { content: '→'; position: absolute; top: 50%; right: -19px; transform: translateY(-50%); color: var(--mute); }
-.path b { font: 400 22px/1.1 var(--serif); }
-.path span { font-size: 12px; color: var(--mute); }
-@media (max-width: 720px) {
-  .path { grid-template-columns: minmax(0, 1fr); gap: 22px; }
-  .path li:not(:last-child)::after { content: '↓'; top: auto; bottom: -20px; right: auto; left: 22px; transform: none; }
+/* the picture at the top: in from a wallet, private on the chain, out where you choose */
+.map { display: grid; grid-template-columns: minmax(0, 1fr) 128px minmax(0, 1.25fr) 128px minmax(0, 1fr); align-items: center; margin: 26px 0 0; padding: 22px; background: var(--card); border: 1px solid var(--hair-2); }
+.mp { display: grid; gap: 4px; justify-items: start; padding: 14px; background: var(--field); border: 1px solid var(--hair-2); min-width: 0; }
+.mp .tk { width: 24px; height: 24px; margin-bottom: 4px; }
+.mp b { font: 400 22px/1.1 var(--serif); }
+.mp > span { font-size: 12px; color: var(--mute); }
+.mc { padding: 16px; border-color: var(--ink); }
+.mc b { font-style: italic; }
+.pay { display: flex; align-items: center; gap: 8px; width: 100%; margin: 10px 0 0; font-size: 11px; color: var(--mute); }
+.pay > span { padding: 1px 8px; background: var(--card); border: 1px solid var(--hair-2); }
+.pay i { position: relative; flex: 1; height: 1px; background: var(--hair-2); }
+.pay i::after { content: ''; position: absolute; right: -1px; top: -4px; border-left: 7px solid var(--hair-2); border-top: 4.5px solid transparent; border-bottom: 4.5px solid transparent; }
+.pay em { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); padding: 0 5px; font-style: normal; letter-spacing: .08em; color: var(--ink); background: var(--field); animation: pay 3.2s ease-in-out infinite; }
+@keyframes pay { 0% { left: 18%; opacity: 0; } 20% { opacity: 1; } 80% { opacity: 1; } 100% { left: 78%; opacity: 0; } }
+.ma { display: grid; justify-items: center; gap: 6px; padding: 0 10px; text-align: center; min-width: 0; }
+.ma b { font: italic 400 19px/1 var(--serif); }
+.ma i { position: relative; display: block; width: 100%; height: 1px; background: var(--mute); }
+.ma i::after { content: ''; position: absolute; right: -1px; top: -4px; border-left: 7px solid var(--mute); border-top: 4.5px solid transparent; border-bottom: 4.5px solid transparent; }
+.ma i::before { content: ''; position: absolute; top: -2px; left: 0; width: 5px; height: 5px; border-radius: 50%; background: var(--orange); opacity: 0; animation: mv 2.6s linear infinite; }
+.mc + .ma i::before { animation-delay: 1.3s; }
+@keyframes mv { 0% { left: 0; opacity: 0; } 20% { opacity: 1; } 80% { opacity: 1; } 100% { left: calc(100% - 12px); opacity: 0; } }
+.ma span { font-size: 11px; line-height: 1.4; color: var(--mute); }
+.mo { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; min-width: 0; }
+.mo li { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 10px; align-items: center; padding: 8px 12px; background: var(--field); border: 1px solid var(--hair-2); }
+.mo .tk { width: 22px; height: 22px; grid-row: span 2; }
+.mo b { font: 400 18px/1.1 var(--serif); }
+.mo span { font-size: 11px; color: var(--mute); }
+.map figcaption { grid-column: 1 / -1; margin: 18px 0 0; font-size: 12.5px; color: var(--mute); max-width: 72ch; }
+@media (max-width: 900px) {
+  .map { grid-template-columns: minmax(0, 1fr); padding: 16px; }
+  .ma { grid-template-columns: auto minmax(0, 1fr); justify-items: start; column-gap: 14px; row-gap: 2px; padding: 10px 0 10px 18px; text-align: left; }
+  .ma i { grid-row: 1 / 3; grid-column: 1; width: 1px; height: auto; min-height: 46px; align-self: stretch; }
+  .ma i::after { right: auto; left: -4px; top: auto; bottom: -1px; border-left: 4.5px solid transparent; border-right: 4.5px solid transparent; border-top: 7px solid var(--mute); border-bottom: 0; }
+  .ma i::before { left: -2px; top: 0; animation-name: mvv; }
+  .ma b, .ma span { grid-column: 2; }
 }
+@keyframes mvv { 0% { top: 0; opacity: 0; } 20% { opacity: 1; } 80% { opacity: 1; } 100% { top: calc(100% - 12px); opacity: 0; } }
+
+/* a payment's path: four stops, each arrow named for what it carries (top to bottom on a narrow screen) */
+.path { list-style: none; margin: 6px 0 18px; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 64px; }
+.path li { position: relative; display: grid; gap: 4px; align-content: start; justify-items: start; padding: 14px 14px 16px; background: var(--card); border: 1px solid var(--hair-2); min-width: 0; }
+.path li:last-child { border-color: var(--ink); }
+.path .ic { width: 24px; height: 24px; margin-bottom: 4px; fill: none; stroke: var(--ink); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.path .tk.ic { stroke: none; }
+.path b { font: 400 22px/1.1 var(--serif); }
+.path li > span:not(.to) { font-size: 12px; color: var(--mute); }
+.path .see { margin-top: 6px; padding: 1px 8px; font-size: 11px; color: var(--ink); background: var(--field); border: 1px solid var(--hair-2); }
+.path .to { position: absolute; left: 100%; top: 50%; width: 64px; transform: translateY(-50%); padding: 0 4px 12px; font-size: 11px; color: var(--mute); text-align: center; }
+.path .to::before { content: ''; position: absolute; left: 6px; right: 6px; bottom: 4px; height: 1px; background: var(--mute); }
+.path .to::after { content: ''; position: absolute; right: 5px; bottom: 0; border-left: 7px solid var(--mute); border-top: 4.5px solid transparent; border-bottom: 4.5px solid transparent; }
+.path .to i { position: absolute; left: 6px; bottom: 2px; width: 5px; height: 5px; border-radius: 50%; background: var(--orange); opacity: 0; animation: run 2.4s linear infinite; }
+.path li:nth-child(2) .to i { animation-delay: .8s; }
+.path li:nth-child(3) .to i { animation-delay: 1.6s; }
+@keyframes run { 0% { left: 6px; opacity: 0; } 20% { opacity: 1; } 80% { opacity: 1; } 100% { left: calc(100% - 18px); opacity: 0; } }
+@media (max-width: 1000px) {
+  .path { grid-template-columns: minmax(0, 1fr); gap: 44px; max-width: 520px; }
+  .path .to { left: 22px; top: 100%; width: auto; height: 44px; transform: none; padding: 0 0 0 16px; display: flex; align-items: center; text-align: left; }
+  .path .to::before { left: 0; right: auto; top: 4px; bottom: 6px; width: 1px; height: auto; }
+  .path .to::after { right: auto; left: -4px; bottom: 0; border-left: 4.5px solid transparent; border-right: 4.5px solid transparent; border-top: 7px solid var(--mute); border-bottom: 0; }
+  .path .to i { left: -2px; bottom: auto; top: 4px; animation-name: runv; }
+}
+@keyframes runv { 0% { top: 4px; opacity: 0; } 20% { opacity: 1; } 80% { opacity: 1; } 100% { top: calc(100% - 14px); opacity: 0; } }
+
+/* the drawings: hairline boxes, mono labels, one serif word, orange only for what was added */
+.fig { margin: 6px 0 20px; padding: 20px; max-width: 640px; background: var(--card); border: 1px solid var(--hair); }
+.fig svg.d { display: block; width: 100%; max-width: 460px; height: auto; margin: 0 auto; overflow: visible; }
+.fig figcaption { margin: 14px 0 0; font-size: 12px; color: var(--mute); }
+@media (max-width: 480px) { .fig { padding: 14px 10px; } }
+.d text { font: 500 14px var(--mono); fill: var(--ink); letter-spacing: -.01em; }
+.d text.m { font-weight: 400; font-size: 13px; fill: var(--mute); }
+.d text.sm { font-size: 12px; }
+.d text.h { font: 500 11.5px var(--mono); letter-spacing: .12em; fill: var(--mute); }
+.d text.s { font: italic 400 22px var(--serif); fill: var(--ink); }
+.d .bx { fill: var(--field); stroke: var(--hair-2); stroke-width: 1; }
+.d .bx.ink { stroke: var(--ink); }
+.d .ln { fill: none; stroke: var(--mute); stroke-width: 1.2; }
+.d .dash { fill: none; stroke: var(--mute); stroke-width: 1.2; stroke-dasharray: 3 4; }
+.d .st { fill: none; stroke: var(--hair-2); stroke-width: 1; }
+.d .tint { fill: var(--orange); opacity: .45; }
+.d .ah, .d .fi { fill: var(--mute); }
+.d .fi { fill: var(--ink); }
 
 .more { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; max-width: 72ch; margin-top: 18px; }
 .more a { display: grid; gap: 2px; padding: 12px 14px; text-decoration: none; background: var(--card); border: 1px solid var(--hair-2); }
@@ -150,7 +219,11 @@ code { font: inherit; font-size: .95em; padding: 0 .3em; background: var(--field
 @media (hover: hover) { .more a:hover { border-color: var(--ink); } }
 @media (max-width: 560px) { .more { grid-template-columns: minmax(0, 1fr); } }
 
-@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .pay em { animation: none; }
+  .ma i::before, .path .to i { display: none; }
+}
 </style>
 <!-- chrome:head:begin inline -->
 <style>
@@ -282,6 +355,8 @@ footer.sf svg.fill { width: 16px; height: 16px; }
 <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
   <defs>
     <symbol id="tk-tac" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#0a0a0a"/><circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2.5"/><path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="#f7931a" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11L21 11" stroke="#f7931a" stroke-width="2.4" stroke-linecap="round"/></symbol>
+    <symbol id="c-eth" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#0a0a0a"/><circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2.5"/><g fill="#8ea2f0" transform="translate(16 16) scale(1.05) translate(-16.3 -16)"><path fill-opacity=".7" d="M16.3 7v6.6l5.6 2.5z"/><path d="M16.3 7L10.7 16.1l5.6-2.5z"/><path fill-opacity=".7" d="M16.3 20.4v4.5l5.6-7.8z"/><path d="M16.3 24.9v-4.5l-5.6-3.3z"/><path fill-opacity=".35" d="M16.3 19.4l5.6-3.3-5.6-2.5z"/><path fill-opacity=".7" d="M10.7 16.1l5.6 3.3v-5.8z"/></g></symbol>
+    <symbol id="c-btc" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#0a0a0a"/><circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2.5"/><path transform="translate(16 16) scale(.74) translate(-16.3 -16.6)" fill="#f7931a" d="M23.189 14.02c.314-2.096-1.283-3.223-3.465-3.975l.708-2.84-1.728-.43-.69 2.765c-.454-.114-.92-.22-1.385-.326l.695-2.783L15.596 6l-.708 2.839c-.376-.086-.746-.17-1.104-.26l.002-.009-2.384-.595-.46 1.846s1.283.294 1.256.312c.7.175.826.638.805 1.006l-.806 3.235c.048.012.11.03.18.057l-.183-.045-1.13 4.532c-.086.212-.303.531-.793.41.018.025-1.256-.313-1.256-.313l-.858 1.978 2.25.561c.418.105.828.215 1.231.318l-.715 2.872 1.727.43.708-2.84c.472.127.93.245 1.378.357l-.706 2.828 1.728.43.715-2.866c2.948.558 5.164.333 6.097-2.333.752-2.146-.037-3.385-1.588-4.192 1.13-.26 1.98-1.003 2.207-2.538zm-3.95 5.538c-.533 2.147-4.148.986-5.32.695l.95-3.805c1.172.293 4.929.872 4.37 3.11zm.535-5.569c-.487 1.953-3.495.96-4.47.717l.86-3.45c.975.243 4.118.696 3.61 2.733z"/></symbol>
   </defs>
 </svg>
 <div class="shell">
@@ -319,7 +394,29 @@ footer.sf svg.fill { width: 16px; height: 16px; }
   <main>
     <section class="hero" aria-labelledby="h">
       <h1 id="h">The Tacit <em>chain</em></h1>
-      <p class="sub">A zk-rollup for private TAC payments, settled on Ethereum. Pay anyone in seconds. Who paid whom, and how much, stays hidden.</p>
+      <p class="sub">The Tacit chain lets you hold and send TAC privately. It runs on Ethereum: every block is proven and checked there. Payments go through in seconds, and no one else can see who paid whom or how much.</p>
+
+      <figure class="map" aria-labelledby="map-cap">
+        <div class="mp">
+          <svg class="tk" aria-hidden="true"><use href="#c-eth"/></svg>
+          <b>Your wallet</b>
+          <span>Public TAC on Ethereum</span>
+        </div>
+        <div class="ma"><b>Shield</b><i aria-hidden="true"></i><span>Public: your address and the amount</span></div>
+        <div class="mp mc">
+          <svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg>
+          <b>Tacit chain</b>
+          <span>Send and receive. Who and how much stay hidden.</span>
+          <p class="pay" aria-hidden="true"><span>you</span><i><em>•••</em></i><span>anyone</span></p>
+        </div>
+        <div class="ma"><b>Withdraw</b><i aria-hidden="true"></i><span>Public: the amount and where it goes</span></div>
+        <ul class="mo">
+          <li><svg class="tk" aria-hidden="true"><use href="#c-eth"/></svg><b>Your wallet</b><span>public TAC</span></li>
+          <li><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><b>DeFi pool</b><span>swap, farm, borrow</span></li>
+          <li><svg class="tk" aria-hidden="true"><use href="#c-btc"/></svg><b>Bitcoin</b><span>your address</span></li>
+        </ul>
+        <figcaption id="map-cap">TAC goes in from your wallet, moves privately on the chain, and comes out where you choose. Only the way in and the way out are public.</figcaption>
+      </figure>
 
       <div class="ways">
         <section class="way" aria-labelledby="w-use">
@@ -329,7 +426,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
             <dt>Does</dt><dd>Hold TAC privately, pay anyone, get paid</dd>
             <dt>Needs</dt><dd>TAC in an Ethereum wallet. No ETH.</dd>
             <dt>Costs</dt><dd>A small fee in TAC, shown before you press</dd>
-            <dt>Speed</dt><dd>Sent in seconds, settled on Ethereum in about a minute</dd>
+            <dt>Speed</dt><dd>Sent in seconds, settled in about a minute</dd>
             <dt>Where</dt><dd><a href="/tac/">tacit.finance/tac</a></dd>
           </dl>
           <div class="go"><a href="#start">Get started</a></div>
@@ -338,10 +435,10 @@ footer.sf svg.fill { width: 16px; height: 16px; }
           <p class="k">For builders</p>
           <h2 id="w-how">How it <em>works</em></h2>
           <dl>
-            <dt>Proofs</dt><dd>One per payment, made on the payer’s device. One per block, checked on Ethereum.</dd>
-            <dt>Data</dt><dd>On Ethereum. Anyone can rebuild the chain from it.</dd>
+            <dt>Proofs</dt><dd>Each payment is proven on the payer’s device. Each block is proven once and checked on Ethereum.</dd>
+            <dt>Data</dt><dd>Stored on Ethereum. Anyone can rebuild the chain from it.</dd>
             <dt>Control</dt><dd>No owner, no upgrade key, no pause</dd>
-            <dt>Leaders</dt><dd>Anyone who locks a 1,000 TAC seat</dd>
+            <dt>Leaders</dt><dd>Anyone who locks 1,000 TAC</dd>
             <dt>Contract</dt><dd>0x00000000000a9147ffd8d41d152d730ca5f84e6c</dd>
           </dl>
           <div class="go"><a href="#path">How it works</a><a href="https://github.com/src-company/tacit/blob/main/docs/TACIT-BLOCKS.md" target="_blank" rel="noopener noreferrer">Full spec ↗</a></div>
@@ -374,53 +471,76 @@ footer.sf svg.fill { width: 16px; height: 16px; }
 <section class="part" id="start">
   <p class="kick">Use it</p>
   <h2>Get <em>started</em></h2>
-  <p>Everything happens on <a href="/tac/">tacit.finance/tac</a>. Sign in with your Ethereum wallet: one signature makes your Tacit key, and the same wallet always makes the same key, on any device.</p>
+  <p>Go to <a href="/tac/">tacit.finance/tac</a> and sign in with your Ethereum wallet. Signing in creates your Tacit key. The same wallet always creates the same key, so you can sign in again on any device.</p>
   <ol class="steps">
-    <li><b>Shield.</b> Choose how much TAC to make private and press Shield. Sign once and it goes in with no ETH, or send one transaction yourself if you hold ETH. It shows as private TAC on the Tacit chain. For now one shield takes up to a launch limit, which the page shows.</li>
-    <li><b>Send.</b> Enter a <code>tacit1…</code> address, a <code>name.wei</code> or an <code>0x…</code> address, and an amount. It says Sent within seconds and settles on Ethereum in about a minute. To a tacit1 address or a name, the payment stays private. To an 0x address it arrives as public TAC, and the sender stays hidden.</li>
-    <li><b>Get paid.</b> The Receive tab has your tacit1 address, a pay link such as <code>tacit.finance/to/yourname/25</code>, and a code to scan that turns to Paid when the money arrives.</li>
-    <li><b>Withdraw.</b> Take TAC out to your wallet as public TAC, into the DeFi pool to swap, farm or borrow privately, or to Bitcoin.</li>
+    <li><b>Shield.</b> Pick an amount of TAC and press Shield. If you have no ETH, sign once and the leader sends it in for you. If you hold ETH, you can send the transaction yourself instead. Your TAC then shows as private TAC on the Tacit chain. For now, each shield has a limit, which the page shows.</li>
+    <li><b>Send.</b> Enter a <code>tacit1…</code> address, a <code>name.wei</code> or an <code>0x…</code> address, and an amount. You see “Sent” within seconds. The payment settles on Ethereum about a minute later. A payment to a tacit1 address or a name stays private. A payment to an 0x address arrives as ordinary public TAC, but no one can see who sent it.</li>
+    <li><b>Get paid.</b> Open the Receive tab. Share your tacit1 address, or a pay link such as <code>tacit.finance/to/yourname/25</code>. You can also show a code to scan. It turns to “Paid” when the money arrives.</li>
+    <li><b>Withdraw.</b> Move TAC out to your wallet as public TAC, into the DeFi pool to swap, farm or borrow privately, or to Bitcoin.</li>
   </ol>
-  <p class="note">A tacit1 address can be paid on the chain once its owner has opened their Tacit wallet. Private TAC already in the DeFi pool moves onto the chain from the same page.</p>
+  <p class="note">People can pay your tacit1 address on the chain once you have opened your Tacit wallet. If you already have private TAC in the DeFi pool, you can move it onto the chain from the same page.</p>
 </section>
 
 <!-- ─────────────── Fees ─────────────── -->
 <section class="part" id="fees">
   <p class="kick">Use it</p>
   <h2>Fees</h2>
-  <p>Every action pays a small fee in TAC, shown before you press. Most of it pays the leader for Ethereum gas, so it moves with gas prices. A fixed part stays in the chain’s pool.</p>
+  <p>Each action costs a small fee in TAC. The page shows it before you press. Most of the fee pays the leader for Ethereum gas, so it goes up and down with gas prices. A small part stays in the chain’s pool.</p>
   <div class="tbl"><table>
     <tr><th>Action</th><th>Stays in the pool</th><th>Pays for gas</th></tr>
     <tr><td class="t">Send</td><td>0.002 TAC</td><td>The leader’s fee</td></tr>
-    <tr><td class="t">Shield</td><td>A small margin, now 0.02%</td><td>The leader’s fee, and the cost of sending it in when you sign once</td></tr>
+    <tr><td class="t">Shield</td><td>A small margin, now 0.02%</td><td>The leader’s fee, plus sending it in if you signed once</td></tr>
     <tr><td class="t">Withdraw</td><td>0.1%, at least 0.002 TAC</td><td>The leader’s fee</td></tr>
   </table></div>
-  <p>Your private balance is a number of shares of that pool. What stays in it raises the worth of every share, so each payment others make adds a little to what yours is worth. A share’s worth in TAC never goes down.</p>
+  <p>Your private balance is counted in shares of this pool. The part of each fee that stays in the pool makes every share worth a little more. So when other people pay, what you hold grows slightly. A share never loses value in TAC.</p>
+  <figure class="fig">
+    <svg class="d" viewBox="0 0 420 184" role="img" aria-label="Before: 100 TAC and 100 shares, so one share is 1.00 TAC. Fees add 10 TAC and no shares. After: 110 TAC and 100 shares, so one share is 1.10 TAC.">
+      <defs><marker id="ah-sh" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M0 0L8 4L0 8z"/></marker></defs>
+      <rect class="bx" x="30" y="20" width="120" height="100"/>
+      <path class="st" d="M30 40H150M30 60H150M30 80H150M30 100H150"/>
+      <rect class="bx" x="260" y="10" width="120" height="110"/>
+      <rect class="tint" x="260.5" y="10.5" width="119" height="10"/>
+      <path class="st" d="M260 32H380M260 54H380M260 76H380M260 98H380"/>
+      <text class="m" x="388" y="19">fees</text>
+      <path class="ln" d="M162 65H250" marker-end="url(#ah-sh)"/>
+      <text class="m sm" x="206" y="56" text-anchor="middle">fees add TAC</text>
+      <text class="m sm" x="206" y="82" text-anchor="middle">no new shares</text>
+      <text class="h" x="90" y="140" text-anchor="middle">BEFORE</text>
+      <text class="m" x="90" y="158" text-anchor="middle">100 TAC · 100 shares</text>
+      <text x="90" y="176" text-anchor="middle">1 share = 1.00 TAC</text>
+      <text class="h" x="320" y="140" text-anchor="middle">AFTER</text>
+      <text class="m" x="320" y="158" text-anchor="middle">110 TAC · 100 shares</text>
+      <text x="320" y="176" text-anchor="middle">1 share = 1.10 TAC</text>
+    </svg>
+    <figcaption>The pool holds the TAC, and you hold shares of it. Fees add TAC but no shares, so each share is worth more. The numbers are an example; real fees are much smaller.</figcaption>
+  </figure>
 </section>
 
 <!-- ─────────────── What is public ─────────────── -->
 <section class="part" id="public">
   <p class="kick">Use it</p>
   <h2>What is <em>public</em></h2>
+  <p>The chain hides what happens inside it. What crosses its edges is public, as the picture at the top shows.</p>
   <div class="tbl"><table>
     <tr><th></th><th>Public</th><th>Hidden</th></tr>
-    <tr><td class="t">Shield</td><td>Your Ethereum address and the amount</td><td>Who holds it after</td></tr>
+    <tr><td class="t">Shield</td><td>Your Ethereum address and the amount</td><td>Who holds it afterwards</td></tr>
     <tr><td class="t">Send</td><td>That a block landed, and how many notes it made</td><td>Who paid whom, and how much</td></tr>
-    <tr><td class="t">Withdraw</td><td>The amount and the address it goes to</td><td>Whose notes paid it</td></tr>
-    <tr><td class="t">Balances</td><td>The chain’s total</td><td>What anyone holds</td></tr>
+    <tr><td class="t">Withdraw</td><td>The amount and the address it goes to</td><td>Who it came from</td></tr>
+    <tr><td class="t">Balances</td><td>The total on the chain</td><td>What anyone holds</td></tr>
   </table></div>
-  <p>What goes in and out shows, so a withdrawal of exactly what you shielded can be matched to it. Let time pass between them, and move different amounts.</p>
+  <p>Because the edges are public, a withdrawal of exactly the amount you shielded can be linked to it. Wait a while between the two, and use different amounts.</p>
 </section>
 
 <!-- ─────────────── Safety ─────────────── -->
 <section class="part" id="safety">
   <p class="kick">Use it</p>
   <h2>If something <em>goes wrong</em></h2>
+  <p>No single party can freeze your money. Here is what happens in each case.</p>
   <ul>
-    <li><b>The leader stops.</b> After 10 minutes with no block, anyone may land the next one.</li>
-    <li><b>Your payment is left out.</b> Press “Post it to Ethereum yourself” in the app. Every block must take it within an hour. A posted payment shows on Ethereum which notes it spends and makes; the amounts stay hidden.</li>
-    <li><b>A shield is never taken in.</b> After 7 days, press Take back in the app. Your TAC returns to your wallet, or as private TAC in the DeFi pool.</li>
-    <li><b>You lose your device.</b> Sign in with the same wallet anywhere. Your key is the same, and your notes are found again from what is on Ethereum.</li>
+    <li><b>The leader stops.</b> If no block lands for 10 minutes, anyone may land the next one.</li>
+    <li><b>Your payment is left out.</b> Press “Post it to Ethereum yourself” in the app. Blocks must include it within an hour. A posted payment shows on Ethereum which notes it spends and creates, but not the amounts.</li>
+    <li><b>A shield never goes in.</b> After 7 days, press “Take back” in the app. The TAC goes back to your wallet, or into the DeFi pool as private TAC.</li>
+    <li><b>You lose your device.</b> Sign in with the same wallet somewhere else. You get the same key, and the app finds your notes again from the data on Ethereum.</li>
   </ul>
 </section>
 
@@ -428,41 +548,89 @@ footer.sf svg.fill { width: 16px; height: 16px; }
 <section class="part" id="path">
   <p class="kick">How it works</p>
   <h2>A payment’s <em>path</em></h2>
-  <ol class="path" aria-label="From your device to Ethereum">
-    <li><b>Your device</b><span>Proves the payment. Keys and amounts stay on it.</span></li>
-    <li><b>Leader</b><span>Checks the proof, answers in seconds, gathers a block.</span></li>
-    <li><b>Prover</b><span>Any GPU on the prover board. One proof for the whole block.</span></li>
-    <li><b>Ethereum</b><span>Checks that proof, keeps the block’s data, holds the TAC.</span></li>
+  <ol class="path" aria-label="A payment goes from your device to the leader, then a prover, then Ethereum">
+    <li><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="10" height="18" rx="2"/><path d="M11 18h2"/></svg><b>Your device</b><span>Proves the payment. Your keys and amounts stay here.</span><span class="to" aria-hidden="true">payment<i></i></span></li>
+    <li><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 9h8M8 12h8M8 15h5"/></svg><b>Leader</b><span>Checks the proof and adds it to the next block.</span><small class="see">You see “Sent”</small><span class="to" aria-hidden="true">block<i></i></span></li>
+    <li><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/></svg><b>Prover</b><span>Proves the whole block at once, on a GPU.</span><span class="to" aria-hidden="true">proof<i></i></span></li>
+    <li><svg class="tk ic" aria-hidden="true"><use href="#c-eth"/></svg><b>Ethereum</b><span>Checks the block’s proof and stores its data.</span><small class="see">You see “Settled”</small></li>
   </ol>
-  <p>Your device makes a zero-knowledge proof (Halo2, the circuit of the Bitcoin shielded pool) that you own the notes you spend and that the amounts add up. The leader checks it and puts it in the next block. A prover runs the block program in SP1: it checks every proof in the block in one pairing, applies the block, and wraps the result in one Groth16 proof. <code>TacitBlocks.land</code> checks that proof on Ethereum and records the block.</p>
-  <p>Checking a block’s proof costs Ethereum the same for one payment or thirty, so the payments in a block share it.</p>
+  <p>Your device makes a zero-knowledge proof. The proof shows that you own the notes you are spending and that the amounts add up, without revealing either. It uses Halo2, the same circuit as the Bitcoin shielded pool.</p>
+  <p>The leader checks the proof and adds the payment to the next block. A prover then runs the block program in SP1. The program checks every payment proof in the block in one step and produces a single Groth16 proof for the whole block. The <code>TacitBlocks</code> contract checks that proof on Ethereum and records the block.</p>
+  <p>Checking a block’s proof costs the same on Ethereum whether the block holds one payment or thirty. The payments in a block share that cost, which keeps fees low.</p>
 </section>
 
 <!-- ─────────────── Notes ─────────────── -->
 <section class="part" id="notes">
   <p class="kick">How it works</p>
   <h2>Notes and <em>shares</em></h2>
-  <ul>
-    <li><b>Notes.</b> A balance is a set of notes. Each is a commitment to an amount and an owner’s key, a leaf of the note tree. The tree holds only commitments: no amount or owner is in it.</li>
-    <li><b>Nullifiers.</b> Spending a note publishes its nullifier, a tag only its owner can compute. It stops a second spend without saying which note was spent.</li>
-    <li><b>Spends.</b> A spend takes up to two notes and makes up to three: what is paid, your change and the leader’s fee.</li>
-    <li><b>Memos.</b> Each new note carries a 1,152-byte encrypted memo. Your wallet finds your notes by opening memos with your key. The encryption pairs ML-KEM-768 with secp256k1, so a recorded memo stays private even against a future quantum computer.</li>
-    <li><b>Shares.</b> Notes count shares of one pool. A share is worth <code>(pool + 1) / (shares + 1)</code> TAC, the 1 being a virtual TAC no note holds. A shield buys shares at that rate, a withdrawal sells them back less its fee, and what fees leave in the pool raises the rate.</li>
-  </ul>
+  <figure class="fig">
+    <svg class="d" viewBox="0 0 420 184" role="img" aria-label="A payment spends two notes and creates three: one for the person paid, one for your change and one for the leader’s fee. It publishes the old notes’ nullifiers and the new notes. The amounts stay sealed.">
+      <defs><marker id="ah-sp" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M0 0L8 4L0 8z"/></marker></defs>
+      <text class="h" x="0" y="12">SPENT</text>
+      <rect class="bx" x="0" y="22" width="100" height="34"/><text x="12" y="44">note</text><text class="m" x="88" y="44" text-anchor="end">•••</text>
+      <rect class="bx" x="0" y="68" width="100" height="34"/><text x="12" y="90">note</text><text class="m" x="88" y="90" text-anchor="end">•••</text>
+      <path class="ln" d="M100 39C124 39 124 54 146 54" marker-end="url(#ah-sp)"/>
+      <path class="ln" d="M100 85C124 85 124 70 146 70" marker-end="url(#ah-sp)"/>
+      <rect class="bx ink" x="150" y="32" width="120" height="60"/>
+      <text class="s" x="210" y="60" text-anchor="middle">proof</text>
+      <text class="m" x="210" y="80" text-anchor="middle">on your device</text>
+      <path class="ln" d="M270 62C294 62 294 35 316 35" marker-end="url(#ah-sp)"/>
+      <path class="ln" d="M270 62C294 62 294 71 316 71" marker-end="url(#ah-sp)"/>
+      <path class="ln" d="M270 62C294 62 294 107 316 107" marker-end="url(#ah-sp)"/>
+      <text class="h" x="320" y="12">NEW</text>
+      <rect class="bx" x="320" y="20" width="100" height="30"/><text x="332" y="40">them</text><text class="m" x="408" y="40" text-anchor="end">•••</text>
+      <rect class="bx" x="320" y="56" width="100" height="30"/><text x="332" y="76">change</text><text class="m" x="408" y="76" text-anchor="end">•••</text>
+      <rect class="bx" x="320" y="92" width="100" height="30"/><text x="332" y="112">fee</text><text class="m" x="408" y="112" text-anchor="end">•••</text>
+      <path class="dash" d="M195 92C195 120 98 116 98 142" marker-end="url(#ah-sp)"/>
+      <path class="dash" d="M225 92C225 120 322 116 322 142" marker-end="url(#ah-sp)"/>
+      <text class="m sm" x="210" y="130" text-anchor="middle">published</text>
+      <rect class="bx" x="0" y="146" width="195" height="34"/><text x="12" y="168">nullifiers</text><text class="m" x="183" y="168" text-anchor="end">mark spent</text>
+      <rect class="bx" x="225" y="146" width="195" height="34"/><text x="237" y="168">new notes</text><text class="m" x="408" y="168" text-anchor="end">join tree</text>
+    </svg>
+    <figcaption>One payment: two notes in, three out. It publishes the old notes’ nullifiers and the new notes. The amounts (•••) stay sealed.</figcaption>
+  </figure>
+  <p>Your balance is made of notes. A note is a sealed record of an amount and its owner. The chain stores only the seal, called a commitment, so no one can read the amount or the owner from it.</p>
+  <p>To spend notes, your wallet publishes their nullifiers. A nullifier is a tag that only the owner can compute. It marks a note as spent, so the note can’t be spent twice, but it doesn’t reveal which note it was.</p>
+  <p>A payment spends up to two notes and creates up to three new ones: one for the person you pay, one for your change, and one for the leader’s fee.</p>
+  <p>Each new note comes with an encrypted memo of 1,152 bytes. Your wallet finds your notes by trying to open the memos with your key. The memos use ML-KEM-768 together with secp256k1, so even a future quantum computer couldn’t read one recorded today.</p>
+  <p>Notes count shares of the pool. One share is worth <code>(pool + 1) / (shares + 1)</code> TAC. The extra 1 on each side is a virtual TAC that no note holds, so no single deposit can set the price. Shielding buys shares at this rate. Withdrawing sells them back, less the fee.</p>
 </section>
 
 <!-- ─────────────── Blocks ─────────────── -->
 <section class="part" id="blocks">
   <p class="kick">How it works</p>
   <h2>Blocks and <em>leaders</em></h2>
-  <p>A leader takes payments and lands blocks. Turns come from <code>TacitSeats</code>, which has no owner.</p>
-  <ul>
-    <li><b>Seats.</b> Anyone can take a seat by locking 1,000 TAC. Leaving returns it 7 days later.</li>
-    <li><b>Turns.</b> Time runs in slots of 50 Ethereum blocks (about 10 minutes), 16 slots to an epoch. Each slot one seat leads, drawn with Ethereum’s beacon randomness. While no seat is held, the bootstrap leader leads.</li>
-    <li><b>Pay.</b> Each payment carries a fee note to its leader, which covers the gas of landing. Provers are paid in points.</li>
-    <li><b>No one can stall it.</b> After 10 minutes with no block anyone may land, and whatever is posted to the forced queue must be in a block within an hour.</li>
-  </ul>
-  <p>To lead, run the node and leader from <a href="https://github.com/src-company/tacit/tree/main/tacit-leader" target="_blank" rel="noopener noreferrer">tacit-leader ↗</a> and call <code>announce(url)</code>. To prove blocks on your GPU, see <a href="/prove/">tacit.finance/prove</a>.</p>
+  <p>A leader collects payments and lands blocks on Ethereum. The <code>TacitSeats</code> contract decides who leads. It has no owner.</p>
+  <figure class="fig">
+    <svg class="d" viewBox="0 0 420 166" role="img" aria-label="Time runs in slots of about 10 minutes, and one seat leads each slot. If no block lands for 10 minutes, anyone may land one. A payment posted on Ethereum must be in a block within an hour.">
+      <defs><marker id="ah-sl" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M0 0L8 4L0 8z"/></marker></defs>
+      <text class="h" x="0" y="12">ONE SEAT LEADS EACH SLOT · ABOUT 10 MIN</text>
+      <rect class="bx" x="0" y="22" width="46" height="34"/><text x="23" y="44" text-anchor="middle">A</text>
+      <rect class="bx" x="52" y="22" width="46" height="34"/><text x="75" y="44" text-anchor="middle">B</text>
+      <rect class="bx ink" x="104" y="22" width="46" height="34"/><text x="127" y="44" text-anchor="middle">A</text>
+      <rect class="bx" x="156" y="22" width="46" height="34"/><text x="179" y="44" text-anchor="middle">C</text>
+      <rect class="bx" x="208" y="22" width="46" height="34"/><text x="231" y="44" text-anchor="middle">B</text>
+      <rect class="bx" x="260" y="22" width="46" height="34"/><text x="283" y="44" text-anchor="middle">A</text>
+      <rect class="bx" x="312" y="22" width="46" height="34"/><text x="335" y="44" text-anchor="middle">C</text>
+      <rect class="bx" x="364" y="22" width="46" height="34"/><text x="387" y="44" text-anchor="middle">A</text>
+      <text class="m" x="127" y="74" text-anchor="middle">now</text>
+      <text class="h" x="0" y="106">IF THINGS STALL</text>
+      <circle class="fi" cx="4" cy="126" r="3.5"/>
+      <path class="ln" d="M10 126H212" marker-end="url(#ah-sl)"/>
+      <text class="m sm" x="111" y="119" text-anchor="middle">10 min with no block</text>
+      <text x="224" y="130">anyone may land</text>
+      <circle class="fi" cx="4" cy="156" r="3.5"/>
+      <path class="ln" d="M10 156H212" marker-end="url(#ah-sl)"/>
+      <text class="m sm" x="111" y="149" text-anchor="middle">1 h after posting</text>
+      <text x="224" y="160">must be in a block</text>
+    </svg>
+    <figcaption>Each letter is a seat. Sixteen slots make an epoch, and Ethereum’s randomness picks which seat leads each slot. Two timers keep blocks coming if a leader goes quiet.</figcaption>
+  </figure>
+  <p>Anyone can take a seat by locking 1,000 TAC. If you leave, you get the TAC back 7 days later.</p>
+  <p>Time is split into slots of 50 Ethereum blocks, about 10 minutes each. In each slot, one seat leads. While no one holds a seat, the bootstrap leader leads.</p>
+  <p>Every payment includes a fee note for its leader, which pays the gas to land the block. Provers are paid in points.</p>
+  <p>Two rules keep the chain moving. If no block lands for 10 minutes, anyone may land one. And anything posted to the forced queue on Ethereum must be in a block within an hour.</p>
+  <p>To lead, run the node and leader from <a href="https://github.com/src-company/tacit/tree/main/tacit-leader" target="_blank" rel="noopener noreferrer">tacit-leader ↗</a> and call <code>announce(url)</code>. To prove blocks with your GPU, see <a href="/prove/">tacit.finance/prove</a>.</p>
 </section>
 
 <!-- ─────────────── Trust ─────────────── -->
@@ -472,12 +640,13 @@ footer.sf svg.fill { width: 16px; height: 16px; }
   <div class="tbl"><table>
     <tr><th>For</th><th>You rely on</th><th>Not on</th></tr>
     <tr><td class="t">Your funds</td><td>The proofs and the contract’s code</td><td>The leader or the provers</td></tr>
-    <tr><td class="t">Staying live</td><td>Any leader, or anyone after 10 minutes</td><td>Any one leader</td></tr>
-    <tr><td class="t">The data</td><td>Ethereum, which keeps every block’s notes, memos and nullifiers</td><td>An indexer: anyone can rebuild the state</td></tr>
-    <tr><td class="t">Privacy</td><td>Your device, which makes every proof</td><td>The leader or the provers</td></tr>
+    <tr><td class="t">Staying live</td><td>Any leader, or anyone after 10 minutes</td><td>Any single leader</td></tr>
+    <tr><td class="t">Your data</td><td>Ethereum, which stores every block’s notes, memos and nullifiers</td><td>Any indexer. Anyone can rebuild the chain’s state.</td></tr>
+    <tr><td class="t">Your privacy</td><td>Your own device, which makes every proof</td><td>The leader or the provers</td></tr>
   </table></div>
-  <p>The contract has no owner, no upgrade key and no pause. A new design comes as a new chain, and each user moves their own notes to it, with their privacy.</p>
-  <p>A block’s prover sees which nullifiers and new notes came from the same payment, within that block. It never sees keys, amounts or owners. The proofs use pairings, as most zk-rollups on Ethereum do. The memos are post-quantum already.</p>
+  <p>The contract has no owner, no upgrade key and no pause. Improvements come as a new chain. Each person moves their own notes to it and keeps their privacy on the way.</p>
+  <p>A block’s prover can see which nullifiers and new notes belong to the same payment within that block. It can’t see keys, amounts or owners.</p>
+  <p>The proofs use pairings, like most zk-rollups on Ethereum. The memos are already safe against quantum computers.</p>
 </section>
 
 <!-- ─────────────── Build ─────────────── -->
@@ -486,18 +655,18 @@ footer.sf svg.fill { width: 16px; height: 16px; }
   <h2>Build <em>on it</em></h2>
   <p>The leader’s API is public and needs no key.</p>
   <div class="code"><pre><code>curl https://tacit-chain-leader.onrender.com/state   <span class="c"># height, roots, pool and shares</span>
-curl https://tacit-chain-leader.onrender.com/fee     <span class="c"># what a spend pays now</span></code></pre></div>
+curl https://tacit-chain-leader.onrender.com/fee     <span class="c"># what a payment costs now</span></code></pre></div>
   <div class="tbl"><table>
-    <tr><th>Route</th><th>Gives</th></tr>
+    <tr><th>Route</th><th>Returns</th></tr>
     <tr><td class="t"><code>GET /state</code></td><td>Height, note root, counts, the forced queue, pool and shares</td></tr>
-    <tr><td class="t"><code>GET /fee</code></td><td>The fee, the shield’s sweep fee and cap, the leader’s chain address</td></tr>
+    <tr><td class="t"><code>GET /fee</code></td><td>The fee, the shield’s sending fee and limit, and the leader’s chain address</td></tr>
     <tr><td class="t"><code>GET /notes?from=N&amp;limit=M</code></td><td>New notes and their memos, to scan</td></tr>
     <tr><td class="t"><code>GET /path/N</code></td><td>A note’s Merkle path</td></tr>
     <tr><td class="t"><code>GET /spent/0x…</code></td><td>Whether a nullifier is spent</td></tr>
-    <tr><td class="t"><code>POST /spend</code></td><td>Hands over a proved spend; follow it at <code>/receipt/ID</code></td></tr>
-    <tr><td class="t"><code>POST /forced</code></td><td>The bytes <code>TacitBlocks.force</code> takes</td></tr>
+    <tr><td class="t"><code>POST /spend</code></td><td>Takes a proved payment. Follow it at <code>/receipt/ID</code>.</td></tr>
+    <tr><td class="t"><code>POST /forced</code></td><td>The bytes to post with <code>TacitBlocks.force</code></td></tr>
   </table></div>
-  <p>In JavaScript, <code>dapp/tacit-chain-client.js</code> is the app’s whole chain wallet. Amounts are units of 10<sup>−8</sup> TAC.</p>
+  <p>In JavaScript, <code>dapp/tacit-chain-client.js</code> is the app’s complete chain wallet. Amounts are in units of 10<sup>−8</sup> TAC.</p>
   <div class="code"><pre><code>import { makeChainClient } from './dapp/tacit-chain-client.js';
 import { tacitChain } from './dapp/tacit-chain-config.js';
 import { makeHalo2System } from './dapp/btc-pool-halo2-prover.js';
@@ -508,7 +677,7 @@ const c = makeChainClient({ cfg: tacitChain(), rpcCall, priv, system: () =&gt; s
 await c.ready();
 await c.scan();                     <span class="c">// find your notes</span>
 await c.worth();                    <span class="c">// your balance, in units</span>
-await c.pay(chainAddress, units);   <span class="c">// proved here, handed to the leader</span>
+await c.pay(chainAddress, units);   <span class="c">// proved here, sent to the leader</span>
 await c.withdraw('0x…', units);</code></pre></div>
   <div class="tbl"><table>
     <tr><th>Contract</th><th>Address</th></tr>
@@ -519,7 +688,7 @@ await c.withdraw('0x…', units);</code></pre></div>
     <tr><td class="t">Block program key</td><td class="h">0x00610fb0fa1b5d800e548c3cdcdf98ceb4288828be1cec1fb81e39004bad6ed6</td></tr>
   </table></div>
   <div class="more">
-    <a href="https://github.com/src-company/tacit/blob/main/docs/TACIT-BLOCKS.md" target="_blank" rel="noopener noreferrer">The spec<span>Every word a block commits</span></a>
+    <a href="https://github.com/src-company/tacit/blob/main/docs/TACIT-BLOCKS.md" target="_blank" rel="noopener noreferrer">The spec<span>Every value a block commits to</span></a>
     <a href="https://github.com/src-company/tacit/tree/main/tacit-leader" target="_blank" rel="noopener noreferrer">Run a leader<span>The node, the leader and seats</span></a>
     <a href="/tac/">The chain, live<span>Blocks, leader and provers now</span></a>
     <a href="/build/">Build on tacit<span>The DeFi pool and the Pay pool</span></a>
