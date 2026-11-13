@@ -233,8 +233,8 @@ if (process.argv[2] === 'serve') startDense(); else await initDense();   // a ru
 if (process.argv[2] === 'serve') {
   http.createServer(async (req, res) => {
     const ip = clientIp(req); const pathname = req.url.split('?')[0];
-    if (req.method === 'OPTIONS' && (pathname === '/ask' || pathname === '/health' || pathname === '/helpdesk/credits')) { cors(req, res); res.writeHead(204); return res.end(); }
-    if (pathname === '/ask' || pathname === '/health') cors(req, res);
+    if (req.method === 'OPTIONS' && (pathname === '/ask' || pathname === '/health' || pathname === '/stats' || pathname === '/helpdesk/credits')) { cors(req, res); res.writeHead(204); return res.end(); }
+    if (pathname === '/ask' || pathname === '/health' || pathname === '/stats') cors(req, res);   // /stats feeds the review card on /prove/
     if (pathname === '/whoami') return send(res, 200, { ip, trueClientIp: req.headers['true-client-ip'] || null, xff: req.headers['x-forwarded-for'] || null, socket: req.socket.remoteAddress, hops: HOPS, trustProxy: process.env.TRUST_PROXY === '1' });
     if (req.method === 'GET' && pathname === '/helpdesk/credits') { cors(req, res); const q = new URL(req.url, 'http://x').searchParams.get('day'); const day = /^\d{1,6}$/.test(q || '') ? Number(q) : NaN;
       if (!(day <= utcDay())) return send(res, 400, { ok: false, error: 'day must be a UTC day number, today or before' });

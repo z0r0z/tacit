@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self' http://127.0.0.1:47815 wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://tacit-points.onrender.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://rpc.flashbots.net https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self' http://127.0.0.1:47815 https://tacit-helpdesk.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://tacit-points.onrender.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://rpc.flashbots.net https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit prove</title>
 <meta name="description" content="Every block is private transactions, proved on someone's computer. Prove one and earn TAC.">
@@ -21,11 +21,12 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /prove/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/prove/app.js?cb=f3f7e3a6">
+<link rel="modulepreload" href="/prove/app.js?cb=2f1833f0">
 <link rel="modulepreload" href="/community-prove.js?cb=30714a9f">
 <link rel="modulepreload" href="/prove/view.js?cb=f0f73815">
 <link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
+<link rel="modulepreload" href="/prove/review.js?cb=a8c503cf">
 <link rel="modulepreload" href="/prove/chain.js?cb=8a988a34">
 <!-- preload:end -->
 <style>
@@ -711,6 +712,19 @@ footer.sf svg.fill { width: 16px; height: 16px; }
         <p class="eyebrow" id="salt-bank-h" hidden></p>
         <ol id="salt-bank" class="bank scroll" tabindex="0" aria-label="Addresses banked for deploys"></ol>
       </section>
+      <section class="panel side" id="review" aria-labelledby="h-review" data-card="review">
+        <p class="eyebrow"><span>While you're away</span></p>
+        <h3 id="h-review">Review Tacit's code</h3>
+        <p class="hint">While this computer is idle and plugged in, a small model on it reviews Tacit's code and checks other nodes' findings. A proof always comes first.</p>
+        <div class="pair" id="review-get" hidden><pre class="cmd"><code id="review-cmd"></code></pre><button class="btn ghost" id="review-copy" type="button">Copy</button></div>
+        <button class="btn" id="review-go" type="button" hidden></button>
+        <p class="hint" id="review-say" aria-live="polite" hidden></p>
+        <div class="rows num">
+          <div class="kv"><span>This computer</span><b id="review-state">—</b></div>
+          <div class="kv" id="review-me-row" hidden><span>Your record</span><b id="review-me">—</b></div>
+          <div class="kv"><span>Nodes online</span><b id="review-n">—</b></div>
+        </div>
+      </section>
       </div>
       <div class="col">
       <section class="panel feed" aria-label="Activity" data-card="activity">
@@ -838,6 +852,6 @@ node tools/community-runner.mjs mirror   # no key: keeps the board public on Nos
 
 <div id="toast-container" class="toasts" popover="manual"></div>
 
-<script type="module" src="/prove/app.js?cb=f3f7e3a6"></script>
+<script type="module" src="/prove/app.js?cb=2f1833f0"></script>
 </body>
 </html>

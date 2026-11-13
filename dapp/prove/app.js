@@ -4,6 +4,7 @@
 import { cleanAddress, proveCommand, utcDay, mineLines, capOf } from '/community-prove.js?cb=30714a9f';
 import { localState, jobView, headline, isPhone, isWindows, setupText, proverUpdate, updateText } from '/prove/view.js?cb=f0f73815';
 import { invaderSvg, gpuSvg } from '/prove/invader.js?cb=e8a5ec59';
+import { HELPDESK, FETCH_CMD, cleanDesk, cleanStats, reviewView } from '/prove/review.js?cb=a8c503cf';
 import { short, cells, opsText, tac, rewardWei, ago, took, fresh, blockAgo, kindOf, KINDS, kindText, median, untilDayEnds, cleanBlock, cleanProof, cleanMiner } from '/prove/chain.js?cb=8a988a34';
 
 const API = 'https://api.tacit.finance', POINTS = 'https://tacit-points.onrender.com', LOCAL = 'http://127.0.0.1:47815';
@@ -13,6 +14,7 @@ const $ = (s) => document.querySelector(s);
 const get = (url, ms = 6000) => fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(ms) }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
+let desk = null, deskStats = null, reviewBusy = false;   // the code-review card: the prover's help desk job, and the help desk's stats
 let health = null, mine = null, pool = null, points = null, tally = null, busy = false, copied = false, salts = null, cross = [], rollup = [], misses = 0;
 // The setup line's kind of computer, from the browser; the switch above the line changes it (setting up another computer).
 let os = isWindows(navigator.userAgent) ? 'win' : 'unix';
@@ -51,6 +53,7 @@ async function readLocal() {
   health = await get(`${LOCAL}/health`, 2500);
   blocked = health ? false : await readBlocked();
   mine = health?.ok ? await get(`${LOCAL}/mine`, 2500) : null;
+  desk = health?.ok ? cleanDesk(await get(`${LOCAL}/helpdesk`, 2500)) : null;
   // The prover's own address fills an empty field: it is where this computer's proofs already pay.
   if (mine?.miner && !$('#addr').value) { $('#addr').value = mine.miner; addressChanged(); }
 }
@@ -364,6 +367,7 @@ function paint() {
   $('#run').textContent = mine?.proved ? String(mine.proved) : '0';
   $('#run-row').hidden = !mine || typeof mine.on !== 'boolean';
   paintSalt();
+  paintReview();
 }
 
 // The address this computer's prover pays while it is on, when that is not the one in the field: the node says so, and its button moves it.
@@ -444,6 +448,31 @@ $('#gpu-copy').addEventListener('click', async () => {
   if (!addr() && !$('#desk').hidden) { askAddress(); return; }
   try { await navigator.clipboard.writeText(gpuCommand()); gpuCopied = true; paintGpu(); setTimeout(() => { gpuCopied = false; paintGpu(); }, 1500); } catch {}
 });
+// The code-review card (review.js): this computer's help desk job, switched on and off here, the line that gets its model, and the address's review record.
+function paintReview() {
+  const v = reviewView({ proverUp: !!health?.ok, desk, stats: deskStats, me: me() });
+  $('#review-state').textContent = v.state; $('#review-n').textContent = v.online;
+  $('#review-get').hidden = !v.cmd; $('#review-cmd').textContent = FETCH_CMD;
+  const go = $('#review-go'); go.hidden = !v.button; if (v.button) go.textContent = reviewBusy ? '…' : v.button; go.disabled = reviewBusy;
+  $('#review-me-row').hidden = !v.record; if (v.record) $('#review-me').textContent = v.record;
+}
+function reviewSay(text, bad = false) { const s = $('#review-say'); s.textContent = text; s.hidden = !text; s.classList.toggle('err', bad); }
+async function toggleReview() {
+  if (!desk) return;
+  reviewBusy = true; paintReview();
+  try {
+    const r = await fetch(`${LOCAL}/helpdesk`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ on: !desk.on, api: HELPDESK }) });
+    const j = await r.json().catch(() => null);
+    if (!r.ok) throw new Error(j?.error || `tacit-prover answered ${r.status}`);
+    desk = cleanDesk(j); reviewSay('');   // the status row says what it does now; the note is for what went wrong
+  } catch (e) { reviewSay(e.message || 'tacit-prover did not answer.', true); }
+  reviewBusy = false; paintReview();
+}
+async function readReview() { deskStats = cleanStats(await get(`${HELPDESK}/stats`, 8000)); paintReview(); }
+$('#review-copy').addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText(FETCH_CMD); $('#review-copy').textContent = 'Copied'; setTimeout(() => { $('#review-copy').textContent = 'Copy'; }, 1500); } catch {}
+});
+$('#review-go').addEventListener('click', toggleReview);
 // A copy button with no address to put in its line takes the reader to the field.
 function askAddress() {
   const f = $('#addr');
@@ -659,6 +688,7 @@ loop(async () => { const p = await get(`${API}/prover/pool`); if (p) pool = clea
 loop(readRemote, 30000, 120000);
 loop(readBoardPay, 60000, 300000);
 loop(readSalts, 30000, 120000);
+loop(readReview, 60000, 300000);
 // The day's checkpoint (worker/src/pool-snapshot-job.js): the tacit block, Bitcoin's height as the pool sees it, and the manifest on IPFS
 // that holds them, named on Ethereum by snapshot.tacit.wei. Anyone can rebuild every part of it from Ethereum.
 const HEX32 = /^0x[0-9a-f]{64}$/i, CID = /^b[a-z2-7]{58}$/;
@@ -680,6 +710,7 @@ $('#send-page').addEventListener('click', async (e) => {
 if (isPhone(navigator.userAgent)) {
   $('#phone').hidden = false;
   $('#desk').hidden = true;
+  $('#review').hidden = true;   // a phone runs no prover
 } else {
   $('#addr').addEventListener('input', addressChanged);
   $('#go').addEventListener('click', toggle);

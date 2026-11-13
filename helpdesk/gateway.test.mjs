@@ -17,6 +17,8 @@ try {
   check('CORS preflight from tacit.finance is allowed', pre.status === 204 && pre.headers.get('access-control-allow-origin') === 'https://tacit.finance' && /origin/i.test(pre.headers.get('vary') || ''));
   const bad = await fetch(`${B}/ask`, { method: 'OPTIONS', headers: { origin: 'https://evil.example' } });
   check('another origin gets no allow-origin header', bad.status === 204 && !bad.headers.get('access-control-allow-origin'));
+  const pub = await fetch(`${B}/stats`, { headers: { Origin: 'https://tacit.finance' } }), pubOther = await fetch(`${B}/stats`, { headers: { Origin: 'https://evil.example' } });
+  check('the public stats can be read from tacit.finance (the review card on /prove/), and only from there', pub.status === 200 && pub.headers.get('access-control-allow-origin') === 'https://tacit.finance' && !pubOther.headers.get('access-control-allow-origin'));
   const r = await fetch(`${B}/ask`, { method: 'POST', headers: { origin: 'https://tacit.finance', 'content-type': 'application/json' }, body: JSON.stringify({ q: 'How many TAC will ever exist?' }) });
   const j = await r.json(); check('a question with no node and no backend gets the plain "offline" reply, with CORS headers', j.unavailable === true && r.headers.get('access-control-allow-origin') === 'https://tacit.finance');
   const w1 = await (await fetch(`${B}/whoami`, { headers: { 'x-forwarded-for': '1.1.1.1, 2.2.2.2' } })).json();

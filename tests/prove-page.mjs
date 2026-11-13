@@ -57,7 +57,7 @@ async function open(browser, local, { phone = false, idle = false, ua = null, ha
     else if (d[0] === 'EVENT') ws.send(JSON.stringify(['OK', d[1]?.id, true, '']));
   }));
   if (init) await page.addInitScript(init);
-  const errors = [], posts = [], codeReads = [];
+  const errors = [], posts = [], codeReads = [], deskPosts = [];
   page.on('pageerror', (e) => errors.push(e.message));
   // a public Nostr relay that is down (the Relay tab reads several) is the outside world, not the page
   page.on('console', (m) => { if (m.type() === 'error' && !/Failed to load resource|ERR_|WebSocket connection to 'wss:\/\//.test(m.text())) errors.push(m.text()); });
@@ -68,6 +68,9 @@ async function open(browser, local, { phone = false, idle = false, ua = null, ha
     if (!local.v) return route.abort('connectionrefused');
     if (path === '/health') return json(route, { ok: true, vkey: '0x00', busy: !!local.v.mine?.job });
     if (path === '/mine' && req.method() === 'GET') return local.v.mine ? json(route, local.v.mine) : json(route, { error: 'not found' }, 404);
+    // the help desk job: `local.v.desk` is what GET /helpdesk answers (none: an older prover), and each POST switches it
+    if (path === '/helpdesk' && req.method() === 'GET') return local.v.desk ? json(route, local.v.desk) : json(route, { error: 'not found' }, 404);
+    if (path === '/helpdesk' && req.method() === 'POST') { const b = JSON.parse(req.postData() || '{}'); deskPosts.push(b); local.v.desk = { ...local.v.desk, on: b.on, api: b.api }; return json(route, local.v.desk); }
     if (path === '/mine' && req.method() === 'POST') {
       const b = JSON.parse(req.postData() || '{}');
       posts.push(b);
@@ -97,10 +100,16 @@ async function open(browser, local, { phone = false, idle = false, ua = null, ha
     codeReads.push(b.length);
     return json(route, b.map((x) => ({ jsonrpc: '2.0', id: x.id, result: String(x.params[0]).toLowerCase() === DEPLOYED ? '0x60806040' : '0x' })));
   });
+  // the help desk's public stats: three nodes online and the review record of the page's address
+  await page.route('https://tacit-helpdesk.onrender.com/**', (route) => {
+    const u = new URL(route.request().url());
+    if (u.pathname === '/stats') return json(route, { nodes: { online: 3, miners: [] }, swarm: { findings: { pending: 4 }, reviewers: [{ miner: ADDR.slice(0, 8) + '…' + ADDR.slice(-4), skeptic: { n: 37, right: 22 }, scout: { n: 17, found: 5 } }] } });
+    return json(route, {}, 404);
+  });
   await page.route('https://tacit-points.onrender.com/**', (route) => json(route, { enabled: true, endSec: Math.floor(Date.now() / 1000) + 86400 * 10, terms: { capWeiPerPoint: '10000000000000000' }, account: { creditedWei: '6000000000000000000' }, pocket: { totalWei: '7500000000000000000000', creditedWei: '291270000000000000000', remainingWei: '7208730000000000000000' } }));
   await page.goto(`${ORIGIN}/prove/${hash}`);
   if (more) await page.evaluate(() => document.querySelectorAll('#desk .more, .more.cp').forEach((d) => { d.open = true; }));
-  return { page, ctx, errors, posts, codeReads };
+  return { page, ctx, errors, posts, codeReads, deskPosts };
 }
 const text = (page, s) => page.locator(s).innerText();
 const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: join(SHOTS, `${name}.png`), fullPage: true }); };
@@ -389,6 +398,12 @@ try {
     const { page, ctx, errors } = await open(browser, { v: null }, { hash: '#gpu', more: false });
     await ctx.grantPermissions(['clipboard-read', 'clipboard-write']);
     await page.waitForTimeout(300);
+    // the card a link names is brought into the window as the page opens (measured before the presses below scroll the page elsewhere)
+    const gpu = page.locator('[data-card="gpu"]');
+    check(await page.locator('#t-prove').isVisible() && await gpu.evaluate((el) => el.classList.contains('lit')), '#gpu opens the Prove tab and marks the GPU card');
+    await page.waitForTimeout(1200);
+    const box = await gpu.boundingBox();
+    check(box && box.y >= 0 && box.y + box.height <= page.viewportSize().height, 'and brings it into the window', JSON.stringify(box));   // the page ends soon after it, so it cannot always reach the top
     // The node card shows three numbers and keeps the rest behind a summary; the checkpoint is a summary of its own. Both start closed.
     await page.waitForFunction(() => !document.querySelector('#typ-row').hidden && !document.querySelector('#checkpoint').hidden, null, { timeout: 8000 }).catch(() => {});
     check((await text(page, '#desk .more summary')) === 'More numbers' && !(await page.locator('#desk .more').evaluate((d) => d.open)) && !(await page.locator('#typ-row').isVisible()), 'the node keeps its other numbers behind More numbers, closed');
@@ -397,11 +412,6 @@ try {
     check((await text(page, '.more.cp summary')) === 'Checkpoint' && !(await page.locator('#checkpoint').isVisible()), 'the checkpoint is a summary, closed');
     await page.locator('.more.cp summary').click();
     check((await page.locator('#checkpoint').isVisible()) && (await text(page, '#checkpoint')).startsWith('Block #'), 'and a press shows the block, Bitcoin and the snapshot');
-    const gpu = page.locator('[data-card="gpu"]');
-    check(await page.locator('#t-prove').isVisible() && await gpu.evaluate((el) => el.classList.contains('lit')), '#gpu opens the Prove tab and marks the GPU card');
-    await page.waitForTimeout(1200);
-    const box = await gpu.boundingBox();
-    check(box && box.y >= 0 && box.y + box.height <= page.viewportSize().height, 'and brings it into the window', JSON.stringify(box));   // the page ends soon after it, so it cannot always reach the top
     const cards = await page.locator('[data-card]').count(), links = await page.locator('.card-link').count();
     check(cards >= 10 && links === cards && (await page.locator('[data-share], .share-x, a[href*="x.com/intent"]').count()) === 0, 'every card has its Link and none posts to X', `${links} of ${cards}`);
     await page.evaluate(() => { history.replaceState(null, '', location.pathname); });
@@ -444,7 +454,40 @@ try {
     check((await text(page, '#send-page')) === 'Link copied' && (await page.evaluate(() => navigator.clipboard.readText())) === 'https://tacit.finance/prove/', 'and can send the page on (the link copied where there is no share sheet)', await text(page, '#send-page'));
     const over = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
     check(!over, 'no sideways scroll on a phone');
+    check(!(await page.locator('#review').isVisible()), 'a phone shows no code-review card (it runs no prover)');
     await shot(page, 'prove-phone');
+    await ctx.close();
+  }
+  // the code-review card: no prover, an older prover, the model not yet fetched, and switching it on (the POST it sends, the record shown)
+  {
+    const none = await open(browser, { v: null }, { more: false });
+    await none.page.waitForFunction(() => document.querySelector('#review-n').textContent === '3');
+    check((await text(none.page, '#review-state')) === 'Needs tacit-prover, above' && !(await none.page.locator('#review-go').isVisible()) && !(await none.page.locator('#review-get').isVisible()), 'review card, no prover: it says what it needs, no button, no line', await text(none.page, '#review-state'));
+    await none.ctx.close();
+    const old = await open(browser, { v: { mine: { miner: ADDR, on: true, job: null, proved: 0 } } }, { more: false });
+    await old.page.waitForFunction(() => document.querySelector('#review-state').textContent === 'Update tacit-prover to turn this on');
+    check(!(await old.page.locator('#review-go').isVisible()), 'review card, a prover with no help desk: asked to update, no button');
+    await old.ctx.close();
+    const bare = await open(browser, { v: { mine: { miner: ADDR, on: true, job: null, proved: 0 }, desk: { on: false, api: null, miner: ADDR, installed: false, model_running: false, served: 0, job: null } } }, { more: false });
+    await bare.page.waitForFunction(() => document.querySelector('#review-state').textContent === 'Get the model first');
+    check(await bare.page.locator('#review-get').isVisible() && (await text(bare.page, '#review-cmd')) === 'curl -fsSL https://tacit.finance/helpdesk-fetch.sh | bash' && !(await bare.page.locator('#review-go').isVisible()), 'review card, no model: the line that gets it, and no button yet', await text(bare.page, '#review-cmd'));
+    await bare.ctx.close();
+    const local = { v: { mine: { miner: ADDR, on: true, job: null, proved: 0 }, desk: { on: false, api: null, miner: ADDR, installed: true, model_running: false, served: 0, job: null } } };
+    const { page, ctx, errors, deskPosts } = await open(browser, local, { more: false });
+    await page.waitForFunction(() => document.querySelector('#review-go').textContent === 'Turn on' && !document.querySelector('#review-me-row').hidden);
+    check((await text(page, '#review-state')) === 'Off' && (await text(page, '#review-me')) === '22 of 37 checks right · 5 of 17 planted bugs found' && (await text(page, '#review-n')) === '3', 'review card, installed and off: Turn on, the address\'s record and the nodes online', `${await text(page, '#review-state')} | ${await text(page, '#review-me')}`);
+    await page.click('#review-go');
+    await page.waitForFunction(() => document.querySelector('#review-go').textContent === 'Turn off');
+    check(deskPosts.length === 1 && deskPosts[0].on === true && deskPosts[0].api === 'https://tacit-helpdesk.onrender.com', 'Turn on sends the prover on, with the help desk\'s address', JSON.stringify(deskPosts));
+    check((await text(page, '#review-state')) === 'On · when this computer is idle and plugged in' && !(await page.locator('#review-say').isVisible()), 'and the card says when it works, with no extra note', await text(page, '#review-state'));
+    local.v.desk = { ...local.v.desk, model_running: true, job: { id: 'j', secs: 2 }, served: 4 };
+    await page.waitForFunction(() => document.querySelector('#review-state').textContent === 'Reviewing · 4 answered');
+    check(true, 'a job under way shows as Reviewing, with the answers so far');
+    await page.click('#review-go');
+    await page.waitForFunction(() => document.querySelector('#review-go').textContent === 'Turn on');
+    check(deskPosts.length === 2 && deskPosts[1].on === false, 'Turn off sends it off');
+    check(!errors.length, 'review card: no page errors', errors.join(' | '));
+    await shot(page, 'prove-review');
     await ctx.close();
   }
 } finally {
