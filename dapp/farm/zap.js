@@ -142,7 +142,21 @@ export async function shareNote({ t, priv, built, tries = 10, every = 4000 }) {
 }
 
 // Step 3: a share note bonded to its farm by the relay (one proof, about a minute). The note stays the key's until it lands.
-export const bondShare = ({ t, priv, note, wait = () => ({}) }) => t.farmBond({ walletPriv: priv(), lpNote: note, waitOpts: { timeoutMs: 20 * 60e3, ...wait('bond') } });
+// The relay can prove the entry and send it a little later (it answers "open": proved, waiting to be sent), or still hold it in its
+// queue when the wait runs out. Neither is a failure: the job is followed until it lands (`say('waiting', jobId)` once), and only a job
+// that fails, or one followed for half an hour, ends it.
+export const inLine = (e) => e?.code === 'open' || !!e?.open || /settle timed out|status polling for job/i.test(String(e?.message || ''));
+export async function bondShare({ t, priv, note, wait = () => ({}), say = () => {} }) {
+  const w = wait('bond');
+  let job = null;
+  try { return await t.farmBond({ walletPriv: priv(), lpNote: note, waitOpts: { timeoutMs: 20 * 60e3, ...w, onJob: (id, type) => { job = id; w.onJob?.(id, type); } } }); }
+  catch (e) {
+    const id = e?.open?.jobId || job;
+    if (!id || !inLine(e)) throw e;
+    say('waiting', id);
+    return t.relay.waitForSettle(id, { openGraceMs: Infinity, timeoutMs: 30 * 60e3, intervalMs: 5000, onUpdate: w.onUpdate });
+  }
+}
 
 // The whole of it. `say(step, detail)` names each step as it starts: prepare, proving, check, confirm, sent, landed, bonding, done.
 // `ready` is a proof made by an earlier press that was not sent (the same pool and amount): it is sent without proving again, for the
@@ -157,7 +171,7 @@ export async function zapRun({ t, rpc, wallet, from, priv, pool, q, ready = null
     note = await shareNote({ t, priv, built: r.built, tries: noteTries, every: noteEvery });
     if (!note) throw said('Your share is private, and this page does not see it in your balance yet. Press Farm it in a minute.');
     say('bonding', hash);
-    const bond = await bondShare({ t, priv, note, wait });
+    const bond = await bondShare({ t, priv, note, wait, say });
     say('done', bond?.txHash || hash);
     return { hash, shares: r.shares, bond };
   } catch (e) { throw Object.assign(e, { share: true, note, hash }); }

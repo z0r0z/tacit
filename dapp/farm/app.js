@@ -14,7 +14,7 @@ import { readCampaign, bestApr, notTrading } from '/trade/lp-campaign.js?cb=8da1
 import { DEPLOYMENTS } from '/vault/deployments.js?cb=4af96594';
 import { exitSaid } from '/farm-ops.js?cb=28af38e1';
 import { relayWords } from '/relay-outcome.js?cb=17e48a9a';
-import { readReserves, marketOf, otherOf, zapMath, zapQuote, zapRun, bondShare, readNotes, looseOf, declined, ZAP_GAS } from '/farm/zap.js?cb=24ae69b7';
+import { readReserves, marketOf, otherOf, zapMath, zapQuote, zapRun, bondShare, readNotes, looseOf, declined, ZAP_GAS } from '/farm/zap.js?cb=bb5bff74';
 
 const API = 'https://api.tacit.finance', POOL = '0x000000000Ed1eabD231Be41d93b719056F7febFC';
 const E10 = 10n ** 10n, HINT = 10n ** 17n;                                      // a tenth of an ETH: the deposit a tile's entry cost is said for
@@ -471,6 +471,7 @@ function onStep(step, d) {
   else if (step === 'sent') cookSay(`Sent ${txLink(d)}. Waiting for it to land…`, { secs: 24 });
   else if (step === 'landed') { steps('farm'); cookSay('In the pool, as a private share. Reading it…'); }
   else if (step === 'bonding') cookSay('The relay is putting your share in the farm, about a minute…', { secs: 70 });
+  else if (step === 'waiting') cookSay('Proved. The relay sends it in turn: waiting for it to land…', { secs: 90 });
 }
 
 // The Tacit key: the tab's own if it has one open, else opened at the press (the wallet connected here signs, with no sheet, on a first
@@ -623,12 +624,16 @@ async function farmIt(pool, note0, btn = null) {
   const f = FARMS.find((x) => x.pool && x.pool.poolId === pool.poolId) || { name: pairName(pool.pair), pid: Number(pool.pid) };
   Z.busy = true; lock(true); if (btn) btn.disabled = true;
   steps('farm'); acts.innerHTML = ''; react('cook');
-  cookSay('The relay is putting your share in the farm, about a minute…', { secs: 70 });
+  cookSay('Checking your share…');
   try {
     const [t, r] = await Promise.all([getUx(), run()]), priv = () => key.priv();
-    const note = note0 || looseOf((await scan(true)).notes, [pool])[0]?.note;
+    // read afresh: a share the relay has put in the farm since is not held any more, and is not farmed twice
+    const fresh = looseOf((await scan(true)).notes, [pool]), same = (n) => String(n.leaf).toLowerCase() === String(note0?.leaf).toLowerCase();
+    if (note0 && !fresh.some((x) => same(x.note))) { farmed(f, null); return; }
+    const note = note0 || fresh[0]?.note;
     if (!note) throw Object.assign(new Error('That share is not in your balance yet. Try again in a minute.'), { said: true });
-    const out = await bondShare({ t, priv, note, wait: waitFor(r, f) });
+    cookSay('The relay is putting your share in the farm, about a minute…', { secs: 70 });
+    const out = await bondShare({ t, priv, note, wait: waitFor(r, f), say: onStep });
     if (out?.jobId) r.journal.put('job:' + out.jobId, { status: 'settled', hash: out.txHash || undefined });
     farmed(f, out?.txHash || null);
   } catch (e) {
@@ -650,7 +655,7 @@ $('#pz-loose').addEventListener('click', async (e) => {
 
 // the key's positions in the private farms: the rewards page's panel, on this page's key
 function mountMine() {
-  return mineP ||= import('/rewards/farms.js?cb=16c9b893').then((m) => {
+  return mineP ||= import('/rewards/farms.js?cb=86891f34').then((m) => {
     mineUi = m.mountFarms($('#pf-mine'), { pick: pickProvider, session: key, wallet, W, connect: () => connect.connect(), program: () => S.prog,
       names: () => new Map(S.priv.map((x) => [x.pid, x.name])), pair: (pid) => { const icons = S.priv.find((x) => String(x.pid) === String(pid))?.icons; return icons ? pairIcons(icons) : ''; },
       onRead: (list) => { S.mine = new Map(list.map((p) => [Number(p.pid), p])); paint(); },

@@ -158,6 +158,7 @@ const t = {
     state: async () => ({ state: T().proving === false ? 'paused' : 'ok', proving: T().proving !== false, settling: true, board: true }),
     async prove(spec, w) { note('prove', spec.type); w?.onJob?.('job-prove'); await sleep(T().proveMs ?? 250); if (T().proveFail) throw new Error('prove failed: the guest rejects this input'); return { status: 'proven', jobId: 'job-prove', publicValues: '0x' + '11'.repeat(64), proof: '0x' + '0b'.repeat(32), memos: spec.memos }; },
     landed: async () => ({ ok: true }),
+    async waitForSettle(id, o) { note('follow', id + '@' + o.openGraceMs); await sleep(T().sendMs ?? 600); T().bonded = true; T().joined = true; return { status: 'settled', jobId: id, txHash: '0x' + '44'.repeat(32) }; },
   },
   nextShareIndex: () => { note('index'); return 3; },
   releaseShareIndex: ({ index }) => note('release', index),
@@ -171,7 +172,9 @@ const t = {
   },
   async lpBond({ aNote, bNote, controller }) { note('lpbond', aNote.value + '+' + bNote.value + '@' + controller.slice(0, 8)); await sleep(150); if (T().joinFail) throw Object.assign(new Error('relay 503: temporarily unavailable'), { code: 'relay_held' }); T().joined = true; T().bonded = true; return { jobId: 'job-lpbond', txHash: '0x' + '33'.repeat(32) }; },
   async transfer() { note('transfer'); throw new Error('this stand-in does not cut notes'); },
-  async farmBond({ lpNote }) { note('bond', lpNote.leaf.slice(0, 6)); await sleep(T().bondMs ?? 200); if (T().bondFail) throw Object.assign(new Error('relay 503: temporarily unavailable'), { code: 'relay_held' }); T().bonded = true; return { jobId: 'job-bond', txHash: '0x' + '22'.repeat(32) }; },
+  async farmBond({ lpNote, waitOpts }) { note('bond', lpNote.leaf.slice(0, 6)); waitOpts?.onJob?.('job-bond', 'farmbond'); await sleep(T().bondMs ?? 200);
+    if (T().bondOpen) throw Object.assign(new Error('settle held: proved and waiting for a sender (job job-bond); it can be sent from any account now'), { code: 'open', open: { jobId: 'job-bond', publicValues: '0x01', proof: '0x02', memos: [] } });
+    if (T().bondFail) throw Object.assign(new Error('relay 503: temporarily unavailable'), { code: 'relay_held' }); T().bonded = true; return { jobId: 'job-bond', txHash: '0x' + '22'.repeat(32) }; },
   farmPositions: async () => (T().bonded ? [{ pid: 0, receiptLeaf: '0x' + '77'.repeat(32), pendingUnits: '0', pendingTac: '0', shares: '1' }] : (T().positions || [])),
   ethCall: async () => '0x' + '0'.repeat(64), identity: () => ({ pubHex: '02' + 'ab'.repeat(32) }), poolTickerOf: (id) => ({ '${A_TAC}': 'TAC', '${A_CUSD}': 'cUSD', '${A_CBTC}': 'cBTC' })[String(id).toLowerCase()] || 'cETH', quoteOpFee: async () => 0n, quoteUnwrapFee: () => ({ net: 1n, fee: 0n }),
 };
@@ -489,6 +492,34 @@ try {
       await page.click('#pz-go');
       ok(await until(page, () => /The price moved\. Nothing was sent/.test(document.querySelector('#pz-status')?.textContent || '')), `a pool that moved against the quote: ${await text(page, '#pz-status')}`);
       ok(st.sent.length === 0 && await page.evaluate(() => !(window.__ux || []).some((x) => x.startsWith('prove')) && document.querySelector('#pz-cook').hidden), 'nothing was proved or sent');
+      await r.browser.close();
+    }
+    {
+      // the relay proves the farm entry and sends it later: the page waits for it, and ends in the farm with no Farm it to press
+      const r = await openPage({ hash: '#teth-tac', fake: true, wallet: true, t: { bondOpen: true, sendMs: 1500 } }), { page, st } = r;
+      await until(page, () => /Enter an amount/.test(document.querySelector('#pz-go').textContent));
+      await page.click('#pz .quick [data-q="0.1"]'); await quoted(page);
+      await until(page, () => !document.querySelector('#pz-go').disabled);
+      await page.click('#pz-go');
+      ok(await sayIs(page, /Proved\. The relay sends it in turn: waiting for it to land/), `a farm entry proved and not sent yet is waited for: ${await text(page, '#pz-say')}`);
+      ok(await page.evaluate(() => document.querySelector('#pz-go').disabled && !document.querySelector('#pz-acts [data-act="farmit"]')), 'nothing offers to farm it again meanwhile');
+      ok(await sayIs(page, /In the farm/), `and it ends in the farm once the relay sends it (${await text(page, '#pz-say')})`);
+      ok(await page.evaluate(() => window.__ux.filter((x) => x.startsWith('bond')).length === 1 && window.__ux.includes('follow:job-bond@Infinity') && /0x44444444/.test(document.querySelector('#pz-say').innerHTML)), 'one farm entry, followed to its transaction');
+      ok(st.sent.length === 1, 'and one transaction from the wallet');
+      await r.browser.close();
+    }
+    {
+      // Farm it on a share the relay has meanwhile put in the farm: read afresh, said to be in, not entered twice
+      const r = await openPage({ hash: '#teth-tac', fake: true, wallet: true, t: { bondFail: true } }), { page } = r;
+      await until(page, () => /Enter an amount/.test(document.querySelector('#pz-go').textContent));
+      await page.click('#pz .quick [data-q="0.1"]'); await quoted(page);
+      await until(page, () => !document.querySelector('#pz-go').disabled);
+      await page.click('#pz-go');
+      await sayIs(page, /Your share is private and safe/);
+      await page.evaluate(() => { window.__t.bondFail = false; window.__t.bonded = true; });       // the relay sent it after all
+      await page.click('#pz-acts [data-act="farmit"]');
+      ok(await sayIs(page, /In the farm/), 'Farm it on a share already in the farm says so');
+      ok(await page.evaluate(() => window.__ux.filter((x) => x.startsWith('bond')).length === 1), 'without a second farm entry');
       await r.browser.close();
     }
     {

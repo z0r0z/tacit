@@ -233,7 +233,16 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
     const now = await terms(pool, true);
     if (bFor(a, now.res) !== b) { updateInfo(); throw Object.assign(new Error(`The pool’s price moved while your notes were cut to size: the second side is now ${units8(bFor(a, now.res))} ${tm.tkB}. Press again: the notes are ready and nothing was added.`), { said: true }); }
     say(`Step ${n} of ${n} · the relay is proving your farm entry…`);
-    settled(await bond(t, priv(), { manager: prog.manager, aNote: nA, bNote: nB, feeBps: now.res.feeBps ?? pool.feeBps, waitOpts: run().wait(`Add ${name(pool)} liquidity and farm it`, 20 * 60e3) }));
+    // proved and sent a little later by the relay ("open"), or still in its queue when the wait runs out: followed until it lands
+    const w = run().wait(`Add ${name(pool)} liquidity and farm it`, 20 * 60e3);
+    let jid = null;
+    try { settled(await bond(t, priv(), { manager: prog.manager, aNote: nA, bNote: nB, feeBps: now.res.feeBps ?? pool.feeBps, waitOpts: { ...w, onJob: (id, ty) => { jid = id; w.onJob?.(id, ty); } } })); }
+    catch (e) {
+      const id = e?.open?.jobId || jid;
+      if (!id || !(e?.code === 'open' || e?.open || /settle timed out|status polling for job/i.test(String(e?.message || '')))) throw e;
+      say('Proved. The relay sends it in turn: waiting for it to land…');
+      settled(await t.relay.waitForSettle(id, { openGraceMs: Infinity, timeoutMs: 30 * 60e3, intervalMs: 5000 }));
+    }
     if (D) D.form = joinAt ? { pool: D.form.pool, open: true } : {};
     return prog?.epoch?.active ? 'In the farm: TAC is streaming to your private position.' : 'In the farm. It earns once the next reward period starts.';
   }

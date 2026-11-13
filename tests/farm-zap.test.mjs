@@ -78,13 +78,14 @@ function world(over = {}) {
       state: async () => (st.noState ? null : { state: st.proving ? 'ok' : 'paused', proving: st.proving }),
       prove: async (spec, w) => { log.push(['prove', spec.type, w.viaRelay, w.timeoutMs]); if (st.proveErr) throw st.proveErr; return st.proven ?? { status: 'proven', jobId: 'job1', publicValues: '0x' + '11'.repeat(40), proof: '0x' + '0b'.repeat(8) }; },
       landed: async (id, hash) => { log.push(['landed', id, hash]); },
+      waitForSettle: async (id, o) => { log.push(['follow', id, o.openGraceMs, o.timeoutMs]); if (st.followErr) throw st.followErr; return { status: 'settled', jobId: id, txHash: '0x' + '44'.repeat(32) }; },
     },
     nextShareIndex: (a) => { log.push(['index', a.owned.length, a.used.join()]); return 4; },
     releaseShareIndex: (a) => { log.push(['release', a.index]); },
     buildShareWrap: (a) => { log.push(['build', a.shares, a.index]); return { ...built, index: a.index }; },
     wrapProofFits: () => st.fits !== false,
     balance: async () => { log.push(['balance']); return { notes: st.notes, spentNotes: [{ asset: 'x', owner: 'y' }] }; },
-    farmBond: async (a) => { log.push(['bond', a.lpNote.leaf, a.waitOpts.timeoutMs]); if (st.bondErr) throw st.bondErr; return { jobId: 'job2', txHash: '0x' + '22'.repeat(32) }; },
+    farmBond: async (a) => { log.push(['bond', a.lpNote.leaf, a.waitOpts.timeoutMs]); a.waitOpts.onJob?.('job2', 'farmbond'); if (st.bondErr) throw st.bondErr; return { jobId: 'job2', txHash: '0x' + '22'.repeat(32) }; },
   };
   const rpc = async (method, params) => {
     if (method === 'eth_gasPrice') return '0x3b9aca00';
@@ -209,6 +210,17 @@ const readyOf = async (w) => zapProve({ t: w.t, priv: w.priv, pool, q: await quo
   const other = world(); other.st.notes = [{ leaf: other.built.leaf, asset: pool.lpAsset, value: '1' }];
   await zapRun({ t: other.t, rpc: other.rpc, wallet: other.wallet, from: FROM, priv: other.priv, pool, q, ready: { ...kept, wei: WEI * 2n }, noteEvery: 1 });
   ok(other.names().includes('prove'), 'one kept for another amount is not');
+
+  // a farm entry the relay proved and sends later ("open"), or still holds in its queue: followed until it lands, not called failed
+  const open = world({ bondErr: Object.assign(new Error('settle held: proved and waiting for a sender (job job9)'), { code: 'open', open: { jobId: 'job9' } }) }); open.st.notes = [{ leaf: open.built.leaf, asset: pool.lpAsset, value: '1' }];
+  const o1 = await zapRun({ t: open.t, rpc: open.rpc, wallet: open.wallet, from: FROM, priv: open.priv, pool, q, say: open.say, noteEvery: 1 });
+  eq([open.log.at(-1), o1.bond.txHash], [['follow', 'job9', Infinity, 30 * 60e3], '0x' + '44'.repeat(32)], 'an open farm entry is followed, with no time to be open given up on, for half an hour');
+  ok(open.said.includes('waiting:job9') && open.said.at(-1).startsWith('done:0x44444444'), `and the page is told it is waiting, then done (${open.said.slice(-3).join(', ')})`);
+  const slow = world({ bondErr: new Error('settle timed out (box offline or backlogged)') }); slow.st.notes = [{ leaf: slow.built.leaf, asset: pool.lpAsset, value: '1' }];
+  await zapRun({ t: slow.t, rpc: slow.rpc, wallet: slow.wallet, from: FROM, priv: slow.priv, pool, q, noteEvery: 1 });
+  eq(slow.log.at(-1).slice(0, 2), ['follow', 'job2'], 'a wait that ran out follows the job it was given');
+  const lost = world({ bondErr: Object.assign(new Error('settle held'), { code: 'open', open: { jobId: 'job9' } }), followErr: new Error('settle failed: reverted') }); lost.st.notes = [{ leaf: lost.built.leaf, asset: pool.lpAsset, value: '1' }];
+  await fails(zapRun({ t: lost.t, rpc: lost.rpc, wallet: lost.wallet, from: FROM, priv: lost.priv, pool, q, noteEvery: 1 }), (e) => ok(e.share === true && /settle failed/.test(e.message)), 'a followed job that fails still says the share is the key’s');
 
   const held = world({ bondErr: Object.assign(new Error('relay 503'), { code: 'relay_held' }) }); held.st.notes = [{ leaf: held.built.leaf, asset: pool.lpAsset, value: '1' }];
   await fails(zapRun({ t: held.t, rpc: held.rpc, wallet: held.wallet, from: FROM, priv: held.priv, pool, q, noteEvery: 1 }), (e) => ok(e.share === true && e.note?.leaf === held.built.leaf && e.hash === '0x' + 'ab'.repeat(32) && e.code === 'relay_held'), 'a farm entry that fails after the transaction says the share is the key’s, and which note it is');
