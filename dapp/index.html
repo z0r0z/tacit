@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-ZxZzPUlyiLqEhWMRD08WVo/FVHQ6xpxeIEv13Jz/x5k=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-bJRecIBiOIa62ENvqaFfDFwfpPKdVDSQu1MoBxgFdK0=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -19,7 +19,7 @@
 <link rel="preload" href="/fonts/instrument-serif-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/ibm-plex-mono-500-latin.woff2" as="font" type="font/woff2" crossorigin>
-<script defer src="/front-route.js?cb=1610a94f"></script>
+<script defer src="/front-route.js?cb=c01afa16"></script>
 <title>tacit defi</title>
 <link rel="canonical" href="https://tacit.finance/">
 <meta name="description" content="Private DeFi across Bitcoin and Ethereum: shield, swap, send, earn and borrow from one tacit1 ID.">
@@ -42,7 +42,7 @@
 <link rel="modulepreload" href="/tab-key.js?cb=ec8829ac">
 <link rel="modulepreload" href="/tacit-address.js">
 <link rel="modulepreload" href="/bip352.js">
-<link rel="modulepreload" href="/evm-wallet.js?cb=ce3b412c">
+<link rel="modulepreload" href="/evm-wallet.js?cb=c0ce7f8f">
 <link rel="modulepreload" href="/identity-message.js">
 <link rel="modulepreload" href="/wallet-prompts.js">
 <link rel="modulepreload" href="/walletconnect.js?cb=843803d6">
@@ -68,7 +68,7 @@
 <link rel="modulepreload" href="/bridge-tick.js?cb=42d78071">
 <link rel="modulepreload" href="/tacit-session.js?cb=4636e436">
 <link rel="modulepreload" href="/activity.js?cb=a0384066">
-<link rel="modulepreload" href="/swap/card.js?cb=c5a40713">
+<link rel="modulepreload" href="/swap/card.js?cb=8c0c83f3">
 <link rel="modulepreload" href="/trade/wallet.js?cb=5d19a733">
 <link rel="modulepreload" href="/trade/util.js?cb=1d2cd8d3">
 <link rel="modulepreload" href="/trade/rpc.js">
@@ -2475,7 +2475,7 @@ import { knownWallets } from '/tacit-wallet-known.js?cb=ec5b5193';
 import { tabKeyRead, tabKeyWrite, tabKeyClear, tabKeyWatch } from '/tab-key.js?cb=ec8829ac';
 import { makeTacitAddress, poolKeysOf } from '/tacit-address.js';
 import { bip352TaggedHash } from '/bip352.js';
-import { makeEvmWallet, declinedWords, stillWaiting } from '/evm-wallet.js?cb=ce3b412c';
+import { makeEvmWallet, declinedWords, stillWaiting } from '/evm-wallet.js?cb=c0ce7f8f';
 import { announceWalletConnect, wcSheets, dialogHost, WC_PROJECT_ID } from '/walletconnect.js?cb=843803d6';
 import { makeEvmAccount } from '/evm-account.js';
 import { makeEvmTx } from '/evm-tx.js';
@@ -4110,10 +4110,10 @@ function resumeActivity() {
 const render = {}, load = {};
 // The sheets' code is front/sheets.js: it loads when a sheet first opens, on the first press or key, or once the page is idle.
 // front-sheets:begin
-const sheetsCtx = () => ({ $, $$, ACT, ADDR, ASSET_SEND_SATS, BASE_NODES, BF, BR_DONE, BTC, BTC_NOTE_ASSETS, BTC_TOKENS, BWB, BWX, CETH_ID, CHAIN_ASSETS, CHAIN_META, CSEND, CS_ASSETS, DEV, DEVICE_CHAINS, DEV_JOB, DEV_PREF, DISTRIBUTOR, E10, ETHERSCAN, ETH_DP, ETH_LOG_NODES, EVM_POOL, EVM_ROUTER, EXIT_AHEAD, FARM, FLASH, HARVEST_WORTH, HOLD, HOLD_CONSENT, HX, HX_FLIGHT, JOBS, JOIN, KEEP_READY, KEPT, L2BAL, LK, LOCAL, LOCK, LOGO, LP_KEEP_ETH, MEMPOOL, NOTIFY_KEY, OFFERED, OPENISH, OPEN_OFFERED, OUT, P, PGM, POOL_TK, PTS, PTS_BOARD, REDEEM, RETRY, REVERTS, REWARD_PAID, RS, RUNS, Raw, S, SATS_DUST, SEALED, SEL, SELF, SELFDO, SP, SP_PREF, SP_SEAL, SWAP_ASSETS, TAB, TAC_BTC_ID, TAC_DP, TK, TOKEN_POOLS, US, V1, VOUCH, WAIT_WHY, WAL, WNS, WTAC, XA, XA_REDEEM, XO_AT, XO_STEPS, ZAP_SETTLE_GAS, ZROUTER, ZSWAP, aFor, aboutEth, acked, actBridge, actBtc, actDone, actGet, actSave, addrFlat, addrWord, addressFor, addressId, ago, alts, aprLong, aprOf, aprShort, assetById, assetSendForm, bFor, badStatus, big, bondAck, bondDue, bondElsewhere, bondFunds, bondNoWallet, bondNotes, bondVia, bondsNow, brJournal, btcQr, btcRouteM, btcSendNow, busy, bwCanWst, byValue, bytesToHex, chainFull, chainMark, chainMarks, chainNow, chainRpc, chainTag, clearField, clock, concatBytes, connect, copy, cutAhead, dashGo, dashSoon, dayFmt, dayShort, deadline, debounce, depositCallout, devBal, devDepositSend, devNow, devOn, devOutSend, devProver, devResolve, devSaid, deviceSync, deviceWallet, dfmt, earnRows, earnedNow, ended, errText, etaWords, ethBalance, ethBase, ethCall, ethKeep, ethOfTac, evm, exitAheadFor, exitGo, exitKind, exitPosition, failText, feeRoom, feesLine, fmt, freeNotes, getDeviceMods, getUx, heldLabel, hexToBytes, hmac, holdBehind, holdConsented, holdPayTo, holderTier, holdingRound, html, hxBwInflight, hxDraft, hxLive, hxPts, hxWarmWrap, idRow, inUse, joinAhead, joinMax, joinNow, joinOnePlan, joinPairPlan, joinSides, joinTerms, kLock, kNote, kOfAsset, kPos, keccak_256, keep, keepKey, keepReady, keepSizes, keeperDown, keeperRead, keeperTrouble, keeperTx, keyRow, knownWallet, lastEnd, lastSeen, leftWords, linkNote, linked, listed, loadBonds, loadBorrow, loadBtc, loadFarms, loadHeld, loadLocks, loadPoints, loadPositions, loadUnified, loadUsdtBal, lockAhead, lockId, lockLine, lockList, lockNext, lossGate, lossOk, lpCost, lpKeep, lpPoolFor, lpSays, lpSendNow, lpShare, lpTicker, lsKv, maxAria, midAction, mine, mount, multicall, needKey, nfmt, noRelayFee, noteFor, noteKeep, now, offerMore, offerSelf, okStatus, onEdit, onTheWay, opParts, openLink, openOf, openProve, openSheet, otherKey, otherSelf, otherWallet, overBalance, ownAccount, ownJob, ownNow, ownOn, ownWord, paceOf, paintAct, paintProve, paintSp, paintWallet, paintWalletBal, pairName, parseUnits, payFrom, payFromTok, payer, payingAccount, pct, pctFmt, pendingFor, pendingSent, perProof, permitSig, plain, pointsWho, poolLine, poolMaking, poolVsMarket, poolWorth, potTac, precisionApr, privateOf, proofsBusy, proofsFor, proveAhead, proveFmt, proveFor, proveOr, proveOwn, prover, provingNote, ptChain, ptsDays, ptsEnd, ptsFmt, ptsWhy, pubExitSend, pubOutData, pubPreview, pubSend, quoteErr, rankRows, rateStr, reProve, readOutlook, readPublicTac, readRow, readWrapTip, recipientOf, redeemBuild, redeemOn, redeemRefresh, redeemSend, redeemSent, redeemStep, refreshAll, refreshFarm, refreshWalletBal, relayDeposit, relayProving, relayWhy, render, rerender, resetPrivate, resolveToM, revertText, rewardPop, rewardWorth, rpc, running, samePos, say, sayErr, sayLive, scanIfNew, scanPrivate, scanShielded, scheduled, sealOn, secp, segSub, selfDo, selfOffer, selfWork, sendTx, setDeviceChain, setNotify, setPayer, settleBorrow, shLookingNote, sha256, sharePct, sharesEth, sheetOf, shieldedApr, short, shown, shownAs, sig, signIn, sizesNow, sleep, spApply, spMod, spOn, spRead, spSaid, spendable, stealthSendNow, stepBond, stepHarvest, stepLi, stepOf, stepRedeem, stepTakeOut, stepUnbond, store, strip, swapAsset, syncAccount, syncLink, tacOf, tacShort, tacitShort, takeBond, takeDraft, takenByOther, tickerOf, tkPin, toSelf, toast, tokDepositSend, tokRecipient, tokenSync, tokenWallet, tooFine, txFail, txLink, txMark, txSite, txUrl, unharvested, unitOf, unwrapNow, usdtExitFee, usdtOwner, usdtWrapNow, utcDay, viaText, viewAddr, vouchers, waitRanOut, waitTx, walletBalances, walletPriv, warn, wireAck, wireFinish, wireSignIn, wireSub, withKey, word, wordAt, wrapMax, wrapNow, wtacHere, xaOf, xbHeld, xbOf, xoCovered, xoDue, xoErr, xoFundRow, xoJournal, xoKeyOpen, xoLink, xoNoteText, xoOut, xoRecords, xoShown, your, zapAhead, zapNow, zapQuote, zapUnit, zapsFinish, zapsMine, zapsRead, get PTSINFO() { return PTSINFO; }, get T() { return T; }, get UNI() { return UNI; } });
+const sheetsCtx = () => ({ $, $$, ACT, ADDR, ASSET_SEND_SATS, BASE_NODES, BF, BR_DONE, BTC, BTC_NOTE_ASSETS, BTC_TOKENS, BWB, BWX, CETH_ID, CHAIN_ASSETS, CHAIN_META, CSEND, CS_ASSETS, DEV, DEVICE_CHAINS, DEV_JOB, DEV_PREF, DISTRIBUTOR, E10, ETHERSCAN, ETH_DP, ETH_LOG_NODES, EVM_POOL, EVM_ROUTER, EXIT_AHEAD, FARM, FLASH, HARVEST_WORTH, HOLD, HOLD_CONSENT, HX, HX_FLIGHT, JOBS, JOIN, KEEP_READY, KEPT, L2BAL, LK, LOCAL, LOCK, LOGO, LP_KEEP_ETH, MEMPOOL, NOTIFY_KEY, OFFERED, OPENISH, OPEN_OFFERED, OUT, P, PGM, POOL_TK, PTS, PTS_BOARD, REDEEM, RETRY, REVERTS, REWARD_PAID, RS, RUNS, Raw, S, SATS_DUST, SEALED, SEL, SELF, SELFDO, SP, SP_PREF, SP_SEAL, SWAP_ASSETS, TAB, TAC_BTC_ID, TAC_DP, TK, TOKEN_POOLS, US, V1, VOUCH, WAIT_WHY, WAL, WNS, WTAC, XA, XA_REDEEM, XO_AT, XO_STEPS, ZAP_SETTLE_GAS, ZROUTER, ZSWAP, aFor, aboutEth, acked, actBridge, actBtc, actDone, actGet, actSave, addrFlat, addrWord, addressFor, addressId, ago, alts, aprLong, aprOf, aprShort, assetById, assetSendForm, bFor, badStatus, big, bondAck, bondDue, bondElsewhere, bondFunds, bondNoWallet, bondNotes, bondVia, bondsNow, brJournal, btcQr, btcRouteM, btcSendNow, busy, bwCanWst, byValue, bytesToHex, chainFull, chainMark, chainMarks, chainNow, chainRpc, chainTag, clearField, clock, concatBytes, connect, copy, cutAhead, dashGo, dashSoon, dayFmt, dayShort, deadline, debounce, depositCallout, devBal, devDepositSend, devNow, devOn, devOutSend, devProver, devResolve, devSaid, deviceSync, deviceWallet, dfmt, earnRows, earnedNow, ended, errText, etaWords, ethBalance, ethBase, ethCall, ethKeep, ethOfTac, evm, exitAheadFor, exitGo, exitKind, exitPosition, failText, feeRoom, feesLine, fmt, freeNotes, getDeviceMods, getUx, heldLabel, hexToBytes, hmac, holdBehind, holdConsented, holdPayTo, holderTier, holdingRound, html, hxBwInflight, hxDraft, hxLive, hxPts, hxWarmWrap, idRow, inUse, joinAhead, joinMax, joinNow, joinOnePlan, joinPairPlan, joinSides, joinTerms, kLock, kNote, kOfAsset, kPos, keccak_256, keep, keepKey, keepReady, keepSizes, keeperDown, keeperRead, keeperTrouble, keeperTx, keyRow, knownWallet, lastEnd, lastSeen, leftWords, linkNote, linked, listed, loadBonds, loadBorrow, loadBtc, loadFarms, loadHeld, loadLocks, loadPoints, loadPositions, loadUnified, loadUsdtBal, lockAhead, lockId, lockLine, lockList, lockNext, lossGate, lossOk, lpCost, lpKeep, lpPoolFor, lpSays, lpSendNow, lpShare, lpTicker, lsKv, maxAria, midAction, mine, mount, multicall, needKey, nfmt, noRelayFee, noteFor, noteKeep, now, offerMore, offerSelf, okStatus, onEdit, onTheWay, opParts, openLink, openOf, openProve, openSheet, openerOn, otherKey, otherSelf, otherWallet, overBalance, ownAccount, ownJob, ownNow, ownOn, ownWord, paceOf, paintAct, paintProve, paintSp, paintWallet, paintWalletBal, pairName, parseUnits, payFrom, payFromTok, payer, payingAccount, pct, pctFmt, pendingFor, pendingSent, perProof, permitSig, plain, pointsWho, poolLine, poolMaking, poolVsMarket, poolWorth, potTac, precisionApr, privateOf, proofsBusy, proofsFor, proveAhead, proveFmt, proveFor, proveOr, proveOwn, prover, provingNote, ptChain, ptsDays, ptsEnd, ptsFmt, ptsWhy, pubExitSend, pubOutData, pubPreview, pubSend, quoteErr, rankRows, rateStr, reProve, readOutlook, readPublicTac, readRow, readWrapTip, recipientOf, redeemBuild, redeemOn, redeemRefresh, redeemSend, redeemSent, redeemStep, refreshAll, refreshFarm, refreshWalletBal, relayDeposit, relayProving, relayWhy, render, rerender, resetPrivate, resolveToM, revertText, rewardPop, rewardWorth, rpc, running, samePos, say, sayErr, sayLive, scanIfNew, scanPrivate, scanShielded, scheduled, sealOn, secp, segSub, selfDo, selfOffer, selfWork, sendTx, setDeviceChain, setNotify, setPayer, settleBorrow, shLookingNote, sha256, sharePct, sharesEth, sheetOf, shieldedApr, short, shown, shownAs, sig, signIn, sizesNow, sleep, spApply, spMod, spOn, spRead, spSaid, spendable, stealthSendNow, stepBond, stepHarvest, stepLi, stepOf, stepRedeem, stepTakeOut, stepUnbond, store, strip, swapAsset, syncAccount, syncLink, tacOf, tacShort, tacitShort, takeBond, takeDraft, takenByOther, tickerOf, tkPin, toSelf, toast, tokDepositSend, tokRecipient, tokenSync, tokenWallet, tooFine, txFail, txLink, txMark, txSite, txUrl, unharvested, unitOf, unwrapNow, usdtExitFee, usdtOwner, usdtWrapNow, utcDay, viaText, viewAddr, vouchers, waitRanOut, waitTx, walletBalances, walletPriv, warn, wireAck, wireFinish, wireSignIn, wireSub, withKey, word, wordAt, wrapMax, wrapNow, wtacHere, xaOf, xbHeld, xbOf, xoCovered, xoDue, xoErr, xoFundRow, xoJournal, xoKeyOpen, xoLink, xoNoteText, xoOut, xoRecords, xoShown, your, zapAhead, zapNow, zapQuote, zapUnit, zapsFinish, zapsMine, zapsRead, get PTSINFO() { return PTSINFO; }, get T() { return T; }, get UNI() { return UNI; } });
 // front-sheets:end
 let SHEET_CODE = null;
-const sheetsReady = lazy(() => import('/front/sheets.js?cb=f2e268f5').then((m) => { SHEET_CODE ||= m.default(sheetsCtx()); }));
+const sheetsReady = lazy(() => import('/front/sheets.js?cb=f4db180b').then((m) => { SHEET_CODE ||= m.default(sheetsCtx()); }));
 const withSheets = (f) => (SHEET_CODE ? f() : sheetsReady().then(f, () => {}));
 for (const k of ["wallet","eth","usdt","btc","pts","farm","borrow"]) render[k] = () => { if (!SHEET_CODE) withSheets(() => rerender(k)); };
 function renderProve(...a) { if (SHEET_CODE) return SHEET_CODE.renderProve(...a); withSheets(() => { if ($('#sheet-prove').open) reProve(); }); }
@@ -4373,8 +4373,8 @@ const loadTacit = TS.load, tacitTurn = TS.turn, withKey = TS.withKey, dropTacitK
 const mainnetBtc = (a) => { if (!/^(bc1|[13])/i.test(String(a || ''))) throw new Error('Your Bitcoin wallet is on a test network. Switch it to mainnet.'); };
 
 const open = {
-  async eth(k) {
-    const id = await evm.deriveIdentity({ pick: pickWallet, expect: k?.address, onStep: (x) => signStep?.(x) });
+  async eth(k, { wc = false } = {}) {
+    const id = await evm.deriveIdentity({ pick: pickWallet, expect: k?.address, wc, onStep: (x, i) => signStep?.(x, i) });
     const was = S.wallet;
     S.provider = id.provider; S.wallet = '0x' + id.address;
     try { setKey({ mode: 'eth', priv: id.priv, pubHex: k?.pubHex || id.pubHex, address: S.wallet }); }
@@ -4446,8 +4446,9 @@ function signIn(id, first = 'eth') {
   const saved = known?.mode !== 'local' && other?.mode !== 'local' && isPub(readJson('tacit-wallet-v1:mainnet')?.pub);
   const pk = isPasskeyAvailable();
   const opt = (k, title, sub, cls = '') => html`<button class="opt ${cls}" type="button" data-in="${k}"><span class="opt-t">${title}</span><span class="opt-m">${sub}</span></button>`;
+  const mineOn = openerOn(known) || openerOn(other);
   const links = html`<p class="more">${saved ? html`<button class="link" type="button" data-in="local">Saved in this browser</button>` : ''}
-      <button class="link" type="button" data-in="paste">Paste a key</button>${pk && known ? html`<button class="link" type="button" data-in="new">New passkey wallet</button>` : ''}</p>
+      ${evm.canPair() && !mineOn ? html`<button class="link" type="button" data-in="wc">WalletConnect</button>` : ''}<button class="link" type="button" data-in="paste">Paste a key</button>${pk && known ? html`<button class="link" type="button" data-in="new">New passkey wallet</button>` : ''}</p>
     <div class="amt text" id="${id}-paste" hidden><input id="${id}-hex" type="password" placeholder="64-character Tacit key" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Tacit key"><button class="link" type="button" data-in="key">Open</button></div>`;
   if (known || other) {
     const mine = (k, w, main) => {
@@ -4457,7 +4458,7 @@ function signIn(id, first = 'eth') {
     };
     const way = (k, icon, name, title) => html`<button class="way" type="button" data-in="${k}" title="${title}"><svg class="tk" aria-hidden="true"><use href="#${icon}"/></svg><span>${name}</span></button>`;
     const eth = way('eth', 'tk-eth', 'Ethereum', 'MetaMask, Rabby, Rainbow, any browser wallet, or WalletConnect'), btc = way('btc', 'tk-btc', 'Bitcoin', 'Xverse, Leather or UniSat');
-    const ways = (first === 'btc' ? [btc, eth] : [eth, btc]).filter((x) => !(x === eth && (openerOn(known) || openerOn(other))));
+    const ways = (first === 'btc' ? [btc, eth] : [eth, btc]).filter((x) => !(x === eth && mineOn));
     return html`<div class="opts" id="${id}-in">
       <div class="lbl"><span>${known && other ? 'Open a wallet' : 'Open your wallet'}</span></div>
       ${known && other ? html`<p class="note">Two separate wallets, each with its own address and balances.</p>` : ''}
@@ -4467,8 +4468,10 @@ function signIn(id, first = 'eth') {
       ${links}
     </div>`;
   }
-  const walletEth = opt('eth', html`<svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>Ethereum wallet`, 'MetaMask, Rabby, Rainbow, any browser wallet, or WalletConnect. One free signature, two the first time.');
-  const walletBtc = opt('btc', html`<svg class="tk sm" aria-hidden="true"><use href="#tk-btc"/></svg>Bitcoin wallet`, 'Xverse, Leather or UniSat. One free signature, two the first time.');
+  const sole = evm.soleWallet(), on = !!(S.wallet && S.provider);
+  const ethSub = on ? html`<span class="nw">${short(S.wallet)}</span> is connected. Sign to open its Tacit wallet.` : sole ? `Continue with ${sole.named ? sole.name : 'your browser wallet'}.` : 'MetaMask, Rabby, Rainbow, or WalletConnect.';
+  const walletEth = opt('eth', html`<svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>Ethereum wallet`, ethSub, (on || sole) && first !== 'btc' ? 'main' : '');
+  const walletBtc = opt('btc', html`<svg class="tk sm" aria-hidden="true"><use href="#tk-btc"/></svg>Bitcoin wallet`, 'Xverse, Leather or UniSat.');
   return html`<div class="opts" id="${id}-in">
     ${(first === 'btc' ? [walletBtc, walletEth] : [walletEth, walletBtc])}
     ${pk ? opt('passkey', html`<svg class="tk sm" aria-hidden="true"><use href="#i-key"/></svg>Passkey`, 'Already made one? Touch ID, Windows Hello or a security key.') : ''}
@@ -4476,8 +4479,15 @@ function signIn(id, first = 'eth') {
     ${links}
   </div>`;
 }
-let signing = false, cancelSign = null, signStep = null;
-const SIGN_SAY = { account: 'Reading your wallet…', sign: 'Waiting for your wallet: sign there.', confirm: 'Sign there once more, to confirm.' };
+let signing = false, cancelSign = null, signStep = null, openAtOnce = true;
+const SIGN_SAY = { account: 'Reading your wallet…', connect: 'Connect in your wallet.', sign: 'Sign the message in your wallet.', confirm: 'Sign once more to confirm.' };
+const SIGN_FIRST = { eth: 'Reading your wallet…', btc: 'Sign in your Bitcoin wallet. The first time, twice.', ext: 'Sign in your Bitcoin wallet.', passkey: 'Use your passkey when your browser asks.', local: 'Opening the key saved in this browser…' };
+function signInSoon() {
+  if (S.key || signing || !openAtOnce || !navigator.userActivation?.isActive) return;
+  const known = knownWallet(), other = otherWallet(), one = known && other ? null : known || other;
+  if (!one || !['eth', 'btc', 'passkey'].includes(one.mode)) return;
+  withSheets(() => { if (!S.key && !signing && $('#sheet-wallet').open) $(`#ws-in [data-in="${known ? 'known' : 'other'}"]`)?.click(); });
+}
 function wireSignIn(root, id, after) {
   loadUnified().catch(() => {});
   evm.warm();
@@ -4495,11 +4505,12 @@ function wireSignIn(root, id, after) {
       const stop = new Promise((_, no) => { cancelSign = () => no(Object.assign(new Error('Cancelled in your wallet.'), { code: 4001 })); });
       const wait = document.createElement('p');
       wait.className = 'status wait';
-      mount(wait, html`<span>Waiting for your wallet: sign there (the first time, twice).</span> <button class="link" type="button">Cancel</button>`);
+      const how = k === 'known' ? known.mode : k === 'other' ? other.mode : k === 'wc' ? 'eth' : k === 'new' ? 'passkey' : k;
+      mount(wait, html`<span>${SIGN_FIRST[how] || 'Waiting for your wallet…'}</span> <button class="link" type="button">Cancel</button>`);
       wait.querySelector('button').onclick = () => cancelSign?.();
       const say = wait.querySelector('span');
       let slow = null;
-      signStep = (x) => { say.textContent = SIGN_SAY[x] || say.textContent; clearTimeout(slow); slow = setTimeout(() => { say.textContent = 'Still waiting. Open your wallet to answer.'; }, 10000); };
+      signStep = (x, i) => { if (SIGN_SAY[x]) say.textContent = `${SIGN_SAY[x]}${i?.of === 2 ? ` Step ${x === 'confirm' ? 2 : 1} of 2.` : ''}`; clearTimeout(slow); slow = setTimeout(() => { say.textContent = 'Still waiting. Open your wallet to answer.'; }, 10000); };
       const more = box.querySelector('.more');
       const shown = k === 'key' ? null : setTimeout(() => { if (more?.isConnected) { more.style.display = 'none'; more.after(wait); } else box.append(wait); }, 600);
       const dlg = root.closest?.('dialog'), onClose = () => cancelSign?.();
@@ -4511,10 +4522,12 @@ function wireSignIn(root, id, after) {
           else if (k === 'key') open.key(box.querySelector(`#${id}-hex`).value);
           else if (k === 'new') await open.newPasskey();
           else if (k === 'local') await open.local({ pubHex: readJson('tacit-wallet-v1:mainnet')?.pub });
+          else if (k === 'wc') await open.eth(undefined, { wc: true });
           else await open[k]();
         })(), stop]);
+        openAtOnce = true;
         after?.();
-      } catch (e) { if (!/cancel/i.test(e?.message || '') && e?.name !== 'NotAllowedError' && e?.code !== 4001 && !e?.unlockCancelled && errText(e) !== 'Cancelled in your wallet.') toast(errText(e), true); }
+      } catch (e) { openAtOnce = false; if (!/cancel/i.test(e?.message || '') && e?.name !== 'NotAllowedError' && e?.code !== 4001 && !e?.unlockCancelled && errText(e) !== 'Cancelled in your wallet.') toast(errText(e), true); }
       finally { signing = false; cancelSign = null; signStep = null; clearTimeout(shown); clearTimeout(slow); wait.remove(); if (more) more.style.display = ''; dlg?.removeEventListener('close', onClose); rest.forEach((x) => { x.disabled = false; }); }
     });
   };
@@ -4736,7 +4749,7 @@ function paintWallet() {
   try { hxPathPaint(); } catch { }
   $('#wallet-dot').className = 'dot' + (S.key ? ' on' : S.address ? ' live' : '');
   const wid = $('#wd-id'); if (wid) wid.textContent = S.key?.tacit ? short(S.key.tacit, 6) : 'tacit1…';
-  mount($('#wallet-label'), S.key ? (S.key.tacit ? chipView(S.key.tacit) : html`Opening…`) : html`${S.address ? short(S.address) : knownWallet() ? 'Open wallet' : 'Sign in'}`);
+  mount($('#wallet-label'), S.key ? (S.key.tacit ? chipView(S.key.tacit) : html`Opening…`) : html`${knownWallet() || otherWallet() ? 'Open wallet' : S.address ? short(S.address) : 'Sign in'}`);
 }
 $('#wallet').onclick = () => { openSheet('wallet'); if (!S.key) getUx().catch(() => {}); };
 $('#hold-tot').onclick = () => $('#dash')?.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
@@ -5078,6 +5091,7 @@ function openSheet(name) {
   if (tab && !running(sheet)) selectTab(sheet, tab);
   if (render[sheet]) { if (running(sheet)) deferred.add(sheet); else keep(d, render[sheet]); }
   if (!d.open) d.showModal();
+  if (sheet === 'wallet') signInSoon();
   paintBack(sheet);
   paintSp();
   syncLink();
@@ -15919,7 +15933,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=c5a40713').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=8c0c83f3').catch((e) => { SWC.p = null; throw e; }));
 const LBT = { p: null, at: 0 };
 const lbToday = () => {
   if (!LBT.p || Date.now() - LBT.at > 60e3) {

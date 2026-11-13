@@ -5,7 +5,7 @@ import { makeRpc, RPCS, ARCHIVE, HISTORY, makeReader, QUEUE_EXPIRY } from '/vaul
 import { makeFeed } from '/vault/feed.js?cb=6d915237';
 import { makePools } from '/vault/pools.js?cb=8c92fc24';
 import { makeVaultEngine, KIND, BATCH_MAX, StopWaiting } from '/vault/engine.js?cb=9e5ed096';
-import { makeConnect, UserStopped } from '/trade/connect.js?cb=f59469b9';
+import { makeConnect, UserStopped } from '/trade/connect.js?cb=b758e60b';
 import { tabKeyRead } from '/tab-key.js?cb=ec8829ac';
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -454,12 +454,12 @@ document.addEventListener('click', (e) => {
 // The Bitcoin side's own position (vault/mine.js): loaded on the holder's first press, or with the side when this tab already has a Tacit
 // wallet open, so the side reads nothing more until then
 // with no wallet connected here, the visitor chooses among the browser's wallets (the sign-in sheet's own picker)
-const pickProvider = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : import('/trade/key.js?cb=6fa82796').then((m) => m.pickWalletSheet(list)); };
+const pickProvider = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : import('/trade/key.js?cb=09f263cb').then((m) => m.pickWalletSheet(list)); };
 let mineP = null;
 function openMine(press, btn = null) {
   if (mineP) return;
   if (btn) { btn.textContent = 'Opening…'; btn.disabled = true; }
-  mineP = import('/vault/mine.js?cb=ec65a2c2').then((m) => { m.mountMine($('#btc-mine'), { ticket: $('#btc-tk'), pick: pickProvider, wallet, W, connect: connectSaying }); if (press) $('#btc-mine [data-mine="open"]')?.click(); })
+  mineP = import('/vault/mine.js?cb=86991c39').then((m) => { m.mountMine($('#btc-mine'), { ticket: $('#btc-tk'), pick: pickProvider, wallet, W, connect: connectSaying }); if (press) $('#btc-mine [data-mine="open"]')?.click(); })
     .catch((err) => { mineP = null; if (btn) { btn.textContent = 'Could not load. Try again'; btn.disabled = false; } console.warn('your position:', err?.message || err); });
 }
 $('#btc').addEventListener('click', (e) => {

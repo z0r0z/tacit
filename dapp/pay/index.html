@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-f8gZ58Uwi7KRtCoe3+I9g39o3Hc/ei1wfgZEhUwJ1WE=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://tacit-api.onrender.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-7iCeZG3Okz0dpsLnwb7RdQiUwQusHRkBoegB2fb7/pk=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://tacit-api.onrender.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay</title>
 <meta name="description" content="Pay BTC, TAC and ETH privately from one key and one tacit1 address. Every payment is made on your device.">
@@ -25,7 +25,7 @@
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="/prf-wallet.js">
 <link rel="modulepreload" href="/tacit-wallet-known.js?cb=ec5b5193">
-<link rel="modulepreload" href="/evm-wallet.js?cb=ce3b412c">
+<link rel="modulepreload" href="/evm-wallet.js?cb=c0ce7f8f">
 <link rel="modulepreload" href="/identity-message.js">
 <link rel="modulepreload" href="/wallet-prompts.js">
 <link rel="modulepreload" href="/walletconnect.js?cb=843803d6">
@@ -747,7 +747,7 @@ if (forwardOld(location.hash)) await new Promise(() => {});
 const [{ secp, keccak_256, sha256, hmac, bytesToHex, hexToBytes, concatBytes }, { prfBytesToScalar, prfLogin, prfRegister, loadPrfMap, savePrfMap, isPasskeyAvailable }, { knownWallets },
   { makeEvmWallet, declinedWords }, { announceWalletConnect, wcSheets, dialogHost, WC_PROJECT_ID }, { makeTacitAddress }, { bip352TaggedHash }, { addressId }] = await Promise.all([
   import('/vendor/tacit-deps.min.js'), import('/prf-wallet.js'), import('/tacit-wallet-known.js?cb=ec5b5193'),
-  import('/evm-wallet.js?cb=ce3b412c'), import('/walletconnect.js?cb=843803d6'), import('/tacit-address.js'), import('/bip352.js'), import('/address-id.js?cb=01f14d36')]);
+  import('/evm-wallet.js?cb=c0ce7f8f'), import('/walletconnect.js?cb=843803d6'), import('/tacit-address.js'), import('/bip352.js'), import('/address-id.js?cb=01f14d36')]);
 
 if (!secp.etc.hmacSha256Sync) secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, concatBytes(...m));
 // preload-later:begin
@@ -1069,9 +1069,9 @@ function pickWallet(list) {
   });
 }
 const open = {
-  async eth(k) {
+  async eth(k, { wc = false } = {}) {
     let id;
-    try { id = await evm.deriveIdentity({ pick: pickWallet, expect: k?.address }); }
+    try { id = await evm.deriveIdentity({ pick: pickWallet, expect: k?.address, wc }); }
     catch (e) { evm.deselectProvider(); throw e; }
     S.provider = id.provider; S.wallet = '0x' + lc(id.address).replace(/^0x/, '');
     setKey({ mode: 'eth', priv: id.priv, pubHex: k?.pubHex || id.pubHex, address: S.wallet });
@@ -1148,7 +1148,7 @@ function signIn(id, first = 'eth') {
   const saved = known?.mode !== 'local' && other?.mode !== 'local' && isPub(readJson('tacit-wallet-v1:mainnet')?.pub);
   const opt = (k, title, sub, cls = '') => html`<button class="opt ${cls}" type="button" data-in="${k}"><span class="opt-t">${title}</span><span class="opt-m">${sub}</span></button>`;
   const links = html`<p class="opts-err" id="${id}-err" role="alert" hidden></p>
-    <p class="more">${saved ? html`<button class="link" type="button" data-in="local">Saved in this browser</button>` : ''}<button class="link" type="button" data-in="paste">Paste a key</button>${pk && known ? html`<button class="link" type="button" data-in="new">New passkey wallet</button>` : ''}</p>
+    <p class="more">${saved ? html`<button class="link" type="button" data-in="local">Saved in this browser</button>` : ''}${evm.canPair() && !openerOn(known) && !openerOn(other) ? html`<button class="link" type="button" data-in="wc">WalletConnect</button>` : ''}<button class="link" type="button" data-in="paste">Paste a key</button>${pk && known ? html`<button class="link" type="button" data-in="new">New passkey wallet</button>` : ''}</p>
     <div class="amt text" id="${id}-paste" hidden><input id="${id}-hex" type="password" placeholder="64-character Tacit key" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Tacit key"><button class="link" type="button" data-in="key">Open</button></div>`;
   if (known || other) {
     // A returning visitor: each Tacit wallet this browser opened, by its address and what opens it (they are different keys, each with its own balances), then the other ways in, smaller
@@ -1170,8 +1170,10 @@ function signIn(id, first = 'eth') {
       ${links}
     </div>`;
   }
-  const walletEth = opt('eth', html`<svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>Ethereum wallet`, 'MetaMask, Rabby, Rainbow, any browser wallet, or WalletConnect. One free signature, two the first time.');
-  const walletBtc = opt('btc', html`<svg class="tk sm" aria-hidden="true"><use href="#tk-btc"/></svg>Bitcoin wallet`, 'Xverse, Leather or UniSat. One free signature, two the first time.');
+  const sole = evm.soleWallet(), on = !!(S.wallet && S.provider);
+  const ethSub = on ? html`<span class="nw">${short(S.wallet)}</span> is connected. Sign to open its Tacit wallet.` : sole ? `Continue with ${sole.named ? sole.name : 'your browser wallet'}.` : 'MetaMask, Rabby, Rainbow, or WalletConnect.';
+  const walletEth = opt('eth', html`<svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>Ethereum wallet`, ethSub, (on || sole) && first !== 'btc' ? 'main' : '');
+  const walletBtc = opt('btc', html`<svg class="tk sm" aria-hidden="true"><use href="#tk-btc"/></svg>Bitcoin wallet`, 'Xverse, Leather or UniSat.');
   return html`<div class="opts" id="${id}-in">
     ${(first === 'btc' ? [walletBtc, walletEth] : [walletEth, walletBtc])}
     ${pk ? opt('passkey', html`<svg class="tk sm" aria-hidden="true"><use href="#i-key"/></svg>Passkey`, 'Already made one? Touch ID, Windows Hello or a security key.') : ''}
@@ -1202,6 +1204,7 @@ function wireSignIn(root, id, after) {
         else if (k === 'key') open.key(box.querySelector(`#${id}-hex`).value);
         else if (k === 'new') await open.newPasskey();
         else if (k === 'local') await open.local({ pubHex: readJson('tacit-wallet-v1:mainnet')?.pub });
+        else if (k === 'wc') await open.eth(undefined, { wc: true });
         else await open[k]();
         after?.();
       } catch (e) { if (!/cancel/i.test(e?.message || '') && e?.name !== 'NotAllowedError' && !e?.unlockCancelled) signInErr(box, id, e); }

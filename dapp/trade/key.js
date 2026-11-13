@@ -5,8 +5,8 @@
 import { secp, sha256, keccak_256, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 import { prfBytesToScalar, prfLogin, prfRegister, loadPrfMap, savePrfMap, isPasskeyAvailable } from '/prf-wallet.js';
 import { knownWallets } from '/tacit-wallet-known.js?cb=ec5b5193';
-import { makeEvmWallet } from '/evm-wallet.js?cb=ce3b412c';
-import { signInSheet, pickWalletSheet, Cancelled } from '/trade/sign-in.js?cb=c301dbb1';
+import { makeEvmWallet } from '/evm-wallet.js?cb=c0ce7f8f';
+import { signInSheet, pickWalletSheet, Cancelled } from '/trade/sign-in.js?cb=1b0bfcfb';
 import { tabKeyRead, tabKeyWrite, tabKeyClear, tabKeyWatch } from '/tab-key.js?cb=ec8829ac';
 
 const RECORD = 'tacit-trade-id-v1';                                           // how /trade last opened a key: public data only (the Bitcoin market writes it too)
@@ -37,8 +37,8 @@ export function makeKeySession({ moved = null, ways = {} } = {}) {
   }
   const open = {
     // `pick(list)` names which of several announced wallets signs: the page passes the one already connected.
-    async eth(k, pick) {
-      const id = await evm.deriveIdentity({ pick, expect: k?.address });
+    async eth(k, pick, { wc = false, onStep } = {}) {
+      const id = await evm.deriveIdentity({ pick, expect: k?.address, wc, onStep });
       set({ mode: 'eth', priv: id.priv, pubHex: k?.pubHex || id.pubHex, address: '0x' + lc(id.address).replace(/^0x/, '') });
     },
     async passkey(k) {
@@ -105,6 +105,7 @@ export function makeKeySession({ moved = null, ways = {} } = {}) {
     // The wallet tacit.finance has open, when this page cannot open it (a Bitcoin wallet, a key saved in the browser).
     elsewhere: () => { const p = ids().primary; return p && !opens.has(p.mode) ? p : null; },
     passkeyAvailable: () => isPasskeyAvailable(), ethAvailable: () => evm.available(), warm: () => evm.warm(), btcSeen: ways.btcSeen,
+    soleWallet: () => evm.soleWallet(), canPair: () => evm.canPair(),
     // the Ethereum wallet the key was opened with (null for a passkey, a pasted key or a Bitcoin wallet): a page's last-resort node for reads
     walletProvider: () => (key && key.mode === 'eth' ? evm.provider() : null),
     // settles once the key this tab already held has been opened again, or let go: at once unless an Ethereum wallet has to answer first

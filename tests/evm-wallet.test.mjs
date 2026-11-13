@@ -86,14 +86,17 @@ A.refuse.clear();
 await evm.deriveIdentity({ pick });
 ok('a wallet chosen before stays chosen after a failed sign-in with it', picks === p1);
 
-// A sign-in for a known account that the wallet is not on is refused before it signs, and keeps nothing.
+// A sign-in for a known account goes to the wallet that already shows the site that account: there is nothing to ask.
 evm.deselectProvider();
 choice = 'B';
-await assert.rejects(evm.deriveIdentity({ pick, expect: idA.address }), /Switch your wallet/);
 const p2 = picks;
-choice = 'A';
-await evm.deriveIdentity({ pick, expect: idA.address });
-ok('a sign-in refused for the wrong account asks which wallet again', picks === p2 + 1 && reach() === 'A');
+const idA2 = await evm.deriveIdentity({ pick, expect: idA.address });
+ok('a sign-in for a known account goes to the wallet that holds it, without asking which', picks === p2 && idA2.provider === A.provider && idA2.priv === idA.priv && reach() === 'A');
+// An account no wallet shows: the wallet used last is tried, then the person is asked, and a wallet on another account is refused before it signs.
+evm.deselectProvider();
+const signed = () => A.calls.concat(B.calls).filter((m) => m === 'personal_sign').length, s0 = signed();
+await assert.rejects(evm.deriveIdentity({ pick, expect: '0x' + 'ee'.repeat(20) }), /Switch your wallet/);
+ok('for an account no wallet is on the person is asked which wallet, and a wallet on another account signs nothing', picks === p2 + 1 && signed() === s0 && reach() === 'A');
 
 // The wallet connected last is remembered by which wallet it is, and the next page connects it again with no prompt.
 ok('the wallet a sign-in used last is the one recorded, by name and not by account', store.get('tacit-trade-wallet') === 'test.a');
@@ -326,5 +329,52 @@ const throwing = wallet('D', '44'.repeat(32));
 throwing.provider.request = async () => { throw new Error('wallet is not ready'); };
 await assert.rejects(makeEvmWallet({ secp, sha256, keccak256: keccak_256, bytesToHex, hexToBytes, prfBytesToScalar, netName: 'mainnet' }).deriveIdentity({ pick: async (l) => l.find((w) => w.name === 'D').uuid, onStep: () => { throw new Error('a listener must not break it'); } }), /wallet is not ready/);
 ok('a wallet that errs gives its own error, even with a step listener that throws', true);
+
+// ── A browser with one wallet: nothing to choose ─────────────────────────────────────────────────────────────────────────────────────────
+// The page announces WalletConnect itself, so one browser wallet used to mean a "Choose a wallet" question with two answers. A sign-in now
+// goes to the browser's wallet, says which one that is, and WalletConnect is asked for by name.
+globalThis.window = new EventTarget();                                           // another browser: only what is announced from here on
+store.clear();
+const H = wallet('Solo', '88'.repeat(32));
+const wc2 = { isWalletConnect: true, calls: [], on() {}, async request({ method }) { wc2.calls.push(method); if (method === 'eth_accounts') return []; if (method === 'eth_requestAccounts') throw new Error('The pairing was closed.'); throw new Error('unexpected ' + method); } };
+window.addEventListener('eip6963:requestProvider', () => window.dispatchEvent(new CustomEvent('eip6963:announceProvider', { detail: { info: { uuid: 'uuid-wc2', name: 'WalletConnect', icon: '', rdns: 'com.walletconnect' }, provider: wc2 } })));
+const solo = makeEvmWallet({ secp, sha256, keccak256: keccak_256, bytesToHex, hexToBytes, prfBytesToScalar, netName: 'mainnet' });
+let asked = 0;
+const never = async () => { asked++; return null; };
+ok('the one wallet in the browser is named, and WalletConnect is offered beside it', solo.soleWallet()?.name === 'Solo' && solo.soleWallet().named && solo.canPair() && solo.listProviders().length === 2);
+const stepsH = [];
+const idH = await solo.deriveIdentity({ pick: never, onStep: (s, i) => stepsH.push(i?.of ? `${s}/${i.of}` : s) });
+ok('a first sign-in goes to it with no question', asked === 0 && idH.provider === H.provider && wc2.calls.length === 0);
+ok('and says each thing the wallet is asked: to connect, to sign, to sign again', stepsH.join() === 'account,connect,sign/2,confirm/2');
+stepsH.length = 0;
+solo.deselectProvider();
+await solo.deriveIdentity({ pick: never, expect: idH.address, onStep: (s, i) => stepsH.push(i?.of ? `${s}/${i.of}` : s) });
+ok('the sign-in after it is one signature, and still no question', asked === 0 && stepsH.join() === 'account,sign/1');
+solo.deselectProvider();
+const wcBase = wc2.calls.length;
+await assert.rejects(solo.deriveIdentity({ pick: never, wc: true }), /pairing was closed/);
+ok('WalletConnect asked for by name goes to WalletConnect, whatever else is in the browser', asked === 0 && wc2.calls.slice(wcBase).join() === 'eth_accounts,eth_requestAccounts');
+await solo.deriveIdentity({ pick: never, expect: idH.address });
+const inUse = wc2.calls.length;
+await assert.rejects(solo.deriveIdentity({ pick: never, wc: true }), /pairing was closed/);
+ok('also while another wallet is in use, which stays in use when the pairing is refused', wc2.calls.length === inUse + 2 && solo.soleWallet()?.name === 'Solo');
+await solo.connect({ pick: async (l) => { asked++; return l.find((w) => w.name === 'Solo').uuid; } });
+ok('a plain connect goes to the wallet in use', asked === 0);
+const plain = makeEvmWallet({});
+await plain.connect({ pick: async (l) => { asked++; return l.find((w) => w.name === 'Solo').uuid; } });
+ok('and with none in use a plain connect still asks: only a sign-in, which can offer WalletConnect beside it, skips the question', asked === 1);
+
+// Two wallets in the browser: a first sign-in asks, a wallet remembered for the account does not.
+const I = wallet('Second', '99'.repeat(32));
+const two = makeEvmWallet({ secp, sha256, keccak256: keccak_256, bytesToHex, hexToBytes, prfBytesToScalar, netName: 'mainnet' });
+ok('with two wallets there is no one wallet to name', two.soleWallet() === null && !two.canPair());
+let asked2 = 0;
+const idI = await two.deriveIdentity({ pick: async (l) => { asked2++; return l.find((w) => w.name === 'Second').uuid; } });
+ok('a first sign-in asks which', asked2 === 1 && idI.provider === I.provider);
+two.deselectProvider();
+H.allowed = false; I.allowed = false;                                            // both locked: neither shows the site an account
+const lockedI = I.calls.length;
+await two.deriveIdentity({ pick: async () => { asked2++; return null; }, expect: idI.address });
+ok('a locked wallet that opened this account before is the one asked to connect, with no question', asked2 === 1 && I.calls.slice(lockedI).join() === 'eth_accounts,eth_accounts,eth_requestAccounts,personal_sign');
 
 console.log(`\n${pass} passed, 0 failed`);

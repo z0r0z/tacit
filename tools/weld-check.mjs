@@ -3087,9 +3087,9 @@ await step('makepub', async () => {
 await step('keys', async () => {
   const r = await openPage({ account: A0, key: K0 });
   await r.page.goto(r.url + '#wallet');
-  // Before anyone has signed in: the chip says what it opens, and the Ethereum option says what the signature is and how many the first time asks for.
+  // Before anyone has signed in: the chip says what it opens, and the sheet says that signing in is free and sends nothing.
   const first = await r.page.evaluate(() => ({ chip: document.querySelector('#wallet-label').textContent, eth: document.querySelector('#wallet-body [data-in="eth"]').textContent.replace(/\s+/g, ' '), lede: document.querySelector('#wallet-body .lede-s').textContent }));
-  ok(first.chip === 'Sign in' && /One free signature, two the first time/.test(first.eth) && /sends nothing and costs nothing/.test(first.lede), `keys: the first visit says it is a sign-in, and that the signature is free (${first.chip} | ${first.eth})`);
+  ok(first.chip === 'Sign in' && /^\s*Ethereum wallet/.test(first.eth) && /free and sends nothing/.test(first.lede), `keys: the first visit says it is a sign-in, and that it is free (${first.chip} | ${first.eth})`);
   await r.page.click('#wallet-body [data-in="eth"]');
   await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
   const txt = await shown(r.page);

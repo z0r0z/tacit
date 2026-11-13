@@ -34,6 +34,7 @@ const CSS = `
 .bsheet .kv b { font-weight: 400; color: var(--ink); text-align: right; overflow-wrap: anywhere; }
 .bsheet .note, .bsheet .lede-s { font-size: 12.5px; color: var(--mute); margin: 0 0 12px; }
 .bsheet .note.err { color: var(--err); }
+.bsheet .opts .note.wait { text-align: center; color: var(--ink); }
 .bsheet .linkbtn { padding: 0; font: 12px var(--mono); color: var(--mute); background: none; border: 0; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
 .bsheet .linkbtn:hover { color: var(--ink); }
 .bsheet-actions { display: grid; grid-auto-flow: column; gap: 10px; }

@@ -117,7 +117,7 @@ try {
     await page.goto('about:blank');
     await page.goto(URL_, { waitUntil: 'domcontentloaded' });
     if (name !== 'front page') await page.click(chip);
-    await page.click(`${sheet} [data-in="known"]`);
+    if (name !== '/tac') await page.click(`${sheet} [data-in="known"]`);   // /tac's chip opens the one wallet this browser has opened, with no second press
     await tacitLabel(page);
     ok((await label(page)) === first && !(await page.$('#sheet-wc[open]')) && asked.join(' ') === 'personal_sign', `${name}: after a reload the kept session opens the same wallet, no pairing (asked: ${asked.join(' → ')})`);
 

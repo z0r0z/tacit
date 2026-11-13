@@ -7,7 +7,7 @@
 
 import { tabKeyRead, tabKeyWrite, tabKeyClear, tabKeyWatch } from '/tab-key.js?cb=ec8829ac';
 
-const TACIT_URL = '/tacit.js?cb=b45e21d5', KNOWN_URL = '/tacit-wallet-known.js?cb=ec5b5193', EVM_URL = '/evm-wallet.js?cb=ce3b412c';
+const TACIT_URL = '/tacit.js?cb=b45e21d5', KNOWN_URL = '/tacit-wallet-known.js?cb=ec5b5193', EVM_URL = '/evm-wallet.js?cb=c0ce7f8f';
 const DEPS_URL = '/vendor/tacit-deps.min.js', PRF_URL = '/prf-wallet.js';
 const RECORD = 'tacit-trade-id-v1';                                           // how this page last opened a key: public data only
 const KNOWN_IDS = [RECORD, 'tacit-tac-id-v1', 'tacit-pay-hub-id-v1', 'tacit-lite-id-v1', 'tacit-pay-id-v1'];
@@ -120,9 +120,9 @@ export function makeBtcSession({ moved = null } = {}) {
 
   // The ways in, each ending in setKey. `pick(list)` chooses among several Ethereum wallets (the page's own picker).
   const open = {
-    async eth(k, pick) {
+    async eth(k, pick, { wc = false, onStep } = {}) {
       await load();
-      const id = await evm.deriveIdentity({ pick, expect: k?.address });
+      const id = await evm.deriveIdentity({ pick, expect: k?.address, wc, onStep });
       await setKey({ mode: 'eth', priv: id.priv, pubHex: k?.pubHex || id.pubHex, address: '0x' + lc(id.address).replace(/^0x/, '') });
     },
     async passkey(k) {
@@ -180,7 +180,7 @@ export function makeBtcSession({ moved = null } = {}) {
     get T() { return T; }, get D() { return D; }, get key() { return key; }, get unlocked() { return !!(key && T && T.wallet.priv); },
     get address() { return key && T ? T.wallet.address() : null; },
     known: () => usable(knownIds().primary), other: () => usable(knownIds().other),
-    passkeyAvailable: () => !!prf?.isPasskeyAvailable?.(), ethAvailable: () => !!evm?.available?.(), warm: () => evm?.warm?.(),
+    passkeyAvailable: () => !!prf?.isPasskeyAvailable?.(), ethAvailable: () => !!evm?.available?.(), warm: () => evm?.warm?.(), soleWallet: () => evm?.soleWallet?.() || null, canPair: () => !!evm?.canPair?.(),
     btcSeen: () => !!(window.btc_providers?.length || window.XverseProviders?.BitcoinProvider || window.LeatherProvider || window.unisat),
     lock() { forget(); tabKeyClear(); emit(); },
     onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); },

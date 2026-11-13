@@ -2,7 +2,7 @@
 // and the two presses that need only the relay (the burn of a moved bridge, the mint of a recorded one). Nothing is loaded until the holder asks:
 // this module, the key sheet and tacit.js (four megabytes) all come in on that press. Starting a bridge is the front page's Bridge tab. Merging, bridging all, minting to another address,
 // paying the mint from a wallet and proving it oneself stay on the front page, which these rows link to.
-import { makeKeySession, signInSheet } from '/trade/key.js?cb=6fa82796';
+import { makeKeySession, signInSheet } from '/trade/key.js?cb=09f263cb';
 import { makeTacitSession } from '/tacit-session.js?cb=4636e436';
 import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverEvery } from '/bridge-tick.js?cb=42d78071';
 import { ROUTES } from '/bridge/track.js?cb=d654a7d8';
@@ -10,7 +10,7 @@ import { parseUnits } from '/trade/util.js?cb=1d2cd8d3';
 import { forgetUx } from '/trade/poolux.js?cb=59d125e5';
 import { relayWords } from '/relay-outcome.js?cb=17e48a9a';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
-import { btcWay, btcSeen } from '/trade/btc-way.js?cb=8cd735cf';
+import { btcWay, btcSeen } from '/trade/btc-way.js?cb=9820720a';
 
 const TACIT_URL = '/tacit.js?cb=b45e21d5';
 const PLAN_KEY = 'tacit-lite-bridge-plan-v1', SELF_PROVE = 'tacit-lite-prove-self-v1:';

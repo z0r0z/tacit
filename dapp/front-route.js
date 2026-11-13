@@ -42,7 +42,7 @@
     // a link that opens a sheet: the sheets' code is asked for now, beside the page's module, not once the module reaches the link
     if (window.location.hash.length > 1) {
       var pre = document.createElement('link');
-      pre.rel = 'modulepreload'; pre.href = '/front/sheets.js?cb=f2e268f5';
+      pre.rel = 'modulepreload'; pre.href = '/front/sheets.js?cb=f4db180b';
       document.head.appendChild(pre);
     }
   } catch (e) { }

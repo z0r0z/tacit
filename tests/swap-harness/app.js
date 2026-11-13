@@ -1,10 +1,10 @@
 // The test harness for the swap card (tests/swap-page.mjs, tests/swap-bitcoin-lane.mjs), made from the retired /swap/ page; the tests serve it at /swap/app.js.
 // /swap/: the swap card (swap/card.js) with this page's wallet, its Earn tab, the prices under the title, and the address bar kept in step
 // with the card (from, to, amt, private; #earn and #bitcoin).
-import { makeConnect } from '/trade/connect.js?cb=f59469b9';
+import { makeConnect } from '/trade/connect.js?cb=b758e60b';
 import { rpc, api, esc, fmtUnits, parseUnits, plain, usd, $ } from '/trade/util.js?cb=1d2cd8d3';
 import { aprText } from '/trade/farm-read.js?cb=efe1d81e';
-import { mountSwapCard, ethCall, batch } from '/swap/card.js?cb=c5a40713';
+import { mountSwapCard, ethCall, batch } from '/swap/card.js?cb=8c0c83f3';
 
 const txLink = (h) => `<a href="https://etherscan.io/tx/${esc(h)}" target="_blank" rel="noopener noreferrer">${esc(h.slice(0, 10))}…↗</a>`;
 const P = { tab: location.hash === '#earn' ? 'earn' : 'swap', farm: 'precision', farms: null, px: {} };

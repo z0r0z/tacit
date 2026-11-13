@@ -244,7 +244,7 @@ try {
   await p.click('.bsheet .bm >> text=Connect a wallet');
   await p.waitForSelector('.bsheet.top .opt', { timeout: 30000 });
   const lead = await p.$eval('.bsheet.top .opt', (b) => ({ t: b.textContent.replace(/\s+/g, ' '), k: b.dataset.in, main: b.classList.contains('main') }));
-  ok(lead.k === 'eth' && lead.main && /^Ethereum wallet ?0x[0-9a-fA-F]{4}…[0-9a-fA-F]{4} is connected here\. One free signature/.test(lead.t), `with no key opened before, the sheet's sign-in leads with the wallet connected on the page (${lead.t.slice(0, 80)})`);
+  ok(lead.k === 'eth' && lead.main && /^Ethereum wallet ?0x[0-9a-fA-F]{4}…[0-9a-fA-F]{4} is connected here\. Sign to open/.test(lead.t), `with no key opened before, the sheet's sign-in leads with the wallet connected on the page (${lead.t.slice(0, 80)})`);
   await p.click('.bsheet.top [data-in="eth"]');
   await until(p, () => !document.querySelector('.bsheet.top'), null, 60000);
   await until(p, () => /Balance:\s*3,000,000 sats/.test(document.querySelector('.bsheet .bm')?.textContent || ''), null, 60000);

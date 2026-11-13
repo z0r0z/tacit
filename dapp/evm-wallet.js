@@ -32,6 +32,17 @@ export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes,
   const hasBrowserWallet = () => !!injected() || providers.some((p) => !p.provider.isWalletConnect);
   const ordered = () => [...providers].sort((a, b) => !!a.provider.isWalletConnect - !!b.provider.isWalletConnect);
   function listProviders() { return ordered().map((p) => ({ uuid: p.info.uuid, name: p.info.name, icon: p.info.icon, rdns: p.info.rdns })); }
+  const pairing = () => providers.find((p) => p.provider.isWalletConnect) || null;
+  function sole() {
+    if (selected) return providers.find((p) => p.provider === selected) || { info: { name: BARE }, provider: selected };
+    const own = providers.filter((p) => !p.provider.isWalletConnect);
+    if (own.length === 1) return own[0];
+    if (!own.length && !providers.length && injected()) return { info: { name: BARE }, provider: injected() };
+    return null;
+  }
+  const hear = () => { if (typeof window !== 'undefined') { try { window.dispatchEvent(new Event('eip6963:requestProvider')); } catch { } } };
+  const soleWallet = () => { hear(); const p = sole(); return p ? { name: p.info.name || BARE, icon: p.info.icon || null, named: !!p.info.name && p.info.name !== BARE } : null; };
+  const canPair = () => { hear(); const s = sole(); return !!s && !s.provider.isWalletConnect && !!pairing(); };
   function selectProvider(uuid) { const p = providers.find((x) => x.info.uuid === uuid); if (p) selected = p.provider; return !!p; }
   function deselectProvider() { selected = null; }
   function providerLabel() { const a = providers.find((p) => p.provider === currentProvider()); return a?.info?.name || 'Ethereum wallet'; }
@@ -59,28 +70,50 @@ export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes,
     Promise.resolve(p).then(done, () => done(fallback)).finally(() => clearTimeout(t));
   });
 
-  async function reach({ pick, silent = false } = {}) {
-    if (typeof window !== 'undefined') { try { window.dispatchEvent(new Event('eip6963:requestProvider')); } catch { } }
+  const sameAccount = (a, address) => Array.isArray(a) && String(a[0] || '').toLowerCase().replace(/^0x/, '') === address;
+  function holderOf(address) {
+    const list = ordered();
+    if (list.length < 2) return Promise.resolve(null);
+    return new Promise((done) => {
+      let left = list.length;
+      for (const p of list) capped(Promise.resolve().then(() => p.provider.request({ method: 'eth_accounts' })), 400, []).then((a) => { if (sameAccount(a, address)) done(p.provider); else if (!--left) done(null); });
+    });
+  }
+  const lastUsed = () => {
+    let id = null;
+    try { id = localStorage.getItem(REMEMBERED); } catch { }
+    return id ? ordered().find((p) => idOf(p.info) === id)?.provider || null : null;
+  };
+
+  async function reach({ pick, silent = false, expect = null, wc = false, ask = false, onConnect } = {}) {
+    hear();
     if (!selected && !providers.length) await new Promise((r) => setTimeout(r, 120));
-    let provider = selected, chosen = null;
+    let provider = wc || ask ? null : selected, chosen = null, guessed = false;
     if (!provider) {
-      if (providers.length >= 2 && typeof pick === 'function') {
+      if (wc) {
+        chosen = pairing()?.provider || null;
+        if (!chosen) throw new Error('WalletConnect is not available on this page. Reload and try again.');
+      } else if (silent && !ask) {
+        chosen = expect ? await holderOf(expect) : null;
+        if (!chosen) { chosen = (expect && lastUsed()) || sole()?.provider || null; guessed = !!chosen; }
+      }
+      if (!chosen && providers.length >= 2 && typeof pick === 'function') {
         const uuid = await pick(listProviders());
         if (!uuid) throw Object.assign(new Error('Wallet choice cancelled'), { code: 4001 });
         chosen = providers.find((x) => x.info.uuid === uuid)?.provider;
         if (!chosen) throw new Error('selected wallet vanished — reload the page and reconnect');
       }
-      else if (providers.length >= 1) chosen = ordered()[0].provider;
+      else if (!chosen && providers.length >= 1) chosen = ordered()[0].provider;
       provider = chosen || injected();
     }
     if (!provider || typeof provider.request !== 'function') throw new Error('no Ethereum wallet detected — install MetaMask, Rabby, Rainbow, or Coinbase Wallet');
     guardProvider(provider);
     let accounts = silent ? await capped(provider.request({ method: 'eth_accounts' }), 1500, []) : [];
-    if (!Array.isArray(accounts) || !accounts.length) accounts = await provider.request({ method: 'eth_requestAccounts' });
+    if (!Array.isArray(accounts) || !accounts.length) { try { onConnect?.(); } catch { } accounts = await provider.request({ method: 'eth_requestAccounts' }); }
     if (!Array.isArray(accounts) || !accounts.length) throw new Error('no accounts returned');
     const addr = String(accounts[0]).toLowerCase().replace(/^0x/, '');
     if (!/^[0-9a-f]{40}$/.test(addr)) throw new Error('wallet returned malformed address');
-    return { provider, address: addr, chosen };
+    return { provider, address: addr, chosen, guessed };
   }
   const remember = (provider) => {
     const info = providers.find((p) => p.provider === provider)?.info;
@@ -200,18 +233,21 @@ export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes,
     try { localStorage.setItem(ANCHOR_KEY + String(address).toLowerCase(), pubHex); } catch { }
   }
 
-  async function deriveIdentity({ pick, expect, onStep } = {}) {
-    const step = (s) => { try { onStep?.(s); } catch { } };
+  async function deriveIdentity({ pick, expect, onStep, wc = false } = {}) {
+    const step = (s, info) => { try { onStep?.(s, info); } catch { } };
     step('account');
-    const c = await reach({ pick, silent: true }), { provider, address } = c;
-    const want = expect && String(expect).toLowerCase().replace(/^0x/, '');
+    const want = expect ? String(expect).toLowerCase().replace(/^0x/, '') : null;
+    const onConnect = () => step('connect');
+    let c = await reach({ pick, silent: true, expect: want, wc, onConnect });
+    if (want && c.address !== want && c.guessed && providers.length >= 2 && typeof pick === 'function') c = await reach({ pick, silent: true, ask: true, onConnect });
+    const { provider, address } = c;
     if (want && address !== want) throw new Error(`Switch your wallet to 0x${want.slice(0, 4)}…${want.slice(-4)}, the account this Tacit wallet was opened with.`);
     const anchored = !!readAnchor(address);
     const reading = anchored ? null : codeOf(provider, address);
     const early = reading ? await capped(reading, CODE_WAIT_MS, STILL_READING) : '0x';
     if (isContractCode(early)) throw new Error(CONTRACT_WALLET);
     const msg = derivationMsg();
-    step('sign');
+    step('sign', { of: anchored ? 1 : 2 });
     const sig = await provider.request({ method: 'personal_sign', params: ['0x' + bytesToHex(enc(msg)), '0x' + address] });
     if (early === STILL_READING && isContractCode(await reading)) throw new Error(CONTRACT_WALLET);
     if (typeof sig !== 'string' || !sig.startsWith('0x')) throw new Error('wallet returned invalid signature');
@@ -233,7 +269,7 @@ export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes,
         + 'was altered in transit. Reconnect with a wallet you trust and retry; nothing was derived or spent.');
     }
     if (!anchored) {
-      step('confirm');
+      step('confirm', { of: 2 });
       const again = await provider.request({ method: 'personal_sign', params: ['0x' + bytesToHex(enc(msg)), '0x' + address] });
       const b = typeof again === 'string' && again.startsWith('0x') ? hexToBytes(again.slice(2)) : null;
       if (b && b.length === 65 && (b[64] === 0 || b[64] === 1)) b[64] += 27;
@@ -301,5 +337,5 @@ export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes,
   }
 
   const provider = () => currentProvider() || null;
-  return { provider, available, hasBrowserWallet, listProviders, selectProvider, deselectProvider, providerLabel, connect, changeAccount, restore, onElsewhere, forget, disconnect, deriveIdentity, warm, signErc2612, fundTx, chainId, derivationMsg };
+  return { provider, available, hasBrowserWallet, listProviders, soleWallet, canPair, selectProvider, deselectProvider, providerLabel, connect, changeAccount, restore, onElsewhere, forget, disconnect, deriveIdentity, warm, signErc2612, fundTx, chainId, derivationMsg };
 }
