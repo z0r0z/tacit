@@ -182,7 +182,7 @@ for (const refuse of [false, true]) {
   ok(BigInt(await rpcA('eth_call', [{ to: WB, data: '0xdd62ed3e' + pad(sg.address) + pad(ZAP) }, 'latest'])) === 0n && (await bal(WB, ZAP)) === 0n, 'and the zap keeps no allowance and holds nothing');
 }
 
-// ── TAC, by its EIP-2612 permit signed for the zap, through the Precision pool: one transaction in, none out (the swap out is sent for it) ──
+// ── TAC, by its EIP-2612 permit signed for the zap, through the Precision pool or both pools: one transaction in, none out (the swap out is sent for it) ──
 {
   const { sg, steps } = await walletFor();
   await rpcA('anvil_impersonateAccount', [TAC_HOLDER]); await rpcA('anvil_setBalance', [TAC_HOLDER, hx(10n ** 18n)]);
@@ -191,13 +191,13 @@ for (const refuse of [false, true]) {
   const L = makeLater({ keyHex: async () => privHex, signer: sg, ethCall, venues, store, chain, prove });
   const amountIn = 1500n * 10n ** 18n, dl = BigInt((await now()) + 1200);
   const q = await quoteThrough({ ethCall, venues, pay: TAC, get: USDC, amountIn, slippageBps: 100, deadline: dl });
-  ok(!!q && q.r0.name === 'Precision pool' && q.r1.out > 0n, `the card's quote: 1,500 TAC → ${q ? Number(q.ethWei) / 1e18 : '?'} ETH (${q?.r0.name}) → ${q ? Number(q.r1.out) / 1e6 : '?'} USDC`);
+  ok(!!q && /^(Precision|Both) pools?$/.test(q.r0.name) && q.r1.out > 0n, `the card's quote: 1,500 TAC → ${q ? Number(q.ethWei) / 1e18 : '?'} ETH (${q?.r0.name}) → ${q ? Number(q.r1.out) / 1e6 : '?'} USDC`);
   const { depositWei, extraWei } = depositFor({ swapWei: q.ethWei, feeWei: FEE, pct: 20 });
   const est = (amountIn * depositWei * 10020n + q.r0.min * 10000n - 1n) / (q.r0.min * 10000n), most = (est * 10100n) / 10000n;
   const t0 = await bal(TAC, sg.address), p0 = await bal(ZERO, POOL);
   const plan = await L.start({ swapWei: q.ethWei, extraWei, token: USDC, sym: 'USDC', dec: 6, to: DEST2, depositWei, pay: { token: TAC, sym: 'TAC', dec: 18, amountIn, min: q.r0.min, most, slippageBps: 100 }, onStep: (s) => steps.push(s) });
   const spent = t0 - (await bal(TAC, sg.address));
-  ok(plan.state === 'waiting' && plan.pay?.route === 'Precision pool', `the deposit is made from TAC through the Precision pool (${plan.state})`);
+  ok(plan.state === 'waiting' && plan.pay?.route === q.r0.name, `the deposit is made from TAC through the route quoted, ${q.r0.name} (${plan.state})`);
   ok(steps.includes('sign:Permit') && !steps.includes('approve') && steps.filter((s) => /^send:/.test(s)).join() === `send:${lc(ZAP)}`, `TAC's permit signed for the zap, and one transaction, to the zap (${steps.filter((s) => /^send:|^sign:/.test(s)).join(', ')})`);
   ok(spent === BigInt(plan.pay.amountWei) && spent <= most, `it spent exactly ${Number(spent) / 1e18} TAC, within the ${Number(most) / 1e18} shown`);
   ok(BigInt(await rpcA('eth_call', [{ to: TAC, data: '0xdd62ed3e' + pad(sg.address) + pad(ZAP) }, 'latest'])) === 0n, 'and the zap keeps no allowance');

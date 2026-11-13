@@ -298,7 +298,7 @@ function paintStation() {
 // ── the TAC/ETH farm: the Precision farm's form, with amounts a press away under its ETH field ──
 let pubP = null, pubUi = null;
 function mountPublic() {
-  return pubP ||= Promise.all([import('/trade/farm.js?cb=6f0b3ce6'), import('/evm-trade-venues.js?cb=c9a3c2e7')]).then(([{ mountFarm }, E]) => {
+  return pubP ||= Promise.all([import('/trade/farm.js?cb=6f0b3ce6'), import('/evm-trade-venues.js?cb=42f026e7')]).then(([{ mountFarm }, E]) => {
     const ethCall = (to, data, block = 'latest', o = {}) => rpc('eth_call', [{ to, data, ...(o.from ? { from: o.from } : {}), ...(o.value ? { value: `0x${BigInt(o.value).toString(16)}` } : {}) }, block]);
     const batch = async (calls) => E._internal.decAggregate3(await ethCall(E.MULTICALL3, E._internal.encAggregate3(calls)), calls.length);
     const host = $('#farm-host');

@@ -41,30 +41,55 @@ export async function routeOut({ ethCall, token, amount, to, slippageBps, deadli
   if (checkRoute(data, { to, tokenIn: ZERO, tokenOut: token, exactOut: false, amount, maxIn: amount, minOut: q.min, deadline, curvePools: q.curvePools || [] }) !== null) return null;
   return { ...q, callData: data, standData: q.callData, to };
 }
-export async function routeOutTac({ venues, amount, to, slippageBps, deadline, random = (n) => crypto.getRandomValues(new Uint8Array(n)) }) {
-  if (!venues) throw new Error('TAC swaps need the page\'s venues.');
-  const rt = await venues.route({ dir: 'ETH_TO_TAC', amountIn: BigInt(amount) });
-  const q = rt?.single;
-  if (!q || (q.venue !== 'precision' && q.venue !== 'tacit-amm') || BigInt(q.amountIn) !== BigInt(amount)) return null;
-  const min = (BigInt(q.amountOut) * BigInt(10000 - slippageBps)) / 10000n;
-  if (min <= 0n) return null;
-  const mk = (rcpt) => venues.build({ quote: q, dir: 'ETH_TO_TAC', account: rcpt, to: rcpt, minOut: min, deadline: BigInt(deadline) });
-  const stand = '0x' + hexOf(random(20)), real = mk(to), copy = mk(stand);
-  if (lc(real.to) !== lc(ZROUTER) || BigInt(real.value || 0) !== BigInt(amount) || real.approval) return null;
-  if (copy.data === real.data || copy.data.split(word(stand)).join(word(to)) !== real.data) return null;
-  return { kind: 'tac', callData: real.data, standData: copy.data, min, out: BigInt(q.amountOut), amountIn: BigInt(q.amountIn), name: q.venue === 'precision' ? 'Precision pool' : 'Tacit pool', to, deadline: BigInt(deadline) };
+const TAC_POOL = { precision: 'Precision pool', 'tacit-amm': 'Tacit pool' }, BOTH = 'Both pools';
+const legsOf = (split) => split.legs.map((l) => ({ venue: l.venue, amountIn: BigInt(l.amountIn), amountOut: BigInt(l.amountOut) }));
+const floorOf = (out, slippageBps) => (BigInt(out) * BigInt(10000 - slippageBps)) / 10000n;
+// Both pools in one call when that pays more than `one` pool by over the split's extra gas (0.3% with no gas price to go by). The gas is
+// weighed at twice the network's price: the relay's fee counts the gas limit, above what the route burns, at its own price.
+async function splitFor({ venues, dir, rt, one, amt, gasPrice }) {
+  const s = rt?.split;
+  if (!s || BigInt(s.amountIn) !== amt || typeof venues.splitWorth !== 'function') return null;
+  const gp = await Promise.resolve(gasPrice).catch(() => null);
+  return !one || venues.splitWorth({ dir, split: s, amountIn: amt, gasPrice: gp == null ? null : BigInt(gp) * 2n, over: one }) ? s : null;
 }
-export async function routeIn({ ethCall, venues, token, amountIn, from, slippageBps = 50, deadline }) {
+export async function routeOutTac({ venues, amount, to, slippageBps, deadline, gasPrice = null, random = (n) => crypto.getRandomValues(new Uint8Array(n)) }) {
+  if (!venues) throw new Error('TAC swaps need the page\'s venues.');
+  const amt = BigInt(amount), dl = BigInt(deadline), stand = '0x' + hexOf(random(20));
+  const rt = await venues.route({ dir: 'ETH_TO_TAC', amountIn: amt });
+  const one = (rt?.r?.ranked || []).find((q) => TAC_POOL[q.venue] && BigInt(q.amountIn) === amt) || null;
+  const both = await splitFor({ venues, dir: 'ETH_TO_TAC', rt, one, amt, gasPrice });
+  for (const q of [both, one]) {
+    const min = q ? floorOf(q.amountOut, slippageBps) : 0n;
+    if (min <= 0n) continue;
+    const mk = (rcpt) => (q === both ? venues.buildSplit({ split: q, account: rcpt, to: rcpt, minOut: min, deadline: dl }) : venues.build({ quote: q, dir: 'ETH_TO_TAC', account: rcpt, to: rcpt, minOut: min, deadline: dl }));
+    const real = mk(to), copy = mk(stand);
+    if (lc(real.to) !== lc(ZROUTER) || BigInt(real.value || 0) !== amt || real.approval) continue;
+    if (copy.data === real.data || copy.data.split(word(stand)).join(word(to)) !== real.data) continue;
+    return { kind: 'tac', callData: real.data, standData: copy.data, min, out: BigInt(q.amountOut), amountIn: amt, name: q === both ? BOTH : TAC_POOL[q.venue], ...(q === both ? { legs: legsOf(q) } : {}), to, deadline: dl };
+  }
+  return null;
+}
+// TAC sold for ETH in one zRouter call that takes the TAC from its caller by an allowance to zRouter: the Precision pool, or both pools.
+// `build(mk)` writes the call for each (account, recipient) it needs; every one must be that shape.
+async function tacIn({ venues, amt, account, slippageBps, deadline, gasPrice, build }) {
+  const rt = await venues.route({ dir: 'TAC_TO_ETH', amountIn: amt, account }), p = rt?.r?.precision;
+  const one = p && BigInt(p.amountIn) === amt ? p : null;
+  const both = await splitFor({ venues, dir: 'TAC_TO_ETH', rt, one, amt, gasPrice });
+  for (const q of [both, one]) {
+    const min = q ? floorOf(q.amountOut, slippageBps) : 0n;
+    if (min <= 0n) continue;
+    const txs = build((who, to) => (q === both ? venues.buildSplit({ split: q, account: who, to, minOut: min, deadline: BigInt(deadline) }) : venues.build({ quote: q, dir: 'TAC_TO_ETH', account: who, to, minOut: min, deadline: BigInt(deadline) })));
+    if (txs.some((t) => lc(t.to) !== lc(ZROUTER) || BigInt(t.value || 0) !== 0n || (t.approval && (lc(t.approval.spender) !== lc(ZROUTER) || BigInt(t.approval.amount) !== amt)))) continue;
+    return { txs, min, out: BigInt(q.amountOut), name: q === both ? BOTH : TAC_POOL.precision, ...(q === both ? { legs: legsOf(q) } : {}) };
+  }
+  return null;
+}
+export async function routeIn({ ethCall, venues, token, amountIn, from, slippageBps = 50, deadline, gasPrice = null }) {
   const amt = BigInt(amountIn);
   if (lc(token) === TAC) {
     if (!venues) throw new Error('TAC swaps need the page\'s venues.');
-    const q = (await venues.route({ dir: 'TAC_TO_ETH', amountIn: amt, account: from }))?.r?.precision;
-    if (!q || BigInt(q.amountIn) !== amt) return null;
-    const out = BigInt(q.amountOut), min = (out * BigInt(10000 - slippageBps)) / 10000n;
-    if (min <= 0n) return null;
-    const tx = venues.build({ quote: q, dir: 'TAC_TO_ETH', account: from, to: ZAP, minOut: min, deadline: BigInt(deadline) });
-    if (lc(tx.to) !== lc(ZROUTER) || BigInt(tx.value || 0) !== 0n || !lc(tx.data).includes(word(ZAP))) return null;
-    return { callData: tx.data, out, min, name: 'Precision pool', amountIn: amt };
+    const r = await tacIn({ venues, amt, account: from, slippageBps, deadline, gasPrice, build: (mk) => [mk(from, ZAP)] });
+    return r && lc(r.txs[0].data).includes(word(ZAP)) ? { callData: r.txs[0].data, out: r.out, min: r.min, name: r.name, ...(r.legs ? { legs: r.legs } : {}), amountIn: amt } : null;
   }
   const q = await bestRoute({ ethCall, to: ZAP, refundTo: from, tokenIn: token, tokenOut: ZERO, amountIn: amt, slippageBps, deadline });
   return q && q.min > 0n ? { callData: q.callData, out: q.out, min: q.min, name: q.name, amountIn: amt } : null;
@@ -100,31 +125,26 @@ export async function sizeBoxed({ route, amountIn, out, needWei, tries = 3 }) {
   return null;
 }
 export const swapOf = (wei) => { const v = BigInt(wei), unit = 10n ** BigInt(Math.max(0, v.toString().length - 3)); return (v / unit) * unit; };
-export async function quoteThrough({ ethCall, venues, pay, get, amountIn, slippageBps = 50, deadline, random = (n) => crypto.getRandomValues(new Uint8Array(n)) }) {
+export async function quoteThrough({ ethCall, venues, pay, get, amountIn, slippageBps = 50, deadline, gasPrice = null, random = (n) => crypto.getRandomValues(new Uint8Array(n)) }) {
   const stand = () => '0x' + hexOf(random(20));
-  const r0 = await routeIn({ ethCall, venues, token: pay, amountIn, from: stand(), slippageBps, deadline });
+  const r0 = await routeIn({ ethCall, venues, token: pay, amountIn, from: stand(), slippageBps, deadline, gasPrice });
   if (!r0) return null;
   const x = swapOf(r0.out);
   if (x <= 0n) return null;
   const r1 = lc(get) === ZERO ? { out: x, min: x, name: 'ETH' }
-    : lc(get) === TAC ? await routeOutTac({ venues, amount: x, to: stand(), slippageBps, deadline, random })
+    : lc(get) === TAC ? await routeOutTac({ venues, amount: x, to: stand(), slippageBps, deadline, gasPrice, random })
       : await routeOut({ ethCall, token: get, amount: x, to: stand(), slippageBps, deadline, random });
   return r1 ? { r0, ethWei: x, r1 } : null;
 }
 let TP = null;
 export const tokenPools = () => (TP ||= globalThis.fetch('/evm-pool/token-pool-code.json').then((r) => { if (!r.ok) throw new Error(`token pools: HTTP ${r.status}`); return r.json(); })
   .then((code) => makeTokenPools({ code, keccak256: keccak_256 })).catch((e) => { TP = null; throw e; }));
-export async function routeFrom({ ethCall, venues, tokenIn, token, amount, to, slippageBps = 50, deadline, random = (n) => crypto.getRandomValues(new Uint8Array(n)) }) {
+export async function routeFrom({ ethCall, venues, tokenIn, token, amount, to, slippageBps = 50, deadline, gasPrice = null, random = (n) => crypto.getRandomValues(new Uint8Array(n)) }) {
   const stand = '0x' + hexOf(random(20)), amt = BigInt(amount), dl = BigInt(deadline), write = (d) => d.split(word(stand)).join(word(to));
   let q = null;
   if (lc(tokenIn) === TAC && lc(token) === ZERO) {
-    const rt = (await venues.route({ dir: 'TAC_TO_ETH', amountIn: amt, account: stand }))?.r?.precision;
-    if (!rt || BigInt(rt.amountIn) !== amt) return null;
-    const min = (BigInt(rt.amountOut) * BigInt(10000 - slippageBps)) / 10000n;
-    const build = (who) => venues.build({ quote: rt, dir: 'TAC_TO_ETH', account: who, to: who, minOut: min, deadline: dl });
-    const tx = build(stand), real = build(to);
-    if ([tx, real].some((t) => lc(t.to) !== lc(ZROUTER) || BigInt(t.value || 0) !== 0n)) return null;
-    return { callData: real.data, standData: tx.data, min, out: BigInt(rt.amountOut), name: 'Precision pool', deadline: dl };
+    const r = await tacIn({ venues, amt, account: stand, slippageBps, deadline: dl, gasPrice, build: (mk) => [mk(to, to), mk(stand, stand)] });
+    return r && { callData: r.txs[0].data, standData: r.txs[1].data, min: r.min, out: r.out, name: r.name, ...(r.legs ? { legs: r.legs } : {}), deadline: dl };
   } else if (lc(tokenIn) === TAC) {
     const r = await quoteTacitToToken({ ethCall, venues, tokenIn, tokenOut: token, amountIn: amt, account: stand, to: stand, slippageBps, deadline: dl });
     if (!r || r.amountIn !== amt) return null;
@@ -193,7 +213,7 @@ export async function depositFee(get = globalThis.fetch, keeper = CHAIN.keeper) 
   return BigInt(least);
 }
 
-export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, sendPrivate = null, store = globalThis.localStorage, chain = CHAIN, prove: proveWith = null, tokens = null, walletOf = null, routes = {}, knows = null, callRan = null, now = Date.now }) {
+export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, sendPrivate = null, store = globalThis.localStorage, chain = CHAIN, prove: proveWith = null, tokens = null, walletOf = null, routes = {}, knows = null, callRan = null, gasPrice: gasNow = null, now = Date.now }) {
   const rt = { routeOut, routeFrom, routeOutTac, ...routes };
   const secs = () => Math.floor(now() / 1000);
   let modsP = null, proverP = null, rpc = null, keyAddr = null;
@@ -400,7 +420,8 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
     if (pay) {
       onStep('reading the price again');
       const deadline = BigInt(secs() + DEADLINE_S), slippageBps = pay.slippageBps ?? 50;
-      const size = () => sizeIn({ route: (a) => routeIn({ ethCall, venues, token: pay.token, amountIn: a, from: signer.address, slippageBps, deadline }), amountIn: pay.amountIn, min: pay.min, depositWei });
+      const gasPrice = gasNow?.();
+      const size = () => sizeIn({ route: (a) => routeIn({ ethCall, venues, token: pay.token, amountIn: a, from: signer.address, slippageBps, deadline, gasPrice }), amountIn: pay.amountIn, min: pay.min, depositWei });
       const r = (await size().catch(() => null)) || (await sleep(1500), await size());
       if (!r) throw new Error(`No onchain route sells ${pay.sym} for the deposit right now. Nothing was sent.`);
       if (pay.most != null && r.amountIn > BigInt(pay.most)) throw Object.assign(new Error(`The price moved: the deposit takes more ${pay.sym} than was shown. Nothing was sent; check it and press again.`), { moved: true, amountIn: r.amountIn });
@@ -553,7 +574,7 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
     const w = await wallet(into.hop), back = refund || (await tacitAccount()).acct.address;
     onStep('reading the price again');
     const deadline = BigInt(secs() + DEADLINE_S);
-    const route = (to) => (lc(token) === TAC ? rt.routeOutTac({ venues, amount: swap, to, slippageBps, deadline }) : rt.routeOut({ ethCall, token, amount: swap, to, slippageBps, deadline }));
+    const route = (to) => (lc(token) === TAC ? rt.routeOutTac({ venues, amount: swap, to, slippageBps, deadline, gasPrice: gasNow?.() }) : rt.routeOut({ ethCall, token, amount: swap, to, slippageBps, deadline }));
     const first = await route('0x' + hexOf(crypto.getRandomValues(new Uint8Array(20))));
     if (!first) throw new Error('No onchain route for this right now. Nothing was sent.');
     const fee = BigInt((await w.quote(Number(HOP_GAS))).fee), amount = (BigInt(shownMin ?? first.min) * BOX_MARGIN) / 1000n;
@@ -714,12 +735,12 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
     const deadline = BigInt(secs() + DEADLINE_S);
     const route = async (to) => {
       if (plan.hop) {
-        const r = await rt.routeFrom({ ethCall, venues, tokenIn: plan.hop.token, token: plan.token, amount: BigInt(plan.swapWei), to, slippageBps, deadline });
+        const r = await rt.routeFrom({ ethCall, venues, tokenIn: plan.hop.token, token: plan.token, amount: BigInt(plan.swapWei), to, slippageBps, deadline, gasPrice: gasNow?.() });
         if (!r) throw new Error(`No onchain route sells ${plan.hop.sym} for ${plan.sym} right now. Nothing was sent; try again in a while.`);
         return r;
       }
       const r = lc(plan.token) === TAC
-        ? await rt.routeOutTac({ venues, amount: BigInt(plan.swapWei), to, slippageBps, deadline })
+        ? await rt.routeOutTac({ venues, amount: BigInt(plan.swapWei), to, slippageBps, deadline, gasPrice: gasNow?.() })
         : await rt.routeOut({ ethCall, token: plan.token, amount: BigInt(plan.swapWei), to, slippageBps, deadline });
       if (!r) throw new Error(`No onchain route sells ETH for ${plan.sym} right now. Nothing was sent; try again in a while.`);
       return r;

@@ -1257,9 +1257,9 @@ if (!process.env.SKIP_GASRELAY) {
   await quoted(page); await ackIf(page);
   ok(await page.isVisible('#later'), 'selling TAC for USDC offers Swap privately');
   await page.click('#later-on');
-  await until(page, () => /Precision pool → ETH pool →/.test(document.querySelector('#rcpt')?.textContent || ''), null, 90000);
+  await until(page, () => /(Precision pool|Precision \d+% Tacit \d+%) → ETH pool →/.test(document.querySelector('#rcpt')?.textContent || ''), null, 90000);
   await until(page, () => /TAC$/.test(document.querySelector('#later-dep')?.textContent || ''), null, 30000);
-  ok(/^[\d.,]+ TAC$/.test(await page.textContent('#later-dep')), `through the Precision pool, the deposit in TAC (${await page.textContent('#later-dep')})`);
+  ok(/^[\d.,]+ TAC$/.test(await page.textContent('#later-dep')), `through the Precision pool or both, the deposit in TAC (${await page.textContent('#later-dep')})`);
   { const mk = await page.$$eval('#later .st.pre .mk', (ms) => ms.map((m) => Math.round(m.getBoundingClientRect().width)));
     ok(mk.length >= 3 && mk.every((w) => w >= 17), `the steps' numbers stay round on a phone (${mk.join(', ')} px)`); }
   ok((await overflow(page)) <= 0, 'no sideways scroll on a dark phone');

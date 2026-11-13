@@ -1,8 +1,8 @@
-import { MULTICALL3, TAC_POOL_ASSET_ID, CETH_POOL_ASSET_ID, _internal } from '/evm-trade-venues.js?cb=c9a3c2e7';
+import { MULTICALL3, TAC_POOL_ASSET_ID, CETH_POOL_ASSET_ID, _internal } from '/evm-trade-venues.js?cb=42f026e7';
 import { keccak_256 } from '/vendor/tacit-deps.min.js';
 import { ETH_LOG_NODES } from '/eth-nodes.js';
 import { ethCall, rpc, wordAt, word, strip } from '/trade/util.js?cb=1d2cd8d3';
-import { POOL, heldHistory } from '/teth/read.js?cb=7aa845b7';
+import { POOL, heldHistory } from '/teth/read.js?cb=2a357daf';
 
 export const ENGINE = '0x000000003f608BDdF0ca45934003ffb9DbDF70DB';
 export const WSTETH = '0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0';

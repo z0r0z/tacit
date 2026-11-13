@@ -211,6 +211,8 @@
 .swc .st.pre .mk { flex: none; width: 18px; height: 18px; font-size: 10px; }
 /* on a phone the deposit's figure may take two lines, so the three steps fit the card */
 @media (max-width: 460px) { .swc .st.pre li:first-child { flex: 0 1 auto; min-width: 0; white-space: normal; } .swc .st.pre li + li::before { margin: 0 5px; min-width: 6px; } }
+/* four steps on a phone: the lines between them give way before a step runs off the panel */
+@media (max-width: 460px) { .swc .st.pre:has(li:nth-child(4)) li { gap: 4px; } .swc .st.pre:has(li:nth-child(4)) li + li::before { margin: 0 3px; min-width: 0; } }
 .swc .steps { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; margin: 12px 2px 0; font-size: 12.5px; }
 .swc .steps .plan { padding: 12px 14px; background: var(--field); border: 1px solid color-mix(in srgb, var(--ink) 8%, transparent); border-radius: 16px; }
 .swc .steps header { display: flex; align-items: center; gap: 8px; min-width: 0; margin: 0 0 14px; }
@@ -402,10 +404,16 @@
 .swc dt .tk.xs { display: inline-block; margin-right: 5px; vertical-align: -2px; }
 
 /* a split across the two TAC pools, drawn as on the TAC trading page: each pool's share, named */
-.swc .splitbar { display: flex; gap: 2px; height: 18px; margin-top: 3px; min-width: 150px; font: 10.5px var(--mono); letter-spacing: .02em; }
-.swc .splitbar span { display: flex; align-items: center; min-width: 0; padding: 0 6px; overflow: hidden; white-space: nowrap; color: #fff; }
-.swc .splitbar .pp { background: #4a63d6; border-radius: 3px 0 0 3px; } .swc .splitbar .tp { background: #15803d; border-radius: 0 3px 3px 0; }
-.swc .splitbar.ghost span { flex: 1; background: color-mix(in srgb, var(--ink) 6%, transparent); border-radius: 3px; }
+.swc .splitbar { display: flex; gap: 2px; height: 18px; margin-top: 3px; min-width: 150px; overflow: hidden; border-radius: 9px; font: 10.5px var(--mono); letter-spacing: .02em; }
+.swc .splitbar > span { container-type: inline-size; display: flex; align-items: center; min-width: 0; padding: 0; overflow: hidden; white-space: nowrap; color: #fff; }
+.swc .splitbar .pp { background: #4a63d6; } .swc .splitbar .tp { background: #15803d; }
+.swc .splitbar i { padding: 0 7px; font-style: normal; }
+/* a narrow share keeps its figure and drops the pool's name, then the figure: the colour, the title and the label still say whose it is */
+@container (max-width: 98px) { .swc .splitbar .pp i > span { display: none; } }
+@container (max-width: 74px) { .swc .splitbar .tp i > span { display: none; } }
+@container (max-width: 36px) { .swc .splitbar i { display: none; } }
+.swc .splitbar.ghost span { flex: 1; background: color-mix(in srgb, var(--ink) 6%, transparent); }
+.swc .rcpt .splitbar { display: inline-flex; width: 190px; min-width: 0; max-width: 100%; margin: 0 0 0 1px; vertical-align: -5px; }
 
 /* a token row's kind: Private (dashed, like the ring on its mark), Public, Bitcoin; shown only while searching, when the switch and the headings are gone */
 .swc .pk-r b .pk-t { display: none; margin-left: 8px; padding: 0 6px; font: 500 9.5px/16px var(--mono); letter-spacing: .07em; text-transform: uppercase; border-radius: 999px; vertical-align: 2px; color: var(--mute); border: 1px solid color-mix(in srgb, currentColor 30%, transparent); }

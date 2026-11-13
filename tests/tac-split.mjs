@@ -295,7 +295,15 @@ const DL = 2000000000n;
   assert.equal(splitWorth({ dir: 'TAC_TO_ETH', split: null, amountIn: 1n }), false);
   assert.equal(splitWorth({ dir: 'TAC_TO_ETH', split: { ...sell, gain: 0n }, amountIn: 1n }), false);
   assert.ok(SPLIT_EXTRA_GAS.ETH_TO_TAC > 100000n && SPLIT_EXTRA_GAS.TAC_TO_ETH > SPLIT_EXTRA_GAS.ETH_TO_TAC, 'the measured gas deltas');
-  ok('splitWorth: a 0.3% margin without a gas price; with one the gain (in ETH) must exceed 1.2x the extra gas, to the wei, both directions');
+  // `over`: weighed against a named route instead of the better pool (a caller that can use only one of them)
+  const both = { ...buy, amountOut: 12108n * E18 };
+  assert.equal(splitWorth({ dir: 'ETH_TO_TAC', split: both, amountIn: E18, over: { amountOut: 12090n * E18 } }), false, '0.15% over the named route is under the margin');
+  assert.equal(splitWorth({ dir: 'ETH_TO_TAC', split: both, amountIn: E18, over: { amountOut: 11900n * E18 } }), true, '1.7% over it clears, whatever the split gains on the better pool');
+  assert.equal(splitWorth({ dir: 'ETH_TO_TAC', split: both, amountIn: E18, over: { amountOut: 12108n * E18 } }), false, 'nothing over it');
+  assert.equal(splitWorth({ dir: 'TAC_TO_ETH', split: { ...sell, amountOut: 304n * 10n ** 15n }, amountIn: 5000n * E18, gasPrice: 10n * 10n ** 9n, over: { amountOut: 302n * 10n ** 15n } }), true, '0.002 ETH over it beats 1.2x the gas (0.0017 ETH)');
+  assert.equal(splitWorth({ dir: 'TAC_TO_ETH', split: { ...sell, amountOut: 304n * 10n ** 15n }, amountIn: 5000n * E18, gasPrice: 10n * 10n ** 9n, over: { amountOut: 303n * 10n ** 15n } }), false, '0.001 ETH does not');
+  assert.equal(makeEvmTradeVenues({ ethCall: async () => null }).splitWorth, splitWorth, 'the venues carry the same rule');
+  ok('splitWorth: a 0.3% margin without a gas price; with one the gain (in ETH) must exceed 1.2x the extra gas, to the wei, both directions; and against a named route');
 }
 
 // ── route: which way an order runs, with the points preference a purchase carries ──

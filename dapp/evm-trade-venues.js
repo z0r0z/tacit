@@ -464,10 +464,12 @@ async function simulateTx({ ethCall, tx, from, block = 'latest' }) {
 }
 
 export const SPLIT_EXTRA_GAS = Object.freeze({ ETH_TO_TAC: 110000n, TAC_TO_ETH: 141000n });
-export function splitWorth({ dir, split, amountIn, gasPrice = null, minGainBps = 30 }) {
-  if (!split || split.gain <= 0n) return false;
-  if (gasPrice == null) return split.gainBps >= minGainBps;
-  const gainEth = dir === 'TAC_TO_ETH' ? split.gain : (split.gain * amountIn) / split.single.amountOut;
+export function splitWorth({ dir, split, amountIn, gasPrice = null, minGainBps = 30, over = null }) {
+  if (!split) return false;
+  const base = BigInt((over || split.single).amountOut), gain = over ? BigInt(split.amountOut) - base : split.gain;
+  if (gain <= 0n) return false;
+  if (gasPrice == null) return (over ? Number((gain * 10000n) / base) : split.gainBps) >= minGainBps;
+  const gainEth = dir === 'TAC_TO_ETH' ? gain : (gain * amountIn) / base;
   return gainEth * 10n > SPLIT_EXTRA_GAS[dir] * BigInt(gasPrice) * 12n;
 }
 
@@ -584,6 +586,7 @@ export function makeEvmTradeVenues({ ethCall, keccak256 } = {}) {
     plan,
     quoteSplit: (args) => quoteSplit({ ethCall, ...args }),
     buildSplit: (args) => buildSplit({ keccak256, ...args }),
+    splitWorth,
     precisionLegs: (args) => precisionSwapLegs({ keccak256, ...args }),
     simulate: (args) => simulateTx({ ethCall, ...args }),
     quotePrecision: (args) => quotePrecision({ ethCall, ...args }),

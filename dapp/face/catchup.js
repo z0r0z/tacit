@@ -1,7 +1,7 @@
 // Catch the price feed up from anyone's wallet: the same records the keeper sends (vault/feed.js builds them from an
 // archive node and the oracle checks them again), in batches through Multicall3. The sale reads its pair oracle like a
 // vault does (`ORACLE()`), so the vault page's feed reader works on the sale's address as it is.
-import { makeFeed, encBatch, MULTICALL3 } from '/vault/feed.js?cb=6d915237';
+import { makeFeed, encBatch, MULTICALL3 } from '/vault/feed.js?cb=9d8360c4';
 import { ETH_ARCHIVE_NODES } from '/eth-nodes.js';
 
 const PER_BATCH = 8; // about 7.6M gas a batch

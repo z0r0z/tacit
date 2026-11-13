@@ -117,6 +117,23 @@ console.log(`  proofs: ${times.map((t) => `${(t / 1000).toFixed(1)} s`).join(', 
   const rc6 = await rpcA('eth_getTransactionReceipt', [h6]);
   ok(rc6?.status === '0x1' && (await bal(TAC, ACCT)) - tacc0 >= rt2.min && (await bal(ZERO, ACCT)) - eth0 === gasWei, `one withdrawal pays the account ${Number((await bal(TAC, ACCT)) - tacc0) / 1e18} TAC and ${Number(gasWei) / 1e18} ETH for the wrap`);
   ok((await bal(ZERO, (await import('../dapp/evm-pool-gateway.js')).callEscrowAddress(intent4, ROUTER))) === 0n, 'and leaves nothing in its escrow');
+
+  // a larger swap goes through both pools when that pays more than one: still the escrow's one zRouter call, with one floor for the whole
+  const DEST5 = '0x00000000000000000000000000000000000De575', big = 3n * 10n ** 17n;
+  const h7 = await W.deposit({ amount: big + extraWei, onStep: () => {} });
+  ok(/^0x[0-9a-f]{64}$/.test(h7), 'a deposit for a larger swap into TAC');
+  const dl3 = BigInt(Number(BigInt((await rpcA('eth_getBlockByNumber', ['latest', false])).timestamp)) + 1200);
+  const best = (await venuesNow.route({ dir: 'ETH_TO_TAC', amountIn: big })).r.best;
+  const rt3 = await routeOutTac({ venues: venuesNow, amount: big, to: DEST5, slippageBps: 100, deadline: dl3 });
+  ok(rt3?.name === 'Both pools' && rt3.legs?.length === 2 && rt3.legs[0].amountIn + rt3.legs[1].amountIn === big && rt3.out > BigInt(best.amountOut),
+    `0.3 ETH is routed through both pools: ${rt3?.legs?.map((l) => `${Number(l.amountIn) / 1e18} ETH in the ${l.venue} pool`).join(', ')}, ${Number(rt3?.out || 0n) / 1e18} TAC where the better pool alone pays ${Number(best.amountOut) / 1e18}`);
+  ok(rt3.callData.toLowerCase().includes(DEST5.slice(2).toLowerCase()) && !rt3.standData.toLowerCase().includes(DEST5.slice(2).toLowerCase()), 'written for the address, its copy for a stand-in');
+  const intent5 = callIntent({ calls: [{ target: ZROUTER, value: big, data: rt3.callData }], refund: await W.refundBox(), deadline: dl3, nonce: 13n });
+  const t5 = await bal(TAC, DEST5);
+  const h8 = await W.withdrawAndCall({ intent: intent5, amount: big, via: 'self', onStep: () => {} });
+  const rc8 = await rpcA('eth_getTransactionReceipt', [h8]), got5 = (await bal(TAC, DEST5)) - t5;
+  ok(rc8?.status === '0x1' && got5 >= rt3.min && got5 > BigInt(best.amountOut), `the withdrawal into the two-pool swap runs (${BigInt(rc8?.gasUsed || 0)} gas): the address got ${Number(got5) / 1e18} TAC, at least the ${Number(rt3.min) / 1e18} shown and more than one pool pays`);
+  ok((await bal(ZERO, (await import('../dapp/evm-pool-gateway.js')).callEscrowAddress(intent5, ROUTER))) === 0n && (await bal(TAC, (await import('../dapp/evm-pool-gateway.js')).callEscrowAddress(intent5, ROUTER))) === 0n, 'and nothing is left in that escrow, ETH or TAC');
 }
 
 // ── the same through makeLater: what the card calls (plan kept, deposit, wait, a price shown, the swap out, a plan checked) ──

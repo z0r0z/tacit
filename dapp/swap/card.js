@@ -1,5 +1,5 @@
 import { keccak_256 } from '/vendor/tacit-deps.min.js';
-import { makeEvmTradeVenues, _internal as V, MULTICALL3 } from '/evm-trade-venues.js?cb=c9a3c2e7';
+import { makeEvmTradeVenues, _internal as V, MULTICALL3 } from '/evm-trade-venues.js?cb=42f026e7';
 import { UserStopped } from '/trade/wallet.js?cb=5d19a733';
 import { declinedWords } from '/wallet-prompts.js';
 import { rpc, API, api, esc, fmtUnits, parseUnits, plain, usd, sig, E10, E18, ago } from '/trade/util.js?cb=1d2cd8d3';
@@ -73,7 +73,13 @@ const laterPts = (q, r) => (!q || r?.hop ? null : ptsFor('dev', laterDeposit(q))
 const ptsSaid = (p, word = true) => (p ? `${p.floor ? '' : '≈ '}${Math.round(p.pts).toLocaleString('en-US')}${p.floor ? '+' : ''}${word ? ' points' : ''}` : '');
 const AVOID = new Map();
 const poolFloor = (x, slip = S.slip) => (x * (10000n - BigInt(Math.max(Number(slip) || 0, 100)))) / 10000n;
-const splitBar = (sh) => `<span class="splitbar" role="img" aria-label="${sh}% Precision pool, ${100 - sh}% Tacit pool"><span class="pp" style="flex:${Math.max(sh, 8)}">Precision ${sh}%</span><span class="tp" style="flex:${Math.max(100 - sh, 8)}">Tacit ${100 - sh}%</span></span>`;
+const BOTH = 'Both pools';
+const splitBar = (legs, from) => {
+  const [p, t] = legs, sh = Math.round(Number((p.amountIn * 1000n) / (p.amountIn + t.amountIn)) / 10), [a, b] = from === 'TAC' ? ['TAC', 'ETH'] : ['ETH', 'TAC'];
+  const seg = (l, cls, name, pct) => `<span class="${cls}" style="flex:${Math.max(pct, 8)}" title="${esc(`${tidy(amtFmt(l.amountIn, 18))} ${a} → ${tidy(amtFmt(l.amountOut, 18))} ${b}`)}"><i><span>${name}</span> ${pct}%</i></span>`;
+  return `<span class="splitbar" role="img" aria-label="${sh}% Precision pool, ${100 - sh}% Tacit pool">${seg(p, 'pp', 'Precision', sh)}${seg(t, 'tp', 'Tacit', 100 - sh)}</span>`;
+};
+const routeCell = (text, r) => (r?.legs && text.includes(BOTH) ? htmlVal(esc(text).replace(BOTH, splitBar(r.legs, r.legsFrom))) : text);
 const TAC_MARK = '<svg class="tk xs" aria-hidden="true"><use href="#tk-tac"/></svg>';
 const ptsTag = (p, word = true) => (p ? `<span class="pt">${TAC_MARK}${ptsSaid(p, word)}</span>` : '');
 const reward = (p) => { if (p?.pts >= 1) rewardPop($('#go'), { pts: p.pts }); return true; };
@@ -483,7 +489,7 @@ async function signTyped(typed, from) {
 }
 
 const PREVIEW = '0x0000000000000000000000000000000000000001';
-const GAS = { single: 160000n, twohop: 260000n, hybrid: 480000n, tac: 160000n, tacSell: 210000n, split: 270000n, any: 320000n, amm: 150000n, ammIn: 200000n, out: 340000n, in: 290000n, zap: 700000n, snwap: 380000n };
+const GAS = { single: 160000n, twohop: 260000n, hybrid: 480000n, tac: 160000n, tacSell: 210000n, split: 270000n, bothSell: 350000n, any: 320000n, amm: 150000n, ammIn: 200000n, out: 340000n, in: 290000n, zap: 700000n, snwap: 380000n };
 const picked = (q = S.q) => (q?.rows || []).find((r) => r.k === S.pick) || q?.rows?.find((r) => r.best) || q?.rows?.[0] || null;
 
 function syncMove() {
@@ -527,20 +533,20 @@ async function quote(my, wei) {
   const account = W.account || undefined;
   if (laterOn(kind) && !isEth(S.pay) && viaToken()) {
     const lt = await ltLoad(), stand = '0x' + Array.from(crypto.getRandomValues(new Uint8Array(20)), (b) => b.toString(16).padStart(2, '0')).join('');
-    const r = await within(lt.mod.routeFrom({ ethCall, venues, tokenIn: S.pay, token: isEth(S.get) ? R.ZERO : S.get, amount: wei, to: stand, slippageBps: S.slip, deadline: chainDeadline(1200) }), 25e3, 'zQuoter did not answer in time. Try again.');
+    const r = await within(lt.mod.routeFrom({ ethCall, venues, tokenIn: S.pay, token: isEth(S.get) ? R.ZERO : S.get, amount: wei, to: stand, slippageBps: S.slip, deadline: chainDeadline(1200), gasPrice: gasPrice() }), 25e3, 'zQuoter did not answer in time. Try again.');
     if (!r) return done({ rows: [], why: `No onchain route sells ${esc(pay.sym)} for ${esc(get.sym)} right now.`, lt: 'hop' });
-    return done({ rows: [{ k: 'later', name: `${pay.sym} pool → ${r.name}`, note: '', out: r.out, min: r.min, hop: true, gas: GAS.zap, best: true }], lt: 'hop' });
+    return done({ rows: [{ k: 'later', name: `${pay.sym} pool → ${r.name}`, note: '', out: r.out, min: r.min, hop: true, legs: r.legs, legsFrom: 'TAC', gas: GAS.zap, best: true }], lt: 'hop' });
   }
   if (laterOn(kind) && !isEth(S.pay)) {
-    const lt = await ltLoad(), v = await within(lt.mod.quoteThrough({ ethCall, venues, pay: S.pay, get: S.get, amountIn: wei, slippageBps: S.slip, deadline: chainDeadline(1200) }), 25e3, 'zQuoter did not answer in time. Try again.');
+    const lt = await ltLoad(), v = await within(lt.mod.quoteThrough({ ethCall, venues, pay: S.pay, get: S.get, amountIn: wei, slippageBps: S.slip, deadline: chainDeadline(1200), gasPrice: gasPrice() }), 25e3, 'zQuoter did not answer in time. Try again.');
     if (!v) return done({ rows: [], why: `No onchain route takes ${esc(pay.sym)} through the private pool to ${esc(get.sym)} right now.`, lt: 'zap' });
-    return done({ rows: [{ k: 'later', name: `${v.r0.name} → ETH pool → ${v.r1.name}`, note: '', out: v.r1.out, min: v.r1.min, via: { ...v, spend: (wei * v.ethWei) / v.r0.out }, gas: GAS.zap, best: true }], lt: 'zap' });
+    return done({ rows: [{ k: 'later', name: `${v.r0.name} → ETH pool → ${v.r1.name}`, note: '', out: v.r1.out, min: v.r1.min, via: { ...v, spend: (wei * v.ethWei) / v.r0.out }, legs: v.r0.legs || v.r1.legs, legsFrom: v.r0.legs ? 'TAC' : 'ETH', gas: GAS.zap, best: true }], lt: 'zap' });
   }
   if (kind === 'tac' && isEth(S.pay) && laterOn(kind)) {
     const lt = await ltLoad(), w = alignTac(wei);
-    const r = w > 0n ? await within(lt.mod.routeOutTac({ venues, amount: w, to: standIn(), slippageBps: S.slip, deadline: chainDeadline(1200) }), 25e3, 'The pools did not answer in time. Try again.') : null;
+    const r = w > 0n ? await within(lt.mod.routeOutTac({ venues, amount: w, to: standIn(), slippageBps: S.slip, deadline: chainDeadline(1200), gasPrice: gasPrice() }), 25e3, 'The pools did not answer in time. Try again.') : null;
     if (!r) return done({ rows: [], why: 'No pool can fill this right now.' });
-    return done({ rows: [{ k: r.name === 'Precision pool' ? 'precision' : 'tacit-amm', name: r.name, note: '', out: r.out, min: r.min, gas: GAS.tac, best: true }], dir: 'ETH_TO_TAC' });
+    return done({ rows: [{ k: r.legs ? 'both' : r.name === 'Precision pool' ? 'precision' : 'tacit-amm', name: r.name, note: '', out: r.out, min: r.min, legs: r.legs, legsFrom: 'ETH', gas: r.legs ? GAS.split : GAS.tac, best: true }], dir: 'ETH_TO_TAC' });
   }
   if (kind === 'tac') {
     const dir = isEth(S.pay) ? 'ETH_TO_TAC' : 'TAC_TO_ETH';
@@ -548,8 +554,8 @@ async function quote(my, wei) {
     if (!rt.single) return done({ rows: [], why: 'No pool can fill this right now.' });
     const rows = [];
     const ranked = rt.r.ranked || [];
-    for (const v of ranked) rows.push({ k: v.venue, name: v.venue === 'precision' ? 'Precision pool' : 'Tacit pool', note: '', out: BigInt(v.amountOut), venue: v, gas: dir === 'ETH_TO_TAC' ? GAS.tac : GAS.tacSell });
-    if (rt.split) { const sh = Math.round(Number(rt.split.legs[0].amountIn * 1000n / (rt.split.legs[0].amountIn + rt.split.legs[1].amountIn)) / 10); rows.push({ k: 'split', name: 'Both pools', note: splitBar(sh), out: BigInt(rt.split.amountOut), split: rt.split, gas: GAS.split }); }
+    for (const k of ['precision', 'tacit-amm']) { const v = ranked.find((x) => x.venue === k); if (v) rows.push({ k, name: k === 'precision' ? 'Precision pool' : 'Tacit pool', note: '', out: BigInt(v.amountOut), venue: v, gas: dir === 'ETH_TO_TAC' ? GAS.tac : GAS.tacSell }); }
+    if (rt.split) rows.push({ k: 'split', name: BOTH, note: splitBar(rt.split.legs, isEth(S.pay) ? 'ETH' : 'TAC'), out: BigInt(rt.split.amountOut), split: rt.split, gas: dir === 'ETH_TO_TAC' ? GAS.split : GAS.bothSell });
     const best = rt.pick === 'split' ? rows.find((r) => r.k === 'split') : rows.find((r) => r.k === rt.single.venue);
     if (best) best.best = true;
     return done({ rows, dir });
@@ -609,6 +615,14 @@ async function quote(my, wei) {
   if (kind === 'pout') return done(await quoteOut(units, pay, get));
   return done(await privQuote(units, isEth(S.pay) ? 'eth' : PK[S.pay], pay.sym));
 }
+const TIERS = [30, 5, 100, 1], TIERS_OF = new Map();
+// The pair's pool that pays most. A pair is asked for every fee tier once; for ten minutes after, only for the tiers that have a pool.
+async function bestTier(t, cur, next, amountIn) {
+  const known = TIERS_OF.get(`${cur}>${next}`), ask = known && Date.now() - known.at < 600e3 ? known.tiers : TIERS;
+  const got = await Promise.all(ask.map((feeBps) => t.quoteRoute({ asset0: cur, amountIn, path: [{ assetNext: next, feeBps }] }).then((r) => r || null, () => undefined)));
+  if (ask === TIERS && !got.includes(undefined) && got.some(Boolean)) TIERS_OF.set(`${cur}>${next}`, { at: Date.now(), tiers: TIERS.filter((_, i) => got[i]) });
+  return got.filter((r) => r && r.amountOut > 0n).reduce((a, c) => (!a || c.amountOut > a.amountOut ? c : a), null);
+}
 async function privQuote(units, from, sym) {
   const wallet = from === 'eth' && !S.inP, tipP = wallet ? tipFor(units) : null;
   if (wallet && S.get === 'teth') return { rows: [{ k: 'private', name: 'Made private', note: '', out: units * E10, best: true, priv: true }], fee: null, tip: await tipP };
@@ -622,8 +636,7 @@ async function privQuote(units, from, sym) {
   const pools = [];
   for (const k of stops) {
     const next = id(k);
-    const tiers = await Promise.all([30, 5, 100, 1].map((feeBps) => t.quoteRoute({ asset0: cur, amountIn: amt, path: [{ assetNext: next, feeBps }] }).then((r) => (r && r.amountOut > 0n ? r : null), () => null)));
-    const best = tiers.filter(Boolean).reduce((a, c) => (!a || c.amountOut > a.amountOut ? c : a), null);
+    const best = await bestTier(t, cur, next, amt);
     if (!best) return { rows: [], why: 'The Tacit pool has no price for this pair right now.' };
     const h = best.hops[0], lo = BigInt(cur) <= BigInt(next);
     pools.push({ a: at, b: k, feeBps: Number(h.feeBps), ra: BigInt(lo ? h.reserveAPre : h.reserveBPre), rb: BigInt(lo ? h.reserveBPre : h.reserveAPre) });
@@ -641,8 +654,7 @@ async function quoteOut(units, pay, get) {
     fee = await opFee(t, POOL_TK[from], 'route');
     if (units <= fee * 2n) return { rows: [], why: `Swap more than ${fmtUnits(fee * 2n, 8, 6)} ${esc(pay.sym)}: the relay’s fee is ${fmtUnits(fee, 8, 6)}.`, tiny: true };
     const cur = IDS[from], next = IDS.eth;
-    const tiers = await Promise.all([30, 5, 100, 1].map((feeBps) => t.quoteRoute({ asset0: cur, amountIn: units - fee, path: [{ assetNext: next, feeBps }] }).then((r) => (r && r.amountOut > 0n ? r : null), () => null)));
-    const best = tiers.filter(Boolean).reduce((a, c) => (!a || c.amountOut > a.amountOut ? c : a), null);
+    const best = await bestTier(t, cur, next, units - fee);
     if (!best) return { rows: [], why: 'The Tacit pool has no price for this pair right now.' };
     const h = best.hops[0], lo = BigInt(cur) <= BigInt(next);
     pools.push({ a: from, b: 'eth', feeBps: Number(h.feeBps), ra: BigInt(lo ? h.reserveAPre : h.reserveBPre), rb: BigInt(lo ? h.reserveBPre : h.reserveAPre) });
@@ -675,7 +687,7 @@ const tipFor = (units) => {
   const k = String(units), c = TIPS.get(k);
   if (c && Date.now() - c.at < 30e3) return c.p;
   for (const [x, v] of TIPS) if (Date.now() - v.at >= 30e3) TIPS.delete(x);
-  const p = import('/teth/read.js?cb=7aa845b7').then((m) => m.wrapQuote(units * E10)).then((x) => x.tip, () => { if (TIPS.get(k)?.p === p) TIPS.delete(k); return null; });
+  const p = import('/teth/read.js?cb=2a357daf').then((m) => m.wrapQuote(units * E10)).then((x) => x.tip, () => { if (TIPS.get(k)?.p === p) TIPS.delete(k); return null; });
   TIPS.set(k, { p, at: Date.now() });
   return p;
 };
@@ -896,8 +908,8 @@ function quotePaint() {
     const hopEth = laterOn(kind) && isEth(S.pay) && !r.hop && !r.via && rows.hidden;
     const named = hopEth || !routed ? routeLine({ r, pools: q.pools, hop: hopEth }, (k) => PSYM[k]) : null;
     const compared = r.agg?.quotes?.length ? `Compared with ${r.agg.quotes.length} pool${r.agg.quotes.length > 1 ? 's' : ''}` : r.sv ? 'An outside solver, settled through zRouter: it pays at least the least shown, or nothing is swapped' : '';
-    if (named) lines.push(['Route', named.text, '', [named.tip, compared].filter(Boolean).join(' ')]);
-    else if (routed) lines.push(['Route', r.name, '', compared]);
+    if (named) lines.push(['Route', routeCell(named.text, r), '', [named.tip, compared].filter(Boolean).join(' ')]);
+    else if (routed) lines.push(['Route', routeCell(r.name, r), '', compared]);
     if (r.agg?.quotes?.length) {
       const gain = Number(r.out - r.agg.quotes[0].out) / Number(r.agg.quotes[0].out);
       if (gain >= 0.001) lines.push(['Over best pool', `+${(gain * 100).toFixed(2)}%`, 'ok', r.agg.quotes[0].name]);
@@ -1416,7 +1428,7 @@ function depositSoon(q) {
   clearTimeout(depTimer);
   depTimer = setTimeout(ask, 0);
 }
-const ltLoad = () => (LTP ||= import('/swap/later.js?cb=2564b4ad').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o), now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
+const ltLoad = () => (LTP ||= import('/swap/later.js?cb=25004174').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o), gasPrice, now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
 const laterPay = (k) => isEth(k) || k === lc(R.TAC) || (isListed(k) && !tacitKey(k) && k !== lc(R.WETH));
 const laterPair = (kind, pay = S.pay, get = S.get) => laterPay(pay)
   && (isEth(pay) ? kind === 'agg' || (kind === 'tac' && get === lc(R.TAC)) : (kind === 'agg' && get !== lc(R.WETH)) || kind === 'any' || kind === 'out' || kind === 'tac');
@@ -1947,8 +1959,8 @@ async function quoteExit(my, wei) {
     const out = exitOf()?.wallet && !isEth(S.pay)
     ? A.bestRoute({ ethCall, to: PREVIEW, refundTo: PREVIEW, tokenIn: S.pay, tokenOut: S.get, amountIn: wei, slippageBps: S.slip, deadline })
     : isEth(S.pay)
-    ? (S.get === lc(R.TAC) ? lt.mod.routeOutTac({ venues, amount: wei, to: stand, slippageBps: S.slip, deadline }) : lt.mod.routeOut({ ethCall, token: S.get, amount: wei, to: stand, slippageBps: S.slip, deadline }))
-    : lt.mod.routeFrom({ ethCall, venues, tokenIn: S.pay, token: isEth(S.get) ? R.ZERO : S.get, amount: wei, to: stand, slippageBps: S.slip, deadline });
+    ? (S.get === lc(R.TAC) ? lt.mod.routeOutTac({ venues, amount: wei, to: stand, slippageBps: S.slip, deadline, gasPrice: gasPrice() }) : lt.mod.routeOut({ ethCall, token: S.get, amount: wei, to: stand, slippageBps: S.slip, deadline }))
+    : lt.mod.routeFrom({ ethCall, venues, tokenIn: S.pay, token: isEth(S.get) ? R.ZERO : S.get, amount: wei, to: stand, slippageBps: S.slip, deadline, gasPrice: gasPrice() });
     return within(out, 25e3, 'zQuoter did not answer in time. Try again.').then((r) => ({ r }), (e) => ({ e }));
   };
   const routeP = S.pay === S.get ? null : price();
@@ -1962,7 +1974,7 @@ async function quoteExit(my, wei) {
   const dst = exitOf()?.into ? await exitPool(S.get) : null;
   if (dst && !dst.open) return done({ rows: [], why: `The private ${get.sym} pool is not open yet.` });
   const arrives = dst && dst.fee != null ? (r.min * 997n) / 1000n - dst.fee : null;
-  return done({ rows: [{ k: 'exit', name: r.name, out: r.out, min: r.min, best: true }], fee: pool.fee, ...(dst ? { dstFee: dst.fee, arrives } : {}) });
+  return done({ rows: [{ k: 'exit', name: r.name, out: r.out, min: r.min, legs: r.legs, legsFrom: isEth(S.pay) ? 'ETH' : 'TAC', best: true }], fee: pool.fee, ...(dst ? { dstFee: dst.fee, arrives } : {}) });
 }
 const exitDest = () => S.to || (W.account ? lc(W.account) : null);
 function exitButton(q, r) {
@@ -1998,7 +2010,7 @@ function paintExit() {
   if (r) {
     const inAmt = Number(q.wei) / 10 ** pay.dec, outAmt = Number(r.out) / 10 ** get.dec, dest = exitDest();
     if (S.pay !== S.get && inAmt > 0 && outAmt > 0) lines.push(['Price', (outAmt >= inAmt) !== !!S.pxFlip ? `1 ${pay.sym} = ${sig(outAmt / inAmt)} ${get.sym}` : `1 ${get.sym} = ${sig(inAmt / outAmt)} ${pay.sym}`, '', '', null, 'px-flip']);
-    if (S.pay !== S.get) { lines.push(['At least', `${tidy(amtFmt(r.min, get.dec))} ${get.sym}`]); lines.push(['Route', r.name]); }
+    if (S.pay !== S.get) { lines.push(['At least', `${tidy(amtFmt(r.min, get.dec))} ${get.sym}`]); lines.push(['Route', routeCell(r.name, r)]); }
     lines.push(['Chain sees', exitOf()?.wallet ? `your ${tidy(amtFmt(q.wei, pay.dec))} ${pay.sym} swapped into a pool deposit, not whose it is` : intoPool() ? `a swap into a pool deposit, not whose it is` : htmlVal(`${esc(get.sym)} to ${dest ? whoH(dest) : 'the address'}, not from whom`)]);
     if (q.arrives != null && q.arrives > 0n) lines.push(['Arrives', `about ${tidy(amtFmt(q.arrives, get.dec))} ${get.sym}, private`, '', 'A little under the least above, less the relay’s fee of that pool for completing the deposit']);
     const fu = q.fee != null ? usdOf(S.pay, q.fee) : null;
@@ -2087,7 +2099,7 @@ async function exitGo() {
 
 let PVP = null, PV = null;
 const pickWallet = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : list[0]?.uuid; };
-const pvLoad = () => (PVP ||= import('/swap/private.js?cb=53f6bbfd').then((m) => {
+const pvLoad = () => (PVP ||= import('/swap/private.js?cb=2bdcd052').then((m) => {
   PV = m.makePrivate({ getUx, pick: pickWallet, ...H.key, now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()), onKey: (why) => { if (why) say(esc(why), 'err', true); else { PV.read().then(paint, () => {}); if (plans().some((x) => x.state === 'waiting')) ltLoad().then(readBlend, () => {}); } paint(); } });
   PV.mod = m;
   return PV;
