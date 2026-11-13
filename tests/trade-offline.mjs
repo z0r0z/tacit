@@ -8,6 +8,7 @@ import { createRequire } from 'node:module';
 import http from 'node:http';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join, extname } from 'node:path';
+import { RPC_HOSTS } from './eth-hosts.mjs';
 
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT || '/Users/z/zFi/node_modules/playwright-core');
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
@@ -23,12 +24,14 @@ const base = `http://127.0.0.1:${server.address().port}`;
 let n = 0, fails = 0;
 const ok = (c, s) => { if (c) { n++; console.log('  ok   ' + s); } else { fails++; console.log('FAIL   ' + s); } };
 const text = (p, s) => p.$eval(s, (e) => e.textContent.replace(/\s+/g, ' ').trim()).catch(() => '');
+// every Ethereum node the page may ask: with one left reachable the page reads the pools from it and never says it could not
+const NODES = new RegExp(`^https://(${RPC_HOSTS.map((h) => h.replace(/\./g, '\\.')).join('|')})/`);
 
 const b = await chromium.launch();
 try {
   const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } }), p = await ctx.newPage();
   let rpc = 0, api = 0; const errors = [];
-  await ctx.route(/^https:\/\/(ethereum-rpc\.publicnode\.com|eth\.drpc\.org|1rpc\.io|mainnet\.gateway\.tenderly\.co)\//, (r) => { rpc++; r.abort(); });
+  await ctx.route(NODES, (r) => { rpc++; r.abort(); });
   await ctx.route('https://api.tacit.finance/**', (r) => { api++; r.abort(); });
   p.on('pageerror', (e) => errors.push(e.message));
   await p.goto(`${base}/trade/tac/`, { waitUntil: 'domcontentloaded' });
@@ -54,8 +57,8 @@ try {
   await p.fill('#amt', '0.05');
   await p.waitForFunction(() => /Could not read the pools/.test(document.querySelector('#status')?.textContent || ''), null, { timeout: 60000 });
   ok(/Could not read the pools\. Try again in a moment\./.test(await text(p, '#status')), 'a quote the nodes refused says so');
-  await ctx.unroute(/^https:\/\/(ethereum-rpc\.publicnode\.com|eth\.drpc\.org|1rpc\.io|mainnet\.gateway\.tenderly\.co)\//);
-  await ctx.route(/^https:\/\/(ethereum-rpc\.publicnode\.com|eth\.drpc\.org|1rpc\.io|mainnet\.gateway\.tenderly\.co)\//, (r) => r.continue());
+  await ctx.unroute(NODES);
+  await ctx.route(NODES, (r) => r.continue());
   const back = await p.waitForFunction(() => !document.querySelector('#out')?.classList.contains('ph') && !/Could not read/.test(document.querySelector('#status')?.textContent || ''), null, { timeout: 90000 }).then(() => true, () => false);
   ok(back, 'and asks again itself when they answer again: the quote lands without retyping the amount');
   ok(errors.length === 0, `no page errors from the refusals (${errors.slice(0, 2).join(' | ')})`);

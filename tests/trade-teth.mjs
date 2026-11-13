@@ -622,10 +622,10 @@ try {
   await cfg(p, { settleMs: 0, indexMs: 0, settleFails: 0, proveRefused: true });
   r.log.reject = true;
   await p.fill('#amt', '0.02');
-  await until(p, () => document.querySelector('#go').textContent === 'Shield ETH' && !document.querySelector('#go').disabled).catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | go: ${await text(p, '#go')} | status: ${(await text(p, '#status')).slice(0, 200)}`); });
+  await until(p, () => document.querySelector('#go').textContent === 'Make ETH private' && !document.querySelector('#go').disabled).catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | go: ${await text(p, '#go')} | status: ${(await text(p, '#status')).slice(0, 200)}`); });
   await p.click('#go');
   await until(p, () => /Cancelled in your wallet|declined it straight away/.test(document.querySelector('#status').textContent));
-  ok(/Nothing was sent/.test(await text(p, '#status')) && (await text(p, '#go')) === 'Shield ETH' && !(await money(p)).disabled && r.log.sends.length === 1, 'a refusal in the wallet sends nothing and leaves the ticket as it was');
+  ok(/Nothing was sent/.test(await text(p, '#status')) && (await text(p, '#go')) === 'Make ETH private' && !(await money(p)).disabled && r.log.sends.length === 1, 'a refusal in the wallet sends nothing and leaves the ticket as it was');
   ok(r.log.signs === 2, 'the key was not asked for again');
   r.log.reject = false;
   await cfg(p, { settleFails: 1 });
@@ -654,7 +654,7 @@ try {
   // Lock forgets what a retry holds
   await cfg(p, { settleFails: 1 });
   await p.fill('#amt', '0.02');
-  await until(p, () => document.querySelector('#go').textContent === 'Shield ETH' && !document.querySelector('#go').disabled);
+  await until(p, () => document.querySelector('#go').textContent === 'Make ETH private' && !document.querySelector('#go').disabled);
   await p.click('#go');
   await until(p, () => document.querySelector('#retry'), null, 20000);
   await p.click('#mode-seg [data-mode="use"]'); await p.click('#held-lock');
@@ -676,14 +676,14 @@ try {
   await p.click('#finish');
   await until(p, () => /They are private now/.test(document.querySelector('#status').textContent), null, 20000);
   await p.fill('#amt', '0.02');
-  await until(p, () => document.querySelector('#go').textContent === 'Shield ETH' && !document.querySelector('#go').disabled);
+  await until(p, () => document.querySelector('#go').textContent === 'Make ETH private' && !document.querySelector('#go').disabled);
   await p.click('#go');
   await until(p, () => /Done\./.test(document.querySelector('#status').textContent), null, 20000);
   ok(r.log.sends.length === 4, `with nothing waiting the deposit goes (${r.log.sends.length} sends; ${await text(p, '#status')})`);
   // the deposit reverted
   chain.receipt = 'revert';
   await p.fill('#amt', '0.03');
-  await until(p, () => document.querySelector('#go').textContent === 'Shield ETH' && !document.querySelector('#go').disabled);
+  await until(p, () => document.querySelector('#go').textContent === 'Make ETH private' && !document.querySelector('#go').disabled);
   await p.click('#go');
   await until(p, () => /The transaction failed/.test(document.querySelector('#status').textContent), null, 20000);
   ok(!/not private yet/.test(await text(p, '#status')) && !(await p.$('#retry')) && (await text(p, '#go')) !== 'Finish the earlier deposit first', 'a deposit that reverted is not called waiting and offers no retry');
@@ -691,7 +691,7 @@ try {
   // the index could not be read
   await cfg(p, { indexFails: true });
   await p.fill('#amt', '0.04');
-  await until(p, () => document.querySelector('#go').textContent === 'Shield ETH' && !document.querySelector('#go').disabled);
+  await until(p, () => document.querySelector('#go').textContent === 'Make ETH private' && !document.querySelector('#go').disabled);
   const before = r.log.sends.length;
   await p.click('#go');
   await until(p, () => /could not read this asset/.test(document.querySelector('#status').textContent));
@@ -713,7 +713,7 @@ try {
   // ── the relay refuses the settle: the deposit is finished from the wallet, which sends the relay's proof itself ──
   const deposit = async (amt) => {
     await p.fill('#amt', amt);
-    await until(p, () => document.querySelector('#go').textContent === 'Shield ETH' && !document.querySelector('#go').disabled);
+    await until(p, () => document.querySelector('#go').textContent === 'Make ETH private' && !document.querySelector('#go').disabled);
     await p.click('#go');
   };
   const lastCall = (u2, name) => [...u2.calls].reverse().find((c) => c[0] === name);
@@ -784,7 +784,7 @@ try {
   await deposit('0.09');
   await until(p, () => document.querySelector('#retry'), null, 20000);
   sst = await text(p, '#status');
-  ok(/as many proofs as it can for today\. Try again after midnight UTC\. Your deposit is safe and waits to be finished\./.test(sst) && !(await p.$('#self')), `a relay with no proofs left says so and offers no wallet finish (${sst.slice(0, 160)})`);
+  ok(/Today’s relay proofs are taken\. Try again after midnight UTC\. Your deposit is safe and waits to be finished\./.test(sst) && !(await p.$('#self')), `a relay with no proofs left says so and offers no wallet finish (${sst.slice(0, 160)})`);
   ok(/Or prove it with your own credit\./.test(sst) && !!(await p.$('#status #own')), 'where the relay cannot prove, proving with your own credit is offered');
   await p.click('#retry');
   await until(p, () => /Done\./.test(document.querySelector('#status').textContent), null, 20000);
@@ -902,7 +902,7 @@ try {
   ok(await p.evaluate(() => /"[0-9a-f]{66}":true/.test(localStorage.getItem('tacit-trade-own-prover-v1') || '')), 'the choice is kept for this key, in this browser');
   const quotesBefore = r.seen.filter((x) => x.startsWith('/confidential/quote')).length, postsBefore = posts.length;
   await p.fill('#amt', '0.04');
-  await until(p, () => /Relay tipnone: you prove it yourself/.test(document.querySelector('#route').textContent) && document.querySelector('#go').textContent === 'Shield ETH', null, 10000);
+  await until(p, () => /Relay tipnone: you prove it yourself/.test(document.querySelector('#route').textContent) && document.querySelector('#go').textContent === 'Make ETH private', null, 10000);
   ok(/0\.04 ETH in one transaction/.test(await text(p, '#route')) && r.seen.filter((x) => x.startsWith('/confidential/quote')).length === quotesBefore, `the receipt has no relay tip, one transaction, and the relay is not asked for one (${await text(p, '#route')})`);
   await spnCfg(p, { proveMs: 600 });
   events.length = 0;
@@ -929,7 +929,7 @@ try {
   await spnCfg(p, { privateOff: true, proveMs: 600 });
   const pubFrom = r.log.sends.length;
   await p.fill('#amt', '0.04');
-  await until(p, () => document.querySelector('#go').textContent === 'Shield ETH' && !document.querySelector('#go').disabled, null, 10000);
+  await until(p, () => document.querySelector('#go').textContent === 'Make ETH private' && !document.querySelector('#go').disabled, null, 10000);
   const sawPub = p.waitForFunction(() => /goes with a public input, which anyone can read/.test(document.querySelector('#status')?.textContent || ''), null, { timeout: 30000, polling: 50 }).then(() => true, () => false);
   await p.click('#go');
   await until(p, () => /Done\./.test(document.querySelector('#status').textContent), null, 30000);
@@ -942,7 +942,7 @@ try {
   await spnCfg(p, { credit: String(10n ** 17n) });
   const shortFrom = r.log.sends.length;
   await p.fill('#amt', '0.04');
-  await until(p, () => document.querySelector('#go').textContent === 'Shield ETH' && !document.querySelector('#go').disabled, null, 10000);
+  await until(p, () => document.querySelector('#go').textContent === 'Make ETH private' && !document.querySelector('#go').disabled, null, 10000);
   await p.click('#go');
   await until(p, () => /prover credit is/.test(document.querySelector('#status').textContent), null, 20000);
   sst = await text(p, '#status');
@@ -955,7 +955,7 @@ try {
   await p.evaluate(() => document.querySelector('#prover-line #ps-open').click());
   await until(p, () => /2 PROVE · enough/.test(document.querySelector('.bsheet #ps-acct')?.textContent || ''), null, 20000);
   await p.click('.bsheet .x');
-  await until(p, () => document.querySelector('#go').textContent === 'Shield ETH' && !document.querySelector('#go').disabled, null, 10000);
+  await until(p, () => document.querySelector('#go').textContent === 'Make ETH private' && !document.querySelector('#go').disabled, null, 10000);
   await spnCfg(p, { credits: [String(2n * E18N), String(10n ** 17n)] });
   const midFrom = r.log.sends.length;
   await p.click('#go');
@@ -973,7 +973,7 @@ try {
   await spnCfg(p, { notProved: true });
   const npFrom = r.log.sends.length;
   await p.fill('#amt', '0.04');
-  await until(p, () => document.querySelector('#go').textContent === 'Shield ETH' && !document.querySelector('#go').disabled, null, 10000);
+  await until(p, () => document.querySelector('#go').textContent === 'Make ETH private' && !document.querySelector('#go').disabled, null, 10000);
   await p.click('#go');
   await until(p, () => /did not take it/.test(document.querySelector('#status').textContent), null, 30000);
   sst = await text(p, '#status');
@@ -1025,7 +1025,7 @@ try {
   const devPosts = posts.length, devSends = r.log.sends.length, devReqs = await requests();
   events.length = 0;
   await p.fill('#amt', '0.06');
-  await until(p, () => /Relay tipnone: this computer proves it/.test(document.querySelector('#route').textContent) && document.querySelector('#go').textContent === 'Shield ETH', null, 10000);
+  await until(p, () => /Relay tipnone: this computer proves it/.test(document.querySelector('#route').textContent) && document.querySelector('#go').textContent === 'Make ETH private', null, 10000);
   ok(/0\.06 ETH in one transaction/.test(await text(p, '#route')) && /This computer proves your note before any ETH moves/.test(await text(p, '#tk-note')), 'the receipt: no tip, the amount in one transaction, proved here first');
   await p.click('#go');
   await until(p, () => /Done\./.test(document.querySelector('#status').textContent), null, 30000);
@@ -1038,7 +1038,7 @@ try {
   // the wallet declines: the proof is kept, and the next press sends it without proving again
   r.log.reject = true;
   await p.fill('#amt', '0.06');
-  await until(p, () => document.querySelector('#go').textContent === 'Shield ETH' && !document.querySelector('#go').disabled, null, 10000);
+  await until(p, () => document.querySelector('#go').textContent === 'Make ETH private' && !document.querySelector('#go').disabled, null, 10000);
   await p.click('#go');
   await until(p, () => /The proof is kept/.test(document.querySelector('#status').textContent), null, 30000);
   const provesBefore = devlog.filter((x) => x.path === '/prove').length;
@@ -1051,7 +1051,7 @@ try {
   chain.device = { up: true, fail: true };
   const failFrom = r.log.sends.length;
   await p.fill('#amt', '0.06');
-  await until(p, () => document.querySelector('#go').textContent === 'Shield ETH' && !document.querySelector('#go').disabled, null, 10000);
+  await until(p, () => document.querySelector('#go').textContent === 'Make ETH private' && !document.querySelector('#go').disabled, null, 10000);
   await p.click('#go');
   await until(p, () => /rejects this input/.test(document.querySelector('#status').textContent), null, 30000);
   ok(/The prover on this computer: the guest rejects this input\. Nothing was sent\./.test(await text(p, '#status')) && r.log.sends.length === failFrom, `a proof this computer could not make is said, and nothing was sent (${(await text(p, '#status')).slice(0, 160)})`);
@@ -1276,7 +1276,7 @@ try {
   await until(p, () => document.querySelector('#status #own-now'), null, 30000);
   sst = await text(p, '#status');
   ok(sst === 'The relay isn’t proving right now. Prove it on this computer, prove it with your own credit or deposit anyway: it goes through once the relay is back, or you finish it from your wallet.' && !!(await p.$('#status #anyway')) && !!(await p.$('#status #dev-now')), `paused at the press: one sentence and three ways on (${sst})`);
-  ok(r.log.sends.length === 0 && !(await ux(p)).calls.some((c) => c[0] === 'nextWrapIndex') && (await text(p, '#go')) === 'Shield ETH', 'no deposit was sent and no note was built; the ticket is as it was');
+  ok(r.log.sends.length === 0 && !(await ux(p)).calls.some((c) => c[0] === 'nextWrapIndex') && (await text(p, '#go')) === 'Make ETH private', 'no deposit was sent and no note was built; the ticket is as it was');
   await p.click('#status #own-now');
   await until(p, () => document.querySelector('.bsheet #ps-on') && /Credit0 PROVE/.test(document.querySelector('.bsheet #ps-acct')?.textContent || ''), null, 20000);
   ok((await p.$eval('#ps-on', (x) => x.checked)) && /Relay tipnone: you prove it yourself/.test(await text(p, '#route')) && r.log.sends.length === 0, 'Prove it with your own credit, with too little: the fund sheet opens first, the wrap is quoted with no relay tip, and nothing is sent');
@@ -1284,7 +1284,7 @@ try {
   await p.click('.bsheet .x'); await p.click('#prover-line #ps-open');
   await until(p, () => /2 PROVE · enough for about 4 proofs/.test(document.querySelector('.bsheet #ps-acct')?.textContent || ''), null, 20000);
   await p.click('.bsheet .x');
-  await until(p, () => document.querySelector('#go').textContent === 'Shield ETH' && !document.querySelector('#go').disabled, null, 10000);
+  await until(p, () => document.querySelector('#go').textContent === 'Make ETH private' && !document.querySelector('#go').disabled, null, 10000);
   let postsAt = posts.length;
   await p.click('#go');
   await statusHas(/Done\./);
@@ -1293,7 +1293,7 @@ try {
   // deposit anyway: the deposit goes to the relay, and the page stops waiting at once with the holder's own credit offered
   await cfg(p, { settleHang: true });
   await p.fill('#amt', '0.03');
-  await until(p, () => /Relay tip\d/.test(document.querySelector('#route').textContent) && document.querySelector('#go').textContent === 'Shield ETH', null, 20000);
+  await until(p, () => /Relay tip\d/.test(document.querySelector('#route').textContent) && document.querySelector('#go').textContent === 'Make ETH private', null, 20000);
   await p.click('#go');
   await until(p, () => document.querySelector('#status #anyway'), null, 20000);
   const anyFrom = r.log.sends.length;
@@ -1336,7 +1336,7 @@ try {
   // the relay stops proving before the wallet's settle (refused: relay_paused): the holder's own credit is offered, not the wallet
   await cfg(p, { proveRefuse: 'relay_paused' });
   await p.fill('#amt', '0.02');
-  await until(p, () => /then the settle/.test(document.querySelector('#route').textContent) && document.querySelector('#go').textContent === 'Shield ETH', null, 20000);
+  await until(p, () => /then the settle/.test(document.querySelector('#route').textContent) && document.querySelector('#go').textContent === 'Make ETH private', null, 20000);
   await p.click('#go');
   await until(p, () => document.querySelector('#status #own'), null, 30000);
   sst = await text(p, '#status');
@@ -1388,7 +1388,7 @@ try {
   await until(p, () => document.querySelector('#ps-on') && !document.querySelector('#ps-on').disabled, null, 30000);
   await p.check('#ps-on'); await p.click('.bsheet .x');
   await p.fill('#amt', '0.06');
-  await until(p, () => /Relay tipnone/.test(document.querySelector('#route').textContent) && document.querySelector('#go').textContent === 'Shield ETH', null, 20000);
+  await until(p, () => /Relay tipnone/.test(document.querySelector('#route').textContent) && document.querySelector('#go').textContent === 'Make ETH private', null, 20000);
   await p.clock.install();
   await p.click('#go');
   await statusHas(/Sent/);
