@@ -5,9 +5,9 @@
 // shapes the few bits of a plan or a line that carry markup (an icon, a ratio's zone, the button that adds TAC), `hooks` is told what changed.
 import * as M from '/vault/math.js?cb=ac1ed53e';
 import { makeReader, staticCalls, parseStatic, dynamicCalls, parseDynamic, timestampCall, refusal, decString, SEL, wordAt, addrWord,
-  encDeposit, encWithdraw, encBorrow, encRepay, encCancel, encApprove, encPermit, encMulticall } from '/vault/chain.js?cb=31674812';
-import { RECORD_GAS, PER_TX, GAS_ROOM, encBatch, MULTICALL3 } from '/vault/feed.js?cb=9d8360c4';
-import { simulateBundle, sendBundle, batchSupport, readMixed } from '/vault/batch.js?cb=b9833732';
+  encDeposit, encWithdraw, encBorrow, encRepay, encCancel, encApprove, encPermit, encMulticall } from '/vault/chain.js?cb=fafa70cd';
+import { RECORD_GAS, PER_TX, GAS_ROOM, encBatch, MULTICALL3 } from '/vault/feed.js?cb=d2f993b2';
+import { simulateBundle, sendBundle, batchSupport, readMixed } from '/vault/batch.js?cb=3cd77d4e';
 import { ROUTER_SEL, encRouterRecords, encRouterBorrow, encRouterWithdraw, encRouterDeposit, encRouterRepay, encRouterPermitSynth, borrowTyped, withdrawTyped } from '/vault/router.js?cb=21df6509';
 
 export const KIND = { usd: { name: 'TAC Dollar', sym: 'TACD', dp: 2, price: (t) => `$${t}` }, eth: { name: 'TAC Ether', sym: 'TACE', dp: 4, price: (t) => `${t} ETH` } };

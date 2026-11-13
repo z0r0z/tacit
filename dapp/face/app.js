@@ -130,7 +130,7 @@ async function catchUp() {
   if (!W.account) { await conn.connect(); return; }
   S.busy = true; render();
   try {
-    const { makeCatchUp } = await import('/face/catchup.js?cb=ddfb0f1e');
+    const { makeCatchUp } = await import('/face/catchup.js?cb=eca7e86a');
     await makeCatchUp({ rpc, sale: SALE, wallet: conn.wallet, account: () => W.account, say }).run();
   } catch (e) {
     say(e?.userStopped ? e.message : String(e?.message || e).slice(0, 140), true);
