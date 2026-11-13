@@ -82,3 +82,24 @@ export function plant(src, { start = 1, end = Infinity, lens = null, strict = fa
   }
   return null;
 }
+
+// Planted bugs made ahead of time. Making one runs the parser in a separate process, which is too slow to do for every exam a busy gateway hands out, so exams draw
+// from this store at random and it is topped up in the background (fill), a few at a time, keeping the newest `size`. An entry names the file, commit and line it
+// was made at and the line's two versions, not the whole file: the code is read again (from git's cache) when the exam is made.
+export function makePlantPool({ sample, source, size = 300, rand = Math.random }) {
+  const pool = [];
+  function fill(n = 1) {
+    let made = 0;
+    for (let t = 0; t < n * 4 && made < n; t++) {
+      const s = sample(); if (!s) break;
+      let src; try { src = source(s.commit, s.file); } catch { continue; }
+      const p = plant(src, { start: s.start, end: s.end, lens: s.lens, strict: true, rand }); if (!p) continue;
+      pool.push({ file: s.file, commit: s.commit, start: s.start, end: s.end, lens: s.lens, line: p.line, orig: p.orig, mut: p.mut, kind: p.kind, say: p.say });
+      if (pool.length > size) pool.shift();
+      made++;
+    }
+    return made;
+  }
+  const take = () => (pool.length ? pool[Math.floor(rand() * pool.length)] : null);
+  return { fill, take, size: () => pool.length, full: () => pool.length >= size };
+}

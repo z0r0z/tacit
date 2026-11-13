@@ -130,5 +130,37 @@ f = mk(); const j3 = await f.next(); check('after a restart, files changed while
   check('a feed with no exam file keeps nothing and does not fail', readFileSync(exam, 'utf8').trim().split('\n').length === 3);
   rmSync(d4, { recursive: true, force: true });
 }
+// with the gateway's shared exam book, a pool of planted bugs, and the windows looked at counted in memory
+{
+  const { makeExamBook } = await import('./swarmbook.mjs');
+  const { makePlantPool } = await import('./codecheck/mutate.mjs');
+  const d5 = mkdtempSync(path.join(tmpdir(), 'sft5-')); const repo5 = path.join(d5, 'r'); mkdirSync(path.join(repo5, 'dapp'), { recursive: true });
+  const git5 = (...a) => execFileSync('git', ['-C', repo5, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { encoding: 'utf8' });
+  git5('init', '-q', '-b', 'main'); writeFileSync(path.join(repo5, 'dapp/a.js'), 'export function f(a, b) {\n  if (a >= b) return BigInt(a);\n  return Number(b);\n}\n'); git5('add', '.'); git5('commit', '-qm', 'one');
+  const first = git5('rev-parse', 'HEAD').trim();
+  const book = makeExamBook({ file: path.join(d5, 'exam.jsonl') }), results = path.join(d5, 'results.jsonl');
+  let feed = null; let seed = 7; const rand = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const pool = makePlantPool({ sample: () => feed.sample(), source: (c, f) => feed.source(c, f), size: 10, rand });
+  feed = makeScanFeed({ repo: repo5, ref: 'main', inbox: path.join(d5, 'i.jsonl'), cursorFile: path.join(d5, 'c.json'), refreshMs: 0, lenses: true, examBook: book, pool, results, resultsEveryMs: 60000, rand });
+  const before = []; for (let i = 0; i < 16; i++) before.push(await feed.next());
+  check('with an empty pool no exam is handed out: the exam turn goes to a snippet', before.every((j) => !j.meta.exam));
+  pool.fill(4);
+  writeFileSync(path.join(repo5, 'dapp/a.js'), 'export function f(a, b) {\n  if (a >= b) return BigInt(a);\n  return Number(b) + 1;\n}\n'); git5('commit', '-qam', 'two');
+  let ex = null; for (let i = 0; i < 16 && !ex; i++) { const j = await feed.next(); if (j.meta.exam) ex = j; }
+  check('with a pool, an exam comes from it, and carries the commit it was made at', ex && ex.meta.commit === first && ex.meta.exam.lens && ex.meta.exam.mut && ex.messages[1].content.includes(ex.meta.exam.mut.trim()));
+  await feed.onResult(ex, JSON.stringify({ findings: [{ line: ex.meta.exam.line, why: 'x', old: ex.meta.exam.mut, new: ex.meta.exam.orig }] }), '0xaa', { node: 'n1', tier: 'small' });
+  check('the answer is graded against the commit it was made at, and goes to the shared book', book.summary().scout.n === 1 && book.summary().scout.restored === 1);
+  await feed.onInvalid({ meta: { lens: 'units' } }, 'prose', '0xaa', { node: 'n1' });
+  check('an invalid reply goes to the book too', book.summary().scout.invalid === 1);
+  const site = before.find((j) => j.meta.site && !j.meta.exam);
+  await feed.onResult(site, '{"findings":[]}', '0xaa', {}); await feed.onResult(site, '{"findings":[]}', '0xbb', {});
+  check('windows looked at are counted in memory, not written one by one', !existsSync(results));
+  feed.flush();
+  const rows = readFileSync(results, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  check('and written as one line when flushed, saying how many', rows.length === 1 && rows[0].windows === 2 && rows[0].findings === 0 && typeof rows[0].t === 'number');
+  feed.flush();
+  check('a flush with nothing new writes nothing', readFileSync(results, 'utf8').trim().split('\n').length === 1);
+  rmSync(d5, { recursive: true, force: true });
+}
 rmSync(d, { recursive: true, force: true });
 console.log(fails ? `${fails} scanfeed test(s) failed` : 'scanfeed: all tests passed'); process.exit(fails ? 1 : 0);

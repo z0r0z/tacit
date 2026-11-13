@@ -116,6 +116,19 @@ const mkFeed = (o = {}) => makeCheckFeed({ source: () => SRC, sample: () => ({ f
   check('most asks are real work when there is some', real && !real.meta.exam && real.meta.fid === 'real1');
 }
 
+// --- exams from a pool of planted bugs made ahead of time
+{
+  const { makePlantPool } = await import('./codecheck/mutate.mjs');
+  writeFileSync(F.inbox, ''); writeFileSync(F.checks, '');
+  const pool = makePlantPool({ sample: () => ({ file: 'dapp/a.js', commit: 'abc', start: 1, end: 6, lens: 'bounds' }), source: () => SRC, size: 5 });
+  const feed = mkFeed({ pool, examEvery: 1, rand: () => 0 });
+  check('with an empty pool there is no exam', (await feed.next({ node: 'n' })) === null);
+  pool.fill(3);
+  const j = await feed.next({ node: 'n' });
+  check('with a pool, the exam is built from one of its plants', j && j.meta.exam && j.meta.exam.lens === 'bounds' && j.meta.codeText.includes('>>> version A or version B goes here <<<') && versions(j)[j.meta.side] !== versions(j)[j.meta.side === 'A' ? 'B' : 'A']);
+  const stale = makePlantPool({ sample: () => ({ file: 'dapp/a.js', commit: 'abc', start: 1, end: 6, lens: 'bounds' }), source: () => SRC, size: 5 }); stale.fill(2);
+  check('a plant whose line no longer matches the file is not used', (await mkFeed({ pool: stale, examEvery: 1, rand: () => 0, source: () => SRC.replace(/>=/g, '!==').replace(/ > /g, ' !== ') }).next({ node: 'n' })) === null);
+}
 // --- the order is shuffled, so a constant answer is at chance and a reader is not
 {
   const mulberry = (a) => () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };

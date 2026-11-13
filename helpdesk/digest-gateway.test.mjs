@@ -44,7 +44,7 @@ posts.length = 0;
   const g = boot('confirmed', { PORT: '8797', NUDGER_SECRET: 's3cret' }, { votes: [{ node: 'n1' }, { node: 'n2' }] }); await waitPost();
   check('with the swarm on, a finding two skeptics confirmed is posted, with how they voted', posts.length === 1 && posts[0].body.findings.length === 1 && posts[0].body.findings[0].subject === 'window 1-1 · 2 of 2 checkers agree');
   const st = await stats(g);
-  check('/stats shows the findings by state and the exam results', st.swarm && st.swarm.findings.confirmed === 1 && st.swarm.findings.pending === 0 && st.swarm.exam.scout.n === 0 && st.swarm.exam.skeptic.n === 0);
+  check('/stats shows the findings by state, the exam results and each reviewer\'s standing', st.swarm && st.swarm.findings.confirmed === 1 && st.swarm.findings.pending === 0 && st.swarm.exam.scout.n === 0 && st.swarm.exam.skeptic.n === 0 && Array.isArray(st.swarm.reviewers));
   g.stop();
 }
 // swarm, not yet checked

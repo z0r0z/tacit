@@ -13,7 +13,7 @@ RUN curl -fsSL -C - --retry 8 --retry-delay 3 --retry-all-errors -o /tmp/llama.t
  && curl -fsSL -C - --retry 8 --retry-delay 3 --retry-all-errors -o /opt/bge.gguf https://huggingface.co/ggml-org/bge-small-en-v1.5-Q8_0-GGUF/resolve/main/bge-small-en-v1.5-q8_0.gguf \
  && echo "$BGE_SHA  /opt/bge.gguf" | sha256sum -c -
 WORKDIR /app
-COPY server.mjs backend.mjs lease.mjs scanfeed.mjs checkfeed.mjs reviewdigest.mjs retrieval.mjs guard.mjs build-corpus.mjs faq-check.mjs inbox.mjs bip39-english.txt persona.txt faq.json corpus.json ./
+COPY server.mjs backend.mjs lease.mjs scanfeed.mjs checkfeed.mjs swarmbook.mjs reviewdigest.mjs retrieval.mjs guard.mjs build-corpus.mjs faq-check.mjs inbox.mjs bip39-english.txt persona.txt faq.json corpus.json ./
 COPY codecheck/scan.mjs codecheck/lenses.mjs codecheck/mutate.mjs codecheck/roles.mjs ./codecheck/
 COPY deploy/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

@@ -1,6 +1,6 @@
 // node lenses.test.mjs -- Tacit's review lenses (where each has something to look at) and the planted bugs (one realistic mistake per kind, still valid code)
 import { LENSES, LENS, PRIMER, sites, snippet } from './codecheck/lenses.mjs';
-import { MUTATIONS, mask, plant, parses } from './codecheck/mutate.mjs';
+import { MUTATIONS, mask, plant, parses, makePlantPool } from './codecheck/mutate.mjs';
 let fails = 0; const check = (n, c) => { console.log((c ? 'ok   ' : 'FAIL ') + n); if (!c) fails++; };
 const seq = (...v) => { let i = 0; return () => v[i++ % v.length]; };
 
@@ -72,5 +72,20 @@ for (const [kind, [line, lens]] of Object.entries(CASES)) {
   check('only lines inside the range are changed', plant('const a = x >= 1;\nconst b = y >= 2;\nconst c = z >= 3;\n', { start: 2, end: 2, rand: () => 0 }).line === 2);
   check('a mutation that no longer parses is skipped for another', (() => { const p2 = plant('const a = 1;\nconst b = x > y;\n', { rand: () => 0 }); return !p2 || parses(p2.src); })());
   check('parses says no to broken code and yes to valid code', parses('const a = 1;') && !parses('const a = ;'));
+}
+// --- the pool of planted bugs made ahead of time
+{
+  const SRCP = 'function f(a, b) {\n  if (a >= b) return 1;\n  if (b <= a) return 2;\n  if (a > 3) return 3;\n  return 0;\n}\n';
+  let i = 0; const r = () => [0.1, 0.6, 0.3, 0.9, 0.5][i++ % 5];
+  const pool = makePlantPool({ sample: () => ({ file: 'dapp/p.js', commit: 'c1', start: 1, end: 6, lens: 'bounds' }), source: () => SRCP, size: 3, rand: r });
+  check('an empty pool gives nothing', pool.take() === null && pool.size() === 0 && !pool.full());
+  check('fill makes as many as asked', pool.fill(2) === 2 && pool.size() === 2);
+  const e = pool.take();
+  check('an entry names the file, commit, range, lens, line and its two versions, not the whole file', e.file === 'dapp/p.js' && e.commit === 'c1' && e.start === 1 && e.end === 6 && e.lens === 'bounds' && SRCP.split('\n')[e.line - 1] === e.orig && e.mut !== e.orig && typeof e.kind === 'string' && typeof e.say === 'string' && !('src' in e));
+  check('putting the changed line back into the file gives code that parses', (() => { const ls = SRCP.split('\n'); ls[e.line - 1] = e.mut; return parses(ls.join('\n')); })());
+  pool.fill(5);
+  check('it keeps the newest size', pool.size() === 3 && pool.full());
+  check('with nothing to sample from it makes none', makePlantPool({ sample: () => null, source: () => SRCP }).fill(3) === 0);
+  check('a file that cannot be read is skipped', makePlantPool({ sample: () => ({ file: 'x', commit: 'c', start: 1, end: 6, lens: 'bounds' }), source: () => { throw new Error('gone'); } }).fill(2) === 0);
 }
 console.log(fails ? `${fails} lens/plant test(s) failed` : 'lenses: all tests passed'); process.exit(fails ? 1 : 0);

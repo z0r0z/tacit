@@ -15,6 +15,8 @@ import { makeLeases, makeVet, isAddr, creditsFor } from './lease.mjs';
 import { makeScanFeed } from './scanfeed.mjs';
 import { makeDigestPoster } from './reviewdigest.mjs';
 import { makeCheckFeed } from './checkfeed.mjs';
+import { makeExamBook, makeVoteBook } from './swarmbook.mjs';
+import { makePlantPool } from './codecheck/mutate.mjs';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 // DATA_DIR: where this process keeps what must outlive a restart (the points ledger, the review inbox, the scan cursor, lease state, embeddings). On a host with a
 // persistent disk, point it there.
@@ -114,16 +116,21 @@ const CANARIES = [
 let canaryI = 0;
 // The review swarm (SWARM=0 turns it off): scouts get lens snippets and now and then a planted bug, skeptics check each other's findings, and the exam results and
 // votes are kept beside the inbox. CHECK_PANEL machines at most vote on a finding and CHECK_QUORUM weight of them must say real; one skeptic job in CHECK_EXAM_EVERY
-// is an exam; SCAN_PER_HOUR is how many review jobs one client may take an hour (they are short).
+// is an exam; SCAN_PER_HOUR is how many review jobs one client may take an hour (they are short). Both feeds share one record of exam answers and one of votes
+// (swarmbook.mjs), kept in memory and appended to their files; planted bugs come from a pool of PLANT_POOL made in the background; review work earns points only
+// while a machine's exam record shows it does the work.
 const SWARM = !!process.env.SCAN_REPO && process.env.SWARM !== '0';
 const EXAM = path.join(DATA, 'scan-exam.jsonl'), CHECKS = path.join(DATA, 'scan-checks.jsonl');
-const scanFeed = process.env.SCAN_REPO ? makeScanFeed({ repo: process.env.SCAN_REPO, ref: process.env.SCAN_REF || 'origin/main', inbox: INBOX, results: SCAN_RESULTS, cursorFile: path.join(DATA, 'scan-cursor.json'), lenses: SWARM, examFile: SWARM ? EXAM : null, say: (m) => console.log(m) }) : null;
-const checkFeed = SWARM ? makeCheckFeed({ source: scanFeed.source, sample: scanFeed.sample, inbox: INBOX, checks: CHECKS, exam: EXAM, panel: Number(process.env.CHECK_PANEL ?? 3), quorum: Number(process.env.CHECK_QUORUM ?? 2), examEvery: Number(process.env.CHECK_EXAM_EVERY ?? 4), say: (m) => console.log(m) }) : null;
+const examBook = SWARM ? makeExamBook({ file: EXAM }) : null, voteBook = SWARM ? makeVoteBook({ file: CHECKS }) : null;
+let scanFeed = null;
+const pool = SWARM ? makePlantPool({ sample: () => scanFeed.sample(), source: (c, f) => scanFeed.source(c, f), size: Number(process.env.PLANT_POOL ?? 300) }) : null;
+scanFeed = process.env.SCAN_REPO ? makeScanFeed({ repo: process.env.SCAN_REPO, ref: process.env.SCAN_REF || 'origin/main', inbox: INBOX, results: SCAN_RESULTS, resultsEveryMs: 60_000, cursorFile: path.join(DATA, 'scan-cursor.json'), lenses: SWARM, examBook, pool, say: (m) => console.log(m) }) : null;
+const checkFeed = SWARM ? makeCheckFeed({ source: scanFeed.source, sample: scanFeed.sample, inbox: INBOX, checks: voteBook, exam: examBook, pool, panel: Number(process.env.CHECK_PANEL ?? 3), quorum: Number(process.env.CHECK_QUORUM ?? 2), examEvery: Number(process.env.CHECK_EXAM_EVERY ?? 4), say: (m) => console.log(m) }) : null;
 const leases = makeLeases({
   ledger: path.join(DATA, 'ledger.jsonl'), persist: path.join(DATA, 'leases-state.json'),
   points: { answer: Number(process.env.POINTS_ANSWER ?? 1), canary: Number(process.env.POINTS_CANARY ?? 1), scan: Number(process.env.POINTS_SCAN ?? 1), check: Number(process.env.POINTS_CHECK ?? 1) }, clientMaxPerDay: Number(process.env.POINTS_MAX_DAY ?? 100), vet: makeVet(corpus.chunks.map((c) => c.text).join('\n')),
   canaryEvery: Number(process.env.CANARY_EVERY || 6), waitMs: Number(process.env.LEASE_HOLD_MS || 20000),
-  scan: scanFeed, check: checkFeed, scanPerHour: Number(process.env.SCAN_PER_HOUR ?? (SWARM ? 30 : 12)),
+  scan: scanFeed, check: checkFeed, scanPerHour: Number(process.env.SCAN_PER_HOUR ?? (SWARM ? 30 : 12)), payable: examBook ? (kind, ctx) => examBook.payable(kind, ctx.node) : null, checkShare: Number(process.env.CHECK_SHARE ?? 0.5),
   canary: async () => { const c = CANARIES[canaryI++ % CANARIES.length]; const { chunks } = await retrieve(c.q); return { messages: promptFor(c.q, chunks), check: c.check, ctxText: chunks.map((x) => x.text).join('\n') }; },
 });
 
@@ -244,6 +251,9 @@ if (process.argv[2] === 'serve') {
     }
     res.writeHead(404); res.end();
   }).listen(Number(process.env.PORT || 8787), process.env.HOST || '127.0.0.1', () => console.log(`help desk PoC on http://${process.env.HOST || '127.0.0.1'}:${process.env.PORT || 8787}`));
+  // the plant pool is topped up a plant a second until full, then one in ten seconds (new commits come in that way); the windows looked at are written once a minute
+  if (pool) { let n = 0; setInterval(() => { try { if (!pool.full() || ++n % 10 === 0) pool.fill(1); } catch { /* a commit not fetched yet: next time */ } }, Number(process.env.PLANT_EVERY_MS || 1000)).unref(); }
+  if (scanFeed) setInterval(() => scanFeed.flush(), 60_000).unref();
   // NUDGER_SECRET (the same value the API holds) turns on the daily digest of what the community reviewers filed, to the team's review channel through the API.
   if (process.env.SCAN_REPO && process.env.NUDGER_SECRET) {
     const poster = makeDigestPoster({ api: (process.env.NUDGER_API || 'https://api.tacit.finance').replace(/\/+$/, ''), secret: process.env.NUDGER_SECRET, inbox: INBOX, results: SCAN_RESULTS, stateFile: path.join(DATA, 'digest-state.json'), hourUtc: Number(process.env.NUDGER_HOUR_UTC ?? 6), max: Number(process.env.NUDGER_MAX ?? 8), decide: checkFeed ? (r) => checkFeed.decision(r.id) : null });

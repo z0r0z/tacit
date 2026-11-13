@@ -20,11 +20,14 @@ import { scoutMessages, findingId, fits } from './codecheck/roles.mjs';
 const PLAN = ['site', 'site', 'window', 'site', 'site', 'window', 'site', 'exam'];
 
 export function makeScanFeed({ repo, ref = 'origin/main', inbox, results = null, cursorFile, maxLines = Number(process.env.SCAN_MAXLINES || 1800), refreshMs = Number(process.env.SCAN_REFRESH_MS || 3600000), fetch = process.env.SCAN_FETCH === '1', paths = /^dapp\/[^/]+\.js$/,
-  lenses = false, examFile = null, rand = Math.random, say = () => {} }) {
+  lenses = false, examFile = null, examBook = null, pool = null, resultsEveryMs = 0, rand = Math.random, say = () => {} }) {
+  // exam answers go to the exam book the gateway shares with the check feed, or straight to a file
+  const examOn = !!(examBook || examFile);
+  const writeExam = (row) => { if (examBook) examBook.add(row); else if (examFile) try { appendFileSync(examFile, JSON.stringify(row) + '\n'); } catch { /* a full disk loses a row, not the service */ } };
   const git = (...a) => execFileSync('git', ['-C', repo, ...a], { encoding: 'utf8', maxBuffer: 256 << 20, timeout: 120000 });
   const sync = () => { if (fetch) try { git('fetch', '--quiet', '--no-tags', 'origin'); } catch { /* offline or rate-limited: review what is already here */ } };
   let commit = null, units = null, siteUnits = null, lastCheck = 0; const cache = new Map(); const priority = [], sitePriority = []; let seen = null;
-  const show = (c, f) => { const k = c + ':' + f; if (!cache.has(k)) { cache.set(k, git('show', k)); if (cache.size > 64) cache.delete(cache.keys().next().value); } return cache.get(k); };
+  const show = (c, f) => { const k = c + ':' + f; if (!cache.has(k)) { cache.set(k, git('show', k)); if (cache.size > 256) cache.delete(cache.keys().next().value); } return cache.get(k); };
   const eligible = (c) => git('ls-tree', '-r', '--name-only', c).split('\n').filter((x) => paths.test(x) && !/\.min\.js$|generated|vendor/.test(x)).sort();
   // the windows of every eligible file at one commit
   function build(c) {
@@ -82,7 +85,14 @@ export function makeScanFeed({ repo, ref = 'origin/main', inbox, results = null,
     return job({ file: u.file, commit, start: u.start, end: u.end, lens: u.lens, site: true, fresh }, messages, 500);
   }
   // A snippet with a planted bug of its lens's own kind, picked at random. null if none of a few tries finds a line it can change.
+  // With a pool, the planted bug is one made ahead of time (possibly at an earlier commit: the job carries the commit it was made at, and is scored against it).
   function examJob() {
+    if (pool) {
+      const e = pool.take(); if (!e) return null; let src; try { src = show(e.commit, e.file); } catch { return null; }
+      const lines = src.split('\n'); if (lines[e.line - 1] !== e.orig) return null; lines[e.line - 1] = e.mut;
+      const messages = scoutMessages(e.lens, e.file, e.start, e.end, snippet(lines.join('\n'), e.start, e.end)); if (!fits(messages)) return null;
+      return job({ file: e.file, commit: e.commit, start: e.start, end: e.end, lens: e.lens, site: true, exam: { line: e.line, orig: e.orig, mut: e.mut, kind: e.kind, lens: e.lens } }, messages, 500);
+    }
     const all = getSites(); if (!all.length) return null;
     for (let t = 0; t < 6; t++) {
       const u = all[Math.floor(rand() * all.length)]; let src; try { src = show(commit, u.file); } catch { continue; }
@@ -98,11 +108,24 @@ export function makeScanFeed({ repo, ref = 'origin/main', inbox, results = null,
     const st = state();
     if (!lenses) return windowJob(st);
     const k = st.k || 0, step = PLAN[k % PLAN.length]; st.k = k + 1;
-    if (step === 'exam' && examFile) { const j = examJob(); if (j) { keep(st); return j; } }
+    if (step === 'exam' && examOn) { const j = examJob(); if (j) { keep(st); return j; } }
     if (step !== 'window') { const j = siteJob(st); if (j) return j; }
     return windowJob(st);
   }
 
+  // What the digest counts as reviewed: the windows and snippets looked at. With resultsEveryMs 0 that is a line per window ({ t, miner, n }); otherwise the count is
+  // kept in memory and written as one line ({ t, windows, findings }) at most that often, so a busy gateway does not write a line for every job.
+  let pending = { windows: 0, findings: 0 }, lastFlush = Date.now();
+  function flush() {
+    if (!results || !pending.windows) return;
+    try { appendFileSync(results, JSON.stringify({ t: Date.now(), windows: pending.windows, findings: pending.findings }) + '\n'); } catch { /* as above */ }
+    pending = { windows: 0, findings: 0 }; lastFlush = Date.now();
+  }
+  function count(miner, n) {
+    if (!results) return;
+    if (!resultsEveryMs) { try { appendFileSync(results, JSON.stringify({ t: Date.now(), miner, n }) + '\n'); } catch { /* as above */ } return; }
+    pending.windows++; pending.findings += n; if (Date.now() - lastFlush >= resultsEveryMs) flush();
+  }
   // The same window reviewed again by the same model at temperature 0 says the same thing; a suggestion already filed (whatever a reviewer did
   // with it) is not filed again.
   const key = (file, f) => `${file}\u0001${f.old}\u0001${f.new}`;
@@ -119,15 +142,15 @@ export function makeScanFeed({ repo, ref = 'origin/main', inbox, results = null,
       else if (f.line != null && Math.abs(f.line - exam.line) <= 2) { if (outcome !== 'restored') outcome = 'near'; }
       else fp++;
     }
-    try { appendFileSync(examFile, JSON.stringify({ t: Date.now(), role: 'scout', lens: exam.lens, kind: exam.kind, miner, ...who, outcome, fp, n: found.length }) + '\n'); } catch {}
+    writeExam({ t: Date.now(), role: 'scout', lens: exam.lens, kind: exam.kind, miner, ...who, outcome, fp, n: found.length });
   }
 
   async function onResult(job, text, miner, who = {}) {
-    if (job.meta.exam) { if (examFile) scoreExam(job, text, miner, who); return; }   // a planted bug is scored, never filed
+    if (job.meta.exam) { if (examOn) scoreExam(job, text, miner, who); return; }   // a planted bug is scored, never filed
     const { file, commit: c, start, end, fresh, lens } = job.meta; let src; try { src = show(c, file); } catch { return; }
     if (!seen) loadSeen();
     const found = parseFindings(text).slice(0, lens ? 1 : 3);
-    if (results) appendFileSync(results, JSON.stringify({ t: Date.now(), miner, n: found.length }) + '\n');   // one line per window looked at, what the digest counts as reviewed
+    count(miner, found.length);
     for (const f of found) {
       if (seen.has(key(file, f))) continue; seen.add(key(file, f));
       const patched = applyPatch(src, f); let status = 'no-apply';
@@ -139,12 +162,12 @@ export function makeScanFeed({ repo, ref = 'origin/main', inbox, results = null,
   // A reply that was not the JSON asked for: kept (role, lens, whether it was an exam, the machine, and the start of what came back) beside the exam results,
   // where it is counted as invalid and not graded.
   function onInvalid(job, text, miner, who = {}) {
-    if (!examFile) return;
+    if (!examOn) return;
     const sample = sampleOf(text);
-    try { appendFileSync(examFile, JSON.stringify({ t: Date.now(), role: 'scout', lens: job.meta.lens || 'window', exam: !!job.meta.exam, miner, ...who, outcome: 'invalid', sample }) + '\n'); } catch {}
+    writeExam({ t: Date.now(), role: 'scout', lens: job.meta.lens || 'window', exam: !!job.meta.exam, miner, ...who, outcome: 'invalid', sample });
     say(`invalid scout reply (${who.tier || '?'}, ${who.model || '?'}): ${JSON.stringify(sampleOf(text, 600))}`);
   }
   // what the check feed needs: the code at a commit, and a snippet to plant a bug in
   const sample = () => { if (!units) load(); const all = getSites(); if (!all.length) return null; const u = all[Math.floor(rand() * all.length)]; return { ...u, commit }; };
-  return { next, onResult, onInvalid, source: show, sample, size: () => { if (!units) load(); return units.length; } };
+  return { next, onResult, onInvalid, flush, source: show, sample, size: () => { if (!units) load(); return units.length; } };
 }

@@ -67,7 +67,7 @@ export function makeDigestPoster({ api, secret, inbox, results, stateFile, hourU
       const since = st.lastTs || 0, posted = new Set(st.posted || []);
       const rows = readLines(inbox).filter((r) => (decide ? !posted.has(idOf(r)) : r.t > since));
       const picked = pick(rows, { max, decide: decide ? (r) => decide({ ...r, id: idOf(r) }) : null });
-      const reviewed = readLines(results).filter((r) => r.t > since).length;
+      const reviewed = readLines(results).filter((r) => r.t > since).reduce((n, r) => n + (Number.isFinite(r.windows) ? r.windows : 1), 0);   // a line is one window, or says how many
       const res = await fetchImpl(`${api}/nudger/digest`, { method: 'POST', headers: { Authorization: `Bearer ${secret}`, 'Content-Type': 'application/json' }, body: JSON.stringify(toDigest(picked, { day, reviewed })), signal: AbortSignal.timeout(60_000) });
       const text = await res.text().catch(() => '');
       if (!res.ok) return { error: `HTTP ${res.status} ${text.slice(0, 120)}` };

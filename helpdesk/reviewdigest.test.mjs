@@ -132,6 +132,18 @@ try {
   check('a torn or foreign line in the inbox is skipped', (await mk().tick()).posted === 1);
 } finally { rmSync(dir, { recursive: true, force: true }); }
 
+// --- windows looked at, counted per line or per flush
+{
+  const dir3 = mkdtempSync(path.join(tmpdir(), 'rd3-'));
+  try {
+    const inbox = path.join(dir3, 'i.jsonl'), results = path.join(dir3, 'r.jsonl'); writeFileSync(inbox, '');
+    writeFileSync(results, [{ t: 5, miner: '0x', n: 0 }, { t: 6, windows: 40, findings: 3 }, { t: 7, windows: 2, findings: 0 }, { t: 1, windows: 1000 }].map((r) => JSON.stringify(r)).join('\n') + '\n');
+    let body = null; const p = makeDigestPoster({ api: 'https://x', secret: 's', inbox, results, stateFile: path.join(dir3, 's.json'), now: () => Date.parse('2026-11-13T07:00:00Z'), fetchImpl: async (u, i) => { body = JSON.parse(i.body); return { ok: true, status: 200, text: async () => '{}' }; } });
+    writeFileSync(path.join(dir3, 's.json'), JSON.stringify({ lastDay: '2026-11-12', lastTs: 4 }));
+    const r = await p.tick();
+    check('a line that says how many windows counts that many, an older line one, and lines before the last digest none', r.reviewed === 43 && body.reviewed === 43);
+  } finally { rmSync(dir3, { recursive: true, force: true }); }
+}
 // --- with the skeptics: only what they confirmed, whenever it was filed
 {
   const state = (id, o = {}) => ({ state: 'confirmed', yes: 2, no: 0, n: 2, counts: { real: 2, false: 0, unsure: 0 }, ...o });

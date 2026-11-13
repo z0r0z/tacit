@@ -32,7 +32,7 @@ export function tierOf(hw) {
 
 export function makeLeases(opts = {}) {
   const o = { leaseMs: 120000, waitMs: 20000, canaryEvery: 6, canaryMaxAgeMs: 86400000, strikeLimit: 3, strikeWindowMs: 3600000, banMs: 3600000, onlineMs: 60000, maxTries: 2,
-    now: () => Date.now(), ledger: null, canary: null, vet: () => null, scan: null, check: null, scanPerHour: 12, sweepMs: 5000,
+    now: () => Date.now(), ledger: null, canary: null, vet: () => null, scan: null, check: null, checkShare: 1, rand: Math.random, payable: null, scanPerHour: 12, sweepMs: 5000,
     points: { answer: 1, canary: 1, scan: 1, check: 1 },      // credited per unit; the policy is the operator's, set by env in server.mjs
     clientMaxPerDay: 100,                           // points one client (IP hash) can earn in a UTC day, however many addresses it names
     clientIdleMs: 3 * 86400000, statsMiners: 50,    // a client unheard of this long (not banned, no recent strikes) is forgotten; /stats names this many miners, the most points first
@@ -102,7 +102,9 @@ export function makeLeases(opts = {}) {
       c.scans = c.scans.filter((x) => t - x < 3600000);
       if (c.scans.length < o.scanPerHour) {
         const ctx = { node: nodeKey(ck, addr), tier: tierOf(nd.hw), model: nd.model || null };
-        for (const feed of [o.check, o.scan]) { if (!feed) continue; const sj = await feed.next({ miner: addr, ...ctx }); if (sj) { c.scans.push(t); return give(sj.id, { ...sj, scan: true, feed, ctx }, who); } }
+        // checkShare of the asks try checking first and the rest scouting first, so a backlog of findings to check does not stop new ones being found (or the reverse)
+        const order = o.check && o.scan && o.rand() >= o.checkShare ? [o.scan, o.check] : [o.check, o.scan];
+        for (const feed of order) { if (!feed) continue; const sj = await feed.next({ miner: addr, ...ctx }); if (sj) { c.scans.push(t); return give(sj.id, { ...sj, scan: true, feed, ctx }, who); } }
       }
     }
     return new Promise((resolve) => { const w = { resolve, who, kinds }; w.timer = setTimeout(() => finish(w, null), o.waitMs); waiters.push(w); closed?.addEventListener('abort', () => finish(w, null), { once: true }); });
@@ -130,11 +132,16 @@ export function makeLeases(opts = {}) {
       // a review is the JSON the prompt asks for (a findings list, empty when there is nothing to report; for a skeptic, a verdict); a reply that is not that is not one, and earns nothing
       const checking = job.kind === 'check';
       if (!(checking ? verdictShape(text) : reviewed(text))) {
-        m.errors++; log({ ev: checking ? 'check' : 'scan', miner: addr, job: job.id, points: 0, why: 'not the shape asked for' });
+        m.errors++;
         try { await (job.feed || o.scan).onInvalid?.(job, text, addr, job.ctx); } catch {}   // the feed keeps what came back, to see which prompts a model cannot follow
         return { ok: true, points: 0 };
       }
-      try { await (job.feed || o.scan).onResult(job, text, addr, job.ctx); } catch {} const pts = credit(ck, addr, checking ? 'check' : 'scan', job); log({ ev: checking ? 'check' : 'scan', miner: addr, job: job.id, points: pts }); return { ok: true, points: pts };
+      try { await (job.feed || o.scan).onResult(job, text, addr, job.ctx); } catch {}
+      // Review work earns points only while the machine's exam record shows it does the work (payable); a review that earns nothing is not written to the ledger,
+      // which then grows with what is paid, not with every job.
+      const kind = checking ? 'check' : 'scan', paid = !o.payable || o.payable(kind, job.ctx || {}) !== false;
+      const pts = paid ? credit(ck, addr, kind, job) : 0; if (pts > 0) log({ ev: kind, miner: addr, job: job.id, points: pts });
+      return { ok: true, points: pts, ...(paid ? {} : { unpaid: true }) };
     }
     const bad = o.vet(text, job.ctxText);
     if (bad) {

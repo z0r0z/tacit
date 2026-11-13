@@ -215,6 +215,37 @@ check('isAddr', isAddr(A) && !isAddr('0x12') && !isAddr(null));
   check('a feed with no way to keep it is fine', r4.points === 0 && r4.ok === true);
   L.close(); feeds2.close(); old.close(); }
 
+// review work is paid only while the machine's record allows, and only paid work is written to the ledger
+{ const { mkdtempSync: mk2, readFileSync: rf, existsSync: ex2, rmSync: rm2 } = await import('node:fs'); const { tmpdir: td } = await import('node:os'); const pth = await import('node:path');
+  const dd = mk2(pth.join(td(), 'lp-')), ledger = pth.join(dd, 'ledger.jsonl'); const asked = [];
+  const feed = (kind) => ({ next: async () => ({ id: kind + Math.random(), kind, messages: [{ role: 'user', content: 'x' }], meta: {} }), onResult: async () => {} });
+  let pay = true;
+  const L = mk({ waitMs: 20, scanPerHour: 100, ledger, scan: feed('scan'), points: { answer: 1, canary: 1, scan: 1, check: 1 }, payable: (kind, ctx) => { asked.push({ kind, ctx }); return pay; } });
+  const go = async (text) => { const j = await L.lease({ miner: A, ip: '99.0.0.1', kinds: ['scan'], model: 'm1', hw: { ram: 64, vram: 24, cores: 8, os: 'linux', arch: 'x64' } }); return L.submit({ id: j.id, lease: j.lease, miner: A, ip: '99.0.0.1', text }); };
+  const r1 = await go('{"findings":[]}');
+  check('a paid review earns its point and is written to the ledger', r1.points === 1 && !r1.unpaid && ex2(ledger) && rf(ledger, 'utf8').trim().split('\n').length === 1);
+  check('the rule is asked with the kind of work and the machine that did it', asked.length === 1 && asked[0].kind === 'scan' && asked[0].ctx.model === 'm1' && asked[0].ctx.tier === 'big' && typeof asked[0].ctx.node === 'string');
+  pay = false;
+  const r2 = await go('{"findings":[]}');
+  check('an unpaid review earns nothing, says so, and is not written to the ledger', r2.points === 0 && r2.unpaid === true && rf(ledger, 'utf8').trim().split('\n').length === 1);
+  pay = true; const r3 = await go('not a review');
+  check('a reply that is not a review is not written to the ledger either', r3.points === 0 && rf(ledger, 'utf8').trim().split('\n').length === 1);
+  L.close(); rm2(dd, { recursive: true, force: true }); }
+
+// asks are split between checking and scouting, so neither starves the other
+{ const feed = (kind, has = true) => ({ next: async () => (has ? { id: kind + Math.random(), kind, messages: [{ role: 'user', content: 'x' }], meta: {} } : null), onResult: async () => {} });
+  const kindsOf = async (o, n = 40) => { const L = mk({ waitMs: 10, scanPerHour: 1000, ...o }); const got = []; for (let i = 0; i < n; i++) { const j = await L.lease({ miner: A, ip: '98.0.0.1', kinds: ['scan'] }); got.push(j ? (j.id.startsWith('check') ? 'check' : 'scan') : null); if (j) await L.submit({ id: j.id, lease: j.lease, miner: A, ip: '98.0.0.1', text: '{"findings":[]}' }); } L.close(); return got; };
+  const always = await kindsOf({ check: feed('check'), scan: feed('scan') });
+  check('by default a check, when there is one, comes first', always.every((k) => k === 'check'));
+  let i = 0; const alt = () => [0.2, 0.8][i++ % 2];
+  const half = await kindsOf({ check: feed('check'), scan: feed('scan'), checkShare: 0.5, rand: alt });
+  check('with a share of a half, asks go to checking and to scouting in turn', half.filter((k) => k === 'check').length === 20 && half.filter((k) => k === 'scan').length === 20);
+  const none = await kindsOf({ check: feed('check'), scan: feed('scan'), checkShare: 0, rand: () => 0.5 });
+  check('with a share of nothing, scouting comes first', none.every((k) => k === 'scan'));
+  const fallback = await kindsOf({ check: feed('check'), scan: feed('scan', false), checkShare: 0, rand: () => 0.5 }, 5);
+  check('and when the feed tried first has nothing, the other is asked', fallback.every((k) => k === 'check'));
+}
+
 // the model a node says it runs: a short plain name, or nothing
 check('a model name is kept when it is short and plain', cleanModel('qwen3.5-4b-q4_k_m') === 'qwen3.5-4b-q4_k_m' && cleanModel('gemma-3:4b') === 'gemma-3:4b' && cleanModel('x'.repeat(40)) === 'x'.repeat(40));
 check('and dropped when it is long, has spaces, markup or control characters, or is not text', [cleanModel('x'.repeat(41)), cleanModel('two words'), cleanModel('<script>'), cleanModel('a\u001b[2Jb'), cleanModel(''), cleanModel(7), cleanModel(null), cleanModel({})].every((v) => v === null));
