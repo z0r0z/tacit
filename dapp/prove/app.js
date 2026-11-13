@@ -4,7 +4,7 @@
 import { cleanAddress, proveCommand, utcDay, mineLines, capOf, perPoint } from '/community-prove.js?cb=e2a65259';
 import { localState, jobView, headline, isPhone, isWindows, setupText, proverUpdate, updateText } from '/prove/view.js?cb=f0f73815';
 import { invaderSvg, gpuSvg } from '/prove/invader.js?cb=e8a5ec59';
-import { makeTabMiner, defaultThreads, maxThreads, GPU_LEVELS } from '/prove/tabmine.js?cb=761b1a36';
+import { makeTabMiner, defaultThreads, maxThreads, GPU_LEVELS, dayShare } from '/prove/tabmine.js?cb=df5187cf';
 import { HELPDESK, FETCH_CMD, cleanDesk, cleanStats, reviewView } from '/prove/review.js?cb=a8c503cf';
 import { short, cells, opsText, tac, rewardWei, ago, took, fresh, blockAgo, kindOf, KINDS, kindText, median, untilDayEnds, cleanBlock, cleanProof, cleanMiner } from '/prove/chain.js?cb=a282e227';
 
@@ -59,6 +59,7 @@ async function readLocal() {
   blocked = health ? false : await readBlocked();
   mine = health?.ok ? await get(`${LOCAL}/mine`, 2500) : null;
   desk = health?.ok ? cleanDesk(await get(`${LOCAL}/helpdesk`, 2500)) : null;
+  hearProver();
   // The prover's own address fills an empty field: it is where this computer's proofs already pay.
   if (mine?.miner && !$('#addr').value) { $('#addr').value = mine.miner; addressChanged(); }
 }
@@ -397,8 +398,10 @@ function paint() {
   const jt = state === 'proving' && mine?.on ? 'Your node is proving' : state === 'waiting' ? 'Your node is on' : 'Start proving', js = $('#net-join span');
   if (js.textContent !== jt) js.textContent = jt;
   // Once the line is copied, a computer with no prover yet is waiting for it to start.
-  $('#title').textContent = state === 'none' && copied ? 'Waiting for tacit-prover…' : h.title;
-  $('#state').classList.toggle('copied', state === 'none' && copied);
+  const tabOn = tab.state().on;
+  $('#title').textContent = state === 'none' && tabOn ? 'Mining in this tab' : state === 'none' && copied ? 'Waiting for tacit-prover…' : h.title;
+  $('#state').classList.toggle('copied', state === 'none' && copied && !tabOn);
+  $('#state').classList.toggle('tab', state === 'none' && tabOn);
   // A tab left open shows what the node is doing; a browser that blocks the page from the computer's prover says so.
   document.title = state === 'proving' ? `Proving · ${BASE_TITLE}` : BASE_TITLE;
   $('#blocked').hidden = !(blocked && state === 'none');
@@ -432,6 +435,9 @@ function paint() {
   // Windows' first step (installing Ubuntu) is for a computer with no prover yet; one that has it only updates, in Ubuntu
   setup.dataset.os = os;
   setup.toggleAttribute('data-first', state === 'none');
+  // With no prover on this computer the first step is the tab (nothing to install); the setup line is the step after it, so its button steps back.
+  $('#setup-more').hidden = state !== 'none' || isPhone(navigator.userAgent);
+  $('#copy').classList.toggle('ghost', state === 'none');
   for (const b of setup.querySelectorAll('[data-os]')) b.setAttribute('aria-pressed', String(b.dataset.os === os));
   $('#copy').textContent = addr() ? words.button : words.need;
   $('#setup-hint').textContent = words.hint;
@@ -482,7 +488,7 @@ function addressChanged() {
   const typed = $('#addr').value.trim();
   $('#addr').setAttribute('aria-invalid', typed && !a ? 'true' : 'false');
   $('#addr-bad').textContent = typed && !a ? (/\.eth$/i.test(typed) ? 'Use the 0x address, not the name.' : 'That is not an address: 0x and 40 letters or digits.') : '';
-  if (a) { try { localStorage.setItem(SAVED_ADDR, a); } catch {} tab.setMiner(a); }   // the tab's shares follow the address in the field
+  if (a) { try { localStorage.setItem(SAVED_ADDR, a); } catch {} if (!proverMining) tab.setMiner(a); }   // the tab's shares follow the address in the field (beside the prover, the prover's)
   misses = 0;
   paint();
   // The strip, the feed, the crowd and the GPU card mark this address: drawn again when it is another one, not on every keystroke; the
@@ -640,44 +646,69 @@ function paintSalt() {
   if (salts?.minBits) tab.setMinBits(salts.minBits);
   paintTab();
 }
+// Whether this computer's tacit-prover is mining, as last heard, and the address it pays. A read that gets no answer (a busy computer can be slow to say) is not
+// a pause: the prover is taken as stopped when it says so, or after three reads in a row with no answer. The tab's miner goes by this, so one slow read does not
+// send it to the cores and the field's address and back.
+let proverMining = false, proverMiner = null, proverSilent = 0, proverHeard = false;
+function hearProver() {
+  if (mine && typeof mine.on === 'boolean') { proverMining = mine.on; proverMiner = cleanAddress(mine.miner) || proverMiner; proverSilent = 0; proverHeard = true; }
+  else if (++proverSilent >= 3) { proverMining = false; proverHeard = false; }
+}
 // Salt mining in this tab (tabmine.js), for a visitor with nothing installed: threads of this page grind the same salts tacit-prover grinds between proofs and
 // send their shares for the address in the field. A quarter of the cores unless the person asks for more; not on battery; not while this computer's tacit-prover
-// is mining (it grinds already, and the pool takes one send every 20 s from a connection); in one tab at a time. Where the browser has WebGPU the GPU grinds too
+// is mining on the cores: then the tab adds the GPU alone, for the address the prover pays (the prover grinds on cores only); in one tab at a time. Where the browser has WebGPU the GPU grinds too
 // (saltgpu.js), many times what the cores do: at half by default (it rests as long as it works, so the screen stays smooth), full or off as the person picks.
 const CORES = navigator.hardwareConcurrency || 2, SAVED_THREADS = 'tacit-prove-tab-threads';
 const savedThreads = () => { try { const n = Number(localStorage.getItem(SAVED_THREADS)); return Number.isInteger(n) && n >= 1 && n <= maxThreads(CORES) ? n : null; } catch { return null; } };
 const SAVED_GPU = 'tacit-prove-tab-gpu';
 const savedGpu = () => { try { const g = localStorage.getItem(SAVED_GPU); return GPU_LEVELS.includes(g) ? g : null; } catch { return null; } };
 let tabThreads = savedThreads() ?? defaultThreads(CORES), tabLock = null, tabNote = '', onBattery = false, batteryOk = false, gpuAble = false, tabGpu = savedGpu() ?? 'half';
-const tab = makeTabMiner({ api: API, makeWorker: () => new Worker('/prove/salt-worker.js?cb=f97cf872', { type: 'module' }), onChange: () => paintTab() });
+const tab = makeTabMiner({ api: API, makeWorker: () => new Worker('/prove/salt-worker.js?cb=d90bf231', { type: 'module' }), onChange: () => paintTab() });
 const holdTab = () => (navigator.locks ? new Promise((res) => { navigator.locks.request('tacit-prove-tab-miner', { ifAvailable: true }, (lock) => { if (!lock) { res(false); return undefined; } res(true); return new Promise((r) => { tabLock = r; }); }).catch(() => res(true)); }) : Promise.resolve(true));
 async function tabStart() {
-  const a = addr();
+  const beside = proverMining, a = beside ? proverMiner || addr() : addr();   // beside the prover: its address, and the GPU alone
   if (!a) { askAddress(); return; }
-  if (mine?.on || tab.state().on) return;
+  if (tab.state().on || (beside && !gpuAble)) return;
   if (!(await holdTab())) { tabNote = 'Another tab is mining already.'; paintTab(); return; }
   tabNote = ''; say('');   // an earlier "enter the address" is answered
-  tab.start({ miner: a, threads: tabThreads, minBits: salts?.minBits || 26, gpu: gpuAble ? tabGpu : 'off' });
+  if (beside && tabGpu === 'off') tabGpu = 'half';
+  tab.start({ miner: a, threads: beside ? 0 : tabThreads, minBits: salts?.minBits || 26, gpu: gpuAble ? tabGpu : 'off' });
+  paint();
 }
-function tabStop(o) { tab.stop(o); tabLock?.(); tabLock = null; paintTab(); }
+function tabStop(o) { tab.stop(o); tabLock?.(); tabLock = null; paint(); }
 function tabStep(d) {
   tabThreads = Math.min(maxThreads(CORES), Math.max(1, tabThreads + d));
   try { localStorage.setItem(SAVED_THREADS, String(tabThreads)); } catch {}
-  tab.setThreads(tabThreads); paintTab();
+  if (!proverMining) tab.setThreads(tabThreads);
+  paintTab();
 }
 function paintTab() {
-  const s = tab.state(), go = $('#tab-go');
-  if (s.on && mine?.on) { tabStop(); return; }                                       // the prover started: it grinds from here
-  go.hidden = isPhone(navigator.userAgent) || mine?.on === true;
-  go.textContent = s.on ? 'Stop mining in this tab' : addr() ? 'Mine in this tab' : 'Enter your address first';
+  const s = tab.state(), go = $('#tab-go'), beside = proverMining, phone = isPhone(navigator.userAgent);
+  // tacit-prover has the cores while it mines: the tab keeps the GPU alone, for the prover's address, or stops if it has none; the cores come back when it pauses
+  if (s.on && beside && s.threads !== 0) { if (s.gpu.on) { tab.setThreads(0); tab.setMiner(proverMiner || s.miner); } else tabStop(); return; }
+  if (s.on && !beside && s.threads === 0) { tab.setThreads(tabThreads); if (addr()) tab.setMiner(addr()); return; }
+  if (s.on && s.threads === 0 && !s.gpu.on && !s.paused) { tabNote = s.gpu.failed ? 'The GPU could not be used here.' : ''; tabStop(); return; }   // nothing left to grind on
+  go.hidden = phone || (beside && !gpuAble);
+  go.textContent = s.on ? (beside ? 'Stop the GPU in this tab' : 'Stop mining in this tab') : beside ? 'Add this computer\'s GPU' : addr() ? 'Mine in this tab' : 'Enter your address first';
   go.classList.toggle('ghost', s.on);
   $('#tab-rows').hidden = !s.on;
   const note = s.error || tabNote || (s.on && s.gpu.failed ? 'The GPU could not be used here: mining on the cores.' : ''); $('#tab-say').textContent = note; $('#tab-say').hidden = !note; $('#tab-say').classList.toggle('err', !!s.error);
   $('#tab-battery').hidden = !(s.on && s.paused === 'battery');
+  // what this pace can expect in a day: its part of the day's salt points by weight (tabmine.js dayShare), at what a point is paid today so far
+  const share = dayShare({ rate: s.rate, minBits: salts?.minBits || 26, maxWeightBits: salts?.maxWeightBits || 20, netWeight: salts?.weight || 0, netRate: salts?.rate || 0, dayFrac: (Date.now() % 86_400_000) / 86_400_000 });
+  const paceWei = share && salts?.pointsPerDay ? rewardWei(Math.floor(salts.pointsPerDay * share), pointRate()) : null;
+  const pace = paceWei ? `about ${tac(paceWei) === '0' ? 'under 0.01' : tac(paceWei)} TAC a day` : '';
+  // the node card's own button and line, for a computer with no prover: the tab is its first step
+  const main = $('#tab-main'), first = localState(health, mine) === 'none' && !proverHeard && !phone;   // not for a prover that only missed a read
+  main.hidden = !first; main.textContent = s.on ? 'Stop' : addr() ? 'Start in this tab' : 'Enter your address first'; main.classList.toggle('ghost', s.on);
+  const mainSay = $('#tab-main-say'); mainSay.hidden = !first;
+  mainSay.textContent = !s.on ? `Nothing to install. ${gpuAble ? 'This computer\'s GPU and a few of its cores mine' : 'A few of this computer\'s cores mine'} contract addresses while this tab is open.`
+    : s.paused === 'battery' ? 'Paused on battery.' : [s.rate ? rateText(s.rate) : 'Starting…', pace].filter(Boolean).join(' · ');
   if (!s.on) return;
   $('#tab-rate').textContent = s.paused === 'battery' ? 'Paused on battery' : s.rate ? rateText(s.rate) : 'Starting…';
-  $('#tab-n').textContent = `${s.threads} of ${CORES}`;
-  $('#tab-less').disabled = s.threads <= 1; $('#tab-more').disabled = s.threads >= maxThreads(CORES);
+  $('#tab-cores-row').hidden = beside;
+  $('#tab-n').textContent = `${tabThreads} of ${CORES}`;
+  $('#tab-less').disabled = tabThreads <= 1; $('#tab-more').disabled = tabThreads >= maxThreads(CORES);
   $('#tab-gpu-row').hidden = !gpuAble;
   for (const b of document.querySelectorAll('#tab-gpu-row [data-gpu]')) b.setAttribute('aria-pressed', String(b.dataset.gpu === (s.gpu.failed ? 'off' : tabGpu)));
   // what the pool has counted for the address today, and its part of the day's salt points so far; before the first share, about how long one takes
@@ -685,13 +716,15 @@ function paintTab() {
   const eta = s.rate ? Math.max(1, Math.round(2 ** (salts?.minBits || 26) / s.rate / 60)) : null;
   $('#tab-today').textContent = s.today?.shares ? [`${s.today.shares.toLocaleString('en-US')} ${s.today.shares === 1 ? 'share' : 'shares'}`, part ? `${tac(part) === '0' ? '< 0.01' : tac(part)} TAC so far` : null].filter(Boolean).join(' · ')
     : s.waiting ? 'First share found, sending' : s.paused ? '—' : eta ? `First share in about ${eta} min` : '—';
+  $('#tab-pace-row').hidden = !pace; $('#tab-pace').textContent = pace;
 }
 $('#tab-go').addEventListener('click', () => (tab.state().on ? tabStop() : tabStart()));
 $('#tab-less').addEventListener('click', () => tabStep(-1));
 $('#tab-more').addEventListener('click', () => tabStep(1));
-$('#tab-quick').addEventListener('click', (e) => { e.preventDefault(); showCard('salts'); tabStart(); });
+$('#tab-main').addEventListener('click', () => (tab.state().on ? tabStop() : tabStart()));
 for (const b of document.querySelectorAll('#tab-gpu-row [data-gpu]')) b.addEventListener('click', () => {
   tabGpu = b.dataset.gpu; try { localStorage.setItem(SAVED_GPU, tabGpu); } catch {}
+  if (tabGpu === 'off' && proverMining) { tabStop(); return; }   // beside the prover the GPU is all the tab does
   tab.setGpu(tabGpu); paintTab();
 });
 // whether this browser has a GPU the page may use: asked once, without asking for the fast one (the grinding thread does, when it starts); a miner already running takes it up
@@ -823,11 +856,19 @@ $('.tabs').addEventListener('keydown', (e) => {
 window.addEventListener('hashchange', () => (cardOf() ? showCard(cardOf()) : showTab(tabOf(), { write: false })));
 if (cardOf()) {
   showCard(cardOf(), 'auto');
-  // and again once the network strip and the rows above have their height, unless the reader has scrolled meanwhile
-  let moved = false;
-  addEventListener('wheel', () => { moved = true; }, { once: true, passive: true });
-  addEventListener('touchmove', () => { moved = true; }, { once: true, passive: true });
-  setTimeout(() => { if (!moved && cardOf()) CARDS.get(cardOf()).scrollIntoView({ block: 'start' }); }, 900);
+  // The network strip and the rows above get their height as the network answers, sooner or later. Until the reader scrolls, presses something, or eight seconds
+  // have passed, the card is kept where the link put it: each frame, if it is not where a scroll to it would leave it, it is scrolled to again.
+  const linked = CARDS.get(cardOf()); let held = true;
+  const margin = parseFloat(getComputedStyle(linked).scrollMarginTop) || 0;
+  const keep = () => {
+    if (!held) return;
+    const want = Math.max(0, Math.min(linked.getBoundingClientRect().top + scrollY - margin, document.documentElement.scrollHeight - innerHeight));
+    if (Math.abs(scrollY - want) > 2) linked.scrollIntoView({ block: 'start', behavior: 'instant' });
+    requestAnimationFrame(keep);
+  };
+  const letGo = () => { held = false; };
+  for (const ev of ['wheel', 'touchmove', 'keydown', 'mousedown']) addEventListener(ev, letGo, { once: true, passive: true });
+  requestAnimationFrame(keep); setTimeout(letGo, 8000);
 } else showTab(tabOf(), { write: false });
 
 // The stage's button goes to where proving starts: the node's card and its address field; on a phone, the card that sends the page to a computer.

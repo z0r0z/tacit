@@ -107,6 +107,21 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
   check('a real thread\'s shares are salts of today that the pool\'s own check gives the same bits', shares.length > 3 && shares.every((s) => poolAddress(s.salt).bits === s.bits && s.bits >= 12 && C.dayOfSalt(s.salt) === C.utcDay() % 65536) && real[0].wasm === true);
 }
 
+// ---- what a pace can expect of a day's points
+{
+  const live = { minBits: 26, maxWeightBits: 20, netWeight: 5_463_825, netRate: 584_612_889, dayFrac: 0.21 };   // the pool on 2026-11-13, five hours into the day
+  const half = T.dayShare({ rate: 4_500_000, ...live }), full = T.dayShare({ rate: 9_000_000, ...live }), cores = T.dayShare({ rate: 750_000, ...live });
+  check('a laptop GPU at half can expect about a seventh of a percent of the day, not its part of the salts ground (three quarters of a percent)', half > 0.001 && half < 0.002 && half < 4_500_000 / 584_612_889 / 3);
+  check('twice the pace is a little more than twice the part (more shares in the day reach heavier ones)', full > 2 * half && full < 2.3 * half);
+  check('two cores can expect a fiftieth of a percent', cores > 0.00015 && cores < 0.0003);
+  check('no pace, no part; and never more than the whole', T.dayShare({ rate: 0, ...live }) === 0 && T.dayShare({ rate: -5, ...live }) === 0 && T.dayShare({ rate: 1e15, ...live }) < 1 && T.dayShare({ rate: 1e15, ...live }) > 0.99);
+  const early = T.dayShare({ rate: 4_500_000, ...live, dayFrac: 0.02 }), noWeight = T.dayShare({ rate: 4_500_000, ...live, netWeight: 0 });
+  check('in the day\'s first two hours, or with no weight to go by, the network\'s rate is used at a share\'s mean weight', early === noWeight && early > 0 && Math.abs(early - 39_000 / (11 * 584_612_889 * 86400 / 2 ** 26 + 39_000)) / early < 0.05);
+  check('of the two measures of the network the larger is taken (the smaller part)', T.dayShare({ rate: 4_500_000, ...live, netWeight: 1 }) === noWeight && T.dayShare({ rate: 4_500_000, ...live, netWeight: 50_000_000 }) < noWeight);
+  check('with nothing known of the network there is no figure', T.dayShare({ rate: 4_500_000, minBits: 26 }) === 0);
+  check('a smaller share size means more shares, and the same part', Math.abs(T.dayShare({ rate: 1e6, minBits: 20, netRate: 1e8 }) / T.dayShare({ rate: 1e6, minBits: 26, netRate: 1e8 }) - 1) < 0.6);
+}
+
 // ---- the miner
 const ADDR = '0x66F5a1225e6ac772c461f2b4d8028bf9568f3db5';
 function rig({ reply = () => ({ status: 200, body: { ok: true, accepted: 0, rejected: [], today: { shares: 0, weight: 0, best: null } } }) } = {}) {
@@ -171,8 +186,8 @@ function rig({ reply = () => ({ status: 200, body: { ok: true, accepted: 0, reje
   check('more threads are started when asked', r.live().length === 4 && r.m.state().threads === 4 && r.m.state().grinding === 4);
   r.m.setThreads(1);
   check('and stopped: told to stop, then ended', r.live().length === 1 && r.workers.filter((w) => w.dead).every((w) => w.sent[w.sent.length - 1].type === 'stop'));
-  r.m.setThreads(0); r.m.setThreads(2.5);
-  check('a thread count that is not a whole number of one or more changes nothing', r.m.state().threads === 1);
+  r.m.setThreads(-1); r.m.setThreads(2.5);
+  check('a thread count that is not a whole number, or is under none, changes nothing', r.m.state().threads === 1);
   r.m.setMinBits(28);
   check('a new share size from the pool is passed to the threads', r.live()[0].sent[r.live()[0].sent.length - 1].minBits === 28);
   const told = r.live()[0].sent.length; r.m.setMinBits(28); r.m.setMinBits(4);
@@ -256,7 +271,7 @@ function rig({ reply = () => ({ status: 200, body: { ok: true, accepted: 0, reje
   await r.fire();
   check('while the GPU thread runs, the pool is told so in the miner\'s name', r.calls.length === 1 && r.calls[0].body.client === 'tacit-prove-tab/1+gpu');
   r.m.setGpu('full');
-  check('full is passed to the GPU thread, which goes on', gw().sent[gw().sent.length - 1].duty === 1 && r.live().length === 3 && r.m.state().gpu.level === 'full');
+  check('full is passed to the GPU thread, which goes on (resting a tenth of the time, so the page can still draw)', gw().sent[gw().sent.length - 1].duty === 0.9 && r.live().length === 3 && r.m.state().gpu.level === 'full');
   r.m.setMinBits(27);
   check('a new share size reaches the GPU thread too', gw().sent[gw().sent.length - 1].minBits === 27);
   r.m.setGpu('sideways');
@@ -281,6 +296,13 @@ function rig({ reply = () => ({ status: 200, body: { ok: true, accepted: 0, reje
   check('and starts again with them', r.live().length === 3 && gw().sent[0].duty === 0.5);
   r.m.stop(); await flush();
   check('a stop ends it', r.live().length === 0 && r.m.state().gpu.on === false);
+  // the GPU alone, for a computer whose tacit-prover has the cores
+  const solo = rig(); solo.m.start({ miner: ADDR, threads: 0, gpu: 'half' });
+  check('with no cores asked for, the GPU thread is the only one', solo.live().length === 1 && solo.live()[0].sent[0].gpu === true && solo.m.state().threads === 0 && solo.m.state().grinding === 0 && solo.m.state().gpu.on === true);
+  solo.m.setThreads(2);
+  check('cores can be added to it', solo.live().length === 3 && solo.m.state().threads === 2);
+  solo.m.setThreads(0);
+  check('and taken away again, the GPU going on', solo.live().length === 1 && solo.live()[0].sent[0].gpu === true);
   const plain = rig(); plain.m.start({ miner: ADDR, threads: 1 });
   check('with nothing said about the GPU it is off', plain.live().length === 1 && plain.m.state().gpu.level === 'off' && !plain.live()[0].sent[0].gpu);
   const err = rig(); err.m.start({ miner: ADDR, threads: 1, gpu: 'full' }); const ge = err.live().find((w) => w.sent[0].gpu); ge.onerror();

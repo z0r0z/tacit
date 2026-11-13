@@ -70,6 +70,7 @@ async function open(browser, local, { phone = false, idle = false, busy = false,
     const req = route.request(), path = new URL(req.url()).pathname;
     if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: { 'access-control-allow-origin': '*', 'access-control-allow-methods': 'GET, POST', 'access-control-allow-headers': 'content-type' } });
     if (!local.v) return route.abort('connectionrefused');
+    if (local.skip > 0 && path === '/health') { local.skip--; return route.abort('connectionrefused'); }   // a read or more that gets no answer, from a prover that is there
     if (path === '/health') return json(route, { ok: true, vkey: '0x00', busy: !!local.v.mine?.job });
     if (path === '/mine' && req.method() === 'GET') return local.v.mine ? json(route, local.v.mine) : json(route, { error: 'not found' }, 404);
     // the help desk job: `local.v.desk` is what GET /helpdesk answers (none: an older prover), and each POST switches it
@@ -506,7 +507,15 @@ try {
     check(await page.locator('#t-prove').isVisible() && await gpu.evaluate((el) => el.classList.contains('lit')), '#gpu opens the Prove tab and marks the GPU card');
     await page.waitForTimeout(1200);
     const box = await gpu.boundingBox();
-    check(box && box.y >= 0 && box.y + box.height <= page.viewportSize().height, 'and brings it into the window', JSON.stringify(box));   // the page ends soon after it, so it cannot always reach the top
+    check(box && box.y >= 0 && box.y + box.height <= page.viewportSize().height, 'and brings it into the window', JSON.stringify(box));
+    // rows above that get their height late (a slow network) do not carry the card away: it is put back
+    await page.evaluate(() => { const pad = document.createElement('div'); pad.id = 'late-pad'; pad.style.height = '140px'; document.querySelector('.feed').prepend(pad); });
+    await page.waitForTimeout(400);
+    const grown = await gpu.boundingBox();
+    await page.evaluate(() => document.querySelector('#late-pad').remove());
+    await page.waitForTimeout(400);
+    const shrunk = await gpu.boundingBox();
+    check(Math.abs(grown.y - box.y) <= 2 && Math.abs(shrunk.y - box.y) <= 2, 'and keeps it there while the rows above it change height', JSON.stringify({ first: box.y, grown: grown.y, shrunk: shrunk.y }));   // the page ends soon after it, so it cannot always reach the top
     // The node card shows three numbers and keeps the rest behind a summary; the checkpoint is a summary of its own. Both start closed.
     await page.waitForFunction(() => !document.querySelector('#typ-row').hidden && !document.querySelector('#checkpoint').hidden, null, { timeout: 8000 }).catch(() => {});
     check((await text(page, '#desk .more summary')) === 'More numbers' && !(await page.locator('#desk .more').evaluate((d) => d.open)) && !(await page.locator('#typ-row').isVisible()), 'the node keeps its other numbers behind More numbers, closed');
@@ -566,12 +575,14 @@ try {
   {
     const { page, ctx, errors, shares } = await open(browser, { v: null }, { more: false, minBits: 16, init: CHARGER });
     await page.waitForFunction(() => document.querySelector('#title').textContent === 'Set up this computer');
+    check((await text(page, '#tab-main')) === 'Enter your address first' && (await text(page, '#tab-main-say')).startsWith('Nothing to install.') && await page.locator('#setup-more').isVisible() && await page.locator('#copy').evaluate((b) => b.classList.contains('ghost')) && !(await page.locator('#tab-main').evaluate((b) => b.classList.contains('ghost'))),
+      'a computer with no prover: the tab is the first step (its button leads), and the setup line is the step after it ("Earn more")', `${await text(page, '#tab-main')} | ${await text(page, '#tab-main-say')}`);
     check((await text(page, '#tab-go')) === 'Enter your address first' && await page.locator('#tab-go').isVisible(), 'tab mining, no address: the button asks for one', await text(page, '#tab-go'));
     await page.click('#tab-go');
     check(await page.evaluate(() => document.activeElement?.id === 'addr') && page.workers().length === 0, 'and a press takes the reader to the field, starting nothing');
     await page.fill('#addr', ADDR);
     await page.waitForFunction(() => document.querySelector('#tab-go').textContent === 'Mine in this tab');
-    check(!(await page.locator('#tab-rows').isVisible()), 'before it starts there are no numbers');
+    check(!(await page.locator('#tab-rows').isVisible()) && (await text(page, '#tab-main')) === 'Start in this tab', 'before it starts there are no numbers, and the node card says Start in this tab', await text(page, '#tab-main'));
     const noGpu = await page.evaluate(async () => !(await navigator.gpu?.requestAdapter?.()));
     await page.click('#tab-go');
     await page.waitForFunction(() => document.querySelector('#tab-go').textContent === 'Stop mining in this tab' && !document.querySelector('#tab-rows').hidden);
@@ -581,6 +592,9 @@ try {
     if (noGpu) check(!(await page.locator('#tab-gpu-row').isVisible()), 'in a browser with no GPU for the page, no GPU is offered');
     await page.waitForFunction(() => /\d (k|M)\/s$/.test(document.querySelector('#tab-rate').textContent), null, { timeout: 30000 });
     check(true, 'the card shows how fast this tab grinds');
+    check((await text(page, '#title')) === 'Mining in this tab' && (await text(page, '#tab-main')) === 'Stop' && await page.locator('#state').evaluate((e) => e.classList.contains('tab')), 'the node card says it is mining in this tab, with a Stop', await text(page, '#title'));
+    await page.waitForFunction(() => /^about .+ TAC a day$/.test(document.querySelector('#tab-pace').textContent) && /\/s · about .+ TAC a day$/.test(document.querySelector('#tab-main-say').textContent), null, { timeout: 30000 }).catch(() => {});
+    check(/^about (under )?\d[\d.]* TAC a day$/.test(await text(page, '#tab-pace')) && /(k|M)\/s · about .+ TAC a day$/.test(await text(page, '#tab-main-say')), 'and what this pace earns in a day, from the rate the whole network grinds', `${await text(page, '#tab-pace')} | ${await text(page, '#tab-main-say')}`);
     if (cores > 2) {
       await page.click('#tab-more');
       await page.waitForFunction((n) => document.querySelector('#tab-n').textContent.startsWith(`${n} of `), want + 1);
@@ -621,13 +635,18 @@ try {
     await page.waitForFunction(() => document.querySelector('#tab-battery').hidden);
     check(await threads(page, (n) => n >= 1) && (await text(page, '#tab-rate')) !== 'Paused on battery', '"Mine on battery too" goes on without the charger');
     await ctx.close();
-    // from the setup block's own link
+    // from the node card's own button
     const quick = await open(browser, { v: null }, { more: false, minBits: 16, init: CHARGER });
     await quick.page.fill('#addr', ADDR);
     await quick.page.waitForFunction(() => !document.querySelector('#setup').hidden);
-    await quick.page.click('#tab-quick');
+    await quick.page.waitForFunction(() => document.querySelector('#tab-main').textContent === 'Start in this tab');
+    await quick.page.click('#tab-main');
     await quick.page.waitForFunction(() => document.querySelector('#tab-go').textContent === 'Stop mining in this tab');
-    check(await threads(quick.page, (n) => n >= 1), 'the setup block\'s "Mine in this tab" starts it');
+    check(await threads(quick.page, (n) => n >= 1) && (await text(quick.page, '#title')) === 'Mining in this tab', 'the node card\'s "Start in this tab" starts it');
+    await quick.page.click('#tab-main');
+    check(await threads(quick.page, (n) => n === 0) && (await text(quick.page, '#title')) === 'Set up this computer' && (await text(quick.page, '#tab-main')) === 'Start in this tab', 'and its Stop stops it');
+    await quick.page.click('#tab-main');
+    await quick.page.waitForFunction(() => document.querySelector('#tab-go').textContent === 'Stop mining in this tab');
     check((await text(quick.page, '#say')) === '', 'and no "enter the address" is left on the card');
     // one tab at a time: while another holds the miner's lock, this one says so and starts nothing
     const held = await open(browser, { v: null }, { more: false, minBits: 16, init: CHARGER });
@@ -648,7 +667,7 @@ try {
     // a prover that is mining grinds already: the tab is not offered
     const mining = await open(browser, { v: { mine: { miner: ADDR, on: true, job: null, proved: 0 } } }, { more: false });
     await mining.page.waitForFunction(() => document.querySelector('#go') && !document.querySelector('#go').hidden);
-    check(!(await mining.page.locator('#tab-go').isVisible()), 'with tacit-prover mining on this computer, the tab is not offered');
+    check(!(await mining.page.locator('#tab-go').isVisible()) && !(await mining.page.locator('#tab-main').isVisible()), 'with tacit-prover mining on this computer and no GPU for the page, the tab is not offered');
     await mining.ctx.close();
     // a prover that is paused: the tab can mine, and stops when the prover starts
     const local = { v: { mine: { miner: ADDR, on: false, job: null, proved: 0 } } };
@@ -755,6 +774,31 @@ try {
         await page.click('#tab-go');
         check(await threads(page, (n) => n === 0), 'Stop ends every thread, the GPU\'s too', `${page.workers().length} workers`);
         check(!errors.length, 'GPU mining: no page errors', errors.join(' | '));
+        // beside tacit-prover: the prover has the cores, the tab adds the GPU alone, for the prover's address
+        const local = { v: { mine: { miner: ADDR, on: true, job: null, proved: 0 } } };
+        const beside = await open(gpuBrowser, local, { more: false, minBits: 16, init: CHARGER });
+        await beside.page.waitForFunction(() => document.querySelector('#tab-go').textContent === "Add this computer's GPU" && !document.querySelector('#tab-go').hidden, null, { timeout: 15000 });
+        check(!(await beside.page.locator('#tab-main').isVisible()), 'with tacit-prover mining, a browser with a GPU offers to add it', await text(beside.page, '#tab-go'));
+        await beside.page.fill('#addr', OTHER);   // another address in the field: the GPU still pays the one the prover pays
+        await beside.page.click('#tab-go');
+        await beside.page.waitForFunction(() => document.querySelector('#tab-go').textContent === 'Stop the GPU in this tab');
+        check(await threads(beside.page, (n) => n === 1) && !(await beside.page.locator('#tab-cores-row').isVisible()) && await beside.page.locator('#tab-gpu-row').isVisible(), 'it starts the GPU thread alone: the cores are the prover\'s', `${beside.page.workers().length} workers`);
+        const bt = Date.now(); while (!beside.shares.length && Date.now() - bt < 40000) await beside.page.waitForTimeout(500);
+        check(beside.shares[0]?.miner === ADDR && beside.shares[0]?.client === 'tacit-prove-tab/1+gpu', 'its shares go to the address the prover pays, named as the tab\'s GPU', JSON.stringify({ miner: beside.shares[0]?.miner, client: beside.shares[0]?.client }));
+        // one read of the prover with no answer (a busy computer) changes nothing: the tab does not take the cores, or pay the field's address
+        const sentBefore = beside.shares.length; local.skip = 1;
+        await beside.page.waitForFunction(() => true); while (local.skip > 0) await beside.page.waitForTimeout(200);
+        await beside.page.waitForTimeout(3500);
+        check(beside.page.workers().length === 1 && beside.shares.every((b) => b.miner === ADDR) && !(await beside.page.locator('#tab-main').isVisible()), 'a read of the prover that gets no answer changes nothing: the GPU thread alone, still paying the prover\'s address', JSON.stringify({ workers: beside.page.workers().length, miners: [...new Set(beside.shares.map((b) => b.miner))], sends: beside.shares.length - sentBefore }));
+        local.v.mine = { ...local.v.mine, on: false };
+        check(await threads(beside.page, (n) => n === want + 1, 30000) && await beside.page.locator('#tab-cores-row').isVisible(), 'when the prover pauses, the tab takes up the cores too', `${beside.page.workers().length} workers`);
+        local.v.mine = { ...local.v.mine, on: true };
+        check(await threads(beside.page, (n) => n === 1, 30000), 'and gives them back when it starts again', `${beside.page.workers().length} workers`);
+        await beside.page.click('#tab-gpu-row [data-gpu="off"]');
+        await beside.page.waitForFunction(() => document.querySelector('#tab-go').textContent === "Add this computer's GPU");
+        check(await threads(beside.page, (n) => n === 0), 'GPU off, beside the prover, stops the tab: there is nothing else for it to do', `${beside.page.workers().length} workers`);
+        check(!beside.errors.length, 'beside the prover: no page errors', beside.errors.join(' | '));
+        await beside.ctx.close();
       }
       await ctx.close();
     } finally { await gpuBrowser.close(); }

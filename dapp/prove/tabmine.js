@@ -9,6 +9,21 @@ export const CLIENT = 'tacit-prove-tab/1';   // what the pool lists this miner a
 export const defaultThreads = (cores) => Math.max(1, Math.floor((Number(cores) || 2) / 4));
 export const maxThreads = (cores) => Math.max(1, (Number(cores) || 2) - 1);
 
+// What part of a day's salt points a miner grinding `rate` salts a second can expect. The pool shares the points by weight, and a share's weight doubles with
+// every zero bit past the smallest (up to maxWeightBits), so most of a day's weight is in its few best shares: a miner with more shares in the day finds better
+// ones, and gets more than its part of the salts ground. So this is not rate over the network's rate. It takes the weight a miner with that many shares
+// typically ends a day with (each further zero bit as far as its share count reaches), against the network's weight in a day: today's so far carried to the
+// whole day (netWeight over dayFrac, once two hours in), or what its rate would make at a share's mean weight, whichever is more.
+export function dayShare({ rate, minBits = 26, maxWeightBits = 20, netWeight = 0, netRate = 0, dayFrac = 1 }) {
+  if (!(rate > 0)) return 0;
+  const perShare = 2 ** minBits, shares = (rate * 86400) / perShare;
+  const mine = (shares * (Math.min(Math.log2(Math.max(shares, 2)), maxWeightBits) + 1)) / 2;
+  const byWeight = dayFrac >= 1 / 12 && netWeight > 0 ? netWeight / Math.min(1, dayFrac) : 0;
+  const byRate = netRate > 0 ? (((maxWeightBits + 2) / 2) * netRate * 86400) / perShare : 0;
+  const net = Math.max(byWeight, byRate);
+  return net > 0 ? mine / (net + mine) : 0;
+}
+
 // ---- a grinding thread. post({ type: 'work', hashes, shares: [{ salt, bits }], wasm, gpu }) after each chunk; a chunk is sized to take about a fifth of a second
 // (a twentieth on the GPU, which the screen shares), so a stop is heard quickly. A new run of salts (another 5 random bytes) starts with each UTC day and before
 // the 4-byte counter comes round. Started with gpu, the thread grinds on the GPU (gpuGrinderOf, saltgpu.js) and nothing else: where that cannot be had, or is lost,
@@ -51,9 +66,10 @@ export function makeGrindLoop({ post, random = (n) => crypto.getRandomValues(new
   };
 }
 
-// How hard the GPU is worked: half rests it as long as it works (the screen stays smooth), full does not rest.
+// How hard the GPU is worked: half rests it as long as it works (the screen stays smooth); full rests it a tenth of the time, which is what lets the browser
+// still draw the page between its bursts.
 export const GPU_LEVELS = ['off', 'half', 'full'];
-const DUTY = { half: 0.5, full: 1 };
+const DUTY = { half: 0.5, full: 0.9 };
 
 // ---- the miner. makeWorker() -> { postMessage, terminate, onmessage= }; fetchImpl, now and timers can be stood in. onChange() after anything state() would show.
 // Beside the threads on the cores it runs one more on the GPU when asked (gpu: 'half' or 'full'); a GPU that cannot be had is noted and the cores go on alone.
@@ -123,14 +139,15 @@ export function makeTabMiner({ api, makeWorker, fetchImpl = (...a) => fetch(...a
     // -> true if it started. An address is needed: it is where the points go.
     start({ miner: m, threads: n, minBits: b, gpu }) {
       if (!/^0x[0-9a-fA-F]{40}$/.test(String(m))) return false;
-      miner = m.toLowerCase(); if (Number.isInteger(n) && n >= 1) threads = n; if (Number.isInteger(b)) minBits = b;
+      miner = m.toLowerCase(); if (Number.isInteger(n) && n >= 0) threads = n; if (Number.isInteger(b)) minBits = b;
       if (GPU_LEVELS.includes(gpu)) { gpuLevel = gpu; gpuFailed = false; }
       if (!on) { on = true; error = null; marks = []; gpuMarks = []; plan(SEND_EVERY_MS + jitter()); }
       sync(); onChange(); return true;
     },
     // what was found and not yet sent goes in one last send, if the pool will take it
     stop({ keepalive = false } = {}) { if (!on) return; on = false; sync(); timers.clear(timer); timer = null; marks = []; if (found.length) send({ keepalive }); onChange(); },
-    setThreads(n) { if (Number.isInteger(n) && n >= 1) { threads = n; sync(); onChange(); } },
+    // none is allowed: the GPU alone, while tacit-prover has the cores
+    setThreads(n) { if (Number.isInteger(n) && n >= 0) { threads = n; sync(); onChange(); } },
     // off, half or full; choosing one again after the GPU could not be had tries it again
     setGpu(level) { if (!GPU_LEVELS.includes(level)) return; gpuLevel = level; gpuFailed = false; if (gpuWorker && level !== 'off') tell(gpuWorker, { duty: DUTY[level] }); sync(); onChange(); },
     setMinBits(b) { if (Number.isInteger(b) && b >= 8 && b <= 64 && b !== minBits) { minBits = b; for (const w of [...workers, ...(gpuWorker ? [gpuWorker] : [])]) tell(w, { minBits }); } },
