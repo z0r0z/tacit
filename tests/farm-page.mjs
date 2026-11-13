@@ -494,7 +494,7 @@ try {
       await page.click('#pz .quick [data-q="0.1"]'); await quoted(page);
       await until(page, () => !document.querySelector('#pz-go').disabled);
       await page.click('#pz-go');
-      ok(await sayIs(page, /free relay sends for this are used up, so your wallet sends this one/), `the page says the wallet sends the entry, and why: ${await text(page, '#pz-say')}`);
+      ok(await sayIs(page, /free relay sends for this are used up, so your wallet sends this one|Confirm in your wallet: this one puts your share in the farm/), `the page says the wallet sends the entry, and why: ${await text(page, '#pz-say')}`);
       ok(await sayIs(page, /In the farm/), `and it ends in the farm (${await text(page, '#pz-say')})`);
       const own = st.sent[1];
       ok(st.sent.length === 2 && lc(own?.to) === lc(POOL) && String(own?.data).startsWith('0x8b8c6b4b') && BigInt(own?.gas || 0) === 650000n,

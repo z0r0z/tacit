@@ -6,7 +6,7 @@
 // The front page's Earn card has more ways in (a proof kept ready, a swap split with the Precision pool, your own prover, LP only);
 // this is the one path a page with a wallet and a key needs. Everything it calls is the pool module's (confidential-pool-ux.js).
 import { zapPlan, zapPlanFor, zapSettleCalldata } from '/lp-zap.js?cb=a43160fd';
-import { relayedOrOwn } from '/farm-ops.js?cb=7a628e22';
+import { relayedOrOwn } from '/farm-ops.js?cb=f872de9d';
 
 export const PUBLIC_AMM = '0x00000000E36C7EC997CC59DCda9E03673B448119';
 const CETH = '0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
@@ -147,9 +147,11 @@ export async function shareNote({ t, priv, built, tries = 10, every = 4000 }) {
 // queue when the wait runs out. Neither is a failure: the job is followed until it lands (`say('waiting', jobId)` once), and only a job
 // that fails, or one followed for half an hour, ends it.
 // When the relay will prove the entry but not send it for free just now, `own` (farm-ops.js walletSettle) sends it from the wallet:
-// `say('own', error)` first.
+// `say('own', error)` first. So does an entry the relay proved and has not sent `ownAfterMs` later (its sending wallet may be short):
+// the wallet sends that same proof.
 export const inLine = (e) => e?.code === 'open' || !!e?.open || /settle timed out|status polling for job/i.test(String(e?.message || ''));
-export async function bondShare({ t, priv, note, wait = () => ({}), say = () => {}, own = null }) {
+const sendable = (o) => (o && o.publicValues && o.proof && Array.isArray(o.memos) ? o : null);
+export async function bondShare({ t, priv, note, wait = () => ({}), say = () => {}, own = null, ownAfterMs = 120e3 }) {
   const w = wait('bond');
   let job = null;
   const go = (selfSettle) => t.farmBond({ walletPriv: priv(), lpNote: note, ...(selfSettle ? { selfSettle } : {}), waitOpts: { timeoutMs: 20 * 60e3, ...w, onJob: (id, type) => { job = id; w.onJob?.(id, type); } } });
@@ -158,7 +160,15 @@ export async function bondShare({ t, priv, note, wait = () => ({}), say = () => 
     const id = e?.open?.jobId || job;
     if (!id || !inLine(e)) throw e;
     say('waiting', id);
-    return t.relay.waitForSettle(id, { openGraceMs: Infinity, timeoutMs: 30 * 60e3, intervalMs: 5000, onUpdate: w.onUpdate });
+    const follow = (timeoutMs) => t.relay.waitForSettle(id, { openGraceMs: Infinity, timeoutMs, intervalMs: 5000, onUpdate: w.onUpdate });
+    if (!own) return follow(30 * 60e3);
+    try { return await follow(ownAfterMs); }
+    catch (e2) {
+      const o = sendable(e2?.open) || sendable(e?.open);
+      if (!o || !inLine(e2)) throw e2;
+      say('own', { code: 'open' });
+      return { jobId: id, ...(await own({ jobId: id, publicValues: o.publicValues, proof: o.proof, memos: o.memos })) };
+    }
   }
 }
 

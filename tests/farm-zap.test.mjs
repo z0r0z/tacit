@@ -238,6 +238,24 @@ const readyOf = async (w) => zapProve({ t: w.t, priv: w.priv, pool, q: await quo
   eq(doneDay.bond, { jobId: 'job3', txHash: '0x' + '33'.repeat(32) }, 'and the zap ends with the entry the wallet sent');
   const noWallet = world({ bondErr: Object.assign(new Error('free relayed settles for today are used up (8/8)'), { code: 'free_budget' }) }); noWallet.st.notes = [{ leaf: noWallet.built.leaf, asset: pool.lpAsset, value: '1' }];
   await fails(zapRun({ t: noWallet.t, rpc: noWallet.rpc, wallet: noWallet.wallet, from: FROM, priv: noWallet.priv, pool, q, noteEvery: 1 }), (e) => ok(e.share === true && e.code === 'free_budget'), 'with no wallet sender, the refusal stands and the share is said to be the key’s');
+  // proved and not sent by the relay within the wait (its sending wallet short): the wallet sends that same proof
+  {
+    const pv = { publicValues: '0xpv', proof: '0xpf', memos: ['0xm'] }, follows = [], sentOwn = [], said = [];
+    const tt = { farmBond: async () => { throw Object.assign(new Error('settle held: proved and waiting for a sender'), { code: 'open', open: { jobId: 'jobO', ...pv } }); },
+      relay: { waitForSettle: async (id, o) => { follows.push([id, o.timeoutMs]); throw Object.assign(new Error('settle timed out (box offline or backlogged)'), { code: 'open', open: { jobId: id, ...pv } }); } } };
+    const r = await bondShare({ t: tt, priv: () => 'P', note: { leaf: 'L' }, say: (s, d) => said.push([s, d?.code]), own: async (x) => { sentOwn.push(x); return { txHash: '0xown' }; }, ownAfterMs: 5 });
+    eq(follows, [['jobO', 5]], 'the relay is given the wait first');
+    eq(sentOwn, [{ jobId: 'jobO', ...pv }], 'then the wallet sends the proof the relay made');
+    eq(r, { jobId: 'jobO', txHash: '0xown' }); ok(said.some(([s, c]) => s === 'own' && c === 'open'), 'and the page says why');
+    const quiet = { ...tt, relay: { waitForSettle: async (id, o) => { follows.push([id, o.timeoutMs]); return { status: 'settled', txHash: '0xrelay' }; } } };
+    follows.length = 0; sentOwn.length = 0;
+    eq((await bondShare({ t: quiet, priv: () => 'P', note: { leaf: 'L' }, own: async () => { sentOwn.push(1); return {}; }, ownAfterMs: 5 })).txHash, '0xrelay', 'a relay that sends it within the wait sends it');
+    ok(sentOwn.length === 0, 'and the wallet is not asked');
+    follows.length = 0;
+    await bondShare({ t: quiet, priv: () => 'P', note: { leaf: 'L' } }); eq(follows, [['jobO', 30 * 60e3]], 'with no wallet sender, it is followed for half an hour as before');
+    const failed = { ...tt, relay: { waitForSettle: async () => { throw new Error('settle failed: reverted'); } } };
+    await fails(bondShare({ t: failed, priv: () => 'P', note: { leaf: 'L' }, own: async () => ({}), ownAfterMs: 5 }), (e) => ok(/settle failed/.test(e.message)), 'a job that failed is not sent from the wallet');
+  }
   const early = world({ sendErr: Object.assign(new Error('User rejected the request.'), { code: 4001 }) });
   await fails(zapRun({ t: early.t, rpc: early.rpc, wallet: early.wallet, from: FROM, priv: early.priv, pool, q }), (e) => ok(!e.share && e.ready), 'a failure before the transaction lands claims no share');
 }

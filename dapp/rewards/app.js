@@ -442,7 +442,7 @@ function paintPrivate(list) {
 // with no wallet connected here, the visitor chooses among the browser's wallets (the sign-in sheet's own picker)
 const pickProvider = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : import('/trade/key.js?cb=09f263cb').then((m) => m.pickWalletSheet(list)); };
 let farmsP = null;
-const openFarms = () => (farmsP ||= import('/rewards/farms.js?cb=390bdfc8').then((m) => { const f = m.mountFarms($('#pf-mine'), { pick: pickProvider, names: () => new Map(PRIV.map((x) => [x.pid, x.name])), pair: (pid) => { const icons = PRIV.find((x) => String(x.pid) === String(pid))?.icons || []; return icons.length ? pairIcons(icons) : ''; }, program: () => PROG, wallet, W, connect: () => connect.connect() }); $('#pf-mine [data-pf="open"]')?.click(); return f; })
+const openFarms = () => (farmsP ||= import('/rewards/farms.js?cb=85734053').then((m) => { const f = m.mountFarms($('#pf-mine'), { pick: pickProvider, names: () => new Map(PRIV.map((x) => [x.pid, x.name])), pair: (pid) => { const icons = PRIV.find((x) => String(x.pid) === String(pid))?.icons || []; return icons.length ? pairIcons(icons) : ''; }, program: () => PROG, wallet, W, connect: () => connect.connect() }); $('#pf-mine [data-pf="open"]')?.click(); return f; })
   .catch((err) => { farmsP = null; console.warn('your positions:', err?.message || err); }));
 $('#pf-mine').addEventListener('click', (e) => {
   if (farmsP || !e.target.closest('[data-pf="open"]')) return;

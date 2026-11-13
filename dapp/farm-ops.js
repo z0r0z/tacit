@@ -19,9 +19,11 @@ export function exitSaid(lockSeconds, name, { lpOnly = false } = {}) {
 // A step the relay proves but will not send for free just now (the day's free sends of its kind are used, or it is catching up on its sends)
 // goes out from the connected wallet instead: the relay proves it as a prove-only job and the wallet sends it, paying the network fee.
 export const ownSend = (e) => e?.code === 'free_budget' || e?.code === 'relay_held';
-export const ownWhy = (e) => (e?.code === 'relay_held'
-  ? 'The relay is catching up on its sends, so your wallet sends this one: the relay proves it, then you confirm it (a network fee, paid in ETH).'
-  : 'Today’s free relay sends for this are used up, so your wallet sends this one: the relay proves it, then you confirm it (a network fee, paid in ETH).');
+export const ownWhy = (e) => (e?.code === 'open'
+  ? 'The relay proved this but has not sent it yet, so your wallet sends it now (a network fee, paid in ETH).'
+  : e?.code === 'relay_held'
+    ? 'The relay is catching up on its sends, so your wallet sends this one: the relay proves it, then you confirm it (a network fee, paid in ETH).'
+    : 'Today’s free relay sends for this are used up, so your wallet sends this one: the relay proves it, then you confirm it (a network fee, paid in ETH).');
 // → selfSettle for the pool module's steps: the proof sent to the pool from `from` (an address, or a function giving it), after the node
 // has estimated it (a step that would not go through is not sent). null without a wallet that sends.
 export function walletSettle(t, wallet, from, { confirm = () => {} } = {}) {
