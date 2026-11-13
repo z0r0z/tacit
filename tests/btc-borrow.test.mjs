@@ -3,7 +3,7 @@
 // The pool module is a stand-in that records what it is asked: its own maths is tested elsewhere.
 //   node tests/btc-borrow.test.mjs
 import assert from 'node:assert/strict';
-import { makeLoans, exactNotes, bondGap, bondCall, ESCROW, lockPad, lockRate, loanHealth, borrowAt, SAFE_RATIOS } from '../dapp/btc-borrow.js';
+import { makeLoans, exactNotes, bondGap, bondCall, ESCROW, lockPad, lockRate, loanHealth, borrowAt, SAFE_RATIOS, NEAR_FALL, NEAR_CLEAR, fallToLiq, fallText, liqPhrase, approaching, loanId } from '../dapp/btc-borrow.js';
 import * as secp from '@noble/secp256k1';
 import { sha256 } from '@noble/hashes/sha256';
 import { hmac } from '@noble/hashes/hmac';
@@ -131,8 +131,35 @@ assert.deepEqual({ ...got.record, at: 0 }, { lockTxid: 'aa'.repeat(32), lockVout
   assert.equal(h(600).level, 'warn', 'under 175% it says so (166.7%)'); assert.ok(Math.abs(h(600).ratio - 166.666) < 0.01);
   assert.equal(h(700).level, 'err', 'under the 150% floor it is an error (142.9%)');
   assert.ok(Math.abs(h(500).liqAt - 65000) < 1e-6, '500 cUSD against 0.01 BTC is liquidated below $65,000 a bitcoin (500 / 0.01 x 1.30)');
-  assert.deepEqual(h(0), { ratio: null, liqAt: null, level: '' }); assert.deepEqual(h(5, { usdBtc: 0 }), { ratio: null, liqAt: null, level: '' }); assert.deepEqual(loanHealth({ sats: 0n, debt: 5n, ...E }), { ratio: null, liqAt: null, level: '' });
+  const none = { ratio: null, liqAt: null, fall: null, near: false, level: '' };
+  assert.deepEqual(h(0), none); assert.deepEqual(h(5, { usdBtc: 0 }), none); assert.deepEqual(loanHealth({ sats: 0n, debt: 5n, ...E }), none);
   assert.equal(h(500, { liq: 0 }).liqAt, null, 'no liquidation ratio read: no price named');
+  // how far bitcoin can fall: 0.01 cBTC against 500 cUSD is liquidated at $65,000, 35% under $100,000
+  assert.ok(Math.abs(h(500).fall - 35) < 1e-9 && !h(500).near, '200% against a 130% line: bitcoin must fall 35%, not near');
+  assert.equal(h(500, { liq: 0 }).fall, null); assert.equal(h(500, { liq: 0 }).near, false, 'no liquidation ratio read: nothing is near');
+  assert.ok(h(695).near && !h(690).near, 'near is a fall of under 10% (143.9% is, 144.9% is not)');
+  assert.ok(Math.abs(h(700).fall - 9) < 1e-9 && h(700).near && h(700).level === 'err', '142.9%: a 9% fall, near, an error');
+  assert.equal(h(800).fall, 0, '125% is under the 130% line: it can be liquidated now'); assert.ok(h(800).near);
+  assert.equal(fallToLiq(130, 130), 0); assert.equal(fallToLiq(131.3, 130) > 0, true); assert.equal(fallToLiq(null, 130), null); assert.equal(fallToLiq(150, 0), null);
+  assert.equal(fallText(35), '35%'); assert.equal(fallText(12.99), '12%', 'rounded down, so the cushion is never overstated'); assert.equal(fallText(0.76), 'less than 1%');
+  assert.equal(liqPhrase(h(500)), "liquidated below $65,000 a bitcoin, 35% under today's price");
+  assert.equal(liqPhrase(h(763)), "liquidated below $99,190 a bitcoin, less than 1% under today's price", 'a loan a hair above the line says so');
+  assert.equal(liqPhrase(h(800)), 'liquidated below $104,000 a bitcoin', 'already under the line: no distance to name');
+  assert.equal(liqPhrase(h(500, { liq: 0 })), ''); assert.equal(liqPhrase(h(0)), ''); assert.equal(liqPhrase(null), '');
+  // who is told: a loan newly near, once; kept while near and until it backs off 3 points more; told again if it returns
+  {
+    const L = (ratio, fall, debt = 500n) => ({ debt, sats: 1_000_000n, ratio, fall, near: fall != null && fall < NEAR_FALL });
+    const far = L(200, 35), near = L(140, 7), mid = L(145, 10.3), back = L(150, 13.4);
+    assert.deepEqual(approaching([far], []), { tell: [], keep: [] }, 'a safe loan: nothing');
+    assert.deepEqual(approaching([near], []), { tell: [near], keep: [loanId(near)] }, 'newly near: told');
+    assert.deepEqual(approaching([near], [loanId(near)]), { tell: [], keep: [loanId(near)] }, 'already told: not again');
+    assert.deepEqual(approaching([mid], [loanId(mid)]), { tell: [], keep: [loanId(mid)] }, 'just above the line it hovers at: still remembered, so it does not repeat');
+    assert.deepEqual(approaching([back], [loanId(back)]), { tell: [], keep: [] }, 'well clear again: forgotten');
+    assert.deepEqual(approaching([L(140, 7)], []).tell.length, 1, 'and told afresh when it comes near again');
+    assert.deepEqual(approaching([near, L(130, 0, 900n)], [loanId(near)]).tell.map(loanId), ['900:1000000'], 'a second loan is its own');
+    assert.deepEqual(approaching([], [loanId(near)]), { tell: [], keep: [] }, 'a loan that is gone is forgotten');
+    assert.equal(NEAR_CLEAR, 3);
+  }
   // the amounts the chips fill: rounded down to the cent, so the loan lands at or above the ratio
   assert.deepEqual(SAFE_RATIOS, [250, 200, 175]);
   assert.equal(borrowAt({ sats: 1_000_000n, usdBtc: 100000, pct: 250 }), 400); assert.equal(borrowAt({ sats: 1_000_000n, usdBtc: 100000, pct: 200 }), 500);

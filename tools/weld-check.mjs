@@ -11526,7 +11526,7 @@ await step('vaultborrow', async () => {
     ok(chips.join() === '250%,200%,175%', `vaultborrow: the form offers the safer ratios (${chips})`);
     await r.page.click('#btc-tk .bm-chips button:nth-child(2)');
     const filled = Number(await r.page.inputValue('#bm-amt')), health = (await text(r.page, '#bm-health')).replace(/\s+/g, ' ');
-    ok(filled > 0 && /Collateral ratio 2\d\d%; liquidated below \$[\d,]+ a bitcoin\./.test(health) && !/borrow less/.test(health), `vaultborrow: choosing 200% fills the amount and says how the loan would stand (${filled} cUSD: ${health})`);
+    ok(filled > 0 && /Collateral ratio 2\d\d%; liquidated below \$[\d,]+ a bitcoin, \d+% under today's price\./.test(health) && !/borrow less/.test(health), `vaultborrow: choosing 200% fills the amount and says how the loan would stand (${filled} cUSD: ${health})`);
     await r.page.fill('#bm-amt', String(Math.ceil(filled * 4)));
     await until(r.page, () => /borrow less/.test(document.querySelector('#bm-health')?.textContent || ''), null, 10000);
     ok(await r.page.evaluate(() => !!document.querySelector('#bm-health b.err')), 'vaultborrow: an amount under the floor is said to be, in the error colour');

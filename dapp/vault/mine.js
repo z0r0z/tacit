@@ -7,7 +7,7 @@ import { makeKeySession, signInSheet } from '/trade/key.js?cb=09f263cb';
 import { btcWay, btcSeen } from '/trade/btc-way.js?cb=9820720a';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=59d125e5';
 import { readLocks, readLoans, readHeld, readEngine, sizeBond, lockStep, ENGINE, WSTETH } from '/cbtc/read.js?cb=340e46f6';
-import { makeLoans, exactNotes, bondGap, bondCall, bondShareCall, bondBackCall, outpointOf, lockPad, lockRate, loanHealth, borrowAt, SAFE_RATIOS } from '/btc-borrow.js?cb=2b7e1f6b';
+import { makeLoans, exactNotes, bondGap, bondCall, bondShareCall, bondBackCall, outpointOf, lockPad, lockRate, loanHealth, liqPhrase, borrowAt, SAFE_RATIOS } from '/btc-borrow.js?cb=04fd20b5';
 import { makeRunner } from '/activity.js';
 import { relayRefused, relayWords } from '/relay-outcome.js?cb=17e48a9a';
 import { esc, short, grp, plain, parseUnits, word, wordAt } from '/trade/util.js?cb=1d2cd8d3';
@@ -313,7 +313,7 @@ export function mountMine(root, { ticket = null, pick, wallet = null, W = null, 
     if (!n || !debt || !e?.usdBtc) return '';
     const h = loanHealth({ sats: n.value, debt, usdBtc: e.usdBtc, floor: e.ratio, liq: e.liq });
     if (h.ratio == null) return '';
-    return `Collateral ratio <b class="${h.level}">${esc(String(Math.floor(h.ratio)))}%</b>${h.liqAt ? `; liquidated below $${esc(Math.round(h.liqAt).toLocaleString('en-US'))} a bitcoin` : ''}.${h.level === 'err' ? ` That is under the ${esc(String(e.ratio))}% floor: borrow less.` : ''}`;
+    return `Collateral ratio <b class="${h.level}">${esc(String(Math.floor(h.ratio)))}%</b>${h.liqAt ? `; ${esc(liqPhrase(h))}` : ''}.${e.ratio && h.ratio < e.ratio ? ` That is under the ${esc(String(e.ratio))}% floor: borrow less.` : ''}`;
   }
   const tk = (id) => `<svg class="tk" aria-hidden="true"><use href="#tk-${id}"/></svg>`;
   const off = () => (D.busy || D.reading ? ' disabled' : '');                   // no press while a step is under way or a read is in flight: its figures replace these
@@ -391,7 +391,7 @@ export function mountMine(root, { ticket = null, pick, wallet = null, W = null, 
       } else rows.push(`<p class="hint err">Could not read your balance: ${esc(errs.held)}</p>`);
       if (loans) loans.forEach((l, i) => {
         const e = D.engine, hh = e?.usdBtc ? loanHealth({ sats: l.cbtc, debt: l.debt, usdBtc: e.usdBtc, floor: e.ratio, liq: e.liq }) : null;
-        rows.push(`<div class="kv"><span>${mk('cusd')}Loan</span><b class="num">${esc(cusdTxt(l.debt))} cUSD<small>against ${esc(btcTxt(l.cbtc))} cBTC · <button class="linkbtn" type="button" data-mine="repay" data-i="${i}"${off()}>${D.busy === `repay:${i}` ? 'Repaying…' : 'Repay'}</button></small>${hh?.ratio != null ? `<small class="bm-health">Collateral ratio <b class="${hh.level}">${esc(String(Math.floor(hh.ratio)))}%</b>${hh.liqAt ? ` · liquidated below $${esc(Math.round(hh.liqAt).toLocaleString('en-US'))} a bitcoin` : ''}</small>` : ''}</b></div>`);
+        rows.push(`<div class="kv"><span>${mk('cusd')}Loan</span><b class="num">${esc(cusdTxt(l.debt))} cUSD<small>against ${esc(btcTxt(l.cbtc))} cBTC · <button class="linkbtn" type="button" data-mine="repay" data-i="${i}"${off()}>${D.busy === `repay:${i}` ? 'Repaying…' : 'Repay'}</button></small>${hh?.ratio != null ? `<small class="bm-health">Collateral ratio <b class="${hh.level}">${esc(String(Math.floor(hh.ratio)))}%</b>${hh.liqAt ? ` · ${esc(liqPhrase(hh))}` : ''}${hh.near ? ` · <b class="err">${hh.fall > 0 ? 'close to liquidation' : 'can be liquidated now'}</b>` : ''}</small>` : ''}</b></div>`);
       });
       else rows.push(`<p class="hint err">Could not read your loans: ${esc(errs.loans)}</p>`);
       if (locks) locks.forEach((l, i) => {

@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-eS0OHfHyCHJO9cEA27ci/Hx4W2eEkDrB9tVfNkJbRUQ=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-VrhWdeyMWx/Mv9Guf9HCe5hmHijhGJDLILNF502sVdw=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -62,7 +62,7 @@
 <link rel="modulepreload" href="/lp-zap.js?cb=a43160fd">
 <link rel="modulepreload" href="/farm-ops.js?cb=f872de9d">
 <link rel="modulepreload" href="/relay-outcome.js?cb=17e48a9a">
-<link rel="modulepreload" href="/btc-borrow.js?cb=2b7e1f6b">
+<link rel="modulepreload" href="/btc-borrow.js?cb=04fd20b5">
 <link rel="modulepreload" href="/bridge-out.js?cb=9662a160">
 <link rel="modulepreload" href="/bridge/track.js?cb=d654a7d8">
 <link rel="modulepreload" href="/bridge-in.js?cb=ba07ee86">
@@ -2525,7 +2525,7 @@ import * as GR from '/gas-relay.js?cb=e8d173a8';
 import { netPicker } from '/net-pick.js?cb=9229f173';
 import { UNBOND_DUST, HARVEST_WORTH, unharvested, exitSaid, bFor, aFor, farmManager, ladder as xoLadder, feeShort as xoFeeShort } from '/farm-ops.js?cb=f872de9d';
 import { relayCode, proveCapped, proved, relayRefused, jobSaid, calmText } from '/relay-outcome.js?cb=17e48a9a';
-import { makeLoans, bondGap, lockPad as lockPadOf, lockRate as lockRateOf } from '/btc-borrow.js?cb=2b7e1f6b';
+import { makeLoans, bondGap, lockPad as lockPadOf, lockRate as lockRateOf, NEAR_FALL, fallToLiq, fallText, approaching, loanId } from '/btc-borrow.js?cb=04fd20b5';
 import { makeOutFee, limitText, proofWarn, fundingText, onTheWay } from '/bridge-out.js?cb=9662a160';
 import { ROUTES as BR_WAYS, LIMITS as BR_LIMITS, satsOut, satsBack, readBridges, nextOf as brNext, fmtAmount as brRowAmt } from '/bridge/track.js?cb=d654a7d8';
 import { SERVED as SERVED_POOLS, keeperIdOf, makeTokenPools, KEEPERS as POOL_KEEPERS, RELAYER as POOL_RELAYER } from '/evm-pool-tokens.js?cb=16e0e196';
@@ -10623,18 +10623,40 @@ const DASH_DO = { eth: ['private', 'eth', 'v1-finish'], tac: ['tac', 'tac', 'tac
 const DASH_PX = { ctac: 'tac', teth: 'eth', dev: 'eth', devtac: 'tac', devtacd: 'usd', devtace: 'eth', tethbtc: 'eth', tacbridged: 'tac', usdtbtc: 'usd', cusdt: 'usd', tac: 'tac', btc: 'btc', cbtc: 'btc', cusd: 'usd', tacbtc: 'btc', tacusd: 'usd', tacd: 'usd', tace: 'eth' };
 const DASH_HELD = new Set(['private', 'pay', 'lp', 'public', 'bitcoin']);
 const DASH_PRIV = new Set(['ctac', 'teth', 'dev', 'devtac', 'devtacd', 'devtace', 'tethbtc', 'tacbridged', 'usdtbtc', 'cbtc', 'cusd', 'cusdt']);
-function dashLoans() {
+// What a loan at `ratio`% is liquidated at, and how far bitcoin must fall to get there.
+const liqStarts = (ratio, st) => { const lq = Number(st.liq) / 100, f = fallToLiq(ratio, lq); return f > 0 ? `liquidation starts at ${lq}% (bitcoin ${fallText(f)} lower).` : f === 0 ? `it can be liquidated now (the line is ${lq}%).` : `liquidation starts at ${lq}%.`; };
+function dashLoans(pxNow = null) {
   const k = S.key?.pubHex, cb = P.scan?.cbtc?.id;
   if (!k || !cb) return null;
   const known = LOANS.pub === k ? LOANS.v : null, owes = !!known?.positions?.length || (P.scan?.cusd && BigInt(P.scan.cusd.value || 0) > 0n);
   if (owes && !LOANS.p && (!known || Date.now() - LOANS.at > 60e3) && Date.now() - (DASH.loansAt || 0) > 60e3) { DASH.loansAt = Date.now(); getUx().then((t) => cdpLoans(t, walletPriv())).then(() => dashSoon(), () => {}); }
   if (HXR.ratio == null) hxRatios().then(() => { if (HXR.ratio != null) dashSoon(); });
-  const px = LOCK.state?.px || (TPX.v?.usdBtc ? BigInt(Math.round(TPX.v.usdBtc * 1e8)) : null);
+  const px = pxNow || LOCK.state?.px || (TPX.v?.usdBtc ? BigInt(Math.round(TPX.v.usdBtc * 1e8)) : null);
   return (known?.positions || []).filter((p) => p.live !== false && (p.basket || []).some((x) => String(x.asset).toLowerCase() === cb)).map((p) => {
     const sats = BigInt(p.basket.find((x) => String(x.asset).toLowerCase() === cb).value), debt = BigInt(p.debtValue), usd = px ? sats * px / 10n ** 8n : 0n;
-    return { debt, sats, ratio: usd && debt ? Number(usd * 10000n / debt) / 100 : null };
+    const ratio = usd && debt ? Number(usd * 10000n / debt) / 100 : null, fall = fallToLiq(ratio, HXR.liq);
+    return { debt, sats, ratio, fall, near: fall != null && fall < NEAR_FALL };
   });
 }
+// A loan near its liquidation line (NEAR_FALL, in btc-borrow.js) is told to a borrower whose tab is in the background, once they have turned
+// notifications on: looked at every five minutes with a fresh price and a fresh read of their loans, and told once each time it comes near.
+const LOANW = { busy: false };
+const loanSeenKey = () => `tacit-loan-near-v1:${S.key?.pubHex}`;
+setInterval(async () => {
+  const k = S.key?.pubHex, loaded = () => (LOANS.pub === k ? LOANS.v : null);
+  if (!k || LOANW.busy || !document.hidden || !store.get(NOTIFY_KEY) || typeof Notification !== 'function' || Notification.permission !== 'granted') return;
+  if (!loaded()?.positions?.length && !(P.scan?.cusd && BigInt(P.scan.cusd.value || 0) > 0n)) return;
+  LOANW.busy = true;
+  try {
+    const [t] = await Promise.all([getUx(), loadTacPrice()]);
+    await cdpLoans(t, walletPriv());
+    if (HXR.ratio == null) await hxRatios();
+    if (S.key?.pubHex !== k || !loaded() || !TPX.v?.usdBtc) return;
+    const { tell, keep } = approaching(dashLoans(BigInt(Math.round(TPX.v.usdBtc * 1e8))) || [], store.get(loanSeenKey()) || []);
+    for (const x of tell) osNote('A loan is close to liquidation', `${fmt(x.debt, 8, 2)} cUSD at ${Math.floor(x.ratio)}%: ${x.fall > 0 ? `bitcoin falling ${fallText(x.fall)} liquidates it` : 'it can be liquidated now'}. Repay it.`, `loan-near:${loanId(x)}`, () => openSheet('borrow'));
+    store.set(loanSeenKey(), keep);
+  } catch {} finally { LOANW.busy = false; }
+}, 300e3);
 function dashPx() {
   const v = TPX.v;
   return v?.usdBtc && v.ethBtc ? { eth: v.usdBtc / v.ethBtc, btc: v.usdBtc, usd: 1, tac: v.mid ? v.mid * v.usdBtc / v.ethBtc : null } : null;
@@ -10726,7 +10748,8 @@ function paintDash0() {
         : `${xs.length} bridges of ${a.ticker} are on their way from Ethereum to Bitcoin. They finish while this page is open with your wallet.`, link, 'Follow']);
     }
     const near = (dashLoans() || []).filter((x) => x.ratio != null && x.ratio < 175).sort((a, b) => a.ratio - b.ratio)[0];
-    if (near) due.push([`A loan of ${fmt(near.debt, 8, 2)} cUSD stands at ${Math.round(near.ratio)}%${HXR.liq ? `; liquidation starts at ${HXR.liq}%` : ''}. Repay it before BTC falls further.`, 'loans', 'Open']);
+    if (near) due.push([near.near ? `A loan of ${fmt(near.debt, 8, 2)} cUSD stands at ${Math.floor(near.ratio)}%${near.fall > 0 ? `, and bitcoin falling ${fallText(near.fall)} liquidates it` : `, under the ${HXR.liq}% line: it can be liquidated now`}. Repay it.`
+      : `A loan of ${fmt(near.debt, 8, 2)} cUSD stands at ${Math.round(near.ratio)}%${HXR.liq ? `; liquidation starts at ${HXR.liq}%` : ''}. Repay it before BTC falls further.`, 'loans', 'Open']);
     const claims = [];
     const pw = pointsWho(), prow = PTS.key && PTS.key === pw.map(([a]) => a).join() ? PTS.rows || [] : [], owed = prow.reduce((a, r) => a + r.owed, 0n);
     if (owed > 0n) claims.push([`${tacShort(owed)} TAC from points`, 'pts', 'Points']);
@@ -12015,11 +12038,11 @@ function hxBwView(st) {
     panel = st.loanErr ? html`<p class="hx-bw-d err">Your loans could not be read.</p>${btn('reload', 'Try again', { ghost: true })}`
       : html`<p class="hx-bw-d">${HX.bm === 'cbtc' ? html`<b>${fmt(vBtc, 8, 8)} cBTC</b> is yours, a private note. Borrow cUSD against it whenever you like.` : html`Borrow cUSD against your <b>${fmt(vBtc, 8, 8)} cBTC</b>, up to the ${Number(st.ratio) / 100}% floor. Repay any time to take it back.`}</p>
         <div class="hx-bw-a"><input class="hx-amt" id="hx-bw-debt" inputmode="decimal" autocomplete="off" aria-label="cUSD to borrow" placeholder="${sug ? plain(sug, 8) : '0'}" value="${HX.bwDebt || ''}"><span class="hx-unit">cUSD</span></div>
-        <p class="hx-bw-n" id="hx-bw-r">${ratio ? html`Collateral ratio <b class="${ratio < Number(st.ratio) / 100 ? 'err' : ratio < 175 ? 'warn' : ''}">${Math.round(ratio)}%</b>; liquidation starts at ${Number(st.liq) / 100}%.` : ''}</p>
+        <p class="hx-bw-n" id="hx-bw-r">${ratio ? html`Collateral ratio <b class="${ratio < Number(st.ratio) / 100 ? 'err' : ratio < 175 ? 'warn' : ''}">${Math.floor(ratio)}%</b>; ${liqStarts(ratio, st)}` : ''}</p>
         ${btn('borrow', 'Borrow cUSD')}`;
   } else {
     const ratio = st.usd ? Number(st.usd * 10000n / st.borrowed) / 100 : null;
-    panel = html`<p class="hx-bw-d">Borrowed <b>${fmt(st.borrowed, 8, 2)} cUSD</b>.${ratio ? html` Collateral ratio <b class="${ratio < Number(st.ratio) / 100 ? 'err' : ratio < 175 ? 'warn' : ''}">${Math.round(ratio)}%</b>; liquidation starts at ${Number(st.liq) / 100}%.` : ''} Repaying burns the cUSD and returns your cBTC.</p>${btn('repay', LOCK.repayOver ? 'Repay anyway' : 'Repay and close')}`;
+    panel = html`<p class="hx-bw-d">Borrowed <b>${fmt(st.borrowed, 8, 2)} cUSD</b>.${ratio ? html` Collateral ratio <b class="${ratio < Number(st.ratio) / 100 ? 'err' : ratio < 175 ? 'warn' : ''}">${Math.floor(ratio)}%</b>; ${liqStarts(ratio, st)}` : ''} Repaying burns the cUSD and returns your cBTC.</p>${btn('repay', LOCK.repayOver ? 'Repay anyway' : 'Repay and close')}`;
   }
   const sum = (ns) => (ns || []).reduce((a, n) => a + BigInt(n.value), 0n), cbtc = P.scan ? sum(P.scan.cbtc?.notes) : null, cusd = P.scan?.cusd ? BigInt(P.scan.cusd.value) : null;
   const rows = [['Locked', `${fmt(vBtc, 8, 8)} BTC`], st.have ? ['Bond', `${fmt(st.have, 18, 5)} wstETH`] : null, cbtc != null ? ['cBTC', `${fmt(cbtc, 8, 8)} private`] : null,
@@ -12054,7 +12077,7 @@ function hxBwPaint() {
   if (debt) debt.oninput = () => {
     HX.bwDebt = debt.value;
     const v = parseUnits(debt.value || debt.placeholder, 8), r = v && st.usd ? Number(st.usd * 10000n / v) / 100 : null, el = $('#hx-bw-r');
-    if (el) mount(el, r ? html`Collateral ratio <b class="${r < Number(st.ratio) / 100 ? 'err' : r < 175 ? 'warn' : ''}">${Math.round(r)}%</b>; liquidation starts at ${Number(st.liq) / 100}%.` : html``);
+    if (el) mount(el, r ? html`Collateral ratio <b class="${r < Number(st.ratio) / 100 ? 'err' : r < 175 ? 'warn' : ''}">${Math.floor(r)}%</b>; ${liqStarts(r, st)}` : html``);
   };
   if (debt) debt.onkeydown = (e) => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); $('[data-hxbw="borrow"]', box)?.click(); } };
   box.onclick = (e) => {
