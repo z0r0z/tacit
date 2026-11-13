@@ -58,6 +58,10 @@ export const PROVER_BOARD = Object.freeze({
   turnPrograms: Object.freeze(['btc-state']),          // community jobs given to one machine at a time, in turn
   turnSeenMs: 30_000,
   turnTroubleMs: 6 * 3600_000,
+  // Community machines get first pick of public work: while one that proves a job's program is ready (asked lately, racing nothing else) or
+  // is already racing the job, Tacit's own workers leave the job for this long after it was posted, then take it as before (a press keeps a
+  // bound on its wait: Tacit's GPU still proves it if no community proof has come by then). Private work is never held.
+  communityFirstMs: Object.freeze({ confidential: 20_000, 'tacit-block': 120_000 }), // PROVER_BOARD_FIRST_MS, PROVER_BOARD_BLOCK_FIRST_MS (0: no wait)
   communityKept: 200,                                  // community records kept on the summary (the most recently seen)
   maxCandidatePvBytes: 16 * 1024,                      // a race candidate's public values (a wrap's or a Bitcoin batch's are a few KB)
   pointsPerProof: 20,                                  // POINTS_BOARD_PER_PROOF: for each community proof the relay takes
@@ -79,6 +83,7 @@ export function proverBoardConfig(env = {}) {
     pointsPerProof: n(env.POINTS_BOARD_PER_PROOF, PROVER_BOARD.pointsPerProof),
     proofsPerMinerDay: n(env.POINTS_BOARD_DAILY_CAP, PROVER_BOARD.proofsPerMinerDay, 1),
     pointsByProgram: Object.freeze({ 'btc-state': n(env.POINTS_BOARD_BTC_PER_PROOF, PROVER_BOARD.pointsByProgram['btc-state']), 'tacit-block': n(env.POINTS_BOARD_BLOCK_PER_PROOF, PROVER_BOARD.pointsByProgram['tacit-block']) }),
+    communityFirstMs: Object.freeze({ confidential: n(env.PROVER_BOARD_FIRST_MS, PROVER_BOARD.communityFirstMs.confidential), 'tacit-block': n(env.PROVER_BOARD_BLOCK_FIRST_MS, PROVER_BOARD.communityFirstMs['tacit-block']) }),
   });
 }
 const DAY_MS = 86_400_000;
@@ -131,6 +136,7 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
   const pay = { pointsPerProof: cfg.pointsPerProof ?? PROVER_BOARD.pointsPerProof, proofsPerMinerDay: cfg.proofsPerMinerDay ?? PROVER_BOARD.proofsPerMinerDay,
     pointsByProgram: cfg.pointsByProgram ?? PROVER_BOARD.pointsByProgram };
   const pointsFor = (program) => pay.pointsByProgram[program] ?? pay.pointsPerProof;
+  const firstMs = cfg.communityFirstMs ?? PROVER_BOARD.communityFirstMs;
   const exclusive = lock || makeLock();
   const id = hash || ((s) => 'pb_' + s.length.toString(36) + '_' + Array.from(s).reduce((a, c) => ((a * 33) ^ c.charCodeAt(0)) >>> 0, 5381).toString(36));
   const workers = async () => (await storage.getWorkers()) || {};
@@ -324,12 +330,21 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
       let open = 0;
       for (const jid of pend) { const j = await storage.getJob(jid); if (j && j.status === 'claimed' && j.worker === worker.name) open++; }
       if (open >= PROVER_BOARD.maxOpenPerWorker) return null;
+      let ws = null, live = null;
       // the pool's own proofs first: a tacit chain block (public work community machines race too) is taken only when no other job waits
       for (const pass of [0, 1]) for (const jid of pend) {
         const j = await storage.getJob(jid);
         if (!j || j.status !== 'queued' || !classes.includes(j.class) || !worker.classes.includes(j.class) || !can.includes(j.program || 'confidential')) continue;
         if (Number((j.program || 'confidential') === 'tacit-block') !== pass) continue;
         if (j.sealed && j.sealed.worker !== worker.name) continue; // sealed to another worker: not even offered
+        // first pick for the community: a fresh public job a community machine is racing, or one a ready machine can take, waits its window
+        const first = j.class === 'public' && !j.sealed ? Number(firstMs[j.program || 'confidential']) || 0 : 0;
+        if (first > 0 && clock() - (j.postedAt || 0) < first) {
+          if (liveRacers(j).length) continue;
+          ws = ws || await workers();
+          live = live || (await Promise.all(pend.map((id) => storage.getJob(id)))).filter((x) => x && ['queued', 'claimed'].includes(x.status));
+          if (readyFor(ws, live, j)) continue;
+        }
         j.status = 'claimed'; j.worker = worker.name; j.claimedAt = clock(); j.leaseUntil = clock() + leaseFor(j);
         await storage.putJob(jid, j);
         return { jobId: j.id, class: j.class, program: j.program, mode: j.mode || PROVER_BOARD.modes[j.program], stdin: await inputOf(j), sealed: j.sealed ? { epk: j.sealed.epk, iv: j.sealed.iv, ct: j.sealed.ct } : null, cycleLimit: j.cycleLimit, gasLimit: j.gasLimit, deadline: j.deadline, leaseUntil: j.leaseUntil, label: j.label };
@@ -374,6 +389,14 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
       }
       return null;
     });
+  }
+
+  // Whether a community machine could take this job now: one that proves its program, asked for work in the last turnSeenMs, is racing nothing
+  // (communityOpen is one) and has not raced the job already.
+  function readyFor(ws, open, j) {
+    const t = clock(), busy = new Set(open.flatMap(liveRacers)), prog = j.program || 'confidential';
+    return Object.entries(ws).some(([n, w]) => w.community && (w.programs || ['confidential']).includes(prog) && t - (w.lastSeen || 0) < PROVER_BOARD.turnSeenMs
+      && !busy.has(n) && !(j.raced || []).includes(n));
   }
 
   // Whose turn a batch is: of the machines that prove its program, asked for work in the last turnSeenMs, are proving nothing and have not

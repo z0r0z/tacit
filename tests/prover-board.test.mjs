@@ -281,8 +281,10 @@ test('community: anyone races a public job without taking it; a candidate is the
   assert.equal((await b.status(pub.jobId)).status, 'queued', 'the claim took the job from no one');
   const house = await b.claim({ worker: tacit, classes: ['private', 'public'] });
   assert.equal(house.jobId, priv.jobId, 'Tacit\'s worker takes the oldest, the private job');
+  assert.equal(await b.claim({ worker: tacit, classes: ['private', 'public'] }), null, 'the public job a community machine races waits its window: first pick is the community\'s');
+  t += PROVER_BOARD.communityFirstMs.confidential;
   const house2 = await b.claim({ worker: tacit, classes: ['private', 'public'] });
-  assert.equal(house2.jobId, pub.jobId, 'and still the public one a community machine races');
+  assert.equal(house2.jobId, pub.jobId, 'once the window has passed Tacit\'s worker takes it too, so a press is never left to one machine');
   assert.equal((await b.claim({ worker: c2, classes: ['public'] })).jobId, pub.jobId, 'a second machine joins the race');
   // a bad candidate: dropped, marked, the job goes on
   assert.deepEqual(await b.result({ worker: c2, jobId: pub.jobId, publicValues: '0x' + '33'.repeat(64), proof: '0x' + '44'.repeat(260) }), { ok: true, status: 'candidate' });
@@ -354,7 +356,7 @@ test('routes: a community machine claims and answers with only an address; the r
 test('points: each proof the relay takes from a community machine counts for its address on its UTC day, up to the day\'s cap; bad ones, house workers and unchecked ones earn nothing', async () => {
   const DAY = 86_400_000, D = 20_800;
   t = D * DAY + 3600_000;
-  const b = makeProverBoard({ storage: store(), now, cfg: { ...PROVER_BOARD, pointsPerProof: 20, proofsPerMinerDay: 2 } });
+  const b = makeProverBoard({ storage: store(), now, cfg: { ...PROVER_BOARD, pointsPerProof: 20, proofsPerMinerDay: 2, communityFirstMs: { confidential: 0, 'tacit-block': 0 } } });
   const A = '0x' + 'a1'.repeat(20), B = '0x' + 'b2'.repeat(20);
   const ca = { name: `c-${A}`, classes: ['public'], community: true }, cb = { name: `c-${B}`, classes: ['public'], community: true };
   let n = 0;
@@ -392,12 +394,71 @@ test('points: each proof the relay takes from a community machine counts for its
 });
 
 test('points config: env sets the points and a count a day, 0 points pays nothing, no count or 0 is no count, nonsense keeps the default', () => {
-  const btc = (n, k = 100) => ({ pointsByProgram: { 'btc-state': n, 'tacit-block': k } });
+  const btc = (n, k = 100, f = 20_000, fb = 120_000) => ({ pointsByProgram: { 'btc-state': n, 'tacit-block': k }, communityFirstMs: { confidential: f, 'tacit-block': fb } });
   assert.deepEqual(proverBoardConfig({}), { pointsPerProof: 20, proofsPerMinerDay: Infinity, ...btc(1000) });
   assert.deepEqual(proverBoardConfig({ POINTS_BOARD_PER_PROOF: '50', POINTS_BOARD_DAILY_CAP: '10', POINTS_BOARD_BTC_PER_PROOF: '800' }), { pointsPerProof: 50, proofsPerMinerDay: 10, ...btc(800) });
   assert.deepEqual(proverBoardConfig({ POINTS_BOARD_PER_PROOF: '0', POINTS_BOARD_DAILY_CAP: '0', POINTS_BOARD_BTC_PER_PROOF: '0' }), { pointsPerProof: 0, proofsPerMinerDay: Infinity, ...btc(0) });
   assert.deepEqual(proverBoardConfig({ POINTS_BOARD_PER_PROOF: 'lots', POINTS_BOARD_DAILY_CAP: '-1' }), { pointsPerProof: 20, proofsPerMinerDay: Infinity, ...btc(1000) });
   assert.deepEqual(proverBoardConfig({ POINTS_BOARD_BLOCK_PER_PROOF: '250' }), { pointsPerProof: 20, proofsPerMinerDay: Infinity, ...btc(1000, 250) });
+  assert.deepEqual(proverBoardConfig({ PROVER_BOARD_FIRST_MS: '0', PROVER_BOARD_BLOCK_FIRST_MS: '60000' }).communityFirstMs, { confidential: 0, 'tacit-block': 60_000 }, 'the first-pick windows: 0 is no wait');
+  assert.deepEqual(proverBoardConfig({ PROVER_BOARD_FIRST_MS: 'soon' }).communityFirstMs, { confidential: 20_000, 'tacit-block': 120_000 }, 'nonsense keeps the default');
+});
+
+test('community first pick: a fresh public job waits for a ready community machine before Tacit\'s worker takes it, private work never waits', async () => {
+  t = 7_000_000;
+  const b = makeProverBoard({ storage: store(), now });
+  const g = { name: 'c-0x' + '9a'.repeat(20), classes: ['public'], community: true }, h = { name: 'c-0x' + '9b'.repeat(20), classes: ['public'], community: true };
+  const house = () => b.claim({ worker: tacit, classes: ['private', 'public'] });
+  const pub = (k) => b.post({ class: 'public', stdin: Buffer.from(`press ${k} ${t}`).toString('base64'), cycleLimit: 1e6, gasLimit: 1e8, deadline: now() / 1000 + 600 });
+  // nobody from the community has asked: Tacit's worker takes a public job at once
+  const p0 = await pub(0);
+  assert.equal((await house()).jobId, p0.jobId, 'with no community machine about, nothing waits');
+  assert.equal((await b.result({ worker: tacit, jobId: p0.jobId, publicValues: '0x' + '11'.repeat(64), proof: '0x' + '22'.repeat(260) })).status, 'proved');
+  // a machine asks (nothing to race yet), so it is ready: the next press waits for it
+  assert.equal(await b.claim({ worker: g, classes: ['public'] }), null);
+  const p1 = await pub(1);
+  assert.equal(await house(), null, 'a ready community machine has first pick of a fresh press');
+  const priv0 = await b.post({ class: 'private', stdin: Buffer.from(`a first witness ${t}`).toString('base64'), cycleLimit: 1e6, gasLimit: 1e8, deadline: now() / 1000 + 600 });
+  assert.equal((await house()).jobId, priv0.jobId, 'private work is not held for it, even with a machine ready: only Tacit proves it');
+  assert.equal((await b.result({ worker: tacit, jobId: priv0.jobId, publicValues: '0x' + '11'.repeat(64), proof: '0x' + '22'.repeat(260) })).status, 'proved');
+  assert.equal((await b.claim({ worker: g, classes: ['public'] })).jobId, p1.jobId, 'and takes it');
+  assert.equal(await house(), null, 'while it races, inside the window, Tacit\'s worker leaves it');
+  // private work is Tacit's alone and never waits
+  const priv = await b.post({ class: 'private', stdin: Buffer.from(`a witness ${t}`).toString('base64'), cycleLimit: 1e6, gasLimit: 1e8, deadline: now() / 1000 + 600 });
+  assert.equal((await house()).jobId, priv.jobId, 'a private job is taken at once');
+  // the only community machine is busy racing p1: a new press has nobody ready, so Tacit's worker takes it at once
+  const p2 = await pub(2);
+  assert.equal((await house()).jobId, p2.jobId, 'a press nobody ready can take is not held');
+  // past the window Tacit's worker joins the race for p1
+  t += PROVER_BOARD.communityFirstMs.confidential;
+  assert.equal(await house(), null, 'two open already: Tacit\'s worker holds at most two');
+  // a machine seen longer ago than turnSeenMs is not waited for
+  const quiet = makeProverBoard({ storage: store(), now });
+  assert.equal(await quiet.claim({ worker: h, classes: ['public'] }), null);
+  t += PROVER_BOARD.turnSeenMs + 1;
+  const q = await quiet.post({ class: 'public', stdin, cycleLimit: 1e6, gasLimit: 1e8, deadline: now() / 1000 + 600 });
+  assert.equal((await quiet.claim({ worker: tacit, classes: ['private', 'public'] })).jobId, q.jobId, 'a machine that has stopped asking is not waited for');
+  // a machine that proves only Bitcoin batches is not waited for on a press
+  const batches = makeProverBoard({ storage: store(), now });
+  assert.equal(await batches.claim({ worker: h, classes: ['public'], programs: ['btc-state'] }), null);
+  const bp = await batches.post({ class: 'public', stdin, cycleLimit: 1e6, gasLimit: 1e8, deadline: now() / 1000 + 600 });
+  assert.equal((await batches.claim({ worker: tacit, classes: ['private', 'public'] })).jobId, bp.jobId, 'a machine that does not prove presses is not waited for');
+  // a tacit chain block waits longer for a community machine that proves blocks, and with the window set to 0 nothing waits
+  const blocks = makeProverBoard({ storage: store(), now });
+  const bw = { ...tacit, name: 'tacit-blocks' };
+  assert.equal(await blocks.claim({ worker: h, classes: ['public'], programs: ['tacit-block'] }), null);
+  const blk = await blocks.post({ class: 'public', program: 'tacit-block', stdin: Buffer.from(`block ${t}`).toString('base64'), cycleLimit: 1e8, gasLimit: 1e9, deadline: now() / 1000 + 900 });
+  const bclaim = () => blocks.claim({ worker: bw, classes: ['public'], programs: ['confidential', 'tacit-block'] });
+  assert.equal(await bclaim(), null, 'a block waits for the community machine that proves blocks');
+  t += PROVER_BOARD.communityFirstMs.confidential;
+  assert.equal(await blocks.claim({ worker: h, classes: ['public'], programs: ['tacit-block'] }) !== null, true, 'which races it');
+  assert.equal(await bclaim(), null, 'still inside the block window');
+  t += PROVER_BOARD.communityFirstMs['tacit-block'];
+  assert.equal((await bclaim()).jobId, blk.jobId, 'past it, Tacit\'s worker takes the block too');
+  const open = makeProverBoard({ storage: store(), now, cfg: { ...PROVER_BOARD, communityFirstMs: { confidential: 0, 'tacit-block': 0 } } });
+  assert.equal(await open.claim({ worker: g, classes: ['public'] }), null);
+  const o = await open.post({ class: 'public', stdin, cycleLimit: 1e6, gasLimit: 1e8, deadline: now() / 1000 + 600 });
+  assert.equal((await open.claim({ worker: tacit, classes: ['private', 'public'] })).jobId, o.jobId, 'windows of 0: nothing waits');
 });
 
 test('the tacit chain\'s block program: public groth16 work any community machine that proves it may race', async () => {

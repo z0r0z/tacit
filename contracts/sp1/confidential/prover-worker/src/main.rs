@@ -33,7 +33,9 @@
 // gives each batch to one machine, in turn) through the open community routes (POST /prover/community/claim { miner, programs: ["btc-state"] }
 // and /prover/community/result { miner, jobId, ... }),
 // and each batch the relay takes earns that address the board's points for it (TAC from the points service). BTC_STATE=0 takes no
-// turns: a card under 24 GB, which the installer gives a smaller GPU server, proves the pool's wraps alone. The warm-up pings, which are
+// turns: a card under 24 GB, which the installer gives a smaller GPU server, proves the pool's wraps and presses alone. CONFIDENTIAL
+// (default 1) also races the board's public settle jobs, a person's press as it happens (programs gains "confidential"): the board gives
+// a ready community machine first pick of each before Tacit's own worker, and the first sound proof is the one the relay takes. The warm-up pings, which are
 // for Tacit's own tokens, are off. Between jobs its spare CPU cores grind deploy salts for the same address (salt.rs; SALT_THREADS, half
 // the cores by default, 0 is off). Tacit's own box grinds too, earning nothing (the pool gives the house no weight), when SALT_MINER
 // names the house address (the deployer).
@@ -290,6 +292,8 @@ fn main() {
     // The tacit chain's blocks (TACIT_BLOCK, on by default): a few million cycles each, raced like any public job.
     let block_on = env_or("TACIT_BLOCK", "1") == "1";
     let mut block_key: Option<Result<_, String>> = None;
+    // Presses (CONFIDENTIAL, on by default): a community machine races the board's public settle jobs with the pool's guest it already proves wraps with.
+    let conf_on = env_or("CONFIDENTIAL", "1") == "1";
     // A proof that never ends (a GPU kernel that hangs leaves the server alive and silent, and the client waiting on it for ever) is
     // ended from outside: a watchdog thread sees a job in hand for longer than JOB_TIMEOUT_SECS (15 minutes by default, three times a
     // long op) and exits the process, so the loop around it starts a fresh worker and GPU server and the job goes back to the board.
@@ -354,13 +358,14 @@ fn main() {
         let block_claims = block_on && !matches!(block_key, Some(Err(_)));
         let (claim_classes, programs) = if community.is_some() {
             let mut p = vec![];
+            if conf_on { p.push("confidential"); }
             if btc_claims { p.push("btc-state"); }
             if block_claims { p.push("tacit-block"); }
             (vec!["public".to_string()], p)
         } else {
             claim_scope(&classes, eth_claims, btc_claims, block_claims)
         };
-        // a community worker that proves neither Bitcoin batches nor blocks has nothing to claim at the board
+        // a community worker that proves no presses, Bitcoin batches or blocks has nothing to claim at the board
         let claimed: Result<Claim, String> = if community.is_some() && programs.is_empty() {
             Ok(Claim { job: None })
         } else {
