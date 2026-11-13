@@ -4,6 +4,7 @@
 import { cleanAddress, proveCommand, utcDay, mineLines, capOf } from '/community-prove.js?cb=30714a9f';
 import { localState, jobView, headline, isPhone, isWindows, setupText, proverUpdate, updateText } from '/prove/view.js?cb=f0f73815';
 import { invaderSvg, gpuSvg } from '/prove/invader.js?cb=e8a5ec59';
+import { makeTabMiner, defaultThreads, maxThreads } from '/prove/tabmine.js?cb=bce3cb31';
 import { HELPDESK, FETCH_CMD, cleanDesk, cleanStats, reviewView } from '/prove/review.js?cb=a8c503cf';
 import { short, cells, opsText, tac, rewardWei, ago, took, fresh, blockAgo, kindOf, KINDS, kindText, median, untilDayEnds, cleanBlock, cleanProof, cleanMiner } from '/prove/chain.js?cb=8a988a34';
 
@@ -387,7 +388,7 @@ function addressChanged() {
   const typed = $('#addr').value.trim();
   $('#addr').setAttribute('aria-invalid', typed && !a ? 'true' : 'false');
   $('#addr-bad').textContent = typed && !a ? (/\.eth$/i.test(typed) ? 'Use the 0x address, not the name.' : 'That is not an address: 0x and 40 letters or digits.') : '';
-  if (a) { try { localStorage.setItem(SAVED_ADDR, a); } catch {} }
+  if (a) { try { localStorage.setItem(SAVED_ADDR, a); } catch {} tab.setMiner(a); }   // the tab's shares follow the address in the field
   misses = 0;
   paint();
   // The strip, the feed, the crowd and the GPU card mark this address: drawn again when it is another one, not on every keystroke; the
@@ -541,7 +542,60 @@ function paintSalt() {
   const on = mine?.salt?.on === true && Number.isFinite(rate) && rate > 0;
   $('#salt-row').hidden = !(on || mineRow);
   $('#salt').textContent = [mineRow ? `${(mineRow.shares || 0).toLocaleString('en-US')} shares` : null, part ? `${tac(part)} TAC so far` : null, on ? rateText(rate) : null].filter(Boolean).join(' · ') || '—';
+  if (salts?.minBits) tab.setMinBits(salts.minBits);
+  paintTab();
 }
+// Salt mining in this tab (tabmine.js), for a visitor with nothing installed: threads of this page grind the same salts tacit-prover grinds between proofs and
+// send their shares for the address in the field. A quarter of the cores unless the person asks for more; not on battery; not while this computer's tacit-prover
+// is mining (it grinds already, and the pool takes one send every 20 s from a connection); in one tab at a time.
+const CORES = navigator.hardwareConcurrency || 2, SAVED_THREADS = 'tacit-prove-tab-threads';
+const savedThreads = () => { try { const n = Number(localStorage.getItem(SAVED_THREADS)); return Number.isInteger(n) && n >= 1 && n <= maxThreads(CORES) ? n : null; } catch { return null; } };
+let tabThreads = savedThreads() ?? defaultThreads(CORES), tabLock = null, tabNote = '', onBattery = false, batteryOk = false;
+const tab = makeTabMiner({ api: API, makeWorker: () => new Worker('/prove/salt-worker.js?cb=a46fe229', { type: 'module' }), onChange: () => paintTab() });
+const holdTab = () => (navigator.locks ? new Promise((res) => { navigator.locks.request('tacit-prove-tab-miner', { ifAvailable: true }, (lock) => { if (!lock) { res(false); return undefined; } res(true); return new Promise((r) => { tabLock = r; }); }).catch(() => res(true)); }) : Promise.resolve(true));
+async function tabStart() {
+  const a = addr();
+  if (!a) { askAddress(); return; }
+  if (mine?.on || tab.state().on) return;
+  if (!(await holdTab())) { tabNote = 'Another tab is mining already.'; paintTab(); return; }
+  tabNote = ''; say('');   // an earlier "enter the address" is answered
+  tab.start({ miner: a, threads: tabThreads, minBits: salts?.minBits || 26 });
+}
+function tabStop(o) { tab.stop(o); tabLock?.(); tabLock = null; paintTab(); }
+function tabStep(d) {
+  tabThreads = Math.min(maxThreads(CORES), Math.max(1, tabThreads + d));
+  try { localStorage.setItem(SAVED_THREADS, String(tabThreads)); } catch {}
+  tab.setThreads(tabThreads); paintTab();
+}
+function paintTab() {
+  const s = tab.state(), go = $('#tab-go');
+  if (s.on && mine?.on) { tabStop(); return; }                                       // the prover started: it grinds from here
+  go.hidden = isPhone(navigator.userAgent) || mine?.on === true;
+  go.textContent = s.on ? 'Stop mining in this tab' : addr() ? 'Mine in this tab' : 'Enter your address first';
+  go.classList.toggle('ghost', s.on);
+  $('#tab-rows').hidden = !s.on;
+  const note = s.error || tabNote; $('#tab-say').textContent = note; $('#tab-say').hidden = !note; $('#tab-say').classList.toggle('err', !!s.error);
+  $('#tab-battery').hidden = !(s.on && s.paused === 'battery');
+  if (!s.on) return;
+  $('#tab-rate').textContent = s.paused === 'battery' ? 'Paused on battery' : s.rate ? rateText(s.rate) : 'Starting…';
+  $('#tab-n').textContent = `${s.threads} of ${CORES}`;
+  $('#tab-less').disabled = s.threads <= 1; $('#tab-more').disabled = s.threads >= maxThreads(CORES);
+  // what the pool has counted for the address today, and its part of the day's salt points so far; before the first share, about how long one takes
+  const part = s.today && salts?.weight && salts.pointsPerDay ? rewardWei(Math.floor((salts.pointsPerDay * s.today.weight) / Math.max(salts.weight, s.today.weight)), cap()) : null;
+  const eta = s.rate ? Math.max(1, Math.round(2 ** (salts?.minBits || 26) / s.rate / 60)) : null;
+  $('#tab-today').textContent = s.today?.shares ? [`${s.today.shares.toLocaleString('en-US')} ${s.today.shares === 1 ? 'share' : 'shares'}`, part ? `${tac(part) === '0' ? '< 0.01' : tac(part)} TAC so far` : null].filter(Boolean).join(' · ')
+    : s.waiting ? 'First share found, sending' : s.paused ? '—' : eta ? `First share in about ${eta} min` : '—';
+}
+$('#tab-go').addEventListener('click', () => (tab.state().on ? tabStop() : tabStart()));
+$('#tab-less').addEventListener('click', () => tabStep(-1));
+$('#tab-more').addEventListener('click', () => tabStep(1));
+$('#tab-quick').addEventListener('click', (e) => { e.preventDefault(); showCard('salts'); tabStart(); });
+// On battery it waits for the charger, as tacit-prover does, unless the person says to go on (for this visit).
+const batteryPause = () => tab.setPaused(onBattery && !batteryOk ? 'battery' : null);
+navigator.getBattery?.().then((b) => { const set = () => { onBattery = !b.charging; batteryPause(); }; b.addEventListener('chargingchange', set); set(); }).catch(() => {});
+$('#tab-battery').addEventListener('click', () => { batteryOk = true; batteryPause(); paintTab(); });
+addEventListener('pagehide', () => { if (tab.state().on) tabStop({ keepalive: true }); });
+setInterval(() => { if (tab.state().on) paintTab(); }, 1000);
 // A long list fades at its foot while there is more below it.
 const moreBelow = () => { const b = $('#salt-bank'); b.classList.toggle('more', b.scrollTop + b.clientHeight < b.scrollHeight - 2); };
 $('#salt-bank').addEventListener('scroll', moreBelow, { passive: true });

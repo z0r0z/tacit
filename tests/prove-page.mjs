@@ -7,6 +7,7 @@ import { createServer } from 'node:http';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { extname, join, normalize } from 'node:path';
+import { saltAddress as poolSaltAddress } from '../worker/src/salt-pool.js';
 
 const require = createRequire(import.meta.url);
 let chromium;
@@ -44,9 +45,11 @@ const SALT_BANK = () => [{ address: DEPLOYED, bits: 44, miner: OTHER, at: BANK_A
   { address: '0x0000000000cd12cd34ef56ab78cd90ef12ab34cd', bits: 40, miner: HOUSE, at: BANK_AT, house: true },
   ...[1, 2, 3, 4, 5, 6].map((i) => ({ address: '0x00000000' + i + i + '12cd34ef56ab78cd90ef12ab34cd56', bits: 38 - i, miner: OTHER, at: BANK_AT }))];
 // The stand-in prover: `local` is what it answers (null: nothing listens), and each POST /mine it was sent.
+// The browser's battery, stood in: on the charger unless a scenario unplugs it (window.__battery, then a chargingchange event).
+const CHARGER = () => { const b = new EventTarget(); b.charging = true; window.__battery = b; navigator.getBattery = () => Promise.resolve(b); };
 const WINDOWS_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
 // `more`: the node's other numbers and the checkpoint sit behind summaries, so the scenarios that read them open those first.
-async function open(browser, local, { phone = false, idle = false, ua = null, hash = '', init = null, noBank = false, more = true } = {}) {
+async function open(browser, local, { phone = false, idle = false, ua = null, hash = '', init = null, noBank = false, more = true, minBits = 26 } = {}) {
   const ctx = await browser.newContext(phone ? { viewport: { width: 390, height: 800 }, userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148' } : { viewport: { width: 1100, height: 900 }, ...(ua ? { userAgent: ua } : {}) });
   const page = await ctx.newPage();
   // The public Nostr relays are the outside world: a page under test must never post its stand-in jobs to them or read other people's, so
@@ -57,7 +60,7 @@ async function open(browser, local, { phone = false, idle = false, ua = null, ha
     else if (d[0] === 'EVENT') ws.send(JSON.stringify(['OK', d[1]?.id, true, '']));
   }));
   if (init) await page.addInitScript(init);
-  const errors = [], posts = [], codeReads = [], deskPosts = [];
+  const errors = [], posts = [], codeReads = [], deskPosts = [], shares = [];
   page.on('pageerror', (e) => errors.push(e.message));
   // a public Nostr relay that is down (the Relay tab reads several) is the outside world, not the page
   page.on('console', (m) => { if (m.type() === 'error' && !/Failed to load resource|ERR_|WebSocket connection to 'wss:\/\//.test(m.text())) errors.push(m.text()); });
@@ -87,7 +90,9 @@ async function open(browser, local, { phone = false, idle = false, ua = null, ha
     if (u.pathname === '/prover/pool/recent') return json(route, { proofs: [{ at: Date.now() - 60_000 - (idle ? 30 * 60_000 : 0), house: true, points: 0, secs: 31 }, { at: Date.now() - 120_000 - (idle ? 30 * 60_000 : 0), miner: ADDR, points: 20, secs: 552 }] });
     if (u.pathname === '/prover/pool/credits') return json(route, { day, over: false, miners: [{ miner: ADDR, proofs: 4, points: 80 }] });
     if (u.pathname === '/pool/snapshot') return json(route, { v: 1, cid: 'bafkreia4g6iad4ec3634pd5lsfcqsmenqcc5oyn3mm2kwezybpwv6iltom', to: 26352486, checkpoint: { eth: { block: 26352486, hash: '0x' + 'e9'.repeat(32) }, tacit: { height: 9441, hash: '0xec803dcef9a1a4c0f64a919b491a226ce22e9d30be225c76a148b0a22b62eb41' }, bitcoin: { relayTip: 974739, reflection: { height: 974721 } }, ethereum: { finalizedSlot: 13450016 } } });
-    if (u.pathname === '/prover/salt') return json(route, { recent: SALT_FINDS(), pointsPerDay: 1500, minBits: 26, today: { miners: 2, shares: 30, weight: 400000 }, top: [{ miner: ADDR, shares: 20, weight: 2200 }], live: [{ miner: OTHER, at: Date.now() - 60_000 }, { miner: '0x68575b073de49a94e3e3acf6f3a0d6e3b66267c7', at: Date.now() - 30_000, house: true }], rate: 2_400_000, bank: [{ address: '0x0000000000ab12cd34ef56ab78cd90ef12ab34cd', bits: 41, miner: OTHER }, { address: '0x0000000000cd12cd34ef56ab78cd90ef12ab34cd', bits: 40, miner: '0x68575b073de49a94e3e3acf6f3a0d6e3b66267c7', house: true }] });
+    // the salt pool takes the tab miner's shares: each send is kept, and answered as the pool answers (every salt counted)
+    if (u.pathname === '/prover/salt/share' && route.request().method() === 'POST') { const b = JSON.parse(route.request().postData() || '{}'); shares.push(b); const n = (b.salts || []).length, total = shares.reduce((a, x) => a + x.salts.length, 0); return json(route, { ok: true, accepted: n, weight: n, rejected: [], today: { shares: total, weight: total * 4000, best: null } }); }
+    if (u.pathname === '/prover/salt') return json(route, { recent: SALT_FINDS(), pointsPerDay: 1500, minBits, today: { miners: 2, shares: 30, weight: 400000 }, top: [{ miner: ADDR, shares: 20, weight: 2200 }], live: [{ miner: OTHER, at: Date.now() - 60_000 }, { miner: '0x68575b073de49a94e3e3acf6f3a0d6e3b66267c7', at: Date.now() - 30_000, house: true }], rate: 2_400_000, bank: [{ address: '0x0000000000ab12cd34ef56ab78cd90ef12ab34cd', bits: 41, miner: OTHER }, { address: '0x0000000000cd12cd34ef56ab78cd90ef12ab34cd', bits: 40, miner: '0x68575b073de49a94e3e3acf6f3a0d6e3b66267c7', house: true }] });
     if (u.pathname === '/prover/salt/bank') return noBank ? json(route, {}, 500) : json(route, { bank: SALT_BANK().map((b) => ({ ...b, salt: '0x' + '00'.repeat(32) })) });
     return json(route, {}, 404);
   });
@@ -109,9 +114,11 @@ async function open(browser, local, { phone = false, idle = false, ua = null, ha
   await page.route('https://tacit-points.onrender.com/**', (route) => json(route, { enabled: true, endSec: Math.floor(Date.now() / 1000) + 86400 * 10, terms: { capWeiPerPoint: '10000000000000000' }, account: { creditedWei: '6000000000000000000' }, pocket: { totalWei: '7500000000000000000000', creditedWei: '291270000000000000000', remainingWei: '7208730000000000000000' } }));
   await page.goto(`${ORIGIN}/prove/${hash}`);
   if (more) await page.evaluate(() => document.querySelectorAll('#desk .more, .more.cp').forEach((d) => { d.open = true; }));
-  return { page, ctx, errors, posts, codeReads, deskPosts };
+  return { page, ctx, errors, posts, codeReads, deskPosts, shares };
 }
 const text = (page, s) => page.locator(s).innerText();
+// the page's grinding threads, once their number is what is expected (the browser reports a thread started or ended a moment after the page asks)
+const threads = async (page, ok, ms = 4000) => { const t0 = Date.now(); while (!ok(page.workers().length) && Date.now() - t0 < ms) await page.waitForTimeout(50); return ok(page.workers().length); };
 const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: join(SHOTS, `${name}.png`), fullPage: true }); };
 
 const browser = await chromium.launch();
@@ -455,8 +462,106 @@ try {
     const over = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
     check(!over, 'no sideways scroll on a phone');
     check(!(await page.locator('#review').isVisible()), 'a phone shows no code-review card (it runs no prover)');
+    check(!(await page.locator('#tab-go').isVisible()), 'and is not asked to grind salts');
     await shot(page, 'prove-phone');
     await ctx.close();
+  }
+  // salt mining in the tab, with nothing installed: started from the card, real threads grind, their shares go to the pool for the address, and it stops
+  {
+    const { page, ctx, errors, shares } = await open(browser, { v: null }, { more: false, minBits: 16, init: CHARGER });
+    await page.waitForFunction(() => document.querySelector('#title').textContent === 'Set up this computer');
+    check((await text(page, '#tab-go')) === 'Enter your address first' && await page.locator('#tab-go').isVisible(), 'tab mining, no address: the button asks for one', await text(page, '#tab-go'));
+    await page.click('#tab-go');
+    check(await page.evaluate(() => document.activeElement?.id === 'addr') && page.workers().length === 0, 'and a press takes the reader to the field, starting nothing');
+    await page.fill('#addr', ADDR);
+    await page.waitForFunction(() => document.querySelector('#tab-go').textContent === 'Mine in this tab');
+    check(!(await page.locator('#tab-rows').isVisible()), 'before it starts there are no numbers');
+    await page.click('#tab-go');
+    await page.waitForFunction(() => document.querySelector('#tab-go').textContent === 'Stop mining in this tab' && !document.querySelector('#tab-rows').hidden);
+    const cores = await page.evaluate(() => navigator.hardwareConcurrency || 2), want = Math.max(1, Math.floor(cores / 4));
+    await page.waitForFunction((n) => document.querySelector('#tab-n').textContent.startsWith(`${n} of `), want);
+    check(await threads(page, (n) => n === want), 'a press starts a quarter of the cores as grinding threads', `${page.workers().length} workers, ${cores} cores`);
+    await page.waitForFunction(() => /\d (k|M)\/s$/.test(document.querySelector('#tab-rate').textContent), null, { timeout: 30000 });
+    check(true, 'the card shows how fast this tab grinds');
+    if (cores > 2) {
+      await page.click('#tab-more');
+      await page.waitForFunction((n) => document.querySelector('#tab-n').textContent.startsWith(`${n} of `), want + 1);
+      check(await threads(page, (n) => n === want + 1), 'one more core on a press of +', `${page.workers().length} workers`);
+      await page.click('#tab-less');
+      await page.waitForFunction((n) => document.querySelector('#tab-n').textContent.startsWith(`${n} of `), want);
+      check(await threads(page, (n) => n === want) && (await page.evaluate(() => localStorage.getItem('tacit-prove-tab-threads'))) === String(want), 'and one fewer on −, the choice kept for the next visit', `${page.workers().length} workers`);
+    }
+    // the first send is about 21 s after the start
+    const t0 = Date.now(); while (!shares.length && Date.now() - t0 < 40000) await page.waitForTimeout(500);
+    const sent = shares[0] || { salts: [] };
+    check(shares.length >= 1 && sent.miner === ADDR && sent.client === 'tacit-prove-tab/1' && sent.salts.length >= 1 && sent.salts.length <= 64, 'its shares are sent to the pool for the address, as this page\'s miner', JSON.stringify({ n: shares.length, miner: sent.miner, salts: sent.salts.length }));
+    const today = Math.floor(Date.now() / 86400000) % 65536;
+    const bits = sent.salts.map((s) => poolSaltAddress(s).bits);
+    check(sent.salts.every((s) => /^0x[0-9a-f]{64}$/.test(s) && s.slice(2, 44) === '68575b073de49a94e3e3acf6f3a0d6e3b66267c7' + '00' && [today, (today + 65535) % 65536].includes(parseInt(s.slice(44, 48), 16))) && bits.every((b) => b >= 16) && bits.every((b, i) => i === 0 || b <= bits[i - 1]) && new Set(sent.salts).size === sent.salts.length,
+      'every salt is one of Tacit\'s deployer for today that the pool\'s own check counts, the best first', JSON.stringify(bits.slice(0, 8)));
+    await page.waitForFunction(() => /^\d[\d,]* shares? · .* TAC so far$/.test(document.querySelector('#tab-today').textContent), null, { timeout: 8000 }).catch(() => {});
+    check(/^\d[\d,]* shares? · .* TAC so far$/.test(await text(page, '#tab-today')), 'what the pool counted, and its part of the day\'s points, are shown', await text(page, '#tab-today'));
+    await page.click('#tab-go');
+    await page.waitForFunction(() => document.querySelector('#tab-go').textContent === 'Mine in this tab');
+    check(await threads(page, (n) => n === 0) && !(await page.locator('#tab-rows').isVisible()), 'Stop ends the threads and puts the numbers away', `${page.workers().length} workers`);
+    check(!errors.length, 'tab mining: no page errors (the threads and the WebAssembly are allowed by the page\'s policy)', errors.join(' | '));
+    await page.click('#tab-go');
+    await page.waitForFunction(() => document.querySelector('#tab-go').textContent === 'Stop mining in this tab');
+    await page.waitForFunction(() => /\d (k|M)\/s$/.test(document.querySelector('#tab-rate').textContent), null, { timeout: 30000 });
+    await shot(page, 'prove-tabmine');
+    // off the charger it waits, as tacit-prover does, unless the person says to go on
+    const unplug = (charging) => page.evaluate((c) => { window.__battery.charging = c; window.__battery.dispatchEvent(new Event('chargingchange')); }, charging);
+    await unplug(false);
+    await page.waitForFunction(() => document.querySelector('#tab-rate').textContent === 'Paused on battery' && !document.querySelector('#tab-battery').hidden);
+    check(await threads(page, (n) => n === 0), 'on battery the threads stop, and the card says so and offers to go on', `${page.workers().length} workers`);
+    await unplug(true);
+    await page.waitForFunction(() => document.querySelector('#tab-battery').hidden && document.querySelector('#tab-rate').textContent !== 'Paused on battery');
+    check(await threads(page, (n) => n >= 1), 'back on the charger they start again', `${page.workers().length} workers`);
+    await unplug(false);
+    await page.waitForFunction(() => !document.querySelector('#tab-battery').hidden);
+    await page.click('#tab-battery');
+    await page.waitForFunction(() => document.querySelector('#tab-battery').hidden);
+    check(await threads(page, (n) => n >= 1) && (await text(page, '#tab-rate')) !== 'Paused on battery', '"Mine on battery too" goes on without the charger');
+    await ctx.close();
+    // from the setup block's own link
+    const quick = await open(browser, { v: null }, { more: false, minBits: 16, init: CHARGER });
+    await quick.page.fill('#addr', ADDR);
+    await quick.page.waitForFunction(() => !document.querySelector('#setup').hidden);
+    await quick.page.click('#tab-quick');
+    await quick.page.waitForFunction(() => document.querySelector('#tab-go').textContent === 'Stop mining in this tab');
+    check(await threads(quick.page, (n) => n >= 1), 'the setup block\'s "Mine in this tab" starts it');
+    check((await text(quick.page, '#say')) === '', 'and no "enter the address" is left on the card');
+    // one tab at a time: while another holds the miner's lock, this one says so and starts nothing
+    const held = await open(browser, { v: null }, { more: false, minBits: 16, init: CHARGER });
+    await held.page.fill('#addr', ADDR);
+    await held.page.waitForFunction(() => document.querySelector('#tab-go').textContent === 'Mine in this tab');
+    await held.page.evaluate(() => { navigator.locks.request('tacit-prove-tab-miner', () => new Promise((r) => { window.__letGo = r; })); });
+    await held.page.waitForTimeout(100);
+    await held.page.click('#tab-go');
+    await held.page.waitForFunction(() => document.querySelector('#tab-say').textContent === 'Another tab is mining already.');
+    check(held.page.workers().length === 0 && (await text(held.page, '#tab-go')) === 'Mine in this tab', 'while another tab mines, this one says so and starts nothing');
+    await held.page.evaluate(() => window.__letGo());
+    await held.page.waitForTimeout(100);
+    await held.page.click('#tab-go');
+    await held.page.waitForFunction(() => document.querySelector('#tab-go').textContent === 'Stop mining in this tab');
+    check(await threads(held.page, (n) => n >= 1) && !(await held.page.locator('#tab-say').isVisible()), 'and starts once the other has stopped');
+    await held.ctx.close();
+    await quick.ctx.close();
+    // a prover that is mining grinds already: the tab is not offered
+    const mining = await open(browser, { v: { mine: { miner: ADDR, on: true, job: null, proved: 0 } } }, { more: false });
+    await mining.page.waitForFunction(() => document.querySelector('#go') && !document.querySelector('#go').hidden);
+    check(!(await mining.page.locator('#tab-go').isVisible()), 'with tacit-prover mining on this computer, the tab is not offered');
+    await mining.ctx.close();
+    // a prover that is paused: the tab can mine, and stops when the prover starts
+    const local = { v: { mine: { miner: ADDR, on: false, job: null, proved: 0 } } };
+    const paused = await open(browser, local, { more: false, minBits: 16, init: CHARGER });
+    await paused.page.waitForFunction(() => document.querySelector('#tab-go').textContent === 'Mine in this tab' && !document.querySelector('#tab-go').hidden);
+    await paused.page.click('#tab-go');
+    await paused.page.waitForFunction(() => document.querySelector('#tab-go').textContent === 'Stop mining in this tab');
+    local.v.mine = { ...local.v.mine, on: true };
+    await paused.page.waitForFunction(() => document.querySelector('#tab-go').hidden, null, { timeout: 8000 });
+    check(await threads(paused.page, (n) => n === 0), 'when the prover starts mining, the tab stops and leaves it to the prover', `${paused.page.workers().length} workers`);
+    await paused.ctx.close();
   }
   // the code-review card: no prover, an older prover, the model not yet fetched, and switching it on (the POST it sends, the record shown)
   {

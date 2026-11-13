@@ -21,11 +21,13 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /prove/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/prove/app.js?cb=2f1833f0">
+<link rel="modulepreload" href="/prove/app.js?cb=279b09aa">
 <link rel="modulepreload" href="/community-prove.js?cb=30714a9f">
 <link rel="modulepreload" href="/prove/view.js?cb=f0f73815">
 <link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
+<link rel="modulepreload" href="/prove/tabmine.js?cb=bce3cb31">
+<link rel="modulepreload" href="/prove/saltcore.js?cb=845ff17e">
 <link rel="modulepreload" href="/prove/review.js?cb=a8c503cf">
 <link rel="modulepreload" href="/prove/chain.js?cb=8a988a34">
 <!-- preload:end -->
@@ -262,6 +264,11 @@ pre.cmd { margin: 16px 0 0; padding: 12px 14px; background: var(--field); border
 .pair { display: flex; gap: 8px; margin-top: 12px; }
 .pair pre.cmd { flex: 1; margin: 0; }
 .pair .btn.ghost { flex: none; width: auto; min-width: 88px; min-height: 0; padding: 0 14px; white-space: nowrap; }
+#tab-go, #tab-battery { margin-top: 14px; }
+.steps { display: inline-flex; align-items: center; gap: 8px; }
+.steps button { width: 26px; height: 26px; padding: 0; background: none; border: 1px solid var(--hair-2); color: var(--ink); cursor: pointer; font: 500 13px/1 var(--mono); }
+.steps button:hover:not(:disabled) { border-color: var(--ink); }
+.steps button:disabled { opacity: .35; cursor: not-allowed; }
 
 /* the node's jobs: Prove, Relay, Bitcoin */
 .tabs { display: flex; gap: 4px; margin: 28px 0 0; border-bottom: 1px solid var(--hair); }
@@ -695,6 +702,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
           <pre class="cmd"><code id="cmd"></code></pre>
           <button class="btn" id="copy" type="button">Copy, then paste in Terminal</button>
           <p class="hint" id="setup-hint">Once per computer. A Mac with Apple silicon, or Linux.</p>
+          <p class="hint">Nothing to install? <a href="#salts" id="tab-quick">Mine in this tab</a></p>
         </div>
         <p class="status" id="say"></p>
         <div class="rows num">
@@ -719,6 +727,14 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
         <p class="eyebrow"><span>Between proofs</span></p>
         <h3 id="h-salt">Mine contract addresses<span id="salt-pay"></span></h3>
         <p class="hint" id="salt-day">While it waits, your node searches for the addresses Tacit's next contracts deploy to, the ones starting with the most zeros. A proof always comes first.</p>
+        <button class="btn" id="tab-go" type="button" hidden></button>
+        <p class="hint" id="tab-say" aria-live="polite" hidden></p>
+        <div class="rows num" id="tab-rows" hidden>
+          <div class="kv"><span>This tab</span><b id="tab-rate">—</b></div>
+          <div class="kv"><span>Cores</span><b class="steps"><button id="tab-less" type="button" aria-label="Use one core fewer">−</button><span id="tab-n"></span><button id="tab-more" type="button" aria-label="Use one core more">+</button></b></div>
+          <div class="kv"><span>Counted today</span><b id="tab-today">—</b></div>
+        </div>
+        <button class="btn ghost" id="tab-battery" type="button" hidden>Mine on battery too</button>
         <p class="eyebrow" id="salt-best-h" hidden></p>
         <ol id="salt-best" class="bank"></ol>
         <p class="eyebrow" id="salt-bank-h" hidden></p>
@@ -864,6 +880,6 @@ node tools/community-runner.mjs mirror   # no key: keeps the board public on Nos
 
 <div id="toast-container" class="toasts" popover="manual"></div>
 
-<script type="module" src="/prove/app.js?cb=2f1833f0"></script>
+<script type="module" src="/prove/app.js?cb=279b09aa"></script>
 </body>
 </html>
