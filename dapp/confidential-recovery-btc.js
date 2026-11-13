@@ -173,7 +173,28 @@ export function makeBtcHistoryProvider({ fetchImpl, sha256, bases = ESPLORA_BASE
     return out.reverse();
   }
 
-  return { history, txsOf, walletScripts, locks };
+  // Transactions the wallet funded whose first output is a taproot output nothing has spent, newest first: what a commit looks like
+  // while its reveal has not followed. A lock cut short after its commit is one of them (cbtc-lock.js lockOfCommit tells which), so it
+  // is found from the key and Bitcoin alone. `pages` of the funding script's history are read; what spends a commit is newer than it,
+  // so each page read is whole for this.
+  //   → [{ txid, value, script, anchor: { txid, vout }, confirmed }]
+  async function openCommits(priv, { pages = 1 } = {}) {
+    const s = walletScripts(priv), funding = bytesToHex(s.funding), h = scriptHash(s.funding), txs = [];
+    let page = await getJson(`/scripthash/${h}/txs`);
+    for (let n = 1; Array.isArray(page) && page.length; n++) {
+      txs.push(...page);
+      const confirmed = page.filter((t) => t.status && t.status.confirmed);
+      if (n >= pages || page.length < 25 || !confirmed.length) break;
+      page = await getJson(`/scripthash/${h}/txs/chain/${confirmed[confirmed.length - 1].txid}`);
+    }
+    const spent = new Set();
+    for (const t of txs) for (const v of t.vin || []) spent.add(`${v.txid}:${v.vout}`);
+    return txs.filter((t) => t.vin && t.vin[0] && t.vin[0].prevout && String(t.vin[0].prevout.scriptpubkey || '').toLowerCase() === funding
+      && t.vout && t.vout[0] && t.vout[0].scriptpubkey_type === 'v1_p2tr' && !spent.has(`${t.txid}:0`))
+      .map((t) => ({ txid: t.txid, value: t.vout[0].value, script: String(t.vout[0].scriptpubkey).toLowerCase(), anchor: { txid: t.vin[0].txid, vout: t.vin[0].vout }, confirmed: !!(t.status && t.status.confirmed) }));
+  }
+
+  return { history, txsOf, walletScripts, locks, openCommits };
 }
 
 const LOCK_FLOOR = 546;

@@ -39,15 +39,24 @@ export function lockPad(recommended, estimates, coins = 2) {
 }
 const LOCK_REVEAL_VB = 212;
 export const bondCall = (t, lock) => ({ to: ESCROW, data: '0x' + POST_ESCROW_WITH_ETH + strip(outpointOf(t, lock)) });
+// A bond posted through the helper: the share an account holds on a lock (a read), and the call that returns it to that account as
+// wstETH, which the engine allows while nothing is minted on the lock.
+export const bondShareCall = (t, lock, account) => ({ to: ESCROW, data: '0x78808388' + strip(outpointOf(t, lock)) + strip(account).toLowerCase().padStart(64, '0') });
+export const bondBackCall = (t, lock) => ({ to: ESCROW, data: '0xc5211d27' + strip(outpointOf(t, lock)) });
 
 const strip = (h) => String(h).replace(/^0x/, '');
 const ZERO = '0x' + '0'.repeat(64);
 
 const CBTC_MINTED = 'e2c2a40c', ESCROW_TOTAL = 'e06e89c9';
+// Commits read once and found to be no lock of the key (a payment to someone's taproot address looks like one until it is tried): not
+// tried again, on this visit or a later one in this browser.
+const NOT_LOCKS_KEY = 'tacit-cbtc-not-locks-v1', NOT_LOCKS = new Set();
+const notLocks = () => { try { const v = JSON.parse(localStorage.getItem(NOT_LOCKS_KEY) || '[]'); for (const x of Array.isArray(v) ? v : []) NOT_LOCKS.add(x); } catch {} return NOT_LOCKS; };
+const notLock = (txid) => { notLocks().add(txid); try { localStorage.setItem(NOT_LOCKS_KEY, JSON.stringify([...NOT_LOCKS].slice(-300))); } catch {} };
 const sentence = (s) => `${s.charAt(0).toUpperCase()}${s.slice(1)}.`;
 
 export function makeLoans({ sha256, hmac, secp, bytesToHex, hexToBytes, pubHex, noteRecovery = () => import('/cbtc-note-recovery.js'), redeemModule = () => import('/cbtc-redeem.js?cb=10a0d63f'),
-  lockModule = () => import('/cbtc-lock-mint.js?cb=91821cf3'), deployments = () => import('/confidential-deployments.js') }) {
+  lockModule = () => import('/cbtc-lock-mint.js?cb=6083caf9'), deployments = () => import('/confidential-deployments.js') }) {
   async function positions() {
     const { makeCdpPositionStore } = await import('/confidential-secret-store.js');
     return makeCdpPositionStore({ sha256, hmac, secp, curveOrder: secp.CURVE.n });
@@ -103,6 +112,15 @@ export function makeLoans({ sha256, hmac, secp, bytesToHex, hexToBytes, pubHex, 
       debtNotes: picked.map((n) => ({ cx: n.cx, cy: n.cy, value: n.value, blinding: n.blinding, leafIndex: n.leafIndex, path: n.path, owner: n.owner, nk: n.secret })),
     };
   }
+  // The key that closes a loan: derived from the Tacit key and the loan's own nonce; for a loan opened before keys were derived that
+  // way, the copy this browser kept of it, sealed under the Tacit key. → the key, or null when neither gives it.
+  async function ownerKey(ps, priv, p) {
+    const own = await ps.ownerPrivFor(priv, p);
+    if (own) return own;
+    const same = (a, b) => String(a || '').toLowerCase() === String(b || '').toLowerCase();
+    const kept = ps.list().find((x) => x && x !== p && same(x.controller, p.controller) && same(x.positionOwner, p.positionOwner));
+    return kept ? ps.ownerPrivFor(priv, kept) : null;
+  }
   const repaid = (ps, p) => ps.remove((x) => x.controller === p.controller && (x.positionOwner || '') === (p.positionOwner || '') && x.debtValue === p.debtValue);
 
   async function mintArgs(t, priv, lock) {
@@ -125,11 +143,13 @@ export function makeLoans({ sha256, hmac, secp, bytesToHex, hexToBytes, pubHex, 
   const signedDrop = (lockTxid) => signedPut(signedList().filter((x) => x.lockTxid !== lockTxid));
   const recordOf = (x) => ({ lockTxid: x.lockTxid, lockVout: x.lockVout, vBtc: String(x.vBtc), anchor: { txid: x.anchor.txid, vout: x.anchor.vout }, at: x.at || Date.now() });
 
-  // The kept locks, each sent again where it is not on Bitcoin yet. → { locked: [record], waiting: n }: the ones Bitcoin now has, and how
-  // many could not be finished or ruled out this time.
-  async function resumeLocks(t, priv) {
-    const list = signedList(), out = { locked: [], waiting: 0 };
-    if (!list.length) return out;
+  // The kept locks, each sent again where it is not on Bitcoin yet; and, for `commits` (the wallet's commits with no reveal, from
+  // confidential-recovery-btc.js openCommits), a lock nothing here kept: one cut short in another browser, or before anything was kept,
+  // is read back from its commit and the key, and its reveal signed and sent again.
+  //   → { locked: [record], waiting: n }: the ones Bitcoin now has, and how many could not be finished or ruled out this time.
+  async function resumeLocks(t, priv, { commits = null } = {}) {
+    const list = signedList(), seen = commits && commits.length ? notLocks() : NOT_LOCKS, found = (commits || []).filter((c) => !seen.has(c.txid)), out = { locked: [], waiting: 0 };
+    if (!list.length && !found.length) return out;
     const { lm, dep } = await lockMaker(t, priv);
     for (const x of list) {
       let state;
@@ -138,15 +158,25 @@ export function makeLoans({ sha256, hmac, secp, bytesToHex, hexToBytes, pubHex, 
       else dep.unprotectOutpoint(x.lockTxid, x.lockVout);
       signedDrop(x.lockTxid);
     }
+    for (const c of found) {
+      let l;
+      if (!lm.lockOfCommit) break;
+      try { if (await lm.spentBy(c.txid, 0)) continue; l = await lm.lockOfCommit(c); } catch { out.waiting++; continue; }
+      if (!l) { notLock(c.txid); continue; }
+      if (out.locked.some((x) => x.lockTxid === l.lockTxid)) continue;
+      try { await lm.send(l.revealHex); } catch { out.waiting++; continue; }
+      dep.protectOutpoint(l.lockTxid, l.lockVout, l.vBtc);
+      out.locked.push(recordOf({ ...l, at: Date.now() }));
+    }
     return out;
   }
 
   // `rate` (sat/vB) is the fee rate the page sized the lock with (lockRate). A lock kept from an earlier press is finished first, and is
   // what comes back (`resumed`) when it is: a second lock is not made beside it.
-  async function lock(t, priv, { sats, unconfirmed = [], rate = null, say = () => {} }) {
+  async function lock(t, priv, { sats, unconfirmed = [], rate = null, commits = null, say = () => {} }) {
     say('Checking which of your outputs are already locks…');
     await t.syncCbtcLockReservations(priv);
-    const earlier = await resumeLocks(t, priv);
+    const earlier = await resumeLocks(t, priv, { commits });
     if (earlier.waiting) throw new Error('An earlier lock from this browser is still being sent to Bitcoin. Try again in a minute.');
     if (earlier.locked.length) { const r = earlier.locked[earlier.locked.length - 1]; return { ...r, record: r, resumed: true }; }
     const { lm, dep } = await lockMaker(t, priv, unconfirmed);
@@ -193,5 +223,5 @@ export function makeLoans({ sha256, hmac, secp, bytesToHex, hexToBytes, pubHex, 
     return { ...built, sent: true };
   }
 
-  return { positions, nextKeyNonce, fresh, openArgs, opened, positionLeaf, repayArgs, repaid, mintArgs, lockMaker, lock, resumeLocks, takeBack };
+  return { positions, nextKeyNonce, fresh, openArgs, opened, positionLeaf, ownerKey, repayArgs, repaid, mintArgs, lockMaker, lock, resumeLocks, takeBack };
 }

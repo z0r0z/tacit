@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-i2yEg7CiYqNazhVeut956j9YSLp2AnirDnZxNKvF/nY=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-MrMepgHTUxliMHmcfB5rfv2L2ND7GNfBNdkYx8+BvYQ=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -62,7 +62,7 @@
 <link rel="modulepreload" href="/lp-zap.js?cb=a43160fd">
 <link rel="modulepreload" href="/farm-ops.js?cb=28af38e1">
 <link rel="modulepreload" href="/relay-outcome.js?cb=17e48a9a">
-<link rel="modulepreload" href="/btc-borrow.js?cb=17eff9ef">
+<link rel="modulepreload" href="/btc-borrow.js?cb=d3743265">
 <link rel="modulepreload" href="/bridge-out.js?cb=9662a160">
 <link rel="modulepreload" href="/bridge/track.js?cb=29efa548">
 <link rel="modulepreload" href="/bridge-in.js?cb=ba07ee86">
@@ -2450,7 +2450,7 @@ import * as GR from '/gas-relay.js?cb=e8d173a8';
 import { netPicker } from '/net-pick.js?cb=9229f173';
 import { UNBOND_DUST, HARVEST_WORTH, unharvested, exitSaid, bFor, aFor, farmManager, ladder as xoLadder, feeShort as xoFeeShort } from '/farm-ops.js?cb=28af38e1';
 import { relayCode, proveCapped, proved, relayRefused, jobSaid, calmText } from '/relay-outcome.js?cb=17e48a9a';
-import { makeLoans, bondGap, lockPad as lockPadOf, lockRate as lockRateOf } from '/btc-borrow.js?cb=17eff9ef';
+import { makeLoans, bondGap, lockPad as lockPadOf, lockRate as lockRateOf } from '/btc-borrow.js?cb=d3743265';
 import { makeOutFee, limitText, proofWarn, fundingText, onTheWay } from '/bridge-out.js?cb=9662a160';
 import { ROUTES as BR_WAYS, LIMITS as BR_LIMITS, satsOut, satsBack } from '/bridge/track.js?cb=29efa548';
 import { SERVED as SERVED_POOLS, keeperIdOf, makeTokenPools, KEEPERS as POOL_KEEPERS, RELAYER as POOL_RELAYER } from '/evm-pool-tokens.js?cb=16e0e196';
@@ -5662,7 +5662,7 @@ const noteLanded = (wei) => {
   if (v) v.textContent = fmt((P.scan ? BigInt(P.scan.eth.value) : lastSeen('teth') ?? 0n) + P.coming, 8, 6);
   dashSoon();
 };
-function resetPrivate() { fastForget(); for (const k of Object.keys(FLASH)) delete FLASH[k]; P.scan = null; P.scanning = null; P.full = null; P.err = null; P.coming = 0n; DEV.W = null; DEV.bal = null; DEV.key = null; DEV.quote = null; DEV.gq = {}; DEV.err = null; DEV.self = false; Object.assign(TK, { W: null, key: null, bal: null, at: 0, err: null, syncing: null, keys: null, quote: null, qFail: 0, self: false }); Object.assign(LOCK, { rec: null, state: null, lm: null, bonds: [], list: [], pick: null, found: null, repayOver: null, q: null, gone: null, unlockAsk: null }); Object.assign(LK, { at: 0, pub: null, mine: [], back: [], scanning: null }); Object.assign(BTC, { pub: null, at: 0, err: null, share: null, sp: null, held: [], got: 0, part: false });
+function resetPrivate() { fastForget(); for (const k of Object.keys(FLASH)) delete FLASH[k]; P.scan = null; P.scanning = null; P.full = null; P.err = null; P.coming = 0n; DEV.W = null; DEV.bal = null; DEV.key = null; DEV.quote = null; DEV.gq = {}; DEV.err = null; DEV.self = false; Object.assign(TK, { W: null, key: null, bal: null, at: 0, err: null, syncing: null, keys: null, quote: null, qFail: 0, self: false }); Object.assign(LOCK, { rec: null, state: null, lm: null, bonds: [], list: [], pick: null, found: null, repayOver: null, q: null, gone: null, unlockAsk: null, swept: null }); Object.assign(LK, { at: 0, pub: null, mine: [], back: [], scanning: null }); Object.assign(BTC, { pub: null, at: 0, err: null, share: null, sp: null, held: [], got: 0, part: false });
   try { for (const x of Object.values(HOLD.byKey)) x.w = {}; FARM.positions = null; FARM.wtac = null; FARM.left = null; FARM.jm = null; FARM.auto = {}; FARM.paid = null; for (const k of Object.keys(JOIN)) delete JOIN[k]; } catch { }
   dropTacitKey();
   if (!S.key) { tabKeyClear(); try { sessionStorage.removeItem('tacit-tac-seen-v1'); } catch { } }
@@ -14117,7 +14117,7 @@ function cdpLoans(t, priv, fresh = false) {
 const lockKey = () => `tacit-lite-cbtc-v1:${S.key.pubHex}`;
 const outpointOf = (t, rec) => t.pool.outpointKey('0x' + rec.lockTxid.match(/../g).reverse().join(''), rec.lockVout);
 const getLockMod = lazy(async () => {
-  const [lm, dep, rec] = await Promise.all([import('/cbtc-lock-mint.js?cb=91821cf3'), import('/confidential-deployments.js'), import('/cbtc-note-recovery.js')]);
+  const [lm, dep, rec] = await Promise.all([import('/cbtc-lock-mint.js?cb=6083caf9'), import('/confidential-deployments.js'), import('/cbtc-note-recovery.js')]);
   return { ...lm, ...dep, ...rec };
 });
 async function lockMint(skip = [], priv = walletPriv()) {
@@ -14383,6 +14383,19 @@ async function settleBorrow() {
   rerender('borrow');
   paintPrivateFeet().catch(() => {});
 }
+// A lock cut short after its commit is looked for on Bitcoin from the key alone, kept in this browser or not, on a key's first read and
+// on each fresh one, off the read's own path. One found is finished, and the read made again so it shows.
+function sweepLocks(t, pub, deep) {
+  const mine = () => S.key?.pubHex === pub;
+  btcHistory().then((x) => (mine() ? x.h.openCommits?.(walletPriv(), { pages: deep ? 2 : 1 }) : null))
+    .then((commits) => (commits?.length && mine() ? LN.resumeLocks(t, walletPriv(), { commits }) : null))
+    .then((r) => {
+      if (!r?.locked.length || !mine()) return;
+      if (!store.get(lockKey())) store.set(lockKey(), r.locked[r.locked.length - 1]);
+      toast('A lock that had not finished is on Bitcoin now');
+      loadBorrow(true).then(() => { rerender('borrow'); hxBwUpdate(); }, () => {});
+    }, () => {});
+}
 async function readBorrow(fresh, current) {
   if (!S.key) return;
   const pub = S.key.pubHex, key = lockKey(), priv = walletPriv(), same = () => S.key?.pubHex === pub && current();
@@ -14398,6 +14411,7 @@ async function readBorrow(fresh, current) {
   ]);
   const back = await LN.resumeLocks(t, priv).catch(() => null);
   if (!same()) return;
+  if (fresh || LOCK.swept !== pub) { LOCK.swept = pub; sweepLocks(t, pub, fresh); }
   let cached = store.get(key);
   if (back?.locked.length && !cached) { cached = back.locked[back.locked.length - 1]; store.set(key, cached); }
   let locks = await findLocks(t, priv, fresh || !!back?.locked.length).catch(() => null);
@@ -14760,8 +14774,8 @@ const BWX = {
       if (!p) throw new Error('The loan is not visible on chain yet. Try again in a minute.');
       const t = await getUx(), priv = walletPriv(), key = lockKey(), debtValue = BigInt(p.debtValue);
       const ps = await LN.positions();
-      const ownerPriv = await ps.ownerPrivFor(priv, p);
-      if (!ownerPriv) throw new Error("This loan’s key could not be re-derived here. Close it on the classic app’s CDP tab.");
+      const ownerPriv = await LN.ownerKey(ps, priv, p);
+      if (!ownerPriv) throw new Error('This loan’s key does not come from this Tacit key, and this browser holds no copy of it. It closes from the browser it was opened in.');
       const { leaf, basket, debtAsset } = LN.positionLeaf(t, p);
       say(where(), 'Finding your loan and your cUSD…');
       const [tree, bal] = await Promise.all([t.cdpPositionTree(), t.balance(priv)]);
@@ -14841,7 +14855,7 @@ render.borrow = () => {
             <div class="amt act"><input id="bw-amt" inputmode="decimal" placeholder="0.001" autocomplete="off" aria-label="BTC to lock"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-btc"/></svg>BTC</span></div>
             <div class="row2"><button class="btn ghost" type="button" id="bw-fund">Send from Bitcoin wallet</button><button class="btn" type="button" id="bw-lock">Lock BTC</button></div>
             <div class="status" role="status" id="bw-s1"></div>
-            ${st.lockWaiting ? html`<p class="note err">A lock signed here is not all on Bitcoin yet. It is kept in this browser and sent again on its own, every half minute while this is open.</p>` : ''}
+            ${st.lockWaiting ? html`<p class="note err">A lock of yours is not all on Bitcoin yet. It is sent again on its own, every half minute while this is open.</p>` : ''}
             <p class="note">Xverse, Leather or UniSat send it in one popup, or pay the address from anywhere. Locking waits for one confirmation.</p>
             ${lag != null ? html`<p class="note">Minting waits for Bitcoin’s proof on Ethereum to reach the lock’s block, which trails Bitcoin by at least 24 blocks (about 4 hours). It is at block ${attested.toLocaleString('en-US')}, ${lag.toLocaleString('en-US')} behind Bitcoin${lag > 36 ? ' and catching up' : ''}. Until it is minted, its bond can be taken back.</p>` : ''}`;
   const cbtcId = P.scan?.cbtc?.id, notes = cbtcId ? freeNotes(P.scan.cbtc.notes).sort(byValue) : [];
@@ -17231,7 +17245,7 @@ function hxHaveAddr(el, addr) {
     : html`<span class="hx-pl"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg><span>Your Bitcoin address <b class="mono">${viewAddr(addr, 8)}</b></span><button class="link" type="button" data-copy="${addr}">copy</button><button class="link" type="button" data-bw-qr aria-expanded="${String(HX.bwQr === addr)}">${HX.bwQr === addr ? 'hide QR' : 'QR'}</button></span>
     ${HX.bwQr === addr ? html`<span class="hx-qr" id="hx-bw-qr"></span>` : ''}
     <span class="hx-hv">The BTC goes here first, from any wallet or exchange or with the button, and is locked once confirmed. Only your key spends it.</span>
-    ${LOCK.state?.lockWaiting ? html`<span class="hx-hv err">A lock signed here is not all on Bitcoin yet. It is kept in this browser and sent again on its own.</span>` : ''}`;
+    ${LOCK.state?.lockWaiting ? html`<span class="hx-hv err">A lock of yours is not all on Bitcoin yet. It is sent again on its own.</span>` : ''}`;
   el.hidden = false;
   if (el.__h !== view.s) {
     el.__h = view.s; mount(el, view);

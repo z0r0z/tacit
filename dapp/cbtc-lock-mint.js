@@ -160,6 +160,7 @@ export function makeCbtcLockMint({ priv, pool, cbtcAsset, esploraBases, postHint
   return {
     wallet,
     lock: cbtc.buildAndBroadcastCbtcLock,
+    lockOfCommit: cbtc.lockOfCommit,
     finishLock,
     txKnown: esplora.txKnown,
     // what taking a lock back needs (cbtc-redeem.js buildUnlockTx): the wallet's primitives, the lock's spender if it has one, a fee rate, and a send

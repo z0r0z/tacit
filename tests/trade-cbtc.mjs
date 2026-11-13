@@ -12,7 +12,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { keccak_256 } from '../dapp/vendor/tacit-deps.min.js';
-import { ETH_NODES, ETH_LOG_NODES, ETH_ARCHIVE_NODES } from '../dapp/eth-nodes.js';
+import { RPC_HOSTS } from './eth-hosts.mjs';
 
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT || '/Users/z/zFi/node_modules/playwright-core');
 const DAPP = new URL('../dapp/', import.meta.url).pathname, FX = new URL('./fixtures/', import.meta.url).pathname;
@@ -174,6 +174,7 @@ export function makeConfidentialPoolUx() {
       ux.calls.push(['ethCall', s]);
       if (s === '034448ed') return w(10n ** 15n);                                                   // requiredEscrow: 0.001 wstETH
       if (s === 'e06e89c9') return w(ux.cfg.bondHave || 0);                                         // escrowTotal
+      if (s === '78808388') return w(ux.cfg.bondShare || 0);                                        // helperEscrowOf: the connected wallet's share
       if (s === 'bb2952fc') return w(BigInt('0x' + data.slice(10)) * 117n / 100n);                  // stEthPerWst: 1.17
       return w(0);
     },
@@ -187,14 +188,13 @@ export function makeConfidentialPoolUx() {
   };
 }`;
 const HIST_STUB = `
-export function makeBtcHistoryProvider(o) { return { locks: async (priv) => { (window.__ux ||= { calls: [], cfg: {} }).calls.push(['locks', priv.length, o.hrp]); if (window.__ux.cfg.locksFail) throw new Error('esplora is down'); return window.__ux.cfg.locks || []; } }; }`;
+export function makeBtcHistoryProvider(o) { return { openCommits: async () => [], locks: async (priv) => { (window.__ux ||= { calls: [], cfg: {} }).calls.push(['locks', priv.length, o.hrp]); if (window.__ux.cfg.locksFail) throw new Error('esplora is down'); return window.__ux.cfg.locks || []; } }; }`;
 
 async function openPage(viewport, { wallet = false, scheme = 'light', hash = '' } = {}) {
   const browser = await chromium.launch(), ctx = await browser.newContext({ viewport, colorScheme: scheme });
   const log = wallet ? await stubWallet(ctx) : null;
   const ok200 = (body) => ({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(body) });
-  // every node the pages may ask (the lists in eth-nodes.js), so no read reaches the real chain
-  for (const h of new Set(['ethereum-rpc.publicnode.com', 'eth.drpc.org', '1rpc.io', 'mainnet.gateway.tenderly.co', ...[...ETH_NODES, ...ETH_LOG_NODES, ...ETH_ARCHIVE_NODES].map((u) => new URL(u).hostname)])) await ctx.route(`https://${h}/**`, (r) => { const q = JSON.parse(r.request().postData() || '{}'); return r.fulfill(ok200(Array.isArray(q) ? q.map(rpcAnswer) : rpcAnswer(q))); });
+  for (const h of RPC_HOSTS) await ctx.route(`https://${h}/**`, (r) => { const q = JSON.parse(r.request().postData() || '{}'); return r.fulfill(ok200(Array.isArray(q) ? q.map(rpcAnswer) : rpcAnswer(q))); });
   await ctx.route(/^https:\/\/api\.tacit\.finance\//, (r) => {
     const u = new URL(r.request().url());
     if (u.pathname === '/stats') return r.fulfill(chain.stats === 'down' ? { status: 503, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: '{}' } : ok200(stats));
@@ -433,7 +433,22 @@ try {
   await press9a();
   await until(p, () => /bond is still posted on this lock: take the bond back first/.test(document.querySelector('#btc-mine #bm-status')?.textContent || ''), null, 20000);
   ok(!(await ux(p)).calls.some((c) => c[0] === 'send'), 'vault: with a bond on it, the bond comes back first and nothing is sent; the line is under the rows it was pressed in');
-  await cfg(p, { bondHave: 0 });
+  // the row then offers the bond's way back: the wallet that posted it is asked for the helper's reclaim on that lock
+  const bondBack9a = () => p.evaluate(() => [...document.querySelectorAll('#btc-mine .kv')].find((x) => /Lock 9a9a9a/.test(x.textContent)).querySelector('[data-mine="bondback"]').click());
+  await until(p, () => !!([...document.querySelectorAll('#btc-mine .kv')].find((x) => /Lock 9a9a9a/.test(x.textContent))?.querySelector('[data-mine="bondback"]:not([disabled])')), null, 30000);
+  await bondBack9a();
+  await until(p, () => /no bond on this lock from here/.test(document.querySelector('#btc-mine #bm-status')?.textContent || ''), null, 20000);
+  ok(/Do it on the front page/.test(await text(p, '#btc-mine #bm-status')), 'vault: a bond this wallet did not post here is the front page’s to take back');
+  await cfg(p, { bondShare: '5000000000000000' });
+  walletAccepts = true;
+  await until(p, () => !!([...document.querySelectorAll('#btc-mine .kv')].find((x) => /Lock 9a9a9a/.test(x.textContent))?.querySelector('[data-mine="bondback"]:not([disabled])')), null, 30000);
+  await bondBack9a();
+  await until(p, () => /The bond is back in your wallet/.test(document.querySelector('#btc-mine #bm-status')?.textContent || ''), null, 30000);
+  const took = r.log.lastSend || {};
+  ok(String(took.to).toLowerCase() === '0x000000008ecd09f922c9fbbdd9aca5ae8f0bebfa' && String(took.data).toLowerCase() === '0xc5211d27' + '00'.repeat(31) + '07' && !BigInt(took.value || 0),
+    `vault: Bond back asks the wallet for the helper's reclaim on that lock, with no ETH (${JSON.stringify(took).slice(0, 160)})`);
+  walletAccepts = false;
+  await cfg(p, { bondHave: 0, bondShare: 0 });
   await until(p, () => !!([...document.querySelectorAll('#btc-mine .kv')].find((x) => /Lock 9a9a9a/.test(x.textContent))?.querySelector('[data-mine="unlock"]:not([disabled])')), null, 30000);
   await press9a();
   await until(p, () => /This spends the lock: 0\.000497 BTC returns to your deposit address, after a network fee of 300 sats/.test(document.querySelector('#btc-mine #bm-status')?.textContent || ''), null, 20000);

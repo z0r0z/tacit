@@ -11,6 +11,7 @@ import http from 'node:http';
 import { execFileSync } from 'node:child_process';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join, extname } from 'node:path';
+import { RPC_HOSTS } from './eth-hosts.mjs';
 
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT || '/Users/z/zFi/node_modules/playwright-core');
 const DAPP = new URL('../dapp/', import.meta.url).pathname, FX = new URL('./fixtures/', import.meta.url).pathname;
@@ -334,7 +335,7 @@ async function openPage(viewport, { wallet = false, reject = false, hash = '', s
   const ctx = await browser.newContext({ viewport, colorScheme: scheme });
   const log = wallet ? await stubWallet(ctx, { reject }) : null;
   const ok200 = (body) => ({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(body) });
-  for (const h of ['ethereum-rpc.publicnode.com', 'eth.drpc.org', '1rpc.io', 'mainnet.gateway.tenderly.co']) await ctx.route(`https://${h}/**`, (r) => {
+  for (const h of RPC_HOSTS) await ctx.route(`https://${h}/**`, (r) => {
     const q = JSON.parse(r.request().postData() || '{}');
     return r.fulfill(ok200(Array.isArray(q) ? q.map(rpcAnswer) : rpcAnswer(q)));
   });
@@ -549,7 +550,7 @@ try {
   await until(p, () => document.querySelector('#go').textContent === 'Not enough ETH');
   ok((await money(p)).disabled, 'more than the wallet holds is refused');
   await p.click('#in-bal');
-  await until(p, () => document.querySelector('#amt').value !== '99');
+  await until(p, () => document.querySelector('#amt').value === '4.99567121', null, 10000).catch(() => {});      // Max settles once the fee is read
   ok((await p.inputValue('#amt')) === '4.99567121', `Max keeps the network fee and the relay's tip back (${await p.inputValue('#amt')})`);
   await p.fill('#amt', '0.1');
   await until(p, () => document.querySelector('#go').textContent === 'Sign in to make ETH private');
@@ -621,9 +622,9 @@ try {
   await cfg(p, { settleMs: 0, indexMs: 0, settleFails: 0, proveRefused: true });
   r.log.reject = true;
   await p.fill('#amt', '0.02');
-  await until(p, () => document.querySelector('#go').textContent === 'Shield ETH' && !document.querySelector('#go').disabled);
+  await until(p, () => document.querySelector('#go').textContent === 'Shield ETH' && !document.querySelector('#go').disabled).catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | go: ${await text(p, '#go')} | status: ${(await text(p, '#status')).slice(0, 200)}`); });
   await p.click('#go');
-  await until(p, () => /Cancelled in your wallet/.test(document.querySelector('#status').textContent));
+  await until(p, () => /Cancelled in your wallet|declined it straight away/.test(document.querySelector('#status').textContent));
   ok(/Nothing was sent/.test(await text(p, '#status')) && (await text(p, '#go')) === 'Shield ETH' && !(await money(p)).disabled && r.log.sends.length === 1, 'a refusal in the wallet sends nothing and leaves the ticket as it was');
   ok(r.log.signs === 2, 'the key was not asked for again');
   r.log.reject = false;

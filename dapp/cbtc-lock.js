@@ -51,5 +51,17 @@ export function makeCbtcLock(deps) {
     };
   }
 
-  return { buildAndBroadcastCbtcLock };
+  // A commit already on Bitcoin ({ txid, value, script } of its first output, and `anchor`, its first input), read as this key's lock: the
+  // note's blinding comes from that first input as it does when a lock is made, so the amount whose envelope reproduces the commit's
+  // script is the lock's, and its reveal can be signed again. → { vBtc, lockVout, anchor, revealHex, lockTxid }, or null when it is no lock
+  // of this key.
+  async function lockOfCommit({ txid, value, script, anchor }) {
+    if (typeof broadcastCbtcLockTx.revealForCommit !== 'function') throw new Error('cbtc-lock: the broadcast seam cannot read a commit back');
+    const blinding = deriveCbtcNoteBlinding({ privkey, anchorOutpoint: anchorBytes(anchor.txid, anchor.vout), outputIndex: 0 });
+    const amountOf = (vSats) => { const { cx, cy } = commitXY(BigInt(vSats), blinding); return buildCbtcLockEnvelope({ asset, lockVout, cx, cy }); };
+    const r = await broadcastCbtcLockTx.revealForCommit({ commit: { txid, value, script }, lockVout, lockSpk: ownLockScriptPubKey(), amountOf });
+    return r && { ...r, anchor: { txid: anchor.txid, vout: anchor.vout } };
+  }
+
+  return { buildAndBroadcastCbtcLock, lockOfCommit };
 }

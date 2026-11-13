@@ -92,6 +92,14 @@ const ma = await LR.mintArgs(lockT, priv, lock);
 const r0 = makeCbtcNoteRecovery({ hmac, sha256, curveOrder }), b0 = r0.deriveCbtcNoteBlinding({ privkey: priv, anchorOutpoint: r0.anchorBytes(lock.anchor.txid, lock.anchor.vout), outputIndex: 0 });   // the front page's former inline formula
 assert.deepEqual(ma, { walletPriv: priv, outpoint: `op(0x${lock.lockTxid.match(/../g).reverse().join('')},1)`, vBtc: 5000000n, blinding: '0x' + b0.toString(16).padStart(64, '0') }, 'the mint\'s arguments, its blinding from the key and the anchor');
 assert.notEqual((await LR.mintArgs(lockT, new Uint8Array(32).fill(8), lock)).blinding, ma.blinding, 'another key, another blinding');
+// ── the key that closes a loan: derived from the Tacit key, else the copy this browser kept ──
+{
+  const kept = [{ controller: '0xC', positionOwner: '0xAbC', sec: 'sealed' }, { controller: '0xC', positionOwner: '0xother', sec: 'sealed-other' }];
+  const ps2 = { list: () => kept, ownerPrivFor: async (priv, rec) => (rec.keyNonce === 3 ? `derived(${priv})` : rec.sec ? `opened(${rec.sec})` : null) };
+  assert.equal(await L.ownerKey(ps2, 'PRIV', { controller: '0xC', positionOwner: '0xabc', keyNonce: 3 }), 'derived(PRIV)', 'derived from the key when the loan carries its nonce');
+  assert.equal(await L.ownerKey(ps2, 'PRIV', { controller: '0xc', positionOwner: '0xABC' }), 'opened(sealed)', 'else the kept copy of the same loan, whatever the case of its hex');
+  assert.equal(await L.ownerKey(ps2, 'PRIV', { controller: '0xC', positionOwner: '0xnobody' }), null, 'and nothing when neither has it');
+}
 // ── locking ──
 // the pad: the reveal's dust output, its fee (212 vB) and the commit's fee for the coins it may spend (11 + 68 a coin + 74 vB), each fee at least 500 sats, and a tenth more
 const padOf = (f, j, n = 2) => { const rate = Math.max(1, Math.ceil(f?.fastestFee || j?.['1'] || j?.['2'] || 5)), fee = (vb) => Math.max(500, vb * rate); return BigInt(Math.ceil((546 + fee(212) + fee(11 + n * 68 + 43 + 31)) * 1.1)); };

@@ -11,6 +11,7 @@ import http from 'node:http';
 import { execFileSync } from 'node:child_process';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join, extname } from 'node:path';
+import { RPC_HOSTS } from './eth-hosts.mjs';
 
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT || '/Users/z/zFi/node_modules/playwright-core');
 const DAPP = new URL('../dapp/', import.meta.url).pathname, FX = new URL('./fixtures/', import.meta.url).pathname;
@@ -64,7 +65,7 @@ async function openPage(viewport, { wallet = false, hash = '#btc=on', utxos = []
   const seen = { api: new Set(), explorer: new Set(), posts: [], unmatched: new Set() };
   const ok200 = (body, ct = 'application/json') => ({ status: 200, contentType: ct, headers: { 'access-control-allow-origin': '*' }, body: typeof body === 'string' ? body : JSON.stringify(body) });
   // Ethereum is not what this checks: its reads fail quickly and the page says so.
-  for (const h of ['ethereum-rpc.publicnode.com', 'eth.drpc.org', '1rpc.io', 'mainnet.gateway.tenderly.co']) await ctx.route(`https://${h}/**`, (r) => r.fulfill(ok200({ jsonrpc: '2.0', id: 1, error: { code: -32000, message: 'not served in this test' } })));
+  for (const h of RPC_HOSTS) await ctx.route(`https://${h}/**`, (r) => r.fulfill(ok200({ jsonrpc: '2.0', id: 1, error: { code: -32000, message: 'not served in this test' } })));
   await ctx.route(/^https:\/\/api\.tacit\.finance\//, (route) => {
     const u = new URL(route.request().url()), path = u.pathname;
     seen.api.add(`${route.request().method()} ${path}`);
