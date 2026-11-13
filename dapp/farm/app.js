@@ -289,7 +289,7 @@ function paintStation() {
   const others = FARMS.filter((x) => x.id !== f.id), sw = others.map((x) => `<a href="#${esc(x.id)}" title="${esc(x.name)}">${pairIcons(x.icons)}<b class="num">${x.apr == null ? '' : aprText(x.apr)}</b></a>`).join('');
   if ($('#sw').__h !== sw) { $('#sw').__h = sw; $('#sw').innerHTML = sw; }
   $('#k-more').innerHTML = f.kind === 'private' && f.pid != null
-    ? `With private tETH or ${esc(f.name.split(' / ')[1])}, or as liquidity alone: <a href="/#card=earn:ether:p${f.pid}">the front page’s Earn card</a>.`
+    ? `With one private coin alone, or as liquidity with no farm: <a href="/#card=earn:ether:p${f.pid}">the front page’s Earn card</a>.`
     : 'The stake, what it earns and its exit are public, at your wallet’s address. <a href="#teth-tac">A private farm</a> keeps them to you.';
   if (f.kind === 'private') paintPrivate();
   pubUi?.paint();
@@ -328,7 +328,7 @@ function quickRow(input) {
 }
 
 // ── a private farm: ETH in with one transaction, the position private after ──
-const Z = { f: null, q: null, seq: 0, busy: false, ready: null, ack: null, timer: 0, share: null };
+const Z = { f: null, q: null, seq: 0, busy: false, ready: null, ack: null, timer: 0, share: null, mode: 'eth' };
 const amtIn = $('#pz-amt'), goBtn = $('#pz-go'), rcpt = $('#pz-rcpt'), statusEl = $('#pz-status'), cook = $('#pz-cook'), sayEl = $('#pz-say'), bar = $('#pz-bar'), acts = $('#pz-acts');
 $('#pz-quick').replaceWith(quickRow(amtIn));
 function openPrivate(f) {
@@ -336,6 +336,21 @@ function openPrivate(f) {
   Z.f = f;
   session().then(() => mountMine(), () => {});
 }
+// Deposit with ETH (half swapped in the pool, one transaction), or with both coins from the private balance at the pool's ratio (the
+// positions panel's join, drawn in this card). Both sides needs the farm to be open to joins, which a farm between periods is not.
+const bothOk = (f) => !!f?.live && f.pid != null;
+function setMode(m) {
+  if (Z.busy) return;
+  Z.mode = m === 'both' && bothOk(Z.f) ? 'both' : 'eth';
+  for (const b of $$('#pz-mode button')) b.setAttribute('aria-pressed', String(b.dataset.pm === Z.mode));
+  $('#pz-eth').hidden = Z.mode !== 'eth'; $('#pz-join').hidden = Z.mode !== 'both';
+  const other = Z.f?.name?.split(' / ')[1] || 'TAC';
+  $('#pz-how').textContent = Z.mode === 'both' ? `From your private tETH and ${other}, at the pool’s ratio: nothing is swapped.` : 'Half is swapped inside the pool, then both go in privately: one transaction.';
+  if (Z.mode === 'both' && Z.joinFor !== Z.f.pid) { Z.joinFor = Z.f.pid; session().then(() => mountMine()).then((ui) => ui?.choose(Z.f.pid), () => { Z.joinFor = null; }); }
+}
+$('#pz-mode').addEventListener('click', (e) => { const b = e.target.closest('[data-pm]'); if (b && !b.disabled) setMode(b.dataset.pm); });
+// the join's way in opens the key as a deposit does: the wallet connected here signs, with no sheet on a first visit
+$('#pz-join').addEventListener('click', (e) => { if (!e.target.closest('[data-pf="open"]')) return; e.stopImmediatePropagation(); openKey().catch(() => {}); }, true);
 function paintPrivate() {
   const f = VIEW;
   Z.f = f;
@@ -346,6 +361,9 @@ function paintPrivate() {
       + cell('In the pool', worth == null ? '—' : eu ? usd(worth * eu) : `${worth.toFixed(2)} ETH`, f.name.replace(' / ', ' and '))
       + cell('Stream ends', f.live && f.finish ? dayFmt(f.finish) : '—');
   if ($('#pz-stats').__h !== stats) { $('#pz-stats').__h = stats; $('#pz-stats').innerHTML = stats; }
+  $('#pz-both').textContent = `tETH + ${f.name.split(' / ')[1] || 'TAC'}`;
+  $('#pz-mode').hidden = !bothOk(f);
+  setMode(Z.mode);
   maxLine();
   gate();
 }
@@ -516,7 +534,7 @@ function dropReady(quiet = false) {
   if (!r || quiet || !key?.unlocked) return;
   getUx().then((t) => t.releaseShareIndex({ walletPriv: key.priv(), poolId: r.poolId, index: r.index })).catch(() => {});
 }
-const lock = (on) => { amtIn.disabled = on; for (const b of $$('#pz .quick button, #pz-max')) b.disabled = on; if (on) { goBtn.setAttribute('aria-busy', 'true'); goBtn.disabled = true; } else goBtn.removeAttribute('aria-busy'); };
+const lock = (on) => { amtIn.disabled = on; for (const b of $$('#pz .quick button, #pz-max, #pz-mode button')) b.disabled = on; if (on) { goBtn.setAttribute('aria-busy', 'true'); goBtn.disabled = true; } else goBtn.removeAttribute('aria-busy'); };
 const frontLink = (f, wei) => `<a href="/#card=earn:ether:p${f.pid}&amt=${plain(wei)}">The front page can prove it another way →</a>`;
 
 goBtn.addEventListener('click', async () => {
@@ -632,10 +650,12 @@ $('#pz-loose').addEventListener('click', async (e) => {
 
 // the key's positions in the private farms: the rewards page's panel, on this page's key
 function mountMine() {
-  return mineP ||= import('/rewards/farms.js?cb=6adb8532').then((m) => {
+  return mineP ||= import('/rewards/farms.js?cb=16c9b893').then((m) => {
     mineUi = m.mountFarms($('#pf-mine'), { pick: pickProvider, session: key, wallet, W, connect: () => connect.connect(), program: () => S.prog,
       names: () => new Map(S.priv.map((x) => [x.pid, x.name])), pair: (pid) => { const icons = S.priv.find((x) => String(x.pid) === String(pid))?.icons; return icons ? pairIcons(icons) : ''; },
-      onRead: (list) => { S.mine = new Map(list.map((p) => [Number(p.pid), p])); paint(); } });
+      onRead: (list) => { S.mine = new Map(list.map((p) => [Number(p.pid), p])); paint(); },
+      joinAt: $('#pz-join'), onAct: (name, ok) => { if (name !== 'join') return; if (ok) { cheer('In the farm'); readLoose(); } else react('down', 1600); } });
+    if (Z.mode === 'both' && Z.f?.pid != null) { Z.joinFor = Z.f.pid; mineUi.choose(Z.f.pid); }
     return mineUi;
   }).catch((e) => { mineP = null; console.warn('your farms:', e?.message || e); });
 }

@@ -167,11 +167,13 @@ const t = {
     note('balance');
     const loose = T().loose ? [{ leaf: '0x' + 'ab'.repeat(32), asset: T().loose, value: '1000', owner: '0x01' }] : [];
     const made = window.__zapSent && !T().bonded ? [{ leaf: LEAF, asset: T().lpAsset || '${LPA[0]}', value: '1', owner: '0x02' }] : [];
-    return { notes: [...loose.filter(() => !T().bonded), ...made], spentNotes: [] };
+    return { notes: [...loose.filter(() => !T().bonded), ...made, ...(T().joined ? [] : T().privNotes || [])], spentNotes: [] };
   },
+  async lpBond({ aNote, bNote, controller }) { note('lpbond', aNote.value + '+' + bNote.value + '@' + controller.slice(0, 8)); await sleep(150); if (T().joinFail) throw Object.assign(new Error('relay 503: temporarily unavailable'), { code: 'relay_held' }); T().joined = true; T().bonded = true; return { jobId: 'job-lpbond', txHash: '0x' + '33'.repeat(32) }; },
+  async transfer() { note('transfer'); throw new Error('this stand-in does not cut notes'); },
   async farmBond({ lpNote }) { note('bond', lpNote.leaf.slice(0, 6)); await sleep(T().bondMs ?? 200); if (T().bondFail) throw Object.assign(new Error('relay 503: temporarily unavailable'), { code: 'relay_held' }); T().bonded = true; return { jobId: 'job-bond', txHash: '0x' + '22'.repeat(32) }; },
   farmPositions: async () => (T().bonded ? [{ pid: 0, receiptLeaf: '0x' + '77'.repeat(32), pendingUnits: '0', pendingTac: '0', shares: '1' }] : (T().positions || [])),
-  ethCall: async () => '0x' + '0'.repeat(64), identity: () => ({ pubHex: '02' + 'ab'.repeat(32) }), poolTickerOf: () => 'cETH', quoteOpFee: async () => 0n, quoteUnwrapFee: () => ({ net: 1n, fee: 0n }),
+  ethCall: async () => '0x' + '0'.repeat(64), identity: () => ({ pubHex: '02' + 'ab'.repeat(32) }), poolTickerOf: (id) => ({ '${A_TAC}': 'TAC', '${A_CUSD}': 'cUSD', '${A_CBTC}': 'cBTC' })[String(id).toLowerCase()] || 'cETH', quoteOpFee: async () => 0n, quoteUnwrapFee: () => ({ net: 1n, fee: 0n }),
 };
 export const getUx = async () => t;
 export const forgetUx = async () => { note('forget'); };
@@ -329,6 +331,7 @@ try {
     ok(await page.title() === 'tacit farm', 'and the tab’s title is the page’s');
     await page.goBack();
     ok(await until(page, () => location.hash === '#tac-eth' && !document.querySelector('#station').hidden), 'the browser’s Back returns to the farm');
+    await sleep(400);                                                                  // opening a farm focuses its amount a moment later
     await page.focus('#fm-amt');
     await page.keyboard.press('Escape');
     ok(await page.evaluate(() => document.activeElement?.id !== 'fm-amt' && !document.querySelector('#station').hidden), 'Escape in the amount leaves the field and keeps the farm open');
@@ -496,6 +499,68 @@ try {
       ok(await sayIs(page, /In the farm/), 'and its Farm it bonds it');
       ok(await page.evaluate(() => window.__ux.filter((x) => x.startsWith('bond')).length === 1 && !window.__keyOpens), 'with the key the tab had, no sign-in');
       clean(r, 'a share in no farm');
+      await r.browser.close();
+    }
+  }
+
+  // 4b. Both coins from the private balance: the positions panel's join, drawn in the farm's card.
+  if (runs('both')) {
+    const a = 10000000n, b = a * 10000000000000n / 1000000000n;                         // 0.1 tETH and, at the pool's 1:10,000, 1,000 TAC
+    const privNotes = [{ leaf: '0x' + 'c1'.repeat(32), asset: CETH, value: String(a), owner: '0x03' }, { leaf: '0x' + 'c2'.repeat(32), asset: A_TAC, value: String(b), owner: '0x04' }];
+    {
+      const r = await openPage({ hash: '#teth-tac', fake: true, wallet: true, t: { keyOpen: true, privNotes } }), { page } = r;
+      ok(await until(page, () => !document.querySelector('#pz-mode').hidden && document.querySelector('#pz-both').textContent === 'tETH + TAC'), 'a private farm offers ETH or tETH + TAC');
+      ok(/Half is swapped inside the pool/.test(await text(page, '#pz-how')), `ETH is the first way in: ${await text(page, '#pz-how')}`);
+      await page.click('#pz-both');
+      ok(await until(page, () => !document.querySelector('#pz-join').hidden && document.querySelector('#pz-eth').hidden && !!document.querySelector('#pz-join #pf-a')), 'tETH + TAC shows the join in the card, in place of the ETH form');
+      ok(/From your private tETH and TAC, at the pool’s ratio: nothing is swapped/.test(await text(page, '#pz-how')), `and says how it goes in: ${await text(page, '#pz-how')}`);
+      ok(await page.evaluate(() => !document.querySelector('#pf-mine #pf-a') && !document.querySelector('#pf-mine .pf-join')), 'the positions panel no longer carries a second join form');
+      ok(await until(page, () => /Held 0\.1/.test(document.querySelector('#pz-join [data-pf="max"]')?.textContent || '')), 'what the key holds of tETH is a press away');
+      await page.click('#pz-join [data-pf="max"]');
+      ok(await until(page, () => document.querySelector('#pz-join #pf-a').value === '0.1' && /TAC, at the pool’s ratio\s*1,000/.test(document.querySelector('#pf-info').textContent)), `Held fills 0.1 and the second side is worked out: ${await text(page, '#pf-info')}`);
+      ok(await until(page, () => !document.querySelector('#pz-join [data-pf="join"]').disabled), 'notes of exactly those sizes need no cut, and the button is ready');
+      await shot(page, 'private-both');
+      await page.click('#pz-join [data-pf="join"]');
+      ok(await until(page, () => /In the farm/.test(document.querySelector('#pj-said')?.textContent || ''), null, 20000), `the join ends in the farm, said in the card (${await text(page, '#pz-join')})`);
+      const ux = await page.evaluate(() => window.__ux);
+      ok(ux.filter((x) => x.startsWith('lpbond')).length === 1 && ux.includes(`lpbond:${a}+${b}@0x000031`) && !ux.includes('transfer'), `one proof adds both and farms the share, with nothing cut first (${ux.filter((x) => /^(lpbond|transfer)/.test(x)).join(', ')})`);
+      ok(await until(page, () => document.querySelector('#chef').dataset.mood === 'up' || !!document.querySelector('#fx')), 'and the chef cheers');
+      ok(await until(page, () => document.querySelector('#d-teth-tac .yours')?.textContent === 'Yours'), 'the farm’s tile is marked as yours');
+      await page.click('[data-pm="eth"]');
+      ok(await page.evaluate(() => !document.querySelector('#pz-eth').hidden && document.querySelector('#pz-join').hidden), 'ETH brings the one-transaction form back');
+      clean(r, 'both coins');
+      await r.browser.close();
+    }
+    {
+      // the key not open: the card's way in opens it with the wallet connected here, then the join is drawn
+      const r = await openPage({ hash: '#teth-tac', fake: true, wallet: true, t: { privNotes } }), { page } = r;
+      await until(page, () => !document.querySelector('#pz-mode').hidden);
+      await page.click('#pz-both');
+      ok(await until(page, () => /Open your Tacit wallet/.test(document.querySelector('#pz-join')?.textContent || '')), 'with the key shut the card asks to open it');
+      await page.click('#pz-join [data-pf="open"]');
+      ok(await until(page, () => !!document.querySelector('#pz-join #pf-a')), 'and once it is open the join is there');
+      ok(await page.evaluate(() => window.__keyOpens === 1 && !window.__sheets), 'opened by the wallet connected here, with no sheet');
+      await r.browser.close();
+    }
+    {
+      // a farm between reward periods takes no joins: no choice is offered
+      const r = await openPage({ hash: '#teth-tac', fake: true, prog: program({ active: false }) }), { page } = r;
+      await until(page, () => /Between reward periods/.test(document.querySelector('#k-kind')?.textContent || ''));
+      ok(await page.evaluate(() => document.querySelector('#pz-mode').hidden && !document.querySelector('#pz-eth').hidden), 'between reward periods only the ETH form is there');
+      await r.browser.close();
+    }
+    {
+      // the rewards page mounts the same panel without a card: its join stays in the panel
+      const r = await openPage({ fake: true, t: { keyOpen: true, privNotes } });
+      await r.page.goto(`http://127.0.0.1:${WEB}/rewards/`, { waitUntil: 'load' });
+      await until(r.page, () => !!document.querySelector('#pf-mine [data-pf="open"]'));
+      await r.page.click('#pf-row > summary').catch(() => {});
+      await r.page.click('#pf-mine [data-pf="open"]');
+      ok(await until(r.page, () => !!document.querySelector('#pf-mine details.pf-join #pf-a') && /No private farm positions yet/.test(document.querySelector('#pf-mine').textContent)), 'the rewards page’s panel still lists positions with its own join form');
+      await r.page.evaluate(() => { document.querySelector('#pf-mine details.pf-join').open = true; });
+      await r.page.fill('#pf-mine #pf-a', '0.1');
+      ok(await until(r.page, () => /1,000/.test(document.querySelector('#pf-mine #pf-info')?.textContent || '') && !document.querySelector('#pf-mine [data-pf="join"]').disabled), 'and quotes the second side there');
+      ok(!r.errors.length, `no page errors on the rewards page (${r.errors.slice(0, 2).join(' | ')})`);
       await r.browser.close();
     }
   }

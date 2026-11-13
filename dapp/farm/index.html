@@ -32,7 +32,7 @@
 <link rel="preconnect" href="https://tacit-points.onrender.com" crossorigin>
 <!-- preload-roots: /farm/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/farm/app.js?cb=0d2d002b">
+<link rel="modulepreload" href="/farm/app.js?cb=31edf0be">
 <link rel="modulepreload" href="/trade/connect.js?cb=b758e60b">
 <link rel="modulepreload" href="/walletconnect.js?cb=843803d6">
 <link rel="modulepreload" href="/trade/wallet.js?cb=5d19a733">
@@ -290,6 +290,13 @@ html[data-view="farm"] .menu { display: none; }
 .cook-bar { height: 3px; margin: 10px 0 0; border-radius: 2px; background: var(--hair); overflow: hidden; }
 .cook-bar i { display: block; height: 100%; width: 0; border-radius: 2px; background: var(--ink); transition: width 1s linear; }
 .cook-bar[hidden] { display: none; }
+/* both sides from the private balance: the positions panel's join (rewards/farms.js), drawn in the card */
+.pj dl.kv { display: grid; gap: 0; margin: 0; padding: 0; }
+.pj dl.kv div { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; font-size: 12.5px; color: var(--mute); }
+.pj dl.kv dt { margin: 0; } .pj dl.kv dd { margin: 0; color: var(--ink); text-align: right; overflow-wrap: anywhere; }
+.pj .more { margin: 8px 0 0; font-size: 12.5px; color: var(--mute); overflow-wrap: anywhere; } .pj .more.err { color: var(--err); } .pj .more.ok { color: var(--ok); }
+.pj .more a { color: var(--ink); }
+.pj .note { margin-top: 0; }
 .cook-acts { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 8px 0 0; } .cook-acts:empty { display: none; }
 
 /* the key's own private farms (rewards/farms.js draws them): positions, harvest, exit */
@@ -547,6 +554,9 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
             <div class="fm-stats" id="pz-stats"></div>
             <div class="fm-add">
               <h3 id="pz-h">Farm privately</h3>
+              <div class="seg big" id="pz-mode" role="group" aria-label="Deposit with"><button type="button" data-pm="eth" aria-pressed="true">ETH</button><button type="button" data-pm="both" aria-pressed="false" id="pz-both">tETH + TAC</button></div>
+              <p class="note fm-how" id="pz-how"></p>
+              <div id="pz-eth">
               <div class="lbl"><span>ETH</span><button class="linkbtn" type="button" id="pz-max" hidden></button></div>
               <div class="amt"><input id="pz-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="ETH to deposit"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>ETH</span></div>
               <div class="quick" id="pz-quick"></div>
@@ -554,6 +564,8 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
               <div class="cook" id="pz-cook" hidden><span class="cook-fig" aria-hidden="true"></span><div class="cook-b"><ol class="steps" id="pz-steps"><li data-s="prove">Prove</li><li data-s="send">Send</li><li data-s="farm">Farm</li></ol><p class="cook-say" id="pz-say" role="status"></p><div class="cook-bar" id="pz-bar" hidden><i></i></div><div class="cook-acts" id="pz-acts"></div></div></div>
               <button class="btn" type="button" id="pz-go">Enter an amount</button>
               <div class="status" id="pz-status" role="status"></div>
+              </div>
+              <div class="pj" id="pz-join" hidden></div>
             </div>
           </div>
         </div>
@@ -586,6 +598,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/farm/app.js?cb=0d2d002b"></script>
+<script type="module" src="/farm/app.js?cb=31edf0be"></script>
 </body>
 </html>

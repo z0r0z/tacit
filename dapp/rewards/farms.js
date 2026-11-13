@@ -5,6 +5,8 @@
 // Nothing here is loaded until the holder asks: this module, the key and the pool all come in on that press.
 // A page that opens the key for something of its own (the farm page's deposits) passes its `session`, so one sign-in serves both: it
 // then calls `forget(why)` when the wallet behind the key has moved. `onRead(list)` is told the positions each time they are read.
+// `joinAt` is an element the join with both sides is drawn in instead (the farm page's own card, on the farm `choose` names), with what
+// it says as it runs; `onAct(name, ok)` is told when an action ends.
 import { makeKeySession, signInSheet } from '/trade/key.js?cb=09f263cb';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=59d125e5';
 import { makeRunner } from '/activity.js';
@@ -25,8 +27,9 @@ const MULTICALL3 = '0xca11bde05977b3631167028862be2a173976ca11';
 // the chain's clock, read with the positions: whether a bond is over goes by it, not by this device's
 const chainNow = async (ux) => ({ at: Date.now(), t: Number(wordAt(await ux.ethCall(MULTICALL3, '0x0f28c97d'), 0)) });
 
-export function mountFarms(root, { pick, names = () => new Map(), pair = () => '', program = () => null, wallet = null, W = null, connect = null, session = null, onRead = () => {} } = {}) {
+export function mountFarms(root, { pick, names = () => new Map(), pair = () => '', program = () => null, wallet = null, W = null, connect = null, session = null, onRead = () => {}, joinAt = null, onAct = () => {} } = {}) {
   let D = null, seq = 0, runner = null, wanted = null;
+  const jr = joinAt || root;                                                           // where the join's form and fields are
   let lockedWhy = '';                                                                  // why the key was locked, when the wallet that opened it moved
   const now = () => (D?.clock ? D.clock.t + (Date.now() - D.clock.at) / 1000 : undefined);   // the chain's time, carried on from its read
   const key = session || makeKeySession({ moved: (why) => forget(why || '') });
@@ -53,7 +56,7 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
       const ux = await getUx(), [list, bal, wt, clock] = await Promise.all([ux.farmPositions({ walletPriv: priv }), ux.balance(priv).catch(() => null), walletWtac(ux), chainNow(ux).catch(() => null)]);
       if (my !== seq || key.key?.pubHex !== pub) return;
       const cur = D?.pub === pub ? D : null;                                         // what was typed, said or started while this was read is kept
-      D = { pub, list: Array.isArray(list) ? list : [], notes: bal?.notes || [], notesOk: !!bal, wtac: wt, clock: clock || cur?.clock || null, said: cur?.said || null, form: cur?.form || wanted || {}, terms: cur?.terms || {}, busy: cur?.busy || null };
+      D = { pub, list: Array.isArray(list) ? list : [], notes: bal?.notes || [], notesOk: !!bal, wtac: wt, clock: clock || cur?.clock || null, said: cur?.said || null, sayAt: cur?.sayAt || null, form: cur?.form || wanted || {}, terms: cur?.terms || {}, busy: cur?.busy || null };
       try { onRead(D.list); } catch { /* the page's own note of them */ }
     } catch (e) { if (my === seq) D = { pub, err: String(e?.message || e).slice(0, 160) }; }
     paint();
@@ -71,11 +74,12 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
   async function act(name, fn) {
     if (!D || D.busy) return;
     const mine = D;
-    mine.busy = name; say('');
-    try { const text = await fn(); if (D?.pub === mine.pub) say(text, 'ok'); }
+    let done = false;
+    mine.busy = name; mine.sayAt = name === 'join' && joinAt ? 'join' : null; say('');
+    try { const text = await fn(); done = true; if (D?.pub === mine.pub) say(text, 'ok'); }
     catch (e) { if (D?.pub === mine.pub) { const [text, kind] = failure(e); say(text, kind); } }
     // whatever it came to, the positions are read again: a step that went through before a later one failed shows as it is
-    finally { if (D?.pub === mine.pub) D.busy = null; if (key.unlocked) read(); }
+    finally { if (D?.pub === mine.pub) D.busy = null; if (key.unlocked) read(); try { onAct(name, done); } catch { /* the page's own */ } }
   }
   const walletWtac = async (ux) => (W?.account ? wordAt(await ux.ethCall(wtacBalanceCall(W.account).to, wtacBalanceCall(W.account).data).catch(() => '0x'), 0) : 0n);
   const name = (pos) => names().get(Number(pos.pid)) || `Farm ${pos.pid}`;
@@ -230,7 +234,7 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
     if (bFor(a, now.res) !== b) { updateInfo(); throw Object.assign(new Error(`The pool’s price moved while your notes were cut to size: the second side is now ${units8(bFor(a, now.res))} ${tm.tkB}. Press again: the notes are ready and nothing was added.`), { said: true }); }
     say(`Step ${n} of ${n} · the relay is proving your farm entry…`);
     settled(await bond(t, priv(), { manager: prog.manager, aNote: nA, bNote: nB, feeBps: now.res.feeBps ?? pool.feeBps, waitOpts: run().wait(`Add ${name(pool)} liquidity and farm it`, 20 * 60e3) }));
-    if (D) D.form = {};
+    if (D) D.form = joinAt ? { pool: D.form.pool, open: true } : {};
     return prog?.epoch?.active ? 'In the farm: TAC is streaming to your private position.' : 'In the farm. It earns once the next reward period starts.';
   }
   function joinForm() {
@@ -239,6 +243,14 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
     const f = D.form, pool = chosen(), pid = String(pool.pid), tm = D.terms?.[pid], a = parseUnits(f.a || '', 8);
     if (!tm && !D.termsAsked?.[pid]) { (D.termsAsked ||= {})[pid] = true; terms(pool).then(() => paint(), () => {}); }
     const short = tm && a && D.notesOk && plan(pool, tm, a, D.notes).short;
+    if (joinAt) {
+      // the page's own card: its farm, the first side's amount, the second at the pool's ratio, one press
+      const held = tm && D.notesOk ? notesOf(D.notes, pool.reserves.assetA).reduce((s, x) => s + BigInt(x.value), 0n) : null;
+      return `<div class="lbl"><span>${esc(tm?.tkA || 'tETH')}, private</span>${held ? `<button class="linkbtn" type="button" data-pf="max">Held ${esc(units8(held))}</button>` : ''}</div>
+        <div class="amt"><input id="pf-a" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="${esc(tm?.tkA || 'tETH')} to put in" value="${esc(f.a || '')}"${D.busy ? ' disabled' : ''}><span class="u">${esc(tm?.tkA || 'tETH')}</span></div>
+        <div class="fm-rcpt" id="pf-info">${joinInfo(pool, tm, a) || '<p class="note">The second side is worked out at the pool’s ratio.</p>'}</div>
+        <button class="btn" type="button" data-pf="join"${D.busy || !tm || short ? ' disabled' : ''}>${D.busy === 'join' ? 'Adding…' : `Add both and farm`}</button>`;
+    }
     return `<details class="pf-join"${f.open || f.a ? ' open' : ''}><summary>Join a private farm</summary>
       <dl class="kv"><div><dt>Farm</dt><dd><select id="pf-pool" aria-label="Farm to join"${D.busy ? ' disabled' : ''}>${fs.map((p) => `<option value="${esc(String(p.pid))}"${String(p.pid) === pid ? ' selected' : ''}>${esc(name(p))}</option>`).join('')}</select></dd></div>
       <div><dt>${esc(tm?.tkA || 'First side')}</dt><dd><input id="pf-a" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="${esc(tm?.tkA || 'First side')} to put in" value="${esc(f.a || '')}"${D.busy ? ' disabled' : ''}></dd></div></dl>
@@ -250,14 +262,34 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
   function updateInfo() {
     const pool = D?.form && chosen();
     if (!pool) return;
-    const tm = D.terms?.[String(pool.pid)], a = parseUnits(D.form.a || '', 8), el = root.querySelector('#pf-info'), go = root.querySelector('[data-pf="join"]');
-    if (el) el.innerHTML = joinInfo(pool, tm, a);
+    const tm = D.terms?.[String(pool.pid)], a = parseUnits(D.form.a || '', 8), el = jr.querySelector('#pf-info'), go = jr.querySelector('[data-pf="join"]');
+    if (el) el.innerHTML = joinInfo(pool, tm, a) || (joinAt ? '<p class="note">The second side is worked out at the pool’s ratio.</p>' : '');
     if (go) go.disabled = !!D.busy || !tm || !!(a && D.notesOk && plan(pool, tm, a, D.notes).short);
     if (tm && a && Date.now() - tm.at > QUOTE_FRESH) terms(pool, true).then(updateInfo, () => {});
   }
   setInterval(() => { if (!document.hidden && key.unlocked && D?.form?.a && !D.busy) updateInfo(); }, 15e3);
 
+  // what a press said, as a status line
+  const saidLine = (id) => { const s = D?.said; return s?.text ? `<p class="more${s.kind === 'ok' ? ' ok' : s.kind ? ' err' : ''}" role="status" id="${id}">${esc(s.text)}${s.kind === 'front' ? ' <a href="/#farm">Do it on the front page →</a>' : ''}</p>` : `<p class="more" role="status" id="${id}"></p>`; };
+  // the join drawn where the page asked: a way in when the key is shut, the form once the notes are read
+  function paintJoin() {
+    if (!joinAt) return;
+    const h = !key.unlocked ? `<p class="note">Open your Tacit wallet to add what you hold privately.</p><button class="btn" type="button" data-pf="open">Open your Tacit wallet</button>`
+      : !D || D.loading ? '<p class="note">Reading your private balance…</p>'
+      : D.err ? `<p class="note err">${esc(D.err)} <button class="linkbtn" type="button" data-pf="again">Try again</button></p>`
+      : `${openFarms().length ? joinForm() : '<p class="note">No private farm is open to join now.</p>'}${D.sayAt === 'join' ? saidLine('pj-said') : ''}`;
+    put(joinAt, h);
+  }
+  function put(el, h) {
+    if (el.__h === h) return;
+    // the field being typed in keeps its place through a repaint
+    const at = document.activeElement, id = at && el.contains(at) ? at.id : '', s0 = at?.selectionStart, s1 = at?.selectionEnd;
+    el.__h = h; el.innerHTML = h;
+    const f = id && el.querySelector(`#${CSS.escape(id)}`);
+    if (f) { f.focus({ preventScroll: true }); try { if (s0 != null) f.setSelectionRange(s0, s1); } catch { /* a field with no selection */ } }
+  }
   function paint() {
+    paintJoin();
     let h;
     if (!key.unlocked) h = `${lockedWhy ? `<p class="more err">${esc(lockedWhy)}</p>` : ''}<p class="more">Your positions in the private farms.</p><button class="act" type="button" data-pf="open">Show mine</button>`;
     else if (!D || D.loading) h = '<p class="more">Reading your positions…</p>';
@@ -272,32 +304,35 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
             <button type="button" data-pf="exit" data-i="${i}"${b || lk ? ' disabled' : ''}>${b === `exit:${i}` ? 'Exiting…' : 'Exit'}</button>
           </div>`;
       }).join('');
-      const s = D.said, said = s?.text ? `<p class="more${s.kind === 'ok' ? ' ok' : s.kind ? ' err' : ''}" role="status" id="pf-said">${esc(s.text)}${s.kind === 'front' ? ' <a href="/#farm">Do it on the front page →</a>' : ''}</p>` : '<p class="more" role="status" id="pf-said"></p>';
+      const said = D.sayAt === 'join' ? '' : saidLine('pf-said');
       const rn = rewardNotes(D.notes, program()?.rewardAsset), rsum = rn.reduce((a, x) => a + BigInt(x.value), 0n);
       const rewards = rn.length || D.wtac > 0n ? `<dl class="kv"><div><dt>Rewards to turn into TAC</dt><dd class="num">${rn.length ? `${esc(noteTxt(rsum))} wTAC private` : ''}${rn.length && D.wtac > 0n ? ' · ' : ''}${D.wtac > 0n ? `${esc(tacTxt(D.wtac))} wTAC in your wallet` : ''}</dd></div></dl>
         <div class="acts"><button type="button" data-pf="totac"${D.busy ? ' disabled' : ''}>${D.busy === 'totac' ? 'Turning…' : 'Turn into TAC'}</button></div>` : '';
-      h = `${rows || '<p class="more">No private farm positions yet.</p>'}${rewards}${joinForm()}${said}<div class="acts"><button type="button" data-pf="again"${D.busy ? ' disabled' : ''}>Read again</button><button type="button" data-pf="lock"${D.busy ? ' disabled' : ''}>Lock your key</button></div>`;
+      h = `${rows || '<p class="more">No private farm positions yet.</p>'}${rewards}${joinAt ? '' : joinForm()}${said}<div class="acts"><button type="button" data-pf="again"${D.busy ? ' disabled' : ''}>Read again</button><button type="button" data-pf="lock"${D.busy ? ' disabled' : ''}>Lock your key</button></div>`;
     }
-    if (root.__h !== h) {
-      // the field being typed in keeps its place through a repaint
-      const at = document.activeElement, id = at && root.contains(at) ? at.id : '', s0 = at?.selectionStart, s1 = at?.selectionEnd;
-      root.__h = h; root.innerHTML = h;
-      const el = id && root.querySelector(`#${CSS.escape(id)}`);
-      if (el) { el.focus({ preventScroll: true }); try { if (s0 != null) el.setSelectionRange(s0, s1); } catch { /* a field with no selection */ } }
-    }
+    put(root, h);
   }
 
-  root.addEventListener('toggle', (e) => { if (D?.form && e.target.classList?.contains('pf-join')) D.form.open = e.target.open; }, true);
-  root.addEventListener('input', (e) => {
-    if (!D?.form || e.target.id !== 'pf-a') return;
-    D.form.a = e.target.value.trim();
-    updateInfo();
-  });
-  root.addEventListener('change', (e) => { if (D?.form && e.target.id === 'pf-pool') { D.form.pool = e.target.value; paint(); } });
-  root.addEventListener('click', (e) => {
+  const hosts = joinAt ? [root, joinAt] : [root];
+  for (const el of hosts) {
+    el.addEventListener('toggle', (e) => { if (D?.form && e.target.classList?.contains('pf-join')) D.form.open = e.target.open; }, true);
+    el.addEventListener('input', (e) => {
+      if (!D?.form || e.target.id !== 'pf-a') return;
+      D.form.a = e.target.value.trim();
+      updateInfo();
+    });
+    el.addEventListener('change', (e) => { if (D?.form && e.target.id === 'pf-pool') { D.form.pool = e.target.value; paint(); } });
+    el.addEventListener('click', onClick);
+  }
+  function onClick(e) {
     const b = e.target.closest('[data-pf]');
     if (!b || b.disabled) return;
     const what = b.dataset.pf, i = Number(b.dataset.i);
+    if (what === 'max') {                                                              // every note of the first side held
+      const pool = chosen(), held = pool ? notesOf(D.notes, pool.reserves.assetA).reduce((s, x) => s + BigInt(x.value), 0n) : 0n;
+      if (held > 0n) { D.form.a = units8(held).replace(/,/g, ''); paint(); updateInfo(); }
+      return;
+    }
     if (what === 'lock') return forget();
     if (what === 'again') return read();
     if (what === 'harvest') return act(`harvest:${i}`, () => doHarvest(i));
@@ -306,7 +341,7 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
     if (what === 'totac') return act('totac', toTac);
     if (what === 'join') return act('join', join);
     signInSheet(key, { pick, why: 'Open your Tacit wallet to see your private farm positions. Nothing is stored or sent.' }).then(() => read(), () => {});
-  });
+  }
   key.onChange(() => { if (key.unlocked && D?.pub !== key.key.pubHex) read(); else paint(); });
   if (key.unlocked) read(); else paint();
   // a farm picked elsewhere on the page: the join form opened on it, now or once the positions are read
