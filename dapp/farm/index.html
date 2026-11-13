@@ -1,0 +1,591 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; connect-src 'self' https://api.tacit.finance https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://tacit-api.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://rpc.flashbots.net https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io https://ipfs.filebase.io; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com">
+<meta name="color-scheme" content="light dark">
+<title>tacit farm</title>
+<meta name="description" content="Put ETH into a Tacit farm in one transaction and earn TAC, in public or in private.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="tacit">
+<link rel="canonical" href="https://tacit.finance/farm/">
+<meta property="og:url" content="https://tacit.finance/farm/">
+<meta property="og:title" content="tacit farm">
+<meta property="og:description" content="Put ETH into a Tacit farm in one transaction and earn TAC, in public or in private.">
+<meta property="og:image" content="https://tacit.finance/tacit-card.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#E8E0CC" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#15130E" media="(prefers-color-scheme: dark)">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<script src="/farm/early.js?cb=05df0fd4"></script>
+<link rel="preload" href="/fonts/instrument-serif-400-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/instrument-serif-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/ibm-plex-mono-500-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/farm/chef.png" as="image">
+<link rel="prefetch" href="/farm/chef-wink.png">
+<link rel="preconnect" href="https://api.tacit.finance" crossorigin>
+<link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
+<link rel="preconnect" href="https://rpc.mevblocker.io" crossorigin>
+<link rel="preconnect" href="https://eth-mainnet.nodereal.io" crossorigin>
+<link rel="preconnect" href="https://tacit-points.onrender.com" crossorigin>
+<!-- preload-roots: /farm/app.js -->
+<!-- preload:begin -->
+<link rel="modulepreload" href="/farm/app.js?cb=8334e55c">
+<link rel="modulepreload" href="/trade/connect.js?cb=b758e60b">
+<link rel="modulepreload" href="/walletconnect.js?cb=843803d6">
+<link rel="modulepreload" href="/trade/wallet.js?cb=5d19a733">
+<link rel="modulepreload" href="/wallet-prompts.js">
+<link rel="modulepreload" href="/trade/sheet.js?cb=d857446c">
+<link rel="modulepreload" href="/trade/util.js?cb=1d2cd8d3">
+<link rel="modulepreload" href="/trade/rpc.js">
+<link rel="modulepreload" href="/rpc-body.js">
+<link rel="modulepreload" href="/eth-nodes.js">
+<link rel="modulepreload" href="/rpc-pace.js">
+<link rel="modulepreload" href="/trade/fmt.js?cb=172824e5">
+<link rel="modulepreload" href="/trade/batch.js">
+<link rel="modulepreload" href="/trade/farm-read.js?cb=efe1d81e">
+<link rel="modulepreload" href="/trade/lp-campaign.js?cb=8da1c942">
+<link rel="modulepreload" href="/vault/deployments.js?cb=4af96594">
+<link rel="modulepreload" href="/farm-ops.js?cb=28af38e1">
+<link rel="modulepreload" href="/relay-outcome.js?cb=17e48a9a">
+<link rel="modulepreload" href="/farm/zap.js?cb=24ae69b7">
+<link rel="modulepreload" href="/lp-zap.js?cb=a43160fd">
+<!-- preload:end -->
+<style>
+@font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
+@font-face { font-family: 'IBM Plex Mono'; font-weight: 500; font-display: swap; src: url('/fonts/ibm-plex-mono-500-latin.woff2') format('woff2'); }
+@font-face { font-family: 'Instrument Serif'; font-weight: 400; font-display: swap; src: url('/fonts/instrument-serif-400-latin.woff2') format('woff2'); }
+@font-face { font-family: 'Instrument Serif'; font-weight: 400; font-style: italic; font-display: swap; src: url('/fonts/instrument-serif-400i-latin.woff2') format('woff2'); }
+
+:root {
+  --paper: #E8E0CC; --card: #F2EBD4; --field: #FAF6EA;
+  --ink: #1A1A1A; --mute: #625C4F;
+  --hair: rgba(26,26,26,.12); --hair-2: rgba(26,26,26,.28);
+  --orange: #f7931a; --ok: #0a7234; --warn: #9a4a00; --err: #b8341d;
+  --scrim: rgba(26,26,26,.36); --sheet-shadow: 0 40px 90px -40px rgba(0,0,0,.6);
+  --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --serif: 'Instrument Serif', 'Instrument Serif Fallback', 'Instrument Serif Fallback T', 'Instrument Serif Fallback N', Georgia, serif;
+  --spring: cubic-bezier(.2, .8, .2, 1);
+  --tap: 44px;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #15130E; --card: #1F1C15; --field: #191711;
+    --ink: #EDE5CF; --mute: #A39B85;
+    --hair: rgba(237,229,207,.12); --hair-2: rgba(237,229,207,.28);
+    --ok: #8fcf9a; --warn: #f7931a; --err: #f08a6c;
+    --scrim: rgba(0,0,0,.6);
+    color-scheme: dark;
+  }
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+html, body { margin: 0; background: var(--paper); color: var(--ink); }
+body {
+  font: 14px/1.6 var(--mono); letter-spacing: -.01em; overflow-x: hidden;
+  background-image: radial-gradient(var(--hair) 1px, transparent 1px); background-size: 24px 24px;
+  padding: 0 max(16px, env(safe-area-inset-right)) env(safe-area-inset-bottom) max(16px, env(safe-area-inset-left));
+}
+a { color: inherit; text-underline-offset: 3px; text-decoration-thickness: 1px; }
+:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+[hidden] { display: none !important; }
+.num { font-variant-numeric: tabular-nums; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.skip { position: absolute; left: 16px; top: -64px; z-index: 100; padding: 10px 16px; background: var(--ink); color: var(--paper); border-radius: 8px; text-decoration: none; font-size: 13px; transition: top .15s; }
+.skip:focus { top: 12px; }
+.tk { width: 28px; height: 28px; display: block; flex: none; border-radius: 50%; }
+.tk.sm { width: 18px; height: 18px; } .tk.xs { width: 14px; height: 14px; } .tk.inl { display: inline-block; vertical-align: -3px; margin-right: 5px; }
+.shell { max-width: 1120px; margin: 0 auto; padding-bottom: 56px; min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; }
+#main { flex: 1; outline: none; }
+.err { color: var(--err); } .ok { color: var(--ok); }
+
+/* header */
+.top { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 22px 0 8px; }
+.brand { display: inline-flex; align-items: center; gap: 10px; text-decoration: none; flex: none; }
+.brand b { font: italic 400 30px/1 var(--serif); letter-spacing: -.01em; }
+.brand i { font-style: normal; font-size: 12px; color: var(--mute); text-transform: uppercase; letter-spacing: .12em; }
+
+/* the chef over the title: the rewards page's ninja under a toque. He bobs while he waits, nods at a farm picked, stirs while a deposit
+   is under way and hops when it is in */
+.hero { padding: clamp(10px, 3vh, 34px) 0 0; text-align: center; }
+.hero h1 { font: 400 clamp(42px, 7vw, 64px)/.95 var(--serif); letter-spacing: -.025em; margin: 0; }
+.hero h1 em { font-style: italic; }
+.lede { margin: 12px 0 0; color: var(--mute); }
+.chef { position: relative; width: 96px; height: 124px; margin: 0 auto 6px; padding: 0; display: block; background: none; border: 0; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.chef .fig { position: absolute; inset: 0; background: url('/farm/chef.png') center bottom / contain no-repeat; image-rendering: pixelated; transform-origin: 50% 100%; animation: bob 3.4s ease-in-out infinite; }
+.chef.wink .fig { background-image: url('/farm/chef-wink.png'); }
+.chef[data-mood="pick"] .fig { animation: nod .9s ease-in-out 1; }
+.chef[data-mood="cook"] .fig { animation: stir 1s ease-in-out infinite; }
+.chef[data-mood="up"] .fig { animation: hop 1.2s var(--spring) 1; }
+.chef[data-mood="down"] .fig { animation: no .8s ease-in-out 1; }
+@keyframes bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
+@keyframes nod { 0%, 100% { transform: rotate(0); } 25% { transform: rotate(7deg); } 50% { transform: rotate(-2deg); } 75% { transform: rotate(6deg); } }
+@keyframes stir { 0%, 100% { transform: rotate(-5deg); } 50% { transform: rotate(5deg); } }
+@keyframes hop { 0%, 100% { transform: translateY(0) scale(1); } 18% { transform: translateY(4px) scale(1.04, .94); } 42% { transform: translateY(-18px) scale(.97, 1.04); } 64% { transform: translateY(0) scale(1.03, .96); } 80% { transform: translateY(-5px); } }
+@keyframes no { 0%, 100% { transform: rotate(0); } 20% { transform: rotate(-9deg); } 40% { transform: rotate(9deg); } 60% { transform: rotate(-6deg); } 80% { transform: rotate(4deg); } }
+.emo { position: absolute; left: calc(100% - 6px); top: 34px; font-size: 30px; line-height: 1; pointer-events: none; }
+.emo.pop { animation: emo 2.8s cubic-bezier(.2, .9, .2, 1) both; }
+@keyframes emo { 0% { transform: scale(0) rotate(-24deg); opacity: 0; } 10% { transform: scale(1.4) rotate(8deg); opacity: 1; } 22% { transform: scale(1) rotate(0); } 78% { transform: translateY(-4px); opacity: 1; } 100% { transform: translateY(-16px); opacity: 0; } }
+/* steam off the pot while he cooks */
+.chef .steam { position: absolute; left: 50%; top: -6px; width: 0; height: 0; opacity: 0; }
+.chef[data-mood="cook"] .steam { opacity: 1; }
+.chef .steam i { position: absolute; bottom: 0; width: 7px; height: 7px; border-radius: 50%; background: var(--mute); opacity: 0; animation: steam 1.8s ease-out infinite; animation-play-state: paused; }
+.chef[data-mood="cook"] .steam i { animation-play-state: running; }
+.chef .steam i:nth-child(1) { left: -22px; } .chef .steam i:nth-child(2) { left: -3px; animation-delay: .6s; } .chef .steam i:nth-child(3) { left: 16px; animation-delay: 1.2s; }
+@keyframes steam { 0% { transform: translateY(6px) scale(.5); opacity: 0; } 30% { opacity: .5; } 100% { transform: translateY(-22px) scale(1.5); opacity: 0; } }
+@media (prefers-color-scheme: dark) { .chef .fig, .cook-fig { filter: drop-shadow(0 0 .7px rgba(237, 229, 207, .75)) drop-shadow(0 0 .7px rgba(237, 229, 207, .75)); } }
+/* with a farm open the title steps back, so the form is what the screen shows */
+html[data-view="farm"] .hero { padding-top: 0; }
+html[data-view="farm"] .chef { width: 60px; height: 78px; margin-bottom: 2px; }
+html[data-view="farm"] .hero h1 { font-size: clamp(30px, 5vw, 40px); }
+html[data-view="farm"] .lede { display: none; }
+html[data-view="farm"] .emo { top: 12px; font-size: 24px; }
+html[data-view="farm"] .menu { display: none; }
+
+/* the menu: a tile for each farm that pays now. What goes in, what comes out, and what it pays a year */
+.menu { max-width: 960px; margin: 34px auto 0; }
+/* three to a row, a last row of fewer centred under them */
+.dishes { --gap: 14px; --n: 3; list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; justify-content: center; gap: var(--gap); }
+.dishes > li { flex: 0 0 calc((100% - (var(--n) - 1) * var(--gap)) / var(--n)); min-width: 0; }
+.dish { position: relative; display: flex; flex-direction: column; align-items: center; height: 100%; padding: 26px 18px 0; text-align: center; text-decoration: none; color: var(--ink); background: var(--card); border: 1px solid var(--hair); border-radius: 18px; transition: transform .25s var(--spring), border-color .2s, box-shadow .25s; animation: rise .42s cubic-bezier(.2, .7, .2, 1) both; animation-delay: calc(var(--i, 0) * 45ms); }
+@keyframes rise { from { opacity: 0; transform: translateY(12px); } }
+.plate { display: flex; align-items: center; justify-content: center; width: 76px; height: 76px; border-radius: 50%; background: var(--field); border: 1px solid var(--hair); transition: transform .3s var(--spring); }
+.plate .tk { width: 32px; height: 32px; } .plate .tk + .tk { margin-left: -9px; box-shadow: 0 0 0 2px var(--field); }
+.dish .nm { margin-top: 14px; font: 400 27px/1.1 var(--serif); letter-spacing: -.01em; }
+.dish .kind { margin-top: 5px; font: 500 10.5px/1.4 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--mute); }
+.dish .how { margin-top: 10px; font-size: 12.5px; line-height: 1.55; color: var(--mute); }
+.dish .how b { font-weight: 400; color: var(--ink); }
+.dish .sel { display: grid; place-items: center; flex: none; width: 100%; min-height: var(--tap); margin-top: 16px; font: 500 13.5px/1 var(--mono); color: var(--ink); border: 1px solid var(--hair-2); border-radius: 12px; transition: background-color .15s, color .15s, border-color .15s; }
+.dish.pick .sel, .dish.mine .sel { color: var(--card); background: var(--ink); border-color: var(--ink); }
+.dish .how { flex: 1; }
+.dish .apy { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; align-self: stretch; margin: 16px -18px 0; padding: 11px 18px 0; border-top: 1px solid var(--hair); font-size: 12px; color: var(--mute); text-align: left; }
+.dish .apy b { font: 500 16px/1.2 var(--mono); color: var(--ok); min-height: 19px; }
+.dish .apy b:empty::before { content: ''; display: inline-block; width: 6ch; height: 12px; border-radius: 3px; background: var(--hair); animation: pulse 1.2s ease-in-out infinite; }
+.dish.off .apy b:empty::before { content: '—'; width: auto; height: auto; background: none; animation: none; color: var(--mute); }
+@keyframes pulse { 50% { opacity: .45; } }
+/* under the APR: what the farm pays a day, and for a pool that is dear to enter with ETH, what the way in costs */
+.dish .sub { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0 10px; align-self: stretch; min-height: 17px; margin: 3px 0 12px; font-size: 11.5px; line-height: 1.5; color: var(--mute); text-align: left; }
+.dish .sub .cost { color: var(--warn); }
+.dish .tag { position: absolute; top: 0; left: 50%; transform: translate(-50%, -50%); padding: 3px 10px; font: 500 10.5px/1.4 var(--mono); letter-spacing: .04em; white-space: nowrap; color: var(--warn); border: 1px solid color-mix(in srgb, var(--orange) 70%, var(--card)); border-radius: 999px; background: color-mix(in srgb, var(--orange) 12%, var(--card)); }
+.dish .yours { position: absolute; top: 12px; right: 12px; display: inline-flex; align-items: center; gap: 6px; font: 500 10.5px/1.4 var(--mono); letter-spacing: .04em; color: var(--ok); }
+.dish .yours::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
+@media (hover: hover) {
+  .dish:hover { transform: translateY(-3px); border-color: var(--hair-2); box-shadow: 0 18px 34px -24px rgba(0, 0, 0, .45); }
+  .dish:hover .plate { transform: scale(1.06) rotate(-4deg); }
+  .dish:hover .sel { color: var(--card); background: var(--ink); border-color: var(--ink); }
+}
+.dish:active { transform: scale(.985); }
+.dish:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+.dish.pick { border-color: color-mix(in srgb, var(--orange) 55%, var(--hair-2)); }
+.menu-more { display: flex; flex-wrap: wrap; justify-content: center; gap: 0 6px; margin: 26px 0 0; font-size: 13px; color: var(--mute); }
+.menu-more a { padding: 9px 9px; color: inherit; text-decoration: none; }
+.menu-more a:hover { color: var(--ink); text-decoration: underline; }
+.menu-note { margin: 18px 0 0; text-align: center; color: var(--warn); }
+.menu-note:empty { display: none; }
+@media (max-width: 860px) { .dishes { --n: 2; } }
+@media (max-width: 480px) {
+  .menu { margin-top: 26px; } .dishes { --gap: 10px; }
+  .dish { padding: 22px 12px 0; border-radius: 16px; }
+  .plate { width: 62px; height: 62px; } .plate .tk { width: 27px; height: 27px; }
+  .dish .nm { font-size: 23px; } .dish .how { font-size: 12px; }
+  .dish .apy { margin: 14px -12px 0; padding: 10px 12px 0; } .dish .apy b { font-size: 15px; }
+  .dish .sub { font-size: 11px; margin-bottom: 10px; }
+  .dish .tag { padding: 2px 8px; font-size: 10px; } .dish .yours { top: 9px; right: 9px; }
+}
+
+/* one farm, open: its facts, the amount, the press. The way back and the other farms sit over it */
+.station { max-width: 640px; margin: 22px auto 0; }
+.st-nav { display: flex; align-items: center; gap: 10px; min-height: var(--tap); margin: 0 0 8px; }
+.st-nav .bk { flex: none; display: inline-flex; align-items: center; min-height: var(--tap); padding: 0 4px; color: var(--mute); text-decoration: none; font-size: 13px; }
+.st-nav .bk:hover { color: var(--ink); }
+.sw { display: flex; gap: 6px; margin-left: auto; min-width: 0; overflow-x: auto; scrollbar-width: none; padding: 2px; }
+.sw::-webkit-scrollbar { display: none; }
+.sw a { flex: none; display: inline-flex; align-items: center; gap: 7px; min-height: 36px; padding: 0 11px 0 7px; font: 500 12px/1 var(--mono); color: var(--mute); text-decoration: none; border: 1px solid var(--hair); border-radius: 999px; transition: border-color .15s, color .15s, background-color .15s; }
+.sw a .pairtk .tk { width: 20px; height: 20px; }
+.sw a:hover { color: var(--ink); border-color: var(--hair-2); background: var(--card); }
+.pairtk { display: inline-flex; flex: none; } .pairtk .tk + .tk { margin-left: -6px; box-shadow: 0 0 0 2px var(--card); }
+.kitchen { background: var(--card); border: 1px solid var(--hair); border-radius: 18px; animation: rise .38s cubic-bezier(.2, .7, .2, 1) both; }
+.k-h { display: flex; align-items: center; gap: 14px; padding: 18px 22px; border-bottom: 1px solid var(--hair); }
+.k-h .plate { width: 60px; height: 60px; flex: none; } .k-h .plate .tk { width: 26px; height: 26px; } .k-h .plate .tk + .tk { margin-left: -8px; }
+.k-t { flex: 1; min-width: 0; }
+.k-t h2 { margin: 0; font: 400 30px/1.1 var(--serif); letter-spacing: -.01em; }
+.k-t p { margin: 3px 0 0; font: 500 10.5px/1.4 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--mute); }
+.k-apr { flex: none; display: grid; justify-items: end; line-height: 1.25; }
+.k-apr b { font: 500 24px/1.2 var(--mono); color: var(--ok); min-height: 29px; } .k-apr small { font-size: 11px; color: var(--mute); }
+.k-b { padding: 18px 22px 22px; }
+.k-more { margin: 14px 4px 0; font-size: 12.5px; color: var(--mute); text-align: center; }
+.k-more a:hover { color: var(--ink); }
+
+/* the form, as the Precision farm's module draws it (trade/farm.js) and as this page draws the private farms' beside it: one look */
+.farm-host .eyebrow, .farm-host #fm-h, .farm-host .fm-prog { display: none; }
+.farm-host .note { font-size: 12.5px; color: var(--mute); margin: 12px 0 0; text-align: left; } .farm-host .note a { color: var(--ink); }
+.farm-host .note.err, .farm-host .err { color: var(--err); } .farm-host .ok { color: var(--ok); }
+.farm-host h3 { margin: 0 0 10px; font: 500 12px/1.4 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--mute); }
+.farm-host .seg { display: inline-grid; grid-auto-flow: column; grid-auto-columns: minmax(0, auto); border: 1px solid var(--hair-2); border-radius: 10px; overflow: hidden; }
+.farm-host .seg button { min-height: 34px; padding: 4px 13px; background: none; border: 0; cursor: pointer; color: var(--mute); font: 12.5px var(--mono); }
+.farm-host .seg button + button { border-left: 1px solid var(--hair-2); }
+.farm-host .seg button[aria-pressed="true"] { background: var(--ink); color: var(--card); }
+.farm-host .seg.big { display: grid; grid-auto-columns: minmax(0, 1fr); margin-bottom: 14px; } .farm-host .seg.big button { min-height: 40px; font-size: 13px; }
+.farm-host .lbl { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--mute); margin: 14px 0 6px; }
+.farm-host .amt { display: flex; align-items: center; background: var(--field); border: 1px solid var(--hair); border-radius: 12px; transition: border-color .15s; }
+.farm-host .amt:focus-within { border-color: var(--ink); }
+.farm-host .amt input { flex: 1; min-width: 0; font: 400 32px/1.15 var(--serif); color: var(--ink); background: none; border: 0; padding: 10px 14px; outline: none; }
+.farm-host .amt .u { display: inline-flex; align-items: center; gap: 8px; padding: 0 14px 0 4px; color: var(--mute); white-space: nowrap; }
+.farm-host .kv { display: flex; justify-content: space-between; gap: 12px; margin: 0; font-size: 12.5px; color: var(--mute); padding: 5px 0; }
+.farm-host .kv b { font-weight: 400; color: var(--ink); text-align: right; overflow-wrap: anywhere; } .farm-host .kv b.err { color: var(--err); }
+.farm-host .btn { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 52px; margin-top: 14px; padding: 10px 16px; font: 500 14.5px var(--mono); text-decoration: none; color: var(--card); background: var(--ink); border: 1px solid var(--ink); border-radius: 12px; cursor: pointer; transition: box-shadow .15s, transform .2s var(--spring); }
+@media (hover: hover) { .farm-host .btn:hover:not(:disabled) { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ink) 22%, transparent); } }
+.farm-host .btn:active:not(:disabled) { transform: scale(.985); }
+.farm-host .btn:disabled { color: color-mix(in srgb, var(--ink) 70%, var(--card)); background: color-mix(in srgb, var(--ink) 6%, transparent); border-color: var(--hair-2); cursor: not-allowed; }
+.farm-host .btn[aria-busy="true"] { cursor: progress; }
+.farm-host .btn.ghost { color: var(--ink); background: transparent; border-color: var(--hair-2); }
+.farm-host .btn.ghost:disabled { color: color-mix(in srgb, var(--ink) 55%, var(--card)); border-color: var(--hair); }
+@media (hover: hover) { .farm-host .btn.ghost:hover:not(:disabled) { border-color: var(--ink); box-shadow: none; } }
+.farm-host .btn.sm { width: auto; min-height: 28px; padding: 2px 12px; font-size: 12px; margin: 0; border-radius: 8px; }
+.farm-host .linkbtn, .linkbtn { background: none; border: 0; padding: 0; cursor: pointer; color: var(--mute); text-decoration: underline; text-underline-offset: 3px; font: 12px var(--mono); }
+.farm-host .linkbtn:hover, .linkbtn:hover { color: var(--ink); }
+.farm-host .status { font-size: 12.5px; margin-top: 12px; overflow-wrap: anywhere; text-align: left; } .farm-host .status:empty { margin-top: 0; } .farm-host .status a { color: var(--ink); }
+.farm-host .fm-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 16px; margin: 0 0 4px; }
+.farm-host .fm-stats > div { display: grid; gap: 2px; align-content: start; } .farm-host .fm-stats .k { font-size: 11px; color: var(--mute); } .farm-host .fm-stats b { font-weight: 500; font-size: 15px; } .farm-host .fm-stats .s { font-size: 11.5px; color: var(--mute); }
+.farm-host#farm-host .fm-stats > div:first-child { display: none; }     /* the module's APR is the card's own, above */
+.farm-host .fm-pos, .farm-host .fm-add { border-top: 1px solid var(--hair); margin-top: 14px; padding-top: 14px; }
+.farm-host .fm-how { margin: 0 0 4px; }
+.farm-host .fm-rcpt { margin: 12px 0 0; padding: 10px 12px; background: var(--field); border: 1px solid var(--hair-2); border-radius: 10px; animation: rcpt .22s ease-out; }
+@keyframes rcpt { from { opacity: 0; transform: translateY(-4px); } }
+.farm-host .fm-rcpt .note { margin: 6px 0 0; }
+.farm-host .ack { display: flex; gap: 10px; align-items: flex-start; margin: 10px 0 0; font-size: 12.5px; line-height: 1.5; cursor: pointer; }
+.farm-host .ack input { width: 18px; height: 18px; margin: 1px 0 0; accent-color: var(--ink); flex: none; }
+.farm-host .ack input:not([type="checkbox"]) { width: 72px; height: auto; margin: 0; padding: 6px 8px; font: 500 16px var(--mono); color: var(--ink); background: transparent; border: 1px solid var(--err); border-radius: 8px; }
+.farm-host .fm-out { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; } .farm-host .fm-out .seg button { min-height: 30px; padding: 2px 10px; font-size: 12px; }
+.farm-host .kv.earned { align-items: center; } .farm-host .kv .rt { display: inline-flex; align-items: center; gap: 10px; }
+.farm-host .wd { margin: 6px 0 0; border-top: 1px solid var(--hair); padding-top: 6px; }
+.farm-host .wd > summary { cursor: pointer; list-style: none; font-size: 12.5px; color: var(--mute); display: flex; align-items: center; gap: 6px; padding: 6px 0; }
+.farm-host .wd > summary::-webkit-details-marker { display: none; }
+.farm-host .wd > summary::before { content: '▸'; font-size: 10px; transition: transform .15s; } .farm-host .wd[open] > summary::before { transform: rotate(90deg); }
+/* amounts a press away, under the field */
+.quick { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 0; }
+.quick button { min-height: 34px; padding: 0 13px; font: 500 12.5px/1 var(--mono); color: var(--ink); background: none; border: 1px solid var(--hair-2); border-radius: 999px; cursor: pointer; transition: border-color .15s, background-color .15s, transform .2s var(--spring); }
+.quick button:hover:not(:disabled) { border-color: var(--ink); background: var(--field); }
+.quick button:active:not(:disabled) { transform: scale(.95); }
+.quick button:disabled { opacity: .45; cursor: default; }
+.quick button small { font-size: 11px; color: var(--mute); margin-left: 5px; }
+
+/* a private deposit under way: three steps, the one being done said under them, the chef at the pot */
+.cook { display: flex; gap: 14px; align-items: flex-start; margin: 14px 0 0; padding: 14px; background: var(--field); border: 1px solid var(--hair-2); border-radius: 12px; animation: rcpt .22s ease-out; }
+.cook-fig { flex: none; width: 36px; height: 47px; background: url('/farm/chef.png') center bottom / contain no-repeat; image-rendering: pixelated; transform-origin: 50% 100%; }
+.cook[data-live] .cook-fig { animation: stir 1s ease-in-out infinite; }
+.cook-b { flex: 1; min-width: 0; }
+.steps { list-style: none; display: flex; align-items: center; gap: 8px; margin: 0; padding: 0; font: 500 12px/1.3 var(--mono); color: var(--mute); }
+.steps li { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+.steps li::before { content: ''; flex: none; width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid var(--hair-2); transition: background-color .2s, border-color .2s; }
+.steps li + li::after { content: ''; order: -1; width: clamp(10px, 5vw, 34px); height: 1px; margin-right: 1px; background: var(--hair-2); }
+.steps li[data-at="now"] { color: var(--ink); } .steps li[data-at="now"]::before { border-color: var(--orange); background: var(--orange); animation: pulse 1.1s ease-in-out infinite; }
+.steps li[data-at="done"] { color: var(--ink); } .steps li[data-at="done"]::before { border-color: var(--ok); background: var(--ok); }
+.steps li[data-at="bad"]::before { border-color: var(--err); background: var(--err); }
+.cook-say { margin: 9px 0 0; font-size: 12.5px; line-height: 1.5; overflow-wrap: anywhere; } .cook-say a { color: var(--ink); }
+.cook-bar { height: 3px; margin: 10px 0 0; border-radius: 2px; background: var(--hair); overflow: hidden; }
+.cook-bar i { display: block; height: 100%; width: 0; border-radius: 2px; background: var(--ink); transition: width 1s linear; }
+.cook-bar[hidden] { display: none; }
+.cook-acts { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 8px 0 0; } .cook-acts:empty { display: none; }
+
+/* the key's own private farms (rewards/farms.js draws them): positions, harvest, exit */
+.mine { margin: 14px 0 0; padding: 18px 22px 20px; background: var(--card); border: 1px solid var(--hair); border-radius: 18px; }
+.mine h3 { margin: 0 0 8px; font: 500 12px/1.4 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--mute); }
+.mine .more { margin: 0 0 10px; font-size: 13px; color: var(--mute); } .mine .more.ok { color: var(--ok); } .mine .more.err { color: var(--err); } .mine .more:empty { display: none; }
+.mine .more a { color: var(--ink); }
+.mine .act, .loose .act { display: inline-flex; align-items: center; min-height: var(--tap); padding: 0 18px; font: 500 14px var(--mono); color: var(--paper); background: var(--ink); border: 0; border-radius: 12px; cursor: pointer; }
+.mine .kv { margin: 10px 0 0; display: grid; gap: 4px; }
+.mine .kv div { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 6px 0; border-top: 1px solid var(--hair); }
+.mine .kv dt { color: var(--mute); display: inline-flex; align-items: center; } .mine .kv dd { margin: 0; text-align: right; }
+.mine .kv dt .pairtk { margin-right: 8px; } .mine .kv dt .pairtk .tk { width: 20px; height: 20px; }
+.mine .kv select, .mine .kv input { min-height: 38px; max-width: 46vw; padding: 0 10px; font: 400 14px var(--mono); color: var(--ink); background: var(--field); border: 1px solid var(--hair-2); border-radius: 10px; }
+.mine .acts { display: flex; flex-wrap: wrap; gap: 4px 18px; margin: 4px 0 8px; }
+.mine .acts a, .mine .acts button { font: 400 13px/1.4 var(--mono); color: var(--mute); background: none; border: 0; padding: 6px 0; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px; }
+.mine .acts a:hover, .mine .acts button:hover:not(:disabled) { color: var(--ink); } .mine .acts button:disabled { opacity: .45; cursor: default; text-decoration: none; }
+.mine details > summary { cursor: pointer; color: var(--mute); padding: 8px 0 2px; font-size: 13px; }
+.loose { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 14px; margin: 0 0 14px; padding: 12px 14px; background: var(--field); border: 1px solid var(--orange); border-radius: 12px; font-size: 12.5px; }
+.loose p { margin: 0; flex: 1; min-width: 200px; } .loose .act { min-height: 38px; padding: 0 14px; font-size: 13px; }
+#fx { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 60; }
+
+@media (max-width: 560px) {
+  .station { margin-top: 14px; }
+  .k-h { gap: 12px; padding: 16px 16px; } .k-h .plate { width: 50px; height: 50px; } .k-h .plate .tk { width: 22px; height: 22px; }
+  .k-t h2 { font-size: 26px; } .k-apr b { font-size: 20px; min-height: 24px; }
+  .k-b { padding: 16px 16px 18px; } .mine { padding: 16px 16px 18px; }
+  .farm-host .fm-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; } .farm-host .fm-stats b { font-size: 14px; }
+  .sw a b { display: none; } .sw a { padding: 0 7px; }
+}
+@media (pointer: coarse) { .farm-host .amt input, .mine .kv input, .mine .kv select { font-size: max(16px, 1em); } .farm-host .amt input { font-size: 32px; } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+/* the menu and a farm trade places as one picture where the browser can draw it: the plate picked becomes the open farm's */
+::view-transition-old(root), ::view-transition-new(root) { animation-duration: .22s; }
+::view-transition-group(plate), ::view-transition-group(dishname) { animation-duration: .34s; animation-timing-function: cubic-bezier(.2, .8, .2, 1); }
+</style>
+<!-- chrome:head:begin inline -->
+<style>
+/* The header's page links and the footer, as every page that wears them draws them. The markup is made by build/chrome.mjs and stamped
+   into the pages (`npm run build`); a page keeps only its own tokens (--ink --mute --card --hair --hair-2 --orange --mono --spring)
+   and its brand, chips and spacing. Nothing here is a size the page has to agree with: the header's width is read from the header. */
+
+header.top { position: relative; z-index: 30; container: top / inline-size; }
+header.top .top-r { position: relative; display: flex; align-items: center; gap: 6px; min-width: 0; }
+
+/* page links: six in the header (icons, then icons and names as the header gets wide), the rest in the menu; on a phone all of them are there */
+.sn { display: flex; align-items: center; gap: 2px; }
+.sn > a, .sn summary {
+  position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 8px; box-sizing: border-box; flex: none;
+  height: 40px; min-width: 40px; padding: 0 9px; border-radius: 12px; color: var(--mute);
+  font: 500 12.5px/1 var(--mono); text-decoration: none; list-style: none; cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent;
+  transition: color .15s, background-color .15s, transform .25s var(--spring, ease);
+}
+.sn summary::-webkit-details-marker { display: none; }
+/* the menu is a <details>: a page's own rules for details and summary (a border, a "+", a margin) are not for it */
+header.top .sm { margin: 0; padding: 0; border: 0; font: inherit; }
+header.top .sm > summary { display: flex; min-height: 0; }
+header.top .sm > summary::before, header.top .sm > summary::after { content: none; }
+.sn svg, .sf svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.sn svg.fill, .sf svg.fill { fill: currentColor; stroke: none; }
+.sn > a { display: none; }
+.sn > a span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.sn > a[aria-current="page"], .sn summary.here, .sm[open] > summary { color: var(--ink); background: var(--hair); }
+@media (hover: hover) { .sn > a:hover, .sn summary:hover { color: var(--ink); background: var(--hair); } }
+.sn > a:active, .sn summary:active { transform: scale(.93); }
+.sn a:focus-visible, .sn summary:focus-visible, .sf a:focus-visible { outline: 2px solid var(--orange); outline-offset: 1px; }
+@container top (min-width: 540px) { .sn > a { display: inline-flex; } }
+.sn > a[href="/rewards/"], .sn .sm > summary { position: relative; }
+.sn[data-owed] > a[href="/rewards/"]::after, .sn[data-owed] .sm > summary::after { content: ''; position: absolute; top: 8px; left: 26px; width: 7px; height: 7px; border-radius: 50%; background: var(--orange); box-shadow: 0 0 0 2px var(--paper, transparent); }
+@container top (min-width: 540px) { .sn[data-owed] .sm > summary::after { display: none; } }
+@container top (max-width: 539px) { .sn[data-owed] > a[href="/rewards/"]::after { display: none; } }
+/* a bridge under way: a dot on the header's Bridge link, or on the menu button where the links are in the menu (chrome.js adds both) */
+.sn .bd { position: absolute; top: 5px; right: 3px; width: 8px; height: 8px; border-radius: 50%; background: var(--orange); box-shadow: 0 0 0 2px var(--paper, transparent); pointer-events: none; }
+.sn > a > .bd { top: 8px; right: auto; left: 26px; width: 7px; height: 7px; }
+@container top (min-width: 540px) { .sn .sm > summary > .bd { display: none; } }
+/* the Activity link chrome.js adds on a page without its own chip: at every width, once there is something in it, with the count still going */
+.sn > a.sa:not([hidden]) { display: inline-flex; }
+.sn > a.sa .n { position: absolute; top: 3px; right: 1px; min-width: 16px; height: 16px; padding: 0 4px; box-sizing: border-box; border-radius: 8px; background: var(--orange); color: #fff; font: 600 10px/16px var(--mono); text-align: center; }
+@container top (min-width: 900px) {
+  .sn > a { padding: 0 13px 0 11px; }
+  .sn > a span { position: static; width: auto; height: auto; overflow: visible; clip-path: none; }
+}
+
+/* a very narrow header keeps the mark and the name; the page's label, and the Activity and total chips' room, go first */
+@container top (max-width: 340px) { header.top .brand i { display: none; } }
+
+/* the account chip (and, on the front page, Activity and the total): a quiet outline on the page's own ground, not a block; the dot says whether a wallet is open */
+header.top .chip {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px; box-sizing: border-box; flex: 0 1 auto; min-width: 0; height: 40px; margin: 0; padding: 0 16px 0 13px;
+  color: var(--ink); background: transparent; border: 1px solid var(--hair-2, var(--hair-strong, var(--hair))); border-radius: 999px;
+  font: 500 12.5px/1 var(--mono); white-space: nowrap; cursor: pointer; -webkit-tap-highlight-color: transparent;
+  transition: border-color .15s, background-color .15s, transform .25s var(--spring, ease);
+}
+header.top .chip > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+header.top .chip .dot { width: 7px; height: 7px; margin: 0; border-radius: 50%; background: var(--hair-2, var(--hair-strong, var(--hair))); flex: none; vertical-align: 0; }
+header.top .chip .dot.on { background: var(--ok); }
+header.top .chip .dot.warn, header.top .chip .dot.live { background: var(--orange); }
+header.top .chip.act { position: relative; width: 40px; padding: 0; color: var(--mute); border-color: transparent; }
+header.top .chip.act[aria-expanded="true"], header.top .chip.act:hover { color: var(--ink); }
+@media (hover: hover) { header.top .chip:hover { border-color: var(--mute); background: var(--hair); } header.top .chip.act:hover { border-color: transparent; } }
+header.top .chip:active { transform: scale(.97); }
+header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
+@container top (max-width: 480px) { header.top .chip { padding: 0 12px 0 11px; } header.top .chip.act { padding: 0; } }
+@media (pointer: coarse) { .sn > a, .sn summary, header.top .chip, footer.sf nav a { height: var(--tap, 44px); } }
+/* Touch, on every page that wears this: a quick double tap on a control does not zoom the page, and a text button takes a press a thumb can land (its box does not
+   change: the target reaches past it). */
+@media (pointer: coarse) {
+  a, button, summary, input, select, textarea, label, [role="button"], [role="tab"] { touch-action: manipulation; }
+  button.link, .linkbtn { position: relative; }
+  button.link::after, .linkbtn::after { content: ''; position: absolute; inset: -8px -6px; }
+  /* the mark and name at the header's left are 26-30px tall: the target reaches to the chips' 44 */
+  header.top a.brand { position: relative; }
+  header.top a.brand::after { content: ''; position: absolute; inset: -8px -6px; }
+}
+
+/* the menu: under the header's right edge, whatever the width */
+.sm-p {
+  position: absolute; z-index: 5; top: calc(100% + 8px); right: 0; display: grid; gap: 1px; box-sizing: border-box;
+  width: max-content; min-width: 220px; max-width: calc(100vw - 32px); padding: 6px;
+  background: var(--card); border: 1px solid var(--hair-2, var(--hair)); border-radius: 16px;
+  box-shadow: 0 24px 48px -26px rgba(0,0,0,.5), 0 2px 8px rgba(0,0,0,.06);
+  transform-origin: 100% 0; animation: sm-in .16s ease-out;
+}
+@keyframes sm-in { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
+.sm-p a { display: flex; align-items: center; gap: 12px; box-sizing: border-box; min-height: 42px; padding: 0 12px; border-radius: 10px; color: var(--ink); font: 400 13px/1 var(--mono); text-decoration: none; }
+.sm-p a svg { width: 18px; height: 18px; color: var(--mute); }
+.sm-p a[aria-current="page"] { background: var(--hair); }
+.sm-p a:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
+.sm-p hr { margin: 4px 8px; border: 0; border-top: 1px solid var(--hair); }
+.sm-p .pr { display: flex; }
+@container top (min-width: 540px) { .sm-p .pr { display: none; } }
+@media (hover: hover) { .sm-p a:hover { background: var(--hair); } }
+@media (prefers-reduced-motion: reduce) { .sm-p { animation: none; } .sn > a, .sn summary, header.top .chip { transition: none; } }
+
+/* a page with little on it still reaches the bottom of the window, so its footer is not left floating under a few lines (a page that sets a height for its own <main> keeps it) */
+:where(.shell > main) { min-height: calc(100vh - 300px); min-height: calc(100svh - 300px); }
+
+/* the footer: where it is said to be, then the places outside the app. In a wide footer the protocol's own (paper, build, security, source, contract, stats) are words and the
+   places that have a mark of their own are that mark; in a narrow one every place is an icon that says its name on hover and to a screen reader (they narrow a little on a small
+   phone before they would run off the page) */
+footer.sf { container: foot / inline-size; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0 20px; margin-top: 56px; padding: 10px 0 22px; border-top: 1px solid var(--hair); color: var(--mute); font: 400 12px/1.4 var(--mono); }
+footer.sf nav { display: flex; align-items: center; max-width: 100%; margin: 0 -10px 0 auto; }
+footer.sf nav a { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; flex: 0 1 40px; min-width: 28px; height: 40px; border-radius: 12px; color: var(--mute); text-decoration: none; transition: color .15s, background-color .15s, transform .25s var(--spring, ease); }
+footer.sf nav a:active { transform: scale(.92); }
+footer.sf svg { width: 18px; height: 18px; }
+footer.sf svg.fill { width: 16px; height: 16px; }
+footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+@container foot (min-width: 840px) {
+  footer.sf nav a.fw { flex: none; padding: 0 10px; }
+  footer.sf nav a.fw svg { display: none; }
+  footer.sf nav a.fw span { position: static; width: auto; height: auto; overflow: visible; clip-path: none; }
+  footer.sf nav a.fw + a:not(.fw) { margin-left: 8px; }
+}
+@media (hover: hover) { footer.sf nav a:hover { color: var(--ink); background: var(--hair); } }
+@media (max-width: 480px) { footer.sf nav { margin: 0 0 0 -11px; } }
+
+/* what only one page has to point at (papers, the pool on each chain): a quiet line above the footer */
+.sf-x { display: flex; flex-wrap: wrap; align-items: center; gap: 0 18px; margin-top: 48px; color: var(--mute); font: 400 12px/1.4 var(--mono); }
+.sf-x + footer.sf { margin-top: 12px; }
+.sf-x span { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; }
+.sf-x a { display: inline-flex; align-items: center; min-height: 32px; color: var(--mute); text-decoration: underline; text-decoration-color: var(--hair-2, var(--hair)); text-underline-offset: 3px; }
+@media (hover: hover) { .sf-x a:hover { color: var(--ink); text-decoration-color: currentColor; } }
+
+/* A serif scaled to Instrument Serif's width and line metrics (Georgia, Times or Noto Serif, whichever the device has) shows until the font arrives, so the swap moves nothing */
+@font-face { font-family: 'Instrument Serif Fallback'; src: local('Georgia'); size-adjust: 75.8%; ascent-override: 130.6%; descent-override: 40.9%; line-gap-override: 0%; }
+@font-face { font-family: 'Instrument Serif Fallback'; font-style: italic; src: local('Georgia Italic'), local('Georgia-Italic'); size-adjust: 78.8%; ascent-override: 125.6%; descent-override: 39.3%; line-gap-override: 0%; }
+@font-face { font-family: 'Instrument Serif Fallback T'; src: local('Times New Roman'), local('TimesNewRomanPSMT'), local('Liberation Serif'), local('Tinos'); size-adjust: 83.1%; ascent-override: 119.1%; descent-override: 37.3%; line-gap-override: 0%; }
+@font-face { font-family: 'Instrument Serif Fallback T'; font-style: italic; src: local('Times New Roman Italic'), local('TimesNewRomanPS-ItalicMT'), local('Liberation Serif Italic'), local('Tinos Italic'); size-adjust: 87.8%; ascent-override: 112.8%; descent-override: 35.3%; line-gap-override: 0%; }
+@font-face { font-family: 'Instrument Serif Fallback N'; src: local('Noto Serif'), local('NotoSerif'); size-adjust: 70.5%; ascent-override: 140.4%; descent-override: 44%; line-gap-override: 0%; }
+@font-face { font-family: 'Instrument Serif Fallback N'; font-style: italic; src: local('Noto Serif Italic'), local('NotoSerif-Italic'); size-adjust: 76.3%; ascent-override: 129.7%; descent-override: 40.6%; line-gap-override: 0%; }
+</style>
+<script src="/chrome.js?cb=3cafe52f" defer></script>
+<!-- chrome:head:end -->
+</head>
+<body>
+<a class="skip" href="#main">Skip to the farms</a>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <defs>
+    <symbol id="tk-tac" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#0a0a0a"/><circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2.5"/><path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="#f7931a" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11L21 11" stroke="#f7931a" stroke-width="2.4" stroke-linecap="round"/></symbol>
+    <symbol id="tk-eth" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#627EEA"/><g fill="#FFF"><path fill-opacity=".602" d="M16.498 4v8.87l7.497 3.35z"/><path d="M16.498 4L9 16.22l7.498-3.35z"/><path fill-opacity=".602" d="M16.498 21.968v6.027L24 17.616z"/><path d="M16.498 27.995v-6.028L9 17.616z"/><path fill-opacity=".2" d="M16.498 20.573l7.497-4.353-7.497-3.348z"/><path fill-opacity=".602" d="M9 16.22l7.498 4.353v-7.701z"/></g></symbol>
+    <symbol id="tk-teth" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#0a0a0a"/><circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2.5"/><path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="#627eea" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11L21 11" stroke="#627eea" stroke-width="2.4" stroke-linecap="round"/><path d="M14.8 17L19 17" stroke="#627eea" stroke-width="2.2" stroke-linecap="round"/></symbol>
+    <symbol id="tk-cbtc" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#0a0a0a"/><circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2.5" stroke-dasharray="2.4 1.4"/><g fill="none" stroke="#f7931a" stroke-linecap="round" stroke-linejoin="round"><path d="M16.4 8 L12.9 23 C 18.6 24 21 21.5 21 18.7 C 21 16 17.6 15.2 14.7 15.6" stroke-width="2.8"/><path d="M11.9 13.2 L18.4 11.5" stroke-width="2.4"/></g></symbol>
+    <symbol id="tk-cusd" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#0a0a0a"/><circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2.5" stroke-dasharray="2.4 1.4"/><path d="M16.5 7 L15.5 25" stroke="#16a34a" stroke-width="2.7" stroke-linecap="round"/><path d="M18.9 13 C 18.9 10.3 13.1 10.3 13.1 13.2 C 13.1 15.5 18.9 16.4 18.9 19.4 C 18.9 22.3 13.1 22.3 13.1 19.6" fill="none" stroke="#16a34a" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="tk-tacd" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#0a0a0a"/><circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2.5"/><path d="M16.5 7 L15.5 25" stroke="#f7931a" stroke-width="2.7" stroke-linecap="round"/><path d="M18.9 13 C 18.9 10.3 13.1 10.3 13.1 13.2 C 13.1 15.5 18.9 16.4 18.9 19.4 C 18.9 22.3 13.1 22.3 13.1 19.6" fill="none" stroke="#f7931a" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="tk-tace" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#0a0a0a"/><circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2.5"/><path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="#f7931a" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11L21 11" stroke="#f7931a" stroke-width="2.4" stroke-linecap="round"/><path d="M14.8 17L19 17" stroke="#f7931a" stroke-width="2.2" stroke-linecap="round"/></symbol>
+    <symbol id="tk-usdc" viewBox="0 0 32 32"><g fill="none"><circle fill="#2775CA" cx="16" cy="16" r="16"/><g fill="#FFF"><path d="M20.022 18.124c0-2.124-1.28-2.852-3.84-3.156-1.828-.243-2.193-.728-2.193-1.578 0-.85.61-1.396 1.828-1.396 1.097 0 1.707.364 2.011 1.275a.458.458 0 00.427.303h.975a.416.416 0 00.427-.425v-.06a3.04 3.04 0 00-2.743-2.489V9.142c0-.243-.183-.425-.487-.486h-.915c-.243 0-.426.182-.487.486v1.396c-1.829.242-2.986 1.456-2.986 2.974 0 2.002 1.218 2.791 3.778 3.095 1.707.303 2.255.668 2.255 1.639 0 .97-.853 1.638-2.011 1.638-1.585 0-2.133-.667-2.316-1.578-.06-.242-.244-.364-.427-.364h-1.036a.416.416 0 00-.426.425v.06c.243 1.518 1.219 2.61 3.23 2.914v1.457c0 .242.183.425.487.485h.915c.243 0 .426-.182.487-.485V21.34c1.829-.303 3.047-1.578 3.047-3.217z"/><path d="M12.892 24.497c-4.754-1.7-7.192-6.98-5.424-11.653.914-2.55 2.925-4.491 5.424-5.402.244-.121.365-.303.365-.607v-.85c0-.242-.121-.424-.365-.485-.061 0-.183 0-.244.06a10.895 10.895 0 00-7.13 13.717c1.096 3.4 3.717 6.01 7.13 7.102.244.121.488 0 .548-.243.061-.06.061-.122.061-.243v-.85c0-.182-.182-.424-.365-.546zm6.46-18.936c-.244-.122-.488 0-.548.242-.061.061-.061.122-.061.243v.85c0 .243.182.485.365.607 4.754 1.7 7.192 6.98 5.424 11.653-.914 2.55-2.925 4.491-5.424 5.402-.244.121-.365.303-.365.607v.85c0 .242.121.424.365.485.061 0 .183 0 .244-.06a10.895 10.895 0 007.13-13.717c-1.096-3.46-3.778-6.07-7.13-7.162z"/></g></g></symbol>
+  </defs>
+</svg>
+<div class="shell">
+
+  <header class="top">
+    <a class="brand" href="/" aria-label="tacit"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><b>tacit</b><i>farm</i></a>
+    <div class="top-r">
+      <!-- chrome:nav:begin -->
+      <nav class="sn" aria-label="Pages">
+          <a href="/assets/" title="Assets"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M8.1 9.3h7.2"/><path d="M13 6.1L10 16.3Q10 17.9 13.3 17.2"/></svg><span>Assets</span></a>
+          <a href="/farm/" title="Farm" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 14.2A4.2 4.2 0 0 1 7.8 6.1a4.6 4.6 0 0 1 8.4 0 4.2 4.2 0 0 1 1.3 8.1"/><path d="M6.5 14.2V19a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-4.8"/><path d="M6.5 16.8h11"/></svg><span>Farm</span></a>
+          <a href="/rewards/" title="Rewards"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13"/><path d="M5 12v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-8"/><path d="M7.5 8a2.5 2.5 0 1 1 0-5C10 3 12 8 12 8s2-5 4.5-5a2.5 2.5 0 1 1 0 5"/></svg><span>Rewards</span></a>
+          <a href="/prove/" title="Prove"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/></svg><span>Prove</span></a>
+          <details class="sm">
+            <summary aria-label="More pages" title="More"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="6.5" height="6.5" rx="1.7"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.7"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.7"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.7"/></svg></summary>
+            <div class="sm-p">
+            <a class="pr" href="/assets/"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M8.1 9.3h7.2"/><path d="M13 6.1L10 16.3Q10 17.9 13.3 17.2"/></svg>Assets</a>
+            <a class="pr" href="/farm/" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 14.2A4.2 4.2 0 0 1 7.8 6.1a4.6 4.6 0 0 1 8.4 0 4.2 4.2 0 0 1 1.3 8.1"/><path d="M6.5 14.2V19a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-4.8"/><path d="M6.5 16.8h11"/></svg>Farm</a>
+            <a class="pr" href="/rewards/"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13"/><path d="M5 12v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-8"/><path d="M7.5 8a2.5 2.5 0 1 1 0-5C10 3 12 8 12 8s2-5 4.5-5a2.5 2.5 0 1 1 0 5"/></svg>Rewards</a>
+            <a class="pr" href="/prove/"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/></svg>Prove</a>
+            <hr class="pr">
+            <a href="/#portfolio"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h15a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h11"/><path d="M16 14h.01"/></svg>Portfolio</a>
+            <a href="/pay/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 3L10.5 13.5"/><path d="M21 3l-6.5 18-4-7.5L3 9.5z"/></svg>Pay</a>
+            <a href="/vault/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9.5L12 4l9 5.5"/><path d="M5.5 10v8M10 10v8M14 10v8M18.5 10v8"/><path d="M3 20.5h18"/></svg>Borrow</a>
+            <a href="/bridge/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17h18"/><path d="M5 17v-3a7 7 0 0 1 14 0v3"/><path d="M9 17v-4.5M15 17v-4.5M12 17v-6"/></svg>Bridges</a>
+            <a href="/tac/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7.5 3v5.5c0 4.6-3.2 8-7.5 9.5-4.3-1.5-7.5-4.9-7.5-9.5V6z"/><path d="M9 12l2.2 2.2L15.5 10"/></svg>TAC</a>
+            <a href="/etch/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l4.2-1 10.6-10.6a2.1 2.1 0 0 0-3-3L5.2 16z"/><path d="M13.6 7.4l3 3"/></svg>Etch</a>
+            <a href="/tasks/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>Tasks</a>
+            <a href="/face/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 20V10a6 6 0 0 1 12 0v10l-2-2-2 2-2-2-2 2-2-2z"/><path d="M9.5 11.5h1M13.5 11.5h1"/></svg>FACE</a>
+            </div>
+          </details>
+        </nav>
+      <!-- chrome:nav:end -->
+      <button class="chip" id="wallet-chip" type="button" aria-label="Connect a wallet"><span class="dot" id="wallet-dot"></span><span id="wallet-label">Connect</span></button>
+    </div>
+  </header>
+
+  <main id="main" tabindex="-1">
+    <section class="hero" aria-labelledby="farm-h1">
+      <button class="chef" id="chef" type="button" data-mood="idle" aria-label="The chef"><span class="steam" aria-hidden="true"><i></i><i></i><i></i></span><span class="emo" id="emo" aria-hidden="true"></span><span class="fig" aria-hidden="true"></span></button>
+      <h1 id="farm-h1">tacit <em>farm</em></h1>
+      <p class="lede">Put ETH in. Earn TAC every second.</p>
+    </section>
+
+    <section class="menu" id="menu" aria-labelledby="menu-h">
+      <h2 class="sr" id="menu-h">Farms</h2>
+      <ul class="dishes" id="dishes">
+        <li style="--i:0"><a class="dish" id="d-tac-eth" href="#tac-eth" data-farm="tac-eth"><span class="plate"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg></span><b class="nm">TAC / ETH</b><span class="kind">Public pool</span><span class="how">Deposit <b>ETH</b><br>Earn <b>TAC</b></span><span class="sel">Select</span><span class="apy"><span>APR</span><b class="num apr"></b></span><span class="sub"><span class="day"></span></span></a></li>
+        <li style="--i:1"><a class="dish" id="d-teth-tac" href="#teth-tac" data-farm="teth-tac"><span class="plate"><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg></span><b class="nm">tETH / TAC</b><span class="kind">Private pool</span><span class="how">Deposit <b>ETH</b><br>Earn <b>TAC</b></span><span class="sel">Select</span><span class="apy"><span>APR</span><b class="num apr"></b></span><span class="sub"><span class="day"></span></span></a></li>
+        <li style="--i:2"><a class="dish" id="d-teth-cusd" href="#teth-cusd" data-farm="teth-cusd"><span class="plate"><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-cusd"/></svg></span><b class="nm">tETH / cUSD</b><span class="kind">Private pool</span><span class="how">Deposit <b>ETH</b><br>Earn <b>TAC</b></span><span class="sel">Select</span><span class="apy"><span>APR</span><b class="num apr"></b></span><span class="sub"><span class="day"></span></span></a></li>
+        <li style="--i:3"><a class="dish" id="d-teth-cbtc" href="#teth-cbtc" data-farm="teth-cbtc"><span class="plate"><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-cbtc"/></svg></span><b class="nm">tETH / cBTC</b><span class="kind">Private pool</span><span class="how">Deposit <b>ETH</b><br>Earn <b>TAC</b></span><span class="sel">Select</span><span class="apy"><span>APR</span><b class="num apr"></b></span><span class="sub"><span class="day"></span></span></a></li>
+        <li style="--i:4"><a class="dish" id="d-tace-eth" href="/vault/#v=eth&amp;pools" data-market="eth"><span class="plate"><svg class="tk" aria-hidden="true"><use href="#tk-tace"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg></span><b class="nm">TACE / ETH</b><span class="kind">Borrow market</span><span class="how">Supply <b>TACE</b> and <b>ETH</b><br>Earn <b>TAC</b></span><span class="sel">Supply</span><span class="apy"><span>Best APR</span><b class="num apr"></b></span><span class="sub"><span class="day"></span></span></a></li>
+        <li style="--i:5"><a class="dish" id="d-tacd-usdc" href="/vault/#v=usd&amp;pools" data-market="usd"><span class="plate"><svg class="tk" aria-hidden="true"><use href="#tk-tacd"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-usdc"/></svg></span><b class="nm">TACD / USDC</b><span class="kind">Borrow market</span><span class="how">Supply <b>TACD</b> and <b>USDC</b><br>Earn <b>TAC</b></span><span class="sel">Supply</span><span class="apy"><span>Best APR</span><b class="num apr"></b></span><span class="sub"><span class="day"></span></span></a></li>
+      </ul>
+      <p class="menu-note" id="menu-note" role="status"></p>
+      <nav class="menu-more" aria-label="More ways to earn"><a href="/rewards/">Points, the airdrop and what you can claim →</a></nav>
+    </section>
+
+    <section class="station" id="station" aria-labelledby="k-name" hidden>
+      <nav class="st-nav" aria-label="Farms"><a class="bk" href="#" id="bk">← All farms</a><div class="sw" id="sw"></div></nav>
+      <article class="kitchen">
+        <header class="k-h">
+          <span class="plate" id="k-plate"></span>
+          <div class="k-t"><h2 id="k-name"></h2><p id="k-kind"></p></div>
+          <div class="k-apr"><b class="num" id="k-apr"></b><small>APR now</small></div>
+        </header>
+        <div class="k-b" id="k-pub" hidden><div class="farm-host" id="farm-host"></div></div>
+        <div class="k-b" id="k-priv" hidden>
+          <div class="farm-host" id="pz">
+            <div class="fm-stats" id="pz-stats"></div>
+            <div class="fm-add">
+              <h3 id="pz-h">Farm privately</h3>
+              <div class="lbl"><span>ETH</span><button class="linkbtn" type="button" id="pz-max" hidden></button></div>
+              <div class="amt"><input id="pz-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="ETH to deposit"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>ETH</span></div>
+              <div class="quick" id="pz-quick"></div>
+              <div class="fm-rcpt" id="pz-rcpt" hidden></div>
+              <div class="cook" id="pz-cook" hidden><span class="cook-fig" aria-hidden="true"></span><div class="cook-b"><ol class="steps" id="pz-steps"><li data-s="prove">Prove</li><li data-s="send">Send</li><li data-s="farm">Farm</li></ol><p class="cook-say" id="pz-say" role="status"></p><div class="cook-bar" id="pz-bar" hidden><i></i></div><div class="cook-acts" id="pz-acts"></div></div></div>
+              <button class="btn" type="button" id="pz-go">Enter an amount</button>
+              <div class="status" id="pz-status" role="status"></div>
+            </div>
+          </div>
+        </div>
+      </article>
+      <article class="mine" id="k-mine" hidden>
+        <h3>Your private farms</h3>
+        <div id="pz-loose"></div>
+        <div id="pf-mine"><p class="more">What you hold in the private farms, and what it has earned.</p><button class="act" type="button" data-pf="open">Show mine</button></div>
+      </article>
+      <p class="k-more" id="k-more"></p>
+    </section>
+    <p class="sr" id="note" role="status" aria-live="polite"></p>
+  </main>
+
+  <!-- chrome:foot:begin -->
+  <footer class="sf">
+    <span>tacit.finance · mainnet</span>
+    <nav aria-label="Elsewhere">
+      <a class="fw" href="/tacit-v1.pdf" title="Whitepaper" aria-label="Whitepaper"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h4"/></svg><span>Whitepaper</span></a>
+      <a class="fw" href="/build/" title="Build" aria-label="Build"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7l-5 5 5 5"/><path d="M16 7l5 5-5 5"/><path d="M14 4l-4 16"/></svg><span>Build</span></a>
+      <a class="fw" href="https://github.com/src-company/tacit/blob/main/SECURITY.md" title="Security" aria-label="Security" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg><span>Security</span></a>
+      <a class="fw" href="https://github.com/src-company/tacit" title="Source" aria-label="Source" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" class="fill" aria-hidden="true"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg><span>Source</span></a>
+      <a class="fw" href="https://etherscan.io/address/0x000000000Ed1eabD231Be41d93b719056F7febFC" title="Pool contract" aria-label="Pool contract" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5"/><path d="M12 12v9"/></svg><span>Contract</span></a>
+      <a class="fw" href="/weld/stats/" title="Stats" aria-label="Stats"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20v-6"/><path d="M12 20V5"/><path d="M19 20v-10"/></svg><span>Stats</span></a>
+      <a href="https://defillama.com/protocol/tacit" title="DefiLlama" aria-label="DefiLlama" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" class="fill" aria-hidden="true"><g transform="translate(2.2 1) scale(.34375)"><path d="M17.62 51.872 17.21 64H5.786a5.8 5.8 0 0 1-4.09-1.691A5.77 5.77 0 0 1 0 58.23v-2.58a42.7 42.7 0 0 0 17.62-3.78"/><path d="M14.08 20.449a1.46 1.46 0 0 1-.121 1.149 1.46 1.46 0 0 1-.938.677 1.43 1.43 0 0 1-1.137-.234l-3.618-2.605a.973.973 0 0 1 .976-1.675l4.067 1.821a1.43 1.43 0 0 1 .772.867m0 23.74a1.42 1.42 0 0 1-.776.861l-4.067 1.826a.98.98 0 0 1-1.267-.39.97.97 0 0 1 .29-1.29l3.619-2.6a1.434 1.434 0 0 1 1.997.322c.029.039.053.083.078.122a1.46 1.46 0 0 1 .122 1.149M6.752 33.72 5.2 33.19a1.19 1.19 0 0 1-.804-1.12 1.18 1.18 0 0 1 .804-1.12l1.552-.531a1.75 1.75 0 0 1 1.892.49 1.742 1.742 0 0 1-.769 2.81 1.77 1.77 0 0 1-1.123 0M24.763 0H15.79a15.73 15.73 0 0 1-4.625 11.134A15.82 15.82 0 0 1 0 15.75v39.9a42.7 42.7 0 0 0 17.62-3.779l.698-20.623c-1.235-.609-2.118-2.226-2.118-4.114 0-2.128 1.113-3.896 2.582-4.295.2-1.28.655-2.509 1.338-3.612a2.13 2.13 0 0 1-1.567-1.013c-1.328-1.947-3.12-3.944-4.492-7.172a1.71 1.71 0 0 1 .186-1.728.855.855 0 0 1 1.303-.063c2.124 2.006 4.677 2.604 6.089 4.528q.155-.36.405-.663a2.96 2.96 0 0 1 3.496-.915 3 3 0 0 1 1.089-1.559 3.028 3.028 0 0 1 4.706 1.56 2.8 2.8 0 0 1 2.03-.098A42.2 42.2 0 0 1 39.372 3.5 32 32 0 0 0 24.763 0"/><path d="m51.668 33.185-1.557.53a1.75 1.75 0 0 1-2.197-1.097 1.74 1.74 0 0 1 1.074-2.204 1.77 1.77 0 0 1 1.123 0l1.557.531a1.19 1.19 0 0 1 .804 1.12 1.18 1.18 0 0 1-.804 1.12m-3.286 13.282a.976.976 0 0 1-1.245.404l-4.067-1.826a1.42 1.42 0 0 1-.722-1.87l.073-.14a1.42 1.42 0 0 1 1.425-.704c.186.025.366.087.528.182l.122.078 3.618 2.6a.973.973 0 0 1 .273 1.276m-6.093-26.019a1.43 1.43 0 0 1 .776-.862l4.067-1.82a.98.98 0 0 1 1.247.397.97.97 0 0 1-.27 1.277l-3.618 2.605a1.44 1.44 0 0 1-2.002-.336l-.068-.107a1.43 1.43 0 0 1-.132-1.154m-.161-15.356A32 32 0 0 0 39.37 3.5a42.2 42.2 0 0 0-6.006 8.603 3.05 3.05 0 0 1 1.465 1.013q.244.305.405.662c1.323-1.806 3.652-2.215 5.693-4.153a1.198 1.198 0 0 1 1.816.112 1.17 1.17 0 0 1 .142 1.217l-.059.136c-1.367 3.165-3.149 5.18-4.467 7.123a2.14 2.14 0 0 1-1.592 1.013 9.6 9.6 0 0 1 1.314 3.613c1.323.36 2.353 1.82 2.548 3.66q.036.316.034.634c0 1.777-.78 3.315-1.909 3.992a1.3 1.3 0 0 1-.21.122v.307l.977 28.852A32.05 32.05 0 0 0 52.163 48.62a31.93 31.93 0 0 0 4.666-16.618 31.9 31.9 0 0 0-3.906-15.325 32 32 0 0 0-10.79-11.585"/><path d="M15.79 0a15.73 15.73 0 0 1-4.626 11.134A15.82 15.82 0 0 1 0 15.75V5.77A5.77 5.77 0 0 1 1.696 1.69 5.8 5.8 0 0 1 5.786 0z"/><path d="M34.535 30.187a1.91 1.91 0 0 1-.107 2.03c-1.392 2.025-3.34 3.564-5.82 3.564h-.527c-2.144-.185-4.395-1.582-5.786-3.262a1.945 1.945 0 0 1-.18-2.206 5.83 5.83 0 0 0 .834-3.004c0-.993-.244-1.971-.713-2.848a1.9 1.9 0 0 1 .108-2.01q.16.212.366.384a2.856 2.856 0 0 0 3.462.049c0 1.105 1.118 2 2.49 2q.187.015.376 0c1.2-.146 2.118-.973 2.118-1.976a2.86 2.86 0 0 0 3.51-.073l.138-.122a1.94 1.94 0 0 1-.181 1.631 5.8 5.8 0 0 0-.82 2.985 6 6 0 0 0 .732 2.872m8.197-20.463a1 1 0 0 0-.268-.263 1.2 1.2 0 0 0-1.528.151c-2.041 1.947-4.394 2.347-5.693 4.153a3.2 3.2 0 0 0-.405-.662 3.05 3.05 0 0 0-1.465-1.013 2.8 2.8 0 0 0-2.031.098 3 3 0 0 0-1.09-1.56 3.028 3.028 0 0 0-4.705 1.56 2.966 2.966 0 0 0-3.496.915q-.25.302-.405.662c-1.411-1.923-3.965-2.522-6.089-4.528a.85.85 0 0 0-1.206-.063.7.7 0 0 0-.117.126 1.71 1.71 0 0 0-.185 1.729c1.372 3.228 3.163 5.214 4.492 7.171a2.13 2.13 0 0 0 1.586 1.013 9.7 9.7 0 0 0-1.337 3.613c-1.465.399-2.583 2.166-2.583 4.294 0 1.889.883 3.505 2.119 4.114l-.698 20.624L17.218 64h7.547a32 32 0 0 0 14.608-3.5l.171-.093-.971-28.852v-.307q.11-.051.21-.122c1.127-.677 1.909-2.215 1.909-3.992q0-.318-.035-.633c-.195-1.84-1.225-3.301-2.548-3.661a9.5 9.5 0 0 0-1.338-3.613 2.15 2.15 0 0 0 1.592-1.013c1.318-1.947 3.1-3.958 4.467-7.122l.059-.137a1.17 1.17 0 0 0-.142-1.217" fill-opacity="0.3"/><path d="m31.334 27.854-1.626 1.49c-.14.131-.24.3-.288.486-.107.429-.317 1.271-.488 2.07a.49.49 0 0 1-.488.37.49.49 0 0 1-.489-.37l-.517-2.07a.97.97 0 0 0-.288-.487l-1.626-1.49a.486.486 0 0 1 0-.686.49.49 0 0 1 .415-.15l2.441.33h.132l.19-.024 2.251-.307a.49.49 0 0 1 .488.273.485.485 0 0 1-.112.565m2.441-.546a5.8 5.8 0 0 1 .85-2.965 1.94 1.94 0 0 0 .156-1.611l-.112.102a2.86 2.86 0 0 1-3.486.03c0 .992-.908 1.83-2.12 1.966q-.187.015-.375 0c-1.372 0-2.49-.896-2.49-2.001a2.856 2.856 0 0 1-3.486-.03 2.3 2.3 0 0 1-.366-.384 1.9 1.9 0 0 0-.108 2.011 6 6 0 0 1 .713 2.882 5.8 5.8 0 0 1-.81 2.975 1.94 1.94 0 0 0-.255 1.13c.033.395.137.788.388 1.094 1.4 1.68 3.69 3.059 5.833 3.244h.527c2.48 0 4.428-1.539 5.82-3.564a1.91 1.91 0 0 0 .083-2.001 6 6 0 0 1-.732-2.873" fill-rule="evenodd" fill-opacity="0.3"/><path d="m31.337 27.854-1.626 1.49c-.14.131-.24.3-.288.486a64 64 0 0 0-.488 2.07.486.486 0 0 1-.488.37.49.49 0 0 1-.488-.37l-.518-2.07a.97.97 0 0 0-.288-.486l-1.626-1.49a.486.486 0 0 1 0-.687.49.49 0 0 1 .415-.15l2.441.33h.132l.19-.024 2.251-.307a.49.49 0 0 1 .489.273.485.485 0 0 1-.113.565" fill-rule="evenodd"/></g></svg></a>
+      <a href="https://ethbeat.org/privacy/projects/tacit-pay" title="Listed on ETHBeat" aria-label="Listed on ETHBeat" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" class="fill" aria-hidden="true"><g transform="scale(.03785) translate(0 36.5)"><mask id="eb-cut" maskUnits="userSpaceOnUse" x="0" y="-36.5" width="634" height="634"><path fill="#fff" d="M307.096 560.329C215.105 476.865 24.6334 315.428 2.25121 198.915C-19.4595 86.099 120.653 13.5025 216.336 34.6765C272.292 47.112 272.18 64.9251 307.655 97.5263C315.489 89.572 320.525 79.4892 327.911 71.1988C353.763 42.2947 388.903 18.3199 426.169 7.34079C533.156 -24.0281 640.926 48.2323 633.651 165.081C627.944 255.379 414.183 471.709 414.183 471.709C384.863 499.605 343.019 545.205 307.096 560.329Z"/><path fill="#000" d="M253.41 202.969C236.176 199.72 199.917 216.189 189.062 196.247C180.109 179.667 210.884 175.522 220.061 172.945C256.208 162.75 310.037 143.929 346.184 141.24C381.436 138.439 369.797 166.559 347.415 176.978C337.343 181.683 325.928 183.14 316.192 188.629C310.149 221.342 318.227 266.099 319.905 299.709C321.472 332.086 321 362.08 322.347 394.992C323.866 432.098 335.231 492.294 293.633 492.294C252.034 492.294 259.851 428.828 257.999 399.361C255.984 367.32 257.887 217.757 253.41 202.969Z M148.071 279.359C158.436 280.844 229.014 270.225 224.199 292.285C220.132 310.727 163.131 310.927 148.792 319.134C147.668 335.55 148.759 392.688 154.905 406.118C173.918 410.952 215.29 395.48 229.142 413.866C238.258 425.941 214.156 436.451 205.726 438.475C181.765 444.158 117.892 457.181 96.8035 445.367C79.8402 435.853 81.4586 390.265 80.3631 371.585C77.4223 324.051 64.1845 199.571 77.436 159.116C80.4219 149.913 88.946 141.942 96.9131 136.797C116.893 124.1 177.327 111.89 200.192 117.801C205.963 119.248 215.006 124.039 212.837 131.303C207.438 150.023 161.915 146.042 148.826 157.449C139.314 165.909 142.997 264.765 148.071 279.359Z M502.421 243.903C484.11 247.936 466.595 246.062 449.151 248.415C447.249 215.453 455.642 151.844 448.927 125.516C445.57 112.52 432.812 100.421 418.711 104.118C390.062 111.4 389.055 143.889 386.481 167.752C383.236 197.44 384.131 227.129 383.124 256.705C381.781 291.995 369.023 364.144 382.676 395.4C399.239 433.379 438.296 411.645 442.213 366.048C444.115 342.409 445.796 317.216 447.249 292.443C461.122 288.634 474.258 288.634 502.421 288.634C504.91 317.216 498.859 342.384 502.421 363.359C508.128 396.969 548.536 397.319 557.455 366.048C562.929 351.138 569.231 164.055 566.322 135.823C563.972 112.744 565.762 77.2305 537.673 69.1642C519.095 63.7867 504.883 78.3508 501.078 95.6037C498.341 135.823 507.099 222.797 502.421 243.903Z"/></mask><path mask="url(#eb-cut)" d="M307.096 560.329C215.105 476.865 24.6334 315.428 2.25121 198.915C-19.4595 86.099 120.653 13.5025 216.336 34.6765C272.292 47.112 272.18 64.9251 307.655 97.5263C315.489 89.572 320.525 79.4892 327.911 71.1988C353.763 42.2947 388.903 18.3199 426.169 7.34079C533.156 -24.0281 640.926 48.2323 633.651 165.081C627.944 255.379 414.183 471.709 414.183 471.709C384.863 499.605 343.019 545.205 307.096 560.329Z"/></g></svg></a>
+      <a href="https://x.com/tacitfi" title="@tacitfi on X" aria-label="@tacitfi on X" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" class="fill" aria-hidden="true"><path d="M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.638 7.584H.474l8.6-9.83L0 1.154h7.594l5.243 6.932ZM17.61 20.644h2.039L6.486 3.24H4.298Z"/></svg></a>
+      <a href="https://discord.gg/VxYx9XSBrM" title="Tacit Discord community" aria-label="Tacit Discord community" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" class="fill" aria-hidden="true"><path d="M20.317 4.3698a19.7913 19.7913 0 00-4.8851-1.5152.0741.0741 0 00-.0785.0371c-.211.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 00-.0785-.037 19.7363 19.7363 0 00-4.8852 1.515.0699.0699 0 00-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 00.0312.0561c2.0528 1.5076 4.0413 2.4228 5.9929 3.0294a.0777.0777 0 00.0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 00-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 01-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 01.0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 01.0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 01-.0066.1276 12.2986 12.2986 0 01-1.873.8914.0766.0766 0 00-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 00.0842.0286c1.961-.6067 3.9495-1.5219 6.0023-3.0294a.077.077 0 00.0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 00-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.157-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1569 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.946 2.4189-2.1568 2.4189Z"/></svg></a>
+    </nav>
+  </footer>
+  <!-- chrome:foot:end -->
+</div>
+<script type="module" src="/farm/app.js?cb=8334e55c"></script>
+</body>
+</html>

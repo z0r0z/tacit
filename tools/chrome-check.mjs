@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Checks the header's page menu and the footer that every page wears (build/chrome.mjs) in a real browser, with nothing reaching a live
 // service and no fork needed:
-//   menu     the pages a holder goes to, in order, with no divider; Assets, Rewards and Prove beside it in a wide header and first in it on a phone
+//   menu     the pages a holder goes to, in order, with no divider; Assets, Farm, Rewards and Prove beside it in a wide header and first in it on a phone
 //   footer   icons for the places outside the app, Build and Stats among them, and the whole row on the page down to a 320 px phone
 //   here     the page you are on is marked in the menu; the Tacit chain has no entry of its own, and its old address goes on to TAC's page
 //   PLAYWRIGHT=<path to playwright-core> node tools/chrome-check.mjs
@@ -28,7 +28,7 @@ const server = createServer((req, res) => {
 let failed = 0;
 const ok = (c, m, extra = '') => { console.log(`${c ? 'ok  ' : 'FAIL'} ${m}${extra ? ` (${extra})` : ''}`); if (!c) failed++; };
 
-const HEADER = 'Assets:/assets/ Rewards:/rewards/ Prove:/prove/';
+const HEADER = 'Assets:/assets/ Farm:/farm/ Rewards:/rewards/ Prove:/prove/';
 const MENU = 'Portfolio:/#portfolio Pay:/pay/ Borrow:/vault/ Bridges:/bridge/ TAC:/tac/ Etch:/etch/ Tasks:/tasks/ FACE:/face/';
 const FOOTER = 'Whitepaper | Build | Security | Source | Pool contract | Stats | DefiLlama | Listed on ETHBeat | @tacitfi on X | Tacit Discord community';
 // page → the menu entry marked as the page you are on (none for a page the menu does not list)

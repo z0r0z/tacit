@@ -47,6 +47,7 @@
 /pay      /pay/      301
 /assets   /assets/   301
 /rewards   /rewards/   301
+/farm   /farm/   301
 /bridge   /bridge/   301
 /etch   /etch/   301
 /pay/eth  /pay/eth/  301
@@ -55,7 +56,7 @@
 /pay/wei/*  /pay/eth/index.html  200
 
 # The front page is dapp/index.html (tacit weld, formerly at /weld/); the classic app is dapp/classic.html. The
-# catch-all keeps serving the front page: its head script (front-route.js) turns readable paths (/lock, /farm,
+# catch-all keeps serving the front page: its head script (front-route.js) turns readable paths (/lock, /farm/public,
 # /device/base/withdraw) into their # links on the page, and forwards the classic app's links (its tab paths such as
 # /market?aid=… and /cdp, its #tab= and other fragments) to /classic.html.
 #

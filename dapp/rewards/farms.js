@@ -3,6 +3,8 @@
 // wallet, which turns the wTAC into TAC), and a join with both sides (each cut to size by the relay if no note fits, then bonded at the pool's
 // ratio). Joining with one side (a swap first) and what only an unwrap sent yourself can do are the front page's: they link there.
 // Nothing here is loaded until the holder asks: this module, the key and the pool all come in on that press.
+// A page that opens the key for something of its own (the farm page's deposits) passes its `session`, so one sign-in serves both: it
+// then calls `forget(why)` when the wallet behind the key has moved. `onRead(list)` is told the positions each time they are read.
 import { makeKeySession, signInSheet } from '/trade/key.js?cb=09f263cb';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=59d125e5';
 import { makeRunner } from '/activity.js';
@@ -23,14 +25,14 @@ const MULTICALL3 = '0xca11bde05977b3631167028862be2a173976ca11';
 // the chain's clock, read with the positions: whether a bond is over goes by it, not by this device's
 const chainNow = async (ux) => ({ at: Date.now(), t: Number(wordAt(await ux.ethCall(MULTICALL3, '0x0f28c97d'), 0)) });
 
-export function mountFarms(root, { pick, names = () => new Map(), pair = () => '', program = () => null, wallet = null, W = null, connect = null } = {}) {
+export function mountFarms(root, { pick, names = () => new Map(), pair = () => '', program = () => null, wallet = null, W = null, connect = null, session = null, onRead = () => {} } = {}) {
   let D = null, seq = 0, runner = null, wanted = null;
   let lockedWhy = '';                                                                  // why the key was locked, when the wallet that opened it moved
   const now = () => (D?.clock ? D.clock.t + (Date.now() - D.clock.at) / 1000 : undefined);   // the chain's time, carried on from its read
-  const key = makeKeySession({ moved: (why) => { lockedWhy = why || ''; forget(); } });
+  const key = session || makeKeySession({ moved: (why) => forget(why || '') });
   const run = () => (runner ||= makeRunner({ api: API, base: async () => (await import('/confidential-deployments.js')).getConfidentialDeployment('mainnet')?.relayBase || API, pub: () => key.key?.pubHex || null }));
   const settled = (r) => { if (r?.jobId) run().journal.put('job:' + r.jobId, { status: 'settled', hash: r.txHash || undefined }); };
-  function forget() { key.lock(); forgetUx(); seq++; D = null; paint(); }
+  function forget(why = null) { if (typeof why === 'string') lockedWhy = why; key.lock(); forgetUx(); seq++; D = null; paint(); }
 
   // The key a flow starts under. Each step of the flow asks for it again, so a key locked or changed meanwhile stops the flow before its next
   // step, and each step is given its own copy.
@@ -52,6 +54,7 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
       if (my !== seq || key.key?.pubHex !== pub) return;
       const cur = D?.pub === pub ? D : null;                                         // what was typed, said or started while this was read is kept
       D = { pub, list: Array.isArray(list) ? list : [], notes: bal?.notes || [], notesOk: !!bal, wtac: wt, clock: clock || cur?.clock || null, said: cur?.said || null, form: cur?.form || wanted || {}, terms: cur?.terms || {}, busy: cur?.busy || null };
+      try { onRead(D.list); } catch { /* the page's own note of them */ }
     } catch (e) { if (my === seq) D = { pub, err: String(e?.message || e).slice(0, 160) }; }
     paint();
   }

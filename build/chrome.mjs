@@ -21,6 +21,7 @@ export const CHROME_PAGES = {
   'build/index.html': '', 'etch/index.html': 'etch', 'weld/stats/index.html': '', 'relay/index.html': '',
   'splitter/index.html': '', 'sats/index.html': '', 'bridge/index.html': 'bridge',
   'discord/index.html': '', 'face/index.html': 'face', 'fast/index.html': 'bridge', 'prove/index.html': 'prove', 'help/index.html': '', 'docs/chain/index.html': '',
+  'farm/index.html': 'farm',
 };
 
 // 24×24 line drawings, the lander's tabs' hand; drawn by chrome.css (stroke, round caps) unless a glyph is .fill. The assets glyph is the TAC logo's t in its ring, at the logo's proportions (slanted stem, wide high bar, foot sweeping right). The llama is DefiLlama's mark in one colour
@@ -32,6 +33,7 @@ const G = {
   more: '<rect x="4" y="4" width="6.5" height="6.5" rx="1.7"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.7"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.7"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.7"/>',
   tac: '<path d="M12 3l7.5 3v5.5c0 4.6-3.2 8-7.5 9.5-4.3-1.5-7.5-4.9-7.5-9.5V6z"/><path d="M9 12l2.2 2.2L15.5 10"/>',
   bridge: '<path d="M3 17h18"/><path d="M5 17v-3a7 7 0 0 1 14 0v3"/><path d="M9 17v-4.5M15 17v-4.5M12 17v-6"/>',
+  farm: '<path d="M6.5 14.2A4.2 4.2 0 0 1 7.8 6.1a4.6 4.6 0 0 1 8.4 0 4.2 4.2 0 0 1 1.3 8.1"/><path d="M6.5 14.2V19a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-4.8"/><path d="M6.5 16.8h11"/>',
   rewards: '<rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13"/><path d="M5 12v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-8"/><path d="M7.5 8a2.5 2.5 0 1 1 0-5C10 3 12 8 12 8s2-5 4.5-5a2.5 2.5 0 1 1 0 5"/>',
   etch: '<path d="M4 20l4.2-1 10.6-10.6a2.1 2.1 0 0 0-3-3L5.2 16z"/><path d="M13.6 7.4l3 3"/>',
   face: '<path d="M6 20V10a6 6 0 0 1 12 0v10l-2-2-2 2-2-2-2 2-2-2z"/><path d="M9.5 11.5h1M13.5 11.5h1"/>',
@@ -52,11 +54,11 @@ const G = {
 const FILLED = new Set(['github', 'x', 'llama', 'discord', 'ethbeat']);
 const svg = (k) => `<svg viewBox="0 0 24 24"${FILLED.has(k) ? ' class="fill"' : ''} aria-hidden="true">${G[k]}</svg>`;
 
-// the places most people come for, always in the header (icons below ~900px, a menu entry on a phone): the assets, what they pay (rewards: farms,
-// points, the airdrop) and proving. Shielding, swapping, sending, earning, bridging and borrowing are the front page's tile, which the logo opens.
+// the places most people come for, always in the header (icons below ~900px, a menu entry on a phone): the assets, the farms (the glyph is the
+// farm page's chef's hat), what else pays and what there is to claim (rewards: points, the airdrop) and proving. Shielding, swapping, sending, earning, bridging and borrowing are the front page's tile, which the logo opens.
 // The menu holds the rest: the pages of their own for a holder (pay, borrow, the bridge page that follows bridges under way). The footer has the
 // network's own (build, stats)
-const MAIN = [['assets', '/assets/', 'Assets'], ['rewards', '/rewards/', 'Rewards'], ['prove', '/prove/', 'Prove']];
+const MAIN = [['assets', '/assets/', 'Assets'], ['farm', '/farm/', 'Farm'], ['rewards', '/rewards/', 'Rewards'], ['prove', '/prove/', 'Prove']];
 const MORE = [['portfolio', '/#portfolio', 'Portfolio'], ['pay', '/pay/', 'Pay'], ['borrow', '/vault/', 'Borrow'], ['bridge', '/bridge/', 'Bridges'], ['tac', '/tac/', 'TAC'], ['etch', '/etch/', 'Etch'], ['tasks', '/tasks/', 'Tasks'], ['face', '/face/', 'FACE']];
 
 const here = (key, k) => (key === k ? ' aria-current="page"' : '');
