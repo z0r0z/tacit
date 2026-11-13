@@ -5,11 +5,11 @@
 // The proving key is the ceremony's: /evm-pool/pin.json names it and its files by SHA-256.
 // Link: /sats#eth=<chain id>[&do=send|withdraw] opens this panel on that chain, at that form.
 
-import { makeEvmPoolZk } from '/evm-pool-zk.js?cb=2f062779';
+import { makeEvmPoolZk } from '/evm-pool-zk.js';
 import { ETH_NODES, BASE_NODES, ROBINHOOD_NODES } from '/eth-nodes.js';
 import { evmPoolKeys, makeEvmPoolWallet, jsonRpc } from '/evm-pool-wallet.js?cb=62522386';
 import { vkHash } from '/evm-pool-zk-prover.js?cb=00ff69c2';
-import { poolRecipient } from '/pool-recipient.js?cb=a9311fc4';
+import { poolRecipient } from '/pool-recipient.js';
 import { L2_BRIDGES } from '/evm-pool-gateway.js';
 import { poseidon2, poseidon3, poseidon4, poseidon5, poseidon7 } from '../vendor/tacit-poseidon.min.js';
 import { guardProvider } from '../wallet-prompts.js';
@@ -53,7 +53,7 @@ function fmtEth(wei) {
   const w = BigInt(wei);
   const whole = w / 10n ** 18n;
   const frac = (w % 10n ** 18n).toString().padStart(18, '0').slice(0, 6).replace(/0+$/, '');
-  return `${whole.toLocaleString('en-US')}${frac ? '.' + frac : ''} ETH`;
+  return `${whole.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',')}${frac ? '.' + frac : ''} ETH`;
 }
 function parseEth(s) {
   const m = String(s).trim().match(/^(\d*)(?:\.(\d{0,18}))?$/);

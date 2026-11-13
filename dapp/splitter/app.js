@@ -429,7 +429,9 @@ if (provider()?.on) {
   provider().on('chainChanged', () => paint());
 }
 (async () => {
-  loadRelay(); setInterval(loadRelay, 120000);
+  let missed = false;
+  loadRelay(); setInterval(() => { if (document.hidden) missed = true; else loadRelay(); }, 120000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && missed) { missed = false; loadRelay(); } });
   rpc('eth_gasPrice', []).then((g) => { S.gas = BigInt(g); paintDeploy(); }).catch(() => {});
   paintChip();
   if (provider()) provider().request({ method: 'eth_accounts' }).then((a) => { if (a[0]) { S.account = lc(a[0]); paint(); } }).catch(() => {});

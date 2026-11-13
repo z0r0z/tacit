@@ -12,6 +12,7 @@ export const PX_CALLS = [
   { to: '0x000000003f608BDdF0ca45934003ffb9DbDF70DB', data: '7dd55c2b' + word(10n ** 8n) },
   { to: '0x000000003f608BDdF0ca45934003ffb9DbDF70DB', data: 'd5901347' + word(10n ** 8n) },
   { to: '0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0', data: 'bb2952fc' + word(10n ** 18n) },
+  { to: '0x00000000E36C7EC997CC59DCda9E03673B448119', data: '3bc1414a' + '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34' + 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b' + word(30) + word(10n ** 16n) },
 ];
 
 export function pxFigures([sp, wst, usd, rate]) {
@@ -36,6 +37,7 @@ export function paintPx(el, v) {
 }
 
 export const pxState = { fresh: false };
+export const pxEarly = { at: 0, p: null };
 
 const HOSTS = ['https://ethereum-rpc.publicnode.com', 'https://rpc.mevblocker.io', 'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7', 'https://eth.drpc.org'];
 async function read() {
@@ -72,7 +74,8 @@ if (!window.__tacitAway) {
     const kept = JSON.parse(localStorage.getItem(PXS_KEY));
     if (kept?.v && Date.now() - kept.at < PXS_MS) whenParsed((el) => paintPx(el, kept.v));
   } catch { }
-  read().then((raw) => {
+  pxEarly.at = Date.now(); pxEarly.p = read();
+  pxEarly.p.then((raw) => {
     const v = raw && pxFigures(raw);
     if (!v?.usdBtc || !v.mid) return;
     pxState.fresh = true;

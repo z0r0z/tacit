@@ -121,7 +121,9 @@ async function load() {
   paintBuyback(j); paintFees(j); paintCosts(j); paintTips(j);
 }
 load();
-setInterval(load, 120000);
+let missed = false;
+setInterval(() => { if (document.hidden) missed = true; else load(); }, 120000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden && missed) { missed = false; load(); } });
 
 // ── the wallet, and what it can do here ──
 // The wallet's notices go to the status line of the panel last used.

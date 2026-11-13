@@ -224,17 +224,23 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
   const toLink = () => { if (doc.defaultView?.location.hash === '#provide') root.open = true; };
   toLink();
   doc.defaultView?.addEventListener('hashchange', toLink);
-  // what is waiting for a provider, read now and every minute
+  // what is waiting for a provider, read now and every minute (a hidden tab with nothing to provide reads it again when it is back)
   if (waiting) {
     // a bridge that starts waiting and that this key could take is said once (the ones there at the first look are not news)
-    const look = () => waiting().then((w) => {
-      S.wait = w;
-      const now = new Set((w.items || []).map((i) => i.pub));
-      if (S.seen && S.inv) { const fresh = fitting(w).filter((i) => !S.seen.has(i.pub)); if (fresh.length) notify(`A bridge of ${fmtTac(fresh[0].amount)} TAC is waiting for a provider you can be.`); }
-      if (S.inv || !S.seen) S.seen = now;
-      paint();
-    }).catch(() => {});
+    let lookedAt = 0;
+    const look = () => {
+      if (S.seen && !S.inv && doc.visibilityState === 'hidden') return;
+      lookedAt = Date.now();
+      waiting().then((w) => {
+        S.wait = w;
+        const now = new Set((w.items || []).map((i) => i.pub));
+        if (S.seen && S.inv) { const fresh = fitting(w).filter((i) => !S.seen.has(i.pub)); if (fresh.length) notify(`A bridge of ${fmtTac(fresh[0].amount)} TAC is waiting for a provider you can be.`); }
+        if (S.inv || !S.seen) S.seen = now;
+        paint();
+      }).catch(() => {});
+    };
     look(); setInterval(look, waitMs);
+    doc.addEventListener('visibilitychange', () => { if (doc.visibilityState !== 'hidden' && Date.now() - lookedAt >= waitMs) look(); });
   }
   paint();
   return { busy: () => !!(S.st && S.st.running && (S.st.accepting || S.st.open > 0)) };

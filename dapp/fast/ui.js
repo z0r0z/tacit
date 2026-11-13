@@ -18,6 +18,7 @@ import { minutesFor } from './route.js';
 export { fmtTac, parseTac, slowNet, lineageText };
 const pct = (fee, of) => (of > 0n ? `${(Number((fee * 1000000n) / of) / 10000).toFixed(2)}%` : '');
 const SCAN = 'https://mempool.space/tx/';
+const KEPT = 'tacit-fast-providers-v1';
 const big = (xs, pick) => xs.reduce((a, x) => (pick(x) > a ? pick(x) : a), 0n);
 
 // what a provider can take now: its most, or less when it says so; one with less free than its least takes nothing now
@@ -30,6 +31,9 @@ const range = (a, b) => `${fmtTac(a, 2)} to ${fmtTac(b, 2)} TAC`;
 export function mountFast({ root, keyS, signIn, open, discover, wants = null, notify = () => {}, pinned = () => null, quoteDelayMs = 350, refreshMs = 30000, retryMs = 15000, say = () => {} }) {
   const doc = root.ownerDocument;
   const S = { providers: [], empties: 0, loaded: false, termsAt: 0, sess: null, pub: null, bal: null, amt: '', quotes: [], quote: null, best: null, seq: 0, busy: false, note: '', bad: false, recs: [], stop: null, timer: 0, opening: null, want: null, told: false, watch: 0, cost: null, sure: null, checking: false, anyOnly: null };
+  // how many providers the last visit read: the card's first line and the tiles keep the room they took until they are read again
+  let kept = 0;
+  try { kept = Number(doc.defaultView.localStorage.getItem(KEPT)) || 0; } catch { /* none kept */ }
 
   root.innerHTML = `
     <p class="fx-sum" id="fx-lp" aria-live="polite"></p>
@@ -73,6 +77,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
 
   function paintProvider() {
     const e = $('fx-lp'), sm = summary();
+    e.classList.toggle('held', !S.loaded && kept !== 1);
     // with nobody providing, a key must still be able to open: it is how the first provider starts
     // the key's own offer is not one to bridge with, but it is online: the provider is told so, not that nobody is
     const mine = keyS.unlocked && keyS.key && S.providers.some((p) => p.id === keyS.key.pubHex);
@@ -151,6 +156,13 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
   function paintTiles() {
     const e = doc.getElementById('fx-tiles');
     if (!e) return;
+    if (!S.loaded) {
+      const n = Math.min(kept, 6);
+      e.hidden = n < 2;
+      e.innerHTML = n < 2 ? '' : `<p class="eyebrow"><span>Providers online</span><span class="who num">&nbsp;</span></p>
+      <div class="lp-grid" aria-hidden="true">${'<div class="lp-tile"><div class="lp-top"><b>&nbsp;</b><small class="num lp-key">&nbsp;</small></div><div class="kv"><span>Fee</span><b class="num">…</b></div><div class="kv"><span>Takes</span><b class="num">…</b></div></div>'.repeat(n)}</div>`;
+      return;
+    }
     const me = keyS.unlocked && keyS.key ? keyS.key.pubHex : null;
     const ps = S.providers.slice().sort((a, b) => (a.id === me ? -1 : b.id === me ? 1 : a.terms.feeBps - b.terms.feeBps));
     const show = ps.length > 1 || (ps.length === 1 && ps[0].id === me);
@@ -178,6 +190,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
       if (ps.length || !S.providers.length || S.empties >= 2) S.providers = ps;
     } catch { /* the providers already read stand */ }
     S.loaded = true;
+    if (S.providers.length !== kept) { kept = S.providers.length; try { doc.defaultView.localStorage.setItem(KEPT, String(kept)); } catch { /* a convenience */ } }
     paint();
   }
 

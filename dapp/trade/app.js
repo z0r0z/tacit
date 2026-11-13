@@ -4,7 +4,7 @@ import { ETH_NODES } from '/eth-nodes.js';
 import {
   makeEvmTradeVenues, zswapDeepLink, encErc20Approve, PRECISION_POOL, TAC_ERC20, TACIT_AMM, MULTICALL3, CETH_POOL_ASSET_ID, TAC_POOL_ASSET_ID, _internal,
 } from '/evm-trade-venues.js?cb=c9a3c2e7';
-import { getConfidentialDeployment } from '/confidential-deployments.js';
+import { DEPLOY_OVERRIDES } from '/confidential-deployments.generated.js';
 import { buildBook, planBuy, planSell as planBtcSell, ladderLevels } from '/btc-book.js?cb=0a09ab9e';
 import { decodeTape, chartBars, continuous, invert, ethLaneUsd, btcLaneUsd, candlesFromTrades, tradePrices, closeAt, volumeSince, gap, TAPE_FINE, TAPE_COARSE, TAPE_WORDS } from '/trade/tape.js?cb=714b0344';
 import { mountChart, fmtLocalStamp, fmtLocalTime } from '/trade/chart.js?cb=c0b1d232';
@@ -23,6 +23,7 @@ const RPCS = ETH_NODES;
 const CHAINLINK = { ethUsd: '0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419', btcUsd: '0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c' };
 const ZSWAP_HOST = 'https://zswap.wei.limo';
 const SCAN = 'https://etherscan.io/address/';
+const POOL_ADDR = DEPLOY_OVERRIDES?.mainnet?.pool || null;
 const E10 = 10n ** 10n, E18 = 10n ** 18n;
 const ORANGE = '#f7931a', ETHBLUE = '#627eea', GREEN = '#16a34a';
 
@@ -73,7 +74,7 @@ async function loadChain() {
   try { await readChain(); D.chainFailed = D.perEth == null; } catch (e) { D.chainFailed = true; throw e; } finally { D.chainDone = true; }
 }
 async function readChain() {
-  const pool = getConfidentialDeployment('mainnet')?.pool;
+  const pool = POOL_ADDR;
   const calls = [
     { to: PRECISION_POOL, data: '0x2af1f249' },
     { to: CHAINLINK.ethUsd, data: '0xfeaf968c' }, { to: CHAINLINK.btcUsd, data: '0xfeaf968c' },
@@ -672,7 +673,7 @@ function notify(msg, kind = '', ms = 5000) {
 const pageWallet = () => (W.account && W.prov && !W.prov.isWalletConnect ? { uuid: W.uuid, address: W.account } : null);
 let bitcoinP = null;
 function getBitcoin() {
-  return (bitcoinP ||= import('/trade/btc.js?cb=20c3900b').then((m) => (bitcoin = m.makeBitcoin({
+  return (bitcoinP ||= import('/trade/btc.js?cb=1bbeb77d').then((m) => (bitcoin = m.makeBitcoin({
     notify, wallet: pageWallet, onChange: () => syncMe(),
     onTraded: (t) => { noteBitcoinTrade(t); loadBitcoin().then(paintAll).catch(() => {}); },
   }))).catch((e) => { bitcoinP = null; throw e; }));
@@ -956,7 +957,7 @@ function pinOrder(key) {
 function renderAbout() {
   setHtml($('#about'), `<p><b>TAC</b> is Tacit’s private money: 21,000,000, issued once on Bitcoin, confidential by default. On Ethereum it is an ERC-20 minted only against TAC that left Bitcoin. <a href="/verify.html">Check the supply →</a></p>`);
   const link = (a, t) => `<a href="${SCAN}${a}" target="_blank" rel="noopener noreferrer">${t || addrFlat(a, 6, 8)}</a>`;
-  const pool = getConfidentialDeployment('mainnet')?.pool, vol24Usd = D.btc?.vol24 && D.btcUsd ? (D.btc.vol24 * D.btcUsd) / 1e8 : null;
+  const pool = POOL_ADDR, vol24Usd = D.btc?.vol24 && D.btcUsd ? (D.btc.vol24 * D.btcUsd) / 1e8 : null;
   const main = [
     ['Ethereum', `ERC-20 ${link(TAC_ERC20)}${D.ethSupply != null ? ` · ${grp(Number(D.ethSupply) / 1e18, 0)} TAC minted there so far` : ''}`, CM_ETH],
     ['Bitcoin', `Asset <code>${TAC_BTC_ID.slice(0, 8)}…${TAC_BTC_ID.slice(-6)}</code>${D.btc?.holders ? ` · ${grp(D.btc.holders, 0)} holders` : ''}${D.btc?.vol24 ? ` · ${grp(D.btc.vol24, 0)} sats${vol24Usd != null ? ` (${vol24Usd < 10 ? usd(vol24Usd) : `$${grp(vol24Usd, 0)}`})` : ''} traded in 24h` : ''}`, CM_BTC],

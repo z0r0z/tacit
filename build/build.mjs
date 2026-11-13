@@ -228,8 +228,9 @@ const tradeAssetPage = (slug) => readFileSync(join(DAPP_DIR, TRADE_PAGE), 'utf8'
   .replace('<head>', `<head>\n<!-- Made from /trade/index.html by \`npm run build\` (build/build.mjs): edit that file, not this one. -->`);
 // TAC's page, /tac/, is the front page at TAC's address: the same document and module, which draws TAC's page when its address is /tac/, so a Tacit
 // key opened on either is open on both (it is held in memory only) and moving between them loads nothing again. tac/index.html is made from
-// index.html here, differing only in the head's name for it and a mark on <html> that lays it out as TAC's page before the module runs; it is
-// made last, once index.html's tokens and pin are final, and `--verify-only` fails when it is not what this makes.
+// index.html here, differing only in the head's name for it, the swap card's preloads (the card is drawn there only when a tile opens it) and a mark
+// on <html> that lays it out as TAC's page before the module runs; it is made last, once index.html's tokens and pin are final, and `--verify-only`
+// fails when it is not what this makes.
 const TAC_PAGE_DESC = 'TAC: one private currency on Bitcoin and Ethereum.';
 const TAC_PAGE_SWAPS = [
   ['<html lang="en">', '<html lang="en" data-page="tac">'],
@@ -238,11 +239,15 @@ const TAC_PAGE_SWAPS = [
   ['<meta property="og:url" content="https://tacit.finance/">', '<meta property="og:url" content="https://tacit.finance/tac/">'],
   ['<meta property="og:title" content="tacit defi">', '<meta property="og:title" content="tacit TAC">'],
 ];
+const TAC_PAGE_UNPRELOAD = /<link rel="modulepreload" href="\/(?:swap\/(?:card|route|aggregate|solvers|link|route-name)|trade\/(?:wallet|util|fmt)|points-note)\.js\?cb=[0-9a-f]{8}">\n/g;
 function tacPageOf(text) {
   for (const [a, b] of TAC_PAGE_SWAPS) {
     if (text.split(a).length !== 2) throw new Error(`index.html has no single ${a}: update TAC_PAGE_SWAPS in build/build.mjs`);
     text = text.replace(a, b);
   }
+  const card = (text.match(TAC_PAGE_UNPRELOAD) || []).length;
+  if (card !== 10) throw new Error(`index.html preloads ${card} of the swap card's 10 modules: update TAC_PAGE_UNPRELOAD in build/build.mjs`);
+  text = text.replace(TAC_PAGE_UNPRELOAD, '');
   const desc = /(<meta (?:name="description"|property="og:description") content=")[^"]*(">)/g;
   if ((text.match(desc) || []).length !== 2) throw new Error('index.html should have one description and one og:description: update tacPageOf in build/build.mjs');
   return text.replace(desc, (m, a, b) => `${a}${TAC_PAGE_DESC}${b}`)

@@ -7,15 +7,15 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-KWSq9rZ+EPuMrKHOnEbDnxdWiH4nLYafaneOnksVyv4=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-UMOheAp84WACKzGaJwjpAWyAVgZ/G9XzKhSGx9/CxfQ=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
 <link rel="preconnect" href="https://rpc.mevblocker.io" crossorigin>
 <link rel="preconnect" href="https://tacit-evm-pool-keepers.onrender.com" crossorigin>
 <script async src="/front-guard.js?cb=51f5d28b"></script>
-<script type="module" src="/px-strip.js?cb=046a6701" async fetchpriority="high"></script>
-<link rel="preload" href="/swap/card.css?cb=ee86a552" as="style">
+<script type="module" src="/px-strip.js?cb=d4520508" async fetchpriority="high"></script>
+<link rel="preload" href="/swap/card.css?cb=92ffd704" as="style">
 <link rel="preload" href="/fonts/instrument-serif-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/instrument-serif-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
@@ -64,26 +64,16 @@
 <link rel="modulepreload" href="/relay-outcome.js?cb=17e48a9a">
 <link rel="modulepreload" href="/btc-borrow.js?cb=2b7e1f6b">
 <link rel="modulepreload" href="/bridge-out.js?cb=9662a160">
-<link rel="modulepreload" href="/bridge/track.js?cb=29efa548">
+<link rel="modulepreload" href="/bridge/track.js?cb=2f3df17a">
 <link rel="modulepreload" href="/bridge-in.js?cb=ba07ee86">
 <link rel="modulepreload" href="/bridge-tick.js?cb=42d78071">
 <link rel="modulepreload" href="/tacit-session.js?cb=4636e436">
 <link rel="modulepreload" href="/activity.js?cb=a0384066">
-<link rel="modulepreload" href="/swap/card.js?cb=6dc6f2f7">
-<link rel="modulepreload" href="/trade/wallet.js?cb=5d19a733">
-<link rel="modulepreload" href="/trade/util.js?cb=1d2cd8d3">
 <link rel="modulepreload" href="/trade/rpc.js">
 <link rel="modulepreload" href="/eth-nodes.js">
 <link rel="modulepreload" href="/rpc-pace.js">
-<link rel="modulepreload" href="/trade/fmt.js?cb=172824e5">
-<link rel="modulepreload" href="/swap/route.js?cb=44449874">
-<link rel="modulepreload" href="/swap/aggregate.js?cb=67d0c300">
-<link rel="modulepreload" href="/swap/solvers.js?cb=669b2617">
-<link rel="modulepreload" href="/swap/link.js?cb=00bf0557">
-<link rel="modulepreload" href="/swap/route-name.js?cb=2a0317f3">
 <link rel="modulepreload" href="/gas-relay.js?cb=e8d173a8">
 <link rel="modulepreload" href="/reward-pop.js?cb=88973dac">
-<link rel="modulepreload" href="/points-note.js?cb=40738db7">
 <link rel="modulepreload" href="/evm-pool-tokens.js?cb=16e0e196">
 <link rel="modulepreload" href="/net-pick.js?cb=9229f173">
 <!-- preload:end -->
@@ -113,7 +103,6 @@
   --skel: rgba(26,26,26,.08);
   --skel-hi: rgba(26,26,26,.02);
   --bar: #8F8979;
-  --route-o: .55;
   --blue: #627eea;
   --green: #16a34a;
   --float: 0 1px 2px rgba(26,26,26,.05), 0 26px 50px -34px rgba(26,26,26,.38);
@@ -144,7 +133,6 @@
     --skel: rgba(237,229,207,.07);
     --skel-hi: rgba(237,229,207,.15);
     --bar: #6F6958;
-    --route-o: .8;
     --float: 0 0 0 1px rgba(237,229,207,.04), 0 34px 70px -30px rgba(0,0,0,.95);
     color-scheme: dark;
   }
@@ -478,7 +466,7 @@ a.di { color: inherit; text-decoration: none; }
 .hx-pl .hx-earn { color: var(--mute); margin-left: -4px; }
 .hx-pl .link { margin-left: auto; padding: 0; font-size: 12px; }
 .hx-pl .link + .link { margin-left: 10px; }
-.hx-qr { display: flex; justify-content: center; padding: 8px 0 4px; line-height: 0; }
+.hx-qr { padding: 8px 0 4px; line-height: 0; }
 .hx-pl .link, .hx-q .link { position: relative; }
 .hx-pl .link::after, .hx-q .link::after { content: ''; position: absolute; inset: -8px -6px; }
 .hx-do { display: flex; flex-wrap: wrap; gap: 4px 16px; padding-left: 23px; }
@@ -576,7 +564,6 @@ a.di { color: inherit; text-decoration: none; }
 .hx-rc { margin: 6px 0 0; font-size: 12px; line-height: 1.5; color: var(--mute); overflow-wrap: anywhere; }
 .hx-rc.warn { color: var(--warn); }
 /* what the send does, by its coin and its recipient: a private one with the lock */
-.hx-way { margin: 6px 0 0; font-size: 12px; line-height: 1.5; color: var(--mute); }
 .hx-way[data-k="private"], .hx-way[data-k="deposit"] { color: var(--ink); }
 .hx-way[data-k="private"]::before, .hx-way[data-k="deposit"]::before { content: ''; display: inline-block; width: 8px; height: 9px; margin-right: 6px; vertical-align: -1px; border: 1.5px dashed currentColor; border-radius: 2px; }
 .hx-recent { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin: 8px 0 0; }
@@ -584,9 +571,6 @@ a.di { color: inherit; text-decoration: none; }
 .hx-b .hx-recent .link { position: relative; padding: 0; font-size: 12px; }
 .hx-recent .link::after { content: ''; position: absolute; inset: -8px -6px; }
 .hero .hx-q.warn, .hx-q.warn { color: var(--warn); }
-.hx-gauge { margin: 14px 2px 2px; }
-.hx-gauge-b { position: relative; height: 10px; border-radius: 5px; background: linear-gradient(90deg, var(--err) 0 13%, var(--orange) 13% 25%, var(--ok) 25%); opacity: .85; }
-.hx-gauge-l { display: flex; justify-content: space-between; margin-top: 6px; font-size: 11px; color: var(--mute); }
 
 /* ── live: what happened lately, as a tape under the hero. It stops under the pointer and stands still under reduced motion
    (the tape can then be scrolled by hand). ── */
@@ -879,7 +863,6 @@ a.di { color: inherit; text-decoration: none; }
 .pair .tk { transition: transform .4s var(--spring); }
 .pair .tk:nth-child(2) { transition-delay: .03s; }
 .pair .tk:nth-child(3) { transition-delay: .06s; }
-.btn { transition: background .15s, color .15s, transform .1s; }
 @media (hover: hover) { .brand:hover .tk { animation: coin .7s var(--ease); } }
 .news:active, .proof:active { transform: scale(.99); transition-duration: .08s; }
 .btn:active:not(:disabled), .chip:active { transform: scale(.98); }
@@ -1131,7 +1114,6 @@ a.btn { text-decoration: none; white-space: nowrap; }
 .opt-t .w-bal { margin-left: auto; font-weight: 400; font-size: 13px; color: var(--mute); }
 .opts + .seg, .note + .seg { margin-top: 14px; }
 #tac-bal > .opts { margin: 0 0 16px; }
-.note.tb-ask { margin: 0 0 14px; }
 /* TAC's home: each place TAC can be, what it holds there and what can be done with it there */
 .th { list-style: none; margin: -4px 0 16px; padding: 0; }
 .th > li { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; column-gap: 10px; align-items: baseline; padding: 11px 0; border-bottom: 1px solid var(--hair); }
@@ -1142,7 +1124,6 @@ a.btn { text-decoration: none; white-space: nowrap; }
 .th-v .link { font-size: 12px; }
 .th-a { grid-column: 2 / -1; display: flex; flex-wrap: wrap; gap: 2px 16px; margin-top: 4px; }
 .th-a .link { font-size: 12.5px; padding: 4px 0; }
-.th-slot { grid-column: 1 / -1; }
 .tp { padding: 14px 0 4px; }
 .tp .seg.sub { margin: 0 0 10px; }
 .tp-bal { padding: 0 0 2px; }
@@ -1169,8 +1150,6 @@ html[data-page="tac"] :is(.hero, #dash, #how, #tac, .pg, .sx.pi), html:not([data
 .tpg-panel { margin-top: 32px; padding: 22px 0 0; border-top: 1px solid var(--hair); }
 .tpg-panel.tpg-act { margin-top: 14px; padding: 22px 24px; background: var(--card); border: 1px solid var(--hair); }
 .tpg-panel > .tpg-h:first-child { margin-top: 0; }
-.tpg-hd { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
-.tpg-hd .link { font-size: 12.5px; }
 .tpg-tot { display: flex; align-items: baseline; gap: 10px; margin: 2px 0 0; font: 500 34px/1.1 var(--mono); letter-spacing: -.02em; }
 .tpg-tot small { font: 400 14px/1 var(--mono); letter-spacing: 0; color: var(--mute); }
 .tpg-usd { min-height: 18px; margin: 6px 0 0; font-size: 12.5px; color: var(--mute); }
@@ -1185,38 +1164,23 @@ html[data-page="tac"] :is(.hero, #dash, #how, #tac, .pg, .sx.pi), html:not([data
 .tpg-leg li small { margin-left: 8px; font-size: 12px; color: var(--mute); }
 .tpg-leg .nudge { grid-column: 2 / -1; margin-top: 2px; font-size: 12px; }
 .tpg-leg .nudge .link { font-size: 12px; }
-.tpg-top-go { margin-top: 18px; }
-.tpg-get { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
-.tpg-get .btn { margin: 0; }
-.tpg-row { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--hair); }
-.tpg-row:first-of-type { border-top: 1px solid var(--hair); }
-.tpg-row > div { flex: 1; min-width: 0; }
-.tpg-row b { display: block; font-weight: 500; }
-.tpg-row small { display: block; font-size: 12.5px; color: var(--mute); }
-.tpg-row .btn { flex: none; width: auto; min-height: 38px; margin: 0; padding: 6px 14px; white-space: nowrap; }
-.tpg-row .btn.ghost { background: transparent; }
-.tpg-route { min-height: 20px; }
-.tpg-route b { font-weight: 500; color: var(--ink); }
 .tpg-act-h { display: flex; align-items: baseline; gap: 14px; margin: 0 0 16px; font-size: 13px; }
 .tpg-act-h span { color: var(--mute); }
 .tpg-act .hx { margin: 0 auto; }
-.tpg-next { margin: 16px 0 0; font-size: 13px; }
-.tpg-next small { color: var(--mute); }
 /* the card: where the TAC is, the asset, its four tabs, one form and what the chain sees */
-.tcd { margin-top: 24px; padding: 18px 22px 20px; background: var(--card); border: 1px solid var(--hair-2); }
-.tcd-seg { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; padding: 3px; background: var(--field); border: 1px solid var(--hair); }
-.tcd-seg button, .tcd-dest button { min-height: 44px; padding: 8px 10px; font: inherit; font-size: 13px; color: var(--mute); background: none; border: 0; cursor: pointer; }
-.tcd-seg button { min-height: 36px; }
+.tcd { margin-top: 24px; }
+.tcd-seg { grid-template-columns: 1fr 1fr; }
+.tcd-seg button, .tcd-dest button { padding: 8px 10px; font: inherit; color: var(--mute); background: none; border: 0; cursor: pointer; }
 .tcd-dest button + button { border-left: 1px solid var(--hair-2); }
-.tcd-seg button[aria-pressed="true"] { color: var(--ink); background: var(--card); box-shadow: 0 0 0 1px var(--hair-2); font-weight: 500; }
+.tcd-seg button[aria-pressed="true"] { color: var(--ink); font-weight: 500; }
 .tcd-dest button[aria-checked="true"] { color: var(--card); background: var(--ink); }
 .tcd-bal { margin: 20px 0 0; }
-.tcd-k { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 0; font-size: 12.5px; font-weight: 400; color: var(--mute); }
+.tcd-k { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 0; font-weight: 400; color: var(--mute); }
 .tcd-k .tk { width: 18px; height: 18px; }
 .tcd-k b { font-weight: 500; color: var(--ink); }
-.tcd-v { display: flex; align-items: baseline; gap: 8px; margin: 8px 0 0; font: 500 36px/1.1 var(--mono); letter-spacing: -.02em; }
+.tcd-v { display: flex; align-items: baseline; gap: 8px; margin: 8px 0 0; }
 .tcd-v small { font: 400 14px/1 var(--mono); letter-spacing: 0; color: var(--mute); }
-.tcd-sub { min-height: 18px; margin: 4px 0 0; font-size: 12.5px; color: var(--mute); }
+.tcd-sub { min-height: 18px; margin: 4px 0 0; color: var(--mute); }
 .tcd-steps { margin: 0 0 16px; padding: 12px 14px; background: var(--field); border: 1px solid var(--hair); border-left: 2px solid var(--orange); }
 .tcd-steps[hidden] { display: none; }
 .tcd-steps-h { margin: 0 0 8px; font-size: 13px; overflow-wrap: anywhere; }
@@ -1319,8 +1283,7 @@ html[data-page="tac"] :is(.hero, #dash, #how, #tac, .pg, .sx.pi), html:not([data
 .tcd-q b { font-weight: 500; color: var(--ink); }
 .tcd-way { margin: 10px 0 0; font-size: 12.5px; text-align: center; }
 .tcd-way:empty { display: none; }
-.tcd .keyrow { margin-top: 14px; }
-.tcd-foot { margin: 16px 0 0; padding-top: 14px; border-top: 1px solid var(--hair); font-size: 12.5px; color: var(--mute); text-wrap: pretty; }
+.tcd-foot { margin: 16px 0 0; color: var(--mute); text-wrap: pretty; }
 .tcd-foot:empty { display: none; }
 /* the card, plain like the chain over it: no frame (a hairline above), a text switch, the balance in the serif, fields on one hairline */
 .tcd { padding: 24px 0 0; background: none; border: 0; border-top: 1px solid var(--hair); }
@@ -1390,7 +1353,6 @@ html[data-page="tac"] :is(.hero, #dash, #how, #tac, .pg, .sx.pi), html:not([data
 .tpg-fold[open] > summary::after { content: '−'; }
 .tpg-fold > summary small { color: var(--mute); font-size: 12px; }
 .tpg-fold > div { padding: 4px 0 24px; }
-.tpg-px .up { display: block; margin-top: 6px; font: 400 12.5px/1.2 var(--mono); color: var(--green, var(--mute)); }
 .tpg-feeline { margin: 18px 0 0; font-size: 12.5px; color: var(--mute); text-wrap: pretty; }
 .tpg-feeline b { font-weight: 500; color: var(--ink); }
 .tpg-more { margin: 10px 0 0; }
@@ -1398,36 +1360,29 @@ html[data-page="tac"] :is(.hero, #dash, #how, #tac, .pg, .sx.pi), html:not([data
 .tpg-more > summary::-webkit-details-marker { display: none; }
 .tpg-more[open] > summary { margin-bottom: 12px; }
 /* The Tacit chain, live, on TAC's page (dapp/chain/live.js): the path a payment takes and the chain's figures over the card; its chart, blocks and facts under it */
-.cl-top { margin: 22px 0 18px; }
-.cl-h { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 0 0 14px; }
+.cl-h { display: flex; flex-wrap: wrap; align-items: center; }
 .cl-name { margin: 0; font: 400 28px/1 var(--serif); letter-spacing: -.01em; }
 .cl-name em { font-style: italic; }
-.cl-v { display: inline-flex; align-items: center; gap: 8px; padding: 4px 12px 4px 10px; border: 1px solid var(--hair-2); border-radius: 999px; font-size: 12px; font-weight: 500; transition: border-color .2s, color .2s; }
-.cl-v[data-s="ok"] { border-color: color-mix(in srgb, var(--ok) 55%, transparent); }
-.cl-v[data-s="busy"] { border-color: var(--orange); }
+.cl-v { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--hair-2); border-radius: 999px; transition: border-color .2s, color .2s; }
 .cl-v[data-s="bad"] { border-color: var(--err); color: var(--err); }
-.cl-sub { margin-left: auto; font-size: 12px; color: var(--mute); }
+.cl-sub { margin-left: auto; }
 .cl-sub.stale::after { content: ' · not updating'; color: var(--warn); }
 .cl-top .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--hair-2); flex: none; }
 .cl-top .dot.ok { background: var(--ok); } .cl-top .dot.busy { background: var(--orange); } .cl-top .dot.bad { background: var(--err); }
 .cl-v .dot.ok { animation: cl-beat 2.8s ease-out infinite; }
 @keyframes cl-beat { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 50%, transparent); } 70%, 100% { box-shadow: 0 0 0 6px transparent; } }
-.cl-flow { display: grid; grid-template-columns: minmax(0, 1fr) 24px minmax(0, 1fr) 24px minmax(0, 1fr) 24px minmax(0, 1fr); align-items: stretch; }
-.cl-n { position: relative; display: flex; flex-direction: column; gap: 7px; min-width: 0; padding: 12px 12px 13px; background: var(--card); border: 1px solid var(--hair); }
+.cl-flow { display: grid; }
+.cl-n { position: relative; display: flex; flex-direction: column; min-width: 0; }
 .cl-n::before { content: ''; position: absolute; left: -1px; right: -1px; top: -1px; height: 2px; }
 .cl-n.ok::before { background: color-mix(in srgb, var(--ok) 70%, transparent); } .cl-n.busy::before { background: var(--orange); } .cl-n.bad::before { background: var(--err); }
-.cl-n.busy { background: color-mix(in srgb, var(--orange) 8%, var(--card)); } .cl-n.bad { background: color-mix(in srgb, var(--err) 8%, var(--card)); }
-.cl-ic { display: flex; } .cl-ic .tk, .cl-ic .ic { width: 16px; height: 16px; }
 .cl-ic .ic { fill: none; stroke: var(--mute); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-.cl-k { font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
-.cl-n b { display: flex; align-items: flex-start; gap: 6px; font: 500 12px/1.3 var(--mono); min-width: 0; }
+.cl-n b { display: flex; align-items: flex-start; gap: 6px; min-width: 0; }
 .cl-n b .dot { margin-top: 4px; }
 .cl-n b > span:last-child { min-width: 0; overflow-wrap: anywhere; }
-.cl-n.landed { animation: cl-landed 1.6s ease-out; }
 @keyframes cl-landed { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 55%, transparent); } 100% { box-shadow: 0 0 0 14px transparent; } }
 /* a wire: a hairline and its arrowhead; its dot sits at one end of a strip as long as the line and moves by the strip's width (the bridge's way): slow when
    all is quiet, quick with a payment on its way, none and dashed where the path is broken */
-.cl-w { position: relative; align-self: center; height: 1px; background: color-mix(in srgb, var(--ink) 35%, transparent); }
+.cl-w { position: relative; height: 1px; background: color-mix(in srgb, var(--ink) 35%, transparent); }
 .cl-w::after { content: ''; position: absolute; right: 0; top: -3px; width: 6px; height: 6px; border: solid color-mix(in srgb, var(--ink) 35%, transparent); border-width: 1.5px 1.5px 0 0; transform: rotate(45deg); }
 .cl-w::before { content: ''; position: absolute; left: 0; right: 6px; top: -3px; height: 7px; opacity: 0; background: radial-gradient(circle 3px at 3px 50%, var(--orange) 1.8px, transparent 2.4px); }
 .cl-w.on::before { animation: cl-wire 4.4s ease-in-out infinite; }
@@ -1437,20 +1392,18 @@ html[data-page="tac"] :is(.hero, #dash, #how, #tac, .pg, .sx.pi), html:not([data
 @keyframes cl-wire { 0% { transform: translateX(0); opacity: 0; } 15%, 80% { opacity: .9; } 100% { transform: translateX(100%); opacity: 0; } }
 .cl-note { margin: 14px 0 0; min-height: 1.5em; font-size: 12.5px; line-height: 1.5; color: var(--mute); text-wrap: pretty; }
 .cl-note a { color: var(--ink); }
-.cl-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 18px; margin: 16px 0 0; }
+.cl-stats { display: grid; margin: 16px 0 0; }
 .cl-stats .v { display: block; font: 400 30px/1 var(--serif); letter-spacing: -.01em; overflow-wrap: anywhere; }
 .cl-stats .v small { margin-left: 3px; font: 400 11px var(--mono); letter-spacing: 0; color: var(--mute); }
-.cl-stats .k { display: block; margin-top: 6px; font-size: 11px; color: var(--mute); }
+.cl-stats .k { display: block; color: var(--mute); }
 .cl-stats .ok { color: var(--ok); }
 .cl-off { margin: 0; font-size: 12.5px; color: var(--mute); }
-.cl-hh { display: flex; justify-content: space-between; gap: 12px; }
-.cl-hh span:last-child { letter-spacing: 0; text-transform: none; }
 .cl-chart figure { margin: 0; }
-.cl-plot { position: relative; height: 140px; margin-top: 18px; touch-action: pan-y; cursor: crosshair; }
+.cl-plot { position: relative; margin-top: 18px; touch-action: pan-y; cursor: crosshair; }
 .cl-skp { background: var(--hair); opacity: .5; cursor: default; }
 .cl-plot svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
 .cl-plot .ln { fill: none; stroke: var(--ink); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
-.cl-plot .ar { fill: color-mix(in srgb, var(--ink) 7%, transparent); stroke: none; }
+.cl-plot .ar { stroke: none; }
 .cl-plot .gd { stroke: var(--hair-2); stroke-width: 1; vector-effect: non-scaling-stroke; }
 .cl-plot .pt { position: absolute; width: 7px; height: 7px; margin: -3.5px 0 0 -3.5px; border-radius: 50%; background: var(--paper); border: 1.5px solid var(--ink); pointer-events: none; }
 .cl-plot .pt.on { background: var(--ink); transform: scale(1.3); }
@@ -1462,73 +1415,48 @@ html[data-page="tac"] :is(.hero, #dash, #how, #tac, .pg, .sx.pi), html:not([data
 .cl-plot.in .pt { animation: cl-pop .35s ease-out both; animation-delay: calc(var(--i, 0) * 40ms + 300ms); }
 @keyframes cl-pop { from { opacity: 0; transform: scale(.3); } }
 .cl-chart figcaption { display: flex; justify-content: space-between; gap: 12px; margin-top: 8px; font-size: 11.5px; color: var(--mute); }
-.cl-blocks { list-style: none; margin: 0; padding: 0; }
-.cl-blocks li { display: grid; grid-template-columns: 3.6em minmax(0, 1fr) auto; grid-template-areas: "n a x" ". s p"; gap: 3px 12px; align-items: baseline; padding: 10px 0; border-bottom: 1px solid var(--hair); font-size: 12.5px; }
-.cl-blocks li:last-child { border-bottom: 0; }
-.cl-blocks li.sl, .cl-blocks li.none { display: block; color: var(--mute); }
-.cl-blocks .n { grid-area: n; font-weight: 500; } .cl-blocks .a { grid-area: a; color: var(--mute); } .cl-blocks .x { grid-area: x; white-space: nowrap; }
-.cl-blocks .s { grid-area: s; } .cl-blocks .s i { font-style: normal; color: var(--mute); }
-.cl-blocks .p { grid-area: p; text-align: right; } .cl-blocks .p small { font-size: 11px; color: var(--mute); }
-.cl-blocks a { color: var(--ink); }
 .cl-n, .cl-n.ok, .cl-n.busy, .cl-n.bad { color: var(--ink); }
-.cl-blocks li .x, .cl-blocks li .x a { font: 400 12px/1.3 var(--mono); width: auto; height: auto; }
-.cl-blocks li.fresh { animation: cl-fresh 2.8s ease-out; }
-@keyframes cl-fresh { 0% { background: color-mix(in srgb, var(--ok) 16%, transparent); } 100% { background: transparent; } }
-.cl-more:not(:empty) { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 20px; margin-top: 10px; padding-top: 12px; border-top: 1px solid var(--hair); font-size: 12.5px; color: var(--mute); }
+.cl-more:not(:empty) { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 20px; margin-top: 10px; padding-top: 12px; font-size: 12.5px; color: var(--mute); }
 .cl-more a { color: var(--ink); }
 .cl-facts { list-style: none; margin: 0; padding: 0; font-size: 12.5px; }
-.cl-facts li { padding: 10px 0; border-bottom: 1px solid var(--hair); }
-.cl-facts li:last-child { border-bottom: 0; }
-.cl-facts li > span:first-child { display: block; margin-bottom: 3px; font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
+.cl-facts li { padding: 10px 0; }
+.cl-facts li > span:first-child { display: block; margin-bottom: 3px; }
 .cl-facts a { color: var(--ink); } .cl-facts code { font: inherit; overflow-wrap: anywhere; }
 .cl-tech { margin-top: 6px; border-top: 1px solid var(--hair); }
 .cl-tech > summary { padding: 10px 0 2px; font-size: 12px; color: var(--mute); }
 .cl-tech .cl-facts code { font-size: 11.5px; }
 @media (max-width: 520px) {
-  .cl-flow { grid-template-columns: minmax(0, 1fr) 12px minmax(0, 1fr) 12px minmax(0, 1fr) 12px minmax(0, 1fr); }
-  .cl-n { padding: 10px 8px 11px; gap: 6px; }
-  .cl-k { font-size: 9.5px; letter-spacing: .06em; }
-  .cl-n b { font-size: 11px; }
   .cl-w::after { display: none; }
-  .cl-stats .v { font-size: 24px; }
   .cl-sub { margin-left: 0; }
 }
 /* the live strip, plain: no frame, one line of four steps on a hairline wire, the figures one calm row; colour only in the dots */
 .cl-top { margin: 40px 0 0; padding: 0; background: none; border: 0; }
 /* the chain's panel on TAC's page is drawn by a module of its own, a moment after the page: its place is held, so the card under it does not drop when it arrives */
-#tpg-live:empty { min-height: 373px; }
-@media (max-width: 639px) { #tpg-live:empty { min-height: 411px; } }
+#tpg-live.cl-hold { min-height: 373px; }
+@media (max-width: 639px) { #tpg-live.cl-hold { min-height: 411px; } }
+html[data-page="tac"] #tac-px[hidden]:empty { display: block !important; visibility: hidden; min-height: 27px; }
+@media (max-width: 419px) { html[data-page="tac"] #tac-px[hidden]:empty { min-height: 48px; } }
+html[data-page="tac"] #tcd-seg:empty { min-height: 32px; }
 .cl-h { gap: 8px 16px; margin: 0 0 24px; }
 .cl-name { font-size: 22px; }
 .cl-v { padding: 3px 10px 3px 8px; font-size: 12px; font-weight: 400; border-color: var(--hair-2); }
 .cl-v[data-s="ok"], .cl-v[data-s="busy"] { border-color: var(--hair-2); }
 .cl-sub { font: 400 12px var(--mono); color: var(--mute); }
-.cl-flow { grid-template-columns: auto minmax(16px, 1fr) auto minmax(16px, 1fr) auto minmax(16px, 1fr) auto; align-items: start; }
-.cl-n, .cl-n.ok, .cl-n.busy, .cl-n.bad { gap: 8px; padding: 0; background: none; border: 0; }
+.cl-flow { align-items: start; }
+.cl-n, .cl-n.ok, .cl-n.busy, .cl-n.bad { padding: 0; background: none; border: 0; }
 .cl-n::before { display: none; }
 .cl-n.landed { animation: none; }
 .cl-n.landed .cl-ic { animation: cl-landed 1.6s ease-out; border-radius: 50%; }
 .cl-ic .tk, .cl-ic .ic { width: 20px; height: 20px; }
 .cl-k { font-size: 12px; letter-spacing: 0; text-transform: none; color: var(--ink); }
 .cl-n b { font: 400 12px/1.4 var(--mono); color: var(--mute); }
-.cl-w { align-self: start; margin: 10px 12px 0; }
 .cl-stats { gap: 16px 24px; margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--hair); }
 .cl-stats .v { font-size: 20px; }
 .cl-stats .k { margin-top: 4px; font-size: 12px; }
 #tpg-live + #tac-claim[hidden] + #tpg-co[hidden] + #tpg-card { margin-top: 24px; }
-.cl-plot { height: 160px; }
 .cl-plot .pt.last { width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px; background: var(--orange); border-color: var(--orange); }
 .cl-plot .pt.last::after { content: ''; position: absolute; inset: -1.5px; border-radius: 50%; animation: cl-ping 2.8s ease-out infinite; }
 @keyframes cl-ping { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--orange) 45%, transparent); } 80%, 100% { box-shadow: 0 0 0 7px transparent; } }
-.cl-blocks { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; border-top: 1px solid var(--hair); }
-.cl-blocks li, .cl-blocks li:last-child { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "n x" "a a" "s s" "p p"; gap: 4px 8px; padding: 16px 16px 16px 0; border: 0; font-size: 12px; }
-.cl-blocks li + li, .cl-blocks li + li:last-child { padding-left: 16px; border-left: 1px solid var(--hair); }
-.cl-blocks li.sl, .cl-blocks li.none { grid-column: 1 / -1; padding-left: 0; border-left: 0; }
-.cl-blocks .n { font: 400 20px/1 var(--serif); }
-.cl-blocks li:first-child .n::after { content: ''; display: inline-block; width: 6px; height: 6px; margin: 0 0 3px 8px; border-radius: 50%; background: var(--orange); vertical-align: middle; }
-.cl-blocks li.sl .n::after, .cl-blocks li.none .n::after { display: none; }
-.cl-blocks .a, .cl-blocks .p small { font-size: 12px; }
-.cl-blocks .p { text-align: left; } .cl-blocks .p small { display: block; }
 .cl-more:not(:empty) { border-top: 1px solid var(--hair); }
 .cl-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 24px; }
 .cl-facts li, .cl-facts li:last-child { border-bottom: 1px solid var(--hair); }
@@ -1555,22 +1483,15 @@ html[data-page="tac"] :is(.hero, #dash, #how, #tac, .pg, .sx.pi), html:not([data
   .cl-chain { margin-bottom: 16px; }
   .cl-chain b { width: 36px; height: 36px; font-size: 11px; }
   .cl-chain li + li::after { top: 18px; }
-  .cl-flow { grid-template-columns: minmax(0, 1fr) 18px minmax(0, 1fr) 18px minmax(0, 1fr) 18px minmax(0, 1fr); }
-  .cl-w { margin: 9px 4px 0 0; }
   .cl-ic .tk, .cl-ic .ic { width: 18px; height: 18px; }
   .cl-k { font-size: 11px; }
   .cl-n b { font-size: 11px; }
   .cl-stats { gap: 12px; }
   .cl-stats .v { font-size: 18px; }
   .cl-stats .k { font-size: 11px; }
-  .cl-plot { height: 140px; }
-  .cl-blocks li, .cl-blocks li:last-child { padding-right: 8px; }
-  .cl-blocks li + li, .cl-blocks li + li:last-child { padding-left: 8px; }
-  .cl-blocks .x { display: none; }
-  .cl-blocks .s i { display: block; }
   .cl-facts { grid-template-columns: minmax(0, 1fr); }
 }
-@media (prefers-reduced-motion: reduce) { .cl-w::before, .cl-v .dot, .cl-n.landed .cl-ic, .cl-plot.in svg, .cl-plot.in .pt, .cl-plot .pt.last::after, .cl-chain li.hd b, .cl-chain li.in, .cl-blocks li.fresh { animation: none !important; } }
+@media (prefers-reduced-motion: reduce) { .cl-w::before, .cl-v .dot, .cl-n.landed .cl-ic, .cl-plot.in svg, .cl-plot.in .pt, .cl-plot .pt.last::after, .cl-chain li.hd b, .cl-chain li.in { animation: none !important; } }
 /* the path as a diagram: a ring for each step on one line, the wires run ring to ring, the ring takes the colour of a step that is working or stuck; the words sit under it (the first and last keep to the page's edges) */
 .cl-flow { grid-template-columns: 40px minmax(16px, 1fr) 40px minmax(16px, 1fr) 40px minmax(16px, 1fr) 40px; }
 .cl-n, .cl-n.ok, .cl-n.busy, .cl-n.bad { align-items: center; gap: 4px; text-align: center; }
@@ -1599,18 +1520,7 @@ html[data-page="tac"] :is(.hero, #dash, #how, #tac, .pg, .sx.pi), html:not([data
 .tpg-strip > div { padding: 12px; background: var(--field); }
 .tpg-strip .v { display: block; font: 500 19px/1.15 var(--mono); letter-spacing: -.02em; overflow-wrap: anywhere; }
 .tpg-strip .k { display: block; margin-top: 6px; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--mute); }
-.tpg-chart { margin: 12px 0 0; }
-.tpg-chart svg { display: block; width: 100%; height: 120px; overflow: visible; }
-.tpg-chart .ln { fill: none; stroke: var(--ink); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
-.tpg-chart .ar { fill: color-mix(in srgb, var(--ink) 7%, transparent); stroke: none; }
-.tpg-chart .gd { stroke: var(--hair); stroke-width: 1; vector-effect: non-scaling-stroke; }
-.tpg-chart figcaption { display: flex; justify-content: space-between; gap: 12px; margin-top: 6px; font-size: 11.5px; color: var(--mute); }
-.tpg-px { margin: 0; font: 500 24px/1.15 var(--mono); letter-spacing: -.02em; }
-.tpg-px small { font: 400 13px/1 var(--mono); letter-spacing: 0; color: var(--mute); }
 .tpg-mine { margin: 6px 0 0; font-size: 13px; }
-.tpg-rules { list-style: none; margin: 16px 0 0; padding: 0; font-size: 12.5px; color: var(--mute); }
-.tpg-rules li { padding: 3px 0 3px 16px; text-indent: -16px; }
-.tpg-rules li::before { content: '·'; display: inline-block; width: 16px; text-indent: 0; color: var(--ink); }
 /* where each fee goes: a card per move, its cost, and an arrow to each who takes a part */
 .tpg-fees { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 0; padding: 0; list-style: none; }
 .tpg-fees > li { padding: 12px 14px; background: var(--field); border: 1px solid var(--hair); font-size: 12.5px; }
@@ -1632,7 +1542,7 @@ html[data-page="tac"] :is(.hero, #dash, #how, #tac, .pg, .sx.pi), html:not([data
   .tpg-fold > summary { padding: 12px 14px; }
   .tpg-fold > div { padding: 4px 14px 20px; }
   .tpg-tot { font-size: 28px; }
-  .tpg-get, .tpg-fees { grid-template-columns: 1fr; }
+  .tpg-fees { grid-template-columns: 1fr; }
   .tpg-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .tcd { padding: 24px 0 0; }
   .tcd-v { font-size: 30px; }
@@ -1825,7 +1735,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
 }
 </style>
 <!-- the hero tile is drawn with the swap card's parts (swap/card.js, which the Swap tab mounts): its styles, after the page's own -->
-<link rel="stylesheet" href="/swap/card.css?cb=ee86a552" media="print">
+<link rel="stylesheet" href="/swap/card.css?cb=92ffd704" media="print">
 <!-- chrome:head:begin inline -->
 <style>
 /* The header's page links and the footer, as every page that wears them draws them. The markup is made by build/chrome.mjs and stamped
@@ -2045,7 +1955,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
       <p class="lead">One private currency on Bitcoin and Ethereum.</p>
     </div>
     <details class="tpx" id="tac-px" hidden></details>
-    <div class="cl-top" id="tpg-live" aria-label="The Tacit chain, live"></div>
+    <div class="cl-top cl-hold" id="tpg-live" aria-label="The Tacit chain, live"></div>
     <div class="tac-claim" id="tac-claim" role="region" aria-label="A claim link" hidden></div>
     <section class="tco" id="tpg-co" aria-labelledby="tco-h" hidden>
       <div id="tco-pay"><div id="tco-top"></div><div id="tco-in"></div><dl class="tco-rows" id="tco-rows"></dl>
@@ -2058,7 +1968,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
       <div class="tcd-steps" id="tcd-steps" hidden></div>
       <div id="tcd-seg"></div>
       <div class="cl-top tcd-net" id="tcd-net" aria-label="The Bitcoin pool, live" hidden></div>
-      <div class="tcd-bal" id="tcd-head"><h2 class="tcd-k" id="tcd-name"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg><b>Private TAC</b><span>on the Tacit chain</span></h2><p class="tcd-v num">&nbsp;</p><p class="tcd-sub">&nbsp;</p></div>
+      <div class="tcd-bal" id="tcd-head"><h2 class="tcd-k" id="tcd-name"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg><b>Private TAC</b><span>on the Tacit chain</span></h2><p class="tcd-sub tcd-in"><button class="link" type="button" data-signin>Sign in to see yours</button></p></div>
       <div id="tcd-tabs"></div>
       <div id="tpg-p" role="tabpanel" aria-label="Private TAC"></div>
       <div id="tcd-pool" hidden></div>
@@ -2436,14 +2346,14 @@ import { announceWalletConnect, wcSheets, dialogHost, WC_PROJECT_ID } from '/wal
 import { makeEvmAccount } from '/evm-account.js';
 import { makeEvmTx } from '/evm-tx.js';
 import { makeTacAirdrop, makeRpcCall } from '/tac-airdrop.js';
-import { encErc20Approve, CETH_POOL_ASSET_ID, TAC_POOL_ASSET_ID, TACIT_AMM, makeEvmTradeVenues } from '/evm-trade-venues.js?cb=c9a3c2e7';
+import { encErc20Approve, CETH_POOL_ASSET_ID, TAC_POOL_ASSET_ID, makeEvmTradeVenues } from '/evm-trade-venues.js?cb=c9a3c2e7';
 import { parseRecipient } from '/confidential-payout.js?cb=6360255f';
 import { planMerge, planAll, countAll, opsCompared } from '/bridge-all.js?cb=d4d71d34';
 import { aprFrom, shieldedApr as shieldedAprOf, poolWorthEth } from '/trade/farm-read.js?cb=efe1d81e';
 import { addressId } from '/address-id.js?cb=01f14d36';
 import { addrView, addrFlat } from '/address-view.js?cb=58dd4914';
 import { balanceRows } from '/wallet-balances.js?cb=329e7a26';
-import { PXS_KEY, PX_CALLS, pxFigures, paintPx, pxState } from '/px-strip.js?cb=046a6701';
+import { PXS_KEY, PX_CALLS, pxFigures, paintPx, pxState, pxEarly } from '/px-strip.js?cb=d4520508';
 import { zapPlan, zapPlanFor, zapCalldata, zapSettleCalldata, zapSplitSearch, zapWorth } from '/lp-zap.js?cb=a43160fd';
 import { rewardPop } from '/reward-pop.js?cb=88973dac';
 import * as GR from '/gas-relay.js?cb=e8d173a8';
@@ -2452,7 +2362,7 @@ import { UNBOND_DUST, HARVEST_WORTH, unharvested, exitSaid, bFor, aFor, farmMana
 import { relayCode, proveCapped, proved, relayRefused, jobSaid, calmText } from '/relay-outcome.js?cb=17e48a9a';
 import { makeLoans, bondGap, lockPad as lockPadOf, lockRate as lockRateOf } from '/btc-borrow.js?cb=2b7e1f6b';
 import { makeOutFee, limitText, proofWarn, fundingText, onTheWay } from '/bridge-out.js?cb=9662a160';
-import { ROUTES as BR_WAYS, LIMITS as BR_LIMITS, satsOut, satsBack } from '/bridge/track.js?cb=29efa548';
+import { ROUTES as BR_WAYS, LIMITS as BR_LIMITS, satsOut, satsBack } from '/bridge/track.js?cb=2f3df17a';
 import { SERVED as SERVED_POOLS, keeperIdOf, makeTokenPools, KEEPERS as POOL_KEEPERS, RELAYER as POOL_RELAYER } from '/evm-pool-tokens.js?cb=16e0e196';
 import { bridgeError, checkText, listNotes as listBridgeNotes, begin as beginBridge, toSelf as noteToSelf, through as brThrough, transfers as brTransfers, longCount as brLongCount, longReason as brLongReason, needsSend as brNeedsSend, firstStep as brFirst, overCap as brOver, haltText as bridgeHaltText, halts as brHalts, mergeSend, startNote, tryAgain, bulkFee, prepsAfterPass, runMerge as bridgeRunMerge, runAll as bridgeRunAll } from '/bridge-in.js?cb=ba07ee86';
 import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverEvery, IN_DONE, IN_HELD, IN_BURN_SENT, waitRanOut } from '/bridge-tick.js?cb=42d78071';
@@ -2576,6 +2486,9 @@ const countIO = 'IntersectionObserver' in window && !matchMedia('(prefers-reduce
   ? new IntersectionObserver((es) => { for (const e of es) if (e.isIntersecting) { countIO.unobserve(e.target); runCount(e.target); } }, { threshold: 0.6 })
   : null;
 function countUp(el) { if (el && countIO && !COUNTED.has(el) && /\d/.test(el.textContent)) { COUNTED.add(el); countIO.observe(el); } }
+const NFC = new Map(), DTFC = new Map();
+const nfmt = (o) => { const k = JSON.stringify(o); let f = NFC.get(k); if (!f) NFC.set(k, f = new Intl.NumberFormat('en-US', o)); return f; };
+const dfmt = (d, o) => { if (Number.isNaN(d.getTime())) return 'Invalid Date'; const k = JSON.stringify(o); let f = DTFC.get(k); if (!f) DTFC.set(k, f = new Intl.DateTimeFormat('en-GB', o)); return f.format(d); };
 function runCount(el) {
   const node = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, { acceptNode: (n) => (/\d/.test(n.nodeValue) && !n.parentElement.closest('small, .boost') ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP) }).nextNode();
   const m = node?.nodeValue.match(/^(\D*)(\d[\d,]*(?:\.\d+)?)([\s\S]*)$/), target = m ? Number(m[2].replace(/,/g, '')) : 0;
@@ -2584,7 +2497,7 @@ function runCount(el) {
   const step = (t) => {
     if (!node.isConnected) return;
     const k = Math.min(1, (t - t0) / 900);
-    node.nodeValue = m[1] + (target * (1 - (1 - k) ** 3)).toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec }) + m[3];
+    node.nodeValue = m[1] + nfmt({ minimumFractionDigits: dec, maximumFractionDigits: dec }).format(target * (1 - (1 - k) ** 3)) + m[3];
     if (k < 1) requestAnimationFrame(step);
   };
   requestAnimationFrame(step);
@@ -2611,7 +2524,7 @@ function fmt(v, dec = 18, max = 4) {
     if (bumped.length > max) { whole += 1n; f = '0'.repeat(max); } else f = bumped;
   }
   f = f.replace(/0+$/, '');
-  return (neg ? '-' : '') + whole.toLocaleString('en-US') + (f ? '.' + f : '');
+  return (neg ? '-' : '') + whole.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (f ? '.' + f : '');
 }
 function parseUnits(s, dec = 18) {
   let t = String(s || '').trim();
@@ -5732,7 +5645,7 @@ function comingPoll(sheet) {
 const lockList = (kind) => (kind === 'claim' ? LK.mine : LK.back).filter((l) => !taken(kLock(l)));
 const lpPoolOf = (asset) => (FARM.program?.pools || []).find((p) => String(p.lpAsset).toLowerCase() === String(asset).toLowerCase()) || null;
 const lpPoolFor = async (asset) => lpPoolOf(asset) || (FARM.program ? null : await loadProgram().then(() => lpPoolOf(asset), () => null));
-const lpSays = (p, shares) => { const w = sharesEth(p, shares); return w ? `${aboutEth(w).replace(/^≈ /, '')} of ${pairName(p.pair)} LP` : `${BigInt(shares).toLocaleString('en-US')} ${pairName(p.pair)} LP shares`; };
+const lpSays = (p, shares) => { const w = sharesEth(p, shares); return w ? `${aboutEth(w).replace(/^≈ /, '')} of ${pairName(p.pair)} LP` : `${BigInt(shares).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',')} ${pairName(p.pair)} LP shares`; };
 function lockWhat(ls) {
   const t = SP.ux, by = new Map(), lp = [];
   if (!t) return '';
@@ -9049,8 +8962,10 @@ function loadTacPrice(force = false, book = false) {
   return (TPX.p ||= (async () => {
     const api = (path) => fetch(`${API}${path}`, { signal: within(10e3) }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
     const IN = 10n ** 16n, AMM_FEE = 30;
+    const early = !force && pxEarly.p && Date.now() - pxEarly.at < 20e3 ? pxEarly.p : null;
+    if (early) pxEarly.p = null;
     const [[sp, wst, usd, rate, ammOut], asset, sales] = await Promise.all([
-      multicall([...PX_CALLS, { to: TACIT_AMM, data: SEL.tacitQuote + strip(CETH_POOL_ASSET_ID) + strip(TAC_POOL_ASSET_ID) + word(AMM_FEE) + word(IN) }]),
+      early ? Promise.race([early.catch(() => null), new Promise((r) => setTimeout(r, 2000, null))]).then((raw) => raw || multicall(PX_CALLS)) : multicall(PX_CALLS),
       book ? api(`/assets/${TAC_BTC_ID}?network=mainnet`) : null,
       book ? api(`/assets/${TAC_BTC_ID}/preauth-sales?network=mainnet`) : null,
     ]);
@@ -9086,8 +9001,8 @@ function loadPrivateAmm() {
     TPX.amm = null;
   })().catch(() => { TPX.ammErr = true; }).finally(() => { TPX.ammP = null; }));
 }
-const sig = (x, n = 3) => (x >= 1 ? x.toLocaleString('en-US', { maximumFractionDigits: 2 }) : x.toLocaleString('en-US', { maximumSignificantDigits: n, maximumFractionDigits: 20 }));
-const satsFmt = (n) => (n >= 100 ? Math.round(n).toLocaleString('en-US') : n.toLocaleString('en-US', { maximumFractionDigits: 1 }));
+const sig = (x, n = 3) => (x >= 1 ? nfmt({ maximumFractionDigits: 2 }).format(x) : nfmt({ maximumSignificantDigits: n, maximumFractionDigits: 20 }).format(x));
+const satsFmt = (n) => (n >= 100 ? Math.round(n).toLocaleString('en-US') : nfmt({ maximumFractionDigits: 1 }).format(n));
 function paintTacPrice() {
   const box = $('#tac-px'), v = TPX.v;
   if (!box) return;
@@ -9115,7 +9030,7 @@ function paintTacPrice() {
   } else mount(box, html`<summary>${head}</summary>${body}`);
   box.open = open;
   box.hidden = false;
-  box.ontoggle = () => { if (box.open && TPX.amm === undefined) loadPrivateAmm().then(paintTacPrice); };
+  box.ontoggle = () => { if (!box.open) return; if (TPX.amm === undefined) loadPrivateAmm().then(paintTacPrice); loadTacPrice(false, true).then(paintTacPrice, () => {}); };
 }
 render.tac = () => {
   tcoPaint();
@@ -9130,7 +9045,7 @@ render.tac = () => {
 };
 load.tac = () => {
   if (chainOn() && !S.key) (window.requestIdleCallback || setTimeout)(() => chainMods().catch(() => {}));
-  loadTacPrice(false, true).then(paintTacPrice).catch(() => {});
+  loadTacPrice(false, !!$('#tac-px')?.open).then(paintTacPrice).catch(() => {});
   if (S.key) loadHeld().then(() => rerender('tac'), () => {});
   tpgWhyRead();
   return Promise.all([BRM.mode === 'out' ? Promise.resolve() : loadBridge(), loadTacHoldings()]);
@@ -10436,7 +10351,13 @@ function tacPageSet(on) {
   if (on) document.documentElement.dataset.page = 'tac'; else delete document.documentElement.dataset.page;
   document.title = on ? 'tacit TAC' : 'tacit defi';
   for (const a of $$('a[href="/tac/"]')) { if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); }
-  if (!on) { TPOOL.open = false; tpgAct(null); tacClaimStop(); chainLive(false); chlRead(); return; }
+  if (!on) {
+    TPOOL.open = false; tpgAct(null); tacClaimStop(); chainLive(false); chlRead(); refreshTape();
+    if (!numsAt && store.get(NUMS_KEY)) paintNums(store.get(NUMS_KEY));
+    if (Date.now() - numsAt > NUMS_MS) refreshNums();
+    if (HX.tab === 'swap' && !SWC.el) paintHx();
+    return;
+  }
   keep($('#sheet-tac'), render.tac);
   chainLive(true);
   load.tac().then(() => rerender('tac')).catch(() => {});
@@ -10444,7 +10365,7 @@ function tacPageSet(on) {
 const CLV = { p: null };
 function chainLive(on) {
   if (!on) { CLV.p?.then((l) => l.stop(), () => {}); return; }
-  CLV.p ||= import('/chain/live.js?cb=0d30fa73').then((m) => m.mountChainLive({ top: $('#tpg-live'), rest: $('#tpg-chain') }));
+  CLV.p ||= import('/chain/live.js?cb=a766a28d').then((m) => m.mountChainLive({ top: $('#tpg-live'), rest: $('#tpg-chain') }));
   CLV.p.then((l) => { if (TACP.on) l.start(); }, () => { CLV.p = null; });
 }
 function tacPageOpen(part = null) {
@@ -10526,9 +10447,9 @@ const TPG_ROWS = [['chain', 'Tacit chain', 'var(--c-chain)'], ['pool', 'Bitcoin 
   ['wallet', 'Wallet', 'var(--c-wallet)'], ['btc', 'Bitcoin address', 'var(--c-btc)']];
 function tpgTop(el) {
   const who = tacWho(), k = S.key?.pubHex;
-  if (chainOn() && !CHAIN_SWEEP.at && !CHAIN_SWEEP.p && Date.now() - CHAIN_SWEEP.failAt > 15e3) chainSweepFee().then(() => rerender('tac'), () => {});
   el.hidden = !k && !who;
   if (el.hidden) return;
+  if (chainOn() && !CHAIN_SWEEP.at && !CHAIN_SWEEP.p && Date.now() - CHAIN_SWEEP.failAt > 15e3) chainSweepFee().then(() => rerender('tac'), () => {});
   const read = k ? tacPlaces(k, who) : tacPlaces(null, who).filter((p) => p.key === 'wallet');
   if (k) tacSeenKeep(k, read);
   const places = k ? tacSeenOn(k, read) : read, by = Object.fromEntries(places.map((p) => [p.key, p])), stale = places.some((p) => p.seen);
@@ -11403,9 +11324,25 @@ function tpgWhyRead(force = false) {
   if (!chainOn() || (!force && (TPGW.p || Date.now() - TPGW.at < 60e3))) return TPGW.p || Promise.resolve();
   TPGW.at = Date.now();
   return (TPGW.p = Promise.all([
-    Promise.all([import('/tacit-chain-config.js?cb=74171404'), import('/tacit-chain-client.js?cb=e6807d32'), import('/chain/ui.js?cb=345c9adc'), import('/tacit-chain-wallet.js')])
-      .then(([cf, cm, ui, w]) => { TPGW.ui = ui; TPGW.w = w; return cm.chainStatus({ cfg: cf.tacitChain(), rpcCall: (m, ps) => rpc(m, ps) }); }).then((s) => { TPGW.cs = s; }, () => {}),
+    Promise.all([import('/tacit-chain-config.js?cb=74171404'), import('/chain/ui.js?cb=345c9adc'), import('/tacit-chain-wallet.js')])
+      .then(([cf, ui, w]) => { TPGW.ui = ui; TPGW.w = w; return tpgStatus(cf.tacitChain()); }).then((s) => { TPGW.cs = s; }, () => {}),
   ]).finally(() => { TPGW.p = null; tpgActionsSoft(); rerender('tac'); }));
+}
+async function tpgStatus(cfg) {
+  if (!cfg) throw new Error('tacit chain: not deployed');
+  const sels = ['0ef26743', '2fb9bbfd', '16f0115b', '03314efa'], n = (v) => (/^\d+$/.test(String(v ?? '')) ? BigInt(v) : 0n);
+  const terms = (async () => {
+    try {
+      const r = await fetch(cfg.leader + '/fee', { signal: AbortSignal.timeout(10e3) });
+      if (!r.ok) return null;
+      const f = await r.json(), cap = n(f?.shieldCap);
+      return { fee: n(f?.fee), shieldCap: cap > 0n ? cap : null, sweepFee: n(f?.sweepFee) };
+    } catch { return null; }
+  })();
+  let v = await multicall(sels.map((x) => ({ to: cfg.blocks, data: x }))).catch(() => null);
+  if (!v?.every(Boolean)) v = await Promise.all(sels.map((x) => ethCall(cfg.blocks, x)));
+  const [height, last, pool, shares] = v.map((h) => BigInt('0x' + (strip(h) || '0')));
+  return { height: Number(height), lastLanded: Number(last), pool, shares, leader: await terms };
 }
 const tpgActionsSoft = () => { if (TACP.on) tcardQuoteSoon(); };
 const tpgPrice = (pool, shares) => Number((BigInt(pool) + 100000000n) * 10n ** 9n / (BigInt(shares) + 100000000n)) / 1e9;
@@ -11902,7 +11839,7 @@ const ethBase = () => PGM.rates.evmpooldeposit ?? PGM.rates.zswapeth ?? 1000;
 const listOr = (xs) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} or ${xs.at(-1)}`);
 function capText(day) {
   const eff = [...PGM.rateCap].reverse().find((e) => e.fromDay <= day), next = PGM.rateCap.find((e) => e.fromDay > day);
-  const lim = (e) => (e.wei ? `${(Number(e.wei / 10n ** 12n) / 1e6).toLocaleString('en-US', { maximumFractionDigits: 4 })} TAC per point` : null);
+  const lim = (e) => (e.wei ? `${nfmt({ maximumFractionDigits: 4 }).format(Number(e.wei / 10n ** 12n) / 1e6)} TAC per point` : null);
   const now = eff && lim(eff), later = next && `${lim(next) || 'no limit'} from ${dayShort(next.fromDay)}`;
   return now ? (later ? `${now}, ${later}` : now) : later && lim(next) ? later : null;
 }
@@ -11967,8 +11904,8 @@ const dayLeft = () => { const s = 86400 - (now() % 86400), h = Math.floor(s / 36
 const pointsWho = () => [...new Map([[S.acct?.address, 'Key address'], [S.wallet, 'Wallet']].filter(([a]) => a).map(([a, l]) => [a.toLowerCase(), l]))];
 const ptsFmt = (n) => Math.round(Number(n) || 0).toLocaleString('en-US');
 const utcDay = (sec) => Math.floor(Number(sec) / 86400);
-const dayShort = (d) => new Date(d * 864e5).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
-const dayName = (d) => { const t = utcDay(now()); return d === t ? 'Today' : d === t - 1 ? 'Yesterday' : new Date(d * 864e5).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' }); };
+const dayShort = (d) => dfmt(new Date(d * 864e5), { day: 'numeric', month: 'short', timeZone: 'UTC' });
+const dayName = (d) => { const t = utcDay(now()); return d === t ? 'Today' : d === t - 1 ? 'Yesterday' : dfmt(new Date(d * 864e5), { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' }); };
 const tacOf = (pot, pts, total) => { const d = BigInt(Math.round((total > 0 ? total : 0) * 1e6)); return d > 0n ? pot * BigInt(Math.round(pts * 1e6)) / d : 0n; };
 function loadPoints(force = false) {
   const key = pointsWho().map(([a]) => a).join();
@@ -12154,6 +12091,7 @@ function readyMarks() {
   if (HX.tab === 'swap') SWC.card?.refresh?.();
 }
 function paintPointsFoot() {
+  if (!document.querySelector('[data-foot="pts"], [data-dot="pts"]')) { dashSoon(); return; }
   const rows = PTS.key && PTS.key === pointsWho().map(([a]) => a).join() ? PTS.rows : null;
   if (!rows || !rows.some((r) => r.read)) { setFoot('pts', `${fmt(PGM.totalWei, 18, 0)} TAC over ${PGM.days} days`); return; }
   const pts = rows.reduce((s, r) => s + r.points, 0), owed = rows.reduce((s, r) => s + r.owed, 0n), rank = Math.min(...rows.map((r) => r.rank || Infinity));
@@ -12199,7 +12137,7 @@ function pulse() {
   if (!p) return '';
   const per = p.total > 0 ? Number(p.pot / 10n ** 12n) / 1e6 / p.total * 1000 : null;
   const rates = (p.groups || []).filter((g) => Number(g.points) > 0 && /^\d+$/.test(String(g.paidWei))).map((g) => Number(BigInt(g.paidWei) / 10n ** 12n) / 1e6 / Number(g.points) * 1000);
-  const tacN = (x) => x.toLocaleString('en-US', { maximumFractionDigits: x < 10 ? 2 : 1 });
+  const tacN = (x) => nfmt({ maximumFractionDigits: x < 10 ? 2 : 1 }).format(x);
   const range = rates.length > 1 && Math.max(...rates) / Math.min(...rates) > 1.2 ? `${tacN(Math.min(...rates))} to ${tacN(Math.max(...rates))} TAC` : null;
   return html`<div class="pulse">
     <div class="kv"><span>Today’s pot</span><b>${fmt(p.pot, 18, p.pot >= 100n * 10n ** 18n ? 0 : 2)} TAC · day ${p.day} of ${ptsDays()}${p.pot + 10n ** 15n < PGM.dayWei ? html` <small class="mute">at the limit per point</small>` : ''}</b></div>
@@ -12252,7 +12190,7 @@ function terms() {
   const cp = scheduled(PGM.caps, today), limits = cp && Object.keys(cp.e.caps).length ? `${Object.entries(cp.e.caps).map(([a, c]) => `${ACT_NAME[a] || a} counts up to ${c} ETH a day`).join(', ')}, all chains together${cp.from ? ` from ${dayShort(cp.from)}` : ''}` : null;
   const sc = scheduled(PGM.shareCaps, today), shares = sc && Object.keys(sc.e.caps).length ? `${Object.entries(sc.e.caps).map(([a, c]) => `${ACT_NAME[a] || a} points together take at most ${pct(c)} of a day’s ${potTac()} TAC`).join(', ')}; the rest is split as before${sc.from ? ` (from ${dayShort(sc.from)})` : ''}` : null;
   const bdNow = [...PGM.budgets].reverse().find((e) => e.fromDay <= today), bdNext = PGM.budgets.find((e) => e.fromDay > today);
-  const perPoint = (x) => `${(Number(x / 10n ** 12n) / 1e6).toLocaleString('en-US', { maximumFractionDigits: 4 })} TAC per point`;
+  const perPoint = (x) => `${nfmt({ maximumFractionDigits: 4 }).format(Number(x / 10n ** 12n) / 1e6)} TAC per point`;
   const WORDS = { holding: 'holding ETH in the private pools', cbtchold: 'keeping bonds posted', zswapeth: 'buying TAC', cusdmint: 'borrowing', cbtcmint: 'posting bonds', weiname: '.wei names', pmbet: 'bets', pmcreate: 'markets', wrap: 'wrapping ETH', evmpooldeposit: 'pool deposits', btcpool: 'the Bitcoin pool' };
   const andList = (xs) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs.at(-1)}`);
   const reserved = [bdNow, bdNext].filter((e) => e?.groups?.length).map((e) => `${e.fromDay > today ? `From ${dayShort(e.fromDay)}: ` : ''}${e.groups.map((g) => `${pct(g.share)}${g.capped ? ' at most' : ''} of a day’s ${potTac()} TAC for ${andList(g.activities.map((a) => WORDS[a] || a))}${g.wei ? ` (up to ${perPoint(g.wei)}${g.top ? `, and ${perPoint(g.top).replace(' TAC per point', '')} when the day has TAC left over` : ''})` : ''}`).join(' and ')}. ${e.groups.some((g) => g.capped) ? 'A share that is not used is not paid out.' : 'A share that is not used goes back to everyone else.'}`).join(' ') || null;
@@ -12516,6 +12454,8 @@ const PROGRAM_KEY = 'tacit-lite-farm-program-v1';
 const FARM = { precision: null, program: store.get(PROGRAM_KEY), open: 'precision', mode: null, positions: null, outPct: '100', outAs: 'both', fill: null, wtac: null, paid: null, reinvest: null, auto: {} };
 const LP = { m: null, c: null, at: 0, done: false };
 function loadCampaign() { return (LP.p ||= readCampaignNow().finally(() => { LP.p = null; })); }
+const LPW = { on: false };
+const campaignSoon = () => { if (LPW.on) return; LPW.on = true; loadCampaign().then(paintEarn); };
 async function readCampaignNow() {
   if (LP.done && Date.now() - LP.at < 120e3) return;
   try {
@@ -12541,6 +12481,7 @@ async function loadPrecision() {
     { to: p, data: SEL.balanceOf + addrWord(who) }, { to: p, data: SEL.allowance + addrWord(who) + addrWord(f) });
   const holders = who ? [...new Set([S.wallet, S.acct?.address].filter(Boolean).map((a) => a.toLowerCase()))] : [];
   for (const token of [ADDR.tac, ADDR.tacbtc, ADDR.tacusd, ADDR.tacd, ADDR.tace]) for (const a of holders) calls.push({ to: token, data: SEL.balanceOf + addrWord(a) });
+  const balAt = who ? calls.push({ to: ADDR.multicall, data: '4d2301cc' + addrWord(who) }) - 1 : -1, gp = who ? gasNow() : null;
   const r = await multicall(calls);
   const w = (i) => r[i] ? wordAt(r[i], 0) : 0n;
   const x = { who, r0: w(0), r1: w(1), supply: w(2), sp: w(3), totalStaked: w(4), rate: w(5), finish: Number(w(6)), t: Number(w(7)) || now(), staked: w(8), earned: w(9), tac: w(10), allowance: w(11), lp: w(12), lpAllow: w(13), at: Date.now() };
@@ -12551,7 +12492,7 @@ async function loadPrecision() {
   const s = Number(x.sp) / 1e18;
   x.value = Number(x.r0) + (s > 0 ? Number(x.r1) / (s * s) : 0);
   x.tacEth = s > 0 ? 1 / (s * s) : 0;
-  if (who) [x.bal, x.gp] = await Promise.all([rpc('eth_getBalance', [who, 'latest']).then(BigInt).catch(() => null), gasNow()]);
+  if (who) { x.bal = r[balAt] ? wordAt(r[balAt], 0) : null; x.gp = await gp; }
   if (my !== precisionSeq) return FARM.precision;
   if (S.address !== who) return loadPrecision();
   FARM.precision = x;
@@ -12596,7 +12537,7 @@ const loadFarms = (force = false, o = {}) => once(FARM, `${S.address}|${S.key?.p
 async function readFarms(current, force = false, o = {}) {
   const [pr, pg] = await Promise.allSettled([loadPrecision(), loadProgram(), S.key ? loadPositions() : null, S.key ? scanPrivate() : null,
     S.address ? ((who) => ethCall(WTAC, SEL.balanceOf + addrWord(who)).then((r) => { FARM.wtac = { who, v: wordAt(r, 0) }; }))(S.address) : null,
-    loadTacPrice(), loadCampaign()]);
+    loadTacPrice()]);
   if (!current()) return;
   if (S.address && $('#sheet-farm')?.open) loadPaid(S.address, force && !o.private).then(() => { if (current()) rerender('farm'); }).catch(() => {});
   FARM.errs = { precision: pr.status === 'rejected' && FARM.precision?.who !== S.address ? pr.reason : null, program: pg.status === 'rejected' && !FARM.program ? pg.reason : null };
@@ -12608,6 +12549,7 @@ async function readFarms(current, force = false, o = {}) {
   const apr = x?.live ? precisionApr(x) : null, farms = 1 + (prog?.pools?.length || 0);
   FARM.top = !x && !prog ? null : { apr, perDay: total, pubDay: Math.round(pub), farms };
   paintEarn();
+  if (LPW.on) loadCampaign().then(paintEarn);
   if (x && (x.staked > 0n || x.earned > 0n)) setFoot('farm', `Farming · ${fmt(x.earned, 18, 2)} TAC earned`, 'on');
   else if (mine) setFoot('farm', `${mine} private position${mine === 1 ? '' : 's'} earning`, 'on');
   else setFoot('farm', '');
@@ -15612,13 +15554,20 @@ function paintNums(p) {
   for (const el of els) el.hidden = !p?.v;
   if (!p?.v) return;
   for (const b of $$('[data-num]')) { b.textContent = p.v[b.dataset.num] ?? '—'; countUp(b); }
-  const asOf = `As of ${new Date(p.at).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })}`;
-  for (const el of els) el.title = asOf;
+  (window.requestIdleCallback || setTimeout)(() => { const asOf = `As of ${dfmt(new Date(p.at), { dateStyle: 'medium', timeStyle: 'short' })}`; for (const el of els) el.title = asOf; });
 }
+const LEADER = new Map();
+const leaderState = (base) => {
+  const hit = LEADER.get(base);
+  if (hit && Date.now() - hit.at < 20e3) return hit.p;
+  const p = fetch(`${base}/state`, { signal: within(10e3) }).then((r) => (r.ok ? r.json() : null));
+  LEADER.set(base, { at: Date.now(), p });
+  p.catch(() => { if (LEADER.get(base)?.p === p) LEADER.delete(base); });
+  return p;
+};
 async function chainSpendsRead() {
   if (!chainOn()) return 0;
-  const r = await fetch(`${TACIT_CHAIN_PAGE.leader.replace(/\/$/, '')}/state`, { signal: within(10e3) });
-  const n = Number((r.ok ? await r.json() : null)?.spends);
+  const n = Number((await leaderState(TACIT_CHAIN_PAGE.leader.replace(/\/$/, '')))?.spends);
   return Number.isSafeInteger(n) && n > 0 ? n : 0;
 }
 async function loadNums() {
@@ -15635,8 +15584,7 @@ async function loadNums() {
   paintNums(p);
 }
 const refreshNums = () => loadNums().catch(() => { if (!store.get(NUMS_KEY)) paintNums(null); });
-if (store.get(NUMS_KEY)) paintNums(store.get(NUMS_KEY));
-refreshNums();
+if (!TACP.on) { if (store.get(NUMS_KEY)) paintNums(store.get(NUMS_KEY)); refreshNums(); }
 
 const TAPE = { key: '' };
 const RECENT = { p: null, at: 0 };
@@ -15650,12 +15598,12 @@ const FEED = {
   evmpooldeposit: (r) => ({ icons: ['tk-peth'], what: 'ETH to a pay pool', amt: `${twoFig(r.amount)} ETH`, chain: Number(r.chain) || 1 }),
   zswapeth: (r) => ({ icons: ['tk-tac'], what: 'TAC bought with ETH', amt: `${twoFig(r.amount)} ETH` }),
   cbtcmint: (r) => ({ icons: ['tk-cbtc'], what: 'A bond posted toward cBTC', amt: `${twoFig(r.amount)} wstETH` }),
-  cusdmint: (r) => ({ icons: ['tk-cusd'], what: 'cUSD borrowed against bitcoin', amt: `${(Number(BigInt(r.amount)) / 1e8).toLocaleString('en-US', { maximumSignificantDigits: 2 })} cUSD` }),
+  cusdmint: (r) => ({ icons: ['tk-cusd'], what: 'cUSD borrowed against bitcoin', amt: `${nfmt({ maximumSignificantDigits: 2 }).format(Number(BigInt(r.amount)) / 1e8)} cUSD` }),
   weiname: () => ({ icons: ['tk-eth'], what: 'A .wei name registered' }),
   pmbet: (r) => ({ icons: ['tk-eth'], what: 'A prediction-market bet', amt: `${twoFig(r.amount)} ETH` }),
   pmcreate: () => ({ icons: ['tk-eth'], what: 'A prediction market opened' }),
 };
-const twoFig = (wei) => (Number(BigInt(wei) / 10n ** 12n) / 1e6).toLocaleString('en-US', { maximumSignificantDigits: 2 });
+const twoFig = (wei) => nfmt({ maximumSignificantDigits: 2 }).format(Number(BigInt(wei) / 10n ** 12n) / 1e6);
 function tapeEvents(d, rec) {
   const latest = (xs, n) => xs.filter((t) => t).sort((a, b) => b - a).slice(0, n);
   const latestIn = (xs, n) => xs.filter(([t]) => t).sort((a, b) => b[0] - a[0]).slice(0, n);
@@ -19095,7 +19043,16 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=6dc6f2f7').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=b0e957cb').catch((e) => { SWC.p = null; throw e; }));
+const LBT = { p: null, at: 0 };
+const lbToday = () => {
+  if (!LBT.p || Date.now() - LBT.at > 60e3) {
+    LBT.at = Date.now();
+    const p = LBT.p = fetch(`${API}/leaderboard?day=today&limit=1`, { signal: within(20e3) }).then((r) => (r.ok ? r.json() : null));
+    p.catch(() => { if (LBT.p === p) LBT.p = null; });
+  }
+  return LBT.p;
+};
 function swcFlow() {
   hxPathPaint();
   if (!SWC.card || SWC.card.flow === HX.flow) return;
@@ -19161,6 +19118,7 @@ function swcAsk() { if (SWC.ask && SWC.card?.busy) SWC.ask = null; else if (SWC.
 function hxSwap() {
   const put = () => { const s = $('#hx-swap'); if (s && s !== SWC.el) { s.replaceWith(SWC.el); SWC.card?.requote?.(); } swcFlow(); swcAsk(); hxLeadPaint(); };
   if (SWC.el) return put();
+  if (TACP.on && TACP.act !== 'tile') return;
   swcLoad().then((m) => {
     if (!SWC.el) {
       SWC.el = Object.assign(document.createElement('div'), { id: 'hx-swap', className: 'hx-swap' });
@@ -19182,6 +19140,7 @@ function hxSwap() {
         onIdle: () => { if (SWC.el?.isConnected) { swcFlow(); swcAsk(); hxLeadPaint(); } },
         onFlow: (f) => { HX.flow = f; SWC.flow = f; hxRemember(); hxHeadSync(); },
         farmIt: (wei) => hxPreset('earn:wtac:public', wei ? plain(wei / E10, 8) : '', true),
+        today: lbToday,
       });
       if (!SWC.ask && !HX.flow) {
         SWC.ask = new URLSearchParams(HX.swq);
@@ -19671,7 +19630,7 @@ hxRecall();
 hxAskFromUrl();
 paintHx();
 paintHints();
-refreshTape();
+if (!TACP.on) refreshTape();
 loadTacPrice().catch(() => {});
 if ('IntersectionObserver' in window) { const io = new IntersectionObserver((es) => { for (const e of es) e.target.classList.toggle('rest', !e.isIntersecting); }); for (const el of $$('.tape, .wd, .tc-stage')) io.observe(el); }
 document.addEventListener('click', (e) => {
@@ -19759,8 +19718,9 @@ function refreshAll() {
 }
 paintWallet();
 paintEarn();
+{ const pg = $('#pg-pays')?.closest('section'); if (pg && 'IntersectionObserver' in window) { const io = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) { io.disconnect(); campaignSoon(); } }, { rootMargin: '800px 0px' }); io.observe(pg); } else campaignSoon(); }
 paintWays();
-fetch(`${API}/leaderboard?day=today&limit=1`, { signal: within(20e3) }).then((r) => (r.ok ? r.json() : null)).then((d) => { if (d?.program) takeProgram(d.program); }).catch(() => {});
+lbToday().then((d) => { if (d?.program) takeProgram(d.program); }).catch(() => {});
 resumeActivity();
 setTimeout(() => xoTick(), 8000);
 function tabKeyOpen(walletRead) {
@@ -19780,7 +19740,7 @@ restoring.then(() => tabKeyOpen(true), () => tabKeyOpen(true));
 Promise.race([restoring, new Promise((r) => setTimeout(() => r(false), 1500))]).then((restored) => { if (!restored && !S.key) refreshAll(); });
 evm.onElsewhere(restoreWallet);
 let lastTick = Date.now();
-const tick = () => { lastTick = Date.now(); paintEarn(); refreshTape(); loadTacPrice().catch(() => {}); brTick(); brPrepTick().catch(() => {}); bswTick().catch(() => {}); fastTick().catch(() => {}); xoTick(); if (lastTick - numsAt > NUMS_MS) refreshNums(); for (const n of SHEETS) if (shown(n) && !running(n)) load[n]?.().then(() => rerender(n)).catch(() => {}); };
+const tick = () => { lastTick = Date.now(); paintEarn(); if (!TACP.on) refreshTape(); loadTacPrice().catch(() => {}); brTick(); brPrepTick().catch(() => {}); bswTick().catch(() => {}); fastTick().catch(() => {}); xoTick(); if (!TACP.on && lastTick - numsAt > NUMS_MS) refreshNums(); for (const n of SHEETS) if (shown(n) && !running(n)) load[n]?.().then(() => rerender(n)).catch(() => {}); };
 setInterval(() => { if (!document.hidden) tick(); }, 60e3);
 const CHL = { p: null };
 const chlAgo = (s) => (s < 90 ? 'just now' : s < 5400 ? `${Math.round(s / 60)} min ago` : s < 129600 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} d ago`);
@@ -19790,11 +19750,11 @@ function chlRead() {
   CHL.p = import('/tacit-chain-config.js?cb=74171404').then(async (cf) => {
     const cfg = cf.tacitChain();
     if (!cfg) { el.hidden = true; return; }
-    const word = (sel) => rpc('eth_call', [{ to: cfg.blocks, data: '0x' + sel }, 'latest']).then((h) => BigInt(h));
-    const [st, height, last, pool, shares] = await Promise.all([
-      fetch(cfg.leader + '/state', { signal: within(10e3) }).then((r) => (r.ok ? r.json() : null)).catch(() => null),
-      ...['0ef26743', '2fb9bbfd', '16f0115b', '03314efa'].map((sel) => word(sel).catch(() => null)),
+    const [st, w] = await Promise.all([
+      leaderState(cfg.leader).catch(() => null),
+      multicall(['0ef26743', '2fb9bbfd', '16f0115b', '03314efa'].map((sel) => ({ to: cfg.blocks, data: sel }))).catch(() => []),
     ]);
+    const [height, last, pool, shares] = [0, 1, 2, 3].map((i) => { try { return w[i] ? BigInt(w[i]) : null; } catch { return null; } });
     if (height == null || pool == null || shares == null) return;
     const pending = Number(st?.pending || 0), quiet = last ? Date.now() / 1000 - Number(last) : null;
     $('#chl-dot').className = `dot ${!st ? '' : pending && quiet > 180 ? 'live' : 'on'}`;

@@ -46,7 +46,7 @@ export const batch = async (calls) => V.decAggregate3(await ethCall(MULTICALL3, 
 const venues = makeEvmTradeVenues({ ethCall, keccak256: keccak_256 });
 const standIn = () => '0x' + Array.from(crypto.getRandomValues(new Uint8Array(20)), (b) => b.toString(16).padStart(2, '0')).join('');
 const within = (p, ms, why) => Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error(why)), ms))]);
-const PN = makePointsNote({ read: () => fetch('https://api.tacit.finance/leaderboard?day=today&limit=1', { signal: AbortSignal.timeout(8000) }).then((r) => (r.ok ? r.json() : null)) });
+const PN = makePointsNote({ read: () => (H.today ? H.today() : fetch('https://api.tacit.finance/leaderboard?day=today&limit=1', { signal: AbortSignal.timeout(8000) }).then((r) => (r.ok ? r.json() : null))) });
 const noteOf = (x, q) => [x.note, ptsTag(rowPts(x, q))].filter(Boolean).join(/class="splitbar"/.test(x.note || '') ? '' : ' · ');
 const ghostNote = (k, buy, wei) => {
   const pts = (w) => (buy && ptsFor('zswap', w) ? `<span style="visibility:hidden">${ptsTag({ pts: 100, floor: true })}</span>` : '');
@@ -89,6 +89,7 @@ const S = {
 let ROOT = null, H = {}, wallet = null, W = {};
 const paced = (k) => { try { H.pace?.(k); } catch { } };
 const $ = (s) => ROOT.querySelector(s);
+const setHtml = (el, h) => { if (el.__h !== h) { el.__h = h; el.innerHTML = h; } };
 const changed = () => H.onChange?.();
 const RECENT_KEY = 'tacit-swap-recent-v1';
 let RECENT = [];
@@ -750,9 +751,9 @@ function paintSides() {
   let pay = shownAt(S.pay, atOf('pay')), get = shownAt(S.get, atOf('get'));
   if (FLOW === 'shield' && get && pay) get = { ...get, sym: S.get === 'teth' ? 'ETH' : pay.sym };
   if (FLOW === 'withdraw' && get && pay) pay = { ...pay, sym: get.sym };
-  $('#pay-coin').innerHTML = `${coin(pay)}${esc(pay.sym)}<span class="car" aria-hidden="true">▾</span>`;
+  setHtml($('#pay-coin'), `${coin(pay)}${esc(pay.sym)}<span class="car" aria-hidden="true">▾</span>`);
   $('#pay-coin').setAttribute('aria-label', `Pay with ${pay.sym}. Choose another`);
-  $('#get-coin').innerHTML = `${coin(get)}${esc(get.sym)}<span class="car" aria-hidden="true">▾</span>`;
+  setHtml($('#get-coin'), `${coin(get)}${esc(get.sym)}<span class="car" aria-hidden="true">▾</span>`);
   $('#get-coin').setAttribute('aria-label', `Get ${get.sym}. Choose another`);
   const payPriv = S.inP, out = (!moveOf() && kindOf(S.pay, S.get) === 'pout') || exiting(), inPriv = S.outP;
   if (out && !S.toAsked && ((exiting() && !intoPool()) || (!S.to && !S.toBad && !W.account && !intoPool()))) { S.toOpen = true; S.toAsked = true; }
@@ -789,11 +790,11 @@ function paintSides() {
   if (homes) { const h = homesHtml(); homes.hidden = !h; if (h !== homes.dataset.h) { homes.innerHTML = h; homes.dataset.h = h; } }
   if (chain) { const c = chainHtml(); chain.hidden = !c; if (c !== chain.dataset.h) { chain.innerHTML = c; chain.dataset.h = c; netPicker($('#chain-sel')); } }
   const side = $('#pay-side'), mk = !S.amt && !fixed ? moveOf() : null, sizes = mk ? H.moves?.sizes?.(mk) || null : !S.amt && !fixed ? keptChips() : null;
-  if (payPriv && bal == null && !S.at.pay && !moveOf()) side.innerHTML = PV?.unlocked ? `<span>Reading your private balance…${PV.readFailed ? ' <button type="button" id="pv-read">Read again</button>' : ''}</span>` : '<button type="button" id="pv-open">Sign in to see your private balance</button>';
-  else if (moving() && isPrivAt(atOf('pay')) && bal == null && !fixed && !H.key?.session?.unlocked) side.innerHTML = '<button type="button" id="pv-sign">Sign in to see your private balance</button>';
-  else if (bal != null) side.innerHTML = fixed ? `<span>Balance ${esc(balFmt(bal, pay.dec))}</span>` : `<button type="button" id="max" class="${wei && wei > bal ? 'over' : ''}">Balance ${esc(balFmt(bal, pay.dec))}${bal > 0n ? ' <span class="mx">Max</span>' : ''}</button>`;
-  else if (!S.amt && !fixed && !sizes) side.innerHTML = `<span class="quick">${((poolUnits() ? QUICK_PRIV : QUICK)[pay.sym] || []).map((v) => `<button type="button" data-quick="${v}">${v}</button>`).join('')}</span>`;
-  else side.textContent = '';
+  if (payPriv && bal == null && !S.at.pay && !moveOf()) setHtml(side, PV?.unlocked ? `<span>Reading your private balance…${PV.readFailed ? ' <button type="button" id="pv-read">Read again</button>' : ''}</span>` : '<button type="button" id="pv-open">Sign in to see your private balance</button>');
+  else if (moving() && isPrivAt(atOf('pay')) && bal == null && !fixed && !H.key?.session?.unlocked) setHtml(side, '<button type="button" id="pv-sign">Sign in to see your private balance</button>');
+  else if (bal != null) setHtml(side, fixed ? `<span>Balance ${esc(balFmt(bal, pay.dec))}</span>` : `<button type="button" id="max" class="${wei && wei > bal ? 'over' : ''}">Balance ${esc(balFmt(bal, pay.dec))}${bal > 0n ? ' <span class="mx">Max</span>' : ''}</button>`);
+  else if (!S.amt && !fixed && !sizes) setHtml(side, `<span class="quick">${((poolUnits() ? QUICK_PRIV : QUICK)[pay.sym] || []).map((v) => `<button type="button" data-quick="${v}">${v}</button>`).join('')}</span>`);
+  else setHtml(side, '');
   if (moving() && atOf('pay') === 'pay' && Date.now() - PAYWARM > 30e3) { PAYWARM = Date.now(); H.moves.warm?.(); }
   const getBal = !S.outP && !S.at.get && !S.to && W.account ? S.bal[S.get] : null;
   $('#get-side').textContent = getBal ? `Balance ${balFmt(getBal, get.dec)}` : '';
@@ -2630,7 +2631,7 @@ let lane = null, laneP = null;
 const pageWallet = () => (W.account && W.prov && !W.prov.isWalletConnect ? { uuid: W.uuid, address: W.account } : null);
 async function openLane() {
   try {
-    laneP ||= import('/swap/bitcoin.js?cb=5ded20f6').then((mod) => (lane = mod.makeBitcoinLane({ host: $('#btc'), notify: (m) => live(m), wallet: pageWallet, onBridged: paintNudge, from: moving() && S.pay === lc(R.TAC) ? 'tac' : 'teth' })));
+    laneP ||= import('/swap/bitcoin.js?cb=06074573').then((mod) => (lane = mod.makeBitcoinLane({ host: $('#btc'), notify: (m) => live(m), wallet: pageWallet, onBridged: paintNudge, from: moving() && S.pay === lc(R.TAC) ? 'tac' : 'teth' })));
     await laneP;
     if (S.btc) await lane.show();
   } catch (e) { $('#btc').innerHTML = `<p class="q err">Could not load the Bitcoin lane: ${esc(e?.message || e)}</p>`; lane = laneP = null; }

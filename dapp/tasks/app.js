@@ -209,8 +209,8 @@ async function readDone(job, { chain = false } = {}) {
   keepSeen(job, out);
   return out;
 }
-async function loadApi() {
-  S.api = await get(`${pointsUrl()}/tasks`);
+async function loadApi(p = get(`${pointsUrl()}/tasks`)) {
+  S.api = await p;
   S.asked = true;
   renderAll();
 }
@@ -745,6 +745,7 @@ $('#ends > summary').textContent = Object.keys(ends.rpc || {}).length || ends.po
 function settled() { $('#jobs').classList.remove('loading'); $('#stats').classList.remove('loading'); }
 setTimeout(settled, 12e3);
 async function start() {
+  const pts = pointsUrl(), apiEarly = get(`${pts}/tasks`);
   const file = await get('/tasks/jobs.json');
   if (!file?.jobs?.length) { settled(); $('#jobs').innerHTML = '<p class="none">Could not load the jobs. Try again in a moment.</p>'; return; }
   S.jobs = file.jobs.filter((j) => !j.into);
@@ -752,7 +753,7 @@ async function start() {
   const wanted = location.hash.slice(1);
   if (S.jobs.some((j) => j.id === wanted)) S.expanded.set(wanted, true);          // a link to a job opens it
   renderAll();
-  apiFirst = loadApi();
+  apiFirst = loadApi(pointsUrl() === pts ? apiEarly : undefined);
   await Promise.all([apiFirst, refresh()]);
   setInterval(() => { if (!document.hidden && !S.running) { refresh(); loadApi(); } }, 30e3);
   setInterval(() => { if (!document.hidden) settle(); }, 20e3);

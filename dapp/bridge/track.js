@@ -310,5 +310,5 @@ export function nextOf(row, live = null, auto = false) {
 export function fmtAmount(raw, dp = 4, dec = 8) {
   const v = big(raw), neg = v < 0n, a = neg ? -v : v, one = 10n ** BigInt(dec);
   const whole = a / one, frac = (a % one).toString().padStart(dec, '0').slice(0, dp).replace(/0+$/, '');
-  return `${neg ? '-' : ''}${whole.toLocaleString('en-US')}${frac ? '.' + frac : ''}`;
+  return `${neg ? '-' : ''}${whole.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',')}${frac ? '.' + frac : ''}`;
 }

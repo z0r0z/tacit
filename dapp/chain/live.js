@@ -57,7 +57,7 @@ export function mountChainLive({ top, rest }) {
       ${cfg && !cfg.dev ? '<details class="tpg-fold cl-tech"><summary>Chain facts</summary><div><ul class="cl-facts" data-r="tech"></ul></div></details><details class="tpg-fold cl-tech"><summary>Lead blocks</summary><div><ul class="cl-facts" data-r="lead"></ul></div></details>' : ''}</section>`;
   const el = (k) => top.querySelector(`[data-r="${k}"]`) || rest.querySelector(`[data-r="${k}"]`);
   const put = (k, html) => { const e = el(k); if (e && e.__h !== html) { e.__h = html; e.innerHTML = html; } };   // drawn again only when it changed
-  if (!cfg) { put('flow', '<p class="cl-off">The Tacit chain is not deployed here.</p>'); return { start() {}, stop() {} }; }
+  if (!cfg) { put('flow', '<p class="cl-off">The Tacit chain is not deployed here.</p>'); top.classList.remove('cl-hold'); return { start() {}, stop() {} }; }
 
   const call = async (sel, arg = '') => BigInt(await rpc('eth_call', [{ to: cfg.blocks, data: '0x' + sel + arg }, 'latest']));
   // TacitBlocks' height() lastLanded() pool() shares() queued() queueDone() FORCE_DELAY() WINDOW(), and Multicall3's getBlockNumber() and getCurrentBlockTimestamp()
@@ -208,7 +208,7 @@ export function mountChainLive({ top, rest }) {
   const intro = () => { if (!introAt) introAt = Date.now(); return Date.now() - introAt < 1500 ? ' in' : ''; };
   function chart(rollup) {
     CH = null;
-    if (rollup === undefined) return '<div class="cl-plot cl-skp"></div>';
+    if (rollup === undefined) return '<figure><div class="cl-plot cl-skp"></div><figcaption>&nbsp;</figcaption></figure>';
     const pts = [...rollup].reverse().map((b) => [b.height, price(b.pool, b.shares)]);
     if (pts.length < 2) return pts.length ? `<p class="cl-off">After block ${int(pts[0][0])}, 1 share = ${pts[0][1].toFixed(5)} TAC. It started at 1.</p>` : '';
     const x0 = pts[0][0], x1 = pts.at(-1)[0], ys = pts.map((q) => q[1]), lo = Math.min(1, ...ys), hi = Math.max(...ys), span = hi - lo || 1e-9;
@@ -283,8 +283,10 @@ export function mountChainLive({ top, rest }) {
 
   // who may lead and what it takes: the seat's price, the seats held, who leads now, the steps (the seats contract's own calls, on Etherscan)
   async function leadRead() {
-    const at = (sel) => rpc('eth_call', [{ to: SEATS, data: '0x' + sel }, 'latest']);
-    const [seat, slot, held, lead] = await Promise.all([at('d1b17078'), at('d4005c4a'), at('9c5655d6'), at('40eedabb')]);
+    const calls = ['d1b17078', 'd4005c4a', '9c5655d6', '40eedabb'].map((s) => ({ to: SEATS, data: '0x' + s }));
+    let got = null;
+    try { got = decodeBatch(await rpc('eth_call', [{ to: MULTICALL3, data: encodeBatch(calls) }, 'latest']), calls.length); } catch {}
+    const [seat, slot, held, lead] = got?.every(Boolean) ? got : await Promise.all(calls.map((c) => rpc('eth_call', [c, 'latest'])));
     return { seat: BigInt(seat), slot: Number(BigInt(slot)), held: Number(BigInt(held)), leader: '0x' + String(lead).slice(26) };
   }
   function lead(d) {
@@ -373,7 +375,7 @@ export function mountChainLive({ top, rest }) {
         mark();
       }));
       R.at = Date.now();
-    } finally { busy = false; mark(); if (stale) { stale = false; refresh(); } }
+    } finally { busy = false; if (R.at) top.classList.remove('cl-hold'); mark(); if (stale) { stale = false; refresh(); } }
   }
   const onVis = () => { if (!document.hidden && Date.now() - (R.at || 0) > 20e3) refresh(); };
   rest.addEventListener('pointermove', (e) => { if (e.target.closest?.('.cl-plot')) scrub(e); });
