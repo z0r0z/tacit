@@ -1,12 +1,3 @@
-// The user's side of a fast bridge swap, for a page or a script: the LP's terms and quote, the notes to lock, the Bitcoin
-// locker (fastbridge-bl.js) over a store, the words for where each swap is, and the recovery of a lock from the key.
-//
-//   const fb = makeFastBridgeClient({ lp, btc, evm, store, seed, pins })
-//   lp      the LP's base URL, or an object with the calls of fastbridge-http.js (info, quote, sendOffer, getEvmOffer)
-//   btc     the Bitcoin locker's Bitcoin context (fastbridge-btc.js)      evm   the pool side (fastbridge-evm.js)
-//   store   { get(id), put(rec), list() }                                  seed  32 bytes, the swap seed from the key
-//   pins    { claimPub?, btcAsset, evmAsset }: what the page expects of the LP; a quote that differs is refused
-//   policy  { csvBlocks, minCsv, maxCsv, minClaimSecs, offerWaitSecs, maxEvmWindowSecs, warnFeeBps, maxFeeBps, quoteMarginSecs }
 
 import { makeBitcoinLocker } from './fastbridge-bl.js';
 import { makeHttpCounter } from './fastbridge-http.js';
@@ -21,12 +12,9 @@ const MAX_INPUTS = 6;
 
 export const DEFAULT_POLICY = {
   csvBlocks: 144, minCsv: 72, maxCsv: 288, maxTakeSats: 30000, minClaimSecs: 3600, offerWaitSecs: 2 * 3600, maxEvmWindowSecs: 6 * 3600,
-  // a fee over warnFeeBps is quoted, flagged `highFee`, for a page to say so plainly (a provider prices as it likes); one over maxFeeBps is not quoted
   warnFeeBps: 500, maxFeeBps: 9000, quoteMarginSecs: 120,
 };
 
-// What the take of a provider costs at a fee rate: the formula the providers quote with (fastbridge-provider.js takeSatsAt), so a page can tell a take
-// that is far above it. A quote asking more than TAKE_FLAG times that is flagged `highTake`: it is still quoted, and it sorts below those that are not.
 export const TAKE_VB = 750, TAKE_DUST = 546, TAKE_FLAG = 2;
 export const fairTakeAt = (feeRate) => TAKE_DUST + Math.ceil(TAKE_VB * feeRate * 2);
 
@@ -36,7 +24,6 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
   const bl = makeBitcoinLocker({ seed, now, policy, store, btc, evm, counter });
   const pinned = (a) => (pins[a] ? strip(pins[a]) : null);
 
-  // The provider's terms, checked for shape and against what the page pinned.
   async function terms() {
     const i = await counter.info();
     if (!i || !isHex(i.claimPub, 66) || !isHex(i.btcAsset, 64) || !isHex(i.evmAsset, 64)) throw new Error('the provider\'s terms are not readable');
@@ -49,8 +36,6 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
     return t;
   }
 
-  // A quote for an amount of base units, checked before the user sees it: the same provider and assets, a timelock in range,
-  // a fee within the limit, and time enough left to use it.
   async function quote(amount) {
     const q = await counter.quote(amount);
     if (!q || typeof q.id !== 'string' || !isHex(q.claimPub, 66) || !isHex(q.btcAsset, 64) || !isHex(q.evmAsset, 64)) throw new Error('the provider\'s quote is not readable');
@@ -64,18 +49,15 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
     if (fee * 10000n > btcValue * BigInt(policy.maxFeeBps)) throw new Error('the quote\'s fee is above the limit this page accepts');
     const highFee = fee * 10000n > btcValue * BigInt(policy.warnFeeBps);
     if (!(Number(q.validUntil) > now() + policy.quoteMarginSecs)) throw new Error('the quote expires too soon to use');
-    // the provider's take fee, which the lock pays it on Bitcoin: none, or from dust to the most this page pays
     const takeSats = Number(q.takeSats ?? 0);
     if (!Number.isInteger(takeSats) || (takeSats !== 0 && (takeSats < 546 || takeSats > policy.maxTakeSats))) throw new Error('the quote\'s Bitcoin fee is out of range');
-    // the take against what it costs at this page's own fee rate (not flagged when there is no rate to compare with)
     let highTake = false;
     if (takeSats > 0 && btc && typeof btc.feeRate === 'function') {
-      try { highTake = takeSats > TAKE_FLAG * fairTakeAt(await btc.feeRate()); } catch { /* no rate: nothing to compare with */ }
+      try { highTake = takeSats > TAKE_FLAG * fairTakeAt(await btc.feeRate()); } catch { }
     }
     return { ...q, claimPub: strip(q.claimPub), btcAsset: strip(q.btcAsset), evmAsset: strip(q.evmAsset), btcValue, evmAmount, fee, csvBlocks, takeSats, highFee, highTake };
   }
 
-  // Notes to lock for `amount`: the smallest single note that covers it, else the largest first until covered.
   function pickNotes(notes, amount) {
     const want = BigInt(amount), have = notes.map((n) => ({ ...n, amount: BigInt(n.amount) })).filter((n) => n.amount > 0n);
     const one = have.filter((n) => n.amount >= want).sort((a, b) => (a.amount < b.amount ? -1 : a.amount > b.amount ? 1 : 0))[0];
@@ -91,15 +73,12 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
 
   const outpointsOf = (ns) => new Set(ns.map((n) => `${n.txid}:${n.vout}`));
 
-  // The notes a swap still holds are not offered to another: a second lock built from one would double-spend the first.
   async function freeNotes(notes) {
     const held = new Set();
     for (const r of await store.list()) if (!TERMINAL.has(r.phase) && r.role === 'bl') for (const i of r.noteInputs || []) held.add(`${i.txid}:${i.vout}`);
     return held.size ? notes.filter((n) => !held.has(`${n.txid}:${n.vout}`)) : notes;
   }
 
-  // What the lock for a quote would cost on Bitcoin, and whether the address can pay it: the lock is built and signed as it would be,
-  // and neither stored nor sent. { fee, take, total } in sats, or { short: true, need, have } when the address lacks the sats.
   async function cost({ quote: q, notes }) {
     const pick = pickNotes(await freeNotes(notes), q.btcValue);
     if (!pick) return { short: false, noNotes: true };
@@ -116,14 +95,12 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
     }
   }
 
-  // Builds and stores the lock for a checked quote, and sends it (a failed send is kept, with its error, for the next step).
   async function start({ quote: q, notes: all }) {
     if (!(Number(q.validUntil) > now() + policy.quoteMarginSecs)) throw new Error('the quote expired');
     const notes = await freeNotes(all);
     const pick = pickNotes(notes, q.btcValue);
     if (!pick) throw new Error(notes.length < all.length ? 'fastbridge: this note is already part of a swap' : 'these notes do not cover the amount');
     if (await store.get(bytesToHex(X.swapIdOf(pick.notes[0].txid, pick.notes[0].vout)))) throw new Error('fastbridge: this note is already part of a swap');
-    // the provider holds the payout before anything is locked: a provider that cannot is found out while the TAC is still in hand
     if (counter.reserve) {
       const r = await counter.reserve({ quoteId: q.id });
       if (!r || r.ok === false) throw new Error(`the provider cannot hold that amount${r && r.why ? `: ${r.why}` : ''}`);
@@ -133,9 +110,7 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
       asset: hexToBytes(q.btcAsset), amount: q.btcValue, notes: pick.notes, counterClaimPub: hexToBytes(q.claimPub),
       evmAsset: q.evmAsset, evmAmount: q.evmAmount, quoteId: q.id, takeSats: q.takeSats ?? 0, avoid: outpointsOf(all),
     });
-    // the provider is kept with the swap, so it is carried on with the one it began with
     if (provider) { rec.provider = provider; await store.put(rec); }
-    // sent at the press, while the quote and the provider's hold stand: a lock left for a later pass (the tab closed meanwhile) would go out after both ran out
     return bl.step(rec);
   }
 
@@ -145,13 +120,12 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
     return out.sort((a, b) => b.created - a.created).map((r) => describe(r, now));
   }
 
-  // Calls tick() on a timer while the page is open; one pass at a time. Returns stop().
   function run({ everyMs = 15000, onChange = () => {} } = {}) {
     let busy = false, stopped = false, timer = null;
     const pass = async () => {
       if (busy || stopped) return;
       busy = true;
-      try { onChange(await tick()); } catch { /* the next pass tries again */ } finally { busy = false; }
+      try { onChange(await tick()); } catch { } finally { busy = false; }
     };
     pass();
     timer = setInterval(pass, everyMs);
@@ -160,8 +134,6 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
 
   const records = async () => (await store.list()).sort((a, b) => b.created - a.created).map((r) => describe(r, now));
 
-  // The Bitcoin locks this key made that the store does not hold (a new browser, cleared data): found from the lock
-  // transactions in the address's history and kept as swaps that take the note back on the timelock.
   async function recover({ pages = 4 } = {}) {
     const known = new Set((await store.list()).map((r) => r.id)), found = [];
     for (const tx of await btc.history(btc.address, pages)) {
@@ -187,14 +159,6 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
   return { terms, quote, pickNotes, freeNotes, cost, start, tick, run, records, recover, describe, step: (rec) => bl.step(rec) };
 }
 
-// Several providers: a quote from each, the best first, and each swap carried on with the provider it began with.
-//   const market = makeFastBridgeMarket({ btc, evm, store, seed, pins, counterFor })
-//   counterFor(ref)   the counter of a provider, from the reference kept with its swaps ({ kind, claimPub, base | boardBase + gateway })
-//   market.quoteAll(providers, amount)   -> { quotes: [{ provider, quote }] best payout first, failed: [{ provider, error }] }
-//   market.start({ quotes, notes })      the best quote a provider will hold, each asked in turn -> { rec, provider }
-//   market.tick() / run() / records() / recover()     as the client's, over the swaps of every provider
-// How long a provider has to quote. One reached through a board answers on its polling rhythm (about 3.7 s measured, a cycle or two more now and
-// then), so the wait leaves room over the slowest quotes seen (9 s); a provider that is gone costs the page this long before the others show.
 export const QUOTE_WAIT_MS = 12000;
 export function makeFastBridgeMarket({ btc, evm, store, seed, pins = {}, policy, now, counterFor, makeClient = makeFastBridgeClient }) {
   const clients = new Map();
@@ -210,7 +174,6 @@ export function makeFastBridgeMarket({ btc, evm, store, seed, pins = {}, policy,
     const got = await Promise.all(providers.map(async (provider) => {
       try { return { provider, quote: await withTimeout(clientFor(provider.ref).quote(amount), timeoutMs) }; } catch (error) { return { provider, error }; }
     }));
-    // best payout first, those that ask a take far above its cost after the rest
     const quotes = got.filter((r) => r.quote).sort((a, b) => (a.quote.highTake ? 1 : 0) - (b.quote.highTake ? 1 : 0) || (a.quote.evmAmount > b.quote.evmAmount ? -1 : a.quote.evmAmount < b.quote.evmAmount ? 1 : 0));
     return { quotes, failed: got.filter((r) => r.error) };
   }
@@ -224,7 +187,6 @@ export function makeFastBridgeMarket({ btc, evm, store, seed, pins = {}, policy,
     }
     throw last || new Error('the provider cannot hold that amount');
   }
-  // the cost of the lock for the best quote (the one tried first)
   const cost = ({ quotes, notes }) => clientFor(quotes[0].provider.ref).cost({ quote: quotes[0].quote, notes });
   async function tick() {
     const out = [];
@@ -236,7 +198,7 @@ export function makeFastBridgeMarket({ btc, evm, store, seed, pins = {}, policy,
     const pass = async () => {
       if (busy || stopped) return;
       busy = true;
-      try { onChange(await tick()); } catch { /* the next pass tries again */ } finally { busy = false; }
+      try { onChange(await tick()); } catch { } finally { busy = false; }
     };
     pass();
     const timer = setInterval(pass, everyMs);
@@ -247,7 +209,6 @@ export function makeFastBridgeMarket({ btc, evm, store, seed, pins = {}, policy,
   return { quoteAll, start, cost, tick, run, records, recover, clientFor };
 }
 
-// Where a swap is, in words and as a position among the four steps (lock on Bitcoin, lock in the pool, claim, done).
 const STEPS = ['Lock on Bitcoin', 'Lock in the pool', 'Claim', 'Done'];
 const SAYS = {
   built: [0, 'Locking on Bitcoin', 'The lock transaction is being sent.'],
@@ -260,8 +221,6 @@ const SAYS = {
   refunded: [3, 'Returned', 'The lock came back to your Bitcoin address.'],
   'counter-took': [3, 'Done', 'The TAC is in your private balance. The provider took the Bitcoin lock.'],
 };
-// Why a bridge did not go through, in a person's words: the reasons the two sides record (fastbridge-bl.js, and what the provider answers an offer
-// with) are written for the log. A reason that is not known is said as it is, as a sentence, not dropped.
 const REASONS = [
   [/quote expired/i, 'The provider’s quote ran out before your lock was confirmed.'],
   [/unknown quote/i, 'The provider no longer had your quote.'],
@@ -283,8 +242,6 @@ export function plainWhy(why) {
   const said = declined ? `The provider declined it: ${declined[1]}` : raw;
   return said.charAt(0).toUpperCase() + said.slice(1).replace(/[.\s]*$/, '.');
 }
-// Where the lock stands once a bridge has not gone through: safe, and when it is due back (the timelock runs about a day from the confirmation).
-// The app itself sends it back, so it says to open the app. `opens` is when the timelock runs, or null when that is not known.
 const BTC_BLOCK_SECS = 600;
 const opensAt = (rec) => { const t = rec.lockAt || rec.confirmedAt; return t && rec.csvBlocks ? t + (rec.csvBlocks - 1) * BTC_BLOCK_SECS : null; };
 function returnLine(opens, now) {
@@ -295,18 +252,14 @@ function returnLine(opens, now) {
   const when = h >= 1.5 ? `in about ${Math.round(h)} hours` : h >= 0.75 ? 'in about an hour' : 'within the hour';
   return `Your Bitcoin is safe. The lock comes back to your address ${when}: open the app then and it is sent back.`;
 }
-// `clock()`: the time in seconds the caller keeps (a client's own); anything else, as when `describe` is handed to a map, is the page's clock.
 export function describe(rec, clock = null) {
   const now = typeof clock === 'function' ? clock() : Date.now() / 1000;
   let [at, title, detail] = SAYS[rec.phase] || [0, rec.phase, ''];
-  // the lock has confirmed and the provider has been asked: it is reading the lock from Bitcoin, which can take a minute, and says so
   if (rec.phase === 'broadcast' && rec.confirmedAt) {
     at = 1; title = 'The provider is checking your lock';
     detail = rec.offerWhy ? `The lock is confirmed. The provider says: ${String(rec.offerWhy).replace(/\.$/, '')}.` : 'The lock is confirmed. The provider reads it from Bitcoin before it locks TAC for you.';
   }
   const ended = TERMINAL.has(rec.phase), back = rec.phase === 'refund-wait' || rec.phase === 'refunded';
-  // A bridge that did not go through says so, what went wrong, that the Bitcoin is safe, and when it is due back. A lock found again from the key
-  // (a bridge this page lost) has no failure to tell: it is only on its way back.
   let waitingOnTimelock = false;
   if (rec.phase === 'refund-wait') {
     const found = /found from the key/.test(rec.why || '') || !!rec.recovered, opens = opensAt(rec);
@@ -316,31 +269,27 @@ export function describe(rec, clock = null) {
   }
   return {
     id: rec.id, phase: rec.phase, title, detail,
-    // the last failed read of the provider is not news while the lock waits for its timelock: it only said the provider is not answering
     at, steps: STEPS, ended, returned: back, amount: rec.amount, receive: back ? '0' : rec.evmAmount, created: rec.created,
     lockTxid: rec.lock?.txid || null, error: waitingOnTimelock ? null : (rec.lastError || null), recovered: !!rec.recovered,
   };
 }
 
-// A provider's terms from what it says of itself (its /info, or its ad): amounts as BigInt, what it can take now when it says.
 export const termsOf = (i) => ({
   feeBps: Number(i.feeBps) || 0, flatFee: BigInt(i.flatFee ?? 0), minAmount: BigInt(i.minAmount), maxAmount: BigInt(i.maxAmount),
   available: i.available == null ? null : BigInt(i.available),
-  // takes TAC whatever its history; a provider that says nothing screens locks with the bridge's trace
   anyTac: i.anyTac === true,
 });
 
-// Swaps kept in the page's localStorage under a prefix, one entry each.
 export function makeLocalStore(prefix, storage = globalThis.localStorage) {
   return {
     async get(id) { try { const v = storage.getItem(prefix + id); return v ? JSON.parse(v) : null; } catch { return null; } },
     async put(rec) { storage.setItem(prefix + rec.id, JSON.stringify(rec)); },
-    async del(id) { try { storage.removeItem(prefix + id); } catch { /* nothing kept */ } },
+    async del(id) { try { storage.removeItem(prefix + id); } catch { } },
     async list() {
       const out = [];
       for (let i = 0; i < storage.length; i++) {
         const k = storage.key(i);
-        if (k && k.startsWith(prefix)) { try { const r = JSON.parse(storage.getItem(k)); if (r && r.id) out.push(r); } catch { /* an entry that is not a swap */ } }
+        if (k && k.startsWith(prefix)) { try { const r = JSON.parse(storage.getItem(k)); if (r && r.id) out.push(r); } catch { } }
       }
       return out;
     },

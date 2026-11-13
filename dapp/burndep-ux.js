@@ -8,8 +8,6 @@ import { makeBridgeBurnBroadcaster } from './bridge-burn-broadcast.js';
 
 export const BURNDEP_BETA_CAP_RAW = 100_000_000_000n;
 export const RETURN_FEE_CEILING = 100;
-// The reflection guest folds a burn-deposit whose provenance holds at most 256 transfers; the move to the burn address is one of
-// them, so the note itself may have 255 behind it.
 const MAX_HOPS_BURN_HOME = 256;
 const MAX_HOPS_SOURCE = MAX_HOPS_BURN_HOME - 1;
 const TRACE_WAIT_MAX_S = 60;
@@ -111,7 +109,6 @@ export function makeBurnDepositUx(deps) {
   function saveAll(walletPub, list) {
     try { storage.setItem(journalKey(walletPub), serializeRecord(list)); }
     catch (e) {
-      // a full store: the provenance bundle of a bridge that is finished is not read again, so it is let go and the save is tried once more
       const slim = list.map((r) => (r.bundle && ['minted', 'reclaimed', 'recovered'].includes(r.stage) ? (({ bundle, ...rest }) => rest)(r) : r));
       if (slim.every((r, i) => r === list[i])) throw e;
       storage.setItem(journalKey(walletPub), serializeRecord(slim));
@@ -214,14 +211,9 @@ export function makeBurnDepositUx(deps) {
   }
 
   const SPENDS_NOTHING = new Set(['minted', 'reclaimed', 'reclaim-sent', 'recovered', 'recovering', 'not-recorded', 'stopped']);
-  // The move's change (its reveal's vout 1) is what the move set aside to pay the burn's fee (bridgeCost's `later`), so until the
-  // burn is signed it is held for that bridge: another move or send spending it would leave the burn with nothing to pay with.
   const BEFORE_BURN = new Set(['migrate-signed', 'migrate-sent', 'migrate-confirmed', 'traced']);
   const moveChangeOf = (rec) => (rec.migrate && rec.migrate.revealTxid && BEFORE_BURN.has(rec.stage) ? recordId(rec.migrate.revealTxid, 1) : null);
-  // A burn built while its check waits holds its coin for CHECK_HOLD_MS. It is sent only once signed (rec.burn), so a hold past that
-  // is spent by nothing: it holds nothing for anyone else, and its own bridge may pick the coin again.
   const heldBurn = (rec) => (rec && rec.checkWait && rec.checkWait.burn && now() - Number(rec.checkWait.burn.at || 0) < CHECK_HOLD_MS ? rec.checkWait.burn : null);
-  // `except`: a bridge id whose own holds are not counted (that bridge asking whether it may spend a coin itself).
   function isReserved(txid, vout, except = null) {
     const op = recordId(txid, vout);
     for (const rec of allRecordsAnyWallet()) {
@@ -338,9 +330,6 @@ export function makeBurnDepositUx(deps) {
     return out;
   }
 
-  // Whether the reflection tracks each note, read from the state noteForms reads and with no explorer call: 'tracked' (a live output),
-  // 'bound' (a live output bound to a deployment, which a plain transfer is not for), 'new' (made in a block the proof has not reached, or no
-  // known block) or 'untracked' (a block it has passed that left no live output).
   async function noteTracking(notes) {
     const r = await reflected(), out = new Map();
     for (const n of notes || []) {
@@ -351,20 +340,11 @@ export function makeBurnDepositUx(deps) {
     return out;
   }
 
-  // Whether a note's history can be followed back to the etch, for a caller that does not burn the note but whose counterparty may check
-  // it this way: a fast bridge provider screens a lock with this same trace, and a lock it refuses costs its holder the Bitcoin fees and a
-  // day. A note the reflection tracks needs no trace. Map note id -> a verdict, by `state`:
-  //   'tracked' | 'traced' (with `hops`)   the history is followed
-  //   'unprovable' (with `through`: 'shielded' | 'pool' | 'arrived' | 'other', and `at`, the transaction)   some transfer in it cannot be
-  //                                        followed, which never changes
-  //   'long' (with `hops`, `max`)          more transfers behind it than the proof folds
-  //   'unread' (with `reading`, `error`)   not told: the service did not answer, or is still reading a long history
-  // A verdict that is final is kept while the page stays open: the history of a confirmed note does not change.
   const lineageKept = new Map();
   async function lineage(notes, { onProgress = null } = {}) {
     const out = new Map();
     let r = null;
-    try { r = await reflected(); } catch { /* the trace tells instead */ }
+    try { r = await reflected(); } catch { }
     for (const n of notes || []) {
       const id = `${n.txid}:${n.vout}`, kept = lineageKept.get(recordId(n.txid, n.vout));
       if (kept) { out.set(id, kept); continue; }
@@ -428,8 +408,6 @@ export function makeBurnDepositUx(deps) {
     return putRecord({ ...rec, stage: 'rburn-mined', burnHeight: Number(t.status.block_height), lastError: null, errorCount: 0 });
   }
 
-  // The public part of an API's 202 answer: where the check stands in its line, and once it runs what it is doing (reading the
-  // blocks of the history, so many of so many transactions; building the header chain; verifying every transfer).
   function waitProgress(p) {
     if (!p || (p.state !== 'queued' && p.state !== 'running')) return {};
     const n = (x) => (Number.isFinite(Number(x)) && Number(x) >= 0 ? Math.round(Number(x)) : 0);
@@ -437,24 +415,17 @@ export function makeBurnDepositUx(deps) {
     return { progress: { state: p.state, ahead: n(p.ahead), runningSec: n(p.runningSec), ...doing } };
   }
 
-  // A history the reflection guest cannot follow back to the etch: some transfer in it spends an output that no transfer made
-  // (a pool or farm action, a shielded-pool exit, TAC that arrived from Ethereum, or a shape the guest refuses). That does not
-  // change with time, unlike a read that failed, so it is told apart: 'pool', 'shielded', 'arrived' or 'other'.
   function unprovableThrough(m) {
     const kind = /classified as '([a-z_]+)'/.exec(m), op = /resolvable leaf \(opcode 0x([0-9a-f]{2})\)/i.exec(m);
     if (kind) return kind[1] === 'crossout_mint' ? 'arrived' : /^(swap|lp_|harvest|protocol_fee|farm)/.test(kind[1]) ? 'pool' : 'other';
-    if (op) return /^6[cd]$/i.test(op[1]) ? 'shielded' : 'other'; // 0x6c shields into the pool, 0x6d spends from it (an exit is the note a spend makes)
+    if (op) return /^6[cd]$/i.test(op[1]) ? 'shielded' : 'other';
     if (/not produced by a known cxfer and not a supply leaf|non-confidential input at index|atomic settlement whose asset input/.test(m)) return 'other';
     return null;
   }
 
-  // The API reads a long history in parts, a bounded time per request, and keeps what it read: while it answers `pending` this
-  // asks again (reporting how many transfers it has read so far) until the trace is whole, for up to TRACE_TOTAL_MS. A history it
-  // read before comes back at once. The walk stops past the burn-home's limit, so a longer history reads as "more than 256".
   async function traceNote({ txid, vout, assetId, onProgress = null }) {
     const ask = () => callWorker('POST', '/reflection/burndep/trace', { note: { txid: stripHex(txid), vout }, assetId, maxDepth: MAX_HOPS_BURN_HOME });
     const until = now() + TRACE_TOTAL_MS;
-    // A rate limit is waited out once before the API has read anything, and up to three times once it is part way through.
     for (let limited = 0, reading = false; ;) {
       let res;
       try { res = await ask(); }
@@ -465,7 +436,7 @@ export function makeBurnDepositUx(deps) {
       }
       if (res && res.pending) {
         reading = true;
-        if (onProgress) { try { onProgress(Number(res.read) || 0); } catch { /* a closed view */ } }
+        if (onProgress) { try { onProgress(Number(res.read) || 0); } catch { } }
         if (now() > until) {
           throw Object.assign(new Error('burndep-ux: this TAC’s history is long and still being read from Bitcoin; try again in a few minutes'), { code: 'trace_reading', read: Number(res.read) || 0 });
         }
@@ -499,9 +470,6 @@ export function makeBurnDepositUx(deps) {
     const cover = list.filter((u) => Number(u.value) >= need).sort((a, b) => unconfirmed(a) - unconfirmed(b) || Number(a.value) - Number(b.value));
     return cover[0] || list.slice().sort((a, b) => unconfirmed(a) - unconfirmed(b) || Number(b.value) - Number(a.value))[0] || null;
   }
-  // `rec`'s own coins are spent first, its move's change (moveChangeOf) and the coin its last burn held: the wallet's coin list leaves
-  // them out, being held for that bridge. When every free coin is held for this key's other bridges, that is said (code 'held'),
-  // since each of their burns returns change this one can pay with.
   async function pickFundingUtxo(address, need = 0, rec = null) {
     const own = rec ? await ownCoins(rec, address) : [];
     const ownPick = pickFunding(own, need);
@@ -520,7 +488,6 @@ export function makeBurnDepositUx(deps) {
     const kept = rec.checkWait && rec.checkWait.burn && rec.checkWait.burn.fundingUtxo;
     const [change, held] = await Promise.all([
       moveChange(rec, address),
-      // the coin its last burn held, unless another bridge has taken it since (two burns on one coin would leave one stuck)
       kept && !isReserved(kept.txid, kept.vout, rec.id)
         ? fetchChainJson(`/tx/${stripHex(kept.txid)}/outspend/${Number(kept.vout)}`).then((o) => (o && o.spent === false ? { txid: stripHex(kept.txid).toLowerCase(), vout: Number(kept.vout), value: Number(kept.value) } : null), () => null)
         : null,
@@ -579,8 +546,6 @@ export function makeBurnDepositUx(deps) {
 
   let _burner = null;
   const burner = () => _burner || (_burner = makeBridgeBurnBroadcaster({ pool, bridgeMint }));
-  // `recipient` { pubHex, name? } pays someone else: the burn names a stealth lock for their address (OP_BRIDGE_STEALTH_MINT) instead
-  // of a note for this key, and they claim it under their private payments.
   const startReflected = (args) => startingLease(recordId(args.note.txid, args.note.vout), () => startReflectedNow(args));
   async function startReflectedNow({ note, walletPriv, feeRate = null, allowHighFee = false, recipient = null }) {
     const walletPub = secp.getPublicKey(walletPriv, true);
@@ -637,8 +602,6 @@ export function makeBurnDepositUx(deps) {
     });
   }
 
-  // What the journal keeps of a stealth bridge: public fields only. The ephemeral key, the lock's blinding and the refund key are not
-  // kept; stealthDestFor derives them again from this key, the burn's nullifier, the recipient and the deadline.
   function stealthRecord(sd, recipient) {
     return {
       recipientPub: sd.recipientSpendPub, ...(recipient && recipient.name ? { recipientName: String(recipient.name) } : {}),
@@ -658,8 +621,6 @@ export function makeBurnDepositUx(deps) {
   const ARMABLE = new Set(['rburn-signed', 'rburn-sent', 'rburn-mined', 'rfolded']);
   async function armMint(walletPub, id, { walletPriv }) {
     const rec = getRecord(walletPub, id);
-    // The relay arms only a plain mint (POST /confidential/arm takes type bridgemint), so a bridge that pays a stealth address is minted
-    // from this page once the burn is folded.
     if (!rec || rec.path !== 'reflected' || !rec.mint || rec.stealth || !ARMABLE.has(rec.stage) || typeof bridgeMint.armMint !== 'function') return rec;
     const a = rec.arm;
     if (a && (a.ok || Number(a.tries) >= ARM_TRIES || now() - Number(a.at || 0) < ARM_RETRY_MS)) return rec;
@@ -682,9 +643,6 @@ export function makeBurnDepositUx(deps) {
   const inFlight = new Set();
   const WAITS = new Set(['migrate-sent', 'migrate-confirmed', 'traced', 'burn-submitted', 'burn-mined', 'registered', 'rburn-sent', 'rburn-mined', 'recovering', 'reclaim-sent']);
   const passing = (e) => { const st = Number(e && e.status); return st === 429 || st >= 500 || (e && e.code === 'trace_reading') || /failed to fetch|networkerror|load failed|timed? ?out|aborted|\bAPI (429|5\d\d)\b|rate limited|chain APIs unreachable|rates failed \(5\d\d\)/i.test(String((e && e.message) || e)); };
-  // A signed burn that a busy or unreachable miner (429, 5xx, no network) did not take is not one the miner refused, so it does not count at the pace of a refusal
-  // ("The miner did not take this burn" and Move back come after three counted failures, and Move back costs two transactions to undo a burn that may be fine):
-  // it counts once in half an hour, so a miner this page cannot reach for about an hour still offers Move back, and a blip of a few minutes does not.
   const SLOW_COUNT = new Set(['burn-signed']), SLOW_COUNT_MS = 30 * 60 * 1000;
   async function advance(walletPub, id, { walletPriv = null, onProgress = null, selfSettle = null, maxFeeRate = null, go = false } = {}) {
     const rec = getRecord(walletPub, id);
@@ -755,8 +713,6 @@ export function makeBurnDepositUx(deps) {
       const destLeaf = pool.leaf(withHex(tacAssetId), destCx, destCy, dest.owner);
       const envelope = { assetId: withHex(tacAssetId), nullifier: dest.nullifier, destLeaf, target };
 
-      // While its check waits, the burn it was asked about is kept and asked about again unchanged, so the API joins the check it
-      // already has running (or reads its answer) rather than starting another; past CHECK_HOLD_MS it is built again at the day's rate.
       let burn = heldBurn(rec);
       if (!burn) {
         const rates = await broadcaster.slipstreamRates();
@@ -765,7 +721,6 @@ export function makeBurnDepositUx(deps) {
           return putRecord({ ...rec, feeWait: { rate: feeRate, max: Number(maxFeeRate), at: now() } });
         }
         let fundingUtxo = rec.burn && rec.burn.fundingUtxo ? rec.burn.fundingUtxo : null;
-        // Every free coin held for this key's other burns is a wait, not a failure: their change comes back, and the page asks again.
         if (!fundingUtxo) {
           try { fundingUtxo = await pickFundingUtxo(P.wallet.address(), Math.ceil(300 * feeRate) + 846, rec); }
           catch (e) { if (e && e.code === 'held') return putRecord({ ...rec, checkWait: { at: now(), go: !!go || !!(rec.checkWait && rec.checkWait.go), fund: 'others' } }); throw e; }
@@ -773,9 +728,6 @@ export function makeBurnDepositUx(deps) {
         const built = await reveal.buildBurnDepositRevealTxs({ prims: P, burnHome, envelope, fundingUtxo, feeRate });
         burn = { hex: built.revealHex, txid: built.revealTxid, feeRate: built.feeRate, fee: built.fee, fundingUtxo, at: now() };
       }
-      // A long history's first check is still reading its blocks, or the API is busy checking others: nothing is sent yet, and the
-      // next advance asks again (a holder who pressed Burn it is carried on by the page without a second press, `go`).
-      // What the API said about the wait (where the check stands in its line, or that the line is full) is kept for the page to show.
       const wait = (said) => putRecord({ ...rec, feeWait: null, checkWait: { at: now(), go: !!go || !!(rec.checkWait && rec.checkWait.go), burn, ...said } });
       let check;
       try { check = await callWorker('POST', '/reflection/burndep/check', { bundle: rec.bundle, assetId: withHex(tacAssetId), burnTxHex: burn.hex }); }
@@ -792,13 +744,9 @@ export function makeBurnDepositUx(deps) {
       if (tracked === null) return rec;
       try { await broadcaster.submitToSlipstream(rec.burn.hex); }
       catch (e) {
-        // A burn Bitcoin already has needs no sending: an earlier send whose answer this page never saw, or another browser's, put it
-        // there, and the miner now refuses it because the burn itself has spent its coins. The bridge carries on from its mining.
         if ((await chainTxState(rec.burn.txid)) === 'present') {
           return putRecord({ ...rec, stage: 'burn-submitted', submittedAt: rec.submittedAt || now(), lastError: null, errorCount: 0 });
         }
-        // A signed burn whose coin another transaction has spent can never be mined: when Bitcoin plainly has neither the burn nor its
-        // coin unspent, the bridge goes back to its move (the burn address untouched) and builds its burn on another coin.
         const u = rec.burn.fundingUtxo;
         const out = u ? await fetchChainJson(`/tx/${stripHex(u.txid)}/outspend/${Number(u.vout)}`).catch(() => null) : null;
         if (out && out.spent === true && out.txid && lc(stripHex(out.txid)) !== lc(stripHex(rec.burn.txid)) && (await chainTxState(rec.burn.txid)) === 'absent') {
@@ -1017,7 +965,6 @@ export function makeBurnDepositUx(deps) {
     const f = fetchImpl || (typeof fetch === 'function' ? fetch.bind(globalThis) : null);
     if (!f) throw new Error('burndep-ux: no fetch implementation');
     const res = await f(`${workerBase}/chain${path}${path.includes('?') ? '&' : '?'}network=${network}`);
-    // carries the status, so a busy or failing explorer (429, 5xx) is a read to repeat (`passing`), not an answer that this is no bridge
     if (!res.ok) throw Object.assign(new Error(`burndep-ux: chain read failed (${res.status})`), { status: res.status });
     return (await res.text()).trim().replace(/^0x/, '');
   }
@@ -1086,9 +1033,6 @@ export function makeBurnDepositUx(deps) {
     } finally { inFlight.delete(id); releaseLease(id); }
   }
 
-  // `recipient` { pubHex, name? }: the address a burn paid, for a bridge that paid someone else. Its lock cannot be told from the
-  // chain alone (the envelope holds only the lock's hash), so the holder names the address and the deadline is found among the few
-  // days around the burn's block time (the deadline is a whole UTC day, see stealthDeadline).
   async function recoverReflectedBurn(burnTxidDisplay, walletPriv, { recipient = null } = {}) {
     if (!openNote && !openHeldNote) return null;
     const id = stripHex(burnTxidDisplay).toLowerCase();
@@ -1157,21 +1101,14 @@ export function makeBurnDepositUx(deps) {
     return putRecord(rec);
   }
 
-  // A burn's reveal carries no range proof, so the envelope script it spends is a couple of hundred bytes; a transfer's is nearly a
-  // thousand. A transaction whose script is plainly a transfer's is not read: the explorer's answer for the address already says so.
   const TRANSFER_SCRIPT_HEX = 1200;
   const looksLikeTransfer = (tx) => { const w = tx.vin[0] && tx.vin[0].witness; return Array.isArray(w) && w.length >= 3 && String(w[1]).length > TRANSFER_SCRIPT_HEX; };
-  // A move to a burn address (the first step of a bridge the reflection does not track) is a transfer whose vout 0 is the burn
-  // address this key derives for the note its vin 1 spends: told apart from the explorer's answer alone, with no read.
   function moveSourceOf(tx, P, walletPriv) {
     const home = tx.vout && tx.vout[0], src = tx.vin[1];
     if (tx.vin.length !== 2 || !home || home.scriptpubkey_type !== 'v1_p2tr' || Number(home.value) !== 546 || !src || !/^[0-9a-f]{64}$/i.test(String(src.txid || ''))) return null;
     const source = { txid: lc(src.txid), vout: Number(src.vout) };
     return reveal.isBurnHomeOf({ prims: P, walletPriv, source, spk: home.scriptpubkey }) ? source : null;
   }
-  // Rebuilds a bridge from its move alone: the amount opens with the key (the move encrypts it to itself), and must open the burn
-  // address's commitment. A burn address still unspent goes on to its burn; one already burned goes on from that burn; one moved
-  // back has nothing left to bridge.
   async function recoverMove(tx, source, P, walletPriv) {
     const id = lc(stripHex(tx.txid));
     const envHex = extractTaprootEnvelope('0x' + await fetchChainText(`/tx/${id}/hex`));
@@ -1208,7 +1145,6 @@ export function makeBurnDepositUx(deps) {
     return getRecord(walletPub, rec.id) ? null : putRecord(rec);
   }
 
-  // `left` is how many candidates this call did not get to (past `limit`, or a read that could not be answered just now).
   async function discover({ walletPriv, txs = [], skip = [], limit = 20 } = {}) {
     if (!walletPriv) throw new Error('burndep-ux: discover needs the wallet key');
     const walletPub = secp.getPublicKey(walletPriv, true), P = freshPrims(walletPriv);
@@ -1233,8 +1169,6 @@ export function makeBurnDepositUx(deps) {
     return { found, tried, left };
   }
 
-  // A move's own transaction id finds its bridge too: the move alone says what it holds, and this key alone opens it (`discover` does the
-  // same over an address's history). null when the transaction is no move of this key's.
   async function recoverMoveFromTxid(txidDisplay, walletPriv) {
     const tx = await fetchChainJson(`/tx/${stripHex(txidDisplay).toLowerCase()}`).catch(() => null);
     if (!tx || !Array.isArray(tx.vin) || !looksLikeTransfer(tx)) return null;
@@ -1333,7 +1267,6 @@ export function makeBurnDepositUx(deps) {
       if (rec.burn && rec.burn.txid) {
         const burnState = await chainTxState(rec.burn.txid);
         if (burnState === 'present') return putRecord({ ...rec, stage: 'burn-submitted', submittedAt: rec.submittedAt || now(), lastError: null, errorCount: 0 });
-        // a burn that cannot be looked up may still be mined: moving back races it, and the commit would be left holding the funding coin
         if (burnState !== 'absent') throw new Error('burndep-ux: Bitcoin could not be asked about the burn just now, so nothing was moved back; try again in a minute');
       }
       const built = await buildCancel({ rec, walletPriv, feeRate });

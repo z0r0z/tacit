@@ -1,32 +1,10 @@
-// The provider side of a fast bridge, for a page or a process: what it quotes, what it can take, and the handler of the
-// requests a user's client makes. It runs the Ethereum-locker machine (fastbridge-el.js) over a store and advances every open
-// swap on a tick. Chain access (btc, evm) and storage are injected: the daemon wires the real adapters, a page wires the
-// ones its key opens, the tests wire simulated ones. A request is { method, path, body } and an answer { status, body }, so
-// the same handler serves HTTP (fastbridge-lp/) and a mailbox (fastbridge-mailbox.js).
-//
-//   GET  /health            200 while the last tick succeeded
-//   GET  /info              the LP's Bitcoin claim key, the asset pair, limits, windows and what it can take now
-//   POST /quote   { amount }              a price: what the user pays on Bitcoin and receives in the pool (holds nothing)
-//   POST /reserve { quoteId }             holds the payout for the swap while the user builds and sends its lock (minutes)
-//   POST /extend  { quoteId, txid }       once the lock is on the network: holds it through its confirmation
-//   POST /offer   { quoteId, offer }      the user's Bitcoin lock offer; answers { ok } or { ok: false, retry, why }
-//   GET  /swap/:id          { phase, why }
-//   GET  /swap/:id/offer    the pool lock's offer once the lock is made
-//
-// What the LP can take is what its pool wallet holds, less what is already promised (a reservation, or a swap whose
-// lock is not yet made). A quote only checks that; the reservation is what holds it, so a user comparing providers holds
-// nothing at any of them. Each quote names the fee of the take (`takeSats`), which the user's lock pays to the LP's
-// address, so an LP needs no Bitcoin of its own.
 
-// The take is a commit and a reveal of about this many vbytes in all; it is priced at twice the rate of the quote, and pays
-// for the dust its note keeps.
 export const TAKE_VB = 750;
 export const takeSatsAt = (feeRate) => 546 + Math.ceil(TAKE_VB * feeRate * 2);
 const FEE_WARM_MS = 30000;
 
 import { makeEthereumLocker } from './fastbridge-el.js';
 
-// ── prices ──
 const randomHex = (n) => [...crypto.getRandomValues(new Uint8Array(n))].map((b) => b.toString(16).padStart(2, '0')).join('');
 
 export function makeQuoter({ store, now, params }) {
@@ -53,7 +31,6 @@ export function makeQuoter({ store, now, params }) {
     await store.put(q);
     return q;
   }
-  // The largest amount to quote whose payout is at most `outAvail` (0 when not even the least fits).
   function maxAmountFor(outAvail) {
     const out = BigInt(outAvail);
     const fits = (a) => { try { return price(a).evmAmount <= out; } catch { return false; } };
@@ -62,12 +39,10 @@ export function makeQuoter({ store, now, params }) {
     while (lo < hi) { const mid = (lo + hi + 1n) / 2n; if (fits(mid)) lo = mid; else hi = mid - 1n; }
     return lo;
   }
-  // the form the Ethereum locker checks an offer against
   const get = async (id) => (/^[0-9a-f]{32}$/.test(String(id)) ? store.get(id) : null);
   return { price, quote, get, maxAmountFor };
 }
 
-// ── the service ──
 const TERMINAL = new Set(['done', 'refunded', 'rejected', 'aborted', 'lost']);
 const DAY = 86400;
 const isId = (v) => /^[0-9a-f]{32}$/.test(String(v));
@@ -78,29 +53,23 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
   const quoter = makeQuoter({ store: quoteStore, now, params: { ...config.quote, claimPub: config.claimPub, csvBlocks: config.csvBlocks, evmWindowSecs: config.policy.evmWindowSecs, minConfsFor: config.policy.minConfsFor, takeSats } });
   const hold = { reserveSecs: 300, extendSecs: 7200, maxUnbackedShare: 0.5, ...(config.reserve || {}) };
   const refreshSecs = config.inventory?.refreshSecs ?? 60;
-  const reservations = new Map();                       // quote id -> { amount, until, txid, swapId }
-  const pending = new Map();                            // swap id -> { amount, until }: an offer being checked, whose payout is held meanwhile
+  const reservations = new Map();
+  const pending = new Map();
   const published = new Map();
-  const checking = new Map();                           // swap id -> { p, done, at }: offers whose checks are under way
+  const checking = new Map();
   const offerBudgetMs = config.offerBudgetMs ?? 8000;
   const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
   const counter = { publishEvmOffer: async (id, offer) => { published.set(id, offer); } };
-  // An offer is judged against its quote, which lasts as long as the reservation made for it, and `quote.graceSecs` longer (0 when it is not set).
-  // The offer of a user comes once the Bitcoin lock has a confirmation, which can be hours after the quote when the lock was sent for a low fee;
-  // the quote's terms are a fixed fee against TAC for TAC, so a lock that is confirmed and pays this side's take is no worse for being slow.
   const graceSecs = Number(config.quote?.graceSecs) || 0;
   const quotes = { get: async (id) => { const q = await quoter.get(id); if (!q) return q; const r = reservations.get(id); const until = Math.max(q.validUntil + graceSecs, r ? r.until : 0); return until > q.validUntil ? { ...q, validUntil: until } : q; } };
   const el = makeEthereumLocker({ seed, now, store: swaps, quotes, btc, evm, counter, policy: config.policy });
   const health = { ok: true, lastTick: 0, lastError: null };
   const reported = new Set(), lastAlert = new Map();
 
-  // capacity-changing requests one at a time, so two of them cannot both be given the same inventory
   let chain = Promise.resolve();
   const exclusive = (fn) => { const run = chain.then(fn, fn); chain = run.catch(() => {}); return run; };
 
-  // ── what can be taken ──
   const inv = { at: -Infinity, held: null, p: null };
-  // A read newer than maxAge is used even while another is under way; the tick starts the next at half the age a quote accepts.
   function readInventory(maxAge = refreshSecs) {
     if (now() - inv.at < maxAge) return Promise.resolve(inv);
     if (inv.p) return inv.p;
@@ -115,7 +84,6 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
   }
   const stale = () => { inv.at = -Infinity; };
 
-  // the payout promised: reservations still running, and swaps whose lock is not made yet
   async function promised() {
     const t = now();
     let sum = 0n, count = 0;
@@ -134,8 +102,6 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
     }
     return { sum, count };
   }
-  // A lock the pool cannot be given is not promised: when the relay will not send it and no account of this provider's own can, a quote,
-  // a reservation or an offer is turned away with the reason (an offer may be tried again, the relay may be back), and the ad shows nothing to take.
   async function lockable() {
     if (!evm.ready) return;
     const r = await evm.ready().catch(() => ({ ok: true }));
@@ -146,8 +112,6 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
     const i = await readInventory(), p = await promised();
     if (i.held != null && payout > i.held - p.sum) throw cannotTake();
   }
-  // A reservation with no transaction behind it costs its holder nothing: those together may hold only a share of the pool balance,
-  // unless there is just the one, so a request that holds nothing real cannot take all of what the provider could lend.
   async function unbackedFits(payout) {
     const i = await readInventory();
     if (i.held == null) return true;
@@ -168,14 +132,11 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
     if (q) await quoteStore.put({ ...q, reservedUntil: r ? r.until : 0, reservedTxid: r ? r.txid : null });
   };
 
-  // reservations still running survive a restart, as do the notes already given to a stored lock
   async function start() {
     const open = await swaps.list(), used = new Set(open.map((r) => r.quoteId)), txids = new Set(open.map((r) => r.lockTxid).filter(Boolean));
     for (const rec of open) if (evm.reserve) evm.reserve(rec);
     for (const q of (await quoteStore.list()).sort((a, b) => (a.created || 0) - (b.created || 0))) {
       if (!(q.reservedUntil > now()) || used.has(q.id)) continue;
-      // one lock transaction stands for one hold: a second hold kept for the same transaction (an earlier version took one for every quote
-      // a user asked with the same lock) is let go, as is a hold for a lock that is already a swap
       if (q.reservedTxid && txids.has(q.reservedTxid)) { await quoteStore.put({ ...q, reservedUntil: 0, reservedTxid: null }); continue; }
       if (q.reservedTxid) txids.add(q.reservedTxid);
       reservations.set(q.id, { amount: BigInt(q.evmAmount), until: q.reservedUntil, txid: q.reservedTxid || null });
@@ -183,10 +144,6 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
     await dropDeadHolds().catch(() => {});
   }
 
-  // A hold for a lock already on Bitcoin is worth keeping only while that lock's offer can still be answered: once the lock confirmed longer
-  // ago than this side answers offers for (maxOfferAgeSecs), no offer for it will be taken, and the hold only keeps others from bridging. A provider
-  // that answers offers for longer than it is worth keeping the room (`holdAgeSecs`) lets the hold go sooner: a late offer is then answered only if
-  // the room is there when it comes, and held at that moment.
   const lockTimes = new Map();
   async function dropDeadHolds() {
     const maxAge = config.policy.holdAgeSecs ?? config.policy.maxOfferAgeSecs ?? 3600;
@@ -203,12 +160,9 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
     if (gone.length) { stale(); log({ level: 'info', msg: 'holds for locks too old to answer were let go', count: gone.length }); }
     return gone.length;
   }
-  // what is held against the pool balance now, for the one who provides to see
   const held = async () => (await promised()).sum;
-  // the private TAC not promised: the pool balance less what is reserved or owed to swaps whose lock is not made (null while the balance cannot be read)
   const free = async () => { const i = await readInventory(), p = await promised(); return i.held == null ? null : i.held > p.sum ? i.held - p.sum : 0n; };
 
-  // quotes that were never used are forgotten after two days
   let lastPrune = 0;
   async function prune() {
     if (!quoteStore.del || now() - lastPrune < 3600) return;
@@ -218,15 +172,12 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
     for (const q of await quoteStore.list()) if (q.validUntil + 2 * DAY < now() && !used.has(q.id) && !reservations.has(q.id)) await quoteStore.del(q.id);
   }
 
-  // Keeps what a quote needs fresh between quotes, the fee estimate and the pool's inventory, each read again at half the age a quote accepts,
-  // so a quote does not wait on the explorers or the Ethereum nodes. Not waited for: a slow read holds up no swap.
   let feeWarned = false;
   const warmUp = () => {
     if (btc.feeRate) btc.feeRate(FEE_WARM_MS).then(() => { feeWarned = false; }, (e) => { if (!feeWarned) log({ level: 'warn', msg: 'no fee estimate', error: String((e && e.message) || e).slice(0, 300) }); feeWarned = true; });
     readInventory(refreshSecs / 2).catch(() => {});
   };
 
-  // said once when the provider stops being able to lock, and once when it can again, so the one who runs it hears of it before a user does
   let lockableSaid = true;
   async function sayLockable() {
     if (!evm.ready) return;
@@ -234,16 +185,12 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
     if (r.ok !== lockableSaid) { lockableSaid = r.ok; alert({ level: r.ok ? 'info' : 'alert', msg: r.ok ? 'the provider can lock again' : 'the provider is not taking bridges', why: r.ok ? null : r.why }); }
   }
 
-  // What can be lent and what stands against it, said in the log every five minutes: the ad shows only the most one bridge can take, which hides
-  // whether the rest of the pool is free, promised to open swaps and holds, or not there.
   let capacitySaid = -Infinity, lowSaid = -Infinity;
   async function sayCapacity() {
     if (now() - capacitySaid < 300) return;
     capacitySaid = now();
     const i = await readInventory(), p = await promised();
     log({ level: 'info', msg: 'capacity', held: i.held == null ? null : String(i.held), promised: String(p.sum), open: p.count, holds: reservations.size });
-    // a provider nearly out of TAC to lend tells the one who runs it (`lowFree`, in pool units), again each alertSecs while it stays low: bridges too big for it
-    // otherwise wait on the board with nobody told
     if (config.lowFree != null && i.held != null) {
       const free = i.held > p.sum ? i.held - p.sum : 0n;
       if (free < BigInt(config.lowFree) && now() - lowSaid >= (config.alertSecs ?? 3600)) {
@@ -260,7 +207,6 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
     try {
       await dropDeadHolds().catch(() => {});
       const recs = await swaps.list();
-      // a record the store cannot read is a swap nobody is advancing: say so once, loudly
       for (const p of (swaps.problems && swaps.problems()) || []) if (!reported.has(p.id)) { reported.add(p.id); alert({ level: 'alert', msg: 'a swap record cannot be read', id: p.id, error: p.error }); }
       for (const rec of recs) {
         if (TERMINAL.has(rec.phase)) continue;
@@ -271,7 +217,6 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
         if (next.phase !== before || (!hadLock && next.lock)) stale();
         if (next.phase === 'lost') alert({ level: 'alert', msg: 'a lock was claimed without revealing t', id: next.id });
         if (next.lastError && next.lastError !== rec.lastError) log({ level: 'warn', msg: 'swap step failed', id: next.id, phase: next.phase, error: next.lastError });
-        // the take must land before the user's timelock opens: a swap held in these phases long is worth a person's attention, again each alertSecs
         if (next.phase === 'taking' || next.phase === 'refunding') {
           const every = config.alertSecs ?? 3600, key = next.id + '|' + next.phase, t = now();
           if (t - (next.phaseAt || next.created) > every && t - (lastAlert.get(key) ?? -Infinity) >= every) {
@@ -286,7 +231,6 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
     health.lastTick = now();
   }
 
-  // whether the user's Bitcoin lock has the confirmations this provider asked for, as the explorers say now; an explorer that cannot answer does not stop a user
   async function lockStands(rec) {
     try { const st = await btc.status(rec.lockTxid); return st.confirmations >= Math.max(1, Number(config.policy.minConfsFor(BigInt(rec.offer.btc.value)))); } catch { return true; }
   }
@@ -294,14 +238,9 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
   const reply = (body, status = 200) => ({ status, body });
   const no = (why, retry = false) => reply({ ok: false, retry, why });
 
-  // What an offer comes to: held and checked, or declined with a reason. A check that fails for a reason of its own (an explorer or a node that
-  // cannot be read, a bug) is logged and answered as one to try again, with its words, and is not a bare 500.
   async function judgeOffer(body, q, sid) {
     let held = false;
     try {
-      // An offer whose payout is not held is held now, or declined, before anything is checked of it. The hold is the swap's, kept while the
-      // offer is checked, so two offers arriving together cannot both be given what is left for one; a reservation covers the one swap that
-      // first uses it, and a second swap on the same quote asks for room of its own.
       if (q && !(await swaps.get(sid))) {
         const have = reservations.get(q.id);
         if (have && have.until > now() && (!have.swapId || have.swapId === sid)) have.swapId = sid;
@@ -321,7 +260,6 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
     } finally { if (held) pending.delete(sid); }
   }
 
-  // A request in, { status, body } out. The HTTP layer owns the limits per client; nothing here reads the address.
   async function handle({ method, path, body }) {
     try {
       if (method === 'GET' && path === '/health') return reply({ ok: health.ok, lastTick: health.lastTick, error: health.lastError }, health.ok ? 200 : 503);
@@ -349,18 +287,15 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
       }
       if (method === 'POST' && path === '/extend') {
         if (!body || !isId(body.quoteId) || !/^[0-9a-f]{64}$/.test(String(body.txid))) return reply({ error: 'quoteId and txid are required' }, 400);
-        // the transaction is read before the capacity lock is taken: an explorer that is slow must not hold every other request
         if (!reservations.has(body.quoteId)) return no('no reservation');
         const tx = await btc.fetchTx(body.txid).catch(() => null);
         return await exclusive(async () => {
           const r = reservations.get(body.quoteId);
           if (!r || r.until <= now()) return no('no reservation');
           if (r.txid && r.txid !== body.txid) return no('this reservation is held for another transaction');
-          // held once: the same transaction asked again is answered with the hold it has, which does not start over
           if (r.txid === body.txid) return reply({ ok: true, until: r.until });
           if (!tx) return no('the lock transaction is not visible yet', true);
           if (!tx.vin || tx.vin.length < 2) return no('that is not a lock transaction');
-          // a hold that stands for a lock is one that pays this provider's take, and one transaction stands for one quote
           const q = await quoter.get(body.quoteId), take = Number((q && q.takeSats) || 0);
           if (take > 0 && btc.prims && btc.wallet) {
             const own = [...btc.prims.p2wpkhScript(btc.wallet.pub)].map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -377,12 +312,8 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
         if (!body || typeof body.quoteId !== 'string' || !body.offer || typeof body.offer !== 'object') return reply({ error: 'quoteId and offer are required' }, 400);
         const q = isId(body.quoteId) ? await quoter.get(body.quoteId) : null;
         const sid = String(body.offer.swapId || '').toLowerCase().replace(/^0x/, '');
-        // every answer to an offer is said once, with its reason: a lock turned away is the one failure that costs a user a day of locked Bitcoin
         const said = (r) => { log({ level: r.ok ? 'info' : 'warn', msg: r.ok ? 'offer accepted' : 'offer declined', id: sid, ...(r.ok ? {} : { retry: !!r.retry, why: String(r.why || '').slice(0, 200) }) }); return r; };
         if (!/^[0-9a-f]{72}$/.test(sid)) return reply(said(await judgeOffer(body, q, sid)));
-        // The checks of an offer read the lock and its notes from explorers, which takes as long as they take. The request waits a few
-        // seconds for them and is then answered "ask again" while they go on; the same offer asked again joins the checks under way, so a
-        // slow check is one check and not one for every try, and a user's client is not left to time out on a provider that is working.
         for (const [k, c] of checking) if (c.done && now() - c.at > 600) checking.delete(k);
         let c = checking.get(sid);
         if (!c) {
@@ -398,8 +329,6 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
       const m = /^\/swap\/([0-9a-f]{72})(\/offer)?$/.exec(path);
       if (method === 'GET' && m) {
         if (m[2]) {
-          // the pre-signature that lets the user claim is given while the user's lock stands: a lock that has fallen under its confirmations
-          // (replaced, or reorganised away) is not paid for, and is asked about again when it is back
           const rec = await swaps.get(m[1]);
           if (rec && (rec.phase === 'locked' || rec.phase === 'offered') && !(await lockStands(rec))) return reply({ error: 'no offer yet' }, 404);
           const o = await offerOf(m[1]);

@@ -3,7 +3,7 @@
 // is nothing to show but the price it would have: ETH's, in sats. So the panel has two states, said by `isActive`: a book (its depth, its ladders,
 // the last price and how far it sits from ETH) with a way into the Bitcoin market; and a quiet one that says what will appear, with ETH's price
 // in sats as its one figure.
-import { buildBook, ladderLevels } from '/btc-book.js?cb=0a09ab9e';
+import { buildBook, ladderLevels } from '/btc-book.js?cb=3a43da09';
 import { api, esc, grp, usd } from '/trade/util.js?cb=1d2cd8d3';
 
 export const BTC_ID = '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';        // tETH on Bitcoin: the cETH asset id, without the 0x

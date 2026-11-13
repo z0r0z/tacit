@@ -131,21 +131,15 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
 
   function account(walletPriv) { return evm.deriveEvmAccount(walletPriv, cfg.evmNetwork); }
 
-  // Ethereum reads go to the public nodes (eth-nodes.js) through trade/rpc.js: one node at a time, a second one asked beside it when the first is slow,
-  // the first answer taken. What each node did is remembered for the visit (a node that failed rests and is asked last), and so is the widest range of
-  // logs each serves, so the next page starts from what this one learned. The connected wallet's own node is the last resort for a read.
   const _store = (() => { try { return globalThis.localStorage || null; } catch { return null; } })();
   const _health = nodeHealth({ store: _store, key: `tacit-pool-rpc-rest-v1:${cfg.chainId}`, shared: _fetch || true });
-  // logs keep their own: a node that refuses old or wide ranges (publicnode's archive, a plan's cap no narrower range meets) rests for logs only
   const _logHealth = nodeHealth({ store: _store, key: `tacit-pool-rpc-logrest-v1:${cfg.chainId}`, strict: true, shared: _fetch || true });
   let _walletGet = null;
   const _wallet = walletNode(() => (_walletGet ? _walletGet() : Number(cfg.chainId) === 1 ? connectedInjected() : null));
   const SPANS = `tacit-pool-rpc-span-v1:${cfg.chainId}`;
   const _spans = (() => { try { return JSON.parse(_store?.getItem(SPANS) || 'null') || {}; } catch { return {}; } })();
-  // each node starts at the widest range it is known to serve (eth-nodes.js), or narrower where this browser has learned it
   const _eps = (cfg.logRpcs || cfg.rpcs).map((url) => ({ url, span: Math.min(Number(_spans[url]) > 0 ? Number(_spans[url]) : Infinity, logSpan(url)) }));
   const _keepSpan = (ep) => { _spans[ep.url] = ep.span; try { _store?.setItem(SPANS, JSON.stringify(_spans)); } catch { } };
-  // a log read of a fixed range of blocks is asked of the node once, however many readers in the page ask it (see `once`)
   const _fixed = (method, params) => method === 'eth_getLogs' && /^0x[0-9a-f]+$/i.test(String(params?.[0]?.fromBlock)) && /^0x[0-9a-f]+$/i.test(String(params?.[0]?.toBlock));
   const _post = (ep, method, params, ms = 10000) => (_fixed(method, params) ? once(_fetch, `${ep.url}|${JSON.stringify(params)}`, 20000, () => _postNow(ep, method, params, ms)) : _postNow(ep, method, params, ms));
   async function _postNow(ep, method, params, ms = 10000) {
@@ -178,7 +172,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
         lastErr = e;
       }
     }
-    // a node that answered with an error said why (a send's "insufficient funds", "nonce too low"): that is the call's answer
     if (lastErr?.rpc) throw Object.assign(lastErr, { kind: 'rpc' });
     throw Object.assign(new Error(`Ethereum's public nodes did not answer (${String(lastErr?.message || 'no answer').slice(0, 80)})`), { kind: 'transport', unreachable: true, cause: lastErr });
   }
@@ -192,8 +185,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     if (cap) { const n = Number(cap[1].replace(/,/g, '')); return n < span ? { span: n, cap: n } : null; }
     return /too (large|wide|big|many)|exceed|more than|response size/i.test(e.message) && span > 1 ? { span: Math.floor(span / 2) } : null;
   }
-  // The connected wallet's own node is a last resort for a log read that names no one: the pool's events by their kind say nothing of the key reading them, but a filter on
-  // an address (an account derived from the Tacit key) would tell the wallet's provider which account is whose, so those never go there.
   const _walletEp = { url: 'wallet', wallet: true, span: 5000 };
   const _namesNoOne = (params) => (params.topics || []).slice(1).every((t) => t == null);
   async function _logsIn(params, from, to) {
@@ -202,15 +193,11 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       let got = null;
       for (let pass = 0; pass < 2 && !got; pass++) {
         if (pass > 0) await new Promise((res) => setTimeout(res, 400));
-        // the nodes that take a wide range first (of those, the ones with a quota of their own before the key every visitor shares), the widest first, those resting after a failure last
         const narrow = (e) => e.span < 5000;
         const wide = _eps.map((e, i) => [e, i]).sort(([a, i], [b, j]) => (narrow(a) - narrow(b)) || (isShared(a.url) - isShared(b.url)) || (a.span < b.span) - (a.span > b.span) || i - j).map(([e]) => e);
         const byUrl = new Map(wide.map((e) => [e.url, e]));
         const ordered = _logHealth.order(wide.map((e) => e.url)).map((u) => byUrl.get(u));
-        // a node known to refuse this range (eth-nodes.js: one without logs, one that keeps recent blocks only) is asked after those that do not
         const refused = (ep) => refuses(ep.url, 'eth_getLogs', [{ fromBlock: '0x' + start.toString(16), toBlock: '0x' + Math.min(to, start + Math.min(ep.span, to - start + 1) - 1).toString(16) }], to);
-        // A node that is certain to refuse this range (eth-nodes.js: publicnode's old blocks, a node without logs) or whose quota is used up is not asked: the browser lists every
-        // refused request, and the answer is known. A read with nowhere left to go waits for its next try.
         const eps = [...ordered.filter((ep) => !refused(ep) && !_logHealth.quotaRest(ep.url)), ...(_namesNoOne(params) && _wallet.usable('eth_getLogs', [params]) ? [_walletEp] : [])];
         for (const ep of eps) {
           let span = Math.min(to - start + 1, ep.span);
@@ -258,10 +245,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     }
     try { return next === Number(BigInt(await rpc('eth_call', [{ to: cfg.pool, data: '0x0be4f422' }, '0x' + to.toString(16)]))); } catch { return null; }
   }
-  // A first visit (nothing kept) starts its read of the pool's whole history from the latest snapshot on IPFS (pool-snapshot.js), named by the
-  // snapshot.tacit.wei record or, without one, by the API; the rest comes from the nodes as always. The snapshot counts only once the note, lock and
-  // position trees the logs build match the pool's storage at the block read to. Its range is read again from the nodes once the page has settled
-  // (the kept record carries `snap` until then), and what they say is kept.
   const _allTopics = () => {
     const T = evmLog.TOPIC0;
     return [T.LeavesInserted, T.NullifiersSpent, T.LockLeavesInserted, T.Wrap, T.CdpPositionInserted, T.CrossOutRecorded,
@@ -301,7 +284,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
         const logs = old.length === fresh.length && old.every((l, i) => id(l) === id(fresh[i])) ? c.logs : [...fresh, ...c.logs.filter((l) => _blockOf(l) > snapTo)];
         _logsCache.set(key, { ...c, logs, snapTo: null });
         if (_kept) await _kept.put(key, { v: 1, finalTo: c.toBlock - FINAL, logs: logs.filter((l) => _blockOf(l) <= c.toBlock - FINAL) });
-      } catch { _audits.delete(key); } // the kept record keeps its mark, and the next visit reads it again
+      } catch { _audits.delete(key); }
     }, snapshotOpts.auditMs ?? 30000);
   }
   const _logsBusy = new Map();
@@ -398,11 +381,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   const _bridgeFound = new Map();
   const _bridgeFastTried = new Set();
   const _bridgeTried = new Set();
-  // v2: a v1 set could hold leaves the search had found (it marked every leaf it searched), so a note it found was skipped on the next
-  // page load and fell out of the balance; v1 is left unread, so each such leaf is searched once more.
   const _triedStoreKey = (wk, fast) => `tacit-bridge-tried-v2:${network || activeNetwork()}:${fast ? 'fast' : 'full'}:${wk}`;
-  // A bridge mint the search found, kept per key: its leaf, value, asset, destination index and the burn's ν (no blinding, which is
-  // derived from the key and ν). A later scan rebuilds each with one candidate instead of the whole search.
   const _foundStoreKey = (wk) => `tacit-bridge-found-v1:${network || activeNetwork()}:${wk}`;
   function _loadFoundHints(wk) {
     if (typeof localStorage === 'undefined') return new Map();
@@ -457,12 +436,10 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     promise.catch(() => { entry.at = Date.now() - BTC_HISTORY_TTL_MS + 60000; });
     return promise;
   }
-  let _forgets = 0;           // how many times the keys were forgotten: a wrap walk that finishes after one is not kept
+  let _forgets = 0;
   const forget = () => { _forgets++; _ownKeys.clear(); _btcHistoryCache.clear(); _bridgeFound.clear(); _wrapWalks.clear(); _walking.clear(); };
   _keyForgetters.add(forget);
   const _lockVBtcCache = new Map();
-  // The pool's record for many outputs at once, a multicall per 200: a wallet whose history holds many outputs shaped like a
-  // lock (every Tacit note it was paid is one) costs a call or two, not a call each. A batch or call that fails is asked alone.
   async function _cbtcLockVBtcMany(outputs) {
     const sel = '0x' + _selector('cbtcLockVBtc(bytes32)');
     const rows = (outputs || []).map((o) => ({ txid: o.txid, vout: o.vout, outpoint: pool.outpointKey('0x' + _rev(o.txid), o.vout) }));
@@ -479,8 +456,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return rows.map((r) => ({ ...r, vBtc: _lockVBtcCache.get(r.outpoint) || 0n }));
   }
 
-  // The pool's record of each lock (its vBtc, spent, redeemed) for many outputs at once: three reads per outpoint, a multicall per 200. A batch or
-  // call that fails is asked alone. An outpoint the pool does not record is neither spent nor redeemed.
   async function _cbtcLockStateMany(outputs) {
     const sels = ['cbtcLockVBtc(bytes32)', 'cbtcLockSpent(bytes32)', 'cbtcLockRedeemed(bytes32)'].map((sig) => '0x' + _selector(sig));
     const ops = (outputs || []).map((o) => pool.outpointKey('0x' + _rev(o.txid), o.vout));
@@ -506,7 +481,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   async function syncCbtcLockReservations(walletPriv, { btcHistory = null } = {}) {
     const id = identity(walletPriv);
     const h = typeof btcHistory === 'function' ? await btcHistory(id.priv) : (btcHistory || await _defaultBtcHistory(id.priv));
-    // one batched read says which outputs are recorded locks, and only those are asked, in one more, whether they are spent or redeemed
     const recorded = new Set((await _cbtcLockVBtcMany(h.lockOutputs)).filter((r) => r.vBtc > 0n).map((r) => `${r.txid}:${r.vout}`));
     const locks = (h.lockOutputs || []).filter((o) => recorded.has(`${o.txid}:${o.vout}`));
     const states = new Map((await _cbtcLockStateMany(locks)).map((st, i) => [`${locks[i].txid}:${locks[i].vout}`, st]));
@@ -613,7 +587,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   const _knownAssets = (notes) => [...new Set([..._poolAssets.map((a) => a.assetId), ...notes.map((n) => n.asset)].map(lc))];
 
   const _spentDeposits = new Set();
-  // the deposits still waiting for their settle: every status in one multicall (a batch that fails is asked a call each), and one read as settled is not asked again
   async function _stillWaiting(deposits) {
     const ask = deposits.filter((d) => !_spentDeposits.has(lc(d.depositId)));
     const sel = '0x' + _selector('depositStatus(bytes32)');
@@ -627,8 +600,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return waiting;
   }
 
-  // A note's path, kept by the root it was read at: the tree that gives the root gives the path, so a read while the tree stands as it was (the
-  // balance polled through an exit) rebuilds nothing for it. The kept paths go with their root once the tree grows.
   let _paths = { root: null, at: new Map() };
   function _pathAt(tree, root, leafIndex) {
     if (_paths.root !== root) _paths = { root, at: new Map() };
@@ -636,10 +607,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     if (!p) _paths.at.set(leafIndex, (p = tree.rootAndPath(leafIndex).path));
     return p;
   }
-  // The wrap walk (walkWraps) for a key, kept with what it read: the Wrap deposits (ids and amounts, in order) and the index hints it started from.
-  // A read of the same deposits from the same hints is the same walk, so its answer is handed back as it was; a Wrap landed since, or a hint moved,
-  // walks afresh. What the walk tried per asset (the indexes it found used, through the last one tried, against the deposits it saw) serves
-  // nextWrapIndex. Cleared with the keys (forget).
   const _wrapWalks = new Map();
   const _walking = new Map();
   async function _walkWrapsOf(id, events) {
@@ -656,7 +623,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const wk = lc(id.pubHex), kept = _wrapWalks.get(wk);
     let w = kept && kept.key === key ? kept.w : null;
     if (!w) {
-      // in slices that hand the thread back; a second read of the same deposits waits for this one rather than walking again
       const run = _walking.get(wk + key) || (() => { const r = recovery().walkWrapsSliced({ priv: id.priv, events, assets, minIndex: (assetId) => _wrapIndexHint(id.pubHex, assetId) }); _walking.set(wk + key, r); r.then(() => _walking.delete(wk + key), () => _walking.delete(wk + key)); return r; })();
       const forgets = _forgets;
       w = await run;
@@ -666,9 +632,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return { found: w.found.map((n) => ({ ...n })), scanned: w.scanned.map((sc) => ({ ...sc })) };
   }
 
-  // `recent`: a quick first read. With nothing kept for this key on this device (no valid memo checkpoint) only the newest `recent` leaves are
-  // opened with the key, a note it made itself is found by derivation as ever (walkWraps), and nothing is kept as covered, so the full read that
-  // follows still opens every older leaf. With a checkpoint it is ignored: the read is the same incremental one. `diag.quick` says it was one.
   async function _scanNotes({ walletPriv, events, deep = false, cbtc = true, btcHistory = null, bridge = true, bridgeAmounts = [], recent = 0 }) {
     const R = recovery();
     const id = identity(walletPriv);
@@ -678,8 +641,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const slot = new Map();
     leaves.forEach((l, i) => { if (l) slot.set(lc(l.leaf), i); });
     const nu = (n, leaf) => pool.nativeNu(n.owner, n.secret, leaf);
-    // a payment to one of this key's receive codes: its nk is derived here from the index its memo names, and the note kept only if it hashes
-    // to the owner (anything else is not this key's to spend, and is skipped by the scan)
     const memoNu = (n, leaf) => {
       if (n.receiveIndex != null) {
         const nk = receiveNk(walletPriv, n.receiveIndex);
@@ -703,11 +664,9 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     };
     const _ck = _ckKey(id.pubHex), covered = deep ? null : _loadMemoCk(_ck, leaves);
     const quick = recent > 0 && !covered;
-    if (quick) { cbtc = false; bridge = false; }       // a quick read leaves the long searches to the full read behind it
+    if (quick) { cbtc = false; bridge = false; }
     const emptyLeaves = leaves.filter((l) => l && (!l.memo || l.memo === '0x'));
     diag.leaves = leaves.filter(Boolean).length; diag.emptyMemoLeaves = emptyLeaves.length;
-    // The Bitcoin history the cBTC search reads is asked for now, while the pool's own steps run, and that search comes last: a
-    // slow or rate-limited explorer holds back only cBTC notes, not the rest of the balance.
     const btcHist = cbtc && emptyLeaves.length
       ? Promise.resolve().then(() => (typeof btcHistory === 'function' ? btcHistory(id.priv) : (btcHistory || _defaultBtcHistory(id.priv))))
       : null;
@@ -741,8 +700,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const amounts = [...new Set([...(bridgeAmounts || []), ..._storedBridgeAmounts(id.pubHex)].map((v) => { try { return BigInt(v); } catch { return 0n; } }).filter((v) => v > 0n).map(String))].sort();
     diag.bridge.amountsTried = amounts.length;
     {
-      // With `bridge: false` (a read that must be quick) the notes this key has already found are still applied, from memory or its kept hints (one
-      // candidate each); only the search for new ones is left out. A round-amount bridge note has no memo, so it appears nowhere else.
       const todo = new Map();
       const wk = lc(id.pubHex);
       const triedSet = fast ? _bridgeFastTried : _bridgeTried;
@@ -765,7 +722,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
         if (!todo.has(t)) todo.set(t, []);
         todo.get(t).push(lf);
       }
-      // What this key found before: one candidate each (its own value, asset and index), not the whole search.
       if (rebuild.size) {
         try {
           const hs = [...rebuild.values()].flat().map((lf) => hints.get(lf));
@@ -773,7 +729,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
             values: [...new Set(hs.map((h) => h.value))].map((v) => BigInt(v)), roundValues: false, destIndexes: Math.max(...hs.map((h) => h.destIndex)) + 1, maxNullifiers: 4096 });
           const got = new Set(r.found.map((n) => lc(n.leaf)));
           for (const n of r.found) keep(n);
-          // a hint that no longer rebuilds is dropped, and its leaf searched as any other
           for (const [t, lfs] of rebuild) for (const lf of lfs) if (!got.has(lf)) { hints.delete(lf); if (!todo.has(t)) todo.set(t, []); todo.get(t).push(lf); }
         } catch (e) { diag.errors.bridge = String(e && e.message || e); }
       }
@@ -784,8 +739,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
         try {
           const assets = [...new Map(_poolAssets.filter((a) => a.bitcoinLink && (!fast || a.ticker === 'TAC' || a.ticker === 'cTAC')).map((a) => [lc(a.assetId), { assetId: a.assetId }])).values()];
           const walk = (unexplained, maxNullifiers) => R.walkBridgeMints({ priv: id.priv, tx, unexplained, assets, values: amounts.map((v) => BigInt(v)), destIndexes: fast ? 1 : 8, maxExp: fast ? 15 : 18, maxNullifiers });
-          // The fast search goes newest first in slices of about 48 nullifiers, each kept as it ends (leaves tried, notes found),
-          // so a page closed part way through carries on from there next time.
           const slices = [];
           if (fast) {
             let part = [], n = 0, total = 0;
@@ -805,12 +758,10 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
             diag.bridge.candidatesTried += r.tried;
             const got = new Set(r.found.map((n) => lc(n.leaf)));
             for (const n of r.found) keep(n);
-            // only a leaf searched and not found is marked tried; a found one is kept above and rebuilt on the next scan
             for (const [t, lfs] of slice) if (!r.searched || r.searched.has(t)) for (const lf of lfs) if (!got.has(lf)) triedSet.add(triedKey(lf));
             _saveTried(wk, fast, amounts.join(','), triedSet);
             _saveFoundHints(wk, hints);
           }
-          // The leaves whose transactions the search did not get to (the deep search reads 16 nullifiers; the fast one up to 4,096): said, so a read is not called complete over them.
           diag.bridge.unsearchedLeaves = [...todo].filter(([t]) => !covered.has(t)).reduce((sN, [, a]) => sN + a.length, 0);
         } catch (e) { diag.errors.bridge = String(e && e.message || e); }
       }
@@ -891,7 +842,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
           try { ext = _externalTacHolders() || []; } catch {}
           const addrs = [...new Set([account(scanPriv).address, ...ext]
             .map((a) => String(a || '').toLowerCase()).filter((a) => /^0x[0-9a-f]{40}$/.test(a)))];
-          // the accounts' balances in one multicall (a lone account is one call); a batch that fails is asked a call each
           const calls = addrs.map((a) => ({ to: ctac.underlying, data: '0x70a08231' + a.slice(2).padStart(64, '0') }));
           const got = calls.length > 1 ? await _multicall(calls).catch(() => null) : null;
           let sum = 0n;
@@ -978,9 +928,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   const freshEph = () => randomScalar();
 
   const deriveOutput = (walletPriv, anchor, role, index = 0) => deriveOutputKeys({ hmac, sha256: vendorSha256, curveOrder: SECP_N }, walletPriv, anchor, role, index);
-  // Receive codes: an owner this key gives out to be paid at (from a staged deposit's wrap-and-send, by anyone), one per index so two payers
-  // are not linked by it. The nk behind it is derived from the key and the index, never sent; the payment's memo carries the index
-  // (confidential-memo.js receiveSecret) and the scan derives the nk back. A code reads tacitrecv1:<pubkey>:<index>:<owner>.
   const RECEIVE_ANCHOR = '0x' + _hex(vendorSha256(new TextEncoder().encode('tacit-receive-v1')));
   const receiveNk = (walletPriv, index) => deriveOutput(walletPriv, RECEIVE_ANCHOR, 'receive', index).nk;
   function receiveCode({ walletPriv, index }) {
@@ -1018,9 +965,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     if (amount <= 0n || amount % unitScale !== 0n) throw new Error('amount not aligned to unitScale');
     return _wrapOf({ walletPriv, meta, value: amount / unitScale, amount, index });
   }
-  // A share note for LP shares a public add minted and ConfidentialPool.shieldShares turned into a pending deposit (the router's
-  // zapETHIntoShieldedLP does both in one transaction): the note, commitment, opening proof and memo of a wrap, for the pool's LP-share asset
-  // at `shares` (the pool's own units, so no scale). submitWrapSettle settles it with the same OP_WRAP.
   function buildShareWrap({ walletPriv, poolId, shares, index = 0 }) {
     const value = BigInt(shares);
     if (value <= 0n) throw new Error('buildShareWrap: no shares');
@@ -1066,8 +1010,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     if (!built || !built.wrapOp) throw new Error('submitWrapSettle: pass the buildWrap() result');
     const spec = { type: 'wrap', op: built.wrapOp, leaves: [built.leaf], outputs: built.outputs, memos: built.memos, ephRand: built.ephRand };
     if (selfSettle) {
-      // The deposit's transaction rides on the proof request too: the relay counts a wrap whose deposit tipped it as paid work, and a
-      // proof asked for without it draws on the relay's free proofs, which run out for the day.
       const proven = await relay.prove(depositTx ? { ...spec, depositTx } : spec, waitOpts);
       if (proven.status === 'settled') return proven;
       const memos = proven.memos || built.memos;
@@ -1094,8 +1036,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     if (!Number.isFinite(head)) throw new Error('no head block');
     return getLogsChunked({ address: cfg.pool, topics: [evmLog.TOPIC0.Wrap, null, String(assetId).toLowerCase()] }, Number(cfg.deployBlock || 0), head);
   }
-  // The first wrap on a device reads every Wrap log of the asset (the slow part of "preparing your note"); reading them as the
-  // form opens leaves nextWrapIndex only the newest blocks. It takes no index, so nothing is reserved.
   async function warmWrapLogs({ ticker = 'cETH' } = {}) {
     const meta = assetByTicker[ticker];
     if (meta) await wrapLogs(meta.assetId);
@@ -1113,8 +1053,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       throw new Error(`nextWrapIndex: could not read this asset's wrap deposits (${e && e.message ? e.message : e}); retry, or pass an explicit index`);
     }
     const matchSet = (list) => ({ ids: new Set(list.map((e) => lc(e.depositId))), values: [...new Set(list.filter((e) => e.amount % unitScale === 0n).map((e) => e.amount / unitScale))] });
-    // The key's last wrap walk (_walkWrapsOf, at a balance read) tried every index through `walked.through` against the deposits it saw: of those
-    // indexes, the ones it found used are passed over, and the rest are matched against the deposits landed since alone; past it, against every deposit.
     const walked = (_wrapWalks.get(lc(id.pubHex)) || { byAsset: new Map() }).byAsset.get(assetId) || null;
     const all = matchSet(events), since = walked ? matchSet(events.filter((e) => !walked.ids.has(lc(e.depositId)))) : all;
     const hintKey = _wrapHintKey(id.pubHex, assetId);
@@ -1139,8 +1077,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       return i;
     }
   }
-  // A share note's index (buildShareWrap): the next one this key has not used for the pool's LP-share asset. Shielded shares leave no Wrap
-  // log to walk, so it is the first past the hint (kept as a wrap's is) whose note this key does not already hold.
   function nextShareIndex({ walletPriv, poolId, owned = [], used = [] } = {}) {
     const id = identity(walletPriv), assetId = String(_lp.lpShareId(poolId)).toLowerCase(), hintKey = _wrapHintKey(id.pubHex, assetId);
     const owners = new Set(owned.filter((n) => String(n.asset).toLowerCase() === assetId).map((n) => String(n.owner).toLowerCase()));
@@ -1152,19 +1088,12 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       return i;
     }
   }
-  // Hands back a share index reserved for a zap that was never sent (the wallet prompt was declined), as releaseWrapIndex does for a wrap.
   function releaseShareIndex({ walletPriv, poolId, index } = {}) {
     if (!Number.isInteger(index) || index < 0) return;
     const key = _wrapHintKey(identity(walletPriv).pubHex, String(_lp.lpShareId(poolId)).toLowerCase()), taken = _reservedWrapIndex.get(key);
     if (taken && taken.delete(index) && !taken.size) _reservedWrapIndex.delete(key);
     try { if (parseInt(localStorage.getItem(key), 10) === index + 1) localStorage.setItem(key, String(index)); } catch { }
   }
-  // Zaps whose shielded shares no note has opened yet, found from the key and the chain alone, whoever paid: each zap's add pulls its token
-  // leg from the router into the public AMM (`amm`), and the router refunds the rest of the swap to the payer, so a Transfer from the router
-  // to the AMM (or to one of the key's accounts) names it. Its calldata (sent directly, or inside a contract wallet's call) holds the shares
-  // and the commitment, which give the deposit's id without the key; only a deposit still waiting is walked for the share-note index that
-  // makes its commitment.
-  // → [{ poolId, shares, index, depositId, tx }] still pending.
   async function shareDeposits(walletPriv, { router, amm, pools = [], accounts = [], fromBlock } = {}) {
     const id = identity(walletPriv), accts = [...new Set([account(walletPriv).address, ...accounts, amm].filter(Boolean).map(lc))];
     const tokens = [...new Set(pools.map((p) => lc(p.token)))];
@@ -1173,7 +1102,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       address: tokens, topics: [_topic('Transfer(address,address,uint256)'), _addrTopic(router), accts.map(_addrTopic)],
     }, Number(fromBlock ?? cfg.deployBlock ?? 0), to));
     const zaps = [], seen = new Set(), hashes = [...new Set(logs.map((l) => lc(l.transactionHash)))], inputs = [];
-    // the transactions eight at a time; one that could not be read fails the whole read (so it is tried again), not skipped as if it were not a zap
     for (let i = 0; i < hashes.length; i += 8) inputs.push(...await Promise.all(hashes.slice(i, i + 8).map(async (hash) => lc((await rpc('eth_getTransactionByHash', [hash]))?.input || ''))));
     for (const [h, hash] of hashes.entries()) {
       const input = inputs[h];
@@ -1183,7 +1111,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
         const p = pools.find((x) => lc(x.token) === token && (x.feeBps == null || Number(x.feeBps) === fee));
         if (!p || w(6).length < 64) continue;
         const shares = BigInt('0x' + w(4)), commit = '0x' + w(6), asset = lc(_lp.lpShareId(p.poolId));
-        // the pool's id for it: keccak256(share asset, shares, commitment)
         const depositId = '0x' + _hex(keccak256(Uint8Array.from([..._b32b(asset), ..._b32b(_word(shares)), ..._b32b(commit)])));
         if (seen.has(depositId)) continue;
         seen.add(depositId); zaps.push({ poolId: p.poolId, asset, shares, commit, depositId, tx: hash });
@@ -1191,8 +1118,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     }
     if (!zaps.length) return [];
     const st = await _multicall(zaps.map((z) => ({ to: cfg.pool, data: '0x' + _selector('depositStatus(bytes32)') + _word(z.depositId) })));
-    // each index's owner and blinding, derived once per share asset: a device with no hint walks 256 of them (a key that has made more share
-    // notes in one pool than that keeps its hint where it made them)
     const found = [], keys = new Map(), keyAt = (asset, i) => {
       const ks = keys.get(asset) || keys.set(asset, []).get(asset);
       if (!ks[i]) { const { secret, blinding } = pool.deriveNote(id.priv, asset, i); ks[i] = { owner: pool.nkToOwner(secret), blind: '0x' + BigInt(blinding).toString(16).padStart(64, '0') }; }
@@ -1209,9 +1134,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     }
     return found;
   }
-  // Recovery from the key alone walks wrap indexes and stops after 24 in a row with no deposit, so an index reserved for a
-  // deposit that was never sent (the wallet prompt was declined) is handed back, or enough cancelled tries would put a later
-  // deposit out of its reach. Only the newest reservation can be returned: the hint is the next index to try.
   function releaseWrapIndex({ walletPriv, ticker = 'cETH', index } = {}) {
     const meta = assetByTicker[ticker];
     if (!meta || !Number.isInteger(index) || index < 0) return;
@@ -1284,7 +1206,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       const b = _router.buildWrapETH({ commit: w.commit, amount: w.amount });
       return { ...w, to: b.to, value: b.value.toString(), calldata: b.calldata, via: 'router', permitType: 'native' };
     }
-    // the permit's hour runs from the chain's clock (the router's check), and from the device's only when the chain cannot be read
     const nowSecs = permitDeadline != null ? 0 : await rpc('eth_getBlockByNumber', ['latest', false]).then((b) => Number(BigInt(b.timestamp))).catch(() => Math.floor(Date.now() / 1000));
     const deadline = BigInt(permitDeadline ?? (nowSecs + 3600));
     if (kind === 'eip2612') {
@@ -1338,7 +1259,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     if (send) {
       try { txHash = await rpc('eth_sendRawTransaction', [signed.raw]); }
       catch (e) {
-        // a node that holds the transaction already answers so: it went out (the first node's answer was lost); a node that did not answer at all leaves it unknown
         if (/already known|known transaction|already imported|nonce too low/i.test(String(e?.message || e))) txHash = signed.hash;
         else { if (e?.kind === 'transport') e.maybeSent = true; throw e; }
       }
@@ -1388,7 +1308,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return { ...w, from: acct.address, nonce: sent.nonce.toString(), signedRaw: sent.signedRaw, txHash: sent.txHash };
   }
 
-  // `receiveCode`: pay another key at a code it gave out (receiveCode above), in place of `recipientPubHex`, which may only be this key's own.
   function buildWrapTransferOp({ walletPriv, amountWei, ticker = 'cETH', recipientPubHex, receiveCode: code = null, amount, fee = 0n, index = 0 }) {
     const meta = assetByTicker[ticker];
     if (!meta) throw new Error(`unknown asset ${ticker}`);
@@ -1421,7 +1340,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const depositId = pool.depositId(meta.assetId, depositValue, dcx, dcy, depOwner);
 
     const recvKeys = deriveOutput(walletPriv, depositId, 'send', 0);
-    // to a receive code the owner is the receiver's and the memo names its index; the nk stays the receiver's alone
     const recvNk = to ? null : recvKeys.nk;
     const recipientOwner = to ? to.owner : pool.nkToOwner(recvNk);
 
@@ -1547,10 +1465,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return { ...r, dShares, pid, lpAsset, assetA, assetB, firstMint: sharesPre === 0n };
   }
 
-  // A deposit swapped in the pool in one proof (OP 33): the deposit of `amountWei` of `fromTicker` at wrap index `index` (the same note a plain
-  // wrap at that index makes, so a deposit whose swap does not settle can still be settled as a wrap) swapped at the pool's reserves now for
-  // `toTicker` (or the pool asset `toAsset`), the proof pinning those reserves. → the op, its output note and the deposit's commit, in the
-  // shape wrapSettleCall and wrapProofFits take (`amount`, `commit`, `wrapArgs.assetId`, `depositId`, `leaf`).
   async function buildWrapSwap({ walletPriv, fromTicker = 'cETH', toTicker = null, toAsset = null, amountWei, feeBps = 30, minOut = 0n, fee = 0n, deadline = 0n, index = 0 } = {}) {
     const id = identity(walletPriv);
     const D = _depositLeg({ id, ticker: fromTicker, amountWei, index });
@@ -1608,15 +1522,10 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const b = await buildWrapSwap({ walletPriv, fromTicker, toTicker, toAsset, amountWei, feeBps, minOut, fee, deadline, index });
     return submitWrapSwap({ walletPriv, built: b, selfRelay, selfSettle, waitOpts });
   }
-  // A built wrap-swap whose deposit is in the pool, proved and settled by the relay (its fee bound into the op).
   async function submitWrapSwap({ walletPriv, built: b, selfRelay = false, selfSettle = null, waitOpts } = {}) {
     const r = await _dispatch({ type: 'wrapswap', spec: { op: b.op, leaves: b.leaves, outputs: b.outputs, ephRand: b.ephRand }, sealedMemos: b.memos, selfRelay, selfSettle, walletPriv, waitOpts });
     return { ...r, amountOut: b.amountOut, pid: b.pid, assetIn: b.assetIn, assetOut: b.assetOut };
   }
-  // A wrap-swap proved before anything is deposited, with no fee bound in (the holder's own transaction deposits and settles it through the
-  // router's wrapAndSettleETH, the relay's tip on top): `ahead` asks the relay's prover board only, behind the jobs people pressed. The proof
-  // holds only while the pool's reserves are those it was built at (`built.reserveA`/`reserveB`), so a trade in the pool before it is sent
-  // makes the router refuse it, with nothing sent.
   async function proveWrapSwap({ walletPriv, fromTicker = 'cETH', toTicker = null, toAsset = null, amountWei, feeBps = 30, deadline = 0n, index, ahead = false, waitOpts, onBuilt } = {}) {
     if (!cfg.router) throw new Error('ConfidentialRouter not deployed for this network');
     if (index == null) index = await nextWrapIndex({ walletPriv, ticker: fromTicker });
@@ -1698,11 +1607,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return { to: cfg.router, value: value.toString(), calldata, gasLimit: gasLimit.toString(), jobId, depositCommit };
   }
 
-  // A wrap proved before any value moves. OP_WRAP's public values pin nothing on chain (the deposit id is keccak(asset, value, commit),
-  // with no root and no deadline), so its proof is good whenever it is sent, and the router deposits and settles it in one transaction.
-  // The ETH stays in the wallet until the proof exists, so a slow or stopped prover leaves no deposit waiting. The proof comes from
-  // whatever relay.prove uses: this device's prover, the holder's own credit, or the relay.
-  // `ahead`: asked for before its press (a form that has settled), so the relay makes it only on its own prover, after the jobs pressed
   async function proveWrap({ walletPriv, amountWei, ticker = 'cETH', index, waitOpts, onBuilt, ahead = false } = {}) {
     if (!cfg.router) throw new Error('ConfidentialRouter not deployed for this network');
     if (index == null) index = await nextWrapIndex({ walletPriv, ticker });
@@ -1714,9 +1618,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return { built, proven: { ...proven, memos: proven.memos || built.memos } };
   }
 
-  // Whether a wrap's proof is for this note: it consumes exactly this deposit and inserts exactly this leaf (PublicValues' depositsConsumed
-  // and leaves, contracts/src/ConfidentialPool.sol). A prover elsewhere could otherwise hand back a valid proof of another pending deposit,
-  // which the router would settle in place of this one, leaving this deposit waiting for its own proof.
   function wrapProofFits(built, proven) {
     try {
       const h = String(proven.publicValues).replace(/^0x/, '').toLowerCase(), w = (i) => BigInt('0x' + h.slice(i * 64, i * 64 + 64));
@@ -1727,10 +1628,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     } catch { return false; }
   }
 
-  // The router call that deposits a wrap and settles its proof in one transaction, for any wallet to send: native ETH as the call's
-  // value (wrapAndSettleETH), a token through the holder's EIP-2612 `permit` ({ deadline, v, r, s }, wrapAndSettleWithPermit) or a
-  // Permit2 `permit2` ({ permitSingle, signature }, wrapAndSettleWithPermit2), each for exactly the wrap's amount and naming the router.
-  // A relay-proved wrap pays the relay its fee on top (`ethFeeWei` to `feeRecipient`, by default the relay's).
   function wrapSettleCall({ built, proven, ethFeeWei = 0n, feeRecipient, gasLimit = 750000n, permit = null, permit2 = null }) {
     if (!cfg.router) throw new Error('ConfidentialRouter not deployed for this network');
     const meta = _poolAssets.find((m) => String(m.assetId).toLowerCase() === String(built.wrapArgs.assetId).toLowerCase());
@@ -2007,7 +1904,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   async function farmUnbond({ walletPriv, position, forfeitPending = false, selfSettle = null, waitOpts } = {}) {
     const farm = _farmCfg();
     const rc = await _farmReceipt({ walletPriv, position });
-    // the bond is over by the chain's clock (the pool's check), not the device's
     const chainSecs = await rpc('eth_getBlockByNumber', ['latest', false]).then((b) => Number(BigInt(b.timestamp))).catch(() => Math.floor(Date.now() / 1000));
     if (rc.cur.unlockAt > chainSecs) throw new Error(`farm-unbond: locked until ${rc.cur.unlockAt}`);
     const pendingUnits = BigInt(rc.cur.pendingUnits || 0);
@@ -2166,7 +2062,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const mine = (notes || []).filter((n) => String(n.asset).toLowerCase() === String(asset).toLowerCase());
     const exact = mine.find((n) => BigInt(n.value) === want);
     if (exact) return { note: exact, split: false };
-    // an asset with no relay fee asset (an LP share: the pool cannot pay a relay out in it) splits with no fee, as the relay's sponsored LP move
     const ticker = poolTickerOf(asset);
     const splitFee = selfSettle || !ticker ? 0n : await gasAwareMinFee(ticker, 'transfer');
     const src = mine.filter((n) => BigInt(n.value) >= want + splitFee).sort((x, y) => (BigInt(x.value) > BigInt(y.value) ? 1 : -1))[0];
@@ -2268,7 +2163,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
 
   const _ct = makeConfidentialTransfer({ keccak256 });
   const _stealth = makeConfidentialStealth({ keccak256, secp, signSchnorr, curveOrder: SECP_N, pool, transfer: _ct });
-  // The airdrop helpers below are built after this; the bridge mint only calls them when a burn pays a stealth address.
   const _airdropLazy = Object.fromEntries(['ephPriv', 'lockBlinding', 'refundPriv', 'refundPubOf', 'sealStealthMemo', 'sealStealthSenderTail'].map((k) => [k, (...a) => _airdrop[k](...a)]));
   const _bridgeMint = makeConfidentialBridgeMint({ pool, ct: _ct, relay, fetchImpl: _fetch, relayBase: cfg.relayBase, stealth: _stealth, airdrop: _airdropLazy });
   const _bridgeBurn = makeBridgeBurnBroadcaster({ pool, bridgeMint: _bridgeMint, fetchImpl: _fetch, relayBase: cfg.relayBase });
@@ -2476,9 +2370,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const memoCheck = await checkEmittedLockMemos({ txHash: r && r.txHash, lockLeaves: [op.lockLeaf], memos: [memo] });
     return { ...r, ...built, ...(memoCheck ? { memoCheck } : {}) };
   }
-  // A stealth send's lock proved before its press, from a note of exactly the amount (the board makes it; nothing in it moves while it
-  // waits but the note itself): posted at the press, the relay sends it on its free settles as it does the same lock relayed. → what
-  // stealthSendAheadSend takes. The lock's secrets (`built`) are kept by the caller once it is sent, as stealthSend's are.
   async function stealthSendAhead({ walletPriv, recipientPubHex, note, amount, deadline, waitOpts } = {}) {
     amount = BigInt(amount);
     if (!note || BigInt(note.value) !== amount) throw new Error('stealthSendAhead: a note of exactly the amount is required');
@@ -2496,7 +2387,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const memoCheck = await checkEmittedLockMemos({ txHash: st && st.txHash, lockLeaves: [a.lockLeaf], memos: [a.memo] });
     return { ...st, ...a.built, ...(memoCheck ? { memoCheck } : {}) };
   }
-  // The lock's op and memo, and what its sender keeps to refund it: from a note of exactly `amount`.
   function _stealthBuild({ id, recipientPubHex, note, asset, amount, deadline }) {
     const deadlineB = deadline != null ? BigInt(deadline) : coarseDeadline(90 * 24 * 3600, 3600);
     if (deadlineB <= 0n) throw new Error('stealthSend: deadline required');
@@ -2824,8 +2714,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       feeBps: Number(BigInt('0x' + word(5))), totalShares: BigInt('0x' + word(6)),
     };
   }
-  // What a pool's liquidity earns in trading fees, as a year's rate: how much the invariant per share, sqrt(reserveA * reserveB) / shares, grew over the
-  // last `days` (a trade's fee grows it; a price move, a deposit or a withdrawal leaves it alone). Null when the pool is younger than that or a read fails.
   const _isqrt = (n) => { if (n < 2n) return n; let x = n, y = (x + 1n) / 2n; while (y < x) { x = y; y = (x + n / x) / 2n; } return x; };
   async function poolFeeApr(poolIdHex, days = 7) {
     try {
@@ -2881,9 +2769,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return { amountOut: curAmount, assetFinal: curAsset, hops };
   }
 
-  // A route's op, the leaves and recovery descriptors of what it makes and their sealed memos: what a relayed route, one proved first and one
-  // proved ahead all send. `split`: the change cut into these values (each a note of its own, adding up to what the route leaves of the note),
-  // so a route can also make the exact note the next step spends (a farm join's pairing side) with no cut of its own.
   async function _routeBuild({ walletPriv, inNote, amountIn, path, minOut, fee = 0n, split = null } = {}) {
     const q = await quoteRoute({ asset0: inNote.asset, amountIn, path, fee });
     if (!q) throw new Error('route: a hop pool is not initialized');
@@ -2917,7 +2802,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     }
     const ephRand = freshEph;
     const sealedMemos = guard.sealMemosForOutputs({ outputs, ephRand });
-    // the change's opening (its value and blinding) stays here: the op carries only its commitment and owner
     const wireOp = { ...op, change: (op.change || []).map((c) => ({ cx: c.cx, cy: c.cy, owner: c.owner })) };
     return { q, spec: { op: wireOp, leaves, outputs, ephRand }, sealedMemos };
   }
@@ -2925,21 +2809,13 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const { spec, sealedMemos } = await _routeBuild({ walletPriv, inNote, amountIn, path, minOut, fee, split });
     return _dispatch({ type: 'route', spec, sealedMemos, selfRelay, selfSettle, walletPriv, waitOpts });
   }
-  // A private swap proved before its press, as an exit is (exitAhead): a prove-only job the relay makes only on its board, whose proof is
-  // posted at the press for the relay to send. The proof pins the note it spends and the reserves of the pools it crosses (`hops`), so it holds
-  // only while the pool has not traded; the settle that finds otherwise is refused when the proof is posted, with nothing sent.
-  // → what routeAheadSend takes: { note, amountIn, path, minOut, fee, hops, out, proven, leaves, memos }
   async function routeAhead({ walletPriv, inNote, amountIn, path, minOut, fee = 0n, split = null, waitOpts } = {}) {
     const b = await _routeBuild({ walletPriv, inNote, amountIn, path, minOut, fee, split });
     const proven = await relay.prove({ type: 'route', ...b.spec, memos: b.sealedMemos, ahead: true }, { ...waitOpts, viaRelay: true });
     if (!proven || !proven.publicValues) throw new Error(proven && proven.error || 'routeAhead: no proof');
     return { note: inNote, amountIn: BigInt(amountIn), path, minOut: BigInt(minOut), fee: BigInt(fee), split, hops: b.q.hops, out: b.q.amountOut, proven, leaves: b.spec.leaves, memos: proven.memos || b.sealedMemos };
   }
-  // The press: the proof made ahead is posted for the relay to send, then waited for as a relayed route is, its memos checked.
   const routeAheadSend = (a, o) => _postAhead('route', a, o);
-  // A private transfer proved before its press (a note cut to size for a send or a join, to the key itself): it binds the notes it spends against
-  // a root the pool always knows, so it holds until one of them is spent, and its relay fee pays the relay that sends it.
-  // → what transferAheadSend takes: { notes, amount, fee, proven, leaves, memos }
   async function transferAhead({ walletPriv, notes, recipientPubHex, amount, fee = 0n, feeUsd = null, waitOpts } = {}) {
     if (feeUsd == null && BigInt(fee) > 0n) feeUsd = await feeUsdFor(fee, poolTickerOf(notes?.[0]?.asset)).catch(() => null);
     const b = buildTransferOp({ walletPriv, notes, recipientPubHex, amount, fee, feeUsd });
@@ -2948,12 +2824,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return { notes, amount: BigInt(amount), fee: BigInt(fee), recipientPubHex, proven, leaves: b.leaves, memos: proven.memos || b.memos };
   }
   const transferAheadSend = (a, o) => _postAhead('transfer', a, o);
-  // Proofs anyone may send for their fee (exitForAnyone below), for a private send. A transfer pays only its holder (a note's owner comes
-  // from the recipient's own spend key) and a stealth lock carries no fee, so a send goes in two parts:
-  //  - cutForAnyone: `amount` cut from `notes` to the holder's own key, `fee` bound in for its sender (when no note of exactly the amount is held);
-  //  - lockForAnyone: ONE proof of two ops (the guest proves any ops in one run): the stealth lock of `note` for the recipient, and a transfer of
-  //    `feeNote` to the holder's own key that pays `fee` to whoever sends it. `proveBatch(items)` is the holder's prover (device-prover.js).
-  // Neither carries a deadline: each stays good until sent, or until the holder spends one of its notes another way. → { type, note, proven, memos, deadlineMs: 0, built? }
   async function cutForAnyone({ walletPriv, notes, amount, fee, waitOpts } = {}) {
     const b = buildTransferOp({ walletPriv, notes, recipientPubHex: identity(walletPriv).pubHex, amount: BigInt(amount), fee: BigInt(fee), feeUsd: null });
     const proven = await relay.prove({ type: 'transfer', op: b.op, leaves: b.leaves, outputs: b.outputs, ephRand: b.ephRand, memos: b.memos }, waitOpts);
@@ -2968,14 +2838,10 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const { op: lockOp, memo, built } = _stealthBuild({ id, recipientPubHex, note, asset: note.asset, amount: BigInt(note.value), deadline });
     const t = buildTransferOp({ walletPriv, notes: [feeNote], recipientPubHex: id.pubHex, amount: BigInt(feeNote.value) - BigInt(fee), fee: BigInt(fee), feeUsd: null });
     guard.assertOutputsRecoverable({ leaves: t.leaves, outputs: t.outputs, memos: t.memos });
-    // the transfer goes first: the pool pairs memos with the note leaves first and the lock leaves after them, and the guest commits them in op order
     const r = await proveBatch([{ type: 'transfer', op: t.op, memos: t.memos }, { type: 'stealthlock', op: lockOp, memos: [memo] }], { onUpdate });
     if (!r || !r.publicValues) throw new Error('lockForAnyone: no proof');
     return { type: 'stealthlock', note, proven: { publicValues: r.publicValues, proof: r.proof }, memos: [...t.memos, memo], built, deadlineMs: 0 };
   }
-  // A proof made ahead, posted at its press. The relay's refusal (a 4xx, or an answer that names its code: the note spent, its pools traded, the
-  // relay paused) or an answer with no job means nothing was posted, and the press goes the usual way (`notPosted`); a post the relay did not
-  // answer may have been taken, and says so (confidential-relay.js), so nothing is posted again.
   async function _postMade(spec) {
     let posted;
     try { posted = await relay.postProof(spec); }
@@ -3080,9 +2946,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const wei = RELAY_FEE_ASSETS[ticker] && RELAY_FEE_ASSETS[ticker].minUnderlying;
     return wei == null ? 0n : wei / _unitScaleOf(ticker);
   }
-  // The gas a relayed settle uses, for the fee asked. Measured on mainnet (6 Nov 2026): a cross-out 365k to 390k over 11 settles, a whole-note unwrap 335k at the median and 369k at the 95th
-  // percentile over 1,244, a transfer 583k to 605k; each is asked for with a little over, and the price is asked for with 35% over (gasAwareMinFee). The relay's own table (worker-relay
-  // OP_GAS: bridgeburn 400k, unwrap 323k) must stay under these, or it refuses the fee.
   const SETTLE_GAS = { unwrap: 380000n, sendunwrap: 680000n, transfer: 620000n, lp: 780000n, lpremove: 720000n, route: 600000n, swap: 600000n, bridgeburn: 430000n };
   const PROVE_COST_WEI = 40000000000000n;
   const PROVE_TOKEN = '0x6BEF15D938d4E72056AC92Ea4bDD0D76B1C4ad29';
@@ -3260,7 +3123,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     let stop = false;
     const relayP = relay.waitForSettle(jobId, waitOpts).then((st) => ({ status: st.status, txHash: st.txHash }));
     const sameNote = (n) => { try { return BigInt(n.cx) === BigInt(note.cx) && BigInt(n.cy) === BigInt(note.cy); } catch { return false; } };
-    // the chain's word beside the relay's: settled once the note has left the balance (seen, then gone twice), null once the watcher gives up
     const chainP = new Promise((resolve) => {
       (async () => {
         let seen = false, misses = 0;
@@ -3277,8 +3139,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
         resolve(null);
       })();
     });
-    // The relay's answer ends the wait, but one that says its status could not be read does not: the exit may land while the relay cannot be
-    // asked, so the chain is watched on, and that answer stands only once the watcher gives up.
     try {
       return await new Promise((resolve, reject) => {
         chainP.then((st) => { if (st) resolve(st); });
@@ -3322,10 +3182,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return { ...built, jobId: sub.jobId, status: st.status, txHash: st.txHash };
   }
 
-  // An exit proved before its press: the op the relayed exit sends (its fee bound in), proved now as a prove-only job the relay makes only
-  // on its board (`ahead`: refused, 'not_now', while the board is down), then posted at the press for the relay to send from the open
-  // board, where a proof whose tETH fee covers its settle is sent at once. A proof nobody posts costs nothing but a board minute.
-  // → what exitAheadSend takes: { type, note, amount, recipient, fee, proven, leaves, memos, out }
   async function exitAhead({ note, walletPriv, recipient, amount, feeOpts, waitOpts } = {}) {
     if (!note) throw new Error('exitAhead: note required');
     amount = BigInt(amount);
@@ -3342,7 +3198,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     if (!proven || !proven.publicValues) throw new Error(proven && proven.error || 'exitAhead: no proof');
     return { type: 'sendunwrap', note, amount, recipient, fee: x.out.fee, proven, leaves: [x.changeLeaf], memos: proven.memos, out: x.out };
   }
-  // The press: the proof made ahead is posted for the relay to send, then waited for as a relayed exit is, the change note's memo checked.
   async function exitAheadSend(a, { walletPriv, waitOpts } = {}) {
     const memos = a.proven.memos || a.memos || [];
     const posted = await _postMade({ type: a.type, publicValues: a.proven.publicValues, proof: a.proven.proof, memos });
@@ -3355,10 +3210,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return { ...a.out, jobId: posted.jobId, status: checked.status || landed.status, txHash: checked.txHash || landed.txHash, ...(checked.memoCheck ? { memoCheck: checked.memoCheck } : {}) };
   }
 
-  // An exit anyone may send for its fee: proved with the prover the page set (the holder's own machine, say), with `fee` (in the note's asset)
-  // bound in for whoever sends it and a deadline `ttl` seconds out, then handed back for the page to post where any sender finds it (the
-  // Nostr board, the API's). It needs no ETH and no relay; a proof nobody sends by its deadline lapses and the note stays the holder's.
-  // → { type, note, proven, memos, out, deadlineMs }
   async function exitForAnyone({ note, walletPriv, recipient, amount, fee, ttl = 3 * 3600, waitOpts } = {}) {
     if (!note) throw new Error('exitForAnyone: note required');
     amount = BigInt(amount);
@@ -3374,7 +3225,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     if (!proven || !proven.publicValues) throw new Error(proven && proven.error || 'exitForAnyone: no proof');
     return { type: 'sendunwrap', note, proven, memos: proven.memos || [], out: x.out, deadlineMs: Number(x.op.opDeadline || 0) * 1000 };
   }
-  // Until `note` leaves the holder's balance (spent: an exit someone sent) or `untilMs` passes. → 'settled' | 'expired'
   async function watchSpent({ walletPriv, note, untilMs, everyMs = 30000, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
     const same = (n) => { try { return BigInt(n.cx) === BigInt(note.cx) && BigInt(n.cy) === BigInt(note.cy); } catch { return false; } };
     let misses = 0;
@@ -3388,15 +3238,11 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     }
   }
 
-  // A note of exactly the amount leaves by plain unwrap, whose floor is lower than send-and-unwrap's (no change note to make).
   const _exitKind = (note, amount) => (BigInt(note.value) === BigInt(amount) ? 'unwrap' : 'sendunwrap');
   async function sendUnwrap(args = {}) {
     if (!args.note || args.selfSettle || (args.feeOpts && args.feeOpts.minFee != null)) return _sendUnwrapOnce(args);
     return _withFloorRetry(poolTickerOf(args.note.asset) || 'cETH', _exitKind(args.note, args.amount), args.feeOpts, (feeOpts) => _sendUnwrapOnce({ ...args, feeOpts }));
   }
-  // A send-and-unwrap's op, its change note and what the exit says it is: the same for a relayed exit, one proved first and an exit proved
-  // ahead. `{ exact: true }` for a note of exactly the amount, which leaves by plain unwrap.
-  // `ttl`: how long the proof may wait before it is settled (an hour; a stage proved on the holder's own machine takes longer).
   async function _sendUnwrapExit({ note, walletPriv, recipient, amount, feeOpts, selfSettle = null, ttl = 3600 } = {}) {
     if (!note) throw new Error('sendUnwrap: note required');
     const ticker = poolTickerOf(note.asset) || 'cETH';
@@ -3632,8 +3478,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     ux: { cfg, assetByTicker, buildWrap, nextWrapIndex, submitWrapSettle },
   });
 
-  // useWallet(get): the page's own connected-wallet provider for Ethereum mainnet reads as a last resort (get() -> provider or null); without one, an
-  // injected wallet this site is already connected to is used.
   return { cfg, assets: _poolAssets, assetByTicker, account, identity, rpc, useWallet: (get) => { _walletGet = typeof get === 'function' ? get : null; }, ethCall, fetchEvents, balance, poolStatsFromEvents, tickerOf, poolTickerOf,
     deriveOutput, receiveCode, parseReceiveCode, buildWrap, buildShareWrap, nextShareIndex, releaseShareIndex, shareDeposits, nextWrapIndex, warmWrapLogs, releaseWrapIndex, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, wrapAndMintCusdCall, resumeWrapAndSend, proveWrap, wrapProofFits, wrapSettleCall, sendPreparedTx, buildTransferOp, transfer, stealthSend, scanStealthLocks, stealthClaim, stealthRefund, stealthLockPosition, crossOut, payInvoice, quoteUnwrapFee, ladderFee: _ladderFee, poolLeafCount, refreshFarmPending, holderFeeBps, setPublicTacHeld, quoteTransferFee, quoteOpFee: gasAwareMinFee, feeUsdFor, relayFeeEligible, buildUnwrap, unwrap, sendUnwrap, sendUnwrapExitOp: _sendUnwrapExit, exitAhead, exitAheadSend, exitForAnyone, watchSpent, cutForAnyone, lockForAnyone, addBridgeAmountHint, buildAttestMeta, chainBindingHex,
     settleFromAccount, erc2612Nonce: _erc2612Nonce, waitReceipt: _waitReceipt, poolReserves, poolFeeApr, poolCurrentRoot, sameRoot, routePoolId, quoteRoute, route, routeAhead, routeAheadSend, transferAhead, transferAheadSend, stealthSendAhead, stealthSendAheadSend, swapBatched, swapBatchPending, swapBatchFlush, lpBondPosition, buildLpBondOp, lpBond, farmProgram, farmBond, farmPositions, importFarmPosition, recover, recoverCdpPositions, scanSentLocks, farmHarvest, farmUnbond, farmRedeem, buildFastlaneExitOp, fastlaneExit, lpAdd, lpRemove, quoteLpAdd, wrapLp, wrapSwap, buildWrapSwap, submitWrapSwap, proveWrapSwap, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle, settleCalldata,

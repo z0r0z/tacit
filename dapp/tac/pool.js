@@ -1,21 +1,3 @@
-// TAC's shielded pool on Bitcoin, drawn into a page that holds an open Tacit key: TAC shielded from the key's Bitcoin address, paid
-// privately (to a Tacit or bp1 address, or to a claim link), combined, withdrawn to the Bitcoin address or sold for sats (sats.js),
-// received, and claimed from a link someone sent. The page keeps the key; this asks for it through `ctx` and stores none of it.
-//
-//   const tp = makeTacPool(ctx);
-//   tp.mount(host)                 its tabs, drawn once into `host` (the page may move the host; it keeps its state)
-//   tp.show('send')                a tab: 'shield' | 'send' | 'withdraw' | 'receive' (tp.show('withdraw', 'sats') for To sats)
-//   tp.claim(box, '#tacclaim=…')   a claim link's panel, drawn into `box`
-//   tp.keyChanged()                the page's key was opened, switched or locked
-//   tp.totals()                    { shielded, public } in TAC units (1e-8), null until read
-//   tp.pay(to, amount)             Send, filled with a payment the page took and pressed
-//   tp.fees(), tp.poolAddress(), tp.scan(report), tp.stats()   the relay's fee, the key's bp1… address, Scan for payments, the pool's figures
-//
-// ctx: key() → { pubHex } | null; priv() → the open key's bytes; ensureKey() returns with a key open, or shows the page's sign-in and throws
-// a quiet error; withKey(fn) → fn(T), tacit.js with the key in its wallet (the page's own turn of it); tacitAddress() → 'tacit1…' | null;
-// toast(msg, bad). Optional: hold(btn, fn), the page's own busy press around fn; changed(what), the pool's balance moved ('bitcoin': the
-// key's TAC on Bitcoin too); viewChanged(), a tab was picked; usd(sats) → '$…' | ''; mods: { secret, claim, sats }, the modules themselves, where they are not to be
-// loaded by their URLs (a test's stubs).
 
 const SECRET_URL = '/sats/secret.js?cb=f45e2684';
 const SATS_URL = '/tac/sats.js?cb=37cf5ec2';
@@ -25,7 +7,6 @@ const ASSET = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b'
 const DECIMALS = 8;
 const CLAIM_LINKS = 'tacit-tac-claim-links-v1';
 export const TABS = [['shield', 'Shield'], ['send', 'Send'], ['withdraw', 'Withdraw'], ['receive', 'Receive']];
-// A claim link, in a page's fragment (`#tacclaim=p1.…`, tac/claim.js)
 export const CLAIM_HASH = /(?:^#?|&)tacclaim=[^&\s]+/;
 
 export const fmt = (units, d = DECIMALS) => {
@@ -59,7 +40,6 @@ const parseUnits = (str, d = DECIMALS) => {
 };
 const blocksText = (n) => `${n} more Bitcoin block${n === 1 ? '' : 's'} (≈ ${n * 10} min)`;
 const short = (a, n = 4) => { if (!a) return ''; const head = /^tacit1/.test(a) ? 10 + n : n + 2; return a.length > head + n + 2 ? `${a.slice(0, head)}…${a.slice(-n)}` : a; };
-// A relayed payment can come back without its id (the relay says it posted, not in which transaction): it went out in the relay's batch.
 const txLink = (txid) => {
   if (!txid) return document.createTextNode('the relay’s batch');
   const a = document.createElement('a');
@@ -96,7 +76,6 @@ export function errText(e) {
   return end > 80 ? cut.slice(0, end + 1) : `${cut.slice(0, cut.lastIndexOf(' '))}…`;
 }
 
-// The claim links this device made, by their secrets (the only copy of a link the relay posted without saying where)
 function claimLinks() {
   try {
     const v = JSON.parse(localStorage.getItem(CLAIM_LINKS) || '[]');
@@ -118,14 +97,12 @@ export function makeTacPool(ctx) {
   const loadSecret = () => (S ? Promise.resolve(S) : (mods.secret ? Promise.resolve(mods.secret) : import(SECRET_URL)).then((m) => (S = m)));
   const loadClaim = () => (C ? Promise.resolve(C) : (mods.claim ? Promise.resolve(mods.claim) : import(CLAIM_URL)).then((m) => (C = m)));
   const unlocked = () => !!ctx.key();
-  // the pool wallet of the key open now (derived once a key)
   function wallet() {
     const k = ctx.key();
     if (!k || !S) return null;
     if (pwPub !== k.pubHex) { pwPub = k.pubHex; pw = S.poolWalletFor(ctx.priv(), 'mainnet'); }
     return pw;
   }
-  // the key open, the modules loaded and tacit.js's wallet holding the key, for a press
   async function ready() {
     await ctx.ensureKey();
     await loadSecret();
@@ -161,7 +138,6 @@ export function makeTacPool(ctx) {
     }
   }
 
-  // ── prices, the relay's fee, the pool's note feed ──
   const satsFor = (units) => (markSats == null ? null : Math.floor((Number(units) / 10 ** DECIMALS) * markSats));
   const satsText = (units) => {
     const s = satsFor(units);
@@ -176,7 +152,6 @@ export function makeTacPool(ctx) {
       paintBalances(); paintHints();
     }, () => { priceP = null; }));
   }
-  // the relay's fee read, which a press that sizes an amount waits for
   function loadRelay() {
     return (relayP ||= loadSecret().then(() => S.poolClientFor('mainnet').relayInfo()).then((info) => {
       relayLive = !!info; const f = info?.fees?.['0x' + S.TAC_ASSET_MAINNET]; relayFee = f == null ? null : BigInt(f);
@@ -184,16 +159,12 @@ export function makeTacPool(ctx) {
   }
   const relayFeeUnits = () => (relayLive && relayFee != null ? relayFee : 0n);
   const combineFee = () => (relayLive && relayFee != null ? relayFee : null);
-  const feeCap = () => (combineFee() == null ? null : (combineFee() * 5n) / 4n);   // a quote up to a quarter over the fee shown goes through; one above it is shown first
-  // A quote above the fee shown ends the press before anything is paid: the fee shown, Max and the balance check follow the new one, and the
-  // press is asked for again.
+  const feeCap = () => (combineFee() == null ? null : (combineFee() * 5n) / 4n);
   const feeMoved = (e) => {
     if (e?.feeMoved == null) throw e;
     relayFee = e.feeMoved; paintSendComb();
     throw said(`The relay’s fee changed to ${fmt(e.feeMoved)} TAC. Check it and press again.`);
   };
-  // The pool's note feed as last read here, kept as long as the pool client keeps its own read (20 s from its answer): a claim panel and the
-  // wallet's own read scan the same bytes instead of fetching them again.
   function poolFeed() {
     if (!feedKept || (feedKept.at != null && Date.now() - feedKept.at > 20e3)) {
       const kept = { p: null, at: null };
@@ -204,7 +175,6 @@ export function makeTacPool(ctx) {
   }
   const feedFresh = () => (feedKept && (feedKept.at == null || Date.now() - feedKept.at <= 20e3) ? feedKept.p : null);
 
-  // ── balances ──
   const noteVal = (u) => (typeof u.amount === 'bigint' ? u.amount : BigInt(u.amount));
   const publicTotal = () => pub.notes.reduce((t, u) => t + noteVal(u), 0n);
   const liveAll = () => (S && wallet() ? S.pendingView(shielded.notes || [], S.TAC_ASSET_MAINNET, wallet()).live : (shielded.notes || []).filter((n) => !n.spent));
@@ -212,7 +182,6 @@ export function makeTacPool(ctx) {
   const liveNotes = () => liveAll().filter((n) => BigInt(n.value) > 0n);
   const liveValues = () => liveNotes().map((n) => BigInt(n.value)).sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
 
-  // `quiet`: a read that follows a press says nothing of its own failing (it would write over what the press said)
   async function loadPublic(quiet = false) {
     if (!unlocked()) return;
     const k = ctx.key().pubHex;
@@ -233,7 +202,6 @@ export function makeTacPool(ctx) {
     if (!w) return;
     shielded = { ...shielded, loading: true }; paintBalances();
     try {
-      // a feed read moments ago opens this wallet's notes too, so the pool's notes are not fetched a second time for it
       const kept = feedFresh();
       const notes = kept ? (await S.poolClientFor('mainnet').walletNotes(S.pool, w, { notes: await kept })).filter((n) => lc(n.asset).replace(/^0x/, '') === S.TAC_ASSET_MAINNET) : await S.poolNotes(w, S.TAC_ASSET_MAINNET);
       if (wallet() !== w) return;
@@ -249,7 +217,6 @@ export function makeTacPool(ctx) {
     await Promise.all([loadPublic(), loadShielded()]);
     await recoverExits().catch(() => {});
   }
-  // A withdrawal whose opening this device lost (a tab closed mid-exit) is opened again from the pool's record of it.
   async function recoverExits() {
     if (!unlocked() || !wallet() || !shielded.notes) return;
     const k = ctx.key().pubHex;
@@ -260,7 +227,6 @@ export function makeTacPool(ctx) {
     const n = await ctx.withKey((t) => S.recoverExitOpenings(t, { poolWallet: wallet(), asset: S.TAC_ASSET_MAINNET, utxos: ghosts.map((g) => g.utxo), notes: shielded.notes }));
     if (n) { await ctx.withKey((t) => { t.invalidateHoldingsCache?.(); }); await loadPublic(); ctx.changed?.('bitcoin'); }
   }
-  // Payments to the key's one-time (stealth) addresses on Bitcoin, found by scanning TAC's transfers
   async function findStealth({ report } = {}) {
     if (!unlocked()) return 0;
     let found = 0;
@@ -277,7 +243,6 @@ export function makeTacPool(ctx) {
     if (found) { await ctx.withKey((t) => { t.invalidateHoldingsCache?.(); }); await loadPublic(); ctx.changed?.('bitcoin'); }
     return found;
   }
-  // (`statusId`: the panel's line to say it in, or a function the page says it with)
   async function scanEverything(statusId = 'tp-st-recv') {
     const tell = typeof statusId === 'function' ? statusId : (m) => say(statusId, m);
     await ready();
@@ -289,7 +254,6 @@ export function makeTacPool(ctx) {
     ctx.changed?.();
   }
 
-  // ── painting ──
   function paintBalances() {
     if (!host) return;
     const el = q('tp-bal');
@@ -298,13 +262,13 @@ export function makeTacPool(ctx) {
     el.textContent = !unlocked() ? 'Open your Tacit wallet to see what you hold here.'
       : !shielded.read ? 'Reading your shielded notes…'
       : `${fmt(shieldedTotal())} TAC shielded, in ${n} note${n === 1 ? '' : 's'}`;
-    if (unlocked() && shielded.read && !shielded.loading && n > 2) {   // a payment spends two notes at most: Withdraw and claim links need this too
+    if (unlocked() && shielded.read && !shielded.loading && n > 2) {
       const b = Object.assign(document.createElement('button'), { className: 'link', type: 'button', textContent: 'Combine' });
       b.onclick = offerCombine;
       el.append(' · ', b);
     }
     q('tp-refresh').hidden = !unlocked();
-    el.closest('.tp-bal').hidden = !unlocked();    // with no key the card's head already says to sign in
+    el.closest('.tp-bal').hidden = !unlocked();
     paintSendComb();
   }
   const combineBox = (id, lead, each = false) => html`<div class="callout"><span>${lead}<small>${combineFee() != null ? `Relay fee ≈ ${fmt(combineFee())} TAC${each ? ' each' : ''}` : 'Posted from your Bitcoin address, which pays its Bitcoin fee and shows as the sender'}.</small></span><button class="btn ghost" type="button" id="${id}">Combine</button></div>`;
@@ -337,8 +301,8 @@ export function makeTacPool(ctx) {
     const sel = q('tp-shield-pick');
     if (!sel) return;
     const was = sel.value, note = q('tp-shield-note'), go = q('tp-shield-go'), grp = sel.closest('.amt');
-    if (go) go.textContent = unlocked() ? 'Shield' : 'Sign in';    // with no key, the press opens the wallet
-    for (const e of [grp, grp?.previousElementSibling]) if (e) e.hidden = !unlocked();    // and there is nothing to pick: its label and the list wait for a key
+    if (go) go.textContent = unlocked() ? 'Shield' : 'Sign in';
+    for (const e of [grp, grp?.previousElementSibling]) if (e) e.hidden = !unlocked();
     sel.replaceChildren();
     const one = (text) => { const o = document.createElement('option'); o.textContent = text; sel.append(o); sel.disabled = true; };
     note.textContent = '';
@@ -363,7 +327,6 @@ export function makeTacPool(ctx) {
     t.placeholder = p.placeholder = w ? 'Reading…' : 'Open your Tacit wallet to see it';
   }
 
-  // ── presses ──
   async function doShield() {
     await ready();
     if (!pub.notes.length) await loadPublic();
@@ -376,13 +339,11 @@ export function makeTacPool(ctx) {
     let r;
     try { r = await S.shieldNote(T, { note, poolWallet: wallet(), say: (m) => say('tp-st-shield', m) }); }
     catch (e) {
-      // a note that was spent already is not offered again: the list is read afresh behind the message
       if (e?.spent) { try { T.invalidateHoldingsCache?.(); } catch {} loadPublic(true).catch(() => {}); }
       throw e;
     }
     say('tp-st-shield', `${fmt(r.poolNote.value)} TAC shielded in `, txLink(r.revealTxid), '. It joins the pool after one confirmation.');
     try { T.invalidateHoldingsCache?.(); } catch {}
-    // (the note leaves the list at once: a scan that fails or runs long must not offer it again, nor write over the line above)
     pub = { ...pub, notes: pub.notes.filter((x) => `${x.utxo.txid}:${x.utxo.vout}` !== picked) };
     paintBalances(); paintShieldPicker();
     await loadPublic(true); await loadShielded();
@@ -425,7 +386,6 @@ export function makeTacPool(ctx) {
     await loadPublic(); await loadShielded();
     ctx.changed?.('bitcoin');
   }
-  // Max: the shielded balance, less the relay's fee where the relay carries it (it is waited for rather than taken as none)
   const maxInto = (field, statusId) => async () => {
     await ready();
     if (shielded.loading) await shieldedP; else if (!shielded.notes.length) await loadShielded();
@@ -471,7 +431,6 @@ export function makeTacPool(ctx) {
     say(statusId, wrap);
   }
 
-  // ── claim links: made here ──
   function writeClaimLinks(list) {
     try { localStorage.setItem(CLAIM_LINKS, JSON.stringify(list)); } catch {}
     paintClaimLinks();
@@ -546,17 +505,16 @@ export function makeTacPool(ctx) {
       keep: ({ secret32, pinned, network }) => {
         secret = toHex(secret32);
         putClaimLink({ secret, pinned, network, amount: amount.toString(), at: Date.now() });
-        // storage that is full or blocked keeps nothing: the payment is not made to a key only this tab knows
         if (!claimLinks().some((x) => x.secret === secret)) throw new Error('This browser could not save the link’s key, so nothing was sent. Free some space or allow this site’s data, then try again.');
       },
-    }).catch((e) => { if (e?.feeMoved != null && secret) dropClaimLink(secret); feeMoved(e); });   // a fee refused before anything is paid leaves no link behind
+    }).catch((e) => { if (e?.feeMoved != null && secret) dropClaimLink(secret); feeMoved(e); });
     if (r.wait) {
       if (secret) dropClaimLink(secret);
       return say('tp-st-claim-make', `Your newest note needs ${blocksText(r.wait)} before it can be spent. Try again after that.`);
     }
     if (secret) patchClaimLink(secret, { txid: r.revealTxid, link: r.link });
     q('tp-claim-amt').value = ''; q('tp-claim-pin').value = ''; paintHints();
-    if (!r.link) {   // the relay posted it without saying where: the link is read back from the note once the pool counts it
+    if (!r.link) {
       say('tp-st-claim-make', `${fmt(amount)} TAC went out in the relay’s batch. Its link is under Links made here: press Find the link there in a few blocks.`);
       return loadShielded();
     }
@@ -569,7 +527,6 @@ export function makeTacPool(ctx) {
     await loadShielded();
   }
 
-  // ── a claim link someone sent: one panel at a time (a new link stops the last one's checks, and a late read of the last one's changes nothing) ──
   const claimTimers = { typing: 0, again: 0 };
   let claimGen = 0;
   async function showClaim(box, payload) {
@@ -587,10 +544,10 @@ export function makeTacPool(ctx) {
     pinField.setAttribute('aria-label', 'PIN');
     const line = document.createElement('div'); line.className = 'kv';
     const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'btn'; btn.textContent = 'Claim it';
-    btn.disabled = true;   // live once a read says there is something under the link
+    btn.disabled = true;
     const st = document.createElement('div'); st.className = 'status'; st.id = 'tp-st-claim'; st.setAttribute('role', 'status');
 
-    let looked = 0, claimed = false;   // claimed here: the pool's feed can still show the note for a few blocks
+    let looked = 0, claimed = false;
     async function refresh() {
       if (gen !== claimGen || !box.isConnected) return;
       const mine = ++looked;
@@ -601,8 +558,6 @@ export function makeTacPool(ctx) {
         const r = await C.readClaim(S, S.pool, { secret32: parsed.secret32, pin: pinField.value.trim(), network: 'mainnet', asset: S.TAC_ASSET_MAINNET, feed, txid: parsed.txid });
         if (mine !== looked || gen !== claimGen) return;
         has = r.total > 0n && !claimed; gone = claimed || (!has && r.seen > 0);
-        // no note under the link at all: a payment still on its way while the pool has not indexed its transaction; once it has, the PIN is not
-        // the one the link was made with, or the link was changed on the way
         const why = has ? `${fmt(r.total)} TAC${satsText(r.total) ? ' · ' + satsText(r.total) : ''}` : gone ? 'Already claimed' : r.indexed === false ? 'Not arrived yet' : parsed.pinned ? 'Check the PIN' : r.indexed ? 'Copy the whole link again' : 'Not arrived yet';
         line.replaceChildren(
           Object.assign(document.createElement('span'), { textContent: has ? 'Waiting for you' : gone ? 'Nothing under this link' : 'Nothing here yet' }),
@@ -610,7 +565,6 @@ export function makeTacPool(ctx) {
         btn.disabled = !has;
       } catch (e) { if (mine !== looked || gen !== claimGen) return; failed = true; line.replaceChildren(); errInto(line, e); }
       clearTimeout(claimTimers.again);
-      // a payment a few blocks out, or a read that failed, is looked for again in a minute; a tab out of sight looks once it is seen again
       if (failed || (!has && !gone)) claimTimers.again = setTimeout(() => { if (!document.hidden) refresh(); else document.addEventListener('visibilitychange', () => refresh(), { once: true }); }, 60e3);
     }
 
@@ -625,7 +579,7 @@ export function makeTacPool(ctx) {
       st.replaceChildren(document.createTextNode('Claimed into your shielded TAC on Bitcoin in '), txLink(r.revealTxid), document.createTextNode(r.relayed ? '. The fee came out of the TAC, so it cost you no bitcoin.' : '.'));
       await refreshAll();
       await refresh();
-    }).then(() => { if (claimed) btn.disabled = true; });   // busy hands the button back as it was before the press
+    }).then(() => { if (claimed) btn.disabled = true; });
 
     box.replaceChildren(
       Object.assign(document.createElement('p'), { className: 'note tp-lead', textContent: parsed.pinned ? 'Someone sent you TAC. Enter the PIN you were given.' : 'Someone sent you TAC. Claiming moves it into your shielded TAC on Bitcoin.' }),
@@ -639,7 +593,6 @@ export function makeTacPool(ctx) {
     el.append(span);
   }
 
-  // ── tabs ──
   function pick(k, sub = null, user = false) {
     if (!TABS.some(([x]) => x === k)) k = 'shield';
     tab = k;
@@ -664,7 +617,6 @@ export function makeTacPool(ctx) {
     const box = q('tp-sats');
     if (satsMounted || !box) return;
     satsMounted = true;
-    // the panel reads the key's sale keys through tacit.js as it is drawn, so it is loaded with the key first
     const keyed = unlocked() ? ctx.withKey((t) => { T = t; }).catch(() => {}) : Promise.resolve();
     Promise.all([keyed, loadSecret(), mods.sats ? mods.sats : import(SATS_URL)]).then(([, , m]) => m.mount(box, {
       get T() { return T; }, get S() { return S; }, get poolWallet() { return wallet(); },
@@ -754,7 +706,6 @@ export function makeTacPool(ctx) {
     host = el;
     el.classList.add('tp');
     el.innerHTML = view().s;
-    // an amount that does not read says why under its field
     for (const ev of ['input', 'change']) el.addEventListener(ev, ({ target: i }) => {
       if (!i.matches?.('input[inputmode="decimal"]')) return;
       const t = i.value.trim(), open = ev === 'input' && (t === '.' || /^[1-9]\d{0,2}(?:,\d{3})*,\d{0,3}$/.test(t));
@@ -793,12 +744,11 @@ export function makeTacPool(ctx) {
     loadSecret().then(() => { paintReceive(); if (unlocked() && !shielded.read && !shielded.loading) refreshAll().catch(() => {}); }, () => {});
   }
 
-  // the key opened, switched or locked: what was read for the last one is let go of
   function keyChanged() {
     pw = null; pwPub = null; stealthScanned = false;
     pub = { loading: false, notes: [], read: false }; shielded = { loading: false, notes: [], read: false };
     for (const id of ['tp-st-shield', 'tp-st-send', 'tp-st-exit', 'tp-st-recv', 'tp-st-comb', 'tp-st-claim-make']) say(id);
-    window.dispatchEvent(new Event('tac:wallet'));      // the To sats pane's sale keys are the key's
+    window.dispatchEvent(new Event('tac:wallet'));
     if (!host) return;
     paintBalances(); paintShieldPicker(); paintReceive();
     if (unlocked()) whenIdle(() => refreshAll().then(() => {
@@ -817,22 +767,15 @@ export function makeTacPool(ctx) {
     refresh: () => (unlocked() ? refreshAll() : Promise.resolve()),
     busy: () => busyId != null,
     totals: () => ({ shielded: shielded.read ? shieldedTotal() : null, public: pub.read ? publicTotal() : null }),
-    // a payment entered on the page: the Send tab filled with it, then pressed as its own button is
     pay: (to, amount) => {
       pick('send');
       q('tp-send-to').value = String(to || ''); q('tp-send-amt').value = String(amount || '');
       paintHints(); paintSendComb();
       return busy(q('tp-send-go'), 'tp-st-send', () => doSend());
     },
-    // the relay's fee for a payment (TAC units), null while it is not posting them
     fees: () => loadRelay().then(() => ({ relay: relayLive && relayFee != null ? relayFee : null })),
-    // the key's pool address (bp1…), null with no key open
     poolAddress: () => loadSecret().then(() => (unlocked() ? wallet()?.addressString || null : null)),
-    // Scan for payments, its words said through `report`
     scan: (report) => scanEverything(report),
-    // the pool as anyone sees it, for TAC: its notes (every asset has its own, the asset being public), the transactions that made them, the Bitcoin block the
-    // last one came in, the block the pool has read against Bitcoin's tip, whether it is reading well, and its proof system. Amounts stay hidden, even where TAC
-    // goes in and out, so there is no total to show
     stats: async () => {
       await loadSecret();
       const st = await S.poolClientFor('mainnet').status(), feed = await poolFeed().catch(() => null);

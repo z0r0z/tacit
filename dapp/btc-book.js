@@ -1,16 +1,5 @@
-// The Bitcoin order book for one asset, as a plain data model: normalize the worker's
-// listings and bids into asks/bids a trader can actually fill, and plan market orders
-// against them. No DOM, no globals, no network — btc-market.js renders and executes,
-// tests/btc-book.test.mjs pins the behaviour.
-//
-// Amounts are base units (bigint). A unit price is sats per whole token (Number) and is
-// only ever used to sort, bound and display; every sats figure that reaches a signer is
-// recomputed from the listing's own integer price_sats with the same integer math the
-// executors in tacit.js use.
 
 export const DUST = 546;
-// Sats a move of a bridged note takes from the trading address: the commit and the reveal tacit.js builds (about 153 and 435 vB, each at least 500 sats) at the fee rate
-// now, half again for a rate that rises before it is signed, and the output's dust. A rate that cannot be read leaves the flat sum the pages named before.
 export const MOVE_SATS_FLAT = 5000;
 export async function moveSatsNeeded(feeRate) {
   let rate = 0;
@@ -19,14 +8,9 @@ export async function moveSatsNeeded(feeRate) {
   const fee = (vb) => Math.max(500, Math.ceil(vb * rate * 1.5));
   return Math.ceil((DUST + fee(153) + fee(435)) / 500) * 500;
 }
-// Atomic offers older than this rarely have a maker online to confirm a claim.
 export const STALE_INTENT_SEC = 12 * 3600;
-// Never route into something that expires before a take could confirm.
 export const EXPIRY_GUARD_SEC = 60;
-// A seller's claim on a bid reserves it for 30 minutes and the worker refuses one whose
-// bid ends sooner, so bids inside that window can't be sold into.
 export const BID_CLAIM_WINDOW_SEC = 1800 + 120;
-// Display-only network fee estimates (the executors price the real fee at broadcast).
 export const FEE_EST_TAKE_SATS = 800;
 export const FEE_EST_BATCH_EXTRA_SATS = 250;
 export const FEE_EST_SELL_SATS = 1600;
@@ -41,31 +25,24 @@ export function unitPrice(priceSats, amountBase, decimals) {
   return (p * Math.pow(10, decimals)) / Number(a);
 }
 
-// floor(amount × priceSats / fullAmount) — the scaling fulfilBidIntent and the
-// variable-intent claim both use for a partial fill.
 export function scaledSats(fillBase, priceSats, fullBase) {
   const full = toBig(fullBase);
   if (full <= 0n) return 0;
   return Number((toBig(fillBase) * toBig(priceSats)) / full);
 }
 
-// Base units buyable for `sats` at `unit` sats/token, rounded down.
 export function amountForSats(sats, unit, decimals) {
   if (!(unit > 0) || !(sats > 0)) return 0n;
   const scaledUnit = BigInt(Math.max(1, Math.round(unit * 1e8)));
   return (BigInt(Math.floor(sats)) * pow10(decimals) * 100_000_000n) / scaledUnit;
 }
 
-// Sats for `amountBase` at `unit`, rounded down.
 export function satsForAmount(amountBase, unit, decimals) {
   if (!(unit > 0)) return 0;
   const scaledUnit = BigInt(Math.max(1, Math.round(unit * 1e8)));
   return Number((toBig(amountBase) * scaledUnit) / (pow10(decimals) * 100_000_000n));
 }
 
-// What a person typed as plain digits and one point, or null. A comma between groups of three (1,500 and 1,234.5) is a thousands separator, as it
-// always was here; any other comma is a decimal point (0,05 and 12,5, as a keypad with a comma key gives them; 1.234,5 reads as 1234.5), not a
-// separator that would make 0,05 five.
 export function cleanNumber(text) {
   let s = String(text ?? '').trim().replace(/[_\s]/g, '');
   if (/^\d{1,3}(?:\.\d{3})+,\d*$/.test(s)) s = s.replace(/\./g, '').replace(',', '.');
@@ -73,7 +50,6 @@ export function cleanNumber(text) {
   s = s.replace(/,/g, '');
   return /^\d*\.?\d*$/.test(s) && s !== '' && s !== '.' ? s : null;
 }
-// A typed price or total as a number: NaN when it cannot be read.
 export const parseNumber = (text) => { const s = cleanNumber(text); return s == null ? NaN : Number(s); };
 
 export function parseAmount(text, decimals) {
@@ -85,8 +61,6 @@ export function parseAmount(text, decimals) {
   return v;
 }
 
-// Each Intl formatter is made once: toLocaleString(locale, options) builds a new one per call, and a ladder formats a number per row per render.
-// They are made when first used, as the first one loads the locale data and a page should not wait for that before its first request.
 const NF = {};
 const NF_INT = { format: (v) => (NF.int ||= new Intl.NumberFormat('en-US')).format(v) };
 const NF_UNIT = [{ format: (v) => (NF.u0 ||= new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 })).format(v) }, { format: (v) => (NF.u1 ||= new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })).format(v) }, { format: (v) => (NF.u2 ||= new Intl.NumberFormat('en-US', { maximumFractionDigits: 3 })).format(v) }];
@@ -121,9 +95,6 @@ export function fmtSats(n) {
   return NF_INT.format(Math.round(n));
 }
 
-// ── normalization ───────────────────────────────────────────────────────────
-
-// ctx: { assetId, decimals, myPubHex, myH160, nowSec, varIntents, takenIds:Set }
 export function normalizeAsks(listings, ctx) {
   const { assetId, decimals, myPubHex = null, myH160 = null, nowSec, varIntents = false } = ctx;
   const taken = ctx.takenIds || new Set();
@@ -177,15 +148,12 @@ export function normalizeAsks(listings, ctx) {
   return { asks, excluded };
 }
 
-// Cheapest first; on a tie, instant (walk-away) listings before ones a maker must
-// confirm, then older first so earlier makers keep priority.
 export function compareAsks(a, b) {
   if (a.unit !== b.unit) return a.unit - b.unit;
   if (a.instant !== b.instant) return a.instant ? -1 : 1;
   return a.createdAt - b.createdAt;
 }
 
-// ctx: { decimals, myPubHex, nowSec, autoBidIds:Set }
 export function normalizeBids(bids, ctx) {
   const { decimals, myPubHex = null, nowSec } = ctx;
   const autoIds = ctx.autoBidIds || new Set();
@@ -247,8 +215,6 @@ export function buildBook(input) {
   };
 }
 
-// Group rows that would print identically (same displayed price, same flags) so the
-// ladder shows one line per level with a count, not one per UTXO.
 export function ladderLevels(rows, side) {
   const out = [];
   const byKey = new Map();
@@ -271,15 +237,6 @@ export function ladderLevels(rows, side) {
   return out;
 }
 
-// ── planning ────────────────────────────────────────────────────────────────
-
-// Market buy. Exactly one of spendSats / receiveBase.
-//   spendSats   — never spend more than this; whole lots that don't fit are skipped.
-//   receiveBase — cheapest route to at least this much; a whole lot may overshoot a
-//                 little, but never by more than the amount still needed.
-// maxUnit caps every fill's price. maxBase (spend mode) caps the tokens received, so a
-// limit buy of N tokens never fills more than N from cheaper lots. Own offers are never
-// routed.
 export function planBuy(book, { spendSats = null, receiveBase = null, maxUnit = Infinity, maxBase = null, includeIntents = true, excludeIds = null } = {}) {
   const dec = book.decimals;
   const skip = excludeIds || new Set();
@@ -351,8 +308,6 @@ export function planBuy(book, { spendSats = null, receiveBase = null, maxUnit = 
   };
 }
 
-// Market sell into bids. includeManual adds bids whose owner has to be online to
-// settle (no watchtower); by default only bids that settle on their own are used.
 export function planSell(book, { sellBase, minUnit = 0, includeManual = false, excludeIds = null } = {}) {
   const dec = book.decimals;
   const skip = excludeIds || new Set();
@@ -391,9 +346,6 @@ export function planSell(book, { sellBase, minUnit = 0, includeManual = false, e
   };
 }
 
-// A re-plan made after the user confirmed may run without asking again only if it
-// stays inside what they agreed to: no more sats and no worse price (buy), or no more
-// tokens and no worse price (sell).
 export function withinBounds(plan, bounds) {
   if (!plan || !plan.fills.length) return false;
   if (plan.side === 'buy') {
@@ -404,16 +356,12 @@ export function withinBounds(plan, bounds) {
   return plan.fills.every((f) => f.unit >= bounds.minUnit * (1 - 1e-9));
 }
 
-// Price a limit order would rest at relative to the book, for the ticket's hint.
 export function limitCrossesBook(book, side, unit) {
   if (!(unit > 0)) return false;
   if (side === 'buy') return book.bestAsk != null && unit >= book.bestAsk;
   return book.bestBid != null && unit <= book.bestBid;
 }
 
-// Split a sell listing into k equal walk-away lots (2..7, as publishPreauthSaleChunks
-// takes them) so buyers can take part of it; k = 1 when splitting would push a lot
-// under 2×dust. An indivisible remainder of a few base units stays in the wallet.
 export function listingShape(amountBase, unit, decimals) {
   const amt = BigInt(amountBase);
   const totalSats = satsForAmount(amt, unit, decimals);

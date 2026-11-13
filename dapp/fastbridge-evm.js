@@ -1,16 +1,3 @@
-// The Ethereum side of the fast bridge machines (fastbridge-bl.js, fastbridge-el.js) on the pool wallet
-// (dapp/confidential-pool-ux.js) and the relay client it carries: the chain reads (time, the lock set, whether a lock
-// is spent and by which claim), the ops of both lockers, and sending them through the relay.
-//
-// Ops are built once, returned as bundles { op, leaves, outputs, lockMemos, ephSeed } the machines store before they
-// send, and sent from the stored bytes. Every key and blinding a bundle needs derives from the wallet key and the swap
-// id, and the memos are sealed from a seed in the bundle, so a bundle sent twice is the same job and a lost record
-// costs nothing the key and the chain cannot rebuild. Notes the wallet receives (a claimed or refunded note) carry a
-// memo sealed to its key and are found again by the wallet's own scan.
-//
-//   const evm = makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv, seed, asset, poolAddress })
-//   ux          makeConfidentialPoolUx(...)           walletPriv  32 bytes, the pool identity        seed  32 bytes, the swap seed
-//   hmacSha256  (key, msg) => 32 bytes                asset       the pool asset id of the swap      poolAddress  the pool contract
 
 import { makeConfidentialAdaptor } from './confidential-adaptor.js';
 import * as X from './adaptor-xswap.js';
@@ -22,15 +9,8 @@ const POSITION_TTL_MS = 5 * 60 * 1000;
 const strip = (h) => String(h).replace(/^0x/, '').toLowerCase();
 const lc = (h) => '0x' + strip(h);
 
-// the relayer the pool's lock scan trusts to forward settles (dapp/confidential-lock-scan.js)
 const MAINNET_RELAYER = '0x000000009C28617AC88B52Eae5EFaAcdD4aC34c3';
 
-// `selfSettle(x)` -> { txHash }: sends a settle the relay does not send (it is 'held': its sender is under its gas floor) from an
-// account of the page's own, x = { jobId, publicValues, proof, memos }; it is used only after `openGraceMs` of the relay not sending,
-// and a try that fails waits `selfRetryMs` before the next. Without it a held settle waits for the relay. See jobStatus.
-// `ownAccount` = { address }: the account `selfSettle` sends from belongs to this process (a provider that runs on its own, with no wallet to
-// ask). The relay may refuse a settle at the door (the day's free settles are used up, it is held, it has had too many requests): with an
-// own account such an op is proved prove-only and sent from the account at once, and `ready()` says whether the account can pay for it.
 export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv, seed, asset, poolAddress, relayerAddress = MAINNET_RELAYER, policy = {}, adaptor = null, selfSettle = null, ownAccount = null, openGraceMs = 45000, selfRetryMs = 120000, clock = () => Date.now(), log = () => {} }) {
   const te = new TextEncoder();
   const hex = (b) => [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
@@ -45,7 +25,6 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
   const assetId = lc(asset);
   const identity = () => ux.identity(privBytes);
 
-  // A scalar from the wallet key, a purpose and the swap id: the same on every run.
   function derive(tag, id, i = 0) {
     for (let c = i; ; c++) {
       const k = toBig(hmacSha256(privBytes, cat(te.encode('tacit-fastbridge-' + tag), bytes(id), Uint8Array.of(c)))) % SECP_N;
@@ -53,7 +32,6 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     }
   }
   const xonlyOf = (k) => G.multiply(k).toRawBytes(true).slice(1);
-  // The randomness a memo is sealed with, from a seed, so the same bundle seals to the same memo every time.
   const seeded = (seedHex) => { let i = 0; const key = bytes(seedHex); return () => { for (; ; i++) { const k = toBig(hmacSha256(key, Uint8Array.of(i))) % SECP_N; if (k > 0n) { i++; return k; } } }; };
   const affine = (P) => { const u = P.toRawBytes(false); return { tx: '0x' + hex(u.slice(1, 33)), ty: '0x' + hex(u.slice(33, 65)) }; };
 
@@ -61,18 +39,12 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
   const serial = (fn) => { const run = queue.p.catch(() => {}).then(fn); queue.p = run; return run; };
   const reserved = new Set();
 
-  // ── chain reads ──
   async function now() {
     const b = await rpc('eth_getBlockByNumber', ['latest', false]);
     return parseInt(b.timestamp, 16);
   }
   const lockNullifier = (leaf) => pool.nullifier(lc(leaf));
-  // Where a lock sits in the lock set. Reading the set decodes the pool's whole event history, so it is not done for a
-  // question already answered: a position found stays good (the pool accepts any root the set has had) and is read again
-  // only after a few minutes, in case the block it was found in has since been replaced; a lock not found is looked for
-  // again only when the set has grown, which its count shows at the cost of one storage read.
   const positions = new Map(), misses = new Map();
-  // what a provider that runs for weeks remembers is bounded: the oldest entry goes first (a pool transaction's calldata is kilobytes each)
   const cap = (map, max) => { while (map.size > max) map.delete(map.keys().next().value); };
   async function lockPosition(leaf) {
     const key = lc(leaf), hit = positions.get(key);
@@ -94,7 +66,6 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     if (!blocks.has(n)) { blocks.set(n, parseInt((await rpc('eth_getBlockByNumber', ['0x' + n.toString(16), false])).timestamp, 16)); cap(blocks, 4096); }
     return blocks.get(n);
   }
-  // The first block at or after a time, by bisection.
   async function blockAtOrAfter(ts) {
     let lo = 0, hi = parseInt(await rpc('eth_blockNumber', []), 16);
     while (lo < hi) { const mid = Math.floor((lo + hi) / 2); if ((await blockTs(mid)) < ts) lo = mid + 1; else hi = mid; }
@@ -107,22 +78,18 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
   }
   const trustedTo = new Set([poolAddress, relayerAddress].map((a) => String(a).toLowerCase()));
   const claims = new Map();
-  // null while the lock is unspent; the s values its settle committed once it is spent ([] for a refund).
   async function findClaim(lockNu, { sinceSecs = 0 } = {}) {
     if (!(await mappingFlag(LOCK_SPENT_SLOT, lockNu))) return null;
     const key = lc(lockNu);
     if (claims.has(key)) return claims.get(key);
     const events = await ux.fetchEvents({ fromBlock: sinceSecs ? await blockAtOrAfter(Math.max(0, sinceSecs - 3600)) : undefined, toBlock: 'latest' });
     const seen = new Set();
-    // every call that names the lock is read, in every transaction that touched the pool, and the values are gathered: the caller tests each against its own T.
     const found = []; let named = false;
     for (const e of events) {
       if (!e.txHash || seen.has(e.txHash) || (e.type !== 'LeavesInserted' && e.type !== 'NullifiersSpent')) continue;
       seen.add(e.txHash);
       const tx = await txOf(e.txHash);
       const decoded = tx && ux.lockScan.decodeSettleCalls(tx.input);
-      // only a settle the pool itself (or its relayer) was called with says what the pool did: bytes inside the calldata of some other
-      // contract's call are whatever its sender wrote, and a settle-shaped decoy there would end the swap in the wrong phase
       if (!decoded || !decoded.direct || !trustedTo.has(tx.to)) continue;
       for (const call of decoded.calls) {
         let f; try { f = ux.lockScan.decodePublicValuesAdaptorFields(call.publicValues); } catch { continue; }
@@ -133,13 +100,7 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     throw new Error('the lock is spent, and the settle that spent it is not found yet');
   }
 
-  // A settle the relay does not send is sent by the page's own account (`selfSettle`) once the relay has not sent it for a while. Two ways:
-  // a job the relay proved and put on its open board ('open': a cut, a plain transfer) is sent with that proof; a job the relay leaves
-  // waiting while it is 'held' (its settle wallet under its gas floor: an adaptor lock, claim or refund never goes on the open board) is
-  // proved again prove-only, which a held relay still does, and that proof is sent. One send at a time per job; one that lands counts as
-  // settled whatever the relay says of the job after. Sending it shows the account's address on Ethereum, which the wallet asks about.
   const own = new Map();
-  // `immediate`: a job the relay never took (see submit) has no relay to give a while to
   function sendOwn(id, proven, immediate = false) {
     let o = own.get(id);
     if (!o) own.set(id, (o = { seen: immediate ? -Infinity : clock(), retryAt: 0, sending: null, done: false }));
@@ -157,9 +118,7 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     return 'pending';
   }
   const relayHeld = async () => { try { const r = ux.relay.state ? await ux.relay.state() : null; return !!(r && r.state === 'held'); } catch { return false; } };
-  // `again` = { type, bundle }: the op the job was submitted with, so a job a held relay leaves waiting can be proved prove-only
   async function jobStatus(id, again = null) {
-    // a job of this process's own (see submit): the relay does not know it, so it is proved and sent from the record's op alone
     if (isOwnJob(id)) {
       if (own.get(id) && own.get(id).done) return 'settled';
       if (!selfSettle || !again || !again.bundle) return 'pending';
@@ -178,8 +137,6 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     type, op: bundle.op, leaves: bundle.leaves || [], outputs: bundle.outputs || null,
     ephRand: bundle.ephSeed ? seeded(bundle.ephSeed) : undefined, lockMemos: bundle.lockMemos || null,
   });
-  // What the relay says at the door when it will not take a settle: the day's free settles are used up, it is held (its sender is under its gas
-  // floor), this address has asked too often, or the fee it would need is not there. Anything else is not a refusal but a fault.
   const refusalOf = (e) => {
     const m = String((e && e.message) || e), code = e && e.code;
     if (code === 'free_budget' || /free relayed settles for today/i.test(m)) return 'the free settles for today are used up';
@@ -188,9 +145,6 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     if (/fee below|feegate|marginal cost/i.test(m)) return 'the settle is below the relay’s fee floor';
     return null;
   };
-  // A refusal is not asked again at once: the relay's own wait (at least 30 s, at most 10 min) is kept, and while it runs an op of that type
-  // goes to the account at once, or the same refusal is said again. It is kept per type of op: the day's free settles are used up for a lock
-  // and a claim, which carry no fee, while a refund that carries one is still taken.
   const refusals = new Map();
   const refusal = (type) => { const r = refusals.get(type); return r && clock() < r.until ? r : null; };
   let readyAt = -Infinity, readyLast = { ok: true }, ownSeq = 0;
@@ -214,9 +168,6 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     }
   }
 
-  // Whether a lock can be sent now. The relay is a way when it is proving and sending and has not just refused; otherwise only an account of
-  // this process's own is, and only while it holds the gas of a settle (it is read at most every 20 s). A relay that is not proving at all
-  // cannot prove it for the account either. With a wallet the page asks (no `ownAccount`) the wallet is the way, as it has always been.
   async function ready() {
     if (clock() - readyAt < 20000) return readyLast;
     let st = null;
@@ -246,8 +197,6 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     return (byAsset[assetId] && byAsset[assetId].notes) || [];
   }
 
-  // What the wallet holds of the asset, less the notes already given to a lock and the relay's fee for cutting a note of the size (paid
-  // only when the day's free settles are used up, but then out of these notes): the most a new lock can use.
   const cutFee = { at: -Infinity, fee: 0n };
   async function cutReserve(sum) {
     if (clock() - cutFee.at > 600000) { cutFee.fee = await refundFee(sum + 1n); cutFee.at = clock(); }
@@ -259,17 +208,11 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     return sum > fee ? sum - fee : 0n;
   };
 
-  // ── the Ethereum locker ──
   const refundKey = async (id) => ({ xonly: xonlyOf(derive('evm-refund', id)) });
-  // A note of exactly the amount, cut from a larger one when there is none; one cut at a time.
   const prepare = ({ rec }) => serial(async () => {
     const amount = BigInt(rec.offer.evm.amount);
     const free = (await heldNotes()).filter((n) => !reserved.has(lc(n.leaf)));
     if (free.some((n) => BigInt(n.value) === amount)) return;
-    // One transfer to this wallet's own identity takes in the fewest notes that cover it (the smallest one that does, else the largest
-    // first) and puts out a note of exactly the amount and the change. It is sent with no fee first, as the relay's free settles carry
-    // (the relay is the provider's own service, and the lock that follows is free as well); only when the day's free settles are used up
-    // is the relay's fee paid, out of the notes.
     const pick = (fee) => {
       const need = amount + fee, sorted = free.slice().sort((x, y) => (BigInt(x.value) > BigInt(y.value) ? 1 : -1));
       const one = sorted.find((n) => BigInt(n.value) >= need);
@@ -281,10 +224,8 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     const send = async (fee) => {
       const notes = pick(fee);
       if (!notes) throw new Error(`fastbridge: the pool notes hold ${free.reduce((x, n) => x + BigInt(n.value), 0n)}, short of ${amount}${fee ? ` and the fee of cutting it (${fee})` : ''}`);
-      // with the relay held the cut is proved prove-only and sent from the page's own account at once
       const own = selfSettle && (await relayHeld()) ? (x) => { log({ level: 'info', msg: 'the relay is held: sending the cut from your wallet', jobId: x.jobId }); return selfSettle(x); } : null;
       return ux.transfer({ walletPriv: privBytes, notes, recipientPubHex: identity().pubHex, amount, fee, ...(own ? { selfSettle: own } : {}) }).catch((e) => {
-        // the relay proved the cut and holds it: the page's own account sends it
         if (!(e && e.open && selfSettle)) throw e;
         log({ level: 'info', msg: 'the relay holds a settle: sending it from your wallet', jobId: e.open.jobId });
         return selfSettle({ jobId: e.open.jobId, publicValues: e.open.publicValues, proof: e.open.proof, memos: e.open.memos || [] });
@@ -296,9 +237,6 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
       await send(await refundFee(amount + 1n));
     }
   });
-  // The reservation of a note keeps two swaps of one size from being given the same note. A swap keeps its note across tries: a lock
-  // that is built again (the relay lost the job, or said it failed) is built from the note the first try used, so that if the first
-  // lands after all the second cannot, instead of two locks of one swap being made from two notes.
   const reserve = (rec) => {
     if (!rec || rec.phase === 'aborted') return;
     const op = rec.lock && rec.lock.op && (rec.lock.op.op || rec.lock.op);
@@ -309,7 +247,6 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
   const lockOp = ({ rec, rEvmLock, T, deadline, recipient, refundXonly, prefer = null }) => serial(async () => {
     const amount = BigInt(rec.offer.evm.amount);
     const held = await heldNotes();
-    // a note an earlier try used is the one to use: when it is no longer held, that try has probably landed, and the pool says so by the lock's leaf
     const note = prefer ? held.find((n) => lc(n.leaf) === lc(prefer) && BigInt(n.value) === amount) : held.find((n) => BigInt(n.value) === amount && !reserved.has(lc(n.leaf)));
     if (!note) return null;
     const op = ad.buildAdaptorLock({
@@ -343,7 +280,6 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
   }
   const secpPoint = (h) => secp.ProjectivePoint.fromHex(strip(h));
 
-  // ── the Bitcoin locker ──
   const recipient = async (id) => { const k = derive('evm-auth', id); return { xonly: xonlyOf(k), priv: k }; };
   async function claimOp({ rec, evmOffer, sec, position }) {
     const id = rec.id, amount = BigInt(evmOffer.amount);
