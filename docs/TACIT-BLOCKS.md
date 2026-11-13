@@ -136,7 +136,8 @@ block extends the held state, the time, the queue, and:
   **inbox** takes TAC with no approval and no call: `inbox(shares, amount, C, body, back)` is a CREATE2 address the confidential pool's
   unwrap (which only mints to an address) or anyone pays, and `sweep` (the leader's, or anyone's) takes it in. `sweepWithPermit` takes it
   from a holder with no ETH: the holder's ERC-2612 permit names the inbox, the inbox pulls what it lacks when it is created, and the
-  caller, who pays the gas, takes the permit's `fee`. Anyone may queue the one spend that takes a swept deposit in; if none does within 7 days, `giveBack` wraps it into the
+  caller, who pays the gas, takes the permit's `fee`. A holder with ETH sends it themselves, their permit naming no fee: one transaction,
+  and the deposit is held at once. Anyone may queue the one spend that takes a swept deposit in; if none does within 7 days, `giveBack` wraps it into the
   confidential pool for `back`, and a sweep that finds the spend's key already held by another deposit wraps it there at once. An inbox is
   created once: what is paid to it after its sweep stays there.
 * **Hops** are sent by anyone (`sendHop(s)`); one the confidential pool refuses (it takes a commitment once) stays, to be sent again, and
