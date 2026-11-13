@@ -171,8 +171,8 @@ function updateCacheBust(htmlBytes, appJsBytes, prebootBytes) {
 const SATS_CB_FILES = ['sats/join-worker.js', 'sats/mix.js', 'sats/secret.js', 'sats/eth.js', 'sats/app.js', 'sats/index.html'];
 // The front page (dapp/index.html) and weld's stats and keeper pages each keep their imports in their inline module, so their tokens are rewritten before
 // those modules' CSP hashes are taken (updatePinnedCsp below).
-// (TAC's Bitcoin pool, tac/pool.js and what it loads, and the sheets, front/sheets.js, are hashed before the front page that loads them)
-const WELD_CB_FILES = ['btc-borrow.js', 'btcswap-page.js', 'walletconnect.js', 'evm-pool-sync-worker.js', 'holding-prove-worker.js', 'tac/sats.js', 'tac/claim.js', 'tac/pool.js', 'front/sheets.js', 'front-route.js', 'index.html', 'weld/stats/index.html'];
+// (TAC's Bitcoin pool, tac/pool.js and what it loads, the sheets, front/sheets.js, and TAC's page, front/tac.js, are hashed before the front page that loads them)
+const WELD_CB_FILES = ['btc-borrow.js', 'btcswap-page.js', 'walletconnect.js', 'evm-pool-sync-worker.js', 'holding-prove-worker.js', 'tac/sats.js', 'tac/claim.js', 'tac/pool.js', 'front/sheets.js', 'front/tac.js', 'front-route.js', 'index.html', 'weld/stats/index.html'];
 // dapp/pay/ and dapp/pay/eth/ are built the same way as weld: one page each, every import in its inline module.
 const PAY_CB_FILES = ['private-route.js', 'pay/index.html', 'pay/eth/index.html'];
 // dapp/tac/ holds TAC's Bitcoin pool, which TAC's page draws: pool.js lazy-imports sats.js and claim.js, so those are hashed first, then pool.js
@@ -228,9 +228,9 @@ const tradeAssetPage = (slug) => readFileSync(join(DAPP_DIR, TRADE_PAGE), 'utf8'
   .replace('<head>', `<head>\n<!-- Made from /trade/index.html by \`npm run build\` (build/build.mjs): edit that file, not this one. -->`);
 // TAC's page, /tac/, is the front page at TAC's address: the same document and module, which draws TAC's page when its address is /tac/, so a Tacit
 // key opened on either is open on both (it is held in memory only) and moving between them loads nothing again. tac/index.html is made from
-// index.html here, differing only in the head's name for it, the swap card's preloads (the card is drawn there only when a tile opens it) and a mark
-// on <html> that lays it out as TAC's page before the module runs; it is made last, once index.html's tokens and pin are final, and `--verify-only`
-// fails when it is not what this makes.
+// index.html here, differing only in the head's name for it, the swap card's preloads (the card is drawn there only when a tile opens it), a preload
+// of front/tac.js (which the module imports to draw TAC's page, under the URL it imports) and a mark on <html> that lays it out as TAC's page before
+// the module runs; it is made last, once index.html's tokens and pin are final, and `--verify-only` fails when it is not what this makes.
 const TAC_PAGE_DESC = 'The Tacit chain: a zk-rollup for private payments in TAC, settled on Ethereum and connected to Bitcoin by proof.';
 const TAC_PAGE_SWAPS = [
   ['<html lang="en">', '<html lang="en" data-page="tac">'],
@@ -240,6 +240,7 @@ const TAC_PAGE_SWAPS = [
   ['<meta property="og:title" content="tacit defi">', '<meta property="og:title" content="tacit TAC">'],
 ];
 const TAC_PAGE_UNPRELOAD = /<link rel="modulepreload" href="\/(?:swap\/(?:card|route|aggregate|solvers|link|route-name)|trade\/(?:wallet|util|fmt)|points-note)\.js\?cb=[0-9a-f]{8}">\n/g;
+const TAC_PAGE_PRELOAD = /\bimport\('(\/front\/tac\.js\?cb=[0-9a-f]{8})'\)/g;
 function tacPageOf(text) {
   for (const [a, b] of TAC_PAGE_SWAPS) {
     if (text.split(a).length !== 2) throw new Error(`index.html has no single ${a}: update TAC_PAGE_SWAPS in build/build.mjs`);
@@ -248,32 +249,41 @@ function tacPageOf(text) {
   const card = (text.match(TAC_PAGE_UNPRELOAD) || []).length;
   if (card !== 10) throw new Error(`index.html preloads ${card} of the swap card's 10 modules: update TAC_PAGE_UNPRELOAD in build/build.mjs`);
   text = text.replace(TAC_PAGE_UNPRELOAD, '');
+  const tacJs = [...text.matchAll(TAC_PAGE_PRELOAD)].map((m) => m[1]);
+  if (tacJs.length !== (existsSync(TAC_JS) ? 1 : 0)) throw new Error(`index.html imports /front/tac.js ${tacJs.length} times: update tacPageOf in build/build.mjs`);
+  if (tacJs.length) {
+    if (text.split('<!-- preload:end -->').length !== 2 || text.includes(`href="${tacJs[0]}"`)) throw new Error('index.html should have one <!-- preload:end --> and no preload of /front/tac.js: update tacPageOf in build/build.mjs');
+    text = text.replace('<!-- preload:end -->', `<link rel="modulepreload" href="${tacJs[0]}">\n<!-- preload:end -->`);
+  }
   const desc = /(<meta (?:name="description"|property="og:description") content=")[^"]*(">)/g;
   if ((text.match(desc) || []).length !== 2) throw new Error('index.html should have one description and one og:description: update tacPageOf in build/build.mjs');
   return text.replace(desc, (m, a, b) => `${a}${TAC_PAGE_DESC}${b}`)
     .replace('<head>', '<head>\n<!-- Made from /index.html by `npm run build` (build/build.mjs): edit that file, not this one. -->');
 }
-// The front page's sheets are front/sheets.js, which the page's module imports when one first opens (build/split-front.mjs made it).
-// Its install(ctx) takes the page's names it reads from ctx: by value on its first line, and as ctx.X for the page's let and var
-// bindings, so it sees them change. The page's sheetsCtx, between `// front-sheets:begin` and `// front-sheets:end`, is made here
-// from those two lists. A name sheets.js reads from the page without ctx, a name ctx carries that the page does not declare, and a
-// let or var taken by value fail the build, so a sheet cannot open into a ReferenceError or a stale value.
-const SHEETS_JS = join(DAPP_DIR, 'front', 'sheets.js'), SHEETS_BLOCK = /\/\/ front-sheets:begin\n[\s\S]*?\/\/ front-sheets:end/;
+// The front page's sheets are front/sheets.js, which the page's module imports when one first opens, and TAC's page is front/tac.js, which it
+// imports when TAC's page opens (build/split-front.mjs made both). Each one's install(ctx) takes the page's names it reads from ctx: by value
+// on its first line, and as ctx.X for the page's let and var bindings, so it sees them change. The page's sheetsCtx, between
+// `// front-sheets:begin` and `// front-sheets:end`, and its tacCtx, between `// front-tac:begin` and `// front-tac:end`, are made here
+// from those two lists. A name the module reads from the page without ctx, a name ctx carries that the page does not declare, and a
+// let or var taken by value fail the build, so a sheet or TAC's page cannot open into a ReferenceError or a stale value.
+const FRONT_MODULES = [['front/sheets.js', 'front-sheets', 'sheetsCtx'], ['front/tac.js', 'front-tac', 'tacCtx']];
+const TAC_JS = join(DAPP_DIR, 'front', 'tac.js');
 const NOT_NAMES = new Set('await break case catch class const continue debugger default delete do else enum export extends false finally for function if implements import in instanceof interface let new null package private protected public return static super switch this throw true try typeof var void while with yield arguments eval undefined NaN Infinity __proto__'.split(' '));
-function frontSheets(write) {
-  if (!existsSync(SHEETS_JS)) return [];
-  const js = readFileSync(SHEETS_JS, 'utf8'), page = readFileSync(WELD_HTML, 'utf8');
-  const main = [...page.matchAll(/<script type="module">\n([\s\S]*?)<\/script>/g)].map((m) => m[1]).filter((t) => SHEETS_BLOCK.test(t));
-  if (main.length !== 1) throw new Error(`index.html: expected one inline module with the front-sheets block, found ${main.length}`);
+function frontModule(write, rel, mark, ctxName) {
+  const file = join(DAPP_DIR, rel), BLOCK = new RegExp(`// ${mark}:begin\\n[\\s\\S]*?// ${mark}:end`), page = readFileSync(WELD_HTML, 'utf8');
+  if (!existsSync(file)) { if (BLOCK.test(page)) throw new Error(`index.html has the ${mark} block, but there is no dapp/${rel}`); return []; }
+  const js = readFileSync(file, 'utf8');
+  const main = [...page.matchAll(/<script type="module">\n([\s\S]*?)<\/script>/g)].map((m) => m[1]).filter((t) => BLOCK.test(t));
+  if (main.length !== 1) throw new Error(`index.html: expected one inline module with the ${mark} block, found ${main.length}`);
   const head = /^const \{ ([^}]*) \} = ctx;$/m.exec(js);
-  if (!head) throw new Error('front/sheets.js: install() does not start with `const { … } = ctx;`');
-  // esbuild's define replaces only the names sheets.js reads and does not declare; its copy also has no comments
+  if (!head) throw new Error(`${rel}: install() does not start with \`const { … } = ctx;\``);
+  // esbuild's define replaces only the names the module reads and does not declare; its copy also has no comments
   const words = [...new Set(js.match(/[A-Za-z_$][\w$]*/g))].filter((w) => !NOT_NAMES.has(w));
   const marked = transformSync(js, { format: 'esm', logLevel: 'silent', define: Object.fromEntries(words.map((w) => [w, `__front_free_${w}`])) }).code;
   const free = [...new Set([...marked.matchAll(/__front_free_([A-Za-z_$][\w$]*)/g)].map((m) => m[1]))];
   const byValue = head[1].split(',').map((x) => x.trim()).filter(Boolean);
   const live = [...new Set([...marked.matchAll(/\bctx\.([A-Za-z_$][\w$]*)/g)].map((m) => m[1]))].sort();
-  const want = `// front-sheets:begin\nconst sheetsCtx = () => ({ ${[...byValue, ...live.map((x) => `get ${x}() { return ${x}; }`)].join(', ')} });\n// front-sheets:end`;
+  const want = `// ${mark}:begin\nconst ${ctxName} = () => ({ ${[...byValue, ...live.map((x) => `get ${x}() { return ${x}; }`)].join(', ')} });\n// ${mark}:end`;
   // which of those the page's module declares (define replaces only the names it does not), and which it declares with let or var:
   // a let or var statement starts a line, and esbuild says which of the names in one are constant, imported or lexical
   const names = [...new Set([...free, ...byValue, ...live])];
@@ -288,15 +298,16 @@ function frontSheets(write) {
   const esc = (n) => n.replace(/\$/g, '\\$');
   const letOrVar = (n) => maybe.includes(n) && !fixed.has(n) && (lexical.has(n) ? !new RegExp(`^class\\s+${esc(n)}\\b`, 'm').test(main[0]) : !new RegExp(`^(?:async\\s+)?function\\s*\\*?\\s*${esc(n)}\\s*\\(`, 'm').test(main[0]));
   const problems = [
-    ...free.filter((n) => !undeclared.has(n)).map((n) => `front/sheets.js reads ${n} from the page's module without ctx: add it to install's first line (or read it as ctx.${n} if it is a let or var)`),
-    ...[...byValue, ...live].filter((n) => undeclared.has(n)).map((n) => `front/sheets.js takes ${n} from ctx, but the page's module does not declare it`),
-    ...byValue.filter(letOrVar).map((n) => `front/sheets.js takes the page's let or var ${n} by value: read it as ctx.${n}`),
+    ...free.filter((n) => !undeclared.has(n)).map((n) => `${rel} reads ${n} from the page's module without ctx: add it to install's first line (or read it as ctx.${n} if it is a let or var)`),
+    ...[...byValue, ...live].filter((n) => undeclared.has(n)).map((n) => `${rel} takes ${n} from ctx, but the page's module does not declare it`),
+    ...byValue.filter(letOrVar).map((n) => `${rel} takes the page's let or var ${n} by value: read it as ctx.${n}`),
   ];
   if (problems.length) throw new Error(problems.join('\n    '));
-  if (SHEETS_BLOCK.exec(page)[0] === want) return [];
-  if (write) writeFileSync(WELD_HTML, page.replace(SHEETS_BLOCK, () => want));
-  return ['index.html sheetsCtx does not carry what front/sheets.js takes from ctx'];
+  if (BLOCK.exec(page)[0] === want) return [];
+  if (write) writeFileSync(WELD_HTML, page.replace(BLOCK, () => want));
+  return [`index.html ${ctxName} does not carry what ${rel} takes from ctx`];
 }
+const frontSheets = (write) => FRONT_MODULES.flatMap(([rel, mark, ctxName]) => frontModule(write, rel, mark, ctxName));
 function tacPage(write) {
   const want = tacPageOf(readFileSync(WELD_HTML, 'utf8')), got = existsSync(TAC_HTML) ? readFileSync(TAC_HTML, 'utf8') : null;
   if (got === want) return [];
@@ -663,7 +674,7 @@ async function main() {
     const satsDrift = pageCacheBust(SATS_CB_FILES, true);
     console.log(`• sats page cache-bust: ${satsDrift.length ? `${satsDrift.length} token(s) updated` : 'unchanged'}`);
     const sheetsDrift = frontSheets(true);
-    console.log(`• front page sheets' ctx: ${sheetsDrift.length ? 'made again from front/sheets.js' : 'unchanged'}`);
+    console.log(`• front page sheets' and TAC page's ctx: ${sheetsDrift.length ? `made again (${sheetsDrift.length})` : 'unchanged'}`);
     const weldDrift = pageCacheBust(WELD_CB_FILES, true);
     console.log(`• weld page cache-bust: ${weldDrift.length ? `${weldDrift.length} token(s) updated` : 'unchanged'}`);
     const tacDrift = pageCacheBust(TAC_CB_FILES, true);

@@ -44,6 +44,12 @@
       var pre = document.createElement('link');
       pre.rel = 'modulepreload'; pre.href = '/front/sheets.js?cb=f4db180b';
       document.head.appendChild(pre);
+      // and a link to TAC's page (its card, the bridge, a claim) the TAC page's code too
+      if (/^#(?:tac|bridge)(?:\/|$)|^#tacclaim=/.test(window.location.hash)) {
+        var tac = document.createElement('link');
+        tac.rel = 'modulepreload'; tac.href = '/front/tac.js?cb=f79c6229';
+        document.head.appendChild(tac);
+      }
     }
   } catch (e) { }
 })();
