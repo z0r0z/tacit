@@ -16,15 +16,53 @@ export function exitSaid(lockSeconds, name, { lpOnly = false } = {}) {
   return `${when}, as private ${coins.length === 2 ? `${coins[0]} and ${coins[1]}` : name}`;
 }
 
-export const harvest = (t, priv, pos, waitOpts) => t.farmHarvest({ walletPriv: priv, position: pos, waitOpts });
+// A step the relay proves but will not send for free just now (the day's free sends of its kind are used, or it is catching up on its sends)
+// goes out from the connected wallet instead: the relay proves it as a prove-only job and the wallet sends it, paying the network fee.
+export const ownSend = (e) => e?.code === 'free_budget' || e?.code === 'relay_held';
+export const ownWhy = (e) => (e?.code === 'relay_held'
+  ? 'The relay is catching up on its sends, so your wallet sends this one: the relay proves it, then you confirm it (a network fee, paid in ETH).'
+  : 'Today’s free relay sends for this are used up, so your wallet sends this one: the relay proves it, then you confirm it (a network fee, paid in ETH).');
+// → selfSettle for the pool module's steps: the proof sent to the pool from `from` (an address, or a function giving it), after the node
+// has estimated it (a step that would not go through is not sent). null without a wallet that sends.
+export function walletSettle(t, wallet, from, { confirm = () => {} } = {}) {
+  if (!wallet?.sendTx || !wallet?.receipt) return null;
+  return async ({ publicValues, proof, memos }) => {
+    const who = typeof from === 'function' ? await from() : from;
+    if (!who) throw new Error('The relay proved this step for your wallet to send: connect a wallet and press again.');
+    const to = t.cfg.pool, data = t.settleCalldata({ publicValues, proof, memos });
+    let gas = null;
+    try { gas = (BigInt(await t.rpc('eth_estimateGas', [{ from: who, to, data }])) * 13n) / 10n; }
+    catch (e) {
+      if (e?.revert || /revert/i.test(String(e?.message || e))) throw new Error('This step would not go through as the pool stands now, so nothing was sent. Press again.');
+    }
+    confirm();
+    const hash = await wallet.sendTx({ to, data, from: who, ...(gas ? { gas } : {}) });
+    const rc = await wallet.receipt(hash);
+    if (rc?.status !== '0x1') throw new Error(`The transaction did not go through (${String(hash).slice(0, 10)}…). Nothing was lost but its network fee: press again.`);
+    return { txHash: hash };
+  };
+}
+// The step through the relay; when the relay will prove it but not send it, again with the wallet sending (`onOwn(e)` first, to say so).
+export async function relayedOrOwn(step, own, onOwn = () => {}) {
+  try { return await step(null); }
+  catch (e) {
+    if (!own || !ownSend(e)) throw e;
+    onOwn(e);
+    return step(own);
+  }
+}
+const via = (s) => (s ? { selfSettle: s } : {});
 
-export async function unbond(t, priv, pos, waitOpts, again = (p) => p, { forfeit = false } = {}) {
-  if (forfeit) return t.farmUnbond({ walletPriv: priv, position: pos, forfeitPending: true, waitOpts });
-  try { return await t.farmUnbond({ walletPriv: priv, position: pos, forfeitPending: false, waitOpts }); }
+export const harvest = (t, priv, pos, waitOpts, own = null, onOwn) => relayedOrOwn((s) => t.farmHarvest({ walletPriv: priv, position: pos, waitOpts, ...via(s) }), own, onOwn);
+
+export async function unbond(t, priv, pos, waitOpts, again = (p) => p, { forfeit = false, own = null, onOwn } = {}) {
+  const go = (p, forfeitPending) => relayedOrOwn((s) => t.farmUnbond({ walletPriv: priv, position: p, forfeitPending, waitOpts, ...via(s) }), own, onOwn);
+  if (forfeit) return go(pos, true);
+  try { return await go(pos, false); }
   catch (e) {
     const u = /farm-unbond: (\d+) reward units/.exec(String(e?.message || ''));
     if (!u || BigInt(u[1]) > HARVEST_WORTH) throw e;
-    return t.farmUnbond({ walletPriv: priv, position: again(pos), forfeitPending: true, waitOpts });
+    return go(again(pos), true);
   }
 }
 
@@ -44,7 +82,7 @@ export function worthHarvesting(t, units, rewardAsset) {
 export const redeem = (t, priv, note, to, waitOpts) => t.farmRedeem({ walletPriv: priv, note, to, wait: true, waitOpts });
 
 export const lpNotes = (notes, pool) => (notes || []).filter((n) => pool?.lpAsset && String(n.asset).toLowerCase() === String(pool.lpAsset).toLowerCase());
-export const takeOut = (t, priv, pool, note, waitOpts) => t.lpRemove({ walletPriv: priv, assetA: pool.reserves.assetA, assetB: pool.reserves.assetB, feeBps: Number(pool.feeBps ?? 30), shareNote: note, waitOpts });
+export const takeOut = (t, priv, pool, note, waitOpts, own = null, onOwn) => relayedOrOwn((s) => t.lpRemove({ walletPriv: priv, assetA: pool.reserves.assetA, assetB: pool.reserves.assetB, feeBps: Number(pool.feeBps ?? 30), shareNote: note, waitOpts, ...via(s) }), own, onOwn);
 
 export const bFor = (a, res) => (BigInt(a) * BigInt(res.reserveB) + BigInt(res.reserveA) - 1n) / BigInt(res.reserveA);
 export const aFor = (b, res) => (BigInt(b) * BigInt(res.reserveA)) / BigInt(res.reserveB);
@@ -84,4 +122,4 @@ export function farmManager(t, named) {
   if (named && String(named).toLowerCase() !== String(mine).toLowerCase()) throw new Error('This farm names a manager other than the configured one, so nothing was added.');
   return mine;
 }
-export const bond = (t, priv, { manager, aNote, bNote, feeBps, waitOpts }) => t.lpBond({ walletPriv: priv, controller: farmManager(t, manager), aNote, bNote, feeBps: Number(feeBps ?? 30), waitOpts });
+export const bond = (t, priv, { manager, aNote, bNote, feeBps, waitOpts, own = null, onOwn }) => relayedOrOwn((s) => t.lpBond({ walletPriv: priv, controller: farmManager(t, manager), aNote, bNote, feeBps: Number(feeBps ?? 30), waitOpts, ...via(s) }), own, onOwn);

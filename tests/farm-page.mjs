@@ -172,9 +172,14 @@ const t = {
   },
   async lpBond({ aNote, bNote, controller }) { note('lpbond', aNote.value + '+' + bNote.value + '@' + controller.slice(0, 8)); await sleep(150); if (T().joinFail) throw Object.assign(new Error('relay 503: temporarily unavailable'), { code: 'relay_held' }); T().joined = true; T().bonded = true; return { jobId: 'job-lpbond', txHash: '0x' + '33'.repeat(32) }; },
   async transfer() { note('transfer'); throw new Error('this stand-in does not cut notes'); },
-  async farmBond({ lpNote, waitOpts }) { note('bond', lpNote.leaf.slice(0, 6)); waitOpts?.onJob?.('job-bond', 'farmbond'); await sleep(T().bondMs ?? 200);
+  async farmBond({ lpNote, waitOpts, selfSettle }) { note(selfSettle ? 'bond-own' : 'bond', lpNote.leaf.slice(0, 6)); waitOpts?.onJob?.('job-bond', 'farmbond'); await sleep(T().bondMs ?? 200);
+    // proved for the wallet to send (the relay's free sends for the day used up): the page's sender sends it
+    if (selfSettle) { const r = await selfSettle({ jobId: 'job-bond-own', publicValues: '0x' + 'a1'.repeat(8), proof: '0x' + 'b2'.repeat(8), memos: [] }); T().bonded = true; return { jobId: 'job-bond-own', ...r }; }
+    if (T().bondDay) throw Object.assign(new Error('free relayed settles for today are used up (8/8) — attach a fee above the floor, or prove-mode and settle it yourself'), { code: 'free_budget', class: 'farm' });
     if (T().bondOpen) throw Object.assign(new Error('settle held: proved and waiting for a sender (job job-bond); it can be sent from any account now'), { code: 'open', open: { jobId: 'job-bond', publicValues: '0x01', proof: '0x02', memos: [] } });
-    if (T().bondFail) throw Object.assign(new Error('relay 503: temporarily unavailable'), { code: 'relay_held' }); T().bonded = true; return { jobId: 'job-bond', txHash: '0x' + '22'.repeat(32) }; },
+    if (T().bondFail) throw Object.assign(new Error('relay 503: temporarily unavailable'), { code: 'relay_paused' }); T().bonded = true; return { jobId: 'job-bond', txHash: '0x' + '22'.repeat(32) }; },
+  settleCalldata: ({ publicValues, proof }) => '0x8b8c6b4b' + String(publicValues).slice(2) + String(proof).slice(2),
+  rpc: async (m) => { note('rpc', m); if (m === 'eth_estimateGas') return '0x7a120'; throw new Error('the stand-in has no ' + m); },
   farmPositions: async () => (T().bonded ? [{ pid: 0, receiptLeaf: '0x' + '77'.repeat(32), pendingUnits: '0', pendingTac: '0', shares: '1' }] : (T().positions || [])),
   ethCall: async () => '0x' + '0'.repeat(64), identity: () => ({ pubHex: '02' + 'ab'.repeat(32) }), poolTickerOf: (id) => ({ '${A_TAC}': 'TAC', '${A_CUSD}': 'cUSD', '${A_CBTC}': 'cBTC' })[String(id).toLowerCase()] || 'cETH', quoteOpFee: async () => 0n, quoteUnwrapFee: () => ({ net: 1n, fee: 0n }),
 };
@@ -480,6 +485,23 @@ try {
       ok(await sayIs(page, /In the farm/), 'Farm it puts it in the farm');
       ok(st.sent.length === 1 && await page.evaluate(() => window.__ux.filter((x) => x.startsWith('bond')).length === 2 && window.__ux.filter((x) => x.startsWith('prove')).length === 1), 'with no second transaction and no second proof');
       ok(await until(page, () => document.querySelector('#pz-loose').textContent === ''), 'and the note over the positions goes');
+      await r.browser.close();
+    }
+    {
+      // the relay's free farm sends for the day are used up: the entry is proved for the wallet, which sends it as a second transaction
+      const r = await openPage({ hash: '#teth-tac', fake: true, wallet: true, t: { bondDay: true, bondMs: 600 } }), { page, st } = r;
+      await until(page, () => /Enter an amount/.test(document.querySelector('#pz-go').textContent));
+      await page.click('#pz .quick [data-q="0.1"]'); await quoted(page);
+      await until(page, () => !document.querySelector('#pz-go').disabled);
+      await page.click('#pz-go');
+      ok(await sayIs(page, /free relay sends for this are used up, so your wallet sends this one/), `the page says the wallet sends the entry, and why: ${await text(page, '#pz-say')}`);
+      ok(await sayIs(page, /In the farm/), `and it ends in the farm (${await text(page, '#pz-say')})`);
+      const own = st.sent[1];
+      ok(st.sent.length === 2 && lc(own?.to) === lc(POOL) && String(own?.data).startsWith('0x8b8c6b4b') && BigInt(own?.gas || 0) === 650000n,
+        `two transactions: the deposit, then the farm entry to the pool with the node’s gas estimate and a margin (${own?.to} ${String(own?.data).slice(0, 10)} ${own?.gas})`);
+      ok(await page.evaluate(() => window.__ux.filter((x) => x.startsWith('bond')).join() === 'bond:0xeeee,bond-own:0xeeee' && window.__ux.includes('rpc:eth_estimateGas')), 'the relay was asked first, then the wallet sent the same entry, estimated by the node first');
+      ok(await page.evaluate(() => !document.querySelector('#pz-acts [data-act="farmit"]')), 'and nothing is left to farm');
+      await shot(page, 'private-own-entry');
       await r.browser.close();
     }
     {

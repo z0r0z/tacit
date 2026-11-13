@@ -6,6 +6,7 @@
 // The front page's Earn card has more ways in (a proof kept ready, a swap split with the Precision pool, your own prover, LP only);
 // this is the one path a page with a wallet and a key needs. Everything it calls is the pool module's (confidential-pool-ux.js).
 import { zapPlan, zapPlanFor, zapSettleCalldata } from '/lp-zap.js?cb=a43160fd';
+import { relayedOrOwn } from '/farm-ops.js?cb=7a628e22';
 
 export const PUBLIC_AMM = '0x00000000E36C7EC997CC59DCda9E03673B448119';
 const CETH = '0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
@@ -145,11 +146,14 @@ export async function shareNote({ t, priv, built, tries = 10, every = 4000 }) {
 // The relay can prove the entry and send it a little later (it answers "open": proved, waiting to be sent), or still hold it in its
 // queue when the wait runs out. Neither is a failure: the job is followed until it lands (`say('waiting', jobId)` once), and only a job
 // that fails, or one followed for half an hour, ends it.
+// When the relay will prove the entry but not send it for free just now, `own` (farm-ops.js walletSettle) sends it from the wallet:
+// `say('own', error)` first.
 export const inLine = (e) => e?.code === 'open' || !!e?.open || /settle timed out|status polling for job/i.test(String(e?.message || ''));
-export async function bondShare({ t, priv, note, wait = () => ({}), say = () => {} }) {
+export async function bondShare({ t, priv, note, wait = () => ({}), say = () => {}, own = null }) {
   const w = wait('bond');
   let job = null;
-  try { return await t.farmBond({ walletPriv: priv(), lpNote: note, waitOpts: { timeoutMs: 20 * 60e3, ...w, onJob: (id, type) => { job = id; w.onJob?.(id, type); } } }); }
+  const go = (selfSettle) => t.farmBond({ walletPriv: priv(), lpNote: note, ...(selfSettle ? { selfSettle } : {}), waitOpts: { timeoutMs: 20 * 60e3, ...w, onJob: (id, type) => { job = id; w.onJob?.(id, type); } } });
+  try { return await relayedOrOwn(go, own, (e) => say('own', e)); }
   catch (e) {
     const id = e?.open?.jobId || job;
     if (!id || !inLine(e)) throw e;
@@ -162,7 +166,7 @@ export async function bondShare({ t, priv, note, wait = () => ({}), say = () => 
 // `ready` is a proof made by an earlier press that was not sent (the same pool and amount): it is sent without proving again, for the
 // share count it names. A failure once the transaction has landed carries `share` (true: the ETH is in the pool as a private share
 // note; with `note` when the balance already shows it), so the page offers to farm it and says nothing was lost.
-export async function zapRun({ t, rpc, wallet, from, priv, pool, q, ready = null, wait, used, owned, say = () => {}, noteTries, noteEvery }) {
+export async function zapRun({ t, rpc, wallet, from, priv, pool, q, ready = null, wait, used, owned, say = () => {}, noteTries, noteEvery, own = null }) {
   const r = ready && ready.pid === pool.pid && ready.wei === q.wei ? ready : await zapProve({ t, priv, pool, q, wait, used, owned, say });
   const { hash } = await zapSend({ t, rpc, wallet, from, pool, ready: r, say });
   say('landed', hash);
@@ -171,7 +175,7 @@ export async function zapRun({ t, rpc, wallet, from, priv, pool, q, ready = null
     note = await shareNote({ t, priv, built: r.built, tries: noteTries, every: noteEvery });
     if (!note) throw said('Your share is private, and this page does not see it in your balance yet. Press Farm it in a minute.');
     say('bonding', hash);
-    const bond = await bondShare({ t, priv, note, wait, say });
+    const bond = await bondShare({ t, priv, note, wait, say, own });
     say('done', bond?.txHash || hash);
     return { hash, shares: r.shares, bond };
   } catch (e) { throw Object.assign(e, { share: true, note, hash }); }

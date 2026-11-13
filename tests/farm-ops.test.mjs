@@ -2,7 +2,7 @@
 // reward sent again giving it up only when that reward is dust.
 //   node tests/farm-ops.test.mjs
 import assert from 'node:assert/strict';
-import { exitSaid, canHarvest, canUnbond, unharvested, locked, harvest, unbond, UNBOND_DUST, HARVEST_WORTH, WTAC, wtacWithdrawCall, wtacBalanceCall, rewardNotes, relayable, worthHarvesting, redeem, lpNotes, takeOut, bFor, aFor, joinTerms, notesOf, exactOf, cutPick, cut, cutSized, ladder, feeShort, farmManager, bond } from '../dapp/farm-ops.js';
+import { exitSaid, canHarvest, canUnbond, unharvested, locked, harvest, unbond, UNBOND_DUST, HARVEST_WORTH, WTAC, wtacWithdrawCall, wtacBalanceCall, rewardNotes, relayable, worthHarvesting, redeem, lpNotes, takeOut, bFor, aFor, joinTerms, notesOf, exactOf, cutPick, cut, cutSized, ladder, feeShort, farmManager, bond, ownSend, ownWhy, walletSettle, relayedOrOwn } from '../dapp/farm-ops.js';
 
 const now = 1_800_000_000;
 assert.equal(canHarvest({ pendingUnits: '1' }), true); assert.equal(canHarvest({ pendingUnits: '0' }), false, 'nothing pending: nothing to harvest');
@@ -103,4 +103,57 @@ assert.equal(exitSaid(-5, 'tETH / TAC'), null, 'a negative lock is not a lock');
 assert.equal(exitSaid(undefined, 'tETH / TAC', { lpOnly: true }), 'any time, as private tETH and TAC', 'LP only has no bond, so no lock, known or not');
 assert.equal(exitSaid(9 * 86400, 'tETH / TAC', { lpOnly: true }), 'any time, as private tETH and TAC', 'and a pool lock does not apply to it');
 assert.equal(exitSaid(0, 'TAC'), 'any time, as private TAC', 'a name that is not a pair is said as it is');
+// A step the relay proves but will not send for free just now goes out from the connected wallet: the same step again with selfSettle.
+{
+  const refused = (code) => Object.assign(new Error('free relayed settles for today are used up (8/8)'), { code });
+  assert.ok(ownSend(refused('free_budget')) && ownSend(refused('relay_held')), 'used-up free sends and a relay catching up are sent from the wallet');
+  assert.ok(!ownSend(refused('prove_budget')) && !ownSend(refused('relay_paused')) && !ownSend(new Error('boom')), 'nothing else is: a relay that will not prove cannot be helped by a wallet');
+  assert.match(ownWhy(refused('free_budget')), /free relay sends for this are used up, so your wallet sends this one/);
+  assert.match(ownWhy(refused('relay_held')), /catching up on its sends/);
+
+  const seen = [], step = (fail) => async (s) => { seen.push(s); if (!s && fail) throw refused(fail); return { jobId: s ? 'own' : 'relayed' }; };
+  assert.deepEqual(await relayedOrOwn(step(null), 'SELF'), { jobId: 'relayed' }); assert.deepEqual(seen, [null], 'a relayed step that goes through is sent once');
+  seen.length = 0; let told = null;
+  assert.deepEqual(await relayedOrOwn(step('free_budget'), 'SELF', (e) => { told = e.code; }), { jobId: 'own' });
+  assert.deepEqual(seen, [null, 'SELF'], 'refused for the day: sent again with the wallet sending'); assert.equal(told, 'free_budget', 'and the page is told why first');
+  seen.length = 0;
+  await assert.rejects(relayedOrOwn(step('free_budget'), null), /used up/, 'with no wallet to send it, the refusal stands');
+  await assert.rejects(relayedOrOwn(step('prove_budget'), 'SELF'), /used up/, 'and a refusal a wallet cannot help with stands');
+
+  // through the farm steps: each takes the wallet's sender and passes it as selfSettle on the second try
+  const got = [], ft = {
+    farmHarvest: async (a) => { got.push(['harvest', !!a.selfSettle]); if (!a.selfSettle) throw refused('free_budget'); return { jobId: 'h2', txHash: '0xh' }; },
+    farmUnbond: async (a) => { got.push(['unbond', a.forfeitPending, !!a.selfSettle]); if (!a.selfSettle) throw refused('relay_held'); return { jobId: 'u2' }; },
+    lpRemove: async (a) => { got.push(['out', !!a.selfSettle]); if (!a.selfSettle) throw refused('free_budget'); return { jobId: 'o2' }; },
+    lpBond: async (a) => { got.push(['bond', !!a.selfSettle]); if (!a.selfSettle) throw refused('free_budget'); return { jobId: 'b2' }; },
+    cfg: { farm: { manager: '0xm' } },
+  };
+  assert.deepEqual(await harvest(ft, 'P', { id: 1 }, 'W', 'SELF'), { jobId: 'h2', txHash: '0xh' });
+  assert.deepEqual((await unbond(ft, 'P', { id: 2 }, 'W', undefined, { forfeit: true, own: 'SELF' })).jobId, 'u2');
+  assert.deepEqual((await takeOut(ft, 'P', { reserves: { assetA: 'a', assetB: 'b' } }, { v: 1 }, 'W', 'SELF')).jobId, 'o2');
+  assert.deepEqual((await bond(ft, 'P', { manager: '0xm', aNote: 1, bNote: 2, own: 'SELF' })).jobId, 'b2');
+  assert.deepEqual(got, [['harvest', false], ['harvest', true], ['unbond', true, false], ['unbond', true, true], ['out', false], ['out', true], ['bond', false], ['bond', true]],
+    'harvest, unbond, take-out and the two-coin entry each go relayed first, then from the wallet');
+  got.length = 0;
+  await assert.rejects(harvest(ft, 'P', { id: 1 }, 'W'), /used up/, 'a page that passes no wallet sender keeps the relay’s refusal');
+
+  // the wallet's sender: estimated by the node first (a step that would revert is not sent), sent to the pool, waited for
+  const sent = [], rpcSeen = [];
+  const tt = { cfg: { pool: '0xpool' }, settleCalldata: ({ publicValues, proof, memos }) => `0xsettle:${publicValues}:${proof}:${memos.length}`,
+    rpc: async (m, p) => { rpcSeen.push([m, p[0].from, p[0].to]); if (tt.revert) throw new Error('execution reverted: stale root'); return '0x7a120'; } };
+  const wallet = { sendTx: async (x) => { sent.push(x); return '0xabc'; }, receipt: async () => ({ status: wallet.status ?? '0x1' }) };
+  let asked = 0;
+  const self = walletSettle(tt, wallet, async () => '0xme', { confirm: () => asked++ });
+  assert.deepEqual(await self({ publicValues: '0xpv', proof: '0xpf', memos: ['0x1', '0x2'] }), { txHash: '0xabc' });
+  assert.deepEqual(rpcSeen, [['eth_estimateGas', '0xme', '0xpool']]);
+  assert.deepEqual(sent, [{ to: '0xpool', data: '0xsettle:0xpv:0xpf:2', from: '0xme', gas: 650000n }], 'sent to the pool with the node’s estimate and a margin');
+  assert.equal(asked, 1, 'the page says to confirm before the wallet asks');
+  tt.revert = true; sent.length = 0;
+  await assert.rejects(self({ publicValues: '0xpv', proof: '0xpf', memos: [] }), /would not go through as the pool stands now, so nothing was sent/);
+  assert.equal(sent.length, 0, 'a step that would revert is not sent');
+  tt.revert = false; wallet.status = '0x0';
+  await assert.rejects(self({ publicValues: '0xpv', proof: '0xpf', memos: [] }), /did not go through \(0xabc…\)\. Nothing was lost but its network fee/);
+  await assert.rejects(walletSettle(tt, wallet, async () => null)({ publicValues: '0x', proof: '0x', memos: [] }), /connect a wallet and press again/);
+  assert.equal(walletSettle(tt, null, '0xme'), null, 'no wallet that sends: no sender, so the relay’s refusal stands');
+}
 console.log('farm-ops: all checks passed');

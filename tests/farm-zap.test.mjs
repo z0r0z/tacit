@@ -227,6 +227,17 @@ const readyOf = async (w) => zapProve({ t: w.t, priv: w.priv, pool, q: await quo
   const unseen = world();
   await fails(zapRun({ t: unseen.t, rpc: unseen.rpc, wallet: unseen.wallet, from: FROM, priv: unseen.priv, pool, q, noteTries: 2, noteEvery: 1 }), (e) => ok(e.share === true && e.note === null && /does not see it in your balance yet/.test(e.message)), 'a share the balance does not show yet is still said to be there');
   ok(!unseen.names().includes('bond'));
+  // the day's free farm sends used up: the same entry proved for the wallet to send, the page told why, and the zap ends farmed
+  const day = world({ bondErr: Object.assign(new Error('free relayed settles for today are used up (8/8)'), { code: 'free_budget', class: 'farm' }) }); day.st.notes = [{ leaf: day.built.leaf, asset: pool.lpAsset, value: '1' }];
+  const realBond = day.t.farmBond, owned = [];
+  day.t.farmBond = async (a) => { owned.push(!!a.selfSettle); if (a.selfSettle) { day.st.bondErr = null; const r = await a.selfSettle({ publicValues: '0xpv', proof: '0xpf', memos: [] }); return { jobId: 'job3', ...r }; } return realBond(a); };
+  const told = [];
+  const doneDay = await zapRun({ t: day.t, rpc: day.rpc, wallet: day.wallet, from: FROM, priv: day.priv, pool, q, noteEvery: 1, own: async () => ({ txHash: '0x' + '33'.repeat(32) }), say: (s, d) => told.push([s, d?.code]) });
+  eq(owned, [false, true], 'refused for the day, the entry is asked for again with the wallet sending it');
+  ok(told.some(([s, c]) => s === 'own' && c === 'free_budget'), 'the page is told the wallet sends this one, and why');
+  eq(doneDay.bond, { jobId: 'job3', txHash: '0x' + '33'.repeat(32) }, 'and the zap ends with the entry the wallet sent');
+  const noWallet = world({ bondErr: Object.assign(new Error('free relayed settles for today are used up (8/8)'), { code: 'free_budget' }) }); noWallet.st.notes = [{ leaf: noWallet.built.leaf, asset: pool.lpAsset, value: '1' }];
+  await fails(zapRun({ t: noWallet.t, rpc: noWallet.rpc, wallet: noWallet.wallet, from: FROM, priv: noWallet.priv, pool, q, noteEvery: 1 }), (e) => ok(e.share === true && e.code === 'free_budget'), 'with no wallet sender, the refusal stands and the share is said to be the key’s');
   const early = world({ sendErr: Object.assign(new Error('User rejected the request.'), { code: 4001 }) });
   await fails(zapRun({ t: early.t, rpc: early.rpc, wallet: early.wallet, from: FROM, priv: early.priv, pool, q }), (e) => ok(!e.share && e.ready), 'a failure before the transaction lands claims no share');
 }

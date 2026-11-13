@@ -12,9 +12,9 @@ import { day as dayFmt } from '/trade/fmt.js?cb=172824e5';
 import { aprText, readPrecision, readSpot, readStake, privateFarms, poolWorthEth } from '/trade/farm-read.js?cb=efe1d81e';
 import { readCampaign, bestApr, notTrading } from '/trade/lp-campaign.js?cb=8da1c942';
 import { DEPLOYMENTS } from '/vault/deployments.js?cb=4af96594';
-import { exitSaid } from '/farm-ops.js?cb=28af38e1';
+import { exitSaid, walletSettle, ownWhy } from '/farm-ops.js?cb=7a628e22';
 import { relayWords } from '/relay-outcome.js?cb=17e48a9a';
-import { readReserves, marketOf, otherOf, zapMath, zapQuote, zapRun, bondShare, readNotes, looseOf, declined, ZAP_GAS } from '/farm/zap.js?cb=bb5bff74';
+import { readReserves, marketOf, otherOf, zapMath, zapQuote, zapRun, bondShare, readNotes, looseOf, declined, ZAP_GAS } from '/farm/zap.js?cb=532b0183';
 
 const API = 'https://api.tacit.finance', POOL = '0x000000000Ed1eabD231Be41d93b719056F7febFC';
 const E10 = 10n ** 10n, HINT = 10n ** 17n;                                      // a tenth of an ETH: the deposit a tile's entry cost is said for
@@ -480,7 +480,11 @@ function onStep(step, d) {
   else if (step === 'landed') { steps('farm'); cookSay('In the pool, as a private share. Reading it…'); }
   else if (step === 'bonding') cookSay('The relay is putting your share in the farm, about a minute…', { secs: 70 });
   else if (step === 'waiting') cookSay('Proved. The relay sends it in turn: waiting for it to land…', { secs: 90 });
+  else if (step === 'own') cookSay(esc(ownWhy(d)) + ' About a minute to prove…', { secs: 60 });
+  else if (step === 'own-confirm') cookSay('Proved. Confirm in your wallet: this one puts your share in the farm.');
 }
+// The farm entry sent from the connected wallet, for when the relay proves it but will not send it for free just now (farm-ops.js).
+const ownSender = (t) => walletSettle(t, wallet, async () => W.account || (await connect.connect().catch(() => null), W.account), { confirm: () => onStep('own-confirm') });
 
 // The Tacit key: the tab's own if it has one open, else opened at the press (the wallet connected here signs, with no sheet, on a first
 // visit). The pool module and the key's notes are read as soon as it is open, so a press finds them ready.
@@ -571,7 +575,7 @@ goBtn.addEventListener('click', async () => {
     const [t, r] = await Promise.all([getUx(), run()]), from = W.account, priv = () => key.priv();
     J = r.journal;
     const record = (h) => { hash = h; J.put(`tx:1:${String(h).toLowerCase()}`, { kind: 'tx', label: `Zap ${fmtUnits(q.plan.value, 18, 6)} ETH into ${f.name}`, chain: 1, hash: h, to: from, status: 'pending' }); };
-    const out = await zapRun({ t, rpc, wallet, from, priv, pool: f.pool, q, ready: Z.ready, wait: waitFor(r, f), used: usedIndexes(f.pool), owned: () => owned(),
+    const out = await zapRun({ t, rpc, wallet, from, priv, pool: f.pool, q, ready: Z.ready, wait: waitFor(r, f), used: usedIndexes(f.pool), owned: () => owned(), own: ownSender(t),
       say: (step, d) => { if (step === 'sent') record(d); if (step === 'landed') { J.put(`tx:1:${String(d).toLowerCase()}`, { status: 'confirmed' }); Z.ready = null; } onStep(step, d); } });
     if (out.bond?.jobId) J.put('job:' + out.bond.jobId, { status: 'settled', hash: out.bond.txHash || undefined });
     farmed(f, out.bond?.txHash || out.hash);
@@ -645,7 +649,7 @@ async function farmIt(pool, note0, btn = null) {
     const note = note0 || fresh[0]?.note;
     if (!note) throw Object.assign(new Error('That share is not in your balance yet. Try again in a minute.'), { said: true });
     cookSay('The relay is putting your share in the farm, about a minute…', { secs: 70 });
-    const out = await bondShare({ t, priv, note, wait: waitFor(r, f), say: onStep });
+    const out = await bondShare({ t, priv, note, wait: waitFor(r, f), say: onStep, own: ownSender(t) });
     if (out?.jobId) r.journal.put('job:' + out.jobId, { status: 'settled', hash: out.txHash || undefined });
     farmed(f, out?.txHash || null);
   } catch (e) {
@@ -667,7 +671,7 @@ $('#pz-loose').addEventListener('click', async (e) => {
 
 // the key's positions in the private farms: the rewards page's panel, on this page's key
 function mountMine() {
-  return mineP ||= import('/rewards/farms.js?cb=86891f34').then((m) => {
+  return mineP ||= import('/rewards/farms.js?cb=390bdfc8').then((m) => {
     mineUi = m.mountFarms($('#pf-mine'), { pick: pickProvider, session: key, wallet, W, connect: () => connect.connect(), program: () => S.prog,
       names: () => new Map(S.priv.map((x) => [x.pid, x.name])), pair: (pid) => { const icons = S.priv.find((x) => String(x.pid) === String(pid))?.icons; return icons ? pairIcons(icons) : ''; },
       onRead: (list) => { S.mine = new Map(list.map((p) => [Number(p.pid), p])); paint(); },

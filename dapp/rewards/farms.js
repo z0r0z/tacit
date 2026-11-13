@@ -10,7 +10,7 @@
 import { makeKeySession, signInSheet } from '/trade/key.js?cb=09f263cb';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=59d125e5';
 import { makeRunner } from '/activity.js';
-import { canHarvest, canUnbond, unharvested, locked, harvest, unbond, rewardNotes, relayable, redeem, wtacWithdrawCall, wtacBalanceCall, worthHarvesting, lpNotes, takeOut, HARVEST_WORTH, UNBOND_DUST, bFor, joinTerms, notesOf, exactOf, cutPick, cutSized, bond } from '/farm-ops.js?cb=28af38e1';
+import { walletSettle, ownWhy, canHarvest, canUnbond, unharvested, locked, harvest, unbond, rewardNotes, relayable, redeem, wtacWithdrawCall, wtacBalanceCall, worthHarvesting, lpNotes, takeOut, HARVEST_WORTH, UNBOND_DUST, bFor, joinTerms, notesOf, exactOf, cutPick, cutSized, bond } from '/farm-ops.js?cb=7a628e22';
 import { relayWords } from '/relay-outcome.js?cb=17e48a9a';
 import { esc, wordAt, parseUnits, rpc } from '/trade/util.js?cb=1d2cd8d3';
 
@@ -83,13 +83,17 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
   }
   const walletWtac = async (ux) => (W?.account ? wordAt(await ux.ethCall(wtacBalanceCall(W.account).to, wtacBalanceCall(W.account).data).catch(() => '0x'), 0) : 0n);
   const name = (pos) => names().get(Number(pos.pid)) || `Farm ${pos.pid}`;
+  // A step the relay proves but will not send for free just now goes out from the connected wallet (farm-ops.js walletSettle).
+  const own = (t) => walletSettle(t, wallet, async () => W?.account || (connect ? (await Promise.resolve(connect()).catch(() => null), W?.account) : null),
+    { confirm: () => say('Proved. Confirm sending it in your wallet…') });
+  const onOwn = (e) => say(ownWhy(e));
 
   async function doHarvest(i) {
     const pos = D.list[i];
     if (!pos || !canHarvest(pos)) throw new Error('Nothing to harvest yet.');
     const priv = pinned(), t = await getUx(), label = 'Harvest farm rewards';
     say('The relay is proving your harvest…');
-    settled(await harvest(t, priv(), pos, run().wait(label, 15 * 60e3)));
+    settled(await harvest(t, priv(), pos, run().wait(label, 15 * 60e3), own(t), onOwn));
     return 'Harvested to a wTAC note, one for one with TAC.';
   }
   async function doUnbond(i) {
@@ -99,7 +103,7 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
     if (unharvested(pos)) throw new Error('Harvest first: unbonding now would give up what it has earned.');
     const priv = pinned(), t = await getUx(), label = 'Unbond from a farm';
     say('The relay is proving your unbond…');
-    settled(await unbond(t, priv(), pos, run().wait(label, 15 * 60e3)));
+    settled(await unbond(t, priv(), pos, run().wait(label, 15 * 60e3), undefined, { own: own(t), onOwn }));
     return 'Unbonded. Your liquidity is a private note again.';
   }
 
@@ -155,19 +159,19 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
     if (pending > HARVEST_WORTH && !worth) throw Object.assign(new Error('Its reward is worth turning into TAC only by sending the unwrap yourself.'), { front: true });
     const n = worth ? 3 : 2;
     let k = 0;
-    if (worth) { say(`Step ${++k} of ${n} · the relay is proving your harvest…`); settled(await harvest(t, priv(), pos, run().wait('Harvest farm rewards', 15 * 60e3))); }
+    if (worth) { say(`Step ${++k} of ${n} · the relay is proving your harvest…`); settled(await harvest(t, priv(), pos, run().wait('Harvest farm rewards', 15 * 60e3), own(t), onOwn)); }
     const lpOf = async () => lpNotes((await t.balance(priv())).notes, pool);
     const had = new Set((await lpOf()).map(noteKey));
     say(`Step ${++k} of ${n} · the relay is proving your unbond…`);
     const [cur] = (await t.farmPositions({ walletPriv: priv() })).filter((p) => p.receiptLeaf === pos.receiptLeaf);
     const given = BigInt(cur?.pendingUnits || 0);
-    settled(await unbond(t, priv(), cur || pos, run().wait('Unbond from a farm', 15 * 60e3), undefined, { forfeit: true }));
+    settled(await unbond(t, priv(), cur || pos, run().wait('Unbond from a farm', 15 * 60e3), undefined, { forfeit: true, own: own(t), onOwn }));
     let fresh = [];
     for (let j = 0; !fresh.length && j < 8; j++) { fresh = (await lpOf()).filter((x) => !had.has(noteKey(x))); if (!fresh.length) await sleep(5000); }
     if (!fresh.length) throw new Error('Unbonded. The liquidity note is not showing yet: Read again in a minute and take it out from the front page.');
     for (const [j, note] of fresh.entries()) {
       say(`Step ${n} of ${n} · the relay is taking your liquidity out${fresh.length > 1 ? ` (${j + 1} of ${fresh.length})` : ''}…`);
-      try { settled(await takeOut(t, priv(), pool, note, run().wait(`Take out ${name(pos)} liquidity`, 15 * 60e3))); }
+      try { settled(await takeOut(t, priv(), pool, note, run().wait(`Take out ${name(pos)} liquidity`, 15 * 60e3), own(t), onOwn)); }
       catch (e) { if (/not covered by this withdrawal/.test(String(e?.message || ''))) throw Object.assign(new Error('Unbonded. This liquidity is worth less than the relay’s fee to take it out.'), { front: true }); throw e; }
     }
     return `Out. Your liquidity is back as private ${name(pos)} notes.${given > UNBOND_DUST ? ` The ${noteTxt(given)} TAC it earned while this ran was given up.` : ''}`;
@@ -236,7 +240,7 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
     // proved and sent a little later by the relay ("open"), or still in its queue when the wait runs out: followed until it lands
     const w = run().wait(`Add ${name(pool)} liquidity and farm it`, 20 * 60e3);
     let jid = null;
-    try { settled(await bond(t, priv(), { manager: prog.manager, aNote: nA, bNote: nB, feeBps: now.res.feeBps ?? pool.feeBps, waitOpts: { ...w, onJob: (id, ty) => { jid = id; w.onJob?.(id, ty); } } })); }
+    try { settled(await bond(t, priv(), { manager: prog.manager, aNote: nA, bNote: nB, feeBps: now.res.feeBps ?? pool.feeBps, own: own(t), onOwn, waitOpts: { ...w, onJob: (id, ty) => { jid = id; w.onJob?.(id, ty); } } })); }
     catch (e) {
       const id = e?.open?.jobId || jid;
       if (!id || !(e?.code === 'open' || e?.open || /settle timed out|status polling for job/i.test(String(e?.message || '')))) throw e;
