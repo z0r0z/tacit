@@ -13,6 +13,12 @@
   "tickSecs": 15,
   "alertSecs": 3600,
   "lowFreeTac": 2000,
+  "refill": {
+    "treasury": "0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2",
+    "lowWaterTac": 5000,
+    "chunkTac": 5000,
+    "maxPerDayTac": 20000
+  },
   "btcBases": [
     "https://mempool.space/api",
     "https://blockstream.info/api",

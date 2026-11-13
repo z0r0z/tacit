@@ -1,7 +1,9 @@
-// Keeps the provider's private TAC from running out. When what it holds free (its pool balance less what is promised) falls under a low-water
-// mark, it brings in more. TAC that has reached its own address is shielded first, whoever sent it; otherwise a chunk is pulled from a treasury
-// that has approved this key for a limited amount (an ERC-20 allowance, which the treasury can take back at any time with an approval of 0),
-// and shielded. It never pulls more than the allowance, the treasury's balance, a chunk, or what is left of the day's limit.
+// Keeps the provider's private TAC from running out. TAC that has reached its own address, whoever sent it and whatever the provider holds free,
+// is shielded: it is the provider's to lend and does nothing where it is (40,000 TAC sat at the address for twelve hours on 2026-11-13 because
+// nobody was there to shield it). And when what it holds free (its pool balance less what is promised) falls under a low-water mark with nothing at
+// the address, a chunk is pulled from a treasury that has approved this key for a limited amount (an ERC-20 allowance, which the treasury can take
+// back at any time with an approval of 0), and shielded. It never pulls more than the allowance, the treasury's balance, a chunk, or what is left
+// of the day's limit.
 //
 // Everything it touches goes through the calls it is given, so the rules are tried without a chain (tests/fastbridge-refill.test.mjs).
 //
@@ -13,36 +15,43 @@
 //   pull(wei)       sends the pull and returns when it is mined; throws if it fails
 //   shield(wei)     deposits and settles it into private notes; throws, with `deposited` set to the transaction if the deposit was made
 //   load(), save()  the day's pulled total, { day, pulled }, kept across restarts
-//   config          { lowWater, chunk, minShield, maxPerDay } in token units, and minIntervalSecs between attempts
+//   config          { lowWater, chunk, minShield, maxPerDay } in token units; minIntervalSecs (default 30 min) before another attempt after one
+//                   that failed or found nothing to bring in, afterShieldSecs (default 1 min) after one that shielded, so what is left goes on at once
 
 const P = 10n ** 10n;                                           // token units in one pool unit
 const min = (...v) => v.reduce((a, b) => (b < a ? b : a));
 const whole = (v) => v - (v % P);                               // the pool takes whole pool units
 
 export function makeRefill({ free, publicTac, allowance, treasuryTac, ethOk, quiet = async () => true, pull, shield, load = async () => ({}), save = async () => {}, now = () => Math.floor(Date.now() / 1000), config, log = () => {}, alert = () => {} }) {
-  const c = { minIntervalSecs: 1800, ...config };
+  const c = { minIntervalSecs: 1800, afterShieldSecs: 60, ...config };
   if (!(c.lowWater > 0n) || !(c.chunk > 0n) || !(c.minShield > 0n) || !(c.maxPerDay >= 0n)) throw new Error('refill: lowWater, chunk and minShield must be more than 0 and maxPerDay not below 0');
-  let busy = false, last = -Infinity, halted = null;
+  let busy = false, nextAt = -Infinity, halted = null;
   const said = new Map();
   const sayOnce = (key, o, secs = 21600) => { if (now() - (said.has(key) ? said.get(key) : -Infinity) >= secs) { said.set(key, now()); alert(o); } };
   const dayOf = () => new Date(now() * 1000).toISOString().slice(0, 10);
+  const noEth = () => { sayOnce('eth', { level: 'warn', msg: 'refill: the provider\'s own account is low on ETH, so it cannot bring in more TAC' }); return { did: 'eth' }; };
 
   async function step() {
     if (halted) return { did: 'halted' };
     if (busy) return { did: 'busy' };
-    if (now() - last < c.minIntervalSecs) return { did: 'wait' };
+    if (now() < nextAt) return { did: 'wait' };
     busy = true;
     try {
-      const f = await free();
-      if (f == null) return { did: 'unread' };
-      if (f * P >= c.lowWater) return { did: 'enough' };
-      if (!(await quiet())) return { did: 'quiet' };
-      if (!(await ethOk())) { sayOnce('eth', { level: 'warn', msg: 'refill: the provider\'s own account is low on ETH, so it cannot bring in more TAC' }); return { did: 'eth' }; }
-      last = now();
       let amount, pulled = 0n;
       const pub = whole(await publicTac());
-      if (pub >= c.minShield) amount = min(pub, c.chunk);
-      else {
+      if (pub >= c.minShield) {
+        // TAC at the address: shielded at any level of what is free, a chunk at a time
+        if (!(await quiet())) return { did: 'quiet' };
+        if (!(await ethOk())) return noEth();
+        nextAt = now() + c.minIntervalSecs;
+        amount = min(pub, c.chunk);
+      } else {
+        const f = await free();
+        if (f == null) return { did: 'unread' };
+        if (f * P >= c.lowWater) return { did: 'enough' };
+        if (!(await quiet())) return { did: 'quiet' };
+        if (!(await ethOk())) return noEth();
+        nextAt = now() + c.minIntervalSecs;
         const st = await load(), day = dayOf(), today = st && st.day === day ? BigInt(st.pulled || '0') : 0n;
         const room = c.maxPerDay > today ? c.maxPerDay - today : 0n;
         const [allowed, held] = [await allowance(), await treasuryTac()];
@@ -69,6 +78,7 @@ export function makeRefill({ free, publicTac, allowance, treasuryTac, ethOk, qui
         return { did: 'failed', amount };
       }
       log({ level: 'info', msg: 'refill: shielded', amount: String(amount), pulled: pulled > 0n });
+      nextAt = now() + c.afterShieldSecs;                       // it went well: what is left goes on after a short pause, not the long one
       return { did: 'refilled', amount, pulled };
     } catch (e) {
       alert({ level: 'warn', msg: 'refill: an attempt failed', error: String((e && e.message) || e).slice(0, 200) });

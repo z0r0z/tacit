@@ -1,6 +1,6 @@
-// The provider's refill (fastbridge-lp/lib/refill.mjs): when its free private TAC runs under a mark it shields what has reached its address, or
-// pulls a chunk from a treasury that approved it for a limited amount and shields that; it stays inside the allowance, the treasury's balance,
-// a chunk and the day's limit, and it does nothing it cannot finish safely.
+// The provider's refill (fastbridge-lp/lib/refill.mjs): it shields what has reached its address at any level of what is free, and when its free
+// private TAC runs under a mark with nothing there it pulls a chunk from a treasury that approved it for a limited amount and shields that; it
+// stays inside the allowance, the treasury's balance, a chunk and the day's limit, and it does nothing it cannot finish safely.
 //   node tests/fastbridge-refill.test.mjs        (Node 22)
 
 import assert from 'node:assert/strict';
@@ -28,7 +28,7 @@ function world(over = {}) {
 const tests = [];
 const test = (name, fn) => tests.push([name, fn]);
 
-test('with enough free it does nothing, and reads nothing else', async () => {
+test('with enough free and nothing at the address it does nothing', async () => {
   const w = world({ free: 3000n * POOL });
   assert.equal((await w.r.step()).did, 'enough');
   assert.deepEqual(w.calls, []);
@@ -41,7 +41,7 @@ test('while the free amount cannot be read it does nothing', async () => {
   assert.deepEqual(w.calls, []);
 });
 
-test('TAC already at its address is shielded first, up to a chunk, and nothing is pulled', async () => {
+test('TAC at its address is shielded in preference to a pull, up to a chunk, and nothing is pulled', async () => {
   const w = world({ pub: tac(2000) });
   const r = await w.r.step();
   assert.deepEqual([r.did, r.amount], ['refilled', tac(2000)]);
@@ -112,13 +112,40 @@ test('it does nothing when the address is low on ETH, or another send from it ma
   assert.equal((await busy.r.step()).did, 'refilled', 'asked again, it goes on: waiting for quiet is not an attempt');
 });
 
-test('attempts are spaced: not again within the interval, and again after it', async () => {
+test('attempts are spaced: a short pause after one that shielded, a long one after one that failed or found nothing to bring in', async () => {
   const w = world({ free: 0n });
   assert.equal((await w.r.step()).did, 'refilled');
   w.free = 0n;
   assert.equal((await w.r.step()).did, 'wait');
-  w.advance(1799); assert.equal((await w.r.step()).did, 'wait');
-  w.advance(2); assert.equal((await w.r.step()).did, 'refilled');
+  w.advance(59); assert.equal((await w.r.step()).did, 'wait');
+  w.advance(2); assert.equal((await w.r.step()).did, 'refilled', 'after the short pause it goes on');
+  const none = world({ free: 0n, allow: 0n });
+  assert.equal((await none.r.step()).did, 'none');
+  none.advance(1799); assert.equal((await none.r.step()).did, 'wait', 'after one that found nothing to bring in, the long pause');
+  none.advance(2); assert.equal((await none.r.step()).did, 'none');
+});
+
+test('TAC that reaches the address is shielded at any level of what is free, a chunk at a time with the short pause between, until it is all in', async () => {
+  const w = world({ free: 50000n * POOL, pub: tac(12000) });
+  assert.equal((await w.r.step()).did, 'refilled');
+  assert.deepEqual(w.calls, [['shield', tac(5000)]], 'plenty is free, and it is shielded all the same: idle TAC at the address lends nothing');
+  assert.equal((await w.r.step()).did, 'wait');
+  w.advance(61); await w.r.step();
+  w.advance(61); await w.r.step();
+  assert.deepEqual(w.calls, [['shield', tac(5000)], ['shield', tac(5000)], ['shield', tac(2000)]], 'all of it, in chunks');
+  w.advance(61);
+  assert.equal((await w.r.step()).did, 'enough', 'and with it all in and plenty free, nothing more');
+  assert.equal(w.pub, 0n);
+});
+
+test('TAC at the address waits for ETH and for a quiet address, as a pull does', async () => {
+  const w = world({ free: 50000n * POOL, pub: tac(2000), eth: false });
+  assert.equal((await w.r.step()).did, 'eth');
+  w.eth = true; w.quiet = false;
+  assert.equal((await w.r.step()).did, 'quiet');
+  w.quiet = true;
+  assert.equal((await w.r.step()).did, 'refilled');
+  assert.deepEqual(w.calls, [['shield', tac(2000)]]);
 });
 
 test('a pull that fails shields nothing and is not repeated at once; the next attempt works', async () => {
@@ -180,6 +207,7 @@ test('the daemon makes it only when the config names a treasury, never in a dry 
   assert.match(src, /if \(C\.refill && !DRY\)/, 'off unless configured, and never in a dry run');
   assert.match(src, /0x23b872dd/, 'transferFrom(address,address,uint256)');
   assert.match(src, /'0x23b872dd' \+ word\(treasury\) \+ word\(acct\.address\) \+ word\(amount\)/, 'from the treasury to its own address, and no other recipient');
+  assert.match(src, /ux\.warmWrapLogs\(\{ ticker: 'TAC' \}\)/, 'the wrap logs are read a little after start, so the first real shield is not the slow one');
 });
 
 let passed = 0;

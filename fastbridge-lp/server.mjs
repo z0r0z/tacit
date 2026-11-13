@@ -145,11 +145,14 @@ if (C.refill && !DRY) {
     },
     load: async () => { try { return JSON.parse(readF(stateFile, 'utf8')); } catch { return {}; } },
     save: async (s) => writeF(stateFile, JSON.stringify(s)),
-    config: { lowWater: wei(rc.lowWaterTac ?? 3000), chunk: wei(rc.chunkTac ?? 5000), minShield: wei(rc.minShieldTac ?? 100), maxPerDay: wei(rc.maxPerDayTac ?? 20000), minIntervalSecs: rc.minIntervalSecs ?? 1800 },
+    config: { lowWater: wei(rc.lowWaterTac ?? 3000), chunk: wei(rc.chunkTac ?? 5000), minShield: wei(rc.minShieldTac ?? 100), maxPerDay: wei(rc.maxPerDayTac ?? 20000), minIntervalSecs: rc.minIntervalSecs ?? 1800, afterShieldSecs: rc.afterShieldSecs ?? 60 },
     log, alert,
   });
   log({ level: 'info', msg: 'refill is on', treasury, lowWaterTac: rc.lowWaterTac ?? 3000, chunkTac: rc.chunkTac ?? 5000, maxPerDayTac: rc.maxPerDayTac ?? 20000 });
   setInterval(() => { refill.step().catch(() => {}); }, (rc.everySecs ?? 60) * 1000).unref();
+  // The first wrap of a key reads the asset's Wrap logs to find its next unused index (minutes), and keeps the answer in the wallet cache on the data disk.
+  // Reading them a little after start, while nothing is being shielded, leaves the first real shield only the newest blocks. It reserves no index.
+  setTimeout(() => { ux.warmWrapLogs({ ticker: 'TAC' }).catch(() => {}); }, (rc.warmSecs ?? 45) * 1000).unref();
 }
 const server = makeHttpServer({ handle: service.handle, origins: C.origins || [], trustProxy: !!C.trustProxy });
 server.listen(C.port ?? 8787, () => log({ level: 'info', msg: 'listening', port: C.port ?? 8787 }));

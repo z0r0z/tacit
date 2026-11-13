@@ -107,21 +107,22 @@ Keep several coins at the Bitcoin address, or one swap at a time is all it takes
 ## Keeping it filled
 
 Each bridge a provider takes moves TAC out of its private pool balance, so it runs out. Left alone it says so (the `capacity` line in the log, and a
-bridge too big for it waits on the board); with `refill` in the config it brings in more itself:
+bridge too big for it waits on the board); with `refill` in the config it brings in more itself, in two ways:
 
 ```json
 "refill": { "treasury": "0x…", "lowWaterTac": 3000, "chunkTac": 5000, "maxPerDayTac": 20000 }
 ```
 
-When the TAC it holds free (its pool balance less what is promised) falls under `lowWaterTac`:
-
-1. TAC that has reached its own address, from anyone, is shielded (at most a chunk at a time, and not less than `minShieldTac`, default 100).
-2. Otherwise a chunk is pulled from `treasury` with `transferFrom` and shielded. The treasury has to have approved the provider's address
-   (`poolAccount`, printed at start) for an amount of TAC first; the provider can pull nothing beyond it, beyond what the treasury holds, beyond
-   `chunkTac`, or beyond `maxPerDayTac` in a day. The treasury takes the permission back at any time with an approval of 0.
+1. TAC that reaches its own address, from anyone, is shielded whatever it holds free: a chunk at a time, not less than `minShieldTac` (default 100),
+   a minute apart until it is all in. TAC at the address lends nothing, and an operator who sent some and went to bed should find it working in
+   the morning (40,000 TAC once sat at the address for twelve hours with nobody to shield it).
+2. When the TAC it holds free (its pool balance less what is promised) falls under `lowWaterTac` and there is none at the address, a chunk is
+   pulled from `treasury` with `transferFrom` and shielded. The treasury has to have approved the provider's address (`poolAccount`, printed at
+   start) for an amount of TAC first; the provider can pull nothing beyond it, beyond what the treasury holds, beyond `chunkTac`, or beyond
+   `maxPerDayTac` in a day. The treasury takes the permission back at any time with an approval of 0.
 
 It needs ETH at its address for the pull, the deposit and a settle sent from it when the relay is not sending them (enough for about 1.5 million gas at twice the gas price of the moment; `minEth` sets a floor under that), and it
-waits while a swap is locking or refunding, which send from the same address. Attempts are `minIntervalSecs` apart (default 1800). It does nothing
+waits while a swap is locking or refunding, which send from the same address. An attempt that shielded is followed by the next after `afterShieldSecs` (default 60); one that failed, or found nothing to bring in, after `minIntervalSecs` (default 1800). It does nothing
 until the config names a treasury, and nothing in a dry run. A deposit whose settle fails stops it for good, with the deposit named in an alert: the TAC is
 in the pool's hands until it is settled. Try it first with a small `chunkTac` (100) and a small approval.
 
