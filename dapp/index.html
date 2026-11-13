@@ -1589,6 +1589,8 @@ html[data-page="tac"] #tcd-seg:empty { min-height: 32px; }
 #tpg-live .cl-sub { margin-left: 0; }
 #tpg-live .cl-more:not(:empty) { margin: 0 0 0 auto; padding: 0; border: 0; font-size: 12px; }
 .cl-chain { margin: 0; }
+.cl-chain b { box-sizing: border-box; width: auto; min-width: 40px; padding: 0 5px; }
+@media (max-width: 520px) { .cl-chain b { min-width: 36px; padding: 0 4px; } }
 .cl-chain li.me b { background: color-mix(in srgb, var(--orange) 18%, transparent); border-color: var(--orange); }
 .cl-chain li.nx.me small { color: var(--ink); }
 /* the other parts drawn a moment after the page keep their places too, so nothing under them moves when they arrive */
