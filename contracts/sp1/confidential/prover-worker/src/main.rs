@@ -36,8 +36,11 @@
 // turns: a card under 24 GB, which the installer gives a smaller GPU server, proves the pool's wraps and presses alone. CONFIDENTIAL
 // (default 1) also races the board's public settle jobs, a person's press as it happens (programs gains "confidential"): the board gives
 // a ready community machine first pick of each before Tacit's own worker, and the first sound proof is the one the relay takes.
-// HELPDESK (default 1, community mode): between proofs the GPU runs the community help desk's jobs, code review and visitors' questions, on a
-// small local model, for the same address (helpdesk.rs); the model is stopped before every proof and the GPU is the prover's first. The warm-up pings, which are
+// HELPDESK (default 1, community mode): a machine that has made no proof for REVIEW_AFTER_IDLE_SECS (600) hands its GPU to the community help desk
+// for a review spell: it exits (code 5) so the loop around it lets SP1's GPU server go, and starts again in the spell, running the help desk's jobs,
+// code review and visitors' questions, on a small local model for the same address (helpdesk.rs), without building the prover. The spell ends
+// after REVIEW_SPELL_SECS (1800) or as soon as the pool has wraps waiting, with another exit 5, and the worker starts again to prove. While a spell
+// lasts the machine claims nothing at the board, so presses and batches go to the machines ready for them. The warm-up pings, which are
 // for Tacit's own tokens, are off. Between jobs its spare CPU cores grind deploy salts for the same address (salt.rs; SALT_THREADS, half
 // the cores by default, 0 is off). Tacit's own box grinds too, earning nothing (the pool gives the house no weight), when SALT_MINER
 // names the house address (the deployer).
@@ -186,6 +189,16 @@ fn main() {
             }
         });
     }
+    // A review spell, when the last run handed the GPU over (the flag in HELPDESK_DIR): the help desk's model, not the prover, until it is time to prove.
+    let review_flag = review_cfg(community.as_deref(), &name).map(|c| c.dir.join("review-spell"));
+    if let Some(flag) = review_flag.as_ref().filter(|f| f.exists()) {
+        warming.store(false, std::sync::atomic::Ordering::Relaxed);
+        if let Some(cfg) = review_cfg(community.as_deref(), &name) { review_spell(&name, &base, cfg); }
+        let _ = std::fs::remove_file(flag);
+        println!("[{name}] back to proofs");
+        std::process::exit(5);
+    }
+    let review_after = Duration::from_secs(env_or("REVIEW_AFTER_IDLE_SECS", "600").parse().unwrap_or(600));
     println!("[{name}] building the CUDA prover and the proving key (once)...");
     let t0 = Instant::now();
     let device: u32 = env_or("GPU_DEVICE", "0").trim().parse().expect("GPU_DEVICE is a card's number, as nvidia-smi gives it");
@@ -232,19 +245,6 @@ fn main() {
     }
 
     warming.store(false, std::sync::atomic::Ordering::Relaxed);
-    // Between proofs a community machine reviews Tacit's code and answers help desk questions on its GPU (helpdesk.rs; HELPDESK=0 is off).
-    if let Some(miner) = community.as_ref() {
-        let api = env_or("HELPDESK_API", "https://tacit-helpdesk.onrender.com").trim_end_matches('/').to_string();
-        if env_or("HELPDESK", "1") != "1" {
-            println!("[{name}] help desk off (HELPDESK=0)");
-        } else if !helpdesk::api_ok(&api) {
-            println!("[{name}] help desk off: HELPDESK_API must be the help desk's own https:// address");
-        } else {
-            let dir = std::env::var("HELPDESK_DIR").ok().filter(|d| !d.is_empty()).map(std::path::PathBuf::from)
-                .unwrap_or_else(|| std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/root".into())).join(".tacit-gpu"));
-            helpdesk::start(helpdesk::Cfg { miner: miner.clone(), gpu: env_or("GPU_DEVICE", "0"), dir, api });
-        }
-    }
     let reload_flag = env_or("RELOAD_FLAG", "/workspace/worker.reload");
     let reload_due = || std::path::Path::new(&reload_flag).exists();
     let (claim_url, result_url) = if community.is_some() {
@@ -297,6 +297,7 @@ fn main() {
     let pool_idle = Duration::from_secs(env_or("POOL_IDLE_SECS", "20").parse::<u64>().unwrap_or(20));
     let pool_max_hour = env_or("POOL_MAX_PER_HOUR", "60").parse::<usize>().unwrap_or(60);
     let mut board_last = Instant::now();
+    let mut last_proof = Instant::now();   // the last proof this run made or tried, board or pool: what a review spell waits on
     let mut pool_hour: std::collections::VecDeque<Instant> = std::collections::VecDeque::new();
     // The Ethereum-state program: claimed while ETH_STATE is on and its key has not been refused (set up on the first job).
     let eth_on = env_or("ETH_STATE", "1") == "1";
@@ -424,6 +425,7 @@ fn main() {
                             quiet = 0;
                             jobs_done += 1;
                             pool_hour.push_back(Instant::now());
+                            last_proof = Instant::now();
                             match outcome {
                                 Ok(secs) => { failed_in_a_row = 0; println!("[{name}] pool wrap: proved in {secs:.1} s"); }
                                 Err(e) => {
@@ -442,6 +444,13 @@ fn main() {
                             println!("[{name}] the pool leases nothing more here today: {why}");
                         }
                         Leased::Nothing => {}
+                    }
+                }
+                // nothing to prove for a while: the GPU goes to the help desk's model for a spell (the loop around the worker lets the prover go)
+                if let Some(flag) = review_flag.as_ref() {
+                    if last_proof.elapsed() >= review_after && std::fs::write(flag, b"").is_ok() {
+                        println!("[{name}] no proof for {} min: a review spell on this GPU, back to proofs after it or when the pool has work", review_after.as_secs() / 60);
+                        std::process::exit(5);
                     }
                 }
                 quiet += 1;
@@ -490,6 +499,7 @@ fn main() {
         job_since.store(0, std::sync::atomic::Ordering::Relaxed);
         drop(hold);
         board_last = Instant::now();
+        last_proof = Instant::now();
         let body = match &outcome {
             Ok((pv, proof)) => {
                 println!("[{name}] job {} {label}: proved in {:.1} s", &job.job_id[..job.job_id.len().min(12)], t.elapsed().as_secs_f64());
@@ -652,6 +662,33 @@ fn eth_state_proof<P: Prover>(
 // The client's errors when the GPU server is gone rather than one input failing.
 fn gpu_gone(e: &str) -> bool {
     e.contains("early eof") || e.contains("Could not connect") || e.contains("Connection reset") || e.contains("Broken pipe")
+}
+
+// The help desk's settings for a review spell, or None: community mode only, HELPDESK=1 (the default), the help desk's own https:// address.
+fn review_cfg(community: Option<&str>, name: &str) -> Option<helpdesk::Cfg> {
+    let miner = community?.to_string();
+    let api = env_or("HELPDESK_API", "https://tacit-helpdesk.onrender.com").trim_end_matches('/').to_string();
+    if env_or("HELPDESK", "1") != "1" { return None; }
+    if !helpdesk::api_ok(&api) { println!("[{name}] no review spells: HELPDESK_API must be the help desk's own https:// address"); return None; }
+    let dir = std::env::var("HELPDESK_DIR").ok().filter(|d| !d.is_empty()).map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/root".into())).join(".tacit-gpu"));
+    Some(helpdesk::Cfg { miner, gpu: env_or("GPU_DEVICE", "0"), dir, api })
+}
+
+// A review spell: the help desk's model has the GPU (no prover is built in this run) until REVIEW_SPELL_SECS have passed or the pool has
+// wraps waiting for a prover, read every half minute.
+fn review_spell(name: &str, base: &str, cfg: helpdesk::Cfg) {
+    let spell = Duration::from_secs(env_or("REVIEW_SPELL_SECS", "1800").parse().unwrap_or(1800));
+    println!("[{name}] review spell: the help desk's model has this GPU for up to {} min", spell.as_secs() / 60);
+    helpdesk::start(cfg);
+    let (t, agent) = (Instant::now(), ureq::AgentBuilder::new().timeout(Duration::from_secs(20)).build());
+    loop {
+        std::thread::sleep(Duration::from_secs(30));
+        if t.elapsed() >= spell { println!("[{name}] the spell is over ({} reviews)", helpdesk::DONE.load(std::sync::atomic::Ordering::Relaxed)); break; }
+        let queued = agent.get(&format!("{base}/prover/pool")).call().ok().and_then(|r| r.into_json::<serde_json::Value>().ok()).and_then(|v| v["queued"].as_u64()).unwrap_or(0);
+        if queued > 0 { println!("[{name}] the pool has {queued} waiting: ending the spell ({} reviews)", helpdesk::DONE.load(std::sync::atomic::Ordering::Relaxed)); break; }
+    }
+    helpdesk::stop_all();
 }
 
 fn now_secs() -> u64 {

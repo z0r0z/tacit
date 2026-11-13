@@ -5,14 +5,16 @@
 // Qwen3.5-4B file, on this GPU) and sends the answer back; the help desk checks nodes with questions whose answers it knows and pays the
 // address checked work earns from the same daily pot as proofs. The model sees the job's text and nothing else.
 //
-// A proof always comes first. Before any proof starts, the worker calls `hold()`, which stops the model and waits for it to be gone, so the GPU's
-// memory is the prover's again; the model starts again for the next job once the proof is done, and is unloaded after a while without work.
-// The model is started only with enough of the GPU's memory free beside SP1's GPU server (HELPDESK_MIN_FREE_MB, 4096).
+// It runs in a review spell (main.rs): SP1's GPU server keeps most of the card's memory once it has proved (13.6 GB of 16 after a press, 15.6 after a
+// chain block), so the model cannot run beside it; a machine that has made no proof for a while lets the prover go, gives the GPU to the model
+// for a spell, and goes back to proofs when the spell ends or the pool has work (`stop_all`). `hold()` stops the model before any proof all the same.
+// The model is started only with this much of the GPU's memory free (HELPDESK_MIN_FREE_MB, 4096); one that will not start is not retried for ten
+// minutes, and no job is leased without a model running.
 //
 // Files (HELPDESK_DIR, ~/.tacit-gpu by default): helpdesk/llama-server and helpdesk/model.gguf, fetched the first time by dapp/helpdesk-fetch.sh,
 // which is built into this program (the same pinned downloads, checked against their SHA-256), helpdesk/fetch.log and helpdesk/llama.log.
-// Env: HELPDESK=0 (off), HELPDESK_API (the help desk's https:// address), HELPDESK_DIR, HELPDESK_MIN_FREE_MB, HELPDESK_UNLOAD_SECS (900),
-// HELPDESK_CTX (4096), GPU_DEVICE (the card the model runs on, as for proofs).
+// Env: HELPDESK=0 (off), HELPDESK_API (the help desk's https:// address), HELPDESK_DIR, HELPDESK_MIN_FREE_MB, HELPDESK_CTX (4096), GPU_DEVICE (the card
+// the model runs on, as for proofs).
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -57,6 +59,12 @@ pub fn hold() -> Hold {
     PROVING.store(true, Ordering::SeqCst);
     stop_llm("a proof is starting");
     Hold
+}
+
+// The spell is over: no more jobs are leased and the model is stopped before this returns.
+pub fn stop_all() {
+    PROVING.store(true, Ordering::SeqCst);
+    stop_llm("back to proofs");
 }
 
 fn stop_llm(why: &str) {
@@ -163,7 +171,7 @@ fn start_llm(cfg: &Cfg, bin: &Path, model: &Path) -> Option<u16> {
 }
 fn llm_up() -> bool { LLM.lock().unwrap().as_mut().map(|c| matches!(c.try_wait(), Ok(None))).unwrap_or(false) }
 
-enum Outcome { Worked, Empty, Failed }
+enum Outcome { Worked, Empty, Failed, NoModel }
 
 fn post(agent: &ureq::Agent, url: &str, body: &Value) -> Option<(u16, Value)> {
     match agent.post(url).send_json(body.clone()) {
@@ -185,11 +193,8 @@ fn lease_one(cfg: &Cfg, hw: &Value, port: &mut Option<u16>) -> Outcome {
         return job["id"].as_str().map(|id| give_up(id, "a job this node will not run")).unwrap_or(Outcome::Failed);
     };
     if PROVING.load(Ordering::SeqCst) { return give_up(&id, "a proof is running"); }
-    if port.is_none() || !llm_up() {
-        let Some((bin, model)) = resources(&cfg.dir) else { return give_up(&id, "no model installed") };
-        *port = start_llm(cfg, &bin, &model);
-    }
-    let Some(p) = *port else { return give_up(&id, "the model did not start") };
+    // the model was started before the lease; gone since, the job goes back and the loop starts it again
+    let Some(p) = port.filter(|_| llm_up()) else { give_up(&id, "the model stopped"); *port = None; return Outcome::NoModel };
     let t0 = Instant::now();
     let reply = ureq::AgentBuilder::new().timeout(Duration::from_secs(120)).build()
         .post(&format!("http://127.0.0.1:{p}/v1/chat/completions"))
@@ -222,26 +227,29 @@ pub fn start(cfg: Cfg) {
 fn run(cfg: Cfg) {
     let hw = hardware(&cfg.gpu);
     let min_free: u64 = env_or("HELPDESK_MIN_FREE_MB", "4096").parse().unwrap_or(4096);
-    let unload = Duration::from_secs(env_or("HELPDESK_UNLOAD_SECS", "900").parse().unwrap_or(900));
     let mut next_fetch = Instant::now();
-    let (mut port, mut last_work) = (None::<u16>, Instant::now());
-    println!("[helpdesk] reviewing for {} between proofs ({}), model {MODEL_ID}", cfg.miner, cfg.api);
+    let mut next_start = Instant::now();
+    let mut port = None::<u16>;
+    println!("[helpdesk] reviewing for {} ({}), model {MODEL_ID}", cfg.miner, cfg.api);
     loop {
         if PROVING.load(Ordering::SeqCst) { port = None; std::thread::sleep(Duration::from_secs(1)); continue; }
         if resources(&cfg.dir).is_none() {
             if Instant::now() >= next_fetch && !fetch(&cfg.dir) { next_fetch = Instant::now() + Duration::from_secs(3600); }
             if resources(&cfg.dir).is_none() { std::thread::sleep(Duration::from_secs(30)); continue; }
         }
-        // the model starts only with room for it beside the prover; one already running keeps going
-        if !llm_up() {
+        // the model runs before any job is leased: one that will not start, or has no room, leases nothing
+        if port.is_none() || !llm_up() {
             port = None;
-            if smi("memory.free", &cfg.gpu).map_or(true, |free| free < min_free) { std::thread::sleep(Duration::from_secs(60)); continue; }
+            if Instant::now() < next_start { std::thread::sleep(Duration::from_secs(10)); continue; }
+            if smi("memory.free", &cfg.gpu).map_or(true, |free| free < min_free) { next_start = Instant::now() + Duration::from_secs(60); continue; }
+            let Some((bin, model)) = resources(&cfg.dir) else { continue };
+            port = start_llm(&cfg, &bin, &model);
+            if port.is_none() { next_start = Instant::now() + Duration::from_secs(600); continue; }
         }
-        if llm_up() && last_work.elapsed() > unload { stop_llm("no work for a while"); port = None; }
         match lease_one(&cfg, &hw, &mut port) {
-            Outcome::Worked => last_work = Instant::now(),
-            Outcome::Empty => {}                                         // the help desk holds a lease request open for a while: not a busy loop
+            Outcome::Worked | Outcome::Empty => {}                       // the help desk holds a lease request open for a while: not a busy loop
             Outcome::Failed => std::thread::sleep(Duration::from_secs(10)),
+            Outcome::NoModel => {}
         }
     }
 }
