@@ -129,6 +129,36 @@ const mkFeed = (o = {}) => makeCheckFeed({ source: () => SRC, sample: () => ({ f
   const stale = makePlantPool({ sample: () => ({ file: 'dapp/a.js', commit: 'abc', start: 1, end: 6, lens: 'bounds' }), source: () => SRC, size: 5 }); stale.fill(2);
   check('a plant whose line no longer matches the file is not used', (await mkFeed({ pool: stale, examEvery: 1, rand: () => 0, source: () => SRC.replace(/>=/g, '!==').replace(/ > /g, ' !== ') }).next({ node: 'n' })) === null);
 }
+// --- votes weighed by lens, and findings sent to the machines that judge their lens well
+{
+  writeFileSync(F.inbox, ''); writeFileSync(F.checks, ''); writeFileSync(F.exam, '');
+  // machine G is right every time on async and at chance on bounds
+  const rows = [];
+  for (let i = 0; i < 20; i++) rows.push(examRow('G', 'right', { lens: 'async' }), examRow('G', i % 2 ? 'right' : 'wrong', { lens: 'bounds' }));
+  put(F.exam, rows);
+  put(F.inbox, [find({ id: 'A1', lens: 'async', node: 'P' }), find({ id: 'B1', lens: 'bounds', node: 'P', line: 3 })]);
+  const feed = mkFeed();
+  const j = await feed.next({ node: 'G', tier: 'small', model: 'm' });
+  check('a machine is never sent a finding in a lens where its vote would count for nothing', j && j.meta.fid === 'A1' && (await (async () => { put(F.checks, [vote('A1', 'G', 'real')]); return feed.next({ node: 'G', tier: 'small', model: 'm' }); })()) === null);
+  put(F.checks, [vote('A1', 'G', 'real'), vote('A1', 'H', 'real')]);
+  check('its vote counts fully on the lens it judges well (1.5 + 1 confirms)', feed.decision('A1').state === 'confirmed' && feed.decision('A1').yes === 2.5);
+  put(F.checks, [vote('B1', 'G', 'real'), vote('B1', 'H', 'real')]);
+  check('and not at all on the lens it does not (0 + 1 does not)', feed.decision('B1').state === 'pending' && feed.decision('B1').yes === 1);
+  writeFileSync(F.checks, '');
+  put(F.inbox, [find({ id: 'B2', lens: 'bounds', node: 'P', t: 1 }), find({ id: 'A2', lens: 'async', node: 'P', t: 2 })]);
+  const rowsK = []; for (let i = 0; i < 20; i++) rowsK.push(examRow('K', 'right', { lens: 'async' }), examRow('K', i % 10 < 7 ? 'right' : 'wrong', { lens: 'bounds' }));   // 100% on async (1.5), 70% on bounds (1)
+  put(F.exam, rowsK);
+  check('a machine is sent first the findings in the lens it judges best, older ones notwithstanding', (await mkFeed().next({ node: 'K', model: 'm' })).meta.fid === 'A2');
+  check('a machine with no record by lens is sent findings as before, oldest first', (await mkFeed().next({ node: 'new', model: 'm' })).meta.fid === 'B2');
+  // findings the scouts add while the gateway runs are picked up without the inbox being read again, and a finding marked in the inbox tool drops out
+  writeFileSync(F.exam, ''); writeFileSync(F.checks, '');
+  put(F.inbox, [find({ id: 'C1' })]); const live = mkFeed();
+  check('a finding in the inbox is offered', (await live.next({ node: 'n1' }))?.meta.fid === 'C1');
+  appendFileSync(F.inbox, JSON.stringify(find({ id: 'C2', t: 0 })) + '\n');
+  check('one appended later is offered too (the oldest first)', (await live.next({ node: 'n2' }))?.meta.fid === 'C2');
+  writeFileSync(F.inbox, [find({ id: 'C1', review: 'rejected' }), find({ id: 'C2', t: 0, review: 'rejected' })].map((r) => JSON.stringify(r)).join('\n') + '\n');
+  check('and once the inbox is rewritten with both marked, neither is', (await live.next({ node: 'n3' })) === null);
+}
 // --- the order is shuffled, so a constant answer is at chance and a reader is not
 {
   const mulberry = (a) => () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };

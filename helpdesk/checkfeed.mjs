@@ -11,7 +11,7 @@ import { randomBytes } from 'node:crypto';
 import { plant } from './codecheck/mutate.mjs';
 import { skepticMessages, proposedSide, voteOf, examClaim, findingId, fits, blindView } from './codecheck/roles.mjs';
 import { sampleOf } from './codecheck/scan.mjs';
-import { makeExamBook, makeVoteBook, weightFor, examSummary } from './swarmbook.mjs';
+import { makeExamBook, makeVoteBook, makeTailRows, weightFor, examSummary } from './swarmbook.mjs';
 export { examSummary };
 
 const cached = new Map();   // file -> { sig, rows }: a file is read again only when it has changed
@@ -50,30 +50,41 @@ export function decide(voteRows, skill, { panel = 3, quorum = 2 } = {}) {
 export function makeCheckFeed({ source, sample, inbox, checks, exam, pool = null, panel = 3, quorum = 2, examEvery = 4, minExam = 6, context = 15, rand = Math.random, now = Date.now, say = () => {} }) {
   const book = exam && typeof exam === 'object' ? exam : makeExamBook({ file: exam, minExam });
   const votes = checks && typeof checks === 'object' ? checks : makeVoteBook({ file: checks });
-  let fc = { rows: null, list: [], owner: new Map() };
-  const findings = () => { const rows = readRows(inbox); if (rows !== fc.rows) { const list = rows.map((r) => ({ ...r, id: r.id || findingId(r.file, r.old, r.new) })); fc = { rows, list, owner: new Map(list.map((r) => [r.id, r])) }; } return fc.list; };
+  // the inbox is read a piece at a time as scouts add to it (makeTailRows); the findings list grows with it, and is built again only when the file was rewritten
+  const inboxRows = makeTailRows(inbox);
+  let fc = { rows: null, n: 0, list: [], owner: new Map() };
+  const findings = () => {
+    const rows = inboxRows.rows();
+    if (rows !== fc.rows) fc = { rows, n: 0, list: [], owner: new Map() };
+    for (; fc.n < rows.length; fc.n++) { const r = { ...rows[fc.n], id: rows[fc.n].id || findingId(rows[fc.n].file, rows[fc.n].old, rows[fc.n].new) }; fc.list.push(r); fc.owner.set(r.id, r); }
+    return fc.list;
+  };
   // Whether this machine proposed the finding. A finding filed before machines were recorded names only the address, so the address stands in for the machine.
   const proposedBy = (r, who) => (r.node ? !!who.node && r.node === who.node : !!r.miner && !!who.miner && String(r.miner).toLowerCase() === String(who.miner).toLowerCase());
   // the votes on a finding, the proposer's own never among them (from what was last read: the callers read the inbox and the votes once, then look at many findings)
   const votesOf = (id) => { const f = fc.owner.get(id); return votes.peek(id).filter((v) => !(f && proposedBy(f, { node: v.node, miner: v.miner }))); };
   const fresh = () => { const list = findings(); votes.sync(); return list; };
-  const skill = () => book.skill();
-  const decision = (id) => { fresh(); return decide(votesOf(id), skill(), { panel, quorum }); };
+  // a finding's votes are weighed by each machine's record on the finding's own lens (swarmbook.mjs weights)
+  const lensView = (W, lens) => ({ get: (node) => W.get(node, lens) });
+  const decision = (id) => { fresh(); return decide(votesOf(id), lensView(book.weights(), fc.owner.get(id)?.lens), { panel, quorum }); };
 
   // A finding that still needs votes, for this machine: not decided, not full, not proposed by it, not already voted on by it. Findings in code that just changed
   // first, those a model like this one has not voted on before those it has, then the ones already part-way to a decision, then the oldest.
   function realJob(who) {
-    const list = fresh(), sk = skill(); const open = [];
+    const list = fresh(), W = book.weights(); const open = [];
     for (const r of list) {
       if (r.status !== 'syntax-ok' || r.review !== 'new') continue;
       if (proposedBy(r, who)) continue;
+      // a machine whose vote on this lens would count for nothing is not asked: the finding waits for one that judges this kind of mistake well
+      const mine = W.get(who.node, r.lens); if (mine === 0) continue;
       const vs = votesOf(r.id);
       if (vs.some((v) => v.node === who.node)) continue;
-      if (decide(vs, sk, { panel, quorum }).state !== 'pending') continue;
-      open.push({ r, vs, seen: who.model ? vs.some((v) => v.model === who.model) : false });
+      if (decide(vs, lensView(W, r.lens), { panel, quorum }).state !== 'pending') continue;
+      open.push({ r, vs, w: mine ?? 1, seen: who.model ? vs.some((v) => v.model === who.model) : false });
     }
     if (!open.length) return null;
-    open.sort((a, b) => (a.seen - b.seen) || ((b.r.fresh ? 1 : 0) - (a.r.fresh ? 1 : 0)) || (b.vs.length - a.vs.length) || (a.r.t - b.r.t));
+    // the lenses this machine judges best first, then those a model like it has not voted on, code that just changed, the ones part-way to a decision, the oldest
+    open.sort((a, b) => (b.w - a.w) || (a.seen - b.seen) || ((b.r.fresh ? 1 : 0) - (a.r.fresh ? 1 : 0)) || (b.vs.length - a.vs.length) || (a.r.t - b.r.t));
     for (const { r } of open) {
       let src; try { src = source(r.commit, r.file); } catch { continue; }
       const [ws] = String(r.window || '').split('-').map(Number), view = blindView(src, { ...r, line: Number.isInteger(r.line) ? r.line : ws }, context); if (!view) continue;
@@ -128,8 +139,8 @@ export function makeCheckFeed({ source, sample, inbox, checks, exam, pool = null
   function summary() {
     const list = fresh(), key = `${fc.list.length}:${votes.version()}:${book.version()}`;
     if (sc.key === key && sc.rows === fc.rows) return sc.out;
-    const sk = skill(), states = { confirmed: 0, refuted: 0, unclear: 0, pending: 0 };
-    for (const r of list) if (r.status === 'syntax-ok') states[decide(votesOf(r.id), sk, { panel, quorum }).state]++;
+    const W = book.weights(), states = { confirmed: 0, refuted: 0, unclear: 0, pending: 0 };
+    for (const r of list) if (r.status === 'syntax-ok') states[decide(votesOf(r.id), lensView(W, r.lens), { panel, quorum }).state]++;
     sc = { key, rows: fc.rows, out: { findings: states, exam: book.summary(), reviewers: book.standings() } }; return sc.out;
   }
   return { next, onResult, onInvalid, decision, summary };

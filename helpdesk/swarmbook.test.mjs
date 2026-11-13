@@ -3,7 +3,8 @@
 import { mkdtempSync, writeFileSync, appendFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { makeExamBook, makeVoteBook, weightFor, examSummary, examAdd, emptySummary } from './swarmbook.mjs';
+import { makeExamBook, makeVoteBook, makeTailRows, weightFor, examSummary, examAdd, emptySummary } from './swarmbook.mjs';
+import { writeSync, openSync, closeSync, renameSync, utimesSync } from 'node:fs';
 let fails = 0; const check = (n, c) => { console.log((c ? 'ok   ' : 'FAIL ') + n); if (!c) fails++; };
 const dir = mkdtempSync(path.join(tmpdir(), 'sb-'));
 const A = '0x' + 'a1'.repeat(20), B = '0x' + 'b2'.repeat(20);
@@ -31,6 +32,8 @@ check('no weight below the minimum answers, then by how often it was right', wei
   check('rows another writer appended are counted', book.summary().skeptic.n === 2 && book.summary().scout.near === 1);
   writeFileSync(f, JSON.stringify(sk('n9', 'right')) + '\n');
   check('a file rewritten shorter is read again from the start', book.summary().skeptic.n === 1 && book.summary().scout.n === 0);
+  writeFileSync(f, JSON.stringify(sk('n8', 'wrong')) + '\n'); utimesSync(f, new Date(), new Date(Date.now() + 7000));
+  check('a file rewritten at the same size is read again (its time moved)', book.summary().skeptic.n === 1 && book.summary().skeptic.wrong === 1);
   rmSync(f);
   check('a file that is gone is no rows', book.summary().skeptic.n === 0);
   book.add(sk('n1', 'right'));
@@ -59,6 +62,58 @@ check('no weight below the minimum answers, then by how often it was right', wei
   check('a machine with too few answers has no weight on record', (() => { book.add(sk('new', 'right')); return !book.skill().has('new'); })());
   check('unsure and invalid answers are not counted either way', (() => { for (let i = 0; i < 10; i++) { book.add(sk('u', 'unsure')); book.add(sk('u', 'invalid')); } return !book.skill().has('u'); })());
   check('scout answers are not skeptic weight', (() => { for (let i = 0; i < 10; i++) book.add(sc('s', 'restored')); return !book.skill().has('s'); })());
+}
+// --- weights by lens
+{
+  const f = path.join(dir, 'e7.jsonl'), book = makeExamBook({ file: f, window: 200, lensWindow: 20 });
+  for (let i = 0; i < 20; i++) book.add(sk('m', 'right', { lens: 'async' }));
+  for (let i = 0; i < 20; i++) book.add(sk('m', i % 2 ? 'right' : 'wrong', { lens: 'bounds' }));
+  const W = book.weights();
+  check('a machine right every time on one lens carries full weight there', W.get('m', 'async') === 1.5);
+  check('and none on a lens where it is at chance', W.get('m', 'bounds') === 0);
+  check('on a lens it has too few answers on, its overall record counts (30 of 40 right: 1)', W.get('m', 'units') === 1 && W.get('m', undefined) === 1 && book.skill().get('m') === 1);
+  check('a machine with nothing on record has no weight, and no machine is none', W.get('nobody', 'async') === undefined && W.get(null, 'async') === undefined);
+  for (let i = 0; i < 20; i++) book.add(sk('m', 'wrong', { lens: 'async' }));
+  check('weights are worked out again once new answers come in, from the recent ones only', book.weights().get('m', 'async') === 0);
+}
+// --- an appended file read a piece at a time
+{
+  const f = path.join(dir, 'inbox.jsonl'), t = makeTailRows(f);
+  check('a file that is not there yet is no rows', t.rows().length === 0);
+  writeFileSync(f, JSON.stringify({ n: 1 }) + '\n' + JSON.stringify({ n: 2 }) + '\n');
+  const first = t.rows();
+  check('lines written are read', first.length === 2 && first[1].n === 2);
+  appendFileSync(f, JSON.stringify({ n: 3, why: 'é' }) + '\n');
+  check('lines appended are added to the same rows', t.rows() === first && first.length === 3 && first[2].why === 'é');
+  appendFileSync(f, '{"n":4,"half":');
+  check('a line still being written is not read', t.rows().length === 3);
+  appendFileSync(f, 'true}\n');
+  check('and is read once it is whole', t.rows().length === 4 && t.rows()[3].half === true);
+  // a character of more than one byte split between two writes
+  const fd = openSync(f, 'a'), line = Buffer.from(JSON.stringify({ n: 5, why: '✓ ok' }) + '\n'); const cut = line.indexOf(Buffer.from('✓')) + 1;
+  writeSync(fd, line.subarray(0, cut)); t.rows(); writeSync(fd, line.subarray(cut)); closeSync(fd);
+  check('a character split between two writes is read whole', t.rows().length === 5 && t.rows()[4].why === '✓ ok');
+  const gen0 = t.gen();
+  // the inbox tool marks a finding: the file is rewritten, longer
+  const marked = readFileSync(f, 'utf8').replace('{"n":1}', '{"n":1,"review":"rejected"}'); writeFileSync(f, marked);
+  const again = t.rows();
+  check('a file rewritten longer is read again from the start, not as an append', again !== first && again.length === 5 && again[0].review === 'rejected' && t.gen() > gen0);
+  writeFileSync(f, JSON.stringify({ n: 9 }) + '\n');
+  check('a file rewritten shorter is read again from the start', t.rows().length === 1 && t.rows()[0].n === 9);
+  const same = JSON.stringify({ n: 8 }) + '\n'; writeFileSync(f, same); utimesSync(f, new Date(), new Date(Date.now() + 5000));
+  check('a file rewritten at the same size is read again (its time changed)', t.rows().length === 1 && t.rows()[0].n === 8);
+  const other = path.join(dir, 'inbox2.jsonl'); writeFileSync(other, JSON.stringify({ n: 7 }) + '\n' + JSON.stringify({ n: 6 }) + '\n'); renameSync(other, f);
+  check('a file replaced by another is read from the start', t.rows().length === 2 && t.rows()[0].n === 7);
+  appendFileSync(f, 'not json\n' + JSON.stringify({ n: 5 }) + '\n');
+  check('a torn or foreign line is skipped', t.rows().length === 3 && t.rows()[2].n === 5);
+  // a replacement that keeps the bytes last read where they were, changes an earlier row and adds one: only its being another file says to read from the start
+  const long = JSON.stringify({ n: 7, pad: 'x'.repeat(120) }) + '\n' + JSON.stringify({ n: 6 }) + '\n';
+  writeFileSync(f, long); t.rows();
+  const swapped = path.join(dir, 'inbox3.jsonl');
+  writeFileSync(swapped, long.replace('"n":7', '"n":1') + JSON.stringify({ n: 4 }) + '\n'); renameSync(swapped, f);
+  check('a file replaced by another that ends the same is still read from the start', t.rows().length === 3 && t.rows()[0].n === 1 && t.rows()[2].n === 4);
+  rmSync(f);
+  check('a file that is gone is no rows', t.rows().length === 0);
 }
 // --- pay
 {
@@ -98,6 +153,9 @@ check('no weight below the minimum answers, then by how often it was right', wei
   check('votes are kept by finding', votes.of('f1').length === 2 && votes.of('f2').length === 1 && votes.of('nope').length === 0 && votes.count() === 3);
   appendFileSync(f, JSON.stringify({ id: 'f2', node: 'c', vote: 'real' }) + '\n');
   check('a vote another writer appended is seen', votes.of('f2').length === 2);
+  writeFileSync(f, JSON.stringify({ id: 'f9', node: 'a', vote: 'real' }) + '\n' + JSON.stringify({ id: 'f9', node: 'b', vote: 'real' }) + '\n' + JSON.stringify({ id: 'f9', node: 'c', vote: 'real' }) + '\n');
+  const sameSize = readFileSync(f, 'utf8').replace(/f9/g, 'f8'); writeFileSync(f, sameSize); utimesSync(f, new Date(), new Date(Date.now() + 9000));
+  check('votes rewritten at the same size are read again', votes.of('f9').length === 0 && votes.of('f8').length === 3);
   writeFileSync(f, '');
   check('a file emptied under it is read again', votes.of('f1').length === 0 && votes.count() === 0);
   check('a vote with no finding is not kept', (() => { votes.add({ node: 'x', vote: 'real' }); return votes.count() === 0; })());

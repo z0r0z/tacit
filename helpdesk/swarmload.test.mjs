@@ -38,7 +38,9 @@ pool.fill(20);
 const L = makeLeases({ ledger: P.ledger, scan, check: checkFeed, checkShare: 0.5, rand, scanPerHour: 100000, waitMs: 10, points: { answer: 1, canary: 1, scan: 1, check: 1 }, clientMaxPerDay: 30, payable: (kind, ctx) => book.payable(kind, ctx.node) });
 
 const machines = Array.from({ length: 20 }, (_, k) => ({ miner: '0x' + String(k).padStart(2, '0').repeat(20), ip: `10.0.0.${k + 1}`, hw: { ram: k % 2 ? 64 : 16, vram: k % 2 ? 24 : 6, cores: 8, os: 'linux', arch: 'x64' }, model: k % 3 ? 'qwen3.5-4b' : 'gemma-3-4b' }));
-const reply = (j) => (/JUDGE/.test(j.messages[0].content) ? JSON.stringify({ choice: rand() < 0.5 ? 'A' : 'B', line: 2, quote: 'export function run(v, out) {', why: 'x' }) : '{"findings":[]}');
+// a scout files a finding now and then (a comparison it would flip), so the inbox grows while the gateway runs, as it does with a community
+const scoutReply = (j) => { if (rand() > 0.15) return '{"findings":[]}'; const m = j.messages[1].content.match(/\b([a-e]\d+) >= (\d+)\b/); return m ? JSON.stringify({ findings: [{ line: 2, why: 'off by one', old: `${m[1]} >= ${m[2]}`, new: `${m[1]} > ${m[2]}` }] }) : '{"findings":[]}'; };
+const reply = (j) => (/JUDGE/.test(j.messages[0].content) ? JSON.stringify({ choice: rand() < 0.5 ? 'A' : 'B', line: 2, quote: 'export function run(v, out) {', why: 'x' }) : scoutReply(j));
 const ROUNDS = 1500; let done = 0, kinds = { check: 0, scan: 0 }, empty = 0;
 const t1 = Date.now();
 for (let r = 0; r < ROUNDS; r++) {
@@ -51,9 +53,11 @@ const ms = Date.now() - t1, per = ms / ROUNDS;
 console.log(`     ${ROUNDS} rounds in ${ms} ms (${per.toFixed(2)} ms each): ${kinds.check} checks, ${kinds.scan} scans, ${empty} empty`);
 check('every round got a job and its answer was taken', done === ROUNDS && empty === 0);
 check('both roles were handed out', kinds.check > 100 && kinds.scan > 100);
+const filed = readFileSync(P.inbox, 'utf8').trim().split('\n').length - 3000;
+check(`the inbox grew while the gateway ran (${filed} findings filed) and the check feed saw them`, filed > 10 && checkFeed.summary().findings.pending + checkFeed.summary().findings.unclear + checkFeed.summary().findings.confirmed + checkFeed.summary().findings.refuted >= 3000 + filed);
 check(`a lease and its answer stay fast with 100,000 exam rows, 3,000 findings and 3,000 votes on record (${per.toFixed(1)} ms each, under 25)`, per < 25);
 const t2 = Date.now(); const s1 = checkFeed.summary(); const s2 = checkFeed.summary(); const sumMs = Date.now() - t2;
-check(`the stats are worked out quickly, and not again when nothing has changed (${sumMs} ms)`, sumMs < 1500 && s1 === s2 && s1.findings.pending + s1.findings.unclear + s1.findings.confirmed + s1.findings.refuted === 3000 && Array.isArray(s1.reviewers));
+check(`the stats are worked out quickly, and not again when nothing has changed (${sumMs} ms)`, sumMs < 1500 && s1 === s2 && Array.isArray(s1.reviewers));
 check('the exam answers went to the book', book.lines() > 100000 && book.summary().skeptic.n + book.summary().scout.n > 0);
 scan.flush();
 check('the windows looked at take one line, not one per job', readFileSync(P.results, 'utf8').trim().split('\n').length === 1 && JSON.parse(readFileSync(P.results, 'utf8')).windows > 100);
