@@ -174,4 +174,44 @@ assert.equal($('tp-shield-go').textContent, 'Sign in', 'the button says what the
   stat = { ...stat, halted: 'a block was not available' };
   assert.equal((await t2.stats()).well, false, 'a halted pool is not reading well');
 }
+
+// TAC taken out for a sale waits at a sale key, which the balance does not count: To sats' read gives it a line under the balance.
+// The read starts when the page opens the panel with a key (mount runs for every visitor and starts nothing), and after a sign-in
+// with the panel open.
+{
+  let k = { pubHex: '02' + 'cd'.repeat(32) }, mounts = 0, report = null;
+  const t3 = makeTacPool({ key: () => k, priv: () => new Uint8Array(32).fill(1), ensureKey: async () => {}, withKey: async (fn) => fn(T), tacitAddress: () => 'tacit1example',
+    toast: () => {}, changed: () => {}, viewChanged: () => {}, usd: () => '', mods: { secret: S, claim: C, sats: { mount: (box, c) => { mounts++; report = c.held; } } } });
+  const h3 = document.createElement('div'); document.body.append(h3);
+  const row = () => h3.querySelector('#tp-held-row'), line = () => h3.querySelector('#tp-held').textContent;
+  t3.mount(h3); await settle();
+  assert.equal(mounts, 0, 'mounting the panel reads no sale keys');
+  assert.equal(row().hidden, true);
+  t3.show('shield'); await settle();
+  assert.equal(mounts, 1, 'the page opening the panel with a key starts the read');
+  report({ units: 97207564851n, count: 1, unread: 0 });
+  assert.equal(row().hidden, false);
+  assert.match(line(), /^972\.07564851 TAC taken out for sale$/);
+  report({ units: 0n, count: 0, unread: 1 });
+  assert.equal(line(), '1 output at a sale key not read', 'an output the read could not open is said, not left out');
+  report({ units: 0n, count: 0, unread: 0 });
+  assert.equal(row().hidden, true, 'nothing at the sale keys: no line');
+  report(null);
+  assert.equal(row().hidden, true, 'no line while a read runs or after one failed');
+  report({ units: 5n * TAC, count: 1, unread: 0 });
+  h3.querySelector('#tp-held-go').click(); await settle();
+  assert.deepEqual(t3.view(), ['withdraw', 'sats'], 'the line leads to To sats');
+  k = null; t3.keyChanged(); await settle();
+  assert.equal(row().hidden, true, 'a key change lets go of the line');
+
+  let k4 = null, mounts4 = 0;
+  const t4 = makeTacPool({ key: () => k4, priv: () => new Uint8Array(32).fill(1), ensureKey: async () => {}, withKey: async (fn) => fn(T), tacitAddress: () => 'tacit1example',
+    toast: () => {}, changed: () => {}, viewChanged: () => {}, usd: () => '', mods: { secret: S, claim: C, sats: { mount: () => { mounts4++; } } } });
+  const h4 = document.createElement('div'); document.body.append(h4);
+  t4.mount(h4); await settle();
+  t4.show('withdraw'); await settle();
+  assert.equal(mounts4, 0, 'opened with no key: nothing is read');
+  k4 = { pubHex: '02' + 'ef'.repeat(32) }; t4.keyChanged(); await settle();
+  assert.equal(mounts4, 1, 'signing in with the panel open reads the sale keys');
+}
 console.log('ok tac pool panel');

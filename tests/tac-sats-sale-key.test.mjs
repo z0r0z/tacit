@@ -60,8 +60,8 @@ const tacitScan = {
   txOutputEnvelope: (t) => ({ opcode: t.opcode, payload: new Uint8Array([1]) }),
   recordOpening: (...a) => recorded.push(a),
 };
-let wantAddrs = [relayAddr];
-pool.recoverExit = (wallet, payload, notes, opts) => { assert.equal(wallet, pw); assert.ok(Array.isArray(notes)); assert.deepEqual(opts?.addresses, wantAddrs, 'the relay’s address opens the fee note'); return { exitVout: 1, value: '250000000', blinding: '0x' + '05'.padStart(64, '0') }; };
+let wantAddrs = [relayAddr], failOpen = false;
+pool.recoverExit = (wallet, payload, notes, opts) => { if (failOpen && payload[0] === 2) throw new Error('btc-pool: exit opening not recovered'); assert.equal(wallet, pw); assert.ok(Array.isArray(notes)); assert.deepEqual(opts?.addresses, wantAddrs, 'the relay’s address opens the fee note'); return { exitVout: 1, value: '250000000', blinding: '0x' + '05'.padStart(64, '0') }; };
 
 {
   const seen = chain({
@@ -80,11 +80,32 @@ pool.recoverExit = (wallet, payload, notes, opts) => { assert.equal(wallet, pw);
   assert.deepEqual(recorded, [['ee'.repeat(32), 1, ASSET, 250000000n, 5n]], 'the opening is recorded for the holdings scan');
   assert.equal(r.free, 2, 'counter 1 is skipped: its P2TR key has history');
   assert.ok(seen.includes(secret.saleKey(pw, 7).address) && !seen.includes(secret.saleKey(pw, 8).address), 'six quiet counters end the walk');
+  assert.deepEqual(r.unread, [], 'another output of an exit and a coin that is no exit are nothing to report');
 }
 {
   chain();
   const r = await secret.saleKeys(tacitScan, pw, [], ASSET);
-  assert.deepEqual(r, { keys: [], free: 0 }, 'a new wallet starts at counter 0');
+  assert.deepEqual(r, { keys: [], free: 0, unread: [] }, 'a new wallet starts at counter 0');
+}
+// an output at a sale key the read cannot open is named as unread, never dropped: a transaction that did not load, and a pool
+// exit whose opening cannot be rebuilt (its fee note unreadable); the output that does open is still found
+{
+  chain({ wpkh: { 0: [
+    { txid: 'ee'.repeat(32), vout: 1, value: 546, status: { confirmed: true } },
+    { txid: 'aa'.repeat(32), vout: 0, value: 546, status: { confirmed: true } },
+    { txid: 'bb'.repeat(32), vout: 1, value: 546, status: { confirmed: true } },
+    { txid: '39'.repeat(32), vout: 1, value: 546, status: { confirmed: true } },
+  ] } });
+  const scan = {
+    ...tacitScan,
+    getTx: async (id) => { if (id.startsWith('aa')) throw new Error('explorer 429'); return tx(id, /^(ee|bb)/.test(id) ? 0x6d : 0x39); },
+    txOutputEnvelope: (t) => ({ opcode: t.opcode, payload: new Uint8Array([t.id.startsWith('bb') ? 2 : 1]) }),
+  };
+  failOpen = true;
+  const r = await secret.saleKeys(scan, pw, [], ASSET, { addresses: [relayAddr] });
+  failOpen = false;
+  assert.deepEqual(r.keys[0].notes.map((n) => n.txid), ['ee'.repeat(32)], 'the output that opens is found');
+  assert.deepEqual(r.unread, [{ txid: 'aa'.repeat(32), vout: 0 }, { txid: 'bb'.repeat(32), vout: 1 }], 'the two it could not open are named');
 }
 
 // ── a first explorer that is down or erroring: the dapp's second explorer answers; both down is a failure, not "none" ──
@@ -100,7 +121,7 @@ pool.recoverExit = (wallet, payload, notes, opts) => { assert.equal(wallet, pw);
       }
       return inner(url, init);
     };
-    assert.deepEqual(await secret.saleKeys(two, pw, [], ASSET, { addresses: [relayAddr] }), { keys: [], free: 0 }, `first explorer ${kind}: the second one answers`);
+    assert.deepEqual(await secret.saleKeys(two, pw, [], ASSET, { addresses: [relayAddr] }), { keys: [], free: 0, unread: [] }, `first explorer ${kind}: the second one answers`);
   }
   globalThis.fetch = async () => { throw new TypeError('fetch failed'); };
   await assert.rejects(secret.saleKeys(two, pw, [], ASSET), /fetch failed/, 'no explorer answering is a failed read, never "no take-outs"');

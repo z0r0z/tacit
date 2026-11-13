@@ -732,6 +732,9 @@ export async function saleKeys(tacit, poolWallet, notes, asset, { addresses = []
     return !!i && [i.chain_stats, i.mempool_stats].some((x) => x?.tx_count > 0);
   };
   const keys = [];
+  // outputs at a sale key that this read could not open (a transaction that did not load, or an exit whose fee note it cannot
+  // read): the screen says they were not read, never "nothing there"
+  const unread = [];
   let quiet = 0, free = null;
   for (let c = 0; quiet < SALE_GAP || free == null; c++) {
     const k = saleKey(poolWallet, c);
@@ -745,17 +748,18 @@ export async function saleKeys(tacit, poolWallet, notes, asset, { addresses = []
     const found = [];
     for (const u of (await esplora(tacit, `/address/${k.address}/utxo`)) || []) {
       const tx = await tacit.getTx(u.txid).catch(() => null);
-      const env = tx ? tacit.txOutputEnvelope(tx) : null;
+      if (!tx) { unread.push({ txid: u.txid, vout: u.vout }); continue; }
+      const env = tacit.txOutputEnvelope(tx);
       if (!env || env.opcode !== 0x6d) continue;
       let o;
-      try { o = pool.recoverExit(poolWallet, env.payload, notes, { addresses }); } catch { continue; }
+      try { o = pool.recoverExit(poolWallet, env.payload, notes, { addresses }); } catch { unread.push({ txid: u.txid, vout: u.vout }); continue; }
       if (o.exitVout !== u.vout) continue;
       tacit.recordOpening(u.txid, u.vout, assetHex, BigInt(o.value), BigInt(o.blinding));
       found.push({ txid: u.txid, vout: u.vout, value: BigInt(o.value), confirmed: !!u.status?.confirmed });
     }
     keys.push({ ...k, notes: found });
   }
-  return { keys, free };
+  return { keys, free, unread };
 }
 
 export async function exitToSaleKey(tacit, { poolWallet, amount, asset, key, anchor = null, maxFee = null, say = () => {}, inputs = null, requoted = false }) {

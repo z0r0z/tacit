@@ -205,5 +205,52 @@ assert.match(said['st-sats-1'], /on its way to a new key, posted by the relay in
   assert.match(host4.textContent, /Could not read what you have taken out/, 'the failed read says so beside Step 2');
 }
 
+// What the panel tells the pool panel's balance line: the TAC at the sale keys once a read has finished, nothing before it, nothing
+// after a read that failed.
+{
+  const reports = [];
+  const h = document.createElement('div'); document.body.append(h);
+  mount(h, { ...ctx, held: (s) => reports.push(s) });
+  assert.equal(reports[0], null, 'nothing is claimed before the read has finished');
+  await settle();
+  assert.deepEqual(reports[reports.length - 1], { units: NOTE.value, count: 1, unread: 0 });
+
+  const bad = [];
+  const hb = document.createElement('div'); document.body.append(hb);
+  mount(hb, { ...ctx, S: { ...S, saleKeys: async () => { throw new Error('explorer down'); } }, held: (s) => bad.push(s) });
+  await settle();
+  assert.ok(bad.length && bad.every((s) => s === null), 'a read that failed claims nothing');
+}
+
+// A read that finds nothing says so, but only once it has finished; an output it could not open is named with a retry, and is never
+// "nothing".
+{
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const reports = [];
+  const h = document.createElement('div'); document.body.append(h);
+  mount(h, { ...ctx, S: { ...S, saleKeys: async () => { await gate; return { keys: [], free: 0, unread: [] }; } }, held: (s) => reports.push(s) });
+  await settle();
+  assert.doesNotMatch(h.textContent, /Found no TAC/, 'not said while the read is under way');
+  release(); await settle();
+  assert.match(h.textContent, /Found no TAC at this wallet’s sale keys\./);
+  assert.deepEqual(reports[reports.length - 1], { units: 0n, count: 0, unread: 0 });
+
+  let calls = 0;
+  const miss = { txid: 'ab'.repeat(32), vout: 0 };
+  const hu = document.createElement('div'); document.body.append(hu);
+  const S5 = { ...S, saleKeys: async () => { calls++; return calls === 1 ? { keys: [{ ...saleKey, notes: [] }], free: 0, unread: [miss] } : { keys: [{ ...saleKey, notes: [NOTE] }], free: 0, unread: [] }; } };
+  mount(hu, { ...ctx, S: S5, held: (s) => reports.push(s) });
+  await settle();
+  assert.match(hu.textContent, /Could not read one output at your sale keys: abababab…:0\./);
+  assert.doesNotMatch(hu.textContent, /Found no TAC/, 'an output it could not open is not "nothing"');
+  assert.deepEqual(reports[reports.length - 1], { units: 0n, count: 0, unread: 1 });
+  [...hu.querySelectorAll('button.link')].find((b) => b.textContent === 'Retry').click();
+  await settle();
+  assert.equal(calls, 2, 'retry reads again');
+  assert.doesNotMatch(hu.textContent, /Could not read/);
+  assert.match(hu.textContent, /2,500 TAC\s*ready to list/);
+}
+
 console.log('tac-sats-panel: all checks passed');
 process.exit(0);   // the panel keeps a timer for the page it lives in

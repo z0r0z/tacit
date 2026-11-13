@@ -78,6 +78,8 @@ export function mount(host, ctx) {
 
   const fee = () => (ctx.relayFeeUnits ? ctx.relayFeeUnits() : 0n);
   const held = () => (sale?.keys || []).flatMap((k) => k.notes.map((n) => ({ ...n, key: k })));
+  const unread = () => sale?.unread || [];     // outputs at the sale keys that the read could not open
+  const retry = () => { readErr = false; sale = null; render(); look().catch(() => {}); };
   const listing = (n) => (book?.sales || []).find((s) => !s.expired && s.asset_outpoint?.txid === n.txid && s.asset_outpoint?.vout === n.vout) || null;
   const listable = () => held().filter((n) => ready.has(opKey(n)) && !listing(n));
   const chosen = () => { const l = listable(); return l.find((n) => opKey(n) === pick) || l[0] || null; };
@@ -244,7 +246,7 @@ export function mount(host, ctx) {
   }
 
   function render() {
-    const f = fee(), rows = held();
+    const f = fee(), rows = held(), miss = unread();
     // the field being typed in keeps its place: putting it back under the host takes its focus
     const at = document.activeElement, kept = at && host.contains(at) ? at : null, s0 = kept?.selectionStart, s1 = kept?.selectionEnd;
     fill(host,
@@ -274,7 +276,11 @@ export function mount(host, ctx) {
 
       el('p', { class: 'eyebrow', style: 'margin-top:18px' }, 'Step 2: list for sats'),
       readErr ? el('p', { class: 'note' }, 'Could not read what you have taken out. Nothing is lost: it stays at its own key. ',
-        el('button', { class: 'link', type: 'button', onclick: () => { readErr = false; render(); look().catch(() => {}); } }, 'Retry')) : null,
+        el('button', { class: 'link', type: 'button', onclick: retry }, 'Retry')) : null,
+      miss.length ? el('p', { class: 'note' }, `Could not read ${miss.length === 1 ? 'one output' : `${miss.length} outputs`} at your sale keys: ${miss.map((u) => `${u.txid.slice(0, 8)}…:${u.vout}`).join(', ')}. `,
+        el('button', { class: 'link', type: 'button', onclick: retry }, 'Retry')) : null,
+      // said only once the read has finished, and never over an output it could not open
+      sale && !readErr && !rows.length && !miss.length ? el('p', { class: 'note' }, 'Found no TAC at this wallet’s sale keys.') : null,
       ...rows.map(heldRow),
       btnList,
       statusStep2,
@@ -284,6 +290,8 @@ export function mount(host, ctx) {
     host.querySelectorAll('input[name="sats-pick"]').forEach((r, i) => r.addEventListener('change', () => { pick = opKey(listable()[i]); recompute(); }));
     btnList.disabled = !chosen();
     recompute();
+    // the pool panel keeps a line of its own for this, since the balance there counts only what is still in the pool
+    ctx.held?.(sale && !readErr ? { units: rows.reduce((t, n) => t + n.value, 0n), count: rows.length, unread: miss.length } : null);
   }
 
   btnOut.addEventListener('click', () => busy(btnOut, 'st-sats-1', doOut));

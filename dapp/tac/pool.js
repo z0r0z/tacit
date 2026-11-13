@@ -1,6 +1,6 @@
 
-const SECRET_URL = '/sats/secret.js?cb=f45e2684';
-const SATS_URL = '/tac/sats.js?cb=37cf5ec2';
+const SECRET_URL = '/sats/secret.js?cb=87f09704';
+const SATS_URL = '/tac/sats.js?cb=1361f0b3';
 const CLAIM_URL = '/tac/claim.js?cb=dc513e91';
 const WORKER = 'https://api.tacit.finance';
 const ASSET = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
@@ -90,6 +90,7 @@ export function makeTacPool(ctx) {
   let pub = { loading: false, notes: [], read: false }, shielded = { loading: false, notes: [], read: false };
   let relayLive = null, relayFee = null, relayP = null, markSats = null, priceP = null;
   let busyId = null, afterBusy = null, stealthScanned = false, satsMounted = false;
+  let opened = false, satsHeld = null;   // the panel has been opened; what To sats read at this key's sale keys, once it has read
   let feedKept = null, shieldedP = null;
 
   const q = (id) => host?.querySelector(`#${id}`) || document.getElementById(id);
@@ -269,7 +270,21 @@ export function makeTacPool(ctx) {
     }
     q('tp-refresh').hidden = !unlocked();
     el.closest('.tp-bal').hidden = !unlocked();
+    paintHeld();
     paintSendComb();
+  }
+  // TAC taken out of the pool for a sale waits at a sale key, which the balance above does not count: it gets its own line, from
+  // the read To sats makes, and an output that read could not open is said rather than left out.
+  function paintHeld() {
+    const row = q('tp-held-row');
+    if (!row) return;
+    const h = unlocked() ? satsHeld : null, on = !!h && (h.units > 0n || h.unread > 0);
+    row.hidden = !on;
+    if (!on) return;
+    q('tp-held').textContent = [
+      h.units > 0n ? `${fmt(h.units)} TAC taken out for sale` : null,
+      h.unread > 0 ? `${h.unread} output${h.unread === 1 ? '' : 's'} at a sale key not read` : null,
+    ].filter(Boolean).join(' · ');
   }
   const combineBox = (id, lead, each = false) => html`<div class="callout"><span>${lead}<small>${combineFee() != null ? `Relay fee ≈ ${fmt(combineFee())} TAC${each ? ' each' : ''}` : 'Posted from your Bitcoin address, which pays its Bitcoin fee and shows as the sender'}.</small></span><button class="btn ghost" type="button" id="${id}">Combine</button></div>`;
   function paintSendComb() {
@@ -623,6 +638,7 @@ export function makeTacPool(ctx) {
       get markSats() { return markSats; }, get notes() { return shielded.notes; },
       ensureKey: ready, busy, say, errSay, fmt, blocksText, parseUnits, shieldedTotal, txLink, loadShielded, relayFeeUnits, feeCap, feeMoved,
       turn: (fn) => ctx.withKey(fn),
+      held: (s) => { satsHeld = s; paintHeld(); },
     })).catch((e) => { satsMounted = false; errSay('tp-st-exit', e); });
   }
   const tabsKeys = (sel, attr, onPick) => {
@@ -645,6 +661,7 @@ export function makeTacPool(ctx) {
   function view() {
     return html`<div class="seg sub" role="tablist" aria-label="TAC in the Bitcoin pool">${TABS.map(([k, t]) => html`<button type="button" role="tab" id="tp-t-${k}" aria-controls="tp-p-${k}" aria-selected="false" tabindex="-1" data-tp="${k}">${t}</button>`)}</div>
     <div class="kv tp-bal"><span id="tp-bal"></span><button class="link" type="button" id="tp-refresh" hidden>Refresh</button></div>
+    <div class="kv tp-bal" id="tp-held-row" hidden><span id="tp-held"></span><button class="link" type="button" id="tp-held-go">To sats</button></div>
     <div class="status" id="tp-st-comb" role="status"></div>
 
     <div id="tp-p-shield" role="tabpanel" aria-labelledby="tp-t-shield">
@@ -720,6 +737,7 @@ export function makeTacPool(ctx) {
     tabsKeys('[data-tp]', 'tp', (k) => pick(k, null, true));
     tabsKeys('[data-tpw]', 'tpw', (k) => { wTab = k; pick('withdraw', k, true); });
     q('tp-refresh').onclick = (e) => busy(e.currentTarget, 'tp-st-recv', () => scanEverything('tp-st-recv'));
+    q('tp-held-go').onclick = () => pick('withdraw', 'sats', true);
     q('tp-shield-go').onclick = (e) => busy(e.currentTarget, 'tp-st-shield', doShield);
     q('tp-send-go').onclick = (e) => busy(e.currentTarget, 'tp-st-send', () => doSend());
     q('tp-exit-go').onclick = (e) => busy(e.currentTarget, 'tp-st-exit', () => doExit());
@@ -748,9 +766,11 @@ export function makeTacPool(ctx) {
     pw = null; pwPub = null; stealthScanned = false;
     pub = { loading: false, notes: [], read: false }; shielded = { loading: false, notes: [], read: false };
     for (const id of ['tp-st-shield', 'tp-st-send', 'tp-st-exit', 'tp-st-recv', 'tp-st-comb', 'tp-st-claim-make']) say(id);
+    satsHeld = null;
     window.dispatchEvent(new Event('tac:wallet'));
     if (!host) return;
     paintBalances(); paintShieldPicker(); paintReceive();
+    if (opened && unlocked()) mountSats();   // signed in with the panel already open: the sale keys are read now, not when To sats is picked
     if (unlocked()) whenIdle(() => refreshAll().then(() => {
       if (!stealthScanned && unlocked()) findStealth().then((n) => { if (n) say('tp-st-recv', `Found ${n} stealth payment${n === 1 ? '' : 's'}.`); }).catch(() => {});
     }).catch(() => {}));
@@ -759,7 +779,9 @@ export function makeTacPool(ctx) {
 
   return {
     mount,
-    show: (k, sub = null) => pick(k, sub),
+    // opened by the page (not by mount, which runs for every visitor): a signed-in key's sale keys are read from here on, so the line
+    // under the balance does not wait for the To sats tab
+    show: (k, sub = null) => { opened = true; pick(k, sub); if (unlocked()) mountSats(); },
     view: () => [tab, ...(tab === 'withdraw' && wTab === 'sats' ? ['sats'] : [])],
     claim: (box, payload) => showClaim(box, payload).catch((e) => console.warn('[tac pool] claim link', e)),
     stopClaim: () => { claimGen++; clearTimeout(claimTimers.typing); clearTimeout(claimTimers.again); },
