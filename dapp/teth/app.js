@@ -1,8 +1,8 @@
 import { mountChart, fmtLocalStamp, fmtLocalTime } from '/trade/chart.js?cb=c0b1d232';
 import { makeConnect, UserStopped } from '/trade/connect.js?cb=b758e60b';
 import { makeKeySession, signInSheet, pickWalletSheet, Cancelled } from '/trade/key.js?cb=09f263cb';
-import { readPool, heldHistory, heldBars, rangesFor, barSize, recentMoves, movedSince, readRates, readProgram, poolRows, positionsIn, programEnds, wrapQuote, shown, POOL, WRAP_TIP } from '/teth/read.js?cb=2a357daf';
-import { wrapEth, wrapFirst, settle, readHeld, finish, wrapIssue, relayWords, selfable, selfFinish, settleCost, proveOwn, ownWords, ownable, deviceWords, relayState, relayStopped, forgetUx, getUx } from '/teth/wrap.js?cb=aac4f492';
+import { readPool, heldHistory, heldBars, rangesFor, barSize, recentMoves, movedSince, readRates, readProgram, poolRows, positionsIn, programEnds, wrapQuote, shown, POOL, WRAP_TIP } from '/teth/read.js?cb=44f2673f';
+import { wrapEth, wrapFirst, settle, readHeld, finish, wrapIssue, relayWords, selfable, selfFinish, settleCost, proveOwn, ownWords, ownable, deviceWords, relayState, relayStopped, forgetUx, getUx } from '/teth/wrap.js?cb=3cda0713';
 import { ownPref, setOwnPref, devicePref, setDevicePref, deviceProver, proverFor, readCredit, proofsFor, fundFromWallet, quoteEth, quoteEthFor, fundWithEth, loadSelfProver, tokenBalance } from '/teth/prover.js?cb=d9e1968c';
 import { overlay } from '/trade/sheet.js?cb=d857446c';
 import { addrFlat } from '/address-view.js?cb=58dd4914';
@@ -243,7 +243,7 @@ function renderQuote() {
   if (q.err) { box.innerHTML = `<p class="note err">${esc(q.err)}</p>`; return; }
   if (q.loading) { box.innerHTML = '<div class="kv"><span>Relay tip</span><b class="mute">reading…</b></div>'; return; }
   // The relay proves first, so while it can't send, the wallet still sends one transaction that deposits and settles; two only when the deposit goes first.
-  const heldTx = () => `${S.relayFirstOff ? ', then the settle' : ' in one transaction'}<span class="mute self-cost-fee">${S.cost ? ` · network fee about ${esc(fmtUnits(S.cost, 18, 5))} ETH` : ''}</span>`;
+  const heldTx = () => `${firstOff() ? ', then the settle' : ' in one transaction'}<span class="mute self-cost-fee">${S.cost ? ` · network fee about ${esc(fmtUnits(S.cost, 18, 5))} ETH` : ''}</span>`;
   if (q.own || q.device) {
     box.innerHTML = `<div class="kv"><span>Relay tip</span><b>none: ${q.device ? 'this computer proves it' : 'you prove it yourself'}</b></div>
     <div class="kv"><span>Your wallet sends</span><b>${esc(fmtUnits(q.wei, 18, 6))} ETH in one transaction<span class="mute self-cost-fee">${S.cost ? ` · network fee about ${esc(fmtUnits(S.cost, 18, 5))} ETH` : ''}</span></b></div>
@@ -255,7 +255,7 @@ function renderQuote() {
   box.innerHTML = `<div class="kv"><span title="Paid to Tacit’s relay, ${esc(short(q.to, 4))}, in the same transaction">Relay tip</span><b>${esc(fmtUnits(q.tip, 18, 6))} ETH${ethUsd() ? ` <span class="mute">· ${usd(toEth(q.tip) * ethUsd())}${share >= 0.0005 ? `, ${(share * 100).toFixed(share < 0.01 ? 2 : 1)}%` : ''}</span>` : ''}</b></div>
     <div class="kv"><span>Your wallet sends</span><b>${esc(fmtUnits(total, 18, 6))} ETH${q.held ? heldTx() : ''}</b></div>
     <div class="kv"><span>Private to</span><b>${esc(ownerText())}</b></div>
-    ${q.held && S.relayFirstOff ? '<p class="note">The relay can’t send this one right now, so your wallet sends the settle and pays its network fee.</p>' : ''}
+    ${q.held && firstOff() ? '<p class="note">The relay can’t send this one right now, so your wallet sends the settle and pays its network fee.</p>' : ''}
     ${q.floor && q.wei < 3n * q.floor ? `<p class="note">Sending or taking out an amount this small later costs about ${esc(fmtUnits(q.floor, 18, 6))} ETH in relay fees.</p>` : ''}`;
   $('#tk-note').innerHTML = noteHtml();
 }
@@ -372,10 +372,13 @@ async function press({ anyway = false } = {}) {
   if (key.unlocked && laneOf(q) !== laneNow()) { requote(); say('This Tacit wallet proves another way, so the amounts were read again. Check them and press again.'); return; }
   if (q.device || q.own) { await proveFirst(q, q.device ? 'device' : 'own'); return; }
   // The relay's sponsored proof first, then one transaction with the tip in it; the deposit goes first only when the relay has no
-  // sponsored proofs left today, or is not proving.
-  if (!S.relayFirstOff && (await proveFirst(q, 'relay')) !== 'relay-refused') return;
+  // sponsored proofs left today, or is not proving. A refusal holds for a while, so the quote says what happens and the next press
+  // does not ask again first.
+  if (!firstOff() && (await proveFirst(q, 'relay')) !== 'relay-refused') return;
+  if (!firstOff()) { S.relayFirstOff = Date.now(); renderQuote(); }
   await pressRelay(q, { anyway });
 }
+const firstOff = () => !!S.relayFirstOff && Date.now() - S.relayFirstOff < 15 * 60e3;
 // The relay's way: the deposit goes first with its tip, and the relay proves and settles it, so the holder can leave once it is sent.
 async function pressRelay(q, { anyway = false } = {}) {
   const from = W.account, hadKey = key.unlocked;

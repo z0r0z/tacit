@@ -378,6 +378,9 @@ async function openPage(viewport, { wallet = false, reject = false, hash = '', s
 const posts = [];                                                                      // what the page (through the pool module) posted to the relay
 const ux = (page) => page.evaluate(() => window.__ux);
 const spnCfg = (page, o) => page.evaluate((x) => { (window.__spn ||= { calls: [], cfg: {} }); Object.assign(window.__spn.cfg, x); }, o);
+// the relay has finished the waiting deposits, and Finish is pressed in the same moment: a read of the balance between the two (the page
+// re-reads it now and then) would take the Finish away before the press
+const finishNow = (page) => page.evaluate(() => { window.__ux.cfg.pending = []; document.querySelector('#finish').click(); });
 const cfg = (page, o) => page.evaluate((x) => { (window.__ux ||= { calls: [], cfg: {} }); Object.assign(window.__ux.cfg, x); }, o);
 const money = (page) => page.evaluate(() => ({ route: document.querySelector('#route')?.textContent.replace(/\s+/g, ' ').trim(), go: document.querySelector('#go').textContent, disabled: document.querySelector('#go').disabled }));
 
@@ -672,8 +675,7 @@ try {
   await p.click('#mode-seg [data-mode="use"]');
   ok(!!(await p.$eval('#finish', (b) => b.offsetParent !== null)), 'and the Finish is in view from Use tETH too');
   await p.click('#mode-seg [data-mode="get"]');
-  await cfg(p, { pending: [] });
-  await p.click('#finish');
+  await finishNow(p);
   await until(p, () => /They are private now/.test(document.querySelector('#status').textContent), null, 20000);
   await p.fill('#amt', '0.02');
   await until(p, () => document.querySelector('#go').textContent === 'Make ETH private' && !document.querySelector('#go').disabled);
@@ -704,8 +706,7 @@ try {
   await until(p, () => document.querySelector('#finish'), null, 20000);
   ok(/0\.1 ETH is waiting to become private/.test(await text(p, '#waiting')), `a waiting deposit shows with a Finish (${await text(p, '#waiting')})`);
   await p.click('#mode-seg [data-mode="get"]');
-  await cfg(p, { pending: [] });
-  await p.click('#finish');
+  await finishNow(p);
   await until(p, () => /They are private now/.test(document.querySelector('#status').textContent), null, 20000);
   u = await ux(p);
   const lastBuild = [...u.calls].reverse().find((c) => c[0] === 'buildWrap'), lastSub = [...u.calls].reverse().find((c) => c[0] === 'submitWrapSettle');
@@ -1315,14 +1316,15 @@ try {
   ok(r.errors.length === 0 && r.blocked.length === 0, `no page error (${[...r.errors, ...r.blocked].join(' | ').slice(0, 160)})`);
   await r.browser.close();
 
-  // proving but not sending at the press: the quote says the wallet sends the settle, and it goes deposit → the relay's proof only → the wallet's settle
+  // proving but not sending at the press: the relay is asked to prove first (the wallet then sends one transaction); it refuses, its proofs for
+  // today being used up, so it goes deposit → the relay's proof only → the wallet's settle
   r = await relayPage({ state: 'held', proving: true, settling: false, board: false, ageSeconds: 20 });
   p = r.page;
   await p.fill('#amt', '0.04');
-  await until(p, () => /then the settle · network fee about/.test(document.querySelector('#route').textContent), null, 20000);
+  await until(p, () => /in one transaction · network fee about/.test(document.querySelector('#route').textContent), null, 20000);
   // The relay only proves, so its tip is the one it asks for a proof alone.
   const heldRoute = await text(p, '#route'), heldTotal = 4n * 10n ** 16n + BigInt(quote.recommendedProveTipWei);
-  ok(heldRoute.includes(`Your wallet sends${f6(heldTotal)} ETH, then the settle · network fee about ${feeTxt} ETH`) && heldRoute.includes('The relay can’t send this one right now, so your wallet sends the settle and pays its network fee.'), `held: the quote adds the settle and its network fee, with the relay's tip for a proof alone (${heldRoute})`);
+  ok(heldRoute.includes(`Your wallet sends${f6(heldTotal)} ETH in one transaction · network fee about ${feeTxt} ETH`) && !heldRoute.includes('can’t send'), `held: the quote is the relay's proof first and one transaction from the wallet, with the relay's tip for a proof alone (${heldRoute})`);
   events.length = 0;
   postsAt = posts.length;
   await p.click('#go'); await signInNow();
@@ -1331,6 +1333,8 @@ try {
   ok(heldTx.length === 2 && heldTx[0].to.toLowerCase() === WRAP_TIP.toLowerCase() && BigInt(heldTx[0].value) === heldTotal && heldTx[1].to.toLowerCase() === POOL.toLowerCase() && heldTx[1].data.includes('ab'.repeat(96)), 'the deposit goes with its tip, then the wallet sends the settle with the relay\'s proof');
   u = await ux(p);
   ok(posts.length === postsAt + 1 && posts.at(-1).mode === 'prove' && count(u, 'submitWrapSettle', (c) => c[4] === 'relay') === 0 && events.map((x) => x[0]).join() === 'send,sim,send', `the relay is asked for a proof only, never the settle, and the settle is tried before it is sent (${posts.slice(postsAt).map((x) => x.mode).join()})`);
+  { const k = u.calls.map((c) => c[0]), pw = k.lastIndexOf('proveWrap'), rel = k.lastIndexOf('releaseWrapIndex');
+    ok(pw >= 0 && rel > pw && lastCall(u, 'releaseWrapIndex')[1] === lastCall(u, 'proveWrap')[3] && k.indexOf('submitWrapSettle', rel) > rel, 'the relay was asked to prove first; refused, the note\'s index went back and the deposit went first'); }
   const heldStepsSeen = await p.$$eval('#steps li', (ls) => ls.map((l) => l.textContent));
   ok(heldStepsSeen.join('|').includes('The relay proves your note|The settle is checked before it is sent|Confirm the settle in your wallet|The settle lands') && /Settled from your wallet/.test(await text(p, '#status')), `the steps say so (${heldStepsSeen.join(' · ')})`);
   // the relay stops proving before the wallet's settle (refused: relay_paused): the holder's own credit is offered, not the wallet
