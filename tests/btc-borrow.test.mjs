@@ -3,7 +3,7 @@
 // The pool module is a stand-in that records what it is asked: its own maths is tested elsewhere.
 //   node tests/btc-borrow.test.mjs
 import assert from 'node:assert/strict';
-import { makeLoans, exactNotes, bondGap, bondCall, ESCROW, lockPad, lockRate, loanHealth, borrowAt, SAFE_RATIOS, NEAR_FALL, NEAR_CLEAR, fallToLiq, fallText, liqPhrase, healthLine, approaching, loanId } from '../dapp/btc-borrow.js';
+import { makeLoans, exactNotes, bondGap, bondCall, ESCROW, lockPad, lockRate, loanHealth, borrowAt, SAFE_RATIOS, NEAR_FALL, NEAR_CLEAR, fallToLiq, fallText, liqPhrase, healthLine, approaching, loanId, loanTag } from '../dapp/btc-borrow.js';
 import * as secp from '@noble/secp256k1';
 import { sha256 } from '@noble/hashes/sha256';
 import { hmac } from '@noble/hashes/hmac';
@@ -167,6 +167,10 @@ assert.deepEqual({ ...got.record, at: 0 }, { lockTxid: 'aa'.repeat(32), lockVout
     assert.deepEqual(approaching([near, L(130, 0, 900n)], [loanId(near)]).tell.map(loanId), ['900:1000000'], 'a second loan is its own');
     assert.deepEqual(approaching([], [loanId(near)]), { tell: [], keep: [] }, 'a loan that is gone is forgotten');
     assert.equal(NEAR_CLEAR, 3);
+    // a caller that names loans another way (the keeper names them by position leaf)
+    const byLeaf = (x) => x.leaf, a = { ...near, leaf: '0xaa' }, b = { ...near, leaf: '0xbb' };
+    assert.deepEqual(approaching([a, b], ['0xaa'], byLeaf), { tell: [b], keep: ['0xaa', '0xbb'] }, 'two loans of the same size are told apart by their own id');
+    assert.equal(loanTag('0xab12cd34' + 'e'.repeat(56)), 'ab12cd34'); assert.equal(loanTag('ab12cd34ee'), 'ab12cd34', 'the first eight digits, with or without 0x');
   }
   // the amounts the chips fill: rounded down to the cent, so the loan lands at or above the ratio
   assert.deepEqual(SAFE_RATIOS, [250, 200, 175]);

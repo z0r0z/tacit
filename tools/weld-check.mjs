@@ -11541,12 +11541,13 @@ await step('vaultborrow', async () => {
     // borrowed
     await r.page.fill('#bm-amt', '5');
     await r.page.click('#btc-tk [data-mine="borrow"]');
-    await until(r.page, () => /Borrowed 5 cUSD/.test(document.querySelector('#bm-status')?.textContent || ''), null, 240000);
+    await until(r.page, () => /Borrowed 5(\.00)? cUSD/.test(document.querySelector('#bm-status')?.textContent || ''), null, 240000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | status: ${await said()} | calls: ${JSON.stringify((await vb()).calls.slice(-3))}`); });
     const open = (await vb()).calls.filter((c) => c.kind === 'open').at(-1);
     ok(open && open.self === 'undefined' && open.debt === '500000000' && open.coll === '20000' && /^0x[0-9a-f]{64}$/.test(open.owner), `vaultborrow: the loan is relayed against the whole note (${JSON.stringify(open)})`);
     ok((await store()).length > s0.length, 'vaultborrow: and remembered once it is in, as the front page remembers it');
     await until(r.page, () => !!document.querySelector('#btc-mine [data-mine="repay"]'), null, 120000);
-    ok(/Loan5 cUSD/.test(await text(r.page, '#btc-mine')), 'vaultborrow: the loan is listed, with Repay');
+    ok(/Loan5(\.00)? cUSD/.test(await text(r.page, '#btc-mine')), 'vaultborrow: the loan is listed, with Repay');
     ok(/Collateral ratio \d+%.*liquidated below \$[\d,]+ a bitcoin/.test((await text(r.page, '#btc-mine')).replace(/\s+/g, ' ')), 'vaultborrow: and says how safe it is: its ratio and the price of a bitcoin it is liquidated below');
     // repaid with the cUSD note the loan made
     const s1 = await store();
@@ -11557,7 +11558,7 @@ await step('vaultborrow', async () => {
     ok(close && close.self === 'undefined' && close.debt === '500000000' && close.notes === '500000000' && close.index === 0, `vaultborrow: the repayment is relayed with the cUSD note of exactly the loan (${JSON.stringify(close)})`);
     ok((await store()).length < s1.length, 'vaultborrow: and the loan is forgotten once repaid');
     const j = await journal();
-    ok(j.includes('Borrow 5 cUSD:settled') && j.includes('Repay 5 cUSD:settled'), `vaultborrow: both are in the shared journal under their names, settled (${j.slice(0, 4).join(' | ')})`);
+    ok(j.some((e) => /^Borrow 5(\.00)? cUSD:settled$/.test(e)) && j.some((e) => /^Repay 5(\.00)? cUSD:settled$/.test(e)), `vaultborrow: both are in the shared journal under their names, settled (${j.slice(0, 4).join(' | ')})`);
     ok(new URL(r.page.url()).hash === '#btc', `vaultborrow: the panel's buttons leave the page's address alone (the vault's "Use my wallet" handler does not take them) (${new URL(r.page.url()).hash})`);
     if (r.errors.length) { fails++; console.log('FAIL vaultborrow page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }

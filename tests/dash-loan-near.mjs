@@ -33,7 +33,7 @@ const ok = (c, s) => { if (c) { n++; console.log('  ok   ' + s); } else { fails+
 let PAGE = readFileSync(join(DAPP, 'index.html'), 'utf8').replace(/<meta http-equiv="Content-Security-Policy"[^>]*>/, '');
 const at = PAGE.indexOf('const store = {'), end = PAGE.indexOf('</script>', at);
 if (at < 0 || end < 0 || !/const getUx = lazy\(/.test(PAGE)) { console.log('FAIL   the page has the names this test hooks into'); process.exit(1); }
-PAGE = PAGE.slice(0, end) + `\n;globalThis.__t = { S, P, LOANS, TPX, HXR, LOCK, dashLoans, dashSoon, hxBwView, stub: (o) => { if (o.cdpLoans) cdpLoans = o.cdpLoans; if (o.loadTacPrice) loadTacPrice = o.loadTacPrice; if (o.getUx) getUx = o.getUx; } };\n` + PAGE.slice(end);
+PAGE = PAGE.slice(0, end) + `\n;globalThis.__t = { S, P, LOANS, TPX, HXR, LOCK, dashLoans, dashSoon, hxBwView, hxBwList, VE, dashVaults, stub: (o) => { if (o.cdpLoans) cdpLoans = o.cdpLoans; if (o.loadTacPrice) loadTacPrice = o.loadTacPrice; if (o.getUx) getUx = o.getUx; if (o.vaultLoad) vaultLoad = o.vaultLoad; } };\n` + PAGE.slice(end);
 PAGE = PAGE.replace('const getUx = lazy(', 'let getUx = lazy(');
 
 const KEY = '11'.repeat(31) + '22', CB = 'cb'.repeat(32), NOTIFY = 'tacit-lite-notify-v1';
@@ -147,6 +147,57 @@ try {
   await run();
   got = await notes();
   ok(got.length === 3 && /cUSD at 129%: it can be liquidated now\. Repay it\.$/.test(got[2].body), `under the line it says so: ${got[2]?.body}`);
+
+  // a TACD vault: public and the wallet's own, read by the vault engine (stood in for here by a vault whose figures the test sets). The bitcoin loan is put
+  // well clear first, so every notice from here is the vault's.
+  await setPx(120000);
+  await page.evaluate(() => {
+    const t = globalThis.__t, wallet = '0x' + 'ab'.repeat(20);
+    t.S.wallet = wallet;
+    const x = { sym: 'TACD', k: { dp: 2, name: 'USD' }, me: { debt: 120n * 10n ** 18n, collateral: 500n * 10n ** 18n }, ratio: 13500n, s: { liq: 13000n }, zone: 'redemption' };
+    t.VE.E = { derive: (V) => V.x }; t.VE.VS = [{ key: 'usd', x }]; t.VE.who = wallet; t.VE.at = Date.now();
+    t.stub({ vaultLoad: async () => t.VE.E });
+    window.__vx = x;
+  });
+  const vset = (bps) => page.evaluate((b) => { window.__vx.ratio = b; }, bps);
+  let vs = await page.evaluate(() => globalThis.__t.dashVaults().map((v) => ({ key: v.key, ratio: v.ratio, near: v.near, fall: v.fall })));
+  ok(vs.length === 1 && vs[0].near && Math.abs(vs[0].fall - 3.7) < 0.1, `a vault at 135% against a 130% line is near: ${JSON.stringify(vs)}`);
+  t = await note();
+  ok(/A TACD vault owing 120(\.00)? TACD stands at 135%, and TAC falling 3% opens an auction on it\. Repay it\./.test(t), `its note says how far TAC must fall: ${t.slice(0, 200)}`);
+  // the Borrow tab's list of what the wallet owes, drawn by the page's own list code: the bitcoin loan (bitcoin at $74,000, 0.002 cBTC against 110 cUSD, so
+  // 134%) and the vault, each with its distance and the loan its id
+  await page.evaluate(([cb]) => {
+    const t = globalThis.__t;
+    document.body.insertAdjacentHTML('beforeend', '<div id="hx-bwl" hidden><div id="hx-bwl-l"></div></div>');
+    t.LOCK.state = { px: 7400000000000n, ratio: 15000n, liq: 13000n, loans: { positions: [{ live: true, debtValue: '11000000000', basket: [{ asset: cb, value: '200000' }], positionLeaf: '0xab12cd34' + 'e'.repeat(56) }] } };
+    t.hxBwList();
+  }, [CB]);
+  const listText = () => page.$eval('#hx-bwl-l', (e) => e.textContent.replace(/\s+/g, ' ').trim());
+  let lt = await listText();
+  ok(/110(\.00)? cUSD owed ?0\.002 cBTC behind it · 134% · bitcoin 3% from the line · id ab12cd34/.test(lt), `the list says a bitcoin loan's distance and its id: ${lt.slice(0, 150)}`);
+  ok(/120(\.00)? TACD owed ?500(\.00)? TAC in the vault · 135% · TAC 3% from an auction/.test(lt), `and a vault's: ${lt.slice(0, 260)}`);
+  await vset(20000n); await page.evaluate(() => { globalThis.__t.LOCK.state.px = 12000000000000n; globalThis.__t.hxBwList(); });
+  lt = await listText();
+  ok(/110(\.00)? cUSD owed ?0\.002 cBTC behind it · 218% · id ab12cd34/.test(lt) && !/from the line|from an auction/.test(lt) && /· 200%/.test(lt), `well clear: the ratios and the id, no distance: ${lt.slice(0, 200)}`);
+  await vset(13500n); await page.evaluate(() => { globalThis.__t.LOCK.state = null; });
+  await vset(20000n); vs = await page.evaluate(() => globalThis.__t.dashVaults());
+  t = await note();
+  ok(!vs[0].near && !/TACD vault/.test(t), 'at 200% it is not near and has no note');
+  await vset(12900n); t = await note();
+  ok(/stands at 129%: it can be auctioned now\. Repay it\./.test(t), `under the line it says so: ${t.slice(0, 200)}`);
+  // the watch, for the vault alone
+  const before = (await notes()).length;
+  await vset(13500n); await run();
+  got = await notes();
+  ok(got.length === before + 1 && got.at(-1).title === 'A vault is close to an auction' && /^120(\.00)? TACD owed at 135%: TAC falling 3% opens an auction on it\. Repay it\.$/.test(got.at(-1).body) && got.at(-1).tag === 'vault-near:usd', `a background tab is told once: ${JSON.stringify(got.at(-1))}`);
+  await run();
+  ok((await notes()).length === before + 1, 'and not again while it stays near');
+  await vset(20000n); await run(); await vset(13500n); await run();
+  ok((await notes()).length === before + 2, 'told again once it has gone clear and come back');
+  ok(JSON.stringify(await page.evaluate(() => Object.entries(localStorage).filter(([k]) => k.startsWith('tacit-loan-near-v1:')).map(([, v]) => JSON.parse(v)))) === '[["vault:usd"]]', 'only the vault is remembered (the bitcoin loan has been forgotten)');
+  await page.evaluate(() => { window.__hidden = false; });
+  await vset(12900n); await run();
+  ok((await notes()).length === before + 2, 'with the tab in front it tells nothing');
 
   ok(errors.length === 0, `no page errors${errors.length ? ': ' + errors.slice(0, 3).join(' | ') : ''}`);
 } catch (e) {

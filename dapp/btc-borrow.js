@@ -37,15 +37,17 @@ export function healthLine(h, esc) {
   return `Collateral ratio <b class="${h.level}">${esc(String(Math.floor(h.ratio)))}%</b>${h.liqAt ? ` · ${esc(liqPhrase(h))}` : ''}${h.near ? ` · <b class="err">${h.fall > 0 ? 'close to liquidation' : 'can be liquidated now'}</b>` : ''}`;
 }
 // Which loans have come near liquidation since `seen` (the ids last told about): `tell` are the ones to tell now, `keep` the ids to remember.
-// A loan is its debt and its collateral; one that left the line is forgotten, so it is told again if it comes back.
+// A loan is, by default, its debt and its collateral (`id` says otherwise); one that left the line is forgotten, so it is told again if it comes back.
 export const loanId = (x) => `${x.debt}:${x.sats}`;
-export function approaching(loans, seen = []) {
+export function approaching(loans, seen = [], id = loanId) {
   const had = new Set(seen);
   return {
-    tell: loans.filter((x) => x.near && !had.has(loanId(x))),
-    keep: loans.filter((x) => x.near || (had.has(loanId(x)) && x.fall != null && x.fall < NEAR_FALL + NEAR_CLEAR)).map(loanId),
+    tell: loans.filter((x) => x.near && !had.has(id(x))),
+    keep: loans.filter((x) => x.near || (had.has(id(x)) && x.fall != null && x.fall < NEAR_FALL + NEAR_CLEAR)).map(id),
   };
 }
+// What a loan is called beside its row and in the keeper's alerts: the first eight digits of its position leaf, which is public on Ethereum.
+export const loanTag = (leaf) => String(leaf).replace(/^0x/, '').slice(0, 8);
 export function borrowAt({ sats, usdBtc, pct }) {
   const v = (Number(sats) / 1e8) * usdBtc / (pct / 100);
   return Number.isFinite(v) && v > 0 ? Math.floor(v * 100) / 100 : 0;

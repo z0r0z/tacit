@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-pISIUgnVjJph/qEJVGZ+nt3Hz9vxxvxSaPF0ABSk2xU=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-90IDVduV6YSWOMIArIkDE5BY5O1VLEMSrNn/gzLroxk=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -63,7 +63,7 @@
 <link rel="modulepreload" href="/lp-zap.js?cb=a43160fd">
 <link rel="modulepreload" href="/farm-ops.js?cb=f872de9d">
 <link rel="modulepreload" href="/relay-outcome.js?cb=17e48a9a">
-<link rel="modulepreload" href="/btc-borrow.js?cb=1fc310cc">
+<link rel="modulepreload" href="/btc-borrow.js?cb=739f4312">
 <link rel="modulepreload" href="/bridge-out.js?cb=9662a160">
 <link rel="modulepreload" href="/bridge/track.js?cb=d654a7d8">
 <link rel="modulepreload" href="/bridge-in.js?cb=ba07ee86">
@@ -2517,7 +2517,7 @@ import * as GR from '/gas-relay.js?cb=e8d173a8';
 import { netPicker } from '/net-pick.js?cb=9229f173';
 import { UNBOND_DUST, HARVEST_WORTH, unharvested, exitSaid, bFor, aFor, farmManager, ladder as xoLadder, feeShort as xoFeeShort } from '/farm-ops.js?cb=f872de9d';
 import { relayCode, proveCapped, proved, relayRefused, jobSaid, calmText } from '/relay-outcome.js?cb=17e48a9a';
-import { makeLoans, bondGap, lockPad as lockPadOf, lockRate as lockRateOf, NEAR_FALL, fallToLiq, fallText, approaching, loanId } from '/btc-borrow.js?cb=1fc310cc';
+import { makeLoans, bondGap, lockPad as lockPadOf, lockRate as lockRateOf, NEAR_FALL, fallToLiq, fallText, approaching, loanId, loanTag } from '/btc-borrow.js?cb=739f4312';
 import { makeOutFee, limitText, proofWarn, fundingText, onTheWay } from '/bridge-out.js?cb=9662a160';
 import { ROUTES as BR_WAYS, LIMITS as BR_LIMITS, satsOut, satsBack, readBridges, nextOf as brNext, fmtAmount as brRowAmt } from '/bridge/track.js?cb=d654a7d8';
 import { SERVED as SERVED_POOLS, keeperIdOf, makeTokenPools, KEEPERS as POOL_KEEPERS, RELAYER as POOL_RELAYER } from '/evm-pool-tokens.js?cb=16e0e196';
@@ -10635,19 +10635,40 @@ function dashLoans(pxNow = null) {
 // notifications on: looked at every five minutes with a fresh price and a fresh read of their loans, and told once each time it comes near.
 const LOANW = { busy: false };
 const loanSeenKey = () => `tacit-loan-near-v1:${S.key?.pubHex}`;
+// The TACD / TACE vaults the connected wallet owes on, from the vault engine's last read (none until it has read): how far TAC must fall before each
+// can be auctioned. A vault is public and belongs to the wallet, so unlike a cBTC loan there is nothing to scan for.
+function dashVaults() {
+  if (!S.wallet || !VE.E || VE.who !== S.wallet) return [];
+  const out = [];
+  for (const V of VE.VS || []) {
+    const x = VE.E.derive(V);
+    if (!x || !(x.me.debt > 0n) || x.ratio == null || !x.s) continue;
+    const ratio = Number(x.ratio) / 100, fall = fallToLiq(ratio, Number(x.s.liq) / 100);
+    out.push({ key: V.key, sym: x.sym, dp: x.k.dp, debt: x.me.debt, ratio, fall, near: fall != null && fall < NEAR_FALL });
+  }
+  return out;
+}
 setInterval(async () => {
   const k = S.key?.pubHex, loaded = () => (LOANS.pub === k ? LOANS.v : null);
   if (!k || LOANW.busy || !document.hidden || !store.get(NOTIFY_KEY) || typeof Notification !== 'function' || Notification.permission !== 'granted') return;
-  if (!loaded()?.positions?.length && !(P.scan?.cusd && BigInt(P.scan.cusd.value || 0) > 0n)) return;
+  const hasLoans = !!loaded()?.positions?.length || !!(P.scan?.cusd && BigInt(P.scan.cusd.value || 0) > 0n), hasVaults = dashVaults().length > 0;
+  if (!hasLoans && !hasVaults) return;
   LOANW.busy = true;
   try {
-    const [t] = await Promise.all([getUx(), loadTacPrice()]);
-    await cdpLoans(t, walletPriv());
-    if (HXR.ratio == null) await hxRatios();
-    if (S.key?.pubHex !== k || !loaded() || !TPX.v?.usdBtc) return;
-    const { tell, keep } = approaching(dashLoans(BigInt(Math.round(TPX.v.usdBtc * 1e8))) || [], store.get(loanSeenKey()) || []);
-    for (const x of tell) osNote('A loan is close to liquidation', `${fmt(x.debt, 8, 2)} cUSD at ${Math.floor(x.ratio)}%: ${x.fall > 0 ? `bitcoin falling ${fallText(x.fall)} liquidates it` : 'it can be liquidated now'}. Repay it.`, `loan-near:${loanId(x)}`, () => openSheet('borrow'));
-    store.set(loanSeenKey(), keep);
+    let loans = [], vaults = [], loansRead = false;
+    if (hasLoans) {
+      const [t] = await Promise.all([getUx(), loadTacPrice()]);
+      await cdpLoans(t, walletPriv());
+      if (HXR.ratio == null) await hxRatios();
+      if (S.key?.pubHex === k && loaded() && TPX.v?.usdBtc) { loans = dashLoans(BigInt(Math.round(TPX.v.usdBtc * 1e8))) || []; loansRead = true; }
+    }
+    if (hasVaults) { await vaultLoad(true); vaults = dashVaults(); }
+    if (S.key?.pubHex !== k) return;
+    const seen = store.get(loanSeenKey()) || [], a = approaching(loans, seen), b = approaching(vaults, seen, (x) => `vault:${x.key}`);
+    for (const x of a.tell) osNote('A loan is close to liquidation', `${fmt(x.debt, 8, 2)} cUSD at ${Math.floor(x.ratio)}%: ${x.fall > 0 ? `bitcoin falling ${fallText(x.fall)} liquidates it` : 'it can be liquidated now'}. Repay it.`, `loan-near:${loanId(x)}`, () => openSheet('borrow'));
+    for (const x of b.tell) osNote('A vault is close to an auction', `${fmt(x.debt, 18, x.dp)} ${x.sym} owed at ${Math.floor(x.ratio)}%: ${x.fall > 0 ? `TAC falling ${fallText(x.fall)} opens an auction on it` : 'it can be auctioned now'}. Repay it.`, `vault-near:${x.key}`, () => openSheet('borrow'));
+    // each list is judged only when it was read: a failed read must not make a loan look gone (and be told again when it is read next)
+    store.set(loanSeenKey(), [...(loansRead ? a.keep : seen.filter((s) => s.startsWith('vault:') === false)), ...(hasVaults ? b.keep : seen.filter((s) => s.startsWith('vault:')))]);
   } catch {} finally { LOANW.busy = false; }
 }, 300e3);
 function dashPx() {
@@ -10743,6 +10764,8 @@ function paintDash0() {
     const near = (dashLoans() || []).filter((x) => x.ratio != null && x.ratio < 175).sort((a, b) => a.ratio - b.ratio)[0];
     if (near) due.push([near.near ? `A loan of ${fmt(near.debt, 8, 2)} cUSD stands at ${Math.floor(near.ratio)}%${near.fall > 0 ? `, and bitcoin falling ${fallText(near.fall)} liquidates it` : `, under the ${HXR.liq}% line: it can be liquidated now`}. Repay it.`
       : `A loan of ${fmt(near.debt, 8, 2)} cUSD stands at ${Math.round(near.ratio)}%${HXR.liq ? `; liquidation starts at ${HXR.liq}%` : ''}. Repay it before BTC falls further.`, 'loans', 'Open']);
+    const vnear = dashVaults().filter((x) => x.near).sort((a, b) => a.fall - b.fall)[0];
+    if (vnear) due.push([`A ${vnear.sym} vault owing ${fmt(vnear.debt, 18, vnear.dp)} ${vnear.sym} stands at ${Math.floor(vnear.ratio)}%${vnear.fall > 0 ? `, and TAC falling ${fallText(vnear.fall)} opens an auction on it` : ': it can be auctioned now'}. Repay it.`, 'loans', 'Open']);
     const claims = [];
     const pw = pointsWho(), prow = PTS.key && PTS.key === pw.map(([a]) => a).join() ? PTS.rows || [] : [], owed = prow.reduce((a, r) => a + r.owed, 0n);
     if (owed > 0n) claims.push([`${tacShort(owed)} TAC from points`, 'pts', 'Points']);
@@ -14803,9 +14826,11 @@ function hxBwList() {
     }
     if (r.loan) {
       const debt = BigInt(r.loan.debtValue), usd = st?.px ? r.sats * st.px / 10n ** 8n : 0n, ratio = usd && debt ? Number(usd * 10000n / debt) / 100 : null, floor = st ? Number(st.ratio) / 100 : 150;
-      return html`<div class="hx-pr">${ico('tk-cusd', 'tk-cbtc')}<span class="rt"><b>${fmt(debt, 8, 2)} cUSD owed</b><small>${fmt(r.sats, 8, 8)} cBTC behind it${ratio ? html` · <span class="${ratio < floor ? 'err' : ratio < 175 ? 'warn' : ''}">${Math.round(ratio)}%</span>` : ''}</small></span><span class="hx-pa"><button class="link" type="button" data-brp="${i}"${off}>Repay</button></span></div>`;
+      const fall = st ? fallToLiq(ratio, Number(st.liq) / 100) : null, near = fall != null && fall < NEAR_FALL;
+      return html`<div class="hx-pr">${ico('tk-cusd', 'tk-cbtc')}<span class="rt"><b>${fmt(debt, 8, 2)} cUSD owed</b><small>${fmt(r.sats, 8, 8)} cBTC behind it${ratio ? html` · <span class="${near || ratio < floor ? 'err' : ratio < 175 ? 'warn' : ''}">${Math.floor(ratio)}%</span>${near ? html` · ${fall > 0 ? html`bitcoin ${fallText(fall)} from the line` : 'under the line'}` : ''}` : ''}${r.loan.positionLeaf ? html` · id ${loanTag(r.loan.positionLeaf)}` : ''}</small></span><span class="hx-pa"><button class="link" type="button" data-brp="${i}"${off}>Repay</button></span></div>`;
     }
-    const x = r.x, z = x.ratio != null ? html` · <span class="${x.zone === 'liquidation' ? 'err' : x.zone === 'redemption' ? 'warn' : ''}">${Math.floor(Number(x.ratio) / 100)}%</span>` : '';
+    const x = r.x, vf = x.ratio != null && x.s ? fallToLiq(Number(x.ratio) / 100, Number(x.s.liq) / 100) : null, vnear = vf != null && vf < NEAR_FALL;
+    const z = x.ratio != null ? html` · <span class="${x.zone === 'liquidation' || vnear ? 'err' : x.zone === 'redemption' ? 'warn' : ''}">${Math.floor(Number(x.ratio) / 100)}%</span>${vnear ? html` · ${vf > 0 ? html`TAC ${fallText(vf)} from an auction` : 'can be auctioned now'}` : ''}` : '';
     return html`<div class="hx-pr">${ico('tk-tac', r.vault === 'eth' ? 'tk-tace' : 'tk-tacd')}<span class="rt"><b>${fmt(x.me.debt, 18, x.k.dp)} ${x.sym} owed</b><small>${fmt(x.me.collateral, 18, 2)} TAC in the vault${z}</small></span><span class="hx-pa">${[['repay', 'Repay'], ['deposit', 'Add TAC'], ['withdraw', 'Withdraw']].map(([k, t]) => html`<button class="link" type="button" data-bva="${r.vault}:${k}"${off}>${t}</button>`)}</span></div>`;
   };
   const view = html`${rows.map(row)}`;
