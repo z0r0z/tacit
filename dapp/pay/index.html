@@ -242,8 +242,9 @@ input::placeholder { color: var(--mute); opacity: 1; }
 .addr .link { flex: none; }
 .addr code.clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; }
 .addr.open code.clamp { display: block; }
-details.fold { margin-top: 12px; border: 1px solid var(--hair); border-radius: 14px; overflow: hidden; }
-details.fold > summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: var(--tap); padding: 8px 14px; cursor: pointer; list-style: none; }
+details.fold { margin-top: 12px; border: 1px solid var(--hair); border-radius: 14px; }
+details.fold > summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: var(--tap); padding: 8px 14px; cursor: pointer; list-style: none; border-radius: 13px; }
+details.fold[open] > summary { border-radius: 13px 13px 0 0; }
 details.fold > summary::-webkit-details-marker { display: none; }
 details.fold > summary::after { content: '+'; flex: none; font-size: 18px; line-height: 1; color: var(--mute); }
 details.fold[open] > summary::after { content: '−'; }
