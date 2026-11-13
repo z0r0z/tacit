@@ -37,10 +37,10 @@ the dapp's deployment config, which the API also imports.
 | CbtcEscrowHelperTipForwarder (splits a tip off a self-proved escrow+settle call to the helper above) | [`0x000000006fcb52Aa67AC4A420a4D43A0e48F136F`](https://etherscan.io/address/0x000000006fcb52Aa67AC4A420a4D43A0e48F136F) |
 | TacitAmmRoute (the last step of a swap from any token into tacUSD or tacBTC: unwraps the WETH it is handed and swaps the ETH through TacitPublicAmm; no owner, holds nothing) | [`0x00000065e3e51af95d330fb6932cA3E87912c554`](https://etherscan.io/address/0x00000065e3e51af95d330fb6932cA3E87912c554) |
 
-Every row but CbtcEscrowHelper/CbtcEscrowHelperTipForwarder and TacitAmmRoute matches `contracts/deployments/1-createx.json`
-exactly. TacitAmmRoute is deployed by the `amm-route` job of [`/tasks`](https://tacit.finance/tasks/) (CreateX, an open salt). Both are deployed by their own scripts (`DeployCbtcEscrowHelperCreateX.s.sol`,
-`DeployCbtcEscrowHelperTipForwarderCreateX.s.sol`), and their addresses live in `contracts/deployments/1.json`
-instead.
+Every other row matches `contracts/deployments/1-createx.json` exactly. CbtcEscrowHelper and
+CbtcEscrowHelperTipForwarder are deployed by their own scripts (`DeployCbtcEscrowHelperCreateX.s.sol`,
+`DeployCbtcEscrowHelperTipForwarderCreateX.s.sol`), and their addresses live in `contracts/deployments/1.json` instead.
+TacitAmmRoute is deployed by the `amm-route` job of [`/tasks`](https://tacit.finance/tasks/) (CreateX, an open salt).
 
 An earlier CbtcEscrowHelper (`0x00000000689c71e690e5842df088af97f9d4f71b`) and an earlier
 CbtcEscrowHelperTipForwarder pointed at it (`0x000000fB551f7Ef4936a59ECdD431ae253139E8d`) remain deployed and
@@ -90,8 +90,7 @@ untouched since.
 | Logo | [PNG, pinned on IPFS](https://ipfs.filebase.io/ipfs/bafkreibwpxssdmoczx75vsqmk5vpdyztwwz3qmykpucn5xow64ku5ht46m) alongside the CETCH metadata (also `dapp/tac-logo.png` in this repo); the SVG mark inlined on-chain in [TAC's token.list.wei listing](https://token.list.wei.limo) is mirrored at [`assets/tac-onchain.svg`](../assets/tac-onchain.svg) |
 | Ethereum ERC-20 | [`0xA1313eb9f3A445606D9583bcAc3ebeB56a858279`](https://etherscan.io/address/0xA1313eb9f3A445606D9583bcAc3ebeB56a858279) |
 | Buyback | [`TacBuyback` `0x6919cbEf0e70AFFA02Ae02c86c532A137154f250`](https://etherscan.io/address/0x6919cbEf0e70AFFA02Ae02c86c532A137154f250): buys TAC for the reserve (the ops multisig) on the public TAC/ETH market; see [`TAC.md`](./TAC.md) |
-| Bridged supply | the ERC-20's live `totalSupply()` — currently ~2.5M TAC, all of it minted by the pool from TAC proven to have left Bitcoin |
-| Bitcoin activity | ~1,957 holders; 4,166 confidential transfers; 229 orderbook trades against real BTC since 2026-05-24 |
+| Bridged supply | the ERC-20's live `totalSupply()`, all of it minted by the pool from TAC proven to have left Bitcoin |
 
 **A full round trip, ETH → BTC → ETH**, each leg a real settled transaction: a pool crossOut
 ([`0xc7bfc7ce…3c29a8f`](https://etherscan.io/tx/0xc7bfc7cec938e59c5d256d1c44c2aea5269eb7c237ac018878f21b2a93c29a8f)),
@@ -105,31 +104,26 @@ the same note, both chains, proven twice.
 
 ### cBTC, cUSD and tETH
 
-Unlike TAC, cBTC and cUSD are pool-minted, not Bitcoin-issued: neither has a `T_CETCH` genesis, and
-neither has been unwrapped to its public ERC-20 form yet — `tacBTC`
+Unlike TAC, cBTC and cUSD are pool-minted, not Bitcoin-issued: neither has a `T_CETCH` genesis. Both are held
+as confidential pool notes, and their public ERC-20s, minted only by the pool, are `tacBTC`
 ([`0xdf1d99148bEb7a9AFf1d95C49B3d22b7ed90D696`](https://etherscan.io/address/0xdf1d99148bEb7a9AFf1d95C49B3d22b7ed90D696))
 and `tacUSD`
-([`0x23cACFFAc2674514A6d4F6cD420B4cc2aC921564`](https://etherscan.io/address/0x23cACFFAc2674514A6d4F6cD420B4cc2aC921564))
-both read `totalSupply() == 0` on mainnet today, so what's minted so far lives entirely as confidential
-pool notes. Icons: [`cbtc-zk-icon.svg`](../contracts/tokenlist-drafts/cbtc-zk-icon.svg) and
+([`0x23cACFFAc2674514A6d4F6cD420B4cc2aC921564`](https://etherscan.io/address/0x23cACFFAc2674514A6d4F6cD420B4cc2aC921564)),
+whose `totalSupply()` is the part held in public. Icons: [`cbtc-zk-icon.svg`](../contracts/tokenlist-drafts/cbtc-zk-icon.svg) and
 [`cusd-zk-icon.svg`](../contracts/tokenlist-drafts/cusd-zk-icon.svg), standalone marks distinct from the
 composite cBTC/TAC and cUSD/TAC pairing icons elsewhere in `contracts/`.
 
 **cBTC** mints against real Bitcoin locks ([SPEC §5.7](../SPEC.md#57-cdp-cusd-and-cbtc)): `cbtcBackingSats()`
-on the pool — the reflection-attested sum of live self-custody lock sats — read **4,800 sats** on 2026-09-28
-(`cast call` against the live pool). A lock mints cBTC only once its 1.5× wstETH escrow clears; an
-under-escrowed lock stays unmintable.
+on the pool is the reflection-attested sum of live self-custody lock sats. A lock mints cBTC only once its 1.5×
+wstETH escrow clears; an under-escrowed lock stays unmintable.
 
-**cUSD** mints as CDP debt against cBTC collateral, at the same 150% mint / 130% liquidation thresholds
-([SPEC §5.7](../SPEC.md#57-cdp-cusd-and-cbtc)). `CollateralEngine.outstandingCusd()` read
-**49,815,650** (in-system units) on 2026-09-28 across the engine's two currently-open positions; the insurance reserve is
-still empty (nothing has ever been liquidated). Three real `CdpMinted` mints and one `CdpClosed` close, all
-on the current engine:
+**cUSD** mints as CDP debt against cBTC collateral, at the 150% mint / 130% liquidation thresholds
+([SPEC §5.7](../SPEC.md#57-cdp-cusd-and-cbtc)). `CollateralEngine.outstandingCusd()` is the cUSD principal across open
+positions (in-system units). The engine's first `CdpMinted` mints and `CdpClosed` close:
 [`0xb4a1f32d…afa7d4908`](https://etherscan.io/tx/0xb4a1f32d80ff1cd413d58023811eaafa8aed3388d3fa82741f52f06afa7d4908),
-[`0x6da330c1…ebceaccb479b3229`](https://etherscan.io/tx/0x6da330c161f236030ef83ce5c9c77268c735a52e7f9789c7ebceaccb479b3229)
-(open), [`0x23851ea3…14e44232e`](https://etherscan.io/tx/0x23851ea3ec4c0434940a1120505b0efe1878023e3d6faac9cea41ad14e44232e)
-(closed), [`0x5f20ec5c…ffe52ec`](https://etherscan.io/tx/0x5f20ec5cc1dc1ecd31cd8f60970e8947ca61165500dbb4cb27bb9c048ffe52ec)
-(open).
+[`0x6da330c1…ebceaccb479b3229`](https://etherscan.io/tx/0x6da330c161f236030ef83ce5c9c77268c735a52e7f9789c7ebceaccb479b3229),
+[`0x23851ea3…14e44232e`](https://etherscan.io/tx/0x23851ea3ec4c0434940a1120505b0efe1878023e3d6faac9cea41ad14e44232e)
+(the close) and [`0x5f20ec5c…ffe52ec`](https://etherscan.io/tx/0x5f20ec5cc1dc1ecd31cd8f60970e8947ca61165500dbb4cb27bb9c048ffe52ec).
 
 **tETH** is not a separate asset from cETH — it's the same shared asset id
 (`0x3cba71e1…03126f34`, [SPEC §4.2](../SPEC.md#42-assets-and-units)) named by chain context: "cETH" when
@@ -188,7 +182,7 @@ is in [`TAC-VAULTS-DEPLOY.md`](./TAC-VAULTS-DEPLOY.md).
 ### TAC for gas and proofs
 
 Two immutable contracts let TAC pay for work, outside the pool's own surface. Integrator notes:
-[`TAC.md`](./TAC.md#what-tac-does) and the [build guide](https://tacit.finance/build/#tacpay).
+[`TAC.md`](./TAC.md#what-tac-does) and the [build guide](https://tacit.finance/build/#api).
 
 | Contract | Address |
 | --- | --- |
@@ -259,19 +253,45 @@ Bitcoin digest at the anchor height above.
 Roles, claim paths, the emergency sweep and the runbook are in [`AIRDROP.md`](./AIRDROP.md); the inputs and how to rebuild the root are in
 [`airdrop/v1/README.md`](../airdrop/v1/README.md).
 
+## Tacit chain (Ethereum)
+
+A zk-rollup for private TAC payments, settled on Ethereum: payers prove their spends on their own devices, and each block is one SP1
+proof that `TacitBlocks` checks before it takes the block's data. Neither contract has an owner, an upgrade path or a pause. The chain's
+TAC is held by `TacitBlocks`, and its hops go into the `ConfidentialPool` above. Spec: [`TACIT-BLOCKS.md`](./TACIT-BLOCKS.md); user
+docs: [tacit.finance/docs/chain](https://tacit.finance/docs/chain/); live view: [tacit.finance/tac](https://tacit.finance/tac/).
+
+| Contract | Address |
+| --- | --- |
+| TacitBlocks (lands blocks and holds the chain's TAC; deploy block 26366005) | [`0x00000000000a9147ffd8d41d152d730ca5f84e6c`](https://etherscan.io/address/0x00000000000a9147ffd8d41d152d730ca5f84e6c) |
+| TacitSeats (whose turn it is to land: seat holders; deploy block 26366003) | [`0x00000000001f703eae70de3b528213e4802790fb`](https://etherscan.io/address/0x00000000001f703eae70de3b528213e4802790fb) |
+
+| Field | Value |
+| --- | --- |
+| SP1 verifier (`VERIFIER()`) | `0xb69f2584CBcFf99a58C4e7002E8b89Af54a6f4e2`, the pool's immutable Groth16 leaf |
+| Block program vkey (`BLOCK_VKEY()`) | `0x00610fb0fa1b5d800e548c3cdcdf98ceb4288828be1cec1fb81e39004bad6ed6` |
+| Spend relation (`SPEND_VK()`) | `0xc85febd5ed7a2b00819d90960a17bf686b15d28183c7a207499204bd369bdfe4` |
+| Chain binding (`CHAIN()`) | `0x9f37b5d63a21e8f8d4fb57cfee82681877fd344b61a5bedf6c5f19d1fb396f9d` |
+| `WINDOW()` / `FORCE_DELAY()` | 600 s / 3,600 s |
+| Seat (`SEAT()`) / slot (`SLOT_BLOCKS()`) | 1,000 TAC / 50 Ethereum blocks |
+| Bootstrap leader (`BOOTSTRAP()`, leads while no seat is held) | `0x841d93ae315E3D9AF5Fd98C09299CA62148Ff65d` |
+| Leader API | `https://tacit-chain-leader.onrender.com` |
+
 ## EVM pool (Ethereum, Base, Robinhood Chain, MegaETH)
 
-A separate, smaller pool: native ETH only, one fixed Groth16 circuit, proved on the user's own device — not
-part of the `ConfidentialPool`/SP1 suite above. Same addresses on all four chains (CreateX CREATE3, salts
-locked to deployer `0x68575B073DE49a94e3E3ACf6F3A0d6E3b66267C7`). MegaETH has the core (pool, router, verifier,
-PoseidonT5) and no token swaps: zRouter, zQuoter and the zap are not deployed there.
+A separate, smaller pool: one fixed Groth16 circuit, proved on the user's own device — not part of the
+`ConfidentialPool`/SP1 suite above. The native-ETH pool is at the same addresses on all four chains (CreateX CREATE3,
+salts locked to deployer `0x68575B073DE49a94e3E3ACf6F3A0d6E3b66267C7`). MegaETH has the core (pool, router, verifier,
+PoseidonT5) and no token swaps: zRouter, zQuoter and the zap are not deployed there. On Ethereum the same contracts also
+run ERC-20 pools (TAC, TACD, TACE, USDC, USDT, and any token's pool anyone opens); their addresses are in
+[`EVM-POOL.md`](./EVM-POOL.md#addresses).
 
 | | |
 |---|---|
-| `TacitEvmPool` | `0x000000c2A20657CE25f2Ba99737933D031AFBEE9` |
+| `TacitEvmPool` (native ETH) | `0x000000c2A20657CE25f2Ba99737933D031AFBEE9` |
 | `TacitEvmPoolRouter` | `0x0000006C96Afa6f1cD4DF8FE19bc0d8B6A6Cd7B5` |
 | Groth16 verifier (`TransactVerifier`) | `0x000000b1c0e84CEc8AdF8278B90c4d6400DfB153` |
 | PoseidonT5 | `0x555333f3f677Ca3930Bf7c56ffc75144c51D9767` |
+| `TacitEvmPoolZap` (shields a token in one transaction; not on MegaETH) | `0x0000008EbBF2323f95c4fBc18254f3D65C53998c` |
 | Ceremony | 176 contributions, sealed with Bitcoin block 968840; vk hash `43d11e6e…5757` |
 
 | Chain | Deploy block | Verified | Keeper |

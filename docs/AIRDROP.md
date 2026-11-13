@@ -35,8 +35,8 @@ The guardian is the ops multisig at the address recorded as `engineAdmin` in
 [`contracts/deployments/1.json`](../contracts/deployments/1.json). Confirm it with `node tools/verify-roles.mjs`, and
 copy it from that file rather than retyping it (see the runbook).
 
-The multisig is two-of-four with a built-in one-hour delay ([SPEC §7.2](../SPEC.md#72-governed-periphery)): two
-owner signatures queue a call, anyone can execute it after the delay, and a call signed by all four owners runs
+The multisig is two-of-five with a built-in one-hour delay ([SPEC §7.2](../SPEC.md#72-governed-periphery)): two
+owner signatures queue a call, anyone can execute it after the delay, and a call signed by all five owners runs
 immediately. A pause or a sweep therefore takes at least an hour on the standard path, and the queued call is
 visible on-chain for that hour. The guardian is fixed at deployment: with fewer than two owner keys available there
 is no pause and no sweep, and claims still work.

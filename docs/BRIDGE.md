@@ -1,6 +1,6 @@
 # The Tacit bridge
 
-TAC, tETH and cBTC move between Bitcoin and Ethereum by proof. Each chain's state is proven to the other
+TAC, tETH, cBTC, cUSD and USDT move between Bitcoin and Ethereum by proof. Each chain's state is proven to the other
 in zero knowledge, and a bridge waits for a proof, never for a signature. No multisig, federation or
 attestor set signs a bridge message. Nothing on Bitcoin had to change for it: it runs on Bitcoin and
 Ethereum mainnet today.
@@ -23,8 +23,8 @@ Every bridge is three moves:
 | **Prove** | Once 24 blocks deep, the burn is folded into Bitcoin's proof, and the pool verifies it. | Once Ethereum finalizes it, the cross-out is proven inside Bitcoin's proof. |
 | **Mint** | The pool mints a fresh note of the same value, privately, once per burn. | A Bitcoin transaction mints a fresh note of the same value, once, as a proven member of the cross-outs. |
 
-The amount is not published on either chain. Whoever makes the mint's proof sees it, and today that is
-Tacit's prover.
+The amount is not published on either chain. Whoever makes the mint's proof sees it: Tacit's relay by
+default, or the holder's own prover account.
 
 ## One format, two chains
 
@@ -154,7 +154,8 @@ browser has under way.
 | --- | --- | --- |
 | TAC | Burn on Bitcoin, minted privately in the pool once proven | Cross-out from the pool, minted on Bitcoin once proven |
 | tETH | Burn on Bitcoin, minted back in the pool once proven | Cross-out from the pool |
-| cBTC | Lock BTC at your own key's output, with a wstETH bond behind it; the pool mints cBTC 1:1 once the lock is proven. Borrow cUSD against it. | Will be burned on Bitcoin to redeem a lock |
+| cBTC | Lock BTC at your own key's output, with a wstETH bond behind it; the pool mints cBTC for the locked value, less a fee, once the lock is proven. Borrow cUSD against it. A cBTC note on Bitcoin comes back as tETH does. | Cross-out from the pool; on Bitcoin, a cBTC note redeems a lock (`T_CBTC_REDEEM`) |
+| cUSD | Burn on Bitcoin, minted back in the pool once proven | Cross-out from the pool |
 | USDT | Burn on Bitcoin, minted back in the pool once proven | Cross-out from the pool, from private USDT (cUSDT) |
 
 USDT is an Ethereum token the pool holds in escrow, so it keeps its six decimals and has no Bitcoin etch: it crosses under the id of its registration
@@ -169,17 +170,19 @@ exactly the amount and one signature), and is taken out again to an Ethereum add
 | --- | --- | --- |
 | TAC | 20 to 1,000 TAC a bridge | up to 1,000 TAC, a note goes whole |
 | tETH | 0.001 to 0.5 tETH a bridge | up to 0.5 tETH, a note goes whole |
+| cBTC | 0.00001 to 0.5 cBTC a bridge | up to 0.5 cBTC, a note goes whole |
+| cUSD | 10 to 1,000 cUSD a bridge | up to 1,000 cUSD, a note goes whole |
 | USDT | 2 to 100 USDT a bridge | up to 100 USDT, a note goes whole |
 
 A TAC note going back in two steps carries up to 255 transfers of history.
 
 | What a bridge costs | To Bitcoin | Back from Bitcoin |
 | --- | --- | --- |
-| Relay fee | Taken out of the note: the relay's floor for the asset at today's gas (about 0.0005 tETH, 4 TAC). The note must be worth more than it. | None: Tacit covers the Ethereum mint for now |
+| Relay fee | Taken out of the note: the relay's floor for the asset (4 TAC for TAC; for the others it follows gas). The note must be worth more than it. | None: Tacit covers the Ethereum mint |
 | Bitcoin fee | About 900 to 1,200 sats at 1 to 2 sat/vB (a 180 vB reveal, a 154 vB commit, and the 546-sat output the note sits on), paid from the key's own Bitcoin address, which needs one free coin of about twice that when the Bitcoin step is sent, a few hours after the burn. A bridge can start without it: the app asks for the sats when the step is due, and the burn waits until they are there | About 1,000 sats at 1 to 2 sat/vB (two transactions, each at least 500), paid from the same address |
 
 [tacit.finance/bridge](https://tacit.finance/bridge/) shows what each way costs at the live rates. A USDT bridge must exceed its relay fee, which follows gas (about 3 USDT at 1.7 gwei, under 1 when gas is cheap; the way back is free, and a withdraw pays it again, about 2.5 USDT at 1.7 gwei). Its
-Bitcoin steps are paid separately in sats (about 1,000 to 1,500 each, around a dollar). So the least that crosses moves with gas: 2 USDT is the form's floor, and at today's gas 5 is what gets through, arriving as about 2. The limits are in
+Bitcoin steps are paid separately in sats (about 1,000 to 1,500 each, around a dollar). So the least that crosses moves with gas: 2 USDT is the form's floor, and when gas is high a bridge needs more than that to clear its fee. The limits are in
 [`crossout-ux.js`](../dapp/crossout-ux.js) and [`burndep-ux.js`](../dapp/burndep-ux.js); `tests/bridge-track.test.mjs`
 holds the page's copy of them, and of the sizes behind the costs, to those files.
 
@@ -211,6 +214,8 @@ has seen it (the front page lists it under Getting ready too). Bridging a note f
 someone else's address or as public TAC, proving a burn or a mint yourself, and paying the mint from a wallet are on the
 front page; a press the relay will not take links there.
 
+cBTC and cUSD have the same two ways on the Borrow sheet's Bitcoin tab (`#borrow/bitcoin/cbtc`, `#borrow/bitcoin/cusd`, each with `/back`).
+
 USDT has a sheet of its own (`#usdt`) with three tabs: **Make private** (USDT from the wallet into the pool), **Withdraw** (private USDT out to the wallet) and
 **Bitcoin** (`#usdt/bitcoin/out`, `#usdt/bitcoin/back`: the bridge forms, as for cUSD and cBTC). The front page's Bridge tab takes USDT from the wallet, making it
 private first when the key holds too little, and brings it back from Bitcoin.
@@ -227,8 +232,8 @@ asked for).
 
 ## On mainnet
 
-The ERC-20 supply of TAC (~2.5M) was all minted by the pool from TAC proven to have left Bitcoin. TAC has
-made the whole round trip, each leg a settled transaction:
+Every TAC ERC-20 on Ethereum was minted by the pool from TAC proven to have left Bitcoin. TAC has made the
+whole round trip, each leg a settled transaction:
 
 1. Out of the pool: [`0xc7bfc7ce…3c29a8f`](https://etherscan.io/tx/0xc7bfc7cec938e59c5d256d1c44c2aea5269eb7c237ac018878f21b2a93c29a8f)
 2. Minted on Bitcoin: [`aaa68792…97bcf2`](https://mempool.space/tx/aaa687924435ef64f056aa83beb7fabef4f57087f315655b52c596f83897bcf2)

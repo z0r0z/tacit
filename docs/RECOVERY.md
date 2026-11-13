@@ -2,7 +2,9 @@
 
 What a wallet finds again from its private key alone, what needs a saved record, how to run recovery, and what the
 client checks so that a note is never sealed in a way it cannot be opened. The protocol side is
-[SPEC §9](../SPEC.md#9-recovery). Everything here reads public chain data; nothing is signed or sent.
+[SPEC §9](../SPEC.md#9-recovery). Everything here reads public chain data; nothing is signed or sent. This page covers the V1
+pool; a Tacit chain wallet finds its notes from its seed and the chain's published memos
+([`TACIT-BLOCKS.md`](./TACIT-BLOCKS.md#memos)).
 
 ## What comes back from the key alone
 
@@ -25,6 +27,7 @@ A confidential note reaches its owner through one of two channels:
 | CDP positions opened with the derived owner key | derivation: owner from the key and a key nonce, matched to the position's settle calldata | nothing |
 | Stealth locks the wallet sent | a tail sealed to the sender's own key on the lock memo | nothing |
 | Stealth locks addressed to the wallet | memo | nothing |
+| Notes paid to one of the wallet's receive codes (`tacitrecv1:…`) | memo, which names the code's index; the nullifier key is derived again from the key (role `receive`) | nothing |
 
 ## Derived outputs
 
@@ -50,7 +53,7 @@ ephemeral stay on fresh randomness.
 | LP add | first spent note's nullifier | `lpShare` (0), `change` (0 for A, 1 for B) |
 | Wrap-and-add-liquidity | consumed deposit id of the lower asset id | `lpShare` (0) |
 | LP remove | share note's nullifier | `lpOut` (0 for A, 1 for B) |
-| Route swap | spent note's nullifier | `swapOut` (0), `change` (0) |
+| Route swap | spent note's nullifier | `swapOut` (0), `change` (0; 0 to 7 when the change is split) |
 | Wrap-and-swap | consumed deposit id | `swapOut` (0) |
 | CDP open | first collateral note's nullifier | `cdpDebt` (0) |
 | CDP close | closed position's nullifier | `cdpRelease` (leg index, asset-sorted) |
@@ -58,6 +61,7 @@ ephemeral stay on fresh randomness.
 | Farm harvest | receipt leaf | `harvest` (ordinal of this harvest of the receipt), `harvestNonce` (same ordinal) |
 | Farm unbond | receipt leaf | `unbond` (0) |
 | Fast-lane exit | first spent input's nullifier | `exit` (0) |
+| Receive code | `sha256("tacit-receive-v1")` | `receive` (the code's index) |
 
 A harvest does not spend the receipt, so its ordinal is the number of `Harvested` events the manager has emitted for that
 receipt; two harvests never share one.
@@ -115,7 +119,8 @@ walks that read transaction calldata, so it is cheap enough to poll.
 
 Options: `{ toBlock, deep: false }` skips the calldata walks (change notes and derived outputs found from a spent note), `{ cbtc: false }` skips the Bitcoin history
 read, `{ bridgeAmounts: [units…] }` adds amounts to try for bridge-mint notes, `{ btcHistory }` supplies the wallet's
-Bitcoin history (`{ anchors: [{ txid, vout }], lockOutputs: [{ txid, vout }] }`) instead of reading esplora, and
+Bitcoin history (`{ anchors: [{ txid, vout }], lockOutputs: [{ txid, vout }] }`) instead of reading esplora,
+`{ farm: false }`, `{ cdp: false }` and `{ locks: false }` skip those walks, and
 `{ events }` reuses an event stream you already fetched (from `fetchEvents({ include: ['wraps', 'cdp', 'bonds'] })`).
 
 ### Reading the diagnostics
@@ -163,8 +168,9 @@ from 0 and stops after 24 unused in a row, so an index left far behind a gap of 
 
 ## Cost
 
-- One event pass over the pool from its deploy block, in windows of 500 blocks (the tightest range cap on common
-  public nodes): one `eth_getLogs` call per window, about 430 per month of history. `recover` fetches the pool's note events, `Wrap`,
+- One event pass over the pool from its deploy block. Each node is asked for the widest range it takes, and a narrower one
+  when it refuses. A first pass starts from the pool's latest snapshot on IPFS once its trees match the pool's storage,
+  and a browser keeps what was read, so a later pass reads only the newer blocks. `recover` fetches the pool's note events, `Wrap`,
   `CdpPositionInserted` and the farm manager's `Bonded` and `Harvested` in that one pass. Pass `events` to avoid fetching twice.
 - Wrap and bridge-mint walks are local hashing over that stream. The bridge-mint walk tries the amounts m × 10^k for m
   below 100 (about 1,900 per burn nullifier and destination index, plus any `bridgeAmounts`); it runs only for leaves with an empty memo and is remembered per session.

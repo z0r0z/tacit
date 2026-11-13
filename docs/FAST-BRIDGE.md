@@ -142,7 +142,7 @@ lock), and a bridge that ends is said once. `?fast=0` turns the preference off i
 | Bitcoin refund timelock | 144 blocks |
 | Ethereum lock window | 4 h from the block that confirmed the Bitcoin lock, rounded up to 10 min |
 | Minimum time left to claim | 1 h |
-| Offers answered | up to 2 h after the lock's first confirmation (`maxOfferAgeSecs`): a lock needing three confirmations can have its third after an hour when blocks are slow |
+| Offers answered | up to 1 h after the lock's first confirmation (`maxOfferAgeSecs`); the reference provider allows 2 h, since a lock needing three confirmations can have its third after an hour when blocks are slow |
 | Slack between the Ethereum deadline and the opening of the Bitcoin refund | 2 h |
 | Confirmations before the LP locks | policy by amount (1 for small, more for large) |
 
@@ -229,8 +229,8 @@ and advances with `step(record)`.
   confirmations (one for the smaller amounts) can be double-spent by its maker. The confirmations policy is the defence.
 - The claim's proof is made by the claimer's chosen prover; see "Proving the claim".
 - Wants cost nothing to make up: the board takes 30 an hour from one address (`fastbridge-lp/board.mjs`, which needs
-  `FB_BOARD_TRUST_PROXY` behind Render's proxy to tell addresses apart), and a provider's panel lists each by size with how many it can take.
-- When the relay is held (its settle wallet under its gas floor) it proves but does not send. The pages then send each settle from the
+  `FB_BOARD_TRUST_PROXY` behind a reverse proxy to tell addresses apart), and a provider's panel lists each by size with how many it can take.
+- When the relay is held (it proves but does not send), the pages send each settle from the
   connected Ethereum wallet after 45 s (`fastbridge-evm.js` jobStatus, `fast/wire.js` walletSettle): an open-board job with its proof, and
   an adaptor lock, claim or refund (which never go on the open board) proved again prove-only. The sender's address is public on
   Ethereum, so a bridger who sends its own claim links that address to the claim; the wallet asks first. `tests/fastbridge-fork.mjs` C
@@ -241,7 +241,7 @@ and advances with `step(record)`.
 ## Tests
 
 ```
-export PATH=$HOME/.nvm/versions/node/v22.22.3/bin:$PATH
+# Node 22
 node tests/adaptor-signature.mjs; node tests/adaptor-swap.mjs
 node tests/adaptor-xswap.test.mjs          # offers, checks, windows, secrets
 node tests/adaptor-btc-lock.test.mjs       # the Bitcoin lock under the real note validator
@@ -267,11 +267,14 @@ pinned `elf/cxfer-guest`, whose verifying key is the one inside the deployed poo
 
 ## Status
 
+Live on mainnet: the bridge page (`/fast/`) and the front page's Bridge tab, with providers found through the board named in
+`dapp/fast/lp.json`.
+
 Built and tested: the protocol, the transaction builders, both role machines, a simulated chain, the full swap in both
 directions against the real settle guest and the real note validator, the pool adapter, the LP process with its
 HTTP API, store and explorer adapter, the board and the mailbox over it, and the bridge page (`/fast/`) with its client,
 recovery from the key, a choice among providers, a provider mode for any key, and a browser check. The page reads its
 board from `dapp/fast/lp.json`.
 
-Not built: the Ethereum to Bitcoin direction, the claim prover's options
-(the relay that is not the provider, the user's device, a prover network), and a run with real funds.
+Not built: the Ethereum to Bitcoin direction in the pages, and the claim prover's options (the relay that is not the
+provider, the user's device, a prover network).

@@ -9,7 +9,8 @@ Ethereum.**
 
 Live on Ethereum mainnet since 2026-09-18 ([contracts and addresses](./docs/DEPLOYMENTS.md)). The first
 Bitcoin-native AMM pool, founded directly on Bitcoin with no Ethereum contract, is live in the indexer as
-of 2026-09-25 ([pool and reserves](./docs/DEPLOYMENTS.md#bitcoin-native-amm-pool)).
+of 2026-09-25 ([pool and reserves](./docs/DEPLOYMENTS.md#bitcoin-native-amm-pool)). The Tacit chain, a zk-rollup for
+private TAC payments settled on Ethereum, is live on mainnet ([contracts](./docs/DEPLOYMENTS.md#tacit-chain-ethereum)).
 
 Tacit is a Bitcoin metaprotocol. Assets are issued and transferred in Taproot envelopes. Amounts are
 hidden by Pedersen commitments and range proofs, and any indexer running the spec reaches the same state
@@ -29,6 +30,8 @@ or attestor set signs a bridge message.
 - **Secret Sats paper:** [tacit.finance/secret-sats](https://tacit.finance/secret-sats), private payments on Bitcoin itself
 - **Contracts:** [`docs/DEPLOYMENTS.md`](./docs/DEPLOYMENTS.md), mainnet addresses and verifying keys
 - **How the pools trade:** [`docs/AMM.md`](./docs/AMM.md), public and private swaps and liquidity on one set of reserves
+- **Tacit chain:** [tacit.finance/docs/chain](https://tacit.finance/docs/chain/), private TAC payments; the spec is
+  [`docs/TACIT-BLOCKS.md`](./docs/TACIT-BLOCKS.md)
 - **Verify it yourself:** [`docs/VERIFY-LIVE.md`](./docs/VERIFY-LIVE.md), `node tools/verify-live.mjs` checks the
   live deployment against this repository
 - **Build on it:** [tacit.finance/build](https://tacit.finance/build/) maps every path on one page;
@@ -74,6 +77,14 @@ or attestor set signs a bridge message.
 - Relay any op without gas, with the relayer's fee bound inside the proof. Anyone can also prove and
   settle their own ops.
 
+**On the Tacit chain (Ethereum)**
+- Hold and send TAC privately. Each payment is proved on the payer's device, and each block is one SP1 proof
+  checked on Ethereum, which keeps the block's data.
+- Shield TAC from an Ethereum wallet, with no ETH needed. Withdraw to any address, or hop into the
+  confidential pool.
+- Notes count shares of the chain's pool, and the fees that stay in it raise every share's worth.
+- Leaders lock 1,000 TAC for a seat and take turns. A forced queue on Ethereum takes any spend no leader takes.
+
 **Between the chains**
 - **Bitcoin → Ethereum.** A full-proof-of-work header relay feeds an SP1 guest. The guest folds Tacit
   envelopes into roots that the pool accepts after 24 confirmations.
@@ -118,6 +129,11 @@ Bitcoin output key, so Bitcoin-side state stands on its own before any reflectio
 Each is pinned by ELF hash to an immutable verifying key, and each
 [rebuilds byte for byte](./docs/REPRODUCIBLE-BUILDS.md).
 
+**The Tacit chain** adds a fourth: the **block program** (`contracts/sp1/confidential/tacit-block`), which checks a
+whole block of the payers' Halo2 spend proofs in one SP1 run. `TacitBlocks` verifies each block's Groth16 proof
+under its immutable `BLOCK_VKEY`, holds the chain's TAC and publishes the block's data, and `TacitSeats` decides
+whose turn it is to land. Spec: [`docs/TACIT-BLOCKS.md`](./docs/TACIT-BLOCKS.md).
+
 **Ceremonies.** The transparent stack needs no trusted setup. Two finalized ceremonies supply Groth16
 keys for circuits that are expensive to express otherwise:
 - the **AMM ceremony**, whose `amm_swap_batch` key is compiled into both guests for blind batch swaps
@@ -149,7 +165,8 @@ replace it.
   one step (buy-and-shield) and so is leaving (exit-to-sats, with the maker's payout bound into the signed
   spend). It is live on mainnet, flagged experimental. Its proof system is Halo2 with KZG over the Hermez
   setup already pinned, so it needs no new ceremony.
-- **The EVM pool.** The same keys, notes and address, for ETH on Ethereum, Base and Robinhood Chain. One
+- **The EVM pool.** The same keys, notes and address, for ETH on Ethereum, Base and Robinhood Chain,
+  and for ERC-20s such as USDC and USDT on Ethereum. One
   Groth16 circuit (two notes in, two out) from a public ceremony, proved in the browser; the contract never
   hashes, so a private transfer costs about 340k gas. A standing private address takes ETH from any wallet or
   exchange, and a withdrawal can run a swap, a bridge or a move into a V1 note in the same transaction.
@@ -199,7 +216,7 @@ Specification: [SPEC §3.10](./SPEC.md#310-bitcoin-native-shielded-pool-live-on-
   - cUSD and the cBTC escrow rely on price feeds (BTC/USD, and BTC per wstETH).
   - cBTC is secured economically, by the locker's wstETH escrow (at least the engine's escrow ratio,
     1.5× today).
-  - The periphery (CollateralEngine, FarmManager) is governed by a 2-of-4 ops multisig with a built-in
+  - The periphery (CollateralEngine, FarmManager) is governed by a 2-of-5 ops multisig with a built-in
     one-hour delay, within on-chain bounds.
   - Walk-away bids on Bitcoin rely on a watchtower holding a capped, dedicated key.
 - **You don't trust:** relayers, the hosted API or IPFS gateways. The pool, its guests and their keys
@@ -213,14 +230,16 @@ the next. A retired pool keeps every exit open ([SPEC §8](./SPEC.md#8-deploymen
 
 ## Run the dapp
 
-The dapp is static files: the front page `dapp/index.html`, the classic app `dapp/classic.html` with `tacit.js`, and a vendored crypto bundle.
+The dapp is static files: the front page `dapp/index.html`, a directory for each page (`dapp/tac/`, `dapp/pay/`,
+`dapp/vault/`, …), the protocol core `dapp/tacit.js` and a vendored crypto bundle.
 
 ```sh
 cd dapp && python3 -m http.server 8000     # http://localhost:8000
 ```
 
-Pin `dapp/` to IPFS or any static host. To rebuild the vendored bundle and print its SRI hashes:
-`cd build && npm install && npm run build`.
+Pin `dapp/` to IPFS or any static host. Install the build tools once with `(cd build && npm install) && npm install`.
+After an edit, `npm run build` refreshes the pages' cache tokens, CSP hashes and shared header and footer, and prints
+the SRI hashes; `npm run build:vendor` also rebuilds the vendored bundle.
 
 Sign in with an Ethereum wallet, a passkey, a Bitcoin wallet or an imported key. A wallet identity comes
 from one deterministic signature over the Tacit identity message, the same in every Tacit app, so
@@ -234,14 +253,16 @@ return from chain data alone.
 
 ```
 dapp/            the app: protocol core (tacit.js), pool client (confidential-*.js), circuits, ceremony bundle
-contracts/       Solidity (src/, script/, test/) and SP1 guests (sp1/confidential, sp1/eth-reflection)
+contracts/       Solidity (src/, script/, test/) and SP1 guests (sp1/confidential, sp1/eth-reflection),
+                 the Tacit chain's block program among them (sp1/confidential/tacit-block)
 worker/          indexer + API (served by server/ on Node); reads Bitcoin from public Esplora endpoints
                  with fallbacks; never proves, never holds funds
 worker-relay/    hosted relay: settle, reflection, header relay, monitoring, EVM pool keepers
+tacit-leader/    the Tacit chain's leader: follows TacitBlocks, builds, proves and lands blocks
 tests/           cross-implementation vectors and test suites
 tools/ scripts/  operational and verification tools
 docs/            integrator guides: build a dapp, deployments, ceremony artifacts, farms, airdrop, recovery,
-                 reproducible builds, live verification
+                 reproducible builds, live verification, the Tacit chain's spec
 audit/           security reviews
 whitepaper/      the papers: the Tacit whitepaper (.md, .tex, .pdf) and Secret Sats (.tex, .pdf)
 ```
@@ -272,8 +293,7 @@ open market for the protocol reserve.
 
 TAC also governs: holders vote on proposals that the ops multisig carries out, either privately by proving a Bitcoin
 TAC balance tier or in the open with an Ethereum wallet's exact ERC-20 balance, weighed at a snapshot taken
-when each proposal opens. The dapp's Govern tab is the portal for all of it — proposing, voting, and the
-Protocol view of reserve flows and buybacks. See [`docs/TAC.md`](./docs/TAC.md).
+when each proposal opens. Proposing, voting and the reserve's flows are in [`docs/TAC.md`](./docs/TAC.md).
 
 ## Points and farms
 

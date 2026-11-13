@@ -16,11 +16,11 @@ your browser and recomputes every check, with no Tacit server or indexer asked.
   cent of TAC and lands in about a minute. A balance there is a number of shares of the chain's pool. Every payment leaves
   0.002 TAC in the pool and every withdrawal 0.1% (at least 0.002 TAC), so each share is worth a little more after
   each one. The same TAC moves between the two chains by proof, and into the private pool to swap, farm and borrow.
-  [tacit.finance/tac](https://tacit.finance/tac/).
+  [tacit.finance/tac](https://tacit.finance/tac/), with a guide at [tacit.finance/docs/chain](https://tacit.finance/docs/chain/).
 - **Pays for gas.** A public swap or pool entry can be paid in TAC (or the token being spent) instead of ETH.
   The holder signs one order and a solver submits it through
-  [TacitGasRelay](https://etherscan.io/address/0x000000197E8f0B64463B2010e568fF42090Af88d), which takes its fee
-  in TAC. The contract is immutable and calls only the routers it was deployed with.
+  [TacitGasRelay](https://etherscan.io/address/0x000000197E8f0B64463B2010e568fF42090Af88d), which pays the
+  solver's fee in that same token. The contract is immutable and calls only the routers it was deployed with.
 - **Pays for proofs.** Anyone with a computer can prove for the network and earn TAC
   ([tacit prove](https://tacit.finance/prove/)).
 - **Collateral.** [Borrow TACD (a dollar) or TACE (ether) against TAC](https://tacit.finance/vault/) and keep
@@ -40,8 +40,8 @@ your browser and recomputes every check, with no Tacit server or indexer asked.
 
 [tacit.finance/trade/tac](https://tacit.finance/trade/tac/) prices every place TAC trades and quotes the best way to trade an amount:
 
-- **The Bitcoin order book**, in sats: listings (taken whole) and standing bids. A sale to a bid settles when its bidder is online;
-  a sale can also be listed at your price.
+- **The Bitcoin order book**, in sats: listings (taken whole) and standing bids. A sale to a bid settles within minutes when the bid
+  settles on its own, and otherwise when its bidder is online; a sale can also be listed at your price.
 - **The Precision pool** on Ethereum (TAC/ETH, 0.30% fee), the deepest. It records a price tape on chain (5-minute and 4-hour
   candles), read with `eth_call` and no indexer, which is the page's Ethereum chart. It is a chart, not an oracle: it shows executed
   prices with fees, and one small trade can move a candle's high or low.
@@ -85,8 +85,8 @@ quoting and the calldata, and `tests/tac-split-fork.mjs` runs both directions on
 
 Governance oversees everything the ops multisig controls: the treasury and reserve, CollateralEngine
 (collateral ratios, price feeds, the cUSD stability fee), FarmManager (reward weights), the airdrop guardian
-and pool succession. The **Protocol** view in the dapp's Govern tab shows each of these with live on-chain
-values, who holds the role, and anything queued to change, with a button to propose a change to it.
+and pool succession. `GET https://api.tacit.finance/governance/oversight?network=mainnet` lists each of these with
+its live on-chain values, who holds the role, and anything queued to change.
 
 - **Proposing** takes proof of at least 100 TAC. Proposals and final results are pinned to IPFS.
 - **Voting.** Bitcoin TAC holders vote by proving a balance tier (1 / 10 / 100 / 1,000 / 10,000 / 100,000 TAC)
@@ -136,6 +136,7 @@ A checklist for listing it (quoting, routing, prices, metadata) is in the
 | --- | --- |
 | TAC ERC-20 | [`0xA1313eb9f3A445606D9583bcAc3ebeB56a858279`](https://etherscan.io/address/0xA1313eb9f3A445606D9583bcAc3ebeB56a858279) |
 | wTAC | [`0x2018139a8FDd3666855BE3315C7683b4D6aB7AEf`](https://etherscan.io/address/0x2018139a8FDd3666855BE3315C7683b4D6aB7AEf) |
+| TacitBlocks (the Tacit chain) | [`0x00000000000A9147fFd8d41D152d730cA5F84E6c`](https://etherscan.io/address/0x00000000000A9147fFd8d41D152d730cA5F84E6c) |
 | TacitGasRelay | [`0x000000197E8f0B64463B2010e568fF42090Af88d`](https://etherscan.io/address/0x000000197E8f0B64463B2010e568fF42090Af88d) |
 | ProofMarket | [`0x0000000033Dd45B1686Ba37e5F6e4ABDdaC17609`](https://etherscan.io/address/0x0000000033Dd45B1686Ba37e5F6e4ABDdaC17609) |
 | TacBuyback | [`0x6919cbEf0e70AFFA02Ae02c86c532A137154f250`](https://etherscan.io/address/0x6919cbEf0e70AFFA02Ae02c86c532A137154f250) |

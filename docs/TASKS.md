@@ -74,7 +74,7 @@ asks each chain for what it needs in one batched request, and a step it has seen
 ## Turning it on
 
 Set `POINTS_TASKS_BUDGET_WEI` (what was topped up for tasks, in wei) and `POINTS_TASKS_END_SEC` on `tacit-points`, then deploy it.
-Set them in the Render dashboard only: `render.yaml` lists the two keys with `sync: false`, because a blueprint sync (any push that touches that file) writes the file's values back to the service, and a value there switched tasks off once. Both unset (or the budget 0) leaves `/tasks` answering `{ "enabled": false }` and the page closed. A job also needs an
+Set them on the service itself: `worker-relay/render.yaml` lists the two keys with `sync: false`, so a blueprint sync does not write over them. Both unset (or the budget 0) leaves `/tasks` answering `{ "enabled": false }` and the page closed. A job also needs an
 `opensAt` in its job files: a step mined before it is never credited, and a job with none is closed.
 
 After a top-up for tasks, raise the budget by the same amount. The root-setter's deadline is on chain (`ROOT_UPDATE_DEADLINE`);
@@ -91,7 +91,7 @@ job by id and leaves the others):
 
     node worker-relay/scripts/tasks-jobs.mjs --payload payload.json --manifest tac-vaults.json --rpc <anvil fork> --opens <unix secs>
 
-`worker-relay/scripts/tasks-usdt-bridge.mjs` builds the `usdt-bridge-test` job: three read-by-hand steps (`kind: review`, as the fast bridge job's), each paying a fixed sum (`--tac`, 150 by default) once to the tester whose round trip of 2 USDT or more to Bitcoin and back was checked. A tester claims with the Bitcoin transaction that brought the USDT back; the page sends the account a transaction to itself naming it, and the step lists that hash after review (`--tester`, `--tester2`, `--tester3`: a push and a deploy of the points service). The job's `hint` is the page's line under the button.
+`worker-relay/scripts/tasks-usdt-bridge.mjs` builds the `usdt-bridge-test` job: four read-by-hand steps (`kind: review`, as the fast bridge job's), each paying a fixed sum (`--tac`, 250 by default) once to the tester whose round trip of USDT to Bitcoin and back was checked. A tester claims with the Bitcoin transaction that brought the USDT back; the page sends the account a transaction to itself naming it, and the step lists that hash after review (`--tester` to `--tester4`: a push and a deploy of the points service). `worker-relay/scripts/tasks-usdt-settle.mjs` follows each claim to its burn and, with `--apply`, approves it once the pool has minted the USDT again. A job's `hint` is the page's line under the button.
 
 `worker-relay/scripts/tasks-gen4.mjs` builds the `anon-wei-4` job (the page's chunks on Ethereum, the catch-up registry on three chains,
 the first points on two) from the page build's `out/` and the registry's init code and open salt; it reads each step's gas from the
@@ -119,7 +119,8 @@ A change to the contracts changes the addresses: rebuild the files, run the test
 
     node worker-relay/tests/points-tasks.test.mjs                       rewards, matching, guards, store, the service
     node worker-relay/tests/tasks-page-state.test.mjs                   the page's reading of what is done, counted request by request (Chrome)
-    anvil --fork-url <mainnet rpc> --port 8546 --chain-id 1
-    FORK_RPC=http://127.0.0.1:8546 node worker-relay/tests/points-tasks-fork.test.mjs   all 21 steps, claimed and credited
+    anvil --fork-url <archive mainnet rpc> --fork-block-number 26201023 --port 8546 --chain-id 1   (before the TAC vaults were deployed)
+    FORK_RPC=http://127.0.0.1:8546 node worker-relay/tests/points-tasks-fork.test.mjs   the TAC vaults job's 21 steps, claimed and credited
     FORK_RPC=http://127.0.0.1:8546 node worker-relay/tests/tasks-page-e2e.mjs           the page in Chrome, wallet and all
+    anvil --fork-url <mainnet rpc> --port 8546 --chain-id 1
     FORK_RPC=http://127.0.0.1:8546 node worker-relay/tests/tasks-amm-route-e2e.mjs      the amm-route job in Chrome, on a current fork

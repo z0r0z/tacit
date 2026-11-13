@@ -48,7 +48,7 @@ id.
 | 2 | cETH / cBTC | 20 | `0x0a0cce175bc483945822c8de3d3926e813269f5e1bbe1f9c853e09ed48b68254` | `0x8359cd1f812e3a9040129e186e1477f60f2188bad1bd6a56e5506b22bf5cd331` |
 
 Read the live values: governance can re-weight within bounds (section 9). The addresses are also in the dapp
-config's `farm` block (section 3).
+config's `farm` block (section 3). `cETH` is the pool's ETH asset, which the app shows as tETH.
 
 **Units.** The reward value unit is `1e-8` TAC (the pool's 8-decimal in-system unit). `wei = units × 1e10`.
 The epoch rate is `1,282,150` units per second. Every reward figure from the manager (`pending`, `rate`,

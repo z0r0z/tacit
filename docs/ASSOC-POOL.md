@@ -1,7 +1,7 @@
 # Through a pool: a private source for a deposit
 
 The Deposit tab on [tacit.finance/pay/eth](https://tacit.finance/pay/eth/) has a third mode, **Through a pool**: deposit ETH into the first
-generation of [Privacy Pools](https://v1.privacypools.com/) (the ETH pool, about 770 ETH from 6,300 deposits at last read), watch its review, and
+generation of [Privacy Pools](https://v1.privacypools.com/) (the ETH pool, about 710 ETH from 6,500 deposits at last read), watch its review, and
 take it into a fresh Tacit receive address through a relayer. All of it happens on the page. The account is the pool app's own kind, so the same
 deposits show in the pool's own app under the recovery phrase the panel shows, and the whole account comes back from the Tacit key alone.
 

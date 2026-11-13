@@ -118,7 +118,7 @@ Race Tacit's own prover for the prover board's public jobs. These are ops whose 
 
 - **Needs:** `tacit-prover` running, and `MINER=0x…`, the address the board credits. No key and no ETH: nothing is sent on chain.
 - **Who wins:** a press waits a few minutes at most, so a machine that proves in under a minute (a desktop GPU) wins races; a laptop's 10 to 15 minutes does not. After its first proof the runner passes over a job due sooner than its last proof took. Laptops earn more from [Prove for the wrap pool](#prove-for-the-wrap-pool), whose wraps wait.
-- **Points:** each proof the relay takes earns the address `POINTS_BOARD_PER_PROOF` points (20 by default) for at most `POINTS_BOARD_DAILY_CAP` proofs a UTC day (30); a refused or unchecked proof earns nothing, and 0 for either switches it off. The day's tally is at `GET /prover/board/credits?day=<n>`, the proof pool's shape. The mining campaign pays it once its URL is added to the points service's `POINTS_MINE_FEED` after the pool's, comma-separated: each address's points from both are summed for the day, and each feed caps the day on its own.
+- **Points:** each proof the relay takes earns the address `POINTS_BOARD_PER_PROOF` points (20 by default; a Bitcoin-state batch earns 1,000 and a Tacit chain block 100), with no daily count unless `POINTS_BOARD_DAILY_CAP` sets one; a refused or unchecked proof earns nothing. The day's tally is at `GET /prover/board/credits?day=<n>`, the proof pool's shape. The points service's proof-mining campaign reads it beside the pool's and sums each address's points from both for the day.
 - **Off:** `PROVER_BOARD_COMMUNITY=0` on the API closes the routes.
 
 ### Not included: overflow drains
@@ -153,15 +153,21 @@ again, it updates the program and keeps the address. Cutting a new release means
   with 16 GB or more (13 minutes measured on an 8 GB MacBook Air) and uses the processor while it runs, so a laptop does best plugged in. The program makes one proof
   at a time and asks the pool for the next as soon as one is done (once a minute while the pool is empty).
 - **Costs:** nothing else. No key and no ETH are involved and nothing is signed; the address only receives points. A proof it cannot make is handed back, unpaid.
-- **Earns:** 20 points a proof, the first 30 of a day. Once the day is over, the points service shares that day's TAC between the provers by points, no point
+- **Earns:** 20 points a proof, with no daily count. Once the day is over, the points service shares that day's TAC between the provers by points, no point
   paid more than a cap, so a proof pays up to 20 times the cap. [`GET https://tacit-points.onrender.com/mine`](https://tacit-points.onrender.com/mine) gives the
-  terms, when they end and what is left in the pocket; add `?address=0x…` for what an address has been credited. The keeper page and `--status` read it.
+  terms, when they end and what is left in the pocket; add `?address=0x…` for what an address has been credited. [tacit prove](https://tacit.finance/prove/) and `--status` read it.
 
 ## On your device
 
 The runner makes no proofs; it lands proofs others publish. Proving an op with your own hardware is
 [`contracts/sp1/confidential/device-prover/`](../contracts/sp1/confidential/device-prover/); proving with your own
 Succinct account is in [OPEN-RELAYER.md](./OPEN-RELAYER.md#proving-with-your-own-prover-account).
+
+A machine with an NVIDIA GPU runs the prover board's community worker with
+`curl -fsSL https://tacit.finance/prove-gpu.sh | sh -s -- 0xYourAddress` ([tacit prove](https://tacit.finance/prove/) gives it with
+your address filled in). It races the Tacit chain's blocks on the board ([`TACIT-BLOCKS.md`](./TACIT-BLOCKS.md)), proves the
+proof pool's wraps between jobs, and on a card of 24 GB or more takes its turn at the board's Bitcoin-state batches. Each proof the
+relay or the pool takes earns the address its points.
 
 ## Tests
 

@@ -1,8 +1,9 @@
 # The pool's blocks
 
-The live pool's history, read as a chain of blocks. Ethereum orders it and its logs hold it; nothing here is decided by Tacit, and anyone can
+The V1 pool's history, read as a chain of blocks. Ethereum orders it and its logs hold it; nothing here is decided by Tacit, and anyone can
 rebuild every block and its hash from the pool's logs alone. `GET https://api.tacit.finance/prover/blocks` serves it (worker/src/tacit-chain.js),
-and [tacit prove](https://tacit.finance/prove/) draws it.
+and [tacit prove](https://tacit.finance/prove/) draws it. These are not the Tacit chain's blocks: that rollup lands its own
+([`TACIT-BLOCKS.md`](./TACIT-BLOCKS.md)), and the same route serves its newest as `rollup`.
 
 ## Blocks
 
@@ -15,10 +16,11 @@ Blocks are numbered from 0, the first such transaction after the pool's deployme
 |---|---|
 | `height` | the block's number, 0 first |
 | `ethBlock`, `tx` | the Ethereum block and transaction |
-| `leaves` | the leaves inserted, in log order: `LeavesInserted` leaves, then `LockLeavesInserted` lock leaves |
-| `nullifiers` | the nullifiers spent, in log order: `NullifiersSpent`, then the lock nullifiers |
+| `leaves` | the leaves inserted, in log order: `LeavesInserted` leaves, then `LockLeavesInserted` lock leaves (in the hash; the API serves counts) |
+| `nullifiers` | the nullifiers spent, in log order: `NullifiersSpent`, then the lock nullifiers (in the hash; the API serves counts) |
 | `notes`, `spent`, `deposits` | counts of note leaves, note nullifiers and `Wrap` logs in the transaction |
 | `prev`, `hash` | the previous block's hash and this one's |
+| `prover`, `points`, `house` | who proved it, when the proof pool did (below) |
 
 ```
 hash = keccak256(prev ‖ uint64(height) ‖ uint64(ethBlock) ‖ tx ‖ keccak256(leaves[0] ‖ leaves[1] ‖ …) ‖ keccak256(nullifiers[0] ‖ …))
@@ -36,7 +38,7 @@ the pool holds and ends at a new one, so the batches chain inside the proofs the
 
 | Field | What it is |
 |---|---|
-| `digest` | the reflection digest the batch ends at (the pool's `knownReflectionDigest` once it lands) |
+| `digest` | the reflection digest the batch ends at (the pool's `attestedReflectionDigest()` once it lands) |
 | `bitcoin` | the Bitcoin height the batch takes the pool to |
 | `ethereum` | the eth-state proof it folds: its digest and the beacon slot it was finalized at |
 | `tx`, `ethBlock` | the Ethereum transaction and block it landed in |
@@ -64,15 +66,16 @@ proof the Bitcoin side checks inside its own.
 
 A block names its prover when a community prover made the proof of one of its notes: the proof pool records, for each proof it takes, the
 leaf it inserts and the address its points went to (`proof-pool.js minedBy`). That block shows the address and the points the proof earned,
-paid in TAC by the points service (points × the day's most per point). Proofs made any other way, including by Tacit's own provers, name
-nobody. A cross-chain block names its prover the same way, from the board (`prover-board.js`, the Bitcoin-state program).
+paid in TAC by the points service (points × the day's most per point). A proof the pool took from Tacit's own GPU marks the block `house`
+and earns nothing. Proofs made any other way name nobody. A cross-chain block names its prover the same way, from the board
+(`prover-board.js`, the Bitcoin-state program).
 
 Between proofs the same machines mine deploy salts: CreateX salts that only Tacit's deployer can use, for addresses with leading zero bytes
 (`salt-pool.js`). They share what the day's proofs leave of the mining campaign's daily points.
 
 ## Roles, now and next
 
-- **Holders** prove what holds their key on their own device (the stage of a staged swap, a send): no one else ever sees it.
+- **Holders** can prove what holds their key on their own device (the stage of a staged swap, a send), so no one else sees it.
 - **Provers** prove what holds no secret (deposits, presses, batches of deposits) and are paid in TAC for each proof the pool takes:
   tacit-prover on a laptop today, GPUs for the work that must be fast next.
 - **Relays** send proved settles to Ethereum and are paid the settle's fee. Anyone may: `settle` takes any caller with a valid proof. A prover
@@ -81,5 +84,6 @@ Between proofs the same machines mine deploy salts: CreateX salts that only Taci
   the relay takes from the board.
 
 The aim is a network: every role taken by whoever shows up, Tacit's own provers and relay one participant among them, and in time not needed.
-A chain whose blocks anyone can rebuild, and whose block producers are named by what they proved, is what a rollup of Tacit's own would need
-first; the block format above is meant to carry over unchanged.
+Tacit's own rollup, the Tacit chain, is live with a block format of its own: blocks land at TacitBlocks
+(`0x00000000000a9147ffd8d41d152d730ca5f84e6c`), specified in [`TACIT-BLOCKS.md`](./TACIT-BLOCKS.md), with user docs at
+[tacit.finance/docs/chain](https://tacit.finance/docs/chain/).

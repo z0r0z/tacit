@@ -22,7 +22,7 @@ A proof lands on the board in one of two ways:
 
 | route | |
 |---|---|
-| `GET /confidential/open?limit=` | `{ pool, jobs }`, oldest first (the list can be up to five seconds old). Each job has `{ jobId, type, status, posted, publicValues, proof, memos, openSince, expiresAt, feeUsd, feeAsset }`. `status` is `open`, or `sending` while a relay has taken the job to send; a send that never finishes goes back to `open` after five minutes. `expiresAt` is in ms (0 means none). |
+| `GET /confidential/open?limit=` | `{ pool, jobs }`, oldest first (the list can be up to five seconds old). Each job has `{ jobId, type, status, posted, free, publicValues, proof, memos, openSince, expiresAt, feeUsd, feeAsset }` (`free`: a step with no fee in it, such as a private send's lock, whose claim pays the relay). `status` is `open`, or `sending` while a relay has taken the job to send; a send that never finishes goes back to `open` after five minutes. `expiresAt` is in ms (0 means none). |
 | `POST /confidential/landed` | `{ jobId, txHash }`. Closes the job once the API sees that the transaction succeeded, reached the pool, carries the job's public values, and that the same settle would now be refused. |
 | `POST /confidential/submit` | `{ type, mode: 'preproven', publicValues, proof, memos }` posts your own proof. Its settle is simulated first, and a proof the pool would refuse now is turned away. The same public values posted twice are one job. |
 | `GET /confidential/status?id=` | One job's status. An open job carries the same proof and memos as on the board. |
@@ -30,10 +30,12 @@ A proof lands on the board in one of two ways:
 **What goes on the board.** Only ops whose settle is a plain `pool.settle`:
 
 - **Never listed:**
-  - router-embedded proofs: `wraptransfer`, `wraplp`, `wrapswap`, `wrapcdpmint`;
+  - router-embedded proofs: `wraptransfer`, `wraplp`, `wrapswap`, `wrapcdpmint` (a posted `wrapswap` whose deposit
+    already waits in the pool settles as a plain `pool.settle`, and is listed);
   - proofs pinned to a root that moves with the reflection: `bridgemint`, `cbtcmint`, `fastlane`;
   - adaptor-swap legs (`adaptorlock`, `adaptorclaim`, `adaptorrefund`): when one lands is part of the swap;
-  - exits that carry an L2 recipe for the relay to activate.
+  - relayed exits that carry an L2 recipe for the relay to activate. A holder may post such an exit; Tacit's relay
+    activates its recipe when it sends it.
 - **Leaving the board:** a relayed job stays until its own deadline. A posted proof also leaves after a day if
   nobody sent it. A landing closes every job on the board that carries the same proof.
 
@@ -182,6 +184,8 @@ proves in time goes to the network as before, so a worker that stops only stops 
 **Who may prove what.** The API knows each worker by a bearer token (`PROVER_WORKER_TOKENS`, `name:token[:classes]`).
 The `private` class carries a user's witness, so it goes only to workers Tacit runs or has named for it; the `public` class
 is work whose input is public anyway. A proof the pool refuses counts against its worker and the job goes on to the network.
+Public jobs are also open to anyone with no token, named by the address their points go to: `POST /prover/community/claim`
+and `/prover/community/result` (the `board` mode in [COMMUNITY-OPS.md](./COMMUNITY-OPS.md#board-opt-in-not-part-of-all)).
 
 **Sealed inputs.** A page can keep an op from the relay and the API altogether: it builds the program input itself
 (`dapp/sp1-stdin.js`, the same bytes the relay would build), encrypts it to one worker's `pubkey` from the board

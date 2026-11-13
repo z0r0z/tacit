@@ -10,9 +10,9 @@ cd contracts && forge build      # produces the artifacts the bytecode checks co
 cd .. && node tools/verify-live.mjs
 ```
 
-It reads Ethereum over public RPC, trying `ethereum-rpc.publicnode.com`, `eth.drpc.org`, `cloudflare-eth.com`
-and `1rpc.io/eth` in turn, and pins every read to one block so the table is a single coherent snapshot. About
-fifty calls, a few seconds.
+It reads Ethereum over public RPC, trying `ethereum-rpc.publicnode.com`, `eth.drpc.org` and `1rpc.io/eth` in
+turn, and pins every read to one block so the table is a single coherent snapshot. About sixty-five calls, a few
+seconds.
 
 ## What it checks
 
@@ -98,12 +98,15 @@ the protocol's risk appetite, only to make the setting visible.
 - **Not the hidden state.** Note amounts, ownership and the shielded supply of escrow-wrapped assets are
   private by construction. The solvency section therefore prints the pool's ERC-20 and ETH balances without
   asserting an invariant over them: the in-system supply they back is not public. Only the pool-minted
-  canonical tokens admit a public bound, and those are the two that are checked.
+  canonical tokens admit a public bound: tacBTC and tacUSD against what the pool tracks, TAC against the
+  21,000,000 etched on Bitcoin.
 - **Not that the manifest is right.** `contracts/deployments/1.json` is repository data. Checks compare chain
   state against it, so a wrong manifest agreeing with a wrong deployment would pass. The pool address is the
   anchor; confirm it independently before trusting the rest.
 - **Not that the RPC is telling the truth.** It trusts whichever public endpoint answers. Re-run it against a
   different endpoint, or your own node, if that matters to you.
+- **Not the Tacit chain.** TacitBlocks (`0x00000000000a9147ffd8d41d152d730ca5f84e6c`) is a separate contract with
+  its own block program; see [`TACIT-BLOCKS.md`](./TACIT-BLOCKS.md).
 
 A green run means: the bytecode on mainnet is this repository's bytecode, it is wired to the addresses and
 keys this repository publishes, and the state it is in is internally consistent right now. That is the whole
@@ -111,8 +114,8 @@ claim.
 
 ## The device pools
 
-`tools/evm-pool-solvency.mjs` does the same kind of check for the native-ETH `TacitEvmPool` on each chain it is
-deployed on (Ethereum, Base, Robinhood Chain, MegaETH). Unlike the escrow pool, this pool's whole public boundary
+`tools/evm-pool-solvency.mjs` does the same kind of check for the native-ETH `TacitEvmPool` on Ethereum, Base and
+Robinhood Chain. Unlike the escrow pool, this pool's whole public boundary
 is in its events: every deposit and withdrawal states its amount, and every relayer fee is paid out of the pool,
 so the ETH it holds can be checked against them exactly.
 
@@ -130,6 +133,7 @@ It reads the pool's `Transact` events through a block a few behind the head and 
 - the last event's root is the pool's `root()`.
 
 It exits 0 when every chain was read and every check passed, 1 when a check failed, and 2 when a chain could not be
-read. The first full run takes about 400 log calls (most of them on Base); with `--state` a repeat run takes about
-20. This is a consistency check on public data and does not prove the proof system sound: it is the alarm that a
+read. The first full run reads each chain from its deploy block, several hundred log calls that grow with the
+chains' history (most of them on Base); with `--state` a repeat run takes about 20. `--chain 1,8453` limits the run
+to the chains named. This is a consistency check on public data and does not prove the proof system sound: it is the alarm that a
 flaw in it would trip. `tests/evm-pool-solvency.test.mjs` holds each check to a case that passes and one that fails.

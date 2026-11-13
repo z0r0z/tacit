@@ -436,7 +436,7 @@ const { notes, byAsset } = await tacit.balance(walletPriv);</code></pre></div>
   <ul>
     <li><b>Balances are notes.</b> Each holds an asset and an amount behind a commitment. Spending one publishes a nullifier, so it cannot be spent twice. Every op except a deposit is one <code>settle()</code> with a proof.</li>
     <li><b>Amounts are 8-decimal units, not wei.</b> ETH, TAC, cBTC and cUSD scale by <code>1e10</code>; an amount must divide exactly.</li>
-    <li><b>Everything comes back from the key.</b> <code>tacit.recover({ walletPriv })</code> finds notes, farm and loan positions from chain data. Save a loan’s secrets before you submit it: they exist nowhere else.</li>
+    <li><b>Everything comes back from the key.</b> <code>tacit.recover({ walletPriv })</code> finds notes, farm and loan positions from chain data. A position opened under a key you generated yourself, not one derived from the wallet key, must be saved before you submit it.</li>
     <li><b>One key per process</b>, and rescan before a spend so every input comes from the same scan.</li>
     <li><b>A good first loop:</b> shield, send to yourself, withdraw. That covers a deposit, a proof, a spend and an exit.</li>
   </ul>
@@ -488,21 +488,22 @@ await tacit.unwrap({ note: notes[0], walletPriv, recipient: '0x…' });</code></
   <h2>Swap <em>and earn</em></h2>
   <p>Each asset pair and fee tier is one pool with public reserves. A trade reaches them privately, as notes and a proof, or in public through <code>TacitPublicAmm</code> with no proof. Both move the same reserves, so liquidity is never split, and a swap’s fee stays in the reserves for the LPs.</p>
   <div class="code"><pre><code>const path = [{ assetNext: assetB, feeBps: 30 }];
-const q = await tacit.quoteRoute({ asset0: assetA, amountIn, path });
-await tacit.route({ walletPriv, inNote, amountIn, path, minOut });
+const fee = await tacit.quoteOpFee(tacit.poolTickerOf(assetA), 'route');   <span class="c">// the relay fee, in the input asset</span>
+const q = await tacit.quoteRoute({ asset0: assetA, amountIn, path, fee });  <span class="c">// null if a pool on the path is not founded</span>
+await tacit.route({ walletPriv, inNote, amountIn, path, fee, minOut: q.amountOut * 995n / 1000n });
 
 <span class="c">// Earn: add liquidity and bond it to a farm in one settle</span>
-await tacit.lpBond({ walletPriv, controller: farm.manager, aNote, bNote, feeBps: 30, selfRelay: true });
+await tacit.lpBond({ walletPriv, controller: tacit.cfg.farm.manager, aNote, bNote, feeBps: 30, selfRelay: true });
 const [pos] = await tacit.farmPositions({ walletPriv });
 await tacit.farmHarvest({ walletPriv, position: pos });   <span class="c">// before unbonding</span>
 await tacit.farmUnbond({ walletPriv, position: pos });</code></pre></div>
   <ul>
-    <li><b>Whole notes.</b> A route spends its input note whole, up to four pools in one settle. Split with <code>transfer</code> first.</li>
+    <li><b>Any amount.</b> A route spends <code>amountIn</code> from one note, through up to four pools in one settle; the rest of the note comes back as change in the same proof.</li>
     <li><b>A private swap clears at the reserves it was proved against.</b> If another trade lands first, it is refused, nothing is spent, and you quote again.</li>
     <li><b>Finding a pool.</b> There is no registry: compute <code>tacit.routePoolId(a, b, feeBps)</code> and read <code>pools(poolId)</code>. The app checks the 30, 5, 100 and 1 bps tiers.</li>
     <li><b>Founding a pool</b> is sent from your own account (<code>lpAdd</code> with <code>selfRelay: true</code>), and sets the price.</li>
     <li><b>Farms</b> pay wTAC, which redeems one for one for TAC (<code>farmRedeem</code>). Read the live pools, weights and rate from <code>GET /farm/program</code>: they change, so don’t hardcode them. Harvest before you unbond; unbonding forfeits what was not harvested.</li>
-    <li><b>Aggregators</b> use <code>TacitPublicAmm.quoteSwap</code> and <code>swapPublic</code>, or <code>ConfidentialRouter</code>’s permit and Permit2 entry points. Amounts must be multiples of <code>1e10</code>.</li>
+    <li id="amm-doors"><b>Aggregators</b> use <code>TacitPublicAmm.quoteSwap</code> and <code>swapPublic</code>, or <code>ConfidentialRouter</code>’s permit and Permit2 entry points. Amounts must be multiples of <code>1e10</code>.</li>
   </ul>
 </section>
 
@@ -514,8 +515,9 @@ await tacit.farmUnbond({ walletPriv, position: pos });</code></pre></div>
 
   <h3>Bitcoin to Ethereum</h3>
   <div class="flow"><span>burn on Bitcoin</span><i>→</i><span>24 blocks</span><i>→</i><span>mint on Ethereum</span></div>
-  <div class="code"><pre><code>const b = await tacit.bridgeBurnToPool({ prims, note, notePriv, fee: 0n, dest: { owner },
-  deriveDestBlinding: (nu) => deriveBridgeMintBlinding({ privkey: priv, nullifier: nu }),
+  <div class="code"><pre><code><span class="c">// deriveBridgeMintBlinding: bridge-mint-recovery.js, so the minted note comes back from the key</span>
+const b = await tacit.bridgeBurnToPool({ prims, note, notePriv, fee: 0n, dest: { owner },
+  deriveDestBlinding: (nu) => deriveBridgeMintBlinding({ privkey: walletPriv, nullifier: nu }),
   isSpendable: (u) => isPlainSats(u) });
 <span class="c">// once the burn is 24 blocks deep</span>
 await tacit.bridgeMint.bridgeMint({ ...b.mintArgs, recovery });</code></pre></div>
@@ -527,7 +529,7 @@ await tacit.bridgeMint.bridgeMint({ ...b.mintArgs, recovery });</code></pre></di
   <h3>Ethereum to Bitcoin</h3>
   <div class="flow"><span>burn on Ethereum</span><i>→</i><span>block covered</span><i>→</i><span>mint on Bitcoin</span></div>
   <div class="code"><pre><code>const r = await tacit.crossOut({ walletPriv, notes, amount, destOwner, destChain: 1 });
-await broadcast.completeCrossOutOnBitcoin({ ...r, ...r.crossOuts[0] });   <span class="c">// crossout-broadcast.js</span></code></pre></div>
+await broadcast.completeCrossOutOnBitcoin({ ...r, ...r.crossOuts[0], block: r.ethBlock });   <span class="c">// crossout-broadcast.js</span></code></pre></div>
   <div class="box">
     <b>A wrong Bitcoin mint fails silently</b>
     <ul>
@@ -538,7 +540,7 @@ await broadcast.completeCrossOutOnBitcoin({ ...r, ...r.crossOuts[0] });   <span 
   </div>
 
   <h3>The fast lane</h3>
-  <p>A Bitcoin note bound to this pool can be spent on Ethereum directly, with no burn and mint: <code>tacit.fastlaneExit</code>. The spend is recorded, so the note cannot also be spent on Bitcoin. <code>buildTacMigration</code> binds a note in one Bitcoin transaction.</p>
+  <p>A Bitcoin note bound to this pool can be spent on Ethereum directly, with no burn and mint: <code>tacit.fastlaneExit</code>. The spend is recorded, so the note cannot also be spent on Bitcoin. <code>buildTacMigration</code> (<code>burn-deposit-bitcoin.js</code>) binds a TAC note in one Bitcoin transaction.</p>
 </section>
 
 <!-- ─────────────── Borrow ─────────────── -->
@@ -550,7 +552,7 @@ await broadcast.completeCrossOutOnBitcoin({ ...r, ...r.crossOuts[0] });   <span 
     <li><b>Lock</b> BTC in a self-custody output carrying the lock envelope (<code>cbtc-lock.js</code>). Pick the funding input first: the note’s blinding derives from it.</li>
     <li><b>Escrow</b> wstETH worth 1.5 times the lock through <code>CbtcEscrowHelper.postEscrowWithETH(outpoint)</code>.</li>
     <li><b>Mint</b> cBTC once the lock is 24 blocks deep: <code>tacit.mintCbtc({ walletPriv, outpoint, vBtc, blinding })</code>, relayed and free.</li>
-    <li><b>Borrow</b> cUSD with <code>tacit.defiActions(walletPriv).openCdp</code>: 150% collateral to mint, liquidation below 130%. Mint at fee 0, and save the position’s secrets first.</li>
+    <li><b>Borrow</b> cUSD with <code>tacit.defiActions(walletPriv).openCdp</code>: 150% collateral to mint, liquidation below 130%. Mint at fee 0. Derive the position’s keys from the wallet key as <code>btc-borrow.js</code> does, so <code>recover</code> finds the loan.</li>
   </ol>
   <h3>TACD and TACE, against TAC</h3>
   <p>Two vaults take TAC as collateral: one lends TACD, a dollar, the other TACE, an ether. <code>TacVaultRouter</code> moves TAC in with a permit and borrows in one transaction. Read a vault with <code>totalDebt()</code>, <code>debtCeiling()</code> and <code>vaults(owner)</code>. The app is <a href="/vault/">tacit.finance/vault</a>.</p>
@@ -560,12 +562,12 @@ await broadcast.completeCrossOutOnBitcoin({ ...r, ...r.crossOuts[0] });   <span 
 <section class="part" id="pay">
   <p class="kick">Pay pool</p>
   <h2>Private payments, <em>proved on device</em></h2>
-  <p>A smaller pool with one fixed circuit, for holding and paying privately. One transaction can shield, pay someone with change, withdraw and pay a relayer. The user’s device makes every proof, so nothing private leaves it. Its trusted setup closed after 176 public contributions. It runs <a href="/pay/eth/">tacit.finance/pay</a> and the front page’s “Pay anyone”.</p>
+  <p>A smaller pool with one fixed circuit, for holding and paying privately. One transaction can shield, pay someone with change, withdraw and pay a relayer. The user’s device makes every proof, so nothing private leaves it. Its trusted setup closed after 176 public contributions. It runs <a href="/pay/eth/">tacit.finance/pay/eth</a> and the front page’s “Pay anyone”.</p>
   <ul>
     <li><b>Drop-in wallet.</b> <code>https://tacit.finance/evm-pool/tacit-evm-pool-wallet.js</code> is the whole wallet as one ES module with no imports: keys, scanning, proving and sending. It is served with <code>Access-Control-Allow-Origin: *</code> and checks the proving files against pinned hashes.</li>
-    <li><b>Same addresses on every chain:</b> pool <code>0x000000c2A20657CE25f2Ba99737933D031AFBEE9</code>, router <code>0x0000006C96Afa6f1cD4DF8FE19bc0d8B6A6Cd7B5</code>, token zap <code>0x0000008EbBF2323f95c4fBc18254f3D65C53998c</code>.</li>
+    <li><b>Same addresses on every chain:</b> pool <code>0x000000c2A20657CE25f2Ba99737933D031AFBEE9</code>, router <code>0x0000006C96Afa6f1cD4DF8FE19bc0d8B6A6Cd7B5</code>, token zap <code>0x0000008EbBF2323f95c4fBc18254f3D65C53998c</code>. MegaETH has the pool and router too (no zap), and the drop-in wallet works there.</li>
     <li><b>Fast first load.</b> An on-chain checkpoint registry lets a new wallet start from a recent tree instead of the deploy block, then read older history in the background.</li>
-    <li><b>Relayers</b> send a withdraw for a fee in the pool’s own asset, so a user never needs gas.</li>
+    <li><b>Relayers</b> send a withdraw for a fee in the pool’s own asset, so a withdrawal needs no gas.</li>
   </ul>
   <p><a href="https://github.com/src-company/tacit/blob/main/docs/EVM-POOL.md" target="_blank" rel="noopener noreferrer">EVM-POOL.md</a> has the token pools, keepers, deposit addresses and payment links.</p>
 </section>
@@ -578,14 +580,14 @@ await broadcast.completeCrossOutOnBitcoin({ ...r, ...r.crossOuts[0] });   <span 
   <ol class="steps">
     <li><b>Hosted, the default.</b> The relay proves and sends <code>settle()</code>, paid from the op.</li>
     <li><b>Proof only.</b> <code>selfRelay: true</code> on an SDK call takes the proof and sends <code>settle()</code> from your account.</li>
-    <li><b>Your own prover.</b> <code>self-prover.js</code> with your own Succinct account; the witness never reaches the relay.</li>
+    <li><b>Your own prover.</b> <code>self-prover.js</code> with your own Succinct account: the op goes to the prover network, not the relay’s queue. A page uploads it through the API’s <code>/prover/upload</code>, which forwards the bytes and keeps nothing.</li>
   </ol>
-  <p>Anyone with a GPU can prove for others and earn TAC at <a href="/prove/">tacit.finance/prove</a>. A wallet with no ETH can pay gas in TAC: it signs one order and <a href="https://etherscan.io/address/0x000000197E8f0B64463B2010e568fF42090Af88d" target="_blank" rel="noopener noreferrer">TacitGasRelay</a> runs it (<code>gas-relay.js</code>).</p>
+  <p id="tacpay">Anyone with a GPU can prove for others and earn TAC at <a href="/prove/">tacit.finance/prove</a>. A wallet with no ETH can pay gas in TAC: it signs one order and <a href="https://etherscan.io/address/0x000000197E8f0B64463B2010e568fF42090Af88d" target="_blank" rel="noopener noreferrer">TacitGasRelay</a> runs it (<code>gas-relay.js</code>).</p>
   <p><b>What the relay sees:</b> the op you hand it, never your key or a note’s blinding. It can prove that op or decline it; it cannot redirect an output or raise the fee.</p>
   <div class="tbl"><table>
     <tr><th>Endpoint</th><th>What it does</th></tr>
     <tr><td><code>POST /confidential/submit</code></td><td><code>{ type, op, memos, mode? }</code> → <code>{ jobId }</code></td></tr>
-    <tr><td><code>GET /confidential/status?id=</code></td><td><code>pending</code> → <code>proving</code> → <code>settled</code> or <code>failed</code></td></tr>
+    <tr><td><code>GET /confidential/status?id=</code></td><td><code>pending</code> → <code>proving</code> → <code>settled</code> (a prove-only job stops at <code>proven</code>), or <code>failed</code></td></tr>
     <tr><td><code>GET /confidential/quote?asset=</code></td><td>The relay fee floor; quote with <code>tacit.quoteOpFee</code></td></tr>
     <tr><td><code>GET /confidential/relay</code></td><td>Whether the relay is up and proving</td></tr>
     <tr><td><code>GET /confidential/index</code></td><td>The pool’s events behind one cursor, for recovery without a scanner</td></tr>
@@ -640,12 +642,14 @@ await broadcast.completeCrossOutOnBitcoin({ ...r, ...r.crossOuts[0] });   <span 
         <tr><td>TacitGasRelay</td><td class="h">0x000000197E8f0B64463B2010e568fF42090Af88d</td></tr>
         <tr><td>ProofMarket</td><td class="h">0x0000000033Dd45B1686Ba37e5F6e4ABDdaC17609</td></tr>
         <tr><td>TacAirdrop</td><td class="h">0x4b4cb98D0C836c2783Ac46f0078b904dab533AE8</td></tr>
+        <tr><td>TacitBlocks (Tacit chain)</td><td class="h">0x00000000000A9147fFd8d41D152d730cA5F84E6c</td></tr>
+        <tr><td>TacitSeats (Tacit chain)</td><td class="h">0x00000000001F703eAE70De3B528213E4802790Fb</td></tr>
         <tr><td>Bitcoin header relay</td><td class="h">0x20A6ddc2C6E620c6248B5A34E85996516FDd19D0</td></tr>
         <tr><td>SP1 verifier (Groth16)</td><td class="h">0xb69f2584CBcFf99a58C4e7002E8b89Af54a6f4e2</td></tr>
         <tr><td>Ops multisig</td><td class="h">0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2</td></tr>
         <tr><td>Program vkey (settle)</td><td class="h">0x006cd47fd23937a6d247696cace28c22d2c6a8280447e6ac45a3571de232d6e3</td></tr>
       </table></div>
-      <p>The full list, with deploy blocks, is in <a href="https://github.com/src-company/tacit/blob/main/contracts/deployments/1-createx.json" target="_blank" rel="noopener noreferrer">contracts/deployments</a>.</p>
+      <p>The full list, with deploy blocks, is in <a href="https://github.com/src-company/tacit/blob/main/docs/DEPLOYMENTS.md" target="_blank" rel="noopener noreferrer">DEPLOYMENTS.md</a>. The Tacit chain’s wallet module is <code>dapp/tacit-chain-client.js</code> and its spec is <a href="https://github.com/src-company/tacit/blob/main/docs/TACIT-BLOCKS.md" target="_blank" rel="noopener noreferrer">TACIT-BLOCKS.md</a>.</p>
     </div>
   </details>
 
@@ -662,7 +666,7 @@ await broadcast.completeCrossOutOnBitcoin({ ...r, ...r.crossOuts[0] });   <span 
         <tr><td>TACD</td><td class="h">0x9cb6a17c0a61a40fa936296e9ec2b428e2a3b7c70cdb76ed25c6937124a3cc11</td><td class="h">0xA0f6B02561C8ef08335B69aD25e022C0B342147C</td></tr>
         <tr><td>TACE</td><td class="h">0xda4acdbe7c276dd82c39c3fd470aa1d18d562504b678cfa5a8144c8afddd5db4</td><td class="h">0x9DE27883C5Dc9Db47BE12E595D59b8f1aBEC8570</td></tr>
       </table></div>
-      <p>Resolve a pool-minted token with <code>canonicalTokenFor(assetId)</code> rather than caching it. Every asset is also listed on the token.list.wei registry (<code>0x0000006013dF75A31678B786061C2B54bf531524</code>); a listing with <code>standard = 5</code> is a pool asset, not an ERC-20.</p>
+      <p>Resolve a pool-minted token with <code>canonicalTokenFor(assetId)</code> rather than caching it. TAC, tETH, cBTC and cUSD are also listed by pool asset id on the token.list.wei registry (<code>0x0000006013dF75A31678B786061C2B54bf531524</code>): a listing whose standard is <code>Tacit</code> is a pool asset, not an ERC-20.</p>
     </div>
   </details>
 

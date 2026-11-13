@@ -9,7 +9,7 @@
 <style>
   /* ─── tokens ────────────────────────────────────────────────────────────
      The whole skin lives here. Change these nine values and nothing else,
-     and the page re-themes. Matches the live dapp's palette. */
+     and the page re-themes. */
   :root {
     --paper:  #f4eee3;
     --card:   #fffaf2;
@@ -174,9 +174,9 @@
     <p class="note">
       The pool keys by <em>asset id</em>, not token address. In-system values are
       <code>amount / unitScale</code> and must divide exactly — ETH is 18-dec at scale 1e10, so the pool
-      sees 8 decimals. The usd column reads the standard mainnet Chainlink ETH/USD and BTC/USD aggregators
-      directly (not a Tacit contract, so it never goes stale on a redeploy) — plain
-      <code>latestRoundData()</code> calls, same zero-dependency pattern as everything else on this page.
+      sees 8 decimals. The usd column reads Chainlink's mainnet ETH/USD and BTC/USD aggregators
+      directly with plain <code>latestRoundData()</code> calls, the same zero-dependency pattern as
+      everything else on this page.
     </p>
   </div>
 </section>
@@ -186,10 +186,10 @@
   <h2>Your account</h2>
   <div class="card">
     <p class="note">
-      Tacit derives its own EVM account from the wallet seed — fund that address once and every call
+      Tacit derives its own EVM account from the Tacit key — fund that address once and every call
       signs itself. Wire <code>makeConfidentialPoolUx</code> below to light this up.
     </p>
-    <label for="seed">wallet seed (hex scalar) — never paste a real one into a page you have not read</label>
+    <label for="seed">Tacit key (hex scalar) — never paste a real one into a page you have not read</label>
     <input id="seed" placeholder="0x…" autocomplete="off" spellcheck="false">
     <button id="derive" disabled>derive account</button>
     <div class="row" style="margin-top:12px"><span class="k">address</span><span class="v" id="a-addr">—</span></div>
@@ -214,7 +214,7 @@
 <section>
   <h2>Send</h2>
   <div class="card">
-    <label for="s-to">recipient pubkey (hex)</label>
+    <label for="s-to">recipient public key (hex, from their tacit1… address)</label>
     <input id="s-to" placeholder="0x…" autocomplete="off" spellcheck="false">
     <label for="s-asset">asset</label>
     <select id="s-asset">
@@ -227,26 +227,28 @@
     <input id="s-amt" value="0.01" inputmode="decimal">
     <button id="send" disabled>send</button>
     <p class="note">
-      Shielded — the recipient is looked up by a pubkey they've shared out of band, not a wallet address.
-      Covers the amount from your own notes when you hold enough; otherwise wraps straight from your public
-      balance and sends in one step (<code>wrapAndSend</code>).
+      Private — the amount goes into a lock only the recipient's key can claim, and they find it with that
+      key alone (<code>stealthSend</code>). Address them by their public key, not a wallet address. It spends
+      your shielded notes, so wrap first; after about 90 days unclaimed, you can refund it.
     </p>
   </div>
 </section>
 
 <footer>
   Skeleton for the Tacit confidential pool. Read
-  <a href="../BUILD-A-TACIT-DAPP.md">BUILD-A-TACIT-DAPP.md</a> next; addresses come from
-  <a href="../../contracts/deployments/1-createx.json">1-createx.json</a>, which is the source of truth.
-  Only want private ETH, on Ethereum, Base and Robinhood Chain? See
-  <a href="../EVM-POOL.md">EVM-POOL.md</a> — a smaller pool with its own no-import bundle.
+  <a href="../BUILD-A-TACIT-DAPP.md">BUILD-A-TACIT-DAPP.md</a> next; the pool suite's addresses come from
+  <a href="../../contracts/deployments/1-createx.json">1-createx.json</a>, and the rest (the farm manager among
+  them) from <a href="../DEPLOYMENTS.md">DEPLOYMENTS.md</a>.
+  Only want private payments? See <a href="../EVM-POOL.md">EVM-POOL.md</a> — the Pay pool, proved on the
+  user's device, on Ethereum, Base and Robinhood Chain, with its own no-import bundle.
 </footer>
 
 </div>
 
 <script type="module">
 // ─────────────────────────────────────────────────────────────────────────
-// Config. Mirrors contracts/deployments/1-createx.json, the source of truth.
+// Config. The pool, router and engine mirror contracts/deployments/1-createx.json;
+// the farm manager is in docs/DEPLOYMENTS.md.
 // ─────────────────────────────────────────────────────────────────────────
 const CFG = {
   chainId: 1,
@@ -396,9 +398,8 @@ async function loadFarms() {
 }
 
 // ── asset table ──────────────────────────────────────────────────────────
-// Chainlink's standard mainnet aggregators — not a Tacit contract, so these never go
-// stale on a redeploy. latestRoundData() -> (roundId, answer, startedAt, updatedAt,
-// answeredInRound); answer is word[1], an int256 with 8 decimals.
+// Chainlink's standard mainnet aggregators. latestRoundData() -> (roundId, answer,
+// startedAt, updatedAt, answeredInRound); answer is word[1], an int256 with 8 decimals.
 async function feedUsd(addr) {
   const r = await ethCall(addr, '0xfeaf968c');
   if (!r || r.length < 2 + 128) return null;
@@ -438,53 +439,48 @@ loadFarms();
 //
 //   const tacit = makeConfidentialPoolUx({ secp, keccak256, sha256, network: 'mainnet' });
 //
+//   // In-system amounts have 8 decimals for every asset on this page (unitScale 1e10).
+//   const units = (s) => BigInt(Math.round(parseFloat(s) * 1e8));
+//
 //   $('derive').disabled = false;
 //   $('derive').onclick = () => {
 //     const acct = tacit.account($('seed').value.trim());   // sync: { address, priv } (the derived EVM account)
-//     // tacit.identity(seed) is the confidential identity: { priv, pubHex, owner, secret }
+//     // tacit.identity(key) is the confidential identity: { priv, pubHex, owner, secret }
 //     $('a-addr').textContent = acct.address;
 //     $('wrap').disabled = false;
 //     $('send').disabled = false;
-//     tacit.balance($('seed').value.trim())
-//       .then((f) => { $('a-bal').textContent = JSON.stringify(f); });
+//     tacit.balance($('seed').value.trim()).then(({ byAsset }) => {   // values are BigInt, in-system units
+//       $('a-bal').textContent = Object.values(byAsset)
+//         .map((b) => `${b.ticker || b.asset.slice(0, 10)} ${Number(b.value) / 1e8}`).join(', ') || 'no notes';
+//     });
 //   };
 //
 //   $('wrap').onclick = async () => {
-//     const wei = BigInt(Math.round(parseFloat($('amt').value) * 1e18));
+//     const wei = units($('amt').value) * 10n ** 10n;          // a whole multiple of unitScale
 //     const w = await tacit.wrap({ walletPriv: $('seed').value.trim(), amountWei: wei, ticker: 'cETH' });
-//     // wrap() takes the next unused note index itself (w.index); buildWrap() needs one from tacit.nextWrapIndex().
-//     // keep w.note + w.memo — that IS the note; then, once w.txHash is mined:
+//     // wrap() takes the next unused wrap index itself (w.index); buildWrap() needs one from tacit.nextWrapIndex().
+//     // keep w.index: if the proof step fails, buildWrap at that index rebuilds the same deposit. Once w.txHash is mined:
 //     await tacit.submitWrapSettle({ built: w });
 //   };
 //
 //   $('send').onclick = async () => {
 //     const walletPriv = $('seed').value.trim();
-//     const ticker = $('s-asset').value;
-//     const wei = BigInt(Math.round(parseFloat($('s-amt').value) * 1e18));
+//     const asset = CFG.assets.find((a) => a.t === $('s-asset').value);
+//     const amount = units($('s-amt').value);
 //     const recipientPubHex = $('s-to').value.trim();
-//     const assetId = CFG.assets.find((a) => a.t === ticker).id.toLowerCase();
-//     const fee = await tacit.quoteTransferFee(wei, ticker).catch(() => 0n);
 //     const { byAsset } = await tacit.balance(walletPriv);
-//     const held = byAsset[assetId];
-//     if (held && held.value >= wei + fee) {
-//       // pick notes summing to >= wei + fee from held.notes yourself (e.g. largest-first);
-//       // transfer() proves the exact sum, so overshoot comes back as a fresh change note.
-//       await tacit.transfer({ walletPriv, notes: pickCovering(held.notes, wei + fee), recipientPubHex, amount: wei, fee });
-//     } else {
-//       // no covering note: wrap straight from the public balance and send in one step.
-//       await tacit.wrapAndSend({ walletPriv, ticker, recipientPubHex, amountWei: wei, fee: 0n });
-//     }
+//     const held = byAsset[asset.id.toLowerCase()];
+//     if (!held || held.value < amount) throw new Error('not enough shielded balance: wrap first');
+//     // with no note of exactly `amount`, stealthSend first cuts one from a larger note (a relayed split, its fee in that asset)
+//     const sent = await tacit.stealthSend({ walletPriv, notes: held.notes, recipientPubHex, amount });
+//     // keep `sent` (lockLeaf, deadline, refundPriv): it refunds the lock if it is never claimed (tacit.stealthRefund)
 //   };
 //
-// The relay is paid in-kind in the sent asset, so it only relays assets it can price and
-// convert (relayFeeEligible(ticker)) — an ineligible asset needs a wallet holding gas to
-// self-settle instead.
-//
-// Read docs/BUILD-A-TACIT-DAPP.md sections 4-5 before wiring. You cannot
-// transfer directly to a third party's raw address (use stealthSend for that), and every
-// wrap needs a fresh note index (wrap() picks one; buildWrap() does not). A membership
-// witness stays valid (the pool keeps every root it has had), but rescan before spending
-// so all inputs share one root and spent notes drop out.
+// Read docs/BUILD-A-TACIT-DAPP.md sections 4-5 before wiring. transfer() and wrapAndSend()
+// pay only your own key; stealthSend() pays someone else. Every wrap needs a fresh wrap
+// index (wrap() picks one; buildWrap() does not). A membership witness stays valid (the
+// pool keeps every root it has had), but rescan before spending so all inputs share one
+// root and spent notes drop out.
 // ─────────────────────────────────────────────────────────────────────────
 </script>
 </body>

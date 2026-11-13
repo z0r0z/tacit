@@ -4,7 +4,7 @@ One set of reserves, two ways to trade it. A swap or a liquidity position can be
 transaction with no proof, or **private**, a note and a proof. Both move the same pool, so liquidity is never
 split between them.
 
-The app: [tacit.finance](https://tacit.finance/#card=swap), the front page's Swap and Earn tabs. The short version, on the site: [tacit.finance/build/#amm-doors](https://tacit.finance/build/#amm-doors). The rules: [`SPEC.md` §5.5](../SPEC.md#55-amm).
+The app: [tacit.finance](https://tacit.finance/#card=swap), the front page's Swap and Earn tabs. The short version, on the site: [tacit.finance/build/#amm](https://tacit.finance/build/#amm). The rules: [`SPEC.md` §5.5](../SPEC.md#55-amm).
 The contracts: [`DEPLOYMENTS.md`](./DEPLOYMENTS.md).
 
 ## The pool

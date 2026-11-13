@@ -1,6 +1,8 @@
 # Ceremony artifacts
 
-Tacit's transparent stack (SP1, Bulletproofs+, Schnorr kernels) needs no trusted setup. Three finalized
+Tacit's transparent stack (SP1, Bulletproofs+, Schnorr kernels) needs no trusted setup of its own; SP1's proofs are
+wrapped in Groth16 for Ethereum under SP1's own setup. The Bitcoin shielded pool and the Tacit chain prove spends with
+Halo2-KZG over the public Hermez `pot18` powers of tau, so they need no ceremony of their own either. Three finalized
 Groth16 ceremonies supply keys for circuits that are expensive to express otherwise: the AMM and mixer ceremonies
 ([SPEC §2.8](../SPEC.md#28-circuits-and-ceremonies)) and the EVM pool ceremony. This page lists every artifact, where it lives, and how
 to check it. Each value below was re-derived from the fetched bytes.
@@ -54,7 +56,7 @@ Other AMM identifiers:
 
 ## EVM pool ceremony (Secret Sats EVM pool) — used in production
 
-`transact.circom` backs the Ethereum, Base and Robinhood Chain pools ([EVM-POOL.md](./EVM-POOL.md)). Its key came from
+`transact.circom` backs the EVM pools on Ethereum, Base, Robinhood Chain and MegaETH ([EVM-POOL.md](./EVM-POOL.md)). Its key came from
 one open ceremony on 26 and 27 September 2026: 176 contributions from 120 distinct public keys, sealed with the hash of
 Bitcoin block 968,840 as the final beacon.
 
@@ -123,9 +125,10 @@ File hashes and a local verification recipe are in the bundle's `README.md`.
 - **Where the dapp gets the zkey.** The dapp resolves the head zkey from the coordinator. If the coordinator is
   unreachable, it fetches the pinned CID above. A zkey that is not the finalized one produces proofs the
   guests reject, so a wrong download fails closed.
-- **Mirrors.** Every CID on this page is in [`tools/mirror-pins.sh`](../tools/mirror-pins.sh):
+- **Mirrors.** Every CID on this page except the EVM pool's final zkey is in [`tools/mirror-pins.sh`](../tools/mirror-pins.sh)
+  (that zkey's CID and SHA-256 are in [`dapp/evm-pool/pin.json`](../dapp/evm-pool/pin.json)):
   - `FILEBASE_BUCKET=<bucket> tools/mirror-pins.sh` copies them to another provider;
-  - `tools/mirror-pins.sh audit` reconciles what a provider holds.
+  - `FILEBASE_BUCKET=<bucket> tools/mirror-pins.sh audit` reconciles what a provider holds.
 
   Multi-block artifacts (the zkeys, r1cs and ptau) need a local Kubo daemon so each block is hash-verified.
 

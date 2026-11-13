@@ -1,6 +1,6 @@
 # Holding Bitcoin coins under a multisig or vault script without burning Tacit assets
 
-A Tacit asset note is a Bitcoin output. Spending it as plain sats destroys the asset ([SPEC §3.2](../SPEC.md)).
+A Tacit asset note is a Bitcoin output. Spending it as plain sats destroys the asset ([SPEC §3.2](../SPEC.md#32-validity-and-consensus)).
 A wallet whose coins sit under a script with no single key (a multisig vault) cannot use the owner-keyed
 `/holdings` lookup, so it needs to know by coin which outputs are notes.
 
@@ -8,14 +8,14 @@ A wallet whose coins sit under a script with no single key (a multisig vault) ca
 
 1. **Never send Tacit assets to a vault address.** Nothing in the protocol stops a sender from paying a note to any
    script, and the vault can then neither read the amount (the blinding derives from the recipient's private key,
-   [§2.6](../SPEC.md)) nor publish an opening. Only the sender knows what is in it.
+   [§2.6](../SPEC.md#26-key-derivations-bitcoin)) nor publish an opening. Only the sender knows what is in it.
 2. **Quarantine anything that arrives anyway.** Anyone can send a note to your address. The 546-sat band catches the
    usual case but is not a guarantee: the sender chooses the output value.
 3. **Fail closed.** If the check cannot run, build no spend.
 
 ## `POST /outpoints/classify?network=mainnet`
 
-Open to any origin. No key, no auth. Up to 100 outpoints per call.
+Open to any origin. No key, no auth. Up to 100 outpoints per call. Calls are metered per IP: past the limit the answer is 429 with `Retry-After`.
 
 ```
 POST https://api.tacit.finance/outpoints/classify?network=mainnet
@@ -78,6 +78,6 @@ list with their `asset_ids[0]`. Add `https://api.tacit.finance` to `connect-src`
 
 If you would rather not depend on the endpoint for the gate, fetch each coin's creating transaction from any
 Esplora and quarantine the coin when any input's witness holds a taproot script of the form
-`<32-byte key> OP_CHECKSIG OP_FALSE OP_IF "TACIT" 0x01 <payload> OP_ENDIF` ([§3.1](../SPEC.md)). That
+`<32-byte key> OP_CHECKSIG OP_FALSE OP_IF "TACIT" 0x01 <payload> OP_ENDIF` ([§3.1](../SPEC.md#31-envelope)). That
 over-excludes a little (a failed op's outputs, a trade's plain BTC payment) and never under-excludes. The endpoint
 then refines it and names the asset.

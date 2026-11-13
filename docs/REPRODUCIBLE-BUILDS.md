@@ -4,7 +4,8 @@ The three SP1 guest programs behind the mainnet pool are pinned by ELF sha256 an
 what is pinned, how to rebuild each ELF byte for byte, and how to check the result against the chain. The pin file
 is [`contracts/sp1/confidential/elf-vkey-pin.json`](../contracts/sp1/confidential/elf-vkey-pin.json); the recipe
 files are in [`contracts/sp1/reproducible/`](../contracts/sp1/reproducible/). The guests themselves are
-described in [SPEC §2.9](../SPEC.md#29-sp1-programs).
+described in [SPEC §2.9](../SPEC.md#29-sp1-programs). The Tacit chain's block program is a separate guest, fixed in
+TacitBlocks as `BLOCK_VKEY` ([`TACIT-BLOCKS.md`](./TACIT-BLOCKS.md)).
 
 ## What is pinned
 

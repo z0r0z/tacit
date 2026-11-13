@@ -68,6 +68,10 @@ Tacit has three layers.
 The same secp256k1 Pedersen commitment is the note on both chains, so a note's value can move between
 them without changing its commitment scheme.
 
+The Tacit chain, a separate zk-rollup for private TAC payments settled on Ethereum (`TacitBlocks`,
+`0x00000000000A9147fFd8d41D152d730cA5F84E6c`), is specified in [`docs/TACIT-BLOCKS.md`](./docs/TACIT-BLOCKS.md).
+A hop moves value from it into the confidential pool through the pool's `wrap`.
+
 ### 1.1 Design principles
 
 - **Validity from data alone.** Bitcoin state follows from the chain and this document. Ethereum state
@@ -91,7 +95,8 @@ them without changing its commitment scheme.
 - **`H`** is a nothing-up-my-sleeve generator. Let `seed = SHA-256("tacit-generator-H-v1")`. For
   `ctr = 0, 1, …, 255`, set `x = SHA-256(seed ‖ ctr)` and take the first `x` for which `0x02 ‖ x` is a
   valid compressed point. The result is `02bd7bf4…5e56`. Nobody knows `log_G H`.
-- **BabyJubJub** over BN254's scalar field is used only inside the swap-batch circuit (§2.8).
+- **BabyJubJub** over BN254's scalar field is used by the swap-batch circuit (§2.8) and the Bitcoin-native
+  shielded pool (§3.10).
 
 ### 2.2 Pedersen commitments
 
@@ -425,7 +430,8 @@ These stay in the validator so existing UTXOs keep their meaning. New flows use 
 | 0x60–0x64 | Legacy bridge |
 | 0x65–0x69 | Cross-chain and cBTC (§3.6–3.7) |
 | 0x6C, 0x6D | Bitcoin-native shielded pool; live on mainnet, experimental (§3.10) |
-| 0x6A, 0x6B, 0x6E–0xFF | Free |
+| 0x6E | `T_BTC_AGG`: one aggregate proof for a carrier's proofless `T_BTC_SPEND`s, read by the shielded-pool indexer |
+| 0x6A, 0x6B, 0x6F–0xFF | Free |
 
 A new opcode is claimed by updating this table together with `dapp/tacit.js`, `worker/src/index.js` and,
 if it folds into the pool, `cxfer-core` and the reflection guest.
@@ -528,7 +534,7 @@ Each note carries an encrypted memo so its owner can recover it (§9). The contr
 - An asset is keyed by a 32-byte id shared across chains. Bitcoin assets keep their `asset_id`.
 - An Ethereum escrow asset registers permissionlessly under
   `SHA-256("tacit-evm-token-v1" ‖ chainid ‖ token)`. Its in-pool precision is `min(decimals, 8)`, and a
-  note of value `v` pays out `v · unitScale` base units, where `unitScale = 10^(decimals − 8)`.
+  note of value `v` pays out `v · unitScale` base units, where `unitScale = 10^max(decimals − 8, 0)`.
 - Native ETH is registered under its Bitcoin-side (tETH) link id with scale `1e10`.
 - An escrow token can never claim a Bitcoin-side id. Links to Bitcoin assets are set at construction, or
   registered lazily from asset metadata proven by reflection.
@@ -679,7 +685,7 @@ A fee must be zero or have at most two significant decimal digits. A user who pr
 A pool is a constant-product curve with a fee tier, plus an optional protocol-fee switch. The switch
 directs a fraction of the fee to a recipient fixed in `pool_id`. Reserves are public.
 
-- **`OP_SWAP`** clears up to many intents at one uniform price. Traders in one batch clear at the same
+- **`OP_SWAP`** clears up to 256 intents at one uniform price. Traders in one batch clear at the same
   price, so they cannot sandwich each other. Each trader gets a hidden output note with a minimum-output
   bound and a signed deadline. The prover sees the amounts.
 - **`OP_SWAP_ROUTE`** composes hops atomically.
@@ -846,8 +852,8 @@ None of them can move a user's note or escrow.
 
 ### 7.2 Governed periphery
 
-The ops multisig is 2-of-4. A 2-of-4 call executes after a built-in one-hour delay, and a call signed by
-all four owners executes immediately. It governs:
+The ops multisig is 2-of-5. A call signed by two owners executes after a built-in one-hour delay, and a call
+signed by all five owners executes immediately. It governs:
 
 - `CollateralEngine`: feeds, CDP ratios (the liquidation ratio is capped), the stability fee (capped),
   escrow enforcement and insurance draws. Changes that work against borrowers take effect only after
@@ -857,7 +863,7 @@ all four owners executes immediately. It governs:
   While a program runs, its total reward rate cannot be lowered and its end cannot move earlier.
 - `TacVault` (TACD and TACE): the owner can at once set the debt ceiling and the fees (up to 5% to borrow and
   2.5% to redeem) and pause liquidations, outside bids, absorbs and redemptions for up to 12 hours at a time. A named
-  pauser can start a pause and nothing else. The ratios, the liquidation bonus, the auction timing and the minimum
+  pauser can start or lengthen a pause and nothing else. The ratios, the liquidation bonus, the auction timing and the minimum
   debt change only after a 2-day announcement and within fixed limits, and a new oracle after 3 days. `lockParams`
   and `lockOracle` end those powers for good. The borrow fee goes to the reserve.
 - `TacAirdrop`: a guardian that can pause and sweep. It cannot change the root, token or deadline.
@@ -948,8 +954,8 @@ With covenants:
 Other extension points are live today:
 - `T_BTC_CALL` / `EthCallOutbox` for value-free cross-chain messages;
 - the controller pattern (§5.7), for new debt assets and reward programs without touching the pool;
-- free op codes 35–255 in the settle guest and `0x6A`–`0xFF` on Bitcoin, for a future pool deployment and
-  future indexers.
+- free op codes 35–255 in the settle guest and `0x6A`, `0x6B` and `0x6F`–`0xFF` on Bitcoin, for a future pool
+  deployment and future indexers.
 
 ---
 

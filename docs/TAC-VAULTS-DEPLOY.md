@@ -4,6 +4,9 @@ The TAC vaults are deployed by anyone, in a handful of transactions, to addresse
 sender matters: the addresses commit to the exact code, constructor arguments and owner, so the only thing a deployer
 chooses is whether to pay the gas.
 
+This plan is deployed on Ethereum mainnet. The addresses are in `contracts/deployments/tac-vaults.json` and
+[`DEPLOYMENTS.md`](./DEPLOYMENTS.md#tac-vaults), and the dapp reads them from `dapp/vault/deployments.js`.
+
 ## How it is fixed
 
 Each contract goes through CreateX (`0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed`) with `deployCreate2(salt, initCode)`.
@@ -37,9 +40,10 @@ can finish what another started. Afterwards it registers both synths in the conf
 pairs (each only if missing), and checks the result. Dry-run it first by leaving out `--broadcast`: 21 transactions,
 about 44M gas.
 
-Without Foundry, send the transactions in `payload.json` in order (`to`, `data`, `value` 0): 14 to CreateX, then 7 to the
-confidential pool. A page can do the same: for each deployment, read the code at `expectedAddress` and send the
-transaction only if there is none; check `tools/tac-vaults-check.mjs` passes for the payload it ships.
+Without Foundry, send the transactions in `payload.json` (written by `tools/tac-vaults-plan.mjs --payload`, below) in order
+(`to`, `data`, `value` 0): 14 to CreateX, then 7 to the confidential pool. A page can do the same: for each deployment,
+read the code at `expectedAddress` and send the transaction only if there is none; check `tools/tac-vaults-check.mjs`
+passes for the payload it ships.
 
 ## The router
 
@@ -53,14 +57,16 @@ send a batch themselves (EIP-5792) do not need it: the dapp uses their batch fir
     forge script script/DeployTacVaultRouter.s.sol --rpc-url $RPC --broadcast --account <account>
 
 It deploys through CreateX like the rest (a chain-bound salt: the default is mined for an address with three leading zero bytes,
-`0x000000F9ab49650502BeC910D13b4717F0082598`; `ROUTER_SALT` sets another), checks its bindings, and prints the address to put in `dapp/vault/deployments.js` (`router`). Until then the dapp does without it.
+`0x000000F9ab49650502BeC910D13b4717F0082598`; `ROUTER_SALT` sets another), checks its bindings, and prints the address to put in `dapp/vault/deployments.js` (`router`).
+The router is deployed at that default address, and `deployments.js` names it.
 
 ## Checking
 
 - `node tools/tac-vaults-check.mjs payload.json contracts/deployments/tac-vaults.json` re-derives every hash and address
   from the payload with `cast` alone and checks the manifest agrees.
-- `DeployTacVault.verifyAll()` (run by the script) checks the owners, wiring, depth share, the venue storage slots
-  against the live pools, and the registry entries. It can be called on its own.
+- `DeployTacVault.verifyAll()` (run by the script) checks the owners, wiring, the depth share the vaults were deployed with
+  and the venue storage slots against the live pools. It can be called on its own. The registry entries are checked as
+  `registerAll()` reads each one back.
 - `node tools/tac-vaults-etherscan.mjs` prints the `forge verify-contract` commands.
 
 ## After deployment
@@ -90,10 +96,10 @@ ETH and with no hook, are found from the factory and listed after these.
 - **Why bands.** A swap that would leave the band is refused, so the band decides both the price and the exit. Measured against the pool itself on a fork, a $200 pool (100 + 100)
   selling 25 tokens gives up 19.52% across a full range, 6.87% at ×0.5–×2, 1.32% at ±10% and 0.68% at ±5%. The cost of a tight band is the tail: if the token fell to $0.80, a ±10%
   depositor is 8.7% behind holding and a full-range one 0.6%. Hence a tight tier for the price and a wide tier for the fall.
-- **How much there can be.** TACD and TACE exist only as debt, and the vaults lend `DEPTH_BPS` (55) of the TAC pools' smallest ETH depth — 3.6 ETH today, so about $46 of TACD and
-  0.02 TACE in all, against a smallest debt of $10. The first liquidity therefore comes from an account that borrowed (1% fee) and holds the other side. Raising the room is a
-  parameter, not a pool: at the maximum 1,000 bps today's depth would lend about $850. `tests/vault-page.mjs` opens the markets against the live factory's code on a local chain,
-  in both token orders.
+- **How much there can be.** TACD and TACE exist only as debt, and each vault lends at most `DEPTH_BPS` (55) of the TAC pools' smallest ETH depth over the oracle's longest
+  window (`depthCeiling()` reads it), against a smallest debt of $10 of TACD or 0.004 TACE. The first liquidity therefore comes from an account that borrowed (1% fee) and holds
+  the other side. Raising the room is a parameter, not a pool: the owner can raise `DEPTH_BPS` to at most 1,000 after a 2-day announcement. `tests/vault-page.mjs` opens the
+  markets against the live factory's code on a local chain, in both token orders.
 
 ## Changing anything
 

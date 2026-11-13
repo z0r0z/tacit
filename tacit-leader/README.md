@@ -28,7 +28,7 @@ the queue's entries within `FORCE_DELAY`. A shield of a `deposit()` is posted by
 `tests/tacit-chain-force-fork.mjs` runs the leader with its fee and spends posted to the forced queue on a mainnet fork.
 `tests/tacit-leader-anvil.mjs` runs all of it on a mainnet fork (real TAC, the live confidential pool, the fixture chain's real spends, a verifier
 that takes any proof): the contract's state must be the fixture's after every block. `PROVER=stub` is that test's verifier; a real run proves each
-block with `tacit-block-gpu` (see `contracts/sp1/confidential/tacit-block/scripts/`) or, once the prover board has a `tacit-block` program, there.
+block with `tacit-block-gpu` (see `contracts/sp1/confidential/tacit-block/scripts/`) or with `PROVER=board` on the prover board's `tacit-block` program, which community GPUs race (`PROVER_FALLBACK` proves it if no proof comes in time).
 
 **Leading blocks.** Turns come from `TacitSeats`, which has no owner. A seat is `SEAT` TAC (1,000 today), locked with `join()` after approving TAC to the contract
 and given up with `leave(i)`; its TAC is claimed `EXIT_DELAY` (7 days) later with `claim()`. Time runs in slots of `SLOT_BLOCKS` Ethereum blocks (50 today, about ten
@@ -46,7 +46,7 @@ the front page's `connect-src`: `node tools/tacit-chain-seat-host.mjs https://yo
 committed and pushed with the dapp. The endpoint must be `https` on a DNS name and answer cross-origin reads and posts as the house leader does.
 
 Not built yet: sending blocks whose data is in blobs (the program, contract and node do it; the sender must use the post-Fusaka blob transaction
-format), replaying blob blocks another leader landed (needs a beacon node's blob sidecars), the prover board job, and a status page.
+format) and replaying blob blocks another leader landed (needs a beacon node's blob sidecars).
 
 **Restarts.** A restart rebuilds the node, from the blocks kept in `ARCHIVE_DIR` when they are the whole chain (every block from 1 to the contract's height is there, each starts where the one before ended, the last ends at the contract's `state`, and no forced entry waits), else from the logs of `BLOCKS` from `FROM_BLOCK`. Every block this leader builds or reads is kept there. `RPC_URL` may list several endpoints, comma apart (`https://a,https://b`): the first that answers is used, and one that refuses, rate-limits or has dropped old logs is passed over. Keep `ARCHIVE_DIR` on the persistent disk.
 

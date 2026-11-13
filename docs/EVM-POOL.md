@@ -1,26 +1,28 @@
 # EVM pool: integration guide
 
-A native-ETH shielded pool that users prove on their own device. Balances are fungible notes of any amount; a
-single transaction can deposit, pay someone privately with change, withdraw, and pay a relayer. The contracts are
-immutable: no owner, no pause, no upgrade. Design and measurements: [`DESIGN-evm-client-pool.md`](../contracts/sp1/confidential/DESIGN-evm-client-pool.md).
+A shielded pool (the Pay pool on tacit.finance) that users prove on their own device, for native ETH or, one pool per
+token, an ERC-20. Balances are fungible notes of any amount; a single transaction can deposit, pay someone privately with
+change, withdraw, and pay a relayer. The contracts are immutable: no owner, no pause, no upgrade. Design and measurements:
+[`DESIGN-evm-client-pool.md`](../contracts/sp1/confidential/DESIGN-evm-client-pool.md).
 
 **Status.** The circuit's public trusted-setup ceremony is closed: 176 contributions, sealed with Bitcoin block
 968840 as the beacon. The full suite is live at the addresses below on Ethereum, Base and Robinhood Chain, and the core
 (pool, router, verifier) on MegaETH; deploy blocks and transactions are in
 [`contracts/deployments/evm-pool.json`](../contracts/deployments/evm-pool.json). Scan events from each chain's deploy block.
 
-**Which pool.** This is the smaller of Tacit's two pools: one fixed circuit, ETH only, multichain, with no
-prover but the user's own device. For DeFi (swap, LP, lend, farm, OTC, bids), multi-asset notes, or the
-Bitcoin bridge, see [`BUILD-A-TACIT-DAPP.md`](./BUILD-A-TACIT-DAPP.md) — the confidential pool on Ethereum
-mainnet, one SP1 program for every op. The two pools share nothing on chain; a hop between them is a public
-exit/entry (["Moving between V1 and this pool"](#moving-between-v1-and-this-pool)).
+**Which pool.** This is the smaller of Tacit's two pools on Ethereum: one fixed circuit, one asset per pool (ETH,
+or an ERC-20 in a [token pool](#addresses)), multichain, with no prover but the user's own device. For DeFi (swap,
+LP, lend, farm, OTC, bids), multi-asset notes, or the Bitcoin bridge, see [`BUILD-A-TACIT-DAPP.md`](./BUILD-A-TACIT-DAPP.md) —
+the confidential pool on Ethereum mainnet, one SP1 program for every op. The two pools share nothing on chain; a hop
+between them is a public exit/entry (["Moving between V1 and this pool"](#moving-between-v1-and-this-pool)). Private
+TAC payments run on the Tacit chain, a zk-rollup settled on Ethereum ([docs](https://tacit.finance/docs/chain/)).
 
 ## Where to use it
 
 | App | What it is | Chains |
 |---|---|---|
-| [anon.wei.limo](https://anon.wei.limo/) | The reference app: one page that shields, sends privately, withdraws, takes payments at a deposit address, and shields from or withdraws as a token. Also served by name as `anon.wei` ([the reference app](#the-reference-app-anonwei)). | Ethereum, Base, Robinhood Chain |
-| [tacit.finance/pay/eth](https://tacit.finance/pay/eth/), and "On this device" on the [tacit.finance](https://tacit.finance/) front page | The same pool without token swaps: shield, send, withdraw, a deposit address, payment links. On Ethereum an asset row under the chain row picks the private USDC, USDT and TAC pools beside ETH ([addresses](#addresses)): each its own balance, deposit (a permit signed for its router, else the approval in one batch with it, else an approval first), private send, withdrawal through the relay (its fee in the token) or the wallet, and Receive, whose payment link and QR name the token (`#pay=…&asset=usdc&amount=25`); one Tacit address takes payments in any of them. The front page's Send tab offers the same three (balance, relay fee in the token, then the device sheet's form with the address and the amount filled). | Ethereum, Base, Robinhood Chain and **MegaETH** (the token pools: Ethereum) |
+| [anon.wei.limo](https://anon.wei.limo/) | The reference app: one page that shields, sends privately, withdraws, takes payments at a deposit address, shields from or withdraws as a token, and holds the token pools beside ETH. Also served by name as `anon.wei` ([the reference app](#the-reference-app-anonwei)). | Ethereum, Base, Robinhood Chain |
+| [tacit.finance/pay/eth](https://tacit.finance/pay/eth/), and "On this device" on the [tacit.finance](https://tacit.finance/) front page | The same pool without token swaps: shield, send, withdraw, a deposit address, payment links. An asset row under the chain row picks that chain's private token pools beside ETH (Ethereum: USDC, USDT, TAC and wstETH; Base: USDC, USDT and wstETH; Robinhood Chain: USDG and USDe; [addresses](#addresses)): each its own balance, deposit (a permit signed for its router, else the approval in one batch with it, else an approval first), private send, withdrawal through the relay (its fee in the token) or the wallet, and Receive, whose payment link and QR name the token (`#pay=…&asset=usdc&amount=25`, with `&chain=base` off Ethereum); one Tacit address takes payments in any of them. "On this device" on the front page lists the Ethereum token pools, and TACD and TACE beside them. The front page's Send tab sends from the Ethereum USDC, USDT and TAC pools too (balance, relay fee in the token, then the device sheet's form with the address and the amount filled). | Ethereum, Base, Robinhood Chain |
 | [tacit.finance](https://tacit.finance/#card=swap), the front page's Swap tab, "Swap privately" | A swap in two halves: the wallet's ETH or a token deposited now (into the ETH pool, a token through the zap, below, or into the token's own pool where it is open, [addresses](#addresses)); later the swap's share withdrawn into a swap that pays another address (withdraw-and-call, sent by the keeper), the rest left a note. | Ethereum |
 | [Secret Sats](https://tacit.finance/sats/), ETH tab | The same pool beside the Bitcoin pool: one address (`bp1…`) receives in both. | Ethereum, Base, Robinhood Chain |
 | [The standalone wallet](#standalone-wallet) | The whole wallet as one ES module, for your own app. | Ethereum, Base, Robinhood Chain and MegaETH |
@@ -49,7 +51,8 @@ these addresses). On any other chain, treat code at these addresses as unrelated
 proof's `asset` input is `keccak256(abi.encode(chainId, pool, token)) mod p`, so the same circuit, proving key and verifier serve an
 ERC-20 pool. Three were deployed with the TAC vaults ([`contracts/deployments/tac-vaults.json`](../contracts/deployments/tac-vaults.json)),
 for TAC and the vaults' two synths, TACD (a dollar) and TACE (an ether); each pool's first block is 26,201,971 and its router's 26,201,972.
-The relay serves them: the keeper service runs one keeper per pool beside the ETH pool's, at
+The front page's tile and Swap card send private TAC payments to the Tacit chain rather than the TAC pool; TAC already in the
+TAC pool still comes out. The relay serves the three pools: the keeper service runs one keeper per pool beside the ETH pool's, at
 `https://tacit-evm-pool-keepers.onrender.com/1-tac/evm-pool/keeper` (and `/1-tacd/`, `/1-tace/`), with the same routes as every
 keeper (quote, relay, deposit boxes, receive boxes, the history feed). They send from the Ethereum keeper's address,
 `0x7c9f8aE4e48Cbb2727F95b6477a1cf92bCFc43D0` (one wallet for the gas, its sends in one queue), which fronts the gas in ETH and is paid in
@@ -69,34 +72,38 @@ EIP-5792 batch, and only otherwise an approval transaction first, always for exa
 | TACD pool (asset TACD `0xA0f6B02561C8ef08335B69aD25e022C0B342147C`) and router | `0x0000007bDb91d1aa0b5D3106Fd1c44C784b33DBA`, `0x000000e96fcFf90F220fa65F8b82C6114Cd1Cc30` |
 | TACE pool (asset TACE `0x9DE27883C5Dc9Db47BE12E595D59b8f1aBEC8570`) and router | `0x00000091974fB81e7eBA4cF2Cb24869c00a9A1a1`, `0x000000e66C32bEC739180A5eDeeB40A8225c5223` |
 
-**Any other ERC-20: a pool anyone opens, on Ethereum.** Every other token's pool is the same two contracts with that token as the asset:
-`TacitEvmPool(verifier, token)` and its own `TacitEvmPoolRouter(pool, zRouter, Permit2, V1, PoseidonT5)` (a router is bound to one pool and
-takes its token by an allowance, an EIP-2612 permit, Permit2 or a wallet batch, so no other router is needed). Both sit at CreateX CREATE2
-addresses fixed by the token alone, under open salts: 20 zero bytes, the flag `0x00`, then the first 11 bytes of
-`keccak256("tacit-evm-token-pool-v1" ‖ uint256(chainId) ‖ token)` (the router's salt says `router`). The init code is the creation code the
-live TAC pool and router were built from ([`dapp/evm-pool/token-pool-code.json`](../dapp/evm-pool/token-pool-code.json), written by
-`tools/token-pool-code.mjs` only if it rebuilds their init-code hashes), so whoever sends it, the contract is the same, and
-[`dapp/evm-pool-tokens.js`](../dapp/evm-pool-tokens.js) gives any page a token's pool and router from the token alone (`poolOf`) and
-checks they are there (`poolState`).
+**Any other ERC-20: a pool anyone opens, on Ethereum, Base and Robinhood Chain.** Every other token's pool is the same two contracts with
+that token as the asset: `TacitEvmPool(verifier, token)` and its own `TacitEvmPoolRouter(pool, zRouter, Permit2, V1, PoseidonT5)` (a router
+is bound to one pool and takes its token by an allowance, an EIP-2612 permit, Permit2 or a wallet batch, so no other router is needed; `V1`
+is zero off Ethereum). Both sit at CreateX CREATE2 addresses fixed by the chain and the token alone, under open salts: 20 zero bytes, the
+flag `0x00`, then the first 11 bytes of `keccak256("tacit-evm-token-pool-v1" ‖ uint256(chainId) ‖ token)` (the router's salt says
+`router`). The init code is the creation code the live TAC pool and router were built from
+([`dapp/evm-pool/token-pool-code.json`](../dapp/evm-pool/token-pool-code.json), written by `tools/token-pool-code.mjs` only if it rebuilds
+their init-code hashes), so whoever sends it, the contract is the same, and [`dapp/evm-pool-tokens.js`](../dapp/evm-pool-tokens.js) gives
+any page a token's pool and router on a chain from the token alone (`makeTokenPools({ code, keccak256, chain })`, then `poolOf`) and checks
+they are there (`poolState`).
 - **Opening one.** One transaction from anyone, `openTx(token)`: Multicall3's `aggregate3` calling CreateX's `deployCreate2` for the
   pool and then its router (about 4.4M gas, paid in ETH by whoever sends it), or only the router if the pool is there. The swap page
   reads whether a token's pool and router are there in one call (Multicall3, `poolState`) and offers the opening to the first person who
   swaps privately from any token whose pool is not open, beside the ETH pool's route;
   `tools/token-pool-open.mjs` writes the transaction for each served pool not open yet, for any wallet to send, and each is a job on
   [tacit.finance/tasks](https://tacit.finance/tasks/) (paid in TAC; see docs/TASKS.md).
-- **The relay.** It serves the pools of the tokens in `SERVED` (USDC and USDT; their pool and router addresses are listed there) and any
-  its operator adds (`EVM_POOL_TOKEN_POOLS_ALLOW_1`): tokens deep enough on chain that whoever opens a pool cannot set the price its fees
-  are taken at. Other tokens' holders swap privately through the ETH pool (the zap), whose crowd a pool of their own would only split.
+- **The relay.** It serves the pools of the tokens in `SERVED` on Ethereum (USDC and USDT; their pool and router addresses are listed
+  there) and, on each chain, any its operator adds (`EVM_POOL_TOKEN_POOLS_ALLOW_<chainId>`): tokens deep enough on chain that whoever opens
+  a pool cannot set the price its fees are taken at. It serves USDC, USDT and wstETH on Ethereum and Base, and USDG and USDe on Robinhood
+  Chain; `GET https://tacit-evm-pool-keepers.onrender.com/token-pools?chainId=<id>` lists them. Other tokens' holders swap privately
+  through the ETH pool (the zap), whose crowd a pool of their own would only split.
   Any other token's pool is kept once someone names it: `POST https://tacit-evm-pool-keepers.onrender.com/token-pools` with
-  `{ "token": "0x…" }` (the swap page does, after opening one and when it finds one open that the relay does not serve yet; `GET` lists
-  the pools served). Its pool and router must be on chain where the salts put them, and it is served on a daily allowance of gas (0.003 ETH
-  by default): its token's price is only as sound as its thinnest market, so a send past the allowance, or a quote for one, is refused. The keeper service reads CreateX's `ContractCreation` logs under those tokens' pool salts, keeps a creation
+  `{ "token": "0x…", "chainId": 1 }` (`chainId` is Ethereum when left out; the swap page posts it, after opening one and when it finds one
+  open that the relay does not serve yet). Its pool and router must be on chain where the salts put them, and it is served on a daily
+  allowance of gas (0.003 ETH by default): its token's price is only as sound as its thinnest market, so a send past the allowance, or a
+  quote for one, is refused. The keeper service reads CreateX's `ContractCreation` logs under those tokens' pool salts, keeps a creation
   only at the address the salts give, and serves the pool once its router answers `POOL()` with it, at
-  `https://tacit-evm-pool-keepers.onrender.com/1-x<the token's first ten hex digits>/evm-pool/keeper`, with the routes every keeper has.
-  It sends from `0x7c9f8aE4e48Cbb2727F95b6477a1cf92bCFc43D0` like the others and is paid in the token, at the lowest price zQuoter gave for
-  one token in ETH over the last ten minutes; with no quote it refuses fees in the token. A wallet takes a quote only from that address, for
-  that pool, and at most `maxRelayFee` (about 0.05 ETH's worth). Any other token's pool can be opened the same way and used from a wallet
-  that sends itself, paying gas in ETH.
+  `https://tacit-evm-pool-keepers.onrender.com/<chainId>-x<the token's first ten hex digits>/evm-pool/keeper`, with the routes every keeper
+  has. It sends from that chain's keeper address (on Ethereum `0x7c9f8aE4e48Cbb2727F95b6477a1cf92bCFc43D0`, like the others) and is paid in
+  the token, at the lowest price zQuoter gave for one token in ETH over the last ten minutes; with no quote it refuses fees in the token. A
+  wallet takes a quote only from that address, for that pool, and at most `maxRelayFee` (on Ethereum about 0.05 ETH's worth). Any other
+  token's pool can be opened the same way and used from a wallet that sends itself, paying gas in ETH.
 - **What it hides.** A withdrawal hides which of the pool's deposits paid it; a pool's crowd is its own deposits, so a new one has few.
   Moving notes to V1 works only for an asset V1 has registered.
 
@@ -105,11 +112,15 @@ CREATE2 under one salt anyone may use (20 zero bytes and the flag `0x00`, which 
 no deployer and no chain id is mixed in): it lands at the same address on every chain, and the address is fixed by the registry's
 init code (19,163 bytes, hash `0x0a66d640…1031`, built under the `checkpoints` foundry profile: no via-IR, 200 runs, no metadata
 hash), so nothing but that exact code can ever be there and any account may deploy it. It is deployed on Ethereum, Base, Robinhood
-Chain and MegaETH by the `anon-wei-4` job on tacit.finance/tasks, or by hand from the localhost admin page
-`contracts/script/deploy-checkpoints.mjs`, which also shows each chain's newest point and posts one. It is not deployed on any chain
-yet; this section lists the chains once it is.
+Chain and MegaETH. The localhost admin page `contracts/script/deploy-checkpoints.mjs` shows each chain's newest point and posts one.
+Every other pool (the token pools) keeps its points in the hub, `TacitEvmPoolCheckpointsHub`, one contract per chain for every pool
+(`latest(pool)`, `pointAt(pool, size)`, `newest(pools)`), which reads the ETH pool's points through from the registry. The hub is at
+the same address on Ethereum, Base and Robinhood Chain.
 
-| Catch-up registry (`TacitEvmPoolCheckpoints`) | `0x00000000C3267616ED5E0DAA6F6490D109d6844D` |
+| Contract | Address |
+|---|---|
+| Catch-up registry (`TacitEvmPoolCheckpoints`, the ETH pool) | `0x00000000C3267616ED5E0DAA6F6490D109d6844D` |
+| Catch-up hub (`TacitEvmPoolCheckpointsHub`, every pool) | `0x00000000C824B4F120C03f4Bdd4Bf4656232E835` |
 
 PoseidonT5 is the standard deterministic deployment (poseidon-solidity, CREATE2 proxy
 `0x4e59b44847b379578588920cA78FbF26c0B4956C`); the deploy script lands it first on chains that lack it. The zap goes
@@ -127,6 +138,10 @@ What is deployed where:
 | Token list (token.list.wei; one registry, on Ethereum, that names the chain of each token) | yes | no | no | no |
 | Router's own zap entry points | on | on | on | off (the router was deployed with zRouter set to zero, and cannot change) |
 | Relay (keeper) | yes | yes | yes | yes |
+| Token pools anyone opens, and their relay | yes | yes | yes | no |
+| TAC, TACD and TACE pools | yes | no | no | no |
+| Catch-up registry | yes | yes | yes | yes |
+| Catch-up hub | yes | yes | yes | no |
 | V1 wrap boxes and `withdrawToV1` | yes | no | no | no |
 
 Everything the pool does (shield, private send, withdraw, deposit addresses, withdraw-and-call) needs only the first
@@ -277,7 +292,7 @@ paid the sender. A link's index is chosen only after that chain's history is rea
 ### An onchain copy of the proving files (Base Sepolia)
 
 The files a wallet fetches from tacit.finance or IPFS and checks against a pinned SHA-256 are also stored as contract code
-on Base Sepolia (chain 84532), written on 4 October 2026 (the standalone wallet's current build on 12 October 2026). An
+on Base Sepolia (chain 84532), written on 4 October 2026 (the standalone wallet's build on 12 October 2026). An
 app can read them from any Base Sepolia node when every mirror is down, and must still check the hash. A testnet is not
 permanent: this is one copy among several, not a replacement for the mirrors.
 
@@ -287,7 +302,7 @@ permanent: this is one copy among several, not a replacement for the mirrors.
 | `transact.wasm` (witness program) | 4,916,992 | 201 | `02dd5e84970e5bc629a7a3cd4d7eae5fc9ca05579fa22c9b39b5ea70c8d8a6c1` | `0xc63e43d159429583A9fb3fF0b5053e4D12415F55` |
 | `transact_vk.json` (verifying key) | 4,761 | 1 | `f3e36ac06ad59428003b90abd80b807180badeb06c3960c50b060ebc59b626b3` | `0x8649Dd8ec5b0DE7de9F6934A13188E2b868B975B` |
 | `pin.json` | 1,501 | 1 | `79ddf12a68239eb9d1ddeaff9518d05ef57fa56e20deea8aae730413c3be78f9` | `0x75578ab320147Af1f8d39e7e3643621Bc57e5bE9` |
-| `tacit-evm-pool-wallet.js` (standalone wallet, as served) | 667,636 | 28 | `384a88220fb78f576e60480439bceb3e91e0fe8a32557f5c01c672390b81f5bc` | `0x0bFAcFe74c2FfA357BCcd211Ac8b2C687788c0b8` |
+| `tacit-evm-pool-wallet.js` (standalone wallet, 12 October 2026 build) | 667,636 | 28 | `384a88220fb78f576e60480439bceb3e91e0fe8a32557f5c01c672390b81f5bc` | `0x0bFAcFe74c2FfA357BCcd211Ac8b2C687788c0b8` |
 
 The wallet's earlier build (`cdc59dd5d5c95370a30161dd64637e32590b85290241944184283a05098c15c0`, 705,182 bytes in 29
 pieces, manifest `0x202fF20B540794CD6f8F54cF80A0Af6170BEaDB4`) is there too. Each file was read back and matched its
@@ -305,7 +320,7 @@ SHA-256 when it was written.
 - **Reading it.** `TacitArtifacts` at `0x250FCb513A809727b9b538A313895Eec5A36674C` (verified on Sourcify and Basescan)
   names the four ceremony files and the wallet's earlier build in `files()`; `manifest(m)` (SHA-256, size and piece
   addresses), `piece(m, i)`, and `check(m)` (reassembles a small file onchain and compares its SHA-256) read any manifest,
-  the wallet's current one included. Or fetch the pieces with `eth_getCode` and join them
+  the wallet's 12 October one included. Or fetch the pieces with `eth_getCode` and join them
   without their first byte, then check the SHA-256. A reader that does this and checks the hash is
   `tacit-pay/deploy/artifact-read.mjs` in the ERC8244/dapps repository.
 - **What is not there.** The Groth16 verifier contract is not on Base Sepolia. It lives at the address above on each
@@ -326,8 +341,11 @@ function transact(
 | `< 0` | Withdraw `-extAmount` wei to `recipient` (must be non-zero). |
 | `0` | Private transfer inside the pool. |
 
-A withdrawal to a contract first calls it with 100,000 gas. If the contract does not accept the ETH, the pool delivers
-it by a forced transfer that runs no code on the contract (`forceSafeTransferETH`), so the withdrawal does not revert.
+In a token pool, amounts are the token's base units: a deposit takes `extAmount` from the sender's allowance (no
+`msg.value`), and a token that arrives short of it (a fee-on-transfer token) is refused.
+
+A withdrawal from the ETH pool to a contract first calls it with 100,000 gas. If the contract does not accept the ETH,
+the pool delivers it by a forced transfer that runs no code on the contract (`forceSafeTransferETH`), so the withdrawal does not revert.
 
 `fee` goes to `relayer` in the same call (a non-zero fee needs a non-zero relayer). The contract recomputes the asset,
 `extDataHash` and `publicAmount` itself, so recipient, amounts, relayer, fee and memos cannot be altered after the
@@ -382,7 +400,7 @@ on the wrong chain can never be completed there, only reclaimed. Fund a box with
 once completed it has code, and a 2300-gas stipend transfer to it can fail.
 
 A keeper service completes boxes for its fee: `POST /evm-pool/keeper/deposit` with `{ intent, hint }` from
-`depositIntent()` (each chain's keeper URL is `keeper` in `contracts/deployments/evm-pool.json`). Anyone can run one
+`depositIntent()` (each chain's keeper is `https://tacit-evm-pool-keepers.onrender.com/<chainId>/evm-pool/keeper`). Anyone can run one
 (`worker-relay/src/evm-pool-keeper.js`); the same service sweeps receive boxes and relays ([Relaying](#relaying)).
 Its `GET /quote` says what completing a box costs it: `depositGas` (its `EVM_POOL_KEEPER_DEPOSIT_GAS`, default 500,000) and `depositFee`, the
 least fee a box may carry at that gas. A page that makes the box takes its fee from that figure (a half over it, so a rise in gas before the
@@ -480,8 +498,9 @@ as recipient, or an exact-in route for an amount of the token sized so its floor
 Swap privately sizes it that way, so splits and two-hop routes can be used; the ETH over the deposit comes back). The proof is an ordinary deposit, built against the pool's head; if another deposit lands first, the call
 reverts (`StaleRoot`) and nothing moves. The zap holds nothing between transactions, takes tokens only from
 `msg.sender`, allows zRouter only within the call (reset to zero after the swap), and accepts ETH only during a zap.
-The router has the same idea in one entry point of its own, `zapTokenToDepositWithPermit2(tx, amountIn, permit, sig,
-swapData)`, which is off where the router was deployed without zRouter (MegaETH).
+The router has the same idea in entry points of its own, `zapTokenToDepositWithPermit2(tx, amountIn, permit, sig,
+swapData)` and, for a token pool, `zapETHToDeposit(tx, swapData)` (ETH in, the pool's token deposited), which are off where the
+router was deployed without zRouter (MegaETH).
 
 A wallet picks the way that asks least of the user, in this order: an allowance it already has; an EIP-2612 signature
 (an ordinary account, or one delegated under EIP-7702); a Permit2 signature when the token is already approved to
@@ -575,15 +594,16 @@ combining before a large spend; each combine is one more transaction, with its o
 On live transactions a shield, send or withdraw typically uses about 350,000 to 440,000 gas on Ethereum, Base and Robinhood
 Chain, and collecting a deposit-address payment about 470,000 to 510,000. MegaETH prices storage and contract creation
 higher, so the same actions use more gas there (measured on 5 October 2026: about 580,000 to 625,000, and about 1.1
-million for collecting a deposit-address payment) at a far lower price per unit. Fees are each relay's quote on 12 October
-2026, with ETH at about $2,555. `GET /evm-pool/keeper/quote` returns the fee now.
+million for collecting a deposit-address payment) at a far lower price per unit. Fees are each relay's quote on 13 November
+2026, with ETH at about $1,925; own-wallet costs are that day's gas price for a typical transaction. `GET /evm-pool/keeper/quote`
+returns the fee now.
 
 | | Ethereum | Base | Robinhood Chain | MegaETH |
 | --- | --- | --- | --- | --- |
-| Your own wallet: shield, send or withdraw | about 0.00003 ETH ($0.08) | about 0.000005 ETH ($0.013) | about 0.000008 ETH ($0.020) | about 0.000001 ETH ($0.003) |
-| Relayer fee: send or withdraw | 0.0000679 ETH ($0.17) | 0.000005 ETH ($0.013) | 0.0000109 ETH ($0.028) | 0.0000011 ETH ($0.003) |
-| Relayer fee: collect a deposit-address payment | 0.0000906 ETH ($0.23) | 0.0000043 ETH ($0.011) | 0.0000145 ETH ($0.037) | 0.0000018 ETH ($0.005) |
-| Smallest payment a relayer collects | 0.0362 ETH ($93) | 0.0017 ETH ($4.42) | 0.0058 ETH ($15) | 0.00072 ETH ($1.84) |
+| Your own wallet: shield, send or withdraw | about 0.00005 ETH ($0.09) | about 0.0000025 ETH ($0.005) | about 0.000008 ETH ($0.015) | about 0.0000006 ETH ($0.001) |
+| Relayer fee: send or withdraw | 0.0000975 ETH ($0.19) | 0.000005 ETH ($0.010) | 0.0000109 ETH ($0.021) | 0.0000011 ETH ($0.002) |
+| Relayer fee: collect a deposit-address payment | 0.000121 ETH ($0.23) | 0.0000043 ETH ($0.008) | 0.0000145 ETH ($0.028) | 0.0000018 ETH ($0.003) |
+| Smallest payment a relayer collects | 0.00061 ETH ($1.17) | 0.0017 ETH ($3.32) | 0.000073 ETH ($0.14) | 0.00072 ETH ($1.39) |
 
 A payment below the minimum waits at its address until it grows or you collect it yourself, which costs gas only.
 
@@ -636,12 +656,13 @@ it is asked to watch; and at `/events`, the block a history read begins in: the 
 own place, and the wallet's own place only when it read the feed in the last ten minutes. It cannot change the recipient, amount,
 relayer or fee, and it holds no key that can spend. Sending from the user's own wallet is always possible.
 
-With the keeper service (each chain's `keeper` URL and `keeperAddress` are in `contracts/deployments/evm-pool.json`):
+With the keeper service (each chain's keeper is `https://tacit-evm-pool-keepers.onrender.com/<chainId>/evm-pool/keeper`, its
+address is `keeperAddress` in `contracts/deployments/evm-pool.json`, and `GET /chains` on the service lists every pool it serves):
 
 1. `GET /evm-pool/keeper/quote` → `{ relayer, fee, sweepFee, receiveMin, … }`: the keeper's address and the fee it
-   accepts now, plus what collecting a receive box costs now (`sweepFee`) and the smallest box balance whose 0.25%
-   cap pays for it (`receiveMin`). A smaller balance stays in its box, owned by its keys, and is collected once more
-   arrives or gas falls.
+   accepts now, plus what collecting a receive box costs now (`sweepFee`) and the smallest box balance it collects now
+   (`receiveMin`: the 0.25% cap pays the part of `sweepFee` the keeper does not cover itself). A smaller balance stays in
+   its box, owned by its keys, and is collected once more arrives or gas falls.
 2. Build and prove the transaction with that `relayer` and `fee` (`withdrawalWitness` for a withdrawal, or a
    transfer with `extAmount = 0`).
 3. `POST /evm-pool/keeper/relay` with `{ tx: { pA, pB, pC, publicInputs, recipient, extAmount, relayer, fee, memo0,
@@ -734,7 +755,8 @@ sends every request it makes to a relay through a forwarder, from its first requ
 request when no forwarder answers rather than send it directly. It hides the person's address from the relay and from whatever hosts it. It does
 not hide it from the chain nodes the page reads through (they see the wallet's receive-box addresses, some seventy balance reads a minute for a
 signed-in tab), or from any other service a page asks (the points lookups at `api.tacit.finance` send the connected Ethereum wallet's address, when one is
-connected). The page says the first in one line under the switch.
+connected). The page says the first in one line under the switch. `ROUTE.forwarders` is empty in `dapp/private-route.js`
+today, so no page offers the switch.
 
 **Turning it on.** Each step can be left standing; nothing a person sees changes until the last.
 1. Deploy the keepers with this code. The route is off without a key: `GET /<id>/evm-pool/keeper/info` has no `sealed`, `POST /sealed` is a 404.
@@ -807,12 +829,13 @@ from a Blob) and submission. It checks the ceremony files against their pinned h
 served at `https://tacit.finance/evm-pool/tacit-evm-pool-wallet.js` with `Access-Control-Allow-Origin: *`, as are the
 ceremony files beside it.
 
-Current build (667,636 bytes): sha256 `384a88220fb78f576e60480439bceb3e91e0fe8a32557f5c01c672390b81f5bc`, IPFS
-`bafybeihtthsjejf4ij3g2yfpkcvhavkvvw6tfryismkrw5c6ij5ifb6u3y` (pinned on Filebase), onchain copy on Base Sepolia
-([above](#an-onchain-copy-of-the-proving-files-base-sepolia)). The build is deterministic from the repository: `npm ci`
-in `build/`, then `node build/build-evm-pool-wallet.mjs` prints the same hash. The build before it, which knew only
-Ethereum, Base and Robinhood Chain, was
-`cdc59dd5d5c95370a30161dd64637e32590b85290241944184283a05098c15c0` (IPFS
+Current build, as served (674,893 bytes): sha256 `0e8431ebfbb5651d59340fe3b6ad9889d305d7e501aa81b21607042cb7d3df43`. The
+build is deterministic from the repository: `npm ci` in `build/`, then `node build/build-evm-pool-wallet.mjs` prints the
+same hash. The 12 October 2026 build (667,636 bytes, sha256
+`384a88220fb78f576e60480439bceb3e91e0fe8a32557f5c01c672390b81f5bc`) is pinned on IPFS
+(`bafybeihtthsjejf4ij3g2yfpkcvhavkvvw6tfryismkrw5c6ij5ifb6u3y`, Filebase) and stored on Base Sepolia
+([above](#an-onchain-copy-of-the-proving-files-base-sepolia)). The build before that, which knew only Ethereum, Base and
+Robinhood Chain, was `cdc59dd5d5c95370a30161dd64637e32590b85290241944184283a05098c15c0` (IPFS
 `bafybeigatwjp4gda4y3hj4zza7mgmk4qsipqs7gcgqipudql7625eefthy`).
 
 The wallet keeps its synced state in storage sealed under a key from the wallet's view scalar. It finds history
@@ -905,27 +928,27 @@ that the funds' origin is any V1 note holder rather than a public wallet.
 
 [anon.wei.limo](https://anon.wei.limo/) is a complete app for this pool in one HTML file, served from contract code on
 Ethereum. It offers Ethereum, Base and Robinhood Chain, the most liquid of the chains the pool is on: shield from a
-wallet or a token, send, withdraw to an address or as a token, a standing deposit address, payment links and a move to
-Base or Robinhood Chain. A community that wants the same service on another chain (the core pool is also on MegaETH, and
-more chains may follow) can start from it instead of from nothing.
+wallet or a token, send, withdraw to an address or as a token, a standing deposit address, payment links, the token
+pools and a move to Base or Robinhood Chain. A community that wants the same service on another chain (the core pool is
+also on MegaETH, and more chains may follow) can start from it instead of from nothing.
 
 | Where | What |
 |---|---|
 | `https://anon.wei.limo/` | The page, by name. `anon.wei` is registered in WNS (`0x0000000000696760e15f265e828db644a0c242eb`): `computeId("anon")`, then `resolve(id)` gives the contract that serves it. |
 | `https://<contract>.w4eth.io/` | The same page by contract address, through an ERC-8244 gateway (any contract with `html()`). |
 | `https://<contract>.1.w3link.io/` | Through ERC-4804 (`request()`). This gateway adds a script of its own after `<body>`, so its bytes are not the contract's. |
-| `html()` on the contract | The page itself, from any node: `cast call <contract> "html()(string)" --rpc-url <rpc>`. The call is a read: about 1.1 million gas for the current page, far under the usual 50 million call cap. |
+| `html()` on the contract | The page itself, from any node: `cast call <contract> "html()(string)" --rpc-url <rpc>`. The call is a read: about 1.6 million gas for the current page, far under the usual 50 million call cap. |
 
 **Finding the newest version.** The contract is a versioned wrapper. `latest()` called on any version walks `successor` to
 the newest, `successor()` and `PREVIOUS()` give the neighbours, and `PAGE_HASH`, `PAGE_LENGTH`, `chunkCount()` and
 `chunkAt(i)` describe what it serves. A version never redirects: it serves its own bytes forever, so a reader who audited
 one stays on it by not walking, and the keccak256 of `html()` must equal `PAGE_HASH`. The page also pins the proving key
-and witness program by SHA-256 and uses them only when they match, so a mirror cannot change what it proves with. On 12
-October 2026 the newest version is `0x0000002145004Fd9637c0FA5AED0A9Ea05E89A9D` (`PAGE_LENGTH` 340,906 bytes in 14
-chunks; `PAGE_HASH` `0x3aef828273b39c6b095d18c26d190ced0baf531ba076c9dc768898907c32d649`).
+and witness program by SHA-256 and uses them only when they match, so a mirror cannot change what it proves with. On 13
+November 2026 the newest version is `0x0000000d42137547140b0812E1178F025e08bc49` (`PAGE_LENGTH` 415,902 bytes in 17
+chunks; `PAGE_HASH` `0xc38edd73acfcad5a4d5049669f6d7853c32b4687904d6b3d56ce9ccac0feea12`).
 
-**Adapting it to a chain.** The source is the deployed page. Fetch `html()` and edit it, or read it with its chunker and
-deploy tools in `tacit-pay/` of the `ERC8244/dapps` repository. The places to change:
+**Adapting it to a chain.** The deployed page's script is minified. Its source, with the chunker and deploy tools, is in
+`tacit-pay/` of the `ERC8244/dapps` repository. The places to change there:
 - `CHAINS`: one entry per chain, with `chainId`, names, `explorer`, `relay` (the relay URL, or none), `deployBlock` (the
   pool's deploy block), `confirmations`, `gasReserve` and a list of `rpc` URLs. Add an entry for the new chain; a chain
   with no relay sends every spend from the user's wallet.
@@ -1014,8 +1037,8 @@ with no relay: it proves and sends everything itself.
 ## Questions
 
 Answers for people using the private ETH pool through anon.wei.limo or tacit.finance, and for integrators. Chains:
-Ethereum (1), Base (8453), Robinhood Chain (4663) and, for the core pool, MegaETH (4326). The anon.wei page offers the
-first three; the tacit.finance pay page offers all four.
+Ethereum (1), Base (8453), Robinhood Chain (4663) and, for the core pool, MegaETH (4326). The anon.wei page and the
+tacit.finance pages offer the first three; the standalone wallet all four.
 
 ### What is public and what is hidden
 

@@ -7,10 +7,17 @@ needs a build step, a framework or a backend. A starting skeleton is
 The protocol itself is in [`SPEC.md`](../SPEC.md); addresses are in [`DEPLOYMENTS.md`](./DEPLOYMENTS.md). Every path on one page,
 with its rules, the relay API, the addresses and the mainnet transactions behind each: [tacit.finance/build](https://tacit.finance/build/).
 
-**Only want private ETH payments, on Ethereum, Base and Robinhood Chain?** That is a separate, smaller pool —
+**Only want private ETH payments, on Ethereum, Base, Robinhood Chain and MegaETH?** That is a separate, smaller pool —
 one fixed Groth16 circuit, proved on the user's own device, no SP1, no relay witness — with its own guide:
 [`EVM-POOL.md`](./EVM-POOL.md). This guide is for the confidential pool: multi-asset notes, DeFi (swap, LP,
 lend, farm, OTC, bids) and the Bitcoin bridge, all through one SP1 program.
+
+**Private TAC payments in blocks?** The Tacit chain is a zk-rollup for private TAC payments, settled on Ethereum by
+`TacitBlocks` (`0x00000000000a9147ffd8d41d152d730ca5f84e6c`). Its wallet module is
+[`dapp/tacit-chain-client.js`](../dapp/tacit-chain-client.js), the user guide is
+[tacit.finance/docs/chain](https://tacit.finance/docs/chain/) and the spec is [`TACIT-BLOCKS.md`](./TACIT-BLOCKS.md).
+Private TAC moves from this pool onto the chain through an unwrap to the chain's shield inbox, and back by a hop
+(`OP_HOP`), which lands as a deposit in this pool.
 
 ---
 
@@ -26,10 +33,10 @@ lend, farm, OTC, bids) and the Bitcoin bridge, all through one SP1 program.
   successor (`createNextGen`), which closes this pool to new value while every exit stays open (see
   [Lineage](./DEPLOYMENTS.md#lineage)). `pool.successor()` reads zero while the pool is active.
 - A **memo** is emitted per created leaf: the note's opening, encrypted to its owner. It is the main way a
-  wallet recovers its notes from a seed. A few kinds of note carry an empty memo because their opening
-  re-derives from the wallet key instead (wrap deposits by index, bridge-mint destinations, cBTC bearer
-  notes). The notes a wallet mints for itself (change, LP shares, swap outputs, released collateral, claim and
-  refund notes, farm rewards) also re-derive from the key and a public anchor of the settle, so they are found
+  wallet recovers its notes from a seed. Some notes also re-derive from the wallet key, so a wallet finds them
+  without a memo: wrap deposits (by index), bridge-mint destinations and cBTC bearer notes. A cBTC mint, and a
+  bridge mint built with a derived blinding, carry an empty memo. The notes a wallet mints for itself (change,
+  LP shares, swap outputs, released collateral, claim and refund notes, farm rewards) also re-derive from the key and a public anchor of the settle, so they are found
   again even if a memo was lost; a note sent to someone else has only its memo.
 - You do not need to prove anything yourself. The **relay** proves and settles for a fee carved from the op.
   It receives the witness of the op you hand it, but never your wallet key or any note's blinding, so it can
@@ -54,8 +61,8 @@ reproduces the deposit id from the value alone.
 
 **Bitcoin value arrives two ways.** A bridge burn is re-minted as a note once, and a deployment-bound
 Bitcoin note (`T_CXFER_BOUND`) can be spent directly in the fast lane
-([SPEC §6.3](../SPEC.md#63-two-ways-bitcoin-value-reaches-ethereum)). Both wait on reflection. None of the
-flows in this guide depend on either.
+([SPEC §6.3](../SPEC.md#63-two-ways-bitcoin-value-reaches-ethereum)). Both wait on reflection. Only the
+bridge flows (§5f) depend on either.
 
 **A wrap is two steps.** `pool.wrap(...)` is a plain transaction that escrows funds and registers a *pending
 deposit* — no proof. The deposit becomes a spendable note only when an `OP_WRAP` settle consumes it. The
@@ -65,8 +72,8 @@ first step works with nothing but an RPC; the second needs the relay.
 
 Ethereum mainnet. The source of truth is
 [`contracts/deployments/1-createx.json`](../contracts/deployments/1-createx.json); read addresses from it.
-(A second, separate Tacit pool — private ETH only, multichain on Ethereum, Base and Robinhood Chain — has its
-own addresses; see §5h.)
+(The EVM pool, a separate Tacit pool on Ethereum, Base, Robinhood Chain and MegaETH, has its own addresses;
+see §5h.)
 
 | | |
 |---|---|
@@ -84,17 +91,19 @@ Asset ids (the pool keys by id, not by token address):
 | cBTC | `0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8` | `1e10` |
 | cUSD | `0x8f4490dd3728b0ee904d7a67c11b37ffd463a5c7f08b79810006995ee8a9679d` | `1e10` |
 | TAC | `0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b` | `1e10` |
+| cUSDT (USDT, 6 decimals) | `0xc50e8dd9666f64a23e5457d686382901f08aaea3554328fc4ac25d2f9fac6c00` | `1` |
 
 ETH is registered under its Bitcoin-side (tETH) link id, which keeps a bridged note and a wrapped note the
 same confidential asset. cBTC's id is a protocol constant; cUSD's is `keccak("tacit-cdp-debt-v1" ‖ engine)`, so
-it belongs to this engine ([SPEC §4.2](../SPEC.md#42-assets-and-units)).
+it belongs to this engine ([SPEC §4.2](../SPEC.md#42-assets-and-units)). cUSDT is USDT held in the pool's escrow,
+under the id every external ERC20 gets: `sha256("tacit-evm-token-v1" ‖ chainId ‖ token)`.
 
-Beyond this fixed set, `ConfidentialPool`'s asset registry is permissionless: anyone can register a new
+Beyond this set, `ConfidentialPool`'s asset registry is permissionless: anyone can register a new
 ERC20 under its own id, and the checks are self-attested by the candidate token contract. Registration is
 not a legitimacy or endorsement signal — resolve ids to token addresses only from the table above or from
 [`contracts/deployments/1-createx.json`](../contracts/deployments/1-createx.json), and if you build an
-asset picker or indexer over `registeredExternalPoolAssets` (`confidential-deployments.js`), do not present
-a registered asset as vetted by Tacit.
+asset picker or indexer over the pool's `AssetRegistered` events, do not present a registered asset as
+vetted by Tacit.
 
 ## 4. Reuse the dapp modules — do not reimplement the crypto
 
@@ -193,8 +202,15 @@ To pay the relay for step 2 in the same transaction, send the deposit through `W
 (`0x000000D218B03db5837943b0b05DeA2965AE956e`, cETH) instead of the pool: `wrapWithTip(bytes32 commit,
 uint256 amount, address tipRecipient)` (`0xfc24c435`) with `value = amount + tip`. It makes the same `pool.wrap`
 call with the same commit and forwards the tip in that call. Take `tip` and `tipRecipient` from
-`GET /confidential/quote?asset=cETH&amountWei=<amount>` (`recommendedWrapTipWei`, `recommendedTipRecipient`, and `tipSplitter` when there is one: the ops multisig stays the recipient the quote has always named and the relay counts a tip paid to either as paid, so a page that pinned the multisig keeps working; a page that wants its tip to reach the relay's wallets and the buyback pays `tipSplitter`);
-step 2 is unchanged.
+`GET /confidential/quote?asset=cETH&amountWei=<amount>`: `recommendedWrapTipWei`, and `recommendedTipRecipient` or
+`tipSplitter` (when the quote names one); the relay counts a tip paid to either address. `WrapTokenTipForwarder`
+(`0x0000007b1d93d72f698A861aA86Ac675D6AF7216`) does the same for a token wrap. In step 2, pass the deposit's
+transaction hash, `submitWrapSettle({ built, depositTx })`: the relay reads the tip from that transaction.
+
+To deposit and settle in one transaction, with no deposit left waiting, prove first:
+`tacit.proveWrap({ walletPriv, amountWei, ticker })` returns `{ built, proven }` before any value moves, and
+`tacit.wrapSettleCall({ built, proven })` returns the router call (`{ to, value, data, gasLimit }`) that deposits and
+settles it, for any wallet to send. A token wrap also passes the holder's `permit` or `permit2` for the router.
 
 `index` selects which deterministic note the wrap creates: `(nk, blinding)` are derived from your key, the
 asset and `index`. The same asset, value and index produce the same deposit id, which the pool rejects
@@ -218,15 +234,12 @@ no deadline, so a pending deposit is safe to leave exactly where it is and settl
 the same witness — `tacit.buildWrap({ walletPriv, amountWei, ticker, index })` with the **same** `index` as the
 original attempt — and retrying `submitWrapSettle({ built })`. `buildWrap` is synchronous and deterministic:
 the note, its commitment and the deposit id all come from `(walletPriv, asset, index, amountWei)` alone
-(`confidential-pool-ux.js:612-668`), so rebuilding reproduces the exact deposit already sitting in escrow
+(`buildWrap` and `_wrapOf` in `confidential-pool-ux.js`), so rebuilding reproduces the exact deposit already sitting in escrow
 rather than a new one — only the memo's sealing ephemeral is fresh per call, and a wrap deposit's note never
 depends on its memo to be recovered (it re-derives from the key and index instead, §1). This is the other
 reason to record `index` alongside the collision-avoidance one above: it also doubles as your recovery key for
-this deposit. `dapp/confidential-pool-tab.js`'s `wireResumeWraps` is the shipped version of exactly this
-pattern — for each pending deposit it rebuilds with `buildWrap` and resubmits with `submitWrapSettle` — and the
-banner and Resume button it wires up (`pendingWrapRowsHtml`, deduplicated across tabs with
-`notifyPendingWrapsOnce`) live in `dapp/confidential-scan-health.js`, shared with the send tab so both surfaces
-show the same stuck deposit the same way.
+this deposit. The front page (`dapp/index.html`) finishes a waiting deposit this way: it rebuilds with
+`buildWrap` at the recorded index and resubmits with `submitWrapSettle`.
 
 ### Wrap and split in one transaction (`wrapAndSend`)
 
@@ -243,12 +256,12 @@ by someone else's pubkey could never be spent, and the deposit would be lost. To
 describes the one-transaction shape, not a way to pay a third party.
 
 **`wrapAndSend`'s recovery path is different from plain wrap's, and more restrictive.** Its outputs — the
-amount you send plus change — are sealed under fresh, random blindings each time `buildWrapTransferOp` runs,
-not the index-derived kind a plain wrap's single deposit note uses. So calling `wrapAndSend` again after a
-failure does **not** reproduce the same op the way `buildWrap` does: it seals different memos and a different
-`depositCommit`, and if the first attempt's proof was already generated (or its transaction already sent)
-before it failed, a naive retry risks a second real wrap-and-send against the same balance rather than a safe
-replay of the first. Recover instead by keeping what the first attempt already handed you, before it failed:
+amount you send plus change — re-derive from the key and the deposit id (`deriveOutput`, §1), so the notes
+are found again either way. But calling `wrapAndSend` again after a failure does **not** replay the first
+attempt: without a pinned `index` it takes the next unused one, so it builds a new deposit, a new
+`depositCommit`, fresh memos and a new proof job. If the first attempt's proof was already generated (or its
+transaction already sent) before it failed, a naive retry risks a second real wrap-and-send. Recover instead by
+keeping what the first attempt already handed you, before it failed:
 
 ```js
 let saved;
@@ -272,18 +285,17 @@ const sent = await tacit.sendPreparedTx({ walletPriv, to: resumed.to, value: res
 exact memos and commit the first attempt sealed — it proves nothing new, so it cannot diverge into a different
 op. It hands back the prepared call rather than sending it, so broadcast it yourself, e.g. with
 `tacit.sendPreparedTx`. Two limits worth knowing: it only ever builds the native-ETH calldata
-(`wrapAndSettleETHCalldata`), so an ERC20 `wrapAndSend` that fails after its job is queued has no resume path
-today; and all four of `jobId`, `memos`, `depositCommit` and `wrapAmount` are required, so losing any one of
+(`wrapAndSettleETHCalldata`), so an ERC20 `wrapAndSend` that fails after its job is queued has no resume path;
+and all four of `jobId`, `memos`, `depositCommit` and `wrapAmount` are required, so losing any one of
 them before it's persisted leaves nothing to resume — check the wallet's plain and shielded balances before
-trying again from scratch rather than assume the first attempt never landed. `dapp/confidential-send-tab.js`'s
-`wireResumeWrapSend` (with `_saveWrapSendResume` / `_loadWrapSendResume` and the `pendingWrapSendHtml` banner)
-is the shipped version of exactly this — read it for the persistence shape.
+trying again from scratch rather than assume the first attempt never landed.
 
 ### Spend
 
 ```js
-// self-send / merge — recipientPubHex must be your own
-await tacit.transfer({ walletPriv, notes, recipientPubHex: me.pubHex, amount: 5_000_000n, fee: 100n });
+// self-send / merge — recipientPubHex must be your own; a relayed op's fee must clear the floor
+const fee = await tacit.quoteOpFee('cETH', 'transfer');
+await tacit.transfer({ walletPriv, notes, recipientPubHex: me.pubHex, amount: 5_000_000n, fee });
 
 // exit to a public address
 await tacit.unwrap({ note: notes[0], walletPriv, recipient: '0xabc…' });
@@ -304,7 +316,7 @@ it, or you do). A direct call to the pool, or a plain ETH transfer to its addres
 - **Names.** A receiver can publish their `tacit1…` address as the `finance.tacit` text record of a `.wei`, `.gwei` or `.eth` name
   (`.base.eth` is not read), and the send tab accepts the name in the recipient field. `dapp/confidential-names.js`
   (`makeConfidentialNames({ call, send, secp, keccak256 })`) is the same code for your own dapp:
-  `resolveName(name)` returns `{ name, address, key, source, node }`, where `key` is the Ethereum-side key to pass as `recipientPubHex`;
+  `resolveName(name)` returns `{ name, address, key, pool, source, node }` (`key` and `pool` when the record carries them), where `key` is the Ethereum-side key to pass as `recipientPubHex`;
   `primaryName(address)`, `planPublish` and `publish` cover the receiver's side. Behaviour to keep:
   - Lookups read Ethereum mainnet only, whatever network the page is on, and are never cached; look the name up at send time and pin the key for that send.
   - The record must decode strictly: bech32m prefix `tacit`, version `0x00`, and the length its flags fix (see *Tacit address format* below). A writer publishes it with an Ethereum-side key (flag `0x02` with its 33 bytes, or `0x80`, which makes it the spend key), as every address a Tacit app derives has. A reader can be more lenient: `resolveName` also takes a record whose only payable lane is the pool lane (`0x04`), which a pool payment needs and nothing more; a Tacit-pool private send needs the Ethereum-side key, a valid secp256k1 point, and refuses a record without it, with the reason.
@@ -353,8 +365,8 @@ Which ops need a fee: an op that carries a fee leg (`transfer`, `unwrap`, LP ops
 nonzero fee) must offer at least the floor from `GET /confidential/quote`, or the relay refuses it at submit. The
 static cUSD floor is 30,000,000 units. A fee in an asset with no direct price feed is valued from a public AMM pool
 that pairs it with cETH, a USD asset or cBTC, when that pool is deep enough; with no such pool the fee is relayed
-as unpriced work. Ops with no fee (`wrap`, `cbtcmint`, `farmbond`, a zero-fee `bridgemint`, adaptor and stealth
-locks, `cdptopup`) relay for free within a daily budget. Pool founding cannot be relayed: it needs
+as unpriced work. Ops with no fee (`wrap`, `cbtcmint`, `farmbond`, a zero-fee `bridgemint`, adaptor locks and
+claims, stealth locks, `cdptopup`) relay for free within a daily budget. Pool founding cannot be relayed: it needs
 `createPairAndSettle`, so use `selfRelay: true`.
 
 ### Bitcoin-backed cBTC and CDPs
@@ -427,7 +439,8 @@ const pending = await farm.pending(receiptLeaf);    // { units, tac }: units is 
 
 // 4. Unbond returns the LP note; harvest first, unharvested reward is forfeited. tacit.farmUnbond refuses
 //    while more than 0.001 TAC is pending unless you pass forfeitPending: true.
-// 5. Redeem: tacit.unwrap(wTAC note) -> WrappedTac.withdraw(amount, to) -> TAC ERC20.
+// 5. Redeem: tacit.farmRedeem({ walletPriv, note }) unwraps the wTAC note and returns the
+//    WrappedTac.withdraw(amount, to) call (in `next`) that turns the wTAC ERC20 into TAC.
 ```
 
 Three things to get right:
@@ -444,7 +457,7 @@ Three things to get right:
   unclaimed in it is forfeited to the treasury surplus.
 
 `tacit.lpBond` adds liquidity and bonds in one settle (enabled per pool by `farmControllers[poolId]`). It carries
-no relay fee leg, so call it with `selfRelay: true`, as the Earn tab does.
+no relay fee leg, so send its settle yourself: `selfRelay: true`, or a `selfSettle` callback, as the front page does.
 
 **One key, many processes.** Every note sealed to a key shows up in that key's scan, including notes another
 process created. Two scripts sharing a wallet key will pick each other's notes as inputs. Give each process its
@@ -474,8 +487,8 @@ allocation and claims it.
 | Host | URL | For |
 |---|---|---|
 | the dapp's origin | `/airdrop/v1/proofs/<xx>.json` (`https://tacit.finance/airdrop/v1/proofs/<xx>.json`) | the tacit.finance dapp. It sends no CORS header, so a page on another origin cannot read it |
-| jsDelivr, pinned to a commit | `https://cdn.jsdelivr.net/gh/z0r0z/tacit@1b2eedde8490801c9ef4406020530059162e6d47/dapp/airdrop/v1/proofs/<xx>.json` | any page: CORS-enabled and immutable |
-| GitHub raw, same commit | `https://raw.githubusercontent.com/z0r0z/tacit/1b2eedde8490801c9ef4406020530059162e6d47/dapp/airdrop/v1/proofs/<xx>.json` | fallback for the same files, CORS-enabled |
+| jsDelivr, pinned to a commit | `https://cdn.jsdelivr.net/gh/src-company/tacit@1b2eedde8490801c9ef4406020530059162e6d47/dapp/airdrop/v1/proofs/<xx>.json` | any page: CORS-enabled and immutable |
+| GitHub raw, same commit | `https://raw.githubusercontent.com/src-company/tacit/1b2eedde8490801c9ef4406020530059162e6d47/dapp/airdrop/v1/proofs/<xx>.json` | fallback for the same files, CORS-enabled |
 
 The files are public and about 8.7 MB in all (18 to 64 KB each), so you can also serve your own copy from the same paths. A lookup tells the file's host one byte of the
 address; the `eth_call` that follows carries the whole address to your RPC.
@@ -489,7 +502,7 @@ import { keccak_256 } from '@noble/hashes/sha3';
 
 const AIRDROP = '0x4b4cb98D0C836c2783Ac46f0078b904dab533AE8';
 const ROOT    = '0x27451b320d5aa9631f7a3fd8adcfa537db8d792dd49aad9ab0951af0c2986a10';
-const PROOFS  = 'https://cdn.jsdelivr.net/gh/z0r0z/tacit@1b2eedde8490801c9ef4406020530059162e6d47/dapp/airdrop/v1/proofs';
+const PROOFS  = 'https://cdn.jsdelivr.net/gh/src-company/tacit@1b2eedde8490801c9ef4406020530059162e6d47/dapp/airdrop/v1/proofs';
 const RPC     = 'https://ethereum-rpc.publicnode.com';
 
 const hex   = (u8) => Array.from(u8, (b) => b.toString(16).padStart(2, '0')).join('');
@@ -532,7 +545,7 @@ async function claimable(address) {
 }
 
 await claimable('0x1C0Aa8cCD568d90d61659F060D1bFb1e6f855A20');
-// { index: 978, wei: '216176408192580000000000', tac: '216176.40819258', claimed: false }
+// { index: 978, wei: '216176408192580000000000', tac: '216176.40819258', claimed: true }
 ```
 
 The wire facts behind it, for any language:
@@ -692,18 +705,18 @@ const q = await tacit.quoteRoute({ asset0: assetA, amountIn, path: [{ assetNext:
 ```
 
 **Swap.** There is one swap op, `route()`, walked over a `path` of one or more hops — a single-hop path
-is a plain swap. This is what the dapp's own swap tab calls:
+is a plain swap. This is what the front page's private swap calls:
 
 ```js
 const r = await tacit.route({
-  walletPriv, inNote, amountIn, path: [{ assetNext: assetB, feeBps }], minOut, selfRelay: false,
+  walletPriv, inNote, amountIn, path: [{ assetNext: assetB, feeBps }], minOut,
+  fee: await tacit.quoteOpFee(ticker, 'route'),   // relayed: at least the floor, in the input asset; 0n with selfRelay: true
 });
 ```
 
-`inNote` must be spent whole: `route`'s change path is not implemented yet, so a partial amount
-throws (`partial-spend change is not yet implemented`) rather than returning change. Pre-split the note
-with `transfer` first if you need to route less than its full value. A route composes up to four hops in
-one settle (`MAX_ROUTE_HOPS = 4`), and its relay type is `'route'`.
+`amountIn` may be less than `inNote`'s value: the rest comes back as change in the input asset, one note by
+default, or `split` into 1, 2, 4 or 8 notes (`split: [v1, v2, …]`, summing to the change). A route composes up to
+four hops in one settle (`MAX_ROUTE_HOPS = 4`), and its relay type is `'route'`.
 
 **Swap straight from a deposit.** `wrapSwap` skips the note entirely — it consumes a *pending* deposit
 (same two-step wrap you already know) and mints the swapped output directly:
@@ -721,7 +734,7 @@ instead.
 **Add and remove liquidity.**
 
 ```js
-const quote = await tacit.quoteLpAdd({ assetA, assetB, feeBps, amountA });   // { addA, amountB, fee, init }
+const quote = await tacit.quoteLpAdd({ assetA, assetB, feeBps, amountA });   // { addA, amountB, fee, init }; init: true = this add founds the pool
 await tacit.lpAdd({ walletPriv, aNote, bNote, feeBps, fee: quote.fee });
 // or straight from two deposits, no note needed:
 await tacit.wrapLp({ walletPriv, aTicker, bTicker, aAmountWei, bAmountWei, feeBps, fee });
@@ -745,15 +758,14 @@ await tacit.lpRemove({ walletPriv, assetA, assetB, feeBps, shareNote, fee: null 
 
 **Prover-blind batch swaps.** `swapBatched(intent)` queues an intent into `OP_SWAP` and settles it against
 others at one uniform clearing price once enough intents arrive (or a short timeout passes) — hiding an
-individual trade's size inside the batch. It is real, tested code (`swapBatched`, `swapBatchPending`,
-`swapBatchFlush`), available to call, but the dapp's own swap tab does not use it yet; `route` is what
-ships today.
+individual trade's size inside the batch. It is tested code (`swapBatched`, `swapBatchPending`,
+`swapBatchFlush`), available to call; the front page's private swaps use `route`.
 
 ## 5c. OTC: a direct two-party trade
 
 `OP_OTC` ([SPEC §5.3](../SPEC.md#53-op-table)) settles a fixed, agreed trade between two parties in one
-proof — no pool, no slippage. `dapp/confidential-otc.js` is the real assembler; `dapp/confidential-otc-tab.js`
-drives it as a three-message handshake, with no coordinator:
+proof — no pool, no slippage. `dapp/confidential-otc.js` (`makeConfidentialOtc({ keccak256, pool })`) is the
+assembler, used as a three-message handshake with no coordinator:
 
 ```js
 // 1. Maker proposes, from their own note
@@ -762,9 +774,8 @@ const maker = otc.buildLeg({ owner: n.owner, nk: n.secret, inAmount: n.value, in
 const offer = { assetA: n.asset, assetB, vA, vB, chainBinding, spendRoot: n.root, deadline: 0, maker: publicLeg(maker) };
 // publicLeg always strips _r (the note blinding — a discrete-log secret, never share it, signed or not).
 // It also strips nk UNLESS the leg is already signed: an unsigned leg's nk protects nothing (there is no
-// spend to authorize yet) but nobody else needs it either, so it stays local. The real tab persists this
-// `maker` object (with its secret _r/nk) between steps 1 and 3 — e.g. localStorage — since a maker's own
-// browser is what finalizes in step 3, not a value that survives as a JS variable alone.
+// spend to authorize yet) but nobody else needs it either, so it stays local. Persist this `maker` object
+// (with its secret _r/nk) between steps 1 and 3, encrypted: the maker's own device finalizes in step 3.
 
 // 2. Taker countersigns, from their own note
 const taker = otc.buildLeg({ owner: n.owner, nk: n.secret, inAmount: n.value, inR: n.blinding,
@@ -774,17 +785,22 @@ const ctx = otc.composeCtx({ assetA: offer.assetA, assetB: offer.assetB, chainBi
 otc.signLegs(taker, ctx, 'taker');
 const countersign = { ...offer, taker: publicLeg(taker) }; // taker is now SIGNED, so publicLeg keeps its nk
 
-// 3. Maker finalizes and submits — the taker's nk rode in on step 2, no separate channel needed
+// 3. Maker finalizes — the taker's nk rode in on step 2, no separate channel needed
 const ctx2 = otc.composeCtx({ ...countersign, maker, taker: hydrateLeg(countersign.taker) });
 otc.signLegs(maker, ctx2, 'maker');
 const assembled = otc.assembleOtc({ ...countersign, maker, taker: hydrateLeg(countersign.taker) });
 const result = otc.verifyOtc(assembled, { merkleRootFrom: tacit.pool.merkleRootFrom });   // same checks the guest re-runs
-await tacit.relay.settle({ type: 'otc', op: otc.toWireOp(assembled), leaves: result.leaves, outputs: [], ephRand: () => 1n });
+// result: { nullifiers, leaves, fees }; the wire op is otc.toWireOp(assembled)
 ```
 
 (`publicLeg`/`hydrateLeg` are the two small helpers at the top of `confidential-otc-tab.js` — strip/restore
 `amount`'s BigInt-vs-string shape and the secret fields on the way in and out of a shared message.) Each
 side may carve its own relay fee out of what it receives (`feeA`/`feeB`), fixed once both legs sign.
+
+The settle is `tacit.relay.settle({ type: 'otc', op: otc.toWireOp(assembled), leaves: result.leaves, outputs, ephRand })`.
+Like every relayed op that creates leaves, it takes one recovery descriptor per leaf in `outputs` (a memo to seal,
+or `{ seedDerived: true }`), or the recovery guard refuses it (§4). The OTC module returns the op and its leaves;
+the caller supplies those descriptors for both parties' received and change notes.
 
 **Finalizing genuinely works between two independent strangers — no matcher, no side channel.** The taker's
 `nk` rides directly in step 2's countersignature; a signed leg's `nk` cannot forge an opening for any other
@@ -796,8 +812,10 @@ field that must never appear in a shared message, signed or not — `publicLeg` 
 ## 5d. Buyer-offline bids
 
 `OP_BID` ([SPEC §5.3](../SPEC.md#53-op-table)) lets a buyer pre-fund an order and go offline: `buildBid`
-locks `maxFill · price` of the quote asset against a grid (`minFill`, `maxFill`, `increment`), and any
-seller can fill part or all of it later with `fillBid`, no buyer action required at fill time.
+locks `maxFill · price` of the quote asset against a grid (`minFill`, `maxFill`, `increment`), the buyer
+pre-signs every fill on the grid (`presignBidGrid`) and shares the bid without its secrets (`toShareableBid`),
+and any seller can fill part or all of it later with `fillPresignedBid`, no buyer action required at fill time.
+(`fillBid` takes the built bid itself, which holds the buyer's blindings, so it is for a buyer filling its own.)
 `dapp/confidential-bid.js` has both sides, with no shipped UI tab; import it directly as in
 [§4](#4-reuse-the-dapp-modules--do-not-reimplement-the-crypto):
 
@@ -805,14 +823,16 @@ seller can fill part or all of it later with `fillBid`, no buyer action required
 import { makeConfidentialBid } from './dapp/confidential-bid.js';
 const bid = makeConfidentialBid({ keccak256, pool: tacit.pool });
 
-// buyer, once, then offline
-const built = bid.buildBid({ assetA, assetB, minFill, maxFill, price, increment, chainBinding, spendRoot,
-                             buyerOwner, nk, fundRSecp, fundLeafIndex, fundPath, bidSecret });
+// buyer, once, then offline: sign every fill on the grid, share the bid without its blindings
+const built  = bid.buildBid({ assetA, assetB, minFill, maxFill, price, increment, chainBinding, spendRoot,
+                              buyerOwner, nk, fundRSecp, fundLeafIndex, fundPath, bidSecret });
+const shared = bid.toShareableBid(bid.presignBidGrid(built));
 
-// any seller, any time before the buyer cancels — fillBid takes the built bid first, fill options second
-const filled = bid.fillBid(built, { chosenF, sellerOwner, sellerNk, sellerInAmount, sellerInRSecp, sellerInLeafIndex, sellerInPath, nonces, fee });
+// any seller, any time before the buyer cancels
+const filled = bid.fillPresignedBid(shared, { chosenF, sellerOwner, sellerNk, sellerInAmount, sellerInRSecp,
+                                              sellerInLeafIndex, sellerInPath, sellerRecvRSecp, sellerChangeRSecp, fee });
 const result = bid.verifyBid(filled, { merkleRootFrom: tacit.pool.merkleRootFrom });
-// one { seedDerived: true } descriptor per emitted leaf — a bid's outputs recover from bidSecret, not a sealed memo
+// { seedDerived: true } per leaf: the buyer's outputs recover from bidSecret; the seller keeps its own blindings
 await tacit.relay.settle({ type: 'bid', op: bid.toWireOp(filled), leaves: result.leaves, outputs: result.leaves.map(() => ({ seedDerived: true })), ephRand: () => 1n });
 ```
 
@@ -833,21 +853,20 @@ resting order is the same primitive repeated (`buildRestingBid` / `fillRestingLo
 
 `OP_ADAPTOR_LOCK` / `_CLAIM` / `_REFUND` ([SPEC §5.3](../SPEC.md#53-op-table)) lock a note under a
 Schnorr adaptor point `T`, so claiming it reveals the discrete log the other leg of a cross-chain swap
-needs — the mechanism behind cBTC redemption. `dapp/adaptor-signature.js` has the presign, complete and
-extract primitives for both an EVM-side kernel adaptor and a Bitcoin-side BIP-340 adaptor, and
-`dapp/adaptor-swap.js` sequences a full two-leg swap on top of them — role assignment, the
-initiator-claims-first ordering, and the `farDeadline > nearDeadline` timeout safety margin that keeps the
-second claimant from getting stuck holding an unclaimed leg. `dapp/cbtc-redemption.js` and
-`dapp/cross-chain-orderbook.js` build cBTC's redemption market on that same state machine.
+needs. The fast bridge ([`FAST-BRIDGE.md`](./FAST-BRIDGE.md)) runs on them.
 
-**None of these assemble the actual on-chain op.** Every one of them takes leg construction as an
-injected `(dPriv, msg32, nonce)` (Bitcoin lane) or `(excess, inC, outC, nonce)` (EVM lane) and returns a
-signature or kernel response — real, tested cryptography, but not a witness with the concrete
-`spendRoot`/note commitments/leaves a settle needs. That builder, for either chain, does not exist yet in
-`dapp/`. If you need it: `contracts/sp1/confidential/harnesses/exec-adaptorlock.rs` /
-`exec-adaptorclaim.rs` / `exec-adaptorrefund.rs` give the exact stdin field order the guest reads — for a
-lock, `asset ‖ locker ‖ recipient ‖ refundPub ‖ amount ‖ Tx ‖ Ty ‖ deadline` followed by the spent note's
-membership witness and opening, then the locked output's commitment and opening.
+- `dapp/adaptor-signature.js` has the presign, complete and extract primitives for both an EVM-side kernel
+  adaptor and a Bitcoin-side BIP-340 adaptor.
+- `dapp/confidential-adaptor.js` (`makeConfidentialAdaptor({ keccak256, secp, signSchnorr, curveOrder, pool })`)
+  assembles the Ethereum-side ops: `buildAdaptorLock`, `buildAdaptorClaim` and `buildAdaptorRefund` return the
+  witnesses the `exec-adaptorlock.rs` / `exec-adaptorclaim.rs` / `exec-adaptorrefund.rs` harnesses read. The caller
+  supplies the Merkle witnesses and seals the memos.
+- `dapp/adaptor-xswap.js` sequences a swap between a Bitcoin Tacit note and a pool note: the terms each side
+  checks before it locks, the deadline windows, and how the Bitcoin locker finds its lock again from its key
+  (the Bitcoin lock itself is `dapp/adaptor-btc-lock.js`).
+- `dapp/adaptor-swap.js` is the generic two-leg state machine: role assignment, the initiator-claims-first
+  ordering, and the `farDeadline > nearDeadline` margin that keeps the second claimant from being left with an
+  unclaimed leg. `dapp/cbtc-redemption.js` and `dapp/cross-chain-orderbook.js` build a cBTC redemption market on it.
 
 ## 5f. Bridging between chains
 
@@ -874,11 +893,12 @@ funding UTXO, not something the Ethereum-side call has access to.
 real `CrossOutRecorded` event, not just the client-side prediction), `cx`/`cy`, `destOwner`, and `ethBlock`
 (the settle's own Ethereum block — see below for what it's for). Two ways to finish the Bitcoin side:
 
-- **`makeCrossoutBroadcaster` (`dapp/crossout-broadcast.js`)**, dependency-injected on your own Bitcoin
-  commit/reveal broadcast: `broadcast.completeCrossOutOnBitcoin({ ...r, ...r.crossOuts[0], waitOpts })`
+- **`makeCrossoutBroadcaster({ buildAndBroadcastEnvelope, workerBase })` (`dapp/crossout-broadcast.js`)**,
+  dependency-injected on your own Bitcoin commit/reveal broadcast, with `workerBase` the relay API
+  (`https://api.tacit.finance`): `broadcast.completeCrossOutOnBitcoin({ ...r, ...r.crossOuts[0], block: r.ethBlock, waitOpts })`
   waits until the crossOut is safely coverable (see below), then broadcasts. Spread the whole `crossOut()`
-  result: it carries `ethBlock` **and** `claimIdVerified`, and both are checked. `waitOpts` matches this
-  SDK's usual `{ intervalMs, timeoutMs, onUpdate }` convention.
+  result and pass its `ethBlock` as `block`: `block` **and** `claimIdVerified` are both checked. `waitOpts`
+  matches this SDK's usual `{ intervalMs, timeoutMs, onUpdate }` convention.
 - **`tools/build-crossout-mint.mjs`** — a CLI, build-only: takes the same fields plus a funding UTXO and
   writes the two signed transactions to a file for you to review and broadcast by hand.
 
@@ -923,9 +943,9 @@ if the refund pays a key one of the spent inputs was homed at, the refund's null
 one the scan just spent. The note appends to the tree and reads as live, but it can never be spent. The input
 is gone and the refund is unspendable.
 
-Refunding to the address the input came from is the obvious thing to build, and forcing the refund branch is
-cheap for anyone else — move the pool's reserves so the proof goes stale, add an input, or wait out the
-expiry. So:
+Refunding to the address the input came from is the obvious thing to build, and the refund branch runs whenever
+the swap does not clear: the pool's reserves moved so the proof is stale, an input was added, or the intent
+expired. So:
 
 - Derive a **fresh** key for every refund output. Never an input's key, never another intent's refund key in
   the same transaction (two refunds under one key collide with each other for the same reason).
@@ -1014,7 +1034,7 @@ asset to whoever settles it. So the relay fee is chosen *when the burn is built*
 destination committed to the full value mints with fee 0, which the relay settles within its free daily budget.
 A holder with no ETH can therefore complete the whole direction through the hosted relay.
 
-For a reflected note, `buildBridgeBurnEnvelope({ asset, bitcoinPoolRoot, chainBinding, burned, fee, dest })`
+For a reflected note, `tacit.bridgeMint.buildBridgeBurnEnvelope({ asset, bitcoinPoolRoot, chainBinding, burned, fee, dest })`
 returns the 161-byte `0x2B` payload with the destination already net of the fee, the burned note's nullifier
 and the destination opening to keep for the mint. Pass a `deriveDestBlinding` built from
 `makeBridgeMintRecovery({ hmac, sha256, curveOrder })` (`bridge-mint-recovery.js`) rather than a random
@@ -1183,6 +1203,9 @@ live, unchanged, at the same addresses on Ethereum mainnet, Base, Robinhood Chai
 | Chain ids | Ethereum `1`, Base `8453`, Robinhood Chain `4663`, MegaETH `4326` |
 | Deploy blocks, transactions | [`contracts/deployments/evm-pool.json`](../contracts/deployments/evm-pool.json) |
 
+On Ethereum the same contracts also run token pools (USDC, USDT, TAC, and the TAC vaults' TACD and TACE) at
+their own addresses ([`EVM-POOL.md`](./EVM-POOL.md#addresses)).
+
 The full guide — the ceremony, the router's deposit/wrap/receive boxes, relaying mechanics, moving to an L2 —
 is [`EVM-POOL.md`](./EVM-POOL.md). This is the smallest working loop.
 
@@ -1191,10 +1214,8 @@ is [`EVM-POOL.md`](./EVM-POOL.md). This is the smallest working loop.
 `dapp/evm-pool/tacit-evm-pool-wallet.js` is the whole client as one dependency-free ES module — key
 derivation, note scanning, Groth16 proving (snarkjs, in a Worker started from a Blob) and submission — built
 from `dapp/evm-pool-wallet.js` by `node build/build-evm-pool-wallet.mjs`. It is served at
-`https://tacit.finance/evm-pool/tacit-evm-pool-wallet.js`; the copy in this repo hashes to
-`sha256:384a88220fb78f576e60480439bceb3e91e0fe8a32557f5c01c672390b81f5bc` (667,636 bytes) — recompute it
-yourself (`shasum -a 256`) rather than trust a pinned number, since it changes with the bundle or the ceremony
-artifacts.
+`https://tacit.finance/evm-pool/tacit-evm-pool-wallet.js`. To pin the copy you vendor, take its SHA-256
+yourself (`shasum -a 256`); it changes with the bundle or the ceremony artifacts.
 
 ```js
 import { makeEvmPoolWallet } from './dapp/evm-pool/tacit-evm-pool-wallet.js';
@@ -1222,8 +1243,8 @@ proving files; opening never asks the wallet to connect either.
 Full surface: `sync()`, `balance()`, `address`, `notes()`, `receive.address` / `receive.waiting()` /
 `receive.sweep()`, `deposit(wei)`, `send(bp1, wei)`, `withdraw(0x…, wei)`, `quote()`,
 `bridgeOut(toChainId, wei, { l2Rpc })`, `toV1(wei, commit, { via })`, `rescan()`,
-`setArtifacts({ wasm, zkey, vk })`, `terminate()`. `deposit`/`send`/`withdraw`/`bridgeOut`/`toV1`/
-`receive.sweep` each take a trailing `{ via: 'self' | 'relay', onStep(msg) }`; with no `relay` configured,
+`setArtifacts({ wasm, zkey, vk })`, `terminate()`. `deposit`/`send`/`withdraw`/`toV1`/`receive.sweep` each
+take a trailing `{ via: 'self' | 'relay', onStep(msg) }` (`bridgeOut`'s is `{ l2Rpc, onStep }`); with no `relay` configured,
 every action is proved on-device and sent from `provider` (no fee beyond gas), and with one, spends go through
 it unless called with `{ via: 'self' }`.
 
@@ -1274,7 +1295,7 @@ Base `https://api.tacit.finance`. Everything below is public; nothing needs a ke
 
 | endpoint | |
 |---|---|
-| `POST /confidential/submit` | `{ type, op, memos, mode?, feeAsset? }` → `{ jobId, relay }`. `mode: 'prove'` returns a proof for you to submit yourself; default `'settle'` has the relay submit it. `relay` is the relay's state when it took the job (as `GET /confidential/relay` reads it), so a job waiting on a held, paused or down relay is known at once |
+| `POST /confidential/submit` | `{ type, op, memos, mode?, feeAsset?, depositTx? }` → `{ jobId, relay }`. `mode: 'prove'` returns a proof for you to submit yourself; default `'settle'` has the relay submit it. `depositTx` is a tipped wrap's deposit transaction (§5), which makes the wrap paid work. `relay` is the relay's state when it took the job (as `GET /confidential/relay` reads it), so a job waiting on a held, paused or down relay is known at once |
 | `GET /prover/board` | `{ queued, claimed, proved, failed, workers, lease }`: the relay's prover board (machines proving settle proofs for it before the prover network is asked; [OPEN-RELAYER.md](OPEN-RELAYER.md#proving-for-the-relay)). Cached for ten seconds |
 | `GET /confidential/relay` | `{ state, proving, settling, board, failing, ageSeconds }` (`failing`: proofs the relay failed in the last hour, 0 when none): where the relay stands, read from its heartbeat. `state` is `ok`, `busy` (proving a job), `held` (proving, but not sending relayed settles; `board` when it puts them on the open board for any sender), `paused` (not proving for now; queued jobs keep their place) or `down` (no heartbeat for ten minutes). `proving` is true for ok, busy and held; `settling` for ok and busy. It carries no reason. Cached for ten seconds; `relay.state()` in `confidential-relay.js` reads it, and `relayCanProve(st)` is false only for paused and down |
 | `GET /confidential/status?id=` | `pending` → `proving` → `settled` \| `failed` (a `failed` with a non-empty `broadcastHashes` is not final: the settle was broadcast and may still land, and the job is then corrected to `settled`); a `mode: 'prove'` job ends at `proven` and carries the proof (`publicValues`, `proof`) and the `memos` it commits to, which `settle()` must carry exactly: the same op submitted twice is proved once, with the first submit's memos. A prove job whose deposit was settled from elsewhere first reads `settled`, with that transaction. A settled job carries `lane`: where its proof was made, `board` (Tacit's own machine; the input never left Tacit), `network-private` (the prover network, input readable by the whitelisted prover only) or `network-public` (the prover network, input readable by anyone), or null for a proof made before this was recorded |
@@ -1282,7 +1303,7 @@ Base `https://api.tacit.finance`. Everything below is public; nothing needs a ke
 | `POST /confidential/landed` | `{ jobId, txHash }` → `{ ok, status: 'settled', txHash }`: a settle sent outside the relay closes its job once the API sees that transaction succeed, reach the pool, carry the job's public values, and leave the same settle refused. Open, sending and proven jobs |
 | `POST /confidential/submit` with `mode: 'sealed'` | `{ type, mode: 'sealed', sealed: { worker, epk, iv, ct }, memos }` → `{ jobId, relay }`: a relayed settle whose op you encrypted to one prover-board worker's `pubkey` (`GET /prover/board`; `dapp/sealed-input.js` seals the bytes `dapp/sp1-stdin.js` builds), so the relay and the API hold only the ciphertext. The op must pay its relay fee in tETH, TAC, cUSD or cBTC (read from the proof, held to this API's quoted floor) or carry none by design (a lock, metered on the free budgets), and the job is proved on that worker or not at all ([OPEN-RELAYER.md](OPEN-RELAYER.md#proving-for-the-relay)) |
 | `POST /confidential/submit` with `mode: 'preproven'` | `{ type, mode: 'preproven', publicValues, proof, memos }` → `{ jobId, status: 'open' }`: a proof you made with your own prover account goes on the board. The API simulates its settle first and refuses one the pool would not take now |
-| `GET /confidential/quote?asset=cETH&amountWei=` | `{ ticker, assetId, relayFeeEligible, staticFloorUnits, gasAwareFloorUnits }` — floors are in the asset's **in-system units**, not wei. `asset` takes a ticker or a `0x` asset id. `recommendedTipRecipient` is always there. `recommendedWrapTipWei` (the tip for a tipped wrap, §5) and `recommendedProveTipWei` come with every asset that has a gas-aware floor (not cTAC), in wei of ETH, and are left out when the gas price cannot be read. For cETH, `amountWei` caps `recommendedWrapTipWei` at 3% of the deposit; without it the tip is what settling costs. |
+| `GET /confidential/quote?asset=cETH&amountWei=` | `{ ticker, assetId, relayFeeEligible, staticFloorUnits, gasAwareFloorUnits }` — floors are in the asset's **in-system units**, not wei. `asset` takes a ticker or a `0x` asset id. `recommendedTipRecipient` is always there, and `tipSplitter` (null when there is none). `recommendedWrapTipWei` (the tip for a tipped wrap, §5) and `recommendedProveTipWei` come with every asset that has a gas-aware floor (not cTAC), in wei of ETH, and are left out when the gas price cannot be read. For cETH, `amountWei` caps `recommendedWrapTipWei` at 3% of the deposit; without it the tip is what settling costs. |
 | `GET /confidential/index?from=&limit=` | the pool's event stream plus the stealth lock set, in chain order behind one cursor — recover a key's notes and locks without running a scanner |
 | `GET /farm/program?network=mainnet`, `GET /farm/health` | the launch farms' emission schedule and a solvency verdict, read from the manager on chain |
 | `GET /reflection/status?network=mainnet` | `{ attestedHeight, tipHeight, lagBlocks, confirmations, … }` — how far reflection has folded Bitcoin; a cBTC mint waits for its lock's block |
@@ -1361,8 +1382,8 @@ client submits the intent; the keeper does not scan for one on its own.
 | `GET /evm-pool/keeper/events?from=<block>` | confirmed `Transact`/`Received` events, for syncing history without a log scanner. After an absence, ask from the start of a range of blocks (`feedStart` in `dapp/evm-pool-wallet.js`: a day on Ethereum, an hour on Base), not from your own place, and keep only the events after it; within ten minutes of the tip, ask from your own place |
 | `POST /evm-pool/keeper/relay` | `{ tx, call?, wrap? }` — submits a proven transfer, withdrawal, `withdrawAndCall` or `withdrawToV1` |
 
-Live at `https://tacit-evm-pool-keepers.onrender.com/1/evm-pool/keeper` (Ethereum), `…-base.onrender.com` (Base),
-`…-robinhood.onrender.com` (Robinhood Chain) and `…-megaeth.onrender.com` (MegaETH) — full URLs in
+Live at `https://tacit-evm-pool-keepers.onrender.com/<chainId>/evm-pool/keeper`, with `<chainId>` `1` (Ethereum),
+`8453` (Base), `4663` (Robinhood Chain) or `4326` (MegaETH); each chain's own keeper URL is `keeper` in
 [`contracts/deployments/evm-pool.json`](../contracts/deployments/evm-pool.json).
 
 ## 7. Iterating on the design
@@ -1374,7 +1395,7 @@ Two conventions to keep:
 - **Tokens on `:root`, nothing hardcoded.** The template ships cream `#f4eee3`, ink `#171717` and orange
   `#ff9818`, in monospace with dashed dividers. Swap the token values and the whole thing re-skins.
 - **Keep the op builders and the renderer apart.** Every builder returns a plain `{ op, leaves, outputs,
-  memos }`; the UI only ever renders that. It is what lets `tacit.js` be a thin renderer over the same
+  memos }`; the UI only ever renders that. It is what lets the pages be thin renderers over the same
   modules, and it is why a redesign never risks the crypto.
 
 [`dapp/index.html`](../dapp/index.html), the front page at `https://tacit.finance/`, is the same idea
@@ -1390,11 +1411,12 @@ carried through the launch features in one file:
 - points claims and `.wei` names, the shielded farms, and the TAC/ETH Precision farm end to end: add from ETH, TAC
   or both (`zapETH`, `zapTokenWithPermit`, `addAndStakeWithPermit`), stake LP already held (`stakeWithPermit`), and
   withdraw part or all of a position as both assets or as either one (`withdrawAndRemove`, `withdrawTo`, `exitTo`);
-- the cBTC lock, bond, mint and cUSD loan.
+- the cBTC lock, bond, mint and cUSD loan;
+- the Tacit chain: shielding TAC, private payments, and moves to and from this pool.
 
-Every sheet has a link: `#private`, `#device`, `#bitcoin`, `#airdrop`, `#buy` (or `#swap`), `#sell`, `#points`,
-`#farm`, `#borrow` and `#wallet` open it directly, and the link button in each sheet's header copies the one for
-what it shows.
+Every sheet has a link: `#private`, `#device`, `#bitcoin`, `#buy` (or `#swap`), `#sell`, `#points`,
+`#farm`, `#borrow` and `#wallet` open it directly (`#airdrop` opens the rewards page), and the link button in
+each sheet's header copies the one for what it shows.
 
 Public transactions come from a connected wallet or from the key's own Tacit account, which signs in the page.
 Its one inline module is pinned by hash in its own CSP, and `npm run build` refreshes that pin with its `?cb=`
@@ -1417,7 +1439,7 @@ tokens, so it runs on the dapp's origin without `'unsafe-inline'`.
 | farm `OverClaim` | harvest claimed more than the position's accrued reward; read `pending` at build time |
 | farm `NoLivePosition` | the receipt is not bonded (wrong nonce, shares or owner, or already unbonded) |
 | farm `WrongStakeAsset` | the note is not an LP-share asset the manager has a pool for |
-| farm `Locked` | unbond before the pool's `unlockAt` (the launch pools have no lock) |
+| farm `Locked` | unbond before the position's `unlockAt` (the launch pools have no lock) |
 
 A failed proof costs the relay, not you, and moves no state. A settle either applies completely or reverts.
 
@@ -1428,6 +1450,7 @@ A failed proof costs the relay, not you, and moves no state. A settle either app
 - [`PRIVATE-PAYOUT.md`](./PRIVATE-PAYOUT.md) — paying a 0x address from a confidential balance
 - [`FARMS.md`](./FARMS.md) — the TAC launch farms: cards, flows, monitoring and governance bounds
 - [`AIRDROP.md`](./AIRDROP.md) — the TAC airdrop contract and its roles
+- [`TACIT-BLOCKS.md`](./TACIT-BLOCKS.md) — the Tacit chain: private TAC in blocks, settled on Ethereum
 - [`DEPLOYMENTS.md`](./DEPLOYMENTS.md) — every live address and vkey
 - [`SPEC.md`](../SPEC.md) — the protocol specification: envelopes, pool ops, reflection
 - [`audit/AUDITS.md`](../audit/AUDITS.md) — the audit reports

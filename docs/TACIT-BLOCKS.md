@@ -3,15 +3,23 @@
 A validity rollup for one asset, TAC. Spenders prove their own spends on their own devices (the Bitcoin shielded pool's Halo2 circuit,
 unchanged); a block program checks a whole block of them in one SP1 run; Ethereum checks one Groth16 proof, holds the TAC, and takes the
 block's data. Nothing in it has an owner or an upgrade key: the program, the verifier and the contract are fixed at deployment, and a new
-design is a new chain that users move to through the confidential pool (V1) in one transaction.
+design is a new chain that each user moves their own notes to (Migrate, below).
+
+Live on Ethereum mainnet: `TacitBlocks` `0x00000000000a9147ffd8d41d152d730ca5f84e6c`, `TacitSeats`
+`0x00000000001f703eae70de3b528213e4802790fb`, the leader's API at https://tacit-chain-leader.onrender.com
+([deployments](./DEPLOYMENTS.md#tacit-chain-ethereum)). Using it: [tacit.finance/docs/chain](https://tacit.finance/docs/chain/); the
+live chain: [tacit.finance/tac](https://tacit.finance/tac/).
 
 | Piece | Where |
 |---|---|
 | Block program (SP1 guest) | `contracts/sp1/confidential/tacit-block/{guest,common}` |
 | Landing contract | `contracts/src/TacitBlocks.sol` |
-| Whose turn it is (TAC stakers) | `contracts/src/TacitSeats.sol` |
+| Whose turn it is (seat holders) | `contracts/src/TacitSeats.sol` |
 | Replays the chain, builds blocks | `contracts/sp1/confidential/tacit-block/node` |
-| Wallet formats | `dapp/tacit-chain-lock.js`, `dapp/tacit-chain-memo.js` (vectors: `tests/vectors/`) |
+| The leader (follows the contract, proves and lands blocks) | `tacit-leader/` |
+| Proves a block on a GPU | `contracts/sp1/confidential/tacit-block/gpu`, or the prover board's `tacit-block` program (`worker/src/prover-board.js`) |
+| Wallet and formats | `dapp/tacit-chain-wallet.js`, `dapp/tacit-chain-lock.js`, `dapp/tacit-chain-memo.js` (vectors: `tests/vectors/`) |
+| Live view | `dapp/chain/live.js`, on tacit.finance/tac/ |
 
 ## Notes and spends
 
@@ -27,7 +35,8 @@ Notes count shares of the chain's pool. The state keeps `pool` (the TAC behind e
 `(pool + V) / (shares + V)` units, `V = 10^8` (a virtual TAC of each, which no note holds: no deposit or burn can set the price alone, and
 what is left in a pool with no shares is not the next depositor's). Every spend in a block is priced at the rate before the block.
 
-* **In.** A deposit's opening is shares; its `amount` (TAC) must buy them at the rate (wallets pay 2 bps over, which stays with the pool).
+* **In.** A deposit's opening is shares; its `amount` (TAC) must buy them at the rate (wallets pay a small margin over, 2 bps once the pool
+  is large, which stays with the pool).
 * **Out.** An exit's, hop's or migration's opening is shares; its `amount` (TAC paid out) is at most their worth less the exit fee:
   `EXIT_FEE_BPS = 10` (0.1%, rounded up) and at least `MIN_POOL_FEE = 200,000` units (0.002 TAC).
 * **Payments.** A spend of notes must use its exit slot: an exit, hop, lock, migration, or a **pool share** (`OP_POOL`, 4), shares worth
@@ -102,19 +111,23 @@ Anyone can rebuild the chain's state from the lists alone (`tacit-block-node rep
 ## Landing (`TacitBlocks.land`)
 
 Only the leader of the current turn may land until `WINDOW` seconds pass with no block, or until a queued entry has waited `FORCE_DELAY +
-WINDOW` (leaders that land only the entries they must cannot hold the queue back); then anyone may. Turns (`TacitSeats`) are TAC stakers
-drawn by the epoch's seed: the beacon chain's randomness (`prevrandao`) in the first block of the epoch's first `SEED_BLOCKS` (4) in which
-anyone keeps it, which a leader does as the epoch begins. A block hash would not do (its builder can try as many as it likes); this way the
-most anyone chooses is which of four blocks keeps it, and an epoch whose seed no one kept in time has no leader, so anyone may land in it. The contract checks the proof, that the block extends the held state, the time, the queue, and:
+WINDOW` (leaders that land only the entries they must cannot hold the queue back); then anyone may. Turns (`TacitSeats`) go to seat
+holders. A seat is `SEAT` TAC locked with `join()`, given up with `leave(i)` and claimed `EXIT_DELAY` (7 days) later. Time runs in slots of
+`SLOT_BLOCKS` Ethereum blocks and epochs of 16 slots; each slot one seat leads, and while no seat is held `BOOTSTRAP` leads. The seat is
+drawn by the epoch's seed: the beacon chain's randomness (`prevrandao`) in the first of the epoch's blocks 1 to `SEED_BLOCKS` (4) in which
+anyone keeps it (`turn()`), which a leader does as the epoch begins. A block hash would not do (its builder can try as many as it likes); this
+way the most anyone chooses is which of four blocks keeps it, and an epoch whose seed no one kept in time has no leader, so anyone may land in
+it. On mainnet `WINDOW` is 10 minutes, `FORCE_DELAY` 1 hour, a seat 1,000 TAC and a slot 50 blocks. The contract checks the proof, that the
+block extends the held state, the time, the queue, and:
 
 * **Calldata mode** (word 15 = 0): the new notes and memos, nullifiers and claims are in the call, each list checked against its hash.
 * **Blob mode** (word 15 != 0): they are in the transaction's blobs. The program builds the data stream, and for each blob (KZG commitment
   `C`) evaluates the blob's polynomial at `z = SHA-256(C ‖ SHA-256(stream)) mod r` itself; it commits SHA-256 of every (versioned hash, `z`,
   `y`). The contract checks each versioned hash is the transaction's blob and that `C` opens to `y` at `z` (the point-evaluation precompile):
-  two polynomials that agree at a point drawn after both were fixed are the same, so the blobs hold exactly the stream. The leader picks
-  the mode per block, whichever costs less. Blob data is pruned by Ethereum after about 18 days, so wallets and indexers must keep or fetch
-  an archive; calldata is kept for good.
-* Deposits, exits, hops and anchors are always in calldata, since the contract acts on them. A deposit taken in must have been made on L1,
+  two polynomials that agree at a point drawn after both were fixed are the same, so the blobs hold exactly the stream. The program,
+  contract and node build both modes; the live leader lands its blocks in calldata mode. Blob data is pruned by Ethereum after about 18
+  days, so wallets and indexers must keep or fetch an archive; calldata is kept for good.
+* Deposits, exits, hops, migrations and anchors are always in calldata, since the contract acts on them. A deposit taken in must have been made on L1,
   bound to the shield spend that takes it in, and a spend takes in one deposit ever (its deposit's nullifier, `Poseidon(tag, C, body)`,
   enters the nullifier tree); an exit is credited to its address (`withdraw` sends it on, by anyone). The contract keeps what the chain's
   notes are worth (`inChain`: deposits' amounts taken in, less exits, hops and migrations paid out) and refuses a block that would take out
@@ -148,11 +161,13 @@ and the Halo2 proof (the pool's wasm prover, 17-24 s a spend in Node), padded to
 leaves. It submits to a leader (`POST /spend`), which checks the proof natively, that the spend's asset is TAC, that its root is one a block ended
 at, and that a trial block takes it; it finds its notes by trying every published memo (`scan`), which costs a hybrid decapsulation each (8 ms in
 pure JS: a wallet recovered from its seed at 100k notes takes minutes, so a WASM ML-KEM and workers are the wallet's to add; no protocol change).
-A shield first makes the deposit on L1 (`TacitBlocks.deposit`), whose commitment and body hash the wallet's spend names; a leader includes a
-shield only once its deposit is waiting there.
+A shield's TAC reaches L1 first, by `TacitBlocks.deposit` or by an inbox the leader sweeps (above); the wallet's spend names its commitment
+and body hash, and a leader includes a shield only once its deposit is waiting there.
 
 A leader (`tacit-leader/`) admits only what can land: a block that held a spend of another asset, a deposit not on L1 or a root no block ended at
-would revert and could be made to by anyone. Its `/build` and `/landed` routes are its own.
+would revert and could be made to by anyone. Its `POST /build`, `/landed`, `/pending`, `/drop`, `/fee` and `/restore` routes are its own, behind
+an admin token. It proves each block on its own GPU (`tacit-block-gpu`) or through the prover board's `tacit-block` program, which community
+GPUs race ([tacit.finance/prove](https://tacit.finance/prove/)), and uses the first proof a simulated landing of that block accepts.
 
 ### A leader's API
 
@@ -160,7 +175,8 @@ What a wallet uses is public, served by the leader's node (`tacit-block-node`; t
 
 * `GET /state`: height, state digest, note root, counts, the forced queue's position, the chain binding, and `pool` and `shares` (the rate a
   deposit buys at and an exit pays at).
-* `GET /notes?from=N&limit=M`, `/path/N`, `/spent/0x…`, `/leaf/0x…`, `/receipt/ID`, `/mempool`: what a wallet scans and follows.
+* `GET /notes?from=N&limit=M`, `/pending-notes`, `/path/N`, `/spent/0x…`, `/leaf/0x…`, `/receipt/ID`, `/mempool`: what a wallet scans and
+  follows (`/pending-notes`: the new notes of the payments waiting for a block).
 * `GET /fee`: `{ address, fee, sweepFee, shieldCap, at, window }`. A spend pays `fee` (units of 1e-8 TAC) in a note to `address`, the leader's
   chain address. `sweepFee` (TAC's own wei) is what a shield paid by permit adds on top, for the leader to send it in (`sweepWithPermit`):
   the gas of the sweep at the base fee and TAC's price, with a margin. `shieldCap` (units) is the most one shield may deposit through this
@@ -171,15 +187,17 @@ What a wallet uses is public, served by the leader's node (`tacit-block-node`; t
   SHA-256("tacit-chain-key-v1" ‖ key ‖ address), checked by the leader. `GET /address/key/<key>` returns `{ address, sig }`, so a Tacit address
   from before the chain (it carries the key, not the chain lane) is paid on the chain; the payer checks the signature again.
 
-What waits lives in the leader's memory: a restart drops it, and wallets hand their kept spends over again the next time they open. Nothing
-is lost, as a deposit or a paid inbox waits on Ethereum; a leader replays every landed block from the contract's events when it starts.
+What waits is written to a file (`TACIT_NODE_MEMPOOL`) and admitted again after a restart, each entry checked as a new submission; wallets
+also hand their kept spends over again the next time they open. A deposit or a paid inbox waits on Ethereum, so nothing is lost. A leader
+rebuilds the chain when it starts, from its archive of landed blocks or from the contract's events.
 
 ## What each party sees
 
-* **Everyone**: deposits, exits and hops (amounts and addresses, on Ethereum), the count of notes and nullifiers per block, the time.
+* **Everyone**: deposits, exits and hops (amounts and addresses, on Ethereum), each block's total to a successor chain, the count of notes
+  and nullifiers per block, the time.
 * **Not the public**: which spend made which note, any amount inside the chain, who paid whom.
 * **A block's prover**: each spend's nullifiers beside its output leaves, within one block. A nullifier cannot be tied to the leaf it spends
-  without its owner's key, so this is less than Zcash shows the whole world. It never sees keys, values or owners.
+  without its owner's key, so the prover cannot tie a spend's new notes to the notes it spent. It never sees keys, values or owners.
 * **Quantum**: hidden amounts and note linkage hold (above). Proof forgery does not: Halo2-KZG and the Groth16 wrap are pairing-based, as is
   Ethereum's verifier, so the chain's soundness waits on post-quantum proofs, as every Ethereum rollup's does.
 

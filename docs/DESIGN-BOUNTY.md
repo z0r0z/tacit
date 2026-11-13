@@ -13,7 +13,7 @@ The entry we merge ships at tacit.finance.
 
 ## 1. What there is
 
-The front page, `dapp/index.html`, is the app: one file of about 21,000 lines holding the stylesheet (colour, type and spacing are
+The front page, `dapp/index.html`, is the app: one file of about 20,000 lines holding the stylesheet (colour, type and spacing are
 custom properties at the top: `--paper`, `--card`, `--ink`, `--orange`, `--mono`, `--serif`, with the dark set under
 `prefers-color-scheme`), the markup, and one inline module that draws every card and sheet. Today it is warm paper, Instrument
 Serif, IBM Plex Mono and an orange accent. Keep any of it or none of it.
@@ -31,7 +31,7 @@ so one change there reaches them all. The wallet sheet's look for the sub-pages 
 - For each of those: loading, signed out, signed in, in flight, refused in the wallet, and error. Light and dark, 320 px to 1440 px.
 
 **Welcome, not required:** the rest of the front page, the other sheets, holdings (`#dash`, `/assets/`), and the sub-pages (`/pay/`,
-`/vault/`, `/bridge/`, `/rewards/`, `/tac/`, `/swap/`). A page you leave alone must still sit beside your header and footer
+`/vault/`, `/bridge/`, `/rewards/`, `/tac/`). A page you leave alone must still sit beside your header and footer
 without breaking.
 
 **Out of scope:** `classic.html`, `/admin/`, the papers, the contracts, and the relay, worker and server code.

@@ -4,7 +4,7 @@ Pay a plain 0x address an exact amount out of your own confidential balance: dep
 
 **What this hides is the link between the deposit and the payout, inside the pool.** The payout address and amount are public, like the deposit's address, amount and time — and the two can be matched by timing while the pool is small. Section 5 says what to tell a user.
 
-Names below are the SDK object from `makeConfidentialPoolUx` (`tacit`), as in [`BUILD-A-TACIT-DAPP.md`](./BUILD-A-TACIT-DAPP.md). Amounts are in-system units (ETH has 8 decimals: 1 unit is 1e-8 ETH, `unitScale` 1e10) unless a name says Wei. The dapp's send tab does all of this when the recipient field holds a 0x address (section 3). The arithmetic, note selection and confirmation poll are in [`dapp/confidential-payout.js`](../dapp/confidential-payout.js); use them rather than rewriting them.
+Names below are the SDK object from `makeConfidentialPoolUx` (`tacit`), as in [`BUILD-A-TACIT-DAPP.md`](./BUILD-A-TACIT-DAPP.md). Amounts are in-system units (ETH has 8 decimals: 1 unit is 1e-8 ETH, `unitScale` 1e10) unless a name says Wei. The classic app's send tab ([tacit.finance/classic.html](https://tacit.finance/classic.html)) does all of this when the recipient field holds a 0x address (section 3). The arithmetic, note selection and confirmation poll are in [`dapp/confidential-payout.js`](../dapp/confidential-payout.js); use them rather than rewriting them.
 
 ---
 
@@ -88,7 +88,7 @@ async function payEth({ walletPriv, to: rawTo, amountEth }) {
 
 - `plan` on success: `{ net, fee, gross, note, change, wholeNote, total }`. Show `net`, `fee` and `gross` before anything is sent: they are what the recipient gets, what the relay takes, and what leaves the balance.
 - **Pin the floor** with `feeOpts: { minFee }`, the value the fee was computed from. Without it `sendUnwrap` quotes again at submit time, and a fee that has moved since would leave the recipient short of what you promised. Quote again just before submitting and go back to the user if the fee rose.
-- `wait: false` returns as soon as the relay has queued the job: `{ jobId, status, fee, payout, change, recipient }`. `payout` is what the recipient will receive; check it equals `net`.
+- `wait: false` returns as soon as the relay has queued the job: `{ jobId, status, fee, payout, change, recipient, verifyMemos }`. `payout` is what the recipient will receive; check it equals `net`. Once the settle lands, `verifyMemos()` checks that the chain carries the change note's memo.
 - The fee is bound in the proof. The relay cannot raise it or change the recipient.
 - A note exactly the size of `gross` has no change, so `sendUnwrap` exits the whole note (`unwrap`) with the same fee, and the result carries `net` instead of `payout`.
 - For a token, read `balanceOf` instead: `makeBalanceReader({ rpc, ethCall, token: meta.underlying, address })`, and `expected` is `net × meta.unitScale` (a token with `unitScale` 1 pays `net` itself).
@@ -128,9 +128,9 @@ if (merge.ok) {
 
 A merge tells the relay that those notes belong together. `plan.code === 'insufficient'` means the total is short: deposit more or pay less.
 
-## 3. In the dapp
+## 3. In the classic app
 
-On the confidential pool's send tab, paste a 0x address into **To**. The note-send controls give way to a panel titled "Pay this address publicly from your shielded balance":
+On the confidential pool's send tab of the classic app ([tacit.finance/classic.html](https://tacit.finance/classic.html)), paste a 0x address into **To**. The note-send controls give way to a panel titled "Pay this address publicly from your shielded balance":
 
 1. The address is checked: EIP-55 when mixed-case (a wrong checksum is refused), and the zero address, the pool, the router and the token contracts are refused. An all-lower or all-upper address has no checksum, and the review says so.
 2. An asset picker lists the assets that can be paid out to an address, with the confidential balance found from the key.
@@ -139,11 +139,11 @@ On the confidential pool's send tab, paste a 0x address into **To**. The note-se
 5. With enough in total but no single note, a **Merge** button runs the self-transfer above and reviews again.
 6. **Confirm** re-checks the fee (a rise sends you back to review), reads the recipient's balance, submits with `wait: false`, and polls. The result line says "Paid" only after the balance rose. On timeout it says "Submitted, not yet confirmed" with the job id.
 
-There is no self-settle option: `sendUnwrap` is always relayed, so its fee is always charged.
+The panel always relays the payout, so it always pays the relay's fee. Section 4 shows how to settle one yourself.
 
 ## 4. Fees
 
-The relay's fee on a payout is `max(0.30% of gross, floor)`, rounded up to at most two significant digits (the settle guest rejects a fee that is not), in the asset's own units, and capped at the amount.
+The relay's fee on a payout is `max(0.30% of gross, floor)`, rounded up to at most two significant digits (the settle guest rejects a fee that is not), in the asset's own units, and capped at the amount. The 0.30% falls to 0.25%, 0.20% or 0.15% once the key holds at least 100, 1,000 or 10,000 TAC, privately or in its derived account (`balance` reads both).
 
 - The floor is `tacit.quoteOpFee(ticker, 'sendunwrap')`: the larger of the static floor and a gas-priced one, live. `GET /confidential/quote?asset=<ticker>` returns the relay's own numbers (`staticFloorUnits`, `gasAwareFloorUnits`, in in-system units); the relay refuses an offer below its floor. The static floors are 10,000 units (0.0001 ETH) for cETH and 30,000,000 units ($0.30) for cUSD; the gas-aware floor moves with gas.
 - Only assets the relay can take a fee in can be paid out this way (`tacit.relayFeeEligible(ticker)`): cETH, cUSDC, cUSDT, cUSD, cBTC and cTAC.
@@ -161,15 +161,16 @@ The ladder exists because an odd-valued fee is a fingerprint: it lands in a publ
 
 An amount so small that the fee would swallow it is refused (`below-fee`). A payment smaller than its fee is allowed and the dapp warns.
 
-**Self-settled.** `sendUnwrap` always submits to the relay, so a partial payout always pays the relay's fee. (The settle guest accepts a payout with fee 0, but the SDK has no prove-and-submit path for this op.) A whole note can be exited with no fee if you settle it yourself, from the derived account, which then needs ETH for gas:
+**Self-settled.** Pass `selfSettle` to `sendUnwrap`, a function that sends the settle itself. The op is then built with fee 0, the relay proves it and hands back the proof, and your function sends it; here from the derived account, which then needs ETH for gas. With no fee, the recipient receives `amount` (plan with `feeOf: () => 0n, minFee: 0n`):
 
 ```js
-const built = tacit.buildUnwrap({ note, walletPriv, recipient, selfSettle: true });   // fee 0, the whole note
-const proven = await tacit.relay.prove({ type: 'unwrap', op: built.op, memos: [] });
-await tacit.submitSettle({ settlerPriv: walletPriv, publicValues: proven.publicValues, proof: proven.proof, memos: [] });
+const job = await tacit.sendUnwrap({
+  note: plan.note, walletPriv, recipient: to.address, amount: net,                      // fee 0: the recipient gets `net`
+  selfSettle: ({ publicValues, proof, memos }) => tacit.settleFromAccount({ settlerPriv: walletPriv, publicValues, proof, memos }),
+});
 ```
 
-To pay an exact amount this way, first make a note of exactly that value (`tacit.ensureExactNote`, a relayed self-transfer that pays its own fee). The relay still receives the witness and proves it; only the fee and the relay's address on the transaction go away. To keep the witness to yourself, prove it locally (the trustless checklist in [`INTEGRATOR-PLAYBOOK.md`](./INTEGRATOR-PLAYBOOK.md#4-trustless-checklist)).
+When the note is exactly `amount`, `sendUnwrap` exits it whole (`unwrap`) and settles it the same way. The relay still receives the witness and proves it; only the fee and the relay's address on the transaction go away. To keep the witness to yourself, prove it locally (the trustless checklist in [`INTEGRATOR-PLAYBOOK.md`](./INTEGRATOR-PLAYBOOK.md#4-trustless-checklist)).
 
 ## 5. Privacy: what to tell the user
 
@@ -194,12 +195,12 @@ To pay an exact amount this way, first make a note of exactly that value (`tacit
 | the recipient is a token contract | the pool does not stop it and the tokens are normally unrecoverable | refuse it in your UI (the dapp does) |
 | a token refuses the recipient | the transfer reverts, so the settle reverts | the job fails and the note is unchanged |
 | the recipient is a contract without a payable receive | native ETH is force-sent, so it still arrives | none |
-| the remaining balance looks short after a payout | with `wait: false` the check that the chain emitted the change memo you sealed does not run | scan again; if the change note is missing, run `recover({ walletPriv })`, which re-derives it from the settle |
+| the remaining balance looks short after a payout | with `wait: false` the check that the chain emitted the change memo you sealed runs only when you call the result's `verifyMemos()` | scan again; if the change note is missing, run `recover({ walletPriv })`, which re-derives it from the settle |
 | a note spent elsewhere | two processes share a key, and a scan returns every note sealed to it | give each process its own key, or keep an explicit leaf list |
 
 ## 7. Limits
 
-- Weak privacy, sender only, as above. A single relay operator settles it: it can decline or delay a payout, and cannot redirect it or raise its fee.
+- Weak privacy, sender only, as above. A single relay operator proves it and, unless you settle it yourself (section 4), sends it: it can decline or delay a payout, and cannot redirect it or raise its fee.
 - One note per payout, and no batch of payouts. The recipient is an address: a name is not resolved here.
 - Assets are those the relay prices. A payout in a token needs that token to be a payable pool asset (native ETH, or an ERC20 underlying).
 - The op is valid for about an hour. A payout that is not settled by then can be built again from the same note.
