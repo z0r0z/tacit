@@ -433,3 +433,39 @@
   .swc button.where::after { content: ''; position: absolute; inset: -9px -6px; }
   .swc button, .swc a { touch-action: manipulation; }
 }
+
+/* ── design bounty: blueprint ───────────────────────────────────────────────
+   The swap card follows the front page's panel: ink hairlines, square corners,
+   mono labels and a blue action. All hooks and flows stay where they are. */
+.swc .f, .swc .rows, .swc .snt > div, .swc .later, .swc .ack, .swc .coin, .swc .flip { border-radius: 4px; }
+.swc .mode, .swc .sides { border-radius: 4px; }
+.swc .mode button, .swc .sides button { border-radius: 3px; }
+.swc .mode button[aria-checked="true"], .swc .sides button[aria-checked="true"] { box-shadow: 0 0 0 1px var(--hair-2); }
+.swc .mode button[aria-checked="true"] { background: var(--card); }
+.swc .fh, .swc .ff, .swc .pk-d, .swc .to small { font-family: var(--mono); }
+.swc .fh, .swc .ff { font-size: 11px; letter-spacing: .02em; }
+.swc .fm .amt, .swc .fm .big { font: 600 42px/1 var(--sans); letter-spacing: -.045em; }
+.swc .fm .amt.long, .swc .fm .big.long { font-size: 32px; }
+.swc .fm .amt.longer, .swc .fm .big.longer { font-size: 25px; }
+.swc .rows { border-color: var(--hair); }
+.swc .rows button { border-top-color: var(--hair); }
+.swc .rows .rt b { font: 600 16px/1.15 var(--sans); letter-spacing: -.02em; }
+.swc .rows .rt small { font-family: var(--mono); font-size: 10px; letter-spacing: .01em; }
+.swc .rows .ra { font: 600 14px/1.2 var(--sans); }
+.swc .rows .ra small { font-family: var(--mono); }
+.swc .rows .rd { border-radius: 3px; }
+.swc .rows [aria-checked="true"] .rd { box-shadow: inset 0 0 0 3.5px var(--field), inset 0 0 0 9px var(--ink); }
+.swc .go { min-height: 52px; border-radius: 4px; font: 500 11px var(--mono); letter-spacing: .12em; text-transform: uppercase; background: var(--orange); border-color: var(--orange); color: var(--card); }
+@media (hover: hover) { .swc .go:hover:not(:disabled) { background: var(--ink); border-color: var(--ink); color: var(--card); box-shadow: 4px 4px 0 var(--orange); } }
+.swc .go:disabled { color: color-mix(in srgb, var(--ink) 65%, var(--card)); background: color-mix(in srgb, var(--ink) 6%, transparent); border-color: var(--hair-2); }
+.swc .q { font-size: 11.5px; }
+.swc .rcpt { font-size: 12px; }
+.swc .st .mk { border-radius: 3px; }
+.swc .later .pill { border-radius: 3px; }
+.swc .later .pill::after { border-radius: 2px; }
+.swc .later .via .vp, .swc .quick button, .swc .ff #max .mx { border-radius: 3px; }
+.swc .to input { border-radius: 4px; }
+@media (max-width: 380px) {
+  .swc .rows .rt b { font-size: 15px; }
+  .swc .rows .ra { font-size: 13px; }
+}
