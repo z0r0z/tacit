@@ -21,7 +21,7 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /prove/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/prove/app.js?cb=531433ef">
+<link rel="modulepreload" href="/prove/app.js?cb=36f4a22c">
 <link rel="modulepreload" href="/community-prove.js?cb=e2a65259">
 <link rel="modulepreload" href="/prove/view.js?cb=f0f73815">
 <link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
@@ -29,7 +29,7 @@
 <link rel="modulepreload" href="/prove/tabmine.js?cb=a9294239">
 <link rel="modulepreload" href="/prove/saltcore.js?cb=87770f39">
 <link rel="modulepreload" href="/prove/review.js?cb=ad2a8099">
-<link rel="modulepreload" href="/prove/chain.js?cb=a282e227">
+<link rel="modulepreload" href="/prove/chain.js?cb=c7608249">
 <!-- preload:end -->
 <style>
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
@@ -904,7 +904,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
         <div class="rows num">
           <div class="kv"><span>This computer</span><b id="review-state">—</b></div>
           <div class="kv" id="review-me-row" hidden><span>Your record</span><b id="review-me">—</b></div>
-          <div class="kv"><span>Nodes online</span><b id="review-n">—</b></div>
+          <div class="kv"><span>Reviewers online</span><b id="review-n">—</b></div>
         </div>
       </section>
       </div>
@@ -975,7 +975,7 @@ node tools/community-runner.mjs mirror   # no key: keeps the board public on Nos
       <p class="status" id="proof-status" role="status"></p>
     </div>
     <div class="callout">
-      <p>Each proof covers one batch of Bitcoin blocks. <a href="/prove/#gpu">GPUs on this page</a> take turns making them for TAC; with none online, Tacit’s prover makes it on the Succinct network, paid in <a href="https://etherscan.io/address/0x6BEF15D938d4E72056AC92Ea4bDD0D76B1C4ad29" target="_blank" rel="noopener">PROVE</a>.</p>
+      <p>Each proof covers one batch of Bitcoin blocks. <a href="/prove/#gpu">GPUs on this page</a> take turns making them for TAC; with none online, or none back within the hour, Tacit’s prover makes it on the Succinct network, paid in <a href="https://etherscan.io/address/0x6BEF15D938d4E72056AC92Ea4bDD0D76B1C4ad29" target="_blank" rel="noopener">PROVE</a>.</p>
       <p>Tacit’s prover looks for a new batch every 30 seconds. Anyone can run it on the same public inputs with their own Succinct account: <a href="https://github.com/src-company/tacit/blob/main/worker-relay/src/reflection-folder.js" target="_blank" rel="noopener">reflection-folder.js</a>.</p>
     </div>
   </section>
@@ -1009,6 +1009,6 @@ node tools/community-runner.mjs mirror   # no key: keeps the board public on Nos
 
 <div id="toast-container" class="toasts" popover="manual"></div>
 
-<script type="module" src="/prove/app.js?cb=531433ef"></script>
+<script type="module" src="/prove/app.js?cb=36f4a22c"></script>
 </body>
 </html>

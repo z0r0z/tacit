@@ -83,6 +83,14 @@ export const kindText = (b) => (kindOf(b) === 'batch' ? `Batch · ${(b.notes || 
 
 // The middle of a list of seconds, for a prover's usual speed.
 export const median = (xs) => { const s = xs.filter((x) => x > 0).sort((a, b) => a - b); return s.length ? s[Math.floor(s.length / 2)] : null; };
+// How long a proof takes, as a range: from the quicker quarter of the newest proofs to the slow tenth, since a GPU proves in seconds and a laptop in
+// minutes and one figure in the middle would say neither. One figure when they round to the same, null with none.
+export function proofSpan(xs) {
+  const s = xs.filter((x) => x > 0).sort((a, b) => a - b);
+  if (!s.length) return null;
+  const lo = took(s[Math.floor(s.length / 4)]), hi = took(s[Math.min(s.length - 1, Math.floor(s.length * 0.9))]);
+  return lo === hi ? lo : `${lo} to ${hi}`;
+}
 
 // How long until a UTC day is over, when its proofs are paid: "5 h 12 min".
 export function untilDayEnds(nowMs = Date.now()) {
@@ -102,3 +110,18 @@ export function cleanBlock(b) {
 }
 export const cleanProof = (p) => (p && (p.house === true || addrOr(p.miner)) ? { at: nat(p.at), miner: addrOr(p.miner) || undefined, house: p.house === true, points: nat(p.points), secs: nat(p.secs) } : null);
 export const cleanMiner = (m) => (m && addrOr(m.miner) ? { miner: addrOr(m.miner), proofs: nat(m.proofs), points: nat(m.points) } : null);
+// Each address's day across the proof pool's tally and the board's (a GPU's batches and blocks), both of which the points service pays:
+// lowercased address -> { miner, proofs, points, pool: { proofs, points }, board: { proofs, points } }.
+export function dayTotals(poolMiners = [], boardMiners = []) {
+  const out = new Map();
+  for (const [part, list] of [['pool', poolMiners], ['board', boardMiners]]) {
+    for (const m of list || []) {
+      if (!m?.miner) continue;
+      const k = String(m.miner).toLowerCase();
+      const o = out.get(k) || { miner: m.miner, proofs: 0, points: 0, pool: { proofs: 0, points: 0 }, board: { proofs: 0, points: 0 } };
+      o.proofs += m.proofs || 0; o.points += m.points || 0; o[part].proofs += m.proofs || 0; o[part].points += m.points || 0;
+      out.set(k, o);
+    }
+  }
+  return out;
+}
