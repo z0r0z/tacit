@@ -7,10 +7,11 @@
 // validation) | groth16 (on-chain).
 //
 // Proving elsewhere (the prover board's GPU worker; worker-relay/src/lib/btc-board.js): SP1_PROVER=stdin builds the same input
-// (the inner Ethereum proof included) with a local CPU client and stops before proving, writing out/bitcoin_stdin.bin (the bincode
-// SP1Stdin) and a STDIN_OK line. The worker proves it groth16 and returns the public values and the proof bytes the pool's
-// attestBitcoinStateProven takes, which the relay checks against the verifier under BITCOIN_RELAY_VKEY before using them; so
-// there is no finish run. BITCOIN_PROVE_MODES=1 prints the modes this build has and does nothing else.
+// (the inner Ethereum proof included) and stops before proving, writing out/bitcoin_stdin.bin (the bincode SP1Stdin) and a STDIN_OK
+// line. It takes the inner proof's key from the network client, as a network run does: the key is the same, and a local CPU
+// prover would hold more memory than the relay host has to spare (about 1.7 GB, against some 0.8 GB for a whole network run).
+// The worker proves it groth16 and returns the public values and the proof bytes the pool's attestBitcoinStateProven takes,
+// which the relay checks against the verifier under BITCOIN_RELAY_VKEY before using them; so there is no finish run. BITCOIN_PROVE_MODES=1 prints the modes this build has and does nothing else.
 use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, SP1Stdin, Elf, HashableKey, SP1Proof, SP1ProofWithPublicValues};
 use sp1_sdk::ProvingKey;
 use reflect_stdin::write_stdin;
@@ -41,8 +42,8 @@ fn main() {
     // Deployment target is the hosted Succinct network prover (no GPU on the relay host), matching the
     // confidential settle harnesses. Swap to .cuda() only for a local GPU box build.
     if std::env::var("SP1_PROVER").as_deref() == Ok("stdin") {
-        let cpu = ProverClient::builder().cpu().build();
-        add_eth_proof(&cpu, &f, &out_dir, mode_b, &mut stdin);
+        let client = ProverClient::builder().network().build();
+        add_eth_proof(&client, &f, &out_dir, mode_b, &mut stdin);
         let bytes = bincode::serialize(&stdin).expect("the input did not serialize");
         std::fs::create_dir_all(&out_dir).ok();
         std::fs::write(format!("{out_dir}/bitcoin_stdin.bin"), &bytes).expect("write bitcoin_stdin.bin");

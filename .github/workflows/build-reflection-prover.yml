@@ -20,7 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Build deps (protoc for sp1-prover-types)
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler time
       # The Groth16 FFI's build script runs `go`: the version its go.mod asks for.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -75,6 +75,19 @@ jobs:
           cmp out-base/bitcoin_pv.hex out-new/bitcoin_pv.hex
           [ "$(grep '^EXECUTED' run-base.log)" = "$(grep '^EXECUTED' run-new.log)" ]
           echo "same public values and cycles as $BASELINE's bitcoin_prove"
+          # The input the prover board's GPUs are given (SP1_PROVER=stdin): how much memory building it holds (the relay host stops it at
+          # BTC_STATE_STDIN_RSS_KB, 1,700,000 KB by default; the fixture is a forward batch, so this is the client without the inner key's
+          # setup, which a network run's own peak already includes), and, when the baseline has the mode, the same bytes as its.
+          if SP1_PROVER=stdin PROVER_OUT=$PWD/stdin-new /usr/bin/time -v "$B" > stdin-new.log 2>&1; then
+            grep -E '^STDIN_OK|Maximum resident' stdin-new.log
+            kb=$(awk -F': ' '/Maximum resident/ {print $2}' stdin-new.log)
+            [ "$kb" -lt 1200000 ] || { echo "building the input held $kb KB, too close to the relay host's limit"; exit 1; }
+            if grep -q 'BITCOIN_PROVE_MODES.*stdin' <(BITCOIN_PROVE_MODES=1 base/bitcoin_prove); then
+              SP1_PROVER=stdin PROVER_OUT=$PWD/stdin-base /usr/bin/time -v base/bitcoin_prove > stdin-base.log 2>&1 || { tail -20 stdin-base.log; exit 1; }
+              grep -E 'Maximum resident' stdin-base.log | sed 's/^/baseline: /'
+              cmp stdin-base/bitcoin_stdin.bin stdin-new/bitcoin_stdin.bin && echo "the same input as $BASELINE's"
+            fi
+          else tail -30 stdin-new.log; exit 1; fi
           mkdir -p dist && cp "$B" dist/ && (cd dist && sha256sum bitcoin_prove | tee bitcoin_prove.sha256)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
