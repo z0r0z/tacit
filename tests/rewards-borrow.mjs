@@ -39,7 +39,7 @@ const until = (page, fn, arg, timeout = 60000) => page.waitForFunction(fn, arg, 
 
 const LISTED = '0x1c0aa8ccd568d90d61659f060d1bfb1e6f855a20', E18 = 10n ** 18n;
 const USD = '0x00000087ac9ed3E1Bd443E00FBe18B4EdcAEeb1F', DISTRIBUTOR = '0x000000C918e44A3a443937fA7594eA4f7C95D6b9';
-const RPC_HOSTS = ['ethereum-rpc.publicnode.com', 'eth.drpc.org', '1rpc.io', 'mainnet.gateway.tenderly.co', 'rpc.mevblocker.io', 'eth-mainnet.nodereal.io', '1.rpc.thirdweb.com', 'rpc.flashbots.net', 'eth-mainnet.public.blastapi.io', 'ethereum-json-rpc.stakely.io'];
+const RPC_HOSTS = ['ethereum-rpc.publicnode.com', 'mainnet.rpc.buidlguidl.com', 'eth.drpc.org', '1rpc.io', 'mainnet.gateway.tenderly.co', 'rpc.mevblocker.io', 'eth-mainnet.nodereal.io', '1.rpc.thirdweb.com', 'rpc.flashbots.net', 'eth-mainnet.public.blastapi.io', 'ethereum-json-rpc.stakely.io'];
 const json = (route, body) => route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(body) });
 const w = (v) => BigInt(v).toString(16).padStart(64, '0');
 const vaultView = async (v, data) => BigInt(await rpcA('eth_call', [{ to: v, data }, 'latest']));

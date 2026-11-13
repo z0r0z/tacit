@@ -2,6 +2,7 @@
 const LANES = {
   'eth-mainnet.nodereal.io': { eth_getLogs: 3 },
   'rpc.mevblocker.io': { eth_getLogs: 2 },
+  'mainnet.rpc.buidlguidl.com': { eth_getLogs: 3 },
   'mainnet.base.org': { '*': 4 },
 };
 

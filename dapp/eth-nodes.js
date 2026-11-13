@@ -2,6 +2,7 @@
 export const ETH_NODES = [
   'https://ethereum-rpc.publicnode.com',
   'https://rpc.mevblocker.io',
+  'https://mainnet.rpc.buidlguidl.com',
   'https://eth.drpc.org',
   'https://1.rpc.thirdweb.com',
   'https://eth-mainnet.public.blastapi.io',
@@ -13,12 +14,14 @@ export const ETH_LOG_NODES = [
   'https://rpc.mevblocker.io',
   'https://rpc.mevblocker.io/fast',
   'https://ethereum-rpc.publicnode.com',
+  'https://mainnet.rpc.buidlguidl.com',
   'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7',
   'https://ethereum-json-rpc.stakely.io',
   'https://1rpc.io/eth',
 ];
 export const ETH_ARCHIVE_NODES = [
   'https://rpc.mevblocker.io',
+  'https://mainnet.rpc.buidlguidl.com',
   'https://eth.drpc.org',
   'https://eth-mainnet.public.blastapi.io',
   'https://1.rpc.thirdweb.com',
@@ -40,6 +43,7 @@ export const ROBINHOOD_NODES = [
 const LIMITS = {
   'ethereum-rpc.publicnode.com': { logs: 9999, back: 9999, state: true },
   'rpc.mevblocker.io': { logs: 45000 },
+  'mainnet.rpc.buidlguidl.com': { logs: 10000 },
   'eth-mainnet.nodereal.io': { logs: 49999, shared: true },
   'rpc.flashbots.net': { logs: 0 },
   'robinhood-rpc.publicnode.com': { logs: 0, state: true },

@@ -9,7 +9,7 @@ import { jsonRpc } from '../dapp/evm-pool-wallet.js';
 
 let failed = 0;
 const test = async (name, fn) => { try { await fn(); console.log('  ok - ' + name); } catch (e) { failed++; console.log('  FAIL - ' + name + '\n' + e.stack); } };
-const NODEREAL = 'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7', BASE = 'https://mainnet.base.org', OTHER = 'https://ethereum-rpc.publicnode.com';
+const NODEREAL = 'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7', BASE = 'https://mainnet.base.org', OTHER = 'https://ethereum-rpc.publicnode.com', BUIDLGUIDL = 'https://mainnet.rpc.buidlguidl.com';
 const tick = (ms = 5) => new Promise((r) => setTimeout(r, ms));
 
 // a node that answers after `ms`, and notes how many requests it has at once
@@ -45,6 +45,15 @@ await test('Base\'s own endpoint is held to four of any kind', async () => {
   const n = node(10);
   await Promise.all(Array.from({ length: 20 }, (_, i) => pace(BASE, i % 2 ? 'eth_call' : 'eth_getBalance', () => n.send(i))));
   assert.equal(n.max, 4);
+});
+
+await test('BuidlGuidl\'s node is held to three wide log queries at once (its per-IP limit answers 429 from the fifth), other reads are not', async () => {
+  const n = node(15);
+  await Promise.all(Array.from({ length: 9 }, (_, i) => pace(BUIDLGUIDL, 'eth_getLogs', () => n.send(i))));
+  assert.equal(n.max, 3);
+  const m = node(15);
+  await Promise.all(Array.from({ length: 12 }, (_, i) => pace(BUIDLGUIDL, 'eth_call', () => m.send(i))));
+  assert.equal(m.max, 12);
 });
 
 await test('a request that fails frees its place, and its error reaches the caller', async () => {
