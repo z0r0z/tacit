@@ -191,6 +191,9 @@
 //            sent to another key's Tacit address from Send, withdrawn to the paying account; the address gains its chain lane; 390 and 1280 px, light and dark;
 //            with the private pool: the leader's shield cap, a hop into the live pool found and settled as a wrap's deposit, private TAC onto the chain
 //            through its inbox (the relay's side stubbed: its unwrap pays the inbox, its wrap settle is recorded)
+//   chainways a browser wallet's TAC shielded from TAC's page on the same fork set-up, each way it goes in: with ETH, one permit signed and one transaction
+//            of the wallet's own (sweepWithPermit, no fee, no sweep from the leader); the leader's way picked on the gas row (one signature, the leader's
+//            sweep); a wallet that signs no typed data (one TAC transfer to the inbox); a wallet with no ETH (the leader's way, nothing to choose)
 //   PLAYWRIGHT=<path to playwright-core> node tools/weld-check.mjs [scenario,…] [fork rpc]   (SHOTS=<dir> saves screenshots)
 
 import { spawn } from 'node:child_process';
@@ -213,7 +216,7 @@ const DAPP = new URL('../dapp/', import.meta.url).pathname;
 const bwText = (page) => page.evaluate((s) => [...document.querySelectorAll(s)].map((e) => e.textContent).join(' '), '#bw-status, #bw-s1, #bw-s2, #bw-s3, #bw-s4');
 // `ui`: the front page's tile and landing, the steps a look-and-copy pass needs (tools/weld-ui.sh runs them on a pinned, cached fork)
 const UI_STEPS = 'links,tacbuy,swapurl,swapfield,hints,hxbridge,hxfold,hxnudge,tradelinks';
-const ONLY = new Set((process.argv[2] === 'ui' ? UI_STEPS : process.argv[2] || 'airdrop,links,tacbuy,swapurl,swapfield,hints,hxbridge,hxbridgec,hxbridgeu,usdtwrap,usdtwrapw,usdtout,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,redeemgo,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,swaphere,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,shieldsrc,shieldwc,provebar,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,usdback,selffund,selfeth,selfprove,exitahead,selfdevice,nohost,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,tileahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,anyone,relayfail,selfwallet,slowline,fastroute,chainoff,chaintile').split(','));
+const ONLY = new Set((process.argv[2] === 'ui' ? UI_STEPS : process.argv[2] || 'airdrop,links,tacbuy,swapurl,swapfield,hints,hxbridge,hxbridgec,hxbridgeu,usdtwrap,usdtwrapw,usdtout,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,redeemgo,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,swaphere,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,shieldsrc,shieldwc,provebar,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,usdback,selffund,selfeth,selfprove,exitahead,selfdevice,nohost,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,tileahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,anyone,relayfail,selfwallet,slowline,fastroute,chainoff,chaintile,chainways').split(','));
 const FORK = process.argv[3] || 'https://mainnet.gateway.tenderly.co';
 const SHOTS = process.env.SHOTS || null;
 const PORT = 20000 + Math.floor(Math.random() * 2000), WEB = PORT + 1;
@@ -281,7 +284,7 @@ const server = createServer((req, res) => {
 
 const RPC_HOSTS = ['ethereum-rpc.publicnode.com', 'eth.drpc.org', '1rpc.io', 'mainnet.gateway.tenderly.co', 'cloudflare-eth.com', 'rpc.flashbots.net',
   'rpc.mevblocker.io', 'eth-mainnet.public.blastapi.io', 'ethereum-json-rpc.stakely.io', 'eth.rpc.blxrbdn.com', '1.rpc.thirdweb.com', 'eth-mainnet.nodereal.io'];   // and the TAC vaults' own (vault/chain.js)
-const submits = [], refused = [], relays = [], walletTxs = [];
+const submits = [], refused = [], relays = [], walletTxs = [], walletTyped = [];   // (walletTyped: the typed data the wallet stub signed)
 // What the wallet stub does beyond sending: takes EIP-5792 batches (batch), cannot sign typed data (noTyped), turns it down (rejectTyped),
 // or signs a permit for another amount than the one asked (badPermit). The batches it was sent, and where each one landed.
 const walletWays = { batch: false, noTyped: false, rejectTyped: false, badPermit: false }, batches = [], batchHashes = {};
@@ -474,6 +477,7 @@ async function openPage({ account, key = null, host = '127.0.0.1', init = null, 
       if (!key) throw Object.assign(new Error('this account cannot sign'), { code: 4001 });
       if (method === 'eth_signTypedData_v4' && walletWays.noTyped) throw Object.assign(new Error('the method eth_signTypedData_v4 is not supported'), { code: -32601 });
       if (method === 'eth_signTypedData_v4' && walletWays.rejectTyped) throw Object.assign(new Error('User rejected the request.'), { code: 4001 });
+      if (method === 'eth_signTypedData_v4') walletTyped.push(JSON.parse(params[1]));
       let digest;
       if (method === 'personal_sign') {
         const msg = Buffer.from(params[0].slice(2), 'hex');
@@ -14302,8 +14306,9 @@ await step('chainoff', async () => {
     if (r.errors.length) { fails++; console.log('FAIL chainoff page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }
 });
-await step('chaintile', async () => {
-  if (!existsSync(CHAIN_NODE_BIN)) { fails++; return console.log('FAIL chaintile - the tacit-block-node binary is not built'); }
+// The tacit chain on the fork, for the steps that use it: TacitSeats and TacitBlocks deployed (a verifier that takes any proof), the real leader run with
+// its stub prover, and pages pointed at them (`open`: a page with the wallet stub for `account`; `chainPage`: one with a Tacit key pasted in).
+async function chainFork() {
   const { execFileSync } = await import('node:child_process'), { mkdtempSync } = await import('node:fs'), { tmpdir } = await import('node:os');
   const CONTRACTS = process.env.CHAIN_CONTRACTS || new URL('../contracts/', import.meta.url).pathname, LEADER_KEY = '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d';
   const forge = (path, ctor) => execFileSync('forge', ['create', path, '--rpc-url', ANVIL, '--private-key', K0, '--broadcast', ...(ctor ? ['--constructor-args', ...ctor] : [])], { cwd: CONTRACTS, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).match(/Deployed to: (0x[0-9a-fA-F]{40})/)[1];
@@ -14327,15 +14332,20 @@ await step('chaintile', async () => {
       await route.fulfill({ status: r.status, contentType: 'application/json', body: await r.text() });
     } catch (e) { await route.fulfill({ status: 502, contentType: 'application/json', body: JSON.stringify({ error: e.message }) }); }
   };
-  const chainPage = async (hex, viewport, colorScheme, setup = null) => {
-    const r = await openPage({ account: A0, key: K0, viewport, colorScheme, init: { fn: (c) => localStorage.setItem('tacit-chain-dev', JSON.stringify(c)), arg: { blocks, leader: leaderUrl } } });
+  const open = async ({ account = A0, key = K0, viewport, colorScheme, setup = null } = {}) => {
+    const r = await openPage({ account, key, viewport, colorScheme, init: { fn: (c) => localStorage.setItem('tacit-chain-dev', JSON.stringify(c)), arg: { blocks, leader: leaderUrl } } });
     await r.ctx.route(/\/tacit-chain-leader\//, forward);
     if (setup) await setup(r);
     await r.page.goto(r.url);
     await r.page.waitForSelector('[data-hxm="swap"]', { timeout: 120000 });
-    await pasteKey(r.page, hex);
     return r;
   };
+  const chainPage = async (hex, viewport, colorScheme, setup = null) => { const r = await open({ viewport, colorScheme, setup }); await pasteKey(r.page, hex); return r; };
+  return { blocks, NODE, log, leader, open, chainPage };
+}
+await step('chaintile', async () => {
+  if (!existsSync(CHAIN_NODE_BIN)) { fails++; return console.log('FAIL chaintile - the tacit-block-node binary is not built'); }
+  const { blocks, NODE, log, leader, chainPage } = await chainFork();
   const addrOf = async (p) => { await p.evaluate(() => { location.hash = ''; location.hash = '#wallet'; }); await until(p, () => !!document.querySelector('#w-tacit .full code'), null, 60000); return (await text(p, '#w-tacit .full code')).trim(); };
   const laneOf = (a) => { try { return makeTacitAddress({ secp }).decodeTacitAddress(a).lanes.chain?.hash || null; } catch { return null; } };
   const tacHeld = (a) => tacOf(a);
@@ -14627,6 +14637,92 @@ await step('chaintile', async () => {
         for (const [who, x] of [['bob', rb], ['alice', ra]]) if (x.errors.length) { fails++; console.log(`FAIL chaintile (pay link, ${who}) page errors: ` + x.errors.slice(0, 3).join(' | ')); }
       } finally { await rb.browser.close(); await ra.browser.close(); }
     }
+  } finally { leader.kill(); if (fails && !process.env.VERBOSE) console.log('     leader said: ' + log.slice(-6).join('\n     ')); }
+});
+// A browser wallet's TAC shielded from TAC's page, each way it goes in, against the real landing contract and leader. The wallet signs in (its Tacit key
+// comes of its signature, its key's own address is unused, so the wallet is what pays). With ETH: one permit signed for the shield's inbox and the
+// deposit alone, and one transaction of the wallet's own, TacitBlocks.sweepWithPermit with no fee; the leader sends no sweep. The leader's way, picked
+// on the gas row: one permit signed for the deposit and the leader's fee, no transaction, the leader's sweep. A wallet that signs no typed data: one
+// TAC transfer to the inbox, which the leader sweeps. A wallet with no ETH: the leader's way, with nothing to choose. Each lands, and the contract
+// holds exactly what was shielded.
+await step('chainways', async () => {
+  if (!existsSync(CHAIN_NODE_BIN)) { fails++; return console.log('FAIL chainways - the tacit-block-node binary is not built'); }
+  const { blocks, log, leader, open } = await chainFork();
+  const A2 = '0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc', K2 = '0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a', unit = 10n ** 18n;
+  const SWEEP = Buffer.from(keccak_256(Buffer.from('sweepWithPermit(uint256,uint256,bytes32,bytes32,bytes32,bytes32,address,uint256,uint256,uint8,bytes32,bytes32)'))).subarray(0, 4).toString('hex');
+  const hexOf = (d) => String(d || '').replace(/^0x/, '').toLowerCase(), same = (a, b) => String(a || '').toLowerCase() === String(b || '').toLowerCase();
+  const rows = (p) => p.$$eval('#tcd-q .tcd-rows > div', (ds) => ds.map((d) => `${(d.querySelector('dt').firstChild?.textContent || '').trim().replace(/ in$/, '')}: ${d.querySelector('dd').textContent.replace(/\s+/g, ' ').trim()}`).join(' | '));
+  const steps = (p) => p.$$eval('#tcd-flow li', (ls) => ls.map((l) => l.textContent.trim() + (l.classList.contains('done') ? ' ✓' : '')).join(', '));
+  const swept = (from) => log.slice(from).filter((l) => /"swept"/.test(l));
+  // the wallet signs in, TAC's page opens in place, and the card reads what the wallet holds
+  const walletPage = async (account, key) => {
+    const r = await open({ account, key, viewport: { width: 1280, height: 1100 } }), p = r.page;
+    await p.evaluate(() => { location.hash = ''; location.hash = '#wallet'; });
+    await p.click('#wallet-body [data-in="eth"]');
+    await until(p, () => !!document.querySelector('#wallet-dot.on'), null, 180000);
+    await p.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
+    await p.evaluate(() => document.querySelector('a[href="/tac/"]')?.click());
+    await until(p, () => location.pathname === '/tac/' && /\d in your wallet/.test(document.querySelector('#tcd-have')?.textContent || ''), null, 300000);
+    return r;
+  };
+  // an amount typed and quoted; the press, until it has landed or the card says why not
+  const quote = async (p, amt) => {
+    await until(p, () => document.querySelector('#tcd-go')?.getAttribute('aria-busy') !== 'true', null, 240000).catch(() => {});
+    await p.fill('#tcd-amt', amt);
+    await until(p, () => /≈/.test(document.querySelector('#tcd-q .tcd-rows')?.textContent || '') && !document.querySelector('#tcd-q .sk') && !document.querySelector('#tcd-go').disabled, null, 300000).catch(() => {});
+    return rows(p);
+  };
+  const press = async (p) => {
+    await p.click('#tcd-go');
+    await until(p, () => /Shielded\.|class="err"/.test(document.querySelector('#tcd-st')?.innerHTML || ''), null, 900000).catch(() => {});
+    return (await text(p, '#tcd-st')).replace(/\s+/g, ' ').trim();
+  };
+  try {
+    await fundTac(A0, 60n * unit);
+    const r = await walletPage(A0, K0), p = r.page;
+    try {
+      // with ETH: its own gas
+      const q1 = await quote(p, '20'), h1 = await tacOf(blocks), w1 = walletTxs.length, t1 = walletTyped.length, l1 = log.length;
+      ok(/Gas: your ETH, no fee/.test(q1) && /Takes: One signature, one transaction/.test(q1) && await p.$eval('#tcd-q [data-tcd-way="own"]', (b) => b.getAttribute('aria-pressed') === 'true').catch(() => false),
+        `chainways: a wallet with ETH is quoted its own gas, picked on the gas row (${q1})`);
+      const s1 = await press(p), sent1 = walletTxs.slice(w1), signed1 = walletTyped.slice(t1), d1 = hexOf(sent1[0]?.data);
+      ok(/^Shielded\./.test(s1) && (await tacOf(blocks)) - h1 === 20n * unit && /On Ethereum ✓$/.test(await steps(p)), `chainways: 20 TAC shielded from the wallet, the contract holding exactly 20 more (${s1.slice(0, 90)} | ${await steps(p)})`);
+      ok(sent1.length === 1 && same(sent1[0].to, blocks) && d1.startsWith(SWEEP) && BigInt('0x' + (d1.slice(8 + 64 * 7, 8 + 64 * 8) || '1')) === 0n && same('0x' + d1.slice(8 + 64 * 6 + 24, 8 + 64 * 7), A0)
+        && signed1.length === 1 && signed1[0].primaryType === 'Permit' && BigInt(signed1[0].message.value) === 20n * unit && !swept(l1).length,
+        `chainways: one permit signed for the deposit alone, one transaction of the wallet's own (sweepWithPermit on the chain's contract, no fee), and no sweep from the leader (${sent1.length} sent, ${signed1.length} signed, permit for ${signed1[0]?.message?.value}, leader swept ${swept(l1).length})`);
+      // the leader's way, picked on the gas row
+      await quote(p, '10');
+      await p.click('#tcd-q [data-tcd-way="permit"]');
+      await until(p, () => document.querySelector('#tcd-q [data-tcd-way="permit"]')?.getAttribute('aria-pressed') === 'true' && !document.querySelector('#tcd-go').disabled, null, 60000).catch(() => {});
+      const q2 = await rows(p), h2 = await tacOf(blocks), a2 = await tacOf(A0), w2 = walletTxs.length, t2 = walletTyped.length, l2 = log.length;
+      const s2 = await press(p), signed2 = walletTyped.slice(t2), asked2 = BigInt(signed2[0]?.message?.value || 0), paid2 = a2 - (await tacOf(A0));
+      ok(/Gas: [\d.,]+ TAC/.test(q2) && /Takes: One signature ·/.test(q2) && /^Shielded\./.test(s2) && (await tacOf(blocks)) - h2 === 10n * unit, `chainways: the leader's way, picked on the gas row: 10 TAC shielded (${q2} | ${s2.slice(0, 80)})`);
+      ok(walletTxs.length === w2 && signed2.length === 1 && asked2 >= 10n * unit && paid2 === asked2 && swept(l2).some((l) => /"permit":true/.test(l)),
+        `chainways: one signature and no transaction from the wallet; the leader sends its permit in, the wallet paying the deposit and the leader's fee and no more (${walletTxs.length - w2} sent, permit for ${asked2}, wallet paid ${paid2})`);
+      // a wallet that signs no typed data: its TAC goes to the inbox in one transfer
+      walletWays.noTyped = true;
+      await quote(p, '5');
+      const h3 = await tacOf(blocks), w3 = walletTxs.length, t3 = walletTyped.length, l3 = log.length;
+      const s3 = await press(p), sent3 = walletTxs.slice(w3), d3 = hexOf(sent3[0]?.data);
+      ok(/^Shielded\./.test(s3) && (await tacOf(blocks)) - h3 === 5n * unit && sent3.length === 1 && same(sent3[0].to, TAC) && d3.startsWith('a9059cbb') && BigInt('0x' + (d3.slice(8 + 64, 8 + 128) || '0')) === 5n * unit
+        && walletTyped.length === t3 && swept(l3).some((l) => /"permit":false/.test(l)),
+        `chainways: a wallet that signs no typed data sends one TAC transfer to the inbox, which the leader takes in (${s3.slice(0, 80)} | ${sent3.length} sent | leader swept ${swept(l3).length})`);
+      const q3 = await quote(p, '3');
+      ok(/Gas: your ETH, no fee/.test(q3) && /Takes: One transaction/.test(q3) && !(await p.$('#tcd-q [data-tcd-way]')), `chainways: and from then on that is its way, with nothing to choose (${q3})`);
+      if (r.errors.length) { fails++; console.log('FAIL chainways page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+    } finally { walletWays.noTyped = false; await r.browser.close(); }
+    // a wallet with no ETH: the leader's way, and no choice to make
+    await rpc('anvil_setBalance', [A2, '0x0']);
+    await fundTac(A2, 30n * unit);
+    const r2 = await walletPage(A2, K2), p2 = r2.page;
+    try {
+      const q4 = await quote(p2, '10'), h4 = await tacOf(blocks), w4 = walletTxs.length, t4 = walletTyped.length, l4 = log.length;
+      ok(/Gas: [\d.,]+ TAC, no ETH needed/.test(q4) && /Takes: One signature ·/.test(q4) && !(await p2.$('#tcd-q [data-tcd-way]')), `chainways: a wallet with no ETH is quoted the leader's way, with nothing to choose (${q4})`);
+      const s4 = await press(p2);
+      ok(/^Shielded\./.test(s4) && (await tacOf(blocks)) - h4 === 10n * unit && walletTxs.length === w4 && walletTyped.length === t4 + 1 && swept(l4).some((l) => /"permit":true/.test(l)) && BigInt(await rpc('eth_getBalance', [A2, 'latest'])) === 0n,
+        `chainways: 10 TAC shielded with one signature, no transaction and no ETH (${s4.slice(0, 80)} | ${walletTxs.length - w4} sent, ${walletTyped.length - t4} signed)`);
+      if (r2.errors.length) { fails++; console.log('FAIL chainways (no ETH) page errors: ' + r2.errors.slice(0, 3).join(' | ')); }
+    } finally { await r2.browser.close(); }
   } finally { leader.kill(); if (fails && !process.env.VERBOSE) console.log('     leader said: ' + log.slice(-6).join('\n     ')); }
 });
 
