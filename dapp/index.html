@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-90IDVduV6YSWOMIArIkDE5BY5O1VLEMSrNn/gzLroxk=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-qwstT2CFj7m1IfvGIKdj9H9krSRrDIzOk+DXPozWv6Q=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -12608,6 +12608,13 @@ async function hxKeep(src, cid = hxWalletChain()) {
   if (src === 'ctac') { const v = chainHeld(), q = await chainQuote(HX.tab === 'send' ? 'pay' : 'withdraw', 0n).catch(() => null); return v != null && q && v > q.most ? v - q.most : 0n; }
   return noteKeep(src);
 }
+function hxNotesGo() {
+  const rows = $('#hx-routes');
+  if (!rows || rows.hidden) { if (S.key) loadBridge().then(() => hxQuoteSoon(true), () => {}); return; }
+  const live = $$('[data-hxr]:not([disabled])', rows), at = live.find((b) => b.getAttribute('aria-checked') === 'true') || live[0];
+  rows.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'center' });
+  at?.focus({ preventScroll: true });
+}
 function hxBalPaint() {
   if (hxWrapMode() && S.key) { const v = `${hxWrapVia()}|${!!S.wallet}`; if (HX.wv !== v) { const was = HX.wv; HX.wv = v; if (was) setTimeout(() => { HX.q = null; hxQuote(); }, 0); } }
   if (HX.tab === 'swap') { hxMoveAuto(); SWC.card?.refresh?.(); }
@@ -12630,10 +12637,13 @@ function hxBalPaint() {
     return;
   }
   const [v, dec] = h, typed = whole ? 0n : hxUnits(), dev = hxPayP(), over = !!typed && v > 0n && (!dev && dec === 18 ? typed * E10 : typed) > v, max = v > 0n && !whole && !(HX.tab === 'send' && hxSendBtc());
-  const view = html`<button type="button" id="hx-max"${over ? html` class="over"` : ''} ${max ? '' : 'disabled'}>${wrapEth && hxWrapVia() === 'tacit' ? 'Key address' : 'Balance'} ${fmt(v, dec, h[3] ?? (dec === 18 ? 4 : 6))}${max ? ' · Max' : ''}</button>`;
+  const amount = fmt(v, dec, h[3] ?? (dec === 18 ? 4 : 6));
+  const view = whole ? (v > 0n ? html`<button type="button" id="hx-max" data-hxnotes>Balance ${amount} · See notes</button>` : html`<span id="hx-max">Balance ${amount}</span>`)
+    : html`<button type="button" id="hx-max"${over ? html` class="over"` : ''} ${max ? '' : 'disabled'}>${wrapEth && hxWrapVia() === 'tacit' ? 'Key address' : 'Balance'} ${amount}${max ? ' · Max' : ''}</button>`;
   const key = `${HX.tab}|${src}|${dev?.slug ?? ''}|${v}|${view.s}`;
   if (el.__h === key) return;
   el.__h = key; mount(el, view);
+  if (whole) { const b = $('[data-hxnotes]', el); if (b) b.onclick = hxNotesGo; return; }
   $('#hx-max').onclick = async () => {
     const tab = HX.tab, pool = HX.pool, stale = () => HX.tab !== tab || HX.pool !== pool || hxAmtSrc() !== src || hxPayP()?.slug !== dev?.slug;
     const jp = HX.tab === 'earn' && S.key && P.scan && (HX.from === 'eth' || HX.from === 'tac') && FARM.program?.pools?.find((x) => String(x.pid) === String(HX.pool));
@@ -14561,7 +14571,7 @@ function paintHx() {
   } else if (m === 'bridge') {
     const groups = hxGroups('bridge'), place = hxPlaceOf('bridge', HX.sf), to = hxBrTo(HX.sf), w = HX_WAY[`${HX.sf}>${HX.sd}`], fixed = hxMoveFixed();
     const step = (t, i) => { const c = /^(.+?) ((?:on|for|to) (Bitcoin|Ethereum))$/.exec(t); return html`<li style="--i:${i}"><span class="dot" aria-hidden="true"></span>${c ? html`${c[1]} <span class="sr">${c[2]}</span><svg class="tk" aria-hidden="true"><use href="#c-${c[3] === 'Bitcoin' ? 'btc' : 'eth'}"/></svg>` : t}</li>`; };
-    body = html`${field('From', heldAt(place), fixed ? html`<span class="say">whole notes, picked next</span>` : amt(`${HX_SH[HX.sf].u} to bridge`), coin('hx-from', 'Bridge from', groups, HX.sf), fixed ? 'bal' : true, place === 'private')}
+    body = html`${field('From', heldAt(place), fixed ? html`<span class="say">whole notes, picked below</span>` : amt(`${HX_SH[HX.sf].u} to bridge`), coin('hx-from', 'Bridge from', groups, HX.sf), fixed ? 'bal' : true, place === 'private')}
       ${mid('Bridge it the other way')}
       ${field('To', heldAt(to), out(), html`<span class="coin one">${hxIco(w.ic)}${w.u}</span>`, false, to === 'private')}
       <ol class="hx-brs${to === 'bitcoin' ? ' out' : ''}" aria-label="Steps">${hxBrSteps(HX.sf).map(step)}</ol>

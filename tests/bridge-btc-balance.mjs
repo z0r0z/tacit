@@ -37,15 +37,19 @@ const COIN = [{ txid: 'aa'.repeat(32), vout: 0, value: 250000, status: { confirm
 const TACIT_JS = readFileSync(join(DAPP, 'tacit.js'), 'utf8') + '\n_testSetScanHoldingsOverride(() => (globalThis.__held ? globalThis.__held() : new Map()));\n';
 
 const browser = await chromium.launch({ args: ['--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1'] });
-try {
+// a fresh browser context whose Bitcoin address holds `spec` ([{ asset, id, amount }], amount in the asset's smallest unit, as a string)
+async function contextWith(spec) {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 1300 }, serviceWorkers: 'block' });
-  await ctx.addInitScript(([tac, teth]) => {
-    const note = (txid, amount) => ({ utxo: { txid, vout: 0, status: { confirmed: true } }, amount });
-    window.__held = () => new Map([
-      [tac, { assetIdHex: tac, ticker: 'TAC', decimals: 8, balance: 638843749052500n, utxos: [note('cc'.repeat(32), 638843749052500n)], unverified: [] }],
-      [teth, { assetIdHex: teth, ticker: 'tETH', decimals: 8, balance: 150000000n, utxos: [note('dd'.repeat(32), 150000000n)], unverified: [] }],
-    ]);
-  }, [TAC, TETH]);
+  await ctx.addInitScript((spec) => {
+    const by = new Map();
+    for (const s of spec) {
+      const g = by.get(s.asset) || { assetIdHex: s.asset, ticker: 'TAC', decimals: 8, balance: 0n, utxos: [], unverified: [] };
+      g.utxos.push({ utxo: { txid: s.id.repeat(32), vout: 0, status: { confirmed: true } }, amount: BigInt(s.amount) });
+      g.balance += BigInt(s.amount);
+      by.set(s.asset, g);
+    }
+    window.__held = () => new Map(by);
+  }, spec);
   await ctx.route('**/*', (r) => {
     const u = r.request().url();
     if (u.startsWith(BASE)) {
@@ -55,6 +59,13 @@ try {
     if (/\/address\/[^/]+\/utxo/.test(u)) return r.fulfill({ status: 200, headers: CORS, body: JSON.stringify(COIN) });
     return r.abort();
   });
+  return ctx;
+}
+try {
+  const ctx = await contextWith([
+    { asset: TAC, id: 'cc', amount: '638843749052500' },
+    { asset: TETH, id: 'dd', amount: '150000000' },
+  ]);
   const page = await ctx.newPage();
   const errors = []; page.on('pageerror', (e) => errors.push(String(e.message || e)));
   const text = (sel) => page.$eval(sel, (e) => e.textContent.replace(/\s+/g, ' ').trim()).catch(() => '');
@@ -92,10 +103,11 @@ try {
   ok(from === 'btc', `the Bridge tab is on TAC from Bitcoin (${from})`);
   await page.waitForFunction(() => /6,388,437/.test(document.querySelector('#hx-bal')?.textContent || ''), null, { timeout: 30000 }).catch(() => {});
   const bal = await text('#hx-bal');
-  ok(/^Balance 6,388,437\.4905$/.test(bal), `the From field says how much TAC is on Bitcoin, to 4 places: "${bal}"`);
+  ok(/^Balance 6,388,437\.4905 · See notes$/.test(bal), `the From field says how much TAC is on Bitcoin, to 4 places: "${bal}"`);
   const max = await page.$eval('#hx-max', (b) => ({ off: b.disabled, t: b.textContent })).catch(() => null);
-  ok(!!max && max.off && !/Max/.test(max.t), 'and offers no Max, since notes bridge whole');
+  ok(!!max && !max.off && !/Max/.test(max.t), 'and offers no Max, since notes bridge whole, but a way to the notes instead of a dead button');
   ok(!(await page.$('#hx-bal .quick')), 'and no quick amounts');
+  ok(/whole notes, picked below/.test(await text('#hx .f .say')), `the From field points to where the note is picked: "${await text('#hx .f .say')}"`);
 
   // the one note is over the 1,000 TAC a bridge takes: it is picked and the card offers the split
   await page.waitForFunction(() => /Split off 1,000 TAC/.test(document.querySelector('#hx-go')?.textContent || ''), null, { timeout: 30000 }).catch(() => {});
@@ -105,6 +117,8 @@ try {
   const rc = await text('#hx-receipt');
   ok(/Splits off\s*1,000 TAC to your own address/.test(rc) && /Keeps\s*6,387,437\.4905 TAC/.test(rc), `the receipt says what goes and what stays: ${rc}`);
   await shot('split');
+  await page.click('#hx-max');
+  ok(await page.evaluate(() => !!document.activeElement?.matches('#hx-routes [data-hxr]')), 'pressing Balance goes to the notes list and lands on the note');
   await page.click('#hx-go');
   await page.waitForFunction(() => /Press again to split it/.test(document.querySelector('#hx-ss')?.textContent || ''), null, { timeout: 15000 }).catch(() => {});
   ok(/Press again to split it/.test(await text('#hx-ss')), `a first press asks for a second: "${await text('#hx-ss')}"`);
@@ -121,6 +135,41 @@ try {
   await page.keyboard.press('Escape');
   ok(errors.length === 0, `no page errors${errors.length ? ': ' + errors.slice(0, 2).join(' | ') : ''}`);
   await ctx.close();
+
+  // 2,000 TAC in two notes of 1,000 each, both under the cap: Balance leads to the notes and each note can be picked
+  {
+    const c2 = await contextWith([{ asset: TAC, id: 'cc', amount: '100000000000' }, { asset: TAC, id: 'dd', amount: '100000000000' }]);
+    const p2 = await c2.newPage();
+    const errs2 = []; p2.on('pageerror', (e) => errs2.push(String(e.message || e)));
+    const t2 = (sel) => p2.$eval(sel, (e) => e.textContent.replace(/\s+/g, ' ').trim()).catch(() => '');
+    await p2.goto(BASE + '/', { waitUntil: 'commit' });
+    await p2.waitForSelector('#wallet', { timeout: 30000 });
+    await p2.click('#wallet');
+    await p2.waitForSelector('#ws-in', { timeout: 15000 });
+    await p2.click('#ws-in [data-in="paste"]');
+    await p2.fill('#ws-hex', KEY);
+    await p2.click('#ws-in [data-in="key"]');
+    await p2.waitForFunction(() => (document.querySelector('#wd-id')?.textContent || '').length > 12, null, { timeout: 30000 });
+    await p2.click('#wallet');
+    await p2.waitForSelector('#wbal-re:not([disabled])', { timeout: 30000 });
+    await p2.click('#wbal-re');
+    await p2.waitForFunction(() => /2,000/.test(document.querySelector('#wbal-box')?.textContent || ''), null, { timeout: 60000 }).catch(() => {});
+    await p2.keyboard.press('Escape');
+    await p2.waitForFunction(() => !document.querySelector('dialog.sheet[open]'), null, { timeout: 10000 }).catch(() => {});
+    await p2.click('#hx [data-hxm="more"]');
+    await p2.click('#hx [data-hxm="bridge"]').catch(() => {});
+    await p2.waitForFunction(() => document.querySelectorAll('#hx-routes [data-hxr]').length === 2, null, { timeout: 40000 }).catch(() => {});
+    ok(/^Balance 2,000 · See notes$/.test(await t2('#hx-bal')), `two notes of 1,000: "${await t2('#hx-bal')}"`);
+    const rows = await p2.$$eval('#hx-routes [data-hxr]', (bs) => bs.map((b) => ({ off: b.disabled, on: b.getAttribute('aria-checked') })));
+    ok(rows.length === 2 && rows.every((r) => !r.off && r.on === 'false'), `both can be picked and none is yet: ${JSON.stringify(rows)}`);
+    await p2.click('#hx-max');
+    ok(await p2.evaluate(() => document.activeElement === document.querySelector('#hx-routes [data-hxr]')), 'Balance lands on the first note');
+    await p2.click('#hx-routes [data-hxr]:nth-of-type(2)');
+    const after = await p2.$$eval('#hx-routes [data-hxr]', (bs) => bs.map((b) => b.getAttribute('aria-checked')));
+    ok(after.join() === 'false,true', `picking the second note picks it: ${after}`);
+    ok(errs2.length === 0, `no page errors${errs2.length ? ': ' + errs2.slice(0, 2).join(' | ') : ''}`);
+    await c2.close();
+  }
 } finally {
   await browser.close(); server.close();
 }
