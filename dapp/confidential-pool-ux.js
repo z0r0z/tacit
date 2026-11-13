@@ -187,9 +187,9 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   }
   const _walletEp = { url: 'wallet', wallet: true, span: 5000 };
   const _namesNoOne = (params) => (params.topics || []).slice(1).every((t) => t == null);
-  async function _logsIn(params, from, to) {
+  async function _logsIn(params, from, to, prog = null) {
     const out = [];
-    for (let start = from, lastErr = null; start <= to;) {
+    for (let start = from, lastErr = null, lastWide = false; start <= to;) {
       let got = null;
       for (let pass = 0; pass < 2 && !got; pass++) {
         if (pass > 0) await new Promise((res) => setTimeout(res, 400));
@@ -208,7 +208,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
               got = { logs: Array.isArray(logs) ? logs : [], end };
               _logHealth.ok(ep.url);
             } catch (e) {
-              lastErr = e;
+              const wide = !narrow(ep);
+              if (wide || !lastWide) { lastErr = e; lastWide = wide; }
               const n = _narrower(e, span);
               if (!n) { _logHealth.fail(ep.url, e.quota ? 'quota' : e.kind === 'busy' ? 'limited' : e.timeout ? 'slow' : 'down'); break; }
               if (n.cap && n.cap < ep.span) { ep.span = n.cap; _keepSpan(ep); }
@@ -221,6 +222,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       if (!got) throw lastErr || new Error('eth_getLogs: no endpoint answered');
       out.push(...got.logs);
       start = got.end + 1;
+      if (prog) { prog.logs = out; prog.next = start; }
     }
     return out;
   }
@@ -295,6 +297,13 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     _logsBusy.set(key, run);
     try { return await run; } finally { if (_logsBusy.get(key) === run) _logsBusy.delete(key); }
   }
+  function _keepPartial(key, cached, walkFrom, to, prog, snapTo) {
+    const finalTo = Math.min(prog.next - 1, to - FINAL);
+    if (finalTo < walkFrom) return;
+    const logs = [...(cached ? cached.logs.filter((l) => _blockOf(l) < walkFrom) : []), ...prog.logs.filter((l) => _blockOf(l) <= finalTo)];
+    _logsCache.set(key, { toBlock: finalTo + FINAL, logs, stored: true, snapTo, ...(cached && cached.snap ? { snap: true } : {}) });
+    if (_kept) _kept.put(key, { v: 1, finalTo, logs, ...(snapTo ? { snap: snapTo } : {}) }).catch(() => {});
+  }
   async function _getLogsChunked(params, from, to, key) {
     let cached = _logsCache.get(key);
     if (!cached && _kept) {
@@ -308,7 +317,10 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       if (s && s.manifest.to < to) { snapTo = s.manifest.to; cached = { toBlock: snapTo + FINAL, logs: selectLogs(s.logs, params), stored: true, snap: true }; }
     }
     const walkFrom = cached ? Math.max(from, cached.toBlock - FINAL + 1) : from;
-    let logs = [...(cached ? cached.logs.filter((l) => _blockOf(l) < walkFrom) : []), ...(await _logsIn(params, walkFrom, to))].filter((l) => _blockOf(l) <= to);
+    const prog = { next: walkFrom, logs: [] };
+    let fresh;
+    try { fresh = await _logsIn(params, walkFrom, to, prog); } catch (e) { _keepPartial(key, cached, walkFrom, to, prog, snapTo); throw e; }
+    let logs = [...(cached ? cached.logs.filter((l) => _blockOf(l) < walkFrom) : []), ...fresh].filter((l) => _blockOf(l) <= to);
     let sound = true;
     if (cached && cached.snap ? !(await _treesHold(logs, to)) : cached && cached.stored && (await _leavesAddUp(params, from, logs, to)) === false) {
       logs = await _logsIn(params, from, to);
@@ -1032,9 +1044,16 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return n;
   }
   async function wrapLogs(assetId) {
-    const head = await headBlock();
-    if (!Number.isFinite(head)) throw new Error('no head block');
-    return getLogsChunked({ address: cfg.pool, topics: [evmLog.TOPIC0.Wrap, null, String(assetId).toLowerCase()] }, Number(cfg.deployBlock || 0), head);
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const head = await headBlock();
+        if (!Number.isFinite(head)) throw new Error('no head block');
+        return await getLogsChunked({ address: cfg.pool, topics: [evmLog.TOPIC0.Wrap, null, String(assetId).toLowerCase()] }, Number(cfg.deployBlock || 0), head);
+      } catch (e) {
+        if (attempt >= 2) throw e;
+        await new Promise((res) => setTimeout(res, 600 * (attempt + 1)));
+      }
+    }
   }
   async function warmWrapLogs({ ticker = 'cETH' } = {}) {
     const meta = assetByTicker[ticker];

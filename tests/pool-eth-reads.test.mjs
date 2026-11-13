@@ -175,3 +175,49 @@ test('a node\'s widest range of logs is learned from its refusal and kept for th
   const spans = w2.asked.filter(([u, m]) => u === ETH_LOG_NODES[1] && m === 'eth_getLogs');
   assert.equal(spans.length, 5, 'the next page asks in ranges it serves, with no refusal first');
 });
+
+// The Wrap scan of one asset (nextWrapIndex) reads the pool's whole history of that asset's deposits through the log nodes. The wide nodes fail in
+// patches (mevblocker "service temporarily unavailable", the shared key's quota, BuidlGuidl's per-origin quota), and the nodes of 25 and 50 blocks
+// cannot carry it: they answered last, and their word ("method not available") was what the card showed.
+const DEPLOY = 25_998_736, TAC_KEY = '0x' + '11'.repeat(32);
+const NARROW = (u) => u.includes('stakely') || u.includes('1rpc.io');
+const range = (p) => [parseInt(p[0].fromBlock, 16), parseInt(p[0].toBlock, 16)];
+
+test('a wrap scan that fails says what the wide nodes said, not what a node of a few blocks said last', async () => {
+  mem.clear();
+  const head = DEPLOY + 100_000;
+  const w = world(Object.fromEntries(ETH_LOG_NODES.map((u) => [u, (method) => (method === 'eth_blockNumber' ? '0x' + head.toString(16)
+    : method === 'eth_getLogs' ? { error: { code: -32000, message: NARROW(u) ? 'method not available' : 'service temporarily unavailable' } } : '0x0')])));
+  await assert.rejects(() => w.ux().nextWrapIndex({ walletPriv: TAC_KEY, ticker: 'TAC' }),
+    (e) => /could not read this asset's wrap deposits \(service temporarily unavailable\).*pass an explicit index/.test(e.message), 'the wide nodes\' word, in the same shape');
+});
+
+test('a wrap scan that meets a bad patch of the nodes tries again by itself, and a later try picks up where the last stopped', async () => {
+  mem.clear();
+  const head = DEPLOY + 100_000, realNow = Date.now;
+  let failing = 12, outage = false;
+  const asks = [];
+  const mk = () => world(Object.fromEntries(ETH_LOG_NODES.map((u) => [u, (method, params) => {
+    if (method === 'eth_blockNumber') return '0x' + head.toString(16);
+    if (method !== 'eth_getLogs') return '0x0';
+    const [from, to] = range(params);
+    asks.push([u, from, to]);
+    if (failing > 0) { failing--; return { error: { code: -32000, message: 'service temporarily unavailable' } }; }
+    if (outage && to >= DEPLOY + 60_000) return { error: { code: -32000, message: NARROW(u) ? 'method not available' : 'service temporarily unavailable' } };
+    return [];
+  }])));
+  try {
+    assert.equal(await mk().ux().nextWrapIndex({ walletPriv: TAC_KEY, ticker: 'TAC' }), 0, 'the first requests failed and the scan still came back');
+    // a scan that is read part-way, with the rest down: the first range is read, then the nodes fail
+    mem.clear(); asks.length = 0; outage = true; failing = 0;
+    const ux = mk().ux();
+    await assert.rejects(() => ux.nextWrapIndex({ walletPriv: TAC_KEY, ticker: 'TAC' }), /could not read this asset's wrap deposits/);
+    assert.ok(asks.some(([, from]) => from === DEPLOY), 'the first range was read');
+    // the nodes come back a minute later: the ranges already read are not read again
+    outage = false; asks.length = 0;
+    Date.now = () => realNow() + 60_000;
+    assert.equal(await ux.nextWrapIndex({ walletPriv: TAC_KEY, ticker: 'TAC' }), 0);
+    assert.ok(asks.length > 0, 'the rest was read');
+    assert.equal(asks.filter(([, from]) => from === DEPLOY).length, 0, 'the range already read was not read again');
+  } finally { Date.now = realNow; }
+});
