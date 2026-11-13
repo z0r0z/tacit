@@ -19,7 +19,7 @@ export const SAFE_RATIOS = [250, 200, 175];
 // A loan is near when that is under NEAR_FALL percent; one already told about is told again only once it has backed off NEAR_CLEAR points more.
 export const NEAR_FALL = 10, NEAR_CLEAR = 3;
 export const fallToLiq = (ratio, liq) => (ratio > 0 && liq > 0 ? Math.max(0, (1 - liq / ratio) * 100) : null);
-export const fallText = (fall) => (fall < 1 ? 'less than 1%' : `${Math.floor(fall)}%`);
+export const fallText = (fall) => (fall < 1 ? 'less than 1%' : `${Math.floor(fall + 1e-9)}%`);
 export function loanHealth({ sats, debt, usdBtc, floor, liq }) {
   const coll = Number(sats) / 1e8, owed = Number(debt) / 1e8;
   if (!(coll > 0) || !(owed > 0) || !(usdBtc > 0)) return { ratio: null, liqAt: null, fall: null, near: false, level: '' };
@@ -31,6 +31,10 @@ export function liqPhrase(h) {
   if (h?.liqAt == null) return '';
   const at = `liquidated below $${Math.round(h.liqAt).toLocaleString('en-US')} a bitcoin`;
   return h.fall > 0 ? `${at}, ${fallText(h.fall)} under today's price` : at;
+}
+// The line a loan's row carries: its ratio, the price it is liquidated below, and a red word once it is near (`esc` writes text into HTML).
+export function healthLine(h, esc) {
+  return `Collateral ratio <b class="${h.level}">${esc(String(Math.floor(h.ratio)))}%</b>${h.liqAt ? ` · ${esc(liqPhrase(h))}` : ''}${h.near ? ` · <b class="err">${h.fall > 0 ? 'close to liquidation' : 'can be liquidated now'}</b>` : ''}`;
 }
 // Which loans have come near liquidation since `seen` (the ids last told about): `tell` are the ones to tell now, `keep` the ids to remember.
 // A loan is its debt and its collateral; one that left the line is forgotten, so it is told again if it comes back.

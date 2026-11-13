@@ -560,6 +560,9 @@ const flowFeed = () => { const t = Math.floor(Date.now() / 1000), ago = (x) => t
   series: [{ t: ago(90000), burns: 25, minted: 22, out: 4, att: 969000, relay: 969050, btc: 969100 }, { t: ago(40000), burns: 26, minted: 23, out: 5, att: 969090, relay: 969120, btc: 969150 }, { t: ago(600), burns: 27, minted: 24, out: 5, att: 969159, relay: 969180, btc: 969200 }],
   events: { attests: [ago(70000), ago(30000), ago(900)], settles: [ago(50000), ago(3000)], deposits: [ago(20000)], tacOut: [ago(10000), ago(9000)], tacIn: [ago(5000)] } }; };
 const until = (page, fn, arg, timeout = 60000) => page.waitForFunction(fn, arg, { timeout });
+const go = (p, h) => p.evaluate((x) => { location.hash = ''; location.hash = x; }, h);
+// The Portfolio sheet, open: its rows (#dash-g) are kept current while it is closed, and are pressed with it open.
+const port = async (p) => { if (!(await p.$('#sheet-portfolio[open]'))) await go(p, '#portfolio'); await p.waitForSelector('#sheet-portfolio[open] #dash-g', { timeout: 30000 }); };
 // a tab of the card: Bridge and Borrow sit under its More tab, which is opened first when they are not shown
 // a route row of the card: Earn shows only the farm it picked until its Change opens the others
 const rowClick = async (page, sel) => { const c = await page.$('#hx-routes .chg'); if (c && !(await page.isVisible(sel))) await c.click(); await page.click(sel); };
@@ -3221,9 +3224,6 @@ await step('passkey', async () => {
 });
 
 const balOf = async (a) => BigInt(await rpc('eth_getBalance', [a, 'latest']));
-const go = (p, h) => p.evaluate((x) => { location.hash = ''; location.hash = x; }, h);
-// The Portfolio sheet, open: its rows (#dash-g) are kept current while it is closed, and are pressed with it open.
-const port = async (p) => { if (!(await p.$('#sheet-portfolio[open]'))) await go(p, '#portfolio'); await p.waitForSelector('#sheet-portfolio[open] #dash-g', { timeout: 30000 }); };
 let ACCT = null;
 await step('acct', async () => {
   const r = await openPage({ account: A0, key: K0 });
@@ -11519,7 +11519,7 @@ await step('vaultborrow', async () => {
     await r.page.waitForSelector('.bsheet.top [data-in="eth"], .bsheet.top [data-in="known"]', { timeout: 60000 });
     await r.page.click('.bsheet.top [data-in="known"], .bsheet.top [data-in="eth"]');
     await r.page.waitForSelector('#bm-note', { timeout: 300000 });
-    ok((await r.page.$$eval('#bm-note option', (o) => o.map((x) => x.textContent))).join() === '0.0002 cBTC' && /Up to about [\d.,]+ cUSD at the \d+% floor/.test(await text(r.page, '#btc-tk')),
+    ok((await r.page.$$eval('#bm-note option', (o) => o.map((x) => x.textContent))).join() === '0.0002 cBTC' && /Up to [\d.,]+ cUSD at the \d+% floor/.test(await text(r.page, '#btc-tk')),
       `vaultborrow: a key holding a cBTC note is offered a loan against it, with the most the floor allows (${(await text(r.page, '#btc-tk .bm-form')).replace(/\s+/g, ' ').slice(0, 120)})`);
     // safer ratios are offered, and the loan being typed says how it would stand
     const chips = await r.page.$$eval('#btc-tk .bm-chips button', (b) => b.map((x) => x.textContent));

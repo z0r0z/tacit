@@ -7,7 +7,7 @@ import { makeKeySession, signInSheet } from '/trade/key.js?cb=09f263cb';
 import { btcWay, btcSeen } from '/trade/btc-way.js?cb=9820720a';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=59d125e5';
 import { readLocks, readLoans, readHeld, readEngine, sizeBond, lockStep, ENGINE, WSTETH } from '/cbtc/read.js?cb=340e46f6';
-import { makeLoans, exactNotes, bondGap, bondCall, bondShareCall, bondBackCall, outpointOf, lockPad, lockRate, loanHealth, liqPhrase, borrowAt, SAFE_RATIOS } from '/btc-borrow.js?cb=04fd20b5';
+import { makeLoans, exactNotes, bondGap, bondCall, bondShareCall, bondBackCall, outpointOf, lockPad, lockRate, loanHealth, liqPhrase, healthLine, borrowAt, SAFE_RATIOS } from '/btc-borrow.js?cb=1fc310cc';
 import { makeRunner } from '/activity.js';
 import { relayRefused, relayWords } from '/relay-outcome.js?cb=17e48a9a';
 import { esc, short, grp, plain, parseUnits, word, wordAt } from '/trade/util.js?cb=1d2cd8d3';
@@ -391,7 +391,7 @@ export function mountMine(root, { ticket = null, pick, wallet = null, W = null, 
       } else rows.push(`<p class="hint err">Could not read your balance: ${esc(errs.held)}</p>`);
       if (loans) loans.forEach((l, i) => {
         const e = D.engine, hh = e?.usdBtc ? loanHealth({ sats: l.cbtc, debt: l.debt, usdBtc: e.usdBtc, floor: e.ratio, liq: e.liq }) : null;
-        rows.push(`<div class="kv"><span>${mk('cusd')}Loan</span><b class="num">${esc(cusdTxt(l.debt))} cUSD<small>against ${esc(btcTxt(l.cbtc))} cBTC · <button class="linkbtn" type="button" data-mine="repay" data-i="${i}"${off()}>${D.busy === `repay:${i}` ? 'Repaying…' : 'Repay'}</button></small>${hh?.ratio != null ? `<small class="bm-health">Collateral ratio <b class="${hh.level}">${esc(String(Math.floor(hh.ratio)))}%</b>${hh.liqAt ? ` · ${esc(liqPhrase(hh))}` : ''}${hh.near ? ` · <b class="err">${hh.fall > 0 ? 'close to liquidation' : 'can be liquidated now'}</b>` : ''}</small>` : ''}</b></div>`);
+        rows.push(`<div class="kv"><span>${mk('cusd')}Loan</span><b class="num">${esc(cusdTxt(l.debt))} cUSD<small>against ${esc(btcTxt(l.cbtc))} cBTC · <button class="linkbtn" type="button" data-mine="repay" data-i="${i}"${off()}>${D.busy === `repay:${i}` ? 'Repaying…' : 'Repay'}</button></small>${hh?.ratio != null ? `<small class="bm-health">${healthLine(hh, esc)}</small>` : ''}</b></div>`);
       });
       else rows.push(`<p class="hint err">Could not read your loans: ${esc(errs.loans)}</p>`);
       if (locks) locks.forEach((l, i) => {

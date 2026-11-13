@@ -3,7 +3,7 @@
 // The pool module is a stand-in that records what it is asked: its own maths is tested elsewhere.
 //   node tests/btc-borrow.test.mjs
 import assert from 'node:assert/strict';
-import { makeLoans, exactNotes, bondGap, bondCall, ESCROW, lockPad, lockRate, loanHealth, borrowAt, SAFE_RATIOS, NEAR_FALL, NEAR_CLEAR, fallToLiq, fallText, liqPhrase, approaching, loanId } from '../dapp/btc-borrow.js';
+import { makeLoans, exactNotes, bondGap, bondCall, ESCROW, lockPad, lockRate, loanHealth, borrowAt, SAFE_RATIOS, NEAR_FALL, NEAR_CLEAR, fallToLiq, fallText, liqPhrase, healthLine, approaching, loanId } from '../dapp/btc-borrow.js';
 import * as secp from '@noble/secp256k1';
 import { sha256 } from '@noble/hashes/sha256';
 import { hmac } from '@noble/hashes/hmac';
@@ -146,6 +146,14 @@ assert.deepEqual({ ...got.record, at: 0 }, { lockTxid: 'aa'.repeat(32), lockVout
   assert.equal(liqPhrase(h(763)), "liquidated below $99,190 a bitcoin, less than 1% under today's price", 'a loan a hair above the line says so');
   assert.equal(liqPhrase(h(800)), 'liquidated below $104,000 a bitcoin', 'already under the line: no distance to name');
   assert.equal(liqPhrase(h(500, { liq: 0 })), ''); assert.equal(liqPhrase(h(0)), ''); assert.equal(liqPhrase(null), '');
+  // the line on a loan's row (vault page), written the way the page writes it (esc turns & < > into entities)
+  const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  assert.equal(healthLine(h(500), esc), `Collateral ratio <b class="">200%</b> · liquidated below $65,000 a bitcoin, 35% under today's price`, 'a safe loan: no red word');
+  assert.equal(healthLine(h(600), esc), `Collateral ratio <b class="warn">166%</b> · liquidated below $78,000 a bitcoin, 22% under today's price`, 'under 175%: amber, rounded down');
+  assert.equal(fallText(34.99999999999999), '35%', 'a distance that is whole but for float noise is not shown a point short');
+  assert.equal(healthLine(h(700), esc), `Collateral ratio <b class="err">142%</b> · liquidated below $91,000 a bitcoin, 9% under today's price · <b class="err">close to liquidation</b>`, 'near: red, and says so');
+  assert.equal(healthLine(h(800), esc), `Collateral ratio <b class="err">125%</b> · liquidated below $104,000 a bitcoin · <b class="err">can be liquidated now</b>`, 'under the line');
+  assert.equal(healthLine(h(500, { liq: 0 }), esc), `Collateral ratio <b class="">200%</b>`, 'no liquidation ratio read: ratio only');
   // who is told: a loan newly near, once; kept while near and until it backs off 3 points more; told again if it returns
   {
     const L = (ratio, fall, debt = 500n) => ({ debt, sats: 1_000_000n, ratio, fall, near: fall != null && fall < NEAR_FALL });
