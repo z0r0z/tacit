@@ -34,7 +34,8 @@ function world(nodes) {
     const body = out && out.error ? { jsonrpc: '2.0', id: 1, error: out.error } : { jsonrpc: '2.0', id: 1, result: out };
     return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
   };
-  return { asked, ux: () => makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256, network: 'mainnet', fetchImpl, logStore: null }) };
+  return { asked, ux: () => makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256, network: 'mainnet', fetchImpl, logStore: null }),
+    uxWith: (extra) => makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256, network: 'mainnet', fetchImpl, logStore: null, ...extra }) };
 }
 const only = (host, f) => Object.fromEntries(ETH_NODES.map((u) => [u, u === host ? f : () => 'reset']));
 
@@ -220,4 +221,85 @@ test('a wrap scan that meets a bad patch of the nodes tries again by itself, and
     assert.ok(asks.length > 0, 'the rest was read');
     assert.equal(asks.filter(([, from]) => from === DEPLOY).length, 0, 'the range already read was not read again');
   } finally { Date.now = realNow; }
+});
+
+// The wallet's own pass of the pool (fetchEvents: every event of the pool in one query, from its deploy block) already holds every Wrap log. A read of one
+// asset's deposits for the next wrap index takes what that pass finished and asks the nodes only for the blocks after it.
+const WRAP_T = '0x' + Buffer.from(keccak_256(new TextEncoder().encode('Wrap(bytes32,bytes32,uint256)'))).toString('hex');
+const POOL_A = '0x000000000Ed1eabD231Be41d93b719056F7febFC'.toLowerCase();
+const wrapLogAt = (built, asset, block) => ({ address: POOL_A, topics: [WRAP_T, built.depositId, asset], data: '0x' + BigInt(built.amount).toString(16).padStart(64, '0'), blockNumber: '0x' + block.toString(16), logIndex: '0x0', transactionHash: '0x' + 'ab'.repeat(32) });
+function wrapWorld(head, logs, asks) {
+  return world(Object.fromEntries(ETH_LOG_NODES.map((u) => [u, (method, params) => {
+    if (method === 'eth_blockNumber') return '0x' + head.toString(16);
+    if (method !== 'eth_getLogs') return '0x0';
+    const [from, to] = range(params);
+    asks.push([u, from, to]);
+    const [t0, , asset] = params[0].topics;
+    if (!(Array.isArray(t0) ? t0.includes(WRAP_T) : t0 === WRAP_T)) return [];
+    return logs.filter((l) => { const b = parseInt(l.blockNumber, 16); return b >= from && b <= to && (!asset || l.topics[2] === asset); });
+  }])));
+}
+function twoWraps(head) {
+  const ux0 = world({}).ux(), asset = ux0.assetByTicker.TAC.assetId.toLowerCase();
+  const first = ux0.buildWrap({ walletPriv: TAC_KEY, amountWei: (5n * 10n ** 18n).toString(), ticker: 'TAC', index: 0 });
+  const second = ux0.buildWrap({ walletPriv: TAC_KEY, amountWei: (7n * 10n ** 18n).toString(), ticker: 'TAC', index: 1 });
+  // index 0 long ago (inside what the wallet's pass finished), index 1 a few blocks ago (inside the last blocks, which it does not call final)
+  return [wrapLogAt(first, asset, DEPLOY + 10), wrapLogAt(second, asset, head - 10)];
+}
+
+test('a wrap read after the wallet\'s own pass of the pool asks only for the blocks after it, and still finds every deposit', async () => {
+  mem.clear();
+  const head = DEPLOY + 200_000, asks = [];
+  const ux = wrapWorld(head, twoWraps(head), asks).ux();
+  await ux.fetchEvents({ include: ['wraps'] });
+  assert.ok(asks.some(([, from]) => from === DEPLOY), 'the wallet\'s pass read the history');
+  asks.length = 0;
+  assert.equal(await ux.nextWrapIndex({ walletPriv: TAC_KEY, ticker: 'TAC' }), 2, 'index 0 (read by the pass) and index 1 (in the newest blocks) are both taken');
+  assert.ok(asks.length >= 1 && asks.every(([, from]) => from > head - 500), 'only recent blocks were asked for: ' + JSON.stringify(asks.slice(0, 3)));
+});
+
+test('a wrap read with no pass of the pool behind it, or one that began later than the deploy block, reads the whole history of the asset', async () => {
+  mem.clear();
+  const head = DEPLOY + 200_000, asks = [];
+  const logs = twoWraps(head);
+  assert.equal(await wrapWorld(head, logs, asks).ux().nextWrapIndex({ walletPriv: TAC_KEY, ticker: 'TAC' }), 2);
+  assert.ok(asks.some(([, from]) => from === DEPLOY), 'no pass: from the deploy block');
+  mem.clear(); asks.length = 0; // the first call kept its index as a hint for the next one
+  const ux = wrapWorld(head, logs, asks).ux();
+  await ux.fetchEvents({ fromBlock: head - 1000, include: ['wraps'] });
+  asks.length = 0;
+  assert.equal(await ux.nextWrapIndex({ walletPriv: TAC_KEY, ticker: 'TAC' }), 2, 'a pass of the last 1,000 blocks does not stand for the history');
+  assert.ok(asks.some(([, from]) => from === DEPLOY), 'so the history is read from the deploy block');
+});
+
+test('the newest blocks of the wallet\'s pass are asked for again: a deposit that a reorg took out of them does not count', async () => {
+  mem.clear();
+  const head = DEPLOY + 200_000, asks = [], logs = twoWraps(head);
+  const ux = wrapWorld(head, logs, asks).ux();
+  await ux.fetchEvents({ include: ['wraps'] });
+  logs.pop(); // index 1's deposit was in the last blocks of the pass, and is gone from the chain now
+  assert.equal(await ux.nextWrapIndex({ walletPriv: TAC_KEY, ticker: 'TAC' }), 1, 'index 1 is free again');
+});
+
+test('a record kept in the browser counts only once its own pass has finished; until then the history is read from the nodes', async () => {
+  mem.clear();
+  const head = DEPLOY + 200_000, asks = [], logs = twoWraps(head);
+  // the browser kept a pass up to head - 100 (index 0's deposit inside it); this page's pass is under way, asking the nodes for the blocks since
+  const record = { v: 1, finalTo: head - 100, logs: [logs[0]] };
+  let release; const gate = new Promise((r) => { release = r; });
+  const w = world(Object.fromEntries(ETH_LOG_NODES.map((u) => [u, async (method, params) => {
+    if (method === 'eth_blockNumber') return '0x' + head.toString(16);
+    if (method !== 'eth_getLogs') return '0x0';
+    const [from, to] = range(params), [t0, , asset] = params[0].topics;
+    asks.push([u, from, to, Array.isArray(t0) ? 'all' : 'asset']);
+    if (Array.isArray(t0)) await gate;
+    return logs.filter((l) => { const b = parseInt(l.blockNumber, 16); return b >= from && b <= to && (!asset || l.topics[2] === asset); });
+  }])));
+  const ux = w.uxWith({ logStore: { get: async (key) => (key.includes('|[[') ? record : null), put: async () => {}, del: async () => {} } }); // the record is the pass of every event (its topics are one list)
+  const pass = ux.fetchEvents({ include: ['wraps'] });
+  await new Promise((r) => setTimeout(r, 50));
+  const idx = await ux.nextWrapIndex({ walletPriv: TAC_KEY, ticker: 'TAC' });
+  assert.equal(idx, 2);
+  assert.ok(asks.some(([, from, , kind]) => kind === 'asset' && from === DEPLOY), 'the asset\'s deposits were read from the deploy block: ' + JSON.stringify(asks.filter((a) => a[3] === 'asset').slice(0, 2)));
+  release(); await pass;
 });

@@ -253,6 +253,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       ...(cfg.farm && cfg.farm.manager ? [T.Bonded, T.Harvested] : [])];
   };
   const _snapAddrs = () => [cfg.pool, ...(cfg.farm && cfg.farm.manager ? [cfg.farm.manager] : [])];
+  const _allParams = () => ({ address: cfg.farm && cfg.farm.manager ? [cfg.pool, cfg.farm.manager] : cfg.pool, topics: [_allTopics()] });
   const _snapFits = (params) => Number(cfg.chainId) === 1 && snapshotCovers(params, { addresses: _snapAddrs(), topics: _allTopics() }) &&
     [].concat(params.address).some((a) => String(a).toLowerCase() === String(cfg.pool).toLowerCase()) &&
     [evmLog.TOPIC0.LeavesInserted, evmLog.TOPIC0.LockLeavesInserted, evmLog.TOPIC0.CdpPositionInserted].every((t) => [].concat(params.topics[0]).map((x) => String(x).toLowerCase()).includes(String(t).toLowerCase()));
@@ -349,7 +350,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       ...(inc.has('bonds') && manager ? [T.Bonded, T.Harvested] : [])].map((t) => String(t).toLowerCase()));
     const managerTopics = new Set([T.Bonded, T.Harvested].map((t) => String(t).toLowerCase()));
     const poolLc = String(cfg.pool).toLowerCase();
-    const logs = (await getLogsChunked({ address: manager ? [cfg.pool, cfg.farm.manager] : cfg.pool, topics: [all] }, from, to)).filter((l) => {
+    const logs = (await getLogsChunked(_allParams(), from, to)).filter((l) => {
       const t = String((l.topics || [])[0] || '').toLowerCase(), a = String(l.address || '').toLowerCase();
       if (!want.has(t)) return false;
       if (managerTopics.has(t)) return !!manager && a === manager;
@@ -1043,12 +1044,24 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     for (const i of _reservedWrapIndex.get(key) || []) n = Math.max(n, i + 1);
     return n;
   }
+  // The wallet's own pass of the pool (fetchEvents from the deploy block: every event in one query) already holds every Wrap log. What it finished, as
+  // far as the last FINAL blocks, is the start of an asset's deposits; only a pass that completed here counts (a record loaded from the browser's store is
+  // checked at the end of its pass, and one from a later block than the deploy block is not the history).
+  function _knownWraps(asset) {
+    const c = _logsCache.get(_qkey(_allParams(), Number(cfg.deployBlock || 0)));
+    if (!c || c.stored) return null;
+    const through = c.toBlock - FINAL, W = lc(evmLog.TOPIC0.Wrap), pool = lc(cfg.pool);
+    return { through, logs: c.logs.filter((l) => _blockOf(l) <= through && lc(l.address || pool) === pool && lc((l.topics || [])[0]) === W && lc((l.topics || [])[2]) === asset) };
+  }
   async function wrapLogs(assetId) {
+    const asset = String(assetId).toLowerCase(), deploy = Number(cfg.deployBlock || 0);
     for (let attempt = 0; ; attempt++) {
       try {
         const head = await headBlock();
         if (!Number.isFinite(head)) throw new Error('no head block');
-        return await getLogsChunked({ address: cfg.pool, topics: [evmLog.TOPIC0.Wrap, null, String(assetId).toLowerCase()] }, Number(cfg.deployBlock || 0), head);
+        const known = _knownWraps(asset);
+        const logs = await getLogsChunked({ address: cfg.pool, topics: [evmLog.TOPIC0.Wrap, null, asset] }, known ? Math.max(deploy, known.through + 1) : deploy, head);
+        return known ? [...known.logs, ...logs] : logs;
       } catch (e) {
         if (attempt >= 2) throw e;
         await new Promise((res) => setTimeout(res, 600 * (attempt + 1)));
