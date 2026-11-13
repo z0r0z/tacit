@@ -161,6 +161,10 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .btn.ghost:disabled { color: color-mix(in srgb, var(--ink) 55%, var(--card)); border-color: var(--hair); }   /* a quiet button that cannot be pressed looks it */
 @media (hover: hover) { .btn.ghost:hover:not(:disabled) { border-color: var(--ink); box-shadow: none; } }
 .steps button { border-radius: 8px; }   /* the small − and + beside a count */
+/* the small switch in a row of figures (the GPU's Off, Half, Full) is the page's soft track with a raised pill, at the height it had */
+.kv .seg { gap: 2px; padding: 2px; border: 0; border-radius: 10px; background: color-mix(in srgb, var(--ink) 6%, transparent); }
+.kv .seg button { min-height: 24px; padding: 3px 10px; border-radius: 8px; transition: background .15s, color .15s; }
+.kv .seg button[aria-pressed="true"] { color: var(--ink); background: var(--card); box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 14%, transparent); }
 /* the node's button is the page's one loud thing only when it is asking for something (Start); Pause is a quiet one */
 #go.ghost { min-height: 52px; margin-top: 16px; }
 .status { font-size: 12.5px; margin-top: 12px; overflow-wrap: anywhere; }
