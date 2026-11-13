@@ -48,17 +48,26 @@ function world({ utxos, rate = 4, commit = 'ok', reveal = 'ok' }) {
     }
     if (/\/address\/[a-z0-9]+\/utxo$/.test(u)) return json(utxos);
     if (u.endsWith('/fee-estimates')) return json({ 2: rate });
-    const st = u.match(/\/tx\/([0-9a-f]{64})\/status$/);
-    if (st) return w.commit === 'down' && w.reveal === 'down' ? Promise.reject(new TypeError('fetch failed')) : w.known.has(st[1]) ? json({ confirmed: false }) : new Response('Transaction not found', { status: 404 });
+    const os = u.match(/\/tx\/([0-9a-f]{64})\/outspend\/(\d+)$/);
+    if (os) { const by = w.posts.map(parseTx).find((x) => x.ins.some((i) => i.txid === os[1] && i.vout === Number(os[2]))); return json(by && w.known.has(by.txid) ? { spent: true, txid: by.txid } : { spent: false }); }
+    // as the explorers answer: a transaction they have never seen is a 404 only when it is asked for itself; its status reads unconfirmed
+    if (/\/tx\/[0-9a-f]{64}\/status$/.test(u)) return json({ confirmed: false });
+    const st = u.match(/\/tx\/([0-9a-f]{64})$/);
+    if (st) return w.commit === 'down' && w.reveal === 'down' ? Promise.reject(new TypeError('fetch failed')) : w.known.has(st[1]) ? json({ txid: st[1] }) : new Response('Transaction not found', { status: 404 });
     return new Response('not found', { status: 404 });
   };
   return w;
 }
 const priv = new Uint8Array(32).fill(0x11), PUB = 'pub';
-const t = { syncCbtcLockReservations: async () => {}, pool: { CBTC_ZK_ASSET_ID: '0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8',
+// the pool and the engine as the lock's Ethereum side reads them: what is minted and bonded on an outpoint, set per test
+const eth = { minted: 0n, escrow: 0n, down: false, state: { spent: false, redeemed: false } };
+const word = (v) => '0x' + v.toString(16).padStart(64, '0');
+const t = { syncCbtcLockReservations: async () => {}, cfg: { pool: '0xpool', collateralEngine: '0xengine' }, cbtcLockState: async () => eth.state,
+  ethCall: async (to, data) => { if (eth.down) throw new Error('no node answered'); return word(to === '0xpool' && data.startsWith('0xe2c2a40c') ? eth.minted : to === '0xengine' && data.startsWith('0xe06e89c9') ? eth.escrow : 0n); },
+  pool: { CBTC_ZK_ASSET_ID: '0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8', outpointKey: (txid, vout) => '0x' + bytesToHex(sha256(new TextEncoder().encode(`${txid}:${vout}`))),
   commitXY: (v, b) => ({ cx: '0x' + bytesToHex(sha256(new TextEncoder().encode(`x${v}:${b}`))), cy: '0x' + bytesToHex(sha256(new TextEncoder().encode(`y${v}:${b}`))) }) } };
 const LN = makeLoans({ sha256, hmac, secp, bytesToHex, hexToBytes, pubHex: () => PUB,
-  lockModule: () => import('../dapp/cbtc-lock-mint.js'), deployments: () => import('../dapp/confidential-deployments.js') });
+  lockModule: () => import('../dapp/cbtc-lock-mint.js'), deployments: () => import('../dapp/confidential-deployments.js'), redeemModule: () => import('../dapp/cbtc-redeem.js') });
 const coin = (i, value, confirmed = true) => ({ txid: (i + 1).toString(16).padStart(64, 'a'), vout: i % 3, value, status: { confirmed } });
 const SIGNED = `tacit-cbtc-lock-signed-v1:${PUB}`, PROTECTED = 'tacit-protected-outpoints-v1';
 const signed = () => JSON.parse(mem.get(SIGNED) || '[]'), protectedNow = () => Object.keys(JSON.parse(mem.get(PROTECTED) || '{}'));
@@ -174,6 +183,41 @@ await test('the fee the page sets aside covers locking all an address holds, for
   }
   assert.ok(lockPad({ fastestFee: 10 }, null, 3) > lockPad({ fastestFee: 10 }, null, 2), 'each coin is an input to pay for');
   assert.equal(lockPad({ fastestFee: 10 }, null), lockPad({ fastestFee: 10 }, null, 2), 'two, when the count is not given');
+});
+
+await test('a lock nothing was minted on is taken back in one transaction, and only then', async () => {
+  fresh();
+  Object.assign(eth, { minted: 0n, escrow: 0n, down: false, state: { spent: false, redeemed: false } });
+  const utxos = [coin(0, 500000)], w = world({ utxos });
+  const lock = (await LN.lock(t, priv, { sats: 100000n, rate: 4 })).record;
+  assert.deepEqual(protectedNow(), [`${lock.lockTxid}:1`]);
+  // each thing that stands in its way refuses it, and nothing is sent
+  const refused = async (set, re, why) => {
+    Object.assign(eth, { minted: 0n, escrow: 0n, down: false, state: { spent: false, redeemed: false } }, set);
+    const e = await LN.takeBack(t, priv, lock, { rate: 4 }).then(() => null, (x) => x);
+    assert.ok(e?.refused && re.test(e.message), `${why} (${e?.message})`);
+    assert.equal(w.posts.length, 2, 'nothing more was sent');
+  };
+  await refused({ minted: 1n }, /^This lock has cBTC minted on it/, 'cBTC minted on it: a redeem, not a plain spend');
+  await refused({ escrow: 5n }, /bond is still posted.*take the bond back first/, 'a bond on it comes back first');
+  await refused({ down: true }, /could not be read/, 'what cannot be read is not assumed');
+  await refused({ state: { spent: true, redeemed: false } }, /already spent/, 'the pool has it as spent');
+  Object.assign(eth, { minted: 0n, escrow: 0n, down: false, state: { spent: false, redeemed: false } });
+  await assert.rejects(LN.takeBack(t, priv, { ...lock, lockTxid: 'cc'.repeat(32) }, { rate: 4 }), /Bitcoin does not have this lock/, 'a lock Bitcoin has never seen is not spent from');
+  const q = await LN.takeBack(t, priv, lock, { rate: 4, quote: true });
+  assert.deepEqual([q.sent, q.outValue, w.posts.length], [false, 100000 - q.fee, 2], 'a quote says what comes back and sends nothing');
+  const res = await LN.takeBack(t, priv, lock, { rate: 4 });
+  assert.equal(w.posts.length, 3);
+  const tx = parseTx(w.posts[2]), { makeCbtcLockMint } = await import('../dapp/cbtc-lock-mint.js'), { verifySchnorr } = await import('../dapp/bulletproofs.js');
+  const lm = makeCbtcLockMint({ priv, pool: t.pool, cbtcAsset: t.pool.CBTC_ZK_ASSET_ID }), P = lm.prims, lockSpk = lm.ownLockScriptPubKey(), home = P.p2wpkhScript(P.wallet.pub);
+  assert.deepEqual([res.sent, res.txid, tx.ins, tx.outs], [true, tx.txid, [{ txid: lock.lockTxid, vout: 1 }], [{ value: 100000 - res.fee, script: bytesToHex(home) }]], 'the lock’s output, whole, to the key’s own address');
+  assert.ok(res.fee / tx.vsize >= 4 && res.fee < 1000, `at the rate asked (${res.fee} sats for ${tx.vsize} vB)`);
+  const sig = (() => { const b = hexToBytes(w.posts[2]); return b.slice(b.length - 4 - 64, b.length - 4); })();
+  const body = { version: 2, locktime: 0, inputs: [{ txid: lock.lockTxid, vout: 1, sequence: 0xfffffffd, witness: [] }], outputs: [{ value: tx.outs[0].value, script: home }] };
+  assert.ok(verifySchnorr(sig, P.tapSighashKeyPath(body, 0, [{ value: 100000, script: lockSpk }], 0x00), lockSpk.slice(2)), 'signed for the lock’s own key');
+  assert.deepEqual(protectedNow(), [], 'and its output is no longer kept from spending: it is gone');
+  await assert.rejects(LN.takeBack(t, priv, lock, { rate: 4 }), /already spent on Bitcoin/, 'a second press finds it spent');
+  assert.equal(w.posts.length, 3);
 });
 
 console.log(`\n${n} passed`);

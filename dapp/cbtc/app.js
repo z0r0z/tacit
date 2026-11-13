@@ -11,7 +11,7 @@ import { makeKeySession, signInSheet } from '/trade/key.js?cb=7149c223';
 import { btcWay, btcSeen } from '/trade/btc-way.js?cb=8cd735cf';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=efc87cea';
 import { readRates, readProgram, heldBars, rangesFor, barSize } from '/teth/read.js?cb=7aa845b7';
-import { totalsOf, readEngine, sizeBond, coverage, readPools, poolRows, farmApr, readLocks, readLoans, readHeld, readHistory, positionsIn, lockStep, CBTC_ID, ENGINE, WSTETH } from '/cbtc/read.js?cb=1b131187';
+import { totalsOf, readEngine, sizeBond, coverage, readPools, poolRows, farmApr, readLocks, readLoans, readHeld, readHistory, positionsIn, lockStep, CBTC_ID, ENGINE, WSTETH } from '/cbtc/read.js?cb=4838906d';
 import { $, esc, api, now, fmtUnits, parseUnits, grp, usd, short, sig } from '/trade/util.js?cb=1d2cd8d3';
 
 const SCAN = 'https://etherscan.io/', MEMPOOL = 'https://mempool.space/';

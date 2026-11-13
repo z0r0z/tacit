@@ -6,8 +6,8 @@ import { sha256, hmac, secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.m
 import { makeKeySession, signInSheet } from '/trade/key.js?cb=7149c223';
 import { btcWay, btcSeen } from '/trade/btc-way.js?cb=8cd735cf';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=efc87cea';
-import { readLocks, readLoans, readHeld, readEngine, sizeBond, lockStep, ENGINE, WSTETH } from '/cbtc/read.js?cb=1b131187';
-import { makeLoans, exactNotes, bondGap, bondCall, outpointOf, lockPad, lockRate, loanHealth, borrowAt, SAFE_RATIOS } from '/btc-borrow.js?cb=81aa9958';
+import { readLocks, readLoans, readHeld, readEngine, sizeBond, lockStep, ENGINE, WSTETH } from '/cbtc/read.js?cb=4838906d';
+import { makeLoans, exactNotes, bondGap, bondCall, outpointOf, lockPad, lockRate, loanHealth, borrowAt, SAFE_RATIOS } from '/btc-borrow.js?cb=17eff9ef';
 import { makeRunner } from '/activity.js?cb=a0384066';
 import { relayRefused, relayWords } from '/relay-outcome.js?cb=17e48a9a';
 import { esc, short, grp, plain, parseUnits, word, wordAt } from '/trade/util.js?cb=1d2cd8d3';
@@ -30,7 +30,12 @@ const cusdTxt = (v) => (Number(v) / 1e8).toLocaleString('en-US', { minimumFracti
 const big = (v) => BigInt(v);
 // what a lock's next step is, done from here
 const NEXT = { 'post its bond': ['Post the bond', 'bond'], 'ready to mint': ['Mint cBTC', 'mint'] };
-const FRONT = '<a href="/#borrow">Do it on the front page →</a>';
+const FRONT = '<a href="/#borrow">Do it on the front page →</a>', USE = '<a href="/#private/swap">Swap it →</a>';
+// how long Bitcoin's proof on Ethereum takes to reach a block that many ahead of it
+const eta = (blocks) => (blocks <= 1 ? 'any minute now' : blocks < 9 ? `about ${blocks * 10} minutes` : `about ${Math.round(blocks / 6)} hour${Math.round(blocks / 6) === 1 ? '' : 's'}`);
+// what a relayed step's line says as the relay moves it on
+const JOB_SAYS = { pending: 'In line at the relay…', proving: 'The relay is proving it…', proven: 'Proved. Sending it to Ethereum…' };
+const lockIdOf = (l) => `${l.lockTxid}:${l.lockVout}`;
 const mk = (id) => `<svg class="tk xs inl" aria-hidden="true"><use href="#tk-${id}"/></svg>`;
 // a note, by what it is and not by where it sits in a list that a read can reorder
 const noteId = (x) => String(x.leaf || x.nullifier || `${x.cx}:${x.cy}`).toLowerCase();
@@ -40,6 +45,7 @@ const depSig = (d) => `${d.sats}:${d.pending}:${d.unconfirmed.join()}`;
 
 export function mountMine(root, { ticket = null, pick, wallet = null, W = null, connect = null } = {}) {
   let D = null, seq = 0, histP = null, runner = null;
+  const gone = new Set();                                                              // locks taken back here, left out before Bitcoin's history says so
   let lockedWhy = '';                                                                  // why the key was locked, when the wallet that opened it moved
   const key = makeKeySession({ moved: (why) => { lockedWhy = why || ''; forget(); }, ways: { btc: btcWay(), btcSeen } });
   const LN = makeLoans({ sha256, hmac, secp, bytesToHex, hexToBytes, pubHex: () => key.key?.pubHex });
@@ -64,10 +70,29 @@ export function mountMine(root, { ticket = null, pick, wallet = null, W = null, 
       const [held, locks, loans, engine, dep] = await Promise.allSettled([readHeld({ ux, priv }), readLocks({ ux, priv, hist }), readLoans({ ux, priv }), readEngine(), readDeposit(ux, priv)]);
       if (my !== seq || key.key?.pubHex !== pub) return;
       const v = (r) => (r.status === 'fulfilled' ? r.value : null), why = (r) => (r.status === 'rejected' ? String(r.reason?.message || r.reason).slice(0, 140) : null);
+      const mine = v(locks)?.filter((l) => !gone.has(lockIdOf(l))) ?? null, proof = await readProof(mine).catch(() => null);
+      if (my !== seq || key.key?.pubHex !== pub) return;
       const cur = D?.pub === pub ? D : null;                                         // what was typed, said or started while this was read is kept
-      D = { pub, held: v(held), locks: v(locks), loans: v(loans), engine: v(engine), dep: v(dep), lockWaiting: back?.waiting || 0, errs: { held: why(held), locks: why(locks), loans: why(loans), dep: why(dep) }, form: cur?.form || was?.form || {}, said: cur?.said || null, busy: cur?.busy || null };
+      D = { pub, held: v(held), locks: mine, loans: v(loans), engine: v(engine), dep: v(dep), proof, lockWaiting: back?.waiting || 0, saidAt: cur?.saidAt || null, errs: { held: why(held), locks: why(locks), loans: why(loans), dep: why(dep) }, form: cur?.form || was?.form || {}, said: cur?.said || null, busy: cur?.busy || null };
     } catch (e) { if (my === seq) D = { pub, err: String(e?.message || e).slice(0, 160) }; }
     paint();
+  }
+
+  // Where Bitcoin's proof on Ethereum stands, and the block of each lock that waits for it: read only while one waits.
+  async function readProof(locks) {
+    const waits = (locks || []).filter((l) => lockStep(l) === 'waiting for its proof');
+    if (!waits.length) return null;
+    const [refl, ...sts] = await Promise.all([fetch(`${API}/reflection/status?network=mainnet`, { signal: AbortSignal.timeout(15e3) }).then((r) => r.json()).catch(() => null),
+      ...waits.map((l) => esplora(`/tx/${l.lockTxid}/status`).catch(() => null))]);
+    return { top: Number(refl?.attestedHeight) || null, heights: new Map(waits.map((l, i) => [lockIdOf(l), sts[i]?.confirmed ? sts[i].block_height : sts[i] ? 0 : null])) };
+  }
+  // what a waiting lock's row says: how far Bitcoin's proof is from its block
+  function waitText(l) {
+    const p = D.proof, h = p?.heights.get(lockIdOf(l));
+    if (h === 0) return 'waiting to confirm on Bitcoin';
+    if (!h || !p.top) return 'waiting for its proof';
+    const togo = Math.max(0, h - p.top);
+    return togo ? `waiting for its proof · ${togo} block${togo === 1 ? '' : 's'}, ${eta(togo)}` : 'waiting for its proof · any minute now';
   }
 
   // what the lock record the front page keeps for this key says about its loan
@@ -107,7 +132,7 @@ export function mountMine(root, { ticket = null, pick, wallet = null, W = null, 
     await LN.opened(ps, raw, { controller: c, debtValue, keyNonce, positionOwner, rate, anchor, basket: [{ asset: leg.asset, value: String(big(leg.value)) }], txHash: r?.txHash || null });
     markLoan(priv.pub, leg.value, debtValue);
     if (D?.pub === priv.pub) D.form = {};
-    return `Borrowed ${cusdTxt(debtValue)} cUSD.`;
+    return { text: `Borrowed ${cusdTxt(debtValue)} cUSD.`, kind: 'use' };
   }
 
   async function repay(i) {
@@ -189,8 +214,8 @@ export function mountMine(root, { ticket = null, pick, wallet = null, W = null, 
     if (!gap) return 'The bond is posted. Mint once the lock is proven.';
     const eth = wordAt(await t.ethCall(WSTETH, '0x' + SEL.stEthPerWst + word(gap)), 0);
     if (!eth) throw new Error('The bond size could not be read. Try again in a few minutes.');
-    if (!W.account) await connect();
-    if (!W.account) throw Object.assign(new Error('The bond is paid in ETH from an Ethereum wallet. With none, your Tacit wallet’s own address can pay it.'), { front: true });
+    const why = W.account ? '' : await connect();
+    if (!W.account) throw Object.assign(new Error(typeof why === 'string' && why ? why : 'The bond is paid in ETH from an Ethereum wallet. With none, your Tacit wallet’s own address can pay it.'), { front: true });
     say(`Confirm the ${ethTxt(eth)} ETH bond in your wallet…`);
     const hash = await wallet.sendTx({ ...bondCall(t, l), value: eth, from: W.account });
     const label = `Post the bond for ${btcTxt(l.sats)} BTC`, id = `tx:1:${String(hash).toLowerCase()}`;
@@ -200,6 +225,27 @@ export function mountMine(root, { ticket = null, pick, wallet = null, W = null, 
     J.put(id, rc?.status === '0x1' ? { status: 'confirmed' } : { status: 'failed', err: 'The transaction reverted.' });
     if (rc?.status !== '0x1') throw new Error('The bond did not go through.');
     return 'Bond posted. Mint once the lock is proven.';
+  }
+
+  // A lock with nothing minted on it and no bond, taken back to the deposit address. The first press says what comes back; the second sends it.
+  async function unlock(i) {
+    const l = D.locks?.[i];
+    if (!l) throw new Error('That lock is not listed any more. Read again.');
+    const priv = pinned(), t = await getUx(), id = lockIdOf(l), sure = D.form.unlock === id, J = run().journal, op = String(outpointOf(t, l)).replace(/^0x/, '');
+    J.get('');
+    if (J.state.items.some((x) => x.kind === 'tx' && x.op === op && x.status === 'pending')) throw new Error('A bond for this lock is still on its way. Wait for it to land first.');
+    const r = await LN.takeBack(t, priv(), l, { rate: D.dep?.rate, quote: !sure, say: (x) => say(x) });
+    if (!r.sent) {
+      if (D?.pub === priv.pub) D.form.unlock = id;
+      return { text: `This spends the lock: ${btcTxt(r.outValue)} BTC returns to your deposit address, after a network fee of ${r.fee.toLocaleString('en-US')} sats, and nothing can be minted on it afterwards. Press Take it back to send it.`, kind: 'note' };
+    }
+    gone.add(id);
+    try { const rec = JSON.parse(localStorage.getItem(recKeyOf(priv.pub))); if (rec && lockIdOf(rec) === id) localStorage.removeItem(recKeyOf(priv.pub)); } catch {}
+    const jid = 'btc:' + String(r.txid).toLowerCase();
+    J.put(jid, { kind: 'btc', label: `Take back ${btcTxt(l.sats)} BTC from a lock`, hash: r.txid, status: 'pending' });
+    run().follow.btc(jid);
+    if (D?.pub === priv.pub) D.form.unlock = null;
+    return 'Taken back. It is at your deposit address once it confirms.';
   }
 
   // A lock's mint, relayed: one cBTC for each BTC locked, its note found again later from the key alone.
@@ -217,13 +263,14 @@ export function mountMine(root, { ticket = null, pick, wallet = null, W = null, 
   }
 
   function say(text, kind = '') { if (D) { D.said = { text, kind }; paint(); } }
-  async function act(name, fn) {
+  // `at`: the panel the step was pressed in ('mine', the rows; otherwise the ticket), where its line then shows
+  async function act(name, fn, at = null) {
     if (!D || D.busy || D.reading) return;
     const mine = D;
-    mine.busy = name; say('');
-    try { const text = await fn(); if (D?.pub === mine.pub) say(text, 'ok'); }
+    mine.busy = name; mine.saidAt = at; if (mine.form && !name.startsWith('unlock')) mine.form.unlock = null; say('');
+    try { const r = await fn(), done = typeof r === 'string' ? { text: r, kind: 'ok' } : r; if (D?.pub === mine.pub) { D.saidAt = at; say(done.text, done.kind); } }
     catch (e) {
-      if (D?.pub === mine.pub) { const w = relayWords(e); say(w ? w.text : String(e?.message || e).slice(0, 240), w?.front || e?.front ? 'front' : 'err'); }
+      if (D?.pub === mine.pub) { const w = relayWords(e); D.saidAt = at; if (D.form) D.form.unlock = null; say(w ? w.text : String(e?.message || e).slice(0, 240), w?.front || e?.front ? 'front' : 'err'); }
     }
     // whatever it came to, what is held is read again: a step that went through before a later one failed shows as it is
     finally { if (D?.pub === mine.pub) D.busy = null; if (key.unlocked) read(); }
@@ -321,15 +368,17 @@ export function mountMine(root, { ticket = null, pick, wallet = null, W = null, 
       else rows.push(`<p class="hint err">Could not read your loans: ${esc(errs.loans)}</p>`);
       if (locks) locks.forEach((l, i) => {
         const step = lockStep(l), [a, what] = NEXT[step] || [], busy = D.busy === `${what}:${i}`;
-        rows.push(`<div class="kv"><span>${mk('btc')}Lock ${esc(short(l.lockTxid, 4))}:${l.lockVout}</span><b class="num">${esc(btcTxt(l.sats))} BTC<small class="${l.minted ? 'ok' : ''}">${a ? `<button class="linkbtn" type="button" data-mine="${what}" data-i="${i}"${off()}>${busy ? `${a}…` : a}</button>` : esc(step)}</small></b></div>`);
+        const back = step === 'post its bond' ? ` · <button class="linkbtn" type="button" data-mine="unlock" data-i="${i}"${off()}>${D.busy === `unlock:${i}` ? 'Taking it back…' : D.form.unlock === lockIdOf(l) ? 'Take it back' : 'Take BTC back'}</button>` : '';
+        rows.push(`<div class="kv"><span>${mk('btc')}Lock ${esc(short(l.lockTxid, 4))}:${l.lockVout}</span><b class="num">${esc(btcTxt(l.sats))} BTC<small class="${l.minted ? 'ok' : ''}">${a ? `<button class="linkbtn" type="button" data-mine="${what}" data-i="${i}"${off()}>${busy ? `${a}…` : a}</button>${back}` : esc(step === 'waiting for its proof' ? waitText(l) : step)}</small></b></div>`);
       });
       else rows.push(`<p class="hint err">Could not read your locks: ${esc(errs.locks)}</p>`);
       if (locks && loans && !locks.length && !loans.length && !held?.cbtc.list.length) rows.push('<p class="empty">No locks or loans yet.</p>');
-      h = `<div class="rows flat bm-pos">${rows.join('')}</div><p class="note bm-foot"><button class="linkbtn" type="button" data-mine="again"${off()}>Read again</button> · <button class="linkbtn" type="button" data-mine="lock"${off()}>Lock your key</button></p>`;
+      const s = D.said, tail = { front: ` ${FRONT}`, use: ` ${USE}` }[s?.kind] || '';
+      const said = `<p class="status${s?.kind === 'ok' || s?.kind === 'use' ? ' ok' : s?.kind && s.kind !== 'note' ? ' err' : ''}" role="status" id="bm-status">${s?.text ? `${esc(s.text)}${tail}` : ''}</p>`;
+      h = `<div class="rows flat bm-pos">${rows.join('')}</div>${D.saidAt === 'mine' ? said : ''}<p class="note bm-foot"><button class="linkbtn" type="button" data-mine="again"${off()}>Read again</button> · <button class="linkbtn" type="button" data-mine="lock"${off()}>Lock your key</button></p>`;
       // the ticket opens on Borrow once there is cBTC to put up, on Lock before
       const tab = D.form.tab || (held?.cbtc.list.length ? 'borrow' : 'lock');
-      const s = D.said, said = `<p class="status${s?.kind === 'ok' ? ' ok' : s?.kind ? ' err' : ''}" role="status" id="bm-status">${s?.text ? `${esc(s.text)}${s.kind === 'front' ? ` ${FRONT}` : ''}` : ''}</p>`;
-      t = `<div class="seg big tabs" role="group" aria-label="What to do">${[['lock', 'Lock BTC'], ['borrow', 'Borrow cUSD']].map(([k, l]) => `<button type="button" data-mine="tab" data-t="${k}" aria-pressed="${k === tab}"${off()}>${l}</button>`).join('')}</div>${tab === 'borrow' ? form() : lockForm()}${said}`;
+      t = `<div class="seg big tabs" role="group" aria-label="What to do">${[['lock', 'Lock BTC'], ['borrow', 'Borrow cUSD']].map(([k, l]) => `<button type="button" data-mine="tab" data-t="${k}" aria-pressed="${k === tab}"${off()}>${l}</button>`).join('')}</div>${tab === 'borrow' ? form() : lockForm()}${D.saidAt === 'mine' ? '' : said}`;
     }
     put(root, h); put(ticket, t);
     const q = ticket?.querySelector('.bm-qr');
@@ -357,21 +406,27 @@ export function mountMine(root, { ticket = null, pick, wallet = null, W = null, 
       if (what === 'ratio') { D.form.amt = b.dataset.v; const i = ticket.querySelector('#bm-amt'); if (i) i.value = D.form.amt; updateHealth(); return; }
       if (what === 'qr') { if (D?.form) { D.form.qr = !D.form.qr; paint(); ticket.querySelector('[data-mine="qr"]')?.focus({ preventScroll: true }); } return; }
       if (what === 'lockmax') { D.form.lock = b.dataset.v; const i = ticket.querySelector('#bm-lock'); if (i) i.value = D.form.lock; bondSoon(); return; }
-      if (what === 'borrow') return act('borrow', borrow);
-      if (what === 'repay') { const i = Number(b.dataset.i); return act(`repay:${i}`, () => repay(i)); }
-      if (what === 'bond') { const i = Number(b.dataset.i); return act(`bond:${i}`, () => bond(i)); }
-      if (what === 'mint') { const i = Number(b.dataset.i); return act(`mint:${i}`, () => mint(i)); }
-      if (what === 'lockbtc') return act('lockbtc', lockBtc);
+      const at = el === root ? 'mine' : null;
+      if (what === 'borrow') return act('borrow', borrow, at);
+      if (what === 'repay') { const i = Number(b.dataset.i); return act(`repay:${i}`, () => repay(i), at); }
+      if (what === 'bond') { const i = Number(b.dataset.i); return act(`bond:${i}`, () => bond(i), at); }
+      if (what === 'mint') { const i = Number(b.dataset.i); return act(`mint:${i}`, () => mint(i), at); }
+      if (what === 'unlock') { const i = Number(b.dataset.i); return act(`unlock:${i}`, () => unlock(i), at); }
+      if (what === 'lockbtc') return act('lockbtc', lockBtc, at);
       if (what === 'copy') { (navigator.clipboard ? navigator.clipboard.writeText(b.dataset.copy) : Promise.reject()).then(() => { b.textContent = 'Copied'; }, () => { b.textContent = 'Could not copy'; }); return; }
       if (key.unlocked) return read();
       signInSheet(key, { pick, first: btcSeen() ? 'btc' : 'eth', why: 'Open your Tacit wallet to see your locks, loans and cBTC. Nothing is stored or sent.' }).catch(() => {});   // the key opening is a change of it, and that starts the read (below)
     });
   }
   key.onChange(() => { if (key.unlocked && D?.pub !== key.key.pubHex) read(); else paint(); });
-  let watching = false;
+  addEventListener('tacit:job', ({ detail: d }) => { if (D?.busy && /^(borrow|repay|mint)/.test(D.busy) && JOB_SAYS[d?.status] && D.said?.text !== JOB_SAYS[d.status]) say(JOB_SAYS[d.status]); });
+  let watching = false, ticks = 0;
   setInterval(async () => {
-    const mine = D, d = mine?.dep;
-    if (!d || watching || document.hidden || !key.unlocked || mine.busy || mine.reading || !ticket?.querySelector('.bm-lock') || !ticket.offsetParent) return;
+    const mine = D, d = mine?.dep, typing = /^(INPUT|SELECT)$/.test(document.activeElement?.tagName || '');
+    if (!mine || watching || document.hidden || !key.unlocked || mine.busy || mine.reading || !root.offsetParent) return;
+    // a lock that waits for its proof is read again every two minutes, so its row moves on by itself
+    if (++ticks % 4 === 0 && !typing && mine.locks?.some((l) => lockStep(l) === 'waiting for its proof')) return read();
+    if (!d || !ticket?.querySelector('.bm-lock')) return;
     if (mine.lockWaiting) return read();
     watching = true;
     try {

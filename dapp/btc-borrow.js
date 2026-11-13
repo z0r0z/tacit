@@ -43,8 +43,11 @@ export const bondCall = (t, lock) => ({ to: ESCROW, data: '0x' + POST_ESCROW_WIT
 const strip = (h) => String(h).replace(/^0x/, '');
 const ZERO = '0x' + '0'.repeat(64);
 
-export function makeLoans({ sha256, hmac, secp, bytesToHex, hexToBytes, pubHex, noteRecovery = () => import('/cbtc-note-recovery.js'),
-  lockModule = () => import('/cbtc-lock-mint.js?cb=6e5d5d31'), deployments = () => import('/confidential-deployments.js') }) {
+const CBTC_MINTED = 'e2c2a40c', ESCROW_TOTAL = 'e06e89c9';
+const sentence = (s) => `${s.charAt(0).toUpperCase()}${s.slice(1)}.`;
+
+export function makeLoans({ sha256, hmac, secp, bytesToHex, hexToBytes, pubHex, noteRecovery = () => import('/cbtc-note-recovery.js'), redeemModule = () => import('/cbtc-redeem.js?cb=10a0d63f'),
+  lockModule = () => import('/cbtc-lock-mint.js?cb=91821cf3'), deployments = () => import('/confidential-deployments.js') }) {
   async function positions() {
     const { makeCdpPositionStore } = await import('/confidential-secret-store.js');
     return makeCdpPositionStore({ sha256, hmac, secp, curveOrder: secp.CURVE.n });
@@ -163,5 +166,32 @@ export function makeLoans({ sha256, hmac, secp, bytesToHex, hexToBytes, pubHex, 
     return { ...res, record: recordOf({ ...res, at: Date.now() }) };
   }
 
-  return { positions, nextKeyNonce, fresh, openArgs, opened, positionLeaf, repayArgs, repaid, mintArgs, lockMaker, lock, resumeLocks };
+  // A lock nothing was minted on, taken back: its output spent to the key's deposit address in one Bitcoin transaction, the fee out of
+  // the lock. It is refused unless the pool has minted nothing on the lock and no bond stands on it, both read now, and Bitcoin still
+  // has the output; a read that fails refuses too. `quote` builds it and sends nothing.
+  //   → { txid, fee, outValue, sent }
+  async function takeBack(t, priv, lock, { rate = null, quote = false, say = () => {} } = {}) {
+    const op = strip(outpointOf(t, lock)), word = (h) => (/^0x[0-9a-f]{64}/i.test(String(h)) ? BigInt(String(h).slice(0, 66)) : null);
+    say('Checking the lock…');
+    const { lm, dep } = await lockMaker(t, priv);
+    const unasked = () => { throw new Error('Bitcoin could not be asked whether this lock is still unspent, so nothing was sent. Try again in a moment.'); };
+    const [minted, escrow, lockState, spentBy, known] = await Promise.all([
+      t.ethCall(t.cfg.pool, '0x' + CBTC_MINTED + op).then(word, () => null), t.ethCall(t.cfg.collateralEngine, '0x' + ESCROW_TOTAL + op).then(word, () => null),
+      t.cbtcLockState(lock.lockTxid, lock.lockVout).catch(() => null),
+      lm.spentBy(lock.lockTxid, lock.lockVout).catch(unasked), lm.txKnown(lock.lockTxid).catch(unasked),
+    ]);
+    if (!known) throw Object.assign(new Error('Bitcoin does not have this lock, so there is nothing to take back.'), { refused: true });
+    const R = (await redeemModule()).makeCbtcRedeem({ pool: t.pool, secp, sha256, prims: lm.prims });
+    const a = R.assessUnlock({ minted: minted == null ? null : minted !== 0n, escrow, lockState, spentBy });
+    if (!a.ok) throw Object.assign(new Error(sentence(a.problems[0])), { refused: true, problems: a.problems });
+    const built = R.buildUnlockTx({ lock: { txid: lock.lockTxid, vout: lock.lockVout, value: Number(lock.vBtc), spk: bytesToHex(lm.ownLockScriptPubKey()) }, feeRate: rate > 0 ? rate : await lm.feeRate() });
+    if (quote) return { ...built, sent: false };
+    say('Sending it back to your Bitcoin address…');
+    await lm.send(built.hex);
+    dep.unprotectOutpoint(lock.lockTxid, lock.lockVout);
+    signedDrop(lock.lockTxid);
+    return { ...built, sent: true };
+  }
+
+  return { positions, nextKeyNonce, fresh, openArgs, opened, positionLeaf, repayArgs, repaid, mintArgs, lockMaker, lock, resumeLocks, takeBack };
 }

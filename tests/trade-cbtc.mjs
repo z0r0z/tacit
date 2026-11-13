@@ -12,6 +12,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { keccak_256 } from '../dapp/vendor/tacit-deps.min.js';
+import { ETH_NODES, ETH_LOG_NODES, ETH_ARCHIVE_NODES } from '../dapp/eth-nodes.js';
 
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT || '/Users/z/zFi/node_modules/playwright-core');
 const DAPP = new URL('../dapp/', import.meta.url).pathname, FX = new URL('./fixtures/', import.meta.url).pathname;
@@ -99,7 +100,13 @@ function rpcAnswer(req) {
   }
   if (method === 'eth_getBalance') return res('0x' + (5n * 10n ** 18n).toString(16));
   if (method === 'eth_getTransactionReceipt') return res(params[0] === SENT ? { status: '0x1', transactionHash: SENT, blockNumber: '0x1', logs: [] } : null);
-  if (method === 'eth_getLogs') return chain.logs && String(params[0].address).toLowerCase() === '0x000000003f608bddf0ca45934003ffb9dbdf70db' ? res(engineLogs) : err('stub: no logs');
+  // the head is just past the fixture's last event, and each span of the history is answered with the events inside it
+  if (method === 'eth_blockNumber') return res('0x' + (Math.max(...engineLogs.map((l) => Number(BigInt(l.blockNumber)))) + 5).toString(16));
+  if (method === 'eth_getLogs') {
+    if (!chain.logs || String(params[0].address).toLowerCase() !== '0x000000003f608bddf0ca45934003ffb9dbdf70db') return err('stub: no logs');
+    const from = Number(BigInt(params[0].fromBlock)), to = Number(BigInt(params[0].toBlock));
+    return res(engineLogs.filter((l) => { const b = Number(BigInt(l.blockNumber)); return b >= from && b <= to; }));
+  }
   return err(`stub: ${method}`);
 }
 
@@ -138,6 +145,17 @@ export function makeCbtcLockMint(o) {
       ux.calls.push(['lock', String(a.amountSats), (o.excludeOutpoints || []).join()]);
       return { lockTxid: '9a'.repeat(32), lockVout: 7, vBtc: a.amountSats, anchor: { txid: '77'.repeat(32), vout: 0 } };
     },
+    prims: {}, ownLockScriptPubKey: () => new Uint8Array(34), feeRate: async () => 3, txKnown: async () => true,
+    spentBy: async (txid, vout) => { ux.calls.push(['spentBy', vout]); return ux.cfg.spentBy || null; },
+    send: async (hex) => { ux.calls.push(['send', hex]); },
+  };
+}`;
+// the spend of a lock nothing was minted on: the real checks' answers for what the page read, and a fixed transaction (the real one is tested in cbtc-lock-driver.test.mjs)
+const REDEEM_STUB = `
+export function makeCbtcRedeem() {
+  return {
+    assessUnlock: ({ minted, escrow, spentBy }) => { const problems = []; if (minted !== false) problems.push('this lock has cBTC minted on it'); if (escrow == null || BigInt(escrow) > 0n) problems.push('a bond is still posted on this lock: take the bond back first'); if (spentBy) problems.push('the lock output is already spent on Bitcoin'); return { ok: !problems.length, problems }; },
+    buildUnlockTx: ({ lock }) => ({ hex: 'f00d', txid: 'ee'.repeat(32), fee: 300, outValue: lock.value - 300, vsize: 100 }),
   };
 }`;
 const UX_STUB = `
@@ -148,6 +166,7 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 export function makeConfidentialPoolUx() {
   return {
     pool: { outpointKey: (txid, vout) => '0x' + '00'.repeat(31) + vout.toString(16).padStart(2, '0'), CBTC_ZK_ASSET_ID: '0xcb' },
+    cfg: { pool: '0x' + '0e'.repeat(20), collateralEngine: '0x' + '3f'.repeat(20) },
     async syncCbtcLockReservations() { ux.calls.push(['syncCbtcLockReservations']); },
     async cbtcLockState(txid, vout) { ux.calls.push(['cbtcLockState', vout]); return ux.cfg.states?.[vout] || { spent: false, redeemed: false }; },
     async ethCall(to, data) {
@@ -174,7 +193,8 @@ async function openPage(viewport, { wallet = false, scheme = 'light', hash = '' 
   const browser = await chromium.launch(), ctx = await browser.newContext({ viewport, colorScheme: scheme });
   const log = wallet ? await stubWallet(ctx) : null;
   const ok200 = (body) => ({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(body) });
-  for (const h of ['ethereum-rpc.publicnode.com', 'eth.drpc.org', '1rpc.io', 'mainnet.gateway.tenderly.co']) await ctx.route(`https://${h}/**`, (r) => { const q = JSON.parse(r.request().postData() || '{}'); return r.fulfill(ok200(Array.isArray(q) ? q.map(rpcAnswer) : rpcAnswer(q))); });
+  // every node the pages may ask (the lists in eth-nodes.js), so no read reaches the real chain
+  for (const h of new Set(['ethereum-rpc.publicnode.com', 'eth.drpc.org', '1rpc.io', 'mainnet.gateway.tenderly.co', ...[...ETH_NODES, ...ETH_LOG_NODES, ...ETH_ARCHIVE_NODES].map((u) => new URL(u).hostname)])) await ctx.route(`https://${h}/**`, (r) => { const q = JSON.parse(r.request().postData() || '{}'); return r.fulfill(ok200(Array.isArray(q) ? q.map(rpcAnswer) : rpcAnswer(q))); });
   await ctx.route(/^https:\/\/api\.tacit\.finance\//, (r) => {
     const u = new URL(r.request().url());
     if (u.pathname === '/stats') return r.fulfill(chain.stats === 'down' ? { status: 503, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: '{}' } : ok200(stats));
@@ -183,6 +203,7 @@ async function openPage(viewport, { wallet = false, scheme = 'light', hash = '' 
   });
   await ctx.route('**/confidential-pool-ux.js*', (r) => r.fulfill({ status: 200, contentType: 'text/javascript', body: UX_STUB }));
   await ctx.route(/\/cbtc-lock-mint\.js(\?|$)/, (r) => r.fulfill({ status: 200, contentType: 'text/javascript', body: LOCK_STUB }));
+  await ctx.route(/\/cbtc-redeem\.js(\?|$)/, (r) => r.fulfill({ status: 200, contentType: 'text/javascript', body: REDEEM_STUB }));
   await ctx.route(/^https:\/\/(mempool\.space|blockstream\.info)\/api\//, (r) => {
     const u = new URL(r.request().url()), ok200 = (b) => r.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(b) });
     if (/\/address\/bc1qdeposit[a-z0-9]*\/utxo$/.test(u.pathname)) return ok200(DEPOSIT.utxos);
@@ -246,9 +267,12 @@ try {
   const rd = await text(p, '#ch-read');
   ok(rd.startsWith('0.1139 BTC') && /all time|past month/.test(rd), `its right edge is what is locked now, and the events add up to it (${rd.slice(0, 80)})`);
   ok(!/do not add up/.test((await p.$eval('#chart-note', (e) => e.textContent))) && (await p.$$eval('#range-seg button', (b) => b.map((x) => x.textContent))).includes('All'), 'the history says nothing of a mismatch, and offers ranges');
+  // the whole history, so the fixture's events are in view whatever today's date is
+  await p.evaluate(() => [...document.querySelectorAll('#range-seg button')].find((b) => b.textContent === 'All')?.click());
+  await p.waitForTimeout(300);
   const box = await (await p.$('#chart svg')).boundingBox();
   let hover = '';
-  for (let k = 8; k < 90 && !/BTC locked in/.test(hover); k += 2) { await p.mouse.move(box.x + box.width * k / 100, box.y + box.height / 2); await p.waitForTimeout(40); hover = await text(p, '#ch-read'); }
+  for (let k = 0.5; k < 90 && !/BTC locked in/.test(hover); k += 0.5) { await p.mouse.move(box.x + box.width * k / 100, box.y + box.height / 2); await p.waitForTimeout(25); hover = await text(p, '#ch-read'); }
   ok(/0\.\d{4} BTC locked in \d+ step/.test(hover) && !/\b0 BTC/.test(hover), `a bar's hover reads the bitcoin it locked in the digits a lock needs (${hover.slice(0, 90)})`);
   await p.mouse.move(5, 5);
   await p.click('#view-seg [data-unit="usd"]');
@@ -400,6 +424,28 @@ try {
     `vault: the lock's outpoint is protected, its record kept where the front page keeps it, and it is in the journal (${JSON.stringify(kept).slice(0, 200)})`);
   await until(p, () => /Lock 9a9a9a/.test(document.querySelector('#btc-mine')?.textContent || ''), null, 30000);
   ok(true, 'vault: and the new lock is listed before Bitcoin\'s history has it');
+  // a lock with no bond and nothing minted on it is taken back from its row: the first press says what comes back, the second sends it
+  const row9a = () => p.evaluate(() => { const r = [...document.querySelectorAll('#btc-mine .kv')].find((x) => /Lock 9a9a9a/.test(x.textContent)); return r ? r.textContent.replace(/\s+/g, ' ') : ''; });
+  const press9a = () => p.evaluate(() => [...document.querySelectorAll('#btc-mine .kv')].find((x) => /Lock 9a9a9a/.test(x.textContent)).querySelector('[data-mine="unlock"]').click());
+  await until(p, () => !!([...document.querySelectorAll('#btc-mine .kv')].find((x) => /Lock 9a9a9a/.test(x.textContent))?.querySelector('[data-mine="unlock"]:not([disabled])')), null, 30000);
+  ok(/Post the bond · Take BTC back/.test(await row9a()), `vault: a lock with no bond offers its bond and the way back (${await row9a()})`);
+  await cfg(p, { bondHave: '5' });
+  await press9a();
+  await until(p, () => /bond is still posted on this lock: take the bond back first/.test(document.querySelector('#btc-mine #bm-status')?.textContent || ''), null, 20000);
+  ok(!(await ux(p)).calls.some((c) => c[0] === 'send'), 'vault: with a bond on it, the bond comes back first and nothing is sent; the line is under the rows it was pressed in');
+  await cfg(p, { bondHave: 0 });
+  await until(p, () => !!([...document.querySelectorAll('#btc-mine .kv')].find((x) => /Lock 9a9a9a/.test(x.textContent))?.querySelector('[data-mine="unlock"]:not([disabled])')), null, 30000);
+  await press9a();
+  await until(p, () => /This spends the lock: 0\.000497 BTC returns to your deposit address, after a network fee of 300 sats/.test(document.querySelector('#btc-mine #bm-status')?.textContent || ''), null, 20000);
+  await until(p, () => /Take it back/.test([...document.querySelectorAll('#btc-mine .kv')].find((x) => /Lock 9a9a9a/.test(x.textContent))?.textContent || '') && !!document.querySelector('#btc-mine [data-mine="unlock"]:not([disabled])'), null, 30000);
+  ok(!(await ux(p)).calls.some((c) => c[0] === 'send'), 'vault: the first press says what comes back and its fee, and sends nothing');
+  await press9a();
+  await until(p, () => /Taken back/.test(document.querySelector('#btc-mine #bm-status')?.textContent || ''), null, 20000);
+  const gone = await p.evaluate(() => ({ prot: Object.keys(JSON.parse(localStorage.getItem('tacit-protected-outpoints-v1') || '{}')), rec: Object.entries(localStorage).filter(([k]) => k.startsWith('tacit-lite-cbtc-v1:')).map(([, v]) => JSON.parse(v)), act: (JSON.parse(localStorage.getItem('tacit-lite-activity-v1') || '{}').items || []).map((x) => `${x.label}:${x.kind}`) }));
+  ok((await ux(p)).calls.filter((c) => c[0] === 'send').length === 1 && !gone.prot.some((x) => x.startsWith('9a'.repeat(32))) && !gone.rec.some((x) => x?.lockTxid === '9a'.repeat(32)) && gone.act.includes('Take back 0.0005 BTC from a lock:btc'),
+    `vault: the second press sends it once; its outpoint is no longer protected, its record is gone and it is in the journal (${JSON.stringify(gone).slice(0, 160)})`);
+  await until(p, () => !/Lock 9a9a9a/.test(document.querySelector('#btc-mine')?.textContent || ''), null, 30000);
+  ok(true, 'vault: and the lock is off the list');
   await p.click('#btc-mine [data-mine="lock"]');
   await until(p, () => !!document.querySelector('#btc-mine [data-mine="open"]'), null, 10000);
   ok(true, 'vault: Lock your key puts the panel back to asking');
@@ -409,7 +455,7 @@ try {
   // ── what cannot be read ──
   chain.logs = false;
   r = await openPage({ width: 1280, height: 900 });
-  await until(r.page, () => /Could not read the history/.test(document.querySelector('#chart').textContent), null, 30000);
+  await until(r.page, () => /Could not read the history/.test(document.querySelector('#chart').textContent), null, 60000);
   ok(!(await r.page.$('#chart .line')) && (await r.page.$$eval('#cov .cov-row', (a) => a.length)) === 4, 'a node that does not serve the events leaves the chart saying so, and everything else stands');
   await r.browser.close();
   chain.logs = true;

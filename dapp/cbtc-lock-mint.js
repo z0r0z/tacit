@@ -55,12 +55,13 @@ function makeEsplora(bases = [
     },
     fetchFeeRate: async (_tier) => { try { const j = await (await req('/fee-estimates')).json(); return Math.max(1, Math.ceil(j['2'] || j['3'] || j['6'] || 5)); } catch { return 5; } },
     // Whether Bitcoin has a transaction, in a block or a mempool: true from the first mirror that has it, false once a mirror answers
-    // that it does not and none has it; it throws when no mirror answers.
+    // that it does not and none has it; it throws when no mirror answers. The transaction itself is asked for: an explorer answers
+    // its /status and /outspend for one it has never seen as it does for one unconfirmed and unspent.
     txKnown: async (txid) => {
       let missing = false, err = null;
       for (const base of bases) {
         try {
-          const r = await fetch(`${base}/tx/${txid}/status`, { signal: AbortSignal.timeout(8000) });
+          const r = await fetch(`${base}/tx/${txid}`, { signal: AbortSignal.timeout(8000) });
           if (r.ok) return true;
           if (r.status === 404) missing = true; else err = new Error(`${r.status}`);
         } catch (e) { err = e; }
@@ -68,6 +69,8 @@ function makeEsplora(bases = [
       if (missing) return false;
       throw err || new Error('esplora unavailable');
     },
+    // The transaction that spends an output (in a block or a mempool), or null while it is unspent.
+    spentBy: async (txid, vout) => { const j = await (await req(`/tx/${txid}/outspend/${vout}`)).json(); return j && j.spent ? j.txid || 'spent' : null; },
   };
 }
 
@@ -159,6 +162,11 @@ export function makeCbtcLockMint({ priv, pool, cbtcAsset, esploraBases, postHint
     lock: cbtc.buildAndBroadcastCbtcLock,
     finishLock,
     txKnown: esplora.txKnown,
+    // what taking a lock back needs (cbtc-redeem.js buildUnlockTx): the wallet's primitives, the lock's spender if it has one, a fee rate, and a send
+    prims,
+    spentBy: esplora.spentBy,
+    feeRate: () => prims.getFeeRate('priority'),
+    send: (hex) => prims.broadcastWithRetry(hex),
     scanCbtc: rec.scanCbtc,           // recover the note from key + chain (the anti-strand check)
     ownLockScriptPubKey,
   };

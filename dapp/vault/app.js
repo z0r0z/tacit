@@ -47,15 +47,18 @@ const rpc = makeRpc([...RPCS, walletNode({ last: true })]);
 const { ethCall, batch } = makeReader(rpc);
 const cur = () => VS.find((v) => v.key === S.v) || null;
 
+let connectSaid = '';
 const connect = makeConnect({
   describe: 'Borrow against TAC', name: 'tacit borrow', rpc,
   busy: () => S.busy,
-  say: (t) => say(t),
+  say: (t) => { connectSaid = t || ''; say(t); },
   onChange: () => { detectBatch(); if (side === 'tac') pools.read(); if (S.busy || side !== 'tac') return; if (!S.view) { if (S.seq) refresh(); } else renderAll(); },   // the first read waits for a remembered wallet (`restored`, below): an account that arrives before it is read by it
   restore: false,
 });
 const { wallet, W } = connect;
 const connectWallet = connect.connect, renderChip = connect.renderChip;
+// for the Bitcoin side, whose own line says it: connect, and answer why when the wallet did not ('' when it did)
+const connectSaying = async () => { connectSaid = ''; if (await connectWallet()) return ''; const d = document.createElement('div'); d.innerHTML = connectSaid; return d.textContent || 'The wallet did not connect.'; };
 walletNow = W;
 const sameAddr = (a, b) => !!a && !!b && String(a).toLowerCase() === String(b).toLowerCase();
 const who = () => S.view || W.account || null;
@@ -455,7 +458,7 @@ let mineP = null;
 function openMine(press, btn = null) {
   if (mineP) return;
   if (btn) { btn.textContent = 'Opening…'; btn.disabled = true; }
-  mineP = import('/vault/mine.js?cb=1a72e296').then((m) => { m.mountMine($('#btc-mine'), { ticket: $('#btc-tk'), pick: pickProvider, wallet, W, connect: connectWallet }); if (press) $('#btc-mine [data-mine="open"]')?.click(); })
+  mineP = import('/vault/mine.js?cb=30e8ed8c').then((m) => { m.mountMine($('#btc-mine'), { ticket: $('#btc-tk'), pick: pickProvider, wallet, W, connect: connectSaying }); if (press) $('#btc-mine [data-mine="open"]')?.click(); })
     .catch((err) => { mineP = null; if (btn) { btn.textContent = 'Could not load. Try again'; btn.disabled = false; } console.warn('your position:', err?.message || err); });
 }
 $('#btc').addEventListener('click', (e) => {

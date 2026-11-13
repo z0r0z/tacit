@@ -421,6 +421,41 @@ export function makeCbtcRedeem({ pool, secp, sha256, prims: defaultPrims = null,
     return { ok: problems.length === 0, problems };
   }
 
+  // A lock nothing was minted on, taken back: one transaction that spends the lock's output to `to` (default the key's P2WPKH), its fee
+  // out of the lock. Nothing is burned, so it is only for a lock with no cBTC and no bond on it (assessUnlock); with cBTC minted the same
+  // spend reads as a rug. Nothing is broadcast.
+  //   lock { txid, vout, value, spk } → { hex, txid, fee, outValue, vsize }
+  function buildUnlockTx({ prims, lock: lockIn, feeRate, to = null, maxFeeSats = DEFAULT_MAX_FEE_SATS } = {}) {
+    const P = primsOf(prims), lock = normLock(lockIn), signer = signerFor(lock.spk, P), rate = Number(feeRate);
+    if (!(rate >= MIN_RELAY_RATE)) throw new Error('cbtc-redeem: feeRate must be at least 1 sat/vB');
+    const toSpk = to ? (typeof to === 'string' ? hexBytes(to) : to) : P.p2wpkhScript(P.wallet.pub);
+    const prevouts = [{ value: lock.value, script: hexBytes(lock.spk) }];
+    const make = (value) => {
+      const tx = { version: 2, locktime: 0, inputs: [{ txid: lock.txid, vout: lock.vout, sequence: 0xfffffffd, witness: [] }], outputs: [{ value, script: toSpk }] };
+      tx.inputs[0].witness = signer.sign(tx, 0, prevouts);
+      return tx;
+    };
+    const vsize = vsizeOf(P, make(lock.value)), fee = Math.ceil(vsize * rate), outValue = lock.value - fee;
+    if (fee > maxFeeSats) throw new Error(`cbtc-redeem: a fee of ${fee} sats is over the ${maxFeeSats} this allows`);
+    if (outValue < DUST) throw new Error('cbtc-redeem: the lock is too small to pay for its own spend');
+    const tx = make(outValue);
+    return { hex: bytesHex(P.serializeTx(tx, true)), txid: P.txid(tx), fee, outValue, vsize };
+  }
+
+  // Whether a lock can be taken back with a plain spend, from facts the caller has just read: no cBTC minted on it, no bond on it (a
+  // lock is minted against only while its bond stands, so with none posted nothing can be minted while the spend confirms), and its
+  // output still unspent. `minted` and `escrow` are null when they could not be read.
+  function assessUnlock({ minted, escrow, lockState = null, spentBy = null } = {}) {
+    const problems = [];
+    if (minted == null) problems.push('whether cBTC was minted on this lock could not be read');
+    else if (minted) problems.push('this lock has cBTC minted on it, so its BTC comes back by a redeem, not a plain spend');
+    if (lockState && (lockState.spent || lockState.redeemed)) problems.push('this lock was already spent on Bitcoin');
+    if (escrow == null) problems.push('the bond on this lock could not be read');
+    else if (BigInt(escrow) > 0n) problems.push('a bond is still posted on this lock: take the bond back first');
+    if (spentBy) problems.push('the lock output is already spent on Bitcoin');
+    return { ok: problems.length === 0, problems };
+  }
+
   // Commit first, then the reveal; both are already built and checked.
   async function send({ built, broadcast, broadcastWithRetry = null, isUnspent = null, onProgress = null } = {}) {
     if (!built || !built.commitHex || !built.revealHex) throw new Error('cbtc-redeem: nothing built to send');
@@ -442,5 +477,5 @@ export function makeCbtcRedeem({ pool, secp, sha256, prims: defaultPrims = null,
     return { commitTxid: built.commitTxid, revealTxid: built.revealTxid };
   }
 
-  return { kernelMsg, signerFor: (spk, prims) => signerFor(spk, primsOf(prims)), buildRedeemTxs, checkRedeemReveal, assessRedeem, pickNotes, planRedeem, bestSubsetSum, send };
+  return { kernelMsg, signerFor: (spk, prims) => signerFor(spk, primsOf(prims)), buildRedeemTxs, checkRedeemReveal, assessRedeem, pickNotes, planRedeem, bestSubsetSum, send, buildUnlockTx, assessUnlock };
 }

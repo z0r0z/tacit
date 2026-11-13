@@ -25,6 +25,7 @@ await test('every lock above the dust band comes back oldest first, with its bli
   const other = { scriptpubkey: '0014' + '00'.repeat(20), value: 5000 };
   const commit = { scriptpubkey: '5120' + '11'.repeat(32), scriptpubkey_type: 'v1_p2tr' }, wallet = { scriptpubkey: '0014' + '22'.repeat(20), scriptpubkey_type: 'v0_p2wpkh' };
   const txs = [
+    { txid: 'f0'.repeat(32), vin: [{ txid: 'b1'.repeat(32), vout: 1, prevout: { scriptpubkey: lock, scriptpubkey_type: 'v1_p2tr' } }], vout: [other], status: { block_time: 2700 } },   // the oldest lock, taken back
     { txid: 'e1'.repeat(32), vin: [{ txid: 'c8'.repeat(32), vout: 0, prevout: wallet }], vout: [other, out(40000)], status: { block_time: 2600 } },   // a plain payment to the same script
     { txid: 'e0'.repeat(32), vin: [{ txid: 'c7'.repeat(32), vout: 0, prevout: commit }], vout: [out(50000), other], status: { block_time: 2500 } },   // at output 0, where a lock never is
     { txid: 'b2'.repeat(32), vin: [{ txid: 'c2'.repeat(32), vout: 0, prevout: commit }], vout: [other, out(30000)], status: { block_time: 2000 } },
@@ -45,6 +46,7 @@ await test('every lock above the dust band comes back oldest first, with its bli
     ['b2b2', 1, '30000', 'a2a2', 1],
   ]);
   assert.equal(locks[0].at, 1_000_000);
+  assert.deepEqual(locks.map((l) => l.spentBy || null), ['f0'.repeat(32), null], 'a lock whose output Bitcoin has spent names what spent it');
 });
 
 await test('a key with no locks has none', async () => {

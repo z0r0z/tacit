@@ -125,7 +125,7 @@ export async function readHistory({ locked, out }) {
 
 export const lockStep = (l) => (l.minted ? 'minted' : !l.bonded ? 'post its bond' : !l.recorded ? 'waiting for its proof' : 'ready to mint');
 export async function readLocks({ ux, priv, hist }) {
-  const all = await hist.locks(priv);
+  const all = (await hist.locks(priv)).filter((l) => !l.spentBy);                // a lock whose output Bitcoin has spent is gone, before the pool records it
   if (!all.length) return [];
   const op = (l) => strip(ux.pool.outpointKey('0x' + l.lockTxid.match(/../g).reverse().join(''), l.lockVout));
   // one batch for every lock: what the pool records of it, whether it is spent or redeemed (those are left out), its bond and its mint

@@ -172,6 +172,7 @@
 //           liquidated at, a note cut to size when no note matches), its loans listed with Repay, the lock steps folded under it
 //   holdpublic tacBTC held in public by the paying account is offered as the collateral: the relay is asked to prove the deposit-collateral open for
 //           that amount, the approval is signed, and the router call is asked of the pool before it would be sent
+//   usdback    public tacUSD in the paying wallet is made private again from the Borrow sheet: one router transaction with its permit, the deposit left to Finish
 //   selffund  #prove-self: the Tacit account as prover account and its credit; PROVE added from the wallet (a transfer to the Tacit account,
 //            then permitAndDeposit with a permit that account signs, taken by the real vApp on the fork); the switch and each sheet's note
 //   selfprove with the switch on, a withdrawal and a swap are proved on the holder's credit (no submit to the relay) and settled from the
@@ -212,7 +213,7 @@ const DAPP = new URL('../dapp/', import.meta.url).pathname;
 const bwText = (page) => page.evaluate((s) => [...document.querySelectorAll(s)].map((e) => e.textContent).join(' '), '#bw-status, #bw-s1, #bw-s2, #bw-s3, #bw-s4');
 // `ui`: the front page's tile and landing, the steps a look-and-copy pass needs (tools/weld-ui.sh runs them on a pinned, cached fork)
 const UI_STEPS = 'links,tacbuy,swapurl,swapfield,hints,hxbridge,hxfold,hxnudge,tradelinks';
-const ONLY = new Set((process.argv[2] === 'ui' ? UI_STEPS : process.argv[2] || 'airdrop,links,tacbuy,swapurl,swapfield,hints,hxbridge,hxbridgec,hxbridgeu,usdtwrap,usdtwrapw,usdtout,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,swaphere,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,shieldsrc,shieldwc,provebar,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,nohost,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,tileahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,anyone,relayfail,selfwallet,slowline,fastroute,chainoff,chaintile').split(','));
+const ONLY = new Set((process.argv[2] === 'ui' ? UI_STEPS : process.argv[2] || 'airdrop,links,tacbuy,swapurl,swapfield,hints,hxbridge,hxbridgec,hxbridgeu,usdtwrap,usdtwrapw,usdtout,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,swaphere,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,shieldsrc,shieldwc,provebar,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,usdback,selffund,selfeth,selfprove,exitahead,selfdevice,nohost,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,tileahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,anyone,relayfail,selfwallet,slowline,fastroute,chainoff,chaintile').split(','));
 const FORK = process.argv[3] || 'https://mainnet.gateway.tenderly.co';
 const SHOTS = process.env.SHOTS || null;
 const PORT = 20000 + Math.floor(Math.random() * 2000), WEB = PORT + 1;
@@ -2230,6 +2231,8 @@ const toWallet = (p) => p.evaluate(() => { location.hash = ''; location.hash = '
 const shown = async (p) => { await toWallet(p); await p.waitForSelector('#wallet-body .who, #wallet-body [data-in]', { timeout: 60000 }); return walletText(p); };
 const lock = async (p) => { await toWallet(p); await p.waitForSelector('#w-lock', { timeout: 60000 }); await p.click('#w-lock'); await p.waitForSelector('#wallet-body [data-in]'); };
 const addrIn = (txt) => (txt.match(/tacit1[0-9a-z]{8}…[0-9a-z]{12}/) || [''])[0];
+// The sheet shows a key's address in one form as it opens and its lasting form a moment later: read once two looks agree.
+const shownSettled = async (p) => { let a = addrIn(await shown(p)); for (let i = 0; i < 10; i++) { await sleep(1500); const b = addrIn(await shown(p)); if (b && b === a) return b; a = b; } return a; };
 
 await step('csend', async () => {
   const r = await openPage({ account: A0, key: K0 });
@@ -2982,12 +2985,13 @@ await step('bitcoin', async () => {
   await r.page.goto(r.url + '#wallet');
   await r.page.click('#wallet-body [data-in="btc"]');
   await until(r.page, () => !!document.querySelector('#wallet-dot.on'), null, 120000);
-  const txt = await shown(r.page);
-  ok(/Opened with Bitcoin bc1qte/.test(txt), `bitcoin: a Bitcoin wallet's signature opens a key (${addrIn(txt)})`);
+  const txt = await shown(r.page), first = await shownSettled(r.page);
+  ok(/Opened with Bitcoin bc1qte/.test(txt), `bitcoin: a Bitcoin wallet's signature opens a key (${first})`);
   await lock(r.page);
   await r.page.click('#wallet-body [data-in="known"]');
   await until(r.page, () => !!document.querySelector('#wallet-dot.on'), null, 120000);
-  ok((await shown(r.page)).includes(addrIn(txt) || '?'), 'bitcoin: signing in again opens the same key');
+  const again = await shownSettled(r.page);
+  ok(!!first && again === first, `bitcoin: signing in again opens the same key (${again})`);
   await r.page.evaluate(() => { location.hash = '#borrow'; });
   await r.page.waitForSelector('#bw-amt', { timeout: 120000 });
   await r.page.fill('#bw-amt', '0.0002');
@@ -12042,6 +12046,53 @@ await step('holdpublic', async () => {
     ok(BigInt(await rpc('eth_call', [{ to: TACBTC, data: '0x70a08231' + addrWord(acct) }, 'latest'])) === 30000n * 10n ** 10n, 'holdpublic: the tacBTC is where it was');
     if (r.errors.length) { fails++; console.log('FAIL holdpublic page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { proveStub = false; await r.browser.close(); }
+});
+
+// Public tacUSD in the paying wallet is made private again from the Borrow sheet's Send block: the wallet signs the permit and sends one
+// router transaction, and the deposit is left for the relay to settle (or Finish), as a TAC deposit is. It is what a borrower who withdrew
+// cUSD to an account repays with, so the sheet's repay line points there.
+await step('usdback', async () => {
+  const ROUTER = '0x000000005da3e3b73726af3c774deeb9472d4992', TACUSD = '0x23cACFFAc2674514A6d4F6cD420B4cc2aC921564';
+  // solady's balance slot: keccak(owner (20 bytes) ‖ 8 zero bytes ‖ 0x87a211a2)
+  const balSlot = (owner) => '0x' + Buffer.from(keccak_256(Buffer.concat([Buffer.from(owner.slice(2).toLowerCase(), 'hex'), Buffer.alloc(8), Buffer.from('87a211a2', 'hex')]))).toString('hex');
+  const usdOf = async (x) => BigInt(await rpc('eth_call', [{ to: TACUSD, data: '0x70a08231' + addrWord(x) }, 'latest']));
+  const kw = '0x' + Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('hex');
+  const W = '0x' + Buffer.from(keccak_256(secp.getPublicKey(kw.slice(2), false).slice(1))).toString('hex').slice(-40);
+  await rpc('anvil_impersonateAccount', [W]); await rpc('anvil_setBalance', [W, '0x' + (10n ** 18n).toString(16)]);
+  await rpc('anvil_setStorageAt', [TACUSD, balSlot(W), '0x' + word(40n * 10n ** 18n)]);
+  ok((await usdOf(W)) === 40n * 10n ** 18n, 'usdback: the wallet holds 40 tacUSD on the fork');
+  const hex = '05db'.padEnd(64, '4');
+  const r = await openPage({ account: W, key: kw });
+  try {
+    await r.page.goto(r.url + '#wallet');
+    await r.page.click('#wallet-body [data-in="paste"]');
+    await r.page.fill('#ws-hex', hex);
+    await r.page.click('#wallet-body [data-in="key"]');
+    await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
+    await toWallet(r.page);
+    await r.page.waitForSelector('[data-pay="wallet"]', { timeout: 60000 });
+    await r.page.click('[data-pay="wallet"]');                                              // connects the stub wallet, which pays
+    await until(r.page, () => document.querySelector('[data-pay="wallet"]')?.classList.contains('main'));
+    await go(r.page, '#borrow');
+    await r.page.waitForSelector('#bw-send #cs-wrap', { timeout: 300000 }).catch(async (e) => {
+      throw new Error(`${e.message.split('\n')[0]} | send: ${(await text(r.page, '#bw-send').catch(() => '')).replace(/\s+/g, ' ').slice(0, 200)} | errors: ${r.errors.slice(0, 2).join(' | ')}`);
+    });
+    const block = (await text(r.page, '#bw-send')).replace(/\s+/g, ' ');
+    ok(/Public in your wallet 40 tacUSD/.test(block) && /Make it private, as cUSD/.test(block) && await r.page.$eval('#cs-wrap', (b) => b.disabled), `usdback: the Send block offers the wallet's tacUSD and making it private (${block.slice(0, 150)})`);
+    await r.page.fill('#cs-amt', '25');
+    await until(r.page, () => !document.querySelector('#cs-wrap').disabled, null, 30000);
+    const t0 = walletTxs.length, before = await usdOf(W);
+    await r.page.click('#cs-wrap');
+    await until(r.page, () => /press Finish|err/i.test(document.querySelector('#bw-status')?.innerHTML || ''), null, 240000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | status: ${await text(r.page, '#bw-status')} | errors: ${r.errors.slice(0, 2).join(' | ')}`); });
+    const tx = walletTxs.slice(t0).find((x) => String(x.to).toLowerCase() === ROUTER);
+    const sel = Buffer.from(keccak_256('wrapWithPermit(address,uint256,bytes32,uint256,uint8,bytes32,bytes32)')).toString('hex').slice(0, 8);
+    ok(tx && String(tx.from).toLowerCase() === W && String(tx.data).startsWith('0x' + sel) && String(tx.data).toLowerCase().includes(TACUSD.slice(2).toLowerCase()), `usdback: one router transaction from the wallet, the tacUSD permit in it (${tx ? tx.data.slice(0, 10) : 'none sent'})`);
+    ok((await usdOf(W)) === before - 25n * 10n ** 18n, `usdback: and 25 tacUSD left the wallet for the pool (${before} → ${await usdOf(W)})`);
+    const st = await text(r.page, '#bw-status');
+    ok(/deposit is (in the Tacit pool|safe in the pool)/.test(st) && /press Finish/.test(st), `usdback: the settle is left to Finish like every other deposit (${st.slice(0, 120)})`);
+    if (r.errors.length) { fails++; console.log('FAIL usdback page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { await r.browser.close(); }
 });
 
 // ── proving with your own credit ──
