@@ -759,11 +759,16 @@ fn pool_prove(
         Ok((pv, proof)) => serde_json::json!({ "id": l.id, "lease": l.lease, "publicValues": format!("0x{}", hex::encode(pv)), "proof": format!("0x{}", hex::encode(proof)) }),
         Err(e) => serde_json::json!({ "id": l.id, "lease": l.lease, "error": e.chars().take(300).collect::<String>() }),
     };
-    // The API asks Ethereum's verifier before it keeps a proof; while no node answers (503) the lease holds and the proof is sent again.
+    // The API asks Ethereum's verifier before it keeps a proof; while no node answers (503), or this place has sent too many just now (429,
+    // after its Retry-After), the lease holds and the proof is sent again.
     for _ in 0..6 {
         match agent.post(&format!("{base}/prover/pool/submit")).send_json(body.clone()) {
             Ok(_) => break,
             Err(ureq::Error::Status(503, _)) | Err(ureq::Error::Transport(_)) => std::thread::sleep(Duration::from_secs(20)),
+            Err(ureq::Error::Status(429, r)) => {
+                let wait = r.header("Retry-After").and_then(|s| s.trim().parse().ok()).unwrap_or(20u64).clamp(1, 120);
+                std::thread::sleep(Duration::from_secs(wait));
+            }
             Err(ureq::Error::Status(code, r)) => {
                 println!("pool job {}: not taken ({code}): {}", l.id, r.into_string().unwrap_or_default().chars().take(200).collect::<String>());
                 break;

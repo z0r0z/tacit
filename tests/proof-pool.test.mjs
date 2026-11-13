@@ -35,15 +35,18 @@ function wrapJob(i = 0, memo = null, nonce = 0x77n + BigInt(i)) {
   const bytes = stdinFor('wrap', op);
   return { stdin: hx(bytes), bytes, expect: wrapExpect(readWrapStdin(bytes)), id: bytesToHex(sha256(bytes)).slice(0, 32) };
 }
-// abi.encode(PublicValues) as far as the pool reads it: the tuple's head (field k in word 1 + k) with the chain binding, the memo
-// root and the offsets of `leaves` and `depositsConsumed`, then those two lists.
+// abi.encode(PublicValues): the tuple's 31 fields (field k in word 1 + k), the chain binding, the memo root, `leaves` and
+// `depositsConsumed`, every other list empty and every other word zero unless `fields` names it (field 2 is spendRoot, 11 bitcoinSpentRoot).
 const word = (x) => BigInt(x).toString(16).padStart(64, '0');
-function pvFor(e, { leaves = [e.leaf], deposits = [e.depositId], chainBinding = e.chainBinding, memoRoot = e.memoRoot } = {}) {
-  const head = Array.from({ length: 32 }, () => word(0)), tail = [];
-  head[0] = word(32); head[1] = word(1); head[2] = chainBinding.slice(2); head[28] = memoRoot.slice(2);
-  head[5] = word(31 * 32); tail.push(word(leaves.length), ...leaves.map((x) => x.slice(2)));
-  head[6] = word((31 + tail.length) * 32); tail.push(word(deposits.length), ...deposits.map((x) => x.slice(2)));
-  return '0x' + head.join('') + tail.join('');
+const PV_LISTS = new Set([3, 4, 5, 6, 7, 8, 9, 10, 13, 14, 17, 18, 19, 22, 23, 24, 25, 26, 28, 29, 30]);
+function pvFor(e, { leaves = [e.leaf], deposits = [e.depositId], chainBinding = e.chainBinding, memoRoot = e.memoRoot, fields = {} } = {}) {
+  const head = [], tail = [];
+  for (let f = 0; f < 31; f++) {
+    if (!PV_LISTS.has(f)) { head.push(word(fields[f] ?? (f === 0 ? 1 : f === 1 ? chainBinding : f === 27 ? memoRoot : 0))); continue; }
+    const items = f === 4 ? leaves : f === 5 ? deposits : [];
+    head.push(word(32 * (31 + tail.length))); tail.push(word(items.length), ...items.map(word));
+  }
+  return '0x' + word(32) + head.join('') + tail.join('');
 }
 const PROOF = '0x' + 'ab'.repeat(260);
 const MINER = '0x' + '11'.repeat(20), MINER2 = '0x' + '22'.repeat(20), MINER3 = '0x' + '33'.repeat(20);
@@ -96,6 +99,15 @@ test('the proof: public values fit only their own wrap (read on a real mainnet w
   assert.equal(proofFits(pvFor(a.expect), c.expect), false, 'same deposit and leaf, another memo');
   assert.equal(proofFits(pvFor(a.expect, { leaves: [a.expect.leaf, a.expect.leaf] }), a.expect), false, 'a second leaf');
   assert.equal(proofFits(pvFor(a.expect, { deposits: [] }), a.expect), false, 'no deposit');
+  // The same wrap proved against a root (each one the settle checks against the pool's own), or with a deadline, is not this job's:
+  // spendRoot, bitcoinSpentRoot, bitcoinBurnRoot, deadline, lockSetRoot, refundNotBefore, cdpPositionRoot, and the version.
+  assert.equal(pvFor(MAINNET.expect), MAINNET.publicValues.toLowerCase(), 'the full encoding is the mainnet proof\'s, word for word');
+  for (const f of [2, 11, 12, 15, 16, 20, 21]) assert.equal(proofFits(pvFor(a.expect, { fields: { [f]: '0x' + 'de'.repeat(32) } }), a.expect), false, `field ${f} set`);
+  assert.equal(proofFits(pvFor(a.expect, { fields: { 0: 2 } }), a.expect), false, 'another version');
+  for (const f of [2, 11, 12, 16, 21]) {
+    const pv = MAINNET.publicValues.slice(0, 2 + 64 * (f + 1)) + 'de'.repeat(32) + MAINNET.publicValues.slice(2 + 64 * (f + 2));
+    assert.equal(proofFits(pv, e), false, `the mainnet proof's public values with field ${f} changed`);
+  }
   // cast calldata "verifyProof(bytes32,bytes,bytes)" 0x006c…e3 0x0102…35 0xabcdef
   assert.equal(verifyCalldata({ vkey: '0x006cd47fd23937a6d247696cace28c22d2c6a8280447e6ac45a3571de232d6e3', publicValues: '0x0102030405060708091011121314151617181920212223242526272829303132333435', proof: '0xabcdef' }),
     '0x41493c60006cd47fd23937a6d247696cace28c22d2c6a8280447e6ac45a3571de232d6e3000000000000000000000000000000000000000000000000000000000000006000000000000000000000000000000000000000000000000000000000000000c00000000000000000000000000000000000000000000000000000000000000023010203040506070809101112131415161718192021222324252627282930313233343500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000003abcdef0000000000000000000000000000000000000000000000000000000000');

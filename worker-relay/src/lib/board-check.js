@@ -35,8 +35,8 @@ export function wrapExpectation(type, stdin) {
 // A board proof made before its deposit is in the pool (a wrap, wrap-swap or wrap-and-send proved first and sent with its deposit through the router): the
 // pool's settle simulation can only refuse it, so the SP1 verifier (`verify`) judges whether it is sound. That holds for Tacit's own worker, which proved the
 // input it was given, and for a community machine alike, so the first sound proof wins the race whoever made it. A community proof is first held to the
-// job: it consumes exactly the job's deposits and, for a plain wrap (`expect`), carries the job's leaf, chain binding and memo root, which is what
-// keeps a sound proof of someone else's op from passing. → true, 'unchecked' (the verifier could not be asked) or false.
+// job: it consumes exactly the job's deposits and, for a plain wrap (`expect`), its public values are exactly the job's wrap's, which is what
+// keeps a sound proof of someone else's op, or of this one against any root, from passing. → true, 'unchecked' (the verifier could not be asked) or false.
 export async function judgeNodeposit({ community = false, publicValues, proof, want, expect = null, verify }) {
   if (community) {
     if (!consumesJobDeposits(publicValues, want || [])) return false;

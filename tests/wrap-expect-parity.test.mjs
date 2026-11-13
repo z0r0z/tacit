@@ -29,16 +29,20 @@ ok([8, 20, 100, 200, 300, BIN.length - 9].every((i) => same('readWrapStdin', fli
 const e = pool.wrapExpect(pool.readWrapStdin(BIN));
 ok(JSON.stringify(e) === JSON.stringify(relay.wrapExpect(relay.readWrapStdin(BIN))), 'the expected deposit, leaf, chain binding and memo root are the same');
 const word = (x) => BigInt(x).toString(16).padStart(64, '0');
+const LISTS = new Set([3, 4, 5, 6, 7, 8, 9, 10, 13, 14, 17, 18, 19, 22, 23, 24, 25, 26, 28, 29, 30]);
 const pv = (o = {}) => {
-  const x = { leaves: [e.leaf], deposits: [e.depositId], chainBinding: e.chainBinding, memoRoot: e.memoRoot, ...o };
-  const head = Array.from({ length: 32 }, () => word(0)), tail = [];
-  head[0] = word(32); head[1] = word(1); head[2] = x.chainBinding.slice(2); head[28] = x.memoRoot.slice(2);
-  head[5] = word(31 * 32); tail.push(word(x.leaves.length), ...x.leaves.map((y) => y.slice(2)));
-  head[6] = word((31 + tail.length) * 32); tail.push(word(x.deposits.length), ...x.deposits.map((y) => y.slice(2)));
-  return '0x' + head.join('') + tail.join('');
+  const x = { leaves: [e.leaf], deposits: [e.depositId], chainBinding: e.chainBinding, memoRoot: e.memoRoot, fields: {}, ...o };
+  const head = [], tail = [];
+  for (let f = 0; f < 31; f++) {
+    if (!LISTS.has(f)) { head.push(word(x.fields[f] ?? (f === 0 ? 1 : f === 1 ? x.chainBinding : f === 27 ? x.memoRoot : 0))); continue; }
+    const items = f === 4 ? x.leaves : f === 5 ? x.deposits : [];
+    head.push(word(32 * (31 + tail.length))); tail.push(word(items.length), ...items.map(word));
+  }
+  return '0x' + word(32) + head.join('') + tail.join('');
 };
 const O = '0x' + 'cd'.repeat(32);
-const variants = [pv(), pv({ leaves: [O] }), pv({ deposits: [O] }), pv({ deposits: [e.depositId, O] }), pv({ chainBinding: O }), pv({ memoRoot: O }), '0x1234', 'nope', ''];
+const variants = [pv(), pv({ leaves: [O] }), pv({ deposits: [O] }), pv({ deposits: [e.depositId, O] }), pv({ chainBinding: O }), pv({ memoRoot: O }), pv({ fields: { 2: O } }), pv({ fields: { 11: O } }), '0x1234', 'nope', ''];
+ok(pool.wrapPublicValues(e) === relay.wrapPublicValues(e) && pool.wrapPublicValues(e) === pv(), 'the full public values of a wrap are written the same');
 ok(variants.every((v) => pool.proofFits(v, e) === relay.proofFits(v, e)), 'every proof, fitting or not, is judged the same');
 ok(pool.proofFits(pv(), e) === true && pool.proofFits(pv({ chainBinding: O }), e) === false, 'and the fit is what it should be: the job\'s own passes, another chain\'s does not');
 console.log(`all ${n} ok`);

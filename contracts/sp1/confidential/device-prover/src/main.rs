@@ -297,8 +297,8 @@ mod pool {
             hand_back(&http, id, token, &job.error);
             return true;
         }
-        // The API asks Ethereum's verifier before it takes a proof: while no node answers it keeps the lease, so the proof is sent
-        // again a few times before it is left to run out.
+        // The API asks Ethereum's verifier before it takes a proof: while no node answers, or this place has sent too many just now (429,
+        // after its retryAfter), it keeps the lease, so the proof is sent again a few times before it is left to run out.
         let body = json!({ "id": id, "lease": token, "publicValues": job.public_values, "proof": job.proof });
         for _ in 0..6 {
             match post(&http, "submit", &body) {
@@ -308,6 +308,7 @@ mod pool {
                     break;
                 }
                 Some((503, _)) | None => std::thread::sleep(Duration::from_secs(30)),
+                Some((429, v)) => std::thread::sleep(Duration::from_secs(v["retryAfter"].as_u64().unwrap_or(20).clamp(1, 120))),
                 Some((_, v)) => {
                     eprintln!("tacit-prover: pool job {id} not taken: {}", v["error"].as_str().or(v["code"].as_str()).unwrap_or("no reason given"));
                     break;

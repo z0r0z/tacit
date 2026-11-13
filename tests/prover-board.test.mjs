@@ -9,8 +9,9 @@ import { makeProverBoard, parseWorkerTokens, workerOf, proverBoardConfig, PROVER
 import worker from '../worker/src/index.js';
 
 const store = () => {
-  const m = new Map(), days = new Map(); let pend = [], ws = {};
-  return { getDay: async (d) => (days.has(d) ? JSON.parse(days.get(d)) : null), putDay: async (d, r) => { days.set(d, JSON.stringify(r)); }, getPending: async () => pend.slice(), putPending: async (ids) => { pend = ids.slice(); }, getJob: async (id) => (m.has(id) ? JSON.parse(m.get(id)) : null), putJob: async (id, j) => { m.set(id, JSON.stringify(j)); }, getWorkers: async () => JSON.parse(JSON.stringify(ws)), putWorkers: async (w) => { ws = JSON.parse(JSON.stringify(w)); } };
+  const m = new Map(), days = new Map(); let pend = [], ws = {}, trouble = {};
+  return { getDay: async (d) => (days.has(d) ? JSON.parse(days.get(d)) : null), putDay: async (d, r) => { days.set(d, JSON.stringify(r)); }, getPending: async () => pend.slice(), putPending: async (ids) => { pend = ids.slice(); }, getJob: async (id) => (m.has(id) ? JSON.parse(m.get(id)) : null), putJob: async (id, j) => { m.set(id, JSON.stringify(j)); }, getWorkers: async () => JSON.parse(JSON.stringify(ws)), putWorkers: async (w) => { ws = JSON.parse(JSON.stringify(w)); },
+    getTrouble: async () => ({ ...trouble }), putTrouble: async (x) => { trouble = { ...x }; } };
 };
 const stdin = Buffer.from('program input bytes').toString('base64');
 let t = 1_000_000;
@@ -342,6 +343,14 @@ test('routes: a community machine claims and answers with only an address; the r
   const sum = await (await call('/prover/board')).json();
   assert.equal(sum.workers.find((w) => w.name === `c-${MINER}`).community, true);
   assert.equal((await call('/prover/community/claim', post({ miner: MINER }), { ...env, PROVER_BOARD_COMMUNITY: '0' })).status, 404);
+  // a race is answered from the place that claimed it (its /24): the same address from elsewhere is not racing it
+  const from = (ip) => ({ 'CF-Connecting-IP': ip });
+  const pub2 = await (await call('/prover/jobs', post({ class: 'public', stdin: Buffer.from('another public input').toString('base64'), cycleLimit: 1e6, gasLimit: 1e8, deadline: Math.floor(Date.now() / 1000) + 600 }, box))).json();
+  const two = (await (await call('/prover/community/claim', post({ miner: MINER }, from('203.0.113.5')))).json()).job;
+  assert.equal(two.jobId, pub2.jobId);
+  const cand = { miner: MINER, jobId: pub2.jobId, publicValues: '0x' + 'ab'.repeat(64), proof: '0x' + 'cd'.repeat(260) };
+  assert.deepEqual(await (await call('/prover/community/result', post(cand, from('198.51.100.9')))).json(), { ok: false, error: 'not racing this job' });
+  assert.deepEqual(await (await call('/prover/community/result', post(cand, from('203.0.113.77')))).json(), { ok: true, status: 'candidate' });
   // the taken proof is credited to the address for today, open to any page
   const today = Math.floor(Date.now() / 86400e3);
   const cr = await call(`/prover/board/credits?day=${today}`, { headers: { Origin: 'https://some-page.example' } });
@@ -529,7 +538,8 @@ test('a community Bitcoin batch earns its own points, and the summary says what 
   assert.deepEqual((await b.summary()).pay, { pointsPerProof: 20, pointsByProgram: { 'btc-state': 500 } });
 });
 
-const gpu = (h) => ({ name: 'c-0x' + h.repeat(20), classes: ['public'], community: true });
+// a community machine named by its address, asking from a place of its own (`at`: another place, under the same address)
+const gpu = (h, at = `place-${h}`) => ({ name: 'c-0x' + h.repeat(20), classes: ['public'], community: true, client: at });
 const batchOn = (b) => { let k = 0; return () => b.post({ class: 'public', program: 'btc-state', stdin: Buffer.from(`batch ${++k} ${t}`).toString('base64'), cycleLimit: 1e11, gasLimit: 1e11, deadline: now() / 1000 + 7200 }); };
 const answer = async (b, w, jobId, ok = true) => {
   await b.result({ worker: w, jobId, publicValues: '0x' + '11'.repeat(64 * 8), proof: '0x' + '22'.repeat(260) });
@@ -604,6 +614,62 @@ test('community: a machine that has stopped asking is not waited for, and one th
   const b4 = await batch();
   assert.equal(await ask(q), null, 'both troubles are old now: p, whose last turn is older, first');
   assert.equal((await ask(p)).jobId, b4.jobId);
+});
+
+test('community: a place whose turn went unanswered goes after the others under any address it names, and an address it names is not held to it', async () => {
+  t = 7_000_000;
+  const b = makeProverBoard({ storage: store(), now }), batch = batchOn(b);
+  const ask = (w) => b.claim({ worker: w, classes: ['public'], programs: ['btc-state'] });
+  const p = gpu('f1');
+  assert.equal(await ask(p), null);
+  const b1 = await batch();
+  assert.equal((await ask(p)).jobId, b1.jobId);
+  assert.deepEqual(await answer(b, p, b1.jobId), { ok: true, status: 'proved' });
+  // a machine that has had no turn is next, ahead of p
+  t += 1000;
+  const x1 = gpu('e1', 'place-x');
+  assert.equal(await ask(x1), null); assert.equal(await ask(p), null);
+  const b2 = await batch();
+  assert.equal(await ask(p), null);
+  assert.equal((await ask(x1)).jobId, b2.jobId);
+  assert.deepEqual(await b.cancel({ jobId: b2.jobId }), { ok: true, status: 'cancelled' });
+  // its turn lapsed: another address from the same place goes after p
+  t += 1000;
+  const x2 = gpu('e2', 'place-x');
+  assert.equal(await ask(x2), null); assert.equal(await ask(p), null);
+  const b3 = await batch();
+  assert.equal(await ask(x2), null, 'its place let its last turn lapse: p first, whatever address it names');
+  assert.equal((await ask(p)).jobId, b3.jobId);
+  assert.deepEqual(await answer(b, p, b3.jobId), { ok: true, status: 'proved' });
+  // p's address named from another place: a turn that lapses there counts against that place, and p, back at its own, is first again
+  t += 1000;
+  const elsewhere = gpu('f1', 'place-y');
+  assert.equal(await ask(elsewhere), null);
+  const b4 = await batch();
+  assert.equal((await ask(elsewhere)).jobId, b4.jobId);
+  assert.deepEqual(await b.cancel({ jobId: b4.jobId }), { ok: true, status: 'cancelled' });
+  t += 1000;
+  assert.equal(await ask(x2), null); assert.equal(await ask(p), null);
+  const b5 = await batch();
+  assert.equal(await ask(x2), null);
+  assert.equal((await ask(p)).jobId, b5.jobId, 'the lapse stayed with place-y');
+});
+
+test('community: a race is answered only from the place that claimed it, and an address racing from one place may race from another', async () => {
+  t = 8_000_000;
+  const b = makeProverBoard({ storage: store(), now });
+  const job = (s) => b.post({ class: 'public', stdin: Buffer.from(s).toString('base64'), cycleLimit: 1e6, gasLimit: 1e8, deadline: now() / 1000 + 600 });
+  const j1 = await job('race one'), j2 = await job('race two');
+  const home = gpu('ab'), away = gpu('ab', 'place-elsewhere');
+  assert.equal((await b.claim({ worker: home, classes: ['public'] })).jobId, j1.jobId);
+  const cand = { publicValues: '0x' + 'ab'.repeat(64), proof: '0x' + 'cd'.repeat(260) };
+  assert.deepEqual(await b.result({ worker: away, jobId: j1.jobId, error: 'gave up' }), { ok: false, error: 'not racing this job' });
+  assert.deepEqual(await b.result({ worker: away, jobId: j1.jobId, ...cand }), { ok: false, error: 'not racing this job' });
+  assert.equal((await b.claim({ worker: away, classes: ['public'] })).jobId, j2.jobId, 'the same address from another place races the next job');
+  assert.equal(await b.claim({ worker: home, classes: ['public'] }), null, 'one job at a time from one place');
+  assert.deepEqual(await b.result({ worker: home, jobId: j1.jobId, ...cand }), { ok: true, status: 'candidate' });
+  const st = await b.status(j1.jobId);
+  assert.deepEqual(st.race.map((c) => Object.keys(c).sort()), [['proof', 'publicValues', 'worker']], 'the relay reads no place');
 });
 
 test('a token machine takes the pool\'s waiting jobs before a tacit chain block, and the block once none waits', async () => {

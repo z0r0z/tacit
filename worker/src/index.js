@@ -3907,7 +3907,8 @@ async function handleProverBoard(req, env, url, cors) {
     } catch (e) { return jsonResponse({ ok: false, error: String(e.message || e), code: e.code || null }, e.code === 'full' ? 503 : 400, nostore); }
   }
   // Community provers: anyone races Tacit's own workers for public jobs (prover-board.js), named by the address their points go to, a few
-  // asks a minute from one place. PROVER_BOARD_COMMUNITY=0 closes it.
+  // asks a minute from one place. A race is held by the place it was claimed from (`client`: a hash of the sender as the relay's queue counts
+  // it, queueSender). PROVER_BOARD_COMMUNITY=0 closes it.
   if (url.pathname === '/prover/community/claim' || url.pathname === '/prover/community/result') {
     if (env.PROVER_BOARD_COMMUNITY === '0') return jsonResponse({ ok: false, error: 'community proving is closed' }, 404, nostore);
     if (req.method !== 'POST') return jsonResponse({ error: 'method' }, 405, nostore);
@@ -3917,7 +3918,7 @@ async function handleProverBoard(req, env, url, cors) {
     const claimPath = url.pathname === '/prover/community/claim';
     const rl = await proveRateLimit(env, ip, claimPath ? 'board-community-claim' : 'board-community-result', claimPath ? 20 : 6, claimPath ? 3000 : 20000);
     if (!rl.ok) return jsonResponse({ ok: false, code: 'rate', error: `too many asks, retry in ~${rl.retryAfter}s`, retryAfter: rl.retryAfter }, 429, { ...nostore, 'Retry-After': String(rl.retryAfter) });
-    const worker = { name: `c-${b.miner.toLowerCase()}`, classes: ['public'], community: true };
+    const worker = { name: `c-${b.miner.toLowerCase()}`, classes: ['public'], community: true, client: clientOf(queueSender(ip) || ip) };
     try {
       if (claimPath) { const job = await board.claim({ worker, classes: ['public'], programs: Array.isArray(b.programs) ? b.programs.slice(0, 8).map(String) : null }); return jsonResponse(job ? { job } : {}, 200, nostore); }
       return jsonResponse(await board.result({ worker, jobId: b.jobId, publicValues: b.publicValues ?? null, proof: b.proof ?? null, error: b.error ?? null }), 200, nostore);
@@ -4161,8 +4162,9 @@ async function handleProofPool(req, env, url, cors) {
     }
     return send(await pool.lease({ miner: b.miner, client: house ? `house:${house.name}` : client, minAgeMs: Number(b.minAgeMs) || 0, house: house?.name || null }));
   }
-  // Each submit asks Ethereum: a few a minute from one place.
-  const rl = await proveRateLimit(env, ip, 'pool-submit', 6, 20000);
+  // A submit may ask Ethereum, and each answers a lease: one place submits at the pace it may lease (above), so the machines a place may run
+  // (leasesPerClient) can each send every proof they make.
+  const rl = await proveRateLimit(env, ip, 'pool-submit', 6, 5000);
   if (!rl.ok) return jsonResponse({ ok: false, code: 'rate', error: `too many submits — retry in ~${rl.retryAfter}s`, retryAfter: rl.retryAfter }, 429, { ...nostore, 'Retry-After': String(rl.retryAfter) });
   return send(await pool.submit({ id: b.id, lease: b.lease, publicValues: b.publicValues, proof: b.proof, error: b.error ?? null }));
 }

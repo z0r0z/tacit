@@ -61,26 +61,24 @@ export function wrapExpect(w) {
   };
 }
 
-// Whether public values are this wrap's, read as the page reads them (confidential-pool-ux.js wrapProofFits): abi.encode of
-// ConfidentialPool.PublicValues, a tuple whose field k sits in word 1 + k, so word 2 is the chain binding, words 5 and 6 point at
-// `leaves` and `depositsConsumed`, and word 28 is the memo root. It consumes exactly this deposit and inserts exactly this leaf,
-// for the chain and the memos its input named: any other proof, however valid, is not this job's.
+// Every public value a wrap's proof commits, from the wrap itself: abi.encode of ConfidentialPool.PublicValues (the settle guest's
+// PublicValues, field k in word 1 + k) with version 1, the chain binding, the one leaf, the one deposit and the memo root, and every
+// other field zero or empty: a wrap proves against no root and spends, pays, withdraws and swaps nothing.
+const PV_FIELDS = 31, PV_LISTS = new Set([3, 4, 5, 6, 7, 8, 9, 10, 13, 14, 17, 18, 19, 22, 23, 24, 25, 26, 28, 29, 30]);
+export function wrapPublicValues(expect) {
+  const word = (x) => BigInt(x).toString(16).padStart(64, '0');
+  const head = [], tail = [];
+  for (let f = 0; f < PV_FIELDS; f++) {
+    if (!PV_LISTS.has(f)) { head.push(word(f === 0 ? 1 : f === 1 ? expect.chainBinding : f === 27 ? expect.memoRoot : 0)); continue; }
+    const items = f === 4 ? [expect.leaf] : f === 5 ? [expect.depositId] : [];
+    head.push(word(32 * (PV_FIELDS + tail.length)));
+    tail.push(word(items.length), ...items.map(word));
+  }
+  return '0x' + word(32) + head.join('') + tail.join('');
+}
+
+// Whether public values are this wrap's: exactly the ones above, so a proof of any other op, or of this wrap against any root, is not
+// this job's however valid.
 export function proofFits(publicValues, expect) {
-  try {
-    const h = String(publicValues).replace(/^0x/, '').toLowerCase();
-    if (!h.length || h.length % 64 || !/^[0-9a-f]+$/.test(h)) return false;
-    const n = h.length / 64;
-    const word = (i) => { if (!(i >= 0 && i < n)) throw new Error('short'); return '0x' + h.slice(i * 64, i * 64 + 64); };
-    const w = (i) => BigInt(word(i));
-    if (w(0) !== 32n) return false;
-    const list = (head) => {
-      const at = 1n + w(head) / 32n, len = w(Number(at));
-      if (w(head) % 32n || at + 1n + len > BigInt(n)) throw new Error('short');
-      return Array.from({ length: Number(len) }, (_, k) => word(Number(at) + 1 + k));
-    };
-    const lc = (x) => String(x).toLowerCase();
-    const leaves = list(5), deposits = list(6);
-    return leaves.length === 1 && leaves[0] === lc(expect.leaf) && deposits.length === 1 && deposits[0] === lc(expect.depositId)
-      && word(2) === lc(expect.chainBinding) && word(28) === lc(expect.memoRoot);
-  } catch { return false; }
+  try { return String(publicValues).replace(/^0x/, '').toLowerCase() === wrapPublicValues(expect).slice(2); } catch { return false; }
 }

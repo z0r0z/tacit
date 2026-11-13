@@ -8,9 +8,9 @@
 //
 // Each input is checked as the program checks it before it is queued (wrapOpens): its signature must open its commitment, or no
 // prover could prove it.
-// Each proof is checked before it is kept: its public values must be this input's (the deposit it consumes, the leaf it inserts,
+// Each proof is checked before it is kept: its public values must be exactly this input's (the deposit it consumes, the leaf it inserts,
 // the chain it is bound to and its memo root, every one read from the input itself, so a page cannot name a deposit its input does
-// not prove), and the live SP1 verifier must take it. A proof that passes is kept for the page and earns its miner's address points
+// not prove, and nothing else: no root, no payment), and the live SP1 verifier must take it. A proof that passes is kept for the page and earns its miner's address points
 // for the UTC day, for every proof it makes (no count a day unless one is set: the campaign's daily pot already bounds what is paid, and
 // a count per address only holds back the provers who give the most, since anyone may name more addresses); the points service's mining campaign pays those points in TAC from a pocket of its
 // own once the day is over, reading the day's tally from GET /prover/pool/credits. A proof that fails goes back to the queue for
@@ -139,28 +139,26 @@ export function wrapExpect(w) {
   };
 }
 
-// Whether public values are this wrap's, read as the page reads them (confidential-pool-ux.js wrapProofFits): abi.encode of
-// ConfidentialPool.PublicValues, a tuple whose field k sits in word 1 + k, so word 2 is the chain binding, words 5 and 6 point at
-// `leaves` and `depositsConsumed`, and word 28 is the memo root. It consumes exactly this deposit and inserts exactly this leaf,
-// for the chain and the memos its input named: any other proof, however valid, is not this job's.
+// Every public value a wrap's proof commits, from the wrap itself: abi.encode of ConfidentialPool.PublicValues (the settle guest's
+// PublicValues, field k in word 1 + k) with version 1, the chain binding, the one leaf, the one deposit and the memo root, and every
+// other field zero or empty: a wrap proves against no root and spends, pays, withdraws and swaps nothing.
+const PV_FIELDS = 31, PV_LISTS = new Set([3, 4, 5, 6, 7, 8, 9, 10, 13, 14, 17, 18, 19, 22, 23, 24, 25, 26, 28, 29, 30]);
+export function wrapPublicValues(expect) {
+  const word = (x) => BigInt(x).toString(16).padStart(64, '0');
+  const head = [], tail = [];
+  for (let f = 0; f < PV_FIELDS; f++) {
+    if (!PV_LISTS.has(f)) { head.push(word(f === 0 ? 1 : f === 1 ? expect.chainBinding : f === 27 ? expect.memoRoot : 0)); continue; }
+    const items = f === 4 ? [expect.leaf] : f === 5 ? [expect.depositId] : [];
+    head.push(word(32 * (PV_FIELDS + tail.length)));
+    tail.push(word(items.length), ...items.map(word));
+  }
+  return '0x' + word(32) + head.join('') + tail.join('');
+}
+
+// Whether public values are this wrap's: exactly the ones above, so a proof of any other op, or of this wrap against any root, is not
+// this job's however valid.
 export function proofFits(publicValues, expect) {
-  try {
-    const h = String(publicValues).replace(/^0x/, '').toLowerCase();
-    if (!h.length || h.length % 64 || !/^[0-9a-f]+$/.test(h)) return false;
-    const n = h.length / 64;
-    const word = (i) => { if (!(i >= 0 && i < n)) throw new Error('short'); return '0x' + h.slice(i * 64, i * 64 + 64); };
-    const w = (i) => BigInt(word(i));
-    if (w(0) !== 32n) return false;
-    const list = (head) => {
-      const at = 1n + w(head) / 32n, len = w(Number(at));
-      if (w(head) % 32n || at + 1n + len > BigInt(n)) throw new Error('short');
-      return Array.from({ length: Number(len) }, (_, k) => word(Number(at) + 1 + k));
-    };
-    const lc = (x) => String(x).toLowerCase();
-    const leaves = list(5), deposits = list(6);
-    return leaves.length === 1 && leaves[0] === lc(expect.leaf) && deposits.length === 1 && deposits[0] === lc(expect.depositId)
-      && word(2) === lc(expect.chainBinding) && word(28) === lc(expect.memoRoot);
-  } catch { return false; }
+  try { return String(publicValues).replace(/^0x/, '').toLowerCase() === wrapPublicValues(expect).slice(2); } catch { return false; }
 }
 
 // abi.encode for the SP1 verifier's verifyProof(bytes32 programVKey, bytes publicValues, bytes proofBytes), with its selector. It
@@ -420,7 +418,7 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
       if (!job || job.status !== 'open') { delete L[id]; await write(K.leases, L); return { r: noLease }; }
       if (!proofFits(publicValues, job.expect)) {
         await refuse(L, id, l, t, true);
-        return { r: reply(400, { ok: false, code: 'bad_proof', error: 'these public values are not this job\'s: they must consume its deposit, insert its leaf and carry its chain binding and memo root' }) };
+        return { r: reply(400, { ok: false, code: 'bad_proof', error: 'these public values are not this job\'s: they must be exactly its wrap\'s (its deposit, its leaf, its chain binding and memo root, and no root)' }) };
       }
       return { r: null };
     });

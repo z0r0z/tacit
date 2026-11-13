@@ -46,13 +46,17 @@ test('on a real mainnet wrap proof, the deposit read is the one its op consumed'
 const WRAP_OP = JSON.parse(readFileSync(new URL('../../tests/fixtures/sp1-stdin/wrap.op.json', import.meta.url), 'utf8'));
 const STDIN = stdinFor('wrap', WRAP_OP);
 const EXPECT = wrapExpectation('wrap', STDIN);
-// abi.encode(PublicValues) as far as a wrap's fit is read: chain binding (word 2), the leaves and deposits lists, the memo root (word 28).
-function pvFor(e, { leaves = [e.leaf], deposits = [e.depositId], chainBinding = e.chainBinding, memoRoot = e.memoRoot } = {}) {
-  const head = Array.from({ length: 32 }, () => word(0)), tail = [];
-  head[0] = word(32); head[1] = word(1); head[2] = chainBinding.slice(2); head[28] = memoRoot.slice(2);
-  head[5] = word(31 * 32); tail.push(word(leaves.length), ...leaves.map((x) => x.slice(2)));
-  head[6] = word((31 + tail.length) * 32); tail.push(word(deposits.length), ...deposits.map((x) => x.slice(2)));
-  return '0x' + head.join('') + tail.join('');
+// abi.encode(PublicValues): the tuple's 31 fields (field k in word 1 + k), the chain binding, the memo root, `leaves` and
+// `depositsConsumed`, every other list empty and every other word zero unless `fields` names it (field 2 is spendRoot, 11 bitcoinSpentRoot).
+const PV_LISTS = new Set([3, 4, 5, 6, 7, 8, 9, 10, 13, 14, 17, 18, 19, 22, 23, 24, 25, 26, 28, 29, 30]);
+function pvFor(e, { leaves = [e.leaf], deposits = [e.depositId], chainBinding = e.chainBinding, memoRoot = e.memoRoot, fields = {} } = {}) {
+  const head = [], tail = [];
+  for (let f = 0; f < 31; f++) {
+    if (!PV_LISTS.has(f)) { head.push(word(fields[f] ?? (f === 0 ? 1 : f === 1 ? chainBinding : f === 27 ? memoRoot : 0))); continue; }
+    const items = f === 4 ? leaves : f === 5 ? deposits : [];
+    head.push(word(32 * (31 + tail.length))); tail.push(word(items.length), ...items.map(word));
+  }
+  return '0x' + word(32) + head.join('') + tail.join('');
 }
 const verifier = (answer) => { const calls = []; const verify = async (a) => { calls.push(a); return answer; }; verify.calls = calls; return verify; };
 
@@ -83,7 +87,7 @@ test('a community proof the verifier refuses, or cannot judge, is not taken, and
   assert.equal(await judgeNodeposit({ community: true, publicValues: pvFor(EXPECT), proof: '0xab', want: [EXPECT.depositId], expect: EXPECT, verify: verifier('unchecked') }), 'unchecked');
 });
 
-test('a community proof that is not the job\'s is refused before the verifier is asked: another deposit, one more, a wrong chain, a wrong memo root, a wrong leaf', async () => {
+test('a community proof that is not the job\'s is refused before the verifier is asked: another deposit, one more, a wrong chain, a wrong memo root, a wrong leaf, a root', async () => {
   const OTHER_DEP = '0x' + 'bb'.repeat(32), OTHER = '0x' + 'cd'.repeat(32);
   const cases = {
     'its own deposit': pvFor(EXPECT, { deposits: [OTHER_DEP] }),
@@ -91,6 +95,8 @@ test('a community proof that is not the job\'s is refused before the verifier is
     'another chain': pvFor(EXPECT, { chainBinding: OTHER }),
     'another memo root': pvFor(EXPECT, { memoRoot: OTHER }),
     'another leaf': pvFor(EXPECT, { leaves: [OTHER] }),
+    'a spend root': pvFor(EXPECT, { fields: { 2: OTHER } }),
+    'a Bitcoin spent root': pvFor(EXPECT, { fields: { 11: OTHER } }),
   };
   for (const [what, publicValues] of Object.entries(cases)) {
     const verify = verifier(true);

@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { openStore } from '../src/lib/points-store.js';
 import { parseLpSchedule, WAD } from '../src/lib/points-lp.js';
 import { createMine, readTally, mergeTallies, allocateMineDay, dayId, CREDIT_PREFIX } from '../src/lib/points-mine-service.js';
-import { makeProofPool, wrapExpect, readWrapStdin, PROOF_POOL } from '../../worker/src/proof-pool.js';
+import { makeProofPool, wrapExpect, readWrapStdin, wrapPublicValues, PROOF_POOL } from '../../worker/src/proof-pool.js';
 import { makeProverBoard, PROVER_BOARD } from '../../worker/src/prover-board.js';
 import { stdinFor } from '../../dapp/sp1-stdin.js';
 import { makeConfidentialPool } from '../../dapp/confidential-pool.js';
@@ -78,10 +78,7 @@ function world(over = {}) {
     const bytes = signedWrap(1500 + ++n), e = wrapExpect(readWrapStdin(bytes));
     await pool.request({ type: 'wrap', stdin: '0x' + Buffer.from(bytes).toString('hex'), expect: e, client: `page${n}` });
     const l = (await pool.lease({ miner, client: miner })).body;
-    const w = (x) => BigInt(x).toString(16).padStart(64, '0'), head = Array.from({ length: 32 }, () => w(0));
-    head[0] = w(32); head[2] = e.chainBinding.slice(2); head[28] = e.memoRoot.slice(2); head[5] = w(31 * 32); head[6] = w(33 * 32);
-    const pv = '0x' + head.join('') + w(1) + e.leaf.slice(2) + w(1) + e.depositId.slice(2);
-    return (await pool.submit({ id: l.id, lease: l.lease, publicValues: pv, proof: '0x' + 'ab'.repeat(260) })).body;
+    return (await pool.submit({ id: l.id, lease: l.lease, publicValues: wrapPublicValues(e), proof: '0x' + 'ab'.repeat(260) })).body;
   };
   // A community machine's proof of a public board job, which the relay takes.
   const race = async (miner) => {
