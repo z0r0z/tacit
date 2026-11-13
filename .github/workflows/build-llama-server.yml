@@ -50,7 +50,10 @@ jobs:
         run: |
           set -eu
           mkdir -p pkg/llama dist
-          cp build/bin/llama-server build/bin/*.so pkg/llama/ && cp src/LICENSE pkg/llama/
+          # build/bin whole, links kept: the libraries are loaded by their versioned names (libllama.so.0 and so on), as llama.cpp's own release packs it
+          cp -a build/bin/. pkg/llama/ && cp src/LICENSE pkg/llama/
+          for f in pkg/llama/llama-server pkg/llama/*.so; do LD_LIBRARY_PATH=pkg/llama ldd "$f" | grep -q 'not found' && { echo "$f is missing a library:"; LD_LIBRARY_PATH=pkg/llama ldd "$f" | grep 'not found' | grep -v 'libcuda.so.1'; } || true; done
+          LD_LIBRARY_PATH= pkg/llama/llama-server --version   # it starts from the package itself, with nothing on the library path
           tar -czf dist/llama-b12211-bin-ubuntu22-x64.tar.gz -C pkg llama
           (cd dist && sha256sum llama-b12211-bin-ubuntu22-x64.tar.gz | tee llama-b12211-bin-ubuntu22-x64.tar.gz.sha256)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
