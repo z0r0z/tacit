@@ -195,7 +195,7 @@
 
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { readFileSync, existsSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { extname, join, normalize } from 'node:path';
 import * as secp from '@noble/secp256k1';
@@ -213,7 +213,7 @@ const DAPP = new URL('../dapp/', import.meta.url).pathname;
 const bwText = (page) => page.evaluate((s) => [...document.querySelectorAll(s)].map((e) => e.textContent).join(' '), '#bw-status, #bw-s1, #bw-s2, #bw-s3, #bw-s4');
 // `ui`: the front page's tile and landing, the steps a look-and-copy pass needs (tools/weld-ui.sh runs them on a pinned, cached fork)
 const UI_STEPS = 'links,tacbuy,swapurl,swapfield,hints,hxbridge,hxfold,hxnudge,tradelinks';
-const ONLY = new Set((process.argv[2] === 'ui' ? UI_STEPS : process.argv[2] || 'airdrop,links,tacbuy,swapurl,swapfield,hints,hxbridge,hxbridgec,hxbridgeu,usdtwrap,usdtwrapw,usdtout,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,swaphere,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,shieldsrc,shieldwc,provebar,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,usdback,selffund,selfeth,selfprove,exitahead,selfdevice,nohost,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,tileahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,anyone,relayfail,selfwallet,slowline,fastroute,chainoff,chaintile').split(','));
+const ONLY = new Set((process.argv[2] === 'ui' ? UI_STEPS : process.argv[2] || 'airdrop,links,tacbuy,swapurl,swapfield,hints,hxbridge,hxbridgec,hxbridgeu,usdtwrap,usdtwrapw,usdtout,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,redeemgo,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,swaphere,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,shieldsrc,shieldwc,provebar,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,usdback,selffund,selfeth,selfprove,exitahead,selfdevice,nohost,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,tileahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,anyone,relayfail,selfwallet,slowline,fastroute,chainoff,chaintile').split(','));
 const FORK = process.argv[3] || 'https://mainnet.gateway.tenderly.co';
 const SHOTS = process.env.SHOTS || null;
 const PORT = 20000 + Math.floor(Math.random() * 2000), WEB = PORT + 1;
@@ -2052,7 +2052,8 @@ await step('locks', async () => {
   const hex = 'feed'.padEnd(64, '9');
   const spk = makeBtcHistoryProvider({ sha256, fetchImpl: async () => ({ ok: false }) }).walletScripts(hex).lock;
   const lockHex = Buffer.from(spk).toString('hex'), sh = Buffer.from(sha256(spk)).toString('hex');
-  const lockTx = (id, commit, value, time) => ({ txid: id.repeat(32), vin: [{ txid: commit.repeat(32), vout: 0 }], status: { confirmed: true, block_time: time, block_height: 968900 },
+  // A lock's reveal spends a Taproot commit output: an output is read as a lock only for that shape.
+  const lockTx = (id, commit, value, time) => ({ txid: id.repeat(32), vin: [{ txid: commit.repeat(32), vout: 0, prevout: { scriptpubkey: '5120' + '11'.repeat(32), scriptpubkey_type: 'v1_p2tr' } }], status: { confirmed: true, block_time: time, block_height: 968900 },
     vout: [{ scriptpubkey: '0014' + '00'.repeat(20), value: 1000 }, { scriptpubkey: lockHex, value }] });
   const history = [lockTx('b2', 'c2', 30000, 1_790_600_000), lockTx('b1', 'c1', 20000, 1_790_500_000)];     // newest first, as esplora serves
   for (const base of ['https://mempool.space/api', 'https://blockstream.info/api', 'https://mempool.emzy.de/api']) {
@@ -2093,9 +2094,9 @@ await step('locks', async () => {
   } finally { await r.browser.close(); }
 });
 
-// The Redeem panel (a cBTC lock's bitcoin back, dapp/cbtc-redeem.js) is dark: with the 'tacit-cbtc-redeem' setting off nothing of it
-// shows. With it on, a lock backing minted cBTC offers Redeem; the panel reads the lock and the cBTC on Bitcoin and in the private
-// balance and, holding none, says how much is short and points to Swap. Closing it takes it away.
+// The Redeem panel (a cBTC lock's bitcoin back, dapp/cbtc-redeem.js): a lock backing minted cBTC offers Redeem; the panel reads the lock
+// and the cBTC on Bitcoin and in the private balance and, holding none, says how much is short and points to Swap. Closing it takes it
+// away. With the 'tacit-cbtc-redeem' setting switched off nothing of it shows.
 await step('redeem', async () => {
   const HELPER = '0x000000008eCD09f922C9FbbDD9ACA5aE8F0beBfA', POOL = '0x000000000Ed1eabD231Be41d93b719056F7febFC';
   const hex = 'cafe'.padEnd(64, '5'), TXID = 'b3'.repeat(32), COMMIT = 'c3'.repeat(32);   // palindromic ids: display and raw byte order agree
@@ -2114,10 +2115,11 @@ await step('redeem', async () => {
     const r = await openPage({ account: A0, key: K0 });
     const asked = new Set();
     r.page.on('request', (rq) => { if (/scripthash|\/tx\/|\/address\//.test(rq.url())) asked.add(rq.url().replace(/^https:\/\//, '').slice(0, 100)); });
-    if (on) await r.ctx.addInitScript(() => localStorage.setItem('tacit-cbtc-redeem', 'true'));
+    if (!on) await r.ctx.addInitScript(() => localStorage.setItem('tacit-cbtc-redeem', 'false'));
     for (const base of ['https://mempool.space/api', 'https://blockstream.info/api', 'https://mempool.emzy.de/api']) {
       await r.ctx.route(`${base}/scripthash/${sh}/txs**`, (route) => json(route, route.request().url().includes('/chain/') ? [] : [lockTx]));
       await r.ctx.route(`${base}/tx/${COMMIT}`, (route) => json(route, { txid: COMMIT, vin: [{ txid: 'a3'.repeat(32), vout: 0 }] }));
+      await r.ctx.route(`${base}/tx/${TXID}/outspend/1`, (route) => json(route, { spent: false }));
     }
     await r.ctx.route((u) => /\/address\/bc1p[0-9a-z]+\/utxo$/.test(u.pathname), (route) => json(route, []));   // nothing bridged to this key's Taproot address
     await r.page.goto(r.url + '#wallet');
@@ -2137,17 +2139,17 @@ await step('redeem', async () => {
   try {
     let r = await open(false);
     try {
-      ok(!(await r.page.$('[data-redeem]')) && !(await r.page.$('#bw-redeem')), 'redeem: with the setting off the sheet offers no Redeem');
+      ok(!(await r.page.$('[data-redeem]')) && !(await r.page.$('#bw-redeem')), 'redeem: with the setting switched off the sheet offers no Redeem');
       await r.page.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
       await tabClick(r.page, 'borrow');
       await until(r.page, () => /0\.0002 BTC locked/.test(document.querySelector('#hx-bwl')?.textContent || ''), null, 240000).catch(() => {});
       ok(/0\.0002 BTC locked/.test(await text(r.page, '#hx-bwl')) && !(await r.page.$('#hx-bwl [data-brd]')), `redeem: nor does the tile's lock row (${(await text(r.page, '#hx-bwl')).replace(/\s+/g, ' ').slice(0, 120)})`);
-      if (r.errors.length) { fails++; console.log('FAIL redeem (dark) page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+      if (r.errors.length) { fails++; console.log('FAIL redeem (off) page errors: ' + r.errors.slice(0, 3).join(' | ')); }
     } finally { await r.browser.close(); }
     r = await open(true);
     try {
       await r.page.waitForSelector(`[data-redeem="0x${OP}"]`, { timeout: 60000 });
-      ok(true, 'redeem: with the setting on, a lock backing minted cBTC offers Redeem');
+      ok(true, 'redeem: a lock backing minted cBTC offers Redeem');
       await r.page.click(`[data-redeem="0x${OP}"]`);
       await until(r.page, () => /more\./.test(document.querySelector('#bw-redeem')?.textContent || '') || /error|could not|cannot/i.test(document.querySelector('#bw-redeem .err')?.textContent || ''), null, 180000)
         .catch(async () => { throw new Error(`the panel never named the next step (${(await text(r.page, '#bw-redeem')).slice(0, 240)})`); });
@@ -2184,6 +2186,196 @@ await step('redeem', async () => {
   } finally {
     await flag(127, 0); await flag(123, 0);
     await rpc('eth_sendTransaction', [{ from: A0, to: HELPER, data: '0xc5211d27' + OP }]);
+  }
+});
+
+// A redeem from start to finish. The key's lock backs minted cBTC and its Taproot address holds a cBTC note of the lock's size, made by a
+// real, signed cross-out mint (built in the page with its own modules). While Bitcoin's proof has not reached the note the panel waits;
+// once the proof holds it the panel reads Review and the review names the fees, in the sheet and in the tile, and Redeem (pressed in the
+// tile) sends two transactions that are read back here: the second classifies as a redeem of the lock, passes the proof's own fold, spends the first, the lock and the note, and pays the
+// lock's bitcoin to the key's address. With this browser's record of it gone the redeem is found again from Bitcoin, a plain spend of
+// the lock is told apart, and once the pool has the lock redeemed the bond comes back. CBTC_REDEEM_VECTOR_OUT=<file> writes the sent
+// redeem for contracts/sp1/confidential/cxfer-core/tests/cbtc_redeem_js_vector.rs.
+await step('redeemgo', async () => {
+  const HELPER = '0x000000008eCD09f922C9FbbDD9ACA5aE8F0beBfA', POOL = '0x000000000Ed1eabD231Be41d93b719056F7febFC', WSTETH = '0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0';
+  const CBTC = '0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8';
+  const hex = 'cafe'.padEnd(64, '5'), TXID = 'b3'.repeat(32), COMMIT = 'c3'.repeat(32), FUND = 'f1'.repeat(32), OTHER = 'e7'.repeat(32);   // palindromic ids: display and raw byte order agree
+  const privB = Buffer.from(hex, 'hex'), pub = Buffer.from(secp.getPublicKey(privB, true)).toString('hex'), XONLY = '0x' + pub.slice(2);
+  const { makeConfidentialPool } = await import(new URL('../dapp/confidential-pool.js', import.meta.url));
+  const { makeCbtcRedeem } = await import(new URL('../dapp/cbtc-redeem.js', import.meta.url));
+  const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 }), R = makeCbtcRedeem({ pool, secp, sha256 });
+  const rev = (h) => h.match(/../g).reverse().join('');
+  const scripts = makeBtcHistoryProvider({ sha256, fetchImpl: async () => ({ ok: false }) }).walletScripts(hex);
+  const lockHex = Buffer.from(scripts.lock).toString('hex'), sh = Buffer.from(sha256(scripts.lock)).toString('hex'), fundHex = Buffer.from(scripts.funding).toString('hex');
+  const OP = Buffer.from(keccak_256(Buffer.concat([Buffer.from(TXID, 'hex'), Buffer.from([1, 0, 0, 0])]))).toString('hex');
+  const slot = (n) => '0x' + Buffer.from(keccak_256(Buffer.from(OP + word(n), 'hex'))).toString('hex');
+  const flag = (n, v) => rpc('anvil_setStorageAt', [POOL, slot(n), '0x' + word(v)]);   // 123 lock sats, 126 redeemed, 127 minted
+  const wst = async (x) => BigInt(await rpc('eth_call', [{ to: WSTETH, data: '0x70a08231' + addrWord(x) }, 'latest']));
+  const h0 = await rpc('eth_sendTransaction', [{ from: A0, to: HELPER, data: '0xc0e2d9a1' + OP, value: '0x' + (10n ** 15n).toString(16) }]);
+  await chainUntil(async () => (await rpc('eth_getTransactionReceipt', [h0]))?.status === '0x1', 60000);
+  await flag(123, 20000); await flag(127, 1);
+  // The note: 0.0002 cBTC, its blinding HMAC(key, 'tacit-crossout-blinding-v1' || nullifier) mod n as a cross-out derives it.
+  const NU = '0x' + 'a7'.repeat(32), CLAIM = '0x' + 'c7'.repeat(32), AMOUNT = 20000n;
+  const blinding = (() => { let b = 0n; for (const x of hmac(sha256, privB, Buffer.concat([Buffer.from('tacit-crossout-blinding-v1'), Buffer.from(NU.slice(2), 'hex')]))) b = (b << 8n) | BigInt(x); b %= secp.CURVE.n; return b === 0n ? 1n : b; })();
+  const NOTE = { amount: AMOUNT, blinding, ...pool.commitXY(AMOUNT, blinding), claimId: CLAIM, nullifier: NU, height: 970000 };
+  const lockTx = { txid: TXID, vin: [{ txid: COMMIT, vout: 0, prevout: { scriptpubkey: '5120' + '11'.repeat(32), scriptpubkey_type: 'v1_p2tr' } }], status: { confirmed: true, block_time: 1_790_500_000, block_height: 968900 },
+    vout: [{ scriptpubkey: '0014' + '00'.repeat(20), value: 1000 }, { scriptpubkey: lockHex, value: 20000 }] };
+  // A segwit transaction's inputs, outputs and id, for reading back what the page sent.
+  const parse = (raw) => {
+    const b = Buffer.from(raw, 'hex'); let p = 6;
+    const vi = () => { const f = b[p++]; if (f < 0xfd) return f; const v = b.readUInt16LE(p); p += 2; return v; };
+    const ins = Array.from({ length: vi() }, () => { const txid = Buffer.from(b.subarray(p, p + 32)).reverse().toString('hex'), vout = b.readUInt32LE(p + 32); p += 36; const n = vi(); p += n + 4; return { txid, vout }; });
+    const outs = Array.from({ length: vi() }, () => { const value = Number(b.readBigUInt64LE(p)); p += 8; const n = vi(), script = b.subarray(p, p + n).toString('hex'); p += n; return { value, script }; });
+    const base = Buffer.concat([b.subarray(0, 4), b.subarray(6, p), b.subarray(b.length - 4)]);
+    return { ins, outs, txid: Buffer.from(sha256(sha256(base))).reverse().toString('hex') };
+  };
+  const r = await openPage({ account: A0, key: K0 });
+  try {
+    const api = (re, fn) => r.page.route(re, (route) => fn(route, new URL(route.request().url())));
+    const plainText = (route, body) => route.fulfill({ status: 200, contentType: 'text/plain', headers: { 'access-control-allow-origin': '*' }, body });
+    const posts = [];
+    let proofAt = 969900, spentBy = null, spentHex = null, noteGone = false, addrP2tr = null;
+    const explorer = (route, u) => {
+      const p = u.pathname.replace(/^\/api/, '').replace(/^\/chain/, '');
+      if (route.request().method() === 'POST' && p === '/tx') { posts.push(route.request().postData()); return plainText(route, 'ab'.repeat(32)); }
+      if (p.startsWith(`/scripthash/${sh}/txs`)) return json(route, p.includes('/txs/chain/') ? [] : [lockTx]);
+      if (p === `/tx/${COMMIT}`) return json(route, { txid: COMMIT, vin: [{ txid: 'a3'.repeat(32), vout: 0 }] });
+      if (p === `/tx/${TXID}`) return json(route, lockTx);
+      if (p === `/tx/${TXID}/outspend/1`) return json(route, spentBy ? { spent: true, txid: spentBy, vin: 1, status: { confirmed: false } } : { spent: false });
+      if (spentBy && p === `/tx/${spentBy}/hex`) return plainText(route, spentHex);
+      if (addrP2tr && p === `/address/${addrP2tr}/utxo`) return json(route, noteGone ? [] : [{ txid: NOTE.txid, vout: 0, value: 330, status: { confirmed: true, block_height: NOTE.height } }]);
+      if (/^\/address\/bc1p[0-9a-z]+\/utxo$/.test(p)) return json(route, []);
+      if (/^\/address\/bc1q[0-9a-z]+\/utxo$/.test(p)) return json(route, [{ txid: FUND, vout: 0, value: 20000, status: { confirmed: true, block_height: 960000 } }]);
+      if (NOTE.txid && p === `/tx/${NOTE.txid}/hex`) return plainText(route, NOTE.revealHex);
+      if (NOTE.txid && p === `/tx/${NOTE.txid}`) return json(route, { txid: NOTE.txid, status: { confirmed: true, block_height: NOTE.height }, vout: [{ scriptpubkey: '5120' + XONLY.slice(2), value: 330 }] });
+      if (NOTE.txid && p === `/tx/${NOTE.txid}/outspend/0`) return json(route, { spent: false });
+      if (/\/fees\/recommended$/.test(p)) return json(route, { fastestFee: 3, halfHourFee: 3, hourFee: 2, economyFee: 1, minimumFee: 1 });
+      if (/\/fee-estimates$/.test(p)) return json(route, { 1: 3, 6: 2, 144: 1 });
+      return route.fallback();
+    };
+    await api(/^https:\/\/(mempool\.space|blockstream\.info|mempool\.emzy\.de)\/api\//, explorer);
+    await api(/^https:\/\/api\.tacit\.finance\/chain\//, explorer);
+    await api(/^https:\/\/api\.tacit\.finance\/reflection\/dump/, (route) => json(route, { attestedHeight: proofAt, snapshot: { height: proofAt,
+      liveTriples: proofAt >= NOTE.height ? [[pool.outpointKey('0x' + rev(NOTE.txid), 0), pool.commitmentHash(NOTE.cx, NOTE.cy), CBTC, XONLY, 0]] : [],
+      noteLeaves: proofAt >= NOTE.height ? [pool.btcNoteLeaf(CBTC, NOTE.cx, NOTE.cy, XONLY)] : [], spentLinks: [], burnNodes: [['0x' + '00'.repeat(32), '0x' + '00'.repeat(32), '0x' + '00'.repeat(32), true]], pendingDepositRecords: [] } }));
+    await api(/^https:\/\/api\.tacit\.finance\/crossout\/minted/, (route, u) => json(route, u.searchParams.get('txid') === NOTE.txid
+      ? { network: 'mainnet', txid: NOTE.txid, vout: 0, decided: true, minted: true, status: 'minted', mintedTxid: NOTE.txid, scanned_height: 970400 } : { decided: false, minted: false, status: null }));
+    await api(/^https:\/\/api\.tacit\.finance\/reflection\/(status|eth-state)/, (route) => json(route, { network: 'mainnet', attestedHeight: proofAt, tipHeight: 970100, lagBlocks: 0 }));
+    await r.page.goto(r.url + '#wallet');
+    await r.page.evaluate(async () => {
+      globalThis.__TACIT_NO_INIT__ = true; localStorage.setItem('tacit-network-v1', 'mainnet');
+      const T = await import([...document.scripts].map((x) => x.textContent).join('').match(/\/tacit\.js\?cb=[0-9a-f]+/)[0]);
+      T._testSetScanHoldingsOverride(() => new Map());
+    });
+    const mint = await r.page.evaluate(async ([hexKey, xonly, asset, n]) => {
+      const { makeBtcWallet } = await import('/bitcoin-taproot-wallet.js');
+      const { makeCrossoutMintReveal } = await import('/crossout-mint-reveal.js');
+      const { secp } = await import('/vendor/tacit-deps.min.js');
+      const priv = Uint8Array.from(hexKey.match(/../g).map((b) => parseInt(b, 16)));
+      const w = makeBtcWallet({ priv, hrp: 'bc', fetchUtxos: async () => [], broadcastTx: async () => {}, fetchFeeRate: async () => 3 });
+      const b = makeCrossoutMintReveal({ secp }).buildCrossoutMintTxs({ prims: w.prims, assetId: asset, claimId: n.claimId, cx: n.cx, cy: n.cy, destXonly: xonly, fundingUtxo: { txid: '1'.repeat(64), vout: 0, value: 50000 }, feeRate: 3 });
+      return { revealHex: b.revealHex, revealTxid: b.revealTxid, addr: (await import('/crossout-notes.js')).p2trAddress(xonly.slice(2), 'bc') };
+    }, [hex, XONLY, CBTC, { claimId: NOTE.claimId, cx: NOTE.cx, cy: NOTE.cy }]);
+    NOTE.revealHex = mint.revealHex; NOTE.txid = mint.revealTxid; addrP2tr = mint.addr;
+    // The journal remembers the bridge that made the note, as the browser that sent it does.
+    const big = (v) => ({ __big: String(v) });
+    await r.page.evaluate(([k, v]) => localStorage.setItem(k, v), [`tacit-crossout-bridge-v1:mainnet:${pub}`, JSON.stringify([{ id: NU, network: 'mainnet', walletPub: pub, stage: 'minted', createdAt: Date.now() - 36e5, destXonly: XONLY.slice(2),
+      source: { nullifier: NU, value: big(AMOUNT + 2000n), amount: big(AMOUNT), fee: big(2000), assetId: CBTC, ticker: 'cBTC' }, settle: { txHash: 'e1'.repeat(32), claimId: CLAIM, cx: NOTE.cx, cy: NOTE.cy, ethBlock: 26000000, claimIdVerified: true } }])]);
+    await r.page.click('#wallet-body [data-in="paste"]');
+    await r.page.fill('#ws-hex', hex);
+    await r.page.click('#wallet-body [data-in="key"]');
+    await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
+    await r.page.evaluate(() => { location.hash = ''; location.hash = '#borrow'; });
+    const panel = async () => (await text(r.page, '#bw-redeem')).replace(/\s+/g, ' ');
+    const said = async () => `${(await panel()).slice(0, 260)} | ${(await bwText(r.page)).replace(/\s+/g, ' ').trim().slice(0, 200)} | ${r.errors.slice(0, 2).join(' | ')}`;
+    const reopen = async () => {
+      if (await r.page.$('#bw-redeem-x')) { await r.page.click('#bw-redeem-x'); await until(r.page, () => !document.querySelector('#bw-redeem'), null, 20000); }
+      await r.page.waitForSelector(`[data-redeem="0x${OP}"]`, { timeout: 240000 });
+      await r.page.click(`[data-redeem="0x${OP}"]`);
+    };
+    const reads = async (re, ms = 240000) => until(r.page, (src) => new RegExp(src).test((document.querySelector('#bw-redeem')?.textContent || '').replace(/\s+/g, ' ')), re.source, ms).catch(async () => { throw new Error(`the panel never read ${re} (${await said()})`); });
+    // 1. the note is there and the proof has not reached its block: the panel waits, and offers nothing to send
+    await reopen();
+    await reads(/on its way to Bitcoin|Burns|more\.|could not|cannot/);
+    ok(/cBTC is on its way to Bitcoin\. When it has arrived and Bitcoin’s proof holds it, this reads Redeem\./.test(await panel()) && !(await r.page.$('#bw-redeem-go')),
+      `redeemgo: a note Bitcoin's proof has not reached is waited for, and nothing is offered to send (${(await panel()).slice(0, 160)})`);
+    // 2. the proof holds it: the panel reads Review
+    proofAt = 970100;
+    await reopen();
+    await r.page.waitForSelector('#bw-redeem-go', { timeout: 240000 }).catch(async () => { throw new Error(`no Review once the proof holds the note (${await said()})`); });
+    ok(/Burns ?0\.0002 cBTC on your Bitcoin address/.test(await panel()) && /Unlocks ?0\.0002 BTC, back to your Bitcoin address/.test(await panel()), `redeemgo: with the note in Bitcoin's proof the panel says what burns and what unlocks (${(await panel()).slice(0, 200)})`);
+    // 3. the review: the fees, and a box to tick before Redeem can be pressed
+    await r.page.click('#bw-redeem-go');
+    await r.page.waitForSelector('#bw-redeem-send', { timeout: 240000 }).catch(async () => { throw new Error(`the review never showed (${await said()})`); });
+    ok(/Bitcoin fees ?[\d,]+ sats, from bc1q/.test(await panel()) && await r.page.$eval('#bw-redeem-send', (b) => b.disabled) && posts.length === 0, `redeemgo: the review names the Bitcoin fees and sends nothing; Redeem waits for the box (${(await panel()).slice(0, 260)})`);
+    await shot(r.page, 'redeemgo-review');
+    // 4. the tile: the lock's row opens the same redeem at its Redeem step; reviewed and sent from there, as two transactions, read back
+    await r.page.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
+    await tabClick(r.page, 'borrow');
+    const tile = async () => (await text(r.page, '#hx-rd')).replace(/\s+/g, ' ');
+    await until(r.page, () => !!document.querySelector('#hx-bwl [data-brd]'), null, 240000).catch(async () => { throw new Error(`the tile's lock row offers no Redeem (${(await text(r.page, '#hx-bwl')).replace(/\s+/g, ' ').slice(0, 200)})`); });
+    await r.page.click('#hx-bwl [data-brd]');
+    await r.page.waitForSelector('#hx-rd [data-rd="review"]', { timeout: 240000 }).catch(async () => { throw new Error(`the tile never offered the review (${(await tile()).slice(0, 260)})`); });
+    ok((await r.page.$eval('#hx-rd .hx-st [aria-current="step"]', (x) => x.textContent)).includes('Redeem') && /Burns ?0\.0002 cBTC on Bitcoin/.test(await tile()) && posts.length === 0,
+      `redeemgo: the tile's Redeem is at its Redeem step and says what burns; the review made in the sheet sent nothing (${(await tile()).slice(0, 200)})`);
+    await r.page.click('#hx-rd [data-rd="review"]');
+    await r.page.waitForSelector('#hx-rd [data-rd="send"]', { timeout: 240000 }).catch(async () => { throw new Error(`the tile's review never showed (${(await tile()).slice(0, 260)})`); });
+    ok(/Bitcoin fees ?[\d,]+ sats/.test(await tile()) && await r.page.$eval('#hx-rd [data-rd="send"]', (b) => b.disabled), `redeemgo: the tile's review names the fees, and Redeem waits for the box (${(await tile()).slice(0, 240)})`);
+    await r.page.click('#hx-rd-ack');
+    await r.page.click('#hx-rd [data-rd="send"]');
+    await until(r.page, () => /Sent: /.test(document.querySelector('#hx-rd')?.textContent || ''), null, 240000).catch(async () => { throw new Error(`the tile never said the redeem was sent (${(await tile()).slice(0, 300)} | posts ${posts.length} | ${r.errors.slice(0, 2).join(' | ')})`); });
+    ok((await r.page.$eval('#hx-rd .hx-st [aria-current="step"]', (x) => x.textContent)).includes('Bond back'), `redeemgo: once sent the tile moves on to the bond (${(await tile()).slice(0, 160)})`);
+    await shot(r.page, 'redeemgo-tile');
+    await r.page.evaluate(() => { location.hash = ''; location.hash = '#borrow'; });
+    await reads(/Sent: /);
+    const sentTxs = [...new Set(posts)];
+    ok(sentTxs.length === 2, `redeemgo: Redeem sends two transactions (${sentTxs.length})`);
+    const [commitHex, revealHex] = sentTxs, c = parse(commitHex), v = parse(revealHex);
+    ok(R.redeems(revealHex, { txid: TXID, vout: 1 }) && !R.redeems(commitHex, { txid: TXID, vout: 1 }), 'redeemgo: the second classifies as a redeem of this lock, as the proof reads it');
+    const notes = [{ txid: NOTE.txid, vout: 0, amount: NOTE.amount, blinding: NOTE.blinding, cx: NOTE.cx, cy: NOTE.cy }];
+    const fold = R.checkRedeemReveal({ revealHex, lock: { txid: TXID, vout: 1, value: 20000, spk: lockHex }, notes });
+    ok(fold.ok, `redeemgo: it passes the proof's own fold: the lock is retired, never read as spent (${fold.problems.join('; ') || fold.passed.length + ' checks'})`);
+    ok(JSON.stringify(v.ins) === JSON.stringify([{ txid: c.txid, vout: 0 }, { txid: TXID, vout: 1 }, { txid: NOTE.txid, vout: 0 }]) && c.ins.length === 1 && c.ins[0].txid === FUND,
+      `redeemgo: it spends the first transaction, the lock and the note, in that order, and the first spends only plain bitcoin (${JSON.stringify(v.ins).slice(0, 200)})`);
+    ok(v.outs.length === 1 && v.outs[0].script === fundHex && v.outs[0].value === 20000 + 330 + 546, `redeemgo: the lock's bitcoin, with the note's and the first transaction's dust, goes to the key's own address (${v.outs.map((o) => o.value).join(', ')} sats)`);
+    const kept = JSON.parse(await r.page.evaluate((k) => localStorage.getItem(k), `tacit-cbtc-redeem-v1:${pub}`) || '{}')[`0x${OP}`];
+    ok(kept?.reveal === v.txid && kept?.commit === c.txid, 'redeemgo: the browser keeps the two transaction ids it sent');
+    if (process.env.CBTC_REDEEM_VECTOR_OUT) writeFileSync(process.env.CBTC_REDEEM_VECTOR_OUT, JSON.stringify({ revealHex, lock: { txid: TXID, vout: 1, value: 20000 }, authKey: XONLY.slice(2), notes: notes.map((n) => ({ txid: n.txid, vout: 0, amount: n.amount.toString(), cx: n.cx, cy: n.cy })) }, null, 1));
+    await shot(r.page, 'redeemgo-sent');
+    // 5. from the key and Bitcoin alone: this browser's record gone, the lock's output spent by the redeem, the note spent with it
+    await r.page.evaluate((k) => localStorage.removeItem(k), `tacit-cbtc-redeem-v1:${pub}`);
+    spentBy = v.txid; spentHex = revealHex; noteGone = true;
+    await reopen();
+    await reads(/Sent: |more\.|Bridge exactly|could not|cannot/);
+    ok(/Sent: /.test(await panel()) && !!(await r.page.$(`#bw-redeem a[href$="/tx/${v.txid}"]`)), `redeemgo: with no record of it in this browser, the redeem is found on Bitcoin and nothing more is asked for (${(await panel()).slice(0, 160)})`);
+    // 6. a spend of the lock that is not a redeem is told as one
+    spentBy = OTHER; spentHex = commitHex;
+    await reopen();
+    await reads(/without a redeem|Sent: |more\.|Bridge exactly|could not|cannot/);
+    ok(/This lock was spent on Bitcoin without a redeem/.test(await panel()), `redeemgo: a plain spend of the lock is not taken for a redeem (${(await panel()).slice(0, 160)})`);
+    // 7. the pool has the lock redeemed: the panel says so and the bond comes back
+    spentBy = v.txid; spentHex = revealHex;
+    await flag(126, 1);
+    await reopen();
+    await reads(/Redeemed|could not|cannot/);
+    // the key was pasted, so the wallet that posted the bond is not connected: the row offers to connect it
+    await r.page.waitForSelector('[data-bond-conn]', { timeout: 240000 }).catch(async () => { throw new Error(`a bond posted from a wallet not connected here offers no way to it (${(await text(r.page, '#bw-bonds')).replace(/\s+/g, ' ').slice(0, 240)})`); });
+    ok(/Redeemed: .*The bond above can be taken back\./.test(await panel()) && /can come back/.test(await text(r.page, '#bw-bonds')) && !(await r.page.$('[data-bond-take]')),
+      `redeemgo: once the pool has the lock redeemed the panel says so, and a bond posted from a wallet not connected here offers to connect it (${(await panel()).slice(0, 160)})`);
+    await r.page.click('[data-bond-conn]');
+    // where the page asks which wallet, the browser's own is chosen
+    await Promise.race([r.page.waitForSelector('.bsheet .way:has-text("Browser wallet")', { timeout: 120000 }).then((b) => b.click()), r.page.waitForSelector(`[data-bond-take^="0x${OP}"]`, { timeout: 120000 })]).catch(() => {});
+    await r.page.waitForSelector(`[data-bond-take^="0x${OP}"]`, { timeout: 240000 }).catch(async () => { throw new Error(`a redeemed lock's bond offers no take-back (${(await text(r.page, '#bw-bonds')).replace(/\s+/g, ' ').slice(0, 240)} | ${(await bwText(r.page)).replace(/\s+/g, ' ').trim().slice(0, 160)} | asking which wallet: ${!!(await r.page.$('.bsheet .way'))})`); });
+    ok(true, 'redeemgo: with the wallet connected the bond can be taken back');
+    const w0 = await wst(A0);
+    await r.page.click(`[data-bond-take^="0x${OP}"]`);
+    await chainUntil(async () => (await wst(A0)) > w0, 120000);
+    ok((await wst(A0)) > w0, `redeemgo: the bond on a redeemed lock comes back as wstETH to the account that posted it (${(await bwText(r.page)).replace(/\s+/g, ' ').trim().slice(0, 120)})`);
+    if (r.errors.length) { fails++; console.log('FAIL redeemgo page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally {
+    await r.browser.close();
+    await flag(126, 0); await flag(127, 0); await flag(123, 0);
+    await rpc('eth_sendTransaction', [{ from: A0, to: HELPER, data: '0xc5211d27' + OP }]).catch(() => {});
   }
 });
 

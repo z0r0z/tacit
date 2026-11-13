@@ -97,7 +97,7 @@ function makeWorld(bridges) {
     throw new Error('world: unknown ' + path);
   };
   const chainHex = async (path) => { const m = path.match(/^\/tx\/([0-9a-f]{64})\/hex$/); if (m && byTxid.has(m[1])) return byTxid.get(m[1]).revealHex; throw new Error('world: no hex ' + path); };
-  const workerJson = async (path) => { reads.minted++; const q = new URL('http://x' + path).searchParams; const id = q.get('txid'); return credited.has(id) ? { decided: true, minted: true } : { decided: false, minted: false }; };
+  const workerJson = async (path) => { reads.minted++; const q = new URL('http://x' + path).searchParams; const id = q.get('txid'), c = credited.get(id); return c === true ? { decided: true, minted: true, mintedTxid: id } : c ? c : { decided: false, minted: false }; };
   const logs = bridges.map((b) => b.log);
   const rpc = async (method, params) => {
     if (method === 'eth_blockNumber') return '0x' + (26_100_000).toString(16);
@@ -126,6 +126,13 @@ const makeNotes = (world, extra = {}) => makeCrossoutNotes({ secp, hmac: (h, k, 
   const { cx, cy } = pool.commitXY(f2.amount, f2.blinding);
   ok(cx === B2.cx && cy === B2.cy, 'the recovered opening reproduces the commitment in the mint');
   ok(f1.credited === true && f2.credited === null, 'whether the worker has credited each is reported (undecided is unknown, not no)');
+  // A second mint transaction for a bridge whose first was the one recorded: decided, and not this transaction.
+  world.credited.set(B2.revealTxid, { decided: true, minted: false, status: 'minted', mintedTxid: 'ab'.repeat(32) });
+  const again = await notes.discover({ walletPriv: WALLET_PRIV, assetIds: [TETH] });
+  ok(again.find((x) => x.txid === B2.revealTxid).credited === false, 'a mint that is not the transaction recorded for its bridge is not credited, though the bridge is');
+  world.credited.set(B2.revealTxid, { decided: true, minted: false, status: 'rejected', mintedTxid: null });
+  ok((await notes.discover({ walletPriv: WALLET_PRIV, assetIds: [TETH] })).find((x) => x.txid === B2.revealTxid).credited === false, 'nor is a rejected one');
+  world.credited.delete(B2.revealTxid);
   ok(f1.sats === 330 && f1.vout === 0 && f1.confirmed === true && f1.claimId === B1.claimId, 'with the output it sits in');
   const both = await notes.discover({ walletPriv: WALLET_PRIV, assetIds: [TETH, TAC] });
   ok(both.length === 3 && both.find((x) => x.assetId === TAC.toLowerCase()).amount === 7_000n, 'asking for more assets finds theirs too');

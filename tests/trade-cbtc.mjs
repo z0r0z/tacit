@@ -294,7 +294,7 @@ try {
   await until(p, () => /ETH bond, at least/.test(document.querySelector('#route').textContent));
   await p.click('#mode-seg [data-mode="use"]');
   const uses = await p.$$eval('#uses a.use', (a) => a.map((x) => [x.querySelector('b').textContent, x.getAttribute('href')]));
-  ok(uses.map((u) => u[1]).join() === '/vault/#btc,/#private/swap,#farm,/#lock' && /Borrow cUSD/.test(uses[0][0]) && /bond back/.test(uses[3][0]), `use cBTC: borrow on the Borrow page; swap, farm and take a bond back on the front page (${uses.map((u) => u[1]).join(' ')})`);
+  ok(uses.map((u) => u[1]).join() === '/vault/#btc,/#private/swap,#farm,/#borrow,/#lock' && /Borrow cUSD/.test(uses[0][0]) && /Redeem a lock/.test(uses[3][0]) && /bond back/.test(uses[4][0]), `use cBTC: borrow on the Borrow page; swap, farm, redeem a lock and take a bond back on the front page (${uses.map((u) => u[1]).join(' ')})`);
   ok(/Sign in/.test(await text(p, '#held')), 'its private balance waits for a key');
   await r.browser.close();
 

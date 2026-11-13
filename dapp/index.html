@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-3bZMJU6QMLd0D1Q6RxG240yGnj2sAUopi3iqVXw+UMY=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-KWSq9rZ+EPuMrKHOnEbDnxdWiH4nLYafaneOnksVyv4=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -61,7 +61,7 @@
 <link rel="modulepreload" href="/lp-zap.js?cb=a43160fd">
 <link rel="modulepreload" href="/farm-ops.js?cb=28af38e1">
 <link rel="modulepreload" href="/relay-outcome.js?cb=17e48a9a">
-<link rel="modulepreload" href="/btc-borrow.js?cb=d3743265">
+<link rel="modulepreload" href="/btc-borrow.js?cb=2b7e1f6b">
 <link rel="modulepreload" href="/bridge-out.js?cb=9662a160">
 <link rel="modulepreload" href="/bridge/track.js?cb=29efa548">
 <link rel="modulepreload" href="/bridge-in.js?cb=ba07ee86">
@@ -2449,7 +2449,7 @@ import * as GR from '/gas-relay.js?cb=e8d173a8';
 import { netPicker } from '/net-pick.js?cb=9229f173';
 import { UNBOND_DUST, HARVEST_WORTH, unharvested, exitSaid, bFor, aFor, farmManager, ladder as xoLadder, feeShort as xoFeeShort } from '/farm-ops.js?cb=28af38e1';
 import { relayCode, proveCapped, proved, relayRefused, jobSaid, calmText } from '/relay-outcome.js?cb=17e48a9a';
-import { makeLoans, bondGap, lockPad as lockPadOf, lockRate as lockRateOf } from '/btc-borrow.js?cb=d3743265';
+import { makeLoans, bondGap, lockPad as lockPadOf, lockRate as lockRateOf } from '/btc-borrow.js?cb=2b7e1f6b';
 import { makeOutFee, limitText, proofWarn, fundingText, onTheWay } from '/bridge-out.js?cb=9662a160';
 import { ROUTES as BR_WAYS, LIMITS as BR_LIMITS, satsOut, satsBack } from '/bridge/track.js?cb=29efa548';
 import { SERVED as SERVED_POOLS, keeperIdOf, makeTokenPools, KEEPERS as POOL_KEEPERS, RELAYER as POOL_RELAYER } from '/evm-pool-tokens.js?cb=16e0e196';
@@ -2938,7 +2938,7 @@ function esploraOrder() {
   return ESPLORA_ORDER;
 }
 const esploraDown = (base) => { ESPLORA_COOL.set(base, Date.now() + 60e3); esploraOrder(); };
-function esplora(path) {
+function esplora(path, text = false) {
   const order = [...esploraOrder()];
   return new Promise((resolve, reject) => {
     let i = 0, open = 0, done = false, last = null;
@@ -2948,7 +2948,7 @@ function esplora(path) {
       const base = order[i++], slow = setTimeout(next, 2500);
       open++;
       fetch(base + path, { signal: within(20e3) })
-        .then(async (r) => { if (!r.ok) throw Object.assign(new Error(`${r.status}`), { down: r.status === 429 || r.status >= 500 }); return r.json().catch(() => { throw Object.assign(new Error('not JSON'), { down: false }); }); })
+        .then(async (r) => { if (!r.ok) throw Object.assign(new Error(`${r.status}`), { down: r.status === 429 || r.status >= 500 }); return text ? r.text() : r.json().catch(() => { throw Object.assign(new Error('not JSON'), { down: false }); }); })
         .then((j) => { if (!done) { done = true; resolve(j); } }, (e) => {
           last = e;
           if (e.down !== false) esploraDown(base);
@@ -9432,7 +9432,7 @@ const FAST_OFF = 'tacit-fast-route-off-v1';
 try { const q = new URLSearchParams(location.search).get('fast'); if (q === '0') store.set(FAST_OFF, 1); else if (q === '1') store.set(FAST_OFF, null); } catch {}
 const fastOn = () => !store.get(FAST_OFF);
 const FASTR = { route: null, pub: null, fr: null, frP: null, offers: new Map(), slow: null, stop: null, recs: [], open: new Set() };
-const fastMods = lazy(() => Promise.all([import('/fast/route.js?cb=20c37406'), import('/fast/wire.js?cb=99f252fc'), fetch('/fast/lp.json', { cache: 'no-cache' }).then((r) => r.json()).catch(() => ({}))]));
+const fastMods = lazy(() => Promise.all([import('/fast/route.js?cb=20c37406'), import('/fast/wire.js?cb=cc87c56a'), fetch('/fast/lp.json', { cache: 'no-cache' }).then((r) => r.json()).catch(() => ({}))]));
 function fastForget() { FASTR.stop?.(); Object.assign(FASTR, { pub: null, fr: null, frP: null, stop: null, recs: [], slow: null }); FASTR.offers.clear(); FASTR.open.clear(); }
 function fastRoute() {
   const pub = S.key?.pubHex;
@@ -14166,6 +14166,8 @@ const BONDS = { pub: null, acc: '', at: 0, data: null, p: null };
 const bondSeen = () => `tacit-lite-bonds-seen-v1:${S.key?.pubHex}`, bondAck = () => `tacit-lite-bonds-ack-v1:${S.key?.pubHex}`;
 const bondVia = (acct) => (S.acct && acct === S.acct.address.toLowerCase() ? 'tacit' : S.wallet && acct === S.wallet.toLowerCase() ? 'wallet' : null);
 const bondsNow = () => (BONDS.pub === S.key?.pubHex ? BONDS.data : null);
+// A bond that can come back, none of it posted by an account open here, with no wallet connected to ask about.
+const bondElsewhere = (l) => (l.state === 'pending' || l.state === 'free') && l.total > 0n && !S.wallet && !l.bonds.some((b) => b.take && bondVia(b.account));
 function loadBonds(fresh = false) {
   const k = S.key?.pubHex, acc = [S.acct?.address, S.wallet].filter(Boolean).join(' ').toLowerCase();
   if (!k) return Promise.resolve(null);
@@ -14211,11 +14213,19 @@ function bondNews(r) {
   }
   store.set(bondSeen(), { ids: [...seen, ...fresh.map((n) => n.id)].slice(-200) });
 }
-const redeemOn = () => store.get('tacit-cbtc-redeem') === true;
-const REDEEM = { op: null, pub: null, plan: null, err: null, built: null, acked: false };
+const redeemOn = () => store.get('tacit-cbtc-redeem') !== false;
+const REDEEM = { op: null, pub: null, plan: null, err: null, built: null, acked: false, poll: 0 };
 const redeemSentKey = () => `tacit-cbtc-redeem-v1:${S.key?.pubHex}`;
+// The redeem a lock's output was spent by, as Bitcoin has it; else the one this browser sent, until an hour on Bitcoin still shows the lock unspent.
+const redeemSent = (l) => {
+  const R = REDEEM.plan?.op === l.op ? REDEEM.plan : null, kept = (store.get(redeemSentKey()) || {})[l.op] || null;
+  if (R?.out?.redeem) return { reveal: R.out.txid };
+  return kept && !(R && !R.out && Date.now() - kept.at > 3600e3) ? kept : null;
+};
+// A bridge under way is told as arriving at once, before the next read.
+const redeemStep = (r) => (r?.step === 'bridge' && S.key && xoRecords(S.key.pubHex, XA_REDEEM).length ? 'arriving' : r?.step);
 const getRedeemMod = lazy(async () => {
-  const [rm, bw, dep] = await Promise.all([import('/cbtc-redeem.js?cb=10a0d63f'), import('/bitcoin-taproot-wallet.js'), import('/confidential-deployments.js')]);
+  const [rm, bw, dep] = await Promise.all([import('/cbtc-redeem.js?cb=de8f620c'), import('/bitcoin-taproot-wallet.js'), import('/confidential-deployments.js')]);
   return { ...rm, ...bw, ...dep };
 });
 async function redeemRead(op) {
@@ -14224,11 +14234,14 @@ async function redeemRead(op) {
   const [t, ux, m] = await Promise.all([getUx(), xoUx(), getRedeemMod()]), lim = ux.assetOf(a.id);
   if (!lim) throw new Error('cBTC cannot be bridged to Bitcoin from this deployment.');
   await Promise.all([P.scan ? null : scanPrivate(), loadBridged(true, a)]);
-  const XB = xbOf(a), notes = XB.pub === pub ? XB.notes || [] : [];
-  const st = await t.cbtcLockState(l.txid, l.vout), fee = await xoFee(t, a);
+  const XB = xbOf(a);
+  if (XB.pub !== pub || !XB.notes || XB.unread || XB.notes.some((n) => n.amount == null && n.openErr)) throw new Error('Your cBTC on Bitcoin could not be read. Try again in a minute.');
   const R = m.makeCbtcRedeem({ pool: t.pool, secp, sha256 });
-  const plan = R.planRedeem({ lockState: { vBtc: st.vBtc, spent: st.spent, redeemed: st.redeemed, minted: l.minted }, notes, held: spendable(a.k), bridging: xoRecords(pub, a).length, fee, min: lim.minRaw ?? 0n, cap: lim.capRaw });
-  return { op, plan, fee, st, cap: lim.capRaw, held: spendable(a.k), loans: redeemLoans().length };
+  const [st, fee, sp] = await Promise.all([t.cbtcLockState(l.txid, l.vout), xoFee(t, a), esplora(`/tx/${l.txid}/outspend/${l.vout}`)]);
+  const out = sp.spent && sp.txid ? { txid: sp.txid, redeem: R.redeems(await esplora(`/tx/${sp.txid}/hex`, true), l) } : null;
+  const notes = XB.notes.filter((n) => !T.bridgeUx().isReserved(n.txid, n.vout));   // a note on its way back to Ethereum is not this redeem's to burn
+  const plan = R.planRedeem({ lockState: { vBtc: st.vBtc, spent: st.spent || (!!out && !out.redeem), redeemed: st.redeemed, minted: l.minted }, notes, held: spendable(a.k), bridging: xoRecords(pub, a).length, fee, min: lim.minRaw ?? 0n, cap: lim.capRaw });
+  return { op, plan, fee, st, out, cap: lim.capRaw, held: spendable(a.k), loans: redeemLoans().length };
 }
 const redeemLoans = () => { const cb = P.scan?.cbtc?.id; return cb ? (LOCK.state?.loans?.positions || []).filter((p) => p.live !== false && (p.basket || []).some((x) => String(x.asset).toLowerCase() === cb)) : []; };
 async function redeemRefresh() {
@@ -14238,6 +14251,8 @@ async function redeemRefresh() {
     const r = await redeemRead(op);
     if (REDEEM.op !== op || S.key?.pubHex !== pub) return;
     REDEEM.plan = r; REDEEM.err = null;
+    const l = bondsNow()?.locks.find((x) => x.op === op);
+    if (l && (!!r.st.redeemed !== l.redeemed || !!r.st.spent !== l.spent)) loadBonds(true).then(() => hxRdPaint(), () => {});
   } catch (e) { if (REDEEM.op === op) REDEEM.err = e; }
   rerender('borrow'); hxRdPaint();
 }
@@ -14245,7 +14260,7 @@ function redeemPanel() {
   if (!redeemOn() || !REDEEM.op || REDEEM.pub !== S.key?.pubHex) return '';
   const l = bondsNow()?.locks.find((x) => x.op === REDEEM.op);
   if (!l) return '';
-  const N = fmt(BigInt(l.vBtc), 8, 8), R = REDEEM.plan, r = R?.plan, sent = (store.get(redeemSentKey()) || {})[l.op], b = REDEEM.built;
+  const N = fmt(BigInt(l.vBtc), 8, 8), R = REDEEM.plan, r = R?.plan, step = redeemStep(r), sent = redeemSent(l), b = REDEEM.built;
   const link = (h) => html`<a href="${MEMPOOL}/tx/${h}" target="_blank" rel="noopener">${short(h, 6)} ↗</a>`;
   const c = (v) => `${fmt(BigInt(v), 8, 8)} cBTC`;
   const body = REDEEM.err ? html`<p class="note err">${errText(REDEEM.err)}</p><button class="btn ghost" type="button" id="bw-redeem-again">Try again</button>`
@@ -14259,8 +14274,8 @@ function redeemPanel() {
     : r.step === 'buy' && R.loans ? html`<p class="note">Your cBTC backs ${R.loans === 1 ? 'a loan' : `${R.loans} loans`}. Repay ${R.loans === 1 ? 'it' : 'them'} under Borrow cUSD above: the cBTC comes back and counts toward the redeem.</p>`
     : r.step === 'buy' ? html`<p class="note">You hold ${c(R.held)} privately. Redeeming needs ${c(r.bridge)}: the lock’s ${N} BTC${r.have ? `, less the ${c(r.have)} already on Bitcoin,` : ''} and the relay fee of ${c(R.fee)}. ${c(r.lack)} more.</p>
         <a class="btn ghost" href="#card=swap:ether:cbtc:private">Get cBTC in Swap</a>`
-    : r.step === 'bridge' ? html`<p class="note">Bridge exactly ${c(r.bridge)} to Bitcoin: ${c(r.short)} for the lock${r.have ? ' (the rest of it)' : ''} and the relay fee of ${c(R.fee)}. It must be exact, since a redeem burns the lock’s value to the satoshi. Once on Bitcoin it stays there until it is redeemed: this page has no way to bring it back.</p><div id="bw-xo"></div>`
-    : r.step === 'arriving' ? html`<p class="note">cBTC is on its way to Bitcoin. When it has arrived and Bitcoin’s proof holds it, this reads Redeem.</p><div id="bw-xo"></div>`
+    : step === 'bridge' ? html`<p class="note">Bridge exactly ${c(r.bridge)} to Bitcoin: ${c(r.short)} for the lock${r.have ? ' (the rest of it)' : ''} and the relay fee of ${c(R.fee)}. It must be exact, since a redeem burns the lock’s value to the satoshi.</p><div id="bw-xo"></div>`
+    : step === 'arriving' ? html`<p class="note">cBTC is on its way to Bitcoin. When it has arrived and Bitcoin’s proof holds it, this reads Redeem.</p><div id="bw-xo"></div>`
     : html`<div class="kv"><span>Burns</span><b>${c(l.vBtc)} on your Bitcoin address</b></div>
       <div class="kv"><span>Unlocks</span><b>${N} BTC, back to your Bitcoin address</b></div>
       ${b ? html`<div class="kv"><span>Bitcoin fees</span><b>${(b.commitFee + b.revealFee).toLocaleString('en-US')} sats, from ${viewAddr(b.address, 6)}</b></div>
@@ -14276,20 +14291,22 @@ async function redeemBuild(run, status) {
     const fresh = await redeemRead(op), p = fresh.plan;
     REDEEM.plan = fresh;
     if (p.step !== 'ready') { rerender('borrow'); return; }
-    const [t, m] = await Promise.all([getUx(), getRedeemMod()]), l = bondsNow().locks.find((x) => x.op === op);
+    const [t, m, bx] = await Promise.all([getUx(), getRedeemMod(), loadTacit().then((x) => x.bridgeUx())]), l = bondsNow().locks.find((x) => x.op === op);
     const tx = await esplora(`/tx/${l.txid}`), out = tx.vout?.[l.vout];
     if (!out || !tx.status?.confirmed) throw new Error('The lock’s transaction is not confirmed on Bitcoin yet.');
     const lock = { txid: l.txid, vout: l.vout, value: out.value, spk: out.scriptpubkey };
     const spent = async (txid, vout) => (await esplora(`/tx/${txid}/outspend/${vout}`)).spent === true;
     const unspent = { lock: !(await spent(l.txid, l.vout)), notes: await Promise.all(p.notes.map(async (n) => !(await spent(n.txid, n.vout)))) };
+    const live = await Promise.all(p.notes.map((n) => bx.isLive(n.txid, n.vout, { fresh: true }).catch(() => undefined)));
+    const notes = p.notes.map((n, i) => ({ ...n, live: live[i] }));
     const built = await withKey(async (Tk) => {
       const priv = walletPriv();
       const { prims, wallet } = m.makeBtcWallet({ priv, hrp: 'bc', fetchUtxos: async () => [], broadcastTx: (h) => Tk.broadcast(h), fetchFeeRate: () => Tk.getFeeRate('priority') });
       const R = m.makeCbtcRedeem({ pool: t.pool, secp, sha256, prims });
-      const verdict = R.assessRedeem({ lock, lockState: { vBtc: fresh.st.vBtc, spent: fresh.st.spent, redeemed: fresh.st.redeemed, minted: l.minted }, unspent, notes: p.notes });
+      const verdict = R.assessRedeem({ lock, lockState: { vBtc: fresh.st.vBtc, spent: fresh.st.spent, redeemed: fresh.st.redeemed, minted: l.minted }, unspent, notes });
       if (!verdict.ok) throw new Error(verdict.problems[0]);
       const funding = (await Tk.pickSafeCommitSats(await Tk.getUtxos(wallet.address(), null, { forSpend: true }))).map((u) => ({ txid: u.txid, vout: u.vout, value: u.value }));
-      const b = R.buildRedeemTxs({ prims, lock, notes: p.notes, funding, feeRate: await Tk.getFeeRate('priority'), expectedVBtc: fresh.st.vBtc, protectedOutpoints: m.listProtectedOutpoints() });
+      const b = R.buildRedeemTxs({ prims, lock, notes, funding, feeRate: await Tk.getFeeRate('priority'), expectedVBtc: fresh.st.vBtc, protectedOutpoints: m.listProtectedOutpoints() });
       return { ...b, address: wallet.address(), at: Date.now() };
     }, pub);
     if (REDEEM.op !== op || S.key?.pubHex !== pub) return;
@@ -14331,12 +14348,15 @@ function wireRedeem(el, status) {
   const go = $('#bw-redeem-go', el); if (go) go.onclick = () => busy(go, (run) => redeemBuild(run, status));
   const ack = $('#bw-redeem-ack', el), send = $('#bw-redeem-send', el);
   if (ack && send) { ack.onchange = () => { REDEEM.acked = ack.checked; send.disabled = !ack.checked; }; send.onclick = () => busy(send, (run) => redeemSend(run, status)); }
-  const xo = $('#bw-xo', el), step = REDEEM.plan?.plan?.step;
+  const xo = $('#bw-xo', el), r = REDEEM.plan?.plan, step = redeemStep(r), l = REDEEM.op && bondsNow()?.locks.find((x) => x.op === REDEEM.op);
   if (xo && (step === 'bridge' || step === 'arriving')) {
     xoOut(xo, status, XA_REDEEM);
     const amt = $('#xkr-amt', xo);
-    if (amt && step === 'bridge') { amt.value = plain(REDEEM.plan.plan.bridge, 8); amt.dispatchEvent(new Event('input')); }
+    if (amt && step === 'bridge') { amt.value = plain(r.bridge, 8); amt.dispatchEvent(new Event('input')); }
   }
+  clearTimeout(REDEEM.poll);
+  const poll = () => { if (!REDEEM.op || !$('#sheet-borrow')?.open) return; if (document.hidden) REDEEM.poll = setTimeout(poll, 60e3); else redeemRefresh(); };
+  if ($('#bw-redeem', el) && r && !REDEEM.err && (step === 'arriving' || (l && redeemSent(l) && r.step !== 'done'))) REDEEM.poll = setTimeout(poll, 60e3);
 }
 async function takeBond(run, ref, status) {
   const [op, contract, account] = ref.split('|');
@@ -14365,7 +14385,8 @@ function bondsBlock() {
     ${locks.map((l) => html`<div class="kv"><span>${l.vBtc ? `${fmt(l.vBtc, 8, 8)} BTC` : 'Lock'} · ${link(l)}${l.everyday ? ' · everyday address' : ''}</span><b class="${l.state === 'forfeit' ? 'err' : ''}">${fmt(l.total, 18, 5)} wstETH${l.par ? ` · ${fmt(l.total * 100n / l.par, 2, 2)}× the BTC` : ''} · ${what[l.state]}</b></div>
       ${l.state === 'backing' && l.par ? html`<button class="btn ghost" type="button" data-bond-add="${l.op}">Add 0.25× to this bond</button>` : ''}
       ${l.state === 'backing' && l.txid && redeemOn() ? html`<button class="btn ghost" type="button" data-redeem="${l.op}">Redeem this lock</button>` : ''}
-      ${l.bonds.filter((b) => b.take && bondVia(b.account)).map((b) => html`<button class="btn ghost" type="button" data-bond-take="${l.op}|${b.contract}|${b.account}">Take back ${fmt(b.share, 18, 5)} wstETH to your ${bondVia(b.account) === 'tacit' ? 'Key address' : 'wallet'}</button>`)}`)}
+      ${l.bonds.filter((b) => b.take && bondVia(b.account)).map((b) => html`<button class="btn ghost" type="button" data-bond-take="${l.op}|${b.contract}|${b.account}">Take back ${fmt(b.share, 18, 5)} wstETH to your ${bondVia(b.account) === 'tacit' ? 'Key address' : 'wallet'}</button>`)}
+      ${bondElsewhere(l) ? html`<button class="btn ghost" type="button" data-bond-conn>Connect the wallet that posted it</button>` : ''}`)}
     ${everyday ? html`<p class="note">${everyday === 1 ? 'One lock holds its' : `${everyday} locks hold their`} BTC at your everyday Bitcoin address, where early locks put it. This app never spends it, but another Bitcoin wallet using this key would see it as spendable, and spending it gives up its bond. Keep this key out of other Bitcoin wallets until you redeem.</p>` : ''}
     <p class="note">A bond is held as wstETH, which keeps earning staking yield, and comes back as wstETH to the account that posted it, before its lock is minted against or once the lock is redeemed. It must be at least 1.5× the BTC when the lock is minted against, then moves with the price of ETH in BTC; adding to it keeps the lock well covered. Spending a lock’s BTC any other way gives its bond to the insurance reserve.</p>
     ${redeemPanel()}
@@ -14994,6 +15015,7 @@ render.borrow = () => {
   if (unlock) unlock.onclick = () => busy(unlock, (run) => { only($('#bw-s2u')); return BWX.unlock(run, () => $('#bw-s2u') || status); });
   wireBwFinish();
   $$('[data-bond-take]', el).forEach((btn) => btn.onclick = () => busy(btn, (run) => takeBond(run, btn.dataset.bondTake, status)));
+  $$('[data-bond-conn]', el).forEach((btn) => btn.onclick = () => busy(btn, () => connect({ key: false }).then(() => loadBonds(true), (e) => sayErr(status, e))));
   $$('[data-bond-topup]', el).forEach((btn) => btn.onclick = () => busy(btn, async (run) => {
     const l = bondsNow()?.locks.find((x) => x.op === btn.dataset.bondTopup);
     try {
@@ -19526,18 +19548,18 @@ function hxRdOpen(lock) {
 function hxRdPaint() {
   const box = $('#hx-rd');
   if (!box || !hxRdOn()) return;
-  const l = bondsNow()?.locks.find((x) => x.op === HX.rdOp), R = REDEEM.plan, r = R?.plan, sent = l && (store.get(redeemSentKey()) || {})[l.op], built = REDEEM.built, off = HX.bwBusy > 0;
+  const l = bondsNow()?.locks.find((x) => x.op === HX.rdOp), R = REDEEM.plan, r = R?.plan, step = redeemStep(r), sent = l && redeemSent(l), built = REDEEM.built, off = HX.bwBusy > 0;
   const c = (v) => `${fmt(BigInt(v), 8, 8)} cBTC`, N = l ? fmt(BigInt(l.vBtc), 8, 8) : '', loans = redeemLoans();
   const btn = (k, text, ghost = false) => html`<button class="btn${ghost ? ' ghost' : ''}" type="button" data-rd="${k}"${off ? ' disabled' : ''}>${text}</button>`;
   const link = (h) => html`<a href="${MEMPOOL}/tx/${h}" target="_blank" rel="noopener">${short(h, 6)} ↗</a>`;
-  const now = !r ? 0 : r.step === 'done' || sent ? 3 : r.step === 'ready' ? 2 : r.step === 'bridge' || r.step === 'arriving' ? 1 : 0;
+  const now = !r ? 0 : step === 'done' || sent ? 3 : step === 'ready' ? 2 : step === 'bridge' || step === 'arriving' ? 1 : 0;
   const stepper = html`<ol class="hx-st" aria-label="The redeem’s steps">${[['cBTC', 0], ['To Bitcoin', 1], ['Redeem', 2], ['Bond back', 3]].map(([t, i]) => html`<li class="${i < now ? 'done' : i === now ? 'now' : ''}"${i === now ? html` aria-current="step"` : ''}><span aria-hidden="true">${i < now ? '✓' : i + 1}</span>${t}</li>`)}</ol>`;
   const takes = l ? l.bonds.filter((b) => b.take && bondVia(b.account)) : [];
   const panel = !l ? html`<p class="hx-bw-d">This lock is not in this key’s Bitcoin history here, so it cannot be redeemed from this page.</p>`
     : REDEEM.err ? html`<p class="hx-bw-d err">${errText(REDEEM.err)}</p>${btn('again', 'Try again', true)}`
     : !r ? html`<p class="hx-bw-d">Reading the lock and your cBTC on Bitcoin…</p>`
-    : r.step === 'done' ? html`<p class="hx-bw-d">Redeemed: the ${N} BTC is back at your Bitcoin address${sent ? html` (${link(sent.reveal)})` : ''}.${takes.length ? ' Take the bond back:' : ' The bond can be taken back once its record catches up.'}</p>
-        ${takes.map((b) => btn(`take:${l.op}|${b.contract}|${b.account}`, `Take back ${fmt(b.share, 18, 5)} wstETH`))}`
+    : r.step === 'done' ? html`<p class="hx-bw-d">Redeemed: the ${N} BTC is back at your Bitcoin address${sent ? html` (${link(sent.reveal)})` : ''}.${takes.length ? ' Take the bond back:' : bondElsewhere(l) ? ' Its bond comes back to the wallet that posted it:' : ' The bond can be taken back once its record catches up.'}</p>
+        ${takes.map((b) => btn(`take:${l.op}|${b.contract}|${b.account}`, `Take back ${fmt(b.share, 18, 5)} wstETH`))}${bondElsewhere(l) ? btn('conn', 'Connect that wallet', true) : ''}`
     : r.step === 'gone' ? html`<p class="hx-bw-d err">This lock was spent on Bitcoin without a redeem, so there is nothing to redeem. Its bond goes to the insurance reserve.</p>`
     : r.step === 'unminted' ? html`<p class="hx-bw-d">No cBTC was minted on this lock, so there is nothing to burn. Its bond can be taken back from the Borrow sheet.</p>`
     : r.step === 'unknown' ? html`<p class="hx-bw-d">The pool has not recorded this lock yet.</p>`
@@ -19546,8 +19568,8 @@ function hxRdPaint() {
     : r.step === 'buy' && loans.length ? html`<p class="hx-bw-d">Your cBTC backs ${loans.length === 1 ? html`a loan of <b>${fmt(BigInt(loans[0].debtValue), 8, 2)} cUSD</b>` : `${loans.length} loans`}. Repay ${loans.length === 1 ? 'it' : 'them'} first: the cBTC comes back and counts toward the redeem.</p>
         ${loans.map((p, i) => btn(`repay:${i}`, `Repay ${fmt(BigInt(p.debtValue), 8, 2)} cUSD`))}`
     : r.step === 'buy' ? html`<p class="hx-bw-d">Redeeming burns <b>${N} cBTC</b> on Bitcoin${r.have ? `, ${c(r.have)} of it there already` : ''}; moving it there costs ${c(R.fee)}. You hold ${c(R.held)}: get <b>${c(r.lack)}</b> more.</p>${btn('swap', 'Get cBTC in Swap')}`
-    : r.step === 'bridge' ? html`<p class="hx-bw-d">Move exactly <b>${c(r.bridge)}</b> to Bitcoin: ${c(r.short)} for the lock and ${c(R.fee)} to the relay. It stays there until it is redeemed.</p>${btn('bridge', `Move ${c(r.bridge)} to Bitcoin`)}`
-    : r.step === 'arriving' ? html`<p class="hx-bw-d">Your cBTC is on its way to Bitcoin. Redeem opens once it has arrived and Bitcoin’s proof holds it; this updates on its own.</p><button class="btn ghost" type="button" data-act-open>Follow it in Activity</button>`
+    : step === 'bridge' ? html`<p class="hx-bw-d">Move exactly <b>${c(r.bridge)}</b> to Bitcoin: ${c(r.short)} for the lock and ${c(R.fee)} to the relay.</p>${btn('bridge', `Move ${c(r.bridge)} to Bitcoin`)}`
+    : step === 'arriving' ? html`<p class="hx-bw-d">Your cBTC is on its way to Bitcoin. Redeem opens once it has arrived and Bitcoin’s proof holds it; this updates on its own.</p><button class="btn ghost" type="button" data-act-open>Follow it in Activity</button>`
     : html`<div class="hx-bw-b"><div><span>Burns</span><b>${N} cBTC on Bitcoin</b></div><div><span>Unlocks</span><b>${N} BTC to your address</b></div>${built ? html`<div><span>Bitcoin fees</span><b>${(built.commitFee + built.revealFee).toLocaleString('en-US')} sats</b></div>` : ''}</div>
         ${built ? html`<label class="pick"><input type="checkbox" id="hx-rd-ack" ${REDEEM.acked ? 'checked' : ''}><span>The cBTC is burned and the lock is spent; neither can be undone.</span></label>${btn('send', 'Redeem')}` : btn('review', 'Review the redeem')}`;
   const view = html`<div class="hx-bw-h"><span class="hx-lbl">Redeem</span><span class="hx-bw-l"><b>${N} BTC</b>${l?.txid ? html` · ${link(l.txid)}` : ''}</span></div>${stepper}<div class="hx-bw-p">${panel}</div>
@@ -19558,7 +19580,7 @@ function hxRdPaint() {
   if (ack) ack.onchange = () => { REDEEM.acked = ack.checked; send.disabled = !ack.checked; };
   clearTimeout(HX.rdPoll);
   const poll = () => { if (!hxRdOn()) return; if (document.hidden) HX.rdPoll = setTimeout(poll, 60e3); else redeemRefresh(); };
-  if (r && (r.step === 'arriving' || (sent && r.step !== 'done'))) HX.rdPoll = setTimeout(poll, 60e3);
+  if (r && (step === 'arriving' || (sent && r.step !== 'done'))) HX.rdPoll = setTimeout(poll, 60e3);
   box.onclick = (e) => {
     const b = e.target.closest?.('[data-rd]');
     if (!b || b.disabled) return;
@@ -19575,6 +19597,7 @@ function hxRdPaint() {
     }
     if (k.startsWith('repay:')) return go((run) => BWX.repay(run, where, b, loans[Number(k.slice(6))]), () => loadBorrow(true).then(() => redeemRefresh(), () => {}));
     if (k.startsWith('take:')) return go((run) => takeBond(run, k.slice(5), where()), () => loadBonds(true).then(() => redeemRefresh(), () => {}));
+    if (k === 'conn') return go(() => connect({ key: false }).then(() => loadBonds(true), (x) => sayErr(where(), x)));
     if (k === 'review') return go((run) => redeemBuild(run, where()));
     if (k === 'send') return go((run) => redeemSend(run, where()), () => { loadBonds(true).catch(() => {}); return redeemRefresh(); });
   };

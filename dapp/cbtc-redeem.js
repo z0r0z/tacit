@@ -340,12 +340,16 @@ export function makeCbtcRedeem({ pool, secp, sha256, prims: defaultPrims = null,
     return { version: new DataView(b.buffer, b.byteOffset, 4).getUint32(0, true), locktime, inputs, outputs };
   }
 
-  // Notes summing to exactly vBtc (the burn takes no change), fewest first, among those the reflection has credited and Bitcoin has
-  // confirmed; null when none do.
+  // A discovered output this key can read as cBTC, and whether a redeem can burn it: `live` is true once Bitcoin's proof on Ethereum
+  // holds the note (the proof folds a redeem only over notes it holds), and `credited` is false for a mint transaction that is not the
+  // one recorded for its bridge.
+  const isCbtc = (x) => x.amount != null && BigInt(x.amount) > 0n && (x.assetId == null || lc(x.assetId) === lc(CBTC_ZK_ASSET_ID));
+  const burnable = (x) => x.live === true && x.confirmed !== false && x.credited !== false;
+
+  // Notes summing to exactly vBtc (the burn takes no change), fewest first, among those Bitcoin's proof holds; null when none do.
   function pickNotes(notes, vBtc) {
     const want = BigInt(vBtc);
-    const usable = (notes || []).filter((x) => x.amount != null && BigInt(x.amount) > 0n && x.credited === true && x.confirmed !== false && x.live !== false
-      && (x.assetId == null || lc(x.assetId) === lc(CBTC_ZK_ASSET_ID)))
+    const usable = (notes || []).filter((x) => isCbtc(x) && burnable(x))
       .sort((a, b) => (BigInt(b.amount) > BigInt(a.amount) ? 1 : BigInt(b.amount) < BigInt(a.amount) ? -1 : 0));
     const suffix = new Array(usable.length + 1).fill(0n);
     for (let i = usable.length - 1; i >= 0; i--) suffix[i] = suffix[i + 1] + BigInt(usable[i].amount);
@@ -374,8 +378,8 @@ export function makeCbtcRedeem({ pool, secp, sha256, prims: defaultPrims = null,
 
   // The next step to get a lock's bitcoin back, from facts already read:
   //   done / gone / unminted   the pool has it redeemed / it was spent without a redeem / no cBTC was minted on it
-  //   ready      notes on Bitcoin sum to exactly the lock
-  //   arriving   a bridge of cBTC to Bitcoin is under way
+  //   ready      notes Bitcoin's proof holds sum to exactly the lock
+  //   arriving   a bridge of cBTC to Bitcoin is under way, or a note is there that the proof has not reached yet
   //   bridge     bridge `bridge` (the shortfall plus the relay fee) from the private balance
   //   buy        the private balance is short by `lack`
   //   toobig     the bridge needed is over the cap
@@ -385,10 +389,11 @@ export function makeCbtcRedeem({ pool, secp, sha256, prims: defaultPrims = null,
     if (lockState.redeemed) return { step: 'done' };
     if (lockState.spent) return { step: 'gone' };
     if (lockState.minted === false) return { step: 'unminted' };
-    const usable = notes.filter((x) => x.amount != null && x.credited === true && x.confirmed !== false && x.live !== false && (x.assetId == null || lc(x.assetId) === lc(CBTC_ZK_ASSET_ID)));
+    const mine = notes.filter(isCbtc), usable = mine.filter(burnable);
     const pick = pickNotes(usable, N);
     if (pick) return { step: 'ready', notes: pick, have: N };
-    if (bridging > 0) return { step: 'arriving', have: bestSubsetSum(usable.map((x) => BigInt(x.amount)), N) };
+    const coming = mine.some((x) => !burnable(x) && x.live !== false && x.credited !== false);
+    if (bridging > 0 || coming) return { step: 'arriving', have: bestSubsetSum(usable.map((x) => BigInt(x.amount)), N) };
     // A remainder under the bridge minimum cannot be bridged alone, so the whole lock is bridged again.
     const have = bestSubsetSum(usable.map((x) => BigInt(x.amount)), N);
     let short = N - have, bridge = short + BigInt(fee);
@@ -414,11 +419,18 @@ export function makeCbtcRedeem({ pool, secp, sha256, prims: defaultPrims = null,
     if (unspent && unspent.lock === false) problems.push('the lock output is already spent on Bitcoin');
     if (unspent && Array.isArray(unspent.notes) && unspent.notes.some((u) => u === false)) problems.push('a cBTC note is already spent on Bitcoin');
     notes.forEach((n, i) => {
-      if (n.live === false) problems.push(`cBTC note ${i + 1} is not held by Bitcoin's proof on Ethereum, so spending it would burn nothing`);
       if (n.confirmed === false) problems.push(`cBTC note ${i + 1} has not confirmed on Bitcoin yet`);
-      if (n.credited !== true) problems.push(`cBTC note ${i + 1} has not been credited by the reflection yet (spending it before then would burn it with no effect)`);
+      else if (n.live === false) problems.push(`cBTC note ${i + 1} is not held by Bitcoin's proof on Ethereum, so spending it would burn nothing`);
+      else if (n.live !== true) problems.push(`cBTC note ${i + 1} is not held by Bitcoin's proof on Ethereum yet (spending it before then would burn nothing)`);
+      if (n.credited === false) problems.push(`cBTC note ${i + 1} is not the transaction recorded for its bridge`);
     });
     return { ok: problems.length === 0, problems };
+  }
+
+  // Whether a transaction's bytes are a redeem of this lock, as the proof classifies it.
+  function redeems(txHex, lock) {
+    const c = classifyConfidentialTx(stripHex(txHex));
+    return !!c && c.type === 'cbtc_redeem' && lc(c.lockTxid) === reverseHex(lock.txid) && Number(c.lockVout) === Number(lock.vout);
   }
 
   // A lock nothing was minted on, taken back: one transaction that spends the lock's output to `to` (default the key's P2WPKH), its fee
@@ -477,5 +489,5 @@ export function makeCbtcRedeem({ pool, secp, sha256, prims: defaultPrims = null,
     return { commitTxid: built.commitTxid, revealTxid: built.revealTxid };
   }
 
-  return { kernelMsg, signerFor: (spk, prims) => signerFor(spk, primsOf(prims)), buildRedeemTxs, checkRedeemReveal, assessRedeem, pickNotes, planRedeem, bestSubsetSum, send, buildUnlockTx, assessUnlock };
+  return { kernelMsg, signerFor: (spk, prims) => signerFor(spk, primsOf(prims)), buildRedeemTxs, checkRedeemReveal, assessRedeem, pickNotes, planRedeem, bestSubsetSum, send, redeems, buildUnlockTx, assessUnlock };
 }

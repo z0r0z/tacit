@@ -160,7 +160,7 @@ export function makeCrossoutNotes({ secp, hmac, sha256, pool, evmLog, rpc, poolA
       let credited = null;
       try {
         const c = await workerJson(`/crossout/minted?asset=${stripHex(cm.assetId)}&claim=${stripHex(cm.claimId)}&txid=${stripHex(u.txid)}`);
-        credited = c && c.decided === true ? (c.minted === true || !!c.mintedTxid) : null;
+        credited = c && c.decided === true ? c.minted === true : null;
       } catch { }
       out.push({
         txid: stripHex(u.txid).toLowerCase(), vout: 0, sats: Number(u.value), assetId: lc(withHex(cm.assetId)), claimId: cm.claimId, cx: cm.cx, cy: cm.cy,

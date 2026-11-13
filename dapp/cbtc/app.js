@@ -222,6 +222,7 @@ function renderUse() {
   const rows = [['/vault/#btc', 'Borrow cUSD', 'Borrow dollars against your cBTC. Repay to unlock it.', '', 'cusd'],
     ['/#private/swap', 'Swap privately', (() => { const r = D.rows.find((x) => (x.depthUsd ?? 0) >= DUST_USD); return r?.per ? `${r.other} pool: 1 cBTC = ${sig(r.per, 4)} ${r.other}, ${compact(r.depthUsd)} deep.` : 'In the private pools.'; })(), '', 'cbtc'],
     ['#farm', 'Earn TAC', 'Join a farm with cBTC alone.', 'scroll', 'tac'],
+    ['/#borrow', 'Redeem a lock', 'Burn its cBTC on Bitcoin and the BTC unlocks.', '', 'btc'],
     ['/#lock', 'Take a bond back', 'Before minting, or after you redeem. Spending the BTC any other way forfeits it.', '', 'eth']];
   $('#uses').innerHTML = rows.map(([href, t, sub, k, ico]) => `<a class="use" href="${esc(href)}"${k === 'scroll' ? ' data-scroll' : ''}>${mark(ico, 'tk sm')}<b>${esc(t)}</b><span>${esc(sub)}</span><i aria-hidden="true">→</i></a>`).join('');
   $('#use-note').textContent = 'These open on the front page. Use the same wallet or passkey there.';

@@ -222,7 +222,7 @@ if (process.env.CBTC_REDEEM_VECTOR_OUT) {
 {
   const lock = mkLock();
   const live = { vBtc: 100000n, spent: false, redeemed: false, minted: true };
-  const good = [{ confirmed: true, credited: true }, { confirmed: true, credited: true }];
+  const good = [{ confirmed: true, credited: true, live: true }, { confirmed: true, credited: null, live: true }];
   assert.ok(R.assessRedeem({ lock, lockState: live, unspent: { lock: true, notes: [true, true] }, notes: good }).ok);
   const bad = (over, re) => { const r = R.assessRedeem({ lock, lockState: live, unspent: { lock: true, notes: [true, true] }, notes: good, ...over }); assert.ok(!r.ok && r.problems.some((p) => re.test(p)), JSON.stringify(r)); };
   bad({ lockState: { ...live, redeemed: true } }, /already redeemed/);
@@ -232,16 +232,18 @@ if (process.env.CBTC_REDEEM_VECTOR_OUT) {
   bad({ lockState: null }, /no record of this lock/);
   bad({ unspent: { lock: false, notes: [true, true] } }, /lock output is already spent/);
   bad({ unspent: { lock: true, notes: [true, false] } }, /cBTC note is already spent/);
-  bad({ notes: [{ confirmed: true, credited: false }, good[1]] }, /not been credited/);
-  bad({ notes: [{ confirmed: false, credited: true }, good[1]] }, /not confirmed/);
-  bad({ notes: [{ confirmed: true, credited: true, live: false }, good[1]] }, /not held by Bitcoin's proof/);
+  bad({ notes: [{ confirmed: true, credited: false, live: true }, good[1]] }, /not the transaction recorded for its bridge/);
+  bad({ notes: [{ confirmed: false, credited: true, live: true }, good[1]] }, /not confirmed/);
+  bad({ notes: [{ confirmed: true, credited: true, live: false }, good[1]] }, /not held by Bitcoin's proof on Ethereum, so/);
+  bad({ notes: [{ confirmed: true, credited: true, live: null }, good[1]] }, /not held by Bitcoin's proof on Ethereum yet/);
+  bad({ notes: [{ confirmed: true, credited: true }, good[1]] }, /not held by Bitcoin's proof on Ethereum yet/);
   assert.ok(R.assessRedeem({ lock, lockState: { ...live, minted: false }, unspent: { lock: true, notes: [true, true] }, notes: good, force: true }).ok, 'force lets an unminted lock through');
-  ok('assessRedeem refuses redeemed/spent/unminted/mis-sized locks and uncredited or spent notes');
+  ok('assessRedeem refuses redeemed/spent/unminted/mis-sized locks, spent notes, and notes the proof does not hold');
 }
 
 // ── 9b. choosing notes that sum to exactly the lock ──
 {
-  const mk = (amount, extra = {}) => ({ amount: BigInt(amount), credited: true, confirmed: true, assetId: CBTC_ZK_ASSET_ID, ...extra });
+  const mk = (amount, extra = {}) => ({ amount: BigInt(amount), credited: true, confirmed: true, live: true, assetId: CBTC_ZK_ASSET_ID, ...extra });
   const sum = (l) => l.reduce((s, x) => s + x.amount, 0n);
   const one = R.pickNotes([mk(30000), mk(100000), mk(70000)], 100000n);
   assert.equal(one.length, 1, 'a single exact note wins over a pair');
@@ -250,11 +252,12 @@ if (process.env.CBTC_REDEEM_VECTOR_OUT) {
   const three = R.pickNotes([mk(25000), mk(35000), mk(40000), mk(99999)], 100000n);
   assert.equal(sum(three), 100000n); assert.equal(three.length, 3);
   assert.equal(R.pickNotes([mk(60000), mk(50000)], 100000n), null, 'no exact subset: null, never a near miss');
-  assert.equal(R.pickNotes([mk(100000, { credited: false })], 100000n), null, 'an uncredited note is not spendable yet');
-  assert.equal(R.pickNotes([mk(100000, { credited: null })], 100000n), null, 'an unknown credit is not spendable');
+  assert.equal(R.pickNotes([mk(100000, { credited: false })], 100000n), null, 'a mint that is not the one recorded for its bridge is never spent');
+  assert.equal(R.pickNotes([mk(100000, { credited: null })], 100000n).length, 1, 'a note the proof holds is spendable whether or not the relay has decided its credit');
   assert.equal(R.pickNotes([mk(100000, { confirmed: false })], 100000n), null, 'an unconfirmed note is not spendable yet');
   assert.equal(R.pickNotes([mk(100000, { live: false })], 100000n), null, 'a note the proof passed but does not hold is never spent');
-  assert.equal(R.pickNotes([mk(100000, { live: null })], 100000n).length, 1, 'a note the proof has not reached yet is fine: the proof folds it before the redeem');
+  assert.equal(R.pickNotes([mk(100000, { live: null })], 100000n), null, 'a note the proof has not reached yet waits for it');
+  assert.equal(R.pickNotes([mk(100000, { live: undefined })], 100000n), null, 'a note whose standing in the proof could not be read is not spent');
   assert.equal(R.pickNotes([mk(100000, { assetId: '0x' + '11'.repeat(32) })], 100000n), null, 'another asset is ignored');
   assert.equal(R.pickNotes([mk(100000, { amount: null })], 100000n), null, 'a note whose amount could not be opened is ignored');
   const many = Array.from({ length: 20 }, (_, i) => mk(1000 + i));
@@ -265,7 +268,7 @@ if (process.env.CBTC_REDEEM_VECTOR_OUT) {
 // ── 9c. planRedeem: the next step, from facts ──
 {
   const live = { vBtc: 100000n, spent: false, redeemed: false, minted: true };
-  const note = (amount, extra = {}) => ({ amount: BigInt(amount), credited: true, confirmed: true, assetId: CBTC_ZK_ASSET_ID, ...extra });
+  const note = (amount, extra = {}) => ({ amount: BigInt(amount), credited: true, confirmed: true, live: true, assetId: CBTC_ZK_ASSET_ID, ...extra });
   const plan = (o) => R.planRedeem({ lockState: live, fee: 2000n, min: 10000n, cap: 50_000_000n, held: 0n, ...o });
   assert.equal(plan({ lockState: null }).step, 'unknown');
   assert.equal(plan({ lockState: { ...live, redeemed: true } }).step, 'done');
@@ -274,6 +277,11 @@ if (process.env.CBTC_REDEEM_VECTOR_OUT) {
   assert.equal(plan({ notes: [note(100000)] }).step, 'ready');
   assert.equal(plan({ notes: [note(40000), note(60000)] }).notes.length, 2, 'two notes that sum exactly are both used');
   assert.equal(plan({ notes: [note(100000, { credited: false })], bridging: 1 }).step, 'arriving');
+  assert.equal(plan({ notes: [note(100000, { live: null })], held: 200000n }).step, 'arriving', 'a note the proof has not reached is waited for, not bridged again');
+  assert.equal(plan({ notes: [note(100000, { live: null, credited: null, confirmed: false })], held: 200000n }).step, 'arriving', 'so is one still confirming');
+  assert.equal(plan({ notes: [note(100000, { live: false })], held: 200000n }).step, 'bridge', 'an output the proof passed and does not hold is not waited for');
+  assert.equal(plan({ notes: [note(100000, { live: null, credited: false })], held: 200000n }).step, 'bridge', 'nor a mint that is not the one recorded for its bridge');
+  { const q = plan({ notes: [note(60000), note(40000, { live: null })], held: 200000n }); assert.deepEqual([q.step, q.have], ['arriving', 60000n], 'what the proof already holds is counted while the rest arrives'); }
   let p = plan({ held: 200000n });
   assert.deepEqual([p.step, p.short, p.bridge], ['bridge', 100000n, 102000n], 'nothing on Bitcoin: bridge the lock plus the fee');
   p = plan({ held: 50000n });
@@ -287,6 +295,18 @@ if (process.env.CBTC_REDEEM_VECTOR_OUT) {
   assert.equal(R.bestSubsetSum([30000n, 50000n, 70000n], 100000n), 100000n);
   assert.equal(R.bestSubsetSum([60000n, 50000n], 100000n), 60000n);
   ok('planRedeem picks done/gone/unminted/ready/arriving/bridge/buy/toobig and sizes the bridge');
+}
+
+// ── 9d. a transaction read back from Bitcoin: is it a redeem of this lock ──
+{
+  assert.equal(R.redeems(built.revealHex, mkLock()), true);
+  assert.equal(R.redeems('0x' + built.revealHex, { txid: txid('aa'), vout: 1 }), true);
+  assert.equal(R.redeems(built.revealHex, { txid: txid('aa'), vout: 2 }), false, 'another output of the same transaction');
+  assert.equal(R.redeems(built.revealHex, { txid: txid('ab'), vout: 1 }), false, 'another lock');
+  assert.equal(R.redeems(built.commitHex, mkLock()), false, 'the commit carries no envelope');
+  const odd = '0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20';
+  assert.equal(R.redeems(build({ lock: { ...mkLock(), txid: odd } }).revealHex, { txid: odd, vout: 1 }), true, 'a lock txid is matched in display order');
+  ok('redeems() tells a redeem of this lock from any other spend');
 }
 
 // ── 10. send(): commit first, nothing at all if an input is already gone ──
