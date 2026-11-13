@@ -119,6 +119,13 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
   check('in the day\'s first two hours, or with no weight to go by, the network\'s rate is used at a share\'s mean weight', early === noWeight && early > 0 && Math.abs(early - 39_000 / (11 * 584_612_889 * 86400 / 2 ** 26 + 39_000)) / early < 0.05);
   check('of the two measures of the network the larger is taken (the smaller part)', T.dayShare({ rate: 4_500_000, ...live, netWeight: 1 }) === noWeight && T.dayShare({ rate: 4_500_000, ...live, netWeight: 50_000_000 }) < noWeight);
   check('with nothing known of the network there is no figure', T.dayShare({ rate: 4_500_000, minBits: 26 }) === 0);
+  // the pool's cap on a share's weight
+  const flat = { minBits: 26, maxWeightBits: 0, netRate: 2e9 };
+  check('with every share weighing the same, a pace\'s part is its part of the salts ground', Math.abs(T.dayShare({ rate: 7e6, ...flat }) - 7e6 / (2e9 + 7e6)) < 1e-9 && Math.abs(T.dayShare({ rate: 7e5, ...flat }) / T.dayShare({ rate: 7e6, ...flat }) - 0.1) < 0.001);
+  const part = (cap) => T.dayShare({ rate: 7e6, minBits: 26, maxWeightBits: cap, netRate: 2e9 });
+  check('with the cap inside what its shares reach, a small miner\'s part is its part of the salts; with the cap past that it typically falls short (here by a third)', Math.abs(part(4) - part(0)) < 1e-12 && Math.abs(part(8) - part(0)) < 1e-12 && part(20) < 0.7 * part(0) && part(20) > 0.6 * part(0));
+  check('a cap past what its shares reach changes nothing for it', T.dayShare({ rate: 7e5, minBits: 26, maxWeightBits: 20, netWeight: 3e7 }) === T.dayShare({ rate: 7e5, minBits: 26, maxWeightBits: 30, netWeight: 3e7 }));
+  check('a miner with so many shares that the cap binds weighs the mean a share', Math.abs(T.dayShare({ rate: 5e9, minBits: 26, maxWeightBits: 20, netWeight: 1 }) - 1) < 1e-6 && (() => { const n = (5e9 * 86400) / 2 ** 26, w = n * 11; return Math.abs(T.dayShare({ rate: 5e9, minBits: 26, maxWeightBits: 20, netWeight: w }) - 0.5) < 1e-9; })());
   check('a smaller share size means more shares, and the same part', Math.abs(T.dayShare({ rate: 1e6, minBits: 20, netRate: 1e8 }) / T.dayShare({ rate: 1e6, minBits: 26, netRate: 1e8 }) - 1) < 0.6);
 }
 

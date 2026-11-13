@@ -25,7 +25,7 @@ export const SALT_POOL = Object.freeze({
   deployer: '0x68575b073de49a94e3e3acf6f3a0d6e3b66267c7',
   createx: '0xba5ed099633d3b313e4d5f7bdc1305d3c28ba5ed',
   minBits: 26,              // SALT_MIN_BITS: a share's address starts with this many zero bits (about a minute of four laptop cores)
-  maxWeightBits: 20,
+  maxWeightBits: 20,        // SALT_MAX_WEIGHT_BITS: a share weighs at most 2^this. The lower it is, the less one connection can earn in a day (it sends 64 shares in 20 s), and the more evenly a day's points go round; at 0 every share weighs the same
   pointsPerDay: 5000,       // POINTS_SALT_DAILY: the most a day's salts may share, whatever the pot (proofs take the rest)
   potPoints: 5000,          // the campaign's daily points when its terms cannot be read (50 TAC at 0.01 TAC a point)
   bankBits: 32,             // SALT_BANK_BITS: the best bankKeep salts at least this good (four zero bytes) are kept for deploys
@@ -55,6 +55,7 @@ export function saltPoolConfig(env = {}) {
   return Object.freeze({
     ...SALT_POOL,
     minBits: n(env.SALT_MIN_BITS, SALT_POOL.minBits, 16, 64),
+    maxWeightBits: n(env.SALT_MAX_WEIGHT_BITS, SALT_POOL.maxWeightBits, 0, 40),
     pointsPerDay: n(env.POINTS_SALT_DAILY, SALT_POOL.pointsPerDay, 0, 1_000_000),
     bankBits: n(env.SALT_BANK_BITS, SALT_POOL.bankBits, 24, 96),
     goodBits: n(env.SALT_GOOD_BITS, SALT_POOL.goodBits, 24, 96),

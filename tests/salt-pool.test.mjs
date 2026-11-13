@@ -80,6 +80,20 @@ test('config: env sets the share size, the points and the bank; nonsense keeps t
   assert.equal(saltPoolConfig({ POINTS_SALT_DAILY: 'lots' }).pointsPerDay, SALT_POOL.pointsPerDay);
 });
 
+test('config: the most a share can weigh is a setting, 2^20 unless it is given', async () => {
+  assert.equal(saltPoolConfig({}).maxWeightBits, 20);
+  assert.equal(saltPoolConfig({ SALT_MAX_WEIGHT_BITS: '4' }).maxWeightBits, 4);
+  assert.equal(saltPoolConfig({ SALT_MAX_WEIGHT_BITS: '0' }).maxWeightBits, 0, 'none: every share weighs the same');
+  for (const bad of ['-1', '41', '2.5', 'x', '']) assert.equal(saltPoolConfig({ SALT_MAX_WEIGHT_BITS: bad }).maxWeightBits, 20, `"${bad}" keeps the default`);
+  // the same three shares (8, 12 and 16 zero bits, against a share size of 8) under three caps
+  let t = 400 * DAY + 5000; const day = Math.floor(t / DAY);
+  const s8 = (() => { for (;;) { const g = grind(day, 8); if (g.bits === 8) return g; } })(), s12 = (() => { for (;;) { const g = grind(day, 12); if (g.bits === 12) return g; } })(), s16 = (() => { for (;;) { const g = grind(day, 16); if (g.bits === 16) return g; } })();
+  const weigh = async (maxWeightBits) => { const pool = makeSaltPool({ kv: kvStore(), cfg: { ...SALT_POOL, minBits: 8, sendEveryMs: 0, maxWeightBits }, now: () => t }); const r = await pool.submit({ miner: A, salts: [s8.salt, s12.salt, s16.salt], client: 'c' }); return { weight: r.body.weight, cap: (await pool.summary()).body.maxWeightBits }; };
+  assert.deepEqual(await weigh(20), { weight: 1 + 16 + 256, cap: 20 }, 'uncapped here: a share weighs two to the bits past the share size');
+  assert.deepEqual(await weigh(4), { weight: 1 + 16 + 16, cap: 4 }, 'capped at four bits: the best share weighs 16, not 256');
+  assert.deepEqual(await weigh(0), { weight: 3, cap: 0 }, 'at none every share weighs one, and the page is told the cap');
+});
+
 test('Tacit\'s own machines bank what they find and never share the day\'s points', async () => {
   let t = 300 * DAY + 1000;
   const kv = kvStore(), pool = makeSaltPool({ kv, cfg: { ...SALT_POOL, minBits: 8, bankBits: 9, sendEveryMs: 0, pointsPerDay: 1000, house: [SALT_POOL.deployer] }, now: () => t });

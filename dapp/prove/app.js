@@ -4,7 +4,7 @@
 import { cleanAddress, proveCommand, utcDay, mineLines, capOf, perPoint } from '/community-prove.js?cb=e2a65259';
 import { localState, jobView, headline, isPhone, isWindows, setupText, proverUpdate, updateText } from '/prove/view.js?cb=f0f73815';
 import { invaderSvg, gpuSvg } from '/prove/invader.js?cb=e8a5ec59';
-import { makeTabMiner, defaultThreads, maxThreads, GPU_LEVELS, dayShare } from '/prove/tabmine.js?cb=df5187cf';
+import { makeTabMiner, defaultThreads, maxThreads, GPU_LEVELS, dayShare } from '/prove/tabmine.js?cb=a9294239';
 import { HELPDESK, FETCH_CMD, cleanDesk, cleanStats, reviewView } from '/prove/review.js?cb=a8c503cf';
 import { short, cells, opsText, tac, rewardWei, ago, took, fresh, blockAgo, kindOf, KINDS, kindText, median, untilDayEnds, cleanBlock, cleanProof, cleanMiner } from '/prove/chain.js?cb=a282e227';
 
@@ -667,7 +667,7 @@ const savedThreads = () => { try { const n = Number(localStorage.getItem(SAVED_T
 const SAVED_GPU = 'tacit-prove-tab-gpu';
 const savedGpu = () => { try { const g = localStorage.getItem(SAVED_GPU); return GPU_LEVELS.includes(g) ? g : null; } catch { return null; } };
 let tabThreads = savedThreads() ?? defaultThreads(CORES), tabLock = null, tabNote = '', onBattery = false, batteryOk = false, gpuAble = false, tabGpu = savedGpu() ?? 'half';
-const tab = makeTabMiner({ api: API, makeWorker: () => new Worker('/prove/salt-worker.js?cb=d90bf231', { type: 'module' }), onChange: () => paintTab() });
+const tab = makeTabMiner({ api: API, makeWorker: () => new Worker('/prove/salt-worker.js?cb=6df5c0ae', { type: 'module' }), onChange: () => paintTab() });
 const holdTab = () => (navigator.locks ? new Promise((res) => { navigator.locks.request('tacit-prove-tab-miner', { ifAvailable: true }, (lock) => { if (!lock) { res(false); return undefined; } res(true); return new Promise((r) => { tabLock = r; }); }).catch(() => res(true)); }) : Promise.resolve(true));
 async function tabStart() {
   const beside = proverMining, a = beside ? proverMiner || addr() : addr();   // beside the prover: its address, and the GPU alone
@@ -699,7 +699,7 @@ function paintTab() {
   const note = s.error || tabNote || (s.on && s.gpu.failed ? 'The GPU could not be used here: mining on the cores.' : ''); $('#tab-say').textContent = note; $('#tab-say').hidden = !note; $('#tab-say').classList.toggle('err', !!s.error);
   $('#tab-battery').hidden = !(s.on && s.paused === 'battery');
   // what this pace can expect in a day: its part of the day's salt points by weight (tabmine.js dayShare), at what a point is paid today so far
-  const share = dayShare({ rate: s.rate, minBits: salts?.minBits || 26, maxWeightBits: salts?.maxWeightBits || 20, netWeight: salts?.weight || 0, netRate: salts?.rate || 0, dayFrac: (Date.now() % 86_400_000) / 86_400_000 });
+  const share = dayShare({ rate: s.rate, minBits: salts?.minBits || 26, maxWeightBits: salts?.maxWeightBits ?? 20, netWeight: salts?.weight || 0, netRate: salts?.rate || 0, dayFrac: (Date.now() % 86_400_000) / 86_400_000 });
   const paceWei = share && salts?.pointsPerDay ? rewardWei(Math.floor(salts.pointsPerDay * share), pointRate()) : null;
   const pace = paceWei ? `about ${tac(paceWei) === '0' ? 'under 0.01' : tac(paceWei)} TAC a day` : '';
   // the node card's own button and line, for a computer with no prover: the tab is its first step
