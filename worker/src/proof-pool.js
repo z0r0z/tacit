@@ -6,6 +6,8 @@
 // with its holder, and the input carries only the commitment and a signature that opens it. So a page may post the input here, and
 // anyone running the device prover (tacit-prover) or an idle prover-board worker may lease it, prove it and post the proof back.
 //
+// Each input is checked as the program checks it before it is queued (wrapOpens): its signature must open its commitment, or no
+// prover could prove it.
 // Each proof is checked before it is kept: its public values must be this input's (the deposit it consumes, the leaf it inserts,
 // the chain it is bound to and its memo root, every one read from the input itself, so a page cannot name a deposit its input does
 // not prove), and the live SP1 verifier must take it. A proof that passes is kept for the page and earns its miner's address points
@@ -26,10 +28,12 @@
 // clients' strikes and counts, kept long enough for the campaign to read), pp:req:<day>:<client> (the requests one client made that day). A client is
 // a hash of its IP address, never the address itself. pp:paid:<depositId> marks a deposit already proved (paid for once), pp:mined:<leaf>
 // who proved it, pp:recent the newest proofs.
+import * as secp from '@noble/secp256k1';
 import { sha256 } from '@noble/hashes/sha256';
 import { keccak_256 } from '@noble/hashes/sha3';
 import { bytesToHex, hexToBytes, concatBytes } from '@noble/hashes/utils';
 import { isHex } from './confidential-open.js';
+import { makeConfidentialPool } from '../../dapp/confidential-pool.js';
 
 export const PROOF_POOL = Object.freeze({
   types: Object.freeze(['wrap']),
@@ -115,9 +119,9 @@ export function readWrapStdin(bytes) {
   let value = 0n;
   for (let i = 7; i >= 0; i--) value = (value << 8n) | BigInt(e[9][i]);
   const cx = vec(10, 32, 'cx'), cy = vec(11, 32, 'cy'), owner = vec(12, 32, 'the owner');
-  vec(13, 33, 'the signature\'s R'); vec(14, 32, 'the signature\'s z');
+  const sigR = vec(13, 33, 'the signature\'s R'), sigZ = vec(14, 32, 'the signature\'s z');
   const memoHash = vec(15, 32, 'the memo hash');
-  return { chainBinding, asset, value, cx, cy, owner, memoHash };
+  return { chainBinding, asset, value, cx, cy, owner, sigR, sigZ, memoHash };
 }
 
 // What a wrap's proof must commit to, from the wrap itself (dapp/confidential-pool.js leaf, depositId; cxfer-core memo_root): the
@@ -169,6 +173,21 @@ export function verifyCalldata({ vkey, publicValues, proof }) {
   const pv = bytes(strip(publicValues)), pf = bytes(strip(proof));
   return VERIFY_SELECTOR + strip(vkey).padStart(64, '0') + num(96) + num(96 + pv.length / 2) + pv + pf;
 }
+
+// Whether a wrap opens as the program checks it (contracts/sp1/confidential/src/main.rs, OP_WRAP): the commitment is a point on the
+// curve, and the signature (R, z) opens it to the value over the wrap's intent context. The program stops on one that does not.
+let kit = null;
+export function wrapOpens(w) {
+  try {
+    kit ||= makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
+    const hx = (b) => '0x' + bytesToHex(b);
+    const cx = hx(w.cx), cy = hx(w.cy), owner = hx(w.owner);
+    secp.ProjectivePoint.fromAffine({ x: BigInt(cx), y: BigInt(cy) }).assertValidity();
+    const ctx = kit.intentContext('tacit-wrap-intent-v1', hx(w.chainBinding), hx(w.asset), wrapExpect(w).depositId, [[cx, cy, owner]], [w.value]);
+    return kit.verifyOpeningSigma(cx, cy, w.value, hx(w.sigR), hx(w.sigZ), ctx) === true;
+  } catch { return false; }
+}
+const stdinOpens = (stdin) => { try { return wrapOpens(readWrapStdin(hexToBytes(String(stdin).replace(/^0x/, '')))); } catch { return false; } };
 
 // ── the pool ──
 
@@ -252,14 +271,15 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
       return reply(400, { ok: false, code: 'bad_stdin', error: `stdin must be the 0x-hex of a bincode SP1Stdin of at most ${cfg.maxStdinBytes} bytes` });
     }
     const bytes = hexToBytes(stdin.slice(2));
-    let want;
-    try { want = wrapExpect(readWrapStdin(bytes)); } catch (err) { return reply(400, { ok: false, code: 'bad_stdin', error: `not a wrap's program input: ${err.message}` }); }
+    let w, want;
+    try { w = readWrapStdin(bytes); want = wrapExpect(w); } catch (err) { return reply(400, { ok: false, code: 'bad_stdin', error: `not a wrap's program input: ${err.message}` }); }
     if (!expect || typeof expect !== 'object' || !B32.test(String(expect.depositId)) || !B32.test(String(expect.leaf))) {
       return reply(400, { ok: false, code: 'bad_expect', error: 'expect must be { depositId, leaf }, each 0x and 32 bytes' });
     }
     if (expect.depositId.toLowerCase() !== want.depositId || expect.leaf.toLowerCase() !== want.leaf) {
       return reply(400, { ok: false, code: 'bad_expect', error: 'expect is not the deposit and the leaf this input proves' });
     }
+    if (!wrapOpens(w)) return reply(400, { ok: false, code: 'bad_opening', error: 'the input\'s signature does not open its commitment, so it cannot be proved' });
     const id = bytesToHex(sha256(bytes)).slice(0, 32);
     return exclusive(async () => {
       const t = clock();
@@ -280,7 +300,7 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
       const d = dayOf(t), n = Number(await kv.get(K.req(d, client))) || 0;
       if (n >= cfg.reqPerClientDay) { await save(); return reply(429, { ok: false, code: 'pool_cap', error: `at most ${cfg.reqPerClientDay} proofs asked for from one place a day; this one can still be proved another way` }); }
       if (q.length + Object.keys(L).length >= cfg.maxPending) { await save(); return reply(429, { ok: false, code: 'pool_full', error: 'the pool is full just now; prove this one another way' }); }
-      await write(K.job(id), { id, type, stdin: stdin.toLowerCase(), expect: want, status: 'open', postedAt: t });
+      await write(K.job(id), { id, type, stdin: stdin.toLowerCase(), expect: want, status: 'open', postedAt: t, opens: true });
       const u = urgent === true ? Number(await kv.get(K.urg(d, client))) || 0 : 0, mark = urgent === true && u < cfg.urgentPerClientDay;
       q.push({ id, at: t, tries: 0, skip: [], ...(mark ? { urgent: true } : {}) });
       changed = true;
@@ -334,6 +354,8 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
         changed = true;
         const job = await read(K.job(e.id), null);
         if (!job || job.status !== 'open') continue;          // gone from under its place: dropped
+        // a job not marked as opening is checked as it comes up, and dropped if it does not open
+        if (!job.opens && !stdinOpens(job.stdin)) { await kv.delete(K.job(e.id)); continue; }
         const l = { lease: token(), until: t + cfg.leaseMs, miner: m, client, at: e.at, tries: e.tries || 0, skip: e.skip || [], ...(e.urgent ? { urgent: true } : {}), ...(house ? { house: true } : {}) };
         L[e.id] = l;
         await save();

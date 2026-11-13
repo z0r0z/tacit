@@ -41,9 +41,9 @@ export function readWrapStdin(bytes) {
   let value = 0n;
   for (let i = 7; i >= 0; i--) value = (value << 8n) | BigInt(e[9][i]);
   const cx = vec(10, 32, 'cx'), cy = vec(11, 32, 'cy'), owner = vec(12, 32, 'the owner');
-  vec(13, 33, 'the signature\'s R'); vec(14, 32, 'the signature\'s z');
+  const sigR = vec(13, 33, 'the signature\'s R'), sigZ = vec(14, 32, 'the signature\'s z');
   const memoHash = vec(15, 32, 'the memo hash');
-  return { chainBinding, asset, value, cx, cy, owner, memoHash };
+  return { chainBinding, asset, value, cx, cy, owner, sigR, sigZ, memoHash };
 }
 
 // What a wrap's proof must commit to, from the wrap itself (dapp/confidential-pool.js leaf, depositId; cxfer-core memo_root): the

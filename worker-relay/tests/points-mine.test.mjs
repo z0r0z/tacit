@@ -13,11 +13,23 @@ import { createMine, readTally, mergeTallies, allocateMineDay, dayId, CREDIT_PRE
 import { makeProofPool, wrapExpect, readWrapStdin, PROOF_POOL } from '../../worker/src/proof-pool.js';
 import { makeProverBoard, PROVER_BOARD } from '../../worker/src/prover-board.js';
 import { stdinFor } from '../../dapp/sp1-stdin.js';
+import { makeConfidentialPool } from '../../dapp/confidential-pool.js';
+import * as secp from '@noble/secp256k1';
+import { keccak_256 } from '@noble/hashes/sha3';
+import { sha256 } from '@noble/hashes/sha256';
 
 const A = '0x1111111111111111111111111111111111111111', B = '0x2222222222222222222222222222222222222222';
 const tac = (n) => BigInt(Math.round(n * 1e6)) * 10n ** 12n;
 const DAY = 86400, D0 = 20800, T = (day, hour = 0) => day * DAY + hour * 3600;
 const WRAP_OP = JSON.parse(readFileSync(new URL('../../tests/fixtures/sp1-stdin/wrap.op.json', import.meta.url), 'utf8'));
+// A page's wrap of `value`, signed as a page signs it.
+const KIT = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
+const signedWrap = (value) => {
+  const v = BigInt(value), r = 0x1234n + v, { cx, cy } = KIT.commitXY(v, r);
+  const dep = KIT.depositId(WRAP_OP.asset, v, cx, cy, WRAP_OP.owner);
+  const sig = KIT.openingSigma(v, r, KIT.intentContext('tacit-wrap-intent-v1', WRAP_OP.chainBinding, WRAP_OP.asset, dep, [[cx, cy, WRAP_OP.owner]], [v]), 0x77n + v);
+  return stdinFor('wrap', { ...WRAP_OP, value: String(v), cx, cy, sigR: sig.R, sigZ: sig.z });
+};
 
 test('the rules: a tally is read only for its own day once the API calls it over; a day\'s amount is shared by points under the cap', () => {
   const body = { day: D0, over: true, pointsPerProof: 20, miners: [{ miner: B, proofs: 1, points: 20 }, { miner: A.toUpperCase().replace('0X', '0x'), proofs: 3, points: 40 }, { miner: '0x' + '33'.repeat(20), proofs: 1, points: 0 }] };
@@ -63,7 +75,7 @@ function world(over = {}) {
   let n = 0;
   // A page asks for a wrap and `miner` proves it.
   const prove = async (miner) => {
-    const bytes = stdinFor('wrap', { ...WRAP_OP, value: String(1500 + ++n) }), e = wrapExpect(readWrapStdin(bytes));
+    const bytes = signedWrap(1500 + ++n), e = wrapExpect(readWrapStdin(bytes));
     await pool.request({ type: 'wrap', stdin: '0x' + Buffer.from(bytes).toString('hex'), expect: e, client: `page${n}` });
     const l = (await pool.lease({ miner, client: miner })).body;
     const w = (x) => BigInt(x).toString(16).padStart(64, '0'), head = Array.from({ length: 32 }, () => w(0));

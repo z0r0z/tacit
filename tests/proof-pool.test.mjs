@@ -12,7 +12,7 @@ import * as secp from '@noble/secp256k1';
 import { keccak_256 } from '@noble/hashes/sha3';
 import { sha256 } from '@noble/hashes/sha256';
 import { bytesToHex, hexToBytes, concatBytes } from '@noble/hashes/utils';
-import { makeProofPool, readWrapStdin, wrapExpect, proofFits, verifyCalldata, proofPoolConfig, clientOf, PROOF_POOL } from '../worker/src/proof-pool.js';
+import { makeProofPool, readWrapStdin, wrapExpect, wrapOpens, proofFits, verifyCalldata, proofPoolConfig, clientOf, PROOF_POOL } from '../worker/src/proof-pool.js';
 import { stdinFor } from '../dapp/sp1-stdin.js';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 import worker, { ethCallVerdict, simulateSettle } from '../worker/src/index.js';
@@ -23,9 +23,15 @@ const WRAP_BIN = new Uint8Array(readFileSync(new URL('wrap.bin', FIX)));
 const MAINNET = JSON.parse(readFileSync(new URL('./fixtures/proof-pool/mainnet-wrap.json', import.meta.url), 'utf8'));
 const hx = (b) => '0x' + bytesToHex(b);
 
-// A wrap's input and what its proof must commit to; `i` makes a different deposit (the value), `memo` a different memo only.
-function wrapJob(i = 0, memo = null) {
-  const op = { ...WRAP_OP, value: String(1500 + i), ...(memo ? { memoHashes: [memo] } : {}) };
+// A wrap's input and what its proof must commit to; `i` makes a different deposit (the value), `memo` a different memo only. Each
+// is signed as a page signs it, so it opens.
+const KIT = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
+function wrapJob(i = 0, memo = null, nonce = 0x77n + BigInt(i)) {
+  const value = 1500n + BigInt(i), r = 0x1234n + BigInt(i);
+  const { cx, cy } = KIT.commitXY(value, r);
+  const dep = KIT.depositId(WRAP_OP.asset, value, cx, cy, WRAP_OP.owner);
+  const sig = KIT.openingSigma(value, r, KIT.intentContext('tacit-wrap-intent-v1', WRAP_OP.chainBinding, WRAP_OP.asset, dep, [[cx, cy, WRAP_OP.owner]], [value]), nonce);
+  const op = { ...WRAP_OP, value: String(value), cx, cy, sigR: sig.R, sigZ: sig.z, ...(memo ? { memoHashes: [memo] } : {}) };
   const bytes = stdinFor('wrap', op);
   return { stdin: hx(bytes), bytes, expect: wrapExpect(readWrapStdin(bytes)), id: bytesToHex(sha256(bytes)).slice(0, 32) };
 }
@@ -124,6 +130,40 @@ test('request: the input names the job, the same input is one job, expect must b
   assert.deepEqual([r.status, r.body.code], [429, 'pool_full'], 'three waiting is full');
   h.t += 86_400_000;
   assert.equal((await h.pool.request({ type: 'wrap', stdin: wrapJob(4).stdin, expect: wrapJob(4).expect, client: 'c1' })).body.code, 'pool_full', 'a new day resets the client, not the queue');
+});
+
+test('opening: an input opens only as the program checks it; one that does not is refused at the door, and an unmarked queued one is dropped when it comes up', async () => {
+  assert.equal(wrapOpens(readWrapStdin(WRAP_BIN)), true, 'a page\'s own wrap opens');
+  assert.equal(wrapOpens(readWrapStdin(wrapJob(3).bytes)), true);
+  const changed = (patch) => readWrapStdin(stdinFor('wrap', { ...WRAP_OP, ...patch }));
+  const plus1 = (x) => '0x' + (BigInt(x) + 1n).toString(16).padStart(64, '0');
+  for (const [patch, why] of [
+    [{ value: '1501' }, 'another value'], [{ chainBinding: '0x' + '01'.repeat(32) }, 'another chain'], [{ asset: '0x' + '02'.repeat(32) }, 'another asset'],
+    [{ owner: '0x' + '03'.repeat(32) }, 'another owner'], [{ sigZ: plus1(WRAP_OP.sigZ) }, 'another z'], [{ sigR: '0x02' + 'ff'.repeat(32) }, 'an R that is no point'],
+    [{ cy: plus1(WRAP_OP.cy) }, 'a commitment off the curve'], [{ cx: '0x' + '00'.repeat(32), cy: '0x' + '00'.repeat(32) }, 'no commitment'],
+  ]) assert.equal(wrapOpens(changed(patch)), false, why);
+
+  const h = harness();
+  const bad = stdinFor('wrap', { ...WRAP_OP, value: '1501' }), badE = wrapExpect(readWrapStdin(bad)), badId = bytesToHex(sha256(bad)).slice(0, 32);
+  const r = await h.pool.request({ type: 'wrap', stdin: hx(bad), expect: { depositId: badE.depositId, leaf: badE.leaf }, client: 'c1' });
+  assert.deepEqual([r.status, r.body.code], [400, 'bad_opening']);
+  assert.equal(await h.store.get(`pp:job:${badId}`), null, 'nothing kept');
+  assert.equal((await h.pool.lease({ miner: MINER, client: 'm1' })).status, 204, 'nothing queued');
+
+  // Jobs in the queue without the mark are checked as they come up: one that does not open is dropped and the next leased.
+  const old = wrapJob(5);
+  await h.store.put(`pp:job:${badId}`, JSON.stringify({ id: badId, type: 'wrap', stdin: hx(bad), expect: badE, status: 'open', postedAt: h.t }));
+  await h.store.put(`pp:job:${old.id}`, JSON.stringify({ id: old.id, type: 'wrap', stdin: old.stdin, expect: old.expect, status: 'open', postedAt: h.t }));
+  await h.store.put('pp:queue', JSON.stringify([{ id: badId, at: h.t, tries: 0, skip: [] }, { id: old.id, at: h.t + 1, tries: 0, skip: [] }]));
+  const l = await h.pool.lease({ miner: MINER, client: 'm1' });
+  assert.deepEqual([l.status, l.body.id], [200, old.id], 'the old job that opens is leased');
+  assert.equal(await h.store.get(`pp:job:${badId}`), null, 'the one that does not is dropped');
+  assert.deepEqual((await h.pool.results([badId])).body.results[badId], { status: 'gone' });
+  assert.equal((await h.pool.lease({ miner: MINER2, client: 'm2' })).status, 204, 'and nothing else waits');
+  // A job posted through the door is marked, so it is not checked again when it comes up.
+  const fresh = wrapJob(6);
+  assert.equal((await h.pool.request({ type: 'wrap', stdin: fresh.stdin, expect: fresh.expect, client: 'c2' })).status, 200);
+  assert.equal(JSON.parse(await h.store.get(`pp:job:${fresh.id}`)).opens, true);
 });
 
 test('lease: the oldest job first, one lease per address on a client and a few on a client, 204 when nothing waits; a lease that runs out puts its job back at its age; three tries and it is dropped', async () => {
@@ -460,10 +500,9 @@ test('a note is paid for once: its input posted again with another signature is 
   await h.pool.request({ type: 'wrap', stdin: a.stdin, expect: a.expect, client: 'page' });
   let l = (await h.pool.lease({ miner: MINER, client: 'm1' })).body;
   assert.equal((await h.pool.submit({ id: l.id, lease: l.lease, publicValues: pvFor(a.expect), proof: PROOF })).body.points, PROOF_POOL.pointsPerProof);
-  // the same wrap with one byte of the opening signature changed: a different input, the same leaf and deposit
-  const z = WRAP_OP.sigZ, flipped = z.slice(0, -2) + (z.slice(-2) === '00' ? '01' : '00');
-  const bytes = stdinFor('wrap', { ...WRAP_OP, value: '1500', sigZ: flipped });
-  const b = { stdin: hx(bytes), expect: wrapExpect(readWrapStdin(bytes)) };
+  // the same wrap signed again with another nonce: a different input, the same leaf and deposit
+  const b = wrapJob(0, null, 0x99n);
+  assert.notEqual(b.stdin, a.stdin);
   assert.deepEqual(b.expect, a.expect, 'the check reads the same leaf, deposit, chain and memos');
   assert.equal((await h.pool.request({ type: 'wrap', stdin: b.stdin, expect: b.expect, client: 'page2' })).status, 200);
   l = (await h.pool.lease({ miner: MINER2, client: 'm2' })).body;
