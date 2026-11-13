@@ -56,7 +56,7 @@ render.tac = () => {
   tcoPaint();
   tpgTop($('#tpg-top'));
   tcard();
-  tpgWhy($('#tpg-why'));
+  tpgWhy($('#tpg-earn'));
   renderTacBal($('#tac-bal'));
   paintTacPrice();
   renderBridge($('#bridge-body'));
@@ -1352,7 +1352,7 @@ async function tcardShieldSay(units) {
   const sf = way === 'permit' ? await chainSweepFee().catch(() => 0n) : 0n, cap = CHAIN_SWEEP.cap ?? ctx.CH.cap ?? null;
   tcdHave(held != null ? `${fmt(held, 18, 2)} in ${payer() === 'tacit' ? 'this key’s address' : 'your wallet'}` : '');
   if (held === 0n) return [html`No TAC in ${your()}. <button class="link" type="button" data-hx="swap:ether:tac">Buy with ETH</button> · <a class="link" href="/trade/tac/#btc=buy">Buy with sats</a> · <a class="link" href="/rewards/">Claim your airdrop</a>`, false];
-  const rows = (arrives) => tcdRows(tcdRow('Arrives', arrives), key ? tcdGas(way, sf, units) : tcdRow('Gas', html`<span><span class="num">${t4(sf)}</span> TAC, or your own ETH</span>`), tcdRow('Takes', html`${key ? tcdTakes(way) : 'One signature'} · about a minute`));
+  const rows = (arrives) => tcdRows(tcdRow('Arrives', arrives), tcdRow('Earns', html`<span class="mute">a share of every fee, no lock</span>`), key ? tcdGas(way, sf, units) : tcdRow('Gas', html`<span><span class="num">${t4(sf)}</span> TAC, or your own ETH</span>`), tcdRow('Takes', html`${key ? tcdTakes(way) : 'One signature'} · about a minute`));
   if (!units) return [html`${rows(html`<span class="mute">private, on the Tacit chain</span>`)}${cap != null && held != null && held > cap * E10 ? html`<p class="tcd-cap">Up to ${fmt(cap, 8, 0)} TAC a shield for now.</p>` : ''}`, true];
   if (cap != null && units > cap) return [tcdErr(chainCapLine(cap)), false];
   const total = units * E10 + sf;
@@ -1582,16 +1582,15 @@ const tpgPx = (pool, shares) => (TPGW.ui ? TPGW.ui.sharePrice(pool, shares, 5) :
 function tpgWhy(el) {
   el.hidden = !chainOn();
   if (!chainOn()) return;
+  const top = $('#tpg-why'), fees = $('#tpg-fees');
   const cs = TPGW.cs, roll = TPGW.roll || [], last = roll.length ? [...roll].sort((a, b) => b.height - a.height)[0] : null;
   const price = cs ? tpgPx(cs.pool, cs.shares) : last ? tpgPx(last.pool, last.shares) : null;
   const mb = cs && TPGW.w ? TPGW.w.shieldMargin({ pool: cs.pool, shares: cs.shares }) : null, margin = mb == null ? 'a small margin' : `${(Number(mb) / 100).toFixed(2).replace(/0$/, '')}%`;
   const k = S.key?.pubHex, shares = k && ctx.TACP.sh?.pub === k ? ctx.TACP.sh.v : null, worth = k && ctx.CH.pub === k ? ctx.CH.bal : null;
   const lf = tpgLeader(), sweep = cs?.leader?.sweepFee ?? null, t4 = (v) => fmt(v, 8, 4), blocks = cs?.height ?? roll.length;
-  const pn = cs ? tpgPrice(cs.pool, cs.shares) : last ? tpgPrice(last.pool, last.shares) : null, up = pn != null && pn > 1 ? `+${((pn - 1) * 100).toFixed(2)}% since it started` : '';
-  mount(el, html`<h2 class="tpg-h" id="tpg-why-h">Why hold it</h2>
-    ${shares != null && shares > 0n && worth != null ? html`<p class="tpg-mine">Your ${fmt(shares, 8, 4)} shares are worth ${fmt(worth, 8, 4)} TAC.</p>` : ''}
-    <p class="tpg-feeline">Held as shares of one pool. Every payment and withdrawal leaves a fee in it, so each share is worth a little more.</p>
-    <details class="tpg-more"><summary>Where the fees go</summary>
+  tpgMount(top, html`${shares != null && shares > 0n && worth != null ? html`<p class="tpg-mine">Your ${fmt(shares, 8, 4)} shares are worth ${fmt(worth, 8, 4)} TAC.</p>` : ''}
+    <p class="tpg-feeline">Shielded TAC is staked: held as shares of one pool. Every payment and withdrawal leaves a fee in it, so each share is worth more. No lock.</p>`);
+  tpgMount(fees, html`<details class="tpg-more"><summary>Where the fees go</summary>
     <ul class="tpg-fees">
       <li><b>Send</b><div class="cost">${lf != null ? `about ${t4(lf + TPG_FLOOR)} TAC` : 'a small fee'}</div>
         <p class="h"><span>0.002 TAC<small>to holders</small></span></p><p><span>${lf != null ? `${t4(lf)} TAC` : 'the rest'}<small>to the leader, for Ethereum gas</small></span></p></li>

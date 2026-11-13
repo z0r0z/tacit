@@ -298,14 +298,15 @@ try {
     const { page, ctx, bad, shot } = await visit();
     ok((await page.title()) === 'tacit TAC', 'TAC\'s page opens');
     // the page is the chain's: named at its head, with what it rests on; the card beside the chain, its button on the first screen
-    const head = await page.evaluate(() => ({ h1: document.querySelector('#tac-h')?.textContent.replace(/\s+/g, ' ').trim(), marks: [...document.querySelectorAll('.tpg-trust a')].map((a) => a.textContent.trim()) }));
+    const head = await page.evaluate(() => ({ h1: document.querySelector('#tac-h')?.textContent.replace(/\s+/g, ' ').trim(), lead: document.querySelector('.tpg-hero .lead')?.textContent.trim(), what: document.querySelector('.tpg-hero .tpg-what')?.textContent.trim(), marks: [...document.querySelectorAll('.tpg-trust a')].map((a) => a.textContent.trim()) }));
     ok(head.h1 === 'tacit chain' && head.marks.join('|') === 'No owner or upgrade key|Every block proven|Data on Ethereum|Forced inclusion', `the page is named for the chain, with what it rests on (${JSON.stringify(head)})`);
+    ok(head.lead === 'Stake TAC privately, earn from every payment, pay in about a minute.' && /^A zk-rollup settled on Ethereum/.test(head.what || ''), `its first line is what a holder does here, its second what the chain is (${head.lead} / ${head.what})`);
     await page.waitForFunction(() => !!document.querySelector('#tpg-live .cl-chain li a, #tpg-live .cl-chain li.sl') && !!document.querySelector('#tcd-go'), null, { timeout: 20000 }).catch(() => {});
     const wide = await laid(page);
     ok(wide.card.left >= wide.live.right && wide.card.top < wide.live.bottom && wide.go.bottom <= wide.screen, `on a wide screen the card is beside the chain, its button on the first screen (${JSON.stringify(wide)})`);
     // before sign-in the card already says what a shield brings and costs, from what anyone can read
     const out = await shieldQuote(page, '250');
-    ok(/^≈ 249\.\d+ TAC, private$/.test(out.Arrives) && out.Gas === '0.04 TAC, or your own ETH' && /^One signature · about a minute$/.test(out.Takes) && (await text(page, '#tcd-go')) === 'Sign in',
+    ok(/^≈ 249\.\d+ TAC, private$/.test(out.Arrives) && out.Earns === 'a share of every fee, no lock' && out.Gas === '0.04 TAC, or your own ETH' && /^One signature · about a minute$/.test(out.Takes) && (await text(page, '#tcd-go')) === 'Sign in',
       `signed out, a shield is quoted from the chain's public figures (${JSON.stringify(out)})`);
     await page.fill('#tcd-amt', '');
     await page.click('#tpg-how > summary');
@@ -330,17 +331,21 @@ try {
     ok(pool?.shown && pool.says.startsWith(`${LEAVES} notes made, ${SPENT} spent.`) && pool.inked > LEAVES && pool.height > 30 && pool.height < 90, `the pool's notes are drawn, the leader's counts under them (${JSON.stringify(pool)})`);
     await page.waitForFunction(() => /GPUs? prove/.test(document.querySelector('#tpg-part')?.textContent || ''), null, { timeout: 20000 }).catch(() => {});
     const ways = await page.$$eval('#tpg-part .cl-part li', (ls) => ls.map((l) => [l.querySelector('b').textContent.trim(), l.querySelector('div span').textContent.trim()]));
-    ok(ways.map((x) => x[0]).join('|') === 'Pay|Lead|Prove|Verify' && /^2 GPUs prove its blocks\./.test(ways[2]?.[1] || ''), `the ways to take part, one for each step of the path, the board's provers counted (${ways.map((x) => x[0]).join(', ')}: ${ways[2]?.[1]})`);
+    ok(ways.map((x) => x[0]).join('|') === 'Stake|Pay|Lead|Prove|Verify' && /^2 GPUs prove its blocks\./.test(ways[3]?.[1] || ''), `the ways to take part, staking and paying first, then one for each step of the path, the board's provers counted (${ways.map((x) => x[0]).join(', ')}: ${ways[3]?.[1]})`);
+    ok(/earns a share of every fee, with no lock/.test(ways[0]?.[1] || '') && await page.$eval('#tpg-part .cl-part li:nth-child(2) [data-tpg]', (b) => b.dataset.tpg === 'pay' && b.textContent === 'Send'), `staking says what it earns, and paying opens Send (${ways[0]?.[1]})`);
     // the path is a ring for each step; the chart is a staircase over the whole history, which the API gives a hundred blocks at a time
     // (one step in the page: a redraw between finding the ring and reading it would leave a node with no style)
     const ring = await page.evaluate(() => { const e = document.querySelector('#tpg-mid .cl-flow .cl-ic'), c = e && getComputedStyle(e); return c ? `${c.width} ${c.borderRadius}` : ''; });
     ok(ring === '40px 50%', `each step of the path is a ring (${ring})`);
-    await page.waitForFunction(() => /^block 1 ·/.test(document.querySelector('#tpg-chain .cl-chart figcaption')?.textContent.trim() || ''), null, { timeout: 20000 }).catch(() => {});
-    const line = await page.$eval('#tpg-chain .cl-plot .ln', (e) => e.getAttribute('d')).catch(() => '');
+    await page.waitForFunction(() => /^block 1 ·/.test(document.querySelector('#tpg-earn .cl-chart figcaption')?.textContent.trim() || ''), null, { timeout: 20000 }).catch(() => {});
+    const line = await page.$eval('#tpg-earn .cl-plot .ln', (e) => e.getAttribute('d')).catch(() => '');
     ok(/^M[\d. ]+( H[\d.]+ V[\d.]+){10,}$/.test(line), `the share chart is a staircase: a share's worth holds until a block moves it (${line.slice(0, 60)})`);
     const pages = apiAsked.filter((x) => x.startsWith('/prover/rollup')).length;
-    ok(/^block 1 ·/.test(await text(page, '#tpg-chain .cl-chart figcaption')) && pages === 3, `the chart runs from the first block, the API's pages taken until none is left (${pages} asked)`);
-    ok((await page.$$('#tpg-chain .cl-plot .pt')).length === 1 && await page.$eval('#tpg-chain .cl-plot .pt', (e, last) => e.classList.contains('last') && e.dataset.i === last, String(SPAN - 1)), 'past forty blocks the chart marks only the newest');
+    ok(/^block 1 ·/.test(await text(page, '#tpg-earn .cl-chart figcaption')) && pages === 3, `the chart runs from the first block, the API's pages taken until none is left (${pages} asked)`);
+    // staking has its own section over the chain's: what it is, what the fees have added to every share (here 0.03 TAC a block over 250 blocks), then the chart
+    const earn = await page.evaluate(() => { const s = document.querySelector('#tpg-earn'), c = document.querySelector('#tpg-chain'); return { h: s?.querySelector('h2')?.textContent, says: s?.querySelector('.tpg-feeline')?.textContent.trim(), earned: s?.querySelector('.cl-earned')?.textContent.trim(), over: !!(s && c && s.compareDocumentPosition(c) & Node.DOCUMENT_POSITION_FOLLOWING), shown: !!s && !s.hidden }; });
+    ok(earn.shown && earn.over && earn.h === 'Stake and earn' && /^Shielded TAC is staked: held as shares of one pool\./.test(earn.says || '') && / No lock\.$/.test(earn.says || '') && earn.earned === 'Holders earned 7.50 TAC in fees since the first block.', `staking is told in its own section, with what holders earned from the blocks themselves (${JSON.stringify(earn)})`);
+    ok((await page.$$('#tpg-earn .cl-plot .pt')).length === 1 && await page.$eval('#tpg-earn .cl-plot .pt', (e, last) => e.classList.contains('last') && e.dataset.i === last, String(SPAN - 1)), 'past forty blocks the chart marks only the newest');
     ok(/about 0\.017 TAC/.test(await text(page, '.tpg-fees')) && /0\.015 TAC/.test(await text(page, '.tpg-fees')), `the fee cards take the leader's terms (${(await text(page, '.tpg-fees')).slice(0, 120)})`);
     await shot('status');
     await signIn(page);

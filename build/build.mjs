@@ -231,7 +231,7 @@ const tradeAssetPage = (slug) => readFileSync(join(DAPP_DIR, TRADE_PAGE), 'utf8'
 // index.html here, differing only in the head's name for it, the swap card's preloads (the card is drawn there only when a tile opens it), a preload
 // of front/tac.js (which the module imports to draw TAC's page, under the URL it imports) and a mark on <html> that lays it out as TAC's page before
 // the module runs; it is made last, once index.html's tokens and pin are final, and `--verify-only` fails when it is not what this makes.
-const TAC_PAGE_DESC = 'The Tacit chain: a zk-rollup for private payments in TAC, settled on Ethereum and connected to Bitcoin by proof.';
+const TAC_PAGE_DESC = 'The Tacit chain: stake TAC privately, earn from every payment and pay in about a minute. A zk-rollup settled on Ethereum, connected to Bitcoin by proof.';
 const TAC_PAGE_SWAPS = [
   ['<html lang="en">', '<html lang="en" data-page="tac">'],
   ['<title>tacit defi</title>', '<title>tacit TAC</title>'],

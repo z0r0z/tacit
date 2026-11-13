@@ -10,7 +10,7 @@ const VERIFIER = '0xb69f2584cbcff99a58c4e7002e8b89af54a6f4e2', LEADER = '0x841d9
 const BLOCK_VKEY = '0x00610fb0fa1b5d800e548c3cdcdf98ceb4288828be1cec1fb81e39004bad6ed6', SPEND_VK = '0xc85febd5ed7a2b00819d90960a17bf686b15d28183c7a207499204bd369bdfe4';
 const GH = 'https://github.com/src-company/tacit/';
 const TAC_TOKEN = '0xa1313eb9f3a445606d9583bcac3ebeb56a858279';
-const PROVER_SEEN_S = 600, STALL_S = 180, EVERY_MS = 30e3, BEAT_MS = 5e3, SHOWN = 12, MORE = 20, UNIT = 100000000n, FLOOR = 200000n;
+const PROVER_SEEN_S = 600, STALL_S = 180, EVERY_MS = 30e3, BEAT_MS = 5e3, SHOWN = 12, MORE = 20, UNIT = 100000000n, FLOOR = 200000n, DAY_BLOCKS = 7200, WEEK = 7, WEEK_PAGES = 12;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const rpc = (method, params) => hedgedRpc(ETH_NODES, method, params, { hedgeMs: 1500, timeoutMs: 15e3 });
 const word = (n) => BigInt(n).toString(16).padStart(64, '0');
@@ -30,6 +30,7 @@ const okBlock = (x) => Number.isInteger(x?.height) && Number.isInteger(x.ethBloc
 
 const ICON = {
   Payments: '<svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg>',
+  Pay: '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>',
   Leader: '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>',
   Provers: '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/></svg>',
   Ethereum: '<svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg>',
@@ -37,17 +38,17 @@ const ICON = {
 const flowOf = (c, pending) => (c.cls === 'sk' || !c.cls || c.cls === 'bad' ? 'off' : c.name === 'Provers' ? (c.cls === 'ok' ? (pending ? 'live' : 'on') : 'off') : c.cls === 'busy' ? 'live' : 'on');
 const wireOf = (a, b) => (a === 'off' || b === 'off' ? 'off' : a === 'live' || b === 'live' ? 'live' : 'on');
 
-export function mountChainLive({ top, mid, rest }) {
+export function mountChainLive({ top, mid, rest, earn = document.createElement('div') }) {
   const cfg = tacitChain();
   top.innerHTML = `<div class="cl-h"><span class="cl-v" data-r="verdict" data-s=""><span class="dot"></span><span>Reading…</span></span><span class="cl-sub" data-r="sub"></span><span class="cl-more" data-r="more"></span></div>
     <ol class="cl-chain" data-r="chain" aria-label="Latest blocks"></ol><div class="sr" data-r="live" role="status" aria-live="polite"></div>`;
   mid.innerHTML = `<div class="cl-flow" data-r="flow" aria-live="polite"></div><p class="cl-note" data-r="note"></p><div class="cl-stats" data-r="stats"></div>
     <figure class="cl-pool" data-r="pool"><canvas role="img"></canvas><figcaption></figcaption></figure>`;
-  rest.innerHTML = `<section class="tpg-panel"><h2 class="tpg-h">A share's worth, block by block</h2><div class="cl-chart" data-r="chart"></div></section>
-    <section class="tpg-panel" id="tpg-part"><h2 class="tpg-h">Take part</h2><ul class="cl-part" data-r="part"></ul></section>
+  earn.innerHTML = '<p class="cl-earned" data-r="earned"></p><div class="cl-chart" data-r="chart"></div>';
+  rest.innerHTML = `<section class="tpg-panel" id="tpg-part"><h2 class="tpg-h">Take part</h2><ul class="cl-part" data-r="part"></ul></section>
     <section class="tpg-panel" id="tpg-rests"><h2 class="tpg-h">What it rests on</h2><ul class="cl-facts" data-r="facts"></ul>
       ${cfg && !cfg.dev ? '<details class="tpg-fold cl-tech"><summary>Chain facts</summary><div><ul class="cl-facts" data-r="tech"></ul></div></details><details class="tpg-fold cl-tech" id="tpg-lead"><summary>Lead blocks</summary><div><ul class="cl-facts" data-r="lead"></ul></div></details>' : ''}</section>`;
-  const el = (k) => { for (const root of [top, mid, rest]) { const e = root.querySelector(`[data-r="${k}"]`); if (e) return e; } return null; };
+  const el = (k) => { for (const root of [top, mid, earn, rest]) { const e = root.querySelector(`[data-r="${k}"]`); if (e) return e; } return null; };
   const put = (k, html) => { const e = el(k); if (e && e.__h !== html) { e.__h = html; e.innerHTML = html; } };
   if (!cfg) { put('flow', '<p class="cl-off">The Tacit chain is not deployed here.</p>'); top.classList.remove('cl-hold'); return { start() {}, stop() {}, mine() {} }; }
 
@@ -76,7 +77,7 @@ export function mountChainLive({ top, mid, rest }) {
     else if (MINE.moved && Date.now() - MINE.moved > 9000) { MINE.since = newest; MINE.moved = 0; }
     return newest === MINE.since;
   }
-  let shown = SHOWN, dirty = false, busy = false, stale = false, said = null, floor = null, olderBusy = false, olderErr = false, filled = false, introAt = 0, CH = null, timers = [];
+  let shown = SHOWN, dirty = false, busy = false, stale = false, said = null, floor = null, olderBusy = false, olderErr = false, filled = false, introAt = 0, CH = null, timers = [], weekAsked = 0;
   const mark = () => { if (!dirty) { dirty = true; queueMicrotask(draw); } };
   const nowS = () => (R.chain ? R.chain.t + (Date.now() - R.chain.at) / 1000 : Date.now() / 1000);
   const say = (t) => { el('live').textContent = t; };
@@ -210,8 +211,25 @@ export function mountChainLive({ top, mid, rest }) {
       <span class="yl num">${lo.toFixed(5)}</span><i class="xh" hidden></i><span class="tip num" hidden></span></div>
       <figcaption><span>block ${int(x0)} · ${pts[0][1].toFixed(5)}</span><span>block ${int(x1)} · ${pts.at(-1)[1].toFixed(5)} TAC</span></figcaption></figure>`;
   }
+  function earned(hist, chain) {
+    if (!chain || !hist.length) return '';
+    const from = chain.n - WEEK * DAY_BLOCKS;
+    let sum = 0n, low = null, short = false;
+    for (let i = 0; i < hist.length; i++) {
+      const b = hist[i], was = hist[i + 1];
+      if (b.ethBlock < from) break;
+      if ((!was && b.height > 1) || (was && was.height !== b.height - 1)) { short = true; break; }
+      const p0 = (was ? BigInt(was.pool) : 0n) + UNIT, s0 = (was ? BigInt(was.shares) : 0n) + UNIT, fee = BigInt(b.pool) + UNIT - (BigInt(b.shares) + UNIT) * p0 / s0;
+      if (fee > 0n) sum += fee;
+      low = b;
+    }
+    if (short) { if (filled && !olderBusy && mayHaveOlder() && weekAsked < WEEK_PAGES) { weekAsked++; older(); } return ''; }
+    if (!low || sum <= 0n) return '';
+    const week = low.height !== 1;
+    return `Holders earned <b class="num">${tac(sum)} TAC</b> in fees ${week ? 'in the past 7 days' : 'since the first block'}.`;
+  }
   function scrub(e) {
-    const pl = rest.querySelector('.cl-plot');
+    const pl = earn.querySelector('.cl-plot');
     if (!pl || !CH) return;
     const r = pl.getBoundingClientRect(), f = (e.clientX - r.left) / (r.width || 1);
     let i = 0;
@@ -224,7 +242,7 @@ export function mountChainLive({ top, mid, rest }) {
     pl.querySelectorAll('.pt').forEach((p) => p.classList.toggle('on', Number(p.dataset.i) === i));
   }
   function unscrub() {
-    const pl = rest.querySelector('.cl-plot');
+    const pl = earn.querySelector('.cl-plot');
     if (!pl) return;
     pl.querySelectorAll('.xh, .tip').forEach((x) => { x.hidden = true; });
     pl.querySelectorAll('.pt.on').forEach((p) => p.classList.remove('on'));
@@ -281,7 +299,8 @@ export function mountChainLive({ top, mid, rest }) {
     const seat = lead ? `${(Number(lead.seat / 10n ** 15n) / 1000).toLocaleString('en-US', { maximumFractionDigits: 3 })} TAC` : '1,000 TAC';
     const li = (name, title, line, go) => `<li><i class="cl-ic">${ICON[name]}</i><div><b>${title}</b><span>${line}</span></div>${go}</li>`;
     return [
-      li('Payments', 'Pay', 'Shield TAC, then send it to a name, a link or a code.', '<button class="link" type="button" data-tpg="priv">Shield</button>'),
+      li('Payments', 'Stake', 'Shield TAC and hold it. It earns a share of every fee, with no lock.', '<button class="link" type="button" data-tpg="priv">Shield</button>'),
+      li('Pay', 'Pay', 'Send it to a name, a link or a code. It lands in about a minute.', '<button class="link" type="button" data-tpg="pay">Send</button>'),
       li('Leader', 'Lead', `${lead ? (lead.held ? `${int(lead.held)} seat${lead.held === 1 ? '' : 's'} held. ` : 'No seat is held yet. ') : ''}A seat is ${seat}, back 7 days after you leave.`, cfg.dev ? '' : '<button class="link" type="button" data-part="lead">How</button>'),
       li('Provers', 'Prove', `${gpus ? `${int(gpus)} GPU${gpus === 1 ? '' : 's'} prove its blocks. ` : ''}Any machine may: the proof is checked, not who made it.`, '<a href="/prove/">Start</a>'),
       li('Ethereum', 'Verify', 'Every block’s data is on Ethereum. Rebuild the chain from it.', `<a href="${GH}tree/main/contracts/sp1/confidential/tacit-block/node" target="_blank" rel="noopener noreferrer">The node ↗</a>`),
@@ -360,6 +379,7 @@ export function mountChainLive({ top, mid, rest }) {
     part(() => pool(R.state));
     const hist = history();
     part(() => put('chart', chart(R.blocks === undefined && !hist.length ? undefined : hist)));
+    part(() => put('earned', earned(hist, R.chain)));
     part(() => put('more', more(hist)));
     part(() => put('part', ways(R)));
     part(() => put('facts', facts(R.chain)));
@@ -371,7 +391,7 @@ export function mountChainLive({ top, mid, rest }) {
   function tick() {
     if (document.hidden) return;
     const now = nowS();
-    for (const root of [top, mid, rest]) root.querySelectorAll('[data-at]').forEach((e) => { const t = ago(now - Number(e.dataset.at)); if (e.textContent !== t) e.textContent = t; });
+    for (const root of [top, mid, earn, rest]) root.querySelectorAll('[data-at]').forEach((e) => { const t = ago(now - Number(e.dataset.at)); if (e.textContent !== t) e.textContent = t; });
     el('sub').classList.toggle('stale', !!R.at && Date.now() - R.at > 2 * EVERY_MS + 30e3);
   }
   async function beat() {
@@ -402,9 +422,9 @@ export function mountChainLive({ top, mid, rest }) {
     } finally { busy = false; if (R.at) top.classList.remove('cl-hold'); mark(); if (stale) { stale = false; refresh(); } }
   }
   const onVis = () => { if (!document.hidden && Date.now() - (R.at || 0) > 20e3) refresh(); };
-  rest.addEventListener('pointermove', (e) => { if (e.target.closest?.('.cl-plot')) scrub(e); });
-  rest.addEventListener('pointerleave', unscrub);
-  rest.addEventListener('pointerout', (e) => { if (e.target.closest?.('.cl-plot') && !e.relatedTarget?.closest?.('.cl-plot')) unscrub(); });
+  earn.addEventListener('pointermove', (e) => { if (e.target.closest?.('.cl-plot')) scrub(e); });
+  earn.addEventListener('pointerleave', unscrub);
+  earn.addEventListener('pointerout', (e) => { if (e.target.closest?.('.cl-plot') && !e.relatedTarget?.closest?.('.cl-plot')) unscrub(); });
   top.addEventListener('click', async (e) => { if (!e.target.closest?.('[data-more]')) return; shown += MORE; mark(); if (HAVE.size < shown) await older(); });
   rest.addEventListener('click', (e) => {
     const d = e.target.closest?.('[data-part="lead"]') ? rest.querySelector('#tpg-lead') : null;

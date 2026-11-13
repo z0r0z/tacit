@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-A4YU6UNWexU7dubUSZVccfq6TLYqrpoempicZHH96ls=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-0hjtfI0xvPNDHyf0QMMvpmfQrfeCgGRt31y75/uhMcU=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -20,15 +20,15 @@
 <link rel="preload" href="/fonts/instrument-serif-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/ibm-plex-mono-500-latin.woff2" as="font" type="font/woff2" crossorigin>
-<script defer src="/front-route.js?cb=f7b5dda7"></script>
+<script defer src="/front-route.js?cb=3130e77e"></script>
 <title>tacit TAC</title>
 <link rel="canonical" href="https://tacit.finance/tac/">
-<meta name="description" content="The Tacit chain: a zk-rollup for private payments in TAC, settled on Ethereum and connected to Bitcoin by proof.">
+<meta name="description" content="The Tacit chain: stake TAC privately, earn from every payment and pay in about a minute. A zk-rollup settled on Ethereum, connected to Bitcoin by proof.">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="tacit">
 <meta property="og:url" content="https://tacit.finance/tac/">
 <meta property="og:title" content="tacit TAC">
-<meta property="og:description" content="The Tacit chain: a zk-rollup for private payments in TAC, settled on Ethereum and connected to Bitcoin by proof.">
+<meta property="og:description" content="The Tacit chain: stake TAC privately, earn from every payment and pay in about a minute. A zk-rollup settled on Ethereum, connected to Bitcoin by proof.">
 <meta property="og:image" content="https://tacit.finance/tacit-card.png">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="theme-color" content="#E8E0CC" media="(prefers-color-scheme: light)">
@@ -76,7 +76,7 @@
 <link rel="modulepreload" href="/reward-pop.js?cb=88973dac">
 <link rel="modulepreload" href="/evm-pool-tokens.js?cb=16e0e196">
 <link rel="modulepreload" href="/net-pick.js?cb=9229f173">
-<link rel="modulepreload" href="/front/tac.js?cb=f79c6229">
+<link rel="modulepreload" href="/front/tac.js?cb=68837f8f">
 <!-- preload:end -->
 <style>
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
@@ -348,7 +348,6 @@ a.di { color: inherit; text-decoration: none; }
 @media (hover: hover) { .chb:hover, .news:hover { border-color: var(--ink); } .chb:hover i { transform: translateX(3px); } }
 @media (prefers-reduced-motion: reduce) { .chb, .chb i, .news { transition: none; } }
 @media (max-width: 560px) { .chl .w { display: none; } .chb { gap: 4px 8px; padding: 6px 13px; } }
-@media (max-width: 380px) { .chl .w3 { display: none; } }
 /* the airdrop's pill goes when its chip does: once the airdrop closes, or signed in, where the Airdrop card in Your Tacit already shows it */
 .newsl.below:not(:has(> .news:not([hidden]))), .hero:has(~ #dash:not([hidden]) [data-dash-open="airdrop"]) .newsl.below { display: none; }
 /* The farms, the second row of the table under the card: a pair and its APR a chip, best first, each opening the card's Earn tab on that pool's ETH zap. The row's height is
@@ -1570,6 +1569,7 @@ html[data-page="tac"] #tcd-seg:empty { min-height: 32px; }
 .tpg-hero h1 { margin-bottom: 16px; }
 .tpg-hero h1 em { font-style: italic; }
 .tpg-hero .lead { max-width: 44ch; margin: 0; font: 400 20px/1.3 var(--serif); letter-spacing: 0; color: var(--ink); text-wrap: balance; }
+.tpg-hero .tpg-what { max-width: 66ch; margin-top: 10px; font-size: 13px; }
 .tpg-trust { display: flex; flex-wrap: wrap; gap: 6px 20px; margin: 18px 0 0; padding: 0; list-style: none; font-size: 12px; }
 .tpg-trust li { display: flex; align-items: baseline; gap: 6px; }
 .tpg-trust li::before { content: '✓'; color: var(--ok); font-weight: 500; }
@@ -1587,11 +1587,11 @@ html[data-page="tac"] #tcd-seg:empty { min-height: 32px; }
 .cl-chain li.nx.me small { color: var(--ink); }
 /* the other parts drawn a moment after the page keep their places too, so nothing under them moves when they arrive */
 #tpg-mid:empty { min-height: 324px; }
-#tpg-chain:empty { min-height: 1000px; }
+#tpg-chain:empty { min-height: 1010px; }
 #tcd-tabs:empty { min-height: 65px; }
-#tpg-p:empty { min-height: 297px; }
-@media (max-width: 639px) { #tpg-mid:empty { min-height: 398px; } .cl-mid .cl-note, .cl-pool figcaption { min-height: 36px; } }
-@media (max-width: 560px) { #tcd-tabs:empty { min-height: 59px; } #tpg-p:empty { min-height: 291px; } }
+#tpg-p:empty { min-height: 336px; }
+@media (max-width: 639px) { #tpg-mid:empty { min-height: 398px; } .cl-mid .cl-note, .cl-pool figcaption { min-height: 36px; } #tpg-chain:empty { min-height: 1283px; } }
+@media (max-width: 560px) { #tcd-tabs:empty { min-height: 59px; } #tpg-p:empty { min-height: 330px; } }
 .cl-mid .cl-stats { margin-top: 20px; }
 /* the pool's notes, a dot each */
 .cl-pool { margin: 20px 0 0; padding-top: 16px; border-top: 1px solid var(--hair); }
@@ -1599,6 +1599,17 @@ html[data-page="tac"] #tcd-seg:empty { min-height: 32px; }
 .cl-pool canvas { display: block; width: 100%; height: 56px; color: var(--ink); }
 .cl-pool figcaption { min-height: 18px; margin-top: 10px; font-size: 12px; line-height: 1.5; color: var(--mute); text-wrap: pretty; }
 .cl-pool figcaption b { font-weight: 500; color: var(--ink); }
+/* staking: what it is, what holders earned, a share's worth block by block, and where each fee goes */
+#tpg-why > :first-child { margin-top: 0; }
+#tpg-why:empty { min-height: 40px; }
+#tpg-earn-live { padding-top: 10px; }
+.cl-earned { min-height: 1.5em; margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--mute); text-wrap: pretty; }
+.cl-earned b { font-weight: 500; color: var(--ink); }
+#tpg-earn-live:empty { min-height: 193px; }
+#tpg-fees { padding-top: 14px; }
+#tpg-fees:empty { min-height: 34px; }
+#tpg-fees .tpg-more { margin-top: 0; }
+@media (max-width: 639px) { #tpg-why:empty { min-height: 60px; } .cl-earned { min-height: 3em; } #tpg-earn-live:empty { min-height: 196px; } }
 /* the card, framed: the one thing on the page to act with */
 .tcd, #tpg-live + #tac-claim[hidden] + #tpg-co[hidden] + #tpg-card { margin-top: 28px; padding: 20px 22px 22px; background: var(--card); border: 1px solid var(--hair); border-radius: 18px; box-shadow: var(--float); }
 .tpg-panel.tpg-act { margin-top: 28px; padding: 0; background: none; border: 0; }
@@ -1611,7 +1622,7 @@ html[data-page="tac"] #tcd-seg:empty { min-height: 32px; }
 .tcd-foot { margin-top: 18px; }
 /* what a move costs and brings, a line each */
 .tcd-q { margin-top: 14px; }
-.tcd-q[data-tab="shield"]:empty { min-height: 116px; }
+.tcd-q[data-tab="shield"]:empty { min-height: 155px; }
 .tcd-rows { display: grid; margin: 0; font-size: 12.5px; }
 .tcd-say { margin: 0; }
 .tcd-say + .tcd-rows { margin-top: 10px; border-top: 1px solid var(--hair); }
@@ -2071,7 +2082,8 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   <section class="tpg" id="sheet-tac" aria-labelledby="tac-h">
     <div class="tpg-hero">
       <h1 id="tac-h" tabindex="-1">tacit <em>chain</em></h1>
-      <p class="lead">A zk-rollup for private payments in TAC. Settled on Ethereum, connected to Bitcoin by proof.</p>
+      <p class="lead">Stake TAC privately, earn from every payment, pay in about a minute.</p>
+      <p class="tpg-what">A zk-rollup settled on Ethereum, connected to Bitcoin by proof.</p>
       <ul class="tpg-trust" aria-label="What it rests on">
         <li><a href="#tpg-rests" data-tpg-to="tpg-rests">No owner or upgrade key</a></li>
         <li><a href="#tpg-rests" data-tpg-to="tpg-rests">Every block proven</a></li>
@@ -2102,8 +2114,8 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
     <div class="cl-top cl-mid" id="tpg-mid" aria-label="The path a payment takes, and what the chain holds"></div>
     <details class="tpx" id="tac-px" hidden></details>
     <section class="tpg-panel" id="tpg-top" aria-labelledby="tpg-top-h" hidden><h2 class="tpg-h" id="tpg-top-h">All your TAC</h2></section>
+    <section class="tpg-panel" id="tpg-earn" aria-labelledby="tpg-earn-h"><h2 class="tpg-h" id="tpg-earn-h">Stake and earn</h2><div id="tpg-why"></div><div id="tpg-earn-live"></div><div id="tpg-fees"></div></section>
     <div class="cl" id="tpg-chain"></div>
-    <section class="tpg-panel" id="tpg-why" aria-labelledby="tpg-why-h" hidden></section>
     <details class="tpg-fold" id="tpg-where"><summary>Where your TAC is</summary><div><div id="tac-bal"></div><details class="tpg-br" id="tpg-br"><summary>Move between Bitcoin and Ethereum →</summary><div id="bridge-body"></div></details></div></details>
     <details class="tpg-fold" id="tpg-how"><summary>The networks</summary><div id="tpg-nets"></div></details>
     <details class="tpg-fold"><summary>What is public</summary><div><ul class="tpg-facts">
@@ -2133,7 +2145,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
     </div>
     <div class="says">
       <div class="chl" id="chl">
-        <a class="chb" id="chl-a" href="/chain/" title="The Tacit chain, live"><svg class="tk w" aria-hidden="true"><use href="#tk-tac"/></svg><b>Tacit chain</b><span class="dot" id="chl-dot" aria-hidden="true"></span><span><span class="w3">a zk-rollup for </span><span class="w">private </span>TAC payments<span class="w">, settled on Ethereum</span></span><i aria-hidden="true">→</i></a>
+        <a class="chb" id="chl-a" href="/tac/" title="The Tacit chain, live"><svg class="tk w" aria-hidden="true"><use href="#tk-tac"/></svg><b>Tacit chain</b><span class="dot" id="chl-dot" aria-hidden="true"></span><span>stake TAC, earn<span class="w"> from every payment</span>, pay<span class="w"> privately</span></span><i aria-hidden="true">→</i></a>
       </div>
       <div class="newsl below">
         <a class="news" id="air-news" href="/rewards/"><span class="dot" data-dot="tac"></span><b>TAC airdrop</b><span data-foot="tac">Is your wallet in it?</span><span class="go"><span class="w">Check yours </span>→</span></a>
@@ -2210,7 +2222,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
         <div><dt>wallets airdropped, both chains</dt><dd class="num">14,000+</dd></div>
         <div><dt>sale or VC</dt><dd>None</dd></div>
       </dl>
-      <div class="tc-links"><button class="btn" type="button" data-hx="swap:ether:tac">Buy TAC</button><a class="tl" href="/trade/tac/">Price and chart →</a></div>
+      <div class="tc-links"><button class="btn" type="button" data-hx="swap:ether:tac">Buy TAC</button><a class="tl" href="/tac/">Stake and pay →</a><a class="tl" href="/trade/tac/">Price and chart →</a></div>
       <p class="tc-more"><button type="button" data-asset="tac">About TAC</button></p>
     </div>
     <div class="tc-set" id="tc-teth" role="tabpanel" aria-labelledby="tc-t-teth">
@@ -4098,7 +4110,7 @@ const render = {}, load = {};
 const tacCtx = () => ({ $, $$, ADDR, BR, BRM, BR_SEEN, BR_TO_ON, BSW, BTC, BTC_TOKENS, CETH_POOL_ASSET_ID, CHAIN_HOP_WAIT, CHAIN_SWEEP, CSEND, E10, FLASH, HELD, HX, HXWB, MEMPOOL, NOTIFY_KEY, P, PERMIT_WAIT, S, TACB, TACSEND, TAC_BOOK, TAC_BTC_ID, TAC_POOL_ASSET_ID, TPG_FLOOR, TPG_KNOWN, TPG_KNOWN_AT, TPX, XA, acctUsed, actBtc, addressId, ago, assetSendForm, brAct, brBridgeNow, brCheckText, brDiscover, brFail, brFirst, brId, brList, brLongReason, brMarkDeep, brMarkEmpty, brOver, brPaid, brPrepSet, brPrepState, brPrepTick, brPreps, brRecords, brRow, brTk, brTransfers, brTry, brUx, bridgeRunAll, bridgeRunMerge, bswHas, bswMod, bswOpen, bswTick, bulkFee, busy, byValue, bytesToHex, calmMotion, chainAhead, chainCap, chainCapLine, chainClient, chainHeld, chainHopRun, chainInRun, chainMark, chainMods, chainNotTo, chainOn, chainOutRun, chainOverCap, chainPayRun, chainQuote, chainRecipient, chainSaid, chainScan, chainSentLine, chainSettle, chainShieldAhead, chainShieldRun, chainSweepFee, chainWarm, chainWayOf, chainWrapWarm, clearField, connect, copy, countAll, dashSoon, decodeTacitAddress, depositCallout, devBal, devOn, errText, ethCall, evm, fastRoute, fmt, freeNotes, gasNow, getUx, hexToBytes, html, hxChainEth, hxLive, hxPreset, hxUsd, hxWalletBal, hxWays, keep, keyRow, load, loadBridge, loadBtc, loadHeld, loadTacHoldings, loadTacPrice, loadTacit, mergeSend, mount, multicall, nameAddrM, needKey, onEdit, openSheet, opsCompared, ownNow, parseUnits, payer, plain, planAll, planMerge, privateOf, qrModule, quoteErr, readPublicTac, render, rerender, resolveTo, resolveToM, satsFmt, say, sayErr, scanPrivate, segSub, setNotify, setPayer, shLookingNote, short, shown, shownAs, sig, sleep, spendable, startNote, stepLi, store, strip, syncLink, tacPageOpen, tacPublicNow, tacWrapNow, tacitIsMine, tacitLanes, takeDraft, tcardQuoteSoon, toSelf, toast, tpgAct, tpgBusy, tpgPrice, viewAddr, vouchers, walletPriv, warn, wireFinish, wireSub, withKey, xoOn, xoOut, xoShown, your, get CH() { return CH; }, get T() { return T; }, get TACP() { return TACP; }, get TCARD() { return TCARD; }, get TCO() { return TCO; }, get TPOOL() { return TPOOL; }, get TREQ() { return TREQ; }, get brLooking() { return brLooking; } });
 // front-tac:end
 let TAC_CODE = null;
-const tacReady = lazy(() => import('/front/tac.js?cb=f79c6229').then((m) => { TAC_CODE ||= m.default(tacCtx()); }));
+const tacReady = lazy(() => import('/front/tac.js?cb=68837f8f').then((m) => { TAC_CODE ||= m.default(tacCtx()); }));
 const withTac = (f) => (TAC_CODE ? f() : tacReady().then(f, () => {}));
 for (const k of ["tac"]) render[k] = () => { if (!TAC_CODE) withTac(() => rerender(k)); };
 for (const k of ["tac"]) load[k] = () => tacReady().then(() => load[k]());
@@ -8030,7 +8042,7 @@ function tacPageSet(on) {
 const CLV = { p: null };
 function chainLive(on) {
   if (!on) { CLV.p?.then((l) => l.stop(), () => {}); return; }
-  CLV.p ||= import('/chain/live.js?cb=c2dfa1ae').then((m) => m.mountChainLive({ top: $('#tpg-live'), mid: $('#tpg-mid'), rest: $('#tpg-chain') }));
+  CLV.p ||= import('/chain/live.js?cb=308b36d2').then((m) => m.mountChainLive({ top: $('#tpg-live'), mid: $('#tpg-mid'), rest: $('#tpg-chain'), earn: $('#tpg-earn-live') }));
   CLV.p.then((l) => { if (TACP.on) l.start(); }, () => { CLV.p = null; });
 }
 const chainMine = (landing) => {
@@ -14315,7 +14327,7 @@ function hxLeadPaint() {
   else if (hk === 'withdraw' && mk === 'ctac>wallet') t = 'Off the Tacit chain to your wallet.';
   else if (hk === 'withdraw' && mk === 'ctac>defi') t = 'Off the Tacit chain into the pool.';
   else if (hk === 'send' && !HX.ask && HX.send === 'ctac') t = 'Fast private TAC to a tacit1 address.';
-  else if (hk === 'shield' && /^w?tac>/.test(mk || '')) t = 'TAC: the DeFi pool to trade and earn, or the Tacit chain to pay fast.';
+  else if (hk === 'shield' && /^w?tac>/.test(mk || '')) t = 'TAC: the DeFi pool to trade and farm, or the Tacit chain to stake and pay.';
   else if (hk === 'shield') t = br ? 'From Bitcoin into the private pool.' : 'Into the pool. Then swap, send, earn.';
   else if (hk === 'withdraw') t = br ? 'Out of the pool to Bitcoin.' : 'Out of the pool to any address.';
   else if (hk === 'swap') t = SWC.card?.params?.()?.get('private') ? 'Private: nothing links the two sides.' : 'Best onchain price. Pick Private to hide it.';
