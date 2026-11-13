@@ -141,7 +141,7 @@ try {
     ok((await page.textContent('#bt-limit')) === '0.001 to 0.5 tETH a bridge while it is new', 'tETH to Bitcoin: the tile says what one bridge takes');
     ok((await page.textContent('#bt-wait')).includes('a little BTC'), 'and that a little BTC from the address pays the mint');
     await page.waitForFunction(() => /\$/.test(document.querySelector('#bt-cost')?.textContent || ''), null, { timeout: 15000 }).catch(() => {});
-    ok((await page.textContent('#bt-cost')) === 'From $2.28 now: 0.0005 tETH to the relay and 1,214 sats on Bitcoin', `the way out says what it costs now, from the relay\'s floor, the fee rate and the prices (${await page.textContent('#bt-cost')})`);
+    ok((await page.textContent('#bt-cost')) === 'From $2.28 now: 0.00052 tETH to the relay and 1,214 sats on Bitcoin', `the way out says what it costs now, from the relay\'s floor, the fee rate and the prices (${await page.textContent('#bt-cost')})`);
     ok(/^A few hours: Ethereum finalizes \(about 13 min\), the next proof covers it, then you sign the Bitcoin step/.test(await page.textContent('#bt-wait')), 'the way out says it takes hours: finality, then the proof that covers the burn, then the Bitcoin step, not finality alone');
     ok(await page.getAttribute('.lost a', 'href') === '/#private/bitcoin/back', 'and a bridge that cannot be seen is looked for on the Private ETH sheet, where tETH’s are found');
     await page.click('#bt-flip');

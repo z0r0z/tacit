@@ -3,7 +3,7 @@
 import { esc, fmtUnits, parseUnits, plain } from '/trade/util.js?cb=1d2cd8d3';
 import { moveSatsNeeded, MOVE_SATS_FLAT } from '/btc-book.js?cb=3a43da09';
 
-const BTC_MODULE = '/trade/btc.js?cb=b73743dd';
+const BTC_MODULE = '/trade/btc.js?cb=cdefa921';
 const TETH = '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34', TAC = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
 const TOKENS = { [TETH]: { sym: 'tETH', icon: 'teth', dec: 8 }, [TAC]: { sym: 'TAC', icon: 'tac', dec: 8 } };
 const SLIPS = [50, 100, 300];

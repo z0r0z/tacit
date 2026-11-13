@@ -220,6 +220,8 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
     else if (keyS.unlocked && !S.sess && root.open) load();
   });
 
+  if (keyS.unlocked && hasOpen(keyS.key.pubHex)) { root.open = true; load(); }
+
   // /fast/#provide comes straight to this panel: on load, and when a link on the page to it is followed
   const toLink = () => { if (doc.defaultView?.location.hash === '#provide') root.open = true; };
   toLink();

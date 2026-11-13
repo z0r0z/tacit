@@ -245,12 +245,12 @@ export function plainWhy(why) {
 const BTC_BLOCK_SECS = 600;
 const opensAt = (rec) => { const t = rec.lockAt || rec.confirmedAt; return t && rec.csvBlocks ? t + (rec.csvBlocks - 1) * BTC_BLOCK_SECS : null; };
 function returnLine(opens, now) {
-  if (opens == null) return 'Your Bitcoin is safe. The lock comes back to your address when its timelock ends, about a day after it confirmed.';
+  if (opens == null) return 'Your TAC is safe. The lock comes back to your address when its timelock ends, about a day after it confirmed.';
   const left = opens - now;
-  if (left <= 0) return 'Your Bitcoin is safe. Its lock is due back now, and is sent to your address from here while the app is open.';
+  if (left <= 0) return 'Your TAC is safe. Its lock is due back now, and is sent to your address from here while the app is open.';
   const h = left / 3600;
   const when = h >= 1.5 ? `in about ${Math.round(h)} hours` : h >= 0.75 ? 'in about an hour' : 'within the hour';
-  return `Your Bitcoin is safe. The lock comes back to your address ${when}: open the app then and it is sent back.`;
+  return `Your TAC is safe. The lock comes back to your address ${when}: open the app then and it is sent back.`;
 }
 export function describe(rec, clock = null) {
   const now = typeof clock === 'function' ? clock() : Date.now() / 1000;

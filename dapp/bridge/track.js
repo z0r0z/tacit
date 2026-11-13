@@ -243,11 +243,18 @@ export function costLine(asset, dir, c = {}) {
   const fee = dir === 'out' ? c.relay?.[asset] : null;
   if (dir === 'out' && fee == null) return '';
   const btc = `${sats.toLocaleString('en-US')} sats on Bitcoin`;
-  const relay = fee != null ? `${fmtAmount(fee, asset === 'teth' ? 4 : r.dp, r.dec)} ${r.ticker} to the relay` : '';
+  const relay = fee != null ? `${fmtSig(fee, r.dec)} ${r.ticker} to the relay` : '';
   const usd = asset === 'teth' && c.btcUsd > 0 && (fee == null || c.ethUsd > 0) ? (sats / 1e8) * c.btcUsd + (fee != null ? (Number(fee) / 1e8) * c.ethUsd : 0) : null;
   const lead = fee != null ? 'From' : 'About';
   const money = usd != null ? `${lead} $${usd < 10 ? usd.toFixed(2) : Math.round(usd)} now: ` : `${lead} `;
   return `${money}${[relay, btc].filter(Boolean).join(' and ')}${dir === 'in' ? '; Tacit covers the Ethereum side' : ''}`;
+}
+
+export function fmtSig(raw, dec = 8) {
+  const v = big(raw);
+  if (v <= 0n) return '0';
+  const cut = 10n ** BigInt(Math.max(0, v.toString().length - 2));
+  return fmtAmount(((v + cut / 2n) / cut) * cut, dec, dec);
 }
 
 export function btcSpan(blocks) {

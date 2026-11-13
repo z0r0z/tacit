@@ -117,6 +117,41 @@ test('the lock\'s cost and the bridge itself are for exactly the note picked, wi
   assert.deepEqual(seen, [{ id: 'x' }]); stop(); assert.equal(s.calls.stopped, true);
 });
 
+test('an offer is fitted to the note: the first provider that takes its history leads, with the lock\'s cost; none taking it is said', async () => {
+  const lineage = Object.assign(new Error('refused'), { code: 'lineage' });
+  // A is the better quote and screens the note out; B takes it
+  const s = session();
+  s.cost = async (o) => { s.calls.costs.push(o); if (o.provider.name === 'A') throw lineage; return { short: false, fee: 3100, take: 8046, total: 11146 }; };
+  const fr = routeOf([provider('A', { feeBps: 20 }), provider('B', { feeBps: 70 })], s);
+  const o = await fr.offer(100n * TAC);
+  assert.equal(o.provider.name, 'A', 'the best quote leads the offer');
+  const f = await fr.fit(o, note);
+  assert.equal(f.ok, true); assert.equal(f.provider.name, 'B'); assert.equal(f.quote.id, 'qB'); assert.deepEqual(f.quotes.map((x) => x.provider.name), ['B']);
+  assert.deepEqual(f.cost, { short: false, fee: 3100, take: 8046, total: 11146 });
+  assert.match(shown(f).rc[1][3], /B/, 'the receipt names the provider that pays');
+  await fr.start(f, note);
+  assert.deepEqual(s.calls.starts[0].quotes.map((x) => x.quote.id), ['qB'], 'and the bridge starts with it, not the one that turned the note away');
+  // every provider screens it out
+  const s2 = session(); s2.cost = async () => { throw lineage; };
+  const none = await routeOf([provider('A'), provider('B')], s2).fit(await routeOf([provider('A'), provider('B')], s2).offer(100n * TAC), note);
+  assert.equal(none.ok, false); assert.equal(none.why, 'lineage');
+  // a cost that could not be read for another reason keeps the offer, unpriced
+  const s3 = session(); s3.cost = async () => { throw new Error('explorer down'); };
+  const r3 = routeOf([provider('A')], s3), f3 = await r3.fit(await r3.offer(100n * TAC), note);
+  assert.equal(f3.ok, true); assert.equal(f3.cost, null); assert.equal(shown(f3).rc[2][1], 'in sats');
+  // a session that cannot price a lock leaves the offer as it is
+  const bare = routeOf([provider('A')], { ...session(), cost: undefined }), ob = await bare.offer(100n * TAC);
+  assert.equal(await bare.fit(ob, note), ob);
+});
+
+test('the bridges are not taken on when the session cannot be opened, and the caller is told', async () => {
+  let failed = null;
+  const fr = makeFastRoute({ discover: async () => [], open: async () => { throw new Error('no session'); } });
+  fr.run(() => {}, (e) => { failed = e; });
+  await new Promise((r) => setTimeout(r, 5));
+  assert.match(String(failed?.message), /no session/);
+});
+
 test('what the tab shows for an offer: the arrival, the fee, the Bitcoin cost, the time and what happens if it stalls', async () => {
   const o = await routeOf([provider('Tacit')], session()).offer(100n * TAC);
   o.cost = { short: false, fee: 3100, take: 8046, total: 11146 };
@@ -138,6 +173,9 @@ test('why the fast bridge is not offered is one row of the regular receipt, and 
   assert.deepEqual(whyRow({ ok: false, why: 'size', min: 10n * TAC, max: 1000n * TAC }), ['Fast bridge', 'providers take 10 to 1,000 TAC now']);
   assert.deepEqual(whyRow({ ok: false, why: 'dear' }), ['Fast bridge', 'the providers’ fee is over 5% at this size; the fast page can still bridge it']);
   assert.deepEqual(whyRow({ ok: false, why: 'busy' }), ['Fast bridge', 'the providers did not answer']);
+  assert.deepEqual(whyRow({ ok: false, why: 'size', min: 10n * TAC, max: 0n }), ['Fast bridge', 'the providers have no room right now'], 'every provider full is not "10 to 0"');
+  assert.deepEqual(whyRow({ ok: false, why: 'size', min: 10n * TAC, max: 5n * TAC }), ['Fast bridge', 'the providers have no room right now'], 'nor is less than the least');
+  assert.deepEqual(whyRow({ ok: false, why: 'lineage', min: 10n * TAC, max: 1000n * TAC }), ['Fast bridge', 'the providers online do not take this note’s history']);
   for (const o of [null, { ok: true }, { ok: false, why: 'none' }, { ok: false, why: 'error' }]) assert.equal(whyRow(o), null);
 });
 

@@ -42,7 +42,8 @@ export function signInSheet(session, { pick = pickWalletSheet, why = WHY, first 
     const pk = session.passkeyAvailable(), canBtc = typeof session.open.btc === 'function', canPaste = typeof session.open.key === 'function';
     const connected = (k) => !!(here && k?.mode === 'eth' && lc(k.address) === lc(here.address));
     const pickFor = (k) => (here?.uuid && (!k?.address || connected(k)) ? async () => here.uuid : pick);
-    const o = overlay({ title: 'Wallet', top: true, onClose: () => { if (!session.unlocked) reject(new Cancelled()); } });
+    // closed with a key open (the one the tab already held, opened again under the sheet) is a key opened
+    const o = overlay({ title: 'Wallet', top: true, onClose: () => { if (session.unlocked) resolve(); else reject(new Cancelled()); } });
     const opt = (k, t, m, cls = '') => `<button class="opt${cls ? ` ${cls}` : ''}" type="button" data-in="${k}"><span class="opt-t">${t}</span><span class="opt-m">${m}</span></button>`;
     const way = (k, id, name, title) => `<button class="way" type="button" data-in="${k}" title="${esc(title)}">${mark(id)}<span>${name}</span></button>`;
     // a Tacit wallet this browser has opened: its address when it is known, and what opens it

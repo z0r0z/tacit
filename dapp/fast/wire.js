@@ -14,7 +14,7 @@ import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js';
 import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=882f11ad';
 import { makeFastBridgeEvm } from '/fastbridge-evm.js?cb=51ba5880';
 import { makeHttpCounter, makeCounter } from '/fastbridge-http.js';
-import { makeFastBridgeMarket, makeLocalStore, termsOf } from '/fastbridge-client.js?cb=0939dda6';
+import { makeFastBridgeMarket, makeLocalStore, termsOf } from '/fastbridge-client.js?cb=a59760d0';
 import { makeLpService } from '/fastbridge-provider.js?cb=20585d3a';
 import { makeMailboxCounter, makeMailboxServer, makeAdPublisher, readProviders, gatewayOf } from '/fastbridge-mailbox.js?cb=e88908a8';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=850e1c5e';
@@ -30,12 +30,13 @@ const hmacSha256 = (k, m) => hmac(sha256, k, m);
 const hex = (b) => [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
 const TERMINAL = ['done', 'refunded', 'rejected', 'aborted', 'lost'];
 
-// The key's confirmed TAC notes as the lock takes them.
+// The key's confirmed TAC notes as the lock takes them: the ones at its own address. TAC received privately sits at an address of its
+// own, which the lock does not sign for; it goes by the regular bridge.
 export async function notesOf(T, asset = TAC_ASSET) {
   const h = await T.scanHoldings();
   const e = h instanceof Map ? h.get(asset) : null;
   return ((e && e.utxos) || [])
-    .filter((x) => x.utxo && x.utxo.status && x.utxo.status.confirmed)
+    .filter((x) => x.utxo && x.utxo.status && x.utxo.status.confirmed && !x.stealthTweakedSk)
     .map((x) => ({ txid: x.utxo.txid, vout: x.utxo.vout, value: x.utxo.value, amount: BigInt(x.amount), blinding: BigInt(x.blinding) }));
 }
 

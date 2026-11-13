@@ -2,14 +2,15 @@
 // and the two presses that need only the relay (the burn of a moved bridge, the mint of a recorded one). Nothing is loaded until the holder asks:
 // this module, the key sheet and tacit.js (four megabytes) all come in on that press. Starting a bridge is the front page's Bridge tab. Merging, bridging all, minting to another address,
 // paying the mint from a wallet and proving it oneself stay on the front page, which these rows link to.
-import { makeKeySession, signInSheet } from '/trade/key.js?cb=7149c223';
+import { makeKeySession, signInSheet } from '/trade/key.js?cb=6fa82796';
 import { makeTacitSession } from '/tacit-session.js?cb=4636e436';
 import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverEvery } from '/bridge-tick.js?cb=42d78071';
-import { ROUTES } from '/bridge/track.js?cb=2f3df17a';
+import { ROUTES } from '/bridge/track.js?cb=d654a7d8';
 import { parseUnits } from '/trade/util.js?cb=1d2cd8d3';
 import { forgetUx } from '/trade/poolux.js?cb=a61d0a42';
 import { relayWords } from '/relay-outcome.js?cb=17e48a9a';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
+import { btcWay, btcSeen } from '/trade/btc-way.js?cb=8cd735cf';
 
 const TACIT_URL = '/tacit.js?cb=b45e21d5';
 const PLAN_KEY = 'tacit-lite-bridge-plan-v1', SELF_PROVE = 'tacit-lite-prove-self-v1:';
@@ -29,7 +30,7 @@ const BURN_SENT = ['burn-submitted', 'burn-mined', 'registered', 'folded', 'mint
 
 // `repaint()` reads the journals again; `say(text, front)` writes the status line (`front`: the text ends with the way to the front page).
 export function mountMover({ pick, repaint = () => {}, say = () => {}, onState = () => {} } = {}) {
-  const key = makeKeySession({ moved: (why) => { lockNow(); say(why); } });
+  const key = makeKeySession({ moved: (why) => { lockNow(); say(why); }, ways: { btc: btcWay(), btcSeen } });
   const TS = makeTacitSession({ url: TACIT_URL, key: () => (key.unlocked ? { pubHex: key.key.pubHex, priv: bytesToHex(key.priv()) } : null), secp, bytesToHex, hexToBytes });
   let timer = null, busy = false, pressing = false, last = 0, loadSaid = false;     // busy: a pass is running (a press runs beside it: the engines lease each bridge, and a mint's wait for the relay lasts minutes); pressing: a press is running (the tick waits for it, so a ready step is not taken by itself meanwhile)
   const rechecked = {};                                                              // when a burn whose claim was not matched was last looked at again (stepOut waits ten minutes)
@@ -100,11 +101,16 @@ export function mountMover({ pick, repaint = () => {}, say = () => {}, onState =
   // The key locked: out of the session first (so the page, told next, sees it closed), then the pass stopped and the pool module's copies of it dropped.
   function lockNow() { key.lock(); forgetUx(); stop(); }
 
-  // The key opened here, then the pass running while the page is open. A second press locks the key again.
+  // The pass running while the page is open, with the key this tab already holds (opened on another page of the site) or one opened here.
+  // A second press, while it runs, locks the key again.
   async function toggle() {
-    if (key.unlocked) { lockNow(); say(''); return false; }
-    try { await signInSheet(key, { pick, why: 'Open your Tacit wallet to move your bridges on from this page. It stays open in this tab only, until you close it, lock it, or leave the site idle for 30 minutes.' }); }
-    catch (e) { if (e?.unlockCancelled) return false; say(String(e?.message || e)); return false; }
+    if (timer) { lockNow(); say(''); return false; }
+    await Promise.race([key.ready(), new Promise((r) => setTimeout(r, 3000))]);
+    if (!key.unlocked) {
+      try { await signInSheet(key, { pick, first: btcSeen() ? 'btc' : 'eth', why: 'Open your Tacit wallet to move your bridges on from this page. It stays open in this tab only, until you close it, lock it, or leave the site idle for 30 minutes.' }); }
+      catch (e) { if (e?.unlockCancelled) return false; say(String(e?.message || e)); return false; }
+    }
+    if (!key.unlocked) return false;
     start();
     return true;
   }
@@ -182,7 +188,10 @@ export function mountMover({ pick, repaint = () => {}, say = () => {}, onState =
       drop = null;
     }
     let cur = rec;
-    if (kind === 'recheck') cur = await ux.recoverFromEthTx('0x' + String(rec.settle.txHash).replace(/^0x/, ''), priv(), { amount: BigInt(rec.source.amount ?? rec.source.value) });
+    if (kind === 'recheck') {
+      if (!rec.settle?.txHash) return say('This bridge has no Ethereum transaction on record yet. “Can’t see a bridge?” finds it from its burn.');
+      cur = await ux.recoverFromEthTx('0x' + String(rec.settle.txHash).replace(/^0x/, ''), priv(), { amount: BigInt(rec.source.amount ?? rec.source.value) });
+    }
     if (kind === 'resign') cur = await ux.resign(pub, id);
     if (kind === 'retry') cur = await ux.retryRejected(pub, id);
     say(kind === 'force' ? 'Sending it to Bitcoin at today’s fee…' : kind === 'retry' ? 'Sending the Bitcoin step again…' : 'Checking…');
@@ -204,9 +213,9 @@ export function mountMover({ pick, repaint = () => {}, say = () => {}, onState =
         : /another tab/i.test(txt(e)) ? 'This bridge is being moved on in another tab. Wait for it there, or close that tab and try again.'
         : /in this page right now/i.test(txt(e)) ? 'This page is moving this bridge on right now. Its row says where it stands.' : null;
       const w = relayWords(e);
-      say(f || w?.text || txt(e), !!w?.front);
+      say(f || w?.text || txt(e), w?.front ? row.href || true : false);
     } finally { pressing = false; repaint(); }
   }
 
-  return { toggle, press, tick, find, findOut, armed, get pressing() { return pressing; }, get open() { return key.unlocked; }, get pub() { return key.key?.pubHex || null; } };
+  return { toggle, press, tick, find, findOut, armed, get pressing() { return pressing; }, get open() { return key.unlocked; }, get running() { return !!timer; }, get pub() { return key.key?.pubHex || null; } };
 }

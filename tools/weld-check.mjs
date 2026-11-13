@@ -3601,7 +3601,8 @@ await step('bridge', async () => {
   ok(dumps === before, `bridge: redrawing the sheet does not run the check, or read the reflection state, again (${before} → ${dumps})`);
   // The receipt offers public TAC on arrival, off unless asked for (a one-step bridge has no burn to send for the holder), and it stays as set across a redraw.
   const opt = await r.page.$$eval('#br-rcpt .pick', (xs) => xs.map((x) => [x.querySelector('input')?.id, x.querySelector('input')?.checked, x.textContent.replace(/\s+/g, ' ').trim().slice(0, 90)]));
-  ok(opt.length === 1 && opt[0][0] === 'br-public' && opt[0][1] === false && /Make it public TAC when it arrives, in this key’s address/.test(opt[0][2]), `bridge: a one-step receipt offers public TAC on arrival, unticked, and nothing to send for the holder (${JSON.stringify(opt)})`);
+  ok(opt.length === 2 && opt[0][0] === 'br-public' && opt[0][1] === false && /Make it public TAC when it arrives, in this key’s address/.test(opt[0][2]) && opt[1][0] === 'br-chain' && opt[1][1] === false && /Move it to the Tacit chain when it arrives/.test(opt[1][2]),
+    `bridge: a one-step receipt offers public TAC on arrival, or a move to the Tacit chain, both unticked, and nothing to send for the holder (${JSON.stringify(opt)})`);
   await r.page.check('#br-public');
   await redrawTac(r.page);
   await until(r.page, () => !!document.querySelector('#br-public'), null, 60000);

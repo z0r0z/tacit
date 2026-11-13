@@ -77,7 +77,8 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
 
   const byAmount = (units) => others().filter((p) => units >= p.terms.minAmount && units <= capOf(p));
   const takersOf = (units) => (S.anyOnly === units ? byAmount(units).filter((p) => p.terms.anyTac) : byAmount(units));
-  const waitable = (units) => !!wants && !!S.sess && !S.want && units != null && units > 0n && (S.bal == null || units <= S.bal) && !takersOf(units).length;
+  const LEAST = 10n * ONE;
+  const waitable = (units) => !!wants && !!S.sess && !S.want && units != null && units >= LEAST && (S.bal == null || units <= S.bal) && !takersOf(units).length;
   const plain = (units) => (units / ONE).toString() + (units % ONE ? '.' + (units % ONE).toString().padStart(DEC, '0').replace(/0+$/, '') : '');
 
   function paintForm() {
@@ -113,15 +114,15 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
     return d < 90 ? 'just now' : d < 5400 ? `${Math.round(d / 60)} minutes ago` : d < 172800 ? `${Math.round(d / 3600)} hours ago` : `${Math.round(d / 86400)} days ago`;
   };
   function paintList() {
-    const e = $('fx-list'), recs = S.recs.slice(0, 10), open = recs.some((r) => !r.ended);
+    const e = $('fx-list'), recs = S.recs.slice(0, 10), open = recs.some((r) => ['built', 'broadcast', 'offered', 'claiming'].includes(r.phase));
     e.hidden = !recs.length;
-    e.innerHTML = recs.length ? `<div class="rows-h"><span>Your bridges</span></div>` + recs.map((r) => `
+    e.innerHTML = recs.length ? `<div class="rows-h"><span>Your bridges</span>${open ? '<span class="fx-keep">Keep this page open until it is done</span>' : ''}</div>` + recs.map((r) => `
       <div class="fx-rec" data-id="${esc(r.id)}" data-phase="${esc(r.phase)}">
         <div class="kv"><b>${esc(r.title)}</b><span class="num">${esc(fmtTac(r.amount))} TAC${r.receive && r.receive !== '0' ? ` → ${esc(fmtTac(r.receive))} TAC` : ''}</span></div>
         ${r.returned ? '' : `<ol class="fx-steps" aria-label="Steps">${r.steps.map((s, i) => `<li${i < r.at || r.ended ? ' class="on"' : i === r.at ? ' class="at"' : ''}>${esc(s)}</li>`).join('')}</ol>`}
         <p class="note">${esc(r.detail)}${r.error && !r.ended ? ` <span class="err">${esc(r.error)}</span>` : ''}</p>
         <p class="note fx-meta">${esc(ago(r.created))}${r.lockTxid ? ` · <a href="${SCAN}${esc(r.lockTxid)}" target="_blank" rel="noopener noreferrer">Bitcoin lock ↗</a>` : ''}${r.ended && !r.returned ? ' · <a href="/">Your TAC, on the front page</a>' : ''}</p>
-      </div>`).join('') + (open ? '<p class="note">Keep this page open until it is done: each step is taken as Bitcoin confirms.</p>' : '') : '';
+      </div>`).join('') : '';
   }
 
   function paintTiles() {
@@ -180,8 +181,8 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
         if (!keyS.unlocked || keyS.key.pubHex !== pub || S.opening !== me) return null;
         S.sess = sess; S.pub = pub;
         S.want = wants ? wants.kept(pub) : null; S.told = false; watchWant();
-        S.bal = await sess.balance();
         S.stop = sess.run({ onChange: (list) => { if (S.sess === sess) { S.recs = list; paintList(); } } });
+        S.bal = await sess.balance();
         sess.recover().then((found) => { if (found.length && S.sess === sess) sess.records().then((l) => { S.recs = l; paintList(); }); }).catch(() => {});
         note('');
         return sess;
@@ -322,7 +323,8 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
       await S.sess.start({ quotes: fits });
       if (S.want) { const pub = S.pub; S.want = null; S.told = false; clearInterval(S.watch); wants.stop(pub).catch(() => {}); }
       S.recs = await S.sess.records(); S.quotes = []; S.quote = null; S.best = null; S.amt = ''; $('fx-amt').value = '';
-      note('Started. It is listed below, and each step is taken as Bitcoin confirms.');
+      const unsent = S.recs[0] && S.recs[0].phase === 'built' && S.recs[0].error;
+      note(unsent ? 'Signed, but Bitcoin has not taken the lock yet. It is listed below and sent again by itself while this page is open.' : 'Started. It is listed below, and each step is taken as Bitcoin confirms.');
       S.sess.balance().then((b) => { S.bal = b; paintForm(); }).catch(() => {});
     } catch (e) {
       const rest = /cannot hold that amount/.test(String((e && e.message) || e)) ? quotes.filter((x) => !fits.includes(x)) : [];
@@ -356,7 +358,8 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
   }
 
   paint();
-  readProviders(true).then(() => { if (keyS.unlocked && S.providers.length) openSession(); });
+  if (keyS.unlocked) openSession();
+  readProviders(true).then(() => { if (keyS.unlocked && !S.sess && !S.opening) openSession(); });
   return {
     lock: (text) => reset(text),
     destroy: () => { if (S.stop) S.stop(); clearTimeout(S.timer); clearInterval(S.watch); },

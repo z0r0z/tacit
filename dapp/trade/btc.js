@@ -1,6 +1,6 @@
 import { makeBtcSession, short } from '/trade/btc-session.js?cb=a2b723db';
 import { overlay, esc } from '/trade/sheet.js?cb=30c6e9a1';
-import { signInSheet, pickWalletSheet } from '/trade/sign-in.js?cb=2d47d55b';
+import { signInSheet, pickWalletSheet } from '/trade/sign-in.js?cb=c301dbb1';
 
 const MARKET_URL = '/btc-market.js', CSS_URL = '/trade/btc-market.css?cb=0f3f9ed2';
 const TAC = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';

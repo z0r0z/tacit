@@ -184,7 +184,7 @@ test('every provider online is a tile, the key\'s own first and marked, with its
   await signIn(m);
   await until(() => !!m.$('fx-tiles').querySelector('.mine'), 'the key\'s own marked');
   const first = m.$('fx-tiles').querySelector('.lp-tile');
-  assert.ok(first.classList.contains('mine')); assert.match(text(first), /^Mine You Fee 0\.01% \+ 1 TAC Takes 10 to/);
+  assert.ok(first.classList.contains('mine')); assert.match(text(first), /^Mine \S+ You Fee 0\.01% \+ 1 TAC Takes 10 to/);
   m.ui.destroy();
 });
 
@@ -355,7 +355,7 @@ test('Bridge: the quotes go to the client, the bridge appears with its steps, th
   await until(() => !m.$('fx-go').disabled, 'a quote'); m.$('fx-go').click();
   await until(() => m.$('fx-go').textContent === 'Press again to bridge', 'the confirmation');
   assert.equal(m.st.calls.starts.length, 0, 'the first press starts nothing');
-  assert.match(m.$('fx-st').textContent, /locks 100 TAC on Bitcoin until Tacit has paid you 98\.7 private TAC in the pool/); assert.match(m.$('fx-st').textContent, /returns to your address after about a day/);
+  assert.match(m.$('fx-st').textContent, /locks 100 TAC on Bitcoin until Tacit(?: \(\w+\))? has paid you 98\.7 private TAC in the pool/); assert.match(m.$('fx-st').textContent, /returns to your address after about a day/);
   m.$('fx-go').click();
   await until(() => m.st.calls.starts.length === 1, 'the start');
   assert.equal(m.st.calls.starts[0].quotes[0].quote.btcValue, 100n * TAC);
@@ -442,6 +442,17 @@ test('a key opened elsewhere on the page (the provider panel) is read here too: 
   await until(() => !m.$('fx-form').hidden, 'the form');
   assert.equal(m.state.signIns, 0); assert.equal(m.state.opens, 1);
   assert.notEqual(m.$('fx-go').textContent, 'Open wallet');
+  m.ui.destroy();
+});
+
+test('a key the tab already holds when the page loads is opened at once, with or without a provider online: its bridges are listed and taken on', async () => {
+  const key = keyStub(); key.open();
+  const st = sessionStub();
+  st.setRecs([rec({ id: 'aa'.repeat(36), phase: 'offered', title: 'Waiting for the pool lock', detail: 'The provider is locking TAC in the pool for you.', at: 1 })]);
+  const m = mount({ key, session: st, providers: [] });
+  await until(() => m.state.opens === 1 && !m.$('fx-list').hidden, 'the session and the list');
+  assert.equal(m.state.signIns, 0, 'no sign-in was asked for');
+  assert.match(text(m.$('fx-list')), /Your bridges Keep this page open until it is done Waiting for the pool lock/, 'the bridge under way is listed, with the word to keep the page open over it');
   m.ui.destroy();
 });
 
@@ -645,7 +656,7 @@ test('a fee over 5% is quoted with a plain warning, in the receipt and again at 
   assert.match(text(m.$('fx-recv')), /High fee: this provider keeps 8 TAC \(8\.00%\) of your 100 TAC, and you receive 92\./);
   assert.equal(m.$('fx-big').textContent, '92');
   m.$('fx-go').click(); await until(() => m.$('fx-go').textContent === 'Press again to bridge', 'the confirmation');
-  assert.match(m.$('fx-st').textContent, /^High fee: Dear keeps 8 TAC \(8\.00%\)\. This locks 100 TAC/);
+  assert.match(m.$('fx-st').textContent, /^High fee: Dear(?: \(\w+\))? keeps 8 TAC \(8\.00%\)\. This locks 100 TAC/);
   const fair = mount({ providers: [provider('Fair', { feeBps: 100, flatFee: '0' })] });
   await signIn(fair);
   typeIn(fair, '100'); await until(() => !fair.$('fx-go').disabled, 'a quote');

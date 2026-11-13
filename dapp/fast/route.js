@@ -11,6 +11,8 @@
 //                              why: 'none' (no provider online), 'size' (none takes that amount now), 'dear' (every quote is dearer than
 //                              the page accepts), 'busy' (the providers did not answer), 'error'
 //   fr.cost(offer, note)    -> { fee, take, total, have, short, need } what the lock costs on Bitcoin, and whether the address can pay it
+//   fr.fit(offer, note)     -> the offer led by the first of its providers that takes this note, with its `cost`; { ok: false, why:
+//                              'lineage' } when every one of them turns the note's history away
 //   fr.start(offer, note)   -> the bridge, begun with that note and the best provider that will hold the payout
 //   fr.records()            -> the bridges, newest first, in words (fastbridge-client.js describe)
 //   fr.run(onChange)        -> stop(): the steps taken while the page is open
@@ -63,6 +65,19 @@ export function makeFastRoute({ discover, open, ownId = () => null, refreshMs = 
     if (typeof s.cost !== 'function') return null;
     return s.cost({ quote: o.quote, provider: o.provider, only: [{ txid: note.txid, vout: note.vout }] });
   }
+  // A provider that screens TAC's history turns some notes away, which only pricing the lock for the note tells: the offer comes back led
+  // by the first provider that takes it, so what the form names is who pays. A cost that could not be read for another reason is left out.
+  async function fit(o, note) {
+    const s = await open();
+    if (typeof s.cost !== 'function') return o;
+    const only = [{ txid: note.txid, vout: note.vout }];
+    for (let i = 0; i < o.quotes.length; i++) {
+      const x = o.quotes[i], led = { ...o, quotes: o.quotes.slice(i), quote: x.quote, provider: x.provider, minutes: minutesFor(x.quote.minConfs) };
+      try { return { ...led, cost: await s.cost({ quote: x.quote, provider: x.provider, only }) }; }
+      catch (e) { if (!e || e.code !== 'lineage') return { ...led, cost: null }; }
+    }
+    return { ok: false, why: 'lineage', min: o.min, max: o.max };
+  }
   async function start(o, note) {
     const s = await open();
     return s.start({ quotes: o.quotes, only: [{ txid: note.txid, vout: note.vout }] });
@@ -70,13 +85,14 @@ export function makeFastRoute({ discover, open, ownId = () => null, refreshMs = 
   // which providers could take a lock for this much of the key's TAC: 'all', 'any' (only one that takes any TAC) or 'none' (fast/wire.js reach)
   async function reach(units) { const s = await open(); return typeof s.reach === 'function' ? s.reach(BigInt(units)) : 'all'; }
   async function records() { return (await open()).records(); }
-  function run(onChange) {
+  // `onFail(error)`: the session could not be opened, so nothing is being taken on (the caller may ask again)
+  function run(onChange, onFail = () => {}) {
     let stop = () => {}, gone = false;
-    open().then((s) => { if (!gone) stop = s.run({ onChange }); }).catch(() => {});
+    open().then((s) => { if (!gone) stop = s.run({ onChange }); }).catch((e) => { if (!gone) onFail(e); });
     return () => { gone = true; stop(); };
   }
 
-  return { offer, cost, start, records, run, providers, reach };
+  return { offer, cost, fit, start, records, run, providers, reach };
 }
 
 // ── what a form says of an offer: plain text and rows, for the Bridge tab (which draws them) ──
@@ -101,7 +117,9 @@ export function shown(o) {
 // why the fast bridge is not offered, when providers are online and none takes this note: one row of the regular receipt (null when there is nothing to say)
 export function whyRow(o) {
   if (!o || o.ok || o.why === 'none' || o.why === 'error') return null;
-  return ['Fast bridge', o.why === 'size' ? `providers take ${fmtTac(o.min)} to ${fmtTac(o.max)} TAC now` : o.why === 'dear' ? 'the providers’ fee is over 5% at this size; the fast page can still bridge it' : 'the providers did not answer'];
+  const size = o.min != null && o.max != null && BigInt(o.max) >= BigInt(o.min) ? `providers take ${fmtTac(o.min)} to ${fmtTac(o.max)} TAC now` : 'the providers have no room right now';
+  return ['Fast bridge', o.why === 'size' ? size : o.why === 'dear' ? 'the providers’ fee is over 5% at this size; the fast page can still bridge it'
+    : o.why === 'lineage' ? 'the providers online do not take this note’s history' : 'the providers did not answer'];
 }
 
 // the first press of the bridge: what it does, what it costs and what happens if the provider stops

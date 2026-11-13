@@ -1,13 +1,13 @@
 import { openBtcWallet } from '/trade/btc-session.js?cb=a2b723db';
 import { isPasskeyAvailable } from '/prf-wallet.js';
-import { makeKeySession, signInSheet } from '/trade/key.js?cb=7149c223';
+import { makeKeySession, signInSheet } from '/trade/key.js?cb=6fa82796';
 import { makeTacitSession } from '/tacit-session.js?cb=4636e436';
 import { getUx as loadUx, forgetUx } from '/trade/poolux.js?cb=a61d0a42';
 import { onMainnet, connectedInjected } from '/eth-nodes.js';
-import { mountFast } from '/fast/ui.js?cb=2bfac83b';
-import { mountProvide } from '/fast/provide.js?cb=7c4357ff';
+import { mountFast } from '/fast/ui.js?cb=0d2021d8';
+import { mountProvide } from '/fast/provide.js?cb=afe91e95';
 import { mountBound } from '/fast/bound.js?cb=862c8d6e';
-import { openFast, openProvider, openBound, discoverProviders, PROVIDER_DEFAULTS } from '/fast/wire.js?cb=e34cd366';
+import { openFast, openProvider, openBound, discoverProviders, PROVIDER_DEFAULTS } from '/fast/wire.js?cb=8b24509f';
 import { makeWants } from '/fast/want.js?cb=1ab031d1';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 

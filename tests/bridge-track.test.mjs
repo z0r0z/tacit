@@ -252,9 +252,11 @@ test('what a way costs is the app\'s own figure, at the live fee rate', () => {
 
 test('the tile\'s cost line says what a way costs now, and nothing when it cannot say', () => {
   const c = { satvb: 2, relay: { teth: 52_241n, tac: 400_000_000n }, ethUsd: 2500, btcUsd: 80_000 };
-  assert.equal(costLine('teth', 'out', c), 'From $2.28 now: 0.0005 tETH to the relay and 1,214 sats on Bitcoin');
+  assert.equal(costLine('teth', 'out', c), 'From $2.28 now: 0.00052 tETH to the relay and 1,214 sats on Bitcoin');
   assert.equal(costLine('teth', 'in', c), 'About $0.80 now: 1,000 sats on Bitcoin; Tacit covers the Ethereum side');
-  assert.equal(costLine('teth', 'out', { ...c, ethUsd: null }), 'From 0.0005 tETH to the relay and 1,214 sats on Bitcoin', 'without a price it names the amounts only');
+  assert.equal(costLine('teth', 'out', { ...c, ethUsd: null }), 'From 0.00052 tETH to the relay and 1,214 sats on Bitcoin', 'without a price it names the amounts only');
+  assert.equal(costLine('teth', 'out', { ...c, relay: { teth: 25_899n }, ethUsd: null }), 'From 0.00026 tETH to the relay and 1,214 sats on Bitcoin', 'a small fee is said to two figures, not cut to less than it is');
+  assert.equal(costLine('teth', 'out', { ...c, relay: { teth: 9_999n }, ethUsd: null }), 'From 0.0001 tETH to the relay and 1,214 sats on Bitcoin', 'and never as nothing');
   assert.equal(costLine('tac', 'out', c), 'From 4 TAC to the relay and 1,214 sats on Bitcoin');
   assert.equal(costLine('tac', 'in', c), '', 'TAC\'s way in has two steps and is priced on its own sheet');
   assert.equal(costLine('cbtc', 'in', c), 'About 1,000 sats on Bitcoin; Tacit covers the Ethereum side', 'cBTC comes back as tETH does');

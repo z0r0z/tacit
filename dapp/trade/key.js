@@ -6,7 +6,7 @@ import { secp, sha256, keccak_256, bytesToHex, hexToBytes } from '/vendor/tacit-
 import { prfBytesToScalar, prfLogin, prfRegister, loadPrfMap, savePrfMap, isPasskeyAvailable } from '/prf-wallet.js';
 import { knownWallets } from '/tacit-wallet-known.js?cb=ec5b5193';
 import { makeEvmWallet } from '/evm-wallet.js?cb=ce3b412c';
-import { signInSheet, pickWalletSheet, Cancelled } from '/trade/sign-in.js?cb=2d47d55b';
+import { signInSheet, pickWalletSheet, Cancelled } from '/trade/sign-in.js?cb=c301dbb1';
 import { tabKeyRead, tabKeyWrite, tabKeyClear, tabKeyWatch } from '/tab-key.js?cb=ec8829ac';
 
 const RECORD = 'tacit-trade-id-v1';                                           // how /trade last opened a key: public data only (the Bitcoin market writes it too)
@@ -88,9 +88,10 @@ export function makeKeySession({ moved = null, ways = {} } = {}) {
   // Ethereum wallet's once that wallet answers, without a prompt, as the account that opened it (any other answer, or none, locks it).
   tabKeyWatch();
   const kept = tabKeyRead();
+  let restored = Promise.resolve();
   if (kept && kept.mode !== 'eth') { try { set(kept); } catch { tabKeyClear(); } }
   else if (kept?.mode === 'eth') {
-    evm.restore().then((c) => {
+    restored = evm.restore().then((c) => {
       if (key) return;
       if (c && '0x' + lc(c.address) === lc(kept.address)) { try { set(kept); } catch { tabKeyClear(); } } else tabKeyClear();
     }, () => tabKeyClear());
@@ -106,6 +107,8 @@ export function makeKeySession({ moved = null, ways = {} } = {}) {
     passkeyAvailable: () => isPasskeyAvailable(), ethAvailable: () => evm.available(), warm: () => evm.warm(), btcSeen: ways.btcSeen,
     // the Ethereum wallet the key was opened with (null for a passkey, a pasted key or a Bitcoin wallet): a page's last-resort node for reads
     walletProvider: () => (key && key.mode === 'eth' ? evm.provider() : null),
+    // settles once the key this tab already held has been opened again, or let go: at once unless an Ethereum wallet has to answer first
+    ready: () => restored,
     lock() { priv = null; key = null; tabKeyClear(); emit(); },
     onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); },
   };

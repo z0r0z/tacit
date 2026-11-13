@@ -1,4 +1,4 @@
-import { ROUTES, readBridges, liveLine, nextOf, fmtAmount, limitLine, limitsSaid, ethSpan, costLine } from '/bridge/track.js?cb=2f3df17a';
+import { ROUTES, readBridges, liveLine, nextOf, fmtAmount, limitLine, limitsSaid, ethSpan, costLine } from '/bridge/track.js?cb=d654a7d8';
 import { bodyType } from '/rpc-body.js';
 { const fq = document.getElementById('fq-lim'); if (fq) fq.textContent = limitsSaid(); }
 
@@ -125,10 +125,13 @@ async function readTxs(rows) {
 
 const PICK = { asset: 'tac', dir: 'in' };
 
+const hashWay = () => location.hash.replace(/^#/, '').toLowerCase().split('/');
 function readHash() {
-  const [a, d] = location.hash.replace(/^#/, '').toLowerCase().split('/');
-  if (Object.hasOwn(ROUTES, a)) PICK.asset = a;
+  const [a, d] = hashWay();
+  if (!Object.hasOwn(ROUTES, a)) return !a;
+  PICK.asset = a;
   PICK.dir = d === 'out' && ROUTES[PICK.asset].out ? 'out' : 'in';
+  return true;
 }
 
 function paintTile() {
@@ -163,8 +166,8 @@ function paintTile() {
   const cost = costLine(PICK.asset, PICK.dir, COST);
   $('#bt-cost').textContent = cost;
   $('#bt-cost').hidden = !cost;
-  const want = `#${PICK.asset}${PICK.dir === 'out' ? '/out' : ''}`;
-  if (location.hash !== want && !(want === '#tac' && !location.hash)) history.replaceState(null, '', want);
+  const want = `#${PICK.asset}${PICK.dir === 'out' ? '/out' : ''}`, at = hashWay()[0];
+  if ((!at || Object.hasOwn(ROUTES, at)) && location.hash !== want && !(want === '#tac' && !location.hash)) history.replaceState(null, '', want);
 }
 
 function wireTile() {
@@ -188,7 +191,7 @@ function wireTile() {
     PICK.dir = PICK.dir === 'in' ? 'out' : 'in';
     paintTile();
   });
-  addEventListener('hashchange', () => { readHash(); paintTile(); });
+  addEventListener('hashchange', () => { if (readHash()) paintTile(); });
 }
 
 let ROWS = [];
@@ -220,6 +223,7 @@ function rowHtml(r) {
       <div class="mb-r" role="img" aria-label="${esc(where)}">${ticks}</div>
       <div class="mb-w"><span>${stepHtml(where)}</span>${live ? `<span class="mb-live">${esc(live)}</span>` : ''}</div>
       ${r.note ? `<p class="mb-n">${esc(r.note)}</p>` : ''}
+      <p class="mb-n mb-said" role="status" data-id="${esc(r.id)}"${SAID?.id === r.id ? '' : ' hidden'}>${SAID?.id === r.id ? saidHtml(SAID) : ''}</p>
     </div>
     <div class="mb-a">${act}${links ? `<span class="mb-x">${links}</span>` : ''}</div>
   </li>`;
@@ -290,14 +294,20 @@ function paintAge() {
   if (t && LIVE.at) t.textContent = `checked ${ago(LIVE.at)}`;
 }
 
+let SAYAT = null, SAID = null;
+const saidHtml = (s) => `${esc(s.text)}${s.front ? ` <a href="${esc(typeof s.front === 'string' ? s.front : '/#bridge')}">Do it on the front page →</a>` : ''}`;
+function paintSaid() {
+  for (const p of $$('#mine-l .mb-said')) { const on = !!SAID && p.dataset.id === SAID.id; p.hidden = !on; p.innerHTML = on ? saidHtml(SAID) : ''; }
+}
 function mineSay(text, front = false) {
+  if (SAYAT && ROWS.some((r) => r.id === SAYAT)) { SAID = text ? { id: SAYAT, text, front } : null; paintSaid(); return; }
   const el = $('#mine').hidden ? $('#lost-s') : $('#mine-s');
   for (const o of [$('#mine-s'), $('#lost-s')]) if (o && o !== el) { o.hidden = true; o.innerHTML = ''; }
   if (!el) return;
   el.hidden = !text;
   el.innerHTML = text ? `${esc(text)}${front ? ` <a href="${esc(typeof front === 'string' ? front : '/#bridge')}">Do it on the front page →</a>` : ''}` : '';
 }
-const loadMover = () => (MVP ||= import('/bridge/mover.js?cb=affcfcc5').then((m) => {
+const loadMover = () => (MVP ||= import('/bridge/mover.js?cb=8918a778').then((m) => {
   const b = $('#mine-mv');
   MV = m.mountMover({ repaint: () => { readMine.sig = null; readMine(); }, say: mineSay,
     onState: (on) => { if (b) { b.setAttribute('aria-pressed', String(on)); b.textContent = on ? 'Moving them on here' : 'Move them on here'; } } });
@@ -313,7 +323,7 @@ function wireMove() {
   $('#lost-a')?.addEventListener('click', async (e) => {
     if (e.metaKey || e.ctrlKey || e.shiftKey || e.button) return;
     e.preventDefault();
-    try { const m = await loadMover(); if (!m.open && !(await m.toggle())) return; $('#lost-form').hidden = false; await m.find(true); } catch { }
+    try { const m = await loadMover(); if (!m.running && !(await m.toggle())) return; $('#lost-form').hidden = false; await m.find(true); } catch { }
     readMine.sig = null; readMine();
   });
   $('#lf-go')?.addEventListener('click', async () => {
@@ -323,14 +333,17 @@ function wireMove() {
   });
   $('#mine-l').addEventListener('click', (e) => {
     const a = e.target.closest('[data-mv-act]');
-    if (a && MV) MV.press(a.dataset.mvAct, ROWS.find((r) => r.id === a.dataset.id));
+    if (!a || !MV) return;
+    const id = a.dataset.id;
+    SAYAT = id; SAID = null; mineSay('Working on it…');
+    Promise.resolve(MV.press(a.dataset.mvAct, ROWS.find((r) => r.id === id))).finally(() => { if (SAYAT === id) SAYAT = null; });
   });
 }
 
 function readMine() {
   let rows = [];
   try { rows = readBridges(localStorage); } catch { rows = []; }
-  const sig = JSON.stringify(rows.map((r) => [r.id, r.stage, r.due, r.at, nxt(r).due]));
+  const sig = JSON.stringify(rows.map((r) => [r.id, r.stage, r.due, r.at, nxt(r).due, r.note, r.checkNote, (r.acts || []).map((x) => x.kind).join()]));
   const changed = sig !== readMine.sig;
   readMine.sig = sig;
   ROWS = rows;
